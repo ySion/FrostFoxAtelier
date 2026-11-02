@@ -29,4 +29,4 @@ cmake --build --preset dev --target editor_dungeons_acceptance
 cmake --build --preset release --target editor_dungeons_acceptance
 ```
 
-无窗口验收逐个加载 2314 个模型、检查三角形数与贴图共享、核对源资源数量并保存重开三个场景。真实窗口验收验证普通工程入口、Content 目录树、三个场景的 D3D12 截图及只含 Models/Scenes 的隔离副本保存重开。证据位于 `out/<配置>/dungeons-evidence/`；该专项不发送原生输入，也不启用 GPU validation。
+无窗口验收保留 GenericOverview 一份磁盘保存重开，按原场景 JSON 核对网格、材质绑定和纹理资产身份，不修改仓库场景。真实窗口验收验证普通工程入口、Content 目录树、三个场景的 D3D12 截图及只含 Models/Scenes 的隔离副本保存重开。证据位于 `out/<配置>/dungeons-evidence/`；该专项不发送原生输入，也不启用 GPU validation。

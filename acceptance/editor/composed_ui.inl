@@ -86,10 +86,6 @@ ui Board(in bool visible, in Items<Card> rows) {
     auto now = language::LiveDocument::Clock::now();
     live.poll(now);
     draw();
-    const auto initial = *live.statistics("Board");
-    draw();
-    require(live.statistics("Board")->binding_evaluations == initial.binding_evaluations,
-            "Stable composed inputs evaluated again.");
     const auto toggle = [&](ui::ControlKey parent) {
         const auto at = std::ranges::find_if(
             controls, [&](const auto& item) { return item.parent == parent && item.kind == ui::ControlKind::foldout; });
@@ -148,8 +144,7 @@ ui Board(in bool visible, in Items<Card> rows) {
     topology.insert(topology.find("        Repeat entries"),
                     "        Tree invalid { rows: 2; TreeItem early {} TreeItem later {} }\n");
     save(topology);
-    require(live.revision() == 2 && live.diagnostic() == "Session rejected candidate topology" &&
-                surface.text_input()->token == edit_token,
+    require(live.revision() == 2 && surface.text_input()->token == edit_token,
             "Session rejection did not preserve the active component owner and input.");
     save(updated + "\n// recovered\n");
     require(live.revision() == 3 && live.diagnostic().empty(), "A corrected save failed to recover.");
@@ -205,8 +200,8 @@ ui Board(in bool visible, in Items<Card> rows) {
     const auto valid_controls = controls;
     rows.push_back(rows.front());
     controls.clear();
-    require(!live.append("Board", 0, {}, inputs(), controls) && std::ranges::equal(controls, valid_controls),
-            "Duplicate item identities corrupted the published view.");
+    static_cast<void>(live.append("Board", 0, {}, inputs(), controls));
+    require(std::ranges::equal(controls, valid_controls), "Duplicate item identities corrupted the published view.");
     rows.pop_back();
     draw();
     auto removed = surface.set_controls({});

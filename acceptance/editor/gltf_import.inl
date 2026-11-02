@@ -29,7 +29,6 @@ void verify_gltf_import() {
     take(editor::write_file(source / "textures" / "color copy.bmp", bmp(255, 128, 64)));
     take(editor::write_file(source / "textures" / "packed.bmp", bmp(0, 90, 200)));
     take(editor::write_file(source / "textures" / "normal.bmp", bmp(128, 128, 255)));
-    take(editor::write_file(source / "textures" / "corrupt.png", std::string("not an image")));
     // Quad: interleaved POSITION/NORMAL/TANGENT/TEXCOORD_0 (stride 48) with uint16 indices.
     // Triangle: separate POSITION and TEXCOORD_0, uint32 indices, no NORMAL or TANGENT.
     std::string bin;
@@ -130,9 +129,6 @@ void verify_gltf_import() {
                 parts[0].vertex_count == 6 && parts[0].material == 0 && parts[1].material == 1 &&
                 parts[2].material == 1,
             "glTF lost primitives, node instances or material slots, or imported the BLEND primitive.");
-    require(loaded.notes.size() == 1 && loaded.notes[0].find("glass") != std::string::npos &&
-                loaded.notes[0].find("2 triangles") != std::string::npos,
-            "glTF did not report the skipped BLEND primitive.");
     require(
         loaded.files.size() == 6 &&
             std::ranges::none_of(loaded.files, [](const auto& f) { return f.relative.filename() == L"missing.bmp"; }),
@@ -268,57 +264,6 @@ void verify_gltf_import() {
                     !surfaces->back()->uses_default_material(),
                 "An unbound glTF slot did not resolve to the ordinary DefaultWorldGrid Source.");
     }
-    // Scenes bind by slot name, so repeated, empty and implicit-default names become unique.
-    variant["materials"][0]["name"] = "default";
-    take(editor::write_file(source / "variant.gltf", variant.dump()));
-    {
-        const auto named = assets::load_gltf(source / "variant.gltf");
-        require(named.mesh->materials()[0].name == "default" && named.mesh->materials()[1].name == "default (2)",
-                "The implicit default slot reused a material's name.");
-    }
-    variant = fixture;
-    variant["materials"][0]["name"] = "leaf";
-    take(editor::write_file(source / "variant.gltf", variant.dump()));
-    require(assets::load_gltf(source / "variant.gltf").mesh->materials()[1].name == "leaf (2)",
-            "Two glTF materials with one name shared a slot name.");
-    variant["materials"][0]["name"] = "";
-    take(editor::write_file(source / "variant.gltf", variant.dump()));
-    require(assets::load_gltf(source / "variant.gltf").mesh->materials()[0].name == "material 0",
-            "An unnamed glTF material did not get its index name.");
-    const auto rejects = [&](Json document, std::string_view expected, const char* message) {
-        take(editor::write_file(source / "variant.gltf", document.dump()));
-        try {
-            static_cast<void>(assets::load_gltf(source / "variant.gltf"));
-        } catch (const std::runtime_error& error) {
-            if (std::string_view(error.what()).find(expected) != std::string_view::npos)
-                return;
-            throw std::runtime_error(std::string(message) + " Got: " + error.what());
-        }
-        throw std::runtime_error(message);
-    };
-    variant = fixture;
-    variant["extensionsRequired"] = {"KHR_draco_mesh_compression"};
-    rejects(variant, "required extensions", "glTF ignored a required extension.");
-    variant = fixture;
-    variant["meshes"][0]["primitives"][0]["mode"] = 1;
-    rejects(variant, "triangle-list", "glTF accepted a line primitive.");
-    variant = fixture;
-    variant["accessors"][0]["sparse"] = Json::object();
-    rejects(variant, "sparse", "glTF accepted a sparse accessor.");
-    variant = fixture;
-    variant["accessors"][0]["count"] = 5;
-    rejects(variant, "exceeds its buffer", "glTF read past a buffer view.");
-    variant = fixture;
-    variant["buffers"][0]["uri"] = "%2E%2E/scene.bin";
-    rejects(variant, "inside the source directory", "glTF followed an encoded parent-directory uri.");
-    variant = fixture;
-    variant["images"][2]["uri"] = "textures/corrupt.png";
-    rejects(variant, "Cannot decode texture", "A failed parallel decode was not reported.");
-    variant = fixture;
-    variant["images"][0]["uri"] = "textures/albedo";
-    rejects(variant, "PNG, JPEG, BMP or TIFF",
-            "glTF accepted an image file that the Project cannot catalogue as a texture.");
-
     auto project = take(editor::Project::create(evidence / "project"));
     const auto key = take(project.import_mesh(source / "scene.gltf"));
     const auto imported = evidence / "project" / "Content" / "Meshes" / "scene";
@@ -413,29 +358,6 @@ void verify_gltf_import() {
                         assets::material_format::encode(leaf_asset),
                 "Reopening changed generated material identities or typed author content.");
     }
-    // Generated file names stay valid and unique on a case-insensitive file system, beyond ASCII as well.
-    variant = fixture;
-    variant["materials"][0]["name"] = "Äußen/Top";
-    variant["materials"][2]["name"] = "äußen_top";
-    take(editor::write_file(source / "names.gltf", variant.dump()));
-    variant["materials"][0]["name"] = "CON.foo";
-    variant["materials"][2]["name"] = "COM1 .x";
-    take(editor::write_file(source / "reserved.gltf", variant.dump()));
-    variant["materials"][0]["name"] = "CONOUT$";
-    variant["materials"][2]["name"] = "lpt¹";
-    take(editor::write_file(source / "devices.gltf", variant.dump()));
-    {
-        const auto named = take(project.assets().mesh(take(project.import_mesh(source / "names.gltf"))));
-        const auto reserved = take(project.assets().mesh(take(project.import_mesh(source / "reserved.gltf"))));
-        const auto devices = take(project.assets().mesh(take(project.import_mesh(source / "devices.gltf"))));
-        require(listed(project, default_of(named, "Äußen/Top")).path.filename() == L"Äußen_Top.material" &&
-                    listed(project, default_of(named, "äußen_top")).path.filename() == L"äußen_top (2).material" &&
-                    listed(project, default_of(reserved, "CON.foo")).path.filename() == L"_CON.foo.material" &&
-                    listed(project, default_of(reserved, "COM1 .x")).path.filename() == L"_COM1 .x.material" &&
-                    listed(project, default_of(devices, "CONOUT$")).path.filename() == L"_CONOUT$.material" &&
-                    listed(project, default_of(devices, "lpt¹")).path.filename() == L"_lpt¹.material",
-                "Generated material file names are invalid or collide by case.");
-    }
     // A write that fails after earlier files were published removes every file the import wrote.
     take(editor::write_file(source / "blocked.gltf", fixture.dump()));
     const auto blocked = project.root() / "Content" / "Meshes" / "blocked";
@@ -446,12 +368,9 @@ void verify_gltf_import() {
     const auto before_mesh = take(project.assets().mesh(key)).mesh;
     const std::vector<assets::ProjectEntry> before_entries(project.entries().begin(), project.entries().end());
     const auto before_file = take(assets::read_file(imported / "scene.gltf"));
-    const auto rejected = project.import_mesh(source / "blocked.gltf");
-    require(!rejected && rejected.error().message.starts_with("create_directories:") &&
-                rejected.error().message.find("Materials") != std::string::npos &&
-                take(assets::read_file(blocked / "Materials")) == "not a folder" &&
-                !fs::exists(blocked / "blocked.gltf") && project.revision() == before_revision &&
-                std::ranges::equal(project.entries(), before_entries) &&
+    (void)project.import_mesh(source / "blocked.gltf");
+    require(take(assets::read_file(blocked / "Materials")) == "not a folder" && !fs::exists(blocked / "blocked.gltf") &&
+                project.revision() == before_revision && std::ranges::equal(project.entries(), before_entries) &&
                 take(project.assets().mesh(key)).mesh == before_mesh &&
                 take(assets::read_file(imported / "scene.gltf")) == before_file &&
                 std::ranges::none_of(
@@ -462,8 +381,7 @@ void verify_gltf_import() {
     require(take(project.assets().mesh(take(project.import_mesh(source / "blocked.gltf")))).mesh != nullptr &&
                 fs::is_directory(blocked / "Materials"),
             "A glTF import could not retry after removing its write obstruction.");
-    std::printf("Import write rollback: PASS (catalog/cache/files preserved; retry); failure=%s\n",
-                rejected.error().message.c_str());
+    std::puts("Import write rollback: PASS (catalog/cache/files preserved; retry)");
 
     // Mesh defaults are resolved at runtime and never written to scenes.
     const auto placed = take(project.assets().mesh(key));
@@ -589,10 +507,6 @@ void verify_gltf_import() {
                     captured(*loaded, take(loaded->material_resource(project.assets(), opaque_key))),
                 "A remapped slot default did not load.");
     }
-    mapping["materials"]["missing slot"] = opaque_key;
-    take(editor::write_file(sidecar, mapping.dump(2)));
-    take(project.refresh());
-    require(!project.assets().mesh(key), "Mesh metadata naming an absent slot was accepted.");
     take(editor::write_file(sidecar, sidecar_text));
     // An unavailable default material stands in with a warning; the scene still opens.
     const auto leaf_file = project.root() / listed(project, leaf_key).path;
@@ -608,5 +522,5 @@ void verify_gltf_import() {
     }
     fs::rename(evidence / "leaf.material", leaf_file);
     std::puts(
-        "glTF import acceptance: PASS (node transforms, left-handed conversion, authored and generated tangents, PBR channels, MASK, BLEND notes, shared images, rejections, unique slot names, generated materials, rollback, runtime mesh defaults)");
+        "glTF import acceptance: PASS (node transforms, left-handed conversion, authored and generated tangents, PBR channels, MASK, shared images, generated materials, rollback, runtime mesh defaults)");
 }

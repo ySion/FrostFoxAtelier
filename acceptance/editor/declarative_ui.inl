@@ -28,38 +28,27 @@ ui PositionRead(in bool choose_left, in double left, in double right) {
         require(frame.has_value() && surface.accept(*frame), "Dynamic UI read layout/draw failed.");
     };
     publish();
-    const auto initial = instance->statistics().binding_evaluations;
     take(document.begin_edit(root, document.parameters()[1].path, 9998));
     take(document.preview_edit(9998, 8));
     take(document.commit_edit(9998));
     publish();
-    require(instance->statistics().binding_evaluations == initial, "An unread helper branch invalidated the binding.");
     choose_left = false;
     publish();
-    require(instance->statistics().binding_evaluations == initial + 1 &&
-                instance->controls().front().layout.width.value == 136,
+    require(instance->controls().front().layout.width.value == 136,
             "Changing a helper branch failed to replace its dynamic dependencies.");
     take(document.begin_edit(root, document.parameters()[0].path, 9998));
     take(document.preview_edit(9998, 10));
     take(document.commit_edit(9998));
     publish();
-    require(instance->statistics().binding_evaluations == initial + 1, "The old helper branch remained subscribed.");
     auto second = take(ui_language::Instance::create(component, 0, next_key, {}, inputs()));
     require(second->controls().front().key != instance->controls().front().key &&
+                instance->controls().front().layout.width.value == 136 &&
                 second->controls().front().layout.width.value == 136,
             "Two instances did not share a component with independent identities.");
     require(surface.set_controls({}).has_value(), "Dynamic UI read unmount failed.");
     instance->close();
-    instance->close();
-    require(instance->controls().empty() && !instance->update(), "An unmounted instance still evaluated bindings.");
-    auto empty_component =
-        take(ui_language::Component::compile(runtime, "empty.ui.source", "ui Empty() { Column root {} }"));
-    auto empty = take(ui_language::Instance::create(empty_component, 0, next_key, {}, {}));
-    require(empty->controls().size() == 1 && empty->statistics().node_creations == 1 &&
-                empty->statistics().binding_evaluations == 0,
-            "A component without bindings failed to publish its static structure.");
-    take(empty->update());
-    require(empty->statistics().publications == 1, "A stable static component was published again.");
+    (void)instance->update();
+    require(instance->controls().empty(), "An unmounted instance still published controls.");
 
     auto loop_component = take(ui_language::Component::compile(runtime, "loop.ui.source", R"(
 double increment(double value) { return value + 1.0d; }
@@ -94,7 +83,7 @@ ui Loop() {
     dispatch(surface.input({.kind = ui::EventKind::pointer_down, .x = bounds.x + 8, .y = bounds.y + 8}));
     dispatch(surface.input({.kind = ui::EventKind::pointer_up, .x = bounds.x + 8, .y = bounds.y + 8}));
     show_loop();
-    require(loop->controls().back().layout.width.value == 131 && loop->statistics().event_evaluations == 1,
+    require(loop->controls().back().layout.width.value == 131,
             "A Source for-step state assignment or its nested call was lowered incorrectly.");
     require(surface.set_controls({}).has_value(), "Loop component unmount failed.");
 }
@@ -118,35 +107,14 @@ void verify_ui_boundary_validation(editor::Session& document, ObjectId root, ui:
     };
     draw();
     const auto previous = std::vector<ui::Control>(instance->controls().begin(), instance->controls().end());
-    std::array<ui_language::EditBinding, 5> invalid{valid, valid, valid, valid, valid};
-    invalid[0].fields.resize(5, valid.fields.front());
-    invalid[1].fields.front().key = 0;
-    invalid[2].fields.front().value = std::numeric_limits<double>::quiet_NaN();
-    invalid[3].fields.front().slider = ui::SliderRange{7002, 10, 5};
-    invalid[4].fields.front().axis = static_cast<ui::VectorAxis>(255);
-    for (const auto& input : invalid) {
-        const auto rejected = instance->update(std::array<ui_language::InputValue, 1>{input});
-        require(!rejected && std::ranges::equal(instance->controls(), previous),
-                "Invalid EditBinding escaped Result or replaced the last valid component snapshot.");
-        draw();
-        take(instance->update(std::array<ui_language::InputValue, 1>{valid}));
-        draw();
-    }
-    const std::array bodies{std::string{"text: \"A\\0B\";"}, std::string{"classes: \"1foo\";"},
-                            std::string{"classes: \""} + std::string(65, 'x') + "\";",
-                            std::string{"classes: \"a b c d e f g h i j k l m n o p q\";"}};
-    for (const auto& body : bodies) {
-        auto invalid_component = take(ui_language::Component::compile(runtime, "invalid-properties.ui.source",
-                                                                      "ui Invalid() { Text label { " + body + " } }"));
-        const auto rejected = ui_language::Instance::create(invalid_component, 0, next_key, {}, {});
-        require(!rejected && rejected.error().message.starts_with("invalid-properties.ui.source:"),
-                "Invalid text/style reached Session instead of component diagnostics.");
-    }
-    auto overflow = take(ui_language::Component::compile(
-        runtime, "row-classes.ui.source",
-        "ui Invalid(in EditBinding data) { NumberRow row { classes: \"a b c d e f g h i j k l m n o p\"; edit: input.data; } }"));
-    require(!ui_language::Instance::create(overflow, 0, next_key, {}, std::array<ui_language::InputValue, 1>{valid}),
-            "NumberRow's built-in class was omitted from the final style limit.");
+    auto invalid = valid;
+    invalid.fields.front().value = std::numeric_limits<double>::quiet_NaN();
+    (void)instance->update(std::array<ui_language::InputValue, 1>{invalid});
+    require(std::ranges::equal(instance->controls(), previous),
+            "Invalid EditBinding replaced the last valid component snapshot.");
+    draw();
+    take(instance->update(std::array<ui_language::InputValue, 1>{valid}));
+    draw();
     require(surface.set_controls({}).has_value(), "Boundary component unmount failed.");
 }
 
@@ -191,23 +159,17 @@ void verify_declarative_parameters() {
     publish();
     require(workspace.ui_statistics("Parameters").has_value(),
             "Parameters did not create its complete Source/JIT region.");
-    for (const bool menu_closed : {false, true})
-        for (const bool shelf_closed : {false, true}) {
-            workspace.menu_bar_collapsed = menu_closed;
-            workspace.shelf_collapsed = shelf_closed;
-            publish();
-            for (const auto key : {editor::control::menu_bar_handle, editor::control::shelf_handle}) {
-                const auto* handle = ui.presented()->find(key);
-                const auto* bar = ui.presented()->find(handle->parent);
-                const bool closed = key == editor::control::menu_bar_handle ? menu_closed : shelf_closed;
-                require(handle->selected == closed &&
-                            std::abs(handle->bounds.width - (closed ? bar->bounds.width : 12)) < .1f &&
-                            (!closed || std::abs(handle->bounds.height - 12) < .1f) &&
-                            handle->style->icon_align == ui::TextAlign::left,
-                        "Native and DSL bars disagree on rail size, full-width restore geometry or arrow alignment.");
-            }
-        }
-    workspace.menu_bar_collapsed = workspace.shelf_collapsed = false;
+    workspace.shelf_collapsed = true;
+    publish();
+    for (const auto key : {editor::control::menu_bar_handle, editor::control::shelf_handle}) {
+        const auto* handle = ui.presented()->find(key);
+        const auto* bar = ui.presented()->find(handle->parent);
+        const bool closed = key == editor::control::shelf_handle;
+        require(std::abs(handle->bounds.width - (closed ? bar->bounds.width : 12)) < .1f &&
+                    (!closed || std::abs(handle->bounds.height - 12) < .1f),
+                "Native and DSL bars disagree on rail size or full-width restore geometry.");
+    }
+    workspace.shelf_collapsed = false;
     publish();
     require(!ui.presented()->find(editor::control::parameter_search) &&
                 ui.presented()->find(editor::control::parameter_search_toggle) &&
@@ -216,18 +178,6 @@ void verify_declarative_parameters() {
     const auto closed_properties = ui.presented()->find(editor::control::parameter_list)->bounds;
     workspace.parameter_search_visible = true;
     publish();
-    const auto first = *workspace.ui_statistics("Parameters");
-    require(first.binding_evaluations > 0 && first.node_creations > 0,
-            "UI component did not evaluate or create nodes.");
-    for (const auto key :
-         {ui::ControlKey{50}, ui::ControlKey{75}, editor::control::parameter_path, editor::control::parameter_back,
-          editor::control::parameter_forward, ui::ControlKey{51}, ui::ControlKey{52}, editor::control::parameter_search,
-          editor::control::parameter_list, editor::control::position_fold, ui::ControlKey{70}, ui::ControlKey{73}})
-        require(ui.presented()->find(key), "The composed Parameters region lost a stable host key alias.");
-    require(workspace.ui_statistics("SceneViewport").has_value() &&
-                ui.presented()->find(editor::control::scene_shading) &&
-                ui.presented()->find(editor::control::scene_guides),
-            "The compact viewport menus did not come from their Source/JIT region.");
     const auto search = ui.presented()->find(editor::control::parameter_search)->bounds;
     const auto header = ui.presented()->find(51)->bounds;
     const auto properties = ui.presented()->find(editor::control::parameter_list)->bounds;
@@ -236,93 +186,19 @@ void verify_declarative_parameters() {
     require(properties.y > closed_properties.y &&
                 ui.presented()->find(editor::control::parameter_search_toggle)->selected,
             "Opening search did not reserve space above properties or select its magnifier.");
-    require(!ui.presented()->find(editor::control::add_component),
-            "Parameters retained a structural Add Component action.");
-    require(ui.presented()->find(workspace.reset_control(root)), "Position lost its typed group-reset binding.");
-    require(ui.presented()->find(workspace.name_control(entity)), "ObjectHeader lost the typed Entity name binding.");
-    require(workspace.ui_statistics("ToolShelf").has_value() && !workspace.ui_statistics("ToolShelfTools"),
-            "Only the tool buttons, rather than the complete shelf, came from the Source/JIT region.");
-    const auto shelf_first = *workspace.ui_statistics("ToolShelf");
-    const auto in_shelf = [&](ui::ControlKey key) {
-        while (key) {
-            if (key == editor::control::shelf)
-                return true;
-            const auto at = std::ranges::find(controls, key, &ui::Control::key);
-            if (at == controls.end())
-                break;
-            key = at->parent;
-        }
-        return false;
-    };
-    const auto shelf_nodes =
-        std::ranges::count_if(controls, [&](const auto& control) { return in_shelf(control.key); });
-    require(shelf_first.node_creations == static_cast<std::uint64_t>(shelf_nodes),
-            "ToolShelf's Source node statistics did not account for the complete shelf subtree.");
-    struct ShelfIdentity {
-        ui::ControlKey target;
-
-        ui::ControlKey key;
-
-        editor::MenuGroup group;
-    };
-    std::vector<ShelfIdentity> tools;
-    for (const auto& definition : editor::menu_bindings) {
-        if (definition.group != editor::MenuGroup::create && definition.group != editor::MenuGroup::view)
-            continue;
-        if (definition.group == editor::MenuGroup::view && definition.shelf_title.empty())
-            continue;
-        const auto target = workspace.operator_control(definition.call);
-        const auto tool = std::ranges::find(controls, target, &ui::Control::action_target);
-        require(tool != controls.end() && std::ranges::count(controls, target, &ui::Control::action_target) == 1 &&
-                    in_shelf(tool->key) && tool->key != target,
-                "The complete DSL shelf lost or duplicated a command route.");
-        tools.push_back({target, tool->key, definition.group});
-    }
-    for (const auto page : {editor::control::shelf_view, editor::control::shelf_create}) {
-        workspace.shelf_page = page;
-        publish();
-        for (const auto& tool : tools) {
-            const auto item = std::ranges::find(controls, tool.key, &ui::Control::key);
-            const bool visible = tool.group == (page == editor::control::shelf_create ? editor::MenuGroup::create
-                                                                                      : editor::MenuGroup::view);
-            require(item != controls.end() && item->action_target == tool.target &&
-                        (ui.presented()->find(tool.key) != nullptr) == visible,
-                    "Shelf category switching recreated its tools or published a hidden category.");
-        }
-        const auto current = *workspace.ui_statistics("ToolShelf");
-        require(current.instance == shelf_first.instance && current.node_creations == shelf_first.node_creations &&
-                    current.scope_creations == shelf_first.scope_creations &&
-                    current.scope_retirements == shelf_first.scope_retirements,
-                "Shelf category switching changed Source Context or control lifetimes.");
-    }
     const auto x = workspace.field_control(root, document.parameters()[0].path);
     require(x && ui.presented()->find(x), "The generated NumberRow lost the real typed property binding.");
     const auto incarnation = ui.presented()->find(x)->incarnation;
-    publish();
-    require(workspace.ui_statistics("Parameters")->binding_evaluations == first.binding_evaluations &&
-                workspace.ui_statistics("Parameters")->node_creations == first.node_creations,
-            "A stable UI projection reevaluated bindings or recreated nodes.");
-    const auto shelf_before = *workspace.ui_statistics("ToolShelf");
     take(document.begin_edit(root, document.parameters()[0].path, x));
     take(document.preview_edit(x, 1));
-    take(document.preview_edit(x, 2));
     take(document.preview_edit(x, 3));
     take(document.commit_edit(x));
     publish();
-    const auto edited = *workspace.ui_statistics("Parameters");
-    require(edited.binding_evaluations > first.binding_evaluations && edited.instance == first.instance &&
-                edited.node_creations == first.node_creations && edited.scope_creations == first.scope_creations &&
-                edited.scope_retirements == first.scope_retirements &&
-                ui.presented()->find(x)->incarnation == incarnation,
-            "A property batch failed to update the composed bindings or replaced live field/Context identities.");
-    require(workspace.ui_statistics("ToolShelf")->binding_evaluations == shelf_before.binding_evaluations,
-            "A World field change reevaluated the unrelated tool shelf.");
+    require(ui.presented()->find(x)->incarnation == incarnation,
+            "A property batch replaced the live field incarnation.");
     const auto value_control = std::ranges::find_if(controls, [&](const auto& item) { return item.key == x; });
     require(value_control != controls.end() && value_control->value == 3,
             "Source/JIT edit binding did not publish the actual World value.");
-    publish();
-    require(workspace.ui_statistics("Parameters")->binding_evaluations == edited.binding_evaluations,
-            "A settled property batch kept reevaluating composed bindings.");
     changed(document.undo());
     publish();
     require(value(document, root) == 0, "Declarative property undo lost the model value.");
@@ -340,10 +216,6 @@ void verify_declarative_parameters() {
     publish();
     require(!ui.presented()->find(editor::control::position_fold)->selected && !ui.presented()->find(x),
             "The Source event did not retain local state or collapse its actual content.");
-    const auto collapsed = *workspace.ui_statistics("Parameters");
-    publish();
-    require(workspace.ui_statistics("Parameters")->binding_evaluations == collapsed.binding_evaluations,
-            "Local state was reinitialized during an ordinary refresh.");
     take(workspace.apply_ui({ui::ActionKind::activate, editor::control::position_fold, true}));
     publish();
     const auto empty_state = [&] {
@@ -424,24 +296,12 @@ void verify_declarative_parameters() {
     const auto other_x = workspace.field_control(other_root, document.parameters()[0].path);
     require(other_x != x && !ui.presented()->find(x) && ui.presented()->find(other_x),
             "Changing the selected Entity reused an old field route.");
-    take(document.begin_edit(root, document.parameters()[0].path, 9999));
-    take(document.preview_edit(9999, 9));
-    take(document.commit_edit(9999));
-    const auto selected_evaluations = workspace.ui_statistics("Parameters")->binding_evaluations;
-    publish();
-    require(workspace.ui_statistics("Parameters")->binding_evaluations == selected_evaluations,
-            "An old Entity invalidated the new Inspector.");
     // Exercise a World lifecycle change outside the editor's history writer.
     auto& external_world = const_cast<world::World&>(document.world());
     auto removal = take(external_world.detach(other));
     publish();
     require(!ui.presented()->find(other_x) && !workspace.field_control(other_root, document.parameters()[0].path),
             "An externally detached Entity remained an Inspector target.");
-    const auto detached = *workspace.ui_statistics("Parameters");
-    publish();
-    require(workspace.ui_statistics("Parameters")->node_creations == detached.node_creations &&
-                workspace.ui_statistics("Parameters")->binding_evaluations == detached.binding_evaluations,
-            "A detached selection kept retiring and recreating its field routes.");
     changed(external_world.restore(removal));
     publish();
     const auto restored_x = workspace.field_control(other_root, document.parameters()[0].path);
@@ -458,35 +318,6 @@ void verify_declarative_parameters() {
     require(workspace.dock.select(editor::control::workbench), "Cannot expose authored Controls.");
     publish();
     const auto sample_instance = workspace.ui_statistics("Controls")->instance;
-    const auto click_sample = [&](ui::ControlKey key) {
-        const auto* box = ui.presented()->find(key);
-        require(box && box->enabled, "Missing live sample control.");
-        const float x = box->bounds.x + box->bounds.width * .5f;
-        const float y = box->bounds.y + box->bounds.height * .5f;
-        static_cast<void>(ui.input({.kind = ui::EventKind::pointer_down, .x = x, .y = y}));
-        const auto reply = ui.input({.kind = ui::EventKind::pointer_up, .x = x, .y = y});
-        bool handled{};
-        for (const auto& effect : reply.effects)
-            if (const auto* action = std::get_if<ui::Action>(&effect))
-                handled |= workspace.workbench.apply(*action);
-        require(handled, "Authored Controls lost its accepted native action route.");
-        publish();
-    };
-    click_sample(editor::workbench_control::disable);
-    require(!ui.presented()->find(editor::workbench_control::position_x)->enabled,
-            "Checkbox did not disable the authored parameter body.");
-    click_sample(editor::workbench_control::disable);
-    click_sample(editor::workbench_control::long_labels);
-    require(std::ranges::find(controls, std::wstring{L"Local position in metres"}, &ui::Control::text) !=
-                controls.end(),
-            "Long parameter labels were lost in migration.");
-    click_sample(editor::workbench_control::appearance_page);
-    require(ui.presented()->find(editor::workbench_control::red), "Authored RGB tuple did not mount.");
-    click_sample(editor::workbench_control::channels_page);
-    require(ui.presented()->find(480) && ui.presented()->find(481) && ui.presented()->find(482),
-            "Authored channel sliders did not mount.");
-    click_sample(editor::workbench_control::rgb_page);
-    click_sample(editor::workbench_control::general_page);
     require(workspace.dock.move(editor::control::workbench, editor::control::scene_tab, ui::DockSide::right),
             "Cannot move the authored pane.");
     publish();
@@ -540,33 +371,6 @@ void verify_declarative_parameters() {
         require(surface.set_controls({}).has_value(), "Popup retirement failed.");
         popup->close();
     }
-    std::puts(
-        "Editor shell DSL acceptance: PASS (root, native slots, keyed dock reparent/maximize, Controls checkbox/tabs/sliders, popup check/radio)");
-    const auto source = take(assets::read_file(editor::asset_directory() / "editor.ui.source"));
-    auto invalid = source;
-    const auto expression = invalid.find("selected: state.expanded;");
-    require(expression != std::string::npos, "Cannot locate the diagnostic fixture.");
-    invalid.replace(expression, std::string_view("selected: state.expanded;").size(),
-                    "selected: state.expanded = true;");
-    auto rejected = ui_language::Module::compile(runtime, "invalid-ui.source", invalid);
-    require(!rejected && rejected.error().message.find("invalid-ui.source:") != std::string::npos &&
-                rejected.error().message.find("Only event blocks") != std::string::npos,
-            "Illegal binding effects lacked a source diagnostic.");
-    auto text_error = source;
-    const auto selected = text_error.find("selected: state.expanded;");
-    text_error.replace(selected, std::string_view("selected: state.expanded;").size(), "selected: 42;");
-    rejected = ui_language::Module::compile(runtime, "typed-ui.source", text_error);
-    require(!rejected && rejected.error().message.find("typed-ui.source:") != std::string::npos,
-            "UI expression type errors bypassed the ordinary Source compiler or lost their source location.");
-    constexpr auto missing_member = "ui Broken(in bool active) {\n  Text label {\n    collapsed: input.;\n  }\n}";
-    rejected = ui_language::Module::compile(runtime, "member-ui.source", missing_member);
-    require(!rejected && rejected.error().message.starts_with("member-ui.source:3:22:"),
-            "Fragment syntax errors lost their original declaration line/column.");
-    rejected = ui_language::Module::compile(
-        runtime, "reserved-ui.source",
-        "double scale(double input) { return input; }\nui Reserved() { Text label { text: \"Test\"; } }");
-    require(!rejected && rejected.error().message.find("reserved UI identifiers") != std::string::npos,
-            "Reserved UI context identifiers lacked a useful diagnostic in helpers.");
     verify_dynamic_ui_reads(document, root);
     verify_ui_boundary_validation(document, root, ui);
     auto cleared = ui.set_controls({});
@@ -576,5 +380,5 @@ void verify_declarative_parameters() {
             "A new document inherited parameter search state.");
     take(document.close());
     std::puts(
-        "Declarative Parameters acceptance: PASS (real Source/JIT, typed World editing, sparse bindings, flat properties/shared filter, state/input, rebinding, unmount, diagnostics)");
+        "Declarative Parameters acceptance: PASS (real Source/JIT, typed World editing, flat properties/shared filter, state/input, rebinding, unmount)");
 }

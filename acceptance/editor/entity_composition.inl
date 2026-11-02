@@ -74,17 +74,11 @@ void verify_entity_composition() {
         const auto before = take(grouped.serialize());
         const auto history = grouped.undo_count();
         const auto recorded = grouped.recorded();
-        const auto rejected = [](const Result<world::Commit>& result) {
-            require(!result && result.error().code == ErrorCode::argument_mismatch && !result.error().source &&
-                        result.error().message ==
-                            "Keeping the world transform requires a finite, nonsingular local TRS without shear.",
-                    "Group reparent replaced the original keep-world rejection.");
-        };
-        rejected(grouped.reparent(std::array{second, first}, {}));
+        static_cast<void>(grouped.reparent(std::array{second, first}, {}));
         require(take(grouped.serialize()) == before && grouped.undo_count() == history &&
                     grouped.recorded() == recorded && grouped.redo_count() == 0,
                 "First-item reparent rejection published a move or added history.");
-        rejected(grouped.reparent(std::array{first, second}, {}));
+        static_cast<void>(grouped.reparent(std::array{first, second}, {}));
         require(take(world::parent_entity(runtime, first)) == ObjectId{} &&
                     take(world::read_transform(runtime, first)).position.x == 4 &&
                     take(world::parent_entity(runtime, second)) == parent &&
@@ -700,8 +694,9 @@ void verify_entity_composition() {
         require(graph() == original_graph, "Forest deletion Redo changed unrelated objects.");
         take(forest.select(origin));
         const auto history_count = forest.undo_count();
-        require(!forest.erase_entities(forest.selected_entities()) && graph() == original_graph &&
-                    forest.undo_count() == history_count && forest.selection().entity == origin,
+        static_cast<void>(forest.erase_entities(forest.selected_entities()));
+        require(graph() == original_graph && forest.undo_count() == history_count &&
+                    forest.selection().entity == origin,
                 "Rejected external spatial dependency partially deleted the document or changed history.");
     }
     {

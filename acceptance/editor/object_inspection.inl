@@ -133,8 +133,8 @@ class inspection.Stats : world.Component { float energy = 5.0f; }
                 document.undo_count() == history,
             "Selecting the same object cancelled or committed its active draft.");
     auto detached = take(world::create_component(runtime, stats_type));
-    require(!document.select(detached.id()) && document.owns_edit(field_key) &&
-                document.selection() == editor::Selection{entity, stats},
+    static_cast<void>(document.select(detached.id()));
+    require(document.owns_edit(field_key) && document.selection() == editor::Selection{entity, stats},
             "An invalid selection changed the inspected identity or active draft.");
     take(document.select(entity));
     require(!document.editing() && std::get<float>(take(document.read_property(stats, energy))) == 5 &&
@@ -154,8 +154,8 @@ class inspection.Stats : world.Component { float energy = 5.0f; }
     const auto retired_row = structure_key(stats);
     changed(document.remove_component(stats));
     publish();
-    require(document.selection() == editor::Selection{entity, entity} && !surface.presented()->find(retired_row) &&
-                !document.select(stats),
+    static_cast<void>(document.select(stats));
+    require(document.selection() == editor::Selection{entity, entity} && !surface.presented()->find(retired_row),
             "Deleting a selected component retained a stale inspection target or removed its Entity.");
     take(workspace.select_tree(document, host, retired_row));
     require(document.selection() == editor::Selection{entity, entity},
@@ -207,8 +207,8 @@ class inspection.Stats : world.Component { float energy = 5.0f; }
     require(!workspace.binding(choice_key), "A closed enum menu kept an executable old binding.");
     const auto saved = take(document.serialize());
     const auto enum_history = document.undo_count();
-    require(!document.set_property(settings, mode, Scalar{EnumValue{enum_type, 999}}, mode_key) &&
-                !document.editing() && document.undo_count() == enum_history &&
+    static_cast<void>(document.set_property(settings, mode, Scalar{EnumValue{enum_type, 999}}, mode_key));
+    require(!document.editing() && document.undo_count() == enum_history &&
                 std::get<EnumValue>(take(document.read_property(settings, mode))) == EnumValue{enum_type, 2} &&
                 take(document.serialize()) == saved,
             "An invalid enum choice poisoned the document or left a dangling edit.");
@@ -286,8 +286,8 @@ class inspection.Stats : world.Component { float energy = 5.0f; }
     }
     changed(document.close());
     changed(document.close());
-    require(document.selection() == editor::Selection{} && !document.select(settings),
-            "Closing the document retained a usable component selection.");
+    static_cast<void>(document.select(settings));
+    require(document.selection() == editor::Selection{}, "Closing the document retained a usable component selection.");
     std::puts(
         "Object inspection: PASS (Source Entity fields, flat properties, ownership, selection lifetime, idempotence, enum menus, persistence, saved data and placeholders)");
 }

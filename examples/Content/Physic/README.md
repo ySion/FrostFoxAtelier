@@ -48,4 +48,4 @@ cmake --build --preset dev --target physics_acceptance physics_examples_acceptan
 cmake --build --preset release --target physics_acceptance physics_examples_acceptance
 ```
 
-`physics_examples_acceptance` 先将全部 9 个场景写盘重开并实际模拟，检查约束、位姿、接触/过滤、查询、暂停/单步、停止重启及旧句柄失效，再通过正式编辑器和 D3D12 GPU validation 捕获编辑与模拟画面。窗口证据位于 `out/<配置>/physics-examples-evidence/`。`physics_acceptance` 另外覆盖 27 个底层真实场景，包括 Cook 缓存、边界输入、跨 World 拒绝、组件依赖和生命周期。详见[物理验收](../../../docs/modules/physics/acceptance.md)。
+`physics_examples_acceptance` 通过正式编辑器和 D3D12 GPU validation 捕获编辑与模拟画面，窗口证据位于 `out/<配置>/physics-examples-evidence/`。物理数学、持久化和生命周期代表由 `physics_acceptance` 承担；场景对象引用的保存重开由 Editor composition 代表覆盖，不重复运行九场景文档模拟矩阵。详见[物理验收](../../../docs/modules/physics/acceptance.md)。

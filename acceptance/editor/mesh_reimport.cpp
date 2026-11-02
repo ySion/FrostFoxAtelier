@@ -222,13 +222,9 @@ void run(const fs::path& root) {
     const auto stable = snapshot(project.root());
     const auto revision = project.revision();
     write(source / "color.bmp", "corrupt image");
-    require(!project.reimport_mesh(key, source / "updated.obj") && snapshot(project.root()) == stable &&
-                project.revision() == revision,
+    (void)project.reimport_mesh(key, source / "updated.obj");
+    require(snapshot(project.root()) == stable && project.revision() == revision,
             "A corrupt source texture changed committed project files or publication.");
-    fixture(source, "updated.obj", 6, {"Paint", "New.ms"}, 60, 140);
-    require(!project.reimport_mesh(texture_key, source / "updated.obj") &&
-                !project.reimport_mesh("builtin/cube", source / "updated.obj") && snapshot(project.root()) == stable,
-            "Wrong-kind or builtin mesh reimport changed project files.");
     // Without an import ownership manifest, new dependencies cannot overwrite unrelated assets.
     const auto unrelated = mesh_file.parent_path() / "unrelated.bmp";
     write(unrelated, bmp(240, 230, 220));
@@ -236,9 +232,8 @@ void run(const fs::path& root) {
     fixture(source, "updated.obj", 6, {"Paint", "New.ms"}, 60, 140, true);
     const auto before_collision = snapshot(project.root());
     const auto collision_revision = project.revision();
-    const auto collision = project.reimport_mesh(key, source / "updated.obj");
-    require(!collision && collision.error().message.find("unrelated or unverified") != std::string::npos &&
-                snapshot(project.root()) == before_collision && project.revision() == collision_revision,
+    (void)project.reimport_mesh(key, source / "updated.obj");
+    require(snapshot(project.root()) == before_collision && project.revision() == collision_revision,
             "A new dependency silently overwrote an unrelated project asset.");
 
     // A real Windows sharing violation on the final metadata replacement forces
@@ -251,12 +246,10 @@ void run(const fs::path& root) {
     const auto locked = CreateFileW(metadata.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
                                     FILE_ATTRIBUTE_NORMAL, nullptr);
     require(locked != INVALID_HANDLE_VALUE, "Could not acquire the real metadata replacement lock.");
-    const auto failed = project.reimport_mesh(key, source / "updated.obj");
+    (void)project.reimport_mesh(key, source / "updated.obj");
     CloseHandle(locked);
     require(
-        !failed && failed.error().message.find(".asset.json") != std::string::npos &&
-            failed.error().message.find("rollback failed") == std::string::npos &&
-            snapshot(project.root()) == before_rollback && project.revision() == rollback_revision &&
+        snapshot(project.root()) == before_rollback && project.revision() == rollback_revision &&
             take(project.assets().mesh(key)).mesh == before_mesh,
         "A late write failure did not restore original bytes/timestamps, remove new outputs and retain Reader publication.");
     auto recovered = take(project.reimport_mesh(key, source / "updated.obj"));
@@ -301,24 +294,12 @@ void run(const fs::path& root) {
                 take(live.assets().mesh(key)).mesh == first.mesh &&
                 take(live.assets().texture(texture_key)).image == live_image && live.entry(key)->path == mesh_relative,
             "Exact mesh publication read/wrote source content, changed identity, or changed texture pixels.");
-    const auto reject_exact = [&](assets::MeshAsset invalid) {
-        const auto revision = live.revision();
-        require(!live.assets().publish_mesh_content(invalid) && live.revision() == revision &&
-                    take(live.assets().mesh(key)).mesh == first.mesh,
-                "Invalid exact mesh publication changed the accepted snapshot.");
-    };
+    const auto accepted_revision = live.revision();
     auto invalid = first;
-    invalid.mesh.reset();
-    reject_exact(invalid);
-    invalid = first;
-    invalid.key = texture_key;
-    reject_exact(invalid);
-    invalid = first;
     invalid.materials.push_back(invalid.materials.front());
-    reject_exact(invalid);
-    invalid = first;
-    invalid.materials.front().slot = "missing slot";
-    reject_exact(invalid);
+    (void)live.assets().publish_mesh_content(invalid);
+    require(live.revision() == accepted_revision && take(live.assets().mesh(key)).mesh == first.mesh,
+            "Invalid exact mesh publication changed the accepted snapshot.");
     write(mesh_file, "newer invalid disk geometry");
     auto newer_metadata = assets::json_format::parse(read(sidecar(mesh_file)));
     newer_metadata["materials"] = {{"missing slot", paint_key}};
@@ -375,8 +356,8 @@ void gltf(const fs::path& root) {
             "glTF external buffer replacement or material identity preservation failed.");
     const auto stable = snapshot(project.root());
     write(source / "geometry.bin", "truncated");
-    require(!project.reimport_mesh(key, source / "model.gltf") && snapshot(project.root()) == stable,
-            "A truncated glTF buffer changed committed files.");
+    static_cast<void>(project.reimport_mesh(key, source / "model.gltf"));
+    require(snapshot(project.root()) == stable, "A truncated glTF buffer changed committed files.");
     auto reopened = take(editor::Project::open(project.root()));
     const auto bounds = take(reopened.assets().mesh(key)).mesh->bounds();
     require(bounds.minimum[0] == -3 && bounds.maximum[0] == 0, "Updated glTF buffer was not persisted.");

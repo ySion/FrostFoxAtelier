@@ -171,7 +171,7 @@ cmake --build --preset dev --target physics_examples_acceptance
 cmake --build --preset release --target physics_examples_acceptance
 ```
 
-`physics_acceptance` 也包含在总 `acceptance` 中，通过真实 Jolt 及 World 公开接口检查 Entity 组成与反射配置、刚体、力/冲量、碰撞矩阵、查询、Cook 资产、固定步、生命周期及角色/约束/布娃娃；`--list` 列出可独立运行的场景，完成时输出逐项结果与总数。`physics_examples_acceptance` 验证 9 个官方组件场景的磁盘往返、模拟和编辑器 GPU 画面。检查不依赖 `assert`，发布配置同样有效。场景清单、单场景命令与证据边界见[物理验收](docs/modules/physics/acceptance.md)。
+`physics_acceptance` 也包含在总 `acceptance` 中，通过真实 Jolt 及 World 公开接口检查 Entity 组成与反射配置、刚体、力/冲量、碰撞矩阵、查询、Cook 资产、固定步、生命周期及角色/约束/布娃娃；`--list` 列出可独立运行的场景，完成时输出逐项结果与总数。`physics_examples_acceptance` 捕获官方组件场景的编辑器 GPU 画面，不重复运行文档模拟矩阵。检查不依赖 `assert`，发布配置同样有效。场景清单、单场景命令与证据边界见[物理验收](docs/modules/physics/acceptance.md)。
 
 升级 Jolt 时，先确保子模块内没有未提交修改，获取上游版本并显式选择目标：
 

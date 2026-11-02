@@ -428,7 +428,7 @@ Parameters、Controls 等区域挂在稳定的业务内容槽内；停靠移动�
 
 正式入口为 `cmake --build --preset <dev|release> --target editor_document_acceptance ui_acceptance atelier_editor`，窗口使用 `atelier_editor --acceptance-project output [source-project]`。
 
-[源码 patch 验收](../../../acceptance/editor/ui_source_patch.inl) 使用真实文件、JIT、Runtime 与 Session，核对无关区域零求值、Context 身份、子组件增删/换型、state 调整、新事件执行、同帧事件与失败源码、首次挂载拒绝、草稿和最终资源回收。[组合验收](../../../acceptance/editor/composed_ui.inl) 覆盖列表重排/重挂、重复项根重命名、输入和草稿；[事务验收](../../../acceptance/editor/ui_reload_transaction.inl) 覆盖回滚、容量与幂等；[代码复用验收](../../../acceptance/editor/ui_reload_profile.inl) 覆盖租约、源码位置及 Runtime 边界。[窗口验收](../../../acceptance/editor/ui_authoring_window.inl) 保存独立作者文件副本，验证真实画面、错误恢复、输入 token、折叠状态及后续 World 字段编辑。
+[源码 patch 验收](../../../acceptance/editor/ui_source_patch.inl) 使用真实文件、JIT、Runtime 与 Session，核对 Context 身份、子组件增删/换型、state 调整、新事件执行、同帧事件与失败源码、首次挂载失败后的 root 清理、草稿和最终资源回收。[组合验收](../../../acceptance/editor/composed_ui.inl) 覆盖列表重排/重挂、重复项根重命名、输入和草稿；[事务验收](../../../acceptance/editor/ui_reload_transaction.inl) 保留失败回滚与代码拥有者寿命序列；[代码复用验收](../../../acceptance/editor/ui_reload_profile.inl) 检查旧租约执行、当前源码位置、复用后的运行时校验及 helper 函数体变化后的实际执行值，不以编译/复用计数作为通过条件。[窗口验收](../../../acceptance/editor/ui_authoring_window.inl) 保存独立作者文件副本，验证真实画面、错误恢复、输入 token、折叠状态及后续 World 字段编辑。
 
 组件只求值失效绑定，输入只复制变化槽位；变化片段可通过 swap 提交或恢复，长度变化时准备新的连续快照。控件 key 序列不变时跳过 key 集合构造与差集统计；稳定帧不递归执行退休清理。源码按组件生成代码复用 JIT，不是一般的函数级增量编译。宿主仍逐帧采样并 describe/set_controls；这不等于整个编辑器只遍历变化节点，也不等于增量布局求解。
 

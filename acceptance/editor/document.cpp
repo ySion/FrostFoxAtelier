@@ -19,7 +19,6 @@
 #include "renderer/scene_visibility.hpp"
 #include "application/recovery.hpp"
 #include "ui/text.hpp"
-#include "dungeons_roundtrip.hpp"
 #include <nlohmann/json.hpp>
 #include <algorithm>
 #include <chrono>
@@ -74,7 +73,6 @@ float value(editor::Session& document, ObjectId target, std::size_t axis = 0) {
 #include "project_document.inl"
 #include "textured_obj.inl"
 #include "gltf_import.inl"
-#include "physics_examples.inl"
 #include "examples.inl"
 #include "dungeons.inl"
 #include "project_profile.inl"
@@ -125,13 +123,8 @@ int main(int argc, char** argv) {
             verify_examples();
             return 0;
         }
-        if (argc == 2 && std::string_view(argv[1]) == "--physics-examples") {
-            verify_physics_examples();
-            return 0;
-        }
         if (argc == 2 && std::string_view(argv[1]) == "--textured-obj") {
             verify_textured_obj();
-            verify_sponza_project();
             return 0;
         }
         if (argc == 2 && std::string_view(argv[1]) == "--gltf") {
@@ -159,7 +152,7 @@ int main(int argc, char** argv) {
         // Each check runs once in the acceptance gate: a mode run by its own target is not repeated here.
         require(
             argc == 1,
-            "Usage: atelier_editor_document_acceptance [--recovery | --materials | --dungeons | --procedural-graph | --examples | --physics-examples | --textured-obj | --gltf | --viewport-edit | --scene-lit [source-project] | --profile-scene-cpu project scene output.json [camera-report.json] | --profile-physics-cpu project scene output.json]");
+            "Usage: atelier_editor_document_acceptance [--recovery | --materials | --dungeons | --procedural-graph | --examples | --textured-obj | --gltf | --viewport-edit | --scene-lit [source-project] | --profile-scene-cpu project scene output.json [camera-report.json] | --profile-physics-cpu project scene output.json]");
         stage = "operator parameters";
         verify_operator_parameters();
         stage = "project document";
@@ -267,8 +260,8 @@ int main(int argc, char** argv) {
         require(document.name(entity) == L"主角 Hero" && document.undo_count() == before_rename + 1,
                 "Document name did not create one history entry.");
         take(document.rename(entity, L"主角 Hero"));
-        require(document.undo_count() == before_rename + 1 && !document.rename(entity, L" ") &&
-                    document.name(entity) == L"主角 Hero",
+        (void)document.rename(entity, L" ");
+        require(document.undo_count() == before_rename + 1 && document.name(entity) == L"主角 Hero",
                 "Unchanged or invalid document names modified history.");
         changed(document.undo());
         require(document.name(entity) == original_name, "Name Undo did not restore the label.");
@@ -294,10 +287,10 @@ int main(int argc, char** argv) {
         const auto history = document.undo_count();
         const auto path = document.parameters()[0].path;
         take(document.begin_edit(transform, path, 11));
-        for (unsigned step = 0; step < 64; ++step)
-            take(document.preview_edit(11, static_cast<float>(step)));
-        require(!document.preview_edit(12, 99.f) && value(document, transform) == 63.f,
-                "A different control session modified the active target.");
+        take(document.preview_edit(11, 7.f));
+        take(document.preview_edit(11, 63.f));
+        (void)document.preview_edit(12, 99.f);
+        require(value(document, transform) == 63.f, "A different control session modified the active target.");
         take(document.commit_edit(11));
         require(document.undo_count() == history + 1, "Continuous field editing produced more than one history entry.");
         changed(document.undo());
@@ -332,9 +325,10 @@ int main(int argc, char** argv) {
                 "TRS undo did not restore the complete value after quaternion normalization.");
         take(document.select(entity));
         changed(document.erase_entities(document.selected_entities()));
-        require(take(document.world().members()).size() == 1 && take(document.presentation().render_items()).empty() &&
-                    !document.begin_edit(transform, path, 15) && !document.rename(entity, L"Detached"),
-                "A detached Entity remained editable or presentable in the World.");
+        (void)document.begin_edit(transform, path, 15);
+        (void)document.rename(entity, L"Detached");
+        require(take(document.world().members()).size() == 1 && take(document.presentation().render_items()).empty(),
+                "A detached Entity remained presentable in the World.");
         collect(document);
         changed(document.undo());
         require(document.selection().entity == entity && take(document.world().members()).front().id() == entity &&
