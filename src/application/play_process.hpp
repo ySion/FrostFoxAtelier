@@ -10,7 +10,7 @@
 
 namespace atelier::application {
 // Owns one project run and its descendants. Runtime identities and GPU objects
-// remain in that process; only scene values, a stop event, text and change
+// remain in that process; only scene values, stop/ack events, text and change
 // messages cross here. With live, the run gets a change link and *live its editor end.
 class PlayProcess final {
 public:
@@ -77,9 +77,12 @@ public:
     // Never waits for output. After process exit, subsequent polls finish the pipes before running becomes false.
     void poll() noexcept;
 
-    // Shutdown only: up to 500 ms cooperative process wait, then up to 1 s after forced termination.
+    // Shutdown only: 500 ms for stop acknowledgement or exit; acknowledged cleanup
+    // and forced-exit observation share a 4 s total budget measured from close entry.
     // At most eight poll budgets are read, without waiting for pipe data. Remaining bytes are accounted
     // as abandoned where measurable; unobserved EOF is marked unknown. Buffered bytes remain available.
+    // Unobserved exit logs an error and retains the process handle for nonblocking poll;
+    // repeated close/destruction never starts another wait budget.
     void close() noexcept;
 
     bool running() const noexcept { return process_ != nullptr; }
@@ -113,23 +116,31 @@ private:
 
     HANDLE stop_{};
 
+    HANDLE stop_ack_{};
+
     std::filesystem::path log_directory_;
 
     std::array<OutputPipe, 2> output_;
 
     bool stopping_{};
 
+    bool acknowledged_{};
+
     bool forced_{};
 
     bool exited_{};
 
+    bool closing_{};
+
     std::optional<DWORD> exit_code_;
 
-    std::chrono::steady_clock::time_point stop_deadline_{};
+    std::chrono::steady_clock::time_point stop_began_{};
 
     void drain() noexcept;
 
-    void observe_exit() noexcept;
+    void observe_acknowledgement() noexcept;
+
+    DWORD observe_exit(DWORD timeout_ms = 0) noexcept;
 
     void force() noexcept;
 

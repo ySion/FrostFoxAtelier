@@ -8,6 +8,7 @@
 #include "renderer/overlay.hpp"
 
 #include <array>
+#include <functional>
 #include <memory>
 #include <span>
 #include <vector>
@@ -181,11 +182,18 @@ struct Frame {
     // mesh mapping must belong together. Required and ready for any mesh frame;
     // UI/no-mesh frames may omit it.
     const MaterialBatch* materials{};
+
+    // Optional shutdown request, borrowed only through render(). Called on the
+    // owner thread between preparation batches; must not throw or reenter Renderer.
+    // A true result cancels this frame and permits only close/destruction afterwards.
+    const std::function<bool()>* stop_requested{};
 };
 
 // not_ready: the view's pipelines are still preparing; nothing was encoded or
 // presented and the frame may be retried, or drawn with another view.
-enum class FrameStatus { accepted, skipped, not_ready };
+// cancelled: shutdown was observed; no Present/Capture publication. Recorded
+// commands and partial resources remain owned until close, not reusable next frame.
+enum class FrameStatus { accepted, skipped, not_ready, cancelled };
 
 // Activity from this successful render return (accepted or skipped). Counts
 // encoded commands, including an occluded Present; pre-encoding skips have zero

@@ -10,6 +10,14 @@
 
 renderer 不保留业务对象身份、GC 根或 JIT 回调。UI 布局、文本排版、输入处理和撤销归各自拥有者；renderer 消费 [公共 CPU 协议](../../../src/ui/frame.hpp)。同一 owner 线程完成打开、查询、绘制和关闭，窗口必须存活到 renderer 关闭之后。
 
+### 合作停机
+
+`Frame::stop_requested` 可借用宿主的只读停止谓词，仅在本次 `render` 内于 owner 线程调用；谓词须为常数级廉价查询，不抛异常、不重入 Renderer。Renderer 不持有宿主事件、不等待，也不创建取消工作线程。未请求停止时，原有准备、编码和呈现顺序不变。
+
+渲染入口、几何实例/材质表准备、几何焊接的每 1024 个顶点/三角形、共享几何缓冲上传、工作室逐网格批次及提交前检查停止。观察到停止后返回独立的 `FrameStatus::cancelled`，而不是 `not_ready`：不接受或 Present 半帧、不替换 Capture，之后只允许 `close`/析构。已录制命令和部分创建的 GPU 资源仍由原缓存及 gfx 延迟退休机制拥有，正常关闭会提交、排空并释放，不是丢弃命令或回滚；显式 Capture 也可能在最后检查前调用 finish。关闭前仍须先释放 MaterialBatch。
+
+取消只记一条正式 info `renderer.frame_cancelled`，包含 frame_id、phase 和本次 render 的 elapsed_ms。它不表示 GPU 零执行或已完成。UI 纹理批次、Scene Lit 内部编码和 BLAS 循环尚无停止检查点；单个驱动调用、同步编译、分配或 fence 等待内部也不能被这个谓词抢占。异步管线准备的关闭仍遵守 RHI 原有 join/资源寿命约束，不新增等待路径或截止时间，不能承诺所有首帧阻塞均可取消。现有 Renderer 默认验收中的 K6 代表以首次查询即为真的谓词检查初始取消、未发布帧/捕获和正常关闭，不证明中途部分上传的实际关闭耗时。
+
 ## 程序材质批次
 
 `prepare_materials(span<ProgramSurfaceRef>)` 创建 move-only `MaterialBatch`，保有完整 Surface 表，不采用候选。17 个材质相关管线按精确 Program 对象集合共享，不按每个 MI 单独生成；参数、图片、policy 和表顺序不进入代码集合键。参数按各 Program 的真实布局打包，生成器的 `ms_load_parameters` 读取 byte base；普通参数不进入 shader 源码。

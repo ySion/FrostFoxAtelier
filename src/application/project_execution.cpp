@@ -77,13 +77,6 @@ void Application::consume_play_output() noexcept try {
         return;
     play_log_ended_ = true;
     workspace_.output.source_ended(play_.log_directory());
-    logging::Entry entry{.category = "play",
-                         .event_code = "play.process_ended",
-                         .message = "Runner process ended; retained JSONL tail remains readable."};
-    entry.fields = {{"directory", assets::utf8(play_.log_directory().generic_wstring())}, {"forced", play_.forced()}};
-    if (play_.exit_code())
-        entry.fields.push_back({"exit_code", std::uint64_t{*play_.exit_code()}});
-    static_cast<void>(workspace_.output.submit_owned(std::move(entry)));
 } catch (...) {
     std::fputs("Cannot capture the Runner output; its exit result is unchanged.\n", stderr);
 }

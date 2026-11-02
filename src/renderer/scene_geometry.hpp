@@ -4,6 +4,7 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <vector>
 
 namespace atelier::renderer::detail {
@@ -41,5 +42,5 @@ struct WeldedMesh {
     std::vector<GpuFace> faces;
 };
 
-WeldedMesh weld(const geometry::Mesh& mesh);
+WeldedMesh weld(const geometry::Mesh& mesh, const std::function<bool()>* stop_requested);
 }

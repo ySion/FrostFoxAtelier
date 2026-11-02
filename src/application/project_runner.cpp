@@ -141,6 +141,8 @@ int run_project_command(std::span<wchar_t*> arguments) {
                 options.frames = number(arguments[i]);
             else if (option == L"--stop-event")
                 options.stop_event = reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(number(arguments[i])));
+            else if (option == L"--stop-ack-event")
+                options.stop_ack_event = reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(number(arguments[i])));
             else
                 throw std::runtime_error("Unknown project run option.");
         }
@@ -169,14 +171,15 @@ int run_project(const RunOptions& options) {
             if (value)
                 CloseHandle(value);
         }
-    } stop_event{options.stop_event};
+    } stop_event{options.stop_event}, stop_ack_event{options.stop_ack_event};
     try {
         require_frame_timing();
-        if (options.stop_event) {
-            DWORD flags{};
-            if (!GetHandleInformation(options.stop_event, &flags))
-                throw std::runtime_error("Invalid inherited stop event.");
-        }
+        for (const auto event : {options.stop_event, options.stop_ack_event})
+            if (event) {
+                DWORD flags{};
+                if (!GetHandleInformation(event, &flags))
+                    throw std::runtime_error("Invalid inherited stop/ack event.");
+            }
         auto project = take(editor::Project::open(options.project));
         editor::ProjectDocument loaded;
         if (options.preview_ui) {
@@ -320,20 +323,22 @@ int run_project(const RunOptions& options) {
         };
         timing::Recorder recorder;
         editor::FramePerformance performance;
-        while (!options.frames || frame < options.frames) {
-            if (options.stop_event) {
-                const auto stopped = WaitForSingleObject(options.stop_event, 0);
-                if (stopped == WAIT_FAILED) {
-                    const auto error = GetLastError();
-                    static_cast<void>(ATELIER_LOG(logging::Severity::error, "runner", "runner.stop_wait_failed",
-                                                  "WaitForSingleObject(stop event) failed: Windows {}", error));
-                }
-                if (stopped == WAIT_OBJECT_0) {
-                    static_cast<void>(ATELIER_LOG(logging::Severity::info, "runner", "runner.stop_observed",
-                                                  "Stop request observed after {} frames", frame));
-                    break;
-                }
+        DWORD stop_error{};
+        const std::function<bool()> stop_requested = [&] {
+            if (!options.stop_event)
+                return false;
+            if (stop_error)
+                return true;
+            const auto stopped = WaitForSingleObject(options.stop_event, 0);
+            if (stopped == WAIT_FAILED) {
+                stop_error = GetLastError();
+                return true;
             }
+            return stopped == WAIT_OBJECT_0;
+        };
+        while (!options.frames || frame < options.frames) {
+            if (stop_requested())
+                break;
             // One frame per loop; the idle sleeps below stay outside it.
             timing::Recorder::Frame timed{recorder};
             std::optional<std::uint64_t> sampled;
@@ -504,6 +509,7 @@ int run_project(const RunOptions& options) {
                         rendering::sky_radiance(view.lit),
                         focus};
                     rendered.materials = camera ? group.materials.get() : nullptr;
+                    rendered.stop_requested = &stop_requested;
                     const auto lighting_start = RenderClock::Clock::now();
                     const bool lighting_active = target.drawable && camera && !group.meshes.empty() && view.lit.ddgi;
                     rendered.render_delta_seconds = lighting_clock.delta(lighting_start, lighting_active);
@@ -515,6 +521,10 @@ int run_project(const RunOptions& options) {
                         static_cast<void>(ATELIER_LOG(logging::Severity::info, "runner", "runner.first_render_end",
                                                       "First render completed"));
                         first_render = false;
+                    }
+                    if (drawn.result.status == renderer::FrameStatus::cancelled) {
+                        performance.observe(timed.finish(), std::nullopt);
+                        break;
                     }
                     if (drawn.failure != render_failure) {
                         render_failure = drawn.failure;
@@ -557,6 +567,20 @@ int run_project(const RunOptions& options) {
                 Sleep(4);
             else if (!target.drawable)
                 Sleep(16);
+        }
+        if (stop_requested()) {
+            if (stop_error)
+                static_cast<void>(ATELIER_LOG(logging::Severity::error, "runner", "runner.stop_wait_failed",
+                                              "WaitForSingleObject(stop event) failed: Windows {}", stop_error));
+            else {
+                static_cast<void>(ATELIER_LOG(logging::Severity::info, "runner", "runner.stop_observed",
+                                              "Stop request observed after {} frames", frame));
+                if (options.stop_ack_event && !SetEvent(options.stop_ack_event)) {
+                    const auto error = GetLastError();
+                    static_cast<void>(ATELIER_LOG(logging::Severity::error, "runner", "runner.stop_ack_failed",
+                                                  "SetEvent(stop acknowledgement) failed: Windows {}", error));
+                }
+            }
         }
         {
             static_cast<void>(ATELIER_LOG(logging::Severity::info, "runner", "runner.document_stop_begin",

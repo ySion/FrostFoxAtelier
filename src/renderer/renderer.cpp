@@ -29,8 +29,21 @@
 #include <unordered_map>
 #include <utility>
 
+namespace atelier::renderer {
+namespace {
+struct FrameCancelled {
+    std::string_view phase;
+};
+
+void check_stop(const std::function<bool()>* requested, std::string_view phase) {
+    if (requested && (*requested)())
+        throw FrameCancelled{phase};
+}
+}
+}
+
 namespace atelier::renderer::detail {
-WeldedMesh weld(const geometry::Mesh& mesh) {
+WeldedMesh weld(const geometry::Mesh& mesh, const std::function<bool()>* stop_requested) {
     // Merges only bitwise-identical corners: every vertex keeps its exact authored data.
     struct Hash {
         using is_transparent = void;
@@ -61,10 +74,13 @@ WeldedMesh weld(const geometry::Mesh& mesh) {
     };
     const auto source = mesh.vertices();
     WeldedMesh result;
+    check_stop(stop_requested, "weld");
     result.indices.resize(source.size());
     result.faces.resize(source.size() / 3);
     ankerl::unordered_dense::set<std::uint32_t, Hash, Equal> seen(0, Hash{&result.vertices}, Equal{&result.vertices});
     for (std::size_t i = 0; i < source.size(); ++i) {
+        if (i % 1024 == 0)
+            check_stop(stop_requested, "weld");
         if (const auto found = seen.find(source[i]); found != seen.end()) {
             result.indices[i] = *found;
             continue;
@@ -76,6 +92,8 @@ WeldedMesh weld(const geometry::Mesh& mesh) {
     }
     for (const auto& part : mesh.parts())
         for (std::uint32_t t = part.first_vertex / 3; t < (part.first_vertex + part.vertex_count) / 3; ++t) {
+            if (t % 1024 == 0)
+                check_stop(stop_requested, "weld");
             const auto* v = source.data() + std::size_t(t) * 3;
             std::array<double, 3> a{};
             std::array<double, 3> b{};
@@ -519,6 +537,8 @@ struct Renderer::State {
 
     bool first_frame{true};
 
+    bool cancelled{};
+
     rhi::Pipeline ui_pipeline;
 
     rhi::Pipeline background;
@@ -651,6 +671,8 @@ struct Renderer::State {
             return std::unexpected(error(rhi::ErrorCode::wrong_thread, "Renderer requires owner thread"));
         if (!gfx)
             return std::unexpected(error(rhi::ErrorCode::closed, "Renderer is closed"));
+        if (cancelled)
+            return std::unexpected(error(rhi::ErrorCode::closed, "Renderer was cancelled; close is required", true));
         if (failure)
             return std::unexpected(*failure);
         return {};
@@ -866,6 +888,7 @@ struct Renderer::State {
             materials.program_indices.clear();
             materials.program_offsets.clear();
             for (const auto& mesh : frame.meshes) {
+                check_stop(frame.stop_requested, "prepare");
                 materials.program_offsets.push_back(static_cast<std::uint32_t>(materials.program_slots.size()));
                 for (auto slot : *mesh.material_slots) {
                     materials.program_slots.push_back(batch->surfaces[slot]);
@@ -1031,6 +1054,7 @@ struct Renderer::State {
     }
 
     void draw(const Frame& frame, const ui::PixelExtent extent, Capture* capture) {
+        check_stop(frame.stop_requested, "prepare");
         const auto& viewport = frame.scene_viewport;
         const bool has_viewport = viewport.width > 0 && viewport.height > 0;
         const bool draw_scene = !instances.empty() && has_viewport;
@@ -1099,6 +1123,7 @@ struct Renderer::State {
             }
             if (!lighting)
                 prepare_matcap();
+            check_stop(frame.stop_requested, "upload");
             if (depth_extent != extent) {
                 if (depth)
                     require(gfxDestroyTexture(gfx, std::exchange(depth, {})), "Retire old depth");
@@ -1114,16 +1139,20 @@ struct Renderer::State {
             {
                 timing::Scope upload_stage{phases::encode_scene_upload};
                 for (const auto& group : mesh_groups) {
+                    check_stop(frame.stop_requested, "upload");
                     auto& geometry = *group.geometry;
                     if (!geometry.gpu.vertices) {
-                        const auto welded = detail::weld(*geometry.source);
+                        const auto welded = detail::weld(*geometry.source, frame.stop_requested);
                         auto& gpu = geometry.gpu;
+                        check_stop(frame.stop_requested, "upload");
                         gpu.vertices = gfxCreateBuffer<geometry::Vertex>(
                             gfx, static_cast<std::uint32_t>(welded.vertices.size()), welded.vertices.data());
                         allocation(bool(gpu.vertices));
+                        check_stop(frame.stop_requested, "upload");
                         gpu.indices = gfxCreateBuffer<std::uint32_t>(
                             gfx, static_cast<std::uint32_t>(welded.indices.size()), welded.indices.data());
                         allocation(bool(gpu.indices));
+                        check_stop(frame.stop_requested, "upload");
                         gpu.faces = gfxCreateBuffer<detail::GpuFace>(
                             gfx, static_cast<std::uint32_t>(welded.faces.size()), welded.faces.data());
                         allocation(bool(gpu.faces));
@@ -1194,6 +1223,7 @@ struct Renderer::State {
                 require(gfxCommandBindKernel(gfx, pipeline.kernel()), "Bind scene pipeline");
                 timing::Scope draws_stage{phases::encode_draws};
                 for (const auto& group : mesh_groups) {
+                    check_stop(frame.stop_requested, "encode");
                     const auto first = selected_only ? group.selected_first : group.visible_first;
                     const auto count = selected_only ? group.selected_count : group.visible_count;
                     if (!count)
@@ -1549,6 +1579,8 @@ Result<Preparation> Renderer::preparation(MaterialBatch& batch) {
 
 Result<FrameResult> Renderer::render(const Frame& frame, Capture* capture) {
     timing::Scope rendering{phases::render};
+    const auto began =
+        frame.stop_requested ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     const auto destination = target();
     if (!destination)
         return std::unexpected(destination.error());
@@ -1594,6 +1626,7 @@ Result<FrameResult> Renderer::render(const Frame& frame, Capture* capture) {
     bool encoding = false;
     try {
         std::optional<timing::Scope> stage{std::in_place, phases::prepare};
+        check_stop(frame.stop_requested, "prepare");
         if (frame.materials) {
             const auto* batch = frame.materials->state_.get();
             if (!batch || &batch->context != &s.context)
@@ -1633,6 +1666,7 @@ Result<FrameResult> Renderer::render(const Frame& frame, Capture* capture) {
         s.instance_groups.clear();
         s.instance_groups.reserve(frame.meshes.size());
         for (std::size_t i = 0; i < frame.meshes.size(); ++i) {
+            check_stop(frame.stop_requested, "prepare");
             const auto& mesh = frame.meshes[i];
             auto& checked = s.mesh_checks[i];
             if (!checked.prepared)
@@ -1708,6 +1742,7 @@ Result<FrameResult> Renderer::render(const Frame& frame, Capture* capture) {
         rhi::FrameInfo details;
         {
             timing::Scope submitting{phases::frame};
+            check_stop(frame.stop_requested, "submit");
             const bool first_frame = std::exchange(s.first_frame, false);
             if (first_frame)
                 static_cast<void>(ATELIER_LOG(logging::Severity::info, "renderer", "renderer.first_frame_begin",
@@ -1740,6 +1775,15 @@ Result<FrameResult> Renderer::render(const Frame& frame, Capture* capture) {
                 *capture = std::move(pending);
         }
         return result;
+    } catch (const FrameCancelled& cancelled) {
+        s.cancelled = true;
+        const auto elapsed =
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - began).count();
+        static_cast<void>(ATELIER_LOG(logging::Severity::info, "renderer", "renderer.frame_cancelled",
+                                      "Frame cancelled: frame_id={} phase={} elapsed_ms={}", frame.ui_frame.id,
+                                      cancelled.phase, elapsed));
+        return FrameResult{
+            .status = FrameStatus::cancelled, .accepted_extent = {}, .next_extent = extent, .stats = s.stats};
     } catch (Error e) {
         e.terminal = encoding;
         if (encoding)

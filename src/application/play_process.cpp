@@ -21,16 +21,25 @@ void report_os_failure(std::string_view operation, DWORD error) noexcept {
 }
 
 void report_forced(const std::filesystem::path& directory, std::chrono::steady_clock::duration waited, bool exited,
-                   std::optional<DWORD> exit_code) noexcept try {
+                   std::optional<DWORD> exit_code, bool acknowledged) noexcept try {
     const std::array fields{
         logging::Field{"directory", assets::utf8(directory.generic_wstring())},
         logging::Field{"waited_ms", std::chrono::duration_cast<std::chrono::milliseconds>(waited).count()},
-        logging::Field{"exited", exited}, logging::Field{"exit_code", exit_code ? std::int64_t{*exit_code} : -1}};
+        logging::Field{"exited", exited}, logging::Field{"exit_code", exit_code ? std::int64_t{*exit_code} : -1},
+        logging::Field{"acknowledged", acknowledged}};
     static_cast<void>(ATELIER_LOG_WITH(logging::Severity::warning, "play", "play.forced",
                                        logging::native::Context{.fields = fields},
-                                       "Play did not stop cooperatively; terminating its process group"));
+                                       "Play stop acknowledgement or exit timed out; terminating its process group"));
 } catch (...) {
     std::fputs("Play termination diagnostic capture failed.\n", stderr);
+}
+
+void report_exit_unobserved(std::chrono::steady_clock::duration waited, bool forced, bool acknowledged,
+                            bool wait_failed) noexcept {
+    static_cast<void>(ATELIER_LOG(logging::Severity::error, "play", "play.exit_unobserved",
+                                  "Play exit unobserved: waited_ms={} forced={} acknowledged={} wait_failed={}",
+                                  std::chrono::duration_cast<std::chrono::milliseconds>(waited).count(), forced,
+                                  acknowledged, wait_failed));
 }
 
 std::wstring argument(std::wstring_view text) {
@@ -62,6 +71,9 @@ struct Handle {
 
 PlayProcess::~PlayProcess() {
     close();
+    // A failed bounded close has already reported an unobserved exit. Destruction
+    // relinquishes OS ownership without restarting waits or claiming completion.
+    release();
 }
 
 Result<void> PlayProcess::start(const std::filesystem::path& project, const std::filesystem::path& scene, bool headless,
@@ -75,6 +87,9 @@ Result<void> PlayProcess::start(const std::filesystem::path& project, const std:
     Handle stop{CreateEventW(&security, TRUE, FALSE, nullptr)};
     if (!stop.value)
         return failure("Cannot create the run stop event");
+    Handle stop_ack{CreateEventW(&security, TRUE, FALSE, nullptr)};
+    if (!stop_ack.value)
+        return failure("Cannot create the run stop acknowledgement event");
     Handle read_out;
     Handle write_out;
     Handle read_err;
@@ -116,7 +131,8 @@ Result<void> PlayProcess::start(const std::filesystem::path& project, const std:
         parent ? parent->info().directory / (L"runner-" + std::to_wstring(++launch))
                : std::filesystem::absolute(control::default_directory().parent_path() / "Logs" / control::unique_id());
     auto command = argument(executable) + L" --run-project " + argument(project.wstring()) + L" --stop-event " +
-                   std::to_wstring(reinterpret_cast<std::uintptr_t>(stop.value)) + L" --log-directory " +
+                   std::to_wstring(reinterpret_cast<std::uintptr_t>(stop.value)) + L" --stop-ack-event " +
+                   std::to_wstring(reinterpret_cast<std::uintptr_t>(stop_ack.value)) + L" --log-directory " +
                    argument(directory.wstring());
     if (parent)
         command += L" --parent-run " + argument(assets::wide(parent->info().run_id));
@@ -146,7 +162,7 @@ Result<void> PlayProcess::start(const std::filesystem::path& project, const std:
 
         ~Attributes() { DeleteProcThreadAttributeList(value); }
     } owner{list};
-    std::vector<HANDLE> handles{write_out.value, write_err.value, stop.value, input.value};
+    std::vector<HANDLE> handles{write_out.value, write_err.value, stop.value, stop_ack.value, input.value};
     if (live)
         handles.insert(handles.end(), {from_editor.value, to_editor.value});
     if (!UpdateProcThreadAttribute(list, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, handles.data(),
@@ -160,7 +176,7 @@ Result<void> PlayProcess::start(const std::filesystem::path& project, const std:
     startup.StartupInfo.hStdOutput = write_out.value;
     startup.StartupInfo.hStdError = write_err.value;
     PROCESS_INFORMATION process{};
-    // Pipes and the stop event are the entire console contract. A hidden console
+    // Pipes and the stop/ack events are the entire console contract. A hidden console
     // would add a conhost descendant whose asynchronous exit looks like a writer
     // being killed when the root exits and we close its job.
     if (!CreateProcessW(executable.c_str(), command.data(), nullptr, nullptr, TRUE,
@@ -184,6 +200,7 @@ Result<void> PlayProcess::start(const std::filesystem::path& project, const std:
     process_ = std::exchange(child.value, nullptr);
     job_ = std::exchange(job.value, nullptr);
     stop_ = std::exchange(stop.value, nullptr);
+    stop_ack_ = std::exchange(stop_ack.value, nullptr);
     output_[0].handle = std::exchange(read_out.value, nullptr);
     output_[1].handle = std::exchange(read_err.value, nullptr);
     for (auto& output : output_) {
@@ -191,7 +208,7 @@ Result<void> PlayProcess::start(const std::filesystem::path& project, const std:
         output.status = {};
     }
     exit_code_.reset();
-    stopping_ = forced_ = exited_ = false;
+    stopping_ = acknowledged_ = forced_ = exited_ = closing_ = false;
     log_directory_ = std::move(directory);
     if (live)
         *live =
@@ -210,7 +227,7 @@ void PlayProcess::stop() noexcept {
         std::fputs("Play stop diagnostic capture failed.\n", stderr);
     }
     stopping_ = true;
-    stop_deadline_ = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    stop_began_ = std::chrono::steady_clock::now();
     if (!SetEvent(stop_))
         report_os_failure("SetEvent(stop)", GetLastError());
 }
@@ -267,20 +284,52 @@ void PlayProcess::drain() noexcept {
     }
 }
 
-void PlayProcess::observe_exit() noexcept {
-    if (!process_ || exited_)
+void PlayProcess::observe_acknowledgement() noexcept {
+    if (!stopping_ || !stop_ack_ || acknowledged_)
         return;
-    const auto waited = WaitForSingleObject(process_, 0);
+    const auto waited = WaitForSingleObject(stop_ack_, 0);
     if (waited == WAIT_FAILED)
-        report_os_failure("WaitForSingleObject(observe exit)", GetLastError());
+        report_os_failure("WaitForSingleObject(stop acknowledgement)", GetLastError());
     if (waited != WAIT_OBJECT_0)
         return;
-    exited_ = true;
+    acknowledged_ = true;
+    try {
+        const std::array fields{logging::Field{"waited_ms", std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                                std::chrono::steady_clock::now() - stop_began_)
+                                                                .count()}};
+        static_cast<void>(ATELIER_LOG_WITH(logging::Severity::info, "play", "play.stop_acknowledged",
+                                           logging::native::Context{.fields = fields}, "Play stop acknowledged"));
+    } catch (...) {
+        std::fputs("Play acknowledgement diagnostic capture failed.\n", stderr);
+    }
+}
+
+DWORD PlayProcess::observe_exit(DWORD timeout_ms) noexcept {
+    if (!process_ || exited_)
+        return WAIT_OBJECT_0;
+    const auto waited = WaitForSingleObject(process_, timeout_ms);
+    if (waited == WAIT_FAILED)
+        report_os_failure("WaitForSingleObject(observe exit)", GetLastError());
+    observe_acknowledgement();
+    if (waited != WAIT_OBJECT_0)
+        return waited;
     DWORD code{};
-    if (GetExitCodeProcess(process_, &code))
-        exit_code_ = code;
-    else
+    if (!GetExitCodeProcess(process_, &code)) {
         report_os_failure("GetExitCodeProcess", GetLastError());
+        return WAIT_FAILED;
+    }
+    exited_ = true;
+    exit_code_ = code;
+    // Observation owns the event, including a late exit after close's budget.
+    try {
+        const std::array fields{logging::Field{"directory", assets::utf8(log_directory_.generic_wstring())},
+                                logging::Field{"forced", forced_}, logging::Field{"exit_code", std::uint64_t{code}}};
+        static_cast<void>(ATELIER_LOG_WITH(logging::Severity::info, "play", "play.process_ended",
+                                           logging::native::Context{.fields = fields},
+                                           "Runner process ended; retained JSONL tail remains readable."));
+    } catch (...) {
+        std::fputs("Play exit diagnostic capture failed.\n", stderr);
+    }
     // Preserve the existing process-tree ownership: descendants do not outlive
     // their root. Killing a remaining writer can lose bytes not yet in its pipe.
     if (job_) {
@@ -293,9 +342,12 @@ void PlayProcess::observe_exit() noexcept {
         CloseHandle(job_);
         job_ = nullptr;
     }
+    return WAIT_OBJECT_0;
 }
 
 void PlayProcess::force() noexcept {
+    if (forced_)
+        return;
     forced_ = true;
     for (auto& output : output_)
         output.status.tail_loss_unknown = true;
@@ -307,11 +359,15 @@ void PlayProcess::poll() noexcept {
     if (!process_)
         return;
     observe_exit();
-    if (!exited_ && stopping_ && std::chrono::steady_clock::now() >= stop_deadline_) {
-        if (!forced_)
-            report_forced(log_directory_, std::chrono::steady_clock::now() - stop_deadline_ + std::chrono::seconds(2),
-                          exited_, exit_code_);
-        force();
+    if (!exited_ && !forced_ && stopping_) {
+        const auto observed = observe_exit(); // Zero wait, immediately before any force decision.
+        const auto waited = std::chrono::steady_clock::now() - stop_began_;
+        if (observed != WAIT_OBJECT_0 && waited >= std::chrono::seconds(acknowledged_ ? 4 : 2)) {
+            report_forced(log_directory_, waited, exited_, exit_code_, acknowledged_);
+            force();
+            if (acknowledged_)
+                report_exit_unobserved(waited, forced_, acknowledged_, observed == WAIT_FAILED);
+        }
     }
     drain();
     observe_exit();
@@ -353,7 +409,7 @@ void PlayProcess::abandon(OutputPipe& output) noexcept {
 }
 
 void PlayProcess::release() noexcept {
-    for (auto* handle : {&process_, &job_, &stop_})
+    for (auto* handle : {&process_, &job_, &stop_, &stop_ack_})
         if (*handle) {
             CloseHandle(*handle);
             *handle = nullptr;
@@ -362,34 +418,66 @@ void PlayProcess::release() noexcept {
 }
 
 void PlayProcess::close() noexcept {
+    if (closing_) {
+        poll();
+        return;
+    }
+    closing_ = true;
     const bool active = process_ != nullptr;
     const auto began = std::chrono::steady_clock::now();
+    const auto deadline = began + std::chrono::seconds(4);
     if (active)
         static_cast<void>(ATELIER_LOG(logging::Severity::info, "play", "play.close_begin",
                                       "Closing Play: exited={} forced={}", exited_, forced_));
-    if (process_ && !exited_ && !SetEvent(stop_))
-        report_os_failure("SetEvent(close)", GetLastError());
-    // Drain while offering the existing 500 ms cooperative stop grace. Neither
-    // this grace nor the four final drain passes waits for pipe data to arrive.
-    for (unsigned pass = 0; pass < 4 && process_; ++pass) {
-        poll();
-        if (process_ && !exited_ && WaitForSingleObject(process_, 125) == WAIT_FAILED)
-            report_os_failure("WaitForSingleObject(close cooperative)", GetLastError());
+    stop();
+    // Acknowledgement allows normal cleanup within the same total exit budget.
+    // Keep the existing four initial and four final output-drain budgets.
+    DWORD observed = WAIT_TIMEOUT;
+    unsigned drains{};
+    while (process_ && !exited_ && !forced_) {
+        if (drains < 4) {
+            drain();
+            ++drains;
+        }
+        observe_acknowledgement();
+        const auto until = acknowledged_ ? deadline : began + std::chrono::milliseconds(500);
+        const auto remaining =
+            std::chrono::ceil<std::chrono::milliseconds>(until - std::chrono::steady_clock::now()).count();
+        observed = observe_exit(static_cast<DWORD>(std::clamp<std::int64_t>(remaining, 0, 125)));
+        if (observed == WAIT_FAILED ||
+            std::chrono::steady_clock::now() >= (acknowledged_ ? deadline : began + std::chrono::milliseconds(500)))
+            break;
     }
-    observe_exit();
+    // Do not force based on an earlier timed-out wait if exit has since become observable.
+    if (process_ && !exited_ && observed != WAIT_FAILED)
+        observed = observe_exit();
+    bool exit_unobserved{};
     if (process_ && !exited_) {
         if (!forced_)
-            report_forced(log_directory_, std::chrono::steady_clock::now() - began, exited_, exit_code_);
+            report_forced(log_directory_, std::chrono::steady_clock::now() - began, exited_, exit_code_, acknowledged_);
         force();
-        if (WaitForSingleObject(process_, 1000) == WAIT_FAILED)
-            report_os_failure("WaitForSingleObject(close forced)", GetLastError());
-        observe_exit();
+        const auto remaining =
+            std::chrono::ceil<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count();
+        if (remaining <= 0 || observed == WAIT_FAILED) {
+            report_exit_unobserved(std::chrono::steady_clock::now() - began, forced_, acknowledged_,
+                                   observed == WAIT_FAILED);
+            exit_unobserved = true;
+        }
+        if (observed != WAIT_FAILED)
+            observed = observe_exit(static_cast<DWORD>(std::max<std::int64_t>(0, remaining)));
     }
-    for (unsigned pass = 0; pass < 4 && process_; ++pass)
-        poll();
+    for (unsigned pass = 0; pass < 4 && process_; ++pass) {
+        drain();
+        if (observed != WAIT_FAILED)
+            observed = observe_exit();
+    }
     for (auto& output : output_)
         abandon(output);
-    release();
+    if (!process_ || exited_)
+        release();
+    else if (!exit_unobserved)
+        report_exit_unobserved(std::chrono::steady_clock::now() - began, forced_, acknowledged_,
+                               observed == WAIT_FAILED);
     if (active)
         static_cast<void>(ATELIER_LOG(logging::Severity::info, "play", "play.close_end",
                                       "Play closed: running={} exited={} forced={} exit_code={}", running(), exited_,

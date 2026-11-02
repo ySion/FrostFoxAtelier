@@ -892,8 +892,22 @@ int main(int argc, char** argv) try {
     selection_clipping_cases(renderer, ui_frame.extent);
     viewport_cases(renderer, ui_frame.extent);
     reference_guide_cases(renderer, ui_frame.extent);
+    // K6: a shutdown request is not a retryable or accepted frame. The expected
+    // capture is authored here, not copied from a previous renderer result.
+    const std::function<bool()> stop_requested = [] { return true; };
+    atelier::renderer::Frame cancelled_frame{ui_frame, {}, {}, {}};
+    cancelled_frame.stop_requested = &stop_requested;
+    render::Capture cancelled_capture{
+        .frame_id = 991, .extent = {1, 1}, .rgba = {17, 43, 91, 255}, .depth = {}, .motion = {}};
+    const auto cancelled = take(renderer.render(cancelled_frame, &cancelled_capture));
+    check(cancelled.status == render::FrameStatus::cancelled && cancelled.accepted_id == 0 &&
+              cancelled.accepted_extent == ui::PixelExtent{} && cancelled.stats.ui_draw_calls == 0 &&
+              cancelled.stats.scene_draw_calls == 0 && cancelled.stats.viewport_draw_calls == 0 &&
+              cancelled_capture.frame_id == 991 && cancelled_capture.extent == ui::PixelExtent{1, 1} &&
+              cancelled_capture.rgba == std::vector<std::uint8_t>{17, 43, 91, 255},
+          "shutdown cancellation did not encode, present or publish a capture");
     auto closed = renderer.close();
-    check(bool(closed), "drain and close before HWND destruction");
+    check(bool(closed), "drain and close a cancelled Renderer before HWND destruction");
     check(bool(renderer.close()) && !renderer.target(), "idempotent close and closed target");
     std::puts("Renderer acceptance: PASS (GPU validation, scene/depth, UI coverage/blend/clip, revisions, "
               "resize, minimize/restore, lifetime)");

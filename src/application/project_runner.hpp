@@ -36,6 +36,8 @@ struct RunOptions {
 
     HANDLE stop_event{}; // Inherited event; this process closes its own handle.
 
+    HANDLE stop_ack_event{}; // Inherited acknowledgement; signalled before document.stop, closed with stop_event.
+
     bool headless{};
 
     bool preview_ui{};
