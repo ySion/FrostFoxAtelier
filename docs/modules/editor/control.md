@@ -12,7 +12,7 @@ UI 和快捷键直接调用负责业务不变量的执行层；外部调用经�
 
 需要复现固定画布时，可以组合 `--client-size 3840 2054 --no-activate`。宽、高明确是初始 **client 物理像素**，非 DIP 或含边框的窗口尺寸；应用在创建 Renderer 和显示窗口前，按实际 HWND DPI 补上非客户区。省略后仍使用原 1280×840 DIP 默认值。参数只接受 1–32768 的十进制正整数，禁止重复；低于当前 DPI 下编辑器最小窗口尺寸、或系统无法精确兑现的尺寸会在创建图形设备前拒绝，不静默改成其他尺寸。后续手动 resize 与 DPI 变化沿现有窗口规则。
 
-客户区相同不保证 viewport 相同：渲染对照还须核对同一 DPI、停靠布局、工具架状态，以及 `editor.inspect.last_frame.extent` 和 `viewport`。尺寸为启动参数，没有新增 Control 窗口写操作。真实进程验收：`atelier_editor_control_acceptance editor.exe <输出目录> --client-size`，记录默认、奇数像素与 3840×2054 的原生客户区/DPI/接受帧 viewport，并验证非法参数、焦点与 Scene 保存隔离。
+客户区相同不保证 viewport 相同：渲染对照还须核对同一 DPI、停靠布局、工具架状态，以及 `editor.inspect.last_frame.extent` 和 `viewport`。尺寸为启动参数，没有新增 Control 窗口写操作。真实进程验收：`atelier_editor_control_acceptance editor.exe <输出目录> --client-size`，记录默认、奇数像素与 3840×2054 的原生客户区/DPI/接受帧 viewport，并验证焦点与 Scene 保存隔离。
 
     . ./tools/enter-dev.ps1
     cmake --build --preset dev --target atelier_editor atelier_control

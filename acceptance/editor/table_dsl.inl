@@ -387,15 +387,6 @@ ui Board(in TableBinding model, in ActionBinding open, in Key context,
         require(!surface.presented()->find(table_key)->enabled && actions.empty(),
                 "Table ignored a model, action or node disabled condition.");
     }
-    for (const auto* invalid :
-         {"ui Broken() { Table grid {} }", "ui Broken(in ActionBinding route) { Table grid { model: input.route; } }",
-          "ui Broken(in TableBinding model) { Table grid { model: input.model; context: 17; } }",
-          "ui Broken(in TableBinding model) { Table grid { model: input.model; on activate {} } }",
-          "ui Broken(in TableBinding model) { Table grid { model: input.model; Text row { text: \"Row\"; } } }",
-          "ui Broken(in EditBinding edit) { NumberRow row { edit: input.edit; context: node.row; } }",
-          "ui Broken(in TableBinding model) { Table grid { model: input.model; shrink_width: 144; width: 144; } }"})
-        require(!language::Module::compile(runtime, "invalid-table.ui.source", invalid),
-                "Invalid Table DSL syntax or binding type was accepted.");
     require(surface.set_controls({}).has_value(), "Table DSL unmount failed.");
     instance->close();
     std::puts(

@@ -257,8 +257,6 @@ struct EditorAcceptanceAccess {
 
     static bool vsync(const Application& app) { return app.vsync_; }
 
-    static auto sampled_frame(const Application& app) { return app.sampled_frame_; }
-
     static auto render_retry_delay(const Application& app) { return app.render_retry_delay_; }
 
     static auto render_retry_deadline(const Application& app) { return app.render_retry_at_; }
@@ -1199,73 +1197,6 @@ void verify_style_changes(Application& app, const std::filesystem::path& output,
     tick(app, 1);
 }
 
-// Reads the product's frame timing record of the last step, which must have been accepted without capture.
-struct TimingSeries {
-    std::vector<double> layout;
-
-    std::vector<double> render;
-
-    atelier::renderer::FrameStats total;
-
-    std::uint64_t peak_live_coverages{};
-
-    std::uint64_t peak_live_bytes{};
-
-    atelier::ui::Statistics start;
-
-    atelier::ui::Statistics finish;
-
-    explicit TimingSeries(const Application& app) : start(app.ui_statistics()) {}
-
-    void record(const Application& app) {
-        const auto& record = app.frame_record();
-        require(atelier::application::EditorAcceptanceAccess::sampled_frame(app) == app.presented()->drawing->id &&
-                    record.structure_errors == 0 && record.count(atelier::renderer::phases::render) == 1,
-                "Timing did not describe the accepted frame.");
-        const auto microseconds = [&](const atelier::timing::Marker& marker) {
-            return std::chrono::duration<double, std::micro>(record.time(marker)).count();
-        };
-        layout.push_back(microseconds(atelier::application::phases::layout));
-        render.push_back(microseconds(atelier::renderer::phases::render));
-        const auto& stats = app.frame_statistics();
-        total.ui_draw_calls += stats.ui_draw_calls;
-        total.scene_draw_calls += stats.scene_draw_calls;
-        total.viewport_draw_calls += stats.viewport_draw_calls;
-        total.coverage_upload_count += stats.coverage_upload_count;
-        total.coverage_upload_bytes += stats.coverage_upload_bytes;
-        total.cached_coverage_count = std::max(total.cached_coverage_count, stats.cached_coverage_count);
-        total.cached_coverage_texel_bytes =
-            std::max(total.cached_coverage_texel_bytes, stats.cached_coverage_texel_bytes);
-        total.cached_coverage_cpu_bytes = std::max(total.cached_coverage_cpu_bytes, stats.cached_coverage_cpu_bytes);
-        finish = app.ui_statistics();
-        peak_live_coverages = std::max(peak_live_coverages, finish.live_coverages);
-        peak_live_bytes = std::max(peak_live_bytes, finish.live_coverage_bytes);
-    }
-
-    void write(std::ostream& report, const char* name) const {
-        const auto distribution = [&](const char* stage, std::vector<double> values) {
-            require(!values.empty(), "No timing samples were collected.");
-            std::sort(values.begin(), values.end());
-            const auto p95 = (values.size() * 95 + 99) / 100 - 1;
-            report << name << ',' << stage << ',' << values.size() << ','
-                   << std::accumulate(values.begin(), values.end(), 0.0) / static_cast<double>(values.size()) << ','
-                   << values[values.size() / 2] << ',' << values[p95] << ',' << values.back() << '\n';
-        };
-        distribution("layout_cpu_us", layout);
-        distribution("render_cpu_us", render);
-    }
-
-    void resources(std::ostream& report, const char* name) const {
-        report << name << ',' << layout.size() << ',' << finish.prepares - start.prepares << ','
-               << finish.rasterizations - start.rasterizations << ',' << finish.raster_bytes - start.raster_bytes << ','
-               << finish.culled_text_controls - start.culled_text_controls << ',' << total.ui_draw_calls << ','
-               << total.scene_draw_calls << ',' << total.viewport_draw_calls << ',' << total.coverage_upload_count
-               << ',' << total.coverage_upload_bytes << ',' << peak_live_coverages << ',' << peak_live_bytes << ','
-               << total.cached_coverage_count << ',' << total.cached_coverage_texel_bytes << ','
-               << total.cached_coverage_cpu_bytes << '\n';
-    }
-};
-
 void verify_shared_text(Application& app, const std::filesystem::path& output, atelier::ObjectId object) {
     auto field = property_control(app, object, 0);
     const auto original_position = x(app, object);
@@ -1522,22 +1453,11 @@ void verify_list_workload(Application& app, const std::filesystem::path& output)
     png(track_pixels, output / "scrollbar-thumb-end.png");
     wheel(app, 23, 240);
 
-    TimingSeries scroll(app);
-    for (unsigned frame = 0; frame < 48; ++frame) {
-        wheel(app, 23, frame < 24 ? -8 : 8);
-        scroll.record(app);
-    }
     const auto field = property_control(app, last, 0);
     const auto before = x(app, last);
     const auto history = app.document().undo_count();
     auto point = centre(app, field);
     mouse(app, WM_LBUTTONDOWN, point);
-    TimingSeries editing(app);
-    for (unsigned frame = 0; frame < 64; ++frame) {
-        point.x += frame < 32 ? 2 : -2;
-        mouse(app, WM_MOUSEMOVE, point);
-        editing.record(app);
-    }
     point.x += 12;
     mouse(app, WM_MOUSEMOVE, point);
     mouse(app, WM_LBUTTONUP, point);
@@ -1549,17 +1469,6 @@ void verify_list_workload(Application& app, const std::filesystem::path& output)
     require(x(app, last) == before, "One undo did not restore the dense-scene drag.");
     key(app, 'Y', true);
     require(x(app, last) == after, "Redo did not restore the dense-scene drag.");
-    std::ofstream report(output / "s1-performance.csv");
-    report << "workload,stage,samples,mean,p50,p95,max\n";
-    scroll.write(report, "256_entities_scroll");
-    editing.write(report, "256_entities_field_drag");
-    require(report.good(), "Cannot save window sampling evidence.");
-    std::ofstream resources(output / "s1-resources.csv");
-    resources
-        << "workload,accepted_samples,prepare_calls,rasterizations,raster_bytes,culled_text_controls,ui_draw_calls,scene_draw_calls,viewport_draw_calls,coverage_upload_count,coverage_payload_bytes,peak_live_cpu_coverages,peak_live_cpu_bytes,peak_renderer_cache_count,peak_renderer_cache_texel_bytes,peak_renderer_cache_cpu_bytes\n";
-    scroll.resources(resources, "256_entities_scroll");
-    editing.resources(resources, "256_entities_field_drag");
-    require(resources.good(), "Cannot save resource sampling evidence.");
 }
 #include "controls.inl"
 #include "docking.inl"
@@ -2582,9 +2491,6 @@ int verify_editor_window(Application& app, const char* output_directory) {
         << "Native menus: actual owned WS_POPUP HWND; shared UI/SS/GPU renderer; beyond-editor placement and screen-work-area containment; F10/Alt mnemonic, arrows/hover switching, reused host, restored owner focus, cancel/focus-loss cleanup; menu commands, context clipboard and combo choices use the original consumers; narrow menubar stow rail, restored geometry/history and F10 reveal.\n"
         << "Failure evidence: real clipboard lock contention preserved the draft; a seeded real Session transaction made native drag edit_begin fail, then preview stopped, rollback/capture release ran, and the first error remained visible.\n"
         << "IME evidence: Unicode WM_CHAR and clipboard checks do not establish system IME acceptance. Real profile/physical-key/composition/candidate verification remains a separate completion gate.\n"
-        << "Sampling: s1-performance.csv contains app.layout and render phase microseconds from the product frame timing record of each sampled step; render includes Present/waits; capture frames excluded. No GPU duration or before/after speedup claimed.\n"
-        << "Sampling environment: this acceptance application enables hardware D3D12 debug/GBV and renderer vsync, including in release; results do not represent validation-disabled production frame time.\n"
-        << "s1-resources.csv: UI cumulative counters use interval differences; renderer activity sums sampled render results. Resource peaks are sampled ownership counts, not total process memory or physical VRAM; R8 upload bytes exclude transfer padding.\n"
         << "DPI coverage: WM_DPICHANGED policy at the current monitor DPI; physical multi-monitor DPI migration not exercised.\n"
         << "Accepted frames: " << app.accepted_frames() << "\n";
     std::puts("Editor window acceptance: PASS");

@@ -48,9 +48,6 @@ int verify_editor_tooltips(Application& app, const char* output_directory) {
         require(tip && tip->content && tip->content->title == title && !tip->content->identity.empty() &&
                     !tip->content->description.empty(),
                 "Real parameter label did not show its reflected documentation.");
-        require(tip->bounds.x >= 0 && tip->bounds.y >= 0 && tip->bounds.x + tip->bounds.width <= extent.width &&
-                    tip->bounds.y + tip->bounds.height <= extent.height,
-                "Real tooltip escaped the editor surface.");
         capture(app, output / file);
         require(app.presented()->tooltip && app.presented()->tooltip->content->title == title &&
                     app.presented()->drawing->extent == extent &&

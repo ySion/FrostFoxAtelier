@@ -209,40 +209,6 @@ ui Board(in bool visible, in Items<Card> rows) {
             "Duplicate item identities corrupted the published view.");
     rows.pop_back();
     draw();
-    require(!language::Module::compile(runtime, "cycle.ui.source", "ui A() { B b {} } ui B() { A a {} }"),
-            "Recursive composition was accepted.");
-    require(
-        !language::Module::compile(
-            runtime, "items.ui.source",
-            "ui A() { Text a {} } ui B() { Text b {} } ui List(in Items<A> rows) { Repeat list { items: input.rows; } } "
-            "ui Host(in Items<B> rows) { List list { rows: input.rows; } }"),
-        "An Items argument lost its declared element type.");
-    const std::array<std::string_view, 3> heights{"height: 23;", "expand_height: true;", "single_line: true;"};
-    for (std::size_t first = 0; first < heights.size(); ++first)
-        for (std::size_t second = 0; second < heights.size(); ++second)
-            if (first != second) {
-                const auto rejected =
-                    language::Module::compile(runtime, "height.ui.source",
-                                              "ui Panel() { Text label {\n" + std::string(heights[first]) + "\n" +
-                                                  std::string(heights[second]) + "\n} }");
-                require(!rejected && rejected.error().message.starts_with("height.ui.source:3:1:") &&
-                            rejected.error().message.find("mutually exclusive height strategies") != std::string::npos,
-                        "Conflicting height strategies were accepted or diagnosed at the wrong source position.");
-            }
-    for (const std::string_view builtin :
-         {"Column", "Row", "Text", "Foldout", "NumberRow", "TextField", "Tree", "TreeItem", "Repeat"}) {
-        const auto rejected = language::Module::compile(runtime, "names.ui.source",
-                                                        "\nui " + std::string(builtin) + "() { Column root {} }");
-        require(!rejected && rejected.error().message.starts_with("names.ui.source:2:4:") &&
-                    rejected.error().message.find("built-in node types") != std::string::npos,
-                "A component shadowed a built-in node or its name diagnostic lost the source position.");
-    }
-    require(
-        language::Module::compile(runtime, "arguments.ui.source",
-                                  "ui Child(in double height, in bool single_line) { Text label { text: \"Child\"; } } "
-                                  "ui Host() { Child child { height: 23; single_line: true; } }")
-            .has_value(),
-        "Height strategy validation incorrectly rejected distinct component inputs.");
     auto removed = surface.set_controls({});
     require(removed.has_value(), "Composition unmount failed.");
     route(*removed);

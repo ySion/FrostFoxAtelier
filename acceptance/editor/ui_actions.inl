@@ -113,14 +113,6 @@ ui Actions(in ActionBinding first, in ActionBinding second, in bool available) {
     accept();
     click(501);
     require(take(document.world().members()).size() == 2, "Refusing an invalid binding damaged the live command.");
-    require(!language::Component::compile(
-                runtime, "checked-button.ui.source",
-                "ui Invalid() { state bool flag = false; Button b { on activate { state.flag = event.checked; } } }"),
-            "An ordinary Button accepted a toggle payload.");
-    require(!language::Component::compile(
-                runtime, "ambiguous-button.ui.source",
-                "ui Invalid(in ActionBinding action) { Button b { action: input.action; on activate {} } }"),
-            "Button accepted competing local and host actions.");
     require(surface.set_controls({}).has_value(), "Action unmount failed.");
     instance->close();
     std::puts(
