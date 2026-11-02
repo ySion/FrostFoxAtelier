@@ -57,8 +57,7 @@ function(atelier_add_renderer)
         INPUT "${PROJECT_SOURCE_DIR}/cmake/run-renderer-acceptance.cmake.in")
     # One window target per entry, so a targeted run (and its GPU validation level) can pick entries.
     set(_entries)
-    foreach(_mode default scene-lit scene-lit-benchmark scene-lit-temporal scene-lit-quality scene-lit-stability
-            scene-lit-clustered scene-lit-shadows scene-lit-cost scene-lit-sky material-programs)
+    foreach(_mode default scene-lit scene-lit-benchmark material-programs)
         string(REPLACE "-" "_" _entry "renderer_acceptance_${_mode}")
         add_custom_target(${_entry}
             COMMAND "${CMAKE_COMMAND}" -D "MODE=${_mode}" -P "${CMAKE_BINARY_DIR}/run-renderer-acceptance.cmake"

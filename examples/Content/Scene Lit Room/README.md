@@ -10,4 +10,4 @@
 
 **Window → World Settings** 提供效果开关、曝光与直接光候选数。**Antialiasing** 可选 Off / TAA / SMAA / SMAA T2x，默认 SMAA。可用房间中的硬边、反射地面和动态灯光观察各项差异。Edit/Play 与显示模式相互独立；材质、灯光与 World 效果配置属于场景数据，修改支持撤销和保存；着色预览与诊断开关不进入场景撤销历史。
 
-完整功能、近场近似的边界和默认值见 [Scene Lit 合同](../../../docs/modules/renderer/scene-lit.md)，实际结果见 [验收记录](../../../docs/modules/renderer/acceptance.md)。固定场景的性能结果不代表编辑器工程的操作耗时。质量专项入口为 `atelier_renderer_acceptance --scene-lit-quality --output <绝对目录>`。
+完整功能、近场近似的边界和默认值见 [Scene Lit 合同](../../../docs/modules/renderer/scene-lit.md)，保留代表与覆盖边界见 [Renderer 验收](../../../docs/modules/renderer/acceptance.md)。固定场景的性能结果不代表编辑器工程的操作耗时。现行入口 `atelier_renderer_acceptance --scene-lit --output <绝对目录>` 运行独立真值代表，不再运行旧质量矩阵。

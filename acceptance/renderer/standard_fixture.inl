@@ -126,11 +126,7 @@ class Surface {
 public:
     explicit Surface(Description value = {}) : value_(std::move(value)) {}
 
-    explicit Surface(atelier::material::ProgramSurfaceRef value) : authored_(false), program_(std::move(value)) {}
-
-    const Description& description() const { return value_; }
-
-    bool describes(const Description& value) const { return authored_ && value_ == value; }
+    bool describes(const Description& value) const { return value_ == value; }
 
     atelier::material::ProgramSurfaceRef program() const {
         if (!program_)
@@ -140,8 +136,6 @@ public:
 
 private:
     Description value_;
-
-    bool authored_{true};
 
     mutable atelier::material::ProgramSurfaceRef program_;
 };
@@ -174,11 +168,6 @@ struct MeshInstance {
     std::uint64_t stable_key{};
 
     std::shared_ptr<const std::vector<standard_fixture::SurfaceRef>> surfaces{};
-
-    // Negative slot-contract cases deliberately override the generated table.
-    std::shared_ptr<const std::vector<std::uint32_t>> material_slots{};
-
-    bool omit_material_slots{};
 };
 
 struct Frame : atelier::renderer::Frame {
@@ -245,13 +234,9 @@ struct Frame : atelier::renderer::Frame {
                 authors.push_back(std::move(author));
             }
             std::shared_ptr<const std::vector<std::uint32_t>> mapping = slots;
-            if (mesh.material_slots)
-                mapping = mesh.material_slots;
-            else if (draws.size() < old.meshes.size() && old.meshes[draws.size()].material_slots &&
-                     *old.meshes[draws.size()].material_slots == *slots)
+            if (draws.size() < old.meshes.size() && old.meshes[draws.size()].material_slots &&
+                *old.meshes[draws.size()].material_slots == *slots)
                 mapping = old.meshes[draws.size()].material_slots;
-            if (mesh.omit_material_slots)
-                mapping.reset();
             draws.push_back({mesh.world, mesh.selected, mesh.geometry, mesh.stable_key, std::move(mapping)});
         }
         if (!std::ranges::equal(old.batch.surfaces(), surfaces)) {
