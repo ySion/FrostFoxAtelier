@@ -47,6 +47,7 @@ function(atelier_add_renderer)
     atelier_target(atelier_renderer)
     target_include_directories(atelier_renderer PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/renderer-generated")
     target_link_libraries(atelier_renderer PUBLIC atelier_rhi atelier_ui_protocol atelier_geometry atelier_foundation atelier_rendering atelier_material)
+    target_link_libraries(atelier_renderer PRIVATE atelier_logging)
     add_executable(atelier_renderer_acceptance "${PROJECT_SOURCE_DIR}/acceptance/renderer/main.cpp"
         "${PROJECT_SOURCE_DIR}/acceptance/renderer/material_programs.cpp")
     atelier_target(atelier_renderer_acceptance)

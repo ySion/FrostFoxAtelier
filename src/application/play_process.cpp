@@ -15,6 +15,24 @@ auto failure(std::string message, DWORD error = GetLastError()) {
         Error{ErrorCode::invalid_storage, std::move(message) + " (Windows " + std::to_string(error) + ")."});
 }
 
+void report_os_failure(std::string_view operation, DWORD error) noexcept {
+    static_cast<void>(
+        ATELIER_LOG(logging::Severity::error, "play", "play.os_failed", "{} failed: Windows {}", operation, error));
+}
+
+void report_forced(const std::filesystem::path& directory, std::chrono::steady_clock::duration waited, bool exited,
+                   std::optional<DWORD> exit_code) noexcept try {
+    const std::array fields{
+        logging::Field{"directory", assets::utf8(directory.generic_wstring())},
+        logging::Field{"waited_ms", std::chrono::duration_cast<std::chrono::milliseconds>(waited).count()},
+        logging::Field{"exited", exited}, logging::Field{"exit_code", exit_code ? std::int64_t{*exit_code} : -1}};
+    static_cast<void>(ATELIER_LOG_WITH(logging::Severity::warning, "play", "play.forced",
+                                       logging::native::Context{.fields = fields},
+                                       "Play did not stop cooperatively; terminating its process group"));
+} catch (...) {
+    std::fputs("Play termination diagnostic capture failed.\n", stderr);
+}
+
 std::wstring argument(std::wstring_view text) {
     std::wstring result = L"\"";
     std::size_t slashes{};
@@ -193,7 +211,8 @@ void PlayProcess::stop() noexcept {
     }
     stopping_ = true;
     stop_deadline_ = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-    SetEvent(stop_);
+    if (!SetEvent(stop_))
+        report_os_failure("SetEvent(stop)", GetLastError());
 }
 
 void PlayProcess::drain() noexcept {
@@ -249,12 +268,19 @@ void PlayProcess::drain() noexcept {
 }
 
 void PlayProcess::observe_exit() noexcept {
-    if (!process_ || exited_ || WaitForSingleObject(process_, 0) != WAIT_OBJECT_0)
+    if (!process_ || exited_)
+        return;
+    const auto waited = WaitForSingleObject(process_, 0);
+    if (waited == WAIT_FAILED)
+        report_os_failure("WaitForSingleObject(observe exit)", GetLastError());
+    if (waited != WAIT_OBJECT_0)
         return;
     exited_ = true;
     DWORD code{};
     if (GetExitCodeProcess(process_, &code))
         exit_code_ = code;
+    else
+        report_os_failure("GetExitCodeProcess", GetLastError());
     // Preserve the existing process-tree ownership: descendants do not outlive
     // their root. Killing a remaining writer can lose bytes not yet in its pipe.
     if (job_) {
@@ -270,28 +296,23 @@ void PlayProcess::observe_exit() noexcept {
 }
 
 void PlayProcess::force() noexcept {
-    if (!forced_)
-        try {
-            const std::array fields{logging::Field{"directory", assets::utf8(log_directory_.generic_wstring())}};
-            static_cast<void>(ATELIER_LOG_WITH(logging::Severity::warning, "play", "play.forced",
-                                               logging::native::Context{.fields = fields},
-                                               "Play did not stop cooperatively; terminating its process group"));
-        } catch (...) {
-            std::fputs("Play termination diagnostic capture failed.\n", stderr);
-        }
     forced_ = true;
     for (auto& output : output_)
         output.status.tail_loss_unknown = true;
-    if (job_)
-        TerminateJobObject(job_, 1);
+    if (job_ && !TerminateJobObject(job_, 1))
+        report_os_failure("TerminateJobObject", GetLastError());
 }
 
 void PlayProcess::poll() noexcept {
     if (!process_)
         return;
     observe_exit();
-    if (!exited_ && stopping_ && std::chrono::steady_clock::now() >= stop_deadline_)
+    if (!exited_ && stopping_ && std::chrono::steady_clock::now() >= stop_deadline_) {
+        if (!forced_)
+            report_forced(log_directory_, std::chrono::steady_clock::now() - stop_deadline_ + std::chrono::seconds(2),
+                          exited_, exit_code_);
         force();
+    }
     drain();
     observe_exit();
     if (exited_ && !output_status().pending)
@@ -341,19 +362,27 @@ void PlayProcess::release() noexcept {
 }
 
 void PlayProcess::close() noexcept {
-    if (process_ && !exited_)
-        SetEvent(stop_);
+    const bool active = process_ != nullptr;
+    const auto began = std::chrono::steady_clock::now();
+    if (active)
+        static_cast<void>(ATELIER_LOG(logging::Severity::info, "play", "play.close_begin",
+                                      "Closing Play: exited={} forced={}", exited_, forced_));
+    if (process_ && !exited_ && !SetEvent(stop_))
+        report_os_failure("SetEvent(close)", GetLastError());
     // Drain while offering the existing 500 ms cooperative stop grace. Neither
     // this grace nor the four final drain passes waits for pipe data to arrive.
     for (unsigned pass = 0; pass < 4 && process_; ++pass) {
         poll();
-        if (process_ && !exited_)
-            WaitForSingleObject(process_, 125);
+        if (process_ && !exited_ && WaitForSingleObject(process_, 125) == WAIT_FAILED)
+            report_os_failure("WaitForSingleObject(close cooperative)", GetLastError());
     }
     observe_exit();
     if (process_ && !exited_) {
+        if (!forced_)
+            report_forced(log_directory_, std::chrono::steady_clock::now() - began, exited_, exit_code_);
         force();
-        WaitForSingleObject(process_, 1000);
+        if (WaitForSingleObject(process_, 1000) == WAIT_FAILED)
+            report_os_failure("WaitForSingleObject(close forced)", GetLastError());
         observe_exit();
     }
     for (unsigned pass = 0; pass < 4 && process_; ++pass)
@@ -361,5 +390,9 @@ void PlayProcess::close() noexcept {
     for (auto& output : output_)
         abandon(output);
     release();
+    if (active)
+        static_cast<void>(ATELIER_LOG(logging::Severity::info, "play", "play.close_end",
+                                      "Play closed: running={} exited={} forced={} exit_code={}", running(), exited_,
+                                      forced_, exit_code_ ? std::int64_t{*exit_code_} : -1));
 }
 }

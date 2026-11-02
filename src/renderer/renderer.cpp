@@ -7,6 +7,7 @@
 #include "raster_viewport.hpp"
 #include "scene_visibility.hpp"
 #include "timing.hpp"
+#include "logging/native.hpp"
 
 #include <ankerl/unordered_dense.h>
 #include <d3d12sdklayers.h>
@@ -514,6 +515,10 @@ struct Renderer::State {
 
     Options options;
 
+    bool first_encode{true};
+
+    bool first_frame{true};
+
     rhi::Pipeline ui_pipeline;
 
     rhi::Pipeline background;
@@ -744,7 +749,15 @@ struct Renderer::State {
     void prepare_pipeline(rhi::Pipeline& output, const char* name, const char* vs, const char* ps,
                           PipelineStyle style) {
         const auto desc = detail::studio_pipeline(name, vs, ps, style);
+        static_cast<void>(ATELIER_LOG(logging::Severity::info, "renderer", "renderer.pipeline_prepare_begin",
+                                      "Synchronous pipeline preparation beginning: {}", std::string_view(name)));
+        const auto began = std::chrono::steady_clock::now();
         auto prepared = context.prepare(desc);
+        const auto elapsed =
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - began).count();
+        static_cast<void>(ATELIER_LOG(logging::Severity::info, "renderer", "renderer.pipeline_prepare_end",
+                                      "Synchronous pipeline preparation returned: {} elapsed_ms={} success={}",
+                                      std::string_view(name), elapsed, bool(prepared)));
         if (!prepared)
             throw Error{prepared.error(), false};
         output = std::move(*prepared);
@@ -1681,12 +1694,31 @@ Result<FrameResult> Renderer::render(const Frame& frame, Capture* capture) {
             (frame.view.shading != Shading::scene_lit || frame.view.wireframe == Wireframe::only ||
              frame.meshes.empty() || frame.scene_viewport.width == 0 || frame.scene_viewport.height == 0))
             s.scene_lit->invalidate(frame.meshes.empty(), s.stats);
+        const bool first_encode = std::exchange(s.first_encode, false);
+        if (first_encode)
+            static_cast<void>(ATELIER_LOG(logging::Severity::info, "renderer", "renderer.first_encode_begin",
+                                          "First encoding beginning: frame_id={} shading={}", frame.ui_frame.id,
+                                          std::to_underlying(frame.view.shading)));
         s.draw(frame, extent, capture ? &pending : nullptr);
+        if (first_encode)
+            static_cast<void>(ATELIER_LOG(logging::Severity::info, "renderer", "renderer.first_encode_end",
+                                          "First encoding returned: frame_id={} shading={}", frame.ui_frame.id,
+                                          std::to_underlying(frame.view.shading)));
         stage.reset();
         rhi::FrameInfo details;
         {
             timing::Scope submitting{phases::frame};
+            const bool first_frame = std::exchange(s.first_frame, false);
+            if (first_frame)
+                static_cast<void>(ATELIER_LOG(logging::Severity::info, "renderer", "renderer.first_frame_begin",
+                                              "First submission beginning: frame_id={} shading={}", frame.ui_frame.id,
+                                              std::to_underlying(frame.view.shading)));
             const auto presented = s.context.frame(s.options.vsync, &details);
+            if (first_frame)
+                static_cast<void>(ATELIER_LOG(logging::Severity::info, "renderer", "renderer.first_frame_end",
+                                              "First submission returned: frame_id={} shading={} success={}",
+                                              frame.ui_frame.id, std::to_underlying(frame.view.shading),
+                                              bool(presented)));
             if (!presented)
                 throw Error{presented.error(), true};
             // gfx partitions its frame call by CPU wall time; record it as children of the call.

@@ -292,6 +292,7 @@ int run_project(const RunOptions& options) {
         std::uint64_t ui_revision{};
         double elapsed{};
         bool started{};
+        bool first_render{true};
         std::optional<atelier::presentation::CameraSnapshot> accepted_camera;
         std::string camera_error;
         auto previous = std::chrono::steady_clock::now();
@@ -320,8 +321,19 @@ int run_project(const RunOptions& options) {
         timing::Recorder recorder;
         editor::FramePerformance performance;
         while (!options.frames || frame < options.frames) {
-            if (options.stop_event && WaitForSingleObject(options.stop_event, 0) == WAIT_OBJECT_0)
-                break;
+            if (options.stop_event) {
+                const auto stopped = WaitForSingleObject(options.stop_event, 0);
+                if (stopped == WAIT_FAILED) {
+                    const auto error = GetLastError();
+                    static_cast<void>(ATELIER_LOG(logging::Severity::error, "runner", "runner.stop_wait_failed",
+                                                  "WaitForSingleObject(stop event) failed: Windows {}", error));
+                }
+                if (stopped == WAIT_OBJECT_0) {
+                    static_cast<void>(ATELIER_LOG(logging::Severity::info, "runner", "runner.stop_observed",
+                                                  "Stop request observed after {} frames", frame));
+                    break;
+                }
+            }
             // One frame per loop; the idle sleeps below stay outside it.
             timing::Recorder::Frame timed{recorder};
             std::optional<std::uint64_t> sampled;
@@ -392,6 +404,8 @@ int run_project(const RunOptions& options) {
                                                    logging::native::Context{fields}, "Project started: {}",
                                                    assets::utf8(project.root().wstring())));
                 startup_checkpoint();
+                static_cast<void>(ATELIER_LOG(logging::Severity::info, "runner", "runner.startup_complete",
+                                              "Startup checkpoint completed"));
             }
             if (started && !options.preview_ui) {
                 auto updated = document.update(dt);
@@ -493,7 +507,15 @@ int run_project(const RunOptions& options) {
                     const auto lighting_start = RenderClock::Clock::now();
                     const bool lighting_active = target.drawable && camera && !group.meshes.empty() && view.lit.ddgi;
                     rendered.render_delta_seconds = lighting_clock.delta(lighting_start, lighting_active);
+                    if (first_render)
+                        static_cast<void>(ATELIER_LOG(logging::Severity::info, "runner", "runner.first_render_begin",
+                                                      "First render beginning"));
                     const auto drawn = graphics(lit_fallback.render(*renderer, rendered, nullptr));
+                    if (first_render) {
+                        static_cast<void>(ATELIER_LOG(logging::Severity::info, "runner", "runner.first_render_end",
+                                                      "First render completed"));
+                        first_render = false;
+                    }
                     if (drawn.failure != render_failure) {
                         render_failure = drawn.failure;
                         if (!render_failure.empty())
@@ -537,7 +559,11 @@ int run_project(const RunOptions& options) {
                 Sleep(16);
         }
         {
+            static_cast<void>(ATELIER_LOG(logging::Severity::info, "runner", "runner.document_stop_begin",
+                                          "Document stop beginning"));
             auto stopped = document.stop();
+            static_cast<void>(
+                ATELIER_LOG(logging::Severity::info, "runner", "runner.document_stop_end", "Document stop returned"));
             report_diagnostics();
             complete(std::move(stopped));
         }
