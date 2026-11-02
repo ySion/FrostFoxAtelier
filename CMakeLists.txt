@@ -156,7 +156,7 @@ get_property(_renderer_acceptance GLOBAL PROPERTY ATELIER_RENDERER_ACCEPTANCE)
 # USES_TERMINAL on these leaf targets serializes them in Ninja's console pool.
 set(_window_acceptance
     rhi_acceptance ${_renderer_acceptance} editor_acceptance
-    editor_control_acceptance editor_control_path_acceptance editor_camera_projection_acceptance editor_project_acceptance
+    editor_control_acceptance editor_control_path_acceptance editor_project_acceptance
     editor_repro_material_acceptance editor_output_acceptance editor_log_smoke_acceptance
     editor_shortcuts_acceptance editor_edit_acceptance editor_surfaces_acceptance
     editor_dialogs_acceptance editor_scene_lit_acceptance)

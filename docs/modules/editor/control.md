@@ -94,7 +94,7 @@ Transform、parent_set 和 space_reference_set 的 Context 目标必须是 Entit
 
 full 仍返回完整 assets，不静默截断；full/summary 不接受分页参数。4 MiB 响应上限、repro 输入文件与 Source 编译限额保持独立，不因工程目录取消项数上限而取消。大工程调用方可先 summary，再逐页读取 assets，并用资源 key 与最新 state_token 沿既有操作编辑。
 
-真实 `editor_control_acceptance` 同时检查无工程内建项、小目录分页与 full 完全一致、超过 10000 项的尾页、游标失效与保留、参数错误、失败 Refresh 及只读性。
+真实 `editor_control_acceptance` 检查失败 Refresh 保留已发布目录和原 cursor 的后续页，以及清理失败夹具后原目录与已保存场景不变。
 
 ### 大场景对象查询
 
@@ -118,7 +118,7 @@ full 仍返回完整 assets，不静默截断；full/summary 不接受分页参�
 
 宽容加载为未注册类型创建的占位对象，其对象记录另带 `placeholder: true` 和 `saved_type`（存档中的原类型名），`type` 是其原生基类；普通对象不含这两项。full 与单对象详情另以 `saved_data` 列出无法应用的保存值（`path`、截断预览 `value`、诊断 `kind`）。这些值只读，丢弃仍走编辑器的 Discard Saved Data。网格组件详情带 `mesh: {source, missing, default_materials}`；默认关联包含 slot/object/source/missing。显式 `materials` 项包含 slot/object/asset/parent/scene/assignment_override/default_material，具体材质诊断由该 object 的 `material.inspect` 返回。替代显示不改写保存引用。
 
-现有真实进程验收 `atelier_editor_control_acceptance editor.exe <输出目录> --descriptions` 同时覆盖空目录、单项分页、名称/类型过滤、详情一致性、非法参数、游标失效、对象删除、占位对象的 `saved_type` / `saved_data` 及查询不改变文档。
+描述专项保留空目录、按 Entity 名称筛选的 handle 与尾页、后续 cursor 和对象删除后的寿命，以及占位对象的 `saved_type` / `saved_data`；执行方式见下文[端到端验收](#端到端验收)。
 
 2026-10-16 的 Dev／Release 均通过，日志为 `out/direct-clustered-20261016/control-inspection-{dev,release}.log`。真实 3572 实体地牢另验证了 objects → object → 临时修改太阳属性 → render.compare → undo；最终 dirty=false、undo=0，源 Scene 哈希不变。
 
@@ -294,29 +294,23 @@ manifest 标记 `view_schema: 7`，相机或视图快照合同改变时加一。
     cmake --build --preset dev --target editor_control_acceptance
     cmake --build --preset release --target editor_control_acceptance
 
-长路径专项使用独立真实编辑器验证短控制目录与超 MAX_PATH 的控制目录、长文件名场景、源码归档、连续导出/重开/保存、CLI 请求文件及实例发现文件清理：
+默认链使用独立工程和真实编辑器进程，经命名管道验证请求重放、过期身份不重执行、跨管道文档修改和历史、对象句柄与目录 cursor 寿命、失败刷新不替换已发布目录、未保存场景与已发布游戏/UI/材质输入的复现闭包。失败候选不得替换当前文档、历史或 token；多接受帧任务的临时视图必须恢复，取消、上下文变化、超时、断线和关闭各保留清理序列。需要可绘制的独立窗口，不要求键盘焦点或人工输入；证据保存在构建目录 control-acceptance/。捕获只参与任务及状态恢复的验收，不作渲染图片正确性对照。
+
+`--repro-paths` 使用独立真实编辑器验证嵌套输出不留下递归目录、Examples 场景的真实依赖闭包，以及 glTF 默认材质、绑定、草稿导出重开和导出后关闭：
 
     cmake --build --preset dev --target editor_control_path_acceptance
     cmake --build --preset release --target editor_control_path_acceptance
 
-相机投影专项复用 Control 驱动，使用非默认正常游戏尺度裁剪面完成透视/正交的 op.call view.camera_set、相等裁剪面拒绝、repro 导出/重开、已知面深度捕获与远裁剪变化；核对 Capture 的派生 far_depth，透视 far 改变不改变 P，但仍裁掉越界几何。报告与图像位于构建目录 camera-projection-acceptance/：
+`--repro-lighting` 验证 sky 作者资源键与旋转的往返，以及引用材质草稿、缺失纹理清除后的导出与严格重开；构建目标为 `editor_repro_material_acceptance`，执行方式见 [README](../../../README.md#构建与端到端验收)。
 
-    cmake --build --preset dev --target editor_camera_projection_acceptance
-    cmake --build --preset release --target editor_camera_projection_acceptance
+相机投影的有限远裁剪数学由 [viewport-edit CPU 验收](../../../acceptance/editor/viewport_edit.inl)的作者几何代表覆盖；GPU 投影由 [Renderer 验收](../renderer/acceptance.md)的 hidden-line 代表覆盖。
 
-独立工程和真实编辑器进程通过命名管道验收：发现与 CLI、创建/选择/组件/属性/TRS、Undo/Redo、相机、显示约束、重复请求、请求/任务淘汰、过期 token、未保存场景导出/重开、游戏和 UI 发布快照、额外文件拒绝、重开失败保留原文档、嵌套输出拒绝、多接受帧捕获、Scene Lit、失败与无效修改保留任务、取消、上下文变化、超时、断线和关闭。需要可绘制的独立窗口，不要求键盘焦点或人工输入；报告和图像保存在构建目录 control-acceptance/。
-
-描述元数据专项复用同一驱动与真实命名管道，只检查选项 schema、UTF-8／换行和 Vector 聚合字段说明；创建 Mesh 后撤销到干净状态，正常关闭独立编辑器并核对原场景文件的 SHA-256。该模式使用 `--no-activate`，不置顶、不启用 GPU validation，不进入渲染对照或复现导出：
+描述元数据专项复用同一驱动与真实命名管道，核对 `probe_volume_0_count_x` 为 integer、范围 2–32、scope 为 scene，对照 [ProbeVolume 的 AFIELD 定义](../../../src/presentation/presentation.hpp)。同时保留对象目录筛选、cursor 与退休 handle、未知类型占位对象的持久数据，以及创建 Mesh 后撤销、关闭和原场景文件不变的守卫。该模式使用 `--no-activate`，不置顶、不启用 GPU validation，不进入渲染对照或复现导出：
 
     ./out/dev/atelier_editor_control_acceptance.exe ./out/dev/atelier_editor.exe ./out/control-descriptions-dev --descriptions
     ./out/release/atelier_editor_control_acceptance.exe ./out/release/atelier_editor.exe ./out/control-descriptions-release --descriptions
 
-DDGI 接线专项沿同一驱动运行：
-
-    ./out/dev/atelier_editor_control_acceptance.exe ./out/dev/atelier_editor.exe ./out/ddgi-control-dev --ddgi-debug
-    ./out/release/atelier_editor_control_acceptance.exe ./out/release/atelier_editor.exe ./out/ddgi-control-release --ddgi-debug
-
-覆盖四体积共享 schema、summary 观察、原子拒绝和幂等、覆盖预设、相机目标滚动的真实捕获、世界坐标精度及完整复现。World 页的输入预览/提交/取消、关闭和槽位切换在既有 `--acceptance-surfaces` 窗口链中验收；`atelier_editor_document_acceptance --scene-lit` 验证正式 DSL 页面与文档交互边界。
+World 页的输入预览/提交/取消、关闭和槽位切换在既有 `--acceptance-surfaces` 窗口链中验收；`atelier_editor_document_acceptance --scene-lit` 验证正式 DSL 页面与文档交互边界。Control 默认链保留无效批量 patch 不发生部分写入、幂等请求不取消活动任务的守卫。
 
 ### World 配置与字段显示元数据
 
