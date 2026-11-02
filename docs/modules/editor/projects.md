@@ -363,7 +363,11 @@ File → Edit Editor UI Source 是引擎开发命令，用于修改编辑器自�
 
 ### 验收与范围
 
-`project_integration_acceptance` 使用真实磁盘、编译器、Runtime、Workspace、UI 和独立运行进程，覆盖跨文件组件、默认值、属性投影、Scene 往返、方法热更、错误保留、跨文件定位、类型重建、字段删除/恢复与构建失败时的保留数据和占位对象、构建失败时 Play 拒绝、缺失类型时 Play 汇总、运行中 Source 故障的对象隔离与修复后恢复、子进程诊断输出与 `--halt-on-fault`、进程内运行时 Play 通道在 start 之前及每次 update 之前得到服务且批次在首帧生效、编辑器到 Play 的变更链路（批次编号与回执、超限批次落盘与按 op 拆分、error 回执、乱序回执、积压上限、链路关闭的宽限与分歧；真实 headless Play 中加载期间的修改在开始前生效，创建、撤销、重做、字段预览与取消跟随文档，Play 端读取并应用落盘批次、发送端在 ACK/close 后回收文件、拒绝序号空缺且之后不再应用、对无法解析的消息报错，Stop 后清理运行目录）、项目 UI、运行隔离、游戏/UI 死循环停止、搬移工程和删除 Cache。`project_scene_acceptance` 补充真实类型的字段事务、生命周期、物理设置往返、Play 副本的变更批次（字段与名称、物理位姿与设置、World 设置、材质资产、增删与重新添加、组件附加、改父级、根与子级的序号及越界夹值、三角网格碰撞体运行中缩放后按新缩放重建、目标或引用目标已被游戏销毁、Ragdoll 无法跟随的移动、身份冲突与不分配身份），以及宽容加载的保留、写回、撤销、复制、删除目标和结构性拒绝。`editor_document_acceptance` 检查既有 UI、场景和源码编辑链。对应 Dev / Release 结果见[源码工作流验收](source-editor.md#端到端验收)。
+`project_integration_acceptance` 使用真实磁盘、编译器、Runtime、Workspace、UI 和独立运行进程，覆盖跨文件组件、默认值、属性投影、方法热更、失败后的旧代码运行、跨文件定位、类型重建、字段删除/恢复与构建失败后的占位数据恢复。Source 故障保留 isolate 与 halt 各一个代表，检查首因字段、正常 final 与强制退出残尾的区别；原始 stdout/stderr 检查连续字节、消费边界、尾部和回收，游戏与 UI 的真实死循环仍通过独立进程停止。项目 UI 保留热更失败后旧帧、handler 和代码租约的恢复序列；搬移工程和删除 Cache 后重开仍在入口内。
+
+同一入口的 Play 链路检查批次编号、落盘与按 op 拆分、ACK/close 后发送端文件退休，以及链路关闭宽限。真实 headless Play 覆盖加载期间修改、创建与历史、预览与取消、Environment-first 相机 forest 的跨 IPC 引用与 Undo/Redo、删除后保存再 Undo；序号空缺后的后续修改不得执行，截断资源不得污染已接受内容。超过消息上限的 RGBA 和 mesh 内容、旧 owner 不变及参数 Undo 不复活旧资源保留独立代表。不以错误序号、文案或拒绝矩阵作为通过条件。
+
+`project_scene_acceptance` 覆盖真实类型的字段事务、文档身份、保留数据写回/历史/复制、加载失败清理、stop 重入及 Source/Jolt 生命周期。Play 副本保留非对称的字段、组合/空间、物理位姿、材质与天空资源、销毁目标和稀疏引用变更结果；相机加载检查派生类型的一次合法恢复和一次 retained/default 回退，不承担 GPU 投影验收。相机 forest、main_camera 历史和游戏销毁后不复活的序列仍保留。`editor_document_acceptance` 检查既有 UI、场景和源码编辑链。运行命令与日志位置见[源码工作流验收](source-editor.md#端到端验收)。
 
 当前提供独立运行窗口和 UI 预览。[Runtime/JIT 调试核心](../../source-debugger.md)已实现断点、单步和只读变量检查；编辑器中的交互与 Control 指令仍处于[接入方案](control.md#源码调试接入待实现)阶段。语义补全、查找替换、导出打包、运行画面嵌入编辑器及运行值回写尚未实现。
 

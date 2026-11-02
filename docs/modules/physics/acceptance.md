@@ -53,7 +53,7 @@ cmake --build --preset release --target project_scene_acceptance
 
 [Physic](../../../examples/Content/Physic/README.md) 包含 9 个组件场景。姿态与查询数学由上述 Physics 代表覆盖；约束目标和持有序列的场景对象映射由 Editor 的 entity composition 保存重开代表覆盖。这些示例不含独有外部资产身份，不另外保留批量文档模拟验收。
 
-`--examples` 文档验收只保留 Sponza 的独有资产身份往返，不承担 Physic 全场景验证。`project_scene_acceptance` 验证脚本 `translate_owner` 不得覆盖已配置物理的 Primitive、Character 或 Ragdoll 的位姿所有权。独立 Project Run 的布娃娃场景还运行 180 帧并输出最终场景。
+`--examples` 文档验收只保留 Sponza 的独有资产身份往返，不承担 Physic 全场景验证。`project_scene_acceptance` 用已配置物理的 Primitive 保留脚本位姿所有权冲突后的停止清理代表；Play 变更另保留 Ragdoll 拒绝作者移动后原位姿不变。独立 Project Run 的布娃娃场景还运行 180 帧并输出最终场景。
 
 `project_scene_acceptance` 还通过正式 JIT 绑定查询派生组件 Tick，验证原生继承方法、一次请求、布尔/计数/距离/Vector3 返回、保存后瞬态清空和代码拥有者释放。
 

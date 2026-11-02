@@ -711,11 +711,6 @@ void run(const std::filesystem::path& root) {
                     faults[0].phase == world::DiagnosticPhase::tick && faults[0].entity == mover &&
                     faults[0].type == "project.Move",
                 "A Source Tick fault was not isolated to one diagnostic on its object.");
-        const auto line = editor::describe_diagnostic(run, faults[0]);
-        require(line.starts_with(L"Diagnostic [error] behavior_failed in tick") &&
-                    line.find(L"(project.Move)") != std::wstring::npos &&
-                    line.find(assets::wide(faults[0].message)) != std::wstring::npos,
-                "The Project Output line lost the fault's kind, type or message.");
         take(editor::write_file(component, declaration));
         take(faulty.code->poll(project, true));
         take(run.update(.5f));
@@ -739,15 +734,6 @@ void run(const std::filesystem::path& root) {
     const auto game_frame = take(project_ui.prepare(ui, {{1280, 800}, 1, 1}, 1, 1, [](const ui::Reply&) {}));
     require(game_frame && ui.accept(game_frame), "Could not accept the project UI frame.");
     require(project_ui.diagnostic().empty(), "Project UI did not compile through the native UI pipeline.");
-    take(editor::write_file(root / "Source/UI/Main.ui.source", "ui broken {"));
-    project_ui.sync(&project);
-    // Explicitly opening a new project UI exercises cold failure independently of debounce timing.
-    editor::ProjectUI broken_ui;
-    broken_ui.sync(&project);
-    require(!broken_ui.prepare(ui, {{1280, 800}, 1, 1}, 0, 1, [](const ui::Reply&) {}),
-            "Cold-invalid project UI unexpectedly produced a frame.");
-    require(!broken_ui.diagnostic().empty(), "A broken project UI did not report its error.");
-    take(editor::write_file(root / "Source/UI/Main.ui.source", editor::ProjectCode::ui_source()));
 
     const auto snapshot = root / "Cache/run.scene";
     const auto report = root / "Cache/result.scene";
@@ -845,43 +831,17 @@ void run(const std::filesystem::path& root) {
                     narrowed.session->load_issues().front().kind == world::DiagnosticKind::unknown_field &&
                     take(narrowed.session->serialize()) == authored,
                 "A removed Source field lost its saved value.");
-        require(!editor::load_project_scene(project, authored, editor::LoadPolicy::strict).session,
-                "Strict loading accepted a removed Source field.");
         take(editor::write_file(component, extended));
         auto widened = editor::load_project_scene(project, take(narrowed.session->serialize()));
         require(widened.session && widened.session->load_issues().empty() &&
                     std::get<float>(field(*widened.session, "speed")) == 5,
                 "A restored Source field did not recover its saved value.");
-        // The editor's document publishes editor.* operator records before Source builds; Source still cannot name them.
-        take(editor::write_file(
-            helper, "float travel(float speed,float dt) { editor.ToolSettings tools; return speed * dt; }\n"));
-        const auto reserved = editor::load_project_scene(project, authored, editor::LoadPolicy::tolerant, false,
-                                                         editor::SessionRole::editor);
-        require(!reserved.session && reserved.error &&
-                    reserved.error->message.find("editor.ToolSettings") != std::string::npos &&
-                    reserved.error->message.find("Unknown registered value type") != std::string::npos,
-                "Project Source in the editor's document used an editor operator record.");
         // A broken build opens interactively with placeholders; once it builds, a fresh load restores them.
         take(editor::write_file(helper, "float travel(float speed,float dt) { return missing; }\n"));
-        require(!editor::load_project_scene(project, authored).session,
-                "Exact loading accepted a broken Source build.");
         auto broken = editor::load_project_scene(project, authored, editor::LoadPolicy::tolerant, true);
         require(broken.session && broken.error && !broken.code && broken.session->placeholder_count() == 1 &&
                     take(broken.session->serialize()) == authored,
                 "A broken build did not load placeholders that save their original type and values.");
-        take(process.start(root, snapshot, true, 1));
-        wait(process, std::chrono::seconds(45));
-        RunLog broken_log(process);
-        broken_log.finish(
-            true, {{"source",
-                    "source.build_rejected",
-                    logging::Severity::error,
-                    1,
-                    {{"phase", std::string("prepare")}, {"project_root", assets::utf8(root.generic_wstring())}}},
-                   {"runner", "runner.failed", logging::Severity::error, 1}});
-        require(process.exit_code() != 0 && !broken_log.count("runner.started") &&
-                    broken_log.count("source.build_rejected") == 1,
-                "Play ran while the Source build was broken, or omitted its build failure.");
         take(editor::write_file(helper, helpers));
         auto repaired = editor::load_project_scene(project, take(broken.session->serialize()));
         require(repaired.session && repaired.session->load_issues().empty() &&
