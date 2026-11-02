@@ -151,10 +151,15 @@ struct Driver {
         : client(std::make_unique<Client>(instance, 600s)), descriptor(std::move(instance)) {}
 
     Json call(std::string op, Json args = Json::object(), std::string id = {}) {
+        const auto name = op == "op.call" && args.is_object() && args.contains("id") && args.at("id").is_string()
+                              ? op + " " + args.at("id").get_ref<const std::string&>()
+                              : op;
         Json request{{"op", std::move(op)}, {"args", std::move(args)}, {"state_token", token}};
         if (!id.empty())
             request["request_id"] = id;
         auto result = client->call(std::move(request));
+        if (result.value("status", "") == "error")
+            std::cerr << "Control request failed: " << name << '\n';
         if (result.contains("state_token"))
             token = result.at("state_token").get<std::string>();
         return result;

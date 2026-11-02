@@ -153,7 +153,7 @@ DDGI 诊断通过相同的入口使用 `probe_visualization`（off/irradiance/st
 请求包含 protocol: 1、instance_id、request_id、op、args 和按需提供的 state_token。正常响应关联前述身份和 token，返回 status: ok / pending / error、result 或 error。无法解析的消息没有可用的请求身份。
 
 - 实例身份包含随机 ID、PID、进程创建时间、构建和 exe SHA-256。客户端校验管道服务进程；发现时过滤已退出或 PID 复用的实例。
-- 有副作用或需要固定上下文的操作要求最近的 token。过期返回 stale_state；重新观察后再决定是否继续。
+- 有副作用或需要固定上下文的操作要求最近的 token。过期返回 stale_state；错误消息列出操作名、客户端和当前版本，以及两者之间每次版本变化的 Observation 字段名（最多保留最近 16 次，超出时明确标记截断；token 的实例不同时直接说明）。重新观察后再决定是否继续。
 - token 覆盖文档代次、单调编辑版本、选择、相机、显示偏好、窗口映射、工程/已发布代码状态和用户输入。Undo 游标及渲染 revision 不承担此职责。
 - 对象句柄仅在当前实例和文档代次内有效，不持有对象；离开成员关系返回 stale_object。重开文档后重新发现。
 - 缓存最近至多 256 个改变状态的请求，总计最多 8 MiB。同 ID、同内容重放缓存响应；异步任务完成后，缓存更新为最终结果。同 ID 改内容返回 request_id_conflict。只读轮询不挤占缓存。这是有界重试缓存，不是持久事务日志；旧响应的 token 不是当前状态的新证明。

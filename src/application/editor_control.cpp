@@ -8,6 +8,7 @@
 #include "platform/windows_path.hpp"
 #include "atelier/build_info.hpp"
 #include <Windows.h>
+#include <charconv>
 #include <deque>
 #include <future>
 #include <limits>
@@ -512,6 +513,18 @@ struct EditorControl::Impl {
         bool operator==(const Observation&) const = default;
     } observed;
 
+    static constexpr std::array<std::string_view, 12> observation_fields{
+        "document", "session", "input",  "project", "code",    "view_revision",
+        "extent",   "dpi",     "camera", "view",    "editing", "running"};
+
+    struct ObservationChange {
+        std::uint64_t version{};
+
+        std::array<bool, observation_fields.size()> fields{};
+    };
+
+    std::array<ObservationChange, 16> observation_changes{};
+
     std::unordered_map<ObjectId, std::string> handles;
 
     std::unordered_map<std::string, ObjectId> objects;
@@ -715,6 +728,13 @@ struct EditorControl::Impl {
             app.document_->editing(),
             app.play_.running()};
         if (current != observed) {
+            observation_changes[(version + 1) % observation_changes.size()] = {
+                version + 1,
+                {current.document != observed.document, current.session != observed.session,
+                 current.input != observed.input, current.project != observed.project, current.code != observed.code,
+                 current.view_revision != observed.view_revision, current.extent != observed.extent,
+                 current.dpi != observed.dpi, current.camera != observed.camera, current.view != observed.view,
+                 current.editing != observed.editing, current.running != observed.running}};
             observed = current;
             ++version;
         }
@@ -722,6 +742,56 @@ struct EditorControl::Impl {
 
     std::string token() const {
         return server.identity().at("instance_id").get<std::string>() + ":" + std::to_string(version);
+    }
+
+    std::string stale_message(std::string_view client_token, std::string_view op, const Json& args) const {
+        std::string message = "Inspect the editor again before changing its state; op=" + std::string(op);
+        if (op == "op.call") {
+            const auto id = args.find("id");
+            const auto* value = id == args.end() ? nullptr : id->get_ptr<const std::string*>();
+            message += " id=";
+            message += value && value->size() <= 80 &&
+                               std::ranges::all_of(*value, [](unsigned char c) { return c >= 0x20 && c <= 0x7e; })
+                           ? *value
+                           : "<invalid id>";
+        }
+        message += "; current_version=" + std::to_string(version);
+        const auto separator = client_token.rfind(':');
+        if (separator == client_token.npos)
+            return message + "; client_version=invalid; missing or invalid state_token";
+        const auto number = client_token.substr(separator + 1);
+        std::uint64_t client_version{};
+        const auto parsed = std::from_chars(number.data(), number.data() + number.size(), client_version);
+        const bool valid = parsed.ec == std::errc{} && parsed.ptr == number.data() + number.size();
+        message += "; client_version=" + (valid ? std::to_string(client_version) : "invalid");
+        if (client_token.substr(0, separator) != server.identity().at("instance_id").get_ref<const std::string&>())
+            return message + "; state_token instance differs";
+        if (!valid)
+            return message + "; invalid state_token version";
+        const auto first = version > observation_changes.size() ? version - observation_changes.size() + 1 : 2;
+        if (client_version < first - 1)
+            message += "; change history truncated before version " + std::to_string(first);
+        message += "; changes=";
+        bool any{};
+        for (auto next = first; next <= version; ++next) {
+            if (next <= client_version)
+                continue;
+            const auto& change = observation_changes[next % observation_changes.size()];
+            message += (any ? "; " : "") + std::to_string(change.version) + ":[";
+            bool field{};
+            for (std::size_t i = 0; i < change.fields.size(); ++i)
+                if (change.fields[i]) {
+                    if (field)
+                        message += ',';
+                    message += observation_fields[i];
+                    field = true;
+                }
+            message += ']';
+            any = true;
+        }
+        if (!any)
+            message += "none (token differs without a recorded version change)";
+        return message;
     }
 
     auto busy_states() const {
@@ -1822,7 +1892,7 @@ struct EditorControl::Impl {
             remember = op->changes;
             if (op->changes) {
                 if (request.value("state_token", "") != token())
-                    throw Failure("stale_state", "Inspect the editor again before changing its state");
+                    throw Failure("stale_state", stale_message(request.value("state_token", ""), name, args));
             }
             auto result = dispatch(name, args, id, peer);
             if (result.contains("status"))
