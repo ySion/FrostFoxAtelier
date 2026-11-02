@@ -80,7 +80,7 @@ cmake --preset release
 cmake --build --preset release --target editor_acceptance
 ```
 
-每种配置输出 `Editor window acceptance: PASS`；无窗口文档链使用 `editor_document_acceptance`。GPU 颜色/深度捕获对应的 PNG 与操作报告保存在 `out/<配置>/editor-evidence/`，包括状态/字体/256 Entity 列表、组件增删和完整 TRS 投影。采样条件和实测边界见[编辑器验收](docs/modules/editor/README.md#验收入口)。
+每种配置输出 `Editor window acceptance: PASS`；无窗口文档链使用 `editor_document_acceptance`。保留行为的 GPU readback PNG 与操作报告保存在 `out/<配置>/editor-evidence/`，记录布局、字体快照寿命、列表滚动、原生输入与历史；不作渲染图片正确性对照。覆盖范围见[编辑器验收](docs/modules/editor/README.md#验收入口)。
 窗口验收启用真实硬件 D3D12 debug/GBV。DPI 项验证当前显示器的过渡消息政策，不替代跨不同 DPI 显示器的实测。可执行文件旁须保留构建部署的 mimalloc、DXC、Agility、PIX DLL 与许可证，以及 editor.ss、fonts/ 中的字体和许可证。Examples 是独立工程，不属于可执行文件的部署依赖。
 
 编辑器的可捕获异常会在释放 Session 前，将未保存的已提交作者 Scene 原子写入独立恢复目录，并在错误日志中报告路径；原场景保持不变。范围、资源依赖与恢复步骤见[异常退出时的场景保全](docs/modules/editor/projects.md#异常退出时的场景保全)。CPU 端到端入口为 `editor_recovery_acceptance`，不会启动图形设备。

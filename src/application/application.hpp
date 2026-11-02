@@ -128,8 +128,6 @@ public:
 
     const ui::Style& style() const noexcept { return ui_.style(); }
 
-    ui::Statistics ui_statistics() const noexcept { return ui_.statistics(); }
-
     // Most recent step's render result; zero when that step did not render.
     const renderer::FrameStats& frame_statistics() const noexcept { return frame_statistics_; }
 

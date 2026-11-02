@@ -389,9 +389,9 @@ accepted extent 固定为录制/呈现时尺寸，frame末尾resize后的新尺�
 `atelier_editor --snapshot <输出目录>` 是设计评审用的截图入口，不是验收：窗口以不激活方式显示，不抢占前台、不发送系统输入，直接调用文档与视口工具入口，导出各工具手柄、表面游标、模态 G/R 的 GPU readback PNG。可在他人使用桌面时运行。
 `atelier_editor --acceptance-project <输出目录> [源工程目录]`在同一个正式窗口内执行工程操作链，输出目录下每次新建独立的 `run-*` 证据目录。提供源工程时，仅复制 Config／Content／Source 到验收目录；跳过链接和 Cache，所有编辑、导入、保存和目录搬移发生在副本。输出目录必须位于源工程之外。省略源工程时创建空工程 fixture；CMake 的 `editor_project_acceptance` 使用这一形式。窗口输入仍要求编辑器保持前台，外部焦点丢失会停止输入。
 窗口链包含分隔、增删/历史、列表选择、实时拖调/一次undo/Esc、文字Delete、非法值、相机、失焦/捕获、resize、最小化和正常退出。
-S1 覆盖正常/hover/pressed/focus/invalid/disabled、颜色改变的同Coverage/零raster/零上传、非法Style整体拒绝、字体family/weight/size及caret同步失效、旧帧几何/像素寿命。256真实成员由 Create 菜单加入，验证屏外控件几何仍在、文字不生成、滚回恢复，以及连续拖调历史。
-S2 扩展覆盖本地/场景历史归属、非法 Enter/保留焦点、文本模式拖选、真实参数过滤、代理对/组合字符/ZWJ 删除、双向选区、CF_UNICODETEXT 读写。用真实剪贴板占用验证失败保留草稿；预先建立真实 Session 事务，使随后原生拖动的 begin 失败，验证后续 preview 停止、回滚/捕获释放和首错保留。
-截图来自 renderer 实际颜色/深度 readback，输出 `m0.png`、`editor.png`、`s1-pressed/focused/invalid/disabled/color/font/list-256.png`、`s2-search-unicode/bidi-selection/number-selection/failed-edit.png` 与 `acceptance.txt`。首版和已收口 S1 证据分别保存在各配置的 `editor-evidence-v1/`、`editor-evidence-s1/`；被后续运行覆盖的工作目录不作为 S1 原始证据。
+样式验收保留设置改变不替换已接受帧、坏样式拒绝后主题与已接受帧不变、字体及caret同步失效、旧帧几何/像素寿命；布局代表检查 Filter 位于对象标题与滚动属性之间。菜单栏关闭时 hover 不打开弹窗。删除对象后其属性控件退役、名称输入禁用，Undo 后恢复可交互选择。列表夹具固定填到 256 个成员，保留屏外文字裁剪、滚回、末行拖动与历史，不以填满成员上限作验收目标。
+文本验收保留本地/场景历史归属、非法 Enter/保留焦点、文本模式拖选、真实参数过滤和 CF_UNICODETEXT 读写。用真实剪贴板占用验证失败保留草稿；预先建立真实 Session 事务，使随后原生拖动的 begin 失败，验证后续 preview 停止、回滚/捕获释放和首错保留。
+保留行为的截图来自 renderer 实际 readback，包括 `m0.png`、`editor.png`、`chrome-pixels.png`、`s1-disabled.png`、`s1-color.png`、`s1-font.png`、`s1-list.png`、`scrollbar-thumb-end.png`、`s2-search-unicode.png`、`s2-number-selection.png`、`s2-failed-edit.png`；报告为 `acceptance.txt`。这些是布局、输入和生命周期的操作证据，不作渲染图片正确性对照。
 DPI 验收覆盖当前显示器上的 WM_DPICHANGED 过渡政策，不据此声称已验证跨不同 DPI 显示器迁移。Unicode WM_CHAR 和 UI 组合协议注入不代表真实系统输入法通过。
 
 ### S2 集成状态与输入法验收
