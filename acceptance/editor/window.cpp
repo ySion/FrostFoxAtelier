@@ -4,6 +4,7 @@
 #include "assets/material_format.hpp"
 #include "atelier/build_info.hpp"
 #include "control/control.hpp"
+#include "editor/error.hpp"
 #include "renderer/raster_viewport.hpp"
 #include "renderer/timing.hpp"
 #include "ui/text.hpp"
@@ -1660,6 +1661,94 @@ int capture_editor_snapshot(Application& app, const char* output_directory) {
     std::puts("Editor snapshot: written");
     return 0;
 }
+
+class AcceptanceInputMonitor {
+    static inline thread_local AcceptanceInputMonitor* current_{};
+
+    std::atomic<std::uint64_t> mouse_{};
+
+    std::atomic<std::uint64_t> keyboard_{};
+
+    std::atomic<bool> ready_{};
+
+    std::atomic<bool> available_{};
+
+    HANDLE stop_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+
+    std::thread thread_;
+
+    static LRESULT CALLBACK mouse(int code, WPARAM message, LPARAM data) noexcept {
+        if (code == HC_ACTION && !(reinterpret_cast<const MSLLHOOKSTRUCT*>(data)->flags & LLMHF_INJECTED))
+            current_->mouse_.fetch_add(1, std::memory_order_relaxed);
+        return CallNextHookEx(nullptr, code, message, data);
+    }
+
+    static LRESULT CALLBACK keyboard(int code, WPARAM message, LPARAM data) noexcept {
+        if (code == HC_ACTION && !(reinterpret_cast<const KBDLLHOOKSTRUCT*>(data)->flags & LLKHF_INJECTED))
+            current_->keyboard_.fetch_add(1, std::memory_order_relaxed);
+        return CallNextHookEx(nullptr, code, message, data);
+    }
+
+public:
+    AcceptanceInputMonitor() {
+        if (!stop_)
+            return;
+        try {
+            thread_ = std::thread([this] {
+                // Low-level callbacks must not wait for the acceptance thread's rendering or PNG writes.
+                current_ = this;
+                MSG message{};
+                PeekMessageW(&message, nullptr, 0, 0, PM_NOREMOVE);
+                const auto module = GetModuleHandleW(nullptr);
+                const auto mouse_hook = SetWindowsHookExW(WH_MOUSE_LL, mouse, module, 0);
+                const auto keyboard_hook = SetWindowsHookExW(WH_KEYBOARD_LL, keyboard, module, 0);
+                available_.store(mouse_hook && keyboard_hook);
+                ready_.store(true);
+                ready_.notify_one();
+                if (available_.load()) {
+                    for (;;) {
+                        const auto result =
+                            MsgWaitForMultipleObjectsEx(1, &stop_, INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+                        if (result != WAIT_OBJECT_0 + 1) {
+                            if (result != WAIT_OBJECT_0)
+                                available_.store(false);
+                            break;
+                        }
+                        while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+                            TranslateMessage(&message);
+                            DispatchMessageW(&message);
+                        }
+                    }
+                }
+                if (keyboard_hook)
+                    UnhookWindowsHookEx(keyboard_hook);
+                if (mouse_hook)
+                    UnhookWindowsHookEx(mouse_hook);
+                current_ = nullptr;
+            });
+            ready_.wait(false);
+        } catch (const std::exception&) {
+            // Diagnostic setup failure must not change the acceptance outcome.
+        }
+    }
+
+    ~AcceptanceInputMonitor() {
+        if (thread_.joinable()) {
+            SetEvent(stop_);
+            thread_.join();
+        }
+        if (stop_)
+            CloseHandle(stop_);
+    }
+
+    std::string diagnostic() const {
+        if (!available_.load())
+            return "input monitor unavailable";
+        return std::format("non-injected mouse/keyboard events: {}/{}", mouse_.load(std::memory_order_relaxed),
+                           keyboard_.load(std::memory_order_relaxed));
+    }
+};
+
 #include "performance.inl"
 #include "surfaces.inl"
 #include "tooltips_window.inl"
@@ -1668,245 +1757,254 @@ int capture_editor_snapshot(Application& app, const char* output_directory) {
 #include "viewport_navigation.inl"
 #include "shortcuts.inl"
 int verify_editor_shortcuts(Application& app, const char* output_directory) {
-    using namespace atelier;
-    namespace control = atelier::editor::control;
-    using Access = application::EditorAcceptanceAccess;
-    const auto com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
-    hr(com);
-    struct ComScope {
-        ~ComScope() { CoUninitialize(); }
-    } com_scope;
-    const auto output = std::filesystem::absolute(assets::wide(output_directory));
-    std::filesystem::create_directories(output);
-    tick(app);
-    verify_viewport_splitter_drag(app);
-    require(bool(Access::invoke(app, "scene.add", {{"kind", "mesh"}})), "Shortcut scene creation failed.");
-    tick(app);
-    verify_viewport_navigation(app, output);
-    verify_menu_input_transitions(app);
-    const auto first = app.document().selection().entity;
-    const auto viewport = app.presented()->find(control::viewport)->bounds;
-    const float x = viewport.x + viewport.width * .5f;
-    const float y = viewport.y + viewport.height * .5f;
-    const auto move = [&](float px, float py) {
-        Access::input(app, {.kind = ui::EventKind::pointer_move, .x = px, .y = py});
-    };
-    const auto key = [&](WPARAM code, ui::Key mapped = ui::Key::none, bool shift = false, bool ctrl = false,
-                         bool up = false, bool repeat = false) {
-        ui::Event e;
-        e.kind = up ? ui::EventKind::key_up : ui::EventKind::key_down;
-        e.key = mapped;
-        e.shift = shift;
-        e.control = ctrl;
-        e.repeat = repeat;
-        Access::input(app, e, code);
-    };
-    move(x, y);
-    key('X');
-    key(VK_ESCAPE, ui::Key::escape);
-    tick(app);
-    require(!Access::menu_open(app), "An immediate Escape failed to cancel a pending popup.");
-    const auto history = app.document().undo_count();
-    key('D', ui::Key::none, true);
-    tick(app);
-    require(app.document().selected_entities().size() == 1 && app.document().selection().entity != first &&
-                Access::tool_active(app),
-            "Shift+D did not duplicate and enter modal move.");
-    key('D', ui::Key::none, true, false, false, true);
-    require(app.document().undo_count() == history + 1, "Repeated Shift+D created extra copies.");
-    key('X');
-    Access::input(app, {.kind = ui::EventKind::text, .data = std::wstring{L"2"}});
-    key(VK_RETURN, ui::Key::enter);
-    tick(app);
-    require(app.document().undo_count() == history + 1 && !Access::tool_active(app),
-            "Duplicate movement created an extra undo step.");
-    key('Z', ui::Key::z, false, true);
-    tick(app);
-    require(app.document().world().members()->size() == 1, "Ctrl+Z did not undo the entire duplicate gesture.");
-    key('Z', ui::Key::z, true, true);
-    tick(app);
-    require(app.document().world().members()->size() == 2, "Redo did not restore the duplicate.");
-    {
-        // Zero scale is legal but degenerate: only an explicit domain Repeat may coalesce it.
-        auto& document = Access::physics_document(app);
-        const auto copy = document.selection().entity;
-        const auto original = *world::read_transform(document.world().runtime(), copy);
-        auto flat = original;
-        flat.scale = {0, 1, 1};
-        const auto degenerate = [&] {
-            std::vector<editor::Output::Row> rows;
-            const auto& output = Access::output(app);
-            for (const auto& row : output.rows())
-                if (output.record(row.key)->entry.event_code == "world.degenerate_value")
-                    rows.push_back(row);
-            return rows;
+    AcceptanceInputMonitor monitor;
+    try {
+        using namespace atelier;
+        namespace control = atelier::editor::control;
+        using Access = application::EditorAcceptanceAccess;
+        const auto com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+        hr(com);
+        struct ComScope {
+            ~ComScope() { CoUninitialize(); }
+        } com_scope;
+        const auto output = std::filesystem::absolute(assets::wide(output_directory));
+        std::filesystem::create_directories(output);
+        tick(app);
+        verify_viewport_splitter_drag(app);
+        require(bool(Access::invoke(app, "scene.add", {{"kind", "mesh"}})), "Shortcut scene creation failed.");
+        tick(app);
+        verify_viewport_navigation(app, output);
+        verify_menu_input_transitions(app);
+        const auto first = app.document().selection().entity;
+        const auto viewport = app.presented()->find(control::viewport)->bounds;
+        const float x = viewport.x + viewport.width * .5f;
+        const float y = viewport.y + viewport.height * .5f;
+        const auto move = [&](float px, float py) {
+            Access::input(app, {.kind = ui::EventKind::pointer_move, .x = px, .y = py});
         };
-        const auto flatten = [&](const world::Trs& value) {
-            require(bool(document.set_transform(copy, value)), "A zero or restored scale was rejected.");
+        const auto key = [&](WPARAM code, ui::Key mapped = ui::Key::none, bool shift = false, bool ctrl = false,
+                             bool up = false, bool repeat = false) {
+            ui::Event e;
+            e.kind = up ? ui::EventKind::key_up : ui::EventKind::key_down;
+            e.key = mapped;
+            e.shift = shift;
+            e.control = ctrl;
+            e.repeat = repeat;
+            Access::input(app, e, code);
+        };
+        move(x, y);
+        key('X');
+        key(VK_ESCAPE, ui::Key::escape);
+        tick(app);
+        require(!Access::menu_open(app), "An immediate Escape failed to cancel a pending popup.");
+        const auto history = app.document().undo_count();
+        key('D', ui::Key::none, true);
+        tick(app);
+        require(app.document().selected_entities().size() == 1 && app.document().selection().entity != first &&
+                    Access::tool_active(app),
+                "Shift+D did not duplicate and enter modal move.");
+        key('D', ui::Key::none, true, false, false, true);
+        require(app.document().undo_count() == history + 1, "Repeated Shift+D created extra copies.");
+        key('X');
+        Access::input(app, {.kind = ui::EventKind::text, .data = std::wstring{L"2"}});
+        key(VK_RETURN, ui::Key::enter);
+        tick(app);
+        require(app.document().undo_count() == history + 1 && !Access::tool_active(app),
+                "Duplicate movement created an extra undo step.");
+        key('Z', ui::Key::z, false, true);
+        tick(app);
+        require(app.document().world().members()->size() == 1, "Ctrl+Z did not undo the entire duplicate gesture.");
+        key('Z', ui::Key::z, true, true);
+        tick(app);
+        require(app.document().world().members()->size() == 2, "Redo did not restore the duplicate.");
+        {
+            // Zero scale is legal but degenerate: only an explicit domain Repeat may coalesce it.
+            auto& document = Access::physics_document(app);
+            const auto copy = document.selection().entity;
+            const auto original = *world::read_transform(document.world().runtime(), copy);
+            auto flat = original;
+            flat.scale = {0, 1, 1};
+            const auto degenerate = [&] {
+                std::vector<editor::Output::Row> rows;
+                const auto& output = Access::output(app);
+                for (const auto& row : output.rows())
+                    if (output.record(row.key)->entry.event_code == "world.degenerate_value")
+                        rows.push_back(row);
+                return rows;
+            };
+            const auto flatten = [&](const world::Trs& value) {
+                require(bool(document.set_transform(copy, value)), "A zero or restored scale was rejected.");
+                tick(app);
+            };
+            const auto await_count = [&](std::uint64_t count) {
+                const auto deadline = GetTickCount64() + 10000;
+                do {
+                    tick(app, 1);
+                    const auto rows = degenerate();
+                    if (rows.size() == 1 && rows.front().count == count)
+                        return rows;
+                } while (GetTickCount64() < deadline);
+                throw std::runtime_error(
+                    "Structured zero-scale diagnostic did not arrive with its expected repeat count.");
+            };
+            flatten(flat);
+            const auto first = await_count(1);
+            const auto& entry = Access::output(app).record(first.front().key)->entry;
+            const auto field = [&](std::string_view name, std::string_view value) {
+                return std::ranges::any_of(entry.fields, [&](const auto& item) {
+                    const auto* text = std::get_if<std::string>(&item.value);
+                    return item.key == name && text && *text == value;
+                });
+            };
+            require(entry.severity == logging::Severity::warning && field("phase", "presentation") &&
+                        field("field_path", "/scale") && entry.repeat,
+                    "Zero scale did not retain typed warning/phase/field/repeat metadata.");
+            flatten(original);
+            flatten(flat);
+            const auto repeated = await_count(2);
+            require(repeated.front().key == first.front().key,
+                    "A recurring zero scale replaced its existing projected row.");
+            const auto table = Access::output(app).table();
+            const auto row = std::ranges::find(table->rows, repeated.front().key, &ui::TableRow::key);
+            const auto column = std::ranges::find(table->columns, ui::TableKey{3}, &ui::TableColumn::key);
+            require(column != table->columns.end() &&
+                        row->cells[static_cast<std::size_t>(column - table->columns.begin())].text.ends_with(L" (×2)"),
+                    "The structured repeat count lost its visible ×2 suffix.");
+            flatten(original);
+        }
+        move(x, y);
+        key('X');
+        tick(app);
+        require(app.menu_frame() &&
+                    app.menu_frame()->find(Access::operator_item(app, "scene.delete", {{"target", "entities"}})),
+                "X did not open its confirmation menu.");
+        RECT popup{};
+        GetWindowRect(app.menu_window(), &popup);
+        POINT client{static_cast<LONG>(x), static_cast<LONG>(y)};
+        ClientToScreen(app.window(), &client);
+        const auto item =
+            app.menu_frame()->find(Access::operator_item(app, "scene.delete", {{"target", "entities"}}))->bounds;
+        require(client.x - popup.left >= item.x && client.x - popup.left < item.x + item.width &&
+                    client.y - popup.top >= item.y && client.y - popup.top < item.y + item.height,
+                "Delete confirmation did not place its action under the invocation point.");
+        const auto popup_hwnd = app.menu_window();
+        key(VK_ESCAPE, ui::Key::escape);
+        key(VK_ESCAPE, ui::Key::escape, false, false, true);
+        tick(app);
+        require(app.document().world().members()->size() == 2 && !Access::menu_open(app),
+                "Cancelling Delete changed the document.");
+        const auto before_reopen = Access::menu_input_diagnostic(app);
+        key('X');
+        const bool reopen_requested = Access::menu_open(app);
+        tick(app);
+        if (app.menu_window() != popup_hwnd)
+            throw std::runtime_error("Delete menu did not reuse its native window: old=" +
+                                     std::to_string(reinterpret_cast<std::uintptr_t>(popup_hwnd)) +
+                                     ", new=" + std::to_string(reinterpret_cast<std::uintptr_t>(app.menu_window())) +
+                                     ", requested=" + std::to_string(reopen_requested) +
+                                     ", menu=" + std::to_string(Access::menu_open(app)) +
+                                     ", status=" + assets::utf8(app.status_text()) + "; before=[" + before_reopen +
+                                     "]; after=[" + Access::menu_input_diagnostic(app) + "].");
+        Access::input(app, {.kind = ui::EventKind::pointer_down, .x = x, .y = y});
+        Access::input(app, {.kind = ui::EventKind::pointer_up, .x = x, .y = y});
+        tick(app);
+        require(app.document().world().members()->size() == 1 && !Access::menu_open(app),
+                "Delete confirmation click missed its command.");
+        key('Z', ui::Key::z);
+        key('Z', ui::Key::z, false, false, true);
+        tick(app);
+        require(Access::menu_open(app) && app.presented()->popup == control::viewport_pie,
+                "Tapping Z did not retain its pie menu.");
+        move(x - 90, y);
+        tick(app);
+        capture(app, output / "shading-pie.png");
+        Access::input(app, {.kind = ui::EventKind::pointer_down, .x = x - 90, .y = y});
+        Access::input(app, {.kind = ui::EventKind::pointer_up, .x = x - 90, .y = y});
+        tick(app);
+        require(!Access::menu_open(app) && Access::scene_lit_view(app).wireframe == renderer::Wireframe::only,
+                "Pie click did not select Wireframe.");
+        move(x, y);
+        key('Z', ui::Key::z);
+        move(x, y + 90);
+        key('Z', ui::Key::z, false, false, true);
+        tick(app);
+        require(!Access::menu_open(app) && Access::scene_lit_view(app).shading == renderer::Shading::matcap &&
+                    Access::scene_lit_view(app).wireframe == renderer::Wireframe::off,
+                "Fast hold/swipe/release was lost before the first pie frame.");
+        move(x, y);
+        key('Z', ui::Key::z);
+        tick(app);
+        Access::finish_menu_hold(app);
+        key('Z', ui::Key::z, false, false, true);
+        tick(app);
+        require(!Access::menu_open(app), "Held pie release in the dead zone did not cancel.");
+        key('Z', ui::Key::z);
+        tick(app);
+        key(VK_ESCAPE, ui::Key::escape);
+        tick(app);
+        require(!Access::menu_open(app) && !app.presented()->popup, "Pie cancellation leaked modal state.");
+        move(viewport.x + viewport.width - 6, viewport.y + 6);
+        key('Z', ui::Key::z);
+        key('Z', ui::Key::z, false, false, true);
+        tick(app);
+        const auto edge_item = app.presented()->find(control::shading_preset_first + 1)->bounds;
+        Access::input(app, {.kind = ui::EventKind::pointer_down,
+                            .x = edge_item.x + edge_item.width * .5f,
+                            .y = edge_item.y + edge_item.height * .5f});
+        Access::input(app, {.kind = ui::EventKind::pointer_up,
+                            .x = edge_item.x + edge_item.width * .5f,
+                            .y = edge_item.y + edge_item.height * .5f});
+        tick(app);
+        require(!Access::menu_open(app) && Access::scene_lit_view(app).shading == renderer::Shading::smooth,
+                "A screen-edge pie slot click was interpreted relative to the old gesture origin.");
+        const auto camera = app.presented()->find(control::viewport_camera)->bounds;
+        const auto click = [&](float px, float py) {
+            Access::input(app, {.kind = ui::EventKind::pointer_down, .x = px, .y = py});
+            Access::input(app, {.kind = ui::EventKind::pointer_up, .x = px, .y = py});
             tick(app);
         };
-        const auto await_count = [&](std::uint64_t count) {
-            const auto deadline = GetTickCount64() + 10000;
-            do {
-                tick(app, 1);
-                const auto rows = degenerate();
-                if (rows.size() == 1 && rows.front().count == count)
-                    return rows;
-            } while (GetTickCount64() < deadline);
-            throw std::runtime_error("Structured zero-scale diagnostic did not arrive with its expected repeat count.");
-        };
-        flatten(flat);
-        const auto first = await_count(1);
-        const auto& entry = Access::output(app).record(first.front().key)->entry;
-        const auto field = [&](std::string_view name, std::string_view value) {
-            return std::ranges::any_of(entry.fields, [&](const auto& item) {
-                const auto* text = std::get_if<std::string>(&item.value);
-                return item.key == name && text && *text == value;
-            });
-        };
-        require(entry.severity == logging::Severity::warning && field("phase", "presentation") &&
-                    field("field_path", "/scale") && entry.repeat,
-                "Zero scale did not retain typed warning/phase/field/repeat metadata.");
-        flatten(original);
-        flatten(flat);
-        const auto repeated = await_count(2);
-        require(repeated.front().key == first.front().key,
-                "A recurring zero scale replaced its existing projected row.");
-        const auto table = Access::output(app).table();
-        const auto row = std::ranges::find(table->rows, repeated.front().key, &ui::TableRow::key);
-        const auto column = std::ranges::find(table->columns, ui::TableKey{3}, &ui::TableColumn::key);
-        require(column != table->columns.end() &&
-                    row->cells[static_cast<std::size_t>(column - table->columns.begin())].text.ends_with(L" (×2)"),
-                "The structured repeat count lost its visible ×2 suffix.");
-        flatten(original);
-    }
-    move(x, y);
-    key('X');
-    tick(app);
-    require(app.menu_frame() &&
-                app.menu_frame()->find(Access::operator_item(app, "scene.delete", {{"target", "entities"}})),
-            "X did not open its confirmation menu.");
-    RECT popup{};
-    GetWindowRect(app.menu_window(), &popup);
-    POINT client{static_cast<LONG>(x), static_cast<LONG>(y)};
-    ClientToScreen(app.window(), &client);
-    const auto item =
-        app.menu_frame()->find(Access::operator_item(app, "scene.delete", {{"target", "entities"}}))->bounds;
-    require(client.x - popup.left >= item.x && client.x - popup.left < item.x + item.width &&
-                client.y - popup.top >= item.y && client.y - popup.top < item.y + item.height,
-            "Delete confirmation did not place its action under the invocation point.");
-    const auto popup_hwnd = app.menu_window();
-    key(VK_ESCAPE, ui::Key::escape);
-    key(VK_ESCAPE, ui::Key::escape, false, false, true);
-    tick(app);
-    require(app.document().world().members()->size() == 2 && !Access::menu_open(app),
-            "Cancelling Delete changed the document.");
-    const auto before_reopen = Access::menu_input_diagnostic(app);
-    key('X');
-    const bool reopen_requested = Access::menu_open(app);
-    tick(app);
-    if (app.menu_window() != popup_hwnd)
-        throw std::runtime_error("Delete menu did not reuse its native window: old=" +
-                                 std::to_string(reinterpret_cast<std::uintptr_t>(popup_hwnd)) +
-                                 ", new=" + std::to_string(reinterpret_cast<std::uintptr_t>(app.menu_window())) +
-                                 ", requested=" + std::to_string(reopen_requested) +
-                                 ", menu=" + std::to_string(Access::menu_open(app)) +
-                                 ", status=" + assets::utf8(app.status_text()) + "; before=[" + before_reopen +
-                                 "]; after=[" + Access::menu_input_diagnostic(app) + "].");
-    Access::input(app, {.kind = ui::EventKind::pointer_down, .x = x, .y = y});
-    Access::input(app, {.kind = ui::EventKind::pointer_up, .x = x, .y = y});
-    tick(app);
-    require(app.document().world().members()->size() == 1 && !Access::menu_open(app),
-            "Delete confirmation click missed its command.");
-    key('Z', ui::Key::z);
-    key('Z', ui::Key::z, false, false, true);
-    tick(app);
-    require(Access::menu_open(app) && app.presented()->popup == control::viewport_pie,
-            "Tapping Z did not retain its pie menu.");
-    move(x - 90, y);
-    tick(app);
-    capture(app, output / "shading-pie.png");
-    Access::input(app, {.kind = ui::EventKind::pointer_down, .x = x - 90, .y = y});
-    Access::input(app, {.kind = ui::EventKind::pointer_up, .x = x - 90, .y = y});
-    tick(app);
-    require(!Access::menu_open(app) && Access::scene_lit_view(app).wireframe == renderer::Wireframe::only,
-            "Pie click did not select Wireframe.");
-    move(x, y);
-    key('Z', ui::Key::z);
-    move(x, y + 90);
-    key('Z', ui::Key::z, false, false, true);
-    tick(app);
-    require(!Access::menu_open(app) && Access::scene_lit_view(app).shading == renderer::Shading::matcap &&
-                Access::scene_lit_view(app).wireframe == renderer::Wireframe::off,
-            "Fast hold/swipe/release was lost before the first pie frame.");
-    move(x, y);
-    key('Z', ui::Key::z);
-    tick(app);
-    Access::finish_menu_hold(app);
-    key('Z', ui::Key::z, false, false, true);
-    tick(app);
-    require(!Access::menu_open(app), "Held pie release in the dead zone did not cancel.");
-    key('Z', ui::Key::z);
-    tick(app);
-    key(VK_ESCAPE, ui::Key::escape);
-    tick(app);
-    require(!Access::menu_open(app) && !app.presented()->popup, "Pie cancellation leaked modal state.");
-    move(viewport.x + viewport.width - 6, viewport.y + 6);
-    key('Z', ui::Key::z);
-    key('Z', ui::Key::z, false, false, true);
-    tick(app);
-    const auto edge_item = app.presented()->find(control::shading_preset_first + 1)->bounds;
-    Access::input(app, {.kind = ui::EventKind::pointer_down,
-                        .x = edge_item.x + edge_item.width * .5f,
-                        .y = edge_item.y + edge_item.height * .5f});
-    Access::input(app, {.kind = ui::EventKind::pointer_up,
-                        .x = edge_item.x + edge_item.width * .5f,
-                        .y = edge_item.y + edge_item.height * .5f});
-    tick(app);
-    require(!Access::menu_open(app) && Access::scene_lit_view(app).shading == renderer::Shading::smooth,
-            "A screen-edge pie slot click was interpreted relative to the old gesture origin.");
-    const auto camera = app.presented()->find(control::viewport_camera)->bounds;
-    const auto click = [&](float px, float py) {
-        Access::input(app, {.kind = ui::EventKind::pointer_down, .x = px, .y = py});
-        Access::input(app, {.kind = ui::EventKind::pointer_up, .x = px, .y = py});
+        Access::input(app, {.kind = ui::EventKind::pointer_down,
+                            .x = camera.x + camera.width * .5f,
+                            .y = camera.y + camera.height * .5f});
+        require(Access::menu_open(app), "Camera menu waited for button release.");
         tick(app);
-    };
-    Access::input(
-        app,
-        {.kind = ui::EventKind::pointer_down, .x = camera.x + camera.width * .5f, .y = camera.y + camera.height * .5f});
-    require(Access::menu_open(app), "Camera menu waited for button release.");
-    tick(app);
-    Access::input(
-        app,
-        {.kind = ui::EventKind::pointer_up, .x = camera.x + camera.width * .5f, .y = camera.y + camera.height * .5f});
-    tick(app);
-    capture(app, output / "persp-menu.png");
-    key(VK_ESCAPE, ui::Key::escape);
-    tick(app);
-    // Shortcut dispatch must yield to actual text focus.
-    require(bool(Access::select_entity(app, first)), "Text focus setup failed.");
-    tick(app);
-    const auto name = app.presented()->find(Access::name_control(app, first))->bounds;
-    click(name.x + name.width * .5f, name.y + name.height * .5f);
-    move(x, y);
-    const auto text_history = app.document().undo_count();
-    key('D', ui::Key::none, true);
-    key('X');
-    key('Z', ui::Key::z);
-    tick(app);
-    require(!Access::menu_open(app) && !Access::tool_active(app) && app.document().undo_count() == text_history,
-            "Viewport shortcuts escaped text focus.");
-    verify_shortcut_input_boundaries(app);
-    require(Access::performance(app).structure_errors() == 0,
-            "A shortcut step recorded a frame timing phase under the wrong parent.");
-    Access::mark_saved(app);
-    app.close();
-    std::ofstream(output / "acceptance.txt")
-        << "Viewport shortcut acceptance: PASS\nConfiguration: " << build_info::configuration
-        << "\nMenu transitions: queued replacement, top-level branch, command capture transfer."
-        << "\nReal Application input routing, World history, Source/JIT controls, native popup, GPU captures. No desktop input injection.\n";
-    std::puts("Viewport shortcut acceptance: PASS");
-    return 0;
+        Access::input(app, {.kind = ui::EventKind::pointer_up,
+                            .x = camera.x + camera.width * .5f,
+                            .y = camera.y + camera.height * .5f});
+        tick(app);
+        capture(app, output / "persp-menu.png");
+        key(VK_ESCAPE, ui::Key::escape);
+        tick(app);
+        // Shortcut dispatch must yield to actual text focus.
+        require(bool(Access::select_entity(app, first)), "Text focus setup failed.");
+        tick(app);
+        const auto name = app.presented()->find(Access::name_control(app, first))->bounds;
+        click(name.x + name.width * .5f, name.y + name.height * .5f);
+        move(x, y);
+        const auto text_history = app.document().undo_count();
+        key('D', ui::Key::none, true);
+        key('X');
+        key('Z', ui::Key::z);
+        tick(app);
+        require(!Access::menu_open(app) && !Access::tool_active(app) && app.document().undo_count() == text_history,
+                "Viewport shortcuts escaped text focus.");
+        verify_shortcut_input_boundaries(app);
+        require(Access::performance(app).structure_errors() == 0,
+                "A shortcut step recorded a frame timing phase under the wrong parent.");
+        Access::mark_saved(app);
+        app.close();
+        std::ofstream(output / "acceptance.txt")
+            << "Viewport shortcut acceptance: PASS\nConfiguration: " << build_info::configuration
+            << "\nMenu transitions: queued replacement, top-level branch, command capture transfer."
+            << "\nReal Application input routing, World history, Source/JIT controls, native popup, GPU captures. No desktop input injection.\n";
+        std::puts("Viewport shortcut acceptance: PASS");
+        return 0;
+    } catch (atelier::editor::detail::Failure& error) {
+        error.error.message += "; " + monitor.diagnostic();
+        throw;
+    } catch (const std::exception& error) {
+        throw std::runtime_error(std::string(error.what()) + "; " + monitor.diagnostic());
+    }
 }
 
 int verify_editor_edit_mode(Application& app, const char* output_directory) {
@@ -2098,326 +2196,335 @@ int verify_editor_project(Application& app, const char* output_directory, const 
 }
 
 int verify_editor_window(Application& app, const char* output_directory) {
-    const auto com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
-    hr(com);
-    struct ComScope {
-        ~ComScope() { CoUninitialize(); }
-    } com_scope;
-    const std::filesystem::path output(output_directory);
-    std::filesystem::create_directories(output);
-    const auto host = await_acceptance_activation(app, output, "window");
-    tick(app);
-    require(entities(app).empty(), "The production editor did not start with an empty scene.");
-    verify_viewport_fly(app, output);
-    click(app, control::file_menu);
-    const auto retained_popup = app.menu_window();
-    key(app, VK_ESCAPE);
-    click(app, control::file_menu);
-    require(app.menu_window() == retained_popup, "Warm open replaced the native popup window.");
-    key(app, VK_ESCAPE);
-    click(app, operator_item(app, "scene.add", {{"kind", "mesh"}}));
-    require(entities(app).size() == 1 && app.document().undo_count() == 1,
-            "Static mesh creation was not a single document command.");
-    require(model(app.document().world().runtime().type_of(app.document().selection().entity)) ==
-                app.document().presentation_types().static_mesh_entity,
-            "Create shelf did not construct the real StaticMeshEntity type.");
-    verify_parameter_search(app, output);
-    verify_tool_shelf(app, output);
-    capture(app, output / "m0.png");
-    verify_chrome_layout(app, output);
-    const auto named_entity = app.document().selection().entity;
-    const auto name_key = atelier::application::EditorAcceptanceAccess::name_control(app, named_entity);
-    const std::wstring original_name(app.document().name(named_entity));
-    click(app, name_key);
-    type(app, L"主角 Hero");
-    key(app, VK_RETURN);
-    require(app.document().name(named_entity) == L"主角 Hero", "Object header did not commit the document name.");
-    key(app, 'Z', true);
-    require(app.document().name(named_entity) == original_name, "Object name bypassed scene Undo.");
-    key(app, 'Y', true);
-    require(app.document().name(named_entity) == L"主角 Hero", "Object name Redo failed.");
-    key(app, 'Z', true);
-    key(app, VK_ESCAPE);
-    auto cursor_point = centre(app, property_control(app, named_entity, 0));
-    ClientToScreen(app.window(), &cursor_point);
-    require(SetCursorPos(cursor_point.x, cursor_point.y) != FALSE,
-            "Cannot position the cursor over its accepted field.");
-    tick(app, 3);
-    const auto adjust_cursor = GetCursor();
-    require(adjust_cursor && adjust_cursor != LoadCursorW(nullptr, IDC_ARROW) &&
-                adjust_cursor != LoadCursorW(nullptr, IDC_SIZEWE),
-            "Number adjustment did not use its own cursor.");
-    SendMessageW(app.window(), WM_SETCURSOR, reinterpret_cast<WPARAM>(app.window()),
-                 MAKELPARAM(HTCLIENT, WM_MOUSEMOVE));
-    require(GetCursor() == adjust_cursor, "WM_SETCURSOR overwrote the adjustment cursor.");
-    require(SetCursorPos(host.left + 32, host.top + 12) != FALSE, "Cannot restore the acceptance pointer.");
-    tick(app, 3);
-    const auto navigation_history = app.document().undo_count();
-    click(app, control::parameter_back);
-    require(app.document().selection().entity == atelier::ObjectId{} &&
-                app.presented()->find(control::scene_forward)->enabled,
-            "Path back did not reach World context.");
-    require(!app.presented()->find(control::parameter_list) && !app.presented()->find(control::position_fold) &&
-                !app.presented()->find(control::parameter_search),
-            "World context retained object properties or Filter.");
-    click(app, control::scene_forward);
-    require(app.document().selection().entity == named_entity, "Path forward did not restore the selected Entity.");
-    click(app, control::entity_path);
-    capture(app, output / "path-context-menu.png");
-    click(app, control::world_context);
-    click(app, control::parameter_path);
-    key(app, VK_DOWN);
-    key(app, VK_RETURN);
-    require(app.document().selection().entity == named_entity && app.document().undo_count() == navigation_history,
-            "Path menu selection changed document history or chose the wrong Entity.");
-    click(app, operator_item(app, "view.reset"));
-    const auto original_width = app.parameter_width();
-    auto divider = centre(app, app.parameter_splitter());
-    {
-        require_input_focus(app);
-        KeyStateScope modifiers;
-        SendMessageW(app.window(), WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(divider.x, divider.y));
-        divider.x -= 50;
-        SendMessageW(app.window(), WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(divider.x, divider.y));
-        SendMessageW(app.window(), WM_LBUTTONUP, 0, MAKELPARAM(divider.x, divider.y));
-        tick(app, 2);
-    }
-    require(app.parameter_width() > original_width + 20, "Pane divider did not change the workspace.");
+    AcceptanceInputMonitor monitor;
+    try {
+        const auto com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+        hr(com);
+        struct ComScope {
+            ~ComScope() { CoUninitialize(); }
+        } com_scope;
+        const std::filesystem::path output(output_directory);
+        std::filesystem::create_directories(output);
+        const auto host = await_acceptance_activation(app, output, "window");
+        tick(app);
+        require(entities(app).empty(), "The production editor did not start with an empty scene.");
+        verify_viewport_fly(app, output);
+        click(app, control::file_menu);
+        const auto retained_popup = app.menu_window();
+        key(app, VK_ESCAPE);
+        click(app, control::file_menu);
+        require(app.menu_window() == retained_popup, "Warm open replaced the native popup window.");
+        key(app, VK_ESCAPE);
+        click(app, operator_item(app, "scene.add", {{"kind", "mesh"}}));
+        require(entities(app).size() == 1 && app.document().undo_count() == 1,
+                "Static mesh creation was not a single document command.");
+        require(model(app.document().world().runtime().type_of(app.document().selection().entity)) ==
+                    app.document().presentation_types().static_mesh_entity,
+                "Create shelf did not construct the real StaticMeshEntity type.");
+        verify_parameter_search(app, output);
+        verify_tool_shelf(app, output);
+        capture(app, output / "m0.png");
+        verify_chrome_layout(app, output);
+        const auto named_entity = app.document().selection().entity;
+        const auto name_key = atelier::application::EditorAcceptanceAccess::name_control(app, named_entity);
+        const std::wstring original_name(app.document().name(named_entity));
+        click(app, name_key);
+        type(app, L"主角 Hero");
+        key(app, VK_RETURN);
+        require(app.document().name(named_entity) == L"主角 Hero", "Object header did not commit the document name.");
+        key(app, 'Z', true);
+        require(app.document().name(named_entity) == original_name, "Object name bypassed scene Undo.");
+        key(app, 'Y', true);
+        require(app.document().name(named_entity) == L"主角 Hero", "Object name Redo failed.");
+        key(app, 'Z', true);
+        key(app, VK_ESCAPE);
+        auto cursor_point = centre(app, property_control(app, named_entity, 0));
+        ClientToScreen(app.window(), &cursor_point);
+        require(SetCursorPos(cursor_point.x, cursor_point.y) != FALSE,
+                "Cannot position the cursor over its accepted field.");
+        tick(app, 3);
+        const auto adjust_cursor = GetCursor();
+        require(adjust_cursor && adjust_cursor != LoadCursorW(nullptr, IDC_ARROW) &&
+                    adjust_cursor != LoadCursorW(nullptr, IDC_SIZEWE),
+                "Number adjustment did not use its own cursor.");
+        SendMessageW(app.window(), WM_SETCURSOR, reinterpret_cast<WPARAM>(app.window()),
+                     MAKELPARAM(HTCLIENT, WM_MOUSEMOVE));
+        require(GetCursor() == adjust_cursor, "WM_SETCURSOR overwrote the adjustment cursor.");
+        require(SetCursorPos(host.left + 32, host.top + 12) != FALSE, "Cannot restore the acceptance pointer.");
+        tick(app, 3);
+        const auto navigation_history = app.document().undo_count();
+        click(app, control::parameter_back);
+        require(app.document().selection().entity == atelier::ObjectId{} &&
+                    app.presented()->find(control::scene_forward)->enabled,
+                "Path back did not reach World context.");
+        require(!app.presented()->find(control::parameter_list) && !app.presented()->find(control::position_fold) &&
+                    !app.presented()->find(control::parameter_search),
+                "World context retained object properties or Filter.");
+        click(app, control::scene_forward);
+        require(app.document().selection().entity == named_entity, "Path forward did not restore the selected Entity.");
+        click(app, control::entity_path);
+        capture(app, output / "path-context-menu.png");
+        click(app, control::world_context);
+        click(app, control::parameter_path);
+        key(app, VK_DOWN);
+        key(app, VK_RETURN);
+        require(app.document().selection().entity == named_entity && app.document().undo_count() == navigation_history,
+                "Path menu selection changed document history or chose the wrong Entity.");
+        click(app, operator_item(app, "view.reset"));
+        const auto original_width = app.parameter_width();
+        auto divider = centre(app, app.parameter_splitter());
+        {
+            require_input_focus(app);
+            KeyStateScope modifiers;
+            SendMessageW(app.window(), WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(divider.x, divider.y));
+            divider.x -= 50;
+            SendMessageW(app.window(), WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(divider.x, divider.y));
+            SendMessageW(app.window(), WM_LBUTTONUP, 0, MAKELPARAM(divider.x, divider.y));
+            tick(app, 2);
+        }
+        require(app.parameter_width() > original_width + 20, "Pane divider did not change the workspace.");
 
-    // Keep a fixed visible mesh for downstream captures that move or delete the edited Entity.
-    click(app, atelier::application::EditorAcceptanceAccess::asset_key(app, "builtin/sphere"));
-    click(app, atelier::editor::browser_control::add);
+        // Keep a fixed visible mesh for downstream captures that move or delete the edited Entity.
+        click(app, atelier::application::EditorAcceptanceAccess::asset_key(app, "builtin/sphere"));
+        click(app, atelier::editor::browser_control::add);
 
-    const auto object = entities(app).front().id();
-    click(app, app.object_control(object));
-    require(app.document().selection().entity == object, "List selection did not select the clicked object.");
-    auto field = property_control(app, object, 0);
-    const auto before = x(app, object);
-    const auto history = app.document().undo_count();
-    auto point = centre(app, field);
-    mouse(app, WM_LBUTTONDOWN, point);
-    for (unsigned move = 0; move < 2; ++move) {
-        point.x += 12;
+        const auto object = entities(app).front().id();
+        click(app, app.object_control(object));
+        require(app.document().selection().entity == object, "List selection did not select the clicked object.");
+        auto field = property_control(app, object, 0);
+        const auto before = x(app, object);
+        const auto history = app.document().undo_count();
+        auto point = centre(app, field);
+        mouse(app, WM_LBUTTONDOWN, point);
+        for (unsigned move = 0; move < 2; ++move) {
+            point.x += 12;
+            mouse(app, WM_MOUSEMOVE, point);
+        }
+        if (!(x(app, object) > before && app.document().undo_count() == history)) {
+            capture(app, output / "failed-field-drag.png");
+            throw std::runtime_error(
+                "Drag failed to preview without history: before=" + std::to_string(before) +
+                ", value=" + std::to_string(x(app, object)) + ", undo=" + std::to_string(app.document().undo_count()) +
+                ", expected undo=" + std::to_string(history) + ", editing=" + std::to_string(app.document().editing()));
+        }
+        mouse(app, WM_LBUTTONUP, point);
+        const auto after = x(app, object);
+        require(app.document().undo_count() == history + 1, "Continuous drag did not commit exactly one undo.");
+        click(app, operator_item(app, "edit.undo"));
+        require(x(app, object) == before, "Single undo did not restore the drag origin.");
+        click(app, operator_item(app, "edit.redo"));
+        require(x(app, object) == after, "Redo did not restore the committed position.");
+        point = centre(app, field);
+        mouse(app, WM_LBUTTONDOWN, point);
+        point.x += 32;
         mouse(app, WM_MOUSEMOVE, point);
-    }
-    if (!(x(app, object) > before && app.document().undo_count() == history)) {
-        capture(app, output / "failed-field-drag.png");
-        throw std::runtime_error(
-            "Drag failed to preview without history: before=" + std::to_string(before) +
-            ", value=" + std::to_string(x(app, object)) + ", undo=" + std::to_string(app.document().undo_count()) +
-            ", expected undo=" + std::to_string(history) + ", editing=" + std::to_string(app.document().editing()));
-    }
-    mouse(app, WM_LBUTTONUP, point);
-    const auto after = x(app, object);
-    require(app.document().undo_count() == history + 1, "Continuous drag did not commit exactly one undo.");
-    click(app, operator_item(app, "edit.undo"));
-    require(x(app, object) == before, "Single undo did not restore the drag origin.");
-    click(app, operator_item(app, "edit.redo"));
-    require(x(app, object) == after, "Redo did not restore the committed position.");
-    point = centre(app, field);
-    mouse(app, WM_LBUTTONDOWN, point);
-    point.x += 32;
-    mouse(app, WM_MOUSEMOVE, point);
-    key(app, VK_ESCAPE);
-    mouse(app, WM_LBUTTONUP, point);
-    require(x(app, object) == after && app.document().undo_count() == history + 1,
-            "Esc did not cancel a continuous edit.");
+        key(app, VK_ESCAPE);
+        mouse(app, WM_LBUTTONUP, point);
+        require(x(app, object) == after && app.document().undo_count() == history + 1,
+                "Esc did not cancel a continuous edit.");
 
-    click(app, field);
-    require(app.wants_keyboard(), "Numeric control did not enter text input.");
-    const auto count = entities(app).size();
-    key(app, 'A', true);
-    key(app, VK_DELETE);
-    require(entities(app).size() == count, "Delete in text focus deleted a scene object.");
-    key(app, VK_ESCAPE);
-    click(app, field);
-    type(app, L"-2.5");
-    key(app, VK_RETURN);
-    require(std::abs(x(app, object) + 2.5f) < .0001f, "Numeric text commit did not update the Runtime field.");
-    click(app, field);
-    type(app, L"1000e");
-    const auto last_valid_preview = x(app, object);
-    const auto invalid_history = app.document().undo_count();
-    key(app, VK_RETURN);
-    require(x(app, object) == last_valid_preview && app.document().undo_count() == invalid_history &&
-                app.wants_keyboard(),
-            "Invalid Enter wrote the scene, recorded history or exited text focus.");
-    key(app, VK_ESCAPE);
-    require(std::abs(x(app, object) + 2.5f) < .0001f, "Esc did not roll back the invalid draft's earlier preview.");
-    const auto identity = object;
-    const auto old_entity_control = app.object_control(object);
-    const auto old_field_control = field;
-    click(app, app.object_control(object));
-    click(app, operator_item(app, "scene.delete", {{"target", "object"}}));
-    require(!contains(app, object), "Deleted object remained a member.");
-    tick(app, 64); // host GC crosses complete cycles while only history holds this object
-    click(app, operator_item(app, "edit.undo"));
-    require(contains(app, identity) && std::abs(x(app, object) + 2.5f) < .0001f,
-            "Window delete/GC/undo failed to restore identity and position.");
-    field = property_control(app, object, 0);
-    require(field != old_field_control && app.object_control(object) != old_entity_control,
-            "Entity restore reused retired control identities.");
-    click(app, operator_item(app, "view.frame_selected"));
-    click(app, operator_item(app, "view.reset"));
+        click(app, field);
+        require(app.wants_keyboard(), "Numeric control did not enter text input.");
+        const auto count = entities(app).size();
+        key(app, 'A', true);
+        key(app, VK_DELETE);
+        require(entities(app).size() == count, "Delete in text focus deleted a scene object.");
+        key(app, VK_ESCAPE);
+        click(app, field);
+        type(app, L"-2.5");
+        key(app, VK_RETURN);
+        require(std::abs(x(app, object) + 2.5f) < .0001f, "Numeric text commit did not update the Runtime field.");
+        click(app, field);
+        type(app, L"1000e");
+        const auto last_valid_preview = x(app, object);
+        const auto invalid_history = app.document().undo_count();
+        key(app, VK_RETURN);
+        require(x(app, object) == last_valid_preview && app.document().undo_count() == invalid_history &&
+                    app.wants_keyboard(),
+                "Invalid Enter wrote the scene, recorded history or exited text focus.");
+        key(app, VK_ESCAPE);
+        require(std::abs(x(app, object) + 2.5f) < .0001f, "Esc did not roll back the invalid draft's earlier preview.");
+        const auto identity = object;
+        const auto old_entity_control = app.object_control(object);
+        const auto old_field_control = field;
+        click(app, app.object_control(object));
+        click(app, operator_item(app, "scene.delete", {{"target", "object"}}));
+        require(!contains(app, object), "Deleted object remained a member.");
+        tick(app, 64); // host GC crosses complete cycles while only history holds this object
+        click(app, operator_item(app, "edit.undo"));
+        require(contains(app, identity) && std::abs(x(app, object) + 2.5f) < .0001f,
+                "Window delete/GC/undo failed to restore identity and position.");
+        field = property_control(app, object, 0);
+        require(field != old_field_control && app.object_control(object) != old_entity_control,
+                "Entity restore reused retired control identities.");
+        click(app, operator_item(app, "view.frame_selected"));
+        click(app, operator_item(app, "view.reset"));
 
-    using CameraInput = atelier::application::EditorAcceptanceAccess;
-    auto view = centre(app, control::viewport);
-    for (const auto reason : {WM_CANCELMODE, WM_ACTIVATEAPP, WM_CAPTURECHANGED, WM_KILLFOCUS}) {
-        require_input_focus(app);
-        view = centre(app, control::viewport);
-        CameraInput::move_pointer(app, view, reason);
-        tick(app, 1);
-        SendMessageW(app.window(), WM_MBUTTONDOWN, MK_MBUTTON, MAKELPARAM(view.x, view.y));
-        tick(app, 1);
-        CameraInput::require_camera(app, GetCapture() == app.window(), reason, "Orbit did not acquire window capture");
-        const auto before = CameraInput::camera_view(app);
-        view.x += 18;
-        view.y += 9;
-        CameraInput::move_pointer(app, view, reason);
-        tick(app, 1);
-        CameraInput::require_camera(app, CameraInput::camera_view(app) != before, reason,
-                                    "Camera cancellation did not start a real orbit");
-        if (reason == WM_CAPTURECHANGED)
-            ReleaseCapture();
-        else if (reason == WM_KILLFOCUS)
-            SetFocus(nullptr);
-        else
-            SendMessageW(app.window(), reason, 0, 0);
+        using CameraInput = atelier::application::EditorAcceptanceAccess;
+        auto view = centre(app, control::viewport);
+        for (const auto reason : {WM_CANCELMODE, WM_ACTIVATEAPP, WM_CAPTURECHANGED, WM_KILLFOCUS}) {
+            require_input_focus(app);
+            view = centre(app, control::viewport);
+            CameraInput::move_pointer(app, view, reason);
+            tick(app, 1);
+            SendMessageW(app.window(), WM_MBUTTONDOWN, MK_MBUTTON, MAKELPARAM(view.x, view.y));
+            tick(app, 1);
+            CameraInput::require_camera(app, GetCapture() == app.window(), reason,
+                                        "Orbit did not acquire window capture");
+            const auto before = CameraInput::camera_view(app);
+            view.x += 18;
+            view.y += 9;
+            CameraInput::move_pointer(app, view, reason);
+            tick(app, 1);
+            CameraInput::require_camera(app, CameraInput::camera_view(app) != before, reason,
+                                        "Camera cancellation did not start a real orbit");
+            if (reason == WM_CAPTURECHANGED)
+                ReleaseCapture();
+            else if (reason == WM_KILLFOCUS)
+                SetFocus(nullptr);
+            else
+                SendMessageW(app.window(), reason, 0, 0);
+            tick(app, 2);
+            CameraInput::require_camera(app, GetCapture() != app.window(), reason,
+                                        "Native cancellation retained camera-owned capture");
+            const auto stopped = CameraInput::camera_view(app);
+            view.x += 24;
+            view.y += 12;
+            CameraInput::move_pointer(app, view, reason);
+            tick(app, 1);
+            CameraInput::require_camera(app, CameraInput::camera_view(app) == stopped, reason,
+                                        "Native cancellation left camera orbit active after capture release");
+            SendMessageW(app.window(), WM_MBUTTONUP, 0, MAKELPARAM(view.x, view.y));
+            tick(app, 1);
+            CameraInput::require_camera(app, CameraInput::camera_view(app) == stopped, reason,
+                                        "Late button release changed a cancelled orbit");
+            if (reason == WM_KILLFOCUS)
+                SetFocus(app.window());
+            else if (reason == WM_ACTIVATEAPP)
+                SendMessageW(app.window(), WM_ACTIVATEAPP, TRUE, 0);
+            tick(app, 1);
+        }
+
+        const auto before_loss = x(app, object);
+        point = centre(app, field);
+        mouse(app, WM_LBUTTONDOWN, point);
+        point.x += 20;
+        mouse(app, WM_MOUSEMOVE, point);
+        ReleaseCapture();
         tick(app, 2);
-        CameraInput::require_camera(app, GetCapture() != app.window(), reason,
-                                    "Native cancellation retained camera-owned capture");
-        const auto stopped = CameraInput::camera_view(app);
-        view.x += 24;
-        view.y += 12;
-        CameraInput::move_pointer(app, view, reason);
+        require(!app.document().editing() && x(app, object) == before_loss,
+                "Unexpected capture loss retained a partial edit.");
+        point = centre(app, field);
+        mouse(app, WM_LBUTTONDOWN, point);
+        point.x += 20;
+        mouse(app, WM_MOUSEMOVE, point);
+        SetFocus(nullptr);
+        tick(app, 2);
+        SetFocus(app.window());
         tick(app, 1);
-        CameraInput::require_camera(app, CameraInput::camera_view(app) == stopped, reason,
-                                    "Native cancellation left camera orbit active after capture release");
-        SendMessageW(app.window(), WM_MBUTTONUP, 0, MAKELPARAM(view.x, view.y));
-        tick(app, 1);
-        CameraInput::require_camera(app, CameraInput::camera_view(app) == stopped, reason,
-                                    "Late button release changed a cancelled orbit");
-        if (reason == WM_KILLFOCUS)
-            SetFocus(app.window());
-        else if (reason == WM_ACTIVATEAPP)
-            SendMessageW(app.window(), WM_ACTIVATEAPP, TRUE, 0);
-        tick(app, 1);
-    }
+        require(!app.document().editing() && x(app, object) == before_loss, "Focus loss retained a partial edit.");
 
-    const auto before_loss = x(app, object);
-    point = centre(app, field);
-    mouse(app, WM_LBUTTONDOWN, point);
-    point.x += 20;
-    mouse(app, WM_MOUSEMOVE, point);
-    ReleaseCapture();
-    tick(app, 2);
-    require(!app.document().editing() && x(app, object) == before_loss,
-            "Unexpected capture loss retained a partial edit.");
-    point = centre(app, field);
-    mouse(app, WM_LBUTTONDOWN, point);
-    point.x += 20;
-    mouse(app, WM_MOUSEMOVE, point);
-    SetFocus(nullptr);
-    tick(app, 2);
-    SetFocus(app.window());
-    tick(app, 1);
-    require(!app.document().editing() && x(app, object) == before_loss, "Focus loss retained a partial edit.");
-
-    const auto before_resize = x(app, object);
-    point = centre(app, field);
-    mouse(app, WM_LBUTTONDOWN, point);
-    point.x += 20;
-    mouse(app, WM_MOUSEMOVE, point);
-    SetWindowPos(app.window(), nullptr, 0, 0, 1120, 740, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
-    tick(app, 4);
-    require(!app.document().editing() && x(app, object) == before_resize, "Resize retained a partial edit.");
-    ShowWindow(app.window(), SW_MINIMIZE);
-    const auto accepted = app.accepted_frames();
-    app.step();
-    app.step();
-    require(app.accepted_frames() == accepted, "Minimized window accepted an interactive frame.");
-    ShowWindow(app.window(), SW_RESTORE);
-    tick(app, 4);
-    const auto revision = app.presented()->drawing->surface_revision;
-    point = centre(app, field);
-    mouse(app, WM_LBUTTONDOWN, point);
-    point.x += 20;
-    mouse(app, WM_MOUSEMOVE, point);
-    RECT bounds{};
-    GetWindowRect(app.window(), &bounds);
-    const auto dpi = GetDpiForWindow(app.window());
-    SendMessageW(app.window(), WM_DPICHANGED, MAKEWPARAM(dpi, dpi), reinterpret_cast<LPARAM>(&bounds));
-    tick(app, 3);
-    require(app.presented()->drawing->surface_revision > revision && !app.document().editing() &&
-                x(app, object) == before_resize,
-            "DPI transition policy did not cancel and publish matching hit data.");
-    verify_stow_alignment(app);
-    verify_retired_field(app, output, object);
-    verify_style_changes(app, output, object);
-    verify_shared_text(app, output, object);
-    verify_docking(app, output, object);
-    verify_native_menus(app, output, object);
-    verify_basic_controls(app, output, object);
-    verify_tree_view(app, output, object);
-    view = centre(app, control::viewport);
-    ClientToScreen(app.window(), &view);
-    SendMessageW(app.window(), WM_MOUSEWHEEL, MAKEWPARAM(0, static_cast<WORD>(-2 * WHEEL_DELTA)),
-                 MAKELPARAM(view.x, view.y));
-    tick(app, 1);
-    capture(app, output / "editor.png");
-    verify_list_workload(app, output);
-    verify_project_window(app, output);
-    atelier::application::EditorAcceptanceAccess::mark_saved(app);
-    SendMessageW(app.window(), WM_CLOSE, 0, 0);
-    require(!app.step(), "WM_CLOSE did not close the application.");
-    {
-        Application quit_app(true);
-        SetForegroundWindow(quit_app.window());
-        SetFocus(quit_app.window());
-        RECT quit_host{};
-        GetWindowRect(quit_app.window(), &quit_host);
-        require(SetCursorPos(quit_host.left + 32, quit_host.top + 12) != FALSE,
-                "Cannot park the quit acceptance pointer.");
-        tick(quit_app);
-        key(quit_app, VK_F10);
-        require(quit_app.menu_window() && quit_app.menu_frame(),
-                "Quit acceptance did not open an accepted native menu.");
-        PostQuitMessage(0);
-        atelier::renderer::Capture quit_capture;
-        quit_app.capture_menu(quit_capture);
-        require(quit_capture.frame_id != 0, "Quit acceptance did not render the native menu capture.");
-        require(!quit_app.step(), "Native menu capture consumed the thread quit before the main window.");
-        require(!quit_app.menu_window() && GetCapture() != quit_app.window(),
-                "Thread quit retained an interactive native menu.");
-        require(atelier::application::EditorAcceptanceAccess::performance(quit_app).structure_errors() == 0,
-                "A quit step recorded a frame timing phase under the wrong parent.");
+        const auto before_resize = x(app, object);
+        point = centre(app, field);
+        mouse(app, WM_LBUTTONDOWN, point);
+        point.x += 20;
+        mouse(app, WM_MOUSEMOVE, point);
+        SetWindowPos(app.window(), nullptr, 0, 0, 1120, 740, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+        tick(app, 4);
+        require(!app.document().editing() && x(app, object) == before_resize, "Resize retained a partial edit.");
+        ShowWindow(app.window(), SW_MINIMIZE);
+        const auto accepted = app.accepted_frames();
+        app.step();
+        app.step();
+        require(app.accepted_frames() == accepted, "Minimized window accepted an interactive frame.");
+        ShowWindow(app.window(), SW_RESTORE);
+        tick(app, 4);
+        const auto revision = app.presented()->drawing->surface_revision;
+        point = centre(app, field);
+        mouse(app, WM_LBUTTONDOWN, point);
+        point.x += 20;
+        mouse(app, WM_MOUSEMOVE, point);
+        RECT bounds{};
+        GetWindowRect(app.window(), &bounds);
+        const auto dpi = GetDpiForWindow(app.window());
+        SendMessageW(app.window(), WM_DPICHANGED, MAKEWPARAM(dpi, dpi), reinterpret_cast<LPARAM>(&bounds));
+        tick(app, 3);
+        require(app.presented()->drawing->surface_revision > revision && !app.document().editing() &&
+                    x(app, object) == before_resize,
+                "DPI transition policy did not cancel and publish matching hit data.");
+        verify_stow_alignment(app);
+        verify_retired_field(app, output, object);
+        verify_style_changes(app, output, object);
+        verify_shared_text(app, output, object);
+        verify_docking(app, output, object);
+        verify_native_menus(app, output, object);
+        verify_basic_controls(app, output, object);
+        verify_tree_view(app, output, object);
+        view = centre(app, control::viewport);
+        ClientToScreen(app.window(), &view);
+        SendMessageW(app.window(), WM_MOUSEWHEEL, MAKEWPARAM(0, static_cast<WORD>(-2 * WHEEL_DELTA)),
+                     MAKELPARAM(view.x, view.y));
+        tick(app, 1);
+        capture(app, output / "editor.png");
+        verify_list_workload(app, output);
+        verify_project_window(app, output);
+        atelier::application::EditorAcceptanceAccess::mark_saved(app);
+        SendMessageW(app.window(), WM_CLOSE, 0, 0);
+        require(!app.step(), "WM_CLOSE did not close the application.");
+        {
+            Application quit_app(true);
+            SetForegroundWindow(quit_app.window());
+            SetFocus(quit_app.window());
+            RECT quit_host{};
+            GetWindowRect(quit_app.window(), &quit_host);
+            require(SetCursorPos(quit_host.left + 32, quit_host.top + 12) != FALSE,
+                    "Cannot park the quit acceptance pointer.");
+            tick(quit_app);
+            key(quit_app, VK_F10);
+            require(quit_app.menu_window() && quit_app.menu_frame(),
+                    "Quit acceptance did not open an accepted native menu.");
+            PostQuitMessage(0);
+            atelier::renderer::Capture quit_capture;
+            quit_app.capture_menu(quit_capture);
+            require(quit_capture.frame_id != 0, "Quit acceptance did not render the native menu capture.");
+            require(!quit_app.step(), "Native menu capture consumed the thread quit before the main window.");
+            require(!quit_app.menu_window() && GetCapture() != quit_app.window(),
+                    "Thread quit retained an interactive native menu.");
+            require(atelier::application::EditorAcceptanceAccess::performance(quit_app).structure_errors() == 0,
+                    "A quit step recorded a frame timing phase under the wrong parent.");
+        }
+        // Every step of the run, captures included, kept the timing hierarchy.
+        require(atelier::application::EditorAcceptanceAccess::performance(app).structure_errors() == 0,
+                "An editor step recorded a frame timing phase under the wrong parent.");
+        std::ofstream report(output / "acceptance.txt");
+        report
+            << "Editor window acceptance: PASS\n"
+            << "Real HWND messages -> platform adapter -> UI accepted-frame input -> Session -> World -> Runtime -> matrix-value renderer\n"
+            << "World: Entity delete/GC/undo restores identity and values with new control bindings.\n"
+            << "splitter; list selection; drag preview/one undo; Esc; text/Delete; invalid draft rollback; delete/GC/undo; cancel mode/deactivation/capture/focus loss with stopped orbit and late release; resize; minimize; DPI transition; WM_CLOSE shutdown; thread quit preserved through native menu capture\n"
+            << "Style: accepted frame ownership, font/metrics/caret and old-frame geometry/pixels. List: visible rows, scroll-back, last-row drag and history.\n"
+            << "Scene Tree: actual World membership and Entity types; Entity-only rows; World expansion; close/reopen retains expansion; no scene history changes.\n"
+            << "Entity Structure: separate dock tab; Entity context plus inspected Component identity; keyboard expansion/navigation and type filtering; native add/delete/undo/redo restore the same component; Scene Tree remains Entity-only.\n"
+            << "Text: parameter search preview/commit/Esc/OS blur; native Unicode clipboard cut/paste; numeric text selection; invalid Enter; retained focus; passive-focus business Z/Y and active local history ownership\n"
+            << "Dock workspace: accepted-frame tab drag/preview/cancel, edge split, strip merge, both divider axes, maximize/restore, Ctrl+Tab/Ctrl+W, reopen and final-pane reset, retained field identity and separate histories; collapse either side, thin restore strip, exact ratio restoration, Show reveals ancestors, central swap and Alt rotation; tab-first chrome, adjacent add button, native add menu moving the existing view.\n"
+            << "Parameter controls: shared aligned text/choice/vector rows, modified/default states, atomic tuple reset, native context menus and clipboard, invalid paste cancellation, modal outside click/wheel/Delete, Apps/Shift+F10/Esc, combo keyboard selection/history, middle-drag ladder commit/cancellation and held-rung geometry, checkbox/foldout, disabled inheritance, narrow Vector3/Vector4, isolated sample history\n"
+            << "Parameter slider: separate navigation/legal ranges, native track click and drag preview, one commit/undo, Esc and capture-loss rollback, original value outside navigation range, End navigation, disabled input; shared axis-accent SS and GPU capture.\n"
+            << "Chrome: Filter remains between the object header and scrolling properties; context menu selection and back/forward do not change document history.\n"
+            << "Shelf: 56 DIP expanded; shared 12 DIP rail and full-width 12 DIP restore strip; leading arrow; far-end click and keyboard expansion retain category, control identity and scene state.\n"
+            << "Native menus: actual owned WS_POPUP HWND; shared UI/SS/GPU renderer; beyond-editor placement and screen-work-area containment; F10/Alt mnemonic, arrows/hover switching, reused host, restored owner focus, cancel/focus-loss cleanup; menu commands, context clipboard and combo choices use the original consumers; narrow menubar stow rail, restored geometry/history and F10 reveal.\n"
+            << "Failure evidence: real clipboard lock contention preserved the draft; a seeded real Session transaction made native drag edit_begin fail, then preview stopped, rollback/capture release ran, and the first error remained visible.\n"
+            << "IME evidence: Unicode WM_CHAR and clipboard checks do not establish system IME acceptance. Real profile/physical-key/composition/candidate verification remains a separate completion gate.\n"
+            << "DPI coverage: WM_DPICHANGED policy at the current monitor DPI; physical multi-monitor DPI migration not exercised.\n"
+            << "Accepted frames: " << app.accepted_frames() << "\n";
+        std::puts("Editor window acceptance: PASS");
+        std::fflush(stdout);
+        return 0;
+    } catch (atelier::editor::detail::Failure& error) {
+        error.error.message += "; " + monitor.diagnostic();
+        throw;
+    } catch (const std::exception& error) {
+        throw std::runtime_error(std::string(error.what()) + "; " + monitor.diagnostic());
     }
-    // Every step of the run, captures included, kept the timing hierarchy.
-    require(atelier::application::EditorAcceptanceAccess::performance(app).structure_errors() == 0,
-            "An editor step recorded a frame timing phase under the wrong parent.");
-    std::ofstream report(output / "acceptance.txt");
-    report
-        << "Editor window acceptance: PASS\n"
-        << "Real HWND messages -> platform adapter -> UI accepted-frame input -> Session -> World -> Runtime -> matrix-value renderer\n"
-        << "World: Entity delete/GC/undo restores identity and values with new control bindings.\n"
-        << "splitter; list selection; drag preview/one undo; Esc; text/Delete; invalid draft rollback; delete/GC/undo; cancel mode/deactivation/capture/focus loss with stopped orbit and late release; resize; minimize; DPI transition; WM_CLOSE shutdown; thread quit preserved through native menu capture\n"
-        << "Style: accepted frame ownership, font/metrics/caret and old-frame geometry/pixels. List: visible rows, scroll-back, last-row drag and history.\n"
-        << "Scene Tree: actual World membership and Entity types; Entity-only rows; World expansion; close/reopen retains expansion; no scene history changes.\n"
-        << "Entity Structure: separate dock tab; Entity context plus inspected Component identity; keyboard expansion/navigation and type filtering; native add/delete/undo/redo restore the same component; Scene Tree remains Entity-only.\n"
-        << "Text: parameter search preview/commit/Esc/OS blur; native Unicode clipboard cut/paste; numeric text selection; invalid Enter; retained focus; passive-focus business Z/Y and active local history ownership\n"
-        << "Dock workspace: accepted-frame tab drag/preview/cancel, edge split, strip merge, both divider axes, maximize/restore, Ctrl+Tab/Ctrl+W, reopen and final-pane reset, retained field identity and separate histories; collapse either side, thin restore strip, exact ratio restoration, Show reveals ancestors, central swap and Alt rotation; tab-first chrome, adjacent add button, native add menu moving the existing view.\n"
-        << "Parameter controls: shared aligned text/choice/vector rows, modified/default states, atomic tuple reset, native context menus and clipboard, invalid paste cancellation, modal outside click/wheel/Delete, Apps/Shift+F10/Esc, combo keyboard selection/history, middle-drag ladder commit/cancellation and held-rung geometry, checkbox/foldout, disabled inheritance, narrow Vector3/Vector4, isolated sample history\n"
-        << "Parameter slider: separate navigation/legal ranges, native track click and drag preview, one commit/undo, Esc and capture-loss rollback, original value outside navigation range, End navigation, disabled input; shared axis-accent SS and GPU capture.\n"
-        << "Chrome: Filter remains between the object header and scrolling properties; context menu selection and back/forward do not change document history.\n"
-        << "Shelf: 56 DIP expanded; shared 12 DIP rail and full-width 12 DIP restore strip; leading arrow; far-end click and keyboard expansion retain category, control identity and scene state.\n"
-        << "Native menus: actual owned WS_POPUP HWND; shared UI/SS/GPU renderer; beyond-editor placement and screen-work-area containment; F10/Alt mnemonic, arrows/hover switching, reused host, restored owner focus, cancel/focus-loss cleanup; menu commands, context clipboard and combo choices use the original consumers; narrow menubar stow rail, restored geometry/history and F10 reveal.\n"
-        << "Failure evidence: real clipboard lock contention preserved the draft; a seeded real Session transaction made native drag edit_begin fail, then preview stopped, rollback/capture release ran, and the first error remained visible.\n"
-        << "IME evidence: Unicode WM_CHAR and clipboard checks do not establish system IME acceptance. Real profile/physical-key/composition/candidate verification remains a separate completion gate.\n"
-        << "DPI coverage: WM_DPICHANGED policy at the current monitor DPI; physical multi-monitor DPI migration not exercised.\n"
-        << "Accepted frames: " << app.accepted_frames() << "\n";
-    std::puts("Editor window acceptance: PASS");
-    std::fflush(stdout);
-    return 0;
 }
 
 int verify_editor_ime(Application& app, const char* output_directory) try {

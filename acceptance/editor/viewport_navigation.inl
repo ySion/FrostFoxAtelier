@@ -105,96 +105,8 @@ void verify_viewport_navigation(Application& app, const std::filesystem::path& o
         "Viewport navigation acceptance: PASS (axis pie, fast release, retained checkbox, history/cursor isolation)");
 }
 
-class FlyInputMonitor {
-    static inline thread_local FlyInputMonitor* current_{};
-
-    std::atomic<std::uint64_t> mouse_{};
-
-    std::atomic<std::uint64_t> keyboard_{};
-
-    std::atomic<bool> ready_{};
-
-    std::atomic<bool> available_{};
-
-    HANDLE stop_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-
-    std::thread thread_;
-
-    static LRESULT CALLBACK mouse(int code, WPARAM message, LPARAM data) noexcept {
-        if (code == HC_ACTION && !(reinterpret_cast<const MSLLHOOKSTRUCT*>(data)->flags & LLMHF_INJECTED))
-            current_->mouse_.fetch_add(1, std::memory_order_relaxed);
-        return CallNextHookEx(nullptr, code, message, data);
-    }
-
-    static LRESULT CALLBACK keyboard(int code, WPARAM message, LPARAM data) noexcept {
-        if (code == HC_ACTION && !(reinterpret_cast<const KBDLLHOOKSTRUCT*>(data)->flags & LLKHF_INJECTED))
-            current_->keyboard_.fetch_add(1, std::memory_order_relaxed);
-        return CallNextHookEx(nullptr, code, message, data);
-    }
-
-public:
-    FlyInputMonitor() {
-        if (!stop_)
-            return;
-        try {
-            thread_ = std::thread([this] {
-                // Low-level callbacks must not wait for the acceptance thread's rendering or PNG writes.
-                current_ = this;
-                MSG message{};
-                PeekMessageW(&message, nullptr, 0, 0, PM_NOREMOVE);
-                const auto module = GetModuleHandleW(nullptr);
-                const auto mouse_hook = SetWindowsHookExW(WH_MOUSE_LL, mouse, module, 0);
-                const auto keyboard_hook = SetWindowsHookExW(WH_KEYBOARD_LL, keyboard, module, 0);
-                available_.store(mouse_hook && keyboard_hook);
-                ready_.store(true);
-                ready_.notify_one();
-                if (available_.load()) {
-                    for (;;) {
-                        const auto result =
-                            MsgWaitForMultipleObjectsEx(1, &stop_, INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
-                        if (result != WAIT_OBJECT_0 + 1) {
-                            if (result != WAIT_OBJECT_0)
-                                available_.store(false);
-                            break;
-                        }
-                        while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
-                            TranslateMessage(&message);
-                            DispatchMessageW(&message);
-                        }
-                    }
-                }
-                if (keyboard_hook)
-                    UnhookWindowsHookEx(keyboard_hook);
-                if (mouse_hook)
-                    UnhookWindowsHookEx(mouse_hook);
-                current_ = nullptr;
-            });
-            ready_.wait(false);
-        } catch (const std::exception&) {
-            // Diagnostic setup failure must not change the acceptance outcome.
-        }
-    }
-
-    ~FlyInputMonitor() {
-        if (thread_.joinable()) {
-            SetEvent(stop_);
-            thread_.join();
-        }
-        if (stop_)
-            CloseHandle(stop_);
-    }
-
-    std::string diagnostic() const {
-        if (!available_.load())
-            return "input monitor unavailable";
-        return std::format("non-injected mouse/keyboard events: {}/{}", mouse_.load(std::memory_order_relaxed),
-                           keyboard_.load(std::memory_order_relaxed));
-    }
-};
-
 // Only the foreground editor window acceptance may exercise global raw input and clipping.
 void verify_viewport_fly(Application& app, const std::filesystem::path& output) {
-    FlyInputMonitor monitor;
     try {
         using namespace atelier;
         namespace control = atelier::editor::control;
@@ -354,6 +266,6 @@ void verify_viewport_fly(Application& app, const std::filesystem::path& output) 
         std::puts(
             "Viewport fly acceptance: PASS (native raw mouse, movement, modal lifecycle and centered passive reticle)");
     } catch (const std::exception& error) {
-        throw std::runtime_error(std::string(error.what()) + "; " + monitor.diagnostic());
+        throw std::runtime_error(error.what());
     }
 }

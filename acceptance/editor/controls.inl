@@ -343,10 +343,20 @@ void verify_basic_controls(Application& app, const std::filesystem::path& output
         require(SetCursorPos(row_point.x, row_point.y) != FALSE, "Cannot align the ladder row pointer.");
         SendMessageW(app.window(), WM_MOUSEMOVE, MK_MBUTTON, MAKELPARAM(from.x, row_y));
         tick(app, 2);
-        require(app.presented()->value_ladder->selected_row == 2 && app.presented()->value_ladder->increment == 1 &&
-                    app.control_workbench().values().position[0] == 12.5 &&
-                    app.control_workbench().undo_count() == select_history,
-                "Selecting a visible ladder rung changed the value or used a different hit region.");
+        const auto selected_row = app.presented()->value_ladder->selected_row;
+        const auto increment = app.presented()->value_ladder->increment;
+        const auto value = app.control_workbench().values().position[0];
+        const auto undo_count = app.control_workbench().undo_count();
+        if (selected_row != 2 || increment != 1 || value != 12.5 || undo_count != select_history) {
+            const auto actual = std::format(" selected_row={}; increment={:.17g}; value={:.17g}; undo_count={}; "
+                                            "expected_undo_count={}",
+                                            selected_row, increment, value, undo_count, select_history);
+            require(selected_row == 2, ("Selecting a visible ladder rung did not select row 2." + actual).c_str());
+            require(increment == 1, ("Selecting a visible ladder rung did not select increment 1." + actual).c_str());
+            require(value == 12.5, ("Selecting a visible ladder rung changed the value from 12.5." + actual).c_str());
+            require(undo_count == select_history,
+                    ("Selecting a visible ladder rung changed the undo count." + actual).c_str());
+        }
         SendMessageW(app.window(), WM_MOUSEMOVE, MK_MBUTTON, MAKELPARAM(from.x + dx, row_y));
         SendMessageW(app.window(), WM_MBUTTONUP, 0, MAKELPARAM(from.x + dx, row_y));
         tick(app, 2);
