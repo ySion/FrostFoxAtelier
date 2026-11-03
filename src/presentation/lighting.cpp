@@ -33,6 +33,7 @@ Result<void> validate_light(Runtime& runtime, const LightSettings& settings) {
     return detail::check_value(runtime, settings);
 }
 
+namespace {
 rendering::SceneLightingSettings environment_settings(const EnvironmentComponent& value) noexcept {
     rendering::SceneLightingSettings result;
     result.shadows = value.shadows;
@@ -67,6 +68,7 @@ rendering::SceneLightingSettings environment_settings(const EnvironmentComponent
     result.sky_map = detail::Access::sky_map_resolved(value);
     result.sky_rotation = value.sky_rotation;
     return result;
+}
 }
 
 // Single-field bounds are AFIELD hard bounds, checked before this runs.

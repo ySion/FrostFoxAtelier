@@ -316,9 +316,6 @@ private:
     rendering::SkyMapRef sky_map_resolved_;
 };
 
-// The renderer's view of an Environment's authored values.
-[[nodiscard]] rendering::SceneLightingSettings environment_settings(const EnvironmentComponent&) noexcept;
-
 [[nodiscard]] Result<void> validate_light(Runtime&, const LightSettings&);
 
 // Reads authored settings, including detached/disabled objects. Does not root them.
@@ -526,10 +523,6 @@ struct MeshSlot {
 class Scene final {
 public:
     [[nodiscard]] static Result<Scene> create(world::World&, const Types&);
-
-    [[nodiscard]] world::World& world() const noexcept { return *world_; }
-
-    [[nodiscard]] const Types& types() const noexcept { return types_; }
 
     [[nodiscard]] world::CapabilityId meshes() const noexcept { return meshes_; }
 
