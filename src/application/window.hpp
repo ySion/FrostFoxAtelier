@@ -100,6 +100,8 @@ public:
     const NativeInputStatistics& input_statistics() const noexcept { return input_statistics_; }
 
 private:
+    friend struct EditorAcceptanceAccess;
+
     HWND handle_{};
 
     HCURSOR cursor_{};
