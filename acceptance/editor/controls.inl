@@ -340,6 +340,11 @@ void verify_basic_controls(Application& app, const std::filesystem::path& output
         const auto select_history = app.control_workbench().undo_count();
         auto row_point = POINT{from.x, row_y};
         ClientToScreen(app.window(), &row_point);
+        // Drain queued capture/alignment movement before inserting the synchronous row move.
+        for (unsigned attempt = 0; HIWORD(GetQueueStatus(QS_MOUSEMOVE | QS_MOUSEBUTTON)) != 0; ++attempt) {
+            require(attempt < 8, "Pending mouse messages did not drain before ladder row selection within 8 ticks.");
+            tick(app, 1);
+        }
         const auto input_before = Access::ladder_input_snapshot(app);
         const auto queue_before = Access::pointer_queue_snapshot(app);
         // Query current bits only: unlike PeekMessage, this does not dispatch pending sent messages.
