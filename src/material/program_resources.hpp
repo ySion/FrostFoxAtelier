@@ -298,10 +298,6 @@ Result<SourceState> read_source(Runtime&, ObjectId);
 
 Result<InstanceState> read_instance(Runtime&, ObjectId);
 
-// Last successful publication's diagnostics, for either MS or MI. Frozen hosts
-// consume ProgramSurface::diagnostics(), not this possibly old cache.
-Result<std::vector<AuthorDiagnostic>> read_diagnostics(Runtime&, ObjectId);
-
 // Synchronous single-object publication, not adoption by a host's visible group.
 // Failure retains this object's author data, edges and Surface. Ancestor caches
 // and Runtime write stamps are not rolled back. Reads never resolve/write back.

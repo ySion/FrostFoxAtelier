@@ -99,15 +99,9 @@ Result<void> validate_binding(const TextureBinding& binding, const ImageRef& ima
 }
 
 Result<bool> source_role(Runtime& runtime, ObjectId id) {
-    auto type = runtime.type_of(id);
-    if (!type)
-        return std::unexpected(type.error());
-    auto source = runtime.native_type<MaterialSource>();
-    if (!source)
-        return std::unexpected(source.error());
-    auto instance = runtime.native_type<MaterialInstance>();
-    if (!instance)
-        return std::unexpected(instance.error());
+    ATELIER_TRY_BIND(type, runtime.type_of(id));
+    ATELIER_TRY_BIND(source, runtime.native_type<MaterialSource>());
+    ATELIER_TRY_BIND(instance, runtime.native_type<MaterialInstance>());
     if (*type == *source)
         return true;
     if (*type == *instance)
@@ -117,12 +111,8 @@ Result<bool> source_role(Runtime& runtime, ObjectId id) {
 
 template <class T>
 Result<void> exact_type(Runtime& runtime, ObjectId id) {
-    auto type = runtime.type_of(id);
-    if (!type)
-        return std::unexpected(type.error());
-    auto wanted = runtime.native_type<T>();
-    if (!wanted)
-        return std::unexpected(wanted.error());
+    ATELIER_TRY_BIND(type, runtime.type_of(id));
+    ATELIER_TRY_BIND(wanted, runtime.native_type<T>());
     if (*type != *wanted)
         return failure("Material operation does not match the object's actual role.");
     return {};
@@ -140,9 +130,7 @@ struct ProgramAccess {
 
     static Result<ProgramSurfaceRef> missing_parent() {
         static const auto prepared = []() -> Result<ProgramSurfaceRef> {
-            auto fallback = default_program_surface();
-            if (!fallback)
-                return std::unexpected(fallback.error());
+            ATELIER_TRY_BIND(fallback, default_program_surface());
             const auto parameters = (*fallback)->parameters();
             return surface((*fallback)->definition(), {parameters.begin(), parameters.end()}, {},
                            {{"$parent", "Material parent is unavailable; using the engine default material."}}, true);
@@ -162,9 +150,7 @@ struct ProgramAccess {
                             .hidden_field<&MaterialInstance::parent_>(
                                 "parent", {TypeReference::native<Material>(), ValueForm::strong_reference})
                             .build();
-        auto registered = runtime.register_types({std::move(resource), std::move(source), std::move(instance)});
-        if (!registered)
-            return std::unexpected(registered.error());
+        ATELIER_TRY(runtime.register_types({std::move(resource), std::move(source), std::move(instance)}));
         return {};
     }
 
@@ -187,12 +173,8 @@ struct ProgramAccess {
     template <class Binding, class PreviousBinding>
     static Result<Textures> textures(Runtime& runtime, std::span<const ObjectRoot> roots, Binding binding,
                                      const Material& previous, PreviousBinding previous_binding) {
-        auto type = runtime.native_type<TextureResource>();
-        if (!type)
-            return std::unexpected(type.error());
-        auto empty = runtime.null_reference(*type);
-        if (!empty)
-            return std::unexpected(empty.error());
+        ATELIER_TRY_BIND(type, runtime.native_type<TextureResource>());
+        ATELIER_TRY_BIND(empty, runtime.null_reference(*type));
         Textures result;
         result.images.resize(roots.size());
         result.references.assign(roots.size(), *empty);
@@ -206,9 +188,7 @@ struct ProgramAccess {
             const auto* input = binding(i);
             if (!input || input->asset_key.empty())
                 return failure("A numeric or explicitly cleared input cannot own a texture root.");
-            auto held = runtime.hold(roots[i].reference());
-            if (!held)
-                return std::unexpected(held.error());
+            ATELIER_TRY_BIND(held, runtime.hold(roots[i].reference()));
             auto content = image(runtime, held->id(), input->asset_key);
             if (!content) {
                 if (content.error().code != ErrorCode::invalid_object)
@@ -248,19 +228,13 @@ struct ProgramAccess {
     // allocate only when a texture publishes new content or is lost.
     static Result<std::optional<std::vector<ImageRef>>> current_images(Runtime& runtime, const Material& value,
                                                                        std::unordered_set<ObjectId>* dependencies) {
-        auto size = runtime.sequence_size(value.texture_field_);
-        if (!size)
-            return std::unexpected(size.error());
+        ATELIER_TRY_BIND(size, runtime.sequence_size(value.texture_field_));
         if (*size != value.images_.size() || *size != value.texture_ids_.size())
             return failure("Material resource edges do not match its captured inputs.");
         std::optional<std::vector<ImageRef>> images;
         for (std::size_t i = 0; i < *size; ++i) {
-            auto reference = runtime.sequence_read(value.texture_field_, i);
-            if (!reference)
-                return std::unexpected(reference.error());
-            auto live = available(runtime, *reference, value.texture_ids_[i]);
-            if (!live)
-                return std::unexpected(live.error());
+            ATELIER_TRY_BIND(reference, runtime.sequence_read(value.texture_field_, i));
+            ATELIER_TRY_BIND(live, available(runtime, *reference, value.texture_ids_[i]));
             if (!*live) {
                 if (value.images_[i]) {
                     if (!images)
@@ -289,19 +263,13 @@ struct ProgramAccess {
     }
 
     static Result<std::vector<ObjectRoot>> roots(Runtime& runtime, const Material& value) {
-        auto size = runtime.sequence_size(value.texture_field_);
-        if (!size)
-            return std::unexpected(size.error());
+        ATELIER_TRY_BIND(size, runtime.sequence_size(value.texture_field_));
         std::vector<ObjectRoot> result(*size);
         for (std::size_t i = 0; i < *size; ++i) {
-            auto reference = runtime.sequence_read(value.texture_field_, i);
-            if (!reference)
-                return std::unexpected(reference.error());
+            ATELIER_TRY_BIND(reference, runtime.sequence_read(value.texture_field_, i));
             if (reference->is_null())
                 continue;
-            auto held = runtime.hold(*reference);
-            if (!held)
-                return std::unexpected(held.error());
+            ATELIER_TRY_BIND(held, runtime.hold(*reference));
             result[i] = std::move(*held);
         }
         return result;
@@ -311,12 +279,8 @@ struct ProgramAccess {
         return runtime.with_native<const MaterialInstance>(id, [&](const auto& value) -> Result<ObjectReference> {
             if (!value.published_)
                 return failure("Material instance is not initialized.");
-            auto reference = runtime.read_reference(value.parent_field_);
-            if (!reference)
-                return std::unexpected(reference.error());
-            auto live = available(runtime, *reference, value.parent_id_);
-            if (!live)
-                return std::unexpected(live.error());
+            ATELIER_TRY_BIND(reference, runtime.read_reference(value.parent_field_));
+            ATELIER_TRY_BIND(live, available(runtime, *reference, value.parent_id_));
             if (!*live)
                 return runtime.null_reference(reference->description().type);
             return *reference;
@@ -327,14 +291,10 @@ struct ProgramAccess {
         for (;;) {
             if (current == target)
                 return failure("Material inheritance must be acyclic.");
-            auto source = source_role(runtime, current);
-            if (!source)
-                return std::unexpected(source.error());
+            ATELIER_TRY_BIND(source, source_role(runtime, current));
             if (*source)
                 return {};
-            auto next = parent(runtime, current);
-            if (!next)
-                return std::unexpected(next.error());
+            ATELIER_TRY_BIND(next, parent(runtime, current));
             if (next->is_null())
                 return {}; // The initialized ancestor resolves to the engine default.
             current = next->id();
@@ -343,18 +303,13 @@ struct ProgramAccess {
 
     template <class T, class State>
     static Result<ObjectRoot> create(Runtime& runtime, std::string_view key, const State& state) {
-        if (auto ready = runtime.check_code_publication(); !ready)
-            return std::unexpected(ready.error());
+        ATELIER_TRY(runtime.check_code_publication());
         // The publishing asset directory owns key authority. Native creation
         // also serves installed engine Sources, not only project author files.
         if (!valid_key(key))
             return failure("Invalid material resource key.");
-        auto type = runtime.native_type<T>();
-        if (!type)
-            return std::unexpected(type.error());
-        auto root = runtime.create(*type);
-        if (!root)
-            return std::unexpected(root.error());
+        ATELIER_TRY_BIND(type, runtime.native_type<T>());
+        ATELIER_TRY_BIND(root, runtime.create(*type));
         auto initialized = runtime.with_native<T>(root->id(), [&](auto& value) -> Result<void> {
             value.asset_key_ = key;
             return {};
@@ -383,9 +338,7 @@ struct ProgramAccess {
         return runtime.with_native<const MaterialSource>(id, [&](const auto& value) -> Result<SourceState> {
             if (!value.published_)
                 return failure("Material source is not initialized.");
-            auto textures = roots(runtime, value);
-            if (!textures)
-                return std::unexpected(textures.error());
+            ATELIER_TRY_BIND(textures, roots(runtime, value));
             return SourceState{value.definition_, std::move(*textures)};
         });
     }
@@ -394,25 +347,10 @@ struct ProgramAccess {
         return runtime.with_native<const MaterialInstance>(id, [&](const auto& value) -> Result<InstanceState> {
             if (!value.published_)
                 return failure("Material instance is not initialized.");
-            auto reference = runtime.read_reference(value.parent_field_);
-            if (!reference)
-                return std::unexpected(reference.error());
-            auto held = runtime.hold(*reference);
-            if (!held)
-                return std::unexpected(held.error());
-            auto textures = roots(runtime, value);
-            if (!textures)
-                return std::unexpected(textures.error());
+            ATELIER_TRY_BIND(reference, runtime.read_reference(value.parent_field_));
+            ATELIER_TRY_BIND(held, runtime.hold(*reference));
+            ATELIER_TRY_BIND(textures, roots(runtime, value));
             return InstanceState{std::move(*held), value.entries_, std::move(*textures)};
-        });
-    }
-
-    static Result<std::vector<AuthorDiagnostic>> diagnostics(Runtime& runtime, ObjectId id) {
-        return runtime.with_native<const Material>(id, [](const auto& value) -> Result<std::vector<AuthorDiagnostic>> {
-            if (!value.published_)
-                return failure("Material is not initialized.");
-            const auto issues = value.published_->diagnostics();
-            return std::vector<AuthorDiagnostic>(issues.begin(), issues.end());
         });
     }
 
@@ -427,22 +365,14 @@ struct ProgramAccess {
         });
         if (!prepared)
             return std::unexpected(prepared.error());
-        auto surface = resolve_source(state.definition, prepared->images);
-        if (!surface)
-            return std::unexpected(surface.error());
+        ATELIER_TRY_BIND(surface, resolve_source(state.definition, prepared->images));
         auto definition = state.definition;
         return runtime.with_native<MaterialSource>(id, [&](auto& value) -> Result<void> {
-            auto field = runtime.reference_field(id, value.textures_);
-            if (!field)
-                return std::unexpected(field.error());
-            auto size = runtime.sequence_size(*field);
-            if (!size)
-                return std::unexpected(size.error());
+            ATELIER_TRY_BIND(field, runtime.reference_field(id, value.textures_));
+            ATELIER_TRY_BIND(size, runtime.sequence_size(*field));
             const std::array<ReferenceChange, 1> changes{SequenceSplice{*field, 0, *size, prepared->references}};
             *surface = reuse(value.published_, std::move(*surface));
-            auto written = runtime.apply_reference_changes(changes);
-            if (!written)
-                return written;
+            ATELIER_TRY(runtime.apply_reference_changes(changes));
             // No allocation, validation or callbacks after the reference commit.
             value.texture_field_ = std::move(*field);
             value.texture_ids_.swap(prepared->ids);
@@ -460,17 +390,11 @@ struct ProgramAccess {
         if (!state.parent.registered()) {
             if (!reference.is_null())
                 return failure("Parent root belongs to a closed Runtime.");
-            auto type = runtime.native_type<Material>();
-            if (!type)
-                return std::unexpected(type.error());
-            auto empty = runtime.null_reference(*type);
-            if (!empty)
-                return std::unexpected(empty.error());
+            ATELIER_TRY_BIND(type, runtime.native_type<Material>());
+            ATELIER_TRY_BIND(empty, runtime.null_reference(*type));
             reference = *empty;
         }
-        auto held = runtime.hold(reference);
-        if (!held)
-            return std::unexpected(held.error());
+        ATELIER_TRY_BIND(held, runtime.hold(reference));
         auto parent_surface =
             runtime.with_native<const MaterialInstance>(id, [&](const auto& value) -> Result<ProgramSurfaceRef> {
                 if (reference.is_null()) {
@@ -485,8 +409,7 @@ struct ProgramAccess {
                         return missing_parent();
                     return std::unexpected(type.error());
                 }
-                if (auto valid = check_parent(runtime, id, reference.id()); !valid)
-                    return std::unexpected(valid.error());
+                ATELIER_TRY(check_parent(runtime, id, reference.id()));
                 return capture_program(runtime, reference.id());
             });
         if (!parent_surface)
@@ -499,26 +422,16 @@ struct ProgramAccess {
         });
         if (!prepared)
             return std::unexpected(prepared.error());
-        auto resolved = resolve_instance(*parent_surface, state.entries, prepared->images);
-        if (!resolved)
-            return std::unexpected(resolved.error());
+        ATELIER_TRY_BIND(resolved, resolve_instance(*parent_surface, state.entries, prepared->images));
         auto entries = state.entries;
         return runtime.with_native<MaterialInstance>(id, [&](auto& value) -> Result<void> {
-            auto field = runtime.reference_field(id, value.textures_);
-            if (!field)
-                return std::unexpected(field.error());
-            auto size = runtime.sequence_size(*field);
-            if (!size)
-                return std::unexpected(size.error());
-            auto parent_field = runtime.reference_field(id, value.parent_);
-            if (!parent_field)
-                return std::unexpected(parent_field.error());
+            ATELIER_TRY_BIND(field, runtime.reference_field(id, value.textures_));
+            ATELIER_TRY_BIND(size, runtime.sequence_size(*field));
+            ATELIER_TRY_BIND(parent_field, runtime.reference_field(id, value.parent_));
             const std::array<ReferenceChange, 2> changes{SequenceSplice{*field, 0, *size, prepared->references},
                                                          ReferenceWrite{*parent_field, held->reference()}};
             *resolved = reuse(value.published_, std::move(*resolved));
-            auto written = runtime.apply_reference_changes(changes);
-            if (!written)
-                return written;
+            ATELIER_TRY(runtime.apply_reference_changes(changes));
             value.texture_field_ = std::move(*field);
             value.parent_field_ = std::move(*parent_field);
             value.parent_id_ = held->id();
@@ -533,9 +446,7 @@ struct ProgramAccess {
 
     static Result<ProgramSurfaceRef> capture(Runtime& runtime, ObjectId id,
                                              std::unordered_set<ObjectId>* dependencies = nullptr) {
-        auto source = source_role(runtime, id);
-        if (!source)
-            return std::unexpected(source.error());
+        ATELIER_TRY_BIND(source, source_role(runtime, id));
         ProgramSurfaceRef next_parent;
         ProgramSurfaceRef refreshed;
         std::optional<std::vector<ImageRef>> next_images;
@@ -546,14 +457,10 @@ struct ProgramAccess {
                         return failure("Material source is not initialized.");
                     if (dependencies)
                         dependencies->insert(id);
-                    auto images = current_images(runtime, value, dependencies);
-                    if (!images)
-                        return std::unexpected(images.error());
+                    ATELIER_TRY_BIND(images, current_images(runtime, value, dependencies));
                     if (!*images)
                         return value.published_;
-                    auto resolved = resolve_source(value.definition_, **images);
-                    if (!resolved)
-                        return std::unexpected(resolved.error());
+                    ATELIER_TRY_BIND(resolved, resolve_source(value.definition_, **images));
                     next_images = std::move(*images);
                     refreshed = reuse(value.published_, std::move(*resolved));
                     return refreshed;
@@ -572,23 +479,15 @@ struct ProgramAccess {
                     return failure("Material instance is not initialized.");
                 if (dependencies)
                     dependencies->insert(id);
-                auto reference = runtime.read_reference(value.parent_field_);
-                if (!reference)
-                    return std::unexpected(reference.error());
-                auto live = available(runtime, *reference, value.parent_id_);
-                if (!live)
-                    return std::unexpected(live.error());
-                auto parent_surface = *live ? capture(runtime, reference->id(), dependencies) : missing_parent();
-                if (!parent_surface)
-                    return std::unexpected(parent_surface.error());
-                auto images = current_images(runtime, value, dependencies);
-                if (!images)
-                    return std::unexpected(images.error());
+                ATELIER_TRY_BIND(reference, runtime.read_reference(value.parent_field_));
+                ATELIER_TRY_BIND(live, available(runtime, *reference, value.parent_id_));
+                ATELIER_TRY_BIND(parent_surface,
+                                 *live ? capture(runtime, reference->id(), dependencies) : missing_parent());
+                ATELIER_TRY_BIND(images, current_images(runtime, value, dependencies));
                 if (*parent_surface == value.parent_surface_ && !*images)
                     return value.published_;
-                auto resolved = resolve_instance(*parent_surface, value.entries_, *images ? **images : value.images_);
-                if (!resolved)
-                    return std::unexpected(resolved.error());
+                ATELIER_TRY_BIND(resolved,
+                                 resolve_instance(*parent_surface, value.entries_, *images ? **images : value.images_));
                 next_images = std::move(*images);
                 next_parent = std::move(*parent_surface);
                 refreshed = reuse(value.published_, std::move(*resolved));
@@ -653,10 +552,8 @@ ProgramSurface::ProgramSurface(DefinitionRef definition, std::vector<std::byte> 
 
 Result<Output> ProgramSurface::evaluate(const Context& context) const {
     Output output;
-    auto result = program().evaluate(std::as_bytes(std::span{&context, 1}), parameters_,
-                                     std::as_writable_bytes(std::span{&output, 1}), samplers_);
-    if (!result)
-        return std::unexpected(result.error());
+    ATELIER_TRY(program().evaluate(std::as_bytes(std::span{&context, 1}), parameters_,
+                                   std::as_writable_bytes(std::span{&output, 1}), samplers_));
     return output;
 }
 
@@ -690,24 +587,14 @@ Result<ProgramSurfaceRef> default_world_surface() {
     try {
         static const auto prepared = []() -> Result<ProgramSurfaceRef> {
             Runtime compiler;
-            if (auto ready = register_program_types(compiler); !ready)
-                return std::unexpected(ready.error());
-            auto context = compiler.native_type<Context>();
-            if (!context)
-                return std::unexpected(context.error());
-            auto output = compiler.native_type<Output>();
-            if (!output)
-                return std::unexpected(output.error());
-            auto texture = compiler.native_type<TextureInput>();
-            if (!texture)
-                return std::unexpected(texture.error());
-            auto program = source::compile_material(compiler, *context, *output, *texture,
-                                                    "builtin/material/default-grid.source", default_world_source());
-            if (!program)
-                return std::unexpected(program.error());
-            auto definition = make_definition(std::move(*program), default_world_policy, {});
-            if (!definition)
-                return std::unexpected(definition.error());
+            ATELIER_TRY(register_program_types(compiler));
+            ATELIER_TRY_BIND(context, compiler.native_type<Context>());
+            ATELIER_TRY_BIND(output, compiler.native_type<Output>());
+            ATELIER_TRY_BIND(texture, compiler.native_type<TextureInput>());
+            ATELIER_TRY_BIND(program,
+                             source::compile_material(compiler, *context, *output, *texture,
+                                                      "builtin/material/default-grid.source", default_world_source()));
+            ATELIER_TRY_BIND(definition, make_definition(std::move(*program), default_world_policy, {}));
             return resolve_source(std::move(*definition), {});
         }();
         return prepared;
@@ -720,17 +607,10 @@ Result<ProgramSurfaceRef> default_program_surface() {
     try {
         static const auto prepared = []() -> Result<ProgramSurfaceRef> {
             Runtime compiler;
-            if (auto registered = register_program_types(compiler); !registered)
-                return std::unexpected(registered.error());
-            auto context = compiler.native_type<Context>();
-            if (!context)
-                return std::unexpected(context.error());
-            auto output = compiler.native_type<Output>();
-            if (!output)
-                return std::unexpected(output.error());
-            auto texture = compiler.native_type<TextureInput>();
-            if (!texture)
-                return std::unexpected(texture.error());
+            ATELIER_TRY(register_program_types(compiler));
+            ATELIER_TRY_BIND(context, compiler.native_type<Context>());
+            ATELIER_TRY_BIND(output, compiler.native_type<Output>());
+            ATELIER_TRY_BIND(texture, compiler.native_type<TextureInput>());
             auto program =
                 source::compile_material(compiler, *context, *output, *texture, "engine/default-material.source", R"(
 struct Params { float marker; };
@@ -743,9 +623,7 @@ material.Output shade(material.Context c, Params p) {
 })");
             if (!program)
                 return std::unexpected(program.error());
-            auto definition = make_definition(std::move(*program), {}, {});
-            if (!definition)
-                return std::unexpected(definition.error());
+            ATELIER_TRY_BIND(definition, make_definition(std::move(*program), {}, {}));
             const auto parameters = (*definition)->program().default_parameters();
             return detail::ProgramAccess::surface(
                 std::move(*definition), {parameters.begin(), parameters.end()}, {},
@@ -871,12 +749,9 @@ Result<void> register_resource_types(Runtime& runtime) {
     if (runtime.native_type<MaterialSource>() && runtime.native_type<MaterialInstance>())
         return {};
     // Prepare fallback code on the cold registration path, never on steady capture.
-    if (auto fallback = default_program_surface(); !fallback)
-        return std::unexpected(fallback.error());
-    if (auto registered = register_texture_types(runtime); !registered)
-        return registered;
-    if (auto registered = register_program_types(runtime); !registered)
-        return registered;
+    ATELIER_TRY(default_program_surface());
+    ATELIER_TRY(register_texture_types(runtime));
+    ATELIER_TRY(register_program_types(runtime));
     return detail::ProgramAccess::register_objects(runtime);
 }
 
@@ -897,34 +772,23 @@ Result<ObjectRoot> create_instance(Runtime& runtime, std::string_view key, const
 }
 
 Result<std::string> material_key(Runtime& runtime, ObjectId id) {
-    if (auto role = source_role(runtime, id); !role)
-        return std::unexpected(role.error());
+    ATELIER_TRY(source_role(runtime, id));
     return detail::ProgramAccess::key(runtime, id);
 }
 
 Result<SourceState> read_source(Runtime& runtime, ObjectId id) {
-    if (auto valid = exact_type<MaterialSource>(runtime, id); !valid)
-        return std::unexpected(valid.error());
+    ATELIER_TRY(exact_type<MaterialSource>(runtime, id));
     return detail::ProgramAccess::read_source(runtime, id);
 }
 
 Result<InstanceState> read_instance(Runtime& runtime, ObjectId id) {
-    if (auto valid = exact_type<MaterialInstance>(runtime, id); !valid)
-        return std::unexpected(valid.error());
+    ATELIER_TRY(exact_type<MaterialInstance>(runtime, id));
     return detail::ProgramAccess::read_instance(runtime, id);
 }
 
-Result<std::vector<AuthorDiagnostic>> read_diagnostics(Runtime& runtime, ObjectId id) {
-    if (auto role = source_role(runtime, id); !role)
-        return std::unexpected(role.error());
-    return detail::ProgramAccess::diagnostics(runtime, id);
-}
-
 Result<void> update_source(Runtime& runtime, ObjectId id, const SourceState& state) {
-    if (auto ready = runtime.check_code_publication(); !ready)
-        return ready;
-    if (auto valid = exact_type<MaterialSource>(runtime, id); !valid)
-        return valid;
+    ATELIER_TRY(runtime.check_code_publication());
+    ATELIER_TRY(exact_type<MaterialSource>(runtime, id));
     try {
         return detail::ProgramAccess::update_source(runtime, id, state);
     } catch (const std::exception& error) {
@@ -933,10 +797,8 @@ Result<void> update_source(Runtime& runtime, ObjectId id, const SourceState& sta
 }
 
 Result<void> update_instance(Runtime& runtime, ObjectId id, const InstanceState& state) {
-    if (auto ready = runtime.check_code_publication(); !ready)
-        return ready;
-    if (auto valid = exact_type<MaterialInstance>(runtime, id); !valid)
-        return valid;
+    ATELIER_TRY(runtime.check_code_publication());
+    ATELIER_TRY(exact_type<MaterialInstance>(runtime, id));
     try {
         return detail::ProgramAccess::update_instance(runtime, id, state);
     } catch (const std::exception& error) {
@@ -950,9 +812,7 @@ Result<ProgramSurfaceRef> capture_program(Runtime& runtime, ObjectId id) {
 
 Result<ProgramCapture> capture_program_with_dependencies(Runtime& runtime, ObjectId id) {
     ProgramCapture result;
-    auto surface = detail::ProgramAccess::capture(runtime, id, &result.dependencies);
-    if (!surface)
-        return std::unexpected(surface.error());
+    ATELIER_TRY_BIND(surface, detail::ProgramAccess::capture(runtime, id, &result.dependencies));
     result.surface = std::move(*surface);
     return result;
 }

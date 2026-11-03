@@ -1,6 +1,6 @@
 # 资产系统：当前边界与后续路线
 
-2026-10-29：资产读侧、MS/MI 创作与正式消费、手动纹理/模型 Reimport 已完成本阶段集成。范围与验证见[阶段基线](../../research/material-baseline-20261029.md)；实现合同分别由[工程工作流](../editor/projects.md)、[材质系统](../renderer/materials.md)和[项目场景](../world/project-scenes.md)维护。本页只保留跨模块决策与后续范围，不再维护已完成的 A/B 实施清单。
+2026-10-29：资产读侧、MS/MI 创作与正式消费、手动纹理/模型 Reimport 已完成本阶段集成。当前范围与验收边界见[材质合同](../renderer/materials.md)；实现合同分别由[工程工作流](../editor/projects.md)、[材质系统](../renderer/materials.md)和[项目场景](../world/project-scenes.md)维护。本页只保留跨模块决策与后续范围，不再维护已完成的 A/B 实施清单。
 
 ## 当前范围：资产现态与参数撤销
 

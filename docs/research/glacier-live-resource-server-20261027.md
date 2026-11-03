@@ -14,7 +14,7 @@
 
 ## 本项目 2026-10-27 基线与此前方案
 
-以下为研究当日事实，不是现行功能清单。2026-10-29 已完成精确 Source/纹理/网格 Live 及独立大资源预算，见[阶段基线](material-baseline-20261029.md)；独立资源服务仍属[后续设计](../modules/resources/live-resource-reassessment.md)。
+以下为研究当日事实，不是现行功能清单。2026-10-29 已完成精确 Source/纹理/网格 Live 及独立大资源预算，见[资源发布与默认替代](../modules/renderer/materials.md#资源发布与默认替代)；独立资源服务仍属[后续设计](../modules/resources/live-resource-reassessment.md)。
 
 - 现有 Live 是编辑器向独立 Play 副本转发操作。命令与 ACK 沿有序链路执行，4 MiB 消息、16 MiB 批次及 256 批/64 MiB 积压限制见 [play_link.hpp](../../src/application/play_link.hpp)。大命令已有私有文件 spill，不表示内容可以逃过批次限额。
 - 现有材质更新主要传作者数据/资源键，再由 Play 的资源会话或目录解析；没有精确跨进程图片版本保证。见 [scene.cpp](../../src/editor/scene.cpp) 的 forward_material/apply_live，以及[既有合同](../modules/editor/projects.md#play-副本与变更批次)。

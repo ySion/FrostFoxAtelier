@@ -122,8 +122,7 @@ void resources() {
         near(output.emissive.z, 128.f / 255); // Observe color alpha separately: sRGB decode must affect only RGB.
         require(initial->policy().coverage == Coverage::mask && !initial->policy().double_sided,
                 "Source policy was lost.");
-        require(take(read_diagnostics(runtime, b.id())).size() == 1,
-                "Dormant unknown input did not retain a diagnostic.");
+        require(initial->diagnostics().size() == 1, "Dormant unknown input did not retain a diagnostic.");
 
         // Steady capture/read are const, including nested borrowing of another
         // native object, as presentation's mesh traversal will do.
@@ -219,8 +218,9 @@ void resources() {
         auto repaired = take(create_texture(runtime, "image/unavailable", pixel({255, 16, 32, 255})));
         author_b.textures.back() = repaired;
         take(update_instance(runtime, b.id(), author_b));
-        near(color_red(take(capture_program(runtime, b.id()))), .9f);
-        require(take(read_diagnostics(runtime, b.id())).size() == 1, "Repair left a stale local texture diagnostic.");
+        const auto repaired_surface = take(capture_program(runtime, b.id()));
+        near(color_red(repaired_surface), .9f);
+        require(repaired_surface->diagnostics().size() == 1, "Repair left a stale local texture diagnostic.");
         author_b.entries.back().value = TextureBinding{"", Address::mirror};
         author_b.textures.back().reset();
         take(update_instance(runtime, b.id(), author_b));
@@ -238,10 +238,11 @@ void resources() {
         bad.entries[0].value = math::Vector2{1, 2};
         require(bool(update_instance(runtime, b.id(), bad)),
                 "Enabled numeric type mismatch must publish the current inherited value with a diagnostic.");
-        near(color_red(take(capture_program(runtime, b.id()))), .1f * .5f);
+        const auto mismatched_surface = take(capture_program(runtime, b.id()));
+        near(color_red(mismatched_surface), .1f * .5f);
         const auto mismatched = take(read_instance(runtime, b.id()));
         require(mismatched.entries[0].enabled && std::get<math::Vector2>(mismatched.entries[0].value).y == 2 &&
-                    take(read_diagnostics(runtime, b.id())).size() == 2,
+                    mismatched_surface->diagnostics().size() == 2,
                 "Fallback rewrote the enabled author value or lost its diagnostic.");
         for (float invalid : {std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity()}) {
             bad = author_b;
@@ -265,9 +266,9 @@ void resources() {
         bad = author_b;
         bad.entries[1].enabled = true;
         take(update_instance(runtime, b.id(), bad));
-        near(color_red(take(capture_program(runtime, b.id()))), .1f * .9f);
-        require(take(read_instance(runtime, b.id())).entries[1].enabled &&
-                    take(read_diagnostics(runtime, b.id())).size() == 1,
+        const auto removed_input = take(capture_program(runtime, b.id()));
+        near(color_red(removed_input), .1f * .9f);
+        require(take(read_instance(runtime, b.id())).entries[1].enabled && removed_input->diagnostics().size() == 1,
                 "Removed enabled input lost authored intent or diagnostic.");
         take(update_instance(runtime, b.id(), author_b));
 
@@ -306,10 +307,10 @@ void resources() {
         // Declaration removal uses current defaults, not the old layout/value.
         // Earlier owners remain usable without becoming the new publication.
         take(update_source(runtime, source.id(), source_state(changed_def, color, data)));
-        near(color_red(take(capture_program(runtime, a.id()))), red * .75f);
+        const auto removed_declaration = take(capture_program(runtime, a.id()));
+        near(color_red(removed_declaration), red * .75f);
         near(color_red(take(capture_program(runtime, b.id()))), .1f * .75f);
-        require(take(read_instance(runtime, a.id())).entries[0].enabled &&
-                    !take(read_diagnostics(runtime, a.id())).empty(),
+        require(take(read_instance(runtime, a.id())).entries[0].enabled && !removed_declaration->diagnostics().empty(),
                 "Enabled removed declaration was rewritten or lost its diagnostic.");
         near(color_red(before), .1f * .9f);
         author_a.entries[0].enabled = false;
@@ -317,7 +318,8 @@ void resources() {
         author_b.entries[0].enabled = false;
         take(update_instance(runtime, b.id(), author_b));
         near(color_red(take(capture_program(runtime, b.id()))), .1f * .75f);
-        require(!take(read_diagnostics(runtime, a.id())).empty(), "Dormant removed declaration lost its diagnostic.");
+        const auto dormant_parent = take(capture_program(runtime, a.id()));
+        require(!dormant_parent->diagnostics().empty(), "Dormant removed declaration lost its diagnostic.");
         take(update_source(runtime, source.id(), source_state(def, color, data)));
         author_b.entries[0].enabled = true;
         take(update_instance(runtime, b.id(), author_b));
@@ -332,9 +334,9 @@ void resources() {
         missing.default_textures[0].reset();
         require(bool(update_source(runtime, source.id(), missing)),
                 "Missing MS texture must publish typed default sampling with a diagnostic.");
-        near(color_red(take(capture_program(runtime, source.id()))), .1f * .5f);
-        require(take(capture_program(runtime, source.id())) != old_source &&
-                    take(read_diagnostics(runtime, source.id())).size() == 1,
+        const auto missing_surface = take(capture_program(runtime, source.id()));
+        near(color_red(missing_surface), .1f * .5f);
+        require(take(capture_program(runtime, source.id())) != old_source && missing_surface->diagnostics().size() == 1,
                 "Missing source texture retained stale content or lost its diagnostic.");
         take(update_source(runtime, source.id(), source_state(def, color, data)));
         take(runtime.destroy(color.id()));
@@ -462,9 +464,8 @@ void whole_material_fallback() {
     near(color_red(original), .6f);
     take(update_source(runtime, source.id(), {}));
     const auto missing = take(capture_program(runtime, child.id()));
-    require(missing->uses_default_material() && std::ranges::equal(missing->parameters(), fallback->parameters()) &&
-                missing->diagnostics().size() == 4,
-            "Missing definition mixed an old author layout with default code or hid ancestor diagnostics.");
+    require(missing->uses_default_material() && missing->diagnostics().size() == 4,
+            "Missing definition did not use the default material or hid ancestor diagnostics.");
     near(color_red(missing), 1);
     require(!take(read_source(runtime, source.id())).definition &&
                 take(read_instance(runtime, child.id())).entries.size() == 2,

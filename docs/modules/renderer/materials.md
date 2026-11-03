@@ -45,6 +45,8 @@ MS 成功发布时，Session 按新声明补齐其已加载命名子链和场景
 
 默认替代不改写源码、资源键或覆盖值，不创建历史。`ProgramSurface::diagnostics()` 属于该精确结果；Session 另保留原始加载/编译诊断。strict 加载、Repro 完整性与身份/关系校验仍可失败，不能因为存在显示替代而当作输入合法。
 
+材质资源验收检查消费者经产品 `capture_program` 取得的当前内容带诊断；同次捕获的 Surface 同时用于值与诊断检查，需要检查父实例时显式捕获父实例。捕获可能解析依赖并刷新派生缓存，检查的不是此前发布缓存中的诊断；稳态捕获不改写 Runtime 的守卫仍独立保留。
+
 Live 将参数命令与精确资源内容分开传输；纹理和网格 spill 文件按在途预算与 ACK/close 寿命管理。Repro 冻结实际可达 MS/MI 父链、Source 文本和活动纹理像素，休眠项仍保留作者数据但不引入执行依赖。它不是通用资源服务或可回退的资产历史。
 
 ## GPU 批次与实际显示
@@ -84,10 +86,10 @@ DDGI 的世界尺度为 \(\rho=0.01t\)。两轴沿射线在命中平面的投影
 
 既有 `renderer_acceptance_material_programs`（可执行文件 `--material-programs`）包含：
 
-- 真实图片与两份 Source 程序的 GPU coverage-only / 完整 point / CPU 数值对照，包括 Context 分支、参数改变后选择另一纹理输入、程序索引交换、三种寻址、颜色空间和 `coverage == 0`；输出到 `outputs.csv`，组合源码为 `composed.hlsl`。
-- 同一两程序集合 Opaque → Mask → Opaque 的真实双平面场景，以前板/后板深度及绿色后板的直接阴影明暗检查 program-set 失效。参数字节、图片和其他策略均相同；未使用的首个同程序定义保持 Opaque，后续 caster 改为 Mask，并反转表顺序。只按程序指针复用或只检查首个定义，会令旧 Opaque PSO 的常量 coverage 错误遮暗相机镂空露出的后板。阶段为 `native-policy-*`，输出 PNG 和 `native-outputs.csv`；返回 Opaque 还检查匹配分类的即时复用。
-- 原有 `native-shadow-blocked` / `native-shadow-hole` 保留直接阴影的遮挡与镂空检查。`native-ddgi-masked` / `native-ddgi-shared-mask` 则明确检查 GI 近似：负 coverage 的亮发光面仍照亮接收面，共享 Opaque sibling 与实例顺序不改变这一行为。
-- `native-ddgi-footprint` 用红蓝棋盘采样后的非线性乘积发光：LOD0 红蓝中心都为零，过滤后接近均匀白色参考发光面；检查 GI 不透明命中仍先过滤纹理再执行完整材质计算，且不以负的过滤 coverage 丢弃命中。该检查不再依靠候选 Mask 筛选出单一颜色。
+- 一个 ProgramB 采样记录：真实 Source → HLSL → GPU，完整 point 和 coverage-only 各对作者 repeat UV、纹素权重、颜色空间及字面参数推导的同一真值，不互相比，也不以 CPU evaluator 输出作期望。
+- 一个 authored math 输入元组，检查 clamp/lerp/fract 的字面结果，不展开参数矩阵。
+- 四张原生批次图：`native-smooth` 的作者红/绿 Mask 和 .8/.4 深度，`native-default-smooth` 的公开不透明品红，`native-final-uv-mips` 的等面积红蓝棋盘均值和 .8 深度，以及 `native-ddgi-masked` 的无灯/环境、视锥外负 coverage 发光面照亮接收面。每个特性一图，沿 [Renderer 验收](acceptance.md#--material-programs) 的唯一代表，不以另一帧作真值。
+- 同一批次序列覆盖 live batch 阻止 close、已准备但未采用图片保活、采用、最后一次使用不 capture/finish、释放后继续提交及正常关闭。
 
 这些入口不新增生产导出 API。性能、驱动 scratch 和长期真实场景稳定性需单独测量；验收源码的存在不代表本次运行已通过。
 

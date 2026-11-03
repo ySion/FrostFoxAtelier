@@ -35,9 +35,7 @@ Result<void> register_program_types(Runtime& runtime) {
                              .field<&TextureInput::slot_>("slot", {TypeReference::native<std::uint32_t>()},
                                                           offsetof(TextureInput, slot_))
                              .build();
-    auto published = runtime.register_types({std::move(context), std::move(output), std::move(texture_input)});
-    if (!published)
-        return std::unexpected(published.error());
+    ATELIER_TRY(runtime.register_types({std::move(context), std::move(output), std::move(texture_input)}));
     return {};
 }
 
