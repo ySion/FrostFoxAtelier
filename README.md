@@ -377,7 +377,7 @@ Source/JIT 入口及同一 Runtime 入口调用的 Memory 验收还覆盖：
 - 原生/描述型标量返回、const 接收者元数据、共享签名解析、嵌套实参次序、第二次 ABI 回调漏写/错种类、结果不提交与显式清根；源码首次声明、宿主期望核验、接收者要求固定及各版本实际调用存储。
 - mimalloc 验收代表：DLL 初始化期 CRT 分配、256 字节对齐且值为 42 的 C++ 对象、calloc 零初始化后跨 DLL 扩容保留值 123 并释放，以及分配线程退出后的跨线程释放。独立验收 DLL 不链接 mimalloc，用于确认 CRT 路径的实际重定向；这些检查由 `runtime_acceptance` 执行。
 
-首阶段的目标与取舍见[第一步记录](docs/first-step.md)。执行合同与验收范围见[运行时协议](docs/runtime-model.md#业务执行协议)，尚未实现的范围见[当前能力边界](docs/runtime-structure.md#已知成本与能力边界)。
+执行合同与验收范围见[运行时协议](docs/runtime-model.md#业务执行协议)，尚未实现的范围见[当前能力边界](docs/runtime-structure.md#已知成本与能力边界)。
 
 现行源码语法见 [LANGUAGE.md](LANGUAGE.md)，长期方向与待定问题见[业务语言设计契约](docs/language-contract.md)；待定方案不代表已实现能力。
 

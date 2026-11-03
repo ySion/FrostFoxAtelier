@@ -15,7 +15,6 @@
 - 构建、运行验收或确认已实现能力：读取 [README.md](README.md)。版本以 [工具链锁文件](cmake/toolchain-lock.json) 为准，命令以 presets 和 README 为准。
 - 设计模块、编写 C++、处理内存/并发/错误或优化性能：读取 [工程指南](docs/engineering.md) 的相关段落。
 - 讨论类型、对象、引用、语言或编译器术语：读取 [CONTEXT.md](CONTEXT.md)。其中只有词义，没有额外实现规则。
-- 回看首阶段的目标与取舍：读取 [第一步记录](docs/first-step.md)。阶段限制与历史验收不是永久规范或当前任务的验收结果。
 - 定位代码时，若仓库根目录有 `.codegraph/`，先用 `codegraph_explore` 或 `codegraph explore`；否则用 `rg`。不自行建立索引，不重复加载已有且仍有效的上下文。
 
 ## 迭代方式
