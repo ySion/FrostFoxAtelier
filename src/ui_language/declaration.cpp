@@ -1,5 +1,6 @@
 #include "ui_language/declaration.hpp"
 #include "language/lexer.hpp"
+#include "foundation/result.hpp"
 #include <algorithm>
 #include <charconv>
 #include <optional>
@@ -770,9 +771,7 @@ std::expected<std::vector<Declaration>, language::Diagnostic> lower_module(std::
 }
 
 std::expected<Declaration, language::Diagnostic> lower(std::string_view name, std::string_view source) {
-    auto all = lower_module(name, source);
-    if (!all)
-        return std::unexpected(all.error());
+    ATELIER_TRY_BIND(all, lower_module(name, source));
     if (all->size() != 1)
         return std::unexpected(language::Diagnostic{{}, "Choose a named component from this UI module."});
     return std::move(all->front());

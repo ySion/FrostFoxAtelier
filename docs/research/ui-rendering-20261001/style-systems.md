@@ -1,23 +1,8 @@
 # 游戏 UI 样式机制：USS、Theme 与 typed Style
 
-本地源码观察对应 SS 实施前的 `8d774cf`；当前实现以 [SS 文档](../../modules/ui/style-sheets.md)为准。
+本文保留外部样式机制与采用成本的比较；本项目当前实现以 [SS 文档](../../modules/ui/style-sheets.md)为准。
 
 检索日期：2026-10-01。本文为研究与建议，不是已实施合同。Unity 手册固定为 6.0（6000.0）；UnityCsReference 固定于提交 `88ce7b60434ba7a8ca0218590a4cb509971788ad`，其 README 标注 6000.7.0b2；这是预发布源码观察，与 6000.0 手册不是同一版本，不能视为 6.0 实现保证。Godot 固定为 4.5，避开 latest 中新增能力。Epic 官方链接当日显示 Unreal Engine 5.8，仅表示实际见到的动态文档视图，不据此判断最新或稳定版本，也不代表项目应采用该版本。未运行这些引擎或项目验收。
-
-## 判断
-
-本项目需要样式支持，但已经有样式基础。值得建立的是统一的样式求值、来源优先级、状态组合、继承与变化分类；CSS 文本只是可选的输入方式。先扩展当前 C++ typed Style，随后用一个小型声明式前端生成同一份样式规则，是成本最可控的路径。Unity 提供共享样式表和类规则的经验；Godot、Slate 说明完整游戏编辑器样式也可以围绕类型、变体、状态资源组织。
-
-统一执行链建议为：样式来源与状态 → typed computed style → 有效布局/文字参数 → LayoutDocument 与 TextStore → UiFrame → RHI 接受 → 已接受帧命中。样式不能在绘制处偷偷改变已测量字体、内容框或可点击几何。
-
-## 已有项目机制
-
-- [style.hpp](../../../src/ui/style.hpp)：`Style` 拥有字体、Palette、角色比例、内容边距、边框及滚动条尺寸；不是“没有 CSS 就没有样式”。
-- [style.inl](../../../src/ui/style.inl)：`resolve_style` 根据 Role、ControlKind、VisualState 生成私有 `Appearance`；`effective_padding` 明确显式布局 padding 与主题控件 padding 相加。现有状态包括 enabled、hover、pressed、focus、selected、invalid。
-- [session.cpp](../../../src/ui/session.cpp)：`Session::set_style` 完整校验/复制候选，区分字体变化；测量与绘制均使用解析入口。`UiFrame` 记录 style revision 与 measure provider revision。
-- [UI 模块合同](../../modules/ui/README.md)：颜色变化复用 R8 文字覆盖；字体度量变化沿文字版本失效；候选帧不改变命中，接受后发布；旧帧拥有其像素与几何。布局独立于 UI，UI 独立于 Runtime、editor 与 RHI。
-
-真实缺口是局部主题、可复用变体、按控件应用规则及其增量求值，而不是从零建立浏览器。现有 Role 不应无限增加 `danger_button_in_toolbar` 一类产品组合；这类差异适合变体或 class，而 ControlKind 继续表示行为。
 
 ## Unity UI Toolkit：USS 实际提供什么
 
@@ -89,66 +74,4 @@ Slate invalidation 区分 paint、layout、child 等变化；例如颜色可只�
 | 主要风险 | 每控件写特例、整个 Style 复制、渲染端额外覆盖 | 无限选择器、优先级战争、隐藏祖先依赖、每帧文本解析 |
 | 共同核心 | 部分指定值 → 唯一 typed computed style → 同一变化分类与发布 | 使用相同核心，不另加 stylesheet 专用 renderer/layout |
 
-因此，typed 与声明式不应成为两个运行模式。先确立共有规则数据与求值入口；C++、未来自有语言和可选文本编译器都只是生产者。样式是普通值/资源，除非真实业务需要独立身份，不把每个属性注册成 Runtime 对象。
-
-## 可审查的最小统一方案
-
-### 1. 属性合同先于语法
-
-扩展 Appearance 的职责，形成唯一内部 computed style；给每个真实属性定义类型、默认值、是否可继承、变化影响。指定结构保留 unset，reset 删除本层覆盖；unset 不等于 0、透明色或空字体。不要新增一个与现有 Style 并存的 Theme 世界。
-
-初期属性覆盖字体策略、文本色/选择色/caret、背景、边框颜色/宽度、控件内容 inset、滚动条；圆角/图片等由绘制负责人明确协议后加入。结构布局继续使用 NodeInput；若要把 margin/gap/size 放入声明式样式，它们只生成唯一有效 NodeInput，业务显式布局覆盖顺序需要预先约定，不允许两次相加。
-
-### 2. 有限来源层与状态组合
-
-建议低至高：引擎默认 → 会话主题 → 显式局部主题 scope → 控件 variant/class 规则 → 显式本控件覆盖。每层只有实际声明的属性覆盖；同层规则按有限 specificity 与稳定源码顺序。局部主题层的选择优先级是项目建议，刻意比 Unity 更简单，不宣称 USS 兼容。
-
-状态规则与普通规则处于相同求值体系，state mask 匹配并发状态。默认保持当前 pressed 背景、focus 边框、invalid 边框等规则；disabled 阻止 hover/pressed 活跃反馈，但业务 invalid 是否在 disabled 时仍显示由产品决定。hover、pressed、focus 来自 UI 状态；selected、invalid 来自控件语义输入，不能从 Runtime 活跃状态猜测。多 class 冲突按规则顺序而不是 class 添加顺序。
-
-变体先解决紧凑工具栏按钮、危险命令按钮、普通字段等真实差异；class 名称 intern 为稳定 ID，发布规则时编译成 typed 数据。初期选择器只要 kind/role/class/state 与显式 scope。后代/child 选择器等真实用户需求出现后再加入，并同时建立其脏传播。
-
-### 3. 单一求值链与分类更新
-
-| 变化 | 最少正确工作 | 要保留的不变量 |
-| --- | --- | --- |
-| 颜色/状态 paint | 更新外观与新帧 draw，不重新排版/raster 相同文字 | 已发布帧不可变 |
-| 字体/字号/字重/locale | 更新文字 key、测量、基线、raster、布局及帧命中 | 测量、caret、selection、IME 使用同一 TextStore layout |
-| 内容 inset/尺寸 | 更新有效布局和内容框，必要文字重排 | 边距只计算一次，点击几何来自接受帧 |
-| clip/transform/visibility | 更新帧几何、绘制、命中/IME anchor | 不能只移动像素而不移动命中 |
-| class/state | 求匹配规则并比较实际 computed 值 | class 改变未改变属性时不无条件重算全部缓存 |
-| scope/token/规则资源版本 | 使依赖该资源的节点失效；先简单 scope 子树传播 | 资源版本不是内容版本、对象 incarnation 或 GPU 上传版本 |
-
-layout/text/paint/hit-test 是影响集合而非四个互斥枚举：字体同时影响多个阶段，颜色通常只影响 paint。分类由属性元数据与实际值差异承担；调用者只提交变化，不手工猜 dirty flag。初期局部 scope 子树重算足够正确；尚无实测成本时不引入复杂 token 反向索引。
-
-注意现有测量与绘制两次 resolve：当前 state 只改变颜色时安全；未来若 pressed padding/font 可变，测量与绘制必须消费同一计算结果及状态快照。首片可限制互动状态规则只改 paint，后续要支持 layout state 时完整接入布局版本与旧帧命中，不能静默放开。
-
-### 4. 发布与资源所有权
-
-样式候选先编译/校验，失败保留上一个完整资源；成功在既有 Session 更新点替换。样式资源/规则集共享不可变快照，节点保存 ID 与版本或有明确生命周期的引用，不持裸字符串视图指向已释放 parser 缓冲。
-
-computed style 的字体/图片引用与 UiFrame 必须共同保证旧帧寿命；GPU 上传/退休仍由 renderer 拥有。主题版本变动不等于所有 R8 内容版本必须变动：颜色不推进字体度量版本；内容不同则按内容版本识别。缓存若用 hash，必须处理碰撞且不把 hash 当权威身份。
-
-初期只需“此 scope 的主题版本”和“此节点指定样式/状态版本”；缓存基于实际 computed 参数和现有 TextStore。共享 computed style 去重、多级 selector cache、跨线程编译等在实际重复与成本出现后再做。
-
-### 5. 后续声明式前端与动画
-
-真实需求是样式热编辑/非 C++ 作者后，再增加受限文本：有限 selector、typed 属性、token、fallback、明确来源位置和错误。加载时 parse/compile，帧循环只匹配与求值。运行时与 C++ 描述使用同一规则资源；不要留下“文本控件”和“原生控件”两个入口。
-
-颜色/透明度 transition 可作为下一片，用 active 动画列表只采样活跃节点，完成后移除。明确被隐藏/销毁、主题重载、禁用、反向中断时政策；不默认支持 transition all、布局动画、CSS keyframes 和任意表达式。
-
-## 顺序与端到端可观察结果
-
-1. **最低成本、最高收益**：统一属性/状态解析和变化分类，保持现有默认样式；给真实编辑器两种主题切换，颜色切换保持文字覆盖复用，字体切换更新文字与几何，候选失败保留上一帧。
-2. **低至中成本**：增加一个局部 scope 与少量变体。工具栏使用 compact 按钮，危险命令使用 danger，参数字段继续同一编辑过程；不增加专用绘制分支。验收主题局部覆盖、inherit/unset、focus+invalid+disabled 组合及 DPI/旧帧。
-3. **中成本、作者收益明确后投入**：class 规则、typed token、小型文本编译与重载；验收错误定位、删除覆盖恢复、主题/图片重载与旧帧资源寿命。
-4. **按交互价值投入**：颜色 transition；变换和布局动画随后。观察真实窗口文字排版/raster 次数、prepare 成本和覆盖内存差值；这些建议并非已测量性能收益。
-
-默认不引入：全 CSS selector（属性查询、兄弟关系、`:has` 等）、HTML DOM/JS、浏览器排版、网络/URL 资源语义、完整 CSS 单位/数学函数、伪元素、完整动画语言、新的 Runtime 业务对象世界。以后需要哪个能力就扩大同一规则合同，不从“缺少动态 class”推导出“必须实现浏览器”。
-
-## 仅需确认的重要语义
-
-1. 样式作者是否需要第一阶段就独立文本热编辑？若主要由 C++/自有语言编写，可先 typed 规则和 theme/variant，文本前端后置。
-2. 样式是否允许覆盖结构布局（尺寸、gap、padding），还是先只管呈现和控件 inset？允许时要定义显式 NodeInput 与样式指定值的优先级，并迁移为同一有效输入。
-3. 项目是否允许 hover/pressed 改字体与内容 inset？建议第一阶段状态规则只改 paint；若立即允许，必须完整接入状态求值、布局与已接受帧命中。
-
-其余常规实现可以按以上方案推进；不需要先选完 CSS 数据格式、建立全属性对象系统或替换现有 Layout/Runtime/RHI。
+因此，typed 与声明式可以是同一规则数据的不同生产者，不必成为两套执行模式。上述比较不代表项目承诺支持 USS、Godot 或 Slate 的全部能力；实际属性、状态限制、发布和布局覆盖关系见 [SS 合同](../../modules/ui/style-sheets.md)。

@@ -25,6 +25,6 @@
 
 几何比较容差为 `0.0002 + 0.000002 × max(abs(a),abs(b))`；可精确表达的几何直接相等比较。DirectWrite 是布局组合的外部真值，不验证字体库自身，也不声称跨字体环境逐位一致。检查使用运行时 `require`，Release 同样执行。
 
-构建与执行命令见[模块入口](README.md#构建与验收)。历史 PASS 和性能数据只适用于[审计记录](audit.md)及[历史性能](../../research/ui-layout-reassessment/native-performance-history.md)所列版本，不代表当前检出的运行结果；其中旧测量入口已移除。
+构建与执行命令见[模块入口](README.md#构建与验收)。[审计记录](audit.md)的历史 PASS 和性能数据只适用于其所列版本，不代表当前检出的运行结果；当前成本边界见[生产合同](contract.md#6-资源错误与成本)。
 
 布局库不拥有文字、绘制或 GPU 资源；生产 UI 的资源寿命由[UI 验收](../ui/README.md#限额与验收)负责。没有全分配点故障注入、并发/异步求解或非 Windows 构建验证。

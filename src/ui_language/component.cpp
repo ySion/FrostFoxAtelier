@@ -1,6 +1,7 @@
 #include "ui_language/component.hpp"
 #include "runtime/native.hpp"
 #include "runtime/foundation.hpp"
+#include "foundation/result.hpp"
 #include "foundation/string.hpp"
 #include <algorithm>
 #include <cmath>
@@ -970,9 +971,7 @@ Result<TypeId> register_types(Runtime& runtime) {
                               .method<&C::set_argument_table>("set_argument_table", true)
                               .method<&C::set_argument_text_from_edit>("set_argument_text_from_edit", true)
                               .build());
-    auto registered = runtime.register_types(std::move(definitions));
-    if (!registered)
-        return std::unexpected(registered.error());
+    ATELIER_TRY_BIND(registered, runtime.register_types(std::move(definitions)));
     return registered->back();
 }
 
@@ -1018,9 +1017,7 @@ Result<std::shared_ptr<Module>> Module::compile(Runtime& runtime, std::string_vi
                     std::ranges::find_if(*declarations, [&](const auto& item) { return item.name == child_name; });
                 if (at == declarations->end())
                     return failure(std::string(name) + ": Unknown child component " + child_name);
-                auto child = compile(static_cast<std::size_t>(at - declarations->begin()));
-                if (!child)
-                    return std::unexpected(child.error());
+                ATELIER_TRY_BIND(child, compile(static_cast<std::size_t>(at - declarations->begin())));
                 if (declaration.nodes[i].kind == NodeKind::repeat &&
                     (std::ranges::count_if((*child)->declaration().nodes,
                                            [](const auto& node) { return node.parent == 0; }) != 1 ||
@@ -1040,19 +1037,13 @@ Result<std::shared_ptr<Module>> Module::compile(Runtime& runtime, std::string_vi
             ++module->compilation_.reused;
         } else {
             impl->program = std::make_shared<source::Program>(runtime, *type);
-            auto request = impl->program->request(impl->declaration.source_name, impl->declaration.generated_source,
-                                                  "__ui_dispatch");
-            if (!request)
-                return std::unexpected(request.error());
+            ATELIER_TRY_BIND(request, impl->program->request(impl->declaration.source_name,
+                                                             impl->declaration.generated_source, "__ui_dispatch"));
             auto candidate = source::Program::prepare(*request);
             if (!candidate)
                 return failure(impl->declaration.diagnostic(candidate.error().message));
-            auto published = impl->program->try_publish(*candidate);
-            if (!published)
-                return std::unexpected(published.error());
-            auto signature = impl->program->bind<void, std::uint32_t>();
-            if (!signature)
-                return std::unexpected(signature.error());
+            ATELIER_TRY(impl->program->try_publish(*candidate));
+            ATELIER_TRY_BIND(signature, impl->program->bind<void, std::uint32_t>());
             ++module->compilation_.compiled;
         }
         module->components_[index] = std::shared_ptr<Component>(new Component(std::move(impl)));
@@ -1060,16 +1051,13 @@ Result<std::shared_ptr<Module>> Module::compile(Runtime& runtime, std::string_vi
         return module->components_[index];
     };
     for (std::size_t i = 0; i < declarations->size(); ++i)
-        if (auto result = compile(i); !result)
-            return std::unexpected(result.error());
+        ATELIER_TRY(compile(i));
     return module;
 }
 
 Result<std::shared_ptr<Component>> Component::compile(Runtime& runtime, std::string_view name, std::string_view source,
                                                       std::string_view entry) {
-    auto module = Module::compile(runtime, name, source);
-    if (!module)
-        return std::unexpected(module.error());
+    ATELIER_TRY_BIND(module, Module::compile(runtime, name, source));
     if (entry.empty()) {
         if ((*module)->components_.size() != 1)
             return failure("Choose a named component from this UI module.");
@@ -1318,9 +1306,7 @@ Result<std::unique_ptr<detail::PreparedUpdate>> detail::InstanceData::prepare(st
         next->component = definition;
         next->parent = parent;
         next->aliases.assign(aliases.begin(), aliases.end());
-        auto code = definition->impl_->program->pin();
-        if (!code)
-            return std::unexpected(code.error());
+        ATELIER_TRY_BIND(code, definition->impl_->program->pin());
         next->code = std::move(*code);
         next->nodes.resize(declaration.nodes.size());
         const auto allocate = [&] {
@@ -1370,8 +1356,7 @@ Result<std::unique_ptr<detail::PreparedUpdate>> detail::InstanceData::prepare(st
                                   std::vector<bool>(declaration.inputs.size() + declaration.states.size()));
         next->dirty.resize(declaration.bindings.size(), true);
         next->reads.resize(declaration.inputs.size() + declaration.states.size());
-        if (auto result = next->publish(inputs); !result)
-            return std::unexpected(result.error());
+        ATELIER_TRY(next->publish(inputs));
         next->initializing = true;
         auto initialized = next->invoke(0);
         next->initializing = false;
@@ -1386,8 +1371,8 @@ Result<std::unique_ptr<detail::PreparedUpdate>> detail::InstanceData::prepare(st
                 if (at != old.end())
                     next->states[i] = value->states[static_cast<std::size_t>(at - old.begin())];
             }
-    } else if (auto result = value->publish(inputs); !result)
-        return std::unexpected(result.error());
+    } else
+        ATELIER_TRY(value->publish(inputs));
     auto& data = next ? *next : *value;
     for (std::size_t i = 0; i < data.dirty.size(); ++i)
         if (data.dirty[i]) {
@@ -1431,9 +1416,7 @@ Result<std::unique_ptr<detail::PreparedUpdate>> detail::InstanceData::prepare(st
             node.control.layout.width.minimum = *node.minimum_width;
         const auto append_existing = [&](Instance& child, std::span<const InputValue> values,
                                          std::span<const KeyBinding> keys, ui::ControlKey parent) -> Result<void> {
-            auto prepared = child.data_->prepare(type, parent, keys, values, remaining);
-            if (!prepared)
-                return std::unexpected(prepared.error());
+            ATELIER_TRY_BIND(prepared, child.data_->prepare(type, parent, keys, values, remaining));
             remaining -= (*prepared ? (*prepared)->subtree_nodes : child.data_->value->subtree_nodes);
             if (*prepared) {
                 (*prepared)->append(output);
@@ -1453,14 +1436,10 @@ Result<std::unique_ptr<detail::PreparedUpdate>> detail::InstanceData::prepare(st
             if (!node.mounted)
                 change.unmount = owners.child != nullptr;
             else if (owners.child) {
-                if (auto result = append_existing(*owners.child, node.arguments, node.aliases, node.control.parent);
-                    !result)
-                    return std::unexpected(result.error());
+                ATELIER_TRY(append_existing(*owners.child, node.arguments, node.aliases, node.control.parent));
             } else {
-                auto child = Instance::create_bounded(type, node.control.parent, *next_key, node.aliases,
-                                                      node.arguments, remaining, lifetime);
-                if (!child)
-                    return std::unexpected(child.error());
+                ATELIER_TRY_BIND(child, Instance::create_bounded(type, node.control.parent, *next_key, node.aliases,
+                                                                 node.arguments, remaining, lifetime));
                 change.child = std::move(*child);
                 append_new(change.child);
             }
@@ -1482,14 +1461,12 @@ Result<std::unique_ptr<detail::PreparedUpdate>> detail::InstanceData::prepare(st
                     const auto parent = item.parent.value_or(node.control.parent);
                     const auto at = owners.repeated.find(item.key);
                     if (at == owners.repeated.end()) {
-                        auto child =
-                            Instance::create_bounded(type, parent, *next_key, keys, item.inputs, remaining, lifetime);
-                        if (!child)
-                            return std::unexpected(child.error());
+                        ATELIER_TRY_BIND(child, Instance::create_bounded(type, parent, *next_key, keys, item.inputs,
+                                                                         remaining, lifetime));
                         append_new(*child);
                         change.additions.emplace(item.key, std::move(*child));
-                    } else if (auto result = append_existing(*at->second, item.inputs, keys, parent); !result)
-                        return std::unexpected(result.error());
+                    } else
+                        ATELIER_TRY(append_existing(*at->second, item.inputs, keys, parent));
                     if (output.size() > composition_limit)
                         return failure("UI composition exceeds 10000 controls.");
                 }
@@ -1653,9 +1630,7 @@ Result<std::unique_ptr<Instance>> Instance::create_bounded(std::shared_ptr<Compo
     data->runtime = &component->impl_->runtime;
     data->next_key = &next_key;
     data->lifetime = std::move(lifetime);
-    auto context = data->runtime->create(*data->runtime->native_type<detail::Context>());
-    if (!context)
-        return std::unexpected(context.error());
+    ATELIER_TRY_BIND(context, data->runtime->create(*data->runtime->native_type<detail::Context>()));
     data->context = std::move(*context);
     ++data->lifetime->created;
     auto result = std::unique_ptr<Instance>(new Instance(std::move(data)));
@@ -1666,9 +1641,7 @@ Result<std::unique_ptr<Instance>> Instance::create_bounded(std::shared_ptr<Compo
     });
     if (!bound)
         return std::unexpected(bound.error());
-    auto prepared = scope.prepare(std::move(component), parent, keys, inputs, budget);
-    if (!prepared)
-        return std::unexpected(prepared.error());
+    ATELIER_TRY_BIND(prepared, scope.prepare(std::move(component), parent, keys, inputs, budget));
     scope.pending = std::move(*prepared);
     result->commit_controls();
     return result;

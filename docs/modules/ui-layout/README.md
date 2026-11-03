@@ -28,7 +28,6 @@
 | 查看已完成的数值修复、交叉二审和同场景性能 | [审计与优化](audit.md) |
 | 管理逻辑行高、可见范围与滚动锚点 | [VirtualList契约](virtual-list.md) |
 | 接入内容绑定与完整呈现帧 | [完整内容消费](composition.md) |
-| 回看全量Inspector/物品格的成本 | [历史性能证据](../../research/ui-layout-reassessment/native-performance-history.md) |
 
 生产命名空间是 `atelier::ui_layout`，静态目标是 `atelier_ui_layout`。公开包含路径为 `ui_layout/layout.hpp`；核心不链接 Runtime、LLVM/JIT、RHI 或文字库。根CMake复用既有工具链和分配器规则，不另建求解器后端工厂。
 
@@ -70,7 +69,6 @@ cmake --build --preset release --target ui_layout_acceptance
 
 ## 研究与历史
 
-- [首步原生实验](../../research/ui-layout-reassessment/native-step1.md)：12项隔离实验、极端权重相消修复与本次合同收敛来源。
 - [三候选真实验证](../../research/ui-layout-reassessment/validation-results.md)：历史比较路径、性能分项、反例及覆盖限制。
 - [工业游戏UI](../../research/ui-layout-reassessment/industry-game-ui.md) / [工业编辑器UI](../../research/ui-layout-reassessment/industry-editor-ui.md)：通过Exa调查的机制依据。
 - [研究总入口](../../research/ui-layout-reassessment/README.md)：来源和历史资料，不是当前生产依赖。

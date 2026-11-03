@@ -72,13 +72,13 @@ ClipRect 由后端转为 framebuffer 坐标 scissor；圆角背景不会自动�
 
 同一 ImGui context 不能任意并发调用。动态字体尤其会让文字测量加载新 glyph，不能把 CalcTextSize 当成纯只读线程安全 API。CloneOutput 可复制 draw list 输出，但快照仍要处理 texture 更新、用户 callback 外部数据和 GPU 生命周期；复制顶点不是完整资源快照。[线程说明](https://github.com/ocornut/imgui/blob/3f00c0d0f414d45af2a0979b925ebf2e8f09936b/imgui.cpp)、[CloneOutput](https://github.com/ocornut/imgui/blob/3f00c0d0f414d45af2a0979b925ebf2e8f09936b/imgui_draw.cpp)
 
-## 面向 FrostFoxAtelier 的取舍
+## 机制比较与采用边界
 
-**研究判断：优先在现有布局结果与 RHI 之间形成一套绘制表示。** Qt 值得参考 transform batch root、细分 dirty 和绘制树同步；RmlUi 值得参考编译几何句柄、效果能力表、资源生命周期中心；ImGui 值得参考简单有序命令与连续合批。三者的算法可组合，不需要把三套控件系统接入项目。
+以下是研究判断，不是本项目待实施清单；本地机制由 [UI](../../modules/ui/README.md)和 [Renderer 合同](../../modules/renderer/contract.md)维护。Qt 值得参考 transform batch root、细分 dirty 和绘制树同步；RmlUi 值得参考编译几何句柄、效果能力表、资源生命周期中心；ImGui 值得参考简单有序命令与连续合批。三者的算法可比较，不意味着需要接入三套控件系统。
 
-建议的执行链路是“现有布局/样式结果 → UI 绘制节点或片段 → 有序帧快照 → 连续兼容合批 → 现有 RHI”。前两层保留稳定片段及依赖版本，快照只包含绘制数据与资源引用，渲染线程不回读业务对象。快照可以按增量同步而非每帧复制全树；是否阻塞同步、双缓冲或版本化发布，应由现有运行时契约决定。这是本项目需要定义的契约，不是外部库已经替项目保证的功能。
+这些系统共同区分布局/样式结果、绘制表示、有序帧和后端提交。缓存片段须记录依赖版本，跨线程快照须拥有绘制数据与资源引用，不能回读可变业务对象。增量同步、阻塞同步、双缓冲和版本化发布是不同的所有权选择；引用外部库的机制不等于宿主已经满足其契约。
 
-| 需要自研并明确的契约 | 最小必要内容 | 原因 |
+| 比较维度 | 必须明确的内容 | 原因 |
 | --- | --- | --- |
 | 图元与样式 | 填充、四边 border、四角 radius、image、已 shaping glyph run；统一 AA 和 DPI 规则 | 避免矩形、文字、装饰器各建一套提交入口 |
 | dirty 与缓存 | layout/shape/geometry/paint/transform/clip/resource 分开失效；缓存键包含依赖版本 | 位置变化不该失效 glyph raster；atlas UV 变化却必须失效相应几何 |
@@ -89,21 +89,10 @@ ClipRect 由后端转为 framebuffer 坐标 scissor；圆角背景不会自动�
 
 CPU 缓存、GPU 几何缓存与离屏像素缓存应是三个明确层级：第一层减少 shaping/三角化，第二层减少上传，第三层减少重复绘制但增加显存、合成与失效依赖。对大量静态 UI 和滚动列表，前两层通常值得优先实现；对持续动画的背景效果，离屏缓存可能不断失效。实际收益需测量 CPU shaping 时间、几何重建数、上传字节、batch、clip/effect pass 和显存峰值，不能仅比较 draw-call 数。
 
-### 对现有 DrawQuad 路径的适用顺序
-
-项目本地调查由主研究成员提供：当前有序 DrawQuad 支持 solid 或整段 R8 Coverage，每可见项一次 `gfxCommandDraw(6)`，矩形 scissor；同一 DWrite layout 提供 metrics/hit/caret 与灰度 raster；GPU 按 coverage identity/revision 缓存独立 texture，并在帧末退休未使用项。本段是基于这些已确认契约的建议，不是对本文件独立执行过的代码验收。
-
-1. **先批处理 solid 与当前兼容 quad。** 保持顺序，只在连续命令拥有兼容 clip、纹理、blend 和目标时合并。solid 背景通常不依赖纹理，因此能先减少其 draw 提交；独立文字 texture 会限制文字合批，但不妨碍这一增量。可选择实例 quad 或索引顶点批；判断依据是已有 RHI 的实际能力及上传开销。
-2. **再增加矩形/border/rounded-rect 原语及正确 clip。** 让同一入口承载 fill、border、圆角与 AA；背景圆角与圆角子内容裁剪独立交付。图元生成缓存按 geometry revision，位移用 transform；不要为此替换 DWrite layout、hit 或 caret 协议。
-3. **只有测量表明文字换纹理或栅格/上传成为瓶颈，才评估 atlas。** 整段 Coverage atlas 可以保留现有 DWrite raster 协议，收益是换纹理减少，代价是分配、padding、UV relocation、碎片与 page retirement；glyph atlas 是更大的变化，需要处理已有 glyph run 与 positioning，并保留 layout 对命中测试的权威性。GlyphKey 至少对应 font face/实例、glyph ID、字号与栅格尺度、渲染参数和字体版本；Unicode 码点不是 glyph identity。
-4. **最后按真实效果需求扩展 mask/layer/filter。** shadow 可以有依赖完整的缓存，backdrop-filter 必须纳入后方像素变化。异步快照须持有 coverage/atlas page 到 GPU 完成；当前帧末 CPU 退休规则迁移到多帧 GPU 使用时要显式处理 fence。
-
-因此本轮不把字体 atlas 列为已证实的首要优化，也不把替换排版引擎与改进 renderer 绑定。当前 coverage identity/revision 和单一 layout 的测量/命中/绘制一致性，应作为扩展后的保留契约。
-
 ### 可直接集成与维护成本
 
 - **RmlUi 整库**适合愿意使用其 RML/RCSS/布局/元素生命周期的区域；它有自定义后端入口，但不能只接 RenderInterface 就获得外部布局的全功能绘制库。当前任务已有布局和统一类型时，宜参考契约或挑选局部算法，避免再维护一棵业务元素树。MIT 允许复用，保留版权与许可；字体、插件和第三方依赖仍分别核对。[许可证](https://github.com/mikke89/RmlUi/blob/3045e6e3510425ef2870f7647b3f59d3ae9970f5/LICENSE.txt)
 - **Dear ImGui**适合调试界面或即时绘制片段，MIT；官方后端可参考或适配现有 RHI。若把 ImDrawList 当长期 UI 底座，需要自己增加 retained invalidation、复杂文本、mask/effect 与资源快照，最终维护成本不再只是一个简单后端。直接使用内部函数还会受动态字体接口演进影响。[许可证](https://github.com/ocornut/imgui/blob/3f00c0d0f414d45af2a0979b925ebf2e8f09936b/LICENSE.txt)、[后端文档](https://github.com/ocornut/imgui/blob/3f00c0d0f414d45af2a0979b925ebf2e8f09936b/docs/BACKENDS.md)
 - **Qt Quick renderer/QRhi**与 Qt 场景图、线程、窗口和私有实现耦合。整体集成需选择适用模块的商业或开源许可证并满足对应条件；从内部源码抽取代码同样受其许可证约束。对已有 RHI，优先理解算法，不默认复制私有 renderer，也不将 LGPL 条件简化成“动态链接即可”。[Qt 许可说明](https://doc.qt.io/qt-6/licensing.html)、[QRhi 私有兼容边界](https://doc.qt.io/qt-6/qrhi.html)
 
-本轮未把 Slint/Vello 扩展成横向框架榜单：当前最有价值的决定已经是保留已有布局语义、明确绘制与资源契约。若后续实际业务出现大量通用曲线路径，再单独评估 GPU path renderer 的局部收益与 RHI 桥接成本。
+本研究不覆盖 Slint/Vello，也未测量通用 GPU path renderer 与现有 RHI 的桥接成本。

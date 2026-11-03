@@ -1,8 +1,8 @@
-# UI DSL 更新粒度：QML、Unity UI Toolkit、Flutter 与当前实现
+# UI DSL 更新粒度：QML、Unity UI Toolkit 与 Flutter
 
-日期：2026-10-05。性质：官方资料研究与设计输入；同日按用户授权落实源码 patch 后，仓库能力部分已同步。外部框架的事实与项目的实现选择分开陈述。
+资料查阅日期：2026-10-05。本文保留外部框架的事实与证据边界；本项目的更新机制由[声明式 UI](../modules/editor/declarative-ui.md#更新粒度数据变化与源码变化)维护。
 
-Qt 以 6.8 文档为准，Unity 以 6.0 的 UIDocument 路径为主；Flutter 使用本次查阅的官方文档。旧版 Unity UI Builder 资料单独标明，避免跨版本推定内部实现。本仓库事实采用本轮调用链核对结果；本文未运行这些框架，也不提供性能排名。
+Qt 以 6.8 文档为准，Unity 以 6.0 的 UIDocument 路径为主；Flutter 使用查阅时的官方文档。旧版 Unity UI Builder 资料单独标明，避免跨版本推定内部实现。本文未运行这些框架，也不提供性能排名。
 
 ## 1. 先分清五个问题
 
@@ -60,47 +60,12 @@ Qt 以 6.8 文档为准，Unity 以 6.0 的 UIDocument 路径为主；Flutter �
 | QML 清组件缓存 | 不属于普通数据求值。 | 清缓存，再加载组件、创建对象。[Q2] | 旧对象仍属旧类型；不是自动迁移旧实例。 |
 | Unity 6.0 Live Reload | runtime binding 有独立触发条件。[U2] | 接收 UXML/USS 更新；Editor UI 重建及 UIDocument 重新接线见上述契约。[U1] | 状态恢复由使用方处理；USS 不能直接套用无条件身份保证。 |
 | Flutter hot reload | State 可请求子树 rebuild。[F4] | 更新代码后 rebuild；并非只刷新源文件对应节点。[F2] | 兼容 Element/State 可延续；Widget 配置可替换。[F3] |
-| 当前 FrostFoxAtelier | 实际依赖的 dirty 绑定求值；Repeat 按 item key 保留 child。 | 全文件 lower；部分 Program 可复用；原 Instance 准备新定义与子树变更。 | 兼容 Context / state / key 保留；新增、移除或换型子组件改变生命周期；一次提交完整源码版本。 |
 
 比较结论：**“保存即见结果”是交互体验；编译复用、状态保留、实例保留和局部树更新是四项独立的实现承诺。**这属于本文对上述官方契约的归纳。
 
-## 4. 本仓库目前做到哪一层
-
-以下是当前实现事实，不是对外部框架的推断。研究起点 `404b2e6` 曾在保存后创建所有区域的候选 Instance 树；同日后续实现已经移除此路径，采用稳定实例上的定义与子树事务。
-
-1. `LiveDocument` 每次有效源码变化仍然 lower 全文件。
-2. 同一 `Runtime` 中，同名组件的 `generated_source` 未变化时可复用 `Program`；Module 仍拥有本版组件集合和新的关系元数据。
-3. `poll` 对 accepted 宿主 region 的原 Instance 调用 `update(inputs, candidate_type)`。同名兼容组件保留 Context；代码或结构变化只重建定义相关的数据，并协调原子实例。未变组件不重算绑定，但保存时仍会遍历已挂载实例以更新元数据、检查子定义。
-4. 当前 `Application` 仍生成完整工作区快照，并调用 `ui::Session::set_controls`；Session 内部按 key 和值差分应用。
-5. 基础 `Session::update_controls(changed_controls)` 只接收已有 key 的完整属性值，不能新增、删除或改变 kind、parent、结构引用。源码 patch 已在实例层落实，Session 层继续使用支持结构变化的完整快照入口。
-6. 普通输入更新时，`Instance` 只求值实际依赖的 dirty 绑定；`Repeat` 的 child 复用按 item key 进行。这条已有运行期增量能力应与源码保存路径分开陈述。
-
-上述结论的本地依据是 [LiveDocument::poll/commit_controls](../../src/ui_language/live_document.cpp)、[Module::compile 与 Instance](../../src/ui_language/component.cpp)、[Application::step](../../src/application/application.cpp) 及 [Session 控件差分](../../src/ui/session_update.inl)。当前用法与限制统一放在[DSL 文档](../modules/editor/declarative-ui.md)，实际身份、状态及拒绝行为由[源码 patch 端到端验收](../../acceptance/editor/ui_source_patch.inl)覆盖。
-
-当前源码保存链路可以压缩为：
-
-```text
-源码变化 → 全文件 lower → Module/Program 复用或编译
-         → accepted regions 在原 Instance 上准备定义与子树变更
-         → 完整工作区快照 → Session 按 key/值差分应用
-```
-
-当前已具备编译产物复用、原实例保留和子树协调。组件自身代码/结构变化后会重算该组件全部绑定，不是逐表达式 patch；也不代表全文件前端、区域遍历或工作区快照提交变成与改动量成正比。
-
-## 5. 实际采用的设计与后续边界
-
-本项目采用稳定作用域与可变定义分开的结构，不引入外部框架或另一套解释器：
-
-1. **身份可观察。**实际 Context 身份和子树创建/回收计数用于验证原对象存续；稳定 key 和最终存活数不足以证明这一点。
-2. **结构与属性同一事务。**`PreparedUpdate` 同时覆盖定义、绑定缓存、代码租约和子成员。Session 接受并结算旧 effects 后统一提交，不留全区域克隆备用入口。
-3. **兼容性明确。**state 按名称/类型保留；具名子组件按节点名称/种类/组件类型保留；Repeat 按 Item.key 保留。移除属性恢复默认值，新子实例正常初始化。
-4. **优化边界继续按测量推进。**未变子树跳过、稀疏 Session 提交和后台 JIT 尚未接入。后台 JIT 尤其依赖 Runtime 的并发准备与关停契约；实例 patch 不自动提供线程安全。
-
-本轮具体变更与本机采样见[源码 patch 验收记录](ui-source-patch-20261005.md)。后续已确定长期支持同步更新，后台化按真实负载评估，详见[默认更新策略](../modules/editor/declarative-ui.md#默认更新策略)。本文不以这些结果推断对 Qt、Unity 或 Flutter 的性能优势。
-
 ## 官方来源
 
-链接均指向官方具体页；正文已将官方契约、本文判断和本仓库事实分开。
+链接均指向官方具体页；正文区分官方契约和本文判断，本仓库现状由[声明式 UI 合同](../modules/editor/declarative-ui.md)维护。
 
 - Qt 6.8：[属性绑定][Q1]、[QQmlEngine 缓存与旧实例][Q2]、[磁盘与预编译代码缓存][Q3]。
 - Unity 6.0：[Live Reload][U1]、[绑定更新触发条件][U2]、[数据源变化跟踪][U3]。

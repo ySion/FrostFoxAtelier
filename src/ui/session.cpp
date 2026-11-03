@@ -1,5 +1,6 @@
 #include "ui/session.hpp"
 #include "ui/text.hpp"
+#include "foundation/result.hpp"
 #include <algorithm>
 #include <array>
 #include <charconv>
@@ -771,8 +772,7 @@ struct Session::Impl {
                 tree.push_back({state.node, owner ? std::optional<std::size_t>{owner->layout_position} : std::nullopt,
                                 std::move(input)});
             } else {
-                if (auto result = checked(layout.update(state.node, input), key); !result)
-                    return result;
+                ATELIER_TRY(checked(layout.update(state.node, input), key));
                 state.layout_dirty = false;
             }
             // These are preparation caches. A failed tree batch keeps structure_dirty
@@ -916,8 +916,7 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare() {
         return std::unexpected(Error{ErrorCode::unavailable_surface});
     try {
         self.sync_code_edit();
-        if (auto synced = self.synchronize(); !synced)
-            return std::unexpected(synced.error());
+        ATELIER_TRY(self.synchronize());
         const float scale = self.surface.dpi_scale;
         const auto geometry = self.layout.compute(
             {self.surface.extent.width / scale, self.surface.extent.height / scale}, self.text.provider_revision());

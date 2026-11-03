@@ -497,8 +497,6 @@ public:
 
     LayoutNodeId root() const noexcept;
 
-    std::size_t node_count() const noexcept;
-
     std::uint64_t input_revision() const noexcept;
 
     Result<void> set_root(const RootInput&);
@@ -575,8 +573,6 @@ public:
     Result<double> offset(std::size_t row) const;
 
     std::size_t size() const noexcept { return heights_.size(); }
-
-    std::size_t storage_bytes() const noexcept { return (heights_.capacity() + sums_.capacity()) * sizeof(double); }
 
 private:
     double prefix(std::size_t count) const noexcept;

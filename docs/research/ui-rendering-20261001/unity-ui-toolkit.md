@@ -96,18 +96,11 @@ Unity 明确提供并行 tessellation：在主线程分配并记录 mesh，作�
 
 这里可确认的线程能力是有显式依赖的 mesh 生成作业。公开证据不足以承诺 VisualElement 树、样式、panel 和绘制回调可任意跨线程调用；源码中样式匹配还注明同一 context 单线程。建议本项目把树与样式更新限定到明确的 UI 所有者线程，后台只产生不可变结果或独占几何，下一次更新统一接入。[VisualTreeStyleUpdater.cs](https://github.com/Unity-Technologies/UnityCsReference/blob/88ce7b60434ba7a8ca0218590a4cb509971788ad/Modules/UIElements/Core/VisualTreeStyleUpdater.cs#L207)，[Parallel tessellation](https://docs.unity3d.com/6000.0/Documentation/Manual/UIE-parallel-tessellation.html)
 
-## 样式边界与建议实施顺序
+## 样式边界
 
 6000.0 USS 是受 CSS 启发并为 Unity 定制的格式；布局采用 Yoga 的 Flexbox 子集原则，盒模型等价 border-box、默认纵向排列，圆角语法也存在明确差异。这是一套可用的游戏 UI 样式体系，并不需要先实现浏览器全规范。[USS](https://docs.unity3d.com/6000.0/Documentation/Manual/UIE-USS.html)，[Layout engine](https://docs.unity3d.com/6000.0/Documentation/Manual/UIE-LayoutEngine.html)，[USS common properties](https://docs.unity3d.com/6000.0/Documentation/Manual/UIE-USS-SupportedProperties.html)
 
 6000.7 预览源码已出现 grid、filter/backdropFilter 与 zIndex，因此“Unity 永远只有 Flexbox”也是错误总结。这些新增能力说明需求会演进，不表示本项目当前必须承接同等实现规模。[ComputedStyle.gen.cs](https://github.com/Unity-Technologies/UnityCsReference/blob/88ce7b60434ba7a8ca0218590a4cb509971788ad/Modules/UIElements/Core/Style/Generated/ComputedStyle.gen.cs#L4936)
-
-以下是面向本项目的建议顺序，不是 Unity 官方路线图：
-
-1. **先闭合状态与绘制契约**：权威元素树、最终样式、布局矩形、绘制顺序、矩形裁剪、文本和图像；标准与自定义控件使用同一输出入口。
-2. **再做到变化只更新必要数据**：属性变化分类，布局结果比较，保留 mesh 与绘制命令，明确业务数据触发 repaint 的方式。
-3. **再处理真实编辑器负载**：相邻状态合批，小图 atlas，字体 atlas，transform/opacity/color 参数更新；采样批次中断、mesh 重建量、GPU 上传字节和缓存内存。
-4. **按场景补高级能力**：圆角 stencil、复杂路径、并行大 mesh、子树离屏合成；每项都定义资源退出、裁剪深度和失败行为。
 
 当前不值得仿制的浏览器能力包括 HTML 解析与纠错、网页导航和网络资源体系、完整 DOM API、全部 CSS 布局与级联兼容性、打印分页，以及没有真实编辑器需求支撑的任意混合/滤镜合成组合。应保留可用的样式、文本塑形、输入和一致布局；不能借“无需浏览器”删掉中文编辑、缺字 fallback 或 DPI 正确性。
 
@@ -115,4 +108,4 @@ Unity 明确提供并行 tessellation：在主线程分配并记录 mesh，作�
 
 最值得学习的是：**样式变化有类别；布局结果决定进一步失效；绘制内容可缓存；经常变化的视觉参数可以独立更新；合批服从覆盖顺序；资源由 panel 生命周期统一退出。** 这些机制适合 Windows 游戏编辑器，也与统一入口的目标一致。
 
-尚未验证：FrostFoxAtelier 当前图形后端的纹理槽与 GPU 上传策略、文本后端、panel/窗口对应关系、实际编辑器 UI 负载，以及 Unity 各预览功能最终稳定版契约。公开 C# 能解释链路，但不能证明原生 shader、驱动行为或最终性能；任何性能收益都需在项目真实端到端场景中测量。
+本研究未验证 Unity 各预览功能最终稳定版契约。公开 C# 能解释链路，但不能证明原生 shader、驱动行为或最终性能；任何性能收益都需在项目真实端到端场景中测量。本地 UI、文字、上传与接受帧合同分别见 [UI 模块](../../modules/ui/README.md)和 [Renderer](../../modules/renderer/contract.md)，不从上述研究推导本地实现状态。

@@ -1,6 +1,6 @@
     // Producers share property validation; Session also validates references and tree row order.
     template<class Lookup> static Result<void> validate_control(const Control& control, Lookup lookup) {
-        if (auto valid=validate_control_properties(control);!valid) return valid;
+        ATELIER_TRY(validate_control_properties(control));
         const auto* parent=lookup(control.parent);
         if (control.parent && !parent) return std::unexpected(Error{ErrorCode::invalid_control,control.key});
         if (control.selection_group && (control.kind!=ControlKind::button || control.selection_group!=control.parent ||
@@ -61,12 +61,11 @@
         bool check_commands=false,check_radio=false;
         if (!sparse) next_order.reserve(controls.size());
         for (const auto& control:controls) {
-            if (auto checked=validate_control(control,lookup);!checked) return std::unexpected(checked.error());
+            ATELIER_TRY(validate_control(control,lookup));
             if (control.table) {
                 const auto* previous=live(control.key);
                 if (!previous || previous->control.table!=control.table) {
-                    auto checked=validate_table(control);
-                    if (!checked) return std::unexpected(checked.error());
+                    ATELIER_TRY_BIND(checked,validate_table(control));
                     table_indices.emplace(control.key,std::move(*checked));
                 }
                 const auto changed=table_indices.find(control.key);
@@ -107,7 +106,7 @@
         }
         // A target property can invalidate an unchanged reset menu item.
         if (check_commands) for (const auto& [key,state]:states) if (state.control.edit_command)
-            if (auto checked=validate_control(*lookup(key),lookup);!checked) return std::unexpected(checked.error());
+            ATELIER_TRY(validate_control(*lookup(key),lookup));
         if (check_radio) {
             std::map<ControlKey,ControlKey> selected_groups;
             const auto admit=[&](const Control& control) {

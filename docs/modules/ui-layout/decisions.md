@@ -34,6 +34,6 @@ Expand采用整池带权分配，Flex采用明确的basis及grow/shrink权重。
 
 ## 取舍依据
 
-[三候选实测](../../research/ui-layout-reassessment/validation-results.md)暴露了饱和分配、文字测量量和深链边界；矩形榜单不足以决定整套UI方案。[原生首步实验](../../research/ui-layout-reassessment/native-step1.md)确定了尺寸和事务语义，反例已进入正式消费者。借鉴[游戏UI](../../research/ui-layout-reassessment/industry-game-ui.md)和[编辑器UI](../../research/ui-layout-reassessment/industry-editor-ui.md)的容器、失效和虚拟化责任划分，不引入其完整对象、输入或渲染世界。
+[三候选实测](../../research/ui-layout-reassessment/validation-results.md)暴露了饱和分配、文字测量量和深链边界；矩形榜单不足以决定整套UI方案。尺寸与失败发布的语义由[生产合同](contract.md)定义。借鉴[游戏UI](../../research/ui-layout-reassessment/industry-game-ui.md)和[编辑器UI](../../research/ui-layout-reassessment/industry-editor-ui.md)的容器、失效和虚拟化责任划分，不引入其完整对象、输入或渲染世界。
 
 本阶段完成边界、实测收益和未覆盖项见[审计](audit.md)。正式 UI、声明式作者层与编辑器已经接入；当前消费成本和后续边界统一见[模块状态](README.md#阶段状态)。

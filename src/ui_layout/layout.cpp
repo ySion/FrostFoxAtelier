@@ -1282,10 +1282,6 @@ LayoutNodeId LayoutDocument::root() const noexcept {
     return impl_->id(0);
 }
 
-std::size_t LayoutDocument::node_count() const noexcept {
-    return impl_->live_count;
-}
-
 std::uint64_t LayoutDocument::input_revision() const noexcept {
     return impl_->input_revision;
 }
