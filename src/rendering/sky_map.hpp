@@ -20,7 +20,7 @@ public:
     static constexpr std::uint32_t cube_size = 4;
 
     // width * height RGB floats from row 0; width must be 2 * height. Sources wider than
-    // width_limit are box-downsampled 2x2 once; mean, peak and cube use the full source.
+    // width_limit are box-downsampled 2x2 once; mean and cube use the full source.
     SkyMap(std::uint32_t width, std::uint32_t height, std::span<const float> rgb);
 
     SkyMap(const SkyMap&) = delete;
@@ -36,13 +36,8 @@ public:
 
     int scale_exponent() const noexcept { return scale_exponent_; }
 
-    // Solid-angle mean radiance and largest channel value of the source.
+    // Solid-angle mean radiance of the source.
     const std::array<float, 3>& mean() const noexcept { return mean_; }
-
-    float peak() const noexcept { return peak_; }
-
-    // Map-space unit direction of the most luminous source texel.
-    const std::array<float, 3>& brightest_direction() const noexcept { return brightest_direction_; }
 
     // Solid-angle box-filtered source radiance, unscaled RGBA float, cube_size^2 per face in
     // D3D face order +X -X +Y -Y +Z -Z.
@@ -58,10 +53,6 @@ private:
     int scale_exponent_{};
 
     std::array<float, 3> mean_{};
-
-    float peak_{};
-
-    std::array<float, 3> brightest_direction_{};
 
     std::vector<float> cube_;
 };

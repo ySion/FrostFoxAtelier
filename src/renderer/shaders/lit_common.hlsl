@@ -179,11 +179,6 @@ void lit_brdf_components(float3 base,float roughness,float metallic,float3 n,flo
     diffuse=(1-f)*base*(1-metallic)/LIT_PI*nl;
     specular=d*gv*gl*f/max(4*nl*nv,1e-5)*nl;
 }
-float3 lit_brdf(float3 base,float roughness,float metallic,float3 n,float3 v,float3 l) {
-    float3 diffuse,specular;
-    lit_brdf_components(base,roughness,metallic,n,v,l,diffuse,specular);
-    return diffuse+specular;
-}
 // Four disjoint counters, with high words in the second half. Classification
 // avoids a second atomic increment for every visibility query.
 uint lit_visibility_counter; // direct=0, probe shading=2, receiver gather=3
@@ -193,9 +188,6 @@ void lit_count_rays(uint kind) {
         uint before;InterlockedAdd(lit_ray_counters[kind],active_rays,before);
         if(before>0xffffffffu-active_rays)InterlockedAdd(lit_ray_counters[kind+4],1);
     }
-}
-float2 lit_triangle_uv(LitRayTriangle face,float2 bary) {
-    return face.vertices[0].uv*(1-bary.x-bary.y)+face.vertices[1].uv*bary.x+face.vertices[2].uv*bary.y;
 }
 MaterialSurface lit_ray_material(uint instance_id,LitRayTriangle face) {
     return material_surfaces[material_indices[material_offsets[instance_id]+lit_face_slot(face.face)]];

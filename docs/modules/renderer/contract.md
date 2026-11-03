@@ -1,6 +1,6 @@
 # 编辑器 renderer 当前契约
 
-本页维护当前执行、显示和资源合同；光照算法、默认值与限制统一见 [Scene Lit](scene-lit.md)，已验证的配置和证据见[验收记录](acceptance.md)，尚未实施的方向见[后续方向](../../research/scene-lit-next-evolution.md)。
+本页维护当前执行、显示和资源合同；光照算法、默认值与限制统一见 [Scene Lit](scene-lit.md)，已验证的配置和证据见[验收记录](acceptance.md)，尚未实施的方向见[后续方向](scene-lit.md#后续方向)。
 
 入口：[renderer.hpp](../../../src/renderer/renderer.hpp)，目标 `atelier_renderer`，由 [cmake/renderer.cmake](../../../cmake/renderer.cmake) 的 `atelier_add_renderer()` 创建。调用前由应用根构建创建 `atelier_rhi` 和 `atelier_ui_protocol`；可执行目标调用 `atelier_deploy_rhi_runtime(target)` 部署同一套 DXC、Agility 与 PIX DLL。shader 在配置时嵌入库，不依赖启动目录或另一 worktree。
 
@@ -48,6 +48,8 @@ batch 必须在所属 Renderer 关闭前于 owner 线程释放；存活批次令
 ## 视口显示策略
 
 应用的 Workspace 将 World 光照/效果作者值与视口显示/诊断偏好求值为同一 `Frame::view`。World 配置随 Scene 保存并参与 Session 历史；诊断偏好与实际探针缓存不存入 Scene，详情见 [Scene Lit](scene-lit.md)。Scene View 路径栏末尾的显示图标菜单包含 Shading、Edges、Topology 三组互斥选项，Guides 图标菜单提供独立勾选；两者使用既有 CPU UI、独立菜单窗口和 accepted 输入链。着色模式切换不修改 World 材质、几何资源、对象身份或文档撤销历史。无参数启动为空文档，普通新建场景使用 MatCap；打开工程不按示例名称改变显示模式，详见[Examples 工程](../../../examples/README.md)。直接调用 Renderer 的默认设置仍为 Smooth。
+
+显示语义参考 [Houdini 视口模式](https://www.sidefx.com/docs/houdini/basics/view.html)与 [Display Options](https://www.sidefx.com/docs/houdini/ref/windows/displayopts_3d.html)：着色、边线与照明是不同维度，Smooth 不等于 PBR。视图 MatCap 覆盖与“未赋材质时使用 MatCap 默认材质”也不同；本项目采用前者。MatCap 纹理中的固定明暗不响应场景灯光（[官方说明](https://www.sidefx.com/docs/houdini/basics/viewporteffects.html)）。这些资料支持显示语义，不证明相同内部算法、默认值或 GPU 成本；Ghost 淡显不是当前合同。
 
 World Settings 的 `direct_candidates` 属于作者值（1～32，默认 8），随 Scene v10 保存；它只控制 DDGI 探针命中点每次挑选的局部光候选数，屏幕直接光不随机选灯。`spatial_light_sampling` 是视口诊断偏好，默认 true，经统一 ViewOption/Control 入口切换探针命中点 fresh RIS 的近源/全局混合 proposal，不写 World、Scene 或撤销历史。屏幕直接光对 cluster 列表中的解析灯逐盏确定求值，方向光独立评估，没有历史；发光网格只经 DDGI 照明。新增资源仍沿现有 RHI 生命周期，D32_FLOAT 和前帧 FP32 深度合同不变。具体算法、能量归属和验收范围以 [Scene Lit](scene-lit.md)及[验收记录](acceptance.md)为准。
 
@@ -130,13 +132,8 @@ CPU 墙钟不进入该快照，而是记录为[帧阶段计时](../../foundation
 | `material_upload_count` | 本帧新场景图片上传次数，包括首次使用的白图；复用版本不上传，不含 UI 图片 |
 | `cached_material_images` | 当前场景 Image/颜色空间缓存项数，不含 UI 图片或 gfx 等待退休的资源 |
 | `viewport_draw_calls` | 实际成功编码的视口辅助 draw 次数；渐变一次，网格与轴线共用一次；不计入物体或 UI draw，不代表 GPU 时间 |
-| `coverage_upload_count` | 本次新建内容版本后成功编码的 R8 上传次数；命中已有版本为 0 |
-| `coverage_upload_bytes` | 上述上传的紧密 R8 有效字节数；不含 CPU 行 padding、D3D 复制对齐与 scratch，也不含网格实例上传 |
-| `cached_coverage_count` | 返回时 renderer 缓存持有的 Coverage/GPU texture 项数 |
-| `cached_coverage_texel_bytes` | 缓存项宽×高的逻辑 R8 字节总量，不是物理显存占用 |
-| `cached_coverage_cpu_bytes` | 缓存持有的 Coverage 的 `pixels.size()` 总量，包含 CPU 行 padding；不是 vector capacity 或整个 UI 的 CPU 内存 |
 
-编码前 skipped 与 not_ready 的活动计数为 0，缓存计数反映仍被持有的资源。原生遮挡发生在编码之后，skipped 仍报告已编码活动。unexpected 失败不返回完整统计；原有接受状态与终态规则不变。缓存量不包含已交给 gfx 等待 GPU 退休的资源，也不包含几何、深度缓冲与上传暂存。每帧计数重置，缓存总量随现有插入/退休动作更新，未改变淘汰策略。
+编码前 skipped 与 not_ready 的活动计数为 0，场景图片缓存计数反映仍被持有的资源。原生遮挡发生在编码之后，skipped 仍报告已编码活动。unexpected 失败不返回完整统计；原有接受状态与终态规则不变。缓存计数不包含已交给 gfx 等待 GPU 退休的资源，也不包含几何、深度缓冲与上传暂存。每帧活动计数重置，场景图片缓存项数随现有插入/退休动作更新，未改变淘汰策略。
 
 应用可在正式交互中测量 prepare/render 的 CPU 墙钟时间；render 时间包含 Present 或必要等待，不能称为 GPU 时长。使用同一 `FrameResult` 关联活动计数，显式 Capture 另行记录，避免把它的同步成本混入普通交互样本。
 

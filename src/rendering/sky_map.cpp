@@ -61,33 +61,17 @@ SkyMap::SkyMap(std::uint32_t width, std::uint32_t height, std::span<const float>
         if (!(value >= 0 && value <= analytic_light_radiance_limit))
             throw std::invalid_argument("Sky map radiance must be finite, non-negative and at most 2^32 per channel.");
     constexpr double pi = std::numbers::pi;
-    const auto texel_direction = [](double u, double v) {
-        const double longitude = 2 * pi * (u - .5);
-        const double latitude = pi * (.5 - v);
-        return std::array<double, 3>{std::sin(longitude) * std::cos(latitude), std::sin(latitude),
-                                     std::cos(longitude) * std::cos(latitude)};
-    };
 
     std::array<double, 3> sum{};
     double total = 0;
-    double brightest = -1;
     for (std::uint32_t y = 0; y < height; ++y) {
         const double solid_angle =
             2 * pi / width * (std::sin(pi * (.5 - double(y) / height)) - std::sin(pi * (.5 - double(y + 1) / height)));
         std::array<double, 3> row{};
         for (std::uint32_t x = 0; x < width; ++x) {
             const float* texel = &rgb[(std::size_t(y) * width + x) * 3];
-            for (std::size_t c = 0; c < 3; ++c) {
+            for (std::size_t c = 0; c < 3; ++c)
                 row[c] += texel[c];
-                peak_ = std::max(peak_, texel[c]);
-            }
-            const double luminance = .2126 * texel[0] + .7152 * texel[1] + .0722 * texel[2];
-            if (luminance > brightest) {
-                brightest = luminance;
-                const auto direction = texel_direction((x + .5) / width, (y + .5) / height);
-                for (std::size_t c = 0; c < 3; ++c)
-                    brightest_direction_[c] = static_cast<float>(direction[c]);
-            }
         }
         for (std::size_t c = 0; c < 3; ++c)
             sum[c] += row[c] * solid_angle;

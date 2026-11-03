@@ -680,7 +680,7 @@ struct SceneLit::State {
             require(gfxDestroyBuffer(gfx, std::exchange(buffer, {})), "Retire Scene Lit buffer");
     }
 
-    GfxTexture texture(std::uint32_t width, std::uint32_t height, DXGI_FORMAT format, std::uint32_t) {
+    GfxTexture texture(std::uint32_t width, std::uint32_t height, DXGI_FORMAT format) {
         auto result = gfxCreateTexture2D(gfx, width, height, format);
         allocation(bool(result));
         return result;
@@ -873,10 +873,10 @@ struct SceneLit::State {
             readback = gfxCreateBuffer(gfx, ray_counter_count * sizeof(std::uint32_t), nullptr, kGfxCpuAccess_Read);
             allocation(bool(readback));
         }
-        brdf_lut = texture(64, 64, DXGI_FORMAT_R16G16_FLOAT, 4);
+        brdf_lut = texture(64, 64, DXGI_FORMAT_R16G16_FLOAT);
         const auto upload_lut = [&](GfxTexture& target, std::uint32_t width, std::uint32_t height, DXGI_FORMAT format,
                                     std::span<const unsigned char> bytes) {
-            target = texture(width, height, format, 0);
+            target = texture(width, height, format);
             auto upload = gfxCreateBuffer(gfx, bytes.size(), bytes.data(), kGfxCpuAccess_Write);
             allocation(bool(upload));
             const auto copied = gfxCommandCopyBufferToTexture(gfx, target, upload);
@@ -1069,11 +1069,10 @@ struct SceneLit::State {
                 texture(w, h,
                         i == 4 ? DXGI_FORMAT_R32_FLOAT
                                : (i == 5 ? DXGI_FORMAT_R16G16_FLOAT
-                                         : (i == 6 ? DXGI_FORMAT_R32G32_UINT : DXGI_FORMAT_R16G16B16A16_FLOAT)),
-                        i >= 4 ? 4 : 8);
+                                         : (i == 6 ? DXGI_FORMAT_R32G32_UINT : DXGI_FORMAT_R16G16B16A16_FLOAT)));
         for (auto* t : {&hdr, &indirect, &reflection_trace, &tone_color, &smaa_output})
-            *t = texture(w, h, DXGI_FORMAT_R16G16B16A16_FLOAT, 8);
-        indirect_half = texture((w + 1) / 2, (h + 1) / 2, DXGI_FORMAT_R16G16B16A16_FLOAT, 8);
+            *t = texture(w, h, DXGI_FORMAT_R16G16B16A16_FLOAT);
+        indirect_half = texture((w + 1) / 2, (h + 1) / 2, DXGI_FORMAT_R16G16B16A16_FLOAT);
         // Overflow beyond a quarter of the receivers gathers inline in the upsampling pass.
         probe_fallback_capacity = std::uint32_t((std::uint64_t(w) * h + 3) / 4);
         probe_fallback = gfxCreateBuffer<std::uint32_t>(gfx, std::uint64_t(probe_fallback_capacity) + 1);
@@ -1082,37 +1081,37 @@ struct SceneLit::State {
         sun_trace_list = gfxCreateBuffer<std::uint32_t>(gfx, std::uint64_t(w) * h);
         sun_trace_arguments = gfxCreateBuffer<std::uint32_t>(gfx, 3);
         allocation(bool(sun_trace_list) && bool(sun_trace_arguments));
-        reflection_hit_trace = texture(w, h, DXGI_FORMAT_R32G32_UINT, 8);
-        ao_texture = texture(w, h, DXGI_FORMAT_R16_FLOAT, 2);
-        ao_raw = texture(w, h, DXGI_FORMAT_R16_FLOAT, 2);
+        reflection_hit_trace = texture(w, h, DXGI_FORMAT_R32G32_UINT);
+        ao_texture = texture(w, h, DXGI_FORMAT_R16_FLOAT);
+        ao_raw = texture(w, h, DXGI_FORMAT_R16_FLOAT);
         ao_depth = gfxCreateTexture2D(gfx, w, h, DXGI_FORMAT_R32_FLOAT, 5);
         allocation(bool(ao_depth));
         for (auto* pair : {&history_normal, &taa_history, &reflection_history, &reflection_scratch, &smaa_spatial})
             for (auto& t : *pair)
-                t = texture(w, h, DXGI_FORMAT_R16G16B16A16_FLOAT, 8);
+                t = texture(w, h, DXGI_FORMAT_R16G16B16A16_FLOAT);
         for (auto& t : reflection_hit_history)
-            t = texture(w, h, DXGI_FORMAT_R32G32_FLOAT, 8);
+            t = texture(w, h, DXGI_FORMAT_R32G32_FLOAT);
         for (auto& t : reflection_moments)
-            t = texture(w, h, DXGI_FORMAT_R32G32_FLOAT, 8);
+            t = texture(w, h, DXGI_FORMAT_R32G32_FLOAT);
         for (auto& t : history_surface_id)
-            t = texture(w, h, DXGI_FORMAT_R32G32_UINT, 8);
+            t = texture(w, h, DXGI_FORMAT_R32G32_UINT);
         for (auto& t : history_geometry_normal)
-            t = texture(w, h, DXGI_FORMAT_R16G16_FLOAT, 4);
+            t = texture(w, h, DXGI_FORMAT_R16G16_FLOAT);
         for (auto& t : ao_history)
-            t = texture(w, h, DXGI_FORMAT_R16G16_FLOAT, 4);
-        smaa_edges = texture(w, h, DXGI_FORMAT_R8G8B8A8_UNORM, 4);
-        smaa_weights = texture(w, h, DXGI_FORMAT_R8G8B8A8_UNORM, 4);
+            t = texture(w, h, DXGI_FORMAT_R16G16_FLOAT);
+        smaa_edges = texture(w, h, DXGI_FORMAT_R8G8B8A8_UNORM);
+        smaa_weights = texture(w, h, DXGI_FORMAT_R8G8B8A8_UNORM);
         for (auto& t : history_depth)
-            t = texture(w, h, DXGI_FORMAT_R32_FLOAT, 4);
+            t = texture(w, h, DXGI_FORMAT_R32_FLOAT);
         for (auto& t : bloom)
-            t = texture((w + 3) / 4, (h + 3) / 4, DXGI_FORMAT_R16G16B16A16_FLOAT, 8);
+            t = texture((w + 3) / 4, (h + 3) / 4, DXGI_FORMAT_R16G16B16A16_FLOAT);
         // Logical level zero is the existing FP32 primary depth, not a (z,z) copy.
         // Keep the original twelve logical levels, including the 1x1 fallback.
         std::uint32_t pw = (w + 1) / 2;
         std::uint32_t ph = (h + 1) / 2;
         pyramid_count = 0;
         while (pyramid_count < 11) {
-            pyramid[pyramid_count++] = texture(pw, ph, DXGI_FORMAT_R32G32_FLOAT, 8);
+            pyramid[pyramid_count++] = texture(pw, ph, DXGI_FORMAT_R32G32_FLOAT);
             if (pw == 1 && ph == 1)
                 break;
             pw = (pw + 1) / 2;
@@ -1139,16 +1138,16 @@ struct SceneLit::State {
             retire(probe_age);
             retire(probe_sample_cursor);
             for (auto& t : probe_irradiance)
-                t = texture(w, h, DXGI_FORMAT_R32G32B32A32_FLOAT, 16);
-            probe_presentation = texture(w, h, DXGI_FORMAT_R32G32B32A32_FLOAT, 16);
-            probe_response = texture(w, h, DXGI_FORMAT_R32G32_UINT, 8);
+                t = texture(w, h, DXGI_FORMAT_R32G32B32A32_FLOAT);
+            probe_presentation = texture(w, h, DXGI_FORMAT_R32G32B32A32_FLOAT);
+            probe_response = texture(w, h, DXGI_FORMAT_R32G32_UINT);
             for (auto& t : probe_distance)
-                t = texture(w, h, DXGI_FORMAT_R32G32_FLOAT, 8);
+                t = texture(w, h, DXGI_FORMAT_R32G32_FLOAT);
             // World-space relocation must retain the range of the supported grid.
             for (auto& t : probe_offsets)
-                t = texture(probe_field.width, probe_field.height, DXGI_FORMAT_R32G32B32A32_FLOAT, 16);
-            probe_age = texture(probe_field.width, probe_field.height, DXGI_FORMAT_R32_UINT, 4);
-            probe_sample_cursor = texture(probe_field.width, probe_field.height, DXGI_FORMAT_R32G32_UINT, 8);
+                t = texture(probe_field.width, probe_field.height, DXGI_FORMAT_R32G32B32A32_FLOAT);
+            probe_age = texture(probe_field.width, probe_field.height, DXGI_FORMAT_R32_UINT);
+            probe_sample_cursor = texture(probe_field.width, probe_field.height, DXGI_FORMAT_R32G32_UINT);
             probe_field.invalidate();
             probe_field.describe(settings, focus);
             probe_parity = 0;

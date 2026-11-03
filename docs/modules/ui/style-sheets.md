@@ -88,7 +88,7 @@ inset/outset 使用方角背景及四个相邻边缘实例。浅边使用 border
 
 方角边框的边界及非零线宽对齐物理像素，最细为一像素；编辑器使用 0.667 DIP 在当前 150% DPI 下表达一像素细边。布局、文字和接受帧命中仍保留原浮点几何。`border-edges` 的部分边使用同一 painter 的实色实例，也采用方角；`border-inner-color` 只在方角框启用。普通四边 solid/圆角继续走原单实例路径。未扩展 RHI 绘制协议，也没有按编辑器类名分支绘制。
 
-一帧的 UI 绘制项由 renderer 用一次上传、一次 draw 按数组顺序画出；clip、贴图和实色/文字/图片类型都在实例数据中，不切批，规则见 [Renderer 合同](../renderer/contract.md#场景和-ui)。没有新增图集或长期几何缓存。`FrameStats` 同时记录 `ui_quads`、实际 `ui_draw_calls`、`ui_instance_upload_bytes`，以及 R8 / RGBA 的上传与缓存数量/字节。缓存统计不含 gfx 在飞退休队列或物理显存。
+一帧的 UI 绘制项由 renderer 用一次上传、一次 draw 按数组顺序画出；clip、贴图和实色/文字/图片类型都在实例数据中，不切批，规则见 [Renderer 合同](../renderer/contract.md#场景和-ui)。没有新增图集或长期几何缓存。`FrameStats` 记录实际 `ui_draw_calls`，不提供 UI 实例数、贴图上传次数/字节或 UI 贴图缓存占用统计。
 
 ## 发布与文字一致性
 

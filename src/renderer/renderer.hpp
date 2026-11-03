@@ -292,10 +292,6 @@ struct FrameStats {
 
     std::uint64_t ui_draw_calls{};
 
-    std::uint64_t ui_quads{}; // Visible instances that overlap their clip; all share one draw.
-
-    std::uint64_t ui_instance_upload_bytes{};
-
     std::uint64_t scene_draw_calls{};
 
     std::uint64_t scene_instances{};
@@ -311,27 +307,6 @@ struct FrameStats {
     std::uint64_t overlay_shapes{};
 
     std::uint64_t overlay_draw_calls{};
-
-    std::uint64_t coverage_upload_count{};
-
-    std::uint64_t coverage_upload_bytes{}; // Tight R8 payload; excludes copy padding/scratch.
-
-    // Current renderer cache only, excluding gfx's in-flight retirement queue.
-    std::uint64_t cached_coverage_count{};
-
-    std::uint64_t cached_coverage_texel_bytes{}; // Logical R8 texels, not physical VRAM.
-
-    std::uint64_t cached_coverage_cpu_bytes{}; // Owned pixels.size(), including CPU row padding.
-
-    std::uint64_t image_upload_count{};
-
-    std::uint64_t image_upload_bytes{}; // Tight RGBA8 payload.
-
-    std::uint64_t cached_image_count{};
-
-    std::uint64_t cached_image_texel_bytes{};
-
-    std::uint64_t cached_image_cpu_bytes{};
 
     // Completed, raw GPU sample. All passes, subpasses and counters refer to
     // gpu_sample_frame_id; may lag this return and repeat until a new completion.

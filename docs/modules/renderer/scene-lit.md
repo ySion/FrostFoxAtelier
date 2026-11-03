@@ -1,6 +1,6 @@
 # Scene Lit
 
-本页维护已实现的光照合同。使用方式与视口合同见 [Renderer](contract.md)，实测结果见[验收记录](acceptance.md)。尚未实施的方向见[后续方向](../../research/scene-lit-next-evolution.md)。
+本页维护已实现的光照合同。使用方式与视口合同见 [Renderer](contract.md)，实测结果见[验收记录](acceptance.md)。尚未实施的方向统一见本页[后续方向](#后续方向)，不代表当前能力或性能承诺。
 
 Scene Lit 是现有 `Renderer::render(Frame)` 的一种视口着色方式。World 持有材质和 LightComponent，Application 从同一 World 生成拥有 CPU 数据的 SceneSnapshot，Renderer 同步借用快照并经唯一 RHI Context 录制、提交、Present。MatCap、Smooth、Flat 保留各自的显示语义，Edit/Play 不选择着色方式。
 
@@ -28,7 +28,7 @@ Scene Lit 是现有 `Renderer::render(Frame)` 的一种视口着色方式。Worl
   - `sky_rotation` 让贴图绕 +Y 转动，方向与 Transform 绕 +Y 的正旋转相同：+X 转向 −Z，在本引擎的左手系里从 +Y 往下看是顺时针。所以方向光和天空转同一角度时，HDRI 里的太阳仍与光对齐。范围 [−180, 180]，±180 是同一方向。
   - 输入：宽高 2:1，宽不超过 8192；辐亮度有限、非负，每通道不超过 2^32。宽于 4096 时按 2×2 平均降一次（高必须为偶数），所以 GPU 背景图最大 4096×2048。
   - 存储为 RGBA16F。源峰值超过 65504 时整图乘 2^-k（k 记在资源里，着色时乘回），不裁掉能量；代价是很暗的纹素会落进 FP16 次正规数，精度下降。
-  - 以下派生量由完整的 float32 源图计算：按立体角加权的平均辐亮度、通道峰值、最亮纹素方向，以及 4²×6 按立体角盒滤的 radiance cube（RGBA float，未缩放，D3D 面序 +X −X +Y −Y +Z −Z，纹素约 22°）。cube 按不大于 0.5° 的子纹素累加，再除以落进每个纹素的采样面积，所以常量贴图逐纹素精确复原，也不受 2^-k 次正规数的影响；采样面积与纹素的几何立体角最多差 0.9%，4K 源图上 0.13%。
+  - 以下派生量由完整的 float32 源图计算：按立体角加权的平均辐亮度，以及 4²×6 按立体角盒滤的 radiance cube（RGBA float，未缩放，D3D 面序 +X −X +Y −Y +Z −Z，纹素约 22°）。cube 按不大于 0.5° 的子纹素累加，再除以落进每个纹素的采样面积，所以常量贴图逐纹素精确复原，也不受 2^-k 次正规数的影响；采样面积与纹素的几何立体角最多差 0.9%，4K 源图上 0.13%。
   - cube 取 4² 是为了 DDGI 稳定。kloppenheim_05 里最亮的 0.1% 纹素（太阳）占全图辐射通量的 64%，而 64 条探针射线的间距约 25°，比 16² 的纹素大得多，太阳纹素时中时不中。room 场景里时间偏差的 p95 与同均值均匀天空（0.50 级）相比：16² 为 3.87 级，8² 为 1.53 级，4² 为 0.55 级。代价是辐照度的精度：在这张 HDRI 上，相对最大辐照度的误差平均 1.6%、最大 7%，集中在法线与太阳方向接近垂直处；16² 分别为 0.9% 和 3.5%（离线按最近纹素估计）。
   - `rendering::decode_radiance_hdr` 读取 Radiance `.hdr`：只接受 `32-bit_rle_rgbe` 和 `-Y H +X W` 方向，支持新式 RLE、旧式 RLE 和平铺扫描线，来源上限 256 MiB。像素按 R × 2^(e−136) 还原，不加半步偏移（与 OIIO、stb_image 一致）；其他头部行（含 EXPOSURE）忽略。4K 源图解码并计算派生量在 Release 下约 0.46 s，每个资产只做一次。
 - World 唯一负责层级变换与灯的正交方向；Renderer 接收最终位置、传播方向和矩形切向轴。空间缩放不隐式改变灯的物理尺寸、范围或强度。权威数据约束见 [Presentation](../presentation/README.md)。
@@ -265,3 +265,68 @@ Renderer 的端到端验收由 `renderer_acceptance` 目标聚合 `default`（�
 资源账目包含全部逻辑纹理与缓冲：GBuffer 与表面历史、DDGI atlas、GTAO/SSSR/AA 历史、cluster 列表、阴影 atlas（启用时两张 4096² D32，共 128 MiB）与光源表；直接光没有 reservoir、降噪历史或中间纹理。关闭 SSSR 或 Bloom 仍按前述裁剪工作；保留的可复用纹理继续计入统计。逻辑字节、dispatch 数均不是实际外部带宽或帧时测量。
 
 可打开的真实工程见 [Scene Lit Room](../../../examples/Content/Scene%20Lit%20Room/README.md) 和 [Sponza](../../../examples/Content/Sponza/README.md)。体积配置来自当前 Scene 的 World 设置，切换场景不继承上一个场景的布局；重新拟合由 World Settings 页的明确操作完成。渲染通过统一材质表消费原有贴图及 Mask。渲染代表的覆盖边界和测量结果见[验收记录](acceptance.md)。
+
+## 后续方向
+
+以下是有设计依据但尚未实施的方向，集中维护在此，不是新增功能授权或已测性能。DDGI 保留为生产主线；其他 GI 只允许有界比较，不长期并存两套完整实现。
+
+### 几何、阴影与其他显示能力
+
+- 子网格剔除先比较 CPU part bounds 与相邻区间合并、task/mesh shader 的 meshlet 视锥/级联/背面锥剔除；后者也可承担程序化实例集合的 GPU 剔除与 LOD。复用现有共享索引几何，不以主视图可见集裁掉 RT、发光或阴影域。HZB、LOD、并行准备和稳定 draw 数据的扩展须由真实开销驱动，不另建 render graph。
+- 现有球光半径/太阳角半径只影响着色；半影及相机移动时静态投影者的滚动级联或页式缓存尚未实现。阴影缓存继续明确静态/动态失效、更新预算与同一 RHI 生命周期。
+- DDGI 可研究自动布点、room/portal、稀疏砖块；几何维护与辐射更新分开排队，稳定区降频也须保留最低维护频率、年龄上限和新区域优先，不能让冻结的探针自己发现变化。固定射线、分类、滚动与调度的依据见 [RTXGI DDGIVolume](https://github.com/NVIDIAGameWorks/RTXGI-DDGI/blob/f33e496ca31b3f0eec1c4e2cbaa8bb620e337fa6/docs/DDGIVolume.md)和 [Production DDGI](https://jcgt.org/published/0010/02/01/paper.pdf)。发光面直接采样须先定义与 DDGI 发光记录的分工及降噪，不能重复加光。
+- 反射可比较反射探针，或给缺失部分以硬件 RT 并复用命中材质/光照；按粗糙度分配工作可参考 [AMD GI-1.1](https://gpuopen.com/learn/gi-1-1-glossy-reflection-rendering/)。粗糙反射单一来源见证对次要来源变化的响应尚无专项验收。
+- 天空的太阳提取、异步解码与分帧上传仍未实现；解码与上传应一起设计。透明混合/折射、蒙皮 BLAS、超分辨率、逐实例属性流亦未实现；相机相对渲染或原点重置等大世界需求须整体设计，不为单个函数单独补精度。
+
+机制参考的边界：Flax 固定源码 [0cbc4be11fb55201d0f934ab0c312ca2fca5b68a](https://github.com/FlaxEngine/FlaxEngine/commit/0cbc4be11fb55201d0f934ab0c312ca2fca5b68a)的 [ShadowsPass](https://github.com/FlaxEngine/FlaxEngine/blob/0cbc4be11fb55201d0f934ab0c312ca2fca5b68a/Source/Engine/Renderer/Lighting/ShadowsPass.cpp#L1728)提供传统图集、静态缓存/动态叠加、失效与更新频率，不是 VSM；其 [HZB](https://github.com/FlaxEngine/FlaxEngine/blob/0cbc4be11fb55201d0f934ab0c312ca2fca5b68a/Source/Engine/Renderer/Culling/HZBOcclusionCulling.cpp#L46)为可选遮挡路径，读回有延迟，不证明完整 GPU-driven 或本项目速度收益。[Global SDF 与 Surface Atlas](https://docs.flaxengine.com/manual/graphics/lighting/gi/realtime.html)增加资产、容量与维护成本，大封闭网格内部、小发光体及镜面都有内容约束；其近似 gather 不等于当前精确 LOS。只借鉴机制，不迁移目录；[LICENSE](https://github.com/FlaxEngine/FlaxEngine/blob/0cbc4be11fb55201d0f934ab0c312ca2fca5b68a/LICENSE.md)受 [Flax EULA](https://flaxengine.com/licensing/)管理，不按 MIT/BSD 复制。没有同硬件同场景实测，不能据此宣称 FPS 或性能领先。
+
+### 较远 SSGI 与 GI 比较合同
+
+旧近场 Local GI 已退出生产链，较远 SSGI 是新实现。候选距离 **4、8、16 米**只是比较档，不是默认值或永久上限；依真实贡献距离、可信命中率和成本选择，不拿灯 range 代替反弹距离，也不靠增益补覆盖。最大距离、射线数、追踪步数独立控制，不能仅放大旧线性步长。
+
+1. 追踪使用高精度深度/Hi-Z 跳空与交点细化，核对透视、正交、viewport 偏移、近裁面及 Reversed-Z；共享深度由实际消费者管理，不能依赖 SSSR 恰好开启。不降低深度精度或放厚远距容差掩盖误命中。
+2. 校验厚度、交点误差、几何法线、背面、屏边及深度断裂；miss、不可信 hit 与合法零贡献分开，不能仅统计成功命中。历史同时检查 receiver 与贡献来源的身份、运动、可见性，以局部失效处理来源移动，不用全场清历史替代。
+3. 可用稀疏/半分辨率低频求解与边缘感知重建，但主几何、材质与输出仍原生 1440p；记录内部采样率，不能凭输出尺寸称全率。必要作者参数沿 World、ViewOption、Control 对齐新增，不复活 `ssil` 旧字段。[UE SSGI](https://dev.epicgames.com/documentation/en-us/unreal-engine/screen-space-global-illumination-in-unreal-engine?application_version=5.6)作为其他间接光的补充，不把 Lumen 整体效果归于纯 SSGI。
+
+| 候选 | 完整比较范围 |
+|---|---|
+| A：改良 DDGI＋可靠 SSGI | 世界/离屏支持，布点、重定位、更新、反馈、gather，屏幕追踪、重建、合成与必要 visibility |
+| B：Capsaicin 式表面探针＋世界缓存 | 可见表面 probe 布置、重投影、追踪、插值，secondary radiance cache 构建、维护、失效、多反弹、visibility 与重建；若有辅助 SSGI 或不可剥离工作也计费 |
+
+双方用同场景、Geometry、Material、LightFrame、相机、曝光、冻结的直接光/阴影实现与配置，以及同一主反射输入。共同输出是**材质调制前的间接辐照度**，沿 `lit_indirect_source` 进入同一合成，坐标、HDR 单位、曝光前后位置、有效性一致；内部直接生成，不从最终颜色除以可能为零的 albedo 倒推。只有真实出现两个求解器才抽内部接口，不预建 GI 插件/第二套资源权威。缺世界缓存、历史失效或完整多反弹的屏幕简化版不算 B；不同引擎演示只作参考，不算同场景对照。
+
+**计能先于扩大距离。** DDGI 的辐照度不是方向 radiance cache，以 \(E/\pi\) 为各向同性基线的残差只能是有界近似。先验证受控场景下的共同估计域，披露视角、能量与收敛偏差；不能完整 SSGI 加完整 DDGI，也不能把屏幕缺失当黑色。屏幕来源不能混入镜面、SSR、tone mapping 或自身修正；发光命中须与 DDGI 发光记录去重但保留散射反弹。两边匹配 secondary 材质近似、反弹数/反馈系数、环境、强度和增益；GTAO 与 SSGI 遮蔽统一，AO/visibility 的范围与成本明列。有限 RT 补充全部记入所属 GI，离屏与遮挡连续支持仍须验证。
+
+**预算与观测：** RX 6800 XT、实际 render extent 2560×1440、SMAA，约 **2 ms** 仅是面向 90 FPS 的 GI 目标档，未证明达到；保留较高成本档的质量—成本曲线。匹配完整 GI 实测耗时，而非 ray/probe 数或输出尺寸；包含所有更新、cache、重定位、反馈、插值、重建、visibility、同步，标明共享成本归属，不重复加父子 scope。稳定负载匹配参数后记录动态 P50/P95/P99、维护峰值，不能隐藏跨帧欠账或收敛。首次进入和暖缓存用同事件时间线/墙钟预热，响应同时报毫秒与有效观测次数；同帧数不代表同预热时间。资源遵守同产品预算，报常驻、临时、退休中的逻辑量，有可靠方法才另报实际驻留。正式 Release 测量排除 validation/截图读回，GPU 合法性另验；完成 sequence 去重，记录外部负载、限帧和 Present 条件。
+
+| 同一脚本分别重放的事件 | 观察边界 |
+|---|---|
+| 平移、旋转、快速切镜 | 视角能量、disocclusion、屏边退出、拖影、冷 cache |
+| 发光体离屏但继续照亮可见墙 | 世界支持与屏幕退出连续性、直接/间接计能 |
+| 开关灯、等亮换色、移动灯/发光体 | 响应、过冲、残留、局部失效与 GPU 峰值 |
+| 薄墙、门洞、楼层、柱子 | 穿墙、远距误命中、接触污渍、漏光 |
+| 静止、窄缝强光、点灯近场亮面 | probe 亮峰、像素方差、热点寿命，避免暗化伪装滤波 |
+| 无灯/无天空、镜面/金属、零漫反射 | 合法黑色和材质/计能边界，不补光掩盖问题 |
+
+先用充分收敛且匹配光路的受控参考校验能量，记录参考自身的近似/缺失路径，再用真实地牢观察动态与成本；报告像素/表面 ROI 时间序列、漏光/边缘指标及代表图，不能凭单图判胜。A 先改进布点/支持与 SSGI，不能拿薄弱 A 对充分调参 B，也不能用不完整 B 宣布 DDGI 胜出。按细节、离屏稳定性、响应、薄墙、尾延迟、显存、复杂度取舍，结果可为保留 A、替换 B 或只吸收有据机制；比较后由 Astra 复审传输定义、预算归属和结论，更新现状并退出失败原型/无用选项。
+
+Capsaicin 参考固定为 [914b91596cd119eda85fbc1d3c7ee6ac391b1452](https://github.com/GPUOpen-LibrariesAndSDKs/Capsaicin/blob/914b91596cd119eda85fbc1d3c7ee6ac391b1452/README.md#L20-L32)：GI-1.2 提供间接光，不是完整解析 DI 替代；空间 grid 是 proposal＋RIS，不是精确 cluster 灯表，默认也不是完整屏幕 ReSTIR DI 链（[配置](https://github.com/GPUOpen-LibrariesAndSDKs/Capsaicin/blob/914b91596cd119eda85fbc1d3c7ee6ac391b1452/src/core/src/render_techniques/gi1/gi1.h#L49-L84)）。压缩活动列表后仍需 RT visibility、滤波和重建；[secondary hit](https://github.com/GPUOpen-LibrariesAndSDKs/Capsaicin/blob/914b91596cd119eda85fbc1d3c7ee6ac391b1452/src/core/src/render_techniques/gi1/gi1.comp#L2500-L2525)的 metallic=0/roughness=1 不是免费保持原材质传输。可参考可见面预算、历史引导方向和 secondary radiance 复用，但要声明完整实现范围。两个默认 radiance value buffer 的[逻辑分配](https://github.com/GPUOpen-LibrariesAndSDKs/Capsaicin/blob/914b91596cd119eda85fbc1d3c7ee6ac391b1452/src/core/src/render_techniques/gi1/gi1.cpp#L440-L507)已约 340 MiB，尚不含其他资源且不是驻留测量；不同硬件/分辨率/功能的旧论文数值不是本机预算证据。
+
+### Mesh SDF 的采用条件
+
+当前继续闭合资格与真实三角形查询。SDF 只在先有多消费者共享的几何派生数据生产者，定义符号、误差、版本、驻留后，才考虑承接部分 inside/clearance/relocation；可靠区用 SDF、不可靠区用三角形回退，但始终一套探针状态和更新入口，不顺带替换全部光追。
+
+距离与符号是不同合同：开放薄片可给 UDF 距离，不能把一侧半空间当实体；混合闭合/开放 Mesh 不能只有一个整 Mesh signed 标记，嵌套壳要保留空腔，自相交/非流形需明确体积解释。加厚、补洞、阈值封闭都是规则而非恢复“原意”。依据见 [libigl 符号方法](https://github.com/libigl/libigl/blob/main/include/igl/signed_distance.h)、[广义 winding number](https://igl.ethz.ch/projects/winding-number/)；后者仍要求大致一致的方向和额外分割。[Epic Mesh DF](https://dev.epicgames.com/documentation/en-us/unreal-engine/mesh-distance-fields-in-unreal-engine)与 [Lumen 软件追踪](https://dev.epicgames.com/documentation/en-us/unreal-engine/lumen-technical-details-in-unreal-engine#softwareraytracing)的薄结构/双面代价和墙厚建议是具体配置限制，不是通用物理阈值。低分辨率 GDF 不能独自裁决贴墙或薄片。
+
+设实例变换 \(x=Ap+t\)，本地 \(d(A^{-1}(x-t))\) 保留已定义的实体符号；仅刚体/统一缩放能以单一比例给出精确世界欧氏距离，非均匀缩放须用最小/最大奇异值界定距离幅值，梯度按 \(A^{-T}\) 变换，镜像不翻转标量符号。棱角、中轴、重叠物体会切换最近点，沿梯度推出一次不保证离开所有实体。近零带、窄带以外、未驻留、过期数据必须是“不确定”而非空处；候选新位置再验证，保留单元 .45 椭球限幅、稳定死区、移动后的历史失效和障碍消失后的重新激活。
+
+一次距离加六次梯度差分约七次场采样，每次三线性还读邻近体素；多实例需筛选或合成，不是全场景一次读。足额更新 64 探针时，32 固定几何射线为 2048，128 照明射线为 8192；仅替换前者最多减少这组主射线数量的 20%，**不是 20% 帧时**。固定射线不着色，visibility、receiver gather、方向距离矩、材质命中和入射光仍存在，保留照明 RT 就仍要 BLAS/TLAS。当前闭合字为 4 B/三角形，10 万三角形约 .38 MiB，CPU 分类在建 BLAS 后释放。
+
+| 每 Mesh 稠密单通道容量（不含 mip、边界、压缩、atlas 对齐、工作区） | FP32 | R16 对照，不表示选择降精度 |
+|---|---:|---:|
+| 32³ | 128 KiB | 64 KiB |
+| 64³ | 1 MiB | 512 KiB |
+| 128³ | 8 MiB | 4 MiB |
+| 256³ | 64 MiB | 32 MiB |
+
+边长翻倍容量八倍。体素分辨率、距离位宽、屏幕 D32/FP32 深度各自独立，数值位宽不能补回漏掉的薄结构，也不改变屏幕深度合同。Mesh 本地场随刚体复用，几何版本改变需重建，Global DF 另有合成/动态更新与重叠实例成本；SDF 对复杂网格可能较省，对简单盒子更贵，不能先断言。只有同场景的 inside 误判、薄墙泄漏、重定位收敛、运动重激活达标，且固定几何阶段的节省覆盖查询、生成、更新、驻留与维护时才采用；静态复杂和频繁移动负载都记分阶段耗时、长尾与峰值内存，不由采样次数推算毫秒。

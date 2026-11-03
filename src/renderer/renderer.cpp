@@ -454,10 +454,6 @@ struct CachedImage {
     bool used{};
 
     std::uint32_t slot{}; // Index in this frame's ui_textures while used.
-
-    std::uint64_t texel_bytes{};
-
-    std::uint64_t cpu_bytes{};
 };
 
 enum class UiShading : std::uint32_t { solid, coverage, image, capsule };
@@ -917,11 +913,6 @@ struct Renderer::State {
             image.texture = gfxCreateTexture2D(gfx, owner->width, owner->height,
                                                color ? DXGI_FORMAT_R8G8B8A8_UNORM_SRGB : DXGI_FORMAT_R8_UNORM);
             allocation(bool(image.texture));
-            image.texel_bytes = std::uint64_t(owner->width) * owner->height * channels;
-            image.cpu_bytes = owner->pixels.size();
-            ++(color ? stats.cached_image_count : stats.cached_coverage_count);
-            (color ? stats.cached_image_texel_bytes : stats.cached_coverage_texel_bytes) += image.texel_bytes;
-            (color ? stats.cached_image_cpu_bytes : stats.cached_coverage_cpu_bytes) += image.cpu_bytes;
             // The protocol permits padded CPU rows; gfx's upload contract is tight.
             const auto pitch = std::size_t(owner->width) * channels;
             upload_pixels.resize(pitch * owner->height);
@@ -932,8 +923,6 @@ struct Renderer::State {
                                gfxCreateBuffer(gfx, upload_pixels.size(), upload_pixels.data(), kGfxCpuAccess_Write)};
             allocation(bool(upload.buffer));
             require(gfxCommandCopyBufferToTexture(gfx, image.texture, upload.buffer), "Upload UI texture");
-            ++(color ? stats.image_upload_count : stats.coverage_upload_count);
-            (color ? stats.image_upload_bytes : stats.coverage_upload_bytes) += upload_pixels.size();
         }
         if (!image.used) {
             image.used = true;
@@ -1332,8 +1321,6 @@ struct Renderer::State {
                 timing::Scope ui_upload{phases::encode_ui_upload};
                 ui_data = ui_slots.write(gfx, context.info().frames_in_flight, ui_instances, true, "UI instance");
             }
-            stats.ui_instance_upload_bytes = (ui_instances.size() - overlay_instances) * sizeof(UiInstance);
-            stats.ui_quads = ui_instances.size() - overlay_instances;
             stats.overlay_shapes = overlay_instances;
             const auto program = ui_pipeline.program();
             const std::array<float, 2> size{static_cast<float>(extent.width), static_cast<float>(extent.height)};
@@ -1367,10 +1354,6 @@ struct Renderer::State {
                 continue;
             }
             require(gfxDestroyTexture(gfx, it->second.texture), "Retire unused UI texture");
-            const bool color = it->first.color;
-            --(color ? stats.cached_image_count : stats.cached_coverage_count);
-            (color ? stats.cached_image_texel_bytes : stats.cached_coverage_texel_bytes) -= it->second.texel_bytes;
-            (color ? stats.cached_image_cpu_bytes : stats.cached_coverage_cpu_bytes) -= it->second.cpu_bytes;
             it = images.erase(it);
         }
         if (capture) {
@@ -1586,18 +1569,12 @@ Result<FrameResult> Renderer::render(const Frame& frame, Capture* capture) {
         return std::unexpected(destination.error());
     auto& s = *state_;
     s.stats.ui_draw_calls = 0;
-    s.stats.ui_quads = 0;
-    s.stats.ui_instance_upload_bytes = 0;
     s.stats.scene_draw_calls = 0;
     s.stats.scene_instances = s.stats.scene_culled_instances = 0;
     s.stats.material_upload_count = 0;
     s.stats.viewport_draw_calls = 0;
     s.stats.overlay_shapes = 0;
     s.stats.overlay_draw_calls = 0;
-    s.stats.coverage_upload_count = 0;
-    s.stats.coverage_upload_bytes = 0;
-    s.stats.image_upload_count = 0;
-    s.stats.image_upload_bytes = 0;
     s.stats.scene_lit_gpu_ms = {};
     s.stats.scene_lit_ddgi_gpu_ms = {};
     s.stats.scene_lit_ddgi_visibility_rays = {};
