@@ -59,4 +59,4 @@
 
 阶梯参考图中的七格、细灰边、中央文字和金色选档改为实际共享弹层绘制。交互依据 [SideFX value ladder](https://www.sidefx.com/docs/houdini/basics/ladder.html) 的上下选精度、左右增减和 Alt 乘法语义；本站实现的具体步距、Shift 细调和缓存合同见 [UI 模块](../modules/ui/README.md)。当前阶梯仍由宿主 Surface 内的捕获式覆盖层呈现，未迁移为独立原生窗口。
 
-窗口验收覆盖单行高度一致、显示档位与命中一致、纵向选档不写值、步进精度、Shift、Alt、单次撤销、Esc 取消及静止缓存。2026-10-02 两种配置均通过 UI 15/15 和普通窗口完整链，各 2840 帧；证据为 `out/field-ladder-20261002/{dev,release}/`。随后 review 增加菜单接管抓取手势的回归，最终结果统一见 [阶段收口](editor-ui-20261002-closeout.md)。
+窗口验收的覆盖与边界见[编辑器验收入口](../modules/editor/README.md#验收入口)，不以固定版本的通过记录代替当前组合验证。

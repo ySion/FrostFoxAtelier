@@ -99,6 +99,8 @@ DSL 的 EditorShell 和 ToolShelf 用普通容器、按钮和 `collapsed` 组成
 
 正式编辑器的 Controls 实验台与位置参数行均使用上述接口，真实窗口验收覆盖两者，见[编辑器模块](../editor/README.md#控件实验台)。
 
+组合依据：[SideFX 参数编辑器](https://www.sidefx.com/docs/houdini/network/parms.html)区分类型、名称、默认值与编辑值；[Operator Type Properties](https://www.sidefx.com/docs/houdini/ref/windows/optype.html)与 [FolderParmTemplate](https://www.sidefx.com/docs/houdini/hom/hou/FolderParmTemplate.html)说明嵌套页签和分组。[数值阶梯](https://www.sidefx.com/docs/houdini/basics/ladder.html)支持垂直选档、水平改值及 Alt 乘法；本项目的具体步距与 Shift 政策以上文为准，不将自己的验收当作 Houdini 实机证明。[QBoxLayout](https://doc.qt.io/qt-6/qboxlayout.html)是方向、伸展、margin/spacing 的组合参考，不是截图能证明的 Houdini 内部实现。
+
 ### 树视图
 
 `tree` 是共享滚动容器，`tree_item` 是它的直接布局子项。Tree 需要宿主提供展平后的行：宿主持有层级、展开状态和过滤，按深度优先先序把可见节点展平成 `tree_row_count` 行，只描述其中一部分。每个 `tree_item` 给出 `tree_index`（行号）、`tree_depth`（< 128）、`tree_branch`、`tree_expanded` 和 `tree_lines`（第 k 位表示第 k 层祖先或本行之后还有同级行，绘制该层连接线）。Session 校验描述行号递增、不超出行数、相邻行至多深一层且只在展开的分支下，然后只排布描述的行：每行按 `tree_index × 行高` 定位，树的滚动范围覆盖全部 `tree_row_count` 行。逻辑层级只表达展示关系，不创建业务对象或修改 World。
@@ -132,6 +134,8 @@ list/tree/popup 默认使用 `scrollbar-gutter: stable`，布局时保留 `scrol
 `Reply.cursor` 未提供时保留当前指针。指针意图由已接受命中或活动手势决定，数值调整、文本、分隔、停靠移动及视口观察各用相应形态。Window 缓存原生指针并处理客户区 `WM_SETCURSOR`；数值调整使用项目自己的双向箭头，文字和分隔条复用 Windows 指针。视口平移、环绕、移动、旋转和缩放使用独立语义指针，浅色笔画带暗描边，按意图与 DPI 缓存，销毁窗口时回收。捕获期间离开原控件仍保持手势指针。
 
 视口工具图标与语义指针共用精选 [Tabler Outline](https://github.com/tabler/tabler-icons) 图形（MIT）。原始 SVG、透明 PNG、版本与许可保存在 [assets/icons](../../../assets/icons/README.md)。构建使用离线生成的压缩 alpha，继续经过 `ControlIcon → TextStore::Symbol → Coverage` 的既有缓存与主题着色；不引入运行时 SVG/PNG 解码器或另一套图标资源管理。
+
+范围与轨道像素分开的参照见 [QScrollBar](https://doc.qt.io/qt-6/qscrollbar.html)。原生指针的处理依据为 [WM_SETCURSOR](https://learn.microsoft.com/en-us/windows/win32/menurc/wm-setcursor)、[About Cursors](https://learn.microsoft.com/en-us/windows/win32/menurc/about-cursors)和 [SetCursor](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setcursor)；静态截图不能证明捕获期间的指针行为。
 
 ### 菜单与下拉
 
@@ -219,7 +223,7 @@ IME使用独立composition_id和固定起始token/替换范围；`CompositionEve
 
 本轮只支持[IMR_QUERYCHARPOSITION](https://learn.microsoft.com/en-us/windows/win32/intl/imr-querycharposition)实测需要的`dwCharPos=0`；Window把bounds左上和clip转换成屏幕坐标，填[IMECHARPOSITION](https://learn.microsoft.com/en-us/windows/win32/api/imm/ns-imm-imecharposition)的pt、cLineHeight和rcDocument。其他offset或无有效快照明确返回0，不夹到offset0，也不以显示caret冒充起点；没有预建逐字符坐标数组。此合同修复本身不证明真实输入法的组合链已经通过。
 
-历史UI验收中的组合事件与剪贴板结果采用生产协议注入，当前消费者不再保留失败和过期边界矩阵。真实CF_UNICODETEXT、本机搜狗输入法的系统确认/取消/候选位置由应用窗口验收负责，不能由本模块的合成事件替代。S2 的历史环境与限制见[编辑器集成记录](../editor/README.md#s2-集成状态与输入法验收)；2026-10-01 参数控件增量已重跑双配置真实搜狗，结果见[本轮验收](../../research/houdini-controls-20261001.md#参数控件复刻增量验收)，不扩展到其他输入法。
+真实 CF_UNICODETEXT 由应用窗口链覆盖；本机搜狗的系统确认/取消/候选位置有独立的[输入法验收](../editor/README.md#输入法验收)。本模块的合成协议事件不能替代系统输入，旧版本通过记录也不能证明当前环境或其他输入法。
 
 ## CPU绘制与文字寿命
 

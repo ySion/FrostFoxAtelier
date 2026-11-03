@@ -167,4 +167,4 @@ Dev/Release 的 `atelier_rhi_acceptance`、`atelier_gfx_regression`、`atelier_r
 - DispatchRays、透明/程序化光追几何、AS compaction；现有验证仅覆盖不透明三角形的 compute inline RayQuery。
 - Runtime Texture 与业务语言/UI 的资源贯通链，以及稳定的产品性能基准。启用 validation 的 GPU 耗时只用于功能验证。
 
-窗口和 Renderer 的其他产品能力见[Renderer 验收](../renderer/acceptance.md)，业务资源剩余缺口见[资源连接提案](../resources/design-proposal.md)。
+窗口和 Renderer 的其他产品能力见[Renderer 验收](../renderer/acceptance.md)，业务资源剩余缺口见[资源连接提案](../resources/asset-system-plan.md#texture-到-ui-的共同消费待接线)。

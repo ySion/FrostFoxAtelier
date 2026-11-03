@@ -47,4 +47,4 @@ gfx 源码按锁定修订号放在 `out/<preset>/_deps/gfx-<revision>-src`，补
 现有 Renderer 已接入 Present/resize、显式尺寸深度与最终帧结果，并通过 dev/release 的[renderer验收](../renderer/acceptance.md)及[编辑器窗口链](../editor/README.md)。主窗口与原生弹出窗口分别持有自己的 Renderer/Context；现行呈现和失败语义见[renderer合同](../renderer/contract.md)。
 未交付或未验证的能力集中列于[验收边界](acceptance.md#未覆盖范围)，包括通用 RDG、业务 Texture 语言接线、并发录制、多 queue、设备恢复和不同 GPU 的支持矩阵。
 
-引擎已有不可变 CPU Mesh/材质图片、UI 图片快照及 Renderer 的上传/退休路径；共享 Runtime Texture 业务对象到语言、布局和绘制的连接仍未实现。已有机制、剩余缺口和生命周期分工见[资源连接提案](../resources/design-proposal.md)，不会把 Mesh Shader 管线等同于引擎 Mesh 资源。
+引擎已有不可变 CPU Mesh/材质图片、UI 图片快照及 Renderer 的上传/退休路径；共享 Runtime Texture 业务对象到语言、布局和绘制的连接仍未实现。已有机制、剩余缺口和生命周期分工见[资源连接提案](../resources/asset-system-plan.md#texture-到-ui-的共同消费待接线)，不会把 Mesh Shader 管线等同于引擎 Mesh 资源。

@@ -1,6 +1,7 @@
 #include "application/application.hpp"
 #include "application/diagnostics.hpp"
 #include "assets/file.hpp"
+#include "foundation/result.hpp"
 #include <algorithm>
 #include <atomic>
 #include <cstdio>
@@ -118,8 +119,7 @@ Result<void> Application::apply_document_request(const editor::DocumentRequest& 
     for (const auto& file : workspace_.source_editor.files()) {
         const auto relative = file->path.lexically_relative(project_->root());
         if (file->dirty() && !relative.empty() && *relative.begin() == L"Source")
-            if (auto saved = save_source(*file, request.interactive); !saved)
-                return saved;
+            ATELIER_TRY(save_source(*file, request.interactive));
     }
     return build_project(request.rebuild);
 }
@@ -136,13 +136,9 @@ Result<void> Application::build_project(bool rebuild) {
     if (play_.running())
         return failure("Stop the project before rebuilding its types.");
     for (const auto& key : document_->dirty_materials()) {
-        auto saved = document_->save_material(*project_, key);
-        if (!saved)
-            return saved;
+        ATELIER_TRY(document_->save_material(*project_, key));
     }
-    auto text = workspace_.scene_available ? document_->serialize() : Result<std::string>{pending_scene_};
-    if (!text)
-        return std::unexpected(text.error());
+    ATELIER_TRY_BIND(text, workspace_.scene_available ? document_->serialize() : Result<std::string>{pending_scene_});
     const bool dirty = workspace_.scene_available && document_->dirty();
     auto next =
         editor::load_project_scene(*project_, *text, editor::LoadPolicy::tolerant, false, editor::SessionRole::editor);
@@ -187,10 +183,8 @@ Result<void> Application::create_source(const std::filesystem::path& relative, b
                        return !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_');
                    })))
         return failure("Use a Source identifier as the component file name (letters, digits and underscore).");
-    auto created = project_->create_source(relative, is_ui ? editor::ProjectCode::ui_source()
-                                                           : editor::ProjectCode::component_source(stem));
-    if (!created)
-        return created;
+    ATELIER_TRY(project_->create_source(relative, is_ui ? editor::ProjectCode::ui_source()
+                                                        : editor::ProjectCode::component_source(stem)));
     if (is_ui) {
         auto configured = project_->set_ui_source(relative);
         if (!configured) {
@@ -204,9 +198,7 @@ Result<void> Application::create_source(const std::filesystem::path& relative, b
     const auto path = project_->resolve(relative);
     if (!path)
         return std::unexpected(path.error());
-    auto opened = open_source(*path);
-    if (!opened)
-        return opened;
+    ATELIER_TRY(open_source(*path));
     auto refreshed = project_->refresh();
     if (!refreshed)
         notice("source.browser_refresh_failed",
@@ -227,13 +219,9 @@ Result<void> Application::run_project() {
     if (!edit || !effects(*edit))
         return failure("Finish the current field edit before running.");
     for (const auto& key : document_->dirty_materials()) {
-        auto saved = document_->save_material(*project_, key);
-        if (!saved)
-            return saved;
+        ATELIER_TRY(document_->save_material(*project_, key));
     }
-    auto built = build_project();
-    if (!built)
-        return built;
+    ATELIER_TRY(build_project());
     const auto source = document_->serialize();
     if (!source)
         return std::unexpected(source.error());
@@ -244,9 +232,7 @@ Result<void> Application::run_project() {
     const auto path = project_->resolve(relative);
     if (!path)
         return std::unexpected(path.error());
-    auto saved = editor::write_file(*path, *source, editor::WriteMode::create);
-    if (!saved)
-        return saved;
+    ATELIER_TRY(editor::write_file(*path, *source, editor::WriteMode::create));
     std::unique_ptr<LiveLink> link;
     consume_play_output(); // Consume the previous run before a successful start resets its buffers.
     auto started = play_.start(project_->root(), *path, false, 0, {}, false, false, &link);
@@ -275,9 +261,7 @@ Result<void> Application::preview_project_ui() {
     if (play_.running())
         return failure("Stop the current run before previewing the project UI.");
     consume_play_output();
-    auto started = play_.start(project_->root(), {}, false, 0, {}, true);
-    if (!started)
-        return started;
+    ATELIER_TRY(play_.start(project_->root(), {}, false, 0, {}, true));
     attach_play_output();
     workspace_.project_running = true;
     workspace_.project_stopping = false;
@@ -297,9 +281,7 @@ Result<void> Application::start_play(bool preview_ui, bool interactive) {
         for (const auto& file : workspace_.source_editor.files()) {
             const auto relative = file->path.lexically_relative(project_->root());
             if (file->dirty() && !relative.empty() && *relative.begin() == L"Source") {
-                auto saved = save_source(*file, interactive);
-                if (!saved)
-                    return saved;
+                ATELIER_TRY(save_source(*file, interactive));
             }
         }
     if (preview_ui)

@@ -4,7 +4,7 @@
 
 ## 当前资源设计研究
 
-[引擎资产与 GPU 资源](engine-resource-industry.md)记录 Unreal、O3DE、Godot、Filament 的资源衔接机制，以及本项目的设计推断。可审查的未实施首增量集中在 [资源连接方案](../../modules/resources/design-proposal.md)；负责人确认的职责不等于新增 API 已实现或贯通验收通过。
+[引擎资产与 GPU 资源](engine-resource-industry.md)记录 Unreal、O3DE、Godot、Filament 的资源衔接机制，以及本项目的设计推断。可审查的未实施首增量集中在 [资源连接方案](../../modules/resources/asset-system-plan.md#texture-到-ui-的共同消费待接线)；负责人确认的职责不等于新增 API 已实现或贯通验收通过。
 
 ## 固定来源记录
 

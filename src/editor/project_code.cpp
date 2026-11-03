@@ -377,20 +377,6 @@ ProjectDocument load_project_scene(Project& project, std::string_view source, Lo
     return result;
 }
 
-std::vector<std::wstring> describe_issues(const Session& session, std::span<const world::Diagnostic> issues,
-                                          std::wstring_view source) {
-    std::vector<std::wstring> lines;
-    if (issues.empty())
-        return lines;
-    lines.push_back(std::wstring(source) + L": " + std::to_wstring(issues.size()) + L" scene diagnostic(s), " +
-                    std::to_wstring(session.placeholder_count()) +
-                    L" placeholder object(s). Saved data that could not be applied is kept and written back on save.");
-    for (const auto& item : issues)
-        lines.push_back(L"  [" + assets::wide(world::name(item.severity)) + L"] " + assets::wide(item.message) +
-                        (item.value.empty() ? std::wstring{} : L" Saved: " + assets::wide(item.value)));
-    return lines;
-}
-
 std::wstring describe_diagnostic(const Session& session, const world::Diagnostic& item) {
     auto line = L"Diagnostic [" + assets::wide(world::name(item.severity)) + L"] " +
                 assets::wide(world::name(item.kind)) + L" in " + assets::wide(world::name(item.phase));

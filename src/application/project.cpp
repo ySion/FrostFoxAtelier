@@ -2,6 +2,7 @@
 #include "application/editor_control.hpp"
 #include "application/diagnostics.hpp"
 #include "editor/error.hpp"
+#include "foundation/result.hpp"
 #include "logging/native.hpp"
 #include "assets/file.hpp"
 #include <cstdio>
@@ -125,8 +126,7 @@ Result<bool> Application::confirm_discard(bool sources, bool interactive) {
             return failed("The active field could not be committed.");
     } else
         return failed("Finish the active field before replacing the document.");
-    if (auto committed = finish_color_edit(true); !committed)
-        return std::unexpected(committed.error());
+    ATELIER_TRY(finish_color_edit(true));
     if (sources)
         for (const auto& file : workspace_.source_editor.files()) {
             const auto confirmed = confirm_source(*file);
@@ -232,9 +232,7 @@ Result<void> Application::open_project(const std::filesystem::path& folder, bool
 Result<void> Application::load_project(const std::filesystem::path& folder, bool create,
                                        const std::filesystem::path& scene, ProjectOpenPolicy policy,
                                        const std::function<Result<void>(const editor::Session&)>& admit) {
-    auto project = create ? editor::Project::create(folder) : editor::Project::open(folder);
-    if (!project)
-        return std::unexpected(project.error());
+    ATELIER_TRY_BIND(project, create ? editor::Project::create(folder) : editor::Project::open(folder));
     const auto initial_scene = scene.empty() ? project->startup_scene() : scene;
     const auto path = project->resolve(initial_scene);
     if (!path)
@@ -253,8 +251,7 @@ Result<void> Application::load_project(const std::filesystem::path& folder, bool
         return candidate.error ? std::unexpected(*candidate.error)
                                : failed("Project did not produce a complete scene.");
     if (reproducible && admit)
-        if (auto admitted = admit(*candidate.session); !admitted)
-            return admitted;
+        ATELIER_TRY(admit(*candidate.session));
     play_.close();
     consume_play_output();
     workspace_.source_editor.clear();
@@ -304,12 +301,8 @@ Result<void> Application::open_scene(const std::filesystem::path& relative, bool
         cancel_operator();
         return {};
     }
-    auto path = project_->resolve(relative);
-    if (!path)
-        return std::unexpected(path.error());
-    auto text = assets::read_file(*path);
-    if (!text)
-        return std::unexpected(text.error());
+    ATELIER_TRY_BIND(path, project_->resolve(relative));
+    ATELIER_TRY_BIND(text, assets::read_file(*path));
     auto next =
         editor::load_project_scene(*project_, *text, editor::LoadPolicy::tolerant, true, editor::SessionRole::editor);
     if (!next.session) {
@@ -340,8 +333,7 @@ Result<void> Application::save_scene(const std::filesystem::path& relative) {
         return failed("Correct the active field before saving.");
     if (!effects(*edit))
         return failed("The active field could not be committed; the scene was not saved.");
-    if (auto committed = finish_color_edit(true); !committed)
-        return committed;
+    ATELIER_TRY(finish_color_edit(true));
     const auto destination = relative.empty() ? scene_path_ : relative;
     if (!editor::Project::is_scene_path(destination))
         return failed("Save scenes inside the project's Content folder with a .scene extension.");
@@ -351,9 +343,7 @@ Result<void> Application::save_scene(const std::filesystem::path& relative) {
     const auto text = document_->serialize();
     if (!text)
         return std::unexpected(text.error());
-    auto saved = editor::write_file(*path, *text);
-    if (!saved)
-        return saved;
+    ATELIER_TRY(editor::write_file(*path, *text));
     scene_path_ = destination;
     document_->mark_saved();
     const auto refreshed = project_->refresh();
@@ -378,12 +368,9 @@ Result<void> Application::reimport_asset(std::string_view key, const std::filesy
     const auto edit = ui_.commit_edit();
     if (!edit || !effects(*edit))
         return failed("Finish the active edit before reimporting.");
-    if (auto finished = finish_color_edit(true); !finished)
-        return finished;
-    auto imported = entry->kind == assets::AssetKind::texture ? document_->reimport_texture(*project_, key, path)
-                                                              : document_->reimport_mesh(*project_, key, path);
-    if (!imported)
-        return imported;
+    ATELIER_TRY(finish_color_edit(true));
+    ATELIER_TRY(entry->kind == assets::AssetKind::texture ? document_->reimport_texture(*project_, key, path)
+                                                          : document_->reimport_mesh(*project_, key, path));
     workspace_.status = L"Resource reimported; current content published";
     return {};
 }
@@ -391,17 +378,13 @@ Result<void> Application::reimport_asset(std::string_view key, const std::filesy
 Result<std::string> Application::import_asset(editor::ImportKind kind, const std::filesystem::path& path) {
     close_menu(false);
     if (kind == editor::ImportKind::texture) {
-        auto created = project_->import_texture(path);
-        if (!created)
-            return std::unexpected(created.error());
+        ATELIER_TRY_BIND(created, project_->import_texture(path));
         if (const auto* at = project_->entry(*created))
             workspace_.assets.navigate(at->path.parent_path());
         workspace_.status = L"Texture imported";
         return created;
     }
-    auto imported = project_->import_mesh(path);
-    if (!imported)
-        return std::unexpected(imported.error());
+    ATELIER_TRY_BIND(imported, project_->import_mesh(path));
     for (const auto& note : project_->assets().mesh_notes(*imported))
         notice("asset.mesh_import_note", L"Import Mesh: " + assets::wide(note));
     workspace_.assets.reset(true);
@@ -414,9 +397,7 @@ Result<void> Application::open_source(const std::filesystem::path& path) {
     const auto edit = ui_.commit_edit();
     if (!edit || !effects(*edit))
         return failed("Finish the current edit before opening source.");
-    auto opened = workspace_.source_editor.open(path);
-    if (!opened)
-        return opened;
+    ATELIER_TRY(workspace_.source_editor.open(path));
     workspace_.dock.select(editor::source_control::tab);
     pending_source_focus_ = true;
     return {};
@@ -438,9 +419,7 @@ Result<void> Application::save_source(editor::SourceEditor::File& file, bool int
         workspace_.status = L"Source saved";
         source_build_pending_ = true;
         if (project_) {
-            auto materials = document_->material_assets();
-            if (!materials)
-                return std::unexpected(materials.error());
+            ATELIER_TRY_BIND(materials, document_->material_assets());
             for (const auto& asset : *materials) {
                 const auto* author = std::get_if<assets::MaterialSourceAsset>(&asset.author);
                 if (!author || author->source_path.starts_with("builtin/"))
@@ -454,9 +433,8 @@ Result<void> Application::save_source(editor::SourceEditor::File& file, bool int
                 source::SourceFile exact{author->source_path, source::content_hash(text), std::move(text),
                                          assets::utf8(file.path.generic_wstring())};
                 std::vector<editor::MissingResource> missing;
-                auto published = document_->publish_material(project_->assets(), asset, std::move(exact), &missing);
-                if (!published)
-                    return std::unexpected(published.error());
+                ATELIER_TRY_BIND(published,
+                                 document_->publish_material(project_->assets(), asset, std::move(exact), &missing));
                 for (const auto& issue : missing)
                     report_error(issue.error, "material.resource_missing", logging::Severity::warning);
                 if (!missing.empty())
@@ -496,13 +474,10 @@ Result<void> Application::save_documents(const editor::Context& context, bool al
         auto edit = ui_.commit_edit();
         if (!edit || !effects(*edit))
             return failed("Finish the material field before saving.");
-        if (auto committed = finish_color_edit(true); !committed)
-            return committed;
+        ATELIER_TRY(finish_color_edit(true));
         if (!project_)
             return failed("No project is open.");
-        auto saved = document_->save_material(*project_, material);
-        if (!saved)
-            return saved;
+        ATELIER_TRY(document_->save_material(*project_, material));
         const auto refreshed = project_->refresh();
         workspace_.status = refreshed ? L"Material saved" : L"Material saved; catalog refresh failed";
         return {};
@@ -514,18 +489,14 @@ Result<void> Application::save_documents(const editor::Context& context, bool al
         auto edit = ui_.commit_edit();
         if (!edit || !effects(*edit))
             return failed("Finish the current field before saving.");
-        if (auto committed = finish_color_edit(true); !committed)
-            return committed;
+        ATELIER_TRY(finish_color_edit(true));
         if (project_)
             for (const auto& key : document_->dirty_materials()) {
-                auto saved = document_->save_material(*project_, key);
-                if (!saved)
-                    return saved;
+                ATELIER_TRY(document_->save_material(*project_, key));
             }
         for (const auto& item : workspace_.source_editor.files())
             if (item->dirty())
-                if (auto result = save_source(*item, context.interactive); !result)
-                    return result;
+                ATELIER_TRY(save_source(*item, context.interactive));
         return project_ && workspace_.scene_available ? this->save_scene() : Result<void>{};
     }
     return {};
@@ -563,9 +534,7 @@ Result<void> Application::reload_source(bool interactive) {
         }
     }
     effects(ui_.focus(0));
-    auto result = workspace_.source_editor.reload(*file);
-    if (!result)
-        return result;
+    ATELIER_TRY(workspace_.source_editor.reload(*file));
     pending_source_focus_ = true;
     return {};
 }

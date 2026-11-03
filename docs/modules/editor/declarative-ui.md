@@ -1,15 +1,31 @@
 # 引擎原生声明式 UI
 
-编辑器现有界面的装配已统一到 [editor.ui.source](../../../assets/editor.ui.source)：EditorShell、菜单栏、工具架、状态栏、停靠页签与分隔条、Scene View、Parameters、Scene Tree、Entity Structure、Asset Browser、Controls、Code、Project Output，以及独立窗口内的 PopupMenu。宿主提供业务数据、稳定身份和动作；Source/JIT 产出同一套原生 Control，沿现有 SS、Session、布局与绘制链执行。迁移范围与尚未实现的业务能力见[迁移清单](dsl-migration.md)。
+编辑器现有界面的装配统一到 [editor.ui.source](../../../assets/editor.ui.source)：EditorShell、菜单栏、工具架、状态栏、停靠页签与分隔条、Scene View、Parameters、Scene Tree、Entity Structure、Asset Browser、Controls、Code、Project Output，以及独立窗口内的 PopupMenu。宿主提供业务数据、稳定身份和动作；Source/JIT 产出同一套原生 Control，沿现有 SS、Session、布局与绘制链执行。区域职责与未实施的交互见[区域与手势边界](#区域与手势边界)。
 
 Parameters 在对象标题下按需展开过滤器，连续展示检查目标的 Position/Rotation/Scale 数值行和 `Items<PropertyGroup>`，不内建 Transform／Components 页签。`PropertyRow` 根据实际字段种类使用 NumberRow、Checkbox 或枚举 Combo；规范数学元组由 NumberRow 组合。资源选择使用 `ResourceParameters` 和 `Items<ResourceProperty>` 展示只读元数据，各行 key 来自同一宿主分配器。EntityStructure 用同一 Tree/Repeat 递归展示 Entity 与组件归属，并提供组成及 Add/Remove Transform 命令；SceneTree 递归展示 Entity 组合层级。ViewportTools 在路径栏末尾提供显示菜单，ViewportMode 在视口左侧组成紧凑的选择组和枢轴菜单。所有视图沿同一原生控件和命令链工作。
 
 
-本文是当前实现的用法与契约说明，包含 2026-10-05 的源码局部更新。Qt/QML、Unity UI Toolkit 与 Flutter 的官方资料比对及演进起点见[更新机制研究](../../research/ui-dsl-update-comparison-20261005.md)。
+本文是当前实现的用法与契约说明。Qt/QML、Unity UI Toolkit 与 Flutter 的官方资料比对见[更新机制研究](../../research/ui-dsl-update-comparison-20261005.md)。
 
 **当前支持数据局部更新和保留兼容实例的源码 patch。保存后全文件检查、按组件复用 JIT；已有 Instance / Runtime Context 保持，变化的定义和子树经过同一个可拒绝事务提交。新增、删除或不兼容的子组件才建立、结束对应生命周期。**
 
 阅读入口：[作者语法](#声明输入与组合)、[控件和属性](#控件与状态)、[更新粒度](#更新粒度数据变化与源码变化)、[新增组件](#在现有编辑器里新增组件)、[源码 patch 契约](#源码-patch-契约)。
+
+## 区域与手势边界
+
+可见结构、控件选择、布局、样式与组合由 DSL/SS 描述；C++ 拥有 World、命令、撤销、资源扫描、平台窗口/对话框、捕获和 GPU 资源。Viewport、DockSpace、Table 保留明确的原生合同，不用一个 NativePanel 包回整块 C++ 界面组装。补能力从真实区域出发，不先建脱离消费者的控件大全。
+
+- 外壳只分配一次剩余空间。工具架、路径、对象标题和内容区各有职责；参数搜索属于被筛选内容的父层，收起返还空间。参数标签/字段共用行高与垂直中心，组合不默认再加边框或 padding；物理截图尺寸不能直接当 DIP。
+- 命令按钮激活一次，没有持久开关状态；图标只是同一命令的呈现，须有可读名称。checked/selected 来自权威值，open 来自 popup 生命周期；hover、pressed、focus、disabled、invalid、modified 分别表达，不能用一个 active 标记替代。
+- Table 的行、列、单元格使用稳定身份；表头、列宽、排序、键盘索引与绘制来自同一数据顺序及接受帧。数值按数值排序，单击只选择，Enter/双击才打开；过滤排除选择后清空，取消过滤不复活旧目标。空目录、无匹配与读取失败分别反馈。编辑单元格、冻结列、合并及完整多选未实现；多选须先定义当前项、锚点、选集和批量动作。
+- 数值拖调、阶梯与滑条复用 Session 捕获和同一事务；文字/IME/剪贴板复用原文本会话，不在 DSL 建编辑缓存。停靠 Tab 与内容 ChoiceButton、列宽调整与资产拖放不是同一手势。
+- `ControlKey` 标识 UI 实例，`ActionBinding.target` 标识动作目标。绑定与控件同批准备/拒绝/提交；换绑取消旧按下，旧接受帧不能操作新目标。执行前重新核对可用性，不能悄悄转向当前新选择。
+
+Scene Tree 的行选择/重命名/组合换父、Parameters 的实例编辑及资源浏览现状见[编辑器](README.md#ui-样式与诊断)和[工程](projects.md)。Class 资产、模板默认值/实例覆盖、多份同类型业务面板、布局持久化、模型缩略图和跨区域资源拖放仍未建设；资源字段与视口的交互应沿同一作者事务扩展，不由 DSL 重复拥有业务状态。
+
+未来资源拖放开始时须冻结资源身份、工程/文档代次及源控件寿命；目标协商类型与可用性，预览不创建正式 Entity，drop 时重新验证并提交一次命令/撤销。字段目标冻结对象/字段身份，禁用字段拒绝；切文档、源退役或目标关闭终止旧会话，不能在 drop 时重读“当前选择”。`DragPoint{x,y}` 只是几何，不是载荷协议。外部文件须经 Windows 适配与同一导入服务验证类型、目录/多文件和工程目标；普通外部链接不自动下载或执行。组合换父不能与空间参考混作一个操作。
+
+设计依据：[SideFX Geometry Spreadsheet](https://www.sidefx.com/docs/houdini/ref/panes/geosheet.html)区分过滤、列和排序；[Panes](https://www.sidefx.com/docs/houdini/basics/panes.html)说明窗格组合与分隔操作。借鉴行为和责任，不复制专有素材或将外部软件未核实的隐藏状态当本项目合同。
 
 ## 编辑与保存
 
@@ -432,6 +448,4 @@ Parameters、Controls 等区域挂在稳定的业务内容槽内；停靠移动�
 
 组件只求值失效绑定，输入只复制变化槽位；变化片段可通过 swap 提交或恢复，长度变化时准备新的连续快照。控件 key 序列不变时跳过 key 集合构造与差集统计；稳定帧不递归执行退休清理。源码按组件生成代码复用 JIT，不是一般的函数级增量编译。宿主仍逐帧采样并 describe/set_controls；这不等于整个编辑器只遍历变化节点，也不等于增量布局求解。
 
-历史测量见[热更审计](../../research/ui-hot-reload-audit-20261005.md)和[源码 patch 验收](../../research/ui-source-patch-20261005.md)。
-
-第一阶段的历史证据见[原生 UI 首片](../../research/native-ui-language-20261005.md)。第二阶段起点结果见[组件与保存更新验收](../../research/native-ui-authoring-20261005.md)。现有界面已完成装配迁移；后续按实际需求补齐 Inspector 业务能力、多窗格实例、跨文件组织及独立 HUD；更新调度遵循[默认更新策略](#默认更新策略)。
+现有界面已完成装配迁移；后续按实际需求补齐 Inspector 业务能力、多窗格实例、跨文件组织及独立 HUD；更新调度遵循[默认更新策略](#默认更新策略)。编译及准备提交的采样沿既有 `--profile-ui-reload` 入口，保存到接受帧的延迟须在真实窗口另测；不以小场景耗时或历史通过表推断完整编辑器延迟。

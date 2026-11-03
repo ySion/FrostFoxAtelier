@@ -4,6 +4,7 @@
 #include "application/diagnostics.hpp"
 #include "editor/error.hpp"
 #include "editor/keymap.hpp"
+#include "foundation/result.hpp"
 #include "logging/native.hpp"
 #include "assets/file.hpp"
 #include "assets/json_format.hpp"
@@ -275,8 +276,7 @@ Result<editor::OperatorReport> Application::call_operator(const editor::Operator
         if (!editor::has_flag(workspace_.operators.find(request.id)->flags, editor::OperatorFlag::replaces_document))
             return std::unexpected(
                 Error{ErrorCode::invalid_definition, "Only a replacing operator may request a document replacement."});
-        if (auto replaced = apply_document_request(*replacement); !replaced)
-            return std::unexpected(replaced.error());
+        ATELIER_TRY(apply_document_request(*replacement));
         if (operator_cancelled())
             report->status = editor::OperatorStatus::cancelled;
     }
@@ -287,9 +287,7 @@ Result<editor::OperatorReport> Application::call_operator(const editor::Operator
 }
 
 Result<void> Application::run_operator(const editor::OperatorCall& call, bool report_unavailable, bool interactive) {
-    auto report = call_operator(call, interactive);
-    if (!report)
-        return std::unexpected(report.error());
+    ATELIER_TRY_BIND(report, call_operator(call, interactive));
     if (report->status == editor::OperatorStatus::failed && report_unavailable)
         return std::unexpected(Error{ErrorCode::unsupported_operation, report->message});
     return {};
@@ -300,8 +298,7 @@ Result<void> Application::run_operator(const editor::OperatorCall& call, bool re
 Result<void> Application::end_interaction() {
     if (camera_drag_)
         cancel_interaction(ui_.cancel_interaction());
-    if (auto cancelled = viewport_tool_.cancel(*document_); !cancelled)
-        return cancelled;
+    ATELIER_TRY(viewport_tool_.cancel(*document_));
     if (!workspace_.menu)
         window_.capture(false);
     return {};
@@ -356,16 +353,13 @@ void Application::scene_changed() {
 }
 
 Result<void> Application::set_view_settings(const renderer::ViewSettings& settings) {
-    if (auto changed = workspace_.set_view_settings(*document_, settings, lighting_focus()); !changed)
-        return changed;
+    ATELIER_TRY(workspace_.set_view_settings(*document_, settings, lighting_focus()));
     workspace_.viewport_settings.grid_spacing = settings.grid_spacing;
     return {};
 }
 
 Result<renderer::ViewSettings> Application::fitted_probe_view(bool follow_focus) const {
-    auto items = document_->presentation().render_items();
-    if (!items)
-        return std::unexpected(items.error());
+    ATELIER_TRY_BIND(items, document_->presentation().render_items());
     if (items->empty())
         return std::unexpected(Error{ErrorCode::invalid_definition, "DDGI volume fitting requires rendered geometry."});
     struct Bounds {
@@ -416,8 +410,7 @@ Result<renderer::ViewSettings> Application::fitted_probe_view(bool follow_focus)
         focused.counts = {13, 7, 13};
         focused.blend_cells = 1;
     }
-    if (auto valid = editor::validate_view_options(candidate, lighting_focus()); !valid)
-        return std::unexpected(valid.error());
+    ATELIER_TRY(editor::validate_view_options(candidate, lighting_focus()));
     return candidate;
 }
 
@@ -428,10 +421,8 @@ Result<void> Application::configure_view(math::Vector3 eye, math::Vector3 target
     if (shading > renderer::Shading::scene_lit || !camera.look_at(eye, target))
         return std::unexpected(Error{ErrorCode::invalid_definition, "Invalid initial camera or shading mode."});
     candidate.shading = shading;
-    if (auto valid = editor::validate_view_options(candidate, {target.x, target.y, target.z}); !valid)
-        return valid;
-    if (auto set = workspace_.set_view_settings(*document_, candidate, {target.x, target.y, target.z}); !set)
-        return set;
+    ATELIER_TRY(editor::validate_view_options(candidate, {target.x, target.y, target.z}));
+    ATELIER_TRY(workspace_.set_view_settings(*document_, candidate, {target.x, target.y, target.z}));
     camera_ = camera;
     camera_cut_ = true;
     invalidate_surface();
@@ -483,8 +474,7 @@ Result<void> Application::action(const ui::Action& source) {
         if (const auto* row = workspace_.binding(request->source);
             row && row->kind == editor::Workspace::Binding::Kind::object && row->path.empty() &&
             row->object != ObjectId{} && !document_->is_selected(row->object))
-            if (auto selected = workspace_.select_tree(*document_, *this, request->source); !selected)
-                return selected;
+            ATELIER_TRY(workspace_.select_tree(*document_, *this, request->source));
         request_menu(*request);
         return {};
     }
@@ -504,9 +494,7 @@ Result<void> Application::action(const ui::Action& source) {
             if (event.kind == ui::ActionKind::edit_cancel || !text || *text == rename->asset.filename().wstring() ||
                 !project_)
                 return {};
-            auto renamed = project_->rename(rename->asset, *text);
-            if (!renamed)
-                return std::unexpected(renamed.error());
+            ATELIER_TRY_BIND(renamed, project_->rename(rename->asset, *text));
             workspace_.assets.reselect(*renamed);
             workspace_.status = L"Renamed to " + renamed->filename().wstring();
             return {};
@@ -585,9 +573,7 @@ Result<void> Application::action(const ui::Action& source) {
             if (choice->kind == Kind::discard)
                 return document_->discard_material_override(choice->object, choice->path);
             if (choice->kind == Kind::create_scene) {
-                auto created = document_->create_scene_material(choice->object, choice->slot);
-                if (!created)
-                    return std::unexpected(created.error());
+                ATELIER_TRY_BIND(created, document_->create_scene_material(choice->object, choice->slot));
                 return {};
             }
             if (!project_)
@@ -596,9 +582,7 @@ Result<void> Application::action(const ui::Action& source) {
                 return document_->assign_material(*project_, choice->object, choice->slot, choice->key);
             if (choice->kind == Kind::texture)
                 return document_->set_material_texture(*project_, choice->object, choice->path, choice->key);
-            auto root = document_->open_material(*project_, choice->key);
-            if (!root)
-                return std::unexpected(root.error());
+            ATELIER_TRY_BIND(root, document_->open_material(*project_, choice->key));
             workspace_.material_inspection = choice->key;
             workspace_.inspecting_asset = true;
             return {};
@@ -607,15 +591,12 @@ Result<void> Application::action(const ui::Action& source) {
         return {};
     if (workspace_.assets.apply(event)) {
         if (event.key == editor::browser_control::results && event.kind == ui::ActionKind::select) {
-            if (auto cancelled = document_->cancel_edit(); !cancelled)
-                return cancelled;
+            ATELIER_TRY(document_->cancel_edit());
             workspace_.inspecting_asset = true;
             workspace_.material_inspection.clear();
             const auto& selected = workspace_.assets.selected();
             if (selected && selected->kind == assets::AssetKind::material && project_) {
-                auto root = document_->open_material(*project_, selected->key);
-                if (!root)
-                    return std::unexpected(root.error());
+                ATELIER_TRY_BIND(root, document_->open_material(*project_, selected->key));
                 workspace_.material_inspection = selected->key;
             }
         }
@@ -648,18 +629,14 @@ Result<void> Application::action(const ui::Action& source) {
         if (selected->kind == assets::AssetKind::folder)
             workspace_.assets.navigate(selected->path);
         else if (selected->kind == assets::AssetKind::material && project_) {
-            auto root = document_->open_material(*project_, selected->key);
-            if (!root)
-                return std::unexpected(root.error());
+            ATELIER_TRY_BIND(root, document_->open_material(*project_, selected->key));
             workspace_.material_inspection = selected->key;
             workspace_.inspecting_asset = true;
             workspace_.dock.select(editor::control::parameters_tab);
         } else if (selected->kind == assets::AssetKind::scene)
             return open_scene(selected->path);
         else if (selected->kind == assets::AssetKind::source && project_) {
-            auto path = project_->resolve(selected->path);
-            if (!path)
-                return std::unexpected(path.error());
+            ATELIER_TRY_BIND(path, project_->resolve(selected->path));
             return open_source(*path);
         }
         return {};
@@ -753,8 +730,7 @@ Result<void> Application::action(const ui::Action& source) {
         if (*current == drop->parent)
             return {};
         // The moved Entity ends selected: the tree reveals a newly selected row under its new parent.
-        if (auto moved = completion(document_->reparent(binding->object, drop->parent)); !moved)
-            return moved;
+        ATELIER_TRY(completion(document_->reparent(binding->object, drop->parent)));
         return done(workspace_.select_object(*document_, *this, binding->object),
                     drop->parent == ObjectId{} ? L"Entity unparented" : L"Entity parented");
     }
@@ -776,9 +752,7 @@ Result<void> Application::action(const ui::Action& source) {
             const auto* number = std::get_if<double>(&event.value);
             if (!number || !std::isfinite(*number) || std::abs(*number) > std::numeric_limits<float>::max())
                 return invalid();
-            auto view = document_->inspect_material(binding->object);
-            if (!view)
-                return std::unexpected(view.error());
+            ATELIER_TRY_BIND(view, document_->inspect_material(binding->object));
             const auto field =
                 std::ranges::find(view->declarations, binding->material_path, &editor::MaterialParameterView::path);
             if (field == view->declarations.end() || binding->index >= field->components)
@@ -849,9 +823,7 @@ Result<void> Application::action(const ui::Action& source) {
             binding->kind == editor::Workspace::Binding::Kind::scale_default) {
             if (event.kind != ui::ActionKind::reset)
                 return invalid();
-            auto value = world::read_transform(document_->world().runtime(), binding->object);
-            if (!value)
-                return std::unexpected(value.error());
+            ATELIER_TRY_BIND(value, world::read_transform(document_->world().runtime(), binding->object));
             if (binding->kind == editor::Workspace::Binding::Kind::rotation_default)
                 value->rotation = {};
             else
@@ -881,9 +853,7 @@ Result<void> Application::action(const ui::Action& source) {
             const auto* number = std::get_if<double>(&event.value);
             if (!number || !std::isfinite(*number) || std::abs(*number) > 360000)
                 return invalid();
-            auto value = document_->original_transform(event.key, binding->object);
-            if (!value)
-                return std::unexpected(value.error());
+            ATELIER_TRY_BIND(value, document_->original_transform(event.key, binding->object));
             auto angles = editor::euler_degrees(value->rotation);
             for (std::size_t axis = 0; axis < 3; ++axis)
                 if (std::ranges::equal(binding->path, document_->types().rotation_fields[axis]))
@@ -925,12 +895,8 @@ Result<void> Application::action(const ui::Action& source) {
         const auto* value = std::get_if<double>(&event.value);
         if (!value)
             return invalid();
-        auto prototype = document_->read_property(binding->object, binding->path);
-        if (!prototype)
-            return std::unexpected(prototype.error());
-        auto typed = scalar_value(*prototype, *value);
-        if (!typed)
-            return std::unexpected(typed.error());
+        ATELIER_TRY_BIND(prototype, document_->read_property(binding->object, binding->path));
+        ATELIER_TRY_BIND(typed, scalar_value(*prototype, *value));
         switch (event.kind) {
         case ui::ActionKind::edit_begin:
             return done(document_->begin_edit(binding->object, binding->path, event.key),
@@ -938,9 +904,7 @@ Result<void> Application::action(const ui::Action& source) {
         case ui::ActionKind::edit_preview:
             return done(document_->preview_edit(event.key, *typed), L"Field preview / Esc cancels");
         case ui::ActionKind::edit_commit: {
-            auto preview = document_->preview_edit(event.key, *typed);
-            if (!preview)
-                return preview;
+            ATELIER_TRY(document_->preview_edit(event.key, *typed));
             return done(document_->commit_edit(event.key), L"Field committed");
         }
         default:
@@ -954,8 +918,7 @@ Result<void> Application::action(const ui::Action& source) {
 // outside clicks keep the edit (Houdini applies live), Revert restores the original.
 Result<void> Application::open_color_edit(ObjectId object, std::span<const FieldId> prefix, ui::ControlKey swatch) {
     if (workspace_.color_edit)
-        if (auto closed = finish_color_edit(true); !closed)
-            return closed;
+        ATELIER_TRY(finish_color_edit(true));
     close_menu(false);
     editor::Workspace::ColorEdit edit;
     edit.object = object;
@@ -966,9 +929,7 @@ Result<void> Application::open_color_edit(ObjectId object, std::span<const Field
             Error{ErrorCode::invalid_definition, "Colour editing requires the owning property's numeric range."});
     edit.maximum = binding->color_maximum;
     if (!binding->material_path.empty()) {
-        auto view = document_->inspect_material(object);
-        if (!view)
-            return std::unexpected(view.error());
+        ATELIER_TRY_BIND(view, document_->inspect_material(object));
         const auto field =
             std::ranges::find(view->declarations, binding->material_path, &editor::MaterialParameterView::path);
         if (field == view->declarations.end() || field->components < 3 || field->components > 4)
@@ -983,20 +944,15 @@ Result<void> Application::open_color_edit(ObjectId object, std::span<const Field
                         edit.original[lane] = edit.value[lane] = value[lane];
             },
             field->value);
-        if (auto begun = document_->begin_material_edit(object, editor::control::color_group); !begun)
-            return begun;
+        ATELIER_TRY(document_->begin_material_edit(object, editor::control::color_group));
     } else {
         for (std::uint32_t lane = 0; lane < 3; ++lane) {
             auto path = world::FieldPath(prefix.begin(), prefix.end());
-            auto info = document_->world().runtime().describe(take_type(object, prefix));
-            if (!info)
-                return std::unexpected(info.error());
+            ATELIER_TRY_BIND(info, document_->world().runtime().describe(take_type(object, prefix)));
             if (lane >= (*info)->fields.size())
                 return std::unexpected(Error{ErrorCode::invalid_definition, "A colour needs three channels."});
             path.push_back((*info)->fields[lane].id);
-            auto value = document_->read_property(object, path);
-            if (!value)
-                return std::unexpected(value.error());
+            ATELIER_TRY_BIND(value, document_->read_property(object, path));
             edit.original[lane] = edit.value[lane] = std::visit(
                 [](const auto& v) -> double {
                     if constexpr (std::same_as<std::decay_t<decltype(v)>, EnumValue>)
@@ -1007,8 +963,7 @@ Result<void> Application::open_color_edit(ObjectId object, std::span<const Field
                 *value);
             edit.paths.push_back(std::move(path));
         }
-        if (auto begun = document_->begin_group_edit(object, edit.paths, editor::control::color_group); !begun)
-            return begun;
+        ATELIER_TRY(document_->begin_group_edit(object, edit.paths, editor::control::color_group));
     }
     // The swatch button routes to this pick key as its action target; anchor the editor under it.
     const ui::ControlBox* box = nullptr;
@@ -1058,8 +1013,7 @@ Result<void> Application::apply_color(std::array<double, 3> rgb) {
                         value[lane] = static_cast<float>(rgb[lane]);
             },
             entry.value);
-        if (auto applied = document_->preview_material_entry(editor::control::color_group, std::move(entry)); !applied)
-            return applied;
+        ATELIER_TRY(document_->preview_material_entry(editor::control::color_group, std::move(entry)));
         for (std::size_t lane = 0; lane < 3; ++lane)
             edit.value[lane] = static_cast<float>(rgb[lane]);
         edit.hex = editor::color_hex(edit.value);
@@ -1071,16 +1025,11 @@ Result<void> Application::apply_color(std::array<double, 3> rgb) {
         if (!std::isfinite(value) || value < 0 || value > edit.maximum)
             return std::unexpected(
                 Error{ErrorCode::argument_mismatch, "Colour channels must stay within the property's numeric range."});
-        auto prototype = document_->read_property(edit.object, edit.paths[lane]);
-        if (!prototype)
-            return std::unexpected(prototype.error());
-        auto typed = scalar_value(*prototype, value);
-        if (!typed)
-            return std::unexpected(typed.error());
+        ATELIER_TRY_BIND(prototype, document_->read_property(edit.object, edit.paths[lane]));
+        ATELIER_TRY_BIND(typed, scalar_value(*prototype, value));
         values.push_back(*typed);
     }
-    if (auto applied = document_->preview_group_edit(editor::control::color_group, values); !applied)
-        return applied;
+    ATELIER_TRY(document_->preview_group_edit(editor::control::color_group, values));
     for (std::size_t lane = 0; lane < 3; ++lane)
         edit.value[lane] = std::visit(
             [](const auto& value) -> double {
@@ -1098,13 +1047,11 @@ Result<bool> Application::color_edit_action(const ui::Action& event) {
     using namespace editor::control;
     auto& edit = *workspace_.color_edit;
     if (event.key == color_done && event.kind == ui::ActionKind::activate) {
-        if (auto done = finish_color_edit(true); !done)
-            return std::unexpected(done.error());
+        ATELIER_TRY(finish_color_edit(true));
         return true;
     }
     if (event.key == color_revert && event.kind == ui::ActionKind::activate) {
-        if (auto applied = apply_color(edit.original); !applied)
-            return std::unexpected(applied.error());
+        ATELIER_TRY(apply_color(edit.original));
         return true;
     }
     if (event.key == color_hex) {
@@ -1116,8 +1063,7 @@ Result<bool> Application::color_edit_action(const ui::Action& event) {
             workspace_.status = L"Hex colour needs six digits, e.g. FF8800";
             return true;
         }
-        if (auto applied = apply_color(*parsed); !applied)
-            return std::unexpected(applied.error());
+        ATELIER_TRY(apply_color(*parsed));
         return true;
     }
     const bool rgb = event.key >= color_rgb && event.key < color_rgb + 3;
@@ -1138,8 +1084,7 @@ Result<bool> Application::color_edit_action(const ui::Action& event) {
         h[event.key - color_hsv] = *value;
         next = editor::hsv_to_rgb(h);
     }
-    if (auto applied = apply_color(next); !applied)
-        return std::unexpected(applied.error());
+    ATELIER_TRY(apply_color(next));
     return true;
 }
 
@@ -1174,8 +1119,7 @@ Result<void> Application::begin_entity_rename(ObjectId entity, editor::RegionKin
         pending_rename_focus_ = true;
     } else {
         if (document_->selection().entity != entity)
-            if (auto selected = document_->select(entity); !selected)
-                return selected;
+            ATELIER_TRY(document_->select(entity));
         workspace_.inspecting_asset = false;
         workspace_.dock.select(editor::control::parameters_tab);
         pending_name_focus_ = true;
@@ -1209,9 +1153,7 @@ Result<void> Application::rename_asset(std::string_view key, std::string_view na
         }
         return {};
     }
-    auto renamed = project_->rename(entry->path, assets::wide(name));
-    if (!renamed)
-        return std::unexpected(renamed.error());
+    ATELIER_TRY_BIND(renamed, project_->rename(entry->path, assets::wide(name)));
     workspace_.assets.reselect(*renamed);
     workspace_.status = L"Renamed to " + renamed->filename().wstring();
     return {};

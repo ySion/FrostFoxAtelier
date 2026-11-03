@@ -48,17 +48,17 @@ Scene View 在路径栏末尾提供两个紧凑图标菜单：显示菜单包含
 工作室 MatCap / Smooth / Flat 默认开启 Screen Cavity，通过几何凹凸增强表面分界；开关、Ridge、Valley 与像素半径属于视口显示设置，具体范围见[渲染合同](docs/modules/renderer/contract.md#工作室-cavity)。
 
 Scene Lit 消费同一 World 的真实光源与标准金属度/粗糙度材质，支持基础色、粗糙度、金属度、切线空间法线、HDR 自发光因子和 Opaque/Mask；六个贴图输入贯通光栅、射线命中与编辑深度，见[材质系统](docs/modules/renderer/materials.md)。直接光按屏幕 tile 与深度分层收集局部解析灯，在一个通道里逐盏确定求值并与间接光、自发光合成 HDR，方向光独立评估；投影光源的可见性来自阴影 atlas，没有随机采样、时间历史或降噪。发光网格只经 DDGI 照亮场景：探针射线命中发光面时记录其自发光，DDGI 关闭时发光网格不照亮其他表面。DDGI、GTAO 和随机屏幕反射分别稳定自己的信号，最终抗锯齿可选 Off / TAA / SMAA / SMAA T2x，默认 SMAA。**Window → World Settings** 编辑探针命中点的光源候选预算、四个 DDGI 体积、传播预算、曝光和 Bloom；作者值随 Scene 保存并参与撤销。Diagnostics 提供 DDGI 命中点空间选灯的对照开关、真实探针球、Volume 边界、重定位、更新年龄与接收面覆盖诊断，偏好留在视口，与 Control 共用入口。Control 的 `editor.inspect` 支持 `detail: summary`，观察相机、设置和最近接受帧时无需枚举整个场景。Point、Rectangle、Directional Light 沿 Create、Entity Structure、Parameters 和场景保存的现有入口编辑；均匀天光是 World Settings 的 Sky 组，关闭时环境照明为零，Environment 还可以带一张天空贴图；Scene Lit 有天空贴图时背景显示天空，没有贴图、空场景或纯线框时为黑，工作室模式保留渐变偏好。[Scene Lit Room](examples/Content/Scene%20Lit%20Room/README.md) 是 Examples 工程中的普通场景，选择 Main Camera 后可用 View from Camera 对齐，并从显示菜单选择 Scene Lit。具体范围、默认值与边界见 [Scene Lit](docs/modules/renderer/scene-lit.md)；产品入口为 `editor_scene_lit_acceptance`；Renderer 端到端入口为 `renderer_acceptance` 目标，运行默认入口与全部 `--scene-lit*` 入口，每个入口另有单独目标；各入口证明的内容与当前成本见[验收记录](docs/modules/renderer/acceptance.md)。
-共享文本编辑已接入 Unicode、参数搜索、剪贴板与 IMM32。字段切换或目标失效时取消旧编辑上下文；本地文本历史和场景撤销按当前编辑状态路由。S1/S2 的历史验收与真实搜狗输入证据见[编辑器验收记录](docs/modules/editor/README.md#s2-集成状态与输入法验收)，当前输入合同见[UI 模块](docs/modules/ui/README.md#共享单行编辑)，当前作者层实现与范围见[声明式 UI](docs/modules/editor/declarative-ui.md)。普通 UI/窗口验收不替代真实系统 IME 验收。
+共享文本编辑已接入 Unicode、参数搜索、剪贴板与 IMM32。字段切换或目标失效时取消旧编辑上下文；本地文本历史和场景撤销按当前编辑状态路由。真实搜狗输入的前置条件与证据边界见[输入法验收](docs/modules/editor/README.md#输入法验收)，当前输入合同见[UI 模块](docs/modules/ui/README.md#共享单行编辑)，当前作者层实现与范围见[声明式 UI](docs/modules/editor/declarative-ui.md)。普通 UI/窗口验收不替代真实系统 IME 验收。
 
 样式/绘制基础已扩展为 [SS（Style Sheets）](docs/modules/ui/style-sheets.md)：类名、角色、交互状态、token、局部作用域及属性覆盖共用最终样式；接受帧保有文字命中快照。GPU 支持独立圆角、向内边框、RGBA 图片与相邻实例合批。编辑器启动读取可执行文件旁的 `editor.ss`，源文件为 [assets/editor.ss](assets/editor.ss)。Parameters 的查询、Position、组件列表和 Scene Tree 现由 [editor.ui.source](assets/editor.ui.source) 声明，支持有类型的组件组合、文字输入、稳定 key 列表、条件挂载，以及保存后的源码 patch。Dev / Release 开发工作树构建读取这份文件，复用未改变的组件代码，保留兼容的 Instance / Runtime Context，只增删对应子实例；失败更新保留原界面。语义、性能与限制见[原生声明式 UI](docs/modules/editor/declarative-ui.md)。
 
-菜单与停靠、嵌套参数组合、字体、单行编辑器和精度阶梯的当前阶段验收与 review 修复见 [2026-10-02 编辑器 UI 收口](docs/research/editor-ui-20261002-closeout.md)。
+菜单与停靠、嵌套参数组合、字体、单行编辑器和精度阶梯的当前合同与验收入口见[编辑器模块](docs/modules/editor/README.md#验收入口)。
 
-完整编辑器的 DSL 迁移按[区域、控件与手势评估](docs/modules/editor/dsl-migration.md)推进。完整工具架、现有 Parameters 和视口图标工具区已由 DSL 声明。参数查询在对象标题下按需展开，Parameters 连续展示实例属性，Entity Structure 独立维护组件组成。Button、ToggleButton、ChoiceButton、Combo 复用既有命令和输入链；命名子组件保持原字段身份，保存后同步更新布局。资产浏览器采用常驻目录树、同行路径/搜索和紧凑菜单；Details 使用共享 Table，支持列头排序、列宽拖动、单元格选择、键盘导航及双击/Enter 打开。资源浏览器的工具行、目录树、状态行和 List/Details/Tiles 全部结果视图已迁入 DSL；三种呈现共享数据、选择和虚拟绘制，菜单内容、Controls、停靠界面与总外壳也已迁入同一 DSL，旧 C++ 界面组装路径已移除；跨区域资源拖放尚未实现。
+完整编辑器的 DSL 迁移按[区域、控件与手势评估](docs/modules/editor/declarative-ui.md#区域与手势边界)推进。完整工具架、现有 Parameters 和视口图标工具区已由 DSL 声明。参数查询在对象标题下按需展开，Parameters 连续展示实例属性，Entity Structure 独立维护组件组成。Button、ToggleButton、ChoiceButton、Combo 复用既有命令和输入链；命名子组件保持原字段身份，保存后同步更新布局。资产浏览器采用常驻目录树、同行路径/搜索和紧凑菜单；Details 使用共享 Table，支持列头排序、列宽拖动、单元格选择、键盘导航及双击/Enter 打开。资源浏览器的工具行、目录树、状态行和 List/Details/Tiles 全部结果视图已迁入 DSL；三种呈现共享数据、选择和虚拟绘制，菜单内容、Controls、停靠界面与总外壳也已迁入同一 DSL，旧 C++ 界面组装路径已移除；跨区域资源拖放尚未实现。
 
-数学基础、World、文件夹工程与视口显示的前代组合已于 2026-10-05 通过双配置后台与正式项目窗口验收，并随 PR #11 发布到 `855433a`，见[最终集成记录](docs/research/editor-product-integration-20261005.md)。后续 Guides 的独立验收见上方记录；与其他未发布增量的组合仍需验证。Unicode 剪贴板偶发失败及普通系统对话框边界仍未关闭。
+数学基础、World、文件夹工程与视口显示的操作链及验证范围见[编辑器验收入口](docs/modules/editor/README.md#验收入口)。逐次通过结果只适用于对应的构建和实际执行路径，不替代后续组合验证；历史 Unicode 剪贴板偶发失败仍未定因，普通系统对话框也不能据渲染专项通过宣称全面覆盖。
 
-本阶段菜单、交互边界与树视图的审查、清理和验收边界见 [UI 边界与生命周期审查](docs/research/ui-boundary-state-lifecycle-audit-20261002.md)。
+菜单、树视图、输入状态与接受帧的所有权由 [UI 合同](docs/modules/ui/README.md)和[持久实例与更新](docs/modules/ui/updates.md)维护。
 
 顶部菜单栏通过 File / Edit / Create / Project / View / Window 组织现有命令，左侧窄收拢区可将它收成细条；再次点击或使用 F10/Alt 菜单快捷键恢复。Tab 栏直接从标签开始，“＋”将已有视图加入当前组。下拉、参数右键和 Pane 菜单共用独立原生弹出窗口，可超出编辑器边界，支持键盘导航、菜单切换与焦点恢复，见[独立菜单窗口](docs/modules/editor/README.md#独立菜单窗口)。
 
@@ -133,7 +133,7 @@ CMake 的 `acceptance_headless` 和 `acceptance_window` 是两类目标的清单
 
 每次运行的日志、超时截图 `*.log.timeout.<窗口句柄>.png`、`summary.txt` 和 `summary.csv` 位于 `out/acceptance-gate/<时间戳-PID>/`；汇总首行为 `Run=targeted`、`Run=full` 或 `Run=probe`，并区分请求范围和实际执行的配置/层（`build`、`headless`、`window` 或 `probe`）。每个目标记录配置、层、`PASS/FAIL/TIMEOUT`、秒数和验证级别（窗口目标为 `gbv` 或 `debug`，构建和无窗口目标为 `none`），并追加至 `out/acceptance-gate/history.csv`。并行无窗口目标的秒数取自各自 `result.csv`；窗口目标的起止时刻见 `gate.log` 的 `Starting` 和结果行。任一失败或超时令脚本返回非 0。仅验证超时清理时，可在已完成构建后运行 `pwsh -NoProfile -File ./tools/acceptance-gate.ps1 -Configs release -ProbeWindowTarget editor_control_acceptance -ProbeTimeoutSeconds 30`，在冷管线准备阶段检查整个父子进程树的终止；probe 不启动激活器，不注入输入，不能与 `-Targets` 或 `-Full` 同用。该模式仍持锁，但明确记为 probe，不是测试通过。
 
-测量入口统一以 `--profile-*` 命名（如 `atelier_editor_document_acceptance --profile-scene-cpu`、`atelier_editor --profile-render-performance`），只输出数值报告，不属于验收，也不进入总入口；其中的数值不作为任何通过条件。成功时输出各模块 `PASS`，包括 `UI acceptance: PASS`、`Editor document acceptance: PASS` 和 `Editor window acceptance: PASS`，返回码为 0。失败返回非 0；发布构建也执行全部验收检查。需要真人操作的真实输入法验收不在总入口内，使用独立的 `editor_ime_acceptance` 目标，前置条件与证据边界见[编辑器验收](docs/modules/editor/README.md#s2-集成状态与输入法验收)。只构建时使用 `cmake --build --preset dev`；只运行源码公共消费者及 JIT 平台/业务贯通验收使用 `cmake --build --preset dev --target jit_acceptance`（发布配置相应替换为 `release`）。
+测量入口统一以 `--profile-*` 命名（如 `atelier_editor_document_acceptance --profile-scene-cpu`、`atelier_editor --profile-render-performance`），只输出数值报告，不属于验收，也不进入总入口；其中的数值不作为任何通过条件。成功时输出各模块 `PASS`，包括 `UI acceptance: PASS`、`Editor document acceptance: PASS` 和 `Editor window acceptance: PASS`，返回码为 0。失败返回非 0；发布构建也执行全部验收检查。需要真人操作的真实输入法验收不在总入口内，使用独立的 `editor_ime_acceptance` 目标，前置条件与证据边界见[编辑器验收](docs/modules/editor/README.md#输入法验收)。只构建时使用 `cmake --build --preset dev`；只运行源码公共消费者及 JIT 平台/业务贯通验收使用 `cmake --build --preset dev --target jit_acceptance`（发布配置相应替换为 `release`）。
 
 首次配置新机器：先按工具链锁文件安装所需 MSVC 工具集、Windows SDK、CMake/Ninja 的 Visual Studio C++ 开发工具，再执行：
 
@@ -207,7 +207,7 @@ cmake --build --preset release --target ui_layout_acceptance
 
 ## 引擎资源连接方案
 
-引擎已有不可变 CPU Mesh/材质图片、UI 图片快照、Renderer 上传与退休，以及 Runtime 的受保护原生载荷访问。三维材质已沿同一 Runtime 引入原生 Texture/Material 资源，见[材质系统](docs/modules/renderer/materials.md)。[共享 Runtime Texture 与 UI 连接方案](docs/modules/resources/design-proposal.md)的剩余缺口是语言的跨类型对象目录/引用字段，以及固定内容版本到 UI 测量和绘制的共同接线；这条业务链尚未通过贯通验收，继续复用已有源码宿主、布局和渲染入口。
+引擎已有不可变 CPU Mesh/材质图片、UI 图片快照、Renderer 上传与退休，以及 Runtime 的受保护原生载荷访问。三维材质已沿同一 Runtime 引入原生 Texture/Material 资源，见[材质系统](docs/modules/renderer/materials.md)。[共享 Runtime Texture 与 UI 连接方案](docs/modules/resources/asset-system-plan.md#texture-到-ui-的共同消费待接线)的剩余缺口是语言的跨类型对象目录/引用字段，以及固定内容版本到 UI 测量和绘制的共同接线；这条业务链尚未通过贯通验收，继续复用已有源码宿主、布局和渲染入口。
 
 ## 默认内存分配
 

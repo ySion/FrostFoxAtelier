@@ -3,6 +3,7 @@
 #include "application/timing.hpp"
 #include "editor/session.hpp"
 #include "editor/viewport_tool.hpp"
+#include "foundation/result.hpp"
 #include "renderer/renderer.hpp"
 #include "logging/logging.hpp"
 #include <algorithm>
@@ -129,11 +130,9 @@ public:
             std::erase_if(mesh_keys_, [](const auto& item) { return !item.second.seen; });
         }
         if (bindings_changed)
-            if (auto bound = bind_materials(); !bound)
-                return bound;
+            ATELIER_TRY(bind_materials());
         if (relayout || reselect)
-            if (auto selected = highlight(document, selection); !selected)
-                return selected;
+            ATELIER_TRY(highlight(document, selection));
         if (!synced_ || scene.lights_changed() > since) {
             for (auto& [object, key] : light_keys_) {
                 (void)object;

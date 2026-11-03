@@ -1,5 +1,6 @@
 #include "application/lit_preparation.hpp"
 #include "editor/assets.hpp"
+#include "foundation/result.hpp"
 #include <Windows.h>
 
 namespace atelier::application {
@@ -45,16 +46,12 @@ renderer::Result<LitFallback::Drawn> LitFallback::render(renderer::Renderer& ren
     if (last_lit_ && *last_lit_ != frame.view) {
         auto lit = frame;
         lit.view = *last_lit_;
-        auto drawn = renderer.render(lit, nullptr);
-        if (!drawn)
-            return std::unexpected(drawn.error());
+        ATELIER_TRY_BIND(drawn, renderer.render(lit, nullptr));
         if (drawn->status != renderer::FrameStatus::not_ready)
             return Drawn{*drawn, lit.view, true, {}};
     }
     frame.view.shading = renderer::Shading::smooth;
-    auto drawn = renderer.render(frame, nullptr);
-    if (!drawn)
-        return std::unexpected(drawn.error());
+    ATELIER_TRY_BIND(drawn, renderer.render(frame, nullptr));
     return Drawn{*drawn, frame.view, true, std::move(failure)};
 }
 }

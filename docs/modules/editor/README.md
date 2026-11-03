@@ -2,7 +2,7 @@
 
 唯一产品入口为 `atelier_editor`；启动和构建命令见[根 README](../../../README.md)。
 
-完整 DSL 迁移的当前评估、区域需求、控件语义、手势边界和实施次序见[迁移计划](dsl-migration.md)。完整工具架、现有参数区结构和 Scene Tree 主体已使用当前[声明式 UI](declarative-ui.md)，现有外壳、菜单、停靠、Controls 和资源浏览器的装配也已迁入同一声明。
+现有外壳、菜单、工具架、停靠与业务面板由同一 DSL 装配；区域职责、控件语义和未实施的手势见[声明式 UI](declarative-ui.md#区域与手势边界)。
 启动日志和 Help → About 使用构建时生成的同一提交标识及配置；未提交改动标为 `local changes`。`atelier_editor --version` 可在不创建窗口的情况下读取该二进制的标识。工程打开成功后记录实际根目录，About 同时显示当前工程目录和场景路径。标识在构建时刷新，运行时不读取当前目录的 Git 状态。
 当前消费者将正式 Entity/Component/World 接入同一编辑器，并使用自动反射、共享调用合同与基础值类型。输入、视觉合同及验收入口见下文。World 使用可选内联空间的 Entity、StaticMeshComponent 和真实 StaticMeshEntity；网格使用中立的不可变 `geometry::MeshRef`，遵循[World 合同](../world/README.md)。
 模型与渲染消费完整 TRS；参数面板展示实例的公开标量和内联记录。位置、欧拉角和缩放使用三分量行，规范数学类型按元数据组合 Vector2/3/4，材质颜色按 RGB 展示；选择 Material 时编辑共享材质参数，其他资源显示元数据。已接入真实网格拾取、多选/框选、变换手柄及 G/R/S 操作。已声明默认值、修改状态、折叠分组、独立菜单、中键数值阶梯继续复用同一控件链；编辑器内 JIT 单步交互、节点画布、可浮动编辑器视图、布局文件保存、参数面板固定目标仍未实施。
@@ -39,6 +39,7 @@ Win32 窗口消息 → Window 复制拥有的事件 → 每条消息后顺序排
 ```
 
 WndProc 的输入事件只复制和排队，不重入 UI/业务；同步输入回调也在同一泵中依序消费。UTF-16 代理项在顺序投递时组装，组合流绑定独立 composition_id 与原编辑身份。候选位置只使用与当前 token 相匹配的 accepted caret。同步 IMR_QUERYCHARPOSITION 只读对应帧的插入/组合起点快照，将客户区物理坐标转为屏幕坐标；仅支持偏移 0，无有效快照或其他偏移明确拒绝。快照在原生组合/失焦/Surface 变化时立即撤下，不用旧显示 caret 冒充组合起点。IME 终止键的首次按下、重复和抬起保持同一归属，避免确认组合后又提交字段。
+`Window::poll` 是线程消息泵的唯一入口：只有主窗口取线程消息并处理 WM_QUIT；弹窗只消费自己的排队记录与回调错误，不在捕获期间另外泵走退出消息。
 系统模态窗口的 `WM_CANCELMODE` 在 WndProc 内立即交给 `DefWindowProcW` 释放原生鼠标捕获，同时排队保留业务取消事件。文件选择和保存确认会暂停应用主循环，不能把原生捕获释放也延后到该循环；否则已禁用的主窗口会继续截获对话框的鼠标输入。业务取消仍在原有事件泵中执行，不从系统回调重入 UI、场景或渲染。该时序遵循 [Windows WM_CANCELMODE 合同](https://learn.microsoft.com/en-us/windows/win32/winmsg/wm-cancelmode)。
 剪贴板失败保留草稿/选区/历史供重试；业务 Action 失败停止同组剩余普通 effects，仍执行 UI 取消、业务回滚、IME 与捕获清理，保留首错并报告清理失败。
 
@@ -74,7 +75,13 @@ G／R／S 通过同一 ViewportTool 与 Session 事务预览、提交和撤销 T
 
 父子多选时，继承去重只减少实际写入对象；活动 Entity 的世界原点和朝向独立保留，用于 Local 基底、吸附、手柄拾取、中键择轴、约束线与读数。缩放统一使用 Local。框选与变换互斥；约束切换、反选和清除变换只处理首次按下，修饰键释放会立即更新当前预览。相机拖动转入全局命令时，先结束旧拖动再释放捕获，迟到的鼠标释放不会恢复旧手势。
 
-Scene View 按 Houdini 22 的场景视图校准（UI Scale 1.75 同机像素采样，2026-10-08）。左侧 38 DIP 工具栏以 32 DIP 单元排列选择、通用、移动、旋转、缩放，选择与手柄工具之间及底部吸附开关前各有 `#4d4d4d` 细分隔；手柄工具使用中性立方体加 `#e04a1c` 手柄的双色图标，选中态 `#5d7289`。视口右侧是 Houdini 式显示栏（34 DIP）：参考网格、原点轴、线框叠加、纯线框、三角边、Cavity、Scene Lit、FPS，每个按钮只改其对应的一项视图设置，与头部着色段、Guides 菜单和 Z 饼菜单同源同步，不进入场景历史。视口头部（32 DIP 一行）融合 Blender 的语义分组：路径之后依次为交互模式图标菜单、**View / Select / Add / Object** 平铺文字菜单、枢轴下拉、吸附开关+步长、叠加层（Guides）下拉、Cavity、四段着色按钮（Wireframe / Solid / MatCap / Scene Lit，与 Z 饼菜单同一组预设）及完整显示菜单箭头。View 菜单含 Focus Selection、Frame All、Viewpoint 子菜单、工具选项栏与 FPS 开关；Select 菜单含 Select All / None / Invert、Box Select 和选择模式子菜单；Add 列出全部创建命令（同 Shift+A）；Object 菜单含 Duplicate、Delete、Clear（Location/Rotation/Scale，同 Alt+G/R/S）、Snap 子菜单与 Transform 增删。面板宽度不足 660 DIP 时文字菜单与 Cavity 折叠，W 菜单和主菜单 View 仍可达。吸附菜单按 Blender 吸附面板分节（带灰色节标题）：总开关、步长（0.1/0.2/0.5/1 m）、Affect（Move/Rotate/Scale 各自是否随吸附开关吸附）、旋转步长（1°/5°/15°/45°）、选择/游标对齐；G/R/S 的 Ctrl 仍临时反转吸附，缩放步长 0.1。操作栏的 Global/Local 下拉即 Blender 变换朝向：Local 时移动/旋转手柄与 X/Y/Z 约束沿活动 Entity 的自身轴，网格吸附只在 Global 下生效（网格是世界格）；缩放始终沿局部轴。Normal/View/Cursor/Parent 朝向尚未实现，不在菜单中显示。头部下方是可折叠的 28 DIP 操作控制栏（`#2e2e2e`，黑色上边与 `#424242` 内沿），左侧为 Blender 五段选择模式（Set / Extend / Subtract / Invert / Intersect，决定右键点选和框选如何与当前选择合并；Shift 仍为切换、Ctrl 仍为减选），随后是轴空间、枢轴名称和表面游标；G/R/S 期间整条换成 Blender 头部读数（如 `D: 0.9499 m (0.9499 m) along global Z`、`Rotation: 22.90 along global X`，键入值显示为 `[2|]`）。视口左上是带阴影的白色操作名与图标，右上是半透明圆角视图胶囊（`Persp ▾`），左下为 Houdini 彩色圆片坐标轴，底边一行为当前工具的鼠标/按键提示，右、下两边绘制 `#424242/#666666` 凹边。背景渐变为 `#657f8c → #bec6c6`，选中描边为 Houdini 黄 `#ffd900`。图标沿原生符号栅格化和缓存链绘制，不复制 Houdini 专有图标素材。
+Scene View 左侧 38 DIP 工具栏以 32 DIP 单元排列选择、通用、移动、旋转、缩放，选择与手柄工具之间及底部吸附开关前各有 `#4d4d4d` 细分隔，选中态 `#5d7289`。工具图标使用 [Tabler 掩码](../../../assets/icons/README.md)，沿原生符号栅格化、主题着色和缓存链绘制，不复制 Houdini 专有图标素材。视口右侧显示栏（34 DIP）包含参考网格、原点轴、线框叠加、纯线框、三角边、Cavity、Scene Lit、FPS；每个按钮只改其对应的一项视图设置，与头部着色段、Guides 菜单和 Z 饼菜单同源同步，不进入场景历史。
+
+视口头部（32 DIP 一行）融合 Blender 的语义分组：路径之后依次为交互模式图标菜单、**View / Select / Add / Object** 平铺文字菜单、枢轴下拉、吸附开关+步长、叠加层（Guides）下拉、Cavity、四段着色按钮（Wireframe / Solid / MatCap / Scene Lit，与 Z 饼菜单同一组预设）及完整显示菜单箭头。View 菜单含 Focus Selection、Frame All、Viewpoint 子菜单、工具选项栏与 FPS 开关；Select 菜单含 Select All / None / Invert、Box Select 和选择模式子菜单；Add 列出全部创建命令（同 Shift+A）；Object 菜单含 Duplicate、Delete、Clear（Location/Rotation/Scale，同 Alt+G/R/S）、Snap 子菜单与 Transform 增删。面板宽度不足 660 DIP 时文字菜单与 Cavity 折叠，W 菜单和主菜单 View 仍可达。
+
+吸附菜单按 Blender 吸附面板分节（带灰色节标题）：总开关、步长（0.1/0.2/0.5/1 m）、Affect（Move/Rotate/Scale 各自是否随吸附开关吸附）、旋转步长（1°/5°/15°/45°）、选择/游标对齐；G/R/S 的 Ctrl 仍临时反转吸附，缩放步长 0.1。操作栏的 Global/Local 下拉即 Blender 变换朝向：Local 时移动/旋转手柄与 X/Y/Z 约束沿活动 Entity 的自身轴，网格吸附只在 Global 下生效（网格是世界格）；缩放始终沿局部轴。Normal/View/Cursor/Parent 朝向尚未实现，不在菜单中显示。
+
+头部下方是可折叠的 28 DIP 操作控制栏（`#2e2e2e`，黑色上边与 `#424242` 内沿），左侧为 Blender 五段选择模式（Set / Extend / Subtract / Invert / Intersect，决定右键点选和框选如何与当前选择合并；Shift 仍为切换、Ctrl 仍为减选），随后是轴空间、枢轴名称和表面游标；G/R/S 期间整条换成 Blender 头部读数（如 `D: 0.9499 m (0.9499 m) along global Z`、`Rotation: 22.90 along global X`，键入值显示为 `[2|]`）。视口左上是带阴影的白色操作名与图标，右上是半透明圆角视图胶囊（`Persp ▾`），左下为 Houdini 彩色圆片坐标轴，底边一行为当前工具的鼠标/按键提示，右、下两边绘制 `#424242/#666666` 凹边。背景渐变为 `#657f8c → #bec6c6`，选中描边为 Houdini 黄 `#ffd900`。
 
 | 操作 | 行为 |
 | --- | --- |
@@ -101,7 +108,7 @@ Scene View 按 Houdini 22 的场景视图校准（UI Scale 1.75 同机像素采�
 | W | 打开模式、Snap、聚焦、创建和删除菜单；Snap 提供选择到网格、选择中心到游标、游标到选择/原点/网格 |
 | 中键 / Alt+左键 / Shift+中键拖动 | 前两者环绕相机，水平拖动按抓取场景的方向旋转，Shift+中键平移；滚轮缩放，F 聚焦当前 Entity。正交视图开始环绕后转为透视 |
 
-Alt+A/G/R/S 以 `WM_SYSKEYDOWN` 到达，窗口把这四个键与菜单助记键一样交给应用，不进入系统菜单。快捷键仅在视口内且文本输入未占用键盘时启动。视口上方的交互控件先参与统一 UI 命中，点击视图菜单不会向后穿透为游标定位。多选变换只处理具有内联空间的 Entity；Parameters 展示活动 Entity，视口手柄修改整组。移动/旋转使用世界轴；缩放手柄沿活动 Entity 的局部轴，改变各 Entity 自身的 scale 分量，并在活动 Entity 基底中缩放组内位置偏移。枢轴可选组中心或游标，Static Mesh 创建使用游标位置。此阶段没有局部/世界坐标切换、物体变换的表面/顶点吸附、跨面板资源放置或程序外拖入。
+Alt+A/G/R/S 以 `WM_SYSKEYDOWN` 到达，窗口把这四个键与菜单助记键一样交给应用，不进入系统菜单。快捷键仅在视口内且文本输入未占用键盘时启动。视口上方的交互控件先参与统一 UI 命中，点击视图菜单不会向后穿透为游标定位。多选变换只处理具有内联空间的 Entity；Parameters 展示活动 Entity，视口手柄修改整组。移动/旋转遵循所选 Global/Local 朝向；缩放手柄沿活动 Entity 的局部轴，改变各 Entity 自身的 scale 分量，并在活动 Entity 基底中缩放组内位置偏移。枢轴可选组中心或游标，Static Mesh 创建使用游标位置。物体变换的表面/顶点吸附、跨面板资源放置和程序外拖入尚未实现。
 
 `ViewportTool` 只持有手势，`Session` 是业务修改入口；一个手势记录一次历史，组内任一目标拒绝时恢复前一有效预览。非法或未完成的数值不能确认；Esc、右键、失焦、捕获丢失、尺寸/DPI 改变、菜单转移、文档更换都取消草稿。Ctrl+Z/Y 先结束视口草稿，再执行同一场景历史。活动变换期间拒绝保存快照与启动 World。
 
@@ -223,9 +230,9 @@ GPU 段：
 - 样本与场景历史按照最近操作的视图选择，允许 Controls 与 Parameters 同时显示。视图隐藏/移动时，未提交交互仍通过 Session 的取消/失焦合同结束；业务字段 key 依对象实际成员生命周期退役，隐藏面板不退役对象绑定。
 - Scene View 隐藏时提交空场景矩形，不生成场景实例；其他 UI 继续走原窗口、renderer 和接受帧。参数面板标题与可选搜索固定，实验台另外保留示例内容页签；下方内容滚动以适应较矮的区域；窄参数行仍使用公共 Flex 换行。
 
-以 Houdini UI Scale 1.75 为同机参照：数值字段最低 23 DIP、标签列 160 DIP、行间 7 DIP。菜单栏为 32 DIP，Tab 栏为 22 DIP；菜单栏与工具架的最新收起把手和整行恢复条尺寸见下方[首版操作](#首版操作)。当前中英文正文与 Tab 使用 12.5 DIP Sarasa UI SC，菜单栏文字为 13.5 DIP。Tab 选中后使用灰色底面，键盘焦点不额外画框；文字字段保留输入焦点提示。F10/Alt 菜单快捷键会展开收起的菜单栏；恢复布局一并展开菜单栏和工具架。系统 DPI 仍只有 Window → Surface 的一个换算入口。早期观察见[工作区研究](../../research/houdini-workspace-reference-20261001.md)与[栏结构校准](../../research/houdini-chrome-20261002.md)，当前行为以本页为准。独立原生浮窗、多份同类视图和持久布局属于后续增量。
+以 Houdini UI Scale 1.75 为同机参照：数值字段最低 23 DIP、标签列 160 DIP、行间 7 DIP。菜单栏为 32 DIP，Tab 栏为 22 DIP；菜单栏与工具架的收起把手和整行恢复条尺寸见下方[首版操作](#首版操作)。当前中英文正文与 Tab 使用 12.5 DIP Sarasa UI SC，菜单栏文字为 13.5 DIP。Tab 选中后使用灰色底面，键盘焦点不额外画框；文字字段保留输入焦点提示。F10/Alt 菜单快捷键会展开收起的菜单栏；恢复布局一并展开菜单栏和工具架。系统 DPI 仍只有 Window → Surface 的一个换算入口。外部观察见[工作区研究](../../research/houdini-workspace-reference-20261001.md)，当前行为以本页为准。独立原生浮窗、多份同类视图和持久布局尚未实现。
 
-布局与参数的本轮参照、原生观察及验收记录见 [Pane 细节](../../research/houdini-pane-details-20261001.md)。
+布局与参数的 SideFX 来源及固定版本观察见 [Pane 细节](../../research/houdini-pane-details-20261001.md)，不作为本项目的验收结果。
 
 ## 控件实验台
 
@@ -240,8 +247,6 @@ GPU 段：
 真实窗口验收在既有 `editor_acceptance` 中覆盖整向量单次撤销、搜索隐藏修改分量后的整组恢复、修改状态、折叠与稳定字段身份、勾选键鼠行为、最窄面板中的 Vector3/Vector4 与禁用、样本历史隔离及返回业务面板。新增验收覆盖菜单不穿透外部点击/视口滚轮/Delete、Menu/Shift+F10/Esc、下拉键盘选择、菜单剪贴板及非法粘贴取消、中键阶梯/细调/默认值/取消/缓存复用。截图为 `out/<配置>/editor-evidence/controls-*.png`；真实搜狗输入、Space 确认、折叠/切换面板取消组合由同一 `editor_ime_acceptance` 覆盖。
 
 原生菜单的统一开启入口先取消主 UI 当前抓取手势，经原 effects 链回滚业务编辑后再转移鼠标捕获。窗口验收覆盖数值拖动和中键阶梯期间按 F10，随后释放鼠标、关闭菜单、再次移动，确认不恢复旧手势、不新增历史。
-
-本阶段最终验收、review 修复和已知边界见 [2026-10-02 阶段收口](../../research/editor-ui-20261002-closeout.md)。
 
 ## 首版操作
 
@@ -317,9 +322,9 @@ PopupHost 的测量 Session 也遵循 Surface 变化取消模态状态的规则�
 
 路径栏显示 World 上下文；固定对象标题用类型图标、类型和名称输入框表达当前 Entity，右侧放大镜控制参数搜索。名称是 editor::Session 的文档标签，通过对象身份索引，重命名、删除恢复和撤销重做共用场景历史；标签本身不持有运行时对象，GC 完成后清理失效索引。名称随场景 JSON 持久化，不是新增的 World 反射字段。
 
-路径栏的下拉通过同一原生菜单选择 World 或 Entity；前后箭头浏览最近的选择。导航历史属于 Workspace，最多保存 64 个不保活的身份，保留 World 入口并清理失效对象；导航调用现有 Session::select，不增加场景撤销条目。路径框、普通输入框、内容页签和滚动条的像素色值与共享样式扩展见[细节校准](../../research/houdini-chrome-pixels-20261002.md)。
+路径栏的下拉通过同一原生菜单选择 World 或 Entity；前后箭头浏览最近的选择。导航历史属于 Workspace，最多保存 64 个不保活的身份，保留 World 入口并清理失效对象；导航调用现有 Session::select，不增加场景撤销条目。路径框、普通输入框、内容页签和滚动条使用同一 [SS 样式](../ui/style-sheets.md)，当前色值由 [editor.ss](../../../assets/editor.ss)定义。
 
-Parameters 展示所选对象的连续属性区，不预设 Transform／Components 内容页签。类型、名称、Object/Category 分组页签与搜索按钮同在一行标题内（Houdini 单行参数头），不再单独占一行。颜色元组末尾的色块可点击，打开颜色编辑器：新色/原色对比（点原色恢复）、RGB 与 HSV 两行数值编辑同一颜色、六位十六进制输入；从打开到 Done 或点外部关闭为一次 Session 组编辑（`begin_group_edit`），只记一条历史，Esc 同样保留当前值，撤销一次恢复三个通道。选择 Entity 时展示 Entity 自身字段和所拥有组件的属性分组；选择组件时只展示该组件，标题中的组件类型只读。Entity 名称仍可编辑。搜索默认收起，点击名称右侧的放大镜在标题下方展开，并在首个接受帧后聚焦；收起停止筛选、归还行高并保留查询文字。查询筛选实际字段与类型分组，不改变组成或撤销历史。结构增删只在 Entity Structure 提供。布局使用 UI DSL 的 PropertyGroup／PropertyRow，数值、勾选、枚举复用共享参数行；枚举只显示元数据中的命名选项，不接受任意整数。数值的合法范围取字段声明的硬边界（`HardMin`/`HardMax`，或带 `LockMin`/`LockMax` 的 `Min`/`Max`），没有时取类型范围；当前值已在范围外（可信原生写入）时放宽到包含它。键入或拖调的越界值夹到合法范围，与 Runtime 写入一致。声明了 UI 范围的浮点标量在数值框后显示滑条，端点为 UI 范围，单侧缺失时用硬边界；整数、布尔、枚举和向量分量不显示滑条。悬浮说明在字段描述后附范围，例如“范围 0 – 1，上下限锁定”“硬下限 0”。Position、旋转和缩放仍按上方应用参数描述。图标来源见[参数面板与图标研究](../../research/parameter-header-icons-20261006.md)。
+Parameters 展示所选对象的连续属性区，不预设 Transform／Components 内容页签。类型、名称、Object/Category 分组页签与搜索按钮同在一行标题内（Houdini 单行参数头），不再单独占一行。颜色元组末尾的色块可点击，打开颜色编辑器：新色/原色对比（点原色恢复）、RGB 与 HSV 两行数值编辑同一颜色、六位十六进制输入；从打开到 Done 或点外部关闭为一次 Session 组编辑（`begin_group_edit`），只记一条历史，Esc 同样保留当前值，撤销一次恢复三个通道。选择 Entity 时展示 Entity 自身字段和所拥有组件的属性分组；选择组件时只展示该组件，标题中的组件类型只读。Entity 名称仍可编辑。搜索默认收起，点击名称右侧的放大镜在标题下方展开，并在首个接受帧后聚焦；收起停止筛选、归还行高并保留查询文字。查询筛选实际字段与类型分组，不改变组成或撤销历史。结构增删只在 Entity Structure 提供。布局使用 UI DSL 的 PropertyGroup／PropertyRow，数值、勾选、枚举复用共享参数行；枚举只显示元数据中的命名选项，不接受任意整数。数值的合法范围取字段声明的硬边界（`HardMin`/`HardMax`，或带 `LockMin`/`LockMax` 的 `Min`/`Max`），没有时取类型范围；当前值已在范围外（可信原生写入）时放宽到包含它。键入或拖调的越界值夹到合法范围，与 Runtime 写入一致。声明了 UI 范围的浮点标量在数值框后显示滑条，端点为 UI 范围，单侧缺失时用硬边界；整数、布尔、枚举和向量分量不显示滑条。悬浮说明在字段描述后附范围，例如“范围 0 – 1，上下限锁定”“硬下限 0”。Position、旋转和缩放仍按上方应用参数描述。图标来源与许可见[图标说明](../../../assets/icons/README.md)。搜索入口参照 [SideFX Parameters](https://www.sidefx.com/docs/houdini/network/parms.html#searching-and-filtering-parameters)；收起保留查询是本编辑器的合同，不据此推断外部软件的隐藏状态。
 
 Scene Tree 与 Asset Browser 支持就地重命名：树行 F2 或双击已选中行，资源 F2 或右键 Rename，在名称文字位置覆盖一个输入框（不遮图标），Enter 提交、Esc 或失焦取消；Entity 重命名进入场景历史，资源重命名通过 `Project::rename` 同时移动 `.asset.json` 身份文件，资源键与场景引用不变，拒绝非法字符、同名覆盖、顶层文件夹及配置中的启动场景/UI 源。Scene Tree 行可拖动：拖到另一行使其成为该 Entity 的子级，拖到 World 行或下方空白解除父级；目标行高亮，不能拖到自身或其后代。换父保持世界变换（keep world），一次拖放一条历史，完成后选中被移动的 Entity 并展开到它。右键行先选中该行，再弹出 Rename（F2，聚焦参数头名称）、Duplicate、Delete、Clear Parent（Alt+P）与 Focus；树获得焦点时 Delete、F2、Ctrl+D/Shift+D、Alt+P 生效。
 
@@ -331,6 +336,7 @@ Entity Structure 是可移动、关闭、重开的独立子页：Entity 递归�
 
 现有值与默认值的比较仅用于显示修改状态。没有声明默认值的原生字段不假定为零，也不伪造恢复默认值能力。修改 Source 字段默认值需重建类型，已保存实例值会恢复，不自动随新默认值传播。未来 Class 资产必须先明确持久身份、组件模板、覆盖和传播规则，再复用同一个检查入口。
 
+外部参照：[UE UClass](https://dev.epicgames.com/documentation/en-us/unreal-engine/API/Runtime/CoreUObject/UClass) 与 [Blueprint Class Defaults](https://dev.epicgames.com/documentation/en-us/unreal-engine/blueprint-editor-defaults-tab)区分类型默认对象与实例；[SideFX Parameters](https://www.sidefx.com/docs/houdini/network/parms.html)和[参数界面](https://www.sidefx.com/docs/houdini/ref/windows/edit_parameter_interface.html)区分节点实例参数与类型作者界面。它们不表示本项目已提供 Class 资产，也不把 SOP 网络等同于 Entity 组成。
 
 Controls 的 Parameters / Appearance 使用同一组合，Appearance 内的 Color / Channels 是独立嵌套组：RGB 元组、三条逐通道滑条和色块消费同一组样本值，支持折叠、禁用、默认值及样本撤销。所有行、组和伸展继续使用现有 row/column/Flex，未引入第二套布局器。
 
@@ -338,7 +344,7 @@ Controls 的 Parameters / Appearance 使用同一组合，Appearance 内的 Colo
 
 全局交互样式区分按下、选中与焦点：普通按钮和列表用灰色底面反馈，菜单栏展开标题及当前菜单条目用橙色底面反馈；普通控件获得焦点不增加外框。焦点通过文字或控件标记的亮度表达；文本和数值编辑器保留原宽度的细灰色边界，非法输入仍使用红色。鼠标点击保留键盘焦点，Tab、方向键、Enter/Space 和菜单返回继续使用同一焦点状态。
 
-Tab 标签悬停不改变背景，统一使用正体。列表有带握柄和双步进按钮的滚动条，支持拖动、翻页和滚轮；字段不会伸到滚动条下方。数字调整、文本、分隔条、停靠拖动与视口观察使用对应鼠标指针。研究依据和未覆盖能力见[参数组合研究](../../research/houdini-parameter-composition-20261002.md)；完整 Ramp、色轮弹窗、动画/表达式编辑仍未实现。
+Tab 标签悬停不改变背景，统一使用正体。列表有带握柄和双步进按钮的滚动条，支持拖动、翻页和滚轮；字段不会伸到滚动条下方。数字调整、文本、分隔条、停靠拖动与视口观察使用对应鼠标指针。组合行为与来源见[UI 参数合同](../ui/README.md#可组合参数控件)；完整 Ramp、二维色盘、动画/表达式编辑仍未实现。
 
 Workspace 声明 `normal/panel/title/caption` 角色、enabled/selected 等语义状态及菜单栏、参数区域等类名。基础主题和 [editor.ss](../../../assets/editor.ss) 通过同一 UI 解析得到最终样式；应用启动时从可执行文件旁读取 SS，非法内容报告行列。对象类型使用 object-type 样式，说明和状态文字使用 caption；容器结构 padding 留在 NodeInput，文字内容内距由最终样式提供。菜单栏标题宽度按文字测量并保留最小宽度。样式覆盖、图片/圆角和相邻合批合同见 [SS 文档](../ui/style-sheets.md)。
 主窗口和原生菜单通过同一 `editor_fonts()` 加载 Sarasa UI SC，数字使用 Source Code Pro；额外缺字及 emoji 沿系统回退，应用不修改系统字体设置。构建部署 `fonts/` 和两份 SIL OFL 许可证；选择依据、字重、体积与来源见[字体说明](../../../assets/fonts/README.md)。窄面板继续同一 Flex 换行。
@@ -346,8 +352,6 @@ Workspace 声明 `normal/panel/title/caption` 角色、enabled/selected 等语�
 窗口验收从同一 Create 菜单添加真实场景成员至 256，验证列表可见行切换、滚动末行与滚动条边界、取消捕获不改变历史，以及位置拖动的一次提交、撤销与重做。
 
 视口 locator 与拾取读取 Renderer 已接受帧的 SceneSnapshot CPU owner，不重新提取活 World；Workspace 仅在已有 UI 引用需要时补查材质成员。完整采用与快照寿命见[材质系统](../renderer/materials.md#gpu-批次与实际显示)。
-
-2026-10-01 独立菜单增量：dev/release UI 15/15 通过；正式窗口完整链分别接受 2632 / 2631 帧并 PASS。新增断言真实 owned WS_POPUP（非子窗口）、跨编辑器边界点击、显示器工作区约束、F10/Alt 快捷入口、左右键/悬停切换、宿主复用、焦点/捕获清理，以及原参数菜单和下拉业务操作。报告及独立 GPU 截图归档于 `out/native-menu-evidence-20261001/{dev,release}/`。开发版通过后仅调整了发布验收中完整拖动的消息投递时序和接口注释；最终两种配置均重新编译。本轮未运行真实搜狗验收。
 
 ## 帧与关停
 
@@ -357,6 +361,24 @@ accepted extent 固定为录制/呈现时尺寸，frame末尾resize后的新尺�
 上传也是录制；录制开始后的错误没有回滚，终态错误停止新交互与后续帧。普通帧不调用finish，诊断截图才显式同步。
 关闭停止输入并取消编辑，释放renderer拥有的资源后关闭RHI，最后销毁窗口；成员/历史根先于Runtime析构。
 
+### 后续调度与成本边界
+
+空闲/后台节流与事件驱动停帧仍需设计，不是现有能力。方向是在唯一 Application 宿主入口协调服务、渲染需求和提交节奏，不在 RHI/Renderer 再建限帧循环。前台输入应尽快处理；渐进光照、反射、AA 或动画必须有明确持续需求，不猜固定帧数后收敛；最小化/隐藏停止 GPU 提交仍须推进服务。独立菜单与主窗口属于同一活跃组。
+
+长时间等待之前须接好 Control/后台结果的就绪通知，以及源码检查、DSL 去抖、Tooltip 等拥有者的最近期限；通知只安排安全阶段，不能在编码、发布或 World 事务内任意派发业务消息。原生模态框须明确可响应的取消/只读边界，不重入文档写入。flip-model 的普通遮挡不能仅靠 `DXGI_STATUS_OCCLUDED` 判定，见 [Microsoft DXGI_STATUS](https://learn.microsoft.com/en-us/windows/win32/direct3ddxgi/dxgi-status)与 [Present](https://learn.microsoft.com/en-us/windows/win32/api/dxgi/nf-dxgi-idxgiswapchain-present)。
+
+通知句柄的拥有者须先停止等待者，再销毁通知句柄；等待尚未结束时关闭句柄的行为未定义，见 [Microsoft MsgWaitForMultipleObjectsEx](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-msgwaitformultipleobjectsex)。
+
+Play 的 World Tick/协程按宿主调用推进，物理累积器不代表整个游戏已经固定步进。后台渲染预算不得改变游戏时间；现有 dt 截断和丢弃须按 [Physics 合同](../physics/README.md)核对。渲染时间沿 RenderClock，暂停后重建基线，普通等待不制造 camera_cut，也不重置所有 GI 历史。
+
+性能改动先区分面板投影、DSL prepare/append、Session 全量差分与 UI 帧构造；等值快照/片段复用或稀疏提交必须仍观察直接 Runtime 写入、选择、展开、过滤、热更和 DPI。仅 Document revision 不能覆盖这些变化。Scene Tree 当前范围见下文；普通 List 的绘制裁剪不等于前段虚拟化，范围化须同时维护键盘、范围选择、过滤、scroll extent、anchor 和稳定身份，复用现有 VirtualList/Session，不另建输入后端。
+
+### 未实现的交互
+
+当前吸附和着色设置使用已有菜单；带分段按钮、图标列表和勾选组合的富弹出面板仍待建设，须复用 PopupHost 的焦点、Esc 和外部点击政策。Normal/View/Cursor/Parent 变换朝向、顶点/边/面吸附、视口独立可见性/可选性状态、长按工具组、Ramp、方向球和 HSV 二维色盘尚未实现；现有 RGB/HSV/Hex 数值颜色编辑不是二维色盘。
+
+多份同类面板、固定检查目标、浮动视图和布局持久化沿现有 DockSpace 与稳定业务身份扩展，不复制场景状态。资源缩略图及跨区域拖放的责任见[声明式 UI 边界](declarative-ui.md#区域与手势边界)；源码调试接入复用[Runtime/JIT 核心](../../source-debugger.md)和[Control 方案](control.md#源码调试接入待实现)，不是另建源码执行宿主。节点画布仍须把选择、作者对象和显示输出分开，并与领域求值区分。
+
 ## 验收入口
 
 总 `acceptance` 目标中每项检查只运行一次：独立文档模式（`--recovery`、`--materials`、`--textured-obj`、`--gltf`、`--viewport-edit`、`--scene-lit` 等）不再重复进入默认文档链；`--examples`、`--dungeons` 与 `--textured-obj` 归入无窗口目标 `editor_examples_acceptance`。`--profile-*` 是测量入口，不进入总入口。
@@ -365,7 +387,7 @@ accepted extent 固定为录制/呈现时尺寸，frame末尾resize后的新尺�
 
 `editor_dialogs_acceptance` 使用正式编辑器菜单打开工程目录选择，以及 File → Exit 触发的未保存场景确认。它检查原生窗口响应、模态期间主窗口不再持有鼠标、取消后输入与接受帧恢复、场景和撤销历史保留；看门狗对无响应给出有界失败。About 的原生生命周期由普通窗口链检查。单独入口为 `atelier_editor --acceptance-dialogs <输出目录>`，不注入桌面键鼠，报告写入 `dialog-evidence/dialogs.txt`。仅检查 WM_NULL 响应不足以识别输入被主窗口捕获的问题，因此同时读取线程的原生捕获状态。
 
-所有无人值守的编辑器窗口入口（`--acceptance*`、`--snapshot*`）在 UI 线程上挂一个 WH_CBT 钩子：在验收声明的预期范围之外，只要创建顶层原生对话框（`#32770`，包括 MessageBoxW 和文件选择框），进程就立即以退出码 1 结束，并输出 `unexpected native dialog "<标题>"`，不会停在那里等人点击。只有 About 和上述对话框验收会声明预期范围。正常启动不挂钩子；由 Control 驱动的编辑器子进程和 `--profile-*` 测量入口不在覆盖范围内。
+所有无人值守的编辑器窗口入口（`--acceptance*`、`--snapshot`）在 UI 线程上挂一个 WH_CBT 钩子：在验收声明的预期范围之外，只要创建顶层原生对话框（`#32770`，包括 MessageBoxW 和文件选择框），进程就立即以退出码 1 结束，并输出 `unexpected native dialog "<标题>"`，不会停在那里等人点击。只有 About 和上述对话框验收会声明预期范围。正常启动不挂钩子；由 Control 驱动的编辑器子进程和 `--profile-*` 测量入口不在覆盖范围内。
 
 同一验收宿主安装 `EVENT_SYSTEM_FOREGROUND` 的 `WINEVENT_OUTOFCONTEXT` 钩子，在固定缓冲中保留最近 8 次已投递前台切换的事件时间、观察时间、HWND、PID、可执行文件名和窗口类；钩子随安装线程退出卸载，不过滤本进程事件。事件时间是 WinEvent 的 32 位启动毫秒数（会回绕），观察时间是 `GetTickCount64`，均非日志墙钟。异步投递依赖现有消息循环，不额外泵消息或等待，尚未投递的事件不在记录中。
 
@@ -374,19 +396,14 @@ accepted extent 固定为录制/呈现时尺寸，frame末尾resize后的新尺�
 `editor_document_acceptance`消费正式 World/Session，覆盖空 Entity、实际组件增删、单次字段历史/控制会话、完整 TRS undo、成员资格、删除跨 GC 的同身份恢复、历史裁剪普通根保组/最终收集及关闭释放。旧 Scene 库和位置专用入口已删除。
 `atelier_editor --acceptance <输出目录>`运行同一正式窗口，用Win32消息和系统焦点/捕获操作驱动控件，再核对Runtime状态与GPU帧。
 `atelier_editor_document_acceptance --viewport-edit` 保留真实网格求交、有限远平面、镜像/零轴 TRS、局部约束、整组回滚与撤销、数学元组及内联重命名布局代表。`atelier_editor --acceptance-edit <输出目录>` 驱动独立原生窗口，覆盖手柄拖动、快捷键、参数联动、捕获取消、数值显示、欧拉角连续输入及资源/实例切换，导出 GPU 截图。组合构建目标为 `editor_edit_acceptance`；窗口部分需要前台焦点。
-2026-10-07 的范围、修正及证据见[视口编辑验收记录](../../research/editor-viewport-edit-20261007.md)。
 `--viewport-edit` 的复制与组合代表检查独立身份、组件关系、物理配置、共享网格和 Undo/Redo；失败后原图/选择/历史保持，删除跨 GC 恢复同一对象。表面游标与中键选轴保留作者几何结果，菜单文案和容量拒绝不构成验收矩阵。窗口验收覆盖经 `WM_SYSKEYDOWN` 的 Alt 组合键与模态读数栏截图 `modal-readout.png`。
 
 `editor_shortcuts_acceptance` 通过独立真实编辑器的统一输入入口验收视口两轴分隔条的连续缩小/放大、跨入视口内容时的捕获保持、越过范围再拖回时回到指针下、松手提交，以及单轴上的 Esc、失焦与捕获丢失取消。视角饼菜单保留透视选择、首次接受帧前快速松键和 Esc 取消；Shift+D、X、Z、文本焦点隔离和原生菜单复用仍沿真实输入执行，并检查零缩放的 `degenerate_value` 在 Project Output 只占一行、再次出现时计数 `(×2)`。菜单链检查方框列连续勾选后保留同一原生窗口并刷新状态、文字点击关闭；这些操作不改变场景历史和游标。它不注入桌面键鼠、不要求前台；分隔条手势期间丢弃系统发往编辑器线程的鼠标消息，结果与窗口位置和物理光标位置无关；操作截图写入构建目录的 `shortcut-evidence/`。真实操作手感仍以交互使用为准。
 
 `editor_surfaces_acceptance` 沿正式 Application、UI 输入和 GPU 帧验证不同尺寸菜单复用同一窗口、两轴分隔条的延迟尺寸提交、Esc/失焦/丢失捕获及迟到松键；也覆盖 Asset Browser 目录分隔条的扩大/缩小、边界、取消和场景历史隔离，确认目录调整不改变 viewport 尺寸。它不注入桌面键鼠；`surface-evidence/` 中的 PNG 保存拖动预览和提交后的画面。菜单打开的 CPU 耗时计入[帧性能](#帧性能)中打开它的宿主阶段。渲染效果与 GPU 资源验收见[渲染验收](../renderer/acceptance.md)。
 
-2026-10-11 主目录 `72843f7` 加本轮修改：目录分隔条 Dev/Release 端到端通过，日志为 `out/browser-splitter-{dev,release}.log`，对应目录中的 `asset-directory-width.png` 保存调整后的画面；最终 Release 原生对话框复验通过，记录在 `out/native-dialogs-final-release.log`。渲染边线的专门验证见[渲染验收](../renderer/acceptance.md#默认入口)。
-
-2026-10-11 的 DDGI 整合验收通过当时的 Scene Lighting → DDGI Debug 菜单点击 Probe Spheres 互斥项与 Volume Bounds 勾选项（当前入口已迁至 World → Diagnostics），确认显示设置生效且不写场景历史。Dev 与独立 Release 均通过，菜单截图和日志在 `out/ddgi-integration-20261011/surfaces-{dev,release}/` 及对应 `.log`。
-
 相机手势与 Control 联合验收使用 Shift+中键平移代表，覆盖正常松手、失焦、捕获丢失、转入菜单四种结束路径；检查活动期间拒绝请求、非所属按键释放、迟到移动、原生捕获释放及场景历史隔离。中键轨道手势另由 Scene Lit 窗口链保留。
-`atelier_editor --snapshot <输出目录>` 是设计评审用的截图入口，不是验收：窗口以不激活方式显示，不抢占前台、不发送系统输入，直接调用文档与视口工具入口，导出各工具手柄、表面游标、模态 G/R 的 GPU readback PNG。可在他人使用桌面时运行。
+`atelier_editor --snapshot <输出目录>` 是显式设计评审工具，不进入默认验收或渲染特性对照：窗口以不激活方式显示，不抢占前台、不发送系统输入，直接调用文档与视口工具入口，导出各工具手柄、表面游标、模态 G/R 的 GPU readback PNG。运行仍遵守机器锁和窗口资源排期。
 `atelier_editor --acceptance-project <输出目录> [源工程目录]`在同一个正式窗口内执行工程操作链，输出目录下每次新建独立的 `run-*` 证据目录。提供源工程时，仅复制 Config／Content／Source 到验收目录；跳过链接和 Cache，所有编辑、导入、保存和目录搬移发生在副本。输出目录必须位于源工程之外。省略源工程时创建空工程 fixture；CMake 的 `editor_project_acceptance` 使用这一形式。窗口输入仍要求编辑器保持前台，外部焦点丢失会停止输入。
 窗口链包含分隔、增删/历史、列表选择、实时拖调/一次undo/Esc、文字Delete、非法值、相机、失焦/捕获、resize、最小化和正常退出。
 样式验收保留设置改变不替换已接受帧、坏样式拒绝后主题与已接受帧不变、字体及caret同步失效、旧帧几何/像素寿命；布局代表检查 Filter 位于对象标题与滚动属性之间。菜单栏关闭时 hover 不打开弹窗。删除对象后其属性控件退役、名称输入禁用，Undo 后恢复可交互选择。列表夹具固定填到 256 个成员，保留屏外文字裁剪、滚回、末行拖动与历史，不以填满成员上限作验收目标。
@@ -394,41 +411,15 @@ accepted extent 固定为录制/呈现时尺寸，frame末尾resize后的新尺�
 保留行为的截图来自 renderer 实际 readback，包括 `m0.png`、`editor.png`、`chrome-pixels.png`、`s1-disabled.png`、`s1-color.png`、`s1-font.png`、`s1-list.png`、`scrollbar-thumb-end.png`、`s2-search-unicode.png`、`s2-number-selection.png`、`s2-failed-edit.png`；报告为 `acceptance.txt`。这些是布局、输入和生命周期的操作证据，不作渲染图片正确性对照。
 DPI 验收覆盖当前显示器上的 WM_DPICHANGED 过渡政策，不据此声称已验证跨不同 DPI 显示器迁移。Unicode WM_CHAR 和 UI 组合协议注入不代表真实系统输入法通过。
 
-### S2 集成状态与输入法验收
+### 输入法验收
 
-本节是 World 迁移前的已验收记录。当前 `Window`/共享文本后端未修改，本轮不重复未受影响的真实 IME 验收；组件字段接入仍通过普通窗口的 Unicode、剪贴板和目标失效链检查。
+真实输入法入口为 `editor_ime_acceptance`（`atelier_editor --acceptance-ime <输出目录>`），不进入自动总入口，运行方式见[根 README](../../../README.md#构建与端到端验收)。需预留桌面时段，串行运行并保持编辑器前台、无物理修饰键按住。驱动仅请求一次前台，开始输入后失焦即停止，不反复抢焦点。
 
-2026-09-29：共享 UI 提交 `60472ed` 已集成为 `0e45c6a`；当时 dev/release 的 UI 12/12 通过，实际文字服务报告 ICU 72.1 / Unicode 15.1。`afb2286` 的应用平台接线与验收驱动在 dev/release 编译通过，顺序运行 `editor_acceptance` 均通过：Scene PASS、窗口各接受 709 帧，含原有场景/窗口链及 S2 非 IME 操作。该版本原始报告和截图另存于 `out/{dev,release}/editor-evidence-afb2286/`，与后续 IME 工作目录分开保留。
+驱动保存原线程 profile，必要时仅在本线程选择已启用搜狗，退出时恢复并核对原文本服务或键盘布局；不修改用户默认、输入列表或启用状态。SendInput 扫描码经系统 IME 生成拥有式 IMM32 快照，再进入正式共享编辑路径。`ime-platform.txt` 记录本轮 profile、位置应答及跨字段结果，`ime-acceptance.txt` 记录组合/结果/候选通知；`s2-ime-native-candidate.png` 保存原生候选窗，应用预编辑文字来自 GPU 截图。
 
-组合起点快照 `4de055a` 已集成为 `7cd9c28`，同一集成树 dev/release UI **13/13** 通过。最终 Window 包含 IMR_QUERYCHARPOSITION 单起点应答、原生边界立即失效及输入绑定更换的上下文生命周期。目标失效/更换时依序取消、解绑旧上下文，发布新绑定，再恢复原默认上下文；原生事件捕获时保存 token，取消/解绑的同步回调仍归旧目标。正常确认的 revision 推进不解绑。最终产品与验收驱动已完成双配置编译和以下独立实测，证据归档于 `out/{dev,release}/editor-evidence-s2/`，不复用旧版本报告。
+验收使用 WEIZHI 的已观察首候选“位置”。候选 reading 可早于 START 或 GCS 组合，不以 `Session::composing` 或候选数量单独判断是否清理。失焦、surface 改变、字段切换和目标更换后，Space 的结果分别与同一 IME 的 `clean_space_query` 比较，并核对旧对象值和业务编辑状态；同时检查滚动后的候选位置与接受帧 caret 一致，以及 Controls 工作台和场景历史隔离。
 
-| 最终验收 | dev | release |
-| --- | --- | --- |
-| 本机搜狗真实输入 | PASS；starts/results 各3，candidate changes 57 | PASS；starts/results 各3，candidate changes 57 |
-| 原跨字段 reading 回归 | query=`位置 `，X=0，business editing=0 | query=`位置 `，X=0，business editing=0 |
-| 原线程 profile 恢复 | verified=1 | verified=1 |
-| 普通窗口全部链路 | PASS；709 accepted frames | PASS；709 accepted frames |
-
-消息验收 helper 显式设置本次 Ctrl/Shift 并清除未请求修饰位，覆盖修饰位继承和意外失焦中断；生产失焦取消语义保留。最终双配置在稳定前台时段顺序完成，没有干预其他进程。
-
-本机搜狗真实输入使用同一 `atelier_editor --acceptance-ime <输出目录>`，CMake 入口为：
-
-```powershell
-cmake --build --preset dev --target editor_ime_acceptance
-cmake --build --preset release --target editor_ime_acceptance
-```
-
-这两个目标须依次运行，并保持编辑器前台且无物理修饰键按住。驱动保存原线程 profile，必要时仅在本线程选择已启用搜狗，退出时恢复并核对原文本服务或键盘布局；不修改用户默认、输入列表或启用状态。实际输入使用 SendInput 扫描码，系统生成的 IMM32 快照进入正式共享编辑路径。GPU 截图保存应用预编辑文字，`s2-ime-native-candidate.png` 保存编辑器所在桌面区域的原生候选窗；`ime-acceptance.txt` 记录系统组合/结果/候选通知及结果。
-
-以下是 2026-09-29 的固定环境和历史证据，不表示当前机器配置。该次按用户指定使用搜狗，Windows build 为 26200.9457 / 25H2，`C:\Windows\System32\SogouTSF.ime` 的 FileVersion/ProductVersion 均为 16.8.0.5415；TIP 为 `{E7EA138E-69F8-11D7-A6EA-00065B844310}`，profile 为 `{E7EA138F-69F8-11D7-A6EA-00065B844311}`，语言为 `0804`。当时输入列表是 zh-Hans-CN 搜狗与 en-US 美式键盘，默认覆盖为搜狗。后续实机验收须重新记录实际环境。
-
-此前为微软拼音临时设置的用户 enable 位及追加可选项已通过原受支持 API 撤回，未覆盖整份用户设置；`out/pinyin-profile-reverted.txt` 与 `out/pinyin-environment-reverted.json` 记录 enable=0、列表顺序及搜狗默认与操作前一致。这不是微软拼音验收通过的证据。当前输入生命周期合同见[共享单行编辑](../ui/README.md#共享单行编辑)与[平台交接](../ui/README.md#剪贴板组合与平台位置)。以下结果须分别看待：
-
-- 真实 dev 运行已通过位置应答的屏幕坐标/非法请求检查。原生截图 `out/dev/editor-evidence/s2-ime-native-candidate.png` 确认 WEIZHI 的首候选为“位置”；物理 Space 已通过真实 START → GCS_RESULTSTR → END 将“位置”插入一次，`s2-ime-confirmed.png` 与 `out/dev/sogou-real-result.log` 保存确认结果。候选阶段可只有 VK_PROCESSKEY、IMN_CHANGECANDIDATE 和起点查询，没有 GCS 组合；不以 Session::composing 判断搜狗 reading 是否存在。
-- 加强生命周期检查后，在 X=0 的数值字段输入 WEIZHI，切到原查询为“位置”的搜索末端，再按 Space，实际变成“位置位置”。同一搜索字段的干净状态 Space 基准是“位置 ”。最新有界诊断存于 `out/dev/sogou-rebind-diagnostic-20260929/`：旧/新 token 转换正确、同一 HIMC/open=1，CPS_CANCEL 确实调用并返回成功；切换前后 starts/results 均为3，Space 后才变4。Space 前原生候选仍可见；最终 expected UTF16 `4f4d 7f6e 20`、actual `4f4d 7f6e 4f4d 7f6e`，X=0、business editing=0。该次证据排除取消分支未执行及取消期间新 start 排队错绑，表明 pre-START reading 仍存活。
-- 加入解绑/恢复后的版本在 dev/release 均通过原真实回归：切字段/失焦/Surface/目标变化后，Space 与同一 IME 的干净状态基准一致。字段内容、旧对象值和业务 editing 分别断言并记录；不以非空候选缓存或结果消息计数增加判失败。候选文本枚举已移除，仅用候选数量观察准备阶段、按本机已观察首候选送 Space。最终 `ime-platform.txt` 的跨字段 expected/actual 均为 `4f4d 7f6e 20`；`ime-acceptance.txt` 与 `acceptance.txt` 分别记录真实搜狗和普通窗口 PASS。最终归档不包含旧失败截图；诊断原始证据单独保留。
-
-驱动只请求一次前台并等待用户切换，随后失焦即停止，不反复抢焦点。临时生产 DEBUG、逐键跟踪、有界取消快照及诊断分支均已移除，保留必要原生计数、失败分类和正式回归。`out/sogou-environment-final.json` 与实测前记录核对，输入法列表/顺序和搜狗默认未变。系统 IME、协议注入、静态环境检查分别记录；此次仅证明当时搜狗 16.8.0.5415 及已观察候选顺序，不代表其他 IME。S2 已在该范围内收口；后续编辑器能力以本模块和当前声明式 UI 文档为准。
+Window 的单起点 `IMR_QUERYCHARPOSITION`、原生边界立即失效和绑定切换的取消/解绑顺序见[共享单行编辑](../ui/README.md#共享单行编辑)与[平台交接](../ui/README.md#剪贴板组合与平台位置)。系统 IME、协议注入和静态环境检查分别报告；一次运行只证明所记录的本机输入法版本与候选顺序，不证明微软拼音或其他 IME，也不替代普通窗口链。实机运行须重新记录环境，不沿用旧版本通过表。
 
 ## Scene Tree
 
