@@ -34,6 +34,8 @@
 
 `UiFrame.controls_revision`标识候选使用的描述批次；描述或SS版本改变后，`accept`拒绝旧候选。颜色改变保留控件incarnation。`prepare`失败仍保有旧帧，但暂停交互激活，直到修复后的帧被接受；已提交描述及已返回的取消effects不会因出帧失败自动撤回。
 
+`prepare(Preparation::geometry)`供隔离的测量 Session 使用，复用完整准备的样式、布局、文字 metrics、ControlBox、裁剪和滚动条几何计算，不创建绘制 Frame、DrawQuad 或文字/符号 Coverage，也不运行 tooltip/数值阶梯绘制。返回的 `UiFrame::drawing` 为空，不能交给 renderer 或被 `accept` 接受；默认 `prepare()` 仍生成完整候选。几何模式会照常更新该 Session 的布局缓存、滚动范围等准备状态，并遵循原失败门控，因此不是对活 Session 的无副作用查询。已有旧帧或缓存持有的 Coverage 不因选择几何模式而清空，统计应区分新产出与当前存活量。
+
 ## 接入导航
 
 - 尺寸、Flex/Grid、测量和几何寿命：[布局核心](../ui-layout/README.md)。布局核心只返回几何，DirectWrite 排版与控件输入由本模块负责。
@@ -144,6 +146,8 @@ DSL 的 PopupMenu / PopupEntry 组合根级 `popup`、普通 `menu_item`、快�
 `context_target` 开启右键和 Menu/Shift+F10 请求；`combo` 在主按钮按下时请求菜单，对应释放交给菜单宿主，不再等待按钮释放才展开。Enter/Space 或上下键也走同一菜单请求。`context_menu` 携带 source、可选 group 和已接受帧的客户区物理坐标。Session 管理上下/Home/End、Enter/Space、Esc/Tab；外部点击只关闭，滚轮及键盘不穿透。`dismiss` 要求宿主撤下菜单，隐藏、禁用、失焦、Surface 失效与捕获丢失沿同一取消路径处理。
 
 正式编辑器的列表菜单使用 [PopupHost](../../../src/application/popup.hpp)：一个复用的 owned `WS_POPUP` 窗口，具有独立的 Session、renderer 和接受帧，使用同一份 SS。主窗口保持键盘焦点与鼠标捕获；输入经屏幕坐标转换到菜单的本地接受帧。主窗口画布没有列表菜单副本，菜单可越过其边缘；菜单尺寸、翻转和夹取基于锚点显示器的工作区。视口饼菜单在主 surface 中通过 DSL 组合，复用同一菜单项模型与命令入口。
+
+PopupHost另保留一个隔离的measurement Session，用工作区约束及同一SS求标题/快捷键列宽、内容高度与滚动槽；它只做几何准备，live Session才按最终窗口尺寸完整准备和绘制。两者不共享或转交可变文字缓存。测量的DPI/工作区失效、列间距、gutter、像素取整及窗口尺寸规则不变；业务命令退休与行身份复用/重建规则保持原行为，不为复用测量保留已退休命令。
 
 `MenuBehavior::checkbox` 的前置方框与普通 checkbox 共用框体和独立抗锯齿勾号绘制，使用 `indicator-size/background/border-color/color`。鼠标按下、松开均位于接受帧的方框列时，Session 发出 `activate` 并设置 `Action.keep_menu_open`，不发 dismiss；标签点击与键盘激活仍关闭菜单。方框列包含左内距、方框和其后 3 DIP 间隔，并受控件裁剪约束。宿主只对仍有效的 checkbox 尊重该标志，接受动作后重新发布权威 selected 值；错误、失效与取消沿原关闭路径。PopupHost 更新后复用原窗口，并在新 GPU 帧接受后恢复原条目的焦点。
 

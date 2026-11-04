@@ -437,7 +437,7 @@ struct TooltipGeometry {
 };
 
 struct UiFrame {
-    std::shared_ptr<const Frame> drawing;
+    std::shared_ptr<const Frame> drawing; // Null for geometry-only preparation; such a result cannot be accepted.
 
     std::vector<ControlBox> controls; // Draw order, also used for reverse hit testing.
 
@@ -788,6 +788,8 @@ struct Statistics {
     ui_layout::Stats layout;
 };
 
+enum class Preparation { complete, geometry };
+
 // One owner thread. Owns UI state and content versions, not scene objects or undo.
 // Keep returned frames through render(); accept only after final renderer accepted.
 class Session {
@@ -827,7 +829,9 @@ public:
     // frame, not the previous descriptors or cancelled interaction.
     Result<Reply> update_controls(std::span<const Control>);
 
-    Result<std::shared_ptr<const UiFrame>> prepare();
+    // Geometry mode retains ordinary layout/scroll preparation but skips paint and
+    // rasterization. It is for scratch Sessions, not a side-effect-free live query.
+    Result<std::shared_ptr<const UiFrame>> prepare(Preparation = Preparation::complete);
 
     bool accept(std::shared_ptr<const UiFrame>);
 

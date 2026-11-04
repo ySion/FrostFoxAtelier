@@ -58,33 +58,37 @@
                     const auto x=body.x-static_cast<float>(state.scroll_x)*scale,y=body.y+(row*line_height-static_cast<float>(state.scroll))*scale;
                     const auto start=buffer.line_start(row),end=start+static_cast<std::uint32_t>(buffer.line(row).size());
                     code.lines.push_back({row,start,paragraph,x,y});
-                    if (row==caret_row && editing) quad({body.x,y,body.width,line_height*scale},body_clip,appearance.tree_alternate);
-                    if (first!=last && first<=end && last>=start && !composition) {
+                    if (paint && row==caret_row && editing) quad({body.x,y,body.width,line_height*scale},body_clip,appearance.tree_alternate);
+                    if (paint && first!=last && first<=end && last>=start && !composition) {
                         for (auto range:paragraph->selection(std::max(first,start)-start,std::min(last,end)-start))
                             quad({x+range.x*scale,y+range.y*scale,range.width*scale,line_height*scale},body_clip,appearance.selection);
                         if (last>end) {const auto line_end=paragraph->caret({end-start,true});quad({x+line_end.x*scale,y,appearance.font.size*.6f*scale,line_height*scale},body_clip,appearance.selection);}
                     }
-                    const auto raster=self.text.raster(line_key,0,scale,clip_rect({static_cast<float>(body_clip.left)-x,static_cast<float>(body_clip.top)-y,
-                        static_cast<float>(body_clip.right-body_clip.left),static_cast<float>(body_clip.bottom-body_clip.top)}));
-                    if (raster.coverage) quad({x+raster.left,y+raster.top,static_cast<float>(raster.coverage->width),static_cast<float>(raster.coverage->height)},body_clip,appearance.foreground,raster.coverage);
+                    if (paint) {
+                        const auto raster=self.text.raster(line_key,0,scale,clip_rect({static_cast<float>(body_clip.left)-x,static_cast<float>(body_clip.top)-y,
+                            static_cast<float>(body_clip.right-body_clip.left),static_cast<float>(body_clip.bottom-body_clip.top)}));
+                        if (raster.coverage) quad({x+raster.left,y+raster.top,static_cast<float>(raster.coverage->width),static_cast<float>(raster.coverage->height)},body_clip,appearance.foreground,raster.coverage);
+                    }
                     self.text.set(number_key,std::to_wstring(row+1),appearance.font,false,TextAlign::right);visible_text.push_back(number_key);
-                    const auto numbers=self.text.raster(number_key,margin/scale-8,scale);
-                    if (numbers.coverage) quad({bounds.x+numbers.left,y+numbers.top,static_cast<float>(numbers.coverage->width),static_cast<float>(numbers.coverage->height)},
-                        intersect(clip,clip_rect({bounds.x,body.y,margin-4*scale,body.height})),appearance.indicator_foreground.value_or(appearance.foreground),numbers.coverage);
+                    if (paint) {
+                        const auto numbers=self.text.raster(number_key,margin/scale-8,scale);
+                        if (numbers.coverage) quad({bounds.x+numbers.left,y+numbers.top,static_cast<float>(numbers.coverage->width),static_cast<float>(numbers.coverage->height)},
+                            intersect(clip,clip_rect({bounds.x,body.y,margin-4*scale,body.height})),appearance.indicator_foreground.value_or(appearance.foreground),numbers.coverage);
+                    }
                     if (row==caret_row && editing) {
                         const Rect physical{x+caret.x*scale,y+caret.y*scale,appearance.caret_width*scale,std::max(caret.height,line_height)*scale};
-                        quad(physical,body_clip,appearance.caret);
+                        if (paint) quad(physical,body_clip,appearance.caret);
                         if (visible(physical,body_clip)) output->caret=TextCaret{self.edit->token,physical,body_clip};
                         const auto anchor=composition?paragraph->caret({composition->first-start,false}):caret;
                         if (!state.control.read_only) output->input_anchor=TextInputAnchor{self.edit->token,composition?composition->id:0,composition?composition->revision:0,
                             {x+anchor.x*scale,y+anchor.y*scale,anchor.width*scale,line_height*scale},body_clip};
-                        if (composition) for (auto range:paragraph->selection(composition->first-start,composition->first-start+static_cast<std::uint32_t>(composition->preedit.text.size())))
+                        if (paint && composition) for (auto range:paragraph->selection(composition->first-start,composition->first-start+static_cast<std::uint32_t>(composition->preedit.text.size())))
                             quad({x+range.x*scale,y+line_height*scale-scale,range.width*scale,scale},body_clip,appearance.caret);
                     }
                 }
                 output->code_editors.push_back(std::move(code));
-                paint_scrollbar({key,{bounds.x+bounds.width-gutter,body.y,appearance.scrollbar_width*scale,body.height},{},{},{},{},clip,state.scroll_limit,state.scroll,body.height/scale,false},appearance,enabled);
-                paint_scrollbar({key,{body.x,body.y+body.height+scale,body.width,appearance.scrollbar_width*scale},{},{},{},{},clip,state.scroll_x_limit,state.scroll_x,body.width/scale,true},appearance,enabled);
+                prepare_scrollbar({key,{bounds.x+bounds.width-gutter,body.y,appearance.scrollbar_width*scale,body.height},{},{},{},{},clip,state.scroll_limit,state.scroll,body.height/scale,false},appearance,enabled);
+                prepare_scrollbar({key,{body.x,body.y+body.height+scale,body.width,appearance.scrollbar_width*scale},{},{},{},{},clip,state.scroll_x_limit,state.scroll_x,body.width/scale,true},appearance,enabled);
                 std::sort(visible_text.begin(),visible_text.end());visible_text.erase(std::unique(visible_text.begin(),visible_text.end()),visible_text.end());
                 for (auto previous:state.table_text) if (!std::binary_search(visible_text.begin(),visible_text.end(),previous)) self.text.erase(previous);
                 state.table_text=std::move(visible_text);

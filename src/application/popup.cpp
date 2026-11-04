@@ -136,7 +136,7 @@ void PopupHost::update(ui::ControlKey source, RECT anchor, bool below, std::span
             reject("PopupMenu controls were rejected at key " + std::to_string(accepted.error().key));
             return;
         }
-        const auto prepared = measurement_.prepare();
+        const auto prepared = measurement_.prepare(ui::Preparation::geometry);
         if (!prepared) {
             reject("PopupMenu layout failed at key " + std::to_string(prepared.error().key));
             return;

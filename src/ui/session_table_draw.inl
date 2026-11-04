@@ -69,7 +69,7 @@
                 table.columns_per_row=columns_per_row;table.row_stride=stride;
                 const auto header_clip=intersect(table_clip,clip_rect(table.header));
                 const auto body_clip=intersect(table_clip,clip_rect(table.body));
-                quad(table.header,header_clip,appearance.indicator_background);
+                if (paint) quad(table.header,header_clip,appearance.indicator_background);
                 std::vector<detail::TextKey> visible_text;
                 const auto paint_text=[&](TableKey id,bool header,std::wstring_view value,Rect cell,Clip cell_clip,
                     TextAlign alignment,ControlIcon icon,bool row_enabled,float trailing=0.f,bool above=false) {
@@ -79,14 +79,16 @@
                     if (icon!=ControlIcon::none) {
                         const auto size=std::min({appearance.indicator_size*scale,cell.height-2*scale,width});
                         if (size>0) {
-                            using Icon=ControlIcon;
-                            if (icon==Icon::grip_horizontal || icon==Icon::grip_vertical) {
-                                const auto dot=std::max(1.f,scale),pitch=size/4;
-                                for (int i=1;i<=3;++i) quad({x+(icon==Icon::grip_horizontal?i*pitch:size*.5f),
-                                    cell.y+cell.height*.5f+(icon==Icon::grip_vertical?(i-2)*pitch:0.f),dot,dot},cell_clip,color);
-                            } else quad({above?cell.x+(cell.width-size)*.5f:x,above?cell.y+4*scale:cell.y+(cell.height-size)*.5f,size,size},cell_clip,
-                                row_enabled?appearance.indicator_foreground.value_or(color):color,
-                                self.text.symbol(icon_symbol(icon),static_cast<std::uint32_t>(std::ceil(size))));
+                            if (paint) {
+                                using Icon=ControlIcon;
+                                if (icon==Icon::grip_horizontal || icon==Icon::grip_vertical) {
+                                    const auto dot=std::max(1.f,scale),pitch=size/4;
+                                    for (int i=1;i<=3;++i) quad({x+(icon==Icon::grip_horizontal?i*pitch:size*.5f),
+                                        cell.y+cell.height*.5f+(icon==Icon::grip_vertical?(i-2)*pitch:0.f),dot,dot},cell_clip,color);
+                                } else quad({above?cell.x+(cell.width-size)*.5f:x,above?cell.y+4*scale:cell.y+(cell.height-size)*.5f,size,size},cell_clip,
+                                    row_enabled?appearance.indicator_foreground.value_or(color):color,
+                                    self.text.symbol(icon_symbol(icon),static_cast<std::uint32_t>(std::ceil(size))));
+                            }
                             if (above) {const auto used=std::min(cell.height,size+8*scale);cell.y+=used;cell.height-=used;}
                             else {x+=size+4*scale; width=std::max(0.f,width-size-4*scale);}
                         }
@@ -96,6 +98,7 @@
                     self.text.set(text_key,value,appearance.font,false,alignment);
                     const auto metrics=self.text.metrics(text_key,width/scale);
                     const auto y=cell.y+std::max(0.f,cell.height-metrics.height*scale)*.5f;
+                    if (!paint) return;
                     const auto text_clip=intersect(cell_clip,clip_rect({x,cell.y,width,cell.height}));
                     const Clip viewport{static_cast<int>(std::floor(text_clip.left-x)),static_cast<int>(std::floor(text_clip.top-y)),
                         static_cast<int>(std::ceil(text_clip.right-x)),static_cast<int>(std::ceil(text_clip.bottom-y))};
@@ -112,7 +115,7 @@
                         table.columns.push_back({descriptor.key,header,{header.x+header.width-3*scale,header.y,6*scale,header.height},header_clip});
                         paint_text(descriptor.key,true,descriptor.title,header,cell_clip,descriptor.alignment,ControlIcon::none,enabled,
                             data.sort.column==descriptor.key?12.f:0.f);
-                        if (data.sort.column==descriptor.key) {
+                        if (paint && data.sort.column==descriptor.key) {
                             const auto size=std::min(10*scale,header_height);
                             quad({header.x+header.width-size-5*scale,header.y+(header.height-size)*.5f,size,size},cell_clip,appearance.foreground,
                                 self.text.symbol(data.sort.direction==TableSortDirection::ascending?detail::TextStore::Symbol::up:detail::TextStore::Symbol::down,
@@ -134,15 +137,15 @@
                         const auto cell_clip=intersect(body_clip,clip_rect(cell));
                         const auto& content=descriptor.cells.front();
                         table.cells.push_back({descriptor.key,data.columns.front().key,content.key,cell,cell_clip});
-                        if (descriptor.key==selection.row) quad(cell,cell_clip,appearance.selection);
+                        if (paint && descriptor.key==selection.row) quad(cell,cell_clip,appearance.selection);
                         paint_text(content.key,false,content.text,cell,cell_clip,tiles?TextAlign::center:TextAlign::left,content.icon,
                             enabled && descriptor.enabled,0,tiles);
-                        if (self.focus==key && descriptor.key==selection.row)
+                        if (paint && self.focus==key && descriptor.key==selection.row)
                             paint_box(cell,cell_clip,{0,0,0,0},{},{},std::max(1.f,scale),appearance.border,BorderStyle::solid);
                         continue;
                     }
-                    if (row%2) quad({table.body.x,y,body_width,row_height},body_clip,appearance.tree_alternate);
-                    if (descriptor.key==selection.row) quad({table.body.x,y,body_width,row_height},body_clip,appearance.selection);
+                    if (paint && row%2) quad({table.body.x,y,body_width,row_height},body_clip,appearance.tree_alternate);
+                    if (paint && descriptor.key==selection.row) quad({table.body.x,y,body_width,row_height},body_clip,appearance.selection);
                     float x=inner.x-static_cast<float>(state.scroll_x)*scale;
                     for (std::size_t column=0;column<data.columns.size();++column) {
                         const Rect cell{x,y,widths[column],row_height}; x+=widths[column];
@@ -151,17 +154,19 @@
                         const auto cell_clip=intersect(body_clip,clip_rect(cell));
                         table.cells.push_back({descriptor.key,data.columns[column].key,content.key,cell,cell_clip});
                         paint_text(content.key,false,content.text,cell,cell_clip,data.columns[column].alignment,content.icon,enabled && descriptor.enabled);
-                        if (self.focus==key && selection.row==descriptor.key && selection.column==data.columns[column].key)
+                        if (paint && self.focus==key && selection.row==descriptor.key && selection.column==data.columns[column].key)
                             paint_box(cell,cell_clip,{0,0,0,0},{},{},std::max(1.f,scale),appearance.border,BorderStyle::solid);
                     }
-                    quad({table.body.x,y+row_height-scale,body_width,scale},body_clip,appearance.tree_line);
+                    if (paint) quad({table.body.x,y+row_height-scale,body_width,scale},body_clip,appearance.tree_line);
                 }
-                column_x=inner.x-static_cast<float>(state.scroll_x)*scale;
-                for (auto width:widths) {
-                    column_x+=width;
-                    quad({column_x-scale,inner.y,scale,header_height+body_height},intersect(table_clip,clip_rect({inner.x,inner.y,body_width,header_height+body_height})),appearance.tree_line);
+                if (paint) {
+                    column_x=inner.x-static_cast<float>(state.scroll_x)*scale;
+                    for (auto width:widths) {
+                        column_x+=width;
+                        quad({column_x-scale,inner.y,scale,header_height+body_height},intersect(table_clip,clip_rect({inner.x,inner.y,body_width,header_height+body_height})),appearance.tree_line);
+                    }
+                    if (details) quad({inner.x,inner.y+header_height-scale,body_width,scale},header_clip,appearance.tree_line);
                 }
-                if (details) quad({inner.x,inner.y+header_height-scale,body_width,scale},header_clip,appearance.tree_line);
                 if (data.rows.empty()) paint_text(0,false,state.control.text,
                     {table.body.x,table.body.y,body_width,layout.row_height*scale},body_clip,TextAlign::left,ControlIcon::none,false);
                 const auto paint_bar=[&](bool horizontal_bar,Rect bar_bounds,double maximum,double value,double page) {
@@ -169,7 +174,7 @@
                     ScrollbarGeometry bar;
                     bar.key=key; bar.bounds=bar_bounds; bar.clip=table_clip; bar.maximum=maximum;
                     bar.value=value; bar.page=page; bar.horizontal=horizontal_bar;
-                    paint_scrollbar(bar,appearance,enabled);
+                    prepare_scrollbar(bar,appearance,enabled);
                 };
                 const auto inset=appearance.scrollbar_inset*scale,bar_width=appearance.scrollbar_width*scale;
                 if (vertical) paint_bar(false,{inner.x+body_width+inset,table.body.y,bar_width,body_height},state.scroll_limit,state.scroll,body_height/scale);
