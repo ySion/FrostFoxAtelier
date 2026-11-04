@@ -902,11 +902,10 @@ Result<void> check_source_receiver(const Binding& binding, ObjectId receiver) {
 
 // The caller retains admission until invocation roots and observer effects are
 // destroyed. Published versions provide checked metadata from their own code.
-Result<BusinessValue> execute_admitted(ExecutionScope& scope, Runtime& runtime, const Binding& binding,
-                                       BusinessCode* code, BusinessFrameLayout layout, bool requires_receiver,
-                                       ObjectId receiver, std::span<const BusinessValue> arguments,
-                                       InvocationObserver observer, void* result_data, BusinessTrace* trace,
-                                       std::shared_ptr<DebugSessionState> debugger, std::uint32_t* failure_site) {
+Result<void> execute_invocation(ExecutionScope& scope, Runtime& runtime, const Binding& binding,
+                                BusinessFrameLayout layout, bool requires_receiver, ObjectId receiver, void* context,
+                                InvocationBody body, InvocationObserver observer, BusinessTrace* trace,
+                                std::shared_ptr<DebugSessionState> debugger, std::uint32_t* failure_site) {
     const bool hold_receiver = requires_receiver || receiver != ObjectId{};
     if (hold_receiver) {
         ATELIER_TRY(check_source_receiver(binding, receiver));
@@ -917,13 +916,9 @@ Result<BusinessValue> execute_admitted(ExecutionScope& scope, Runtime& runtime, 
     if (hold_receiver) {
         ATELIER_TRY(invocation.frame.hold(receiver_slot, receiver, binding.type));
     }
-    char backend_error[512];
-    BusinessValue value{};
-    value.data = result_data;
-    std::uint32_t site = no_diagnostic_location;
-    const auto status =
-        atelier_invoke_business(code, &invocation, arguments.data(), static_cast<std::uint32_t>(arguments.size()),
-                                &value, backend_error, sizeof(backend_error), trace, &site);
+    char backend_error[512]{};
+    BusinessFailure failure{};
+    const auto status = body(context, invocation, failure, backend_error, sizeof(backend_error));
     // Inspect generated cleanup before the RAII fallback. Observers cannot
     // manufacture success or substitute for this production invariant.
     const bool cleared = invocation.resources_cleared();
@@ -938,13 +933,41 @@ Result<BusinessValue> execute_admitted(ExecutionScope& scope, Runtime& runtime, 
     }
     if (status != 0 || invocation.failed) {
         if (failure_site)
-            *failure_site = site;
+            *failure_site = failure.location;
+        const auto* reason = failure_message(failure.reason);
         return std::unexpected(Error{invocation.failed ? invocation.error_code : ErrorCode::invocation_failed,
-                                     invocation.failed ? invocation.error : backend_error});
+                                     invocation.failed ? invocation.error
+                                     : reason          ? reason
+                                                       : backend_error});
     }
     if (!cleared)
         return std::unexpected(Error{ErrorCode::invocation_failed, "Generated code left execution resources alive."});
-    return value;
+    return {};
+}
+
+Result<BusinessValue> execute_admitted(ExecutionScope& scope, Runtime& runtime, const Binding& binding,
+                                       BusinessCode* code, BusinessFrameLayout layout, bool requires_receiver,
+                                       ObjectId receiver, std::span<const BusinessValue> arguments,
+                                       InvocationObserver observer, void* result_data, BusinessTrace* trace,
+                                       std::shared_ptr<DebugSessionState> debugger, std::uint32_t* failure_site) {
+    struct Call {
+        BusinessCode* code;
+
+        std::span<const BusinessValue> arguments;
+
+        BusinessValue value;
+    } call{code, arguments, {}};
+    call.value.data = result_data;
+    const auto body = [](void* context, Invocation& invocation, BusinessFailure& failure, char* error,
+                         std::uint32_t capacity) noexcept {
+        auto& call = *static_cast<Call*>(context);
+        return atelier_invoke_business(call.code, &invocation, call.arguments.data(),
+                                       static_cast<std::uint32_t>(call.arguments.size()), &call.value, error, capacity,
+                                       invocation.trace, &failure.location);
+    };
+    ATELIER_TRY(execute_invocation(scope, runtime, binding, layout, requires_receiver, receiver, &call, body, observer,
+                                   trace, std::move(debugger), failure_site));
+    return call.value;
 }
 
 Result<BusinessValue> execute_typed(Runtime& runtime, const Binding& binding, BusinessCode* code, ObjectId receiver,

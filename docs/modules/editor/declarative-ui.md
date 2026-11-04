@@ -61,6 +61,8 @@ Dev 和 Release 开发工作树的构建均优先读取 `assets/editor.ui.source
 
 一份文件可声明多个有名 `ui` 类型，可在声明前定义使用显式参数的普通 Source 辅助函数。每个类型使用一个生成的 `void __ui_dispatch(uint operation)`；实例共享 Program，不为每个属性或列表项编译代码。更新仍检查完整类型与组合关系；同一 Runtime 中，同名类型的生成代码完全相同时，只共享上一已接受模块的 Program。每版的源码映射、声明和子类型关系独立建立。共享 Program 发布后不再修改，不建立历史版本缓存。
 
+每份已发布分派经 `Lease::bind<void, uint32_t>()` 核验一次并持有定型代码句柄；复用 Program 时同时复用该句柄，实例准备复制固定版本持有者，不在事件热路径重复绑定。初始化、属性求值和事件都直接传递 operation，不再包装 Scalar 数组。绑定失败在组件准备阶段返回并保留源码错误映射；实例替换、状态回滚及控件提交仍沿原事务，不借定型入口绕过 Runtime Context、执行准入或清理。
+
 ```text
 ui Query(in TextEditBinding edit) {
     Row row {

@@ -165,6 +165,7 @@ void verify_failure_and_abort() {
 )",
             {.diagnostics = true, .debugging = true});
     const auto at = breakpoint(take(aborted.pin()), "abort.source", 4);
+    const auto call = take(take(aborted.pin()).bind<std::uint32_t>());
     for (const bool handler_throws : {false, true}) {
         take(runtime.write(host.id(), field, std::uint32_t{0}));
         bool reached{};
@@ -178,7 +179,7 @@ void verify_failure_and_abort() {
             {.break_on_entry = false});
         take(debugger.set_breakpoints({at}));
         Diagnostics aborted_capture;
-        require(!aborted.entry().invoke(host.id(), {}, &aborted_capture, &debugger) && reached && Particle::live == 0 &&
+        require(!call.invoke(host.id(), &aborted_capture, &debugger) && reached && Particle::live == 0 &&
                     std::get<std::uint32_t>(take(runtime.read(host.id(), field))) == 1,
                 "Abort or handler failure leaked the owned value or resumed the next statement.");
     }

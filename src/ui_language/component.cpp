@@ -193,7 +193,7 @@ struct DefinitionState {
 
     std::shared_ptr<Component> component;
 
-    source::Program::Lease code;
+    source::Program::Typed<void, std::uint32_t> code;
 
     ui::ControlKey parent{};
 
@@ -253,8 +253,7 @@ struct DefinitionState {
             ~Execution() { scope.executing = previous; }
         } guard{scope, scope.executing};
         scope.executing = this;
-        const Scalar argument = operation;
-        auto result = code.invoke(scope.context.id(), std::span{&argument, 1});
+        auto result = code.invoke(scope.context.id(), operation);
         if (!result)
             return failure((source ? *source : declaration()).diagnostic(result.error().message));
         return {};
@@ -859,6 +858,8 @@ struct Component::Impl {
 
     std::shared_ptr<source::Program> program;
 
+    source::Program::Typed<void, std::uint32_t> code;
+
     std::vector<std::shared_ptr<Component>> children;
 
     Impl(Runtime& value, Declaration source) : runtime(value), declaration(std::move(source)) {}
@@ -1034,6 +1035,7 @@ Result<std::shared_ptr<Module>> Module::compile(Runtime& runtime, std::string_vi
             // Share only immutable code. Source maps and child edges belong to
             // this revision even when its parent dispatch did not change.
             impl->program = prior->impl_->program;
+            impl->code = prior->impl_->code;
             ++module->compilation_.reused;
         } else {
             impl->program = std::make_shared<source::Program>(runtime, *type);
@@ -1043,7 +1045,11 @@ Result<std::shared_ptr<Module>> Module::compile(Runtime& runtime, std::string_vi
             if (!candidate)
                 return failure(impl->declaration.diagnostic(candidate.error().message));
             ATELIER_TRY(impl->program->try_publish(*candidate));
-            ATELIER_TRY_BIND(signature, impl->program->bind<void, std::uint32_t>());
+            ATELIER_TRY_BIND(lease, impl->program->pin());
+            auto code = lease->bind<void, std::uint32_t>();
+            if (!code)
+                return failure(impl->declaration.diagnostic(code.error().message));
+            impl->code = std::move(*code);
             ++module->compilation_.compiled;
         }
         module->components_[index] = std::shared_ptr<Component>(new Component(std::move(impl)));
@@ -1306,8 +1312,7 @@ Result<std::unique_ptr<detail::PreparedUpdate>> detail::InstanceData::prepare(st
         next->component = definition;
         next->parent = parent;
         next->aliases.assign(aliases.begin(), aliases.end());
-        ATELIER_TRY_BIND(code, definition->impl_->program->pin());
-        next->code = std::move(*code);
+        next->code = definition->impl_->code;
         next->nodes.resize(declaration.nodes.size());
         const auto allocate = [&] {
             if (!*next_key || *next_key == std::numeric_limits<ui::ControlKey>::max())

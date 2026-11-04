@@ -54,6 +54,8 @@ struct HostOwner {
 
     Program::Entry entry;
 
+    Program::Typed<std::uint32_t, std::uint32_t> synchronous;
+
     std::array<Coroutine, 5> tasks;
 
     bool stopping{};
@@ -87,6 +89,7 @@ struct HostOwner {
             return;
         stopping = true;
         program->close();
+        synchronous = {};
         for (auto& task : tasks)
             task.cancel();
     }
@@ -179,11 +182,19 @@ void verify_synchronous_shutdown() {
     ActiveOwner active(owner);
     owner.publish("uint run(uint mode) { self.signal(mode); return 23; }");
     owner.entry = take(owner.program->bind<std::uint32_t, std::uint32_t>());
+    owner.synchronous = take(take(owner.program->pin()).bind<std::uint32_t, std::uint32_t>());
     owner.current_address = source::detail::ProgramAccess::address(take(owner.program->pin()));
-    const std::array arguments{Scalar{std::uint32_t{1}}};
-    const auto result = take(owner.entry.invoke(owner.receiver.id(), arguments));
-    require(result && std::get<std::uint32_t>(*result) == 23 && owner.busy_in_callback,
-            "Closing during a synchronous callback invalidated the active call or Runtime.");
+    owner.publish("uint run(uint mode) { self.signal(mode); return 61; }");
+    require(take(owner.synchronous.invoke(owner.receiver.id(), 0)) == 23 &&
+                std::get<std::uint32_t>(*take(owner.entry.invoke(owner.receiver.id(), std::array{Scalar{0u}}))) == 61,
+            "Typed binding followed a new publication or ordinary Entry retained the old version.");
+    owner.program->close();
+    require(take(owner.synchronous.invoke(owner.receiver.id(), 0)) == 23,
+            "Closing the program invalidated its pinned typed binding.");
+    // The callback clears the final public typed handle while its call is active.
+    const auto result = take(owner.synchronous.invoke(owner.receiver.id(), 1));
+    require(result == 23 && owner.busy_in_callback,
+            "Releasing a typed handle inside its callback invalidated the active call or Runtime.");
     code_state(owner.current_address, false);
     take(owner.finish_shutdown());
 }

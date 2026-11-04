@@ -100,7 +100,8 @@ uint run() { return leaf(); }
             {.diagnostics = true}, "run");
     require(Particle::live == 0, "Native failure fixture started with an unrelated live Particle.");
     Diagnostics capture;
-    const auto failed = owned.entry().invoke(host.id(), {}, &capture);
+    const auto call = take(take(owned.pin()).bind<std::uint32_t>());
+    const auto failed = call.invoke(host.id(), &capture);
     // The native callback observes the actual live value before it throws. A
     // skipped constructor cannot pass merely because the final live count is zero.
     require(!failed && capture.snapshot().status == DiagnosticStatus::failed && !capture.active() &&

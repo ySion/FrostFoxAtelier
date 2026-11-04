@@ -138,6 +138,8 @@ struct CompiledBusiness {
 
     Entry entry{};
 
+    std::uintptr_t typed_entry{};
+
     CoroutineEntry coroutine_entry{};
 
     DiagnosticEntry diagnostic_entry{};
@@ -253,6 +255,26 @@ T take(llvm::Expected<T> value) {
     return std::move(*value);
 }
 
+bool direct_signature(const language::Function& function) {
+    const auto scalar = [](language::ValueType type) {
+        return type == language::ValueType::i32 || type == language::ValueType::u32 ||
+               type == language::ValueType::f32 || type == language::ValueType::f64 ||
+               type == language::ValueType::boolean;
+    };
+    return !function.is_coroutine && (function.result == language::ValueType::void_value || scalar(function.result)) &&
+           std::ranges::all_of(function.parameters, [&](const auto& parameter) {
+               return parameter.passing == ParameterPassing::value && scalar(parameter.type);
+           });
+}
+
+llvm::Type* direct_parameter_type(llvm::LLVMContext& context, language::ValueType type) {
+    if (type == language::ValueType::f32)
+        return llvm::Type::getFloatTy(context);
+    if (type == language::ValueType::f64)
+        return llvm::Type::getDoubleTy(context);
+    return llvm::Type::getInt32Ty(context); // bool crosses the host ABI as canonical u32.
+}
+
 class SourceLowering {
 public:
     SourceLowering(llvm::LLVMContext& context, llvm::Module& module, const language::Program& source,
@@ -263,7 +285,8 @@ public:
           local_slots_(function_.locals.size(), null_reference_slot),
           temporary_slots_(function_.expressions.size(), null_reference_slot), strong_slots_(strong_base),
           weak_slots_(weak_base), first_strong_slot_(strong_base), first_weak_slot_(weak_base),
-          public_entry_(source.exported(function)), protected_values_(source.material || function_.uses_scoped_values),
+          public_entry_(source.exported(function)), typed_entry_(public_entry_ && direct_signature(function_)),
+          protected_values_(source.material || function_.uses_scoped_values),
           diagnostics_(options.diagnostics ? catalog : nullptr), catalog_(catalog),
           debugging_(options.debugging && (source.exports.empty() || !public_entry_)), function_index_(function),
           position_(function_.position) {
@@ -326,8 +349,9 @@ public:
             debug_frame_type_ = llvm::StructType::get(*context_, {ptr, ptr, ir_.getInt64Ty(), i32, i32});
         }
         invocation_ = entry_->getArg(0);
-        result_output_ = entry_->getArg(public_entry_ ? 2 : 1);
-        failure_output_ = entry_->getArg(public_entry_ ? 3 : 2);
+        const auto parameter_count = static_cast<unsigned>(function_.parameters.size());
+        result_output_ = entry_->getArg(typed_entry_ ? parameter_count + 1 : public_entry_ ? 2 : 1);
+        failure_output_ = entry_->getArg(typed_entry_ ? parameter_count + 2 : public_entry_ ? 3 : 2);
         // A shared helper can run under either a borrowed-value entry or an
         // ordinary entry. Carry that call-chain effect through the internal ABI;
         // O2 folds it when the helper is inlined into a known entry.
@@ -336,7 +360,9 @@ public:
         else
             borrow_active_ = entry_->getArg(3);
         if (diagnostics_) {
-            trace_ = entry_->getArg(public_entry_ && function_.is_coroutine ? 6 : 4);
+            trace_ = entry_->getArg(typed_entry_                              ? parameter_count + 3
+                                    : public_entry_ && function_.is_coroutine ? 6
+                                                                              : 4);
             trace_->setName("diagnostic.trace");
         }
     }
@@ -437,6 +463,15 @@ public:
         }
         open_debug_frame();
         for (std::size_t index = 0; index < function_.parameters.size(); ++index) {
+            if (typed_entry_) {
+                llvm::Value* argument = entry_->getArg(static_cast<unsigned>(index + 1));
+                const auto type = function_.parameters[index].type;
+                if (type == language::ValueType::boolean)
+                    argument = ir_.CreateICmpNE(argument, ir_.getInt32(0));
+                store_value(argument, locals_[index], type);
+                debug_local(index, DebugAvailability::available);
+                continue;
+            }
             if (!public_entry_) {
                 auto* argument = entry_->getArg(static_cast<unsigned>(index + 4 + (diagnostics_ ? 1 : 0)));
                 // Internal record arguments already own a caller-created
@@ -1907,6 +1942,8 @@ private:
 
     const bool public_entry_;
 
+    const bool typed_entry_;
+
     const bool protected_values_;
 
     DiagnosticCatalog* diagnostics_{};
@@ -2010,8 +2047,14 @@ llvm::orc::ThreadSafeModule generate_business(LLJIT& jit, const language::Progra
             continue;
         const bool entry = program.exported(static_cast<std::uint32_t>(i));
         const bool coroutine = program.functions[i].is_coroutine;
+        const bool direct = entry && direct_signature(program.functions[i]);
         llvm::SmallVector<llvm::Type*, 8> parameters;
-        if (entry) {
+        if (direct) {
+            parameters.push_back(ptr); // Invocation precedes typed business arguments.
+            for (const auto& parameter : program.functions[i].parameters)
+                parameters.push_back(direct_parameter_type(*context, parameter.type));
+            parameters.append(3, ptr); // u64 staged result, BusinessFailure, optional trace (always present).
+        } else if (entry) {
             parameters.assign(coroutine ? 6 : 4, ptr);
             if (options.diagnostics)
                 parameters.push_back(ptr);
@@ -2040,7 +2083,8 @@ llvm::orc::ThreadSafeModule generate_business(LLJIT& jit, const language::Progra
         auto* type = llvm::FunctionType::get(coroutine ? static_cast<llvm::Type*>(ptr) : i32, parameters, false);
         auto* function = llvm::Function::Create(
             type, entry ? llvm::GlobalValue::ExternalLinkage : llvm::GlobalValue::InternalLinkage,
-            entry ? (program.exports.empty() ? "atelier_source_entry" : "atelier_source_entry_" + std::to_string(i))
+            entry ? (program.exports.empty() ? "atelier_source_entry" : "atelier_source_entry_" + std::to_string(i)) +
+                        (direct ? "_typed" : "")
                   : "atelier_source_function_" + std::to_string(i),
             *module);
         if (entry || options.debugging)
@@ -2051,6 +2095,37 @@ llvm::orc::ThreadSafeModule generate_business(LLJIT& jit, const language::Progra
         if (coroutine)
             function->addFnAttr(llvm::Attribute::PresplitCoroutine);
         functions[i] = function;
+    }
+    // Generic callers only unpack operands. Both transports enter exactly the
+    // same body, including its begin/poll/finish, diagnostics and cleanup exits.
+    for (std::uint32_t i = 0; i < functions.size(); ++i) {
+        if (!program.reachable[i] || !program.exported(i) || !direct_signature(program.functions[i]))
+            continue;
+        auto* direct = functions[i];
+        llvm::SmallVector<llvm::Type*, 5> parameters(options.diagnostics ? 5 : 4, ptr);
+        auto* wrapper =
+            llvm::Function::Create(llvm::FunctionType::get(i32, parameters, false), llvm::GlobalValue::ExternalLinkage,
+                                   direct->getName().drop_back(6), *module);
+        wrapper->addFnAttr(llvm::Attribute::NoInline);
+        wrapper->addFnAttr(llvm::Attribute::NoUnwind);
+        wrapper->addFnAttr("disable-tail-calls", "true");
+        wrapper->setUWTableKind(llvm::UWTableKind::Async);
+        llvm::IRBuilder<> ir(llvm::BasicBlock::Create(*context, "unpack", wrapper));
+        auto* operand_type = llvm::StructType::get(*context, {i32, i32, ir.getInt64Ty(), i32, ptr, i32, i32});
+        llvm::SmallVector<llvm::Value*, 8> arguments{wrapper->getArg(0)};
+        for (std::uint32_t index = 0; index < program.functions[i].parameters.size(); ++index) {
+            auto* operand = ir.CreateInBoundsGEP(operand_type, wrapper->getArg(1), ir.getInt32(index));
+            llvm::Value* bits = ir.CreateLoad(ir.getInt64Ty(), ir.CreateStructGEP(operand_type, operand, 2));
+            const auto type = program.functions[i].parameters[index].type;
+            if (type != language::ValueType::f64)
+                bits = ir.CreateTrunc(bits, i32);
+            arguments.push_back(ir.CreateBitCast(bits, direct_parameter_type(*context, type)));
+        }
+        arguments.push_back(wrapper->getArg(2));
+        arguments.push_back(wrapper->getArg(3));
+        arguments.push_back(options.diagnostics ? static_cast<llvm::Value*>(wrapper->getArg(4))
+                                                : llvm::ConstantPointerNull::get(ptr));
+        ir.CreateRet(ir.CreateCall(direct, arguments));
     }
     layout = {business_root_slots, 0, nullptr, 0};
     for (std::uint32_t i = 0; i < functions.size(); ++i) {
@@ -2347,6 +2422,8 @@ std::shared_ptr<CompiledBusiness> compile(const BusinessServices& services, cons
         state->diagnostic_entry = address->toPtr<DiagnosticEntry>();
     else
         state->entry = address->toPtr<Entry>();
+    if (direct_signature(entry))
+        state->typed_entry = take(state->jit->lookup(state->entry_symbol + "_typed")).getValue();
     return state;
 }
 }
@@ -2788,6 +2865,10 @@ bool atelier_query_business_artifacts(atelier::source::detail::BusinessCode* cod
 atelier::source::detail::BusinessFrameLayout
 atelier_business_layout(atelier::source::detail::BusinessCode* code) noexcept {
     return code ? code->state->layout : atelier::source::detail::BusinessFrameLayout{};
+}
+
+std::uintptr_t atelier_business_typed_entry(atelier::source::detail::BusinessCode* code) noexcept {
+    return code ? code->state->typed_entry : 0;
 }
 
 std::uint32_t atelier_invoke_business(atelier::source::detail::BusinessCode* code, void* invocation,

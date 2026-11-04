@@ -332,6 +332,14 @@ Result<void> check_source_arguments(const Binding&, const BusinessSignature&, st
 
 Result<void> check_source_receiver(const Binding&, ObjectId);
 
+// Parameter transport varies; admission, Invocation lifetime and explicit
+// cleanup are shared by generic and fixed-signature callers.
+using InvocationBody = std::uint32_t (*)(void*, Invocation&, BusinessFailure&, char*, std::uint32_t) noexcept;
+
+Result<void> execute_invocation(ExecutionScope&, Runtime&, const Binding&, BusinessFrameLayout, bool requires_receiver,
+                                ObjectId, void*, InvocationBody, InvocationObserver = {}, BusinessTrace* = nullptr,
+                                std::shared_ptr<DebugSessionState> = {}, std::uint32_t* failure_site = nullptr);
+
 Result<BusinessValue> execute_admitted(ExecutionScope&, Runtime&, const Binding&, BusinessCode*, BusinessFrameLayout,
                                        bool requires_receiver, ObjectId, std::span<const BusinessValue>,
                                        InvocationObserver = {}, void* result_data = nullptr, BusinessTrace* = nullptr,

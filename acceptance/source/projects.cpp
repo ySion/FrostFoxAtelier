@@ -73,14 +73,14 @@ void verify_property_update() {
     publish(program, input);
     const auto instance = take(runtime.create(take(runtime.find_type("game.Property"))));
     const auto entry = take(program.entry("game.Property.run"));
-    const auto old = take(program.pin("game.Property.run"));
+    const auto old = take(take(program.pin("game.Property.run")).bind<std::uint32_t>());
     require(std::get<std::uint32_t>(*take(entry.invoke(instance.id(), {}))) == 10,
             "Initial cross-file property call produced the wrong state.");
     input.files[0].source = "uint props.GetValue() { return 11; } void props.SetValue(uint v) {}";
     publish(program, input);
     require(std::get<std::uint32_t>(*take(entry.invoke(instance.id(), {}))) == 21 &&
                 std::get<std::uint32_t>(*take(take(program.entry("value")).invoke({}, {}))) == 11 &&
-                std::get<std::uint32_t>(*take(old.invoke(instance.id(), {}))) == 28,
+                take(old.invoke(instance.id())) == 28,
             "Property update kept stale dependencies or changed a pinned accessor version.");
 }
 

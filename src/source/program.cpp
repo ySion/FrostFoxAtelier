@@ -530,6 +530,43 @@ struct Program::Version {
         return result;
     }
 };
+
+Result<std::uint64_t> Program::invoke_bound(std::shared_ptr<const Version> version, std::uintptr_t address,
+                                            ObjectId receiver, void* arguments, DirectCall invoke,
+                                            Diagnostics* diagnostics, Debugger* debugger) {
+    if (!version)
+        return std::unexpected(
+            reject_invocation(diagnostics, debugger, {ErrorCode::invalid_definition, "Typed code lease is empty."}));
+    return version->invoke_captured<std::uint64_t>(
+        diagnostics, debugger, [&](DiagnosticScope& capture, DebugScope& debug) -> Result<std::uint64_t> {
+            struct Call {
+                std::uintptr_t address;
+
+                void* arguments;
+
+                DirectCall invoke;
+
+                std::uint64_t output{};
+            } call{address, arguments, invoke};
+            const auto body = [](void* context, Invocation& invocation, BusinessFailure& failure, char*,
+                                 std::uint32_t) noexcept {
+                auto& call = *static_cast<Call*>(context);
+                return call.invoke(call.address, call.arguments, &invocation, &call.output, &failure, invocation.trace);
+            };
+            const auto& binding = version->contract->binding;
+            ATELIER_TRY_BIND(activation, ExecutionScope::enter(*binding.runtime));
+            std::uint32_t site = no_diagnostic_location;
+            auto result = execute_invocation(*activation, *binding.runtime, binding, version->layout,
+                                             version->declaration->signature.receiver.has_value(), receiver, &call,
+                                             body, {}, capture.trace(), debug.state(), &site);
+            if (!result) {
+                version->locate(result.error(), site);
+                return std::unexpected(std::move(result.error()));
+            }
+            return call.output;
+        });
+}
+
 #include "source/detail/module_state.inl"
 
 struct Program::State {
@@ -874,6 +911,23 @@ Result<std::optional<Scalar>> Program::Entry::invoke_arguments(ObjectId receiver
         return std::unexpected(reject_invocation(
             diagnostics, debugger, {ErrorCode::invalid_definition, "Business entry has no published version."}));
     return version->invoke_values(receiver, arguments, diagnostics, debugger);
+}
+
+Result<std::uintptr_t> Program::Lease::bind_signature(SignatureDefinition expected) const {
+    const auto version = version_;
+    if (!version)
+        return std::unexpected(Error{ErrorCode::invalid_definition, "Code lease is empty."});
+    const auto& signature = version->declaration->signature;
+    if (const auto& receiver = signature.receiver)
+        expected.receiver = ReceiverDefinition{receiver->type, receiver->read_only};
+    ATELIER_TRY_BIND(resolved, version->contract->binding.runtime->resolve_signature(expected));
+    if (*resolved != signature)
+        return std::unexpected(
+            Error{ErrorCode::argument_mismatch, "Host binding does not match the pinned source signature."});
+    const auto address = atelier_business_typed_entry(version->code.get());
+    if (!address)
+        return std::unexpected(Error{ErrorCode::unsupported_operation, "Code has no synchronous scalar typed entry."});
+    return address;
 }
 
 Result<std::optional<Scalar>> Program::Lease::invoke(ObjectId receiver, std::span<const Scalar> arguments,

@@ -420,9 +420,10 @@ Result<void> destroy_value(TypeId, std::span<std::byte> storage);
 
 ### 单入口兼容方法体发布
 
-[source::Program](../src/source/program.hpp) 管理一个完整源码入口/LLJIT 资源单元。Runtime 提供共同签名解析、执行作用域及发布准入；源码请求、候选、稳定入口与租约归该正式宿主模块。公共调用使用 Scalar 值或 Argument 借用；私有 DLL 参数布局与内部观察接缝不进入该接口。每个版本都可以随代码提交新的源码 enum/struct 类型；兼容更新保持已发布类型的身份和布局，不重建对象，也不向原生 Invoker 表塞入裸 JIT 地址。
+[source::Program](../src/source/program.hpp) 管理一个完整源码入口/LLJIT 资源单元。Runtime 提供共同签名解析、执行作用域及发布准入；源码请求、候选、稳定入口与租约归该正式宿主模块。通用公共调用使用 Scalar 值或 Argument 借用，同步标量还可绑定固定版本的定型句柄；私有 DLL 参数布局与内部观察接缝不进入业务接口。每个版本都可以随代码提交新的源码 enum/struct 类型；兼容更新保持已发布类型的身份和布局，不重建对象，也不向原生 Invoker 表塞入裸 JIT 地址。
 
 - **声明与依赖**：构造程序时只绑定 Runtime 和对象目录，不重复手写源码的函数名或参数/结果声明。首次成功发布从真实编译产物通过 Runtime 解析建立不可变 `FunctionSignature`；后续请求捕获该声明及类型/字段/方法、布局和服务表快照。依赖复核使用该程序捕获的目录，其他模块追加无关类型不改变已有索引。`describe()` 交付拥有描述数组的副本；`bind<R,Args...>(expected_execution)` 核对宿主参数、结果和执行种类期望，并返回原 `Entry`。执行种类默认 `FunctionExecution::synchronous`；绑定协程时显式传入 `FunctionExecution::coroutine`，再通过该入口的 `start()` 创建实例。执行种类不匹配返回 `argument_mismatch`，不从已发布声明推断宿主期望，也不改变参数 ABI。
+- **固定定型绑定**：`Lease::bind<R, Args...>()` 核对同一共享签名并返回 `Program::Typed<R, Args...>`。只支持同步按值 int32/uint32/float/double/bool，结果为 void 或其中一个标量；其他位宽、枚举、引用、聚合值、容器与协程不在该接口内。`invoke(ObjectId, Args..., Diagnostics* = nullptr, Debugger* = nullptr)` 返回 `Result<R>`，不构造 Scalar/BusinessValue 实参数组，也不静默回落。签名不合返回错误，空句柄不能执行。定型句柄固定保活其 Version，热发布不改绑，Program 关闭后仍可调用；每次调用在进入回调前额外局部保活，返回后不访问可能已销毁的句柄。它不保活接收者或 Runtime，仍需合法活身份、同线程准入及完整诊断/调试/显式清理；失败不交付结果，但不回滚已经发生的业务副作用。具名 `pin(name)` 同样可绑定。原 `Program::bind` 的跟随 Entry 合同不变。
 - **源码类型发布**：enum/struct 的定义来自源码，身份、布局、字段与值操作来自同一 Runtime。发布在类型安全点完成代码编译、签名解析、依赖核验与全部分配，再提交新类型和代码；失败不占用类型名。已发布的定义随后冻结，后续版本可以追加新声明；关闭代码不注销类型，具体见[源码类型声明](source-type-declarations.md)。
 - **接收者固定**：首次声明确定是否需要接收者；目录中有对象类型并不表示必须提供 self。无接收者声明不能在兼容更新中新增 self；已有接收者即使新函数体不再读取 self，调用方仍须提供正确活对象。`BusinessCodeInfo::requires_receiver` 只是当前代码使用标志，不能重新决定已发布声明。
 - **候选与准备**：请求自有完整源名、模块源码、入口名称、声明快照和单调序号，并通过 Runtime 内部批次准备新类型布局；候选走真实解析、定型、链接及物化，只读捕获输入，不读取 live Runtime 或执行初始化。后端拥有签名/目录/名字及实际引用槽和调用缓冲需求。内部函数按定型参数直接互调；公开入口固定，私有助手随整个候选编译与发布。发布前保留完整兼容及依赖核验；已发布 Version 缓存自身 info/layout，热调用不重复比较整份目录。原始未绑定入口仍完整验证，两条入口共用执行与清理实现。

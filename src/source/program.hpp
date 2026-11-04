@@ -1,14 +1,21 @@
 #pragma once
 
+#include "foundation/result.hpp"
 #include "runtime/execution.hpp"
 #include "source/snapshot.hpp"
 #include "source/diagnostics.hpp"
 #include "source/debugger.hpp"
+#include <bit>
+#include <tuple>
 #include <type_traits>
 
 namespace atelier::source {
 namespace detail {
 struct ProgramAccess;
+
+struct BusinessFailure;
+
+struct BusinessTrace;
 }
 
 // A selected entry or a project snapshot with atomically replaceable code. All operations use
@@ -36,7 +43,66 @@ class Program final {
 
     friend struct detail::ProgramAccess;
 
+    template <class T>
+    static constexpr bool direct_scalar = std::same_as<T, std::int32_t> || std::same_as<T, std::uint32_t> ||
+                                          std::same_as<T, float> || std::same_as<T, double> || std::same_as<T, bool>;
+
+    template <class T>
+    using DirectScalar = std::conditional_t<std::same_as<T, bool>, std::uint32_t, T>;
+
+    using DirectCall = std::uint32_t (*)(std::uintptr_t, void*, void*, std::uint64_t*, detail::BusinessFailure*,
+                                         detail::BusinessTrace*) noexcept;
+
+    static Result<std::uint64_t> invoke_bound(std::shared_ptr<const Version>, std::uintptr_t, ObjectId, void*,
+                                              DirectCall, Diagnostics*, Debugger*);
+
 public:
+    class Lease;
+
+    // Owns one checked synchronous signature and Version, not the receiver or Runtime.
+    // Each invocation pins its Version before callbacks may release this handle.
+    template <class R, class... Args>
+        requires(std::is_void_v<R> || direct_scalar<R>) && (direct_scalar<Args> && ...)
+    class Typed {
+        friend class Lease;
+
+        std::shared_ptr<const Version> version_;
+
+        std::uintptr_t address_{};
+
+        Typed(std::shared_ptr<const Version> version, std::uintptr_t address)
+            : version_(std::move(version)), address_(address) {}
+
+    public:
+        Typed() = default;
+
+        Result<R> invoke(ObjectId receiver, Args... arguments, Diagnostics* diagnostics = nullptr,
+                         Debugger* debugger = nullptr) const {
+            std::tuple<Args...> values{arguments...};
+            const auto call = [](std::uintptr_t address, void* context, void* invocation, std::uint64_t* output,
+                                 detail::BusinessFailure* failure, detail::BusinessTrace* trace) noexcept {
+                using Entry = std::uint32_t (*)(void*, DirectScalar<Args>..., std::uint64_t*, detail::BusinessFailure*,
+                                                detail::BusinessTrace*) noexcept;
+                const auto entry = reinterpret_cast<Entry>(address);
+                return std::apply(
+                    [&](Args... values) {
+                        return entry(invocation, static_cast<DirectScalar<Args>>(values)...,
+                                     std::is_void_v<R> ? nullptr : output, failure, trace);
+                    },
+                    *static_cast<std::tuple<Args...>*>(context));
+            };
+            ATELIER_TRY_BIND(result, invoke_bound(version_, address_, receiver, &values, call, diagnostics, debugger));
+            if constexpr (std::is_void_v<R>)
+                return {};
+            else if constexpr (std::same_as<R, double>)
+                return std::bit_cast<double>(*result);
+            else if constexpr (std::same_as<R, bool>)
+                return *result != 0;
+            else
+                return std::bit_cast<R>(static_cast<std::uint32_t>(*result));
+        }
+    };
+
     class SourceRequest {
         friend class Program;
 
@@ -121,6 +187,18 @@ public:
     public:
         Lease() = default;
 
+        // Binding checks the shared signature once. No generic-argument fallback.
+        template <class R, class... Args>
+            requires(std::is_void_v<R> || direct_scalar<R>) && (direct_scalar<Args> && ...)
+        Result<Typed<R, Args...>> bind() const {
+            SignatureDefinition expected;
+            expected.parameters = {ParameterDefinition{{TypeReference::native<Args>()}, ParameterPassing::value}...};
+            if constexpr (!std::is_void_v<R>)
+                expected.result = ValueDefinition{TypeReference::native<R>()};
+            ATELIER_TRY_BIND(address, bind_signature(std::move(expected)));
+            return Typed<R, Args...>{version_, *address};
+        }
+
         Result<std::optional<Scalar>> invoke(ObjectId, std::span<const Scalar>, Diagnostics* = nullptr,
                                              Debugger* = nullptr) const;
 
@@ -144,6 +222,8 @@ public:
         }
 
     private:
+        Result<std::uintptr_t> bind_signature(SignatureDefinition) const;
+
         Result<std::optional<Scalar>> invoke_arguments(ObjectId, std::span<const Argument>, Diagnostics*,
                                                        Debugger*) const;
 

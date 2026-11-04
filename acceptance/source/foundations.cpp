@@ -176,12 +176,11 @@ void verify_short_circuit() {
         return take(runtime.with_native<Host>(object.id(),
                                               [](const Host& host) -> Result<std::uint32_t> { return host.calls; }));
     };
-    require(!owned.entry().invoke(object.id(), std::array{Scalar{true}}) && calls() == 3 && Work::live == 0 &&
-                runtime.root_count() == 1,
+    const auto owned_call = take(take(owned.pin()).bind<bool, bool>());
+    require(!owned_call.invoke(object.id(), true) && calls() == 3 && Work::live == 0 && runtime.root_count() == 1,
             "A failing logical LHS ran its RHS or leaked scoped storage.");
     require(!roots.entry().invoke(object.id(), {}) && calls() == 4 && runtime.root_count() == 1 &&
-                result<bool>(owned.entry().invoke(object.id(), std::array{Scalar{false}})) && calls() == 6 &&
-                Work::live == 0,
+                take(owned_call.invoke(object.id(), false)) && calls() == 6 && Work::live == 0,
             "Logical failure leaked rooted locals or blocked subsequent execution.");
 }
 
@@ -189,9 +188,8 @@ void verify_numeric_failures() {
     Runtime runtime;
     Program integers(runtime, {});
     publish(integers, "int run(int a, int b) { return a / b; }");
-    require(!integers.entry().invoke({}, std::array{Scalar{std::int32_t{1}}, Scalar{std::int32_t{0}}}) &&
-                result<std::int32_t>(
-                    integers.entry().invoke({}, std::array{Scalar{std::int32_t{8}}, Scalar{std::int32_t{2}}})) == 4,
+    const auto divide = take(take(integers.pin()).bind<std::int32_t, std::int32_t, std::int32_t>());
+    require(!divide.invoke({}, 1, 0) && take(divide.invoke({}, -8, 2)) == -4,
             "Arithmetic error left execution admission closed.");
     Program conversion(runtime, {});
     publish(conversion, "vector3d run(double input) { return vector3d(double(int(input)), 2.0d, 3.0d); }");
@@ -204,6 +202,26 @@ void verify_numeric_failures() {
     require(output == math::Vector3d{-2147483648.0, 2.0, 3.0},
             "FP conversion checked its range before truncating toward zero.");
 }
+
+void verify_typed_scalar_abi() {
+    Runtime runtime;
+    Program program(runtime);
+    publish(program, R"(
+        double run(int signed_value, float narrow, double wide, uint high, bool enabled, int tail) {
+            double value = double(signed_value) * 2.0d + double(narrow) * 3.0d + wide * 5.0d
+                         + double(high) + double(tail) * 7.0d;
+            if (enabled) { value = value + 11.0d; }
+            return value;
+        }
+    )");
+    const auto call =
+        take(take(program.pin()).bind<double, std::int32_t, float, double, std::uint32_t, bool, std::int32_t>());
+    // RCX is Invocation; signed/narrow/wide occupy the other register positions.
+    // high/enabled/tail and the hidden outputs cross into stack arguments.
+    // Independent arithmetic: 4026531841 - 34 + 3.75 - 12.5 + 63 + 11.
+    require(take(call.invoke({}, -17, 1.25f, -2.5, 0xf0000001u, true, 9)) == 4026531872.25,
+            "Typed scalar ABI changed register/stack positions, signedness or floating-point bits.");
+}
 }
 
 void verify_source_foundations() {
@@ -211,5 +229,6 @@ void verify_source_foundations() {
     verify_boolean_storage();
     verify_short_circuit();
     verify_numeric_failures();
+    verify_typed_scalar_abi();
     std::puts("Source foundations: PASS (property order, bool ABI, logical cleanup, checked arithmetic recovery)");
 }

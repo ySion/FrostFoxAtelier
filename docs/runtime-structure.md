@@ -65,13 +65,17 @@ flowchart TD
 ```text
 Entry.invoke 选择当前 Version / Lease.invoke 使用固定 Version
   → Version.invoke → ExecutionScope 准入、参数与接收者检查
-  → execute_admitted 创建本次 Invocation
+  → execute_admitted → execute_invocation 创建本次 Invocation
   → atelier_invoke_business → 生成代码 → BusinessServices
   → Runtime.read / write / call 等既有入口
   → 生成清理 → 检查引用槽已清空 → 提交结果 → 退出执行作用域
 ```
 
 内部 `execute_typed` 执行完整目录/布局检查后也进入 `execute_admitted`，供 raw ABI 等验收使用。已发布 Version 使用自己的已验证元数据。公共入口和内部观察入口共用同一执行与清理实现；正式消费者通过程序入口或版本租约使用已发布代码。
+
+`Lease::bind<R, Args...>` 核对共享签名后持有固定版本及其专用 typed 导出。定型调用在 Source 端仍进入同一诊断/Debugger 捕获、ExecutionScope 和 `execute_invocation`；宿主栈上的定型实参包由编译期 thunk 展开，直接进入 JIT，不生成通用实参数组。支持的同步标量公开函数只降低一次业务体，原通用导出解包后调用同一个 typed 体；内部函数和非标量/协程入口不改变合同。根槽、原生服务、poll、错误首因、位置映射以及 RAII 兜底前的 `resources_cleared/live_values` 判定均共用，不因绑定而跳过。
+
+私有 Windows x64 ABI 为 `uint32_t(Invocation*, A0, A1, ..., uint64_t* staged_result, BusinessFailure*, BusinessTrace*) noexcept`。业务参数顺序保持声明顺序，i32/u32 只解释低32位，不依赖寄存器高位；浮点分别使用 float/double，bool 使用归一化的 u32 0/1，不借用 LLVM i1 的宿主扩展规则。寄存器/栈分配遵循当前工具链的 Windows x64 C 调用约定，包含首个 Invocation 及尾部三个隐藏参数；trace 参数始终存在，未捕获时可为空。暂存结果使用既有低32位标量位模式/64位 double 位模式，bool 为0/1，void 可传空输出；执行和显式清理完整成功后才构造宿主 `Result<R>`，失败不交付暂存。BusinessFailure 保持原因与最内层位置，C++ Result、string 和异常不跨 JIT ABI。Source 局部持有 Version 覆盖同步回调，Runtime、原生服务与后端 DLL 仍须由宿主保活；该入口地址不是业务方可持久保存的裸函数接口。
 
 同步和协程共用 `check_source_receiver`，验证实际对象 `is_a` 绑定类型，再经 `ExecutionFrame::hold(slot, id, binding.type)` 建立声明视图。基类字段和方法继续通过同一 Runtime 访问入口调整地址；桥接不复制对象，也不保留旧的精确类型接收者路径。
 

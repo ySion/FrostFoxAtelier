@@ -563,6 +563,17 @@ atelier_business_info(atelier::source::detail::BusinessCode* code) noexcept {
 extern "C" ATELIER_BUSINESS_BACKEND atelier::source::detail::BusinessFrameLayout
 atelier_business_layout(atelier::source::detail::BusinessCode* code) noexcept;
 
+// Private pinned-Source fast path, never a standalone public handle. The owner
+// must retain this exact code until the call finishes, including all callbacks.
+// Zero means no supported synchronous scalar signature. Otherwise the signature
+// is u32(Invocation*, typed arguments..., u64* staged_result, BusinessFailure*,
+//       BusinessTrace*). i32/u32 use 32-bit operands, f32/f64 use float/double,
+// bool uses canonical u32 0/1; the trace pointer is present even without captures.
+// Result bits use the same low-32/64-bit encoding as the generic path; void may
+// pass null. Source checks explicit cleanup before exposing the staged result.
+extern "C" ATELIER_BUSINESS_BACKEND std::uintptr_t
+atelier_business_typed_entry(atelier::source::detail::BusinessCode* code) noexcept;
+
 // One invocation pins its compiled state before entering generated code.
 // Destroying its outer handle in a synchronous callback does not free active
 // machine code. This does not authorize concurrent use/destruction or DLL unload.
