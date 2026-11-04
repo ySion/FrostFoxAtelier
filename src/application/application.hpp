@@ -402,7 +402,7 @@ private:
 
     Result<void> fit_lighting(bool follow_focus) override;
 
-    Result<void> rename_asset(std::string_view key, std::string_view name, bool interactive) override;
+    Result<void> rename_asset(std::string_view key, std::string_view name) override;
 
     Result<void> save_documents(const editor::Context&, bool all) override;
 

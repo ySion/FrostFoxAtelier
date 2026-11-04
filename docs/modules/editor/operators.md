@@ -2,7 +2,7 @@
 
 状态：O1 设计稿，已由总负责人定稿。第 1 步的无参数部分已实现（`src/editor/operators.*`、`builtin_operators.cpp`，Control `op.list` / `op.call`）：`view.frame_all`、`view.frame_selected`、`view.reset`、`layout.reset`、`edit.undo`、`edit.redo`、`scene.select`。第 3 步已迁移不带参数的 `layout.close_tab`、`layout.maximize`、`scene.transform_add`、`scene.transform_remove`、`scene.discard_saved_data`。第 2 步已实现参数记录与 3 个带参数的操作符：`scene.add`（String）、`tool.settings`（seed）、`view.axis`（枚举），Create、工具、轴心、吸附步长、坐标轴、选择模式和轴向视图命令都改为调用它们；`editor.ViewSettings` 和 `view.set` 推迟到 4b-3 步骤 A 之后，区域状态记录移到第 3 步。注册表由 Workspace 持有，Context 也由 Workspace 构建；第 4 步之前菜单和快捷区仍按命令登记，`command_enabled` 对已迁移的命令直接取对应操作符的 poll，不再保留第二份可用性判断。其余按第 9 节继续迁移；全部完成后本文改写为当前行为文档。
 
-编辑器的每个操作都是一个注册的操作符。菜单、快捷区、按钮、快捷键、Control，以及以后的自有语言，都经同一个入口调用它：`OperatorCall {id, args, context}` → poll → 解码参数 → execute。UI 只描述“调用哪个操作符、带什么参数”，不写逻辑。
+编辑器的每个操作都是一个注册的操作符。菜单、快捷区、按钮、快捷键和 Control 经同一个入口调用它：`OperatorCall {id, args, context}` → poll → 解码参数 → 来源准入 → execute。UI 只描述“调用哪个操作符、带什么参数”，不写逻辑。只读状态、schema 和能力查询沿现有查询入口，不进入会结束手势的 execute 路径。
 
 ## 1. 边界
 
@@ -24,8 +24,8 @@ enum class OperatorFlag : std::uint32_t {
     undo = 1,               // 一次调用最多产生一个场景历史条目（Blender：一个操作符 = 一步撤销）
     history = 2,            // edit.undo / edit.redo：只移动历史游标
     replaces_document = 4,  // 替换文档：execute 只向 Host 请求，替换在 call 返回后执行
-    prompts = 8,            // 过渡标志：交互调用缺少路径或名称时弹出选择器或内联编辑；O2 由 invoke 接管后删除
 };
+enum class OperatorKind { query, direct, interactive };
 struct OperatorParameters {
     ValueInput value;                     // 记录类型参数：Runtime 现有的 {TypeId, const void*}
     std::span<const PropertyPatch> patch; // @context.object：对象类型约束下的稀疏路径补丁（第 4 节）
@@ -41,6 +41,9 @@ struct OperatorInfo {
     std::function<Result<void>(OperatorHost&, const Context&, const OperatorParameters&, ValueOutput result)> execute;
     std::function<Result<void>(const Context&, ValueOutput parameters)> seed;  // 可选：用当前状态初始化补丁式参数
     std::function<std::optional<bool>(const Context&, ValueInput parameters)> state; // 可选：菜单的勾选/单选状态
+    OperatorKind kind = OperatorKind::direct;
+    std::function<bool(ValueInput)> requires_interaction; // 可选：由已解码参数决定是否需要人类交互
+    std::string interaction; // 条件说明，供发现与拒绝结果使用
 };
 class OperatorRegistry {
 public:
@@ -53,7 +56,7 @@ public:
         std::function<Result<void>(OperatorHost&, const Context&, const P&)> execute);
 };
 struct OperatorCall { std::string id; Json args = Json::object(); ContextOverride context; };
-// poll → seed 或默认构造 → 按参数类型严格解码 args → execute → 检查历史不变量。
+// poll → seed 或默认构造 → 按参数类型严格解码 args → 来源准入 → execute → 检查历史不变量。
 // execute 返回后不再访问 Context。
 Result<OperatorReport> call(OperatorRegistry&, OperatorHost&, const Context&, const OperatorCall&);
 }
@@ -67,7 +70,7 @@ Result<OperatorReport> call(OperatorRegistry&, OperatorHost&, const Context&, co
 - `OperatorHost` 是 execute 访问宿主能力的接口（相机、视口工具、Dock、Play 进程、文件选择器、状态栏、文档替换请求），由 Application 实现。Context 只装数据，Host 只装能力；O3 的语言操作符只拿 Context 和 Runtime。
 - `state` 取代 `Workspace::command_item` 中按命令硬写的单选/勾选判断：单选项在“用这组参数调用不会改变任何东西”时为选中，勾选项返回当前布尔值。
 - 菜单的 `OperatorBinding` 拥有不可变调用；第一次查询按原解码规则准备参数，无 seed、无引用的参数记录在该绑定内复用，状态结果仍每次从当前 Context 计算。seeded 参数（例如 `tool.settings`）继续每次以当前状态填充未指定字段；含引用的记录也不长期保留。绑定仅用于同一注册表和文档，不保存注册表容器元素地址，随菜单退役释放；文档切换和宿主关闭先清理绑定，再关闭旧文档。执行仍经 `call` 重新校验、poll、解码和历史检查，不使用查询缓存。
-- 执行结果 `OperatorReport {status, message, result}`：status 为 finished、cancelled 或 failed；poll 失败时 status=failed、message 为原因、execute 不运行。
+- 执行结果 `OperatorReport {status, message, result}`：status 为 finished、cancelled、failed 或 interaction_required；poll 失败时 status=failed、message 为原因。interaction_required 表示外部来源不能启动该人类交互，拒绝发生在 `end_interaction` 和 execute 之前，不取消已有手势或修改文档。execute 的原始错误仍经 Result 传播。
 
 ### 历史不变量
 
@@ -203,12 +206,14 @@ struct KeymapEntry { RegionKind region; KeyChord chord; KeyPhase phase; std::str
 - 菜单上显示的快捷键文字由 keymap 生成：找 `op` 与 `args` 都相同的条目，优先取菜单所在区域，再取全局。只有 modal 的 G/R/S 在 O2 之前不显示快捷键文字，提示写进说明。
 - 要改为查表的硬写分支：`application.cpp` 的 `input()`（约 1120–1195 行）、`viewport.cpp` 的 `viewport_input()`（数字键盘、Home、小数点、Shift+Tab、Q、W、X、Z、Shift+A、`、Shift+D、Ctrl+Z/Y），以及 `viewport_tool.cpp` 的 `key()` 里非 modal 的部分（A、Alt+A、Ctrl+I、Alt+G/R/S）。G/R/S、B 的拖动和 Shift+` 飞行留给 O2。
 
-### `prompts` 过渡规则
+### 查询、直接执行与人类交互
 
-- 只在 `interactive=true` 时弹出文件选择器或开始内联编辑。
-- 非交互调用缺少路径或名称时直接失败，原因写明“非交互调用必须提供 path”（或 name）。
-- 弹出的原生对话框要在 d00e751f 的验收守卫里声明预期范围（`ExpectedNativeDialogs`）；验收经 UI 调用带 `prompts` 的操作符时都要这样做。
-- O2 的 invoke 接管后删除这个标志。
+- `query` 表示只读状态、schema、能力查询，沿 `OperatorBinding::state`、schema 和 Control 的既有查询入口；注册表不接受 query execute 项。查询不结束交互，也不修改作者值或历史。
+- `direct` 由完整参数直接执行；合法默认值仍有效。UI、keymap 与 Control 共用执行体。`Context.interactive` 表示人类调用来源，不代表本次调用类别，Control 的 context override 不能改它。
+- `interactive` 需要人类完成手势、内联输入或对话框。`view.select_box`、`ui.menu`、`app.about`、`app.quit` 固定属于此类。begin/preview/commit/cancel 仍由原来的局部拥有者管理，不提供外部分步交互协议。
+- 双态项保留同一个 ID：`scene.duplicate` 的 `place=true` 需要交互，false（默认）直接复制；scene/asset rename 的空 name 需要内联编辑；路径选择项的空 path 需要选择器；`scene.save` 仅在 `as_new=true && path.empty()` 时需要选择器。元数据条件读取已解码记录，不重复解释 JSON，不按命令名维护准入名单。
+- context/poll 与严格参数解码的原顺序不变。strict decode 能发现的错误优先于来源准入；execute 内的业务校验不前移。例如空 path 且 entries 内容非法的 `asset.new_material`，先因需交互返回 interaction_required，不先校验 entries。已有保存冲突和未保存内容保护继续有效。
+- 外部来源遇到交互调用返回 interaction_required 和操作 ID/条件说明，不静默改参数，不进入捕获、放置、选择器或退出确认。原生对话框的 UI 验收仍使用 `ExpectedNativeDialogs` 声明预期范围。
 
 ## 6. 菜单、快捷区与按钮
 
@@ -219,8 +224,8 @@ struct KeymapEntry { RegionKind region; KeyChord chord; KeyPhase phase; std::str
 
 ## 7. Control
 
-- 新增 `op.list`：返回每个操作符的 `{id, title, description, flags, parameters: JSON schema, result: JSON schema}`，以及 Context 覆盖的 schema。参数 schema 完全由 Runtime 的 TypeInfo/FieldInfo 生成：`{"type":"object","additionalProperties":false,"title":记录名,"properties":{…}}`；每个字段给出 `type`（boolean/integer/number/string）或 `enum`（成员名）和 `description`，硬边界写成 `minimum`/`maximum`，界面范围写成 `ui_min`/`ui_max`。非 seed 式操作符带 `default`；seed 式操作符不带默认值，改标 `"seeded": true`（缺省表示保持当前值）。无参数的操作符是空的 properties，没有 title。`@context.object` 写成 `{"dynamic":"context.object"}`。
-- 新增 `op.call {id, args, context}`：需要状态令牌，与现有的改动类 op 相同；返回 `OperatorReport`，并附上调用后的选择。poll 失败时返回 `{"status":"failed","code":"poll_failed","message":原因}`。Control 调用时 `interactive=false`，带 `prompts` 标志的操作符缺少路径或名称时直接失败，不弹窗。
+- `op.list` 返回每个操作符的 `{id, title, description, kinds, flags, parameters: JSON schema, result: JSON schema}`，以及 Context 覆盖的 schema。固定项 kinds 为 `["direct"]` 或 `["interactive"]`，双态项为 `["direct","interactive"]` 并带 `interaction` 条件说明。参数 schema 完全由 Runtime 的 TypeInfo/FieldInfo 生成：`{"type":"object","additionalProperties":false,"title":记录名,"properties":{…}}`；每个字段给出 `type`（boolean/integer/number/string）或 `enum`（成员名）和 `description`，硬边界写成 `minimum`/`maximum`，界面范围写成 `ui_min`/`ui_max`。非 seed 式操作符带 `default`；seed 式操作符不带默认值，改标 `"seeded": true`（缺省表示保持当前值）。无参数的操作符是空的 properties，没有 title。`@context.object` 写成 `{"dynamic":"context.object"}`。
+- `op.call {id, args, context}` 需要状态令牌，返回业务结果和调用后的选择；Control 固定为外部来源，仅接受本次类别为 direct 的调用。poll 拒绝映射为 `error.code: "poll_failed"`，来源准入拒绝为 `"interaction_required"`。`capabilities.operations` 给出各入口的 kind，op.call 另有 `accepted_operator_kinds:["direct"]`；类别与 requires_state_token 分开，job.cancel 不要求令牌但仍为 direct。协议外层状态与错误形状以 [Control 合同](control.md)为准。
 - 删除所有已迁移的专用 op，不保留兼容名字。Control 只保留 `capabilities`、`editor.inspect`（并入 `material.inspect`，新增 `detail:"asset"`）、`render.*`、`job.*`、`repro.*`。验收客户端 `acceptance/editor/control.cpp` 和 `control.md` 一起改。
 
 ## 8. 对照表
@@ -229,24 +234,24 @@ struct KeymapEntry { RegionKind region; KeyChord chord; KeyPhase phase; std::str
 
 | 旧命令 | 操作符与参数 |
 | --- | --- |
-| new_project / open_project | `project.new {path}` / `project.open {path}`（prompts） |
-| open_scene | `scene.open {path}`（prompts） |
-| save_scene / save_scene_as | `scene.save {path, as_new}`（as_new 时 prompts） |
+| new_project / open_project | `project.new {path}` / `project.open {path}`（空 path 需要人类选择） |
+| open_scene | `scene.open {path}`（空 path 需要人类选择） |
+| save_scene / save_scene_as | `scene.save {path, as_new}`（as_new 且空 path 需要人类选择） |
 | save_document / save_all | `file.save`（按区域保存场景或源码）/ `file.save_all` |
-| import_mesh / import_texture | `asset.import {kind: mesh\|texture, path}`（prompts） |
-| create_material | `asset.new_material {path}`（prompts） |
+| import_mesh / import_texture | `asset.import {kind: mesh\|texture, path}`（空 path 需要人类选择） |
+| create_material | `asset.new_material {path}`（空 path 需要人类选择） |
 | refresh_assets | `asset.refresh` |
-| open_source / edit_ui_source | `source.open {path}`（prompts）/ `source.open_editor_ui` |
+| open_source / edit_ui_source | `source.open {path}`（空 path 需要人类选择）/ `source.open_editor_ui` |
 | close_source / reload_source | `source.close` / `source.reload` |
 | new_source / new_project_ui / edit_project_ui | `source.new_component {path}` / `source.new_project_ui {path}` / `source.open_project_ui` |
 | build_project / rebuild_project | `project.build {rebuild: false\|true}` |
 | run_project / stop_project / show_project_ui | `play.start` / `play.stop` / `play.preview_ui` |
-| exit / about | `app.quit` / `app.about` |
+| exit / about | `app.quit` / `app.about`（仅人类交互） |
 | undo / redo | `edit.undo` / `edit.redo`（按区域选择历史：源码、材质资产、Controls 示例或场景） |
 | create_entity / create_static_mesh / create_point/rectangle/directional_light | `scene.add {kind, mesh}`（create_sky_light 由 4b-3 步骤 A 删除，见第 4 节） |
-| duplicate_selected | `scene.duplicate {place}`（视口的 Shift+D 为 place=true，接到现有放置；O2 改为 modal） |
+| duplicate_selected | `scene.duplicate {place}`（false 默认直接复制；视口 Shift+D 的 true 启动人类放置） |
 | erase_selected / erase_entities | `scene.delete {target: object\|entities}` |
-| rename_selected | `scene.rename {name}`（prompts：交互调用不带 name 时开始内联重命名） |
+| rename_selected | `scene.rename {name}`（空 name 需要人类内联重命名） |
 | unparent_selected | `scene.parent_set {parent: null, keep_world: true}` |
 | add_transform / remove_transform | `scene.transform_add` / `scene.transform_remove` |
 | clear_location / rotation / scale | `scene.transform_clear {channel}` |
@@ -278,7 +283,7 @@ struct KeymapEntry { RegionKind region; KeyChord chord; KeyPhase phase; std::str
 | 字段的枚举下拉与布尔开关 | `scene.set_properties`（Context object 为目标；带预览的字段编辑留给 O2） |
 | 材质槽菜单：指派、默认、编辑共享材质 | 指派/默认保留：无重复 operator；材质编辑随 O2 的 preview/commit 一起迁移。`asset.open` 未迁移：单一 UI 路径，出现 keymap/Control/语言调用方时再迁 |
 | 贴图槽菜单 | 保留：无重复 operator；材质编辑随 O2 的 preview/commit 一起迁移 |
-| 资源操作菜单：Open / Add to Scene / Rename | `scene.add {kind: mesh, mesh}` / `asset.rename {name}`（prompts）；`asset.open` 未迁移：单一 UI 路径，出现 keymap/Control/语言调用方时再迁 |
+| 资源操作菜单：Open / Add to Scene / Rename | `scene.add {kind: mesh, mesh}` / `asset.rename {name}`（空 name 需要人类内联重命名）；`asset.open` 未迁移：单一 UI 路径，出现 keymap/Control/语言调用方时再迁 |
 | 资源过滤、视图、路径 | `assets.display` / `assets.browse` 未迁移：单一 UI 路径，出现 keymap/Control/语言调用方时再迁 |
 | World 页体积槽位、代码页文件切换、Controls 模式 | `world.select_slot` / `source.focus` / `workbench.set` 未迁移：单一 UI 路径，出现 keymap/Control/语言调用方时再迁 |
 | Dock 页菜单 | `layout.*` |
@@ -350,7 +355,7 @@ struct KeymapEntry { RegionKind region; KeyChord chord; KeyPhase phase; std::str
 ## 12. 已定事项
 
 1. 区域可导航状态做成操作符，形状是每种区域一个状态记录，由补丁式的 `region.set` 修改，不进撤销历史（第 4 节）。
-2. `prompts` 过渡按第 5 节的三条规则执行，O2 删除。
+2. 调用按第 5 节区分查询、直接执行和人类交互；来源准入位于严格解码后、结束交互及执行前。
 3. `scene.set_properties` 的参数类型是对象自身的类型，但按稀疏路径补丁解码和写入，一次调用一个历史条目（第 4 节）。
 4. `view.set` 的参数类型由 `ViewOptionInfo` 表生成，表是唯一定义，类型名和字段顺序稳定，验收断言一致（第 4 节）。
 5. 运行时契约（第 11 节 1–3）、R5-6 拆成 a/b、`editor.` 前缀规则的时机，都已由总负责人批准。

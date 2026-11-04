@@ -31,7 +31,7 @@ struct Host final : editor::OperatorHost {
         panels.inspecting_asset = inspect_material;
     }
 
-    Result<void> end_interaction() override { return {}; }
+    Result<void> end_interaction() override { return viewport.cancel(document); }
 
     const editor::Camera& camera() const noexcept override { return view; }
 
@@ -97,7 +97,7 @@ struct Host final : editor::OperatorHost {
 
     Result<void> fit_lighting(bool) override { throw std::runtime_error("Lighting fit requires the window host."); }
 
-    Result<void> rename_asset(std::string_view, std::string_view, bool) override {
+    Result<void> rename_asset(std::string_view, std::string_view) override {
         throw std::runtime_error("Asset rename requires the application host.");
     }
 
@@ -167,8 +167,8 @@ void verify_operator_parameters() {
             return editor::call(registry, host, context, {"asset.new_material", std::move(args), std::move(overrides)});
         };
         const auto before = project.entries().size();
-        (void)invoke(Json::object());
-        require(project.entries().size() == before,
+        const auto refused = take(invoke(Json::object()));
+        require(refused.status == editor::OperatorStatus::interaction_required && project.entries().size() == before,
                 "Noninteractive material creation prompted or changed files without a path.");
         const auto source =
             take(editor::call(registry, host, context,
@@ -459,12 +459,22 @@ void verify_operator_parameters() {
         auto context = controls.panels.operator_context(copied, nullptr, false);
         editor::ContextOverride override;
         override.selection = editor::SelectionContext{source, source, {source}};
-        static_cast<void>(editor::call(registry, controls, context, {"scene.duplicate", {{"place", true}}, override}));
-        require(copied.undo_count() == history && take(copied.world().members()).size() == 2,
-                "Duplicate placement without a viewport changed the document before refusing.");
-        take(editor::call(registry, controls, context, {"scene.duplicate", Json::object(), override}));
+        override.region = editor::RegionKind::viewport;
+        const auto before = take(copied.serialize());
+        const auto tools = controls.tools;
+        controls.viewport.arm_box_select({311, 217}, false);
+        require(controls.viewport.active(), "Admission guard needs an active viewport gesture.");
+        const auto refused =
+            take(editor::call(registry, controls, context, {"scene.duplicate", {{"place", true}}, override}));
+        require(refused.status == editor::OperatorStatus::interaction_required && copied.undo_count() == history &&
+                    take(copied.serialize()) == before && copied.selection().entity == unrelated &&
+                    controls.viewport.active() && same(controls.tools, tools),
+                "Refused duplicate placement retired the existing gesture or changed author state/tool settings.");
+        const auto direct =
+            take(editor::call(registry, controls, context, {"scene.duplicate", Json::object(), override}));
         const auto clone = copied.selection().entity;
-        require(clone != source && clone != unrelated && take(copied.world().members()).size() == 3 &&
+        require(direct.status == editor::OperatorStatus::finished && !controls.viewport.active() && clone != source &&
+                    clone != unrelated && take(copied.world().members()).size() == 3 &&
                     take(world::read_transform(copied.world().runtime(), clone)) ==
                         world::Trs{{3, -2, 5}, {}, {2, 1, 3}} &&
                     copied.undo_count() == history + 1,
@@ -475,7 +485,7 @@ void verify_operator_parameters() {
         changed(copied.redo());
         require(copied.selection().entity == clone && take(copied.world().members()).size() == 3,
                 "Explicit duplicate Redo changed the new identity.");
-        override.region = editor::RegionKind::viewport;
+        context.interactive = true;
         take(editor::call(registry, controls, context, {"scene.duplicate", {{"place", true}}, override}));
         const auto placed = copied.selection().entity;
         require(controls.viewport.active() && copied.undo_count() == history + 2,

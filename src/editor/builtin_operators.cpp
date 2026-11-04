@@ -47,6 +47,20 @@ auto with_parameters(Result<void> (*execute)(OperatorHost&, const Context&, cons
     };
 }
 
+template <class P>
+OperatorInfo interactive_when(OperatorInfo info, bool (*condition)(const P&), std::string description) {
+    info.requires_interaction = [condition](ValueInput value) { return condition(*static_cast<const P*>(value.data)); };
+    info.interaction = std::move(description);
+    return info;
+}
+
+template <class P>
+OperatorInfo path_operator(OperatorInfo info) {
+    return interactive_when<P>(
+        std::move(info), +[](const P& p) { return p.path.empty(); },
+        "An empty path opens a picker; provide path to execute directly.");
+}
+
 Result<void> committed(Result<world::Commit> result) {
     if (!result)
         return std::unexpected(result.error());
@@ -274,11 +288,8 @@ Result<void> scene_transform(OperatorHost& host, const Context& context, const S
 }
 
 Result<void> scene_rename(OperatorHost& host, const Context& context, const SceneRename& p) {
-    if (p.name.empty()) {
-        if (!context.interactive)
-            return std::unexpected(Error{ErrorCode::argument_mismatch, "A noninteractive Rename requires name."});
+    if (p.name.empty())
         return host.begin_entity_rename(context.selection.active, context.region);
-    }
     auto result = context.document.rename(context.selection.active, assets::wide({p.name.c_str(), p.name.size()}));
     host.scene_changed();
     return result;
@@ -486,14 +497,11 @@ Result<void> project_open(const Context& context) {
     return context.project ? Result<void>{} : unavailable("Open a project folder first.");
 }
 
-Result<std::optional<std::filesystem::path>> operation_path(OperatorHost& host, const Context& context,
-                                                            const String& value, PathPurpose purpose,
-                                                            const std::filesystem::path& initial,
+Result<std::optional<std::filesystem::path>> operation_path(OperatorHost& host, const String& value,
+                                                            PathPurpose purpose, const std::filesystem::path& initial,
                                                             std::wstring_view filename = {}) {
     if (!value.empty())
         return std::optional<std::filesystem::path>{assets::wide(std::string_view{value.c_str(), value.size()})};
-    if (!context.interactive)
-        return std::unexpected(Error{ErrorCode::argument_mismatch, "Noninteractive invocation requires path."});
     auto chosen = host.choose_path(purpose, initial, filename);
     if (chosen && !*chosen)
         host.cancel_operator();
@@ -501,27 +509,24 @@ Result<std::optional<std::filesystem::path>> operation_path(OperatorHost& host, 
 }
 
 OperatorInfo open_document(std::string id, std::wstring title, DocumentRequest::Kind kind) {
-    return {
-        std::move(id),
-        std::move(title),
-        "Replace the document after the current operator's values retire",
-        OperatorFlag::replaces_document | OperatorFlag::prompts,
-        kind == DocumentRequest::Kind::open_scene ? project_open : available,
-        [kind](OperatorHost& host, const Context& context, const OperatorParameters& parameters,
-               ValueOutput) -> Result<void> {
-            const auto& p = *static_cast<const OpenPath*>(parameters.value.data);
-            const bool scene = kind == DocumentRequest::Kind::open_scene;
-            ATELIER_TRY_BIND(
-                path, operation_path(host, context, p.path, scene ? PathPurpose::scene_open : PathPurpose::folder,
-                                     context.project ? context.project->root() / "Content" : std::filesystem::path{}));
-            if (!*path)
-                return {};
-            host.replace_document(
-                {kind, scene && (**path).is_absolute() ? (**path).lexically_relative(context.project->root()) : **path,
-                 context.interactive});
-            return {};
-        },
-        "editor.OpenPath"};
+    return path_operator<OpenPath>(
+        {std::move(id), std::move(title), "Replace the document after the current operator's values retire",
+         OperatorFlag::replaces_document, kind == DocumentRequest::Kind::open_scene ? project_open : available,
+         [kind](OperatorHost& host, const Context& context, const OperatorParameters& parameters,
+                ValueOutput) -> Result<void> {
+             const auto& p = *static_cast<const OpenPath*>(parameters.value.data);
+             const bool scene = kind == DocumentRequest::Kind::open_scene;
+             ATELIER_TRY_BIND(
+                 path, operation_path(host, p.path, scene ? PathPurpose::scene_open : PathPurpose::folder,
+                                      context.project ? context.project->root() / "Content" : std::filesystem::path{}));
+             if (!*path)
+                 return {};
+             host.replace_document(
+                 {kind, scene && (**path).is_absolute() ? (**path).lexically_relative(context.project->root()) : **path,
+                  context.interactive});
+             return {};
+         },
+         "editor.OpenPath"});
 }
 
 Result<void> project_build(OperatorHost& host, const Context& context, const ProjectBuildParameters& parameters) {
@@ -530,46 +535,43 @@ Result<void> project_build(OperatorHost& host, const Context& context, const Pro
 }
 
 OperatorInfo source_open(std::string id, std::wstring title, bool create, bool project_ui = false) {
-    return {std::move(id),
-            std::move(title),
-            "Open source, or create and open project source",
-            OperatorFlag::undo | OperatorFlag::prompts,
-            create ? project_open : available,
-            [create, project_ui](OperatorHost& host, const Context& context, const OperatorParameters& parameters,
-                                 ValueOutput) -> Result<void> {
-                const auto& p = *static_cast<const OpenPath*>(parameters.value.data);
-                auto path = operation_path(
-                    host, context, p.path, create ? PathPurpose::source_save : PathPurpose::source,
-                    context.project ? context.project->root() / "Source" : context.editor_ui_source.parent_path(),
-                    project_ui ? L"Main.ui.source" : L"Move.source");
-                if (!path)
-                    return std::unexpected(path.error());
-                if (!*path)
-                    return {};
-                if (!create)
-                    return host.open_source(**path);
-                auto relative = (**path).is_absolute() ? (**path).lexically_relative(context.project->root()) : **path;
-                if (project_ui && !relative.filename().wstring().ends_with(L".ui.source"))
-                    relative.replace_extension(L".ui.source");
-                return host.create_source(relative, project_ui);
-            },
-            "editor.OpenPath"};
+    return path_operator<OpenPath>(
+        {std::move(id), std::move(title), "Open source, or create and open project source", OperatorFlag::undo,
+         create ? project_open : available,
+         [create, project_ui](OperatorHost& host, const Context& context, const OperatorParameters& parameters,
+                              ValueOutput) -> Result<void> {
+             const auto& p = *static_cast<const OpenPath*>(parameters.value.data);
+             auto path = operation_path(host, p.path, create ? PathPurpose::source_save : PathPurpose::source,
+                                        context.project ? context.project->root() / "Source"
+                                                        : context.editor_ui_source.parent_path(),
+                                        project_ui ? L"Main.ui.source" : L"Move.source");
+             if (!path)
+                 return std::unexpected(path.error());
+             if (!*path)
+                 return {};
+             if (!create)
+                 return host.open_source(**path);
+             auto relative = (**path).is_absolute() ? (**path).lexically_relative(context.project->root()) : **path;
+             if (project_ui && !relative.filename().wstring().ends_with(L".ui.source"))
+                 relative.replace_extension(L".ui.source");
+             return host.create_source(relative, project_ui);
+         },
+         "editor.OpenPath"});
 }
 
 Result<void> save_scene(OperatorHost& host, const Context& context, const SceneSave& p) {
     if (p.path.empty() && !p.as_new)
         return host.save_scene({});
-    ATELIER_TRY_BIND(
-        path, operation_path(host, context, p.path, PathPurpose::scene_save, context.project->root() / "Content"));
+    ATELIER_TRY_BIND(path, operation_path(host, p.path, PathPurpose::scene_save, context.project->root() / "Content"));
     if (!*path)
         return {};
     return host.save_scene((**path).is_absolute() ? (**path).lexically_relative(context.project->root()) : **path);
 }
 
 Result<void> import_asset(OperatorHost& host, const Context& context, const AssetImport& p, AssetResult& result) {
-    ATELIER_TRY_BIND(path, operation_path(host, context, p.path,
-                                          p.kind == ImportKind::mesh ? PathPurpose::mesh : PathPurpose::texture,
-                                          context.project->root() / "Content"));
+    ATELIER_TRY_BIND(path,
+                     operation_path(host, p.path, p.kind == ImportKind::mesh ? PathPurpose::mesh : PathPurpose::texture,
+                                    context.project->root() / "Content"));
     if (!*path)
         return {};
     ATELIER_TRY_BIND(imported, host.import_asset(p.kind, **path));
@@ -579,9 +581,9 @@ Result<void> import_asset(OperatorHost& host, const Context& context, const Asse
 
 Result<void> reimport_asset(OperatorHost& host, const Context& context, const OpenPath& p) {
     const auto& entry = *context.project->entry(context.asset);
-    auto path = operation_path(host, context, p.path,
-                               entry.kind == assets::AssetKind::mesh ? PathPurpose::mesh : PathPurpose::texture,
-                               context.project->root() / entry.path.parent_path());
+    auto path =
+        operation_path(host, p.path, entry.kind == assets::AssetKind::mesh ? PathPurpose::mesh : PathPurpose::texture,
+                       context.project->root() / entry.path.parent_path());
     if (!path)
         return std::unexpected(path.error());
     return *path ? host.reimport_asset(context.asset, **path) : Result<void>{};
@@ -600,7 +602,7 @@ Result<void> new_material(OperatorHost& host, const Context& context, const P& p
             return std::unexpected(detail::caught_error(error, ErrorCode::argument_mismatch));
         }
     }
-    ATELIER_TRY_BIND(chosen, operation_path(host, context, p.path,
+    ATELIER_TRY_BIND(chosen, operation_path(host, p.path,
                                             source ? PathPurpose::material_source_save : PathPurpose::material_save,
                                             project.root() / "Content"));
     if (!*chosen)
@@ -634,17 +636,22 @@ void register_builtin_operators(OperatorRegistry& registry) {
         if (auto added = registry.add(std::move(info)); !added)
             throw std::logic_error(added.error().message);
     };
-    add({"ui.menu", L"Viewport Menu", "Open a menu at the viewport pointer", OperatorFlag::none,
+    add({"ui.menu",
+         L"Viewport Menu",
+         "Open a menu at the viewport pointer",
+         OperatorFlag::none,
          [](const Context& c) {
-             return c.interactive && c.region == RegionKind::viewport
-                        ? Result<void>{}
-                        : unavailable("Menus require an interactive viewport.");
+             return c.region == RegionKind::viewport ? Result<void>{} : unavailable("Menus require a viewport.");
          },
          with_parameters(+[](OperatorHost& host, const Context&, const MenuParameters& p) -> Result<void> {
              host.show_menu(p.menu);
              return {};
          }),
-         "editor.Menu"});
+         "editor.Menu",
+         {},
+         {},
+         {},
+         OperatorKind::interactive});
     add({"view.frame_all", L"Frame All", "Frame every rendered Entity and spatial locator", OperatorFlag::none,
          available, [](OperatorHost& host, const Context& context, const OperatorParameters&, ValueOutput) {
              return frame(host, context, false);
@@ -844,7 +851,8 @@ void register_builtin_operators(OperatorRegistry& registry) {
                         : unavailable("Select Entities to delete.");
          },
          with_parameters(scene_delete), "editor.SceneDelete"});
-    add({"scene.duplicate", L"Duplicate Entities", "Copy context subtrees with fresh identities and shared resources",
+    add(interactive_when<SceneDuplicate>(
+        {"scene.duplicate", L"Duplicate Entities", "Copy context subtrees with fresh identities and shared resources",
          OperatorFlag::undo,
          [](const Context& context) -> Result<void> {
              if (!context.scene_available || context.selection.entities.empty())
@@ -856,14 +864,18 @@ void register_builtin_operators(OperatorRegistry& registry) {
                         ? Result<void>{}
                         : unavailable("Editor Entity limit reached.");
          },
-         with_parameters(scene_duplicate), "editor.SceneDuplicate"});
+         with_parameters(scene_duplicate), "editor.SceneDuplicate"},
+        +[](const SceneDuplicate& p) { return p.place; },
+        "place=true starts a human placement gesture; place=false (default) executes directly."));
     add({"scene.add_component", L"Add Component", "Add a registered component to the context's active Entity",
          OperatorFlag::undo, editable_entity, with_parameters(scene_add_component), "editor.SceneAddComponent"});
     add({"scene.transform_set", L"Set Transform", "Set the context Entity's full local transform in one history entry",
          OperatorFlag::undo, editable_entity, with_parameters(scene_transform), "editor.SceneTransform"});
-    add({"scene.rename", L"Rename", "Rename the context Entity; interactive calls can start inline editing",
-         OperatorFlag::undo | OperatorFlag::prompts, editable_entity, with_parameters(scene_rename),
-         "editor.SceneRename"});
+    add(interactive_when<SceneRename>(
+        {"scene.rename", L"Rename", "Rename the context Entity; interactive calls can start inline editing",
+         OperatorFlag::undo, editable_entity, with_parameters(scene_rename), "editor.SceneRename"},
+        +[](const SceneRename& p) { return p.name.empty(); },
+        "An empty name starts inline editing; provide name to execute directly."));
     add({"scene.set_properties", L"Set Properties", "Apply a scalar patch to the inspected object's actual type",
          OperatorFlag::undo,
          [](const Context& context) -> Result<void> {
@@ -920,16 +932,25 @@ void register_builtin_operators(OperatorRegistry& registry) {
         return c.project && !c.project->ui_source().empty() ? Result<void>{}
                                                             : unavailable("Create a project UI first.");
     };
-    const auto host_action = [&](std::string id, std::wstring title, auto poll, void (OperatorHost::*action)()) {
-        add({std::move(id), std::move(title), "Workspace action", OperatorFlag::none, poll,
+    const auto interactive_action = [&](std::string id, std::wstring title, auto poll, void (OperatorHost::*action)()) {
+        add({std::move(id),
+             std::move(title),
+             "Workspace action",
+             OperatorFlag::none,
+             poll,
              [action](OperatorHost& h, const Context&, const OperatorParameters&, ValueOutput) {
                  (h.*action)();
                  return Result<void>{};
-             }});
+             },
+             {},
+             {},
+             {},
+             {},
+             OperatorKind::interactive});
     };
-    host_action("app.quit", L"Exit", available, &OperatorHost::quit);
-    host_action("app.about", L"About", available, &OperatorHost::about);
-    host_action("view.select_box", L"Box Select", scene, &OperatorHost::select_box);
+    interactive_action("app.quit", L"Exit", available, &OperatorHost::quit);
+    interactive_action("app.about", L"About", available, &OperatorHost::about);
+    interactive_action("view.select_box", L"Box Select", scene, &OperatorHost::select_box);
     add({"view.toggle",
          L"Toggle View Display",
          "Toggle a viewport display preference",
@@ -951,7 +972,8 @@ void register_builtin_operators(OperatorRegistry& registry) {
              return h.fit_lighting(p.mode == LightingFitMode::scene_focus);
          }),
          "editor.LightingFit"});
-    add({"asset.rename", L"Rename Asset", "Rename the context's project asset", OperatorFlag::prompts,
+    add(interactive_when<SceneRename>(
+        {"asset.rename", L"Rename Asset", "Rename the context's project asset", OperatorFlag::none,
          [](const Context& c) -> Result<void> {
              const auto* entry = c.project ? c.project->entry(c.asset) : nullptr;
              return entry && std::distance(entry->path.begin(), entry->path.end()) >= 2
@@ -959,11 +981,16 @@ void register_builtin_operators(OperatorRegistry& registry) {
                         : unavailable("Select a project file or folder below a top-level root.");
          },
          with_parameters(+[](OperatorHost& h, const Context& c, const SceneRename& p) {
-             return h.rename_asset(c.asset, {p.name.c_str(), p.name.size()}, c.interactive);
+             return h.rename_asset(c.asset, {p.name.c_str(), p.name.size()});
          }),
-         "editor.SceneRename"});
-    add({"scene.save", L"Save Scene", "Save the scene after committing its active field",
-         OperatorFlag::undo | OperatorFlag::prompts, saveable, with_parameters(save_scene), "editor.SceneSave"});
+         "editor.SceneRename"},
+        +[](const SceneRename& p) { return p.name.empty(); },
+        "An empty name starts inline editing; provide name to execute directly."));
+    add(interactive_when<SceneSave>(
+        {"scene.save", L"Save Scene", "Save the scene after committing its active field", OperatorFlag::undo, saveable,
+         with_parameters(save_scene), "editor.SceneSave"},
+        +[](const SceneSave& p) { return p.as_new && p.path.empty(); },
+        "as_new=true with an empty path opens a picker; provide path or save in place to execute directly."));
     add({"file.save", L"Save", "Save the active document", OperatorFlag::undo,
          [source, saveable](const Context& c) { return c.region == RegionKind::code ? source(c) : saveable(c); },
          [](OperatorHost& h, const Context& c, const OperatorParameters&, ValueOutput) {
@@ -1022,44 +1049,45 @@ void register_builtin_operators(OperatorRegistry& registry) {
                  h.stop_play(restart);
                  return Result<void>{};
              }});
-    add({"asset.import",
-         L"Import Asset",
-         "Import a mesh or texture and return its asset key",
-         OperatorFlag::prompts,
-         project_open,
-         with_parameters(import_asset),
-         "editor.AssetImport",
-         {},
-         "editor.AssetResult"});
-    add({"asset.reimport", L"Reimport Asset", "Replace the context resource while retaining its identity",
-         OperatorFlag::undo | OperatorFlag::prompts,
-         [](const Context& c) -> Result<void> {
-             const auto* entry = c.project ? c.project->entry(c.asset) : nullptr;
-             return c.scene_available && entry &&
-                            (entry->kind == assets::AssetKind::mesh || entry->kind == assets::AssetKind::texture)
-                        ? Result<void>{}
-                        : unavailable("Select a project mesh or texture in a loaded scene.");
-         },
-         with_parameters(reimport_asset), "editor.OpenPath"});
+    add(path_operator<AssetImport>({"asset.import",
+                                    L"Import Asset",
+                                    "Import a mesh or texture and return its asset key",
+                                    OperatorFlag::none,
+                                    project_open,
+                                    with_parameters(import_asset),
+                                    "editor.AssetImport",
+                                    {},
+                                    "editor.AssetResult"}));
+    add(path_operator<OpenPath>({"asset.reimport", L"Reimport Asset",
+                                 "Replace the context resource while retaining its identity", OperatorFlag::undo,
+                                 [](const Context& c) -> Result<void> {
+                                     const auto* entry = c.project ? c.project->entry(c.asset) : nullptr;
+                                     return c.scene_available && entry &&
+                                                    (entry->kind == assets::AssetKind::mesh ||
+                                                     entry->kind == assets::AssetKind::texture)
+                                                ? Result<void>{}
+                                                : unavailable("Select a project mesh or texture in a loaded scene.");
+                                 },
+                                 with_parameters(reimport_asset), "editor.OpenPath"}));
     add({"asset.refresh", L"Refresh Assets", "Refresh the project catalog", OperatorFlag::none, project_open,
          [](OperatorHost&, const Context& c, const OperatorParameters&, ValueOutput) { return c.project->refresh(); }});
-    add({"asset.new_material",
-         L"New Material Instance",
-         "Create an MI, inheriting from the active material",
-         OperatorFlag::prompts,
-         project_open,
-         with_parameters(new_material<NewMaterial>),
-         "editor.NewMaterial",
-         {},
-         "editor.AssetResult"});
-    add({"asset.new_material_source",
-         L"New Material Source",
-         "Create an MS and its source",
-         OperatorFlag::prompts,
-         project_open,
-         with_parameters(new_material<NewMaterialSource>),
-         "editor.NewMaterialSource",
-         {},
-         "editor.AssetResult"});
+    add(path_operator<NewMaterial>({"asset.new_material",
+                                    L"New Material Instance",
+                                    "Create an MI, inheriting from the active material",
+                                    OperatorFlag::none,
+                                    project_open,
+                                    with_parameters(new_material<NewMaterial>),
+                                    "editor.NewMaterial",
+                                    {},
+                                    "editor.AssetResult"}));
+    add(path_operator<NewMaterialSource>({"asset.new_material_source",
+                                          L"New Material Source",
+                                          "Create an MS and its source",
+                                          OperatorFlag::none,
+                                          project_open,
+                                          with_parameters(new_material<NewMaterialSource>),
+                                          "editor.NewMaterialSource",
+                                          {},
+                                          "editor.AssetResult"}));
 }
 }

@@ -162,6 +162,14 @@ Result<void> OperatorRegistry::add(OperatorInfo info) {
         return std::unexpected(invalid("Operator needs poll and execute: " + info.id));
     if (info.seed && info.parameters.empty())
         return std::unexpected(invalid("Only an operator with parameters can seed them: " + info.id));
+    if (info.kind == OperatorKind::query)
+        return std::unexpected(invalid("Queries use state, schema or inspection, not execute: " + info.id));
+    if (info.requires_interaction && (info.kind != OperatorKind::direct || info.parameters.empty() ||
+                                      info.parameters == "@context.object" || info.interaction.empty()))
+        return std::unexpected(
+            invalid("Conditional interaction needs a direct operator, record and guidance: " + info.id));
+    if (!info.requires_interaction && !info.interaction.empty())
+        return std::unexpected(invalid("Interaction guidance needs a parameter condition: " + info.id));
     const auto exclusive = int(has_flag(info.flags, OperatorFlag::undo)) +
                            int(has_flag(info.flags, OperatorFlag::history)) +
                            int(has_flag(info.flags, OperatorFlag::replaces_document));
@@ -272,6 +280,12 @@ Result<OperatorReport> call(const OperatorRegistry& registry, OperatorHost& host
         };
         ATELIER_TRY(decode_properties(runtime, PropertyTarget{value->type, {}, value->bytes}, request.args, reference));
     }
+    const OperatorParameters decoded{value ? ValueInput{value->type, value->bytes.data()} : ValueInput{}, patch};
+    if (!context.interactive && (info->kind == OperatorKind::interactive ||
+                                 (info->requires_interaction && info->requires_interaction(decoded.value))))
+        return OperatorReport{OperatorStatus::interaction_required,
+                              "Operator " + info->id + " requires human interaction." +
+                                  (info->interaction.empty() ? "" : " " + info->interaction)};
     std::unique_ptr<detail::OperatorValue> output;
     if (!info->result.empty()) {
         ATELIER_TRY_BIND(made, parameters(runtime, info->result));
@@ -281,8 +295,7 @@ Result<OperatorReport> call(const OperatorRegistry& registry, OperatorHost& host
     const auto recorded = document.recorded();
     const auto undo = document.undo_count();
     const auto redo = document.redo_count();
-    ATELIER_TRY(info->execute(host, context,
-                              {value ? ValueInput{value->type, value->bytes.data()} : ValueInput{}, patch},
+    ATELIER_TRY(info->execute(host, context, decoded,
                               output ? ValueOutput{output->type, output->bytes.data()} : ValueOutput{}));
     if (auto violation = history_violation(*info, recorded, undo, redo, document.recorded(), document.undo_count(),
                                            document.redo_count());

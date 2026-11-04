@@ -552,8 +552,44 @@ void repro_engine_assets(Driver& d, const std::filesystem::path& root) {
 }
 
 // One operator registry serves menus, keys and Control; the context override lasts one call.
-void verify_operators(Driver& d, const std::string& entity) {
-    const auto entries = d.inspect().at("undo").get<std::size_t>();
+void verify_operators(Driver& d, const std::string& entity, HWND window) {
+    const auto before = d.inspect();
+    const auto token = d.token;
+    const auto thread = GetWindowThreadProcessId(window, nullptr);
+    require(window != nullptr && thread != 0, "Operator admission needs the editor's GUI thread");
+    const auto capture = [&] {
+        GUITHREADINFO state{};
+        state.cbSize = sizeof(state);
+        require(GetGUIThreadInfo(thread, &state) != FALSE, "Cannot inspect editor thread capture");
+        return state.hwndCapture;
+    };
+    require(!before.at("busy").get<bool>() && capture() == nullptr,
+            "Operator admission fixture already owns an interaction or capture");
+    const auto directory = d.ok("op.list");
+    const auto& operators = directory.at("operators");
+    const auto entry = [&](std::string_view id) -> const Json& {
+        const auto found = std::ranges::find_if(
+            operators, [&](const Json& item) { return item.at("id").get_ref<const std::string&>() == id; });
+        require(found != operators.end(), "Operator directory omitted " + std::string(id));
+        return *found;
+    };
+    require(entry("view.select_box").at("kinds") == Json::array({"interactive"}) &&
+                entry("view.reset").at("kinds") == Json::array({"direct"}) &&
+                entry("scene.duplicate").at("kinds") == Json::array({"direct", "interactive"}) &&
+                entry("scene.duplicate").at("parameters").at("properties").at("place").at("default") == false &&
+                !entry("scene.duplicate").at("interaction").get<std::string>().empty(),
+            "Operator directory did not distinguish direct, interactive and argument-dependent invocation");
+    const auto queried = d.inspect();
+    require(d.token == token, "Operator discovery changed the state token");
+    for (const auto key : {"entities", "selection", "dirty", "undo", "redo", "busy", "busy_reasons"})
+        require(queried.at(key) == before.at(key), "Operator discovery changed " + std::string(key));
+    error(d.try_op("view.select_box", Json::object(), {{"region", "viewport"}}), "interaction_required");
+    require(capture() == nullptr, "External box selection acquired editor capture");
+    const auto refused = d.inspect();
+    require(d.token == token, "Refused box selection changed the state token");
+    for (const auto key : {"entities", "selection", "dirty", "undo", "redo", "busy", "busy_reasons"})
+        require(refused.at(key) == before.at(key), "Refused box selection changed " + std::string(key));
+    const auto entries = before.at("undo").get<std::size_t>();
     const auto light = d.ok("op.call", {{"id", "scene.add"}, {"args", {{"kind", "point"}}}}).at("active");
     const auto after = d.inspect();
     require(after.at("undo") == entries + 1 && after.at("selection") == Json::array({light}) &&
@@ -1432,9 +1468,22 @@ int wmain(int argc, wchar_t** argv) {
         require(std::ranges::any_of(caps.at("operations"),
                                     [](const Json& op) {
                                         return op.at("op") == "op.call" && op.at("requires_state_token") == true &&
+                                               op.at("kind") == "direct" &&
+                                               op.at("accepted_operator_kinds") == Json::array({"direct"}) &&
                                                op.at("args").at("required") == Json::array({"id"});
                                     }),
                 "Capabilities omitted the stateful operator call contract");
+        require(std::ranges::any_of(caps.at("operations"),
+                                    [](const Json& op) {
+                                        return op.at("op") == "op.list" && op.at("kind") == "query" &&
+                                               op.at("requires_state_token") == false;
+                                    }) &&
+                    std::ranges::any_of(caps.at("operations"),
+                                        [](const Json& op) {
+                                            return op.at("op") == "job.cancel" && op.at("kind") == "direct" &&
+                                                   op.at("requires_state_token") == false;
+                                        }),
+                "Capabilities confused query semantics with state-token requirements");
         verify_option_descriptions(caps);
         d.settle();
         if (!descriptions) {
@@ -1550,7 +1599,7 @@ int wmain(int argc, wchar_t** argv) {
         current = d.inspect();
         require(current.at("entities")[0].at("transform").at("position")[0] == 1, "Undo did not restore the transform");
         d.op("edit.redo");
-        verify_operators(d, entity);
+        verify_operators(d, entity, editor.window());
         const auto added = d.op("scene.add_component", {{"type", "world.Component"}}).at("inspected_object");
         current = d.inspect();
         require(current.at("entities")[0].at("components").size() == 2, "Component addition failed");

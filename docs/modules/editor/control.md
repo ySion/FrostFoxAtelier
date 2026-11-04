@@ -41,10 +41,12 @@ CLI 补齐协议及实例身份；没有 request_id 时生成新 ID。异步操�
 
 实时参数 schema、枚举和范围由 capabilities 返回。`display_options` 的每项同时包含 `label`、`category`、`description` 与 `scope`；它们直接来自 UI 使用的同一 `ViewOptionInfo` 定义，描述支持 UTF-8 中英文与换行。职责如下：
 
+`capabilities.operations` 的 `kind` 区分 `query` 与 `direct`，不从 `requires_state_token` 推导：例如 job.status 是 query，job.cancel 虽不要求令牌仍是 direct。`op.call` 另声明 `accepted_operator_kinds:["direct"]`；操作符的可用类别及参数条件由 op.list 提供，不提供外部分步交互协议。
+
 | 操作 | 权威入口与行为 |
 | --- | --- |
 | editor.inspect | 默认 `detail: full` 返回完整场景与资源目录，适用于小场景；`summary` 返回状态、历史、相机、显示和最近接受帧，不枚举对象或资产；`assets` 分页读取资源目录，`objects` 分页发现 Entity/Component 句柄，`object` 读取一个已发现对象的反射属性。full/summary 的 `performance` 共用 World 性能表的有界统计快照 |
-| op.list | 列出编辑器操作符：ID、标题、说明、历史标志和参数 schema，以及 Context 覆盖的 schema。参数 schema 由文档 Runtime 中的参数记录生成（字段、枚举成员、硬边界 minimum/maximum、界面范围 ui_min/ui_max；非补丁式带 default，补丁式标 `"seeded": true`）。菜单、快捷键和 Control 调用同一个注册表，见[操作符](operators.md) |
+| op.list | 列出编辑器操作符：ID、标题、说明、kinds、历史标志和参数 schema，以及 Context 覆盖的 schema。固定项 kinds 为 `["direct"]` 或 `["interactive"]`；参数决定类别的项为 `["direct","interactive"]`，另有 interaction 条件说明。参数 schema 由文档 Runtime 中的参数记录生成（字段、枚举成员、硬边界 minimum/maximum、界面范围 ui_min/ui_max；非补丁式带 default，补丁式标 `"seeded": true`）。菜单、快捷键和 Control 调用同一个注册表，见[操作符](operators.md) |
 | op.call | `{id, args, context}` 调用一个操作符，需要状态令牌。`args` 按参数记录严格解码：未知字段、类型不符或越过硬边界都返回 `invalid_request`，不夹值；补丁式操作符（`tool.settings`、`view.set`、`scene.set_properties`）只改出现的字段。`context` 只在本次调用内替换 `selection {entities, active, object}`、`region` 或 `asset`，不改文档选择；句柄必须是存活成员，active 属于 entities，object 是 active 或它的组件。poll 不满足时返回 `poll_failed` 和原因；未知操作符为 `unknown_operator`。协议外层为 `status: ok`，其 `result` 包含业务 `status: finished / cancelled`、`message`、操作符结果 `result`（如新资产的 `asset` 键）及调用后的 `selection`、`active`、`inspected_object` |
 | op.call view.lighting_fit | `mode: scene` / `scene_focus`，沿 World 页同一操作符按当前可渲染几何拟合 DDGI 覆盖；保留传播和显示偏好，完整布局提交为一条场景历史 |
 | op.call project.new / project.open / scene.open / scene.save | Application 工程/场景操作；New/Open 拒绝未保存场景、材质或源码草稿，避免无人处理的保存对话框。`project.build {rebuild:true}` 保留内存作者值及场景 dirty 标记，保存 Source 草稿和材质，但显式退役历史，不受 New/Open 的未保存检查限制 |
@@ -58,7 +60,7 @@ CLI 补齐协议及实例身份；没有 request_id 时生成新 ID。异步操�
 | op.call asset.new_material / asset.new_material_source | MI 参数为 path、entries（默认空数组），父材质来自 context.asset；MS 参数为 path、source（默认生成正文），创建 `.ms.material` 和 Source。entries 保持 `{path,type,enabled,value}` 数组，完整解码后沿 Project 一次发布；结果带 asset 键。非交互调用只发布作者文件，不要求编译或加载成功、不切换检查目标；交互菜单创建后加载并检查材质。Control 的 Context 默认取当前编辑器焦点，Parameters/Assets 正在检查材质时，asset 指向该材质，创建 MI 会以它为父材质，edit.undo 会撤销其历史。创建 MI 时要使用内置默认父材质而非当前材质，显式传 `context: {"asset":""}`；要明确撤销场景历史，传 `context: {"asset":"","region":"viewport"}`，避免 Code/Controls 焦点转到其他历史 |
 | op.call asset.import | kind: texture / mesh，path 为图片或 OBJ/glTF；模型导入生成普通 MI 和网格默认关联，结果记录带 asset 键，重复请求由既有 request_id 合同处理 |
 | op.call asset.reimport | context.asset 与源文件 path；同身份更新并发布精确内容，不进入参数 Undo，模型按槽名保留用户 MI |
-| material.inspect | 保留：无重复 operator；材质编辑随 O2 的 preview/commit 一起迁移。按资产 GUID 或对象句柄读取 MS/MI 的声明、有效值、本地稀疏项、父关系、诊断与保存状态 |
+| material.inspect | 保留：无重复 operator；材质编辑随 O2 的 preview/commit 一起迁移。按资产 GUID 或对象句柄读取 MS/MI 的声明、有效值、本地稀疏项、父关系、诊断与保存状态；asset 冷路径可能加载并发布资源、增加文档 revision，后续观察可能更新 state token 或取消活动渲染任务，因此整体标为 direct，仍不要求 state token，不承诺纯只读查询 |
 | material.set_entry、material.set_texture | 保留：无重复 operator；材质编辑随 O2 的 preview/commit 一起迁移。前者接受 object 与完整 typed entry（path/type/enabled/value）；后者接受 object/path/texture，空纹理键显式清空，不恢复继承 |
 | material.assign | 保留：无重复 operator；材质编辑随 O2 的 preview/commit 一起迁移。按组件句柄与槽名赋予 Material GUID；空 asset 恢复网格默认 |
 | material.create_scene | 保留：无重复 operator；材质编辑随 O2 的 preview/commit 一起迁移。按 component/slot 创建场景 MI，继承该槽当前材质；未绑定槽继承 DefaultWorldGrid，返回实例 object 句柄 |
@@ -71,6 +73,10 @@ CLI 补齐协议及实例身份；没有 request_id 时生成新 ID。异步操�
 | render.prepare | 通过真实接受帧准备当前实例的 Scene Lit 管线，结束后恢复基础显示；单独报告准备耗时 |
 | render.capture、render.compare | 当前显示捕获或临时设置对照 |
 | job.status、job.cancel | 查询和幂等取消任务 |
+
+`op.call` 固定使用外部来源，不能通过 context override 伪装成人类。context/poll 与严格解码之后，统一按注册元数据和已解码参数准入；需要人类交互时返回 `status: error`、`error.code: interaction_required`，message 给出操作 ID 和适用的参数条件。拒绝发生在结束旧交互或执行前，不取消手势、不复制实体、不取得捕获。`view.select_box`、`ui.menu`、`app.about`、`app.quit` 仅支持人类交互；`scene.duplicate` 传 `place:false`（默认）直接复制，`place:true` 拒绝；空 name 的重命名和空 path 的选择器也拒绝，`scene.save` 仅在 `as_new:true` 且空 path 时需要选择器。显式路径的直接调用仍遵循原保存冲突、未保存内容和业务校验规则。
+
+严格解码能发现的错误优先于 interaction_required；execute 内业务校验不前移。例如 `asset.new_material {entries:{}}` 且省略 path，entries 的 JSON 在严格解码阶段仅存储，先因需要选择器返回 interaction_required；显式 path 的直接调用才进入原 entries 业务校验。原 busy、状态令牌和请求重放的优先顺序不变。
 
 场景身份与参数统一使用 Entity 名称：`editor.inspect` 的目录和 `scene.select` 的 context 选择数组均为 `entities`；没有 actor/entitys 别名。`scene.add` 的空实体 `kind` 为 `entity`。`scene.add_component` 对当前选中 Entity 添加 `type` 指定的真实组件。
 
@@ -161,7 +167,7 @@ DDGI 诊断通过相同的入口使用 `probe_visualization`（off/irradiance/st
 - editor.inspect 的 busy_reasons 列出实际阻塞项：document_edit、viewport_tool、camera_orbit、camera_pan、view_edit、menu、ui_pointer、ui_key、text_draft、ime、clipboard、ui_popup；`view_edit` 表示 World 数值草稿。text_focus 单独表示文本键盘焦点，不参与忙碌判定。交互导致的 busy 错误同时附带 busy_reasons。Code 文档的稳定未保存草稿仍由既有保存/替换规则保护，repro.export 可将其单独保存为 drafts.json。
 - 首版一个活动连接、一个异步任务，保留最近 16 个任务。job_id 是原请求 ID；轮询响应的 request_id 属于本次查询。请求内容已淘汰但任务仍保留时，同 ID 返回 request_id_expired，应以 job.status 查询；不会再创建同 ID 的任务。任务记录淘汰前保存其最终缓存结果。两种记录均已淘汰后没有重试保证。
 
-主要错误为 invalid_request、unknown_operation、busy、unsaved_changes、stale_state、stale_object、request_id_conflict、request_id_expired、not_ready、cancelled、state_changed、timeout、render_failure、dependency_mismatch、invalid_destination、storage_error、result_too_large。上下文取消会附上改变的状态类别。
+主要错误为 invalid_request、unknown_operation、interaction_required、busy、unsaved_changes、stale_state、stale_object、request_id_conflict、request_id_expired、not_ready、cancelled、state_changed、timeout、render_failure、dependency_mismatch、invalid_destination、storage_error、result_too_large。上下文取消会附上改变的状态类别。
 
 相机平移和旋转属于同一个活动手势的互斥模式。模式、按键和上次指针位置只在手势存活期间保有；松手、失焦、捕获丢失及转入菜单会结束该手势。`camera_pan` / `camera_orbit` 只报告当前操作，不依据上次使用过的模式。结束后 Control 恢复可调用，活动期间仍按原合同拒绝改变状态的请求。
 

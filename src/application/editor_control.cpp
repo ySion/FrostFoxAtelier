@@ -316,21 +316,31 @@ struct Operation {
     Json properties;
 
     std::vector<std::string> required;
+
+    editor::OperatorKind kind{editor::OperatorKind::direct};
 };
+
+constexpr std::array operator_kind_names{"query", "direct", "interactive"};
 
 const std::vector<Operation>& operations() {
     static const Json str{{"type", "string"}};
     static const Json obj{{"type", "object"}};
     static const Json arr{{"type", "array"}};
     static const std::vector<Operation> values{
-        {"capabilities", "Discover operations, arguments, limits and display options", false, {}, {}},
-        {"op.list",
-         "List editor operators: identity, flags and parameter schema; the context override schema",
+        {"capabilities",
+         "Discover operations, arguments, limits and display options",
          false,
          {},
-         {}},
+         {},
+         editor::OperatorKind::query},
+        {"op.list",
+         "List editor operators: invocation kinds, identity, flags and schema; the context override schema",
+         false,
+         {},
+         {},
+         editor::OperatorKind::query},
         {"op.call",
-         "Call one editor operator; context replaces selection or region for this call only",
+         "Execute a direct operator call; discover invocation kinds and argument conditions with op.list",
          true,
          {{"id", str}, {"args", obj}, {"context", obj}},
          {"id"}},
@@ -343,12 +353,14 @@ const std::vector<Operation>& operations() {
           {"type", str},
           {"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", inspect_page_items}}},
           {"cursor", obj}},
-         {}},
+         {},
+         editor::OperatorKind::query},
         {"material.inspect",
-         "Read owning MS declarations, sparse MI entries, effective values and diagnostics",
+         "Read owning MS declarations, sparse MI entries, effective values and diagnostics; asset may load resources",
          false,
          {{"asset", str}, {"object", str}},
-         {}},
+         {},
+         editor::OperatorKind::direct},
         {"material.set_entry",
          "Edit one typed sparse entry {path,type,enabled,value}; one author history entry",
          true,
@@ -409,7 +421,8 @@ const std::vector<Operation>& operations() {
          "Read a bounded asynchronous job; polling does not mutate editor state",
          false,
          {{"job_id", str}},
-         {"job_id"}},
+         {"job_id"},
+         editor::OperatorKind::query},
         {"job.cancel",
          "Cancel a job idempotently; temporary display is removed at this boundary",
          false,
@@ -431,15 +444,19 @@ Json capabilities() {
                          {"captures", 16},
                          {"capture_bytes", 256 * 1024 * 1024},
                          {"timeout_ms", control::maximum_timeout_ms}}}};
-    for (const auto& op : operations())
+    for (const auto& op : operations()) {
         result["operations"].push_back({{"op", op.name},
                                         {"description", op.description},
+                                        {"kind", operator_kind_names[static_cast<std::size_t>(op.kind)]},
                                         {"requires_state_token", op.changes},
                                         {"args",
                                          {{"type", "object"},
                                           {"properties", op.properties.is_null() ? Json::object() : op.properties},
                                           {"required", op.required},
                                           {"additionalProperties", false}}}});
+        if (op.name == "op.call")
+            result["operations"].back()["accepted_operator_kinds"] = Json::array({"direct"});
+    }
     for (const auto& option : editor::view_options()) {
         Json schema;
         if (option.kind == editor::ViewValueKind::enumeration) {
@@ -1523,8 +1540,7 @@ struct EditorControl::Impl {
             auto flags = Json::array();
             for (const auto& [flag, name] : {std::pair{editor::OperatorFlag::undo, "undo"},
                                              {editor::OperatorFlag::history, "history"},
-                                             {editor::OperatorFlag::replaces_document, "replaces_document"},
-                                             {editor::OperatorFlag::prompts, "prompts"}})
+                                             {editor::OperatorFlag::replaces_document, "replaces_document"}})
                 if (editor::has_flag(info.flags, flag))
                     flags.push_back(name);
             auto parameters = editor::parameter_schema(app.document_->world().runtime(), info);
@@ -1533,12 +1549,18 @@ struct EditorControl::Impl {
             auto result = editor::result_schema(app.document_->world().runtime(), info);
             if (!result)
                 throw Failure("operation_failed", result.error().message);
+            auto kinds = Json::array({operator_kind_names[static_cast<std::size_t>(info.kind)]});
+            if (info.requires_interaction)
+                kinds.push_back("interactive");
             operators.push_back({{"id", info.id},
                                  {"title", control::utf8(info.title)},
                                  {"description", info.description},
+                                 {"kinds", std::move(kinds)},
                                  {"flags", flags},
                                  {"parameters", std::move(*parameters)},
                                  {"result", std::move(*result)}});
+            if (!info.interaction.empty())
+                operators.back()["interaction"] = info.interaction;
         }
         auto regions = Json::array();
         for (const auto name : editor::region_names())
@@ -1630,6 +1652,8 @@ struct EditorControl::Impl {
                           report.error().message);
         if (report->status == editor::OperatorStatus::failed)
             throw Failure("poll_failed", report->message);
+        if (report->status == editor::OperatorStatus::interaction_required)
+            throw Failure("interaction_required", report->message);
         auto selection = Json::array();
         for (const auto entity : app.document_->selected_entities())
             selection.push_back(handle(entity));

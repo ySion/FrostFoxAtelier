@@ -26,12 +26,7 @@ enum class OperatorFlag : std::uint32_t {
     undo = 1, // At most one scene history entry per call.
     history = 2, // Moves the scene history cursor only (edit.undo / edit.redo).
     replaces_document = 4, // Asks the host to replace the document after the call returns.
-    prompts = 8, // Transitional: interactive calls may ask for a missing path or name.
 };
-
-constexpr OperatorFlag operator|(OperatorFlag a, OperatorFlag b) noexcept {
-    return static_cast<OperatorFlag>(static_cast<std::uint32_t>(a) | static_cast<std::uint32_t>(b));
-}
 
 constexpr bool has_flag(OperatorFlag set, OperatorFlag flag) noexcept {
     return (static_cast<std::uint32_t>(set) & static_cast<std::uint32_t>(flag)) != 0;
@@ -72,7 +67,7 @@ struct Context {
 
     bool scene_available{true}; // False while a project has no loadable scene.
 
-    bool interactive{};
+    bool interactive{}; // Human UI/keymap source, not the kind of this invocation; Control cannot override it.
 
     ToolSettings tools;
 
@@ -208,7 +203,7 @@ public:
 
     virtual Result<void> fit_lighting(bool follow_focus) = 0;
 
-    virtual Result<void> rename_asset(std::string_view key, std::string_view name, bool interactive) = 0;
+    virtual Result<void> rename_asset(std::string_view key, std::string_view name) = 0;
 
     virtual Result<void> save_scene(const std::filesystem::path&) = 0;
 
@@ -242,6 +237,9 @@ struct OperatorParameters {
     std::span<const PropertyPatch> patch; // @context.object; owned by call through execute.
 };
 
+// Queries use state/schema/inspection, not the gesture-retiring execute path.
+enum class OperatorKind { query, direct, interactive };
+
 struct OperatorInfo {
     std::string id; // "<domain>.<action>", lowercase.
 
@@ -265,6 +263,13 @@ struct OperatorInfo {
     std::string result{}; // Optional result record name; encoded before its Runtime can be replaced.
 
     std::function<std::optional<bool>(const Context&, ValueInput)> state{};
+
+    OperatorKind kind{OperatorKind::direct};
+
+    // A direct operator can require human interaction for particular decoded arguments.
+    std::function<bool(ValueInput)> requires_interaction{};
+
+    std::string interaction{}; // Discovery and refusal guidance for that condition.
 };
 
 class OperatorRegistry {
@@ -318,18 +323,19 @@ private:
     std::unique_ptr<detail::OperatorValue> parameters_;
 };
 
-enum class OperatorStatus { finished, cancelled, failed };
+enum class OperatorStatus { finished, cancelled, failed, interaction_required };
 
 struct OperatorReport {
     OperatorStatus status{};
 
-    std::string message; // Poll reason when failed; execution failures retain their original Error.
+    std::string message; // Poll or admission reason; execution failures retain their original Error.
 
     assets::json_format::Json result = assets::json_format::Json::object();
 };
 
 // Poll, then seed or default-construct the parameters and decode the arguments strictly
-// into them, then execute, then check the history contract of the operator's flags.
+// into them. Reject human-only calls before ending interactions or executing; otherwise
+// execute and check the history contract of the operator's flags.
 // Unknown operators, invalid arguments or context, execution errors and history
 // contract violations are errors in every build configuration.
 // Reference tokens belong to the caller (Control uses its document-scoped handles).

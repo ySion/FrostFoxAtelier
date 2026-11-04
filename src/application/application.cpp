@@ -288,7 +288,8 @@ Result<editor::OperatorReport> Application::call_operator(const editor::Operator
 
 Result<void> Application::run_operator(const editor::OperatorCall& call, bool report_unavailable, bool interactive) {
     ATELIER_TRY_BIND(report, call_operator(call, interactive));
-    if (report->status == editor::OperatorStatus::failed && report_unavailable)
+    if (report->status == editor::OperatorStatus::interaction_required ||
+        (report->status == editor::OperatorStatus::failed && report_unavailable))
         return std::unexpected(Error{ErrorCode::unsupported_operation, report->message});
     return {};
 }
@@ -1140,11 +1141,11 @@ Result<void> Application::begin_asset_rename() {
     return {};
 }
 
-Result<void> Application::rename_asset(std::string_view key, std::string_view name, bool interactive) {
+Result<void> Application::rename_asset(std::string_view key, std::string_view name) {
     const auto* entry = project_ ? project_->entry(key) : nullptr;
     if (!entry)
         return std::unexpected(Error{ErrorCode::invalid_storage, "Select a project asset to rename."});
-    if (name.empty() && interactive) {
+    if (name.empty()) {
         const auto row = workspace_.assets.row_key(key);
         if (row) {
             workspace_.row_rename = editor::Workspace::RowRename{

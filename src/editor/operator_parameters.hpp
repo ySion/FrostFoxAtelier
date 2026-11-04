@@ -182,7 +182,7 @@ ASTRUCT(Name = "editor.SceneDuplicate", DESC = "复制 Context 的 Entity 子树
 struct SceneDuplicate {
     AGENERATED_BODY(SceneDuplicate)
 
-    AFIELD(DESC = "复制后进入视口放置；需要视口上下文，取消放置保留原位副本。")
+    AFIELD(DESC = "false 直接复制；true 仅由人类调用启动视口放置，取消放置保留原位副本。")
     bool place{};
 };
 
