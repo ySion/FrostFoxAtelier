@@ -649,6 +649,18 @@ struct Renderer::State {
 
     detail::FrameSlots<UiInstance> ui_slots; // Overlay then UI instances, read in place.
 
+    struct UiTextureUpload {
+        GfxTexture texture;
+
+        std::size_t offset;
+
+        std::size_t bytes;
+    };
+
+    std::vector<UiTextureUpload> ui_texture_uploads;
+
+    detail::FrameSlots<std::uint8_t> ui_texture_slots;
+
     std::vector<std::uint8_t> upload_pixels;
 
     std::optional<Error> failure;
@@ -745,6 +757,9 @@ struct Renderer::State {
                     error(rhi::ErrorCode::execution_failed, "Scene frame slot retirement failed", true, r));
         if (const auto r = ui_slots.retire(gfx))
             return std::unexpected(error(rhi::ErrorCode::execution_failed, "UI frame slot retirement failed", true, r));
+        if (const auto r = ui_texture_slots.retire(gfx))
+            return std::unexpected(
+                error(rhi::ErrorCode::execution_failed, "UI texture frame slot retirement failed", true, r));
         ATELIER_TRY(retire(sampler, gfxDestroySamplerState, "Sampler retirement failed"));
         ui_pipeline = {};
         background = {};
@@ -901,7 +916,7 @@ struct Renderer::State {
         mesh_checks.materials_changed = false;
     }
 
-    // Returns the image's slot in this frame's ui_textures; a new revision uploads once.
+    // Returns this frame's texture slot; new revisions join the single upload batch before drawing.
     template <class Pixels>
     std::uint32_t texture(const std::shared_ptr<const Pixels>& owner) {
         constexpr bool color = std::is_same_v<Pixels, ui::ColorImage>;
@@ -916,14 +931,19 @@ struct Renderer::State {
             allocation(bool(image.texture));
             // The protocol permits padded CPU rows; gfx's upload contract is tight.
             const auto pitch = std::size_t(owner->width) * channels;
-            upload_pixels.resize(pitch * owner->height);
+            const auto bytes = pitch * owner->height;
+            // A 256-byte buffer range is legal, but can force an otherwise direct
+            // texture copy through gfx's scratch path. Preserve placement alignment.
+            constexpr std::size_t alignment = D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT;
+            const auto offset = (upload_pixels.size() + alignment - 1) & ~(alignment - 1);
+            // FrameSlots uses a uint32 count rounded up to a power of two.
+            if (offset > std::bit_floor(UINT32_MAX) - bytes)
+                throw std::bad_alloc{};
+            upload_pixels.resize(offset + bytes);
             for (std::uint32_t y = 0; y < owner->height; ++y)
-                std::memcpy(upload_pixels.data() + std::size_t(y) * pitch,
+                std::memcpy(upload_pixels.data() + offset + std::size_t(y) * pitch,
                             owner->pixels.data() + std::size_t(y) * owner->row_pitch, pitch);
-            BufferOwner upload{gfx,
-                               gfxCreateBuffer(gfx, upload_pixels.size(), upload_pixels.data(), kGfxCpuAccess_Write)};
-            allocation(bool(upload.buffer));
-            require(gfxCommandCopyBufferToTexture(gfx, image.texture, upload.buffer), "Upload UI texture");
+            ui_texture_uploads.push_back({image.texture, offset, bytes});
         }
         if (!image.used) {
             image.used = true;
@@ -1313,10 +1333,21 @@ struct Renderer::State {
         for (auto& [key, image] : images)
             image.used = false;
         std::optional<timing::Scope> ui_stage{std::in_place, phases::encode_ui};
+        ui_texture_uploads.clear();
+        upload_pixels.clear();
         if (!ui_instances.empty()) {
             ui_textures.clear();
             for (const auto& [index, item] : ui_textured)
                 ui_instances[index].shading |= (item->coverage ? texture(item->coverage) : texture(item->image)) << 2;
+            if (!ui_texture_uploads.empty()) {
+                const auto staging =
+                    ui_texture_slots.write(gfx, context.info().frames_in_flight, upload_pixels, true, "UI texture");
+                for (const auto& pending : ui_texture_uploads) {
+                    BufferOwner upload{gfx, gfxCreateBufferRange(gfx, staging, pending.offset, pending.bytes)};
+                    allocation(bool(upload.buffer));
+                    require(gfxCommandCopyBufferToTexture(gfx, pending.texture, upload.buffer), "Upload UI texture");
+                }
+            }
             GfxBuffer ui_data;
             {
                 timing::Scope ui_upload{phases::encode_ui_upload};

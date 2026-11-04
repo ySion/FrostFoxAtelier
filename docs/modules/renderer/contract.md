@@ -46,6 +46,8 @@ batch 必须在所属 Renderer 关闭前于 owner 线程释放；存活批次令
 - UI 支持半开像素裁剪、实色矩形、R8 覆盖图、RGBA 图片与 UV。输入为线性 straight RGBA，pixel shader 乘 coverage 与 alpha 后输出预乘颜色，混合使用 ONE/INV_SRC_ALPHA。裁剪逐实例进行：clip 收紧到目标范围后打包进实例，pixel shader 按像素中心落在半开区间内判断，与同一整数 scissor 逐像素一致；空 clip、零尺寸、透明以及与 clip 不相交的项在 CPU 侧剔除，不上传实例或贴图。全部 UI 实例共用一次上传、一条管线和一次 draw，视口叠加层另占一次，两者都只依赖 D3D 在同一次 draw 内按图元提交顺序混合来保持数组顺序，不重排、不按 clip 或贴图切批。本帧用到的 Coverage 与 Image 按首次出现的顺序去重成一张贴图表，作为无界纹理数组绑定，实例携带表内下标；表的内容和顺序与上一帧相同时 gfx 不重写描述符，任何变化都会让 gfx 重写整张表的描述符。
 - renderer 显式请求 SDR RGBA8 backbuffer，并校验实际 RTV 格式为 `R8G8B8A8_UNORM_SRGB`；sRGB RTV 执行写入编码与线性混合。未指定该选项的 RHI 调用采用 gfx 的显示器自动选择，不能推导所有 Context 都保证 RGBA8。
 - Coverage 的非零 identity 与 revision 一起标识不可变内容，renderer 缓存同时保有 `shared_ptr<const Coverage>`。CPU 行可有 padding；上传时收紧行。每个实际使用的版本只上传一次，无用缓存释放 CPU owner，GPU 资源沿 gfx 原有机制退休。当前没有字体图集、显存预算或资源管理器。
+- 同一录制帧的新 UI 贴图共用一个 `FrameSlots<uint8_t>` 上传槽：先聚合唯一 miss 的紧密像素，再只写槽一次，逐图借用 `gfxCreateBufferRange` 录制 copy，全部完成后才录制 UI draw；无 miss 不写槽。每个源区间按 `D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT`（512 字节）对齐，而非仅满足 buffer range 的256字节要求，避免原本行宽符合 footprint RowPitch 的图片因源偏移而退化到 gfx scratch 逐行复制。gfx 原有行宽检查、OPTIONS13 查询与 scratch 路径不变。上传槽按录制序号而非 accepted id 选择，沿原3槽/fence复用；容量不足按2幂增长，关闭时退休，不逐图创建 native 上传 buffer，也不额外等待。CPU 聚合向量及各槽保留峰值容量；聚合字节数超过 FrameSlots 的32位计数可表示的2幂容量（2 GiB）时按分配失败终止，不截断偏移或尺寸。纹理身份、首用顺序、逐图像素与描述符安装合同不变。
+- 占用预算先按512字节起点对齐累加末项结束位置，再对单槽向上取2幂，不能直接按像素字节数取整。例如60,727字节的23项上传若排布至66,048字节，则单槽预计131,072字节，三个槽均使用该规模后合计393,216字节。这是布局预算，不是实测峰值；真实槽容量、CPU向量/任务列表容量和gfx scratch占用分别记录。
 
 ## 视口显示策略
 
