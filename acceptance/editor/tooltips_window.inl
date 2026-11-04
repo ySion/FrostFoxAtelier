@@ -6,6 +6,7 @@ int verify_editor_tooltips(Application& app, const char* output_directory) {
     struct ComScope {
         ~ComScope() { CoUninitialize(); }
     } com_scope;
+    ExternalMouseFilter external_mouse;
     const auto output = std::filesystem::absolute(assets::wide(output_directory));
     std::filesystem::create_directories(output);
     tick(app);
