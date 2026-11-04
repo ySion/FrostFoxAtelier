@@ -2649,23 +2649,6 @@ Result<ObjectReference> Runtime::sequence_read(const ReferenceField& field, std:
     return ObjectReference{{address->value.type, ValueForm::strong_reference}, objects[index]};
 }
 
-Result<void> Runtime::visit_sequence(const ReferenceField& field, ReferenceVisitor visitor) const {
-    const auto address = resolve_reference_field(field);
-    if (!address)
-        return std::unexpected(address.error());
-    if (address->value.form != ValueForm::strong_sequence)
-        return failure(ErrorCode::type_mismatch, "Field is not a reference sequence.");
-    return impl_->visit_guarded(visitor, [&]() -> Result<void> {
-        for (const auto object : static_cast<const ReferenceSequence*>(address->data)->objects_) {
-            const auto result = visitor.visit(
-                visitor.context, ObjectReference{{address->value.type, ValueForm::strong_reference}, object});
-            if (!result)
-                return result;
-        }
-        return {};
-    });
-}
-
 Result<void> Runtime::apply_reference_changes(std::span<const ReferenceChange> changes) {
     if (!impl_->roots->alive || impl_->roots->traversals || impl_->changing_references)
         return failure(ErrorCode::busy, "Reference mutation cannot reenter traversal, another batch or shutdown.");

@@ -112,6 +112,8 @@ Runtime 构造时通过同一注册机制发布内建数学记录，验证原生
 - `ObjectReference` 默认相等比较仍包含声明视图；跨视图判断同一对象使用 `id()`。`std::hash<TypeId/ObjectId>` 与各自完整身份相等规则一致，不暴露布局，也不能作为持久 ID。
 - `belongs_to_context(id)` 只查询身份归属：本 Runtime 的存活或陈旧身份均返回 `true`，其他 Runtime 的身份及默认 `ObjectId{}` 返回 `false`。查询不分配、不保活且为 `noexcept`；存活与类型仍由 `type_of` 等访问入口验证。消费者可据此区分本地失效和跨 Runtime 输入，不读取身份私有布局或解析错误消息。
 
+计划中的 Source 显式 cast 将使用 `cast_reference` 转换引用声明视图，当前尚未接入。
+
 源码宿主可以将基类 `Program` 绑定到派生接收者。同步与协程共用接收者检查，`ExecutionFrame::hold(slot, id, declared_type)` 建立绑定类型视图的 `self` 槽；同步槽在执行区间内保存定型身份，协程槽保留根登记。成员目录及发布依赖包含祖先，元数据快照包含父类型。源码只能看绑定视图可见的成员，`new T()` 仍构造绑定类型，旧 `Lease` 和挂起帧继续持有各自代码版本。语法边界以 [LANGUAGE.md](../LANGUAGE.md) 为准。
 
 此处不提供多继承、源码类声明、通用虚方法覆盖、布局热迁移或世界成员资格。对应真实消费者为 [Runtime 继承](../acceptance/runtime/inheritance.cpp)和[源码继承](../acceptance/source/inheritance.cpp)，沿现有 Runtime/source/JIT 验收入口执行。
@@ -124,7 +126,7 @@ Runtime 构造时通过同一注册机制发布内建数学记录，验证原生
 
 `reference_field(object, path)` 建立公开字段定位器；`reference_field(object, native_slot_or_sequence)` 在 `with_native` 期间按实际存储匹配已登记元数据，可定位隐藏字段、内联记录及原生基段。引用强弱和元素类型来自字段定义，调用方不能重贴标签。`ReferenceField` 拥有字段路径，不保活对象或保存载荷地址；每次访问重新验证对象身份。原生存储定位器仅可在受保护借用期间使用，离开借用后返回 `busy`。
 
-`read_reference`、`sequence_size`、`sequence_read` 和 `visit_sequence` 使用同一定位器。元素读取恢复字段声明视图；空值及显式销毁后的失效身份沿用普通强引用规则。序列遍历按顺序报告每个元素（含空引用），期间禁止修改、原生借用和生命周期重入。
+`read_reference`、`sequence_size` 和 `sequence_read` 使用同一定位器。元素读取恢复字段声明视图；空值及显式销毁后的失效身份沿用普通强引用规则。
 
 ### 同步原生借用
 
@@ -177,6 +179,8 @@ C++ 生产者使用 `AFIELD(Label = "Position", Category = "Transform")`，规�
 - 源码前端不绑定对象的数组字段，元素路径不进入源码绑定目录，也不影响生成代码 ABI。
 - 按路径写入和元素操作的失败消息与校验失败一样以“类型名.路径: 原因”命名所在值：越界下标写出下标和元素数，结构操作越界写出操作、位置和元素数，硬边界拒绝 NaN/±Inf 时指向输入里第一个违规叶，例如 `arrays.Owner.points[1].y`。只有失败才构造路径，成功路径不分配。
 - Array 类型发布时必须提供元素投影 `sequence_view`（`array_definition` 已提供）；缺少 `sequence_mutate` 的数组可以按元素读写，结构操作返回 `unsupported_operation`。
+
+计划中的 Parameters 数组编辑器（R5-6b）将使用 `insert_element` 添加元素及撤销删除。`remove_elements` 计划用于删除元素及撤销添加。`move_element` 计划用于调整元素顺序及逆向撤销。`element_index` 计划用于解释元素路径；这些消费者当前尚未接入。
 
 ### 字段范围与写入约束
 
@@ -292,6 +296,8 @@ auto published = runtime.register_types(std::move(definitions));
 `visit_roots` 枚举外部入口；`visit_references` 枚举单个对象或外部值中的引用，递归内联记录而不继续遍历所指对象。访问者收到非空的持有和观察引用，也可能收到已失效身份；收集器应据形式与代际判断后续处理。`hidden_field` 只控制公共反射字段的暴露，不是语言访问权限机制；它仍参与引用遍历。
 
 遍历期间拒绝 Runtime 的对象/值/字段修改、方法执行和新增根，访问者抛出的异常转换为 `invocation_failed`，正常返回后解除保护。C++ 根复制会新增登记，因此不能在访问者中执行；Root 的撤销不销毁目标，允许解除登记，但访问者必须始终保持借用的值存储有效，不能绕过接口释放或改写该存储。普通方法回调中的合法引用写入、根登记和观察取得仍可执行。
+
+计划中的根泄漏排障将使用 `visit_roots` 观察外部根入口，当前尚未接入产品排障入口。
 
 ### 值操作
 

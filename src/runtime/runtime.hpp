@@ -1011,8 +1011,6 @@ public:
 
     [[nodiscard]] Result<ObjectReference> sequence_read(const ReferenceField&, std::size_t index) const;
 
-    [[nodiscard]] Result<void> visit_sequence(const ReferenceField&, ReferenceVisitor) const;
-
     // One splice per sequence and one write per slot. All validation, input
     // copying and capacity preparation precede any logical change. Commit has
     // no allocations or callbacks; preparation may propagate allocation errors.
