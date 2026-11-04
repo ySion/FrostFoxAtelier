@@ -7,6 +7,12 @@
 #include <cstdint>
 #include <type_traits>
 
+namespace atelier {
+struct NativeContext;
+
+struct NativeFailure;
+}
+
 namespace atelier::source::detail {
 
 inline constexpr std::uint32_t no_diagnostic_location = 0xffffffffu;
@@ -95,12 +101,13 @@ struct BusinessParameter {
     bool operator==(const BusinessParameter&) const = default;
 };
 
-enum class ArgumentStorage : std::uint32_t { value, read_only, reference, field };
+enum class ArgumentStorage : std::uint32_t { value, read_only, reference };
 
 // Fixed-layout operand. Native values borrow original storage; bits only carry
-// scalars; boolean bits must be exactly 0 or 1. Addresses/field locators last through a synchronous call. Math and plain record value
-// arguments point at independent input storage; aggregate results use caller-owned
-// exact typed storage. This is not an aggregate serialization format.
+// scalars; boolean bits must be exactly 0 or 1. Borrowed addresses last through
+// a synchronous call. Math and plain record value arguments point at independent
+// input storage; aggregate results use caller-owned exact typed storage.
+// This is not an aggregate serialization format.
 struct BusinessValue {
     BusinessType kind{};
 
@@ -109,17 +116,23 @@ struct BusinessValue {
     ArgumentStorage storage{ArgumentStorage::value};
 
     const void* data{};
-
-    std::uint32_t slot{};
-
-    std::uint32_t field{};
 };
 
 static_assert(std::is_standard_layout_v<BusinessValue> && std::is_trivially_copyable_v<BusinessValue>);
 
-static_assert(sizeof(BusinessValue) == 40 && alignof(BusinessValue) == 8 && offsetof(BusinessValue, bits) == 8 &&
-              offsetof(BusinessValue, storage) == 16 && offsetof(BusinessValue, data) == 24 &&
-              offsetof(BusinessValue, slot) == 32 && offsetof(BusinessValue, field) == 36);
+static_assert(sizeof(BusinessValue) == 32 && alignof(BusinessValue) == 8 && offsetof(BusinessValue, bits) == 8 &&
+              offsetof(BusinessValue, storage) == 16 && offsetof(BusinessValue, data) == 24);
+
+// Process-local, immutable addressing program captured at compile time. An
+// offset is real published layout; a function is a trusted C++ member/base
+// projection. Generated code emits these directly, without a FieldId lookup.
+struct BusinessAddressStep {
+    void* (*function)(void*) noexcept {};
+
+    std::uint64_t offset{};
+
+    bool operator==(const BusinessAddressStep&) const = default;
+};
 
 // `constrained`: Runtime hard bounds apply, so the field cannot be borrowed writably.
 struct BusinessFieldBinding {
@@ -128,6 +141,17 @@ struct BusinessFieldBinding {
     BusinessType kind;
 
     bool constrained{};
+
+    const BusinessAddressStep* access{};
+
+    std::uint32_t access_count{};
+
+    // Scalar bits (vector fields use their component scalar), mask 1=min, 2=max.
+    std::uint64_t minimum{};
+
+    std::uint64_t maximum{};
+
+    std::uint32_t bounds{};
 };
 
 struct BusinessMethodBinding {
@@ -142,6 +166,12 @@ struct BusinessMethodBinding {
     bool receiver_read_only{};
 
     bool preserves_borrows{};
+
+    std::uintptr_t entry{};
+
+    const BusinessAddressStep* receiver_access{};
+
+    std::uint32_t receiver_access_count{};
 };
 
 struct BusinessEnumItem {
@@ -236,7 +266,6 @@ enum class DebugPoint : std::uint32_t { statement, entry, call_return, error };
 
 enum class EntryFailure : std::uint32_t {
     none,
-    invalid_call_result,
     sequence_bounds,
     sequence_layout,
     sequence_size,
@@ -249,8 +278,6 @@ inline const char* failure_message(EntryFailure reason) noexcept {
     switch (reason) {
     case EntryFailure::none:
         return nullptr;
-    case EntryFailure::invalid_call_result:
-        return "Native call result contract violation: successful callback omitted the result or returned an invalid value.";
     case EntryFailure::sequence_bounds:
         return "Borrowed Array/String index is out of range.";
     case EntryFailure::sequence_layout:
@@ -331,21 +358,6 @@ struct BusinessServices {
 
     std::uint32_t (*create)(void*, std::uint32_t) noexcept;
 
-    std::uint32_t (*read_float)(void*, std::uint32_t, std::uint32_t, float*) noexcept;
-
-    std::uint32_t (*write_float)(void*, std::uint32_t, std::uint32_t, float) noexcept;
-
-    std::uint32_t (*read_uint)(void*, std::uint32_t, std::uint32_t, std::uint32_t*) noexcept;
-
-    std::uint32_t (*write_uint)(void*, std::uint32_t, std::uint32_t, std::uint32_t) noexcept;
-
-    // Arguments/result borrow entry-allocated scratch through this synchronous
-    // call. Non-void methods require result storage and commit its declared kind
-    // and payload only on success; aggregate output.data points to typed writable
-    // scratch. Void methods may receive a null result pointer.
-    std::uint32_t (*call)(void*, std::uint32_t, std::uint32_t, const BusinessValue*, std::uint32_t,
-                          BusinessValue* result) noexcept;
-
     std::uint32_t (*poll)(void*) noexcept;
 
     std::uint32_t (*finish)(void*) noexcept;
@@ -366,20 +378,6 @@ struct BusinessServices {
     std::uint32_t (*mutate_sequence)(void*, std::uint32_t, SequenceMutation, void*, const void*,
                                      std::uint64_t) noexcept {};
 
-    std::uint32_t (*read_double)(void*, std::uint32_t, std::uint32_t, double*) noexcept {};
-
-    std::uint32_t (*write_double)(void*, std::uint32_t, std::uint32_t, double) noexcept {};
-
-    // Exact typed reads/writes for builtin math and recursively plain records.
-    std::uint32_t (*read_value)(void*, std::uint32_t, std::uint32_t, void*) noexcept {};
-
-    std::uint32_t (*write_value)(void*, std::uint32_t, std::uint32_t, const void*) noexcept {};
-
-    // Numeric ABI operands are canonical 0/1; native bool storage remains one byte.
-    std::uint32_t (*read_bool)(void*, std::uint32_t, std::uint32_t, std::uint32_t*) noexcept {};
-
-    std::uint32_t (*write_bool)(void*, std::uint32_t, std::uint32_t, std::uint32_t) noexcept {};
-
     std::uint32_t (*debug_enter)(void*, BusinessDebugFrame*) noexcept {};
 
     std::uint32_t (*debug_point)(void*, BusinessDebugFrame*, std::uint32_t location, DebugPoint,
@@ -392,6 +390,14 @@ struct BusinessServices {
 
     // Independent sampler-address query: same binding, float2 in / float2 out.
     std::uint32_t (*sample_orientation)(void*, std::uint32_t, const float*, float*) noexcept {};
+
+    std::uint32_t (*native_receiver)(void*, std::uint32_t, NativeContext**) noexcept {};
+
+    void (*native_stamp)(NativeContext*) noexcept {};
+
+    void (*native_failure)(void*, const NativeFailure*) noexcept {};
+
+    void (*native_segment)(void*) noexcept {};
 
     bool operator==(const BusinessServices&) const = default;
 };
@@ -442,9 +448,6 @@ struct BusinessFrameLayout {
     // or active invocation pin is alive. Empty/null retains the generic binding
     // used by scalar-only programs.
     const char* object_type_name;
-
-    // Maximum native-call arity across reachable functions, not the host catalog.
-    std::uint32_t max_call_arguments;
 };
 
 static_assert(std::is_trivial_v<BusinessFrameLayout> && std::is_standard_layout_v<BusinessFrameLayout>);

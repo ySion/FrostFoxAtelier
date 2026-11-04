@@ -208,7 +208,7 @@ struct Program::Metadata {
             actual.copy_assignable != value.copy_assignable ||
             actual.contains_references != value.contains_references || actual.element != value.element ||
             actual.native_storage != value.native_storage || actual.sequence_view != value.sequence_view ||
-            actual.sequence_mutate != value.sequence_mutate ||
+            actual.sequence_mutate != value.sequence_mutate || actual.base_address != value.base_address ||
             actual.value_operations_preserve_borrows != value.value_operations_preserve_borrows ||
             actual.fields.size() != value.fields.size() || actual.methods.size() != value.methods.size())
             return false;
@@ -216,14 +216,15 @@ struct Program::Metadata {
             const auto& a = actual.fields[i];
             const auto& b = value.fields[i];
             if (a.id != b.id || a.name != b.name || a.value != b.value || a.offset != b.offset ||
-                !same_leaves(a.default_leaves, b.default_leaves))
+                a.native_address != b.native_address || a.owner != b.owner || a.range.hard_min != b.range.hard_min ||
+                a.range.hard_max != b.range.hard_max || !same_leaves(a.default_leaves, b.default_leaves))
                 return false;
         }
         for (std::size_t i = 0; i < value.methods.size(); ++i) {
             const auto& a = actual.methods[i];
             const auto& b = value.methods[i];
             if (a.id != b.id || a.name != b.name || a.signature != b.signature ||
-                a.preserves_borrows != b.preserves_borrows)
+                a.preserves_borrows != b.preserves_borrows || a.native_entry != b.native_entry)
                 return false;
         }
         return true;

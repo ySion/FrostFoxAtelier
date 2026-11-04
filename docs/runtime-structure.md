@@ -50,7 +50,7 @@ flowchart TD
 ```
 
 1. `Contract` 从同一 Runtime 捕获继承后的成员目录、完整祖先/内联记录依赖及原生服务地址；类型快照包含 `base`。`request` 拥有源码与声明快照，保存请求号；新增 enum/struct/class 经 Runtime 内部类型批次解析和计算布局，暂不发布，也不运行源码。
-2. `prepare` 调用 DLL 编译接口。前端按 Environment 检查名称与类型，后端通过服务索引降低成员访问；同步与协程共用 SourceLowering，只有协程经过协程转换。
+2. `prepare` 调用 DLL 编译接口。前端按 Environment 检查名称与类型，后端从已核对描述物化固定原生 thunk 和字段取址；同步与协程共用 SourceLowering，只有协程经过协程转换。
 3. `Candidate` 已拥有实际链接后的代码。准备阶段按捕获信息检查兼容性；首次发布通过 Runtime 的共享签名解析器建立不可变声明；有新类型时，解析器使用同一未发布批次。
 4. `try_publish` 再检查最新请求、所属程序、声明、Runtime 准入和依赖。签名、版本分配和类型容器预留完成后，无回调提交新类型与当前代码版本。新增类型要求注册仍开放且 GC 空闲；单纯代码更新仍允许暂停 GC。忙时保留候选；新请求失败保留已发布版本，不允许提交过期候选。
 
@@ -66,8 +66,8 @@ flowchart TD
 Entry.invoke 选择当前 Version / Lease.invoke 使用固定 Version
   → Version.invoke → ExecutionScope 准入、参数与接收者检查
   → execute_admitted → execute_invocation 创建本次 Invocation
-  → atelier_invoke_business → 生成代码 → BusinessServices
-  → Runtime.read / write / call 等既有入口
+  → atelier_invoke_business → 生成代码
+  → 定型 native thunk / 直接字段访问；生命周期与引用服务仍用 BusinessServices
   → 生成清理 → 检查引用槽已清空 → 提交结果 → 退出执行作用域
 ```
 
@@ -77,7 +77,15 @@ Entry.invoke 选择当前 Version / Lease.invoke 使用固定 Version
 
 私有 Windows x64 ABI 为 `uint32_t(Invocation*, A0, A1, ..., uint64_t* staged_result, BusinessFailure*, BusinessTrace*) noexcept`。业务参数顺序保持声明顺序，i32/u32 只解释低32位，不依赖寄存器高位；浮点分别使用 float/double，bool 使用归一化的 u32 0/1，不借用 LLVM i1 的宿主扩展规则。寄存器/栈分配遵循当前工具链的 Windows x64 C 调用约定，包含首个 Invocation 及尾部三个隐藏参数；trace 参数始终存在，未捕获时可为空。暂存结果使用既有低32位标量位模式/64位 double 位模式，bool 为0/1，void 可传空输出；执行和显式清理完整成功后才构造宿主 `Result<R>`，失败不交付暂存。BusinessFailure 保持原因与最内层位置，C++ Result、string 和异常不跨 JIT ABI。同步 typed 通过 Runtime 活动计数和 Version 析构前的无分配退休链保护代码，最外层执行退出后释放，不逐调用复制 shared_ptr。Runtime、原生服务与后端 DLL 仍须由宿主保活；该入口地址不是业务方可持久保存的裸函数接口。
 
-同步和协程共用 `check_source_receiver`，验证实际对象 `is_a` 绑定类型，再经 `ExecutionFrame::hold(slot, id, binding.type)` 建立声明视图。基类字段和方法继续通过同一 Runtime 访问入口调整地址；桥接不复制对象，也不保留旧的精确类型接收者路径。
+同步和协程共用 `check_source_receiver`，验证实际对象 `is_a` 绑定类型，再经 `ExecutionFrame::hold(slot, id, binding.type)` 建立声明视图。执行段首次原生访问从 Runtime 解析活对象及绑定类型基段；后续字段和方法按已发布偏移或固定地址调整函数访问，不复制对象或重新遍历字段路径。
+
+### 定型原生调用与地址复用
+
+`NativeRegistration::method` 与 `native_method` 从同一 C++ callable 产生动态 Invoker 和固定 native thunk。World 的 translate_owner、Entity/Component 的 destroy/set_enabled 使用带 Runtime/ObjectId 隐藏上下文的同源函数，队列与阶段提交不变。没有定型入口的方法仅可供动态宿主使用；源码使用时编译失败，没有旧桥回退。
+
+私有 native ABI 为 `uint32_t(NativeContext*, receiver_storage, typed_arguments..., staged_output, NativeFailure*) noexcept`。bool 按值用 u32，bool 借用仍为1字节；枚举按其32位表示。数学/plain record 按值实参是独立对齐活值的地址，C++ thunk 才执行真实按值调用；结果写入独立对齐暂存，仅成功后参与表达式及最终提交。异常在 thunk 内转为固定布局失败，不把 C++ Result/string/异常传过 JIT 边界。字段按已发布偏移或固定取址函数访问，保留硬范围约束和失败前盖章。宿主动态 Runtime::call/read/write 继续提供原反射合同。
+
+Invocation 的地址缓存按执行槽保存 ObjectId、独立对象存储和索引，不保存可扩容槽表的元素地址。实际策略回调使缓存失效，身份变化触发重新解析；每次协程恢复开始新执行段。字段借用在全部实参求值后定位，保留合法同址别名；未知调用没有 readonly/noalias 假设。原生 thunk 只在原生调用期间持回调保护，禁止生命周期操作、GC 与源码重入，不阻止源码本身创建对象。写代号仍在字段写入、授予可写借用/接收者时记录。未启用诊断/调试的 lowering 不生成其事件记录；这是原有按需生成策略的延续，不是新的测量收益。
 
 ### 协程
 
@@ -91,7 +99,7 @@ Entry.start / Lease.start → 固定 Version、复制参数、稳定 Frame
 - 挂起保留 Invocation、引用槽和旧 Version，释放本次执行作用域。同 Runtime 的所有外层执行也已退出时，宿主才可以推进 GC 或发布兼容版本。
 - 完成、失败和取消通过各自协议释放生成帧；运行中取消仅登记请求，等本次恢复返回后处理。具体优先级见[协程协议](runtime-model.md#协程核心协议)。
 - 同步和协程终结均由 `Invocation::resources_cleared()` 检查执行强根与弱槽已经清空、源码拥有值存活计数归零；验证发生在 RAII 兜底前。机器快照的 ObjectRoot 归验收消费者，生成槽清理不负责这个外部拥有者。
-- `BusinessServices::call` 进入原有 `Runtime::call` 和原生借用保护。源码挂起点不保留普通原生调用栈中的借用地址。
+- 原生成员走相同定型 thunk 与回调保护。源码挂起点不保留普通原生调用栈中的借用地址，恢复后首次访问重新验证对象存储。
 - 服务状态、宿主首因错误与生成代码的结果契约错误各有明确来源；清理和结果提交仍沿同一执行链，不由消费者拼装第二条错误路径。
 
 ## 数学值的直接执行
@@ -142,7 +150,7 @@ Entry.start / Lease.start → 固定 Version、复制参数、稳定 Frame
 
 前端先收集模块签名，再检查各函数体与调用图；返回的定型 Program 拥有独立 Function AST 和共用类型目录。接收者需求、值存储使用及借用保持效果沿无环图传播，入口可达性决定实际编译范围。
 
-一个 LLVM module 拥有公开入口及内部函数，逐函数降低复用同一实现。内部函数使用 LLVM 定型参数：标量按值、引用按地址；公共入口和原生调用继续使用既有边界描述。每个函数的值和实参暂存放在自己的生成栈上，循环不追加栈分配。原生调用暂存需求取可达函数的最大实际原生调用参数数。
+一个 LLVM module 拥有公开入口及内部函数，逐函数降低复用同一实现。内部函数使用 LLVM 定型参数：标量按值、引用按地址；公共入口和原生调用各使用经过核对的边界描述。每个函数的值和实参暂存放在自己的生成栈上，循环不追加栈分配。原生调用不再分配通用 Argument/Scalar 数组，聚合值仍保留必要的独立快照与结果暂存。
 
 引用槽由一个 Invocation 提供，各可达函数占用互不重叠的固定区间，接收者槽共用；同步 Invocation 使用身份存储，协程 Invocation 使用持久根存储。无环调用图保证同一函数没有并存的递归激活；每个函数只清理自身区间和拥有值，公开入口最终清空接收者槽并检查全部资源归零。辅助调用错误携带原失败原因逐层返回。协程在同步助手退出后才能挂起，取消时不存在尚未返回的助手帧。
 

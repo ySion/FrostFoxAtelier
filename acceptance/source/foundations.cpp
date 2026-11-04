@@ -37,6 +37,8 @@ struct Work {
     ~Work() noexcept { --live; }
 };
 
+enum class Mode : std::uint32_t { idle = 7 };
+
 struct Host {
     std::uint32_t guard{};
 
@@ -61,6 +63,11 @@ struct Host {
 
     std::uint32_t get_guard() const noexcept { return guard; }
 
+    Mode get_mode() noexcept {
+        ++calls;
+        return Mode::idle;
+    }
+
     void set_guard(std::uint32_t value) {
         if (value > 100)
             throw std::runtime_error("guard rejected");
@@ -79,9 +86,32 @@ TypeId register_foundations(Runtime& runtime) {
                                             .method<&Host::fail>("fail", true)
                                             .method<&Host::get_next>("GetNext", true)
                                             .method<&Host::get_guard>("GetGuard", true)
+                                            .method<&Host::get_mode>("get_mode", true)
                                             .method<&Host::set_guard>("SetGuard", true)
                                             .build(),
-                                        string_definition(runtime), std::move(work)}))[0];
+                                        string_definition(runtime), std::move(work),
+                                        NativeRegistration<Mode>{runtime, "editor.Mode", TypeKind::enumeration}
+                                            .enumerator("idle", Mode::idle)
+                                            .build()}))[0];
+}
+
+void verify_native_result_projection() {
+    Runtime runtime;
+    const auto type = register_foundations(runtime);
+    const auto object = take(runtime.create(type));
+    Scalar mode;
+    take(runtime.call(object.id(), take(runtime.find_method(type, "get_mode")), {}, &mode));
+    require(std::get<EnumValue>(mode) == EnumValue{take(runtime.native_type<Mode>()), 7},
+            "Native-only enum result lost its Runtime identity or value.");
+    Program program(runtime, type);
+    publish(program, "void run() { self.SetGuard(9); }");
+    auto rejected =
+        Program::prepare(take(program.request("native-result.source", "void run() { self.get_mode(); }", "run")));
+    require(!rejected, "Native-only result was exposed as a void call.");
+    take(program.entry().invoke(object.id(), {}));
+    require(take(runtime.with_native<Host>(
+                object.id(), [](const Host& host) -> Result<bool> { return host.calls == 1 && host.guard == 9; })),
+            "Rejected source executed the native-only method or lost the prior valid entry.");
 }
 
 void verify_properties_and_weakening() {
@@ -225,6 +255,7 @@ void verify_typed_scalar_abi() {
 }
 
 void verify_source_foundations() {
+    verify_native_result_projection();
     verify_properties_and_weakening();
     verify_boolean_storage();
     verify_short_circuit();

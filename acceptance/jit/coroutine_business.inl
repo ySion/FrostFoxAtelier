@@ -68,7 +68,8 @@ void verify_coroutine_references() {
     require(runtime.root_count() == 0 && runtime.live_objects() == 0, "Cancelled coroutine retained source objects.");
 
     BusinessProgram stale(runtime, type);
-    publish_coroutine(stale, "coroutine-stale.source", "async uint access() { yield; return self.bump(1); }");
+    publish_coroutine(stale, "coroutine-stale.source",
+                      "async uint access() { self.bump(0); yield; return self.bump(1); }");
     auto receiver = take(runtime.create(type));
     auto invalid = take(start_fixture(stale.entry(), receiver.id(), {}));
     take(invalid.resume());
@@ -94,16 +95,9 @@ void verify_coroutine_references() {
     require(!weak.resume() && weak.state() == CoroutineState::failed && runtime.root_count() == 0,
             "Expired weak access failed to clean up its coroutine.");
 
-    auto callbacks = services;
-    callbacks.call = [](void* context, std::uint32_t slot, std::uint32_t method, const BusinessValue* arguments,
-                        std::uint32_t count, BusinessValue* result) noexcept -> std::uint32_t {
-        const auto status = call_method(context, slot, method, arguments, count, result);
-        if (status == 0 && result)
-            result->kind = ValueKind::void_value;
-        return status;
-    };
-    auto malformed_code = compile_bound(binding, "async uint malformed() { yield; return self.bump(0); }",
-                                        "coroutine-abi-error.source", callbacks);
+    auto malformed_code =
+        compile_bound(binding, "async uint malformed() { yield; self.explode(); return self.bump(0); }",
+                      "coroutine-abi-error.source");
     auto target = take(runtime.create(type));
     Invocation malformed(runtime, binding, atelier_business_layout(malformed_code.get()));
     take(malformed.frame.hold(receiver_slot, target.id()));

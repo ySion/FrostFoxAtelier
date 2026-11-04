@@ -4,6 +4,52 @@
 
 namespace atelier {
 
+// Private generated/native transport. Receiver storage is valid only within an
+// execution segment: discard it after a policy callback, identity replacement or
+// coroutine suspension. It never points into Runtime's movable slot table.
+struct NativeContext {
+    Runtime* runtime{};
+
+    ObjectId self{};
+
+    void* storage{};
+
+    std::size_t* callbacks{};
+
+    std::uint32_t object_index{};
+
+    [[nodiscard]] static Result<NativeContext> resolve(Runtime&, ObjectId, TypeId);
+
+    // Admission/identity checks already succeeded in this execution segment.
+    void stamp() const noexcept;
+};
+
+static_assert(std::is_standard_layout_v<NativeContext>);
+
+struct NativeFailure {
+    std::uint32_t code{};
+
+    char message[512]{};
+};
+
+static_assert(std::is_standard_layout_v<NativeFailure> && sizeof(NativeFailure) == 516);
+
+// Protect exactly native code, not the enclosing script (which may create
+// objects and call policy observers). Also unwinds before a failed thunk returns.
+class NativeCallback final {
+public:
+    explicit NativeCallback(NativeContext& context) noexcept : depth_(*context.callbacks) { ++depth_; }
+
+    ~NativeCallback() { --depth_; }
+
+    NativeCallback(const NativeCallback&) = delete;
+
+    NativeCallback& operator=(const NativeCallback&) = delete;
+
+private:
+    std::size_t& depth_;
+};
+
 // Covers entry preparation, generated execution and frame teardown. Nested
 // invocations in one Runtime prevent GC and publication until the outermost returns.
 // The Runtime must outlive the scope; moving transfers the same activation.

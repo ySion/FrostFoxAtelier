@@ -1,4 +1,5 @@
 #include "world/detail.hpp"
+#include "runtime/native.hpp"
 #include <algorithm>
 #include <cmath>
 #include <exception>
@@ -10,6 +11,28 @@ using detail::Access;
 
 using detail::error;
 
+namespace {
+Result<void> translate_owner(Runtime& runtime, ObjectId self, Component&, float x, float y, float z) {
+    return detail::queue_translation(runtime, self, {x, y, z});
+}
+
+Result<void> request_entity_destroy(Runtime& runtime, ObjectId self, Entity&) {
+    return detail::queue_request(runtime, self, RequestKind::destroy_entity, false);
+}
+
+Result<void> enable_entity(Runtime& runtime, ObjectId self, Entity&, bool enabled) {
+    return detail::queue_request(runtime, self, RequestKind::entity_enabled, enabled);
+}
+
+Result<void> request_component_destroy(Runtime& runtime, ObjectId self, Component&) {
+    return detail::queue_request(runtime, self, RequestKind::destroy_component, false);
+}
+
+Result<void> enable_component(Runtime& runtime, ObjectId self, Component&, bool enabled) {
+    return detail::queue_request(runtime, self, RequestKind::component_enabled, enabled);
+}
+}
+
 Result<Types> register_types(Runtime& runtime) {
     const auto vector = runtime.native_type<math::Vector3>();
     const auto quaternion = runtime.native_type<math::Quaternion>();
@@ -20,43 +43,14 @@ Result<Types> register_types(Runtime& runtime) {
     std::vector<TypeDefinition> definitions;
     definitions.push_back(reflection::Definition<Entity>::build(runtime));
     definitions.push_back(reflection::Definition<Component>::build(runtime));
-    SignatureDefinition translation;
-    translation.parameters.resize(3, ParameterDefinition{{TypeReference::native<float>()}});
     // The native method collects values only: safe for a generated caller with
     // borrowed fields. World applies them after every generated call has returned.
-    definitions.back().methods.push_back({"translate_owner", std::move(translation),
-                                          [](CallContext& call) -> Result<void> {
-                                              return detail::queue_translation(call.runtime, call.self,
-                                                                               {call.arguments[0].get<float>(),
-                                                                                call.arguments[1].get<float>(),
-                                                                                call.arguments[2].get<float>()});
-                                          },
-                                          true});
+    definitions[1].methods.push_back(native_method<&translate_owner>("translate_owner", true));
     // Requests only enqueue; the World applies them when the current phase ends.
-    SignatureDefinition toggle;
-    toggle.parameters.push_back(ParameterDefinition{{TypeReference::native<bool>()}});
-    const auto requests = [&](TypeDefinition& definition, Invoker destroy, Invoker enable) {
-        definition.methods.push_back({"destroy", {}, destroy, true});
-        definition.methods.push_back({"set_enabled", toggle, enable, true});
-    };
-    requests(
-        definitions[0],
-        [](CallContext& call) -> Result<void> {
-            return detail::queue_request(call.runtime, call.self, RequestKind::destroy_entity, false);
-        },
-        [](CallContext& call) -> Result<void> {
-            return detail::queue_request(call.runtime, call.self, RequestKind::entity_enabled,
-                                         call.arguments[0].get<bool>());
-        });
-    requests(
-        definitions[1],
-        [](CallContext& call) -> Result<void> {
-            return detail::queue_request(call.runtime, call.self, RequestKind::destroy_component, false);
-        },
-        [](CallContext& call) -> Result<void> {
-            return detail::queue_request(call.runtime, call.self, RequestKind::component_enabled,
-                                         call.arguments[0].get<bool>());
-        });
+    definitions[0].methods.push_back(native_method<&request_entity_destroy>("destroy", true));
+    definitions[0].methods.push_back(native_method<&enable_entity>("set_enabled", true));
+    definitions[1].methods.push_back(native_method<&request_component_destroy>("destroy", true));
+    definitions[1].methods.push_back(native_method<&enable_component>("set_enabled", true));
     definitions.push_back(reflection::Definition<ShapeKind>::build(runtime));
     definitions.push_back(reflection::Definition<MotionKind>::build(runtime));
     definitions.push_back(reflection::Definition<Response>::build(runtime));

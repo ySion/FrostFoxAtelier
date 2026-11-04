@@ -8,6 +8,7 @@
 #include <windows.h>
 #include <array>
 #include <cstdio>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -40,14 +41,14 @@ std::array<BusinessValue, 2> machine_arguments(float amount, std::uint32_t steps
 }
 
 CodeOwner compile_bound(const Binding& binding, std::string_view text, const char* name,
-                        const BusinessServices& callbacks = services) {
+                        const BusinessServices& callbacks = services, const char* entry = nullptr) {
     const EnvironmentView storage(binding);
     const std::string type_name(binding.name);
     const auto environment = storage.view(type_name.c_str());
     BusinessCode* output{};
     char diagnostic[1024]{};
     if (atelier_compile_business(&callbacks, name, text.data(), static_cast<std::uint32_t>(text.size()), &environment,
-                                 &output, diagnostic, sizeof(diagnostic)) != 0)
+                                 &output, diagnostic, sizeof(diagnostic), entry) != 0)
         throw std::runtime_error(diagnostic);
     return CodeOwner{output, &atelier_destroy_business};
 }
@@ -68,7 +69,7 @@ CodeOwner compile_reference(const Binding& binding, std::string_view source, con
 struct NativeAction {
     void* context;
 
-    void (*run)(void*, CallContext&);
+    void (*run)(void*, ObjectId);
 };
 
 thread_local NativeAction* native_action{};
@@ -81,6 +82,18 @@ struct ActionScope {
     ~ActionScope() { native_action = previous; }
 };
 
+Result<void> advance_machine(Runtime&, ObjectId self, NativeMachine& machine, float amount) {
+    machine.advance(amount);
+    if (native_action)
+        native_action->run(native_action->context, self);
+    return {};
+}
+
+Result<void> assign_machine(Runtime&, ObjectId, NativeMachine&, float& target, float value) {
+    target = value;
+    return {};
+}
+
 TypeId register_machine(Runtime& runtime) {
     take(NativeRegistration<NativeState>{runtime, "business.NativeState", TypeKind::record}
              .field<&NativeState::cycles>("cycles")
@@ -89,14 +102,9 @@ TypeId register_machine(Runtime& runtime) {
     auto definition = NativeRegistration<NativeMachine>{runtime, "business.NativeMachine", TypeKind::object}
                           .field<&NativeMachine::state>("state")
                           .field<&NativeMachine::progress>("progress")
-                          .method<&NativeMachine::advance>("advance")
+                          .method<&advance_machine>("advance")
+                          .method<&assign_machine>("assign")
                           .build();
-    definition.methods[0].invoke = [](CallContext& call) -> Result<void> {
-        static_cast<NativeMachine*>(call.storage)->advance(call.arguments[0].get<float>());
-        if (native_action)
-            native_action->run(native_action->context, call);
-        return {};
-    };
     return take(runtime.register_type(std::move(definition)));
 }
 
@@ -214,24 +222,29 @@ void verify_reference_returns(Runtime& runtime, const Binding& binding) {
 }
 
 void verify_stale_source_references(Runtime& runtime, const Binding& binding) {
-    auto code = compile_reference(binding, R"(
+    auto code = compile_bound(binding,
+                              reference_source(R"(
         void stale_references(float delta, uint loops) {
             $T held = new $T();
             weak $T copy = observe(held);
             held.advance(delta);
+            copy.progress = held.progress;
+            self.assign(copy.progress, later_argument());
+        }
+        float later_argument() {
             uint turn = 0;
             while (turn < 1) { turn = turn + 1; }
-            copy.progress = 88.0;
+            return 88.0;
         })",
-                                  "stale-references.source");
+                                               binding.name),
+                              "stale-references.source", services, "stale_references");
     auto receiver = take(runtime.create(binding.type));
     struct Replacement {
         ObjectId old;
 
         ObjectRoot root;
     } state;
-    NativeAction capture{&state,
-                         [](void* context, CallContext& call) { static_cast<Replacement*>(context)->old = call.self; }};
+    NativeAction capture{&state, [](void* context, ObjectId self) { static_cast<Replacement*>(context)->old = self; }};
     ExecutionStats stats;
     {
         ActionScope scope(capture);
@@ -333,7 +346,7 @@ void verify_reload_owner_destruction(Runtime& runtime, const Binding& binding) {
 
         std::uintptr_t address;
     } state{program, active_entry, address};
-    NativeAction close{&state, [](void* context, CallContext&) {
+    NativeAction close{&state, [](void* context, ObjectId) {
                            auto& state = *static_cast<Closing*>(context);
                            state.program.reset();
                            state.entry.reset();

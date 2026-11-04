@@ -8,6 +8,8 @@ struct TypedUiController {
 
     std::uint32_t revisions{};
 
+    math::Vector3 bounds{};
+
     void reset_focus() {
         opacity = 1.0f;
         cursor = 2.0f;
@@ -59,6 +61,8 @@ TypeId register_typed_ui(Runtime& runtime) {
                     .field<&TypedUiController::selected>("selected")
                     .field<&TypedUiController::cursor>("cursor")
                     .field<&TypedUiController::revisions>("revisions")
+                    .field<&TypedUiController::bounds>("bounds")
+                    .range({.hard_min = Scalar{-1.0f}, .hard_max = Scalar{2.0f}})
                     .method<&TypedUiController::reset_focus>("reset_focus")
                     .method<&TypedUiController::apply_selection>("apply_selection")
                     .method<&TypedUiController::accumulate>("accumulate")
@@ -180,21 +184,30 @@ void verify_typed_return_cleanup(Runtime& runtime, const Binding& binding) {
     require(runtime.root_count() == 0 && runtime.live_objects() == 0, "Finish failure retained resources.");
 }
 
-void verify_native_result_abi(Runtime& runtime, const Binding& binding) {
+void verify_native_result_abi(Runtime& runtime, const Binding& original) {
     struct Calls {
-        bool omit;
+        bool reject;
 
         std::uint32_t count{};
     };
-    auto callbacks = services;
-    callbacks.call = [](void* context, std::uint32_t slot, std::uint32_t method, const BusinessValue* arguments,
-                        std::uint32_t count, BusinessValue* output) noexcept -> std::uint32_t {
-        auto& invocation = *static_cast<Invocation*>(context);
-        auto& calls = *static_cast<Calls*>(fixture(invocation).hook_state);
-        if (++calls.count == 2 && calls.omit)
-            return 0;
-        return call_method(context, slot, method, arguments, count, output);
-    };
+    static thread_local Calls calls{};
+    using Entry = std::uint32_t (*)(NativeContext*, void*, std::uint32_t, void*, NativeFailure*) noexcept;
+    static const auto entry = reinterpret_cast<Entry>(native_method<&TypedUiController::bump>("bump").native_entry);
+    auto binding = original;
+    for (auto& method : binding.methods)
+        if (method.name == "bump")
+            method.entry =
+                reinterpret_cast<std::uintptr_t>(+[](NativeContext* context, void* receiver, std::uint32_t amount,
+                                                     void* output, NativeFailure* failure) noexcept -> std::uint32_t {
+                    const auto status = entry(context, receiver, amount, output, failure);
+                    // The typed ABI cannot change a result tag or replace output storage.
+                    // Fail after writing scratch to test success-only result commit.
+                    if (++calls.count == 2 && calls.reject) {
+                        *failure = {static_cast<std::uint32_t>(ErrorCode::invocation_failed), "Native result failure."};
+                        return 1;
+                    }
+                    return status;
+                });
     auto code = compile_bound(binding,
                               reference_source(R"(
         uint abi() {
@@ -204,24 +217,22 @@ void verify_native_result_abi(Runtime& runtime, const Binding& binding) {
             return self.bump(0);
         })",
                                                binding.name),
-                              "native-result-abi.source", callbacks);
+                              "native-result-abi.source");
     auto receiver = take(runtime.create(binding.type));
     const BusinessValue sentinel{ValueKind::u32, 0xcafebabe};
-    for (const bool omit : {true, false}) {
+    for (const bool reject : {true, false}) {
         {
-            Calls calls{omit};
+            calls = {reject};
             auto activation = take(ExecutionScope::enter(runtime));
-            FixtureInvocation observed{false, nullptr, &calls};
-            Invocation invocation(runtime, binding, atelier_business_layout(code.get()), observed.observer(), nullptr,
-                                  {}, &activation);
+            Invocation invocation(runtime, binding, atelier_business_layout(code.get()), {}, nullptr, {}, &activation);
             take(invocation.frame.hold(receiver_slot, receiver.id()));
             auto output = sentinel;
             char diagnostic[512]{};
             const auto status =
                 atelier_invoke_business(code.get(), &invocation, nullptr, 0, &output, diagnostic, sizeof(diagnostic));
-            require((status != 0) == omit && calls.count == 2 && invocation.resources_cleared(),
-                    "Missing second native result reused scratch or failed generated cleanup.");
-            typed_value(output, omit ? sentinel : scalar(0u), "ABI failure/recovery changed caller output.");
+            require((status != 0) == reject && calls.count == 2 && invocation.resources_cleared(),
+                    "Failed second native result reused scratch or failed generated cleanup.");
+            typed_value(output, reject ? sentinel : scalar(0u), "ABI failure/recovery changed caller output.");
         }
         collect(runtime);
         require(runtime.root_count() == 1 && runtime.live_objects() == 1, "Native result ABI retained a temporary.");
@@ -269,6 +280,25 @@ void verify_typed_ui(Runtime& runtime, const Binding& binding) {
                 "Nested native evaluation overwrote an outer argument.");
     require(std::get<std::uint32_t>(take(runtime.read(fresh.id(), fixture_field(binding, "selected")))) == 123,
             "Native arguments were not evaluated left to right.");
+
+    auto bounded = compile_bound(binding, R"(
+        void bounded(float value) {
+            self.bounds = vector3(-3.0, 4.0, 0.5);
+            self.bounds.z = -5.0;
+            self.bounds = vector3(1.0, 0.75, value);
+        })",
+                                 "native-field-bounds.source");
+    for (const bool fail : {false, true}) {
+        const auto cursor = take(runtime.change_cursor());
+        const auto value = fail ? std::numeric_limits<float>::infinity() : 1.25f;
+        const auto result = execute_fixture(runtime, binding, bounded.get(), fresh.id(), std::array{scalar(value)});
+        math::Vector3 actual;
+        take(runtime.read(fresh.id(), fixture_field(binding, "bounds"),
+                          ValueOutput{take(runtime.native_type<math::Vector3>()), &actual}));
+        require(static_cast<bool>(result) != fail && runtime.changed_since(fresh.id(), cursor) &&
+                    actual == (fail ? math::Vector3{-1, 2, -1} : math::Vector3{1, 0.75f, 1.25f}),
+                "Direct field bounds lost clamp/stamp or partially committed a failed vector write.");
+    }
 }
 
 void verify_typed_business() {

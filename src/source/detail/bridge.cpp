@@ -122,6 +122,14 @@ Binding bind_type(Runtime& runtime, TypeId type, std::span<const TypeInfo* const
             binding.dependencies.end())
             binding.dependencies.push_back(dependency);
     };
+    const auto append_base = [&](const TypeInfo* actual, TypeId owner, std::vector<BusinessAddressStep>& access) {
+        while (actual->id != owner) {
+            require(actual->base.has_value(), "Compiled access does not belong to its receiver.");
+            if (actual->base_address)
+                access.push_back({actual->base_address});
+            actual = describe(*actual->base);
+        }
+    };
     struct FieldCursor {
         const TypeInfo* type;
 
@@ -132,9 +140,14 @@ Binding bind_type(Runtime& runtime, TypeId type, std::span<const TypeInfo* const
         std::size_t prefix_length{};
 
         bool constrained{};
+
+        std::size_t access_depth{};
+
+        FieldRange range{};
     };
     std::vector<FieldCursor> cursors{{info}};
     std::vector<FieldId> path;
+    std::vector<BusinessAddressStep> access;
     std::string prefix;
     remember(type);
     for (auto base = info->base; base;) {
@@ -149,23 +162,32 @@ Binding bind_type(Runtime& runtime, TypeId type, std::span<const TypeInfo* const
         }
         path.resize(cursor.depth);
         prefix.resize(cursor.prefix_length);
+        access.resize(cursor.access_depth);
         const auto& field = cursor.type->fields[cursor.next++];
         if (field.value.form != ValueForm::inline_value)
             continue;
+        append_base(cursor.type, field.owner, access);
+        require(field.offset.has_value() || field.native_address, "Compiled field has no storage operation.");
+        access.push_back({field.offset ? nullptr : field.native_address, field.offset.value_or(0)});
         path.push_back(field.id);
         prefix += field.name;
         const auto field_kind = value_kind(binding, field.value.type);
         const bool typed_field = field_kind.kind == ValueKind::record && binding.values[field_kind.type_index].math;
         const bool constrained = cursor.constrained || field.range.constrains();
-        if (field_kind != ValueKind::void_value && (!aggregate(field_kind) || typed_field))
-            binding.fields.push_back({prefix, path, field_kind, constrained});
+        const auto range = field.range.constrains() ? field.range : cursor.type->math ? cursor.range : FieldRange{};
+        if (field_kind != ValueKind::void_value && (!aggregate(field_kind) || typed_field)) {
+            binding.fields.push_back({prefix, path, field_kind, constrained, access,
+                                      range.hard_min ? scalar(*range.hard_min, binding).bits : 0,
+                                      range.hard_max ? scalar(*range.hard_max, binding).bits : 0,
+                                      (range.hard_min ? 1u : 0u) | (range.hard_max ? 2u : 0u)});
+        }
         if (field_kind == ValueKind::void_value || aggregate(field_kind)) {
             const auto* nested = describe(field.value.type);
             if (nested->kind != TypeKind::record)
                 continue;
             remember(nested->id);
             prefix += '.';
-            cursors.push_back({nested, 0, path.size(), prefix.size(), constrained});
+            cursors.push_back({nested, 0, path.size(), prefix.size(), constrained, access.size(), range});
         }
     }
     for (const auto& method : info->methods) {
@@ -179,16 +201,16 @@ Binding bind_type(Runtime& runtime, TypeId type, std::span<const TypeInfo* const
         require(receiver != nullptr, "Source host method receiver does not match its owning type.");
         // As with fields, methods whose values have no source projection stay
         // native-only without preventing unrelated source functions from binding.
-        if (std::any_of(signature.parameters.begin(), signature.parameters.end(), [&](const auto& parameter) {
+        const auto result = signature.result ? value_kind(binding, signature.result->type) : ValueKind::void_value;
+        if ((signature.result && result == ValueKind::void_value) ||
+            std::any_of(signature.parameters.begin(), signature.parameters.end(), [&](const auto& parameter) {
                 return value_kind(binding, parameter.type) == ValueKind::void_value;
             }))
             continue;
-        BoundMethod bound{method.name,
-                          method.id,
-                          {},
-                          signature.result ? value_kind(binding, signature.result->type) : ValueKind::void_value,
-                          signature.receiver->read_only,
-                          method.preserves_borrows};
+        BoundMethod bound{
+            method.name,        method.id, {}, result, signature.receiver->read_only, method.preserves_borrows,
+            method.native_entry};
+        append_base(info, signature.receiver->type, bound.receiver_access);
         for (const auto parameter : signature.parameters)
             bound.parameters.push_back({value_kind(binding, parameter.type), parameter.passing});
         binding.methods.push_back(std::move(bound));
@@ -275,12 +297,14 @@ EnvironmentView::EnvironmentView(const Binding& binding) {
                           value.can_mutate, value.math, value.plain_value});
     }
     for (const auto& field : binding.fields)
-        fields.push_back({field.name.c_str(), field.kind, field.constrained});
+        fields.push_back({field.name.c_str(), field.kind, field.constrained, field.access.data(),
+                          static_cast<std::uint32_t>(field.access.size()), field.minimum, field.maximum, field.bounds});
     for (const auto& method : binding.methods) {
         require(method.parameters.size() <= std::numeric_limits<std::uint32_t>::max(), "Host signature is too large.");
         methods.push_back({method.name.c_str(), method.parameters.data(),
                            static_cast<std::uint32_t>(method.parameters.size()), method.result,
-                           method.receiver_read_only, method.preserves_borrows});
+                           method.receiver_read_only, method.preserves_borrows, method.entry,
+                           method.receiver_access.data(), static_cast<std::uint32_t>(method.receiver_access.size())});
     }
 }
 
@@ -376,9 +400,9 @@ Invocation::Invocation(Runtime& owner, const Binding& bound, BusinessFrameLayout
                 ? ExecutionFrame(*scope, expanded_references.empty() ? std::span<ObjectReference>{inline_references}
                                                                      : std::span<ObjectReference>{expanded_references})
                 : ExecutionFrame(owner, roots)),
-      expanded_arguments(layout.max_call_arguments > inline_arguments.size() ? layout.max_call_arguments : 0),
-      method_arguments(expanded_arguments.empty() ? std::span<Argument>{inline_arguments}
-                                                  : std::span<Argument>{expanded_arguments}),
+      expanded_native(layout.strong_slots + layout.weak_slots > 1 ? layout.strong_slots + layout.weak_slots : 0),
+      native(expanded_native.empty() ? std::span<NativeContext>{&inline_native, 1}
+                                     : std::span<NativeContext>{expanded_native}),
       observer(observation), trace(capture), debugger(std::move(session)) {}
 
 bool Invocation::resources_cleared() const noexcept {
@@ -407,214 +431,54 @@ void Invocation::fail(ErrorCode code, const char* message) noexcept {
     std::snprintf(error, sizeof(error), "%s", message);
 }
 
+void Invocation::invalidate_native() noexcept {
+    for (auto& context : native)
+        context.storage = nullptr;
+}
+
+std::uint32_t native_receiver(void* context, std::uint32_t slot, NativeContext** output) noexcept {
+    auto& invocation = *static_cast<Invocation*>(context);
+    return bridge(invocation, [&]() -> Result<void> {
+        ATELIER_TRY_BIND(reference, reference_value(invocation, slot));
+        const auto index =
+            (slot & observation_slot_bit) ? invocation.frame.size() + (slot & ~observation_slot_bit) : slot;
+        if (index >= invocation.native.size())
+            return std::unexpected(Error{ErrorCode::invalid_object, "Native access requires a live receiver."});
+        auto& cached = invocation.native[index];
+        if (!cached.storage || cached.self != reference->id()) {
+            ATELIER_TRY_BIND(resolved,
+                             NativeContext::resolve(invocation.runtime, reference->id(), invocation.binding.type));
+            cached = *resolved;
+        }
+        *output = &cached;
+        return {};
+    });
+}
+
+void native_stamp(NativeContext* context) noexcept {
+    context->stamp();
+}
+
+void native_failure(void* context, const NativeFailure* failure) noexcept {
+    static_cast<Invocation*>(context)->fail(static_cast<ErrorCode>(failure->code), failure->message);
+}
+
+void native_segment(void* context) noexcept {
+    static_cast<Invocation*>(context)->invalidate_native();
+}
+
 std::uint32_t create_slot(void* context, std::uint32_t slot) noexcept {
     auto& invocation = *static_cast<Invocation*>(context);
     return bridge(invocation, [&] { return invocation.frame.create(slot, invocation.binding.type); });
 }
 
-std::span<const FieldId> field_path(const Binding& binding, std::uint32_t field, BusinessType kind) {
-    require(field < binding.fields.size() && binding.fields[field].kind == kind,
-            "Host field index or scalar kind is invalid.");
-    return binding.fields[field].path;
-}
-
-Result<ObjectId> object_value(Invocation& invocation, std::uint32_t slot) {
-    ATELIER_TRY_BIND(reference, reference_value(invocation, slot));
-    return reference->id(); // Runtime access still validates liveness, including explicit destruction.
-}
-
-std::uint32_t read_float(void* context, std::uint32_t slot, std::uint32_t field, float* output) noexcept {
-    auto& invocation = *static_cast<Invocation*>(context);
-    return bridge(invocation, [&]() -> Result<void> {
-        ATELIER_TRY_BIND(object, object_value(invocation, slot));
-        ATELIER_TRY_BIND(value,
-                         invocation.runtime.read(*object, field_path(invocation.binding, field, ValueKind::f32)));
-        *output = std::get<float>(*value);
-        return {};
-    });
-}
-
-std::uint32_t write_float(void* context, std::uint32_t slot, std::uint32_t field, float value) noexcept {
-    auto& invocation = *static_cast<Invocation*>(context);
-    return bridge(invocation, [&]() -> Result<void> {
-        ATELIER_TRY_BIND(object, object_value(invocation, slot));
-        return invocation.runtime.write(*object, field_path(invocation.binding, field, ValueKind::f32), value);
-    });
-}
-
-std::uint32_t read_double(void* context, std::uint32_t slot, std::uint32_t field, double* output) noexcept {
-    auto& invocation = *static_cast<Invocation*>(context);
-    return bridge(invocation, [&]() -> Result<void> {
-        ATELIER_TRY_BIND(object, object_value(invocation, slot));
-        ATELIER_TRY_BIND(value,
-                         invocation.runtime.read(*object, field_path(invocation.binding, field, ValueKind::f64)));
-        *output = std::get<double>(*value);
-        return {};
-    });
-}
-
-std::uint32_t write_double(void* context, std::uint32_t slot, std::uint32_t field, double value) noexcept {
-    auto& invocation = *static_cast<Invocation*>(context);
-    return bridge(invocation, [&]() -> Result<void> {
-        ATELIER_TRY_BIND(object, object_value(invocation, slot));
-        return invocation.runtime.write(*object, field_path(invocation.binding, field, ValueKind::f64), value);
-    });
-}
-
-std::uint32_t read_bool(void* context, std::uint32_t slot, std::uint32_t field, std::uint32_t* output) noexcept {
-    auto& invocation = *static_cast<Invocation*>(context);
-    return bridge(invocation, [&]() -> Result<void> {
-        require(output && reinterpret_cast<std::uintptr_t>(output) % alignof(std::uint32_t) == 0,
-                "Host boolean result storage is null or misaligned.");
-        ATELIER_TRY_BIND(object, object_value(invocation, slot));
-        ATELIER_TRY_BIND(value,
-                         invocation.runtime.read(*object, field_path(invocation.binding, field, ValueKind::boolean)));
-        *output = std::get<bool>(*value) ? 1u : 0u;
-        return {};
-    });
-}
-
-std::uint32_t write_bool(void* context, std::uint32_t slot, std::uint32_t field, std::uint32_t value) noexcept {
-    auto& invocation = *static_cast<Invocation*>(context);
-    return bridge(invocation, [&]() -> Result<void> {
-        if (value > 1)
-            return std::unexpected(Error{ErrorCode::argument_mismatch, "Host boolean value must be 0 or 1."});
-        ATELIER_TRY_BIND(object, object_value(invocation, slot));
-        return invocation.runtime.write(*object, field_path(invocation.binding, field, ValueKind::boolean), value != 0);
-    });
-}
-
-const BoundField& typed_field(const Binding& binding, std::uint32_t field) {
-    require(field < binding.fields.size(), "Host typed value field index is invalid.");
-    const auto& target = binding.fields[field];
-    require(target.kind.kind == ValueKind::record && target.kind.type_index < binding.values.size() &&
-                binding.values[target.kind.type_index].math,
-            "Host field is not a builtin math value.");
-    return target;
-}
-
-std::uint32_t read_value(void* context, std::uint32_t slot, std::uint32_t field, void* output) noexcept {
-    auto& invocation = *static_cast<Invocation*>(context);
-    return bridge(invocation, [&]() -> Result<void> {
-        const auto& target = typed_field(invocation.binding, field);
-        ATELIER_TRY_BIND(object, object_value(invocation, slot));
-        return invocation.runtime.read(*object, target.path,
-                                       ValueOutput{value_type_id(invocation.binding, target.kind), output});
-    });
-}
-
-std::uint32_t write_value(void* context, std::uint32_t slot, std::uint32_t field, const void* input) noexcept {
-    auto& invocation = *static_cast<Invocation*>(context);
-    return bridge(invocation, [&]() -> Result<void> {
-        const auto& target = typed_field(invocation.binding, field);
-        ATELIER_TRY_BIND(object, object_value(invocation, slot));
-        return invocation.runtime.write(*object, target.path,
-                                        ValueInput{value_type_id(invocation.binding, target.kind), input});
-    });
-}
-
-std::uint32_t read_uint(void* context, std::uint32_t slot, std::uint32_t field, std::uint32_t* output) noexcept {
-    auto& invocation = *static_cast<Invocation*>(context);
-    return bridge(invocation, [&]() -> Result<void> {
-        ATELIER_TRY_BIND(object, object_value(invocation, slot));
-        require(field < invocation.binding.fields.size() &&
-                    (invocation.binding.fields[field].kind == ValueKind::u32 ||
-                     invocation.binding.fields[field].kind == ValueKind::i32 ||
-                     invocation.binding.fields[field].kind.kind == ValueKind::enumeration),
-                "Invalid integer/enum field.");
-        ATELIER_TRY_BIND(value, invocation.runtime.read(*object, invocation.binding.fields[field].path));
-        *output = static_cast<std::uint32_t>(scalar(*value, invocation.binding).bits);
-        return {};
-    });
-}
-
-std::uint32_t write_uint(void* context, std::uint32_t slot, std::uint32_t field, std::uint32_t value) noexcept {
-    auto& invocation = *static_cast<Invocation*>(context);
-    return bridge(invocation, [&]() -> Result<void> {
-        ATELIER_TRY_BIND(object, object_value(invocation, slot));
-        require(field < invocation.binding.fields.size() &&
-                    (invocation.binding.fields[field].kind == ValueKind::u32 ||
-                     invocation.binding.fields[field].kind == ValueKind::i32 ||
-                     invocation.binding.fields[field].kind.kind == ValueKind::enumeration),
-                "Invalid integer/enum field.");
-        auto decoded = scalar_value({invocation.binding.fields[field].kind, value}, &invocation.binding);
-        require(decoded.has_value(), "Invalid integer/enum value.");
-        return invocation.runtime.write(*object, invocation.binding.fields[field].path, *decoded);
-    });
-}
-
-std::uint32_t call_method(void* context, std::uint32_t slot, std::uint32_t method, const BusinessValue* arguments,
-                          std::uint32_t count, BusinessValue* output) noexcept {
-    auto& invocation = *static_cast<Invocation*>(context);
-    return bridge(invocation, [&]() -> Result<void> {
-        require(method < invocation.binding.methods.size(), "Host method index is invalid.");
-        const auto& target = invocation.binding.methods[method];
-        require(target.result == ValueKind::void_value || output, "Host method result storage is missing.");
-        require(count == target.parameters.size() && count <= invocation.method_arguments.size() &&
-                    (count == 0 || arguments),
-                "Host argument count or storage is invalid.");
-        for (std::uint32_t index = 0; index < count; ++index) {
-            const auto& input = arguments[index];
-            require(input.kind == target.parameters[index].type, "Host argument type is invalid.");
-            if (input.storage == ArgumentStorage::field) {
-                require(input.field < invocation.binding.fields.size() &&
-                            invocation.binding.fields[input.field].kind == input.kind,
-                        "Host borrowed field is invalid.");
-                ATELIER_TRY_BIND(owner, object_value(invocation, input.slot));
-                invocation.method_arguments[index] =
-                    Argument::field(*owner, invocation.binding.fields[input.field].path);
-            } else if (input.storage == ArgumentStorage::read_only || input.storage == ArgumentStorage::reference) {
-                require(input.data != nullptr, "Host borrowed argument is null.");
-                invocation.method_arguments[index] = Argument::borrow(
-                    value_type_id(invocation.binding, input.kind), input.data,
-                    input.storage == ArgumentStorage::reference ? const_cast<void*>(input.data) : nullptr);
-            } else {
-                require(input.storage == ArgumentStorage::value, "Invalid argument storage kind.");
-                if (aggregate(input.kind)) {
-                    require(input.kind.type_index < invocation.binding.values.size() &&
-                                (invocation.binding.values[input.kind.type_index].math ||
-                                 invocation.binding.values[input.kind.type_index].plain_value) &&
-                                input.data,
-                            "Invalid typed value argument.");
-                    invocation.method_arguments[index] =
-                        Argument::borrow(value_type_id(invocation.binding, input.kind), input.data);
-                } else {
-                    auto decoded = scalar_value(input, &invocation.binding);
-                    require(decoded.has_value(), "Invalid scalar argument.");
-                    invocation.method_arguments[index] = Argument{*decoded};
-                }
-            }
-        }
-        ATELIER_TRY_BIND(object, object_value(invocation, slot));
-        if (aggregate(target.result)) {
-            require(target.result.type_index < invocation.binding.values.size() &&
-                        (invocation.binding.values[target.result.type_index].math ||
-                         invocation.binding.values[target.result.type_index].plain_value) &&
-                        output->data,
-                    "Host typed value result requires typed value storage.");
-            ATELIER_TRY(invocation.runtime.call(
-                *object, target.id, invocation.method_arguments.first(count),
-                ValueOutput{value_type_id(invocation.binding, target.result), const_cast<void*>(output->data)}));
-            output->kind = target.result;
-            output->bits = 0;
-            output->storage = ArgumentStorage::value;
-            output->slot = output->field = 0;
-            return {};
-        }
-        Scalar result;
-        ATELIER_TRY(invocation.runtime.call(*object, target.id, invocation.method_arguments.first(count),
-                                            target.result == ValueKind::void_value ? nullptr : &result));
-        if (target.result != ValueKind::void_value)
-            *output = scalar(result, invocation.binding);
-        return {};
-    });
-}
-
 std::uint32_t begin(void* context) noexcept {
     auto& invocation = *static_cast<Invocation*>(context);
     return bridge(invocation, [&]() -> Result<void> {
-        if (invocation.observer.begin)
+        if (invocation.observer.begin) {
+            invocation.invalidate_native();
             return invocation.observer.begin(invocation.observer.context, invocation);
+        }
         return {};
     });
 }
@@ -622,8 +486,10 @@ std::uint32_t begin(void* context) noexcept {
 std::uint32_t poll(void* context) noexcept {
     auto& invocation = *static_cast<Invocation*>(context);
     return bridge(invocation, [&]() -> Result<void> {
-        if (invocation.observer.poll)
+        if (invocation.observer.poll) {
+            invocation.invalidate_native();
             return invocation.observer.poll(invocation.observer.context, invocation);
+        }
         return {};
     });
 }
@@ -631,8 +497,10 @@ std::uint32_t poll(void* context) noexcept {
 std::uint32_t finish(void* context) noexcept {
     auto& invocation = *static_cast<Invocation*>(context);
     return bridge(invocation, [&]() -> Result<void> {
-        if (invocation.observer.finish)
+        if (invocation.observer.finish) {
+            invocation.invalidate_native();
             return invocation.observer.finish(invocation.observer.context, invocation);
+        }
         return {};
     });
 }
@@ -801,10 +669,10 @@ std::uint32_t mutate_sequence(void* context, std::uint32_t type, SequenceMutatio
 }
 
 const BusinessServices services{
-    begin,         create_slot,     read_float,  write_float,      read_uint,      write_uint,      call_method,
-    poll,          finish,          clear_slot,  change_reference, same_reference, construct_value, assign_value,
-    destroy_value, mutate_sequence, read_double, write_double,     read_value,     write_value,     read_bool,
-    write_bool,    debug_enter,     debug_point, debug_leave};
+    begin,          create_slot,     poll,         finish,        clear_slot,      change_reference,
+    same_reference, construct_value, assign_value, destroy_value, mutate_sequence, debug_enter,
+    debug_point,    debug_leave,     nullptr,      nullptr,       native_receiver, native_stamp,
+    native_failure, native_segment};
 
 bool same_environment(const Binding& binding, const BusinessEnvironment& environment) {
     if (binding.fields.size() != environment.field_count || binding.methods.size() != environment.method_count ||
@@ -838,17 +706,26 @@ bool same_environment(const Binding& binding, const BusinessEnvironment& environ
                 return false;
         }
     }
-    for (std::size_t i = 0; i < binding.fields.size(); ++i)
-        if (binding.fields[i].name != environment.fields[i].name ||
-            binding.fields[i].kind != environment.fields[i].kind ||
-            binding.fields[i].constrained != environment.fields[i].constrained)
+    for (std::size_t i = 0; i < binding.fields.size(); ++i) {
+        const auto& expected = binding.fields[i];
+        const auto& actual = environment.fields[i];
+        if (expected.name != actual.name || expected.kind != actual.kind ||
+            expected.constrained != actual.constrained || expected.minimum != actual.minimum ||
+            expected.maximum != actual.maximum || expected.bounds != actual.bounds ||
+            expected.access.size() != actual.access_count || (actual.access_count && !actual.access) ||
+            !std::ranges::equal(expected.access, std::span{actual.access, actual.access_count}))
             return false;
+    }
     for (std::size_t i = 0; i < binding.methods.size(); ++i) {
         const auto& actual = environment.methods[i];
         const auto& expected = binding.methods[i];
         if (expected.name != actual.name || expected.parameters.size() != actual.parameter_count ||
             expected.result != actual.result || expected.receiver_read_only != actual.receiver_read_only ||
-            expected.preserves_borrows != actual.preserves_borrows)
+            expected.preserves_borrows != actual.preserves_borrows || expected.entry != actual.entry ||
+            expected.receiver_access.size() != actual.receiver_access_count ||
+            (actual.receiver_access_count && !actual.receiver_access) ||
+            !std::ranges::equal(expected.receiver_access,
+                                std::span{actual.receiver_access, actual.receiver_access_count}))
             return false;
         for (std::size_t j = 0; j < expected.parameters.size(); ++j)
             if (expected.parameters[j] != actual.parameters[j])

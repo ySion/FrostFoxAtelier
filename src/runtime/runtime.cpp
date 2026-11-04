@@ -1,6 +1,7 @@
 #include "foundation/map.hpp"
 #include "foundation/string.hpp"
 #include "runtime/runtime.hpp"
+#include "runtime/execution.hpp"
 #include "runtime/detail/type_publication.hpp"
 #include "math/runtime.hpp"
 
@@ -2002,6 +2003,7 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
             type.info.element = element->info.id;
         }
         const bool is_native = type.native.construct != nullptr;
+        type.info.base_address = type.native.base_address;
         if (type.info.kind == TypeKind::object) {
             type.base = definition.base ? resolve(*definition.base) : impl_->lookup(impl_->object);
             if (!type.base || type.base->info.kind != TypeKind::object)
@@ -2166,7 +2168,8 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
             if (field.exposed)
                 type.info.fields.push_back({FieldId{id, index}, std::move(field.name), value, field.native_offset,
                                             std::move(published_leaves), std::move(field.label),
-                                            std::move(field.category), std::move(field.description), field.range});
+                                            std::move(field.category), std::move(field.description), field.range,
+                                            field.native_address, id});
         }
         type.info.methods.reserve(definition.methods.size());
         type.methods.reserve(definition.methods.size());
@@ -2187,7 +2190,7 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
             names.resize(signature->parameters.size());
             type.info.methods.push_back({MethodId{id, static_cast<std::uint32_t>(type.info.methods.size())},
                                          std::move(method.name), std::move(*signature), method.preserves_borrows,
-                                         std::move(method.description), std::move(names)});
+                                         std::move(method.description), std::move(names), method.native_entry});
             type.methods.push_back(method.invoke);
         }
     }
@@ -2905,6 +2908,23 @@ Result<std::uint32_t> Runtime::resolve_object(ObjectId object) const {
         return failure(ErrorCode::invalid_object, "Object has been destroyed or committed for collection.");
     }
     return object.index_;
+}
+
+Result<NativeContext> NativeContext::resolve(Runtime& runtime, ObjectId object, TypeId expected) {
+    auto& impl = *runtime.impl_;
+    ATELIER_TRY_BIND(index, runtime.resolve_object(object));
+    const auto& slot = impl.slots[*index];
+    const auto* actual = impl.lookup(slot.type);
+    const auto* type = impl.lookup(expected);
+    if (!type || !Runtime::Impl::derives_from(*actual, *type))
+        return failure(ErrorCode::type_mismatch, "Generated receiver does not match its compiled type.");
+    CallbackScope scope{impl.callbacks};
+    return NativeContext{&runtime, object, Runtime::Impl::base_storage(*actual, *type, slot.storage), &impl.callbacks,
+                         *index};
+}
+
+void NativeContext::stamp() const noexcept {
+    runtime->impl_->stamp(object_index);
 }
 
 Result<ObjectRoot> Runtime::create(TypeId type_id) {

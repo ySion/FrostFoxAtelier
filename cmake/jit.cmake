@@ -76,7 +76,8 @@ function(atelier_add_source)
         src/jit/diagnostic_artifact.cpp src/language/source.cpp src/language/declarations.cpp src/language/material.cpp)
     atelier_llvm_target(atelier_source_backend)
     target_compile_definitions(atelier_source_backend PRIVATE ATELIER_SOURCE_BACKEND_BUILD)
-    target_link_libraries(atelier_source_backend PRIVATE atelier_jit_llvm_support)
+    # Lowering reads the native transport layout, but does not link Runtime's CRT ABI.
+    target_link_libraries(atelier_source_backend PRIVATE atelier_jit_llvm_support unordered_dense::unordered_dense)
 
     add_library(atelier_source STATIC src/source/program.cpp src/source/diagnostics.cpp src/source/detail/bridge.cpp
         src/source/debugger.cpp src/source/detail/debugger.cpp src/source/snapshot.cpp src/source/material_program.cpp

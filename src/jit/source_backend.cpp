@@ -5,6 +5,7 @@
 #include "language/source.hpp"
 #include "language/material.hpp"
 #include "runtime/value_storage.hpp"
+#include "runtime/execution.hpp"
 #include "jit/source_backend_verification.hpp"
 
 #include <llvm/ADT/SmallVector.h>
@@ -30,6 +31,7 @@
 #include <memory>
 #include <map>
 #include <new>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -104,11 +106,15 @@ struct CompiledBusiness {
 
     std::vector<BusinessFieldBinding> fields;
 
+    std::vector<std::vector<BusinessAddressStep>> field_access;
+
     std::vector<std::string> method_names;
 
     std::vector<std::vector<BusinessParameter>> method_parameters;
 
     std::vector<BusinessMethodBinding> methods;
+
+    std::vector<std::vector<BusinessAddressStep>> receiver_access;
 
     std::vector<std::string> enum_names;
 
@@ -279,7 +285,8 @@ class SourceLowering {
 public:
     SourceLowering(llvm::LLVMContext& context, llvm::Module& module, const language::Program& source,
                    std::uint32_t function, const std::vector<llvm::Function*>& functions, std::uint32_t strong_base,
-                   std::uint32_t weak_base, DiagnosticCatalog* catalog, CompileOptions options)
+                   std::uint32_t weak_base, DiagnosticCatalog* catalog, CompileOptions options,
+                   const BusinessEnvironment& environment)
         : function_(source.functions[function]), source_(source), functions_(functions), context_(&context),
           module_(&module), ir_(context), entry_(functions[function]),
           local_slots_(function_.locals.size(), null_reference_slot),
@@ -289,7 +296,7 @@ public:
           protected_values_(source.material || function_.uses_scoped_values),
           diagnostics_(options.diagnostics ? catalog : nullptr), catalog_(catalog),
           debugging_(options.debugging && (source.exports.empty() || !public_entry_)), function_index_(function),
-          position_(function_.position) {
+          position_(function_.position), environment_(environment) {
         for (std::size_t index = 0; index < function_.locals.size(); ++index) {
             const auto type = function_.locals[index].type;
             if (is_reference(type))
@@ -302,13 +309,10 @@ public:
                 node.kind == Kind::acquire_reference)
                 temporary_slots_[index] = allocate_reference(node.type);
             has_source_calls_ |= node.kind == Kind::source_call;
-            if (node.kind == Kind::call) {
-                max_call_arguments_ = std::max(max_call_arguments_, static_cast<std::uint32_t>(node.arguments.size()));
+            if (node.kind == Kind::call)
                 has_call_result_ |= node.type != language::ValueType::void_value;
-            }
         }
         auto* i32 = ir_.getInt32Ty();
-        auto* f32 = ir_.getFloatTy();
         auto* ptr = ir_.getPtrTy();
         const auto declare = [&](const char* name, llvm::Type* result, std::initializer_list<llvm::Type*> parameters) {
             auto function = module_->getOrInsertFunction(
@@ -316,20 +320,13 @@ public:
             llvm::cast<llvm::Function>(function.getCallee())->addFnAttr(llvm::Attribute::NoUnwind);
             return function;
         };
-        abi_value_type_ = llvm::StructType::get(*context_, {i32, i32, ir_.getInt64Ty(), i32, ptr, i32, i32});
+        abi_value_type_ = llvm::StructType::get(*context_, {i32, i32, ir_.getInt64Ty(), i32, ptr});
         begin_ = declare("business_begin", i32, {ptr});
         create_ = declare("business_create", i32, {ptr, i32});
-        read_float_ = declare("business_read_float", i32, {ptr, i32, i32, ptr});
-        write_float_ = declare("business_write_float", i32, {ptr, i32, i32, f32});
-        read_double_ = declare("business_read_double", i32, {ptr, i32, i32, ptr});
-        write_double_ = declare("business_write_double", i32, {ptr, i32, i32, ir_.getDoubleTy()});
-        read_value_ = declare("business_read_value", i32, {ptr, i32, i32, ptr});
-        write_value_ = declare("business_write_value", i32, {ptr, i32, i32, ptr});
-        read_uint_ = declare("business_read_uint", i32, {ptr, i32, i32, ptr});
-        write_uint_ = declare("business_write_uint", i32, {ptr, i32, i32, i32});
-        read_bool_ = declare("business_read_bool", i32, {ptr, i32, i32, ptr});
-        write_bool_ = declare("business_write_bool", i32, {ptr, i32, i32, i32});
-        call_ = declare("business_call", i32, {ptr, i32, i32, ptr, i32, ptr});
+        native_receiver_ = declare("business_native_receiver", i32, {ptr, i32, ptr});
+        native_stamp_ = declare("business_native_stamp", ir_.getVoidTy(), {ptr});
+        native_failure_ = declare("business_native_failure", ir_.getVoidTy(), {ptr, ptr});
+        native_segment_ = declare("business_native_segment", ir_.getVoidTy(), {ptr});
         poll_ = declare("business_poll", i32, {ptr});
         finish_call_ = declare("business_finish", i32, {ptr});
         clear_ = declare("business_clear", ir_.getVoidTy(), {ptr, i32});
@@ -367,7 +364,7 @@ public:
         }
     }
 
-    BusinessFrameLayout layout() const noexcept { return {strong_slots_, weak_slots_, nullptr, max_call_arguments_}; }
+    BusinessFrameLayout layout() const noexcept { return {strong_slots_, weak_slots_, nullptr}; }
 
     void generate() {
         auto* start = block("entry");
@@ -384,14 +381,12 @@ public:
             setup_coroutine();
         else
             prepare_debug_storage();
-        float_result_ = ir_.CreateAlloca(ir_.getFloatTy());
-        double_result_ = ir_.CreateAlloca(ir_.getDoubleTy());
-        double_result_->setAlignment(llvm::Align(8));
-        math_field_result_ = ir_.CreateAlloca(llvm::ArrayType::get(ir_.getInt8Ty(), 128), nullptr, "field.math");
-        math_field_result_->setAlignment(llvm::Align(8));
         uint_result_ = ir_.CreateAlloca(ir_.getInt32Ty());
-        float_result_->setAlignment(llvm::Align(4));
         uint_result_->setAlignment(llvm::Align(4));
+        native_context_ = ir_.CreateAlloca(ir_.getPtrTy(), nullptr, "native.receiver");
+        native_error_ =
+            ir_.CreateAlloca(llvm::ArrayType::get(ir_.getInt8Ty(), sizeof(NativeFailure)), nullptr, "native.failure");
+        native_error_->setAlignment(llvm::Align(alignof(NativeFailure)));
         if (has_source_calls_) {
             source_failure_ = ir_.CreateAlloca(llvm::ArrayType::get(ir_.getInt32Ty(), 2), nullptr, "callee.failure");
             source_failure_->setAlignment(llvm::Align(alignof(BusinessFailure)));
@@ -399,12 +394,8 @@ public:
             source_result_->setAlignment(llvm::Align(8));
         }
         // All host-call scratch is allocated once, never on a loop backedge.
-        if (max_call_arguments_ != 0) {
-            call_arguments_ = ir_.CreateAlloca(abi_value_type_, ir_.getInt32(max_call_arguments_), "host.arguments");
-            call_arguments_->setAlignment(llvm::Align(8));
-        }
         if (has_call_result_) {
-            call_result_ = ir_.CreateAlloca(abi_value_type_, nullptr, "host.result");
+            call_result_ = ir_.CreateAlloca(ir_.getInt64Ty(), nullptr, "host.result");
             call_result_->setAlignment(llvm::Align(8));
             call_math_result_ =
                 ir_.CreateAlloca(llvm::ArrayType::get(ir_.getInt8Ty(), 128), nullptr, "host.math.result");
@@ -725,18 +716,12 @@ private:
 
     DiagnosticCall service_kind(llvm::FunctionCallee function) {
         const auto name = llvm::cast<llvm::Function>(function.getCallee())->getName();
-        if (name.starts_with("business_read_"))
-            return DiagnosticCall::field_read;
-        if (name.starts_with("business_write_"))
-            return DiagnosticCall::field_write;
         if (name.starts_with("business_debug_"))
             return DiagnosticCall::debug_hook;
         if (function.getCallee() == begin_.getCallee())
             return DiagnosticCall::begin;
         if (function.getCallee() == finish_call_.getCallee())
             return DiagnosticCall::finish;
-        if (function.getCallee() == call_.getCallee())
-            return DiagnosticCall::native_call;
         if (function.getCallee() == poll_.getCallee())
             return DiagnosticCall::poll;
         if (function.getCallee() == create_.getCallee())
@@ -830,6 +815,8 @@ private:
         ir_.SetInsertPoint(resume);
         if (final)
             ir_.CreateUnreachable();
+        else
+            ir_.CreateCall(native_segment_, {invocation_});
     }
 
     void complete(llvm::Value* status) {
@@ -952,8 +939,8 @@ private:
 
     bool terminated() const { return ir_.GetInsertBlock()->getTerminatorOrNull() != nullptr; }
 
-    void checked_call(llvm::FunctionCallee function, llvm::ArrayRef<llvm::Value*> arguments) {
-        if (diagnostics_)
+    void checked_call(llvm::FunctionCallee function, llvm::ArrayRef<llvm::Value*> arguments, bool count = true) {
+        if (diagnostics_ && count)
             trace_event(service_kind(function));
         auto* status = ir_.CreateCall(function, arguments);
         auto* failed = failure_edge(status, ir_.getInt32(static_cast<std::uint32_t>(EntryFailure::none)));
@@ -1100,51 +1087,104 @@ private:
                                   ir_.getInt32(destination), source});
     }
 
+    llvm::Value* native_receiver(llvm::Value* slot) {
+        checked_call(native_receiver_, {invocation_, slot, native_context_}, false);
+        return ir_.CreateLoad(ir_.getPtrTy(), native_context_);
+    }
+
+    llvm::Value* native_address(llvm::Value* context, std::span<const BusinessAddressStep> access) {
+        auto* storage_address = ir_.CreateConstGEP1_64(ir_.getInt8Ty(), context, offsetof(NativeContext, storage));
+        llvm::Value* storage = ir_.CreateLoad(ir_.getPtrTy(), storage_address);
+        llvm::Value* callbacks = nullptr;
+        if (std::ranges::any_of(access, [](const auto& step) { return step.function != nullptr; })) {
+            auto* address = ir_.CreateConstGEP1_64(ir_.getInt8Ty(), context, offsetof(NativeContext, callbacks));
+            callbacks = ir_.CreateLoad(ir_.getPtrTy(), address);
+            ir_.CreateStore(ir_.CreateAdd(ir_.CreateLoad(ir_.getInt64Ty(), callbacks), ir_.getInt64(1)), callbacks);
+        }
+        for (const auto& step : access) {
+            if (step.function) {
+                auto* type = llvm::FunctionType::get(ir_.getPtrTy(), {ir_.getPtrTy()}, false);
+                auto* target = llvm::ConstantExpr::getIntToPtr(
+                    ir_.getInt64(reinterpret_cast<std::uintptr_t>(step.function)), ir_.getPtrTy());
+                auto* call = ir_.CreateCall(type, target, {storage});
+                call->setDoesNotThrow();
+                storage = call;
+            } else if (step.offset)
+                storage = ir_.CreateInBoundsGEP(ir_.getInt8Ty(), storage, ir_.getInt64(step.offset));
+        }
+        if (callbacks)
+            ir_.CreateStore(ir_.CreateSub(ir_.CreateLoad(ir_.getInt64Ty(), callbacks), ir_.getInt64(1)), callbacks);
+        return storage;
+    }
+
+    llvm::Value* field_address(llvm::Value* context, std::uint32_t field) {
+        const auto& target = environment_.fields[field];
+        return native_address(context, {target.access, target.access_count});
+    }
+
     llvm::Value* read_field(llvm::Value* slot, language::ValueType type, std::uint32_t field) {
-        if (math_type(type)) {
-            checked_call(read_value_, {invocation_, slot, ir_.getInt32(field), math_field_result_});
-            return load_value(math_field_result_, type);
+        trace_event(DiagnosticCall::field_read);
+        return load_value(field_address(native_receiver(slot), field), type);
+    }
+
+    llvm::Value* constrain_field(llvm::Value* value, language::ValueType type, const BusinessFieldBinding& field) {
+        if (!field.bounds)
+            return value;
+        const auto clamp = [&](llvm::Value* scalar, language::ValueType leaf) {
+            if (floating_type(leaf)) {
+                auto* absolute = ir_.CreateUnaryIntrinsic(llvm::Intrinsic::fabs, scalar);
+                auto* limit = llvm::ConstantFP::get(scalar->getType(), leaf == language::ValueType::f64
+                                                                           ? std::numeric_limits<double>::max()
+                                                                           : std::numeric_limits<float>::max());
+                auto* rejected = block("field.nonfinite");
+                auto* next = block("field.finite");
+                ir_.CreateCondBr(ir_.CreateFCmpOLE(absolute, limit), next, rejected, failure_weights_);
+                ir_.SetInsertPoint(rejected);
+                NativeFailure failure{static_cast<std::uint32_t>(ErrorCode::argument_mismatch)};
+                std::snprintf(failure.message, sizeof(failure.message),
+                              "%s.%s: Hard-bounded fields require finite values.", environment_.object_type_name,
+                              field.name);
+                auto* diagnostic =
+                    ir_.CreateGlobalString(llvm::StringRef(reinterpret_cast<const char*>(&failure), sizeof(failure)),
+                                           "field.failure", 0, module_, false);
+                diagnostic->setAlignment(llvm::Align(alignof(NativeFailure)));
+                ir_.CreateCall(native_failure_, {invocation_, diagnostic});
+                ir_.CreateBr(
+                    failure_edge(ir_.getInt32(1), ir_.getInt32(static_cast<std::uint32_t>(EntryFailure::none))));
+                ir_.SetInsertPoint(next);
+            }
+            if (field.bounds & 1) {
+                auto* minimum = decode_bits(ir_.getInt64(field.minimum), leaf);
+                auto* below = floating_type(leaf)                ? ir_.CreateFCmpOLT(scalar, minimum)
+                              : leaf == language::ValueType::i32 ? ir_.CreateICmpSLT(scalar, minimum)
+                                                                 : ir_.CreateICmpULT(scalar, minimum);
+                scalar = ir_.CreateSelect(below, minimum, scalar);
+            }
+            if (field.bounds & 2) {
+                auto* maximum = decode_bits(ir_.getInt64(field.maximum), leaf);
+                auto* above = floating_type(leaf)                ? ir_.CreateFCmpOGT(scalar, maximum)
+                              : leaf == language::ValueType::i32 ? ir_.CreateICmpSGT(scalar, maximum)
+                                                                 : ir_.CreateICmpUGT(scalar, maximum);
+                scalar = ir_.CreateSelect(above, maximum, scalar);
+            }
+            return scalar;
+        };
+        if (const auto math = math_type(type)) {
+            const auto leaf =
+                math.precision == math::Precision::f64 ? language::ValueType::f64 : language::ValueType::f32;
+            for (std::uint32_t i = 0; i < math.components(); ++i)
+                value = ir_.CreateInsertElement(value, clamp(ir_.CreateExtractElement(value, i), leaf), i);
+            return value;
         }
-        if (type == language::ValueType::f32) {
-            checked_call(read_float_, {invocation_, slot, ir_.getInt32(field), float_result_});
-            return ir_.CreateLoad(ir_.getFloatTy(), float_result_);
-        }
-        if (type == language::ValueType::f64) {
-            checked_call(read_double_, {invocation_, slot, ir_.getInt32(field), double_result_});
-            return ir_.CreateLoad(ir_.getDoubleTy(), double_result_);
-        }
-        if (type == language::ValueType::boolean) {
-            checked_call(read_bool_, {invocation_, slot, ir_.getInt32(field), uint_result_});
-            auto* value = ir_.CreateLoad(ir_.getInt32Ty(), uint_result_);
-            check_value(ir_.CreateICmpULE(value, ir_.getInt32(1)), EntryFailure::invalid_call_result);
-            return ir_.CreateTrunc(value, ir_.getInt1Ty());
-        }
-        if (type != language::ValueType::u32 && type != language::ValueType::i32 &&
-            type.kind != language::ValueType::enumeration)
-            throw std::logic_error("Unsupported business field binding.");
-        checked_call(read_uint_, {invocation_, slot, ir_.getInt32(field), uint_result_});
-        return ir_.CreateLoad(ir_.getInt32Ty(), uint_result_);
+        return clamp(value, type);
     }
 
     void write_field(llvm::Value* slot, language::ValueType type, std::uint32_t field, llvm::Value* value) {
-        if (math_type(type)) {
-            store_value(value, math_field_result_, type);
-            checked_call(write_value_, {invocation_, slot, ir_.getInt32(field), math_field_result_});
-            return;
-        }
-        if (type == language::ValueType::f32) {
-            checked_call(write_float_, {invocation_, slot, ir_.getInt32(field), value});
-        } else if (type == language::ValueType::f64) {
-            checked_call(write_double_, {invocation_, slot, ir_.getInt32(field), value});
-        } else if (type == language::ValueType::boolean) {
-            checked_call(write_bool_,
-                         {invocation_, slot, ir_.getInt32(field), ir_.CreateZExt(value, ir_.getInt32Ty())});
-        } else {
-            if (type != language::ValueType::u32 && type != language::ValueType::i32 &&
-                type.kind != language::ValueType::enumeration)
-                throw std::logic_error("Unsupported business field binding.");
-            checked_call(write_uint_, {invocation_, slot, ir_.getInt32(field), value});
-        }
+        trace_event(DiagnosticCall::field_write);
+        auto* context = native_receiver(slot);
+        auto* address = field_address(context, field);
+        ir_.CreateCall(native_stamp_, {context});
+        store_value(constrain_field(value, type, environment_.fields[field]), address, type);
     }
 
     void safe_point() {
@@ -1434,14 +1474,12 @@ private:
         }
         case Kind::call: {
             auto* owner = expression(node.receiver);
-            // Nested calls reuse the same entry scratch. Finish every operand
-            // left-to-right and retain its SSA value before packing this call.
+            // Evaluate and root identities left-to-right, but do not obtain
+            // object-field addresses until all later operands have run.
             struct Operand {
                 llvm::Value* value;
 
-                ArgumentStorage storage;
-
-                std::uint32_t field;
+                std::optional<std::uint32_t> field{};
             };
             llvm::SmallVector<Operand, 8> values;
             for (std::size_t i = 0; i < node.arguments.size(); ++i) {
@@ -1449,102 +1487,73 @@ private:
                 const auto& argument = function_.expressions[id];
                 const auto passing = node.argument_passing[i];
                 if (passing != ParameterPassing::value && argument.kind == Kind::local)
-                    values.push_back({locals_[argument.value],
-                                      passing == ParameterPassing::reference ? ArgumentStorage::reference
-                                                                             : ArgumentStorage::read_only,
-                                      0});
+                    values.push_back({locals_[argument.value]});
                 else if (passing != ParameterPassing::value && argument.kind == Kind::field)
-                    values.push_back({expression(argument.receiver), ArgumentStorage::field, argument.value});
+                    values.push_back({expression(argument.receiver), argument.value});
                 else if (passing != ParameterPassing::value &&
                          (language::aggregate(argument.type) || argument.kind == Kind::value_field ||
                           (argument.kind == Kind::index &&
                            function_.expressions[argument.left].type.kind != language::ValueType::string)))
-                    values.push_back({value_address(id),
-                                      passing == ParameterPassing::reference ? ArgumentStorage::reference
-                                                                             : ArgumentStorage::read_only,
-                                      0});
+                    values.push_back({value_address(id)});
                 else {
-                    auto* value = math_type(argument.type) ? input_address(id) : expression(id);
+                    auto* value = math_type(argument.type) || passing != ParameterPassing::value ? input_address(id)
+                                                                                                 : expression(id);
                     if (managed_value(argument.type))
                         value = temporary_value(argument_value_slots_[index][i], value);
-                    values.push_back({value, ArgumentStorage::value, 0});
+                    values.push_back({value});
                 }
             }
+            const auto& target = environment_.methods[node.value];
+            if (!target.entry)
+                throw std::runtime_error("Source native method has no typed entry: " + std::string(target.name));
+            llvm::Value* output = llvm::ConstantPointerNull::get(ir_.getPtrTy());
+            if (node.type != language::ValueType::void_value)
+                output = managed_value(node.type) ? temporary_value(expression_value_slots_.at(index))
+                         : math_type(node.type)   ? static_cast<llvm::Value*>(call_math_result_)
+                                                  : static_cast<llvm::Value*>(call_result_);
+            trace_event(DiagnosticCall::native_call);
+            auto* receiver = native_receiver(owner);
+            auto* storage = native_address(receiver, {target.receiver_access, target.receiver_access_count});
+            llvm::SmallVector<llvm::Value*, 8> arguments{receiver, storage};
+            llvm::SmallVector<llvm::Type*, 8> types{ir_.getPtrTy(), ir_.getPtrTy()};
             for (std::size_t i = 0; i < node.arguments.size(); ++i) {
                 const auto type = function_.expressions[node.arguments[i]].type;
                 const auto& operand = values[i];
-                auto* storage = ir_.CreateInBoundsGEP(abi_value_type_, call_arguments_,
-                                                      ir_.getInt32(static_cast<std::uint32_t>(i)));
-                const auto put = [&](unsigned member, llvm::Value* value) {
-                    ir_.CreateStore(value, ir_.CreateStructGEP(abi_value_type_, storage, member));
-                };
-                const auto kind = business_type(type);
-                put(0, ir_.getInt32(static_cast<std::uint32_t>(kind.kind)));
-                put(1, ir_.getInt32(kind.type_index));
-                llvm::Value* bits = ir_.getInt64(0);
-                llvm::Value* data = llvm::ConstantPointerNull::get(ir_.getPtrTy());
-                llvm::Value* slot = ir_.getInt32(0);
-                if (operand.storage == ArgumentStorage::value) {
-                    if (language::aggregate(type))
-                        data = operand.value;
-                    else
-                        bits = encode_bits(operand.value, type);
-                } else if (operand.storage == ArgumentStorage::field)
-                    slot = operand.value;
-                else
-                    data = operand.value;
-                put(2, bits);
-                put(3, ir_.getInt32(static_cast<std::uint32_t>(operand.storage)));
-                put(4, data);
-                put(5, slot);
-                put(6, ir_.getInt32(operand.field));
+                auto* value = operand.value;
+                if (operand.field) {
+                    auto* context = native_receiver(value);
+                    value = field_address(context, *operand.field);
+                    if (node.argument_passing[i] == ParameterPassing::reference)
+                        ir_.CreateCall(native_stamp_, {context});
+                }
+                const bool pointer = language::aggregate(type) || node.argument_passing[i] != ParameterPassing::value;
+                if (!pointer && type == language::ValueType::boolean)
+                    value = ir_.CreateZExt(value, ir_.getInt32Ty());
+                types.push_back(pointer ? ir_.getPtrTy() : direct_parameter_type(*context_, type));
+                arguments.push_back(value);
             }
-            llvm::Value* arguments = node.arguments.empty() ? llvm::ConstantPointerNull::get(ir_.getPtrTy())
-                                                            : static_cast<llvm::Value*>(call_arguments_);
-            llvm::Value* output = llvm::ConstantPointerNull::get(ir_.getPtrTy());
-            llvm::Value* value_result = call_math_result_;
-            if (managed_value(node.type))
-                value_result = temporary_value(expression_value_slots_.at(index));
-            if (node.type != language::ValueType::void_value) {
-                output = call_result_;
-                // A successful callback that omits its value must not reuse a
-                // previous nested call's result or expose uninitialized bits.
-                ir_.CreateStore(llvm::Constant::getNullValue(abi_value_type_), output);
-                if (language::aggregate(node.type))
-                    ir_.CreateStore(value_result, ir_.CreateStructGEP(abi_value_type_, output, 4));
-            }
-            checked_call(call_, {invocation_, owner, ir_.getInt32(node.value), arguments,
-                                 ir_.getInt32(static_cast<std::uint32_t>(node.arguments.size())), output});
+            if (!target.receiver_read_only)
+                ir_.CreateCall(native_stamp_, {receiver});
+            types.append({ir_.getPtrTy(), ir_.getPtrTy()});
+            arguments.append({output, native_error_});
+            auto* function = llvm::FunctionType::get(ir_.getInt32Ty(), types, false);
+            auto* entry = llvm::ConstantExpr::getIntToPtr(ir_.getInt64(target.entry), ir_.getPtrTy());
+            auto* status = ir_.CreateCall(function, entry, arguments);
+            status->setDoesNotThrow();
+            auto* failed = block("native.failed");
+            auto* next = block("native.ok");
+            ir_.CreateCondBr(ir_.CreateICmpEQ(status, ir_.getInt32(0)), next, failed, failure_weights_);
+            ir_.SetInsertPoint(failed);
+            ir_.CreateCall(native_failure_, {invocation_, native_error_});
+            ir_.CreateBr(failure_edge(status, ir_.getInt32(static_cast<std::uint32_t>(EntryFailure::none))));
+            ir_.SetInsertPoint(next);
             if (node.type == language::ValueType::void_value)
                 return nullptr;
-            auto* kind = ir_.CreateLoad(ir_.getInt32Ty(), ir_.CreateStructGEP(abi_value_type_, output, 0));
-            auto* next = block("result.ok");
-            auto* failed = failure_edge(ir_.getInt32(1),
-                                        ir_.getInt32(static_cast<std::uint32_t>(EntryFailure::invalid_call_result)));
-            const auto expected = business_type(node.type);
-            auto* type_index = ir_.CreateLoad(ir_.getInt32Ty(), ir_.CreateStructGEP(abi_value_type_, output, 1));
-            auto* storage_kind = ir_.CreateLoad(ir_.getInt32Ty(), ir_.CreateStructGEP(abi_value_type_, output, 3));
-            auto* valid = ir_.CreateAnd(ir_.CreateICmpEQ(kind, ir_.getInt32(static_cast<std::uint32_t>(expected.kind))),
-                                        ir_.CreateICmpEQ(type_index, ir_.getInt32(expected.type_index)));
-            valid = ir_.CreateAnd(valid, ir_.CreateICmpEQ(storage_kind, ir_.getInt32(0)));
-            if (language::aggregate(node.type)) {
-                auto* data = ir_.CreateLoad(ir_.getPtrTy(), ir_.CreateStructGEP(abi_value_type_, output, 4));
-                valid = ir_.CreateAnd(valid, ir_.CreateICmpEQ(data, value_result));
-            } else if (node.type != language::ValueType::f64) {
-                auto* bits = ir_.CreateLoad(ir_.getInt64Ty(), ir_.CreateStructGEP(abi_value_type_, output, 2));
-                valid = ir_.CreateAnd(
-                    valid,
-                    ir_.CreateICmpULE(bits, ir_.getInt64(node.type == language::ValueType::boolean ? 1 : UINT32_MAX)));
-            }
-            ir_.CreateCondBr(valid, next, failed, failure_weights_);
-            ir_.SetInsertPoint(next);
-            // Load now: later operands may invoke another method using this slot.
             if (managed_value(node.type))
-                return value_result;
-            if (math_type(node.type))
-                return load_value(call_math_result_, node.type);
-            return decode_bits(ir_.CreateLoad(ir_.getInt64Ty(), ir_.CreateStructGEP(abi_value_type_, output, 2)),
-                               node.type);
+                return output;
+            if (node.type == language::ValueType::boolean)
+                return ir_.CreateTrunc(ir_.CreateLoad(ir_.getInt32Ty(), output), ir_.getInt1Ty());
+            return load_value(output, node.type);
         }
         case Kind::unary: {
             auto* value = expression(node.left);
@@ -1880,19 +1889,15 @@ private:
 
     llvm::StructType* abi_value_type_{};
 
-    llvm::AllocaInst* call_arguments_{};
-
     llvm::AllocaInst* call_result_{};
 
-    llvm::AllocaInst* float_result_{};
+    llvm::AllocaInst* native_context_{};
 
-    llvm::AllocaInst* double_result_{};
+    llvm::AllocaInst* native_error_{};
 
     llvm::AllocaInst* source_result_{};
 
     llvm::AllocaInst* call_math_result_{};
-
-    llvm::AllocaInst* math_field_result_{};
 
     llvm::AllocaInst* uint_result_{};
 
@@ -1962,8 +1967,6 @@ private:
 
     llvm::Value* borrow_active_{};
 
-    std::uint32_t max_call_arguments_{};
-
     bool has_call_result_{};
 
     bool has_source_calls_{};
@@ -1972,27 +1975,13 @@ private:
 
     llvm::FunctionCallee create_;
 
-    llvm::FunctionCallee read_float_;
+    llvm::FunctionCallee native_receiver_;
 
-    llvm::FunctionCallee write_float_;
+    llvm::FunctionCallee native_stamp_;
 
-    llvm::FunctionCallee read_double_;
+    llvm::FunctionCallee native_failure_;
 
-    llvm::FunctionCallee write_double_;
-
-    llvm::FunctionCallee read_value_;
-
-    llvm::FunctionCallee write_value_;
-
-    llvm::FunctionCallee read_uint_;
-
-    llvm::FunctionCallee write_uint_;
-
-    llvm::FunctionCallee read_bool_;
-
-    llvm::FunctionCallee write_bool_;
-
-    llvm::FunctionCallee call_;
+    llvm::FunctionCallee native_segment_;
 
     llvm::FunctionCallee poll_;
 
@@ -2029,11 +2018,13 @@ private:
     llvm::AllocaInst* debug_frame_{};
 
     llvm::AllocaInst* debug_locals_{};
+
+    const BusinessEnvironment& environment_;
 };
 
 llvm::orc::ThreadSafeModule generate_business(LLJIT& jit, const language::Program& program, BusinessFrameLayout& layout,
-                                              DiagnosticCatalog* catalog, CompileOptions options,
-                                              Artifacts* artifacts) {
+                                              DiagnosticCatalog* catalog, CompileOptions options, Artifacts* artifacts,
+                                              const BusinessEnvironment& environment) {
     auto context = std::make_unique<llvm::LLVMContext>();
     auto module = std::make_unique<llvm::Module>(program.source_name, *context);
     module->setSourceFileName(diagnostic_source_name(program.source_name));
@@ -2111,7 +2102,7 @@ llvm::orc::ThreadSafeModule generate_business(LLJIT& jit, const language::Progra
         wrapper->addFnAttr("disable-tail-calls", "true");
         wrapper->setUWTableKind(llvm::UWTableKind::Async);
         llvm::IRBuilder<> ir(llvm::BasicBlock::Create(*context, "unpack", wrapper));
-        auto* operand_type = llvm::StructType::get(*context, {i32, i32, ir.getInt64Ty(), i32, ptr, i32, i32});
+        auto* operand_type = llvm::StructType::get(*context, {i32, i32, ir.getInt64Ty(), i32, ptr});
         llvm::SmallVector<llvm::Value*, 8> arguments{wrapper->getArg(0)};
         for (std::uint32_t index = 0; index < program.functions[i].parameters.size(); ++index) {
             auto* operand = ir.CreateInBoundsGEP(operand_type, wrapper->getArg(1), ir.getInt32(index));
@@ -2127,16 +2118,15 @@ llvm::orc::ThreadSafeModule generate_business(LLJIT& jit, const language::Progra
                                                 : llvm::ConstantPointerNull::get(ptr));
         ir.CreateRet(ir.CreateCall(direct, arguments));
     }
-    layout = {business_root_slots, 0, nullptr, 0};
+    layout = {business_root_slots, 0, nullptr};
     for (std::uint32_t i = 0; i < functions.size(); ++i) {
         if (!program.reachable[i])
             continue;
         SourceLowering lowering(*context, *module, program, i, functions, layout.strong_slots, layout.weak_slots,
-                                catalog, options);
+                                catalog, options, environment);
         const auto demand = lowering.layout();
         layout.strong_slots = demand.strong_slots;
         layout.weak_slots = demand.weak_slots;
-        layout.max_call_arguments = std::max(layout.max_call_arguments, demand.max_call_arguments);
         lowering.generate();
     }
     if (catalog) {
@@ -2193,7 +2183,8 @@ llvm::orc::ThreadSafeModule generate_business(LLJIT& jit, const language::Progra
 std::shared_ptr<CompiledBusiness> compile(const BusinessServices& services, const language::Program& program,
                                           language::Environment environment, CompileOptions options,
                                           bool omit_poll_for_verification = false,
-                                          const std::shared_ptr<CompiledBusiness>& shared = {}) {
+                                          const std::shared_ptr<CompiledBusiness>& shared = {},
+                                          const BusinessEnvironment* native_environment = nullptr) {
     const auto& entry = program.functions.at(program.entry);
     auto state = std::make_shared<CompiledBusiness>();
     state->function_name = entry.function_name;
@@ -2225,6 +2216,36 @@ std::shared_ptr<CompiledBusiness> compile(const BusinessServices& services, cons
         state->methods.push_back({state->method_names.back().c_str(), parameters.empty() ? nullptr : parameters.data(),
                                   static_cast<std::uint32_t>(parameters.size()), business_type(method.result),
                                   method.receiver_read_only, method.preserves_borrows});
+    }
+    if (native_environment) {
+        state->field_access.resize(state->fields.size());
+        for (std::size_t i = 0; i < state->fields.size(); ++i) {
+            const auto& input = native_environment->fields[i];
+            auto& access = state->field_access[i];
+            if (!input.access || !input.access_count)
+                throw std::runtime_error("Native field requires its published storage description.");
+            access.assign(input.access, input.access + input.access_count);
+            auto& output = state->fields[i];
+            output.access = access.data();
+            output.access_count = input.access_count;
+            output.minimum = input.minimum;
+            output.maximum = input.maximum;
+            output.bounds = input.bounds;
+        }
+        state->receiver_access.resize(state->methods.size());
+        for (std::size_t i = 0; i < state->methods.size(); ++i) {
+            const auto& input = native_environment->methods[i];
+            auto& access = state->receiver_access[i];
+            if (input.receiver_access_count) {
+                if (!input.receiver_access)
+                    throw std::runtime_error("Native receiver adjustment requires storage descriptions.");
+                access.assign(input.receiver_access, input.receiver_access + input.receiver_access_count);
+            }
+            auto& output = state->methods[i];
+            output.entry = input.entry;
+            output.receiver_access = access.data();
+            output.receiver_access_count = input.receiver_access_count;
+        }
     }
     state->enum_names.reserve(environment.enumerations.size());
     state->enum_item_names.reserve(environment.enumerations.size());
@@ -2363,17 +2384,10 @@ std::shared_ptr<CompiledBusiness> compile(const BusinessServices& services, cons
         };
         bind("business_begin", state->services.begin);
         bind("business_create", state->services.create);
-        bind("business_read_float", state->services.read_float);
-        bind("business_write_float", state->services.write_float);
-        bind("business_read_double", services.read_double);
-        bind("business_write_double", services.write_double);
-        bind("business_read_value", services.read_value);
-        bind("business_write_value", services.write_value);
-        bind("business_read_bool", services.read_bool);
-        bind("business_write_bool", services.write_bool);
-        bind("business_read_uint", state->services.read_uint);
-        bind("business_write_uint", state->services.write_uint);
-        bind("business_call", state->services.call);
+        bind("business_native_receiver", services.native_receiver);
+        bind("business_native_stamp", services.native_stamp);
+        bind("business_native_failure", services.native_failure);
+        bind("business_native_segment", services.native_segment);
         if (!omit_poll_for_verification)
             bind("business_poll", state->services.poll);
         bind("business_finish", state->services.finish);
@@ -2397,7 +2411,7 @@ std::shared_ptr<CompiledBusiness> compile(const BusinessServices& services, cons
         }
         check(state->jit->getMainJITDylib().define(llvm::orc::absoluteSymbols(std::move(symbols))));
         check(state->jit->addIRModule(generate_business(*state->jit, program, state->layout, state->diagnostics.get(),
-                                                        options, state->artifacts.get())));
+                                                        options, state->artifacts.get(), state->environment)));
         // The table is complete once lowering returns; it is retained for the code's lifetime.
         state->diagnostics->locations.shrink_to_fit();
     }
@@ -2526,9 +2540,9 @@ std::uint32_t compile_business_impl(const atelier::source::detail::BusinessServi
     error[0] = '\0';
     try {
         if (!services || !source_name || !source || (!output && !declarations_only) || !services->begin ||
-            !services->create || !services->read_float || !services->write_float || !services->read_uint ||
-            !services->write_uint || !services->call || !services->poll || !services->finish || !services->clear ||
-            !services->reference || !services->same_reference)
+            !services->create || !services->poll || !services->finish || !services->clear || !services->reference ||
+            !services->same_reference || !services->native_receiver || !services->native_stamp ||
+            !services->native_failure || !services->native_segment)
             throw std::runtime_error("Invalid business compiler input, callbacks or output storage.");
         if (options.debugging && (!services->debug_enter || !services->debug_point || !services->debug_leave))
             throw std::runtime_error("Source debugging requires its frame and stop services.");
@@ -2657,13 +2671,13 @@ std::uint32_t compile_business_impl(const atelier::source::detail::BusinessServi
         if (mutates_sequences && !services->mutate_sequence)
             throw std::runtime_error("Source sequence mutation requires its native service.");
         auto state = atelier::source::detail::compile(*services, *program, source_environment, options,
-                                                      omit_poll_for_verification);
+                                                      omit_poll_for_verification, {}, environment);
         std::vector<std::unique_ptr<BusinessCode>> codes;
         codes.push_back(std::make_unique<BusinessCode>(state));
         for (std::uint32_t i = 1; i < entry_count; ++i) {
             program->entry = program->exports[i];
-            auto next =
-                atelier::source::detail::compile(*services, *program, source_environment, options, false, state);
+            auto next = atelier::source::detail::compile(*services, *program, source_environment, options, false, state,
+                                                         environment);
             codes.push_back(std::make_unique<BusinessCode>(std::move(next)));
         }
         for (std::size_t i = 0; i < codes.size(); ++i)

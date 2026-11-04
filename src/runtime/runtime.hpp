@@ -758,6 +758,10 @@ struct MethodDefinition {
 
     // Empty, or one per parameter; an empty name is unnamed. Not part of the signature.
     std::vector<std::string> parameter_names{};
+
+    // Process-local typed native entry, produced from the same C++ signature as
+    // invoke. Zero means dynamic-host-only, never a generated-call fallback.
+    std::uintptr_t native_entry{};
 };
 
 struct TypeDefinition {
@@ -811,6 +815,11 @@ struct FieldInfo {
     std::string description{};
 
     FieldRange range{};
+
+    // Immutable access operation when the producer cannot supply a real offset.
+    void* (*native_address)(void*) noexcept {};
+
+    TypeId owner{};
 };
 
 struct MethodInfo {
@@ -826,6 +835,8 @@ struct MethodInfo {
 
     // One per signature parameter; empty when the producer gave no name.
     std::vector<std::string> parameter_names{};
+
+    std::uintptr_t native_entry{};
 };
 
 struct TypeInfo {
@@ -881,6 +892,8 @@ struct TypeInfo {
 
     // Help text is presentation metadata, not type identity, layout or call ABI.
     std::string description{};
+
+    void* (*base_address)(void*) noexcept {};
 };
 
 // A value that breaks its type's rules. `field` is the failing leaf for a hard bound,
@@ -1273,6 +1286,8 @@ private:
     friend class ExecutionScope;
 
     friend class ExecutionFrame;
+
+    friend struct NativeContext;
 
     [[nodiscard]] Result<void> enter_execution();
 

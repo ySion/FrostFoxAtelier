@@ -49,7 +49,8 @@ auto report = capture.snapshot(); // owning copy; also available after failure
 
 ### 调用计数口径
 
-- `field_read` / `field_write`、`native_call`、`poll`、`object_create`、引用操作及 `root_clear`：现有 Runtime 桥接服务。
+- `field_read` / `field_write`、`native_call`：生成代码经过的字段访问和原生调用边界；包含直接偏移/固定取址及定型 thunk，不代表调用了动态 Runtime 反射服务。关闭诊断时不生成这些计数。
+- `poll`、`object_create`、引用操作及 `root_clear`：现有 Runtime 执行服务。
 - `value_construct` / `value_assign` / `value_destroy`、`sequence_mutation`：源码拥有值和容器生命周期服务。
 - `sequence_view`：直接调用原生容器视图函数，包括绕过普通服务包装的路径。借用参数的视图在函数入口缓存；索引与内联数学不产生逐元素服务调用。
 - `coroutine_allocate` / `coroutine_free`：LLVM 协程生成帧的分配/释放调用，不包含宿主控制块与其它 C++ 分配。

@@ -23,6 +23,14 @@ struct BoundField {
     // Hard bounds apply here or to the containing math vector.
     bool constrained{};
 
+    std::vector<BusinessAddressStep> access{};
+
+    std::uint64_t minimum{};
+
+    std::uint64_t maximum{};
+
+    std::uint32_t bounds{};
+
     bool operator==(const BoundField&) const = default;
 };
 
@@ -38,6 +46,10 @@ struct BoundMethod {
     bool receiver_read_only{};
 
     bool preserves_borrows{};
+
+    std::uintptr_t entry{};
+
+    std::vector<BusinessAddressStep> receiver_access{};
 
     bool operator==(const BoundMethod&) const = default;
 };
@@ -234,11 +246,11 @@ struct Invocation {
 
     ExecutionFrame frame;
 
-    std::array<Argument, 8> inline_arguments;
+    NativeContext inline_native{};
 
-    std::vector<Argument> expanded_arguments;
+    std::vector<NativeContext> expanded_native;
 
-    std::span<Argument> method_arguments;
+    std::span<NativeContext> native;
 
     InvocationObserver observer;
 
@@ -268,6 +280,8 @@ struct Invocation {
     void record_resources(bool cleared) const noexcept;
 
     void fail(ErrorCode, const char*) noexcept;
+
+    void invalidate_native() noexcept;
 };
 
 template <class Operation>
@@ -287,28 +301,11 @@ std::uint32_t bridge(Invocation& invocation, Operation&& operation) noexcept {
 
 std::uint32_t create_slot(void*, std::uint32_t) noexcept;
 
-std::uint32_t read_float(void*, std::uint32_t, std::uint32_t, float*) noexcept;
+std::uint32_t native_receiver(void*, std::uint32_t, NativeContext**) noexcept;
 
-std::uint32_t write_float(void*, std::uint32_t, std::uint32_t, float) noexcept;
+void native_failure(void*, const NativeFailure*) noexcept;
 
-std::uint32_t read_double(void*, std::uint32_t, std::uint32_t, double*) noexcept;
-
-std::uint32_t write_double(void*, std::uint32_t, std::uint32_t, double) noexcept;
-
-std::uint32_t read_value(void*, std::uint32_t, std::uint32_t, void*) noexcept;
-
-std::uint32_t write_value(void*, std::uint32_t, std::uint32_t, const void*) noexcept;
-
-std::uint32_t read_uint(void*, std::uint32_t, std::uint32_t, std::uint32_t*) noexcept;
-
-std::uint32_t write_uint(void*, std::uint32_t, std::uint32_t, std::uint32_t) noexcept;
-
-std::uint32_t read_bool(void*, std::uint32_t, std::uint32_t, std::uint32_t*) noexcept;
-
-std::uint32_t write_bool(void*, std::uint32_t, std::uint32_t, std::uint32_t) noexcept;
-
-std::uint32_t call_method(void*, std::uint32_t, std::uint32_t, const BusinessValue*, std::uint32_t,
-                          BusinessValue*) noexcept;
+void native_segment(void*) noexcept;
 
 std::uint32_t begin(void*) noexcept;
 
