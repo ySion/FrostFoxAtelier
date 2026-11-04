@@ -130,7 +130,7 @@ Scene View 导航行末尾的 **Cavity** 菜单控制屏幕空间凹凸增强：
 
 ### FPS 显示
 
-通过视口 **Guides → Show FPS** 或顶部 **View → Show FPS** 开关，默认关闭。启用后在左上角模式名称下方显示帧率及平均帧间隔（ms），随[帧性能](#帧性能)快照约每 0.25 秒更新。数值取 CPU 段最近 0.5 秒内（最多 120 个）相邻采样步的帧间隔均值，包含正常 UI、场景绘制及呈现等待；它不是 GPU 单独耗时。诊断截图、提交失败、最小化等不采样的步不显示读数，并打断相邻关系、不形成间隔，避免将暂停和读回耗时混入读数；显示域变化后的首个间隔也只在新域内形成。文字不占布局空间、不拦截视口输入，不修改场景历史；视口隐藏时不显示。开关由公共 `show_fps` 命令和同一布尔 Action 入口处理。
+通过视口 **Guides → Show FPS** 或顶部 **View → Show FPS** 开关，默认关闭。启用后在左上角模式名称下方显示帧率及平均帧间隔（ms），随[帧性能](#帧性能)快照约每 0.25 秒更新。数值取 CPU 段最近 0.5 秒内（最多 120 个）相邻采样步的帧间隔均值，包含正常 UI、场景绘制及呈现等待；它不是 GPU 单独耗时。诊断截图、提交失败、最小化及没有宿主提交的服务轮不计为采样步；它们或 Recorder 序号断档会立即清除快照中的旧间隔与 FPS，直到第二个连续采样步才恢复，避免将暂停、服务和读回耗时混成帧率；显示域变化后的首个间隔也只在新域内形成。文字不占布局空间、不拦截视口输入，不修改场景历史；视口隐藏时不显示。开关由公共 `show_fps` 命令和同一布尔 Action 入口处理。
 
 ### 场景光照
 
@@ -158,10 +158,12 @@ Create 菜单与工具架沿同一命令创建 Point、Rectangle 和 Directional
 
 **World → Performance** 用一张 Table 展示 CPU 与 GPU 帧性能：先 CPU 段，后 GPU 段，列为 Current / Mean / P95 / Max（毫秒）与比例。列宽可拖动，行可选择和滚动；层级顺序固定，子阶段缩进，不按格式化字符串排序。顶部给出 CPU 与 GPU 样本数，并区分实际 Target 纹理尺寸与 Scene View 范围；底部显示直接光/AA/DDGI 配置与 Scene Lit 当前逻辑资源大小，不表示物理显存驻留量。两段由同一个 `editor::FramePerformance` 统计，窗口各最多 120 个样本，表格、Control 与 Play 报告都读取它约 4 Hz 发布的同一不可变快照，不各自持有历史。
 
+编辑器宿主启用 [DXGI 呈现准入](../rhi/contract.md#呈现准入)，宿主 VSync=1、原生弹窗 VSync=0 及三个资源帧槽保持不变；弹窗、Play 和其他默认 RHI 消费者不启用此策略。可绘制宿主在每一步外层安全点最多等待 20 ms，输入可以唤醒，但等待本身不分发消息或重入业务。醒来仍处理输入、Control、后台发布、GC、工作区与菜单，只有取得呈现许可才提取并提交宿主场景；输入唤醒不能冒充许可，accepted 几何也不会被服务轮替换。隐藏/最小化不叠加这次等待，沿原有服务与有限等待路径；许可保留不妨碍已有的准备中回退与恢复。
+
 CPU 段：
 
-- 样本是宿主每一步的[帧阶段计时](../../foundation.md#帧阶段计时)记录，编辑器为一次 `Application::step`，Play 为一次运行循环。只有接受了画面且没有 Capture 的步进入窗口；Capture 读回、失败与跳过的步不计入，但每一步的结构错误都累计，状态行和 Control 报告其数量与第一个出错的阶段。
-- 行按阶段目录深度优先排列：`CPU frame`（整步）之下是宿主阶段 `app.input`（输入与窗口事件）、`app.project`（工程、Play 与代码轮询）、`app.control`（Control；Play 中为变更链路）、`app.gc`（GC 步）、`app.ui`（UI 描述）、`app.layout`（UI 布局）、`app.popup`（弹出菜单）、`app.scene`（场景快照，子阶段 `app.scene.extract` 为呈现提取），以及 World 的 `world.*`、物理的 `physics.*` 和渲染的 `render.*` 阶段，最后是 `Unattributed`（整步减去直接子阶段之和）。阶段是包含式的，同一步多次进入时累加，父子不能相加；比例以 CPU frame 均值为分母。
+- 样本是宿主每一步的[帧阶段计时](../../foundation.md#帧阶段计时)记录，编辑器为一次 `Application::step`，Play 为一次运行循环。只有接受了画面且没有 Capture 的步进入窗口；Capture 读回、失败、跳过及无宿主提交的服务轮不计入，但每一步的结构错误都累计，状态行和 Control 报告其数量与第一个出错的阶段。此窗口不代表所有服务轮的 CPU 成本；输入延迟专项须读取全部原始 Recorder 轮，不能只读取接受帧快照。
+- 行按阶段目录深度优先排列：`CPU frame`（整步）之下是宿主阶段 `app.admission`（呈现准入）、`app.input`（输入与窗口事件）、`app.project`（工程、Play 与代码轮询）、`app.control`（Control；Play 中为变更链路）、`app.gc`（GC 步）、`app.ui`（UI 描述）、`app.layout`（UI 布局）、`app.popup`（弹出菜单）、`app.scene`（场景快照，子阶段 `app.scene.extract` 为呈现提取），以及 World 的 `world.*`、物理的 `physics.*` 和渲染的 `render.*` 阶段，最后是 `Unattributed`（整步减去直接子阶段之和）。阶段是包含式的，同一步多次进入时累加，父子不能相加；比例以 CPU frame 均值为分母。
 - 一行从本域第一次进入起保留，直到清空；未进入的步 Current 显示“—”，行不会随偶发阶段出现又消失。编辑器不运行 World，World 与物理阶段只在 Play 报告中有值。行 key 固定：CPU frame 为 1000，阶段为 1000 加目录下标，Unattributed 为 1064。
 - 弹出菜单的独立表面在 `timing::Suspend` 内渲染，整体计入打开或更新它的宿主阶段。
 - 下文 GPU 域变化或文档替换时，CPU 窗口一并清空。

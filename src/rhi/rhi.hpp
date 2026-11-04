@@ -59,6 +59,9 @@ struct ContextOptions {
 
     bool rgba8_window = false; // Explicit SDR RGBA8 target instead of display auto-selection.
 
+    // Window-only: one queued presentation, admitted with wait_frame before rendering.
+    bool frame_latency_waitable = false;
+
     // Directory shared by processes for compiled shader stages; empty disables
     // it. Cache failures only cost recompilation.
     std::filesystem::path shader_cache{};
@@ -220,9 +223,17 @@ public:
     // A changed size drains pending work, but never presents or advances a frame.
     [[nodiscard]] Result<TargetInfo> sync_window_target();
 
+    // Owner-only, including before the first frame. Waits for presentation capacity
+    // or thread input, without dispatching messages. False means input/timeout,
+    // not permission to render. A true result stays latched until frame; repeated
+    // calls do not consume another signal. Non-waitable contexts return true.
+    // timeout_ms is finite; zero is a single readiness check, not a polling loop.
+    [[nodiscard]] Result<bool> wait_frame(std::uint32_t timeout_ms);
+
     // Details are published only after the entire frame succeeds. Positive DXGI
     // occlusion status is successful execution but not an accepted visible frame.
     // Requesting details also measures gfx frame stages; nullptr avoids clock reads.
+    // A waitable window context must already hold its wait_frame permission.
     [[nodiscard]] Result<void> frame(bool vsync = false, FrameInfo* details = nullptr);
 
     [[nodiscard]] Result<void> finish();

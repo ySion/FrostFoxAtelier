@@ -1,5 +1,6 @@
 #include "rhi.hpp"
 #include "shader_compiler.hpp"
+#include "foundation/result.hpp"
 
 #include <d3d12sdklayers.h>
 #include <wrl/client.h>
@@ -321,6 +322,10 @@ struct ContextState {
 
     std::shared_ptr<Preparer> preparer;
 
+    HANDLE frame_latency{};
+
+    bool frame_ready{};
+
     [[nodiscard]] bool on_owner() const noexcept { return owner == std::this_thread::get_id(); }
 
     ~ContextState() {
@@ -332,6 +337,8 @@ struct ContextState {
             preparer->stop();
         if (gfxDestroyContext(context) != kGfxResult_NoError)
             lifetime_failure("final context destruction cannot prove GPU completion; use close first");
+        if (frame_latency)
+            CloseHandle(frame_latency);
     }
 };
 } // namespace detail
@@ -396,7 +403,8 @@ Context& Context::operator=(Context&& other) noexcept = default;
 Result<Context> Context::open(const ContextOptions& options) {
     if (!options.width || !options.height || options.width > D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION ||
         options.height > D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION || !options.wait_timeout_ms ||
-        options.wait_timeout_ms == INFINITE || (options.window && !IsWindow(options.window)))
+        options.wait_timeout_ms == INFINITE || (options.window && !IsWindow(options.window)) ||
+        (options.frame_latency_waitable && !options.window))
         return std::unexpected(Error{ErrorCode::invalid_argument, kGfxResult_InvalidParameter,
                                      "invalid dimensions, window or finite wait budget"});
     if (options.validation != Validation::disabled && options.validation != Validation::debug_layer &&
@@ -464,12 +472,24 @@ Result<Context> Context::open(const ContextOptions& options) {
     const GfxCreateContextFlags flags =
         (debug ? kGfxCreateContextFlag_EnableDebugLayer : 0) |
         (validation == Validation::gpu ? kGfxCreateContextFlag_EnableGPUBasedValidation : 0) |
-        (options.rgba8_window ? kGfxCreateContextFlag_ForceRGBA8SwapChain : 0);
+        (options.rgba8_window ? kGfxCreateContextFlag_ForceRGBA8SwapChain : 0) |
+        (options.frame_latency_waitable ? kGfxCreateContextFlag_FrameLatencyWaitable : 0);
     state->context = options.window ? gfxCreateContext(options.window, flags, adapter.Get())
                                     : gfxCreateContext(options.width, options.height, flags, adapter.Get());
     if (!state->context)
         return std::unexpected(
             Error{ErrorCode::creation_failed, kGfxResult_DeviceError, "gfx context creation failed"});
+    if (options.frame_latency_waitable) {
+        auto* swap_chain = gfxGetSwapChain(state->context);
+        const HRESULT result = swap_chain->SetMaximumFrameLatency(1);
+        if (FAILED(result))
+            return std::unexpected(Error{ErrorCode::creation_failed, kGfxResult_DeviceError,
+                                         "SetMaximumFrameLatency failed: " + std::to_string(result)});
+        state->frame_latency = swap_chain->GetFrameLatencyWaitableObject();
+        if (!state->frame_latency)
+            return std::unexpected(Error{ErrorCode::creation_failed, kGfxResult_InternalError,
+                                         "GetFrameLatencyWaitableObject returned no handle"});
+    }
     const GfxResult wait_result = gfxSetWaitTimeout(state->context, options.wait_timeout_ms);
     if (wait_result != kGfxResult_NoError)
         return std::unexpected(execution_error(wait_result));
@@ -714,13 +734,38 @@ Result<TargetInfo> Context::sync_window_target() {
     return std::unexpected(execution_error(result));
 }
 
+Result<bool> Context::wait_frame(std::uint32_t timeout_ms) {
+    ATELIER_TRY(admit("wait_frame"));
+    if (timeout_ms == INFINITE)
+        return std::unexpected(
+            Error{ErrorCode::invalid_argument, kGfxResult_InvalidParameter, "frame admission requires a finite wait"});
+    if (!state_->frame_latency || state_->frame_ready)
+        return true;
+    const DWORD result =
+        MsgWaitForMultipleObjectsEx(1, &state_->frame_latency, timeout_ms, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+    if (result == WAIT_OBJECT_0) {
+        state_->frame_ready = true;
+        return true;
+    }
+    if (result == WAIT_OBJECT_0 + 1 || result == WAIT_TIMEOUT)
+        return false;
+    const auto cause = GetLastError();
+    state_->failure = kGfxResult_InternalError;
+    return std::unexpected(
+        Error{ErrorCode::execution_failed, state_->failure, "frame admission wait failed: " + std::to_string(cause)});
+}
+
 Result<void> Context::frame(bool vsync, FrameInfo* details) {
     if (const auto admitted = admit("frame"); !admitted)
         return std::unexpected(admitted.error());
+    if (state_->frame_latency && !state_->frame_ready)
+        return std::unexpected(Error{ErrorCode::invalid_argument, kGfxResult_InvalidOperation,
+                                     "wait_frame must admit the window before frame"});
     const auto rendered = target();
     if (!rendered)
         return std::unexpected(rendered.error());
     FrameCpuTimings cpu;
+    state_->frame_ready = false;
     const GfxResult result = gfxFrame(state_->context, vsync, details ? &cpu : nullptr);
     if (result == kGfxResult_NoError) {
         if (details)
@@ -757,6 +802,8 @@ Result<void> Context::close() {
         return std::unexpected(execution_error(result));
     }
     state_->context = {};
+    if (state_->frame_latency)
+        CloseHandle(std::exchange(state_->frame_latency, nullptr));
     state_.reset();
     return {};
 }

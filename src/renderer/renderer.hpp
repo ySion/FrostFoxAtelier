@@ -36,6 +36,8 @@ struct Options {
 
     bool vsync{true};
 
+    bool frame_latency_waitable{}; // Explicit host pacing; independent of VSync and resource slots.
+
     std::filesystem::path shader_cache{}; // rhi::ContextOptions::shader_cache.
 };
 
@@ -463,6 +465,10 @@ public:
     // Match the native client before preparing its UI frame; no Present is needed.
     [[nodiscard]] Result<Target> sync_window_target();
 
+    // RHI-owned presentation permission. Input/timeout returns false without
+    // dispatching messages; true stays valid until a frame is submitted.
+    [[nodiscard]] Result<bool> wait_frame(std::uint32_t timeout_ms);
+
     // Never waits for compilation. Starts this view's missing pipeline groups and
     // collects finished ones; views that draw no Lit pass are always ready. A
     // preparation failure is non-terminal and returned again for later Lit views.
@@ -483,7 +489,7 @@ public:
     [[nodiscard]] Result<Preparation> preparation(MaterialBatch&);
 
     // Minimized/zero client size, target mismatch or occluded Present is skipped.
-    // A drawn Lit view whose preparation is incomplete returns not_ready.
+    // Incomplete Lit preparation or pending presentation admission returns not_ready.
     // CPU validation failure retains usability. Upload/encoding/execution failure
     // is terminal. Switch the application's hit frame ONLY on accepted.
     [[nodiscard]] Result<FrameResult> render(const Frame& frame, Capture* capture = nullptr);

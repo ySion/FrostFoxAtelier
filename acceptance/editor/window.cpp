@@ -1149,14 +1149,23 @@ void png(const atelier::renderer::Capture& image, const std::filesystem::path& p
     hr(encoder->Commit());
 }
 
-void capture(Application& app, const std::filesystem::path& path) {
+atelier::renderer::Capture capture(Application& app) {
     atelier::renderer::Capture image;
-    const bool stepped = app.step(&image);
-    require(!atelier::application::EditorAcceptanceAccess::view_preparing(app),
-            "Capture met a previous scene or unprepared view; tick first.");
-    require(stepped && image.frame_id != 0, "Renderer did not capture an accepted frame.");
+    const auto deadline = GetTickCount64() + 10000;
+    do {
+        // A serviced input wakeup need not have permission to submit a host frame.
+        require(app.step(&image), "Editor closed before capture.");
+        require(!atelier::application::EditorAcceptanceAccess::view_preparing(app),
+                "Capture met a previous scene or unprepared view; tick first.");
+        require(image.frame_id || GetTickCount64() < deadline, "Renderer did not capture an accepted frame.");
+    } while (!image.frame_id);
     require(image.rgba.size() == static_cast<std::size_t>(image.extent.width) * image.extent.height * 4,
             "Capture has an invalid pixel payload.");
+    return image;
+}
+
+void capture(Application& app, const std::filesystem::path& path) {
+    const auto image = capture(app);
     const auto scene_pixels =
         std::count_if(image.depth.begin(), image.depth.end(), [](float value) { return value > 0 && value <= 1; });
     if (app.presented()->find(control::viewport))
@@ -1172,8 +1181,7 @@ void capture(Application& app, const std::filesystem::path& path) {
 }
 
 void verify_chrome_layout(Application& app, const std::filesystem::path& output) {
-    atelier::renderer::Capture pixels;
-    require(app.step(&pixels) && pixels.frame_id, "Chrome pixel capture failed.");
+    const auto pixels = capture(app);
     const auto field = app.presented()->find(control::parameter_search)->bounds;
     const auto list = app.presented()->find(control::parameter_list)->bounds;
     const auto header = app.presented()->find(51)->bounds;
@@ -1458,8 +1466,7 @@ void verify_list_workload(Application& app, const std::filesystem::path& output)
             "Scrollbar cancellation changed document history or retained capture.");
     require(app.presented()->find(app.object_control(last))->clip.right <= bar().bounds.x,
             "Entity rows overlapped the scrollbar gutter.");
-    atelier::renderer::Capture track_pixels;
-    require(app.step(&track_pixels) && track_pixels.frame_id, "Scrollbar color capture failed.");
+    const auto track_pixels = capture(app);
     png(track_pixels, output / "scrollbar-thumb-end.png");
     wheel(app, 23, 240);
 

@@ -74,7 +74,8 @@ public:
 
         std::optional<Timing> unattributed; // The frame minus its direct children.
 
-        std::optional<Timing> interval; // Between the begins of consecutive sampled steps.
+        // Between consecutive sampled steps; cleared immediately on an unsampled step or sequence gap.
+        std::optional<Timing> interval;
 
         std::optional<double> recent_interval; // Mean of the consecutive intervals in the last half second.
     };

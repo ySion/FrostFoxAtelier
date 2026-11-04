@@ -10,6 +10,8 @@
 
 renderer 不保留业务对象身份、GC 根或 JIT 回调。UI 布局、文本排版、输入处理和撤销归各自拥有者；renderer 消费 [公共 CPU 协议](../../../src/ui/frame.hpp)。同一 owner 线程完成打开、查询、绘制和关闭，窗口必须存活到 renderer 关闭之后。
 
+`Options::frame_latency_waitable` 选择 [RHI 呈现准入](../rhi/contract.md#呈现准入)，默认关闭。宿主通过 `wait_frame` 在安全外层有限等待；Renderer 不取得原生句柄、不分发消息。`render` 在目标可绘制且尺寸匹配后、任何本帧编码前零超时确认许可，未就绪返回 `not_ready`，不更新 Capture 或接受身份。许可只由实际 RHI `frame` 消费，材质/Scene Lit 准备尚未就绪及 LitFallback 重试仍沿同一许可；准入不是接受帧或渲染尝试计数。
+
 ### 合作停机
 
 `Frame::stop_requested` 可借用宿主的只读停止谓词，仅在本次 `render` 内于 owner 线程调用；谓词须为常数级廉价查询，不抛异常、不重入 Renderer。Renderer 不持有宿主事件、不等待，也不创建取消工作线程。未请求停止时，原有准备、编码和呈现顺序不变。

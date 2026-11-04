@@ -131,6 +131,7 @@ Application::Application(bool validation, bool activate, std::optional<ui::Pixel
     renderer::Options options;
     options.validation = validation ? rhi::Validation::gpu : rhi::Validation::disabled;
     options.vsync = vsync_;
+    options.frame_latency_waitable = true;
     options.shader_cache = shader_cache_directory();
     renderer_ = graphics(renderer::Renderer::open(window_.handle(), options));
     popup_ = std::make_unique<PopupHost>(window(), editor_fonts(), gpu_validation_);
@@ -1931,6 +1932,12 @@ bool Application::run_step(renderer::Capture* capture) try {
     frame_statistics_ = {};
     if (closed_)
         return false;
+    // No dispatch or business callbacks run inside this wait. Input only wakes
+    // the service pass; RHI retains any presentation permission it acquired.
+    if (graphics(renderer_.target()).drawable) {
+        timing::Scope admission{phases::admission};
+        static_cast<void>(graphics(renderer_.wait_frame(20)));
+    }
     // Everything this step changed reaches Play as one batch, whichever way the step ends.
     struct ForwardLive {
         Application& app;
@@ -2095,6 +2102,13 @@ bool Application::run_step(renderer::Capture* capture) try {
     if (!workspace_.pie_menu() && !pending_menu_) {
         timing::Scope menus{phases::popup};
         update_menu();
+    }
+    // A message or service timeout is not permission to submit a host frame.
+    // Keep the refreshed model and popup, but leave accepted host geometry alone.
+    {
+        timing::Scope admission{phases::admission};
+        if (!graphics(renderer_.wait_frame(0)))
+            return true;
     }
     const auto& frame = **prepared;
     const auto* viewport = frame.find(editor::control::viewport);

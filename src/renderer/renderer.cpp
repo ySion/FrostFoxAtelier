@@ -8,6 +8,7 @@
 #include "scene_visibility.hpp"
 #include "timing.hpp"
 #include "logging/native.hpp"
+#include "foundation/result.hpp"
 
 #include <ankerl/unordered_dense.h>
 #include <d3d12sdklayers.h>
@@ -1428,6 +1429,7 @@ Result<Renderer> Renderer::open(HWND window, const Options& options) {
                                           .validation = options.validation,
                                           .wait_timeout_ms = options.wait_timeout_ms,
                                           .rgba8_window = true,
+                                          .frame_latency_waitable = options.frame_latency_waitable,
                                           .shader_cache = options.shader_cache});
         if (!opened)
             return std::unexpected(Error{opened.error(), false});
@@ -1474,6 +1476,16 @@ Result<Target> Renderer::sync_window_target() {
     if (!target)
         return std::unexpected(Error{target.error(), true});
     return Target{{target->width, target->height}, target->drawable};
+}
+
+Result<bool> Renderer::wait_frame(std::uint32_t timeout_ms) {
+    if (!state_)
+        return std::unexpected(error(rhi::ErrorCode::closed, "Renderer is closed"));
+    ATELIER_TRY(state_->check());
+    const auto ready = state_->context.wait_frame(timeout_ms);
+    if (!ready)
+        return std::unexpected(Error{ready.error(), true});
+    return *ready;
 }
 
 Result<Preparation> Renderer::preparation(const ViewSettings& view) {
@@ -1600,6 +1612,12 @@ Result<FrameResult> Renderer::render(const Frame& frame, Capture* capture) {
     const auto extent = destination->extent;
     if (!destination->drawable || frame.ui_frame.extent != extent)
         return FrameResult{.accepted_extent = {}, .next_extent = extent, .stats = s.stats};
+    const auto admitted = wait_frame(0);
+    if (!admitted)
+        return std::unexpected(admitted.error());
+    if (!*admitted)
+        return FrameResult{
+            .status = FrameStatus::not_ready, .accepted_extent = {}, .next_extent = extent, .stats = s.stats};
     bool encoding = false;
     try {
         std::optional<timing::Scope> stage{std::in_place, phases::prepare};

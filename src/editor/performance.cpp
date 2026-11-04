@@ -140,8 +140,20 @@ void FramePerformance::observe(const timing::FrameRecord& record, std::optional<
             first_structure_error_ = record.first_error;
         dirty_ = true;
     }
-    if (!sampled_frame)
+    const bool adjacent = sampled_frame && previous_sample_ && previous_sample_->first + 1 == record.sequence;
+    const bool lost_interval = !adjacent && interval_count_ != 0;
+    if (!adjacent) {
+        interval_next_ = 0;
+        interval_count_ = 0;
+    }
+    if (!sampled_frame) {
+        previous_sample_.reset();
+        // Service-only, captured or inactive steps cannot leave stale FPS in
+        // the table or Control while the next consecutive pair is unavailable.
+        if (lost_interval)
+            publish(now);
         return;
+    }
     auto& sample = cpu_[cpu_next_];
     sample.entered = 0;
     double children{};
@@ -163,7 +175,7 @@ void FramePerformance::observe(const timing::FrameRecord& record, std::optional<
     cpu_frame_ = *sampled_frame;
     // Only adjacent steps of one domain form an interval; a skipped or captured step breaks the chain.
     bool first_interval{};
-    if (previous_sample_ && previous_sample_->first + 1 == record.sequence) {
+    if (adjacent) {
         intervals_[interval_next_] = milliseconds(record.begin - previous_sample_->second);
         interval_ends_[interval_next_] = record.begin;
         first_interval = interval_count_ == 0;
@@ -172,7 +184,7 @@ void FramePerformance::observe(const timing::FrameRecord& record, std::optional<
     }
     previous_sample_.emplace(record.sequence, record.begin);
     dirty_ = true;
-    if (first || first_interval || now >= next_publish_)
+    if (first || first_interval || lost_interval || now >= next_publish_)
         publish(now);
 }
 

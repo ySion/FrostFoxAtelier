@@ -340,6 +340,7 @@ void window_target_sync() {
     ContextOptions options;
     options.window = window.handle;
     options.rgba8_window = true;
+    options.frame_latency_waitable = true;
     options.validation = Validation::gpu;
     auto owner = take(Context::open(options));
     const auto gfx = owner.borrow();
@@ -388,6 +389,18 @@ float4 main(uint id : SV_VertexID) : SV_Position {
         ShowWindow(window.handle, SW_SHOWNOACTIVATE);
         require(take(owner.sync_window_target()).drawable, "shown acceptance window is not drawable");
 
+        // Window messages may wake the wait without granting presentation capacity.
+        // Include the first frame, and check that another query retains its permission.
+        const auto deadline = GetTickCount64() + 10000;
+        while (!take(owner.wait_frame(100))) {
+            MSG message{};
+            while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+                TranslateMessage(&message);
+                DispatchMessageW(&message);
+            }
+            require(GetTickCount64() < deadline, "presentation admission did not complete");
+        }
+        require(take(owner.wait_frame(0)), "presentation permission was consumed before frame");
         const auto pitch = (width * 4 + 255) & ~255u;
         auto readback = gfxCreateBuffer(gfx, static_cast<std::uint64_t>(pitch) * height, nullptr, kGfxCpuAccess_Read);
         require(static_cast<bool>(readback), "window readback creation failed");
@@ -460,10 +473,13 @@ float4 main(uint id : SV_VertexID) : SV_Position {
         require(!failed && failed.error().code == ErrorCode::timeout, "resize timeout did not retain terminal failure");
     }
     require(!owner.borrow(), "failed resize remained borrowable");
-    check_hr(gate->Signal(1));
-    check(gfxSetWaitTimeout(gfx, 10000)); // Cleanup budget only; does not clear failure.
     check(gfxDestroyTexture(gfx, automatic));
     pipeline = {};
+    const auto blocked_close = owner.close();
+    require(!blocked_close && blocked_close.error().code == ErrorCode::timeout,
+            "blocked close did not retain its execution domain");
+    check_hr(gate->Signal(1));
+    check(gfxSetWaitTimeout(gfx, 10000)); // Cleanup budget only; does not clear failure.
     complete(owner.close());
     complete(owner.close());
     check_debug(debug.Get());

@@ -9,6 +9,8 @@
 // the project runner in Play. Host phases sit directly under the frame; World,
 // physics and renderer phases open their own roots at the same level.
 namespace atelier::application::phases {
+inline constinit timing::Marker admission{"app.admission", "Presentation admission", &timing::frame};
+
 inline constinit timing::Marker input{"app.input", "Input and window events", &timing::frame};
 
 inline constinit timing::Marker project{"app.project", "Project, Play and code", &timing::frame};
@@ -28,8 +30,8 @@ inline constinit timing::Marker scene{"app.scene", "Scene snapshot", &timing::fr
 
 inline constinit timing::Marker extract{"app.scene.extract", "Presentation extraction", &scene};
 
-inline constexpr std::array<timing::Marker*, 9> markers{&input,  &project, &control, &gc,     &ui,
-                                                        &layout, &popup,   &scene,   &extract};
+inline constexpr std::array<timing::Marker*, 10> markers{&admission, &input,  &project, &control, &gc,
+                                                         &ui,        &layout, &popup,   &scene,   &extract};
 }
 
 namespace atelier::application {

@@ -104,8 +104,7 @@ void verify_viewport_fly(Application& app, const std::filesystem::path& output) 
         namespace control = atelier::editor::control;
         using Access = application::EditorAcceptanceAccess;
         const auto snapshot = [&](const char* name) {
-            renderer::Capture image;
-            require(app.step(&image) && image.frame_id, "Fly viewport capture failed.");
+            const auto image = capture(app);
             png(image, output / name); // Navigation also works in an empty scene.
         };
         const auto require_foreground = [&] {
