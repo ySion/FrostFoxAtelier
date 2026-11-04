@@ -23,6 +23,14 @@ public:
 
     bool wants_capture();
 
+    // Borrow after wants_capture()'s checkpoint, until this render returns.
+    rhi::CommandTrace* command_trace() const;
+
+    // Completes the requested-view attempt before fallback/not_ready rewriting.
+    // A terminal host outcome (including fallback failure) preserves its file
+    // output before shutdown cancels jobs; it does not replace the first result.
+    void traced(const renderer::Frame&, const renderer::Result<renderer::FrameResult>&, bool host_stopping);
+
     void rendered(const renderer::Frame&, const renderer::FrameResult&, renderer::Capture*);
 
     void render_failed(std::string_view);

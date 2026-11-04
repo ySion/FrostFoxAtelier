@@ -70,6 +70,7 @@ CLI 补齐协议及实例身份；没有 request_id 时生成新 ID。异步操�
 | op.call view.camera_set / view.look_at | 公共 Camera 状态和观察目标，参数使用 Runtime 值记录；inspect 的 camera 可原样作为 camera_set 的 state |
 | op.call view.set | 直接以 args 为显示补丁，与菜单共用 ViewOption 规则，不再嵌套 patch |
 | repro.export、repro.open | 内存场景的独立复现工程 |
+| render.trace | 按需观察下一次请求视图的后处理命令录制，导出 JSON 与自包含 HTML/SVG；不读回像素、不等待 accepted |
 | render.prepare | 通过真实接受帧准备当前实例的 Scene Lit 管线，结束后恢复基础显示；单独报告准备耗时 |
 | render.capture、render.compare | 当前显示捕获或临时设置对照 |
 | job.status、job.cancel | 查询和幂等取消任务 |
@@ -170,6 +171,20 @@ DDGI 诊断通过相同的入口使用 `probe_visualization`（off/irradiance/st
 主要错误为 invalid_request、unknown_operation、interaction_required、busy、unsaved_changes、stale_state、stale_object、request_id_conflict、request_id_expired、not_ready、cancelled、state_changed、timeout、render_failure、dependency_mismatch、invalid_destination、storage_error、result_too_large。上下文取消会附上改变的状态类别。
 
 相机平移和旋转属于同一个活动手势的互斥模式。模式、按键和上次指针位置只在手势存活期间保有；松手、失焦、捕获丢失及转入菜单会结束该手势。`camera_pan` / `camera_orbit` 只报告当前操作，不依据上次使用过的模式。结束后 Control 恢复可调用，活动期间仍按原合同拒绝改变状态的请求。
+
+## 后处理录制视图
+
+`render.trace` 是需要 state_token 的异步诊断操作，使用现有 job.status/job.cancel、请求去重、输出目录和取消规则。唯一范围为 `scene_lit_post`（也是默认值），从 Scene Lit 的 TAA 起点到 SMAA 末尾，不包含之前的光照、末尾 display draw、UI 或 Present。调用前显式选择 Scene Lit；需要就绪管线时先调用 render.prepare。trace 不切换显示、不修改 AA/Bloom、不推进作者历史、不激活窗口，也不为等到 accepted 自动重试。
+
+    {"op":"render.trace","state_token":"INSTANCE_ID:VERSION","args":{"scope":"scene_lit_post","timeout_ms":120000}}
+
+它只收集下一次**请求视图的首次 render 尝试**。同一 Application step 随后采用旧 Lit 或 Smooth 回退时，不携带该快照借用，也不覆盖首轮 FrameResult/错误。未进入后处理范围返回 `observation.status: not_entered`；进入后正常关闭且全部观测到为 `complete`；中断、截断或未知绑定为 `incomplete`。这些与 `frame_status: accepted / skipped / not_ready / cancelled / error` 独立：导出成功的 job 可以包含失败的 render 尝试。一直没有 render 尝试时沿原期限失败，默认 120000 毫秒，可设 1–600000。
+
+若本次宿主步骤因首轮或后续 fallback 的终止性错误立即退出，会先等待这份自有 CPU 快照的文件写入结束，避免关闭时取消任务而丢失首轮证据；仍记录首轮结果，不把 fallback 的错误嫁接给它。此等待不涉及 GPU，不补录或重试渲染；普通取消、断线和期限规则不变。
+
+结果给出 `json`、`html`、`manifest` 路径。`trace.json` 的 `schema: atelier.render.trace`、`version: 1` 包含实例/文档、UI frame、gfx recording sequence、实际请求视图、首轮结果和有序 `commands`；每条命令包含快照内 kernel 标识、entry、groups 和实际绑定。直接 dispatch 的 groups 来自录制参数；间接命令为 null，不猜测 GPU 缓冲内容。绑定记录 root_parameter/array_index、名称、kind、valid/dummy/unknown、resource 和 view 范围。`resources` 的 index 只在这次快照内有效，格式数值为 DXGI_FORMAT；不导出原生地址、常量值或资源内容，不把物理 index 当作者 ID。manifest 的 complete 只代表产物写完，不代表观测完整或 GPU 成功。
+
+`trace.html` 直接由同一事实生成内联 SVG、可展开绑定详情和资源表，不依赖外部脚本、不自动打开。实线箭头仅表示 CPU 命令录制顺序，虚线仅表示绑定；SRV/UAV 不等于完整读写集合，同一资源的多次绑定不推导生产者依赖。没有观察到命令时显示空态，不套用预制流程图。资源来源没有在本范围内证明，图不声称 GPU 完成或显示器显示。采集与有界存储见 [RHI 合同](../rhi/contract.md#按需命令录制观测)，唯一真实验收代表见 [Renderer 验收](../renderer/acceptance.md#编辑器侧的渲染验收)。
 
 ## 渲染对照
 

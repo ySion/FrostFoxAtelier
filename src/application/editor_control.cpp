@@ -412,6 +412,11 @@ const std::vector<Operation>& operations() {
          true,
          {{"sample_frames", arr}, {"timeout_ms", {{"type", "integer"}}}},
          {}},
+        {"render.trace",
+         "Observe one requested-view recording attempt; export actual post-chain commands and bindings without readback",
+         true,
+         {{"scope", {{"type", "string"}, {"enum", {"scene_lit_post"}}}}, {"timeout_ms", {{"type", "integer"}}}},
+         {}},
         {"render.compare",
          "Capture sequential temporary display cases; settings never enter document/undo",
          true,
@@ -606,6 +611,10 @@ struct EditorControl::Impl {
         Json response;
 
         std::future<Json> writer;
+
+        std::unique_ptr<rhi::CommandTrace> trace;
+
+        bool tracing{};
 
         bool rendering{};
 
@@ -871,6 +880,8 @@ struct EditorControl::Impl {
             return;
         job.rendering = false;
         job.preparing = false;
+        job.tracing = false;
+        job.trace.reset();
         job.response = control::failure(code, message);
         job.response["job_id"] = job.id;
         job.samples.clear();
@@ -910,7 +921,7 @@ struct EditorControl::Impl {
                 cancel(*job, "cancelled", "Control connection ended");
             else if (std::chrono::steady_clock::now() >= job->deadline)
                 cancel(*job, "timeout", "Control job deadline exceeded");
-            else if (job->rendering && (job->token != token() || busy())) {
+            else if ((job->rendering || job->tracing) && (job->token != token() || busy())) {
                 auto changes = Json::array();
                 const auto& before = job->context;
                 if (before.document != observed.document)
@@ -1473,6 +1484,23 @@ struct EditorControl::Impl {
         return {{"status", "pending"}, {"job_id", id}};
     }
 
+    Json start_trace(const std::string& id, const std::shared_ptr<control::Peer>& peer, const Json& args) {
+        if (args.value("scope", std::string("scene_lit_post")) != "scene_lit_post")
+            throw Failure("invalid_request", "Only scene_lit_post observation is supported");
+        if (app.workspace_.view.shading != renderer::Shading::scene_lit)
+            throw Failure("not_ready", "Select Scene Lit before requesting a post-chain trace");
+        const auto timeout = integer(args.value("timeout_ms", Json(120000)), 1, control::maximum_timeout_ms);
+        auto trace = std::make_unique<rhi::CommandTrace>();
+        auto& job = new_job(id, peer);
+        job.trace = std::move(trace);
+        job.tracing = true;
+        job.deadline = job.started + std::chrono::milliseconds(timeout);
+        job.manifest["kind"] = "render.trace";
+        job.manifest["scope"] = "scene_lit_post";
+        job.manifest["document_generation"] = job.context.document;
+        return {{"status", "pending"}, {"job_id", id}, {"result", {{"phase", "observing"}}}};
+    }
+
     Json start_render(const std::string& id, const std::shared_ptr<control::Peer>& peer, const Json& args, bool compare,
                       bool prepare = false) {
         if (!app.surface_.extent.width || !app.surface_.extent.height || !app.accepted_view_ ||
@@ -1713,6 +1741,7 @@ struct EditorControl::Impl {
                         return job->response;
                     Json progress = {{"phase", job->preparing   ? "preparing"
                                                : job->rendering ? "rendering"
+                                               : job->tracing   ? "observing"
                                                                 : "writing"},
                                      {"case_index", job->case_index},
                                      {"accepted_frames", job->accepted},
@@ -1792,6 +1821,8 @@ struct EditorControl::Impl {
         }
         if (op == "repro.export")
             return start_export(id, peer);
+        else if (op == "render.trace")
+            return start_trace(id, peer, args);
         else if (op == "render.capture" || op == "render.compare" || op == "render.prepare")
             return start_render(id, peer, args, op == "render.compare", op == "render.prepare");
         else if (op == "repro.open") {
@@ -1981,6 +2012,52 @@ bool EditorControl::wants_capture() {
     impl_->checkpoint();
     const auto* job = impl_->active();
     return job && job->rendering && !job->preparing && job->accepted + 1 == job->points[job->point_index];
+}
+
+rhi::CommandTrace* EditorControl::command_trace() const {
+    const auto* job = impl_->active();
+    return job && job->tracing ? job->trace.get() : nullptr;
+}
+
+void EditorControl::traced(const renderer::Frame& frame, const renderer::Result<renderer::FrameResult>& result,
+                           bool host_stopping) {
+    auto& state = *impl_;
+    auto* job = state.active();
+    if (!job || !job->tracing || frame.command_trace != job->trace.get())
+        return;
+    job->tracing = false;
+    try {
+        auto metadata = job->manifest;
+        metadata["ui_frame_id"] = frame.ui_frame.id;
+        metadata["scene_identity"] = frame.scene_identity;
+        metadata["extent"] = {frame.ui_frame.extent.width, frame.ui_frame.extent.height};
+        metadata["effective_view"] = view_json(frame.view);
+        metadata["attempt"] = "first_requested_view";
+        if (result) {
+            constexpr std::array statuses{"accepted", "skipped", "not_ready", "cancelled"};
+            metadata["frame_status"] = statuses[std::to_underlying(result->status)];
+            metadata["accepted_id"] = result->accepted_id;
+            metadata["accepted_extent"] = {result->accepted_extent.width, result->accepted_extent.height};
+            metadata["next_extent"] = {result->next_extent.width, result->next_extent.height};
+        } else {
+            metadata["frame_status"] = "error";
+            metadata["error"] = {{"code", std::to_underlying(result.error().cause.code)},
+                                 {"native_result", result.error().cause.native_result},
+                                 {"message", result.error().cause.message},
+                                 {"terminal", result.error().terminal}};
+        }
+        job->writer = std::async(std::launch::async, [path = job->directory, trace = std::move(job->trace),
+                                                      metadata = std::move(metadata), cancel = job->cancel]() mutable {
+            return control_artifacts::write_trace(path, std::move(*trace), std::move(metadata), *cancel);
+        });
+        // A terminal error in either the first render or a later fallback tears
+        // down the host and cancels jobs. Preserve the first attempt beforehand.
+        // This is owned CPU file output only, never a GPU wait or a render retry.
+        if (host_stopping)
+            job->writer.wait();
+    } catch (const std::exception& error) {
+        state.cancel(*job, "storage_error", error.what());
+    }
 }
 
 void EditorControl::render_failed(std::string_view message) {

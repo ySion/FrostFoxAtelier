@@ -2,11 +2,13 @@
 
 #include <gfx.h>
 
+#include <array>
 #include <cstdint>
 #include <expected>
 #include <filesystem>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 
 namespace atelier::rhi {
@@ -254,6 +256,94 @@ private:
     [[nodiscard]] Result<Pipeline> adopt(detail::PreparationJob& job);
 
     std::shared_ptr<detail::ContextState> state_;
+};
+
+struct RecordedBinding {
+    // Pointer fields are cleared after copying; opaque keys are diagnostic-only.
+    GfxObservedBinding detail;
+
+    std::array<char, 128> name{};
+
+    std::array<char, 128> resource_name{};
+};
+
+struct RecordedCommand {
+    std::array<char, 128> entry{};
+
+    std::uint64_t kernel_key{};
+
+    std::array<std::uint32_t, 3> groups{};
+
+    std::uint32_t first_binding{};
+
+    std::uint32_t binding_count{};
+
+    bool indirect{};
+};
+
+struct CommandTraceInfo {
+    std::uint64_t recording_sequence{};
+
+    bool entered{};
+
+    bool closed{};
+
+    bool truncated{};
+
+    bool unobserved_binding{};
+
+    bool interrupted{};
+};
+
+// One-shot CPU snapshot, allocated before recording, with no GPU/Runtime owners.
+// Storage is below 1 MiB (32 commands, 1024 bindings, bounded copied names).
+// Recording never allocates, waits or throws. Limits mark the snapshot incomplete.
+class CommandTrace {
+public:
+    CommandTrace();
+
+    ~CommandTrace();
+
+    CommandTrace(CommandTrace&&) noexcept;
+
+    CommandTrace& operator=(CommandTrace&&) noexcept;
+
+    [[nodiscard]] const CommandTraceInfo& info() const noexcept;
+
+    [[nodiscard]] std::span<const RecordedCommand> commands() const noexcept;
+
+    [[nodiscard]] std::span<const RecordedBinding> bindings() const noexcept;
+
+private:
+    friend class CommandTraceScope;
+
+    struct Storage;
+
+    std::unique_ptr<Storage> storage_;
+
+    static void observe(void*, const GfxComputeObservation&) noexcept;
+};
+
+// Owner-thread borrow, strictly inside one render attempt. Context and snapshot
+// must outlive the scope; neither may move while attached. No nested observers.
+// Destruction detaches even when command recording fails. Disabled callers do
+// not create a scope; gfx still pays observer checks, not a zero-cost guarantee.
+class CommandTraceScope {
+public:
+    CommandTraceScope(Context&, CommandTrace&) noexcept;
+
+    ~CommandTraceScope();
+
+    CommandTraceScope(const CommandTraceScope&) = delete;
+
+    CommandTraceScope& operator=(const CommandTraceScope&) = delete;
+
+private:
+    GfxContext context_;
+
+    CommandTrace& trace_;
+
+    int exceptions_{};
 };
 
 } // namespace atelier::rhi

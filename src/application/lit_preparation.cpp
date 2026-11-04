@@ -28,8 +28,12 @@ void isolate_shader_cache() {
 }
 
 renderer::Result<LitFallback::Drawn> LitFallback::render(renderer::Renderer& renderer, renderer::Frame frame,
-                                                         renderer::Capture* capture) {
+                                                         renderer::Capture* capture,
+                                                         renderer::Result<renderer::FrameResult>* first_attempt) {
     auto result = renderer.render(frame, capture);
+    if (first_attempt)
+        *first_attempt = result;
+    frame.command_trace = nullptr;
     if (result && result->status != renderer::FrameStatus::not_ready) {
         if (result->status == renderer::FrameStatus::accepted && frame.view.shading == renderer::Shading::scene_lit)
             last_lit_ = frame.view;

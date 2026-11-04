@@ -56,6 +56,16 @@
 
 `ByteAddressBuffer` 反射创建 RAW SRV，不使用 buffer 的逻辑 stride 定义地址或尺寸；`StructuredBuffer` 保留元素 stride。RAW 视图以四字节 word 计数，范围至少包含一个完整 word，D3D12 要求视图起点 16 字节对齐（`D3D12_RAW_UAV_SRV_BYTE_ALIGNMENT`）；shader 的 Load 地址仍相对该视图。公开 `gfxCreateBufferRange` 不代替这些着色器视图约束，消费者须给出合法范围。
 
+## 按需命令录制观测
+
+`CommandTrace` 是一次性的自有 CPU 快照，不拥有 GPU 资源、Context 或 Runtime 根。请求在录制前分配固定存储：32 条命令、1024 条绑定、每个名称 128 字节，总计小于 1 MiB。`CommandTraceScope` 仅在 Context owner 线程、单次 render 尝试内借用 Context 和快照，二者在 scope 结束前不得移动或销毁；不允许嵌套观察器。RAII 在正常结束和异常退出时解除借用，完整性单独记录；同一快照不能重入或拼接多个尝试。完成后可移动到写入线程，期间只访问自有记录，不再访问 gfx。
+
+gfx 在实际安装/复用根参数与 descriptor 的路径报告绑定，在真正发出 Dispatch 或单条 DispatchIndirect 后提交命令记录；安装失败但没有发命令的暂存不发布成节点。当前覆盖后处理链的 2D SRV/UAV（包括 descriptor 缓存命中）、sampler、根常量与 CBV；不支持或无法从现有安装路径确认的绑定标为 unknown，使快照 incomplete，不按 setter 猜测。明确安装的 null/dummy 与 unknown 区分。常量只保留绑定与范围，不读回内容；间接参数只记录实际缓冲区/range，不读取 GPU group 数。绑定种类不声明完整资源访问集合。
+
+回调不分配、不抛异常、不加锁、不做 I/O 或 GPU 等待；容量或名称超限标 truncated 并停止收集。快照内的物理键只供导出时去重，不是作者资源身份，原生地址不写入产物。关闭观测仍有分支检查，不承诺严格零成本；关闭时不枚举诊断参数、不分配/复制快照、不写文件或增加 GPU 工作，尚无成本测量结论。状态转换、屏障、命令提交和资源退休完全沿 gfx 原路径，不建立影子状态或 RDG 调度器。
+
+当前消费者是 [Editor Control 的后处理录制视图](../editor/control.md#后处理录制视图)。它分别展示录制事实、观测完整性与实际 render 结果，不把录制当成 GPU 完成或显示。
+
 ## Scene Lit：inline RayQuery 与离屏资源
 
 - 每个打开的 Context 都支持 inline RayQuery（见上方的硬件门槛），消费者不再检查能力。不新增 DispatchRays 管线种类，使用 `PipelineKind::compute`、`shader_model="6_5"` 和普通 `prepare`；HLSL 通过 `RaytracingAccelerationStructure` / `RayQuery` 访问。

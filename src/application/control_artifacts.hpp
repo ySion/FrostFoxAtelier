@@ -74,4 +74,8 @@ control::Json validate_repro(const std::filesystem::path&);
 
 control::Json write_samples(const std::filesystem::path&, std::vector<Sample>, control::Json,
                             const std::atomic_bool& cancel);
+
+// No GPU readback. The worker receives only owned CPU observations and metadata.
+control::Json write_trace(const std::filesystem::path&, rhi::CommandTrace, control::Json,
+                          const std::atomic_bool& cancel);
 }

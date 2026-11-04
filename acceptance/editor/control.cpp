@@ -208,6 +208,117 @@ struct Driver {
     }
 };
 
+void verify_post_trace(Driver& d) {
+    const auto before = d.inspect();
+    const auto& view = before.at("view");
+    // One representative, two states. Expectations come from the recorded
+    // shader contract, not from trace formatting or the observation callback.
+    const std::array<std::vector<std::string>, 2> entries{
+        {{"lit_taa_cs", "lit_bloom_downsample_cs", "lit_bloom_blur_cs", "lit_bloom_blur_cs", "lit_tonemap_cs",
+          "lit_smaa_edges_cs", "lit_smaa_weights_cs", "lit_smaa_neighborhood_cs", "lit_smaa_resolve_cs"},
+         {"lit_taa_cs", "lit_tonemap_cs"}}};
+    for (std::size_t state = 0; state < entries.size(); ++state) {
+        d.op("view.set",
+             {{"shading", "scene_lit"}, {"bloom", state == 0}, {"antialiasing", state == 0 ? "smaa_t2x" : "off"}});
+        const auto selected = d.inspect();
+        const auto id = unique_id();
+        auto pending = d.call("render.trace", {{"scope", "scene_lit_post"}}, id);
+        require(pending.at("status") == "pending", pending.dump());
+        const auto finished = d.wait(id);
+        require(finished.at("status") == "ok", finished.dump());
+        const auto& result = finished.at("result");
+        const auto trace = read(wide(result.at("json").get<std::string>()));
+        require(trace.at("schema") == "atelier.render.trace" && trace.at("version") == 1 &&
+                    trace.at("observation").at("status") == "complete" && trace.at("frame_status") == "accepted" &&
+                    trace.at("attempt") == "first_requested_view" && trace.at("ui_frame_id") != 0 &&
+                    trace.at("recording_sequence") != 0,
+                "Post trace did not preserve the complete actual render attempt: " + trace.dump());
+        const auto& commands = trace.at("commands");
+        require(commands.size() == entries[state].size(), "Post trace has a missing or invented dispatch");
+        std::ifstream page(wide(result.at("html").get<std::string>()), std::ios::binary);
+        require(bool(page), "Trace HTML is missing");
+        const std::string html{std::istreambuf_iterator<char>(page), std::istreambuf_iterator<char>()};
+        std::size_t position{};
+        for (std::size_t i = 0; i < commands.size(); ++i) {
+            const auto& command = commands[i];
+            require(command.at("ordinal") == i + 1 && command.at("entry") == entries[state][i] &&
+                        command.at("kind") == "dispatch" && command.at("groups")[0] > 0 &&
+                        command.at("groups")[1] > 0 && command.at("groups")[2] == 1,
+                    "Post trace dispatch order or dimensions differ from the actual chain");
+            position = html.find("id=\"command-" + std::to_string(i + 1) + "\"", position);
+            require(position != std::string::npos, "Trace SVG omitted or reordered a command");
+            const auto end = html.find("</g>", position);
+            require(html.substr(position, end - position).find(entries[state][i]) != std::string::npos,
+                    "Trace SVG command label differs from its observation");
+            position = end;
+            std::set<std::pair<unsigned, unsigned>> slots;
+            for (const auto& binding : command.at("bindings")) {
+                require(binding.at("status") == "valid" && binding.at("kind") != "unsupported",
+                        "Normal post chain has a dummy or unobserved binding");
+                require(slots
+                            .emplace(binding.at("root_parameter").get<unsigned>(),
+                                     binding.at("array_index").get<unsigned>())
+                            .second,
+                        "Post trace repeated a root binding instead of resolving installed state");
+            }
+        }
+        const auto resource = [&](std::size_t command, std::string_view name, std::string_view kind) -> Json {
+            for (const auto& binding : commands.at(command).at("bindings"))
+                if (binding.at("name").get_ref<const std::string&>() == name) {
+                    require(binding.at("kind").get_ref<const std::string&>() == kind &&
+                                binding.at("resource").is_number_unsigned() &&
+                                binding.at("view").at("first_mip") == 0 && binding.at("view").at("mip_count") == 1,
+                            "Post trace lost the actual texture view");
+                    const auto start =
+                        html.find("id=\"binding-" + std::to_string(command + 1) + "-" +
+                                  binding.at("root_parameter").dump() + "-" + binding.at("array_index").dump() + "\"");
+                    require(start != std::string::npos, "Trace SVG omitted a binding port");
+                    const auto port = html.substr(start, html.find("</g>", start) - start);
+                    require(port.find(name) != std::string::npos && port.find(kind) != std::string::npos &&
+                                port.find(">R" + binding.at("resource").dump() + "</text>") != std::string::npos,
+                            "Trace SVG binding port differs from the actual resource");
+                    return binding.at("resource");
+                }
+            throw std::runtime_error("Missing actual post binding: " + std::string(name));
+        };
+        const auto taa = resource(0, "lit_taa_output", "texture_uav");
+        require(taa != resource(0, "lit_taa_previous", "texture_srv"), "TAA history aliases the current output");
+        const auto tone = state == 0 ? 4u : 1u;
+        require(resource(tone, "lit_taa", "texture_srv") == taa, "ToneMap lost the real TAA binding");
+        const auto bloom = resource(tone, "lit_bloom", "texture_srv");
+        if (state == 0) {
+            const auto input = resource(2, "lit_bloom_input", "texture_srv");
+            const auto output = resource(2, "lit_bloom_output", "texture_uav");
+            require(input != output && input == bloom && resource(1, "lit_taa", "texture_srv") == taa &&
+                        resource(1, "lit_bloom_output", "texture_uav") == input &&
+                        resource(3, "lit_bloom_input", "texture_srv") == output &&
+                        resource(3, "lit_bloom_output", "texture_uav") == input &&
+                        commands[2].at("kernel") == commands[3].at("kernel"),
+                    "Bloom blur instances lost their actual ping-pong bindings");
+            const auto spatial = resource(7, "lit_smaa_spatial_output", "texture_uav");
+            require(resource(8, "lit_smaa_spatial", "texture_srv") == spatial &&
+                        resource(8, "lit_smaa_previous", "texture_srv") != spatial,
+                    "SMAA current and history bindings were conflated");
+            for (const auto& binding : commands[5].at("bindings"))
+                require(binding.at("name") != "lit_smaa_spatial_output" && binding.at("name") != "lit_smaa_previous",
+                        "Trace treated unused SMAA setters as actual bindings");
+        }
+        const auto after = d.inspect();
+        require(after.at("view") == selected.at("view") && after.at("undo") == selected.at("undo"),
+                "Tracing changed display or author history");
+        std::cout << "Editor Control post trace " << state << ": " << result.at("directory") << '\n';
+    }
+    // Both Bloom and AA are World author settings. The second state always
+    // changes them; the first changes them unless it already matches the base.
+    d.op("edit.undo", Json::object(), {{"asset", ""}, {"region", "viewport"}});
+    if (!view.at("bloom").get<bool>() || view.at("antialiasing") != "smaa_t2x")
+        d.op("edit.undo", Json::object(), {{"asset", ""}, {"region", "viewport"}});
+    d.op("view.set", {{"shading", view.at("shading")}});
+    const auto after = d.inspect();
+    require(after.at("view") == view && after.at("undo") == before.at("undo"),
+            "Post trace representative did not restore its settings");
+}
+
 Json discover_editor(const Process& editor, const std::filesystem::path& directory) {
     const auto deadline = std::chrono::steady_clock::now() + 60s;
     while (std::chrono::steady_clock::now() < deadline) {
@@ -1686,6 +1797,7 @@ int wmain(int argc, wchar_t** argv) {
         current = d.inspect();
         require(current.at("view") == base_view && current.at("undo") == dirty_undo,
                 "Temporary comparison leaked into authoring state");
+        verify_post_trace(d);
         auto cancelled_id = unique_id();
         const Json cancelled_request{{"op", "render.capture"},
                                      {"state_token", d.token},

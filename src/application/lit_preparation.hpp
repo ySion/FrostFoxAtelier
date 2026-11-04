@@ -27,7 +27,10 @@ public:
         std::string failure;
     };
 
-    renderer::Result<Drawn> render(renderer::Renderer&, renderer::Frame, renderer::Capture*);
+    // The optional result belongs to the first requested-view attempt, including
+    // not_ready/error. Its command trace is detached before either fallback.
+    renderer::Result<Drawn> render(renderer::Renderer&, renderer::Frame, renderer::Capture*,
+                                   renderer::Result<renderer::FrameResult>* first_attempt = nullptr);
 
 private:
     std::optional<renderer::ViewSettings> last_lit_;

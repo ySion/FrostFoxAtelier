@@ -378,6 +378,137 @@ void finish(const std::filesystem::path& directory, Json& manifest, const std::a
         throw Failure("resource_limit", "Artifact manifest exceeds the 16 MiB file limit");
     write(directory / "manifest.json", encoded);
 }
+
+std::string html_text(std::string_view text) {
+    std::string escaped;
+    for (const auto c : text)
+        switch (c) {
+        case '&':
+            escaped += "&amp;";
+            break;
+        case '<':
+            escaped += "&lt;";
+            break;
+        case '>':
+            escaped += "&gt;";
+            break;
+        case '"':
+            escaped += "&quot;";
+            break;
+        case '\'':
+            escaped += "&#39;";
+            break;
+        default:
+            escaped += c;
+            break;
+        }
+    return escaped;
+}
+
+// This view consumes only the exported facts. It has no pass names, settings
+// branches, resource-state model or inferred producer/consumer edges.
+std::string trace_html(const Json& trace) {
+    std::string html = R"HTML(<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'">
+<title>Recorded post-processing commands</title><style>
+:root{color-scheme:dark;font:14px/1.5 'Segoe UI',sans-serif;background:#2e2e2e;color:#ccc}
+body{margin:0}main{max-width:1200px;margin:auto;padding:24px}h1{font-size:24px;line-height:1.2;margin:0 0 12px;color:#eee}
+h2{font-size:18px;margin:28px 0 10px;color:#eee}p{max-width:80ch}code,pre,svg text{font:13px/1.5 Consolas,monospace}
+a{color:#b8cfff}a:focus-visible,summary:focus-visible{outline:2px solid #ddd;outline-offset:3px}
+summary{cursor:pointer;padding:12px 4px;color:#eee}summary:hover{background:#3d3d3d}
+details{border-bottom:1px solid #666}details[open]{padding-bottom:16px}pre{white-space:pre-wrap;overflow-wrap:anywhere}
+.scroll{overflow:auto;margin:12px 0}.facts{padding:12px 16px;background:#191919}.notice{color:#f0d4a2}
+svg{display:block;width:100%;min-width:850px}svg rect{fill:#191919;stroke:#888}svg text{fill:#ddd}
+svg path{fill:none;stroke:#aaa}svg .binding{stroke-dasharray:3 4}svg .arrow{fill:#aaa}
+table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}td,th{text-align:left;padding:8px;border-bottom:1px solid #555;vertical-align:top}
+th{color:#eee}td code{overflow-wrap:anywhere}caption{text-align:left;margin-bottom:8px}
+@media(max-width:600px){main{padding:16px}h1{font-size:22px}}
+</style><main><h1>Recorded post-processing commands</h1>
+<p>CPU command recording only. This is not GPU completion or proof of display.
+Solid arrows show recording order; dashed lines show bindings, not dependencies.</p>
+)HTML";
+    const auto text = [](const Json& value) {
+        return html_text(value.is_string() ? value.get<std::string>() : value.dump());
+    };
+    html += "<div class=\"facts\">Scope: <code>" + text(trace.at("scope")) +
+            "</code><br>Recording sequence: " + text(trace.at("recording_sequence")) +
+            " · UI frame: " + text(trace.at("ui_frame_id")) + "<br>Attempt: " + text(trace.at("attempt")) +
+            " · Frame result: <strong>" + text(trace.at("frame_status")) + "</strong> · Observation: <strong>" +
+            text(trace.at("observation").at("status")) + "</strong></div>";
+    if (trace.contains("error"))
+        html += "<pre class=\"notice\">" + html_text(trace.at("error").dump(2)) + "</pre>";
+    if (trace.at("observation").at("status") != "complete")
+        html += "<p class=\"notice\">This observation is not complete. Missing commands or bindings are not inferred. "
+                "See observation flags in the snapshot metadata below.</p>";
+    const auto& commands = trace.at("commands");
+    html += "<h2>Recording order</h2>";
+    if (commands.empty())
+        html += "<p>No dispatch was observed in this scope for this render attempt. No pipeline template is shown.</p>";
+    else {
+        html +=
+            "<div class=\"scroll\"><svg role=\"img\" aria-label=\"Actual dispatch recording order\" viewBox=\"0 0 1000 " +
+            std::to_string(commands.size() * 60) + "\">";
+        for (std::size_t i = 0; i < commands.size(); ++i) {
+            const auto y = std::to_string(i * 60);
+            const auto& command = commands[i];
+            html += "<g transform=\"translate(0 " + y + ")\" id=\"command-" + text(command.at("ordinal")) +
+                    "\"><rect x=\"40\" y=\"2\" width=\"510\" height=\"40\"/>";
+            html += "<text x=\"54\" y=\"28\">" + text(command.at("ordinal")) + " · " + text(command.at("entry")) +
+                    "</text><text x=\"580\" y=\"28\">" + text(command.at("kind")) + " · groups " +
+                    text(command.at("groups")) + "</text>";
+            if (i + 1 < commands.size())
+                html += "<path d=\"M56 42 V55\"/><path class=\"arrow\" d=\"M52 52 L56 58 L60 52 Z\"/>";
+            html += "</g>";
+        }
+        html += "</svg></div><h2>Actual bindings</h2><p>Expand a command to inspect its binding ports and view ranges. "
+                "R numbers identify resources only within this snapshot. Resource origins are not inferred.</p>";
+    }
+    for (const auto& command : commands) {
+        const auto& bindings = command.at("bindings");
+        html += "<details><summary><code>" + text(command.at("ordinal")) + " · " + text(command.at("entry")) +
+                "</code> — " + std::to_string(bindings.size()) + " bindings</summary>";
+        html += "<div class=\"scroll\"><svg role=\"img\" aria-label=\"Actual resource bindings\" viewBox=\"0 0 1000 " +
+                std::to_string(std::max<std::size_t>(80, bindings.size() * 36 + 12)) + "\">";
+        html += "<rect x=\"8\" y=\"8\" width=\"110\" height=\"40\"/><text x=\"20\" y=\"34\">Command " +
+                text(command.at("ordinal")) + "</text>";
+        for (std::size_t i = 0; i < bindings.size(); ++i) {
+            const auto& binding = bindings[i];
+            const auto y = std::to_string(i * 36 + 28);
+            const auto label =
+                binding.at("resource").is_null() ? text(binding.at("status")) : "R" + text(binding.at("resource"));
+            html += "<g id=\"binding-" + text(command.at("ordinal")) + "-" + text(binding.at("root_parameter")) + "-" +
+                    text(binding.at("array_index")) + "\">";
+            html += "<path class=\"binding\" d=\"M118 28 H140 V" + y + " H170 M720 " + y + " H760\"/>";
+            html += "<text x=\"178\" y=\"" + std::to_string(i * 36 + 33) + "\">root " +
+                    text(binding.at("root_parameter")) + ", " + text(binding.at("kind")) + " · " +
+                    text(binding.at("name")) + "[" + text(binding.at("array_index")) + "]</text>";
+            html += "<rect x=\"760\" y=\"" + std::to_string(i * 36 + 12) +
+                    "\" width=\"220\" height=\"30\"/><text x=\"774\" y=\"" + std::to_string(i * 36 + 33) + "\">" +
+                    label + "</text></g>";
+        }
+        html +=
+            "</svg></div><div class=\"scroll\"><table><caption>Installed binding details</caption>"
+            "<thead><tr><th>Root / element</th><th>Name</th><th>Kind / status</th><th>Resource</th><th>View</th></tr></thead><tbody>";
+        for (const auto& binding : bindings)
+            html += "<tr><td>" + text(binding.at("root_parameter")) + " / " + text(binding.at("array_index")) +
+                    "</td><td><code>" + text(binding.at("name")) + "</code></td><td>" + text(binding.at("kind")) +
+                    " / " + text(binding.at("status")) + "</td><td>" + text(binding.at("resource")) +
+                    "</td><td><code>" + text(binding.at("view")) + "</code></td></tr>";
+        html += "</tbody></table></div></details>";
+    }
+    html +=
+        "<h2>Resources</h2><div class=\"scroll\"><table><thead><tr><th>ID</th><th>Kind / name</th><th>Extent / DXGI format</th></tr></thead><tbody>";
+    for (const auto& resource : trace.at("resources"))
+        html += "<tr><td>R" + text(resource.at("index")) + "</td><td>" + text(resource.at("kind")) + " / <code>" +
+                text(resource.at("name")) + "</code></td><td>" + text(resource.at("extent")) + " / " +
+                text(resource.at("format")) + "</td></tr>";
+    html += "</tbody></table></div><details><summary>Snapshot metadata</summary><pre>";
+    auto metadata = trace;
+    metadata.erase("commands");
+    metadata.erase("resources");
+    return html + html_text(metadata.dump(2)) + "</pre></details></main></html>\n";
+}
 }
 
 Repro snapshot_resources(const editor::Session& document) try {
@@ -949,5 +1080,88 @@ Json write_samples(const std::filesystem::path& output, std::vector<Sample> samp
     return {{"directory", path_text(output)},
             {"manifest", path_text(output / "manifest.json")},
             {"samples", manifest["samples"]}};
+}
+
+Json write_trace(const std::filesystem::path& output, rhi::CommandTrace snapshot, Json manifest,
+                 const std::atomic_bool& cancel) {
+    checkpoint(cancel);
+    const auto directory = platform::windows_file_path(output);
+    std::filesystem::create_directories(directory);
+    auto trace = manifest;
+    trace["schema"] = "atelier.render.trace";
+    trace["version"] = 1;
+    const auto& info = snapshot.info();
+    const auto status = !info.entered                                                                   ? "not_entered"
+                        : !info.closed || info.truncated || info.unobserved_binding || info.interrupted ? "incomplete"
+                                                                                                        : "complete";
+    trace["recording_sequence"] = info.recording_sequence;
+    trace["observation"] = {{"status", status},
+                            {"truncated", info.truncated},
+                            {"unobserved_binding", info.unobserved_binding},
+                            {"interrupted", info.interrupted},
+                            {"closed", info.closed}};
+    trace["commands"] = Json::array();
+    trace["resources"] = Json::array();
+    std::map<std::pair<int, std::uint64_t>, std::size_t> resources;
+    std::map<std::uint64_t, std::size_t> kernels;
+    constexpr std::array kinds{"unsupported", "texture_srv", "texture_uav",       "sampler",
+                               "constants",   "cbv",         "indirect_arguments"};
+    constexpr std::array statuses{"unknown", "valid", "dummy"};
+    for (const auto& command : snapshot.commands()) {
+        checkpoint(cancel);
+        const auto [kernel, inserted] = kernels.try_emplace(command.kernel_key, kernels.size() + 1);
+        Json record{{"ordinal", trace["commands"].size() + 1},
+                    {"kernel", kernel->second},
+                    {"entry", command.entry.data()},
+                    {"kind", command.indirect ? "dispatch_indirect" : "dispatch"},
+                    {"groups", command.indirect ? Json(nullptr) : Json(command.groups)},
+                    {"bindings", Json::array()}};
+        for (const auto& owned : snapshot.bindings().subspan(command.first_binding, command.binding_count)) {
+            const auto& binding = owned.detail;
+            Json resource = nullptr;
+            if (binding.resource_key && binding.status == kGfxObserved_Valid) {
+                // SRV and UAV views share texture identity; sampler slots and GPU
+                // allocations use separate namespaces. Native keys never escape.
+                const auto kind = binding.kind == kGfxObserved_TextureUAV ? kGfxObserved_TextureSRV : binding.kind;
+                const auto [item, added] = resources.try_emplace({kind, binding.resource_key}, resources.size() + 1);
+                resource = item->second;
+                if (added)
+                    trace["resources"].push_back({{"index", item->second},
+                                                  {"kind", kind == kGfxObserved_TextureSRV ? "texture" : kinds[kind]},
+                                                  {"name", owned.resource_name.data()},
+                                                  {"extent", {binding.width, binding.height, binding.depth}},
+                                                  {"format", static_cast<std::uint32_t>(binding.resource_format)}});
+            }
+            record["bindings"].push_back({{"name", owned.name.data()},
+                                          {"root_parameter", binding.root_parameter},
+                                          {"array_index", binding.array_index},
+                                          {"kind", kinds[binding.kind]},
+                                          {"status", statuses[binding.status]},
+                                          {"resource", std::move(resource)},
+                                          {"view",
+                                           {{"format", static_cast<std::uint32_t>(binding.format)},
+                                            {"first_mip", binding.first_mip},
+                                            {"mip_count", binding.mip_count},
+                                            {"first_slice", binding.first_slice},
+                                            {"slice_count", binding.slice_count},
+                                            {"byte_offset", binding.byte_offset},
+                                            {"byte_size", binding.byte_size}}}});
+        }
+        trace["commands"].push_back(std::move(record));
+    }
+    write(directory / "trace.json", trace.dump(2) + "\n");
+    checkpoint(cancel);
+    write(directory / "trace.html", trace_html(trace));
+    manifest["trace"] = {{"json", "trace.json"},
+                         {"html", "trace.html"},
+                         {"observation", status},
+                         {"command_count", trace["commands"].size()}};
+    finish(directory, manifest, cancel);
+    return {{"directory", path_text(output)},
+            {"manifest", path_text(output / "manifest.json")},
+            {"json", path_text(output / "trace.json")},
+            {"html", path_text(output / "trace.html")},
+            {"observation", status},
+            {"frame_status", trace["frame_status"]}};
 }
 }

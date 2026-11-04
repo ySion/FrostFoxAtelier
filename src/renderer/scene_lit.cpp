@@ -2403,6 +2403,9 @@ struct SceneLit::State {
                 dispatch_window(reflection_filter, depth);
             }
         end(5);
+        std::optional<rhi::CommandTraceScope> trace;
+        if (frame.command_trace)
+            trace.emplace(context, *frame.command_trace);
         begin(6);
         bind(taa.program(), "lit_reflection", settings.sssr ? reflection_scratch[0] : reflection_history[parity]);
         bind(taa.program(), "lit_reflection_moments", reflection_moments[parity]);
@@ -2464,6 +2467,7 @@ struct SceneLit::State {
                 display = smaa_output;
             }
         }
+        trace.reset(); // The display draw and UI are outside this compute-only scope.
         common(tone.program(), depth);
         bind(tone.program(), "lit_display_source", display);
         require(gfxCommandBindKernel(gfx, tone.kernel()), "Bind Scene Lit tone map");

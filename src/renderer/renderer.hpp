@@ -189,6 +189,10 @@ struct Frame {
     // owner thread between preparation batches; must not throw or reenter Renderer.
     // A true result cancels this frame and permits only close/destruction afterwards.
     const std::function<bool()>* stop_requested{};
+
+    // Optional, preallocated one-attempt Scene Lit post-chain observation. Borrowed
+    // only through render(), never reused for fallback/retry or GPU readback.
+    rhi::CommandTrace* command_trace{};
 };
 
 // not_ready: the view's pipelines are still preparing; nothing was encoded or

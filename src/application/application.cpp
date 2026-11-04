@@ -2179,12 +2179,21 @@ bool Application::run_step(renderer::Capture* capture) try {
         rendering::sky_radiance(effective_view.lit),
         {lighting_focus.x, lighting_focus.y, lighting_focus.z}};
     render_frame.materials = scene ? scene->materials.get() : nullptr;
+    render_frame.command_trace = control_ ? control_->command_trace() : nullptr;
+    std::optional<renderer::Result<renderer::FrameResult>> traced_result;
+    if (render_frame.command_trace)
+        traced_result.emplace();
     const auto lighting_start = Clock::now();
     const bool lighting_active = scene && scene_bounds.width > 0 && scene_bounds.height > 0 && !scene->meshes.empty() &&
                                  effective_view.shading == renderer::Shading::scene_lit &&
                                  effective_view.wireframe != renderer::Wireframe::only && effective_view.lit.ddgi;
     render_frame.render_delta_seconds = lighting_clock_.delta(lighting_start, lighting_active);
-    auto drawn = lit_fallback_.render(renderer_, render_frame, frame_capture);
+    auto drawn =
+        lit_fallback_.render(renderer_, render_frame, frame_capture, traced_result ? &*traced_result : nullptr);
+    if (traced_result) {
+        control_->traced(render_frame, *traced_result, !drawn && drawn.error().terminal);
+        render_frame.command_trace = nullptr;
+    }
     if (!drawn) {
         lighting_clock_.reset();
         if (control_)

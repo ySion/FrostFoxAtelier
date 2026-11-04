@@ -53,6 +53,10 @@ Renderer 消费者（默认入口、Scene Lit fixture、原生材质批次）共
 
 Renderer 与 Editor 合计每个渲染特性只保留一张代表图；只有必须走原生窗口/输入路径的行为才由 Editor 保留。编辑器集成、输入、作者 Scene 保存/加载与撤销的当前清单见[编辑器](../editor/README.md)和 [Control](../editor/control.md)，不在这里复制另一套清单。Renderer 不保留 Dungeon serialize 自比较来代表 K1。
 
+`editor_control_acceptance` 保留一个[后处理录制视图](../editor/control.md#后处理录制视图)代表，使用真实 Editor/Control 的同一场景观察两种状态：Bloom 开、SMAA T2x 的 9 次 dispatch（两次同 kernel blur 的纹理互换），以及 Bloom 关、AA Off 的 TAA→ToneMap 两次 dispatch（ToneMap 仍绑定 Bloom）。序列及关键资源关系来自录制/着色器合同的独立字面期望；同时核对 TAA/SMAA 历史资源、有效绑定而非全部 setter、图的顺序与标签、请求不改变显示或 Undo。该入口需要窗口，执行仍按统一门禁时段安排。
+
+开发验证另临时把 ToneMap 的 Bloom 输入切换到另一张合法的 ping-pong 纹理、删除一次 blur dispatch，确认观测跟随实际绑定/命令而非预制模板；变异不保留、不增加验收矩阵。缓存命中、失败或未进入 scope、fallback 尝试隔离与容量截断由同一合同约束，动态结果须见相应运行记录，不由代码存在推定通过。录制视图不验收渲染像素、GPU 完成或实际显示，也不是声明式 RDG/作者图。
+
 ## 未定因的窗口失败
 
 材质接入期的窗口间歇失败仍未关闭。以下是 Windows x64、RX 6800 XT 上已记录的事实；原始日志位于本机 `out/acceptance-gate/<运行号>/`，只证明当时版本、配置与场景，不作为当前门禁结果。

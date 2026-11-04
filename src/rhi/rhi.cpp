@@ -12,6 +12,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <deque>
+#include <exception>
 #include <fstream>
 #include <iterator>
 #include <mutex>
@@ -806,5 +807,145 @@ Result<void> Context::close() {
         CloseHandle(std::exchange(state_->frame_latency, nullptr));
     state_.reset();
     return {};
+}
+
+struct CommandTrace::Storage {
+    CommandTraceInfo info;
+
+    std::array<RecordedCommand, 32> commands;
+
+    std::array<RecordedBinding, 1024> bindings;
+
+    std::uint32_t command_count{};
+
+    std::uint32_t binding_count{};
+
+    bool pending{};
+
+    void copy(std::array<char, 128>& target, const char* source) noexcept {
+        std::size_t size{};
+        if (source)
+            while (size + 1 < target.size() && source[size]) {
+                target[size] = source[size];
+                ++size;
+            }
+        // Do not split a UTF-8 resource name at the bounded storage boundary.
+        if (source && source[size])
+            while (size && (static_cast<unsigned char>(source[size]) & 0xc0) == 0x80)
+                --size;
+        target[size] = 0;
+        if (source && source[size])
+            info.truncated = true;
+    }
+};
+
+CommandTrace::CommandTrace() : storage_(std::make_unique<Storage>()) {
+    static_assert(sizeof(Storage) < 1024 * 1024);
+}
+
+CommandTrace::~CommandTrace() = default;
+
+CommandTrace::CommandTrace(CommandTrace&&) noexcept = default;
+
+CommandTrace& CommandTrace::operator=(CommandTrace&&) noexcept = default;
+
+const CommandTraceInfo& CommandTrace::info() const noexcept {
+    return storage_->info;
+}
+
+std::span<const RecordedCommand> CommandTrace::commands() const noexcept {
+    return {storage_->commands.data(), storage_->command_count};
+}
+
+std::span<const RecordedBinding> CommandTrace::bindings() const noexcept {
+    return {storage_->bindings.data(), storage_->binding_count};
+}
+
+void CommandTrace::observe(void* user, const GfxComputeObservation& event) noexcept {
+    auto& data = *static_cast<CommandTrace*>(user)->storage_;
+    if (data.info.truncated || data.info.interrupted)
+        return;
+    if (event.kind == kGfxComputeObservation_Begin) {
+        if (data.pending) {
+            data.info.interrupted = true;
+            return;
+        }
+        if (data.command_count == data.commands.size()) {
+            data.info.truncated = true;
+            return;
+        }
+        auto& command = data.commands[data.command_count];
+        data.copy(command.entry, event.entry_point);
+        command.kernel_key = event.kernel_key;
+        std::copy_n(event.groups, 3, command.groups.begin());
+        command.indirect = event.indirect;
+        command.first_binding = data.binding_count;
+        data.pending = true;
+        return;
+    }
+    if (!data.pending) {
+        data.info.interrupted = true;
+        return;
+    }
+    auto& command = data.commands[data.command_count];
+    if (event.kind == kGfxComputeObservation_Dispatch) {
+        command.binding_count = data.binding_count - command.first_binding;
+        for (std::uint32_t i = command.first_binding; i < data.binding_count; ++i)
+            if (data.bindings[i].detail.status == kGfxObserved_Unknown ||
+                data.bindings[i].detail.kind == kGfxObserved_Unsupported)
+                data.info.unobserved_binding = true;
+        ++data.command_count;
+        data.pending = false;
+        return;
+    }
+    const auto& binding = event.binding;
+    auto index = command.first_binding;
+    for (; index < data.binding_count; ++index)
+        if (data.bindings[index].detail.root_parameter == binding.root_parameter &&
+            data.bindings[index].detail.array_index == binding.array_index)
+            break;
+    if (index == data.binding_count) {
+        if (data.binding_count == data.bindings.size()) {
+            data.info.truncated = true;
+            return;
+        }
+        ++data.binding_count;
+    }
+    auto& owned = data.bindings[index];
+    owned.detail = binding;
+    data.copy(owned.name, binding.name);
+    data.copy(owned.resource_name, binding.resource_name);
+    owned.detail.name = nullptr;
+    owned.detail.resource_name = nullptr;
+}
+
+CommandTraceScope::CommandTraceScope(Context& context, CommandTrace& trace) noexcept
+    : trace_(trace), exceptions_(std::uncaught_exceptions()) {
+    auto& info = trace_.storage_->info;
+    if (info.entered) {
+        info.interrupted = true;
+        return;
+    }
+    info.entered = true;
+    const auto borrowed = context.borrow();
+    if (!borrowed || gfxSetComputeObserver(borrowed, CommandTrace::observe, &trace) != kGfxResult_NoError) {
+        info.interrupted = true;
+        return;
+    }
+    context_ = borrowed;
+    info.recording_sequence = gfxGetRecordingFrameSequence(context_);
+}
+
+CommandTraceScope::~CommandTraceScope() {
+    if (!context_)
+        return;
+    if (gfxSetComputeObserver(context_, nullptr) != kGfxResult_NoError)
+        lifetime_failure("command observer detached after context destruction");
+    auto& data = *trace_.storage_;
+    data.info.closed = true;
+    data.info.interrupted |= data.pending || std::uncaught_exceptions() > exceptions_;
+    // Bindings of an unissued command are not published as an actual dispatch.
+    if (data.pending)
+        data.binding_count = data.commands[data.command_count].first_binding;
 }
 } // namespace atelier::rhi
