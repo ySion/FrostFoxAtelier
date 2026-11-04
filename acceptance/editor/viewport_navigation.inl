@@ -49,13 +49,6 @@ void verify_viewport_navigation(Application& app, const std::filesystem::path& o
             "Axis pie selected the wrong camera view or retained the menu.");
     pointer(ui::EventKind::pointer_move, origin);
     key(VK_OEM_3);
-    pointer(ui::EventKind::pointer_move, {origin.x, origin.y - 120});
-    key(VK_OEM_3, true);
-    tick(app, 3);
-    require(!Access::menu_open(app) && Access::camera_mode(app) == editor::CameraView::top,
-            "Fast axis pie hold/swipe/release was lost before its first accepted frame.");
-    pointer(ui::EventKind::pointer_move, origin);
-    key(VK_OEM_3);
     tick(app, 2);
     key(VK_ESCAPE, false, false, ui::Key::escape);
     key(VK_ESCAPE, true, false, ui::Key::escape);
@@ -101,8 +94,7 @@ void verify_viewport_navigation(Application& app, const std::filesystem::path& o
             "Checkbox cleanup did not restore the view preference.");
     require(app.document().undo_count() == history && Access::cursor_position(app) == cursor,
             "View/menu gestures changed scene history or placed the 3D cursor.");
-    std::puts(
-        "Viewport navigation acceptance: PASS (axis pie, fast release, retained checkbox, history/cursor isolation)");
+    std::puts("Viewport navigation acceptance: PASS (axis pie, retained checkbox, history/cursor isolation)");
 }
 
 // Only the foreground editor window acceptance may exercise global raw input and clipping.

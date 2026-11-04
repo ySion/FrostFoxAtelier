@@ -345,17 +345,9 @@ void verify_basic_controls(Application& app, const std::filesystem::path& output
             require(attempt < 8, "Pending mouse messages did not drain before ladder row selection within 8 ticks.");
             tick(app, 1);
         }
-        const auto input_before = Access::ladder_input_snapshot(app);
-        const auto queue_before = Access::pointer_queue_snapshot(app);
-        // Query current bits only: unlike PeekMessage, this does not dispatch pending sent messages.
-        const auto pending = HIWORD(GetQueueStatus(QS_MOUSEMOVE | QS_MOUSEBUTTON | QS_SENDMESSAGE));
-        POINT cursor_before{};
-        const bool cursor_available = GetCursorPos(&cursor_before) != FALSE;
         require(SetCursorPos(row_point.x, row_point.y) != FALSE, "Cannot align the ladder row pointer.");
         SendMessageW(app.window(), WM_MOUSEMOVE, MK_MBUTTON, MAKELPARAM(from.x, row_y));
-        const auto queue_after_send = Access::pointer_queue_snapshot(app);
         tick(app, 2);
-        const auto input_after = Access::ladder_input_snapshot(app);
         const auto selected_row = app.presented()->value_ladder->selected_row;
         const auto increment = app.presented()->value_ladder->increment;
         const auto value = app.control_workbench().values().position[0];
@@ -364,18 +356,7 @@ void verify_basic_controls(Application& app, const std::filesystem::path& output
             const auto actual = std::format(" selected_row={}; increment={:.17g}; value={:.17g}; undo_count={}; "
                                             "expected_undo_count={}",
                                             selected_row, increment, value, undo_count, select_history);
-            std::string selection;
-            if (selected_row != 2)
-                selection = std::format("; before_move: QS_current={:#06x}; QS_MOUSEMOVE={}; QS_MOUSEBUTTON={}; "
-                                        "QS_SENDMESSAGE={}; cursor_available={}; cursor_screen_px=({},{}); "
-                                        "row_screen_px=({},{}); from_client_px=({},{}); row_client_px=({},{})",
-                                        pending, (pending & QS_MOUSEMOVE) != 0, (pending & QS_MOUSEBUTTON) != 0,
-                                        (pending & QS_SENDMESSAGE) != 0, cursor_available, cursor_before.x,
-                                        cursor_before.y, row_point.x, row_point.y, from.x, from.y, from.x, row_y) +
-                            queue_before.describe("before_move") + queue_after_send.describe("after_send_before_tick") +
-                            input_before.describe("before_move") + input_after.describe("after_tick");
-            require(selected_row == 2,
-                    ("Selecting a visible ladder rung did not select row 2." + actual + selection).c_str());
+            require(selected_row == 2, ("Selecting a visible ladder rung did not select row 2." + actual).c_str());
             require(increment == 1, ("Selecting a visible ladder rung did not select increment 1." + actual).c_str());
             require(value == 12.5, ("Selecting a visible ladder rung changed the value from 12.5." + actual).c_str());
             require(undo_count == select_history,

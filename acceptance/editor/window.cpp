@@ -9,7 +9,6 @@
 #include "renderer/timing.hpp"
 #include "ui/text.hpp"
 #include <wincodec.h>
-#include <windowsx.h>
 #include <wrl/client.h>
 #include <msctf.h>
 #include <imm.h>
@@ -34,88 +33,6 @@ struct PlayProcessAcceptanceAccess {
 
 struct EditorAcceptanceAccess {
     static void input(Application& app, ui::Event event, WPARAM key = 0) { app.input(event, key); }
-
-    struct LadderInputSnapshot {
-        bool ready{};
-
-        ui::Surface current;
-
-        std::optional<ui::Surface> presented;
-
-        std::uint64_t frame_id{};
-
-        bool captured{};
-
-        bool focused{};
-
-        bool foreground{};
-
-        std::string describe(std::string_view stage) const {
-            const auto frame = presented.value_or(ui::Surface{});
-            return std::format("; {}: pointer_ready={}; presented={}; frame_id={}; extent_equals_client={}; "
-                               "extent=({},{}); client=({},{}); surface_revision={}/{}; dpi={}/{} (frame/current); "
-                               "capture_is_editor={}; focus_is_editor={}; foreground_is_editor={}",
-                               stage, ready, presented.has_value(), frame_id,
-                               presented && frame.extent == current.extent, frame.extent.width, frame.extent.height,
-                               current.extent.width, current.extent.height, frame.revision, current.revision,
-                               frame.dpi_scale, current.dpi_scale, captured, focused, foreground);
-        }
-    };
-
-    static LadderInputSnapshot ladder_input_snapshot(const Application& app) {
-        LadderInputSnapshot snapshot;
-        snapshot.ready = app.pointer_ready();
-        RECT client{};
-        if (!IsIconic(app.window()))
-            GetClientRect(app.window(), &client);
-        snapshot.current = {{static_cast<std::uint32_t>(client.right), static_cast<std::uint32_t>(client.bottom)},
-                            app.window_.dpi_scale(),
-                            app.surface_revision_};
-        if (const auto& frame = app.presented()) {
-            snapshot.presented =
-                ui::Surface{frame->drawing->extent, frame->drawing->dpi_scale, frame->drawing->surface_revision};
-            snapshot.frame_id = frame->drawing->id;
-        }
-        snapshot.captured = GetCapture() == app.window();
-        snapshot.focused = GetFocus() == app.window();
-        snapshot.foreground = GetForegroundWindow() == app.window();
-        return snapshot;
-    }
-
-    struct PointerQueueSnapshot {
-        std::size_t size{};
-
-        std::vector<std::pair<std::size_t, NativeEvent>> pointers;
-
-        std::string describe(std::string_view stage) const {
-            auto text = std::format("; {}: Window::events_.size={}; pointer_events=[", stage, size);
-            for (const auto& [index, event] : pointers) {
-                text += std::format(" {{index={}; message={:#06x}; ", index, event.message);
-                if (event.relative_motion)
-                    text +=
-                        std::format("raw_relative_delta=({},{})", event.relative_motion->x, event.relative_motion->y);
-                else if (event.message == WM_MOUSELEAVE)
-                    text += "coordinates=none";
-                else
-                    text += std::format("{}=({},{})", event.message == WM_MOUSEWHEEL ? "screen_px" : "client_px",
-                                        GET_X_LPARAM(event.lparam), GET_Y_LPARAM(event.lparam));
-                text += "}";
-            }
-            return text + " ]";
-        }
-    };
-
-    static PointerQueueSnapshot pointer_queue_snapshot(const Application& app) {
-        const auto& events = app.window_.events_;
-        PointerQueueSnapshot snapshot{events.size(), {}};
-        for (std::size_t index = 0; index < events.size(); ++index) {
-            const auto& event = events[index];
-            if ((event.message >= WM_MOUSEFIRST && event.message <= WM_MOUSELAST) || event.message == WM_MOUSELEAVE ||
-                event.relative_motion)
-                snapshot.pointers.emplace_back(index, event);
-        }
-        return snapshot;
-    }
 
     static bool menu_open(const Application& app) { return app.workspace_.menu.has_value(); }
 
