@@ -30,7 +30,7 @@ int run(const int& read, int& write) {
     self.aliases(read, write);
     return read;
 })");
-    auto entry = take(source.bind<int, const int&, int&>());
+    auto entry = source.entry();
     auto result = take(entry.invoke(object.id(), aliases));
     require(result && std::get<int>(*result) == 20 && value == 20, "Host/JIT/native mixed alias chain failed.");
     Program evaluation(runtime, type);

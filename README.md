@@ -257,7 +257,7 @@ cmake --build --preset release --target ui_layout_acceptance
 
 单独运行该消费者：`cmake --build --preset dev --target source_acceptance`（release 同理），成功输出 `Source public consumer: PASS`。
 
-同步标量可通过固定版本的 `Lease::bind<R, Args...>()` 直接定型调用，首个产品消费者是声明式 UI 的 `void(uint32_t)` 分派；原 `Program::bind` 仍返回跟随发布的 Entry。支持范围与版本寿命见[源码调用合同](docs/runtime-model.md#单入口兼容方法体发布)，私有 ABI 与共用清理见[执行结构](docs/runtime-structure.md#同步调用)。现有 Source 验收保留混合寄存器/栈参数的 K5 代表和关闭/热发布 K6 链，真实 UI 链沿无窗口 `editor_document_acceptance`，不新增窗口目标或性能承诺。
+同步标量通过 `Lease::bind<R, Args...>()` 创建固定版本 Typed，或通过 `Entry::bind<R, Args...>()` 创建跟随发布 Typed；声明式 UI 的 `void(uint32_t)` 分派固定版本，项目 World 的 tick/post_physics_tick/late_tick/begin/end 跟随发布且不逐帧重新绑定。两者均不构造通用实参数组，执行区间与延迟退休保护回调中的代码寿命；借用和协程仍使用动态 Entry/Lease。支持范围与版本寿命见[源码调用合同](docs/runtime-model.md#单入口兼容方法体发布)，私有 ABI 与共用清理见[执行结构](docs/runtime-structure.md#同步调用)。现有 Source 验收保留混合寄存器/栈参数 K5、关闭/热发布 K6 链，真实产品链沿无窗口 `editor_document_acceptance`，不新增窗口目标或未经测量的性能承诺。
 
 同一入口包含[交错会话验收](acceptance/source/session.cpp)：一个原生宿主、两个代码版本、四个任务交错经过 yield、GC、完成与 ready/suspended 取消。完成两次后只剩宿主的一份根和对象，释放租约与关闭入口后代码页及展开表退休，最后对象、根和待回收数归零。不再进行多轮预热、规模放大或分配器计时。
 

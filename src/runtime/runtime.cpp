@@ -536,6 +536,8 @@ struct Runtime::Impl {
 
     std::size_t active_executions{};
 
+    RetiredCode* retired_code{};
+
     TypeId f32;
 
     TypeId f64;
@@ -1644,7 +1646,21 @@ Result<void> Runtime::enter_execution() {
 }
 
 void Runtime::leave_execution() noexcept {
-    --impl_->active_executions;
+    if (--impl_->active_executions != 0)
+        return;
+    while (auto* code = impl_->retired_code) {
+        impl_->retired_code = code->next;
+        code->destroy(code);
+    }
+}
+
+void Runtime::retire_code(RetiredCode& code) noexcept {
+    if (impl_->active_executions == 0) {
+        code.destroy(&code);
+        return;
+    }
+    code.next = impl_->retired_code;
+    impl_->retired_code = &code;
 }
 
 Result<void> Runtime::enter_execution_inspection() {

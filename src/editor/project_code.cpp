@@ -24,12 +24,6 @@ bool same(const source::SourceSnapshot& a, const source::SourceSnapshot& b) {
     return true;
 }
 
-Result<void> completed(Result<std::optional<Scalar>> result) {
-    if (!result)
-        return std::unexpected(result.error());
-    return {};
-}
-
 bool lifecycle(std::string_view entry, std::string_view type) {
     if (entry.size() <= type.size() + 1 || !entry.starts_with(type) || entry[type.size()] != '.')
         return false;
@@ -288,15 +282,14 @@ Result<void> ProjectCode::bind() {
             if (!tick && name != "begin" && name != "end")
                 continue;
             ATELIER_TRY_BIND(entry, program_->entry(method.name));
-            if (tick)
-                *tick = [entry = *entry](Runtime&, ObjectId self, float dt) {
-                    const std::array<Scalar, 1> args{dt};
-                    return completed(entry.invoke(self, args));
+            if (tick) {
+                ATELIER_TRY_BIND(bound, (entry->bind<void, float>()));
+                *tick = [entry = std::move(*bound)](Runtime&, ObjectId self, float dt) {
+                    return entry.invoke(self, dt);
                 };
-            else {
-                auto call = [entry = *entry](Runtime&, ObjectId self) {
-                    return completed(entry.invoke(self, std::span<const Scalar>{}));
-                };
+            } else {
+                ATELIER_TRY_BIND(bound, entry->bind<void>());
+                auto call = [entry = std::move(*bound)](Runtime&, ObjectId self) { return entry.invoke(self); };
                 if (name == "begin")
                     behavior.begin = std::move(call);
                 else

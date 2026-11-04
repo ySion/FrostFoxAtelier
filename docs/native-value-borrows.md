@@ -19,7 +19,7 @@ float update(Array<borrow.Particle>& values, float delta) {
 }
 ```
 
-原生入口可用 `program.bind<float, Array<Particle>&, float>()` 核对共享签名；实参为 `Argument::borrow(particles)` 与 `Argument{Scalar{delta}}`。`Entry::invoke` 返回后，原生 `particles[i].position.x` 即为更新后的值。完整错误处理、注册及调用样例见[公共消费者](../acceptance/source/native_values.cpp)。
+原生入口使用 `program.entry().invoke`，实参为 `Argument::borrow(particles)` 与 `Argument{Scalar{delta}}`，由动态入口核对共享签名。该借用不属于同步按值标量的 Typed 白名单。`Entry::invoke` 返回后，原生 `particles[i].position.x` 即为更新后的值。完整错误处理、注册及调用样例见[公共消费者](../acceptance/source/native_values.cpp)。
 
 Array 泛型拼写解析到已发布具体类型的同一身份；没有独立容器注册表。只读记录和数组使用 `const Type& name`，String 只支持只读长度/字节访问。确切语法、只读传播、索引及同步区间限制由 [LANGUAGE.md](../LANGUAGE.md#原生值借用)维护。
 

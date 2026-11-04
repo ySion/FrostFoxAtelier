@@ -56,6 +56,8 @@ struct HostOwner {
 
     Program::Typed<std::uint32_t, std::uint32_t> synchronous;
 
+    Program::Typed<std::uint32_t, std::uint32_t> following;
+
     std::array<Coroutine, 5> tasks;
 
     bool stopping{};
@@ -90,6 +92,7 @@ struct HostOwner {
         stopping = true;
         program->close();
         synchronous = {};
+        following = {};
         for (auto& task : tasks)
             task.cancel();
     }
@@ -148,7 +151,7 @@ void verify_mixed_shutdown() {
             self.signal(mode);
             return mode + 100;
         })");
-    owner.entry = take(owner.program->bind<std::uint32_t, std::uint32_t>(FunctionExecution::coroutine));
+    owner.entry = owner.program->entry();
     owner.current_address = source::detail::ProgramAccess::address(take(owner.program->pin()));
     owner.tasks[0] = take(owner.start(0));
     owner.tasks[1] = take(owner.start(0));
@@ -181,20 +184,50 @@ void verify_synchronous_shutdown() {
     HostOwner owner;
     ActiveOwner active(owner);
     owner.publish("uint run(uint mode) { self.signal(mode); return 23; }");
-    owner.entry = take(owner.program->bind<std::uint32_t, std::uint32_t>());
+    owner.following = take(owner.program->entry().bind<std::uint32_t, std::uint32_t>());
     owner.synchronous = take(take(owner.program->pin()).bind<std::uint32_t, std::uint32_t>());
     owner.current_address = source::detail::ProgramAccess::address(take(owner.program->pin()));
     owner.publish("uint run(uint mode) { self.signal(mode); return 61; }");
     require(take(owner.synchronous.invoke(owner.receiver.id(), 0)) == 23 &&
-                std::get<std::uint32_t>(*take(owner.entry.invoke(owner.receiver.id(), std::array{Scalar{0u}}))) == 61,
-            "Typed binding followed a new publication or ordinary Entry retained the old version.");
+                take(owner.following.invoke(owner.receiver.id(), 0)) == 61,
+            "Fixed typed binding followed a new publication or following binding retained the old version.");
     owner.program->close();
+    require(!owner.following.invoke(owner.receiver.id(), 0), "Closing the program left following typed code callable.");
     require(take(owner.synchronous.invoke(owner.receiver.id(), 0)) == 23,
             "Closing the program invalidated its pinned typed binding.");
     // The callback clears the final public typed handle while its call is active.
-    const auto result = take(owner.synchronous.invoke(owner.receiver.id(), 1));
-    require(result == 23 && owner.busy_in_callback,
-            "Releasing a typed handle inside its callback invalidated the active call or Runtime.");
+    {
+        auto outer = take(ExecutionScope::enter(*owner.runtime));
+        const auto result = take(owner.synchronous.invoke(owner.receiver.id(), 1));
+        require(result == 23 && owner.busy_in_callback,
+                "Releasing a typed handle inside its callback invalidated the active call or Runtime.");
+        code_state(owner.current_address, true);
+    }
+    code_state(owner.current_address, false);
+    take(owner.finish_shutdown());
+}
+
+void verify_following_shutdown() {
+    HostOwner owner;
+    ActiveOwner active(owner);
+    owner.program.emplace(*owner.runtime);
+    source::SourceSnapshot snapshot{"shutdown", 1, {{"Source/Shutdown.source", 1, R"(
+            class stage.Script : stage.Signal {
+                uint run(uint mode) { self.signal(mode); return 37 / (mode - 1); }
+            })"}}};
+    auto candidate = take(Program::prepare(take(owner.program->request(snapshot, {.diagnostics = true}))));
+    take(owner.program->try_publish(candidate));
+    candidate = {};
+    owner.receiver = take(owner.runtime->create(take(owner.runtime->find_type("stage.Script"))));
+    owner.following = take(take(owner.program->entry("stage.Script.run")).bind<std::uint32_t, std::uint32_t>());
+    owner.current_address = source::detail::ProgramAccess::address(take(owner.program->pin("stage.Script.run")));
+    source::Diagnostics diagnostics;
+    // close releases the entire module; no pinned Lease or public Typed remains.
+    // The subsequent generated failure must still locate its source and finish capture.
+    const auto result = owner.following.invoke(owner.receiver.id(), 1, &diagnostics);
+    require(!result && result.error().source && result.error().source->path == "Source/Shutdown.source" &&
+                owner.busy_in_callback && owner.runtime->root_count() == 1,
+            "Following shutdown lost error metadata, execution lifetime or root cleanup.");
     code_state(owner.current_address, false);
     take(owner.finish_shutdown());
 }
@@ -203,6 +236,7 @@ void verify_synchronous_shutdown() {
 void verify_source_shutdown() {
     verify_mixed_shutdown();
     verify_synchronous_shutdown();
+    verify_following_shutdown();
     std::puts(
         "Source shutdown: PASS (mixed states, deferred cancellation, synchronous callback, code/root retirement)");
 }

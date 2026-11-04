@@ -62,7 +62,7 @@ void verify_source_session() {
     auto receiver = take(runtime.create(type));
     Program program(runtime, type);
     publish(program, 1000);
-    const auto entry = take(program.bind<std::uint32_t, std::uint32_t, std::uint32_t>(FunctionExecution::coroutine));
+    const auto entry = program.entry();
     auto old = take(program.pin());
     const auto old_address = source::detail::ProgramAccess::address(old);
     std::array<Coroutine, 4> tasks;

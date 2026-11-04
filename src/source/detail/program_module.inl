@@ -592,9 +592,10 @@ Result<Program::Candidate> Program::prepare_module(const Request& request) {
             auto metadata = std::make_shared<const DiagnosticMetadata>(
                 DiagnosticMetadata{owner->id, request->sequence, name, request->source_name, locations});
             auto debug = make_debug_metadata(*metadata, info, debug_tables);
-            module->versions.push_back(std::make_shared<const Version>(unit.contract, std::move(declaration),
-                                                                       request->sequence, std::move(metadata),
-                                                                       std::move(debug), std::move(codes[i]), map));
+            module->versions.push_back(std::shared_ptr<const Version>{
+                new Version(unit.contract, std::move(declaration), request->sequence, std::move(metadata),
+                            std::move(debug), std::move(codes[i]), map),
+                &Version::retire});
         }
     }
     if (owner->module) {
@@ -608,6 +609,8 @@ Result<Program::Candidate> Program::prepare_module(const Request& request) {
                     Error{ErrorCode::rebuild_required,
                           "Source export signature changed; rebuild the Runtime context: " + old[i].name});
             const auto index = static_cast<std::size_t>(found - module->entries.begin());
+            if (owner->module->versions[i]->typed_address && !module->versions[index]->typed_address)
+                return std::unexpected(Error{ErrorCode::invalid_definition, "Candidate removed a bound typed entry."});
             std::swap(module->entries[i], module->entries[index]);
             std::swap(module->versions[i], module->versions[index]);
         }

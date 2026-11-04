@@ -373,7 +373,7 @@ struct Program::Contract {
     }
 };
 
-struct Program::Version {
+struct Program::Version : Runtime::RetiredCode {
     std::shared_ptr<const Contract> contract;
 
     std::shared_ptr<const Declaration> declaration;
@@ -387,6 +387,8 @@ struct Program::Version {
 
     BusinessFrameLayout layout;
 
+    std::uintptr_t typed_address;
+
     std::shared_ptr<const DiagnosticMetadata> diagnostic;
 
     std::shared_ptr<const DebugMetadata> debug;
@@ -396,9 +398,28 @@ struct Program::Version {
     Version(std::shared_ptr<const Contract> bound, std::shared_ptr<const Declaration> declared, std::uint64_t request,
             std::shared_ptr<const DiagnosticMetadata> capture, std::shared_ptr<const DebugMetadata> session,
             std::shared_ptr<BusinessCode> owner, std::shared_ptr<const SourceMap> source_map = {}) noexcept
-        : contract(std::move(bound)), declaration(std::move(declared)), sequence(request), code(std::move(owner)),
+        : Runtime::RetiredCode{nullptr,
+                               [](Runtime::RetiredCode* code) noexcept { delete static_cast<Version*>(code); }},
+          contract(std::move(bound)), declaration(std::move(declared)), sequence(request), code(std::move(owner)),
           info(atelier_business_info(code.get())), layout(atelier_business_layout(code.get())),
-          diagnostic(std::move(capture)), debug(std::move(session)), map(std::move(source_map)) {}
+          typed_address(atelier_business_typed_entry(code.get())), diagnostic(std::move(capture)),
+          debug(std::move(session)), map(std::move(source_map)) {}
+
+    static void retire(Version* version) noexcept { version->contract->binding.runtime->retire_code(*version); }
+
+    Result<void> bind_signature(SignatureDefinition expected) const {
+        const auto& signature = declaration->signature;
+        if (const auto& receiver = signature.receiver)
+            expected.receiver = ReceiverDefinition{receiver->type, receiver->read_only};
+        ATELIER_TRY_BIND(resolved, contract->binding.runtime->resolve_signature(expected));
+        if (*resolved != signature)
+            return std::unexpected(
+                Error{ErrorCode::argument_mismatch, "Host binding does not match the source signature."});
+        if (!typed_address)
+            return std::unexpected(
+                Error{ErrorCode::unsupported_operation, "Code has no synchronous scalar typed entry."});
+        return {};
+    }
 
     // Generated failure exits report a site index; resolving it allocates, so it
     // happens only after a failure.
@@ -413,7 +434,8 @@ struct Program::Version {
     }
 
     // Keep captures on this stack until the body has released its arguments.
-    // The caller pins this Version; successful starts transfer captures to their frame.
+    // The activation protects this Version even when a callback releases its last
+    // shared owner. Successful starts transfer captures to their persistent frame.
     template <class T, class F>
     Result<T> invoke_captured(Diagnostics* diagnostics, Debugger* debugger, F&& body) const {
         auto activation = ExecutionScope::enter(*contract->binding.runtime);
@@ -531,42 +553,6 @@ struct Program::Version {
     }
 };
 
-Result<std::uint64_t> Program::invoke_bound(std::shared_ptr<const Version> version, std::uintptr_t address,
-                                            ObjectId receiver, void* arguments, DirectCall invoke,
-                                            Diagnostics* diagnostics, Debugger* debugger) {
-    if (!version)
-        return std::unexpected(
-            reject_invocation(diagnostics, debugger, {ErrorCode::invalid_definition, "Typed code lease is empty."}));
-    return version->invoke_captured<std::uint64_t>(
-        diagnostics, debugger, [&](DiagnosticScope& capture, DebugScope& debug) -> Result<std::uint64_t> {
-            struct Call {
-                std::uintptr_t address;
-
-                void* arguments;
-
-                DirectCall invoke;
-
-                std::uint64_t output{};
-            } call{address, arguments, invoke};
-            const auto body = [](void* context, Invocation& invocation, BusinessFailure& failure, char*,
-                                 std::uint32_t) noexcept {
-                auto& call = *static_cast<Call*>(context);
-                return call.invoke(call.address, call.arguments, &invocation, &call.output, &failure, invocation.trace);
-            };
-            const auto& binding = version->contract->binding;
-            ATELIER_TRY_BIND(activation, ExecutionScope::enter(*binding.runtime));
-            std::uint32_t site = no_diagnostic_location;
-            auto result = execute_invocation(*activation, *binding.runtime, binding, version->layout,
-                                             version->declaration->signature.receiver.has_value(), receiver, &call,
-                                             body, {}, capture.trace(), debug.state(), &site);
-            if (!result) {
-                version->locate(result.error(), site);
-                return std::unexpected(std::move(result.error()));
-            }
-            return call.output;
-        });
-}
-
 #include "source/detail/module_state.inl"
 
 struct Program::State {
@@ -599,12 +585,53 @@ struct Program::State {
         return {};
     }
 
-    std::shared_ptr<const Version> select(std::optional<std::size_t> index) const {
+    const std::shared_ptr<const Version>& select(std::optional<std::size_t> index) const {
+        static const std::shared_ptr<const Version> empty;
         if (!index)
-            return module ? nullptr : current;
-        return module && *index < module->versions.size() ? module->versions[*index] : nullptr;
+            return module ? empty : current;
+        return module && *index < module->versions.size() ? module->versions[*index] : empty;
     }
 };
+
+Result<std::uint64_t> Program::invoke_bound(const Version* version, const State* owner,
+                                            std::optional<std::size_t> index, ObjectId receiver, void* arguments,
+                                            DirectCall invoke, Diagnostics* diagnostics, Debugger* debugger) {
+    if (owner)
+        version = owner->open ? owner->select(index).get() : nullptr;
+    if (!version)
+        return std::unexpected(reject_invocation(
+            diagnostics, debugger, {ErrorCode::invalid_definition, "Typed entry has no published version."}));
+    // No handle/State access follows this selection. invoke_captured enters before
+    // any callback and leaves after error location, diagnostics and value cleanup.
+    return version->invoke_captured<std::uint64_t>(
+        diagnostics, debugger, [&](DiagnosticScope& capture, DebugScope& debug) -> Result<std::uint64_t> {
+            struct Call {
+                std::uintptr_t address;
+
+                void* arguments;
+
+                DirectCall invoke;
+
+                std::uint64_t output{};
+            } call{version->typed_address, arguments, invoke};
+            const auto body = [](void* context, Invocation& invocation, BusinessFailure& failure, char*,
+                                 std::uint32_t) noexcept {
+                auto& call = *static_cast<Call*>(context);
+                return call.invoke(call.address, call.arguments, &invocation, &call.output, &failure, invocation.trace);
+            };
+            const auto& binding = version->contract->binding;
+            ATELIER_TRY_BIND(activation, ExecutionScope::enter(*binding.runtime));
+            std::uint32_t site = no_diagnostic_location;
+            auto result = execute_invocation(*activation, *binding.runtime, binding, version->layout,
+                                             version->declaration->signature.receiver.has_value(), receiver, &call,
+                                             body, {}, capture.trace(), debug.state(), &site);
+            if (!result) {
+                version->locate(result.error(), site);
+                return std::unexpected(std::move(result.error()));
+            }
+            return call.output;
+        });
+}
 
 struct Program::Frame final : CoroutineFrame {
     std::shared_ptr<const Version> version;
@@ -913,21 +940,20 @@ Result<std::optional<Scalar>> Program::Entry::invoke_arguments(ObjectId receiver
     return version->invoke_values(receiver, arguments, diagnostics, debugger);
 }
 
-Result<std::uintptr_t> Program::Lease::bind_signature(SignatureDefinition expected) const {
+Result<void> Program::Lease::bind_signature(SignatureDefinition expected) const {
     const auto version = version_;
     if (!version)
         return std::unexpected(Error{ErrorCode::invalid_definition, "Code lease is empty."});
-    const auto& signature = version->declaration->signature;
-    if (const auto& receiver = signature.receiver)
-        expected.receiver = ReceiverDefinition{receiver->type, receiver->read_only};
-    ATELIER_TRY_BIND(resolved, version->contract->binding.runtime->resolve_signature(expected));
-    if (*resolved != signature)
-        return std::unexpected(
-            Error{ErrorCode::argument_mismatch, "Host binding does not match the pinned source signature."});
-    const auto address = atelier_business_typed_entry(version->code.get());
-    if (!address)
-        return std::unexpected(Error{ErrorCode::unsupported_operation, "Code has no synchronous scalar typed entry."});
-    return address;
+    return version->bind_signature(std::move(expected));
+}
+
+Result<std::shared_ptr<Program::State>> Program::Entry::bind_signature(SignatureDefinition expected) const {
+    auto owner = owner_.lock();
+    const auto* version = owner && owner->open ? owner->select(index_).get() : nullptr;
+    if (!version)
+        return std::unexpected(Error{ErrorCode::invalid_definition, "Business entry has no published version."});
+    ATELIER_TRY(version->bind_signature(std::move(expected)));
+    return owner;
 }
 
 Result<std::optional<Scalar>> Program::Lease::invoke(ObjectId receiver, std::span<const Scalar> arguments,
@@ -1027,20 +1053,6 @@ Result<FunctionSignature> Program::describe() const {
         return std::unexpected(
             Error{ErrorCode::invalid_definition, "Business source declaration has not been published."});
     return state_->declaration->signature;
-}
-
-Result<Program::Entry> Program::bind_signature(SignatureDefinition expected) const {
-    const auto owner = state_;
-    if (!owner->open || !owner->declaration)
-        return std::unexpected(
-            Error{ErrorCode::invalid_definition, "Business source declaration has not been published."});
-    if (const auto& receiver = owner->declaration->signature.receiver)
-        expected.receiver = ReceiverDefinition{receiver->type, receiver->read_only};
-    ATELIER_TRY_BIND(resolved, owner->contract->binding.runtime->resolve_signature(expected));
-    if (*resolved != owner->declaration->signature)
-        return std::unexpected(
-            Error{ErrorCode::argument_mismatch, "Host binding does not match the published source signature."});
-    return Entry{owner};
 }
 
 Result<Program::Lease> Program::pin() const {
@@ -1184,9 +1196,12 @@ Result<void> Program::try_publish(Candidate& candidate) {
                          prepared.compilation_contract->resolve_signature(info, prepared.type_publication.get()));
         declaration = std::make_shared<const Declaration>(Declaration{info.function_name, std::move(*signature)});
     }
-    // Allocation precedes the noexcept constructor's transfer of candidate code.
-    auto version = std::make_shared<const Version>(prepared.compilation_contract, declaration, prepared.sequence,
-                                                   prepared.diagnostic, prepared.debug, std::move(prepared.code));
+    auto version =
+        std::shared_ptr<const Version>{new Version(prepared.compilation_contract, declaration, prepared.sequence,
+                                                   prepared.diagnostic, prepared.debug, std::move(prepared.code)),
+                                       &Version::retire};
+    if (owner->current && owner->current->typed_address && !version->typed_address)
+        return std::unexpected(Error{ErrorCode::invalid_definition, "Candidate removed a bound typed entry."});
     if (prepared.type_publication)
         prepared.type_publication->commit(*owner->contract->binding.runtime);
     owner->contract = prepared.compilation_contract;

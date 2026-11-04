@@ -28,6 +28,10 @@
 #include <vector>
 
 namespace atelier {
+namespace source {
+class Program;
+}
+
 template <class T>
 class Span;
 
@@ -1273,6 +1277,18 @@ private:
     [[nodiscard]] Result<void> enter_execution();
 
     void leave_execution() noexcept;
+
+    friend class source::Program;
+
+    // Source code owners enter this allocation-free list before destruction.
+    // Their complete execution dependencies survive the outermost activation.
+    struct RetiredCode {
+        RetiredCode* next{};
+
+        void (*destroy)(RetiredCode*) noexcept;
+    };
+
+    void retire_code(RetiredCode&) noexcept;
 
     friend class ExecutionInspection;
 

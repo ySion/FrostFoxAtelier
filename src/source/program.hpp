@@ -53,25 +53,33 @@ class Program final {
     using DirectCall = std::uint32_t (*)(std::uintptr_t, void*, void*, std::uint64_t*, detail::BusinessFailure*,
                                          detail::BusinessTrace*) noexcept;
 
-    static Result<std::uint64_t> invoke_bound(std::shared_ptr<const Version>, std::uintptr_t, ObjectId, void*,
+    static Result<std::uint64_t> invoke_bound(const Version*, const State*, std::optional<std::size_t>, ObjectId, void*,
                                               DirectCall, Diagnostics*, Debugger*);
 
 public:
     class Lease;
 
-    // Owns one checked synchronous signature and Version, not the receiver or Runtime.
-    // Each invocation pins its Version before callbacks may release this handle.
+    class Entry;
+
+    // One checked synchronous signature: Lease fixes its Version, Entry follows
+    // publication. Active execution, not the handle, protects code during callbacks.
     template <class R, class... Args>
         requires(std::is_void_v<R> || direct_scalar<R>) && (direct_scalar<Args> && ...)
     class Typed {
         friend class Lease;
 
+        friend class Entry;
+
         std::shared_ptr<const Version> version_;
 
-        std::uintptr_t address_{};
+        std::shared_ptr<State> owner_;
 
-        Typed(std::shared_ptr<const Version> version, std::uintptr_t address)
-            : version_(std::move(version)), address_(address) {}
+        std::optional<std::size_t> index_;
+
+        explicit Typed(std::shared_ptr<const Version> version) : version_(std::move(version)) {}
+
+        Typed(std::shared_ptr<State> owner, std::optional<std::size_t> index)
+            : owner_(std::move(owner)), index_(index) {}
 
     public:
         Typed() = default;
@@ -91,7 +99,8 @@ public:
                     },
                     *static_cast<std::tuple<Args...>*>(context));
             };
-            ATELIER_TRY_BIND(result, invoke_bound(version_, address_, receiver, &values, call, diagnostics, debugger));
+            ATELIER_TRY_BIND(result, invoke_bound(version_.get(), owner_.get(), index_, receiver, &values, call,
+                                                  diagnostics, debugger));
             if constexpr (std::is_void_v<R>)
                 return {};
             else if constexpr (std::same_as<R, double>)
@@ -195,8 +204,8 @@ public:
             expected.parameters = {ParameterDefinition{{TypeReference::native<Args>()}, ParameterPassing::value}...};
             if constexpr (!std::is_void_v<R>)
                 expected.result = ValueDefinition{TypeReference::native<R>()};
-            ATELIER_TRY_BIND(address, bind_signature(std::move(expected)));
-            return Typed<R, Args...>{version_, *address};
+            ATELIER_TRY(bind_signature(std::move(expected)));
+            return Typed<R, Args...>{version_};
         }
 
         Result<std::optional<Scalar>> invoke(ObjectId, std::span<const Scalar>, Diagnostics* = nullptr,
@@ -222,7 +231,7 @@ public:
         }
 
     private:
-        Result<std::uintptr_t> bind_signature(SignatureDefinition) const;
+        Result<void> bind_signature(SignatureDefinition) const;
 
         Result<std::optional<Scalar>> invoke_arguments(ObjectId, std::span<const Argument>, Diagnostics*,
                                                        Debugger*) const;
@@ -251,6 +260,19 @@ public:
     public:
         Entry() = default;
 
+        // Retains the closed/open control, not a code version. Each invocation
+        // selects the current published version once, including after reordering.
+        template <class R, class... Args>
+            requires(std::is_void_v<R> || direct_scalar<R>) && (direct_scalar<Args> && ...)
+        Result<Typed<R, Args...>> bind() const {
+            SignatureDefinition expected;
+            expected.parameters = {ParameterDefinition{{TypeReference::native<Args>()}, ParameterPassing::value}...};
+            if constexpr (!std::is_void_v<R>)
+                expected.result = ValueDefinition{TypeReference::native<R>()};
+            ATELIER_TRY_BIND(owner, bind_signature(std::move(expected)));
+            return Typed<R, Args...>{std::move(*owner), index_};
+        }
+
         Result<std::optional<Scalar>> invoke(ObjectId, std::span<const Scalar>, Diagnostics* = nullptr,
                                              Debugger* = nullptr) const;
 
@@ -272,6 +294,8 @@ public:
         }
 
     private:
+        Result<std::shared_ptr<State>> bind_signature(SignatureDefinition) const;
+
         Result<std::optional<Scalar>> invoke_arguments(ObjectId, std::span<const Argument>, Diagnostics*,
                                                        Debugger*) const;
 
@@ -289,7 +313,7 @@ public:
 
     // Idempotently closes entries, requests and publication. Existing leases
     // and coroutines retain their version; their owner must finish/cancel them
-    // before destroying the Runtime. Safe during a pinned active invocation.
+    // before destroying the Runtime. Safe during an active invocation.
     void close() noexcept;
 
     Program(const Program&) = delete;
@@ -314,19 +338,6 @@ public:
 
     Result<FunctionSignature> describe() const;
 
-    template <class R, class... Args>
-        requires((!std::is_rvalue_reference_v<Args> && !std::is_volatile_v<std::remove_reference_t<Args>>) && ...) &&
-                (!std::is_reference_v<R>)
-    Result<Entry> bind(FunctionExecution execution = FunctionExecution::synchronous) const {
-        SignatureDefinition expected;
-        expected.execution = execution;
-        expected.parameters = {
-            ParameterDefinition{{TypeReference::native<std::remove_cvref_t<Args>>()}, parameter_passing<Args>}...};
-        if constexpr (!std::is_void_v<R>)
-            expected.result = ValueDefinition{TypeReference::native<R>()};
-        return bind_signature(std::move(expected));
-    }
-
     Result<Lease> pin() const;
 
     // Requests collect source type declarations and capture unpublished Runtime
@@ -349,8 +360,6 @@ private:
     static Result<Candidate> prepare_module(const Request&);
 
     Result<void> publish_module(Candidate&);
-
-    Result<Entry> bind_signature(SignatureDefinition) const;
 
     std::shared_ptr<State> state_;
 };

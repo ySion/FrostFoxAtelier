@@ -73,17 +73,16 @@ Entry.invoke 选择当前 Version / Lease.invoke 使用固定 Version
 
 内部 `execute_typed` 执行完整目录/布局检查后也进入 `execute_admitted`，供 raw ABI 等验收使用。已发布 Version 使用自己的已验证元数据。公共入口和内部观察入口共用同一执行与清理实现；正式消费者通过程序入口或版本租约使用已发布代码。
 
-`Lease::bind<R, Args...>` 核对共享签名后持有固定版本及其专用 typed 导出。定型调用在 Source 端仍进入同一诊断/Debugger 捕获、ExecutionScope 和 `execute_invocation`；宿主栈上的定型实参包由编译期 thunk 展开，直接进入 JIT，不生成通用实参数组。支持的同步标量公开函数只降低一次业务体，原通用导出解包后调用同一个 typed 体；内部函数和非标量/协程入口不改变合同。根槽、原生服务、poll、错误首因、位置映射以及 RAII 兜底前的 `resources_cleared/live_values` 判定均共用，不因绑定而跳过。
+`Lease::bind<R, Args...>` 和 `Entry::bind<R, Args...>` 核对同一共享签名，创建固定或跟随发布的同名 Typed。跟随句柄持有 State 与稳定索引，每次只选一次 Version；固定句柄直接选其持有的 Version，定型地址由版本缓存。定型调用在 Source 端仍进入同一诊断/Debugger 捕获、ExecutionScope 和 `execute_invocation`；宿主栈上的定型实参包由编译期 thunk 展开，直接进入 JIT，不生成通用实参数组。支持的同步标量公开函数只降低一次业务体，原通用导出解包后调用同一个 typed 体；内部函数和非标量/协程入口不改变合同。根槽、原生服务、poll、错误首因、位置映射以及 RAII 兜底前的 `resources_cleared/live_values` 判定均共用，不因绑定而跳过。
 
-私有 Windows x64 ABI 为 `uint32_t(Invocation*, A0, A1, ..., uint64_t* staged_result, BusinessFailure*, BusinessTrace*) noexcept`。业务参数顺序保持声明顺序，i32/u32 只解释低32位，不依赖寄存器高位；浮点分别使用 float/double，bool 使用归一化的 u32 0/1，不借用 LLVM i1 的宿主扩展规则。寄存器/栈分配遵循当前工具链的 Windows x64 C 调用约定，包含首个 Invocation 及尾部三个隐藏参数；trace 参数始终存在，未捕获时可为空。暂存结果使用既有低32位标量位模式/64位 double 位模式，bool 为0/1，void 可传空输出；执行和显式清理完整成功后才构造宿主 `Result<R>`，失败不交付暂存。BusinessFailure 保持原因与最内层位置，C++ Result、string 和异常不跨 JIT ABI。Source 局部持有 Version 覆盖同步回调，Runtime、原生服务与后端 DLL 仍须由宿主保活；该入口地址不是业务方可持久保存的裸函数接口。
+私有 Windows x64 ABI 为 `uint32_t(Invocation*, A0, A1, ..., uint64_t* staged_result, BusinessFailure*, BusinessTrace*) noexcept`。业务参数顺序保持声明顺序，i32/u32 只解释低32位，不依赖寄存器高位；浮点分别使用 float/double，bool 使用归一化的 u32 0/1，不借用 LLVM i1 的宿主扩展规则。寄存器/栈分配遵循当前工具链的 Windows x64 C 调用约定，包含首个 Invocation 及尾部三个隐藏参数；trace 参数始终存在，未捕获时可为空。暂存结果使用既有低32位标量位模式/64位 double 位模式，bool 为0/1，void 可传空输出；执行和显式清理完整成功后才构造宿主 `Result<R>`，失败不交付暂存。BusinessFailure 保持原因与最内层位置，C++ Result、string 和异常不跨 JIT ABI。同步 typed 通过 Runtime 活动计数和 Version 析构前的无分配退休链保护代码，最外层执行退出后释放，不逐调用复制 shared_ptr。Runtime、原生服务与后端 DLL 仍须由宿主保活；该入口地址不是业务方可持久保存的裸函数接口。
 
 同步和协程共用 `check_source_receiver`，验证实际对象 `is_a` 绑定类型，再经 `ExecutionFrame::hold(slot, id, binding.type)` 建立声明视图。基类字段和方法继续通过同一 Runtime 访问入口调整地址；桥接不复制对象，也不保留旧的精确类型接收者路径。
 
 ### 协程
 
 ```text
-bind<R, Args...>(FunctionExecution::coroutine) → 同一个 Entry
-  → Entry.start / Lease.start → 固定 Version、复制参数、稳定 Frame
+Entry.start / Lease.start → 固定 Version、复制参数、稳定 Frame
   → Coroutine.create → ready（不执行源码体）
   → Coroutine.resume → ExecutionScope → Frame.resume → DLL resume
   → 生成代码与既有 BusinessServices → yield / 完成 / 错误
@@ -111,7 +110,8 @@ bind<R, Args...>(FunctionExecution::coroutine) → 同一个 Entry
 | source::Program / State | 不可变 Contract/Declaration、当前 Version | 幂等 close 关闭新请求、准备、发布和 Entry，释放 current；已有租约和帧保留其版本 |
 | Entry | 弱程序身份 | 每次调用只选取一次当前版本；本身不保活代码或接收者 |
 | Lease | 一个固定 Version | 释放最后一个代码持有者前，旧版本仍可调用 |
-| Version | 编译代码（工程模块里可与旧 Version 共同持有）及对应签名、布局和绑定依赖 | 保持该版本的代码与调用描述一致；代码在最后一个持有它的 Version 释放后回收；不拥有 Runtime |
+| Typed | 固定 Version 或跟随 State/稳定索引 | 固定版本在 close 后可用，跟随版本拒绝新调用；活动执行不依赖句柄继续存活 |
+| Version | 编译代码（工程模块里可与旧 Version 共同持有）及对应签名、布局和绑定依赖 | 最后共享持有者释放后，仍须等 Runtime 最外层执行退出才析构；不拥有 Runtime |
 | Coroutine / Control | 稳定 CoroutineFrame、状态、完成结果/错误 | 外层拥有者析构等价于取消；活动恢复局部保活，终态释放帧 |
 | 宿主 Frame | Version、Invocation、DLL 协程句柄 | 先销毁 DLL 帧，再销毁 Invocation，最后释放 Version |
 | DLL BusinessCoroutineState | CompiledBusiness、参数副本、LLVM 帧和状态 | 先调用本版本 destroy，再释放代码拥有者；恢复期间局部保活允许外壳被回调销毁 |
@@ -127,7 +127,7 @@ bind<R, Args...>(FunctionExecution::coroutine) → 同一个 Entry
 
 这些取舍的直接依据与适用边界：
 
-- [LLVM ORC 资源移除](https://llvm.org/docs/ORCv2.html#how-to-remove-code)不证明活动返回地址或直接调用已经消失，故代码退休由 Version 拥有关系决定；[Windows 动态展开表](https://learn.microsoft.com/en-us/windows/win32/api/winnt/nf-winnt-rtladdfunctiontable)须随可执行分配登记和撤销，而不是为链接成功去掉 `.pdata/.xdata`。
+- [LLVM ORC 资源移除](https://llvm.org/docs/ORCv2.html#how-to-remove-code)不证明活动返回地址或直接调用已经消失，故代码退休同时受 Version 拥有关系和 Runtime 活动执行区间保护；[Windows 动态展开表](https://learn.microsoft.com/en-us/windows/win32/api/winnt/nf-winnt-rtladdfunctiontable)须随可执行分配登记和撤销，而不是为链接成功去掉 `.pdata/.xdata`。
 - 当前采用 COFF/JITLink allocation actions，不依赖完整 COFFPlatform。所核对的 [LLVM COFF runtime](https://github.com/llvm/llvm-project/blob/llvmorg-23.1.1/compiler-rt/lib/orc/coff_platform.cpp)有特定回调异常桥限制；[debugger helper](https://github.com/llvm/llvm-project/blob/llvmorg-23.1.1/llvm/lib/ExecutionEngine/Orc/Debugging/DebuggerSupport.cpp)不接通 COFF 源码调试。版本升级须复核这些路径，不能把平台展开成功当作源码调试或任意 C++ 异常互通。
 - [LLVM switched-resume](https://llvm.org/docs/Coroutines.html#switched-resume-lowering)复用编译器的帧布局与恢复/销毁拆分；冷启动、同线程推进、合作取消和旧版本 pin 仍由本项目负责。取消请求不等于外部操作已经停止，见 [.NET 合作取消](https://learn.microsoft.com/en-us/dotnet/standard/threading/cancellation-in-managed-threads)。不为假设需求增加有栈执行器，也不把 LLVM 转换等同 GC 或调度器。
 - 共享原生存储不等于相同调用 ABI 或零复制；UE-AS 的[真实 C++ caller 适配](https://github.com/Hazelight/UnrealEngine-Angelscript/blob/a7890667d1abb289bc2cec16b3da075faf836f2d/Engine/Source/Runtime/CoreUObject/Public/UObject/CoreNative.h#L36-L151)提供这一边界的对照。该固定源码需要 Unreal 源码访问权限，本项目仍由共享签名、参数准备与 DLL 私有表示各自承担职责。
@@ -152,13 +152,13 @@ bind<R, Args...>(FunctionExecution::coroutine) → 同一个 Entry
 
 | 项目 | 现状与实际影响 | 处理时机与最小方向 |
 | --- | --- | --- |
-| 分配、根槽扫描和代码退休 | 协程有多处分配，根扫描受历史槽位高水位影响，最后代码拥有者在调用线程承担退休 | 交错会话只验证寿命，不评估预算；当前没有已证明需要池化、根表替换或退休队列的负载，不沿用旧测量数值作当前性能结论 |
+| 分配、根槽扫描和代码退休 | 协程有多处分配，根扫描受历史槽位高水位影响；活动执行期间的末持有者释放延迟到最外层退出，在同线程排空退休链 | 延迟退休用于保护无逐调用 pin 的同步代码寿命，不是后台释放或帧预算调度；其独立性能收益须与保留 pin 的对照分开评估，不据此引入池化或替换根表 |
 | 源码调试宿主接入 | 核心已有源码断点、单步、只读局部值和源码调用栈；平台继续提供动态展开信息 | 编辑器面板与 Control 调试指令仍处于[接入方案](modules/editor/control.md#源码调试接入待实现)阶段；核心能力与 C++ 单步、变量写入等边界见[调试合同](source-debugger.md) |
 | GC 参与线程与预算 | 当前单线程非移动分步回收，活动执行区间不推进 GC | 多线程参与、并发/分代及其他堆布局须先明确根发布、借用与生命周期协议，再以真实负载决定；外部 collector 的论文结果不构成实施排期 |
 
 `await`、跨模块调用、递归、多对象类型环境、对象引用参数、资源记录/容器按值调用和布局迁移属于尚未实现的能力；plain record 同步按值参数/结果、原生/描述型记录与容器的同步借用、记录/String/Array 拥有型局部、源码 enum/struct 及 BorrowSafe 原生调用已落地。它们不因出现在研究报告中就成为当前缺陷或必须立即完成的债务；MLIR、有栈协程和并发调度没有实施计划。
 
-正式接口的成本也需保留可见性：公共 Scalar 参数最多八项时在栈上转码，更多参数按需分配；冷端 Candidate 为隐藏内部状态增加一份独立存储，Request 私有构造使用独立 shared_ptr 控制块。
+正式接口的成本也需保留可见性：公共 Scalar 参数最多八项时在栈上转码，更多参数按需分配；冷端 Candidate 为隐藏内部状态增加一份独立存储，Request 私有构造使用独立 shared_ptr 控制块。Version 为在析构前退休，也改用对象与控制块的独立分配；挂链本身不分配，但活跃区间较长时会延后释放该 Runtime 中已无共享持有者的版本。
 
 内部 ABI 不承诺二进制兼容，宿主与后端随同一次构建更新。
 

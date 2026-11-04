@@ -3,7 +3,7 @@ void hierarchical_lifecycle() {
     const auto types = register_test_types(runtime);
     source::Program program(runtime, types.counter);
     publish(program, "async void later() { yield; self.advance(50.0); }");
-    const auto later = take(program.bind<void>(FunctionExecution::coroutine));
+    const auto later = program.entry();
     w::World world(runtime, types);
     take(world.set_failure_policy(w::FailurePolicy::halt));
     auto root = take(w::create_entity(runtime));
@@ -336,7 +336,7 @@ void attachment_space_and_authoring() {
     w::World world(runtime, types);
     source::Program task_program(runtime, types.counter);
     publish(task_program, "async void later() { yield; self.advance(50.0); }");
-    const auto later = take(task_program.bind<void>(FunctionExecution::coroutine));
+    const auto later = task_program.entry();
     auto root = take(w::create_entity(runtime));
     auto logical = take(w::create_entity(runtime));
     auto child = take(w::create_entity(runtime));

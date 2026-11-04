@@ -170,14 +170,10 @@ void editing_and_execution() {
     committed(world.attach_components(entity.id(), counter_added));
     source::Program program(runtime, types.counter);
     publish(program, "void step(float amount) { self.advance(amount); }");
-    const auto entry = take(program.bind<void, float>());
+    const auto entry = take(program.entry().bind<void, float>());
     take(
         world.bind_behavior(types.counter, {.tick = [entry](Runtime&, ObjectId receiver, float amount) -> Result<void> {
-                                const std::array arguments{Scalar{amount}};
-                                auto result = entry.invoke(receiver, arguments);
-                                if (!result)
-                                    return std::unexpected(result.error());
-                                return {};
+                                return entry.invoke(receiver, amount);
                             }}));
     committed(world.start());
     take(world.update(2.f));
@@ -186,7 +182,7 @@ void editing_and_execution() {
             "JIT did not update the same derived Counter.");
     source::Program deferred(runtime, types.counter);
     publish(deferred, "async void later() { yield; self.advance(50.0); }");
-    const auto later = take(deferred.bind<void>(FunctionExecution::coroutine));
+    const auto later = deferred.entry();
     take(world.start_task(counter.id(), [later](Runtime&, ObjectId receiver) { return later.start(receiver, {}); }));
     require(w::detail::Access::state(world).tasks.size() == 1, "World did not own the real coroutine.");
     take(world.update(1.f)); // task suspends after its yield
@@ -480,7 +476,7 @@ void isolated_failures() {
     take(ticking.try_publish(candidate));
     publish(waiting, "async void later() { yield; self.steps = 10 / self.steps; }");
     const auto script = take(ticking.pin());
-    const auto later = take(waiting.bind<void>(FunctionExecution::coroutine));
+    const auto later = waiting.entry();
     const auto steps = take(runtime.find_field(types.counter, "steps"));
     w::World world(runtime, types);
     auto e = take(w::create_entity(runtime));

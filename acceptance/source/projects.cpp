@@ -72,13 +72,22 @@ void verify_property_update() {
         )"}}};
     publish(program, input);
     const auto instance = take(runtime.create(take(runtime.find_type("game.Property"))));
-    const auto entry = take(program.entry("game.Property.run"));
+    const auto entry = take(take(program.entry("game.Property.run")).bind<std::uint32_t>());
     const auto old = take(take(program.pin("game.Property.run")).bind<std::uint32_t>());
-    require(std::get<std::uint32_t>(*take(entry.invoke(instance.id(), {}))) == 10,
-            "Initial cross-file property call produced the wrong state.");
+    require(take(entry.invoke(instance.id())) == 10, "Initial cross-file property call produced the wrong state.");
     input.files[0].source = "uint props.GetValue() { return 11; } void props.SetValue(uint v) {}";
+    // Reorder exports while retaining the same following handle and stable slot.
+    input.files[1].source = R"(
+        uint value() { return props.Value; }
+        class game.Property : procedural.Base {
+            uint stored = 3;
+            uint run() { Local = Local + props.Value; return Local; }
+            uint GetLocal() { return self.stored; }
+            void SetLocal(uint v) { self.stored = v; }
+        }
+    )";
     publish(program, input);
-    require(std::get<std::uint32_t>(*take(entry.invoke(instance.id(), {}))) == 21 &&
+    require(take(entry.invoke(instance.id())) == 21 &&
                 std::get<std::uint32_t>(*take(take(program.entry("value")).invoke({}, {}))) == 11 &&
                 take(old.invoke(instance.id())) == 28,
             "Property update kept stale dependencies or changed a pinned accessor version.");

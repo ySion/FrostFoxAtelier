@@ -83,14 +83,10 @@ void frame_phases() {
     source::Program program(runtime, types.counter);
     publish(program, "void tick(float dt) {\n    self.advance(dt);\n"
                      "    if (self.steps == 1) { self.set_enabled(false); } else { self.destroy(); }\n}\n");
-    const auto entry = take(program.bind<void, float>());
+    const auto entry = take(program.entry().bind<void, float>());
     take(
         world.bind_behavior(types.counter, {.tick = [entry](Runtime&, ObjectId receiver, float amount) -> Result<void> {
-                                const std::array arguments{Scalar{amount}};
-                                auto result = entry.invoke(receiver, arguments);
-                                if (!result)
-                                    return std::unexpected(result.error());
-                                return {};
+                                return entry.invoke(receiver, amount);
                             }}));
     const auto steps = [&] {
         return take(

@@ -124,7 +124,7 @@ void verify_boolean_storage() {
     publish(
         aliases,
         "bool run(bool copy, const bool& read, bool& write) { write = copy; return read == write && write != !copy; }");
-    const auto entry = take(aliases.bind<bool, bool, const bool&, bool&>());
+    const auto entry = aliases.entry();
     struct Guarded {
         bool value{};
 
