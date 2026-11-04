@@ -557,10 +557,10 @@ Result<void> Application::action(const ui::Action& source) {
     if (event.kind == ui::ActionKind::activate)
         if (const auto* binding = workspace_.binding(event.key);
             binding && binding->kind == editor::Workspace::Binding::Kind::operator_call) {
-            if (binding->call->context.selection && document_->selection() != workspace_.menu_selection())
+            if (binding->call->request.context.selection && document_->selection() != workspace_.menu_selection())
                 return invalid();
             // A document replacement may retire the binding during this call.
-            const auto call = *binding->call;
+            const auto call = binding->call->request;
             return run_operator(call, true);
         }
     if (ui_.presented() && workspace_.dock.apply(event, *ui_.presented()))
@@ -2293,6 +2293,7 @@ void Application::close() {
     if (!cancelled)
         throw editor::detail::Failure(cancelled.error());
     window_.capture(false);
+    workspace_.reset_document();
     project_code_ = nullptr;
     diagnostics();
     const auto closed = document_->close();

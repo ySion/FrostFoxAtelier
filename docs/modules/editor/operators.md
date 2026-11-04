@@ -66,6 +66,7 @@ Result<OperatorReport> call(OperatorRegistry&, OperatorHost&, const Context&, co
 - Runtime 没有类型可见性控制，Source 绑定会把所有已发布的、不含引用的类型纳入目录。编辑器参数类型进入文档 Runtime 后，靠 Source 绑定目录里的一条最小规则隔开：`editor.` 前缀保留给编辑器，工程 Source 既不能引用也不能声明这类类型（引用时按类型未登记报错，声明时报 "reserved for editor types"）。O3 再换成按 Program 划分的可见域。编辑器不自行添加机制。
 - `OperatorHost` 是 execute 访问宿主能力的接口（相机、视口工具、Dock、Play 进程、文件选择器、状态栏、文档替换请求），由 Application 实现。Context 只装数据，Host 只装能力；O3 的语言操作符只拿 Context 和 Runtime。
 - `state` 取代 `Workspace::command_item` 中按命令硬写的单选/勾选判断：单选项在“用这组参数调用不会改变任何东西”时为选中，勾选项返回当前布尔值。
+- 菜单的 `OperatorBinding` 拥有不可变调用；第一次查询按原解码规则准备参数，无 seed、无引用的参数记录在该绑定内复用，状态结果仍每次从当前 Context 计算。seeded 参数（例如 `tool.settings`）继续每次以当前状态填充未指定字段；含引用的记录也不长期保留。绑定仅用于同一注册表和文档，不保存注册表容器元素地址，随菜单退役释放；文档切换和宿主关闭先清理绑定，再关闭旧文档。执行仍经 `call` 重新校验、poll、解码和历史检查，不使用查询缓存。
 - 执行结果 `OperatorReport {status, message, result}`：status 为 finished、cancelled 或 failed；poll 失败时 status=failed、message 为原因、execute 不运行。
 
 ### 历史不变量

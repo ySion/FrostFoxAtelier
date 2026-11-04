@@ -830,5 +830,73 @@ class patch.Fields : world.Component { float position = 4.0f; float rotation = 5
         changed(parents.undo());
         require(take(parents.serialize()) == before, "Undo did not restore the operator's grouped parent edits.");
     }
+    {
+        // Real menu projection: fixed parameters may persist, but checked state
+        // and seeded unnamed fields must follow the current document/context.
+        auto menus = std::make_unique<editor::Session>(editor::Session::Prepare{}, editor::SessionRole::editor);
+        editor::Workspace workspace;
+        const std::array fonts{(editor::asset_directory() / "fonts/SarasaUiSC-Regular.ttf").wstring()};
+        ui::Session surface(fonts);
+        const auto theme = ui::StyleSheet::parse(take(assets::read_file(editor::asset_directory() / "editor.ss")));
+        require(theme && surface.set_style_sheet(*theme), "Menu stylesheet failed.");
+        require(surface.set_surface({{1600, 1000}, 1, 1}).has_value(), "Menu surface failed.");
+        const auto present = [&] {
+            const auto controls = workspace.describe(*menus, {1600, 1000}, surface.presented().get());
+            require(surface.set_controls(controls).has_value(), "Menu controls were rejected.");
+            workspace.commit_ui_controls();
+            const auto frame = surface.prepare();
+            if (!frame)
+                throw std::runtime_error("Menu layout failed at control " + std::to_string(frame.error().key) +
+                                         " code=" + std::to_string(static_cast<unsigned>(frame.error().code)));
+            require(surface.accept(*frame), "Menu host frame was rejected.");
+        };
+        const auto item = [&](ui::ControlKey group, const editor::OperatorCall& request) -> const ui::MenuItem& {
+            const auto branch = std::ranges::find(workspace.menu_items, group, &ui::MenuItem::key);
+            require(branch != workspace.menu_items.end(), "Expected menu branch is absent.");
+            const auto found = std::ranges::find_if(branch->children, [&](const auto& entry) {
+                const auto* binding = workspace.binding(entry.key);
+                return binding && binding->call && binding->call->request.id == request.id &&
+                       binding->call->request.args == request.args;
+            });
+            require(found != branch->children.end(), "Expected menu call is absent.");
+            return *found;
+        };
+        const editor::OperatorCall top{"view.axis", {{"view", "top"}}};
+        const editor::OperatorCall snap{"tool.toggle", {{"setting", "grid_snap"}}};
+        const editor::OperatorCall spacing{"tool.settings", {{"grid_spacing", .5}}};
+        workspace.camera_view = editor::CameraView::front;
+        workspace.viewport_settings.grid_snap = false;
+        workspace.viewport_settings.grid_spacing = .5f;
+        workspace.menu = ui::ContextMenuRequest{editor::control::view_menu};
+        present();
+        const auto retired = item(editor::control::viewport_camera, top).key;
+        require(!item(editor::control::viewport_camera, top).selected &&
+                    !item(editor::control::viewport_snap, snap).selected &&
+                    item(editor::control::viewport_snap, spacing).selected,
+                "Initial menu state disagrees with the current camera/tools.");
+        workspace.camera_view = editor::CameraView::top;
+        workspace.viewport_settings.grid_snap = true;
+        workspace.viewport_settings.rotation_step = 45;
+        present();
+        require(item(editor::control::viewport_camera, top).selected &&
+                    item(editor::control::viewport_snap, snap).selected &&
+                    item(editor::control::viewport_snap, spacing).selected,
+                "Menu state or a seeded unnamed field was frozen with its first parameter record.");
+        workspace.menu.reset();
+        present();
+        require(!workspace.binding(retired), "A closed menu retained its executable call.");
+        workspace.menu = ui::ContextMenuRequest{editor::control::view_menu};
+        present();
+        workspace.reset_document();
+        changed(menus->close());
+        menus = std::make_unique<editor::Session>(editor::Session::Prepare{}, editor::SessionRole::editor);
+        workspace.camera_view = editor::CameraView::left;
+        workspace.menu = ui::ContextMenuRequest{editor::control::view_menu};
+        present();
+        require(!item(editor::control::viewport_camera, top).selected && !workspace.binding(retired),
+                "Document replacement reused retired menu state or call identity.");
+        workspace.reset_document();
+        changed(menus->close());
+    }
     std::puts("Operator parameters: PASS (seeded patch, explicit Context, atomic history, author values, first cause)");
 }

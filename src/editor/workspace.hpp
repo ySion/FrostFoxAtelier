@@ -320,7 +320,7 @@ struct Workspace {
 
         std::string material_path{}; // Stable MS declaration path; index is a vector lane.
 
-        std::unique_ptr<const OperatorCall> call{}; // Allocated only for operator bindings, not each property row.
+        std::unique_ptr<OperatorBinding> call{}; // Retired with this binding, before the document closes.
     };
 
     Workspace();

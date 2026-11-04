@@ -188,7 +188,7 @@ struct EditorAcceptanceAccess {
                                         assets::json_format::Json args = assets::json_format::Json::object()) {
         const auto matches = [&](ui::ControlKey key) {
             const auto* binding = app.workspace_.binding(key);
-            return binding && binding->call && binding->call->id == id && binding->call->args == args;
+            return binding && binding->call && binding->call->request.id == id && binding->call->request.args == args;
         };
         for (const auto* frame : {app.menu_frame(), app.presented().get()}) {
             if (frame)

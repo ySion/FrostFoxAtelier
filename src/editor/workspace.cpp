@@ -443,7 +443,7 @@ std::vector<std::uint32_t> Workspace::window_tree(EntityTreeView& tree, ObjectId
 
 ui::ControlKey Workspace::operator_control(const OperatorCall& call) const {
     for (const auto& binding : bindings_)
-        if (binding.call && binding.call->id == call.id && binding.call->args == call.args)
+        if (binding.call && binding.call->request.id == call.id && binding.call->request.args == call.args)
             return binding.key;
     return 0;
 }
@@ -470,7 +470,7 @@ ui::ControlKey Workspace::bind(ObjectId object, std::span<const FieldId> path, B
 ui::ControlKey Workspace::bind_operator(OperatorCall call) {
     const auto first = bindings_.begin() + static_cast<std::ptrdiff_t>(binding_cursor_);
     const auto found = std::find_if(first, bindings_.end(), [&](const auto& item) {
-        return item.kind == Binding::Kind::operator_call && *item.call == call;
+        return item.kind == Binding::Kind::operator_call && item.call->request == call;
     });
     if (found != bindings_.end()) {
         std::iter_swap(first, found);
@@ -482,7 +482,7 @@ ui::ControlKey Workspace::bind_operator(OperatorCall call) {
                     call.context.selection ? call.context.selection->object : ObjectId{},
                     {},
                     Binding::Kind::operator_call};
-    binding.call = std::make_unique<const OperatorCall>(std::move(call));
+    binding.call = std::make_unique<OperatorBinding>(std::move(call));
     bindings_.push_back(std::move(binding));
     std::iter_swap(bindings_.begin() + static_cast<std::ptrdiff_t>(binding_cursor_), bindings_.end() - 1);
     return bindings_[binding_cursor_++].key;
@@ -2121,12 +2121,9 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
                     call.context.asset = std::string{};
                 if (call.id == "scene.rename" && context.region == RegionKind::assets)
                     call.id = "asset.rename";
-                const auto* info = operators.find(call.id);
-                if (!info)
-                    throw std::logic_error("Unknown menu operator: " + call.id);
-                const auto selected = take(operator_state(*info, context, call.args));
                 const auto key_text = shortcut(call, context.region);
                 const auto binding = action(std::move(call));
+                const auto selected = take(bindings_[binding_cursor_ - 1].call->state(operators, context));
                 ui::MenuItem item{binding.target,
                                   std::wstring(definition->title),
                                   binding.enabled,
@@ -2366,7 +2363,7 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
             } else if (source->key == control::viewport_snap) {
                 items = viewport_calls(source->key);
                 for (auto& item : items) {
-                    const auto& call = *binding(item.key)->call;
+                    const auto& call = binding(item.key)->call->request;
                     const auto setting = call.args.value("setting", std::string{});
                     item.separator_before = false;
                     if (setting == "grid_snap")

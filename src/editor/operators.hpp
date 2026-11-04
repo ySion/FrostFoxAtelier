@@ -6,6 +6,7 @@
 #include "editor/session.hpp"
 #include "renderer/view_settings.hpp"
 #include <functional>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -290,8 +291,32 @@ struct OperatorCall {
     bool operator==(const OperatorCall&) const = default;
 };
 
-// Decode a built-in UI binding and obtain its optional checkbox/radio state without executing it.
-Result<std::optional<bool>> operator_state(const OperatorInfo&, const Context&, const assets::json_format::Json&);
+namespace detail {
+class OperatorValue;
+}
+
+// One immutable UI call. Its first state query prepares fixed, reference-free
+// parameters; seeded/reference-bearing records are decoded on every query.
+// Queries use the same registry and document for this binding's lifetime. Retire
+// the binding before closing that document; neither state results nor registry
+// element addresses are retained. Execution still goes through call().
+class OperatorBinding {
+public:
+    explicit OperatorBinding(OperatorCall);
+
+    ~OperatorBinding();
+
+    OperatorBinding(const OperatorBinding&) = delete;
+
+    OperatorBinding& operator=(const OperatorBinding&) = delete;
+
+    const OperatorCall request;
+
+    Result<std::optional<bool>> state(const OperatorRegistry&, const Context&);
+
+private:
+    std::unique_ptr<detail::OperatorValue> parameters_;
+};
 
 enum class OperatorStatus { finished, cancelled, failed };
 

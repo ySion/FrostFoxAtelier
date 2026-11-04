@@ -186,11 +186,11 @@ class inspection.Stats : world.Component { float energy = 5.0f; }
     const auto choice_key = workspace.menu_items[1].key;
     const auto* selected = workspace.binding(choice_key);
     require(selected && selected->kind == editor::Workspace::Binding::Kind::operator_call && selected->call &&
-                selected->call->id == "scene.set_properties" &&
-                selected->call->args == assets::json_format::Json{{"mode", "Active"}} &&
-                selected->call->context.selection == editor::SelectionContext{entity, settings, {entity}},
+                selected->call->request.id == "scene.set_properties" &&
+                selected->call->request.args == assets::json_format::Json{{"mode", "Active"}} &&
+                selected->call->request.context.selection == editor::SelectionContext{entity, settings, {entity}},
             "Enum menu lost the exact typed property target.");
-    const auto call = *selected->call;
+    const auto call = selected->call->request;
     publish();
     require(workspace.menu_items[1].key == choice_key, "An unchanged enum call lost its live control identity.");
     const auto before_choice = document.undo_count();

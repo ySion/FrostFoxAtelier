@@ -9,28 +9,19 @@
 #include <unordered_set>
 
 namespace atelier::editor {
-namespace {
-Error invalid(std::string message) {
-    return Error{ErrorCode::invalid_definition, std::move(message)};
-}
-
-// The caller sent an operator call this registry cannot accept.
-Error rejected(std::string message) {
-    return Error{ErrorCode::argument_mismatch, std::move(message)};
-}
-
+namespace detail {
 // A live parameter or result record in owned, aligned storage.
-class Parameters {
+class OperatorValue {
 public:
-    Parameters(Runtime& runtime, TypeId type, const TypeInfo& info)
+    OperatorValue(Runtime& runtime, TypeId type, const TypeInfo& info)
         : runtime(runtime), type(type), alignment{info.alignment},
           bytes{static_cast<std::byte*>(::operator new(info.size, alignment)), info.size} {}
 
-    Parameters(const Parameters&) = delete;
+    OperatorValue(const OperatorValue&) = delete;
 
-    Parameters& operator=(const Parameters&) = delete;
+    OperatorValue& operator=(const OperatorValue&) = delete;
 
-    ~Parameters() {
+    ~OperatorValue() {
         root.reset();
         if (initialized)
             (void)runtime.destroy_value(type, bytes);
@@ -49,9 +40,20 @@ public:
 
     ValueRoot root;
 };
+}
+
+namespace {
+Error invalid(std::string message) {
+    return Error{ErrorCode::invalid_definition, std::move(message)};
+}
+
+// The caller sent an operator call this registry cannot accept.
+Error rejected(std::string message) {
+    return Error{ErrorCode::argument_mismatch, std::move(message)};
+}
 
 // Default-constructed record, resolved by name in this document's Runtime.
-Result<std::unique_ptr<Parameters>> parameters(Runtime& runtime, std::string_view name) {
+Result<std::unique_ptr<detail::OperatorValue>> parameters(Runtime& runtime, std::string_view name) {
     const auto type = runtime.find_type(name);
     if (!type)
         return std::unexpected(invalid("This document does not publish operator record " + std::string(name)));
@@ -60,7 +62,7 @@ Result<std::unique_ptr<Parameters>> parameters(Runtime& runtime, std::string_vie
         return std::unexpected(info.error());
     if ((*info)->kind != TypeKind::record)
         return std::unexpected(invalid("Operator parameters and results must be records: " + std::string(name)));
-    auto value = std::make_unique<Parameters>(runtime, *type, **info);
+    auto value = std::make_unique<detail::OperatorValue>(runtime, *type, **info);
     ATELIER_TRY(runtime.initialize_value(*type, value->bytes));
     value->initialized = true;
     if ((*info)->contains_references) {
@@ -174,18 +176,31 @@ const OperatorInfo* OperatorRegistry::find(std::string_view id) const noexcept {
     return found == operators_.end() ? nullptr : &*found;
 }
 
-Result<std::optional<bool>> operator_state(const OperatorInfo& info, const Context& context,
-                                           const assets::json_format::Json& args) {
-    if (!info.state)
+OperatorBinding::OperatorBinding(OperatorCall call) : request(std::move(call)) {}
+
+OperatorBinding::~OperatorBinding() = default;
+
+Result<std::optional<bool>> OperatorBinding::state(const OperatorRegistry& registry, const Context& context) {
+    const auto* info = registry.find(request.id);
+    if (!info)
+        return std::unexpected(rejected("Unknown operator: " + request.id));
+    if (!info->state)
         return std::optional<bool>{};
-    if (info.parameters.empty())
-        return info.state(context, {});
+    if (info->parameters.empty())
+        return info->state(context, {});
+    if (parameters_)
+        return info->state(context, {parameters_->type, parameters_->bytes.data()});
     auto& runtime = context.document.world().runtime();
-    ATELIER_TRY_BIND(value, parameters(runtime, info.parameters));
-    if (info.seed)
-        ATELIER_TRY(info.seed(context, {(*value)->type, (*value)->bytes.data()}));
-    ATELIER_TRY(decode_properties(runtime, {(*value)->type, {}, (*value)->bytes}, args, {}));
-    return info.state(context, {(*value)->type, (*value)->bytes.data()});
+    ATELIER_TRY_BIND(value, parameters(runtime, info->parameters));
+    if (info->seed)
+        ATELIER_TRY(info->seed(context, {(*value)->type, (*value)->bytes.data()}));
+    ATELIER_TRY(decode_properties(runtime, {(*value)->type, {}, (*value)->bytes}, request.args, {}));
+    const auto selected = info->state(context, {(*value)->type, (*value)->bytes.data()});
+    // A seeded record depends on current Context; a rooted record must not
+    // prolong an object's life just because its menu remains open.
+    if (!info->seed && !(*value)->root.registered())
+        parameters_ = std::move(*value);
+    return selected;
 }
 
 Result<OperatorReport> call(const OperatorRegistry& registry, OperatorHost& host, const Context& base,
@@ -211,7 +226,7 @@ Result<OperatorReport> call(const OperatorRegistry& registry, OperatorHost& host
     // A replacing operator only files a host request, so the Session stays valid here.
     auto& document = context.document;
     auto& runtime = document.world().runtime();
-    std::unique_ptr<Parameters> value;
+    std::unique_ptr<detail::OperatorValue> value;
     std::vector<PropertyPatch> patch;
     if (info->parameters == "@context.object") {
         const auto object = context.selection.object;
@@ -257,7 +272,7 @@ Result<OperatorReport> call(const OperatorRegistry& registry, OperatorHost& host
         };
         ATELIER_TRY(decode_properties(runtime, PropertyTarget{value->type, {}, value->bytes}, request.args, reference));
     }
-    std::unique_ptr<Parameters> output;
+    std::unique_ptr<detail::OperatorValue> output;
     if (!info->result.empty()) {
         ATELIER_TRY_BIND(made, parameters(runtime, info->result));
         output = std::move(*made);
@@ -306,7 +321,8 @@ Json scalar_json(Runtime& runtime, const Scalar& value) {
 }
 
 // The fields of the record at `path` inside a live parameter value; with `defaults`, their current values.
-Result<Json> record_schema(const Parameters& value, TypeId record, std::vector<FieldId>& path, bool defaults) {
+Result<Json> record_schema(const detail::OperatorValue& value, TypeId record, std::vector<FieldId>& path,
+                           bool defaults) {
     auto& runtime = value.runtime;
     const auto info = runtime.describe(record);
     if (!info)
