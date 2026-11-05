@@ -3,6 +3,7 @@
 #include "runtime/runtime.hpp"
 #include "runtime/execution.hpp"
 #include "runtime/detail/type_publication.hpp"
+#include "runtime/detail/parallel_access.hpp"
 #include "math/runtime.hpp"
 
 #include <algorithm>
@@ -56,9 +57,15 @@ bool normalize_description(std::string& text) {
 struct CallbackScope {
     std::size_t& depth;
 
-    explicit CallbackScope(std::size_t& count) : depth(count) { ++depth; }
+    explicit CallbackScope(std::size_t& count) : depth(count) {
+        detail::assert_serial_access();
+        ++depth;
+    }
 
-    ~CallbackScope() { --depth; }
+    ~CallbackScope() {
+        detail::assert_serial_access();
+        --depth;
+    }
 };
 
 // Exact for every range leaf type: f32, i32 and u32 all widen losslessly.
@@ -235,6 +242,7 @@ struct RootState {
     bool has_capacity() const noexcept { return free_head != no_slot || entries.size() < no_slot; }
 
     std::uint32_t add(Value value) {
+        assert_serial_access();
         if (traversals != 0)
             throw std::logic_error("Cannot add roots during reference traversal.");
         if (!has_capacity())
@@ -266,6 +274,7 @@ struct RootState {
     }
 
     void remove(std::uint32_t index) noexcept {
+        assert_serial_access();
         if (removing)
             removing(observer, index);
         auto& entry = entries[index];
@@ -306,6 +315,7 @@ ObjectRoot::~ObjectRoot() {
 }
 
 ObjectRoot::ObjectRoot(const ObjectRoot& other) {
+    detail::assert_serial_access();
     if (other.state_) {
         index_ = other.state_->add(other.reference());
         state_ = other.state_;
@@ -333,6 +343,7 @@ ObjectRoot& ObjectRoot::operator=(ObjectRoot&& other) noexcept {
 }
 
 void ObjectRoot::reset() noexcept {
+    detail::assert_serial_access();
     if (state_) {
         state_->remove(index_);
         state_.reset();
@@ -368,6 +379,7 @@ ValueRoot& ValueRoot::operator=(ValueRoot&& other) noexcept {
 }
 
 void ValueRoot::reset() noexcept {
+    detail::assert_serial_access();
     if (state_) {
         state_->remove(index_);
         state_.reset();
@@ -1588,7 +1600,9 @@ struct Runtime::Impl {
     }
 };
 
-Runtime::Runtime() : impl_(std::make_unique<Impl>()) {
+Runtime::Runtime() {
+    detail::assert_serial_access();
+    impl_ = std::make_unique<Impl>();
     if (impl_->context == 0)
         throw std::overflow_error("Runtime identity space exhausted.");
     impl_->f32 = impl_->add_scalar<float>("core.f32");
@@ -1637,6 +1651,7 @@ Runtime::Runtime() : impl_(std::make_unique<Impl>()) {
 }
 
 Result<void> Runtime::check_execution_entry() const {
+    detail::assert_serial_access();
     if (!impl_->roots->alive || impl_->callbacks != 0 || impl_->roots->traversals != 0)
         return failure(ErrorCode::busy,
                        "Generated execution cannot enter during a native borrow, traversal or shutdown.");
@@ -1652,6 +1667,7 @@ Result<void> Runtime::enter_execution() {
 }
 
 void Runtime::leave_execution() noexcept {
+    detail::assert_serial_access();
     if (--impl_->active_executions != 0)
         return;
     while (auto* code = impl_->retired_code) {
@@ -1661,6 +1677,7 @@ void Runtime::leave_execution() noexcept {
 }
 
 void Runtime::retire_code(RetiredCode& code) noexcept {
+    detail::assert_serial_access();
     if (impl_->active_executions == 0) {
         code.destroy(&code);
         return;
@@ -1681,6 +1698,7 @@ Result<void> Runtime::enter_execution_inspection() {
 }
 
 void Runtime::leave_execution_inspection() noexcept {
+    detail::assert_serial_access();
     --impl_->roots->traversals;
     --impl_->callbacks;
 }
@@ -1693,6 +1711,7 @@ Result<void> Runtime::check_code_publication() const {
 }
 
 Result<void> Runtime::begin_collection() {
+    detail::assert_serial_access();
     if (impl_->callbacks != 0 || impl_->active_executions != 0 || !impl_->roots->alive ||
         impl_->phase != CollectionPhase::idle) {
         return failure(ErrorCode::busy, "Collection can begin only at an idle host safe point.");
@@ -1712,6 +1731,7 @@ Result<void> Runtime::begin_collection() {
 }
 
 Result<CollectionProgress> Runtime::collect_step(CollectionBudget budget) {
+    detail::assert_serial_access();
     if (impl_->callbacks != 0 || impl_->active_executions != 0 || !impl_->roots->alive) {
         return failure(ErrorCode::busy, "Collection steps require a host safe point.");
     }
@@ -1742,6 +1762,7 @@ std::size_t Runtime::pending_reclamation() const noexcept {
 }
 
 Runtime::~Runtime() {
+    detail::assert_serial_access();
     impl_->roots->alive = false;
     impl_->roots->observer = nullptr;
     impl_->roots->added = nullptr;
@@ -1800,6 +1821,7 @@ Result<FunctionSignature> detail::TypePublication::resolve_signature(Runtime& ru
 }
 
 Result<void> detail::TypePublication::reserve_commit(Runtime& runtime) {
+    assert_serial_access();
     auto& impl = *runtime.impl_;
     if (state_->context != impl.context || state_->committed || state_->first_index != impl.types.size())
         return failure(ErrorCode::invalid_definition, "Type candidate no longer matches its Runtime catalog.");
@@ -1826,6 +1848,7 @@ Result<void> detail::TypePublication::reserve_commit(Runtime& runtime) {
 }
 
 void detail::TypePublication::commit(Runtime& runtime) noexcept {
+    assert_serial_access();
     auto& impl = *runtime.impl_;
     if (!state_->reserved || state_->committed || state_->context != impl.context ||
         state_->first_index != impl.types.size())
@@ -1880,6 +1903,7 @@ Result<void> FieldDefinition::normalize_metadata() {
 }
 
 Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vector<TypeDefinition> definitions) {
+    detail::assert_serial_access();
     // Preparation only reads the published catalog; reserve_commit checks the safe point.
     if (definitions.empty()) {
         return failure(ErrorCode::invalid_definition, "Type publication requires a non-empty batch.");
@@ -2573,6 +2597,7 @@ Result<MethodId> Runtime::find_method(TypeId type, std::string_view name) const 
 }
 
 Runtime::NativeBorrow::NativeBorrow(Runtime& owner, void* address) noexcept : runtime(&owner), storage(address) {
+    detail::assert_serial_access();
     ++runtime->impl_->callbacks;
     ++runtime->impl_->native_borrows;
 }
@@ -2581,6 +2606,7 @@ Runtime::NativeBorrow::NativeBorrow(NativeBorrow&& other) noexcept
     : runtime(std::exchange(other.runtime, nullptr)), storage(other.storage) {}
 
 Runtime::NativeBorrow::~NativeBorrow() {
+    detail::assert_serial_access();
     if (runtime) {
         --runtime->impl_->native_borrows;
         --runtime->impl_->callbacks;
@@ -2589,6 +2615,7 @@ Runtime::NativeBorrow::~NativeBorrow() {
 
 Result<Runtime::NativeBorrow> Runtime::borrow_native(ObjectId object, const void* representation,
                                                      std::span<const FieldId> path, bool write) {
+    detail::assert_serial_access();
     if (!impl_->roots->alive || impl_->roots->traversals != 0)
         return failure(ErrorCode::busy, "Native borrowing is unavailable during traversal or shutdown.");
     ATELIER_TRY_BIND(index, resolve_object(object));
@@ -2714,6 +2741,7 @@ Result<ObjectReference> Runtime::sequence_read(const ReferenceField& field, std:
 }
 
 Result<void> Runtime::apply_reference_changes(std::span<const ReferenceChange> changes) {
+    detail::assert_serial_access();
     if (!impl_->roots->alive || impl_->roots->traversals || impl_->changing_references)
         return failure(ErrorCode::busy, "Reference mutation cannot reenter traversal, another batch or shutdown.");
     CallbackScope scope{impl_->callbacks};
@@ -2810,6 +2838,7 @@ Result<void> Runtime::apply_reference_changes(std::span<const ReferenceChange> c
 }
 
 Result<void> Runtime::initialize_value(TypeId type_id, std::span<std::byte> destination) {
+    detail::assert_serial_access();
     if (impl_->roots->traversals != 0 || impl_->changing_references)
         return failure(ErrorCode::busy,
                        "Value mutation is not allowed during reference traversal or batch preparation.");
@@ -2824,6 +2853,7 @@ Result<void> Runtime::initialize_value(TypeId type_id, std::span<std::byte> dest
 
 Result<void> Runtime::copy_construct_value(TypeId type_id, std::span<std::byte> destination,
                                            std::span<const std::byte> source) {
+    detail::assert_serial_access();
     if (impl_->roots->traversals != 0 || impl_->changing_references)
         return failure(ErrorCode::busy,
                        "Value mutation is not allowed during reference traversal or batch preparation.");
@@ -2847,6 +2877,7 @@ Result<void> Runtime::copy_construct_value(TypeId type_id, std::span<std::byte> 
 
 Result<void> Runtime::assign_value(TypeId type_id, std::span<std::byte> destination,
                                    std::span<const std::byte> source) {
+    detail::assert_serial_access();
     if (impl_->roots->traversals != 0 || impl_->changing_references)
         return failure(ErrorCode::busy,
                        "Value mutation is not allowed during reference traversal or batch preparation.");
@@ -2880,6 +2911,7 @@ Result<void> Runtime::assign_value(TypeId type_id, std::span<std::byte> destinat
 }
 
 Result<void> Runtime::destroy_value(TypeId type_id, std::span<std::byte> storage) {
+    detail::assert_serial_access();
     if (impl_->roots->traversals != 0 || impl_->changing_references)
         return failure(ErrorCode::busy,
                        "Value mutation is not allowed during reference traversal or batch preparation.");
@@ -2897,6 +2929,7 @@ Result<void> Runtime::destroy_value(TypeId type_id, std::span<std::byte> storage
 
 Result<void> Runtime::mutate_sequence(TypeId type_id, std::span<std::byte> storage, SequenceMutation operation,
                                       TypeId input_type, std::span<const std::byte> input, std::size_t count) {
+    detail::assert_serial_access();
     if (impl_->roots->traversals != 0 || impl_->changing_references)
         return failure(ErrorCode::busy, "Sequence mutation is not allowed during traversal or batch preparation.");
     const auto type = impl_->value_type(type_id, storage);
@@ -2969,10 +3002,12 @@ Result<NativeContext> NativeContext::resolve(Runtime& runtime, ObjectId object, 
 }
 
 void NativeContext::stamp() const noexcept {
+    detail::assert_serial_access();
     runtime->impl_->stamp(object_index);
 }
 
 Result<ObjectRoot> Runtime::create(TypeId type_id) {
+    detail::assert_serial_access();
     if (impl_->callbacks != 0)
         return failure(ErrorCode::busy, "Object creation is not allowed during a callback.");
     const auto* type = impl_->lookup(type_id);
@@ -3033,6 +3068,7 @@ Result<ObjectRoot> Runtime::create(TypeId type_id) {
 }
 
 Result<void> Runtime::destroy(ObjectId object) {
+    detail::assert_serial_access();
     if (impl_->callbacks != 0)
         return failure(ErrorCode::busy, "Object destruction is not allowed during a callback.");
     const auto index = resolve_object(object);
@@ -3059,6 +3095,7 @@ Result<TypeId> Runtime::type_of(ObjectId object) const {
 }
 
 Result<std::uint64_t> Runtime::change_cursor() {
+    detail::assert_serial_access();
     if (impl_->callbacks != 0 || impl_->roots->traversals != 0 || impl_->active_executions != 0)
         return failure(ErrorCode::busy,
                        "Change cursors are taken outside callbacks, native borrows, traversal and execution.");
@@ -3127,6 +3164,7 @@ Result<ObjectRoot> Runtime::hold(ObjectId object, TypeId declared_type) {
 }
 
 Result<ObjectRoot> Runtime::hold(const ObjectReference& reference) {
+    detail::assert_serial_access();
     if (!impl_->roots->alive || impl_->roots->traversals != 0) {
         return failure(ErrorCode::busy, "Cannot add roots during shutdown or reference traversal.");
     }
@@ -3157,6 +3195,7 @@ Result<ObjectReference> Runtime::null_reference(TypeId type_id, ValueForm form) 
 }
 
 Result<std::optional<ObjectRoot>> Runtime::try_acquire(const ObjectReference& reference) {
+    detail::assert_serial_access();
     if (!impl_->roots->alive || impl_->roots->traversals != 0) {
         return failure(ErrorCode::busy, "Cannot acquire references during shutdown or reference traversal.");
     }
@@ -3175,6 +3214,7 @@ Result<std::optional<ObjectRoot>> Runtime::try_acquire(const ObjectReference& re
 }
 
 Result<ValueRoot> Runtime::root_value(TypeId type_id, std::span<const std::byte> storage) {
+    detail::assert_serial_access();
     if (!impl_->roots->alive || impl_->roots->traversals != 0) {
         return failure(ErrorCode::busy, "Cannot register value roots during shutdown or reference traversal.");
     }
@@ -3335,6 +3375,7 @@ Result<ObjectReference> Runtime::read_reference(ValueDescription value, const Re
 
 Result<void> Runtime::write_reference(ValueDescription value, ReferenceSlot& storage,
                                       const ObjectReference& reference) {
+    detail::assert_serial_access();
     if (impl_->roots->traversals != 0)
         return failure(ErrorCode::busy, "Reference mutation is not allowed during traversal.");
     return write_reference_at({&storage, value}, reference);
@@ -3349,6 +3390,7 @@ Result<ObjectReference> Runtime::read_reference(ObjectId object, std::span<const
 
 Result<void> Runtime::write_reference(ObjectId object, std::span<const FieldId> path,
                                       const ObjectReference& reference) {
+    detail::assert_serial_access();
     if (impl_->roots->traversals != 0)
         return failure(ErrorCode::busy, "Reference mutation is not allowed during traversal.");
     const auto address = resolve_field(object, path);
@@ -3368,6 +3410,7 @@ Result<ObjectReference> Runtime::read_reference(TypeId type_id, std::span<const 
 
 Result<void> Runtime::write_reference(TypeId type_id, std::span<std::byte> storage, std::span<const FieldId> path,
                                       const ObjectReference& reference) {
+    detail::assert_serial_access();
     if (impl_->roots->traversals != 0)
         return failure(ErrorCode::busy, "Reference mutation is not allowed during traversal.");
     const auto address = resolve_storage(type_id, storage, path);
@@ -3384,6 +3427,7 @@ Result<Scalar> Runtime::read(ObjectId object, std::span<const FieldId> path) con
 }
 
 Result<void> Runtime::write(ObjectId object, std::span<const FieldId> path, Scalar value) {
+    detail::assert_serial_access();
     if (impl_->roots->traversals != 0)
         return failure(ErrorCode::busy, "Field mutation is not allowed during reference traversal.");
     const auto address = resolve_field(object, path);
@@ -3401,6 +3445,7 @@ Result<Scalar> Runtime::read(TypeId type, std::span<const std::byte> storage, st
 }
 
 Result<void> Runtime::write(TypeId type, std::span<std::byte> storage, std::span<const FieldId> path, Scalar value) {
+    detail::assert_serial_access();
     if (impl_->roots->traversals != 0 || impl_->changing_references)
         return failure(ErrorCode::busy,
                        "Value mutation is not allowed during reference traversal or batch preparation.");
@@ -3549,6 +3594,7 @@ Result<void> Runtime::move_element(ObjectId object, std::span<const FieldId> arr
 
 Result<void> Runtime::mutate_elements(ObjectId object, std::span<const FieldId> path, SequenceMutation operation,
                                       std::size_t position, std::size_t operand, ValueInput value) {
+    detail::assert_serial_access();
     // Borrowed element addresses (native borrows, method arguments) must not outlive a change.
     if (impl_->callbacks != 0 || impl_->roots->traversals != 0 || impl_->changing_references)
         return failure(ErrorCode::busy, "Array structure cannot change during callbacks, native borrows or traversal.");
@@ -3607,6 +3653,7 @@ Result<void> Runtime::read(ObjectId object, std::span<const FieldId> path, Value
 }
 
 Result<void> Runtime::write(ObjectId object, std::span<const FieldId> path, ValueInput value) {
+    detail::assert_serial_access();
     if (impl_->roots->traversals != 0)
         return failure(ErrorCode::busy, "Field mutation is not allowed during reference traversal.");
     const auto address = resolve_field(object, path);
@@ -3626,6 +3673,7 @@ Result<void> Runtime::read(TypeId type, std::span<const std::byte> storage, std:
 
 Result<void> Runtime::write(TypeId type, std::span<std::byte> storage, std::span<const FieldId> path,
                             ValueInput value) {
+    detail::assert_serial_access();
     if (impl_->roots->traversals != 0 || impl_->changing_references)
         return failure(ErrorCode::busy,
                        "Value mutation is not allowed during reference traversal or batch preparation.");
@@ -3677,6 +3725,7 @@ Result<void> Runtime::write_at(const Address& address, ValueInput value, bool ob
 }
 
 Result<void> Runtime::restore(ObjectId object, std::span<const FieldId> path, ValueOutput previous) {
+    detail::assert_serial_access();
     if (impl_->roots->traversals != 0)
         return failure(ErrorCode::busy, "Field mutation is not allowed during reference traversal.");
     const auto address = resolve_field(object, path);
@@ -3712,6 +3761,7 @@ Result<void> Runtime::prepare_arguments(const FunctionSignature& signature, std:
 
 Result<void> Runtime::prepare_arguments(const FunctionSignature& signature, std::span<const Argument> arguments,
                                         PreparedArguments& prepared, bool fields) const {
+    detail::assert_serial_access();
     prepared.size_ = 0;
     if (arguments.size() != signature.parameters.size())
         return failure(ErrorCode::argument_mismatch, "Incorrect argument count.");
@@ -3840,6 +3890,7 @@ Result<void> Runtime::call(ObjectId object, MethodId method, std::span<const Sca
 
 Result<void> Runtime::call_arguments(ObjectId object, MethodId method, std::span<const Argument> arguments,
                                      Scalar* output, ValueOutput value_output) {
+    detail::assert_serial_access();
     if (impl_->roots->traversals != 0)
         return failure(ErrorCode::busy, "Method execution is not allowed during reference traversal.");
     const auto index = resolve_object(object);

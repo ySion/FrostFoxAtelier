@@ -210,7 +210,7 @@ const auto completion = atelier::tasks::parallel_for(
 - 正常路径显式 join 消费错误；放弃组时析构取消并 drain，只在清理中丢弃任务错误。run 内部存储/提交失败也先 drain 再抛出。实参求值不在函数内，例如 `run([v=make()] {})` 的 make 抛错，须退出组作用域后在外层 catch。借用拥有者先于组建立，直到 join/退栈清理后才能销毁。若连进入 arena 完成 drain 都失败，报告并终止，不释放仍可能被任务读取的闭包后继续运行。
 - 输入快照、COW 独占、增列/resize 与容量准备在发起前完成。worker 只借固定存储，不结构修改共享容器；输出不仅彼此不重叠，也不得覆盖其他分块的只读输入。固定拥有者覆盖整个 fork→join，借用在 join 返回时结束，不能逃逸后续任务。借出可写列期间不得复制其 SharedArray/Geometry 句柄、移动或重分配存储。
 - Runtime 所属线程可同步发起普通值任务，但 body（包括 caller 执行、P=1、嵌套）不能调用 Runtime、其 Source/VM/JIT、GC、根操作或 World 命令，不能捕获 Runtime 对象内部地址；等待不泵 UI/World/Runtime 回调。普通值自定义构析、闭包和跨 join 的异常/错误载荷都不得携带 ObjectRoot/ValueRoot/Program/Coroutine 等 Runtime 依赖拥有者。不能以任务最终在 caller 上析构为理由放宽此限制。
-- `tasks::in_parallel_body() noexcept` 在 dev/release 均可用，标记可嵌套的 body 执行及其局部对象异常退栈。它不包住调用前的闭包构造、join 后的闭包销毁或所有异常载荷转运，不证明 C++ 捕获安全。Runtime/Source 动态禁入检查由 Runtime 独立片接入，当前只提供查询，不声称检查已覆盖；调试断言也不是 release 安全沙箱。
+- `tasks::in_parallel_body() noexcept` 在 dev/release 均可用，标记可嵌套的 body 执行及其局部对象异常退栈。它不包住调用前的闭包构造、join 后的闭包销毁或所有异常载荷转运，不证明 C++ 捕获安全。Runtime/Source 已接入开发版动态禁入诊断，具体范围见[任务体禁入范围](runtime-model.md#并行任务体禁入诊断)；纯查询不铺满检查，World 尚未覆盖，release 不做检查，也不是安全沙箱。
 - 本入口不新增 Program 后台许可：Program 操作仍按现有 Runtime 线程与关闭/发布合同执行。无 Runtime 依赖的 MaterialProgram 既有并发求值合同不因本片而收紧，本片也不新增其任务消费者。Source worker 执行须另审，不能由 C++ 任务入口自动放行。
 
 ### 计时与 Scatter

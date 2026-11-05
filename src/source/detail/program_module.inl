@@ -258,6 +258,7 @@ Result<Program::Entry> Program::entry(std::string_view name) const {
 }
 
 Result<Program::Lease> Program::pin(std::string_view name) const {
+    atelier::detail::assert_serial_access();
     if (!state_->open)
         return std::unexpected(Error{ErrorCode::invalid_definition, "Business program is closed."});
     auto index = state_->find(name);
@@ -280,6 +281,7 @@ Result<FunctionSignature> Program::describe(std::string_view name) const {
 }
 
 Result<Program::Request> Program::request(SourceSnapshot snapshot, CompileOptions options) {
+    atelier::detail::assert_serial_access();
     if (!state_->open || state_->declaration || state_->contract->binding.type != TypeId{})
         return std::unexpected(
             Error{ErrorCode::invalid_definition, "Project snapshots require an open, unbound Program."});

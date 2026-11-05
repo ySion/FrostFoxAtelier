@@ -34,6 +34,24 @@
 
 **类型目录只追加。** 创建对象后仍可发布新的类型组：新类型可以派生或内联已发布类型，也可以引用之后的类型。准备阶段只读取已发布目录；提交需要类型安全点，即 `check_code_publication()` 的条件（没有回调、借用、遍历或活动的生成代码调用）加上 GC 空闲，否则返回 `busy` 且保留候选，宿主在下一个安全点重试。挂起的协程不阻止发布。已发布类型不重定义、不注销、不增删成员，同名仍返回 `duplicate_name`；`TypeId`、`TypeInfo`/`FieldInfo` 地址与内容在 Runtime 存续期内保持有效。`find_type` 与原生表示查找使用发布时维护的索引。目录消费者缓存 `type_count()`，之后用 `types(first)` 只扫描新增类型；Runtime 不发送增长通知。
 
+## 并行任务体禁入诊断
+
+Foundation 的 `parallel_for` / `JoinGroup` body 只处理宿主预先准备的普通值，不调用 Runtime 或它的 Source 执行入口；同一规则也适用于 caller 实际参与执行、inline/P=1、嵌套 body 和异常退栈。宿主先准备输入、容量与独占输出，join 后才恢复 Runtime 操作。任务的完整借用、捕获与错误载荷前提见[基础库任务协议](foundation.md)。
+
+开发构建通过内部 `assert_serial_access()` 读取唯一的 `tasks::in_parallel_body()` TLS。命中时向 stderr 写固定诊断并 `abort`，不返回 busy、不抛可捕获异常、不进入 Runtime 日志或用户回调。release（`NDEBUG`）编译掉检查，不读取此 TLS；它仍须遵守相同的禁入契约，不因此获得并发 Runtime 能力。
+
+诊断集中守住会执行代码、修改共享状态或释放资源的路径：
+
+- 执行准入与退出、类型准备/发布、对象创建/销毁、原生调用与借用、根登记/复制/撤销、回调计数、写代号、GC 与关停；值构造/复制/赋值/析构及结构修改。
+- Program 请求/准备/发布/关闭，Entry/Lease/Typed 调用或绑定，候选与代码拥有句柄的释放/替换，Version 退休，以及协程创建/恢复/取消。保留原有所有权及代码退休链，不新增后台 prepare 许可。
+- ExecutionFrame 的槽读取、持有与清理，在 `reference()` / `empty()` 首次查看槽之前检查，不只依赖深层执行准入。
+
+纯元数据查询（如 describe/types/type_count/native_type/object_type）和仅验证身份的 `resolve_object` 不新增检查。部分名字看似只读的访问并非纯读：字段路径解析、NativeContext 接收者解析及校验/引用遍历会进入 `CallbackScope` 修改共享计数；它们由该计数边界检查，防止多个 body 同时写计数或遍历暂存。未命中诊断不表示调用合法，也不授权直接使用预先取得的对象内部地址。
+
+这是任务体误用诊断，不是任意线程检测、锁或捕获安全证明；提交前及 join 后的闭包/异常载荷构析不一定在 TLS 标记内。World 入口尚未覆盖且本片不排期；Runtime 检查不能保证 World 在读写自身队列前已拒绝。MaterialProgram 的独立纯值并发合同保持不变，不在通用 JIT DLL 中增加禁令。
+
+代表性清理验收沿既有 Source shutdown：挂起帧存续时执行普通值嵌套任务并注入异常，完整 join 后继续源码恢复，再取消、关闭及释放根/代码；dev/release 都执行该合法序列。故意在 P=1 caller body 中撤根的开发版终止探针仅作临时验证，不加入常驻拒绝矩阵。
+
 ## 共享函数签名与结果
 
 对象继承的成员查找、布局与引用规则见下面的[正式对象单继承](#正式对象单继承)。

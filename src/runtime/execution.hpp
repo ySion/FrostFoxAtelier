@@ -1,6 +1,7 @@
 #pragma once
 
 #include "runtime/runtime.hpp"
+#include "runtime/detail/parallel_access.hpp"
 
 namespace atelier {
 
@@ -38,9 +39,15 @@ static_assert(std::is_standard_layout_v<NativeFailure> && sizeof(NativeFailure) 
 // objects and call policy observers). Also unwinds before a failed thunk returns.
 class NativeCallback final {
 public:
-    explicit NativeCallback(NativeContext& context) noexcept : depth_(*context.callbacks) { ++depth_; }
+    explicit NativeCallback(NativeContext& context) noexcept
+        : depth_((detail::assert_serial_access(), *context.callbacks)) {
+        ++depth_;
+    }
 
-    ~NativeCallback() { --depth_; }
+    ~NativeCallback() {
+        detail::assert_serial_access();
+        --depth_;
+    }
 
     NativeCallback(const NativeCallback&) = delete;
 
@@ -174,7 +181,10 @@ public:
 protected:
     // Cooperatively cancel after a successful resume step. Execution failures
     // still win, and the owner discards any result before destroying the frame.
-    void request_cancel() noexcept { cancel_requested_ = true; }
+    void request_cancel() noexcept {
+        detail::assert_serial_access();
+        cancel_requested_ = true;
+    }
 
 private:
     friend class Coroutine;

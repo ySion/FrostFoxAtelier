@@ -84,6 +84,28 @@ public:
     public:
         Typed() = default;
 
+        ~Typed() { atelier::detail::assert_serial_access(); }
+
+        Typed(const Typed&) = default;
+
+        Typed(Typed&&) noexcept = default;
+
+        Typed& operator=(const Typed& other) noexcept {
+            atelier::detail::assert_serial_access();
+            version_ = other.version_;
+            owner_ = other.owner_;
+            index_ = other.index_;
+            return *this;
+        }
+
+        Typed& operator=(Typed&& other) noexcept {
+            atelier::detail::assert_serial_access();
+            version_ = std::move(other.version_);
+            owner_ = std::move(other.owner_);
+            index_ = std::move(other.index_);
+            return *this;
+        }
+
         Result<R> invoke(ObjectId receiver, Args... arguments, Diagnostics* diagnostics = nullptr,
                          Debugger* debugger = nullptr) const {
             std::tuple<Args...> values{arguments...};
@@ -195,6 +217,24 @@ public:
 
     public:
         Lease() = default;
+
+        ~Lease() { atelier::detail::assert_serial_access(); }
+
+        Lease(const Lease&) = default;
+
+        Lease(Lease&&) noexcept = default;
+
+        Lease& operator=(const Lease& other) noexcept {
+            atelier::detail::assert_serial_access();
+            version_ = other.version_;
+            return *this;
+        }
+
+        Lease& operator=(Lease&& other) noexcept {
+            atelier::detail::assert_serial_access();
+            version_ = std::move(other.version_);
+            return *this;
+        }
 
         // Binding checks the shared signature once. No generic-argument fallback.
         template <class R, class... Args>

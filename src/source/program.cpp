@@ -408,7 +408,10 @@ struct Program::Version : Runtime::RetiredCode {
           typed_address(atelier_business_typed_entry(code.get())), diagnostic(std::move(capture)),
           debug(std::move(session)), map(std::move(source_map)) {}
 
-    static void retire(Version* version) noexcept { version->contract->binding.runtime->retire_code(*version); }
+    static void retire(Version* version) noexcept {
+        atelier::detail::assert_serial_access();
+        version->contract->binding.runtime->retire_code(*version);
+    }
 
     Result<void> bind_signature(SignatureDefinition expected) const {
         const auto& signature = declaration->signature;
@@ -599,6 +602,7 @@ struct Program::State {
 Result<std::uint64_t> Program::invoke_bound(const Version* version, const State* owner,
                                             std::optional<std::size_t> index, ObjectId receiver, void* arguments,
                                             DirectCall invoke, Diagnostics* diagnostics, Debugger* debugger) {
+    atelier::detail::assert_serial_access();
     if (owner)
         version = owner->open ? owner->select(index).get() : nullptr;
     if (!version)
@@ -831,11 +835,17 @@ Program::Candidate::Candidate() = default;
 
 Program::Candidate::Candidate(std::unique_ptr<Prepared> prepared) : prepared_(std::move(prepared)) {}
 
-Program::Candidate::~Candidate() = default;
+Program::Candidate::~Candidate() {
+    atelier::detail::assert_serial_access();
+}
 
 Program::Candidate::Candidate(Candidate&&) noexcept = default;
 
-Program::Candidate& Program::Candidate::operator=(Candidate&&) noexcept = default;
+Program::Candidate& Program::Candidate::operator=(Candidate&& other) noexcept {
+    atelier::detail::assert_serial_access();
+    prepared_ = std::move(other.prepared_);
+    return *this;
+}
 
 Program::Candidate::operator bool() const noexcept {
     return prepared_ && (prepared_->code || prepared_->module);
@@ -896,6 +906,7 @@ Result<std::vector<DiagnosticLocation>> Program::Lease::debug_sites() const {
 
 Result<BusinessValue> ProgramAccess::invoke(const Program::Lease& lease, ObjectId receiver,
                                             std::span<const BusinessValue> arguments, InvocationObserver observer) {
+    atelier::detail::assert_serial_access();
     const auto version = lease.version_;
     if (!version)
         return std::unexpected(Error{ErrorCode::invalid_definition, "Code lease is empty."});
@@ -905,6 +916,7 @@ Result<BusinessValue> ProgramAccess::invoke(const Program::Lease& lease, ObjectI
 
 Result<BusinessValue> ProgramAccess::invoke(const Program::Entry& entry, ObjectId receiver,
                                             std::span<const BusinessValue> arguments, InvocationObserver observer) {
+    atelier::detail::assert_serial_access();
     const auto owner = entry.owner_.lock();
     if (!owner || !owner->open)
         return std::unexpected(Error{ErrorCode::invalid_definition, "Business program is closed."});
@@ -917,6 +929,7 @@ Result<BusinessValue> ProgramAccess::invoke(const Program::Entry& entry, ObjectI
 
 Result<Coroutine> ProgramAccess::start(const Program::Entry& entry, ObjectId receiver,
                                        std::span<const BusinessValue> arguments, InvocationObserver observer) {
+    atelier::detail::assert_serial_access();
     const auto owner = entry.owner_.lock();
     if (!owner || !owner->open)
         return std::unexpected(Error{ErrorCode::invalid_definition, "Business program is closed."});
@@ -925,6 +938,7 @@ Result<Coroutine> ProgramAccess::start(const Program::Entry& entry, ObjectId rec
 
 Result<std::optional<Scalar>> Program::Entry::invoke(ObjectId receiver, std::span<const Scalar> arguments,
                                                      Diagnostics* diagnostics, Debugger* debugger) const {
+    atelier::detail::assert_serial_access();
     const auto owner = owner_.lock();
     const auto version = owner && owner->open ? owner->select(index_) : nullptr;
     if (!version)
@@ -935,6 +949,7 @@ Result<std::optional<Scalar>> Program::Entry::invoke(ObjectId receiver, std::spa
 
 Result<std::optional<Scalar>> Program::Entry::invoke_arguments(ObjectId receiver, std::span<const Argument> arguments,
                                                                Diagnostics* diagnostics, Debugger* debugger) const {
+    atelier::detail::assert_serial_access();
     const auto owner = owner_.lock();
     const auto version = owner && owner->open ? owner->select(index_) : nullptr;
     if (!version)
@@ -944,6 +959,7 @@ Result<std::optional<Scalar>> Program::Entry::invoke_arguments(ObjectId receiver
 }
 
 Result<void> Program::Lease::bind_signature(SignatureDefinition expected) const {
+    atelier::detail::assert_serial_access();
     const auto version = version_;
     if (!version)
         return std::unexpected(Error{ErrorCode::invalid_definition, "Code lease is empty."});
@@ -951,6 +967,7 @@ Result<void> Program::Lease::bind_signature(SignatureDefinition expected) const 
 }
 
 Result<std::shared_ptr<Program::State>> Program::Entry::bind_signature(SignatureDefinition expected) const {
+    atelier::detail::assert_serial_access();
     auto owner = owner_.lock();
     const auto* version = owner && owner->open ? owner->select(index_).get() : nullptr;
     if (!version)
@@ -961,6 +978,7 @@ Result<std::shared_ptr<Program::State>> Program::Entry::bind_signature(Signature
 
 Result<std::optional<Scalar>> Program::Lease::invoke(ObjectId receiver, std::span<const Scalar> arguments,
                                                      Diagnostics* diagnostics, Debugger* debugger) const {
+    atelier::detail::assert_serial_access();
     const auto version = version_;
     if (!version)
         return std::unexpected(
@@ -970,6 +988,7 @@ Result<std::optional<Scalar>> Program::Lease::invoke(ObjectId receiver, std::spa
 
 Result<std::optional<Scalar>> Program::Lease::invoke_arguments(ObjectId receiver, std::span<const Argument> arguments,
                                                                Diagnostics* diagnostics, Debugger* debugger) const {
+    atelier::detail::assert_serial_access();
     const auto version = version_;
     if (!version)
         return std::unexpected(
@@ -979,6 +998,7 @@ Result<std::optional<Scalar>> Program::Lease::invoke_arguments(ObjectId receiver
 
 Result<void> Program::Entry::invoke(ObjectId receiver, std::span<const Scalar> arguments, ValueOutput output,
                                     Diagnostics* diagnostics, Debugger* debugger) const {
+    atelier::detail::assert_serial_access();
     const auto owner = owner_.lock();
     const auto version = owner && owner->open ? owner->select(index_) : nullptr;
     if (!version)
@@ -989,6 +1009,7 @@ Result<void> Program::Entry::invoke(ObjectId receiver, std::span<const Scalar> a
 
 Result<void> Program::Entry::invoke_arguments(ObjectId receiver, std::span<const Argument> arguments,
                                               ValueOutput output, Diagnostics* diagnostics, Debugger* debugger) const {
+    atelier::detail::assert_serial_access();
     const auto owner = owner_.lock();
     const auto version = owner && owner->open ? owner->select(index_) : nullptr;
     if (!version)
@@ -999,6 +1020,7 @@ Result<void> Program::Entry::invoke_arguments(ObjectId receiver, std::span<const
 
 Result<void> Program::Lease::invoke(ObjectId receiver, std::span<const Scalar> arguments, ValueOutput output,
                                     Diagnostics* diagnostics, Debugger* debugger) const {
+    atelier::detail::assert_serial_access();
     const auto version = version_;
     if (!version)
         return std::unexpected(
@@ -1008,6 +1030,7 @@ Result<void> Program::Lease::invoke(ObjectId receiver, std::span<const Scalar> a
 
 Result<void> Program::Lease::invoke_arguments(ObjectId receiver, std::span<const Argument> arguments,
                                               ValueOutput output, Diagnostics* diagnostics, Debugger* debugger) const {
+    atelier::detail::assert_serial_access();
     const auto version = version_;
     if (!version)
         return std::unexpected(
@@ -1017,6 +1040,7 @@ Result<void> Program::Lease::invoke_arguments(ObjectId receiver, std::span<const
 
 Result<Coroutine> Program::Entry::start(ObjectId receiver, std::span<const Scalar> arguments, Diagnostics* diagnostics,
                                         Debugger* debugger) const {
+    atelier::detail::assert_serial_access();
     const auto owner = owner_.lock();
     const auto version = owner && owner->open ? owner->select(index_) : nullptr;
     if (!version)
@@ -1027,6 +1051,7 @@ Result<Coroutine> Program::Entry::start(ObjectId receiver, std::span<const Scala
 
 Result<Coroutine> Program::Lease::start(ObjectId receiver, std::span<const Scalar> arguments, Diagnostics* diagnostics,
                                         Debugger* debugger) const {
+    atelier::detail::assert_serial_access();
     const auto version = version_;
     if (!version)
         return std::unexpected(
@@ -1034,14 +1059,17 @@ Result<Coroutine> Program::Lease::start(ObjectId receiver, std::span<const Scala
     return Version::start_values(version, receiver, arguments, diagnostics, debugger);
 }
 
-Program::Program(Runtime& runtime, TypeId type)
-    : state_(std::make_shared<State>(std::make_shared<const Contract>(runtime, type))) {}
+Program::Program(Runtime& runtime, TypeId type) {
+    atelier::detail::assert_serial_access();
+    state_ = std::make_shared<State>(std::make_shared<const Contract>(runtime, type));
+}
 
 Program::~Program() {
     close();
 }
 
 void Program::close() noexcept {
+    atelier::detail::assert_serial_access();
     state_->open = false;
     state_->current.reset();
     state_->module.reset();
@@ -1059,6 +1087,7 @@ Result<FunctionSignature> Program::describe() const {
 }
 
 Result<Program::Lease> Program::pin() const {
+    atelier::detail::assert_serial_access();
     if (!state_->open || !state_->current)
         return std::unexpected(Error{ErrorCode::invalid_definition, "Business entry has no version to pin."});
     return Lease{state_->current};
@@ -1066,6 +1095,7 @@ Result<Program::Lease> Program::pin() const {
 
 Result<Program::Request> Program::request(std::string_view name, std::string_view source, std::string_view entry_name,
                                           CompileOptions options) {
+    atelier::detail::assert_serial_access();
     if (!state_->open)
         return std::unexpected(Error{ErrorCode::invalid_definition, "Business program is closed."});
     if (state_->module)
@@ -1133,6 +1163,7 @@ Result<Program::Candidate> Program::prepare(const Request& request) {
 }
 
 Result<Program::Candidate> ProgramAccess::prepare(const Program::Request& request, Compiler compile) {
+    atelier::detail::assert_serial_access();
     if (!request)
         return std::unexpected(Error{ErrorCode::invalid_definition, "Source request is empty."});
     if (!compile)
@@ -1173,6 +1204,7 @@ Result<Program::Candidate> ProgramAccess::prepare(const Program::Request& reques
 }
 
 Result<void> Program::try_publish(Candidate& candidate) {
+    atelier::detail::assert_serial_access();
     const auto owner = state_;
     if (!owner->open || !candidate)
         return std::unexpected(Error{ErrorCode::invalid_definition, "Program closed or candidate already consumed."});

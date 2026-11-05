@@ -42,6 +42,7 @@ ExecutionFrame::ExecutionFrame(ExecutionScope& scope, std::span<ObjectReference>
     : runtime_(*scope.runtime_), references_(slots) {}
 
 ExecutionFrame::~ExecutionFrame() {
+    detail::assert_serial_access();
     for (auto& root : slots_)
         root.reset();
     for (auto& reference : references_)
@@ -49,6 +50,7 @@ ExecutionFrame::~ExecutionFrame() {
 }
 
 Result<void> ExecutionFrame::hold(std::uint32_t slot, ObjectId object_id) {
+    detail::assert_serial_access();
     if (slot >= size())
         return invalid_slot();
     ATELIER_TRY_BIND(root, runtime_.hold(object_id));
@@ -60,6 +62,7 @@ Result<void> ExecutionFrame::hold(std::uint32_t slot, ObjectId object_id) {
 }
 
 Result<void> ExecutionFrame::hold(std::uint32_t slot, const ObjectReference& reference) {
+    detail::assert_serial_access();
     if (slot >= size())
         return invalid_slot();
     if (!references_.empty()) {
@@ -75,6 +78,7 @@ Result<void> ExecutionFrame::hold(std::uint32_t slot, const ObjectReference& ref
 }
 
 Result<void> ExecutionFrame::hold(std::uint32_t slot, ObjectId object, TypeId declared_type) {
+    detail::assert_serial_access();
     if (slot >= size())
         return invalid_slot();
     ATELIER_TRY_BIND(root, runtime_.hold(object, declared_type));
@@ -86,6 +90,7 @@ Result<void> ExecutionFrame::hold(std::uint32_t slot, ObjectId object, TypeId de
 }
 
 Result<ObjectReference> ExecutionFrame::reference(std::uint32_t slot) const {
+    detail::assert_serial_access();
     if (slot >= size())
         return invalid_slot();
     if (!references_.empty()) {
@@ -99,6 +104,7 @@ Result<ObjectReference> ExecutionFrame::reference(std::uint32_t slot) const {
 }
 
 Result<void> ExecutionFrame::create(std::uint32_t slot, TypeId type) {
+    detail::assert_serial_access();
     if (slot >= size())
         return invalid_slot();
     ATELIER_TRY_BIND(root, runtime_.create(type));
@@ -133,6 +139,7 @@ Result<ObjectRoot> ExecutionFrame::take(std::uint32_t slot) {
 }
 
 Result<void> ExecutionFrame::clear(std::uint32_t slot) {
+    detail::assert_serial_access();
     if (slot >= size())
         return invalid_slot();
     if (references_.empty())
@@ -143,6 +150,7 @@ Result<void> ExecutionFrame::clear(std::uint32_t slot) {
 }
 
 bool ExecutionFrame::empty() const noexcept {
+    detail::assert_serial_access();
     for (const auto& root : slots_)
         if (root.registered())
             return false;
@@ -169,6 +177,7 @@ struct Coroutine::Control {
 };
 
 Result<Coroutine> Coroutine::create(Runtime& runtime, std::unique_ptr<CoroutineFrame> frame) {
+    detail::assert_serial_access();
     if (!frame)
         return std::unexpected(Error{ErrorCode::invalid_definition, "Coroutine requires an owned frame."});
     return Coroutine(std::make_shared<Control>(runtime, std::move(frame)));
@@ -193,6 +202,7 @@ CoroutineState Coroutine::state() const noexcept {
 }
 
 void Coroutine::cancel() noexcept {
+    detail::assert_serial_access();
     const auto active = control_;
     if (!active)
         return;
@@ -208,6 +218,7 @@ void Coroutine::cancel() noexcept {
 }
 
 Result<CoroutineState> Coroutine::resume() {
+    detail::assert_serial_access();
     // A callback can destroy/move the public owner. Only this pin is used below.
     const auto active = control_;
     if (!active)

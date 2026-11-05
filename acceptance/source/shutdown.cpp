@@ -2,6 +2,7 @@
 #include "source/detail/bridge.hpp"
 #include "source/program.hpp"
 #include "runtime/native.hpp"
+#include "foundation/tasks.hpp"
 
 #include <windows.h>
 #include <array>
@@ -161,6 +162,31 @@ void verify_mixed_shutdown() {
         owner.tasks[index] = take(owner.start(mode));
         require(take(owner.tasks[index].resume()) == CoroutineState::suspended, "New task failed to suspend.");
     }
+
+    // Ordinary-value work may fail while Source frames remain suspended. Join
+    // must finish nested cleanup and restore the caller before Runtime resumes.
+    unsigned cleaned{};
+    bool joined_failure{};
+    struct Cleanup {
+        unsigned& count;
+
+        ~Cleanup() { ++count; }
+    };
+    try {
+        tasks::JoinGroup computation;
+        computation.run([&cleaned] {
+            Cleanup outer{cleaned};
+            (void)tasks::parallel_for({0, 1}, [&cleaned](tasks::Range) {
+                Cleanup inner{cleaned};
+                throw std::runtime_error("Ordinary computation failed.");
+            });
+        });
+        (void)computation.join();
+    } catch (const std::runtime_error&) {
+        joined_failure = true;
+    }
+    require(joined_failure && cleaned == 2 && !tasks::in_parallel_body(),
+            "Failed computation returned before cleanup or retained its body marker.");
     require(take(owner.tasks[3].resume()) == CoroutineState::completed, "Completion setup failed.");
     require(!owner.tasks[4].resume() && owner.tasks[4].state() == CoroutineState::failed, "Failure setup failed.");
 
@@ -238,5 +264,5 @@ void verify_source_shutdown() {
     verify_synchronous_shutdown();
     verify_following_shutdown();
     std::puts(
-        "Source shutdown: PASS (mixed states, deferred cancellation, synchronous callback, code/root retirement)");
+        "Source shutdown: PASS (joined failure, mixed states, deferred cancellation, synchronous callback, code/root retirement)");
 }
