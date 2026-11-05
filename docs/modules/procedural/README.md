@@ -55,9 +55,22 @@
 
 ### 公共凸面剖分
 
-模块内部 [triangles.cpp](../../../src/procedural/triangles.cpp) 是 Scatter、BVH/Ray 共用的数值判据与首角扇形视图，不生成第二份拓扑；借用期间 Geometry 必须保持不变且存活。图元 p 的第 j 个三角取原角 `(first, first+j+1, first+j+2)`，顺序为 p 再 j；折线明确失败。三角输入保留原先零面积跳过规则，多边形则必须有可分辨的平面、简单凸边界及非零边。
+模块内部 [triangles.cpp](../../../src/procedural/triangles.cpp) 是 Scatter、BVH/Ray、Volume 共用的数值判据与首角扇形视图，不生成第二份拓扑；借用期间 Geometry 必须保持不变且存活。图元 p 的第 j 个三角取原角 `(first, first+j+1, first+j+2)`，顺序为 p 再 j；折线明确失败。Scatter/BVH 的三角输入保留原先零面积跳过规则；Volume 要求三角面也通过非退化面校验。多边形都必须有可分辨的平面、简单凸边界及非零边，合法多边形中的零面积扇形片不算退化面。
 
-所有几何判据用 double 计算。距离容差 δ = 8 × float ε × max（最大绝对坐标分量，距首点的最大距离），没有固定米制下限；8 是为 float 输入和变换舍入预留的安全系数，不是容许任意翘曲的建模参数。首角扇形的有向面积向量长度必须大于 δ × 尺度，点到所得平面的距离不超过 δ，投影边长须大于 δ。采用保守凸性规则：投影相邻边的有向叉积必须非负，即使负值来自舍入也拒绝，不用距离容差放过凹角；正向共线角仍有效，允许零面积扇形子三角。接近折返的角（点积非正、叉积不超过 δ × 两邻边长度之和）也拒绝。在此非负转角前提下，转角总和必须为 2π（double 累加容差 64 × ε × 角数），既排除多圈星形，也不让正反小回环抵消成一圈。检查为线性时间，不另建边对相交矩阵。适用于细节显著大于其绝对坐标 float 精度的模型；远离原点或极薄的不可分辨面报错，不静默修补。后续构造与拓扑工具复用此判据，不另定容差。
+所有几何判据用 double 计算。每个原多边形 p 的距离容差 δ_p = 8 × float ε × max（该面各角最大绝对坐标分量，该面 AABB 对角线长），两个输入量都不依赖首角或扇形划分，没有固定米制下限；8 是为 float 输入和变换舍入预留的安全系数，不是容许任意翘曲的建模参数。`polygon_scale` 同时为凸面校验与 Volume 表面带提供这个尺度和容差。首角扇形的有向面积向量长度必须大于 δ_p × AABB 对角线长，点到所得平面的距离不超过 δ_p，投影边长须大于 δ_p。采用保守凸性规则：投影相邻边的有向叉积必须非负，即使负值来自舍入也拒绝，不用距离容差放过凹角；正向共线角仍有效，允许零面积扇形子三角。接近折返的角（点积非正、叉积不超过 δ_p × 两邻边长度之和）也拒绝。在此非负转角前提下，转角总和必须为 2π（double 累加容差 64 × ε × 角数），既排除多圈星形，也不让正反小回环抵消成一圈。检查为线性时间，不另建边对相交矩阵。适用于细节显著大于其绝对坐标 float 精度的模型；远离原点或极薄的不可分辨面报错，不静默修补。后续构造与拓扑工具复用此判据，不另定容差。
+
+### Volume Scatter：有向覆盖与固定格
+
+[volume.cpp](../../../src/procedural/volume.cpp) 的 `volume_scatter` 是串行暴力版；默认 density=1 点/m³、origin=(0,0,0)、cell_size=1 m、seed=0。输入是非空闭合壳集合，不接受 instance 或折线。所有点须有限，各面通过公共非退化判据；按**原多边形边界边**检查每条无向边恰好两用且方向相反，并检查每个被引用点的角环只有一个连通分量。不按位置焊接，不修补开口，不做自交检测。整体有向体积必须为正（平移至首角后用 double 补偿求和），允许反向内腔，不逐壳要求正值；未经转换的 Houdini 顺时针网格会被拒绝。
+
+每个候选以最终存入 P 的 float 位置分类。有效扇形片按 p/j 顺序求有向立体角：`2 atan2(det(a,b,c), |a||b||c| + dot(a,b)|c| + dot(b,c)|a| + dot(c,a)|b|)`，a/b/c 为相对查询点的向量；double 补偿求和除以 4π 得绕数 w，**w ≥ 0.5** 为内部。不取绝对值/奇偶，不提前接受部分和。重叠正壳的 w=2 保留，外壳加反向内壳的内腔 w=0 排除；分离负壳内部 w=−1 也排除，不猜测作者意图。零面积扇形片贡献零并跳过。
+
+边界先于最终阈值：查询点 q 到任一原多边形 p 的**欧氏距离 ≤ δ_p** 时判为表面并排除，包括公共边、扇形对角线和顶点。各非零面积扇形片共用原多边形的 δ_p，以到有界三角形的最近距离判断，邻域取并集；不使用无限平面与外扩半平面的交集，细长扇形的延长尖角不会抹掉远处内点。距离计算与 BVH 共用 `closest_on_triangle` 的 double 实现，平面距离只作宽阶段。δ_p 来自上述公共 `polygon_scale`，不是精确实数谓词；分辨不出的贴面内点也不保留，不随机挪点、不把表面假定成 w=0.5。分类复杂度 O(C·T)，当前无 BVH、并行、填充加速或最小间距。
+
+- 固定格使用几何局部坐标，不按包围盒推导 h。各轴范围为 `floor((min−origin)/h)` 到 `ceil((max−origin)/h)−1`，min/max 来自全部输入点的 AABB；只接触边界的外格不参与。格坐标先检查 int32，再转换；按 x/y/z 字典序（z 最快）枚举。
+- 设 H(a,b) 为现有 lowbias32 组合 hash，U 为高 24 位映射到 [0,1)。格随机源 `s=H(H(H(seed,uint32(x)),uint32(y)),uint32(z))`，负坐标使用模 2³² 编码。λ=density·h³，格内数目 `floor(λ) + (U(H(s,0)) < frac(λ))`。第 k 候选 id=`H(s,k)`，三个位置通道为 `U(H(id,1/2/3))`；以 double 计算 `origin+(cell+u)h`，最终舍入成 float P，再分类。节点 seed 为 H(图 seed, 节点 seed)。这是持久重算语义，不混入枚举下标、线程号或 std::hash。
+- 输出按格/ordinal 顺序稳定压紧为六列：P、uint id、int sourcecellx/sourcecelly/sourcecellz、uint sourceordinal。无 N，不携带输入属性。id 有碰撞，不是身份；格/ordinal 只在 origin/h/seed 固定时表示局部来源。改密度不重排已有 ordinal 的候选位置；几何远处变化不重生成原格候选，压紧后的点下标可以改变。
+- **相交格数和筛选前实际候选数分别不得超过 1,048,576**，小于 Geometry element_limit。先检查格范围/乘积，再用真实概率进位累计候选；不以格数×ceil(λ) 误拒，不等筛选后再计数。超限整节点失败，既有求值器保留旧发布；不截断、不自动调格或密度。候选 float 溢出也报错。上限不是交互性能承诺。
 
 ## 实例发布
 
@@ -91,6 +104,7 @@
 | Polyline | — | points → output |
 | GroupBox | group="selected"、minimum=(−.5,−.5,−.5)、maximum=(.5,.5,.5) | input → output |
 | Scatter | density、seed、min_distance；节点种子为 hash(图种子, seed) | context, surface → points |
+| VolumeScatter | density=1、seed=0、origin=(0,0,0)、cell_size=1 | context, surface → points |
 | Transform | translate、rotate、scale | input → output |
 | Promote | name、to、reduce | input → output |
 | Remove | flag、layer | input → output |
@@ -164,6 +178,7 @@ Ray 对 surface 的公共凸面扇形建立 BVH，命中的点移到交点（min
 
 `procedural_acceptance`（无窗口，[acceptance/procedural/main.cpp](../../../acceptance/procedural/main.cpp)）保留独立真值和必要生命周期序列，不以被测操作自己的输出生成期望：
 
+- **Volume**：同一离线 lowbias32 表的两个格产生 8/7 候选；核对重叠正 Box 全部保留、反向内腔排除、一个面与已知候选精确重合时排除边界，连同 P/id/格来源/ordinal 及压紧顺序。Sphere M4/L3/r2 与 Tube M5/r1/h2 的实际 float 几何经绕 (1,2,3) 旋转 .74 rad、平移 (.125,−.25,.125) 后进入 Volume；独立逆 Rodrigues 变换后的分段方形截面/五边形半空间给真值，分别保留候选 7、11 和候选 11，不用解析球/圆柱代替多面体。Sphere 链同时经真实 Graph/Runtime 节点与图 seed 混合。
 - **原生构造**：Sphere M=4/L=3/r=2 经 Runtime 节点求值，10 点/12 面/40 角、固定角序、径向 N；体积真值为中段 12 加两端各 2，共 16。Box 2×4×6 的手写八角/六面与体积 48；Tube M=5/r=1/h=2 的手写角序、离线五边形坐标、侧/盖法线与体积 5 sin72°。实际 Sphere/Tube 的 float 面进入 BVH，最近点对照已知极点/盖面。Polyline 对照三点两段，GroupBox 的五点对照 `true,true,true,false,false`，包含下/上界且替换已有全 true 组；各构造只留一个代表，不做参数矩阵。
 - **凸面与折线**：前置四边形后的五边形首角扇形面积为 4、8、3，密度 2 产生 8、16、6 点；固定射线命中 p=1/j=1 的重心、距离 3、N=+Z，旧 `3*p` 寻址会得 +Y。表面副本与三点开放折线合并，镜像仅翻面、显式反转同时反线，删除图元/线中点后的 kind、角索引与 vertex 标签对照手写数组，原值不变。
 - **数学与布局**：面积 1、3 的两个三角形按密度 4 分别得到 4、12 点，位置在三角形内且法线为 +Z；一个最小间距样本核对点对距离。非均匀缩放与 Y 轴 90° 旋转的点、向量、法线用解析式，镜像用输入三角形的角顺序与属性作真值。删除、空／混合拓扑合并用固定索引，Promote 的平均值来自源网格顶点；Copy to Points 用手写 S·O·T 矩阵及 N/up 轴，发布分块用已知 floor 结果和 3×4 布局。
@@ -179,7 +194,7 @@ Ray 对 surface 的公共凸面扇形建立 BVH，命中的点移到交点（min
 cmake --build --preset release --target procedural_acceptance
 ```
 
-`procedural_graph_acceptance`（无窗口，`atelier_editor_document_acceptance --procedural-graph`，[acceptance/editor/procedural_graph.inl](../../../acceptance/editor/procedural_graph.inl)）以手写当前 v1 JSON 为金值，读取 Grid → Transform、Box/Sphere/Tube、Line → Polyline → GroupBox 的非默认参数、位置、seed、display 与连接，再保存为相同规范字节。只保留 Missing 类型变成 null 节点且冻结 JSON 无损往返，以及构造失败不能吞成缺失类型两条边界。九种严格加载反例和额外宽容矩阵不再作为验收；严格结构规则仍如上，旧版本升级属于外部工具，不在加载器内做兼容迁移。
+`procedural_graph_acceptance`（无窗口，`atelier_editor_document_acceptance --procedural-graph`，[acceptance/editor/procedural_graph.inl](../../../acceptance/editor/procedural_graph.inl)）以手写当前 v1 JSON 为金值，读取 Grid → Transform、Box → VolumeScatter、Sphere/Tube、Line → Polyline → GroupBox 的非默认参数、位置、seed、display 与连接，再保存为相同规范字节。只保留 Missing 类型变成 null 节点且冻结 JSON 无损往返，以及构造失败不能吞成缺失类型两条边界。九种严格加载反例和额外宽容矩阵不再作为验收；严格结构规则仍如上，旧版本升级属于外部工具，不在加载器内做兼容迁移。
 
 ```powershell
 cmake --build --preset release --target procedural_graph_acceptance
@@ -188,3 +203,5 @@ cmake --build --preset release --target procedural_graph_acceptance
 ## 测量
 
 `atelier_procedural_acceptance --profile-procedural <新的绝对路径.json>` 只输出数值，不属于验收。它在一块 32768 个三角形的起伏地形上构建典型生成图：MeshImport → Scatter（约 5 万点），Grid（224 × 224）→ Transform 抬高 → Ray 投射回地形，两路 Merge 后 CopyToPoints 得到约 10 万实例，再按 32 m 分块发布。报告各项 9 次的中位数（先预热 2 次）：100 万点的撒点与变换，地形 BVH 的构建与 224 × 224 条竖直射线的查询，冷启动整图求值与各节点耗时，无变化的求值，改 Scatter 种子、改 Ray 距离、改 CopyToPoints 变体属性名之后的重算，撤销到已缓存的种子，以及首次发布与逐块复用的再发布。测量时机器应空闲。
+
+同一入口另有闭合 **Sphere(r=8,M=128,L=128)** 的 Volume 负载：32,512 扇形三角、4,096 格、102,400 筛选前候选（origin=0/h=1/density=25/seed=3），约 33 亿次立体角计算/次。报告输入参数、构建配置、预热/样本数、格数、C、T、实际保留点数、`volume_ms` 和 `volume_generate_classify_ms` 的中位数。后者覆盖候选生成、表面/绕数分类与稳定压紧；整次还包含壳校验、预算及输出组装。计时复用 [模块阶段标记](../../../src/procedural/timing.hpp) 与 foundation Recorder，由 profile 宿主安装并绑定，普通无 Recorder 的求值不读时钟。没有新增观察接口。该昂贵采样**尚未运行**，只能在另行批准的独占时段执行；不得把运算次数或两个预算上限当实测性能。首个后续精确加速候选是无表面相交格的连通填充，当前未实施。

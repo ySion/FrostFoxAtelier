@@ -153,6 +153,27 @@ public:
     void evaluate(const Context& context, const Geometry& surface, Geometry& points) const;
 };
 
+ACLASS(Name = "procedural.VolumeScatter", DESC = "在闭合有向流形壳内按密度和固定格撒点，排除表面，不修补网格。")
+class VolumeScatter : public Node {
+    AGENERATED_BODY(VolumeScatter)
+
+public:
+    AFIELD(Label = "Density", Min = "0", Max = "100", LockMin, DESC = "筛选前每立方米的期望点数。")
+    float density{1.f};
+
+    AFIELD(Label = "Seed", DESC = "与图种子混合，不依赖格的遍历下标。")
+    std::uint32_t seed{};
+
+    AFIELD(Label = "Origin", DESC = "固定格原点，几何局部坐标，单位 m。")
+    math::Vector3 origin;
+
+    AFIELD(Label = "Cell Size", Min = "0", Max = "10", LockMin, DESC = "有限且为正的格边长，单位 m，不按包围盒推导。")
+    float cell_size{1.f};
+
+    AFUNCTION(DESC = "在输入壳集合的严格内部生成点。")
+    void evaluate(const Context& context, const Geometry& surface, Geometry& points) const;
+};
+
 ACLASS(
     Name = "procedural.Transform",
     DESC =

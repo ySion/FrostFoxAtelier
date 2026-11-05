@@ -22,19 +22,15 @@ Result<void> validate_polygon(const Geometry& surface, PrimitiveRange range) {
         return math::Vector3d{p.x, p.y, p.z};
     };
     const auto origin = point(0);
-    double coordinate_scale = 0;
-    double extent = 0;
     math::Vector3d area;
     for (std::uint32_t i = 0; i < range.count; ++i) {
         const auto p = point(i);
         if (!math::is_finite(p))
             return failure("Polygon positions must be finite.");
-        coordinate_scale = std::max(coordinate_scale, std::max(std::abs(p.x), std::max(std::abs(p.y), std::abs(p.z))));
-        extent = std::max(extent, math::length(p - origin));
         if (i > 0 && i + 1 < range.count)
             area += math::cross(p - origin, point(i + 1) - origin);
     }
-    const double tolerance = 8 * std::numeric_limits<float>::epsilon() * std::max(coordinate_scale, extent);
+    const auto [extent, tolerance] = polygon_scale(surface, range);
     const double area_length = math::length(area);
     if (!(area_length > tolerance * extent))
         return failure("A polygon needs a resolvable plane and area.");
@@ -70,17 +66,72 @@ Result<void> validate_polygon(const Geometry& surface, PrimitiveRange range) {
 
 }
 
-Result<TriangleView> TriangleView::create(const Geometry& surface) {
+double surface_tolerance(double coordinate_scale, double extent) noexcept {
+    return 8 * std::numeric_limits<float>::epsilon() * std::max(coordinate_scale, extent);
+}
+
+PolygonScale polygon_scale(const Geometry& surface, PrimitiveRange range) noexcept {
+    const auto corners = surface.vertex_points();
+    const auto first = surface.positions()[corners[range.first]];
+    math::Vector3d minimum{first.x, first.y, first.z};
+    auto maximum = minimum;
+    double coordinate_scale = 0;
+    for (std::uint32_t i = 0; i < range.count; ++i) {
+        const auto p = surface.positions()[corners[range.first + i]];
+        for (std::size_t axis = 0; axis < 3; ++axis) {
+            minimum[axis] = std::min(minimum[axis], double{p[axis]});
+            maximum[axis] = std::max(maximum[axis], double{p[axis]});
+            coordinate_scale = std::max(coordinate_scale, std::abs(double{p[axis]}));
+        }
+    }
+    const double extent = math::length(maximum - minimum);
+    return {extent, surface_tolerance(coordinate_scale, extent)};
+}
+
+// Ericson, Real-Time Collision Detection 5.1.5: q = a + v (b - a) + w (c - a).
+math::Vector2d closest_on_triangle(math::Vector3d p, math::Vector3d a, math::Vector3d b, math::Vector3d c) {
+    const auto ab = b - a;
+    const auto ac = c - a;
+    const auto ap = p - a;
+    const double d1 = math::dot(ab, ap);
+    const double d2 = math::dot(ac, ap);
+    if (d1 <= 0 && d2 <= 0)
+        return {0, 0};
+    const auto bp = p - b;
+    const double d3 = math::dot(ab, bp);
+    const double d4 = math::dot(ac, bp);
+    if (d3 >= 0 && d4 <= d3)
+        return {1, 0};
+    const double vc = d1 * d4 - d3 * d2;
+    if (vc <= 0 && d1 >= 0 && d3 <= 0)
+        return {d1 / (d1 - d3), 0};
+    const auto cp = p - c;
+    const double d5 = math::dot(ab, cp);
+    const double d6 = math::dot(ac, cp);
+    if (d6 >= 0 && d5 <= d6)
+        return {0, 1};
+    const double vb = d5 * d2 - d1 * d6;
+    if (vb <= 0 && d2 >= 0 && d6 <= 0)
+        return {0, d2 / (d2 - d6)};
+    const double va = d3 * d6 - d5 * d4;
+    if (va <= 0 && d4 - d3 >= 0 && d5 - d6 >= 0) {
+        const double w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
+        return {1 - w, w};
+    }
+    const double scale = 1 / (va + vb + vc);
+    return {vb * scale, vc * scale};
+}
+
+Result<TriangleView> TriangleView::create(const Geometry& surface, bool require_nondegenerate) {
     std::uint32_t size = 0;
     bool has_subtriangles = false;
     for (std::uint32_t p = 0; p < surface.count(Layer::primitive); ++p) {
         const auto range = surface.primitive(p);
         if (range.kind != PrimitiveKind::polygon)
             return failure("Surface operations do not accept polylines.");
-        if (range.count > 3) {
+        if (range.count > 3 || require_nondegenerate)
             ATELIER_TRY(validate_polygon(surface, range));
-            has_subtriangles = true;
-        }
+        has_subtriangles |= range.count > 3;
         size += range.count - 2; // Bounded by Geometry's total vertex count.
     }
     return TriangleView{surface, size, has_subtriangles};

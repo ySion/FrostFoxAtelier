@@ -6,6 +6,21 @@
 
 namespace atelier::procedural::detail {
 
+// Shared float-input distance uncertainty; no absolute world-unit floor.
+double surface_tolerance(double coordinate_scale, double extent) noexcept;
+
+struct PolygonScale {
+    double extent; // AABB diagonal; independent of the first corner.
+
+    double tolerance;
+};
+
+// Uses all original corners, not a fan piece; the polygon owns one distance band.
+PolygonScale polygon_scale(const Geometry& surface, PrimitiveRange range) noexcept;
+
+// Barycentric (v,w) of the closest point on a nondegenerate bounded triangle.
+math::Vector2d closest_on_triangle(math::Vector3d p, math::Vector3d a, math::Vector3d b, math::Vector3d c);
+
 // Original vertex (corner) indices, not point indices or a flattened triangle number.
 inline std::array<std::uint32_t, 3> fan_corners(PrimitiveRange range, std::uint32_t triangle) noexcept {
     return {range.first, range.first + triangle + 1, range.first + triangle + 2};
@@ -23,7 +38,9 @@ struct SurfaceTriangle {
 // remain unchanged and alive throughout iteration. This is a module-internal view.
 class TriangleView {
 public:
-    static Result<TriangleView> create(const Geometry& surface);
+    // Volume requires every face (including triangles) to have resolvable area.
+    // Zero-area fan pieces of an otherwise valid polygon remain allowed.
+    static Result<TriangleView> create(const Geometry& surface, bool require_nondegenerate = false);
 
     struct Iterator {
         const Geometry* surface;

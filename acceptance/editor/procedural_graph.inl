@@ -41,6 +41,11 @@ void verify_procedural_graph() {
                 "type": "procedural.Tube", "position": [200.0, 200.0],
                 "properties": {"radius": 1.5, "height": 3.0, "segments": 5}, "inputs": {}
             },
+            "volume": {
+                "type": "procedural.VolumeScatter", "position": [300.0, 0.0],
+                "properties": {"density": 0.25, "seed": 19, "origin": {"x": 0.5, "y": -2.0, "z": 3.0},
+                               "cell_size": 2.0}, "inputs": {"surface": "box.output"}
+            },
             "line": {
                 "type": "procedural.Line", "position": [100.0, 300.0],
                 "properties": {"start": {"x": 0.0, "y": 0.0, "z": 0.0},
@@ -90,6 +95,8 @@ void verify_procedural_graph() {
     require(take(contents(runtime, document.graph.id())).display == moved.node.id() &&
                 take(inputs(runtime, moved.node.id())) == std::vector<Input>{{grid.node.id(), 0, 0}} &&
                 take(inputs(runtime, entry("path").node.id())) == std::vector<Input>{{entry("line").node.id(), 0, 0}} &&
+                take(inputs(runtime, entry("volume").node.id())) ==
+                    std::vector<Input>{{entry("box").node.id(), 0, 0}} &&
                 take(editor::save_graph(runtime, document)) == text,
             "The authored display, edge or canonical v1 bytes changed.");
 

@@ -61,40 +61,6 @@ struct Box {
     }
 };
 
-// Ericson, Real-Time Collision Detection 5.1.5: (v, w) with q = a + v (b - a) + w (c - a).
-math::Vector2d closest_on_triangle(Vector3d p, Vector3d a, Vector3d b, Vector3d c) {
-    const auto ab = b - a;
-    const auto ac = c - a;
-    const auto ap = p - a;
-    const double d1 = math::dot(ab, ap);
-    const double d2 = math::dot(ac, ap);
-    if (d1 <= 0 && d2 <= 0)
-        return {0, 0};
-    const auto bp = p - b;
-    const double d3 = math::dot(ab, bp);
-    const double d4 = math::dot(ac, bp);
-    if (d3 >= 0 && d4 <= d3)
-        return {1, 0};
-    const double vc = d1 * d4 - d3 * d2;
-    if (vc <= 0 && d1 >= 0 && d3 <= 0)
-        return {d1 / (d1 - d3), 0};
-    const auto cp = p - c;
-    const double d5 = math::dot(ab, cp);
-    const double d6 = math::dot(ac, cp);
-    if (d6 >= 0 && d5 <= d6)
-        return {0, 1};
-    const double vb = d5 * d2 - d1 * d6;
-    if (vb <= 0 && d2 >= 0 && d6 <= 0)
-        return {0, d2 / (d2 - d6)};
-    const double va = d3 * d6 - d5 * d4;
-    if (va <= 0 && d4 - d3 >= 0 && d5 - d6 >= 0) {
-        const double w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
-        return {1 - w, w};
-    }
-    const double scale = 1 / (va + vb + vc);
-    return {vb * scale, vc * scale};
-}
-
 }
 
 Result<Bvh> Bvh::build(const Geometry& surface) {
@@ -338,7 +304,7 @@ std::optional<Hit> Bvh::closest(Vector3 point_float, float max_distance) const n
                 const auto a = widen(triangle.a);
                 const auto b = widen(triangle.b);
                 const auto c = widen(triangle.c);
-                const auto uv = closest_on_triangle(point, a, b, c);
+                const auto uv = detail::closest_on_triangle(point, a, b, c);
                 const auto position = a + (b - a) * uv.x + (c - a) * uv.y;
                 const auto offset = position - point;
                 if (const double squared = math::dot(offset, offset); squared <= best) {

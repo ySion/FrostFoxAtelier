@@ -53,6 +53,23 @@ struct ScatterSettings {
 // pure triangles retain their six-column schema and values.
 Result<Geometry> scatter(const Geometry& surface, const ScatterSettings& settings);
 
+struct VolumeScatterSettings {
+    float density{1}; // Candidates per cubic metre before signed coverage filtering.
+
+    std::uint32_t seed{};
+
+    math::Vector3 origin{};
+
+    float cell_size{1};
+};
+
+// Closed oriented manifold shells, with positive aggregate signed volume. Fixed grid
+// candidates in cell x/y/z/ordinal order; retains winding >= 0.5, excluding the surface
+// uncertainty band. Serial double compensated solid angles, no parity or mesh repair.
+// Both AABB-intersecting cells and pre-filter candidates are limited to 1,048,576.
+// Outputs P, id (nonunique), sourcecellx/y/z (int32), sourceordinal (uint32).
+Result<Geometry> volume_scatter(const Geometry& surface, const VolumeScatterSettings& settings);
+
 // Applies v * S * R * T. By usage: point columns take the affine transform, vector
 // columns its linear part L, normal columns sign(det L) * cofactor(L) normalized (zero
 // stays zero, so a singular L still yields plane normals); quaternion orient columns

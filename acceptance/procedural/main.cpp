@@ -4,6 +4,7 @@
 #include "procedural/instances.hpp"
 #include "procedural/nodes.hpp"
 #include "procedural/operations.hpp"
+#include "procedural/timing.hpp"
 #include "runtime/native.hpp"
 #include "source/program.hpp"
 
@@ -1032,6 +1033,183 @@ void source_nodes() {
     }
 }
 
+void volume_boundary() {
+    const auto prism = [](bool rotate_top) {
+        Array<Vector3> points{{0, 0, 0},  {1, 0, 0},  {2, 0x1p-14f, 0},  {2, 2, 0},  {0, 2, 0},
+                              {0, 0, -1}, {1, 0, -1}, {2, 0x1p-14f, -1}, {2, 2, -1}, {0, 2, -1}};
+        Array<std::uint32_t> corners =
+            rotate_top ? Array<std::uint32_t>{3, 4, 0, 1, 2} : Array<std::uint32_t>{0, 1, 2, 3, 4};
+        const std::array<std::uint32_t, 5> bottom{5, 9, 8, 7, 6};
+        corners.append({bottom.data(), bottom.size()});
+        Array<std::uint32_t> offsets{0, 5, 10};
+        for (std::uint32_t i = 0; i < 5; ++i) {
+            const auto next = (i + 1) % 5;
+            corners.add(i);
+            corners.add(i + 5);
+            corners.add(next + 5);
+            corners.add(next);
+            offsets.add(static_cast<std::uint32_t>(corners.size()));
+        }
+        return take(Geometry::polygons(std::move(points), std::move(corners), offsets));
+    };
+    constexpr Vector3 q{-0x1p-5f, 0, 0};
+    // Independently evaluated integer hash channels: cell (0,0,0), seed=0, k=0.
+    // These dyadic offsets make the final float candidate exactly q, with w=1.
+    const VolumeScatterSettings settings{.density = 1,
+                                         .seed = 0,
+                                         .origin = {q.x - 5829961 * 0x1p-24f, -3561215 * 0x1p-24f, -6784506 * 0x1p-24f},
+                                         .cell_size = 1};
+    auto cube = take(box({0x1p-6f, 0x1p-6f, 0x1p-6f}));
+    for (auto& p : *take(cube.write<Vector3>("P", Layer::point)))
+        p += q;
+    const Geometry skinny[]{prism(false), cube};
+    const Geometry cyclic[]{prism(true), cube};
+    const Geometry cases[]{cube, take(Geometry::merge(skinny)), take(Geometry::merge(cyclic))};
+    for (const auto& geometry : cases) {
+        const auto result = take(volume_scatter(geometry, settings));
+        const auto& x = column<std::int32_t>(result, "sourcecellx", Layer::point);
+        const auto& y = column<std::int32_t>(result, "sourcecelly", Layer::point);
+        const auto& z = column<std::int32_t>(result, "sourcecellz", Layer::point);
+        const auto& ordinals = column<std::uint32_t>(result, "sourceordinal", Layer::point);
+        bool retained = false;
+        for (std::size_t i = 0; i < result.positions().size(); ++i)
+            if (x[i] == 0 && y[i] == 0 && z[i] == 0 && ordinals[i] == 0) {
+                require(result.positions()[i] == q, "The independent boundary candidate changed.");
+                retained = true;
+            }
+        // q is 1/32 from the prism and 1/128 from its own cube's boundary;
+        // a skinny fan's extended tip must not turn it into a surface point.
+        require(retained, "A distant narrow fan or changed first corner erased a strict interior point.");
+    }
+}
+
+void volume_sampling() {
+    // Offline integer evaluation, not calls to procedural::hash: graph=3,node=19
+    // gives effective seed 0xc98fa26b. lambda=7.5 rounds to 8/7 in cells (-1,0,0)/(0,0,0).
+    // Rows contain id and the top 24 random bits of channels X/Y/Z, in cell/ordinal order.
+    constexpr std::array<std::array<std::uint32_t, 4>, 15> random{{{0x3ca21855, 8526772, 5547691, 4132262},
+                                                                   {0x380d69f4, 7508050, 1922482, 2003365},
+                                                                   {0x1880195d, 12870893, 13685249, 4379748},
+                                                                   {0x91e08aff, 8075927, 13541315, 8533724},
+                                                                   {0x897072c3, 11841542, 16309124, 4024693},
+                                                                   {0x216d6968, 477684, 3483467, 16277160},
+                                                                   {0xf0476850, 8314132, 14828083, 7378086},
+                                                                   {0x7438e251, 15003252, 8474602, 6076835},
+                                                                   {0xc6936d90, 9986235, 14698489, 9393789},
+                                                                   {0xef84998c, 7524404, 16576179, 3007072},
+                                                                   {0x986f1756, 1278147, 12490762, 4397497},
+                                                                   {0xd5b289b4, 336057, 4732733, 9624711},
+                                                                   {0x7d5740d3, 6989278, 7673449, 648773},
+                                                                   {0x9befa51f, 14649682, 2449564, 11813155},
+                                                                   {0xeaa27393, 321380, 15649314, 5206315}}};
+    const VolumeScatterSettings settings{
+        .density = .1171875f, .seed = 0xc98fa26b, .origin = {0, -2, -2}, .cell_size = 4};
+    const auto candidate = [&](std::size_t i) {
+        return Vector3{(i < 8 ? -4.f : 0.f) + float(random[i][1]) * 0x1p-22f, -2.f + float(random[i][2]) * 0x1p-22f,
+                       -2.f + float(random[i][3]) * 0x1p-22f};
+    };
+    const auto check = [&](const Geometry& result, auto expected) {
+        const auto& ids = column<std::uint32_t>(result, "id", Layer::point);
+        const auto& x = column<std::int32_t>(result, "sourcecellx", Layer::point);
+        const auto& y = column<std::int32_t>(result, "sourcecelly", Layer::point);
+        const auto& z = column<std::int32_t>(result, "sourcecellz", Layer::point);
+        const auto& ordinals = column<std::uint32_t>(result, "sourceordinal", Layer::point);
+        std::size_t output = 0;
+        for (std::size_t i = 0; i < random.size(); ++i) {
+            const auto p = candidate(i);
+            if (!expected(p))
+                continue;
+            require(output < result.positions().size(), "Volume omitted an independently classified candidate.");
+            require(result.positions()[output] == p && ids[output] == random[i][0] && x[output] == (i < 8 ? -1 : 0) &&
+                        y[output] == 0 && z[output] == 0 && ordinals[output] == (i < 8 ? i : i - 8),
+                    "Volume changed fixed-grid randomness, classification, provenance or stable compaction.");
+            ++output;
+        }
+        require(output == result.positions().size(), "Volume retained an outside or boundary candidate.");
+    };
+    const auto bounded_box = [](Vector3 lo, Vector3 hi) {
+        auto result = take(box({1, 1, 1}));
+        auto& positions = *take(result.write<Vector3>("P", Layer::point));
+        for (std::uint32_t i = 0; i < 8; ++i)
+            for (std::uint32_t axis = 0; axis < 3; ++axis)
+                positions[i][axis] = i & (1u << axis) ? hi[axis] : lo[axis];
+        return result;
+    };
+    const Geometry overlapping[]{bounded_box({-4, -2, -2}, {1, 2, 2}), bounded_box({-1, -2, -2}, {4, 2, 2})};
+    check(take(volume_scatter(take(Geometry::merge(overlapping)), settings)), [](Vector3) { return true; });
+    auto inner = bounded_box({-2.5f, -1.75f, -1.75f}, {-1.5f, -.25f, -.25f});
+    inner.reverse_primitives();
+    const Geometry hollow[]{bounded_box({-4, -2, -2}, {4, 2, 2}), inner};
+    check(take(volume_scatter(take(Geometry::merge(hollow)), settings)), [](Vector3 p) {
+        return !(p.x > -2.5f && p.x < -1.5f && p.y > -1.75f && p.y < -.25f && p.z > -1.75f && p.z < -.25f);
+    });
+    const float boundary = candidate(0).x;
+    check(take(volume_scatter(bounded_box({-4, -2, -2}, {boundary, 2, 2}), settings)),
+          [&](Vector3 p) { return p.x < boundary; });
+
+    const Vector3 translate{.125f, -.25f, .125f};
+    const float sine = std::sin(.37f) / std::sqrt(14.f);
+    const Quaternion rotation{sine, 2 * sine, 3 * sine, std::cos(.37f)};
+    // Independent inverse Rodrigues rotation; not math::transform or the generated faces.
+    const auto local = [&](Vector3 p) {
+        const math::Vector3d q{double{p.x} - .125, double{p.y} + .25, double{p.z} - .125};
+        const math::Vector3d axis{1 / std::sqrt(14.), 2 / std::sqrt(14.), 3 / std::sqrt(14.)};
+        return q * std::cos(.74) - math::cross(axis, q) * std::sin(.74) +
+               axis * (math::dot(axis, q) * (1 - std::cos(.74)));
+    };
+    const auto in_ball = [&](Vector3 p) {
+        const auto q = local(p);
+        return std::abs(q.y) < 2 && std::abs(q.x) + std::abs(q.z) < std::sqrt(3.) * std::min(1., 2 - std::abs(q.y));
+    };
+    auto cylinder = take(tube(1, 2, 5));
+    take(transform(cylinder, translate, rotation, {1, 1, 1}));
+    check(take(volume_scatter(cylinder, settings)), [&](Vector3 p) {
+        const auto q = local(p);
+        if (std::abs(q.y) >= 1)
+            return false;
+        for (int j = 0; j < 5; ++j) {
+            const double angle = (2 * j + 1) * std::numbers::pi / 5;
+            if (q.x * std::cos(angle) + q.z * std::sin(angle) >= std::cos(std::numbers::pi / 5))
+                return false;
+        }
+        return true;
+    });
+    // The Sphere representative also exercises the native reflected node/port/seed path.
+    Runtime runtime;
+    take(register_types(runtime));
+    Meshes resources;
+    const auto graph = take(runtime.create(type<Graph>(runtime)));
+    const auto ball = take(add_node(runtime, graph.id(), type<Sphere>(runtime)));
+    const auto moved = take(add_node(runtime, graph.id(), type<Transform>(runtime)));
+    const auto volume = take(add_node(runtime, graph.id(), type<VolumeScatter>(runtime)));
+    take(runtime.write(graph.id(), field(runtime, type<Graph>(runtime), "seed"), Scalar{3u}));
+    take(runtime.with_native<Sphere>(ball.id(), [](Sphere& node) -> Result<void> {
+        node.radius = 2;
+        node.segments = 4;
+        node.latitudes = 3;
+        return {};
+    }));
+    take(runtime.with_native<Transform>(moved.id(), [&](Transform& node) -> Result<void> {
+        node.translate = translate;
+        node.rotate = rotation;
+        return {};
+    }));
+    take(runtime.with_native<VolumeScatter>(volume.id(), [&](VolumeScatter& node) -> Result<void> {
+        node.density = settings.density;
+        node.seed = 19;
+        node.origin = settings.origin;
+        node.cell_size = 4;
+        return {};
+    }));
+    take(connect(runtime, graph.id(), ball.id(), 0, moved.id(), 0));
+    take(connect(runtime, graph.id(), moved.id(), 0, volume.id(), 0));
+    take(set_display(runtime, graph.id(), volume.id()));
+    Evaluator evaluator{runtime, graph, resources};
+    take(evaluator.evaluate());
+    require(evaluator.output() != nullptr, "VolumeScatter node failed to publish.");
+    check(*evaluator.output(), in_ball);
+}
+
 // A height field mesh over [0, size]^2 with `quads` quads per side, two triangles each.
 geometry::MeshRef terrain_mesh(std::uint32_t quads, float size) {
     const auto height = [&](std::uint32_t r, std::uint32_t c) {
@@ -1085,6 +1263,36 @@ void profile(const char* path) {
     const auto number = [&](const char* name, double value) {
         report += "  \"" + std::string{name} + "\": " + std::to_string(value) + ",\n";
     };
+
+    // Closed workload, not the open terrain below. Kept out of ordinary acceptance.
+    timing::install({phases::all});
+    const auto volume_surface = take(sphere(8, 128, 128));
+    std::vector<double> volume_times;
+    std::vector<double> classify_times;
+    std::uint32_t retained = 0;
+    for (int i = -2; i < samples; ++i) {
+        timing::Recorder recorder;
+        timing::Recorder::Frame frame{recorder};
+        const auto result = take(volume_scatter(volume_surface, {.density = 25, .seed = 3}));
+        retained = result.count(Layer::point);
+        const auto& record = frame.finish();
+        require(record.structure_errors == 0, "Volume profile timing catalog is incomplete.");
+        if (i >= 0) {
+            volume_times.push_back(std::chrono::duration<double, std::milli>(record.time(phases::volume)).count());
+            classify_times.push_back(std::chrono::duration<double, std::milli>(record.time(phases::classify)).count());
+        }
+    }
+    std::ranges::sort(volume_times);
+    std::ranges::sort(classify_times);
+    report += "  \"volume_input\": \"Sphere(radius=8,segments=128,latitudes=128); origin=0,h=1,density=25,seed=3\",\n";
+    number("volume_samples", samples);
+    number("volume_warmups", 2);
+    number("volume_cells", 16 * 16 * 16);
+    number("volume_candidates", 16 * 16 * 16 * 25);
+    number("volume_triangles", 2 * 128 * (128 - 1));
+    number("volume_retained", retained);
+    number("volume_ms", volume_times[volume_times.size() / 2]);
+    number("volume_generate_classify_ms", classify_times[classify_times.size() / 2]);
 
     // One million points: the in-graph scale.
     const auto ground = triangles({{0, 0, 0}, {0, 0, 1000}, {1000, 0, 0}, {1000, 0, 0}, {0, 0, 1000}, {1000, 0, 1000}});
@@ -1234,6 +1442,8 @@ int main(int argc, char** argv) {
         bvh_queries();
         ray_node();
         native_constructors();
+        volume_boundary();
+        volume_sampling();
         record_parameter_abi();
         graph_evaluation();
         source_nodes();

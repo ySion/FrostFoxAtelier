@@ -62,6 +62,11 @@ void Scatter::evaluate(const Context& context, const Geometry& surface, Geometry
         take(scatter(surface, {.density = density, .seed = hash(context.seed(), seed), .min_distance = min_distance}));
 }
 
+void VolumeScatter::evaluate(const Context& context, const Geometry& surface, Geometry& points) const {
+    points = take(volume_scatter(
+        surface, {.density = density, .seed = hash(context.seed(), seed), .origin = origin, .cell_size = cell_size}));
+}
+
 void Transform::evaluate(const Geometry& input, Geometry& output) const {
     output = input;
     take(transform(output, translate, rotate, scale));

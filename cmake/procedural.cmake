@@ -4,6 +4,7 @@ function(atelier_add_procedural)
         src/procedural/operations.cpp
         src/procedural/constructors.cpp
         src/procedural/triangles.cpp
+        src/procedural/volume.cpp
         src/procedural/instances.cpp
         src/procedural/bvh.cpp
         src/procedural/graph.cpp

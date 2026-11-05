@@ -117,6 +117,7 @@ Result<void> register_types(Runtime& runtime) {
     definitions.push_back(reflection::Definition<Polyline>::build(runtime));
     definitions.push_back(reflection::Definition<GroupBox>::build(runtime));
     definitions.push_back(reflection::Definition<Scatter>::build(runtime));
+    definitions.push_back(reflection::Definition<VolumeScatter>::build(runtime));
     definitions.push_back(reflection::Definition<Transform>::build(runtime));
     definitions.push_back(reflection::Definition<Promote>::build(runtime));
     definitions.push_back(reflection::Definition<Remove>::build(runtime));
