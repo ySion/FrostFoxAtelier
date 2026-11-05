@@ -92,6 +92,16 @@ Result<void> promote(Geometry& geometry, StringView name, Layer to, Reduce reduc
 Result<Geometry> copy_to_points(const Geometry& points, std::span<const Reference> references,
                                 StringView variant = "variant");
 
+// Real geometry copies in selected target-point order, using the same placement as
+// copy_to_points. group is a point bool column (empty selects all); variant picks
+// an ordered source. Sources cannot contain instances. Only selected sources join
+// their schemas; missing columns default, incompatible schemas fail. Explicit target
+// point columns broadcast unchanged, overriding compatible columns (P is forbidden).
+// Detail takes the first selected source in source-port order, then target fallback.
+// Preflights layer counts, fills each output buffer once, and never mutates inputs.
+Result<Geometry> realize(std::span<const Geometry> sources, const Geometry& points, StringView group = {},
+                         StringView variant = "variant", std::span<const String> target_attributes = {});
+
 struct Bounds {
     math::Vector3 minimum;
 

@@ -60,6 +60,11 @@ void verify_procedural_graph() {
                 "properties": {"group": "chosen", "minimum": {"x": 0.0, "y": -1.0, "z": 2.0},
                                "maximum": {"x": 2.0, "y": 1.0, "z": 4.0}},
                 "inputs": {"input": "path.output"}
+            },
+            "realized": {
+                "type": "procedural.Realize", "position": [400.0, 300.0],
+                "properties": {"group": "chosen", "variant": "prototype", "target_attributes": ["id", "weight"]},
+                "inputs": {"sources": ["tube.output", "sphere.output"], "points": "selected.output"}
             }
         }
     })");
@@ -92,11 +97,21 @@ void verify_procedural_graph() {
         require(value.seed == 7, "The authored graph seed did not load.");
         return {};
     }));
+    take(runtime.with_native<const Realize>(entry("realized").node.id(), [](const Realize& value) -> Result<void> {
+        require(value.group.view() == "chosen" && value.variant.view() == "prototype" &&
+                    std::ranges::equal(value.target_attributes, Array<String>{String{"id"}, String{"weight"}}),
+                "Authored Realize selectors or broadcast names did not load.");
+        return {};
+    }));
     require(take(contents(runtime, document.graph.id())).display == moved.node.id() &&
                 take(inputs(runtime, moved.node.id())) == std::vector<Input>{{grid.node.id(), 0, 0}} &&
                 take(inputs(runtime, entry("path").node.id())) == std::vector<Input>{{entry("line").node.id(), 0, 0}} &&
                 take(inputs(runtime, entry("volume").node.id())) ==
                     std::vector<Input>{{entry("box").node.id(), 0, 0}} &&
+                take(inputs(runtime, entry("realized").node.id())) ==
+                    std::vector<Input>{{entry("tube").node.id(), 0, 0},
+                                       {entry("sphere").node.id(), 0, 0},
+                                       {entry("selected").node.id(), 0, 1}} &&
                 take(editor::save_graph(runtime, document)) == text,
             "The authored display, edge or canonical v1 bytes changed.");
 

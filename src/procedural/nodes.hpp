@@ -283,4 +283,22 @@ public:
     void evaluate(const Context& context, const Geometry& points, Geometry& output) const;
 };
 
+ACLASS(Name = "procedural.Realize", DESC = "在目标点上复制有序几何源，生成真实点和图元，不生成资源实例。")
+class Realize : public Node {
+    AGENERATED_BODY(Realize)
+
+public:
+    AFIELD(Label = "Group", DESC = "仅选择目标点的 bool 组；空为全选，显式缺列报错。")
+    String group;
+
+    AFIELD(Label = "Variant Attribute", DESC = "目标点 uint 列，选择 Sources 的连接序号；缺失为 0。")
+    String variant{"variant"};
+
+    AFIELD(Label = "Target Attributes", DESC = "显式广播到副本 point 层的目标点属性；默认不广播，禁止 P。")
+    Array<String> target_attributes;
+
+    AFUNCTION(DESC = "按目标点序批量复制几何，源不得含 instance。")
+    void evaluate(const Geometries& sources, const Geometry& points, Geometry& output) const;
+};
+
 }

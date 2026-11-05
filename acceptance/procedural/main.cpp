@@ -23,6 +23,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <tuple>
 
 namespace {
 using namespace atelier;
@@ -414,6 +415,110 @@ void copy_to_points_and_publication() {
     require(first.collections[2].chunk == std::array<std::int32_t, 3>{0, 0, 0} && scaled[0] == 2 && scaled[4] == 2 &&
                 scaled[8] == 2 && scaled[11] == 3,
             "The 3x4 layout is not axes then translation.");
+}
+
+void realized_geometry() {
+    const Array<Vector3> authored{{0, 0, 0}, {2, 0, 0}, {0, 1, 1}, {1, 0, 2}, {1, 1, 3}, {2, 1, 4}};
+    std::array<Geometry, 2> sources;
+    sources[0] =
+        take(Geometry::primitives(authored, Array<std::uint32_t>{0, 1, 2, 3, 4, 5}, Array<std::uint32_t>{0, 3, 6},
+                                  Array<PrimitiveKind>{PrimitiveKind::polygon, PrimitiveKind::polyline}));
+    sources[1] = sources[0];
+    for (auto& p : *take(sources[1].write<Vector3>("P", Layer::point)))
+        p.x += 3;
+    for (std::uint32_t s = 0; s < 2; ++s) {
+        take(sources[s].add<Vector3>("N", Layer::vertex, {0, -1, 1}));
+        take(sources[s].add<Vector3>("v", Layer::point, {1, 2, 3}));
+        take(sources[s].add<Quaternion>("orient", Layer::point, {0, 0, 1, 0}));
+        take(sources[s].add<float>("weight", Layer::point, float(s + 1)));
+        auto& tags = *take(sources[s].add<std::uint32_t>("tag", Layer::vertex));
+        for (std::uint32_t i = 0; i < 6; ++i)
+            tags[i] = 10 * (s + 1) + i;
+    }
+    take(
+        sources[0].set(String{"material"}, Layer::primitive, SharedArray<std::uint32_t>{Array<std::uint32_t>{31, 32}}));
+    take(
+        sources[1].set(String{"material"}, Layer::primitive, SharedArray<std::uint32_t>{Array<std::uint32_t>{41, 42}}));
+    take(sources[0].add<Vector3>("anchor", Layer::point, {1, 2, 3}, Usage::point));
+    take(sources[0].add<String>("label", Layer::detail, String{"port zero"}));
+    take(sources[1].add<String>("label", Layer::detail, String{"port one"}));
+    take(sources[0].add<Vector3>("pivot", Layer::detail, {100, 101, 102}, Usage::point));
+
+    auto targets = take(Geometry::points(Array<Vector3>{{10, 20, 30}, {-2, 5, 7}, {99, 99, 99}}));
+    take(targets.set(String{"chosen"}, Layer::point, SharedArray<bool>{Array<bool>{true, true, false}}));
+    take(targets.set(String{"prototype"}, Layer::point, SharedArray<std::uint32_t>{Array<std::uint32_t>{1, 0, 0}}));
+    take(
+        targets.set(String{"N"}, Layer::point, SharedArray<Vector3>{Array<Vector3>{{3, 0, 0}, {0, 0, -3}, {0, 0, 1}}}));
+    take(targets.set(String{"up"}, Layer::point,
+                     SharedArray<Vector3>{Array<Vector3>{{0, 4, 0}, {0, -4, 0}, {0, 1, 0}}}));
+    take(targets.set(String{"scale"}, Layer::point,
+                     SharedArray<Vector3>{Array<Vector3>{{-1, 1.5f, 2}, {1, 2, .5f}, {1, 1, 1}}}));
+    take(targets.set(String{"pscale"}, Layer::point, SharedArray<float>{Array<float>{2, 1, 1}}));
+    take(targets.set(String{"weight"}, Layer::point, SharedArray<float>{Array<float>{70, 90, 110}}));
+    take(targets.add<String>("label", Layer::detail, String{"target loses"}));
+    take(targets.add<String>("fallback", Layer::detail, String{"target fills"}));
+    const std::array broadcasts{String{"weight"}};
+    auto output = take(realize(sources, targets, "chosen", "prototype", broadcasts));
+    // Source 1 then 0. The two independent affine formulas are
+    // (10+4z,20+3y,30+2x) and (-2+x,5-2y,7-z/2), not calls to transform().
+    const std::array expected{Vector3{10, 20, 36},  Vector3{10, 20, 40}, Vector3{14, 23, 36},  Vector3{18, 20, 38},
+                              Vector3{22, 23, 38},  Vector3{26, 23, 40}, Vector3{-2, 5, 7},    Vector3{0, 5, 7},
+                              Vector3{-2, 3, 6.5f}, Vector3{-1, 5, 6},   Vector3{-1, 3, 5.5f}, Vector3{0, 3, 5}};
+    constexpr std::array corners{2u, 1u, 0u, 3u, 4u, 5u, 6u, 7u, 8u, 9u, 10u, 11u};
+    constexpr std::array tags{22u, 21u, 20u, 23u, 24u, 25u, 10u, 11u, 12u, 13u, 14u, 15u};
+    require(output.count(Layer::point) == 12 && output.count(Layer::vertex) == 12 &&
+                output.count(Layer::primitive) == 4 && output.count(Layer::instance) == 0 &&
+                std::ranges::equal(output.vertex_points(), corners) &&
+                std::ranges::equal(column<std::uint32_t>(output, "tag", Layer::vertex), tags) &&
+                std::ranges::equal(column<std::uint32_t>(output, "material", Layer::primitive),
+                                   std::array{41u, 42u, 31u, 32u}),
+            "Realize lost source order, mirrored polygon corners, line direction or layered attributes.");
+    for (std::uint32_t p = 0; p < 4; ++p)
+        require(output.primitive(p).first == 3 * p && output.primitive(p).count == 3 &&
+                    output.primitive(p).kind == (p % 2 ? PrimitiveKind::polyline : PrimitiveKind::polygon),
+                "Realize confused equal-size lines and polygons.");
+    for (std::size_t i = 0; i < expected.size(); ++i) {
+        const bool first = i < 6;
+        const auto normal = first ? Vector3{.6f, -.8f, 0} : Vector3{0, 1, -4} / std::sqrt(17.f);
+        const auto q = column<Quaternion>(output, "orient", Layer::point)[i];
+        require(
+            near(output.positions()[i], expected[i]) && near(column<Vector3>(output, "N", Layer::vertex)[i], normal) &&
+                near(column<Vector3>(output, "v", Layer::point)[i],
+                     first ? Vector3{12, 6, 2} : Vector3{1, -4, -1.5f}) &&
+                near(column<Vector3>(output, "anchor", Layer::point)[i], first ? Vector3{} : Vector3{-1, 1, 5.5f}) &&
+                column<float>(output, "weight", Layer::point)[i] == (first ? 70.f : 90.f) &&
+                near(q.x, first ? std::sqrt(.5f) : 0.f) && near(q.y, first ? 0.f : -1.f) &&
+                near(q.z, first ? std::sqrt(.5f) : 0.f) && near(q.w, 0.f),
+            "Realize changed placement, normal/orient composition, target overrides or missing defaults.");
+    }
+    require(!output.find("chosen") && !output.find("prototype") && !output.find("scale") &&
+                column<String>(output, "label", Layer::detail)[0].view() == "port zero" &&
+                column<String>(output, "fallback", Layer::detail)[0].view() == "target fills" &&
+                column<Vector3>(output, "pivot", Layer::detail)[0] == Vector3{100, 101, 102},
+            "Realize implicitly broadcast placement columns or transformed/reordered detail.");
+    (*take(output.write<Vector3>("P", Layer::point)))[0] = {};
+    (*take(output.write<String>("label", Layer::detail)))[0] = String{"changed output"};
+    require(std::ranges::equal(sources[0].positions(), authored) && sources[1].positions()[0] == Vector3{3, 0, 0} &&
+                column<std::uint32_t>(sources[1], "tag", Layer::vertex)[0] == 20 &&
+                column<float>(sources[0], "weight", Layer::point)[0] == 1 &&
+                column<String>(sources[0], "label", Layer::detail)[0].view() == "port zero" &&
+                targets.positions()[0] == Vector3{10, 20, 30},
+            "Realize or editing its output mutated an input.");
+
+    auto vector_source = take(Geometry::points(Array<Vector3>{{1, 2, 3}}));
+    take(vector_source.set(String{"P"}, Layer::point, SharedArray<Vector3>{Array<Vector3>{{1, 2, 3}}}, Usage::vector));
+    auto target = take(Geometry::points(Array<Vector3>{{10, 20, 30}}));
+    take(target.add<Vector3>("scale", Layer::point, {2, 3, 4}));
+    const std::array vector_sources{vector_source};
+    auto vectors = take(realize(vector_sources, target));
+    // Explicit P usage is legal: apply the scale, but neither this placement nor
+    // a later Transform may translate it. This also catches lost output metadata.
+    require(vectors.positions()[0] == Vector3{2, 6, 12} && vectors.find("P")->usage == Usage::vector,
+            "Realize ignored or reset the explicit usage of P.");
+    take(transform(vectors, {5, 0, 0}, {}, {1, 1, 1}));
+    require(vectors.positions()[0] == Vector3{2, 6, 12} && vector_source.positions()[0] == Vector3{1, 2, 3} &&
+                vector_source.find("P")->usage == Usage::vector,
+            "Realize changed later P semantics or the source column.");
 }
 
 // References in double precision over every triangle, by other formulas than the BVH uses.
@@ -1210,6 +1315,88 @@ void volume_sampling() {
     check(*evaluator.output(), in_ball);
 }
 
+void realization_chain() {
+    Runtime runtime;
+    take(register_types(runtime));
+    Meshes resources;
+    const auto graph = take(runtime.create(type<Graph>(runtime)));
+    const auto add = [&](TypeId node_type) { return take(add_node(runtime, graph.id(), node_type)); };
+    const auto cube = add(type<Box>(runtime));
+    const auto volume = add(type<VolumeScatter>(runtime));
+    const auto selected = add(type<GroupBox>(runtime));
+    const auto ball = add(type<Sphere>(runtime));
+    const auto cylinder = add(type<Tube>(runtime));
+    const auto copied = add(type<Realize>(runtime));
+    const auto moved = add(type<Transform>(runtime));
+    const auto line_node = add(type<Line>(runtime));
+    const auto path = add(type<Polyline>(runtime));
+    const auto merged = add(type<Merge>(runtime));
+    take(runtime.write(graph.id(), field(runtime, type<Graph>(runtime), "seed"), Scalar{3u}));
+    take(runtime.with_native<Box>(cube.id(), [](Box& node) -> Result<void> {
+        node.size = {2, 2, 2};
+        return {};
+    }));
+    take(runtime.with_native<VolumeScatter>(volume.id(), [](VolumeScatter& node) -> Result<void> {
+        node.seed = 19;
+        node.density = 2;
+        return {};
+    }));
+    take(runtime.with_native<GroupBox>(selected.id(), [](GroupBox& node) -> Result<void> {
+        node.minimum = {0, -1, -1};
+        node.maximum = {1, 1, 1};
+        return {};
+    }));
+    take(runtime.with_native<Sphere>(ball.id(), [](Sphere& node) -> Result<void> {
+        node.radius = .1f;
+        node.segments = 4;
+        node.latitudes = 3;
+        return {};
+    }));
+    take(runtime.with_native<Tube>(cylinder.id(), [](Tube& node) -> Result<void> {
+        node.radius = .1f;
+        node.height = .2f;
+        node.segments = 5;
+        return {};
+    }));
+    take(runtime.with_native<Realize>(copied.id(), [](Realize& node) -> Result<void> {
+        node.group = String{"selected"};
+        node.variant = String{"sourceordinal"};
+        node.target_attributes = Array<String>{String{"id"}};
+        return {};
+    }));
+    take(runtime.with_native<Transform>(moved.id(), [](Transform& node) -> Result<void> {
+        node.translate = {2, 0, 0};
+        return {};
+    }));
+    take(runtime.with_native<Line>(line_node.id(), [](Line& node) -> Result<void> {
+        node.start = {-4, 0, 0};
+        node.end = {-2, 2, 0};
+        node.count = 3;
+        return {};
+    }));
+    for (const auto& [from, to, input] : {std::tuple{cube.id(), volume.id(), 0u},
+                                          {volume.id(), selected.id(), 0u},
+                                          {ball.id(), copied.id(), 0u},
+                                          {cylinder.id(), copied.id(), 0u},
+                                          {selected.id(), copied.id(), 1u},
+                                          {copied.id(), moved.id(), 0u},
+                                          {line_node.id(), path.id(), 0u},
+                                          {moved.id(), merged.id(), 0u},
+                                          {path.id(), merged.id(), 0u}})
+        take(connect(runtime, graph.id(), from, 0, to, input));
+    take(set_display(runtime, graph.id(), merged.id()));
+    Evaluator evaluator{runtime, graph, resources};
+    take(evaluator.evaluate());
+    const auto* output = evaluator.output();
+    // Four complete positive-X cells, each with ordinal 0 (Sphere) and 1 (Tube).
+    // 4*(10+10) points, 4*(12+7) faces, 4*(40+30) corners, then one three-point line.
+    require(output && output->count(Layer::point) == 83 && output->count(Layer::primitive) == 77 &&
+                output->count(Layer::vertex) == 283 && output->count(Layer::instance) == 0 &&
+                output->primitive(76).kind == PrimitiveKind::polyline && output->positions()[80] == Vector3{-4, 0, 0} &&
+                output->positions()[82] == Vector3{-2, 2, 0},
+            "The native Volume/GroupBox/Realize/Transform/Merge chain lost its selected copies or line.");
+}
+
 // A height field mesh over [0, size]^2 with `quads` quads per side, two triangles each.
 geometry::MeshRef terrain_mesh(std::uint32_t quads, float size) {
     const auto height = [&](std::uint32_t r, std::uint32_t c) {
@@ -1439,11 +1626,13 @@ int main(int argc, char** argv) {
         transform_by_usage();
         removal_merge_and_promotion();
         copy_to_points_and_publication();
+        realized_geometry();
         bvh_queries();
         ray_node();
         native_constructors();
         volume_boundary();
         volume_sampling();
+        realization_chain();
         record_parameter_abi();
         graph_evaluation();
         source_nodes();

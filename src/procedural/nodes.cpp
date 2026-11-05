@@ -154,4 +154,9 @@ void CopyToPoints::evaluate(const Context& context, const Geometry& points, Geom
     output = take(copy_to_points(points, references, variant));
 }
 
+void Realize::evaluate(const Geometries& sources, const Geometry& points, Geometry& output) const {
+    output = take(realize({sources.data(), sources.size()}, points, group, variant,
+                          {target_attributes.data(), target_attributes.size()}));
+}
+
 }
