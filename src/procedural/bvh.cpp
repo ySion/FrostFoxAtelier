@@ -8,6 +8,10 @@
 
 namespace atelier::procedural {
 namespace {
+using detail::narrow;
+
+using detail::widen;
+
 using math::Vector3;
 
 using math::Vector3d;
@@ -23,14 +27,6 @@ constexpr std::uint32_t bins = 16;
 constexpr std::uint32_t sah_depth = 40;
 
 constexpr std::size_t stack_size = 128;
-
-Vector3d widen(Vector3 v) {
-    return {v.x, v.y, v.z};
-}
-
-Vector3 narrow(Vector3d v) {
-    return {static_cast<float>(v.x), static_cast<float>(v.y), static_cast<float>(v.z)};
-}
 
 Vector3 lower(Vector3 a, Vector3 b) {
     return {std::min(a.x, b.x), std::min(a.y, b.y), std::min(a.z, b.z)};

@@ -6,6 +6,14 @@
 
 namespace atelier::procedural::detail {
 
+inline math::Vector3d widen(math::Vector3 v) noexcept {
+    return {v.x, v.y, v.z};
+}
+
+inline math::Vector3 narrow(math::Vector3d v) noexcept {
+    return {static_cast<float>(v.x), static_cast<float>(v.y), static_cast<float>(v.z)};
+}
+
 // Shared float-input distance uncertainty; no absolute world-unit floor.
 double surface_tolerance(double coordinate_scale, double extent) noexcept;
 
@@ -41,6 +49,8 @@ public:
     // Volume requires every face (including triangles) to have resolvable area.
     // Zero-area fan pieces of an otherwise valid polygon remain allowed.
     static Result<TriangleView> create(const Geometry& surface, bool require_nondegenerate = false);
+
+    static Result<TriangleView> create(const Geometry&& surface, bool require_nondegenerate = false) = delete;
 
     struct Iterator {
         const Geometry* surface;

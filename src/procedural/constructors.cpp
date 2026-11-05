@@ -9,8 +9,6 @@ namespace {
 
 using math::Vector3;
 
-constexpr std::uint64_t element_limit = 0xffff'fffeu;
-
 void append_face(Array<std::uint32_t>& corners, Array<std::uint32_t>& offsets,
                  std::initializer_list<std::uint32_t> face) {
     corners.append({face.begin(), face.size()});

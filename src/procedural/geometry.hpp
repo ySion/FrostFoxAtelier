@@ -17,6 +17,9 @@
 
 namespace atelier::procedural {
 
+// One past the largest count remains available as an invalid element index.
+inline constexpr std::uint64_t element_limit = 0xffff'fffeu;
+
 // Detail has exactly one element. Instances are their own layer, not points.
 AENUM(Name = "procedural.Layer",
       DESC = "几何的一层：point 点，vertex 图元的角，primitive 图元，detail 整个几何（只有一个元素），instance 实例。")

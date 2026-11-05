@@ -11,6 +11,10 @@
 namespace atelier::procedural {
 namespace {
 
+using detail::narrow;
+
+using detail::widen;
+
 using math::Matrix4;
 
 using math::Quaternion;
@@ -21,19 +25,9 @@ using math::Vector3;
 
 using math::Vector3d;
 
-constexpr std::uint64_t element_limit = 0xffff'fffeu;
-
 template <class T>
 T value(Result<T> result) {
     return std::move(*result);
-}
-
-Vector3d widen(Vector3 v) {
-    return {v.x, v.y, v.z};
-}
-
-Vector3 narrow(Vector3d v) {
-    return {static_cast<float>(v.x), static_cast<float>(v.y), static_cast<float>(v.z)};
 }
 
 // sign(det) * cofactor rows of the linear part, in double; a zero determinant keeps sign +1.
@@ -725,7 +719,7 @@ Result<Geometry> realize(std::span<const Geometry> sources, const Geometry& poin
     for (const auto& copy : copies) {
         const auto& source = sources[copy.source];
         const auto base = static_cast<std::uint32_t>(positions.size());
-        const auto usage = source.find("P")->usage;
+        const auto usage = source.attributes().front().usage; // Geometry always stores P first.
         for (const auto p : source.positions())
             positions.add(transformed(p, usage, copy.placement.matrix, copy.normals));
         const auto corners = source.vertex_points();
@@ -740,6 +734,7 @@ Result<Geometry> realize(std::span<const Geometry> sources, const Geometry& poin
     }
     ATELIER_TRY_BIND(result,
                      Geometry::primitives(std::move(positions), std::move(vertex_points), offsets, std::move(kinds)));
+    std::vector<const Attribute*> inputs;
     for (const auto& column : schema) {
         const auto& attribute = *column.first;
         if (attribute.name.view() == "P") {
@@ -750,6 +745,14 @@ Result<Geometry> realize(std::span<const Geometry> sources, const Geometry& poin
         if (attribute.layer == Layer::detail) {
             ATELIER_TRY(result->set(attribute.name, attribute.layer, attribute.data, attribute.usage));
             continue;
+        }
+        // Inputs stay immutable. Resolve each used source once per column, not
+        // once per copy, and reuse the lookup storage across output columns.
+        if (!column.broadcast) {
+            inputs.resize(sources.size());
+            for (std::size_t s = 0; s < sources.size(); ++s)
+                if (used[s])
+                    inputs[s] = sources[s].find(attribute.name);
         }
         auto data = std::visit(
             [&](const auto& prototype) -> Result<ColumnData> {
@@ -764,7 +767,7 @@ Result<Geometry> realize(std::span<const Geometry> sources, const Geometry& poin
                         values.resize(values.size() + count, target[copy.target]);
                         continue; // Target values already live in the destination space.
                     }
-                    const auto* input = source.find(attribute.name);
+                    const auto* input = inputs[copy.source];
                     if (!input) {
                         values.resize(values.size() + count);
                         continue; // Missing values are defaults, not transformed defaults.

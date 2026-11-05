@@ -133,8 +133,7 @@ public:
     void evaluate(const Geometry& input, Geometry& output) const;
 };
 
-ACLASS(Name = "procedural.Scatter",
-       DESC = "在三角形图元上按面积撒点。每个三角形的点只取决于它自己和种子，改动一个三角形不影响其他三角形上的点。")
+ACLASS(Name = "procedural.Scatter", DESC = "在三角形和凸平面多边形上按面积撒点。")
 class Scatter : public Node {
     AGENERATED_BODY(Scatter)
 
@@ -149,7 +148,7 @@ public:
            DESC = "两点之间的最小距离，单位 m。0 表示不淘汰。")
     float min_distance{};
 
-    AFUNCTION(DESC = "在输入的三角形上撒点。")
+    AFUNCTION(DESC = "在三角形和凸平面多边形上按面积撒点。")
     void evaluate(const Context& context, const Geometry& surface, Geometry& points) const;
 };
 

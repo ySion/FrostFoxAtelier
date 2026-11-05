@@ -14,6 +14,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <limits>
@@ -1240,6 +1241,30 @@ void volume_sampling() {
                 positions[i][axis] = i & (1u << axis) ? hi[axis] : lo[axis];
         return result;
     };
+    // An unreferenced point cannot change the fixed-grid candidate domain or
+    // spend the cell budget. The eight unit cells each contribute one inner point.
+    const Geometry loose_point[]{take(box({2, 2, 2})), take(Geometry::points({{2000, 2000, 2000}}))};
+    const auto plain = take(volume_scatter(loose_point[0], {}));
+    const auto extra = take(volume_scatter(take(Geometry::merge(loose_point)), {}));
+    require(plain.count(Layer::point) == 8 && plain.attributes().size() == 6 && extra.attributes().size() == 6,
+            "An unused point changed Volume's eight candidates or six-column schema.");
+    for (std::size_t i = 0; i < plain.attributes().size(); ++i) {
+        const auto& expected = plain.attributes()[i];
+        const auto& actual = extra.attributes()[i];
+        require(expected.name == actual.name && expected.layer == actual.layer && expected.usage == actual.usage &&
+                    expected.data.index() == actual.data.index(),
+                "An unused point changed Volume's column order or metadata.");
+        std::visit(
+            [&](const auto& values) {
+                using Storage = std::remove_cvref_t<decltype(values)>;
+                const auto& other = std::get<Storage>(actual.data);
+                require(values.size() == other.size() &&
+                            std::memcmp(values.array().data(), other.array().data(),
+                                        values.size() * sizeof(typename Storage::Value)) == 0,
+                        "An unused point changed Volume's ordered output bytes.");
+            },
+            expected.data);
+    }
     const Geometry overlapping[]{bounded_box({-4, -2, -2}, {1, 2, 2}), bounded_box({-1, -2, -2}, {4, 2, 2})};
     check(take(volume_scatter(take(Geometry::merge(overlapping)), settings)), [](Vector3) { return true; });
     auto inner = bounded_box({-2.5f, -1.75f, -1.75f}, {-1.5f, -.25f, -.25f});

@@ -7,7 +7,7 @@
 | [geometry.hpp](../../../src/procedural/geometry.hpp) | `Geometry` 值、层、属性列、拓扑与实例 |
 | [operations.hpp](../../../src/procedural/operations.hpp) | 导入、生成、撒点、变换、Promote、Copy to Points、Realize、包围盒 |
 | [instances.hpp](../../../src/procedural/instances.hpp) | 把 instance 层发布为渲染用的实例集合 |
-| [bvh.hpp](../../../src/procedural/bvh.hpp) | 三角形 BVH：射线与最近点查询 |
+| [bvh.hpp](../../../src/procedural/bvh.hpp) | 首角扇形 BVH：射线与最近点查询 |
 | [graph.hpp](../../../src/procedural/graph.hpp) | `Graph`、`Node`、端口、连接与编辑入口，类型注册 |
 | [nodes.hpp](../../../src/procedural/nodes.hpp) | C++ 内置节点 |
 | [evaluator.hpp](../../../src/procedural/evaluator.hpp) | 增量求值与结果缓存 |
@@ -78,7 +78,7 @@
 
 边界先于最终阈值：查询点 q 到任一原多边形 p 的**欧氏距离 ≤ δ_p** 时判为表面并排除，包括公共边、扇形对角线和顶点。各非零面积扇形片共用原多边形的 δ_p，以到有界三角形的最近距离判断，邻域取并集；不使用无限平面与外扩半平面的交集，细长扇形的延长尖角不会抹掉远处内点。距离计算与 BVH 共用 `closest_on_triangle` 的 double 实现，平面距离只作宽阶段。δ_p 来自上述公共 `polygon_scale`，不是精确实数谓词；分辨不出的贴面内点也不保留，不随机挪点、不把表面假定成 w=0.5。分类复杂度 O(C·T)，当前无 BVH、并行、填充加速或最小间距。
 
-- 固定格使用几何局部坐标，不按包围盒推导 h。各轴范围为 `floor((min−origin)/h)` 到 `ceil((max−origin)/h)−1`，min/max 来自全部输入点的 AABB；只接触边界的外格不参与。格坐标先检查 int32，再转换；按 x/y/z 字典序（z 最快）枚举。
+- 固定格使用几何局部坐标，不按包围盒推导 h。各轴范围为 `floor((min−origin)/h)` 到 `ceil((max−origin)/h)−1`，min/max 只统计被图元角引用的点；游离点不扩大格范围或消耗候选预算，但仍须通过全部输入点的有限性校验。只接触边界的外格不参与。格坐标先检查 int32，再转换；按 x/y/z 字典序（z 最快）枚举。
 - 设 H(a,b) 为现有 lowbias32 组合 hash，U 为高 24 位映射到 [0,1)。格随机源 `s=H(H(H(seed,uint32(x)),uint32(y)),uint32(z))`，负坐标使用模 2³² 编码。λ=density·h³，格内数目 `floor(λ) + (U(H(s,0)) < frac(λ))`。第 k 候选 id=`H(s,k)`，三个位置通道为 `U(H(id,1/2/3))`；以 double 计算 `origin+(cell+u)h`，最终舍入成 float P，再分类。节点 seed 为 H(图 seed, 节点 seed)。这是持久重算语义，不混入枚举下标、线程号或 std::hash。
 - 输出按格/ordinal 顺序稳定压紧为六列：P、uint id、int sourcecellx/sourcecelly/sourcecellz、uint sourceordinal。无 N，不携带输入属性。id 有碰撞，不是身份；格/ordinal 只在 origin/h/seed 固定时表示局部来源。改密度不重排已有 ordinal 的候选位置；几何远处变化不重生成原格候选，压紧后的点下标可以改变。
 - **相交格数和筛选前实际候选数分别不得超过 1,048,576**，小于 Geometry element_limit。先检查格范围/乘积，再用真实概率进位累计候选；不以格数×ceil(λ) 误拒，不等筛选后再计数。超限整节点失败，既有求值器保留旧发布；不截断、不自动调格或密度。候选 float 溢出也报错。上限不是交互性能承诺。

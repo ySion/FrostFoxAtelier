@@ -12,15 +12,13 @@
 namespace atelier::procedural {
 namespace {
 
+using detail::widen;
+
 using math::Vector3;
 
 using math::Vector3d;
 
 constexpr std::uint32_t work_limit = 1'048'576;
-
-Vector3d widen(Vector3 p) {
-    return {p.x, p.y, p.z};
-}
 
 struct Sum {
     double value{};
@@ -165,7 +163,16 @@ Result<Geometry> volume_scatter(const Geometry& surface, const VolumeScatterSett
         settings.cell_size <= 0 || !math::is_finite(settings.origin))
         return failure("Volume density must be finite and non-negative, cell size positive, and origin finite.");
     ATELIER_TRY_BIND(triangles, prepare(surface));
-    const auto box = *bounds(surface);
+    // Preparation validated a nonempty shell and every input point. Only used
+    // points bound its cells; loose points cannot spend the sampling budget.
+    const auto corners = surface.vertex_points();
+    const auto& points = surface.positions();
+    Bounds box{points[corners[0]], points[corners[0]]};
+    for (const auto index : corners)
+        for (std::size_t axis = 0; axis < 3; ++axis) {
+            box.minimum[axis] = std::min(box.minimum[axis], points[index][axis]);
+            box.maximum[axis] = std::max(box.maximum[axis], points[index][axis]);
+        }
     const double h = settings.cell_size;
     std::array<std::int64_t, 3> first{};
     std::array<std::uint32_t, 3> widths{};

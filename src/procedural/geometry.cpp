@@ -15,7 +15,7 @@ std::size_t column_size(const ColumnData& data) noexcept {
 }
 
 // Values at `indices`, or the type's default where an index is `absent`.
-constexpr std::uint32_t absent = ~0u;
+constexpr std::uint32_t absent = element_limit + 1;
 
 ColumnData gather(const ColumnData& data, std::span<const std::uint32_t> indices) {
     return std::visit(
