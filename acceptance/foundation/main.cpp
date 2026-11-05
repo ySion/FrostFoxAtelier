@@ -12,6 +12,8 @@ void verify_container_lifecycle();
 
 void verify_frame_timing();
 
+void verify_tasks();
+
 namespace {
 using namespace atelier;
 
@@ -172,7 +174,9 @@ int main() {
         verify_associative_containers();
         verify_container_lifecycle();
         verify_frame_timing();
-        std::puts("Foundation acceptance: PASS (owning aliases, failure cleanup, shared lifetime, GC, frame timing)");
+        verify_tasks();
+        std::puts(
+            "Foundation acceptance: PASS (owning aliases, failure cleanup, shared lifetime, GC, frame timing, tasks)");
         return 0;
     } catch (const std::exception& error) {
         std::fprintf(stderr, "Foundation acceptance: FAIL: %s\n", error.what());

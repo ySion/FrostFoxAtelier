@@ -1,5 +1,5 @@
 add_executable(atelier_foundation_acceptance acceptance/foundation/main.cpp acceptance/foundation/associative.cpp
-    acceptance/foundation/lifecycle.cpp acceptance/foundation/frame_timing.cpp)
+    acceptance/foundation/lifecycle.cpp acceptance/foundation/frame_timing.cpp acceptance/foundation/tasks.cpp)
 atelier_target(atelier_foundation_acceptance)
 target_link_libraries(atelier_foundation_acceptance PRIVATE atelier_runtime)
 target_include_directories(atelier_foundation_acceptance PRIVATE "${PROJECT_SOURCE_DIR}/acceptance")

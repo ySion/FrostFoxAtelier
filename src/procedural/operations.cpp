@@ -1,5 +1,6 @@
 #include "procedural/operations.hpp"
 #include "foundation/result.hpp"
+#include "foundation/tasks.hpp"
 #include "procedural/random.hpp"
 #include "procedural/triangles.hpp"
 
@@ -162,6 +163,37 @@ Result<Geometry> scatter(const Geometry& surface, const ScatterSettings& setting
         return std::unexpected(triangles.error());
     const auto& points = surface.positions();
     const auto vertex_points = surface.vertex_points();
+    // Only prefix counts survive preparation, including zero-count triangles.
+    // No per-triangle positions, edges, normals or seeds are cached.
+    Array<std::uint32_t> point_offsets;
+    Array<std::uint32_t> triangle_offsets;
+    point_offsets.reserve(static_cast<std::size_t>(triangles->size()) + 1);
+    triangle_offsets.reserve(static_cast<std::size_t>(surface.count(Layer::primitive)) + 1);
+    point_offsets.add(0);
+    for (const auto& [p, j, corners] : *triangles) {
+        if (j == 0)
+            triangle_offsets.add(static_cast<std::uint32_t>(point_offsets.size() - 1));
+        const auto v0 = widen(points[vertex_points[corners[0]]]);
+        const auto e1 = widen(points[vertex_points[corners[1]]]) - v0;
+        const auto e2 = widen(points[vertex_points[corners[2]]]) - v0;
+        const auto normal = math::cross(e1, e2);
+        const double area = math::length(normal) / 2;
+        const double expected = area * settings.density;
+        auto end = point_offsets[point_offsets.size() - 1];
+        if (area > 0 && expected > 0) {
+            const auto seed = j ? hash(hash(settings.seed, p), j) : hash(settings.seed, p);
+            const double whole = std::floor(expected);
+            const auto count = whole + (unit(hash(seed, 0u)) < expected - whole ? 1 : 0);
+            if (end + count > element_limit)
+                return failure("Scatter would create 2^32 - 1 points or more.");
+            end += static_cast<std::uint32_t>(count);
+        }
+        point_offsets.add(end);
+    }
+    triangle_offsets.add(triangles->size());
+    const auto total = point_offsets[point_offsets.size() - 1];
+
+    // Fix all output storage before dispatch. Workers only borrow plain spans.
     Array<Vector3> positions;
     Array<Vector3> normals;
     Array<std::uint32_t> ids;
@@ -169,39 +201,70 @@ Result<Geometry> scatter(const Geometry& surface, const ScatterSettings& setting
     Array<std::uint32_t> subtriangles;
     Array<std::uint32_t> ordinals;
     Array<Vector2> barycentrics;
-    for (const auto& [p, j, corners] : *triangles) {
-        const auto v0 = widen(points[vertex_points[corners[0]]]);
-        const auto e1 = widen(points[vertex_points[corners[1]]]) - v0;
-        const auto e2 = widen(points[vertex_points[corners[2]]]) - v0;
-        const auto normal = math::cross(e1, e2);
-        const double area = math::length(normal) / 2;
-        const double expected = area * settings.density;
-        if (!(area > 0) || !(expected > 0))
-            continue;
-        const auto seed = j ? hash(hash(settings.seed, p), j) : hash(settings.seed, p);
-        const auto source = j ? hash(p, j) : p;
-        const double whole = std::floor(expected);
-        const auto count = whole + (unit(hash(seed, 0u)) < expected - whole ? 1 : 0);
-        if (positions.size() + count > element_limit)
-            return failure("Scatter would create 2^32 - 1 points or more.");
-        const auto face = narrow(normal / (area * 2));
-        for (std::uint32_t k = 0; k < static_cast<std::uint32_t>(count); ++k) {
-            float r1 = unit(hash(seed, 2 * k + 1));
-            float r2 = unit(hash(seed, 2 * k + 2));
-            if (r1 + r2 > 1) {
-                r1 = 1 - r1;
-                r2 = 1 - r2;
+    positions.resize(total);
+    normals.resize(total);
+    ids.resize(total);
+    primitives.resize(total);
+    if (triangles->has_subtriangles())
+        subtriangles.resize(total);
+    ordinals.resize(total);
+    barycentrics.resize(total);
+    const auto filled = tasks::parallel_for(
+        {0, total},
+        [point_offsets = Span<const std::uint32_t>{point_offsets.view()},
+         triangle_offsets = Span<const std::uint32_t>{triangle_offsets.view()}, points = points.view(), vertex_points,
+         seed = settings.seed, positions = positions.view(), normals = normals.view(), ids = ids.view(),
+         primitives = primitives.view(), subtriangles = subtriangles.view(), ordinals = ordinals.view(),
+         barycentrics = barycentrics.view()](tasks::Range range) {
+            // Split output ranges so a single large face can still use the pool.
+            auto t = static_cast<std::uint32_t>(
+                std::upper_bound(point_offsets.begin(), point_offsets.end(), range.begin) - point_offsets.begin() - 1);
+            auto p = static_cast<std::uint32_t>(std::upper_bound(triangle_offsets.begin(), triangle_offsets.end(), t) -
+                                                triangle_offsets.begin() - 1);
+            auto i = range.begin;
+            while (i < range.end) {
+                if (point_offsets[t + 1] == i) {
+                    ++t;
+                    continue;
+                }
+                while (t >= triangle_offsets[p + 1])
+                    ++p;
+                const auto j = t - triangle_offsets[p];
+                // A contiguous n-corner fan contributes n-2 triangles. Thus p's
+                // first original corner is its triangle prefix plus 2*p.
+                const auto first = triangle_offsets[p] + 2 * p;
+                const auto v0 = widen(points[vertex_points[first]]);
+                const auto e1 = widen(points[vertex_points[first + j + 1]]) - v0;
+                const auto e2 = widen(points[vertex_points[first + j + 2]]) - v0;
+                const auto normal = math::cross(e1, e2);
+                const double area = math::length(normal) / 2;
+                const auto face = narrow(normal / (area * 2));
+                const auto s = j ? hash(hash(seed, p), j) : hash(seed, p);
+                const auto source = j ? hash(p, j) : p;
+                const auto end = std::min(range.end, static_cast<std::size_t>(point_offsets[t + 1]));
+                for (; i < end; ++i) {
+                    const auto k = static_cast<std::uint32_t>(i - point_offsets[t]);
+                    float r1 = unit(hash(s, 2 * k + 1));
+                    float r2 = unit(hash(s, 2 * k + 2));
+                    if (r1 + r2 > 1) {
+                        r1 = 1 - r1;
+                        r2 = 1 - r2;
+                    }
+                    positions[i] = narrow(v0 + e1 * double(r1) + e2 * double(r2));
+                    normals[i] = face;
+                    ids[i] = hash(source, k);
+                    primitives[i] = p;
+                    if (!subtriangles.empty())
+                        subtriangles[i] = j;
+                    ordinals[i] = k;
+                    barycentrics[i] = {r1, r2};
+                }
+                ++t;
             }
-            positions.add(narrow(v0 + e1 * double(r1) + e2 * double(r2)));
-            normals.add(face);
-            ids.add(hash(source, k));
-            primitives.add(p);
-            if (triangles->has_subtriangles())
-                subtriangles.add(j);
-            ordinals.add(k);
-            barycentrics.add({r1, r2});
-        }
-    }
+        },
+        1024);
+    if (filled != tasks::Completion::completed)
+        return failure("Scatter was cancelled before all candidates were filled.");
     if (settings.min_distance > 0 && !positions.empty()) {
         // Cells as wide as the distance: a kept point closer than it lies in a neighbouring cell.
         const double cell = settings.min_distance;

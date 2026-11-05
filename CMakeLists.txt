@@ -49,10 +49,12 @@ endfunction()
 
 include(cmake/logging.cmake)
 include(cmake/unordered_dense.cmake)
-add_library(atelier_foundation STATIC src/foundation/string.cpp src/foundation/hash.cpp src/foundation/frame_timing.cpp src/foundation/sha256.cpp)
+include(cmake/tbb.cmake)
+add_library(atelier_foundation STATIC src/foundation/string.cpp src/foundation/hash.cpp src/foundation/frame_timing.cpp
+    src/foundation/sha256.cpp src/foundation/tasks.cpp)
 target_include_directories(atelier_foundation PUBLIC src)
 target_compile_features(atelier_foundation PUBLIC cxx_std_23)
-target_link_libraries(atelier_foundation PUBLIC unordered_dense::unordered_dense PRIVATE bcrypt)
+target_link_libraries(atelier_foundation PUBLIC unordered_dense::unordered_dense PRIVATE bcrypt TBB::tbb)
 atelier_target(atelier_foundation)
 
 add_executable(atelier_math_acceptance acceptance/math/main.cpp)

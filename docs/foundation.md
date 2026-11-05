@@ -176,6 +176,49 @@ Runtime 校验原生元素表示和复制能力；当前反射数组只接受不
 
 源码拥有型局部复用原生构析操作，序列修改经 `Runtime::mutate_sequence` 分派到基础库；`sequence_mutate` 与 `value_operations_preserve_borrows` 由同一 TypeInfo 发布，数组能力还取决于元素的操作契约。当前没有数组元素编辑器、非平凡按值调用 ABI 或跨挂起借用。同步原生值区间只允许 `BorrowSafe` 原生方法和按值读取 `self` 字段，结构修改限于源码拥有的序列，并把 GC 留给区间外的宿主；原生调用方仍负责实际存续期。详细限制由 [LANGUAGE.md](../LANGUAGE.md#原生值借用)维护。
 
+## 原生 fork-join 任务
+
+[tasks.hpp](../src/foundation/tasks.hpp) 提供 `atelier::tasks::parallel_for` 和单次使用的 `JoinGroup`，用于普通 C++ 值上的同步计算；当前产品消费者是 [Scatter](../src/procedural/operations.cpp)。公共头不暴露 oneTBB 类型，后端版本与源码校验值只在[依赖锁文件](../cmake/dependencies-lock.json)。构建仅部署对应配置的一份 TBB 调度 DLL 与许可证，不构建或分发 tbbmalloc；通用分配器仍按项目既有 mimalloc 入口接管。
+
+```cpp
+auto candidate = snapshot;
+const auto input = snapshot.view();
+const auto output = candidate.write().view(); // 发起前完成 COW、容量及元素构造
+const auto completion = atelier::tasks::parallel_for(
+    {0, input.size()},
+    [input, output](atelier::tasks::Range range) {
+        for (auto i = range.begin; i < range.end; ++i)
+            output[i] = input[i] * 2;
+    },
+    1024); // grain 提示，不是每块的最大长度
+// 仅 completed 时发布 candidate；取消/失败后的部分结果不能发布。
+```
+
+### 范围、完成与拥有者
+
+- `Range{begin,end}` 是 size_t 半开区间。成功时每个索引恰好处理一次；空范围不调用 body。倒置范围或 grain=0 抛 invalid_argument。块长、顺序和执行线程不是业务结果；grain 交给自适应分块器，不引入持久 affinity 状态。
+- caller 进入共享 arena 参与执行；arena 满时允许委派，不能以 caller 每次实际执行至少一块作为正确性前提。嵌套仍用同一池并继承父取消；已处于任务 body 的嵌套调用不再次 execute 切换默认 context。禁止用普通 future、兄弟任务屏障或业务锁等待池内同伴；依赖只通过结构化子任务 join 表达。
+- `parallel_for` 借用 const-invocable 的 body，只向后端复制借用描述。`JoinGroup` 不可复制/移动，只有建立它的线程调用 `run/cancel/join`，body 可建立自己的子组。组拥有普通值闭包，存储与释放在提交线程；所有 body 执行结束后才释放。一次 join 后终态，不提供 detach、跨帧复用或后台任务。
+- 每次 parallel_for 在进入 arena 前捕获 caller 的浮点设置；组在构造时捕获，供该组全部任务使用。P=1、单块及委派路径仍由后端应用、恢复相同设置。body 不修改浮点环境，不以无序浮点归约改变元素内原计算次序。
+- foundation 内部唯一进程拥有者在首用时完成初始化，多个 Runtime/World 共用；不在 Runtime 中各建池。默认并行度 P=min(8,max(1,H/2))，H 为 hardware_concurrency 提示，P 包含 caller。它限制本 arena 并发与 TBB worker 预算，不限制外部应用线程，也不接管 Jolt、RHI 或解码线程。
+- 进程退出前须停止发起任务，全部调用线程和组均已终态。禁止静态寿命 JoinGroup，禁止静态析构期再提交。拥有者在任务外先 terminate 本方 arena，再 finalize 调度器；arena 析构不是 join。finalize 返回失败会报告并终止进程，不伪装成已清空 worker。以后增加其他 TBB arena/handle 时须共同履行关停合同。
+
+### 取消、失败与借用边界
+
+- stop_token 与 `JoinGroup::cancel()` 是合作取消，不强杀已经执行的 body；长 body 自行选择合理分块。所有已派发工作结束后才返回 completed/cancelled，或重抛一个代表异常。异常优先于纯取消，不保证按索引或时间选错，不收集全量错误；部分输出不自动回滚。不同顶层调用的取消隔离。
+- parallel_for 和组任务的 stop 回调只在已经绑定 context 的后端任务执行栈上存活，避免首次绑定覆盖提前设置的取消位；进入用户 body 前再次检查取消。返回/退栈时先注销并等待回调结束，之后任务才完成，因此 group wait 重置 context 前没有残留回调。组的显式取消另保留单调状态，首次绑定与 wait 重置都不能将其清除。
+- 正常路径显式 join 消费错误；放弃组时析构取消并 drain，只在清理中丢弃任务错误。run 内部存储/提交失败也先 drain 再抛出。实参求值不在函数内，例如 `run([v=make()] {})` 的 make 抛错，须退出组作用域后在外层 catch。借用拥有者先于组建立，直到 join/退栈清理后才能销毁。若连进入 arena 完成 drain 都失败，报告并终止，不释放仍可能被任务读取的闭包后继续运行。
+- 输入快照、COW 独占、增列/resize 与容量准备在发起前完成。worker 只借固定存储，不结构修改共享容器；输出不仅彼此不重叠，也不得覆盖其他分块的只读输入。固定拥有者覆盖整个 fork→join，借用在 join 返回时结束，不能逃逸后续任务。借出可写列期间不得复制其 SharedArray/Geometry 句柄、移动或重分配存储。
+- Runtime 所属线程可同步发起普通值任务，但 body（包括 caller 执行、P=1、嵌套）不能调用 Runtime、其 Source/VM/JIT、GC、根操作或 World 命令，不能捕获 Runtime 对象内部地址；等待不泵 UI/World/Runtime 回调。普通值自定义构析、闭包和跨 join 的异常/错误载荷都不得携带 ObjectRoot/ValueRoot/Program/Coroutine 等 Runtime 依赖拥有者。不能以任务最终在 caller 上析构为理由放宽此限制。
+- `tasks::in_parallel_body() noexcept` 在 dev/release 均可用，标记可嵌套的 body 执行及其局部对象异常退栈。它不包住调用前的闭包构造、join 后的闭包销毁或所有异常载荷转运，不证明 C++ 捕获安全。Runtime/Source 动态禁入检查由 Runtime 独立片接入，当前只提供查询，不声称检查已覆盖；调试断言也不是 release 安全沙箱。
+- 本入口不新增 Program 后台许可：Program 操作仍按现有 Runtime 线程与关闭/发布合同执行。无 Runtime 依赖的 MaterialProgram 既有并发求值合同不因本片而收紧，本片也不新增其任务消费者。Source worker 执行须另审，不能由 C++ 任务入口自动放行。
+
+### 计时与 Scatter
+
+所有 body 进入同一 RAII TLS 区间并暂停所在线程的 Recorder，包括 caller、嵌套及异常路径；worker 不写发起者 Recorder。发起阶段包住 fork→join 的墙钟，已经包含等待及 worker 工作，不再累加各 worker 耗时。parallel_for 不复制用户闭包，但后端调度可以分配；JoinGroup 的拥有存储也可分配，不能宣称任务零分配。
+
+Scatter 先按权威 TriangleView 的原图元 p、子三角 j 顺序算候选数，保留每子三角的点前缀和每原图元的子三角前缀；零计数也保留槽位，不缓存三角几何、法线或种子。分配输出后按连续输出区间并行填充，因此一个大三角形也能分块；fill 从固定输入 span 重读几何，以 p/j/k 恢复原种子和来源，k 在每子三角重新计数。连续 n 角多边形贡献 n−2 个扇形三角，所以 p 的首角下标可由其三角前缀加 2p 恢复。纯三角仍为原六列，只有含多边形输入追加 sourcetri。不存在按规模切换到旧串行实现的双路径。每元素内 double/float 运算顺序不变，最小间距在全部候选原序上串行淘汰、各列同步压紧。成功 join 后才构成返回 Geometry，失败不发布部分候选；不在 worker 上调用 Runtime 或操作 Geometry 结构。
+
 ## 帧阶段计时
 
 [frame_timing.hpp](../src/foundation/frame_timing.hpp) 提供常开的 CPU 帧阶段计时机制，dev 与 release 行为一致。foundation 只拥有根标记 `timing::frame`；各模块在自己的 `timing.hpp` 中以 `inline constinit timing::Marker` 声明阶段，给出键名、显示标题和父标记，例如 [renderer/timing.hpp](../src/renderer/timing.hpp) 的 `render` 以 `timing::frame` 为父项。父标记只引用本模块或其依赖模块的标记，依赖方向与链接一致。
@@ -196,6 +239,7 @@ Recorder 已绑定时，未登记的标记、未在声明父项下打开的标�
 - [资源目录消费者](../acceptance/foundation/associative.cpp)：Map 部分复制失败后，已有目标和源资源仍存活，退出作用域后全部释放。
 - [生命周期消费者](../acceptance/foundation/lifecycle.cpp)：资源子树提升时的移动赋值顺序，以及 SharedArray 多线程复制、写时分离和线程结束后的共享缓冲释放。原子内存序在 x64 上不能由这项验收区分。
 - [拥有资源消费者](../acceptance/foundation/main.cpp)：Array 自身别名追加/填充、构造与复制失败后的清理，以及宏生成原生 Inventory、描述型 Array 字段、独立快照、Runtime 值复制与 GC 析构资源的链路。
+- [原生任务消费者](../acceptance/foundation/tasks.cpp)：不可变输入与 COW 输出的非对称邻接计算、非零起点和尾块、嵌套 join；取消后已开始任务抛错的优先传播、用户闭包在提交线程释放及失败后再次调用。原地正向计算反例说明仅写区间互不重叠不足以安全并行，不执行有数据竞争的反例。只检查结果与生命周期，不以耗时或参与线程数判 PASS。
 - [Array 缓冲寿命](../acceptance/foundation/array_lifetime.cpp)与 [String 缓冲寿命](../acceptance/foundation/string_lifetime.cpp)：分别执行一次 Array 拷贝/销毁和一次 String 目录清空，严格比较前后 mimalloc 活分配字节；不是元素 live 计数，也不是性能采样。两个可执行文件随同一个 `foundation_acceptance` 入口运行，不输出计时或性能报告。
 
 [帧阶段计时消费者](../acceptance/foundation/frame_timing.cpp)检查目录组装、层级与记录序列，入口仍为 `foundation_acceptance`。
