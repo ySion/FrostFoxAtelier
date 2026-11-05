@@ -319,6 +319,12 @@ public:
         return *this;
     }
 
+    // Applies to the most recently declared field; Runtime validates and owns the values.
+    NativeRegistration& metadata(std::vector<std::pair<std::string, std::string>> values) {
+        definition_.fields.back().metadata = std::move(values);
+        return *this;
+    }
+
     // Validate is a free function or const member returning Result<void> for const T&.
     template <auto Validate>
         requires std::is_invocable_r_v<Result<void>, decltype(Validate), const T&>

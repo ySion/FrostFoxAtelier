@@ -110,7 +110,7 @@ Result<FieldDefinition> class_field(const SourceSnapshot& snapshot, const langua
     const auto unsupported = [&] {
         return at(
             field.position,
-            "Source object fields require bool, int, uint, float, double, a float or double vector, or an enum: " +
+            "Source object fields require bool, int, uint, float, double, a float or double vector, an enum, or String: " +
                 field.type);
     };
     FieldDefinition result;
@@ -146,15 +146,25 @@ Result<FieldDefinition> class_field(const SourceSnapshot& snapshot, const langua
         leaf = vector->math.precision == math::Precision::f64 ? "double" : "float";
     } else if (const auto type = runtime.find_type(field.type); type && !language::editor_reserved(field.type)) {
         const auto* info = take(runtime.describe(*type));
-        if (!info->enumeration)
+        if (info->kind == TypeKind::string)
+            result.default_text.emplace();
+        else if (info->enumeration) {
+            items = &info->enumeration->values;
+            signed_items = info->enumeration->underlying == binding.i32;
+        } else
             return unsupported();
         result.value = {*type};
-        items = &info->enumeration->values;
-        signed_items = info->enumeration->underlying == binding.i32;
     } else
         return unsupported();
     const auto& initializer = field.initializer;
-    if (items) {
+    if (result.default_text) {
+        if (!initializer.text.empty()) {
+            if (!field.initializer_text)
+                return std::unexpected(mapped_error(snapshot, initializer, {},
+                                                    "String field defaults require one ordinary string literal."));
+            result.default_text = field.initializer_text;
+        }
+    } else if (items) {
         std::uint32_t bits = 0;
         if (!initializer.text.empty()) {
             const auto item =
@@ -202,10 +212,14 @@ Result<FieldDefinition> class_field(const SourceSnapshot& snapshot, const langua
     result.label = field.label;
     result.category = field.category;
     result.description = field.description;
+    result.metadata = field.metadata;
+    const auto normalized = result.normalize_metadata();
+    if (!normalized)
+        return at(field.position, normalized.error().message);
     return result;
 }
 
-// A published field keeps its exact default leaves, bounds and presentation text; source spacing is not part of them.
+// Published field definitions compare decoded contents, not source spacing or attribute order.
 bool same_field(const FieldDefinition& a, const FieldDefinition& b) {
     const auto same = [](const std::optional<Scalar>& x, const std::optional<Scalar>& y) {
         return x && y ? same_scalar(*x, *y) : x.has_value() == y.has_value();
@@ -213,7 +227,7 @@ bool same_field(const FieldDefinition& a, const FieldDefinition& b) {
     return same_leaves(a.default_leaves, b.default_leaves) && same(a.range.ui_min, b.range.ui_min) &&
            same(a.range.ui_max, b.range.ui_max) && same(a.range.hard_min, b.range.hard_min) &&
            same(a.range.hard_max, b.range.hard_max) && a.label == b.label && a.category == b.category &&
-           a.description == b.description;
+           a.description == b.description && a.metadata == b.metadata && a.default_text == b.default_text;
 }
 }
 
@@ -293,12 +307,19 @@ Result<Program::Request> Program::request(SourceSnapshot snapshot, CompileOption
         return fail(source_error(input, collected.error().file, collected.error().diagnostic.position,
                                  collected.error().diagnostic.message));
     module.source = std::move(*collected);
-    // A math short name and its canonical name are one type, so a published field keeps it under either spelling.
+    auto& runtime = *state_->contract->binding.runtime;
+    // Builtin short names and canonical names denote one registered type, including during layout comparison.
     for (auto& cls : module.source.classes)
-        for (auto& field : cls.fields)
-            for (const auto& value : state_->contract->binding.values)
-                if (value.math && field.type == math::short_name(value.math))
-                    field.type = value.name;
+        for (auto& field : cls.fields) {
+            if (field.type == "String") {
+                if (const auto type = runtime.native_type<String>())
+                    field.type = take(runtime.describe(*type))->name;
+            } else {
+                for (const auto& value : state_->contract->binding.values)
+                    if (value.math && field.type == math::short_name(value.math))
+                        field.type = value.name;
+            }
+        }
     language::MappedSource types;
     for (const auto& declaration : module.source.declarations)
         if (declaration.kind == language::TopLevel::Kind::type)
@@ -307,7 +328,6 @@ Result<Program::Request> Program::request(SourceSnapshot snapshot, CompileOption
     if (!values)
         return fail(mapped_error(input, types, values.error().position, values.error().message));
     module.value_types = std::move(*values);
-    auto& runtime = *state_->contract->binding.runtime;
     // Functions, constants and accessor projections share names with the complete type catalog,
     // including empty classes that produce no bound compile unit.
     const auto type_named = [&](std::string_view name) {
@@ -396,7 +416,7 @@ Result<Program::Request> Program::request(SourceSnapshot snapshot, CompileOption
             for (std::size_t i = 0; i < fields.size(); ++i)
                 if (!same_field(before[i], fields[i]))
                     return fail({ErrorCode::rebuild_required,
-                                 "Published source class field changed its default, range or presentation; "
+                                 "Published source class field changed its default, range, presentation or Meta; "
                                  "rebuild the Runtime context: " +
                                      cls.name + "." + fields[i].name});
         } else {

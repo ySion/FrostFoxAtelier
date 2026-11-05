@@ -65,14 +65,24 @@ void field_attributes(Tokens& tokens, const SourceFile& unit, std::uint32_t file
     const auto find = [&](std::string_view name) { return std::ranges::find(seen, name, &Token::text); };
     do {
         const auto option = tokens.identifier();
-        if (find(option.text) != seen.end())
+        if (option.text != "Meta" && find(option.text) != seen.end())
             reject(option.position, "Duplicate field attribute: " + std::string(option.text));
         seen.push_back(option);
         const auto bound = std::ranges::find(bounds, option.text);
         const bool lock = option.text == "LockMin" || option.text == "LockMax";
         if ((lock || bound != bounds.end()) && !field.range)
             field.range = option.position;
-        if (lock) {
+        if (option.text == "Meta") {
+            tokens.expect("(");
+            std::array<std::string, 2> values;
+            for (std::size_t i = 0; i < values.size(); ++i) {
+                if (tokens.token_.kind != Token::Kind::string)
+                    reject(tokens.token_.position, "Meta requires a string literal key and value.");
+                values[i] = string_value(tokens.consume());
+                tokens.expect(i == 0 ? "," : ")");
+            }
+            field.metadata.emplace_back(std::move(values[0]), std::move(values[1]));
+        } else if (lock) {
             if (tokens.token_.text == "=")
                 reject(option.position, std::string(option.text) + " is a flag without a value.");
         } else if (option.text == "Label" || option.text == "Category" || option.text == "DESC") {
@@ -370,13 +380,17 @@ std::expected<SourceModule, ModuleDiagnostic> collect_module(const SourceSnapsho
                         if (type.array_depth || type.name == "void")
                             reject(
                                 start,
-                                "Source object fields require bool, int, uint, float, double, a float or double vector, or an enum.");
+                                "Source object fields require bool, int, uint, float, double, a float or double vector, an enum, or String.");
                         field.name = name.text;
                         field.type = type.name;
                         field.position = start;
                         if (tokens.accept("=")) {
                             const auto expression = tokens.token_.position;
-                            if (tokens.token_.kind == Token::Kind::identifier && !reserved(tokens.token_.text))
+                            if (tokens.token_.kind == Token::Kind::string) {
+                                auto text = string_value(tokens.consume());
+                                if (tokens.token_.text == ";")
+                                    field.initializer_text = std::move(text);
+                            } else if (tokens.token_.kind == Token::Kind::identifier && !reserved(tokens.token_.text))
                                 initializer_shape(tokens, unit, file, field);
                             while (tokens.token_.text != ";") {
                                 if (tokens.token_.kind == Token::Kind::end || tokens.token_.text == "{" ||

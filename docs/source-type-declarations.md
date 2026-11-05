@@ -70,13 +70,15 @@ uint process(const gameplay.Batch& input) {
 
 ## 原生对象的源码派生类
 
-项目快照中的 class 使用同一 `TypePublication` 事务准备，继承检查只查询事务类型目录；预览 TypeId 不进入正式 Runtime 查询或对象操作。发布后 `Runtime::create` 直接构造原生基类并写入描述型标量、向量和枚举字段的默认值，不需要宿主调用第二个初始化入口。`FieldInfo::default_leaves` 按分量描述相同默认值，`range/label/category/description` 来自字段属性；原生字段仍由 C++ 构造函数负责，规则见[字段默认值](runtime-model.md#字段默认值)。
+项目快照中的 class 使用同一 `TypePublication` 事务准备，继承检查只查询事务类型目录；预览 TypeId 不进入正式 Runtime 查询或对象操作。发布后 `Runtime::create` 直接构造原生基类和描述型字段，不需要宿主调用第二个初始化入口。`FieldInfo::default_leaves` 描述标量、向量和枚举默认值，`default_text` 描述真实 String 字段默认文本，`range/label/category/description/metadata` 来自字段属性；原生字段仍由 C++ 构造函数负责，规则见[字段默认值](runtime-model.md#字段默认值)与[扩展元数据](runtime-model.md#字段扩展元数据)。String 字段仅供宿主反射、保存与重建使用，不向源码开放 `self` 上的 String 访问或借用。
 
-已发布 class 的布局、字段默认值、范围和展示文本冻结；后续版本可以追加 class 和已有 class 的新方法。热更新保留已创建对象的字段值、地址和身份；关闭源码 Program 不注销类型。语法、限制和具名生命周期入口见 [LANGUAGE.md](../LANGUAGE.md#项目快照与原生派生类)，宿主发布示例见[项目快照](source-function-modules.md#项目快照与多个公开入口)。
+已发布 class 的布局、字段默认值、范围、展示文本和 Meta 内容冻结；后续版本可以追加 class 和已有 class 的新方法。热更新保留已创建对象的字段值、地址和身份；关闭源码 Program 不注销类型。语法、规范化兼容比较、重建限制和具名生命周期入口见 [LANGUAGE.md](../LANGUAGE.md#项目快照与原生派生类)，宿主发布示例见[项目快照](source-function-modules.md#项目快照与多个公开入口)。
 
 ## 验收
 
 [公共消费者](../acceptance/source/types.cpp)保留一份混合 enum/struct 与 C++ 共享存储代表：独立声明推导 16 字节、4 字节对齐及字段偏移；固定输入经源码修改后得到 amount=7、x=6、kind=8、返回值 13。类型拒绝、发布排列、复制与热更新矩阵不再重复覆盖。
+
+[项目消费者](../acceptance/source/projects.cpp)保留 String 默认字节、宿主覆盖与兼容更新后旧代码/状态完整性；[Runtime 值消费者](../acceptance/runtime/main.cpp)覆盖后续字段构造失败时已完成 String 的逆序清理；[工程集成](../acceptance/editor/project_execution.cpp)沿真实保存、加载和新上下文重建检查非 SSO、含零字节的 String 覆盖与新增字段默认值。它们分别随 `source_acceptance`、`runtime_acceptance`、`project_integration_acceptance` 无窗口运行，不改变持久格式。
 
 ### 值字段组合
 

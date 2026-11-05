@@ -5,6 +5,7 @@
 #include "runtime/detail/type_publication.hpp"
 #include "language/declarations.hpp"
 #include "language/module.hpp"
+#include "foundation/string.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -217,7 +218,8 @@ struct Program::Metadata {
             const auto& b = value.fields[i];
             if (a.id != b.id || a.name != b.name || a.value != b.value || a.offset != b.offset ||
                 a.native_address != b.native_address || a.owner != b.owner || a.range.hard_min != b.range.hard_min ||
-                a.range.hard_max != b.range.hard_max || !same_leaves(a.default_leaves, b.default_leaves))
+                a.range.hard_max != b.range.hard_max || !same_leaves(a.default_leaves, b.default_leaves) ||
+                a.metadata != b.metadata || a.default_text != b.default_text)
                 return false;
         }
         for (std::size_t i = 0; i < value.methods.size(); ++i) {

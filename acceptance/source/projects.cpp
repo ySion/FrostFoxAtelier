@@ -1,6 +1,7 @@
 #include "../helpers.hpp"
 #include "source/program.hpp"
 #include "runtime/native.hpp"
+#include "runtime/foundation.hpp"
 #include "world/world.hpp"
 
 #include <array>
@@ -57,6 +58,7 @@ void verify_property_update() {
     Runtime runtime;
     take(NativeRegistration<EngineBase>{runtime, "procedural.Base", TypeKind::object}.publish());
     Program program(runtime);
+    const auto string_type = take(runtime.register_type(string_definition(runtime)));
     source::SourceSnapshot input{
         "properties",
         1,
@@ -64,14 +66,34 @@ void verify_property_update() {
          {"Source/Property.source", 1, R"(
             uint value() { return props.Value; }
             class game.Property : procedural.Base {
+                [Meta("test.role", "stored"), Meta("test.binding", "run")]
                 uint stored = 3;
+                String selection = "noise_0123456789_分组\0tail";
+                String group;
                 uint GetLocal() { return self.stored; }
                 void SetLocal(uint v) { self.stored = v; }
                 uint run() { Local = Local + props.Value; return Local; }
             }
         )"}}};
     publish(program, input);
-    const auto instance = take(runtime.create(take(runtime.find_type("game.Property"))));
+    const auto type = take(runtime.find_type("game.Property"));
+    const auto field = take(runtime.find_field(type, "stored"));
+    const auto* info = take(runtime.describe(type));
+    const std::vector<std::pair<std::string, std::string>> metadata{{"test.binding", "run"}, {"test.role", "stored"}};
+    require(info->fields[0].metadata == metadata, "Source field Meta was not published in canonical key order.");
+    const auto instance = take(runtime.create(type));
+    const auto selection = take(runtime.find_field(type, "selection"));
+    const auto read_text = [&](FieldId id) {
+        String text;
+        take(runtime.read(instance.id(), id, ValueOutput{string_type, &text}));
+        return text;
+    };
+    constexpr char expected[] = "noise_0123456789_分组\0tail";
+    require(read_text(selection) == String{StringView{expected, sizeof(expected) - 1}} &&
+                read_text(take(runtime.find_field(type, "group"))).empty(),
+            "Source String defaults lost decoded bytes or empty initialization.");
+    const String edited{StringView{"host_owned_selection_0123456789"}};
+    take(runtime.write(instance.id(), selection, ValueInput{string_type, &edited}));
     const auto entry = take(take(program.entry("game.Property.run")).bind<std::uint32_t>());
     const auto old = take(take(program.pin("game.Property.run")).bind<std::uint32_t>());
     require(take(entry.invoke(instance.id())) == 10, "Initial cross-file property call produced the wrong state.");
@@ -80,7 +102,10 @@ void verify_property_update() {
     input.files[1].source = R"(
         uint value() { return props.Value; }
         class game.Property : procedural.Base {
+            [Meta("test.binding", "run"), Meta("test.role", "stored")]
             uint stored = 3;
+            core.String selection = "noise_0123456789_分组\0tail";
+            core.String group = "";
             uint run() { Local = Local + props.Value; return Local; }
             uint GetLocal() { return self.stored; }
             void SetLocal(uint v) { self.stored = v; }
@@ -91,6 +116,22 @@ void verify_property_update() {
                 std::get<std::uint32_t>(*take(take(program.entry("value")).invoke({}, {}))) == 11 &&
                 take(old.invoke(instance.id())) == 28,
             "Property update kept stale dependencies or changed a pinned accessor version.");
+    require(take(runtime.describe(type)) == info && take(runtime.find_field(type, "stored")) == field &&
+                info->fields[0].metadata == metadata && read_text(selection) == edited,
+            "Equivalent field declarations changed identity, metadata or the live String override.");
+    const auto revision = program.revision();
+    input.files[1].source.replace(input.files[1].source.find("\"run\""), 5, "\"other\"");
+    const auto changed = Program::prepare(take(program.request(input)));
+    require(!changed && changed.error().code == ErrorCode::rebuild_required && program.revision() == revision &&
+                take(entry.invoke(instance.id())) == 39 && info->fields[0].metadata == metadata,
+            "Changed field Meta bypassed rebuild or damaged the prior publication.");
+    input.files[1].source.replace(input.files[1].source.find("\"other\""), 7, "\"run\"");
+    input.files[1].source.replace(input.files[1].source.find("noise_"), 6, "new_");
+    const auto default_changed = Program::prepare(take(program.request(input)));
+    require(!default_changed && default_changed.error().code == ErrorCode::rebuild_required &&
+                program.revision() == revision && read_text(selection) == edited &&
+                take(entry.invoke(instance.id())) == 50,
+            "Changed String default bypassed rebuild or damaged the prior live object and code.");
 }
 
 source::SourceSnapshot sources(float factor = 1) {

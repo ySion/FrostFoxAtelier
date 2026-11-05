@@ -741,6 +741,17 @@ struct FieldDefinition {
 
     // Part of the published definition; checked against the leaf type and default.
     FieldRange range{};
+
+    // Owned UTF-8 values under dotted ASCII identifier keys. Publication sorts
+    // keys and rejects duplicates; consumers interpret their own namespaces.
+    std::vector<std::pair<std::string, std::string>> metadata{};
+
+    // Described object String fields only. Publication canonicalizes an omitted
+    // value to empty text; construction uses one String constructor, not assignment.
+    std::optional<std::string> default_text{};
+
+    // Shared cold-path normalization for native publication and Source comparisons.
+    Result<void> normalize_metadata();
 };
 
 struct MethodDefinition {
@@ -820,6 +831,12 @@ struct FieldInfo {
     void* (*native_address)(void*) noexcept {};
 
     TypeId owner{};
+
+    // Immutable, key-sorted copy of the declaration, also retained on inherited fields.
+    std::vector<std::pair<std::string, std::string>> metadata{};
+
+    // Owned decoded String default; absent for native fields and other value types.
+    std::optional<std::string> default_text{};
 };
 
 struct MethodInfo {

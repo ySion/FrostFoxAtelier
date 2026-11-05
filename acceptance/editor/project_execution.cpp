@@ -574,7 +574,9 @@ void run(const std::filesystem::path& root) {
     const std::string helpers =
         "float travel(float speed,float dt) { return speed * dt * (2.0f * procedural.unit(2147483648)); }\n";
     const std::string declaration =
-        "class project.Move : world.Component {\n    float speed = 2.0f;\n    bool moving = true;\n    uint ticks = 0;\n    void tick(float dt) {\n        if (self.moving) { self.translate_owner(travel(self.speed, dt), 0.0f, 0.0f); }\n        self.ticks = self.ticks + 1;\n    }\n}\n";
+        "class project.Move : world.Component {\n    float speed = 2.0f;\n    bool moving = true;\n    uint ticks = 0;\n"
+        "    String attribute = \"default_attribute_0123456789\";\n"
+        "    void tick(float dt) {\n        if (self.moving) { self.translate_owner(travel(self.speed, dt), 0.0f, 0.0f); }\n        self.ticks = self.ticks + 1;\n    }\n}\n";
     {
         auto empty = editor::load_project_scene(project, take(assets::read_file(root / "Content/Scenes/Main.scene")));
         if (!empty.session)
@@ -595,6 +597,22 @@ void run(const std::filesystem::path& root) {
                                     take(document.world().runtime().find_type("project.Move"))));
     require(std::get<float>(field(document, "speed")) == 2 && std::get<bool>(field(document, "moving")),
             "Runtime did not initialize source field defaults.");
+    const auto text_field = [](editor::Session& session, std::string_view name) {
+        auto& runtime = session.world().runtime();
+        const auto move = behavior(session);
+        String text;
+        take(runtime.read(move, take(runtime.find_field(take(runtime.type_of(move)), name)),
+                          ValueOutput{take(runtime.native_type<String>()), &text}));
+        return text;
+    };
+    require(text_field(document, "attribute") == String{StringView{"default_attribute_0123456789"}},
+            "Source class String default did not reach the scene object.");
+    constexpr char saved_bytes[] = "saved_selection_0123456789_分组\0tail";
+    const String saved_text{StringView{saved_bytes, sizeof(saved_bytes) - 1}};
+    auto& runtime = document.world().runtime();
+    take(runtime.write(behavior(document),
+                       take(runtime.find_field(take(runtime.type_of(behavior(document))), "attribute")),
+                       ValueInput{take(runtime.native_type<String>()), &saved_text}));
     const auto original = take(document.serialize());
     take(editor::write_file(root / "Content/Scenes/Main.scene", original));
     document.mark_saved();
@@ -638,6 +656,8 @@ void run(const std::filesystem::path& root) {
     auto playing = editor::load_project_scene(project, original);
     require(playing.session != nullptr, "Play snapshot failed to load.");
     auto& play = *playing.session;
+    require(text_field(play, "attribute") == saved_text,
+            "Scene round-trip lost the saved Source String bytes or restored its default instead.");
     const auto moving_entity = entity(play);
     complete(play.start());
     take(play.update(.5f));
@@ -719,7 +739,9 @@ void run(const std::filesystem::path& root) {
         complete(run.stop());
     }
     auto extended = declaration;
-    extended.insert(extended.find("    void tick"), "    float extra = 7.0f;\n");
+    extended.replace(extended.find("default_attribute_0123456789"), 28, "changed_attribute_default_0123456789");
+    extended.insert(extended.find("    void tick"),
+                    "    float extra = 7.0f;\n    String added = \"new_field_default_0123456789\";\n");
     take(editor::write_file(component, extended));
     const auto changed = playing.code->poll(project, true);
     require(!changed && changed.error().code == ErrorCode::rebuild_required,
@@ -727,6 +749,9 @@ void run(const std::filesystem::path& root) {
     auto rebuilt = editor::load_project_scene(project, original);
     require(rebuilt.session != nullptr, "Could not rebuild source types from the saved scene.");
     require(std::get<float>(field(*rebuilt.session, "extra")) == 7, "Rebuilding did not apply a new field's default.");
+    require(text_field(*rebuilt.session, "attribute") == saved_text &&
+                text_field(*rebuilt.session, "added") == String{StringView{"new_field_default_0123456789"}},
+            "Rebuilding lost a saved String override or a new String field's default.");
     take(editor::write_file(root / "Source/UI/Main.ui.source", editor::ProjectCode::ui_source()));
     take(project.set_ui_source("Source/UI/Main.ui.source"));
     editor::ProjectUI project_ui;
@@ -866,6 +891,20 @@ void run(const std::filesystem::path& root) {
                                    1,
                                    {{"phase", std::string("load")},
                                     {"type", std::string("project.Gone")},
+                                    {"field_path", std::string("/properties/added")}}},
+                                  {"world",
+                                   "world.unknown_field",
+                                   logging::Severity::warning,
+                                   1,
+                                   {{"phase", std::string("load")},
+                                    {"type", std::string("project.Gone")},
+                                    {"field_path", std::string("/properties/attribute")}}},
+                                  {"world",
+                                   "world.unknown_field",
+                                   logging::Severity::warning,
+                                   1,
+                                   {{"phase", std::string("load")},
+                                    {"type", std::string("project.Gone")},
                                     {"field_path", std::string("/properties/extra")}}},
                                   {"world",
                                    "world.unknown_field",
@@ -956,7 +995,7 @@ void run(const std::filesystem::path& root) {
     }
 
     const std::string infinite =
-        "class project.Move : world.Component { float speed=2.0f; bool moving=true; uint ticks=0; float extra=7.0f; void tick(float dt) { while (true) {} } }";
+        "class project.Move : world.Component { float speed=2.0f; bool moving=true; uint ticks=0; float extra=7.0f; String attribute; void tick(float dt) { while (true) {} } }";
     take(editor::write_file(component, infinite));
     take(process.start(root, snapshot, true));
     RunLog startup(process);

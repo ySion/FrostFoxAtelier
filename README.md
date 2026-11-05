@@ -253,6 +253,8 @@ cmake --build --preset release --target ui_layout_acceptance
 
 [类型声明消费者](acceptance/source/types.cpp)用一份 C++ 独立布局与固定输入验证源码 `enum/struct` 共用存储；[值字段消费者](acceptance/source/value_fields.cpp)保留 String、Array 和记录组合的助手失败、部分构造与赋值失败清理。新类型可在创建对象后随代码更新追加，已发布类型的定义与身份保持不变；原生方法可按引用直接消费这些描述型记录。执行链与边界见[源码类型声明](docs/source-type-declarations.md)。
 
+原生与 Source 字段共用不可变的命名空间 `Meta("key", "value")` 载体；Source class 可声明真实 String 字段、空或字符串字面量默认值，沿宿主反射及既有场景格式保存、加载和重建。Meta 内容或文本默认值改变要求重建，兼容更新保留实例覆盖；本片不开放源码对对象 String 字段的访问或借用。语法与边界见[原生派生类](LANGUAGE.md#项目快照与原生派生类)，载体见[字段扩展元数据](docs/runtime-model.md#字段扩展元数据)。
+
 同步 plain struct 的按值参数与返回使用同一 `Runtime::call`、`Program::Entry/Lease::invoke`，结果通过 `ValueOutput` 提交；记录可递归包含标量、枚举、数学值和 plain struct。原生成员调用由定型 C++ thunk 处理平台 ABI。[普通记录消费者](acceptance/source/plain_records.cpp)保留构造失败后重试、按值/可写别名快照、高对齐暂存寿命及大值失败不覆盖结果；验收入口为 `source_acceptance`。含 String/Array、GC 引用或其他资源的记录及异步聚合边界仍未开放。
 
 单独运行该消费者：`cmake --build --preset dev --target source_acceptance`（release 同理），成功输出 `Source public consumer: PASS`。

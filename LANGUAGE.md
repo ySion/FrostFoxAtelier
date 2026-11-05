@@ -45,7 +45,7 @@ void bool true false float double uint int const if else while for break continu
 | 已注册枚举 | 独立类型身份，底层为 i32/u32；使用完整 Runtime 类型名 |
 | 记录/结构体 | 同一 Runtime 中的原生或描述型无 GC 引用值；同步借用，具备保持借用有效的复制与生命周期能力时可作拥有型局部 |
 | `Array<T>` | 同一 Runtime 注册的具体原生数组；同步借用或拥有型局部 |
-| `String` | 已注册的引擎 UTF-8 String；只读借用或拥有型局部，长度和索引按字节 |
+| `String` | 已注册的引擎 UTF-8 String；只读借用、拥有型局部或宿主可读写的 class 字段，长度和索引按字节 |
 | `void` | 函数/方法无结果，不能用于值上下文 |
 | 宿主对象类型 | 持有引用，允许为空；`weak` 表达观察引用 |
 
@@ -184,13 +184,15 @@ class game.Move : world.Component {
 }
 ```
 
-- 基类必须是宿主已经注册的原生对象类型。类具有真实 Runtime 类型身份、继承关系和实例存储；字段可以是 bool/float/double/int/uint、float 或 double 的 vector2/3/4（短名或 `math.*` 规范名），以及已注册或同快照声明的枚举；四元数、矩阵、记录、数组、String 和对象引用不能作类字段。原生基类仍由原生构造函数初始化。
+- 基类必须是宿主已经注册的原生对象类型。类具有真实 Runtime 类型身份、继承关系和实例存储；字段可以是 bool/float/double/int/uint、float 或 double 的 vector2/3/4（短名或 `math.*` 规范名）、已注册或同快照声明的枚举，以及已注册的引擎 String（`String` 或其规范名 `core.String`）；四元数、矩阵、其他记录、数组和对象引用不能作类字段。原生基类仍由原生构造函数初始化。
 - 字段初始化器给出整值默认值，没有初始化器时取零值（枚举为底层值 0）。标量写不依赖其他声明的常量标量表达式，按现有数值和显式转换规则检查；向量写 `vector3()` 或每个分量一个常量的 `vector3(c0, c1, c2)`，分量精确匹配向量精度，例如 double 向量的分量写 `0.0d`；枚举写 `geo.Axis::z`。每个浮点叶必须有限：`0.0f / 0.0f`、`1e30f * 1e30f` 这类折叠结果在该字段报错。
+- String 字段默认构造为空，或用一个普通字符串字面量，例如 `String attribute = "pscale";`；转义沿既有 String 规则解码，UTF-8 在发布前校验。`String` 与规范名、无初始化器与 `""` 分别等价。它是同一 Runtime 中的真实拥有型字段，支持宿主反射读写、保存与重建，**不开放源码 `self.attribute` 的读取、写入或借用**，也不新增 class 构造函数或 Source 类间继承。宿主需要文本时先复制到自己的 String，不能让对象内部地址跨 invoke 存续。
 - 字段前可写属性，名称与 AFIELD 相同：`[Min = 0.0, Max = 2.0, LockMin, HardMax = 10.0, Label = "Amount", Category = "Noise", DESC = "说明"] float amount = 0.5f;`。边界是字段叶类型的有限常量（向量按分量、int/uint 用整数），只能用于 int/uint/float/double 和向量字段；`LockMin/LockMax` 把同侧 UI 边界同时作硬边界，要求同侧 `Min/Max` 且不能再写 `HardMin/HardMax`。`Label`、`Category` 是不含控制字符的字符串字面量，`DESC` 允许 `\n`、`\t`。重复或未知属性、写在方法前的属性在编译期报错；大小顺序、UI 边界落在硬边界内、默认值满足硬边界由 Runtime 发布检查，错误同样指到该字段。规则见[字段范围与硬边界](docs/reflection.md#字段范围与硬边界)。
+- 字段还可写 `[Meta("procedural.bind", "evaluate.values"), Meta("procedural.layer", "point")] String attribute = "pscale";`。Meta 可重复声明不同键，每项恰好两个字符串字面量；同键重复拒绝。载体和原生字段一致，格式、拥有关系及排序见[Runtime 字段扩展元数据](docs/runtime-model.md#字段扩展元数据)。语言和 Runtime 不解释这些业务键。
 - 类方法为同步函数。生命周期入口签名固定为 `void begin()`、`void tick(float)`、`void post_physics_tick(float)`、`void late_tick(float)`、`void end()`，三个帧阶段方法都接收整帧 dt；缺省方法不导出。其余同步方法使用既有值与借用规则。源码通过 `self` 访问当前类及继承成员；同类方法和全局助手按普通函数语法调用。全局函数与该类方法名不能冲突，暂不支持跨类方法调用或动态分派。
 - 工程文件里的全局函数导出为函数名，类方法导出为 `完整类名.方法名`；引擎文件里的全局函数只供源码调用，不是入口。类方法始终要求当前类视图的活接收者，即使方法体为空。宿主从 `Program::entries/describe/entry/pin` 取得签名和代码。
 - 整份快照共用类型发布事务。编译单元有三种：工程单元包含工程文件的全部顶层声明，导出其中的函数；每个有方法的 class 一个单元；每个引擎模块一个只做检查、不生成代码的单元。单元只编译自身文本，加上它的文本按名字（含带点的全名及其每个前缀）直接或间接写到的顶层声明；局部变量与声明同名时也算写到。每个顶层声明都在所属单元里通过语义检查，无方法类不生成占位函数。同一单元的入口和助手共用一个 LLVM 模块；输入未变的单元不再检查和编译，沿用已发布的机器码。一个单元失败会保留整个旧版本。
-- 创建 Runtime 对象后仍可发布。已发布模块只增长：方法体可兼容修改，入口声明顺序可调整；新增 struct/enum、class、全局函数，以及已有或新增 class 上的方法（含生命周期入口）随新版本兼容发布。删除或改名已发布的类型、字段、函数或方法，已有类型的字段顺序/类型、基类，已有字段的默认值、范围、`Label`、`Category` 或 `DESC` 变化，以及已有入口的签名变化返回 `rebuild_required`，由宿主重建上下文；只改属性列表里的空白仍可兼容发布。参数名不属于签名，只改参数名可以兼容发布；`Program::entries()` 按顺序给出每个入口的参数名，以及只在该入口所在编译单元的输入变化时才更换的 `code`：改一个没有单元写到的引擎函数不更换任何 code，Runtime 新增值类型则更换全部 code；`Program::revision()` 统计成功发布次数，见[项目快照](docs/source-function-modules.md#项目快照与多个公开入口)。默认值按浮点位表示比较，区分正负零。
+- 创建 Runtime 对象后仍可发布。已发布模块只增长：方法体可兼容修改，入口声明顺序可调整；新增 struct/enum、class、全局函数，以及已有或新增 class 上的方法（含生命周期入口）随新版本兼容发布。删除或改名已发布的类型、字段、函数或方法，已有类型的字段顺序/类型、基类，已有字段的默认值、范围、`Label`、`Category`、`DESC` 或 Meta 内容变化，以及已有入口的签名变化返回 `rebuild_required`，由宿主重建上下文；只改属性空白、Meta 顺序、String 别名或等价文本默认值仍可兼容发布，不人为更换代码身份。参数名不属于签名，只改参数名可以兼容发布；`Program::entries()` 按顺序给出每个入口的参数名，以及只在该入口所在编译单元的输入变化时才更换的 `code`：改一个没有单元写到的引擎函数不更换任何 code，Runtime 新增值类型则更换全部 code；`Program::revision()` 统计成功发布次数，见[项目快照](docs/source-function-modules.md#项目快照与多个公开入口)。浮点默认值按位表示比较，区分正负零；文本按解码后的完整字节比较。重建使用新上下文和新身份，保存的属性恢复原值，未保存字段使用新默认，不迁移活动对象或帧。
 - `Entry` 跟随整个项目的新版本，`Lease` 固定旧入口及其模块。共享助手沿实际调用链传播借用保护，无关入口使用 String/Array 不会增加普通入口的借用限制；两者都不在执行区间内推进 GC。所有操作仍在 Runtime 线程执行。
 
 快照不能与同一 Program 的单源码入口模式混用。项目入口暂不支持 async；单源码请求继续支持既有 async/yield。宿主 API 和发布顺序见[项目快照](docs/source-function-modules.md#项目快照与多个公开入口)。
@@ -206,9 +208,11 @@ type_declaration = struct_declaration | enum_declaration | class_declaration ;
 class_declaration = "class", qualified_name, ":", qualified_name, "{",
                     { class_field | function }, "}", [ ";" ] ; (* 仅项目快照；方法必须同步 *)
 class_field    = [ "[", field_attribute, { ",", field_attribute }, "]" ],
-                 ( scalar_type | math_type ), identifier, [ "=", expression ], ";" ; (* 数学类型限 float/double 向量 *)
+                 ( scalar_type | math_type | "String" | qualified_name ), identifier, [ "=", expression ], ";" ;
+                 (* 数学类型限 float/double 向量；其余具名类型限枚举及已注册 String，String 默认值限单个字面量 *)
 field_attribute = ( "Min" | "Max" | "HardMin" | "HardMax" ), "=", expression | "LockMin" | "LockMax"
-                | ( "Label" | "Category" | "DESC" ), "=", string_literal ;
+                | ( "Label" | "Category" | "DESC" ), "=", string_literal
+                | "Meta", "(", string_literal, ",", string_literal, ")" ;
 struct_declaration = "struct", qualified_name, "{", { field_declaration }, "}", ";" ;
 field_declaration = ( scalar_type | aggregate_type ), identifier, ";" ;
 enum_declaration = "enum", qualified_name, [ ":", ( "int" | "uint" ) ], "{",

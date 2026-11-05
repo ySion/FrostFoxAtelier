@@ -21,21 +21,37 @@ void verify_descriptions() {
         float read() const noexcept { return value; }
     };
     TypeInfo retained{};
+    TypeInfo generated{};
+    TypeInfo inherited{};
     {
         Runtime native;
         auto definition =
             NativeRegistration<Manual>{native, "reflection.ManualDescription", TypeKind::object, "手工 Type\r\n说明"}
                 .field<&Manual::value>("value", {TypeReference::native<float>()}, offsetof(Manual, value), {}, {},
                                        "手工 Field\r说明")
+                .metadata({{"test.note", std::string{"分组\0尾", 10}}, {"test.binding", "evaluate.values"}})
                 .method<&Manual::read>("read", true, "手工 Method\n说明")
                 .build();
         const auto id = take(native.register_type(definition));
         definition = {};
         retained = *take(native.describe(id));
+        TypeDefinition child;
+        child.name = "reflection.Child";
+        child.base = id;
+        inherited = *take(native.describe(take(native.register_type(std::move(child)))));
+        require(inherited.fields[0].id == take(native.find_field(id, "value")),
+                "Inherited metadata changed its declaring field identity.");
+        generated =
+            *take(native.describe(take(native.register_type(atelier::reflection::Definition<Sample>::build(native)))));
     }
     require(retained.description == "手工 Type\n说明" && retained.fields[0].description == "手工 Field\n说明" &&
                 retained.methods[0].description == "手工 Method\n说明",
             "Manual producer or copied metadata failed to own normalized descriptions after Runtime shutdown.");
+    const std::vector<std::pair<std::string, std::string>> expected{{"test.binding", "evaluate.values"},
+                                                                    {"test.note", std::string{"分组\0尾", 10}}};
+    require(retained.fields[0].metadata == expected && generated.fields[0].metadata == expected &&
+                inherited.fields[0].metadata == expected,
+            "Field Meta lost canonical ordering, decoded bytes, inheritance or owned publication lifetime.");
 }
 
 void verify_record_call(Runtime& runtime) {

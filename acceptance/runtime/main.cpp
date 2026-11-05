@@ -1,5 +1,6 @@
 #include "../helpers.hpp"
 #include "runtime/native.hpp"
+#include "runtime/foundation.hpp"
 #include "memory/acceptance.hpp"
 
 #include <array>
@@ -124,6 +125,35 @@ void verify_value_operations() {
     take(runtime.destroy_value(record, source));
     ValueResource::fail_assignment = false;
     require(ValueResource::live == 0, "Failed value operations leaked resources.");
+
+    // A completed non-SSO text field must unwind when a later child fails, and the
+    // next creation must still use the declared text rather than an empty fallback.
+    static int text_destructions = 0;
+    auto text_definition = string_definition(runtime);
+    text_definition.native.destroy = [](void* storage) noexcept {
+        ++text_destructions;
+        std::destroy_at(static_cast<String*>(storage));
+    };
+    const auto text_type = take(runtime.register_type(std::move(text_definition)));
+    FieldDefinition text_field{"text", {text_type}};
+    text_field.default_text = "completed_non_SSO_text_0123456789";
+    const auto owner =
+        take(runtime.register_type({"values.TextOwner", TypeKind::object, {text_field, {"pair", {pair}}}, {}, {}}));
+    ValueResource::remaining_constructions = 1;
+    const auto failed = runtime.create(owner);
+    require(!failed && failed.error().code == ErrorCode::construction_failed && text_destructions == 1 &&
+                ValueResource::live == 0,
+            "Later construction failure leaked or double-destroyed a completed String field.");
+    ValueResource::remaining_constructions = -1;
+    auto recovered = take(runtime.create(owner));
+    String text;
+    take(runtime.read(recovered.id(), take(runtime.find_field(owner, "text")), ValueOutput{text_type, &text}));
+    require(text.view() == StringView{"completed_non_SSO_text_0123456789"} && ValueResource::live == 2,
+            "Creation after a failed text-bearing object lost its default or child lifetimes.");
+    const auto before_destroy = text_destructions;
+    take(runtime.destroy(recovered.id()));
+    require(text_destructions == before_destroy + 1 && ValueResource::live == 0,
+            "Recovered text-bearing object did not release its completed fields exactly once.");
     std::cout << "[pass] Values unwind failed construction and retain destructible partial assignments\n";
 }
 

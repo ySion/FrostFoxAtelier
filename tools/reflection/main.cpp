@@ -49,6 +49,19 @@ std::string quote(llvm::StringRef text) {
     return result;
 }
 
+// Metadata owns decoded bytes, including embedded zeroes. Fixed-width octal
+// escapes avoid C++ literal encoding and escape-boundary ambiguities.
+std::string metadata_text(std::string_view text) {
+    std::string result = "std::string{\"";
+    for (const unsigned char c : text) {
+        result += '\\';
+        result += static_cast<char>('0' + (c >> 6));
+        result += static_cast<char>('0' + ((c >> 3) & 7));
+        result += static_cast<char>('0' + (c & 7));
+    }
+    return result + "\", " + std::to_string(text.size()) + "}";
+}
+
 std::string required(const llvm::json::Object& object, llvm::StringRef name) {
     const auto value = object.getString(name);
     if (!value || value->empty())
@@ -150,6 +163,8 @@ struct Field {
 
     // Designated FieldRange initializers, empty when the field declares no range.
     std::string range{};
+
+    std::vector<std::pair<std::string, std::string>> metadata{};
 };
 
 struct Method {
@@ -254,7 +269,8 @@ struct State {
         return nullptr;
     }
 
-    std::optional<Options> options(const Marker& marker, std::initializer_list<llvm::StringRef> allowed) {
+    std::optional<Options> options(const Marker& marker, std::initializer_list<llvm::StringRef> allowed,
+                                   std::vector<std::pair<std::string, std::string>>* metadata = nullptr) {
         Options result;
         const auto& tokens = marker.arguments;
         std::size_t i = 0;
@@ -269,7 +285,30 @@ struct State {
                 return {};
             }
             std::string value;
-            if (i < tokens.size() && tokens[i].is(tok::equal)) {
+            if (name == "Meta") {
+                if (i == tokens.size() || !tokens[i++].is(tok::l_paren)) {
+                    error(marker.location, "Meta requires (\"key\", \"value\").");
+                    return {};
+                }
+                std::array<std::string, 2> values;
+                for (std::size_t part = 0; part < values.size(); ++part) {
+                    if (i == tokens.size() || !tokens[i].is(tok::string_literal)) {
+                        error(marker.location, "Meta requires an ordinary string literal key and value.");
+                        return {};
+                    }
+                    StringLiteralParser literal(llvm::ArrayRef<Token>(&tokens[i++], 1), compiler->getPreprocessor());
+                    if (literal.hadError) {
+                        failed = true;
+                        return {};
+                    }
+                    values[part] = literal.GetString().str();
+                    if (i == tokens.size() || !tokens[i++].is(part == 0 ? tok::comma : tok::r_paren)) {
+                        error(marker.location, "Meta requires exactly a key and value.");
+                        return {};
+                    }
+                }
+                metadata->emplace_back(std::move(values[0]), std::move(values[1]));
+            } else if (i < tokens.size() && tokens[i].is(tok::equal)) {
                 ++i;
                 if (i == tokens.size() || !tokens[i].is(tok::string_literal)) {
                     error(marker.location, "Reflection option " + name + " requires an ordinary string literal.");
@@ -314,7 +353,8 @@ struct State {
                 error(marker.location, name + " is a flag, without a value.");
                 return {};
             }
-            result.emplace(name, std::move(value));
+            if (name != "Meta")
+                result.emplace(name, std::move(value));
             if (i < tokens.size()) {
                 if (!tokens[i++].is(tok::comma) || i == tokens.size()) {
                     error(marker.location, "Expected another comma-separated reflection option.");
@@ -802,9 +842,11 @@ void members(State& state, Type& type, ASTContext& context) {
                     "Runtime reference storage, including inline records and arrays, requires an explicit AFIELD marker.");
             continue;
         }
-        const auto options =
-            state.options(*marker, {"Name", "Label", "Category", "DESC", "Hidden", "Strong", "Weak", "Sequence", "Min",
-                                    "Max", "LockMin", "LockMax", "HardMin", "HardMax"});
+        std::vector<std::pair<std::string, std::string>> metadata;
+        const auto options = state.options(*marker,
+                                           {"Name", "Label", "Category", "DESC", "Hidden", "Strong", "Weak", "Sequence",
+                                            "Min", "Max", "LockMin", "LockMax", "HardMin", "HardMax", "Meta"},
+                                           &metadata);
         if (!options)
             continue;
         if (field->isBitField() || field->isAnonymousStructOrUnion() || field->getType().isConstQualified() ||
@@ -831,6 +873,7 @@ void members(State& state, Type& type, ASTContext& context) {
             result.category = options->at("Category");
         if (options->contains("DESC"))
             result.description = options->at("DESC");
+        result.metadata = std::move(metadata);
         unsigned forms = 0;
         for (const auto* form : {"Strong", "Weak", "Sequence"})
             if (options->contains(form)) {
@@ -1141,6 +1184,14 @@ void emit(const State& state) {
             cpp += ")";
             if (!field.range.empty())
                 cpp += "\n        .range({" + field.range + "})";
+            if (!field.metadata.empty()) {
+                cpp += "\n        .metadata({";
+                for (std::size_t i = 0; i < field.metadata.size(); ++i) {
+                    const auto& [key, value] = field.metadata[i];
+                    cpp += (i ? ", " : "") + std::string{"{"} + metadata_text(key) + ", " + metadata_text(value) + "}";
+                }
+                cpp += "})";
+            }
         }
         for (const auto& method : type.methods) {
             cpp += location(method.line) + "        .method<static_cast<" + method.pointer +

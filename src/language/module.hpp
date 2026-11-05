@@ -51,6 +51,9 @@ struct ClassField {
 
     std::vector<MappedSource> initializer_arguments;
 
+    // Present only when the entire initializer is one decoded string literal.
+    std::optional<std::string> initializer_text;
+
     // Attributes. LockMin/LockMax already copy their UI bound to the hard side.
     std::string label;
 
@@ -61,6 +64,8 @@ struct ClassField {
     std::array<MappedSource, 4> bounds; // ui_min, ui_max, hard_min, hard_max
 
     std::optional<SourcePosition> range; // the first range attribute
+
+    std::vector<std::pair<std::string, std::string>> metadata;
 };
 
 // Signatures omit parameter names, so renaming a parameter stays compatible.

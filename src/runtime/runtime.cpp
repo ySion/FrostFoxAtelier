@@ -395,6 +395,8 @@ struct Runtime::Impl {
 
         // Only fields with hard bounds allocate; the stable address backs Address and leaf pointers.
         std::unique_ptr<const FieldRange> hard{};
+
+        std::optional<std::string> default_text{};
     };
 
     // A hard-bounded scalar inside a record or object, reached through storage indices
@@ -1377,6 +1379,9 @@ struct Runtime::Impl {
                     if (field.type->native.construct) {
                         if (origin)
                             field.type->native.copy_construct(destination, origin);
+                        else if (field.default_text)
+                            std::construct_at(reinterpret_cast<String*>(destination),
+                                              StringView{std::string_view{*field.default_text}});
                         else
                             field.type->native.construct(destination);
                     } else if (field.type->scalar_leaf) {
@@ -1848,6 +1853,32 @@ Result<std::vector<TypeId>> Runtime::register_types(std::vector<TypeDefinition> 
     return result;
 }
 
+Result<void> FieldDefinition::normalize_metadata() {
+    for (const auto& [key, value] : metadata) {
+        bool start = true;
+        bool valid = key.find('.') != std::string::npos;
+        for (const char c : key) {
+            if (c == '.') {
+                valid &= !start;
+                start = true;
+            } else {
+                valid &=
+                    (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' || (!start && c >= '0' && c <= '9');
+                start = false;
+            }
+        }
+        if (!valid || start)
+            return failure(ErrorCode::invalid_definition, "Meta keys require dotted ASCII identifiers");
+        if (!StringView{std::string_view{value}}.is_valid_utf8())
+            return failure(ErrorCode::invalid_definition, "Meta values require valid UTF-8");
+    }
+    std::ranges::sort(metadata);
+    for (std::size_t i = 1; i < metadata.size(); ++i)
+        if (metadata[i - 1].first == metadata[i].first)
+            return failure(ErrorCode::invalid_definition, "Duplicate Meta key: " + metadata[i].first);
+    return {};
+}
+
 Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vector<TypeDefinition> definitions) {
     // Preparation only reads the published catalog; reserve_commit checks the safe point.
     if (definitions.empty()) {
@@ -1877,9 +1908,14 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
         };
         if (!normalize_description(definition.description))
             return invalid_description(definition.name);
-        for (auto& field : definition.fields)
+        for (auto& field : definition.fields) {
             if (!normalize_description(field.description))
                 return invalid_description(definition.name + "." + field.name);
+            const auto normalized = field.normalize_metadata();
+            if (!normalized)
+                return failure(normalized.error().code,
+                               normalized.error().message + ": " + definition.name + "." + field.name);
+        }
         for (auto& method : definition.methods)
             if (!normalize_description(method.description))
                 return invalid_description(definition.name + "." + method.name);
@@ -2084,6 +2120,15 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
             }
             const auto index = static_cast<std::uint32_t>(type.fields.size());
             const ValueDescription value{target->info.id, form};
+            const bool text_field = !is_native && type.info.kind == TypeKind::object &&
+                                    form == ValueForm::inline_value && target->info.kind == TypeKind::string;
+            if (text_field && !field.default_text)
+                field.default_text.emplace();
+            if (field.default_text &&
+                (!text_field || !StringView{std::string_view{*field.default_text}}.is_valid_utf8()))
+                return failure(ErrorCode::invalid_definition,
+                               "Text defaults require a described object's String field and valid UTF-8: " +
+                                   type.info.name + "." + field.name);
             auto published_leaves = field.default_leaves;
             if (!field.default_leaves.empty()) {
                 TypeId leaf{};
@@ -2162,14 +2207,14 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
                             return invalid("default lies outside hard bounds");
                     }
             }
-            type.fields.push_back(
-                {0, field.native_address, value, nullptr, std::move(field.default_leaves),
-                 field.range.constrains() ? std::make_unique<const FieldRange>(field.range) : nullptr});
+            type.fields.push_back({0, field.native_address, value, nullptr, std::move(field.default_leaves),
+                                   field.range.constrains() ? std::make_unique<const FieldRange>(field.range) : nullptr,
+                                   field.default_text});
             if (field.exposed)
-                type.info.fields.push_back({FieldId{id, index}, std::move(field.name), value, field.native_offset,
-                                            std::move(published_leaves), std::move(field.label),
-                                            std::move(field.category), std::move(field.description), field.range,
-                                            field.native_address, id});
+                type.info.fields.push_back(
+                    {FieldId{id, index}, std::move(field.name), value, field.native_offset, std::move(published_leaves),
+                     std::move(field.label), std::move(field.category), std::move(field.description), field.range,
+                     field.native_address, id, std::move(field.metadata), std::move(field.default_text)});
         }
         type.info.methods.reserve(definition.methods.size());
         type.methods.reserve(definition.methods.size());

@@ -29,7 +29,7 @@ public:
 | `AFUNCTION(Name = "...", DESC = "...")` | 声明成员方法；名称与说明可省略，重载须使用不同的反射名称 |
 | `AGENERATED_BODY(TypeName)` | 在类型体内出现一次，仅授权对应元数据生产者访问私有成员；不改变访问段或对象布局 |
 
-`ACLASS/ASTRUCT` 表达引擎语义，C++ 声明本身可以使用 `class` 或 `struct`。类型的 `Name` 默认是完整 C++ 名字，并把 `::` 换成 `.`；成员名字默认取 C++ 名字。稳定的既有名字应明确指定。宏值为普通字符串字面量，`Hidden` 是无值标记。未知或重复参数直接报错。
+`ACLASS/ASTRUCT` 表达引擎语义，C++ 声明本身可以使用 `class` 或 `struct`。类型的 `Name` 默认是完整 C++ 名字，并把 `::` 换成 `.`；成员名字默认取 C++ 名字。稳定的既有名字应明确指定。宏值为普通字符串字面量，`Hidden` 是无值标记。未知或重复参数直接报错；字段的 `Meta` 可重复声明不同键，见下文。
 
 `AFIELD` 的 `Label` 和 `Category` 是可选展示文本，例如：
 
@@ -42,6 +42,12 @@ AFIELD(Label = "Position", Category = "Transform") math::Vector3 position;
 生成器沿 `NativeRegistration` 把展示文本写入 `FieldDefinition::label/category`，发布后由同一个 `FieldInfo` 持有。原生和描述型定义共享这套元数据，继承字段保留声明身份和展示文本；不存在编辑器专属字段表。两项不参与字段存储布局或 Source 的 ABI 依赖比较，详见[Runtime 展示元数据](runtime-model.md#字段展示元数据)。源码类字段的 `[Label = "...", Category = "..."]` 属性也填写同一套展示元数据。
 
 标记紧邻一个声明，可隔空白和注释；每个字段独立标记、独立声明。标记必须直接写在源码中，不再包在另一层宏内。不支持模板、局部类、匿名命名空间和嵌套类型。前向声明可以存在，最终必须在本生成组中找到完整定义；重复标注必须一致。
+
+### 字段 Meta
+
+`AFIELD` 另接受 `Meta("namespace.key", "value")`，每项恰好两个普通字符串字面量；可重复使用 Meta 声明不同键。例如 `AFIELD(Meta("procedural.bind", "evaluate.values"), Meta("procedural.layer", "point")) String attribute;`。生成器保留解码后的完整字节和长度，沿 `NativeRegistration::metadata({{"namespace.key", "value"}})` 写入最近声明的字段；手写生产者也可直接填写 `FieldDefinition::metadata`。
+
+键格式、排序、同键拒绝、拥有关系和定义兼容性由 [Runtime 字段扩展元数据](runtime-model.md#字段扩展元数据)统一规定。消费者解释自己的命名空间，生成器与 Runtime 不解释几何列或其他业务绑定。Source 类字段使用相同的 `Meta("key", "value")` 写在属性列表中，不借用 `DESC` 或展示名称承载机器语义。
 
 ### 类型与成员说明
 

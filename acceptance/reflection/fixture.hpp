@@ -9,7 +9,7 @@ ASTRUCT(Name = "reflection.Sample")
 struct Sample {
     AGENERATED_BODY(Sample)
 
-    AFIELD()
+    AFIELD(Meta("test.note", "分组\0尾"), Meta("test.binding", "evaluate.values"))
     float value{3};
 };
 
