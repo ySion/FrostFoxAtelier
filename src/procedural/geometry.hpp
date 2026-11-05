@@ -55,17 +55,21 @@ struct Reference {
     bool operator==(const Reference&) const = default;
 };
 
+enum class PrimitiveKind : std::uint8_t { polygon, polyline };
+
 struct PrimitiveRange {
     std::uint32_t first;
 
     std::uint32_t count;
+
+    PrimitiveKind kind;
 };
 
 [[nodiscard]] inline std::unexpected<Error> failure(std::string message) {
     return std::unexpected(Error{ErrorCode::argument_mismatch, std::move(message)});
 }
 
-// Points, polygons over them, instances and per-layer attribute columns. A value:
+// Points, polygons and open polylines over them, instances and per-layer attribute columns. A value:
 // copies share every column, and writing a column first makes it unique. Each writer
 // must own its Geometry exclusively. While a column is borrowed, do not move or
 // structurally edit the Geometry, or write that column again. A writable borrow also
@@ -87,15 +91,20 @@ public:
     static Result<Geometry> polygons(Array<math::Vector3> positions, Array<std::uint32_t> vertex_points,
                                      const Array<std::uint32_t>& offsets);
 
+    // The same topology with one kind per primitive. Polylines need at least two
+    // vertices and connect only adjacent vertices, never implicitly last to first.
+    static Result<Geometry> primitives(Array<math::Vector3> positions, Array<std::uint32_t> vertex_points,
+                                       const Array<std::uint32_t>& offsets, Array<PrimitiveKind> kinds);
+
     [[nodiscard]] std::uint32_t count(Layer layer) const noexcept;
 
     [[nodiscard]] std::span<const std::uint32_t> vertex_points() const noexcept { return vertex_points_.array(); }
 
     [[nodiscard]] PrimitiveRange primitive(std::uint32_t index) const noexcept {
         if (offsets_.empty())
-            return {index * uniform_, uniform_};
+            return {index * uniform_, uniform_, kinds_.array()[index]};
         const auto* offsets = offsets_.array().data();
-        return {offsets[index], offsets[index + 1] - offsets[index]};
+        return {offsets[index], offsets[index + 1] - offsets[index], kinds_.array()[index]};
     }
 
     // Shared vertex count of every primitive, or 0 when sizes differ or nothing exists.
@@ -168,9 +177,9 @@ public:
 
     Array<math::Matrix4>& write_instance_transforms();
 
-    // Reverses each primitive's vertex order, with vertex attributes, keeping faces
-    // oriented after a reflection.
-    void reverse_primitives();
+    // Reverses vertex order and vertex attributes. A reflection passes polygons_only
+    // to correct face winding without changing a polyline's direction.
+    void reverse_primitives(bool polygons_only = false);
 
     // Elements whose `flag` is true are removed. Removing points removes the primitives that
     // use them; removing primitives keeps their points.
@@ -227,6 +236,8 @@ private:
     SharedArray<std::uint32_t> vertex_points_;
 
     SharedArray<std::uint32_t> offsets_; // offsets_ is empty when every primitive has uniform_ vertices.
+
+    SharedArray<PrimitiveKind> kinds_;
 
     std::vector<Attribute> attributes_; // P first.
 

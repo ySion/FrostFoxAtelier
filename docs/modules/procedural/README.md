@@ -15,7 +15,7 @@
 
 引擎附带的自有语言节点与随机库在 [assets/engine/procedural](../../../assets/engine/procedural)。
 
-本文只说明已实现能力。方向、设计依据与未实施的跨模块约定见[后续路线与未决契约](roadmap.md)。场景生成器组件、渲染器实例化、网络编辑器、持久 Cache、冻结与 Bake 尚未实施；Remap／属性噪声的目标列选择待用户决定，不计为已完成。
+本文只说明已实现能力。方向、设计依据与未实施的跨模块约定见[后续路线与未决契约](roadmap.md)。场景生成器组件、渲染器实例化、网络编辑器、持久 Cache、冻结与 Bake 尚未实施；Remap／属性噪声的目标列选择方向已定，统一字段绑定尚未实现，见 roadmap 的 S0 合同。
 
 ## Geometry
 
@@ -25,7 +25,7 @@
 - **列**：`SharedArray<T>` 持有 `Array<T>`，T 为 bool、int32、uint32、float、Vector2/3/4、Quaternion、Matrix4；String 只能放在 detail 层。`attributes()` 和 `find()` 暴露的共享列只能读取；`read` 借出 const Array，找不到时返回 null，层或类型不符是错误；`write` 先取得独占列再借出可写 Array；`add` 不存在时按填充值新建；`set` 接管一个共享列句柄；`remove` 删除。SharedArray 本身不注册为 Runtime 类型，源码借用的仍是原来的 Array 类型。
 - **借用**：借用结束前，不移动、赋值或结构修改该 Geometry，也不再次 `write` 同一列；可写借用期间还不能复制该 Geometry 或出借列的句柄，只读借用允许复制。需要多列时先完成增列和独占准备，再取供计算使用的引用；Source 求值器和 Ray 节点都按这个顺序执行。
 - **用途**：Vector3 列（以及 Vector4 颜色）带用途 point / vector / normal / color / none，决定变换方式。新列按约定名取用途：P → point，N → normal，v、up → vector，Cd → color，其余 none。
-- **拓扑**：`vertex_points` 给出每个顶点引用的点；图元是首顶点的 CSR 偏移，每个图元至少三个顶点，全部图元边数相同时不存偏移。拓扑只能经 `polygons`、`remove_flagged`、`merge`、`reverse_primitives` 等 C++ 入口改写。
+- **拓扑**：`vertex_points` 给出每个顶点引用的点；图元是首顶点的 CSR 偏移，全部图元角数相同时不存偏移。独立保留 COW 列 `kind` 区分 polygon（至少三角、隐式闭合）与 polyline（至少两角、只连接相邻角、不隐式闭合），不能从角数推断，也不能经属性绑定改写。`polygons` 明确生成面，`primitives` 接收每图元的 kind；`primitive(p)` 同时返回角范围和 kind。删除、合并保留 kind，`reverse_primitives()` 显式反转两类图元及 vertex 属性；镜像变换只纠正面的绕序。
 - **实例**：去重的资源引用表 `references`（持久键 + 宿主解析出的 `MeshRef`），加上 instance 层的保留列：每个实例的引用下标与有限仿射 Matrix4。`set_instances` 替换整个 instance 层并丢弃它的属性。
 - `bytes()` 估算列与拓扑保留的内存（按容量计），共享的列按全额计算，供缓存预算使用。
 
@@ -33,14 +33,20 @@
 
 - **`import_mesh`**：每个三角形一个图元，法线和 UV 写入 vertex 层的 `N`、`uv`，材质槽号写入 primitive 层的 `material`，位置逐位相等的顶点焊接成同一个点。
 - **`grid` / `line`**：XZ 平面点阵（N = +Y，以原点为中心）和含两端的等距点。
-- **`scatter`**：只接受三角形图元。三角形 t 的点数与位置只取决于 `hash(seed, t)`：点数为面积 × 密度，小数部分按概率进位，重心坐标均匀采样。所以结果与线程和遍历顺序无关，改动一个三角形不影响其他三角形上的点。可选最小间距按点序淘汰过近的点，间距小到点的格坐标超出 ±2⁶² 时失败。输出 P、N（面法线）、`id`、`sourceprim`、`sourceordinal`、`sourceprimuv`。`id` 是 32 位哈希随机种子，不是身份，不保证唯一；（`sourceprim`，`sourceordinal`）唯一且局部稳定。
-- **`transform`**：v · S · R · T。point 列完整变换，vector 列只用线性部分 L，normal 列乘 sign(det L) · cofactor(L) 后归一化（零向量保持为零，所以压扁到平面的奇异变换仍有平面法线），`orient` 列复合旋转，实例矩阵右乘，color 与 none 列不变。行列式为负时反转每个图元的顶点顺序，vertex 列随之重排。输入或结果出现非有限值时失败，几何已被部分改写。
+- **`scatter`**：接受三角形及凸平面多边形，不接受折线；按下述公共首角扇形视图采样。原图元 p、局部子三角 j 的随机源 s 在 j=0 时为 `hash(seed,p)`，j>0 时为 `hash(hash(seed,p),j)`；点数为面积 × 密度，以 `hash(s,0)` 按小数部分概率进位，第 k 个点使用 `hash(s,2*k+1)` 与 `hash(s,2*k+2)` 均匀采样重心坐标。输出按 p/j/k 顺序，k 在每个子三角内从零开始，不把展开下标或线程号混入随机源。可选最小间距在全部候选上按这个顺序稳定淘汰，所有列一起压紧；格坐标超出 ±2⁶² 时失败。输出 P、N、`id`、`sourceprim`、`sourceordinal`、`sourceprimuv`；仅输入包含超过三角的面时在末尾追加 uint `sourcetri`（其他三角面的值为 0）。纯三角输入的六列顺序、算术与值不变。`id` 在 j=0 时为 `hash(p,k)`，否则为 `hash(hash(p,j),k)`，它只是非唯一随机种子；（p,j,k）是局部稳定来源。`sourceprimuv` 是子三角 j 内的 (b1,b2)，不是原多边形坐标。
+- **`transform`**：v · S · R · T。point 列完整变换，vector 列只用线性部分 L，normal 列乘 sign(det L) · cofactor(L) 后归一化（零向量保持为零，所以压扁到平面的奇异变换仍有平面法线），`orient` 列复合旋转，实例矩阵右乘，color 与 none 列不变。行列式为负时只反转 polygon 的顶点顺序及 vertex 列，polyline 的方向不变。输入或结果出现非有限值时失败，几何已被部分改写。
 - **`promote`**：把属性移到另一层，按 first / sum / average 合成每个目标元素接触到的源元素；sum 与 average 只接受 float 与 float 向量；instance 层只和 detail 交换；P 不能移动。
 - **`remove_flagged`**：删除 bool 列为 true 的元素；删除点时一并删除用到它们的图元，删除图元时保留点。
 - **`merge`**：按输入顺序拼接各层，属性按名字合并，缺失的元素取类型默认值，detail 取第一个有值的输入；同名属性的层、类型或用途不一致时失败。
 - **`copy_to_points`**：每个点一个实例，矩阵为 S · O · T：S = scale × pscale，O 是归一化的 `orient`，没有 orient 时由 N 和 up 对齐（只有 N 时取 +Z 到 N 的最短旋转），T 取自 P。点上的 uint 属性（默认 `variant`，缺失时为 0）选择引用。detail 属性带到输出，输出没有点。非有限输入和越界的变体失败。
 - **`bounds`**：点的包围盒，空几何没有。
-- **`Bvh`**：对三角形图元建立的包围体层次（分箱 SAH，深层退回中位数切分，深度有界），建立时复制三角形，零面积三角形不参与。`ray` 沿单位方向找 max_distance 内最近的交点，三角形双面有效；`closest` 找 max_distance 内最近的表面点。命中给出图元号、距离、重心坐标（与撒点的 `sourceprimuv` 同一约定）和位置。三角形求交和最近点在 double 中计算，包围盒测试留在 float（溢出的距离就是无穷远），所以有限坐标不会因中间结果溢出得到非有限或超出距离限制的命中，平行于某一轴的射线不受零的符号影响。射线恰好穿过共享边时可能两侧都不命中。
+- **`Bvh`**：对公共扇形视图建立的包围体层次（分箱 SAH，深层退回中位数切分，深度有界），建立时复制三角形，零面积三角形不参与。`ray` 沿单位方向找 max_distance 内最近的交点，三角形双面有效；`closest` 找 max_distance 内最近的表面点。Hit 给出原图元号 `primitive`、局部子三角号 `triangle`、距离、子三角内重心坐标和位置。三角形求交和最近点在 double 中计算，包围盒测试留在 float（溢出的距离就是无穷远），所以有限坐标不会因中间结果溢出得到非有限或超出距离限制的命中，平行于某一轴的射线不受零的符号影响。射线恰好穿过共享边时可能两侧都不命中。
+
+### 公共凸面剖分
+
+模块内部 [triangles.cpp](../../../src/procedural/triangles.cpp) 是 Scatter、BVH/Ray 共用的数值判据与首角扇形视图，不生成第二份拓扑；借用期间 Geometry 必须保持不变且存活。图元 p 的第 j 个三角取原角 `(first, first+j+1, first+j+2)`，顺序为 p 再 j；折线明确失败。三角输入保留原先零面积跳过规则，多边形则必须有可分辨的平面、简单凸边界及非零边。
+
+所有几何判据用 double 计算。距离容差 δ = 8 × float ε × max（最大绝对坐标分量，距首点的最大距离），没有固定米制下限；8 是为 float 输入和变换舍入预留的安全系数，不是容许任意翘曲的建模参数。首角扇形的有向面积向量长度必须大于 δ × 尺度，点到所得平面的距离不超过 δ，投影边长须大于 δ。采用保守凸性规则：投影相邻边的有向叉积必须非负，即使负值来自舍入也拒绝，不用距离容差放过凹角；正向共线角仍有效，允许零面积扇形子三角。接近折返的角（点积非正、叉积不超过 δ × 两邻边长度之和）也拒绝。在此非负转角前提下，转角总和必须为 2π（double 累加容差 64 × ε × 角数），既排除多圈星形，也不让正反小回环抵消成一圈。检查为线性时间，不另建边对相交矩阵。适用于细节显著大于其绝对坐标 float 精度的模型；远离原点或极薄的不可分辨面报错，不静默修补。后续构造与拓扑工具复用此判据，不另定容差。
 
 ## 实例发布
 
@@ -76,7 +82,7 @@
 | Ray | mode（project / minimum）、direction、max_distance、normal、remove_misses | points, surface → output |
 | CopyToPoints | meshes（资源键列表）、variant | context, points → output |
 
-Ray 对 surface 的三角形建立 BVH，命中的点移到交点（minimum 模式为最近的表面点），写入 `hitprim`（int32）、`hitprimuv`、`hitdist`；未命中的点保持原位，`hitprim` 与 `hitdist` 为 -1。`normal` 打开时命中点的 N 取命中三角形按顶点顺序的法线，`remove_misses` 删除未命中的点。每次求值都重新建立 BVH。
+Ray 对 surface 的公共凸面扇形建立 BVH，命中的点移到交点（minimum 模式为最近的表面点），写入 `hitprim`、`hittri`（都是 int32）、`hitprimuv`、`hitdist`；未命中的点保持原位，两个编号与距离都为 -1。`hitprimuv` 是局部子三角 `hittri` 内的 (b1,b2)，不是原多边形坐标。`normal` 打开时 N 取命中子三角的三个原角计算的法线，不按 `3*hitprim` 寻址；`remove_misses` 删除未命中的点。每次求值都重新建立 BVH。
 
 节点失败时抛出异常，Runtime 把它转成 `invocation_failed`，消息就是失败原因。未连接的单输入端口收到空几何。
 
@@ -136,10 +142,13 @@ Ray 对 surface 的三角形建立 BVH，命中的点移到交点（minimum 模�
 
 验收的宽容用例只保留“缺失节点类型 → null 节点并保留冻结数据”的往返。未知 leaf、连接、settings 和不能作为节点的已知类型等额外宽容仍是上述现行产品行为，待单独审查；缩减验收不改变这些路径，也不引入旧版本兼容加载。
 
+图文件不保存派生的 Geometry 缓冲；kind 与扇形视图不改变 JSON v1，也不修改资源保存格式。
+
 ## 验收
 
 `procedural_acceptance`（无窗口，[acceptance/procedural/main.cpp](../../../acceptance/procedural/main.cpp)）保留独立真值和必要生命周期序列，不以被测操作自己的输出生成期望：
 
+- **凸面与折线**：前置四边形后的五边形首角扇形面积为 4、8、3，密度 2 产生 8、16、6 点；固定射线命中 p=1/j=1 的重心、距离 3、N=+Z，旧 `3*p` 寻址会得 +Y。表面副本与三点开放折线合并，镜像仅翻面、显式反转同时反线，删除图元/线中点后的 kind、角索引与 vertex 标签对照手写数组，原值不变。
 - **数学与布局**：面积 1、3 的两个三角形按密度 4 分别得到 4、12 点，位置在三角形内且法线为 +Z；一个最小间距样本核对点对距离。非均匀缩放与 Y 轴 90° 旋转的点、向量、法线用解析式，镜像用输入三角形的角顺序与属性作真值。删除、空／混合拓扑合并用固定索引，Promote 的平均值来自源网格顶点；Copy to Points 用手写 S·O·T 矩阵及 N/up 轴，发布分块用已知 floor 结果和 3×4 布局。
 - **概率取整**：面积 1、密度 2.25，取固定种子 0…2235。每次只能得到 2 或 3 点，总平均与 2.25 的误差严格小于 .03。在独立均匀随机的模型下，向上取整数 X 服从 Binomial(2236, .25)，接受区间为 492…626，精确二项求和覆盖率约 99.902133%；2236 是达到 99.9% 覆盖的最小种子数。实际固定种子运行是确定性的，不把统计模型称为实测分布或耗时证据。
 - **BVH 与 Ray**：18 个高度场三角形超过保留叶的 16 上限，一个斜射线和一个最近点查询各与独立 double 暴力公式比较。Ray 用可解析的抬高三角形核对命中与未命中、覆盖已有结果列但不改旧输入、删除未命中点，以及 minimum 模式的已知最近角点。

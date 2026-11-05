@@ -25,20 +25,22 @@ struct ScatterSettings {
     float min_distance{}; // 0 keeps every point.
 };
 
-// Points on triangle primitives. Triangle t draws its count and positions from
-// hash(seed, t) alone: round(area * density) rounds up with probability equal to the
-// fraction, and positions are uniform. Each triangle's points therefore do not depend
-// on other triangles, the order of work or threads. With min_distance, points are then
-// visited in order and dropped when closer than it to a kept point. Outputs P, N (face
-// normal), id = hash(t, k) as a random seed rather than an identity, sourceprim = t,
-// sourceordinal = k and sourceprimuv = barycentric (b1, b2) of the k-th point of t.
+// Points on first-corner fans of convex planar polygons; polylines fail. Primitive p,
+// fan triangle j uses s = hash(seed, p) for j=0, hash(hash(seed, p), j) otherwise.
+// Count is area*density, fraction rounded up probabilistically using hash(s, 0).
+// Positions draw hash(s, 2*k+1/2*k+2); output order is p/j/local ordinal k. Work order
+// and threads cannot change these values. With min_distance, stable sequential
+// elimination follows generation. Outputs P, N, id = hash(p, k) for j=0 or
+// hash(hash(p, j), k) otherwise (a seed, not identity), sourceprim, sourceordinal,
+// sourceprimuv (b1,b2 within j). Only inputs with >3-corner polygons add sourcetri;
+// pure triangles retain their six-column schema and values.
 Result<Geometry> scatter(const Geometry& surface, const ScatterSettings& settings);
 
 // Applies v * S * R * T. By usage: point columns take the affine transform, vector
 // columns its linear part L, normal columns sign(det L) * cofactor(L) normalized (zero
 // stays zero, so a singular L still yields plane normals); quaternion orient columns
 // are composed with `rotation`; instance transforms are right-multiplied; color and none
-// columns stay. A reflection reverses every primitive's vertex order. Fails when a
+// columns stay. A reflection reverses only polygon vertex order. Fails when a
 // result is not finite; the geometry is then left partly transformed.
 Result<void> transform(Geometry& geometry, math::Vector3 translate, math::Quaternion rotation, math::Vector3 scale);
 

@@ -74,6 +74,96 @@ Geometry triangles(std::initializer_list<Vector3> corners) {
     return take(Geometry::polygons(std::move(points), std::move(vertices), offsets));
 }
 
+void convex_surface() {
+    // The old 3 * primitive addressing reads this quad's last corner and yields +Y, not +Z.
+    const auto surface = take(Geometry::polygons(
+        Array<Vector3>{
+            {10, 0, 0}, {10, 2, 0}, {10, 2, 1}, {10, 0, 1}, {0, 0, 2}, {4, 0, 2}, {5, 2, 2}, {2, 4, 2}, {0, 3, 2}},
+        Array<std::uint32_t>{0, 1, 2, 3, 4, 5, 6, 7, 8}, Array<std::uint32_t>{0, 4, 9}));
+    const auto points = take(scatter(surface, {.density = 2, .seed = 17}));
+    const auto& primitives = column<std::uint32_t>(points, "sourceprim", Layer::point);
+    const auto& subtriangles = column<std::uint32_t>(points, "sourcetri", Layer::point);
+    const auto& ordinals = column<std::uint32_t>(points, "sourceordinal", Layer::point);
+    const auto& uv = column<Vector2>(points, "sourceprimuv", Layer::point);
+    constexpr std::array<std::array<std::uint32_t, 3>, 3> corners{{{4, 5, 6}, {4, 6, 7}, {4, 7, 8}}};
+    std::array<std::uint32_t, 3> counts{};
+    for (std::size_t i = 4; i < points.positions().size(); ++i) {
+        const auto expected_triangle = i < 12 ? 0u : i < 28 ? 1u : 2u;
+        require(primitives[i] == 1 && subtriangles[i] == expected_triangle,
+                "Scatter lost the polygon's original source or fan order.");
+        const auto j = subtriangles[i];
+        require(ordinals[i] == counts[j]++, "Polygon ordinals are not local to each fan triangle.");
+        const auto [a, b, c] = corners[j];
+        const auto expected = surface.positions()[a] * (1 - uv[i].x - uv[i].y) + surface.positions()[b] * uv[i].x +
+                              surface.positions()[c] * uv[i].y;
+        require(near(points.positions()[i], expected), "Polygon UVs do not address the first-corner fan.");
+    }
+    require(points.count(Layer::point) == 34 && counts == std::array{8u, 16u, 6u},
+            "The pentagon fan did not retain its areas 4, 8, 3.");
+    // Independently evaluated lowbias32 for (seed,p,j,k)=(17,1,1,3): s=0x6d94d8d1,
+    // hashes 0x8e53067a / 0x34951c66. Top 24 bits need no reflection; P=(5u+2v,2u+4v,2).
+    require(uv[15] == Vector2{9327366.f * 0x1p-24f, 3446044.f * 0x1p-24f} &&
+                points.positions()[15] == Vector3{float(53528918.0 * 0x1p-24), float(32438908.0 * 0x1p-24), 2} &&
+                column<std::uint32_t>(points, "id", Layer::point)[15] == 0xa400fab0u,
+            "The nonzero fan triangle lost its independent random source.");
+    const Vector3 origin{7.f / 3, 2, 5};
+    const auto bvh = take(Bvh::build(surface));
+    const auto hit = bvh.ray(origin, {0, 0, -1}, 10);
+    require(hit && hit->primitive == 1 && hit->triangle == 1 && near(hit->distance, 3) && near(hit->uv.x, 1.f / 3) &&
+                near(hit->uv.y, 1.f / 3) && near(hit->position, {7.f / 3, 2, 2}),
+            "The ray did not hit the middle fan triangle's centroid.");
+    Ray ray;
+    ray.direction = {0, 0, -1};
+    ray.normal = true;
+    Geometry projected;
+    ray.evaluate(take(Geometry::points(Array<Vector3>{origin})), surface, projected);
+    require(column<std::int32_t>(projected, "hitprim", Layer::point)[0] == 1 &&
+                column<std::int32_t>(projected, "hittri", Layer::point)[0] == 1 &&
+                near(column<Vector3>(projected, "N", Layer::point)[0], {0, 0, 1}),
+            "Ray used triangle-only corner addressing on a polygon.");
+
+    const auto polyline =
+        take(Geometry::primitives(Array<Vector3>{{12, 1, 0}, {13, 2, 0}, {14, 1, 0}}, Array<std::uint32_t>{0, 1, 2},
+                                  Array<std::uint32_t>{0, 3}, Array<PrimitiveKind>{PrimitiveKind::polyline}));
+    auto mixed = take(Geometry::merge(std::array{surface, polyline}));
+    {
+        auto& tags = *take(mixed.add<std::uint32_t>("tag", Layer::vertex));
+        for (std::uint32_t i = 0; i < 12; ++i)
+            tags[i] = 100 + i;
+    }
+    const auto original = mixed;
+    take(transform(mixed, {}, {}, {-1, 1, 1}));
+    constexpr std::array mirror{3u, 2u, 1u, 0u, 8u, 7u, 6u, 5u, 4u, 9u, 10u, 11u};
+    require(mixed.primitive(0).kind == PrimitiveKind::polygon && mixed.primitive(1).kind == PrimitiveKind::polygon &&
+                mixed.primitive(2).kind == PrimitiveKind::polyline && mixed.primitive(2).count == 3 &&
+                near(mixed.positions()[10], {-13, 2, 0}),
+            "Merge or mirror lost the open polyline's kind or position.");
+    for (std::size_t i = 0; i < mirror.size(); ++i)
+        require(mixed.vertex_points()[i] == mirror[i] &&
+                    column<std::uint32_t>(mixed, "tag", Layer::vertex)[i] == 100 + mirror[i] &&
+                    original.vertex_points()[i] == i &&
+                    column<std::uint32_t>(original, "tag", Layer::vertex)[i] == 100 + i,
+                "Mirror reversed a line or lost vertex attributes or COW isolation.");
+    mixed.reverse_primitives();
+    const auto removed_quad = take(mixed.remove_flagged(Layer::primitive, std::array{true, false, false}));
+    constexpr std::array reversed{4u, 5u, 6u, 7u, 8u, 11u, 10u, 9u};
+    require(removed_quad.count(Layer::primitive) == 2 && removed_quad.primitive(0).first == 0 &&
+                removed_quad.primitive(0).count == 5 && removed_quad.primitive(0).kind == PrimitiveKind::polygon &&
+                removed_quad.primitive(1).first == 5 && removed_quad.primitive(1).kind == PrimitiveKind::polyline,
+            "Primitive removal lost kinds or offsets.");
+    for (std::size_t i = 0; i < reversed.size(); ++i)
+        require(removed_quad.vertex_points()[i] == reversed[i] &&
+                    column<std::uint32_t>(removed_quad, "tag", Layer::vertex)[i] == 100 + reversed[i],
+                "Explicit reversal or removal lost the line direction or its vertex attributes.");
+    std::array<bool, 12> removed{};
+    removed[10] = true;
+    const auto removed_point = take(removed_quad.remove_flagged(Layer::point, removed));
+    require(removed_point.count(Layer::point) == 11 && removed_point.count(Layer::primitive) == 1 &&
+                removed_point.primitive(0).kind == PrimitiveKind::polygon &&
+                std::ranges::equal(removed_point.vertex_points(), std::array{4u, 5u, 6u, 7u, 8u}),
+            "Removing a line point did not remove its whole primitive.");
+}
+
 // Twice the signed area of (a, b, p) in the XY plane.
 double side(Vector3 a, Vector3 b, Vector3 p) {
     return double(b.x - a.x) * (p.y - a.y) - double(b.y - a.y) * (p.x - a.x);
@@ -457,13 +547,15 @@ void ray_node() {
     node.evaluate(points, surface, output);
     const auto& p = output.positions();
     const auto& primitive = column<std::int32_t>(output, "hitprim", Layer::point);
+    const auto& triangle = column<std::int32_t>(output, "hittri", Layer::point);
     const auto& uv = column<Vector2>(output, "hitprimuv", Layer::point);
     const auto& distance = column<float>(output, "hitdist", Layer::point);
     const auto& n = column<Vector3>(output, "N", Layer::point);
-    require(near(p[0], {1, 2, 1}) && primitive[0] == 2 && near(distance[0], 3) && near(uv[0].x, 0.25f) &&
-                near(uv[0].y, 0.25f) && near(n[0], {0, 1, 0}),
+    require(near(p[0], {1, 2, 1}) && primitive[0] == 2 && triangle[0] == 0 && near(distance[0], 3) &&
+                near(uv[0].x, 0.25f) && near(uv[0].y, 0.25f) && near(n[0], {0, 1, 0}),
             "A ray did not stop at the nearest, raised triangle.");
-    require(near(p[1], {20, 5, 20}) && primitive[1] == -1 && distance[1] == -1 && near(n[1], {0, 0, 0}),
+    require(near(p[1], {20, 5, 20}) && primitive[1] == -1 && triangle[1] == -1 && distance[1] == -1 &&
+                near(n[1], {0, 0, 0}),
             "A missing ray moved its point.");
     Geometry projected_again;
     node.evaluate(output, surface, projected_again);
@@ -984,6 +1076,7 @@ int main(int argc, char** argv) {
             return 0;
         }
         require(argc == 1, "Usage: atelier_procedural_acceptance [--profile-procedural new-output.json]");
+        convex_surface();
         scatter_counts_and_spacing();
         transform_by_usage();
         removal_merge_and_promotion();

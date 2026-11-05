@@ -1,4 +1,5 @@
 #include "procedural/bvh.hpp"
+#include "procedural/triangles.hpp"
 
 #include <algorithm>
 #include <array>
@@ -97,17 +98,17 @@ math::Vector2d closest_on_triangle(Vector3d p, Vector3d a, Vector3d b, Vector3d 
 }
 
 Result<Bvh> Bvh::build(const Geometry& surface) {
-    const auto primitives = surface.count(Layer::primitive);
-    if (primitives && surface.uniform_primitive_size() != 3)
-        return failure("A BVH needs triangle primitives.");
+    const auto view = detail::TriangleView::create(surface);
+    if (!view)
+        return std::unexpected(view.error());
     const auto& positions = surface.positions();
     const auto corners = surface.vertex_points();
     Bvh result;
     std::vector<Triangle> triangles;
-    triangles.reserve(primitives);
-    for (std::uint32_t p = 0; p < primitives; ++p) {
-        const Triangle triangle{positions[corners[3 * p]], positions[corners[3 * p + 1]], positions[corners[3 * p + 2]],
-                                p};
+    triangles.reserve(view->size());
+    for (const auto& [p, j, vertices] : *view) {
+        const Triangle triangle{positions[corners[vertices[0]]], positions[corners[vertices[1]]],
+                                positions[corners[vertices[2]]], p, j};
         // A zero-area triangle has no surface to hit or project onto.
         const auto a = widen(triangle.a);
         if (math::cross(widen(triangle.b) - a, widen(triangle.c) - a) != Vector3d{})
@@ -288,6 +289,7 @@ std::optional<Hit> Bvh::ray(Vector3 origin_float, Vector3 direction_float, float
                 if (bound < distance)
                     bound = std::nextafter(bound, infinity);
                 hit = Hit{triangle.primitive,
+                          triangle.triangle,
                           static_cast<float>(distance),
                           {static_cast<float>(u), static_cast<float>(v)},
                           narrow(a + e1 * u + e2 * v)};
@@ -342,6 +344,7 @@ std::optional<Hit> Bvh::closest(Vector3 point_float, float max_distance) const n
                 if (const double squared = math::dot(offset, offset); squared <= best) {
                     best = squared;
                     hit = Hit{triangle.primitive,
+                              triangle.triangle,
                               static_cast<float>(std::sqrt(squared)),
                               {static_cast<float>(uv.x), static_cast<float>(uv.y)},
                               narrow(position)};

@@ -147,7 +147,7 @@ enum class RayMode : std::uint32_t { project, minimum };
 ACLASS(
     Name = "procedural.Ray",
     DESC =
-        "把点移到表面三角形上：沿方向找最近的交点，或者取最近的表面点。每个点记下 hitprim（未命中为 -1）、hitprimuv 和 hitdist（未命中为 -1）。")
+        "把点移到凸多边形表面上：沿方向投射或者取最近点。记录原图元 hitprim、首角扇形子三角 hittri、子三角内 hitprimuv 和 hitdist；未命中时两个编号与距离为 -1。")
 class Ray : public Node {
     AGENERATED_BODY(Ray)
 

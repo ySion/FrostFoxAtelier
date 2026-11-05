@@ -2,6 +2,7 @@ function(atelier_add_procedural)
     add_library(atelier_procedural STATIC
         src/procedural/geometry.cpp
         src/procedural/operations.cpp
+        src/procedural/triangles.cpp
         src/procedural/instances.cpp
         src/procedural/bvh.cpp
         src/procedural/graph.cpp

@@ -10,19 +10,21 @@ namespace atelier::procedural {
 struct Hit {
     std::uint32_t primitive;
 
+    std::uint32_t triangle; // First-corner fan index within primitive.
+
     float distance;
 
-    math::Vector2 uv; // Barycentric (b1, b2): position = (1 - b1 - b2) a + b1 b + b2 c, as scatter's sourceprimuv.
+    math::Vector2 uv; // Barycentric (b1, b2) in triangle, as scatter's sourceprimuv (not polygon coordinates).
 
     math::Vector3 position;
 };
 
-// Bounding volume hierarchy over the triangle primitives of a geometry, snapshotted at build;
+// Bounding volume hierarchy over first-corner fans of convex planar polygons, snapshotted at build;
 // zero-area triangles are left out. Triangles count from both sides, and a ray through a
 // shared edge may miss both neighbours.
 class Bvh {
 public:
-    // Fails for primitives other than triangles.
+    // Fails for polylines or polygons without a simple, convex, resolvable plane.
     static Result<Bvh> build(const Geometry& surface);
 
     // The nearest triangle along a unit direction within max_distance.
@@ -53,6 +55,8 @@ private:
         math::Vector3 c;
 
         std::uint32_t primitive;
+
+        std::uint32_t triangle;
     };
 
     std::vector<Node> nodes_;

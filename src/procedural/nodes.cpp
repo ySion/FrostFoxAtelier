@@ -2,6 +2,7 @@
 #include "procedural/bvh.hpp"
 #include "procedural/operations.hpp"
 #include "procedural/random.hpp"
+#include "procedural/triangles.hpp"
 
 #include <cmath>
 #include <limits>
@@ -66,17 +67,22 @@ void Ray::evaluate(const Geometry& points, const Geometry& surface, Geometry& ou
         throw std::runtime_error("Ray direction must be finite and nonzero.");
     if (surface.count(Layer::primitive) > std::uint32_t(std::numeric_limits<std::int32_t>::max()))
         throw std::runtime_error("Ray surfaces have fewer than 2^31 primitives.");
+    for (std::uint32_t p = 0; p < surface.count(Layer::primitive); ++p)
+        if (surface.primitive(p).count - 2 > std::uint32_t(std::numeric_limits<std::int32_t>::max()))
+            throw std::runtime_error("Ray polygons have fewer than 2^31 fan triangles.");
     const auto bvh = take(Bvh::build(surface));
     output = points;
     const auto count = output.count(Layer::point);
     // Finish adding columns before borrowing them: growing attributes moves their handles.
     take(output.add<std::int32_t>("hitprim", Layer::point));
+    take(output.add<std::int32_t>("hittri", Layer::point));
     take(output.add<math::Vector2>("hitprimuv", Layer::point));
     take(output.add<float>("hitdist", Layer::point));
     if (normal)
         take(output.add<math::Vector3>("N", Layer::point));
     auto& positions = *take(output.write<math::Vector3>("P", Layer::point));
     auto& primitives = *take(output.write<std::int32_t>("hitprim", Layer::point));
+    auto& subtriangles = *take(output.write<std::int32_t>("hittri", Layer::point));
     auto& uvs = *take(output.write<math::Vector2>("hitprimuv", Layer::point));
     auto& distances = *take(output.write<float>("hitdist", Layer::point));
     auto* normals = normal ? take(output.write<math::Vector3>("N", Layer::point)) : nullptr;
@@ -89,6 +95,7 @@ void Ray::evaluate(const Geometry& points, const Geometry& surface, Geometry& ou
                                                   : bvh.closest(positions[i], max_distance);
         if (!hit) {
             primitives[i] = -1;
+            subtriangles[i] = -1;
             uvs[i] = {};
             distances[i] = -1;
             if (remove_misses)
@@ -97,12 +104,14 @@ void Ray::evaluate(const Geometry& points, const Geometry& surface, Geometry& ou
         }
         positions[i] = hit->position;
         primitives[i] = static_cast<std::int32_t>(hit->primitive);
+        subtriangles[i] = static_cast<std::int32_t>(hit->triangle);
         uvs[i] = hit->uv;
         distances[i] = hit->distance;
         if (normals) {
-            const auto a = corners[vertices[3 * hit->primitive]];
-            const auto b = corners[vertices[3 * hit->primitive + 1]];
-            const auto c = corners[vertices[3 * hit->primitive + 2]];
+            const auto indices = detail::fan_corners(surface.primitive(hit->primitive), hit->triangle);
+            const auto a = corners[vertices[indices[0]]];
+            const auto b = corners[vertices[indices[1]]];
+            const auto c = corners[vertices[indices[2]]];
             if (const auto n = math::try_normalize(math::cross(b - a, c - a)))
                 (*normals)[i] = *n;
         }

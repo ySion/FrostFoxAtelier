@@ -71,26 +71,40 @@ Result<Geometry> Geometry::points(Array<math::Vector3> positions) {
 
 Result<Geometry> Geometry::polygons(Array<math::Vector3> positions, Array<std::uint32_t> vertex_points,
                                     const Array<std::uint32_t>& offsets) {
+    Array<PrimitiveKind> kinds;
+    kinds.resize(offsets.empty() ? 0 : offsets.size() - 1, PrimitiveKind::polygon);
+    return primitives(std::move(positions), std::move(vertex_points), offsets, std::move(kinds));
+}
+
+Result<Geometry> Geometry::primitives(Array<math::Vector3> positions, Array<std::uint32_t> vertex_points,
+                                      const Array<std::uint32_t>& offsets, Array<PrimitiveKind> kinds) {
     auto result = points(std::move(positions));
     if (!result)
         return result;
     if (vertex_points.size() > absent - 1 || offsets.empty() || offsets[0] != 0 ||
         offsets[offsets.size() - 1] != vertex_points.size())
         return failure("Primitive offsets must start at 0 and end at the vertex count.");
+    if (kinds.size() != offsets.size() - 1)
+        return failure("Each primitive needs one kind.");
     const auto point_count = result->count(Layer::point);
     for (const auto point : vertex_points)
         if (point >= point_count)
             return failure("A vertex refers to a missing point.");
     std::uint32_t uniform = offsets.size() > 1 ? offsets[1] : 0;
     for (std::size_t p = 1; p < offsets.size(); ++p) {
-        if (offsets[p] < offsets[p - 1] || offsets[p] - offsets[p - 1] < 3)
-            return failure("Each primitive needs at least three vertices.");
+        const auto kind = kinds[p - 1];
+        if (kind != PrimitiveKind::polygon && kind != PrimitiveKind::polyline)
+            return failure("Primitive kind must be polygon or polyline.");
+        const auto minimum = kind == PrimitiveKind::polygon ? 3u : 2u;
+        if (offsets[p] < offsets[p - 1] || offsets[p] - offsets[p - 1] < minimum)
+            return failure("Polygons need at least three vertices; polylines need at least two.");
         if (offsets[p] - offsets[p - 1] != uniform)
             uniform = 0;
     }
     result->vertices_ = static_cast<std::uint32_t>(vertex_points.size());
     result->primitives_ = static_cast<std::uint32_t>(offsets.size() - 1);
     result->vertex_points_ = SharedArray<std::uint32_t>{std::move(vertex_points)};
+    result->kinds_ = SharedArray<PrimitiveKind>{std::move(kinds)};
     if (uniform || !result->primitives_)
         result->uniform_ = uniform;
     else
@@ -141,6 +155,7 @@ std::size_t Geometry::bytes() const noexcept {
     std::size_t total =
         (vertex_points_.array().capacity() + offsets_.array().capacity() + instance_references_.array().capacity()) *
             sizeof(std::uint32_t) +
+        kinds_.array().capacity() * sizeof(PrimitiveKind) +
         instance_transforms_.array().capacity() * sizeof(math::Matrix4) + references_.capacity() * sizeof(Reference);
     for (const auto& attribute : attributes_)
         total += std::visit(
@@ -233,7 +248,7 @@ Array<math::Matrix4>& Geometry::write_instance_transforms() {
     return instance_transforms_.write();
 }
 
-void Geometry::reverse_primitives() {
+void Geometry::reverse_primitives(bool polygons_only) {
     if (!primitives_)
         return;
     Array<std::uint32_t> order;
@@ -241,7 +256,8 @@ void Geometry::reverse_primitives() {
     for (std::uint32_t p = 0; p < primitives_; ++p) {
         const auto range = primitive(p);
         for (std::uint32_t i = 0; i < range.count; ++i)
-            order[range.first + i] = range.first + range.count - 1 - i;
+            order[range.first + i] =
+                range.first + (polygons_only && range.kind == PrimitiveKind::polyline ? i : range.count - 1 - i);
     }
     vertex_points_ = std::get<SharedArray<std::uint32_t>>(gather(vertex_points_, order.view()));
     for (auto& attribute : attributes_)
@@ -306,8 +322,10 @@ Result<Geometry> Geometry::remove_flagged(Layer layer, std::span<const bool> rem
     Array<std::uint32_t> vertices;
     Array<std::uint32_t> new_vertex_points;
     Array<std::uint32_t> offsets{0};
+    Array<PrimitiveKind> kinds;
     for (const auto p : primitives) {
         const auto range = primitive(p);
+        kinds.add(range.kind);
         for (std::uint32_t v = range.first; v < range.first + range.count; ++v) {
             vertices.add(v);
             new_vertex_points.add(point_map[vertex_points[v]]);
@@ -320,6 +338,7 @@ Result<Geometry> Geometry::remove_flagged(Layer layer, std::span<const bool> rem
     result.vertices_ = static_cast<std::uint32_t>(vertices.size());
     result.primitives_ = static_cast<std::uint32_t>(primitives.size());
     result.vertex_points_ = SharedArray<std::uint32_t>{std::move(new_vertex_points)};
+    result.kinds_ = SharedArray<PrimitiveKind>{std::move(kinds)};
     result.offsets_ = {};
     result.uniform_ = 0;
     if (!offsets_.empty() && result.primitives_)
@@ -383,6 +402,7 @@ Result<Geometry> Geometry::merge(std::span<const Geometry> inputs) {
         return failure("Merged geometry needs fewer than 2^32 - 1 elements per layer.");
     Array<std::uint32_t> vertex_points;
     Array<std::uint32_t> offsets{0};
+    Array<PrimitiveKind> kinds;
     Array<std::uint32_t> indices;
     Array<math::Matrix4> transforms;
     std::uint32_t point_base = 0;
@@ -393,6 +413,7 @@ Result<Geometry> Geometry::merge(std::span<const Geometry> inputs) {
         for (std::uint32_t p = 0; p < input.primitives_; ++p) {
             const auto range = input.primitive(p);
             offsets.add(vertex_base + range.first + range.count);
+            kinds.add(range.kind);
         }
         for (std::size_t i = 0; i < input.instance_references_.size(); ++i) {
             const auto& reference = input.references_[input.instance_references_.array()[i]];
@@ -416,6 +437,7 @@ Result<Geometry> Geometry::merge(std::span<const Geometry> inputs) {
     result.vertices_ = static_cast<std::uint32_t>(vertices);
     result.primitives_ = static_cast<std::uint32_t>(primitives);
     result.vertex_points_ = SharedArray<std::uint32_t>{std::move(vertex_points)};
+    result.kinds_ = SharedArray<PrimitiveKind>{std::move(kinds)};
     if (result.primitives_ && !same)
         result.offsets_ = SharedArray<std::uint32_t>{std::move(offsets)};
     else

@@ -1,5 +1,7 @@
 #include "procedural/operations.hpp"
+#include "foundation/result.hpp"
 #include "procedural/random.hpp"
+#include "procedural/triangles.hpp"
 
 #include <bit>
 #include <cmath>
@@ -155,27 +157,29 @@ Result<Geometry> scatter(const Geometry& surface, const ScatterSettings& setting
     if (!std::isfinite(settings.density) || settings.density < 0 || !std::isfinite(settings.min_distance) ||
         settings.min_distance < 0)
         return failure("Scatter density and minimum distance must be finite and non-negative.");
-    const auto triangles = surface.count(Layer::primitive);
-    if (triangles && surface.uniform_primitive_size() != 3)
-        return failure("Scatter needs triangle primitives.");
+    const auto triangles = detail::TriangleView::create(surface);
+    if (!triangles)
+        return std::unexpected(triangles.error());
     const auto& points = surface.positions();
     const auto vertex_points = surface.vertex_points();
     Array<Vector3> positions;
     Array<Vector3> normals;
     Array<std::uint32_t> ids;
     Array<std::uint32_t> primitives;
+    Array<std::uint32_t> subtriangles;
     Array<std::uint32_t> ordinals;
     Array<Vector2> barycentrics;
-    for (std::uint32_t t = 0; t < triangles; ++t) {
-        const auto v0 = widen(points[vertex_points[t * 3]]);
-        const auto e1 = widen(points[vertex_points[t * 3 + 1]]) - v0;
-        const auto e2 = widen(points[vertex_points[t * 3 + 2]]) - v0;
+    for (const auto& [p, j, corners] : *triangles) {
+        const auto v0 = widen(points[vertex_points[corners[0]]]);
+        const auto e1 = widen(points[vertex_points[corners[1]]]) - v0;
+        const auto e2 = widen(points[vertex_points[corners[2]]]) - v0;
         const auto normal = math::cross(e1, e2);
         const double area = math::length(normal) / 2;
         const double expected = area * settings.density;
         if (!(area > 0) || !(expected > 0))
             continue;
-        const auto seed = hash(settings.seed, t);
+        const auto seed = j ? hash(hash(settings.seed, p), j) : hash(settings.seed, p);
+        const auto source = j ? hash(p, j) : p;
         const double whole = std::floor(expected);
         const auto count = whole + (unit(hash(seed, 0u)) < expected - whole ? 1 : 0);
         if (positions.size() + count > element_limit)
@@ -190,8 +194,10 @@ Result<Geometry> scatter(const Geometry& surface, const ScatterSettings& setting
             }
             positions.add(narrow(v0 + e1 * double(r1) + e2 * double(r2)));
             normals.add(face);
-            ids.add(hash(t, k));
-            primitives.add(t);
+            ids.add(hash(source, k));
+            primitives.add(p);
+            if (triangles->has_subtriangles())
+                subtriangles.add(j);
             ordinals.add(k);
             barycentrics.add({r1, r2});
         }
@@ -249,6 +255,8 @@ Result<Geometry> scatter(const Geometry& surface, const ScatterSettings& setting
         keep(normals);
         keep(ids);
         keep(primitives);
+        if (triangles->has_subtriangles())
+            keep(subtriangles);
         keep(ordinals);
         keep(barycentrics);
     }
@@ -263,6 +271,9 @@ Result<Geometry> scatter(const Geometry& surface, const ScatterSettings& setting
           result->set(String{"sourceprimuv"}, Layer::point, SharedArray<Vector2>{std::move(barycentrics)})})
         if (!added)
             return std::unexpected(added.error());
+    if (triangles->has_subtriangles())
+        ATELIER_TRY(
+            result->set(String{"sourcetri"}, Layer::point, SharedArray<std::uint32_t>{std::move(subtriangles)}));
     return result;
 }
 
@@ -304,7 +315,7 @@ Result<void> transform(Geometry& geometry, Vector3 translate, Quaternion rotatio
                 return failure("Transformed instances are not finite.");
         }
     if (scale.x * double(scale.y) * scale.z < 0)
-        geometry.reverse_primitives();
+        geometry.reverse_primitives(true);
     return {};
 }
 
