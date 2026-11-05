@@ -1,5 +1,6 @@
 #include "procedural/operations.hpp"
 #include "foundation/result.hpp"
+#include "foundation/tasks.hpp"
 #include "procedural/bvh.hpp"
 #include "procedural/random.hpp"
 #include "procedural/timing.hpp"
@@ -20,6 +21,22 @@ using math::Vector3;
 using math::Vector3d;
 
 constexpr std::uint32_t work_limit = 1'048'576;
+
+constexpr std::size_t block_size = 256;
+
+enum class Classification : std::uint8_t { outside, surface, retained };
+
+struct Block {
+    std::uint32_t retained{};
+
+    std::array<std::uint32_t, 8> attempts{};
+
+    std::array<std::uint32_t, 8> retries{};
+
+    std::uint32_t fallback{};
+
+    bool failed{};
+};
 
 struct Sum {
     double value{};
@@ -139,10 +156,9 @@ bool winding_inside(std::span<const Triangle> triangles, Vector3 position) {
     return angles.value >= 2 * std::numbers::pi;
 }
 
-bool inside(const Bvh& bvh, std::span<const Triangle> triangles, Vector3 position) {
-    timing::record(phases::candidate, {});
+Classification classify(const Bvh& bvh, std::span<const Triangle> triangles, Vector3 position, Block& block) {
     if (bvh.on_surface_band(position))
-        return false;
+        return Classification::surface;
     // Fixed binary approximations of sqrt(2), sqrt(3), sqrt(5), widened exactly
     // for double predicates. Float-representable directions also let public Geometry
     // construct genuine all-direction degeneracies without a private test switch.
@@ -158,13 +174,13 @@ bool inside(const Bvh& bvh, std::span<const Triangle> triangles, Vector3 positio
                                                  {-r3, r5, -r2},
                                                  {-r5, -r2, -r3}}};
     for (std::size_t i = 0; i < directions.size(); ++i) {
-        timing::record(phases::attempts[i], {});
+        ++block.attempts[i];
         if (const auto crossings = bvh.signed_crossings(position, directions[i]))
-            return *crossings >= 1;
-        timing::record(phases::retries[i], {});
+            return *crossings >= 1 ? Classification::retained : Classification::outside;
+        ++block.retries[i];
     }
-    timing::record(phases::fallback, {});
-    return winding_inside(triangles, position);
+    ++block.fallback;
+    return winding_inside(triangles, position) ? Classification::retained : Classification::outside;
 }
 
 }
@@ -201,65 +217,154 @@ Result<Geometry> volume_scatter(const Geometry& surface, const VolumeScatterSett
         widths[axis] = static_cast<std::uint32_t>(width);
         cells *= widths[axis];
     }
-    const auto coordinate = [&](std::uint32_t i) {
+    const auto coordinate = [first, widths](std::uint32_t i) {
         return std::array<std::int32_t, 3>{static_cast<std::int32_t>(first[0] + i / (widths[1] * widths[2])),
                                            static_cast<std::int32_t>(first[1] + i / widths[2] % widths[1]),
                                            static_cast<std::int32_t>(first[2] + i % widths[2])};
     };
-    const auto cell_seed = [&](const auto& xyz) {
-        return hash(hash(hash(settings.seed, static_cast<std::uint32_t>(xyz[0])), static_cast<std::uint32_t>(xyz[1])),
+    const auto cell_seed = [seed = settings.seed](const auto& xyz) {
+        return hash(hash(hash(seed, static_cast<std::uint32_t>(xyz[0])), static_cast<std::uint32_t>(xyz[1])),
                     static_cast<std::uint32_t>(xyz[2]));
     };
     const double expected = settings.density * h * h * h;
     if (!std::isfinite(expected) || std::floor(expected) > work_limit / cells)
         return failure("Volume exceeds 1,048,576 candidates before filtering.");
     const auto whole = static_cast<std::uint32_t>(std::floor(expected));
-    std::vector<std::uint32_t> counts(cells);
-    std::uint32_t candidates = 0;
+    // Keep zero-count cells in the prefix. A dense single cell may span many blocks.
+    std::vector<std::uint32_t> offsets(static_cast<std::size_t>(cells) + 1);
     for (std::uint32_t i = 0; i < cells; ++i) {
-        counts[i] = whole + (unit(hash(cell_seed(coordinate(i)), 0)) < expected - whole);
-        if (counts[i] > work_limit - candidates)
+        const auto count = whole + (unit(hash(cell_seed(coordinate(i)), 0)) < expected - whole);
+        if (count > work_limit - offsets[i])
             return failure("Volume exceeds 1,048,576 candidates before filtering.");
-        candidates += counts[i];
+        offsets[i + 1] = offsets[i] + count;
     }
+    const auto candidates = offsets.back();
     Bvh bvh;
     if (candidates) {
         timing::Scope building{phases::build};
         ATELIER_TRY_BIND(built, Bvh::build(surface));
         bvh = std::move(*built);
     }
+    Array<Vector3> candidate_positions;
+    candidate_positions.resize(candidates);
+    std::vector<Classification> states(candidates);
+    std::vector<Block> blocks((candidates + block_size - 1) / block_size);
+    {
+        timing::Scope classification{phases::classify};
+        const auto classified = tasks::parallel_for(
+            {0, blocks.size()},
+            [&bvh, triangles = std::span<const Triangle>{*triangles}, coordinate, cell_seed, origin = settings.origin,
+             h, candidates, offsets = std::span<const std::uint32_t>{offsets}, positions = candidate_positions.view(),
+             states = std::span{states}, blocks = std::span{blocks}](tasks::Range range) {
+                // A scheduler body may contain several fixed-size logical blocks.
+                for (auto b = range.begin; b < range.end; ++b) {
+                    Block result;
+                    auto i = b * block_size;
+                    const auto end = std::min(i + block_size, static_cast<std::size_t>(candidates));
+                    auto cell = static_cast<std::uint32_t>(std::upper_bound(offsets.begin(), offsets.end(), i) -
+                                                           offsets.begin() - 1);
+                    while (i < end && !result.failed) {
+                        while (offsets[cell + 1] == i)
+                            ++cell;
+                        const auto xyz = coordinate(cell);
+                        const auto seed = cell_seed(xyz);
+                        const auto stop = std::min(end, static_cast<std::size_t>(offsets[cell + 1]));
+                        for (; i < stop; ++i) {
+                            const auto k = static_cast<std::uint32_t>(i - offsets[cell]);
+                            const auto id = hash(seed, k);
+                            Vector3 p;
+                            for (std::uint32_t axis = 0; axis < 3; ++axis)
+                                p[axis] = static_cast<float>(
+                                    origin[axis] + (static_cast<double>(xyz[axis]) + unit(hash(id, axis + 1))) * h);
+                            if (!math::is_finite(p)) {
+                                result.failed = true;
+                                break;
+                            }
+                            positions[i] = p;
+                            states[i] = classify(bvh, triangles, p, result);
+                            result.retained += states[i] == Classification::retained;
+                        }
+                        ++cell;
+                    }
+                    blocks[b] = result;
+                }
+            });
+        if (classified != tasks::Completion::completed)
+            return failure("Volume was cancelled before all candidates were classified.");
+        Block totals;
+        for (const auto& block : blocks) {
+            if (block.failed)
+                return failure("Volume candidate position exceeds float range.");
+            for (std::size_t i = 0; i < totals.attempts.size(); ++i) {
+                totals.attempts[i] += block.attempts[i];
+                totals.retries[i] += block.retries[i];
+            }
+            totals.fallback += block.fallback;
+        }
+        // No worker writes the Recorder. Each event count is bounded by candidates.
+        if (candidates)
+            timing::record(phases::candidate, {}, candidates);
+        for (std::size_t i = 0; i < totals.attempts.size(); ++i) {
+            if (totals.attempts[i])
+                timing::record(phases::attempts[i], {}, totals.attempts[i]);
+            if (totals.retries[i])
+                timing::record(phases::retries[i], {}, totals.retries[i]);
+        }
+        if (totals.fallback)
+            timing::record(phases::fallback, {}, totals.fallback);
+    }
+    std::vector<std::uint32_t> output_offsets(blocks.size() + 1);
+    for (std::size_t b = 0; b < blocks.size(); ++b)
+        output_offsets[b + 1] = output_offsets[b] + blocks[b].retained;
+    const auto retained = output_offsets.back();
     Array<Vector3> positions;
     Array<std::uint32_t> ids;
     Array<std::uint32_t> ordinals;
     std::array<Array<std::int32_t>, 3> sources;
-    positions.reserve(candidates);
-    ids.reserve(candidates);
-    ordinals.reserve(candidates);
+    positions.resize(retained);
+    ids.resize(retained);
+    ordinals.resize(retained);
     for (auto& source : sources)
-        source.reserve(candidates);
-    {
-        timing::Scope classification{phases::classify};
-        for (std::uint32_t i = 0; i < cells; ++i) {
-            const auto xyz = coordinate(i);
-            const auto seed = cell_seed(xyz);
-            for (std::uint32_t k = 0; k < counts[i]; ++k) {
-                const auto id = hash(seed, k);
-                Vector3 p;
-                for (std::uint32_t axis = 0; axis < 3; ++axis)
-                    p[axis] = static_cast<float>(settings.origin[axis] +
-                                                 (static_cast<double>(xyz[axis]) + unit(hash(id, axis + 1))) * h);
-                if (!math::is_finite(p))
-                    return failure("Volume candidate position exceeds float range.");
-                if (!inside(bvh, *triangles, p))
+        source.resize(retained);
+    const auto filled = tasks::parallel_for(
+        {0, blocks.size()},
+        [coordinate, cell_seed, candidates, offsets = std::span<const std::uint32_t>{offsets},
+         output_offsets = std::span<const std::uint32_t>{output_offsets},
+         candidate_positions = Span<const Vector3>{candidate_positions.view()},
+         states = std::span<const Classification>{states}, positions = positions.view(), ids = ids.view(),
+         ordinals = ordinals.view(),
+         sources = std::array{sources[0].view(), sources[1].view(), sources[2].view()}](tasks::Range range) {
+            for (auto b = range.begin; b < range.end; ++b) {
+                if (output_offsets[b] == output_offsets[b + 1])
                     continue;
-                positions.add(p);
-                ids.add(id);
-                ordinals.add(k);
-                for (std::size_t axis = 0; axis < 3; ++axis)
-                    sources[axis].add(xyz[axis]);
+                auto output = output_offsets[b];
+                auto i = b * block_size;
+                const auto end = std::min(i + block_size, static_cast<std::size_t>(candidates));
+                auto cell = static_cast<std::uint32_t>(std::upper_bound(offsets.begin(), offsets.end(), i) -
+                                                       offsets.begin() - 1);
+                while (i < end) {
+                    while (offsets[cell + 1] == i)
+                        ++cell;
+                    const auto xyz = coordinate(cell);
+                    const auto seed = cell_seed(xyz);
+                    const auto stop = std::min(end, static_cast<std::size_t>(offsets[cell + 1]));
+                    for (; i < stop; ++i) {
+                        if (states[i] != Classification::retained)
+                            continue;
+                        const auto k = static_cast<std::uint32_t>(i - offsets[cell]);
+                        positions[output] = candidate_positions[i];
+                        ids[output] = hash(seed, k);
+                        ordinals[output] = k;
+                        for (std::size_t axis = 0; axis < 3; ++axis)
+                            sources[axis][output] = xyz[axis];
+                        ++output;
+                    }
+                    ++cell;
+                }
             }
-        }
-    }
+        });
+    if (filled != tasks::Completion::completed)
+        return failure("Volume was cancelled before all output columns were filled.");
     ATELIER_TRY_BIND(result, Geometry::points(std::move(positions)));
     ATELIER_TRY(result->set(String{"id"}, Layer::point, SharedArray<std::uint32_t>{std::move(ids)}));
     constexpr const char* names[]{"sourcecellx", "sourcecelly", "sourcecellz"};

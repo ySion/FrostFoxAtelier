@@ -1,6 +1,7 @@
 #include "foundation/frame_timing.hpp"
 
 #include <array>
+#include <limits>
 #include <stdexcept>
 #include <string>
 
@@ -64,7 +65,7 @@ void verify_frame_timing() {
 
     {
         timing::Scope unbound{outer};
-        timing::record(injected, std::chrono::nanoseconds{5});
+        timing::record(injected, std::chrono::nanoseconds{5}, 9);
     }
     {
         timing::Recorder::Frame frame{recorder};
@@ -73,12 +74,16 @@ void verify_frame_timing() {
             {
                 timing::Scope nested{inner};
             }
-            timing::record(injected, std::chrono::nanoseconds{7});
+            if (i == 0)
+                timing::record(injected, std::chrono::nanoseconds{7});
+            if (i == 1)
+                timing::record(injected, std::chrono::nanoseconds{11}, 3);
         }
         {
             timing::Scope scope{sibling};
             timing::Suspend suspend;
             timing::Scope hidden{inner};
+            timing::record(injected, std::chrono::nanoseconds{19}, 5);
         }
         {
             timing::Scope misplaced{inner};
@@ -86,7 +91,7 @@ void verify_frame_timing() {
         {
             timing::Scope unknown{stray};
         }
-        timing::record(injected, std::chrono::nanoseconds{1});
+        timing::record(injected, std::chrono::nanoseconds{1}, 7);
         {
             timing::Suspend suspend;
             timing::Recorder::Frame again{recorder};
@@ -94,8 +99,8 @@ void verify_frame_timing() {
     }
     const auto& record = recorder.last();
     require(record.sequence == 2 && record.count(timing::frame) == 1 && record.count(outer) == 3 &&
-                record.count(inner) == 3 && record.count(injected) == 3 &&
-                record.time(injected) == std::chrono::nanoseconds{21} && record.count(sibling) == 1,
+                record.count(inner) == 3 && record.count(injected) == 4 &&
+                record.time(injected) == std::chrono::nanoseconds{18} && record.count(sibling) == 1,
             "Timing entries were not accumulated per frame.");
     require(record.structure_errors == 4 && record.first_error == &inner && record.count(stray) == 0,
             "Misplaced, unregistered, injected or nested records were not reported.");
@@ -121,4 +126,19 @@ void verify_frame_timing() {
                     recorder.last().structure_errors == 0,
                 "Ending a Suspend rebound a frame that finished inside it.");
     }
+
+    {
+        timing::Recorder::Frame frame{recorder};
+        timing::Scope scope{outer};
+        timing::record(injected, std::chrono::nanoseconds{7}, std::numeric_limits<std::uint32_t>::max());
+        {
+            timing::Scope overflow{injected};
+        }
+        timing::Scope recovery{inner};
+    }
+    require(recorder.last().count(injected) == std::numeric_limits<std::uint32_t>::max() &&
+                recorder.last().time(injected) == std::chrono::nanoseconds{7} &&
+                recorder.last().structure_errors == 1 && recorder.last().first_error == &injected &&
+                recorder.last().count(inner) == 1,
+            "A Scope after a full batch wrapped the count, recorded time, or lost its parent.");
 }

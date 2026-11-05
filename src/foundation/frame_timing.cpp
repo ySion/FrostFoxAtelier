@@ -100,16 +100,14 @@ const FrameRecord& Recorder::Frame::finish() noexcept {
     return record;
 }
 
-void record(const Marker& marker, std::chrono::nanoseconds duration) noexcept {
+void record(const Marker& marker, std::chrono::nanoseconds total_duration, std::uint32_t entries) noexcept {
     auto* recorder = detail::bound;
     if (!recorder)
         return;
-    if (marker.index_ == unregistered || marker.parent_index_ != recorder->current_) {
-        recorder->fail(marker);
+    if (!recorder->accepts(marker, entries))
         return;
-    }
-    recorder->record_.duration[marker.index_] += duration;
-    ++recorder->record_.entries[marker.index_];
+    recorder->record_.duration[marker.index_] += total_duration;
+    recorder->record_.entries[marker.index_] += entries;
 }
 
 }

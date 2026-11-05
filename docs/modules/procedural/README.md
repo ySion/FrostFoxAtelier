@@ -87,7 +87,9 @@
 - **符号认证不是 δ 带。** 每次 double 加、减、乘、除后，用相邻 double 向外包住结果；区间组合包含最初的坐标减法和相消误差，不按已相消结果乘一个经验 ε。有限 float 坐标和方向精确扩展到 double，三次乘积在其范围内。保持既有 precise 编译，不启用 fast-math 或重结合。令 a/b/c 为相对 q 的顶点，认证 u=det(b,c,d)、v=det(c,a,d)、w=det(a,b,d)：有两个可信异号即在面外；三者可信同号时，其和就是 n·d，det(a,b,c)/(u+v+w) 的符号判定前后向，正向贡献共同符号。区间含零且不能证明在面外时重试，涵盖边、顶点、共面和扇形对角线；不凭未认证的边侧把交点随意分给某一片。盒测试也逐操作向外舍入，不漏掉真实交点；这些局部谓词及整数和不依赖树的分组和遍历顺序。
 - **仅八个方向全部不确定**时，对该候选直接复用原 p/j 顺序的立体角补偿求和：`2 atan2(det(a,b,c), |a||b||c| + dot(a,b)|c| + dot(b,c)|a| + dot(c,a)|b|)`，总和 ≥ 2π 即保留。没有规模阈值、开关或第二套表面带；固定有限方向不保证任意合法网格都有非退化方向。这里“精确”表示没有近似 fast-winding 或 parity 替代，不声称表面容差和兜底浮点求和是任意精度实数运算。
 
-典型成本约为 O(T log T + C·(log T + I + D))，I 是实际穿越/叶工作，D 是表面带和重试成本；重叠壳、细长大盒或全退化仍可能 O(C·T)。尚无 Volume 并行化、填充加速或最小间距。各方向尝试/重试与兜底次数只经现有 Recorder 和下述 profile 上报，不增加观察 API。
+典型总工作约为 O(T log T + C·(log T + I + D))，I 是实际穿越/叶工作，D 是表面带和重试成本；重叠壳、细长大盒或全退化仍可能 O(C·T)。这不是并行墙钟复杂度或性能保证。尚无最小间距。各方向尝试/重试与兜底次数只经现有 Recorder 和下述 profile 上报，不增加观察 API。
+
+壳校验、原序三角快照和 BVH 构建仍串行。分类按连续候选序号每 256 个划一个逻辑块：cell 前缀保留零计数格，一个高密度 cell 可以跨块；一次 `parallel_for` 融合生成 float P、表面带和射线／兜底，按候选序号写固定 P 与字节状态。每块只写自己的统计槽，不共享计数器。join 后宿主合并整数计数并提交 Recorder，再按块 retained 前缀精确分配六列，用第二次 `parallel_for` 稳定填充。无完成顺序 append，无每候选堆分配；BVH 与三角快照只读共享。worker 只借用固定普通值和输出区间，不碰 Runtime；发布 Geometry 留在成功 join 后。取消、异常或非有限 P 均不发布部分结果。P／状态 scratch 最多 13 MiB，cell 前缀约 4 MiB（替代原 counts），另有块统计；六列最终输出最多另占 32 MiB，不把 scratch 当作总峰值。
 
 - 固定格使用几何局部坐标，不按包围盒推导 h。各轴范围为 `floor((min−origin)/h)` 到 `ceil((max−origin)/h)−1`，min/max 只统计被图元角引用的点；游离点不扩大格范围或消耗候选预算，但仍须通过全部输入点的有限性校验。只接触边界的外格不参与。格坐标先检查 int32，再转换；按 x/y/z 字典序（z 最快）枚举。
 - 设 H(a,b) 为现有 lowbias32 组合 hash，U 为高 24 位映射到 [0,1)。格随机源 `s=H(H(H(seed,uint32(x)),uint32(y)),uint32(z))`，负坐标使用模 2³² 编码。λ=density·h³，格内数目 `floor(λ) + (U(H(s,0)) < frac(λ))`。第 k 候选 id=`H(s,k)`，三个位置通道为 `U(H(id,1/2/3))`；以 double 计算 `origin+(cell+u)h`，最终舍入成 float P，再分类。节点 seed 为 H(图 seed, 节点 seed)。这是持久重算语义，不混入枚举下标、线程号或 std::hash。
@@ -228,4 +230,8 @@ cmake --build --preset release --target procedural_graph_acceptance
 
 `atelier_procedural_acceptance --profile-procedural <新的绝对路径.json>` 只输出数值，不属于验收。它在一块 32768 个三角形的起伏地形上构建典型生成图：MeshImport → Scatter（约 5 万点），Grid（224 × 224）→ Transform 抬高 → Ray 投射回地形，两路 Merge 后 CopyToPoints 得到约 10 万实例，再按 32 m 分块发布。报告各项 9 次的中位数（先预热 2 次）：100 万点的撒点与变换，地形 BVH 的构建与 224 × 224 条竖直射线的查询，冷启动整图求值与各节点耗时，无变化的求值，改 Scatter 种子、改 Ray 距离、改 CopyToPoints 变体属性名之后的重算，撤销到已缓存的种子，以及首次发布与逐块复用的再发布。测量时机器应空闲。
 
-同一入口另有闭合 **Sphere(r=5,M=32,L=32)** 的 Volume 校准负载：1,984 扇形三角、1,000 格、10,000 筛选前候选（origin=0/h=1/density=10/seed=3）。报告输入参数、构建配置、预热/样本数、格数、C、T、实际保留点数，以及 `volume_ms`、`volume_build_ms`、`volume_generate_classify_ms` 的中位数；分类阶段还给 ns/候选。分类时间覆盖候选生成、表面/绕数分类与稳定压紧；整次还包含壳校验、预算及输出组装。各方向的 attempt/retry、兜底次数及比率取最后一轮固定输入的 Recorder 计数；`volume_retry_rate` 为首方向重试数/C，即需尝试第二方向的候选比例，表面排除的候选仍计入 C。计时复用 [模块阶段标记](../../../src/procedural/timing.hpp) 与 foundation Recorder，由 profile 宿主安装并绑定；逐候选事件用零时长 record，不逐点读时钟，普通无 Recorder 求值不读时钟。没有新增观察接口。采样只能在另行批准的独占时段执行，不得把复杂度或预算上限当实测性能；Volume 并行化仍是后续独立增量。
+同一入口另有两档闭合 Volume 负载：**Sphere(r=5,M=32,L=32)** 的 1,984 扇形三角，以及 **M128/L128** 的 32,512 三角；两者都为 1,000 格、10,000 筛选前候选（origin=0/h=1/density=10/seed=3）。小档使用 `volume_*` 键，大档使用 `volume_large_*`；报告输入参数、构建配置、预热/样本数、格数、C、T、实际保留点数和各方向 attempt/retry/fallback 计数，固定输入各轮计数须一致。`retry_rate` 为首方向重试数/C，表面排除的候选仍计入 C。
+
+正式报告给 `ms`（整次）、`build_ms`（仅建 BVH）、`generate_classify_ms`（融合生成／分类 fork→join 及计数合并）和 ns/候选；`remaining_ms` 先逐样本算整次−build−classify，再取中位数，包含壳准备、前缀、分配、稳定填充及列装配。旧串行版的 classify 包含输出 append，不能拿其历史数字直接算本片并行收益；并行收益须比较同一新内核的真 P1 与默认 P 未插桩版本。三个子步骤没有产品 marker；只允许另行批准的临时真 P1 诊断细分，并报告插桩扰动，不把各 worker 重叠时长相加冒充墙钟。
+
+计时复用 [模块阶段标记](../../../src/procedural/timing.hpp) 与 foundation Recorder，由 profile 宿主安装并绑定。worker 仅累计普通整数，host 在 classify 仍打开、所有任务 join 后批量提交零时长事件；不逐点读时钟，无 Recorder 求值不读时钟，没有新增观察接口。采样只能在另行批准的独占时段执行，不得把复杂度或预算上限当实测性能。

@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -1282,6 +1283,27 @@ void volume_sampling() {
                 positions[i][axis] = i & (1u << axis) ? hi[axis] : lo[axis];
         return result;
     };
+    // Independent Python integer/hash and IEEE-f32 evaluation: 972 cells, 262 empty,
+    // 710 strictly interior candidates (nearest face gap > .002). Fold row words in
+    // id/x/y/z/k/Px/Py/Pz order, not production hashes or a serial implementation.
+    // This spans cell boundaries, sparse prefixes and the final partial task block.
+    const auto sparse = take(volume_scatter(bounded_box({-7, -2, -3}, {11, 4, 6}), {.density = .75f, .seed = 37}));
+    require(sparse.count(Layer::point) == 710, "Volume lost sparse-cell candidates across task blocks.");
+    const auto& sparse_ids = column<std::uint32_t>(sparse, "id", Layer::point);
+    const auto& sparse_x = column<std::int32_t>(sparse, "sourcecellx", Layer::point);
+    const auto& sparse_y = column<std::int32_t>(sparse, "sourcecelly", Layer::point);
+    const auto& sparse_z = column<std::int32_t>(sparse, "sourcecellz", Layer::point);
+    const auto& sparse_k = column<std::uint32_t>(sparse, "sourceordinal", Layer::point);
+    std::uint64_t digest = 14695981039346656037ull;
+    for (std::size_t i = 0; i < sparse.positions().size(); ++i) {
+        const auto p = sparse.positions()[i];
+        for (const auto word :
+             {sparse_ids[i], static_cast<std::uint32_t>(sparse_x[i]), static_cast<std::uint32_t>(sparse_y[i]),
+              static_cast<std::uint32_t>(sparse_z[i]), sparse_k[i], std::bit_cast<std::uint32_t>(p.x),
+              std::bit_cast<std::uint32_t>(p.y), std::bit_cast<std::uint32_t>(p.z)})
+            digest = (digest ^ word) * 1099511628211ull;
+    }
+    require(digest == 0x82425ef33da3f110ull, "Volume changed ordered six-column bytes across task blocks.");
     // An unreferenced point cannot change the fixed-grid candidate domain or
     // spend the cell budget. The eight unit cells each contribute one inner point.
     const Geometry loose_point[]{take(box({2, 2, 2})), take(Geometry::points({{2000, 2000, 2000}}))};
@@ -1555,48 +1577,66 @@ void profile(const char* path) {
 
     // Closed workload, not the open terrain below. Kept out of ordinary acceptance.
     timing::install({phases::all});
-    const auto volume_surface = take(sphere(5, 32, 32));
-    std::vector<double> volume_times;
-    std::vector<double> build_times;
-    std::vector<double> classify_times;
-    std::uint32_t retained = 0;
-    timing::FrameRecord volume_record;
-    for (int i = -2; i < samples; ++i) {
-        timing::Recorder recorder;
-        timing::Recorder::Frame frame{recorder};
-        const auto result = take(volume_scatter(volume_surface, {.density = 10, .seed = 3}));
-        retained = result.count(Layer::point);
-        const auto& record = frame.finish();
-        require(record.structure_errors == 0, "Volume profile timing catalog is incomplete.");
-        volume_record = record;
-        if (i >= 0) {
-            volume_times.push_back(std::chrono::duration<double, std::milli>(record.time(phases::volume)).count());
-            build_times.push_back(std::chrono::duration<double, std::milli>(record.time(phases::build)).count());
-            classify_times.push_back(std::chrono::duration<double, std::milli>(record.time(phases::classify)).count());
+    for (const auto resolution : {32u, 128u}) {
+        const std::string prefix = resolution == 32 ? "volume_" : "volume_large_";
+        const auto metric = [&](const std::string& key, double value) { number((prefix + key).c_str(), value); };
+        const auto volume_surface = take(sphere(5, resolution, resolution));
+        std::vector<double> volume_times;
+        std::vector<double> build_times;
+        std::vector<double> classify_times;
+        std::vector<double> remaining_times;
+        std::uint32_t retained = 0;
+        timing::FrameRecord volume_record;
+        for (int i = -2; i < samples; ++i) {
+            timing::Recorder recorder;
+            timing::Recorder::Frame frame{recorder};
+            const auto result = take(volume_scatter(volume_surface, {.density = 10, .seed = 3}));
+            const auto& record = frame.finish();
+            require(record.structure_errors == 0, "Volume profile timing catalog is incomplete.");
+            if (i != -2)
+                require(retained == result.count(Layer::point) && volume_record.entries == record.entries,
+                        "Volume profile event counts changed across identical inputs.");
+            retained = result.count(Layer::point);
+            volume_record = record;
+            if (i >= 0) {
+                volume_times.push_back(std::chrono::duration<double, std::milli>(record.time(phases::volume)).count());
+                build_times.push_back(std::chrono::duration<double, std::milli>(record.time(phases::build)).count());
+                classify_times.push_back(
+                    std::chrono::duration<double, std::milli>(record.time(phases::classify)).count());
+                // Subtract within each sample; a difference of medians is not a median remainder.
+                remaining_times.push_back(std::chrono::duration<double, std::milli>(record.time(phases::volume) -
+                                                                                    record.time(phases::build) -
+                                                                                    record.time(phases::classify))
+                                              .count());
+            }
         }
+        std::ranges::sort(volume_times);
+        std::ranges::sort(build_times);
+        std::ranges::sort(classify_times);
+        std::ranges::sort(remaining_times);
+        report += "  \"" + prefix + "input\": \"Sphere(radius=5,segments=" + std::to_string(resolution) +
+                  ",latitudes=" + std::to_string(resolution) + "); origin=0,h=1,density=10,seed=3\",\n";
+        metric("samples", samples);
+        metric("warmups", 2);
+        metric("cells", 10 * 10 * 10);
+        const auto candidates = volume_record.count(phases::candidate);
+        require(candidates == 10000, "Volume profile changed the fixed candidate workload.");
+        metric("candidates", candidates);
+        metric("triangles", 2 * resolution * (resolution - 1));
+        metric("retained", retained);
+        metric("ms", volume_times[volume_times.size() / 2]);
+        metric("build_ms", build_times[build_times.size() / 2]);
+        metric("generate_classify_ms", classify_times[classify_times.size() / 2]);
+        metric("remaining_ms", remaining_times[remaining_times.size() / 2]);
+        metric("classify_ns_per_candidate", classify_times[classify_times.size() / 2] * 1e6 / candidates);
+        for (std::size_t i = 0; i < phases::attempts.size(); ++i) {
+            metric("attempt" + std::to_string(i), volume_record.count(phases::attempts[i]));
+            metric("retry" + std::to_string(i), volume_record.count(phases::retries[i]));
+        }
+        metric("retry_rate", static_cast<double>(volume_record.count(phases::retries[0])) / candidates);
+        metric("fallbacks", volume_record.count(phases::fallback));
+        metric("fallback_rate", static_cast<double>(volume_record.count(phases::fallback)) / candidates);
     }
-    std::ranges::sort(volume_times);
-    std::ranges::sort(build_times);
-    std::ranges::sort(classify_times);
-    report += "  \"volume_input\": \"Sphere(radius=5,segments=32,latitudes=32); origin=0,h=1,density=10,seed=3\",\n";
-    number("volume_samples", samples);
-    number("volume_warmups", 2);
-    number("volume_cells", 10 * 10 * 10);
-    const auto candidates = volume_record.count(phases::candidate);
-    number("volume_candidates", candidates);
-    number("volume_triangles", 2 * 32 * (32 - 1));
-    number("volume_retained", retained);
-    number("volume_ms", volume_times[volume_times.size() / 2]);
-    number("volume_build_ms", build_times[build_times.size() / 2]);
-    number("volume_generate_classify_ms", classify_times[classify_times.size() / 2]);
-    number("volume_classify_ns_per_candidate", classify_times[classify_times.size() / 2] * 1e6 / candidates);
-    for (std::size_t i = 0; i < phases::attempts.size(); ++i) {
-        number(("volume_attempt" + std::to_string(i)).c_str(), volume_record.count(phases::attempts[i]));
-        number(("volume_retry" + std::to_string(i)).c_str(), volume_record.count(phases::retries[i]));
-    }
-    number("volume_retry_rate", static_cast<double>(volume_record.count(phases::retries[0])) / candidates);
-    number("volume_fallbacks", volume_record.count(phases::fallback));
-    number("volume_fallback_rate", static_cast<double>(volume_record.count(phases::fallback)) / candidates);
 
     // One million points: the in-graph scale.
     const auto ground = triangles({{0, 0, 0}, {0, 0, 1000}, {1000, 0, 0}, {1000, 0, 0}, {0, 0, 1000}, {1000, 0, 1000}});

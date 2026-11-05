@@ -225,7 +225,9 @@ Scatter 先按权威 TriangleView 的原图元 p、子三角 j 顺序算候选�
 
 宿主在启动时、任何线程记录之前调用一次 `timing::install({module_a::markers, module_b::markers})`：先登记 `frame`，再按参数顺序登记各模块标记，由此确定进程内唯一的目录、下标和显示行序。重复调用、空标记、同一标记重复登记、键名重复、父项未先登记或超过 64 项都会拒绝，被拒绝的调用不登记任何项。没有静态自动注册，不依赖静态初始化顺序。`catalog()` 按下标返回已登记标记，`depth()` 给出层级深度。
 
-宿主线程每帧用 `Recorder::Frame` 绑定一个 `Recorder` 并打开 `frame`，`finish()` 或析构时关闭并解绑；`last()` 保留最近一个完成帧的 `FrameRecord`。`Scope` 只读取标记预先分配的下标和父下标，与当前打开的阶段比较后读两次 `steady_clock`，不分配、不查找、不加锁。计时为包含式：父阶段包含子阶段；同一帧多次进入同一阶段时累加时长并增加 `entries`。`record(marker, duration)` 把其他时钟测得的分段（例如 RHI 帧调用内部的提交与等待）记为当前阶段的子项，遵守同一父项规则。
+宿主线程每帧用 `Recorder::Frame` 绑定一个 `Recorder` 并打开 `frame`，`finish()` 或析构时关闭并解绑；`last()` 保留最近一个完成帧的 `FrameRecord`。`Scope` 只读取标记预先分配的下标和父下标，与当前打开的阶段比较后读两次 `steady_clock`，不分配、不查找、不加锁。计时为包含式：父阶段包含子阶段；同一帧多次进入同一阶段时累加时长并增加 `entries`。`record(marker, total_duration, entries = 1) noexcept` 把其他时钟测得的分段（例如 RHI 帧调用内部的提交与等待）记为当前阶段的子项，遵守同一父项规则。总时长只加一次，不乘 `entries`；后者是本帧事件／进入次数，不是帧样本数，不改变消费者按帧计算 mean/p95 的口径。
+
+批量事件由宿主在相关任务全部 join 后、声明的直接父阶段仍打开时提交；worker 只累计自己的普通整数，不写 Recorder 或累加 worker 时长。零事件不调用 `record`，不引入“0 次但有时长”；调用方须保证汇总值和同帧累计值可由 uint32 表示，不得静默窄化。`record` 与 `Scope` 入口共用注册、父项和容量检查：零次数、累计溢出、未注册或错父项均只记一次 `structure_error`，不增加时长和次数；满计数的 `Scope` 在改变当前父项或读钟前拒绝。未绑定或 `Suspend` 时仍不记录。
 
 Recorder 已绑定时，未登记的标记、未在声明父项下打开的标记以及嵌套的 `Frame` 计入 `structure_errors`，`first_error` 指向第一个出错的标记，这些条目不记录时长。`Suspend` 在作用域内解绑当前线程，被挂起的工作整体计入外层已打开的阶段，用于辅助表面等不属于本帧阶段结构的嵌套调用；在 `Suspend` 内结束的 `Frame` 不会在它退出时被重新绑定。
 

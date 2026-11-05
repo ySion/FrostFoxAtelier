@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstdint>
 #include <initializer_list>
+#include <limits>
 #include <span>
 #include <string_view>
 
@@ -50,7 +51,7 @@ private:
 
     friend void install(std::initializer_list<std::span<Marker* const>>);
 
-    friend void record(const Marker&, std::chrono::nanoseconds) noexcept;
+    friend void record(const Marker&, std::chrono::nanoseconds, std::uint32_t) noexcept;
 
     std::string_view key_;
 
@@ -89,7 +90,8 @@ struct FrameRecord {
     std::array<std::uint32_t, capacity> entries{};
 
     // Scopes or records that were not registered or not opened under their
-    // declared parent, and nested host frames. None of them was recorded.
+    // declared parent, zero/overflowing entry counts, and nested host frames.
+    // None of them was recorded.
     std::uint32_t structure_errors{};
 
     const Marker* first_error{};
@@ -144,7 +146,16 @@ private:
 
     friend class Suspend;
 
-    friend void record(const Marker&, std::chrono::nanoseconds) noexcept;
+    friend void record(const Marker&, std::chrono::nanoseconds, std::uint32_t) noexcept;
+
+    bool accepts(const Marker& marker, std::uint32_t entries) noexcept {
+        if (marker.index_ == unregistered || marker.parent_index_ != current_ || entries == 0 ||
+            entries > std::numeric_limits<std::uint32_t>::max() - record_.entries[marker.index_]) {
+            fail(marker);
+            return false;
+        }
+        return true;
+    }
 
     void fail(const Marker& marker) noexcept {
         ++record_.structure_errors;
@@ -168,8 +179,7 @@ public:
     explicit Scope(const Marker& marker) noexcept : recorder_(detail::bound) {
         if (!recorder_)
             return;
-        if (marker.index_ == unregistered || marker.parent_index_ != recorder_->current_) {
-            recorder_->fail(marker);
+        if (!recorder_->accepts(marker, 1)) {
             recorder_ = nullptr;
             return;
         }
@@ -201,9 +211,11 @@ private:
     std::uint8_t previous_{};
 };
 
-// Adds one entry measured by another clock, such as stages inside a third-party
-// call, as a child of the open phase. Same parent rule as Scope.
-void record(const Marker&, std::chrono::nanoseconds) noexcept;
+// Adds a total duration once and an event/entry count, not a frame sample count.
+// The bound host thread submits after workers join, under the marker's direct parent.
+// Omit zero-event batches; entries and the accumulated frame count must fit uint32.
+// Invalid batches record one structure error and no duration or entries.
+void record(const Marker&, std::chrono::nanoseconds total_duration, std::uint32_t entries = 1) noexcept;
 
 // Attributes nested work, such as an auxiliary surface, to the open phase as a whole.
 class Suspend {
