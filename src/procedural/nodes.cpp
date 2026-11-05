@@ -36,6 +36,27 @@ void Line::evaluate(Geometry& output) const {
     output = take(line(start, end, count));
 }
 
+void Box::evaluate(Geometry& output) const {
+    output = take(box(size));
+}
+
+void Sphere::evaluate(Geometry& output) const {
+    output = take(sphere(radius, segments, latitudes));
+}
+
+void Tube::evaluate(Geometry& output) const {
+    output = take(tube(radius, height, segments));
+}
+
+void Polyline::evaluate(const Geometry& points, Geometry& output) const {
+    output = take(points.connect_points());
+}
+
+void GroupBox::evaluate(const Geometry& input, Geometry& output) const {
+    output = input;
+    take(group_box(output, group, minimum, maximum));
+}
+
 void Scatter::evaluate(const Context& context, const Geometry& surface, Geometry& points) const {
     points =
         take(scatter(surface, {.density = density, .seed = hash(context.seed(), seed), .min_distance = min_distance}));

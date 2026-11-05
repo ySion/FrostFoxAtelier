@@ -58,6 +58,81 @@ public:
     void evaluate(Geometry& output) const;
 };
 
+ACLASS(Name = "procedural.Box", DESC = "以原点为中心的长方体，八个共享点、六个四边形，顶点法线保留硬边。")
+class Box : public Node {
+    AGENERATED_BODY(Box)
+
+public:
+    AFIELD(Label = "Size", DESC = "X、Y、Z 的总长度，均须有限且为正，单位 m。")
+    math::Vector3 size{1.f, 1.f, 1.f};
+
+    AFUNCTION(DESC = "生成六面体。")
+    void evaluate(Geometry& output) const;
+};
+
+ACLASS(Name = "procedural.Sphere", DESC = "以原点为中心的球面多面体；极区为三角形，中间为四边形，顶点法线径向平滑。")
+class Sphere : public Node {
+    AGENERATED_BODY(Sphere)
+
+public:
+    AFIELD(Label = "Radius", Min = "0", Max = "10", LockMin, DESC = "有限且为正的半径，单位 m。")
+    float radius{1.f};
+
+    AFIELD(Label = "Segments", Min = "3", Max = "128", LockMin, DESC = "绕 Y 轴的经向分段数。")
+    std::uint32_t segments{32};
+
+    AFIELD(Label = "Latitude Intervals", Min = "2", Max = "64", LockMin, DESC = "北极到南极的纬向区间数。")
+    std::uint32_t latitudes{16};
+
+    AFUNCTION(DESC = "生成共享缝与极点的球面。")
+    void evaluate(Geometry& output) const;
+};
+
+ACLASS(Name = "procedural.Tube", DESC = "以原点为中心、沿 Y 轴的带盖实心圆柱；侧面四边形，两个多边形盖。")
+class Tube : public Node {
+    AGENERATED_BODY(Tube)
+
+public:
+    AFIELD(Label = "Radius", Min = "0", Max = "10", LockMin, DESC = "有限且为正的半径，单位 m。")
+    float radius{1.f};
+
+    AFIELD(Label = "Height", Min = "0", Max = "10", LockMin, DESC = "有限且为正的总高度，单位 m。")
+    float height{2.f};
+
+    AFIELD(Label = "Segments", Min = "3", Max = "128", LockMin, DESC = "绕 Y 轴的分段数。")
+    std::uint32_t segments{32};
+
+    AFUNCTION(DESC = "生成圆柱；侧面法线径向平滑，盖的法线为正负 Y。")
+    void evaluate(Geometry& output) const;
+};
+
+ACLASS(Name = "procedural.Polyline", DESC = "把纯点输入按点序连成一条开放折线，保留点与 detail 属性，不隐式闭合。")
+class Polyline : public Node {
+    AGENERATED_BODY(Polyline)
+
+public:
+    AFUNCTION(DESC = "连接输入点；0 点输出空几何，1 点、有图元或实例时报错。")
+    void evaluate(const Geometry& points, Geometry& output) const;
+};
+
+ACLASS(Name = "procedural.GroupBox", DESC = "按闭区间包围盒选点，写入或替换一个 point 层 bool 组。")
+class GroupBox : public Node {
+    AGENERATED_BODY(GroupBox)
+
+public:
+    AFIELD(Label = "Group", DESC = "输出 bool 列名，不能为空；已有列必须是 point bool。")
+    String group{"selected"};
+
+    AFIELD(Label = "Minimum", DESC = "包围盒各轴下界，包含边界，单位 m。")
+    math::Vector3 minimum{-.5f, -.5f, -.5f};
+
+    AFIELD(Label = "Maximum", DESC = "包围盒各轴上界，包含边界，单位 m。")
+    math::Vector3 maximum{.5f, .5f, .5f};
+
+    AFUNCTION(DESC = "在输入几何的副本上建立点组。")
+    void evaluate(const Geometry& input, Geometry& output) const;
+};
+
 ACLASS(Name = "procedural.Scatter",
        DESC = "在三角形图元上按面积撒点。每个三角形的点只取决于它自己和种子，改动一个三角形不影响其他三角形上的点。")
 class Scatter : public Node {

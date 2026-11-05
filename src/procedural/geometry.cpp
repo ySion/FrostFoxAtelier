@@ -112,6 +112,28 @@ Result<Geometry> Geometry::primitives(Array<math::Vector3> positions, Array<std:
     return result;
 }
 
+Result<Geometry> Geometry::connect_points() const {
+    if (primitives_ || count(Layer::instance))
+        return failure("Polyline accepts only points, without primitives or instances.");
+    const auto size = count(Layer::point);
+    if (size == 1)
+        return failure("One point cannot form a polyline.");
+    if (!size)
+        return *this;
+    Geometry result = *this;
+    for (auto& attribute : result.attributes_)
+        if (attribute.layer == Layer::vertex || attribute.layer == Layer::primitive)
+            append(attribute.data, nullptr, attribute.layer == Layer::vertex ? size : 1);
+    auto& corners = result.vertex_points_.write();
+    corners.resize(size);
+    std::iota(corners.begin(), corners.end(), 0u);
+    result.vertices_ = size;
+    result.primitives_ = 1;
+    result.uniform_ = size;
+    result.kinds_ = SharedArray<PrimitiveKind>{Array<PrimitiveKind>{PrimitiveKind::polyline}};
+    return result;
+}
+
 std::uint32_t Geometry::count(Layer layer) const noexcept {
     switch (layer) {
     case Layer::point:

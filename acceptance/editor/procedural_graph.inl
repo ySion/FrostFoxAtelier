@@ -28,6 +28,33 @@ void verify_procedural_graph() {
                     "scale": {"x": 2.0, "y": 1.0, "z": 1.0}
                 },
                 "inputs": {"input": "grid.output"}
+            },
+            "box": {
+                "type": "procedural.Box", "position": [200.0, 0.0],
+                "properties": {"size": {"x": 2.0, "y": 4.0, "z": 6.0}}, "inputs": {}
+            },
+            "sphere": {
+                "type": "procedural.Sphere", "position": [200.0, 100.0],
+                "properties": {"radius": 2.0, "segments": 4, "latitudes": 3}, "inputs": {}
+            },
+            "tube": {
+                "type": "procedural.Tube", "position": [200.0, 200.0],
+                "properties": {"radius": 1.5, "height": 3.0, "segments": 5}, "inputs": {}
+            },
+            "line": {
+                "type": "procedural.Line", "position": [100.0, 300.0],
+                "properties": {"start": {"x": 0.0, "y": 0.0, "z": 0.0},
+                               "end": {"x": 4.0, "y": 2.0, "z": 6.0}, "count": 3}, "inputs": {}
+            },
+            "path": {
+                "type": "procedural.Polyline", "position": [200.0, 300.0],
+                "properties": {}, "inputs": {"points": "line.output"}
+            },
+            "selected": {
+                "type": "procedural.GroupBox", "position": [300.0, 300.0],
+                "properties": {"group": "chosen", "minimum": {"x": 0.0, "y": -1.0, "z": 2.0},
+                               "maximum": {"x": 2.0, "y": 1.0, "z": 4.0}},
+                "inputs": {"input": "path.output"}
             }
         }
     })");
@@ -62,6 +89,7 @@ void verify_procedural_graph() {
     }));
     require(take(contents(runtime, document.graph.id())).display == moved.node.id() &&
                 take(inputs(runtime, moved.node.id())) == std::vector<Input>{{grid.node.id(), 0, 0}} &&
+                take(inputs(runtime, entry("path").node.id())) == std::vector<Input>{{entry("line").node.id(), 0, 0}} &&
                 take(editor::save_graph(runtime, document)) == text,
             "The authored display, edge or canonical v1 bytes changed.");
 

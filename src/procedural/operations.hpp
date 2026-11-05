@@ -17,6 +17,23 @@ Result<Geometry> grid(math::Vector2 size, std::uint32_t rows, std::uint32_t colu
 // `count` points from `start` to `end` inclusive.
 Result<Geometry> line(math::Vector3 start, math::Vector3 end, std::uint32_t count);
 
+// Origin-centred box with finite positive dimensions, eight shared points in XYZ
+// bit order, and six quads (-X,+X,-Y,+Y,-Z,+Z). Vertex N preserves hard edges.
+Result<Geometry> box(math::Vector3 size);
+
+// Origin-centred, Y-polar sphere: segments around Y, latitudes intervals pole to
+// pole. Shared poles/seam, polar triangles then ring quads then south triangles;
+// radial vertex N. Radius is finite and positive, segments >= 3, latitudes >= 2.
+Result<Geometry> sphere(float radius, std::uint32_t segments, std::uint32_t latitudes);
+
+// Origin-centred capped solid cylinder on Y, segments >= 3, finite positive radius
+// and height. Bottom then top rings, side quads then polygon caps; vertex N.
+Result<Geometry> tube(float radius, float height, std::uint32_t segments);
+
+// Writes/replaces a point bool column using a closed finite AABB. Incompatible
+// existing layer/type or an invalid name fails; P and other columns are unchanged.
+Result<void> group_box(Geometry& geometry, StringView group, math::Vector3 minimum, math::Vector3 maximum);
+
 struct ScatterSettings {
     float density{1}; // Points per unit area before elimination.
 

@@ -111,6 +111,11 @@ Result<void> register_types(Runtime& runtime) {
     definitions.push_back(reflection::Definition<MeshImport>::build(runtime));
     definitions.push_back(reflection::Definition<Grid>::build(runtime));
     definitions.push_back(reflection::Definition<Line>::build(runtime));
+    definitions.push_back(reflection::Definition<Box>::build(runtime));
+    definitions.push_back(reflection::Definition<Sphere>::build(runtime));
+    definitions.push_back(reflection::Definition<Tube>::build(runtime));
+    definitions.push_back(reflection::Definition<Polyline>::build(runtime));
+    definitions.push_back(reflection::Definition<GroupBox>::build(runtime));
     definitions.push_back(reflection::Definition<Scatter>::build(runtime));
     definitions.push_back(reflection::Definition<Transform>::build(runtime));
     definitions.push_back(reflection::Definition<Promote>::build(runtime));

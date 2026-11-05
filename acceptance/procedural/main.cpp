@@ -623,6 +623,156 @@ bool failed(const Evaluator& evaluator, ObjectId node) {
     return evaluator.status(node)->error.has_value();
 }
 
+void native_constructors() {
+    // Divergence measures the authored surface, never another constructor.
+    const auto volume = [](const Geometry& geometry) {
+        double sum = 0;
+        for (std::uint32_t p = 0; p < geometry.count(Layer::primitive); ++p) {
+            const auto range = geometry.primitive(p);
+            require(range.kind == PrimitiveKind::polygon, "A solid constructor emitted a polyline.");
+            const auto a = geometry.positions()[geometry.vertex_points()[range.first]];
+            for (std::uint32_t j = 1; j + 1 < range.count; ++j) {
+                const auto b = geometry.positions()[geometry.vertex_points()[range.first + j]];
+                const auto c = geometry.positions()[geometry.vertex_points()[range.first + j + 1]];
+                const double tetrahedron = math::dot(a, math::cross(b, c)) / 6.0;
+                require(tetrahedron > 0, "A solid constructor has inward winding.");
+                sum += tetrahedron;
+            }
+        }
+        return sum;
+    };
+    Runtime runtime;
+    take(register_types(runtime));
+    Meshes resources;
+    const auto graph = take(runtime.create(type<Graph>(runtime)));
+    const auto sphere_node = take(add_node(runtime, graph.id(), type<Sphere>(runtime)));
+    take(runtime.with_native<Sphere>(sphere_node.id(), [](Sphere& node) -> Result<void> {
+        node.radius = 2;
+        node.segments = 4;
+        node.latitudes = 3;
+        return {};
+    }));
+    take(set_display(runtime, graph.id(), sphere_node.id()));
+    Evaluator evaluator{runtime, graph, resources};
+    take(evaluator.evaluate());
+    require(evaluator.output() != nullptr, "Sphere did not publish geometry.");
+    const auto& ball = *evaluator.output();
+    const float root3 = std::sqrt(3.f);
+    const std::array<Vector3, 10> positions{{{0, 2, 0},
+                                             {root3, 1, 0},
+                                             {0, 1, root3},
+                                             {-root3, 1, 0},
+                                             {0, 1, -root3},
+                                             {root3, -1, 0},
+                                             {0, -1, root3},
+                                             {-root3, -1, 0},
+                                             {0, -1, -root3},
+                                             {0, -2, 0}}};
+    const std::array<std::uint32_t, 40> corners{0, 2, 1, 0, 3, 2, 0, 4, 3, 0, 1, 4, 1, 2, 6, 5, 2, 3, 7, 6,
+                                                3, 4, 8, 7, 4, 1, 5, 8, 9, 5, 6, 9, 6, 7, 9, 7, 8, 9, 8, 5};
+    require(ball.count(Layer::point) == 10 && ball.count(Layer::primitive) == 12 &&
+                std::ranges::equal(ball.vertex_points(), corners),
+            "Sphere topology changed from its authored polar/ring order.");
+    for (std::size_t i = 0; i < positions.size(); ++i)
+        require(near(ball.positions()[i], positions[i]), "Sphere ring positions differ from the analytic fixture.");
+    const auto& normals = column<Vector3>(ball, "N", Layer::vertex);
+    for (std::size_t i = 0; i < corners.size(); ++i)
+        require(near(normals[i], positions[corners[i]] / 2.f), "Sphere normals are not radial vertex values.");
+    // The divergence formula measures the constructed surface; the independent
+    // expected volume is the middle prism (12) plus two square pyramids (2 each).
+    for (std::uint32_t p = 0; p < ball.count(Layer::primitive); ++p) {
+        const auto range = ball.primitive(p);
+        require(range.kind == PrimitiveKind::polygon && range.count == (p < 4 || p >= 8 ? 3u : 4u),
+                "Sphere polar triangles or middle quads changed.");
+    }
+    require(std::abs(volume(ball) - 16) < 1e-5, "Sphere volume is not the analytic 16.");
+    // Use an existing surface consumer to exercise float polygon validation.
+    const auto surface = take(Bvh::build(ball));
+    // A pole is a shared-edge degeneracy for Ray; closest has no ray-edge ambiguity.
+    const auto closest = surface.closest({0, 3, 0}, 4);
+    require(closest && near(closest->position, {0, 2, 0}) && near(closest->distance, 1),
+            "The constructed Sphere is not consumable as a polygon surface.");
+
+    Box box_node;
+    box_node.size = {2, 4, 6};
+    Geometry cube;
+    box_node.evaluate(cube);
+    const std::array<Vector3, 8> box_points{
+        {{-1, -2, -3}, {1, -2, -3}, {-1, 2, -3}, {1, 2, -3}, {-1, -2, 3}, {1, -2, 3}, {-1, 2, 3}, {1, 2, 3}}};
+    const std::array<std::uint32_t, 24> box_corners{0, 4, 6, 2, 1, 3, 7, 5, 0, 1, 5, 4,
+                                                    2, 6, 7, 3, 0, 2, 3, 1, 4, 5, 7, 6};
+    const std::array<Vector3, 6> box_normals{{{-1, 0, 0}, {1, 0, 0}, {0, -1, 0}, {0, 1, 0}, {0, 0, -1}, {0, 0, 1}}};
+    require(std::ranges::equal(cube.positions(), box_points) && cube.count(Layer::primitive) == 6 &&
+                cube.uniform_primitive_size() == 4 && std::ranges::equal(cube.vertex_points(), box_corners) &&
+                std::abs(volume(cube) - 48) < 1e-5,
+            "Box did not retain its eight bit-ordered corners and six outward quads.");
+    const auto& box_n = column<Vector3>(cube, "N", Layer::vertex);
+    for (std::size_t i = 0; i < box_corners.size(); ++i)
+        require(box_n[i] == box_normals[i / 4], "Box lost its hard vertex normals.");
+
+    Tube tube_node;
+    tube_node.radius = 1;
+    tube_node.height = 2;
+    tube_node.segments = 5;
+    Geometry cylinder;
+    tube_node.evaluate(cylinder);
+    // Offline sin/cos of the five regular-pentagon vertices, not constructor output.
+    const std::array<Vector3, 5> ring{{{1, 0, 0},
+                                       {.309016994f, 0, .951056516f},
+                                       {-.809016994f, 0, .587785252f},
+                                       {-.809016994f, 0, -.587785252f},
+                                       {.309016994f, 0, -.951056516f}}};
+    const std::array<std::uint32_t, 30> tube_corners{0, 5, 6, 1, 1, 6, 7, 2, 2, 7, 8, 3, 3, 8, 9,
+                                                     4, 4, 9, 5, 0, 0, 1, 2, 3, 4, 5, 9, 8, 7, 6};
+    require(cylinder.count(Layer::point) == 10 && cylinder.count(Layer::primitive) == 7 &&
+                std::ranges::equal(cylinder.vertex_points(), tube_corners) &&
+                std::abs(volume(cylinder) - 4.755282581475768) < 1e-5,
+            "Tube differs from the pentagonal prism of volume 5 sin(72 degrees).");
+    for (std::size_t i = 0; i < 10; ++i)
+        require(near(cylinder.positions()[i], ring[i % 5] + Vector3{0, i < 5 ? -1.f : 1.f, 0}),
+                "Tube ring order or positions changed.");
+    const auto& tube_n = column<Vector3>(cylinder, "N", Layer::vertex);
+    for (std::size_t i = 0; i < tube_corners.size(); ++i) {
+        const auto expected = i < 20 ? ring[tube_corners[i] % 5] : Vector3{0, i < 25 ? -1.f : 1.f, 0};
+        require(near(tube_n[i], expected), "Tube side/cap normals are not distinct vertex values.");
+    }
+    const auto cap = take(Bvh::build(cylinder)).closest({0, 3, 0}, 4);
+    require(cap && near(cap->position, {0, 1, 0}) && near(cap->distance, 2),
+            "Tube's float cap is not consumable as a planar polygon.");
+
+    Line line_node;
+    line_node.start = {0, 0, 0};
+    line_node.end = {4, 2, 6};
+    line_node.count = 3;
+    Geometry cloud;
+    line_node.evaluate(cloud);
+    take(cloud.set(String{"weight"}, Layer::point, SharedArray<float>{Array<float>{3, 7, 11}}));
+    (void)take(cloud.add<String>("label", Layer::detail, String{"path"}));
+    Polyline polyline_node;
+    Geometry path;
+    polyline_node.evaluate(cloud, path);
+    require(path.count(Layer::point) == 3 && path.count(Layer::primitive) == 1 &&
+                path.primitive(0).kind == PrimitiveKind::polyline && path.primitive(0).count == 3 &&
+                std::ranges::equal(path.vertex_points(), std::array<std::uint32_t, 3>{0, 1, 2}) &&
+                path.positions()[0] == Vector3{0, 0, 0} && path.positions()[1] == Vector3{2, 1, 3} &&
+                path.positions()[2] == Vector3{4, 2, 6} &&
+                std::ranges::equal(column<float>(path, "weight", Layer::point), std::array{3.f, 7.f, 11.f}) &&
+                column<String>(path, "label", Layer::detail)[0].view() == "path" && cloud.count(Layer::primitive) == 0,
+            "Line to Polyline lost its open AB/BC path, attributes or input isolation.");
+
+    GroupBox group_node;
+    group_node.group = String{"chosen"};
+    group_node.minimum = {0, -1, 2};
+    group_node.maximum = {2, 1, 4};
+    auto group_input = take(Geometry::points({{1, 0, 3}, {0, -1, 2}, {2, 1, 4}, {1, 2, 3}, {1, 0, 5}}));
+    (void)take(group_input.add<bool>("chosen", Layer::point, true));
+    Geometry selected;
+    group_node.evaluate(group_input, selected);
+    require(std::ranges::equal(column<bool>(selected, "chosen", Layer::point),
+                               std::array<bool, 5>{true, true, true, false, false}),
+            "GroupBox must replace its bool column using closed bounds on every axis.");
+}
+
 void record_parameter_abi() {
     Runtime runtime;
     take(register_types(runtime));
@@ -1083,6 +1233,7 @@ int main(int argc, char** argv) {
         copy_to_points_and_publication();
         bvh_queries();
         ray_node();
+        native_constructors();
         record_parameter_abi();
         graph_evaluation();
         source_nodes();

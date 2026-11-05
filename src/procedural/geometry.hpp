@@ -177,6 +177,11 @@ public:
 
     Array<math::Matrix4>& write_instance_transforms();
 
+    // Pure points to one open polyline in point order, sharing point/detail columns.
+    // No primitives or instances are accepted. Zero points pass through; one fails.
+    // Empty vertex/primitive columns expand with type defaults; instance columns stay empty.
+    Result<Geometry> connect_points() const;
+
     // Reverses vertex order and vertex attributes. A reflection passes polygons_only
     // to correct face winding without changing a polyline's direction.
     void reverse_primitives(bool polygons_only = false);

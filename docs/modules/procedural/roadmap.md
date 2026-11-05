@@ -44,6 +44,18 @@ S0 契约静态对齐 → S1 原生拓扑/构造/体积采样/Realize，随后�
 | wrangle.class_expansion | Wrangle 采用代码段加 Run Over 层，编译期展开为真实 class，循环体逐元素执行；支持单向“展开成 class”，不要求反向还原。读不存在的属性报错，不跨层回退；邻居读取只能来自输入。先串行；并行只支持逐元素形式，待任务原语就绪后另接 | 未来 Wrangle 作者入口与编译期展开 | 统一 Source/Runtime class、列绑定与求值器 | 另建脚本对象世界、静默补读列/跨层取值、邻居读取当前输出，或未具备任务原语就并行执行 | 用户已裁决的 S1 之后语言需求，未实现；不并入本次 Runtime S0 |
 | evaluation.host_boundary | 生成器组件挂普通 Entity，点与实例不是 Entity；求值是派生数据重算，输入变化标脏。编辑器在编辑提交后、场景提取前的宿主边界求值；加载/Play 按 Cache 或冻结结果在 Begin 前准备。运行中参数变化走请求队列，在 World::update 后、提取前统一求值。首版同步，超预算后再考虑后台 | 未来编辑提交、加载/Play 与运行时参数请求入口 | 未来生成器宿主、World 与场景提取 | 在遍历/提取中途重入求值、把每个点/实例变 Entity，或尚未确认就当作现行 World 合同 | 总参谋提出，用户未否决；S2/S5 前再确认；未实现 |
 | ui.houdini_reference | 节点界面参考 Houdini，复用统一图数据、Parameters、操作符与编辑历史；不是在 S1 顺带建立节点画布 | 未来图编辑器与操作符 | 用户界面、Control/LLM 与文档历史 | UI 私有图成为第二份权威数据，或把此方向当作当前已有节点界面 | 用户已裁决；S2/P3，未实现 |
+| curve.authored_points | 作者可编辑点数组的曲线节点需要视口绘制交互和数学值数组的属性编解码；涉及 src/editor/fields.hpp:54–59 与 scene.cpp，届时由编辑器负责人实施。S1 的 Polyline 只从纯点输入按点序连开放折线，不为它扩展编解码 | 未来曲线绘制/属性编辑入口与编辑器数学值数组编码器 | 未来曲线节点、图文件与属性解码 | 把点数组压成无类型浮点列表，或在 S1 提前扩展编辑器产品 | S2，未实现 |
+
+### 合同依据：与 Houdini 的显式差异
+
+以下是程序化参谋转达的总参谋 Houdini 22.0.429 `hython` 实测回执；本线未重复运行。它们用于解释设计取舍，不作为本项目验收真值；数学期望仍独立推导。
+
+| 对应合同 | 实测参考与本项目取舍 |
+| --- | --- |
+| 构造绕序与未来互通 | Houdini Box 为 8 点、6 面、24 角，从外侧看顺时针（例如面 0 的点序 1,5,4,0，N 朝 −Z）。本项目保持外侧逆时针、右手定则外法线，实际点/面顺序见[构造合同](README.md#构造拓扑的持久语义)。未来 Houdini 导入/导出必须显式反转绕序，不按数据猜；C 的整体正有向体积检查应拒绝未经转换的顺时针输入，不自动修补 |
+| geometry.attribute_namespace、wrangle.class_expansion | Houdini primitive wrangle 读 `@P` 得面中心，`@ptnum` 是首角的点；写 `@P` 静默丢弃，点不动且无警告。故本项目保留全 Geometry 属性名唯一，跨层只能显式 Promote 或经拓扑数组访问，不按当前 Run Over 层猜测同名读写含义 |
+| 显式跨层、vertex N | Houdini 几何只有 vertex N 时，point wrangle 读一次 `@N` 就平均提升为 point N 并删除 vertex N；写也会静默替换，Box 硬边丢失。本项目读不存在/异层列报错，不隐式 Promote；B 构造的 vertex N 不能被消费者静默提升，转层必须显式操作 |
+| asset.template_instance：不允许局部分叉 | Houdini HDA 实例 Allow Editing 后修改内部，只改该实例；保存定义并 match 后才传播。用户明确不采用此行为：本项目解锁直接编辑共享定义，变体必须另存新资产；冻结另按 freeze.scope_and_history 处理 |
 
 ### 仍需细化的模块合同
 
