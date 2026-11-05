@@ -65,7 +65,8 @@ struct VolumeScatterSettings {
 
 // Closed oriented manifold shells, with positive aggregate signed volume. Fixed grid
 // candidates in cell x/y/z/ordinal order; retains winding >= 0.5, excluding the surface
-// uncertainty band. Serial double compensated solid angles, no parity or mesh repair.
+// uncertainty band. Serial BVH signed crossings, with compensated solid angles only
+// after all eight fixed directions are uncertain; no parity, approximation or mesh repair.
 // Both AABB-intersecting cells and pre-filter candidates are limited to 1,048,576.
 // Outputs P, id (nonunique), sourcecellx/y/z (int32), sourceordinal (uint32).
 Result<Geometry> volume_scatter(const Geometry& surface, const VolumeScatterSettings& settings);

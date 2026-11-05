@@ -1,5 +1,6 @@
 #include "procedural/operations.hpp"
 #include "foundation/result.hpp"
+#include "procedural/bvh.hpp"
 #include "procedural/random.hpp"
 #include "procedural/timing.hpp"
 #include "procedural/triangles.hpp"
@@ -87,10 +88,6 @@ Result<void> validate_shells(const Geometry& surface) {
 
 struct Triangle {
     std::array<Vector3d, 3> points;
-
-    Vector3d normal;
-
-    double tolerance;
 };
 
 Result<std::vector<Triangle>> prepare(const Geometry& surface) {
@@ -105,11 +102,8 @@ Result<std::vector<Triangle>> prepare(const Geometry& surface) {
     triangles.reserve(view->size());
     const auto origin = widen(surface.positions()[surface.vertex_points()[0]]);
     Sum volume;
-    double tolerance = 0;
     for (const auto fan : *view) {
         Triangle t{};
-        if (fan.triangle == 0)
-            tolerance = detail::polygon_scale(surface, surface.primitive(fan.primitive)).tolerance;
         for (std::size_t i = 0; i < 3; ++i)
             t.points[i] = widen(surface.positions()[surface.vertex_points()[fan.corners[i]]]);
         const auto a = t.points[0];
@@ -119,8 +113,6 @@ Result<std::vector<Triangle>> prepare(const Geometry& surface) {
         const double area = math::length(cross);
         if (!area) // A valid polygon may contain forward collinear corners.
             continue;
-        t.normal = cross / area;
-        t.tolerance = tolerance;
         volume.add(math::dot(a - origin, math::cross(b - origin, c - origin)));
         triangles.push_back(t);
     }
@@ -129,19 +121,11 @@ Result<std::vector<Triangle>> prepare(const Geometry& surface) {
     return triangles;
 }
 
-bool inside(std::span<const Triangle> triangles, Vector3 position) {
+// Original fixed polygon/fan-order compensated sum, used only after eight uncertain rays.
+bool winding_inside(std::span<const Triangle> triangles, Vector3 position) {
     const auto q = widen(position);
     Sum angles;
     for (const auto& t : triangles) {
-        // Plane distance is only a broad phase. Expanded edge halfplanes would
-        // incorrectly exclude distant points along a narrow fan's extended tip.
-        if (std::abs(math::dot(q - t.points[0], t.normal)) <= t.tolerance) {
-            const auto uv = detail::closest_on_triangle(q, t.points[0], t.points[1], t.points[2]);
-            const auto closest = t.points[0] + (t.points[1] - t.points[0]) * uv.x + (t.points[2] - t.points[0]) * uv.y;
-            const auto offset = closest - q;
-            if (math::dot(offset, offset) <= t.tolerance * t.tolerance)
-                return false;
-        }
         const auto a = t.points[0] - q;
         const auto b = t.points[1] - q;
         const auto c = t.points[2] - q;
@@ -153,6 +137,34 @@ bool inside(std::span<const Triangle> triangles, Vector3 position) {
     }
     // Do not early-accept a partial sum: later inward shells can cancel it.
     return angles.value >= 2 * std::numbers::pi;
+}
+
+bool inside(const Bvh& bvh, std::span<const Triangle> triangles, Vector3 position) {
+    timing::record(phases::candidate, {});
+    if (bvh.on_surface_band(position))
+        return false;
+    // Fixed binary approximations of sqrt(2), sqrt(3), sqrt(5), widened exactly
+    // for double predicates. Float-representable directions also let public Geometry
+    // construct genuine all-direction degeneracies without a private test switch.
+    constexpr float r2 = 0x1.6a09e6p0f;
+    constexpr float r3 = 0x1.bb67aep0f;
+    constexpr float r5 = 0x1.1e377ap1f;
+    constexpr std::array<Vector3, 8> directions{{{1, r2, r3},
+                                                 {-r2, 1, r5},
+                                                 {r3, -r5, 1},
+                                                 {r5, r3, -1},
+                                                 {-1, -r3, r2},
+                                                 {r2, -1, -r5},
+                                                 {-r3, r5, -r2},
+                                                 {-r5, -r2, -r3}}};
+    for (std::size_t i = 0; i < directions.size(); ++i) {
+        timing::record(phases::attempts[i], {});
+        if (const auto crossings = bvh.signed_crossings(position, directions[i]))
+            return *crossings >= 1;
+        timing::record(phases::retries[i], {});
+    }
+    timing::record(phases::fallback, {});
+    return winding_inside(triangles, position);
 }
 
 }
@@ -210,6 +222,12 @@ Result<Geometry> volume_scatter(const Geometry& surface, const VolumeScatterSett
             return failure("Volume exceeds 1,048,576 candidates before filtering.");
         candidates += counts[i];
     }
+    Bvh bvh;
+    if (candidates) {
+        timing::Scope building{phases::build};
+        ATELIER_TRY_BIND(built, Bvh::build(surface));
+        bvh = std::move(*built);
+    }
     Array<Vector3> positions;
     Array<std::uint32_t> ids;
     Array<std::uint32_t> ordinals;
@@ -232,7 +250,7 @@ Result<Geometry> volume_scatter(const Geometry& surface, const VolumeScatterSett
                                                  (static_cast<double>(xyz[axis]) + unit(hash(id, axis + 1))) * h);
                 if (!math::is_finite(p))
                     return failure("Volume candidate position exceeds float range.");
-                if (!inside(*triangles, p))
+                if (!inside(bvh, *triangles, p))
                     continue;
                 positions.add(p);
                 ids.add(id);

@@ -1187,6 +1187,47 @@ void volume_boundary() {
         // a skinny fan's extended tip must not turn it into a surface point.
         require(retained, "A distant narrow fan or changed first corner erased a strict interior point.");
     }
+    // The small shell's +X face has delta=2^-20. Its bounded-distance predicate
+    // rounds delta+2^-80 to delta and excludes this final float point. A box test
+    // based only on nextafter(max+delta) would cancel to zero and skip that face.
+    constexpr float delta = 0x1p-20f;
+    constexpr Vector3 rounded_boundary{0x1p-80f, .75f, 0};
+    auto small = take(box({1, 1, 1}));
+    {
+        auto& positions = *take(small.write<Vector3>("P", Layer::point));
+        for (std::uint32_t i = 0; i < 8; ++i)
+            positions[i] = {i & 1 ? -delta : -.25f - delta, i & 2 ? 1.f : .5f, i & 4 ? .25f : -.25f};
+    }
+    const Geometry shells[]{small, take(box({4, 4, 4}))};
+    // Independent inverse lowbias32 gives cell(0,0,0)'s random channels 0,3331260,4455323.
+    const auto result =
+        take(volume_scatter(take(Geometry::merge(shells)),
+                            {.density = 1,
+                             .seed = 0xd25ddc3fu,
+                             .origin = {rounded_boundary.x, .75f - 3331260 * 0x1p-24f, -4455323 * 0x1p-24f}}));
+    require(std::ranges::find(result.positions(), rounded_boundary) == result.positions().end(),
+            "Surface-band box pruning changed the bounded-distance rounding policy.");
+    // BC interpolation rounds (1/3, 2/3) asymmetrically: closest.x=-delta+2^-54.
+    // The old double leaf therefore excludes q.x=2^-55, even though q is more
+    // than delta outside the exact vertex AABB. Pruning must cover reconstruction too.
+    const auto edge_prism =
+        take(Geometry::polygons(Array<Vector3>{{-.5f + delta, 0, 1},
+                                               {-delta, 0, 1},
+                                               {-delta, .375f, 1},
+                                               {-.5f + delta, 0, .75f},
+                                               {-delta, 0, .75f},
+                                               {-delta, .375f, .75f}},
+                                Array<std::uint32_t>{0, 1, 2, 3, 5, 4, 0, 3, 4, 1, 1, 4, 5, 2, 2, 5, 3, 0},
+                                Array<std::uint32_t>{0, 3, 6, 10, 14, 18}));
+    const Geometry edge_shells[]{edge_prism, take(box({4, 4, 4}))};
+    constexpr Vector3 reconstructed_boundary{0x1p-55f, .125f, 1};
+    const auto reconstructed = take(
+        volume_scatter(take(Geometry::merge(edge_shells)),
+                       {.density = 1,
+                        .seed = 0xd25ddc3fu,
+                        .origin = {reconstructed_boundary.x, .125f - 3331260 * 0x1p-24f, 1.f - 4455323 * 0x1p-24f}}));
+    require(std::ranges::find(reconstructed.positions(), reconstructed_boundary) == reconstructed.positions().end(),
+            "Surface-band pruning missed closest-point reconstruction rounding.");
 }
 
 void volume_sampling() {
@@ -1340,6 +1381,42 @@ void volume_sampling() {
     check(*evaluator.output(), in_ball);
 }
 
+void volume_degenerate_rays() {
+    // Public float geometry places a box corner on each fixed ray from q=0.
+    // These boxes do not contain q. Adding the outer box changes w(q) from 0 to 1,
+    // independently of how ray degeneracies or the solid-angle fallback are handled.
+    constexpr std::array<Vector3, 8> corners{{{1, 0x1.6a09e6p0f, 0x1.bb67aep0f},
+                                              {-0x1.6a09e6p0f, 1, 0x1.1e377ap1f},
+                                              {0x1.bb67aep0f, -0x1.1e377ap1f, 1},
+                                              {0x1.1e377ap1f, 0x1.bb67aep0f, -1},
+                                              {-1, -0x1.bb67aep0f, 0x1.6a09e6p0f},
+                                              {0x1.6a09e6p0f, -1, -0x1.1e377ap1f},
+                                              {-0x1.bb67aep0f, 0x1.1e377ap1f, -0x1.6a09e6p0f},
+                                              {-0x1.1e377ap1f, -0x1.6a09e6p0f, -0x1.bb67aep0f}}};
+    const VolumeScatterSettings settings{.density = 1,
+                                         .origin = {-5829961 * 0x1p-24f, -3561215 * 0x1p-24f, -6784506 * 0x1p-24f}};
+    std::vector<Geometry> shells;
+    for (const auto corner : corners) {
+        auto small = take(box({0x1p-4f, 0x1p-4f, 0x1p-4f}));
+        for (auto& p : *take(small.write<Vector3>("P", Layer::point)))
+            p += corner + Vector3{0x1p-5f, 0x1p-5f, 0x1p-5f};
+        shells.push_back(std::move(small));
+    }
+    const auto contains_origin = [&](const Geometry& surface) {
+        const auto points = take(volume_scatter(surface, settings));
+        return std::ranges::find(points.positions(), Vector3{}) != points.positions().end();
+    };
+    const auto outer = take(box({8, 8, 8}));
+    const Geometry one_direction[]{outer, shells[0]};
+    require(contains_origin(take(Geometry::merge(one_direction))),
+            "A first-direction corner crossing lost an interior candidate instead of retrying.");
+    require(!contains_origin(take(Geometry::merge(shells))),
+            "All-direction uncertainty retained an exterior candidate.");
+    shells.push_back(outer);
+    require(contains_origin(take(Geometry::merge(shells))),
+            "All-direction uncertainty lost the independently known winding-one candidate.");
+}
+
 void realization_chain() {
     Runtime runtime;
     take(register_types(runtime));
@@ -1478,33 +1555,48 @@ void profile(const char* path) {
 
     // Closed workload, not the open terrain below. Kept out of ordinary acceptance.
     timing::install({phases::all});
-    const auto volume_surface = take(sphere(8, 128, 128));
+    const auto volume_surface = take(sphere(5, 32, 32));
     std::vector<double> volume_times;
+    std::vector<double> build_times;
     std::vector<double> classify_times;
     std::uint32_t retained = 0;
+    timing::FrameRecord volume_record;
     for (int i = -2; i < samples; ++i) {
         timing::Recorder recorder;
         timing::Recorder::Frame frame{recorder};
-        const auto result = take(volume_scatter(volume_surface, {.density = 25, .seed = 3}));
+        const auto result = take(volume_scatter(volume_surface, {.density = 10, .seed = 3}));
         retained = result.count(Layer::point);
         const auto& record = frame.finish();
         require(record.structure_errors == 0, "Volume profile timing catalog is incomplete.");
+        volume_record = record;
         if (i >= 0) {
             volume_times.push_back(std::chrono::duration<double, std::milli>(record.time(phases::volume)).count());
+            build_times.push_back(std::chrono::duration<double, std::milli>(record.time(phases::build)).count());
             classify_times.push_back(std::chrono::duration<double, std::milli>(record.time(phases::classify)).count());
         }
     }
     std::ranges::sort(volume_times);
+    std::ranges::sort(build_times);
     std::ranges::sort(classify_times);
-    report += "  \"volume_input\": \"Sphere(radius=8,segments=128,latitudes=128); origin=0,h=1,density=25,seed=3\",\n";
+    report += "  \"volume_input\": \"Sphere(radius=5,segments=32,latitudes=32); origin=0,h=1,density=10,seed=3\",\n";
     number("volume_samples", samples);
     number("volume_warmups", 2);
-    number("volume_cells", 16 * 16 * 16);
-    number("volume_candidates", 16 * 16 * 16 * 25);
-    number("volume_triangles", 2 * 128 * (128 - 1));
+    number("volume_cells", 10 * 10 * 10);
+    const auto candidates = volume_record.count(phases::candidate);
+    number("volume_candidates", candidates);
+    number("volume_triangles", 2 * 32 * (32 - 1));
     number("volume_retained", retained);
     number("volume_ms", volume_times[volume_times.size() / 2]);
+    number("volume_build_ms", build_times[build_times.size() / 2]);
     number("volume_generate_classify_ms", classify_times[classify_times.size() / 2]);
+    number("volume_classify_ns_per_candidate", classify_times[classify_times.size() / 2] * 1e6 / candidates);
+    for (std::size_t i = 0; i < phases::attempts.size(); ++i) {
+        number(("volume_attempt" + std::to_string(i)).c_str(), volume_record.count(phases::attempts[i]));
+        number(("volume_retry" + std::to_string(i)).c_str(), volume_record.count(phases::retries[i]));
+    }
+    number("volume_retry_rate", static_cast<double>(volume_record.count(phases::retries[0])) / candidates);
+    number("volume_fallbacks", volume_record.count(phases::fallback));
+    number("volume_fallback_rate", static_cast<double>(volume_record.count(phases::fallback)) / candidates);
 
     // One million points: the in-graph scale.
     const auto ground = triangles({{0, 0, 0}, {0, 0, 1000}, {1000, 0, 0}, {1000, 0, 0}, {0, 0, 1000}, {1000, 0, 1000}});
@@ -1657,6 +1749,7 @@ int main(int argc, char** argv) {
         native_constructors();
         volume_boundary();
         volume_sampling();
+        volume_degenerate_rays();
         realization_chain();
         record_parameter_abi();
         graph_evaluation();

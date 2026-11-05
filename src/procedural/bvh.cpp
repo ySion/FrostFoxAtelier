@@ -57,6 +57,99 @@ struct Box {
     }
 };
 
+constexpr double double_infinity = std::numeric_limits<double>::infinity();
+
+double down(double x) {
+    return std::nextafter(x, -double_infinity);
+}
+
+double up(double x) {
+    return std::nextafter(x, double_infinity);
+}
+
+// Each elementary IEEE double operation is rounded once; its two adjacent values
+// enclose the exact result. Composing these intervals includes the initial coordinate
+// subtractions and cancellation, unlike an epsilon scaled by the final determinant.
+// No reassociation/fast-math is allowed. This is a sign certificate, not a world-space band.
+struct Interval {
+    double lo;
+
+    double hi;
+
+    explicit Interval(double x) : lo{x}, hi{x} {}
+
+    Interval(double lower, double upper) : lo{lower}, hi{upper} {}
+
+    [[nodiscard]] int sign() const { return lo > 0 ? 1 : hi < 0 ? -1 : 0; }
+};
+
+Interval operator+(Interval a, Interval b) {
+    return {down(a.lo + b.lo), up(a.hi + b.hi)};
+}
+
+Interval operator-(Interval a, Interval b) {
+    return {down(a.lo - b.hi), up(a.hi - b.lo)};
+}
+
+Interval operator*(Interval a, Interval b) {
+    const double ll = a.lo * b.lo;
+    const double lh = a.lo * b.hi;
+    const double hl = a.hi * b.lo;
+    const double hh = a.hi * b.hi;
+    return {down(std::min(std::min(ll, lh), std::min(hl, hh))), up(std::max(std::max(ll, lh), std::max(hl, hh)))};
+}
+
+Interval operator/(Interval a, double b) {
+    return b > 0 ? Interval{down(a.lo / b), up(a.hi / b)} : Interval{down(a.hi / b), up(a.lo / b)};
+}
+
+using Interval3 = std::array<Interval, 3>;
+
+Interval3 relative(Vector3 vertex, Vector3 point) {
+    return {Interval{vertex.x} - Interval{point.x}, Interval{vertex.y} - Interval{point.y},
+            Interval{vertex.z} - Interval{point.z}};
+}
+
+Interval determinant(const Interval3& a, const Interval3& b, const Interval3& c) {
+    return a[0] * (b[1] * c[2] - b[2] * c[1]) + a[1] * (b[2] * c[0] - b[0] * c[2]) + a[2] * (b[0] * c[1] - b[1] * c[0]);
+}
+
+bool ray_box(Vector3 minimum, Vector3 maximum, Vector3 point, Vector3d direction) {
+    double near = 0;
+    double far = double_infinity;
+    for (std::size_t axis = 0; axis < 3; ++axis) {
+        if (direction[axis] == 0) {
+            if (point[axis] < minimum[axis] || point[axis] > maximum[axis])
+                return false;
+            continue;
+        }
+        const auto a = (Interval{minimum[axis]} - Interval{point[axis]}) / direction[axis];
+        const auto b = (Interval{maximum[axis]} - Interval{point[axis]}) / direction[axis];
+        near = std::max(near, std::min(a.lo, b.lo));
+        far = std::min(far, std::max(a.hi, b.hi));
+    }
+    return near <= far;
+}
+
+bool band_box(Vector3 minimum, Vector3 maximum, double tolerance, Vector3 point) {
+    // Let u=2^-53 and S=tolerance/(8*float epsilon). The nonnegative weights
+    // returned by closest_on_triangle sum to at most 1+8u: at most 16u*S
+    // beyond the vertex box. Edge differences and reconstruction cost <16u*S;
+    // the accepted squared-distance rounding adds <8u*tolerance. Together
+    // these are <34u*S. 32*double epsilon*S = tolerance*2^-27 covers them.
+    // This only widens pruning, never the leaf's original surface tolerance.
+    const double prune_tolerance = up(tolerance + tolerance * 0x1p-27);
+    for (std::size_t axis = 0; axis < 3; ++axis) {
+        // Round the gap outward, not bound +/- tolerance: the latter can cancel
+        // to zero and prune a point whose leaf distance rounds down to tolerance.
+        // Float bounds/point widen exactly; no narrowing back to float occurs.
+        if (down(double{minimum[axis]} - point[axis]) > prune_tolerance ||
+            down(double{point[axis]} - maximum[axis]) > prune_tolerance)
+            return false;
+    }
+    return true;
+}
+
 }
 
 Result<Bvh> Bvh::build(const Geometry& surface) {
@@ -79,6 +172,9 @@ Result<Bvh> Bvh::build(const Geometry& surface) {
     const auto count = static_cast<std::uint32_t>(triangles.size());
     if (!count)
         return result;
+    result.polygon_tolerances_.reserve(surface.count(Layer::primitive));
+    for (std::uint32_t p = 0; p < surface.count(Layer::primitive); ++p)
+        result.polygon_tolerances_.push_back(detail::polygon_scale(surface, surface.primitive(p)).tolerance);
     std::vector<Box> bounds(count);
     std::vector<Vector3> centers(count);
     std::vector<std::uint32_t> order(count);
@@ -101,17 +197,22 @@ Result<Bvh> Bvh::build(const Geometry& surface) {
     std::vector<Task> tasks{{0, 0, count, 0}};
     result.nodes_.reserve(2 * std::size_t{count} / leaf_size + 1);
     result.nodes_.push_back({});
+    result.node_tolerances_.reserve(result.nodes_.capacity());
+    result.node_tolerances_.push_back(0);
     while (!tasks.empty()) {
         const auto [node, begin, end, depth] = tasks.back();
         tasks.pop_back();
         Box box;
         Box spread;
+        double tolerance = 0;
         for (auto i = begin; i < end; ++i) {
             box.add(bounds[order[i]]);
             spread.add(centers[order[i]]);
+            tolerance = std::max(tolerance, result.polygon_tolerances_[triangles[order[i]].primitive]);
         }
         result.nodes_[node].minimum = box.minimum;
         result.nodes_[node].maximum = box.maximum;
+        result.node_tolerances_[node] = tolerance;
         const auto leaf = [&] {
             result.nodes_[node].first = begin;
             result.nodes_[node].count = end - begin;
@@ -174,6 +275,8 @@ Result<Bvh> Bvh::build(const Geometry& surface) {
         result.nodes_[node].count = 0;
         result.nodes_.push_back({});
         result.nodes_.push_back({});
+        result.node_tolerances_.push_back(0);
+        result.node_tolerances_.push_back(0);
         tasks.push_back({child + 1, middle, end, depth + 1});
         tasks.push_back({child, begin, middle, depth + 1});
     }
@@ -321,6 +424,92 @@ std::optional<Hit> Bvh::closest(Vector3 point_float, float max_distance) const n
         stack[top++] = {left_first ? node.first : node.first + 1, left_first ? left : right};
     }
     return hit;
+}
+
+bool Bvh::on_surface_band(Vector3 point) const noexcept {
+    if (nodes_.empty())
+        return false;
+    const auto q = widen(point);
+    std::array<std::uint32_t, stack_size> stack;
+    std::size_t top = 0;
+    stack[top++] = 0;
+    while (top) {
+        const auto index = stack[--top];
+        const auto& node = nodes_[index];
+        if (!band_box(node.minimum, node.maximum, node_tolerances_[index], point))
+            continue;
+        if (node.count) {
+            for (auto i = node.first; i < node.first + node.count; ++i) {
+                const auto& t = triangles_[i];
+                const double tolerance = polygon_tolerances_[t.primitive];
+                if (!band_box(lower(lower(t.a, t.b), t.c), upper(upper(t.a, t.b), t.c), tolerance, point))
+                    continue;
+                const auto a = widen(t.a);
+                const auto b = widen(t.b);
+                const auto c = widen(t.c);
+                const auto cross = math::cross(b - a, c - a);
+                const auto normal = cross / math::length(cross);
+                // Preserve C R2's plane broad phase and bounded-distance leaf predicate.
+                if (std::abs(math::dot(q - a, normal)) > tolerance)
+                    continue;
+                const auto uv = detail::closest_on_triangle(q, a, b, c);
+                const auto closest = a + (b - a) * uv.x + (c - a) * uv.y;
+                const auto offset = closest - q;
+                if (math::dot(offset, offset) <= tolerance * tolerance)
+                    return true;
+            }
+            continue;
+        }
+        stack[top++] = node.first + 1;
+        stack[top++] = node.first;
+    }
+    return false;
+}
+
+std::optional<std::int64_t> Bvh::signed_crossings(Vector3 point, Vector3 direction_float) const noexcept {
+    std::int64_t count = 0;
+    if (nodes_.empty())
+        return count;
+    // Float inputs widen exactly and keep all degree-three products within double range.
+    const auto direction = widen(direction_float);
+    const Interval3 d{Interval{direction.x}, Interval{direction.y}, Interval{direction.z}};
+    std::array<std::uint32_t, stack_size> stack;
+    std::size_t top = 0;
+    stack[top++] = 0;
+    while (top) {
+        const auto& node = nodes_[stack[--top]];
+        if (!ray_box(node.minimum, node.maximum, point, direction))
+            continue;
+        if (node.count) {
+            for (auto i = node.first; i < node.first + node.count; ++i) {
+                const auto& t = triangles_[i];
+                // This per-triangle gate makes uncertainty independent of leaf grouping.
+                if (!ray_box(lower(lower(t.a, t.b), t.c), upper(upper(t.a, t.b), t.c), point, direction))
+                    continue;
+                const auto a = relative(t.a, point);
+                const auto b = relative(t.b, point);
+                const auto c = relative(t.c, point);
+                const int u = determinant(b, c, d).sign();
+                const int v = determinant(c, a, d).sign();
+                const int w = determinant(a, b, d).sign();
+                if (std::min(std::min(u, v), w) < 0 && std::max(std::max(u, v), w) > 0)
+                    continue; // Certified outside, including a parallel line missing the face.
+                if (!u || !v || !w)
+                    return std::nullopt;
+                // u+v+w = normal dot d. Equal nonzero signs certify its sign without
+                // division. det(a,b,c)/(u+v+w) is t; opposite signs mean a rearward hit.
+                const int numerator = determinant(a, b, c).sign();
+                if (!numerator)
+                    return std::nullopt;
+                if (numerator == u)
+                    count += u;
+            }
+            continue;
+        }
+        stack[top++] = node.first + 1;
+        stack[top++] = node.first;
+    }
+    return count;
 }
 
 }

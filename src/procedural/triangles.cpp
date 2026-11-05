@@ -90,6 +90,9 @@ PolygonScale polygon_scale(const Geometry& surface, PrimitiveRange range) noexce
 
 // Ericson, Real-Time Collision Detection 5.1.5: q = a + v (b - a) + w (c - a).
 math::Vector2d closest_on_triangle(math::Vector3d p, math::Vector3d a, math::Vector3d b, math::Vector3d c) {
+    // The band-box bound relies on separately rounded products in va/vb/vc:
+    // subtraction may round their exact difference to zero, but cannot flip its sign.
+#pragma clang fp contract(off) reassociate(off)
     const auto ab = b - a;
     const auto ac = c - a;
     const auto ap = p - a;

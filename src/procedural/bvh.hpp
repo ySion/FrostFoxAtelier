@@ -20,8 +20,8 @@ struct Hit {
 };
 
 // Bounding volume hierarchy over first-corner fans of convex planar polygons, snapshotted at build;
-// zero-area triangles are left out. Triangles count from both sides, and a ray through a
-// shared edge may miss both neighbours.
+// zero-area triangles are left out. The nearest-hit ray counts both sides but may miss
+// both neighbours of a shared edge; signed_crossings instead reports uncertain intersections.
 class Bvh {
 public:
     // Fails for polylines or polygons without a simple, convex, resolvable plane.
@@ -33,6 +33,17 @@ public:
 
     // The nearest surface point within max_distance.
     [[nodiscard]] std::optional<Hit> closest(math::Vector3 point, float max_distance) const noexcept;
+
+    // Whether any polygon's bounded Euclidean surface band contains point. Each polygon
+    // uses its own scale-dependent tolerance, not the nearest polygon's tolerance.
+    [[nodiscard]] bool on_surface_band(math::Vector3 point) const noexcept;
+
+    // Sum sign(normal dot direction) over all strictly positive ray intersections.
+    // Finite point and finite, nonzero direction are required. Nullopt means a relevant
+    // intersection's sign could not be certified with outward-rounded double arithmetic.
+    // For a closed oriented surface outside its band, this sum is its integer winding.
+    [[nodiscard]] std::optional<std::int64_t> signed_crossings(math::Vector3 point,
+                                                               math::Vector3 direction) const noexcept;
 
 private:
     // A leaf holds triangles [first, first + count); an interior node has count 0 and its
@@ -62,6 +73,11 @@ private:
     std::vector<Node> nodes_;
 
     std::vector<Triangle> triangles_;
+
+    // Parallel metadata keeps the existing nearest-hit traversal's node/triangle layout.
+    std::vector<double> node_tolerances_;
+
+    std::vector<double> polygon_tolerances_;
 };
 
 }
