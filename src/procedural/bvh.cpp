@@ -114,7 +114,7 @@ Interval determinant(const Interval3& a, const Interval3& b, const Interval3& c)
     return a[0] * (b[1] * c[2] - b[2] * c[1]) + a[1] * (b[2] * c[0] - b[0] * c[2]) + a[2] * (b[0] * c[1] - b[1] * c[0]);
 }
 
-bool ray_box(Vector3 minimum, Vector3 maximum, Vector3 point, Vector3d direction) {
+bool ray_box_interval(Vector3 minimum, Vector3 maximum, Vector3 point, Vector3d direction) {
     double near = 0;
     double far = double_infinity;
     for (std::size_t axis = 0; axis < 3; ++axis) {
@@ -129,6 +129,50 @@ bool ray_box(Vector3 minimum, Vector3 maximum, Vector3 point, Vector3d direction
         far = std::min(far, std::max(a.hi, b.hi));
     }
     return near <= far;
+}
+
+bool ray_box(Vector3 minimum, Vector3 maximum, Vector3 point, Vector3d direction) {
+#pragma clang fp contract(off) reassociate(off)
+    // Certify the existing Interval box result, not a tighter geometric test:
+    // changing which triangles reach the leaf could change retry/fallback counts.
+    // Let u=2^-53, s=fl(bound-point), t=fl(s/d). Each old endpoint is
+    // (s/d)*(1+eta1)*(1+eps)*(1+eta2), |eta|<=2u from nextafter.
+    // In any IEEE rounding mode |eps|<=2u, so endpoint/t lies between
+    // (1-2u)^3/(1+2u) and (1+2u)^3/(1-2u): error <9u*|t|.
+    // h=16u*|t| is exact; fl(t +/- h) retains at least (14u-32u^2)*|t|,
+    // more than 9u*|t| after rounding. No MXCSR check or change is needed.
+    // Nonzero float-derived s and d give |t| about 2^-277..2^278 and
+    // |h|>=about 2^-326: no double subnormals or overflow. DAZ conversion
+    // of input floats is shared with the old path; zero s uses that path.
+    double near_lo = 0;
+    double near_hi = 0;
+    double far_lo = double_infinity;
+    double far_hi = double_infinity;
+    for (std::size_t axis = 0; axis < 3; ++axis) {
+        if (direction[axis] == 0) {
+            if (point[axis] < minimum[axis] || point[axis] > maximum[axis])
+                return false;
+            continue;
+        }
+        const double a = double{minimum[axis]} - point[axis];
+        const double b = double{maximum[axis]} - point[axis];
+        if (a == 0 || b == 0)
+            return ray_box_interval(minimum, maximum, point, direction);
+        const double ta = a / direction[axis];
+        const double tb = b / direction[axis];
+        const double ha = std::abs(ta) * 0x1p-49;
+        const double hb = std::abs(tb) * 0x1p-49;
+        near_lo = std::max(near_lo, std::min(ta - ha, tb - hb));
+        near_hi = std::max(near_hi, std::min(ta + ha, tb + hb));
+        far_lo = std::min(far_lo, std::max(ta - ha, tb - hb));
+        far_hi = std::min(far_hi, std::max(ta + ha, tb + hb));
+    }
+    // Monotone min/max enclose the old near/far; only decide when separated.
+    if (near_lo > far_hi)
+        return false;
+    if (near_hi <= far_lo)
+        return true;
+    return ray_box_interval(minimum, maximum, point, direction);
 }
 
 bool band_box(Vector3 minimum, Vector3 maximum, double tolerance, Vector3 point) {
