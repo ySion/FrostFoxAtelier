@@ -32,9 +32,10 @@ ui Card(in Text title, in TextEditBinding edit) {
         }
     }
 }
-ui Board(in bool visible, in Items<Card> rows) {
+ui Board(in bool visible, in Items<Card> rows, in Key group) {
     Column root {
         Text marker { text: "Version one"; height: 23; }
+        ChoiceButton choice { text: "Choice"; selection_group: input.group; }
         Repeat entries { items: input.rows; mounted: input.visible; }
     }
 }
@@ -48,6 +49,8 @@ ui Board(in bool visible, in Items<Card> rows) {
     std::vector<language::Item> rows{{1001, {std::wstring{L"A"}, language::TextEditBinding{6001, L"one"}}},
                                      {1002, {std::wstring{L"B"}, language::TextEditBinding{6002, L"two"}}}};
     bool visible = true;
+    ui::ControlKey group = 9001;
+    const std::array aliases{language::KeyBinding{"root", 9001}};
     std::vector<ui::Control> controls;
     std::vector<ui::Action> actions;
     const auto route = [&](const ui::Reply& reply) {
@@ -59,22 +62,22 @@ ui Board(in bool visible, in Items<Card> rows) {
             }
     };
     const auto inputs = [&] {
-        return std::array<language::InputValue, 2>{
-            visible, language::ItemList{std::make_shared<const std::vector<language::Item>>(rows)}};
+        return std::array<language::InputValue, 3>{
+            visible, language::ItemList{std::make_shared<const std::vector<language::Item>>(rows)}, group};
     };
     const auto draw = [&] {
         controls.clear();
-        const auto appended = live.append("Board", 0, {}, inputs(), controls);
+        const auto appended = live.append("Board", 0, aliases, inputs(), controls);
         if (live.candidate_failed()) {
             live.reject_controls(std::string(live.diagnostic()));
             controls.clear();
-            take(live.append("Board", 0, {}, inputs(), controls));
+            take(live.append("Board", 0, aliases, inputs(), controls));
         } else if (!appended)
             throw std::runtime_error(appended.error().message);
         auto submitted = surface.set_controls(controls);
         if (!submitted && live.reject_controls("Session rejected candidate topology")) {
             controls.clear();
-            take(live.append("Board", 0, {}, inputs(), controls));
+            take(live.append("Board", 0, aliases, inputs(), controls));
             submitted = surface.set_controls(controls);
         }
         require(submitted.has_value(), "Composition descriptors failed.");
@@ -110,6 +113,17 @@ ui Board(in bool visible, in Items<Card> rows) {
     require(toggle(1001) == first_toggle && surface.presented()->find(1001)->incarnation == incarnation &&
                 !surface.presented()->find(6001),
             "Repeat reorder changed identity or local state.");
+    const auto accepted = controls;
+    group = 0;
+    controls.clear();
+    const auto rejected = live.append("Board", 0, aliases, inputs(), controls);
+    require(!rejected && rejected.error().code == ErrorCode::invalid_definition && controls == accepted,
+            "Invalid selection group did not report failure while preserving the composed tree.");
+    group = 9001;
+    draw();
+    require(live.diagnostic().empty() && controls == accepted && toggle(1001) == first_toggle &&
+                surface.presented()->find(1001)->incarnation == incarnation,
+            "Corrected selection group did not recover the retained scopes and local state.");
     click(6002);
     route(surface.input({.kind = ui::EventKind::key_down, .key = ui::Key::a, .control = true}));
     route(surface.input({.kind = ui::EventKind::text, .data = std::wstring{L"draft 中文"}}));
@@ -200,7 +214,7 @@ ui Board(in bool visible, in Items<Card> rows) {
     const auto valid_controls = controls;
     rows.push_back(rows.front());
     controls.clear();
-    static_cast<void>(live.append("Board", 0, {}, inputs(), controls));
+    static_cast<void>(live.append("Board", 0, aliases, inputs(), controls));
     require(std::ranges::equal(controls, valid_controls), "Duplicate item identities corrupted the published view.");
     rows.pop_back();
     draw();

@@ -24,16 +24,16 @@ auto failure(std::string message) {
     return std::unexpected(Error{ErrorCode::invalid_definition, std::move(message)});
 }
 
-std::wstring wide(const String& value) {
+Result<std::wstring> wide(const String& value) noexcept {
     const auto text = value.view();
     if (text.empty())
         return {};
     if (text.size() > 4096 * 4)
-        throw std::runtime_error("UI text exceeds the control limit.");
+        return failure("UI text exceeds the control limit.");
     const auto count =
         MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()), nullptr, 0);
     if (!count || count > 4096)
-        throw std::runtime_error("Invalid or excessive UI text.");
+        return failure("Invalid or excessive UI text.");
     std::wstring result(static_cast<std::size_t>(count), L'\0');
     MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()), result.data(),
                         count);
@@ -391,15 +391,16 @@ struct Context {
         }
     }
 
-    void write_number(std::uint32_t index, double value) {
+    Result<void> write_number(std::uint32_t index, double value) noexcept {
         auto& d = data();
         if ((!d.initializing && !d.handling_event) || !std::isfinite(value))
-            throw std::runtime_error("Invalid component state write.");
+            return failure("Invalid component state write.");
         auto& target = std::get<double>(d.states.at(index));
         if (target != value) {
             target = value;
             d.invalidate(d.inputs.size() + index);
         }
+        return {};
     }
 
     bool event_bool() const {
@@ -467,7 +468,7 @@ struct Context {
         return node;
     }
 
-    static void text(ui::Control& node, std::uint32_t property, std::wstring value) {
+    static Result<void> text(ui::Control& node, std::uint32_t property, std::wstring value) noexcept {
         if (static_cast<Property>(property) == Property::text ||
             static_cast<Property>(property) == Property::empty_text)
             node.text = std::move(value);
@@ -477,7 +478,7 @@ struct Context {
                                 : kind == Property::tooltip_title ? &ui::Tooltip::title
                                                                   : &ui::Tooltip::identity;
             if (node.tooltip && node.tooltip.get()->*member == value)
-                return;
+                return {};
             auto tooltip = node.tooltip ? *node.tooltip : ui::Tooltip{};
             tooltip.*member = std::move(value);
             node.tooltip = tooltip.title.empty() && tooltip.identity.empty() && tooltip.description.empty()
@@ -491,7 +492,7 @@ struct Context {
             else if (value == L"radio")
                 node.menu_behavior = ui::MenuBehavior::radio;
             else
-                throw std::runtime_error("Menu behavior must be command, checkbox or radio.");
+                return failure("Menu behavior must be command, checkbox or radio.");
         } else if (static_cast<Property>(property) == Property::view) {
             if (value == L"details")
                 node.table_layout.view = ui::TableView::details;
@@ -500,12 +501,12 @@ struct Context {
             else if (value == L"tiles")
                 node.table_layout.view = ui::TableView::tiles;
             else
-                throw std::runtime_error("Table view must be details, list or tiles.");
+                return failure("Table view must be details, list or tiles.");
         } else {
             if (value.size() > 128 ||
                 value.find_first_not_of(L"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_- ") !=
                     value.npos)
-                throw std::runtime_error("Invalid UI style classes.");
+                return failure("Invalid UI style classes.");
             const std::string names(value.begin(), value.end());
             std::vector<std::string> classes;
             std::size_t begin{};
@@ -521,18 +522,20 @@ struct Context {
             }
             node.classes = std::move(classes);
         }
+        return {};
     }
 
-    void set_text(std::uint32_t slot, std::uint32_t property, const String& value) {
-        text(target(slot).control, property, wide(value));
+    Result<void> set_text(std::uint32_t slot, std::uint32_t property, const String& value) noexcept {
+        ATELIER_TRY_BIND(converted, wide(value));
+        return text(target(slot).control, property, std::move(*converted));
     }
 
-    void set_text_reference(std::uint32_t slot, std::uint32_t property, TextReference reference) {
-        text(target(slot).control, property, std::get<std::wstring>(data().inputs.at(reference.slot)));
+    Result<void> set_text_reference(std::uint32_t slot, std::uint32_t property, TextReference reference) noexcept {
+        return text(target(slot).control, property, std::get<std::wstring>(data().inputs.at(reference.slot)));
     }
 
-    void set_text_from_edit(std::uint32_t slot, std::uint32_t property, TextEditReference reference) {
-        text(target(slot).control, property, std::get<TextEditBinding>(data().inputs.at(reference.slot)).text);
+    Result<void> set_text_from_edit(std::uint32_t slot, std::uint32_t property, TextEditReference reference) noexcept {
+        return text(target(slot).control, property, std::get<TextEditBinding>(data().inputs.at(reference.slot)).text);
     }
 
     void set_text_edit(std::uint32_t slot, std::uint32_t, TextEditReference reference) {
@@ -563,11 +566,12 @@ struct Context {
         target(slot).control.context_target = std::get<TextEditBinding>(data().inputs.at(reference.slot)).key;
     }
 
-    void set_selection_group(std::uint32_t slot, std::uint32_t, KeyReference reference) {
+    Result<void> set_selection_group(std::uint32_t slot, std::uint32_t, KeyReference reference) noexcept {
         const auto group = key(reference);
         if (!group)
-            throw std::runtime_error("ChoiceButton requires a nonzero selection group.");
+            return failure("ChoiceButton requires a nonzero selection group.");
         target(slot).control.selection_group = group;
+        return {};
     }
 
     void set_items(std::uint32_t slot, std::uint32_t, ItemsReference reference) {
@@ -575,24 +579,24 @@ struct Context {
         target(slot).items = std::get<ItemList>(d.inputs.at(reference.slot));
     }
 
-    void set_number(std::uint32_t slot, std::uint32_t property, double value) {
+    Result<void> set_number(std::uint32_t slot, std::uint32_t property, double value) noexcept {
         const auto p = static_cast<Property>(property);
         if (p == Property::tree_rows) {
             if (!(value >= 0 && value <= ui::maximum_tree_rows) || std::floor(value) != value)
-                throw std::runtime_error("Tree rows require a count within the supported range.");
+                return failure("Tree rows require a count within the supported range.");
             target(slot).control.tree_row_count = static_cast<std::uint32_t>(value);
-            return;
+            return {};
         }
         const bool signed_value = p == Property::offset_x || p == Property::offset_y;
         if (!std::isfinite(value) || value < (signed_value ? -32768 : 0) || value > 32768)
-            throw std::runtime_error("UI layout value is outside its supported range.");
+            return failure("UI layout value is outside its supported range.");
         auto& state = target(slot);
         auto& node = state.control;
         if (static_cast<Property>(property) == Property::icon) {
             if (std::floor(value) != value || value > static_cast<double>(ui::last_control_icon))
-                throw std::runtime_error("Invalid UI icon.");
+                return failure("Invalid UI icon.");
             node.icon = static_cast<ui::ControlIcon>(static_cast<unsigned>(value));
-            return;
+            return {};
         }
         auto& layout = node.layout;
         const auto scalar = static_cast<float>(value);
@@ -625,7 +629,7 @@ struct Context {
         case Property::green:
         case Property::blue: {
             if (value > 1)
-                throw std::runtime_error("Color channels require a value in [0, 1].");
+                return failure("Color channels require a value in [0, 1].");
             auto color = node.style.background.value_or(ui::Color{0, 0, 0, 1});
             if (p == Property::red)
                 color.r = scalar;
@@ -697,8 +701,9 @@ struct Context {
             layout.padding.bottom = scalar;
             break;
         default:
-            throw std::runtime_error("Invalid numeric UI property.");
+            return failure("Invalid numeric UI property.");
         }
+        return {};
     }
 
     void set_bool(std::uint32_t slot, std::uint32_t property, bool value) {
@@ -813,8 +818,10 @@ struct Context {
 
     void set_argument_number(std::uint32_t slot, std::uint32_t index, double value) { argument(slot, index, value); }
 
-    void set_argument_text(std::uint32_t slot, std::uint32_t index, const String& value) {
-        argument(slot, index, wide(value));
+    Result<void> set_argument_text(std::uint32_t slot, std::uint32_t index, const String& value) noexcept {
+        ATELIER_TRY_BIND(converted, wide(value));
+        argument(slot, index, std::move(*converted));
+        return {};
     }
 
     void set_argument_key(std::uint32_t slot, std::uint32_t index, KeyReference value) {

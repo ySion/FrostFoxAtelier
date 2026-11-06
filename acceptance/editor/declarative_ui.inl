@@ -57,7 +57,14 @@ ui Loop() {
     Column body {
         Foldout run {
             text: "Run";
-            on activate { for (state.count = 0.0d; state.count < 3.0d; state.count = increment(state.count)) {} }
+            on activate {
+                if (event.checked) {
+                    for (state.count = 0.0d; state.count < 3.0d; state.count = increment(state.count)) {}
+                } else {
+                    state.count = 9.0d;
+                    state.count = (state.count - 9.0d) / (state.count - 9.0d);
+                }
+            }
         }
         Text current { text: "Count"; width: 128.0d + state.count; }
     }
@@ -74,7 +81,8 @@ ui Loop() {
     show_loop();
     const auto run = std::ranges::find_if(loop->controls(),
                                           [](const auto& control) { return control.kind == ui::ControlKind::foldout; });
-    const auto bounds = surface.presented()->find(run->key)->bounds;
+    const auto run_key = run->key;
+    const auto bounds = surface.presented()->find(run_key)->bounds;
     const auto dispatch = [&](ui::Reply reply) {
         for (const auto& effect : reply.effects)
             if (const auto* action = std::get_if<ui::Action>(&effect))
@@ -85,6 +93,15 @@ ui Loop() {
     show_loop();
     require(loop->controls().back().layout.width.value == 131,
             "A Source for-step state assignment or its nested call was lowered incorrectly.");
+    const auto rejected = loop->event({ui::ActionKind::activate, run_key, false});
+    require(!rejected && rejected.error().code == ErrorCode::invalid_definition,
+            "Non-finite Source state did not return a recoverable event error.");
+    show_loop();
+    require(loop->controls().back().layout.width.value == 131,
+            "Rejected event did not roll back its earlier finite state write.");
+    require(take(loop->event({ui::ActionKind::activate, run_key, true})), "Corrected state event was not handled.");
+    show_loop();
+    require(loop->controls().back().layout.width.value == 131, "Corrected event failed after state rollback.");
     require(surface.set_controls({}).has_value(), "Loop component unmount failed.");
 }
 

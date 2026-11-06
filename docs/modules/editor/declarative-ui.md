@@ -63,6 +63,8 @@ Dev 和 Release 开发工作树的构建均优先读取 `assets/editor.ui.source
 
 每份已发布分派经 `Lease::bind<void, uint32_t>()` 核验一次并持有定型代码句柄；复用 Program 时同时复用该句柄，实例准备复制固定版本持有者，不在事件热路径重复绑定。初始化、属性求值和事件都直接传递 operation，不再包装 Scalar 数组。绑定失败在组件准备阶段返回并保留源码错误映射；实例替换、状态回滚及控件提交仍沿原事务，不借定型入口绕过 Runtime Context、执行准入或清理。
 
+UI 原生 Context 的可恢复拒绝通过 `Result` 返回，不向 `noexcept` 原生 thunk 抛异常：包括文本转换、样式类、表格视图、菜单行为、数值属性、非有限 state 写入及零 selection group。失败保留源码位置并沿原事务恢复输入、局部状态和已接受控件；修正后可继续更新或处理事件。内存耗尽仍遵循基础层 fatal 合同，不伪装成绑定错误。
+
 ```text
 ui Query(in TextEditBinding edit) {
     Row row {

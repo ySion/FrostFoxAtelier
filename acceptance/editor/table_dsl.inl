@@ -81,10 +81,16 @@ ui Results(in TableBinding model, in Text view, in double width) {
     present();
     const auto accepted = std::vector<ui::Control>(instance->controls().begin(), instance->controls().end());
     inputs[1] = std::wstring{L"unknown"};
-    static_cast<void>(instance->update(inputs));
+    const auto rejected = instance->update(inputs);
+    require(!rejected && rejected.error().code == ErrorCode::invalid_definition,
+            "Invalid view did not return a recoverable binding error.");
     require(std::ranges::equal(instance->controls(), accepted), "Invalid view replaced accepted controls.");
     inputs[1] = std::wstring{L"tiles"};
     present();
+    require(instance->controls().front().table_layout.view == ui::TableView::tiles &&
+                surface.presented()->find_table(41)->data == snapshot &&
+                surface.presented()->find_table(41)->selection.row == 65,
+            "Corrected view did not recover the retained Table model and selection.");
     auto empty = std::make_shared<ui::TableData>();
     empty->columns = snapshot->columns;
     inputs[0] = language::TableBinding{empty, {}};
