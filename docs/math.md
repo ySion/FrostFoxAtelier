@@ -44,6 +44,8 @@
 - World 对缩放、有效变换和生命周期的限制由 World 维护，通用数学值本身不禁止负缩放或非有限计算结果。
 - 源码使用严格浮点语义和普通 LLVM O2 优化，不开启全面 fast-math。结果允许 IEEE 无穷和 NaN；除[超越函数](#超越函数)在支持 FMA3 的主机之间逐位相同外，不承诺跨 CPU、平台或编译器版本逐位一致。精度策略与 SIMD 使用不能替代确定性协议。
 
+原生 C++ 保持 Windows x64 的 SSE2 编译基线，不启用 AVX2/FMA 或 fast-math。`atelier_math` 通过 INTERFACE 编译选项 `/clang:-ffp-contract=off`（clang-cl 透传给 Clang 的 `-ffp-contract=off`），使直接及传递依赖它的自有目标在整个翻译单元内禁止隐式乘加融合，而不只约束头文件中的函数。这不改变舍入模式、FTZ/DAZ 或显式 FMA，也不向没有此依赖的第三方目标传播；BVH 的局部严格浮点 pragma 仍保留。编译选项变化与头文件拆分分别验证，不能由代数等价推定旧输出逐位不变。此 C++ 选项不改变 JIT 生成 IR 的规则或其 FMA3 主机要求。
+
 `float` 对应 `core.f32`，`double` 对应 `core.f64`。无后缀小数/指数仍是 float，例如 `1.0`、`1e2`；`1f`、`1.0F` 显式表示 float，`1d`、`1.0D` 表示 double。浮点字面量必须有限且在转换范围内。已定型 float/double 不隐式混合；`float(value)` 与 `double(value)` 显式转换 float、double、int 或 uint，窄化由调用者选择。
 
 ## 源码运算

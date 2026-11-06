@@ -65,6 +65,8 @@ target_link_libraries(atelier_foundation_headers INTERFACE unordered_dense::unor
 
 add_library(atelier_math INTERFACE)
 target_include_directories(atelier_math INTERFACE modules/core/math/include)
+# Numerical consumers rely on separate multiply/add rounding (notably Volume/BVH bounds).
+target_compile_options(atelier_math INTERFACE /clang:-ffp-contract=off)
 
 add_library(atelier_platform INTERFACE)
 target_include_directories(atelier_platform INTERFACE modules/core/platform/include)
