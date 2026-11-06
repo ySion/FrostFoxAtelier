@@ -1,4 +1,5 @@
 #include "procedural/nodes.hpp"
+#include "foundation/result.hpp"
 #include "procedural/bvh.hpp"
 #include "procedural/operations.hpp"
 #include "procedural/random.hpp"
@@ -6,133 +7,158 @@
 
 #include <cmath>
 #include <limits>
-#include <stdexcept>
 
 namespace atelier::procedural {
 namespace {
-// Node failures leave evaluate as exceptions; Runtime reports them as invocation_failed.
+// Preserve the node invocation error category without using exceptions as transport.
 template <class T>
-T take(Result<T> result) {
+Result<T> invocation_result(Result<T> result) noexcept {
     if (!result)
-        throw std::runtime_error(result.error().message);
-    return std::move(*result);
-}
-
-void take(Result<void> result) {
-    if (!result)
-        throw std::runtime_error(result.error().message);
+        result.error().code = ErrorCode::invocation_failed;
+    return result;
 }
 }
 
-void MeshImport::evaluate(const Context& context, Geometry& output) const {
-    output = import_mesh(*take(context.mesh(mesh)).mesh);
+Result<void> MeshImport::evaluate(const Context& context, Geometry& output) const noexcept {
+    ATELIER_TRY_BIND(reference, invocation_result(context.mesh(mesh)));
+    output = import_mesh(*reference->mesh);
+    return {};
 }
 
-void Grid::evaluate(Geometry& output) const {
-    output = take(grid(size, rows, columns));
+Result<void> Grid::evaluate(Geometry& output) const noexcept {
+    ATELIER_TRY_BIND(result, invocation_result(grid(size, rows, columns)));
+    output = std::move(*result);
+    return {};
 }
 
-void Line::evaluate(Geometry& output) const {
-    output = take(line(start, end, count));
+Result<void> Line::evaluate(Geometry& output) const noexcept {
+    ATELIER_TRY_BIND(result, invocation_result(line(start, end, count)));
+    output = std::move(*result);
+    return {};
 }
 
-void Box::evaluate(Geometry& output) const {
-    output = take(box(size));
+Result<void> Box::evaluate(Geometry& output) const noexcept {
+    ATELIER_TRY_BIND(result, invocation_result(box(size)));
+    output = std::move(*result);
+    return {};
 }
 
-void Sphere::evaluate(Geometry& output) const {
-    output = take(sphere(radius, segments, latitudes));
+Result<void> Sphere::evaluate(Geometry& output) const noexcept {
+    ATELIER_TRY_BIND(result, invocation_result(sphere(radius, segments, latitudes)));
+    output = std::move(*result);
+    return {};
 }
 
-void Tube::evaluate(Geometry& output) const {
-    output = take(tube(radius, height, segments));
+Result<void> Tube::evaluate(Geometry& output) const noexcept {
+    ATELIER_TRY_BIND(result, invocation_result(tube(radius, height, segments)));
+    output = std::move(*result);
+    return {};
 }
 
-void Polyline::evaluate(const Geometry& points, Geometry& output) const {
-    output = take(points.connect_points());
+Result<void> Polyline::evaluate(const Geometry& points, Geometry& output) const noexcept {
+    ATELIER_TRY_BIND(result, invocation_result(points.connect_points()));
+    output = std::move(*result);
+    return {};
 }
 
-void GroupBox::evaluate(const Geometry& input, Geometry& output) const {
+Result<void> GroupBox::evaluate(const Geometry& input, Geometry& output) const noexcept {
     output = input;
-    take(group_box(output, group, minimum, maximum));
+    return invocation_result(group_box(output, group, minimum, maximum));
 }
 
-void Scatter::evaluate(const Context& context, const Geometry& surface, Geometry& points) const {
-    points =
-        take(scatter(surface, {.density = density, .seed = hash(context.seed(), seed), .min_distance = min_distance}));
+Result<void> Scatter::evaluate(const Context& context, const Geometry& surface, Geometry& points) const noexcept {
+    ATELIER_TRY_BIND(
+        result, invocation_result(scatter(
+                    surface, {.density = density, .seed = hash(context.seed(), seed), .min_distance = min_distance})));
+    points = std::move(*result);
+    return {};
 }
 
-void VolumeScatter::evaluate(const Context& context, const Geometry& surface, Geometry& points) const {
-    points = take(volume_scatter(
+Result<void> VolumeScatter::evaluate(const Context& context, const Geometry& surface, Geometry& points) const noexcept {
+    auto result = invocation_result(volume_scatter(
         surface, {.density = density, .seed = hash(context.seed(), seed), .origin = origin, .cell_size = cell_size}));
+    if (!result)
+        return std::unexpected(std::move(result).error());
+    points = std::move(*result);
+    return {};
 }
 
-void Transform::evaluate(const Geometry& input, Geometry& output) const {
+Result<void> Transform::evaluate(const Geometry& input, Geometry& output) const noexcept {
     output = input;
-    take(transform(output, translate, rotate, scale));
+    return invocation_result(transform(output, translate, rotate, scale));
 }
 
-void Promote::evaluate(const Geometry& input, Geometry& output) const {
+Result<void> Promote::evaluate(const Geometry& input, Geometry& output) const noexcept {
     output = input;
-    take(promote(output, name, to, reduce));
+    return invocation_result(promote(output, name, to, reduce));
 }
 
-void Remove::evaluate(const Geometry& input, Geometry& output) const {
-    output = take(input.remove_flagged(layer, flag));
+Result<void> Remove::evaluate(const Geometry& input, Geometry& output) const noexcept {
+    ATELIER_TRY_BIND(result, invocation_result(input.remove_flagged(layer, flag)));
+    output = std::move(*result);
+    return {};
 }
 
-void Merge::evaluate(const Geometries& inputs, Geometry& output) const {
-    output = take(Geometry::merge({inputs.data(), inputs.size()}));
+Result<void> Merge::evaluate(const Geometries& inputs, Geometry& output) const noexcept {
+    ATELIER_TRY_BIND(result, invocation_result(Geometry::merge({inputs.data(), inputs.size()})));
+    output = std::move(*result);
+    return {};
 }
 
-void Ray::evaluate(const Geometry& points, const Geometry& surface, Geometry& output) const {
+Result<void> Ray::evaluate(const Geometry& points, const Geometry& surface, Geometry& output) const noexcept {
     if (!std::isfinite(max_distance) || max_distance < 0)
-        throw std::runtime_error("Ray max distance must be finite and non-negative.");
+        return std::unexpected(
+            Error{ErrorCode::invocation_failed, "Ray max distance must be finite and non-negative."});
     const auto unit = math::try_normalize(direction);
     if (mode == RayMode::project && !unit)
-        throw std::runtime_error("Ray direction must be finite and nonzero.");
+        return std::unexpected(Error{ErrorCode::invocation_failed, "Ray direction must be finite and nonzero."});
     if (surface.count(Layer::primitive) > std::uint32_t(std::numeric_limits<std::int32_t>::max()))
-        throw std::runtime_error("Ray surfaces have fewer than 2^31 primitives.");
+        return std::unexpected(Error{ErrorCode::invocation_failed, "Ray surfaces have fewer than 2^31 primitives."});
     for (std::uint32_t p = 0; p < surface.count(Layer::primitive); ++p)
         if (surface.primitive(p).count - 2 > std::uint32_t(std::numeric_limits<std::int32_t>::max()))
-            throw std::runtime_error("Ray polygons have fewer than 2^31 fan triangles.");
-    const auto bvh = take(Bvh::build(surface));
+            return std::unexpected(
+                Error{ErrorCode::invocation_failed, "Ray polygons have fewer than 2^31 fan triangles."});
+    ATELIER_TRY_BIND(bvh, invocation_result(Bvh::build(surface)));
     output = points;
     const auto count = output.count(Layer::point);
     // Finish adding columns before borrowing them: growing attributes moves their handles.
-    take(output.add<std::int32_t>("hitprim", Layer::point));
-    take(output.add<std::int32_t>("hittri", Layer::point));
-    take(output.add<math::Vector2>("hitprimuv", Layer::point));
-    take(output.add<float>("hitdist", Layer::point));
+    ATELIER_TRY(invocation_result(output.add<std::int32_t>("hitprim", Layer::point)));
+    ATELIER_TRY(invocation_result(output.add<std::int32_t>("hittri", Layer::point)));
+    ATELIER_TRY(invocation_result(output.add<math::Vector2>("hitprimuv", Layer::point)));
+    ATELIER_TRY(invocation_result(output.add<float>("hitdist", Layer::point)));
     if (normal)
-        take(output.add<math::Vector3>("N", Layer::point));
-    auto& positions = *take(output.write<math::Vector3>("P", Layer::point));
-    auto& primitives = *take(output.write<std::int32_t>("hitprim", Layer::point));
-    auto& subtriangles = *take(output.write<std::int32_t>("hittri", Layer::point));
-    auto& uvs = *take(output.write<math::Vector2>("hitprimuv", Layer::point));
-    auto& distances = *take(output.write<float>("hitdist", Layer::point));
-    auto* normals = normal ? take(output.write<math::Vector3>("N", Layer::point)) : nullptr;
+        ATELIER_TRY(invocation_result(output.add<math::Vector3>("N", Layer::point)));
+    ATELIER_TRY_BIND(positions, invocation_result(output.write<math::Vector3>("P", Layer::point)));
+    ATELIER_TRY_BIND(primitives, invocation_result(output.write<std::int32_t>("hitprim", Layer::point)));
+    ATELIER_TRY_BIND(subtriangles, invocation_result(output.write<std::int32_t>("hittri", Layer::point)));
+    ATELIER_TRY_BIND(uvs, invocation_result(output.write<math::Vector2>("hitprimuv", Layer::point)));
+    ATELIER_TRY_BIND(distances, invocation_result(output.write<float>("hitdist", Layer::point)));
+    Array<math::Vector3>* normals{};
+    if (normal) {
+        ATELIER_TRY_BIND(writable, invocation_result(output.write<math::Vector3>("N", Layer::point)));
+        normals = *writable;
+    }
     Array<bool> missed;
     missed.resize(remove_misses ? count : 0);
     const auto& corners = surface.positions();
     const auto vertices = surface.vertex_points();
     for (std::uint32_t i = 0; i < count; ++i) {
-        const auto hit = mode == RayMode::project ? bvh.ray(positions[i], *unit, max_distance)
-                                                  : bvh.closest(positions[i], max_distance);
+        const auto hit = mode == RayMode::project ? bvh->ray((**positions)[i], *unit, max_distance)
+                                                  : bvh->closest((**positions)[i], max_distance);
         if (!hit) {
-            primitives[i] = -1;
-            subtriangles[i] = -1;
-            uvs[i] = {};
-            distances[i] = -1;
+            (**primitives)[i] = -1;
+            (**subtriangles)[i] = -1;
+            (**uvs)[i] = {};
+            (**distances)[i] = -1;
             if (remove_misses)
                 missed[i] = true;
             continue;
         }
-        positions[i] = hit->position;
-        primitives[i] = static_cast<std::int32_t>(hit->primitive);
-        subtriangles[i] = static_cast<std::int32_t>(hit->triangle);
-        uvs[i] = hit->uv;
-        distances[i] = hit->distance;
+        (**positions)[i] = hit->position;
+        (**primitives)[i] = static_cast<std::int32_t>(hit->primitive);
+        (**subtriangles)[i] = static_cast<std::int32_t>(hit->triangle);
+        (**uvs)[i] = hit->uv;
+        (**distances)[i] = hit->distance;
         if (normals) {
             const auto indices = detail::fan_corners(surface.primitive(hit->primitive), hit->triangle);
             const auto a = corners[vertices[indices[0]]];
@@ -142,21 +168,31 @@ void Ray::evaluate(const Geometry& points, const Geometry& surface, Geometry& ou
                 (*normals)[i] = *n;
         }
     }
-    if (remove_misses)
-        output = take(output.remove_flagged(Layer::point, std::span<const bool>{missed.data(), missed.size()}));
+    if (remove_misses) {
+        ATELIER_TRY_BIND(result, invocation_result(output.remove_flagged(
+                                     Layer::point, std::span<const bool>{missed.data(), missed.size()})));
+        output = std::move(*result);
+    }
+    return {};
 }
 
-void CopyToPoints::evaluate(const Context& context, const Geometry& points, Geometry& output) const {
+Result<void> CopyToPoints::evaluate(const Context& context, const Geometry& points, Geometry& output) const noexcept {
     std::vector<Reference> references;
     references.reserve(meshes.size());
-    for (const auto& key : meshes)
-        references.push_back(take(context.mesh(key)));
-    output = take(copy_to_points(points, references, variant));
+    for (const auto& key : meshes) {
+        ATELIER_TRY_BIND(reference, invocation_result(context.mesh(key)));
+        references.push_back(std::move(*reference));
+    }
+    ATELIER_TRY_BIND(result, invocation_result(copy_to_points(points, references, variant)));
+    output = std::move(*result);
+    return {};
 }
 
-void Realize::evaluate(const Geometries& sources, const Geometry& points, Geometry& output) const {
-    output = take(realize({sources.data(), sources.size()}, points, group, variant,
-                          {target_attributes.data(), target_attributes.size()}));
+Result<void> Realize::evaluate(const Geometries& sources, const Geometry& points, Geometry& output) const noexcept {
+    ATELIER_TRY_BIND(result, invocation_result(realize({sources.data(), sources.size()}, points, group, variant,
+                                                       {target_attributes.data(), target_attributes.size()})));
+    output = std::move(*result);
+    return {};
 }
 
 }

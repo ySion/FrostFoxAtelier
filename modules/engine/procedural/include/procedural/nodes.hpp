@@ -19,7 +19,7 @@ public:
     String mesh;
 
     AFUNCTION(DESC = "解析网格并导入。")
-    void evaluate(const Context& context, Geometry& output) const;
+    [[nodiscard]] Result<void> evaluate(const Context& context, Geometry& output) const noexcept;
 };
 
 ACLASS(Name = "procedural.Grid", DESC = "XZ 平面上的点阵，以原点为中心，N 朝 +Y。")
@@ -37,7 +37,7 @@ public:
     std::uint32_t columns{10};
 
     AFUNCTION(DESC = "生成点阵。")
-    void evaluate(Geometry& output) const;
+    [[nodiscard]] Result<void> evaluate(Geometry& output) const noexcept;
 };
 
 ACLASS(Name = "procedural.Line", DESC = "从起点到终点等距排列的点，含两端。")
@@ -55,7 +55,7 @@ public:
     std::uint32_t count{2};
 
     AFUNCTION(DESC = "生成线上的点。")
-    void evaluate(Geometry& output) const;
+    [[nodiscard]] Result<void> evaluate(Geometry& output) const noexcept;
 };
 
 ACLASS(Name = "procedural.Box", DESC = "以原点为中心的长方体，八个共享点、六个四边形，顶点法线保留硬边。")
@@ -67,7 +67,7 @@ public:
     math::Vector3 size{1.f, 1.f, 1.f};
 
     AFUNCTION(DESC = "生成六面体。")
-    void evaluate(Geometry& output) const;
+    [[nodiscard]] Result<void> evaluate(Geometry& output) const noexcept;
 };
 
 ACLASS(Name = "procedural.Sphere", DESC = "以原点为中心的球面多面体；极区为三角形，中间为四边形，顶点法线径向平滑。")
@@ -85,7 +85,7 @@ public:
     std::uint32_t latitudes{16};
 
     AFUNCTION(DESC = "生成共享缝与极点的球面。")
-    void evaluate(Geometry& output) const;
+    [[nodiscard]] Result<void> evaluate(Geometry& output) const noexcept;
 };
 
 ACLASS(Name = "procedural.Tube", DESC = "以原点为中心、沿 Y 轴的带盖实心圆柱；侧面四边形，两个多边形盖。")
@@ -103,7 +103,7 @@ public:
     std::uint32_t segments{32};
 
     AFUNCTION(DESC = "生成圆柱；侧面法线径向平滑，盖的法线为正负 Y。")
-    void evaluate(Geometry& output) const;
+    [[nodiscard]] Result<void> evaluate(Geometry& output) const noexcept;
 };
 
 ACLASS(Name = "procedural.Polyline", DESC = "把纯点输入按点序连成一条开放折线，保留点与 detail 属性，不隐式闭合。")
@@ -112,7 +112,7 @@ class Polyline : public Node {
 
 public:
     AFUNCTION(DESC = "连接输入点；0 点输出空几何，1 点、有图元或实例时报错。")
-    void evaluate(const Geometry& points, Geometry& output) const;
+    [[nodiscard]] Result<void> evaluate(const Geometry& points, Geometry& output) const noexcept;
 };
 
 ACLASS(Name = "procedural.GroupBox", DESC = "按闭区间包围盒选点，写入或替换一个 point 层 bool 组。")
@@ -130,7 +130,7 @@ public:
     math::Vector3 maximum{.5f, .5f, .5f};
 
     AFUNCTION(DESC = "在输入几何的副本上建立点组。")
-    void evaluate(const Geometry& input, Geometry& output) const;
+    [[nodiscard]] Result<void> evaluate(const Geometry& input, Geometry& output) const noexcept;
 };
 
 ACLASS(Name = "procedural.Scatter", DESC = "在三角形和凸平面多边形上按面积撒点。")
@@ -149,7 +149,8 @@ public:
     float min_distance{};
 
     AFUNCTION(DESC = "在三角形和凸平面多边形上按面积撒点。")
-    void evaluate(const Context& context, const Geometry& surface, Geometry& points) const;
+    [[nodiscard]] Result<void> evaluate(const Context& context, const Geometry& surface,
+                                        Geometry& points) const noexcept;
 };
 
 ACLASS(Name = "procedural.VolumeScatter", DESC = "在闭合有向流形壳内按密度和固定格撒点，排除表面，不修补网格。")
@@ -170,7 +171,8 @@ public:
     float cell_size{1.f};
 
     AFUNCTION(DESC = "在输入壳集合的严格内部生成点。")
-    void evaluate(const Context& context, const Geometry& surface, Geometry& points) const;
+    [[nodiscard]] Result<void> evaluate(const Context& context, const Geometry& surface,
+                                        Geometry& points) const noexcept;
 };
 
 ACLASS(
@@ -191,7 +193,7 @@ public:
     math::Vector3 scale{1.f, 1.f, 1.f};
 
     AFUNCTION(DESC = "变换输入几何。")
-    void evaluate(const Geometry& input, Geometry& output) const;
+    [[nodiscard]] Result<void> evaluate(const Geometry& input, Geometry& output) const noexcept;
 };
 
 ACLASS(Name = "procedural.Promote", DESC = "把属性移到另一层，按 Reduce 合成该层每个元素接触到的值。")
@@ -209,7 +211,7 @@ public:
     Reduce reduce{Reduce::average};
 
     AFUNCTION(DESC = "移动属性。")
-    void evaluate(const Geometry& input, Geometry& output) const;
+    [[nodiscard]] Result<void> evaluate(const Geometry& input, Geometry& output) const noexcept;
 };
 
 ACLASS(Name = "procedural.Remove", DESC = "删除一层中 bool 属性为 true 的元素。删除点时一并删除用到它们的图元。")
@@ -224,7 +226,7 @@ public:
     Layer layer{Layer::point};
 
     AFUNCTION(DESC = "删除标记的元素。")
-    void evaluate(const Geometry& input, Geometry& output) const;
+    [[nodiscard]] Result<void> evaluate(const Geometry& input, Geometry& output) const noexcept;
 };
 
 ACLASS(Name = "procedural.Merge", DESC = "按连接顺序拼接各输入的每一层，属性按名字合并。")
@@ -233,7 +235,7 @@ class Merge : public Node {
 
 public:
     AFUNCTION(DESC = "合并输入。")
-    void evaluate(const Geometries& inputs, Geometry& output) const;
+    [[nodiscard]] Result<void> evaluate(const Geometries& inputs, Geometry& output) const noexcept;
 };
 
 AENUM(Name = "procedural.RayMode", DESC = "project：沿方向找最近的交点；minimum：取最近的表面点。")
@@ -263,7 +265,8 @@ public:
     bool remove_misses{};
 
     AFUNCTION(DESC = "把点移到表面上。")
-    void evaluate(const Geometry& points, const Geometry& surface, Geometry& output) const;
+    [[nodiscard]] Result<void> evaluate(const Geometry& points, const Geometry& surface,
+                                        Geometry& output) const noexcept;
 };
 
 ACLASS(Name = "procedural.CopyToPoints",
@@ -279,7 +282,8 @@ public:
     String variant = String::literal<"variant">();
 
     AFUNCTION(DESC = "把点转成实例。")
-    void evaluate(const Context& context, const Geometry& points, Geometry& output) const;
+    [[nodiscard]] Result<void> evaluate(const Context& context, const Geometry& points,
+                                        Geometry& output) const noexcept;
 };
 
 ACLASS(Name = "procedural.Realize", DESC = "在目标点上复制有序几何源，生成真实点和图元，不生成资源实例。")
@@ -297,7 +301,8 @@ public:
     Array<String> target_attributes;
 
     AFUNCTION(DESC = "按目标点序批量复制几何，源不得含 instance。")
-    void evaluate(const Geometries& sources, const Geometry& points, Geometry& output) const;
+    [[nodiscard]] Result<void> evaluate(const Geometries& sources, const Geometry& points,
+                                        Geometry& output) const noexcept;
 };
 
 }

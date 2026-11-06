@@ -17,13 +17,13 @@ struct Access;
 
 class Evaluator;
 
-// Host resources a graph reads by persistent key. revision() changes whenever some key
-// may resolve differently, for example after a reload.
+// Host resources a graph reads by persistent key; recoverable failures return Result.
+// revision() changes whenever some key may resolve differently, for example after a reload.
 class Resources {
 public:
     virtual ~Resources() = default;
 
-    [[nodiscard]] virtual Result<geometry::MeshRef> mesh(StringView key) const = 0;
+    [[nodiscard]] virtual Result<geometry::MeshRef> mesh(StringView key) const noexcept = 0;
 
     [[nodiscard]] virtual std::uint64_t revision() const noexcept = 0;
 };
@@ -38,7 +38,7 @@ public:
     [[nodiscard]] std::uint32_t seed() const noexcept { return seed_; }
 
     // Resolves a mesh and records it as something the evaluating node's result depends on.
-    [[nodiscard]] Result<Reference> mesh(StringView key) const;
+    [[nodiscard]] Result<Reference> mesh(StringView key) const noexcept;
 
 private:
     friend class Evaluator;
@@ -62,6 +62,8 @@ struct Connection {
 // method evaluate declares the ports, in parameter order: const procedural.Context& is
 // the context, const procedural.Geometry& an input port, const procedural.Geometries&
 // an input port taking any number of connections, and procedural.Geometry& an output.
+// Native evaluate returns Result<void> noexcept (reflected as business void). The evaluator
+// owns publication: a failed direct call may leave mutable output partially changed.
 ACLASS(Name = "procedural.Node", DESC = "程序化图中的节点。公开字段是参数，端口来自 evaluate 方法的签名。")
 class Node {
     AGENERATED_BODY(Node)

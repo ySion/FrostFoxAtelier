@@ -66,7 +66,7 @@ Result<bool> upstream(Runtime& runtime, ObjectId from, ObjectId target) {
 
 }
 
-Result<Reference> Context::mesh(StringView key) const {
+Result<Reference> Context::mesh(StringView key) const noexcept {
     if (!resources_)
         return error(ErrorCode::unsupported_operation, "This evaluation provides no resources.");
     auto mesh = resources_->mesh(key);

@@ -140,7 +140,9 @@
 
 Ray 对 surface 的公共凸面扇形建立 BVH，命中的点移到交点（minimum 模式为最近的表面点），写入 `hitprim`、`hittri`（都是 int32）、`hitprimuv`、`hitdist`；未命中的点保持原位，两个编号与距离都为 -1。`hitprimuv` 是局部子三角 `hittri` 内的 (b1,b2)，不是原多边形坐标。`normal` 打开时 N 取命中子三角的三个原角计算的法线，不按 `3*hitprim` 寻址；`remove_misses` 删除未命中的点。每次求值都重新建立 BVH。
 
-节点失败时抛出异常，Runtime 把它转成 `invocation_failed`，消息就是失败原因。未连接的单输入端口收到空几何。
+原生节点的 `evaluate(...) const noexcept` 返回 `atelier::Result<void>`，反射仍发布为业务结果 void，端口和 BorrowSafe 约束不变。业务失败在节点边界转换为 `invocation_failed` 并保留原始原因，不通过异常传递；`Resources::mesh` 和 `Context::mesh` 同样通过 noexcept Result 返回资源拒绝。未连接的单输入端口收到空几何。
+
+求值器只在成功后发布候选 Geometry，失败保留旧发布并阻断下游，修正输入后可恢复。直接调用节点不额外承诺可写引用的事务回滚：较晚失败时 output 可能已部分改变，仍可销毁；调用者如需保旧，应像求值器一样提供独立候选。
 
 ### 自有语言节点
 

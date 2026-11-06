@@ -1,5 +1,6 @@
 #include "memory/fatal.hpp"
 #include "../helpers.hpp"
+#include "foundation/result.hpp"
 #include "procedural/bvh.hpp"
 #include "procedural/evaluator.hpp"
 #include "procedural/instances.hpp"
@@ -121,7 +122,7 @@ void convex_surface() {
     ray.direction = {0, 0, -1};
     ray.normal = true;
     Geometry projected;
-    ray.evaluate(take(Geometry::points(Array<Vector3>{origin})), surface, projected);
+    take(ray.evaluate(take(Geometry::points(Array<Vector3>{origin})), surface, projected));
     require(column<std::int32_t>(projected, "hitprim", Layer::point)[0] == 1 &&
                 column<std::int32_t>(projected, "hittri", Layer::point)[0] == 1 &&
                 near(column<Vector3>(projected, "N", Layer::point)[0], {0, 0, 1}),
@@ -658,7 +659,7 @@ void ray_node() {
     Ray node;
     node.normal = true;
     Geometry output;
-    node.evaluate(points, surface, output);
+    take(node.evaluate(points, surface, output));
     const auto& p = output.positions();
     const auto& primitive = column<std::int32_t>(output, "hitprim", Layer::point);
     const auto& triangle = column<std::int32_t>(output, "hittri", Layer::point);
@@ -672,7 +673,7 @@ void ray_node() {
                 near(n[1], {0, 0, 0}),
             "A missing ray moved its point.");
     Geometry projected_again;
-    node.evaluate(output, surface, projected_again);
+    take(node.evaluate(output, surface, projected_again));
     require(near(column<float>(projected_again, "hitdist", Layer::point)[0], 0) &&
                 column<std::int32_t>(projected_again, "hitprim", Layer::point)[0] == 2 &&
                 column<std::int32_t>(projected_again, "hitprim", Layer::point)[1] == -1 &&
@@ -681,16 +682,26 @@ void ray_node() {
     require(near(column<float>(output, "hitdist", Layer::point)[0], 3) && points.positions()[0] == Vector3{1, 5, 1},
             "Ray wrote through a shared input column.");
     node.remove_misses = true;
-    node.evaluate(points, surface, output);
+    take(node.evaluate(points, surface, output));
     require(output.count(Layer::point) == 1 && near(output.positions()[0], {1, 2, 1}),
             "Remove Misses did not keep exactly the hits.");
     // Closest point: straight down is the ground at 2.5, but the raised triangle's corner is nearer.
     node.mode = RayMode::minimum;
     node.direction = {};
-    node.evaluate(take(Geometry::points(Array<Vector3>{{6, 2.5f, 1}})), surface, output);
+    take(node.evaluate(take(Geometry::points(Array<Vector3>{{6, 2.5f, 1}})), surface, output));
     require(near(output.positions()[0], {4, 2, 0}) &&
                 near(column<float>(output, "hitdist", Layer::point)[0], std::sqrt(5.25f)),
             "Minimum mode did not find the nearest surface point.");
+    node.max_distance = -1;
+    const auto rejected = node.evaluate(points, surface, output);
+    require(!rejected && rejected.error().code == ErrorCode::invocation_failed &&
+                rejected.error().message == "Ray max distance must be finite and non-negative." &&
+                output.count(Layer::point) == 1 && near(output.positions()[0], {4, 2, 0}),
+            "Ray rejection did not return its original reason without replacing the previous output.");
+    node.max_distance = 1000;
+    take(node.evaluate(points, surface, output));
+    require(output.count(Layer::point) == 2 && near(output.positions()[0], {1, 2, 1}),
+            "Ray did not recover after correcting its distance.");
 }
 
 struct Meshes final : Resources {
@@ -698,7 +709,7 @@ struct Meshes final : Resources {
 
     std::uint64_t version{1};
 
-    Result<geometry::MeshRef> mesh(StringView key) const override {
+    Result<geometry::MeshRef> mesh(StringView key) const noexcept override {
         const auto found = meshes.find(key.std_view());
         if (found == meshes.end())
             return std::unexpected(Error{ErrorCode::invalid_member, "No mesh " + std::string{key.std_view()} + "."});
@@ -728,8 +739,14 @@ class RecordNode : public Node {
 public:
     PaddedParameters parameters;
 
-    void evaluate(Geometry& output) const {
-        output = parameters.enabled ? take(line({0, 0, 0}, {1, 0, 0}, parameters.count)) : Geometry{};
+    Result<void> evaluate(Geometry& output) const noexcept {
+        if (parameters.enabled) {
+            ATELIER_TRY_BIND(result, line({0, 0, 0}, {1, 0, 0}, parameters.count));
+            output = std::move(*result);
+        } else {
+            output = Geometry{};
+        }
+        return {};
     }
 };
 
@@ -810,7 +827,7 @@ void native_constructors() {
     Box box_node;
     box_node.size = {2, 4, 6};
     Geometry cube;
-    box_node.evaluate(cube);
+    take(box_node.evaluate(cube));
     const std::array<Vector3, 8> box_points{
         {{-1, -2, -3}, {1, -2, -3}, {-1, 2, -3}, {1, 2, -3}, {-1, -2, 3}, {1, -2, 3}, {-1, 2, 3}, {1, 2, 3}}};
     const std::array<std::uint32_t, 24> box_corners{0, 4, 6, 2, 1, 3, 7, 5, 0, 1, 5, 4,
@@ -829,7 +846,7 @@ void native_constructors() {
     tube_node.height = 2;
     tube_node.segments = 5;
     Geometry cylinder;
-    tube_node.evaluate(cylinder);
+    take(tube_node.evaluate(cylinder));
     // Offline sin/cos of the five regular-pentagon vertices, not constructor output.
     const std::array<Vector3, 5> ring{{{1, 0, 0},
                                        {.309016994f, 0, .951056516f},
@@ -859,12 +876,12 @@ void native_constructors() {
     line_node.end = {4, 2, 6};
     line_node.count = 3;
     Geometry cloud;
-    line_node.evaluate(cloud);
+    take(line_node.evaluate(cloud));
     take(cloud.set(String::literal<"weight">(), Layer::point, SharedArray<float>{Array<float>{3, 7, 11}}));
     (void)take(cloud.add<String>("label", Layer::detail, String::literal<"path">()));
     Polyline polyline_node;
     Geometry path;
-    polyline_node.evaluate(cloud, path);
+    take(polyline_node.evaluate(cloud, path));
     require(path.count(Layer::point) == 3 && path.count(Layer::primitive) == 1 &&
                 path.primitive(0).kind == PrimitiveKind::polyline && path.primitive(0).count == 3 &&
                 std::ranges::equal(path.vertex_points(), std::array<std::uint32_t, 3>{0, 1, 2}) &&
@@ -881,7 +898,7 @@ void native_constructors() {
     auto group_input = take(Geometry::points({{1, 0, 3}, {0, -1, 2}, {2, 1, 4}, {1, 2, 3}, {1, 0, 5}}));
     (void)take(group_input.add<bool>("chosen", Layer::point, true));
     Geometry selected;
-    group_node.evaluate(group_input, selected);
+    take(group_node.evaluate(group_input, selected));
     require(std::ranges::equal(column<bool>(selected, "chosen", Layer::point),
                                std::array<bool, 5>{true, true, true, false, false}),
             "GroupBox must replace its bool column using closed bounds on every axis.");
@@ -974,6 +991,10 @@ void graph_evaluation() {
     require(failed(evaluator, moved) && failed(evaluator, merged) && failed(evaluator, copied) &&
                 !failed(evaluator, line_node),
             "A failure did not block exactly the downstream nodes.");
+    const auto& error = evaluator.status(moved)->error;
+    require(error->code == ErrorCode::invocation_failed &&
+                error->message == "Transform needs a finite translation and scale and a nonzero rotation.",
+            "A native Result failure lost its invocation category or original reason.");
     require(evaluator.output() == shown, "A failure replaced the published output.");
     verify_output();
     write_vector(moved, scale, {1, 1, 1});
