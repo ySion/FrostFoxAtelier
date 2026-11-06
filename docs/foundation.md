@@ -180,23 +180,44 @@ Runtime 校验原生元素表示和复制能力；当前反射数组只接受不
 
 [tasks.hpp](../src/foundation/tasks.hpp) 提供 `atelier::tasks::parallel_for` 和单次使用的 `JoinGroup`，用于普通 C++ 值上的同步计算；当前产品消费者是 [Scatter](../src/procedural/operations.cpp)。公共头不暴露 oneTBB 类型，后端版本与源码校验值只在[依赖锁文件](../cmake/dependencies-lock.json)。构建仅部署对应配置的一份 TBB 调度 DLL 与许可证，不构建或分发 tbbmalloc；通用分配器仍按项目既有 mimalloc 入口接管。
 
+**本节为 W0 冻结的任务目标合同，错误接口待 W2 实施。** 当前代码仍采用 void body 和异常传播；下列 expected 接口及示例不是已实现能力。未涉及错误通道的分块、线程、借用、取消、浮点环境与计时合同保持不变。全局错误分类和 fatal 只由[工程指南](engineering.md#错误处理)定义。
+
 ```cpp
 auto candidate = snapshot;
 const auto input = snapshot.view();
 const auto output = candidate.write().view(); // 发起前完成 COW、容量及元素构造
-const auto completion = atelier::tasks::parallel_for(
+const auto result = atelier::tasks::parallel_for(
     {0, input.size()},
-    [input, output](atelier::tasks::Range range) {
+    [input, output](atelier::tasks::Range range) noexcept
+        -> std::expected<void, atelier::tasks::Failure> {
         for (auto i = range.begin; i < range.end; ++i)
             output[i] = input[i] * 2;
+        return {};
     },
     1024); // grain 提示，不是每块的最大长度
-// 仅 completed 时发布 candidate；取消/失败后的部分结果不能发布。
+// 仅 result && *result == Completion::completed 时发布 candidate。
 ```
+
+### 任务失败目标合同
+
+`tasks::Failure` 是平凡复制、平凡析构的两字段普通值，不分配、不拥有指针、字符串、异常对象或 Runtime 资源：
+
+```cpp
+struct Failure {
+    std::uint32_t code; // 非零；含义由本次操作约定，host 翻译为业务错误
+    std::size_t item{SIZE_MAX}; // 可选逻辑工作项；SIZE_MAX 表示未提供
+};
+```
+
+成功只由 expected 的值分支表示，code=0 不是另一种成功。item 不表示 worker 编号或完成顺序；需要完整 size_t 域的消费者可以省略位置，在自身固定失败槽中保留细节。嵌套任务转发须保持同一操作的码语义，或由 body 显式换码，不建立跨模块通用错误枚举或任意 payload 通道。
+
+- parallel_for body 精确返回 `std::expected<void, Failure>`，以 `const Body&(Range)` 调用；组 body 以 `const Body&()` 调用。两者必须 `noexcept`，模板同时检查精确返回类型与 `is_nothrow_invocable`，擦除回调也保留 noexcept。不失败的 body 显式 `return {}`，不自动适配 void。
+- `parallel_for` 与 `JoinGroup::join` 返回 `std::expected<Completion, Failure>`，并声明 noexcept，表示不以异常作为接口；它不证明禁 EH 编译时能截获外部异常。`JoinGroup::run` 保留 void，只接纳闭包，异步业务失败由 join 观察；不创造已经没有可恢复来源的“提交分配失败”Result。构造、析构与闭包复制/移动/析构不抛异常。
+- 倒置范围、grain=0、跨线程操作组、终态后 run 或重复 join 是调用前置条件违例，dev/release 均 contract-fatal，不占用 Failure 的业务码。终态后的 cancel 仍无作用；取消后的 run 可以接纳闭包并在 join 后释放，但不保证执行 body。
 
 ### 范围、完成与拥有者
 
-- `Range{begin,end}` 是 size_t 半开区间。成功时每个索引恰好处理一次；空范围不调用 body。倒置范围或 grain=0 抛 invalid_argument。块长、顺序和执行线程不是业务结果；grain 交给自适应分块器，不引入持久 affinity 状态。
+- `Range{begin,end}` 是 size_t 半开区间。completed 时每个索引恰好处理一次；空范围不调用 body，按 stop 状态返回 completed/cancelled。块长、顺序和执行线程不是业务结果；grain 交给自适应分块器，不引入持久 affinity 状态。
 - caller 进入共享 arena 参与执行；arena 满时允许委派，不能以 caller 每次实际执行至少一块作为正确性前提。嵌套仍用同一池并继承父取消；已处于任务 body 的嵌套调用不再次 execute 切换默认 context。禁止用普通 future、兄弟任务屏障或业务锁等待池内同伴；依赖只通过结构化子任务 join 表达。
 - `parallel_for` 借用 const-invocable 的 body，只向后端复制借用描述。`JoinGroup` 不可复制/移动，只有建立它的线程调用 `run/cancel/join`，body 可建立自己的子组。组拥有普通值闭包，存储与释放在提交线程；所有 body 执行结束后才释放。一次 join 后终态，不提供 detach、跨帧复用或后台任务。
 - 每次 parallel_for 在进入 arena 前捕获 caller 的浮点设置；组在构造时捕获，供该组全部任务使用。P=1、单块及委派路径仍由后端应用、恢复相同设置。body 不修改浮点环境，不以无序浮点归约改变元素内原计算次序。
@@ -205,19 +226,30 @@ const auto completion = atelier::tasks::parallel_for(
 
 ### 取消、失败与借用边界
 
-- stop_token 与 `JoinGroup::cancel()` 是合作取消，不强杀已经执行的 body；长 body 自行选择合理分块。所有已派发工作结束后才返回 completed/cancelled，或重抛一个代表异常。异常优先于纯取消，不保证按索引或时间选错，不收集全量错误；部分输出不自动回滚。不同顶层调用的取消隔离。
-- parallel_for 和组任务的 stop 回调只在已经绑定 context 的后端任务执行栈上存活，避免首次绑定覆盖提前设置的取消位；进入用户 body 前再次检查取消。返回/退栈时先注销并等待回调结束，之后任务才完成，因此 group wait 重置 context 前没有残留回调。组的显式取消另保留单调状态，首次绑定与 wait 重置都不能将其清除。
-- 正常路径显式 join 消费错误；放弃组时析构取消并 drain，只在清理中丢弃任务错误。run 内部存储/提交失败也先 drain 再抛出。实参求值不在函数内，例如 `run([v=make()] {})` 的 make 抛错，须退出组作用域后在外层 catch。借用拥有者先于组建立，直到 join/退栈清理后才能销毁。若连进入 arena 完成 drain 都失败，报告并终止，不释放仍可能被任务读取的闭包后继续运行。
+- stop_token 与 `JoinGroup::cancel()` 是合作取消，不强杀已经执行的 body；长 body 自行选择合理分块。业务失败只发布一个代表 Failure，再请求取消；所有已接纳工作终止执行后才返回，优先级为 Failure、cancelled、completed。不保证最小索引、最早时间或发现所有未执行任务的错误，不收集全量错误；部分输出不自动回滚。不同顶层调用的取消隔离。
+- 嵌套调用返回 Failure 后，父 body 必须显式传播或转换才能成为父失败；忽略 Result 不能依赖 TBB 替代传播。已请求取消时，已经执行的 body 仍可能报告失败，该失败不能被取消状态覆盖。
+- parallel_for 和组任务的 stop 回调只在已经绑定 context 的后端任务执行栈上存活，避免首次绑定覆盖提前设置的取消位；进入用户 body 前再次检查取消。所有正常返回路径先注销并等待回调结束，之后任务才完成，因此 group wait 重置 context 前没有残留回调。组的显式取消另保留单调状态，首次绑定与 wait 重置都不能将其清除。
+- 正常路径显式 join 消费错误；放弃组时析构取消并 drain，只在清理中丢弃任务 Failure。借用拥有者先于组建立，直到 join/析构清理后才能销毁。可失败的闭包准备先在外部取得并检查 Result，再提交闭包；`run([v=make()] ...)` 中 make 的执行发生在 run 之前，不受 run 管理。完整 join 保证只适用于正常返回的成功、失败与取消，不适用于 fatal；后端不能完成 drain 时不释放仍可能被读取的闭包再继续运行。
 - 输入快照、COW 独占、增列/resize 与容量准备在发起前完成。worker 只借固定存储，不结构修改共享容器；输出不仅彼此不重叠，也不得覆盖其他分块的只读输入。固定拥有者覆盖整个 fork→join，借用在 join 返回时结束，不能逃逸后续任务。借出可写列期间不得复制其 SharedArray/Geometry 句柄、移动或重分配存储。
-- Runtime 所属线程可同步发起普通值任务，但 body（包括 caller 执行、P=1、嵌套）不能调用 Runtime、其 Source/VM/JIT、GC、根操作或 World 命令，不能捕获 Runtime 对象内部地址；等待不泵 UI/World/Runtime 回调。普通值自定义构析、闭包和跨 join 的异常/错误载荷都不得携带 ObjectRoot/ValueRoot/Program/Coroutine 等 Runtime 依赖拥有者。不能以任务最终在 caller 上析构为理由放宽此限制。
-- `tasks::in_parallel_body() noexcept` 在 dev/release 均可用，标记可嵌套的 body 执行及其局部对象异常退栈。它不包住调用前的闭包构造、join 后的闭包销毁或所有异常载荷转运，不证明 C++ 捕获安全。Runtime/Source 已接入开发版动态禁入诊断，具体范围见[任务体禁入范围](runtime-model.md#并行任务体禁入诊断)；纯查询不铺满检查，World 尚未覆盖，release 不做检查，也不是安全沙箱。
+- Runtime 所属线程可同步发起普通值任务，但 body（包括 caller 执行、P=1、嵌套）不能调用 Runtime、其 Source/VM/JIT、GC、根操作或 World 命令，不能捕获 Runtime 对象内部地址；等待不泵 UI/World/Runtime 回调。普通值自定义构析、闭包和跨 join 的错误载荷都不得携带 ObjectRoot/ValueRoot/Program/Coroutine 等 Runtime 依赖拥有者。不能以任务最终在 caller 上析构为理由放宽此限制。
+- `tasks::in_parallel_body() noexcept` 在 dev/release 均可用，标记可嵌套的 body 执行，直到局部对象析构结束才恢复外层状态。它不包住调用前的闭包构造、join 后的闭包销毁或所有错误载荷转运，不证明 C++ 捕获安全。Runtime/Source 已接入开发版动态禁入诊断，具体范围见[任务体禁入范围](runtime-model.md#并行任务体禁入诊断)；纯查询不铺满检查，World 尚未覆盖，release 不做检查，也不是安全沙箱。
 - 本入口不新增 Program 后台许可：Program 操作仍按现有 Runtime 线程与关闭/发布合同执行。无 Runtime 依赖的 MaterialProgram 既有并发求值合同不因本片而收紧，本片也不新增其任务消费者。Source worker 执行须另审，不能由 C++ 任务入口自动放行。
+
+### oneTBB 二进制边界
+
+只在包含 TBB 头的自有使用方统一定义 `TBB_USE_EXCEPTIONS=0`；runtime 目标保持上游异常设置和原样源码，不打禁异常补丁、不新增自有 EH 隔离岛。TBB 仍是每配置一个调度 DLL；不将它的源码或内联对象混入使用方的链接优化域。使用方不交换 TBB 异常对象、STL 拥有权或任意回调结果；Failure 由本方调度适配记录，不作为 TBB 异常传递。
+
+上游 Feature Macros 明确允许 headers 禁异常而 runtime 仍抛异常。对当前锁定版本的使用面，task_group/task_arena/parallel_for 和 `try_call_proxy` 没有该宏分叉；global_control 只条件定义单参 throwing finalize，既用的双参 nothrow finalize 与句柄布局不变。因此未发现此配置导致的已用内联定义冲突。这不是整套 TBB 的 ODR 保证；新增直接 include（特别是并发容器、memory_pool、scalable_allocator）或依赖升级时重新核对，不在同一自有链接模块混用不同宏值。
+
+唯一 Process 拥有 `global_control{terminate_on_exception, 1}`，先于其他需要调度器的成员建立，保持到 arena 终止和 scheduler finalize 之后。该公开开关使上游覆盖的 throw_exception/handle_perror 与调度 catch 路径在 DLL 内终止，而非把故障转换为本方 Failure；它不覆盖控制对象自身建立之前的失败。共享 CRT 域的 SIGABRT 接线和诊断覆盖例外以[统一 fatal 出口](engineering.md#唯一-fatal-出口)为准，不要求逐线程安装，也不能单凭 `noexcept` 推导终止保证。此处为静态核对结论，最终双配置构建及 fatal 子进程探针仍待实施阶段。
 
 ### 计时与 Scatter
 
-所有 body 进入同一 RAII TLS 区间并暂停所在线程的 Recorder，包括 caller、嵌套及异常路径；worker 不写发起者 Recorder。发起阶段包住 fork→join 的墙钟，已经包含等待及 worker 工作，不再累加各 worker 耗时。parallel_for 不复制用户闭包，但后端调度可以分配；JoinGroup 的拥有存储也可分配，不能宣称任务零分配。
+所有 body 进入同一 RAII TLS 区间并暂停所在线程的 Recorder，包括 caller、嵌套及返回 Failure 的路径；worker 不写发起者 Recorder。发起阶段包住 fork→join 的墙钟，已经包含等待及 worker 工作，不再累加各 worker 耗时。parallel_for 不复制用户闭包，但后端调度可以分配；JoinGroup 的拥有存储也可分配，不能宣称任务零分配。
 
 Scatter 先按权威 TriangleView 的原图元 p、子三角 j 顺序算候选数，保留每子三角的点前缀和每原图元的子三角前缀；零计数也保留槽位，不缓存三角几何、法线或种子。分配输出后按连续输出区间并行填充，因此一个大三角形也能分块；fill 从固定输入 span 重读几何，以 p/j/k 恢复原种子和来源，k 在每子三角重新计数。连续 n 角多边形贡献 n−2 个扇形三角，所以 p 的首角下标可由其三角前缀加 2p 恢复。纯三角仍为原六列，只有含多边形输入追加 sourcetri。不存在按规模切换到旧串行实现的双路径。每元素内 double/float 运算顺序不变，最小间距在全部候选原序上串行淘汰、各列同步压紧。成功 join 后才构成返回 Geometry，失败不发布部分候选；不在 worker 上调用 Runtime 或操作 Geometry 结构。
+
+Volume 的块级计数槽继续只累计普通数值；位置不能表示的业务失败可返回约定 code 与候选 ordinal，join 后 host 翻译为 procedural 错误，不在每候选上分配 Error/String，也不在 Failure 之外再建一条通用错误总线。代表性 tasks 验收随 W2 把下文的抛错注入改为 Failure，保留取消后的失败优先、完整 join、提交线程销毁、再次调用和 TLS 恢复的同一序列，不扩展矩阵。
 
 ## 帧阶段计时
 

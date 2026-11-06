@@ -1,6 +1,6 @@
 # 类型与对象运行时
 
-本文维护运行时协议，依据当前源码。业务可观察语义以[语言契约](language-contract.md)和 [LANGUAGE.md](../LANGUAGE.md) 为准，能力范围与构建入口见 [README](../README.md)，模块归属、执行链及已知成本见[执行结构说明](runtime-structure.md)。现行取舍的原始依据见本页末尾。
+本文维护运行时协议，除明确标记的 W0 目标合同外均依据当前源码。业务可观察语义以[语言契约](language-contract.md)和 [LANGUAGE.md](../LANGUAGE.md) 为准，能力范围与构建入口见 [README](../README.md)，模块归属、执行链及已知成本见[执行结构说明](runtime-structure.md)。现行取舍的原始依据见本页末尾。
 
 | 状态 | 内容 |
 | --- | --- |
@@ -9,6 +9,46 @@
 | 按需设计 | GC 的参与线程、并发/分代与堆布局；统一在[能力边界](runtime-structure.md#已知成本与能力边界)记录，不因外部算法存在而安排替换 |
 
 项目快照通过同一 Program 接入多文件、原生派生类和具名同步入口，见[项目快照](source-function-modules.md#项目快照与多个公开入口)；下文单入口协议同样适用于单源码消费者。
+
+## 无 C++ 异常的目标合同
+
+**W0 冻结、W2 待实现。** 全局错误分类、fatal 与构造工厂遵循[工程指南](engineering.md#错误处理)。本节只定义原生值与执行协议的变化；当前代码中的异常转换、构造退栈和相关夹具在 W2 同批替换，不保留双接口或异常适配兼容层。Runtime 类型身份、布局、单线程准入、根与代码寿命不因错误通道改变；World 检查仍不排期，MaterialProgram 的独立并发合同不变。
+
+### 原生值生命周期目标
+
+`NativeLayout` 中可失败的回调改为以下完整函数指针类型；`Result` 为现有 `runtime::Result`，不是新的错误体系。可选复制能力仍可为空。生产者、注册适配、反射生成代码和全部调用方同批重编译：
+
+```cpp
+Result<void> (*construct)(void*) noexcept;
+Result<void> (*copy_construct)(void*, const void*) noexcept;
+Result<void> (*copy_assign)(void*, const void*) noexcept;
+Result<void> (*sequence_mutate)(SequenceMutation, void*, const void*, std::size_t) noexcept;
+```
+
+`destroy`、`swap`、`base_address`、`sequence_view` 保持现有 void/指针返回值及 `noexcept` 签名；后两者继续只是受信任的非分配投影，不引入失败协议。无失败分支的 C++ 构造/复制/赋值由注册器调用后返回成功；确实有业务失败的类型提供结果化操作，不再用可抛的 C++ 特殊成员函数表达它。destroy/swap 不能报告可恢复失败，不得吞掉清理错误继续；不变量破坏按工程指南终止。
+
+| 回调或操作 | 成功 | 返回失败时的存储与清理责任 |
+| --- | --- | --- |
+| `construct` / `copy_construct` | 目标从未初始化存储成为一个完整活值；复制不修改源 | 原生回调在返回前清理自己建立的全部子资源，目标没有活值，Runtime **不得**再对该目标调用 destroy；源保持有效且不变 |
+| 描述型构造 / 复制构造 | 只有字段/原生基段成功后才登记为已构造 | Runtime 以现有预留工作栈逆序销毁已成功部分，不销毁刚失败的原生目标、不重复清理；不发布对象身份或根 |
+| `copy_assign` | 原目标仍为活值并取得源内容 | 保留基本不变量和可销毁状态；允许前面字段已改变，不承诺整体回滚，源不变；调用方之后只正常销毁一次 |
+| `sequence_mutate` | 完成指定序列操作 | 序列仍为可销毁活值，回调清理本次未提交元素/缓冲；上层若原有未改动保证，则必须继续以预检、暂存、成功后交换履行，不能降成部分成功 |
+
+C++ 原生回调不能依赖异常自动展开：若先构造完整对象再做可失败初始化，失败时由回调销毁该对象；若逐子对象构造，则自己记录并逆序清理。描述型父记录只管理已经返回成功的子值。带默认文本的 String 字段仍在完整构造成功后才入清理栈，不先登记一个未完成目标。清理不分配、不失败；宿主不可恢复终止不提供上述正常返回保证。
+
+已有公共值操作的错误分类保持：构造/复制构造失败为 `construction_failed`，赋值失败为 `assignment_failed`，无效存储为 `invalid_storage`，能力缺失为 `unsupported_operation`；适配时保留原诊断原因，不能把输入验证误码为构造失败。`sequence_mutate` 沿所属操作的原错误分类返回。整值字段写入、数组结构编辑及成组引用修改原有的失败保旧语义保持，不能因底层赋值只提供基本保证就直接修改已发布目标。外部业务副作用不由值操作自动撤销。
+
+### 原生调用与 evaluate 目标
+
+可恢复的原生业务错误通过 `runtime::Result<R>` 返回。原生成员方法增加对 `Result<R>` 返回值的注册/反射支持，const 与 noexcept 的接收者含义不变；已有 contextual 方法 `Result<R>(Runtime&, ObjectId, C&, A...) noexcept` 继续走同一生产者和执行通道。R 仍限于现有 void、标量/枚举、数学值或 plain record；不可借此开放拥有容器、引用结果或新的语言 Result 类型。不可失败方法仍可直接返回 R；这是有无失败能力的区别，不是两套错误模式。
+
+原生程序化节点的可失败签名因此为 `runtime::Result<void> evaluate(...) const noexcept`，原有 Geometry/Context 引用参数、参数名及 BorrowSafe 约束保持。注册器把它发布为 **业务结果 void** 的同一个 `evaluate`，错误不是额外输出端口。生产者只剥离一层 runtime Result；不把 `std::expected` 的布局注册成业务类型，不让 Runtime 理解 Geometry、列名或节点错误。程序化操作自己的 Result 由节点在本模块边界转换为带原原因的 runtime 错误（节点执行失败为 `invocation_failed`），不通过 throw、线程局部“最后错误”或往 Context 塞错误旁路传递。
+
+动态 Invoker 与定型 native thunk 从同一个原生结果取值/取错：失败先保留首因，不读取未产生的结果、不覆盖调用方原输出；成功仍需通过既有结果类型与存储检查。进入 JIT 的状态/诊断保持固定 ABI，宿主拥有 Error，生成代码只走状态分支并显式释放已构造值、根和借用。原 `runtime.cpp` 构造清理后的重抛属于宿主内部异常路径，不是需要保留的 JIT 展开协议；W2 改为清理后返回失败。Material 路径中延迟保存的 `exception_ptr` 同样改为普通错误，而非在 JIT 返回后再抛。
+
+失败只保证声明过的输出暂存不提交，不撤销原生回调此前通过可写引用造成的业务修改。程序化求值器仍拥有节点候选输出和发布决定：任一绑定/调用失败不发布部分 Geometry，旧输出保留，修正输入后可重新求值。S1-E 在 W2 完成后复用这条通道统一原生与 Source 列绑定；W0 不实现 E、不改变端口、缓存或调度。
+
+W2 以既有 Runtime/Source/反射/程序化的构造失败、部分赋值、写暂存后失败与恢复序列验收该合同；保留清理计数、旧输出及再次执行结果的独立断言，去掉“必须抛异常”的夹具写法，不新建拒绝矩阵。
 
 ## 结构与职责
 
