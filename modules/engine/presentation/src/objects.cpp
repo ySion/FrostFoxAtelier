@@ -117,11 +117,8 @@ Result<void> set_mesh_binding(Runtime& runtime, ObjectId object, MeshBinding bin
     if (binding.source.size() > 4096 || binding.source.find('\0') != std::string::npos)
         return error(ErrorCode::invalid_definition, "Invalid mesh source key.");
     String source;
-    try {
-        source = String(StringView(binding.source));
-    } catch (const std::exception& failure) {
-        return error(ErrorCode::invalid_definition, failure.what());
-    }
+    if (!source.assign(StringView{binding.source}))
+        return error(ErrorCode::invalid_definition, "String requires valid UTF-8.");
     ATELIER_TRY(runtime.check_code_publication());
     // Each default names one slot of the new mesh exactly once and holds a material that captures.
     std::vector<std::string> default_slots;

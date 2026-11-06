@@ -33,20 +33,18 @@ struct CopyValue {
 
     std::uint32_t count;
 
-    CopyValue() : count(0) {
-        ++constructions;
-        if (reject_construction)
-            throw std::runtime_error("CopyValue default construction rejected.");
-    }
+    CopyValue() : count(0) { ++constructions; }
 };
 
 struct Host {
-    Packet alias(Packet snapshot, Packet& value) const {
+    Result<Packet> alias(Packet snapshot, Packet& value) const noexcept {
         value.count += 10;
         return snapshot;
     }
 
-    Packet fail(Packet) const { throw std::runtime_error("Native plain record failure."); }
+    Result<Packet> fail(Packet) const noexcept {
+        return std::unexpected(Error{ErrorCode::invocation_failed, "Native plain record failure."});
+    }
 };
 
 void publish(Program& program, std::string_view text) {
@@ -63,6 +61,15 @@ void verify_source_plain_records() {
                 .field<&CopyValue::count>("count", {TypeReference::native<std::uint32_t>()}, offsetof(CopyValue, count))
                 .build();
         definition.native.value_operations_preserve_borrows = true;
+        definition.native.construct = [](void* destination) noexcept -> Result<void> {
+            auto* value = std::construct_at(static_cast<CopyValue*>(destination));
+            if (CopyValue::reject_construction) {
+                std::destroy_at(value);
+                return std::unexpected(
+                    Error{ErrorCode::construction_failed, "CopyValue default construction rejected."});
+            }
+            return {};
+        };
         const auto type = take(owner.register_type(std::move(definition)));
         Program local(owner, {});
         publish(local, "plain.CopyValue run(plain.CopyValue input) { plain.CopyValue value; return input; }");

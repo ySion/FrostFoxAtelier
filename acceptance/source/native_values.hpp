@@ -37,12 +37,16 @@ struct alignas(64) Particle {
 
     Particle() { ++live; }
 
-    Particle(const Particle& value) : position(value.position), count(value.count), name(value.name) {
+    Particle(const Particle& value) noexcept : position(value.position), count(value.count), name(value.name) {
+        ++live;
+    }
+
+    static Result<void> accept_copy() noexcept {
         if (copy_budget == 0)
-            throw std::runtime_error("Injected native value copy failure.");
+            return std::unexpected(Error{ErrorCode::construction_failed, "Injected native value copy failure."});
         if (copy_budget > 0)
             --copy_budget;
-        ++live;
+        return {};
     }
 
     Particle(Particle&& value) noexcept : position(value.position), count(value.count), name(std::move(value.name)) {
@@ -61,12 +65,48 @@ struct Algorithms {
     static inline std::uint32_t failures{};
 
     AFUNCTION(BorrowSafe)
-    void fail(Array<Particle>& values) {
+    Result<void> fail(Array<Particle>& values) noexcept {
         if (!values.empty())
             values[0].count = 999;
         ++failures;
-        throw std::runtime_error("Native owned-value failure.");
+        return std::unexpected(Error{ErrorCode::invocation_failed, "Native owned-value failure."});
     }
 };
+
+inline TypeDefinition particle_definition(Runtime& runtime) {
+    auto definition = reflection::Definition<Particle>::build(runtime);
+    definition.native.value_operations_preserve_borrows = true;
+    definition.native.copy_construct = [](void* destination, const void* source) noexcept -> Result<void> {
+        ATELIER_TRY(Particle::accept_copy());
+        std::construct_at(static_cast<Particle*>(destination), *static_cast<const Particle*>(source));
+        return {};
+    };
+    return definition;
+}
+
+inline Result<Array<Particle>> copy_particles(const Array<Particle>& source) noexcept {
+    Array<Particle> prepared;
+    prepared.reserve(source.size());
+    for (const auto& element : source) {
+        ATELIER_TRY(Particle::accept_copy());
+        prepared.add(element);
+    }
+    return prepared;
+}
+
+inline TypeDefinition particle_array_definition(Runtime& runtime, std::string name) {
+    auto definition = array_definition<Particle>(runtime, std::move(name));
+    definition.native.copy_construct = [](void* destination, const void* source) noexcept -> Result<void> {
+        ATELIER_TRY_BIND(prepared, copy_particles(*static_cast<const Array<Particle>*>(source)));
+        std::construct_at(static_cast<Array<Particle>*>(destination), std::move(*prepared));
+        return {};
+    };
+    definition.native.copy_assign = [](void* destination, const void* source) noexcept -> Result<void> {
+        ATELIER_TRY_BIND(prepared, copy_particles(*static_cast<const Array<Particle>*>(source)));
+        static_cast<Array<Particle>*>(destination)->swap(*prepared);
+        return {};
+    };
+    return definition;
+}
 
 }

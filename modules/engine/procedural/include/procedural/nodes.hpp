@@ -121,7 +121,7 @@ class GroupBox : public Node {
 
 public:
     AFIELD(Label = "Group", DESC = "输出 bool 列名，不能为空；已有列必须是 point bool。")
-    String group{"selected"};
+    String group = String::literal<"selected">();
 
     AFIELD(Label = "Minimum", DESC = "包围盒各轴下界，包含边界，单位 m。")
     math::Vector3 minimum{-.5f, -.5f, -.5f};
@@ -276,7 +276,7 @@ public:
     Array<String> meshes;
 
     AFIELD(Label = "Variant Attribute", DESC = "点上的 uint 属性，作为 Meshes 的下标；缺失时都用第一个网格。")
-    String variant{"variant"};
+    String variant = String::literal<"variant">();
 
     AFUNCTION(DESC = "把点转成实例。")
     void evaluate(const Context& context, const Geometry& points, Geometry& output) const;
@@ -291,7 +291,7 @@ public:
     String group;
 
     AFIELD(Label = "Variant Attribute", DESC = "目标点 uint 列，选择 Sources 的连接序号；缺失为 0。")
-    String variant{"variant"};
+    String variant = String::literal<"variant">();
 
     AFIELD(Label = "Target Attributes", DESC = "显式广播到副本 point 层的目标点属性；默认不广播，禁止 P。")
     Array<String> target_attributes;

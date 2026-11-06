@@ -10,10 +10,18 @@ void verify_runtime_inheritance() {
     TypeDefinition child{"inheritance.FailingChild", TypeKind::object, {}, {}, {}};
     child.base = TypeReference::native<Base>();
     child.fields = {{"resource", {TypeReference::native<Resource>()}}, {"failure", {TypeReference::native<Failing>()}}};
+    auto failing = NativeRegistration<Failing>{runtime, "inheritance.Failing", TypeKind::record}.build();
+    failing.native.construct = [](void* destination) noexcept -> Result<void> {
+        if (Failing::fail)
+            return std::unexpected(
+                Error{ErrorCode::construction_failed, "Expected derived-field construction failure."});
+        std::construct_at(static_cast<Failing*>(destination));
+        return {};
+    };
     const auto types = take(runtime.register_types({
         NativeRegistration<Base>{runtime, "inheritance.Base", TypeKind::object}.build(),
         NativeRegistration<Resource>{runtime, "inheritance.Resource", TypeKind::record}.build(),
-        NativeRegistration<Failing>{runtime, "inheritance.Failing", TypeKind::record}.build(),
+        std::move(failing),
         std::move(child),
     }));
     Failing::fail = true;

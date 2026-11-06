@@ -102,7 +102,13 @@ void AssetBrowser::reset(bool has_project) {
 }
 
 ui::ControlKey AssetBrowser::key_for(const std::string& value) {
-    const auto [key, inserted] = keys_.try_emplace(StringView{value}, next_key_);
+    if (const auto* key = keys_.find(StringView{value}))
+        return *key;
+    auto owned = String::from_utf8(StringView{value});
+    // Directory producers validate UTF-8 before publishing; built-in keys are fixed ASCII.
+    if (!owned)
+        fatal("Asset Browser directory contains an invalid UTF-8 key.");
+    const auto [key, inserted] = keys_.try_emplace(std::move(*owned), next_key_);
     if (inserted)
         ++next_key_;
     return *key;

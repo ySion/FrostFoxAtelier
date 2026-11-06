@@ -575,7 +575,8 @@ Result<void> import_asset(OperatorHost& host, const Context& context, const Asse
     if (!*path)
         return {};
     ATELIER_TRY_BIND(imported, host.import_asset(p.kind, **path));
-    result.asset = String{StringView{*imported}};
+    if (!result.asset.assign(StringView{*imported}))
+        return std::unexpected(Error{ErrorCode::argument_mismatch, "Imported asset key requires valid UTF-8."});
     return {};
 }
 
@@ -622,7 +623,8 @@ Result<void> new_material(OperatorHost& host, const Context& context, const P& p
     }();
     if (!created)
         return std::unexpected(created.error());
-    result.asset = String{StringView{*created}};
+    if (!result.asset.assign(StringView{*created}))
+        return std::unexpected(Error{ErrorCode::argument_mismatch, "Created material key requires valid UTF-8."});
     if (context.interactive) {
         ATELIER_TRY_BIND(loaded, context.document.material_resource(project.assets(), *created));
         host.asset_created(*created, true);

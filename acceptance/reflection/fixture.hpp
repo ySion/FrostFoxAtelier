@@ -54,7 +54,7 @@ struct CallProbe {
     AGENERATED_BODY(CallProbe)
 
     AFUNCTION(BorrowSafe)
-    PlainRecord record_alias(PlainRecord copy, PlainRecord& target) const {
+    Result<PlainRecord> record_alias(PlainRecord copy, PlainRecord& target) const noexcept {
         target.count += 10;
         copy.enabled = !copy.enabled;
         return copy;
@@ -64,15 +64,15 @@ struct CallProbe {
     int value{};
 
     AFUNCTION()
-    bool bool_alias(bool copy, const bool& read, bool& write) {
+    Result<bool> bool_alias(bool copy, const bool& read, bool& write) noexcept {
         write = copy;
         return read;
     }
 
     AFUNCTION()
-    bool fail_bool(bool& value) {
+    Result<bool> fail_bool(bool& value) noexcept {
         value = true;
-        throw std::runtime_error("generated bool failure");
+        return std::unexpected(Error{ErrorCode::invocation_failed, "generated bool failure"});
     }
 
     AFUNCTION()

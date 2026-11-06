@@ -44,19 +44,22 @@ struct Host {
 
     std::uint32_t calls{};
 
+    String last_text;
+
     bool touch(bool value) {
         ++calls;
         return value;
     }
 
-    bool text(const String& value) {
+    Result<bool> text(const String& value) noexcept {
         ++calls;
+        last_text = value;
         return value.size() != 0;
     }
 
-    bool fail() {
+    Result<bool> fail() noexcept {
         ++calls;
-        throw std::runtime_error("foundation first failure");
+        return std::unexpected(Error{ErrorCode::invocation_failed, "foundation first failure"});
     }
 
     std::uint32_t get_next() noexcept { return ++calls; }
@@ -68,10 +71,11 @@ struct Host {
         return Mode::idle;
     }
 
-    void set_guard(std::uint32_t value) {
+    Result<void> set_guard(std::uint32_t value) noexcept {
         if (value > 100)
-            throw std::runtime_error("guard rejected");
+            return std::unexpected(Error{ErrorCode::invocation_failed, "guard rejected"});
         guard = value;
+        return {};
     }
 };
 
@@ -112,6 +116,17 @@ void verify_native_result_projection() {
     require(take(runtime.with_native<Host>(
                 object.id(), [](const Host& host) -> Result<bool> { return host.calls == 1 && host.guard == 9; })),
             "Rejected source executed the native-only method or lost the prior valid entry.");
+    {
+        Program literal(runtime, type);
+        publish(literal, "bool run() { return self.text(\"jit-owned-text/0123456789/after-program-retirement\"); }");
+        require(result<bool>(literal.entry().invoke(object.id(), {})), "Native text consumer rejected the literal.");
+    }
+    require(take(runtime.with_native<Host>(object.id(),
+                                           [](const Host& host) -> Result<bool> {
+                                               return host.last_text.view() ==
+                                                      "jit-owned-text/0123456789/after-program-retirement";
+                                           })),
+            "String retained storage from a retired JIT constant pool.");
 }
 
 void verify_properties_and_weakening() {

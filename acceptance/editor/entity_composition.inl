@@ -313,7 +313,10 @@ void verify_entity_composition() {
             type.native = {
                 sizeof(EntityDirectionalLight), alignof(EntityDirectionalLight),
                 atelier::detail::representation<EntityDirectionalLight>(),
-                [](void* storage) { std::construct_at(static_cast<EntityDirectionalLight*>(storage)); },
+                [](void* storage) noexcept -> Result<void> {
+                    std::construct_at(static_cast<EntityDirectionalLight*>(storage));
+                    return {};
+                },
                 [](void* storage) noexcept { std::destroy_at(static_cast<EntityDirectionalLight*>(storage)); }};
             type.native.base_address = [](void* storage) noexcept -> void* {
                 return static_cast<presentation::LightComponent*>(static_cast<EntityDirectionalLight*>(storage));

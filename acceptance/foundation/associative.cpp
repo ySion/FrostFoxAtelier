@@ -41,10 +41,10 @@ void verify_associative_containers() {
     using Catalog = Map<String, Resource>;
     {
         Catalog catalog;
-        catalog.try_emplace("first", 7);
-        catalog.try_emplace("second", 9);
+        catalog.try_emplace(String::literal<"first">(), 7);
+        catalog.try_emplace(String::literal<"second">(), 9);
         Catalog destination;
-        destination.try_emplace("keep", 42);
+        destination.try_emplace(String::literal<"keep">(), 42);
         Resource::copies_until_failure = 1;
         bool rejected = false;
         try {

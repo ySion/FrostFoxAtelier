@@ -844,7 +844,8 @@ void verify_string_properties(editor::Project& project, const std::shared_ptr<Ev
     const world::FieldPath size{caption, take(runtime.find_field(caption_type, "size"))};
     const world::FieldPath lines{caption, take(runtime.find_field(caption_type, "lines"))};
     const auto set = [&](ObjectId object, const world::FieldPath& path, std::string_view value) {
-        String stored{StringView{value}};
+        String stored;
+        require(stored.assign(StringView{value}).has_value(), "Expected valid fixture UTF-8.");
         take(runtime.write(object, path, ValueInput{string_type, &stored}));
     };
     // Each session owns a Runtime with its own field identities, so paths resolve by name per session.
@@ -920,6 +921,11 @@ void verify_string_properties(editor::Project& project, const std::shared_ptr<Ev
             "Strict decoding did not write a caller-owned record, or rejected an exact integral conversion.");
     require(!editor::decode_properties(runtime, record, {{"size", 50}}) && value_of(size) == Scalar{3.f},
             "A rejected strict decode clamped and wrote its value.");
+    const auto invalid_text = editor::decode_properties(runtime, record, {{"text", std::string{"\xc0\xaf"}}});
+    take(runtime.read(caption_type, storage, std::span(text).subspan(1), ValueOutput{string_type, &decoded}));
+    require(!invalid_text && invalid_text.error().code == ErrorCode::argument_mismatch &&
+                invalid_text.error().message == "text: Expected UTF-8 text." && decoded.view() == "hi",
+            "Strict decoding did not preserve the String and report its relative path on invalid UTF-8.");
     take(runtime.destroy_value(caption_type, storage));
 
     // A write hook turns an object decode into a patch without touching the object.
@@ -934,7 +940,7 @@ void verify_string_properties(editor::Project& project, const std::shared_ptr<Ev
         const auto at = std::ranges::find(patch, path, &std::pair<world::FieldPath, editor::PropertyLeaf>::first);
         return at == patch.end() ? nullptr : &at->second;
     };
-    require(patch.size() == 2 && leaf(title) && std::get<String>(*leaf(title)) == String{StringView{"patched"}} &&
+    require(patch.size() == 2 && leaf(title) && std::get<String>(*leaf(title)) == String::literal<"patched">() &&
                 leaf(size) && std::get<Scalar>(*leaf(size)) == Scalar{4.f} && get(document, label, "title") == gate,
             "A collecting write hook did not receive the decoded String and scalar leaves, or the object changed.");
 
@@ -1012,7 +1018,9 @@ void verify_array_properties(editor::Project& project, const std::shared_ptr<Evi
     const std::vector<std::string> names{"north", "\xE5\x8C\x97"};
     const std::vector<float> weights{.25f, 1.f, .5f};
     {
-        const Array<String> stored{String{StringView{names[0]}}, String{StringView{names[1]}}};
+        Array<String> stored;
+        for (const auto& name : names)
+            require(stored.emplace().assign(StringView{name}).has_value(), "Expected valid fixture UTF-8.");
         const Array<float> bounded{.25f, 1.f, .5f};
         take(runtime.write(tags, f.names, ValueInput{f.strings, &stored}));
         take(runtime.write(tags, f.weights, ValueInput{f.floats, &bounded}));
@@ -1053,6 +1061,11 @@ void verify_array_properties(editor::Project& project, const std::shared_ptr<Evi
     const auto unchanged = [&] { return names_of(runtime, tags) == names && weights_of(runtime, tags) == weights; };
     require(!editor::decode_properties(runtime, {f.tags, tags}, {{"weights", Json::array({.5, 2.0})}}) && unchanged(),
             "Strict decoding partly wrote an invalid Array.");
+    const Json invalid_names = Json::array({"valid prefix", std::string{"\xed\xa0\x80"}});
+    const auto invalid_array = editor::decode_properties(runtime, {f.tags, tags}, {{"names", invalid_names}});
+    require(!invalid_array && invalid_array.error().code == ErrorCode::argument_mismatch &&
+                invalid_array.error().message == "names: Expected an array of UTF-8 strings." && unchanged(),
+            "Strict decoding published a partial String Array or lost its UTF-8 error.");
     // A write hook receives each Array as one whole leaf and leaves the object as it was.
     std::vector<std::pair<world::FieldPath, editor::PropertyLeaf>> patch;
     take(editor::decode_properties(
@@ -1070,7 +1083,7 @@ void verify_array_properties(editor::Project& project, const std::shared_ptr<Evi
     require(patch.size() == 2 && patched_names && patched_weights && patched_names->type() == f.strings &&
                 patched_weights->type() == f.floats &&
                 std::ranges::equal(*reinterpret_cast<const Array<String>*>(patched_names->storage().data()),
-                                   std::array{String{StringView{"patched"}}}) &&
+                                   std::array{String::literal<"patched">()}) &&
                 std::ranges::equal(*reinterpret_cast<const Array<float>*>(patched_weights->storage().data()),
                                    std::array{.75f}) &&
                 unchanged(),
@@ -1094,6 +1107,23 @@ void verify_array_properties(editor::Project& project, const std::shared_ptr<Evi
             weights_of(runtime, tags) == std::vector<float>{.75f, 1.f} &&
             counts_of(runtime, tags) == std::vector<std::uint32_t>{1},
         "A tolerant decode did not report its leaves from the record, or did not apply the clamped and converted Arrays.");
+
+    kept.clear();
+    conversions.clear();
+    Json rejected_names;
+    const editor::PropertyReport utf8_report{
+        [&](std::vector<std::string> at, const Json& item, world::DiagnosticKind kind, const std::string&) {
+            require(kind == mismatch, "Invalid UTF-8 was not reported as a leaf mismatch.");
+            kept.push_back(std::move(at));
+            rejected_names = item;
+        },
+        [&](std::vector<std::string> at, const Json&) { conversions.push_back(std::move(at)); }};
+    take(editor::decode_properties(runtime, {f.tags, tags}, take(editor::detail::author_fields(runtime, f.tags)),
+                                   {{"names", invalid_names}, {"weights", Json::array({.125})}}, utf8_report));
+    require(kept == std::vector<std::vector<std::string>>{{"names"}} && conversions.empty() &&
+                rejected_names == invalid_names && names_of(runtime, tags) == names &&
+                weights_of(runtime, tags) == std::vector<float>{.125f},
+            "Tolerant UTF-8 rejection did not keep the complete leaf and continue with its next sibling.");
 
     acceptance_phase = "Array properties in Play";
     auto play_project = take(editor::Project::open(project.root()));

@@ -606,10 +606,9 @@ void run(const std::filesystem::path& root) {
                           ValueOutput{take(runtime.native_type<String>()), &text}));
         return text;
     };
-    require(text_field(document, "attribute") == String{StringView{"default_attribute_0123456789"}},
+    require(text_field(document, "attribute") == String::literal<"default_attribute_0123456789">(),
             "Source class String default did not reach the scene object.");
-    constexpr char saved_bytes[] = "saved_selection_0123456789_分组\0tail";
-    const String saved_text{StringView{saved_bytes, sizeof(saved_bytes) - 1}};
+    const auto saved_text = String::literal<"saved_selection_0123456789_分组\0tail">();
     auto& runtime = document.world().runtime();
     take(runtime.write(behavior(document),
                        take(runtime.find_field(take(runtime.type_of(behavior(document))), "attribute")),
@@ -751,7 +750,7 @@ void run(const std::filesystem::path& root) {
     require(rebuilt.session != nullptr, "Could not rebuild source types from the saved scene.");
     require(std::get<float>(field(*rebuilt.session, "extra")) == 7, "Rebuilding did not apply a new field's default.");
     require(text_field(*rebuilt.session, "attribute") == saved_text &&
-                text_field(*rebuilt.session, "added") == String{StringView{"new_field_default_0123456789"}},
+                text_field(*rebuilt.session, "added") == String::literal<"new_field_default_0123456789">(),
             "Rebuilding lost a saved String override or a new String field's default.");
     take(editor::write_file(root / "Source/UI/Main.ui.source", editor::ProjectCode::ui_source()));
     take(project.set_ui_source("Source/UI/Main.ui.source"));

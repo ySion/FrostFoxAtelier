@@ -47,7 +47,9 @@ struct Host {
 
     void set_value(std::uint32_t next) noexcept { value = next; }
 
-    void fail() { throw std::runtime_error("Debugger native first failure."); }
+    Result<void> fail() noexcept {
+        return std::unexpected(Error{ErrorCode::invocation_failed, "Debugger native first failure."});
+    }
 };
 
 void verify_compile_modes_and_stepping() {
@@ -103,7 +105,7 @@ DebugSnapshot verify_inspection_and_previews() {
 }
 )");
     Array<float> values{1.0f};
-    String text("abcdefghijklmnop");
+    const auto text = String::literal<"abcdefghijklmnop">();
     DebugSnapshot retained;
     Debugger debugger(
         [&](const DebugSnapshot& stop) {

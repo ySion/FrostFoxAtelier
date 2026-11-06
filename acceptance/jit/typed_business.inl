@@ -29,9 +29,9 @@ struct TypedUiController {
         selected += a + 2 * b + 3 * c + 4 * d + 5 * e + 6 * f + 7 * g + 8 * h + 9 * i;
     }
 
-    void explode() {
+    Result<void> explode() noexcept {
         ++revisions;
-        throw std::runtime_error("Typed UI native failure.");
+        return std::unexpected(Error{ErrorCode::invocation_failed, "Typed UI native failure."});
     }
 
     std::uint32_t bump(std::uint32_t amount) {

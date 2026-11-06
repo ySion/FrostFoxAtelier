@@ -17,8 +17,15 @@ inline TypeDefinition string_definition(Runtime& runtime) {
     };
     definition.native.value_operations_preserve_borrows = true;
     definition.native.sequence_mutate = [](SequenceMutation operation, void* target, const void* source,
-                                           std::size_t count) {
+                                           std::size_t count) noexcept -> Result<void> {
         auto& text = *static_cast<String*>(target);
+        const auto appended = operation == SequenceMutation::append        ? static_cast<const String*>(source)->size()
+                              : operation == SequenceMutation::append_text ? count
+                                                                           : 0;
+        if (((operation == SequenceMutation::reserve || operation == SequenceMutation::assign_text) &&
+             count > String::max_size) ||
+            appended > String::max_size - text.size())
+            return std::unexpected(Error{ErrorCode::capacity_exceeded, "String length exceeds addressable storage."});
         switch (operation) {
         case SequenceMutation::reserve:
             text.reserve(count);
@@ -30,14 +37,17 @@ inline TypeDefinition string_definition(Runtime& runtime) {
             text.append(*static_cast<const String*>(source));
             break;
         case SequenceMutation::assign_text:
-            text.assign(StringView{static_cast<const char*>(source), count});
+            if (!text.assign(StringView{static_cast<const char*>(source), count}))
+                return std::unexpected(Error{ErrorCode::argument_mismatch, "String input is not valid UTF-8."});
             break;
         case SequenceMutation::append_text:
-            text.append(StringView{static_cast<const char*>(source), count});
+            if (!text.append(StringView{static_cast<const char*>(source), count}))
+                return std::unexpected(Error{ErrorCode::argument_mismatch, "String input is not valid UTF-8."});
             break;
         default:
-            throw std::invalid_argument("Unsupported String mutation.");
+            return std::unexpected(Error{ErrorCode::unsupported_operation, "Unsupported String mutation."});
         }
+        return {};
     };
     return definition;
 }
@@ -55,22 +65,17 @@ TypeDefinition array_definition(Runtime& runtime, std::string name) {
     };
     definition.native.value_operations_preserve_borrows = true; // composed with element capabilities at publication
     definition.native.sequence_mutate = [](SequenceMutation operation, void* target, const void* source,
-                                           std::size_t count) {
+                                           std::size_t count) noexcept -> Result<void> {
         auto& array = *static_cast<Array<T>*>(target);
-        // Element moves or swaps (std::rotate in Array::insert/move) that can throw would leave a
-        // partial shift; edit a copy instead, sized for `extra` elements so the edit does not regrow it.
-        const auto atomically = [&](std::size_t extra, auto change) {
-            if constexpr (std::is_nothrow_move_constructible_v<T> && std::is_nothrow_move_assignable_v<T> &&
-                          std::is_nothrow_swappable_v<T>)
-                change(array);
-            else {
-                Array<T> copy;
-                copy.reserve(array.size() + extra);
-                copy.append(array.view());
-                change(copy);
-                array.swap(copy);
-            }
-        };
+        const auto added = operation == SequenceMutation::append ? static_cast<const Array<T>*>(source)->size()
+                           : operation == SequenceMutation::add || operation == SequenceMutation::insert ? 1
+                                                                                                         : 0;
+        if (((operation == SequenceMutation::reserve || operation == SequenceMutation::resize) &&
+             count > Array<T>::max_size) ||
+            added > Array<T>::max_size - array.size())
+            return std::unexpected(Error{ErrorCode::capacity_exceeded, "Array size exceeds addressable storage."});
+        // Ordinary C++ element operations have no recoverable error channel.
+        // Fallible registered elements require their own result-based adapter.
         switch (operation) {
         case SequenceMutation::reserve:
             array.reserve(count);
@@ -79,7 +84,8 @@ TypeDefinition array_definition(Runtime& runtime, std::string name) {
             if constexpr (std::default_initializable<T>)
                 array.resize(count);
             else
-                throw std::invalid_argument("Array element is not default constructible.");
+                return std::unexpected(
+                    Error{ErrorCode::unsupported_operation, "Array element is not default constructible."});
             break;
         case SequenceMutation::clear:
             array.clear();
@@ -99,21 +105,24 @@ TypeDefinition array_definition(Runtime& runtime, std::string name) {
                     const auto second = *static_cast<const std::size_t*>(source);
                     if (operation == SequenceMutation::remove) {
                         if (second)
-                            atomically(0, [&](Array<T>& values) { values.remove_at(count, second); });
+                            array.remove_at(count, second);
                     } else if (count != second)
-                        atomically(0, [&](Array<T>& values) { values.move(count, second); });
+                        array.move(count, second);
                 } else if (source)
-                    atomically(1, [&](Array<T>& values) { values.insert(count, *static_cast<const T*>(source)); });
+                    array.insert(count, *static_cast<const T*>(source));
                 else if constexpr (std::default_initializable<T>)
-                    atomically(1, [&](Array<T>& values) { values.insert(count); });
+                    array.insert(count);
                 else
-                    throw std::invalid_argument("Array element is not default constructible.");
+                    return std::unexpected(
+                        Error{ErrorCode::unsupported_operation, "Array element is not default constructible."});
             } else
-                throw std::invalid_argument("Array element is not move assignable.");
+                return std::unexpected(
+                    Error{ErrorCode::unsupported_operation, "Array element is not move assignable."});
             break;
         default:
-            throw std::invalid_argument("Unsupported Array mutation.");
+            return std::unexpected(Error{ErrorCode::unsupported_operation, "Unsupported Array mutation."});
         }
+        return {};
     };
     return definition;
 }

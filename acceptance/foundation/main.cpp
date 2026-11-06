@@ -56,11 +56,13 @@ struct alignas(64) Resource {
 };
 
 void native_workload() {
-    String cache{"abcdefghijklmno"};
-    cache.append(cache.view().slice(1));
-    require(cache.view() == "abcdefghijklmnobcdefghijklmno", "Inline-to-heap append invalidated its self-view.");
+    auto cache = String::from_utf8("abcdefghijklmnopqrst");
+    require(cache.has_value(), "Valid UTF-8 was rejected.");
+    require(cache->append(cache->view().slice(1)).has_value(), "Valid self-view was rejected.");
+    require(cache->view() == "abcdefghijklmnopqrstbcdefghijklmnopqrst",
+            "Inline-to-heap append invalidated its self-view.");
 
-    Array<String> filled{String{"a label longer than the inline capacity"}};
+    Array<String> filled{String::literal<"a label longer than the inline capacity">()};
     filled.squeeze();
     filled.resize(2, filled[0]);
     for (const auto& label : filled)
@@ -137,8 +139,8 @@ void reflection_workload() {
     auto native = take(runtime.create(types[0]));
     auto data = take(runtime.create(described_type));
     take(runtime.with_native<Inventory>(native.id(), [&](Inventory& value) -> Result<void> {
-        value.items.emplace(Item{String{"shield"}, 2, Quality::rare});
-        value.items.emplace(Item{String{"asset:/weapons/steel_sword.asset"}, 1, Quality::common});
+        value.items.emplace(Item{String::literal<"shield">(), 2, Quality::rare});
+        value.items.emplace(Item{String::literal<"asset:/weapons/steel_sword.asset">(), 1, Quality::common});
         return {};
     }));
     const std::array native_path{take(runtime.find_field(types[0], "items"))};
@@ -147,7 +149,7 @@ void reflection_workload() {
     const std::array path{take(runtime.find_field(described_type, "items"))};
     take(runtime.with_native<Array<Item>>(data.id(), path, [&](Array<Item>& value) -> Result<void> {
         value = saved;
-        value[0].name.append("+1");
+        value[0].name.append(String::literal<"+1">());
         return {};
     }));
     const std::array resource_path{take(runtime.find_field(described_type, "resources"))};

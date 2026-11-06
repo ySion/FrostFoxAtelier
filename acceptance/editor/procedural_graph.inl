@@ -1,8 +1,6 @@
 // Current v1 bytes come from an authored fixture, never from the encoder under test.
-class ThrowingNode : public procedural::Node {
+class RejectedNode : public procedural::Node {
 public:
-    ThrowingNode() { throw std::runtime_error("This node cannot be constructed."); }
-
     void evaluate(procedural::Geometry&) const {}
 };
 
@@ -99,7 +97,8 @@ void verify_procedural_graph() {
     }));
     take(runtime.with_native<const Realize>(entry("realized").node.id(), [](const Realize& value) -> Result<void> {
         require(value.group.view() == "chosen" && value.variant.view() == "prototype" &&
-                    std::ranges::equal(value.target_attributes, Array<String>{String{"id"}, String{"weight"}}),
+                    std::ranges::equal(value.target_attributes,
+                                       Array<String>{String::literal<"id">(), String::literal<"weight">()}),
                 "Authored Realize selectors or broadcast names did not load.");
         return {};
     }));
@@ -130,15 +129,19 @@ void verify_procedural_graph() {
             "A missing node was loaded or lost frozen data on save.");
 
     // A real constructor failure must not turn into a successfully loaded null node.
-    take(NativeRegistration<ThrowingNode>{runtime, "graphAcceptance.Throwing", TypeKind::object}
-             .base<Node>()
-             .method<&ThrowingNode::evaluate>("evaluate")
-             .parameter_names({"output"})
-             .publish());
-    auto throwing = authored;
-    throwing["nodes"]["grid"]["type"] = "graphAcceptance.Throwing";
-    throwing["nodes"]["grid"]["properties"] = Json::object();
-    const auto failed = editor::load_graph(runtime, throwing.dump());
+    auto rejected = NativeRegistration<RejectedNode>{runtime, "graphAcceptance.Rejected", TypeKind::object}
+                        .base<Node>()
+                        .method<&RejectedNode::evaluate>("evaluate")
+                        .parameter_names({"output"})
+                        .build();
+    rejected.native.construct = [](void*) noexcept -> Result<void> {
+        return std::unexpected(Error{ErrorCode::construction_failed, "This node cannot be constructed."});
+    };
+    take(runtime.register_type(std::move(rejected)));
+    auto invalid = authored;
+    invalid["nodes"]["grid"]["type"] = "graphAcceptance.Rejected";
+    invalid["nodes"]["grid"]["properties"] = Json::object();
+    const auto failed = editor::load_graph(runtime, invalid.dump());
     require(!failed && failed.error().code == ErrorCode::construction_failed,
             "A node that failed to construct was kept as an unknown type.");
     std::puts("Procedural graph files: PASS (authored v1 bytes, missing-type frozen roundtrip, constructor failure)");

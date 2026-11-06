@@ -72,7 +72,10 @@ Result<Reference> Context::mesh(StringView key) const {
     auto mesh = resources_->mesh(key);
     if (!mesh)
         return std::unexpected(mesh.error());
-    Reference reference{String{key}, std::move(*mesh)};
+    auto name = String::from_utf8(key);
+    if (!name)
+        return failure("Mesh resource key requires valid UTF-8.");
+    Reference reference{std::move(*name), std::move(*mesh)};
     if (std::ranges::find(*dependencies_, reference.key, &Reference::key) == dependencies_->end())
         dependencies_->push_back(reference);
     return reference;

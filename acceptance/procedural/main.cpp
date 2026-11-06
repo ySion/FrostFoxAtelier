@@ -363,19 +363,21 @@ void copy_to_points_and_publication() {
     const auto mesh_a = geometry::cube_mesh();
     const auto mesh_b = std::make_shared<const geometry::Mesh>(
         std::vector<geometry::Vertex>(mesh_a->vertices().begin(), mesh_a->vertices().end()));
-    const std::vector<Reference> references{{String{"fixture/a"}, mesh_a}, {String{"fixture/b"}, mesh_b}};
+    const std::vector<Reference> references{{String::literal<"fixture/a">(), mesh_a},
+                                            {String::literal<"fixture/b">(), mesh_b}};
 
     auto oriented = take(Geometry::points(Array<Vector3>{{1, 2, 3}}));
-    take(oriented.set(String{"orient"}, Layer::point,
+    take(oriented.set(String::literal<"orient">(), Layer::point,
                       SharedArray<Quaternion>{Array<Quaternion>{axis_angle({0, 1, 0}, 90)}}));
-    take(oriented.set(String{"pscale"}, Layer::point, SharedArray<float>{Array<float>{2}}));
-    take(oriented.set(String{"scale"}, Layer::point, SharedArray<Vector3>{Array<Vector3>{{1, 2, 3}}}));
-    take(oriented.set(String{"variant"}, Layer::point, SharedArray<std::uint32_t>{Array<std::uint32_t>{1}}));
-    take(oriented.add<String>("label", Layer::detail, String{"kept"}));
+    take(oriented.set(String::literal<"pscale">(), Layer::point, SharedArray<float>{Array<float>{2}}));
+    take(oriented.set(String::literal<"scale">(), Layer::point, SharedArray<Vector3>{Array<Vector3>{{1, 2, 3}}}));
+    take(oriented.set(String::literal<"variant">(), Layer::point, SharedArray<std::uint32_t>{Array<std::uint32_t>{1}}));
+    take(oriented.add<String>("label", Layer::detail, String::literal<"kept">()));
     const auto instances = take(copy_to_points(oriented, references));
     require(instances.count(Layer::point) == 0 && instances.count(Layer::instance) == 1,
             "Copy to Points made no instances.");
-    require(column<String>(instances, "label", Layer::detail)[0] == String{"kept"}, "Detail attributes were dropped.");
+    require(column<String>(instances, "label", Layer::detail)[0] == String::literal<"kept">(),
+            "Detail attributes were dropped.");
     const Matrix4 expected{{0, 0, -2, 0, 0, 4, 0, 0, 6, 0, 0, 0, 1, 2, 3, 1}};
     require(near(instances.instance_transforms()[0], expected), "An instance transform is not S * O * T.");
     require(instances.instance_references()[0] == 1, "Variant did not pick the reference.");
@@ -390,8 +392,8 @@ void copy_to_points_and_publication() {
 
     // Without orient: N steers +Z and up steers +Y.
     auto with_up = take(Geometry::points(Array<Vector3>{{0, 0, 0}}));
-    take(with_up.set(String{"N"}, Layer::point, SharedArray<Vector3>{Array<Vector3>{{3, 0, 0}}}));
-    take(with_up.set(String{"up"}, Layer::point, SharedArray<Vector3>{Array<Vector3>{{0, 5, 0}}}));
+    take(with_up.set(String::literal<"N">(), Layer::point, SharedArray<Vector3>{Array<Vector3>{{3, 0, 0}}}));
+    take(with_up.set(String::literal<"up">(), Layer::point, SharedArray<Vector3>{Array<Vector3>{{0, 5, 0}}}));
     const auto rows = [](const Matrix4& m) {
         return std::array<Vector3, 3>{Vector3{m[0], m[1], m[2]}, Vector3{m[4], m[5], m[6]}, Vector3{m[8], m[9], m[10]}};
     };
@@ -401,8 +403,9 @@ void copy_to_points_and_publication() {
 
     // Publication: independently known floor divisions and affine layout.
     auto scattered = take(Geometry::points(Array<Vector3>{{-0.01f, 0, 0}, {3, 0, 3}, {10, 0, 0}}));
-    take(scattered.set(String{"variant"}, Layer::point, SharedArray<std::uint32_t>{Array<std::uint32_t>{0, 1, 0}}));
-    take(scattered.set(String{"scale"}, Layer::point,
+    take(scattered.set(String::literal<"variant">(), Layer::point,
+                       SharedArray<std::uint32_t>{Array<std::uint32_t>{0, 1, 0}}));
+    take(scattered.set(String::literal<"scale">(), Layer::point,
                        SharedArray<Vector3>{Array<Vector3>{{1, 1, 1}, {2, 2, 2}, {1, 1, 1}}}));
     const auto first = take(publish(take(copy_to_points(scattered, references)), 10));
     std::map<std::pair<std::string, std::array<std::int32_t, 3>>, std::vector<float>> found;
@@ -438,29 +441,30 @@ void realized_geometry() {
         for (std::uint32_t i = 0; i < 6; ++i)
             tags[i] = 10 * (s + 1) + i;
     }
-    take(
-        sources[0].set(String{"material"}, Layer::primitive, SharedArray<std::uint32_t>{Array<std::uint32_t>{31, 32}}));
-    take(
-        sources[1].set(String{"material"}, Layer::primitive, SharedArray<std::uint32_t>{Array<std::uint32_t>{41, 42}}));
+    take(sources[0].set(String::literal<"material">(), Layer::primitive,
+                        SharedArray<std::uint32_t>{Array<std::uint32_t>{31, 32}}));
+    take(sources[1].set(String::literal<"material">(), Layer::primitive,
+                        SharedArray<std::uint32_t>{Array<std::uint32_t>{41, 42}}));
     take(sources[0].add<Vector3>("anchor", Layer::point, {1, 2, 3}, Usage::point));
-    take(sources[0].add<String>("label", Layer::detail, String{"port zero"}));
-    take(sources[1].add<String>("label", Layer::detail, String{"port one"}));
+    take(sources[0].add<String>("label", Layer::detail, String::literal<"port zero">()));
+    take(sources[1].add<String>("label", Layer::detail, String::literal<"port one">()));
     take(sources[0].add<Vector3>("pivot", Layer::detail, {100, 101, 102}, Usage::point));
 
     auto targets = take(Geometry::points(Array<Vector3>{{10, 20, 30}, {-2, 5, 7}, {99, 99, 99}}));
-    take(targets.set(String{"chosen"}, Layer::point, SharedArray<bool>{Array<bool>{true, true, false}}));
-    take(targets.set(String{"prototype"}, Layer::point, SharedArray<std::uint32_t>{Array<std::uint32_t>{1, 0, 0}}));
-    take(
-        targets.set(String{"N"}, Layer::point, SharedArray<Vector3>{Array<Vector3>{{3, 0, 0}, {0, 0, -3}, {0, 0, 1}}}));
-    take(targets.set(String{"up"}, Layer::point,
+    take(targets.set(String::literal<"chosen">(), Layer::point, SharedArray<bool>{Array<bool>{true, true, false}}));
+    take(targets.set(String::literal<"prototype">(), Layer::point,
+                     SharedArray<std::uint32_t>{Array<std::uint32_t>{1, 0, 0}}));
+    take(targets.set(String::literal<"N">(), Layer::point,
+                     SharedArray<Vector3>{Array<Vector3>{{3, 0, 0}, {0, 0, -3}, {0, 0, 1}}}));
+    take(targets.set(String::literal<"up">(), Layer::point,
                      SharedArray<Vector3>{Array<Vector3>{{0, 4, 0}, {0, -4, 0}, {0, 1, 0}}}));
-    take(targets.set(String{"scale"}, Layer::point,
+    take(targets.set(String::literal<"scale">(), Layer::point,
                      SharedArray<Vector3>{Array<Vector3>{{-1, 1.5f, 2}, {1, 2, .5f}, {1, 1, 1}}}));
-    take(targets.set(String{"pscale"}, Layer::point, SharedArray<float>{Array<float>{2, 1, 1}}));
-    take(targets.set(String{"weight"}, Layer::point, SharedArray<float>{Array<float>{70, 90, 110}}));
-    take(targets.add<String>("label", Layer::detail, String{"target loses"}));
-    take(targets.add<String>("fallback", Layer::detail, String{"target fills"}));
-    const std::array broadcasts{String{"weight"}};
+    take(targets.set(String::literal<"pscale">(), Layer::point, SharedArray<float>{Array<float>{2, 1, 1}}));
+    take(targets.set(String::literal<"weight">(), Layer::point, SharedArray<float>{Array<float>{70, 90, 110}}));
+    take(targets.add<String>("label", Layer::detail, String::literal<"target loses">()));
+    take(targets.add<String>("fallback", Layer::detail, String::literal<"target fills">()));
+    const std::array broadcasts{String::literal<"weight">()};
     auto output = take(realize(sources, targets, "chosen", "prototype", broadcasts));
     // Source 1 then 0. The two independent affine formulas are
     // (10+4z,20+3y,30+2x) and (-2+x,5-2y,7-z/2), not calls to transform().
@@ -500,7 +504,7 @@ void realized_geometry() {
                 column<Vector3>(output, "pivot", Layer::detail)[0] == Vector3{100, 101, 102},
             "Realize implicitly broadcast placement columns or transformed/reordered detail.");
     (*take(output.write<Vector3>("P", Layer::point)))[0] = {};
-    (*take(output.write<String>("label", Layer::detail)))[0] = String{"changed output"};
+    (*take(output.write<String>("label", Layer::detail)))[0] = String::literal<"changed output">();
     require(std::ranges::equal(sources[0].positions(), authored) && sources[1].positions()[0] == Vector3{3, 0, 0} &&
                 column<std::uint32_t>(sources[1], "tag", Layer::vertex)[0] == 20 &&
                 column<float>(sources[0], "weight", Layer::point)[0] == 1 &&
@@ -509,7 +513,8 @@ void realized_geometry() {
             "Realize or editing its output mutated an input.");
 
     auto vector_source = take(Geometry::points(Array<Vector3>{{1, 2, 3}}));
-    take(vector_source.set(String{"P"}, Layer::point, SharedArray<Vector3>{Array<Vector3>{{1, 2, 3}}}, Usage::vector));
+    take(vector_source.set(String::literal<"P">(), Layer::point, SharedArray<Vector3>{Array<Vector3>{{1, 2, 3}}},
+                           Usage::vector));
     auto target = take(Geometry::points(Array<Vector3>{{10, 20, 30}}));
     take(target.add<Vector3>("scale", Layer::point, {2, 3, 4}));
     const std::array vector_sources{vector_source};
@@ -855,8 +860,8 @@ void native_constructors() {
     line_node.count = 3;
     Geometry cloud;
     line_node.evaluate(cloud);
-    take(cloud.set(String{"weight"}, Layer::point, SharedArray<float>{Array<float>{3, 7, 11}}));
-    (void)take(cloud.add<String>("label", Layer::detail, String{"path"}));
+    take(cloud.set(String::literal<"weight">(), Layer::point, SharedArray<float>{Array<float>{3, 7, 11}}));
+    (void)take(cloud.add<String>("label", Layer::detail, String::literal<"path">()));
     Polyline polyline_node;
     Geometry path;
     polyline_node.evaluate(cloud, path);
@@ -870,7 +875,7 @@ void native_constructors() {
             "Line to Polyline lost its open AB/BC path, attributes or input isolation.");
 
     GroupBox group_node;
-    group_node.group = String{"chosen"};
+    group_node.group = String::literal<"chosen">();
     group_node.minimum = {0, -1, 2};
     group_node.maximum = {2, 1, 4};
     auto group_input = take(Geometry::points({{1, 0, 3}, {0, -1, 2}, {2, 1, 4}, {1, 2, 3}, {1, 0, 5}}));
@@ -943,7 +948,7 @@ void graph_evaluation() {
     take(runtime.write(grid_node, field(runtime, type<Grid>(runtime), "columns"), Scalar{std::uint32_t{4}}));
     write_vector(moved, translate, {1, 0, 0});
     take(runtime.with_native<CopyToPoints>(copied, [](CopyToPoints& node) -> Result<void> {
-        node.meshes.add(String{"fixture/a"});
+        node.meshes.add(String::literal<"fixture/a">());
         return {};
     }));
     take(connect(runtime, graph, grid_node, 0, moved, 0));
@@ -1484,9 +1489,9 @@ void realization_chain() {
         return {};
     }));
     take(runtime.with_native<Realize>(copied.id(), [](Realize& node) -> Result<void> {
-        node.group = String{"selected"};
-        node.variant = String{"sourceordinal"};
-        node.target_attributes = Array<String>{String{"id"}};
+        node.group = String::literal<"selected">();
+        node.variant = String::literal<"sourceordinal">();
+        node.target_attributes = Array<String>{String::literal<"id">()};
         return {};
     }));
     take(runtime.with_native<Transform>(moved.id(), [](Transform& node) -> Result<void> {
@@ -1686,7 +1691,7 @@ void profile(const char* path) {
     const auto merged = add(type<Merge>(runtime));
     const auto copied = add(type<CopyToPoints>(runtime));
     take(runtime.with_native<MeshImport>(imported.id(), [](MeshImport& node) -> Result<void> {
-        node.mesh = String{"profile/terrain"};
+        node.mesh = String::literal<"profile/terrain">();
         return {};
     }));
     take(runtime.with_native<Scatter>(scattered.id(), [](Scatter& node) -> Result<void> {
@@ -1703,7 +1708,7 @@ void profile(const char* path) {
         return {};
     }));
     take(runtime.with_native<CopyToPoints>(copied.id(), [](CopyToPoints& node) -> Result<void> {
-        node.meshes.add(String{"profile/rock"});
+        node.meshes.add(String::literal<"profile/rock">());
         return {};
     }));
     take(connect(runtime, graph, imported.id(), 0, scattered.id(), 0));
@@ -1751,7 +1756,8 @@ void profile(const char* path) {
                samples,
                [&](int i) {
                    take(runtime.with_native<CopyToPoints>(copied.id(), [&](CopyToPoints& node) -> Result<void> {
-                       node.variant = String{StringView{"v" + std::to_string(i + 2)}};
+                       if (!node.variant.assign(StringView{"v" + std::to_string(i + 2)}))
+                           return failure("Variant name requires valid UTF-8.");
                        return {};
                    }));
                },

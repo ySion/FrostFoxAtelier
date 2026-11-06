@@ -55,11 +55,9 @@ struct StoredValue {
 
 void verify_source_value_fields() {
     Runtime runtime;
-    auto particle = reflection::Definition<Particle>::build(runtime);
-    particle.native.value_operations_preserve_borrows = true;
-    take(runtime.register_types({std::move(particle), reflection::Definition<Position>::build(runtime),
-                                 string_definition(runtime),
-                                 array_definition<Particle>(runtime, "composed.Particles")}));
+    take(
+        runtime.register_types({particle_definition(runtime), reflection::Definition<Position>::build(runtime),
+                                string_definition(runtime), particle_array_definition(runtime, "composed.Particles")}));
     source::Program program(runtime, {});
     auto candidate = take(source::Program::prepare(take(program.request("value-fields.source", R"(
         struct composed.Bundle { composed.Payload payload; uint processed; };
@@ -95,10 +93,11 @@ void verify_source_value_fields() {
         auto& title = input.at<String>(offset("title"));
         auto& leader = input.at<Particle>(offset("leader"));
         auto& particles = input.at<Array<Particle>>(offset("particles"));
-        title.assign("host/original/long-title");
-        leader.name.assign("host/leader/long-name");
+        require(title.assign("host/original/long-title").has_value(), "Fixture title is invalid UTF-8.");
+        require(leader.name.assign("host/leader/long-name").has_value(), "Fixture leader name is invalid UTF-8.");
         particles.resize(2);
-        particles[0].name.assign("host/particle/long-name");
+        require(particles[0].name.assign("host/particle/long-name").has_value(),
+                "Fixture particle name is invalid UTF-8.");
         const auto* particles_data = particles.data();
         std::array args{Argument::borrow(bundle, input.data, input.data), Argument{Scalar{std::uint32_t{2}}}};
         require(!program.entry().invoke({}, args) && Particle::live == 3,

@@ -149,11 +149,8 @@ Result<void> set_sky_map_binding(Runtime& runtime, ObjectId object, SkyMapBindin
     if (binding.resolved && binding.source.empty())
         return error(ErrorCode::invalid_definition, "A sky map needs its asset key.");
     String source;
-    try {
-        source = String(StringView(binding.source));
-    } catch (const std::exception& failure) {
-        return error(ErrorCode::invalid_definition, failure.what());
-    }
+    if (!source.assign(StringView{binding.source}))
+        return error(ErrorCode::invalid_definition, "String requires valid UTF-8.");
     ATELIER_TRY(runtime.check_code_publication());
     ATELIER_TRY(world::admit_component_edit(runtime, object));
     return runtime.with_native<EnvironmentComponent>(object, [&](EnvironmentComponent& component) -> Result<void> {

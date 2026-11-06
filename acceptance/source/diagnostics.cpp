@@ -35,15 +35,15 @@ struct Host {
 
     Coroutine* task{};
 
-    void fail() {
+    Result<void> fail() noexcept {
         value = static_cast<std::uint32_t>(Particle::live);
-        throw std::runtime_error("Diagnostic native failure.");
+        return std::unexpected(Error{ErrorCode::invocation_failed, "Diagnostic native failure."});
     }
 
-    void cancel_fail() {
+    Result<void> cancel_fail() noexcept {
         task->cancel();
         value = 1;
-        throw std::runtime_error("Diagnostic native failure.");
+        return std::unexpected(Error{ErrorCode::invocation_failed, "Diagnostic native failure."});
     }
 };
 

@@ -652,15 +652,16 @@ struct NativeLayout {
 
     const void* representation{};
 
-    void (*construct)(void*){};
+    Result<void> (*construct)(void*) noexcept {};
 
     void (*destroy)(void*) noexcept {};
 
-    // Optional for records. Construction unwinds on failure; assignment preserves
-    // a destructible value and its basic invariants, but need not roll back.
-    void (*copy_construct)(void*, const void*){};
+    // Optional for records. Failed construction cleans its own partial resources
+    // and leaves no live destination. Failed assignment leaves a destructible value
+    // with its basic invariants, but need not roll back. Neither operation changes source.
+    Result<void> (*copy_construct)(void*, const void*) noexcept {};
 
-    void (*copy_assign)(void*, const void*){};
+    Result<void> (*copy_assign)(void*, const void*) noexcept {};
 
     // Optional for values: exchanges two live values without throwing. Whole-value field
     // writes use it to commit a fully prepared copy, leaving the field unchanged on failure.
@@ -676,7 +677,7 @@ struct NativeLayout {
     // Does not allocate, mutate, invoke user code or extend the buffer lifetime.
     void (*sequence_view)(const void*, const void**, std::size_t*) noexcept {};
 
-    void (*sequence_mutate)(SequenceMutation, void*, const void*, std::size_t){};
+    Result<void> (*sequence_mutate)(SequenceMutation, void*, const void*, std::size_t) noexcept {};
 
     // Trusted promise: value operations may change their destination, but do
     // not invalidate other borrowed storage, retain input addresses or reenter
@@ -897,7 +898,7 @@ struct TypeInfo {
 
     void (*sequence_view)(const void*, const void**, std::size_t*) noexcept {};
 
-    void (*sequence_mutate)(SequenceMutation, void*, const void*, std::size_t){};
+    Result<void> (*sequence_mutate)(SequenceMutation, void*, const void*, std::size_t) noexcept {};
 
     bool value_operations_preserve_borrows{};
 

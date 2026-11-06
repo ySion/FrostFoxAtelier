@@ -34,10 +34,13 @@ Result<ObjectRoot> create_texture(Runtime& runtime, std::string_view source, Ima
         return failure("Invalid texture resource source.");
     if (!image && source.empty())
         return failure("A texture without image content requires the persistent source it stands in for.");
+    auto text = String::from_utf8(StringView{source});
+    if (!text)
+        return failure("Texture resource source requires valid UTF-8.");
     ATELIER_TRY_BIND(type, runtime.native_type<TextureResource>());
     ATELIER_TRY_BIND(root, runtime.create(*type));
     auto written = runtime.with_native<TextureResource>(root->id(), [&](auto& value) -> Result<void> {
-        Access::source(value) = String(StringView(source));
+        Access::source(value) = std::move(*text);
         Access::image(value) = std::move(image);
         return {};
     });

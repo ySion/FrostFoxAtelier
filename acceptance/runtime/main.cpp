@@ -33,11 +33,7 @@ struct alignas(32) ValueResource {
 
     int id;
 
-    static int begin_lifetime() {
-        if (remaining_constructions == 0)
-            throw std::runtime_error("Deliberate value construction failure.");
-        if (remaining_constructions > 0)
-            --remaining_constructions;
+    static int begin_lifetime() noexcept {
         ++live;
         return ++next_id;
     }
@@ -47,11 +43,31 @@ struct alignas(32) ValueResource {
     ValueResource(const ValueResource& source)
         : payload(std::make_unique<std::uint32_t>(*source.payload)), id(begin_lifetime()) {}
 
+    explicit ValueResource(std::unique_ptr<std::uint32_t> value) noexcept
+        : payload(std::move(value)), id(begin_lifetime()) {}
+
     ValueResource& operator=(const ValueResource& source) {
         *payload = *source.payload;
-        if (fail_assignment)
-            throw std::runtime_error("Deliberate value assignment failure.");
         return *this;
+    }
+
+    static Result<void> construct(void* destination, const void* source) noexcept {
+        // A failed native callback owns this prepared resource; no destination is live yet.
+        auto payload =
+            std::make_unique<std::uint32_t>(source ? *static_cast<const ValueResource*>(source)->payload : 7);
+        if (remaining_constructions == 0)
+            return std::unexpected(Error{ErrorCode::construction_failed, "Deliberate value construction failure."});
+        if (remaining_constructions > 0)
+            --remaining_constructions;
+        std::construct_at(static_cast<ValueResource*>(destination), std::move(payload));
+        return {};
+    }
+
+    static Result<void> assign(void* destination, const void* source) noexcept {
+        *static_cast<ValueResource*>(destination) = *static_cast<const ValueResource*>(source);
+        if (fail_assignment)
+            return std::unexpected(Error{ErrorCode::assignment_failed, "Deliberate value assignment failure."});
+        return {};
     }
 
     ~ValueResource() noexcept {
@@ -61,11 +77,20 @@ struct alignas(32) ValueResource {
     }
 };
 
+TypeDefinition value_resource_definition(Runtime& runtime, std::string name) {
+    auto definition = NativeRegistration<ValueResource>{runtime, std::move(name), TypeKind::record}.build();
+    definition.native.construct = [](void* destination) noexcept {
+        return ValueResource::construct(destination, nullptr);
+    };
+    definition.native.copy_construct = ValueResource::construct;
+    definition.native.copy_assign = ValueResource::assign;
+    return definition;
+}
+
 void verify_value_operations() {
     Runtime runtime;
     const auto u32 = take(runtime.native_type<std::uint32_t>());
-    const auto resource =
-        take(NativeRegistration<ValueResource>{runtime, "values.Resource", TypeKind::record}.publish());
+    const auto resource = take(runtime.register_type(value_resource_definition(runtime, "values.Resource")));
     const auto pair = take(runtime.register_type(
         {"values.Pair", TypeKind::record, {{"first", {resource}}, {"second", {resource}}}, {}, {}}));
     const auto record = take(runtime.register_type({"values.Record",
@@ -161,9 +186,9 @@ void verify_value_operations() {
 struct SignatureNative {
     std::uint32_t value{};
 
-    std::uint32_t fail(std::uint32_t amount) {
+    Result<std::uint32_t> fail(std::uint32_t amount) noexcept {
         value += amount;
-        throw std::runtime_error("Native scalar result failure.");
+        return std::unexpected(Error{ErrorCode::invocation_failed, "Native scalar result failure."});
     }
 };
 
@@ -443,12 +468,19 @@ struct CollectionValue {
 void verify_collection_value_mutations() {
     Runtime runtime;
     const auto ids = register_collection_types(runtime);
+    auto value_definition = NativeRegistration<CollectionValue>{runtime, "gc.Value", TypeKind::record}
+                                .field<&CollectionValue::links>("links")
+                                .field<&CollectionValue::resource>("resource")
+                                .build();
+    value_definition.native.copy_assign = [](void* destination, const void* source) noexcept -> Result<void> {
+        auto& target = *static_cast<CollectionValue*>(destination);
+        const auto& origin = *static_cast<const CollectionValue*>(source);
+        target.links = origin.links;
+        return ValueResource::assign(&target.resource, &origin.resource);
+    };
     const auto value_types = take(runtime.register_types({
-        NativeRegistration<CollectionValue>{runtime, "gc.Value", TypeKind::record}
-            .field<&CollectionValue::links>("links")
-            .field<&CollectionValue::resource>("resource")
-            .build(),
-        NativeRegistration<ValueResource>{runtime, "gc.Resource", TypeKind::record}.build(),
+        std::move(value_definition),
+        value_resource_definition(runtime, "gc.Resource"),
     }));
     CollectionValue source;
     CollectionValue destination;
@@ -654,7 +686,7 @@ struct ReentrantValue {
 
 void verify_deep_value_walks() {
     Runtime runtime;
-    const auto resource = take(NativeRegistration<ValueResource>{runtime, "deep.Resource", TypeKind::record}.publish());
+    const auto resource = take(runtime.register_type(value_resource_definition(runtime, "deep.Resource")));
     const auto reentrant =
         take(NativeRegistration<ReentrantValue>{runtime, "deep.Reentrant", TypeKind::record}.publish());
     const auto types = take(runtime.register_types({

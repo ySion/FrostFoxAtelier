@@ -69,7 +69,7 @@ CodeOwner compile_reference(const Binding& binding, std::string_view source, con
 struct NativeAction {
     void* context;
 
-    void (*run)(void*, ObjectId);
+    Result<void> (*run)(void*, ObjectId) noexcept;
 };
 
 thread_local NativeAction* native_action{};
@@ -82,10 +82,10 @@ struct ActionScope {
     ~ActionScope() { native_action = previous; }
 };
 
-Result<void> advance_machine(Runtime&, ObjectId self, NativeMachine& machine, float amount) {
+Result<void> advance_machine(Runtime&, ObjectId self, NativeMachine& machine, float amount) noexcept {
     machine.advance(amount);
     if (native_action)
-        native_action->run(native_action->context, self);
+        return native_action->run(native_action->context, self);
     return {};
 }
 
@@ -244,7 +244,10 @@ void verify_stale_source_references(Runtime& runtime, const Binding& binding) {
 
         ObjectRoot root;
     } state;
-    NativeAction capture{&state, [](void* context, ObjectId self) { static_cast<Replacement*>(context)->old = self; }};
+    NativeAction capture{&state, [](void* context, ObjectId self) noexcept -> Result<void> {
+                             static_cast<Replacement*>(context)->old = self;
+                             return {};
+                         }};
     ExecutionStats stats;
     {
         ActionScope scope(capture);
@@ -346,12 +349,13 @@ void verify_reload_owner_destruction(Runtime& runtime, const Binding& binding) {
 
         std::uintptr_t address;
     } state{program, active_entry, address};
-    NativeAction close{&state, [](void* context, ObjectId) {
+    NativeAction close{&state, [](void* context, ObjectId) noexcept -> Result<void> {
                            auto& state = *static_cast<Closing*>(context);
                            state.program.reset();
                            state.entry.reset();
                            require_code_state(state.address, true);
-                           throw std::runtime_error("Program closed inside failing native call.");
+                           return std::unexpected(
+                               Error{ErrorCode::invocation_failed, "Program closed inside failing native call."});
                        }};
     ExecutionStats stats;
     {

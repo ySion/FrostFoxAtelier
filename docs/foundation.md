@@ -11,12 +11,13 @@
 | `Array<T>` | 独占连续缓冲；复制拥有独立元素，平凡操作可批量完成；移动转移缓冲，源变为空；析构剩余元素并释放缓冲 | [array.hpp](../modules/core/foundation/include/foundation/array.hpp) |
 | `SharedArray<T>` | 计数句柄，共享一个不可变 Array；复制只增加计数，写入前先取得独占；移动后源为空 | [shared_array.hpp](../modules/core/foundation/include/foundation/shared_array.hpp) |
 | `Span<T>` | 指针与元素数量；复制只复制借用描述 | [span.hpp](../modules/core/foundation/include/foundation/span.hpp) |
-| `String` | 独占、有效 UTF-8，保证尾部零字符；复制拥有独立缓冲，移动后源为空 | [string.hpp](../modules/core/foundation/include/foundation/string.hpp) |
+| `String` | 有效 UTF-8，保证尾部零字符；拥有缓冲复制独立，literal 复制借用固定字节，移动后源为空 | [string.hpp](../modules/core/foundation/include/foundation/string.hpp) |
 | `StringView` | 指针与字节数量；允许外部未验证 UTF-8 与局部字节切片，不保证尾部零字符 | 同上 |
 | `Map<K,V>` | 独占键和值；复制独立拥有，移动转移存储；键只读、值可修改，无遍历顺序保证 | [map.hpp](../modules/core/foundation/include/foundation/map.hpp) |
 | `Set<T>` | 独占唯一成员；复制独立拥有，移动转移存储；成员只读，无遍历顺序保证 | [set.hpp](../modules/core/foundation/include/foundation/set.hpp) |
+| `Optional<T>` | 内联值或缺席；移动后源仍 engaged，保存合法的 moved-from T；reset 才变空 | [optional.hpp](../modules/core/foundation/include/foundation/optional.hpp) |
 
-String 使用 32 字节对象及 15 字节短字符串内联存储（SSO），长文本由独占堆缓冲持有。字节复制直接搬移连续缓冲，不构造随后会被覆盖的字符。Array 使用标准分配原语取得正确对齐的未初始化存储；宿主的 String 和 Array 均沿现有全局 new/delete 接入 mimalloc，无额外分配器注册表。取舍与同机采样见[字符串研究与测量](research/string-storage-performance.md)。
+String 使用 32 字节对象、8 字节对齐及 30 字节短字符串内联存储（SSO）；长文本由独占堆缓冲或固定字面量持有。字节复制直接搬移连续缓冲，不构造随后会被覆盖的字符。Array 使用标准分配原语取得正确对齐的未初始化存储；宿主的 String 和 Array 均沿现有全局 new/delete 接入 mimalloc，无额外分配器注册表。[字符串研究与测量](research/string-storage-performance.md)记录旧表示的历史测量，不代表新布局性能。
 
 原生容器可持有普通 C++ 资源；复制指针或句柄不复制其指向对象。Runtime 对象引用的存活仍由根、字段与写屏障管理。普通 `Array<ObjectId>` 不会自动成为 GC 根。
 
@@ -27,8 +28,8 @@ Array/String/Map/Set 自复制、自移动和自交换保持原值；移动后�
 ```cpp
 atelier::Array<atelier::String> names;
 names.reserve(16);
-names.emplace("sword");
-names.emplace("shield");
+names.emplace(atelier::String::literal<"sword">());
+names.emplace(atelier::String::literal<"shield">());
 names.add(names[0]);                 // 支持自身元素作为追加来源
 names.append(names.view());          // 支持自身全部或部分视图
 names.remove_at(0);                  // 保持顺序
@@ -47,7 +48,7 @@ names.squeeze();                    // 显式收紧容量；空数组释放缓�
 - 复制赋值在容量足够、元素可平凡复制构造且平凡复制赋值时复用缓冲，包括空值、变短和重新增长；其他情况先构造完整副本再替换，失败保留目标值。可复制但不可赋值的元素仍然可用。String、智能指针和其他资源类型保留逐元素构析；不抛异常的非平凡赋值不自动取得字节搬运或容量复用资格。
 - 预留容量中的单元素 emplace 直接构造并在成功后增加大小；实际扩容仍先构造新增后缀，再处理旧前缀，保留自身元素或视图作为来源的合同。remove_if 仍逐元素交替调用谓词与搬移，谓词可以观察之前已经压缩的位置。
 - `emplace/add` 构造新增元素可能由调用者提供任意参数；若元素构造主动修改参数，包括移动自身元素，失败时不能撤销这些用户行为。保序删除和 `remove_if` 若元素赋值或谓词抛异常，容器仍可析构，但部分元素可能已改变。
-- 非法索引/切片/删除范围抛 `std::out_of_range`，容量溢出抛 `std::length_error`，分配失败沿 C++ 分配异常传播。通过 Runtime 调用的异常按原有边界转为 `Result` 错误。
+- 直接 C++ Array 的错误出口尚待迁移：非法索引/切片/删除范围仍抛 `std::out_of_range`，容量溢出仍抛 `std::length_error`；宿主 CPU 分配失败已走唯一 fatal 出口。Runtime 适配已采用 `noexcept` 结果回调，并在调用容器前检查业务范围与容量；不再捕获 C++ 异常转成 `Result`，异常越过回调会终止进程。可恢复的元素业务失败必须由显式结果回调及相应容器适配处理，按操作合同清理未发布候选、保留旧值或处理部分赋值；不能假设普通 C++ Array 会调用元素的结果回调。
 
 ## 共享不可变数组
 
@@ -73,11 +74,11 @@ bool shared = same(column, copy);         // false：两者已是不同的块
 ```cpp
 atelier::Map<atelier::String, unsigned> resources;
 resources.reserve(128);                    // 可容纳的总条目数
-auto [value, inserted] = resources.try_emplace("材质/stone", 7u);
+auto [value, inserted] = resources.try_emplace(atelier::String::literal<"材质/stone">(), 7u);
 if (const auto* found = resources.find(atelier::StringView{"材质/stone"})) {
     // found 借用表中的值；本次查询不创建拥有型 String。
 }
-resources.insert_or_assign("材质/stone", 9u);
+resources.insert_or_assign(atelier::String::literal<"材质/stone">(), 9u);
 for (auto [key, current] : resources) {      // 两个绑定都借用元素
     current += 1;                          // key 只读
 }
@@ -132,8 +133,8 @@ Map/Set 目前没有反射或源码定义，也没有等待中的源码消费者
 ## 文本与视图
 
 ```cpp
-atelier::String label{"你好"};
-label.append(" / loot");
+auto label = atelier::String::literal<"你好">();
+label.append(atelier::String::literal<" / loot">());
 atelier::StringView input = label.view();
 auto suffix = input.slice(6);       // 字节偏移；“你好”为 6 个 UTF-8 字节
 bool found = input.contains("loot");
@@ -141,15 +142,29 @@ bool found = input.contains("loot");
 
 String 的 `size/capacity` 不含末尾零字符，所有索引、查找和切片位置均为字节。带长度的 StringView 保留嵌入零字节；零结尾构造只扫描首个零。`c_str()` 可用于需要零结尾的接口，但对方可能在嵌入零处停止。
 
-从 StringView 构造、`assign` 与 `append` 验证 UTF-8：拒绝截断序列、非法续字节、过长编码、代理区和超出 U+10FFFF 的编码；失败不更改原字符串。支持从自身视图追加或赋值。String 不提供可写字符地址。复制有效 String、`assign(const String&)` 或 `append(const String&)` 直接复制已验证字节；任意 StringView，包括来自有效 String 的字节切片，仍需校验。ASCII 校验按完整 8 字节块跳过，残余及非 ASCII 序列继续按 UTF-8 规则处理，不越过视图边界。
+`String::from_utf8(StringView)` 返回 `std::expected<String, StringError>`；`assign(StringView)` 与 `append(StringView)` 返回 `std::expected<void, StringError>`。三个入口均 noexcept，拒绝截断序列、非法续字节、过长编码、代理区和超出 U+10FFFF 的编码，返回唯一编码错误 `StringError::invalid_utf8`，失败不更改原字符串。旧 StringView 构造函数已删除。支持从自身视图追加或赋值。String 不提供可写字符地址。复制有效 String、`assign(const String&)` 或 `append(const String&)` 直接复制已验证字节；任意 StringView，包括来自有效 String 的字节切片，仍需校验。ASCII 校验按完整 8 字节块跳过，残余及非 ASCII 序列继续按 UTF-8 规则处理，不越过视图边界。
 
-容量不包含末尾零字符。空 String 的内联容量为 15；不超过此字节数的普通构造与复制不分配堆缓冲。`reserve` 只准备容量，堆增长采用需求值与约 1.5 倍旧容量的较大值；构造长文本只依据内容长度准备缓冲，不继承源对象预留的大容量。赋值若容量足够便复用缓冲，变短不会自动缩容。`clear` 保留容量，`squeeze` 将堆容量收紧到长度，短值可退回内联存储；`release` 释放堆缓冲并回到空内联表示。分配或 UTF-8 校验失败保留原值。
+容量不包含末尾零字符。空 String 的内联容量为 30；不超过此字节数的拥有值创建与复制不分配堆缓冲。`reserve` 只准备容量，堆增长采用需求值与约 1.5 倍旧容量的较大值；复制长文本不继承源对象预留的大容量。拥有缓冲容量足够时赋值复用缓冲，变短不会自动缩容。堆值的 `clear` 保留容量，`squeeze` 将堆容量收紧到长度，短值可退回内联存储；`release` 释放堆缓冲并回到空内联表示。业务长度上限在上层预检并返回 Result；容器内部不可表示容量及 CPU OOM 走唯一 fatal 出口，不作为 StringError。
+
+`String::literal<"text">()` 编译期验证完整 UTF-8，借用具有静态存储期的模板参数字节，任意长度构造和复制均不分配。字面量所在原生模块须活到全部副本结束，不能借可卸载模块或 JIT 常量池；Source 文本仍复制。写入先分离，不能写/释放静态区。literal 的 capacity 等于字节长度，不保证下一次写入零分配；reserve 不超过该长度时不分离，clear/release 回空内联，squeeze 不改变 literal。literal 拷贝可共享字节，其他 String 拷贝独占缓冲。
+
+String 的末字节 tag 为 0–30（内联长度）、0xFE（堆）、0xFF（literal）；长描述符通过字节复制读写，不读取未激活 union 成员。虽然大小/对齐未变，表示 ABI 已改变；必须与 Runtime NativeLayout 结果化联合重编译、重建反射/JIT 并重启进程，不能混入旧对象和旧代码。
 
 StringView 的 `slice/find/starts_with/ends_with/contains` 都按字节工作，切片可能截断码点；`is_valid_utf8()` 可明确检查。转成 String 时重新校验。`std_view()` 是对标准库消费者的显式借用适配，不创造另一份拥有存储。大小写折叠、Unicode 规范化、字符/字素索引和本地化文本未实现。
+
+`trim/trim_start/trim_end` 默认剪除六种 ASCII 空白（空格、tab、CR、LF、VT、FF），也接受显式字节集合，不按 Unicode 空白分类。`split(delimiter)` 返回零分配惰性输入范围，按完整字节串分隔并保留首尾及相邻分隔符之间的空片段；空输入仍返回一个空片段，空 delimiter 返回整个输入一次。`partition/rpartition` 返回 `{before, separator, after}`；未命中或 delimiter 为空时，前向返回 `{whole, empty, empty}`，反向返回 `{empty, empty, whole}`。所有片段和 split 的 delimiter 都借用原字节，迭代期间不能改变或销毁来源。
+
+`code_points()` 先验证整个视图，返回 `expected<CodePointRange, StringError>`，不以替换字符吞掉坏输入；成功范围逐项给出 `{char32_t value, byte_offset, byte_count}`，偏移与长度均为 UTF-8 字节，不是 UTF-16 单元或字素。空文本产生空范围，嵌入 NUL 是一个正常码点。校验和迭代分两遍且不分配；取得范围后必须保持来源内容不变。新增范围不注册为 Runtime 值，也不新增 Source 字符串遍历语法。
 
 Span 的 `slice(first,count)` 按元素切片；`Span<T>` 可转 `Span<const T>`，反向不允许。`const Span<T>` 只冻结描述本身，不冻结元素。只读元素必须写 `Span<const T>`。
 
 **借用有效期由拥有者和修改行为决定。** 销毁、释放、替换存储及实际扩容使原地址失效；删除和压缩可能让相同地址对应不同元素；clear 结束全部元素生命周期。Array 和堆 String 移动转移缓冲后，原地址若仍使用便依赖新拥有者；内联 String 移动复制字节到目标对象，旧视图不能跟随该值。调用者统一按移动后重新获取 String 视图处理。视图不冻结容器，不提供并发保护，也不能无条件跨协程挂起保存。直接对临时 Array/String 取 `view()` 及从临时 String 构造 StringView 被禁止；C++ 调用者仍须保证其他借用路径有效。
+
+## Optional 的原生合同
+
+Optional 不承载错误；空值不构造 T，也不要求 T 默认可构造。payload 从偏移零开始，占 sizeof(T)，随后是 1 字节 engaged（0/1），总大小按 alignof(T) 向上补齐；不使用 niche 或 padding 压缩。复制、移动、赋值、emplace 和 swap 按 T 对应的 nothrow 能力提供。emplace 先销毁旧值，参数不能借用该旧值；reset/emplace/赋值使 payload 借用失效。
+
+`has_value/bool` 查询状态；`try_get() &/const&` 缺席时返回 nullptr。`operator*/operator->` 空访问为合同 fatal，所有这些借用接口禁止临时对象。移动保留源 engaged；Optional<String> 的源含一个空 String，而不是空 Optional。不提供抛 bad_optional_access 的 value()。Runtime/Source 的接线由 Runtime 负责：通过回调访问，不读取 engaged 私有偏移，也不能自动把 Optional 中的引用作为 GC 根。
 
 ## 共享反射与 Runtime
 

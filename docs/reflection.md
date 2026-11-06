@@ -101,6 +101,8 @@ AFIELD(Min = "1", Max = "64", LockMin) std::uint32_t samples{8};
 - 满足自然对齐的标准布局类型中，公开反射字段额外生成 `offsetof`，由同一 Runtime 发布并校验，供源码借用直接访问。隐藏、非标准布局或不能保证自然对齐的字段继续使用既有成员访问器，不推测偏移；这一限制不影响原有反射能力。详见[原生值借用](native-value-borrows.md)。
 - 构造、析构和记录复制能力沿用 `NativeRegistration`。生成代码带原头文件的 `#line`，编译器继续验证默认构造及不抛异常析构等约束。
 
+上述业务结果 R 也可包装一层 `atelier::Result<R>`，包括 `Result<void>`；生成器保留真实成员指针类型，由同一注册器产生动态及定型入口。Result 的成功值类型才是反射业务结果，不生成 expected 的字段或新的 Source Result 类型。失败与输出提交合同统一见[原生调用与 evaluate 目标](runtime-model.md#原生调用与-evaluate-目标)。
+
 bool 反射字段和方法使用 Runtime 的 `core.bool` 身份与当前目标的 1 字节 C++ bool 存储。bool/const bool&/bool& 及 bool 结果沿既有 `NativeRegistration`、共享签名与结果提交入口处理，保留真实地址和别名；不将 bool 转成 uint 另建调用路径。动态调用及源码调用的错误类型或缺失结果仍按[共享函数契约](runtime-model.md#共享函数签名与结果)拒绝。
 
 ### 枚举与引用示例

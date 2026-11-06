@@ -16,20 +16,11 @@ std::string_view text(const String& value) {
     return {value.c_str(), value.size()};
 }
 
-// Copies may throw and moves are copies, so only the Array that holds them swaps without throwing.
+// The registered Array copy callback rejects selected elements explicitly.
 struct Fragile {
     float value{};
 
     bool fail{};
-
-    Fragile() = default;
-
-    Fragile(const Fragile& other) : value(other.value), fail(other.fail) {
-        if (other.fail)
-            throw std::runtime_error("copy refused");
-    }
-
-    Fragile& operator=(const Fragile&) = default;
 };
 }
 
@@ -40,6 +31,17 @@ void verify_value_paths() {
                                   .field<&Fragile::fail>("fail")
                                   .build();
     fragile_definition.native.value_operations_preserve_borrows = true;
+    auto array = array_definition<Fragile>(runtime, "values.FragileArray");
+    array.native.copy_construct = [](void* destination, const void* source) noexcept -> Result<void> {
+        Array<Fragile> prepared;
+        for (const auto& element : *static_cast<const Array<Fragile>*>(source)) {
+            if (element.fail)
+                return std::unexpected(Error{ErrorCode::construction_failed, "copy refused"});
+            prepared.add(element);
+        }
+        std::construct_at(static_cast<Array<Fragile>*>(destination), std::move(prepared));
+        return {};
+    };
     FieldDefinition weight;
     weight.name = "weight";
     weight.value = {TypeReference::native<float>()};
@@ -47,7 +49,7 @@ void verify_value_paths() {
     const auto types = take(runtime.register_types({
         string_definition(runtime),
         std::move(fragile_definition),
-        array_definition<Fragile>(runtime, "values.FragileArray"),
+        std::move(array),
         {"values.Pair", TypeKind::record, {{"text", {TypeReference{"core.String"}}}, std::move(weight)}, {}, {}},
         {"values.Twin",
          TypeKind::record,
@@ -115,7 +117,7 @@ void verify_value_paths() {
 
         float weight;
     };
-    PairValue heavy{String{StringView{"heavy"}}, 7.0f};
+    PairValue heavy{String::literal<"heavy">(), 7.0f};
     take(runtime.write(id, std::array{pair}, ValueInput{pair_type, &heavy}));
     const std::array weight_path{pair, field(pair_type, "weight")};
     take(runtime.with_native<float>(id, weight_path, [](float& value) -> Result<void> {
@@ -124,7 +126,7 @@ void verify_value_paths() {
     }));
     PairValue before;
     take(runtime.read(id, std::array{pair}, ValueOutput{pair_type, &before}));
-    PairValue replacement{String{StringView{"replacement"}}, 0.5f};
+    PairValue replacement{String::literal<"replacement">(), 0.5f};
     take(runtime.write(id, std::array{pair}, ValueInput{pair_type, &replacement}));
     take(runtime.restore(id, std::array{pair}, ValueOutput{pair_type, &before}));
     String copy;
@@ -134,5 +136,23 @@ void verify_value_paths() {
     require(text(copy) == "heavy" && std::bit_cast<std::uint32_t>(restored) == 0x7fc0'1234u &&
                 text(before.text) == "replacement",
             "restore did not exchange a whole record with a NaN leaf.");
+    const auto storage = std::as_writable_bytes(std::span{&copy, 1});
+    const std::array invalid_utf8{char(0xc0), char(0xaf)};
+    const auto invalid = runtime.mutate_sequence(string_type, storage, SequenceMutation::assign_text, {},
+                                                 std::as_bytes(std::span{invalid_utf8}));
+    const auto oversized =
+        runtime.mutate_sequence(string_type, storage, SequenceMutation::reserve, {}, {}, String::max_size + 1);
+    const auto oversized_array =
+        runtime.mutate_sequence(fragile_array, std::as_writable_bytes(std::span{&good, 1}), SequenceMutation::resize,
+                                {}, {}, Array<Fragile>::max_size + 1);
+    require(!invalid && invalid.error().code == ErrorCode::argument_mismatch && !oversized &&
+                oversized.error().code == ErrorCode::capacity_exceeded && !oversized_array &&
+                oversized_array.error().code == ErrorCode::capacity_exceeded && text(copy) == "heavy" &&
+                good.size() == 1 && good[0].value == 2.0f,
+            "Sequence input rejection lost its error category or changed the old value.");
+    const std::array suffix{'/', 'o', 'k'};
+    take(runtime.mutate_sequence(string_type, storage, SequenceMutation::append_text, {},
+                                 std::as_bytes(std::span{suffix})));
+    require(text(copy) == "heavy/ok", "String did not recover after rejected input.");
     std::puts("[pass] Value paths: failed replacement/read atomicity and owning record restore");
 }

@@ -1121,26 +1121,20 @@ struct Runtime::Impl {
             return {};
         }
         if (type.swap_parts.empty()) {
-            try {
-                assign(type, destination, source);
-            } catch (const std::exception& error) {
-                return failure(ErrorCode::assignment_failed, error.what());
-            } catch (...) {
-                return failure(ErrorCode::assignment_failed, "Native value assignment raised an unknown exception.");
+            if (auto assigned = assign(type, destination, source); !assigned) {
+                assigned.error().code = ErrorCode::assignment_failed;
+                return assigned;
             }
             if (constrained)
                 constrain_value(type, range, destination, true);
             return {};
         }
         detail::ValueStorage temporary;
-        std::byte* copy{};
-        try {
-            copy = temporary.prepare(type.info.size, type.info.alignment);
-        } catch (const std::exception& error) {
-            return failure(ErrorCode::assignment_failed, error.what());
+        auto* copy = temporary.prepare(type.info.size, type.info.alignment);
+        if (auto made = try_construct(type, copy, source); !made) {
+            made.error().code = ErrorCode::assignment_failed;
+            return made;
         }
-        if (auto made = try_construct(type, copy, source); !made)
-            return failure(ErrorCode::assignment_failed, made.error().message);
         if (constrained)
             constrain_value(type, range, copy, true);
         swap_value(type, destination, copy);
@@ -1307,13 +1301,18 @@ struct Runtime::Impl {
         type->native = {sizeof(T),
                         alignof(T),
                         detail::representation<T>(),
-                        [](void* address) { std::construct_at(static_cast<T*>(address)); },
-                        [](void* address) noexcept { std::destroy_at(static_cast<T*>(address)); },
-                        [](void* destination, const void* source) {
-                            std::construct_at(static_cast<T*>(destination), *static_cast<const T*>(source));
+                        [](void* address) noexcept -> Result<void> {
+                            std::construct_at(static_cast<T*>(address));
+                            return {};
                         },
-                        [](void* destination, const void* source) {
+                        [](void* address) noexcept { std::destroy_at(static_cast<T*>(address)); },
+                        [](void* destination, const void* source) noexcept -> Result<void> {
+                            std::construct_at(static_cast<T*>(destination), *static_cast<const T*>(source));
+                            return {};
+                        },
+                        [](void* destination, const void* source) noexcept -> Result<void> {
                             *static_cast<T*>(destination) = *static_cast<const T*>(source);
+                            return {};
                         }};
         representations.try_emplace(type->native.representation, id.index_);
         names.try_emplace(StringView{std::string_view{type->info.name}}, id.index_);
@@ -1358,74 +1357,74 @@ struct Runtime::Impl {
             initialize_scalars<std::uint32_t>(storage, type.info.size);
     }
 
-    // Native constructors own their subobjects. Described frames track only completed
-    // fields, so a failed child is never destroyed twice during reverse unwinding.
-    void construct(const Type& type, void* storage, const void* source = nullptr) {
-        if (type.native.construct) {
-            if (source)
-                type.native.copy_construct(storage, source);
-            else
-                type.native.construct(storage);
-            return;
-        }
+    // Native callbacks clean their failed destination. Described frames track
+    // only completed fields, so reverse cleanup never destroys the failed child.
+    Result<void> construct(const Type& type, void* storage, const void* source = nullptr) {
+        if (type.native.construct)
+            return source ? type.native.copy_construct(storage, source) : type.native.construct(storage);
         if (type.scalar_leaf) {
             construct_scalar_block(type, storage, source);
-            return;
+            return {};
         }
         WalkScope scope{walk_stack};
         walk_stack.push_back({&type, static_cast<std::byte*>(storage), static_cast<const std::byte*>(source)});
-        try {
-            while (walk_stack.size() != scope.base) {
-                const auto index = walk_stack.size() - 1;
-                const auto frame = walk_stack[index];
-                if (frame.next_field == frame.type->fields.size()) {
-                    walk_stack.pop_back();
-                    if (walk_stack.size() != scope.base)
-                        ++walk_stack.back().next_field;
+        Result<void> result;
+        while (walk_stack.size() != scope.base) {
+            const auto index = walk_stack.size() - 1;
+            const auto frame = walk_stack[index];
+            if (frame.next_field == frame.type->fields.size()) {
+                walk_stack.pop_back();
+                if (walk_stack.size() != scope.base)
+                    ++walk_stack.back().next_field;
+                continue;
+            }
+            const auto& field = frame.type->fields[frame.next_field];
+            auto* destination = frame.storage + field.offset;
+            const auto* origin = frame.source ? frame.source + field.offset : nullptr;
+            if (field.value.form == ValueForm::inline_value) {
+                if (field.type->native.construct) {
+                    if (origin)
+                        result = field.type->native.copy_construct(destination, origin);
+                    else if (field.default_text) {
+                        auto text = String::from_utf8(StringView{std::string_view{*field.default_text}});
+                        if (!text)
+                            result = failure(ErrorCode::construction_failed, "Default text is not valid UTF-8.");
+                        else
+                            std::construct_at(reinterpret_cast<String*>(destination), std::move(*text));
+                    } else
+                        result = field.type->native.construct(destination);
+                    if (!result)
+                        break;
+                } else if (field.type->scalar_leaf) {
+                    construct_scalar_block(*field.type, destination, origin);
+                } else {
+                    walk_stack.push_back({field.type, destination, origin});
                     continue;
                 }
-                const auto& field = frame.type->fields[frame.next_field];
-                auto* destination = frame.storage + field.offset;
-                const auto* origin = frame.source ? frame.source + field.offset : nullptr;
-                if (field.value.form == ValueForm::inline_value) {
-                    if (field.type->native.construct) {
-                        if (origin)
-                            field.type->native.copy_construct(destination, origin);
-                        else if (field.default_text)
-                            std::construct_at(reinterpret_cast<String*>(destination),
-                                              StringView{std::string_view{*field.default_text}});
-                        else
-                            field.type->native.construct(destination);
-                    } else if (field.type->scalar_leaf) {
-                        construct_scalar_block(*field.type, destination, origin);
-                    } else {
-                        walk_stack.push_back({field.type, destination, origin});
-                        continue;
-                    }
-                    if (!origin) {
-                        auto* leaf = destination;
-                        for (const auto& value : field.default_leaves)
-                            std::visit(
-                                [&](const auto& scalar) {
-                                    using T = std::remove_cvref_t<decltype(scalar)>;
-                                    if constexpr (!std::same_as<T, EnumValue>) {
-                                        std::memcpy(leaf, &scalar, sizeof(T));
-                                        leaf += sizeof(T);
-                                    }
-                                },
-                                value);
-                    }
-                } else if (field.value.form == ValueForm::strong_sequence) {
-                    std::construct_at(reinterpret_cast<ReferenceSequence*>(destination));
-                } else if (origin) {
-                    std::construct_at(reinterpret_cast<ReferenceSlot*>(destination),
-                                      *reinterpret_cast<const ReferenceSlot*>(origin));
-                } else {
-                    std::construct_at(reinterpret_cast<ReferenceSlot*>(destination));
+                if (!origin) {
+                    auto* leaf = destination;
+                    for (const auto& value : field.default_leaves)
+                        std::visit(
+                            [&](const auto& scalar) {
+                                using T = std::remove_cvref_t<decltype(scalar)>;
+                                if constexpr (!std::same_as<T, EnumValue>) {
+                                    std::memcpy(leaf, &scalar, sizeof(T));
+                                    leaf += sizeof(T);
+                                }
+                            },
+                            value);
                 }
-                ++walk_stack[index].next_field;
+            } else if (field.value.form == ValueForm::strong_sequence) {
+                std::construct_at(reinterpret_cast<ReferenceSequence*>(destination));
+            } else if (origin) {
+                std::construct_at(reinterpret_cast<ReferenceSlot*>(destination),
+                                  *reinterpret_cast<const ReferenceSlot*>(origin));
+            } else {
+                std::construct_at(reinterpret_cast<ReferenceSlot*>(destination));
             }
-        } catch (...) {
+            ++walk_stack[index].next_field;
+        }
+        if (!result) {
             while (walk_stack.size() != scope.base) {
                 const auto index = walk_stack.size() - 1;
                 const auto frame = walk_stack[index];
@@ -1441,32 +1440,28 @@ struct Runtime::Impl {
                     std::destroy_at(reinterpret_cast<ReferenceSequence*>(frame.storage + field.offset));
                 }
             }
-            throw;
         }
+        return result;
     }
 
     Result<void> try_construct(const Type& type, void* storage, const void* source = nullptr) {
         prepare_walk(type);
         CallbackScope scope{callbacks};
-        try {
-            construct(type, storage, source);
-            shade_value(type, storage);
-            return {};
-        } catch (const std::exception& error) {
-            return failure(ErrorCode::construction_failed, error.what());
-        } catch (...) {
-            return failure(ErrorCode::construction_failed, "Native value construction raised an unknown exception.");
+        auto result = construct(type, storage, source);
+        if (!result) {
+            result.error().code = ErrorCode::construction_failed;
+            return result;
         }
+        shade_value(type, storage);
+        return {};
     }
 
-    void assign(const Type& type, void* storage, const void* source) {
-        if (type.native.construct) {
-            type.native.copy_assign(storage, source);
-            return;
-        }
+    Result<void> assign(const Type& type, void* storage, const void* source) {
+        if (type.native.construct)
+            return type.native.copy_assign(storage, source);
         if (type.scalar_leaf) {
             std::memcpy(storage, source, type.info.size);
-            return;
+            return {};
         }
         WalkScope scope{walk_stack};
         walk_stack.push_back({&type, static_cast<std::byte*>(storage), static_cast<const std::byte*>(source)});
@@ -1482,9 +1477,9 @@ struct Runtime::Impl {
             auto* destination = frame.storage + field.offset;
             const auto* origin = frame.source + field.offset;
             if (field.value.form == ValueForm::inline_value) {
-                if (field.type->native.construct)
-                    field.type->native.copy_assign(destination, origin);
-                else if (field.type->scalar_leaf)
+                if (field.type->native.construct) {
+                    ATELIER_TRY(field.type->native.copy_assign(destination, origin));
+                } else if (field.type->scalar_leaf)
                     std::memcpy(destination, origin, field.type->info.size);
                 else
                     walk_stack.push_back({field.type, destination, origin});
@@ -1492,6 +1487,7 @@ struct Runtime::Impl {
                 *reinterpret_cast<ReferenceSlot*>(destination) = *reinterpret_cast<const ReferenceSlot*>(origin);
             }
         }
+        return {};
     }
 
     void destroy(const Type& type, void* storage) noexcept {
@@ -2897,17 +2893,12 @@ Result<void> Runtime::assign_value(TypeId type_id, std::span<std::byte> destinat
     }
     impl_->prepare_walk(**type);
     CallbackScope scope{impl_->callbacks};
-    try {
-        impl_->assign(**type, destination.data(), source.data());
-        impl_->shade_value(**type, destination.data());
-        return {};
-    } catch (const std::exception& error) {
-        impl_->shade_value(**type, destination.data());
-        return failure(ErrorCode::assignment_failed, error.what());
-    } catch (...) {
-        impl_->shade_value(**type, destination.data());
-        return failure(ErrorCode::assignment_failed, "Native value assignment raised an unknown exception.");
-    }
+    auto result = impl_->assign(**type, destination.data(), source.data());
+    // A failed assignment can still have copied references into earlier fields.
+    impl_->shade_value(**type, destination.data());
+    if (!result)
+        result.error().code = ErrorCode::assignment_failed;
+    return result;
 }
 
 Result<void> Runtime::destroy_value(TypeId type_id, std::span<std::byte> storage) {
@@ -2967,14 +2958,7 @@ Result<void> Runtime::mutate_sequence(TypeId type_id, std::span<std::byte> stora
         return failure(ErrorCode::unsupported_operation, "Unknown sequence operation.");
     }
     CallbackScope scope{impl_->callbacks};
-    try {
-        info.sequence_mutate(operation, storage.data(), input.data(), count);
-        return {};
-    } catch (const std::exception& error) {
-        return failure(ErrorCode::invocation_failed, error.what());
-    } catch (...) {
-        return failure(ErrorCode::invocation_failed, "Native sequence operation failed.");
-    }
+    return info.sequence_mutate(operation, storage.data(), input.data(), count);
 }
 
 Result<std::uint32_t> Runtime::resolve_object(ObjectId object) const {
@@ -3026,26 +3010,15 @@ Result<ObjectRoot> Runtime::create(TypeId type_id) {
     impl_->prepare_walk(*type);
     CallbackScope scope{impl_->callbacks};
     void* storage = ::operator new(type->info.size, std::align_val_t{type->info.alignment});
-    try {
-        impl_->construct(*type, storage);
-    } catch (const std::exception& error) {
+    if (auto made = impl_->construct(*type, storage); !made) {
         ::operator delete(storage, std::align_val_t{type->info.alignment});
-        return failure(ErrorCode::construction_failed, error.what());
-    } catch (...) {
-        ::operator delete(storage, std::align_val_t{type->info.alignment});
-        return failure(ErrorCode::construction_failed, "Native constructor raised an unknown exception.");
+        made.error().code = ErrorCode::construction_failed;
+        return std::unexpected(std::move(made.error()));
     }
     const auto index = impl_->free_head == no_slot ? static_cast<std::uint32_t>(impl_->slots.size()) : impl_->free_head;
     const auto generation = index == impl_->slots.size() ? std::uint64_t{1} : impl_->slots[index].generation;
     const ObjectId object{impl_->context, index, generation};
-    std::uint32_t root_index;
-    try {
-        root_index = impl_->roots->add(ObjectReference{{type_id, ValueForm::strong_reference}, object});
-    } catch (...) {
-        impl_->destroy(*type, storage);
-        ::operator delete(storage, std::align_val_t{type->info.alignment});
-        throw;
-    }
+    const auto root_index = impl_->roots->add(ObjectReference{{type_id, ValueForm::strong_reference}, object});
     ObjectRoot root{impl_->roots, root_index};
     if (index == impl_->slots.size())
         impl_->slots.emplace_back();
@@ -3631,14 +3604,8 @@ Result<void> Runtime::mutate_elements(ObjectId object, std::span<const FieldId> 
         return impl_->located(ErrorCode::argument_mismatch, address->root, path, leaf,
                               "Hard-bounded fields reject NaN and infinity.");
     }
-    try {
-        array.info.sequence_mutate(operation, address->data,
-                                   operation == SequenceMutation::insert ? value.data : &operand, position);
-    } catch (const std::exception& error) {
-        return failure(ErrorCode::invocation_failed, error.what());
-    } catch (...) {
-        return failure(ErrorCode::invocation_failed, "Native Array operation failed.");
-    }
+    ATELIER_TRY(array.info.sequence_mutate(operation, address->data,
+                                           operation == SequenceMutation::insert ? value.data : &operand, position));
     if (copy)
         impl_->constrain_value(element, address->range,
                                Impl::elements(array, address->data).first + position * element.info.size, true);

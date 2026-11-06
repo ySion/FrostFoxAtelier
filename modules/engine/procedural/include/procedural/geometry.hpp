@@ -152,9 +152,12 @@ public:
         const auto resolved = usage ? *usage : conventional_usage(name);
         if (auto valid = admit<T>(name, layer, resolved); !valid)
             return std::unexpected(valid.error());
+        auto owned_name = String::from_utf8(name);
+        if (!owned_name)
+            return failure("Attribute name requires valid UTF-8.");
         Array<T> values;
         values.resize(count(layer), fill);
-        attributes_.push_back({String{name}, layer, resolved, SharedArray<T>{std::move(values)}});
+        attributes_.push_back({std::move(*owned_name), layer, resolved, SharedArray<T>{std::move(values)}});
         return &std::get<SharedArray<T>>(attributes_.back().data).write();
     }
 

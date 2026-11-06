@@ -35,7 +35,7 @@ std::uint32_t process(Array<float>& values, const String& label);
 
 String 字面量直接用于声明、赋值或追加时，生成代码直接传递文本字节，不建立未使用的临时拥有值及清理分支；真正作为值使用的字面量仍提前分配清理槽，覆盖全部返回路径。
 
-拥有型对象放在生成栈上，String 的短文本仍使用既有 SSO，长文本和 Array 缓冲仍由基础库分配。复制使用真实值语义；这里不把深复制描述为零拷贝。外部借用及传给原生方法的引用继续访问原存储。
+拥有型对象放在生成栈上，String 的短文本使用基础库 SSO，长文本和 Array 缓冲仍由基础库分配。JIT 文本经 String 的 UTF-8 结果入口复制，不使用原生固定字面量的借用模式；代码版本退休后，已复制到宿主的文本继续有效。复制使用真实值语义；这里不把深复制描述为零拷贝。外部借用及传给原生方法的引用继续访问原存储。
 
 这采用 [RAII 的资源拥有模型](https://learn.microsoft.com/en-us/cpp/cpp/object-lifetime-and-resource-management-modern-cpp?view=msvc-170)，不是 [stackalloc 的栈缓冲分配](https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/operators/stackalloc)：局部本体和其拥有的动态缓冲可以位于不同存储区。[Span 的 owner/consumer/使用期限区分](https://learn.microsoft.com/en-us/dotnet/standard/memory-and-spans/memory-t-usage-guidelines)可作借用对照，却不提供本项目的拥有责任或独占可写保证。无 GC 引用也不证明原生复制、移动和析构会保持借用有效。
 

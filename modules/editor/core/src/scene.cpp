@@ -96,11 +96,6 @@ struct Mismatch : std::runtime_error {
     using std::runtime_error::runtime_error;
 };
 
-// A strict properties decode rejecting one leaf of its caller's record.
-struct Rejected : std::runtime_error {
-    using std::runtime_error::runtime_error;
-};
-
 Scalar decode_scalar(Runtime& runtime, const Scalar& prototype, const Json& value, bool* converted = nullptr) {
     return std::visit(
         [&](const auto& original) -> Scalar {
@@ -245,10 +240,10 @@ Json encode_array(Runtime& runtime, ObjectId object, const detail::ScalarField& 
 
 // Decodes a properties record leaf by leaf: the one path for scene loads, Play changes and operator
 // parameters. Tolerant decodes write a clamped leaf and then keep the saved value; strict decodes
-// (no report) throw at the first leaf they cannot apply as saved and never clamp.
-void read_record(Runtime& runtime, const PropertyTarget& target, std::span<const detail::ScalarField> schema,
-                 const Json& record, const std::vector<std::string>& prefix, const ResolveReference& resolve,
-                 const WriteLeaf& write, const PropertyReport* report) {
+// (no report) return an error at the first rejected leaf and never clamp. Earlier accepted leaves remain written.
+Result<void> read_record(Runtime& runtime, const PropertyTarget& target, std::span<const detail::ScalarField> schema,
+                         const Json& record, const std::vector<std::string>& prefix, const ResolveReference& resolve,
+                         const WriteLeaf& write, const PropertyReport* report) {
     const auto object = target.object != ObjectId{};
     const auto store = [&](std::span<const FieldId> path, const PropertyLeaf& leaf) -> Result<void> {
         if (write)
@@ -272,12 +267,14 @@ void read_record(Runtime& runtime, const PropertyTarget& target, std::span<const
             leaf);
     };
     const auto issue = [&](std::vector<std::string> at, const Json& item, world::DiagnosticKind kind,
-                           const std::string& problem, const std::string& kept) {
+                           const std::string& problem, const std::string& kept) -> Result<void> {
         if (!report)
-            throw Rejected(dotted(std::span(at).subspan(prefix.size())) + ": " + problem);
+            return std::unexpected(
+                Error{ErrorCode::argument_mismatch, dotted(std::span(at).subspan(prefix.size())) + ": " + problem});
         report->keep(std::move(at), item, kind, kept);
+        return {};
     };
-    const auto read = [&](auto&& self, const Json& value, const std::vector<std::string>& path) -> void {
+    const auto read = [&](auto&& self, const Json& value, const std::vector<std::string>& path) -> Result<void> {
         for (const auto& [name, item] : value.items()) {
             auto next_path = path;
             next_path.push_back(name);
@@ -290,13 +287,13 @@ void read_record(Runtime& runtime, const PropertyTarget& target, std::span<const
                            std::equal(next_path.begin(), next_path.end(), f.names.begin());
                 });
                 if (!nested)
-                    issue(std::move(at), item, world::DiagnosticKind::unknown_field, "Unknown field.",
-                          "Unknown field kept from the saved scene.");
+                    ATELIER_TRY(issue(std::move(at), item, world::DiagnosticKind::unknown_field, "Unknown field.",
+                                      "Unknown field kept from the saved scene."));
                 else if (!item.is_object())
-                    issue(std::move(at), item, world::DiagnosticKind::mismatch, "Expected a record.",
-                          "Expected a record. Defaults are used and the saved value is kept.");
+                    ATELIER_TRY(issue(std::move(at), item, world::DiagnosticKind::mismatch, "Expected a record.",
+                                      "Expected a record. Defaults are used and the saved value is kept."));
                 else
-                    self(self, item, next_path);
+                    ATELIER_TRY(self(self, item, next_path));
                 continue;
             }
             bool converted{};
@@ -307,10 +304,11 @@ void read_record(Runtime& runtime, const PropertyTarget& target, std::span<const
                     if (!field->material_entries_json && !item.is_string())
                         throw Mismatch("Expected a string property.");
                     const auto text = field->material_entries_json ? item.dump() : item.get<std::string>();
-                    if (!StringView{text}.is_valid_utf8())
-                        throw Mismatch("Expected UTF-8 text.");
-                    if (auto written = store(field->path, String{StringView{text}}); !written)
-                        throw Mismatch(written.error().message);
+                    auto stored = String::from_utf8(StringView{text});
+                    if (!stored)
+                        problem = "Expected UTF-8 text.";
+                    else if (auto written = store(field->path, *stored); !written)
+                        problem = written.error().message;
                 } else if (field->form == ValueForm::inline_value && field->kind == TypeKind::array) {
                     // The whole Array is built aside and stored as one leaf, so a rejected write leaves the field as it was.
                     if (!item.is_array())
@@ -328,10 +326,16 @@ void read_record(Runtime& runtime, const PropertyTarget& target, std::span<const
                         const std::array selector{take(runtime.element(field->type, static_cast<std::uint32_t>(i)))};
                         const auto& value = item[i];
                         if (text) {
-                            if (!value.is_string() || !StringView{value.get_ref<const std::string&>()}.is_valid_utf8())
-                                throw Mismatch("Expected an array of UTF-8 strings.");
-                            const String stored{StringView{value.get_ref<const std::string&>()}};
-                            take(runtime.write(field->type, leaf.storage(), selector, ValueInput{element, &stored}));
+                            if (!value.is_string()) {
+                                problem = "Expected an array of UTF-8 strings.";
+                                break;
+                            }
+                            auto stored = String::from_utf8(StringView{value.get_ref<const std::string&>()});
+                            if (!stored) {
+                                problem = "Expected an array of UTF-8 strings.";
+                                break;
+                            }
+                            take(runtime.write(field->type, leaf.storage(), selector, ValueInput{element, &*stored}));
                             continue;
                         }
                         const auto scalar = decode_scalar(
@@ -348,14 +352,18 @@ void read_record(Runtime& runtime, const PropertyTarget& target, std::span<const
                     }
                     // Reported before the store: a strict report (a Play change) rejects the clamp with the field unchanged.
                     // As for a scalar, the clamp is the one report, whatever elements converted.
-                    if (clamped_elements) {
-                        issue(
+                    if (problem.empty() && clamped_elements) {
+                        auto reported = issue(
                             at, item, world::DiagnosticKind::mismatch, {},
                             "An element is outside the field's hard bounds; the clamped Array is used and the saved value is kept.");
+                        if (!reported)
+                            return std::unexpected(reported.error());
                         converted = false;
                     }
-                    if (auto written = store(field->path, leaf); !written)
-                        throw Mismatch(written.error().message);
+                    if (problem.empty()) {
+                        if (auto written = store(field->path, leaf); !written)
+                            throw Mismatch(written.error().message);
+                    }
                 } else if (field->form == ValueForm::inline_value) {
                     const auto current = object ? runtime.read(target.object, field->path)
                                                 : runtime.read(target.type, target.storage, field->path);
@@ -402,17 +410,18 @@ void read_record(Runtime& runtime, const PropertyTarget& target, std::span<const
                 problem = error.what();
             }
             if (!problem.empty())
-                issue(std::move(at), item, world::DiagnosticKind::mismatch, problem,
-                      problem + " The default is used and the saved value is kept.");
+                ATELIER_TRY(issue(std::move(at), item, world::DiagnosticKind::mismatch, problem,
+                                  problem + " The default is used and the saved value is kept."));
             else if (clamped)
-                issue(std::move(at), item, world::DiagnosticKind::mismatch, {},
-                      "Outside the field's hard bounds; " + encode_scalar(runtime, *clamped).dump() +
-                          " is used and the saved value is kept.");
+                ATELIER_TRY(issue(std::move(at), item, world::DiagnosticKind::mismatch, {},
+                                  "Outside the field's hard bounds; " + encode_scalar(runtime, *clamped).dump() +
+                                      " is used and the saved value is kept."));
             else if (converted && report)
                 report->converted(std::move(at), item);
         }
+        return {};
     };
-    read(read, record, {});
+    return read(read, record, {});
 }
 
 std::uint64_t local_key(const Json& value, bool allow_null = false) {
@@ -569,10 +578,7 @@ Result<void> decode_properties(Runtime& runtime, const PropertyTarget& target, c
         if (!record.is_object())
             return std::unexpected(Error{ErrorCode::argument_mismatch, "Expected a property record."});
         ATELIER_TRY_BIND(schema, detail::author_fields(runtime, target.type));
-        read_record(runtime, target, *schema, record, {}, resolve, write, nullptr);
-        return {};
-    } catch (const Rejected& error) {
-        return std::unexpected(Error{ErrorCode::argument_mismatch, error.what()});
+        return read_record(runtime, target, *schema, record, {}, resolve, write, nullptr);
     } catch (const std::exception& error) {
         return failed(error);
     }
@@ -590,8 +596,7 @@ Result<void> decode_properties(Runtime& runtime, const PropertyTarget& target,
                 Error{ErrorCode::type_mismatch, "A properties target object must have the target type."});
         if (!record.is_object())
             return std::unexpected(Error{ErrorCode::argument_mismatch, "Expected a property record."});
-        read_record(runtime, target, fields, record, {}, resolve, {}, &report);
-        return {};
+        return read_record(runtime, target, fields, record, {}, resolve, {}, &report);
     } catch (const std::exception& error) {
         return failed(error);
     }
@@ -1297,9 +1302,9 @@ struct Session::GraphCodec {
                 load.report(world::Severity::info, world::DiagnosticKind::converted, object, std::move(at), &item,
                             "Integral number converted exactly to the field's integer type.");
             }};
-        read_record(runtime, {type, object},
-                    business_fields(runtime, session.types_, session.presentation_types_, type), record, {"properties"},
-                    resolve, write, &report);
+        take(read_record(runtime, {type, object},
+                         business_fields(runtime, session.types_, session.presentation_types_, type), record,
+                         {"properties"}, resolve, write, &report));
     }
 
     // Scene instances share the asset entry codec, but their parent may have a

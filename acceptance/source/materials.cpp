@@ -21,8 +21,6 @@ bool near(float a, float b) {
 
 struct UnusedDefault {
     float value;
-
-    UnusedDefault() { throw std::runtime_error("Injected native default failure."); }
 };
 
 const std::string declarations = R"(
@@ -75,10 +73,14 @@ void verify_source_materials() {
     {
         Runtime runtime;
         take(material::register_program_types(runtime));
-        take(
+        auto unused =
             NativeRegistration<UnusedDefault>{runtime, "unused.Value", TypeKind::record}
                 .field<&UnusedDefault::value>("value", {TypeReference::native<float>()}, offsetof(UnusedDefault, value))
-                .publish());
+                .build();
+        unused.native.construct = [](void*) noexcept -> Result<void> {
+            return std::unexpected(Error{ErrorCode::construction_failed, "Injected native default failure."});
+        };
+        take(runtime.register_type(std::move(unused)));
         const auto context = take(runtime.native_type<material::Context>());
         const auto output = take(runtime.native_type<material::Output>());
         const auto texture_input = take(runtime.native_type<material::TextureInput>());

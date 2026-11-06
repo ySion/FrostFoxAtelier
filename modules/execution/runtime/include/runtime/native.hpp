@@ -43,6 +43,20 @@ struct Member<V C::*> {
     using Owner = C;
 };
 
+template <class R>
+struct NativeResult {
+    using Value = R;
+
+    static constexpr bool fallible = false;
+};
+
+template <class R>
+struct NativeResult<Result<R>> {
+    using Value = R;
+
+    static constexpr bool fallible = true;
+};
+
 template <class>
 struct Method;
 
@@ -52,14 +66,17 @@ struct Method<R (C::*)(A...)> {
 
     using Arguments = std::tuple<A...>;
 
-    using Return = R;
+    using Return = typename NativeResult<R>::Value;
+
+    static constexpr bool fallible = NativeResult<R>::fallible;
 
     static constexpr bool receiver_read_only = false;
 
     static constexpr bool contextual = false;
 
-    static_assert(std::same_as<R, void> || ScalarType<R> || MathValueType<R> || PlainNativeValue<R>,
-                  "Method results must be void or supported scalar/plain record values returned by value.");
+    static_assert(!NativeResult<Return>::fallible && (std::same_as<Return, void> || ScalarType<Return> ||
+                                                      MathValueType<Return> || PlainNativeValue<Return>),
+                  "Method results must be void or supported scalar/plain record values, optionally in Result.");
 
     static_assert((NativeParameter<A> && ...), "Method parameters require values or non-volatile lvalue references.");
 };
@@ -112,7 +129,7 @@ auto invoke_native(Runtime& runtime, ObjectId self, void* storage, A&&... argume
         std::conditional_t<Traits::receiver_read_only, const typename Traits::Owner, typename Traits::Owner>;
     if constexpr (Traits::contextual)
         return std::invoke(Pointer, runtime, self, *static_cast<Receiver*>(storage), std::forward<A>(arguments)...);
-    else if constexpr (std::same_as<typename Traits::Return, void>) {
+    else if constexpr (std::same_as<typename Traits::Return, void> && !Traits::fallible) {
         std::invoke(Pointer, *static_cast<Receiver*>(storage), std::forward<A>(arguments)...);
         return {};
     } else
@@ -132,22 +149,16 @@ struct NativeThunk<Pointer, std::tuple<A...>> {
             std::snprintf(failure->message, sizeof(failure->message), "%s", text);
             return 1u;
         };
-        try {
-            auto result =
-                invoke_native<Pointer>(*context->runtime, context->self, receiver, native_argument<A>(arguments)...);
-            if (!result)
-                return fail(result.error().code, result.error().message.c_str());
-            using Return = typename Method<decltype(Pointer)>::Return;
-            if constexpr (std::same_as<Return, bool> || std::is_enum_v<Return>)
-                *static_cast<std::uint32_t*>(output) = static_cast<std::uint32_t>(*result);
-            else if constexpr (!std::same_as<Return, void>)
-                *static_cast<Return*>(output) = *result;
-            return 0;
-        } catch (const std::exception& error) {
-            return fail(ErrorCode::invocation_failed, error.what());
-        } catch (...) {
-            return fail(ErrorCode::invocation_failed, "Native method raised an unknown exception.");
-        }
+        auto result =
+            invoke_native<Pointer>(*context->runtime, context->self, receiver, native_argument<A>(arguments)...);
+        if (!result)
+            return fail(result.error().code, result.error().message.c_str());
+        using Return = typename Method<decltype(Pointer)>::Return;
+        if constexpr (std::same_as<Return, bool> || std::is_enum_v<Return>)
+            *static_cast<std::uint32_t*>(output) = static_cast<std::uint32_t>(*result);
+        else if constexpr (!std::same_as<Return, void>)
+            *static_cast<Return*>(output) = *result;
+        return 0;
     }
 };
 
@@ -215,7 +226,10 @@ public:
         definition_.kind = kind;
         definition_.description = std::move(description);
         definition_.native = {sizeof(T), alignof(T), detail::representation<T>(),
-                              [](void* address) { std::construct_at(static_cast<T*>(address)); },
+                              [](void* address) noexcept -> Result<void> {
+                                  std::construct_at(static_cast<T*>(address));
+                                  return {};
+                              },
                               [](void* address) noexcept { std::destroy_at(static_cast<T*>(address)); }};
         definition_.native.value_operations_preserve_borrows =
             std::is_trivially_default_constructible_v<T> && std::is_trivially_copy_constructible_v<T> &&
@@ -229,13 +243,15 @@ public:
         }
         if (kind != TypeKind::object) {
             if constexpr (std::is_copy_constructible_v<T>) {
-                definition_.native.copy_construct = [](void* destination, const void* source) {
+                definition_.native.copy_construct = [](void* destination, const void* source) noexcept -> Result<void> {
                     std::construct_at(static_cast<T*>(destination), *static_cast<const T*>(source));
+                    return {};
                 };
             }
             if constexpr (std::is_copy_assignable_v<T>) {
-                definition_.native.copy_assign = [](void* destination, const void* source) {
+                definition_.native.copy_assign = [](void* destination, const void* source) noexcept -> Result<void> {
                     *static_cast<T*>(destination) = *static_cast<const T*>(source);
+                    return {};
                 };
             }
             if constexpr (std::is_nothrow_swappable_v<T>) {

@@ -67,12 +67,5 @@ struct Resource {
 
 struct Failing {
     inline static bool fail{};
-
-    Failing() {
-        if (fail)
-            throw std::runtime_error("Expected derived-field construction failure.");
-    }
-
-    ~Failing() noexcept = default;
 };
 }

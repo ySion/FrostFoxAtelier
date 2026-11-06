@@ -27,17 +27,17 @@ struct Object {
 
     ~Object() { --live; }
 
-    void fail() { throw std::runtime_error("Module native failure."); }
+    Result<void> fail() noexcept {
+        return std::unexpected(Error{ErrorCode::invocation_failed, "Module native failure."});
+    }
 };
 }
 
 void verify_source_modules() {
     Runtime runtime;
-    auto particle = reflection::Definition<Particle>::build(runtime);
-    particle.native.value_operations_preserve_borrows = true;
-    take(runtime.register_types({std::move(particle), reflection::Definition<Position>::build(runtime),
+    take(runtime.register_types({particle_definition(runtime), reflection::Definition<Position>::build(runtime),
                                  reflection::Definition<Algorithms>::build(runtime), string_definition(runtime),
-                                 array_definition<Particle>(runtime, "module.Particles"),
+                                 particle_array_definition(runtime, "module.Particles"),
                                  NativeRegistration<Object>{runtime, "module.Object", TypeKind::object}
                                      .method<&Object::fail>("fail")
                                      .build()}));

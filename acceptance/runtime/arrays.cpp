@@ -11,36 +11,40 @@ using namespace atelier;
 
 using namespace atelier::acceptance::helpers;
 
-// Copies may throw while moves are only copies, so Array edits take the copy-and-swap path.
+// Failure belongs to registered operations, not C++ special members.
 struct Fragile {
     float value{};
 
     bool fail{};
-
-    Fragile() = default;
-
-    Fragile(const Fragile& other) : value(other.value), fail(other.fail) {
-        if (other.fail)
-            throw std::runtime_error("copy refused");
-    }
-
-    Fragile& operator=(const Fragile&) = default;
 };
 
-// Moves cannot throw but swaps can, and Array::insert/move rotate elements with swap.
 struct Swapper {
     std::int32_t value{};
 
     static inline bool fail{};
-
-    friend void swap(Swapper& first, Swapper& second) {
-        std::swap(first.value, second.value);
-        if (fail)
-            throw std::runtime_error("swap refused");
-    }
 };
 
-static_assert(std::is_nothrow_move_constructible_v<Swapper> && !std::is_nothrow_swappable_v<Swapper>);
+template <class T>
+TypeDefinition checked_array_definition(Runtime& runtime, std::string name) {
+    auto definition = array_definition<T>(runtime, std::move(name));
+    static const auto mutate = definition.native.sequence_mutate;
+    definition.native.sequence_mutate = [](SequenceMutation operation, void* target, const void* source,
+                                           std::size_t count) noexcept -> Result<void> {
+        auto& array = *static_cast<Array<T>*>(target);
+        auto candidate = array;
+        ATELIER_TRY(mutate(operation, &candidate, source, count));
+        // Deliberately reject after modifying the candidate, before publication.
+        if constexpr (std::same_as<T, Fragile>) {
+            for (const auto& element : candidate)
+                if (element.fail)
+                    return std::unexpected(Error{ErrorCode::invocation_failed, "copy refused"});
+        } else if (Swapper::fail)
+            return std::unexpected(Error{ErrorCode::invocation_failed, "reorder refused"});
+        array.swap(candidate);
+        return {};
+    };
+    return definition;
+}
 
 struct Owner {
     Array<Fragile> fragile;
@@ -56,11 +60,11 @@ void verify_array_elements() {
             .field<&Fragile::value>("value")
             .field<&Fragile::fail>("fail")
             .build(),
-        array_definition<Fragile>(runtime, "arrays.FragileArray"),
+        checked_array_definition<Fragile>(runtime, "arrays.FragileArray"),
         NativeRegistration<Swapper>{runtime, "arrays.Swapper", TypeKind::record}
             .field<&Swapper::value>("value")
             .build(),
-        array_definition<Swapper>(runtime, "arrays.SwapperArray"),
+        checked_array_definition<Swapper>(runtime, "arrays.SwapperArray"),
         NativeRegistration<Owner>{runtime, "arrays.Owner", TypeKind::object}
             .field<&Owner::fragile>("fragile")
             .field<&Owner::swappers>("swappers")
@@ -104,5 +108,7 @@ void verify_array_elements() {
     require(!runtime.move_element(id, swappers, 0, 1), "The move swap did not fail.");
     Swapper::fail = false;
     require(inserted == "11,22," && order() == "11,22,", "A failed insertion or move left the Array reordered.");
-    std::puts("[pass] Array edits: copy and swap failure rollback");
+    take(runtime.move_element(id, swappers, 0, 1));
+    require(order() == "22,11,", "Array edit did not recover after a rejected candidate.");
+    std::puts("[pass] Array edits: explicit candidate failure rollback and recovery");
 }

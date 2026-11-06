@@ -55,7 +55,7 @@ void append(ColumnData& target, const ColumnData* source, std::uint32_t count) {
 }
 
 Geometry::Geometry() {
-    attributes_.push_back({String{"P"}, Layer::point, Usage::point, SharedArray<math::Vector3>{}});
+    attributes_.push_back({String::literal<"P">(), Layer::point, Usage::point, SharedArray<math::Vector3>{}});
 }
 
 Result<Geometry> Geometry::points(Array<math::Vector3> positions) {

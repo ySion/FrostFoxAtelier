@@ -39,7 +39,7 @@ struct Signal {
 
     ~Signal() noexcept { --live; }
 
-    void signal(std::uint32_t mode);
+    Result<void> signal(std::uint32_t mode) noexcept;
 };
 
 // A concrete single-threaded consumer: ownership order is visible here rather
@@ -128,11 +128,11 @@ struct ActiveOwner {
     ~ActiveOwner() { active_owner = previous; }
 };
 
-void Signal::signal(std::uint32_t mode) {
+Result<void> Signal::signal(std::uint32_t mode) noexcept {
     if (mode == 2)
-        throw std::runtime_error("Shutdown fixture failure.");
+        return std::unexpected(Error{ErrorCode::invocation_failed, "Shutdown fixture failure."});
     if (mode != 1)
-        return;
+        return {};
     require(active_owner != nullptr, "Shutdown callback has no host owner.");
     auto& owner = *active_owner;
     owner.request_stop();
@@ -140,6 +140,7 @@ void Signal::signal(std::uint32_t mode) {
     owner.busy_in_callback = !finished && finished.error().code == ErrorCode::busy;
     require(owner.busy_in_callback && owner.runtime.has_value(), "Shutdown destroyed an active Runtime.");
     code_state(owner.current_address, true);
+    return {};
 }
 
 void verify_mixed_shutdown() {

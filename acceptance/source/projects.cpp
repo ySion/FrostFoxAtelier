@@ -89,10 +89,11 @@ void verify_property_update() {
         return text;
     };
     constexpr char expected[] = "noise_0123456789_分组\0tail";
-    require(read_text(selection) == String{StringView{expected, sizeof(expected) - 1}} &&
+    const auto selected_text = read_text(selection);
+    require(selected_text.view() == StringView{expected, sizeof(expected) - 1} &&
                 read_text(take(runtime.find_field(type, "group"))).empty(),
             "Source String defaults lost decoded bytes or empty initialization.");
-    const String edited{StringView{"host_owned_selection_0123456789"}};
+    const auto edited = String::literal<"host_owned_selection_0123456789">();
     take(runtime.write(instance.id(), selection, ValueInput{string_type, &edited}));
     const auto entry = take(take(program.entry("game.Property.run")).bind<std::uint32_t>());
     const auto old = take(take(program.pin("game.Property.run")).bind<std::uint32_t>());

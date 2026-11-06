@@ -55,7 +55,9 @@ struct NativeMath {
         input.z += 6.0f;
     }
 
-    Vector3 fail(Vector3) const { throw std::runtime_error("Native math failure."); }
+    Result<Vector3> fail(Vector3) const noexcept {
+        return std::unexpected(Error{ErrorCode::invocation_failed, "Native math failure."});
+    }
 };
 
 class GuardedPages {

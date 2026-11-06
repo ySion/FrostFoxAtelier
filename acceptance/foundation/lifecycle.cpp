@@ -1,4 +1,5 @@
 #include "foundation/array.hpp"
+#include "foundation/optional.hpp"
 #include "foundation/shared_array.hpp"
 
 #include <array>
@@ -43,6 +44,49 @@ void owned_source_moves() {
     require(array.size() == 1 && array[0].get() == array_leaf, "Array subtree promotion lost its child.");
 }
 
+struct alignas(32) OptionalResource {
+    std::unique_ptr<int> value;
+
+    explicit OptionalResource(std::unique_ptr<int> input) noexcept : value(std::move(input)) {}
+};
+
+static_assert(sizeof(Optional<std::uint32_t>) == 8 && alignof(Optional<std::uint32_t>) == 4);
+
+static_assert(sizeof(Optional<OptionalResource>) == 64 && alignof(Optional<OptionalResource>) == 32);
+
+static_assert(!std::is_copy_constructible_v<Optional<OptionalResource>>);
+
+static_assert(std::is_nothrow_move_constructible_v<Optional<OptionalResource>>);
+
+void optional_resources() {
+    Optional<OptionalResource> source;
+    require(!source && !source.try_get(), "Empty Optional exposed a payload.");
+    source.emplace(std::make_unique<int>(37));
+    Optional<OptionalResource> moved{std::move(source)};
+    require(source.has_value() && !source.try_get()->value, "Optional move reset its source engagement.");
+    require(moved && *moved.try_get()->value == 37, "Optional move lost its resource.");
+    source.reset();
+    source.swap(moved);
+    require(source && *source.try_get()->value == 37 && !moved, "Optional swap failed to transfer engagement.");
+    moved.emplace(std::make_unique<int>(19));
+    source.swap(moved);
+    require(*source.try_get()->value == 19 && *moved.try_get()->value == 37, "Engaged Optional swap lost values.");
+    source = std::move(moved);
+    require(*source.try_get()->value == 37 && moved && !moved.try_get()->value,
+            "Optional move assignment changed source engagement or lost ownership.");
+    moved.reset();
+    source = std::move(moved);
+    require(!source && !moved, "Assigning empty Optional retained a resource.");
+
+    auto owner = std::make_shared<int>(53);
+    Optional<std::shared_ptr<int>> shared{owner};
+    auto copy = shared;
+    require(owner.use_count() == 3 && **copy.try_get() == 53, "Optional copy did not retain its resource.");
+    shared.reset();
+    copy = shared;
+    require(!copy && owner.use_count() == 1, "Optional reset or assignment leaked a resource.");
+}
+
 void shared_arrays() {
     Array<std::uint32_t> numbers;
     numbers.resize(8);
@@ -73,5 +117,6 @@ void shared_arrays() {
 
 void verify_container_lifecycle() {
     owned_source_moves();
+    optional_resources();
     shared_arrays();
 }

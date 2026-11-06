@@ -362,8 +362,11 @@ struct Evaluator::Impl {
                     continue;
                 }
                 if (const auto column = std::ranges::find(columns, parameter.type); column != columns.end()) {
-                    code.parameters.push_back({read ? Code::Use::read : Code::Use::write,
-                                               String{StringView{parameter_name}},
+                    auto owned_name = String::from_utf8(StringView{parameter_name});
+                    if (!owned_name)
+                        return error(ErrorCode::invalid_definition,
+                                     name + ".evaluate parameter " + parameter_name + " requires valid UTF-8.");
+                    code.parameters.push_back({read ? Code::Use::read : Code::Use::write, std::move(*owned_name),
                                                static_cast<std::size_t>(column - columns.begin())});
                     continue;
                 }

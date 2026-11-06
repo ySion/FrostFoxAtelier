@@ -18,7 +18,7 @@ void append_face(Array<std::uint32_t>& corners, Array<std::uint32_t>& offsets,
 Result<Geometry> surface(Array<Vector3> positions, Array<std::uint32_t> corners, const Array<std::uint32_t>& offsets,
                          Array<Vector3> normals) {
     ATELIER_TRY_BIND(result, Geometry::polygons(std::move(positions), std::move(corners), offsets));
-    ATELIER_TRY(result->set(String{"N"}, Layer::vertex, SharedArray<Vector3>{std::move(normals)}));
+    ATELIER_TRY(result->set(String::literal<"N">(), Layer::vertex, SharedArray<Vector3>{std::move(normals)}));
     return std::move(*result);
 }
 

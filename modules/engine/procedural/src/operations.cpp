@@ -230,9 +230,9 @@ Geometry import_mesh(const geometry::Mesh& mesh) {
         for (auto t = part.first_vertex / 3; t < (part.first_vertex + part.vertex_count) / 3; ++t)
             material[t] = part.material;
     auto result = value(Geometry::polygons(std::move(positions), std::move(vertex_points), offsets));
-    (void)result.set(String{"N"}, Layer::vertex, SharedArray<Vector3>{std::move(normals)});
-    (void)result.set(String{"uv"}, Layer::vertex, SharedArray<Vector2>{std::move(uvs)});
-    (void)result.set(String{"material"}, Layer::primitive, SharedArray<std::uint32_t>{std::move(material)});
+    (void)result.set(String::literal<"N">(), Layer::vertex, SharedArray<Vector3>{std::move(normals)});
+    (void)result.set(String::literal<"uv">(), Layer::vertex, SharedArray<Vector2>{std::move(uvs)});
+    (void)result.set(String::literal<"material">(), Layer::primitive, SharedArray<std::uint32_t>{std::move(material)});
     return result;
 }
 
@@ -440,16 +440,17 @@ Result<Geometry> scatter(const Geometry& surface, const ScatterSettings& setting
     if (!result)
         return result;
     for (auto added :
-         {result->set(String{"N"}, Layer::point, SharedArray<Vector3>{std::move(normals)}),
-          result->set(String{"id"}, Layer::point, SharedArray<std::uint32_t>{std::move(ids)}),
-          result->set(String{"sourceprim"}, Layer::point, SharedArray<std::uint32_t>{std::move(primitives)}),
-          result->set(String{"sourceordinal"}, Layer::point, SharedArray<std::uint32_t>{std::move(ordinals)}),
-          result->set(String{"sourceprimuv"}, Layer::point, SharedArray<Vector2>{std::move(barycentrics)})})
+         {result->set(String::literal<"N">(), Layer::point, SharedArray<Vector3>{std::move(normals)}),
+          result->set(String::literal<"id">(), Layer::point, SharedArray<std::uint32_t>{std::move(ids)}),
+          result->set(String::literal<"sourceprim">(), Layer::point, SharedArray<std::uint32_t>{std::move(primitives)}),
+          result->set(String::literal<"sourceordinal">(), Layer::point,
+                      SharedArray<std::uint32_t>{std::move(ordinals)}),
+          result->set(String::literal<"sourceprimuv">(), Layer::point, SharedArray<Vector2>{std::move(barycentrics)})})
         if (!added)
             return std::unexpected(added.error());
     if (triangles->has_subtriangles())
-        ATELIER_TRY(
-            result->set(String{"sourcetri"}, Layer::point, SharedArray<std::uint32_t>{std::move(subtriangles)}));
+        ATELIER_TRY(result->set(String::literal<"sourcetri">(), Layer::point,
+                                SharedArray<std::uint32_t>{std::move(subtriangles)}));
     return result;
 }
 
@@ -591,7 +592,7 @@ Result<void> promote(Geometry& geometry, StringView name, Layer to, Reduce reduc
     if (!promoted)
         return std::unexpected(promoted.error());
     const auto usage = attribute->usage;
-    String moved{name};
+    String moved{attribute->name};
     (void)geometry.remove(name);
     return geometry.set(std::move(moved), to, std::move(*promoted), usage);
 }

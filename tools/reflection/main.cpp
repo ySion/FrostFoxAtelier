@@ -962,19 +962,37 @@ void members(State& state, Type& type, ASTContext& context) {
         const auto options = state.options(*marker, {"Name", "BorrowSafe", "DESC"});
         if (!options)
             continue;
-        auto result = scalar(method->getReturnType(), state, context, true);
+        auto result_type = method->getReturnType();
+        bool fallible = false;
+        if (const auto* specialization =
+                dyn_cast_or_null<ClassTemplateSpecializationDecl>(result_type->getAsCXXRecordDecl());
+            specialization && specialization->getSpecializedTemplate()->getQualifiedNameAsString() == "std::expected") {
+            const auto& arguments = specialization->getTemplateArgs();
+            if (arguments.size() == 2 && arguments[0].getKind() == TemplateArgument::Type &&
+                arguments[1].getKind() == TemplateArgument::Type) {
+                const auto* error = arguments[1].getAsType()->getAsCXXRecordDecl();
+                if (error && error->getQualifiedNameAsString() == "atelier::Error") {
+                    result_type = arguments[0].getAsType();
+                    fallible = true;
+                }
+            }
+        }
+        auto result = scalar(result_type, state, context, true);
         if (!result)
-            result = math_value(method->getReturnType(), context);
+            result = math_value(result_type, context);
         if (!result)
-            result = record_value(method->getReturnType(), state, context);
+            result = record_value(result_type, state, context);
         if (!result || method->isStatic() || method->isVariadic() || method->isDeleted() || method->isVolatile() ||
             method->getRefQualifier() != RQ_None || method->getDescribedFunctionTemplate() ||
             isa<CXXConstructorDecl>(method) || isa<CXXDestructorDecl>(method) || method->isOverloadedOperator() ||
             isa<CXXConversionDecl>(method)) {
-            state.error(method->getLocation(),
-                        "AFUNCTION requires a supported non-static member with a scalar, void or plain record result.");
+            state.error(
+                method->getLocation(),
+                "AFUNCTION requires a supported non-static member with a scalar, void or plain record result, optionally in runtime Result.");
             continue;
         }
+        if (fallible)
+            *result = "::atelier::Result<" + *result + ">";
         Method value{method->getNameAsString(), method->getNameAsString(), *result + " (Self::*)(",
                      sources.getExpansionLineNumber(method->getLocation())};
         if (options->contains("Name"))

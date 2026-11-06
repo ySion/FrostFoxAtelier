@@ -366,12 +366,13 @@ Result<Geometry> volume_scatter(const Geometry& surface, const VolumeScatterSett
     if (filled != tasks::Completion::completed)
         return failure("Volume was cancelled before all output columns were filled.");
     ATELIER_TRY_BIND(result, Geometry::points(std::move(positions)));
-    ATELIER_TRY(result->set(String{"id"}, Layer::point, SharedArray<std::uint32_t>{std::move(ids)}));
-    constexpr const char* names[]{"sourcecellx", "sourcecelly", "sourcecellz"};
+    ATELIER_TRY(result->set(String::literal<"id">(), Layer::point, SharedArray<std::uint32_t>{std::move(ids)}));
+    const String names[]{String::literal<"sourcecellx">(), String::literal<"sourcecelly">(),
+                         String::literal<"sourcecellz">()};
     for (std::size_t axis = 0; axis < 3; ++axis)
-        ATELIER_TRY(
-            result->set(String{names[axis]}, Layer::point, SharedArray<std::int32_t>{std::move(sources[axis])}));
-    ATELIER_TRY(result->set(String{"sourceordinal"}, Layer::point, SharedArray<std::uint32_t>{std::move(ordinals)}));
+        ATELIER_TRY(result->set(names[axis], Layer::point, SharedArray<std::int32_t>{std::move(sources[axis])}));
+    ATELIER_TRY(
+        result->set(String::literal<"sourceordinal">(), Layer::point, SharedArray<std::uint32_t>{std::move(ordinals)}));
     return result;
 }
 

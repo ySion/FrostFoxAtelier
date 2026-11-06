@@ -373,7 +373,7 @@ struct MaterialEntriesJson {
     AGENERATED_BODY(MaterialEntriesJson)
 
     AFIELD()
-    String json{"[]"};
+    String json = String::literal<"[]">();
 };
 
 ASTRUCT(Name = "editor.NewMaterial", DESC = "创建具名材质；实例沿用 Context 中活动材质作为父级。")
