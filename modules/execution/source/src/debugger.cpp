@@ -1,7 +1,7 @@
 #include "detail/debugger.hpp"
 
 #include <algorithm>
-#include <stdexcept>
+#include <cassert>
 
 namespace atelier::source {
 Debugger::Debugger(DebugHandler handler, DebugOptions options) : state_(std::make_shared<detail::DebugSessionState>()) {
@@ -40,27 +40,23 @@ std::shared_ptr<const DebugTables> copy_debug_tables(const BusinessCodeInfo& inf
     auto tables = std::make_shared<DebugTables>();
     if (!info.debugging)
         return tables;
-    if ((info.debug_function_count && !info.debug_functions) || (info.debug_site_count && !info.debug_sites))
-        throw std::runtime_error("Compiled debug metadata is missing its function or site table.");
+    // The compiler owns these tables and publishes their actual storage/counts.
+    assert((!info.debug_function_count || info.debug_functions) && (!info.debug_site_count || info.debug_sites));
     tables->functions.reserve(info.debug_function_count);
     for (std::uint32_t i = 0; i < info.debug_function_count; ++i) {
         const auto& input = info.debug_functions[i];
-        if (input.variable_count && !input.variables)
-            throw std::runtime_error("Compiled debug metadata is missing its variable table.");
+        assert(!input.variable_count || input.variables);
         auto& output = tables->functions.emplace_back();
         output.variables.reserve(input.variable_count);
         for (std::uint32_t j = 0; j < input.variable_count; ++j) {
             const auto& variable = input.variables[j];
-            if (!variable.name)
-                throw std::runtime_error("Compiled debug variable has no name.");
+            assert(variable.name);
             output.variables.push_back({variable.name, variable.type, variable.storage, variable.passing});
         }
     }
     if (info.debug_site_count)
         tables->sites.assign(info.debug_sites, info.debug_sites + info.debug_site_count);
-    for (const auto site : tables->sites)
-        if (site >= info.location_count)
-            throw std::runtime_error("Compiled debug site has no source location.");
+    assert(std::ranges::all_of(tables->sites, [&](const auto site) { return site < info.location_count; }));
     return tables;
 }
 

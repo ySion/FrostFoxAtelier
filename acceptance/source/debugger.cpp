@@ -3,10 +3,10 @@
 #include "source/debugger.hpp"
 #include "source/diagnostics.hpp"
 #include "source/program.hpp"
+#include "memory/fatal.hpp"
 
 #include <array>
 #include <cstdio>
-#include <stdexcept>
 
 namespace {
 using namespace atelier;
@@ -27,7 +27,7 @@ DebugBreakpoint breakpoint(const Program::Lease& lease, std::string_view path, s
     for (const auto& site : take(lease.debug_sites()))
         if (site.source.path == path && site.source.line == line)
             return {site.source.path, site.source.version, site.source.line, site.source.column};
-    throw std::runtime_error("Requested source line has no executable debug site.");
+    fatal("Requested source line has no executable debug site.");
 }
 
 const DebugValue* local(const DebugFrame& frame, std::string_view name) {
@@ -37,9 +37,13 @@ const DebugValue* local(const DebugFrame& frame, std::string_view name) {
     return nullptr;
 }
 
-std::uint32_t number(const DebugValue& value) {
-    require(value.state == DebugValueState::available && value.scalar.has_value(), "Debug uint local is unavailable.");
-    return std::get<std::uint32_t>(*value.scalar);
+std::uint32_t number(const DebugValue& value) noexcept {
+    if (value.state != DebugValueState::available || !value.scalar)
+        fatal("Debug uint local is unavailable.");
+    const auto* result = std::get_if<std::uint32_t>(&*value.scalar);
+    if (!result)
+        fatal("Debug uint local has the wrong scalar type.");
+    return *result;
 }
 
 struct Host {
@@ -69,18 +73,21 @@ uint run(uint input) {
     bool entered_leaf{};
     bool returned_to_caller{};
     bool initialized_result{};
-    Debugger into([&](const DebugSnapshot& stop) {
-        const auto& frame = stop.frames.at(0);
+    Debugger into([&](const DebugSnapshot& stop) noexcept {
+        if (stop.frames.empty())
+            fatal("Debugger stop has no active frame.");
+        const auto& frame = stop.frames[0];
         if (frame.location.function == "leaf") {
             const auto* parameter = local(frame, "value");
-            const auto* initializing = local(stop.frames.at(1), "result");
-            require(parameter && number(*parameter) == 21 && initializing &&
-                        initializing->state == DebugValueState::uninitialized && !initializing->scalar,
-                    "Helper entry read an unfinished caller initializer or lost its parameter.");
+            const auto* initializing = stop.frames.size() > 1 ? local(stop.frames[1], "result") : nullptr;
+            if (!parameter || number(*parameter) != 21 || !initializing ||
+                initializing->state != DebugValueState::uninitialized || initializing->scalar)
+                fatal("Helper entry read an unfinished caller initializer or lost its parameter.");
             entered_leaf = true;
             return stop.command(DebugAction::step_out);
         }
-        require(frame.location.function == "run", "Step-out lost the caller frame.");
+        if (frame.location.function != "run")
+            fatal("Step-out lost the caller frame.");
         if (entered_leaf) {
             returned_to_caller = true;
             if (const auto* value = local(frame, "result"); value && value->state == DebugValueState::available)
@@ -108,7 +115,7 @@ DebugSnapshot verify_inspection_and_previews() {
     const auto text = String::literal<"abcdefghijklmnop">();
     DebugSnapshot retained;
     Debugger debugger(
-        [&](const DebugSnapshot& stop) {
+        [&](const DebugSnapshot& stop) noexcept {
             retained = stop;
             return stop.command(DebugAction::continue_execution);
         },
@@ -147,13 +154,14 @@ void verify_failure_and_abort() {
             {.diagnostics = true, .debugging = true});
     bool before_cleanup{};
     Debugger failed(
-        [&](const DebugSnapshot& stop) -> DebugCommand {
+        [&](const DebugSnapshot& stop) noexcept -> Result<DebugCommand> {
             before_cleanup = stop.reason == DebugStopReason::error && Particle::live == 1;
-            throw std::runtime_error("Debugger error handler failure.");
+            return std::unexpected(Error{ErrorCode::capacity_exceeded, "Debugger error handler failure."});
         },
         {.break_on_entry = false});
     Diagnostics capture;
-    require(!program->entry().invoke(host.id(), {}, &capture, &failed) && before_cleanup && Particle::live == 0 &&
+    const auto failure = program->entry().invoke(host.id(), {}, &capture, &failed);
+    require(!failure && failure.error().code == ErrorCode::invocation_failed && before_cleanup && Particle::live == 0 &&
                 std::get<std::uint32_t>(take(runtime.read(host.id(), field))) == 1,
             "Error stop ran after cleanup, leaked its owned value or resumed user side effects.");
 
@@ -168,22 +176,36 @@ void verify_failure_and_abort() {
             {.diagnostics = true, .debugging = true});
     const auto at = breakpoint(take(aborted->pin()), "abort.source", 4);
     const auto call = take(take(aborted->pin()).bind<std::uint32_t>());
-    for (const bool handler_throws : {false, true}) {
+    for (const bool handler_fails : {false, true}) {
         take(runtime.write(host.id(), field, std::uint32_t{0}));
         bool reached{};
+        bool refuse = true;
+        unsigned stops{};
         Debugger debugger(
-            [&](const DebugSnapshot& stop) {
+            [&](const DebugSnapshot& stop) noexcept -> Result<DebugCommand> {
                 reached = Particle::live == 1;
-                if (handler_throws)
-                    throw std::runtime_error("Debugger handler failure.");
+                ++stops;
+                if (!refuse)
+                    return stop.command(DebugAction::continue_execution);
+                if (handler_fails)
+                    return std::unexpected(Error{ErrorCode::capacity_exceeded, "Debugger handler failure."});
                 return stop.command(DebugAction::abort);
             },
             {.break_on_entry = false});
         take(debugger.set_breakpoints({at}));
         Diagnostics aborted_capture;
-        require(!call.invoke(host.id(), &aborted_capture, &debugger) && reached && Particle::live == 0 &&
+        const auto outcome = call.invoke(host.id(), &aborted_capture, &debugger);
+        require(!outcome &&
+                    outcome.error().code ==
+                        (handler_fails ? ErrorCode::capacity_exceeded : ErrorCode::execution_aborted) &&
+                    reached && Particle::live == 0 && !debugger.active() &&
                     std::get<std::uint32_t>(take(runtime.read(host.id(), field))) == 1,
                 "Abort or handler failure leaked the owned value or resumed the next statement.");
+        refuse = false;
+        require(take(call.invoke(host.id(), &aborted_capture, &debugger)) == 9 && stops == 2 && Particle::live == 0 &&
+                    debugger.status() == DebugStatus::completed && !debugger.active() &&
+                    std::get<std::uint32_t>(take(runtime.read(host.id(), field))) == 2,
+                "Debugger failure did not release inspection or reset the session for recovery.");
     }
 }
 
@@ -203,12 +225,16 @@ async uint run(uint value) {
     const std::array args{Scalar{41u}};
     bool saw_yield{};
     bool crossed_yield{};
-    Debugger debugger([&](const DebugSnapshot& stop) {
-        const auto& frame = stop.frames.at(0);
-        require(frame.location.source.path == "async-debug.source", "Resumed debugger switched source versions.");
+    Debugger debugger([&](const DebugSnapshot& stop) noexcept {
+        if (stop.frames.empty())
+            fatal("Debugger stop has no active frame.");
+        const auto& frame = stop.frames[0];
+        if (frame.location.source.path != "async-debug.source")
+            fatal("Resumed debugger switched source versions.");
         if (frame.location.function == "run" && frame.location.source.line == 4) {
             const auto* value = local(frame, "local");
-            require(value && number(*value) == 42, "Yield snapshot lost its coroutine-frame local.");
+            if (!value || number(*value) != 42)
+                fatal("Yield snapshot lost its coroutine-frame local.");
             saw_yield = true;
             return stop.command(DebugAction::step_over);
         }
@@ -226,7 +252,7 @@ async uint run(uint value) {
                 debugger.status() == DebugStatus::completed && !debugger.active() && crossed_yield,
             "Step-across-yield or old-version execution failed after close.");
     std::unique_ptr<Debugger> shell;
-    shell = std::make_unique<Debugger>([&](const DebugSnapshot& stop) {
+    shell = std::make_unique<Debugger>([&](const DebugSnapshot& stop) noexcept {
         shell.reset();
         return stop.command(DebugAction::continue_execution);
     });

@@ -6,7 +6,7 @@
 
 ## 暂停与执行合同
 
-停点在 Runtime 所在线程同步调用处理器。**处理器返回前，原来的 `invoke/resume` 不返回**；原生栈、参数借用、GC 根和代码版本保持有效。处理器接收独立拥有的 `DebugSnapshot`，返回带本次 `stop_id` 的命令。
+停点在 Runtime 所在线程同步调用处理器。**处理器返回前，原来的 `invoke/resume` 不返回**；原生栈、参数借用、GC 根和代码版本保持有效。处理器接收独立拥有的 `DebugSnapshot`，以 noexcept `Result<DebugCommand>` 返回带本次 `stop_id` 的命令或业务失败，不使用 C++ 异常。处理器移动进入共享会话；复制 Debugger 仍观察同一会话，不复制处理器。
 
 调试暂停时协程仍为 `CoroutineState::running`；只有源码 `yield` 才返回语言层面的 `suspended`。宿主可安排 Runtime 执行线程，并在处理器中接入通信；核心不创建 UI、消息循环或命令队列。外线程只能处理拥有的快照与命令，不能访问当前 Runtime 或 Debugger。通信断开时，适配器应返回继续或终止命令，结束等待。
 
@@ -15,7 +15,7 @@
 通过普通请求选择 `CompileOptions{.debugging = true}`，与 `diagnostics`、`artifacts` 独立。未开启调试的版本收到 `Debugger*`，在参数构造、协程分配与源码副作用前返回 `unsupported_operation`。
 
 ```cpp
-source::Debugger debugger([](const source::DebugSnapshot& stop) {
+source::Debugger debugger([](const source::DebugSnapshot& stop) noexcept {
     // 宿主可在此处理快照并等待命令；示例逐个跳过源码语句。
     return stop.command(source::DebugAction::step_over);
 });
@@ -65,9 +65,9 @@ auto result = entry.invoke(receiver, arguments, nullptr, &debugger);
 
 ## 错误、终止和资源释放
 
-正常运行错误在显式清理前暂停，错误点不可恢复失败的操作。首错只报告一次；后续包装传播、处理器异常、abort 或错误命令均不覆盖它。既有 finish 策略在用户值清理后执行，因此该阶段失败时，已销毁变量显示为作用域外。
+正常运行错误在显式清理前暂停，错误点不可恢复失败的操作。首错只报告一次；后续包装传播、处理器返回失败、abort 或错误命令均不覆盖它。既有 finish 策略在用户值清理后执行，因此该阶段失败时，已销毁变量显示为作用域外。
 
-普通停点的处理器异常、非法动作、迟到命令或快照失败会终止执行，本次会话不再重复调用出错处理器。仅使用 Debugger 时，返回错误也补充原始 `Error.source`，不要求同时启用 Diagnostics。
+普通停点的处理器失败保留原错误码与文本；非法动作、迟到命令及无法进入检查保护同样终止执行，本次会话不再重复调用出错处理器。仅使用 Debugger 时，返回错误也补充原始 `Error.source`，不要求同时启用 Diagnostics。快照只读可信存储、不调用用户 getter；其 CPU 分配遵循统一 fatal 合同，不是可恢复的快照错误。
 
 同步 abort 返回 `execution_aborted`，调试状态为 `cancelled`。异步 abort 通过 `CoroutineFrame::request_cancel()` 交由核心裁定取消；业务失败优先。此前副作用保留，不回滚、不提交本次调用结果，也不以异常或 longjmp 穿越 JIT 栈。
 
@@ -81,7 +81,7 @@ Program.close、热更新和旧 Lease 遵循原有版本保活契约。源码映
 
 取舍依据：[AngelScript line callback](https://www.angelcode.com/angelscript/sdk/docs/manual/doc_debug.html)支持在回调内处理命令、返回后继续；这不赋予同步原生 JIT 任意弹栈后恢复的能力。[Lua hook](https://www.lua.org/manual/5.4/manual.html#lua_sethook)的回跳与重入边界说明停止点不能仅用显示行号表示；本项目用调用实例和语句身份跟踪单步。[LLVM 源码调试](https://llvm.org/docs/SourceLevelDebugging.html)也不保证优化后所有变量位置仍可用，故本模式显式维护可观察槽及初始化/作用域状态，不能展示陈旧地址的值。暂停始终保留原生栈、执行准入及既有根。
 
-[`acceptance/source/debugger.cpp`](../acceptance/source/debugger.cpp) 通过正式编译、调用和 GC 路径保留 step-into/step-out 的固定值代表、Runtime 销毁后仍可读的拥有型快照、原生失败/处理器异常/abort 清理，以及 async 跨 yield、热发布和 close 后的旧帧完成。拒绝、精确错误文本、快照预算及从 debug_sites 反抄期望的断点矩阵已移除。它纳入 `source_acceptance`，也可单独运行：
+[`acceptance/source/debugger.cpp`](../acceptance/source/debugger.cpp) 通过正式编译、调用和 GC 路径保留 step-into/step-out 的固定值代表、Runtime 销毁后仍可读的拥有型快照、原生失败/处理器 Result 失败/abort 清理及同一会话恢复，以及 async 跨 yield、热发布和 close 后的旧帧完成。拒绝、精确错误文本、快照预算及从 debug_sites 反抄期望的断点矩阵已移除。它纳入 `source_acceptance`，也可单独运行：
 
 ```powershell
 . ./tools/enter-dev.ps1

@@ -104,10 +104,11 @@ struct DebugOptions {
     std::size_t max_text_bytes{4096};
 };
 
-using DebugHandler = std::function<DebugCommand(const DebugSnapshot&)>;
+using DebugHandler = std::move_only_function<Result<DebugCommand>(const DebugSnapshot&) noexcept>;
 
 // Same Runtime thread. A stop blocks invoke/resume on its existing native stack;
-// returning a command resumes that call. Handlers inspect owned snapshots only.
+// returning a command resumes that call; failure ends it through normal cleanup.
+// Handlers inspect owned snapshots only and never propagate C++ exceptions.
 // One session belongs to one invocation/coroutine until terminal cleanup.
 class Debugger final {
     friend struct detail::DebugAccess;

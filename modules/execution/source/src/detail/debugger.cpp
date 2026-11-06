@@ -380,76 +380,68 @@ std::uint32_t debug_point(void* context, BusinessDebugFrame* frame, std::uint32_
         state->error_stopped = true;
     } else if (invocation.failed || invocation.debug_aborted)
         return 1;
-    try {
-        if (!frame || frame != invocation.debug_top || location >= state->metadata->locations->size()) {
-            invocation.fail(ErrorCode::invalid_definition,
-                            "Generated debug point has invalid frame or source metadata.");
-            return 1;
-        }
-        frame->location = location;
-        if (invocation.trace) {
-            invocation.trace->current_location = location;
-            if (point == DebugPoint::error && invocation.trace->failure_location == no_diagnostic_location)
-                invocation.trace->failure_location = location;
-        }
-        const bool initial_entry = point == DebugPoint::entry && !state->entry_stopped;
-        if (point == DebugPoint::entry)
-            state->entry_stopped = true;
-        const bool bindable = point == DebugPoint::entry || point == DebugPoint::statement;
-        std::optional<DebugStopReason> reason;
-        if (point == DebugPoint::error) {
-            if (state->options.break_on_error)
-                reason = DebugStopReason::error;
-        } else if (bindable && std::binary_search(state->bound_sites.begin(), state->bound_sites.end(), location)) {
-            reason = DebugStopReason::breakpoint;
-        } else if (initial_entry && state->options.break_on_entry) {
-            reason = DebugStopReason::entry;
-        } else if (stepping(*state, *frame, point)) {
-            reason = DebugStopReason::step;
-        }
-        if (!reason || !state->handler || state->handler_failed)
-            return point == DebugPoint::error ? 1 : 0;
-        auto inspection = ExecutionInspection::enter(invocation.runtime);
-        if (!inspection) {
-            state->handler_failed = true;
-            invocation.fail(inspection.error().code, inspection.error().message.c_str());
-            return 1;
-        }
-        state->last_stop = SnapshotBuilder{invocation, *state, *reason, ++state->next_stop_id}.build();
-        state->status = DebugStatus::paused;
-        const auto command = state->handler(*state->last_stop);
-        state->status = DebugStatus::running;
-        if (command.stop_id != state->last_stop->stop_id) {
-            state->handler_failed = true;
-            invocation.fail(ErrorCode::argument_mismatch, "Debug command does not belong to the current stop.");
-            return 1;
-        }
-        switch (command.action) {
-        case DebugAction::continue_execution:
-        case DebugAction::step_into:
-        case DebugAction::step_over:
-        case DebugAction::step_out:
-            state->action = command.action;
-            state->step_activation = frame->activation;
-            break;
-        case DebugAction::abort:
-            if (!invocation.failed)
-                invocation.debug_aborted = true;
-            return 1;
-        default:
-            state->handler_failed = true;
-            invocation.fail(ErrorCode::argument_mismatch, "Debug command has an invalid action.");
-            return 1;
-        }
-    } catch (const std::exception& error) {
-        state->handler_failed = true;
-        state->status = DebugStatus::running;
-        invocation.fail(ErrorCode::invocation_failed, error.what());
+    if (!frame || frame != invocation.debug_top || location >= state->metadata->locations->size()) {
+        invocation.fail(ErrorCode::invalid_definition, "Generated debug point has invalid frame or source metadata.");
         return 1;
-    } catch (...) {
+    }
+    frame->location = location;
+    if (invocation.trace) {
+        invocation.trace->current_location = location;
+        if (point == DebugPoint::error && invocation.trace->failure_location == no_diagnostic_location)
+            invocation.trace->failure_location = location;
+    }
+    const bool initial_entry = point == DebugPoint::entry && !state->entry_stopped;
+    if (point == DebugPoint::entry)
+        state->entry_stopped = true;
+    const bool bindable = point == DebugPoint::entry || point == DebugPoint::statement;
+    std::optional<DebugStopReason> reason;
+    if (point == DebugPoint::error) {
+        if (state->options.break_on_error)
+            reason = DebugStopReason::error;
+    } else if (bindable && std::binary_search(state->bound_sites.begin(), state->bound_sites.end(), location)) {
+        reason = DebugStopReason::breakpoint;
+    } else if (initial_entry && state->options.break_on_entry) {
+        reason = DebugStopReason::entry;
+    } else if (stepping(*state, *frame, point)) {
+        reason = DebugStopReason::step;
+    }
+    if (!reason || !state->handler || state->handler_failed)
+        return point == DebugPoint::error ? 1 : 0;
+    auto inspection = ExecutionInspection::enter(invocation.runtime);
+    if (!inspection) {
         state->handler_failed = true;
-        state->status = DebugStatus::running;
-        invocation.fail(ErrorCode::invocation_failed, "Debug inspection handler raised an unknown exception.");
+        invocation.fail(inspection.error().code, inspection.error().message.c_str());
+        return 1;
+    }
+    state->last_stop = SnapshotBuilder{invocation, *state, *reason, ++state->next_stop_id}.build();
+    state->status = DebugStatus::paused;
+    const auto command = state->handler(*state->last_stop);
+    state->status = DebugStatus::running;
+    if (!command) {
+        state->handler_failed = true;
+        invocation.fail(command.error().code, command.error().message.c_str());
+        return 1;
+    }
+    if (command->stop_id != state->last_stop->stop_id) {
+        state->handler_failed = true;
+        invocation.fail(ErrorCode::argument_mismatch, "Debug command does not belong to the current stop.");
+        return 1;
+    }
+    switch (command->action) {
+    case DebugAction::continue_execution:
+    case DebugAction::step_into:
+    case DebugAction::step_over:
+    case DebugAction::step_out:
+        state->action = command->action;
+        state->step_activation = frame->activation;
+        break;
+    case DebugAction::abort:
+        if (!invocation.failed)
+            invocation.debug_aborted = true;
+        return 1;
+    default:
+        state->handler_failed = true;
+        invocation.fail(ErrorCode::argument_mismatch, "Debug command has an invalid action.");
         return 1;
     }
     // Inspecting the first failure can never resume its failed instruction.
