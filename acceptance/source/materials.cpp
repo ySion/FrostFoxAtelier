@@ -8,7 +8,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
-#include <stdexcept>
+#include <limits>
 
 namespace {
 using namespace atelier;
@@ -42,7 +42,7 @@ struct Texture {
     bool uv_alpha{};
 };
 
-Result<math::Vector4> sample(const void* data, math::Vector2 uv) {
+Result<math::Vector4> sample(const void* data, math::Vector2 uv) noexcept {
     auto value = static_cast<const Texture*>(data)->value;
     if (static_cast<const Texture*>(data)->uv_alpha)
         value.w = uv.x;
@@ -142,7 +142,7 @@ void verify_source_materials() {
 
         mutable math::Vector2 sampled_uv{};
     } probe;
-    const auto query_orientation = +[](const void* data, math::Vector2 uv) -> Result<math::Vector2> {
+    const auto query_orientation = +[](const void* data, math::Vector2 uv) noexcept -> Result<math::Vector2> {
         ++static_cast<const OrientationProbe*>(data)->queries;
         math::Vector2 direction{1, 1};
         for (std::size_t axis = 0; axis < 2; ++axis) {
@@ -152,7 +152,7 @@ void verify_source_materials() {
         }
         return direction;
     };
-    const auto orientation_sample = +[](const void* data, math::Vector2 uv) -> Result<math::Vector4> {
+    const auto orientation_sample = +[](const void* data, math::Vector2 uv) noexcept -> Result<math::Vector4> {
         const auto& value = *static_cast<const OrientationProbe*>(data);
         ++value.samples;
         value.sampled_uv = uv;
@@ -175,27 +175,23 @@ void verify_source_materials() {
         "An untaken orientation branch executed its callback.");
     material::Output untouched;
     untouched.coverage = 321;
-    const auto orientation_failure = [&] {
+    const auto orientation_failure = [&](ErrorCode code) {
         std::array<std::byte, sizeof(untouched)> before;
         std::memcpy(before.data(), &untouched, before.size());
-        require(!oriented->evaluate(std::as_bytes(std::span(&orientation_context, 1)), oriented->default_parameters(),
-                                    std::as_writable_bytes(std::span(&untouched, 1)), orientation_bindings) &&
-                    std::memcmp(before.data(), &untouched, before.size()) == 0,
+        const auto result =
+            oriented->evaluate(std::as_bytes(std::span(&orientation_context, 1)), oriented->default_parameters(),
+                               std::as_writable_bytes(std::span(&untouched, 1)), orientation_bindings);
+        require(!result && result.error().code == code && std::memcmp(before.data(), &untouched, before.size()) == 0,
                 "Orientation callback failure partially published Output.");
     };
-    orientation_bindings[0].orientation = +[](const void*, math::Vector2) -> Result<math::Vector2> {
+    orientation_bindings[0].orientation = +[](const void*, math::Vector2) noexcept -> Result<math::Vector2> {
         return std::unexpected(Error{ErrorCode::execution_aborted, "Injected orientation failure."});
     };
-    orientation_failure();
-    orientation_bindings[0].orientation = +[](const void*, math::Vector2) -> Result<math::Vector2> {
-        throw std::runtime_error("Injected orientation exception.");
+    orientation_failure(ErrorCode::execution_aborted);
+    orientation_bindings[0].orientation = +[](const void*, math::Vector2) noexcept -> Result<math::Vector2> {
+        return math::Vector2{1, std::numeric_limits<float>::infinity()};
     };
-    orientation_failure();
-    orientation_bindings[0].orientation =
-        +[](const void*, math::Vector2) -> Result<math::Vector2> { throw std::bad_alloc{}; };
-    orientation_failure();
-    orientation_bindings[0].orientation = +[](const void*, math::Vector2) -> Result<math::Vector2> { throw 17; };
-    orientation_failure();
+    orientation_failure(ErrorCode::invocation_failed);
     orientation_bindings[0].orientation = query_orientation;
     require(evaluate(*oriented, orientation_context, orientation_bindings).base_color == math::Vector3{-1, -1, 0.4f},
             "Orientation failures damaged a later call.");
@@ -217,32 +213,28 @@ void verify_source_materials() {
                 near(result.roughness, 0.65f) && result.normal_world == math::Vector3{0, 1, 0},
             "Detached evaluator lost parameters, sampling or native defaults.");
     untouched.coverage = 123;
-    const auto sample_failure = [&] {
+    const auto sample_failure = [&](ErrorCode code) {
         std::array<std::byte, sizeof(untouched)> before;
         std::memcpy(before.data(), &untouched, before.size());
-        require(!a->evaluate(std::as_bytes(std::span(&context, 1)), a->default_parameters(),
-                             std::as_writable_bytes(std::span(&untouched, 1)), textures) &&
-                    std::memcmp(before.data(), &untouched, before.size()) == 0,
+        const auto result = a->evaluate(std::as_bytes(std::span(&context, 1)), a->default_parameters(),
+                                        std::as_writable_bytes(std::span(&untouched, 1)), textures);
+        require(!result && result.error().code == code && std::memcmp(before.data(), &untouched, before.size()) == 0,
                 "Sampler failure partially published Output.");
     };
-    textures[1].sample = +[](const void*, math::Vector2) -> Result<math::Vector4> {
+    textures[1].sample = +[](const void*, math::Vector2) noexcept -> Result<math::Vector4> {
         return std::unexpected(Error{ErrorCode::execution_aborted, "Injected sampler failure."});
     };
-    sample_failure();
-    textures[1].sample = +[](const void*, math::Vector2) -> Result<math::Vector4> {
-        throw std::runtime_error("Injected sampler exception.");
+    sample_failure(ErrorCode::execution_aborted);
+    textures[1].sample = +[](const void*, math::Vector2) noexcept -> Result<math::Vector4> {
+        return math::Vector4{0.1f, 0.2f, std::numeric_limits<float>::quiet_NaN(), 1};
     };
-    sample_failure();
-    textures[1].sample = +[](const void*, math::Vector2) -> Result<math::Vector4> { throw std::bad_alloc{}; };
-    sample_failure();
-    textures[1].sample = +[](const void*, math::Vector2) -> Result<math::Vector4> { throw 23; };
-    sample_failure();
+    sample_failure(ErrorCode::invocation_failed);
     textures[1].sample = sample;
     require(near(evaluate(*a, context, textures).coverage, -0.25f), "Sampler failures damaged a later call.");
     textures[0].slot = slot(*b, "surface.color");
     textures[1].slot = slot(*b, "alpha");
     textures[0].data = &b;
-    textures[0].sample = +[](const void* owner, math::Vector2) -> Result<math::Vector4> {
+    textures[0].sample = +[](const void* owner, math::Vector2) noexcept -> Result<math::Vector4> {
         auto* program = static_cast<const std::shared_ptr<const source::MaterialProgram>*>(owner);
         const_cast<std::shared_ptr<const source::MaterialProgram>*>(program)->reset();
         return math::Vector4{0.2f, 0.4f, 0.6f, 0.8f};

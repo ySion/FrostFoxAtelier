@@ -71,6 +71,7 @@ Renderer 保留最后实际使用的代码 owner，但不因此保留旧参数/�
 
 ## 采样与各通道
 
+- CPU 的 `MaterialTexture::sample/orientation` 以 noexcept Result 返回业务失败；`MaterialProgram::evaluate` 保留原错误，只有状态跨私有 DLL ABI。缺失绑定、非有限坐标/采样值/输出仍返回错误并保持调用方输出不变；可选 orientation 仅在执行到查询时要求存在。CPU 内存耗尽遵循统一 fatal 合同，不以采样错误恢复。
 - 工作室、GBuffer、编辑深度在分派及 discard 前获取透视重心变化，构造完整 Context 的两方向变化，再经程序计算得到最终采样坐标足迹。
 - 相机直接阴影、shadow atlas 与接收面 inline RT 候选使用完整 Context、LOD0 覆盖。`MaterialProgram::hlsl_coverage(namespace)` 提供 `ms_Context`、`ms_Parameters`、`ms_load_parameters` 和返回 float 的 `ms_coverage(environment, context, parameters)`；Renderer 以 `MaterialCoverageN` 及 `material_coverage(surface, context)` 分派，不为候选调用完整 `material_shade`。其具名纹理仍经 `atelier_material_sample` 读取同一输入表，沿真实 linear/sRGB、寻址和空值合同在 LOD0 采样；没有候选 footprint 或独立 coverage 参数表。
 - DDGI 内部遍历按上述不透明近似提交命中，之后仍按 `.01t` 与命中平面两轴构造足迹执行完整材质着色，不用过滤后的 coverage 再否定已提交命中。主表面的 footprint 覆盖与保留候选路径的 LOD0 覆盖是不同采样合同，不能互相替换。

@@ -3,11 +3,11 @@
 #include "runtime/detail/type_publication.hpp"
 
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <cstring>
 #include <exception>
 #include <functional>
-#include <stdexcept>
 
 namespace atelier::source {
 using namespace detail;
@@ -16,65 +16,58 @@ namespace {
 struct Samples {
     std::span<const MaterialTexture> textures;
 
-    // The backend stops at the first failed callback. Owning errors and caught
-    // exceptions stay on the host side; only the status crosses the C ABI.
+    // The backend stops at the first failed callback. Owning errors stay on
+    // the host side; only the status crosses the C ABI.
     std::optional<Error> error{};
-
-    std::exception_ptr failure{};
-
-    const char* unknown_failure{};
 };
 
 std::uint32_t sample_texture(void* invocation, std::uint32_t slot, const float* uv, float* result) noexcept {
     auto& samples = *static_cast<Samples*>(invocation);
-    try {
-        if (!std::isfinite(uv[0]) || !std::isfinite(uv[1]))
-            throw std::runtime_error("Material sample UV is not finite.");
-        const auto texture = std::ranges::find(samples.textures, slot, &MaterialTexture::slot);
-        if (texture == samples.textures.end() || !texture->sample)
-            throw std::runtime_error("Missing material texture binding.");
-        auto value = texture->sample(texture->data, {uv[0], uv[1]});
-        if (!value) {
-            samples.error = std::move(value.error());
+    if (!std::isfinite(uv[0]) || !std::isfinite(uv[1])) {
+        samples.error = Error{ErrorCode::invocation_failed, "Material sample UV is not finite."};
+        return 1;
+    }
+    const auto texture = std::ranges::find(samples.textures, slot, &MaterialTexture::slot);
+    // Source can only copy injected texture tokens; evaluate verified each binding.
+    assert(texture != samples.textures.end() && texture->sample);
+    auto value = texture->sample(texture->data, {uv[0], uv[1]});
+    if (!value) {
+        samples.error = std::move(value.error());
+        return 1;
+    }
+    for (std::size_t i = 0; i < 4; ++i)
+        if (!std::isfinite((*value)[i])) {
+            samples.error = Error{ErrorCode::invocation_failed, "Material sample result is not finite."};
             return 1;
         }
-        for (std::size_t i = 0; i < 4; ++i)
-            if (!std::isfinite((*value)[i]))
-                throw std::runtime_error("Material sample result is not finite.");
-        std::memcpy(result, &*value, sizeof(*value));
-        return 0;
-    } catch (...) {
-        samples.failure = std::current_exception();
-        samples.unknown_failure = "Material sampler failed.";
-    }
-    return 1;
+    std::memcpy(result, &*value, sizeof(*value));
+    return 0;
 }
 
 std::uint32_t sample_orientation(void* invocation, std::uint32_t slot, const float* uv, float* result) noexcept {
     auto& samples = *static_cast<Samples*>(invocation);
-    try {
-        if (!std::isfinite(uv[0]) || !std::isfinite(uv[1]))
-            throw std::runtime_error("Material sample_orientation UV is not finite.");
-        const auto texture = std::ranges::find(samples.textures, slot, &MaterialTexture::slot);
-        if (texture == samples.textures.end())
-            throw std::runtime_error("Missing material texture binding.");
-        if (!texture->orientation)
-            throw std::runtime_error("Missing material sample_orientation callback.");
-        auto value = texture->orientation(texture->data, {uv[0], uv[1]});
-        if (!value) {
-            samples.error = std::move(value.error());
+    if (!std::isfinite(uv[0]) || !std::isfinite(uv[1])) {
+        samples.error = Error{ErrorCode::invocation_failed, "Material sample_orientation UV is not finite."};
+        return 1;
+    }
+    const auto texture = std::ranges::find(samples.textures, slot, &MaterialTexture::slot);
+    assert(texture != samples.textures.end());
+    if (!texture->orientation) {
+        samples.error = Error{ErrorCode::invocation_failed, "Missing material sample_orientation callback."};
+        return 1;
+    }
+    auto value = texture->orientation(texture->data, {uv[0], uv[1]});
+    if (!value) {
+        samples.error = std::move(value.error());
+        return 1;
+    }
+    for (std::size_t i = 0; i < 2; ++i)
+        if (!std::isfinite((*value)[i])) {
+            samples.error = Error{ErrorCode::invocation_failed, "Material sample_orientation result is not finite."};
             return 1;
         }
-        for (std::size_t i = 0; i < 2; ++i)
-            if (!std::isfinite((*value)[i]))
-                throw std::runtime_error("Material sample_orientation result is not finite.");
-        std::memcpy(result, &*value, sizeof(*value));
-        return 0;
-    } catch (...) {
-        samples.failure = std::current_exception();
-        samples.unknown_failure = "Material sample_orientation failed.";
-    }
-    return 1;
+    std::memcpy(result, &*value, sizeof(*value));
+    return 0;
 }
 
 bool finite_value(BusinessType type, const BusinessEnvironment& environment, const std::byte* bytes) {
@@ -192,8 +185,8 @@ Result<std::string> MaterialProgram::generate_hlsl(std::string_view name_space, 
 }
 
 Result<void> MaterialProgram::evaluate(std::span<const std::byte> context, std::span<const std::byte> parameters,
-                                       std::span<std::byte> output, std::span<const MaterialTexture> textures) const
-    try {
+                                       std::span<std::byte> output,
+                                       std::span<const MaterialTexture> textures) const noexcept {
     const auto state = state_; // Samplers may release the caller's last outer owner.
     if (context.size() != state->context.size || parameters.size() != state->parameters.size ||
         output.size() != state->output.size)
@@ -235,26 +228,12 @@ Result<void> MaterialProgram::evaluate(std::span<const std::byte> context, std::
                                 sizeof(error))) {
         if (samples.error)
             return std::unexpected(std::move(*samples.error));
-        if (samples.failure) {
-            try {
-                std::rethrow_exception(samples.failure);
-            } catch (const std::bad_alloc&) {
-                throw;
-            } catch (const std::exception& failure) {
-                return std::unexpected(Error{ErrorCode::invocation_failed, failure.what()});
-            } catch (...) {
-                return std::unexpected(Error{ErrorCode::invocation_failed, samples.unknown_failure});
-            }
-        }
         return std::unexpected(Error{ErrorCode::invocation_failed, error});
     }
     if (!finite_value(info.signature.result, info.environment, output_data))
         return std::unexpected(Error{ErrorCode::invocation_failed, "Material output is not finite."});
     std::memcpy(output.data(), output_data, output.size());
     return {};
-} catch (const std::bad_alloc&) {
-    // Reporting allocation failure must not allocate another diagnostic string.
-    return std::unexpected(Error{ErrorCode::capacity_exceeded, {}});
 }
 
 Result<std::shared_ptr<const MaterialProgram>> compile_material(Runtime& runtime, TypeId context, TypeId output,

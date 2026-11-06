@@ -44,7 +44,7 @@ C++ 原生回调不能依赖异常自动展开：若先构造完整对象再做�
 
 原生程序化节点迁移后的可失败签名为 `atelier::Result<void> evaluate(...) const noexcept`，原有 Geometry/Context 引用参数、参数名及 BorrowSafe 约束保持。注册器把它发布为 **业务结果 void** 的同一个 `evaluate`，错误不是额外输出端口。生产者只剥离一层 runtime Result；不把 `std::expected` 的布局注册成业务类型，不让 Runtime 理解 Geometry、列名或节点错误。程序化操作自己的 Result 由节点在本模块边界转换为带原原因的 runtime 错误（节点执行失败为 `invocation_failed`），不通过 throw、线程局部“最后错误”或往 Context 塞错误旁路传递。
 
-动态 Invoker 与定型 native thunk 从同一个原生结果取值/取错：失败先保留首因，不读取未产生的结果、不覆盖调用方原输出；成功仍需通过既有结果类型与存储检查。进入 JIT 的状态/诊断保持固定 ABI，宿主拥有 Error，生成代码只走状态分支并显式释放已构造值、根和借用。`runtime.cpp` 的值构造现已在清理后返回失败，不再重抛；这不是 JIT 展开协议。Material 路径中延迟保存的 `exception_ptr` 仍待对应片改为普通错误，而非在 JIT 返回后再抛。
+动态 Invoker 与定型 native thunk 从同一个原生结果取值/取错：失败先保留首因，不读取未产生的结果、不覆盖调用方原输出；成功仍需通过既有结果类型与存储检查。进入 JIT 的状态/诊断保持固定 ABI，宿主拥有 Error，生成代码只走状态分支并显式释放已构造值、根和借用。`runtime.cpp` 的值构造现已在清理后返回失败，不再重抛；这不是 JIT 展开协议。Material 的采样与方向回调现为 noexcept Result，evaluate 只在宿主保存普通 Error，不再延迟保存或重抛采样异常；编译期默认值捕获与其他 Source 边界仍待后续片迁移。
 
 失败只保证声明过的输出暂存不提交，不撤销原生回调此前通过可写引用造成的业务修改。程序化求值器仍拥有节点候选输出和发布决定：任一绑定/调用失败不发布部分 Geometry，旧输出保留，修正输入后可重新求值。S1-E 在 W2 完成后复用这条通道统一原生与 Source 列绑定；W0 不实现 E、不改变端口、缓存或调度。
 

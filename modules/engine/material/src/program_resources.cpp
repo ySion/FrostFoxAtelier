@@ -38,7 +38,7 @@ ProgramSurfaceRef reuse(ProgramSurfaceRef old, ProgramSurfaceRef next) {
 
 // The CPU contract is bilinear LOD0, RGB-only sRGB decode before interpolation.
 // Empty values are already linear. UV/channel transformations belong to Source.
-Result<math::Vector4> sample_input(const void* data, math::Vector2 uv) {
+Result<math::Vector4> sample_input(const void* data, math::Vector2 uv) noexcept {
     const auto& input = *static_cast<const SurfaceInput*>(data);
     if (!input.image)
         return input.empty_value;
@@ -79,7 +79,7 @@ Result<math::Vector4> sample_input(const void* data, math::Vector2 uv) {
     return result;
 }
 
-Result<math::Vector2> input_orientation(const void* data, math::Vector2 uv) {
+Result<math::Vector2> input_orientation(const void* data, math::Vector2 uv) noexcept {
     const auto& input = *static_cast<const SurfaceInput*>(data);
     math::Vector2 result{1, 1};
     if (input.address == Address::mirror)

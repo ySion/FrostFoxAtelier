@@ -34,13 +34,14 @@ struct MaterialTexture {
 
     // Synchronous, read-only LOD-0 sample. RGB is decoded to linear when the
     // binding is a color texture; alpha/data are linear. No derivatives.
-    Result<math::Vector4> (*sample)(const void*, math::Vector2);
+    // Both callbacks report recoverable failures through Result, never exceptions.
+    Result<math::Vector4> (*sample)(const void*, math::Vector2) noexcept;
 
     // Same actual binding/addressing, including empty images. Repeat/Clamp
     // return (1,1); Mirror folds u -= floor(u*.5)*2 and returns u>1 ? -1 : +1
     // per axis (fold points choose +1). Required only when executed; a missing
     // callback fails the invocation atomically, never assumes Repeat.
-    Result<math::Vector2> (*orientation)(const void*, math::Vector2){};
+    Result<math::Vector2> (*orientation)(const void*, math::Vector2) noexcept {};
 };
 
 // Immutable owning content, independent of the compilation Runtime. Evaluation
@@ -113,7 +114,7 @@ public:
     // output unchanged. Byte spans have the captured sizes, may be unaligned.
     // CPU/HLSL use float math; no bit-identity promise near rounding boundaries.
     Result<void> evaluate(std::span<const std::byte> context, std::span<const std::byte> parameters,
-                          std::span<std::byte> output, std::span<const MaterialTexture> textures = {}) const;
+                          std::span<std::byte> output, std::span<const MaterialTexture> textures = {}) const noexcept;
 };
 
 // Runtime supplies the actual registered Context/Output and value layouts only
