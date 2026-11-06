@@ -478,7 +478,7 @@ Result<void> destroy_value(TypeId, std::span<std::byte> storage);
 - **寿命前提**：Runtime、原生回调和 DLL 必须覆盖所有非终态帧。宿主关停时先取消/销毁这些帧，再销毁 Runtime 和卸载代码。当前不自动追踪并关闭宿主所有协程，不授权在协程运行中销毁 Runtime。终态已释放帧，之后查询结果不访问 Runtime。
 - **帧与 GC**：宿主适配器在稳定存储中持有 `Invocation`、原有根槽与观察槽。源码局部标量由 LLVM 持久帧保存；持有引用仍登记于原 Runtime，不另建对象堆。原生借用在返回后结束，挂起点不保存可跨期使用的裸对象地址。
 - **代码与发布**：共享 `FunctionSignature::execution` 区分同步和协程，普通原生 Invoker 只接受同步声明。正式 `source::Program::Entry/Lease` 通过 `start` 创建协程，通过 `invoke` 同步调用，误用明确拒绝；仍由同一程序所有者管理声明和版本。每个协程固定持有创建时 Version，恢复和销毁代码、绑定信息及展开表一起保活；完成或取消即释放，结果对象不额外保留代码。
-- **编译后端**：现有 AST → LLVM IR → LLJIT 链增加 `coro.id/begin/suspend/end/free` 与显式 CoroEarly、CoroSplit、CoroCleanup 转换，并在转换前后验证模块。初始挂起在源码体前，最终挂起与取消清理分开。DLL 内成对分配/释放满足对齐的帧存储；宿主仅持不透明句柄，LLVM/STL/CRT 所有权不跨边界。
+- **编译后端**：现有 AST → LLVM IR → LLJIT 链增加 `coro.id/begin/suspend/end/free` 与显式 CoroEarly、CoroSplit、CoroCleanup 转换，并在转换前后验证模块。初始挂起在源码体前，最终挂起与取消清理分开。DLL 内成对分配/释放满足对齐的帧存储，CPU 分配失败直接 fatal，不生成空帧恢复分支；宿主仅持不透明句柄，LLVM/STL/CRT 所有权不跨边界。
 
 当前每实例有五个固定分配调用点：核心控制块、宿主帧、DLL 状态、不透明句柄和 LLVM 帧；非空参数保留副本，根/实参扩展仍按实际需求分配。固定调用点数量不等于实际总分配次数。同步入口不执行协程转换。
 

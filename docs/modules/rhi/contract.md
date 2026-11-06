@@ -29,7 +29,7 @@
 `submit(PipelineDesc) -> Result<PipelineJob>` 与 `prepare` 是同一个准备作业：同一套编译、反射、root signature/PSO 和 GBV 预热代码，`prepare` 只是在 owner 线程内联执行它。
 
 - owner 线程在 `submit` 中按 `prepare` 的规则检查描述，复制源码、名称和 DrawState；文件模式在此读入阶段文件。返回后描述不再被借用。
-- 工作线程在第一次 `submit` 时启动，至多 min(8, 硬件线程数) 个，各自持有 DXC 实例。它们只做编译（或缓存命中）、反射、root signature 与 PSO 创建，只接触自己的作业和 device，不触碰 gfx context。
+- 工作线程在第一次 `submit` 时启动，至多 min(8, 硬件线程数) 个，各自持有 DXC 实例。线程启动失败按宿主资源耗尽 fatal，不返回 creation_failed 或降级为部分线程池。它们只做编译（或缓存命中）、反射、root signature 与 PSO 创建，只接触自己的作业和 device，不触碰 gfx context。
 - `Validation::gpu` 时，工作线程在一个从不执行的命令列表上为每条管线录制一次 `Set*RootSignature` + `SetPipelineState`。GBV 在任何命令列表第一次设置某个 PSO 时生成补丁版本，这一步把该成本移出 owner 线程的第一次录制；执行时仍由 GBV 校验，覆盖面不变。在创建 PSO 时就打补丁的做法会让当前 SDK Layers 崩溃，不采用。
 - `take(job)` 只在 owner 线程调用，从不等待：作业未完成时返回空；完成后恰好一次返回 Pipeline 或失败。Program/Kernel 只在 owner 线程登记进 gfx。工作线程上的失败以值返回，不跨线程抛异常。已取走的作业或属于其他 Context 的作业返回 invalid_argument。
 - 作业不是 Pipeline，不会让 `close` 返回 busy。丢弃 PipelineJob 即取消：排队的作业直接丢弃，正在运行的步骤做完后释放产物。

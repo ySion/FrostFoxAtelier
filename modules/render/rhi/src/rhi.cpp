@@ -117,22 +117,13 @@ public:
 
     Preparer& operator=(const Preparer&) = delete;
 
-    Result<void> submit(std::shared_ptr<PreparationJob> job) {
+    void submit(std::shared_ptr<PreparationJob> job) noexcept {
         std::lock_guard lock(mutex_);
-        if (stopped_)
-            return std::unexpected(Error{ErrorCode::closed, kGfxResult_InvalidOperation, "context is closed"});
-        try {
-            for (auto count = std::clamp(std::thread::hardware_concurrency(), 1u, 8u); threads_.size() < count;)
-                threads_.emplace_back([this] { work(); });
-        } catch (const std::system_error&) {
-            if (threads_.empty())
-                return std::unexpected(
-                    Error{ErrorCode::creation_failed, kGfxResult_InternalError, "preparation thread creation failed"});
-        }
+        for (auto count = std::clamp(std::thread::hardware_concurrency(), 1u, 8u); threads_.size() < count;)
+            threads_.emplace_back([this] { work(); });
         live_.push_back(job);
         queue_.push_back(std::move(job));
         wake_.notify_one();
-        return {};
     }
 
     void run_inline(PreparationJob& job) { run(job, owner_); }
@@ -670,10 +661,7 @@ Result<PipelineJob> Context::submit(const PipelineDesc& desc) {
     auto job = this->job(desc);
     if (!job)
         return std::unexpected(std::move(job.error()));
-    if (auto queued = state_->preparer->submit(*job); !queued) {
-        gfxKernelBuildDestroy(std::exchange((*job)->build, nullptr));
-        return std::unexpected(std::move(queued.error()));
-    }
+    state_->preparer->submit(*job);
     PipelineJob handle;
     handle.preparer_ = state_->preparer;
     handle.job_ = std::move(*job);

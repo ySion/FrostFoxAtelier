@@ -6,7 +6,6 @@
 #include <atomic>
 #include <exception>
 #include <mutex>
-#include <system_error>
 #include <thread>
 
 namespace atelier::assets {
@@ -127,11 +126,11 @@ std::vector<material::ImageRef> decode_images(std::span<const std::string_view> 
             std::min<std::size_t>({sources.size(), 8, std::max(1u, std::thread::hardware_concurrency() / 2)});
         std::vector<std::jthread> workers; // Joined before the shared state above leaves scope.
         workers.reserve(threads - 1);
-        try {
+        // Only startup is fatal; decoding failures still join and report below.
+        [&]() noexcept {
             for (std::size_t i = 1; i < threads; ++i)
                 workers.emplace_back(work);
-        } catch (const std::system_error&) {
-        } // A worker that cannot start leaves its share to the others.
+        }();
         work();
     }
     if (failure)

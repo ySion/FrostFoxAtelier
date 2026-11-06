@@ -180,8 +180,7 @@ void* allocate_coroutine(std::uint64_t size, std::uint32_t alignment) noexcept {
     // coro.id(0) promises at least twice pointer alignment, even if the
     // computed frame layout itself needs less. Match this in deallocation.
     constexpr std::uint32_t minimum = 2 * sizeof(void*);
-    return ::operator new(static_cast<std::size_t>(size), std::align_val_t{alignment < minimum ? minimum : alignment},
-                          std::nothrow);
+    return ::operator new(static_cast<std::size_t>(size), std::align_val_t{alignment < minimum ? minimum : alignment});
 }
 
 void free_coroutine(void* storage, std::uint32_t alignment) noexcept {
@@ -856,12 +855,6 @@ private:
             llvm::FunctionType::get(ir_.getPtrTy(), {ir_.getInt64Ty(), ir_.getInt32Ty()}, false));
         trace_event(DiagnosticCall::coroutine_allocate);
         auto* memory = ir_.CreateCall(allocate, {size, coroutine_alignment_});
-        auto* allocated = block("coroutine.allocated");
-        auto* exhausted = block("coroutine.allocation_failed");
-        ir_.CreateCondBr(ir_.CreateICmpNE(memory, null), allocated, exhausted);
-        ir_.SetInsertPoint(exhausted);
-        ir_.CreateRet(null);
-        ir_.SetInsertPoint(allocated);
         coroutine_handle_ = ir_.CreateCall(intrinsic(llvm::Intrinsic::coro_begin), {coroutine_id_, memory});
         prepare_debug_storage();
         suspend(false); // Creation owns a frame; the first resume enters the body.
@@ -2492,10 +2485,7 @@ struct BusinessCoroutineState {
 
     bool running{};
 
-    ~BusinessCoroutineState() {
-        if (handle)
-            code->destroy(handle);
-    }
+    ~BusinessCoroutineState() { code->destroy(handle); }
 };
 
 struct BusinessCoroutine {
@@ -2971,14 +2961,7 @@ std::uint32_t atelier_invoke_business(atelier::source::detail::BusinessCode* cod
     }
     std::uint64_t staged_bits{};
     atelier::detail::ValueStorage result_storage;
-    void* staged_value = nullptr;
-    try {
-        if (value_result)
-            staged_value = result_storage.prepare(value_result->size, value_result->alignment);
-    } catch (const std::bad_alloc&) {
-        std::snprintf(error, error_capacity, "%s", "Could not allocate record result staging.");
-        return 1;
-    }
+    void* staged_value = value_result ? result_storage.prepare(value_result->size, value_result->alignment) : nullptr;
     atelier::source::detail::BusinessFailure failure{};
     const auto status =
         active_code->options.diagnostics
@@ -3037,29 +3020,19 @@ std::uint32_t atelier_create_business_coroutine(atelier::source::detail::Busines
             return 1;
         }
     }
-    try {
-        auto state = std::make_shared<BusinessCoroutineState>();
-        state->code = active;
-        if (argument_count)
-            state->arguments.assign(arguments, arguments + argument_count);
-        auto owner = std::make_unique<BusinessCoroutine>();
-        owner->state = state;
-        state->handle =
-            active->options.diagnostics
-                ? active->diagnostic_coroutine_entry(invocation, state->arguments.data(), &state->bits, &state->failure,
-                                                     &state->status, &state->completed, trace)
-                : active->coroutine_entry(invocation, state->arguments.data(), &state->bits, &state->failure,
-                                          &state->status, &state->completed);
-        if (!state->handle)
-            throw std::bad_alloc();
-        *output = owner.release();
-        return 0;
-    } catch (const std::exception& failure) {
-        std::snprintf(error, error_capacity, "%s", failure.what());
-    } catch (...) {
-        std::snprintf(error, error_capacity, "%s", "Coroutine creation failed.");
-    }
-    return 1;
+    auto state = std::make_shared<BusinessCoroutineState>();
+    state->code = active;
+    if (argument_count)
+        state->arguments.assign(arguments, arguments + argument_count);
+    auto owner = std::make_unique<BusinessCoroutine>();
+    owner->state = state;
+    state->handle = active->options.diagnostics
+                        ? active->diagnostic_coroutine_entry(invocation, state->arguments.data(), &state->bits,
+                                                             &state->failure, &state->status, &state->completed, trace)
+                        : active->coroutine_entry(invocation, state->arguments.data(), &state->bits, &state->failure,
+                                                  &state->status, &state->completed);
+    *output = owner.release();
+    return 0;
 }
 
 std::uint32_t atelier_resume_business_coroutine(atelier::source::detail::BusinessCoroutine* coroutine, bool* suspended,
