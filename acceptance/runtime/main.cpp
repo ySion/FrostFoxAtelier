@@ -1,3 +1,4 @@
+#include "memory/fatal.hpp"
 #include "../helpers.hpp"
 #include "runtime/native.hpp"
 #include "runtime/foundation.hpp"
@@ -841,6 +842,7 @@ void verify_value_paths();
 void verify_write_stamps();
 
 int main() {
+    atelier::install_fatal_handler();
     try {
         atelier::acceptance::verify_default_allocator();
         verify_method_results();

@@ -211,9 +211,13 @@ cmake --build --preset release --target ui_layout_acceptance
 
 ## 默认内存分配
 
-原生进程使用共享 mimalloc DLL 与官方 Windows CRT 重定向，普通代码继续调用默认分配函数。`atelier_target` 为每个可执行目标直接编译 [global_new_delete.cpp](modules/core/memory/src/global_new_delete.cpp)，在一个翻译单元中采用官方完整的 `new/delete` 覆盖，并链接同一 mimalloc DLL。静态库内的代码随最终进程使用该分配器。
+原生进程使用 C 模式构建的共享 mimalloc DLL 与官方 Windows CRT 重定向，普通代码继续调用默认分配函数。`atelier_target` 为每个可执行目标及自有 DLL 直接编译 [global_new_delete.cpp](modules/core/memory/src/global_new_delete.cpp)，覆盖普通、数组、nothrow、对齐及 sized delete，链接同一 mimalloc DLL；LLVM DLL 在自身 `/MT` 域编译，不再由支持对象重复提供覆盖。仅 CRT 重定向对照 `atelier_allocator_client` 保留不直接链接 mimalloc 的特例。自有全局 new 的分配失败直接进入 fatal，包括 nothrow 形式，不调用 new_handler 或尝试异常恢复。静态库内的代码随最终链接模块使用该分配器。
 
-本项目的可执行文件和 DLL 集中输出到各配置目录。运行验收程序时，需要保留同目录的 `mimalloc-debug.dll`（开发配置）或 `mimalloc.dll`（发布配置）、`mimalloc-redirect.dll`，以及用于验证跨 DLL CRT 分配的 `atelier_allocator_client.dll`。mimalloc 和重定向器采用上游实现，构建同时保留 `LICENSE.mimalloc.txt`。
+基础层的 [memory/fatal.hpp](modules/core/memory/include/memory/fatal.hpp) 提供 `atelier::fatal(std::string_view) noexcept` 与 `atelier::install_fatal_handler() noexcept`。`atelier_memory_headers` 只传播头文件；`atelier_target` 在每个 exe/shared DLL 中按其自身 CRT 编译同一份 fatal 实现，不把宿主 CRT 对象链接进 LLVM 域。全部 exe 入口已安装处理器；Source 后端、JIT 平台验收 DLL 与两个 LLVM 工具在各自 CRT 域安装，LLVM 致命回调使用固定原因。错误政策与覆盖限制以[唯一 fatal 出口](docs/engineering.md#唯一-fatal-出口)为准；其他可空分配调用、线程启动及业务错误路径的去异常迁移仍在进行，本片不翻转全仓编译开关。
+
+fatal 只向成功设为非阻塞的 stderr 管道尽力写出至多 1024 字节原因；控制台（包括 QuickEdit）、文件、设备、无效句柄或不能切换为非阻塞的管道均跳过文本，直接 fail-fast。mimalloc 的[最小补丁](third_party/mimalloc/atelier.patch)关闭其默认 stderr 诊断，避免分配返回 null **之前**被满管道或控制台阻塞；该策略在初始化早期、dev 默认诊断及环境变量要求 verbose/show-errors 时均生效，不改分配或调试检查。需要诊断时使用本方 fatal，不依赖分配器的默认输出。
+
+本项目的可执行文件和 DLL 集中输出到各配置目录。运行验收程序时，需要保留同目录的 `mimalloc-debug.dll`（开发配置）或 `mimalloc.dll`（发布配置）、`mimalloc-redirect.dll`，以及用于验证跨 DLL CRT 分配的 `atelier_allocator_client.dll`。重定向器保持上游实现，构建同时保留 `LICENSE.mimalloc.txt`。
 
 实际覆盖包括全局 C++ 分配、采用默认分配器的标准容器，以及经过动态 CRT 的 C 分配。独立堆、直接操作系统分配、GPU/JIT 专用内存和第三方自定义分配不因 CRT 重定向而自动改用 mimalloc。原有析构、所有权和指定释放接口的契约保持不变。
 

@@ -1,3 +1,4 @@
+#include "memory/fatal.hpp"
 #include "material/program_resources.hpp"
 #include "material/resources.hpp"
 
@@ -650,6 +651,7 @@ void capture_dependencies() {
 }
 
 int main() {
+    atelier::install_fatal_handler();
     try {
         resources();
         ownership_and_filtering();

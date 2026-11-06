@@ -1,3 +1,4 @@
+#include "memory/fatal.hpp"
 #include "../helpers.hpp"
 #include "editor/session.hpp"
 #include "editor/project.hpp"
@@ -99,6 +100,7 @@ float value(editor::Session& document, ObjectId target, std::size_t axis = 0) {
 }
 
 int main(int argc, char** argv) {
+    atelier::install_fatal_handler();
     std::string_view stage = argc > 1 ? argv[1] : "document history";
     try {
         if (argc == 2 && std::string_view(argv[1]) == "--recovery") {

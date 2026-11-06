@@ -1,3 +1,4 @@
+#include "memory/fatal.hpp"
 #include "control/control.hpp"
 #include "platform/windows_path.hpp"
 #include <fstream>
@@ -5,6 +6,7 @@
 #include <thread>
 
 int wmain(int argc, wchar_t** argv) {
+    atelier::install_fatal_handler();
     using namespace atelier::control;
     try {
         auto directory = default_directory();

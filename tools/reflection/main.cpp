@@ -1,3 +1,5 @@
+#include "memory/fatal.hpp"
+#include <llvm/Support/ErrorHandling.h>
 #include <clang/AST/ASTConsumer.h>
 #include <clang/AST/DeclCXX.h>
 #include <clang/AST/DeclFriend.h>
@@ -1223,6 +1225,8 @@ void emit(const State& state) {
 }
 
 int main(int argc, char** argv) {
+    atelier::install_fatal_handler();
+    llvm::install_fatal_error_handler([](void*, const char*, bool) { atelier::fatal("llvm fatal error"); });
     try {
         if (argc != 2)
             throw std::runtime_error("Usage: atelier_reflect <reflection.json>");

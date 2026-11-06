@@ -1,3 +1,4 @@
+#include "memory/fatal.hpp"
 #include "foundation/string.hpp"
 #include <mimalloc.h>
 #include <mimalloc-stats.h>
@@ -26,6 +27,7 @@ std::int64_t live_bytes() {
 }
 
 int main() {
+    atelier::install_fatal_handler();
     try {
         const std::string ascii(192, 'a');
         std::vector<String> catalog;

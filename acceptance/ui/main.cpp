@@ -1,3 +1,4 @@
+#include "memory/fatal.hpp"
 #include "ui/session.hpp"
 #include "ui/text.hpp"
 #include <Windows.h>
@@ -102,6 +103,7 @@ void identity_and_lifetime() {
 }
 
 int main() {
+    atelier::install_fatal_handler();
     unsigned failures = 0;
     const std::pair<const char*, void (*)()> cases[] = {{"identity_and_lifetime", identity_and_lifetime},
                                                         {"accepted_text_style_snapshot", accepted_text_style_snapshot},

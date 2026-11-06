@@ -1,3 +1,4 @@
+#include "memory/fatal.hpp"
 #include "../helpers.hpp"
 #include "foundation/fixture.hpp"
 
@@ -168,6 +169,7 @@ void reflection_workload() {
 }
 
 int main() {
+    atelier::install_fatal_handler();
     try {
         native_workload();
         reflection_workload();

@@ -1,3 +1,4 @@
+#include "memory/fatal.hpp"
 #include "math/math.hpp"
 
 #include <cstdio>
@@ -52,6 +53,7 @@ void scene() {
 }
 
 int main() {
+    atelier::install_fatal_handler();
     try {
         scene();
         std::puts("Native math acceptance: PASS (analytic vector, quaternion and matrix representatives)");

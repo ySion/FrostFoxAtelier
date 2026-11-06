@@ -1,3 +1,4 @@
+#include "memory/fatal.hpp"
 #include "../helpers.hpp"
 #include "reflection/fixture.hpp"
 #include "runtime/native.hpp"
@@ -95,6 +96,7 @@ void verify_failed_borrow(Runtime& runtime) {
 }
 
 int main() {
+    atelier::install_fatal_handler();
     try {
         Runtime runtime;
         const auto types = take(runtime.register_types({atelier::reflection::Definition<Sample>::build(runtime),

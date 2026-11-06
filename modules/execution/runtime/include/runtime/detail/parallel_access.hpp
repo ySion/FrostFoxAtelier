@@ -2,8 +2,7 @@
 
 #ifndef NDEBUG
 #include "foundation/tasks.hpp"
-#include <cstdio>
-#include <cstdlib>
+#include "memory/fatal.hpp"
 #endif
 
 namespace atelier::detail {
@@ -12,10 +11,8 @@ namespace atelier::detail {
 // neither an owner-thread check nor a proof that captures are Runtime-free.
 inline void assert_serial_access() noexcept {
 #ifndef NDEBUG
-    if (tasks::in_parallel_body()) {
-        std::fputs("Runtime: access from a parallel task body is forbidden.\n", stderr);
-        std::abort();
-    }
+    if (tasks::in_parallel_body())
+        fatal("Runtime: access from a parallel task body is forbidden.");
 #endif
 }
 

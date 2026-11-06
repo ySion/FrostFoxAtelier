@@ -1,3 +1,4 @@
+#include "memory/fatal.hpp"
 #include "../helpers.hpp"
 #include "editor/session.hpp"
 #include "editor/project.hpp"
@@ -2304,6 +2305,7 @@ void run() {
 }
 
 int main() {
+    atelier::install_fatal_handler();
     try {
         run();
         return 0;

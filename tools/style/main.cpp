@@ -1,3 +1,5 @@
+#include "memory/fatal.hpp"
+#include <llvm/Support/ErrorHandling.h>
 #include <clang/AST/ASTConsumer.h>
 #include <clang/AST/DeclCXX.h>
 #include <clang/AST/DeclTemplate.h>
@@ -521,6 +523,8 @@ bool apply(const std::string& path, const std::set<Edit>& edits) {
 } // namespace
 
 int main(int argc, const char** argv) {
+    atelier::install_fatal_handler();
+    llvm::install_fatal_error_handler([](void*, const char*, bool) { atelier::fatal("llvm fatal error"); });
     auto parser = tooling::CommonOptionsParser::create(
         argc, argv, category, llvm::cl::OneOrMore,
         "Checks declarations that clang-format cannot normalise: one variable per declaration, and one blank\n"

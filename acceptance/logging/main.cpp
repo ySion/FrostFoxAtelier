@@ -1,7 +1,9 @@
+#include "memory/fatal.hpp"
 #include "support.hpp"
 #include <Windows.h>
 
 int wmain(int argc, wchar_t** argv) {
+    atelier::install_fatal_handler();
     std::string selected;
     try {
         using namespace logging_acceptance;

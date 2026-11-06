@@ -1,3 +1,4 @@
+#include "memory/fatal.hpp"
 #include "assets/file.hpp"
 #include "assets/json_format.hpp"
 #include "editor/project_code.hpp"
@@ -1043,6 +1044,7 @@ ui ProjectUI(in Text title, in double elapsed, in double entities) {
 }
 
 int main(int argc, char** argv) {
+    atelier::install_fatal_handler();
     try {
         if (argc >= 2 && std::string_view(argv[1]) == "--raw-output-child")
             return raw_output_child({argv + 2, static_cast<std::size_t>(argc - 2)});

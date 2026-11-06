@@ -31,15 +31,24 @@ endif()
 include(cmake/mimalloc.cmake)
 include(cmake/acceptance.cmake)
 
+add_library(atelier_memory_headers INTERFACE)
+target_include_directories(atelier_memory_headers INTERFACE modules/core/memory/include)
+
 function(atelier_target target)
+    cmake_parse_arguments(PARSE_ARGV 1 _arg "CRT_ALLOCATOR_PROBE" "" "")
     set_target_properties(${target} PROPERTIES
         CXX_STANDARD 23 CXX_STANDARD_REQUIRED YES CXX_EXTENSIONS NO
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
         MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
     target_compile_options(${target} PRIVATE /W4 /WX /EHsc /permissive- /utf-8)
     target_compile_definitions(${target} PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+    target_link_libraries(${target} PRIVATE atelier_memory_headers)
     get_target_property(_type ${target} TYPE)
-    if(_type STREQUAL "EXECUTABLE")
+    if(_type STREQUAL "EXECUTABLE" OR _type STREQUAL "SHARED_LIBRARY")
+        # Compile in the owning CRT domain, including LLVM's /MT targets.
+        target_sources(${target} PRIVATE "${PROJECT_SOURCE_DIR}/modules/core/memory/src/fatal.cpp")
+    endif()
+    if((_type STREQUAL "EXECUTABLE" OR _type STREQUAL "SHARED_LIBRARY") AND NOT _arg_CRT_ALLOCATOR_PROBE)
         # Link the overrides directly: an unreferenced static-library object can be discarded.
         target_sources(${target} PRIVATE "${PROJECT_SOURCE_DIR}/modules/core/memory/src/global_new_delete.cpp")
         target_link_libraries(${target} PRIVATE mimalloc)
@@ -52,7 +61,7 @@ include(cmake/unordered_dense.cmake)
 include(cmake/tbb.cmake)
 add_library(atelier_foundation_headers INTERFACE)
 target_include_directories(atelier_foundation_headers INTERFACE modules/core/foundation/include)
-target_link_libraries(atelier_foundation_headers INTERFACE unordered_dense::unordered_dense)
+target_link_libraries(atelier_foundation_headers INTERFACE unordered_dense::unordered_dense atelier_memory_headers)
 
 add_library(atelier_math INTERFACE)
 target_include_directories(atelier_math INTERFACE modules/core/math/include)
@@ -85,7 +94,8 @@ target_link_libraries(atelier_runtime PUBLIC atelier_foundation atelier_math ate
 
 add_library(atelier_allocator_client SHARED acceptance/memory/crt_client.cpp)
 target_compile_definitions(atelier_allocator_client PRIVATE ATELIER_ALLOCATOR_CLIENT_BUILD)
-atelier_target(atelier_allocator_client)
+# Keep the CRT malloc/realloc redirector control independent of direct mimalloc links.
+atelier_target(atelier_allocator_client CRT_ALLOCATOR_PROBE)
 
 add_executable(atelier_runtime_acceptance
     acceptance/runtime/main.cpp

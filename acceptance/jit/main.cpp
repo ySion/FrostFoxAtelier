@@ -1,3 +1,4 @@
+#include "memory/fatal.hpp"
 #include "backend.hpp"
 #include "business.hpp"
 
@@ -20,6 +21,7 @@ void log_result(const char* text) noexcept {
 }
 
 int main() {
+    atelier::install_fatal_handler();
     HMODULE native_module{};
     if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
                             reinterpret_cast<LPCWSTR>(&atelier_jit_native_calculate), &native_module) ||

@@ -1,3 +1,4 @@
+#include "memory/fatal.hpp"
 #include "foundation/array.hpp"
 #include <mimalloc.h>
 #include <mimalloc-stats.h>
@@ -24,6 +25,7 @@ std::int64_t live_bytes() {
 }
 
 int main() {
+    atelier::install_fatal_handler();
     try {
         const auto before = live_bytes();
         {

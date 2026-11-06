@@ -1,3 +1,4 @@
+#include "memory/fatal.hpp"
 #include "rhi/rhi.hpp"
 #include "support.hpp"
 #include "shaders.hpp"
@@ -149,6 +150,7 @@ void scene(Context& context, Pipeline& compute, Pipeline& mesh, Pipeline& vertex
 } // namespace
 
 int main() {
+    atelier::install_fatal_handler();
     try {
         ContextOptions options;
         options.validation = Validation::gpu;

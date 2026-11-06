@@ -1,3 +1,4 @@
+#include "memory/fatal.hpp"
 #include "assets/mesh_import.hpp"
 #include "assets/reader.hpp"
 #include <nlohmann/json.hpp>
@@ -289,6 +290,7 @@ void digest() {
 }
 
 int main() {
+    atelier::install_fatal_handler();
     const auto root = fs::absolute("mesh-import-evidence/" +
                                    std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     try {

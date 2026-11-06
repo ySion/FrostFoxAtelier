@@ -1,3 +1,4 @@
+#include "memory/fatal.hpp"
 #include "application/application.hpp"
 #include "application/diagnostics.hpp"
 #include "application/lit_preparation.hpp"
@@ -208,6 +209,7 @@ int host_main(int argc, wchar_t** argv) {
 }
 
 int wmain(int argc, wchar_t** argv) {
+    atelier::install_fatal_handler();
     namespace log = atelier::logging;
     // Deliberately outside the business try: Application, World, workers and
     // catch diagnostics all retire before finish, including early command returns.

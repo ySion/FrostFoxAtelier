@@ -1,3 +1,4 @@
+#include "memory/fatal.hpp"
 #include "../helpers.hpp"
 #include "physics/physics.hpp"
 #include "presentation/presentation.hpp"
@@ -76,6 +77,7 @@ const Scenario scenarios[]{
 } // namespace
 
 int main(int argc, char** argv) {
+    atelier::install_fatal_handler();
     std::string_view selected;
     if (argc == 2 && std::string_view(argv[1]) == "--list") {
         for (const auto& scenario : scenarios)

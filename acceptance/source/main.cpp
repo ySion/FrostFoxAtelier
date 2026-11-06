@@ -1,3 +1,4 @@
+#include "memory/fatal.hpp"
 #include <cstdio>
 #include <exception>
 #include <string_view>
@@ -31,6 +32,7 @@ void verify_source_math();
 void verify_source_projects();
 
 int main(int argc, char** argv) {
+    atelier::install_fatal_handler();
     try {
         if (argc == 2 && std::string_view(argv[1]) == "--materials") {
             verify_source_materials();

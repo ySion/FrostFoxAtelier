@@ -64,8 +64,7 @@ function(atelier_add_source)
     # belongs to each code allocation and requires no shared registry.
     add_library(atelier_jit_llvm_support OBJECT
         modules/execution/jit/src/windows_unwind.cpp
-        third_party/llvm/JITLinkMemoryManager.cpp
-        modules/core/memory/src/global_new_delete.cpp)
+        third_party/llvm/JITLinkMemoryManager.cpp)
     atelier_llvm_target(atelier_jit_llvm_support)
     target_include_directories(atelier_jit_llvm_support PRIVATE "${PROJECT_SOURCE_DIR}/modules/execution/jit/internal")
     target_link_libraries(atelier_jit_llvm_support PUBLIC ${_llvm_libraries} mimalloc)

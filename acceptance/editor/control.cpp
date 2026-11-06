@@ -1,3 +1,4 @@
+#include "memory/fatal.hpp"
 #include "control/control.hpp"
 #include "logging/logging.hpp"
 #include "platform/windows_path.hpp"
@@ -1526,6 +1527,7 @@ void repro_gltf_defaults(const std::filesystem::path& executable, const std::fil
 }
 
 int wmain(int argc, wchar_t** argv) {
+    atelier::install_fatal_handler();
     try {
         require(
             argc == 3 ||

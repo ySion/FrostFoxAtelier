@@ -1,3 +1,4 @@
+#include "memory/fatal.hpp"
 #include "../helpers.hpp"
 #include "procedural/bvh.hpp"
 #include "procedural/evaluator.hpp"
@@ -1772,6 +1773,7 @@ void profile(const char* path) {
 }
 
 int main(int argc, char** argv) {
+    atelier::install_fatal_handler();
     try {
         if (argc == 3 && std::string_view{argv[1]} == "--profile-procedural") {
             profile(argv[2]);

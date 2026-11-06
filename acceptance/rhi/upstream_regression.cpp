@@ -1,3 +1,4 @@
+#include "memory/fatal.hpp"
 #include "support.hpp"
 #include "shaders.hpp"
 
@@ -108,6 +109,7 @@ void timeout_once() {
 } // namespace
 
 int main(int argc, char** argv) {
+    atelier::install_fatal_handler();
     try {
         require(argc == 2, "expected --null-list or --timeout");
         if (std::strcmp(argv[1], "--null-list") == 0)

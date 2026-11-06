@@ -1,3 +1,4 @@
+#include "memory/fatal.hpp"
 #include "renderer/renderer.hpp"
 #include "assets/builtin_materials.hpp"
 
@@ -198,6 +199,7 @@ void run(HWND, const std::filesystem::path&);
 }
 
 int main(int argc, char** argv) try {
+    atelier::install_fatal_handler();
     _set_error_mode(_OUT_TO_STDERR);
     _set_abort_behavior(0, _CALL_REPORTFAULT);
     SetErrorMode(GetErrorMode() | SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);

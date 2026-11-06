@@ -1,3 +1,4 @@
+#include "memory/fatal.hpp"
 #include "ui_layout/layout.hpp"
 
 #include <Windows.h>
@@ -289,6 +290,7 @@ void owned_geometry_lifetime() {
 }
 
 int main() {
+    atelier::install_fatal_handler();
     SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
     try {
         const std::pair<const char*, void (*)()> cases[]{

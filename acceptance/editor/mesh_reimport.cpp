@@ -1,3 +1,4 @@
+#include "memory/fatal.hpp"
 #include "editor/project.hpp"
 #include "assets/material_format.hpp"
 #include <Windows.h>
@@ -365,6 +366,7 @@ void gltf(const fs::path& root) {
 }
 
 int main() {
+    atelier::install_fatal_handler();
     const auto root = fs::absolute("mesh-reimport-evidence/" +
                                    std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     try {

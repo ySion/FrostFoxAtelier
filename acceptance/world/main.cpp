@@ -1,3 +1,4 @@
+#include "memory/fatal.hpp"
 #include "../helpers.hpp"
 #include "presentation/presentation.hpp"
 #include "material/resources.hpp"
@@ -650,6 +651,7 @@ void spatial_tree_and_mesh() {
 }
 
 int main() {
+    atelier::install_fatal_handler();
     try {
         editing_and_execution();
         reference_lifetime();

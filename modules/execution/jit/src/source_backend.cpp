@@ -7,8 +7,10 @@
 #include "runtime/detail/value_storage.hpp"
 #include "runtime/execution.hpp"
 #include "jit/source_backend_verification.hpp"
+#include "memory/fatal.hpp"
 
 #include <llvm/ADT/SmallVector.h>
+#include <llvm/Support/ErrorHandling.h>
 #include <llvm/ExecutionEngine/Orc/LLJIT.h>
 #include <llvm/ExecutionEngine/Orc/ObjectTransformLayer.h>
 #include <llvm/IR/IRBuilder.h>
@@ -40,6 +42,17 @@
 
 namespace atelier::source::detail {
 namespace {
+
+void initialize_fatal_handlers() noexcept {
+    // This DLL owns a static CRT; installing in the host cannot reach its abort.
+    static const bool installed = [] {
+        install_fatal_handler();
+        llvm::install_fatal_error_handler([](void*, const char*, bool) { fatal("llvm fatal error"); });
+        return true;
+    }();
+    (void)installed;
+}
+
 // Keep generated failure reasons and sites separate from opaque host service
 // status codes. This entry is private to the DLL.
 using Entry = std::uint32_t (*)(void*, const BusinessValue*, void*, BusinessFailure*) noexcept;
@@ -2535,6 +2548,7 @@ std::uint32_t compile_business_impl(const atelier::source::detail::BusinessServi
                                     const char* const* entries = nullptr, std::uint32_t entry_count = 0,
                                     bool receiver = false, atelier::source::detail::CompileLocation* location = nullptr,
                                     bool declarations_only = false) noexcept {
+    atelier::source::detail::initialize_fatal_handlers();
     if (!error || error_capacity == 0)
         return 1;
     error[0] = '\0';
@@ -2712,6 +2726,7 @@ atelier_compile_material(const char* name, const char* source, std::uint32_t siz
                          std::uint32_t (*sample)(void*, std::uint32_t, const float*, float*) noexcept,
                          std::uint32_t (*orientation)(void*, std::uint32_t, const float*, float*) noexcept,
                          atelier::source::detail::MaterialCode** output, char* error, std::uint32_t capacity) noexcept {
+    atelier::source::detail::initialize_fatal_handlers();
     if (!error || !capacity)
         return 1;
     error[0] = '\0';
