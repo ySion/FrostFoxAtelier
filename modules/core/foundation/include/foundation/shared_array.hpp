@@ -26,7 +26,7 @@ public:
 
     SharedArray() noexcept = default;
 
-    explicit SharedArray(Array<T>&& values) : block_(new Block{std::move(values)}) {}
+    explicit SharedArray(Array<T>&& values) noexcept : block_(new Block{std::move(values)}) {}
 
     SharedArray(const SharedArray& other) noexcept : block_(other.block_) {
         if (block_)
@@ -61,11 +61,11 @@ public:
 
     [[nodiscard]] bool empty() const noexcept { return array().empty(); }
 
-    // Copies the contents first unless this handle is the only owner; a failed copy
-    // leaves the handle unchanged. The reference is valid until this handle is next
+    // Copies the contents first unless this handle is the only owner.
+    // The reference is valid until this handle is next
     // copied, assigned, moved or destroyed: a copy made while it is in use would see
     // later writes.
-    Array<T>& write() & {
+    Array<T>& write() & noexcept {
         // Acquire pairs with the release decrements of owners dropped on other threads.
         if (block_ && block_->count.load(std::memory_order_acquire) == 1)
             return block_->values;
@@ -85,7 +85,7 @@ private:
     struct Block {
         explicit Block(Array<T>&& adopted) noexcept : values(std::move(adopted)) {}
 
-        explicit Block(const Array<T>& copied) : values(copied) {}
+        explicit Block(const Array<T>& copied) noexcept : values(copied) {}
 
         std::atomic<std::size_t> count{1};
 

@@ -9,6 +9,8 @@
 | 类型 | 存储与复制 | 入口 |
 | --- | --- | --- |
 | `Array<T>` | 独占连续缓冲；复制拥有独立元素，平凡操作可批量完成；移动转移缓冲，源变为空；析构剩余元素并释放缓冲 | [array.hpp](../modules/core/foundation/include/foundation/array.hpp) |
+| `InlineArray<T,N>` | 默认使用 N 个内联槽，超出后上堆；移动内联值逐元素，移动堆值接管缓冲 | [inline_array.hpp](../modules/core/foundation/include/foundation/inline_array.hpp) |
+| `FixedArray<T,N>` | 固定容量、可变长度，只构造活前缀；容器自身永不分配堆存储 | [fixed_array.hpp](../modules/core/foundation/include/foundation/fixed_array.hpp) |
 | `SharedArray<T>` | 计数句柄，共享一个不可变 Array；复制只增加计数，写入前先取得独占；移动后源为空 | [shared_array.hpp](../modules/core/foundation/include/foundation/shared_array.hpp) |
 | `Span<T>` | 指针与元素数量；复制只复制借用描述 | [span.hpp](../modules/core/foundation/include/foundation/span.hpp) |
 | `String` | 有效 UTF-8，保证尾部零字符；拥有缓冲复制独立，literal 复制借用固定字节，移动后源为空 | [string.hpp](../modules/core/foundation/include/foundation/string.hpp) |
@@ -17,7 +19,7 @@
 | `Set<T>` | 独占唯一成员；复制独立拥有，移动转移存储；成员只读，无遍历顺序保证 | [set.hpp](../modules/core/foundation/include/foundation/set.hpp) |
 | `Optional<T>` | 内联值或缺席；移动后源仍 engaged，保存合法的 moved-from T；reset 才变空 | [optional.hpp](../modules/core/foundation/include/foundation/optional.hpp) |
 
-String 使用 32 字节对象、8 字节对齐及 30 字节短字符串内联存储（SSO）；长文本由独占堆缓冲或固定字面量持有。字节复制直接搬移连续缓冲，不构造随后会被覆盖的字符。Array 使用标准分配原语取得正确对齐的未初始化存储；宿主的 String 和 Array 均沿现有全局 new/delete 接入 mimalloc，无额外分配器注册表。[字符串研究与测量](research/string-storage-performance.md)记录旧表示的历史测量，不代表新布局性能。
+String 使用 32 字节对象、8 字节对齐及 30 字节短字符串内联存储（SSO）；长文本由独占堆缓冲或固定字面量持有。字节复制直接搬移连续缓冲，不构造随后会被覆盖的字符。Array 保持 data/size/capacity 的 24 字节、8 字节对齐布局。Array 与 InlineArray 的堆块统一经 `mi_malloc_aligned/mi_realloc_aligned/mi_free`，保持相同 `alignof(T)` 与零 offset；String 仍沿全局 new/delete 接入 mimalloc，无额外分配器注册表。包含数组模板的目标必须同源重编译，不能把旧分配入口的块交给新实现。[字符串研究与测量](research/string-storage-performance.md)记录旧表示的历史测量，不代表新布局性能。
 
 原生容器可持有普通 C++ 资源；复制指针或句柄不复制其指向对象。Runtime 对象引用的存活仍由根、字段与写屏障管理。普通 `Array<ObjectId>` 不会自动成为 GC 根。
 
@@ -42,13 +44,26 @@ names.squeeze();                    // 显式收紧容量；空数组释放缓�
 ```
 
 - `size/capacity/empty` 查询状态，`data/begin/end/view` 提供连续访问。`operator[]` 在所有构建中检查索引；`try_at` 在越界时返回空指针。`find` 返回索引或 `npos`，`contains` 返回是否存在。
-- `reserve(n)` 只准备容量；`resize(n)` 对新增元素做值初始化，`resize(n, value)` 从 value 复制构造新增元素，value 可以是本数组的元素；两者都对移除元素做析构，失败时数组不变。`emplace` 直接构造新增元素。`release()` 清空并释放缓冲。删除不自动缩容。
+- `reserve(n)` 只准备容量；`resize(n)` 对新增元素做值初始化，`resize(n, value)` 从 value 复制构造新增元素，value 可以是本数组的元素；两者都对移除元素做析构。`emplace` 直接构造新增元素。`release()` 清空并释放缓冲。删除不自动缩容。
 - 扩容为几何增长；只构造实际元素，不构造预留槽位。元素要求不抛异常析构，并提供不抛异常的移动构造或复制构造。支持 move-only 元素，但此时复制 Array 的接口不可用。
-- 扩容优先不抛异常移动，否则复制。复制失败时清理新存储，保留旧值。复制、追加与扩容只在类型 trivially-copyable 且实际选中的构造也平凡时批量复制；有序删除另外要求平凡移动赋值，使用可重叠的 memmove。类型标签不会跳过选中模板构造或赋值的副作用。
-- 复制赋值在容量足够、元素可平凡复制构造且平凡复制赋值时复用缓冲，包括空值、变短和重新增长；其他情况先构造完整副本再替换，失败保留目标值。可复制但不可赋值的元素仍然可用。String、智能指针和其他资源类型保留逐元素构析；不抛异常的非平凡赋值不自动取得字节搬运或容量复用资格。
-- 预留容量中的单元素 emplace 直接构造并在成功后增加大小；实际扩容仍先构造新增后缀，再处理旧前缀，保留自身元素或视图作为来源的合同。remove_if 仍逐元素交替调用谓词与搬移，谓词可以观察之前已经压缩的位置。
-- `emplace/add` 构造新增元素可能由调用者提供任意参数；若元素构造主动修改参数，包括移动自身元素，失败时不能撤销这些用户行为。保序删除和 `remove_if` 若元素赋值或谓词抛异常，容器仍可析构，但部分元素可能已改变。
-- 直接 C++ Array 的错误出口尚待迁移：非法索引/切片/删除范围仍抛 `std::out_of_range`，容量溢出仍抛 `std::length_error`；宿主 CPU 分配失败已走唯一 fatal 出口。Runtime 适配已采用 `noexcept` 结果回调，并在调用容器前检查业务范围与容量；不再捕获 C++ 异常转成 `Result`，异常越过回调会终止进程。可恢复的元素业务失败必须由显式结果回调及相应容器适配处理，按操作合同清理未发布候选、保留旧值或处理部分赋值；不能假设普通 C++ Array 会调用元素的结果回调。
+- 扩容优先不抛异常移动，否则复制。复制、追加与扩容只在类型 trivially-copyable 且实际选中的构造也平凡时批量复制；有序删除另外要求平凡移动赋值，使用可重叠的 memmove。类型标签不会跳过选中模板构造或赋值的副作用。
+- 复制赋值在容量足够、元素可平凡复制构造且平凡复制赋值时复用缓冲，包括空值、变短和重新增长；其他情况先构造完整副本再替换。可复制但不可赋值的元素仍然可用。String、智能指针和其他资源类型保留逐元素构析；不抛异常的非平凡赋值不自动取得字节搬运或容量复用资格。
+- 预留容量中的单元素 emplace 直接构造并在成功后增加大小。符合 realloc 条件时，增长前先保存候选值或自视图区间偏移，增长后重新定位，保留自身元素、子对象或视图作为来源的合同；其余增长先构造新增后缀，再处理旧前缀。remove_if 仍逐元素交替调用谓词与搬移，谓词可以观察之前已经压缩的位置。
+- 普通容器操作均为 `noexcept`，元素构造、复制、赋值和谓词不得以异常表达业务失败；CPU OOM 为 fatal。旧异常回滚路径已删除。`emplace/add` 仍允许移动自身元素，来源随后处于合法 moved-from 状态。
+- `find/find_last/find_if/find_last_if` 返回索引或 `npos`；`contains/contains_if` 查询存在性；`index_of(pointer)` 将活元素地址转成索引，外部地址或尾后地址返回 `npos`。`add_unique` 返回既有或新增索引。`remove/remove_last/remove_swap/remove_last_swap` 删除首个或最后一个匹配并返回是否删除；`remove_all/remove_all_swap` 返回删除数，按值保存比较键以支持键来自自身元素。谓词版本为 `remove_first_if/remove_last_if/remove_swap_if/remove_all_swap_if`；既有 `remove_if` 保持删除全部匹配且保序的语义。swap 删除不保序。
+- 三种数组自身的非法索引/删除范围、不可表示的内部容量及 CPU 分配失败在两种配置均走唯一 fatal 出口；借用视图的 `Span::slice` 仍按其当前错误出口，尚未迁移。Runtime 适配已采用 `noexcept` 结果回调，并在调用容器前检查业务范围与容量；不再捕获 C++ 异常转成 `Result`，异常越过回调会终止进程。可恢复的元素业务失败必须由显式结果回调及相应容器适配处理，按操作合同清理未发布候选、保留旧值或处理部分赋值；不能假设普通 C++ Array 会调用元素的结果回调。
+
+### 内联数组与受限 realloc
+
+谓词接口仅在调用期间借用谓词，不复制或保存它；支持 move-only 闭包，并按 `std::invoke` 调用（包括成员投影）。
+
+三种数组共用元素构造/销毁/搬移、增长容量计算、自视图区间识别及先后缀后前缀的扩展实现。`InlineArray<T,N>` 与 `FixedArray<T,N>` 共用内联序列实现，提供上述序列操作及 `back/pop`。两者默认 size 为 0、capacity 为 N；N=0 合法。FixedArray 不是恰好 N 个活元素的 `std::array`，超过固定容量属于调用前置条件违例。业务输入应先检查预算，不把 fatal 当作输入拒绝。
+
+- InlineArray 的 `clear` 保留堆容量；`release` 清空并返回内联；`squeeze` 在 size≤N 时搬回内联，否则收紧堆块。FixedArray 的 `clear/release` 均析构活前缀，`squeeze` 无操作，`reserve` 仅检查是否超过 N。
+- 内联移动不保存来源对象的内联地址，源变空且可复用。移动赋值先分离来源，允许来源由目标元素间接拥有。移动、交换以及使元素搬移的结构变化终止相关借用；临时数组不能取得 view。与 Array 一样，普通元素要求不抛析构，提供不抛移动或可复制构造；移动和交换均为 noexcept，不提供异常恢复。
+- FixedArray 保存 size 和按 T 对齐的原始内联区；InlineArray 另存堆指针/容量。两种新类型不承诺跨 T/N 的固定 ABI，不注册为 Array 的相同表示，暂不开放 Source/反射实例化。后续真实消费者是程序化 BVH 的构建栈和有界查询栈，产品迁移归 W4/A1。
+- realloc 只用于平凡可复制且属于隐式生存期的元素。锁定工具链缺少 `is_implicit_lifetime_v`，具名 concept `ReallocatableArrayElement` 使用已批准的充分条件：平凡可复制，且 aggregate 或默认/复制/移动构造之一平凡；依据为 [c.malloc] 的隐式对象创建。工具链提供标准 trait 后直接替换此条件，不保留回退矩阵。String、智能指针等资源元素仍逐元素构析，没有业务自定义的重定位 trait。
+- 实际 realloc 还要求所选搬移构造平凡，复用 `byte_relocate` 的判定；仅有平凡默认构造不能跳过非平凡搬移的副作用。只有配对分配入口的堆块进入 realloc；内联区从不传给它。零容量显式 free，不以 realloc(p,0) 判断 OOM。只保证正确性和减少可避免的逐元素搬移，尚无本轮性能提升测量。
 
 ## 共享不可变数组
 
@@ -62,8 +77,8 @@ owned[0] = {};                            // column 仍看到原值
 bool shared = same(column, copy);         // false：两者已是不同的块
 ```
 
-- 句柄 8 字节，指向堆上的一个块：原子计数加一个 Array。从 `Array<T>&&` 构造只分配这个块并接管缓冲，分配失败时源 Array 不变。复制句柄只增加计数；最后一个句柄释放时析构元素、释放缓冲和块。默认构造与移动后的源是没有块的空句柄，不分配，`array()` 返回共用的空 Array；读取接口不区分空句柄与块中 Array 为空，`same()` 区分二者。
-- 只读访问为 `array()`、`view()`、`size()`、`empty()`；临时句柄不能取 `array()/view()/write()`。`write()` 在本句柄是块的唯一持有者时原地返回块中的 Array，否则先把内容复制进新块再返回；复制失败时句柄不变，空句柄的 `write()` 新建一个块。`same(a, b)` 判断两者是否共享同一个块，两个空句柄也算相同。没有弱引用、计数查询或可作版本键的地址。
+- 句柄 8 字节，指向堆上的一个块：原子计数加一个 Array。从 `Array<T>&&` 构造只分配这个块并接管缓冲，分配失败为 fatal。复制句柄只增加计数；最后一个句柄释放时析构元素、释放缓冲和块。默认构造与移动后的源是没有块的空句柄，不分配，`array()` 返回共用的空 Array；读取接口不区分空句柄与块中 Array 为空，`same()` 区分二者。
+- 只读访问为 `array()`、`view()`、`size()`、`empty()`；临时句柄不能取 `array()/view()/write()`。`write()` 在本句柄是块的唯一持有者时原地返回块中的 Array，否则先把内容复制进新块再返回；空句柄的 `write()` 新建一个块。普通操作均 noexcept。`same(a, b)` 判断两者是否共享同一个块，两个空句柄也算相同。没有弱引用、计数查询或可作版本键的地址。
 - 块的地址在任何句柄存活期间不变，移动句柄不移动块，因此可以把 `array()` 只读借出、把 `write()` 的结果可写借出，包括经 Runtime 借给源码。`array()/view()` 的结果只在该句柄没有被赋值、移动、`write()` 或析构期间有效；`write()` 返回的引用还要求该句柄没有再被复制，借出期间复制句柄，副本会看到之后的写入，跨线程即数据竞争。借给源码时，调用方在调用期间持有出借的句柄，不对它做上述操作。源码不能给借来的 Array 扩容，借出期间元素缓冲不会重新分配。
 - 计数递增为 relaxed，递减为 release，最后的持有者析构前取 acquire 栅栏；`write()` 以 acquire 判断唯一性。指向同一块的不同句柄可以在任意线程同时复制、析构和读取；同一个句柄的只读操作（读取、从它复制）可以并发，修改它（赋值、移动、`write()`、析构）时不能有其他线程同时使用它。线程独占一个句柄时，在任何线程调用 `write()` 都安全。元素在释放最后一个句柄的线程上析构。源码只在 Runtime 线程执行：工作线程可以持有、读取和 `write()`，不能进入源码。
 - 元素须是不带 const/volatile 的可复制类型，并且是平凡可复制类型或 String；声明了 `is_runtime_reference` 的 Runtime 引用值（ObjectReference、ReferenceSlot）被拒绝，ObjectRoot 等非平凡根句柄不满足前一条。嵌在平凡结构体中的引用值无法在编译期识别；与 `Array<ObjectId>` 一样，SharedArray 中的身份值不是 GC 根，指针、Span 与 StringView 元素也不延长所指对象的寿命。

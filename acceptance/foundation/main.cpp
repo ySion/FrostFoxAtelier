@@ -25,25 +25,28 @@ using namespace atelier::acceptance::helpers;
 struct alignas(64) Resource {
     static inline int live{};
 
-    static inline int copies_until_failure = -1;
+    static inline unsigned copies{};
+
+    static inline unsigned moves{};
+
+    static inline unsigned destroyed{};
 
     std::unique_ptr<int> value;
 
-    explicit Resource(int number = 0) : value(std::make_unique<int>(number)) { ++live; }
+    explicit Resource(int number = 0) noexcept : value(std::make_unique<int>(number)) { ++live; }
 
-    Resource(const Resource& other) {
-        if (copies_until_failure == 0)
-            throw std::runtime_error("Resource copy rejected.");
-        if (copies_until_failure > 0)
-            --copies_until_failure;
-        value = std::make_unique<int>(*other.value);
+    Resource(const Resource& other) noexcept : value(std::make_unique<int>(*other.value)) {
+        ++copies;
         ++live;
     }
 
-    Resource(Resource&& other) noexcept(false) : value(std::move(other.value)) { ++live; }
+    Resource(Resource&& other) noexcept : value(std::move(other.value)) {
+        ++moves;
+        ++live;
+    }
 
-    Resource& operator=(const Resource& other) {
-        *value = *other.value;
+    Resource& operator=(const Resource& other) noexcept {
+        value = std::make_unique<int>(*other.value);
         return *this;
     }
 
@@ -52,7 +55,10 @@ struct alignas(64) Resource {
         return *this;
     }
 
-    ~Resource() { --live; }
+    ~Resource() {
+        ++destroyed;
+        --live;
+    }
 };
 
 void native_workload() {
@@ -73,51 +79,28 @@ void native_workload() {
         resources.emplace(7);
         resources.emplace(9);
         resources.squeeze();
-        Resource::copies_until_failure = 1;
-        bool failed = false;
-        try {
-            resources.reserve(3);
-        } catch (const std::runtime_error&) {
-            failed = true;
-        }
-        require(failed, "Expected resource failure.");
-        require(resources.size() == 2 && *resources[0].value == 7 && Resource::live == 2,
-                "Failed growth leaked or damaged old resources.");
-        Resource::copies_until_failure = 2;
-        failed = false;
-        try {
-            resources.append(resources.view());
-        } catch (const std::runtime_error&) {
-            failed = true;
-        }
-        require(failed, "Expected prefix relocation failure.");
-        require(resources.size() == 2 && Resource::live == 2 && *resources[1].value == 9,
-                "Failed self-append left a live suffix.");
-        Resource::copies_until_failure = -1;
+        const auto moves = Resource::moves;
+        const auto destroyed = Resource::destroyed;
+        resources.reserve(3);
+        require(Resource::moves == moves + 2 && Resource::destroyed == destroyed + 2 && Resource::live == 2,
+                "Array relocation bypassed resource construction or destruction.");
+        const auto copies = Resource::copies;
+        resources.append(resources.view());
+        require(resources.size() == 4 && Resource::copies == copies + 2 && Resource::live == 4 &&
+                    *resources[2].value == 7 && *resources[3].value == 9 &&
+                    resources[0].value.get() != resources[2].value.get(),
+                "Array self-append did not independently own the copied resources.");
         {
             Array<Resource> destination;
             destination.emplace(100);
-            Resource::copies_until_failure = 1;
-            failed = false;
-            try {
-                destination = resources;
-            } catch (const std::runtime_error&) {
-                failed = true;
-            }
-            require(failed && destination.size() == 1 && *destination[0].value == 100 && Resource::live == 3,
-                    "Failed resource assignment changed target or leaked its copy.");
-            Resource::copies_until_failure = -1;
+            destination = resources;
+            require(destination.size() == 4 && *destination[0].value == 7 && Resource::live == 8,
+                    "Resource assignment retained the old target or lost its copy.");
         }
-        Resource::copies_until_failure = 2;
-        failed = false;
-        try {
-            resources.resize(5, resources[1]);
-        } catch (const std::runtime_error&) {
-            failed = true;
-        }
-        Resource::copies_until_failure = -1;
-        require(failed && resources.size() == 2 && *resources[1].value == 9 && Resource::live == 2,
-                "Failed filled resize left a partial suffix.");
+        resources.squeeze();
+        resources.resize(5, resources[1]);
+        require(resources.size() == 5 && *resources[4].value == 9 && Resource::live == 5,
+                "Filled resize lost its aliased resource.");
     }
     require(Resource::live == 0, "Array leaked resource elements.");
 }

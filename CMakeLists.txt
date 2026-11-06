@@ -61,7 +61,7 @@ include(cmake/unordered_dense.cmake)
 include(cmake/tbb.cmake)
 add_library(atelier_foundation_headers INTERFACE)
 target_include_directories(atelier_foundation_headers INTERFACE modules/core/foundation/include)
-target_link_libraries(atelier_foundation_headers INTERFACE unordered_dense::unordered_dense atelier_memory_headers)
+target_link_libraries(atelier_foundation_headers INTERFACE unordered_dense::unordered_dense atelier_memory_headers mimalloc)
 
 add_library(atelier_math INTERFACE)
 target_include_directories(atelier_math INTERFACE modules/core/math/include)
