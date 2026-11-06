@@ -5,6 +5,7 @@
 #include "runtime/detail/type_publication.hpp"
 #include "runtime/detail/parallel_access.hpp"
 #include "detail/math_registration.hpp"
+#include "memory/fatal.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -15,7 +16,6 @@
 #include <cstring>
 #include <limits>
 #include <new>
-#include <stdexcept>
 #include <utility>
 
 namespace atelier {
@@ -240,12 +240,12 @@ struct RootState {
 
     bool has_capacity() const noexcept { return free_head != no_slot || entries.size() < no_slot; }
 
-    std::uint32_t add(Value value) {
+    std::uint32_t add(Value value) noexcept {
         assert_serial_access();
         if (traversals != 0)
-            throw std::logic_error("Cannot add roots during reference traversal.");
+            fatal("Cannot add roots during reference traversal.");
         if (!has_capacity())
-            throw std::length_error("Root identity space exhausted.");
+            fatal("Root identity space exhausted.");
         const bool is_value = std::holds_alternative<ValueRootStorage>(value);
         if (is_value && value_entries.size() == value_entries.capacity()) {
             value_entries.reserve(
@@ -313,7 +313,7 @@ ObjectRoot::~ObjectRoot() {
     reset();
 }
 
-ObjectRoot::ObjectRoot(const ObjectRoot& other) {
+ObjectRoot::ObjectRoot(const ObjectRoot& other) noexcept {
     detail::assert_serial_access();
     if (other.state_) {
         index_ = other.state_->add(other.reference());
@@ -321,7 +321,7 @@ ObjectRoot::ObjectRoot(const ObjectRoot& other) {
     }
 }
 
-ObjectRoot& ObjectRoot::operator=(const ObjectRoot& other) {
+ObjectRoot& ObjectRoot::operator=(const ObjectRoot& other) noexcept {
     if (this != &other) {
         ObjectRoot copy{other};
         *this = std::move(copy);
@@ -1578,11 +1578,11 @@ struct Runtime::Impl {
     }
 };
 
-Runtime::Runtime() {
+Runtime::Runtime() noexcept {
     detail::assert_serial_access();
     impl_ = std::make_unique<Impl>();
     if (impl_->context == 0)
-        throw std::overflow_error("Runtime identity space exhausted.");
+        fatal("Runtime identity space exhausted.");
     impl_->f32 = impl_->add_scalar<float>("core.f32");
     impl_->u32 = impl_->add_scalar<std::uint32_t>("core.u32");
     impl_->i32 = impl_->add_scalar<std::int32_t>("core.i32");
@@ -1596,23 +1596,23 @@ Runtime::Runtime() {
     impl_->types.push_back(std::move(root));
     const auto registered = register_types(math::type_definitions(*this));
     if (!registered)
-        throw std::logic_error(registered.error().message);
+        fatal(registered.error().message);
     const auto classify = [&]<class T>() {
         static_assert(std::is_trivially_copyable_v<T> && std::is_standard_layout_v<T>);
         constexpr auto descriptor = math::type_of<T>;
         const auto identity = native_type<T>();
         if (!identity)
-            throw std::logic_error("Builtin math type has no native identity.");
+            fatal("Builtin math type has no native identity.");
         auto& info = impl_->lookup(*identity)->info;
         if (info.kind != TypeKind::record || info.contains_references || !info.copy_constructible ||
             !info.copy_assignable || info.size != descriptor.size() || info.alignment != descriptor.scalar_size() ||
             info.fields.size() != descriptor.components())
-            throw std::logic_error("Builtin math layout does not match its execution description.");
+            fatal("Builtin math layout does not match its execution description.");
         const auto scalar = descriptor.precision == math::Precision::f64 ? impl_->f64 : impl_->f32;
         for (std::size_t index = 0; index < info.fields.size(); ++index) {
             const auto& field = info.fields[index];
             if (field.value != ValueDescription{scalar} || field.offset != index * descriptor.scalar_size())
-                throw std::logic_error("Builtin math components do not match their native layout.");
+                fatal("Builtin math components do not match their native layout.");
         }
         info.math = descriptor;
     };
@@ -2980,8 +2980,8 @@ Result<ObjectRoot> Runtime::create(TypeId type_id) {
     if (!type || type->info.kind != TypeKind::object) {
         return failure(ErrorCode::invalid_type, "Only registered object types have independent identity.");
     }
-    if ((impl_->free_head == no_slot && impl_->slots.size() >= no_slot) || !impl_->roots->has_capacity()) {
-        return failure(ErrorCode::capacity_exceeded, "Object or root identity space exhausted.");
+    if (impl_->free_head == no_slot && impl_->slots.size() >= no_slot) {
+        return failure(ErrorCode::capacity_exceeded, "Object identity space exhausted.");
     }
     // No user callback may resize slots, so commit will not allocate after construction.
     if (impl_->free_head == no_slot && impl_->slots.size() == impl_->slots.capacity()) {
@@ -2996,6 +2996,12 @@ Result<ObjectRoot> Runtime::create(TypeId type_id) {
         ::operator delete(storage, std::align_val_t{type->info.alignment});
         made.error().code = ErrorCode::construction_failed;
         return std::unexpected(std::move(made.error()));
+    }
+    // Construction may retain roots of existing objects, but cannot create object slots.
+    if (!impl_->roots->has_capacity()) {
+        impl_->destroy(*type, storage);
+        ::operator delete(storage, std::align_val_t{type->info.alignment});
+        return failure(ErrorCode::capacity_exceeded, "Root identity space exhausted.");
     }
     const auto index = impl_->free_head == no_slot ? static_cast<std::uint32_t>(impl_->slots.size()) : impl_->free_head;
     const auto generation = index == impl_->slots.size() ? std::uint64_t{1} : impl_->slots[index].generation;

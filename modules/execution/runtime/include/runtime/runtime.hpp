@@ -441,9 +441,11 @@ public:
 
     ~ObjectRoot();
 
-    ObjectRoot(const ObjectRoot& other);
+    // Copying adds a root; traversal and identity-capacity violations are fatal.
+    // Use Runtime::hold when admission failure must be returned as a Result.
+    ObjectRoot(const ObjectRoot& other) noexcept;
 
-    ObjectRoot& operator=(const ObjectRoot& other);
+    ObjectRoot& operator=(const ObjectRoot& other) noexcept;
 
     ObjectRoot(ObjectRoot&& other) noexcept;
 
@@ -951,7 +953,7 @@ struct CollectionProgress {
 // Callbacks cannot create/destroy objects or publish types.
 class Runtime final {
 public:
-    Runtime();
+    Runtime() noexcept;
 
     ~Runtime();
 
