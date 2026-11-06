@@ -1,13 +1,13 @@
 #pragma once
 
 #include "language/source.hpp"
+#include "memory/fatal.hpp"
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/Intrinsics.h>
 #include <llvm/IR/Module.h>
 #include <cmath>
 #include <limits>
 #include <span>
-#include <stdexcept>
 #include <utility>
 
 namespace atelier::source::detail {
@@ -95,7 +95,7 @@ public:
         case Op::divide:
             return ir_.CreateFDiv(left, right);
         default:
-            throw std::logic_error("Invalid mathematical binary operation.");
+            fatal("Invalid mathematical binary operation.");
         }
     }
 
@@ -149,7 +149,7 @@ public:
         default:
             break;
         }
-        throw std::logic_error("Invalid mathematical intrinsic.");
+        fatal("Invalid mathematical intrinsic.");
     }
 
 private:
@@ -260,7 +260,7 @@ private:
         case Op::pow:
             return wide ? power_double(a[0], a[1]) : power(a[0], a[1]);
         default:
-            throw std::logic_error("Invalid element-wise math operation.");
+            fatal("Invalid element-wise math operation.");
         }
     }
 

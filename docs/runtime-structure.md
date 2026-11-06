@@ -26,6 +26,8 @@
 
 构建权威来源：[CMakeLists.txt](../CMakeLists.txt)、[jit.cmake](../cmake/jit.cmake)。消费者链接 `atelier_source`，由它接入 `atelier_runtime` 与源码后端 DLL；LLVM 头文件不传播到公共接口。`atelier_jit_probe` 只承担平台验收。后端 DLL 的 [missing-poll 编译入口](../modules/execution/jit/internal/jit/source_backend_verification.hpp)只走编译与链接路径，`jit_acceptance` 用它验证真实链接失败后旧程序仍可执行。
 
+LLVM 编译、IR 验证、链接和 COFF 反汇编的可恢复错误在后端内使用 `llvm::Error/Expected` 传递，不再经 throw/catch 转换；DLL 出口仍只写状态和调用方提供的诊断缓冲区。目录拒绝、引用槽/诊断位置索引容量和材质默认值捕获失败保留显式错误；完整候选成功前不写任何代码输出句柄，失败由 DLL 内 RAII 释放临时代码与 LLVM 资源。定型 AST 的内部不变量破坏直接 fatal，CPU 分配失败遵循统一终止合同。前端尚存的诊断异常由前端后续迁移，不表示跨 DLL 的错误协议。
+
 `ValueType`、`BusinessType/BusinessParameter` 和 `FunctionSignature` 分别服务编译分类、私有 ABI 和 Runtime 语义描述。前两者由真实编译产物/元数据核对，不建立业务类型身份；它们的存在不等于三套类型体系。枚举索引只定位捕获的 Runtime 目录；ParameterPassing 在宿主与编译链间共用。私有 ABI 尚不是永久通用调用协议。
 
 `atelier_foundation` 独立管理 Array/String 的拥有存储及 Span/StringView 的借用接口；不依赖 Runtime。`runtime/foundation.hpp` 只生产现有 TypeDefinition，数组元素元数据和受保护字段借用归 `atelier_runtime`，宏生成器复用 NativeRegistration。值构析与对象 GC 共用已有执行链。原生字段直接偏移与 Array/String 序列视图沿同一 TypeInfo 发布；`atelier_source` 捕获布局和共享签名，前端检查同步借用和拥有值能力，后端直接操作调用方存储；拥有型记录/String/Array 在生成栈上构造，生命周期和序列修改通过同一 Runtime 操作。没有独立容器身份或第二套调用入口，见[原生值借用](native-value-borrows.md)。具体操作见[基础库](foundation.md)。

@@ -34,7 +34,6 @@
 #include <map>
 #include <new>
 #include <optional>
-#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -211,13 +210,13 @@ BusinessType business_type(language::ValueType type) {
     case language::ValueType::string:
         return {ValueKind::string, type.type_index};
     default:
-        throw std::logic_error("Unsupported business scalar type.");
+        fatal("Unsupported business scalar type.");
     }
 }
 
-language::ValueType source_type(BusinessType kind) {
+llvm::Expected<language::ValueType> source_type(BusinessType kind) noexcept {
     if (kind.kind != ValueKind::enumeration && !aggregate(kind) && kind.type_index != 0)
-        throw std::runtime_error("Scalar catalog entry has an unexpected enum identity.");
+        return llvm::createStringError("Scalar catalog entry has an unexpected enum identity.");
     switch (kind.kind) {
     case ValueKind::f32:
         return language::ValueType::f32;
@@ -230,15 +229,15 @@ language::ValueType source_type(BusinessType kind) {
     case ValueKind::boolean:
         return language::ValueType::boolean;
     case ValueKind::enumeration:
-        return {language::ValueType::enumeration, kind.type_index};
+        return language::ValueType{language::ValueType::enumeration, kind.type_index};
     case ValueKind::record:
-        return {language::ValueType::record, kind.type_index};
+        return language::ValueType{language::ValueType::record, kind.type_index};
     case ValueKind::array:
-        return {language::ValueType::array, kind.type_index};
+        return language::ValueType{language::ValueType::array, kind.type_index};
     case ValueKind::string:
-        return {language::ValueType::string, kind.type_index};
+        return language::ValueType{language::ValueType::string, kind.type_index};
     default:
-        throw std::runtime_error("Host fields, parameters and non-void results require float or uint kinds.");
+        return llvm::createStringError("Host fields, parameters and non-void results require float or uint kinds.");
     }
 }
 
@@ -259,18 +258,6 @@ std::string diagnostic_source_name(std::string_view name) {
     while (!suffix.empty() && continuation(suffix.front()))
         suffix.remove_prefix(1);
     return std::string(prefix) + "..." + std::string(suffix);
-}
-
-void check(llvm::Error error) {
-    if (error)
-        throw std::runtime_error(llvm::toString(std::move(error)));
-}
-
-template <class T>
-T take(llvm::Expected<T> value) {
-    if (!value)
-        throw std::runtime_error(llvm::toString(value.takeError()));
-    return std::move(*value);
 }
 
 bool direct_signature(const language::Function& function) {
@@ -309,21 +296,6 @@ public:
           diagnostics_(options.diagnostics ? catalog : nullptr), catalog_(catalog),
           debugging_(options.debugging && (source.exports.empty() || !public_entry_)), function_index_(function),
           position_(function_.position), environment_(environment) {
-        for (std::size_t index = 0; index < function_.locals.size(); ++index) {
-            const auto type = function_.locals[index].type;
-            if (is_reference(type))
-                local_slots_[index] = allocate_reference(type);
-        }
-        for (std::size_t index = 0; index < function_.expressions.size(); ++index) {
-            const auto& node = function_.expressions[index];
-            using Kind = language::Expression::Kind;
-            if (node.kind == Kind::create_reference || node.kind == Kind::observe_reference ||
-                node.kind == Kind::acquire_reference)
-                temporary_slots_[index] = allocate_reference(node.type);
-            has_source_calls_ |= node.kind == Kind::source_call;
-            if (node.kind == Kind::call)
-                has_call_result_ |= node.type != language::ValueType::void_value;
-        }
         auto* i32 = ir_.getInt32Ty();
         auto* ptr = ir_.getPtrTy();
         const auto declare = [&](const char* name, llvm::Type* result, std::initializer_list<llvm::Type*> parameters) {
@@ -378,7 +350,30 @@ public:
 
     BusinessFrameLayout layout() const noexcept { return {strong_slots_, weak_slots_, nullptr}; }
 
-    void generate() {
+    llvm::Error generate() {
+        for (std::size_t index = 0; index < function_.locals.size(); ++index) {
+            const auto type = function_.locals[index].type;
+            if (is_reference(type)) {
+                auto slot = allocate_reference(type);
+                if (!slot)
+                    return slot.takeError();
+                local_slots_[index] = *slot;
+            }
+        }
+        for (std::size_t index = 0; index < function_.expressions.size(); ++index) {
+            const auto& node = function_.expressions[index];
+            using Kind = language::Expression::Kind;
+            if (node.kind == Kind::create_reference || node.kind == Kind::observe_reference ||
+                node.kind == Kind::acquire_reference) {
+                auto slot = allocate_reference(node.type);
+                if (!slot)
+                    return slot.takeError();
+                temporary_slots_[index] = *slot;
+            }
+            has_source_calls_ |= node.kind == Kind::source_call;
+            if (node.kind == Kind::call)
+                has_call_result_ |= node.type != language::ValueType::void_value;
+        }
         auto* start = block("entry");
         failure_ = block("cleanup.failure");
         finish_ = block("finish");
@@ -546,6 +541,9 @@ public:
         complete(failure_status_);
         if (function_.is_coroutine)
             finish_coroutine();
+        // Recursive lowering may use inert IR placeholders after a rejection.
+        // The first error leaves here before verification, linking or publication.
+        return lowering_error_ ? std::move(*lowering_error_) : llvm::Error::success();
     }
 
 private:
@@ -639,8 +637,11 @@ private:
             return no_diagnostic_location;
         if (const auto found = location_ids_.find(position_.offset); found != location_ids_.end())
             return found->second;
-        if (catalog_->locations.size() >= no_diagnostic_location)
-            throw std::runtime_error("Source diagnostic location table exceeds its index range.");
+        if (catalog_->locations.size() >= no_diagnostic_location) {
+            if (!lowering_error_)
+                lowering_error_ = llvm::createStringError("Source diagnostic location table exceeds its index range.");
+            return no_diagnostic_location;
+        }
         const auto id = static_cast<std::uint32_t>(catalog_->locations.size());
         catalog_->locations.push_back(
             {catalog_->functions[function_index_].c_str(), position_.offset, position_.line, position_.column});
@@ -748,7 +749,7 @@ private:
             return DiagnosticCall::value_assign;
         if (function.getCallee() == mutate_sequence_.getCallee())
             return DiagnosticCall::sequence_mutation;
-        throw std::logic_error("Unclassified source service call.");
+        fatal("Unclassified source service call.");
     }
 
     static bool floating_type(language::ValueType type) noexcept {
@@ -896,19 +897,19 @@ private:
                type == language::ValueType::null_reference;
     }
 
-    std::uint32_t allocate_reference(language::ValueType type) {
+    llvm::Expected<std::uint32_t> allocate_reference(language::ValueType type) {
         if (type == language::ValueType::strong_reference) {
             if (strong_slots_ >= observation_slot_bit)
-                throw std::runtime_error("Business strong reference layout exceeds the slot encoding.");
+                return llvm::createStringError("Business strong reference layout exceeds the slot encoding.");
             return strong_slots_++;
         }
         if (type == language::ValueType::weak_reference) {
             // The last tagged index is reserved for the null operand.
             if (weak_slots_ >= observation_slot_bit - 1)
-                throw std::runtime_error("Business weak reference layout exceeds the slot encoding.");
+                return llvm::createStringError("Business weak reference layout exceeds the slot encoding.");
             return observation_slot_bit | weak_slots_++;
         }
-        throw std::logic_error("A null reference cannot own invocation storage.");
+        fatal("A null reference cannot own invocation storage.");
     }
 
     llvm::Type* value_type(language::ValueType value) {
@@ -938,7 +939,7 @@ private:
         case language::ValueType::null_reference:
             break;
         }
-        throw std::logic_error("Reference values do not use LLVM value storage.");
+        fatal("Reference values do not use LLVM value storage.");
     }
 
     llvm::BasicBlock* block(const char* name) { return llvm::BasicBlock::Create(*context_, name, entry_); }
@@ -1297,7 +1298,7 @@ private:
             return expression(id);
         if (math_type(node.type))
             return input_address(id);
-        throw std::logic_error("Expression has no borrowed native storage.");
+        fatal("Expression has no borrowed native storage.");
     }
 
     llvm::Value* expression(language::NodeId index) {
@@ -1510,8 +1511,13 @@ private:
                 }
             }
             const auto& target = environment_.methods[node.value];
-            if (!target.entry)
-                throw std::runtime_error("Source native method has no typed entry: " + std::string(target.name));
+            if (!target.entry) {
+                if (!lowering_error_)
+                    lowering_error_ =
+                        llvm::createStringError("Source native method has no typed entry: " + std::string(target.name));
+                return node.type == language::ValueType::void_value ? nullptr
+                                                                    : llvm::PoisonValue::get(value_type(node.type));
+            }
             llvm::Value* output = llvm::ConstantPointerNull::get(ir_.getPtrTy());
             if (node.type != language::ValueType::void_value)
                 output = managed_value(node.type) ? temporary_value(expression_value_slots_.at(index))
@@ -1597,7 +1603,7 @@ private:
         const auto left_type = function_.expressions[node.left].type;
         if (is_reference(left_type)) {
             if (node.operation != Op::equal && node.operation != Op::not_equal)
-                throw std::logic_error("Invalid typed reference comparison.");
+                fatal("Invalid typed reference comparison.");
             checked_call(same_reference_, {invocation_, left, right, uint_result_});
             auto* same = ir_.CreateLoad(ir_.getInt32Ty(), uint_result_);
             return node.operation == Op::equal ? ir_.CreateICmpNE(same, ir_.getInt32(0))
@@ -1668,7 +1674,7 @@ private:
         case Op::logical_or:
             break;
         }
-        throw std::logic_error("Invalid typed binary operation.");
+        fatal("Invalid typed binary operation.");
     }
 
     void clear_scope(const language::Statement& scope) {
@@ -1833,7 +1839,7 @@ private:
         case Kind::break_loop:
         case Kind::continue_loop: {
             if (loops_.empty())
-                throw std::logic_error("Loop transfer has no enclosing loop.");
+                fatal("Loop transfer has no enclosing loop.");
             const auto target = loops_.back();
             clear_temporaries();
             // The for initializer lives in its enclosing block. Only the body
@@ -1844,8 +1850,10 @@ private:
             return;
         }
         }
-        throw std::logic_error("Invalid typed statement.");
+        fatal("Invalid typed statement.");
     }
+
+    std::optional<llvm::Error> lowering_error_;
 
     const language::Function& function_;
 
@@ -2028,9 +2036,10 @@ private:
     const BusinessEnvironment& environment_;
 };
 
-llvm::orc::ThreadSafeModule generate_business(LLJIT& jit, const language::Program& program, BusinessFrameLayout& layout,
-                                              DiagnosticCatalog* catalog, CompileOptions options, Artifacts* artifacts,
-                                              const BusinessEnvironment& environment) {
+llvm::Expected<llvm::orc::ThreadSafeModule> generate_business(LLJIT& jit, const language::Program& program,
+                                                              BusinessFrameLayout& layout, DiagnosticCatalog* catalog,
+                                                              CompileOptions options, Artifacts* artifacts,
+                                                              const BusinessEnvironment& environment) {
     auto context = std::make_unique<llvm::LLVMContext>();
     auto module = std::make_unique<llvm::Module>(program.source_name, *context);
     module->setSourceFileName(diagnostic_source_name(program.source_name));
@@ -2130,10 +2139,11 @@ llvm::orc::ThreadSafeModule generate_business(LLJIT& jit, const language::Progra
             continue;
         SourceLowering lowering(*context, *module, program, i, functions, layout.strong_slots, layout.weak_slots,
                                 catalog, options, environment);
+        if (auto error = lowering.generate())
+            return error;
         const auto demand = lowering.layout();
         layout.strong_slots = demand.strong_slots;
         layout.weak_slots = demand.weak_slots;
-        lowering.generate();
     }
     if (catalog) {
         auto& sites = catalog->debug_sites;
@@ -2143,7 +2153,7 @@ llvm::orc::ThreadSafeModule generate_business(LLJIT& jit, const language::Progra
     std::string verification;
     llvm::raw_string_ostream stream(verification);
     if (llvm::verifyModule(*module, &stream))
-        throw std::runtime_error(verification);
+        return llvm::createStringError(verification);
     if (artifacts) {
         llvm::raw_string_ostream original(artifacts->original_ir);
         module->print(original, nullptr);
@@ -2153,9 +2163,13 @@ llvm::orc::ThreadSafeModule generate_business(LLJIT& jit, const language::Progra
         llvm::FunctionAnalysisManager functions;
         llvm::CGSCCAnalysisManager graph;
         llvm::ModuleAnalysisManager modules;
-        auto target = take(llvm::orc::JITTargetMachineBuilder::detectHost());
-        auto machine = take(target.createTargetMachine());
-        llvm::PassBuilder passes(machine.get());
+        auto target = llvm::orc::JITTargetMachineBuilder::detectHost();
+        if (!target)
+            return target.takeError();
+        auto machine = target->createTargetMachine();
+        if (!machine)
+            return machine.takeError();
+        llvm::PassBuilder passes(machine->get());
         passes.registerModuleAnalyses(modules);
         passes.registerCGSCCAnalyses(graph);
         passes.registerFunctionAnalyses(functions);
@@ -2177,20 +2191,19 @@ llvm::orc::ThreadSafeModule generate_business(LLJIT& jit, const language::Progra
         pipeline.run(*module, modules);
         verification.clear();
         if (llvm::verifyModule(*module, &stream))
-            throw std::runtime_error(verification);
+            return llvm::createStringError(verification);
     }
     if (artifacts) {
         llvm::raw_string_ostream optimized(artifacts->optimized_ir);
         module->print(optimized, nullptr);
     }
-    return {std::move(module), std::move(context)};
+    return llvm::orc::ThreadSafeModule{std::move(module), std::move(context)};
 }
 
-std::shared_ptr<CompiledBusiness> compile(const BusinessServices& services, const language::Program& program,
-                                          language::Environment environment, CompileOptions options,
-                                          bool omit_poll_for_verification = false,
-                                          const std::shared_ptr<CompiledBusiness>& shared = {},
-                                          const BusinessEnvironment* native_environment = nullptr) {
+llvm::Expected<std::shared_ptr<CompiledBusiness>>
+compile(const BusinessServices& services, const language::Program& program, language::Environment environment,
+        CompileOptions options, bool omit_poll_for_verification = false,
+        const std::shared_ptr<CompiledBusiness>& shared = {}, const BusinessEnvironment* native_environment = nullptr) {
     const auto& entry = program.functions.at(program.entry);
     auto state = std::make_shared<CompiledBusiness>();
     state->function_name = entry.function_name;
@@ -2229,7 +2242,7 @@ std::shared_ptr<CompiledBusiness> compile(const BusinessServices& services, cons
             const auto& input = native_environment->fields[i];
             auto& access = state->field_access[i];
             if (!input.access || !input.access_count)
-                throw std::runtime_error("Native field requires its published storage description.");
+                return llvm::createStringError("Native field requires its published storage description.");
             access.assign(input.access, input.access + input.access_count);
             auto& output = state->fields[i];
             output.access = access.data();
@@ -2244,7 +2257,7 @@ std::shared_ptr<CompiledBusiness> compile(const BusinessServices& services, cons
             auto& access = state->receiver_access[i];
             if (input.receiver_access_count) {
                 if (!input.receiver_access)
-                    throw std::runtime_error("Native receiver adjustment requires storage descriptions.");
+                    return llvm::createStringError("Native receiver adjustment requires storage descriptions.");
                 access.assign(input.receiver_access, input.receiver_access + input.receiver_access_count);
             }
             auto& output = state->methods[i];
@@ -2307,15 +2320,17 @@ std::shared_ptr<CompiledBusiness> compile(const BusinessServices& services, cons
         state->artifacts = shared->artifacts;
     } else {
         if (llvm::InitializeNativeTarget() || llvm::InitializeNativeTargetAsmPrinter())
-            throw std::runtime_error("LLVM native target initialization failed.");
-        auto target = take(llvm::orc::JITTargetMachineBuilder::detectHost());
+            return llvm::createStringError("LLVM native target initialization failed.");
+        auto target = llvm::orc::JITTargetMachineBuilder::detectHost();
+        if (!target)
+            return target.takeError();
         // Source math lowers to FMA and SSE4.1 instructions; without them LLVM would emit CRT calls the JIT does not resolve.
-        const auto& features = target.getFeatures().getFeatures();
+        const auto& features = target->getFeatures().getFeatures();
         if (std::find(features.begin(), features.end(), "+fma") == features.end())
-            throw std::runtime_error("The source JIT requires an x64 host CPU with FMA3.");
-        target.setCodeGenOptLevel(llvm::CodeGenOptLevel::Aggressive);
-        target.setCodeModel(llvm::CodeModel::Large);
-        target.setRelocationModel(llvm::Reloc::PIC_);
+            return llvm::createStringError("The source JIT requires an x64 host CPU with FMA3.");
+        target->setCodeGenOptLevel(llvm::CodeGenOptLevel::Aggressive);
+        target->setCodeModel(llvm::CodeModel::Large);
+        target->setRelocationModel(llvm::Reloc::PIC_);
         // Failure sites always record a location; the table is read only after a failure.
         state->diagnostics = std::make_shared<DiagnosticCatalog>();
         state->diagnostics->functions.reserve(program.functions.size());
@@ -2351,11 +2366,11 @@ std::shared_ptr<CompiledBusiness> compile(const BusinessServices& services, cons
         }
         if (options.artifacts) {
             state->artifacts = std::make_shared<Artifacts>();
-            state->artifacts->target_triple = target.getTargetTriple().str();
-            state->artifacts->cpu_features = target.getFeatures().getString();
+            state->artifacts->target_triple = target->getTargetTriple().str();
+            state->artifacts->cpu_features = target->getFeatures().getString();
         }
         llvm::orc::LLJITBuilder builder;
-        builder.setJITTargetMachineBuilder(std::move(target));
+        builder.setJITTargetMachineBuilder(std::move(*target));
         builder.setObjectLinkingLayerCreator(
             [](llvm::orc::ExecutionSession& session,
                llvm::jitlink::JITLinkMemoryManager& memory) -> llvm::Expected<std::unique_ptr<llvm::orc::ObjectLayer>> {
@@ -2364,20 +2379,22 @@ std::shared_ptr<CompiledBusiness> compile(const BusinessServices& services, cons
                 return layer;
             });
         builder.setPlatformSetUp(llvm::orc::setUpInactivePlatform);
-        state->jit = take(builder.create());
+        auto jit = builder.create();
+        if (!jit)
+            return jit.takeError();
+        state->jit = std::move(*jit);
         if (state->artifacts)
             state->jit->getObjTransformLayer().setTransform(
                 [artifacts = state->artifacts](
                     std::unique_ptr<llvm::MemoryBuffer> object) -> llvm::Expected<std::unique_ptr<llvm::MemoryBuffer>> {
-                    try {
-                        const auto bytes = object->getBuffer();
-                        const auto* begin = reinterpret_cast<const std::byte*>(bytes.data());
-                        artifacts->object_code.assign(begin, begin + bytes.size());
-                        artifacts->assembly = disassemble_object(object->getMemBufferRef());
-                        return object;
-                    } catch (const std::exception& error) {
-                        return llvm::make_error<llvm::StringError>(error.what(), llvm::inconvertibleErrorCode());
-                    }
+                    auto assembly = disassemble_object(object->getMemBufferRef());
+                    if (!assembly)
+                        return assembly.takeError();
+                    const auto bytes = object->getBuffer();
+                    const auto* begin = reinterpret_cast<const std::byte*>(bytes.data());
+                    artifacts->object_code.assign(begin, begin + bytes.size());
+                    artifacts->assembly = std::move(*assembly);
+                    return object;
                 });
         state->jit->getExecutionSession().setErrorReporter(
             [diagnostic = state->diagnostic](llvm::Error error) { *diagnostic = llvm::toString(std::move(error)); });
@@ -2415,9 +2432,14 @@ std::shared_ptr<CompiledBusiness> compile(const BusinessServices& services, cons
             bind("business_coroutine_allocate", &allocate_coroutine);
             bind("business_coroutine_free", &free_coroutine);
         }
-        check(state->jit->getMainJITDylib().define(llvm::orc::absoluteSymbols(std::move(symbols))));
-        check(state->jit->addIRModule(generate_business(*state->jit, program, state->layout, state->diagnostics.get(),
-                                                        options, state->artifacts.get(), state->environment)));
+        if (auto error = state->jit->getMainJITDylib().define(llvm::orc::absoluteSymbols(std::move(symbols))))
+            return error;
+        auto module = generate_business(*state->jit, program, state->layout, state->diagnostics.get(), options,
+                                        state->artifacts.get(), state->environment);
+        if (!module)
+            return module.takeError();
+        if (auto error = state->jit->addIRModule(std::move(*module)))
+            return error;
         // The table is complete once lowering returns; it is retained for the code's lifetime.
         state->diagnostics->locations.shrink_to_fit();
     }
@@ -2429,21 +2451,32 @@ std::shared_ptr<CompiledBusiness> compile(const BusinessServices& services, cons
         auto diagnostic = llvm::toString(address.takeError());
         if (!state->diagnostic->empty())
             diagnostic += "\n" + *state->diagnostic;
-        throw std::runtime_error(diagnostic_source_name(program.source_name) + ": JIT materialization: " + diagnostic);
+        return llvm::createStringError(diagnostic_source_name(program.source_name) +
+                                       ": JIT materialization: " + diagnostic);
     }
     if (entry.is_coroutine) {
         if (options.diagnostics)
             state->diagnostic_coroutine_entry = address->toPtr<DiagnosticCoroutineEntry>();
         else
             state->coroutine_entry = address->toPtr<CoroutineEntry>();
-        state->resume = take(state->jit->lookup("atelier_source_resume")).toPtr<CoroutineAction>();
-        state->destroy = take(state->jit->lookup("atelier_source_destroy")).toPtr<CoroutineAction>();
+        auto resume = state->jit->lookup("atelier_source_resume");
+        if (!resume)
+            return resume.takeError();
+        state->resume = resume->toPtr<CoroutineAction>();
+        auto destroy = state->jit->lookup("atelier_source_destroy");
+        if (!destroy)
+            return destroy.takeError();
+        state->destroy = destroy->toPtr<CoroutineAction>();
     } else if (options.diagnostics)
         state->diagnostic_entry = address->toPtr<DiagnosticEntry>();
     else
         state->entry = address->toPtr<Entry>();
-    if (direct_signature(entry))
-        state->typed_entry = take(state->jit->lookup(state->entry_symbol + "_typed")).getValue();
+    if (direct_signature(entry)) {
+        auto typed = state->jit->lookup(state->entry_symbol + "_typed");
+        if (!typed)
+            return typed.takeError();
+        state->typed_entry = typed->getValue();
+    }
     return state;
 }
 }
@@ -2494,39 +2527,56 @@ struct BusinessCoroutine {
 }
 
 namespace {
-std::vector<atelier::language::ValueLayout>
+llvm::Expected<std::vector<atelier::language::ValueLayout>>
 source_values(const atelier::source::detail::BusinessEnvironment& environment) {
     using namespace atelier;
     using namespace atelier::source::detail;
     if (environment.value_count && !environment.values)
-        throw std::runtime_error("Missing native value catalog.");
+        return llvm::createStringError("Missing native value catalog.");
     std::vector<language::ValueLayout> values;
     values.reserve(environment.value_count);
     for (std::uint32_t i = 0; i < environment.value_count; ++i) {
         const auto& value = environment.values[i];
         if (!value.name || (value.field_count && !value.fields))
-            throw std::runtime_error("Invalid native value catalog.");
+            return llvm::createStringError("Invalid native value catalog.");
+        auto type = source_type({value.kind, i});
+        if (!type)
+            return type.takeError();
         language::ValueLayout layout{value.name,
-                                     source_type({value.kind, i}).kind,
+                                     type->kind,
                                      value.size,
                                      value.alignment,
-                                     value.kind == ValueKind::array ? source_type(value.element)
-                                                                    : language::ValueType::void_value,
+                                     language::ValueType::void_value,
                                      {},
                                      value.sequence_view,
                                      value.can_own,
                                      value.can_mutate,
                                      value.math,
                                      value.plain_value};
+        if (value.kind == ValueKind::array) {
+            auto element = source_type(value.element);
+            if (!element)
+                return element.takeError();
+            layout.element = *element;
+        }
         for (std::uint32_t j = 0; j < value.field_count; ++j) {
             const auto& field = value.fields[j];
             if (!field.name)
-                throw std::runtime_error("Missing native field name.");
-            layout.fields.push_back({field.name, source_type(field.type), field.offset});
+                return llvm::createStringError("Missing native field name.");
+            auto field_type = source_type(field.type);
+            if (!field_type)
+                return field_type.takeError();
+            layout.fields.push_back({field.name, *field_type, field.offset});
         }
         values.push_back(std::move(layout));
     }
     return values;
+}
+
+// Only status and caller-owned bytes cross the DLL boundary, never LLVM Error.
+std::uint32_t compilation_failure(char* error, std::uint32_t capacity, const char* message) noexcept {
+    std::snprintf(error, capacity, "%s", message);
+    return 1;
 }
 
 std::uint32_t compile_business_impl(const atelier::source::detail::BusinessServices* services, const char* source_name,
@@ -2542,157 +2592,173 @@ std::uint32_t compile_business_impl(const atelier::source::detail::BusinessServi
     if (!error || error_capacity == 0)
         return 1;
     error[0] = '\0';
-    try {
-        if (!services || !source_name || !source || (!output && !declarations_only) || !services->begin ||
-            !services->create || !services->poll || !services->finish || !services->clear || !services->reference ||
-            !services->same_reference || !services->native_receiver || !services->native_stamp ||
-            !services->native_failure || !services->native_segment)
-            throw std::runtime_error("Invalid business compiler input, callbacks or output storage.");
-        if (options.debugging && (!services->debug_enter || !services->debug_point || !services->debug_leave))
-            throw std::runtime_error("Source debugging requires its frame and stop services.");
-        using namespace atelier;
-        using namespace atelier::source::detail;
-        if (entry_count && !entries)
-            throw std::runtime_error("Missing source export names.");
-        for (std::uint32_t i = 0; i < entry_count; ++i)
-            if (!entries[i] || !*entries[i])
-                throw std::runtime_error("Source export names must not be empty.");
-        std::vector<language::FieldBinding> fields;
-        std::vector<std::vector<language::ParameterType>> method_parameters;
-        std::vector<language::MethodBinding> methods;
-        std::vector<std::vector<language::EnumItem>> enum_items;
-        std::vector<language::EnumBinding> enumerations;
-        std::vector<language::ValueLayout> values;
-        if (environment) {
-            if ((environment->field_count != 0 && !environment->fields) ||
-                (environment->method_count != 0 && !environment->methods))
-                throw std::runtime_error("Host binding count requires catalog storage.");
-            if (environment->enumeration_count && !environment->enumerations)
-                throw std::runtime_error("Missing enum catalog.");
-            enum_items.reserve(environment->enumeration_count);
-            enumerations.reserve(environment->enumeration_count);
-            for (std::uint32_t i = 0; i < environment->enumeration_count; ++i) {
-                const auto& enumeration = environment->enumerations[i];
-                if (!enumeration.name || (enumeration.value_count && !enumeration.values))
-                    throw std::runtime_error("Invalid enum catalog.");
-                auto& items = enum_items.emplace_back();
-                for (std::uint32_t j = 0; j < enumeration.value_count; ++j) {
-                    if (!enumeration.values[j].name)
-                        throw std::runtime_error("Invalid enum item name.");
-                    items.push_back({enumeration.values[j].name, enumeration.values[j].bits});
-                }
-                enumerations.push_back({enumeration.name, source_type(enumeration.underlying), items});
+    if (!services || !source_name || !source || (!output && !declarations_only) || !services->begin ||
+        !services->create || !services->poll || !services->finish || !services->clear || !services->reference ||
+        !services->same_reference || !services->native_receiver || !services->native_stamp ||
+        !services->native_failure || !services->native_segment)
+        return compilation_failure(error, error_capacity,
+                                   "Invalid business compiler input, callbacks or output storage.");
+    if (options.debugging && (!services->debug_enter || !services->debug_point || !services->debug_leave))
+        return compilation_failure(error, error_capacity, "Source debugging requires its frame and stop services.");
+    using namespace atelier;
+    using namespace atelier::source::detail;
+    if (entry_count && !entries)
+        return compilation_failure(error, error_capacity, "Missing source export names.");
+    for (std::uint32_t i = 0; i < entry_count; ++i)
+        if (!entries[i] || !*entries[i])
+            return compilation_failure(error, error_capacity, "Source export names must not be empty.");
+    std::vector<language::FieldBinding> fields;
+    std::vector<std::vector<language::ParameterType>> method_parameters;
+    std::vector<language::MethodBinding> methods;
+    std::vector<std::vector<language::EnumItem>> enum_items;
+    std::vector<language::EnumBinding> enumerations;
+    std::vector<language::ValueLayout> values;
+    if (environment) {
+        if ((environment->field_count != 0 && !environment->fields) ||
+            (environment->method_count != 0 && !environment->methods))
+            return compilation_failure(error, error_capacity, "Host binding count requires catalog storage.");
+        if (environment->enumeration_count && !environment->enumerations)
+            return compilation_failure(error, error_capacity, "Missing enum catalog.");
+        enum_items.reserve(environment->enumeration_count);
+        enumerations.reserve(environment->enumeration_count);
+        for (std::uint32_t i = 0; i < environment->enumeration_count; ++i) {
+            const auto& enumeration = environment->enumerations[i];
+            if (!enumeration.name || (enumeration.value_count && !enumeration.values))
+                return compilation_failure(error, error_capacity, "Invalid enum catalog.");
+            auto& items = enum_items.emplace_back();
+            for (std::uint32_t j = 0; j < enumeration.value_count; ++j) {
+                if (!enumeration.values[j].name)
+                    return compilation_failure(error, error_capacity, "Invalid enum item name.");
+                items.push_back({enumeration.values[j].name, enumeration.values[j].bits});
             }
-            values = source_values(*environment);
-            fields.reserve(environment->field_count);
-            for (std::uint32_t index = 0; index < environment->field_count; ++index) {
-                const auto& field = environment->fields[index];
-                if (!field.name)
-                    throw std::runtime_error("Host field name is null.");
-                fields.push_back({field.name, source_type(field.kind), field.constrained});
-            }
-            method_parameters.reserve(environment->method_count);
-            methods.reserve(environment->method_count);
-            for (std::uint32_t index = 0; index < environment->method_count; ++index) {
-                const auto& method = environment->methods[index];
-                if (!method.name || (method.parameter_count != 0 && !method.parameters))
-                    throw std::runtime_error("Host method name or parameter storage is null.");
-                auto& parameters = method_parameters.emplace_back();
-                parameters.reserve(method.parameter_count);
-                for (std::uint32_t parameter = 0; parameter < method.parameter_count; ++parameter)
-                    parameters.push_back(
-                        {source_type(method.parameters[parameter].type), method.parameters[parameter].passing});
-                const auto result_type = method.result == ValueKind::void_value ? language::ValueType::void_value
-                                                                                : source_type(method.result);
-                methods.push_back(
-                    {method.name, parameters, result_type, method.receiver_read_only, method.preserves_borrows});
-            }
+            auto underlying = source_type(enumeration.underlying);
+            if (!underlying)
+                return compilation_failure(error, error_capacity, llvm::toString(underlying.takeError()).c_str());
+            enumerations.push_back({enumeration.name, *underlying, items});
         }
-        const language::Environment source_environment{fields, methods,
-                                                       environment && environment->object_type_name
-                                                           ? std::string_view(environment->object_type_name)
-                                                           : std::string_view{},
-                                                       enumerations, values};
-        auto program = language::compile_source(source_name, std::string_view(source, source_size), source_environment,
-                                                entry_name ? entry_name : "", declarations_only);
-        if (!program) {
-            const auto& diagnostic = program.error();
+        auto catalog = source_values(*environment);
+        if (!catalog)
+            return compilation_failure(error, error_capacity, llvm::toString(catalog.takeError()).c_str());
+        values = std::move(*catalog);
+        fields.reserve(environment->field_count);
+        for (std::uint32_t index = 0; index < environment->field_count; ++index) {
+            const auto& field = environment->fields[index];
+            if (!field.name)
+                return compilation_failure(error, error_capacity, "Host field name is null.");
+            auto type = source_type(field.kind);
+            if (!type)
+                return compilation_failure(error, error_capacity, llvm::toString(type.takeError()).c_str());
+            fields.push_back({field.name, *type, field.constrained});
+        }
+        method_parameters.reserve(environment->method_count);
+        methods.reserve(environment->method_count);
+        for (std::uint32_t index = 0; index < environment->method_count; ++index) {
+            const auto& method = environment->methods[index];
+            if (!method.name || (method.parameter_count != 0 && !method.parameters))
+                return compilation_failure(error, error_capacity, "Host method name or parameter storage is null.");
+            auto& parameters = method_parameters.emplace_back();
+            parameters.reserve(method.parameter_count);
+            for (std::uint32_t parameter = 0; parameter < method.parameter_count; ++parameter) {
+                auto type = source_type(method.parameters[parameter].type);
+                if (!type)
+                    return compilation_failure(error, error_capacity, llvm::toString(type.takeError()).c_str());
+                parameters.push_back({*type, method.parameters[parameter].passing});
+            }
+            language::ValueType result_type = language::ValueType::void_value;
+            if (method.result != ValueKind::void_value) {
+                auto type = source_type(method.result);
+                if (!type)
+                    return compilation_failure(error, error_capacity, llvm::toString(type.takeError()).c_str());
+                result_type = *type;
+            }
+            methods.push_back(
+                {method.name, parameters, result_type, method.receiver_read_only, method.preserves_borrows});
+        }
+    }
+    const language::Environment source_environment{fields, methods,
+                                                   environment && environment->object_type_name
+                                                       ? std::string_view(environment->object_type_name)
+                                                       : std::string_view{},
+                                                   enumerations, values};
+    auto program = language::compile_source(source_name, std::string_view(source, source_size), source_environment,
+                                            entry_name ? entry_name : "", declarations_only);
+    if (!program) {
+        const auto& diagnostic = program.error();
+        if (location)
+            *location = {diagnostic.position.offset, diagnostic.position.line, diagnostic.position.column};
+        const auto display_name = diagnostic_source_name(source_name);
+        if (location)
+            std::snprintf(error, error_capacity, "%s", diagnostic.message.c_str());
+        else
+            std::snprintf(error, error_capacity, "%s:%zu:%zu: %s", display_name.c_str(), diagnostic.position.line,
+                          diagnostic.position.column, diagnostic.message.c_str());
+        return 1;
+    }
+    // No exports: a check unit, whose declarations and bodies are type-checked without code.
+    if (declarations_only)
+        return 0;
+    if (entry_count) {
+        std::vector<std::string_view> names;
+        for (std::uint32_t i = 0; i < entry_count; ++i)
+            names.emplace_back(entries[i]);
+        auto exported = language::export_functions(*program, names, receiver);
+        if (!exported) {
             if (location)
-                *location = {diagnostic.position.offset, diagnostic.position.line, diagnostic.position.column};
-            const auto display_name = diagnostic_source_name(source_name);
-            if (location)
-                std::snprintf(error, error_capacity, "%s", diagnostic.message.c_str());
-            else
-                std::snprintf(error, error_capacity, "%s:%zu:%zu: %s", display_name.c_str(), diagnostic.position.line,
-                              diagnostic.position.column, diagnostic.message.c_str());
+                *location = {exported.error().position.offset, exported.error().position.line,
+                             exported.error().position.column};
+            std::snprintf(error, error_capacity, "%s", exported.error().message.c_str());
             return 1;
         }
-        // No exports: a check unit, whose declarations and bodies are type-checked without code.
-        if (declarations_only)
-            return 0;
-        if (entry_count) {
-            std::vector<std::string_view> names;
-            for (std::uint32_t i = 0; i < entry_count; ++i)
-                names.emplace_back(entries[i]);
-            auto exported = language::export_functions(*program, names, receiver);
-            if (!exported) {
-                if (location)
-                    *location = {exported.error().position.offset, exported.error().position.line,
-                                 exported.error().position.column};
-                std::snprintf(error, error_capacity, "%s", exported.error().message.c_str());
-                return 1;
-            }
-        }
-        bool owns_values = false;
-        bool mutates_sequences = false;
-        for (std::size_t i = 0; i < program->functions.size(); ++i) {
-            if (!program->reachable[i])
-                continue;
-            const auto& function = program->functions[i];
-            const auto owned_type = [&](language::ValueType type) {
-                return language::aggregate(type) && !program->value_layouts[type.type_index].math;
-            };
-            for (std::size_t local = 0; local < function.locals.size(); ++local)
-                owns_values |= owned_type(function.locals[local].type) &&
-                               (local >= function.parameters.size() ||
-                                (program->exported(static_cast<std::uint32_t>(i)) &&
-                                 function.parameters[local].passing == ParameterPassing::value));
-            owns_values |= !function.strings.empty();
-            mutates_sequences |= !function.strings.empty();
-            for (const auto& expression : function.expressions) {
-                using Kind = language::Expression::Kind;
-                mutates_sequences |= expression.kind == Kind::sequence_mutation;
-                const bool call = expression.kind == Kind::call || expression.kind == Kind::source_call;
-                owns_values |= owned_type(expression.type) && expression.kind == Kind::call;
-                if (call)
-                    for (std::size_t argument = 0; argument < expression.arguments.size(); ++argument)
-                        owns_values |= expression.argument_passing[argument] == ParameterPassing::value &&
-                                       owned_type(function.expressions[expression.arguments[argument]].type);
-            }
-        }
-        if (owns_values && (!services->construct_value || !services->assign_value || !services->destroy_value))
-            throw std::runtime_error("Source-owned values require the native value lifecycle services.");
-        if (mutates_sequences && !services->mutate_sequence)
-            throw std::runtime_error("Source sequence mutation requires its native service.");
-        auto state = atelier::source::detail::compile(*services, *program, source_environment, options,
-                                                      omit_poll_for_verification, {}, environment);
-        std::vector<std::unique_ptr<BusinessCode>> codes;
-        codes.push_back(std::make_unique<BusinessCode>(state));
-        for (std::uint32_t i = 1; i < entry_count; ++i) {
-            program->entry = program->exports[i];
-            auto next = atelier::source::detail::compile(*services, *program, source_environment, options, false, state,
-                                                         environment);
-            codes.push_back(std::make_unique<BusinessCode>(std::move(next)));
-        }
-        for (std::size_t i = 0; i < codes.size(); ++i)
-            output[i] = codes[i].release();
-        return 0;
-    } catch (const std::exception& failure) {
-        std::snprintf(error, error_capacity, "%s", failure.what());
-    } catch (...) {
-        std::snprintf(error, error_capacity, "%s", "Unknown business compilation failure.");
     }
-    return 1;
+    bool owns_values = false;
+    bool mutates_sequences = false;
+    for (std::size_t i = 0; i < program->functions.size(); ++i) {
+        if (!program->reachable[i])
+            continue;
+        const auto& function = program->functions[i];
+        const auto owned_type = [&](language::ValueType type) {
+            return language::aggregate(type) && !program->value_layouts[type.type_index].math;
+        };
+        for (std::size_t local = 0; local < function.locals.size(); ++local)
+            owns_values |= owned_type(function.locals[local].type) &&
+                           (local >= function.parameters.size() ||
+                            (program->exported(static_cast<std::uint32_t>(i)) &&
+                             function.parameters[local].passing == ParameterPassing::value));
+        owns_values |= !function.strings.empty();
+        mutates_sequences |= !function.strings.empty();
+        for (const auto& expression : function.expressions) {
+            using Kind = language::Expression::Kind;
+            mutates_sequences |= expression.kind == Kind::sequence_mutation;
+            const bool call = expression.kind == Kind::call || expression.kind == Kind::source_call;
+            owns_values |= owned_type(expression.type) && expression.kind == Kind::call;
+            if (call)
+                for (std::size_t argument = 0; argument < expression.arguments.size(); ++argument)
+                    owns_values |= expression.argument_passing[argument] == ParameterPassing::value &&
+                                   owned_type(function.expressions[expression.arguments[argument]].type);
+        }
+    }
+    if (owns_values && (!services->construct_value || !services->assign_value || !services->destroy_value))
+        return compilation_failure(error, error_capacity,
+                                   "Source-owned values require the native value lifecycle services.");
+    if (mutates_sequences && !services->mutate_sequence)
+        return compilation_failure(error, error_capacity, "Source sequence mutation requires its native service.");
+    auto state = atelier::source::detail::compile(*services, *program, source_environment, options,
+                                                  omit_poll_for_verification, {}, environment);
+    if (!state)
+        return compilation_failure(error, error_capacity, llvm::toString(state.takeError()).c_str());
+    std::vector<std::unique_ptr<BusinessCode>> codes;
+    codes.push_back(std::make_unique<BusinessCode>(*state));
+    for (std::uint32_t i = 1; i < entry_count; ++i) {
+        program->entry = program->exports[i];
+        auto next = atelier::source::detail::compile(*services, *program, source_environment, options, false, *state,
+                                                     environment);
+        if (!next)
+            return compilation_failure(error, error_capacity, llvm::toString(next.takeError()).c_str());
+        codes.push_back(std::make_unique<BusinessCode>(std::move(*next)));
+    }
+    for (std::size_t i = 0; i < codes.size(); ++i)
+        output[i] = codes[i].release();
+    return 0;
 }
 }
 
@@ -2720,83 +2786,87 @@ atelier_compile_material(const char* name, const char* source, std::uint32_t siz
     if (!error || !capacity)
         return 1;
     error[0] = '\0';
-    try {
-        using namespace atelier;
-        using namespace atelier::source::detail;
-        if (!name || !source || !environment || !capture_default || !output || !sample || !orientation ||
-            context >= environment->value_count || output_type >= environment->value_count ||
-            texture_input >= environment->value_count)
-            throw std::runtime_error("Invalid material compiler input.");
-        auto values = source_values(*environment);
-        for (auto& value : values)
-            value.sequence_view = nullptr;
-        auto material = language::compile_material(name, std::string_view(source, size), values, context, output_type,
-                                                   texture_input);
-        if (!material) {
-            const auto& diagnostic = material.error();
-            const auto display_name = diagnostic_source_name(name);
-            std::snprintf(error, capacity, "%s:%zu:%zu: %s", display_name.c_str(), diagnostic.position.line,
-                          diagnostic.position.column, diagnostic.message.c_str());
-            return 1;
-        }
-        auto& tree = material->program;
-        const auto copy_fields = [&](auto&& self, language::ValueType type, std::byte* to,
-                                     const std::byte* from) -> void {
-            if (type == language::ValueType::f32 || type == language::ValueType::u32) {
-                std::memcpy(to, from, sizeof(std::uint32_t));
-                return;
-            }
-            if (type == language::ValueType::boolean) {
-                *to = *from;
-                return;
-            }
-            for (const auto& field : tree.value_layouts[type.type_index].fields)
-                self(self, field.type, to + field.offset, from + field.offset);
-        };
-        const auto capture_type = [&](auto&& self, language::ValueType type) -> void {
-            if (type.kind != language::ValueType::record)
-                return;
-            auto& layout = tree.value_layouts[type.type_index];
-            if (!layout.initial_value.empty())
-                return;
-            const auto* bytes = capture_default(capture_context, type.type_index);
-            if (!bytes)
-                throw std::runtime_error("Could not capture material value defaults: " + layout.name);
-            layout.initial_value.resize(layout.size);
-            // Only typed leaves become immutable content, never padding or
-            // unreflected native storage that might contain borrowed addresses.
-            copy_fields(copy_fields, type, layout.initial_value.data(), bytes);
-            for (const auto& field : layout.fields)
-                self(self, field.type);
-        };
-        for (std::size_t i = 0; i < tree.functions.size(); ++i)
-            if (tree.reachable[i]) {
-                capture_type(capture_type, tree.functions[i].result);
-                for (const auto& local : tree.functions[i].locals)
-                    capture_type(capture_type, local.type);
-            }
-        auto code = std::make_unique<MaterialCode>();
-        BusinessServices services{};
-        services.sample_texture = sample;
-        services.sample_orientation = orientation;
-        language::Environment captured{{}, {}, {}, {}, values};
-        code->shade.state = compile(services, material->program, captured, {});
-        material->program.entry = material->program.exports[1];
-        code->defaults.state = compile(services, material->program, captured, {}, false, code->shade.state);
-        code->hlsl = language::material_hlsl(*material);
-        code->textures = std::move(material->textures);
-        for (const auto& input : code->textures)
-            code->texture_views.push_back({input.key.c_str(), input.slot, input.offset});
-        code->parameters = material->parameters;
-        code->resources = material->resources;
-        *output = code.release();
-        return 0;
-    } catch (const std::exception& failure) {
-        std::snprintf(error, capacity, "%s", failure.what());
-    } catch (...) {
-        std::snprintf(error, capacity, "%s", "Unknown material compilation failure.");
+    using namespace atelier;
+    using namespace atelier::source::detail;
+    if (!name || !source || !environment || !capture_default || !output || !sample || !orientation ||
+        context >= environment->value_count || output_type >= environment->value_count ||
+        texture_input >= environment->value_count)
+        return compilation_failure(error, capacity, "Invalid material compiler input.");
+    auto values = source_values(*environment);
+    if (!values)
+        return compilation_failure(error, capacity, llvm::toString(values.takeError()).c_str());
+    for (auto& value : *values)
+        value.sequence_view = nullptr;
+    auto material =
+        language::compile_material(name, std::string_view(source, size), *values, context, output_type, texture_input);
+    if (!material) {
+        const auto& diagnostic = material.error();
+        const auto display_name = diagnostic_source_name(name);
+        std::snprintf(error, capacity, "%s:%zu:%zu: %s", display_name.c_str(), diagnostic.position.line,
+                      diagnostic.position.column, diagnostic.message.c_str());
+        return 1;
     }
-    return 1;
+    auto& tree = material->program;
+    const auto copy_fields = [&](auto&& self, language::ValueType type, std::byte* to, const std::byte* from) -> void {
+        if (type == language::ValueType::f32 || type == language::ValueType::u32) {
+            std::memcpy(to, from, sizeof(std::uint32_t));
+            return;
+        }
+        if (type == language::ValueType::boolean) {
+            *to = *from;
+            return;
+        }
+        for (const auto& field : tree.value_layouts[type.type_index].fields)
+            self(self, field.type, to + field.offset, from + field.offset);
+    };
+    const auto capture_type = [&](auto&& self, language::ValueType type) -> llvm::Error {
+        if (type.kind != language::ValueType::record)
+            return llvm::Error::success();
+        auto& layout = tree.value_layouts[type.type_index];
+        if (!layout.initial_value.empty())
+            return llvm::Error::success();
+        const auto* bytes = capture_default(capture_context, type.type_index);
+        if (!bytes)
+            return llvm::createStringError("Could not capture material value defaults: " + layout.name);
+        layout.initial_value.resize(layout.size);
+        // Only typed leaves become immutable content, never padding or
+        // unreflected native storage that might contain borrowed addresses.
+        copy_fields(copy_fields, type, layout.initial_value.data(), bytes);
+        for (const auto& field : layout.fields)
+            if (auto failure = self(self, field.type))
+                return failure;
+        return llvm::Error::success();
+    };
+    for (std::size_t i = 0; i < tree.functions.size(); ++i)
+        if (tree.reachable[i]) {
+            if (auto failure = capture_type(capture_type, tree.functions[i].result))
+                return compilation_failure(error, capacity, llvm::toString(std::move(failure)).c_str());
+            for (const auto& local : tree.functions[i].locals)
+                if (auto failure = capture_type(capture_type, local.type))
+                    return compilation_failure(error, capacity, llvm::toString(std::move(failure)).c_str());
+        }
+    auto code = std::make_unique<MaterialCode>();
+    BusinessServices services{};
+    services.sample_texture = sample;
+    services.sample_orientation = orientation;
+    language::Environment captured{{}, {}, {}, {}, *values};
+    auto shade = compile(services, material->program, captured, {});
+    if (!shade)
+        return compilation_failure(error, capacity, llvm::toString(shade.takeError()).c_str());
+    code->shade.state = std::move(*shade);
+    material->program.entry = material->program.exports[1];
+    auto defaults = compile(services, material->program, captured, {}, false, code->shade.state);
+    if (!defaults)
+        return compilation_failure(error, capacity, llvm::toString(defaults.takeError()).c_str());
+    code->defaults.state = std::move(*defaults);
+    code->hlsl = language::material_hlsl(*material);
+    code->textures = std::move(material->textures);
+    for (const auto& input : code->textures)
+        code->texture_views.push_back({input.key.c_str(), input.slot, input.offset});
+    code->parameters = material->parameters;
+    code->resources = material->resources;
+    *output = code.release();
+    return 0;
 }
 
 atelier::source::detail::MaterialCodeView
