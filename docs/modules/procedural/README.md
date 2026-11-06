@@ -170,6 +170,8 @@ String attribute = String::literal<"pscale">();
 
 输出就是输入几何加上改写过的列。借用的列不能改变长度，各层元素数保持；拓扑修改仍由 Geometry 端口节点完成。原生内核不得保留引用、修改列结构或重入 Source。源码 `evaluate` 可读 `self` 的标量/数学字段，不写 `self`；String 选择由宿主先复制，不开放源码对象 String 借用。两种调用都在 Runtime 线程上串行执行，不给节点盖章。
 
+Source 节点的业务失败统一调用继承的 `self.fail(message)`：`PointNode::fail(const String&) const noexcept` 是 BorrowSafe 原生成员，返回 `invocation_failed`，消息由 Error 拥有；不保留借用、不修改对象、不 GC 或重入。失败沿现有 Entry 清理与候选丢弃路径传播，不用故意越界、非法转换或 contract-fatal 代替业务错误。正常执行不调用此入口。
+
 [assets/engine/procedural](../../../assets/engine/procedural) 里的文件是引擎源码模块，`ProjectCode::snapshot` 把它们并进每个工程快照（编辑器和 Play 同一处），快照路径带 `engine/` 前缀；`ProjectCode` 第一次构建时在工程的 Runtime 中注册本模块的原生类型，因为这些文件里的类派生自 `procedural.PointNode`。这里只能声明 `procedural.` 下的名字，工程文件不能在 `procedural.` 下声明；函数声明和调用都写全名，工程源码也可以调用，例如 `procedural.hash(x)`：
 
 | 文件 | 内容 |
@@ -179,8 +181,25 @@ String attribute = String::literal<"pscale">();
 | jitter.source | `procedural.Jitter`：amount、axis_scale（按轴缩放）、seed；P 的每个分量加上 `random_vector(hash2(hash2(图种子, seed), id))` 的对应分量 × amount × axis_scale，读 `id`，所以偏移跟随点 |
 | random_scale.source | `procedural.RandomScale`：minimum、maximum、seed；pscale 取 lerp(minimum, maximum, unit(hash2(hash2(图种子, seed), id)))，读 `id` |
 | normal_align.source | `procedural.NormalAlign`：up；按 `align_to_normal(N, up)` 写 orient，所以 NormalAlign 之后的 Copy to Points 与直接用 N 和同值 up 列的结果相同，中间可以再改 orient |
+| noise.source | `procedural.Noise`：3D value noise，Vector3 空间输入、point float 输出；`lattice_bits` / `lattice_value` 固定有符号格点编码与角值 |
+| remap.source | `procedural.Remap`：point float 线性映射，double 中间计算，允许反向与外推，不夹值 |
 
 参数用源码字段的元数据（Label、DESC、Min/Max、LockMin）声明，Parameters 面板经 `FieldInfo` 读取。
+
+### Noise / Remap
+
+两者都是 Source PointNode，复用上面的绑定、组和 COW 合同，不改变点数。只读缺列或异层/异型报错；同名 Remap 读旧输入。组外旧值不变，新建输出列的组外值为 0。没有选中元素时仍校验节点参数，不读取未选点的数值。
+
+| 节点 | 默认字段 |
+| --- | --- |
+| Noise | `source_attribute="P"`（point Vector3）、`attribute="noise"`（point float）、`group=""`；`seed=0`、`frequency=1`、`offset=(0,0,0)` |
+| Remap | `source_attribute="noise"`、`attribute="pscale"`（均为 point float）、`group=""`；`input_min=0`、`input_max=1`、`output_min=0`、`output_max=1` |
+
+Noise 在输入空间按 float 分步计算 `q=position*frequency+offset`，不自动转世界空间或融合乘加。frequency 是每单位坐标的格数，允许 0（常量场）及负数（镜像）；offset 是缩放后的格坐标偏移。参数须有限，选中点的 q 每轴须在 `[−2147483648,2147483648)` 内，NaN/Inf 或越界整节点失败，不 wrap、夹坐标或重定位。大 float 坐标会失去亚格精度。
+
+格子取 `floor(q)`，负格坐标按 int32 二补码编码；Source 的受检 `uint(负 int)` 不能代替位编码，负数用 `~uint(-(i+1))`。复用 H=`hash2`：`s=H(graph_seed,node_seed)`，角值 `unit(H(H(H(s,bits(x)),bits(y)),bits(z)))`；不混入点下标/id。小数 f=`q−floor(q)` 的权重为 `f*f*(3−2*f)`，八角按 X→Y→Z 三线性插值，每次 lerp 使用 `a*(1−t)+b*t`。角值在 `[0,1)`，最终 float 显式 clamp 到 `[0,1]` 以界定插值舍入端点。哈希、编码、权重、轴序均为首发内容合同，不能静默改算法；不提供导数、周期或其他噪声族。
+
+Remap 四端点须有限、输入两端不同，输出两端可以相同。按 `out_min + ((x−in_min)/(in_max−in_min))*(out_max−out_min)` 用 double 运算后转 float，避免有限 float 端点相减溢出；最终 double 结果超出有限 float 范围或非有限则整节点失败，不饱和。此检查也拒绝选中元素的 NaN/Inf 输入。允许反向区间及外推：0…1→2…6 时 0.25→3、1.5→8。
 
 ## 求值器
 
@@ -229,7 +248,8 @@ String attribute = String::literal<"pscale">();
 - **概率取整**：面积 1、密度 2.25，取固定种子 0…2235。每次只能得到 2 或 3 点，总平均与 2.25 的误差严格小于 .03。在独立均匀随机的模型下，向上取整数 X 服从 Binomial(2236, .25)，接受区间为 492…626，精确二项求和覆盖率约 99.902133%；2236 是达到 99.9% 覆盖的最小种子数。实际固定种子运行是确定性的，不把统计模型称为实测分布或耗时证据。
 - **BVH 与 Ray**：18 个高度场三角形超过保留叶的 16 上限，一个斜射线和一个最近点查询各与独立 double 暴力公式比较。Ray 用可解析的抬高三角形核对命中与未命中、覆盖已有结果列但不改旧输入、删除未命中点，以及 minimum 模式的已知最近角点。
 - **ABI 与隔离**：plain 记录默认 false/0，经 Runtime 写入 `{true, 3}` 后原生节点产生三点；实例副本只写一个矩阵，原矩阵不变。Source 从 `source::engine_sources` 和保留夹具构建：`hash`／`hash2` 对照离线 lowbias32 常量，`unit(0x80000000)` 为 .5；六点 ColumnBatch 读 P、写 N、新增八列，结果按网格坐标和加法公式核对，旧输入与 Lift 兄弟分支保持各自的解析值。原生和 Source 命名列内核共用六点真值：双只读 P 别名、同名输出、GroupBox mask 与默认填充；写后失败保旧，改为长列名和空组后恢复，核对输入隔离及全选结果。
-- **故障与清理**：原生图 Grid → Transform → Merge ← Line → CopyToPoints 先发布已知 14 个实例，Transform 失败后旧发布仍可读，参数恢复后继续求值；Source 写过所有列后在 invoke 内越界，旧发布仍可读，修正后得到新值；删除 display 后清除输出及节点状态。三种操作序列各保留一份，不附加缓存计数、容量观察或拒绝矩阵。
+- **Noise / Remap**：三点小图用离线整数角值、八角均值和非中心有理权重核对负坐标、种子、负频率与偏移；经 GroupBox → Noise → Remap(pscale) → Realize 核对两个 Box 的缩放角点。随后同名映射、后段溢出失败、反向恢复核对旧发布及输入/兄弟快照，外推与宽有限端点分别以解析公式和中点值为真值，不保留拒绝矩阵。
+- **故障与清理**：原生图 Grid → Transform → Merge ← Line → CopyToPoints 先发布已知 14 个实例，Transform 失败后旧发布仍可读，参数恢复后继续求值；Source 写过所有列后经 `self.fail` 返回业务失败，旧发布仍可读，修正后得到新值；删除 display 后清除输出及节点状态。三种操作序列各保留一份，不附加缓存计数、容量观察或拒绝矩阵。
 
 跨模块工程 Source 消费的 K5 验收由 Editor 的 `project_execution.cpp` 负责，此入口不重复。`Geometry::bytes()` 的生产缓存预算接口不随容量观察用例删除。
 
@@ -238,7 +258,7 @@ String attribute = String::literal<"pscale">();
 cmake --build --preset release --target procedural_acceptance
 ```
 
-`procedural_graph_acceptance`（无窗口，`atelier_editor_document_acceptance --procedural-graph`，[acceptance/editor/procedural_graph.inl](../../../acceptance/editor/procedural_graph.inl)）以手写当前 v1 JSON 为金值，读取 Grid → Transform、Box → VolumeScatter、Sphere/Tube、Line → Polyline → GroupBox 及 Realize 的非默认参数、位置、seed、display 与连接；Realize 显式核对 sources 的连接顺序、points 端口和 group/variant/target_attributes，再保存为相同规范字节。只保留 Missing 类型变成 null 节点且冻结 JSON 无损往返，以及构造失败不能吞成缺失类型两条边界。九种严格加载反例和额外宽容矩阵不再作为验收；严格结构规则仍如上，旧版本升级属于外部工具，不在加载器内做兼容迁移。
+`procedural_graph_acceptance`（无窗口，`atelier_editor_document_acceptance --procedural-graph`，[acceptance/editor/procedural_graph.inl](../../../acceptance/editor/procedural_graph.inl)）以手写当前 v1 JSON 为金值，读取 Grid → Transform、Box → VolumeScatter、Sphere/Tube、Line → Polyline → GroupBox → Noise → Remap 及 Realize 的非默认参数、位置、seed、display 与连接；Noise/Remap 从正式引擎 Source 快照注册，显式读回数值及 String 属性/组选择字段；Realize 显式核对 sources 的连接顺序、points 端口和 group/variant/target_attributes，再保存为相同规范字节。只保留 Missing 类型变成 null 节点且冻结 JSON 无损往返，以及构造失败不能吞成缺失类型两条边界。九种严格加载反例和额外宽容矩阵不再作为验收；严格结构规则仍如上，旧版本升级属于外部工具，不在加载器内做兼容迁移。
 
 ```powershell
 cmake --build --preset release --target procedural_graph_acceptance

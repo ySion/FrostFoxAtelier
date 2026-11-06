@@ -59,16 +59,32 @@ void verify_procedural_graph() {
                                "maximum": {"x": 2.0, "y": 1.0, "z": 4.0}},
                 "inputs": {"input": "path.output"}
             },
+            "noise": {
+                "type": "procedural.Noise", "position": [350.0, 300.0],
+                "properties": {"source_attribute": "rest", "attribute": "density", "group": "chosen",
+                               "seed": 23, "frequency": -0.75, "offset": {"x": 0.5, "y": -1.25, "z": 2.5}},
+                "inputs": {"input": "selected.output"}
+            },
+            "remap": {
+                "type": "procedural.Remap", "position": [375.0, 300.0],
+                "properties": {"source_attribute": "density", "attribute": "size", "group": "chosen",
+                               "input_min": -1.0, "input_max": 2.0, "output_min": 4.0, "output_max": -2.0},
+                "inputs": {"input": "noise.output"}
+            },
             "realized": {
                 "type": "procedural.Realize", "position": [400.0, 300.0],
                 "properties": {"group": "chosen", "variant": "prototype", "target_attributes": ["id", "weight"]},
-                "inputs": {"sources": ["tube.output", "sphere.output"], "points": "selected.output"}
+                "inputs": {"sources": ["tube.output", "sphere.output"], "points": "remap.output"}
             }
         }
     })");
     const auto text = authored.dump(2) + "\n";
     Runtime runtime;
     take(register_types(runtime));
+    source::Program program{runtime};
+    auto candidate = take(source::Program::prepare(take(program.request(
+        source::SourceSnapshot{"procedural-graph", 1, take(source::engine_sources(source::default_engine_root()))}))));
+    take(program.try_publish(candidate));
     auto document = take(editor::load_graph(runtime, text));
     const auto entry = [&](const char* name) -> const editor::GraphNode& {
         const auto found = std::ranges::find(document.nodes, std::string{name}, &editor::GraphNode::name);
@@ -102,17 +118,45 @@ void verify_procedural_graph() {
                 "Authored Realize selectors or broadcast names did not load.");
         return {};
     }));
-    require(take(contents(runtime, document.graph.id())).display == moved.node.id() &&
-                take(inputs(runtime, moved.node.id())) == std::vector<Input>{{grid.node.id(), 0, 0}} &&
-                take(inputs(runtime, entry("path").node.id())) == std::vector<Input>{{entry("line").node.id(), 0, 0}} &&
-                take(inputs(runtime, entry("volume").node.id())) ==
-                    std::vector<Input>{{entry("box").node.id(), 0, 0}} &&
-                take(inputs(runtime, entry("realized").node.id())) ==
-                    std::vector<Input>{{entry("tube").node.id(), 0, 0},
-                                       {entry("sphere").node.id(), 0, 0},
-                                       {entry("selected").node.id(), 0, 1}} &&
-                take(editor::save_graph(runtime, document)) == text,
-            "The authored display, edge or canonical v1 bytes changed.");
+    for (const auto* node : {"noise", "remap"}) {
+        const auto id = entry(node).node.id();
+        const auto owner = take(runtime.type_of(id));
+        for (const auto* name : {"source_attribute", "attribute", "group"}) {
+            String value;
+            take(runtime.read(id, take(runtime.find_field(owner, name)),
+                              ValueOutput{take(runtime.native_type<String>()), &value}));
+            require(value.view().std_view() == authored["nodes"][node]["properties"][name].get<std::string>(),
+                    "An authored Source selector did not reach its String field.");
+        }
+    }
+    const auto scalar = [&](const char* node, const char* name) {
+        const auto id = entry(node).node.id();
+        return take(runtime.read(id, take(runtime.find_field(take(runtime.type_of(id)), name))));
+    };
+    math::Vector3 offset;
+    take(runtime.read(entry("noise").node.id(),
+                      take(runtime.find_field(take(runtime.find_type("procedural.Noise")), "offset")),
+                      ValueOutput{take(runtime.native_type<math::Vector3>()), &offset}));
+    require(
+        std::get<std::uint32_t>(scalar("noise", "seed")) == 23 &&
+            std::get<float>(scalar("noise", "frequency")) == -.75f && offset == math::Vector3{.5f, -1.25f, 2.5f} &&
+            std::get<float>(scalar("remap", "input_min")) == -1 && std::get<float>(scalar("remap", "input_max")) == 2 &&
+            std::get<float>(scalar("remap", "output_min")) == 4 && std::get<float>(scalar("remap", "output_max")) == -2,
+        "Authored Noise/Remap numeric parameters did not load.");
+    require(
+        take(contents(runtime, document.graph.id())).display == moved.node.id() &&
+            take(inputs(runtime, moved.node.id())) == std::vector<Input>{{grid.node.id(), 0, 0}} &&
+            take(inputs(runtime, entry("path").node.id())) == std::vector<Input>{{entry("line").node.id(), 0, 0}} &&
+            take(inputs(runtime, entry("volume").node.id())) == std::vector<Input>{{entry("box").node.id(), 0, 0}} &&
+            take(inputs(runtime, entry("noise").node.id())) ==
+                std::vector<Input>{{entry("selected").node.id(), 0, 0}} &&
+            take(inputs(runtime, entry("remap").node.id())) == std::vector<Input>{{entry("noise").node.id(), 0, 0}} &&
+            take(inputs(runtime, entry("realized").node.id())) ==
+                std::vector<Input>{{entry("tube").node.id(), 0, 0},
+                                   {entry("sphere").node.id(), 0, 0},
+                                   {entry("remap").node.id(), 0, 1}} &&
+            take(editor::save_graph(runtime, document)) == text,
+        "The authored display, edge or canonical v1 bytes changed.");
 
     // The only tolerant fixture: a missing type stays null and keeps all of its frozen JSON.
     auto missing = authored;

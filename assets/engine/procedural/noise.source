@@ -1,0 +1,65 @@
+// Two's-complement lattice encoding; numeric uint(negative int) is not a bit cast.
+uint procedural.lattice_bits(int value) {
+    if (value < 0) { return ~uint(-(value + 1)); }
+    return uint(value);
+}
+
+float procedural.lattice_value(uint seed, int x, int y, int z) {
+    return procedural.unit(procedural.hash2(
+        procedural.hash2(procedural.hash2(seed, procedural.lattice_bits(x)), procedural.lattice_bits(y)),
+        procedural.lattice_bits(z)));
+}
+
+class procedural.Noise : procedural.PointNode {
+    [Meta("procedural.bind", "evaluate.source"), Meta("procedural.layer", "point"), Meta("procedural.kind", "attribute"), Label = "Source Attribute", DESC = "采样空间的 point Vector3 列。"]
+    String source_attribute = "P";
+    [Meta("procedural.bind", "evaluate.values"), Meta("procedural.layer", "point"), Meta("procedural.kind", "attribute"), Label = "Attribute", DESC = "写入 [0,1] 噪声的 point float 列。"]
+    String attribute = "noise";
+    [Meta("procedural.bind", "evaluate.selected"), Meta("procedural.layer", "point"), Meta("procedural.kind", "group"), Label = "Group", DESC = "只修改选中点；空名称表示全选。"]
+    String group = "";
+    [Label = "Seed", DESC = "与图种子混合的噪声种子。"]
+    uint seed = 0;
+    [Label = "Frequency", DESC = "每单位输入坐标的格数；0 为常量场，负数为镜像。"]
+    float frequency = 1.0f;
+    [Label = "Offset", DESC = "缩放后加上的噪声格坐标偏移。"]
+    vector3 offset = vector3(0.0f, 0.0f, 0.0f);
+
+    void evaluate(const procedural.Context& context, const Array<vector3>& source,
+                  Array<float>& values, const Array<bool>& selected) {
+        const float frequency = self.frequency;
+        const vector3 offset = self.offset;
+        const float limit = 3.402823466385288598e38f;
+        if (!(math.abs(frequency) <= limit && math.abs(offset.x) <= limit &&
+              math.abs(offset.y) <= limit && math.abs(offset.z) <= limit)) {
+            self.fail("Noise frequency and offset must be finite.");
+        }
+        const uint seed = procedural.hash2(context.seed, self.seed);
+        for (uint i = 0; i < values.size(); i = i + 1) {
+            if (!selected[i]) { continue; }
+            const vector3 q = source[i] * frequency + offset;
+            // Ordered comparisons also reject NaN. The largest float below 2^31 is
+            // 2147483520, so every floor(q)+1 still fits int32.
+            if (!(q.x >= -2147483648.0f && q.x < 2147483648.0f &&
+                  q.y >= -2147483648.0f && q.y < 2147483648.0f &&
+                  q.z >= -2147483648.0f && q.z < 2147483648.0f)) {
+                self.fail("Noise coordinates must be finite and in [-2147483648,2147483648).");
+            }
+            const vector3 cell = math.floor(q);
+            const int x = int(cell.x);
+            const int y = int(cell.y);
+            const int z = int(cell.z);
+            const vector3 f = q - cell;
+            const vector3 t = math.smoothstep(0.0f, 1.0f, f);
+            // The hash folding and X/Y/Z interpolation order are generated-content contracts.
+            const float a = math.lerp(procedural.lattice_value(seed, x, y, z),
+                                      procedural.lattice_value(seed, x + 1, y, z), t.x);
+            const float b = math.lerp(procedural.lattice_value(seed, x, y + 1, z),
+                                      procedural.lattice_value(seed, x + 1, y + 1, z), t.x);
+            const float c = math.lerp(procedural.lattice_value(seed, x, y, z + 1),
+                                      procedural.lattice_value(seed, x + 1, y, z + 1), t.x);
+            const float d = math.lerp(procedural.lattice_value(seed, x, y + 1, z + 1),
+                                      procedural.lattice_value(seed, x + 1, y + 1, z + 1), t.x);
+            values[i] = math.clamp(math.lerp(math.lerp(a, b, t.y), math.lerp(c, d, t.y), t.z), 0.0f, 1.0f);
+        }
+    }
+}

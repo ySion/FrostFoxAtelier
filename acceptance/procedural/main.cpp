@@ -764,7 +764,7 @@ public:
 
     String group = String::literal<"selected">();
 
-    bool fail{};
+    bool reject{};
 
     Result<void> evaluate(Array<Vector3>& values, Array<float>& weight, const Array<Vector3>& source,
                           const Array<Vector3>& again, const Array<bool>& selected) const noexcept {
@@ -775,7 +775,7 @@ public:
             values[i] = source[(i + 1) % source.size()] + again[i] * 2.f;
             weight[i] = source[i].x + 4.f;
         }
-        if (fail)
+        if (reject)
             return std::unexpected(Error{ErrorCode::invocation_failed, "Column kernel failed after writing."});
         return {};
     }
@@ -820,12 +820,12 @@ void bound_columns(Runtime& runtime, TypeId kernel, const source::Program* progr
     const auto* previous = evaluator.output();
     write_name("destination", String::literal<"shifted_positions_with_a_long_attribute_name">());
     write_name("group", String{});
-    take(runtime.write(node.id(), field(runtime, kernel, "fail"), Scalar{true}));
+    take(runtime.write(node.id(), field(runtime, kernel, "reject"), Scalar{true}));
     take(evaluator.evaluate());
     require(failed(evaluator, node.id()) && evaluator.output() == previous &&
                 std::ranges::equal(evaluator.output()->positions(), selected),
             "A failed named-column invocation replaced the previous publication.");
-    take(runtime.write(node.id(), field(runtime, kernel, "fail"), Scalar{false}));
+    take(runtime.write(node.id(), field(runtime, kernel, "reject"), Scalar{false}));
     take(evaluator.evaluate());
     require(!failed(evaluator, node.id()) &&
                 std::ranges::equal(
@@ -861,7 +861,7 @@ void native_columns() {
             .field<&BoundColumns::group>("group")
             .metadata(
                 {{"procedural.bind", "evaluate.selected"}, {"procedural.layer", "point"}, {"procedural.kind", "group"}})
-            .field<&BoundColumns::fail>("fail")
+            .field<&BoundColumns::reject>("reject")
             .method<&BoundColumns::evaluate>("evaluate")
             .parameter_names({"values", "weight", "source", "again", "selected"})
             .publish());
@@ -1145,6 +1145,158 @@ struct Project {
     }
 };
 
+void source_noise_remap() {
+    Runtime runtime;
+    take(register_types(runtime));
+    Project project;
+    source::Program program{runtime};
+    project.publish(program);
+    const auto noise_type = take(runtime.find_type("procedural.Noise"));
+    const auto graph = take(runtime.create(type<Graph>(runtime)));
+    const auto points = take(add_node(runtime, graph.id(), type<Line>(runtime)));
+    const auto group = take(add_node(runtime, graph.id(), type<GroupBox>(runtime)));
+    const auto noise = take(add_node(runtime, graph.id(), noise_type));
+    take(runtime.with_native<Line>(points.id(), [](Line& node) -> Result<void> {
+        node.start = {-2, 1, 3};
+        node.end = {-1, 2, 4};
+        node.count = 3;
+        return {};
+    }));
+    take(runtime.with_native<GroupBox>(group.id(), [](GroupBox& node) -> Result<void> {
+        node.minimum = {-3, 0, 2};
+        node.maximum = {-1.25f, 3, 5};
+        return {};
+    }));
+    take(runtime.write(graph.id(), field(runtime, type<Graph>(runtime), "seed"), Scalar{3u}));
+    take(runtime.write(noise.id(), field(runtime, noise_type, "seed"), Scalar{19u}));
+    take(connect(runtime, graph.id(), points.id(), 0, group.id(), 0));
+    take(connect(runtime, graph.id(), group.id(), 0, noise.id(), 0));
+    take(set_display(runtime, graph.id(), noise.id()));
+    Meshes resources;
+    Evaluator evaluator{runtime, graph, resources, &program};
+    take(evaluator.evaluate());
+    require(!failed(evaluator, noise.id()) && evaluator.output(), "Source Noise did not publish.");
+    // Independent modular integer arithmetic gives corner top-24 bits, X fastest:
+    // 7039293,12976187,13903901,3857851,6869612,8392983,11722185,15629921.
+    // The middle point is the exact arithmetic mean of those eight corners.
+    constexpr std::array expected{7039293.f * 0x1p-24f, float(80391933.0 / 134217728), 15629921.f * 0x1p-24f};
+    const auto& values = column<float>(*evaluator.output(), "noise", Layer::point);
+    for (std::size_t i = 0; i < expected.size(); ++i)
+        require(near(values[i], expected[i], 0x1p-22f), "Noise lattice values or center interpolation changed.");
+    const Geometry original = *evaluator.output();
+    take(runtime.write(noise.id(), field(runtime, noise_type, "frequency"), Scalar{-.5f}));
+    const Vector3 offset{-2.75f, 1.875f, 5.25f};
+    take(runtime.write(noise.id(), field(runtime, noise_type, "offset"), ValueInput{type<Vector3>(runtime), &offset}));
+    take(evaluator.evaluate());
+    // Exact rational evaluation of the eight-corner weighted sum at the transformed points.
+    constexpr std::array shifted{float(2320696883435.0 / 4398046511104.0), float(3689568671.0 / 8589934592.0),
+                                 float(1083352233829.0 / 2199023255552.0)};
+    const auto& mirrored = column<float>(*evaluator.output(), "noise", Layer::point);
+    for (std::size_t i = 0; i < shifted.size(); ++i)
+        require(near(mirrored[i], shifted[i], 0x1p-22f),
+                "Noise lost cubic weights, negative cells or transform order.");
+    take(runtime.write(noise.id(), field(runtime, noise_type, "frequency"), Scalar{1.f}));
+    const Vector3 zero{};
+    take(runtime.write(noise.id(), field(runtime, noise_type, "offset"), ValueInput{type<Vector3>(runtime), &zero}));
+
+    const auto remap_type = take(runtime.find_type("procedural.Remap"));
+    const auto remap = take(add_node(runtime, graph.id(), remap_type));
+    take(runtime.write(remap.id(), field(runtime, remap_type, "output_min"), Scalar{2.f}));
+    take(runtime.write(remap.id(), field(runtime, remap_type, "output_max"), Scalar{6.f}));
+    take(connect(runtime, graph.id(), noise.id(), 0, remap.id(), 0));
+    take(set_display(runtime, graph.id(), remap.id()));
+    take(evaluator.evaluate());
+    require(!failed(evaluator, remap.id()), "Source Remap did not publish.");
+    const auto& scales = column<float>(*evaluator.output(), "pscale", Layer::point);
+    for (std::size_t i = 0; i < expected.size(); ++i)
+        require(near(scales[i], 2 + 4 * expected[i], 0x1p-22f), "Remap did not map Noise into the requested range.");
+
+    const auto select = [&](ObjectId id, const char* name, const String& value) {
+        take(runtime.write(id, field(runtime, take(runtime.type_of(id)), name),
+                           ValueInput{type<String>(runtime), &value}));
+    };
+    select(noise.id(), "group", String::literal<"selected">());
+    select(remap.id(), "group", String::literal<"selected">());
+    take(evaluator.evaluate());
+    require(column<float>(*evaluator.output(), "noise", Layer::point)[2] == 0 &&
+                column<float>(*evaluator.output(), "pscale", Layer::point)[2] == 0,
+            "Source Noise/Remap wrote outside the selected group.");
+    const auto prototype = take(add_node(runtime, graph.id(), type<Box>(runtime)));
+    const auto copies = take(add_node(runtime, graph.id(), type<Realize>(runtime)));
+    take(runtime.with_native<Box>(prototype.id(), [](Box& node) -> Result<void> {
+        node.size = {2, 4, 6};
+        return {};
+    }));
+    select(copies.id(), "group", String::literal<"selected">());
+    take(connect(runtime, graph.id(), prototype.id(), 0, copies.id(), 0));
+    take(connect(runtime, graph.id(), remap.id(), 0, copies.id(), 1));
+    take(set_display(runtime, graph.id(), copies.id()));
+    take(evaluator.evaluate());
+    require(!failed(evaluator, copies.id()) && evaluator.output()->count(Layer::point) == 16,
+            "Noise/Remap did not feed two selected Realize copies.");
+    for (std::size_t i = 0; i < 2; ++i) {
+        const float scale = 2 + 4 * expected[i];
+        const float delta = float(i) * .5f;
+        require(near(evaluator.output()->positions()[i * 8],
+                     {-2 + delta - scale, 1 + delta - 2 * scale, 3 + delta - 3 * scale}),
+                "The realized first corner lost its noise-derived scale or target position.");
+    }
+    const Geometry sibling = *evaluator.output();
+
+    select(noise.id(), "group", String{});
+    select(remap.id(), "attribute", String::literal<"noise">());
+    take(set_display(runtime, graph.id(), remap.id()));
+    take(evaluator.evaluate());
+    const auto* previous = evaluator.output();
+    const auto& same_name = column<float>(*previous, "noise", Layer::point);
+    require(near(same_name[0], 2 + 4 * expected[0]) && near(same_name[1], 2 + 4 * expected[1]) &&
+                near(same_name[2], expected[2]),
+            "Same-name Remap lost old input or changed the unselected value.");
+    // The first two selected values fit; the last overflows after partial candidate writes.
+    select(remap.id(), "group", String{});
+    take(runtime.write(remap.id(), field(runtime, remap_type, "input_max"), Scalar{.75f}));
+    take(
+        runtime.write(remap.id(), field(runtime, remap_type, "output_max"), Scalar{std::numeric_limits<float>::max()}));
+    take(evaluator.evaluate());
+    require(failed(evaluator, remap.id()) && evaluator.output() == previous &&
+                near(same_name[0], 2 + 4 * expected[0]) && near(same_name[1], 2 + 4 * expected[1]) &&
+                near(same_name[2], expected[2]),
+            "A late Remap failure published a partially written column.");
+    select(remap.id(), "group", String::literal<"selected">());
+    take(runtime.write(remap.id(), field(runtime, remap_type, "input_min"), Scalar{1.f}));
+    take(runtime.write(remap.id(), field(runtime, remap_type, "input_max"), Scalar{0.f}));
+    take(runtime.write(remap.id(), field(runtime, remap_type, "output_max"), Scalar{10.f}));
+    take(evaluator.evaluate());
+    require(!failed(evaluator, remap.id()), "Remap did not recover with a reversed input range.");
+    const auto& reversed = column<float>(*evaluator.output(), "noise", Layer::point);
+    for (std::size_t i = 0; i < 3; ++i) {
+        require(near(reversed[i], i < 2 ? 10 - 8 * expected[i] : expected[i]) &&
+                    near(column<float>(original, "noise", Layer::point)[i], expected[i]),
+                "Reversed Remap or failed-candidate cleanup changed an input snapshot.");
+    }
+    require(sibling.count(Layer::point) == 16 &&
+                near(sibling.positions()[0],
+                     {-2 - (2 + 4 * expected[0]), 1 - 2 * (2 + 4 * expected[0]), 3 - 3 * (2 + 4 * expected[0])}),
+            "A later column write mutated the published Realize sibling.");
+
+    // Every sample lies above .25: extrapolation must not clamp to the output endpoint.
+    select(remap.id(), "group", String{});
+    take(runtime.write(remap.id(), field(runtime, remap_type, "input_min"), Scalar{0.f}));
+    take(runtime.write(remap.id(), field(runtime, remap_type, "input_max"), Scalar{.25f}));
+    take(runtime.write(remap.id(), field(runtime, remap_type, "output_max"), Scalar{6.f}));
+    take(evaluator.evaluate());
+    for (std::size_t i = 0; i < 3; ++i)
+        require(near(column<float>(*evaluator.output(), "noise", Layer::point)[i], 2 + 16 * expected[i]),
+                "Remap clamped an extrapolated value.");
+    // Wide finite endpoints require widening before subtraction.
+    take(
+        runtime.write(remap.id(), field(runtime, remap_type, "input_min"), Scalar{-std::numeric_limits<float>::max()}));
+    take(runtime.write(remap.id(), field(runtime, remap_type, "input_max"), Scalar{std::numeric_limits<float>::max()}));
+    take(evaluator.evaluate());
+    require(std::ranges::equal(column<float>(*evaluator.output(), "noise", Layer::point), std::array{4.f, 4.f, 4.f}),
+            "Remap subtracted its wide endpoints before widening to double.");
+}
+
 // Scalar ABI entries, a sibling writer, and a failure after multi-column writes inside invoke.
 constexpr std::string_view fixture_source = R"(
 uint test_hash(uint x) { return procedural.hash(x); }
@@ -1159,7 +1311,7 @@ class fixture.Lift : procedural.PointNode {
 }
 class fixture.ColumnBatch : procedural.PointNode {
     float offset = 2.0f;
-    bool fail = false;
+    bool reject = false;
     void evaluate(const Array<vector3>& P, Array<vector3>& N,
         Array<float>& a, Array<float>& b, Array<float>& c, Array<float>& d,
         Array<float>& e, Array<float>& f, Array<float>& g, Array<float>& h) {
@@ -1175,7 +1327,7 @@ class fixture.ColumnBatch : procedural.PointNode {
             g[i] = f[i] + 1.0f;
             h[i] = g[i] + 1.0f;
         }
-        if (self.fail) { a[P.size()] = 1.0f; }
+        if (self.reject) { self.fail("Column batch failed after writing."); }
     }
 }
 class fixture.BoundColumns : procedural.PointNode {
@@ -1187,7 +1339,7 @@ class fixture.BoundColumns : procedural.PointNode {
     String alias = "P";
     [Meta("procedural.bind", "evaluate.selected"), Meta("procedural.layer", "point"), Meta("procedural.kind", "group")]
     String group = "selected";
-    bool fail = false;
+    bool reject = false;
     void evaluate(Array<vector3>& values, Array<float>& weight, const Array<vector3>& source,
                   const Array<vector3>& again, const Array<bool>& selected) {
         for (uint i = 0; i < source.size(); i = i + 1) {
@@ -1196,7 +1348,7 @@ class fixture.BoundColumns : procedural.PointNode {
             values[i] = source[(i + 1) % source.size()] + again[i] * 2.0;
             weight[i] = source[i].x + 4.0;
         }
-        if (self.fail) { weight[source.size()] = 1.0; }
+        if (self.reject) { self.fail("Column kernel failed after writing."); }
     }
 }
 )";
@@ -1236,7 +1388,7 @@ void source_nodes() {
     };
 
     // Eight new columns grow the two-attribute input while N already needs a writable borrow.
-    // A bounds failure occurs inside invoke, after writing every column, not during preparation.
+    // A business failure occurs inside invoke, after writing every column, not during preparation.
     const auto batch_root = take(runtime.create(type<Graph>(runtime)));
     const auto batch_graph = batch_root.id();
     const auto batch_input = add(batch_graph, type<Grid>(runtime));
@@ -1280,16 +1432,16 @@ void source_nodes() {
     take(batching.evaluate());
     const auto* previous = batching.output();
     const auto batch_type = source_type("fixture.ColumnBatch");
-    const auto fail = field(runtime, batch_type, "fail");
+    const auto reject = field(runtime, batch_type, "reject");
     const auto offset = field(runtime, batch_type, "offset");
     take(runtime.write(batch, offset, Scalar{9.f}));
-    take(runtime.write(batch, fail, Scalar{true}));
+    take(runtime.write(batch, reject, Scalar{true}));
     take(batching.evaluate());
     const auto& error = batching.status(batch)->error;
     require(error && error->code == ErrorCode::invocation_failed && batching.output() == previous,
             "An invoke failure published a partially written Geometry.");
     verify_batch(batching.output(), 2);
-    take(runtime.write(batch, fail, Scalar{false}));
+    take(runtime.write(batch, reject, Scalar{false}));
     take(batching.evaluate());
     require(!failed(batching, batch), "A corrected invoke failure did not recover.");
     verify_batch(batching.output(), 9);
@@ -1960,6 +2112,7 @@ int main(int argc, char** argv) {
         graph_evaluation();
         native_columns();
         source_nodes();
+        source_noise_remap();
     } catch (const std::exception& error) {
         std::fprintf(stderr, "procedural acceptance failed: %s\n", error.what());
         return 1;

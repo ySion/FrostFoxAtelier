@@ -97,6 +97,12 @@ ACLASS(Name = "procedural.PointNode",
        DESC = "原生和自有语言属性节点的基类：按参数名或字段 Meta 读写几何属性列，各层元素数不变。")
 class PointNode : public Node {
     AGENERATED_BODY(PointNode)
+
+public:
+    // Fails the Source invocation without publishing its candidate. Does not retain message
+    // or touch borrowed columns; replace this entry when Source gains a failure statement.
+    AFUNCTION(BorrowSafe)
+    [[nodiscard]] Result<void> fail(const String& message) const noexcept;
 };
 
 ACLASS(Name = "procedural.Graph", DESC = "程序化图：一组节点及其连接，display 节点的输出是图的结果。")

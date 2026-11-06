@@ -1,0 +1,40 @@
+class procedural.Remap : procedural.PointNode {
+    [Meta("procedural.bind", "evaluate.source"), Meta("procedural.layer", "point"), Meta("procedural.kind", "attribute"), Label = "Source Attribute", DESC = "读取的 point float 列，同名读写仍读取旧输入。"]
+    String source_attribute = "noise";
+    [Meta("procedural.bind", "evaluate.values"), Meta("procedural.layer", "point"), Meta("procedural.kind", "attribute"), Label = "Attribute", DESC = "写入映射结果的 point float 列。"]
+    String attribute = "pscale";
+    [Meta("procedural.bind", "evaluate.selected"), Meta("procedural.layer", "point"), Meta("procedural.kind", "group"), Label = "Group", DESC = "只修改选中点；空名称表示全选。"]
+    String group = "";
+    [Label = "Input Minimum", DESC = "输入区间首端，允许反向但不能两端相等。"]
+    float input_min = 0.0f;
+    [Label = "Input Maximum", DESC = "输入区间末端；区间外的值线性外推。"]
+    float input_max = 1.0f;
+    [Label = "Output Minimum", DESC = "输出区间首端，不夹值。"]
+    float output_min = 0.0f;
+    [Label = "Output Maximum", DESC = "输出区间末端，可等于首端以生成常量。"]
+    float output_max = 1.0f;
+
+    void evaluate(const Array<float>& source, Array<float>& values, const Array<bool>& selected) {
+        const double low = double(self.input_min);
+        const double high = double(self.input_max);
+        const double output_low = double(self.output_min);
+        const double output_high = double(self.output_max);
+        const double limit = double(3.402823466385288598e38f);
+        if (!(math.abs(low) <= limit && math.abs(high) <= limit &&
+              math.abs(output_low) <= limit && math.abs(output_high) <= limit && low != high)) {
+            self.fail("Remap endpoints must be finite and input endpoints must differ.");
+        }
+        // Widen before subtraction: finite float endpoints may span more than FLT_MAX.
+        const double input_span = high - low;
+        const double output_span = output_high - output_low;
+        for (uint i = 0; i < values.size(); i = i + 1) {
+            if (!selected[i]) { continue; }
+            const double mapped = output_low + ((double(source[i]) - low) / input_span) * output_span;
+            // Also rejects non-finite source values, including infinity * a zero output span.
+            if (!(mapped >= -limit && mapped <= limit)) {
+                self.fail("Remap result must fit a finite float.");
+            }
+            values[i] = float(mapped);
+        }
+    }
+}
