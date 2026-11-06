@@ -3,6 +3,7 @@
 #include "source/program.hpp"
 #include "runtime/native.hpp"
 #include "foundation/tasks.hpp"
+#include "memory/fatal.hpp"
 
 #include <windows.h>
 #include <array>
@@ -16,15 +17,16 @@ using source::Program;
 
 using namespace atelier::acceptance::helpers;
 
-void code_state(std::uintptr_t address, bool live) {
-    require(address != 0, "Shutdown code address is missing.");
+void code_state(std::uintptr_t address, bool live) noexcept {
+    if (address == 0)
+        fatal("Shutdown code address is missing.");
     DWORD64 image{};
     const auto* function = RtlLookupFunctionEntry(address, &image, nullptr);
     MEMORY_BASIC_INFORMATION memory{};
-    require(VirtualQuery(reinterpret_cast<void*>(address), &memory, sizeof(memory)) == sizeof(memory),
-            "Shutdown code memory query failed.");
-    require(live ? function && memory.State == MEM_COMMIT : !function && memory.State == MEM_FREE,
-            "Shutdown retired code too early or retained code after the last owner.");
+    if (VirtualQuery(reinterpret_cast<void*>(address), &memory, sizeof(memory)) != sizeof(memory))
+        fatal("Shutdown code memory query failed.");
+    if (!(live ? function && memory.State == MEM_COMMIT : !function && memory.State == MEM_FREE))
+        fatal("Shutdown retired code too early or retained code after the last owner.");
 }
 
 struct HostOwner;
@@ -97,24 +99,28 @@ struct HostOwner {
             task.cancel();
     }
 
-    Result<void> finish_shutdown() {
+    Result<void> finish_shutdown() noexcept {
         if (!runtime)
             return {};
-        require(stopping, "Shutdown must first stop new work.");
+        if (!stopping)
+            fatal("Shutdown must first stop new work.");
         // Covers synchronous execution and native/traversal callbacks as well
         // as the tasks owned here. Busy must leave Runtime and frames intact.
         auto quiet = runtime->check_code_publication();
         if (!quiet)
             return quiet;
         for (const auto& task : tasks)
-            require(task.state() != CoroutineState::running, "A running task reached shutdown teardown.");
+            if (task.state() == CoroutineState::running)
+                fatal("A running task reached shutdown teardown.");
         for (auto& task : tasks)
             task = {};
         program.reset();
         receiver.reset();
-        require(runtime->root_count() == 0, "Shutdown retained task or receiver roots.");
+        if (runtime->root_count() != 0)
+            fatal("Shutdown retained task or receiver roots.");
         runtime.reset();
-        require(Signal::live == 0, "Shutdown leaked native objects.");
+        if (Signal::live != 0)
+            fatal("Shutdown leaked native objects.");
         return {};
     }
 };
@@ -132,12 +138,14 @@ Result<void> Signal::signal(std::uint32_t mode) noexcept {
         return std::unexpected(Error{ErrorCode::invocation_failed, "Shutdown fixture failure."});
     if (mode != 1)
         return {};
-    require(active_owner != nullptr, "Shutdown callback has no host owner.");
+    if (!active_owner)
+        fatal("Shutdown callback has no host owner.");
     auto& owner = *active_owner;
     owner.request_stop();
     auto finished = owner.finish_shutdown();
     owner.busy_in_callback = !finished && finished.error().code == ErrorCode::busy;
-    require(owner.busy_in_callback && owner.runtime.has_value(), "Shutdown destroyed an active Runtime.");
+    if (!owner.busy_in_callback || !owner.runtime)
+        fatal("Shutdown destroyed an active Runtime.");
     code_state(owner.current_address, true);
     return {};
 }

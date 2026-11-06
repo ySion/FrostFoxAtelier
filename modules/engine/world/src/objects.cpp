@@ -56,7 +56,7 @@ Result<Types> register_types(Runtime& runtime) {
     definitions.push_back(reflection::Definition<Response>::build(runtime));
     definitions.push_back(reflection::Definition<PhysicsMaterial>::build(runtime));
     definitions.push_back(reflection::Definition<BodySettings>::build(runtime));
-    definitions.back().validate = [](const void* value) {
+    definitions.back().validate = [](const void* value) noexcept {
         return detail::body_rules(*static_cast<const BodySettings*>(value));
     };
     definitions.push_back(reflection::Definition<PrimitiveComponent>::build(runtime));

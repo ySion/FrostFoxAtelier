@@ -13,7 +13,6 @@
 #include <cmath>
 #include <concepts>
 #include <cstring>
-#include <exception>
 #include <limits>
 #include <new>
 #include <stdexcept>
@@ -432,7 +431,7 @@ struct Runtime::Impl {
 
         std::vector<FieldId> field;
 
-        Result<void> (*validate)(const void*);
+        Result<void> (*validate)(const void*) noexcept;
 
         const Type* array{};
     };
@@ -469,7 +468,7 @@ struct Runtime::Impl {
         // Every hard-bounded leaf (and Array of them), so whole-value writes and validate() can enforce them.
         std::vector<ConstrainedLeaf> constrained_leaves;
 
-        Result<void> (*validate)(const void*){};
+        Result<void> (*validate)(const void*) noexcept {};
 
         // Post-order: base segment, inline records and Arrays innermost first, the type's own validator last.
         std::vector<ValidatorStep> validators;
@@ -1150,19 +1149,15 @@ struct Runtime::Impl {
             Scalar value;
             return bound_violation(range, data, value).empty();
         };
-        auto passes = [](Result<void> (*validate)(const void*), const void* data) {
-            try {
-                return validate(data).has_value();
-            } catch (...) {
-                return false;
-            }
+        auto passes = [](Result<void> (*validate)(const void*) noexcept, const void* data) {
+            return validate(data).has_value();
         };
         if (each_bounded(root, storage, nullptr, within) && each_validator(root, storage, nullptr, passes))
             return std::nullopt;
         std::vector<FieldId> field;
         std::optional<ValidationFailure> found;
-        const auto fail = [&](std::optional<Scalar> value, ErrorCode code, std::string reason) {
-            found = ValidationFailure{field, {}, std::move(value), {code, root.info.name}};
+        const auto fail = [&](std::optional<Scalar> value, std::string reason) {
+            found = ValidationFailure{field, {}, std::move(value), {ErrorCode::argument_mismatch, root.info.name}};
             for (const auto id : field)
                 found->names.push_back(member_name(id));
             append_path(found->error.message, field);
@@ -1172,18 +1167,11 @@ struct Runtime::Impl {
         auto bound = [&](const FieldRange& range, void* data) {
             Scalar value;
             auto reason = bound_violation(range, data, value);
-            return reason.empty() || fail(value, ErrorCode::argument_mismatch, std::move(reason));
+            return reason.empty() || fail(value, std::move(reason));
         };
-        auto rule = [&](Result<void> (*validate)(const void*), const void* data) {
-            Result<void> checked;
-            try {
-                checked = validate(data);
-            } catch (const std::exception& error) {
-                return fail({}, ErrorCode::invocation_failed, std::string("validator threw: ") + error.what());
-            } catch (...) {
-                return fail({}, ErrorCode::invocation_failed, "validator threw an unknown exception");
-            }
-            return checked || fail({}, ErrorCode::argument_mismatch, std::move(checked.error().message));
+        auto rule = [&](Result<void> (*validate)(const void*) noexcept, const void* data) {
+            auto checked = validate(data);
+            return checked || fail({}, std::move(checked.error().message));
         };
         if (each_bounded(root, storage, &field, bound))
             each_validator(root, storage, &field, rule);
@@ -1568,13 +1556,7 @@ struct Runtime::Impl {
             return failure(ErrorCode::argument_mismatch, "Reference traversal requires a visitor.");
         CallbackScope callback_scope{callbacks};
         CallbackScope traversal_scope{roots->traversals};
-        try {
-            return enumerate();
-        } catch (const std::exception& error) {
-            return failure(ErrorCode::invocation_failed, error.what());
-        } catch (...) {
-            return failure(ErrorCode::invocation_failed, "Reference visitor raised an unknown exception.");
-        }
+        return enumerate();
     }
 
     void release(Slot& slot) noexcept {
@@ -3893,34 +3875,26 @@ Result<void> Runtime::call_arguments(ObjectId object, MethodId method, std::span
     const auto invoke = [&](ValueOutput staging) -> Result<void> {
         CallContext context{*this, object, Impl::base_storage(*actual, *type, slot.storage), prepared.values()};
         context.result_value = staging;
-        try {
-            ATELIER_TRY(type->methods[method.index_](context));
-            if (record_result) {
-                if (context.result || !context.result_written || context.result_value.type != staging.type ||
-                    context.result_value.data != staging.data)
-                    return failure(ErrorCode::invocation_failed,
-                                   "Method did not produce its declared plain value result.");
-                std::memcpy(value_output.data, staging.data, result_type->info.size);
-            } else {
-                if (context.result_written || context.result_value.data || context.result_value.type != TypeId{})
-                    return failure(ErrorCode::invocation_failed, "Method produced an undeclared plain value result.");
-                if (signature.result) {
-                    if (!context.result || impl_->scalar_type(*context.result) != signature.result->type ||
-                        (std::holds_alternative<EnumValue>(*context.result) &&
-                         result_type->info.kind != TypeKind::enumeration))
-                        return failure(ErrorCode::invocation_failed,
-                                       "Method did not produce its declared result type.");
-                    *output = *context.result;
-                } else if (context.result) {
-                    return failure(ErrorCode::invocation_failed, "Void method produced an undeclared result.");
-                }
+        ATELIER_TRY(type->methods[method.index_](context));
+        if (record_result) {
+            if (context.result || !context.result_written || context.result_value.type != staging.type ||
+                context.result_value.data != staging.data)
+                return failure(ErrorCode::invocation_failed, "Method did not produce its declared plain value result.");
+            std::memcpy(value_output.data, staging.data, result_type->info.size);
+        } else {
+            if (context.result_written || context.result_value.data || context.result_value.type != TypeId{})
+                return failure(ErrorCode::invocation_failed, "Method produced an undeclared plain value result.");
+            if (signature.result) {
+                if (!context.result || impl_->scalar_type(*context.result) != signature.result->type ||
+                    (std::holds_alternative<EnumValue>(*context.result) &&
+                     result_type->info.kind != TypeKind::enumeration))
+                    return failure(ErrorCode::invocation_failed, "Method did not produce its declared result type.");
+                *output = *context.result;
+            } else if (context.result) {
+                return failure(ErrorCode::invocation_failed, "Void method produced an undeclared result.");
             }
-            return {};
-        } catch (const std::exception& error) {
-            return failure(ErrorCode::invocation_failed, error.what());
-        } catch (...) {
-            return failure(ErrorCode::invocation_failed, "Native method raised an unknown exception.");
         }
+        return {};
     };
     if (record_result) {
         detail::ValueStorage staging_owner;

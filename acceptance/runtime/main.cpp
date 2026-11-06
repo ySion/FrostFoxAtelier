@@ -6,9 +6,9 @@
 
 #include <array>
 #include <cstring>
+#include <exception>
 #include <iostream>
 #include <new>
-#include <stdexcept>
 #include <utility>
 
 namespace {
@@ -188,7 +188,7 @@ struct SignatureNative {
 
     Result<std::uint32_t> fail(std::uint32_t amount) noexcept {
         value += amount;
-        return std::unexpected(Error{ErrorCode::invocation_failed, "Native scalar result failure."});
+        return std::unexpected(Error{ErrorCode::capacity_exceeded, "Native scalar result failure."});
     }
 };
 
@@ -204,8 +204,9 @@ void verify_method_results() {
     const std::array<Scalar, 1> arguments{std::uint32_t{3}};
     const Scalar sentinel{-731.25f};
     Scalar output = sentinel;
-    require(!runtime.call(object.id(), take(runtime.find_method(native, "fail")), arguments, &output),
-            "Native scalar call did not fail.");
+    const auto failed = runtime.call(object.id(), take(runtime.find_method(native, "fail")), arguments, &output);
+    require(!failed && failed.error().code == ErrorCode::capacity_exceeded,
+            "Native scalar call lost its explicit failure.");
     require(output == sentinel && std::get<std::uint32_t>(take(runtime.read(object.id(), value))) == 9,
             "Native failure changed output or rolled back prior side effects.");
     std::cout << "[pass] Native result failure leaves caller output untouched\n";
@@ -754,28 +755,28 @@ void verify_deep_value_walks() {
     };
     NestedTrace tracing{&runtime, deep, destination};
     const ReferenceVisitor visitor{
-        &tracing, [](void* context, const ObjectReference&) -> Result<void> {
+        &tracing, [](void* context, const ObjectReference&) noexcept -> Result<void> {
             auto& state = *static_cast<NestedTrace*>(context);
             if (state.visits++ == 0)
-                take(state.runtime->visit_references(
+                return state.runtime->visit_references(
                     state.type, state.storage,
-                    {&state.nested_visits, [](void* nested_context, const ObjectReference&) -> Result<void> {
+                    {&state.nested_visits, [](void* nested_context, const ObjectReference&) noexcept -> Result<void> {
                          ++*static_cast<std::size_t*>(nested_context);
                          return {};
-                     }}));
+                     }});
             return {};
         }};
     take(runtime.visit_references(deep, source, visitor));
     require(tracing.visits == 2 && tracing.nested_visits == 2, "Nested reference traversal lost edges.");
-    require(!runtime.visit_references(deep, source,
-                                      {nullptr,
-                                       [](void*, const ObjectReference&) -> Result<void> {
-                                           throw std::runtime_error("Deliberate visitor failure.");
-                                       }}),
-            "The reference visitor did not fail.");
+    const auto failed = runtime.visit_references(
+        deep, source, {nullptr, [](void*, const ObjectReference&) noexcept -> Result<void> {
+                           return std::unexpected(Error{ErrorCode::capacity_exceeded, "Deliberate visitor failure."});
+                       }});
+    require(!failed && failed.error().code == ErrorCode::capacity_exceeded,
+            "The reference visitor lost its explicit failure.");
     tracing.visits = tracing.nested_visits = 0;
     take(runtime.visit_references(deep, source, visitor));
-    require(tracing.visits == 2, "Failed traversal left stale walk frames.");
+    require(tracing.visits == 2 && tracing.nested_visits == 2, "Failed traversal left stale walk frames.");
     auto root = take(runtime.root_value(deep, source));
     strong.reset();
     weak.reset();

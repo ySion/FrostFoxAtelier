@@ -314,17 +314,18 @@ std::string reload_source(unsigned factor) {
            std::to_string(factor) + ".0; }";
 }
 
-void require_code_state(std::uintptr_t address, bool alive) {
+void require_code_state(std::uintptr_t address, bool alive) noexcept {
     DWORD64 image_base{};
     const auto* function = RtlLookupFunctionEntry(address, &image_base, nullptr);
     MEMORY_BASIC_INFORMATION memory{};
-    require(VirtualQuery(reinterpret_cast<void*>(address), &memory, sizeof(memory)) == sizeof(memory),
-            "VirtualQuery failed to inspect generated code.");
-    if (alive)
-        require(function != nullptr && memory.State == MEM_COMMIT && (memory.Protect & 0xff) == PAGE_EXECUTE_READ,
-                "A live code owner lost executable storage or unwind data.");
-    else
-        require(function == nullptr && memory.State == MEM_FREE, "Retired code retained storage or unwind data.");
+    if (VirtualQuery(reinterpret_cast<void*>(address), &memory, sizeof(memory)) != sizeof(memory))
+        fatal("VirtualQuery failed to inspect generated code.");
+    if (alive) {
+        if (!function || memory.State != MEM_COMMIT || (memory.Protect & 0xff) != PAGE_EXECUTE_READ)
+            fatal("A live code owner lost executable storage or unwind data.");
+    } else if (function || memory.State != MEM_FREE) {
+        fatal("Retired code retained storage or unwind data.");
+    }
 }
 
 void verify_reload_request_order(Runtime& runtime, const Binding& binding) {

@@ -44,7 +44,7 @@ C++ 原生回调不能依赖异常自动展开：若先构造完整对象再做�
 
 原生程序化节点迁移后的可失败签名为 `atelier::Result<void> evaluate(...) const noexcept`，原有 Geometry/Context 引用参数、参数名及 BorrowSafe 约束保持。注册器把它发布为 **业务结果 void** 的同一个 `evaluate`，错误不是额外输出端口。生产者只剥离一层 runtime Result；不把 `std::expected` 的布局注册成业务类型，不让 Runtime 理解 Geometry、列名或节点错误。程序化操作自己的 Result 由节点在本模块边界转换为带原原因的 runtime 错误（节点执行失败为 `invocation_failed`），不通过 throw、线程局部“最后错误”或往 Context 塞错误旁路传递。
 
-动态 Invoker 与定型 native thunk 从同一个原生结果取值/取错：失败先保留首因，不读取未产生的结果、不覆盖调用方原输出；成功仍需通过既有结果类型与存储检查。进入 JIT 的状态/诊断保持固定 ABI，宿主拥有 Error，生成代码只走状态分支并显式释放已构造值、根和借用。`runtime.cpp` 的值构造现已在清理后返回失败，不再重抛；这不是 JIT 展开协议。Material 的采样、方向与编译期默认值捕获均使用显式 Result；evaluate 和 compile_material 只在宿主保存普通 Error，不再延迟保存或重抛异常。默认值构造失败不发布预览类型或部分 MaterialProgram；已构造临时值沿 Runtime 生命周期清理。Source 运行服务、调用观察器及调试处理器已直接传播 Result，不再捕获异常；Runtime 通用 C++ 回调与 LLVM 内部错误适配仍待后续片迁移。
+动态 Invoker 与定型 native thunk 从同一个原生结果取值/取错：失败先保留首因，不读取未产生的结果、不覆盖调用方原输出；成功仍需通过既有结果类型与存储检查。两种回调均为 noexcept，Runtime::call 不再捕获异常。进入 JIT 的状态/诊断保持固定 ABI，宿主拥有 Error，生成代码只走状态分支并显式释放已构造值、根和借用。`runtime.cpp` 的值构造现已在清理后返回失败，不再重抛；这不是 JIT 展开协议。Material 的采样、方向与编译期默认值捕获均使用显式 Result；evaluate 和 compile_material 只在宿主保存普通 Error，不再延迟保存或重抛异常。默认值构造失败不发布预览类型或部分 MaterialProgram；已构造临时值沿 Runtime 生命周期清理。Source 运行服务、调用观察器、调试处理器及 Runtime 引用访问者、纯值校验器已直接消费 Result；with_native 和 LLVM 内部错误适配仍待后续片迁移。
 
 失败只保证声明过的输出暂存不提交，不撤销原生回调此前通过可写引用造成的业务修改。程序化求值器仍拥有节点候选输出和发布决定：任一绑定/调用失败不发布部分 Geometry，旧输出保留，修正输入后可重新求值。原生与 Source 列节点现已共用这条结果通道和绑定计划，当前字段、列与组选择合同见[原生与自有语言列节点](modules/procedural/README.md#原生与自有语言列节点)。
 
@@ -122,7 +122,7 @@ Foundation 的 `parallel_for` / `JoinGroup` body 只处理宿主预先准备的�
 
 async 参数只允许值传递；async 体可以在一次同步原生调用期间借用帧内局部。源码不提供保存借用或借用返回语法。只读约束只作用于该访问路径，可观察其他别名的写入，不授予独占访问。
 
-`Runtime::call(object, method, arguments, Scalar* output = nullptr)` 保留 `Result<void>` 错误通道；非 void 方法缺少输出存储时在进入用户代码前返回 `invalid_storage`。Invoker 只把业务值写入初始为空的 `CallContext::result`。运行时先保留调用错误，再核对成功值与声明，最后提交 output；缺值、错类型或 void 方法伪造结果均失败。void 不修改可选的 output，任意失败保留调用方原值，但不回滚已经发生的业务修改。原生异常、生命周期借用和准入保护保持原规则。
+`Runtime::call(object, method, arguments, Scalar* output = nullptr)` 保留 `Result<void>` 错误通道；非 void 方法缺少输出存储时在进入用户代码前返回 `invalid_storage`。Invoker 是 noexcept `Result<void>(CallContext&)` 回调，只把业务值写入初始为空的 `CallContext::result`。运行时先保留调用错误，再核对成功值与声明，最后提交 output；缺值、错类型或 void 方法伪造结果均失败。void 不修改可选的 output，任意失败保留调用方原值，但不回滚已经发生的业务修改。原生业务失败必须显式返回，不捕获异常；生命周期借用和准入保护保持原规则。
 
 源码可以使用原生标量结果参与计算，也可作为语句丢弃成功值；丢弃不吞掉错误。嵌套实参按顺序求值并保留 SSA 值或独立聚合快照，后续调用不能覆盖先前实参或结果。引用字段的身份先求值保活，全部实参求值完成后才解析实际地址并盖必要的写代号。
 
@@ -277,7 +277,7 @@ Runtime 为每个对象记录最近一次写入时的代号。消费者用游标
 
 ### 类型校验
 
-`TypeDefinition::validate` 是记录或对象类型可选的校验函数 `Result<void>(const void* storage)`，原生注册写作 `NativeRegistration<T>::validate<&F>()`，`F` 是接受 `const T&` 的自由函数或 const 成员函数。校验器是纯函数：只读一个值的字节，不调用 Runtime，在回调保护下执行；抛出的异常转为 `invocation_failed` 失败。校验器属于已发布定义，枚举、标量和容器类型不能声明。
+`TypeDefinition::validate` 是记录或对象类型可选的 noexcept 校验函数 `Result<void>(const void* storage)`，原生注册写作 `NativeRegistration<T>::validate<&F>()`，`F` 是接受 `const T&` 的自由函数或 const 成员函数。校验器是纯函数：只读一个值的字节，不调用 Runtime，在回调保护下执行；拒绝必须显式返回，不得抛异常。Runtime 保留原校验报告合同，将拒绝文本附上字段路径并报告 `argument_mismatch`，不把它当作一次方法调用失败。校验器属于已发布定义，枚举、标量和容器类型不能声明。
 
 `validate(ObjectId)` 与 `validate_value(TypeId, storage)` 只检查，不修改，也从不在写入时自动运行。调用方是呈现提取、物理协调、编辑器事务提交和场景加载；对象上的输入用[写代号](#写代号与变化游标)找出需要重新校验的那些。检查顺序为：
 
@@ -363,7 +363,7 @@ auto published = runtime.register_types(std::move(definitions));
 
 `visit_roots` 枚举外部入口；`visit_references` 枚举单个对象或外部值中的引用，递归内联记录而不继续遍历所指对象。访问者收到非空的持有和观察引用，也可能收到已失效身份；收集器应据形式与代际判断后续处理。`hidden_field` 只控制公共反射字段的暴露，不是语言访问权限机制；它仍参与引用遍历。
 
-遍历期间拒绝 Runtime 的对象/值/字段修改、方法执行和新增根，访问者抛出的异常转换为 `invocation_failed`，正常返回后解除保护。C++ 根复制会新增登记，因此不能在访问者中执行；Root 的撤销不销毁目标，允许解除登记，但访问者必须始终保持借用的值存储有效，不能绕过接口释放或改写该存储。普通方法回调中的合法引用写入、根登记和观察取得仍可执行。
+遍历期间拒绝 Runtime 的对象/值/字段修改、方法执行和新增根。`ReferenceVisitor::visit` 是 noexcept Result 回调，失败保留原错误并立即结束枚举，正常成功或失败返回后都解除保护；不捕获异常。C++ 根复制会新增登记，因此不能在访问者中执行；Root 的撤销不销毁目标，允许解除登记，但访问者必须始终保持借用的值存储有效，不能绕过接口释放或改写该存储。普通方法回调中的合法引用写入、根登记和观察取得仍可执行。
 
 计划中的根泄漏排障将使用 `visit_roots` 观察外部根入口，当前尚未接入产品排障入口。
 

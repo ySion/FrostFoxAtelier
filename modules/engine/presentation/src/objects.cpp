@@ -15,7 +15,7 @@ Result<Types> register_types(Runtime& runtime) {
     definitions.push_back(reflection::Definition<StaticMeshEntity>::build(runtime));
     definitions.push_back(reflection::Definition<LightKind>::build(runtime));
     definitions.push_back(reflection::Definition<LightSettings>::build(runtime));
-    definitions.back().validate = [](const void* value) {
+    definitions.back().validate = [](const void* value) noexcept {
         return detail::light_rules(*static_cast<const LightSettings*>(value));
     };
     definitions.push_back(reflection::Definition<LightComponent>::build(runtime));
@@ -23,11 +23,11 @@ Result<Types> register_types(Runtime& runtime) {
     definitions.push_back(reflection::Definition<ProbePlacement>::build(runtime));
     definitions.push_back(reflection::Definition<ProbeVolume>::build(runtime));
     definitions.push_back(reflection::Definition<EnvironmentComponent>::build(runtime));
-    definitions.back().validate = [](const void* value) {
+    definitions.back().validate = [](const void* value) noexcept {
         return detail::environment_rules(*static_cast<const EnvironmentComponent*>(value));
     };
     definitions.push_back(reflection::Definition<CameraComponent>::build(runtime));
-    definitions.back().validate = [](const void* value) {
+    definitions.back().validate = [](const void* value) noexcept {
         return detail::camera_rules(*static_cast<const CameraComponent*>(value));
     };
     if (!runtime.find_type("core.String"))

@@ -186,7 +186,7 @@ MethodDefinition native_method(std::string name, bool preserves_borrows = false,
               parameter_passing<std::tuple_element_t<I, Args>>}),
          ...);
     }(std::make_index_sequence<std::tuple_size_v<Args>>{});
-    method.invoke = [](CallContext& call) -> Result<void> {
+    method.invoke = [](CallContext& call) noexcept -> Result<void> {
         const auto invoke = [&]<std::size_t... I>(std::index_sequence<I...>) {
             return detail::invoke_native<Pointer>(call.runtime, call.self, call.storage,
                                                   call.arguments[I].get<std::tuple_element_t<I, Args>>()...);
@@ -345,7 +345,7 @@ public:
     template <auto Validate>
         requires std::is_invocable_r_v<Result<void>, decltype(Validate), const T&>
     NativeRegistration& validate() {
-        definition_.validate = [](const void* storage) -> Result<void> {
+        definition_.validate = [](const void* storage) noexcept -> Result<void> {
             return std::invoke(Validate, *static_cast<const T*>(storage));
         };
         return *this;

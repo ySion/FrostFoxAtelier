@@ -294,7 +294,7 @@ struct CallContext {
     bool result_written{};
 };
 
-using Invoker = Result<void> (*)(CallContext&);
+using Invoker = Result<void> (*)(CallContext&) noexcept;
 
 namespace detail {
 // Local C++ representation check, never a persistent or language type identity.
@@ -501,7 +501,7 @@ private:
 struct ReferenceVisitor {
     void* context{};
 
-    Result<void> (*visit)(void*, const ObjectReference&){};
+    Result<void> (*visit)(void*, const ObjectReference&) noexcept {};
 };
 
 // Definition-time lookup only. Names are exact, fully qualified declaration names;
@@ -803,8 +803,8 @@ struct TypeDefinition {
     std::string description{};
 
     // Records and objects only. A pure check of one value's bytes, run by Runtime::validate
-    // and never on writes; it must not call the Runtime. Exceptions become failures.
-    Result<void> (*validate)(const void* storage){};
+    // and never on writes; it must not call the Runtime or throw. Rejection uses Result.
+    Result<void> (*validate)(const void* storage) noexcept {};
 };
 
 struct FieldInfo {
@@ -924,7 +924,7 @@ struct ValidationFailure {
 
     std::optional<Scalar> value{};
 
-    // argument_mismatch, or invocation_failed when a validator threw; readable message.
+    // argument_mismatch with a readable message and the failing value's path.
     Error error;
 };
 
