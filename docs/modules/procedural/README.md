@@ -90,7 +90,7 @@
 
 典型总工作约为 O(T log T + C·(log T + I + D))，I 是实际穿越/叶工作，D 是表面带和重试成本；重叠壳、细长大盒或全退化仍可能 O(C·T)。这不是并行墙钟复杂度或性能保证。尚无最小间距。各方向尝试/重试与兜底次数只经现有 Recorder 和下述 profile 上报，不增加观察 API。
 
-壳校验、原序三角快照和 BVH 构建仍串行。分类按连续候选序号每 256 个划一个逻辑块：cell 前缀保留零计数格，一个高密度 cell 可以跨块；一次 `parallel_for` 融合生成 float P、表面带和射线／兜底，按候选序号写固定 P 与字节状态。每块只写自己的统计槽，不共享计数器。join 后宿主合并整数计数并提交 Recorder，再按块 retained 前缀精确分配六列，用第二次 `parallel_for` 稳定填充。无完成顺序 append，无每候选堆分配；BVH 与三角快照只读共享。worker 只借用固定普通值和输出区间，不碰 Runtime；发布 Geometry 留在成功 join 后。取消、异常或非有限 P 均不发布部分结果。P／状态 scratch 最多 13 MiB，cell 前缀约 4 MiB（替代原 counts），另有块统计；六列最终输出最多另占 32 MiB，不把 scratch 当作总峰值。
+壳校验、原序三角快照和 BVH 构建仍串行。分类按连续候选序号每 256 个划一个逻辑块：cell 前缀保留零计数格，一个高密度 cell 可以跨块；一次 `parallel_for` 融合生成 float P、表面带和射线／兜底，按候选序号写固定 P 与字节状态。每块只写自己的统计槽，不共享计数器。join 后宿主合并整数计数并提交 Recorder，再按块 retained 前缀精确分配六列，用第二次 `parallel_for` 稳定填充。无完成顺序 append，无每候选堆分配；BVH 与三角快照只读共享。worker 只借用固定普通值和输出区间，不碰 Runtime；发布 Geometry 留在成功 join 后。取消或非有限 P 的任务 Failure 均不发布部分结果，后者在 join 后转成原有 procedural 错误。P／状态 scratch 最多 13 MiB，cell 前缀约 4 MiB（替代原 counts），另有块统计；六列最终输出最多另占 32 MiB，不把 scratch 当作总峰值。
 
 - 固定格使用几何局部坐标，不按包围盒推导 h。各轴范围为 `floor((min−origin)/h)` 到 `ceil((max−origin)/h)−1`，min/max 只统计被图元角引用的点；游离点不扩大格范围或消耗候选预算，但仍须通过全部输入点的有限性校验。只接触边界的外格不参与。格坐标先检查 int32，再转换；按 x/y/z 字典序（z 最快）枚举。
 - 设 H(a,b) 为现有 lowbias32 组合 hash，U 为高 24 位映射到 [0,1)。格随机源 `s=H(H(H(seed,uint32(x)),uint32(y)),uint32(z))`，负坐标使用模 2³² 编码。λ=density·h³，格内数目 `floor(λ) + (U(H(s,0)) < frac(λ))`。第 k 候选 id=`H(s,k)`，三个位置通道为 `U(H(id,1/2/3))`；以 double 计算 `origin+(cell+u)h`，最终舍入成 float P，再分类。节点 seed 为 H(图 seed, 节点 seed)。这是持久重算语义，不混入枚举下标、线程号或 std::hash。

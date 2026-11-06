@@ -34,8 +34,6 @@ struct Block {
     std::array<std::uint32_t, 8> retries{};
 
     std::uint32_t fallback{};
-
-    bool failed{};
 };
 
 struct Sum {
@@ -255,7 +253,8 @@ Result<Geometry> volume_scatter(const Geometry& surface, const VolumeScatterSett
             {0, blocks.size()},
             [&bvh, triangles = std::span<const Triangle>{*triangles}, coordinate, cell_seed, origin = settings.origin,
              h, candidates, offsets = std::span<const std::uint32_t>{offsets}, positions = candidate_positions.view(),
-             states = std::span{states}, blocks = std::span{blocks}](tasks::Range range) {
+             states = std::span{states},
+             blocks = std::span{blocks}](tasks::Range range) noexcept -> std::expected<void, tasks::Failure> {
                 // A scheduler body may contain several fixed-size logical blocks.
                 for (auto b = range.begin; b < range.end; ++b) {
                     Block result;
@@ -263,7 +262,7 @@ Result<Geometry> volume_scatter(const Geometry& surface, const VolumeScatterSett
                     const auto end = std::min(i + block_size, static_cast<std::size_t>(candidates));
                     auto cell = static_cast<std::uint32_t>(std::upper_bound(offsets.begin(), offsets.end(), i) -
                                                            offsets.begin() - 1);
-                    while (i < end && !result.failed) {
+                    while (i < end) {
                         while (offsets[cell + 1] == i)
                             ++cell;
                         const auto xyz = coordinate(cell);
@@ -276,10 +275,8 @@ Result<Geometry> volume_scatter(const Geometry& surface, const VolumeScatterSett
                             for (std::uint32_t axis = 0; axis < 3; ++axis)
                                 p[axis] = static_cast<float>(
                                     origin[axis] + (static_cast<double>(xyz[axis]) + unit(hash(id, axis + 1))) * h);
-                            if (!math::is_finite(p)) {
-                                result.failed = true;
-                                break;
-                            }
+                            if (!math::is_finite(p))
+                                return std::unexpected(tasks::Failure{1, i}); // Unrepresentable candidate position.
                             positions[i] = p;
                             states[i] = classify(bvh, triangles, p, result);
                             result.retained += states[i] == Classification::retained;
@@ -288,13 +285,14 @@ Result<Geometry> volume_scatter(const Geometry& surface, const VolumeScatterSett
                     }
                     blocks[b] = result;
                 }
+                return {};
             });
+        if (!classified)
+            return failure("Volume candidate position exceeds float range.");
         if (classified != tasks::Completion::completed)
             return failure("Volume was cancelled before all candidates were classified.");
         Block totals;
         for (const auto& block : blocks) {
-            if (block.failed)
-                return failure("Volume candidate position exceeds float range.");
             for (std::size_t i = 0; i < totals.attempts.size(); ++i) {
                 totals.attempts[i] += block.attempts[i];
                 totals.retries[i] += block.retries[i];
@@ -332,8 +330,8 @@ Result<Geometry> volume_scatter(const Geometry& surface, const VolumeScatterSett
          output_offsets = std::span<const std::uint32_t>{output_offsets},
          candidate_positions = Span<const Vector3>{candidate_positions.view()},
          states = std::span<const Classification>{states}, positions = positions.view(), ids = ids.view(),
-         ordinals = ordinals.view(),
-         sources = std::array{sources[0].view(), sources[1].view(), sources[2].view()}](tasks::Range range) {
+         ordinals = ordinals.view(), sources = std::array{sources[0].view(), sources[1].view(), sources[2].view()}](
+            tasks::Range range) noexcept -> std::expected<void, tasks::Failure> {
             for (auto b = range.begin; b < range.end; ++b) {
                 if (output_offsets[b] == output_offsets[b + 1])
                     continue;
@@ -362,6 +360,7 @@ Result<Geometry> volume_scatter(const Geometry& surface, const VolumeScatterSett
                     ++cell;
                 }
             }
+            return {};
         });
     if (filled != tasks::Completion::completed)
         return failure("Volume was cancelled before all output columns were filled.");

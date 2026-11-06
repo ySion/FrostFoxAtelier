@@ -193,9 +193,9 @@ Runtime 校验原生元素表示和复制能力；当前反射数组只接受不
 
 ## 原生 fork-join 任务
 
-[tasks.hpp](../modules/core/foundation/include/foundation/tasks.hpp) 提供 `atelier::tasks::parallel_for` 和单次使用的 `JoinGroup`，用于普通 C++ 值上的同步计算；当前产品消费者是 [Scatter](../modules/engine/procedural/src/operations.cpp)。公共头不暴露 oneTBB 类型，后端版本与源码校验值只在[依赖锁文件](../cmake/dependencies-lock.json)。构建仅部署对应配置的一份 TBB 调度 DLL 与许可证，不构建或分发 tbbmalloc；通用分配器仍按项目既有 mimalloc 入口接管。
+[tasks.hpp](../modules/core/foundation/include/foundation/tasks.hpp) 提供 `atelier::tasks::parallel_for` 和单次使用的 `JoinGroup`，用于普通 C++ 值上的同步计算；当前产品消费者是 [Scatter](../modules/engine/procedural/src/operations.cpp) 和 [VolumeScatter](../modules/engine/procedural/src/volume.cpp)。公共头不暴露 oneTBB 类型，后端版本与源码校验值只在[依赖锁文件](../cmake/dependencies-lock.json)。构建仅部署对应配置的一份 TBB 调度 DLL 与许可证，不构建或分发 tbbmalloc；通用分配器仍按项目既有 mimalloc 入口接管。
 
-**本节为 W0 冻结的任务目标合同，错误接口待 W2 实施。** 当前代码仍采用 void body 和异常传播；下列 expected 接口及示例不是已实现能力。未涉及错误通道的分块、线程、借用、取消、浮点环境与计时合同保持不变。全局错误分类和 fatal 只由[工程指南](engineering.md#错误处理)定义。
+任务体与 join 已使用下列 noexcept expected 接口，不保留 void body 或异常传输兼容入口。分块、线程、借用、取消、浮点环境与计时合同保持不变。全局错误分类和 fatal 只由[工程指南](engineering.md#错误处理)定义。
 
 ```cpp
 auto candidate = snapshot;
@@ -256,7 +256,7 @@ struct Failure {
 
 上游 Feature Macros 明确允许 headers 禁异常而 runtime 仍抛异常。对当前锁定版本的使用面，task_group/task_arena/parallel_for 和 `try_call_proxy` 没有该宏分叉；global_control 只条件定义单参 throwing finalize，既用的双参 nothrow finalize 与句柄布局不变。因此未发现此配置导致的已用内联定义冲突。这不是整套 TBB 的 ODR 保证；新增直接 include（特别是并发容器、memory_pool、scalable_allocator）或依赖升级时重新核对，不在同一自有链接模块混用不同宏值。
 
-唯一 Process 拥有 `global_control{terminate_on_exception, 1}`，先于其他需要调度器的成员建立，保持到 arena 终止和 scheduler finalize 之后。该公开开关使上游覆盖的 throw_exception/handle_perror 与调度 catch 路径在 DLL 内终止，而非把故障转换为本方 Failure；它不覆盖控制对象自身建立之前的失败。共享 CRT 域的 SIGABRT 接线和诊断覆盖例外以[统一 fatal 出口](engineering.md#唯一-fatal-出口)为准，不要求逐线程安装，也不能单凭 `noexcept` 推导终止保证。此处为静态核对结论，最终双配置构建及 fatal 子进程探针仍待实施阶段。
+唯一 Process 拥有 `global_control{terminate_on_exception, 1}`，先于其他需要调度器的成员建立，保持到 arena 终止和 scheduler finalize 之后。该公开开关使上游覆盖的 throw_exception/handle_perror 与调度 catch 路径在 DLL 内终止，而非把故障转换为本方 Failure；它不覆盖控制对象自身建立之前的失败。共享 CRT 域的 SIGABRT 接线和诊断覆盖例外以[统一 fatal 出口](engineering.md#唯一-fatal-出口)为准，不要求逐线程安装，也不能单凭 `noexcept` 推导终止保证。
 
 ### 计时与 Scatter
 
@@ -264,7 +264,7 @@ struct Failure {
 
 Scatter 先按权威 TriangleView 的原图元 p、子三角 j 顺序算候选数，保留每子三角的点前缀和每原图元的子三角前缀；零计数也保留槽位，不缓存三角几何、法线或种子。分配输出后按连续输出区间并行填充，因此一个大三角形也能分块；fill 从固定输入 span 重读几何，以 p/j/k 恢复原种子和来源，k 在每子三角重新计数。连续 n 角多边形贡献 n−2 个扇形三角，所以 p 的首角下标可由其三角前缀加 2p 恢复。纯三角仍为原六列，只有含多边形输入追加 sourcetri。不存在按规模切换到旧串行实现的双路径。每元素内 double/float 运算顺序不变，最小间距在全部候选原序上串行淘汰、各列同步压紧。成功 join 后才构成返回 Geometry，失败不发布部分候选；不在 worker 上调用 Runtime 或操作 Geometry 结构。
 
-Volume 的块级计数槽继续只累计普通数值；位置不能表示的业务失败可返回约定 code 与候选 ordinal，join 后 host 翻译为 procedural 错误，不在每候选上分配 Error/String，也不在 Failure 之外再建一条通用错误总线。代表性 tasks 验收随 W2 把下文的抛错注入改为 Failure，保留取消后的失败优先、完整 join、提交线程销毁、再次调用和 TLS 恢复的同一序列，不扩展矩阵。
+Volume 的块级计数槽只累计普通数值；位置不能表示的业务失败返回 code=1 与候选 ordinal，join 后 host 翻译为 procedural 错误，不在每候选上分配 Error/String，也不保留块内 failed 标记这条旧错误通道。代表性 tasks 验收以 Failure 注入保留取消后的失败优先、完整 join、提交线程销毁、再次调用和 TLS 恢复的同一序列，不扩展矩阵。
 
 ## 帧阶段计时
 
@@ -288,7 +288,7 @@ Recorder 已绑定时，未登记的标记、未在声明父项下打开的标�
 - [资源目录消费者](../acceptance/foundation/associative.cpp)：Map 部分复制失败后，已有目标和源资源仍存活，退出作用域后全部释放。
 - [生命周期消费者](../acceptance/foundation/lifecycle.cpp)：资源子树提升时的移动赋值顺序，以及 SharedArray 多线程复制、写时分离和线程结束后的共享缓冲释放。原子内存序在 x64 上不能由这项验收区分。
 - [拥有资源消费者](../acceptance/foundation/main.cpp)：Array 自身别名追加/填充、构造与复制失败后的清理，以及宏生成原生 Inventory、描述型 Array 字段、独立快照、Runtime 值复制与 GC 析构资源的链路。
-- [原生任务消费者](../acceptance/foundation/tasks.cpp)：不可变输入与 COW 输出的非对称邻接计算、非零起点和尾块、嵌套 join；取消后已开始任务抛错的优先传播、用户闭包在提交线程释放及失败后再次调用。原地正向计算反例说明仅写区间互不重叠不足以安全并行，不执行有数据竞争的反例。只检查结果与生命周期，不以耗时或参与线程数判 PASS。
+- [原生任务消费者](../acceptance/foundation/tasks.cpp)：不可变输入与 COW 输出的非对称邻接计算、非零起点和尾块、嵌套 join；取消后已开始任务返回 Failure 的优先传播、用户闭包在提交线程释放及失败后再次调用。原地正向计算反例说明仅写区间互不重叠不足以安全并行，不执行有数据竞争的反例。只检查结果与生命周期，不以耗时或参与线程数判 PASS。
 - [Array 缓冲寿命](../acceptance/foundation/array_lifetime.cpp)与 [String 缓冲寿命](../acceptance/foundation/string_lifetime.cpp)：分别执行一次 Array 拷贝/销毁和一次 String 目录清空，严格比较前后 mimalloc 活分配字节；不是元素 live 计数，也不是性能采样。两个可执行文件随同一个 `foundation_acceptance` 入口运行，不输出计时或性能报告。
 
 [帧阶段计时消费者](../acceptance/foundation/frame_timing.cpp)检查目录组装、层级与记录序列，入口仍为 `foundation_acceptance`。

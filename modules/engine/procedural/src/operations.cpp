@@ -328,7 +328,7 @@ Result<Geometry> scatter(const Geometry& surface, const ScatterSettings& setting
          triangle_offsets = Span<const std::uint32_t>{triangle_offsets.view()}, points = points.view(), vertex_points,
          seed = settings.seed, positions = positions.view(), normals = normals.view(), ids = ids.view(),
          primitives = primitives.view(), subtriangles = subtriangles.view(), ordinals = ordinals.view(),
-         barycentrics = barycentrics.view()](tasks::Range range) {
+         barycentrics = barycentrics.view()](tasks::Range range) noexcept -> std::expected<void, tasks::Failure> {
             // Split output ranges so a single large face can still use the pool.
             auto t = static_cast<std::uint32_t>(
                 std::upper_bound(point_offsets.begin(), point_offsets.end(), range.begin) - point_offsets.begin() - 1);
@@ -374,6 +374,7 @@ Result<Geometry> scatter(const Geometry& surface, const ScatterSettings& setting
                 }
                 ++t;
             }
+            return {};
         },
         1024);
     if (filled != tasks::Completion::completed)

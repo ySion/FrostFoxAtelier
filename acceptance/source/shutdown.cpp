@@ -7,7 +7,6 @@
 #include <windows.h>
 #include <array>
 #include <cstdio>
-#include <stdexcept>
 #include <utility>
 
 namespace {
@@ -173,18 +172,21 @@ void verify_mixed_shutdown() {
 
         ~Cleanup() { ++count; }
     };
-    try {
+    {
         tasks::JoinGroup computation;
-        computation.run([&cleaned] {
+        computation.run([&cleaned]() noexcept -> std::expected<void, tasks::Failure> {
             Cleanup outer{cleaned};
-            (void)tasks::parallel_for({0, 1}, [&cleaned](tasks::Range) {
-                Cleanup inner{cleaned};
-                throw std::runtime_error("Ordinary computation failed.");
-            });
+            const auto nested =
+                tasks::parallel_for({0, 1}, [&cleaned](tasks::Range) noexcept -> std::expected<void, tasks::Failure> {
+                    Cleanup inner{cleaned};
+                    return std::unexpected(tasks::Failure{31});
+                });
+            if (!nested)
+                return std::unexpected(nested.error());
+            return {};
         });
-        (void)computation.join();
-    } catch (const std::runtime_error&) {
-        joined_failure = true;
+        const auto joined = computation.join();
+        joined_failure = !joined && joined.error().code == 31 && joined.error().item == SIZE_MAX;
     }
     require(joined_failure && cleaned == 2 && !tasks::in_parallel_body(),
             "Failed computation returned before cleanup or retained its body marker.");

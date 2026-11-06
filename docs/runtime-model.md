@@ -76,9 +76,9 @@ W2 以既有 Runtime/Source/反射/程序化的构造失败、部分赋值、写
 
 ## 并行任务体禁入诊断
 
-Foundation 的 `parallel_for` / `JoinGroup` body 只处理宿主预先准备的普通值，不调用 Runtime 或它的 Source 执行入口；同一规则也适用于 caller 实际参与执行、inline/P=1、嵌套 body 和异常退栈。宿主先准备输入、容量与独占输出，join 后才恢复 Runtime 操作。任务的完整借用、捕获与错误载荷前提见[基础库任务协议](foundation.md)。
+Foundation 的 `parallel_for` / `JoinGroup` body 只处理宿主预先准备的普通值，不调用 Runtime 或它的 Source 执行入口；同一规则也适用于 caller 实际参与执行、inline/P=1、嵌套 body 和失败返回前的局部析构。宿主先准备输入、容量与独占输出，join 后才恢复 Runtime 操作。任务的完整借用、捕获与错误载荷前提见[基础库任务协议](foundation.md)。
 
-开发构建通过内部 `assert_serial_access()` 读取唯一的 `tasks::in_parallel_body()` TLS。命中时向 stderr 写固定诊断并 `abort`，不返回 busy、不抛可捕获异常、不进入 Runtime 日志或用户回调。release（`NDEBUG`）编译掉检查，不读取此 TLS；它仍须遵守相同的禁入契约，不因此获得并发 Runtime 能力。
+开发构建通过内部 `assert_serial_access()` 读取唯一的 `tasks::in_parallel_body()` TLS。命中时以固定诊断调用唯一 fatal 出口，不返回 busy、不抛可捕获异常、不进入 Runtime 日志或用户回调。release（`NDEBUG`）编译掉检查，不读取此 TLS；它仍须遵守相同的禁入契约，不因此获得并发 Runtime 能力。
 
 诊断集中守住会执行代码、修改共享状态或释放资源的路径：
 
@@ -88,9 +88,9 @@ Foundation 的 `parallel_for` / `JoinGroup` body 只处理宿主预先准备的�
 
 纯元数据查询（如 describe/types/type_count/native_type/object_type）和仅验证身份的 `resolve_object` 不新增检查。部分名字看似只读的访问并非纯读：字段路径解析、NativeContext 接收者解析及校验/引用遍历会进入 `CallbackScope` 修改共享计数；它们由该计数边界检查，防止多个 body 同时写计数或遍历暂存。未命中诊断不表示调用合法，也不授权直接使用预先取得的对象内部地址。
 
-这是任务体误用诊断，不是任意线程检测、锁或捕获安全证明；提交前及 join 后的闭包/异常载荷构析不一定在 TLS 标记内。World 入口尚未覆盖且本片不排期；Runtime 检查不能保证 World 在读写自身队列前已拒绝。MaterialProgram 的独立纯值并发合同保持不变，不在通用 JIT DLL 中增加禁令。
+这是任务体误用诊断，不是任意线程检测、锁或捕获安全证明；提交前及 join 后的闭包构析不一定在 TLS 标记内，任务 Failure 则只有平凡普通值。World 入口尚未覆盖且本片不排期；Runtime 检查不能保证 World 在读写自身队列前已拒绝。MaterialProgram 的独立纯值并发合同保持不变，不在通用 JIT DLL 中增加禁令。
 
-代表性清理验收沿既有 Source shutdown：挂起帧存续时执行普通值嵌套任务并注入异常，完整 join 后继续源码恢复，再取消、关闭及释放根/代码；dev/release 都执行该合法序列。故意在 P=1 caller body 中撤根的开发版终止探针仅作临时验证，不加入常驻拒绝矩阵。
+代表性清理验收沿既有 Source shutdown：挂起帧存续时执行普通值嵌套任务并显式转发 Failure，完整 join 后继续源码恢复，再取消、关闭及释放根/代码；dev/release 都执行该合法序列。故意在 P=1 caller body 中撤根的开发版终止探针仅作临时验证，不加入常驻拒绝矩阵。
 
 ## 共享函数签名与结果
 

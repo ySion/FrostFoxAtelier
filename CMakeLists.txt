@@ -78,6 +78,7 @@ add_library(atelier_foundation STATIC modules/core/foundation/src/string.cpp mod
     modules/core/foundation/src/sha256.cpp modules/core/foundation/src/tasks.cpp)
 target_compile_features(atelier_foundation PUBLIC cxx_std_23)
 target_link_libraries(atelier_foundation PUBLIC atelier_foundation_headers PRIVATE atelier_platform bcrypt TBB::tbb)
+target_compile_definitions(atelier_foundation PRIVATE TBB_USE_EXCEPTIONS=0)
 atelier_target(atelier_foundation)
 
 add_executable(atelier_math_acceptance acceptance/math/main.cpp)

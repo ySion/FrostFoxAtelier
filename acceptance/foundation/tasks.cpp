@@ -11,6 +11,9 @@ using namespace atelier;
 
 using namespace atelier::acceptance::helpers;
 
+static_assert(std::is_trivially_copyable_v<tasks::Failure> && std::is_trivially_destructible_v<tasks::Failure> &&
+              tasks::Failure{23}.item == SIZE_MAX);
+
 struct OwnedInput {
     std::thread::id owner = std::this_thread::get_id();
 
@@ -22,10 +25,10 @@ struct OwnedInput {
     }
 };
 
-struct UnwindCheck {
+struct BodyCleanup {
     std::atomic<bool>& outside_body;
 
-    ~UnwindCheck() {
+    ~BodyCleanup() {
         if (!tasks::in_parallel_body())
             outside_body = true;
     }
@@ -53,26 +56,29 @@ void verify_tasks() {
     timing::Recorder recorder;
     {
         timing::Recorder::Frame frame{recorder};
-        require(tasks::parallel_for(
-                    {3, 1006},
-                    [source, destination](tasks::Range range) {
-                        require(tasks::in_parallel_body(), "An outer task did not enter the parallel body contract.");
-                        timing::Scope suppressed{timing::frame};
-                        require(tasks::parallel_for(
-                                    range,
-                                    [source, destination](tasks::Range chunk) {
-                                        require(tasks::in_parallel_body(),
-                                                "A nested task lost the parallel body contract.");
-                                        timing::Scope suppressed{timing::frame};
-                                        for (auto i = chunk.begin; i < chunk.end; ++i)
-                                            destination[i] = source[i] + 2 * source[i - 1];
-                                    },
-                                    11) == tasks::Completion::completed,
-                                "A successful nested operation was cancelled.");
-                        require(tasks::in_parallel_body(), "Nested join cleared the outer task contract.");
-                    },
-                    97) == tasks::Completion::completed,
-                "A successful operation was cancelled.");
+        require(
+            tasks::parallel_for(
+                {3, 1006},
+                [source, destination](tasks::Range range) noexcept -> std::expected<void, tasks::Failure> {
+                    require(tasks::in_parallel_body(), "An outer task did not enter the parallel body contract.");
+                    timing::Scope suppressed{timing::frame};
+                    require(
+                        tasks::parallel_for(
+                            range,
+                            [source, destination](tasks::Range chunk) noexcept -> std::expected<void, tasks::Failure> {
+                                require(tasks::in_parallel_body(), "A nested task lost the parallel body contract.");
+                                timing::Scope suppressed{timing::frame};
+                                for (auto i = chunk.begin; i < chunk.end; ++i)
+                                    destination[i] = source[i] + 2 * source[i - 1];
+                                return {};
+                            },
+                            11) == tasks::Completion::completed,
+                        "A successful nested operation was cancelled.");
+                    require(tasks::in_parallel_body(), "Nested join cleared the outer task contract.");
+                    return {};
+                },
+                97) == tasks::Completion::completed,
+            "A successful operation was cancelled.");
     }
     require(!tasks::in_parallel_body() && recorder.last().count(timing::frame) == 1 &&
                 recorder.last().structure_errors == 0,
@@ -88,18 +94,26 @@ void verify_tasks() {
     // binding, skip user work and leave the uncancelled parent usable.
     std::atomic<unsigned> cancelled_calls = 0;
     require(tasks::parallel_for({0, 1},
-                                [&](tasks::Range) {
+                                [&](tasks::Range) noexcept -> std::expected<void, tasks::Failure> {
                                     std::stop_source stopped;
                                     stopped.request_stop();
                                     require(tasks::parallel_for(
-                                                {0, 1}, [&](tasks::Range) { ++cancelled_calls; }, 1,
-                                                stopped.get_token()) == tasks::Completion::cancelled,
+                                                {0, 1},
+                                                [&](tasks::Range) noexcept -> std::expected<void, tasks::Failure> {
+                                                    ++cancelled_calls;
+                                                    return {};
+                                                },
+                                                1, stopped.get_token()) == tasks::Completion::cancelled,
                                             "First binding lost a nested operation's cancellation.");
                                     tasks::JoinGroup group;
                                     group.cancel();
-                                    group.run([&] { ++cancelled_calls; });
+                                    group.run([&]() noexcept -> std::expected<void, tasks::Failure> {
+                                        ++cancelled_calls;
+                                        return {};
+                                    });
                                     require(group.join() == tasks::Completion::cancelled,
                                             "First binding lost a group's explicit cancellation.");
+                                    return {};
                                 }) == tasks::Completion::completed &&
                 cancelled_calls == 0,
             "Cancelled work executed or cancelled its parent.");
@@ -111,29 +125,29 @@ void verify_tasks() {
     auto owned = std::make_shared<OwnedInput>(std::this_thread::get_id(), wrong_thread);
     const std::weak_ptr<OwnedInput> lifetime = owned;
     std::stop_source stop;
-    bool failed = false;
     {
         tasks::JoinGroup group{stop.get_token()};
-        group.run([owned = std::move(owned), &outside_body] {
-            UnwindCheck unwind{outside_body};
+        group.run([owned = std::move(owned), &outside_body]() noexcept -> std::expected<void, tasks::Failure> {
+            BodyCleanup cleanup{outside_body};
             require(owned != nullptr && tasks::in_parallel_body(), "A group task lost its input or body scope.");
+            return {};
         });
-        group.run([&] {
-            UnwindCheck unwind{outside_body};
+        group.run([&]() noexcept -> std::expected<void, tasks::Failure> {
+            BodyCleanup cleanup{outside_body};
             stop.request_stop();
-            throw std::runtime_error("The candidate failed after cancellation.");
+            return std::unexpected(tasks::Failure{17, 923});
         });
-        try {
-            (void)group.join();
-        } catch (const std::runtime_error&) {
-            failed = true;
-        }
-        require(failed && lifetime.expired() && !wrong_thread && !outside_body && !tasks::in_parallel_body(),
+        const auto joined = group.join();
+        require(!joined && joined.error().code == 17 && joined.error().item == 923 && lifetime.expired() &&
+                    !wrong_thread && !outside_body && !tasks::in_parallel_body(),
                 "Failed join retained work, released a user capture on a worker, or lost the error/body scope.");
     }
     std::uint32_t result = 0;
     tasks::JoinGroup next;
-    next.run([&] { result = 123; });
+    next.run([&]() noexcept -> std::expected<void, tasks::Failure> {
+        result = 123;
+        return {};
+    });
     require(next.join() == tasks::Completion::completed && result == 123,
             "A failed/cancelled group poisoned the next operation.");
 }
