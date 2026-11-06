@@ -707,7 +707,7 @@ struct Program::Frame final : CoroutineFrame {
         return std::unexpected(std::move(error));
     }
 
-    Result<CoroutineStep> resume() override {
+    Result<CoroutineStep> resume() noexcept override {
         if (diagnostic)
             DiagnosticAccess::running(*diagnostic, true);
         if (invocation.debugger)

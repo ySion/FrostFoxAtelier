@@ -243,7 +243,7 @@ void fixed_step() {
 void failed_lifecycle() {
     enum class Exit { tick, task, activation, stop, close };
     struct FailedTask final : atelier::CoroutineFrame {
-        atelier::Result<atelier::CoroutineStep> resume() override {
+        atelier::Result<atelier::CoroutineStep> resume() noexcept override {
             return std::unexpected(atelier::Error{atelier::ErrorCode::invocation_failed, "primary failure"});
         }
     };

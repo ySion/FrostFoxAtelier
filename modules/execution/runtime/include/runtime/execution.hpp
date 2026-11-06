@@ -172,7 +172,7 @@ class CoroutineFrame {
 public:
     virtual ~CoroutineFrame() = default;
 
-    [[nodiscard]] virtual Result<CoroutineStep> resume() = 0;
+    [[nodiscard]] virtual Result<CoroutineStep> resume() noexcept = 0;
 
     // The owner resolves failure/cancellation precedence before destruction.
     // This notification cannot resume, throw or change the terminal result.
@@ -211,7 +211,7 @@ public:
 
     Coroutine& operator=(const Coroutine&) = delete;
 
-    [[nodiscard]] Result<CoroutineState> resume();
+    [[nodiscard]] Result<CoroutineState> resume() noexcept;
 
     // Ready/suspended cancellation cleans immediately. Running cancellation
     // is a request: an execution error wins; otherwise cancel wins over the

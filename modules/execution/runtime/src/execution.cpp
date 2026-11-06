@@ -1,7 +1,6 @@
 #include "runtime/execution.hpp"
 
 #include <utility>
-#include <exception>
 
 namespace atelier {
 namespace {
@@ -217,7 +216,7 @@ void Coroutine::cancel() noexcept {
     active->frame.reset();
 }
 
-Result<CoroutineState> Coroutine::resume() {
+Result<CoroutineState> Coroutine::resume() noexcept {
     detail::assert_serial_access();
     // A callback can destroy/move the public owner. Only this pin is used below.
     const auto active = control_;
@@ -229,14 +228,7 @@ Result<CoroutineState> Coroutine::resume() {
         return std::unexpected(Error{ErrorCode::invalid_object, "Coroutine has already terminated."});
     ATELIER_TRY_BIND(scope, ExecutionScope::enter(active->runtime));
     active->state = CoroutineState::running;
-    Result<CoroutineStep> step;
-    try {
-        step = active->frame->resume();
-    } catch (const std::exception& error) {
-        step = std::unexpected(Error{ErrorCode::invocation_failed, error.what()});
-    } catch (...) {
-        step = std::unexpected(Error{ErrorCode::invocation_failed, "Coroutine raised an unknown exception."});
-    }
+    auto step = active->frame->resume();
     if (step && (step->state != CoroutineState::suspended && step->state != CoroutineState::completed))
         step = std::unexpected(Error{ErrorCode::invocation_failed, "Coroutine body returned an invalid state."});
     if (step && step->state == CoroutineState::suspended && step->result)

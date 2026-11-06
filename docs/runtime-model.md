@@ -470,7 +470,7 @@ Result<void> destroy_value(TypeId, std::span<std::byte> storage);
 
 ### 协程核心协议
 
-[execution.hpp](../modules/execution/runtime/include/runtime/execution.hpp) 中的 `Coroutine` 是同线程、可移动且不可复制的帧拥有者；`CoroutineFrame` 提供恢复和不抛异常的资源清理。核心不依赖 LLVM，也不拥有业务调度器。源码规则集中在 [LANGUAGE.md](../LANGUAGE.md#显式协程)。
+[execution.hpp](../modules/execution/runtime/include/runtime/execution.hpp) 中的 `Coroutine` 是同线程、可移动且不可复制的帧拥有者；`CoroutineFrame::resume()` 为 noexcept `Result<CoroutineStep>`，失败直接传递，不以 C++ 异常或 catch 适配。正常失败、取消与完成沿同一不抛异常的终态通知和帧清理；`Coroutine::resume()` 同样为 noexcept Result。核心不依赖 LLVM，也不拥有业务调度器。源码规则集中在 [LANGUAGE.md](../LANGUAGE.md#显式协程)。
 
 - **所有权与状态**：稳定控制块区分 `ready/running/suspended/completed/failed/cancelled`，持有帧及完成值/错误。每次恢复先保留控制块，再进入已有 `ExecutionScope`；回调销毁外层拥有者不会使本次恢复访问已释放对象。同一实例重入返回 `busy`，终态恢复拒绝。
 - **准入**：原生借用或只读遍历内恢复被拒，帧保持原状态，可在外层退出后重试。创建准备和每次恢复均受执行区间保护；挂起本身不占活动执行计数，但必须等同 Runtime 的所有外层执行退出后，宿主才可推进 GC 或发布兼容代码。
