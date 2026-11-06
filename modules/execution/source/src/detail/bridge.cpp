@@ -2,29 +2,15 @@
 #include "diagnostics.hpp"
 #include "debugger.hpp"
 #include "language/declarations.hpp"
+#include "memory/fatal.hpp"
 
 #include <algorithm>
 #include <cassert>
 #include <cstdio>
 #include <cstring>
 #include <limits>
-#include <stdexcept>
 
 namespace atelier::source::detail {
-namespace {
-void require(bool value, const char* message) {
-    if (!value)
-        throw std::runtime_error(message);
-}
-
-template <class T>
-T take(Result<T> value) {
-    if (!value)
-        throw std::runtime_error(value.error().message);
-    return std::move(*value);
-}
-}
-
 Result<Binding> bind_type(Runtime& runtime, TypeId type, std::span<const TypeInfo* const> catalog) noexcept {
     std::vector<const TypeInfo*> published;
     if (catalog.empty()) {
@@ -604,9 +590,9 @@ void clear_slot(void* context, std::uint32_t slot) noexcept {
     });
 }
 
-const BoundValue& owned_value(Invocation& invocation, std::uint32_t type) {
-    require(type < invocation.binding.values.size() && invocation.binding.values[type].can_own,
-            "Native value lacks a borrow-preserving lifecycle contract.");
+const BoundValue& owned_value(Invocation& invocation, std::uint32_t type) noexcept {
+    // The frontend admits owned values only with these published capabilities.
+    assert(type < invocation.binding.values.size() && invocation.binding.values[type].can_own);
     return invocation.binding.values[type];
 }
 
@@ -643,7 +629,8 @@ void destroy_value(void* context, std::uint32_t type, void* target) noexcept {
     auto& invocation = *static_cast<Invocation*>(context);
     (void)bridge(invocation, [&]() -> Result<void> {
         const auto& value = owned_value(invocation, type);
-        require(invocation.live_values != 0, "Value cleanup has no live construction.");
+        if (invocation.live_values == 0)
+            fatal("Value cleanup has no live construction.");
         auto result = invocation.runtime.destroy_value(value.type, {static_cast<std::byte*>(target), value.size});
         if (result) {
             --invocation.live_values;
@@ -664,10 +651,12 @@ std::uint32_t mutate_sequence(void* context, std::uint32_t type, SequenceMutatio
         if (operation == SequenceMutation::add || operation == SequenceMutation::append) {
             source_type =
                 operation == SequenceMutation::add ? value_type_id(invocation.binding, value.element) : value.type;
-            source_size = take(invocation.runtime.describe(source_type))->size;
+            const auto info = invocation.runtime.describe(source_type);
+            assert(info);
+            source_size = (*info)->size;
         } else if (operation == SequenceMutation::assign_text || operation == SequenceMutation::append_text)
             source_size = count;
-        require(source || source_size == 0, "Native sequence input is null.");
+        assert(source || source_size == 0);
         return invocation.runtime.mutate_sequence(value.type, {static_cast<std::byte*>(target), value.size}, operation,
                                                   source_type, {static_cast<const std::byte*>(source), source_size},
                                                   count);

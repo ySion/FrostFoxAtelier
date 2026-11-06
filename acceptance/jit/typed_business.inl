@@ -94,9 +94,11 @@ BusinessServices typed_trace_services() {
             auto& trace = *static_cast<TypedTrace*>(fixture(invocation).hook_state);
             trace.receiver_at_finish = invocation.frame.reference(receiver_slot).has_value();
             for (std::uint32_t index = business_root_slots; index < invocation.frame.size(); ++index)
-                require(!invocation.frame.reference(index), "Typed return retained a user reference into finish.");
+                if (invocation.frame.reference(index))
+                    fatal("Typed return retained a user reference into finish.");
             for (const auto& observation : invocation.observations)
-                require(observation.description().type == TypeId{}, "Typed return retained a weak slot into finish.");
+                if (observation.description().type != TypeId{})
+                    fatal("Typed return retained a weak slot into finish.");
             if (trace.fail_finish)
                 return std::unexpected(Error{ErrorCode::invocation_failed, "Typed finish failure."});
             return {};
@@ -109,13 +111,14 @@ BusinessServices typed_trace_services() {
 std::uint32_t typed_raw(Runtime& runtime, const Binding& binding, BusinessCode* code, ObjectId receiver,
                         std::span<const BusinessValue> arguments, BusinessValue& result, TypedTrace& trace) {
     auto activation = take(ExecutionScope::enter(runtime));
-    FixtureInvocation observed{false,
-                               [](void* context, Invocation& invocation) {
-                                   if (static_cast<TypedTrace*>(context)->fail_poll &&
-                                       fixture(invocation).stats.polls == 2)
-                                       throw std::runtime_error("Typed poll failure.");
-                               },
-                               &trace};
+    FixtureInvocation observed{
+        false,
+        [](void* context, Invocation& invocation) noexcept -> Result<void> {
+            if (static_cast<TypedTrace*>(context)->fail_poll && fixture(invocation).stats.polls == 2)
+                return std::unexpected(Error{ErrorCode::execution_aborted, "Typed poll failure."});
+            return {};
+        },
+        &trace};
     Invocation invocation(runtime, binding, atelier_business_layout(code), observed.observer(), nullptr, {},
                           &activation);
     take(invocation.frame.hold(receiver_slot, receiver));
@@ -123,6 +126,9 @@ std::uint32_t typed_raw(Runtime& runtime, const Binding& binding, BusinessCode* 
     const auto status =
         atelier_invoke_business(code, &invocation, arguments.data(), static_cast<std::uint32_t>(arguments.size()),
                                 &result, diagnostic, sizeof(diagnostic));
+    if (trace.fail_poll)
+        require(invocation.failed && invocation.error_code == ErrorCode::execution_aborted && observed.stats.polls == 2,
+                "Poll failure lost its error code or continued execution.");
     require(invocation.resources_cleared(), "Typed raw invocation relied on RAII cleanup.");
     return status;
 }

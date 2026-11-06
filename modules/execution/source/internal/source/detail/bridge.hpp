@@ -8,7 +8,6 @@
 
 #include <array>
 #include <bit>
-#include <exception>
 
 namespace atelier::source::detail {
 using CodeOwner = std::unique_ptr<BusinessCode, decltype(&atelier_destroy_business)>;
@@ -213,16 +212,16 @@ struct AbiArguments {
 struct Invocation;
 
 // All observer state is borrowed until invocation/frame destruction. Callbacks
-// run inside the checked bridge; complete only observes teardown and cannot
-// throw. No observer owns a second program or changes generated slot layout.
+// report failures through Result; complete only observes teardown and cannot
+// fail. No observer owns a second program or changes generated slot layout.
 struct InvocationObserver {
     void* context{};
 
-    Result<void> (*begin)(void*, Invocation&){};
+    Result<void> (*begin)(void*, Invocation&) noexcept {};
 
-    Result<void> (*poll)(void*, Invocation&){};
+    Result<void> (*poll)(void*, Invocation&) noexcept {};
 
-    Result<void> (*finish)(void*, Invocation&){};
+    Result<void> (*finish)(void*, Invocation&) noexcept {};
 
     void (*complete)(void*, const Invocation&, bool success) noexcept {};
 };
@@ -286,16 +285,10 @@ struct Invocation {
 
 template <class Operation>
 std::uint32_t bridge(Invocation& invocation, Operation&& operation) noexcept {
-    try {
-        auto result = operation();
-        if (result)
-            return 0;
-        invocation.fail(result.error().code, result.error().message.c_str());
-    } catch (const std::exception& error) {
-        invocation.fail(ErrorCode::invocation_failed, error.what());
-    } catch (...) {
-        invocation.fail(ErrorCode::invocation_failed, "Unknown native service failure.");
-    }
+    auto result = operation();
+    if (result)
+        return 0;
+    invocation.fail(result.error().code, result.error().message.c_str());
     return 1;
 }
 

@@ -1,6 +1,6 @@
 // Acceptance-owned observations around the actual source host bridge.
 // Program, version, invocation and generated-code ownership stay in the library.
-using PollHook = void (*)(void*, Invocation&);
+using PollHook = Result<void> (*)(void*, Invocation&) noexcept;
 
 struct ExecutionStats {
     std::size_t polls{};
@@ -28,7 +28,7 @@ struct FixtureInvocation {
     FixtureInvocation(bool snapshot_requested = false, PollHook callback = nullptr, void* context = nullptr)
         : make_snapshot(snapshot_requested), hook(callback), hook_state(context) {}
 
-    Result<void> refresh(Invocation& invocation) {
+    Result<void> refresh(Invocation& invocation) noexcept {
         if (!make_snapshot)
             return {};
         auto receiver = invocation.frame.object(receiver_slot);
@@ -47,7 +47,7 @@ struct FixtureInvocation {
 
     InvocationObserver observer() {
         return {this,
-                [](void* context, Invocation& invocation) -> Result<void> {
+                [](void* context, Invocation& invocation) noexcept -> Result<void> {
                     auto& state = *static_cast<FixtureInvocation*>(context);
                     if (!state.make_snapshot)
                         return {};
@@ -60,21 +60,23 @@ struct FixtureInvocation {
                     state.snapshot = std::move(*created);
                     return {};
                 },
-                [](void* context, Invocation& invocation) -> Result<void> {
+                [](void* context, Invocation& invocation) noexcept -> Result<void> {
                     auto& state = *static_cast<FixtureInvocation*>(context);
                     ++state.stats.polls;
-                    if (state.hook)
-                        state.hook(state.hook_state, invocation);
+                    if (state.hook) {
+                        ATELIER_TRY(state.hook(state.hook_state, invocation));
+                    }
                     return state.refresh(invocation);
                 },
-                [](void* context, Invocation& invocation) -> Result<void> {
+                [](void* context, Invocation& invocation) noexcept -> Result<void> {
                     auto& state = *static_cast<FixtureInvocation*>(context);
                     if (!state.make_snapshot)
                         return {};
                     auto refreshed = state.refresh(invocation);
                     if (!refreshed)
                         return refreshed;
-                    require(!state.output.registered(), "Business output was published twice.");
+                    if (state.output.registered())
+                        fatal("Business output was published twice.");
                     state.output = std::move(state.snapshot);
                     return {};
                 },

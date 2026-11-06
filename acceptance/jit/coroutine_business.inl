@@ -138,17 +138,17 @@ void verify_coroutine_control() {
         FixtureInvocation observed;
         std::optional<Coroutine> task;
         Control control{task, discard};
-        observed.hook = [](void* context, Invocation& invocation) {
+        observed.hook = [](void* context, Invocation& invocation) noexcept -> Result<void> {
             if (fixture(invocation).stats.polls != 2)
-                return;
+                return {};
             auto& control = *static_cast<Control*>(context);
             control.visited = true;
             if (control.discard) {
                 control.owner.reset();
-                return;
+                return {};
             }
             control.owner->cancel();
-            throw std::runtime_error("Coroutine failure after cancel.");
+            return std::unexpected(Error{ErrorCode::execution_aborted, "Coroutine failure after cancel."});
         };
         observed.hook_state = &control;
         task.emplace(take(ProgramAccess::start(program->entry(), {}, {}, observed.observer())));
@@ -159,7 +159,8 @@ void verify_coroutine_control() {
             require(outcome && *outcome == CoroutineState::cancelled && !task,
                     "Public owner deletion published a completed result.");
         else
-            require(!outcome && task->state() == CoroutineState::failed && !task->result(),
+            require(!outcome && outcome.error().code == ErrorCode::execution_aborted &&
+                        task->state() == CoroutineState::failed && !task->result(),
                     "Cancellation replaced the native failure or exposed a result.");
     }
 }

@@ -2,6 +2,7 @@
 #include "business.hpp"
 #include "jit/source_backend_verification.hpp"
 #include "machine.hpp"
+#include "memory/fatal.hpp"
 #include "runtime/native.hpp"
 #include "source/detail/bridge.hpp"
 
@@ -33,7 +34,7 @@ std::span<const FieldId> fixture_field(const Binding& binding, std::string_view 
     for (const auto& field : binding.fields)
         if (field.name == name)
             return field.path;
-    throw std::runtime_error("Fixture field was not exposed by the Runtime.");
+    fatal("Fixture field was not exposed by the Runtime.");
 }
 
 std::array<BusinessValue, 2> machine_arguments(float amount, std::uint32_t steps) {
@@ -109,10 +110,13 @@ TypeId register_machine(Runtime& runtime) {
 }
 
 void set_machine(Runtime& runtime, const Binding& binding, ObjectId object, float progress, float heat,
-                 std::uint32_t cycles) {
-    take(runtime.write(object, fixture_field(binding, "progress"), progress));
-    take(runtime.write(object, fixture_field(binding, "state.heat"), heat));
-    take(runtime.write(object, fixture_field(binding, "state.cycles"), cycles));
+                 std::uint32_t cycles) noexcept {
+    if (auto written = runtime.write(object, fixture_field(binding, "progress"), progress); !written)
+        fatal(written.error().message);
+    if (auto written = runtime.write(object, fixture_field(binding, "state.heat"), heat); !written)
+        fatal(written.error().message);
+    if (auto written = runtime.write(object, fixture_field(binding, "state.cycles"), cycles); !written)
+        fatal(written.error().message);
 }
 
 void check_machine(Runtime& runtime, const Binding& binding, ObjectId object, float progress, float heat,
@@ -253,14 +257,20 @@ void verify_stale_source_references(Runtime& runtime, const Binding& binding) {
         ActionScope scope(capture);
         auto result = execute_machine(
             runtime, binding, code.get(), receiver.id(), 0.5f, 0, &stats,
-            [](void* context, Invocation& invocation) {
+            [](void* context, Invocation& invocation) noexcept -> Result<void> {
                 auto& state = *static_cast<Replacement*>(context);
                 if (fixture(invocation).stats.polls != 2)
-                    return;
-                take(invocation.runtime.destroy(state.old));
-                state.root = take(invocation.runtime.create(invocation.binding.type));
-                require(state.root.id() != state.old, "Replacement reused the stale identity.");
+                    return {};
+                if (auto destroyed = invocation.runtime.destroy(state.old); !destroyed)
+                    fatal(destroyed.error().message);
+                auto created = invocation.runtime.create(invocation.binding.type);
+                if (!created)
+                    fatal(created.error().message);
+                state.root = std::move(*created);
+                if (state.root.id() == state.old)
+                    fatal("Replacement reused the stale identity.");
                 set_machine(invocation.runtime, invocation.binding, state.root.id(), 99.0f, 7.0f, 25);
+                return {};
             },
             &state);
         require(!result && stats.explicit_cleanup && runtime.root_count() == 2,
