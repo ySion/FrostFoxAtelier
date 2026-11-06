@@ -24,17 +24,17 @@ void verify_shared_calls(atelier::Runtime& runtime) {
     auto object = take(runtime.create(type));
     int value = 1;
     const std::array aliases{Argument::borrow(value), Argument::borrow(value)};
-    Program source(runtime, type);
-    publish(source, R"(
+    auto source = take(Program::create(runtime, type));
+    publish(*source, R"(
 int run(const int& read, int& write) {
     self.aliases(read, write);
     return read;
 })");
-    auto entry = source.entry();
+    auto entry = source->entry();
     auto result = take(entry.invoke(object.id(), aliases));
     require(result && std::get<int>(*result) == 20 && value == 20, "Host/JIT/native mixed alias chain failed.");
-    Program evaluation(runtime, type);
-    publish(evaluation, "int order() { self.value = 1; return self.mixed(self.value, self.mutate(), self.value); }");
-    require(std::get<int>(*take(evaluation.entry().invoke(object.id(), {}))) == 8,
+    auto evaluation = take(Program::create(runtime, type));
+    publish(*evaluation, "int order() { self.value = 1; return self.mixed(self.value, self.mutate(), self.value); }");
+    require(std::get<int>(*take(evaluation->entry().invoke(object.id(), {}))) == 8,
             "Nested call overwrote an earlier by-value operand.");
 }

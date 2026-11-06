@@ -7,8 +7,8 @@ void publish_coroutine(BusinessProgram& program, const char* name, std::string_v
 void verify_coroutine_references() {
     Runtime runtime;
     const auto type = register_typed_ui(runtime);
-    const auto binding = bind_type(runtime, type);
-    BusinessProgram program(runtime, type);
+    const auto binding = take(bind_type(runtime, type));
+    auto program = take(BusinessProgram::create(runtime, type));
     const auto source = reference_source(R"(
         async uint references(uint amount) {
             $T held = new $T();
@@ -22,9 +22,9 @@ void verify_coroutine_references() {
             return 99;
         })",
                                          binding.name);
-    publish_coroutine(program, "coroutine-roots.source", source);
+    publish_coroutine(*program, "coroutine-roots.source", source);
     const std::array arguments{scalar(5u)};
-    auto task = take(start_fixture(program.entry(), {}, arguments));
+    auto task = take(start_fixture(program->entry(), {}, arguments));
     require(take(task.resume()) == CoroutineState::suspended, "Reference coroutine did not suspend.");
     collect(runtime);
     require(runtime.live_objects() == 1, "Suspended strong reference did not survive GC.");
@@ -35,7 +35,7 @@ void verify_coroutine_references() {
                 runtime.root_count() == 0,
             "Weak acquisition or completed frame cleanup was incorrect.");
     {
-        auto abandoned = take(start_fixture(program.entry(), {}, arguments));
+        auto abandoned = take(start_fixture(program->entry(), {}, arguments));
         take(abandoned.resume());
         collect(runtime);
         require(runtime.live_objects() == 1, "Drop scenario did not retain a live object.");
@@ -67,11 +67,11 @@ void verify_coroutine_references() {
     collect(runtime);
     require(runtime.root_count() == 0 && runtime.live_objects() == 0, "Cancelled coroutine retained source objects.");
 
-    BusinessProgram stale(runtime, type);
-    publish_coroutine(stale, "coroutine-stale.source",
+    auto stale = take(BusinessProgram::create(runtime, type));
+    publish_coroutine(*stale, "coroutine-stale.source",
                       "async uint access() { self.bump(0); yield; return self.bump(1); }");
     auto receiver = take(runtime.create(type));
-    auto invalid = take(start_fixture(stale.entry(), receiver.id(), {}));
+    auto invalid = take(start_fixture(stale->entry(), receiver.id(), {}));
     take(invalid.resume());
     take(runtime.destroy(receiver.id()));
     receiver.reset();
@@ -79,8 +79,8 @@ void verify_coroutine_references() {
                 runtime.root_count() == 0,
             "Destroyed-receiver resume retained roots or published a result.");
 
-    BusinessProgram weak_only(runtime, type);
-    publish_coroutine(weak_only, "coroutine-weak-access.source",
+    auto weak_only = take(BusinessProgram::create(runtime, type));
+    publish_coroutine(*weak_only, "coroutine-weak-access.source",
                       reference_source(R"(
         async uint access() {
             weak $T watched = observe(new $T());
@@ -88,7 +88,7 @@ void verify_coroutine_references() {
             return watched.bump(1);
         })",
                                        binding.name));
-    auto weak = take(start_fixture(weak_only.entry(), {}, {}));
+    auto weak = take(start_fixture(weak_only->entry(), {}, {}));
     take(weak.resume());
     collect(runtime);
     require(runtime.live_objects() == 0, "A suspended weak reference was silently strengthened.");
@@ -125,8 +125,8 @@ void verify_coroutine_references() {
 
 void verify_coroutine_control() {
     Runtime runtime;
-    BusinessProgram program(runtime, {});
-    publish_coroutine(program, "coroutine-control.source", "async uint control() { yield; return 9; }");
+    auto program = take(BusinessProgram::create(runtime));
+    publish_coroutine(*program, "coroutine-control.source", "async uint control() { yield; return 9; }");
     struct Control {
         std::optional<Coroutine>& owner;
 
@@ -151,7 +151,7 @@ void verify_coroutine_control() {
             throw std::runtime_error("Coroutine failure after cancel.");
         };
         observed.hook_state = &control;
-        task.emplace(take(ProgramAccess::start(program.entry(), {}, {}, observed.observer())));
+        task.emplace(take(ProgramAccess::start(program->entry(), {}, {}, observed.observer())));
         require(take(task->resume()) == CoroutineState::suspended, "Control coroutine did not suspend.");
         const auto outcome = task->resume();
         require(control.visited && runtime.root_count() == 0, "Control callback retained roots or did not execute.");

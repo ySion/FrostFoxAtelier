@@ -123,10 +123,10 @@ void verify_elementwise() {
     };
     Runtime runtime;
     for (const auto& item : cases) {
-        Program program(runtime, {});
-        publish(program, std::string("float run(float x, float y, float z) { return ") + item.call + "; }");
+        auto program = take(Program::create(runtime));
+        publish(*program, std::string("float run(float x, float y, float z) { return ") + item.call + "; }");
         const auto result = std::get<float>(
-            *take(program.entry().invoke({}, std::array{Scalar{item.x}, Scalar{item.y}, Scalar{item.z}})));
+            *take(program->entry().invoke({}, std::array{Scalar{item.x}, Scalar{item.y}, Scalar{item.z}})));
         require(result == item.expected, item.call);
     }
 }
@@ -146,25 +146,25 @@ void verify_transcendental() {
     for (std::size_t i = 0; i < std::size(math_reference::functions); ++i) {
         const auto& function = math_reference::functions[i];
         const auto expression = "math." + std::string(function.name) + (function.binary ? "(a[i], b[i])" : "(a[i])");
-        Program narrow(runtime, {});
-        Program wide(runtime, {});
-        publish(narrow,
+        auto narrow = take(Program::create(runtime));
+        auto wide = take(Program::create(runtime));
+        publish(*narrow,
                 "void run(Array<float>& a, const Array<float>& b) { uint i = 0; while (i < a.size()) { a[i] = " +
                     expression + "; i = i + 1; } }");
-        publish(wide,
+        publish(*wide,
                 "void run(Array<double>& a, const Array<double>& b) { uint i = 0; while (i < a.size()) { a[i] = " +
                     expression + "; i = i + 1; } }");
         const float x = i < 2 ? std::bit_cast<float>(0x437ce5f1u) : static_cast<float>(first[i]);
         Array<float> f32{x};
         const Array<float> f32_second{static_cast<float>(second[i])};
-        take(narrow.entry().invoke({}, std::array{Argument::borrow(f32), Argument::borrow(f32_second)}));
+        take(narrow->entry().invoke({}, std::array{Argument::borrow(f32), Argument::borrow(f32_second)}));
         const double expected = reference[i](x, second[i]);
         const double ulp = std::ldexp(1.0, std::ilogb(static_cast<float>(expected)) - 23);
         require(std::isfinite(f32[0]) && std::abs(double(f32[0]) - expected) <= 4 * ulp,
                 "Float transcendental differs from its independent double oracle by more than 4 ULP.");
         Array<double> f64{first[i]};
         const Array<double> f64_second{second[i]};
-        take(wide.entry().invoke({}, std::array{Argument::borrow(f64), Argument::borrow(f64_second)}));
+        take(wide->entry().invoke({}, std::array{Argument::borrow(f64), Argument::borrow(f64_second)}));
         require(math_reference::ulp_distance(f64[0], function.value(first[i], second[i])) <= 3,
                 "Double transcendental differs from CORE-MATH by more than 3 ULP.");
     }
@@ -181,8 +181,8 @@ void verify_source_math() {
                                      .method<&NativeMath::mutate>("mutate", true)
                                      .method<&NativeMath::fail>("fail", true)
                                      .build()}));
-    Program values(runtime, {});
-    publish(values, R"(
+    auto values = take(Program::create(runtime));
+    publish(*values, R"(
         vector3 helper(vector3 value) { return math.cross(value, vector3(0.0, 0.0, 1.0)); }
         math.vector3 run(vector3 value) {
             vector3 result = helper(value) + vector3(1.0, 2.0, 3.0);
@@ -194,20 +194,20 @@ void verify_source_math() {
 
         std::uint32_t canary;
     } compact{{2.0f, 3.0f, 4.0f}, 0xfeedbeef};
-    const auto result = evaluate<Vector3>(runtime, values.entry(), std::array{Argument::borrow(compact.value)});
+    const auto result = evaluate<Vector3>(runtime, values->entry(), std::array{Argument::borrow(compact.value)});
     require(result == Vector3{4, 0, 3} && compact.canary == 0xfeedbeef,
             "Source math helper value return or compact storage failed.");
-    Program compact_float(runtime, {});
-    publish(compact_float, "void run(vector3& value) { value = value * 2.0; }");
+    auto compact_float = take(Program::create(runtime));
+    publish(*compact_float, "void run(vector3& value) { value = value * 2.0; }");
     {
         GuardedPages pages;
         auto* guarded = pages.construct({1, 2, 3});
-        take(compact_float.entry().invoke({}, std::array{Argument::borrow(*guarded)}));
+        take(compact_float->entry().invoke({}, std::array{Argument::borrow(*guarded)}));
         require(*guarded == Vector3{2, 4, 6}, "Compact boundary math changed values.");
         std::destroy_at(guarded);
     }
-    Program doubles(runtime, {});
-    publish(doubles, R"(
+    auto doubles = take(Program::create(runtime));
+    publish(*doubles, R"(
         vector3d helper(vector3d value) { return value + vector3d(1.0d, 2.0d, 3.0d); }
         double run(Array<vector3d>& values) {
             uint index = 0;
@@ -217,18 +217,18 @@ void verify_source_math() {
     )");
     Array<Vector3d> wide;
     wide.add({16777216.0, 0, 0});
-    require(std::get<double>(*take(doubles.entry().invoke({}, std::array{Argument::borrow(wide)}))) == 16777218.0 &&
+    require(std::get<double>(*take(doubles->entry().invoke({}, std::array{Argument::borrow(wide)}))) == 16777218.0 &&
                 wide[0].x == 16777217.0,
             "Double source math narrowed through float.");
-    Program normalized(runtime, {});
-    publish(normalized, "vector3 run(vector3 value) { return math.normalize_or_zero(value); }");
+    auto normalized = take(Program::create(runtime));
+    publish(*normalized, "vector3 run(vector3 value) { return math.normalize_or_zero(value); }");
     const float scale = std::numeric_limits<float>::max();
     Vector3 input{scale, scale, scale};
-    const auto unit = evaluate<Vector3>(runtime, normalized.entry(), std::array{Argument::borrow(input)});
+    const auto unit = evaluate<Vector3>(runtime, normalized->entry(), std::array{Argument::borrow(input)});
     for (std::size_t i = 0; i < 3; ++i)
         require(std::abs(unit[i] - 0.577350269f) <= 0.000001f, "Source normalization overflowed finite inputs.");
-    Program transforms(runtime, {});
-    publish(transforms, R"(
+    auto transforms = take(Program::create(runtime));
+    publish(*transforms, R"(
         vector3 run(vector3 value, matrix4 first, matrix4 second) {
             quaternion turn = quaternion(0.0, 0.0, 1.0, 0.0);
             quaternion identity = quaternion();
@@ -244,13 +244,13 @@ void verify_source_math() {
     second(0, 0) = 2;
     second(1, 1) = 3;
     const auto transformed =
-        evaluate<Vector3>(runtime, transforms.entry(),
+        evaluate<Vector3>(runtime, transforms->entry(),
                           std::array{Argument::borrow(point), Argument::borrow(first), Argument::borrow(second)});
     require(transformed == Vector3{8, 15, 3}, "Quaternion or row-vector matrix composition changed conventions.");
     const auto native_type = take(runtime.native_type<NativeMath>());
     auto host = take(runtime.create(native_type));
-    Program native(runtime, native_type);
-    publish(native, R"(
+    auto native = take(Program::create(runtime, native_type));
+    publish(*native, R"(
         vector3 run(vector3 value) {
             vector3 changed = self.value(value);
             self.mutate(changed);
@@ -259,25 +259,25 @@ void verify_source_math() {
     )");
     Vector3 output{};
     const ValueOutput destination{take(runtime.native_type<Vector3>()), &output};
-    take(native.entry().invoke(host.id(), std::array{Argument::borrow(point)}, destination));
+    take(native->entry().invoke(host.id(), std::array{Argument::borrow(point)}, destination));
     require(output == Vector3{6, 9, 12} && point.x == 1, "Native math value/reference interop failed.");
-    Program fields(runtime, native_type);
-    publish(fields, R"(
+    auto fields = take(Program::create(runtime, native_type));
+    publish(*fields, R"(
         vector3 run(vector3 step) {
             vector3 previous = self.position;
             self.position = previous + step;
             return self.position;
         }
     )");
-    take(fields.entry().invoke(host.id(), std::array{Argument::borrow(point)}, destination));
+    take(fields->entry().invoke(host.id(), std::array{Argument::borrow(point)}, destination));
     require(output == Vector3{2, 4, 6}, "Whole math field read/write lost native state.");
-    publish(native, "vector3 run(vector3 value) { return self.fail(value); }");
+    publish(*native, "vector3 run(vector3 value) { return self.fail(value); }");
     output = {91, 92, 93};
-    require(!native.entry().invoke(host.id(), std::array{Argument::borrow(point)}, destination) &&
+    require(!native->entry().invoke(host.id(), std::array{Argument::borrow(point)}, destination) &&
                 output == Vector3{91, 92, 93},
             "Native failure changed caller output.");
-    Program asynchronous(runtime, {});
-    publish(asynchronous, R"(
+    auto asynchronous = take(Program::create(runtime));
+    publish(*asynchronous, R"(
         async double run(double value) {
             vector3d local = vector3d(value, 2.0d, 3.0d);
             yield;
@@ -285,7 +285,7 @@ void verify_source_math() {
             return local.x + local.y - 6.0d;
         }
     )");
-    auto coroutine = take(asynchronous.entry().start({}, std::array{Scalar{16777216.0}}));
+    auto coroutine = take(asynchronous->entry().start({}, std::array{Scalar{16777216.0}}));
     require(take(coroutine.resume()) == CoroutineState::suspended &&
                 take(coroutine.resume()) == CoroutineState::completed &&
                 std::get<double>(*take(coroutine.result())) == 16777217.0,

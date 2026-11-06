@@ -4,6 +4,7 @@
 #include "language/declarations.hpp"
 
 #include <algorithm>
+#include <cassert>
 #include <cstdio>
 #include <cstring>
 #include <limits>
@@ -24,27 +25,39 @@ T take(Result<T> value) {
 }
 }
 
-Binding bind_type(Runtime& runtime, TypeId type, std::span<const TypeInfo* const> catalog) {
+Result<Binding> bind_type(Runtime& runtime, TypeId type, std::span<const TypeInfo* const> catalog) noexcept {
     std::vector<const TypeInfo*> published;
     if (catalog.empty()) {
         for (const auto id : runtime.types())
-            published.push_back(take(runtime.describe(id)));
+            published.push_back(*runtime.describe(id));
         catalog = published;
     }
+    const TypeInfo* info{};
+    if (type != TypeId{}) {
+        for (const auto* candidate : catalog)
+            if (candidate->id == type) {
+                info = candidate;
+                break;
+            }
+        if (!info || info->kind != TypeKind::object)
+            return std::unexpected(
+                Error{ErrorCode::invalid_type, "Source receiver must be an object in this Runtime."});
+    }
+    // Published and preview catalogs are validated by Runtime. Only the requested
+    // receiver is caller input; all following identities are catalog dependencies.
     const auto describe = [&](TypeId id) -> const TypeInfo* {
-        for (const auto* info : catalog)
-            if (info->id == id)
-                return info;
-        throw std::runtime_error("Source catalog contains an unresolved type identity.");
+        const auto found = std::ranges::find_if(catalog, [&](const auto* info) { return info->id == id; });
+        assert(found != catalog.end());
+        return *found;
     };
     Binding binding{};
     binding.runtime = &runtime;
     binding.type = type;
-    binding.f32 = take(runtime.native_type<float>());
-    binding.f64 = take(runtime.native_type<double>());
-    binding.u32 = take(runtime.native_type<std::uint32_t>());
-    binding.i32 = take(runtime.native_type<std::int32_t>());
-    binding.boolean = take(runtime.native_type<bool>());
+    binding.f32 = *runtime.native_type<float>();
+    binding.f64 = *runtime.native_type<double>();
+    binding.u32 = *runtime.native_type<std::uint32_t>();
+    binding.i32 = *runtime.native_type<std::int32_t>();
+    binding.boolean = *runtime.native_type<bool>();
     binding.dependencies = {binding.f32, binding.f64, binding.u32, binding.i32, binding.boolean};
     for (const auto* enumeration : catalog) {
         const auto id = enumeration->id;
@@ -101,8 +114,7 @@ Binding bind_type(Runtime& runtime, TypeId type, std::span<const TypeInfo* const
         const auto* info = describe(value.type);
         if (info->element) {
             value.element = value_kind(binding, *info->element);
-            require(value.element != ValueKind::void_value,
-                    "Source array requires a supported native element representation.");
+            assert(value.element != ValueKind::void_value);
         }
         for (const auto& field : info->fields) {
             if (!field.offset || field.value.form != ValueForm::inline_value)
@@ -114,8 +126,6 @@ Binding bind_type(Runtime& runtime, TypeId type, std::span<const TypeInfo* const
     }
     if (type == TypeId{})
         return binding;
-    const auto* info = describe(type);
-    require(info->kind == TypeKind::object, "Source receiver must be an object.");
     binding.name = info->name;
     const auto remember = [&](TypeId dependency) {
         if (std::find(binding.dependencies.begin(), binding.dependencies.end(), dependency) ==
@@ -124,7 +134,7 @@ Binding bind_type(Runtime& runtime, TypeId type, std::span<const TypeInfo* const
     };
     const auto append_base = [&](const TypeInfo* actual, TypeId owner, std::vector<BusinessAddressStep>& access) {
         while (actual->id != owner) {
-            require(actual->base.has_value(), "Compiled access does not belong to its receiver.");
+            assert(actual->base.has_value());
             if (actual->base_address)
                 access.push_back({actual->base_address});
             actual = describe(*actual->base);
@@ -167,7 +177,7 @@ Binding bind_type(Runtime& runtime, TypeId type, std::span<const TypeInfo* const
         if (field.value.form != ValueForm::inline_value)
             continue;
         append_base(cursor.type, field.owner, access);
-        require(field.offset.has_value() || field.native_address, "Compiled field has no storage operation.");
+        assert(field.offset.has_value() || field.native_address);
         access.push_back({field.offset ? nullptr : field.native_address, field.offset.value_or(0)});
         path.push_back(field.id);
         prefix += field.name;
@@ -183,22 +193,17 @@ Binding bind_type(Runtime& runtime, TypeId type, std::span<const TypeInfo* const
         }
         if (field_kind == ValueKind::void_value || aggregate(field_kind)) {
             const auto* nested = describe(field.value.type);
+            // Rebinding reads this metadata even when the field stays native-only.
+            remember(nested->id);
             if (nested->kind != TypeKind::record)
                 continue;
-            remember(nested->id);
             prefix += '.';
             cursors.push_back({nested, 0, path.size(), prefix.size(), constrained, access.size(), range});
         }
     }
     for (const auto& method : info->methods) {
         const auto& signature = method.signature;
-        require(signature.receiver.has_value(), "Source host method requires a receiver.");
-        // The catalog may contain unpublished producer identities. Follow its
-        // validated ancestry without passing preview IDs into live operations.
-        const auto* receiver = info;
-        while (receiver && receiver->id != signature.receiver->type)
-            receiver = receiver->base ? describe(*receiver->base) : nullptr;
-        require(receiver != nullptr, "Source host method receiver does not match its owning type.");
+        assert(signature.receiver.has_value());
         // As with fields, methods whose values have no source projection stay
         // native-only without preventing unrelated source functions from binding.
         const auto result = signature.result ? value_kind(binding, signature.result->type) : ValueKind::void_value;
@@ -207,6 +212,8 @@ Binding bind_type(Runtime& runtime, TypeId type, std::span<const TypeInfo* const
                 return value_kind(binding, parameter.type) == ValueKind::void_value;
             }))
             continue;
+        if (signature.parameters.size() > std::numeric_limits<std::uint32_t>::max())
+            return std::unexpected(Error{ErrorCode::capacity_exceeded, "Host signature is too large."});
         BoundMethod bound{
             method.name,        method.id, {}, result, signature.receiver->read_only, method.preserves_borrows,
             method.native_entry};
@@ -215,6 +222,9 @@ Binding bind_type(Runtime& runtime, TypeId type, std::span<const TypeInfo* const
             bound.parameters.push_back({value_kind(binding, parameter.type), parameter.passing});
         binding.methods.push_back(std::move(bound));
     }
+    if (binding.fields.size() > std::numeric_limits<std::uint32_t>::max() ||
+        binding.methods.size() > std::numeric_limits<std::uint32_t>::max())
+        return std::unexpected(Error{ErrorCode::capacity_exceeded, "Source member catalog is too large."});
     // Stable catalogs are independent of native/descriptor field declaration order.
     std::sort(binding.fields.begin(), binding.fields.end(),
               [](const auto& a, const auto& b) { return a.name < b.name; });
@@ -273,10 +283,7 @@ BusinessValue scalar(const Scalar& value, const Binding& binding) {
         value);
 }
 
-EnvironmentView::EnvironmentView(const Binding& binding) {
-    require(binding.fields.size() <= std::numeric_limits<std::uint32_t>::max() &&
-                binding.methods.size() <= std::numeric_limits<std::uint32_t>::max(),
-            "Source member catalog is too large.");
+EnvironmentView::EnvironmentView(const Binding& binding) noexcept {
     enum_items.reserve(binding.enumerations.size());
     enumerations.reserve(binding.enumerations.size());
     for (const auto& enumeration : binding.enumerations) {
@@ -300,7 +307,6 @@ EnvironmentView::EnvironmentView(const Binding& binding) {
         fields.push_back({field.name.c_str(), field.kind, field.constrained, field.access.data(),
                           static_cast<std::uint32_t>(field.access.size()), field.minimum, field.maximum, field.bounds});
     for (const auto& method : binding.methods) {
-        require(method.parameters.size() <= std::numeric_limits<std::uint32_t>::max(), "Host signature is too large.");
         methods.push_back({method.name.c_str(), method.parameters.data(),
                            static_cast<std::uint32_t>(method.parameters.size()), method.result,
                            method.receiver_read_only, method.preserves_borrows, method.entry,

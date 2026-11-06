@@ -6,7 +6,6 @@
 #include <cassert>
 #include <cmath>
 #include <cstring>
-#include <exception>
 #include <functional>
 
 namespace atelier::source {
@@ -238,151 +237,136 @@ Result<void> MaterialProgram::evaluate(std::span<const std::byte> context, std::
 
 Result<std::shared_ptr<const MaterialProgram>> compile_material(Runtime& runtime, TypeId context, TypeId output,
                                                                 TypeId texture_input, std::string_view source_name,
-                                                                std::string_view source) {
+                                                                std::string_view source) noexcept {
     const auto fail = [&](Error error) {
         error.message = std::string(source_name) + ": " + error.message;
         return std::unexpected(std::move(error));
     };
-    try {
-        if (source.size() > UINT32_MAX)
-            return fail(Error{ErrorCode::capacity_exceeded, "Material source is too large."});
-        auto declarations = language::collect_declarations(source);
-        if (!declarations) {
-            const auto& diagnostic = declarations.error();
-            return std::unexpected(Error{ErrorCode::invalid_definition,
-                                         std::string(source_name) + ":" + std::to_string(diagnostic.position.line) +
-                                             ":" + std::to_string(diagnostic.position.column) + ": " +
-                                             diagnostic.message});
-        }
-        const auto original = bind_type(runtime, {});
-        auto definitions = type_definitions(*declarations, original);
-        if (!definitions)
-            return fail(definitions.error());
-        auto publication = atelier::detail::TypePublication::prepare(runtime, std::move(*definitions));
-        if (!publication)
-            return fail(publication.error());
-        const auto binding = bind_type(runtime, {}, (*publication)->catalog());
-        const auto context_type = value_kind(binding, context);
-        const auto output_type = value_kind(binding, output);
-        const auto texture_type = value_kind(binding, texture_input);
-        if (context_type.kind != ValueKind::record || output_type.kind != ValueKind::record ||
-            texture_type.kind != ValueKind::record)
-            return fail(
-                Error{ErrorCode::invalid_type,
-                      "Material Context/Output/TextureInput must be registered plain records in this Runtime."});
-        // Capture ordinary plain defaults while the compile catalog is alive.
-        // Preview Source records compose the existing value defaults without
-        // ever passing preview TypeIds to live Runtime operations.
-        std::vector<std::vector<std::byte>> initial(binding.values.size());
-        std::vector<bool> captured(binding.values.size());
-        struct Defaults {
-            std::function<Result<const std::byte*>(std::uint32_t)> capture;
-
-            std::optional<Error> error;
-
-            std::exception_ptr failure;
-        } defaults;
-        defaults.capture = [&](std::uint32_t index) -> Result<const std::byte*> {
-            if (captured[index])
-                return initial[index].data();
-            captured[index] = true;
-            const auto& value = binding.values[index];
-            initial[index].resize(value.size);
-            if (runtime.describe(value.type)) {
-                atelier::detail::ValueStorage storage;
-                auto bytes = std::span(storage.prepare(value.size, value.alignment), value.size);
-                ATELIER_TRY(runtime.initialize_value(value.type, bytes));
-                std::memcpy(initial[index].data(), bytes.data(), bytes.size());
-                ATELIER_TRY(runtime.destroy_value(value.type, bytes));
-            } else
-                for (const auto& field : value.fields) {
-                    if (field.type.kind != ValueKind::record)
-                        continue;
-                    ATELIER_TRY_BIND(result, defaults.capture(field.type.type_index));
-                    const auto& child = initial[field.type.type_index];
-                    if (!child.empty())
-                        std::memcpy(initial[index].data() + field.offset, child.data(), child.size());
-                }
-            return initial[index].data();
-        };
-        const auto capture = [](void* state, std::uint32_t type) noexcept -> const std::byte* {
-            auto& defaults = *static_cast<Defaults*>(state);
-            try {
-                auto result = defaults.capture(type);
-                if (result)
-                    return *result;
-                defaults.error = std::move(result.error());
-            } catch (...) {
-                defaults.failure = std::current_exception();
-            }
-            return nullptr;
-        };
-        EnvironmentView environment(binding);
-        // Material locals never call native lifecycle operations: plain default
-        // bytes are captured on demand, then construction/copy lowers to value copies.
-        for (auto& value : environment.values)
-            value.can_own = value.plain_value;
-        const auto catalog = environment.view(nullptr);
-        std::string name(source_name);
-        auto state = std::make_shared<MaterialProgram::State>();
-        MaterialCode* code{};
-        char error[2048]{};
-        if (atelier_compile_material(name.c_str(), source.data(), static_cast<std::uint32_t>(source.size()), &catalog,
-                                     &defaults, capture, context_type.type_index, output_type.type_index,
-                                     texture_type.type_index, sample_texture, sample_orientation, &code, error,
-                                     sizeof(error))) {
-            if (defaults.error)
-                return std::unexpected(std::move(*defaults.error));
-            if (defaults.failure)
-                std::rethrow_exception(defaults.failure);
-            return std::unexpected(Error{ErrorCode::invalid_definition, error});
-        }
-        state->code.reset(code);
-        const auto view = atelier_material_code_view(code);
-        const auto info = atelier_business_info(view.shade);
-        const auto& c = binding.values[context_type.type_index];
-        const auto& o = binding.values[output_type.type_index];
-        const auto& p = binding.values[view.parameters];
-        state->supports_coverage = std::ranges::any_of(
-            o.fields, [](const auto& field) { return field.name == "coverage" && field.type == ValueKind::f32; });
-        if (!std::ranges::any_of(*declarations, [&](const auto& declaration) {
-                return declaration.name == p.name && !declaration.enumeration;
-            }))
-            return fail(Error{ErrorCode::invalid_definition, "Material Params must be declared by this source."});
-        if (view.resources != UINT32_MAX) {
-            const auto& resources = binding.values[view.resources];
-            if (!std::ranges::any_of(*declarations, [&](const auto& declaration) {
-                    return declaration.name == resources.name && !declaration.enumeration;
-                }))
-                return fail(
-                    Error{ErrorCode::invalid_definition, "Material Resources must be declared by this source."});
-            state->resources = {resources.size, resources.alignment};
-            state->resource_values.resize(resources.size);
-            for (const auto& input : std::span(view.textures, view.texture_count)) {
-                state->textures.push_back({input.key, input.slot});
-                std::memcpy(state->resource_values.data() + input.offset, &input.slot, sizeof(input.slot));
-            }
-        }
-        state->context = {c.size, c.alignment};
-        state->output = {o.size, o.alignment};
-        state->parameters = {p.size, p.alignment};
-        parameter_fields({ValueKind::record, view.parameters}, info.environment, {}, 0, state->fields);
-        atelier::detail::ValueStorage storage;
-        auto* bytes = storage.prepare(p.size, p.alignment);
-        BusinessValue result{{ValueKind::record, view.parameters}, 0, ArgumentStorage::value, bytes};
-        Samples samples{};
-        if (atelier_invoke_business(view.defaults, &samples, nullptr, 0, &result, error, sizeof(error)))
-            return fail(Error{ErrorCode::invocation_failed, error});
-        if (!finite_value(result.kind, info.environment, bytes))
-            return fail(Error{ErrorCode::invalid_definition, "Material defaults must be finite."});
-        state->defaults.assign(bytes, bytes + p.size);
-        return std::shared_ptr<const MaterialProgram>(new MaterialProgram(std::move(state)));
-    } catch (const std::bad_alloc&) {
-        return std::unexpected(Error{ErrorCode::capacity_exceeded, {}});
-    } catch (const std::exception& error) {
-        return fail(Error{ErrorCode::invalid_definition, error.what()});
-    } catch (...) {
-        return fail(Error{ErrorCode::invalid_definition, "Material default capture failed."});
+    if (source.size() > UINT32_MAX)
+        return fail(Error{ErrorCode::capacity_exceeded, "Material source is too large."});
+    auto declarations = language::collect_declarations(source);
+    if (!declarations) {
+        const auto& diagnostic = declarations.error();
+        return std::unexpected(Error{ErrorCode::invalid_definition,
+                                     std::string(source_name) + ":" + std::to_string(diagnostic.position.line) + ":" +
+                                         std::to_string(diagnostic.position.column) + ": " + diagnostic.message});
     }
+    const auto original = bind_type(runtime, {});
+    if (!original)
+        return fail(original.error());
+    auto definitions = type_definitions(*declarations, *original);
+    if (!definitions)
+        return fail(definitions.error());
+    auto publication = atelier::detail::TypePublication::prepare(runtime, std::move(*definitions));
+    if (!publication)
+        return fail(publication.error());
+    const auto binding = bind_type(runtime, {}, (*publication)->catalog());
+    if (!binding)
+        return fail(binding.error());
+    const auto context_type = value_kind(*binding, context);
+    const auto output_type = value_kind(*binding, output);
+    const auto texture_type = value_kind(*binding, texture_input);
+    if (context_type.kind != ValueKind::record || output_type.kind != ValueKind::record ||
+        texture_type.kind != ValueKind::record)
+        return fail(Error{ErrorCode::invalid_type,
+                          "Material Context/Output/TextureInput must be registered plain records in this Runtime."});
+    // Capture ordinary plain defaults while the compile catalog is alive.
+    // Preview Source records compose the existing value defaults without
+    // ever passing preview TypeIds to live Runtime operations.
+    std::vector<std::vector<std::byte>> initial(binding->values.size());
+    std::vector<bool> captured(binding->values.size());
+    struct Defaults {
+        std::function<Result<const std::byte*>(std::uint32_t)> capture;
+
+        std::optional<Error> error;
+    } defaults;
+    defaults.capture = [&](std::uint32_t index) noexcept -> Result<const std::byte*> {
+        if (captured[index])
+            return initial[index].data();
+        captured[index] = true;
+        const auto& value = binding->values[index];
+        initial[index].resize(value.size);
+        if (runtime.describe(value.type)) {
+            atelier::detail::ValueStorage storage;
+            auto bytes = std::span(storage.prepare(value.size, value.alignment), value.size);
+            ATELIER_TRY(runtime.initialize_value(value.type, bytes));
+            std::memcpy(initial[index].data(), bytes.data(), bytes.size());
+            ATELIER_TRY(runtime.destroy_value(value.type, bytes));
+        } else
+            for (const auto& field : value.fields) {
+                if (field.type.kind != ValueKind::record)
+                    continue;
+                ATELIER_TRY_BIND(result, defaults.capture(field.type.type_index));
+                const auto& child = initial[field.type.type_index];
+                if (!child.empty())
+                    std::memcpy(initial[index].data() + field.offset, child.data(), child.size());
+            }
+        return initial[index].data();
+    };
+    const auto capture = [](void* state, std::uint32_t type) noexcept -> const std::byte* {
+        auto& defaults = *static_cast<Defaults*>(state);
+        auto result = defaults.capture(type);
+        if (result)
+            return *result;
+        defaults.error = std::move(result.error());
+        return nullptr;
+    };
+    EnvironmentView environment(*binding);
+    // Material locals never call native lifecycle operations: plain default
+    // bytes are captured on demand, then construction/copy lowers to value copies.
+    for (auto& value : environment.values)
+        value.can_own = value.plain_value;
+    const auto catalog = environment.view(nullptr);
+    std::string name(source_name);
+    auto state = std::make_shared<MaterialProgram::State>();
+    MaterialCode* code{};
+    char error[2048]{};
+    if (atelier_compile_material(name.c_str(), source.data(), static_cast<std::uint32_t>(source.size()), &catalog,
+                                 &defaults, capture, context_type.type_index, output_type.type_index,
+                                 texture_type.type_index, sample_texture, sample_orientation, &code, error,
+                                 sizeof(error))) {
+        if (defaults.error)
+            return std::unexpected(std::move(*defaults.error));
+        return std::unexpected(Error{ErrorCode::invalid_definition, error});
+    }
+    state->code.reset(code);
+    const auto view = atelier_material_code_view(code);
+    const auto info = atelier_business_info(view.shade);
+    const auto& c = binding->values[context_type.type_index];
+    const auto& o = binding->values[output_type.type_index];
+    const auto& p = binding->values[view.parameters];
+    state->supports_coverage = std::ranges::any_of(
+        o.fields, [](const auto& field) { return field.name == "coverage" && field.type == ValueKind::f32; });
+    if (!std::ranges::any_of(*declarations, [&](const auto& declaration) {
+            return declaration.name == p.name && !declaration.enumeration;
+        }))
+        return fail(Error{ErrorCode::invalid_definition, "Material Params must be declared by this source."});
+    if (view.resources != UINT32_MAX) {
+        const auto& resources = binding->values[view.resources];
+        if (!std::ranges::any_of(*declarations, [&](const auto& declaration) {
+                return declaration.name == resources.name && !declaration.enumeration;
+            }))
+            return fail(Error{ErrorCode::invalid_definition, "Material Resources must be declared by this source."});
+        state->resources = {resources.size, resources.alignment};
+        state->resource_values.resize(resources.size);
+        for (const auto& input : std::span(view.textures, view.texture_count)) {
+            state->textures.push_back({input.key, input.slot});
+            std::memcpy(state->resource_values.data() + input.offset, &input.slot, sizeof(input.slot));
+        }
+    }
+    state->context = {c.size, c.alignment};
+    state->output = {o.size, o.alignment};
+    state->parameters = {p.size, p.alignment};
+    parameter_fields({ValueKind::record, view.parameters}, info.environment, {}, 0, state->fields);
+    atelier::detail::ValueStorage storage;
+    auto* bytes = storage.prepare(p.size, p.alignment);
+    BusinessValue result{{ValueKind::record, view.parameters}, 0, ArgumentStorage::value, bytes};
+    Samples samples{};
+    if (atelier_invoke_business(view.defaults, &samples, nullptr, 0, &result, error, sizeof(error)))
+        return fail(Error{ErrorCode::invocation_failed, error});
+    if (!finite_value(result.kind, info.environment, bytes))
+        return fail(Error{ErrorCode::invalid_definition, "Material defaults must be finite."});
+    state->defaults.assign(bytes, bytes + p.size);
+    return std::shared_ptr<const MaterialProgram>(new MaterialProgram(std::move(state)));
 }
 }

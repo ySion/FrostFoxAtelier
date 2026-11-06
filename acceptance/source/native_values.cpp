@@ -30,8 +30,8 @@ void verify_native_value_borrows() {
                 layout->fields[0].offset == offsetof(Particle, position) &&
                 layout->fields[2].offset == offsetof(Particle, name),
             "Generated direct layout does not match the native record.");
-    source::Program update(runtime, {});
-    auto candidate = take(source::Program::prepare(take(update.request("native-values.source", R"(
+    auto update = take(source::Program::create(runtime));
+    auto candidate = take(source::Program::prepare(take(update->request("native-values.source", R"(
         float update(Array<borrow.Particle>& values, const Array<borrow.Particle>& source, float delta) {
             uint index = 0;
             float total = 0.0;
@@ -44,7 +44,7 @@ void verify_native_value_borrows() {
             return total;
         }
     )"))));
-    take(update.try_publish(candidate));
+    take(update->try_publish(candidate));
     {
         Array<Particle> particles;
         particles.resize(2);
@@ -57,7 +57,7 @@ void verify_native_value_borrows() {
         retired.reset();
         take(runtime.begin_collection());
         require(
-            std::get<float>(*take(update.entry().invoke(
+            std::get<float>(*take(update->entry().invoke(
                 {}, std::array{Argument::borrow(particles), Argument::borrow(read_only), Argument{Scalar{1.f}}}))) == 3,
             "Borrowed source returned an incorrect total.");
         require(RetiredAsset::destroyed == 0, "GC ran inside a synchronous value borrow.");
@@ -68,12 +68,12 @@ void verify_native_value_borrows() {
         while (runtime.collection_phase() != CollectionPhase::idle)
             take(runtime.collect_step({1}));
         require(RetiredAsset::destroyed == 1, "Host could not collect after the borrowed call returned.");
-        source::Program partial(runtime, {});
-        candidate = take(source::Program::prepare(take(partial.request(
+        auto partial = take(source::Program::create(runtime));
+        candidate = take(source::Program::prepare(take(partial->request(
             "partial.source",
             "void partial(Array<borrow.Particle>& values) { values[0].count = 77; values[values.size()].count = 0; }"))));
-        take(partial.try_publish(candidate));
-        require(!partial.entry().invoke({}, std::array{Argument::borrow(particles)}) && particles[0].count == 77,
+        take(partial->try_publish(candidate));
+        require(!partial->entry().invoke({}, std::array{Argument::borrow(particles)}) && particles[0].count == 77,
                 "Bounds failure hid already committed native writes.");
         particles.clear();
     }

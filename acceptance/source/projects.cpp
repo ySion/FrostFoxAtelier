@@ -57,7 +57,7 @@ struct EngineBase {
 void verify_property_update() {
     Runtime runtime;
     take(NativeRegistration<EngineBase>{runtime, "procedural.Base", TypeKind::object}.publish());
-    Program program(runtime);
+    auto program = take(Program::create(runtime));
     const auto string_type = take(runtime.register_type(string_definition(runtime)));
     source::SourceSnapshot input{
         "properties",
@@ -75,7 +75,7 @@ void verify_property_update() {
                 uint run() { Local = Local + props.Value; return Local; }
             }
         )"}}};
-    publish(program, input);
+    publish(*program, input);
     const auto type = take(runtime.find_type("game.Property"));
     const auto field = take(runtime.find_field(type, "stored"));
     const auto* info = take(runtime.describe(type));
@@ -95,8 +95,8 @@ void verify_property_update() {
             "Source String defaults lost decoded bytes or empty initialization.");
     const auto edited = String::literal<"host_owned_selection_0123456789">();
     take(runtime.write(instance.id(), selection, ValueInput{string_type, &edited}));
-    const auto entry = take(take(program.entry("game.Property.run")).bind<std::uint32_t>());
-    const auto old = take(take(program.pin("game.Property.run")).bind<std::uint32_t>());
+    const auto entry = take(take(program->entry("game.Property.run")).bind<std::uint32_t>());
+    const auto old = take(take(program->pin("game.Property.run")).bind<std::uint32_t>());
     require(take(entry.invoke(instance.id())) == 10, "Initial cross-file property call produced the wrong state.");
     input.files[0].source = "uint props.GetValue() { return 11; } void props.SetValue(uint v) {}";
     // Reorder exports while retaining the same following handle and stable slot.
@@ -112,25 +112,25 @@ void verify_property_update() {
             void SetLocal(uint v) { self.stored = v; }
         }
     )";
-    publish(program, input);
+    publish(*program, input);
     require(take(entry.invoke(instance.id())) == 21 &&
-                std::get<std::uint32_t>(*take(take(program.entry("value")).invoke({}, {}))) == 11 &&
+                std::get<std::uint32_t>(*take(take(program->entry("value")).invoke({}, {}))) == 11 &&
                 take(old.invoke(instance.id())) == 28,
             "Property update kept stale dependencies or changed a pinned accessor version.");
     require(take(runtime.describe(type)) == info && take(runtime.find_field(type, "stored")) == field &&
                 info->fields[0].metadata == metadata && read_text(selection) == edited,
             "Equivalent field declarations changed identity, metadata or the live String override.");
-    const auto revision = program.revision();
+    const auto revision = program->revision();
     input.files[1].source.replace(input.files[1].source.find("\"run\""), 5, "\"other\"");
-    const auto changed = Program::prepare(take(program.request(input)));
-    require(!changed && changed.error().code == ErrorCode::rebuild_required && program.revision() == revision &&
+    const auto changed = Program::prepare(take(program->request(input)));
+    require(!changed && changed.error().code == ErrorCode::rebuild_required && program->revision() == revision &&
                 take(entry.invoke(instance.id())) == 39 && info->fields[0].metadata == metadata,
             "Changed field Meta bypassed rebuild or damaged the prior publication.");
     input.files[1].source.replace(input.files[1].source.find("\"other\""), 7, "\"run\"");
     input.files[1].source.replace(input.files[1].source.find("noise_"), 6, "new_");
-    const auto default_changed = Program::prepare(take(program.request(input)));
+    const auto default_changed = Program::prepare(take(program->request(input)));
     require(!default_changed && default_changed.error().code == ErrorCode::rebuild_required &&
-                program.revision() == revision && read_text(selection) == edited &&
+                program->revision() == revision && read_text(selection) == edited &&
                 take(entry.invoke(instance.id())) == 50,
             "Changed String default bypassed rebuild or damaged the prior live object and code.");
 }
@@ -151,8 +151,8 @@ class game.Move : world.Component {
 void verify_world_project() {
     Runtime runtime;
     const auto world_types = take(w::register_types(runtime));
-    Program program(runtime);
-    publish(program, sources());
+    auto program = take(Program::create(runtime));
+    publish(*program, sources());
     const auto type = take(runtime.find_type("game.Move"));
     w::World world(runtime, world_types);
     auto owner = take(w::create_entity(runtime));
@@ -162,8 +162,8 @@ void verify_world_project() {
     require(!composed.notification_error, "Source class capability assembly failed.");
     require(!take(world.attach(owner.id())).notification_error, "Source owner attachment failed.");
     const auto speed = take(runtime.find_field(type, "speed"));
-    const auto tick = take(program.entry("game.Move.tick"));
-    const auto old = take(program.pin("game.Move.tick"));
+    const auto tick = take(program->entry("game.Move.tick"));
+    const auto old = take(program->pin("game.Move.tick"));
     bool replay_old{};
     take(world.bind_behavior(type, {.tick = [&](Runtime&, ObjectId id, float dt) -> Result<void> {
                                  const std::array args{Scalar{dt}};
@@ -182,7 +182,7 @@ void verify_world_project() {
     take(world.update(.5f));
     require(x() == 1.f, "Cross-file helper or inherited native action failed.");
     take(runtime.write(instance.id(), speed, 4.f));
-    publish(program, sources(2));
+    publish(*program, sources(2));
     replay_old = true;
     take(world.update(.5f));
     replay_old = false;
@@ -190,11 +190,11 @@ void verify_world_project() {
             "Hot update lost instance state or its old code lease.");
     auto bad = sources(2);
     bad.files[0].source = "float distance(float speed, float dt) { return missing; }";
-    require(!Program::prepare(take(program.request(bad))), "Invalid replacement compiled.");
+    require(!Program::prepare(take(program->request(bad))), "Invalid replacement compiled.");
     take(world.update(.5f));
     require(x() == 11.f, "Failed candidate replaced active World code.");
     require(!take(world.stop()).notification_error, "Source lifecycle stop failed.");
-    program.close();
+    program->close();
     take(world.bind_behavior(type, {.tick = [old](Runtime&, ObjectId id, float dt) -> Result<void> {
                                  auto result = old.invoke(id, std::array{Scalar{dt}});
                                  if (!result)

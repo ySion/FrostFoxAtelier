@@ -81,10 +81,10 @@ void verify_procedural_graph() {
     const auto text = authored.dump(2) + "\n";
     Runtime runtime;
     take(register_types(runtime));
-    source::Program program{runtime};
-    auto candidate = take(source::Program::prepare(take(program.request(
+    auto program = take(source::Program::create(runtime));
+    auto candidate = take(source::Program::prepare(take(program->request(
         source::SourceSnapshot{"procedural-graph", 1, take(source::engine_sources(source::default_engine_root()))}))));
-    take(program.try_publish(candidate));
+    take(program->try_publish(candidate));
     auto document = take(editor::load_graph(runtime, text));
     const auto entry = [&](const char* name) -> const editor::GraphNode& {
         const auto found = std::ranges::find(document.nodes, std::string{name}, &editor::GraphNode::name);

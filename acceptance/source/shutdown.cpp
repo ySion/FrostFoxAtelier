@@ -50,7 +50,7 @@ struct HostOwner {
 
     ObjectRoot receiver;
 
-    std::optional<Program> program;
+    std::unique_ptr<Program> program;
 
     Program::Entry entry;
 
@@ -70,7 +70,7 @@ struct HostOwner {
         type = take(NativeRegistration<Signal>{*runtime, "stage.Signal", TypeKind::object}
                         .method<&Signal::signal>("signal")
                         .publish());
-        program.emplace(*runtime, type);
+        program = take(Program::create(*runtime, type));
         receiver = take(runtime->create(type));
     }
 
@@ -239,7 +239,7 @@ void verify_synchronous_shutdown() {
 void verify_following_shutdown() {
     HostOwner owner;
     ActiveOwner active(owner);
-    owner.program.emplace(*owner.runtime);
+    owner.program = take(Program::create(*owner.runtime));
     source::SourceSnapshot snapshot{"shutdown", 1, {{"Source/Shutdown.source", 1, R"(
             class stage.Script : stage.Signal {
                 uint run(uint mode) { self.signal(mode); return 37 / (mode - 1); }

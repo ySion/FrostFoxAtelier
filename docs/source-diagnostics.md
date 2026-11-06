@@ -8,18 +8,18 @@
 
 ```cpp
 using namespace atelier;
-source::Program program(runtime);
-auto request = program.request("math.source", "float scale(float x) { return x * 2.0; }",
+ATELIER_TRY_BIND(program, source::Program::create(runtime));
+auto request = (*program)->request("math.source", "float scale(float x) { return x * 2.0; }",
     {}, {.diagnostics = true, .artifacts = true});
 if (!request) return std::unexpected(request.error());
 auto candidate = source::Program::prepare(*request);
 if (!candidate) return std::unexpected(candidate.error());
-auto published = program.try_publish(*candidate);
+auto published = (*program)->try_publish(*candidate);
 if (!published) return published;
 
 source::Diagnostics capture({.timing = true});
 std::array arguments{Scalar{3.0f}};
-auto result = program.entry().invoke({}, arguments, &capture);
+auto result = (*program)->entry().invoke({}, arguments, &capture);
 auto report = capture.snapshot(); // owning copy; also available after failure
 ```
 

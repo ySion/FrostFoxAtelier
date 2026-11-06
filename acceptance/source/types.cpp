@@ -10,8 +10,8 @@ using namespace atelier::acceptance::helpers;
 
 void verify_source_types() {
     Runtime runtime;
-    source::Program program(runtime, {});
-    auto candidate = take(source::Program::prepare(take(program.request("damage.source", R"(
+    auto program = take(source::Program::create(runtime));
+    auto candidate = take(source::Program::prepare(take(program->request("damage.source", R"(
         struct combat.DamageInfo { combat.Point point; combat.Kind kind; uint amount; };
         enum combat.Kind : uint { Physical, Fire = 7, Ice }
         struct combat.Point { float x; int count; };
@@ -32,8 +32,8 @@ void verify_source_types() {
         }
         void bump(uint& value, uint amount) { value = value + amount; }
     )",
-                                                                        "process"))));
-    take(program.try_publish(candidate));
+                                                                         "process"))));
+    take(program->try_publish(candidate));
     const auto damage = take(runtime.find_type("combat.DamageInfo"));
     const auto* info = take(runtime.describe(damage));
     require(info->size == 16 && info->alignment == 4, "Source record layout differs from its declared fields.");
@@ -49,7 +49,7 @@ void verify_source_types() {
     };
     Damage value{5.0f, 0, 7, 3};
     const std::array arguments{Argument::borrow(damage, &value, &value)};
-    require(std::get<std::uint32_t>(*take(program.entry().invoke({}, arguments))) == 13 && value.amount == 7 &&
+    require(std::get<std::uint32_t>(*take(program->entry().invoke({}, arguments))) == 13 && value.amount == 7 &&
                 value.x == 6.0f && value.kind == 8,
             "Source/C++ shared storage lost record copies, reference writes or enum values.");
     std::puts("Source types: PASS (shared record layout and generated value operations)");

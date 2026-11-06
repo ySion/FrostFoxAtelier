@@ -12,7 +12,7 @@
 
 ## 无 C++ 异常的目标合同
 
-**W0 冻结、W2 分片实施：NativeLayout 结果回调、原生成员 Result 注册/反射与定型 thunk 已实现。** 全局错误分类、fatal 与构造工厂遵循[工程指南](engineering.md#错误处理)。这不代表全仓去异常完成：其他回调、LLVM 错误适配、Material 延迟错误及上层业务仍按对应片迁移，最终编译开关尚未翻转。Runtime 类型身份、单线程准入、根与代码寿命不因错误通道改变；World 检查仍不排期，MaterialProgram 的独立并发合同不变。
+**W0 冻结、W2 分片实施：NativeLayout 结果回调、原生成员 Result 注册/反射与定型 thunk 已实现。** 全局错误分类、fatal 与构造工厂遵循[工程指南](engineering.md#错误处理)。这不代表全仓去异常完成：其他运行服务回调、LLVM 错误适配及上层业务仍按对应片迁移，最终编译开关尚未翻转。Runtime 类型身份、单线程准入、根与代码寿命不因错误通道改变；World 检查仍不排期，MaterialProgram 的独立并发合同不变。
 
 ### 原生值生命周期目标
 
@@ -44,9 +44,9 @@ C++ 原生回调不能依赖异常自动展开：若先构造完整对象再做�
 
 原生程序化节点迁移后的可失败签名为 `atelier::Result<void> evaluate(...) const noexcept`，原有 Geometry/Context 引用参数、参数名及 BorrowSafe 约束保持。注册器把它发布为 **业务结果 void** 的同一个 `evaluate`，错误不是额外输出端口。生产者只剥离一层 runtime Result；不把 `std::expected` 的布局注册成业务类型，不让 Runtime 理解 Geometry、列名或节点错误。程序化操作自己的 Result 由节点在本模块边界转换为带原原因的 runtime 错误（节点执行失败为 `invocation_failed`），不通过 throw、线程局部“最后错误”或往 Context 塞错误旁路传递。
 
-动态 Invoker 与定型 native thunk 从同一个原生结果取值/取错：失败先保留首因，不读取未产生的结果、不覆盖调用方原输出；成功仍需通过既有结果类型与存储检查。进入 JIT 的状态/诊断保持固定 ABI，宿主拥有 Error，生成代码只走状态分支并显式释放已构造值、根和借用。`runtime.cpp` 的值构造现已在清理后返回失败，不再重抛；这不是 JIT 展开协议。Material 的采样与方向回调现为 noexcept Result，evaluate 只在宿主保存普通 Error，不再延迟保存或重抛采样异常；编译期默认值捕获与其他 Source 边界仍待后续片迁移。
+动态 Invoker 与定型 native thunk 从同一个原生结果取值/取错：失败先保留首因，不读取未产生的结果、不覆盖调用方原输出；成功仍需通过既有结果类型与存储检查。进入 JIT 的状态/诊断保持固定 ABI，宿主拥有 Error，生成代码只走状态分支并显式释放已构造值、根和借用。`runtime.cpp` 的值构造现已在清理后返回失败，不再重抛；这不是 JIT 展开协议。Material 的采样、方向与编译期默认值捕获均使用显式 Result；evaluate 和 compile_material 只在宿主保存普通 Error，不再延迟保存或重抛异常。默认值构造失败不发布预览类型或部分 MaterialProgram；已构造临时值沿 Runtime 生命周期清理。Source 运行服务与 LLVM 内部错误适配仍待后续片迁移。
 
-失败只保证声明过的输出暂存不提交，不撤销原生回调此前通过可写引用造成的业务修改。程序化求值器仍拥有节点候选输出和发布决定：任一绑定/调用失败不发布部分 Geometry，旧输出保留，修正输入后可重新求值。S1-E 在 W2 完成后复用这条通道统一原生与 Source 列绑定；W0 不实现 E、不改变端口、缓存或调度。
+失败只保证声明过的输出暂存不提交，不撤销原生回调此前通过可写引用造成的业务修改。程序化求值器仍拥有节点候选输出和发布决定：任一绑定/调用失败不发布部分 Geometry，旧输出保留，修正输入后可重新求值。原生与 Source 列节点现已共用这条结果通道和绑定计划，当前字段、列与组选择合同见[原生与自有语言列节点](modules/procedural/README.md#原生与自有语言列节点)。
 
 W2 以既有 Runtime/Source/反射/程序化的构造失败、部分赋值、写暂存后失败与恢复序列验收该合同；保留清理计数、旧输出及再次执行结果的独立断言，去掉“必须抛异常”的夹具写法，不新建拒绝矩阵。
 
@@ -488,7 +488,8 @@ Result<void> destroy_value(TypeId, std::span<std::byte> storage);
 
 [source::Program](../modules/execution/source/include/source/program.hpp) 管理一个完整源码入口/LLJIT 资源单元。Runtime 提供共同签名解析、执行作用域及发布准入；源码请求、候选、稳定入口与租约归该正式宿主模块。通用公共调用使用 Scalar 值或 Argument 借用，同步标量还可绑定固定或跟随版本的定型句柄；私有 DLL 参数布局与内部观察接缝不进入业务接口。每个版本都可以随代码提交新的源码 enum/struct 类型；兼容更新保持已发布类型的身份和布局，不重建对象，也不向原生 Invoker 表塞入裸 JIT 地址。
 
-- **声明与依赖**：构造程序时只绑定 Runtime 和对象目录，不重复手写源码的函数名或参数/结果声明。首次成功发布从真实编译产物通过 Runtime 解析建立不可变 `FunctionSignature`；后续请求捕获该声明及类型/字段/方法、布局和服务表快照。依赖复核使用该程序捕获的目录，其他模块追加无关类型不改变已有索引。`describe()` 交付拥有描述数组的副本；动态 `Entry/Lease::invoke` 核对值或借用实参，`start` 核对协程实参并创建固定版本实例，同步/协程错用拒绝。
+- **创建与绑定**：`Program::create(Runtime&, TypeId = {}) noexcept` 返回 `Result<std::unique_ptr<Program>>`，先完成目录绑定再交付拥有者；错误不留下半初始化程序。非空接收者必须是当前 Runtime 的对象类型，空 TypeId 建立无接收者目录。Program 不可移动，地址稳定；独占拥有者可交给宿主已有的共享所有权，不额外建立脚本对象世界。
+- **声明与依赖**：创建程序时只绑定 Runtime 和对象目录，不重复手写源码的函数名或参数/结果声明。首次成功发布从真实编译产物通过 Runtime 解析建立不可变 `FunctionSignature`；后续请求捕获该声明及类型/字段/方法、布局和服务表快照。依赖复核使用该程序捕获的目录，其他模块追加无关类型不改变已有索引。`describe()` 交付拥有描述数组的副本；动态 `Entry/Lease::invoke` 核对值或借用实参，`start` 核对协程实参并创建固定版本实例，同步/协程错用拒绝。
 - **定型绑定**：`Lease::bind<R, Args...>()` 和 `Entry::bind<R, Args...>()` 核对同一共享签名并返回 `Program::Typed<R, Args...>`，分别固定版本和跟随发布，不增加模式参数。只支持同步按值 int32/uint32/float/double/bool，结果为 void 或其中一个标量；其他位宽、枚举、引用、聚合值、容器与协程继续使用动态接口。`invoke(ObjectId, Args..., Diagnostics* = nullptr, Debugger* = nullptr)` 返回 `Result<R>`，不构造 Scalar/BusinessValue 实参数组，也不静默回落。签名不合返回错误，空句柄不能执行。固定句柄持有其 Version，热发布不改绑，Program 关闭后仍可调用。跟随句柄持有控制状态与稳定入口索引；发布后同一句柄选新版本，关闭后拒绝调用，不保活旧代码。每次只选一次 Version/定型地址，不查名字或重复核签名，执行区间保护该版本至错误定位、诊断和清理结束，不逐调用复制版本 shared_ptr；回调之后不访问可能已销毁的句柄或控制状态。两者都不保活接收者或 Runtime，仍需合法活身份、同线程准入及完整诊断/调试/显式清理；失败不交付结果，不回滚已发生的业务副作用。具名 `entry(name)` / `pin(name)` 同样可绑定，导出重排保持已发布索引。
 - **源码类型发布**：enum/struct 的定义来自源码，身份、布局、字段与值操作来自同一 Runtime。发布在类型安全点完成代码编译、签名解析、依赖核验与全部分配，再提交新类型和代码；失败不占用类型名。已发布的定义随后冻结，后续版本可以追加新声明；关闭代码不注销类型，具体见[源码类型声明](source-type-declarations.md)。
 - **接收者固定**：首次声明确定是否需要接收者；目录中有对象类型并不表示必须提供 self。无接收者声明不能在兼容更新中新增 self；已有接收者即使新函数体不再读取 self，调用方仍须提供正确活对象。`BusinessCodeInfo::requires_receiver` 只是当前代码使用标志，不能重新决定已发布声明。

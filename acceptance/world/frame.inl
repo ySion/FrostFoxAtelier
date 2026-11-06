@@ -80,10 +80,10 @@ void frame_phases() {
             "A Tick-queued destroy did not commit with paired End when its phase ended.");
 
     // Source requests use the same queue.
-    source::Program program(runtime, types.counter);
-    publish(program, "void tick(float dt) {\n    self.advance(dt);\n"
-                     "    if (self.steps == 1) { self.set_enabled(false); } else { self.destroy(); }\n}\n");
-    const auto entry = take(program.entry().bind<void, float>());
+    auto program = take(source::Program::create(runtime, types.counter));
+    publish(*program, "void tick(float dt) {\n    self.advance(dt);\n"
+                      "    if (self.steps == 1) { self.set_enabled(false); } else { self.destroy(); }\n}\n");
+    const auto entry = take(program->entry().bind<void, float>());
     take(
         world.bind_behavior(types.counter, {.tick = [entry](Runtime&, ObjectId receiver, float amount) -> Result<void> {
                                 return entry.invoke(receiver, amount);

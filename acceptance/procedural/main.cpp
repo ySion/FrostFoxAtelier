@@ -1149,8 +1149,8 @@ void source_noise_remap() {
     Runtime runtime;
     take(register_types(runtime));
     Project project;
-    source::Program program{runtime};
-    project.publish(program);
+    auto program = take(source::Program::create(runtime));
+    project.publish(*program);
     const auto noise_type = take(runtime.find_type("procedural.Noise"));
     const auto graph = take(runtime.create(type<Graph>(runtime)));
     const auto points = take(add_node(runtime, graph.id(), type<Line>(runtime)));
@@ -1173,7 +1173,7 @@ void source_noise_remap() {
     take(connect(runtime, graph.id(), group.id(), 0, noise.id(), 0));
     take(set_display(runtime, graph.id(), noise.id()));
     Meshes resources;
-    Evaluator evaluator{runtime, graph, resources, &program};
+    Evaluator evaluator{runtime, graph, resources, program.get()};
     take(evaluator.evaluate());
     require(!failed(evaluator, noise.id()) && evaluator.output(), "Source Noise did not publish.");
     // Independent modular integer arithmetic gives corner top-24 bits, X fastest:
@@ -1359,20 +1359,20 @@ void source_nodes() {
     take(register_types(runtime));
     Project project;
     project.files["fixture.source"] = std::string{fixture_source};
-    source::Program program{runtime};
-    project.publish(program);
+    auto program = take(source::Program::create(runtime));
+    project.publish(*program);
     const auto source_type = [&](std::string_view name) {
-        const auto classes = program.classes();
+        const auto classes = program->classes();
         const auto found = std::ranges::find(classes, name, &source::ClassInfo::name);
         require(found != classes.end(), "A Source node class was not published.");
         return found->type;
     };
-    bound_columns(runtime, source_type("fixture.BoundColumns"), &program);
+    bound_columns(runtime, source_type("fixture.BoundColumns"), program.get());
     const auto lift_type = source_type("fixture.Lift");
     // Fixed lowbias32 vectors computed offline with modular integer arithmetic, not random.hpp.
-    const auto source_hash = take(program.entry("test_hash"));
-    const auto source_hash2 = take(program.entry("test_hash2"));
-    const auto source_unit = take(program.entry("test_unit"));
+    const auto source_hash = take(program->entry("test_hash"));
+    const auto source_hash2 = take(program->entry("test_hash2"));
+    const auto source_unit = take(program->entry("test_unit"));
     const auto call = [](const source::Program::Entry& entry, auto... values) {
         return *take(entry.invoke({}, std::array{Scalar{values}...}));
     };
@@ -1403,7 +1403,7 @@ void source_nodes() {
     take(connect(runtime, batch_graph, batch_input, 0, batch, 0));
     take(connect(runtime, batch_graph, batch_input, 0, sibling, 0));
     take(set_display(runtime, batch_graph, batch_input));
-    Evaluator batching{runtime, batch_root, resources, &program};
+    Evaluator batching{runtime, batch_root, resources, program.get()};
     take(batching.evaluate());
     require(batching.output() != nullptr, "The batch input failed.");
     const Geometry original = *batching.output();

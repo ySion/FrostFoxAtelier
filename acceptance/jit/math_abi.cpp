@@ -25,7 +25,7 @@ void verify_math_abi() {
     const auto type = take(NativeRegistration<MathAbiHost>{runtime, "acceptance.MathAbiHost", TypeKind::object}
                                .method<&MathAbiHost::value>("value", true)
                                .publish());
-    auto binding = bind_type(runtime, type);
+    auto binding = take(bind_type(runtime, type));
     using Entry = std::uint32_t (*)(NativeContext*, void*, void*, NativeFailure*) noexcept;
     static const auto entry = reinterpret_cast<Entry>(native_method<&MathAbiHost::value>("value", true).native_entry);
     binding.methods.front().entry = reinterpret_cast<std::uintptr_t>(

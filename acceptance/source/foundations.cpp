@@ -44,6 +44,8 @@ struct Host {
 
     std::uint32_t calls{};
 
+    Mode mode{Mode::idle};
+
     String last_text;
 
     bool touch(bool value) {
@@ -85,6 +87,7 @@ TypeId register_foundations(Runtime& runtime) {
                     .build();
     work.native.value_operations_preserve_borrows = true;
     return take(runtime.register_types({NativeRegistration<Host>{runtime, "foundation.Host", TypeKind::object}
+                                            .field<&Host::mode>("mode")
                                             .method<&Host::touch>("touch", true)
                                             .method<&Host::text>("text", true)
                                             .method<&Host::fail>("fail", true)
@@ -107,19 +110,32 @@ void verify_native_result_projection() {
     take(runtime.call(object.id(), take(runtime.find_method(type, "get_mode")), {}, &mode));
     require(std::get<EnumValue>(mode) == EnumValue{take(runtime.native_type<Mode>()), 7},
             "Native-only enum result lost its Runtime identity or value.");
-    Program program(runtime, type);
-    publish(program, "void run() { self.SetGuard(9); }");
+    auto program = take(Program::create(runtime, type));
+    publish(*program, "void run() { self.SetGuard(9); }");
+    const auto entry = program->entry();
     auto rejected =
-        Program::prepare(take(program.request("native-result.source", "void run() { self.get_mode(); }", "run")));
+        Program::prepare(take(program->request("native-result.source", "void run() { self.get_mode(); }", "run")));
     require(!rejected, "Native-only result was exposed as a void call.");
-    take(program.entry().invoke(object.id(), {}));
+    take(entry.invoke(object.id(), {}));
     require(take(runtime.with_native<Host>(
                 object.id(), [](const Host& host) -> Result<bool> { return host.calls == 1 && host.guard == 9; })),
             "Rejected source executed the native-only method or lost the prior valid entry.");
+    publish(*program, "void run() { self.SetGuard(13); }");
+    rejected =
+        Program::prepare(take(program->request("native-field.source", "void run() { self.mode = self.mode; }", "run")));
+    take(entry.invoke(object.id(), {}));
+    require(!rejected &&
+                take(runtime.with_native<Host>(object.id(),
+                                               [](const Host& host) -> Result<bool> {
+                                                   return host.calls == 1 && host.guard == 13 &&
+                                                          host.mode == Mode::idle;
+                                               })) &&
+                take(runtime.read(object.id(), take(runtime.find_field(type, "mode")))) == mode,
+            "Native-only field projection changed host data or prevented compatible publication.");
     {
-        Program literal(runtime, type);
-        publish(literal, "bool run() { return self.text(\"jit-owned-text/0123456789/after-program-retirement\"); }");
-        require(result<bool>(literal.entry().invoke(object.id(), {})), "Native text consumer rejected the literal.");
+        auto literal = take(Program::create(runtime, type));
+        publish(*literal, "bool run() { return self.text(\"jit-owned-text/0123456789/after-program-retirement\"); }");
+        require(result<bool>(literal->entry().invoke(object.id(), {})), "Native text consumer rejected the literal.");
     }
     require(take(runtime.with_native<Host>(object.id(),
                                            [](const Host& host) -> Result<bool> {
@@ -132,9 +148,9 @@ void verify_native_result_projection() {
 void verify_properties_and_weakening() {
     Runtime runtime;
     const auto host_type = register_foundations(runtime);
-    Program program(runtime, host_type);
+    auto program = take(Program::create(runtime, host_type));
     const auto object = take(runtime.create(host_type));
-    publish(program, R"(
+    publish(*program, R"(
         uint run() {
             foundation.Host held = self;
             weak foundation.Host watched = held;
@@ -142,9 +158,9 @@ void verify_properties_and_weakening() {
             return watched.Guard + watched.Next * 100;
         }
     )");
-    require(result<std::uint32_t>(program.entry().invoke(object.id(), {})) == 312,
+    require(result<std::uint32_t>(program->entry().invoke(object.id(), {})) == 312,
             "Native property evaluation order changed the result.");
-    publish(program, R"(
+    publish(*program, R"(
         uint GetValue() { return self.Next; }
         void SetValue(uint value) { self.Guard = value; }
         void SetSink(uint value) { self.SetGuard(value); }
@@ -154,10 +170,10 @@ void verify_properties_and_weakening() {
             return self.GetGuard();
         }
     )");
-    require(result<std::uint32_t>(program.entry().invoke(object.id(), {})) == 51,
+    require(result<std::uint32_t>(program->entry().invoke(object.id(), {})) == 51,
             "Source property assignment repeated an operand or lost accessor order.");
-    publish(program, "uint run() { self.Guard = 101; return 0; }");
-    require(!program.entry().invoke(object.id(), {}) &&
+    publish(*program, "uint run() { self.Guard = 101; return 0; }");
+    require(!program->entry().invoke(object.id(), {}) &&
                 take(runtime.with_native<Host>(object.id(),
                                                [](const Host& host) -> Result<bool> { return host.guard == 51; })),
             "Failed property assignment changed its prior value.");
@@ -165,11 +181,11 @@ void verify_properties_and_weakening() {
 
 void verify_boolean_storage() {
     Runtime runtime;
-    Program aliases(runtime, {});
+    auto aliases = take(Program::create(runtime));
     publish(
-        aliases,
+        *aliases,
         "bool run(bool copy, const bool& read, bool& write) { write = copy; return read == write && write != !copy; }");
-    const auto entry = aliases.entry();
+    const auto entry = aliases->entry();
     struct Guarded {
         bool value{};
 
@@ -189,9 +205,9 @@ void verify_boolean_storage() {
 void verify_short_circuit() {
     Runtime runtime;
     const auto host_type = register_foundations(runtime);
-    Program owned(runtime, host_type);
-    Program roots(runtime, host_type);
-    publish(owned, R"(
+    auto owned = take(Program::create(runtime, host_type));
+    auto roots = take(Program::create(runtime, host_type));
+    publish(*owned, R"(
         bool run(bool fail) {
             foundation.Work local;
             local.label = "short-circuit/owned/heap/string";
@@ -209,7 +225,7 @@ void verify_short_circuit() {
             return true || self.fail();
         }
     )");
-    publish(roots, R"(
+    publish(*roots, R"(
         bool run() {
             foundation.Host held = self;
             if (false && held.fail()) { return false; }
@@ -221,37 +237,37 @@ void verify_short_circuit() {
         return take(runtime.with_native<Host>(object.id(),
                                               [](const Host& host) -> Result<std::uint32_t> { return host.calls; }));
     };
-    const auto owned_call = take(take(owned.pin()).bind<bool, bool>());
+    const auto owned_call = take(take(owned->pin()).bind<bool, bool>());
     require(!owned_call.invoke(object.id(), true) && calls() == 3 && Work::live == 0 && runtime.root_count() == 1,
             "A failing logical LHS ran its RHS or leaked scoped storage.");
-    require(!roots.entry().invoke(object.id(), {}) && calls() == 4 && runtime.root_count() == 1 &&
+    require(!roots->entry().invoke(object.id(), {}) && calls() == 4 && runtime.root_count() == 1 &&
                 take(owned_call.invoke(object.id(), false)) && calls() == 6 && Work::live == 0,
             "Logical failure leaked rooted locals or blocked subsequent execution.");
 }
 
 void verify_numeric_failures() {
     Runtime runtime;
-    Program integers(runtime, {});
-    publish(integers, "int run(int a, int b) { return a / b; }");
-    const auto divide = take(take(integers.pin()).bind<std::int32_t, std::int32_t, std::int32_t>());
+    auto integers = take(Program::create(runtime));
+    publish(*integers, "int run(int a, int b) { return a / b; }");
+    const auto divide = take(take(integers->pin()).bind<std::int32_t, std::int32_t, std::int32_t>());
     require(!divide.invoke({}, 1, 0) && take(divide.invoke({}, -8, 2)) == -4,
             "Arithmetic error left execution admission closed.");
-    Program conversion(runtime, {});
-    publish(conversion, "vector3d run(double input) { return vector3d(double(int(input)), 2.0d, 3.0d); }");
+    auto conversion = take(Program::create(runtime));
+    publish(*conversion, "vector3d run(double input) { return vector3d(double(int(input)), 2.0d, 3.0d); }");
     const auto type = take(runtime.native_type<math::Vector3d>());
     math::Vector3d output{91.0, 92.0, 93.0};
-    require(!conversion.entry().invoke({}, std::array{Scalar{2147483648.0}}, ValueOutput{type, &output}) &&
+    require(!conversion->entry().invoke({}, std::array{Scalar{2147483648.0}}, ValueOutput{type, &output}) &&
                 output == math::Vector3d{91.0, 92.0, 93.0},
             "Checked integer conversion overwrote failed output.");
-    take(conversion.entry().invoke({}, std::array{Scalar{-2147483648.5}}, ValueOutput{type, &output}));
+    take(conversion->entry().invoke({}, std::array{Scalar{-2147483648.5}}, ValueOutput{type, &output}));
     require(output == math::Vector3d{-2147483648.0, 2.0, 3.0},
             "FP conversion checked its range before truncating toward zero.");
 }
 
 void verify_typed_scalar_abi() {
     Runtime runtime;
-    Program program(runtime);
-    publish(program, R"(
+    auto program = take(Program::create(runtime));
+    publish(*program, R"(
         double run(int signed_value, float narrow, double wide, uint high, bool enabled, int tail) {
             double value = double(signed_value) * 2.0d + double(narrow) * 3.0d + wide * 5.0d
                          + double(high) + double(tail) * 7.0d;
@@ -260,7 +276,7 @@ void verify_typed_scalar_abi() {
         }
     )");
     const auto call =
-        take(take(program.pin()).bind<double, std::int32_t, float, double, std::uint32_t, bool, std::int32_t>());
+        take(take(program->pin()).bind<double, std::int32_t, float, double, std::uint32_t, bool, std::int32_t>());
     // RCX is Invocation; signed/narrow/wide occupy the other register positions.
     // high/enabled/tail and the hidden outputs cross into stack arguments.
     // Independent arithmetic: 4026531841 - 34 + 3.75 - 12.5 + 63 + 11.

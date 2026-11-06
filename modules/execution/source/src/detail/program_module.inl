@@ -145,7 +145,7 @@ Result<FieldDefinition> class_field(const SourceSnapshot& snapshot, const langua
         result.value = {vector->type};
         leaf = vector->math.precision == math::Precision::f64 ? "double" : "float";
     } else if (const auto type = runtime.find_type(field.type); type && !language::editor_reserved(field.type)) {
-        const auto* info = take(runtime.describe(*type));
+        const auto* info = *runtime.describe(*type);
         if (info->kind == TypeKind::string)
             result.default_text.emplace();
         else if (info->enumeration) {
@@ -315,7 +315,7 @@ Result<Program::Request> Program::request(SourceSnapshot snapshot, CompileOption
         for (auto& field : cls.fields) {
             if (field.type == "String") {
                 if (const auto type = runtime.native_type<String>())
-                    field.type = take(runtime.describe(*type))->name;
+                    field.type = (*runtime.describe(*type))->name;
             } else {
                 for (const auto& value : state_->contract->binding.values)
                     if (value.math && field.type == math::short_name(value.math))
@@ -442,7 +442,10 @@ Result<Program::Request> Program::request(SourceSnapshot snapshot, CompileOption
     }
     const auto catalog =
         request->type_publication_ ? request->type_publication_->catalog() : std::span<const TypeInfo* const>{};
-    request->compilation_contract_ = std::make_shared<const Contract>(runtime, TypeId{}, catalog);
+    auto binding = bind_type(runtime, {}, catalog);
+    if (!binding)
+        return fail(std::move(binding.error()));
+    request->compilation_contract_ = std::make_shared<const Contract>(std::move(*binding), catalog);
     // A unit compiles its own text with the closure of the declarations it spells. Every top-level
     // declaration is checked in its home unit: the project's, whose functions are the global
     // entries, or its engine module's, which only checks.
@@ -477,7 +480,7 @@ Result<Program::Request> Program::request(SourceSnapshot snapshot, CompileOption
         if (catalog.empty()) {
             auto found = runtime.find_type(cls.name);
             if (found)
-                info = take(runtime.describe(*found));
+                info = *runtime.describe(*found);
         } else
             for (const auto* candidate : catalog)
                 if (candidate->name == cls.name) {
@@ -489,7 +492,10 @@ Result<Program::Request> Program::request(SourceSnapshot snapshot, CompileOption
         module.classes.push_back({cls.name, info->id, *info->base});
         if (cls.methods.empty())
             continue;
-        ModuleRequest::Unit unit{std::make_shared<const Contract>(runtime, info->id, catalog),
+        auto binding = bind_type(runtime, info->id, catalog);
+        if (!binding)
+            return fail(std::move(binding.error()));
+        ModuleRequest::Unit unit{std::make_shared<const Contract>(std::move(*binding), catalog),
                                  module.source.closure(cls.uses),
                                  {},
                                  cls.name,

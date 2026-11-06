@@ -345,9 +345,9 @@ public:
         Result<Coroutine> start(ObjectId, std::span<const Scalar>, Diagnostics* = nullptr, Debugger* = nullptr) const;
     };
 
-    // TypeId{} declares a receiverless typed value environment. Binding errors are
-    // reported by exception during construction; execution errors use Result.
-    Program(Runtime&, TypeId = {});
+    // TypeId{} declares a receiverless typed value environment. A binding failure
+    // publishes no Program. The nonmovable owner retains a stable address.
+    static Result<std::unique_ptr<Program>> create(Runtime&, TypeId = {}) noexcept;
 
     ~Program();
 
@@ -397,6 +397,8 @@ public:
     Result<void> try_publish(Candidate&);
 
 private:
+    explicit Program(std::shared_ptr<const Contract>) noexcept;
+
     static Result<Candidate> prepare_module(const Request&);
 
     Result<void> publish_module(Candidate&);

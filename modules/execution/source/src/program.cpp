@@ -6,14 +6,15 @@
 #include "language/declarations.hpp"
 #include "language/module.hpp"
 #include "foundation/string.hpp"
+#include "memory/fatal.hpp"
 
 #include <algorithm>
 #include <atomic>
+#include <cassert>
 #include <cmath>
 #include <cstring>
 
 #include <limits>
-#include <stdexcept>
 
 namespace atelier::source {
 using namespace detail;
@@ -28,7 +29,7 @@ std::uint64_t next_program_id() {
     auto value = next.load(std::memory_order_relaxed);
     for (;;) {
         if (value == UINT64_MAX)
-            throw std::overflow_error("Source program identity exhausted.");
+            fatal("Source program identity exhausted.");
         if (next.compare_exchange_weak(value, value + 1, std::memory_order_relaxed))
             return value;
     }
@@ -92,13 +93,6 @@ diagnostic_locations(const BusinessCodeInfo& info, const SourceMap* map, std::st
             {value.function ? value.function : "", resolve_location(map, path, version, value, line_starts)});
     }
     return locations;
-}
-
-template <class T>
-T take(Result<T> value) {
-    if (!value)
-        throw std::runtime_error(value.error().message);
-    return std::move(*value);
 }
 
 // Floating leaves compare by representation, so signed zeros differ.
@@ -250,23 +244,22 @@ struct Program::Contract {
 
     std::vector<language::TypeDeclaration> declarations;
 
-    Contract(Runtime& runtime, TypeId type, std::span<const TypeInfo* const> catalog = {},
-             std::vector<language::TypeDeclaration> source_types = {})
-        : binding(bind_type(runtime, type, catalog)), type_name(binding.name), actual_services(services),
+    Contract(Binding bound, std::span<const TypeInfo* const> catalog = {},
+             std::vector<language::TypeDeclaration> source_types = {}) noexcept
+        : binding(std::move(bound)), type_name(binding.name), actual_services(services),
           declarations(std::move(source_types)) {
         binding.name = type_name;
         for (const auto dependency : binding.dependencies) {
             const TypeInfo* info{};
             if (catalog.empty())
-                info = take(runtime.describe(dependency));
+                info = *binding.runtime->describe(dependency);
             else
                 for (const auto* candidate : catalog)
                     if (candidate->id == dependency) {
                         info = candidate;
                         break;
                     }
-            if (!info)
-                throw std::logic_error("Source type dependency has no Runtime metadata.");
+            assert(info);
             metadata.push_back({info, *info});
         }
     }
@@ -366,11 +359,11 @@ struct Program::Contract {
         }
         // Other producers may append unrelated types. Revalidate this program's
         // captured catalog without changing its compiled type-table indices.
-        const auto actual = bind_type(*binding.runtime, binding.type, catalog);
-        if (actual.runtime != binding.runtime || actual.type != binding.type || actual.name != type_name ||
-            actual.fields != binding.fields || actual.methods != binding.methods ||
-            actual.enumerations != binding.enumerations || actual.values != binding.values ||
-            actual.dependencies != binding.dependencies)
+        ATELIER_TRY_BIND(actual, bind_type(*binding.runtime, binding.type, catalog));
+        if (actual->runtime != binding.runtime || actual->type != binding.type || actual->name != type_name ||
+            actual->fields != binding.fields || actual->methods != binding.methods ||
+            actual->enumerations != binding.enumerations || actual->values != binding.values ||
+            actual->dependencies != binding.dependencies)
             return std::unexpected(Error{ErrorCode::invalid_definition, "Bound member identities changed."});
         return {};
     }
@@ -432,11 +425,8 @@ struct Program::Version : Runtime::RetiredCode {
     void locate(Error& error, std::uint32_t site) const noexcept {
         if (site >= info.location_count)
             return;
-        try {
-            error.source =
-                resolve_location(map.get(), diagnostic->source_name, diagnostic->code_version, info.locations[site]);
-        } catch (...) {
-        }
+        error.source =
+            resolve_location(map.get(), diagnostic->source_name, diagnostic->code_version, info.locations[site]);
     }
 
     // Keep captures on this stack until the body has released its arguments.
@@ -1059,10 +1049,14 @@ Result<Coroutine> Program::Lease::start(ObjectId receiver, std::span<const Scala
     return Version::start_values(version, receiver, arguments, diagnostics, debugger);
 }
 
-Program::Program(Runtime& runtime, TypeId type) {
+Result<std::unique_ptr<Program>> Program::create(Runtime& runtime, TypeId type) noexcept {
     atelier::detail::assert_serial_access();
-    state_ = std::make_shared<State>(std::make_shared<const Contract>(runtime, type));
+    ATELIER_TRY_BIND(binding, bind_type(runtime, type));
+    return std::unique_ptr<Program>{new Program(std::make_shared<const Contract>(std::move(*binding)))};
 }
+
+Program::Program(std::shared_ptr<const Contract> contract) noexcept
+    : state_(std::make_shared<State>(std::move(contract))) {}
 
 Program::~Program() {
     close();
@@ -1153,8 +1147,13 @@ Result<Program::Request> Program::request(std::string_view name, std::string_vie
         return result;
     }
     result->type_publication_ = *publication;
-    result->compilation_contract_ = std::make_shared<const Contract>(
-        runtime, state_->contract->binding.type, (*publication)->catalog(), std::move(*declarations));
+    auto binding = bind_type(runtime, state_->contract->binding.type, (*publication)->catalog());
+    if (!binding) {
+        report(binding.error().message);
+        return result;
+    }
+    result->compilation_contract_ =
+        std::make_shared<const Contract>(std::move(*binding), (*publication)->catalog(), std::move(*declarations));
     return result;
 }
 

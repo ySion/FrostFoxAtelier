@@ -54,8 +54,8 @@ struct Host {
 
 void verify_compile_modes_and_stepping() {
     Runtime runtime;
-    Program calls(runtime);
-    publish(calls, "steps.source", R"(uint leaf(uint value) {
+    auto calls = take(Program::create(runtime));
+    publish(*calls, "steps.source", R"(uint leaf(uint value) {
     uint doubled = value * 2;
     return doubled;
 }
@@ -89,7 +89,7 @@ uint run(uint input) {
         }
         return stop.command(DebugAction::step_into);
     });
-    require(std::get<std::uint32_t>(*take(calls.entry().invoke({}, std::array{Scalar{21u}}, nullptr, &into))) == 43 &&
+    require(std::get<std::uint32_t>(*take(calls->entry().invoke({}, std::array{Scalar{21u}}, nullptr, &into))) == 43 &&
                 entered_leaf && returned_to_caller && initialized_result,
             "Step-into/out did not resume the caller and publish its initialized result.");
 }
@@ -97,8 +97,8 @@ uint run(uint input) {
 DebugSnapshot verify_inspection_and_previews() {
     Runtime runtime;
     take(runtime.register_types({string_definition(runtime), array_definition<float>(runtime, "debugger.Floats")}));
-    Program program(runtime);
-    publish(program, "preview.source", R"(float run(const Array<float>& values, const String& text) {
+    auto program = take(Program::create(runtime));
+    publish(*program, "preview.source", R"(float run(const Array<float>& values, const String& text) {
     String owned = text;
     uint checkpoint = 0;
     return values[0];
@@ -113,8 +113,8 @@ DebugSnapshot verify_inspection_and_previews() {
             return stop.command(DebugAction::continue_execution);
         },
         {.break_on_entry = false});
-    take(debugger.set_breakpoints({breakpoint(take(program.pin()), "preview.source", 3)}));
-    take(program.entry().invoke(
+    take(debugger.set_breakpoints({breakpoint(take(program->pin()), "preview.source", 3)}));
+    take(program->entry().invoke(
         {}, std::array{Argument::borrow(std::as_const(values)), Argument::borrow(std::as_const(text))}, nullptr,
         &debugger));
     return retained;
@@ -135,8 +135,8 @@ void verify_failure_and_abort() {
     const auto type = take(runtime.native_type<Host>());
     auto host = take(runtime.create(type));
     const auto field = take(runtime.find_field(type, "value"));
-    Program program(runtime, type);
-    publish(program, "debug-failure.source", R"(void run() {
+    auto program = take(Program::create(runtime, type));
+    publish(*program, "debug-failure.source", R"(void run() {
     borrow.Particle live;
     live.name = "live until error inspection finishes";
     self.set_value(1);
@@ -153,12 +153,12 @@ void verify_failure_and_abort() {
         },
         {.break_on_entry = false});
     Diagnostics capture;
-    require(!program.entry().invoke(host.id(), {}, &capture, &failed) && before_cleanup && Particle::live == 0 &&
+    require(!program->entry().invoke(host.id(), {}, &capture, &failed) && before_cleanup && Particle::live == 0 &&
                 std::get<std::uint32_t>(take(runtime.read(host.id(), field))) == 1,
             "Error stop ran after cleanup, leaked its owned value or resumed user side effects.");
 
-    Program aborted(runtime, type);
-    publish(aborted, "abort.source", R"(uint run() {
+    auto aborted = take(Program::create(runtime, type));
+    publish(*aborted, "abort.source", R"(uint run() {
     borrow.Particle live;
     self.set_value(1);
     self.set_value(2);
@@ -166,8 +166,8 @@ void verify_failure_and_abort() {
 }
 )",
             {.diagnostics = true, .debugging = true});
-    const auto at = breakpoint(take(aborted.pin()), "abort.source", 4);
-    const auto call = take(take(aborted.pin()).bind<std::uint32_t>());
+    const auto at = breakpoint(take(aborted->pin()), "abort.source", 4);
+    const auto call = take(take(aborted->pin()).bind<std::uint32_t>());
     for (const bool handler_throws : {false, true}) {
         take(runtime.write(host.id(), field, std::uint32_t{0}));
         bool reached{};
@@ -189,8 +189,8 @@ void verify_failure_and_abort() {
 
 void verify_async_debug_lifetime() {
     Runtime runtime;
-    Program program(runtime);
-    publish(program, "async-debug.source", R"(uint helper(uint value) { return value + 1; }
+    auto program = take(Program::create(runtime));
+    publish(*program, "async-debug.source", R"(uint helper(uint value) { return value + 1; }
 async uint run(uint value) {
     uint local = helper(value);
     yield;
@@ -199,7 +199,7 @@ async uint run(uint value) {
 }
 )",
             {.diagnostics = true, .debugging = true}, "run");
-    const auto old = take(program.pin());
+    const auto old = take(program->pin());
     const std::array args{Scalar{41u}};
     bool saw_yield{};
     bool crossed_yield{};
@@ -217,11 +217,11 @@ async uint run(uint value) {
         return stop.command(DebugAction::step_into);
     });
     Diagnostics capture;
-    auto task = take(program.entry().start({}, args, &capture, &debugger));
+    auto task = take(program->entry().start({}, args, &capture, &debugger));
     require(take(task.resume()) == CoroutineState::suspended && saw_yield,
             "Debug stepping did not preserve the language yield boundary.");
-    publish(program, "async-replacement.source", "async uint run(uint value) { yield; return value + 100; }");
-    program.close();
+    publish(*program, "async-replacement.source", "async uint run(uint value) { yield; return value + 100; }");
+    program->close();
     require(take(task.resume()) == CoroutineState::completed && std::get<std::uint32_t>(*take(task.result())) == 43 &&
                 debugger.status() == DebugStatus::completed && !debugger.active() && crossed_yield,
             "Step-across-yield or old-version execution failed after close.");

@@ -58,8 +58,8 @@ void verify_source_value_fields() {
     take(
         runtime.register_types({particle_definition(runtime), reflection::Definition<Position>::build(runtime),
                                 string_definition(runtime), particle_array_definition(runtime, "composed.Particles")}));
-    source::Program program(runtime, {});
-    auto candidate = take(source::Program::prepare(take(program.request("value-fields.source", R"(
+    auto program = take(source::Program::create(runtime));
+    auto candidate = take(source::Program::prepare(take(program->request("value-fields.source", R"(
         struct composed.Bundle { composed.Payload payload; uint processed; };
         struct composed.Payload {
             String title;
@@ -81,8 +81,8 @@ void verify_source_value_fields() {
             copy.payload.particles[100].count = 0;
         }
     )",
-                                                                        "process"))));
-    take(program.try_publish(candidate));
+                                                                         "process"))));
+    take(program->try_publish(candidate));
     const auto bundle = take(runtime.find_type("composed.Bundle"));
     const auto& info = *take(runtime.describe(bundle));
     const auto& payload = *take(runtime.describe(field(info, "payload").value.type));
@@ -100,16 +100,16 @@ void verify_source_value_fields() {
                 "Fixture particle name is invalid UTF-8.");
         const auto* particles_data = particles.data();
         std::array args{Argument::borrow(bundle, input.data, input.data), Argument{Scalar{std::uint32_t{2}}}};
-        require(!program.entry().invoke({}, args) && Particle::live == 3,
+        require(!program->entry().invoke({}, args) && Particle::live == 3,
                 "Helper failure did not clean both frames' composed values.");
         args[1] = Argument{Scalar{std::uint32_t{1}}};
         Particle::copy_budget = 2; // Leader and one array element construct before the failure.
-        const auto failed = program.entry().invoke({}, args);
+        const auto failed = program->entry().invoke({}, args);
         Particle::copy_budget = -1;
         require(!failed && Particle::live == 3, "Partially constructed composed record leaked fields.");
         args[1] = Argument{Scalar{std::uint32_t{0}}};
         Particle::copy_budget = 3; // Local completes; assigning its array into an empty record fails.
-        const auto failed_assignment = program.entry().invoke({}, args);
+        const auto failed_assignment = program->entry().invoke({}, args);
         Particle::copy_budget = -1;
         require(!failed_assignment && Particle::live == 3, "Failed composed assignment left live owned fields.");
         require(particles.data() == particles_data && particles.size() == 2 && particles[0].count == 3 &&

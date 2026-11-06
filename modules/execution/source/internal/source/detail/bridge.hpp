@@ -134,7 +134,7 @@ struct Binding {
     bool operator==(const Binding&) const = default;
 };
 
-Binding bind_type(Runtime&, TypeId, std::span<const TypeInfo* const> catalog = {});
+Result<Binding> bind_type(Runtime&, TypeId, std::span<const TypeInfo* const> catalog = {}) noexcept;
 
 BusinessType value_kind(const Binding&, TypeId);
 
@@ -155,7 +155,7 @@ struct EnvironmentView {
 
     std::vector<BusinessValueBinding> values;
 
-    explicit EnvironmentView(const Binding&);
+    explicit EnvironmentView(const Binding&) noexcept;
 
     BusinessEnvironment view(const char* object_type_name) const;
 };

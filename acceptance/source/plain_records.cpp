@@ -71,19 +71,19 @@ void verify_source_plain_records() {
             return {};
         };
         const auto type = take(owner.register_type(std::move(definition)));
-        Program local(owner, {});
-        publish(local, "plain.CopyValue run(plain.CopyValue input) { plain.CopyValue value; return input; }");
+        auto local = take(Program::create(owner));
+        publish(*local, "plain.CopyValue run(plain.CopyValue input) { plain.CopyValue value; return input; }");
         CopyValue input;
         CopyValue output;
         input.count = 37;
         output.count = 91;
         CopyValue::reject_construction = true;
         const auto failed =
-            local.entry().invoke({}, std::array{Argument::borrow(std::as_const(input))}, ValueOutput{type, &output});
+            local->entry().invoke({}, std::array{Argument::borrow(std::as_const(input))}, ValueOutput{type, &output});
         CopyValue::reject_construction = false;
         require(!failed && output.count == 91 && CopyValue::constructions == 3,
                 "Local construction failure changed caller output.");
-        take(local.entry().invoke({}, std::array{Argument::borrow(std::as_const(input))}, ValueOutput{type, &output}));
+        take(local->entry().invoke({}, std::array{Argument::borrow(std::as_const(input))}, ValueOutput{type, &output}));
         require(output.count == 37 && CopyValue::constructions == 4,
                 "A failed local construction left value invocation state behind.");
     }
@@ -138,8 +138,8 @@ void verify_source_plain_records() {
     const auto packet_type = take(runtime.native_type<Packet>());
     const auto host_type = take(runtime.native_type<Host>());
     const auto host = take(runtime.create(host_type));
-    Program alias(runtime, host_type);
-    publish(alias, R"(
+    auto alias = take(Program::create(runtime, host_type));
+    publish(*alias, R"(
         plain.Packet snapshot(plain.Packet copy, plain.Packet& target) {
             target.count = target.count + 10;
             return copy;
@@ -152,17 +152,17 @@ void verify_source_plain_records() {
     Packet input{};
     input.count = 4;
     Packet output{};
-    take(alias.entry().invoke(host.id(), std::array{Argument::borrow(input)}, ValueOutput{packet_type, &output}));
+    take(alias->entry().invoke(host.id(), std::array{Argument::borrow(input)}, ValueOutput{packet_type, &output}));
     require(output.count == 4 && input.count == 24,
             "Left-to-right record snapshot changed when a later writable argument aliases it.");
-    Program failure(runtime, host_type);
-    publish(failure, "plain.Packet run(plain.Packet value) { return self.fail(value); }");
+    auto failure = take(Program::create(runtime, host_type));
+    publish(*failure, "plain.Packet run(plain.Packet value) { return self.fail(value); }");
     Packet preserved;
     std::memset(&preserved, 0x5a, sizeof(preserved));
     std::array<std::byte, sizeof(Packet)> before{};
     std::memcpy(before.data(), &preserved, sizeof(preserved));
-    const auto failed = failure.entry().invoke(host.id(), std::array{Argument::borrow(std::as_const(input))},
-                                               ValueOutput{packet_type, &preserved});
+    const auto failed = failure->entry().invoke(host.id(), std::array{Argument::borrow(std::as_const(input))},
+                                                ValueOutput{packet_type, &preserved});
     require(!failed && std::memcmp(before.data(), &preserved, sizeof(preserved)) == 0,
             "Failed record call overwrote output larger than the inline result buffer.");
     std::puts("Source plain records: PASS (construction failure, snapshots, aligned scratch, large failed output)");

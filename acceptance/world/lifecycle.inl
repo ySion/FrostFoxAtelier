@@ -62,9 +62,9 @@ void entity_lifecycle_and_detached_graph() {
     require(events.empty(), "Entity enable repeated Begin or End.");
     committed(world.attach_components(entity.id(), foreign_addition, 1));
     require(events == std::vector<Event>{{'B', inserted.id()}}, "Dynamic Component insertion repeated Entity Begin.");
-    source::Program program(runtime, entity_type);
-    publish(program, "async void later() { yield; self.advance(50.0); }");
-    const auto later = program.entry();
+    auto program = take(source::Program::create(runtime, entity_type));
+    publish(*program, "async void later() { yield; self.advance(50.0); }");
+    const auto later = program->entry();
     take(world.start_task(entity.id(), [later](Runtime&, ObjectId id) { return later.start(id, {}); }));
     take(world.update(0));
     require(w::detail::Access::state(world).tasks.size() == 1, "Entity task was not retained after suspension.");

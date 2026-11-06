@@ -60,12 +60,12 @@ void verify_gc_lifetime() {
     const auto type = register_host(runtime);
     auto host = take(runtime.create(type));
     const auto field = take(runtime.find_field(type, "value"));
-    Program program(runtime, type);
-    publish(program, "gc.source", "void run() { self.value = self.value + 1; }");
+    auto program = take(Program::create(runtime, type));
+    publish(*program, "gc.source", "void run() { self.value = self.value + 1; }");
     Diagnostics capture;
     take(runtime.create(type)).reset();
     take(runtime.begin_collection());
-    take(program.entry().invoke(host.id(), {}, &capture));
+    take(program->entry().invoke(host.id(), {}, &capture));
     require(capture.snapshot().status == DiagnosticStatus::completed && !capture.active() &&
                 std::get<std::uint32_t>(take(runtime.read(host.id(), field))) == 1 && runtime.live_objects() == 2 &&
                 runtime.root_count() == 1 && runtime.collection_phase() == CollectionPhase::roots,
@@ -87,8 +87,8 @@ void verify_owned_failure_cleanup() {
                                  array_definition<Particle>(runtime, "diagnostic.Particles")}));
     auto host = take(runtime.create(type));
     const auto field = take(runtime.find_field(type, "value"));
-    Program owned(runtime, type);
-    publish(owned, "owned-diagnostic.source", R"(
+    auto owned = take(Program::create(runtime, type));
+    publish(*owned, "owned-diagnostic.source", R"(
 uint leaf() {
     Array<borrow.Particle> local;
     local.resize(1);
@@ -100,7 +100,7 @@ uint run() { return leaf(); }
             {.diagnostics = true}, "run");
     require(Particle::live == 0, "Native failure fixture started with an unrelated live Particle.");
     Diagnostics capture;
-    const auto call = take(take(owned.pin()).bind<std::uint32_t>());
+    const auto call = take(take(owned->pin()).bind<std::uint32_t>());
     const auto failed = call.invoke(host.id(), &capture);
     // The native callback observes the actual live value before it throws. A
     // skipped constructor cannot pass merely because the final live count is zero.
@@ -115,9 +115,9 @@ void verify_coroutine_lifetime() {
     const auto type = register_host(runtime);
     auto host = take(runtime.create(type));
     const auto field = take(runtime.find_field(type, "value"));
-    Program program(runtime, type);
-    publish(program, "suspend.source", "async uint run(uint value) { yield; return value + 1; }");
-    const auto entry = program.entry();
+    auto program = take(Program::create(runtime, type));
+    publish(*program, "suspend.source", "async uint run(uint value) { yield; return value + 1; }");
+    const auto entry = program->entry();
     const std::array args{Scalar{std::uint32_t{41}}};
     Diagnostics capture;
     auto cancelled = take(entry.start(host.id(), args, &capture));
@@ -133,16 +133,16 @@ void verify_coroutine_lifetime() {
         task = take(entry.start(host.id(), args, &temporary));
         require(take(task.resume()) == CoroutineState::suspended, "Diagnostic coroutine did not yield.");
     }
-    publish(program, "replacement.source", "async uint run(uint value) { yield; return value + 100; }");
-    program.close();
+    publish(*program, "replacement.source", "async uint run(uint value) { yield; return value + 100; }");
+    program->close();
     require(take(task.resume()) == CoroutineState::completed && std::get<std::uint32_t>(*take(task.result())) == 42 &&
                 capture.snapshot().status == DiagnosticStatus::completed && !capture.active() &&
                 runtime.root_count() == 1,
             "Old coroutine lost its code/capture after publication and close, or retained its receiver root.");
 
-    Program callback(runtime, type);
-    publish(callback, "cancel-callback.source", "async uint run(uint value) { self.cancel_fail(); return value; }");
-    auto active = take(callback.entry().start(host.id(), args, &capture));
+    auto callback = take(Program::create(runtime, type));
+    publish(*callback, "cancel-callback.source", "async uint run(uint value) { self.cancel_fail(); return value; }");
+    auto active = take(callback->entry().start(host.id(), args, &capture));
     take(runtime.with_native<Host>(host.id(), [&](Host& value) -> Result<void> {
         value.task = &active;
         return {};
@@ -162,11 +162,11 @@ void verify_detached_reports_and_artifacts() {
     source::CompilationArtifacts artifacts;
     {
         Runtime runtime;
-        Program program(runtime);
-        publish(program, "detached.source", "uint run(uint divisor) { return 9 / divisor; }",
+        auto program = take(Program::create(runtime));
+        publish(*program, "detached.source", "uint run(uint divisor) { return 9 / divisor; }",
                 {.diagnostics = true, .artifacts = true});
-        artifacts = take(take(program.pin()).artifacts());
-        require(!program.entry().invoke({}, std::array{Scalar{std::uint32_t{0}}}, &capture),
+        artifacts = take(take(program->pin()).artifacts());
+        require(!program->entry().invoke({}, std::array{Scalar{std::uint32_t{0}}}, &capture),
                 "Detached-report scenario did not fail.");
     }
     const auto retained = capture.snapshot();
@@ -176,9 +176,9 @@ void verify_detached_reports_and_artifacts() {
             "Diagnostic output borrowed data from a retired Runtime or executable version.");
     {
         Runtime runtime;
-        Program program(runtime);
-        publish(program, "second-runtime.source", "uint run(uint value) { return value + 2; }");
-        const auto result = take(program.entry().invoke({}, std::array{Scalar{std::uint32_t{40}}}, &capture));
+        auto program = take(Program::create(runtime));
+        publish(*program, "second-runtime.source", "uint run(uint value) { return value + 2; }");
+        const auto result = take(program->entry().invoke({}, std::array{Scalar{std::uint32_t{40}}}, &capture));
         const auto report = capture.snapshot();
         require(result && std::get<std::uint32_t>(*result) == 42 && report.status == DiagnosticStatus::completed &&
                     report.source_name == "second-runtime.source" && !report.error && !capture.active(),

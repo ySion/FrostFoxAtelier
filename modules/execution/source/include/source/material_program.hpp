@@ -56,7 +56,7 @@ class MaterialProgram final {
     explicit MaterialProgram(std::shared_ptr<const State>);
 
     friend Result<std::shared_ptr<const MaterialProgram>> compile_material(Runtime&, TypeId, TypeId, TypeId,
-                                                                           std::string_view, std::string_view);
+                                                                           std::string_view, std::string_view) noexcept;
 
     Result<std::string> generate_hlsl(std::string_view name_space, bool footprint, bool coverage = false) const;
 
@@ -129,6 +129,6 @@ public:
 // sampling and empty values belong to MS author data.
 Result<std::shared_ptr<const MaterialProgram>> compile_material(Runtime&, TypeId context, TypeId output,
                                                                 TypeId texture_input, std::string_view source_name,
-                                                                std::string_view source);
+                                                                std::string_view source) noexcept;
 
 }

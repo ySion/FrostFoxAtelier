@@ -183,7 +183,10 @@ Result<void> ProjectCode::build(const Project& project) {
             // The engine Source in every snapshot declares procedural nodes.
             if (auto registered = procedural::register_types(world_.runtime()); !registered)
                 return reject(registered.error());
-            program_ = std::make_unique<source::Program>(world_.runtime());
+            auto created = source::Program::create(world_.runtime());
+            if (!created)
+                return reject(created.error());
+            program_ = std::move(*created);
         }
         // Request through publish runs synchronously here, and this is the Runtime's only
         // Program, so no other producer can invalidate the candidate; an asynchronous

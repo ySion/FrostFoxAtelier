@@ -169,9 +169,9 @@ void editing_and_execution() {
     auto counter = take(w::create_component(runtime, derived));
     const std::array counter_added{w::Attachment{counter.id()}};
     committed(world.attach_components(entity.id(), counter_added));
-    source::Program program(runtime, types.counter);
-    publish(program, "void step(float amount) { self.advance(amount); }");
-    const auto entry = take(program.entry().bind<void, float>());
+    auto program = take(source::Program::create(runtime, types.counter));
+    publish(*program, "void step(float amount) { self.advance(amount); }");
+    const auto entry = take(program->entry().bind<void, float>());
     take(
         world.bind_behavior(types.counter, {.tick = [entry](Runtime&, ObjectId receiver, float amount) -> Result<void> {
                                 return entry.invoke(receiver, amount);
@@ -181,9 +181,9 @@ void editing_and_execution() {
     require(take(w::inspect_entity(runtime, entity.id())).state == w::EntityState::active &&
                 std::get<float>(take(runtime.read(counter.id(), types.counter_value))) == 2.f,
             "JIT did not update the same derived Counter.");
-    source::Program deferred(runtime, types.counter);
-    publish(deferred, "async void later() { yield; self.advance(50.0); }");
-    const auto later = deferred.entry();
+    auto deferred = take(source::Program::create(runtime, types.counter));
+    publish(*deferred, "async void later() { yield; self.advance(50.0); }");
+    const auto later = deferred->entry();
     take(world.start_task(counter.id(), [later](Runtime&, ObjectId receiver) { return later.start(receiver, {}); }));
     require(w::detail::Access::state(world).tasks.size() == 1, "World did not own the real coroutine.");
     take(world.update(1.f)); // task suspends after its yield
@@ -469,15 +469,15 @@ void ordered_lifecycle() {
 void isolated_failures() {
     Runtime runtime;
     const auto types = register_test_types(runtime);
-    source::Program ticking(runtime, types.counter);
-    source::Program waiting(runtime, types.counter);
+    auto ticking = take(source::Program::create(runtime, types.counter));
+    auto waiting = take(source::Program::create(runtime, types.counter));
     auto candidate = take(source::Program::prepare(
-        take(ticking.request("world-failure.source", "void tick(float dt) {\n    self.steps = 10 / self.steps;\n}\n",
-                             {}, {.diagnostics = true}))));
-    take(ticking.try_publish(candidate));
-    publish(waiting, "async void later() { yield; self.steps = 10 / self.steps; }");
-    const auto script = take(ticking.pin());
-    const auto later = waiting.entry();
+        take(ticking->request("world-failure.source", "void tick(float dt) {\n    self.steps = 10 / self.steps;\n}\n",
+                              {}, {.diagnostics = true}))));
+    take(ticking->try_publish(candidate));
+    publish(*waiting, "async void later() { yield; self.steps = 10 / self.steps; }");
+    const auto script = take(ticking->pin());
+    const auto later = waiting->entry();
     const auto steps = take(runtime.find_field(types.counter, "steps"));
     w::World world(runtime, types);
     auto e = take(w::create_entity(runtime));

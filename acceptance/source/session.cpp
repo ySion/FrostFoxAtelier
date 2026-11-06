@@ -60,16 +60,16 @@ void verify_source_session() {
                                .field<&Counter::value>("value")
                                .publish());
     auto receiver = take(runtime.create(type));
-    Program program(runtime, type);
-    publish(program, 1000);
-    const auto entry = program.entry();
-    auto old = take(program.pin());
+    auto program = take(Program::create(runtime, type));
+    publish(*program, 1000);
+    const auto entry = program->entry();
+    auto old = take(program->pin());
     const auto old_address = source::detail::ProgramAccess::address(old);
     std::array<Coroutine, 4> tasks;
     tasks[0] = take(entry.start(receiver.id(), std::array{Scalar{1u}, Scalar{2u}}));
     take(tasks[0].resume());
-    publish(program, 1001);
-    auto current = take(program.pin());
+    publish(*program, 1001);
+    auto current = take(program->pin());
     const auto current_address = source::detail::ProgramAccess::address(current);
     tasks[1] = take(entry.start(receiver.id(), std::array{Scalar{8u}, Scalar{2u}}));
     tasks[2] = take(entry.start(receiver.id(), std::array{Scalar{5u}, Scalar{2u}}));
@@ -101,7 +101,7 @@ void verify_source_session() {
     old = {};
     code_state(old_address, false);
     current = {};
-    program.close();
+    program->close();
     code_state(current_address, false);
     receiver.reset();
     collect_to_rest(runtime);

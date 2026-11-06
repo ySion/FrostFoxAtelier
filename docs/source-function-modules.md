@@ -55,18 +55,18 @@ async 公开入口可调用同步助手，助手退出后才允许 yield。Strin
 ## 项目快照与多个公开入口
 
 ```cpp
-source::Program program(runtime);
+ATELIER_TRY_BIND(program, source::Program::create(runtime));
 source::SourceSnapshot snapshot{"game", 1, {
     {"Source/Math.source", 3, math_text},
     {"Source/Move.source", 8, move_text}
 }};
-auto request = program.request(std::move(snapshot));
+auto request = (*program)->request(std::move(snapshot));
 if (!request) return std::unexpected(request.error());
 auto candidate = source::Program::prepare(*request);
 if (!candidate) return std::unexpected(candidate.error());
-auto published = program.try_publish(*candidate);
+auto published = (*program)->try_publish(*candidate);
 if (!published) return published;
-auto tick = program.entry("game.Move.tick");
+auto tick = (*program)->entry("game.Move.tick");
 ```
 
 `classes()` 返回 `{name,type,base}`，`entries()` 返回 `{name,signature,parameter_names,code}`，`parameter_names` 按顺序给出源码声明的参数名，不含 `self`；`code` 是入口的代码身份：一个编译单元的编译输入——单元的组装文本、导出名、快照名、`CompileOptions` 和成员目录——与上次发布的同一单元逐字节相同时沿用上次的值，否则取进程内从未用过的新值。组装文本是单元自身的文本（某个 class 的全部方法，或工程文件的全部顶层声明），加上它按名字直接或间接写到的顶层声明，按快照顺序排列。它保守而不精确：改一个全局函数、struct、enum 或常量，只更换写到它的单元的 code，改工程文件的任一顶层声明会更换全部工程全局函数的 code；局部变量与声明同名也算写到；改某个 class 的任一方法会更换该 class 的全部 code；成员目录包含 Runtime 的整个值类型目录，所以 Runtime 新增值类型会更换全部 code；撤销改动也得到新值，不跨进程稳定。`revision()` 是成功发布次数，首次发布前为 0，失败或被拒绝的发布不改变它；宿主可先比较它，再重读 `entries()`。视图在下一次成功发布或 close 后失效。`Candidate` 提供同名只读视图，供宿主在提交前检查业务约束；其预览类身份不可用于正式 Runtime 查询，base 已是注册的原生类型，视图在候选移动、销毁或成功发布后失效。请求拥有不可变快照，`Request::snapshot()` 可用于把诊断关联回原文件版本。`Error::source` 保存 UTF-8 字节定位。运行时错误继续由原执行协议返回。

@@ -1045,7 +1045,8 @@ Result<std::shared_ptr<Module>> Module::compile(Runtime& runtime, std::string_vi
             impl->code = prior->impl_->code;
             ++module->compilation_.reused;
         } else {
-            impl->program = std::make_shared<source::Program>(runtime, *type);
+            ATELIER_TRY_BIND(program, source::Program::create(runtime, *type));
+            impl->program = std::move(*program);
             ATELIER_TRY_BIND(request, impl->program->request(impl->declaration.source_name,
                                                              impl->declaration.generated_source, "__ui_dispatch"));
             auto candidate = source::Program::prepare(*request);

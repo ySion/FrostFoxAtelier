@@ -303,7 +303,7 @@ void verify_typed_ui(Runtime& runtime, const Binding& binding) {
 
 void verify_typed_business() {
     Runtime runtime;
-    const auto binding = bind_type(runtime, register_typed_ui(runtime));
+    const auto binding = take(bind_type(runtime, register_typed_ui(runtime)));
     verify_typed_reference_results(runtime, binding);
     collect(runtime);
     verify_typed_return_cleanup(runtime, binding);

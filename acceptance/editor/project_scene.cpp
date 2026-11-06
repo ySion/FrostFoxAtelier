@@ -115,11 +115,12 @@ struct Evidence {
 struct Code {
     Runtime& runtime;
 
-    source::Program program;
+    std::unique_ptr<source::Program> program;
 
     std::shared_ptr<Evidence> evidence;
 
-    Code(Runtime& r, TypeId type, std::shared_ptr<Evidence> e) : runtime(r), program(r, type), evidence(std::move(e)) {}
+    Code(Runtime& r, TypeId type, std::shared_ptr<Evidence> e)
+        : runtime(r), program(take(source::Program::create(r, type))), evidence(std::move(e)) {}
 
     ~Code() {
         evidence->live_runtime_on_release &= !runtime.types().empty();
@@ -162,10 +163,10 @@ editor::Session::Prepare prepare(std::shared_ptr<Evidence> evidence) {
                  .base<presentation::EnvironmentComponent>()
                  .publish());
         auto code = std::make_shared<Code>(runtime, move, evidence);
-        auto candidate = take(source::Program::prepare(take(code->program.request(
+        auto candidate = take(source::Program::prepare(take(code->program->request(
             "Move.source", "void tick(float dt) { self.translate_owner(self.speed * dt, 0.0f, 0.0f); }"))));
-        take(code->program.try_publish(candidate));
-        auto lease = take(code->program.pin());
+        take(code->program->try_publish(candidate));
+        auto lease = take(code->program->pin());
         take(world.bind_behavior(
             move, {[evidence](Runtime&, ObjectId) -> Result<void> {
                        ++evidence->begins;
@@ -250,14 +251,14 @@ void verify_primitive_source(editor::Project& project) {
     acceptance_phase = "Primitive Source reflection and persistence";
     editor::Session document;
     auto& runtime = document.world().runtime();
-    source::Program program(runtime, document.presentation_types().static_mesh_component);
-    auto candidate = take(source::Program::prepare(take(program.request(
+    auto program = take(source::Program::create(runtime, document.presentation_types().static_mesh_component));
+    auto candidate = take(source::Program::prepare(take(program->request(
         "Primitive.source",
         "void configure() { self.body.enabled = true; self.body.half_extents.x = 2.0f; self.body.material.friction = 0.6f; }"))));
-    take(program.try_publish(candidate));
+    take(program->try_publish(candidate));
     changed(document.create_static_mesh(take(project.assets().mesh("builtin/cube"))));
     const auto component = member(document, document.presentation_types().static_mesh_component);
-    auto lease = take(program.pin());
+    auto lease = take(program->pin());
     take(lease.invoke(component, {}));
     const auto settings = take(physics::read_settings(runtime, component));
     require(settings.enabled && settings.half_extents.x == 2.f && settings.material.friction == .6f,
@@ -292,11 +293,11 @@ void verify_query_source(editor::Project& project) {
                                    .field<&QueryProbe::point>("point")
                                    .publish());
         auto code = std::make_shared<Code>(runtime, type, evidence);
-        auto candidate = take(source::Program::prepare(take(code->program.request(
+        auto candidate = take(source::Program::prepare(take(code->program->request(
             "QueryProbe.source",
             "void tick(float dt) { self.observed = self.query_ready() && self.has_hit(); self.count = self.hit_count(); self.distance = self.hit_distance(); self.point = self.hit_point(); self.request_query(); }"))));
-        take(code->program.try_publish(candidate));
-        const auto lease = take(code->program.pin());
+        take(code->program->try_publish(candidate));
+        const auto lease = take(code->program->pin());
         take(world.bind_behavior(type, {.tick = [lease](Runtime&, ObjectId object, float dt) -> Result<void> {
                                      const std::array<Scalar, 1> arguments{dt};
                                      auto called = lease.invoke(object, arguments);

@@ -318,24 +318,24 @@ void require_code_state(std::uintptr_t address, bool alive) {
 }
 
 void verify_reload_request_order(Runtime& runtime, const Binding& binding) {
-    BusinessProgram program(runtime, binding.type);
-    auto initial = take(BusinessProgram::prepare(take(program.request("initial.source", reload_source(3)))));
-    take(program.try_publish(initial));
+    auto program = take(BusinessProgram::create(runtime, binding.type));
+    auto initial = take(BusinessProgram::prepare(take(program->request("initial.source", reload_source(3)))));
+    take(program->try_publish(initial));
     auto receiver = take(runtime.create(binding.type));
     set_machine(runtime, binding, receiver.id(), 7.0f, 8.0f, 9);
-    const auto current = ProgramAccess::address(take(program.pin()));
-    auto previous = take(BusinessProgram::prepare(take(program.request("previous.source", reload_source(4)))));
-    auto newest = take(program.request("missing-poll.source", reload_source(5)));
+    const auto current = ProgramAccess::address(take(program->pin()));
+    auto previous = take(BusinessProgram::prepare(take(program->request("previous.source", reload_source(4)))));
+    auto newest = take(program->request("missing-poll.source", reload_source(5)));
     auto failed = ProgramAccess::prepare(newest, atelier_compile_business_without_poll_for_verification);
-    require(!failed && !program.try_publish(previous) && static_cast<bool>(previous) &&
-                ProgramAccess::address(take(program.pin())) == current,
+    require(!failed && !program->try_publish(previous) && static_cast<bool>(previous) &&
+                ProgramAccess::address(take(program->pin())) == current,
             "Real link failure consumed an older candidate or replaced the published version.");
-    (void)take(invoke_machine(program.entry(), receiver.id(), 0.5f, 1));
+    (void)take(invoke_machine(program->entry(), receiver.id(), 0.5f, 1));
     check_machine(runtime, binding, receiver.id(), 8.5f, 11.0f, 12);
 }
 
 void verify_reload_owner_destruction(Runtime& runtime, const Binding& binding) {
-    auto program = std::make_unique<BusinessProgram>(runtime, binding.type);
+    auto program = take(BusinessProgram::create(runtime, binding.type));
     auto candidate = take(BusinessProgram::prepare(take(program->request("closed-owner.source", reload_source(1)))));
     take(program->try_publish(candidate));
     auto lease = take(program->pin());
@@ -386,7 +386,7 @@ void verify_business_execution() {
     verify_frame_protocol();
     {
         Runtime runtime;
-        const auto binding = bind_type(runtime, register_machine(runtime));
+        const auto binding = take(bind_type(runtime, register_machine(runtime)));
         verify_reference_returns(runtime, binding);
         verify_stale_source_references(runtime, binding);
         collect(runtime);
