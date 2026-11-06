@@ -1,6 +1,7 @@
 #pragma once
 
 #include "foundation/span.hpp"
+#include "foundation/detail/array_elements.hpp"
 
 #include <algorithm>
 #include <concepts>
@@ -16,6 +17,8 @@ namespace atelier {
 // the exact selected operation to be trivial; resources retain typed lifetimes.
 template <class T>
 class Array {
+    using Elements = detail::ArrayElements<T>;
+
     static_assert(std::is_object_v<T> && !std::is_const_v<T> && !std::is_volatile_v<T>);
 
     static_assert(std::is_nothrow_destructible_v<T>);
@@ -51,7 +54,7 @@ public:
     {
         if (this == &other)
             return *this;
-        if constexpr (byte_copy && std::is_trivially_copy_assignable_v<T>) {
+        if constexpr (Elements::byte_copy && std::is_trivially_copy_assignable_v<T>) {
             if (other.size_ <= capacity_) {
                 // Live prefix assignment and raw tail construction are both
                 // trivial and cannot fail. No resource callback is bypassed.
@@ -126,7 +129,7 @@ public:
     }
 
     void clear() noexcept {
-        destroy(data_, size_);
+        Elements::destroy(data_, size_);
         size_ = 0;
     }
 
@@ -176,7 +179,7 @@ public:
     {
         // Construct the suffix before relocating old elements, including a self-view.
         extend(values.size(), [&](T* destination, std::size_t count, std::size_t& constructed) {
-            copy_construct(destination, values.data(), count, constructed);
+            Elements::copy_construct(destination, values.data(), count, constructed);
         });
     }
 
@@ -208,7 +211,7 @@ public:
         requires std::default_initializable<T>
     {
         if (size < size_) {
-            destroy(data_ + size, size_ - size);
+            Elements::destroy(data_ + size, size_ - size);
             size_ = size;
         } else
             extend(size - size_, [](T* destination, std::size_t count, std::size_t& constructed) {
@@ -222,7 +225,7 @@ public:
         requires std::is_copy_constructible_v<T>
     {
         if (size < size_) {
-            destroy(data_ + size, size_ - size);
+            Elements::destroy(data_ + size, size_ - size);
             size_ = size;
         } else
             extend(size - size_, [&](T* destination, std::size_t count, std::size_t& constructed) {
@@ -245,7 +248,7 @@ public:
             for (std::size_t i = first; i != size_ - count; ++i)
                 data_[i] = std::move(data_[i + count]);
         }
-        destroy(data_ + size_ - count, count);
+        Elements::destroy(data_ + size_ - count, count);
         size_ -= count;
     }
 
@@ -272,7 +275,7 @@ public:
         }
         const auto removed = size_ - write;
         if (removed)
-            destroy(data_ + write, removed);
+            Elements::destroy(data_ + write, removed);
         size_ = write;
         return removed;
     }
@@ -293,41 +296,6 @@ public:
     }
 
 private:
-    static constexpr bool byte_copy = std::is_trivially_copyable_v<T> && std::is_trivially_copy_constructible_v<T>;
-
-    using RelocationSource = decltype(std::move_if_noexcept(std::declval<T&>()));
-
-    static constexpr bool byte_relocate =
-        std::is_trivially_copyable_v<T> && std::is_trivially_constructible_v<T, RelocationSource>;
-
-    static void destroy(T* data, std::size_t size) noexcept {
-        if constexpr (!std::is_trivially_destructible_v<T>)
-            while (size)
-                std::destroy_at(data + --size);
-    }
-
-    static void copy_construct(T* destination, const T* source, std::size_t count, std::size_t& constructed) {
-        if constexpr (byte_copy) {
-            if (count)
-                std::memcpy(destination, source, count * sizeof(T));
-            constructed = count;
-        } else {
-            for (; constructed != count; ++constructed)
-                std::construct_at(destination + constructed, source[constructed]);
-        }
-    }
-
-    static void relocate(T* destination, T* source, std::size_t count, std::size_t& constructed) {
-        if constexpr (byte_relocate) {
-            if (count)
-                std::memcpy(destination, source, count * sizeof(T));
-            constructed = count;
-        } else {
-            for (; constructed != count; ++constructed)
-                std::construct_at(destination + constructed, std::move_if_noexcept(source[constructed]));
-        }
-    }
-
     static T* allocate(std::size_t count) {
         if (count > max_size)
             throw std::length_error("Array exceeds addressable storage.");
@@ -348,13 +316,13 @@ private:
         T* replacement = allocate(capacity);
         std::size_t constructed = 0;
         try {
-            relocate(replacement, data_, size_, constructed);
+            Elements::relocate(replacement, data_, size_, constructed);
         } catch (...) {
-            destroy(replacement, constructed);
+            Elements::destroy(replacement, constructed);
             deallocate(replacement, capacity);
             throw;
         }
-        destroy(data_, size_);
+        Elements::destroy(data_, size_);
         deallocate(data_, capacity_);
         data_ = replacement;
         capacity_ = capacity;
@@ -378,17 +346,17 @@ private:
         try {
             construct(destination + size_, count, suffix);
             if (growing)
-                relocate(destination, data_, size_, prefix);
+                Elements::relocate(destination, data_, size_, prefix);
         } catch (...) {
-            destroy(destination + size_, suffix);
+            Elements::destroy(destination + size_, suffix);
             if (growing) {
-                destroy(destination, prefix);
+                Elements::destroy(destination, prefix);
                 deallocate(destination, capacity);
             }
             throw;
         }
         if (growing) {
-            destroy(data_, size_);
+            Elements::destroy(data_, size_);
             deallocate(data_, capacity_);
             data_ = destination;
             capacity_ = capacity;
