@@ -17,7 +17,8 @@ target_link_libraries(atelier_logging_acceptance PRIVATE atelier_logging nlohman
 # supplies the resident entry point, using the same configured compiler/CRT.
 add_library(atelier_logging_producer SHARED "${PROJECT_SOURCE_DIR}/acceptance/logging/producer_dll.cpp")
 atelier_target(atelier_logging_producer)
-target_include_directories(atelier_logging_producer PRIVATE "${PROJECT_SOURCE_DIR}/src")
+target_include_directories(atelier_logging_producer PRIVATE "${PROJECT_SOURCE_DIR}/modules/core/logging/include")
+target_link_libraries(atelier_logging_producer PRIVATE atelier_foundation_headers)
 
 atelier_headless_acceptance(logging_acceptance
     COMMAND "${CMAKE_COMMAND}"

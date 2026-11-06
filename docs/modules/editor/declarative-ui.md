@@ -222,7 +222,7 @@ ui Tool(in Text title, in ActionBinding command) {
 | `mounted` | bool；组件调用或 Repeat，缺省 true | false 在成功提交后移除子作用域；重新挂载建立新生命周期 |
 | `items` | 直接 Items 输入；Repeat | 条目顺序、稳定身份和各实例参数 |
 
-布局数值须有限且在 0–32768 范围内；坐标和长度按 DIP。NumberRow 的外部布局放在父容器；内部文字与边框走 SS。常用图标建议由宿主从 [ControlIcon](../../../src/ui/style.hpp) 转成数值输入，避免在声明里散布易变编号。
+布局数值须有限且在 0–32768 范围内；坐标和长度按 DIP。NumberRow 的外部布局放在父容器；内部文字与边框走 SS。常用图标建议由宿主从 [ControlIcon](../../../modules/gui/ui/include/ui/style.hpp) 转成数值输入，避免在声明里散布易变编号。
 
 ### 参数说明与悬浮提示
 
@@ -433,12 +433,12 @@ Parameters、Controls 等区域挂在稳定的业务内容槽内；停靠移动�
 
 | 入口 | 责任 |
 | --- | --- |
-| [declaration.cpp](../../../src/ui_language/declaration.cpp) | Source Lexer、UI 结构/组合检查、表达式降低及源码位置映射 |
-| [component.cpp](../../../src/ui_language/component.cpp) | 共享代码、实例状态/依赖、动态子实例及控件快照 |
-| [live_document.cpp](../../../src/ui_language/live_document.cpp) | 文件去抖、候选版本、宿主区域、提交与拒绝 |
+| [declaration.cpp](../../../modules/gui/ui_language/src/declaration.cpp) | Source Lexer、UI 结构/组合检查、表达式降低及源码位置映射 |
+| [component.cpp](../../../modules/gui/ui_language/src/component.cpp) | 共享代码、实例状态/依赖、动态子实例及控件快照 |
+| [live_document.cpp](../../../modules/gui/ui_language/src/live_document.cpp) | 文件去抖、候选版本、宿主区域、提交与拒绝 |
 | [editor.ui.source](../../../assets/editor.ui.source) | 真实面板结构、文案、查询组合、折叠和动态列表 |
-| [workspace.cpp](../../../src/editor/workspace.cpp) | World 阶段采样、原业务 key、整体工作区描述 |
-| [application.cpp](../../../src/application/application.cpp) | 原生输入、Session 提交/effects 顺序、Renderer 接受链 |
+| [workspace.cpp](../../../modules/editor/application/src/editor/workspace.cpp) | World 阶段采样、原业务 key、整体工作区描述 |
+| [application.cpp](../../../modules/editor/application/src/application/application.cpp) | 原生输入、Session 提交/effects 顺序、Renderer 接受链 |
 
 `atelier_ui_language` 链接 `atelier_ui` 与 `atelier_source`，不依赖 editor、World 或 RHI；基础 UI 仍不依赖 Runtime。结构和表达式没有第二个解释器。
 

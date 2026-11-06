@@ -22,14 +22,11 @@ target_link_libraries(atelier_reflection_acceptance PRIVATE atelier_source)
 target_include_directories(atelier_reflection_acceptance PRIVATE "${PROJECT_SOURCE_DIR}/acceptance")
 
 # SOURCE selects a real target compile command; headers use those exact settings.
-# Generated headers retain their path relative to BASE_DIR (normally src/).
+# Generated headers retain their path relative to the explicit public include root.
 function(atelier_reflect target)
     cmake_parse_arguments(PARSE_ARGV 1 AR "" "SOURCE;BASE_DIR" "HEADERS")
-    if(AR_UNPARSED_ARGUMENTS OR NOT AR_SOURCE OR NOT AR_HEADERS)
-        message(FATAL_ERROR "atelier_reflect requires SOURCE and HEADERS")
-    endif()
-    if(NOT AR_BASE_DIR)
-        set(AR_BASE_DIR "${PROJECT_SOURCE_DIR}/src")
+    if(AR_UNPARSED_ARGUMENTS OR NOT AR_SOURCE OR NOT AR_HEADERS OR NOT AR_BASE_DIR)
+        message(FATAL_ERROR "atelier_reflect requires SOURCE, BASE_DIR and HEADERS")
     endif()
     cmake_path(ABSOLUTE_PATH AR_BASE_DIR BASE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" NORMALIZE)
     cmake_path(ABSOLUTE_PATH AR_SOURCE BASE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" NORMALIZE)

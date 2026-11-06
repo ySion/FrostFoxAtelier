@@ -1,6 +1,6 @@
 # 数学值与双精度
 
-数学值使用同一份 C++ 存储、Runtime 类型身份和源码类型定义。纯计算库位于 [`math/math.hpp`](../src/math/math.hpp)，不依赖 Runtime；Runtime 启动时发布内建数学记录，源码编译器从已验证的类型元数据取得数学分类。名字用于查找，不能使任意同名记录获得编译器特权。
+数学值使用同一份 C++ 存储、Runtime 类型身份和源码类型定义。纯计算库位于 [`math/math.hpp`](../modules/core/math/include/math/math.hpp)，不依赖 Runtime；Runtime 启动时发布内建数学记录，源码编译器从已验证的类型元数据取得数学分类。名字用于查找，不能使任意同名记录获得编译器特权。
 
 ## 类型、名称与存储
 

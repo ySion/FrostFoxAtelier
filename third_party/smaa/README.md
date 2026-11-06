@@ -10,7 +10,7 @@ Vendored without modification:
 - `AreaTex.h` ← upstream `Textures/AreaTex.h`.
 - `SearchTex.h` ← upstream `Textures/SearchTex.h`.
 
-`src/renderer/shaders/lit_smaa.hlsl` provides compute wrappers using the reference
+`modules/render/renderer/shaders/lit_smaa.hlsl` provides compute wrappers using the reference
 weight calculation and neighborhood blending. The first pass ports the original
 luma edge equations to explicit scene-linear-to-sRGB loads and zero stores
 instead of pixel-shader discard. The temporal pass keeps two independent spatial
@@ -28,4 +28,4 @@ LUT upload uses the existing RHI/Gfx texture upload path:
 No sRGB views, mip generation, channel swizzling or recomputation. Bind the
 existing linear clamp sampler; compute texture samples explicitly use LOD 0.
 Create/upload these device-lifetime textures once and retire them with the
-renderer. LUT bytes and dimensions are available in `src/renderer/smaa_lut.hpp`.
+renderer. LUT bytes and dimensions are available in `modules/render/renderer/src/detail/smaa_lut.hpp`.

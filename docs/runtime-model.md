@@ -68,7 +68,7 @@ W2 以既有 Runtime/Source/反射/程序化的构造失败、部分赋值、写
 | 枚举引用边 | `visit_roots`、`visit_references` | 区分持有/观察，递归内联记录而不递归对象图；GC 使用同一字段定义派生的持有边追踪计划 |
 | 分步回收对象 | `begin_collection`、`collect_step`、`CollectionProgress` | 宿主显式安全点推进根处理、标记和清扫；统一死亡提交，析构按步执行，时间预算为软上限 |
 
-源码依据：[公开定义](../src/runtime/runtime.hpp)、[注册与运行时实现](../src/runtime/runtime.cpp)、[原生定义生产者](../src/runtime/native.hpp)。
+源码依据：[公开定义](../modules/execution/runtime/include/runtime/runtime.hpp)、[注册与运行时实现](../modules/execution/runtime/src/runtime.cpp)、[原生定义生产者](../modules/execution/runtime/include/runtime/native.hpp)。
 
 `TypeDefinition` 是发布输入，`TypeInfo` 是发布后元数据的查询面；它们指向同一类型身份，不能因结构体不同就判定为两套类型世界。`Runtime::call` 仍只执行原生 `Invoker`；源码编译与 JIT 经独立执行作用域使用同一 Runtime，不把机器码地址塞进原生借用通路。仅 JIT 的决定见[编译与执行契约](language-contract.md#编译与执行)。
 
@@ -451,7 +451,7 @@ Result<void> destroy_value(TypeId, std::span<std::byte> storage);
 
 ### 业务执行协议
 
-核心执行协议位于 [execution.hpp](../src/runtime/execution.hpp) / [execution.cpp](../src/runtime/execution.cpp)，不依赖 LLVM。正式 [source::Program](../src/source/program.hpp) 管理源码调用与发布，[内部桥接](../src/source/detail/bridge.cpp)连接共享 Runtime，[源码前端](../src/language/source.hpp)产出定型 AST，[LLVM 后端](../src/jit/source_backend.cpp)编译并拥有机器码。端到端验收作为这些模块的消费者；支持范围见[最小源码子集](language-contract.md#已实现的最小源码子集)。
+核心执行协议位于 [execution.hpp](../modules/execution/runtime/include/runtime/execution.hpp) / [execution.cpp](../modules/execution/runtime/src/execution.cpp)，不依赖 LLVM。正式 [source::Program](../modules/execution/source/include/source/program.hpp) 管理源码调用与发布，[内部桥接](../modules/execution/source/src/detail/bridge.cpp)连接共享 Runtime，[源码前端](../modules/execution/language/include/language/source.hpp)产出定型 AST，[LLVM 后端](../modules/execution/jit/src/source_backend.cpp)编译并拥有机器码。端到端验收作为这些模块的消费者；支持范围见[最小源码子集](language-contract.md#已实现的最小源码子集)。
 
 1. **准入与身份**：宿主在参数准备、登记新根和业务副作用之前取得 `ExecutionScope::enter(runtime)`，保持到结果交接和帧清理结束。准入检查关停、原生借用和只读遍历，不要求 GC 周期已结束；同一 Runtime 的活动执行统一计数，直到最外层退出才允许 GC 或代码发布。原始代码入口完整核对 Runtime、参数、成员目录和布局；已验证发布版本复用不可变准备，但仍逐次检查实际参数及需要/提供的接收者活身份与类型。不能以执行保护、根登记或静态签名核对替代活身份验证与代码保活。
 2. **帧与存储**：`ExecutionFrame` 借用调用方已构造、地址稳定且独占使用的槽。同步形式接受 `ExecutionScope&` 与 `ObjectReference` 槽，在整个区间内保存定型身份而不逐局部登记持久根；持久形式接受 `Runtime&` 与 `ObjectRoot` 槽，供协程跨挂起保活。作用域、Runtime、槽存储和上下文必须保持到相应帧清理完毕。Frame 不复制、不移动，自身不分配堆，槽编号不是对象身份。编译产物报告强/弱槽需求；每个版本保留自己的槽需求，每次 Invocation 独占引用槽、活值计数和段内接收者缓存。拥有值存储与活值标记由生成代码按需分配。原生实参使用生成代码的定型值或独立聚合暂存，不设通用实参缓冲。生成帧只预留接收者槽，不需要接收者的入口不填入它；机器快照由验收消费者独立持根。尚无通用含引用记录帧或共享 scratch 池。
@@ -472,7 +472,7 @@ Result<void> destroy_value(TypeId, std::span<std::byte> storage);
 
 ### 协程核心协议
 
-[execution.hpp](../src/runtime/execution.hpp) 中的 `Coroutine` 是同线程、可移动且不可复制的帧拥有者；`CoroutineFrame` 提供恢复和不抛异常的资源清理。核心不依赖 LLVM，也不拥有业务调度器。源码规则集中在 [LANGUAGE.md](../LANGUAGE.md#显式协程)。
+[execution.hpp](../modules/execution/runtime/include/runtime/execution.hpp) 中的 `Coroutine` 是同线程、可移动且不可复制的帧拥有者；`CoroutineFrame` 提供恢复和不抛异常的资源清理。核心不依赖 LLVM，也不拥有业务调度器。源码规则集中在 [LANGUAGE.md](../LANGUAGE.md#显式协程)。
 
 - **所有权与状态**：稳定控制块区分 `ready/running/suspended/completed/failed/cancelled`，持有帧及完成值/错误。每次恢复先保留控制块，再进入已有 `ExecutionScope`；回调销毁外层拥有者不会使本次恢复访问已释放对象。同一实例重入返回 `busy`，终态恢复拒绝。
 - **准入**：原生借用或只读遍历内恢复被拒，帧保持原状态，可在外层退出后重试。创建准备和每次恢复均受执行区间保护；挂起本身不占活动执行计数，但必须等同 Runtime 的所有外层执行退出后，宿主才可推进 GC 或发布兼容代码。
@@ -488,7 +488,7 @@ Result<void> destroy_value(TypeId, std::span<std::byte> storage);
 
 ### 单入口兼容方法体发布
 
-[source::Program](../src/source/program.hpp) 管理一个完整源码入口/LLJIT 资源单元。Runtime 提供共同签名解析、执行作用域及发布准入；源码请求、候选、稳定入口与租约归该正式宿主模块。通用公共调用使用 Scalar 值或 Argument 借用，同步标量还可绑定固定或跟随版本的定型句柄；私有 DLL 参数布局与内部观察接缝不进入业务接口。每个版本都可以随代码提交新的源码 enum/struct 类型；兼容更新保持已发布类型的身份和布局，不重建对象，也不向原生 Invoker 表塞入裸 JIT 地址。
+[source::Program](../modules/execution/source/include/source/program.hpp) 管理一个完整源码入口/LLJIT 资源单元。Runtime 提供共同签名解析、执行作用域及发布准入；源码请求、候选、稳定入口与租约归该正式宿主模块。通用公共调用使用 Scalar 值或 Argument 借用，同步标量还可绑定固定或跟随版本的定型句柄；私有 DLL 参数布局与内部观察接缝不进入业务接口。每个版本都可以随代码提交新的源码 enum/struct 类型；兼容更新保持已发布类型的身份和布局，不重建对象，也不向原生 Invoker 表塞入裸 JIT 地址。
 
 - **声明与依赖**：构造程序时只绑定 Runtime 和对象目录，不重复手写源码的函数名或参数/结果声明。首次成功发布从真实编译产物通过 Runtime 解析建立不可变 `FunctionSignature`；后续请求捕获该声明及类型/字段/方法、布局和服务表快照。依赖复核使用该程序捕获的目录，其他模块追加无关类型不改变已有索引。`describe()` 交付拥有描述数组的副本；动态 `Entry/Lease::invoke` 核对值或借用实参，`start` 核对协程实参并创建固定版本实例，同步/协程错用拒绝。
 - **定型绑定**：`Lease::bind<R, Args...>()` 和 `Entry::bind<R, Args...>()` 核对同一共享签名并返回 `Program::Typed<R, Args...>`，分别固定版本和跟随发布，不增加模式参数。只支持同步按值 int32/uint32/float/double/bool，结果为 void 或其中一个标量；其他位宽、枚举、引用、聚合值、容器与协程继续使用动态接口。`invoke(ObjectId, Args..., Diagnostics* = nullptr, Debugger* = nullptr)` 返回 `Result<R>`，不构造 Scalar/BusinessValue 实参数组，也不静默回落。签名不合返回错误，空句柄不能执行。固定句柄持有其 Version，热发布不改绑，Program 关闭后仍可调用。跟随句柄持有控制状态与稳定入口索引；发布后同一句柄选新版本，关闭后拒绝调用，不保活旧代码。每次只选一次 Version/定型地址，不查名字或重复核签名，执行区间保护该版本至错误定位、诊断和清理结束，不逐调用复制版本 shared_ptr；回调之后不访问可能已销毁的句柄或控制状态。两者都不保活接收者或 Runtime，仍需合法活身份、同线程准入及完整诊断/调试/显式清理；失败不交付结果，不回滚已发生的业务副作用。具名 `entry(name)` / `pin(name)` 同样可绑定，导出重排保持已发布索引。

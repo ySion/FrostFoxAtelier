@@ -402,7 +402,7 @@ return 完成原有清理后发布结果；挂起、失败、取消不发布完�
 
 ## 材质纯值编译与具名纹理输入
 
-`source::compile_material` 复用同一类型化前端和 CPU 降低逻辑，另从检查后的树生成 HLSL；不是普通 `Program` 的新执行模式。实际输入/输出和采样令牌使用 [`material.Context/Output/TextureInput`](src/material/program.hpp) 的唯一原生注册，编译接口接收实际 TypeId。普通游戏 Source 不因此获得 `sample` 或 GPU 执行。
+`source::compile_material` 复用同一类型化前端和 CPU 降低逻辑，另从检查后的树生成 HLSL；不是普通 `Program` 的新执行模式。实际输入/输出和采样令牌使用 [`material.Context/Output/TextureInput`](modules/engine/material/include/material/program.hpp) 的唯一原生注册，编译接口接收实际 TypeId。普通游戏 Source 不因此获得 `sample` 或 GPU 执行。
 
 ```source
 struct Params { float cutoff; vector3 tint; };
@@ -435,7 +435,7 @@ material.Output shade(material.Context c, Params p, Textures textures) {
 - `MaterialProgram::hlsl_footprint(namespace)` 生成 `ms_shade_footprint(environment, center, d0, d1, parameters)`；d0/d1 是同形 Context 的零初始化变化量，不是邻点或带默认法线的 Context。分支/短路沿中心值，参数变化为零。`atelier_material_sample_grad(environment, local_slot, uv, d0, d1)` 消费最终 UV 变化；纹理驱动坐标用相同梯度下最多两次偏移采样近似传播。非有限最终梯度及纹素尺度溢出由桥采实际最粗 mip，不传给硬件；它是局部足迹近似，不是跨分支面积积分。各 HLSL 入口执行 orientation 时共用 `atelier_material_sample_orientation(environment, local_slot, uv)`。真实通道政策及 GPU 覆盖边界见[材质采样](docs/modules/renderer/materials.md#采样与各通道)。
 - 声明与类型化计算诊断使用已有的真实源位置，包含源名、行列和原因；后端缩短过长源名的中间部分，为行列/原因留出空间。没有精确位置的布局发布错误只附源名，不伪造行列。
 
-公共接口、拥有与失败合同见 [`material_program.hpp`](src/source/material_program.hpp)。内容可在编译 Runtime 关闭后求值，并可跨调用方共享；执行时固定代码所有者，旧内容不会被新编译覆盖。后端 DLL 与采样实现须在使用期间保持装载；每次调用的字节和采样绑定只同步借用。公开 CPU 入口是 `source_material_acceptance`（`atelier_source_minimal --materials`）；它不宣称 GPU 执行通过。真实 GPU 数值/资源环境验证属于 Renderer 消费验收。
+公共接口、拥有与失败合同见 [`material_program.hpp`](modules/execution/source/include/source/material_program.hpp)。内容可在编译 Runtime 关闭后求值，并可跨调用方共享；执行时固定代码所有者，旧内容不会被新编译覆盖。后端 DLL 与采样实现须在使用期间保持装载；每次调用的字节和采样绑定只同步借用。公开 CPU 入口是 `source_material_acceptance`（`atelier_source_minimal --materials`）；它不宣称 GPU 执行通过。真实 GPU 数值/资源环境验证属于 Renderer 消费验收。
 
 ### 材质局部足迹的边界约定
 

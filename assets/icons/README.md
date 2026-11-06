@@ -15,7 +15,7 @@ npm run generate --prefix tools/icons
 ```
 
 The generator writes 128×128 transparent PNGs for inspection and the same alpha
-data, run-length encoded, into `src/ui/icon_data.inl`. This checked-in output
+data, run-length encoded, into `modules/gui/ui/src/detail/icon_data.inl`. This checked-in output
 keeps ordinary C++ builds offline and avoids adding a PNG decoder or runtime
 asset lookup for these small masks. Node and resvg are generation tools only.
 The source SVGs are authoritative; do not edit the PNGs or generated C++ data.

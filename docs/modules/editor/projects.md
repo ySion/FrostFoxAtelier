@@ -88,7 +88,7 @@ Ctrl+Z/Ctrl+Shift+Z 先服从当前文本控件的草稿规则，再路由到获
 
 ## 资源读取与作者写入
 
-`assets::Reader` 是同步读侧，解析精确的内建网格与安装材质/Source，不需要 Project、Runtime 对象或设备。工程的 mesh、texture、material、sky、导入说明与依赖文件读取也由它负责；OBJ/glTF/WIC、材质与共用 JSON 编解码位于 `src/assets`。Reader 不创建目录、身份文件或作者材质文档，不持有 Runtime 根；读取 MS 作者数据和 Source 文本不编译程序。
+`assets::Reader` 是同步读侧，解析精确的内建网格与安装材质/Source，不需要 Project、Runtime 对象或设备。工程的 mesh、texture、material、sky、导入说明与依赖文件读取也由它负责；OBJ/glTF/WIC、材质与共用 JSON 编解码位于 `modules/engine/assets`。Reader 不创建目录、身份文件或作者材质文档，不持有 Runtime 根；读取 MS 作者数据和 Source 文本不编译程序。
 
 资产值类型直接使用 `assets::AssetKind`、`assets::MeshAsset` 等声明；文件读取/UTF-8 转换、JSON 与材质 codec 分别通过 `assets/file.hpp`、`assets/json_format.hpp`、`assets/material_format.hpp` 使用，不经 `editor` 别名或转发头。`editor/assets.hpp` 仅声明编辑器部署目录定位 `asset_directory()`，不再作为资产读取入口。接口和格式升级遵循[当前开发基线](../../engineering.md#当前开发基线)。
 
@@ -309,7 +309,7 @@ Play 进程（`run_project`）加载场景后调用 `enter_play`，UI 预览除�
 
 Run 的私有快照固定 Scene 作者数据，不是全部工程文件的不可变副本；首载资源从已保存工程解析。图形 runner 在首个完整材质组 ready 后才 start；headless 没有 GPU 门槛。Live ACK 确认命令已经应用并且接收端已取得内容所有权，用于释放传输文件及更新命令同步状态，不代表 GPU ready、Present 或屏幕显示。渲染与拾取仍遵守各自的完整组及接受帧合同。
 
-编辑器启动的 Play 由变更链路（[play_link.hpp](../../../src/application/play_link.hpp)）跟随文档：
+编辑器启动的 Play 由变更链路（[play_link.hpp](../../../modules/editor/application/include/application/play_link.hpp)）跟随文档：
 
 - 传输：每次 Run 新建两条匿名管道，子进程一端的句柄只经 handle list 继承，以 `--live-channel <读> <写>` 传入。每条消息是 uint32 小端字节数加 UTF-8 JSON，单条上限 4 MiB。两端各有一个读线程和一个写线程，只搬运文本；编辑器 UI 线程和 Play 帧循环只轮询队列，不等待对方。
 - 发送：Run 在序列化快照的同一步开始转发，快照与转发之间没有空隙。Play 还在加载时，批次留在管道中，在首帧 start 之前应用。编辑器每一步结束时（无论这一步从哪里返回）取走 `take_live_ops()`，作为一批发出：`{"type":"batch","seq":n,"ops":[...]}`，seq 从 1 递增。超过一条消息的批次写入本次运行的私有目录 `Cache/Play/<运行>/batch-<seq>.json`，文件内容正好是交给 `apply_live` 的 `{"ops":[...]}`，消息只带 `{"type":"batch","seq":n,"file":路径}`。文件始终由发送端拥有，在收到 ACK 或关闭本次链路时删除，接收端只读。超过 16 MiB 的批次在 op 边界拆成连续的几批；单个 op 超过 16 MiB 算作无法生成。Play 结束后编辑器删除该目录。

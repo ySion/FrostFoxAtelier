@@ -1,6 +1,6 @@
 // Fixed integer hashes and uniform numbers for procedural nodes. Results are part of the
 // generated content, so the algorithms never change silently. They are the ones in
-// src/procedural/random.hpp, so Source and C++ nodes draw the same values: lowbias32 by
+// modules/engine/procedural/include/procedural/random.hpp, so Source and C++ nodes draw the same values: lowbias32 by
 // Chris Wellons (public domain), combined as hash(a ^ hash(b)).
 
 uint procedural.hash(uint value) {

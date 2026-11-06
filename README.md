@@ -211,7 +211,7 @@ cmake --build --preset release --target ui_layout_acceptance
 
 ## 默认内存分配
 
-原生进程使用共享 mimalloc DLL 与官方 Windows CRT 重定向，普通代码继续调用默认分配函数。`atelier_target` 为每个可执行目标直接编译 [global_new_delete.cpp](src/memory/global_new_delete.cpp)，在一个翻译单元中采用官方完整的 `new/delete` 覆盖，并链接同一 mimalloc DLL。静态库内的代码随最终进程使用该分配器。
+原生进程使用共享 mimalloc DLL 与官方 Windows CRT 重定向，普通代码继续调用默认分配函数。`atelier_target` 为每个可执行目标直接编译 [global_new_delete.cpp](modules/core/memory/src/global_new_delete.cpp)，在一个翻译单元中采用官方完整的 `new/delete` 覆盖，并链接同一 mimalloc DLL。静态库内的代码随最终进程使用该分配器。
 
 本项目的可执行文件和 DLL 集中输出到各配置目录。运行验收程序时，需要保留同目录的 `mimalloc-debug.dll`（开发配置）或 `mimalloc.dll`（发布配置）、`mimalloc-redirect.dll`，以及用于验证跨 DLL CRT 分配的 `atelier_allocator_client.dll`。mimalloc 和重定向器采用上游实现，构建同时保留 `LICENSE.mimalloc.txt`。
 
@@ -241,7 +241,7 @@ cmake --build --preset release --target ui_layout_acceptance
 
 ## JIT 业务执行闭环
 
-正式消费者包含 [source/program.hpp](src/source/program.hpp)，链接 `atelier_source`，使用同一个 `source::Program` 完成请求、编译、发布、绑定、同步调用及协程启动。标量/枚举值参数和返回值使用 Runtime 的 `Scalar`，借用参数使用 `Argument`，不会暴露 LLVM 或私有 DLL 参数布局。原生或描述型记录、Array 和只读 String 也通过 `Argument::borrow` 进入同一接口；布局来自 Runtime，生成代码访问调用方原有缓冲。[公共验收入口](acceptance/source/main.cpp)分派下列独立代表，不重复基础同步/热更用例。[关停消费者](acceptance/source/shutdown.cpp)覆盖关闭入口、取消任务、等待执行静止及最后释放 Runtime 的完整顺序；具体契约见[宿主关停](docs/runtime-model.md#宿主关停闭环)。
+正式消费者包含 [source/program.hpp](modules/execution/source/include/source/program.hpp)，链接 `atelier_source`，使用同一个 `source::Program` 完成请求、编译、发布、绑定、同步调用及协程启动。标量/枚举值参数和返回值使用 Runtime 的 `Scalar`，借用参数使用 `Argument`，不会暴露 LLVM 或私有 DLL 参数布局。原生或描述型记录、Array 和只读 String 也通过 `Argument::borrow` 进入同一接口；布局来自 Runtime，生成代码访问调用方原有缓冲。[公共验收入口](acceptance/source/main.cpp)分派下列独立代表，不重复基础同步/热更用例。[关停消费者](acceptance/source/shutdown.cpp)覆盖关闭入口、取消任务、等待执行静止及最后释放 Runtime 的完整顺序；具体契约见[宿主关停](docs/runtime-model.md#宿主关停闭环)。
 
 [原生值借用消费者](acceptance/source/native_values.cpp)保留一个小型原生记录数组的共享布局、只读/可写别名与原地更新代表，以及借用后的 GC、失败前已提交写入和拥有者析构。调用链及边界见[原生值借用](docs/native-value-borrows.md)。
 
@@ -265,12 +265,12 @@ cmake --build --preset release --target ui_layout_acceptance
 
 正式接口的现行成本边界见[执行结构](docs/runtime-structure.md#已知成本与能力边界)；交错会话验证资源寿命，不据此评估预算或沿用历史测量数值。
 
-[业务验收](acceptance/jit/business.cpp)内嵌最小源码，经过[词法/语法与类型检查](src/language/source.cpp)、定型语法树及[LLVM 本机编译](src/jit/source_backend.cpp)，保留真实链接失败后旧程序可执行，以及源码引用、快照发布和活动拥有者销毁的清理代表。宿主适配器的同类型快照仍由原 Runtime 管理，并非源码的隐式克隆或 `void` 返回值；夹具复用 [machine.hpp](acceptance/machine.hpp)。
+[业务验收](acceptance/jit/business.cpp)内嵌最小源码，经过[词法/语法与类型检查](modules/execution/language/src/source.cpp)、定型语法树及[LLVM 本机编译](modules/execution/jit/src/source_backend.cpp)，保留真实链接失败后旧程序可执行，以及源码引用、快照发布和活动拥有者销毁的清理代表。宿主适配器的同类型快照仍由原 Runtime 管理，并非源码的隐式克隆或 `void` 返回值；夹具复用 [machine.hpp](acceptance/machine.hpp)。
 
-- [ExecutionFrame](src/runtime/execution.hpp)复用现有定型身份、`ObjectRoot` 及共享屏障/撤销机制。同步局部与临时引用由执行区间保护，不逐个登记持久根；协程持有槽跨挂起保活，观察槽不保活。生成帧只预留接收者槽，机器验收自行持有快照根；循环/早退/错误均显式清理。
+- [ExecutionFrame](modules/execution/runtime/include/runtime/execution.hpp)复用现有定型身份、`ObjectRoot` 及共享屏障/撤销机制。同步局部与临时引用由执行区间保护，不逐个登记持久根；协程持有槽跨挂起保活，观察槽不保活。生成帧只预留接收者槽，机器验收自行持有快照根；循环/早退/错误均显式清理。
 - 顶层以 `ExecutionScope` 覆盖参数准备至结果交接、帧清理，内部准入检查拒绝原生借用或遍历内重入；同一 Runtime 的最外层执行期间，整个 GC 状态机禁止开始或推进。轮询只观察和控制，调用不再接受收集预算；最外层退出不自动收集，宿主继续在已有帧/阶段边界推进同一增量 GC。长执行会延迟回收并累积不可达对象；原生调用、借用和显式销毁的准入保持不变。
 - 错误通过定型 thunk 的状态与固定诊断返回；IR 显式清根，宿主在 RAII 兜底之前验证清理完成。跨 Runtime、错类型、失效代际与槽位复用均按原身份规则拒绝，已发生的业务修改不回滚。
-- LLVM 与 C++ 所有权继续隔离。活动调用在 DLL 内持有代码；已实际验证原生回调销毁外层代码句柄后继续执行，返回后释放代码页和展开表。两条生成路径共用 [Windows 展开机制](src/jit/windows_unwind.cpp)。
+- LLVM 与 C++ 所有权继续隔离。活动调用在 DLL 内持有代码；已实际验证原生回调销毁外层代码句柄后继续执行，返回后释放代码页和展开表。两条生成路径共用 [Windows 展开机制](modules/execution/jit/src/windows_unwind.cpp)。
 - 源码入口接受零个或多个 bool/float/double/uint/int/枚举参数，支持值、只读引用及可写引用，同步入口另支持已注册原生记录/Array 的引用和只读 String 引用，同步入口另支持内建数学值及 plain struct 的按值参数与结果，返回为 void、标量/枚举值、数学值或 plain struct；已定型数值不隐式转换。调用先校验数量、类型和结果存储；失败状态与成功标量分开，只有原生调用、结束回调和生成清理全部成功才提交结果，失败不覆盖调用方结果。
 - 成员名称、字段路径和原生方法签名来自同一 Runtime 的元数据；前端/后端只使用宿主绑定表索引，不知道机器字段名字。机器快照的创建、轮询后刷新与结果根交接归宿主验收适配器；不访问对象的标量或原生值借用入口无需接收者、快照或登记对象根。
 - 原生注册从同一 C++ 签名生成动态 Invoker 与定型 thunk。源码编译捕获不可变入口和字段定位，生成代码直接传定型参数；聚合按值实参使用独立对齐活值地址，由 C++ thunk 完成真实按值调用。引用实参在全部实参求值后定位，保留 const 与合法别名；失败只写固定诊断，不提交暂存结果。动态 Runtime 调用仍检查结果缺失、种类及存储合同。
@@ -281,13 +281,13 @@ cmake --build --preset release --target ui_layout_acceptance
 
 业务验收的源码夹具内嵌于 C++，不再部署额外机器源码文件。编译诊断带源名/行/列；热更新请求另附单调请求号。超长源名仅在诊断与 COFF 文件标签中按首尾缩略，避免吞掉请求号、位置或原因，并保持 UTF-8 边界；请求快照与编译元数据仍保留完整名字，短名诊断格式不变。编译错误的位置与运行停点分别维护：实际断点、单步和局部值通过[调试接口](docs/source-debugger.md)使用；编辑器磁盘检测沿[源码工作流](docs/modules/editor/source-editor.md)执行，PDB 和任意机器指令源码映射尚未接入。
 
-当前仍不是完整语言、任意引用值执行帧、永久通用 ABI、跨发布单元热重载/布局迁移的交付。前端不链接 LLVM/Runtime，只共享参数模式与序列操作的轻量声明，降低位于 `src/jit`，发布与执行服务位于 `src/source`；机器快照、统计与故障模式留在验收消费者。没有解释执行回退。生成代码使用已绑定的原生入口、真实字段偏移或固定取址操作，不逐次遍历字段路径。共享签名与原生结果的完整约束见[函数契约](docs/runtime-model.md#共享函数签名与结果)，数学值与递归 plain struct 已支持同步按值参数与结果；资源记录/容器的按值参数与结果、对象引用参数与结果及借用返回尚未开放。
+当前仍不是完整语言、任意引用值执行帧、永久通用 ABI、跨发布单元热重载/布局迁移的交付。前端不链接 LLVM/Runtime，只共享参数模式与序列操作的轻量声明，降低位于 `modules/execution/jit`，发布与执行服务位于 `modules/execution/source`；机器快照、统计与故障模式留在验收消费者。没有解释执行回退。生成代码使用已绑定的原生入口、真实字段偏移或固定取址操作，不逐次遍历字段路径。共享签名与原生结果的完整约束见[函数契约](docs/runtime-model.md#共享函数签名与结果)，数学值与递归 plain struct 已支持同步按值参数与结果；资源记录/容器的按值参数与结果、对象引用参数与结果及借用返回尚未开放。
 
 早退路径共用按需发射的用户槽清理块，每个 `return` 不重复生成整份清理 IR，并在快照复制与发布之前结束用户引用。槽复用尚未加入，现行调用与清理链见[执行结构](docs/runtime-structure.md#从入口到执行清理)。
 
 ### 单入口兼容方法体热更新
 
-正式 [source::Program](src/source/program.hpp) 先绑定 Runtime 与对象目录，首次成功发布从真实编译产物解析并固定函数声明，不重复手写源码签名。`request` 保存不可变源码和声明/依赖快照，并准备源码类型布局；`prepare` 完成编译、链接和物化，`try_publish` 在 Runtime 静止点提交。每次发布都可一并提交新的源码类型；后续更新固定已发布的类型定义、函数名、参数/结果、接收者要求、成员目录及实际服务地址。共享发布与类型生命周期合同见[运行时说明](docs/runtime-model.md#单入口兼容方法体发布)。
+正式 [source::Program](modules/execution/source/include/source/program.hpp) 先绑定 Runtime 与对象目录，首次成功发布从真实编译产物解析并固定函数声明，不重复手写源码签名。`request` 保存不可变源码和声明/依赖快照，并准备源码类型布局；`prepare` 完成编译、链接和物化，`try_publish` 在 Runtime 静止点提交。每次发布都可一并提交新的源码类型；后续更新固定已发布的类型定义、函数名、参数/结果、接收者要求、成员目录及实际服务地址。共享发布与类型生命周期合同见[运行时说明](docs/runtime-model.md#单入口兼容方法体发布)。
 
 - 同一 Runtime 任一语言调用仍活动，或正处于原生借用、遍历/GC 回调时，发布返回 `busy`，候选保留供外层返回后重试。暂停的 GC 周期本身允许兼容发布；安全点不暗中切换版本。
 - 最新请求一经接受，旧候选不能再提交；最新源码的解析、类型检查或真实链接失败，均保留上次已发布版本，不回退发布过期候选。重复提交及不兼容入口/签名/接收者/服务表明确拒绝。
@@ -310,7 +310,7 @@ cmake --build --preset release --target ui_layout_acceptance
 
 源码请求、编译、发布、同步调用、协程恢复及代码退役的完整链路见[结构与执行链](docs/runtime-structure.md#从源码到发布)；下图说明同一类型与对象体系的定义来源和访问入口。
 
-协程使用[现行规范](LANGUAGE.md#显式协程) 的 `async` 入口和 `yield` 语句。源码仍经 LLVM/LLJIT，新增显式协程转换；核心 [Coroutine](src/runtime/execution.hpp) 管理帧状态、恢复准入、合作取消和结果。挂起帧复用共享 GC 根并持有原代码版本；宿主决定恢复时机。真实源码验收覆盖挂起期间 GC、取消、失效接收者、错误首因、活动拥有者销毁和热更新后的旧代码退休，包含在既有 `jit_acceptance` 与总 `acceptance` 中。
+协程使用[现行规范](LANGUAGE.md#显式协程) 的 `async` 入口和 `yield` 语句。源码仍经 LLVM/LLJIT，新增显式协程转换；核心 [Coroutine](modules/execution/runtime/include/runtime/execution.hpp) 管理帧状态、恢复准入、合作取消和结果。挂起帧复用共享 GC 根并持有原代码版本；宿主决定恢复时机。真实源码验收覆盖挂起期间 GC、取消、失效接收者、错误首因、活动拥有者销毁和热更新后的旧代码退休，包含在既有 `jit_acceptance` 与总 `acceptance` 中。
 
 Runtime、宿主回调和 DLL 须活到所有非终态帧清理完成。当前没有 `await` 组合、跨线程恢复、原生深层挂起或挂起帧迁移；LLVM 降低与宿主绑定通过正式源码模块提供。设计取舍见[执行结构](docs/runtime-structure.md#当前取舍)，当前行为见[核心协议](docs/runtime-model.md#协程核心协议)。
 
@@ -325,9 +325,9 @@ Runtime、宿主回调和 DLL 须活到所有非终态帧清理完成。当前�
                                            使用调用方提供的存储，无独立对象身份
 ```
 
-- [src/runtime/runtime.hpp](src/runtime/runtime.hpp)：运行时公开契约、定义输入和元数据。
-- [src/runtime/runtime.cpp](src/runtime/runtime.cpp)：注册验证、布局、存储、生命周期和动态调用。
-- [src/runtime/native.hpp](src/runtime/native.hpp)：从 C++ 成员指针生成类型定义与调用适配，不拥有第二份类型表。
+- [modules/execution/runtime/include/runtime/runtime.hpp](modules/execution/runtime/include/runtime/runtime.hpp)：运行时公开契约、定义输入和元数据。
+- [modules/execution/runtime/src/runtime.cpp](modules/execution/runtime/src/runtime.cpp)：注册验证、布局、存储、生命周期和动态调用。
+- [modules/execution/runtime/include/runtime/native.hpp](modules/execution/runtime/include/runtime/native.hpp)：从 C++ 成员指针生成类型定义与调用适配，不拥有第二份类型表。
 - [acceptance/runtime/main.cpp](acceptance/runtime/main.cpp)：完整验收入口。两种来源的机器由同一消费函数操作。
 
 原生 C++ 类型通过成员指针访问字段，默认适配使用 `std::addressof` 取得真实子对象地址，不调用成员类型重载的 `operator&`；同一定位用于标量访问、引用枚举和 GC 强边追踪，正式验收覆盖误址与漏边反例。注册顺序不需要匹配内存布局。描述型记录/对象由运行时计算布局，不需要对应的 C++ 类。值记录内联存储，没有独立对象身份，可以嵌套；原生值记录也可以嵌入描述型对象。

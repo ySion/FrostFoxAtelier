@@ -1,6 +1,6 @@
 # RHI 当前契约
 
-本文件描述 [rhi.hpp](../../../src/rhi/rhi.hpp) 与固定 gfx 补丁实际提供的 Interface；具体版本由 [依赖锁](../../../cmake/dependencies-lock.json) 指定。选型与被否决方案的理由只维护于 [decisions](decisions.md)。
+本文件描述 [rhi.hpp](../../../modules/render/rhi/include/rhi/rhi.hpp) 与固定 gfx 补丁实际提供的 Interface；具体版本由 [依赖锁](../../../cmake/dependencies-lock.json) 指定。选型与被否决方案的理由只维护于 [decisions](decisions.md)。
 
 ## 执行域与所有权
 

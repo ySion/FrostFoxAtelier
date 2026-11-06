@@ -17,7 +17,7 @@
 
 ## 作者格式、编辑与历史
 
-唯一材质 codec 为 v2（[`material_format.hpp`](../../../src/assets/material_format.hpp)）：
+唯一材质 codec 为 v2（[`material_format.hpp`](../../../modules/engine/assets/include/assets/material_format.hpp)）：
 
 | 角色 | 文件 | 作者字段 |
 |---|---|---|

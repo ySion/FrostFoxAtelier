@@ -12,7 +12,7 @@
 
 Entity 与 Component 保存真实限定类型名，以 Runtime find_type / is_a 校验。参数发现和编辑沿同一 FieldPath；显示名称不充当身份。标量、枚举、String 与内联 Array 是叶，内联 record 递归保存；Array 保存为 JSON 数组，元素只能是标量、枚举或 String，元素是 record 或数组的类型不能保存或加载（`unsupported_operation`）。Parameters 编辑标量与枚举，不编辑 String 和 Array。枚举保存声明成员名，String 保存为 JSON 字符串，整数严格检查符号与范围，浮点必须有限。TRS 历史保存完整组；移除对象可由历史保活，但保活不授予文档成员资格。
 
-属性记录由一个共用的叶解码器逐叶解码，场景加载、Play 增量和编辑器操作符参数都经过它。`editor::decode_properties`（[properties.hpp](../../../src/editor/properties.hpp)）是严格模式入口：目标是对象或调用方持有的记录值，未知字段、类型不符、越过硬边界和目标拒绝写入都报 `argument_mismatch`，不夹值，其他 Runtime 失败保留原错误码；整数字段中可无损转换的浮点值照常接受；记录中缺省的字段保持原值。带字段表和 `PropertyReport` 的重载是宽容入口，与场景加载相同：放不进字段的叶交给 report，越界的叶用夹值，只有 Runtime 失败才报错；`encode_properties` 是对应的编码入口，与场景保存共用叶编码。传入写入钩子时，内联叶交给钩子（例如收集成补丁），不写入目标；钩子不接收引用叶，所以不能与引用解析同时传入。Array 在调用方的存储里整体构造成一个值，作为一个叶写入或交给钩子，硬边界按元素检查。Play 增量对已存在对象的 String 与 Array 字段经 `World::write(ValueInput)` 整值写入，与标量叶一样经过类型规则与准入检查，被拒时整值恢复并以 error 级 `command_rejected` 报告。Play 增量按严格规则解码：越过硬边界的标量和 Array 元素都被拒，不夹值。
+属性记录由一个共用的叶解码器逐叶解码，场景加载、Play 增量和编辑器操作符参数都经过它。`editor::decode_properties`（[properties.hpp](../../../modules/editor/core/include/editor/properties.hpp)）是严格模式入口：目标是对象或调用方持有的记录值，未知字段、类型不符、越过硬边界和目标拒绝写入都报 `argument_mismatch`，不夹值，其他 Runtime 失败保留原错误码；整数字段中可无损转换的浮点值照常接受；记录中缺省的字段保持原值。带字段表和 `PropertyReport` 的重载是宽容入口，与场景加载相同：放不进字段的叶交给 report，越界的叶用夹值，只有 Runtime 失败才报错；`encode_properties` 是对应的编码入口，与场景保存共用叶编码。传入写入钩子时，内联叶交给钩子（例如收集成补丁），不写入目标；钩子不接收引用叶，所以不能与引用解析同时传入。Array 在调用方的存储里整体构造成一个值，作为一个叶写入或交给钩子，硬边界按元素检查。Play 增量对已存在对象的 String 与 Array 字段经 `World::write(ValueInput)` 整值写入，与标量叶一样经过类型规则与准入检查，被拒时整值恢复并以 error 级 `command_rejected` 报告。Play 增量按严格规则解码：越过硬边界的标量和 Array 元素都被拒，不夹值。
 
 ## Scene v10
 
@@ -50,7 +50,7 @@ EnvironmentComponent 的 `sky_map` 是天空贴图的资产键。记录缺少 `s
 
 打开场景与 `--scene-lit-camera` 不创建 Environment，也不拟合 DDGI。没有 Environment 时使用默认 World 设置；显式编辑 World Settings 或 Coverage → Fit Scene 通过普通历史创建或修改 Environment。场景保存的设置属于作者，打开时不改动。
 
-诊断记录使用 `world::Diagnostic`（[src/world/diagnostic.hpp](../../../src/world/diagnostic.hpp)），`phase` 为 `load`，`Session::load_issues()` 返回本次加载的诊断，`Session::issues()` 返回当前仍未解决的数据。没有改名重定向表；字段改名前后的值以 `unknown_field` 保留，改回原名后恢复。
+诊断记录使用 `world::Diagnostic`（[modules/engine/world/include/world/diagnostic.hpp](../../../modules/engine/world/include/world/diagnostic.hpp)），`phase` 为 `load`，`Session::load_issues()` 返回本次加载的诊断，`Session::issues()` 返回当前仍未解决的数据。没有改名重定向表；字段改名前后的值以 `unknown_field` 保留，改回原名后恢复。
 
 `Session::issues()` 按对象的文档 ID 数值升序列出，同一对象内保留类型、字段和引用诊断的生成顺序，文档级数据最后列出；`serial` 从 1 起按返回顺序连续编号，不作为跨次查询的诊断身份。此顺序不依赖 Runtime ObjectId 的哈希或哈希表遍历顺序；`load_issues()` 仍保留加载时的报告顺序。
 

@@ -43,12 +43,12 @@ Asset Manager 通过 `FPrimaryAssetId` 发现、加载资产，Streamable Handle
 
 本节保留当时的源码判断；此后引擎已增加 CPU Mesh/材质图片、UI 图片消费与窗口渲染。当前资源连接状态见[资源连接提案](../../modules/resources/asset-system-plan.md#texture-到-ui-的共同消费待接线)，RHI 行为以[现行契约](../../modules/rhi/contract.md)为准。
 
-正式消费者已经创建 `GfxBuffer`、`GfxTexture`，用于计算输入、间接参数、颜色/深度目标、上传与回读；`GfxProgram/GfxKernel` 表达着色程序与执行管线。资源由 gfx 跟踪分配、状态、绑定与延迟退休。`atelier::rhi::Context` 管执行域，`Pipeline` 管 Program/Kernel 与执行域的拥有关系。[正式消费者](../../../acceptance/rhi/main.cpp)、[公开入口](../../../src/rhi/rhi.hpp)、[当前契约](../../modules/rhi/contract.md)
+正式消费者已经创建 `GfxBuffer`、`GfxTexture`，用于计算输入、间接参数、颜色/深度目标、上传与回读；`GfxProgram/GfxKernel` 表达着色程序与执行管线。资源由 gfx 跟踪分配、状态、绑定与延迟退休。`atelier::rhi::Context` 管执行域，`Pipeline` 管 Program/Kernel 与执行域的拥有关系。[正式消费者](../../../acceptance/rhi/main.cpp)、[公开入口](https://github.com/ySion/FrostFoxAtelier/blob/c644ba5692fe2d67d1dda93953e227a50ba64f9f/src/rhi/rhi.hpp)、[当前契约](../../modules/rhi/contract.md)
 
 有两个容易误读的地方：
 
 1. `PipelineKind::mesh` 表达 Mesh Shader 管线。上游另有 `gfx_scene.h::GfxMesh`，但本项目明确设置 `GFX_ENABLE_SCENE OFF`；它没有进入当前生产模块。引擎 Mesh 资产、材质槽、LOD 和碰撞表示尚未由这个枚举提供。[构建入口](../../../cmake/rhi.cmake)
-2. 普通 gfx 句柄的复制不增加资源拥有关系。消费者必须显式销毁；`Context::close` 的 busy 检查只覆盖 Pipeline。Pipeline 保持执行域寿命的规则不能自动推广到 texture/buffer 缓存。[关停实现](../../../src/rhi/rhi.cpp)
+2. 普通 gfx 句柄的复制不增加资源拥有关系。消费者必须显式销毁；`Context::close` 的 busy 检查只覆盖 Pipeline。Pipeline 保持执行域寿命的规则不能自动推广到 texture/buffer 缓存。[关停实现](https://github.com/ySion/FrostFoxAtelier/blob/c644ba5692fe2d67d1dda93953e227a50ba64f9f/src/rhi/rhi.cpp)
 
 当前接口公开依赖 gfx，且存在 D3D12/DXGI 类型。这是现行固定后端的选择；本文不提出先增加另一层后端抽象。shader 的文件输入也是编译便利入口，不承担资产目录、持久身份或跨资源重载依赖管理。
 

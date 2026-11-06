@@ -1,6 +1,6 @@
 # Runtime / JIT 源码调试
 
-当前支持精确源码断点、进入/跳过/跳出单步、只读调用栈与局部值、错误现场和受控终止。公共入口为 [`source/debugger.hpp`](../src/source/debugger.hpp)，执行仍使用现有 `Entry/Lease.invoke`、`start` 和 `Coroutine.resume`。
+当前支持精确源码断点、进入/跳过/跳出单步、只读调用栈与局部值、错误现场和受控终止。公共入口为 [`source/debugger.hpp`](../modules/execution/source/include/source/debugger.hpp)，执行仍使用现有 `Entry/Lease.invoke`、`start` 和 `Coroutine.resume`。
 
 这是已经落地的调试核心。编辑器调试面板、快捷键及外部指令的共同接入方向由 [Editor Control](modules/editor/control.md#源码调试接入待实现)维护，目前仍处于方案阶段；各调用方将共享同一宿主调试会话。
 

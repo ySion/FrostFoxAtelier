@@ -12,19 +12,19 @@
 
 | 模块 | 入口与拥有的职责 | 当前目标、依赖与边界 |
 | --- | --- | --- |
-| 类型与对象 Runtime | [runtime.hpp](../src/runtime/runtime.hpp)、[runtime.cpp](../src/runtime/runtime.cpp)：类型发布、对象身份、值操作、根、GC 和原生调用 | 正式静态目标 `atelier_runtime`；不依赖 LLVM、语言前端或验收代码 |
-| 执行协议 | [execution.hpp](../src/runtime/execution.hpp)、[execution.cpp](../src/runtime/execution.cpp)：ExecutionScope、定型引用/持久根执行帧、Coroutine 状态和拥有者 | 同属 `atelier_runtime`；核心通过 CoroutineFrame 接受具体帧，不依赖 LLVM 布局 |
-| 原生定义生产者 | [native.hpp](../src/runtime/native.hpp)：从 C++ 类型和成员生成 TypeDefinition；[自动反射工具](../tools/reflection/main.cpp)产生这些注册调用 | `atelier_reflect` 是构建期工具，薄宏入口为 [reflection.hpp](../src/runtime/reflection.hpp)；生成代码使用同一 Runtime 定义与 Invoker 协议 |
-| 语言前端 | [source.hpp](../src/language/source.hpp)、[source.cpp](../src/language/source.cpp)：类型检查和定型 AST；[declarations.cpp](../src/language/declarations.cpp)、[lexer.hpp](../src/language/lexer.hpp)：共享声明解析与词法，字段/参数/局部共用类型名称解析 | 同一前端按宿主与 LLVM DLL 各自 ABI 编译，STL 对象不跨 DLL；宿主复用定型常量求值，完整方法编译与 LLVM 降低留在后端。Environment 借用到编译结束，AST 拥有降低所需数据 |
-| LLVM 降低与代码资源 | [source_backend.cpp](../src/jit/source_backend.cpp)：SourceLowering、协程转换、LLJIT、CompiledBusiness | 正式 DLL `atelier_source_backend`；LLVM、STL 和分配所有权留在 DLL 内 |
-| Windows 展开信息 | [windows_unwind.cpp](../src/jit/windows_unwind.cpp)：JITLink 分配期间登记和撤销动态展开表 | 源码后端和平台探针共用私有 LLVM support OBJECT 目标，各自按分配动作管理资源；没有复制注册表 |
-| 源码程序拥有者 | [program.hpp](../src/source/program.hpp)、[program.cpp](../src/source/program.cpp)：Program、声明、候选、发布、入口与租约 | 正式静态库 `atelier_source`；公共调用使用 Scalar 值与 Argument 借用，结果使用 Scalar 或数学值的 ValueOutput，使用已有 Coroutine 表达协程拥有关系 |
-| Runtime 桥接 | [bridge.hpp](../src/source/detail/bridge.hpp)、[bridge.cpp](../src/source/detail/bridge.cpp)：Binding、Invocation、目录映射、引用槽与原生服务 | `atelier_source` 内部实现；按需汇总调用计数与拥有值余额。内部策略观察点继续供验收使用，不推进 GC |
-| 调用诊断 | [diagnostics.hpp](../src/source/diagnostics.hpp)、[diagnostics.cpp](../src/source/diagnostics.cpp)：采集句柄、版本/源码位置、资源与状态快照 | `atelier_source`；可选编译插桩写固定 POD 记录，Coroutine 最终状态由原有 Runtime 拥有者通知。报告不保活执行代码或 Runtime |
-| 源码调试 | [debugger.hpp](../src/source/debugger.hpp)、[debugger.cpp](../src/source/detail/debugger.cpp)：精确断点、动态源码帧、单步及有界快照 | `atelier_source`；JIT 服务复用 Invocation，ExecutionInspection 复用 Runtime 只读准入；暂停保留原生栈，见[调试合同](source-debugger.md) |
+| 类型与对象 Runtime | [runtime.hpp](../modules/execution/runtime/include/runtime/runtime.hpp)、[runtime.cpp](../modules/execution/runtime/src/runtime.cpp)：类型发布、对象身份、值操作、根、GC 和原生调用 | 正式静态目标 `atelier_runtime`；不依赖 LLVM、语言前端或验收代码 |
+| 执行协议 | [execution.hpp](../modules/execution/runtime/include/runtime/execution.hpp)、[execution.cpp](../modules/execution/runtime/src/execution.cpp)：ExecutionScope、定型引用/持久根执行帧、Coroutine 状态和拥有者 | 同属 `atelier_runtime`；核心通过 CoroutineFrame 接受具体帧，不依赖 LLVM 布局 |
+| 原生定义生产者 | [native.hpp](../modules/execution/runtime/include/runtime/native.hpp)：从 C++ 类型和成员生成 TypeDefinition；[自动反射工具](../tools/reflection/main.cpp)产生这些注册调用 | `atelier_reflect` 是构建期工具，薄宏入口为 [reflection.hpp](../modules/execution/runtime/include/runtime/reflection.hpp)；生成代码使用同一 Runtime 定义与 Invoker 协议 |
+| 语言前端 | [source.hpp](../modules/execution/language/include/language/source.hpp)、[source.cpp](../modules/execution/language/src/source.cpp)：类型检查和定型 AST；[declarations.cpp](../modules/execution/language/src/declarations.cpp)、[lexer.hpp](../modules/execution/language/include/language/lexer.hpp)：共享声明解析与词法，字段/参数/局部共用类型名称解析 | 同一前端按宿主与 LLVM DLL 各自 ABI 编译，STL 对象不跨 DLL；宿主复用定型常量求值，完整方法编译与 LLVM 降低留在后端。Environment 借用到编译结束，AST 拥有降低所需数据 |
+| LLVM 降低与代码资源 | [source_backend.cpp](../modules/execution/jit/src/source_backend.cpp)：SourceLowering、协程转换、LLJIT、CompiledBusiness | 正式 DLL `atelier_source_backend`；LLVM、STL 和分配所有权留在 DLL 内 |
+| Windows 展开信息 | [windows_unwind.cpp](../modules/execution/jit/src/windows_unwind.cpp)：JITLink 分配期间登记和撤销动态展开表 | 源码后端和平台探针共用私有 LLVM support OBJECT 目标，各自按分配动作管理资源；没有复制注册表 |
+| 源码程序拥有者 | [program.hpp](../modules/execution/source/include/source/program.hpp)、[program.cpp](../modules/execution/source/src/program.cpp)：Program、声明、候选、发布、入口与租约 | 正式静态库 `atelier_source`；公共调用使用 Scalar 值与 Argument 借用，结果使用 Scalar 或数学值的 ValueOutput，使用已有 Coroutine 表达协程拥有关系 |
+| Runtime 桥接 | [bridge.hpp](../modules/execution/source/internal/source/detail/bridge.hpp)、[bridge.cpp](../modules/execution/source/src/detail/bridge.cpp)：Binding、Invocation、目录映射、引用槽与原生服务 | `atelier_source` 内部实现；按需汇总调用计数与拥有值余额。内部策略观察点继续供验收使用，不推进 GC |
+| 调用诊断 | [diagnostics.hpp](../modules/execution/source/include/source/diagnostics.hpp)、[diagnostics.cpp](../modules/execution/source/src/diagnostics.cpp)：采集句柄、版本/源码位置、资源与状态快照 | `atelier_source`；可选编译插桩写固定 POD 记录，Coroutine 最终状态由原有 Runtime 拥有者通知。报告不保活执行代码或 Runtime |
+| 源码调试 | [debugger.hpp](../modules/execution/source/include/source/debugger.hpp)、[debugger.cpp](../modules/execution/source/src/detail/debugger.cpp)：精确断点、动态源码帧、单步及有界快照 | `atelier_source`；JIT 服务复用 Invocation，ExecutionInspection 复用 Runtime 只读准入；暂停保留原生栈，见[调试合同](source-debugger.md) |
 | 端到端消费者 | [公共验收分派入口](../acceptance/source/main.cpp)、[关停消费者](../acceptance/source/shutdown.cpp)、[交错会话](../acceptance/source/session.cpp)、[完整验收](../acceptance/jit/business.cpp)及其 inl 分组 | 业务调用使用正式接口；代码地址观察经内部 ProgramAccess 供 OS 查询验证退休，raw ABI 和故障路径同样通过内部接缝检查，均使用同一正式实现 |
 
-构建权威来源：[CMakeLists.txt](../CMakeLists.txt)、[jit.cmake](../cmake/jit.cmake)。消费者链接 `atelier_source`，由它接入 `atelier_runtime` 与源码后端 DLL；LLVM 头文件不传播到公共接口。`atelier_jit_probe` 只承担平台验收。后端 DLL 的 [missing-poll 编译入口](../src/jit/source_backend_verification.hpp)只走编译与链接路径，`jit_acceptance` 用它验证真实链接失败后旧程序仍可执行。
+构建权威来源：[CMakeLists.txt](../CMakeLists.txt)、[jit.cmake](../cmake/jit.cmake)。消费者链接 `atelier_source`，由它接入 `atelier_runtime` 与源码后端 DLL；LLVM 头文件不传播到公共接口。`atelier_jit_probe` 只承担平台验收。后端 DLL 的 [missing-poll 编译入口](../modules/execution/jit/internal/jit/source_backend_verification.hpp)只走编译与链接路径，`jit_acceptance` 用它验证真实链接失败后旧程序仍可执行。
 
 `ValueType`、`BusinessType/BusinessParameter` 和 `FunctionSignature` 分别服务编译分类、私有 ABI 和 Runtime 语义描述。前两者由真实编译产物/元数据核对，不建立业务类型身份；它们的存在不等于三套类型体系。枚举索引只定位捕获的 Runtime 目录；ParameterPassing 在宿主与编译链间共用。私有 ABI 尚不是永久通用调用协议。
 
@@ -54,7 +54,7 @@ flowchart TD
 3. `Candidate` 已拥有实际链接后的代码。准备阶段按捕获信息检查兼容性；首次发布通过 Runtime 的共享签名解析器建立不可变声明；有新类型时，解析器使用同一未发布批次。
 4. `try_publish` 再检查最新请求、所属程序、声明、Runtime 准入和依赖。签名、版本分配和类型容器预留完成后，无回调提交新类型与当前代码版本。新增类型要求注册仍开放且 GC 空闲；单纯代码更新仍允许暂停 GC。忙时保留候选；新请求失败保留已发布版本，不允许提交过期候选。
 
-项目快照的文件映射与类结构由 [module.cpp](../src/language/module.cpp) 收集，方法体继续交给同一定型前端。每个接收者环境共享一个 LLVM 模块；项目版本一次持有并切换全部入口，公共源码只保留一份，准备每个环境时临时拼接。具名 Entry 按稳定槽位取版本，原调用、错误及资源清理入口不变。详见[项目快照发布](source-function-modules.md#项目快照与多个公开入口)。
+项目快照的文件映射与类结构由 [module.cpp](../modules/execution/language/src/module.cpp) 收集，方法体继续交给同一定型前端。每个接收者环境共享一个 LLVM 模块；项目版本一次持有并切换全部入口，公共源码只保留一份，准备每个环境时临时拼接。具名 Entry 按稳定槽位取版本，原调用、错误及资源清理入口不变。详见[项目快照发布](source-function-modules.md#项目快照与多个公开入口)。
 
 **线程边界：** 当前整个适配器按单线程使用。prepare 的编译与兼容检查主要使用快照，但也检查程序拥有者的存活状态；这不足以授权与程序关闭/发布并发执行。后台编译需要单独确定请求、关闭和提交的同步契约。
 

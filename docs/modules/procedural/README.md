@@ -4,14 +4,14 @@
 
 | 头文件 | 内容 |
 | --- | --- |
-| [geometry.hpp](../../../src/procedural/geometry.hpp) | `Geometry` 值、层、属性列、拓扑与实例 |
-| [operations.hpp](../../../src/procedural/operations.hpp) | 导入、生成、撒点、变换、Promote、Copy to Points、Realize、包围盒 |
-| [instances.hpp](../../../src/procedural/instances.hpp) | 把 instance 层发布为渲染用的实例集合 |
-| [bvh.hpp](../../../src/procedural/bvh.hpp) | 首角扇形 BVH：射线与最近点查询 |
-| [graph.hpp](../../../src/procedural/graph.hpp) | `Graph`、`Node`、端口、连接与编辑入口，类型注册 |
-| [nodes.hpp](../../../src/procedural/nodes.hpp) | C++ 内置节点 |
-| [evaluator.hpp](../../../src/procedural/evaluator.hpp) | 增量求值与结果缓存 |
-| [random.hpp](../../../src/procedural/random.hpp) | 固定算法的整数哈希与单位随机数 |
+| [geometry.hpp](../../../modules/engine/procedural/include/procedural/geometry.hpp) | `Geometry` 值、层、属性列、拓扑与实例 |
+| [operations.hpp](../../../modules/engine/procedural/include/procedural/operations.hpp) | 导入、生成、撒点、变换、Promote、Copy to Points、Realize、包围盒 |
+| [instances.hpp](../../../modules/engine/procedural/include/procedural/instances.hpp) | 把 instance 层发布为渲染用的实例集合 |
+| [bvh.hpp](../../../modules/engine/procedural/include/procedural/bvh.hpp) | 首角扇形 BVH：射线与最近点查询 |
+| [graph.hpp](../../../modules/engine/procedural/include/procedural/graph.hpp) | `Graph`、`Node`、端口、连接与编辑入口，类型注册 |
+| [nodes.hpp](../../../modules/engine/procedural/include/procedural/nodes.hpp) | C++ 内置节点 |
+| [evaluator.hpp](../../../modules/engine/procedural/include/procedural/evaluator.hpp) | 增量求值与结果缓存 |
+| [random.hpp](../../../modules/engine/procedural/include/procedural/random.hpp) | 固定算法的整数哈希与单位随机数 |
 
 引擎附带的自有语言节点与随机库在 [assets/engine/procedural](../../../assets/engine/procedural)。
 
@@ -58,7 +58,7 @@
 
 ### 构造拓扑的持久语义
 
-实现位于 [constructors.cpp](../../../src/procedural/constructors.cpp)。已保存图虽不存 Geometry 缓冲，重算仍依赖点序、面序、首角及 N 所在层；同类型不能静默更换这些规则。后续三角化须显式操作，不把 Box 六面改成十二面。
+实现位于 [constructors.cpp](../../../modules/engine/procedural/src/constructors.cpp)。已保存图虽不存 Geometry 缓冲，重算仍依赖点序、面序、首角及 N 所在层；同类型不能静默更换这些规则。后续三角化须显式操作，不把 Box 六面改成十二面。
 
 - **Box**：8 点的 bit0/bit1/bit2 分别取 X/Y/Z 上界，0 取下界。六面按 −X、+X、−Y、+Y、−Z、+Z 排列，角号依次为 `(0,4,6,2)`、`(1,3,7,5)`、`(0,1,5,4)`、`(2,6,7,3)`、`(0,2,3,1)`、`(4,5,7,6)`。每面四个 vertex N 都取该面轴向法线。
 - **Sphere**：Y 为极轴，M=`segments`、L=`latitudes`；先北极、再从北到南的 L−1 圈（纬角 πj/L），最后南极；每圈经角 φ=2πi/M，从 +X 向 +Z。共 `2+(L−1)M` 点、`ML` 面、`M(4L−2)` 角，共享缝和极点。先北极三角 `(north,ring1_next,ring1_i)`，再逐圈四边形 `(upper_i,upper_next,lower_next,lower_i)`，最后南极三角 `(south,last_i,last_next)`；每角 N 是其实际点位置的单位径向。
@@ -66,13 +66,13 @@
 
 ### 公共凸面剖分
 
-模块内部 [triangles.cpp](../../../src/procedural/triangles.cpp) 是 Scatter、BVH/Ray、Volume 共用的数值判据与首角扇形视图，不生成第二份拓扑；借用期间 Geometry 必须保持不变且存活。图元 p 的第 j 个三角取原角 `(first, first+j+1, first+j+2)`，顺序为 p 再 j；折线明确失败。Scatter/BVH 的三角输入保留原先零面积跳过规则；Volume 要求三角面也通过非退化面校验。多边形都必须有可分辨的平面、简单凸边界及非零边，合法多边形中的零面积扇形片不算退化面。
+模块内部 [triangles.cpp](../../../modules/engine/procedural/src/triangles.cpp) 是 Scatter、BVH/Ray、Volume 共用的数值判据与首角扇形视图，不生成第二份拓扑；借用期间 Geometry 必须保持不变且存活。图元 p 的第 j 个三角取原角 `(first, first+j+1, first+j+2)`，顺序为 p 再 j；折线明确失败。Scatter/BVH 的三角输入保留原先零面积跳过规则；Volume 要求三角面也通过非退化面校验。多边形都必须有可分辨的平面、简单凸边界及非零边，合法多边形中的零面积扇形片不算退化面。
 
 所有几何判据用 double 计算。每个原多边形 p 的距离容差 δ_p = 8 × float ε × max（该面各角最大绝对坐标分量，该面 AABB 对角线长），两个输入量都不依赖首角或扇形划分，没有固定米制下限；8 是为 float 输入和变换舍入预留的安全系数，不是容许任意翘曲的建模参数。`polygon_scale` 同时为凸面校验与 Volume 表面带提供这个尺度和容差。首角扇形的有向面积向量长度必须大于 δ_p × AABB 对角线长，点到所得平面的距离不超过 δ_p，投影边长须大于 δ_p。采用保守凸性规则：投影相邻边的有向叉积必须非负，即使负值来自舍入也拒绝，不用距离容差放过凹角；正向共线角仍有效，允许零面积扇形子三角。接近折返的角（点积非正、叉积不超过 δ_p × 两邻边长度之和）也拒绝。在此非负转角前提下，转角总和必须为 2π（double 累加容差 64 × ε × 角数），既排除多圈星形，也不让正反小回环抵消成一圈。检查为线性时间，不另建边对相交矩阵。适用于细节显著大于其绝对坐标 float 精度的模型；远离原点或极薄的不可分辨面报错，不静默修补。后续构造与拓扑工具复用此判据，不另定容差。
 
 ### Volume Scatter：有向覆盖与固定格
 
-[volume.cpp](../../../src/procedural/volume.cpp) 的 `volume_scatter` 使用串行 BVH 精确有向穿越分类；默认 density=1 点/m³、origin=(0,0,0)、cell_size=1 m、seed=0。输入是非空闭合壳集合，不接受 instance 或折线。所有点须有限，各面通过公共非退化判据；按**原多边形边界边**检查每条无向边恰好两用且方向相反，并检查每个被引用点的角环只有一个连通分量。不按位置焊接，不修补开口，不做自交检测。整体有向体积必须为正（平移至首角后用 double 补偿求和），允许反向内腔，不逐壳要求正值；未经转换的 Houdini 顺时针网格会被拒绝。
+[volume.cpp](../../../modules/engine/procedural/src/volume.cpp) 的 `volume_scatter` 使用串行 BVH 精确有向穿越分类；默认 density=1 点/m³、origin=(0,0,0)、cell_size=1 m、seed=0。输入是非空闭合壳集合，不接受 instance 或折线。所有点须有限，各面通过公共非退化判据；按**原多边形边界边**检查每条无向边恰好两用且方向相反，并检查每个被引用点的角环只有一个连通分量。不按位置焊接，不修补开口，不做自交检测。整体有向体积必须为正（平移至首角后用 double 补偿求和），允许反向内腔，不逐壳要求正值；未经转换的 Houdini 顺时针网格会被拒绝。
 
 每个候选以最终存入 P 的 float 位置分类。对闭合有向三角链上不在表面的 q，绕数 w 是整数；从 q 沿射线到无穷远，每个正向交点贡献 sign(n·d)，全部贡献之和就是 w。因此 **w ≥ 0.5 等价于有向穿越和 ≥ 1**，无需逐候选扫描全部三角形。不取绝对值/奇偶，不提前接受部分和。重叠正壳的 w=2 保留，外壳加反向内壳的内腔 w=0 排除；分离负壳内部 w=−1 也排除，不猜测作者意图。零面积扇形片贡献零并跳过。
 
@@ -157,7 +157,7 @@ Ray 对 surface 的公共凸面扇形建立 BVH，命中的点移到交点（min
 
 | 文件 | 内容 |
 | --- | --- |
-| random.source | 全局函数 `procedural.hash`、`hash2`、`unit`、`random_vector`，与 [random.hpp](../../../src/procedural/random.hpp) 算法相同，所以源码节点和 C++ 节点取到相同的随机数；`random_vector(x)` 由 x 连续哈希三次，每个分量均匀落在 [-1, 1) |
+| random.source | 全局函数 `procedural.hash`、`hash2`、`unit`、`random_vector`，与 [random.hpp](../../../modules/engine/procedural/include/procedural/random.hpp) 算法相同，所以源码节点和 C++ 节点取到相同的随机数；`random_vector(x)` 由 x 连续哈希三次，每个分量均匀落在 [-1, 1) |
 | orient.source | 全局函数 `procedural.frame_rotation`（三根正交轴构成的旋转，按 `math.rotation_matrix` 的行约定）、`shortest_arc`（+Z 到给定单位向量的最短旋转，正对 −Z 时绕 X 转半圈）和 `align_to_normal`（Copy to Points 从 N 与 up 推出的朝向：+Z 沿 N，+Y 朝 up；up 为零、与 N 平行或不是有限值时取最短旋转；N 为零时不旋转，不是有限值时结果也不是有限值） |
 | jitter.source | `procedural.Jitter`：amount、axis_scale（按轴缩放）、seed；P 的每个分量加上 `random_vector(hash2(hash2(图种子, seed), id))` 的对应分量 × amount × axis_scale，读 `id`，所以偏移跟随点 |
 | random_scale.source | `procedural.RandomScale`：minimum、maximum、seed；pscale 取 lerp(minimum, maximum, unit(hash2(hash2(图种子, seed), id)))，读 `id` |
@@ -178,7 +178,7 @@ Ray 对 surface 的公共凸面扇形建立 BVH，命中的点移到交点（min
 
 ## 图文件
 
-图文件的编解码在编辑器里（[editor/graph_format.hpp](../../../src/editor/graph_format.hpp)，`atelier_editor_core`），procedural 不依赖 editor。`load_graph(runtime, text)` 把 version 1 的图文件打开到已注册 procedural 类型的 Runtime 中，得到 `GraphDocument`：图的根、每个节点的 `GraphNode`（名字、节点根、画布位置、保留的原始 JSON）、保留的 settings 和加载诊断（`world::Diagnostic`，field 是从文件根算起的路径）。`save_graph(runtime, document)` 写出规范文本。名字和位置是文档数据，不放进节点对象，所以移动节点不盖章；保存只做 const 读取。
+图文件的编解码在编辑器里（[editor/graph_format.hpp](../../../modules/editor/core/include/editor/graph_format.hpp)，`atelier_editor_core`），procedural 不依赖 editor。`load_graph(runtime, text)` 把 version 1 的图文件打开到已注册 procedural 类型的 Runtime 中，得到 `GraphDocument`：图的根、每个节点的 `GraphNode`（名字、节点根、画布位置、保留的原始 JSON）、保留的 settings 和加载诊断（`world::Diagnostic`，field 是从文件根算起的路径）。`save_graph(runtime, document)` 写出规范文本。名字和位置是文档数据，不放进节点对象，所以移动节点不盖章；保存只做 const 读取。
 
 ```json
 {
@@ -235,4 +235,4 @@ cmake --build --preset release --target procedural_graph_acceptance
 
 正式报告给 `ms`（整次）、`build_ms`（仅建 BVH）、`generate_classify_ms`（融合生成／分类 fork→join 及计数合并）和 ns/候选；`remaining_ms` 先逐样本算整次−build−classify，再取中位数，包含壳准备、前缀、分配、稳定填充及列装配。旧串行版的 classify 包含输出 append，不能拿其历史数字直接算本片并行收益；并行收益须比较同一新内核的真 P1 与默认 P 未插桩版本。三个子步骤没有产品 marker；只允许另行批准的临时真 P1 诊断细分，并报告插桩扰动，不把各 worker 重叠时长相加冒充墙钟。
 
-计时复用 [模块阶段标记](../../../src/procedural/timing.hpp) 与 foundation Recorder，由 profile 宿主安装并绑定。worker 仅累计普通整数，host 在 classify 仍打开、所有任务 join 后批量提交零时长事件；不逐点读时钟，无 Recorder 求值不读时钟，没有新增观察接口。采样只能在另行批准的独占时段执行，不得把复杂度或预算上限当实测性能。
+计时复用 [模块阶段标记](../../../modules/engine/procedural/include/procedural/timing.hpp) 与 foundation Recorder，由 profile 宿主安装并绑定。worker 仅累计普通整数，host 在 classify 仍打开、所有任务 join 后批量提交零时长事件；不逐点读时钟，无 Recorder 求值不读时钟，没有新增观察接口。采样只能在另行批准的独占时段执行，不得把复杂度或预算上限当实测性能。

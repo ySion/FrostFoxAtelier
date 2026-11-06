@@ -39,14 +39,15 @@ function(atelier_add_jolt)
         "${CMAKE_BINARY_DIR}/LICENSE.jolt.txt" COPYONLY)
 
     add_library(atelier_physics STATIC
-        "${PROJECT_SOURCE_DIR}/src/physics/components.cpp"
-        "${PROJECT_SOURCE_DIR}/src/physics/physics.cpp")
+        "${PROJECT_SOURCE_DIR}/modules/engine/physics/src/components.cpp"
+        "${PROJECT_SOURCE_DIR}/modules/engine/physics/src/physics.cpp")
     atelier_target(atelier_physics)
-    target_include_directories(atelier_physics PUBLIC "${PROJECT_SOURCE_DIR}/src")
+    target_include_directories(atelier_physics PUBLIC "${PROJECT_SOURCE_DIR}/modules/engine/physics/include")
     target_link_libraries(atelier_physics PUBLIC atelier_world atelier_geometry PRIVATE Jolt::Jolt)
 
     add_executable(atelier_physics_acceptance "${PROJECT_SOURCE_DIR}/acceptance/physics/main.cpp")
     atelier_target(atelier_physics_acceptance)
+    target_include_directories(atelier_physics_acceptance PRIVATE "${PROJECT_SOURCE_DIR}/modules/engine/world/internal")
     target_link_libraries(atelier_physics_acceptance PRIVATE atelier_physics atelier_presentation)
     atelier_headless_acceptance(physics_acceptance
         COMMAND $<TARGET_FILE:atelier_physics_acceptance>

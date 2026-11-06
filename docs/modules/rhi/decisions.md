@@ -7,11 +7,11 @@
 | 选择 | 理由 | 维护入口 |
 | --- | --- | --- |
 | 固定 gfx 作为 RHI 主体 | 复用资源、反射、绑定、descriptor、barrier、命令和退休机制，不建立第二份状态与资源账 | [依赖锁](../../../cmake/dependencies-lock.json)、[可重放补丁](../../../third_party/gfx/atelier.patch) |
-| 宿主保留 Context 与 Pipeline | 硬件/验证门禁、执行 owner、完整管线准备和执行域寿命有明确责任；无需逐函数代理、profile 对象或 Publisher | [公开入口](../../../src/rhi/rhi.hpp) |
+| 宿主保留 Context 与 Pipeline | 硬件/验证门禁、执行 owner、完整管线准备和执行域寿命有明确责任；无需逐函数代理、profile 对象或 Publisher | [公开入口](../../../modules/render/rhi/include/rhi/rhi.hpp) |
 | owner 串行驱动 owned context | 与固定 gfx 的帧槽、常量池和状态机制匹配，GPU 仍可异步在飞 | [执行域契约](contract.md#执行域与所有权) |
 | Vertex、Mesh、Compute 共用主体 | 实际离屏消费者覆盖三类管线和 GPU 生成的间接参数；Mesh Shader 与 DXR 1.1 inline RayQuery 都是硬件门槛 | [正式消费者](../../../acceptance/rhi/main.cpp) |
 | 完整候选成功后移动替换 | 失败保留旧 Pipeline；新 Program 的参数由消费者绑定，不建第二份发布/绑定表 | [准备与替换](contract.md#管线准备与替换) |
-| 编译、反射、主字节码及 PSO 都参与成功判断 | 有效 handle 或某一阶段生成 PSO 不足以证明所请求管线完整可用 | [生产实现](../../../src/rhi/rhi.cpp) |
+| 编译、反射、主字节码及 PSO 都参与成功判断 | 有效 handle 或某一阶段生成 PSO 不足以证明所请求管线完整可用 | [生产实现](../../../modules/render/rhi/src/rhi.cpp) |
 | 准备在 Context 工作线程，登记在 owner 线程 | 编辑器 UI 线程不等待编译、PSO 创建或 GBV 首次使用补丁；gfx context 仍只由 owner 线程改动。同步 `prepare` 内联同一作业，不维护两份准备代码 | [异步准备](contract.md#异步准备与-dxil-磁盘缓存) |
 | GBV 补丁靠不执行的预热录制提前 | 2026-10-19 实测：创建 PSO 时就打补丁让 SDK Layers 1.619.1.0 崩溃；工作线程只录 `SetPipelineState` 可以吸收首次使用成本，执行时校验不变 | [Renderer 验收](../renderer/acceptance.md) |
 | 引擎自有 DXIL 缓存 | 异步准备不经过 gfx 的编译函数，gfx 自带的 `EnableShaderCache` 覆盖不到它；自有格式把编译器身份、全部参数放进键，条目带校验和，损坏即重编 | [缓存契约](contract.md#异步准备与-dxil-磁盘缓存) |

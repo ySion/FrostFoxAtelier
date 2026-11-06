@@ -1,6 +1,6 @@
 # World 与游戏对象
 
-正式入口为 [world.hpp](../../../src/world/world.hpp)，数学值为 [math.hpp](../../../src/world/math.hpp)。`atelier_world` 使用同一 Runtime 类型、对象身份、引用和 GC，只依赖 Runtime。网格、灯光、环境与材质资源属于 [presentation](../presentation/README.md) 库，经能力登记接入 World。无窗口宿主不链接 renderer/RHI，语言行为由宿主绑定正式 Source 入口。
+正式入口为 [world.hpp](../../../modules/engine/world/include/world/world.hpp)，数学值为 [math.hpp](../../../modules/engine/world/include/world/math.hpp)。`atelier_world` 使用同一 Runtime 类型、对象身份、引用和 GC，只依赖 Runtime。网格、灯光、环境与材质资源属于 [presentation](../presentation/README.md) 库，经能力登记接入 World。无窗口宿主不链接 renderer/RHI，语言行为由宿主绑定正式 Source 入口。
 
 ## 类型与所有权
 
@@ -78,7 +78,7 @@ pre_physics Tick → 任务恢复 → 平移命令 → flush 请求
 
 Begin 沿组合前序：Entity 自身、其组件组成顺序、子 Entity 子树。End 反转当前组成顺序，只配对已成功完成 Begin 的对象。没有 Tick 的数据组件不产生空调用；静态呈现不依赖 Tick。运行中插入立即 Begin，从下一个执行的阶段开始 Tick；禁用不重发 Begin/End；祖先禁用阻止其子树 Tick 并取消相应任务。
 
-每次 update 记为[帧阶段计时](../../foundation.md#帧阶段计时)的 `world.*` 阶段（标记见 [world/timing.hpp](../../../src/world/timing.hpp)）：`world.update` 下依次是 `world.pre_physics`、`world.simulation`、`world.post_physics` 和 `world.late`；每个 Tick 阶段各有自己的 `.tick`、`.commands`、`.flush` 子阶段，pre_physics 另有任务恢复子阶段 `world.pre_physics.tasks`。结构变化后的调度重建记为 `world.update` 下的 `world.schedule`，只在重建发生的阶段之前进入。停止的 World 不记录任何阶段；某阶段使 World 停止时，之后的阶段不再出现。模拟系统自己的阶段挂在 `world.simulation` 下。
+每次 update 记为[帧阶段计时](../../foundation.md#帧阶段计时)的 `world.*` 阶段（标记见 [world/timing.hpp](../../../modules/engine/world/include/world/timing.hpp)）：`world.update` 下依次是 `world.pre_physics`、`world.simulation`、`world.post_physics` 和 `world.late`；每个 Tick 阶段各有自己的 `.tick`、`.commands`、`.flush` 子阶段，pre_physics 另有任务恢复子阶段 `world.pre_physics.tasks`。结构变化后的调度重建记为 `world.update` 下的 `world.schedule`，只在重建发生的阶段之前进入。停止的 World 不记录任何阶段；某阶段使 World 停止时，之后的阶段不再出现。模拟系统自己的阶段挂在 `world.simulation` 下。
 
 模拟系统用 `add_simulation(Simulation{step, writes_pose})` 登记；PhysicsScene 创建时登记，析构时注销。step 在行为分发之外的宿主边界执行，可以调用 World API；step 失败按 World 级处理：停止 World 并使该次 update 失败。World 停止时不调用 step，子系统经生命周期通知清理。`writes_pose(entity)` 声明该系统写入此 Entity 的位姿。可选的 `relocated(entities)` 在运行中的 World 经 `set_transform`（含 Transform 标量写入）改变了位姿时，于宿主边界同步调用一次，参数是被编辑 Entity 及其空间后代中被该系统声明位姿的那些；系统据此让模拟跟上作者位姿。回调可以读取 World，但不能编辑它（返回 busy）；回调返回错误时 World 恢复原 TRS，该次编辑以这个错误失败。模拟系统自己的 `apply_simulation_transforms` 不触发它，World 停止时也不调用。
 
@@ -104,7 +104,7 @@ halt 保持首错即停：任一 Begin、Tick 或任务首错停止后续执行�
 
 故障状态属于一次运行，按对象存于 World 执行状态；对象退出参与或 World 停止时清除。`clear_faults()` 由宿主在兼容代码发布成功后于宿主边界调用：Tick 故障的对象恢复 Tick，不重发 Begin；Begin 故障的对象经运行中插入的 Begin 路径重新 Begin。
 
-诊断记录定义在 [diagnostic.hpp](../../../src/world/diagnostic.hpp)：severity、kind、phase、object、entity、type（限定名）、field（字段名路径）、source（生成代码的失败位置，有值时转发）、message、serial、repeats。场景加载诊断使用同一记录与 kind 词表。`take_diagnostics()` 取走日志；日志最多 1024 条，溢出计入 `dropped_diagnostics()`。呈现、灯光、物理与命令阶段中，同一对象、kind 与字段的失败若在下一次提取或更新中重复，只增加 repeats，某次未再出现即视为解决；已取走的条目在失败持续期间不再重发。行为失败每次发生各记一条。物理等子系统经 `World::contain(Error, Diagnostic)` 按同一策略报告与判断。
+诊断记录定义在 [diagnostic.hpp](../../../modules/engine/world/include/world/diagnostic.hpp)：severity、kind、phase、object、entity、type（限定名）、field（字段名路径）、source（生成代码的失败位置，有值时转发）、message、serial、repeats。场景加载诊断使用同一记录与 kind 词表。`take_diagnostics()` 取走日志；日志最多 1024 条，溢出计入 `dropped_diagnostics()`。呈现、灯光、物理与命令阶段中，同一对象、kind 与字段的失败若在下一次提取或更新中重复，只增加 repeats，某次未再出现即视为解决；已取走的条目在失败持续期间不再重发。行为失败每次发生各记一条。物理等子系统经 `World::contain(Error, Diagnostic)` 按同一策略报告与判断。
 
 ## 编辑、呈现与资源
 

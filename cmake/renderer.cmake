@@ -2,7 +2,7 @@ include_guard(GLOBAL)
 
 function(atelier_add_renderer)
     foreach(_shader raster_position material_common scene_common scene_vs scene_ps ui_common ui_vs ui_ps viewport_vs background_ps grid_ps cavity_ps)
-        set(_path "${PROJECT_SOURCE_DIR}/src/renderer/shaders/${_shader}.hlsl")
+        set(_path "${PROJECT_SOURCE_DIR}/modules/render/renderer/shaders/${_shader}.hlsl")
         set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_path}")
         file(READ "${_path}" ${_shader})
     endforeach()
@@ -14,7 +14,7 @@ function(atelier_add_renderer)
         set(${_shader} "${ui_common}\n${${_shader}}")
     endforeach()
     foreach(_shader lit_common lit_light_sampling lit_clustered lit_gbuffer lit_shadow lit_shadow_sampling lit_direct lit_ddgi_common lit_ddgi lit_ddgi_debug lit_post lit_smaa)
-        set(_path "${PROJECT_SOURCE_DIR}/src/renderer/shaders/${_shader}.hlsl")
+        set(_path "${PROJECT_SOURCE_DIR}/modules/render/renderer/shaders/${_shader}.hlsl")
         set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_path}")
         file(READ "${_path}" ${_shader})
     endforeach()
@@ -37,15 +37,17 @@ function(atelier_add_renderer)
     foreach(_shader lit_gbuffer lit_shadow lit_clustered lit_ddgi lit_ddgi_debug lit_post lit_smaa)
         set(${_shader} "${raster_position}\n${material_common}\n${lit_common}\n${${_shader}}")
     endforeach()
-    configure_file("${PROJECT_SOURCE_DIR}/src/renderer/shader_source.hpp.in"
+    configure_file("${PROJECT_SOURCE_DIR}/modules/render/renderer/src/detail/shader_source.hpp.in"
         "${CMAKE_CURRENT_BINARY_DIR}/renderer-generated/shader_source.hpp" @ONLY)
-    add_library(atelier_renderer STATIC "${PROJECT_SOURCE_DIR}/src/renderer/renderer.cpp"
-        "${PROJECT_SOURCE_DIR}/src/renderer/material_programs.cpp"
-        "${PROJECT_SOURCE_DIR}/src/renderer/scene_lit.cpp"
-        "${PROJECT_SOURCE_DIR}/src/renderer/shadow_cache.cpp"
-        "${PROJECT_SOURCE_DIR}/src/renderer/light_frame.cpp")
+    add_library(atelier_renderer STATIC "${PROJECT_SOURCE_DIR}/modules/render/renderer/src/renderer.cpp"
+        "${PROJECT_SOURCE_DIR}/modules/render/renderer/src/material_programs.cpp"
+        "${PROJECT_SOURCE_DIR}/modules/render/renderer/src/scene_lit.cpp"
+        "${PROJECT_SOURCE_DIR}/modules/render/renderer/src/shadow_cache.cpp"
+        "${PROJECT_SOURCE_DIR}/modules/render/renderer/src/light_frame.cpp")
     atelier_target(atelier_renderer)
-    target_include_directories(atelier_renderer PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/renderer-generated")
+    target_include_directories(atelier_renderer PUBLIC "${PROJECT_SOURCE_DIR}/modules/render/renderer/include"
+        PRIVATE "${PROJECT_SOURCE_DIR}/modules/render/renderer/internal"
+        "${PROJECT_SOURCE_DIR}/third_party" "${CMAKE_CURRENT_BINARY_DIR}/renderer-generated")
     target_link_libraries(atelier_renderer PUBLIC atelier_rhi atelier_ui_protocol atelier_geometry atelier_foundation atelier_rendering atelier_material)
     target_link_libraries(atelier_renderer PRIVATE atelier_logging)
     add_executable(atelier_renderer_acceptance "${PROJECT_SOURCE_DIR}/acceptance/renderer/main.cpp"

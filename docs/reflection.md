@@ -129,7 +129,7 @@ auto types = runtime.register_types(std::move(definitions));
 
 调用方仍决定发布的类型集合及生命周期。每次构建定义显式传入 Runtime，不缓存全局 `TypeId`。已迁移类型删除重复手写描述；`NativeRegistration` 本身及其他未迁移消费者保留。
 
-[World 的类型声明](../src/world/world.hpp)由生成器发布 Material 等作者值类型与 Entity、StaticMeshEntity、Component、PrimitiveComponent、StaticMeshComponent、CollisionComponent、LightComponent 等真实对象类型；空间状态内联于 Entity，不注册 SceneComponent。数学记录由 Runtime 的基础初始化统一发布，World 复用其权威身份；`world::register_types` 保留成组业务发布和字段路径绑定，`detail::Access` 保留业务访问职责。Counter 及其方法仅属于验收业务类型。详见[数学合同](math.md)。
+[World 的类型声明](../modules/engine/world/include/world/world.hpp)由生成器发布 Material 等作者值类型与 Entity、StaticMeshEntity、Component、PrimitiveComponent、StaticMeshComponent、CollisionComponent、LightComponent 等真实对象类型；空间状态内联于 Entity，不注册 SceneComponent。数学记录由 Runtime 的基础初始化统一发布，World 复用其权威身份；`world::register_types` 保留成组业务发布和字段路径绑定，`detail::Access` 保留业务访问职责。Counter 及其方法仅属于验收业务类型。详见[数学合同](math.md)。
 
 拥有容器的类型定义由 `runtime/foundation.hpp` 提供，与生成类型一起提交到同一发布入口；完整示例、字段借用与生命周期合同见[基础库](foundation.md#共享反射与-runtime)。
 
@@ -139,11 +139,12 @@ auto types = runtime.register_types(std::move(definitions));
 
 ```cmake
 atelier_reflect(atelier_world
-    SOURCE src/world/objects.cpp
-    HEADERS src/world/world.hpp)
+    SOURCE modules/engine/world/src/objects.cpp
+    BASE_DIR modules/engine/world/include
+    HEADERS modules/engine/world/include/world/world.hpp)
 ```
 
-`SOURCE` 必须在 `compile_commands.json` 中对应唯一真实编译命令，并包含全部待生成头。`BASE_DIR` 默认是项目 `src/`，可显式指定；头文件必须是其下的 `.hpp`。生成头的 include 路径相对此目录，例如 `world/world.gen.hpp`。生成 include 目录通过目标传播给消费者。
+`SOURCE` 必须在 `compile_commands.json` 中对应唯一真实编译命令，并包含全部待生成头。`BASE_DIR` 必须显式指定为模块的公开 include 根或验收头根；头文件必须是其下的 `.hpp`。生成头的 include 路径相对此目录，例如 `world/world.gen.hpp`。生成 include 目录通过目标传播给消费者。模块头与实现的归属遵循[源码布局与依赖](engineering.md#源码布局与依赖)。
 
 配置时会清理该目标生成目录中已不属于本次声明的 `.gen.hpp`，保留仍声明的输出。头文件迁移到另一个目标后，旧目标的公开 include 目录不能继续提供同路径的过期生成头；清理只限该目标拥有的生成目录，不扫描或删除源码头。
 

@@ -8,13 +8,13 @@
 
 | 类型 | 存储与复制 | 入口 |
 | --- | --- | --- |
-| `Array<T>` | 独占连续缓冲；复制拥有独立元素，平凡操作可批量完成；移动转移缓冲，源变为空；析构剩余元素并释放缓冲 | [array.hpp](../src/foundation/array.hpp) |
-| `SharedArray<T>` | 计数句柄，共享一个不可变 Array；复制只增加计数，写入前先取得独占；移动后源为空 | [shared_array.hpp](../src/foundation/shared_array.hpp) |
-| `Span<T>` | 指针与元素数量；复制只复制借用描述 | [span.hpp](../src/foundation/span.hpp) |
-| `String` | 独占、有效 UTF-8，保证尾部零字符；复制拥有独立缓冲，移动后源为空 | [string.hpp](../src/foundation/string.hpp) |
+| `Array<T>` | 独占连续缓冲；复制拥有独立元素，平凡操作可批量完成；移动转移缓冲，源变为空；析构剩余元素并释放缓冲 | [array.hpp](../modules/core/foundation/include/foundation/array.hpp) |
+| `SharedArray<T>` | 计数句柄，共享一个不可变 Array；复制只增加计数，写入前先取得独占；移动后源为空 | [shared_array.hpp](../modules/core/foundation/include/foundation/shared_array.hpp) |
+| `Span<T>` | 指针与元素数量；复制只复制借用描述 | [span.hpp](../modules/core/foundation/include/foundation/span.hpp) |
+| `String` | 独占、有效 UTF-8，保证尾部零字符；复制拥有独立缓冲，移动后源为空 | [string.hpp](../modules/core/foundation/include/foundation/string.hpp) |
 | `StringView` | 指针与字节数量；允许外部未验证 UTF-8 与局部字节切片，不保证尾部零字符 | 同上 |
-| `Map<K,V>` | 独占键和值；复制独立拥有，移动转移存储；键只读、值可修改，无遍历顺序保证 | [map.hpp](../src/foundation/map.hpp) |
-| `Set<T>` | 独占唯一成员；复制独立拥有，移动转移存储；成员只读，无遍历顺序保证 | [set.hpp](../src/foundation/set.hpp) |
+| `Map<K,V>` | 独占键和值；复制独立拥有，移动转移存储；键只读、值可修改，无遍历顺序保证 | [map.hpp](../modules/core/foundation/include/foundation/map.hpp) |
+| `Set<T>` | 独占唯一成员；复制独立拥有，移动转移存储；成员只读，无遍历顺序保证 | [set.hpp](../modules/core/foundation/include/foundation/set.hpp) |
 
 String 使用 32 字节对象及 15 字节短字符串内联存储（SSO），长文本由独占堆缓冲持有。字节复制直接搬移连续缓冲，不构造随后会被覆盖的字符。Array 使用标准分配原语取得正确对齐的未初始化存储；宿主的 String 和 Array 均沿现有全局 new/delete 接入 mimalloc，无额外分配器注册表。取舍与同机采样见[字符串研究与测量](research/string-storage-performance.md)。
 
@@ -101,7 +101,7 @@ seen.remove(7u);                            // 返回是否移除了成员
 
 ### Hash/Equal 与失败合同
 
-[Hash/Equal](../src/foundation/hash.hpp) 是共同入口。整数、枚举和指针使用锁定后端的整数哈希，即一次 64 位乘法混合，不读取这些类型的 `std::hash` 特化；MSVC STL 的 `std::hash` 对整数逐字节做 FNV-1a，因此不经过它。其他类型的哈希复用现有 `std::hash<T>`；相等仍使用 `operator==`（String/StringView 除外）。结果已充分混合的哈希声明 `is_avalanching`，表直接使用结果而不再混合一次；`std::hash<T>` 声明了该标记时，`Hash<T>` 随之声明。TypeId 与 ObjectId 的 `std::hash` 由 `hash_fields` 逐字段混合 Runtime 上下文、槽位以及 ObjectId 的代际，与各自的完整相等规则一致；`std::unordered_*` 与 Map/Set 因此得到同一哈希。自定义策略作为 Map/Set 的模板参数提供，当前由容器默认构造；策略本身的默认/复制/移动/交换/析构及 Hash/Equal 调用必须不抛，检查包含结果到 size_t/bool 的转换。移动容器时源获得新默认策略，不要求其已移空的旧策略仍可调用。元素必须具备不抛移动构造、移动赋值和析构，编译期拒绝不满足的类型。标准类型的相等运算若未声明 noexcept，也需提供满足该合同的比较策略。
+[Hash/Equal](../modules/core/foundation/include/foundation/hash.hpp) 是共同入口。整数、枚举和指针使用锁定后端的整数哈希，即一次 64 位乘法混合，不读取这些类型的 `std::hash` 特化；MSVC STL 的 `std::hash` 对整数逐字节做 FNV-1a，因此不经过它。其他类型的哈希复用现有 `std::hash<T>`；相等仍使用 `operator==`（String/StringView 除外）。结果已充分混合的哈希声明 `is_avalanching`，表直接使用结果而不再混合一次；`std::hash<T>` 声明了该标记时，`Hash<T>` 随之声明。TypeId 与 ObjectId 的 `std::hash` 由 `hash_fields` 逐字段混合 Runtime 上下文、槽位以及 ObjectId 的代际，与各自的完整相等规则一致；`std::unordered_*` 与 Map/Set 因此得到同一哈希。自定义策略作为 Map/Set 的模板参数提供，当前由容器默认构造；策略本身的默认/复制/移动/交换/析构及 Hash/Equal 调用必须不抛，检查包含结果到 size_t/bool 的转换。移动容器时源获得新默认策略，不要求其已移空的旧策略仍可调用。元素必须具备不抛移动构造、移动赋值和析构，编译期拒绝不满足的类型。标准类型的相等运算若未声明 noexcept，也需提供满足该合同的比较策略。
 
 非透明策略只接受实际键类型，必要的类型转换在调用之前显式完成，例如 `Set<unsigned>::contains(1u)`。异构查询要求 Hash/Equal 同时声明 `is_transparent`，并且实际 Q→哈希结果、Q/K→相等结果的完整调用均不抛；不以策略中存在某个重载来推断后端会跳过键构造。这样查询不会在 noexcept 包装内部隐式执行可抛键转换。
 
@@ -178,7 +178,7 @@ Runtime 校验原生元素表示和复制能力；当前反射数组只接受不
 
 ## 原生 fork-join 任务
 
-[tasks.hpp](../src/foundation/tasks.hpp) 提供 `atelier::tasks::parallel_for` 和单次使用的 `JoinGroup`，用于普通 C++ 值上的同步计算；当前产品消费者是 [Scatter](../src/procedural/operations.cpp)。公共头不暴露 oneTBB 类型，后端版本与源码校验值只在[依赖锁文件](../cmake/dependencies-lock.json)。构建仅部署对应配置的一份 TBB 调度 DLL 与许可证，不构建或分发 tbbmalloc；通用分配器仍按项目既有 mimalloc 入口接管。
+[tasks.hpp](../modules/core/foundation/include/foundation/tasks.hpp) 提供 `atelier::tasks::parallel_for` 和单次使用的 `JoinGroup`，用于普通 C++ 值上的同步计算；当前产品消费者是 [Scatter](../modules/engine/procedural/src/operations.cpp)。公共头不暴露 oneTBB 类型，后端版本与源码校验值只在[依赖锁文件](../cmake/dependencies-lock.json)。构建仅部署对应配置的一份 TBB 调度 DLL 与许可证，不构建或分发 tbbmalloc；通用分配器仍按项目既有 mimalloc 入口接管。
 
 **本节为 W0 冻结的任务目标合同，错误接口待 W2 实施。** 当前代码仍采用 void body 和异常传播；下列 expected 接口及示例不是已实现能力。未涉及错误通道的分块、线程、借用、取消、浮点环境与计时合同保持不变。全局错误分类和 fatal 只由[工程指南](engineering.md#错误处理)定义。
 
@@ -253,7 +253,7 @@ Volume 的块级计数槽继续只累计普通数值；位置不能表示的业�
 
 ## 帧阶段计时
 
-[frame_timing.hpp](../src/foundation/frame_timing.hpp) 提供常开的 CPU 帧阶段计时机制，dev 与 release 行为一致。foundation 只拥有根标记 `timing::frame`；各模块在自己的 `timing.hpp` 中以 `inline constinit timing::Marker` 声明阶段，给出键名、显示标题和父标记，例如 [renderer/timing.hpp](../src/renderer/timing.hpp) 的 `render` 以 `timing::frame` 为父项。父标记只引用本模块或其依赖模块的标记，依赖方向与链接一致。
+[frame_timing.hpp](../modules/core/foundation/include/foundation/frame_timing.hpp) 提供常开的 CPU 帧阶段计时机制，dev 与 release 行为一致。foundation 只拥有根标记 `timing::frame`；各模块在自己的 `timing.hpp` 中以 `inline constinit timing::Marker` 声明阶段，给出键名、显示标题和父标记，例如 [renderer/timing.hpp](../modules/render/renderer/include/renderer/timing.hpp) 的 `render` 以 `timing::frame` 为父项。父标记只引用本模块或其依赖模块的标记，依赖方向与链接一致。
 
 宿主在启动时、任何线程记录之前调用一次 `timing::install({module_a::markers, module_b::markers})`：先登记 `frame`，再按参数顺序登记各模块标记，由此确定进程内唯一的目录、下标和显示行序。重复调用、空标记、同一标记重复登记、键名重复、父项未先登记或超过 64 项都会拒绝，被拒绝的调用不登记任何项。没有静态自动注册，不依赖静态初始化顺序。`catalog()` 按下标返回已登记标记，`depth()` 给出层级深度。
 
@@ -263,7 +263,7 @@ Volume 的块级计数槽继续只累计普通数值；位置不能表示的业�
 
 Recorder 已绑定时，未登记的标记、未在声明父项下打开的标记以及嵌套的 `Frame` 计入 `structure_errors`，`first_error` 指向第一个出错的标记，这些条目不记录时长。`Suspend` 在作用域内解绑当前线程，被挂起的工作整体计入外层已打开的阶段，用于辅助表面等不属于本帧阶段结构的嵌套调用；在 `Suspend` 内结束的 `Frame` 不会在它退出时被重新绑定。
 
-没有绑定 Recorder 的线程只读取一次线程局部变量，不做记录。物理工作线程等辅助线程的耗时体现在发起它们的宿主阶段的墙钟时间中。Recorder 不是线程安全的，只能由绑定它的线程写入。产品宿主绑定 Recorder：编辑器的每次 `Application::step`、Play 的每次运行循环各是一帧。进程入口调用 [application/timing.hpp](../src/application/timing.hpp) 的 `install_frame_timing()`，依次登记宿主阶段 `app.*`、World、物理和渲染阶段；`Application` 与 `run_project` 启动时检查目录，未安装时以 `std::logic_error` 拒绝启动，不会把每个阶段都记成结构错误。宿主把每一步的记录交给编辑器的帧性能统计，供 Performance 表、Control 和 Play 报告使用。计时值只用于诊断报告，不作为验收的通过条件；验收只检查阶段是否存在、层级、进入次数和 `structure_errors`。单个作用域的开销由 `atelier_editor_document_acceptance --profile-scene-cpu` 输出的 `timing_scope_ns` 在同一机器上标定。
+没有绑定 Recorder 的线程只读取一次线程局部变量，不做记录。物理工作线程等辅助线程的耗时体现在发起它们的宿主阶段的墙钟时间中。Recorder 不是线程安全的，只能由绑定它的线程写入。产品宿主绑定 Recorder：编辑器的每次 `Application::step`、Play 的每次运行循环各是一帧。进程入口调用 [application/timing.hpp](../modules/editor/application/include/application/timing.hpp) 的 `install_frame_timing()`，依次登记宿主阶段 `app.*`、World、物理和渲染阶段；`Application` 与 `run_project` 启动时检查目录，未安装时以 `std::logic_error` 拒绝启动，不会把每个阶段都记成结构错误。宿主把每一步的记录交给编辑器的帧性能统计，供 Performance 表、Control 和 Play 报告使用。计时值只用于诊断报告，不作为验收的通过条件；验收只检查阶段是否存在、层级、进入次数和 `structure_errors`。单个作用域的开销由 `atelier_editor_document_acceptance --profile-scene-cpu` 输出的 `timing_scope_ns` 在同一机器上标定。
 ## 验收
 
 构建与运行方式遵循 [README 的必要性验收](../README.md#构建与端到端验收)，按改动选择以下消费者；这里描述覆盖范围，不记录某次交付的通过状态。

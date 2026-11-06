@@ -6,7 +6,6 @@ function(atelier_llvm_target target)
     target_compile_definitions(${target} PRIVATE NDEBUG _ITERATOR_DEBUG_LEVEL=0)
     target_compile_options(${target} PRIVATE /GR-)
     target_include_directories(${target} SYSTEM PRIVATE ${LLVM_INCLUDE_DIRS})
-    target_include_directories(${target} PRIVATE "${PROJECT_SOURCE_DIR}/src")
 endfunction()
 
 function(atelier_add_source)
@@ -64,28 +63,39 @@ function(atelier_add_source)
     # archive member. Both DLLs use the same unwind implementation; registration
     # belongs to each code allocation and requires no shared registry.
     add_library(atelier_jit_llvm_support OBJECT
-        src/jit/windows_unwind.cpp
+        modules/execution/jit/src/windows_unwind.cpp
         third_party/llvm/JITLinkMemoryManager.cpp
-        src/memory/global_new_delete.cpp)
+        modules/core/memory/src/global_new_delete.cpp)
     atelier_llvm_target(atelier_jit_llvm_support)
+    target_include_directories(atelier_jit_llvm_support PRIVATE "${PROJECT_SOURCE_DIR}/modules/execution/jit/internal")
     target_link_libraries(atelier_jit_llvm_support PUBLIC ${_llvm_libraries} mimalloc)
 
     # The same frontend is compiled on each side of the isolation boundary;
     # its STL state stays within the host or the LLVM DLL's own CRT ABI.
-    add_library(atelier_source_backend SHARED src/jit/source_backend.cpp
-        src/jit/diagnostic_artifact.cpp src/language/source.cpp src/language/declarations.cpp src/language/material.cpp)
+    add_library(atelier_source_backend SHARED modules/execution/jit/src/source_backend.cpp
+        modules/execution/jit/src/diagnostic_artifact.cpp modules/execution/language/src/source.cpp modules/execution/language/src/declarations.cpp modules/execution/language/src/material.cpp)
     atelier_llvm_target(atelier_source_backend)
     target_compile_definitions(atelier_source_backend PRIVATE ATELIER_SOURCE_BACKEND_BUILD)
     # Lowering reads the native transport layout, but does not link Runtime's CRT ABI.
-    target_link_libraries(atelier_source_backend PRIVATE atelier_jit_llvm_support unordered_dense::unordered_dense)
+    target_include_directories(atelier_source_backend PRIVATE
+        "${PROJECT_SOURCE_DIR}/modules/execution/jit/internal"
+        "${PROJECT_SOURCE_DIR}/modules/execution/language/include"
+        "${PROJECT_SOURCE_DIR}/modules/execution/runtime/include")
+    target_link_libraries(atelier_source_backend PRIVATE atelier_jit_llvm_support unordered_dense::unordered_dense
+        atelier_foundation_headers atelier_math atelier_execution_contracts)
 
-    add_library(atelier_source STATIC src/source/program.cpp src/source/diagnostics.cpp src/source/detail/bridge.cpp
-        src/source/debugger.cpp src/source/detail/debugger.cpp src/source/snapshot.cpp src/source/material_program.cpp
-        src/language/source.cpp src/language/declarations.cpp src/language/module.cpp)
+    add_library(atelier_source STATIC modules/execution/source/src/program.cpp modules/execution/source/src/diagnostics.cpp modules/execution/source/src/detail/bridge.cpp
+        modules/execution/source/src/debugger.cpp modules/execution/source/src/detail/debugger.cpp modules/execution/source/src/snapshot.cpp modules/execution/source/src/material_program.cpp
+        modules/execution/language/src/source.cpp modules/execution/language/src/declarations.cpp modules/execution/language/src/module.cpp)
     atelier_target(atelier_source)
-    target_include_directories(atelier_source PUBLIC "${PROJECT_SOURCE_DIR}/src")
+    target_include_directories(atelier_source PUBLIC
+        "${PROJECT_SOURCE_DIR}/modules/execution/source/include"
+        "${PROJECT_SOURCE_DIR}/modules/execution/language/include"
+        PRIVATE "${PROJECT_SOURCE_DIR}/modules/execution/source/internal"
+        "${PROJECT_SOURCE_DIR}/modules/execution/jit/internal"
+        "${PROJECT_SOURCE_DIR}/modules/execution/runtime/internal")
     target_compile_features(atelier_source PUBLIC cxx_std_23)
-    target_link_libraries(atelier_source PUBLIC atelier_runtime PRIVATE atelier_source_backend)
+    target_link_libraries(atelier_source PUBLIC atelier_runtime PRIVATE atelier_source_backend atelier_platform)
     # engine/ beside the executables is an exact copy of assets/engine: every reconfigure starts
     # empty, and adding, removing or editing a .source file reconfigures.
     set(engine_tree "${PROJECT_SOURCE_DIR}/assets/engine")
@@ -105,7 +115,9 @@ function(atelier_add_source)
     atelier_target(atelier_source_minimal)
     include("${PROJECT_SOURCE_DIR}/cmake/core_math.cmake")
     target_link_libraries(atelier_source_minimal PRIVATE atelier_source atelier_world atelier_material atelier_core_math mimalloc psapi)
-    target_include_directories(atelier_source_minimal PRIVATE "${PROJECT_SOURCE_DIR}/acceptance")
+    target_include_directories(atelier_source_minimal PRIVATE "${PROJECT_SOURCE_DIR}/acceptance"
+        "${PROJECT_SOURCE_DIR}/modules/execution/source/internal"
+        "${PROJECT_SOURCE_DIR}/modules/execution/jit/internal")
     target_compile_definitions(atelier_source_minimal PRIVATE "ATELIER_ENGINE_SOURCE_TREE=L\"${engine_tree}\"")
     atelier_headless_acceptance(source_acceptance
         COMMAND $<TARGET_FILE:atelier_source_minimal>
@@ -116,6 +128,7 @@ function(atelier_add_source)
 
     add_library(atelier_jit_probe SHARED acceptance/jit/backend.cpp)
     atelier_llvm_target(atelier_jit_probe)
+    target_include_directories(atelier_jit_probe PRIVATE "${PROJECT_SOURCE_DIR}/modules/execution/jit/internal")
     target_compile_definitions(atelier_jit_probe PRIVATE ATELIER_JIT_PROBE_BUILD)
     target_link_libraries(atelier_jit_probe PRIVATE atelier_jit_llvm_support)
 
@@ -126,7 +139,9 @@ function(atelier_add_source)
     add_executable(atelier_jit_acceptance acceptance/jit/main.cpp acceptance/jit/business.cpp
         acceptance/jit/math_abi.cpp)
     atelier_target(atelier_jit_acceptance)
-    target_include_directories(atelier_jit_acceptance PRIVATE acceptance)
+    target_include_directories(atelier_jit_acceptance PRIVATE acceptance
+        "${PROJECT_SOURCE_DIR}/modules/execution/jit/internal"
+        "${PROJECT_SOURCE_DIR}/modules/execution/source/internal")
     target_link_libraries(atelier_jit_acceptance PRIVATE
         atelier_source atelier_source_backend atelier_jit_probe atelier_jit_native_client)
     atelier_headless_acceptance(jit_acceptance

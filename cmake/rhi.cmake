@@ -76,12 +76,12 @@ function(atelier_add_rhi)
     set_target_properties(gfx PROPERTIES CXX_STANDARD 23 CXX_STANDARD_REQUIRED YES
         MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
 
-    add_library(atelier_rhi STATIC "${PROJECT_SOURCE_DIR}/src/rhi/rhi.cpp" "${PROJECT_SOURCE_DIR}/src/rhi/shader_compiler.cpp")
+    add_library(atelier_rhi STATIC "${PROJECT_SOURCE_DIR}/modules/render/rhi/src/rhi.cpp" "${PROJECT_SOURCE_DIR}/modules/render/rhi/src/shader_compiler.cpp")
     atelier_target(atelier_rhi)
     target_compile_features(atelier_rhi PUBLIC cxx_std_23)
-    target_include_directories(atelier_rhi PUBLIC "${PROJECT_SOURCE_DIR}/src")
+    target_include_directories(atelier_rhi PUBLIC "${PROJECT_SOURCE_DIR}/modules/render/rhi/include")
     target_link_libraries(atelier_rhi PUBLIC gfx
-        PRIVATE "${_gfx}/third_party/directx-dxc/lib/x64/dxcompiler.lib" bcrypt ole32)
+        PRIVATE atelier_foundation_headers "${_gfx}/third_party/directx-dxc/lib/x64/dxcompiler.lib" bcrypt ole32)
     target_include_directories(atelier_rhi SYSTEM PUBLIC
         "${_gfx}/third_party/directx12-agility/build/native/include")
     target_include_directories(atelier_rhi SYSTEM PRIVATE "${_gfx}/third_party/directx-dxc/inc")

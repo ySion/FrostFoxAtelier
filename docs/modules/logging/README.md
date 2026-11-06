@@ -1,6 +1,6 @@
 # Logging：进程日志与诊断记录
 
-进程宿主拥有日志寿命；Application / Runner 桥接领域诊断；Project Output 从 JSONL 增量消费。[logging.hpp](../../../src/logging/logging.hpp) 是公共值与生命周期入口，[native.hpp](../../../src/logging/native.hpp) 提供稳定原生代码的编译期格式检查。研究依据及真实反例见[日志评估](../../research/logging-assessment.md)；实际构建和验收结果以本次 acceptance-gate 产物为准，接口说明不替代运行证据。
+进程宿主拥有日志寿命；Application / Runner 桥接领域诊断；Project Output 从 JSONL 增量消费。[logging.hpp](../../../modules/core/logging/include/logging/logging.hpp) 是公共值与生命周期入口，[native.hpp](../../../modules/core/logging/include/logging/native.hpp) 提供稳定原生代码的编译期格式检查。研究依据及真实反例见[日志评估](../../research/logging-assessment.md)；实际构建和验收结果以本次 acceptance-gate 产物为准，接口说明不替代运行证据。
 
 独立目标 `atelier_logging` 不依赖 Runtime、World、Editor、Application 或 RHI；只有一个 Quill 后端，不做可切换后端、通用订阅总线或任意用户 sink callback。Quill 版本由 [dependencies-lock.json](../../../cmake/dependencies-lock.json) 锁定，保留 Quill 和 bundled fmt 的许可。domain 头只依赖标准库；native 便利头**确有 Quill 编译依赖**，但不公开 logger/sink 所有权。
 
@@ -189,10 +189,10 @@ CodeDocument 上限为 1 Mi UTF-16 code units 且拒 NUL，因此 UI 对控制�
 
 ## 实现位置与明确取舍
 
-- [logging.cpp](../../../src/logging/logging.cpp)：显式唯一 Run、固定过滤、producer 准入/退休、同步首因、精确拒绝计数、typed sink 健康、轮转/默认根保留、原子健康快照及 finish。首因文本/字段预算是 8 KiB；为了首因保存不再次分配，start 预留字段/字符串容量，其实际 backing 与 STL 开销大于 8 KiB，不冒充进程内存硬上限。
-- [detail.hpp](../../../src/logging/detail.hpp)：唯一 BoundedDropping frontend、实际编码尺寸检查及 resident decoder 提交。metadata 常量由宿主 cpp 定义；结构化 envelope 放入深拷贝 runtime tags，正文/标量参数仍由后台格式化。没有用正文前缀拼接元数据。`native_source` 对未获证明的编译器列填 0；相对文件名携带构建时固定的编译工作目录，不读取运行中的工程或 cwd。
-- [format.cpp](../../../src/logging/format.cpp)：共享 schema、UTF-8、命名标量和规范十进制校验；拒绝重复 JSON key、BOM、未知成员及超过 16 层的异常嵌套。native.hpp 不包含 JSON 库；JSON 是模块私有依赖。
-- [reader.cpp](../../../src/logging/reader.cpp)：Windows 共享读/写/删除句柄及文件身份游标；目录快照同时复核存在与缺失的名字，轮转竞态留待下次 poll，不拼接文件。保留一个跨 poll 活动句柄，扫描最多九段；字节预算包含分片读取的 manifest/health（单个最多 256 KiB），记录预算包含坏行；半行有界至 2 MiB，去重窗口 4096 个键。无 Runtime、UI、Quill backend 或 UI 历史依赖。
+- [logging.cpp](../../../modules/core/logging/src/logging.cpp)：显式唯一 Run、固定过滤、producer 准入/退休、同步首因、精确拒绝计数、typed sink 健康、轮转/默认根保留、原子健康快照及 finish。首因文本/字段预算是 8 KiB；为了首因保存不再次分配，start 预留字段/字符串容量，其实际 backing 与 STL 开销大于 8 KiB，不冒充进程内存硬上限。
+- [detail/native.hpp](../../../modules/core/logging/include/logging/detail/native.hpp)：唯一 BoundedDropping frontend、实际编码尺寸检查及 resident decoder 提交。metadata 常量由宿主 cpp 定义；结构化 envelope 放入深拷贝 runtime tags，正文/标量参数仍由后台格式化。没有用正文前缀拼接元数据。`native_source` 对未获证明的编译器列填 0；相对文件名携带构建时固定的编译工作目录，不读取运行中的工程或 cwd。
+- [format.cpp](../../../modules/core/logging/src/format.cpp)：共享 schema、UTF-8、命名标量和规范十进制校验；拒绝重复 JSON key、BOM、未知成员及超过 16 层的异常嵌套。native.hpp 不包含 JSON 库；JSON 是模块私有依赖。
+- [reader.cpp](../../../modules/core/logging/src/reader.cpp)：Windows 共享读/写/删除句柄及文件身份游标；目录快照同时复核存在与缺失的名字，轮转竞态留待下次 poll，不拼接文件。保留一个跨 poll 活动句柄，扫描最多九段；字节预算包含分片读取的 manifest/health（单个最多 256 KiB），记录预算包含坏行；半行有界至 2 MiB，去重窗口 4096 个键。无 Runtime、UI、Quill backend 或 UI 历史依赖。
 - **轮转取舍**：固定版本 Quill RotatingFileSink 某些删除路径忽略错误，不能作为 typed health 权威。采用一个自有 Quill Sink 内的固定 Win32 write/rename/delete/close 政策，逐项检查结果；不引入另一条生产队列、可切换后端或通用 sink 框架。本文的命名/轮转容量公共合同不变。
 - [quill.cmake](../../../cmake/quill.cmake) 按 [dependencies-lock.json](../../../cmake/dependencies-lock.json) 的 URL 和 SHA256 获取并校验官方 commit 归档，不引用 Temp 克隆。headers 标为 SYSTEM，关闭 upstream 示例/测试/安装；构建输出目录部署 `LICENSE.quill.txt`、`LICENSE.quill-fmt.txt`，保留 bundled fmt 完整首部许可。JSON 的既有许可证接线继续复用。
 

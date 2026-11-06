@@ -2,13 +2,13 @@
 
 本页维护当前执行、显示和资源合同；光照算法、默认值与限制统一见 [Scene Lit](scene-lit.md)，已验证的配置和证据见[验收记录](acceptance.md)，尚未实施的方向见[后续方向](scene-lit.md#后续方向)。
 
-入口：[renderer.hpp](../../../src/renderer/renderer.hpp)，目标 `atelier_renderer`，由 [cmake/renderer.cmake](../../../cmake/renderer.cmake) 的 `atelier_add_renderer()` 创建。调用前由应用根构建创建 `atelier_rhi` 和 `atelier_ui_protocol`；可执行目标调用 `atelier_deploy_rhi_runtime(target)` 部署同一套 DXC、Agility 与 PIX DLL。shader 在配置时嵌入库，不依赖启动目录或另一 worktree。
+入口：[renderer.hpp](../../../modules/render/renderer/include/renderer/renderer.hpp)，目标 `atelier_renderer`，由 [cmake/renderer.cmake](../../../cmake/renderer.cmake) 的 `atelier_add_renderer()` 创建。调用前由应用根构建创建 `atelier_rhi` 和 `atelier_ui_protocol`；可执行目标调用 `atelier_deploy_rhi_runtime(target)` 部署同一套 DXC、Agility 与 PIX DLL。shader 在配置时嵌入库，不依赖启动目录或另一 worktree。
 
 ## 一条执行链
 
 应用持有 HWND、Runtime 对象与编辑状态 → CPU 场景数组和 UI 完整帧 → `Renderer::render` → 同一 RHI Context/gfx 录制与 Present → 应用只在 accepted 时替换命中帧。
 
-renderer 不保留业务对象身份、GC 根或 JIT 回调。UI 布局、文本排版、输入处理和撤销归各自拥有者；renderer 消费 [公共 CPU 协议](../../../src/ui/frame.hpp)。同一 owner 线程完成打开、查询、绘制和关闭，窗口必须存活到 renderer 关闭之后。
+renderer 不保留业务对象身份、GC 根或 JIT 回调。UI 布局、文本排版、输入处理和撤销归各自拥有者；renderer 消费 [公共 CPU 协议](../../../modules/gui/ui_protocol/include/ui/frame.hpp)。同一 owner 线程完成打开、查询、绘制和关闭，窗口必须存活到 renderer 关闭之后。
 
 `Options::frame_latency_waitable` 选择 [RHI 呈现准入](../rhi/contract.md#呈现准入)，默认关闭。宿主通过 `wait_frame` 在安全外层有限等待；Renderer 不取得原生句柄、不分发消息。`render` 在目标可绘制且尺寸匹配后、任何本帧编码前零超时确认许可，未就绪返回 `not_ready`，不更新 Capture 或接受身份。许可只由实际 RHI `frame` 消费，材质/Scene Lit 准备尚未就绪及 LitFallback 重试仍沿同一许可；准入不是接受帧或渲染尝试计数。
 
@@ -126,7 +126,7 @@ Scene Lit 的环境照明由 World 的天光设置提供（`SceneLightingSetting
 
 `FrameResult::stats` 是该次 `render` 返回的 `FrameStats` 值快照。下表中的既有计数为 `uint64_t`，不增加 GPU 查询、等待或动态分配。Scene Lit 另有完成帧 GPU 计时与射线计数，具体时序、单位和内存统计边界见 [Scene Lit 诊断](scene-lit.md#诊断与性能边界)。
 
-CPU 墙钟不进入该快照，而是记录为[帧阶段计时](../../foundation.md#帧阶段计时)的 `render.*` 阶段（标记见 [renderer/timing.hpp](../../../src/renderer/timing.hpp)），只在宿主绑定 Recorder 时生效：`render` 覆盖整次调用；`render.prepare` 覆盖 Frame 校验、相机、实例、可见性与按资源分组的绘制索引表准备、UI 准备；`render.encode` 覆盖显示模式失效处理及场景/UI 绘制命令录制，其中 `render.encode.scene` 覆盖有场景时的全部录制（子阶段：`.materials` 为材质表与贴图的创建和上传；`.upload` 为逐批的几何缓存使用标记（静止帧也不为 0）、未命中时焊接并上传索引几何、绘制索引表和实例缓冲写入本帧槽（每个在途帧一份持久的 CPU 可写缓冲，GPU 直接读取；按录制帧序号选槽，容量不足时才按 2 的幂重建），实例缓冲在 Lit 模式只在需要编辑深度或编辑线时才写；`.draws` 为各 raster pass 逐批绘制的录制，只有工作室模式（MatCap、Smooth、Flat、线框）才能用它除以 FrameStats 的 `scene_draw_calls` 估算每次绘制的平均开销，因为 Scene Lit 的表面绘制计入 `scene_draw_calls`，耗时却记在 `.lit`；`.lit` 为 Scene Lit 的 draw 和 draw_debug，含其内部的灯、实例上传与 AS 构建），`render.encode.ui` 覆盖 UI 贴图表的建立（含新版本贴图上传）、实例写入本帧槽（子阶段 `.upload`，与绘制索引表同一种帧槽）和叠加层、UI 各至多一次 draw 的录制；同一阶段在一帧内可进入多次，时间累加、次数另计。无场景时的网格与 Scene Lit 调试绘制只计入 `render.encode`。`render.frame` 覆盖 `Context::frame`，其中由 RHI 测得的分段记为子阶段 `render.submit`（提交前准备与提交）、`render.present`、`render.wait`（下一帧槽等待）和 `render.recycle`（resize、回收与 reclaim），字段定义以 [RHI 合同](../rhi/contract.md) 为准。提前 skipped 的调用只有 `render`；not_ready 另有 `render.prepare`。墙钟包含阻塞与线程调度，不等于 CPU 活跃执行时间，也不与 GPU 时长相加。
+CPU 墙钟不进入该快照，而是记录为[帧阶段计时](../../foundation.md#帧阶段计时)的 `render.*` 阶段（标记见 [renderer/timing.hpp](../../../modules/render/renderer/include/renderer/timing.hpp)），只在宿主绑定 Recorder 时生效：`render` 覆盖整次调用；`render.prepare` 覆盖 Frame 校验、相机、实例、可见性与按资源分组的绘制索引表准备、UI 准备；`render.encode` 覆盖显示模式失效处理及场景/UI 绘制命令录制，其中 `render.encode.scene` 覆盖有场景时的全部录制（子阶段：`.materials` 为材质表与贴图的创建和上传；`.upload` 为逐批的几何缓存使用标记（静止帧也不为 0）、未命中时焊接并上传索引几何、绘制索引表和实例缓冲写入本帧槽（每个在途帧一份持久的 CPU 可写缓冲，GPU 直接读取；按录制帧序号选槽，容量不足时才按 2 的幂重建），实例缓冲在 Lit 模式只在需要编辑深度或编辑线时才写；`.draws` 为各 raster pass 逐批绘制的录制，只有工作室模式（MatCap、Smooth、Flat、线框）才能用它除以 FrameStats 的 `scene_draw_calls` 估算每次绘制的平均开销，因为 Scene Lit 的表面绘制计入 `scene_draw_calls`，耗时却记在 `.lit`；`.lit` 为 Scene Lit 的 draw 和 draw_debug，含其内部的灯、实例上传与 AS 构建），`render.encode.ui` 覆盖 UI 贴图表的建立（含新版本贴图上传）、实例写入本帧槽（子阶段 `.upload`，与绘制索引表同一种帧槽）和叠加层、UI 各至多一次 draw 的录制；同一阶段在一帧内可进入多次，时间累加、次数另计。无场景时的网格与 Scene Lit 调试绘制只计入 `render.encode`。`render.frame` 覆盖 `Context::frame`，其中由 RHI 测得的分段记为子阶段 `render.submit`（提交前准备与提交）、`render.present`、`render.wait`（下一帧槽等待）和 `render.recycle`（resize、回收与 reclaim），字段定义以 [RHI 合同](../rhi/contract.md) 为准。提前 skipped 的调用只有 `render`；not_ready 另有 `render.prepare`。墙钟包含阻塞与线程调度，不等于 CPU 活跃执行时间，也不与 GPU 时长相加。
 
 | 字段 | 统计边界 |
 | --- | --- |

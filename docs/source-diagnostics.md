@@ -1,6 +1,6 @@
 # Runtime / JIT 按调用诊断
 
-入口为 [`source/diagnostics.hpp`](../src/source/diagnostics.hpp) 和现有 [`Program`](../src/source/program.hpp)。诊断覆盖同一源码执行链，包括同步借用、拥有值、内部函数、原生服务与协程。记录由调用方持有；运行时不维护全局日志或报告历史。
+入口为 [`source/diagnostics.hpp`](../modules/execution/source/include/source/diagnostics.hpp) 和现有 [`Program`](../modules/execution/source/include/source/program.hpp)。诊断覆盖同一源码执行链，包括同步借用、拥有值、内部函数、原生服务与协程。记录由调用方持有；运行时不维护全局日志或报告历史。
 
 ## 启用与读取
 

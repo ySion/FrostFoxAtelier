@@ -1,6 +1,6 @@
 # Presentation：网格、灯光、相机与环境
 
-正式入口为 [presentation.hpp](../../../src/presentation/presentation.hpp)。`atelier_presentation` 在 World 核心之上定义网格、灯光、相机、环境与材质资源的类型和规则，依赖 world、material、geometry 与 rendering（只用到 `scene_lighting.hpp` 头文件）；World 核心不引用其中任何类型。物理链接它，三角网格碰撞经 `read_static_mesh` 取网格。持久类型名沿用场景格式的 `world.` 前缀（`world.StaticMeshComponent` 等），C++ 命名空间为 `atelier::presentation`。
+正式入口为 [presentation.hpp](../../../modules/engine/presentation/include/presentation/presentation.hpp)。`atelier_presentation` 在 World 核心之上定义网格、灯光、相机、环境与材质资源的类型和规则，依赖 world、material、geometry 与 rendering（只用到 `scene_lighting.hpp` 头文件）；World 核心不引用其中任何类型。物理链接它，三角网格碰撞经 `read_static_mesh` 取网格。持久类型名沿用场景格式的 `world.` 前缀（`world.StaticMeshComponent` 等），C++ 命名空间为 `atelier::presentation`。
 
 `presentation::register_types(Runtime&)` 在 `world::register_types` 之后调用，登记 material 资源类型与本库类型，`core.String` 不存在时一并登记。
 

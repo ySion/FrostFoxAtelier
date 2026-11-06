@@ -1,20 +1,21 @@
 function(atelier_add_procedural)
     add_library(atelier_procedural STATIC
-        src/procedural/geometry.cpp
-        src/procedural/operations.cpp
-        src/procedural/constructors.cpp
-        src/procedural/triangles.cpp
-        src/procedural/volume.cpp
-        src/procedural/instances.cpp
-        src/procedural/bvh.cpp
-        src/procedural/graph.cpp
-        src/procedural/nodes.cpp
-        src/procedural/evaluator.cpp)
+        modules/engine/procedural/src/geometry.cpp
+        modules/engine/procedural/src/operations.cpp
+        modules/engine/procedural/src/constructors.cpp
+        modules/engine/procedural/src/triangles.cpp
+        modules/engine/procedural/src/volume.cpp
+        modules/engine/procedural/src/instances.cpp
+        modules/engine/procedural/src/bvh.cpp
+        modules/engine/procedural/src/graph.cpp
+        modules/engine/procedural/src/nodes.cpp
+        modules/engine/procedural/src/evaluator.cpp)
     atelier_target(atelier_procedural)
-    target_include_directories(atelier_procedural PUBLIC src)
+    target_include_directories(atelier_procedural PUBLIC modules/engine/procedural/include)
     target_link_libraries(atelier_procedural PUBLIC atelier_runtime atelier_geometry atelier_source)
-    atelier_reflect(atelier_procedural SOURCE src/procedural/graph.cpp
-        HEADERS src/procedural/geometry.hpp src/procedural/graph.hpp src/procedural/nodes.hpp)
+    atelier_reflect(atelier_procedural SOURCE modules/engine/procedural/src/graph.cpp
+        BASE_DIR modules/engine/procedural/include
+        HEADERS modules/engine/procedural/include/procedural/geometry.hpp modules/engine/procedural/include/procedural/graph.hpp modules/engine/procedural/include/procedural/nodes.hpp)
 
     add_executable(atelier_procedural_acceptance acceptance/procedural/main.cpp)
     atelier_target(atelier_procedural_acceptance)

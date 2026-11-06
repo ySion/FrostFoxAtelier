@@ -279,10 +279,10 @@ manifest 标记 `view_schema: 7`，相机或视图快照合同改变时加一。
 
 传输线程只解析、排队和收发消息，引擎操作在主线程执行。当前每个连接串行处理请求，上一条请求得到响应后才读取下一条；异步任务先返回 `pending`，随后查询结果。
 
-- src/control/：传输、身份、JSON 边界、发现和 CLI，不依赖 Runtime/UI/GPU。
-- src/application/editor_control.cpp：能力目录、主线程调度、token、句柄、重试和实验状态。Application 在轮询及接受帧边界调用。
-- src/editor/view_options.*：菜单与指令的显示参数合同。Camera/Session 保留各自业务不变量。
-- src/application/control_artifacts.*：拥有快照的文件及图像工作，只持有数据和不可变 MeshRef，不跨线程借用 Runtime。
+- modules/editor/control/ 与 apps/control/：传输、身份、JSON 边界、发现和 CLI，不依赖 Runtime/UI/GPU。
+- modules/editor/application/src/application/editor_control.cpp：能力目录、主线程调度、token、句柄、重试和实验状态。Application 在轮询及接受帧边界调用。
+- [view_options.hpp](../../../modules/editor/core/include/editor/view_options.hpp) 与 [view_options.cpp](../../../modules/editor/core/src/view_options.cpp)：菜单与指令的显示参数合同。Camera/Session 保留各自业务不变量。
+- [control_artifacts.hpp](../../../modules/editor/application/src/application/detail/control_artifacts.hpp) 与 [control_artifacts.cpp](../../../modules/editor/application/src/application/control_artifacts.cpp)：拥有快照的文件及图像工作，只持有数据和不可变 MeshRef，不跨线程借用 Runtime。
 
 关闭时先停止接入，再取消并等待文件工作，之后释放 Renderer 和文档。空闲帧只保留固定大小的最近帧信息，查询/采样时才构造 JSON。
 
@@ -326,7 +326,7 @@ manifest 标记 `view_schema: 7`，相机或视图快照合同改变时加一。
 
 相机投影的有限远裁剪数学由 [viewport-edit CPU 验收](../../../acceptance/editor/viewport_edit.inl)的作者几何代表覆盖；GPU 投影由 [Renderer 验收](../renderer/acceptance.md)的 hidden-line 代表覆盖。
 
-描述元数据专项复用同一驱动与真实命名管道，核对 `probe_volume_0_count_x` 为 integer、范围 2–32、scope 为 scene，对照 [ProbeVolume 的 AFIELD 定义](../../../src/presentation/presentation.hpp)。同时保留对象目录筛选、cursor 与退休 handle、未知类型占位对象的持久数据，以及创建 Mesh 后撤销、关闭和原场景文件不变的守卫。该模式使用 `--no-activate`，不置顶、不启用 GPU validation，不进入渲染对照或复现导出：
+描述元数据专项复用同一驱动与真实命名管道，核对 `probe_volume_0_count_x` 为 integer、范围 2–32、scope 为 scene，对照 [ProbeVolume 的 AFIELD 定义](../../../modules/engine/presentation/include/presentation/presentation.hpp)。同时保留对象目录筛选、cursor 与退休 handle、未知类型占位对象的持久数据，以及创建 Mesh 后撤销、关闭和原场景文件不变的守卫。该模式使用 `--no-activate`，不置顶、不启用 GPU validation，不进入渲染对照或复现导出：
 
     ./out/dev/atelier_editor_control_acceptance.exe ./out/dev/atelier_editor.exe ./out/control-descriptions-dev --descriptions
     ./out/release/atelier_editor_control_acceptance.exe ./out/release/atelier_editor.exe ./out/control-descriptions-release --descriptions

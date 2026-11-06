@@ -1,6 +1,6 @@
 # 编辑器操作符（设计稿）
 
-状态：O1 设计稿，已由总负责人定稿。第 1 步的无参数部分已实现（`src/editor/operators.*`、`builtin_operators.cpp`，Control `op.list` / `op.call`）：`view.frame_all`、`view.frame_selected`、`view.reset`、`layout.reset`、`edit.undo`、`edit.redo`、`scene.select`。第 3 步已迁移不带参数的 `layout.close_tab`、`layout.maximize`、`scene.transform_add`、`scene.transform_remove`、`scene.discard_saved_data`。第 2 步已实现参数记录与 3 个带参数的操作符：`scene.add`（String）、`tool.settings`（seed）、`view.axis`（枚举），Create、工具、轴心、吸附步长、坐标轴、选择模式和轴向视图命令都改为调用它们；`editor.ViewSettings` 和 `view.set` 推迟到 4b-3 步骤 A 之后，区域状态记录移到第 3 步。注册表由 Workspace 持有，Context 也由 Workspace 构建；第 4 步之前菜单和快捷区仍按命令登记，`command_enabled` 对已迁移的命令直接取对应操作符的 poll，不再保留第二份可用性判断。其余按第 9 节继续迁移；全部完成后本文改写为当前行为文档。
+状态：O1 设计稿，已由总负责人定稿。第 1 步的无参数部分已实现（[operators.hpp](../../../modules/editor/application/include/editor/operators.hpp)、[operators.cpp](../../../modules/editor/application/src/editor/operators.cpp)、[builtin_operators.cpp](../../../modules/editor/application/src/editor/builtin_operators.cpp)，Control `op.list` / `op.call`）：`view.frame_all`、`view.frame_selected`、`view.reset`、`layout.reset`、`edit.undo`、`edit.redo`、`scene.select`。第 3 步已迁移不带参数的 `layout.close_tab`、`layout.maximize`、`scene.transform_add`、`scene.transform_remove`、`scene.discard_saved_data`。第 2 步已实现参数记录与 3 个带参数的操作符：`scene.add`（String）、`tool.settings`（seed）、`view.axis`（枚举），Create、工具、轴心、吸附步长、坐标轴、选择模式和轴向视图命令都改为调用它们；`editor.ViewSettings` 和 `view.set` 推迟到 4b-3 步骤 A 之后，区域状态记录移到第 3 步。注册表由 Workspace 持有，Context 也由 Workspace 构建；第 4 步之前菜单和快捷区仍按命令登记，`command_enabled` 对已迁移的命令直接取对应操作符的 poll，不再保留第二份可用性判断。其余按第 9 节继续迁移；全部完成后本文改写为当前行为文档。
 
 编辑器的每个操作都是一个注册的操作符。菜单、快捷区、按钮、快捷键和 Control 经同一个入口调用它：`OperatorCall {id, args, context}` → poll → 解码参数 → 来源准入 → execute。UI 只描述“调用哪个操作符、带什么参数”，不写逻辑。只读状态、schema 和能力查询沿现有查询入口，不进入会结束手势的 execute 路径。
 
@@ -128,9 +128,9 @@ struct Context {
 
 ## 4. 参数类型
 
-参数是原生登记的 Runtime 记录：头文件里用 `ASTRUCT/AFIELD/AENUM` 声明，由 `atelier_reflect` 生成，范围用 `Min/Max/HardMin/HardMax`。默认值就是类型的默认构造。由它派生 `op.list` 的 schema、keymap 和菜单参数的校验，以后也派生“调整上次操作”面板。`src/editor/operator_parameters.hpp` 使用编辑器反射生成组。`editor.MaterialEntriesJson` 仅承载 assets 已有权威材质 entries JSON：编辑器 codec 保留原节点，创建时复用 `decode_entries`，schema 固定为 `array / material.entries`，格式见 [Control 合同](control.md)；不开放通用 JSON 参数或记录数组。
+参数是原生登记的 Runtime 记录：头文件里用 `ASTRUCT/AFIELD/AENUM` 声明，由 `atelier_reflect` 生成，范围用 `Min/Max/HardMin/HardMax`。默认值就是类型的默认构造。由它派生 `op.list` 的 schema、keymap 和菜单参数的校验，以后也派生“调整上次操作”面板。`modules/editor/core/include/editor/operator_parameters.hpp` 使用编辑器反射生成组。`editor.MaterialEntriesJson` 仅承载 assets 已有权威材质 entries JSON：编辑器 codec 保留原节点，创建时复用 `decode_entries`，schema 固定为 `array / material.entries`，格式见 [Control 合同](control.md)；不开放通用 JSON 参数或记录数组。
 
-已实现的记录（`src/editor/operator_parameters.hpp`，由 `operator_parameters.cpp` 的 `register_editor_types` 登记）：
+已实现的记录（`modules/editor/core/include/editor/operator_parameters.hpp`，由 `operator_parameters.cpp` 的 `register_editor_types` 登记）：
 
 | 记录 | 操作符 | 字段 |
 | --- | --- | --- |
@@ -195,7 +195,7 @@ struct KeyChord { std::uint32_t key; bool control{}, shift{}, alt{}; bool repeat
 struct KeymapEntry { RegionKind region; KeyChord chord; KeyPhase phase; std::string_view op; std::string_view args; /* JSON */ };
 ```
 
-- 内置表放在 `src/editor/keymap.cpp`，保存真实 `OperatorCall`。启动时只检查操作符 ID 已注册，未知 ID 明确报错；参数在调用时严格解码，不做无宿主执行或参数试运行。
+- 内置表放在 `modules/editor/application/src/editor/keymap.cpp`，保存真实 `OperatorCall`。启动时只检查操作符 ID 已注册，未知 ID 明确报错；参数在调用时严格解码，不做无宿主执行或参数试运行。
 - 以后增加用户覆盖文件时，用户文件出错的条目只给诊断，并回退到内置表的对应条目，不拒绝启动。现在不实现。
 - 查找顺序与现有行为一致：
   1. 区域为视口、没有文本控件占用键盘时，先查视口表（目前视口键都在 UI 输入之前处理）。

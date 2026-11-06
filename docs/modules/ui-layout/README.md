@@ -19,7 +19,7 @@
 
 | 目的 | 权威 |
 |---|---|
-| 使用公开 C++ 接口 | [`src/ui_layout/layout.hpp`](../../../src/ui_layout/layout.hpp) |
+| 使用公开 C++ 接口 | [`modules/gui/ui_layout/include/ui_layout/layout.hpp`](../../../modules/gui/ui_layout/include/ui_layout/layout.hpp) |
 | 了解尺寸、身份、编辑、错误与结果寿命 | [生产合同](contract.md) |
 | 查看正式目标、复现命令、覆盖和未测项 | [验收记录](acceptance.md) |
 | 了解当前设计取舍 | [决策](decisions.md) |
@@ -75,4 +75,4 @@ cmake --build --preset release --target ui_layout_acceptance
 - [算法取舍与来源](decisions.md#算法依据)：保留规范和工业实现的依据；已完成建议及实测结果见审计记录。
 - 已退役的候选与原生首步探针可从Git历史恢复；源码、独立runner和已失效方案不再留在当前树中。固定来源、许可与必要实测摘要保存在研究目录。
 
-正式代码位于 `src/ui_layout/`，消费者位于 `acceptance/ui_layout/`。当前树只保留这一套正式布局实现和验收入口。
+正式代码位于 `modules/gui/ui_layout/`，消费者位于 `acceptance/ui_layout/`。当前树只保留这一套正式布局实现和验收入口。

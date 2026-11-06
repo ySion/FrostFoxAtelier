@@ -6,7 +6,7 @@ Scene Lit 是现有 `Renderer::render(Frame)` 的一种视口着色方式。Worl
 
 光照、DDGI 布局和效果参数的作者值为中立共享类型 `rendering::SceneLightingSettings`，由 World 的 EnvironmentComponent 提供（没有时为默认值），随 Scene v10 保存并进入 Session 撤销历史。`renderer::SceneLitSettings` 在作者值上附加视口诊断偏好，`Frame::view.lit` 是当帧求值结果。Renderer 不持有或修改 World，Project Run 也从同一 SceneSnapshot 消费场景配置、材质和光源。
 
-实现入口为 [scene_lit.cpp](../../../src/renderer/scene_lit.cpp)，它是 Renderer 私有的 GPU 资源与通道拥有者；没有新增业务对象注册表、原生设备、原生队列或第二套提交接口。纯 UI 和空场景不启动 Scene Lit 管线。管线按视图设置分组，在 RHI 工作线程上准备，未就绪的帧返回 not_ready（见 [Renderer 合同](contract.md#场景和-ui)）；采样器、查询、读回与查找表在第一个编码的 Lit 帧创建。关闭与尺寸变化沿既有 gfx 退休机制处理。
+实现入口为 [scene_lit.cpp](../../../modules/render/renderer/src/scene_lit.cpp)，它是 Renderer 私有的 GPU 资源与通道拥有者；没有新增业务对象注册表、原生设备、原生队列或第二套提交接口。纯 UI 和空场景不启动 Scene Lit 管线。管线按视图设置分组，在 RHI 工作线程上准备，未就绪的帧返回 not_ready（见 [Renderer 合同](contract.md#场景和-ui)）；采样器、查询、读回与查找表在第一个编码的 Lit 帧创建。关闭与尺寸变化沿既有 gfx 退休机制处理。
 
 接受空场景时，Scene Lit 退休旧 Mesh 所有者、BLAS/TLAS、实例与灯光缓冲；可复用的管线、目标纹理仍保留并计入资源统计。模式退出和清理发生在 CPU 帧准备成功后的编码阶段，被拒绝的候选帧不会清除有效光照历史。同一 Renderer 可以随后重新接收非空场景，关闭保持幂等。
 
@@ -23,7 +23,7 @@ Scene Lit 是现有 `Renderer::render(Frame)` 的一种视口着色方式。Worl
   - 换贴图、改旋转角或改颜色强度都会增加探针纪元；旋转角逐帧变化时探针历史逐帧重置。
   - GPU 缓存项持有 `SkyMapRef`，不拿地址当键，旧贴图释放后新贴图即使分配在同一地址也不会命中过期资源。换贴图时旧纹理经 gfx 按在途帧退休；4K 贴图约 85 MiB（RGBA16F 加 mip），cube 1.5 KiB，都计入 `scene_lit_resource_bytes`。上传与 mip 生成计入 AS/uploads 时段，在一帧内完成：4K 贴图的上传帧 CPU 约 34 ms（主要是 64 MiB 上传缓冲 14–17 ms 和建纹理约 5 ms），GPU 约 3.4–3.7 ms。背景纹理创建时就带 UAV 标志，mip 生成只是一次录制（约 0.03 ms）；不带这个标志时 gfx 会在第一次生成 mip 前重建并整张拷贝纹理，多花 12–25 ms。1440p benchmark room 里设了贴图后 compose 中位数从 0.498 ms 变为 0.576 ms（其中背景 motion 约 0.012 ms），DDGI 主追踪不变。
   - 天空里的太阳不提取：它只经 DDGI 和反射照亮场景，没有清晰阴影。需要清晰阴影时，用不带太阳的 HDRI 加一盏 Directional 光，用 `sky_rotation` 对齐。
-- `rendering::SkyMap`（[sky_map.hpp](../../../src/rendering/sky_map.hpp)）是不可变的等距柱状天空资源：
+- `rendering::SkyMap`（[sky_map.hpp](../../../modules/engine/rendering/include/rendering/sky_map.hpp)）是不可变的等距柱状天空资源：
   - 贴图空间：第 0 行是 +Y，行向 −Y 推进；u = 0.5 朝 +Z，u = 0.75 朝 +X，从球心看贴图不镜像。
   - `sky_rotation` 让贴图绕 +Y 转动，方向与 Transform 绕 +Y 的正旋转相同：+X 转向 −Z，在本引擎的左手系里从 +Y 往下看是顺时针。所以方向光和天空转同一角度时，HDRI 里的太阳仍与光对齐。范围 [−180, 180]，±180 是同一方向。
   - 输入：宽高 2:1，宽不超过 8192；辐亮度有限、非负，每通道不超过 2^32。宽于 4096 时按 2×2 平均降一次（高必须为偶数），所以 GPU 背景图最大 4096×2048。
@@ -58,7 +58,7 @@ DDGI 命中处的 fresh RIS 使用上述分布构造、样本域及完整 `q`，
 
 屏幕直接光只有一条路径，没有视口开关：`lit_cluster_build_cs` 先构建保守灯列表，阴影 atlas 重绘需要更新的面，`lit_compose_cs` 再在一个通道里对每个接收像素逐盏确定求值列表中的解析局部灯与全部方向光，乘阴影可见性，加上 DDGI（或环境）漫反射、AO 与自发光，直接写 HDR。没有随机采样、reservoir、时间历史或空间滤波，也没有直接光专用的中间纹理；相同输入逐帧得到相同结果，灯光、材质和遮挡物的编辑当帧生效。
 
-点光（球光）与太阳的漫反射取光源中心方向；GGX 镜面取 Karis 2013 的代表点，并以 (α/α′)² 归一化，α′ = saturate(α + sinθ/3)。球光的距离窗口从球面起算，衰减的最小距离平方为 max(.0025, r²)。矩形光按立体角积分（Heitz 2016 的线性变换余弦，LTC）：漫反射是裁到接收面地平线的余弦多边形积分，在点光极限下精确，其 (1−F) 取多边形平均入射方向的半角向量；镜面用拟合到本项目 BRDF（GGX、可分离 Smith、Schlick）的 64×64 LTC 表，不是 Heitz 按 height-correlated Smith 拟合的原表；表由 `tools/ltc/fit.py`（Python + NumPy）离线生成为 `src/renderer/ltc_lut.hpp`，改动 `lit_brdf_components` 后要重新生成。LTC 镜面逐方向近似，GGX 长尾在 LTC 支持之外为零。视线与法线夹角在约 65° 以内时，面光照亮平面的逐像素误差在峰值的 2% 以内；更掠射时 LTC 这一族分布表达不了 GGX 波瓣（多起点重新拟合都收敛到同一最优），粗糙度 0.3 的金属在 78° 和 83° 视角下，镜面最多低估约 35% 和 50%。单面矩形只照亮朝向一侧；接收面几何平面把四个角都挡在背后时不受光。距离窗口从矩形的支持半径起算，与 cluster 的支持边界一致，没有最小距离钳制；阴影仍从矩形中心投影。确定求值的平滑衰减在 8 位输出上会显示 1 级量化等照度线，显示编码的静态抖动（见下文第 8 步）把它打散。
+点光（球光）与太阳的漫反射取光源中心方向；GGX 镜面取 Karis 2013 的代表点，并以 (α/α′)² 归一化，α′ = saturate(α + sinθ/3)。球光的距离窗口从球面起算，衰减的最小距离平方为 max(.0025, r²)。矩形光按立体角积分（Heitz 2016 的线性变换余弦，LTC）：漫反射是裁到接收面地平线的余弦多边形积分，在点光极限下精确，其 (1−F) 取多边形平均入射方向的半角向量；镜面用拟合到本项目 BRDF（GGX、可分离 Smith、Schlick）的 64×64 LTC 表，不是 Heitz 按 height-correlated Smith 拟合的原表；表由 `tools/ltc/fit.py`（Python + NumPy）离线生成为 `modules/render/renderer/src/detail/ltc_lut.hpp`，改动 `lit_brdf_components` 后要重新生成。LTC 镜面逐方向近似，GGX 长尾在 LTC 支持之外为零。视线与法线夹角在约 65° 以内时，面光照亮平面的逐像素误差在峰值的 2% 以内；更掠射时 LTC 这一族分布表达不了 GGX 波瓣（多起点重新拟合都收敛到同一最优），粗糙度 0.3 的金属在 78° 和 83° 视角下，镜面最多低估约 35% 和 50%。单面矩形只照亮朝向一侧；接收面几何平面把四个角都挡在背后时不受光。距离窗口从矩形的支持半径起算，与 cluster 的支持边界一致，没有最小距离钳制；阴影仍从矩形中心投影。确定求值的平滑衰减在 8 位输出上会显示 1 级量化等照度线，显示编码的静态抖动（见下文第 8 步）把它打散。
 
 阴影是硬阴影：点光与矩形光从光源中心、太阳沿传播方向各取一张深度图，球半径与太阳角半径只影响着色，不产生半影。
 

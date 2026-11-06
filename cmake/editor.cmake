@@ -1,14 +1,14 @@
 include(${CMAKE_CURRENT_LIST_DIR}/json.cmake)
 
 function(atelier_add_editor)
-    add_library(atelier_control_transport STATIC "${PROJECT_SOURCE_DIR}/src/control/control.cpp")
+    add_library(atelier_control_transport STATIC "${PROJECT_SOURCE_DIR}/modules/editor/control/src/control.cpp")
     atelier_target(atelier_control_transport)
-    target_include_directories(atelier_control_transport PUBLIC "${PROJECT_SOURCE_DIR}/src")
-    target_link_libraries(atelier_control_transport PUBLIC nlohmann_json::nlohmann_json PRIVATE atelier_foundation advapi32 ole32)
+    target_include_directories(atelier_control_transport PUBLIC "${PROJECT_SOURCE_DIR}/modules/editor/control/include")
+    target_link_libraries(atelier_control_transport PUBLIC nlohmann_json::nlohmann_json PRIVATE atelier_foundation atelier_platform advapi32 ole32)
     include(${PROJECT_SOURCE_DIR}/cmake/assets.cmake)
-    add_executable(atelier_control "${PROJECT_SOURCE_DIR}/src/control/main.cpp")
+    add_executable(atelier_control "${PROJECT_SOURCE_DIR}/apps/control/main.cpp")
     atelier_target(atelier_control)
-    target_link_libraries(atelier_control PRIVATE atelier_control_transport)
+    target_link_libraries(atelier_control PRIVATE atelier_control_transport atelier_platform)
     find_package(Git QUIET)
     set(build_info "${CMAKE_BINARY_DIR}/generated/atelier/build_info.hpp")
     add_custom_target(atelier_editor_build_info
@@ -23,67 +23,74 @@ function(atelier_add_editor)
         configure_file("${PROJECT_SOURCE_DIR}/assets/fonts/${font_asset}" "${CMAKE_BINARY_DIR}/fonts/${font_asset}" COPYONLY)
     endforeach()
     add_library(atelier_editor_core STATIC
-        "${PROJECT_SOURCE_DIR}/src/editor/assets.cpp"
-        "${PROJECT_SOURCE_DIR}/src/editor/project.cpp"
-        "${PROJECT_SOURCE_DIR}/src/editor/project_materials.cpp"
-        "${PROJECT_SOURCE_DIR}/src/editor/project_code.cpp"
-        "${PROJECT_SOURCE_DIR}/src/editor/view_options.cpp"
-        "${PROJECT_SOURCE_DIR}/src/editor/scene.cpp"
-        "${PROJECT_SOURCE_DIR}/src/editor/graph_format.cpp"
-        "${PROJECT_SOURCE_DIR}/src/editor/session.cpp"
-        "${PROJECT_SOURCE_DIR}/src/editor/session_materials.cpp"
-        "${PROJECT_SOURCE_DIR}/src/editor/camera.cpp"
-        "${PROJECT_SOURCE_DIR}/src/editor/operator_parameters.cpp"
-        "${PROJECT_SOURCE_DIR}/src/editor/viewport_tool.cpp")
+        "${PROJECT_SOURCE_DIR}/modules/editor/core/src/assets.cpp"
+        "${PROJECT_SOURCE_DIR}/modules/editor/core/src/project.cpp"
+        "${PROJECT_SOURCE_DIR}/modules/editor/core/src/project_materials.cpp"
+        "${PROJECT_SOURCE_DIR}/modules/editor/core/src/project_code.cpp"
+        "${PROJECT_SOURCE_DIR}/modules/editor/core/src/view_options.cpp"
+        "${PROJECT_SOURCE_DIR}/modules/editor/core/src/scene.cpp"
+        "${PROJECT_SOURCE_DIR}/modules/editor/core/src/graph_format.cpp"
+        "${PROJECT_SOURCE_DIR}/modules/editor/core/src/session.cpp"
+        "${PROJECT_SOURCE_DIR}/modules/editor/core/src/session_materials.cpp"
+        "${PROJECT_SOURCE_DIR}/modules/editor/core/src/camera.cpp"
+        "${PROJECT_SOURCE_DIR}/modules/editor/core/src/operator_parameters.cpp"
+        "${PROJECT_SOURCE_DIR}/modules/editor/core/src/viewport_tool.cpp")
     atelier_target(atelier_editor_core)
-    atelier_reflect(atelier_editor_core SOURCE src/editor/operator_parameters.cpp HEADERS src/editor/operator_parameters.hpp)
-    target_include_directories(atelier_editor_core PUBLIC "${PROJECT_SOURCE_DIR}/src")
-    target_link_libraries(atelier_editor_core PUBLIC atelier_assets atelier_presentation atelier_ui_language atelier_physics atelier_procedural PRIVATE atelier_logging atelier_control_transport ole32 shell32 nlohmann_json::nlohmann_json)
+    atelier_reflect(atelier_editor_core SOURCE modules/editor/core/src/operator_parameters.cpp
+        BASE_DIR modules/editor/core/include HEADERS modules/editor/core/include/editor/operator_parameters.hpp)
+    # Core uses the CPU overlay/view-settings headers, not the renderer implementation.
+    target_include_directories(atelier_editor_core PUBLIC "${PROJECT_SOURCE_DIR}/modules/editor/core/include"
+        "${PROJECT_SOURCE_DIR}/modules/render/renderer/include")
+    target_link_libraries(atelier_editor_core PUBLIC atelier_assets atelier_presentation atelier_ui_language atelier_physics atelier_procedural PRIVATE atelier_logging atelier_control_transport atelier_platform ole32 shell32 nlohmann_json::nlohmann_json)
     add_library(atelier_editor_application STATIC
-        "${PROJECT_SOURCE_DIR}/src/application/window.cpp"
-        "${PROJECT_SOURCE_DIR}/src/application/input.cpp"
-        "${PROJECT_SOURCE_DIR}/src/application/viewport.cpp"
-        "${PROJECT_SOURCE_DIR}/src/application/presentation.cpp"
-        "${PROJECT_SOURCE_DIR}/src/application/lit_preparation.cpp"
-        "${PROJECT_SOURCE_DIR}/src/application/play_process.cpp"
-        "${PROJECT_SOURCE_DIR}/src/application/play_link.cpp"
-        "${PROJECT_SOURCE_DIR}/src/application/project_runner.cpp"
-        "${PROJECT_SOURCE_DIR}/src/application/diagnostics.cpp"
-        "${PROJECT_SOURCE_DIR}/src/application/popup.cpp"
-        "${PROJECT_SOURCE_DIR}/src/application/application.cpp"
-        "${PROJECT_SOURCE_DIR}/src/application/recovery.cpp"
-        "${PROJECT_SOURCE_DIR}/src/application/editor_control.cpp"
-        "${PROJECT_SOURCE_DIR}/src/application/control_artifacts.cpp"
-        "${PROJECT_SOURCE_DIR}/src/editor/workspace.cpp"
-        "${PROJECT_SOURCE_DIR}/src/editor/output.cpp"
-        "${PROJECT_SOURCE_DIR}/src/editor/workspace_materials.cpp"
-        "${PROJECT_SOURCE_DIR}/src/editor/world_panel.cpp"
-        "${PROJECT_SOURCE_DIR}/src/editor/performance.cpp"
-        "${PROJECT_SOURCE_DIR}/src/editor/asset_browser.cpp"
-        "${PROJECT_SOURCE_DIR}/src/editor/source_editor.cpp"
-        "${PROJECT_SOURCE_DIR}/src/editor/project_ui.cpp"
-        "${PROJECT_SOURCE_DIR}/src/application/project.cpp"
-        "${PROJECT_SOURCE_DIR}/src/application/project_execution.cpp"
-        "${PROJECT_SOURCE_DIR}/src/editor/control_workbench.cpp"
-        "${PROJECT_SOURCE_DIR}/src/editor/operators.cpp"
-        "${PROJECT_SOURCE_DIR}/src/editor/keymap.cpp"
-        "${PROJECT_SOURCE_DIR}/src/editor/builtin_operators.cpp")
+        "${PROJECT_SOURCE_DIR}/modules/editor/application/src/application/window.cpp"
+        "${PROJECT_SOURCE_DIR}/modules/editor/application/src/application/input.cpp"
+        "${PROJECT_SOURCE_DIR}/modules/editor/application/src/application/viewport.cpp"
+        "${PROJECT_SOURCE_DIR}/modules/editor/application/src/application/presentation.cpp"
+        "${PROJECT_SOURCE_DIR}/modules/editor/application/src/application/lit_preparation.cpp"
+        "${PROJECT_SOURCE_DIR}/modules/editor/application/src/application/play_process.cpp"
+        "${PROJECT_SOURCE_DIR}/modules/editor/application/src/application/play_link.cpp"
+        "${PROJECT_SOURCE_DIR}/modules/editor/application/src/application/project_runner.cpp"
+        "${PROJECT_SOURCE_DIR}/modules/editor/application/src/application/diagnostics.cpp"
+        "${PROJECT_SOURCE_DIR}/modules/editor/application/src/application/popup.cpp"
+        "${PROJECT_SOURCE_DIR}/modules/editor/application/src/application/application.cpp"
+        "${PROJECT_SOURCE_DIR}/modules/editor/application/src/application/recovery.cpp"
+        "${PROJECT_SOURCE_DIR}/modules/editor/application/src/application/editor_control.cpp"
+        "${PROJECT_SOURCE_DIR}/modules/editor/application/src/application/control_artifacts.cpp"
+        "${PROJECT_SOURCE_DIR}/modules/editor/application/src/editor/workspace.cpp"
+        "${PROJECT_SOURCE_DIR}/modules/editor/application/src/editor/output.cpp"
+        "${PROJECT_SOURCE_DIR}/modules/editor/application/src/editor/workspace_materials.cpp"
+        "${PROJECT_SOURCE_DIR}/modules/editor/application/src/editor/world_panel.cpp"
+        "${PROJECT_SOURCE_DIR}/modules/editor/application/src/editor/performance.cpp"
+        "${PROJECT_SOURCE_DIR}/modules/editor/application/src/editor/asset_browser.cpp"
+        "${PROJECT_SOURCE_DIR}/modules/editor/application/src/editor/source_editor.cpp"
+        "${PROJECT_SOURCE_DIR}/modules/editor/application/src/editor/project_ui.cpp"
+        "${PROJECT_SOURCE_DIR}/modules/editor/application/src/application/project.cpp"
+        "${PROJECT_SOURCE_DIR}/modules/editor/application/src/application/project_execution.cpp"
+        "${PROJECT_SOURCE_DIR}/modules/editor/application/src/editor/control_workbench.cpp"
+        "${PROJECT_SOURCE_DIR}/modules/editor/application/src/editor/operators.cpp"
+        "${PROJECT_SOURCE_DIR}/modules/editor/application/src/editor/keymap.cpp"
+        "${PROJECT_SOURCE_DIR}/modules/editor/application/src/editor/builtin_operators.cpp")
     atelier_target(atelier_editor_application)
     add_dependencies(atelier_editor_application atelier_editor_build_info)
-    target_include_directories(atelier_editor_application PUBLIC "${CMAKE_BINARY_DIR}/generated")
+    target_include_directories(atelier_editor_application PUBLIC "${CMAKE_BINARY_DIR}/generated"
+        "${PROJECT_SOURCE_DIR}/modules/editor/application/include")
+    target_link_libraries(atelier_editor_application PRIVATE atelier_platform)
     target_compile_definitions(atelier_editor_application PUBLIC UNICODE _UNICODE)
     target_compile_definitions(atelier_editor_application PRIVATE "ATELIER_UI_AUTHORING_PATH=L\"${PROJECT_SOURCE_DIR}/assets/editor.ui.source\"")
     target_link_libraries(atelier_editor_application PUBLIC atelier_logging atelier_editor_core atelier_ui atelier_rhi atelier_control_transport atelier_renderer PRIVATE imm32)
     add_executable(atelier_editor
-        "${PROJECT_SOURCE_DIR}/src/application/editor.manifest"
-        "${PROJECT_SOURCE_DIR}/src/application/main.cpp"
+        "${PROJECT_SOURCE_DIR}/apps/editor/editor.manifest"
+        "${PROJECT_SOURCE_DIR}/apps/editor/main.cpp"
         "${PROJECT_SOURCE_DIR}/acceptance/editor/window.cpp")
     atelier_target(atelier_editor)
+    target_include_directories(atelier_editor PRIVATE "${PROJECT_SOURCE_DIR}/modules/gui/ui/internal"
+        "${PROJECT_SOURCE_DIR}/modules/render/renderer/internal")
     target_link_libraries(atelier_editor PRIVATE atelier_editor_application atelier_ui atelier_renderer nlohmann_json::nlohmann_json user32 ole32 shell32 windowscodecs imm32 uuid gdi32)
     atelier_deploy_rhi_runtime(atelier_editor)
     add_executable(atelier_editor_control_acceptance "${PROJECT_SOURCE_DIR}/acceptance/editor/control.cpp")
     atelier_target(atelier_editor_control_acceptance)
-    target_link_libraries(atelier_editor_control_acceptance PRIVATE atelier_control_transport atelier_logging user32)
+    target_link_libraries(atelier_editor_control_acceptance PRIVATE atelier_control_transport atelier_logging atelier_platform user32)
     add_custom_target(editor_log_smoke_acceptance
         COMMAND $<TARGET_FILE:atelier_editor_control_acceptance> $<TARGET_FILE:atelier_editor> "${CMAKE_BINARY_DIR}/log-smoke-acceptance" --smoke-logs
         DEPENDS atelier_editor_control_acceptance atelier_editor USES_TERMINAL VERBATIM)
@@ -97,9 +104,11 @@ function(atelier_add_editor)
         COMMAND $<TARGET_FILE:atelier_editor_control_acceptance> $<TARGET_FILE:atelier_editor> "${CMAKE_BINARY_DIR}/repro-material-acceptance" --repro-lighting
         DEPENDS atelier_editor_control_acceptance atelier_editor USES_TERMINAL VERBATIM)
     add_executable(atelier_editor_document_acceptance
-        "${PROJECT_SOURCE_DIR}/src/application/editor.manifest"
+        "${PROJECT_SOURCE_DIR}/apps/editor/editor.manifest"
         "${PROJECT_SOURCE_DIR}/acceptance/editor/document.cpp")
     atelier_target(atelier_editor_document_acceptance)
+    target_include_directories(atelier_editor_document_acceptance PRIVATE "${PROJECT_SOURCE_DIR}/modules/gui/ui/internal"
+        "${PROJECT_SOURCE_DIR}/modules/render/renderer/internal")
     target_link_libraries(atelier_editor_document_acceptance PRIVATE atelier_editor_application nlohmann_json::nlohmann_json)
     atelier_headless_acceptance(editor_document_acceptance
         COMMAND $<TARGET_FILE:atelier_editor_document_acceptance>

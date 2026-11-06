@@ -12,13 +12,13 @@
 
 | 现有机制 | 已实现 | 不等同于什么 |
 | --- | --- | --- |
-| [World Diagnostic](../../src/world/diagnostic.hpp)、[World 接口](../../src/world/world.hpp) | severity/kind/phase、对象和实体身份、字段、Source 位置、消息、serial、repeats；最多 1024 条，报告丢弃总数 | 通用线程安全日志、进程时间线或持久化服务 |
-| [World report](../../src/world/world.cpp) | 按对象/阶段/字段合并连续失败；消费后在故障持续期间不重复发同一事件 | 所有时间点的完整事件历史；这是有意的业务降噪，不能简单删除 |
-| [Source Diagnostics](../../src/source/diagnostics.hpp)、[按调用合同](../source-diagnostics.md) | 调用状态、程序/代码版本、Source 位置、资源前后状态、计数和可选计时；报告拥有文本 | 全局日志；合同明确同线程、按调用持有，不维护全局历史 |
-| [Workspace::log/log_repeated](../../src/editor/workspace.cpp) | Project Output 文本表、逐行显示、连续文本合并；保留 256 行，每行至多 2048 个 UTF-16 code units 后加省略号 | 可查询的结构化日志、按 category/severity 过滤、完整文件存档 |
-| [PlayProcess](../../src/application/play_process.cpp)、[输出消费](../../src/application/project_execution.cpp) | stdout/stderr 共用管道，主线程按预算读取，转到 Project Output | 跨进程结构化记录和可靠持久化；输出缓冲超过 64 KiB 会截断，未报告截断计数，未完成长行也可能被清空 |
-| [Runner](../../src/application/project_runner.cpp) | 领域诊断格式化后输出；明确打印 World dropped_diagnostics 增量 | Editor 同等覆盖：当前 Application 取诊断循环没有对应丢弃计数提示 |
-| [RHI](../../src/rhi/rhi.hpp)、[Renderer](../../src/renderer/renderer.hpp) | 结构化 Result、错误码、终态、目标可绘制性、帧状态、统计；底层有 debug layer 与 gfx 文本输出 | 统一事件日志。RHI native_result 是 GfxResult，不是原始 HRESULT；Renderer skipped 合并了多个原因 |
+| [World Diagnostic](https://github.com/ySion/FrostFoxAtelier/blob/25aa632a28f5edd95427bfcf522fb5af717653b6/src/world/diagnostic.hpp)、[World 接口](https://github.com/ySion/FrostFoxAtelier/blob/25aa632a28f5edd95427bfcf522fb5af717653b6/src/world/world.hpp) | severity/kind/phase、对象和实体身份、字段、Source 位置、消息、serial、repeats；最多 1024 条，报告丢弃总数 | 通用线程安全日志、进程时间线或持久化服务 |
+| [World report](https://github.com/ySion/FrostFoxAtelier/blob/25aa632a28f5edd95427bfcf522fb5af717653b6/src/world/world.cpp) | 按对象/阶段/字段合并连续失败；消费后在故障持续期间不重复发同一事件 | 所有时间点的完整事件历史；这是有意的业务降噪，不能简单删除 |
+| [Source Diagnostics](https://github.com/ySion/FrostFoxAtelier/blob/25aa632a28f5edd95427bfcf522fb5af717653b6/src/source/diagnostics.hpp)、[按调用合同](../source-diagnostics.md) | 调用状态、程序/代码版本、Source 位置、资源前后状态、计数和可选计时；报告拥有文本 | 全局日志；合同明确同线程、按调用持有，不维护全局历史 |
+| [Workspace::log/log_repeated](https://github.com/ySion/FrostFoxAtelier/blob/25aa632a28f5edd95427bfcf522fb5af717653b6/src/editor/workspace.cpp) | Project Output 文本表、逐行显示、连续文本合并；保留 256 行，每行至多 2048 个 UTF-16 code units 后加省略号 | 可查询的结构化日志、按 category/severity 过滤、完整文件存档 |
+| [PlayProcess](https://github.com/ySion/FrostFoxAtelier/blob/25aa632a28f5edd95427bfcf522fb5af717653b6/src/application/play_process.cpp)、[输出消费](https://github.com/ySion/FrostFoxAtelier/blob/25aa632a28f5edd95427bfcf522fb5af717653b6/src/application/project_execution.cpp) | stdout/stderr 共用管道，主线程按预算读取，转到 Project Output | 跨进程结构化记录和可靠持久化；输出缓冲超过 64 KiB 会截断，未报告截断计数，未完成长行也可能被清空 |
+| [Runner](https://github.com/ySion/FrostFoxAtelier/blob/25aa632a28f5edd95427bfcf522fb5af717653b6/src/application/project_runner.cpp) | 领域诊断格式化后输出；明确打印 World dropped_diagnostics 增量 | Editor 同等覆盖：当前 Application 取诊断循环没有对应丢弃计数提示 |
+| [RHI](https://github.com/ySion/FrostFoxAtelier/blob/25aa632a28f5edd95427bfcf522fb5af717653b6/src/rhi/rhi.hpp)、[Renderer](https://github.com/ySion/FrostFoxAtelier/blob/25aa632a28f5edd95427bfcf522fb5af717653b6/src/renderer/renderer.hpp) | 结构化 Result、错误码、终态、目标可绘制性、帧状态、统计；底层有 debug layer 与 gfx 文本输出 | 统一事件日志。RHI native_result 是 GfxResult，不是原始 HRESULT；Renderer skipped 合并了多个原因 |
 | [验收 gate](../../tools/acceptance-gate.ps1) | 运行独立目录、逐目标 stdout/stderr、汇总、耗时、验证级别、进程树和超时证据 | 普通产品运行自动拥有相同日志；文件内容也不自动决定测试失败，仍依赖正确的检查和退出码 |
 
 `src`、CMake 和锁文件未发现 spdlog 或其他统一 logger 依赖；Foundation 当前没有日志模块。原生输出主要是分散的 printf/fprintf，业务诊断经 Workspace 展示。`Error/Result` 是传播与恢复合同，不应被“记一条日志然后继续”取代。

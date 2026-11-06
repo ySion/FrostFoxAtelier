@@ -1,6 +1,6 @@
 # RHI：资源与执行入口
 
-当前实现位于 [src/rhi](../../../src/rhi/rhi.hpp)，采用固定 gfx 及可重放补丁。设备资源、反射绑定、descriptor、barrier、命令与退休由 gfx 负责；`atelier::rhi` 负责硬件/验证准入、执行域所有权、管线准备、窗口目标与生命周期。
+当前实现位于 [modules/render/rhi](../../../modules/render/rhi/include/rhi/rhi.hpp)，采用固定 gfx 及可重放补丁。设备资源、反射绑定、descriptor、barrier、命令与退休由 gfx 负责；`atelier::rhi` 负责硬件/验证准入、执行域所有权、管线准备、窗口目标与生命周期。
 
 Compute、Mesh、Vertex 三类管线共用这一执行域，支持离屏执行和现有 Renderer 的窗口呈现。现行行为以 [contract.md](contract.md) 为准，逐项运行证据以 [acceptance.md](acceptance.md) 为准。
 
@@ -12,8 +12,8 @@ Scene Lit 的 RHI 接入已验证 compute inline RayQuery、BLAS/TLAS build/upda
 
 ## 入口
 
-- [公开头文件](../../../src/rhi/rhi.hpp)：`Context::open / prepare / target / sync_window_target / frame / finish / close`，不可复制、可移动的 `Pipeline`。
-- [生产实现](../../../src/rhi/rhi.cpp)：选择硬件 adapter，不自动回退 WARP；统一 owner 线程和错误终态。
+- [公开头文件](../../../modules/render/rhi/include/rhi/rhi.hpp)：`Context::open / prepare / target / sync_window_target / frame / finish / close`，不可复制、可移动的 `Pipeline`。
+- [生产实现](../../../modules/render/rhi/src/rhi.cpp)：选择硬件 adapter，不自动回退 WARP；统一 owner 线程和错误终态。
 - [正式消费者](../../../acceptance/rhi/main.cpp)：同一 Interface 上的六帧 Compute → Mesh → Vertex、间接参数、颜色/深度回读、提前释放与管线替换。
 - [资源与窗口验收](../../../acceptance/rhi/resource_cases.cpp)、[RayQuery 验收](../../../acceptance/rhi/ray_query_cases.cpp)、[Scene Lit 资源验收](../../../acceptance/rhi/scene_lit_cases.cpp)：根参数预算、间接命令、range 复制、首帧窗口尺寸、AS 与时间戳。
 - [后端回归](../../../acceptance/rhi/upstream_regression.cpp)：无 list 的 interop 清理、Mesh PS 资源状态、真实 fence gate 超时与严格一次执行。

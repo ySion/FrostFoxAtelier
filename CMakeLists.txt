@@ -41,7 +41,7 @@ function(atelier_target target)
     get_target_property(_type ${target} TYPE)
     if(_type STREQUAL "EXECUTABLE")
         # Link the overrides directly: an unreferenced static-library object can be discarded.
-        target_sources(${target} PRIVATE "${PROJECT_SOURCE_DIR}/src/memory/global_new_delete.cpp")
+        target_sources(${target} PRIVATE "${PROJECT_SOURCE_DIR}/modules/core/memory/src/global_new_delete.cpp")
         target_link_libraries(${target} PRIVATE mimalloc)
         target_link_options(${target} PRIVATE /include:mi_version)
     endif()
@@ -50,25 +50,38 @@ endfunction()
 include(cmake/logging.cmake)
 include(cmake/unordered_dense.cmake)
 include(cmake/tbb.cmake)
-add_library(atelier_foundation STATIC src/foundation/string.cpp src/foundation/hash.cpp src/foundation/frame_timing.cpp
-    src/foundation/sha256.cpp src/foundation/tasks.cpp)
-target_include_directories(atelier_foundation PUBLIC src)
+add_library(atelier_foundation_headers INTERFACE)
+target_include_directories(atelier_foundation_headers INTERFACE modules/core/foundation/include)
+target_link_libraries(atelier_foundation_headers INTERFACE unordered_dense::unordered_dense)
+
+add_library(atelier_math INTERFACE)
+target_include_directories(atelier_math INTERFACE modules/core/math/include)
+
+add_library(atelier_platform INTERFACE)
+target_include_directories(atelier_platform INTERFACE modules/core/platform/include)
+
+add_library(atelier_execution_contracts INTERFACE)
+target_include_directories(atelier_execution_contracts INTERFACE modules/execution/contracts/include)
+
+add_library(atelier_foundation STATIC modules/core/foundation/src/string.cpp modules/core/foundation/src/hash.cpp modules/core/foundation/src/frame_timing.cpp
+    modules/core/foundation/src/sha256.cpp modules/core/foundation/src/tasks.cpp)
 target_compile_features(atelier_foundation PUBLIC cxx_std_23)
-target_link_libraries(atelier_foundation PUBLIC unordered_dense::unordered_dense PRIVATE bcrypt TBB::tbb)
+target_link_libraries(atelier_foundation PUBLIC atelier_foundation_headers PRIVATE atelier_platform bcrypt TBB::tbb)
 atelier_target(atelier_foundation)
 
 add_executable(atelier_math_acceptance acceptance/math/main.cpp)
 atelier_target(atelier_math_acceptance)
-target_include_directories(atelier_math_acceptance PRIVATE src)
+target_link_libraries(atelier_math_acceptance PRIVATE atelier_math)
 atelier_headless_acceptance(math_acceptance
     COMMAND $<TARGET_FILE:atelier_math_acceptance>
     DEPENDS atelier_math_acceptance)
 
-add_library(atelier_runtime STATIC src/runtime/runtime.cpp src/runtime/execution.cpp)
-target_include_directories(atelier_runtime PUBLIC src)
+add_library(atelier_runtime STATIC modules/execution/runtime/src/runtime.cpp modules/execution/runtime/src/execution.cpp)
+target_include_directories(atelier_runtime PUBLIC modules/execution/runtime/include
+    PRIVATE modules/execution/runtime/internal)
 target_compile_features(atelier_runtime PUBLIC cxx_std_23)
 atelier_target(atelier_runtime)
-target_link_libraries(atelier_runtime PUBLIC atelier_foundation)
+target_link_libraries(atelier_runtime PUBLIC atelier_foundation atelier_math atelier_execution_contracts)
 
 add_library(atelier_allocator_client SHARED acceptance/memory/crt_client.cpp)
 target_compile_definitions(atelier_allocator_client PRIVATE ATELIER_ALLOCATOR_CLIENT_BUILD)
@@ -90,8 +103,9 @@ atelier_headless_acceptance(runtime_acceptance
     COMMAND $<TARGET_FILE:atelier_runtime_acceptance>
     DEPENDS atelier_runtime_acceptance)
 
-add_library(atelier_ui_layout STATIC src/ui_layout/layout.cpp)
-target_include_directories(atelier_ui_layout PUBLIC src)
+add_library(atelier_ui_layout STATIC modules/gui/ui_layout/src/layout.cpp)
+target_include_directories(atelier_ui_layout PUBLIC modules/gui/ui_layout/include)
+target_link_libraries(atelier_ui_layout PRIVATE atelier_foundation_headers)
 target_compile_features(atelier_ui_layout PUBLIC cxx_std_23)
 atelier_target(atelier_ui_layout)
 
@@ -110,14 +124,15 @@ include(cmake/style.cmake)
 include(cmake/foundation.cmake)
 
 add_library(atelier_material STATIC
-    src/material/program.cpp
-    src/material/program_resources.cpp
-    src/material/resources.cpp)
+    modules/engine/material/src/program.cpp
+    modules/engine/material/src/program_resources.cpp
+    modules/engine/material/src/resources.cpp)
 atelier_target(atelier_material)
-target_include_directories(atelier_material PUBLIC src)
+target_include_directories(atelier_material PUBLIC modules/engine/material/include)
 target_compile_features(atelier_material PUBLIC cxx_std_23)
 target_link_libraries(atelier_material PUBLIC atelier_runtime atelier_source)
-atelier_reflect(atelier_material SOURCE src/material/resources.cpp HEADERS src/material/resources.hpp)
+atelier_reflect(atelier_material SOURCE modules/engine/material/src/resources.cpp
+    BASE_DIR modules/engine/material/include HEADERS modules/engine/material/include/material/resources.hpp)
 
 add_executable(atelier_material_program_resources_acceptance acceptance/material/program_resources.cpp)
 atelier_target(atelier_material_program_resources_acceptance)
@@ -127,9 +142,10 @@ atelier_headless_acceptance(material_program_resources_acceptance
     DEPENDS atelier_material_program_resources_acceptance)
 
 include(cmake/geometry.cmake)
-add_library(atelier_rendering STATIC src/rendering/sky_map.cpp)
+add_library(atelier_rendering STATIC modules/engine/rendering/src/sky_map.cpp)
 atelier_target(atelier_rendering)
-target_include_directories(atelier_rendering PUBLIC src)
+target_include_directories(atelier_rendering PUBLIC modules/engine/rendering/include)
+target_link_libraries(atelier_rendering PUBLIC atelier_math)
 
 include(cmake/procedural.cmake)
 atelier_add_procedural()

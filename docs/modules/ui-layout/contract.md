@@ -1,6 +1,6 @@
 # 自研布局核心：生产合同
 
-状态：基础消费链、共享列/换行/查询、原生Flex与二维Grid均已落地。生产 Interface 为 [`src/ui_layout/layout.hpp`](../../../src/ui_layout/layout.hpp)，实现为相邻 `layout.cpp`及其私有算法文件；新增合同见[Flex/Grid](flex-grid.md)，实际运行证据见[验收记录](acceptance.md)。本页是当前行为合同；必要的历史实测与上游来源见[研究入口](../../research/ui-layout-reassessment/README.md)。
+状态：基础消费链、共享列/换行/查询、原生Flex与二维Grid均已落地。生产 Interface 为 [`modules/gui/ui_layout/include/ui_layout/layout.hpp`](../../../modules/gui/ui_layout/include/ui_layout/layout.hpp)，实现位于 [src/layout.cpp](../../../modules/gui/ui_layout/src/layout.cpp) 及 `src/detail/` 私有算法文件；新增合同见[Flex/Grid](flex-grid.md)，实际运行证据见[验收记录](acceptance.md)。本页是当前行为合同；必要的历史实测与上游来源见[研究入口](../../research/ui-layout-reassessment/README.md)。
 
 ## 1. Module、目标与依赖
 

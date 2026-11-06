@@ -1,6 +1,6 @@
 """Fit linearly transformed cosines to the Scene Lit specular BRDF.
 
-Writes src/renderer/ltc_lut.hpp. The BRDF is lit_brdf_components with F = 1:
+Writes modules/render/renderer/src/detail/ltc_lut.hpp. The BRDF is lit_brdf_components with F = 1:
 GGX D, separable Smith G1(v) G1(l), alpha = max(roughness^2, .0025). The fit
 follows Heitz et al. 2016 (Nelder-Mead on the MIS cubed-error metric, warm
 started from the neighbouring cell); only the BRDF differs from their GGX fit.
@@ -245,7 +245,7 @@ def write(matrices, amplitudes, path):
 
 def main():
     root = pathlib.Path(__file__).resolve().parents[2]
-    output = root / "src" / "renderer" / "ltc_lut.hpp"
+    output = root / "modules" / "render" / "renderer" / "src" / "detail" / "ltc_lut.hpp"
     started = time.time()
     matrices, amplitudes = fit()
     write(matrices, amplitudes, output)

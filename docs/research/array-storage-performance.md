@@ -1,6 +1,6 @@
 # Array 存储优化依据
 
-资料与采样日期：2026-09-30，测量基线为 [db6ec54](https://github.com/ySion/FrostFoxAtelier/commit/db6ec54)。本文保留安全边界、实现取舍和历史测量，不代表当前版本重新采样的结果；当前行为见 [array.hpp](../../src/foundation/array.hpp) 与[基础库](../foundation.md)。
+资料与采样日期：2026-09-30，测量基线为 [db6ec54](https://github.com/ySion/FrostFoxAtelier/commit/db6ec54)。本文保留安全边界、实现取舍和历史测量，不代表当前版本重新采样的结果；当前行为见 [array.hpp](../../modules/core/foundation/include/foundation/array.hpp) 与[基础库](../foundation.md)。
 
 ## 存储模型
 

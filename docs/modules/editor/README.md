@@ -43,9 +43,9 @@ WndProc 的输入事件只复制和排队，不重入 UI/业务；同步输入�
 系统模态窗口的 `WM_CANCELMODE` 在 WndProc 内立即交给 `DefWindowProcW` 释放原生鼠标捕获，同时排队保留业务取消事件。文件选择和保存确认会暂停应用主循环，不能把原生捕获释放也延后到该循环；否则已禁用的主窗口会继续截获对话框的鼠标输入。业务取消仍在原有事件泵中执行，不从系统回调重入 UI、场景或渲染。该时序遵循 [Windows WM_CANCELMODE 合同](https://learn.microsoft.com/en-us/windows/win32/winmsg/wm-cancelmode)。
 剪贴板失败保留草稿/选区/历史供重试；业务 Action 失败停止同组剩余普通 effects，仍执行 UI 取消、业务回滚、IME 与捕获清理，保留首错并报告清理失败。
 
-[World](../../../src/world/world.hpp)和 Runtime 管理唯一 Entity/Component 身份、组成与成员资格。编辑 World 保持 stopped；Entity 的 AttachedInactive 状态仍可呈现和编辑，renderer 不按 Active 状态筛除编辑内容。
+[World](../../../modules/engine/world/include/world/world.hpp)和 Runtime 管理唯一 Entity/Component 身份、组成与成员资格。编辑 World 保持 stopped；Entity 的 AttachedInactive 状态仍可呈现和编辑，renderer 不按 Active 状态筛除编辑内容。
 World 的原生类型与字段元数据由[自动反射](../../reflection.md)生成，经 `world::register_types` 发布到 Session 拥有的 Runtime；项目 Source 派生类型在 Session::Prepare 中由同一 Runtime 类型系统发布。编辑器使用该入口返回的类型和字段路径；生成头、World 库及正式编辑器均由当前工作树、当前配置的 CMake 依赖链构建。
-[Session](../../../src/editor/session.hpp)是文档唯一写入口，保存 `{entity, object}` 选择和统一的 Entity、组件、字段历史。字段事务捕获具体对象 ObjectId、正式 FieldPath 和控制会话，不再从当前选择或类型顺序猜目标。一次拖调连续改真实字段，提交只记一次历史。Entity 的空间字段可能使四元数其他分量规范化，所以记录完整 TRS 前后值，经 World 原子恢复；不是删除时的对象图快照。属性 undo/redo 恢复该字段所属对象作为检查目标，并保留其 Entity 上下文。同一目标重复选择不取消草稿；换目标先取消事务。
+[Session](../../../modules/editor/core/include/editor/session.hpp)是文档唯一写入口，保存 `{entity, object}` 选择和统一的 Entity、组件、字段历史。字段事务捕获具体对象 ObjectId、正式 FieldPath 和控制会话，不再从当前选择或类型顺序猜目标。一次拖调连续改真实字段，提交只记一次历史。Entity 的空间字段可能使四元数其他分量规范化，所以记录完整 TRS 前后值，经 World 原子恢复；不是删除时的对象图快照。属性 undo/redo 恢复该字段所属对象作为检查目标，并保留其 Entity 上下文。同一目标重复选择不取消草稿；换目标先取消事务。
 Entity 删除记录保存完整子树根、原组合父与成员位置；组件独立移除记录保存组件根及 owner/组成顺序。Undo 恢复同一 ObjectId 的当前组成与成员资格，重新生成 UI 绑定。裁剪历史/redo 与关闭文档只释放持有，不隐式 destroy。历史最多128项，编辑器最多256个 Entity；只有 World 成员可编辑，没有离线写入或多写者冲突机制。
 World 操作的 Result 失败表示提交未完成；成功 Commit 中的 notification_error 表示关系已改变。Session 先记录变化并更新选择，应用再报告通知错误并停止后续动作，不把它当成未提交或重做一次。成员 span 只在结构变化前借用，UI/renderer 不持有它。
 宿主同线程逐帧以32工作单位推进 GC；普通根保活不表示对象仍参与 World。文档关闭先结束活动编辑，再关闭 World、释放历史；World close 撤成员/参与和根，Runtime 生命周期随后由宿主管理。
@@ -56,7 +56,7 @@ MS/MI、槽菜单、共享编辑、独立资产历史和实例覆盖使用同一
 
 
 位置 X/Y/Z 默认0米，合法域为有限的 `[-10000, 10000]`。普通拖调每逻辑像素0.01米，细调0.001米。
-范围、默认值、单位与拖调步长由[应用参数描述](../../../src/editor/session.hpp)绑定 Runtime 字段，布局与 Runtime 不承担编辑器政策。
+范围、默认值、单位与拖调步长由[应用参数描述](../../../modules/editor/core/include/editor/session.hpp)绑定 Runtime 字段，布局与 Runtime 不承担编辑器政策。
 控件 key 独立单调分配，绑定具体 ObjectId 和 FieldId 路径；稳定控件复用其键，失效后退役且不再分配。Entity/组件恢复保留业务身份，但不会恢复旧控件会话、IME 或剪贴板请求。
 
 位置、旋转、缩放和数学向量复用 DSL `NumberRow` 与共享 `append_number_row`。标题和字段随宽度换行，分量共用一行。根旋转使用 XYZ 顺序的欧拉角（度），实际存储仍为规范化四元数；一次输入始终基于事务起始姿态计算，避免跨过 90° 后将中间转换结果反馈到下一次预览。显示角为四元数的规范欧拉表示，不保存额外的圈数状态。缩放按绝对值限制在 10000 以内：负值为镜像，0 可以保存（呈现与物理按退化处理），不提供 shear；镜像 Entity 在移动、旋转、缩放后保留自身的镜像轴，缩放手势可以越过 0 进入镜像；含零轴的 Entity 同样可以移动、旋转和缩放，零轴保持为 0；位置范围与上方参数定义一致，手柄和字段沿 Session 执行相同范围检查。

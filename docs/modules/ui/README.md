@@ -12,7 +12,7 @@
 
 ## 唯一入口
 
-[session.hpp](../../../src/ui/session.hpp)的`ui::Session`管理同一窗口UI的布局节点、内容、焦点、按压、编辑缓冲和滚动。应用按稳定key提供父节点在前的平坦`Control`描述；控件布局直接复用`ui_layout::NodeInput`。零key表示隐式overlay根。普通容器可使用现有row/column/Flex/Grid；label/button/item/number/text_edit/checkbox/foldout/menu_item/combo/tab/tree_item 是文字叶，list、tree 和 popup 是带裁剪和滚动的 column，table 是持有共享数据快照的虚拟表格，code_editor 是持有共享源码文档的多行编辑叶，splitter/slider/viewport是盒。viewport不自动填色。
+[session.hpp](../../../modules/gui/ui/include/ui/session.hpp)的`ui::Session`管理同一窗口UI的布局节点、内容、焦点、按压、编辑缓冲和滚动。应用按稳定key提供父节点在前的平坦`Control`描述；控件布局直接复用`ui_layout::NodeInput`。零key表示隐式overlay根。普通容器可使用现有row/column/Flex/Grid；label/button/item/number/text_edit/checkbox/foldout/menu_item/combo/tab/tree_item 是文字叶，list、tree 和 popup 是带裁剪和滚动的 column，table 是持有共享数据快照的虚拟表格，code_editor 是持有共享源码文档的多行编辑叶，splitter/slider/viewport是盒。viewport不自动填色。
 
 应用拥有业务值、撤销和重做，控件状态不持有业务对象。数字编辑只保存这次操作的起始值、文本缓冲与预览值；每次新场景投影不会覆盖尚未提交的文字。参数及菜单项 key 绑定具体业务目标，切换绑定时更换或退役旧 key。控件删除再出现会获得新 incarnation，旧帧命中不能误派给重用 key。
 
@@ -77,7 +77,7 @@ DSL 的 `PanePath`、`ObjectHeader` 和内容页签 用普通 row/column、label
 
 `PathBar` 提供宿主拥有的路径 combo、后退/前进按钮身份及可用状态；路径图标与文字使用同一测量入口。`Control.icon` 可与文字并存，前置图标保留 indicator-size 加 6 DIP 的空间；没有文字时默认居中，可通过 `icon-align` 左/中/右对齐。下拉的方向标记限制在右侧预留区域内，较大的前置图标不会放大右侧箭头。路径菜单与普通下拉继续调用原菜单入口。
 
-[controls.hpp](../../../src/ui/controls.hpp) 的 `append_parameter_row` 建立统一标题列和字段容器；文本、下拉与数值行共用此组合。`append_number_row` 在该容器中加入 1–4 个普通 number，传入各自的 key、值、默认值、范围和步长。标题宽 160 DIP，字段最小高 23 DIP；字号增大时数值行可随内容增高；分量紧邻排列，名称保留在描述中，不占用单独标签列。窄宽度通过现有 Flex wrap 将标题和字段分行，分量仍保持一行；重新排布不更换字段身份。主体最低宽度为每字段 24 DIP 加 2 DIP 间距，四字段为 102 DIP。组合层不创建焦点、草稿、业务对象或历史。
+[controls.hpp](../../../modules/gui/ui/include/ui/controls.hpp) 的 `append_parameter_row` 建立统一标题列和字段容器；文本、下拉与数值行共用此组合。`append_number_row` 在该容器中加入 1–4 个普通 number，传入各自的 key、值、默认值、范围和步长。标题宽 160 DIP，字段最小高 23 DIP；字号增大时数值行可随内容增高；分量紧邻排列，名称保留在描述中，不占用单独标签列。窄宽度通过现有 Flex wrap 将标题和字段分行，分量仍保持一行；重新排布不更换字段身份。主体最低宽度为每字段 24 DIP 加 2 DIP 间距，四字段为 102 DIP。组合层不创建焦点、草稿、业务对象或历史。
 
 `Control.modified` 表示权威值与声明默认值不同，基础主题使用 `Palette.modified`，SS 可通过 `:modified` 覆盖颜色和字重。修改状态可通过字重影响文字测量，不代替非法输入状态。标题使用稳定的 `group_key` 作为身份，右键可请求整组菜单；Ctrl+中键发出 `reset(group_key)`，整组写入与一次撤销由宿主负责。宿主只展示字段子集时，通过 `ParameterRow.group_modified` 提供完整组状态；未提供时数值组合从传入字段推导。各字段始终独立比较自己的默认值。
 
@@ -145,7 +145,7 @@ DSL 的 PopupMenu / PopupEntry 组合根级 `popup`、普通 `menu_item`、快�
 
 `context_target` 开启右键和 Menu/Shift+F10 请求；`combo` 在主按钮按下时请求菜单，对应释放交给菜单宿主，不再等待按钮释放才展开。Enter/Space 或上下键也走同一菜单请求。`context_menu` 携带 source、可选 group 和已接受帧的客户区物理坐标。Session 管理上下/Home/End、Enter/Space、Esc/Tab；外部点击只关闭，滚轮及键盘不穿透。`dismiss` 要求宿主撤下菜单，隐藏、禁用、失焦、Surface 失效与捕获丢失沿同一取消路径处理。
 
-正式编辑器的列表菜单使用 [PopupHost](../../../src/application/popup.hpp)：一个复用的 owned `WS_POPUP` 窗口，具有独立的 Session、renderer 和接受帧，使用同一份 SS。主窗口保持键盘焦点与鼠标捕获；输入经屏幕坐标转换到菜单的本地接受帧。主窗口画布没有列表菜单副本，菜单可越过其边缘；菜单尺寸、翻转和夹取基于锚点显示器的工作区。视口饼菜单在主 surface 中通过 DSL 组合，复用同一菜单项模型与命令入口。
+正式编辑器的列表菜单使用 [PopupHost](../../../modules/editor/application/include/application/popup.hpp)：一个复用的 owned `WS_POPUP` 窗口，具有独立的 Session、renderer 和接受帧，使用同一份 SS。主窗口保持键盘焦点与鼠标捕获；输入经屏幕坐标转换到菜单的本地接受帧。主窗口画布没有列表菜单副本，菜单可越过其边缘；菜单尺寸、翻转和夹取基于锚点显示器的工作区。视口饼菜单在主 surface 中通过 DSL 组合，复用同一菜单项模型与命令入口。
 
 PopupHost另保留一个隔离的measurement Session，用工作区约束及同一SS求标题/快捷键列宽、内容高度与滚动槽；它只做几何准备，live Session才按最终窗口尺寸完整准备和绘制。两者不共享或转交可变文字缓存。测量的DPI/工作区失效、列间距、gutter、像素取整及窗口尺寸规则不变；业务命令退休与行身份复用/重建规则保持原行为，不为复用测量保留已退休命令。
 
@@ -157,7 +157,7 @@ PopupHost另保留一个隔离的measurement Session，用工作区约束及同�
 
 ## 停靠与标签
 
-[docking.hpp](../../../src/ui/docking.hpp) 的 `DockSpace` 拥有单宿主的分割树、标签顺序、当前标签、最大化目标和拖放预览。宿主注册稳定的 `DockTab.key/content`、标题与最低尺寸，通过 `presentation` 提供分割尺寸、页签与内容槽数据，由编辑器 DSL 描述全部界面结构。它不拥有业务对象、相机、草稿或历史；同类型多实例由宿主注册不同身份才能存在，不能通过复制 key 创建副本。
+[docking.hpp](../../../modules/gui/ui/include/ui/docking.hpp) 的 `DockSpace` 拥有单宿主的分割树、标签顺序、当前标签、最大化目标和拖放预览。宿主注册稳定的 `DockTab.key/content`、标题与最低尺寸，通过 `presentation` 提供分割尺寸、页签与内容槽数据，由编辑器 DSL 描述全部界面结构。它不拥有业务对象、相机、草稿或历史；同类型多实例由宿主注册不同身份才能存在，不能通过复制 key 创建副本。
 
 - 分割是横/纵方向、比例和两个孩子；叶子是标签组。移动后清理空组与单子分割；最后一组可为空，并仍能从菜单打开内容。最大化不改动原树。
 - `tab` 复用 Session 的焦点、键盘激活、命中和捕获。超过 4 DIP 拖动阈值后产生 `drag_begin/preview/commit/cancel`，`DragPoint` 是已接受客户区的物理坐标。`DockSpace::apply` 使用同一接受帧决定目标，拖放预览不修改布局，松开才提交；Esc、捕获/焦点/Surface 丢失取消。
@@ -172,7 +172,7 @@ PopupHost另保留一个隔离的measurement Session，用工作区约束及同�
 
 ## Style与失效
 
-[style.hpp](../../../src/ui/style.hpp)的`Style`提供基础主题，由`Session::set_style`完整校验、复制后应用；非法值返回`invalid_style`且不修改任何配置。根/局部`StyleSheet`、类名及逐属性覆盖扩展同一解析入口，最终`ResolvedStyle`供测量、绘制与接受帧持有。语法、优先级和资源合同见 [SS 样式表](style-sheets.md)。更换配置后仍通过`prepare → renderer accepted → accept`发布。候选失败保留已接受帧。`UiFrame`记录本帧的`style_revision`和`measure_provider_revision`，旧帧颜色、几何与文字像素不会跟随当前Style改变。
+[style.hpp](../../../modules/gui/ui/include/ui/style.hpp)的`Style`提供基础主题，由`Session::set_style`完整校验、复制后应用；非法值返回`invalid_style`且不修改任何配置。根/局部`StyleSheet`、类名及逐属性覆盖扩展同一解析入口，最终`ResolvedStyle`供测量、绘制与接受帧持有。语法、优先级和资源合同见 [SS 样式表](style-sheets.md)。更换配置后仍通过`prepare → renderer accepted → accept`发布。候选失败保留已接受帧。`UiFrame`记录本帧的`style_revision`和`measure_provider_revision`，旧帧颜色、几何与文字像素不会跟随当前Style改变。
 
 控件选择`Role::normal/panel/title/caption`与类名；局部属性也通过定型`Control.style`进入同一规则系统。唯一状态解析处理normal、hover、pressed、focus、selected、disabled、invalid、modified。字体配置包括family、locale、weight和DIP字号；基础主题的title/caption通过比例表达层级，title另有字重。未知系统字体采用DirectWrite的字体匹配行为。
 
@@ -197,7 +197,7 @@ Surface的revision在客户区坐标映射或DPI变化时递增。尺寸/DPI变�
 
 ## 共享单行编辑
 
-`text_edit`以`Control.text`作为权威投影，number保留value/min/max及拖调策略；两者共用[TextEdit](../../../src/ui/text_edit.hpp)的唯一草稿、original、caret/anchor、选择和有界历史。number只增加完整有限数值解析、范围和格式化：有限数值超出 min/max 时夹到端点，与 Runtime 对有界字段的写入一致。输入文字本身不使用ASCII白名单：非数字或非有限的文字保留为invalid草稿，不写业务preview。
+`text_edit`以`Control.text`作为权威投影，number保留value/min/max及拖调策略；两者共用[TextEdit](../../../modules/gui/ui/include/ui/detail/text_edit.hpp)的唯一草稿、original、caret/anchor、选择和有界历史。number只增加完整有限数值解析、范围和格式化：有限数值超出 min/max 时夹到端点，与 Runtime 对有界字段的写入一致。输入文字本身不使用ASCII白名单：非数字或非有限的文字保留为invalid草稿，不写业务preview。
 
 focus、文字模式和编辑事务分开。number普通拖动仍在超过原指针阈值后调值，Shift细调；单击进入文字模式后，拖动用于选择文字。仅聚焦时Enter或普通文字输入可进入文字模式。text_edit聚焦即可输入。移动caret、选择文字和进入模式均不建立事务。
 
@@ -231,7 +231,7 @@ IME使用独立composition_id和固定起始token/替换范围；`CompositionEve
 
 ## CPU绘制与文字寿命
 
-[frame.hpp](../../../src/ui/frame.hpp)定义唯一renderer协议：有序DrawQuad、物理像素bounds、半开clip、linear straight颜色、独立圆角和向内边框。可选资源为R8 Coverage或预乘RGBA ColorImage，二者互斥；无纹理时为实色盒。shader输出和blend必须配对，避免重复预乘。资源identity/revision不可重新解释成另一份像素；renderer自行管理GPU缓存、上传和在飞退休，并只合并相邻兼容项。图片字节编码、合成与统计见 [SS 绘制合同](style-sheets.md#图片圆角与批处理)。
+[frame.hpp](../../../modules/gui/ui_protocol/include/ui/frame.hpp)定义唯一renderer协议：有序DrawQuad、物理像素bounds、半开clip、linear straight颜色、独立圆角和向内边框。可选资源为R8 Coverage或预乘RGBA ColorImage，二者互斥；无纹理时为实色盒。shader输出和blend必须配对，避免重复预乘。资源identity/revision不可重新解释成另一份像素；renderer自行管理GPU缓存、上传和在飞退休，并只合并相邻兼容项。图片字节编码、合成与统计见 [SS 绘制合同](style-sheets.md#图片圆角与批处理)。
 
 文字服务位于生产`text.cpp`。同一个DirectWrite布局对象提供尺寸、首基线、caret位置和栅格字形；使用Factory2灰度分析合成为整段文字R8覆盖率，不建立通用图集。格式缓存按family/locale/weight/解析后字号索引。相同内容/字体/宽度/DPI复用像素；文字/约束改变时生成新版本，已发布帧持有旧像素，Session析构不使旧帧失效。固定尺寸、未参与布局测量的可见文字也在prepare时栅格化。
 

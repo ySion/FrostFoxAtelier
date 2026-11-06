@@ -12,6 +12,34 @@
 - 对简单数据允许直接结构体和函数。封装应保护真实不变量，而不是机械地为每个字段制造 getter/setter。
 - 并行计算要求明确任务读写范围、同步时机与生命周期；不从“线程安全”口号推导出全局加锁、全量原子或无锁容器框架。
 
+## 源码布局与依赖
+
+产品代码按 `modules/<职责域>/<模块>/` 归属，进程入口在 `apps/`。目录表达责任，不要求一个目录对应一个库。CMake 目标与依赖仍由根构建文件及 `cmake/` 定义；`acceptance/` 保留跨模块端到端消费者，`docs/modules/` 按阅读主题组织，构建工具在 `tools/`，不机械复制产品层级或创建空目录。
+
+模块内按编译可见性放文件：
+
+- `include/<逻辑前缀>/` 放公开头及其完整编译闭包。消费者使用 `foundation/array.hpp`、`runtime/runtime.hpp` 等逻辑路径，不带物理职责域。
+- `include/<逻辑前缀>/detail/` 放公开模板、内联或成员布局必须可见的实现；它仍是公开编译闭包，不是独立承诺的调用入口。
+- `src/` 放实现，`src/detail/` 放只在模块内使用的头及实现片段。产品不得跨模块包含别人的 `src/`。
+- 确有跨目标共享实现或既有验收观察需求时，使用 `internal/<逻辑前缀>/`，只向实际使用目标 PRIVATE 开放。根可见不等于其中所有头都是受支持接口；新增使用者须明确其合同和理由。
+- 着色器、生成模板随拥有者放置；生成输出仍在构建目录，不能用旧生成文件或转发头维持第二套源码布局。
+
+每个目标只公开自己的 include 根及必要的传递头依赖；实现依赖为 PRIVATE，不添加全仓 include 根。头用法与二进制链接分开：纯头需求用 INTERFACE 目标或明确的头根表达，不能为找到头而把宿主 Runtime 实现链接进 LLVM 后端。
+
+下表约束直接产品依赖，允许项是上限而非整层默认可见；同域依赖也须声明并保持单向。公开头的必要传递闭包照常传播，不由此授权上层直接使用更多业务模块。
+
+| 使用者域 | 可依赖的项目代码 |
+| --- | --- |
+| core | 本域底层能力，不依赖其他域 |
+| execution | core、本域纯协议与执行能力；contracts 不依赖 Runtime 实现，runtime 不依赖语言前端、JIT 或 Source 宿主 |
+| engine | core、execution、本域较低层的数据与业务能力；不依赖 GUI、设备渲染或 Editor |
+| gui | core、本域 protocol/layout/ui；ui_language 可依赖 execution |
+| render | core、engine 的 geometry/rendering/material、RHI，以及 gui/ui_protocol；不直接依赖完整 UI、World、physics 或 procedural |
+| editor | core、execution、engine、gui、render 与本域能力；core 不反向依赖 application |
+| apps、tools、acceptance | 入口所需模块；产品库不依赖应用入口或验收实现 |
+
+`rendering` 是 CPU 天空与光照数据，归 engine，不能与设备 `renderer` 混为一层。数学计算归 core/math，数学类型的原生注册归 Runtime。共享参数和诊断纯值归 execution/contracts；language 与 JIT 读取必要的类型头，但 LLVM 后端保持独立 CRT/分配域，不链接宿主 Runtime/Foundation 实现。Source 负责组装与发布。具体文件归属及受限 internal 准入以现有目标定义为准，不能为绕过方向规则复制同一权威类型。
+
 ## 现代 C++
 
 - 当前使用 C++23。C++26 的具体特性有明确收益且固定 Clang/标准库组合支持时，统一升级；不维护旧标准回退分支。
@@ -123,7 +151,7 @@ W0 只检查文档与链接，不构建。W2/W4 每片按现有目标做双配�
 
 mimalloc 是原生进程的默认通用分配器，统一在构建与链接处接入，普通代码继续使用默认分配函数和容器。系统专用内存、GPU 资源及第三方指定释放接口遵循各自契约；默认分配器不改变所有权。专项 arena 或池可以采用 mimalloc 作为底层分配来源，不要求每个元素独立分配。
 
-每帧都可能重写的 GPU 缓冲（实例表、绘制索引表、光源表、UI 实例等）一律使用 [`FrameSlots<T>`](../src/renderer/frame_slots.hpp)：每个在途帧一份持久的 CPU 可写缓冲，按录制帧序号选槽，只在容量不足时按 2 的幂重建。不要每帧调用 `gfxCreateBuffer`。原因是 D3D12MA 对 32 KB 以下的缓冲优先走 committed 分配，带初始数据的默认堆缓冲还会再建一个同样大小的暂存缓冲；每次都是独立的 committed 资源加延迟回收。A1 的绘制索引表和 UI 合批在 maximized 下的实例缓冲都因此每帧多出约 1 ms 的 upload 与 recycle。绘制索引表、工作室实例和 UI 实例由 GPU 直接读帧槽。Scene Lit 的实例表、光源表和阴影批次表被直接光、DDGI 和阴影光栅大量反复读取，改用 [`DeviceTable<T>`](../src/renderer/frame_slots.hpp)：把帧槽当暂存，只在内容变化时把变化区间拷入常驻的默认堆缓冲。光源表直接读帧槽时，Dungeon 的 direct_visibility 和 direct_initial 各慢约 2%。
+每帧都可能重写的 GPU 缓冲（实例表、绘制索引表、光源表、UI 实例等）一律使用 [`FrameSlots<T>`](../modules/render/renderer/src/detail/frame_slots.hpp)：每个在途帧一份持久的 CPU 可写缓冲，按录制帧序号选槽，只在容量不足时按 2 的幂重建。不要每帧调用 `gfxCreateBuffer`。原因是 D3D12MA 对 32 KB 以下的缓冲优先走 committed 分配，带初始数据的默认堆缓冲还会再建一个同样大小的暂存缓冲；每次都是独立的 committed 资源加延迟回收。A1 的绘制索引表和 UI 合批在 maximized 下的实例缓冲都因此每帧多出约 1 ms 的 upload 与 recycle。绘制索引表、工作室实例和 UI 实例由 GPU 直接读帧槽。Scene Lit 的实例表、光源表和阴影批次表被直接光、DDGI 和阴影光栅大量反复读取，改用 [`DeviceTable<T>`](../modules/render/renderer/src/detail/frame_slots.hpp)：把帧槽当暂存，只在内容变化时把变化区间拷入常驻的默认堆缓冲。光源表直接读帧槽时，Dungeon 的 direct_visibility 和 direct_initial 各慢约 2%。
 
 分配器升级使用正式版本并验证覆盖、对齐和生命周期行为；性能收益在真实负载中测量。它不代替访问局部性、分配次数和生命周期设计，批量释放堆内存也不自动履行 C++ 析构或外部资源释放责任。具体接入方式、覆盖范围和依赖版本位置见 README。
 

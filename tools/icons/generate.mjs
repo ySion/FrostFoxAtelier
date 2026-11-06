@@ -33,4 +33,4 @@ for (const [name, source] of Object.entries(manifest.icons)) {
   for (let i = 0; i < runs.length; i += 12) generated += '    ' + runs.slice(i, i + 12).join(',') + ',\n';
   generated += '};\n';
 }
-writeFileSync(root + 'src/ui/icon_data.inl', generated);
+writeFileSync(root + 'modules/gui/ui/src/detail/icon_data.inl', generated);
