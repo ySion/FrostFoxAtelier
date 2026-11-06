@@ -15,7 +15,7 @@
 
 引擎附带的自有语言节点与随机库在 [assets/engine/procedural](../../../assets/engine/procedural)。
 
-本文只说明已实现能力。方向、设计依据与未实施的跨模块约定见[后续路线与未决契约](roadmap.md)。场景生成器组件、渲染器实例化、网络编辑器、持久 Cache、冻结与 Bake 尚未实施；Remap／属性噪声的目标列选择方向已定，统一字段绑定尚未实现，见 roadmap 的 S0 合同。
+本文只说明已实现能力。方向、设计依据与未实施的跨模块约定见[后续路线与未决契约](roadmap.md)。场景生成器组件、渲染器实例化、网络编辑器、持久 Cache、冻结与 Bake 尚未实施；统一字段绑定已接通，Remap／属性噪声算法仍在后续 F 范围。
 
 ## Geometry
 
@@ -144,16 +144,31 @@ Ray 对 surface 的公共凸面扇形建立 BVH，命中的点移到交点（min
 
 求值器只在成功后发布候选 Geometry，失败保留旧发布并阻断下游，修正输入后可恢复。直接调用节点不额外承诺可写引用的事务回滚：较晚失败时 output 可能已部分改变，仍可销毁；调用者如需保旧，应像求值器一样提供独立候选。
 
-### 自有语言节点
+### 原生与自有语言列节点
 
-自有语言的属性节点（类似 Houdini 的 Wrangle）是派生自 `procedural.PointNode` 的源码 class，参数是 class 的字段，算法是同步方法 `void evaluate(...)`。求值器从 Program 取入口 `<类名>.evaluate`，按参数名把参数绑定到输入几何的点属性列：
+属性节点派生自 `procedural.PointNode`，端口固定为 `input` → `output`。原生类型提供 `Result<void> evaluate(...) const noexcept`，经 `Runtime::call` 调用；源码 class 提供同步 `void evaluate(...)`，经 Program 的 `<类名>.evaluate` 入口调用。两者共用列绑定计划，不需要为原生列节点提供 Program，也不增加另一套类型或借用 ABI。无声明时仍按参数名绑定 point 列：
 
 - `const procedural.Context&`（最多一个）是上下文；
 - `Array<T>& name` 是输出列：输入有 point 层的同名同类型列就写它的独占副本，没有就按 T 的默认值（零，四元数为单位旋转）新建，新列按约定名取用途，所以用途与类型不符（例如 `Array<float>& N`）时失败；
 - `const Array<T>& name` 是输入列，借用共享的列本身，不复制；没有这一列时失败。
 - 其他参数形式、没有参数、没有 `evaluate` 方法、带结果或不是同步方法的类型，求值时失败（`invalid_definition`），它的下游被阻断，其他节点照常求值。至少借用上下文或一列，`evaluate` 才是同步值区间，编译器在值区间里拒绝写 `self`。
 
-输出就是输入几何加上改写过的列。借用的列不能改变长度，所以点数与输入相同；改变点数的操作仍由 C++ 节点完成。`evaluate` 读 `self` 的字段（每次读取都是一次 Runtime 调用，循环外先存到局部），不写 `self`，也不给节点盖章。调用在 Runtime 线程上串行执行。
+公开 String 字段可以用以下三个 Meta 键覆盖对应参数的绑定；原生 AFIELD 与 Source 字段属性发布同一份 Runtime 元数据：
+
+```cpp
+AFIELD(Meta("procedural.bind", "evaluate.values"),
+       Meta("procedural.layer", "point"), Meta("procedural.kind", "attribute"))
+String attribute = String::literal<"pscale">();
+// evaluate(..., Array<float>& values) const noexcept
+```
+
+- `procedural.bind` 必须指向唯一的非 Context 列参数，一个参数至多由一个字段选择。`procedural.layer` 显式为 point / vertex / primitive / detail / instance；`procedural.kind` 为 attribute 或 group。缺键、未知 procedural 键、非 String 字段或错误目标均返回 `invalid_definition`，不静默回到参数名。其他命名空间的 Meta 不由本模块解释。
+- 类型与读写权限只来自真实签名，支持已注册的 bool、int32、uint32、float 及 float 数学列；不强转、不隐式 Promote。名字全 Geometry 唯一，已有列的层和类型必须匹配，已有用途保持；新列按 Geometry 的约定名规则确定用途。String 列仍不在列内核签名范围内。
+- group 必须绑定 `const Array<bool>&`。字段值为空时提供该层长度的全 true 临时 mask，不写回 Geometry；非空时必须是输入已有的同层 bool 列。算法负责只写选中元素：已有列的组外值保持，新列的组外值保留类型默认值。输出 GroupBox 的组名不能为空，与此选择语义不同。
+- 每次执行先复制所有选择名，并拒绝多个可写参数选择同名列；所有只读列和显式组从输入解析，之后才准备输出 COW 与增列，最后构造 `Argument::borrow` 并同步调用。多个读别名允许，读写同名时读到旧输入，不会观察本次输出的写入；不能先新建输出再冒充缺失输入。
+- 类型计划只存字段身份、参数序号和静态签名，不保存实例的上次列名或列地址。String 改动自然改变现有内容键；Source revision 改变时重绑其计划，code 身份决定结果复用。Meta 改动仍按 Runtime 定义合同要求重建。错误沿既有 Result 传播，准备或调用失败均不发布候选。
+
+输出就是输入几何加上改写过的列。借用的列不能改变长度，各层元素数保持；拓扑修改仍由 Geometry 端口节点完成。原生内核不得保留引用、修改列结构或重入 Source。源码 `evaluate` 可读 `self` 的标量/数学字段，不写 `self`；String 选择由宿主先复制，不开放源码对象 String 借用。两种调用都在 Runtime 线程上串行执行，不给节点盖章。
 
 [assets/engine/procedural](../../../assets/engine/procedural) 里的文件是引擎源码模块，`ProjectCode::snapshot` 把它们并进每个工程快照（编辑器和 Play 同一处），快照路径带 `engine/` 前缀；`ProjectCode` 第一次构建时在工程的 Runtime 中注册本模块的原生类型，因为这些文件里的类派生自 `procedural.PointNode`。这里只能声明 `procedural.` 下的名字，工程文件不能在 `procedural.` 下声明；函数声明和调用都写全名，工程源码也可以调用，例如 `procedural.hash(x)`：
 
@@ -213,7 +228,7 @@ Ray 对 surface 的公共凸面扇形建立 BVH，命中的点移到交点（min
 - **数学与布局**：面积 1、3 的两个三角形按密度 4 分别得到 4、12 点，位置在三角形内且法线为 +Z；一个最小间距样本核对点对距离。非均匀缩放与 Y 轴 90° 旋转的点、向量、法线用解析式，镜像用输入三角形的角顺序与属性作真值。删除、空／混合拓扑合并用固定索引，Promote 的平均值来自源网格顶点；Copy to Points 用手写 S·O·T 矩阵及 N/up 轴，发布分块用已知 floor 结果和 3×4 布局。
 - **概率取整**：面积 1、密度 2.25，取固定种子 0…2235。每次只能得到 2 或 3 点，总平均与 2.25 的误差严格小于 .03。在独立均匀随机的模型下，向上取整数 X 服从 Binomial(2236, .25)，接受区间为 492…626，精确二项求和覆盖率约 99.902133%；2236 是达到 99.9% 覆盖的最小种子数。实际固定种子运行是确定性的，不把统计模型称为实测分布或耗时证据。
 - **BVH 与 Ray**：18 个高度场三角形超过保留叶的 16 上限，一个斜射线和一个最近点查询各与独立 double 暴力公式比较。Ray 用可解析的抬高三角形核对命中与未命中、覆盖已有结果列但不改旧输入、删除未命中点，以及 minimum 模式的已知最近角点。
-- **ABI 与隔离**：plain 记录默认 false/0，经 Runtime 写入 `{true, 3}` 后原生节点产生三点；实例副本只写一个矩阵，原矩阵不变。Source 从 `source::engine_sources` 和保留夹具构建：`hash`／`hash2` 对照离线 lowbias32 常量，`unit(0x80000000)` 为 .5；六点 ColumnBatch 读 P、写 N、新增八列，结果按网格坐标和加法公式核对，旧输入与 Lift 兄弟分支保持各自的解析值。
+- **ABI 与隔离**：plain 记录默认 false/0，经 Runtime 写入 `{true, 3}` 后原生节点产生三点；实例副本只写一个矩阵，原矩阵不变。Source 从 `source::engine_sources` 和保留夹具构建：`hash`／`hash2` 对照离线 lowbias32 常量，`unit(0x80000000)` 为 .5；六点 ColumnBatch 读 P、写 N、新增八列，结果按网格坐标和加法公式核对，旧输入与 Lift 兄弟分支保持各自的解析值。原生和 Source 命名列内核共用六点真值：双只读 P 别名、同名输出、GroupBox mask 与默认填充；写后失败保旧，改为长列名和空组后恢复，核对输入隔离及全选结果。
 - **故障与清理**：原生图 Grid → Transform → Merge ← Line → CopyToPoints 先发布已知 14 个实例，Transform 失败后旧发布仍可读，参数恢复后继续求值；Source 写过所有列后在 invoke 内越界，旧发布仍可读，修正后得到新值；删除 display 后清除输出及节点状态。三种操作序列各保留一份，不附加缓存计数、容量观察或拒绝矩阵。
 
 跨模块工程 Source 消费的 K5 验收由 Editor 的 `project_execution.cpp` 负责，此入口不重复。`Geometry::bytes()` 的生产缓存预算接口不随容量观察用例删除。

@@ -754,6 +754,120 @@ bool failed(const Evaluator& evaluator, ObjectId node) {
     return evaluator.status(node)->error.has_value();
 }
 
+class BoundColumns : public PointNode {
+public:
+    String destination = String::literal<"P">();
+
+    String source_attribute = String::literal<"P">();
+
+    String alias = String::literal<"P">();
+
+    String group = String::literal<"selected">();
+
+    bool fail{};
+
+    Result<void> evaluate(Array<Vector3>& values, Array<float>& weight, const Array<Vector3>& source,
+                          const Array<Vector3>& again, const Array<bool>& selected) const noexcept {
+        for (std::size_t i = 0; i < source.size(); ++i) {
+            if (!selected[i])
+                continue;
+            values[i] = {-99, -99, -99};
+            values[i] = source[(i + 1) % source.size()] + again[i] * 2.f;
+            weight[i] = source[i].x + 4.f;
+        }
+        if (fail)
+            return std::unexpected(Error{ErrorCode::invocation_failed, "Column kernel failed after writing."});
+        return {};
+    }
+};
+
+// One public graph sequence covers named input/output aliasing, masks, and failed publication.
+void bound_columns(Runtime& runtime, TypeId kernel, const source::Program* program = nullptr) {
+    const auto graph = take(runtime.create(type<Graph>(runtime)));
+    const auto grid_node = take(add_node(runtime, graph.id(), type<Grid>(runtime)));
+    const auto group_node = take(add_node(runtime, graph.id(), type<GroupBox>(runtime)));
+    const auto node = take(add_node(runtime, graph.id(), kernel));
+    take(runtime.with_native<Grid>(grid_node.id(), [](Grid& grid) -> Result<void> {
+        grid.rows = 2;
+        grid.columns = 3;
+        grid.size = {4, 2};
+        return {};
+    }));
+    take(runtime.with_native<GroupBox>(group_node.id(), [](GroupBox& group) -> Result<void> {
+        group.minimum = {-3, -1, -2};
+        group.maximum = {1, 1, 2};
+        return {};
+    }));
+    take(connect(runtime, graph.id(), grid_node.id(), 0, group_node.id(), 0));
+    take(connect(runtime, graph.id(), group_node.id(), 0, node.id(), 0));
+    take(set_display(runtime, graph.id(), group_node.id()));
+    Meshes resources;
+    Evaluator evaluator{runtime, graph, resources, program};
+    take(evaluator.evaluate());
+    const Geometry original = *evaluator.output();
+    take(set_display(runtime, graph.id(), node.id()));
+    take(evaluator.evaluate());
+    require(!failed(evaluator, node.id()), "Named column kernel did not execute.");
+    constexpr std::array<Vector3, 6> selected{{{-4, 0, -3}, {2, 0, -3}, {2, 0, -1}, {-4, 0, 3}, {2, 0, 3}, {2, 0, 1}}};
+    require(std::ranges::equal(evaluator.output()->positions(), selected) &&
+                std::ranges::equal(column<float>(*evaluator.output(), "weight", Layer::point),
+                                   std::array{2.f, 4.f, 0.f, 2.f, 4.f, 0.f}),
+            "Named columns read modified output or lost unselected/default values.");
+
+    const auto write_name = [&](const char* name, const String& value) {
+        take(runtime.write(node.id(), field(runtime, kernel, name), ValueInput{type<String>(runtime), &value}));
+    };
+    const auto* previous = evaluator.output();
+    write_name("destination", String::literal<"shifted_positions_with_a_long_attribute_name">());
+    write_name("group", String{});
+    take(runtime.write(node.id(), field(runtime, kernel, "fail"), Scalar{true}));
+    take(evaluator.evaluate());
+    require(failed(evaluator, node.id()) && evaluator.output() == previous &&
+                std::ranges::equal(evaluator.output()->positions(), selected),
+            "A failed named-column invocation replaced the previous publication.");
+    take(runtime.write(node.id(), field(runtime, kernel, "fail"), Scalar{false}));
+    take(evaluator.evaluate());
+    require(!failed(evaluator, node.id()) &&
+                std::ranges::equal(
+                    column<Vector3>(*evaluator.output(), "shifted_positions_with_a_long_attribute_name", Layer::point),
+                    selected) &&
+                std::ranges::equal(column<float>(*evaluator.output(), "weight", Layer::point),
+                                   std::array{2.f, 4.f, 6.f, 2.f, 4.f, 6.f}),
+            "Changed String bindings, empty-group selection, or failure recovery is wrong.");
+    constexpr std::array<Vector3, 6> input{{{-2, 0, -1}, {0, 0, -1}, {2, 0, -1}, {-2, 0, 1}, {0, 0, 1}, {2, 0, 1}}};
+    require(std::ranges::equal(original.positions(), input) &&
+                std::ranges::equal(evaluator.output()->positions(), input) && original.find("weight") == nullptr,
+            "Named-column preparation or execution mutated its input snapshot.");
+}
+
+void native_columns() {
+    Runtime runtime;
+    take(register_types(runtime));
+    const auto kernel = take(
+        NativeRegistration<BoundColumns>{runtime, "fixture.NativeColumns", TypeKind::object}
+            .base<PointNode>()
+            .field<&BoundColumns::destination>("destination")
+            .metadata({{"procedural.bind", "evaluate.values"},
+                       {"procedural.layer", "point"},
+                       {"procedural.kind", "attribute"}})
+            .field<&BoundColumns::source_attribute>("source_attribute")
+            .metadata({{"procedural.bind", "evaluate.source"},
+                       {"procedural.layer", "point"},
+                       {"procedural.kind", "attribute"}})
+            .field<&BoundColumns::alias>("alias")
+            .metadata({{"procedural.bind", "evaluate.again"},
+                       {"procedural.layer", "point"},
+                       {"procedural.kind", "attribute"}})
+            .field<&BoundColumns::group>("group")
+            .metadata(
+                {{"procedural.bind", "evaluate.selected"}, {"procedural.layer", "point"}, {"procedural.kind", "group"}})
+            .field<&BoundColumns::fail>("fail")
+            .method<&BoundColumns::evaluate>("evaluate")
+            .parameter_names({"values", "weight", "source", "again", "selected"})
+            .publish());
+    bound_columns(runtime, kernel);
+}
+
 void native_constructors() {
     // Divergence measures the authored surface, never another constructor.
     const auto volume = [](const Geometry& geometry) {
@@ -1064,6 +1178,27 @@ class fixture.ColumnBatch : procedural.PointNode {
         if (self.fail) { a[P.size()] = 1.0f; }
     }
 }
+class fixture.BoundColumns : procedural.PointNode {
+    [Meta("procedural.bind", "evaluate.values"), Meta("procedural.layer", "point"), Meta("procedural.kind", "attribute")]
+    String destination = "P";
+    [Meta("procedural.bind", "evaluate.source"), Meta("procedural.layer", "point"), Meta("procedural.kind", "attribute")]
+    String source_attribute = "P";
+    [Meta("procedural.bind", "evaluate.again"), Meta("procedural.layer", "point"), Meta("procedural.kind", "attribute")]
+    String alias = "P";
+    [Meta("procedural.bind", "evaluate.selected"), Meta("procedural.layer", "point"), Meta("procedural.kind", "group")]
+    String group = "selected";
+    bool fail = false;
+    void evaluate(Array<vector3>& values, Array<float>& weight, const Array<vector3>& source,
+                  const Array<vector3>& again, const Array<bool>& selected) {
+        for (uint i = 0; i < source.size(); i = i + 1) {
+            if (!selected[i]) { continue; }
+            values[i] = vector3(-99.0, -99.0, -99.0);
+            values[i] = source[(i + 1) % source.size()] + again[i] * 2.0;
+            weight[i] = source[i].x + 4.0;
+        }
+        if (self.fail) { weight[source.size()] = 1.0; }
+    }
+}
 )";
 
 // Independent scalar results and column borrows surviving growth, invoke failure and recovery.
@@ -1080,6 +1215,7 @@ void source_nodes() {
         require(found != classes.end(), "A Source node class was not published.");
         return found->type;
     };
+    bound_columns(runtime, source_type("fixture.BoundColumns"), &program);
     const auto lift_type = source_type("fixture.Lift");
     // Fixed lowbias32 vectors computed offline with modular integer arithmetic, not random.hpp.
     const auto source_hash = take(program.entry("test_hash"));
@@ -1822,6 +1958,7 @@ int main(int argc, char** argv) {
         realization_chain();
         record_parameter_abi();
         graph_evaluation();
+        native_columns();
         source_nodes();
     } catch (const std::exception& error) {
         std::fprintf(stderr, "procedural acceptance failed: %s\n", error.what());

@@ -33,8 +33,8 @@ struct NodeStatus {
 // plain values (math included), String and Arrays of these.
 class Evaluator {
 public:
-    // `program` supplies the evaluate methods of PointNode types and must outlive the
-    // evaluator; without one those nodes fail.
+    // `program` supplies Source PointNode methods and must outlive the evaluator.
+    // Native PointNode methods need no program.
     Evaluator(Runtime& runtime, ObjectRoot graph, const Resources& resources, const source::Program* program = nullptr,
               std::size_t cache_bytes = std::size_t{256} << 20);
 

@@ -1,4 +1,5 @@
 #include "procedural/evaluator.hpp"
+#include "foundation/result.hpp"
 #include "source/program.hpp"
 
 #include <list>
@@ -18,17 +19,27 @@ void append(std::string& key, const T& value) {
     key.append(reinterpret_cast<const char*>(&value), sizeof value);
 }
 
-// A PointNode type's Source evaluate, bound for one program revision.
+// A PointNode type's evaluate. Only Source entries are rebound on publication.
 struct Code {
-    enum class Use : std::uint8_t { context, read, write };
+    enum class Use : std::uint8_t { context, read, write, group };
 
     struct Parameter {
         Use use;
 
-        String name; // The point column, unless the context.
+        String name; // Parameter name; also the fallback point column.
 
         std::size_t column{}; // ColumnData alternative.
+
+        TypeId type;
+
+        FieldId selector; // Optional String field selecting this column at call time.
+
+        Layer layer = Layer::point;
     };
+
+    MethodId method; // Native target; null for Source.
+
+    TypeId string_type;
 
     source::Program::Entry entry;
 
@@ -43,40 +54,30 @@ template <std::size_t I>
 using ColumnArray = Array<typename std::variant_alternative_t<I, ColumnData>::Value>;
 
 template <std::size_t I>
-Result<void> prepare_column(Geometry& geometry, const Code::Parameter& parameter) {
+Result<const void*> read_column(const Geometry& geometry, StringView name, Layer layer) {
     using T = typename ColumnArray<I>::Value;
-    if (parameter.use == Code::Use::write) {
-        auto column = geometry.add<T>(parameter.name, Layer::point);
-        if (!column)
-            return std::unexpected(column.error());
-        return {};
-    }
-    auto column = geometry.read<T>(parameter.name, Layer::point);
-    if (!column)
-        return std::unexpected(column.error());
+    ATELIER_TRY_BIND(column, geometry.read<T>(name, layer));
     if (!*column)
-        return failure("The input has no point attribute " + std::string{parameter.name.view().std_view()} + ".");
-    return {};
+        return failure("The input has no attribute " + std::string{name.std_view()} + ".");
+    return *column;
 }
 
 template <std::size_t I>
-Argument borrow_column(Geometry& geometry, const Code::Parameter& parameter) {
+Result<void*> write_column(Geometry& geometry, StringView name, Layer layer) {
     using T = typename ColumnArray<I>::Value;
-    // prepare_column already checked the layer/type and made every written column unique.
-    if (parameter.use == Code::Use::write)
-        return Argument::borrow(**geometry.write<T>(parameter.name, Layer::point));
-    return Argument::borrow(**geometry.read<T>(parameter.name, Layer::point));
+    ATELIER_TRY_BIND(column, geometry.add<T>(name, layer));
+    return *column;
 }
 
 struct ColumnAccess {
-    Result<void> (*prepare)(Geometry&, const Code::Parameter&);
+    Result<const void*> (*read)(const Geometry&, StringView, Layer);
 
-    Argument (*borrow)(Geometry&, const Code::Parameter&);
+    Result<void*> (*write)(Geometry&, StringView, Layer);
 };
 
 template <std::size_t... I>
 constexpr std::array<ColumnAccess, sizeof...(I)> column_accessors(std::index_sequence<I...>) {
-    return {ColumnAccess{&prepare_column<I>, &borrow_column<I>}...};
+    return {ColumnAccess{&read_column<I>, &write_column<I>}...};
 }
 
 constexpr auto accessors = column_accessors(std::make_index_sequence<std::variant_size_v<ColumnData>>{});
@@ -141,7 +142,7 @@ struct Evaluator::Impl {
 
     std::uint64_t revision{};
 
-    std::uint64_t code_revision{}; // Of the program, when `sources` was bound.
+    std::uint64_t code_revision{}; // Of the program, when Source entries were bound.
 
     std::uint32_t seed{};
 
@@ -153,7 +154,7 @@ struct Evaluator::Impl {
 
     std::unordered_map<TypeId, Result<Ports>> types;
 
-    std::unordered_map<TypeId, Result<Code>> sources; // PointNode types.
+    std::unordered_map<TypeId, Result<Code>> kernels; // Native and Source PointNode types.
 
     std::array<TypeId, std::variant_size_v<ColumnData>>
         columns{}; // Array type per column alternative; null for String.
@@ -275,18 +276,27 @@ struct Evaluator::Impl {
         auto info = runtime.describe(*type);
         if (!info)
             return std::unexpected(info.error());
+        state.type = *type;
+        state.ports = &*known->second;
+        // Graph traversal still needs current connections when this node's binding fails.
+        auto into = inputs(runtime, id);
+        if (!into)
+            return std::unexpected(into.error());
+        state.inputs = std::move(*into);
+        // Validate the declaration before field keying can reject an invalid selector's value type.
+        if (state.ports->evaluate == MethodId{}) {
+            auto bound = kernels.find(*type);
+            if (bound == kernels.end())
+                bound = kernels.emplace(*type, bind(*type)).first;
+            if (!bound->second)
+                return std::unexpected(bound->second.error());
+        }
         std::string local;
         append(local, *info); // Published TypeInfo addresses are stable identities for this Runtime.
         for (const auto& field : (*info)->fields)
             if (auto added = append_field(local, id, field); !added)
                 return added;
-        auto into = inputs(runtime, id);
-        if (!into)
-            return std::unexpected(into.error());
-        state.type = *type;
-        state.ports = &*known->second;
         state.local = std::move(local);
-        state.inputs = std::move(*into);
         return {};
     }
 
@@ -327,47 +337,62 @@ struct Evaluator::Impl {
             uncache(*recent.back());
     }
 
-    // Resolves `<type name>.evaluate` in the program and maps its parameters to the context and
-    // point columns by name.
+    // Both producers supply the same signature and field Meta. The plan owns no instance names
+    // or column addresses; Source publication invalidates its entry and parameter mapping.
     Result<Code> bind(TypeId type) const {
-        auto info = runtime.describe(type);
-        if (!info)
-            return std::unexpected(info.error());
+        ATELIER_TRY_BIND(info, runtime.describe(type));
         const auto& name = (*info)->name;
-        if (!program)
-            return error(ErrorCode::unsupported_operation, "Source node " + name + " needs a program.");
-        const auto entries = program->entries();
-        const auto found = std::ranges::find(entries, name + ".evaluate", &source::EntryInfo::name);
-        if (found == entries.end())
-            return error(ErrorCode::invalid_definition, "Source node " + name + " has no evaluate method.");
-        const auto& signature = found->signature;
-        if (signature.result || signature.execution != FunctionExecution::synchronous)
+        Code code;
+        const FunctionSignature* signature;
+        std::span<const std::string> names;
+        if ((*info)->native_storage) {
+            const auto method = std::ranges::find((*info)->methods, "evaluate", &MethodInfo::name);
+            if (method == (*info)->methods.end())
+                return error(ErrorCode::invalid_definition, name + " has no evaluate method.");
+            if (!method->signature.receiver || !method->signature.receiver->read_only)
+                return error(ErrorCode::invalid_definition, name + ".evaluate must be const.");
+            code.method = method->id;
+            signature = &method->signature;
+            names = method->parameter_names;
+        } else {
+            if (!program)
+                return error(ErrorCode::unsupported_operation, "Source node " + name + " needs a program.");
+            const auto entries = program->entries();
+            const auto found = std::ranges::find(entries, name + ".evaluate", &source::EntryInfo::name);
+            if (found == entries.end())
+                return error(ErrorCode::invalid_definition, name + " has no evaluate method.");
+            ATELIER_TRY_BIND(entry, program->entry(found->name));
+            code.entry = std::move(*entry);
+            code.identity = found->code;
+            signature = &found->signature;
+            names = found->parameter_names;
+        }
+        if (signature->result || signature->execution != FunctionExecution::synchronous)
             return error(ErrorCode::invalid_definition, name + ".evaluate must be synchronous without a result.");
         // Borrowing makes evaluate a value region, where the compiler rejects writes to self.
-        if (signature.parameters.empty())
+        if (signature->parameters.empty())
             return error(ErrorCode::invalid_definition, name + ".evaluate must borrow the context or a point column.");
-        auto context = runtime.native_type<Context>();
-        if (!context)
-            return std::unexpected(context.error());
-        Code code;
-        code.identity = found->code;
-        for (std::size_t i = 0; i < signature.parameters.size(); ++i) {
-            const auto& parameter = signature.parameters[i];
-            const auto& parameter_name = found->parameter_names[i];
+        ATELIER_TRY_BIND(context, runtime.native_type<Context>());
+        for (std::size_t i = 0; i < signature->parameters.size(); ++i) {
+            const auto& parameter = signature->parameters[i];
+            const auto& parameter_name = names[i];
             if (parameter.form == ValueForm::inline_value && parameter.passing != ParameterPassing::value) {
                 const bool read = parameter.passing == ParameterPassing::read_only;
                 if (parameter.type == *context && read && !code.context) {
                     code.context = true;
-                    code.parameters.push_back({Code::Use::context, {}, 0});
+                    code.parameters.push_back({Code::Use::context, {}, 0, parameter.type, {}});
                     continue;
                 }
                 if (const auto column = std::ranges::find(columns, parameter.type); column != columns.end()) {
                     auto owned_name = String::from_utf8(StringView{parameter_name});
-                    if (!owned_name)
+                    if (!owned_name || parameter_name.empty())
                         return error(ErrorCode::invalid_definition,
-                                     name + ".evaluate parameter " + parameter_name + " requires valid UTF-8.");
-                    code.parameters.push_back({read ? Code::Use::read : Code::Use::write, std::move(*owned_name),
-                                               static_cast<std::size_t>(column - columns.begin())});
+                                     name + ".evaluate column parameters need nonempty UTF-8 names.");
+                    code.parameters.push_back({read ? Code::Use::read : Code::Use::write,
+                                               std::move(*owned_name),
+                                               static_cast<std::size_t>(column - columns.begin()),
+                                               parameter.type,
+                                               {}});
                     continue;
                 }
             }
@@ -375,41 +400,116 @@ struct Evaluator::Impl {
                          name + ".evaluate parameter " + parameter_name +
                              " is not a const procedural.Context& or a borrowed point column.");
         }
-        auto entry = program->entry(found->name);
-        if (!entry)
-            return std::unexpected(entry.error());
-        code.entry = std::move(*entry);
+        ATELIER_TRY_BIND(string_type, runtime.native_type<String>());
+        code.string_type = *string_type;
+        constexpr std::array<std::string_view, 5> layers{"point", "vertex", "primitive", "detail", "instance"};
+        for (const auto& field : (*info)->fields) {
+            std::string_view binding;
+            std::string_view layer;
+            std::string_view kind;
+            bool declared = false;
+            for (const auto& [key, value] : field.metadata) {
+                if (!key.starts_with("procedural."))
+                    continue;
+                declared = true;
+                if (key == "procedural.bind")
+                    binding = value;
+                else if (key == "procedural.layer")
+                    layer = value;
+                else if (key == "procedural.kind")
+                    kind = value;
+                else
+                    return error(ErrorCode::invalid_definition, name + "." + field.name + ": unknown Meta " + key);
+            }
+            if (!declared)
+                continue;
+            const auto at = std::ranges::find(layers, layer);
+            if (field.value.form != ValueForm::inline_value || field.value.type != *string_type ||
+                !binding.starts_with("evaluate.") || at == layers.end() || (kind != "attribute" && kind != "group"))
+                return error(ErrorCode::invalid_definition, name + "." + field.name + ": invalid column binding.");
+            const auto target = binding.substr(std::string_view{"evaluate."}.size());
+            const auto parameter = std::ranges::find_if(code.parameters, [&](const auto& p) {
+                return p.use != Code::Use::context && p.name.view().std_view() == target;
+            });
+            if (parameter == code.parameters.end() || parameter->selector != FieldId{})
+                return error(ErrorCode::invalid_definition,
+                             name + "." + field.name + ": binding target is not unique.");
+            if (kind == "group") {
+                if (parameter->use != Code::Use::read || parameter->type != columns[0])
+                    return error(ErrorCode::invalid_definition,
+                                 name + "." + field.name + ": a group requires const Array<bool>&.");
+                parameter->use = Code::Use::group;
+            }
+            parameter->selector = field.id;
+            parameter->layer = static_cast<Layer>(at - layers.begin());
+        }
         return code;
     }
 
-    // The input geometry with its point columns rewritten by the Source evaluate.
-    Result<void> run_source(ObjectId id, const State& state, const Code& code, Geometry& output) const {
-        output = empty;
+    Result<void> run_columns(ObjectId id, const State& state, const Code& code, Entry& entry) const {
+        const Geometry* input = &empty;
         for (const auto& connection : state.inputs)
-            output = nodes.at(connection.from).entry->outputs[connection.output];
-        // Adding attributes can move their handles. Finish that, validation and detach before
-        // taking any column references; the handles then stay untouched throughout invoke.
-        for (const auto& parameter : code.parameters) {
-            if (parameter.use == Code::Use::context)
-                continue;
-            auto prepared = accessors[parameter.column].prepare(output, parameter);
-            if (!prepared)
-                return std::unexpected(prepared.error());
+            input = &nodes.at(connection.from).entry->outputs[connection.output];
+        std::vector<String> names(code.parameters.size());
+        for (std::size_t i = 0; i < code.parameters.size(); ++i) {
+            const auto& parameter = code.parameters[i];
+            if (parameter.selector != FieldId{}) {
+                ATELIER_TRY(runtime.read(id, parameter.selector, ValueOutput{code.string_type, &names[i]}));
+            } else {
+                names[i] = parameter.name;
+            }
+            if (parameter.use == Code::Use::write)
+                for (std::size_t j = 0; j < i; ++j)
+                    if (code.parameters[j].use == Code::Use::write && names[j] == names[i])
+                        return failure("Multiple writable parameters select " +
+                                       std::string{names[i].view().std_view()} + ".");
         }
         Context context;
         context.seed_ = seed;
-        std::vector<Argument> arguments;
-        arguments.reserve(code.parameters.size());
-        for (const auto& parameter : code.parameters) {
+        context.resources_ = &resources;
+        context.dependencies_ = &entry.dependencies;
+        std::array<Array<bool>, 5> all;
+        std::vector<const void*> values(code.parameters.size());
+        std::vector<void*> writable(code.parameters.size());
+        // Reads must resolve from the old input, even if an earlier write parameter would
+        // create their column. Empty groups are call-owned masks, never output attributes.
+        for (std::size_t i = 0; i < code.parameters.size(); ++i) {
+            const auto& parameter = code.parameters[i];
             if (parameter.use == Code::Use::context) {
-                arguments.push_back(Argument::borrow(std::as_const(context)));
+                values[i] = &context;
                 continue;
             }
-            arguments.push_back(accessors[parameter.column].borrow(output, parameter));
+            if (parameter.use == Code::Use::write)
+                continue;
+            if (parameter.use == Code::Use::group && names[i].empty()) {
+                auto& mask = all[static_cast<std::size_t>(parameter.layer)];
+                if (mask.empty())
+                    mask.resize(input->count(parameter.layer), true);
+                values[i] = &mask;
+            } else {
+                ATELIER_TRY_BIND(column, accessors[parameter.column].read(*input, names[i], parameter.layer));
+                values[i] = *column;
+            }
         }
-        auto called = code.entry.invoke(id, arguments);
-        if (!called)
-            return std::unexpected(called.error());
+        auto& output = entry.outputs.front();
+        output = *input;
+        for (std::size_t i = 0; i < code.parameters.size(); ++i) {
+            const auto& parameter = code.parameters[i];
+            if (parameter.use != Code::Use::write)
+                continue;
+            ATELIER_TRY_BIND(column, accessors[parameter.column].write(output, names[i], parameter.layer));
+            values[i] = writable[i] = *column;
+        }
+        // Array owners live in stable SharedArray blocks even when attributes grow. Do not
+        // use the prepared addresses until all additions/COW finish; no writes repeat a column.
+        std::vector<Argument> arguments;
+        arguments.reserve(code.parameters.size());
+        for (std::size_t i = 0; i < code.parameters.size(); ++i)
+            arguments.push_back(Argument::borrow(code.parameters[i].type, values[i], writable[i]));
+        if (code.method != MethodId{}) {
+            return runtime.call(id, code.method, arguments);
+        }
+        ATELIER_TRY(code.entry.invoke(id, arguments));
         return {};
     }
 
@@ -469,7 +569,7 @@ struct Evaluator::Impl {
         std::chrono::steady_clock::time_point start{};
         if (record_timings)
             start = std::chrono::steady_clock::now();
-        auto ran = code ? run_source(id, state, *code, entry->outputs.front()) : run_native(id, state, *entry);
+        auto ran = code ? run_columns(id, state, *code, *entry) : run_native(id, state, *entry);
         if (record_timings)
             state.status.time = std::chrono::steady_clock::now() - start;
         if (!ran)
@@ -492,14 +592,7 @@ struct Evaluator::Impl {
         std::string key = state.local;
         const Code* code{};
         if (state.ports->evaluate == MethodId{}) {
-            auto bound = sources.find(state.type);
-            if (bound == sources.end())
-                bound = sources.emplace(state.type, bind(state.type)).first;
-            if (!bound->second) {
-                state.status.error = bound->second.error();
-                return;
-            }
-            code = &*bound->second;
+            code = &*kernels.at(state.type); // read() already validated the current plan.
             append(key, code->identity);
             if (code->context)
                 append(key, seed);
@@ -587,9 +680,10 @@ struct Evaluator::Impl {
         const auto id = graph.id();
         bool dirty = !cursor || resources.revision() != revision;
         // A publication may change any Source node's code; rebinding finds which did.
-        if (program && program->revision() != code_revision) {
+        const bool republished = program && program->revision() != code_revision;
+        if (republished) {
             code_revision = program->revision();
-            sources.clear();
+            std::erase_if(kernels, [](const auto& item) { return !item.second || item.second->method == MethodId{}; });
             dirty = true;
         }
         if (!cursor || runtime.changed_since(id, *cursor)) {
@@ -615,7 +709,9 @@ struct Evaluator::Impl {
         for (const auto node : members) {
             auto [found, added] = nodes.try_emplace(node);
             auto& state = found->second;
-            if (!added && !runtime.changed_since(node, *cursor))
+            // Every instance must refresh a possible binding fault, not only the first of its type.
+            const bool stale_code = republished && state.ports && state.ports->evaluate == MethodId{};
+            if (!added && !stale_code && !runtime.changed_since(node, *cursor))
                 continue;
             const auto local = state.local;
             const auto connections = state.inputs;

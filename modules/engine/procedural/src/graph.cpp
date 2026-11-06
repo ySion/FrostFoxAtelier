@@ -156,7 +156,7 @@ Result<Ports> ports(Runtime& runtime, TypeId type) {
         return std::unexpected(attribute.error());
     if (*attribute) {
         if (type == *point)
-            return error(ErrorCode::invalid_type, "procedural.PointNode is the base of Source nodes, not a node.");
+            return error(ErrorCode::invalid_type, "procedural.PointNode is an attribute-node base, not a node.");
         return Ports{{}, {}, {"input"}, {false}, {"output"}};
     }
     auto method = runtime.find_method(type, "evaluate");

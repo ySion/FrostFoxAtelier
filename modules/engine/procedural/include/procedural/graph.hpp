@@ -84,14 +84,17 @@ private:
     std::vector<Connection> connections_; // Parallel to inputs_.
 };
 
-// The base of Source attribute nodes, which rewrite point columns of their input `input` into
-// their output `output`. A Source subclass declares a synchronous `void evaluate(...)`: a
-// `const procedural.Context&` parameter takes the context, `Array<T>& name` writes the point
-// column `name` (added with T's default value, zero or the identity rotation, when missing) and
-// `const Array<T>& name` reads one that must exist. Borrowed columns keep their length, so the
-// point count is the input's.
+// Attribute nodes have fixed `input` -> `output` ports. Native subclasses use a const
+// Result<void> evaluate(...) noexcept; Source subclasses use synchronous void evaluate(...).
+// const Context& supplies the context. Array<T>& writes a COW output column (default-filled
+// when absent), const Array<T>& reads the input snapshot, even for same-name read/write.
+// Columns default to the parameter name on the point layer. Public String fields override
+// this with Meta procedural.bind="evaluate.parameter", procedural.layer, procedural.kind
+// (attribute or group). A group targets const Array<bool>&; an empty selection means all.
+// Finish preparing every column before borrowing. Native callees must not change lengths,
+// retain references or reenter Source; failures discard the candidate, not the old output.
 ACLASS(Name = "procedural.PointNode",
-       DESC = "自有语言属性节点的基类：按 evaluate 的参数名读写输入几何的点属性列，点数不变。")
+       DESC = "原生和自有语言属性节点的基类：按参数名或字段 Meta 读写几何属性列，各层元素数不变。")
 class PointNode : public Node {
     AGENERATED_BODY(PointNode)
 };
@@ -126,8 +129,8 @@ Result<void> register_types(Runtime& runtime);
 enum class Slot : std::uint8_t { context, input, inputs, output };
 
 // Port names are evaluate's parameter names, read again for every published version. A
-// PointNode type has the fixed ports `input` and `output`; its evaluate is Source code, bound
-// by the evaluator, so `evaluate` is null and `parameters` empty.
+// PointNode type has the fixed ports `input` and `output`; its native or Source column kernel
+// is bound by the evaluator, so `evaluate` is null and `parameters` empty.
 struct Ports {
     MethodId evaluate;
 
