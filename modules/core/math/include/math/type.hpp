@@ -1,10 +1,14 @@
 #pragma once
 
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <string_view>
 
 namespace atelier::math {
+
+template <class T>
+concept Real = std::same_as<T, float> || std::same_as<T, double>;
 
 // An execution classification of the Runtime's canonical record types. It does
 // not create a second type identity or change their compact memory layout.
@@ -68,5 +72,8 @@ constexpr std::string_view short_name(Type type) noexcept {
     const auto qualified = name(type);
     return qualified.empty() ? qualified : qualified.substr(5);
 }
+
+template <class T>
+inline constexpr Type type_of{};
 
 }

@@ -2,6 +2,19 @@
 
 数学值使用同一份 C++ 存储、Runtime 类型身份和源码类型定义。纯计算库位于 [`math/math.hpp`](../modules/core/math/include/math/math.hpp)，不依赖 Runtime；Runtime 启动时发布内建数学记录，源码编译器从已验证的类型元数据取得数学分类。名字用于查找，不能使任意同名记录获得编译器特权。
 
+## 原生模块与来源
+
+`math/math.hpp` 是正式聚合入口，定义按职责各存一份，也可直接包含对应头：
+
+- [`type.hpp`](../modules/core/math/include/math/type.hpp)：实数精度约束和数学分类；不创建第二套 Runtime 类型身份。
+- [`vector.hpp`](../modules/core/math/include/math/vector.hpp)：紧凑 2/3/4 分量存储和向量运算。
+- [`quaternion.hpp`](../modules/core/math/include/math/quaternion.hpp)：四元数存储、乘积、共轭、归一化和旋转。
+- [`matrix.hpp`](../modules/core/math/include/math/matrix.hpp)：4×4 存储、矩阵运算、TRS 构造、求逆及法线变换。
+
+当前头文件是本项目既有实现的职责拆分，未移植第三方实现，也没有 SIMD 寄存器公共类型、Affine3 或 TRS 计算值。存储布局、默认值、函数名和求值顺序保持不变；`dot` 从第一个乘积开始累加，`length` 使用 `hypot`（四维嵌套），归一化先按最大分量缩放。不能用代数等价的新公式替换这些数值路径。
+
+后续设计参考锁定为 [nfrechette/rtm v2.4.0，d333385e302686529fc2e981e8ba64249554040d](https://github.com/nfrechette/rtm/commit/d333385e302686529fc2e981e8ba64249554040d)（MIT），不构成当前运行期依赖。若实际移植其实现，衍生文件须记录原文件、commit、本项目修改并保留版权通知，同时随源码和部署保留完整 MIT 声明。ExtremeEngine 的本地 SkrBase/math 快照只用于设计参考，未确认来源链，不复制实现。
+
 ## 类型、名称与存储
 
 | C++ `atelier::math` 类型 | Runtime 规范名称 | 源码短名 | 大小 / 对齐（字节） |
