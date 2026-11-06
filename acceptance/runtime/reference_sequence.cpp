@@ -1,4 +1,5 @@
 #include "inheritance_fixture.hpp"
+#include "memory/fatal.hpp"
 #include <array>
 #include <cstdio>
 
@@ -57,7 +58,8 @@ void collect(Runtime& runtime) {
 void splice(Runtime& runtime, const ReferenceField& field, std::size_t first, std::size_t erased,
             std::span<const ObjectReference> inserted = {}) {
     const std::array<ReferenceChange, 1> changes{SequenceSplice{field, first, erased, inserted}};
-    take(runtime.apply_reference_changes(changes));
+    if (auto applied = runtime.apply_reference_changes(changes); !applied)
+        fatal(applied.error().message);
 }
 
 void graph_and_batch() {
@@ -71,20 +73,36 @@ void graph_and_batch() {
     const std::array incoming{first.reference(), second.reference()};
     take(runtime.with_native<Element>(first.id(), [&](Element& a) -> Result<void> {
         return runtime.with_native<Element>(second.id(), [&](Element& b) -> Result<void> {
-            const auto a_weak = take(runtime.reference_field(first.id(), a.weak_link));
-            const auto b_weak = take(runtime.reference_field(second.id(), b.weak_link));
+            const auto a_weak = runtime.reference_field(first.id(), a.weak_link);
+            if (!a_weak)
+                fatal(a_weak.error().message);
+            const auto b_weak = runtime.reference_field(second.id(), b.weak_link);
+            if (!b_weak)
+                fatal(b_weak.error().message);
             const std::array<ReferenceChange, 3> changes{SequenceSplice{items, 0, 0, incoming},
-                                                         ReferenceWrite{a_weak, holder.reference()},
-                                                         ReferenceWrite{b_weak, holder.reference()}};
-            take(runtime.apply_reference_changes(changes));
-            auto alien = take(other.create(other.object_type()));
+                                                         ReferenceWrite{*a_weak, holder.reference()},
+                                                         ReferenceWrite{*b_weak, holder.reference()}};
+            if (auto applied = runtime.apply_reference_changes(changes); !applied)
+                fatal(applied.error().message);
+            auto alien = other.create(other.object_type());
+            if (!alien)
+                fatal(alien.error().message);
             const std::array<ReferenceChange, 2> bad{SequenceSplice{items, 0, 1, {}},
-                                                     ReferenceWrite{b_weak, alien.reference()}};
-            require(!runtime.apply_reference_changes(bad), "The late invalid reference did not fail.");
-            require(take(runtime.sequence_size(items)) == 2 && take(runtime.read_reference(b_weak)).id() == holder.id(),
-                    "Late invalid reference partially committed a splice.");
-            const auto strong = take(runtime.reference_field(first.id(), a.strong_link));
-            const std::array<ReferenceChange, 1> strong_cycle{ReferenceWrite{strong, holder.reference()}};
+                                                     ReferenceWrite{*b_weak, alien->reference()}};
+            if (runtime.apply_reference_changes(bad))
+                fatal("The late invalid reference did not fail.");
+            const auto count = runtime.sequence_size(items);
+            if (!count)
+                fatal(count.error().message);
+            const auto reference = runtime.read_reference(*b_weak);
+            if (!reference)
+                fatal(reference.error().message);
+            if (*count != 2 || reference->id() != holder.id())
+                fatal("Late invalid reference partially committed a splice.");
+            const auto strong = runtime.reference_field(first.id(), a.strong_link);
+            if (!strong)
+                fatal(strong.error().message);
+            const std::array<ReferenceChange, 1> strong_cycle{ReferenceWrite{*strong, holder.reference()}};
             return runtime.apply_reference_changes(strong_cycle);
         });
     }));
@@ -108,12 +126,17 @@ void borrow_contract() {
     auto holder = take(runtime.create(types[3]));
     ReferenceField hidden;
     take(runtime.with_native<Holder>(holder.id(), [&](Holder& value) -> Result<void> {
-        hidden = take(runtime.reference_field(holder.id(), value.hidden));
+        auto field = runtime.reference_field(holder.id(), value.hidden);
+        if (!field)
+            fatal(field.error().message);
+        hidden = std::move(*field);
         return {};
     }));
-    require(!runtime.with_native<Holder>(holder.id(),
-                                         [](Holder&) -> Result<void> { throw std::runtime_error("borrow failure"); }),
-            "The native borrow did not fail.");
+    const auto failed = runtime.with_native<Holder>(holder.id(), [](Holder&) -> Result<void> {
+        return std::unexpected(Error{ErrorCode::capacity_exceeded, "borrow failure"});
+    });
+    require(!failed && failed.error().code == ErrorCode::capacity_exceeded,
+            "The native borrow lost its explicit failure.");
     auto element = take(runtime.create(types[0]));
     take(runtime.with_native<Holder>(holder.id(), [&](Holder&) -> Result<void> {
         const std::array refs{element.reference()};

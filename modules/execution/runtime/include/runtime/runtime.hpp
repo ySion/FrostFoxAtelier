@@ -14,7 +14,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
-#include <exception>
 #include <functional>
 #include <memory>
 #include <new>
@@ -1001,13 +1000,13 @@ public:
 
     [[nodiscard]] Result<MethodId> find_method(TypeId type, std::string_view name) const;
 
-    // Trusted synchronous native storage access. Callback returns Result<R>;
+    // Trusted synchronous native storage access. Callback must return Result<R> without throwing;
     // R must own its data. Capturing/returning hidden borrowed addresses is also
     // forbidden by contract. The scope blocks object lifecycle, GC and JIT entry.
     // A mutable T stamps the object as written; a const T does not and must not write.
     template <class T, class F>
         requires std::invocable<F, T&> && detail::NativeCallbackResult<std::invoke_result_t<F, T&>>::supported
-    [[nodiscard]] std::invoke_result_t<F, T&> with_native(ObjectId object, F&& callback) {
+    [[nodiscard]] std::invoke_result_t<F, T&> with_native(ObjectId object, F&& callback) noexcept {
         return with_native<T>(object, {}, std::forward<F>(callback));
     }
 
@@ -1015,17 +1014,10 @@ public:
     template <class T, class F>
         requires std::invocable<F, T&> && detail::NativeCallbackResult<std::invoke_result_t<F, T&>>::supported
     [[nodiscard]] std::invoke_result_t<F, T&> with_native(ObjectId object, std::span<const FieldId> path,
-                                                          F&& callback) {
+                                                          F&& callback) noexcept {
         ATELIER_TRY_BIND(
             borrowed, borrow_native(object, detail::representation<std::remove_cv_t<T>>(), path, !std::is_const_v<T>));
-        try {
-            return std::invoke(std::forward<F>(callback), *static_cast<T*>(borrowed->storage));
-        } catch (const std::exception& error) {
-            return std::unexpected(Error{ErrorCode::invocation_failed, error.what()});
-        } catch (...) {
-            return std::unexpected(
-                Error{ErrorCode::invocation_failed, "Native borrow callback raised an unknown exception."});
-        }
+        return std::invoke(std::forward<F>(callback), *static_cast<T*>(borrowed->storage));
     }
 
     [[nodiscard]] Result<ReferenceField> reference_field(ObjectId, std::span<const FieldId>) const;

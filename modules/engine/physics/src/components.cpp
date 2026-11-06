@@ -232,8 +232,8 @@ Result<void> set_constraint_target(Runtime& runtime, ObjectId component, ObjectI
         reference = take(runtime.observe(held.reference()));
     }
     take(runtime.with_native<DistanceConstraintComponent>(component, [&](auto& value) -> Result<void> {
-        const auto field = take(runtime.reference_field(component, value.target));
-        const std::array<ReferenceChange, 1> changes{ReferenceWrite{field, reference}};
+        ATELIER_TRY_BIND(field, runtime.reference_field(component, value.target));
+        const std::array<ReferenceChange, 1> changes{ReferenceWrite{*field, reference}};
         return runtime.apply_reference_changes(changes);
     }));
     return {};

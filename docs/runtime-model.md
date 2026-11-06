@@ -44,7 +44,7 @@ C++ 原生回调不能依赖异常自动展开：若先构造完整对象再做�
 
 原生程序化节点迁移后的可失败签名为 `atelier::Result<void> evaluate(...) const noexcept`，原有 Geometry/Context 引用参数、参数名及 BorrowSafe 约束保持。注册器把它发布为 **业务结果 void** 的同一个 `evaluate`，错误不是额外输出端口。生产者只剥离一层 runtime Result；不把 `std::expected` 的布局注册成业务类型，不让 Runtime 理解 Geometry、列名或节点错误。程序化操作自己的 Result 由节点在本模块边界转换为带原原因的 runtime 错误（节点执行失败为 `invocation_failed`），不通过 throw、线程局部“最后错误”或往 Context 塞错误旁路传递。
 
-动态 Invoker 与定型 native thunk 从同一个原生结果取值/取错：失败先保留首因，不读取未产生的结果、不覆盖调用方原输出；成功仍需通过既有结果类型与存储检查。两种回调均为 noexcept，Runtime::call 不再捕获异常。进入 JIT 的状态/诊断保持固定 ABI，宿主拥有 Error，生成代码只走状态分支并显式释放已构造值、根和借用。`runtime.cpp` 的值构造现已在清理后返回失败，不再重抛；这不是 JIT 展开协议。Material 的采样、方向与编译期默认值捕获均使用显式 Result；evaluate 和 compile_material 只在宿主保存普通 Error，不再延迟保存或重抛异常。默认值构造失败不发布预览类型或部分 MaterialProgram；已构造临时值沿 Runtime 生命周期清理。Source 运行服务、调用观察器、调试处理器及 Runtime 引用访问者、纯值校验器已直接消费 Result；with_native 和 LLVM 内部错误适配仍待后续片迁移。
+动态 Invoker 与定型 native thunk 从同一个原生结果取值/取错：失败先保留首因，不读取未产生的结果、不覆盖调用方原输出；成功仍需通过既有结果类型与存储检查。两种回调均为 noexcept，Runtime::call 不再捕获异常。进入 JIT 的状态/诊断保持固定 ABI，宿主拥有 Error，生成代码只走状态分支并显式释放已构造值、根和借用。`runtime.cpp` 的值构造现已在清理后返回失败，不再重抛；这不是 JIT 展开协议。Material 的采样、方向与编译期默认值捕获均使用显式 Result；evaluate 和 compile_material 只在宿主保存普通 Error，不再延迟保存或重抛异常。默认值构造失败不发布预览类型或部分 MaterialProgram；已构造临时值沿 Runtime 生命周期清理。Source 运行服务、调用观察器、调试处理器及 Runtime 引用访问者、纯值校验器、with_native 均直接消费 Result；LLVM 内部错误适配仍待后续片迁移。
 
 失败只保证声明过的输出暂存不提交，不撤销原生回调此前通过可写引用造成的业务修改。程序化求值器仍拥有节点候选输出和发布决定：任一绑定/调用失败不发布部分 Geometry，旧输出保留，修正输入后可重新求值。原生与 Source 列节点现已共用这条结果通道和绑定计划，当前字段、列与组选择合同见[原生与自有语言列节点](modules/procedural/README.md#原生与自有语言列节点)。
 
@@ -192,7 +192,7 @@ Runtime 构造时通过同一注册机制发布内建数学记录，验证原生
 
 `with_native<T>(object, callback)` 验证实际对象与已注册原生类型的继承关系，在 Runtime 内调整基段地址，再传入 `T&`。描述型对象的原生基段也可访问。回调返回 `Result<R>`；`R` 必须拥有返回数据，直接返回指针、引用、`span`、`string_view` 或 `reference_wrapper` 会被模板约束拒绝。
 
-借用期间可嵌套借用及执行合法字段修改，创建、销毁、GC、同步 JIT 进入和协程启动被拒绝。回调异常转为 `invocation_failed`，退出时释放借用保护。受信任 C++ 调用方仍须保证 Runtime 覆盖整个调用，并且不通过捕获或包装类型带出借用地址；模板约束不构成原生代码沙箱。可变的 `T` 在借用开始时给对象盖上[写代号](#写代号与变化游标)；`const T` 不盖章，回调不得通过它写入对象存储，`const_cast` 也不行，否则这次写入不会被消费者看到。`const T` 不承诺整个对象图不可变：经它调用的其他入口照常按自己的规则盖章。
+借用期间可嵌套借用及执行合法字段修改，创建、销毁、GC、同步 JIT 进入和协程启动被拒绝。`with_native` 是 noexcept 入口，回调不得抛异常；业务失败原样返回 Result，不映射为 `invocation_failed`。成功或失败返回时均释放借用保护，不回滚回调已发生的副作用。受信任 C++ 调用方仍须保证 Runtime 覆盖整个调用，并且不通过捕获或包装类型带出借用地址；模板约束不构成原生代码沙箱。可变的 `T` 在借用开始时给对象盖上[写代号](#写代号与变化游标)；`const T` 不盖章，回调不得通过它写入对象存储，`const_cast` 也不行，否则这次写入不会被消费者看到。`const T` 不承诺整个对象图不可变：经它调用的其他入口照常按自己的规则盖章。
 
 ### 成组修改与 GC
 

@@ -96,28 +96,31 @@ void verify_procedural_graph() {
     require(document.issues.empty() && grid.position == std::array<float, 2>{0, 120} &&
                 moved.position == std::array<float, 2>{100.5f, -40.25f},
             "An authored graph lost node positions.");
-    take(runtime.with_native<const Grid>(grid.node.id(), [](const Grid& value) -> Result<void> {
-        require(value.size == math::Vector2{3, 2} && value.rows == 3 && value.columns == 4,
-                "Authored Grid parameters did not load.");
-        return {};
-    }));
-    take(runtime.with_native<const Transform>(moved.node.id(), [](const Transform& value) -> Result<void> {
-        require(value.translate == math::Vector3{1, 2, 3} && value.scale == math::Vector3{2, 1, 1} &&
-                    value.rotate == math::Quaternion{0, .70710677f, 0, .70710677f},
-                "Authored Transform parameters did not load.");
-        return {};
-    }));
-    take(runtime.with_native<const Graph>(document.graph.id(), [](const Graph& value) -> Result<void> {
-        require(value.seed == 7, "The authored graph seed did not load.");
-        return {};
-    }));
-    take(runtime.with_native<const Realize>(entry("realized").node.id(), [](const Realize& value) -> Result<void> {
-        require(value.group.view() == "chosen" && value.variant.view() == "prototype" &&
-                    std::ranges::equal(value.target_attributes,
-                                       Array<String>{String::literal<"id">(), String::literal<"weight">()}),
-                "Authored Realize selectors or broadcast names did not load.");
-        return {};
-    }));
+    require(take(runtime.with_native<const Grid>(grid.node.id(),
+                                                 [](const Grid& value) -> Result<bool> {
+                                                     return value.size == math::Vector2{3, 2} && value.rows == 3 &&
+                                                            value.columns == 4;
+                                                 })),
+            "Authored Grid parameters did not load.");
+    require(take(runtime.with_native<const Transform>(moved.node.id(),
+                                                      [](const Transform& value) -> Result<bool> {
+                                                          return value.translate == math::Vector3{1, 2, 3} &&
+                                                                 value.scale == math::Vector3{2, 1, 1} &&
+                                                                 value.rotate ==
+                                                                     math::Quaternion{0, .70710677f, 0, .70710677f};
+                                                      })),
+            "Authored Transform parameters did not load.");
+    require(take(runtime.with_native<const Graph>(document.graph.id(),
+                                                  [](const Graph& value) -> Result<bool> { return value.seed == 7; })),
+            "The authored graph seed did not load.");
+    require(take(runtime.with_native<const Realize>(
+                entry("realized").node.id(),
+                [](const Realize& value) -> Result<bool> {
+                    return value.group.view() == "chosen" && value.variant.view() == "prototype" &&
+                           std::ranges::equal(value.target_attributes,
+                                              Array<String>{String::literal<"id">(), String::literal<"weight">()});
+                })),
+            "Authored Realize selectors or broadcast names did not load.");
     for (const auto* node : {"noise", "remap"}) {
         const auto id = entry(node).node.id();
         const auto owner = take(runtime.type_of(id));

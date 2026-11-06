@@ -587,11 +587,10 @@ void fallback_boundaries() {
     Context invalid;
     invalid.uv.x = std::numeric_limits<float>::quiet_NaN();
     require(!defaults->evaluate(invalid), "Runtime evaluation failure was silently replaced by a material default.");
-    take(runtime.with_native<const MaterialSource>(source.id(), [&](const auto&) -> Result<void> {
-        require(!update_instance(runtime, child.id(), author),
-                "Runtime publication-busy failure was masked by fallback.");
-        return {};
-    }));
+    require(
+        take(runtime.with_native<const MaterialSource>(
+            source.id(), [&](const auto&) -> Result<bool> { return !update_instance(runtime, child.id(), author); })),
+        "Runtime publication-busy failure was masked by fallback.");
 }
 
 void capture_dependencies() {

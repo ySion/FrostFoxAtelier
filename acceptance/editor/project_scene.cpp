@@ -333,12 +333,13 @@ void verify_query_source(editor::Project& project) {
     changed(document->start());
     take(document->update(1.f / 60));
     take(document->update(1.f / 60));
-    take(document->world().runtime().with_native<const QueryProbe>(probe, [](const auto& value) -> Result<void> {
-        require(value.observed && value.count == 1 && std::abs(value.distance - 6.5f) < .01f &&
-                    std::abs(value.point.z - 2.5f) < .01f,
-                "Source could not request a trace and read the completed bool/count/distance/vector result.");
-        return {};
-    }));
+    require(take(document->world().runtime().with_native<const QueryProbe>(
+                probe,
+                [](const auto& value) -> Result<bool> {
+                    return value.observed && value.count == 1 && std::abs(value.distance - 6.5f) < .01f &&
+                           std::abs(value.point.z - 2.5f) < .01f;
+                })),
+            "Source could not request a trace and read the completed bool/count/distance/vector result.");
     acceptance_phase = "Source query persistence while active";
     const auto saved = take(document->serialize());
     changed(document->stop());

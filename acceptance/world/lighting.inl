@@ -33,12 +33,13 @@ void environment_and_group_writes() {
     const std::array<Scalar, 3> admitted_values{1.f, 2.f, 10.f};
     const auto rejected = world.write(environment.id(), admitted_paths, admitted_values);
     require(!rejected, "A group write bypassed admission.");
-    take(runtime.with_native<const p::EnvironmentComponent>(environment.id(), [&](const auto& value) -> Result<void> {
-        require(std::bit_cast<std::uint32_t>(value.sky_color.x) == 0x7fc00123u &&
-                    std::bit_cast<std::uint32_t>(value.exposure_ev) == 0x80000000u && value.sky_intensity == 2.f,
-                "A rejected group write did not restore every leaf's exact bytes.");
-        return {};
-    }));
+    require(take(runtime.with_native<const p::EnvironmentComponent>(
+                environment.id(),
+                [](const auto& value) -> Result<bool> {
+                    return std::bit_cast<std::uint32_t>(value.sky_color.x) == 0x7fc00123u &&
+                           std::bit_cast<std::uint32_t>(value.exposure_ev) == 0x80000000u && value.sky_intensity == 2.f;
+                })),
+            "A rejected group write did not restore every leaf's exact bytes.");
     committed(world.close());
     std::puts("[pass] Environment: admission failure restores every group-write leaf's exact bytes");
 }
