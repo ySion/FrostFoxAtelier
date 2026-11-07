@@ -11,6 +11,8 @@
 | `Array<T>` | 独占连续缓冲；复制拥有独立元素，平凡操作可批量完成；移动转移缓冲，源变为空；析构剩余元素并释放缓冲 | [array.hpp](../modules/core/foundation/include/foundation/array.hpp) |
 | `InlineArray<T,N>` | 默认使用 N 个内联槽，超出后上堆；移动内联值逐元素，移动堆值接管缓冲 | [inline_array.hpp](../modules/core/foundation/include/foundation/inline_array.hpp) |
 | `FixedArray<T,N>` | 固定容量、可变长度，只构造活前缀；容器自身永不分配堆存储 | [fixed_array.hpp](../modules/core/foundation/include/foundation/fixed_array.hpp) |
+| `BitVector` | 独占压缩位集合；最低位对应最低下标，尾部未使用位清零，不提供 bool 引用代理 | [bit_vector.hpp](../modules/core/foundation/include/foundation/bit_vector.hpp) |
+| `SparseArray<T>` | 独占稀疏槽；活下标稳定，扩容可搬移地址，删除后的下标可复用 | [sparse_array.hpp](../modules/core/foundation/include/foundation/sparse_array.hpp) |
 | `SharedArray<T>` | 计数句柄，共享一个不可变 Array；复制只增加计数，写入前先取得独占；移动后源为空 | [shared_array.hpp](../modules/core/foundation/include/foundation/shared_array.hpp) |
 | `Span<T>` | 指针与元素数量；复制只复制借用描述 | [span.hpp](../modules/core/foundation/include/foundation/span.hpp) |
 | `String` | 有效 UTF-8，保证尾部零字符；拥有缓冲复制独立，literal 复制借用固定字节，移动后源为空 | [string.hpp](../modules/core/foundation/include/foundation/string.hpp) |
@@ -64,6 +66,23 @@ names.squeeze();                    // 显式收紧容量；空数组释放缓�
 - FixedArray 保存 size 和按 T 对齐的原始内联区；InlineArray 另存堆指针/容量。两种新类型不承诺跨 T/N 的固定 ABI，不注册为 Array 的相同表示，暂不开放 Source/反射实例化。后续真实消费者是程序化 BVH 的构建栈和有界查询栈，产品迁移归 W4/A1。
 - realloc 只用于平凡可复制且属于隐式生存期的元素。锁定工具链缺少 `is_implicit_lifetime_v`，具名 concept `ReallocatableArrayElement` 使用已批准的充分条件：平凡可复制，且 aggregate 或默认/复制/移动构造之一平凡；依据为 [c.malloc] 的隐式对象创建。工具链提供标准 trait 后直接替换此条件，不保留回退矩阵。String、智能指针等资源元素仍逐元素构析，没有业务自定义的重定位 trait。
 - 实际 realloc 还要求所选搬移构造平凡，复用 `byte_relocate` 的判定；仅有平凡默认构造不能跳过非平凡搬移的副作用。只有配对分配入口的堆块进入 realloc；内联区从不传给它。零容量显式 free，不以 realloc(p,0) 判断 OOM。只保证正确性和减少可避免的逐元素搬移，尚无本轮性能提升测量。
+
+## 位集合与稀疏槽
+
+`BitVector` 是独立类型，不特化 `Array<bool>`，不改变 SharedArray<bool> 或程序化 group 列的表示。Windows x64 上为 32B/align8（Array<uint64_t> 加位数）；每个 word 的低位对应较低下标，尾 word 未使用位始终为零，缩小再扩大不复活旧位。
+
+- `size/empty/reserve/resize(bits,value=false)/clear/release/swap` 管理存储；resize 的 value 只填新增区间，clear 保留容量，release 释放。复制独立拥有，移动后源为空。字数用除法加余数计算，不先做 bits+63。
+- `test/operator[]` 返回 bool，不借出可写引用；`contains(index)` 查询集合成员，未置位或不存在的下标返回 false，由位图入口一次判界，供 SparseArray 占用查询使用；test 的越界 fatal 合同不变。`set(index,value=true)/reset/flip/set_range(first,count,value=true)` 显式修改。`count/any/none` 查询集合，`find_first/find_next` 返回下标或 npos；find_next 严格从给定下标之后查找，npos 或超出末尾时返回 npos。`set_bits()` 是升序、零分配 forward range，禁止从临时对象借出。
+- `&=/|=/^=` 要求位数相等，按 word 计算；test/operator[] 与修改操作的索引/范围越界，以及不等位数运算为 contract-fatal。CPU OOM 和内部容量错误沿 Array 唯一出口。没有原子位、平台分派或第二套分配器。修改内容或结构后重新取得迭代器。
+
+`SparseArray<T>` 的 `size` 是活值数，`extent` 是槽位上界，`capacity` 是槽存储容量。`emplace` 返回下标，先 LIFO 复用空槽，空闲链为空才延伸 extent；`erase` 对空洞或不存在下标返回 false。`contains_index/try_at` 查询正常缺项，`operator[]` 对缺项 contract-fatal。查询指针/引用和 `entries()` 禁止从临时对象借出；entries 按下标升序返回 `{index,value引用}`，const 版本只读。结构修改后重新取得迭代器。
+
+- Windows x64 对象为 64B/align8：槽指针、capacity、BitVector、free_head、活值数；extent 直接取占用位图长度，不重复保存。Slot 是 T 与 size_t next 的 union，对齐取两者较大值。空洞没有活 T，不要求 T 默认构造。
+- `reserve` 保留下标和空闲链，只构造/搬移活 T；槽分配复用 ArrayElements 的对齐分配/释放与增长算术，不把带空洞的 Slot 整块交给 realloc。增长时先保存 emplace 候选，支持参数借用既有值。普通构析要求与 Array 相同：析构不抛，移动不抛或可复制；操作 noexcept，业务失败不能由元素抛异常表达。
+- 复制从 const 元素来源构造，保留下标、空洞和下次复用顺序，不选用可变来源的复制重载；元素地址统一用 std::addressof，支持重载或删除 operator& 的 T。移动接管全部存储，源为空。移动赋值先分离来源再释放旧资源，支持资源子树提升。`clear` 析构全部活值并令 size/extent 为0，保留容量；`release` 另释放槽和位图。无 compact/重排/连续 T 视图。
+- 稳定下标不是稳定地址或永久身份：增长可使全部元素引用失效，删除的数字可被重新分配。不提供代际、GC、弱引用、并发或持久化格式。两类型均未新增 Runtime/Source/反射/JIT 注册，不改变已有容器 ABI。
+
+本片真实基础消费者为 SparseArray 自身的占用位图和 foundation 的资源槽消费序列。首批产品迁移候选是 `procedural/volume.cpp` 的 seen_corner/seen_point（BitVector）与 `runtime.cpp` 的 RootState.entries（SparseArray）；这些替换归 W4/A1，尚未实施。RootState 迁移须保留 value_entries、移除回调、trace 队列与身份上限；Runtime 对象槽/UI 带代际槽不能直接按此替换。
 
 ## 共享不可变数组
 

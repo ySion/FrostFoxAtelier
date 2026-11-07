@@ -2,11 +2,14 @@
 #include "foundation/array.hpp"
 #include "foundation/fixed_array.hpp"
 #include "foundation/inline_array.hpp"
+#include "foundation/sparse_array.hpp"
 #include <mimalloc.h>
 #include <mimalloc-stats.h>
 
 #include <cstdio>
 #include <cstdint>
+#include <array>
+#include <ranges>
 
 namespace {
 using namespace atelier;
@@ -113,6 +116,112 @@ struct InlineOwner {
     }
 };
 
+struct SparseOwner {
+    SparseArray<std::shared_ptr<SparseOwner>> children;
+};
+
+struct SparseValue {
+    int value;
+
+    explicit SparseValue(int input) noexcept : value(input) {}
+
+    SparseValue(const SparseValue&) noexcept = default;
+
+    SparseValue(SparseValue& other) noexcept : value(other.value + 1000) { other.value = -other.value; }
+
+    SparseValue(SparseValue&&) noexcept = default;
+
+    SparseValue* operator&() = delete;
+
+    const SparseValue* operator&() const = delete;
+};
+
+void sparse_storage() {
+    static_assert(sizeof(BitVector) == 32 && sizeof(SparseArray<int>) == 64);
+    static_assert(std::ranges::forward_range<BitVector::SetBits>);
+    static_assert(std::ranges::forward_range<SparseArray<int>::Entries<false>>);
+    static_assert(std::ranges::forward_range<SparseArray<int>::Entries<true>>);
+    BitVector selected(67);
+    for (auto index : {0, 3, 64, 66})
+        selected.set(index);
+    selected.reset(64);
+    require(selected.count() == 3 && selected.find_next(3) == 66 && selected.contains(66) && !selected.contains(64) &&
+                !selected.contains(67),
+            "Bit scan or membership query lost a cross-word selection.");
+    selected.resize(65);
+    selected.resize(67);
+    require(std::ranges::equal(selected.set_bits(), std::array<std::size_t, 2>{0, 3}),
+            "Bit shrink/grow revived discarded tail bits.");
+    selected.set_range(62, 5);
+    selected.flip(63);
+    BitVector mask(67, true);
+    mask.set_range(1, 64, false);
+    auto combined = selected;
+    combined &= mask;
+    require(std::ranges::equal(combined.set_bits(), std::array<std::size_t, 3>{0, 65, 66}),
+            "Bit intersection or cross-word range mask changed selected indices.");
+    combined ^= mask;
+    require(combined.none(), "Bit xor retained matching bits.");
+    combined |= selected;
+    auto moved_bits = std::move(combined);
+    require(combined.empty() && !combined.contains(0) && moved_bits.count() == 6 && moved_bits.test(64),
+            "Bit move lost selections or retained source size.");
+
+    auto first = std::make_shared<int>(19);
+    auto last = std::make_shared<int>(71);
+    SparseArray<std::shared_ptr<int>> values;
+    const auto a = values.emplace(first);
+    const auto hole = values.emplace(std::make_shared<int>(43));
+    const auto c = values.emplace(last);
+    require(values.erase(hole) && !values.erase(hole) && !values.try_at(hole), "Sparse erase retained a live hole.");
+    values.reserve(97);
+    const auto reused = values.emplace(values[c]);
+    require(a == 0 && hole == 1 && c == 2 && reused == hole && *values[a] == 19 && *values[c] == 71,
+            "Sparse growth changed stable indices or failed to reuse its free slot.");
+    require(values.erase(a), "Sparse first resource was not erased.");
+    auto copy = values;
+    std::size_t expected = 1;
+    for (auto [index, value] : std::as_const(copy).entries()) {
+        require(index == expected++ && *value == 71, "Sparse entries exposed a hole or changed ordering.");
+    }
+    require(expected == 3 && copy.emplace(first) == a, "Sparse copy lost its free list.");
+    auto moved = std::move(values);
+    require(values.empty() && values.extent() == 0 && values.capacity() == 0 && moved.size() == 2,
+            "Sparse move retained source storage or lost live count.");
+    copy.clear();
+    moved.release();
+    require(first.use_count() == 1 && last.use_count() == 1 && copy.extent() == 0 && copy.capacity() == 3,
+            "Sparse clear/release retained resource ownership or discarded reserved capacity.");
+
+    SparseArray<AlignedValue> aligned;
+    aligned.reserve(1);
+    aligned.emplace(53);
+    const auto duplicate = aligned.emplace(aligned[0].value);
+    require(duplicate == 1 && aligned[duplicate].value == 53 && reinterpret_cast<std::uintptr_t>(&aligned[0]) % 64 == 0,
+            "Sparse self-aliased growth lost value or alignment.");
+    SparseArray<std::unique_ptr<int>> unique;
+    unique.emplace(std::make_unique<int>(97));
+    unique.reserve(21);
+    require(*unique[0] == 97, "Sparse growth lost a move-only resource.");
+    SparseArray<std::shared_ptr<SparseOwner>> owners;
+    owners.emplace(std::make_shared<SparseOwner>());
+    owners[0]->children.emplace(std::make_shared<SparseOwner>());
+    auto* child = owners[0]->children[0].get();
+    owners = std::move(owners[0]->children);
+    require(owners.size() == 1 && owners[0].get() == child, "Sparse subtree promotion destroyed its source early.");
+
+    SparseArray<SparseValue> originals;
+    originals.emplace(17);
+    originals.emplace(91);
+    auto copied = std::as_const(originals);
+    copied.reserve(7);
+    require(originals[0].value == 17 && originals[1].value == 91 && copied[0].value == 17 && copied[1].value == 91 &&
+                std::as_const(copied).try_at(1) == std::addressof(copied[1]),
+            "Sparse copy mutated its source or invoked the element's address operator.");
+    require(copied.erase(0) && copied.emplace(43) == 0 && copied[0].value == 43,
+            "Sparse slot reuse failed for an element with an overloaded address operator.");
+}
+
 void inline_storage() {
     const auto before = live_bytes();
     InlineArray<AlignedValue, 2> values;
@@ -215,6 +324,7 @@ int main() {
     const auto before = live_bytes();
     inline_storage();
     fixed_storage();
+    sparse_storage();
     typed_relocation<Array<ConstructedValue<>>>();
     typed_relocation<Array<ConstructedValue<true>>>();
     typed_relocation<InlineArray<ConstructedValue<true>, 1>>();
