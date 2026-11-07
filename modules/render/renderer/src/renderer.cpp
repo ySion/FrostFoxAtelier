@@ -9,6 +9,7 @@
 #include "renderer/timing.hpp"
 #include "logging/native.hpp"
 #include "foundation/result.hpp"
+#include "memory/fatal.hpp"
 
 #include <ankerl/unordered_dense.h>
 #include <d3d12sdklayers.h>
@@ -32,19 +33,16 @@
 
 namespace atelier::renderer {
 namespace {
-struct FrameCancelled {
-    std::string_view phase;
-};
-
-void check_stop(const std::function<bool()>* requested, std::string_view phase) {
+detail::CancellableResult<void> check_stop(const std::function<bool()>* requested, std::string_view phase) {
     if (requested && (*requested)())
-        throw FrameCancelled{phase};
+        return std::unexpected(detail::FrameCancelled{phase});
+    return {};
 }
 }
 }
 
 namespace atelier::renderer::detail {
-WeldedMesh weld(const geometry::Mesh& mesh, const std::function<bool()>* stop_requested) {
+CancellableResult<WeldedMesh> weld(const geometry::Mesh& mesh, const std::function<bool()>* stop_requested) {
     // Merges only bitwise-identical corners: every vertex keeps its exact authored data.
     struct Hash {
         using is_transparent = void;
@@ -75,13 +73,13 @@ WeldedMesh weld(const geometry::Mesh& mesh, const std::function<bool()>* stop_re
     };
     const auto source = mesh.vertices();
     WeldedMesh result;
-    check_stop(stop_requested, "weld");
+    ATELIER_TRY(check_stop(stop_requested, "weld"));
     result.indices.resize(source.size());
     result.faces.resize(source.size() / 3);
     ankerl::unordered_dense::set<std::uint32_t, Hash, Equal> seen(0, Hash{&result.vertices}, Equal{&result.vertices});
     for (std::size_t i = 0; i < source.size(); ++i) {
         if (i % 1024 == 0)
-            check_stop(stop_requested, "weld");
+            ATELIER_TRY(check_stop(stop_requested, "weld"));
         if (const auto found = seen.find(source[i]); found != seen.end()) {
             result.indices[i] = *found;
             continue;
@@ -94,7 +92,7 @@ WeldedMesh weld(const geometry::Mesh& mesh, const std::function<bool()>* stop_re
     for (const auto& part : mesh.parts())
         for (std::uint32_t t = part.first_vertex / 3; t < (part.first_vertex + part.vertex_count) / 3; ++t) {
             if (t % 1024 == 0)
-                check_stop(stop_requested, "weld");
+                ATELIER_TRY(check_stop(stop_requested, "weld"));
             const auto* v = source.data() + std::size_t(t) * 3;
             std::array<double, 3> a{};
             std::array<double, 3> b{};
@@ -120,19 +118,13 @@ WeldedMesh weld(const geometry::Mesh& mesh, const std::function<bool()>* stop_re
 
 namespace atelier::renderer {
 namespace {
+using detail::allocation;
+
+using detail::require;
+
 Error error(rhi::ErrorCode code, const char* text, bool terminal = false,
             GfxResult native = kGfxResult_InvalidParameter) {
     return {{code, native, text}, terminal};
-}
-
-void require(GfxResult result, const char* operation) {
-    if (result != kGfxResult_NoError)
-        throw error(rhi::ErrorCode::execution_failed, operation, true, result);
-}
-
-void allocation(bool valid) {
-    if (!valid)
-        throw error(rhi::ErrorCode::creation_failed, "GPU allocation failed", true, kGfxResult_OutOfMemory);
 }
 
 bool finite(float value) {
@@ -250,7 +242,7 @@ public:
             const auto& mesh = meshes[i];
             auto& entry = entries_[i];
             materials_changed |= entry.geometry != mesh.geometry || entry.program_slots != mesh.material_slots;
-            // Only acquire allocates; once it succeeds the rest of this position's update cannot throw.
+            // Acquire the new identity before releasing the previously held one.
             if (entry.stable_key != mesh.stable_key) {
                 acquire(mesh.stable_key);
                 release(entry.stable_key);
@@ -307,7 +299,7 @@ private:
     std::uint32_t duplicates_{};
 };
 
-void validate(const Frame& frame, MeshChecks& meshes) {
+Result<void> validate(const Frame& frame, MeshChecks& meshes) {
     const auto& ui = frame.ui_frame;
     bool good = ui.id != 0 && finite(ui.dpi_scale) && ui.dpi_scale > 0 && valid(frame.scene_viewport) &&
                 frame.scene_viewport.x >= 0 && frame.scene_viewport.y >= 0 &&
@@ -351,7 +343,8 @@ void validate(const Frame& frame, MeshChecks& meshes) {
             good &= valid_pixels(*draw.image, 4);
     }
     if (!good)
-        throw error(rhi::ErrorCode::invalid_argument, "Invalid renderer frame, camera, shape, color or image");
+        return std::unexpected(
+            error(rhi::ErrorCode::invalid_argument, "Invalid renderer frame, camera, shape, color or image"));
     for (const auto& shape : frame.overlay) {
         bool valid_shape = shape.kind <= OverlayShape::Kind::rectangle && finite(shape.width) && shape.width >= 0 &&
                            shape.width <= 64 && valid(shape.color) && valid(shape.border);
@@ -360,9 +353,10 @@ void validate(const Frame& frame, MeshChecks& meshes) {
         if (shape.kind == OverlayShape::Kind::rectangle)
             valid_shape &= shape.points[2] >= 0 && shape.points[3] >= 0;
         if (!valid_shape)
-            throw error(rhi::ErrorCode::invalid_argument, "Invalid viewport overlay shape");
+            return std::unexpected(error(rhi::ErrorCode::invalid_argument, "Invalid viewport overlay shape"));
     }
     meshes.commit(frame.meshes);
+    return {};
 }
 
 struct GridCamera {
@@ -419,15 +413,15 @@ std::optional<std::array<float, 16>> prepare_cavity_projection(const Frame& fram
 
 using detail::PipelineStyle;
 
-Instance prepare_instance(const MeshInstance& mesh) {
+Result<Instance> prepare_instance(const MeshInstance& mesh) {
     const auto& m = mesh.world;
     const auto normal = math::normal_transform({m[0], m[1], m[2], m[4], m[5], m[6], m[8], m[9], m[10]});
     if (!normal)
-        throw error(rhi::ErrorCode::invalid_argument,
-                    normal.error() == math::NormalTransformFailure::singular
-                        ? "Mesh world matrix is singular"
-                        : "Mesh normal transform cannot be represented by GPU floats");
-    return {mesh.world, normal->matrix, mesh.selected ? 1.0f : 0.0f, normal->mirror};
+        return std::unexpected(
+            error(rhi::ErrorCode::invalid_argument, normal.error() == math::NormalTransformFailure::singular
+                                                        ? "Mesh world matrix is singular"
+                                                        : "Mesh normal transform cannot be represented by GPU floats"));
+    return Instance{mesh.world, normal->matrix, mesh.selected ? 1.0f : 0.0f, normal->mirror};
 }
 
 struct TextureKey {
@@ -515,7 +509,7 @@ struct BufferOwner {
     ~BufferOwner() {
         if (buffer) {
             if (gfxDestroyBuffer(context, buffer) != kGfxResult_NoError)
-                std::abort();
+                fatal("Renderer buffer retirement failed");
         }
     }
 };
@@ -669,10 +663,8 @@ struct Renderer::State {
 
     ~State() {
         const auto result = close();
-        if (!result) {
-            std::fprintf(stderr, "Renderer cleanup failed: %s\n", result.error().cause.message.c_str());
-            std::abort();
-        }
+        if (!result)
+            fatal(result.error().cause.message);
     }
 
     Result<void> check() const {
@@ -695,16 +687,13 @@ struct Renderer::State {
         if (live_material_batches)
             return std::unexpected(error(rhi::ErrorCode::busy, "Release material batches before closing Renderer"));
         if (scene_lit) {
-            const auto result = scene_lit->close();
-            if (!result)
-                return result;
+            scene_lit->close();
             scene_lit.reset();
         }
         for (auto& [key, image] : images) {
             const auto r = gfxDestroyTexture(gfx, image.texture);
             if (r != kGfxResult_NoError)
-                return std::unexpected(
-                    error(rhi::ErrorCode::execution_failed, "UI texture retirement failed", true, r));
+                fatal("UI texture retirement failed");
             image.texture = {};
         }
         images.clear();
@@ -712,55 +701,46 @@ struct Renderer::State {
             (void)key;
             const auto r = gfxDestroyTexture(gfx, image->texture);
             if (r)
-                return std::unexpected(
-                    error(rhi::ErrorCode::execution_failed, "Material texture retirement failed", true, r));
+                fatal("Material texture retirement failed");
             image->texture = {};
         }
         material_images.clear();
         white_image.reset();
         active_material_programs.reset();
         material_program_sets.clear();
-        const auto retire = [this](auto& handle, auto destroy, const char* message) -> Result<void> {
+        const auto retire = [this](auto& handle, auto destroy, const char* message) {
             if (handle) {
                 const auto result = destroy(gfx, handle);
                 if (result)
-                    return std::unexpected(error(rhi::ErrorCode::execution_failed, message, true, result));
+                    fatal(message);
                 handle = {};
             }
-            return {};
         };
         for (auto& material_sampler : materials.samplers)
-            ATELIER_TRY(retire(material_sampler, gfxDestroySamplerState, "Material sampler retirement failed"));
+            retire(material_sampler, gfxDestroySamplerState, "Material sampler retirement failed");
         ++materials.revision;
         materials.batch = nullptr;
         materials.captured_programs.clear();
         materials.program_slots.clear();
-        for (const auto r : {program_indices.retire(gfx), program_offsets.retire(gfx)})
-            if (r)
-                return std::unexpected(
-                    error(rhi::ErrorCode::execution_failed, "Program slot table retirement failed", true, r));
-        ATELIER_TRY(retire(matcap, gfxDestroyTexture, "MatCap retirement failed"));
-        ATELIER_TRY(retire(depth, gfxDestroyTexture, "Depth retirement failed"));
-        ATELIER_TRY(retire(cavity_normals, gfxDestroyTexture, "Cavity normal retirement failed"));
-        ATELIER_TRY(retire(cavity_color, gfxDestroyTexture, "Cavity color retirement failed"));
+        program_indices.retire(gfx);
+        program_offsets.retire(gfx);
+        retire(matcap, gfxDestroyTexture, "MatCap retirement failed");
+        retire(depth, gfxDestroyTexture, "Depth retirement failed");
+        retire(cavity_normals, gfxDestroyTexture, "Cavity normal retirement failed");
+        retire(cavity_color, gfxDestroyTexture, "Cavity color retirement failed");
         for (auto& [key, geometry] : geometries) {
             (void)key;
             for (auto* buffer : {&geometry.gpu.vertices, &geometry.gpu.indices, &geometry.gpu.faces}) {
-                ATELIER_TRY(retire(*buffer, gfxDestroyBuffer, "Geometry retirement failed"));
+                retire(*buffer, gfxDestroyBuffer, "Geometry retirement failed");
             }
         }
         geometries.clear();
         mesh_groups.clear();
-        for (const auto r : {draw_order_slots.retire(gfx), instance_slots.retire(gfx)})
-            if (r)
-                return std::unexpected(
-                    error(rhi::ErrorCode::execution_failed, "Scene frame slot retirement failed", true, r));
-        if (const auto r = ui_slots.retire(gfx))
-            return std::unexpected(error(rhi::ErrorCode::execution_failed, "UI frame slot retirement failed", true, r));
-        if (const auto r = ui_texture_slots.retire(gfx))
-            return std::unexpected(
-                error(rhi::ErrorCode::execution_failed, "UI texture frame slot retirement failed", true, r));
-        ATELIER_TRY(retire(sampler, gfxDestroySamplerState, "Sampler retirement failed"));
+        draw_order_slots.retire(gfx);
+        instance_slots.retire(gfx);
+        ui_slots.retire(gfx);
+        ui_texture_slots.retire(gfx);
+        retire(sampler, gfxDestroySamplerState, "Sampler retirement failed");
         ui_pipeline = {};
         background = {};
         grid = {};
@@ -770,18 +750,13 @@ struct Renderer::State {
         if (!result)
             return std::unexpected(Error{result.error(), true});
         gfx = {};
-        try {
-            check_debug();
-        } catch (const Error& e) {
-            debug.Reset();
-            return std::unexpected(e);
-        }
+        auto checked = check_debug();
         debug.Reset();
-        return {};
+        return checked;
     }
 
-    void prepare_pipeline(rhi::Pipeline& output, const char* name, const char* vs, const char* ps,
-                          PipelineStyle style) {
+    Result<void> prepare_pipeline(rhi::Pipeline& output, const char* name, const char* vs, const char* ps,
+                                  PipelineStyle style) {
         const auto desc = detail::studio_pipeline(name, vs, ps, style);
         static_cast<void>(ATELIER_LOG(logging::Severity::info, "renderer", "renderer.pipeline_prepare_begin",
                                       "Synchronous pipeline preparation beginning: {}", std::string_view(name)));
@@ -793,13 +768,14 @@ struct Renderer::State {
                                       "Synchronous pipeline preparation returned: {} elapsed_ms={} success={}",
                                       std::string_view(name), elapsed, bool(prepared)));
         if (!prepared)
-            throw Error{prepared.error(), false};
+            return std::unexpected(Error{prepared.error(), false});
         output = std::move(*prepared);
+        return {};
     }
 
-    void prepare_matcap() {
+    Result<void> prepare_matcap() {
         if (matcap)
-            return;
+            return {};
         // Bake one neutral clay sphere in linear light, then encode its pixels as
         // sRGB. This is a fixed material capture, shared by every scene instance.
         constexpr unsigned side = 256;
@@ -829,15 +805,15 @@ struct Renderer::State {
                 pixels[offset + 3] = 255;
             }
         matcap = gfxCreateTexture2D(gfx, side, side, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB);
-        allocation(bool(matcap));
+        ATELIER_TRY(allocation(bool(matcap)));
         BufferOwner upload{gfx, gfxCreateBuffer(gfx, pixels.size(), pixels.data(), kGfxCpuAccess_Write)};
-        allocation(bool(upload.buffer));
-        require(gfxCommandCopyBufferToTexture(gfx, matcap, upload.buffer), "Upload clay MatCap");
+        ATELIER_TRY(allocation(bool(upload.buffer)));
+        return require(gfxCommandCopyBufferToTexture(gfx, matcap, upload.buffer), "Upload clay MatCap");
     }
 
-    void check_debug() {
+    Result<void> check_debug() {
         if (!debug)
-            return;
+            return {};
         const auto count = debug->GetNumStoredMessagesAllowedByRetrievalFilter();
         for (UINT64 i = 0; i < count; ++i) {
             SIZE_T size = 0;
@@ -846,12 +822,14 @@ struct Renderer::State {
             std::vector<std::byte> storage(size);
             auto* message = reinterpret_cast<D3D12_MESSAGE*>(storage.data());
             if (SUCCEEDED(debug->GetMessage(i, message, &size)) && message->Severity <= D3D12_MESSAGE_SEVERITY_ERROR)
-                throw Error{{rhi::ErrorCode::execution_failed, kGfxResult_DeviceError, message->pDescription}, true};
+                return std::unexpected(
+                    Error{{rhi::ErrorCode::execution_failed, kGfxResult_DeviceError, message->pDescription}, true});
         }
         debug->ClearStoredMessages();
+        return {};
     }
 
-    GfxTexture material_texture(material::ImageRef source, bool srgb) {
+    Result<GfxTexture> material_texture(material::ImageRef source, bool srgb) {
         if (!source) {
             if (!white_image)
                 white_image =
@@ -867,28 +845,30 @@ struct Renderer::State {
         image.texture = gfxCreateTexture2D(gfx, source->width(), source->height(),
                                            srgb ? DXGI_FORMAT_R8G8B8A8_UNORM_SRGB : DXGI_FORMAT_R8G8B8A8_UNORM,
                                            gfxCalculateMipCount(source->width(), source->height()));
-        allocation(bool(image.texture));
+        ATELIER_TRY(allocation(bool(image.texture)));
         BufferOwner upload{gfx,
                            gfxCreateBuffer(gfx, source->pixels().size(), source->pixels().data(), kGfxCpuAccess_Write)};
-        allocation(bool(upload.buffer));
-        require(gfxCommandCopyBufferToTexture(gfx, image.texture, upload.buffer), "Upload material texture");
-        require(gfxCommandGenerateMips(gfx, image.texture), "Generate material mipmaps");
+        ATELIER_TRY(allocation(bool(upload.buffer)));
+        ATELIER_TRY(
+            require(gfxCommandCopyBufferToTexture(gfx, image.texture, upload.buffer), "Upload material texture"));
+        ATELIER_TRY(require(gfxCommandGenerateMips(gfx, image.texture), "Generate material mipmaps"));
         ++stats.material_upload_count;
         return image.texture;
     }
 
-    void material_samplers() {
+    Result<void> material_samplers() {
         constexpr D3D12_TEXTURE_ADDRESS_MODE addresses[]{
             D3D12_TEXTURE_ADDRESS_MODE_WRAP, D3D12_TEXTURE_ADDRESS_MODE_CLAMP, D3D12_TEXTURE_ADDRESS_MODE_MIRROR};
         for (std::size_t i = 0; i < materials.samplers.size(); ++i)
             if (!materials.samplers[i]) {
                 materials.samplers[i] =
                     gfxCreateSamplerState(gfx, D3D12_FILTER_ANISOTROPIC, addresses[i], addresses[i]);
-                allocation(bool(materials.samplers[i]));
+                ATELIER_TRY(allocation(bool(materials.samplers[i])));
             }
+        return {};
     }
 
-    void prepare_materials(const Frame& frame) {
+    detail::CancellableResult<void> prepare_materials(const Frame& frame) {
         const auto* batch = frame.materials->state_.get();
         const bool changed =
             !materials.batch || mesh_checks.materials_changed || materials.captured_programs != batch->surfaces;
@@ -900,7 +880,7 @@ struct Renderer::State {
             materials.program_indices.clear();
             materials.program_offsets.clear();
             for (const auto& mesh : frame.meshes) {
-                check_stop(frame.stop_requested, "prepare");
+                ATELIER_TRY(check_stop(frame.stop_requested, "prepare"));
                 materials.program_offsets.push_back(static_cast<std::uint32_t>(materials.program_slots.size()));
                 for (auto slot : *mesh.material_slots) {
                     materials.program_slots.push_back(batch->surfaces[slot]);
@@ -909,16 +889,19 @@ struct Renderer::State {
             }
             ++materials.revision;
         }
-        materials.program_index_buffer = program_indices.write(
-            gfx, context.info().frames_in_flight, materials.program_indices, changed, "Program material indices");
-        materials.program_offset_buffer = program_offsets.write(
-            gfx, context.info().frames_in_flight, materials.program_offsets, changed, "Program material offsets");
+        ATELIER_TRY_BIND(indices, program_indices.write(gfx, context.info().frames_in_flight, materials.program_indices,
+                                                        changed, "Program material indices"));
+        materials.program_index_buffer = *indices;
+        ATELIER_TRY_BIND(offsets, program_offsets.write(gfx, context.info().frames_in_flight, materials.program_offsets,
+                                                        changed, "Program material offsets"));
+        materials.program_offset_buffer = *offsets;
         mesh_checks.materials_changed = false;
+        return {};
     }
 
     // Returns this frame's texture slot; new revisions join the single upload batch before drawing.
     template <class Pixels>
-    std::uint32_t texture(const std::shared_ptr<const Pixels>& owner) {
+    Result<std::uint32_t> texture(const std::shared_ptr<const Pixels>& owner) {
         constexpr bool color = std::is_same_v<Pixels, ui::ColorImage>;
         constexpr unsigned channels = color ? 4 : 1;
         const TextureKey key{owner->identity, owner->revision, color};
@@ -928,7 +911,7 @@ struct Renderer::State {
             image.owner = owner;
             image.texture = gfxCreateTexture2D(gfx, owner->width, owner->height,
                                                color ? DXGI_FORMAT_R8G8B8A8_UNORM_SRGB : DXGI_FORMAT_R8_UNORM);
-            allocation(bool(image.texture));
+            ATELIER_TRY(allocation(bool(image.texture)));
             // The protocol permits padded CPU rows; gfx's upload contract is tight.
             const auto pitch = std::size_t(owner->width) * channels;
             const auto bytes = pitch * owner->height;
@@ -937,8 +920,10 @@ struct Renderer::State {
             constexpr std::size_t alignment = D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT;
             const auto offset = (upload_pixels.size() + alignment - 1) & ~(alignment - 1);
             // FrameSlots uses a uint32 count rounded up to a power of two.
-            if (offset > std::bit_floor(UINT32_MAX) - bytes)
-                throw std::bad_alloc{};
+            constexpr auto capacity = std::bit_floor(UINT32_MAX);
+            if (bytes > capacity || offset > capacity - bytes)
+                return std::unexpected(
+                    error(rhi::ErrorCode::invalid_argument, "UI texture upload exceeds frame slot capacity"));
             upload_pixels.resize(offset + bytes);
             for (std::uint32_t y = 0; y < owner->height; ++y)
                 std::memcpy(upload_pixels.data() + offset + std::size_t(y) * pitch,
@@ -1010,92 +995,100 @@ struct Renderer::State {
         }
     }
 
-    void draw_grid(const Frame& frame, bool with_depth) {
+    Result<void> draw_grid(const Frame& frame, bool with_depth) {
         if (!grid_camera)
-            return;
+            return {};
         auto& pipeline = with_depth ? grid_depth : grid;
         if (!pipeline)
-            prepare_pipeline(pipeline, "viewport reference grid", shaders::viewport_vs,
-                             with_depth ? shaders::grid_ps : shaders::grid_empty_ps,
-                             with_depth ? PipelineStyle::grid_depth : PipelineStyle::grid);
-        require(gfxCommandBindDepthStencilTarget(gfx, with_depth ? depth : GfxTexture{}), "Bind guide occlusion depth");
+            ATELIER_TRY(prepare_pipeline(pipeline, "viewport reference grid", shaders::viewport_vs,
+                                         with_depth ? shaders::grid_ps : shaders::grid_empty_ps,
+                                         with_depth ? PipelineStyle::grid_depth : PipelineStyle::grid));
+        ATELIER_TRY(require(gfxCommandBindDepthStencilTarget(gfx, with_depth ? depth : GfxTexture{}),
+                            "Bind guide occlusion depth"));
         const auto program = pipeline.program();
-        require(gfxProgramSetParameter(gfx, program, "raster_viewport_transform", raster_transform),
-                "Set grid raster viewport");
+        ATELIER_TRY(require(gfxProgramSetParameter(gfx, program, "raster_viewport_transform", raster_transform),
+                            "Set grid raster viewport"));
         const std::array<std::uint32_t, 2> guides{frame.view.reference_grid ? 1u : 0u,
                                                   frame.view.origin_axes ? 1u : 0u};
-        require(gfxProgramSetParameter(gfx, program, "inverse_view_projection", grid_camera->inverse),
-                "Set grid inverse camera");
-        require(gfxProgramSetParameter(gfx, program, "view_projection", grid_camera->view_projection),
-                "Set grid camera");
-        require(gfxProgramSetParameter(gfx, program, "camera_far_depth", frame.camera.far_depth),
-                "Set grid far clipping");
-        require(gfxProgramSetParameter(gfx, program, "guides", guides), "Set reference guides");
-        require(gfxProgramSetParameter(gfx, program, "grid_spacing", frame.view.grid_spacing), "Set grid spacing");
-        require(gfxProgramSetParameter(gfx, program, "grid_plane", static_cast<std::uint32_t>(frame.view.grid_plane)),
-                "Set grid plane");
-        require(gfxCommandBindKernel(gfx, pipeline.kernel()), "Bind reference grid");
-        require(gfxCommandDraw(gfx, 3), "Draw reference grid");
+        ATELIER_TRY(require(gfxProgramSetParameter(gfx, program, "inverse_view_projection", grid_camera->inverse),
+                            "Set grid inverse camera"));
+        ATELIER_TRY(require(gfxProgramSetParameter(gfx, program, "view_projection", grid_camera->view_projection),
+                            "Set grid camera"));
+        ATELIER_TRY(require(gfxProgramSetParameter(gfx, program, "camera_far_depth", frame.camera.far_depth),
+                            "Set grid far clipping"));
+        ATELIER_TRY(require(gfxProgramSetParameter(gfx, program, "guides", guides), "Set reference guides"));
+        ATELIER_TRY(
+            require(gfxProgramSetParameter(gfx, program, "grid_spacing", frame.view.grid_spacing), "Set grid spacing"));
+        ATELIER_TRY(require(
+            gfxProgramSetParameter(gfx, program, "grid_plane", static_cast<std::uint32_t>(frame.view.grid_plane)),
+            "Set grid plane"));
+        ATELIER_TRY(require(gfxCommandBindKernel(gfx, pipeline.kernel()), "Bind reference grid"));
+        ATELIER_TRY(require(gfxCommandDraw(gfx, 3), "Draw reference grid"));
         ++stats.viewport_draw_calls;
+        return {};
     }
 
-    void draw_cavity(const Frame& frame) {
+    Result<void> draw_cavity(const Frame& frame) {
         if (!cavity_composite)
-            prepare_pipeline(cavity_composite, "studio screen cavity", shaders::viewport_vs, shaders::cavity_ps,
-                             PipelineStyle::ui);
-        require(gfxCommandBindDepthStencilTarget(gfx, {}), "Unbind depth for cavity sampling");
+            ATELIER_TRY(prepare_pipeline(cavity_composite, "studio screen cavity", shaders::viewport_vs,
+                                         shaders::cavity_ps, PipelineStyle::ui));
+        ATELIER_TRY(require(gfxCommandBindDepthStencilTarget(gfx, {}), "Unbind depth for cavity sampling"));
         const auto program = cavity_composite.program();
-        require(gfxProgramSetParameter(gfx, program, "raster_viewport_transform", raster_transform),
-                "Set cavity raster viewport");
+        ATELIER_TRY(require(gfxProgramSetParameter(gfx, program, "raster_viewport_transform", raster_transform),
+                            "Set cavity raster viewport"));
         const auto& v = frame.scene_viewport;
         const auto& c = frame.view.cavity;
         const std::array<float, 4> viewport{v.x, v.y, v.width, v.height};
         const std::array<float, 4> controls{c.ridge, c.valley, c.radius, 0};
-        require(gfxProgramSetParameter(gfx, program, "cavity_normals", cavity_normals), "Bind cavity normals");
-        require(gfxProgramSetParameter(gfx, program, "cavity_color", cavity_color), "Bind studio color");
-        require(gfxProgramSetParameter(gfx, program, "cavity_depth", depth), "Bind cavity depth");
-        require(gfxProgramSetParameter(gfx, program, "cavity_inverse_projection", *cavity_projection),
-                "Set cavity projection");
-        require(gfxProgramSetParameter(gfx, program, "cavity_viewport", viewport), "Set cavity viewport");
-        require(gfxProgramSetParameter(gfx, program, "cavity_controls", controls), "Set cavity controls");
-        require(gfxCommandBindKernel(gfx, cavity_composite.kernel()), "Bind cavity pass");
-        require(gfxCommandDraw(gfx, 3), "Draw studio cavity");
+        ATELIER_TRY(
+            require(gfxProgramSetParameter(gfx, program, "cavity_normals", cavity_normals), "Bind cavity normals"));
+        ATELIER_TRY(require(gfxProgramSetParameter(gfx, program, "cavity_color", cavity_color), "Bind studio color"));
+        ATELIER_TRY(require(gfxProgramSetParameter(gfx, program, "cavity_depth", depth), "Bind cavity depth"));
+        ATELIER_TRY(require(gfxProgramSetParameter(gfx, program, "cavity_inverse_projection", *cavity_projection),
+                            "Set cavity projection"));
+        ATELIER_TRY(require(gfxProgramSetParameter(gfx, program, "cavity_viewport", viewport), "Set cavity viewport"));
+        ATELIER_TRY(require(gfxProgramSetParameter(gfx, program, "cavity_controls", controls), "Set cavity controls"));
+        ATELIER_TRY(require(gfxCommandBindKernel(gfx, cavity_composite.kernel()), "Bind cavity pass"));
+        ATELIER_TRY(require(gfxCommandDraw(gfx, 3), "Draw studio cavity"));
         ++stats.viewport_draw_calls;
+        return {};
     }
 
-    void draw(const Frame& frame, const ui::PixelExtent extent, Capture* capture) {
-        check_stop(frame.stop_requested, "prepare");
+    detail::CancellableResult<void> draw(const Frame& frame, const ui::PixelExtent extent, Capture* capture) {
+        ATELIER_TRY(check_stop(frame.stop_requested, "prepare"));
         const auto& viewport = frame.scene_viewport;
         const bool has_viewport = viewport.width > 0 && viewport.height > 0;
         const bool draw_scene = !instances.empty() && has_viewport;
         if (!cavity_projection || cavity_extent != extent) {
-            if (cavity_normals)
-                require(gfxDestroyTexture(gfx, std::exchange(cavity_normals, {})), "Retire unused cavity normals");
-            if (cavity_color)
-                require(gfxDestroyTexture(gfx, std::exchange(cavity_color, {})), "Retire unused studio color");
+            if (cavity_normals && gfxDestroyTexture(gfx, std::exchange(cavity_normals, {})))
+                fatal("Retire unused cavity normals");
+            if (cavity_color && gfxDestroyTexture(gfx, std::exchange(cavity_color, {})))
+                fatal("Retire unused studio color");
             cavity_extent = {};
         }
-        require(gfxCommandClearBackBuffer(gfx), "Clear window");
-        require(gfxCommandBindDepthStencilTarget(gfx, {}), "Unbind depth for viewport background");
+        ATELIER_TRY(require(gfxCommandClearBackBuffer(gfx), "Clear window"));
+        ATELIER_TRY(require(gfxCommandBindDepthStencilTarget(gfx, {}), "Unbind depth for viewport background"));
         if (has_viewport) {
             const auto raster = detail::raster_viewport(viewport);
             raster_transform = raster.clip_transform;
-            require(gfxCommandSetViewport(gfx, raster.hardware.x, raster.hardware.y, raster.hardware.width,
-                                          raster.hardware.height),
-                    "Set scene raster viewport");
-            require(gfxCommandSetScissorRect(gfx, raster.scissor.left, raster.scissor.top,
-                                             raster.scissor.right - raster.scissor.left,
-                                             raster.scissor.bottom - raster.scissor.top),
-                    "Set scene pixel-center scissor");
+            ATELIER_TRY(require(gfxCommandSetViewport(gfx, raster.hardware.x, raster.hardware.y, raster.hardware.width,
+                                                      raster.hardware.height),
+                                "Set scene raster viewport"));
+            auto scissor = require(gfxCommandSetScissorRect(gfx, raster.scissor.left, raster.scissor.top,
+                                                            raster.scissor.right - raster.scissor.left,
+                                                            raster.scissor.bottom - raster.scissor.top),
+                                   "Set scene pixel-center scissor");
+            if (!scissor)
+                return std::unexpected(std::move(scissor).error());
             if (frame.view.shading != Shading::scene_lit && frame.view.background == Background::gradient) {
                 if (!background)
-                    prepare_pipeline(background, "viewport background", shaders::viewport_vs, shaders::background_ps,
-                                     PipelineStyle::background);
-                require(
+                    ATELIER_TRY(prepare_pipeline(background, "viewport background", shaders::viewport_vs,
+                                                 shaders::background_ps, PipelineStyle::background));
+                ATELIER_TRY(require(
                     gfxProgramSetParameter(gfx, background.program(), "raster_viewport_transform", raster_transform),
-                    "Set background raster viewport");
-                require(gfxCommandBindKernel(gfx, background.kernel()), "Bind viewport background");
-                require(gfxCommandDraw(gfx, 3), "Draw viewport background");
+                    "Set background raster viewport"));
+                ATELIER_TRY(require(gfxCommandBindKernel(gfx, background.kernel()), "Bind viewport background"));
+                ATELIER_TRY(require(gfxCommandDraw(gfx, 3), "Draw viewport background"));
                 ++stats.viewport_draw_calls;
             }
         }
@@ -1107,7 +1100,7 @@ struct Renderer::State {
             timing::Scope scene_stage{phases::encode_scene};
             {
                 timing::Scope materials_stage{phases::encode_materials};
-                prepare_materials(frame);
+                ATELIER_TRY(prepare_materials(frame));
             }
             const bool lines_only = frame.view.wireframe == Wireframe::only;
             const bool lighting = frame.view.shading == Shading::scene_lit && !lines_only;
@@ -1123,57 +1116,59 @@ struct Renderer::State {
                     constexpr float empty[4]{};
                     cavity_normals =
                         gfxCreateTexture2D(gfx, extent.width, extent.height, DXGI_FORMAT_R16G16B16A16_FLOAT, 1, empty);
-                    allocation(bool(cavity_normals));
+                    ATELIER_TRY(allocation(bool(cavity_normals)));
                     cavity_color =
                         gfxCreateTexture2D(gfx, extent.width, extent.height, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB);
-                    allocation(bool(cavity_color));
+                    ATELIER_TRY(allocation(bool(cavity_color)));
                     cavity_extent = extent;
                 }
-                require(gfxCommandClearTexture(gfx, cavity_normals), "Clear cavity coverage");
+                ATELIER_TRY(require(gfxCommandClearTexture(gfx, cavity_normals), "Clear cavity coverage"));
             }
             if (!lighting)
-                prepare_matcap();
-            check_stop(frame.stop_requested, "upload");
+                ATELIER_TRY(prepare_matcap());
+            ATELIER_TRY(check_stop(frame.stop_requested, "upload"));
             if (depth_extent != extent) {
-                if (depth)
-                    require(gfxDestroyTexture(gfx, std::exchange(depth, {})), "Retire old depth");
+                if (depth && gfxDestroyTexture(gfx, std::exchange(depth, {})))
+                    fatal("Retire old depth");
                 const float clear[4] = {0, 0, 0, 0};
                 depth = gfxCreateTexture2D(gfx, extent.width, extent.height, DXGI_FORMAT_D32_FLOAT, 1, clear);
-                allocation(bool(depth));
+                ATELIER_TRY(allocation(bool(depth)));
                 depth_extent = extent;
             }
-            require(gfxCommandClearTexture(gfx, depth), "Clear depth");
+            ATELIER_TRY(require(gfxCommandClearTexture(gfx, depth), "Clear depth"));
             GfxBuffer instance_data{};
             GfxBuffer order{};
-            require(gfxCommandBindDepthStencilTarget(gfx, depth), "Bind scene depth");
+            ATELIER_TRY(require(gfxCommandBindDepthStencilTarget(gfx, depth), "Bind scene depth"));
             {
                 timing::Scope upload_stage{phases::encode_scene_upload};
                 for (const auto& group : mesh_groups) {
-                    check_stop(frame.stop_requested, "upload");
+                    ATELIER_TRY(check_stop(frame.stop_requested, "upload"));
                     auto& geometry = *group.geometry;
                     if (!geometry.gpu.vertices) {
-                        const auto welded = detail::weld(*geometry.source, frame.stop_requested);
+                        ATELIER_TRY_BIND(welded, detail::weld(*geometry.source, frame.stop_requested));
                         auto& gpu = geometry.gpu;
-                        check_stop(frame.stop_requested, "upload");
+                        ATELIER_TRY(check_stop(frame.stop_requested, "upload"));
                         gpu.vertices = gfxCreateBuffer<geometry::Vertex>(
-                            gfx, static_cast<std::uint32_t>(welded.vertices.size()), welded.vertices.data());
-                        allocation(bool(gpu.vertices));
-                        check_stop(frame.stop_requested, "upload");
+                            gfx, static_cast<std::uint32_t>(welded->vertices.size()), welded->vertices.data());
+                        ATELIER_TRY(allocation(bool(gpu.vertices)));
+                        ATELIER_TRY(check_stop(frame.stop_requested, "upload"));
                         gpu.indices = gfxCreateBuffer<std::uint32_t>(
-                            gfx, static_cast<std::uint32_t>(welded.indices.size()), welded.indices.data());
-                        allocation(bool(gpu.indices));
-                        check_stop(frame.stop_requested, "upload");
+                            gfx, static_cast<std::uint32_t>(welded->indices.size()), welded->indices.data());
+                        ATELIER_TRY(allocation(bool(gpu.indices)));
+                        ATELIER_TRY(check_stop(frame.stop_requested, "upload"));
                         gpu.faces = gfxCreateBuffer<detail::GpuFace>(
-                            gfx, static_cast<std::uint32_t>(welded.faces.size()), welded.faces.data());
-                        allocation(bool(gpu.faces));
-                        gpu.triangle_count = static_cast<std::uint32_t>(welded.faces.size());
+                            gfx, static_cast<std::uint32_t>(welded->faces.size()), welded->faces.data());
+                        ATELIER_TRY(allocation(bool(gpu.faces)));
+                        gpu.triangle_count = static_cast<std::uint32_t>(welded->faces.size());
                         gpu.generation = ++geometry_uploads;
                     }
                     geometry.used = true;
                 }
-                if (!draw_instances.empty())
-                    order = draw_order_slots.write(gfx, context.info().frames_in_flight, draw_instances, true,
-                                                   "Draw order");
+                if (!draw_instances.empty()) {
+                    ATELIER_TRY_BIND(written, draw_order_slots.write(gfx, context.info().frames_in_flight,
+                                                                     draw_instances, true, "Draw order"));
+                    order = *written;
+                }
             }
             const auto select = [&](detail::MaterialPass pass) -> const rhi::Pipeline& {
                 return materials.batch->pipeline(pass);
@@ -1184,19 +1179,21 @@ struct Renderer::State {
             const auto& visible_lines = select(detail::MaterialPass::visible_lines);
             const auto& all_lines = select(detail::MaterialPass::all_lines);
             std::array<float, 16> view_projection{};
-            const auto draw_batches = [&](const rhi::Pipeline& pipeline, std::uint32_t pass) {
+            const auto draw_batches = [&](const rhi::Pipeline& pipeline,
+                                          std::uint32_t pass) -> detail::CancellableResult<void> {
                 const bool selected_only =
                     (pass == 3 || (pass == 1 && lighting)) && frame.view.wireframe != Wireframe::overlay;
                 if (selected_only && !selected)
-                    return;
+                    return {};
                 if (!order)
-                    return; // Nothing visible.
+                    return {}; // Nothing visible.
                 if (!instance_data) {
                     timing::Scope instance_upload{phases::encode_scene_upload};
                     // Instance transforms were validated before encoding. Upload
                     // editing data only when an actual raster pass consumes it.
-                    instance_data =
-                        instance_slots.write(gfx, context.info().frames_in_flight, instances, true, "Scene instance");
+                    ATELIER_TRY_BIND(written, instance_slots.write(gfx, context.info().frames_in_flight, instances,
+                                                                   true, "Scene instance"));
+                    instance_data = *written;
                     // Match SceneLit's CPU-composed view/projection before the
                     // precise clip path; chained GPU matrices differ by ULPs.
                     math::Matrix4d camera_view;
@@ -1210,47 +1207,57 @@ struct Renderer::State {
                         view_projection[i] = static_cast<float>(combined.elements[i]);
                 }
                 const auto program = pipeline.program();
-                require(gfxProgramSetParameter(gfx, program, "raster_viewport_transform", raster_transform),
-                        "Set scene raster viewport");
-                detail::bind_materials(gfx, program, materials);
+                ATELIER_TRY(require(gfxProgramSetParameter(gfx, program, "raster_viewport_transform", raster_transform),
+                                    "Set scene raster viewport"));
+                ATELIER_TRY(detail::bind_materials(gfx, program, materials));
                 const std::array<std::uint32_t, 4> display{static_cast<std::uint32_t>(frame.view.shading),
                                                            static_cast<std::uint32_t>(frame.view.wireframe),
                                                            frame.view.triangle_edges ? 1u : 0u, pass};
                 const std::array<float, 2> wire_style{frame.view.wire_width, frame.view.wire_opacity};
-                require(gfxProgramSetParameter(gfx, program, "instances", instance_data), "Bind mesh instances");
-                require(gfxProgramSetParameter(gfx, program, "draw_instances", order), "Bind mesh draw order");
-                require(gfxProgramSetParameter(gfx, program, "view", frame.camera.view), "Set view matrix");
-                require(gfxProgramSetParameter(gfx, program, "projection", frame.camera.projection),
-                        "Set projection matrix");
-                require(gfxProgramSetParameter(gfx, program, "scene_view_projection", view_projection),
-                        "Set raster view projection");
-                require(gfxProgramSetParameter(gfx, program, "camera_far_depth", frame.camera.far_depth),
-                        "Set scene far clipping");
-                require(gfxProgramSetParameter(gfx, program, "display", display), "Set viewport display policy");
-                require(gfxProgramSetParameter(gfx, program, "wire_style", wire_style), "Set wire appearance");
-                require(gfxProgramSetParameter(gfx, program, "matcap", matcap), "Bind MatCap");
-                require(gfxProgramSetParameter(gfx, program, "matcap_sampler", sampler), "Bind MatCap sampler");
-                require(gfxCommandBindKernel(gfx, pipeline.kernel()), "Bind scene pipeline");
+                ATELIER_TRY(
+                    require(gfxProgramSetParameter(gfx, program, "instances", instance_data), "Bind mesh instances"));
+                ATELIER_TRY(
+                    require(gfxProgramSetParameter(gfx, program, "draw_instances", order), "Bind mesh draw order"));
+                ATELIER_TRY(
+                    require(gfxProgramSetParameter(gfx, program, "view", frame.camera.view), "Set view matrix"));
+                ATELIER_TRY(require(gfxProgramSetParameter(gfx, program, "projection", frame.camera.projection),
+                                    "Set projection matrix"));
+                ATELIER_TRY(require(gfxProgramSetParameter(gfx, program, "scene_view_projection", view_projection),
+                                    "Set raster view projection"));
+                ATELIER_TRY(require(gfxProgramSetParameter(gfx, program, "camera_far_depth", frame.camera.far_depth),
+                                    "Set scene far clipping"));
+                ATELIER_TRY(
+                    require(gfxProgramSetParameter(gfx, program, "display", display), "Set viewport display policy"));
+                ATELIER_TRY(
+                    require(gfxProgramSetParameter(gfx, program, "wire_style", wire_style), "Set wire appearance"));
+                ATELIER_TRY(require(gfxProgramSetParameter(gfx, program, "matcap", matcap), "Bind MatCap"));
+                ATELIER_TRY(
+                    require(gfxProgramSetParameter(gfx, program, "matcap_sampler", sampler), "Bind MatCap sampler"));
+                ATELIER_TRY(require(gfxCommandBindKernel(gfx, pipeline.kernel()), "Bind scene pipeline"));
                 timing::Scope draws_stage{phases::encode_draws};
                 for (const auto& group : mesh_groups) {
-                    check_stop(frame.stop_requested, "encode");
+                    ATELIER_TRY(check_stop(frame.stop_requested, "encode"));
                     const auto first = selected_only ? group.selected_first : group.visible_first;
                     const auto count = selected_only ? group.selected_count : group.visible_count;
                     if (!count)
                         continue;
                     const auto& geometry = *group.geometry;
-                    require(gfxProgramSetParameter(gfx, program, "vertices", geometry.gpu.vertices),
-                            "Bind mesh vertices");
-                    require(gfxProgramSetParameter(gfx, program, "faces", geometry.gpu.faces),
-                            "Bind mesh triangle records");
-                    require(gfxProgramSetParameter(gfx, program, "triangle_indices", geometry.gpu.indices),
-                            "Bind mesh triangle corners");
-                    require(gfxProgramSetParameter(gfx, program, "first_triangle", 0u), "Set mesh triangle offset");
-                    require(gfxProgramSetParameter(gfx, program, "first_instance", first), "Set mesh instance offset");
-                    require(gfxCommandBindIndexBuffer(gfx, geometry.gpu.indices), "Bind mesh indices");
-                    require(gfxCommandDrawIndexed(gfx, geometry.gpu.triangle_count * 3, count), "Draw mesh batch");
+                    ATELIER_TRY(require(gfxProgramSetParameter(gfx, program, "vertices", geometry.gpu.vertices),
+                                        "Bind mesh vertices"));
+                    ATELIER_TRY(require(gfxProgramSetParameter(gfx, program, "faces", geometry.gpu.faces),
+                                        "Bind mesh triangle records"));
+                    ATELIER_TRY(require(gfxProgramSetParameter(gfx, program, "triangle_indices", geometry.gpu.indices),
+                                        "Bind mesh triangle corners"));
+                    ATELIER_TRY(require(gfxProgramSetParameter(gfx, program, "first_triangle", 0u),
+                                        "Set mesh triangle offset"));
+                    ATELIER_TRY(require(gfxProgramSetParameter(gfx, program, "first_instance", first),
+                                        "Set mesh instance offset"));
+                    ATELIER_TRY(require(gfxCommandBindIndexBuffer(gfx, geometry.gpu.indices), "Bind mesh indices"));
+                    ATELIER_TRY(
+                        require(gfxCommandDrawIndexed(gfx, geometry.gpu.triangle_count * 3, count), "Draw mesh batch"));
                     ++stats.scene_draw_calls;
                 }
+                return {};
             };
             if (lighting) {
                 lit_draws.clear();
@@ -1259,40 +1266,42 @@ struct Renderer::State {
                     lit_draws.push_back({group.geometry->gpu, group.visible_first, group.visible_count});
                 {
                     timing::Scope lit_stage{phases::encode_lit};
-                    scene_lit->draw(frame, extent, depth, {lit_draws, instance_groups, order}, materials, stats);
+                    ATELIER_TRY(
+                        scene_lit->draw(frame, extent, depth, {lit_draws, instance_groups, order}, materials, stats));
                 }
-                require(gfxCommandBindDepthStencilTarget(gfx, depth), "Bind Scene Lit editing depth");
+                ATELIER_TRY(require(gfxCommandBindDepthStencilTarget(gfx, depth), "Bind Scene Lit editing depth"));
                 if (editing_depth) {
                     // AA has consumed and retained its sampled depth. Editing
                     // guides and capture share the public, unjittered camera.
-                    require(gfxCommandClearTexture(gfx, depth), "Clear sampled scene depth for editing");
-                    draw_batches(scene_depth, 2);
+                    ATELIER_TRY(require(gfxCommandClearTexture(gfx, depth), "Clear sampled scene depth for editing"));
+                    ATELIER_TRY(draw_batches(scene_depth, 2));
                 }
                 {
                     timing::Scope lit_stage{phases::encode_lit};
-                    scene_lit->draw_debug(frame, extent, depth, stats);
+                    ATELIER_TRY(scene_lit->draw_debug(frame, extent, depth, stats));
                 }
-                draw_grid(frame, true);
+                ATELIER_TRY(draw_grid(frame, true));
                 if (editing_lines)
-                    draw_batches(visible_lines, 1);
+                    ATELIER_TRY(draw_batches(visible_lines, 1));
             } else if (lines_only) {
-                draw_batches(scene_depth, 2);
-                draw_grid(frame, true);
-                draw_batches(frame.view.hidden_lines ? visible_lines : all_lines, 1);
+                ATELIER_TRY(draw_batches(scene_depth, 2));
+                ATELIER_TRY(draw_grid(frame, true));
+                ATELIER_TRY(draw_batches(frame.view.hidden_lines ? visible_lines : all_lines, 1));
             } else {
                 if (cavity_projection) {
-                    require(gfxCommandBindColorTarget(gfx, 0, cavity_color), "Bind studio surface color");
-                    require(gfxCommandBindColorTarget(gfx, 1, cavity_normals), "Bind cavity surface normals");
-                    draw_batches(cavity_surface, 0);
-                    require(gfxCommandBindColorTarget(gfx, 1, {}), "Unbind cavity surface normals");
-                    require(gfxCommandBindColorTarget(gfx, 0, {}), "Restore window color target");
-                    draw_cavity(frame);
-                    require(gfxCommandBindDepthStencilTarget(gfx, depth), "Restore studio editing depth");
+                    ATELIER_TRY(require(gfxCommandBindColorTarget(gfx, 0, cavity_color), "Bind studio surface color"));
+                    ATELIER_TRY(
+                        require(gfxCommandBindColorTarget(gfx, 1, cavity_normals), "Bind cavity surface normals"));
+                    ATELIER_TRY(draw_batches(cavity_surface, 0));
+                    ATELIER_TRY(require(gfxCommandBindColorTarget(gfx, 1, {}), "Unbind cavity surface normals"));
+                    ATELIER_TRY(require(gfxCommandBindColorTarget(gfx, 0, {}), "Restore window color target"));
+                    ATELIER_TRY(draw_cavity(frame));
+                    ATELIER_TRY(require(gfxCommandBindDepthStencilTarget(gfx, depth), "Restore studio editing depth"));
                 } else
-                    draw_batches(scene, 0);
-                draw_grid(frame, true);
+                    ATELIER_TRY(draw_batches(scene, 0));
+                ATELIER_TRY(draw_grid(frame, true));
                 if (cavity_projection && editing_lines)
-                    draw_batches(visible_lines, 3);
+                    ATELIER_TRY(draw_batches(visible_lines, 3));
             }
         } else {
             ++materials.revision;
@@ -1302,8 +1311,8 @@ struct Renderer::State {
             mesh_checks.materials_changed = true;
             if (has_viewport) {
                 if (scene_lit)
-                    scene_lit->draw_debug(frame, extent, depth, stats);
-                draw_grid(frame, false);
+                    ATELIER_TRY(scene_lit->draw_debug(frame, extent, depth, stats));
+                ATELIER_TRY(draw_grid(frame, false));
             }
         }
         for (auto it = material_images.begin(); it != material_images.end();) {
@@ -1312,7 +1321,8 @@ struct Renderer::State {
                 continue;
             }
             auto& texture = it->second->texture;
-            require(gfxDestroyTexture(gfx, texture), "Retire unused material texture");
+            if (gfxDestroyTexture(gfx, texture))
+                fatal("Retire unused material texture");
             texture = {};
             it = material_images.erase(it);
         }
@@ -1323,13 +1333,14 @@ struct Renderer::State {
                 continue;
             }
             for (const auto& buffer : {it->second.gpu.vertices, it->second.gpu.indices, it->second.gpu.faces})
-                if (buffer)
-                    require(gfxDestroyBuffer(gfx, buffer), "Retire unused mesh geometry");
+                if (buffer && gfxDestroyBuffer(gfx, buffer))
+                    fatal("Retire unused mesh geometry");
             it = geometries.erase(it);
         }
-        require(gfxCommandBindDepthStencilTarget(gfx, {}), "Unbind scene depth");
-        require(gfxCommandSetViewport(gfx, 0, 0, static_cast<float>(extent.width), static_cast<float>(extent.height)),
-                "Set UI viewport");
+        ATELIER_TRY(require(gfxCommandBindDepthStencilTarget(gfx, {}), "Unbind scene depth"));
+        ATELIER_TRY(require(
+            gfxCommandSetViewport(gfx, 0, 0, static_cast<float>(extent.width), static_cast<float>(extent.height)),
+            "Set UI viewport"));
         for (auto& [key, image] : images)
             image.used = false;
         std::optional<timing::Scope> ui_stage{std::in_place, phases::encode_ui};
@@ -1337,47 +1348,54 @@ struct Renderer::State {
         upload_pixels.clear();
         if (!ui_instances.empty()) {
             ui_textures.clear();
-            for (const auto& [index, item] : ui_textured)
-                ui_instances[index].shading |= (item->coverage ? texture(item->coverage) : texture(item->image)) << 2;
+            for (const auto& [index, item] : ui_textured) {
+                ATELIER_TRY_BIND(slot, item->coverage ? texture(item->coverage) : texture(item->image));
+                ui_instances[index].shading |= *slot << 2;
+            }
             if (!ui_texture_uploads.empty()) {
-                const auto staging =
-                    ui_texture_slots.write(gfx, context.info().frames_in_flight, upload_pixels, true, "UI texture");
+                ATELIER_TRY_BIND(staging, ui_texture_slots.write(gfx, context.info().frames_in_flight, upload_pixels,
+                                                                 true, "UI texture"));
                 for (const auto& pending : ui_texture_uploads) {
-                    BufferOwner upload{gfx, gfxCreateBufferRange(gfx, staging, pending.offset, pending.bytes)};
-                    allocation(bool(upload.buffer));
-                    require(gfxCommandCopyBufferToTexture(gfx, pending.texture, upload.buffer), "Upload UI texture");
+                    BufferOwner upload{gfx, gfxCreateBufferRange(gfx, *staging, pending.offset, pending.bytes)};
+                    ATELIER_TRY(allocation(bool(upload.buffer)));
+                    ATELIER_TRY(require(gfxCommandCopyBufferToTexture(gfx, pending.texture, upload.buffer),
+                                        "Upload UI texture"));
                 }
             }
             GfxBuffer ui_data;
             {
                 timing::Scope ui_upload{phases::encode_ui_upload};
-                ui_data = ui_slots.write(gfx, context.info().frames_in_flight, ui_instances, true, "UI instance");
+                ATELIER_TRY_BIND(
+                    written, ui_slots.write(gfx, context.info().frames_in_flight, ui_instances, true, "UI instance"));
+                ui_data = *written;
             }
             stats.overlay_shapes = overlay_instances;
             const auto program = ui_pipeline.program();
             const std::array<float, 2> size{static_cast<float>(extent.width), static_cast<float>(extent.height)};
-            require(gfxProgramSetParameter(gfx, program, "ui_instances", ui_data), "Bind UI instances");
-            require(gfxProgramSetParameter(gfx, program, "target_size", size), "Set UI target");
-            require(gfxProgramSetParameter(gfx, program, "ui_textures", ui_textures.data(),
-                                           static_cast<std::uint32_t>(ui_textures.size())),
-                    "Bind UI textures");
-            require(gfxProgramSetParameter(gfx, program, "ui_sampler", sampler), "Bind UI sampler");
-            require(gfxCommandSetScissorRect(gfx, 0, 0, static_cast<std::int32_t>(extent.width),
-                                             static_cast<std::int32_t>(extent.height)),
-                    "Set UI scissor");
-            require(gfxCommandBindKernel(gfx, ui_pipeline.kernel()), "Bind UI pipeline");
+            ATELIER_TRY(require(gfxProgramSetParameter(gfx, program, "ui_instances", ui_data), "Bind UI instances"));
+            ATELIER_TRY(require(gfxProgramSetParameter(gfx, program, "target_size", size), "Set UI target"));
+            ATELIER_TRY(require(gfxProgramSetParameter(gfx, program, "ui_textures", ui_textures.data(),
+                                                       static_cast<std::uint32_t>(ui_textures.size())),
+                                "Bind UI textures"));
+            ATELIER_TRY(require(gfxProgramSetParameter(gfx, program, "ui_sampler", sampler), "Bind UI sampler"));
+            ATELIER_TRY(require(gfxCommandSetScissorRect(gfx, 0, 0, static_cast<std::int32_t>(extent.width),
+                                                         static_cast<std::int32_t>(extent.height)),
+                                "Set UI scissor"));
+            ATELIER_TRY(require(gfxCommandBindKernel(gfx, ui_pipeline.kernel()), "Bind UI pipeline"));
             // Clips are per instance and D3D blends a draw's primitives in submission
             // order, so each layer keeps painter order in one draw.
-            const auto draw_layer = [&](std::size_t first, std::size_t count, std::uint64_t& calls) {
+            const auto draw_layer = [&](std::size_t first, std::size_t count, std::uint64_t& calls) -> Result<void> {
                 if (count == 0)
-                    return;
-                require(gfxProgramSetParameter(gfx, program, "first_instance", static_cast<std::uint32_t>(first)),
-                        "Set UI instance offset");
-                require(gfxCommandDraw(gfx, 6, static_cast<std::uint32_t>(count)), "Draw UI instances");
+                    return {};
+                ATELIER_TRY(
+                    require(gfxProgramSetParameter(gfx, program, "first_instance", static_cast<std::uint32_t>(first)),
+                            "Set UI instance offset"));
+                ATELIER_TRY(require(gfxCommandDraw(gfx, 6, static_cast<std::uint32_t>(count)), "Draw UI instances"));
                 ++calls;
+                return {};
             };
-            draw_layer(0, overlay_instances, stats.overlay_draw_calls);
-            draw_layer(overlay_instances, ui_instances.size() - overlay_instances, stats.ui_draw_calls);
+            ATELIER_TRY(draw_layer(0, overlay_instances, stats.overlay_draw_calls));
+            ATELIER_TRY(draw_layer(overlay_instances, ui_instances.size() - overlay_instances, stats.ui_draw_calls));
         }
         ui_stage.reset();
         for (auto it = images.begin(); it != images.end();) {
@@ -1385,28 +1403,31 @@ struct Renderer::State {
                 ++it;
                 continue;
             }
-            require(gfxDestroyTexture(gfx, it->second.texture), "Retire unused UI texture");
+            if (gfxDestroyTexture(gfx, it->second.texture))
+                fatal("Retire unused UI texture");
             it = images.erase(it);
         }
         if (capture) {
             const std::uint32_t pitch = (extent.width * 4 + 255) & ~255u;
             BufferOwner color{gfx,
                               gfxCreateBuffer(gfx, std::uint64_t(pitch) * extent.height, nullptr, kGfxCpuAccess_Read)};
-            allocation(bool(color.buffer));
-            require(gfxCommandCopyBackBufferToBuffer(gfx, color.buffer, pitch), "Capture window color");
+            ATELIER_TRY(allocation(bool(color.buffer)));
+            ATELIER_TRY(require(gfxCommandCopyBackBufferToBuffer(gfx, color.buffer, pitch), "Capture window color"));
             BufferOwner z{gfx, {}};
             BufferOwner motion{gfx, {}};
             const std::uint32_t motion_pitch = (extent.width * 8 + 255) & ~255u;
             if (draw_scene) {
                 z.buffer = gfxCreateBuffer(gfx, std::uint64_t(pitch) * extent.height, nullptr, kGfxCpuAccess_Read);
-                allocation(bool(z.buffer));
-                require(gfxCommandCopyTextureToBufferPitched(gfx, z.buffer, depth, pitch), "Capture scene depth");
+                ATELIER_TRY(allocation(bool(z.buffer)));
+                ATELIER_TRY(
+                    require(gfxCommandCopyTextureToBufferPitched(gfx, z.buffer, depth, pitch), "Capture scene depth"));
                 if (frame.view.shading == Shading::scene_lit && frame.view.wireframe != Wireframe::only) {
                     motion.buffer =
                         gfxCreateBuffer(gfx, std::uint64_t(motion_pitch) * extent.height, nullptr, kGfxCpuAccess_Read);
-                    allocation(bool(motion.buffer));
-                    require(gfxCommandCopyTextureToBufferPitched(gfx, motion.buffer, scene_lit->motion(), motion_pitch),
-                            "Capture Scene Lit surface motion");
+                    ATELIER_TRY(allocation(bool(motion.buffer)));
+                    ATELIER_TRY(require(
+                        gfxCommandCopyTextureToBufferPitched(gfx, motion.buffer, scene_lit->motion(), motion_pitch),
+                        "Capture Scene Lit surface motion"));
                 }
             } else {
                 // A UI-only capture describes this frame, not a retained scene depth texture.
@@ -1414,13 +1435,13 @@ struct Renderer::State {
             }
             const auto finished = context.finish();
             if (!finished)
-                throw Error{finished.error(), true};
+                return std::unexpected(Error{finished.error(), true});
             const auto* rgba = static_cast<const std::uint8_t*>(gfxBufferGetData(gfx, color.buffer));
             const auto* depth_bytes =
                 draw_scene ? static_cast<const std::uint8_t*>(gfxBufferGetData(gfx, z.buffer)) : nullptr;
             const auto* motion_bytes =
                 motion.buffer ? static_cast<const std::uint8_t*>(gfxBufferGetData(gfx, motion.buffer)) : nullptr;
-            allocation(rgba && (!draw_scene || depth_bytes) && (!motion.buffer || motion_bytes));
+            ATELIER_TRY(allocation(rgba && (!draw_scene || depth_bytes) && (!motion.buffer || motion_bytes)));
             if (motion_bytes)
                 capture->motion.resize(std::size_t(extent.width) * extent.height * 2);
             for (std::uint32_t y = 0; y < extent.height; ++y) {
@@ -1438,6 +1459,7 @@ struct Renderer::State {
                         }
             }
         }
+        return {};
     }
 };
 
@@ -1452,7 +1474,7 @@ Renderer& Renderer::operator=(Renderer&&) noexcept = default;
 Result<Renderer> Renderer::open(HWND window, const Options& options) {
     if (!window)
         return std::unexpected(error(rhi::ErrorCode::invalid_argument, "Renderer requires an application window"));
-    try {
+    auto result = [&]() -> Result<Renderer> {
         Renderer renderer;
         renderer.state_ = std::make_unique<State>();
         auto& s = *renderer.state_;
@@ -1472,19 +1494,15 @@ Result<Renderer> Renderer::open(HWND window, const Options& options) {
                 error(rhi::ErrorCode::unsupported, "Editor renderer requires an sRGB RGBA8 window target"));
         if (options.validation != rhi::Validation::disabled)
             gfxGetDevice(s.gfx)->QueryInterface(IID_PPV_ARGS(&s.debug));
-        s.prepare_pipeline(s.ui_pipeline, "editor UI", shaders::ui_vs, shaders::ui_ps, PipelineStyle::ui);
+        ATELIER_TRY(s.prepare_pipeline(s.ui_pipeline, "editor UI", shaders::ui_vs, shaders::ui_ps, PipelineStyle::ui));
         s.sampler = gfxCreateSamplerState(s.gfx, D3D12_FILTER_MIN_MAG_LINEAR_MIP_POINT);
-        allocation(bool(s.sampler));
-        s.check_debug();
+        ATELIER_TRY(allocation(bool(s.sampler)));
+        ATELIER_TRY(s.check_debug());
         return renderer;
-    } catch (const Error& e) {
-        auto result = e;
-        result.terminal = false;
-        return std::unexpected(std::move(result));
-    } catch (const std::bad_alloc&) {
-        return std::unexpected(
-            error(rhi::ErrorCode::creation_failed, "Renderer allocation failed", false, kGfxResult_OutOfMemory));
-    }
+    }();
+    if (!result)
+        result.error().terminal = false;
+    return result;
 }
 
 Result<Target> Renderer::target() const {
@@ -1527,14 +1545,9 @@ Result<Preparation> Renderer::preparation(const ViewSettings& view) {
     if (view.shading != Shading::scene_lit || view.wireframe == Wireframe::only)
         return Preparation{.ready = true};
     auto& s = *state_;
-    try {
-        if (!s.scene_lit)
-            s.scene_lit = std::make_unique<detail::SceneLit>(s.context);
-        return s.scene_lit->preparation(view);
-    } catch (const std::bad_alloc&) {
-        return std::unexpected(
-            error(rhi::ErrorCode::creation_failed, "Renderer allocation failed", false, kGfxResult_OutOfMemory));
-    }
+    if (!s.scene_lit)
+        s.scene_lit = std::make_unique<detail::SceneLit>(s.context);
+    return s.scene_lit->preparation(view);
 }
 
 Result<MaterialBatch> Renderer::prepare_materials(std::span<const material::ProgramSurfaceRef> surfaces) {
@@ -1542,17 +1555,10 @@ Result<MaterialBatch> Renderer::prepare_materials(std::span<const material::Prog
         return std::unexpected(error(rhi::ErrorCode::closed, "Renderer is closed"));
     if (const auto checked = state_->check(); !checked)
         return std::unexpected(checked.error());
-    try {
-        MaterialBatch batch;
-        batch.state_ = std::make_unique<detail::MaterialBatchState>(state_->context, state_->live_material_batches);
-        batch.state_->submit(surfaces, state_->material_program_sets);
-        return batch;
-    } catch (const Error& e) {
-        return std::unexpected(e);
-    } catch (const std::bad_alloc&) {
-        return std::unexpected(
-            error(rhi::ErrorCode::creation_failed, "Material batch allocation failed", false, kGfxResult_OutOfMemory));
-    }
+    MaterialBatch batch;
+    batch.state_ = std::make_unique<detail::MaterialBatchState>(state_->context, state_->live_material_batches);
+    ATELIER_TRY(batch.state_->submit(surfaces, state_->material_program_sets));
+    return batch;
 }
 
 Result<Preparation> Renderer::preparation(MaterialBatch& batch) {
@@ -1563,44 +1569,38 @@ Result<Preparation> Renderer::preparation(MaterialBatch& batch) {
     if (!batch.state_ || &batch.state_->context != &state_->context)
         return std::unexpected(
             error(rhi::ErrorCode::invalid_argument, "Material batch belongs to another Renderer or is empty"));
-    try {
-        auto& candidate = *batch.state_;
-        if (candidate.failure)
-            return std::unexpected(*candidate.failure);
-        auto result = candidate.code->preparation(state_->context);
-        if (!result) {
-            candidate.failure = result.error();
-            return result;
-        }
-        if (result->ready && !candidate.ready) {
-            candidate.uploading = true;
+    auto& candidate = *batch.state_;
+    if (candidate.failure)
+        return std::unexpected(*candidate.failure);
+    auto result = candidate.code->preparation(state_->context);
+    if (!result) {
+        candidate.failure = result.error();
+        return result;
+    }
+    if (result->ready && !candidate.ready) {
+        auto uploaded = [&]() -> Result<void> {
             // A descriptor sentinel keeps entirely empty-input programs valid;
             // explicit clears return their linear float4, never this white image.
             if (candidate.images.empty())
                 candidate.images.emplace_back(material::ImageRef{}, false);
             for (const auto& [image, srgb] : candidate.images) {
-                candidate.textures.push_back(state_->material_texture(image, srgb));
+                ATELIER_TRY_BIND(texture, state_->material_texture(image, srgb));
+                candidate.textures.push_back(*texture);
                 candidate.image_owners.push_back(
                     state_->material_images.at({image ? image.get() : state_->white_image.get(), srgb}));
             }
-            state_->material_samplers();
-            candidate.upload();
+            ATELIER_TRY(state_->material_samplers());
+            return candidate.upload();
+        }();
+        if (!uploaded) {
+            auto e = std::move(uploaded).error();
+            e.terminal = true;
+            candidate.failure = e;
+            state_->failure = e;
+            return std::unexpected(std::move(e));
         }
-        return result;
-    } catch (Error e) {
-        e.terminal = batch.state_->uploading;
-        batch.state_->failure = e;
-        if (e.terminal)
-            state_->failure = e;
-        return std::unexpected(std::move(e));
-    } catch (const std::bad_alloc&) {
-        auto e = error(rhi::ErrorCode::creation_failed, "Material batch finalization allocation failed",
-                       batch.state_->uploading, kGfxResult_OutOfMemory);
-        batch.state_->failure = e;
-        if (e.terminal)
-            state_->failure = e;
-        return std::unexpected(std::move(e));
     }
+    return result;
 }
 
 Result<FrameResult> Renderer::render(const Frame& frame, Capture* capture) {
@@ -1650,29 +1650,31 @@ Result<FrameResult> Renderer::render(const Frame& frame, Capture* capture) {
         return FrameResult{
             .status = FrameStatus::not_ready, .accepted_extent = {}, .next_extent = extent, .stats = s.stats};
     bool encoding = false;
-    try {
+    auto attempt = [&]() -> detail::CancellableResult<FrameResult> {
         std::optional<timing::Scope> stage{std::in_place, phases::prepare};
-        check_stop(frame.stop_requested, "prepare");
+        ATELIER_TRY(check_stop(frame.stop_requested, "prepare"));
         if (frame.materials) {
             const auto* batch = frame.materials->state_.get();
             if (!batch || &batch->context != &s.context)
-                throw error(rhi::ErrorCode::invalid_argument, "Frame has an empty or foreign material batch");
+                return std::unexpected(
+                    error(rhi::ErrorCode::invalid_argument, "Frame has an empty or foreign material batch"));
             if (batch->failure)
                 return std::unexpected(*batch->failure);
             if (!batch->ready)
                 return FrameResult{
                     .status = FrameStatus::not_ready, .accepted_extent = {}, .next_extent = extent, .stats = s.stats};
         }
-        validate(frame, s.mesh_checks);
+        ATELIER_TRY(validate(frame, s.mesh_checks));
         if (!std::isfinite(frame.render_delta_seconds) || frame.render_delta_seconds < 0 ||
             frame.render_delta_seconds > .1f)
-            throw error(rhi::ErrorCode::invalid_argument, "Render delta must be finite and in [0, .1] seconds");
+            return std::unexpected(
+                error(rhi::ErrorCode::invalid_argument, "Render delta must be finite and in [0, .1] seconds"));
         if (frame.view.shading == Shading::scene_lit && frame.view.wireframe != Wireframe::only &&
             (!frame.meshes.empty() || frame.view.lit.probe_overlay()) && frame.scene_viewport.width > 0 &&
             frame.scene_viewport.height > 0) {
             if (!s.scene_lit)
                 s.scene_lit = std::make_unique<detail::SceneLit>(s.context);
-            s.scene_lit->validate(frame, s.mesh_checks.duplicate_keys());
+            ATELIER_TRY(s.scene_lit->validate(frame, s.mesh_checks.duplicate_keys()));
             const auto prepared = s.scene_lit->preparation(frame.view);
             if (!prepared)
                 return std::unexpected(prepared.error());
@@ -1692,11 +1694,13 @@ Result<FrameResult> Renderer::render(const Frame& frame, Capture* capture) {
         s.instance_groups.clear();
         s.instance_groups.reserve(frame.meshes.size());
         for (std::size_t i = 0; i < frame.meshes.size(); ++i) {
-            check_stop(frame.stop_requested, "prepare");
+            ATELIER_TRY(check_stop(frame.stop_requested, "prepare"));
             const auto& mesh = frame.meshes[i];
             auto& checked = s.mesh_checks[i];
-            if (!checked.prepared)
-                checked.prepared = prepare_instance(mesh);
+            if (!checked.prepared) {
+                ATELIER_TRY_BIND(instance, prepare_instance(mesh));
+                checked.prepared = *instance;
+            }
             s.instances.push_back(*checked.prepared);
             s.instances.back().selected = mesh.selected ? 1.0f : 0.0f;
             const bool visible = frustum.visible(mesh.geometry->bounds(), mesh.world);
@@ -1759,7 +1763,7 @@ Result<FrameResult> Renderer::render(const Frame& frame, Capture* capture) {
             static_cast<void>(ATELIER_LOG(logging::Severity::info, "renderer", "renderer.first_encode_begin",
                                           "First encoding beginning: frame_id={} shading={}", frame.ui_frame.id,
                                           std::to_underlying(frame.view.shading)));
-        s.draw(frame, extent, capture ? &pending : nullptr);
+        ATELIER_TRY(s.draw(frame, extent, capture ? &pending : nullptr));
         if (first_encode)
             static_cast<void>(ATELIER_LOG(logging::Severity::info, "renderer", "renderer.first_encode_end",
                                           "First encoding returned: frame_id={} shading={}", frame.ui_frame.id,
@@ -1768,7 +1772,7 @@ Result<FrameResult> Renderer::render(const Frame& frame, Capture* capture) {
         rhi::FrameInfo details;
         {
             timing::Scope submitting{phases::frame};
-            check_stop(frame.stop_requested, "submit");
+            ATELIER_TRY(check_stop(frame.stop_requested, "submit"));
             const bool first_frame = std::exchange(s.first_frame, false);
             if (first_frame)
                 static_cast<void>(ATELIER_LOG(logging::Severity::info, "renderer", "renderer.first_frame_begin",
@@ -1781,7 +1785,7 @@ Result<FrameResult> Renderer::render(const Frame& frame, Capture* capture) {
                                               frame.ui_frame.id, std::to_underlying(frame.view.shading),
                                               bool(presented)));
             if (!presented)
-                throw Error{presented.error(), true};
+                return std::unexpected(Error{presented.error(), true});
             // gfx partitions its frame call by CPU wall time; record it as children of the call.
             const auto stage_time = [](double us) { return std::chrono::nanoseconds{std::llround(us * 1000)}; };
             const auto& cpu = details.cpu;
@@ -1790,7 +1794,7 @@ Result<FrameResult> Renderer::render(const Frame& frame, Capture* capture) {
             timing::record(phases::wait, stage_time(cpu.wait_us));
             timing::record(phases::recycle, stage_time(cpu.resize_us + cpu.recycle_us + cpu.reclaim_us));
         }
-        s.check_debug();
+        ATELIER_TRY(s.check_debug());
         FrameResult result{
             .accepted_extent = {}, .next_extent = {details.next.width, details.next.height}, .stats = s.stats};
         if (!details.occluded) {
@@ -1801,26 +1805,25 @@ Result<FrameResult> Renderer::render(const Frame& frame, Capture* capture) {
                 *capture = std::move(pending);
         }
         return result;
-    } catch (const FrameCancelled& cancelled) {
+    }();
+    if (attempt)
+        return std::move(*attempt);
+    if (const auto* cancelled = std::get_if<detail::FrameCancelled>(&attempt.error())) {
         s.cancelled = true;
         const auto elapsed =
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - began).count();
         static_cast<void>(ATELIER_LOG(logging::Severity::info, "renderer", "renderer.frame_cancelled",
                                       "Frame cancelled: frame_id={} phase={} elapsed_ms={}", frame.ui_frame.id,
-                                      cancelled.phase, elapsed));
+                                      cancelled->phase, elapsed));
         return FrameResult{
             .status = FrameStatus::cancelled, .accepted_extent = {}, .next_extent = extent, .stats = s.stats};
-    } catch (Error e) {
-        e.terminal = encoding;
-        if (encoding)
-            state_->failure = e;
-        return std::unexpected(std::move(e));
-    } catch (const std::bad_alloc&) {
-        auto e = error(rhi::ErrorCode::creation_failed, "Renderer allocation failed", encoding, kGfxResult_OutOfMemory);
-        if (encoding)
-            state_->failure = e;
-        return std::unexpected(std::move(e));
     }
+    auto e = std::get<Error>(std::move(attempt).error());
+    if (encoding) {
+        e.terminal = true;
+        state_->failure = e;
+    }
+    return std::unexpected(std::move(e));
 }
 
 Result<void> Renderer::close() {

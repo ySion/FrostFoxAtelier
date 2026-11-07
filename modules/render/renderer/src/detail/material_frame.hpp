@@ -1,6 +1,7 @@
 #pragma once
 #include "renderer/renderer.hpp"
 #include "material_programs.hpp"
+#include "result.hpp"
 
 namespace atelier::renderer::detail {
 // Owned by Renderer; all raster/ray passes borrow the same captured content and
@@ -31,23 +32,26 @@ struct MaterialFrame {
     }
 };
 
-inline void bind_materials(GfxContext gfx, GfxProgram program, const MaterialFrame& frame) {
-    const auto check = [](GfxResult value) {
-        if (value != kGfxResult_NoError)
-            throw Error{{rhi::ErrorCode::execution_failed, value, "Bind material frame"}, true};
-    };
+inline Result<void> bind_materials(GfxContext gfx, GfxProgram program, const MaterialFrame& frame) {
     if (!frame.batch)
-        return; // Non-material compute passes may render an empty scene.
-    check(gfxProgramSetParameter(gfx, program, "material_surfaces", frame.batch->surface_buffer));
-    check(gfxProgramSetParameter(gfx, program, "material_parameters", frame.batch->parameter_buffer));
-    check(gfxProgramSetParameter(gfx, program, "material_inputs", frame.batch->input_buffer));
-    check(gfxProgramSetParameter(gfx, program, "material_indices", frame.program_index_buffer));
-    check(gfxProgramSetParameter(gfx, program, "material_offsets", frame.program_offset_buffer));
+        return {}; // Non-material compute passes may render an empty scene.
+    ATELIER_TRY(require(gfxProgramSetParameter(gfx, program, "material_surfaces", frame.batch->surface_buffer),
+                        "Bind material frame"));
+    ATELIER_TRY(require(gfxProgramSetParameter(gfx, program, "material_parameters", frame.batch->parameter_buffer),
+                        "Bind material frame"));
+    ATELIER_TRY(require(gfxProgramSetParameter(gfx, program, "material_inputs", frame.batch->input_buffer),
+                        "Bind material frame"));
+    ATELIER_TRY(require(gfxProgramSetParameter(gfx, program, "material_indices", frame.program_index_buffer),
+                        "Bind material frame"));
+    ATELIER_TRY(require(gfxProgramSetParameter(gfx, program, "material_offsets", frame.program_offset_buffer),
+                        "Bind material frame"));
     const auto& textures = frame.batch->textures;
-    check(gfxProgramSetParameter(gfx, program, "material_textures", textures.data(),
-                                 static_cast<std::uint32_t>(textures.size())));
+    ATELIER_TRY(require(gfxProgramSetParameter(gfx, program, "material_textures", textures.data(),
+                                               static_cast<std::uint32_t>(textures.size())),
+                        "Bind material frame"));
     constexpr const char* names[]{"material_repeat_sampler", "material_clamp_sampler", "material_mirror_sampler"};
     for (std::size_t i = 0; i < frame.samplers.size(); ++i)
-        check(gfxProgramSetParameter(gfx, program, names[i], frame.samplers[i]));
+        ATELIER_TRY(require(gfxProgramSetParameter(gfx, program, names[i], frame.samplers[i]), "Bind material frame"));
+    return {};
 }
 }

@@ -58,7 +58,7 @@
 
 ## 按需命令录制观测
 
-`CommandTrace` 是一次性的自有 CPU 快照，不拥有 GPU 资源、Context 或 Runtime 根。请求在录制前分配固定存储：32 条命令、1024 条绑定、每个名称 128 字节，总计小于 1 MiB。`CommandTraceScope` 仅在 Context owner 线程、单次 render 尝试内借用 Context 和快照，二者在 scope 结束前不得移动或销毁；不允许嵌套观察器。RAII 在正常结束和异常退出时解除借用，完整性单独记录；同一快照不能重入或拼接多个尝试。完成后可移动到写入线程，期间只访问自有记录，不再访问 gfx。
+`CommandTrace` 是一次性的自有 CPU 快照，不拥有 GPU 资源、Context 或 Runtime 根。请求在录制前分配固定存储：32 条命令、1024 条绑定、每个名称 128 字节，总计小于 1 MiB。`CommandTraceScope` 仅在 Context owner 线程、单次 render 尝试内借用 Context 和快照，二者在 scope 结束前不得移动或销毁；不允许嵌套观察器。RAII 在正常返回和失败短路时均解除借用；仅在整个观测范围成功后调用 `complete()`，未调用或仍有未发出的命令绑定时标记 interrupted，并保留已录制前缀，不依赖异常计数。范围外的显示或提交失败由 render 结果独立表达。同一快照不能重入或拼接多个尝试。完成后可移动到写入线程，期间只访问自有记录，不再访问 gfx。
 
 gfx 在实际安装/复用根参数与 descriptor 的路径报告绑定，在真正发出 Dispatch 或单条 DispatchIndirect 后提交命令记录；安装失败但没有发命令的暂存不发布成节点。当前覆盖后处理链的 2D SRV/UAV（包括 descriptor 缓存命中）、sampler、根常量与 CBV；不支持或无法从现有安装路径确认的绑定标为 unknown，使快照 incomplete，不按 setter 猜测。明确安装的 null/dummy 与 unknown 区分。常量只保留绑定与范围，不读回内容；间接参数只记录实际缓冲区/range，不读取 GPU group 数。绑定种类不声明完整资源访问集合。
 

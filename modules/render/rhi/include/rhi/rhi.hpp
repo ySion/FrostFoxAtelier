@@ -338,12 +338,16 @@ public:
 
     CommandTraceScope& operator=(const CommandTraceScope&) = delete;
 
+    // Mark only after the whole observed command range succeeds. A normal
+    // early return without this call preserves the recorded prefix as interrupted.
+    void complete() noexcept { completed_ = true; }
+
 private:
     GfxContext context_;
 
     CommandTrace& trace_;
 
-    int exceptions_{};
+    bool completed_{};
 };
 
 } // namespace atelier::rhi

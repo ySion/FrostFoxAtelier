@@ -103,7 +103,7 @@ struct MaterialProgramSet {
 
     std::optional<Error> failure;
 
-    void submit(rhi::Context&);
+    Result<void> submit(rhi::Context&);
 
     Result<Preparation> preparation(rhi::Context&);
 };
@@ -143,8 +143,6 @@ struct MaterialBatchState {
 
     GfxBuffer input_buffer{};
 
-    bool uploading{};
-
     bool ready{};
 
     MaterialBatchState(rhi::Context&, std::size_t&);
@@ -155,9 +153,9 @@ struct MaterialBatchState {
 
     MaterialBatchState& operator=(const MaterialBatchState&) = delete;
 
-    void submit(std::span<const material::ProgramSurfaceRef>, std::vector<std::weak_ptr<MaterialProgramSet>>&);
+    Result<void> submit(std::span<const material::ProgramSurfaceRef>, std::vector<std::weak_ptr<MaterialProgramSet>>&);
 
-    void upload(); // Called only after pipelines and Renderer-owned images are ready.
+    Result<void> upload(); // Called only after pipelines and Renderer-owned images are ready.
 
     const rhi::Pipeline& pipeline(MaterialPass pass) const { return code->pipelines[static_cast<std::size_t>(pass)]; }
 };

@@ -78,7 +78,8 @@ static_assert(sizeof(GpuLightCell) == 16 && sizeof(GpuSpatialLightProposal) == 1
 class LightFrame {
 public:
     // Scene Lit's render sequence, not the potentially reused UI frame id.
-    void update(const Frame&, std::uint64_t sequence);
+    // A rejected update clears the partial snapshot and its history.
+    Result<void> update(const Frame&, std::uint64_t sequence);
 
     void clear();
 
@@ -176,11 +177,11 @@ private:
 
     bool spatial_initialized_{};
 
-    void update_impl(const Frame&, std::uint64_t sequence);
+    Result<void> update_impl(const Frame&, std::uint64_t sequence);
 
-    void build_proposals();
+    Result<void> build_proposals();
 
-    void update_spatial(const std::array<float, 3>& focus, std::uint64_t sequence);
+    Result<void> update_spatial(const std::array<float, 3>& focus, std::uint64_t sequence);
 
     void map_previous();
 };

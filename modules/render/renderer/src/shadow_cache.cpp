@@ -1,5 +1,6 @@
 #include "detail/shadow_cache.hpp"
 #include "math/math.hpp"
+#include "foundation/result.hpp"
 
 #include <algorithm>
 #include <bit>
@@ -34,9 +35,10 @@ constexpr std::int32_t fit_shrink_quarters = 2; // Quarter octaves.
 
 constexpr std::uint32_t fit_shrink_frames = 32;
 
-void check(bool condition, const char* message) {
+Result<void> check(bool condition, const char* message) {
     if (!condition)
-        throw Error{{rhi::ErrorCode::invalid_argument, kGfxResult_InvalidParameter, message}, false};
+        return std::unexpected(Error{{rhi::ErrorCode::invalid_argument, kGfxResult_InvalidParameter, message}, false});
+    return {};
 }
 
 M matrix(const std::array<float, 16>& input) {
@@ -46,11 +48,11 @@ M matrix(const std::array<float, 16>& input) {
     return result;
 }
 
-std::array<float, 16> packed(const M& input) {
+Result<std::array<float, 16>> packed(const M& input) {
     std::array<float, 16> result;
     for (std::size_t i = 0; i < 16; ++i) {
         result[i] = static_cast<float>(input.elements[i]);
-        check(std::isfinite(result[i]), "Shadow projection exceeds GPU float representation");
+        ATELIER_TRY(check(std::isfinite(result[i]), "Shadow projection exceeds GPU float representation"));
     }
     return result;
 }
@@ -67,9 +69,9 @@ V cross(V a, V b) {
     return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x};
 }
 
-V unit(V a) {
+Result<V> unit(V a) {
     const auto l = length(a);
-    check(l > 0 && std::isfinite(l), "Invalid shadow basis");
+    ATELIER_TRY(check(l > 0 && std::isfinite(l), "Invalid shadow basis"));
     return a / l;
 }
 
@@ -131,25 +133,26 @@ ShadowBounds expanded(const ShadowBounds& b, double amount) {
     return result;
 }
 
-double ceil_power_two(double value) {
-    check(value > 0 && std::isfinite(value), "Invalid shadow projection extent");
+Result<double> ceil_power_two(double value) {
+    ATELIER_TRY(check(value > 0 && std::isfinite(value), "Invalid shadow projection extent"));
     return std::exp2(std::ceil(std::log2(value)));
 }
 
-M view(V origin, V forward, V up) {
-    const auto z = unit(forward);
-    const auto x = unit(cross(up, z));
-    const auto y = cross(z, x);
-    return {
-        {x.x, y.x, z.x, 0, x.y, y.y, z.y, 0, x.z, y.z, z.z, 0, -dot(origin, x), -dot(origin, y), -dot(origin, z), 1}};
+Result<M> view(V origin, V forward, V up) {
+    ATELIER_TRY_BIND(z, unit(forward));
+    ATELIER_TRY_BIND(x, unit(cross(up, *z)));
+    const auto y = cross(*z, *x);
+    return M{{x->x, y.x, z->x, 0, x->y, y.y, z->y, 0, x->z, y.z, z->z, 0, -dot(origin, *x), -dot(origin, y),
+              -dot(origin, *z), 1}};
 }
 
-M point_projection(V origin, std::uint32_t face, double near_z, double far_z) {
+Result<M> point_projection(V origin, std::uint32_t face, double near_z, double far_z) {
     constexpr std::array<V, 6> directions{{{1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}}};
     constexpr std::array<V, 6> ups{{{0, 1, 0}, {0, 1, 0}, {0, 0, -1}, {0, 0, 1}, {0, 1, 0}, {0, 1, 0}}};
     const M projection{
         {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, -near_z / (far_z - near_z), 1, 0, 0, near_z * far_z / (far_z - near_z), 0}};
-    return view(origin, directions[face], ups[face]) * projection;
+    ATELIER_TRY_BIND(camera, view(origin, directions[face], ups[face]));
+    return *camera * projection;
 }
 
 M expanded_projection(M vp, std::uint32_t size) {
@@ -214,10 +217,10 @@ M request_projection(const Request& request, std::uint32_t face, std::uint32_t s
              -cy / radius, far_z / (far_z - near_z), 1}};
 }
 
-V unproject(const M& inverse, double x, double y, double z) {
+Result<V> unproject(const M& inverse, double x, double y, double z) {
     const auto p = math::Vector4d{x, y, z, 1} * inverse;
-    check(std::isfinite(p.w) && p.w != 0, "Shadow planning needs a finite camera near plane");
-    return {p.x / p.w, p.y / p.w, p.z / p.w};
+    ATELIER_TRY(check(std::isfinite(p.w) && p.w != 0, "Shadow planning needs a finite camera near plane"));
+    return V{p.x / p.w, p.y / p.w, p.z / p.w};
 }
 
 // Rectangles cast from their centre; their support matches lit_cluster_radius.
@@ -225,8 +228,8 @@ V unproject(const M& inverse, double x, double y, double z) {
 // the current one: while their redraw waits for budget the shader selects
 // faces from it, so for every receiver the light now reaches, the faces it
 // lies in as seen from there are kept too.
-Request point_request(const Frame& frame, const GpuLightSource& source, std::span<const ShadowCaster> receivers,
-                      const M& camera_view, const std::array<float, 3>* drawn) {
+Result<Request> point_request(const Frame& frame, const GpuLightSource& source, std::span<const ShadowCaster> receivers,
+                              const M& camera_view, const std::array<float, 3>* drawn) {
     Request request;
     request.kind = 1;
     request.count = 6;
@@ -242,10 +245,12 @@ Request point_request(const Frame& frame, const GpuLightSource& source, std::spa
     const double rounding_margin = std::max(
         1e-4, 1e-5 * std::max(std::max(support, std::abs(origin.x)), std::max(std::abs(origin.y), std::abs(origin.z))));
     const double conservative_support = support + rounding_margin;
-    const double far_z = ceil_power_two(conservative_support * (1 + normal_offset_ratio));
+    ATELIER_TRY_BIND(far_result, ceil_power_two(conservative_support * (1 + normal_offset_ratio)));
+    const double far_z = *far_result;
     const double near_z = std::max(1e-30, std::min(double(shadow_maximum_near), far_z * shadow_near_ratio));
     for (std::uint32_t face = 0; face < request.count; ++face) {
-        request.projection[face] = point_projection(origin, face, near_z, far_z);
+        ATELIER_TRY_BIND(projection, point_projection(origin, face, near_z, far_z));
+        request.projection[face] = *projection;
         request.depth[face] = {near_z, far_z};
     }
     const auto mark = [&](V at, const std::array<M, 6>& projections) {
@@ -262,8 +267,10 @@ Request point_request(const Frame& frame, const GpuLightSource& source, std::spa
     if (drawn) {
         const V at{(*drawn)[0], (*drawn)[1], (*drawn)[2]};
         std::array<M, 6> projections;
-        for (std::uint32_t face = 0; face < 6; ++face)
-            projections[face] = point_projection(at, face, near_z, far_z);
+        for (std::uint32_t face = 0; face < 6; ++face) {
+            ATELIER_TRY_BIND(projection, point_projection(at, face, near_z, far_z));
+            projections[face] = *projection;
+        }
         mark(at, projections);
     }
     const auto eye = math::Vector4d{origin.x, origin.y, origin.z, 1} * camera_view;
@@ -288,9 +295,9 @@ Request point_request(const Frame& frame, const GpuLightSource& source, std::spa
 
 // fit is the measured receiver range [near, far] in camera view Z. Without
 // it, splits are fixed fractions of the conservative receiver bound.
-Request directional_request(const Frame& frame, const GpuLightSource& source, std::span<const ShadowCaster> receivers,
-                            std::span<const ShadowCaster> casters, const M& camera_view,
-                            std::optional<std::array<double, 2>> fit) {
+Result<Request> directional_request(const Frame& frame, const GpuLightSource& source,
+                                    std::span<const ShadowCaster> receivers, std::span<const ShadowCaster> casters,
+                                    const M& camera_view, std::optional<std::array<double, 2>> fit) {
     Request request;
     request.kind = 2;
     request.count = 4;
@@ -299,7 +306,7 @@ Request directional_request(const Frame& frame, const GpuLightSource& source, st
         return request;
     const auto inverse_projection = math::try_inverse(matrix(frame.camera.projection));
     const auto inverse_view = math::try_inverse(camera_view);
-    check(bool(inverse_projection) && bool(inverse_view), "Invalid shadow camera inverse");
+    ATELIER_TRY(check(bool(inverse_projection) && bool(inverse_view), "Invalid shadow camera inverse"));
     std::array<V, 4> near_corners;
     std::array<V, 4> rays;
     double camera_near = std::numeric_limits<double>::infinity();
@@ -307,11 +314,12 @@ Request directional_request(const Frame& frame, const GpuLightSource& source, st
     for (std::uint32_t i = 0; i < 4; ++i) {
         const double x = i & 1 ? 1 : -1;
         const double y = i & 2 ? 1 : -1;
-        near_corners[i] = unproject(*inverse_projection, x, y, 1);
+        ATELIER_TRY_BIND(near_corner, unproject(*inverse_projection, x, y, 1));
+        near_corners[i] = *near_corner;
         const auto far_clip = math::Vector4d{x, y, frame.camera.far_depth, 1} * (*inverse_projection);
-        check(std::isfinite(far_clip.x) && std::isfinite(far_clip.y) && std::isfinite(far_clip.z) &&
-                  std::isfinite(far_clip.w),
-              "Invalid shadow camera far direction");
+        ATELIER_TRY(check(std::isfinite(far_clip.x) && std::isfinite(far_clip.y) && std::isfinite(far_clip.z) &&
+                              std::isfinite(far_clip.w),
+                          "Invalid shadow camera far direction"));
         // H.xyz-N*H.w is a ray even when the reversed-Z far endpoint is at
         // infinity. Retain the previous division order for finite projections.
         const V homogeneous{far_clip.x, far_clip.y, far_clip.z};
@@ -325,20 +333,22 @@ Request directional_request(const Frame& frame, const GpuLightSource& source, st
         }
         camera_near = std::min(camera_near, near_corners[i].z);
     }
-    check(camera_far > camera_near, "Invalid shadow camera depth interval");
+    ATELIER_TRY(check(camera_far > camera_near, "Invalid shadow camera depth interval"));
     double receiver_far = camera_near;
     for (const auto& receiver : receivers)
         for (std::uint32_t i = 0; i < 8; ++i) {
             const auto p = corner(receiver.bounds, i);
             receiver_far = std::max(receiver_far, (math::Vector4d{p.x, p.y, p.z, 1} * camera_view).z);
         }
-    double receiver_limit = ceil_power_two(std::max(receiver_far, 1e-3));
+    ATELIER_TRY_BIND(receiver_limit, ceil_power_two(std::max(receiver_far, 1e-3)));
     // A receiver touching a power-of-two near plane must still leave a
     // nonzero cascade interval; finite camera far clipping remains authoritative.
-    if (receiver_limit <= camera_near)
+    if (*receiver_limit <= camera_near) {
         receiver_limit = ceil_power_two(std::max(std::abs(camera_near), 1e-3) * 2);
-    const double far_z = std::min(camera_far, receiver_limit);
-    check(far_z > camera_near, "Invalid shadow receiver depth interval");
+        ATELIER_TRY(receiver_limit);
+    }
+    const double far_z = std::min(camera_far, *receiver_limit);
+    ATELIER_TRY(check(far_z > camera_near, "Invalid shadow receiver depth interval"));
     // Fitted splits: cascade 0 ends at the first logarithmic split of the
     // fitted range and the other three split the rest logarithmically; no
     // split lies past the conservative one, so no cascade is coarser. Cascade
@@ -360,8 +370,11 @@ Request directional_request(const Frame& frame, const GpuLightSource& source, st
         for (std::uint32_t face = 0; face < 4; ++face)
             ends[face] = face == 3 ? fit_far : std::min(ends[face], first * std::pow(fit_far / first, face / 3.0));
     }
-    request.axis_z = unit({source.direction_radius[0], source.direction_radius[1], source.direction_radius[2]});
-    request.axis_x = unit(cross(std::abs(request.axis_z.y) < .95 ? V{0, 1, 0} : V{1, 0, 0}, request.axis_z));
+    ATELIER_TRY_BIND(axis_z,
+                     unit({source.direction_radius[0], source.direction_radius[1], source.direction_radius[2]}));
+    request.axis_z = *axis_z;
+    ATELIER_TRY_BIND(axis_x, unit(cross(std::abs(request.axis_z.y) < .95 ? V{0, 1, 0} : V{1, 0, 0}, request.axis_z)));
+    request.axis_x = *axis_x;
     request.axis_y = cross(request.axis_z, request.axis_x);
     // Stable world-space depth planes include off-camera casters. Quantization
     // avoids rebuilding the static layer for small motion inside scene bounds.
@@ -373,7 +386,8 @@ Request directional_request(const Frame& frame, const GpuLightSource& source, st
             low = std::min(low, z);
             high = std::max(high, z);
         }
-    const double step = ceil_power_two(std::max(high - low, 1.0)) / 16;
+    ATELIER_TRY_BIND(extent, ceil_power_two(std::max(high - low, 1.0)));
+    const double step = *extent / 16;
     double previous = camera_near;
     double offset = 0;
     for (std::uint32_t face = 0; face < 4; ++face) {
@@ -384,7 +398,7 @@ Request directional_request(const Frame& frame, const GpuLightSource& source, st
         for (std::uint32_t i = 0; i < 8; ++i) {
             const auto ray = rays[i % 4];
             const double depth = i < 4 ? start : end;
-            check(ray.z != 0, "Invalid shadow frustum ray");
+            ATELIER_TRY(check(ray.z != 0, "Invalid shadow frustum ray"));
             const auto camera = near_corners[i % 4] + ray * ((depth - near_corners[i % 4].z) / ray.z);
             corners[i] = math::transform_point(camera, *inverse_view);
             center = center + corners[i];
@@ -702,7 +716,8 @@ struct ShadowCache::State {
         gpu.meta = {1u | (face.dynamic_nonempty ? 2u : 0u) | (gpu.meta[0] & 4u), face.generation, source, index};
     }
 
-    void append(std::uint32_t source, const Request& request, std::uint32_t size, std::uint32_t rank, bool exempt) {
+    Result<void> append(std::uint32_t source, const Request& request, std::uint32_t size, std::uint32_t rank,
+                        bool exempt) {
         auto& gpu_light = plan.lights[source];
         gpu_light.meta = {request.kind, static_cast<std::uint32_t>(plan.faces.size()), request.count, 0};
         gpu_light.splits = request.splits;
@@ -715,35 +730,38 @@ struct ShadowCache::State {
             ++plan.stats.requested_faces;
             plan.stats.atlas_cells += (size / cell_size) * (size / cell_size);
             auto& face = lights[source].faces[i];
-            if (face.drawn && face.stationary_valid && face.dynamic_valid &&
-                face.projection == packed(request_projection(request, i, size))) {
-                // Equal cascade projections can follow different splits; the
-                // blend band reads the current cascade start.
-                if (request.kind == 2)
-                    face.depth[3] = request.starts[i];
-                ++plan.stats.reused_faces;
-                publish(gpu, face, source, i);
-                continue;
+            if (face.drawn && face.stationary_valid && face.dynamic_valid) {
+                ATELIER_TRY_BIND(projection, packed(request_projection(request, i, size)));
+                if (face.projection == *projection) {
+                    // Equal cascade projections can follow different splits; the
+                    // blend band reads the current cascade start.
+                    if (request.kind == 2)
+                        face.depth[3] = request.starts[i];
+                    ++plan.stats.reused_faces;
+                    publish(gpu, face, source, i);
+                    continue;
+                }
             }
             redraws.push_back({source, i, static_cast<std::uint32_t>(plan.faces.size() - 1), size, rank, exempt});
         }
+        return {};
     }
 
-    void redraw(const Redraw& item, const Request& request, std::span<const ShadowCaster> casters) {
+    Result<void> redraw(const Redraw& item, const Request& request, std::span<const ShadowCaster> casters) {
         auto& face = lights[item.source].faces[item.face];
         const auto vp = request_projection(request, item.face, item.size);
         const auto draw_vp = expanded_projection(vp, item.size);
-        const auto projection = packed(vp);
-        if (!face.drawn || face.projection != projection) {
-            face.projection = projection;
+        ATELIER_TRY_BIND(projection, packed(vp));
+        if (!face.drawn || face.projection != *projection) {
+            face.projection = *projection;
             face.stationary_valid = face.dynamic_valid = false;
             face.generation = generation();
         }
         face.depth = {static_cast<float>(request.depth[item.face][0]), static_cast<float>(request.depth[item.face][1]),
                       1.f / float(item.size - 2 * shadow_tile_border),
                       request.kind == 2 ? request.starts[item.face] : 0};
-        check(std::isfinite(face.depth[0]) && std::isfinite(face.depth[1]) && face.depth[1] > face.depth[0],
-              "Shadow near/far planes exceed GPU float representation");
+        ATELIER_TRY(check(std::isfinite(face.depth[0]) && std::isfinite(face.depth[1]) && face.depth[1] > face.depth[0],
+                          "Shadow near/far planes exceed GPU float representation"));
         const std::array<std::uint32_t, 4> rect{(face.slot % grid_size) * cell_size,
                                                 (face.slot / grid_size) * cell_size, item.size, item.size};
         for (const auto layer : {ShadowLayer::stationary, ShadowLayer::dynamic}) {
@@ -754,7 +772,8 @@ struct ShadowCache::State {
             job.face = item.plan_face;
             job.layer = layer;
             job.rect = rect;
-            job.view_projection = packed(draw_vp);
+            ATELIER_TRY_BIND(draw_projection, packed(draw_vp));
+            job.view_projection = *draw_projection;
             for (const auto& caster : casters)
                 if (caster.dynamic == (layer == ShadowLayer::dynamic) && intersects(caster.bounds, draw_vp))
                     job.instances.push_back(caster.instance);
@@ -769,12 +788,13 @@ struct ShadowCache::State {
         }
         face.drawn = true;
         lights[item.source].origin = {float(request.origin.x), float(request.origin.y), float(request.origin.z)};
+        return {};
     }
 
     // A light's stale faces redraw together, so every drawn face of a cube
     // shares one origin; the shader selects and projects faces from it. A
     // light whose redraw does not fit the remaining budget waits whole.
-    void schedule(std::span<const Request> requests, std::span<const ShadowCaster> casters) {
+    Result<void> schedule(std::span<const Request> requests, std::span<const ShadowCaster> casters) {
         queued.assign(lights.size(), 0);
         for (const auto& item : redraws)
             queued[item.source] =
@@ -820,7 +840,7 @@ struct ShadowCache::State {
             for (auto item = first; item != last; ++item) {
                 auto& face = light.faces[item->face];
                 if (draw)
-                    redraw(*item, requests[item->source], casters);
+                    ATELIER_TRY(redraw(*item, requests[item->source], casters));
                 if (face.drawn)
                     publish(plan.faces[item->plan_face], face, item->source, item->face);
             }
@@ -852,6 +872,7 @@ struct ShadowCache::State {
             if (request.kind == 1)
                 gpu.splits = {light.origin[0], light.origin[1], light.origin[2], 0};
         }
+        return {};
     }
 };
 
@@ -878,13 +899,13 @@ void ShadowCache::commit() noexcept {
         state_->pending = false;
 }
 
-const ShadowFramePlan& ShadowCache::prepare(const Frame& frame, const LightFrame& sources,
-                                            std::span<const ShadowCaster> casters,
-                                            std::span<const ShadowChange> changes,
-                                            std::optional<ShadowReceiverDepth> depth, std::uint64_t sequence) {
+Result<const ShadowFramePlan*> ShadowCache::prepare(const Frame& frame, const LightFrame& sources,
+                                                    std::span<const ShadowCaster> casters,
+                                                    std::span<const ShadowChange> changes,
+                                                    std::optional<ShadowReceiverDepth> depth, std::uint64_t sequence) {
     auto& s = *state_;
     if (s.plan_ready && s.initialized && s.scene == frame.scene_identity && s.sequence == sequence)
-        return s.plan;
+        return &s.plan;
     // An unconsumed plan is never GPU-valid. It can be abandoned safely without
     // allowing its scheduled writes to masquerade as completed cache contents.
     if (s.pending || !s.initialized || s.scene != frame.scene_identity)
@@ -930,11 +951,15 @@ const ShadowFramePlan& ShadowCache::prepare(const Frame& frame, const LightFrame
     const double camera_padding =
         2.0 / std::max(1.f, std::min(frame.scene_viewport.width, frame.scene_viewport.height));
     for (const auto& caster : casters) {
-        for (std::size_t axis = 0; axis < 3; ++axis)
-            check(std::isfinite(caster.bounds.minimum[axis]) && std::isfinite(caster.bounds.maximum[axis]) &&
-                      caster.bounds.minimum[axis] <= caster.bounds.maximum[axis],
-                  "Invalid shadow caster bounds");
-        check(caster.instance < frame.meshes.size(), "Shadow caster instance exceeds current frame");
+        for (std::size_t axis = 0; axis < 3; ++axis) {
+            auto bounds =
+                check(std::isfinite(caster.bounds.minimum[axis]) && std::isfinite(caster.bounds.maximum[axis]) &&
+                          caster.bounds.minimum[axis] <= caster.bounds.maximum[axis],
+                      "Invalid shadow caster bounds");
+            if (!bounds)
+                return std::unexpected(std::move(bounds).error());
+        }
+        ATELIER_TRY(check(caster.instance < frame.meshes.size(), "Shadow caster instance exceeds current frame"));
         if (intersects(caster.bounds, camera_vp, camera_padding, frame.camera.far_depth))
             receivers.push_back(caster);
     }
@@ -956,9 +981,12 @@ const ShadowFramePlan& ShadowCache::prepare(const Frame& frame, const LightFrame
         const bool lagging =
             std::ranges::any_of(held.faces, [](const auto& face) { return face.drawn; }) &&
             held.origin != std::array{light.origin_range[0], light.origin_range[1], light.origin_range[2]};
-        requests[index] = light.meta[0] == 2
-                              ? directional_request(frame, light, receivers, casters, camera_view, s.fitted())
-                              : point_request(frame, light, receivers, camera_view, lagging ? &held.origin : nullptr);
+        auto request_result =
+            light.meta[0] == 2 ? directional_request(frame, light, receivers, casters, camera_view, s.fitted())
+                               : point_request(frame, light, receivers, camera_view, lagging ? &held.origin : nullptr);
+        if (!request_result)
+            return std::unexpected(std::move(request_result).error());
+        requests[index] = *request_result;
         if (requests[index].kind == 1) {
             auto& request = requests[index];
             const auto previous_size = s.lights[index].preferred_size;
@@ -1068,7 +1096,7 @@ const ShadowFramePlan& ShadowCache::prepare(const Frame& frame, const LightFrame
                     if (needed)
                         ++s.plan.stats.near_plane_faces;
         }
-        s.append(index, request, size, rank, request.kind == 2 || !sources.keyed(index));
+        ATELIER_TRY(s.append(index, request, size, rank, request.kind == 2 || !sources.keyed(index)));
         if (near_caster) {
             const auto first = s.plan.lights[index].meta[1];
             for (std::uint32_t face = 0; face < request.count; ++face)
@@ -1076,8 +1104,8 @@ const ShadowFramePlan& ShadowCache::prepare(const Frame& frame, const LightFrame
                     s.plan.faces[first + face].meta[0] |= 4;
         }
     }
-    s.schedule(requests, casters);
+    ATELIER_TRY(s.schedule(requests, casters));
     s.plan_ready = true;
-    return s.plan;
+    return &s.plan;
 }
 }

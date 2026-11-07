@@ -13,7 +13,6 @@
 #include <condition_variable>
 #include <cstdio>
 #include <deque>
-#include <exception>
 #include <fstream>
 #include <iterator>
 #include <mutex>
@@ -896,8 +895,7 @@ void CommandTrace::observe(void* user, const GfxComputeObservation& event) noexc
     owned.detail.resource_name = nullptr;
 }
 
-CommandTraceScope::CommandTraceScope(Context& context, CommandTrace& trace) noexcept
-    : trace_(trace), exceptions_(std::uncaught_exceptions()) {
+CommandTraceScope::CommandTraceScope(Context& context, CommandTrace& trace) noexcept : trace_(trace) {
     auto& info = trace_.storage_->info;
     if (info.entered) {
         info.interrupted = true;
@@ -920,7 +918,7 @@ CommandTraceScope::~CommandTraceScope() {
         fatal("RHI lifetime violation: command observer detached after context destruction");
     auto& data = *trace_.storage_;
     data.info.closed = true;
-    data.info.interrupted |= data.pending || std::uncaught_exceptions() > exceptions_;
+    data.info.interrupted |= data.pending || !completed_;
     // Bindings of an unissued command are not published as an actual dispatch.
     if (data.pending)
         data.binding_count = data.commands[data.command_count].first_binding;

@@ -1,22 +1,18 @@
 #include "detail/material_programs.hpp"
+#include "detail/result.hpp"
 #include "shader_source.hpp"
+#include "memory/fatal.hpp"
 
 #include <algorithm>
-#include <cstdio>
-#include <cstdlib>
 #include <limits>
 #include <map>
 
 namespace atelier::renderer::detail {
 namespace {
-void require(GfxResult result, const char* message, bool terminal = false) {
-    if (result)
-        throw Error{{rhi::ErrorCode::execution_failed, result, message}, terminal};
-}
-
-void invalid(bool valid, const char* message) {
+Result<void> invalid(bool valid, const char* message) {
     if (!valid)
-        throw Error{{rhi::ErrorCode::invalid_argument, kGfxResult_InvalidParameter, message}, false};
+        return std::unexpected(Error{{rhi::ErrorCode::invalid_argument, kGfxResult_InvalidParameter, message}, false});
+    return {};
 }
 }
 
@@ -26,33 +22,31 @@ rhi::PipelineDesc studio_pipeline(const char* name, const char* vs, const char* 
     desc.name = name;
     desc.source.vs = vs;
     desc.source.ps = ps;
-    require(gfxDrawStateSetColorTarget(desc.draw_state, 0, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB), "Set window color target");
+    // These setters only copy CPU state: the owned draw state and constant target
+    // indices satisfy their preconditions. GPU validation occurs at pipeline creation.
+    static_cast<void>(gfxDrawStateSetColorTarget(desc.draw_state, 0, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB));
     if (style == PipelineStyle::cavity_surface)
-        require(gfxDrawStateSetColorTarget(desc.draw_state, 1, DXGI_FORMAT_R16G16B16A16_FLOAT),
-                "Set cavity normal target");
-    require(gfxDrawStateSetCullMode(desc.draw_state, D3D12_CULL_MODE_NONE), "Set culling");
+        static_cast<void>(gfxDrawStateSetColorTarget(desc.draw_state, 1, DXGI_FORMAT_R16G16B16A16_FLOAT));
+    static_cast<void>(gfxDrawStateSetCullMode(desc.draw_state, D3D12_CULL_MODE_NONE));
     const bool surface = style == PipelineStyle::surface || style == PipelineStyle::cavity_surface;
     const bool with_depth = surface || style == PipelineStyle::depth || style == PipelineStyle::visible_lines ||
                             style == PipelineStyle::all_lines || style == PipelineStyle::grid_depth;
     const bool write_depth = surface || style == PipelineStyle::depth;
     if (with_depth) {
-        require(gfxDrawStateSetDepthStencilTarget(desc.draw_state, DXGI_FORMAT_D32_FLOAT), "Set depth target");
-        require(gfxDrawStateSetDepthFunction(
-                    desc.draw_state, style == PipelineStyle::all_lines       ? D3D12_COMPARISON_FUNC_ALWAYS
-                                     : style == PipelineStyle::visible_lines ? D3D12_COMPARISON_FUNC_GREATER_EQUAL
-                                                                             : D3D12_COMPARISON_FUNC_GREATER),
-                "Set depth comparison");
+        static_cast<void>(gfxDrawStateSetDepthStencilTarget(desc.draw_state, DXGI_FORMAT_D32_FLOAT));
+        static_cast<void>(gfxDrawStateSetDepthFunction(
+            desc.draw_state, style == PipelineStyle::all_lines       ? D3D12_COMPARISON_FUNC_ALWAYS
+                             : style == PipelineStyle::visible_lines ? D3D12_COMPARISON_FUNC_GREATER_EQUAL
+                                                                     : D3D12_COMPARISON_FUNC_GREATER));
     }
-    require(gfxDrawStateSetDepthWriteMask(desc.draw_state,
-                                          write_depth ? D3D12_DEPTH_WRITE_MASK_ALL : D3D12_DEPTH_WRITE_MASK_ZERO),
-            "Set depth writes");
+    static_cast<void>(gfxDrawStateSetDepthWriteMask(desc.draw_state, write_depth ? D3D12_DEPTH_WRITE_MASK_ALL
+                                                                                 : D3D12_DEPTH_WRITE_MASK_ZERO));
     if (!surface && style != PipelineStyle::background)
-        require(gfxDrawStateSetBlendMode(
-                    desc.draw_state, style == PipelineStyle::depth ? D3D12_BLEND_ZERO : D3D12_BLEND_ONE,
-                    style == PipelineStyle::depth ? D3D12_BLEND_ONE : D3D12_BLEND_INV_SRC_ALPHA, D3D12_BLEND_OP_ADD,
-                    style == PipelineStyle::depth ? D3D12_BLEND_ZERO : D3D12_BLEND_ONE,
-                    style == PipelineStyle::depth ? D3D12_BLEND_ONE : D3D12_BLEND_INV_SRC_ALPHA, D3D12_BLEND_OP_ADD),
-                "Set pass blending");
+        static_cast<void>(gfxDrawStateSetBlendMode(
+            desc.draw_state, style == PipelineStyle::depth ? D3D12_BLEND_ZERO : D3D12_BLEND_ONE,
+            style == PipelineStyle::depth ? D3D12_BLEND_ONE : D3D12_BLEND_INV_SRC_ALPHA, D3D12_BLEND_OP_ADD,
+            style == PipelineStyle::depth ? D3D12_BLEND_ZERO : D3D12_BLEND_ONE,
+            style == PipelineStyle::depth ? D3D12_BLEND_ONE : D3D12_BLEND_INV_SRC_ALPHA, D3D12_BLEND_OP_ADD));
     return desc;
 }
 
@@ -63,14 +57,13 @@ rhi::PipelineDesc gbuffer_pipeline(const char* vs, const char* ps) {
     desc.source.ps = ps;
     desc.name = "Scene Lit GBuffer";
     for (std::uint32_t i = 0; i < 4; ++i)
-        require(gfxDrawStateSetColorTarget(desc.draw_state, i, DXGI_FORMAT_R16G16B16A16_FLOAT), "Set GBuffer format");
-    require(gfxDrawStateSetColorTarget(desc.draw_state, 4, DXGI_FORMAT_R32_FLOAT), "Set previous surface depth format");
-    require(gfxDrawStateSetColorTarget(desc.draw_state, 5, DXGI_FORMAT_R16G16_FLOAT), "Set geometric normal format");
-    require(gfxDrawStateSetColorTarget(desc.draw_state, 6, DXGI_FORMAT_R32G32_UINT),
-            "Set stable surface identity format");
-    require(gfxDrawStateSetDepthStencilTarget(desc.draw_state, DXGI_FORMAT_D32_FLOAT), "Set GBuffer depth");
-    require(gfxDrawStateSetDepthFunction(desc.draw_state, D3D12_COMPARISON_FUNC_GREATER), "Set GBuffer reversed depth");
-    require(gfxDrawStateSetCullMode(desc.draw_state, D3D12_CULL_MODE_NONE), "Set GBuffer culling");
+        static_cast<void>(gfxDrawStateSetColorTarget(desc.draw_state, i, DXGI_FORMAT_R16G16B16A16_FLOAT));
+    static_cast<void>(gfxDrawStateSetColorTarget(desc.draw_state, 4, DXGI_FORMAT_R32_FLOAT));
+    static_cast<void>(gfxDrawStateSetColorTarget(desc.draw_state, 5, DXGI_FORMAT_R16G16_FLOAT));
+    static_cast<void>(gfxDrawStateSetColorTarget(desc.draw_state, 6, DXGI_FORMAT_R32G32_UINT));
+    static_cast<void>(gfxDrawStateSetDepthStencilTarget(desc.draw_state, DXGI_FORMAT_D32_FLOAT));
+    static_cast<void>(gfxDrawStateSetDepthFunction(desc.draw_state, D3D12_COMPARISON_FUNC_GREATER));
+    static_cast<void>(gfxDrawStateSetCullMode(desc.draw_state, D3D12_CULL_MODE_NONE));
     return desc;
 }
 
@@ -80,9 +73,9 @@ rhi::PipelineDesc shadow_pipeline(const char* vs, const char* ps) {
     desc.source.vs = vs;
     desc.source.ps = ps;
     desc.name = "Cached shadow depth";
-    require(gfxDrawStateSetDepthStencilTarget(desc.draw_state, DXGI_FORMAT_D32_FLOAT), "Set cached shadow precision");
-    require(gfxDrawStateSetDepthFunction(desc.draw_state, D3D12_COMPARISON_FUNC_GREATER), "Set shadow reversed depth");
-    require(gfxDrawStateSetCullMode(desc.draw_state, D3D12_CULL_MODE_NONE), "Set two-sided shadow coverage");
+    static_cast<void>(gfxDrawStateSetDepthStencilTarget(desc.draw_state, DXGI_FORMAT_D32_FLOAT));
+    static_cast<void>(gfxDrawStateSetDepthFunction(desc.draw_state, D3D12_COMPARISON_FUNC_GREATER));
+    static_cast<void>(gfxDrawStateSetCullMode(desc.draw_state, D3D12_CULL_MODE_NONE));
     return desc;
 }
 
@@ -92,28 +85,25 @@ MaterialBatchState::MaterialBatchState(rhi::Context& c, std::size_t& count)
 }
 
 MaterialImageResource::~MaterialImageResource() {
-    if (texture && gfxDestroyTexture(retirement_context, texture)) {
-        std::fputs("Material image retirement failed\n", stderr);
-        std::abort();
-    }
+    if (texture && gfxDestroyTexture(retirement_context, texture))
+        fatal("Material image retirement failed");
 }
 
 MaterialBatchState::~MaterialBatchState() {
     if (owner != std::this_thread::get_id())
-        std::abort();
+        fatal("Material batch destruction on a foreign thread");
     for (auto buffer : {surface_buffer, parameter_buffer, input_buffer})
         if (buffer)
-            if (gfxDestroyBuffer(retirement_context, buffer)) {
-                std::fputs("Material batch buffer retirement failed\n", stderr);
-                std::abort();
-            }
+            if (gfxDestroyBuffer(retirement_context, buffer))
+                fatal("Material batch buffer retirement failed");
     --live_batches;
 }
 
-void MaterialBatchState::submit(std::span<const material::ProgramSurfaceRef> input,
-                                std::vector<std::weak_ptr<MaterialProgramSet>>& sets) {
-    invalid(!input.empty() && input.size() <= std::numeric_limits<std::uint32_t>::max() / sizeof(ProgramSurfaceRecord),
-            "Material batch needs a representable nonempty Surface table");
+Result<void> MaterialBatchState::submit(std::span<const material::ProgramSurfaceRef> input,
+                                        std::vector<std::weak_ptr<MaterialProgramSet>>& sets) {
+    ATELIER_TRY(invalid(!input.empty() &&
+                            input.size() <= std::numeric_limits<std::uint32_t>::max() / sizeof(ProgramSurfaceRecord),
+                        "Material batch needs a representable nonempty Surface table"));
     surfaces.assign(input.begin(), input.end());
     struct ProgramUse {
         material::DefinitionRef definition;
@@ -122,7 +112,7 @@ void MaterialBatchState::submit(std::span<const material::ProgramSurfaceRef> inp
     };
     std::map<const source::MaterialProgram*, ProgramUse> unique;
     for (const auto& surface : surfaces) {
-        invalid(bool(surface), "Material batch has a missing Surface");
+        ATELIER_TRY(invalid(bool(surface), "Material batch has a missing Surface"));
         auto& use = unique.try_emplace(&surface->program(), ProgramUse{surface->definition()}).first->second;
         // Different definitions can share a program. Never let the first
         // (possibly Opaque) definition hide another instance's Mask policy.
@@ -151,11 +141,12 @@ void MaterialBatchState::submit(std::span<const material::ProgramSurfaceRef> inp
     std::map<std::pair<const material::Image*, bool>, std::uint32_t> image_indices;
     for (const auto& surface : surfaces) {
         const auto& policy = surface->policy();
-        invalid(parameters.size() + surface->parameters().size() + 3 <= std::numeric_limits<std::uint32_t>::max(),
-                "Material parameter buffer exceeds byte addressing");
-        invalid(inputs.size() + surface->inputs().size() <=
-                    std::numeric_limits<std::uint32_t>::max() / sizeof(ProgramInputRecord),
-                "Material input table exceeds addressing");
+        ATELIER_TRY(
+            invalid(parameters.size() + surface->parameters().size() + 3 <= std::numeric_limits<std::uint32_t>::max(),
+                    "Material parameter buffer exceeds byte addressing"));
+        ATELIER_TRY(invalid(inputs.size() + surface->inputs().size() <=
+                                std::numeric_limits<std::uint32_t>::max() / sizeof(ProgramInputRecord),
+                            "Material input table exceeds addressing"));
         records.push_back({indices.at(&surface->program()),
                            static_cast<std::uint32_t>(parameters.size()),
                            static_cast<std::uint32_t>(inputs.size()),
@@ -187,12 +178,13 @@ void MaterialBatchState::submit(std::span<const material::ProgramSurfaceRef> inp
         code = std::make_shared<MaterialProgramSet>();
         code->definitions = std::move(definitions);
         code->masked_programs = std::move(masked_programs);
-        code->submit(context);
+        ATELIER_TRY(code->submit(context));
         sets.push_back(code);
     }
+    return {};
 }
 
-void MaterialProgramSet::submit(rhi::Context& context) {
+Result<void> MaterialProgramSet::submit(rhi::Context& context) {
     std::string prefix = R"hlsl(#define MATERIAL_PROGRAMS 1
 struct MaterialInput { uint slot; uint texture_index; uint address; uint count; float4 empty_value; };
 StructuredBuffer<MaterialInput> material_inputs;
@@ -249,18 +241,19 @@ float4 atelier_material_sample_grad(uint environment,uint local_slot,float2 uv,f
     for (std::size_t i = 0; i < definitions.size(); ++i) {
         auto hlsl = definitions[i]->program().hlsl("MaterialProgram" + std::to_string(i));
         if (!hlsl)
-            throw Error{{rhi::ErrorCode::invalid_argument, kGfxResult_InvalidParameter, hlsl.error().message}, false};
+            return std::unexpected(
+                Error{{rhi::ErrorCode::invalid_argument, kGfxResult_InvalidParameter, hlsl.error().message}, false});
         prefix += *hlsl;
         auto footprint = definitions[i]->program().hlsl_footprint("MaterialFootprint" + std::to_string(i));
         if (!footprint)
-            throw Error{{rhi::ErrorCode::invalid_argument, kGfxResult_InvalidParameter, footprint.error().message},
-                        false};
+            return std::unexpected(Error{
+                {rhi::ErrorCode::invalid_argument, kGfxResult_InvalidParameter, footprint.error().message}, false});
         prefix += *footprint;
         if (masked_programs[i]) {
             auto coverage = definitions[i]->program().hlsl_coverage("MaterialCoverage" + std::to_string(i));
             if (!coverage)
-                throw Error{{rhi::ErrorCode::invalid_argument, kGfxResult_InvalidParameter, coverage.error().message},
-                            false};
+                return std::unexpected(Error{
+                    {rhi::ErrorCode::invalid_argument, kGfxResult_InvalidParameter, coverage.error().message}, false});
             prefix += *coverage;
         }
     }
@@ -316,11 +309,12 @@ ByteAddressBuffer material_parameters;
         }
         prefix += "}\nreturn (MaterialOutput)0;\n}\n";
     }
-    const auto submit = [&](MaterialPass pass, const rhi::PipelineDesc& desc) {
+    const auto submit = [&](MaterialPass pass, const rhi::PipelineDesc& desc) -> Result<void> {
         auto job = context.submit(desc);
         if (!job)
-            throw Error{job.error(), false};
+            return std::unexpected(Error{job.error(), false});
         pending.push_back({pass, std::move(*job)});
+        return {};
     };
     const auto compute = [&](MaterialPass pass, const char* source, const char* entry) {
         // Only probe transport/inspection approximates Mask as solid geometry.
@@ -333,18 +327,18 @@ ByteAddressBuffer material_parameters;
         desc.source.cs = text.c_str();
         desc.entry_point = entry;
         desc.name = entry;
-        submit(pass, desc);
+        return submit(pass, desc);
     };
     // Submit the costly ray consumers first, like the existing Scene Lit queue.
-    compute(MaterialPass::probe_update, shaders::lit_ddgi, "DDGIUpdate");
-    compute(MaterialPass::compose, shaders::lit_clustered, "lit_compose_cs");
-    compute(MaterialPass::sun_trace, shaders::lit_clustered, "lit_sun_trace_cs");
-    compute(MaterialPass::probe_trace, shaders::lit_ddgi, "DDGITrace");
-    compute(MaterialPass::probe_resolve, shaders::lit_ddgi, "DDGIResolve");
-    compute(MaterialPass::probe_upsample, shaders::lit_ddgi, "DDGIUpsample");
-    compute(MaterialPass::probe_exact, shaders::lit_ddgi, "DDGIExact");
-    compute(MaterialPass::inspect, shaders::lit_ddgi, "DDGIInspect");
-    compute(MaterialPass::inspect_update, shaders::lit_ddgi, "DDGIUpdateInspect");
+    ATELIER_TRY(compute(MaterialPass::probe_update, shaders::lit_ddgi, "DDGIUpdate"));
+    ATELIER_TRY(compute(MaterialPass::compose, shaders::lit_clustered, "lit_compose_cs"));
+    ATELIER_TRY(compute(MaterialPass::sun_trace, shaders::lit_clustered, "lit_sun_trace_cs"));
+    ATELIER_TRY(compute(MaterialPass::probe_trace, shaders::lit_ddgi, "DDGITrace"));
+    ATELIER_TRY(compute(MaterialPass::probe_resolve, shaders::lit_ddgi, "DDGIResolve"));
+    ATELIER_TRY(compute(MaterialPass::probe_upsample, shaders::lit_ddgi, "DDGIUpsample"));
+    ATELIER_TRY(compute(MaterialPass::probe_exact, shaders::lit_ddgi, "DDGIExact"));
+    ATELIER_TRY(compute(MaterialPass::inspect, shaders::lit_ddgi, "DDGIInspect"));
+    ATELIER_TRY(compute(MaterialPass::inspect_update, shaders::lit_ddgi, "DDGIUpdateInspect"));
     const auto studio_vs = prefix + shaders::scene_vs;
     const auto studio_ps = prefix + shaders::scene_ps;
     const auto cavity_ps = prefix + shaders::cavity_surface_ps;
@@ -353,19 +347,20 @@ ByteAddressBuffer material_parameters;
                                       {MaterialPass::depth, PipelineStyle::depth},
                                       {MaterialPass::visible_lines, PipelineStyle::visible_lines},
                                       {MaterialPass::all_lines, PipelineStyle::all_lines}})
-        submit(pass, studio_pipeline("Programmable studio", studio_vs.c_str(),
-                                     pass == MaterialPass::cavity ? cavity_ps.c_str() : studio_ps.c_str(), style));
+        ATELIER_TRY(
+            submit(pass, studio_pipeline("Programmable studio", studio_vs.c_str(),
+                                         pass == MaterialPass::cavity ? cavity_ps.c_str() : studio_ps.c_str(), style)));
     const auto gbuffer = prefix + shaders::lit_gbuffer;
     const auto vs = gbuffer + "\nLitRaster main(uint v:SV_VertexID,uint i:SV_InstanceID){return lit_gbuffer_vs(v,i);}";
     const auto ps =
         gbuffer +
         "\nLitGBuffer main(LitRaster i,uint p:SV_PrimitiveID,float3 b:SV_Barycentrics){return lit_gbuffer_ps(i,p,b);}";
-    submit(MaterialPass::gbuffer, gbuffer_pipeline(vs.c_str(), ps.c_str()));
+    ATELIER_TRY(submit(MaterialPass::gbuffer, gbuffer_pipeline(vs.c_str(), ps.c_str())));
     const auto shadow = prefix + shaders::lit_shadow;
     const auto shadow_vs =
         shadow + "\nLitShadowRaster main(uint v:SV_VertexID,uint i:SV_InstanceID){return lit_shadow_vs(v,i);}";
     const auto shadow_ps = shadow + "\nvoid main(LitShadowRaster i,uint p:SV_PrimitiveID){lit_shadow_ps(i,p);}";
-    submit(MaterialPass::shadow, shadow_pipeline(shadow_vs.c_str(), shadow_ps.c_str()));
+    ATELIER_TRY(submit(MaterialPass::shadow, shadow_pipeline(shadow_vs.c_str(), shadow_ps.c_str())));
     const auto coverage = prefix + shaders::lit_ddgi_debug +
                           "\nfloat4 main(float4 p:SV_Position):SV_Target{return ddgi_debug_coverage_ps(p);}";
     rhi::PipelineDesc desc;
@@ -373,12 +368,10 @@ ByteAddressBuffer material_parameters;
     desc.source.vs = shaders::viewport_vs;
     desc.source.ps = coverage.c_str();
     desc.name = "Programmable DDGI receiver coverage";
-    require(gfxDrawStateSetColorTarget(desc.draw_state, 0, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB),
-            "Set DDGI debug color format");
-    require(gfxDrawStateSetCullMode(desc.draw_state, D3D12_CULL_MODE_NONE), "Set DDGI debug culling");
-    require(gfxDrawStateSetDepthWriteMask(desc.draw_state, D3D12_DEPTH_WRITE_MASK_ZERO),
-            "Disable diagnostic surface depth writes");
-    submit(MaterialPass::probe_coverage, desc);
+    static_cast<void>(gfxDrawStateSetColorTarget(desc.draw_state, 0, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB));
+    static_cast<void>(gfxDrawStateSetCullMode(desc.draw_state, D3D12_CULL_MODE_NONE));
+    static_cast<void>(gfxDrawStateSetDepthWriteMask(desc.draw_state, D3D12_DEPTH_WRITE_MASK_ZERO));
+    return submit(MaterialPass::probe_coverage, desc);
 }
 
 Result<Preparation> MaterialProgramSet::preparation(rhi::Context& context) {
@@ -402,16 +395,15 @@ Result<Preparation> MaterialProgramSet::preparation(rhi::Context& context) {
     return Preparation{total - static_cast<std::uint32_t>(pending.size()), total, pending.empty()};
 }
 
-void MaterialBatchState::upload() {
+Result<void> MaterialBatchState::upload() {
     surface_buffer = gfxCreateBuffer<ProgramSurfaceRecord>(context.borrow(), static_cast<std::uint32_t>(records.size()),
                                                            records.data());
     parameter_buffer = gfxCreateBuffer(context.borrow(), parameters.size(), parameters.data());
     input_buffer =
         gfxCreateBuffer<ProgramInputRecord>(context.borrow(), static_cast<std::uint32_t>(inputs.size()), inputs.data());
-    if (!surface_buffer || !parameter_buffer || !input_buffer)
-        throw Error{{rhi::ErrorCode::creation_failed, kGfxResult_OutOfMemory, "Material batch table upload failed"},
-                    true};
+    ATELIER_TRY(allocation(surface_buffer && parameter_buffer && input_buffer, "Material batch table upload failed"));
     ready = true;
+    return {};
 }
 } // namespace atelier::renderer::detail
 

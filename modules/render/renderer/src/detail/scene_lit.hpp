@@ -33,23 +33,23 @@ public:
     SceneLit& operator=(const SceneLit&) = delete;
 
     // Stable mesh key uniqueness is tracked by the Renderer across shading modes.
-    void validate(const Frame& frame, bool duplicate_mesh_keys) const;
+    Result<void> validate(const Frame& frame, bool duplicate_mesh_keys) const;
 
     // See Renderer::preparation; only Lit views reach here.
     Result<Preparation> preparation(const ViewSettings& view);
 
-    void draw(const Frame& frame, ui::PixelExtent extent, GfxTexture depth, const SceneLitDraws& scene_draws,
-              const MaterialFrame& materials, FrameStats& stats);
+    Result<void> draw(const Frame& frame, ui::PixelExtent extent, GfxTexture depth, const SceneLitDraws& scene_draws,
+                      const MaterialFrame& materials, FrameStats& stats);
 
     // Called only after CPU preparation succeeds, inside the encoding phase.
     // Post-AA diagnostics use the public camera and preserve scene depth.
-    void draw_debug(const Frame& frame, ui::PixelExtent extent, GfxTexture depth, FrameStats& stats);
+    Result<void> draw_debug(const Frame& frame, ui::PixelExtent extent, GfxTexture depth, FrameStats& stats);
 
     GfxTexture motion() const; // This frame's GBuffer surface motion, RGBA16F.
 
     void invalidate(bool empty_scene, FrameStats& stats);
 
-    Result<void> close();
+    void close();
 
 private:
     struct State;

@@ -182,9 +182,11 @@ public:
 
     ShadowCache& operator=(const ShadowCache&) = delete;
 
-    const ShadowFramePlan& prepare(const Frame&, const LightFrame&, std::span<const ShadowCaster>,
-                                   std::span<const ShadowChange>, std::optional<ShadowReceiverDepth>,
-                                   std::uint64_t sequence);
+    // The successful plan is borrowed until the next prepare/invalidate. A rejected
+    // partial plan is never committed; the next prepare invalidates its history.
+    Result<const ShadowFramePlan*> prepare(const Frame&, const LightFrame&, std::span<const ShadowCaster>,
+                                           std::span<const ShadowChange>, std::optional<ShadowReceiverDepth>,
+                                           std::uint64_t sequence);
 
     // Call only after every update and corresponding shade has been encoded.
     // No GPU wait is required: these resources stay on the existing queue.

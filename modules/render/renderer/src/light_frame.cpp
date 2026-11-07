@@ -1,4 +1,5 @@
 #include "detail/light_frame.hpp"
+#include "foundation/result.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -7,40 +8,47 @@
 
 namespace atelier::renderer::detail {
 namespace {
-void check(bool condition, const char* message) {
+Result<void> check(bool condition, const char* message) {
     if (!condition)
-        throw Error{{rhi::ErrorCode::invalid_argument, kGfxResult_InvalidParameter, message}, false};
+        return std::unexpected(Error{{rhi::ErrorCode::invalid_argument, kGfxResult_InvalidParameter, message}, false});
+    return {};
 }
 
-float gpu_float(double value) {
-    check(std::isfinite(value) && std::abs(value) <= std::numeric_limits<float>::max(),
-          "Light source exceeds GPU float representation");
+Result<float> gpu_float(double value) {
+    ATELIER_TRY(check(std::isfinite(value) && std::abs(value) <= std::numeric_limits<float>::max(),
+                      "Light source exceeds GPU float representation"));
     return static_cast<float>(value);
 }
 
-void source_capacity(std::size_t count) {
+Result<void> source_capacity(std::size_t count) {
     // GFX structured buffers use uint32 element counts and uint64 byte sizes.
     // Reserve ~0 as the invalid index; allocation limits remain RHI-owned.
-    check(count < no_light_source && count <= std::numeric_limits<std::size_t>::max() / sizeof(GpuLightSource),
-          "Light source buffer exceeds addressable storage");
+    return check(count < no_light_source && count <= std::numeric_limits<std::size_t>::max() / sizeof(GpuLightSource),
+                 "Light source buffer exceeds addressable storage");
 }
 
 double luminance(const std::array<float, 4>& value) {
     return .2126 * value[0] + .7152 * value[1] + .0722 * value[2];
 }
 
-GpuLightSource analytic_source(const Light& light) {
+Result<GpuLightSource> analytic_source(const Light& light) {
     GpuLightSource result;
     result.origin_range = {light.position[0], light.position[1], light.position[2], light.range};
     result.direction_radius = {light.direction[0], light.direction[1], light.direction[2], light.source_radius};
     for (std::size_t axis = 0; axis < 3; ++axis) {
-        result.radiance[axis] = gpu_float(double(light.color[axis]) * light.intensity);
+        ATELIER_TRY_BIND(radiance, gpu_float(double(light.color[axis]) * light.intensity));
+        result.radiance[axis] = *radiance;
         if (light.kind == LightKind::rectangle) {
-            result.edge1_area[axis] = gpu_float(double(light.right[axis]) * light.width);
-            result.edge2[axis] = gpu_float(double(light.up[axis]) * light.height);
+            ATELIER_TRY_BIND(right, gpu_float(double(light.right[axis]) * light.width));
+            result.edge1_area[axis] = *right;
+            ATELIER_TRY_BIND(up, gpu_float(double(light.up[axis]) * light.height));
+            result.edge2[axis] = *up;
         }
     }
-    result.edge1_area[3] = light.kind == LightKind::rectangle ? gpu_float(double(light.width) * light.height) : 0;
+    if (light.kind == LightKind::rectangle) {
+        ATELIER_TRY_BIND(area, gpu_float(double(light.width) * light.height));
+        result.edge1_area[3] = *area;
+    }
     result.meta = {static_cast<std::uint32_t>(light.kind), (light.two_sided ? 1u : 0u) | (light.casts_shadow ? 2u : 0u),
                    0, 0};
     return result;
@@ -120,20 +128,19 @@ void LightFrame::clear() {
     valid_ = advance_previous_ = changed = radiance_changed = false;
 }
 
-void LightFrame::update(const Frame& frame, std::uint64_t sequence) {
-    try {
-        update_impl(frame, sequence);
-        update_spatial(frame.lighting_focus, sequence);
-    } catch (...) {
+Result<void> LightFrame::update(const Frame& frame, std::uint64_t sequence) {
+    auto result = update_impl(frame, sequence);
+    if (result)
+        result = update_spatial(frame.lighting_focus, sequence);
+    if (!result)
         clear();
-        throw;
-    }
+    return result;
 }
 
-void LightFrame::update_impl(const Frame& frame, std::uint64_t sequence) {
+Result<void> LightFrame::update_impl(const Frame& frame, std::uint64_t sequence) {
     if (valid_ && scene_identity_ != frame.scene_identity)
         clear();
-    source_capacity(frame.lights.size());
+    ATELIER_TRY(source_capacity(frame.lights.size()));
     bool rebuild = !valid_;
     next_analytic_.clear();
     next_analytic_keys_.clear();
@@ -143,7 +150,8 @@ void LightFrame::update_impl(const Frame& frame, std::uint64_t sequence) {
         for (const auto& light : frame.lights) {
             if ((light.kind == LightKind::directional) != directional)
                 continue;
-            next_analytic_.push_back(analytic_source(light));
+            ATELIER_TRY_BIND(source, analytic_source(light));
+            next_analytic_.push_back(*source);
             next_analytic_keys_.push_back({light.stable_key, static_cast<std::uint32_t>(light.kind)});
         }
     const bool rebuild_sources = rebuild || next_analytic_ != analytic_ || next_analytic_keys_ != analytic_keys_;
@@ -152,7 +160,7 @@ void LightFrame::update_impl(const Frame& frame, std::uint64_t sequence) {
     // Several passes may request the same immutable frame snapshot. Preserve
     // both its correspondence and its publication flag on repeated calls.
     if (!rebuild_sources && sequence == frame_id_)
-        return;
+        return {};
     changed = rebuild_sources;
     radiance_changed = false;
     if (!rebuild_sources) {
@@ -162,7 +170,7 @@ void LightFrame::update_impl(const Frame& frame, std::uint64_t sequence) {
                 current_to_previous[i] = keys_[i].owner ? static_cast<std::uint32_t>(i) : no_light_source;
             advance_previous_ = false;
         }
-        return;
+        return {};
     }
 
     previous_sources_.swap(sources);
@@ -172,7 +180,6 @@ void LightFrame::update_impl(const Frame& frame, std::uint64_t sequence) {
     powers_.clear();
     directional_count = 0;
     const auto append = [&](std::size_t i) {
-        source_capacity(sources.size() + 1);
         sources.push_back(analytic_[i]);
         keys_.push_back(analytic_keys_[i]);
     };
@@ -187,7 +194,7 @@ void LightFrame::update_impl(const Frame& frame, std::uint64_t sequence) {
             append(i);
             ++directional_count;
         }
-    build_proposals();
+    ATELIER_TRY(build_proposals());
     map_previous();
     ++source_revision_;
     radiance_changed = !valid_ || sources.size() != previous_sources_.size();
@@ -203,22 +210,23 @@ void LightFrame::update_impl(const Frame& frame, std::uint64_t sequence) {
     frame_id_ = sequence;
     valid_ = true;
     advance_previous_ = true;
+    return {};
 }
 
-void LightFrame::build_proposals() {
+Result<void> LightFrame::build_proposals() {
     proposals.assign(local_count, {});
     if (local_count == 0)
-        return;
+        return {};
     scaled_.resize(local_count);
     actual_.assign(local_count, 0);
     below_.clear();
     above_.clear();
     double total = 0;
     for (double power : powers_) {
-        check(std::isfinite(power) && power >= 0, "Light proposal power is invalid");
+        ATELIER_TRY(check(std::isfinite(power) && power >= 0, "Light proposal power is invalid"));
         total += power;
     }
-    check(std::isfinite(total), "Light proposal power sum is invalid");
+    ATELIER_TRY(check(std::isfinite(total), "Light proposal power sum is invalid"));
     for (std::uint32_t i = 0; i < local_count; ++i) {
         scaled_[i] = total > 0 ? .95 * (powers_[i] / total) * local_count + .05 : 1;
         proposals[i].accept = 1;
@@ -242,9 +250,10 @@ void LightFrame::build_proposals() {
     }
     for (std::uint32_t i = 0; i < local_count; ++i)
         proposals[i].probability = static_cast<float>(actual_[i]);
+    return {};
 }
 
-void LightFrame::update_spatial(const std::array<float, 3>& focus, std::uint64_t sequence) {
+Result<void> LightFrame::update_spatial(const std::array<float, 3>& focus, std::uint64_t sequence) {
     if (!spatial_initialized_ || sequence != spatial_frame_id_)
         spatial_changed = false;
     std::array<float, 4> origin{};
@@ -252,7 +261,7 @@ void LightFrame::update_spatial(const std::array<float, 3>& focus, std::uint64_t
         origin = {};
     if (spatial_initialized_ && spatial_source_revision_ == source_revision_ && origin == spatial_origin) {
         spatial_frame_id_ = sequence;
-        return;
+        return {};
     }
     spatial_nonempty_cells = 0;
     spatial_origin = origin;
@@ -263,7 +272,7 @@ void LightFrame::update_spatial(const std::array<float, 3>& focus, std::uint64_t
     spatial_frame_id_ = sequence;
     spatial_initialized_ = spatial_changed = true;
     if (origin[3] == 0)
-        return;
+        return {};
 
     spatial_cells.resize(light_grid_cell_count);
     spatial_bins_.resize(light_grid_cell_count);
@@ -315,7 +324,7 @@ void LightFrame::update_spatial(const std::array<float, 3>& focus, std::uint64_t
         retained += cell.count;
     if (retained == 0) {
         spatial_cells.clear();
-        return;
+        return {};
     }
     spatial_proposals.reserve(retained);
     spatial_source_slots.assign(local_count, no_light_source);
@@ -331,7 +340,7 @@ void LightFrame::update_spatial(const std::array<float, 3>& focus, std::uint64_t
         double mass = 0;
         for (std::uint32_t slot = 0; slot < count; ++slot)
             mass += proposals[selected[slot]].probability;
-        check(std::isfinite(mass) && mass > 0, "Spatial light proposal mass is invalid");
+        ATELIER_TRY(check(std::isfinite(mass) && mass > 0, "Spatial light proposal mass is invalid"));
         header.mass = static_cast<float>(mass);
         std::array<double, light_grid_cell_capacity> scaled{};
         std::array<double, light_grid_cell_capacity> actual{};
@@ -372,6 +381,7 @@ void LightFrame::update_spatial(const std::array<float, 3>& focus, std::uint64_t
         for (std::uint32_t slot = 0; slot < count; ++slot)
             spatial_proposals[header.offset + slot].probability = static_cast<float>(actual[slot]);
     }
+    return {};
 }
 
 void LightFrame::map_previous() {

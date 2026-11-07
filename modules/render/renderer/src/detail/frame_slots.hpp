@@ -1,5 +1,7 @@
 #pragma once
 #include "renderer/renderer.hpp"
+#include "foundation/result.hpp"
+#include "memory/fatal.hpp"
 #include <algorithm>
 #include <bit>
 #include <cstring>
@@ -9,12 +11,6 @@
 #include <vector>
 
 namespace atelier::renderer::detail {
-[[noreturn]] inline void frame_slot_failure(const char* name, const char* what) {
-    throw Error{
-        {rhi::ErrorCode::execution_failed, kGfxResult_InvalidOperation, std::string(name) + " frame slot " + what},
-        true};
-}
-
 // Persistent CPU-written buffers, one per frame in flight, read by the GPU in
 // place. gfx begins recording frame N only after frame N - frames_in_flight
 // completed, so the slot picked by the recording sequence is no longer read.
@@ -24,14 +20,14 @@ class FrameSlots {
 public:
     // Returns this frame's slot holding values. A slot that already holds the
     // latest values is not rewritten while changed stays false.
-    GfxBuffer write(GfxContext gfx, std::uint32_t frames_in_flight, std::span<const T> values, bool changed,
-                    const char* name) {
+    Result<GfxBuffer> write(GfxContext gfx, std::uint32_t frames_in_flight, std::span<const T> values, bool changed,
+                            const char* name) {
         const auto sequence = gfxGetRecordingFrameSequence(gfx);
         if (!sequence)
-            frame_slot_failure(name, "written outside a recording frame");
+            fatal("Renderer frame slot written outside a recording frame");
         // Work already recorded this frame reads the slot at execution; a second write would redirect it.
         if (sequence == sequence_)
-            frame_slot_failure(name, "written twice in one recording frame");
+            fatal("Renderer frame slot written twice in one recording frame");
         sequence_ = sequence;
         if (slots_.empty())
             slots_.resize(frames_in_flight);
@@ -40,12 +36,12 @@ public:
         const auto count = static_cast<std::uint32_t>(std::max<std::size_t>(1, values.size()));
         if (slot.buffer.getCount() < count) {
             if (slot.buffer && gfxDestroyBuffer(gfx, slot.buffer) != kGfxResult_NoError)
-                frame_slot_failure(name, "retirement failed");
+                fatal("Renderer frame slot retirement failed");
             slot.buffer = gfxCreateBuffer<T>(gfx, std::bit_ceil(count), nullptr, kGfxCpuAccess_Write);
             if (!slot.buffer)
-                throw Error{{rhi::ErrorCode::creation_failed, kGfxResult_OutOfMemory,
-                             std::string(name) + " frame slot allocation failed"},
-                            true};
+                return std::unexpected(Error{{rhi::ErrorCode::creation_failed, kGfxResult_OutOfMemory,
+                                              std::string(name) + " frame slot allocation failed"},
+                                             true});
             slot.revision = 0;
         }
         if (slot.revision != revision_) {
@@ -56,15 +52,13 @@ public:
         return slot.buffer;
     }
 
-    GfxResult retire(GfxContext gfx) {
-        GfxResult result = kGfxResult_NoError;
+    void retire(GfxContext gfx) {
         for (auto& slot : slots_)
             if (slot.buffer)
-                if (const auto r = gfxDestroyBuffer(gfx, slot.buffer); r && !result)
-                    result = r;
+                if (gfxDestroyBuffer(gfx, slot.buffer) != kGfxResult_NoError)
+                    fatal("Renderer frame slot retirement failed");
         slots_.clear();
         sequence_ = 0;
-        return result;
     }
 
     std::uint64_t bytes() const {
@@ -96,41 +90,43 @@ template <class T>
 class DeviceTable {
 public:
     // Copies values[first, last) in; growing the table copies every value.
-    GfxBuffer write(GfxContext gfx, std::uint32_t frames_in_flight, std::span<const T> values, std::size_t first,
-                    std::size_t last, const char* name) {
+    Result<GfxBuffer> write(GfxContext gfx, std::uint32_t frames_in_flight, std::span<const T> values,
+                            std::size_t first, std::size_t last, const char* name) {
         const auto count = static_cast<std::uint32_t>(std::max<std::size_t>(1, values.size()));
         if (buffer_.getCount() < count) {
             if (buffer_ && gfxDestroyBuffer(gfx, buffer_) != kGfxResult_NoError)
-                frame_slot_failure(name, "table retirement failed");
+                fatal("Renderer device table retirement failed");
             buffer_ = gfxCreateBuffer<T>(gfx, std::bit_ceil(count));
             if (!buffer_)
-                throw Error{{rhi::ErrorCode::creation_failed, kGfxResult_OutOfMemory,
-                             std::string(name) + " table allocation failed"},
-                            true};
+                return std::unexpected(Error{{rhi::ErrorCode::creation_failed, kGfxResult_OutOfMemory,
+                                              std::string(name) + " table allocation failed"},
+                                             true});
             first = 0;
             last = values.size();
         }
         if (first < last) {
             const auto changed = values.subspan(first, last - first);
-            const auto staging = staging_.write(gfx, frames_in_flight, changed, true, name);
-            if (gfxCommandCopyBuffer(gfx, buffer_, first * sizeof(T), staging, 0, changed.size_bytes()) !=
-                kGfxResult_NoError)
-                frame_slot_failure(name, "table copy failed");
+            ATELIER_TRY_BIND(staging, staging_.write(gfx, frames_in_flight, changed, true, name));
+            if (const auto copied =
+                    gfxCommandCopyBuffer(gfx, buffer_, first * sizeof(T), *staging, 0, changed.size_bytes());
+                copied != kGfxResult_NoError)
+                return std::unexpected(Error{
+                    {rhi::ErrorCode::execution_failed, copied, std::string(name) + " frame slot table copy failed"},
+                    true});
         }
         return buffer_;
     }
 
-    GfxBuffer write(GfxContext gfx, std::uint32_t frames_in_flight, std::span<const T> values, bool changed,
-                    const char* name) {
+    Result<GfxBuffer> write(GfxContext gfx, std::uint32_t frames_in_flight, std::span<const T> values, bool changed,
+                            const char* name) {
         return write(gfx, frames_in_flight, values, 0, changed ? values.size() : 0, name);
     }
 
-    GfxResult retire(GfxContext gfx) {
-        GfxResult result = staging_.retire(gfx);
+    void retire(GfxContext gfx) {
+        staging_.retire(gfx);
         if (buffer_)
-            if (const auto r = gfxDestroyBuffer(gfx, std::exchange(buffer_, {})); r && !result)
-                result = r;
-        return result;
+            if (gfxDestroyBuffer(gfx, std::exchange(buffer_, {})) != kGfxResult_NoError)
+                fatal("Renderer device table retirement failed");
     }
 
     std::uint64_t bytes() const { return buffer_.getSize() + staging_.bytes(); }

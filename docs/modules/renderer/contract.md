@@ -46,7 +46,7 @@ batch 必须在所属 Renderer 关闭前于 owner 线程释放；存活批次令
 - UI 支持半开像素裁剪、实色矩形、R8 覆盖图、RGBA 图片与 UV。输入为线性 straight RGBA，pixel shader 乘 coverage 与 alpha 后输出预乘颜色，混合使用 ONE/INV_SRC_ALPHA。裁剪逐实例进行：clip 收紧到目标范围后打包进实例，pixel shader 按像素中心落在半开区间内判断，与同一整数 scissor 逐像素一致；空 clip、零尺寸、透明以及与 clip 不相交的项在 CPU 侧剔除，不上传实例或贴图。全部 UI 实例共用一次上传、一条管线和一次 draw，视口叠加层另占一次，两者都只依赖 D3D 在同一次 draw 内按图元提交顺序混合来保持数组顺序，不重排、不按 clip 或贴图切批。本帧用到的 Coverage 与 Image 按首次出现的顺序去重成一张贴图表，作为无界纹理数组绑定，实例携带表内下标；表的内容和顺序与上一帧相同时 gfx 不重写描述符，任何变化都会让 gfx 重写整张表的描述符。
 - renderer 显式请求 SDR RGBA8 backbuffer，并校验实际 RTV 格式为 `R8G8B8A8_UNORM_SRGB`；sRGB RTV 执行写入编码与线性混合。未指定该选项的 RHI 调用采用 gfx 的显示器自动选择，不能推导所有 Context 都保证 RGBA8。
 - Coverage 的非零 identity 与 revision 一起标识不可变内容，renderer 缓存同时保有 `shared_ptr<const Coverage>`。CPU 行可有 padding；上传时收紧行。每个实际使用的版本只上传一次，无用缓存释放 CPU owner，GPU 资源沿 gfx 原有机制退休。当前没有字体图集、显存预算或资源管理器。
-- 同一录制帧的新 UI 贴图共用一个 `FrameSlots<uint8_t>` 上传槽：先聚合唯一 miss 的紧密像素，再只写槽一次，逐图借用 `gfxCreateBufferRange` 录制 copy，全部完成后才录制 UI draw；无 miss 不写槽。每个源区间按 `D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT`（512 字节）对齐，而非仅满足 buffer range 的256字节要求，避免原本行宽符合 footprint RowPitch 的图片因源偏移而退化到 gfx scratch 逐行复制。gfx 原有行宽检查、OPTIONS13 查询与 scratch 路径不变。上传槽按录制序号而非 accepted id 选择，沿原3槽/fence复用；容量不足按2幂增长，关闭时退休，不逐图创建 native 上传 buffer，也不额外等待。CPU 聚合向量及各槽保留峰值容量；聚合字节数超过 FrameSlots 的32位计数可表示的2幂容量（2 GiB）时按分配失败终止，不截断偏移或尺寸。纹理身份、首用顺序、逐图像素与描述符安装合同不变。
+- 同一录制帧的新 UI 贴图共用一个 `FrameSlots<uint8_t>` 上传槽：先聚合唯一 miss 的紧密像素，再只写槽一次，逐图借用 `gfxCreateBufferRange` 录制 copy，全部完成后才录制 UI draw；无 miss 不写槽。每个源区间按 `D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT`（512 字节）对齐，而非仅满足 buffer range 的256字节要求，避免原本行宽符合 footprint RowPitch 的图片因源偏移而退化到 gfx scratch 逐行复制。gfx 原有行宽检查、OPTIONS13 查询与 scratch 路径不变。上传槽按录制序号而非 accepted id 选择，沿原3槽/fence复用；容量不足按2幂增长，关闭时退休，不逐图创建 native 上传 buffer，也不额外等待。CPU 聚合向量及各槽保留峰值容量；聚合字节数超过 FrameSlots 的32位计数可表示的2幂容量（2 GiB）时，在增长向量前返回容量错误，不截断偏移或尺寸，不冒充宿主堆耗尽。此时已开始编码，Renderer 进入仅可关闭的终态。纹理身份、首用顺序、逐图像素与描述符安装合同不变。
 - 占用预算先按512字节起点对齐累加末项结束位置，再对单槽向上取2幂，不能直接按像素字节数取整。例如60,727字节的23项上传若排布至66,048字节，则单槽预计131,072字节，三个槽均使用该规模后合计393,216字节。这是布局预算，不是实测峰值；真实槽容量、CPU向量/任务列表容量和gfx scratch占用分别记录。
 
 ## 视口显示策略
@@ -113,12 +113,14 @@ Scene Lit 的环境照明由 World 的天光设置提供（`SceneLightingSetting
 - 隐藏、最小化、零 client 尺寸或输入 extent 与实际 target 不符：编码前返回 skipped，capture 不变。空 scissor 不会落入 gfx 的“零尺寸代表整个目标”惯例。
 - 画 Lit 的帧（Lit 着色、不是纯线框、有网格或探针叠层、viewport 非零）所需的管线组未就绪：通过 CPU 校验后、编码前返回 not_ready。不录制、不 Present，capture 和 Lit 历史不变。它不是错误，宿主可以重试，也可以改用工作室着色绘制同一帧。
 - 完整 `Context::frame` 成功且 Present 未返回 `DXGI_STATUS_OCCLUDED`：accepted。`accepted_extent` 是编码前捕获的实际尺寸；gfx 在旧目标 Present 后 resize，`next_extent` 只适用于下一帧。accepted 不承诺已经完成扫描显示。
-- CPU 校验和编码前 CPU 分配失败：`Error::terminal=false`，可重新准备帧。开始 GPU 创建、上传或录制后失败：terminal，后续只可关闭，不宣称回滚或继续使用上一 GPU 帧。
+- CPU 输入校验及管线准备失败通过 `Result` 返回，通常为 `Error::terminal=false`，可重新准备帧；已有候选错误保留原终态标记。开始 GPU 创建、上传或录制后失败：terminal，后续只可关闭，不宣称回滚或继续使用上一 GPU 帧。GPU 资源拒绝保留设备错误通道；宿主 CPU 分配耗尽按基础层合同 fatal，不再捕获并伪装成 GPU OutOfMemory。
 - 模式退出引起的 Scene Lit 历史失效也在 CPU 准备成功后执行；被拒绝的候选帧不改变有效 Lit 历史。接受空场景沿原 Context 退休旧场景的光栅与射线资源，可复用的 Scene Lit 目标仍由 Renderer 持有并报告逻辑字节。
 - Present 之后的 resize、等待、Reset 等失败沿 RHI 终态返回，不会提前发布 accepted。遮挡是 skipped，GPU 可能已经提交；它不是 GPU 回滚。
 - 应用只根据 accepted 替换完整命中数据，并负责在窗口大小/DPI 与命中帧不匹配时暂停命中、取消 press/capture；renderer 不建立第二份输入状态。
 
-`close` 退休 GPU 资源、释放 Pipeline、通过原 Context 排空和关闭。重复关闭成功，关闭失败保留清理入口；无法安全清理的最终析构 fail-fast。
+私有准备和录制链显式短路返回首个错误，不借助 C++ 异常传播。LightFrame 派生失败清空未完成快照；ShadowCache 的计划仍由 cache 拥有，未完成计划不 commit，下一次 prepare 按原规则失效。正常失败与取消均保留 RAII 清理及原 gfx 延迟退休，不建立第二套资源状态。
+
+`close` 退休 GPU 资源、释放 Pipeline、通过原 Context 排空和关闭。重复关闭成功，Context 关闭错误保留清理入口；检测到帧槽在无录制帧或同帧二次写入、必要资源退休失败、跨线程析构等不能安全继续的生命周期损坏直接 fatal，最终析构无法关闭亦如此。
 
 ## 诊断捕获
 

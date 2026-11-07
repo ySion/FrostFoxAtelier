@@ -1,6 +1,7 @@
 #pragma once
 #include "geometry/mesh.hpp"
 #include "rhi/rhi.hpp"
+#include "result.hpp"
 
 #include <array>
 #include <cstdint>
@@ -42,5 +43,5 @@ struct WeldedMesh {
     std::vector<GpuFace> faces;
 };
 
-WeldedMesh weld(const geometry::Mesh& mesh, const std::function<bool()>* stop_requested);
+CancellableResult<WeldedMesh> weld(const geometry::Mesh& mesh, const std::function<bool()>* stop_requested);
 }
