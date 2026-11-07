@@ -163,7 +163,7 @@ Scene 统一写出 v10：顶层 `materials` 按文档 ID 保存具名资产引�
 
 本节记录现行格式与加载行为；已裁定的跨模块规则只见[持久化格式规则](../../persistence.md)。下述额外宽容、占位与恢复行为尚待产品审查，本次规则同步没有修改这些实现。
 
-- Project 和资源身份文件为 UTF-8 JSON、`version: 1`；Scene 只读写 `version: 10`，其他版本拒绝。JSON 解析由锁定的 nlohmann/json 提供。共用内部格式校验：16 MiB 上限、最多 32 层容器、禁止重复字段、身份及版本必须是非负整数、向量必须精确匹配长度且各项有限。float 字段写成能读回同一 float 的十进制，通常是最短形式（`0.2f` 写作 `0.2`，不写成扩为 double 后的 `0.20000000298023224`），double 字段写成 double 的最短表示；Scene 与材质文件共用这一写法。Project 与资源身份文件拒绝未知字段；Scene 的未知字段与不符值按下述加载策略处理。内部 JSON 结构不穿过 Project/Session 公共接口。
+- Project 和资源身份文件为 UTF-8 JSON、`version: 1`；Scene 只读写 `version: 10`，其他版本拒绝。JSON 解析由锁定的 `core/json` 提供（glTF 导入仍使用其专用解析器）。共用内部格式校验：16 MiB 上限、最多 32 层容器、禁止重复字段、身份及版本必须是非负整数、向量必须精确匹配长度且各项有限。float 字段写成能读回同一 float 的十进制，通常是最短形式（`0.2f` 写作 `0.2`，不写成扩为 double 后的 `0.20000000298023224`），double 字段写成 double 的最短表示；Scene 与材质文件共用这一写法。Project 与资源身份文件拒绝未知字段；Scene 的未知字段与不符值按下述加载策略处理。内部 JSON 结构不穿过 Project/Session 公共接口。
 - Project 保存名称、相对 `startup_scene` 和可选的 `ui_source`（Source 内的 `.ui.source` 入口）。目录解析检查绝对路径、上级路径和解析后逃出工程的链接，不以进程当前目录寻找资源。
 - Scene v10 保存有序 roots 与 Entity records、真实类型、名称、enabled、有序 children/components、共用的字符串 uint64 文档 ID、可选内联 space、材质和资源键。组件不保存空间 root/parent/TRS。存档不写 Runtime 的 TypeId/ObjectId/FieldId、内存地址或 GPU 资源。
 - World 光照、效果与天光是 Environment Entity 上 `world.EnvironmentComponent` 的普通属性，随该组件保存；字段与 UI / Control 共用的 author-option 目录一一对应，包括 `direct_candidates`。没有 Environment 时使用默认值，文件中不生成它。`World::environment()` 是权威值；`Session::set_environment` 是 World Settings 与 Control 的唯一编辑入口，比对候选中的 World 选项，把变化的项写成一次组写入，记一条普通属性编辑历史；没有 Environment 时同一历史项先创建它，撤销即回到没有 Environment 的状态。无变化为空操作；运行中或关闭的 World 拒绝；Environment 存在但停用（组件或任一祖先停用）时也拒绝，原因提示先在 Parameters 里启用它，因为此时 World Settings 显示的是默认值。天空贴图不是 World 选项，由 `Session::set_sky_map(SkyAsset)` 单独设置：资产来自 `assets::Reader::sky_map`，空资产表示清除；同样记一条历史，没有 Environment 时在同一历史项里创建它，停用时拒绝，无变化为空操作。撤销和重做恢复历史里保存的那个指针，不重新解析键。`sky_rotation` 是普通属性。视口诊断从不进入 Scene。
@@ -197,7 +197,7 @@ JSON 当前位于打开、保存和显式目录刷新路径；帧绘制不解析
 - [Houdini 项目管理](https://www.sidefx.com/docs/houdini/basics/project.html)：目录范围与场景加载职责分开，使用相对项目位置的资源引用。
 - [Godot 文件系统](https://docs.godotengine.org/en/stable/tutorials/scripting/filesystem.html)：项目根目录和资源路径形成可搬移的工作范围。本项目按用户明确方向使用 Config/Content/Source/Cache。
 - [Windows 文件资源管理器](https://support.microsoft.com/en-us/accessibility/windows/use-a-screen-reader-to-explore-and-navigate-file-explorer-in-windows)：目录导航、内容选择、详情及视图切换分别承载清楚的任务。
-- [MoveFileExW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-movefileexw) 与 [JSON 3.12.0](https://github.com/nlohmann/json/releases/tag/v3.12.0)：当前文件替换机制与固定依赖来源。
+- [MoveFileExW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-movefileexw) 与 [core/json](../../json.md)：当前文件替换机制与共享 JSON 合同；glTF 导入仍使用锁定的 nlohmann/json。
 
 ## 工程源码与运行
 

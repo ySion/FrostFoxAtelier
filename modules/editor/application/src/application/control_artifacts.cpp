@@ -1484,10 +1484,6 @@ std::expected<json::Document, Failure> write_samples(const std::filesystem::path
 std::expected<json::Document, Failure> write_trace(const std::filesystem::path& output, rhi::CommandTrace snapshot,
                                                    json::Document metadata, const std::atomic_bool& cancel) {
     checkpoint(cancel);
-    // These fields come from the capture owner, not the command recorder.
-    // Admit their presence once before the HTML presentation consumes them.
-    for (const auto name : {"scope", "ui_frame_id", "attempt", "frame_status"})
-        ATELIER_TRY(metadata.root().at(name));
     const auto native = platform::windows_file_path(output);
     if (!native)
         return std::unexpected(Failure("storage_error", platform::error_message(native.error())));

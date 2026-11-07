@@ -234,7 +234,9 @@ struct Driver {
         const auto deadline = std::chrono::steady_clock::now() + timeout;
         while (std::chrono::steady_clock::now() < deadline) {
             auto result = call("job.status", request);
-            if (result.root().string({"status"}) != "pending")
+            const auto status = result.root().string({"status"});
+            require(bool(status), "Missing job status");
+            if (*status != "pending")
                 return result;
             std::this_thread::sleep_for(20ms);
         }
@@ -291,7 +293,8 @@ void verify_post_trace(Driver& d) {
             position = end;
             std::set<std::pair<unsigned, unsigned>> slots;
             for (const auto binding : *command.at("bindings")->array()) {
-                require(binding.string({"status"}) == "valid" && binding.string({"kind"}) != "unsupported",
+                const auto kind = binding.string({"kind"});
+                require(binding.string({"status"}) == "valid" && kind && *kind != "unsupported",
                         "Normal post chain has a dummy or unobserved binding");
                 require(slots.emplace(*binding.u32({"root_parameter"}), *binding.u32({"array_index"})).second,
                         "Post trace repeated a root binding instead of resolving installed state");
@@ -334,10 +337,11 @@ void verify_post_trace(Driver& d) {
             require(resource(8, "lit_smaa_spatial", "texture_srv") == spatial &&
                         resource(8, "lit_smaa_previous", "texture_srv") != spatial,
                     "SMAA current and history bindings were conflated");
-            for (const auto binding : *commands.at(5)->at("bindings")->array())
-                require(binding.string({"name"}) != "lit_smaa_spatial_output" &&
-                            binding.string({"name"}) != "lit_smaa_previous",
+            for (const auto binding : *commands.at(5)->at("bindings")->array()) {
+                const auto name = binding.string({"name"});
+                require(name && *name != "lit_smaa_spatial_output" && *name != "lit_smaa_previous",
                         "Trace treated unused SMAA setters as actual bindings");
+            }
         }
         const auto after = d.inspect();
         require(*after.root().at("view") == *selected.root().at("view") &&
@@ -348,7 +352,10 @@ void verify_post_trace(Driver& d) {
     // Both Bloom and AA are World author settings. The second state always
     // changes them; the first changes them unless it already matches the base.
     d.op("edit.undo", {}, json::Document::literal<R"({"asset":"","region":"viewport"})">());
-    if (!*view.boolean({"bloom"}) || view.string({"antialiasing"}) != "smaa_t2x")
+    const auto bloom = view.boolean({"bloom"});
+    const auto antialiasing = view.string({"antialiasing"});
+    require(bloom && antialiasing, "Missing original post settings");
+    if (!*bloom || *antialiasing != "smaa_t2x")
         d.op("edit.undo", {}, json::Document::literal<R"({"asset":"","region":"viewport"})">());
     json::Builder restore;
     require(bool(restore.set(restore.root(), "shading", *view.at("shading"))), "Cannot restore shading");

@@ -286,8 +286,13 @@ int verify_editor_surfaces(Application& app, const char* output_directory) {
                 require(token && request.set(request.root(), "state_token", *token), "Missing inspection state token.");
                 auto reply = client->call(request.finish());
                 require(bool(reply), reply ? "" : reply.error().what());
-                if (reply->root().string({"status"}) != "error" ||
-                    reply->root().string({"error", "code"}) != "stale_state")
+                const auto status = reply->root().string({"status"});
+                require(bool(status), "Missing Control reply status.");
+                if (*status != "error")
+                    return std::move(*reply);
+                const auto code = reply->root().string({"error", "code"});
+                require(bool(code), "Missing Control error code.");
+                if (*code != "stale_state")
                     return std::move(*reply);
             }
             throw std::runtime_error("Camera Control acceptance could not obtain a stable state token.");

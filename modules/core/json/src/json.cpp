@@ -90,23 +90,38 @@ struct Access {
     static bool locate(Value current, const void* target, std::string& path) {
         if (current.node_ == target)
             return true;
-        bool found = false;
-        if (yyjson_is_obj(scalar(current))) {
-            object(current, [&](auto key, Value child) {
-                if (!found && locate(child, target, path)) {
-                    path.insert(0, child_path({}, key));
-                    found = true;
+        struct Node {
+            Value value;
+
+            std::size_t parent;
+
+            std::string_view key;
+
+            std::size_t index;
+        };
+        Array<Node> nodes;
+        nodes.emplace(current, 0, std::string_view{}, 0);
+        for (std::size_t i = 0; i < nodes.size(); ++i) {
+            const auto value = nodes[i].value;
+            if (value.node_ == target) {
+                Array<std::size_t> ancestors;
+                for (auto at = i; at; at = nodes[at].parent)
+                    ancestors.emplace(at);
+                while (!ancestors.empty()) {
+                    const auto& node = nodes[ancestors.back()];
+                    path += child_path({}, nodes[node.parent].value.kind() == Kind::object
+                                               ? node.key
+                                               : std::string_view{std::to_string(node.index)});
+                    ancestors.pop();
                 }
-            });
-        } else if (yyjson_is_arr(scalar(current))) {
-            array(current, [&](auto index, Value child) {
-                if (!found && locate(child, target, path)) {
-                    path.insert(0, child_path({}, std::to_string(index)));
-                    found = true;
-                }
-            });
+                return true;
+            }
+            if (value.kind() == Kind::object)
+                object(value, [&](auto key, Value child) { nodes.emplace(child, i, key, 0); });
+            else if (value.kind() == Kind::array)
+                array(value, [&](auto index, Value child) { nodes.emplace(child, i, std::string_view{}, index); });
         }
-        return found;
+        return false;
     }
 
     static std::string location(Value value) {
@@ -414,36 +429,45 @@ Value Document::root() const& {
 
 namespace {
 Result<void> validate(Value value, std::size_t depth, ParseOptions options) {
+    struct Frame {
+        Value value;
+
+        Array<std::pair<std::string_view, Value>> children;
+
+        std::size_t next{};
+
+        std::unordered_set<std::string_view> keys;
+
+        explicit Frame(Value node) : value(node) {
+            if (node.kind() == Kind::object)
+                Access::object(node, [&](auto key, Value child) { children.emplace(key, child); });
+            else if (node.kind() == Kind::array)
+                Access::array(node, [&](auto, Value child) { children.emplace(std::string_view{}, child); });
+        }
+    };
     const bool events = options.depth_policy == DepthPolicy::events;
     if (events && depth > options.maximum_depth)
         return std::unexpected(Error{Fault::depth, "JSON event depth exceeded", {}, {}});
-    std::optional<Error> failure;
-    if (yyjson_is_obj(Access::scalar(value))) {
-        std::unordered_set<std::string_view> keys;
-        Access::object(value, [&](auto key, Value child) {
-            if (failure)
-                return;
-            if (events && depth == options.maximum_depth)
-                failure = Error{Fault::depth, "JSON key event depth exceeded", {}, {}};
-            else if (!keys.insert(key).second)
-                failure = Error{Fault::duplicate_key, "Duplicate JSON key", {}, {}};
-            else if (auto result = validate(child, depth + 1, options); !result)
-                failure = std::move(result.error());
-            if (failure)
-                failure->path.insert(0, child_path({}, key));
-        });
-    } else if (yyjson_is_arr(Access::scalar(value))) {
-        Access::array(value, [&](auto index, Value child) {
-            if (failure)
-                return;
-            if (auto result = validate(child, depth + 1, options); !result) {
-                failure = std::move(result.error());
-                failure->path.insert(0, child_path({}, std::to_string(index)));
-            }
-        });
+    Array<Frame> stack;
+    stack.emplace(value);
+    while (!stack.empty()) {
+        auto& frame = stack.back();
+        if (frame.next == frame.children.size()) {
+            stack.pop();
+            continue;
+        }
+        const auto [key, child] = frame.children[frame.next++];
+        const auto child_depth = depth + stack.size();
+        if (frame.value.kind() == Kind::object) {
+            if (events && child_depth > options.maximum_depth)
+                return std::unexpected(child.error(Fault::depth, "JSON key event depth exceeded"));
+            if (!frame.keys.insert(key).second)
+                return std::unexpected(child.error(Fault::duplicate_key, "Duplicate JSON key"));
+        } else if (events && child_depth > options.maximum_depth)
+            return std::unexpected(child.error(Fault::depth, "JSON event depth exceeded"));
+        if (child.kind() == Kind::object || child.kind() == Kind::array)
+            stack.emplace(child);
     }
-    if (failure)
-        return std::unexpected(std::move(*failure));
     return {};
 }
 }

@@ -72,8 +72,6 @@ bool physical_type(Runtime& runtime, TypeId type) {
 }
 
 json::Result<void> encode_scalar(Runtime& runtime, json::Builder& builder, json::Value target, const Scalar& value) {
-    if (!detail::finite_scalar(value))
-        throw std::runtime_error("Scene property values must be finite.");
     return std::visit(
         [&](const auto& v) -> json::Result<void> {
             if constexpr (std::same_as<std::decay_t<decltype(v)>, EnumValue>) {
@@ -82,9 +80,12 @@ json::Result<void> encode_scalar(Runtime& runtime, json::Builder& builder, json:
                     if (bits == v.bits)
                         return builder.set(target, std::string_view{name});
                 throw std::runtime_error("Scene enum value has no declared name.");
-            } else if constexpr (std::is_floating_point_v<std::decay_t<decltype(v)>>)
-                return builder.set(target, v);
-            else {
+            } else if constexpr (std::is_floating_point_v<std::decay_t<decltype(v)>>) {
+                auto result = builder.set(target, v);
+                if (!result && result.error().fault == json::Fault::range)
+                    throw std::runtime_error("Scene property values must be finite.");
+                return result;
+            } else {
                 if constexpr (std::same_as<std::decay_t<decltype(v)>, bool>)
                     builder.set(target, v);
                 else if constexpr (std::is_signed_v<std::decay_t<decltype(v)>>)
@@ -1247,8 +1248,10 @@ struct Session::GraphCodec {
         for (const auto component : components)
             wanted.insert(std::to_string(session.local_ids_.at(component)));
         const auto key = std::to_string(session.local_ids_.at(entity));
-        json::Builder builder(graph->data);
+        json::Builder builder;
         const auto root = builder.root();
+        (void)builder.set(root, "version", *data.at("version"));
+        (void)builder.set(root, "next_id", *data.at("next_id"));
         const auto entities = *builder.array(root, "entities");
         const auto record = builder.append_object(entities);
         builder.set_validated(record, "id", key);
@@ -1265,9 +1268,18 @@ struct Session::GraphCodec {
                 if (!wanted.contains(std::string(*part.string({"id"}))))
                     continue;
                 if (const auto at = *part.find("materials")) {
-                    const auto entries = *at->array();
-                    for (auto entry : entries)
-                        used.emplace(*entry.string({"resource"}));
+                    if (at->kind() == json::Kind::object) {
+                        for (const auto& [key, entry] : *at->object_items()) {
+                            ATELIER_TRY_BIND(resource, entry.string({"resource"}));
+                            used.emplace(*resource);
+                        }
+                    } else if (!at->is_null()) {
+                        ATELIER_TRY_BIND(entries, at->array());
+                        for (auto entry : *entries) {
+                            ATELIER_TRY_BIND(resource, entry.string({"resource"}));
+                            used.emplace(*resource);
+                        }
+                    }
                 }
                 const auto refs = each_reference(part, [&](json::Value node) -> json::Result<void> {
                     if (const auto at = *node.find("$ref"))
