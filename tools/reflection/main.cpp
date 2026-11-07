@@ -16,6 +16,7 @@
 #include <clang/Lex/PPCallbacks.h>
 #include <clang/Tooling/CompilationDatabase.h>
 #include <clang/Tooling/Tooling.h>
+#include <llvm/Support/Error.h>
 #include <llvm/Support/FileSystem.h>
 #include <llvm/Support/JSON.h>
 #include <llvm/Support/MemoryBuffer.h>
@@ -30,7 +31,6 @@
 #include <map>
 #include <optional>
 #include <set>
-#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -64,10 +64,10 @@ std::string metadata_text(std::string_view text) {
     return result + "\", " + std::to_string(text.size()) + "}";
 }
 
-std::string required(const llvm::json::Object& object, llvm::StringRef name) {
+llvm::Expected<std::string> required(const llvm::json::Object& object, llvm::StringRef name) {
     const auto value = object.getString(name);
     if (!value || value->empty())
-        throw std::runtime_error("Missing configuration string: " + name.str());
+        return llvm::createStringError("Missing configuration string: " + name.str());
     return value->str();
 }
 
@@ -95,30 +95,46 @@ struct Config {
     std::vector<Header> headers;
 };
 
-Config read_config(const char* path) {
+llvm::Expected<Config> read_config(const char* path) {
     auto file = llvm::MemoryBuffer::getFile(path);
     if (!file)
-        throw std::runtime_error(file.getError().message());
+        return llvm::errorCodeToError(file.getError());
     auto json = llvm::json::parse((*file)->getBuffer());
     if (!json)
-        throw std::runtime_error(llvm::toString(json.takeError()));
+        return json.takeError();
     const auto* object = json->getAsObject();
     if (!object)
-        throw std::runtime_error("Reflection configuration must be an object.");
-    Config result{required(*object, "source"),  required(*object, "database"),     required(*object, "cpp"),
-                  required(*object, "depfile"), required(*object, "resource_dir"), {}};
+        return llvm::createStringError("Reflection configuration must be an object.");
+    Config result;
+    for (const auto& [name, destination] : {std::pair{"source", &result.source},
+                                            {"database", &result.database},
+                                            {"cpp", &result.cpp},
+                                            {"depfile", &result.depfile},
+                                            {"resource_dir", &result.resource_dir}}) {
+        auto value = required(*object, name);
+        if (!value)
+            return value.takeError();
+        *destination = std::move(*value);
+    }
     const auto* headers = object->getArray("headers");
     if (!headers || headers->empty())
-        throw std::runtime_error("No reflection headers configured.");
+        return llvm::createStringError("No reflection headers configured.");
     std::set<std::string> paths;
     std::set<std::string> outputs;
     for (const auto& item : *headers) {
         const auto* header = item.getAsObject();
         if (!header)
-            throw std::runtime_error("Invalid reflection header configuration.");
-        Header value{required(*header, "path"), required(*header, "include"), required(*header, "output")};
+            return llvm::createStringError("Invalid reflection header configuration.");
+        Header value;
+        for (const auto& [name, destination] :
+             {std::pair{"path", &value.path}, {"include", &value.include}, {"output", &value.output}}) {
+            auto text = required(*header, name);
+            if (!text)
+                return text.takeError();
+            *destination = std::move(*text);
+        }
         if (!paths.insert(key(value.path)).second || !outputs.insert(key(value.output)).second)
-            throw std::runtime_error("Duplicate reflection header or output.");
+            return llvm::createStringError("Duplicate reflection header or output.");
         result.headers.push_back(std::move(value));
     }
     return result;
@@ -1115,25 +1131,27 @@ public:
     std::unique_ptr<FrontendAction> create() override { return std::make_unique<Action>(state_); }
 };
 
-void write_changed(const std::string& path, const std::string& text) {
+llvm::Error write_changed(const std::string& path, const std::string& text) {
     const auto current = llvm::MemoryBuffer::getFile(path);
     if (current && (*current)->getBuffer() == text)
-        return;
+        return llvm::Error::success();
     if (const auto error = llvm::sys::fs::create_directories(llvm::sys::path::parent_path(path)))
-        throw std::runtime_error(error.message());
+        return llvm::errorCodeToError(error);
     const auto temporary = path + ".tmp";
     std::error_code error;
     {
         llvm::raw_fd_ostream file(temporary, error);
         if (error)
-            throw std::runtime_error(error.message());
+            return llvm::errorCodeToError(error);
         file << text;
         file.flush();
-        if (file.has_error())
-            throw std::runtime_error("Cannot write generated file: " + path);
+        if (file.has_error()) {
+            // The error is returned below; do not let the stream destructor report it as fatal.
+            file.clear_error();
+            return llvm::createStringError("Cannot write generated file: " + path);
+        }
     }
-    if (const auto renamed = llvm::sys::fs::rename(temporary, path))
-        throw std::runtime_error(renamed.message());
+    return llvm::errorCodeToError(llvm::sys::fs::rename(temporary, path));
 }
 
 std::string dependency_path(std::string path) {
@@ -1149,7 +1167,7 @@ std::string dependency_path(std::string path) {
     return result;
 }
 
-void emit(const State& state) {
+llvm::Error emit(const State& state) {
     std::vector<std::string> headers(
         state.config.headers.size(),
         "// Generated by atelier_reflect. Do not edit.\n#pragma once\n#include \"runtime/reflection.hpp\"\n\n");
@@ -1236,42 +1254,49 @@ void emit(const State& state) {
         dependencies += " \\\n  " + dependency_path(path);
     dependencies += "\n";
     for (std::size_t i = 0; i < headers.size(); ++i)
-        write_changed(state.config.headers[i].output, headers[i]);
-    write_changed(state.config.cpp, cpp);
-    write_changed(state.config.depfile, dependencies);
+        if (auto error = write_changed(state.config.headers[i].output, headers[i]))
+            return error;
+    if (auto error = write_changed(state.config.cpp, cpp))
+        return error;
+    return write_changed(state.config.depfile, dependencies);
 }
 }
 
 int main(int argc, char** argv) {
     atelier::install_fatal_handler();
     llvm::install_fatal_error_handler([](void*, const char*, bool) { atelier::fatal("llvm fatal error"); });
-    try {
+    auto generated = [&]() -> llvm::Expected<int> {
         if (argc != 2)
-            throw std::runtime_error("Usage: atelier_reflect <reflection.json>");
+            return llvm::createStringError("Usage: atelier_reflect <reflection.json>");
         auto config = read_config(argv[1]);
+        if (!config)
+            return config.takeError();
         std::string error;
-        auto database = clang::tooling::CompilationDatabase::loadFromDirectory(config.database, error);
+        auto database = clang::tooling::CompilationDatabase::loadFromDirectory(config->database, error);
         if (!database)
-            throw std::runtime_error(error);
-        if (database->getCompileCommands(config.source).size() != 1)
-            throw std::runtime_error("SOURCE must select exactly one real compile command: " + config.source);
-        State state{config};
-        clang::tooling::ClangTool tool(*database, {config.source});
+            return llvm::createStringError(error);
+        if (database->getCompileCommands(config->source).size() != 1)
+            return llvm::createStringError("SOURCE must select exactly one real compile command: " + config->source);
+        State state{*config};
+        clang::tooling::ClangTool tool(*database, {config->source});
         // Metadata producers have a fixed declaration in reflection.hpp, so a
         // real TU can be checked without reading stale generated specializations.
-        for (const auto& header : config.headers)
+        for (const auto& header : config->headers)
             tool.mapVirtualFile(header.output, "#pragma once\n");
         tool.appendArgumentsAdjuster(clang::tooling::getInsertArgumentAdjuster(
-            {"-resource-dir", config.resource_dir.c_str()}, clang::tooling::ArgumentInsertPosition::BEGIN));
+            {"-resource-dir", config->resource_dir.c_str()}, clang::tooling::ArgumentInsertPosition::BEGIN));
         Factory factory(state);
         const auto result = tool.run(&factory);
         if (result != 0 || state.failed)
             return 1;
-        emit(state);
+        if (auto failure = emit(state))
+            return failure;
         llvm::outs() << "Generated " << state.types.size() << " reflected types.\n";
         return 0;
-    } catch (const std::exception& error) {
-        llvm::errs() << "atelier_reflect: " << error.what() << '\n';
+    }();
+    if (!generated) {
+        llvm::errs() << "atelier_reflect: " << llvm::toString(generated.takeError()) << '\n';
         return 1;
     }
+    return *generated;
 }
