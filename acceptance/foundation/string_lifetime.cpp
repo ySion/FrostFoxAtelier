@@ -1,5 +1,8 @@
 #include "memory/fatal.hpp"
 #include "foundation/string.hpp"
+#include "foundation/function_ref.hpp"
+#include "foundation/scope_exit.hpp"
+#include "foundation/flags.hpp"
 #include <mimalloc.h>
 #include <mimalloc-stats.h>
 
@@ -10,6 +13,11 @@
 #include <ranges>
 #include <string>
 #include <vector>
+
+enum class WorkFlag : unsigned { none = 0, read = 1, write = 2, publish = 8 };
+
+template <>
+inline constexpr bool atelier::enable_enum_flags<WorkFlag> = true;
 
 namespace {
 using namespace atelier;
@@ -26,10 +34,98 @@ std::int64_t live_bytes() {
     require(mi_stats_get(&stats), "mimalloc statistics ABI mismatch.");
     return stats.malloc_normal.current + stats.malloc_huge.current;
 }
+
+void utility_workload() {
+    auto callback = [sum = std::make_unique<int>(3)](int value) noexcept { return *sum += value; };
+    static_assert(std::is_constructible_v<FunctionRef<int(int) noexcept>, decltype(callback)&&>);
+    static_assert(!std::is_constructible_v<FunctionRef<int(int) noexcept>, decltype([](int n) { return n; })>);
+    const auto invoke = [](FunctionRef<int(int) noexcept> function) { return function(5); };
+    require(invoke([value = std::make_unique<int>(7)](int n) noexcept { return *value + n; }) == 12,
+            "FunctionRef lost a temporary callable during its call expression.");
+    FunctionRef<int(int) noexcept> borrowed{callback};
+    static_assert(noexcept(borrowed(1)) && sizeof(borrowed) == 16);
+    auto copied = borrowed;
+    require(borrowed(4) == 7 && copied(2) == 9, "FunctionRef copied or lost its borrowed callable state.");
+    FunctionRef<int(int) noexcept> function{+[](int value) noexcept { return value * 3; }};
+    require(function(5) == 15, "FunctionRef did not retain a free function pointer.");
+    struct QualifiedCallable {
+        int operator()() volatile noexcept { return 29; }
+    };
+    volatile QualifiedCallable qualified;
+    FunctionRef<int() noexcept> qualified_ref{qualified};
+    require(qualified_ref() == 29, "FunctionRef lost the callable's volatile qualification.");
+    int cleanups{};
+    const auto reject = [&]() -> std::expected<void, int> {
+        ScopeExit cleanup{[&]() noexcept { ++cleanups; }};
+        auto transferred = std::move(cleanup);
+        return std::unexpected(7);
+    };
+    require(!reject() && cleanups == 1, "ScopeExit lost cleanup on explicit failure or ran a moved action twice.");
+    {
+        ScopeExit cleanup{[&]() noexcept { ++cleanups; }};
+        cleanup.release();
+    }
+    require(cleanups == 1, "ScopeExit release still executed cleanup.");
+    const auto mask = flags_or(WorkFlag::read, WorkFlag::write);
+    require(has_any(WorkFlag::read, mask) && !has_all(WorkFlag::read, mask) && has_all(mask, WorkFlag::none) &&
+                !has_any(mask, WorkFlag::none) &&
+                flags_without(flags_or(mask, WorkFlag::publish), mask) == WorkFlag::publish &&
+                flags_xor(mask, WorkFlag::write) == WorkFlag::read,
+            "Flag any/all, zero mask or bit removal semantics changed.");
+}
+
+void editing_workload() {
+    auto text = String::literal<"Ab中-Ab中">();
+    auto preserved = text;
+    text.to_ascii_lower();
+    require(text.view() == "ab中-ab中" && preserved.view() == "Ab中-Ab中", "ASCII conversion changed a literal copy.");
+    text.to_ascii_upper();
+    require(text.view() == "AB中-AB中" && text.view().starts_with('A') && text.view().ends_with_any({"x", "中"}) &&
+                text.view().starts_with_any({"x", "AB"}) && text.view().starts_with_ascii_case_insensitive("ab中") &&
+                text.view().ends_with_ascii_case_insensitive("ab中") &&
+                !text.view().equals_ascii_case_insensitive("AB中"),
+            "ASCII matching changed non-ASCII bytes or prefix/suffix length semantics.");
+    const auto replaced = text.replace_all(text.view().slice(0, 2), text.view().slice(2, 3));
+    require(replaced && *replaced == 2 && text.view() == "中中-中中", "Replacement invalidated aliased views.");
+    const auto saved = text;
+    require(!text.replace(1, 1, "x") && text == saved && !text.replace_all("missing", StringView{"\xff", 1}) &&
+                text == saved,
+            "Invalid UTF-8 replacement modified the original text.");
+    require(text.replace(0, 3, "").has_value() && text.view() == "中-中中" && text.replace_all("", "x") == 0,
+            "Erase or empty-search replacement changed its contract.");
+    auto overlap = String::literal<"aaa">();
+    require(overlap.replace_all("aa", "b") == 1 && overlap.view() == "ba", "Replacement used overlapping matches.");
+    auto heap = String::literal<"012345678901234567890123456789中\0Z">();
+    require(heap.replace(0, 1, heap.view().slice(30)).has_value() &&
+                heap.view() == StringView{"中\0Z12345678901234567890123456789中\0Z", 39},
+            "Heap replacement lost aliased UTF-8 or embedded zero bytes.");
+    const auto minimum = String::from_number(std::numeric_limits<std::int64_t>::min());
+    require(minimum && minimum->view() == "-9223372036854775808" &&
+                minimum->view().parse_number<std::int64_t>() == std::numeric_limits<std::int64_t>::min() &&
+                StringView{"ff"}.parse_number<unsigned>(16) == 255,
+            "Integer text conversion lost value or base semantics.");
+    const auto decimal = String::from_number(-0.125);
+    require(decimal.view() == "-0.125" && decimal.view().parse_number<double>() == -0.125 &&
+                StringView{"1.25e2"}.parse_number<double>() == 125.0,
+            "Floating text conversion changed value.");
+    const auto integer_suffix = StringView{"256x"}.parse_number<std::uint8_t>();
+    const auto floating_suffix = StringView{"1e999x"}.parse_number<double>();
+    require(!integer_suffix && integer_suffix.error() == std::errc::invalid_argument,
+            "Integer overflow hid trailing input.");
+    require(!floating_suffix && floating_suffix.error() == std::errc::invalid_argument,
+            "Floating overflow hid trailing input.");
+    for (const double value : {std::numeric_limits<double>::max(), std::numeric_limits<double>::denorm_min(),
+                               -std::numeric_limits<double>::infinity()}) {
+        const auto formatted = String::from_number(value);
+        require(formatted.view().parse_number<double>() == value, "Floating text failed to round-trip an extreme.");
+    }
+}
 }
 
 int main() {
     atelier::install_fatal_handler();
+    utility_workload();
+    editing_workload();
     static_assert(std::ranges::input_range<StringSplit> && std::ranges::input_range<CodePointRange>);
     const auto text = StringView{"\t甲,,乙,\r\n"}.trim();
     const std::array<StringView, 4> pieces{"甲", "", "乙", ""};

@@ -334,7 +334,7 @@ bool Window::relative_pointer(bool enabled) {
     return true;
 }
 
-void Window::poll(const std::function<void(NativeEvent&&)>& consume) {
+void Window::poll(FunctionRef<void(NativeEvent&&)> consume) {
     const auto drain = [&] {
         for (std::size_t index = 0; index < events_.size(); ++index) {
             auto owned = std::move(events_[index]);

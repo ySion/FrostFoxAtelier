@@ -125,6 +125,71 @@ std::expected<void, StringError> String::append(StringView text) noexcept {
     return {};
 }
 
+std::expected<void, StringError> String::replace(std::size_t first, std::size_t count,
+                                                 StringView replacement) noexcept {
+    const auto text = view();
+    if (first > text.size() || count > text.size() - first)
+        fatal("String replacement range.");
+    const auto boundary = [&](std::size_t offset) {
+        return offset == text.size() || (static_cast<unsigned char>(text.data()[offset]) & 0xc0) != 0x80;
+    };
+    if (!boundary(first) || !boundary(first + count) || !replacement.is_valid_utf8())
+        return std::unexpected(StringError::invalid_utf8);
+    String candidate;
+    candidate.write_validated(text.slice(0, first), 0);
+    candidate.write_validated(replacement, candidate.size());
+    candidate.write_validated(text.slice(first + count), candidate.size());
+    swap(candidate);
+    return {};
+}
+
+std::expected<std::size_t, StringError> String::replace_all(StringView search, StringView replacement) noexcept {
+    if (!search.is_valid_utf8() || !replacement.is_valid_utf8())
+        return std::unexpected(StringError::invalid_utf8);
+    if (search.empty())
+        return 0;
+    const auto text = view();
+    auto at = text.find(search);
+    if (at == StringView::npos)
+        return 0;
+    String candidate;
+    std::size_t first{};
+    std::size_t replaced{};
+    do {
+        candidate.write_validated(text.slice(first, at - first), candidate.size());
+        candidate.write_validated(replacement, candidate.size());
+        first = at + search.size();
+        ++replaced;
+        at = text.find(search, first);
+    } while (at != StringView::npos);
+    candidate.write_validated(text.slice(first), candidate.size());
+    swap(candidate);
+    return replaced;
+}
+
+void String::change_ascii_case(bool upper) noexcept {
+    const auto convert = [upper](char byte) { return upper ? detail::ascii_upper(byte) : detail::ascii_lower(byte); };
+    const auto length = size();
+    std::size_t first{};
+    while (first != length && convert(c_str()[first]) == c_str()[first])
+        ++first;
+    if (first == length)
+        return;
+    if (tag() == literal_tag)
+        write_validated(view(), 0);
+    auto* destination = is_inline() ? bytes_ : const_cast<char*>(long_value().data);
+    for (; first != length; ++first)
+        destination[first] = convert(destination[first]);
+}
+
+void String::to_ascii_lower() noexcept {
+    change_ascii_case(false);
+}
+
+void String::to_ascii_upper() noexcept {
+    change_ascii_case(true);
+}
+
 void String::write_validated(StringView text, std::size_t prefix) noexcept {
     if (text.size() > max_size - prefix)
         fatal("String exceeds addressable storage.");

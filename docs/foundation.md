@@ -165,7 +165,14 @@ String 的 `size/capacity` 不含末尾零字符，所有索引、查找和切�
 
 String 的末字节 tag 为 0–30（内联长度）、0xFE（堆）、0xFF（literal）；长描述符通过字节复制读写，不读取未激活 union 成员。虽然大小/对齐未变，表示 ABI 已改变；必须与 Runtime NativeLayout 结果化联合重编译、重建反射/JIT 并重启进程，不能混入旧对象和旧代码。
 
-StringView 的 `slice/find/starts_with/ends_with/contains` 都按字节工作，切片可能截断码点；`is_valid_utf8()` 可明确检查。转成 String 时重新校验。`std_view()` 是对标准库消费者的显式借用适配，不创造另一份拥有存储。大小写折叠、Unicode 规范化、字符/字素索引和本地化文本未实现。
+StringView 的 `slice/find/starts_with/ends_with/contains` 都按字节工作，切片可能截断码点；`is_valid_utf8()` 可明确检查。转成 String 时重新校验。`std_view()` 是对标准库消费者的显式借用适配，不创造另一份拥有存储。Unicode 大小写折叠、规范化、字符/字素索引和本地化文本未实现。
+
+- `String::replace(first,count,replacement)` 返回 `expected<void,StringError>`；范围越界为 contract-fatal，切断码点或 replacement 非法返回 invalid_utf8，失败保旧。`replace_all(search,replacement)` 返回替换数，按从左到右非重叠匹配；空 search 不插入、返回 0。两个参数即使未命中也须有效 UTF-8。候选成功才交换，支持参数引用自身内容；实际替换后重新取得视图。
+- `String::to_ascii_lower/to_ascii_upper` 原地只改 A–Z/a–z，保留所有非 ASCII 字节和嵌入 NUL；literal 只有实际改变时才分离。StringView 的 `equals_ascii_case_insensitive/starts_with_ascii_case_insensitive/ends_with_ascii_case_insensitive` 使用同一 ASCII 规则。`starts_with/ends_with` 另接受单字节，`starts_with_any/ends_with_any` 接受 `initializer_list<StringView>`，空集合返回 false，包含空串时匹配成功。
+- `StringView::parse_number<T>` 返回 `expected<T,std::errc>`，必须消费完整输入，不自动 trim，不接受开头加号或整数基数前缀。整数接受 charconv 支持的非 bool 整数类型及显式 base（默认 10，范围 2–36）；浮点使用 general 格式，包括 charconv 的 inf/nan。非法格式、尾部残余和非法 base 返回 invalid_argument，数值溢出返回 result_out_of_range。
+- `String::from_number(integer,base)` 返回 `expected<String,std::errc>`，唯一可恢复错误是非法 base；`from_number(float/double/long double)` 直接返回 String，使用最短 general 表示，无 locale、精度或格式选项。固定栈缓冲覆盖类型最大表示，输出已经是有效 ASCII，不重复 UTF-8 校验。普通有限值往返保值，不承诺 NaN payload 保留。CPU OOM 仍为 fatal。
+
+这些文本函数补齐 C++ 常用函数库，供后续 A1 文本消费者迁移，不新增 Runtime 注册、Source 语法或 JIT ABI；String 的布局不变。UTF-8↔UTF-16 和 `to_wide` 归统一 IO 的 platform 接口，不在此处另建实现。
 
 `trim/trim_start/trim_end` 默认剪除六种 ASCII 空白（空格、tab、CR、LF、VT、FF），也接受显式字节集合，不按 Unicode 空白分类。`split(delimiter)` 返回零分配惰性输入范围，按完整字节串分隔并保留首尾及相邻分隔符之间的空片段；空输入仍返回一个空片段，空 delimiter 返回整个输入一次。`partition/rpartition` 返回 `{before, separator, after}`；未命中或 delimiter 为空时，前向返回 `{whole, empty, empty}`，反向返回 `{empty, empty, whole}`。所有片段和 split 的 delimiter 都借用原字节，迭代期间不能改变或销毁来源。
 
@@ -174,6 +181,12 @@ StringView 的 `slice/find/starts_with/ends_with/contains` 都按字节工作，
 Span 的 `slice(first,count)` 按元素切片；`Span<T>` 可转 `Span<const T>`，反向不允许。`const Span<T>` 只冻结描述本身，不冻结元素。只读元素必须写 `Span<const T>`。
 
 **借用有效期由拥有者和修改行为决定。** 销毁、释放、替换存储及实际扩容使原地址失效；删除和压缩可能让相同地址对应不同元素；clear 结束全部元素生命周期。Array 和堆 String 移动转移缓冲后，原地址若仍使用便依赖新拥有者；内联 String 移动复制字节到目标对象，旧视图不能跟随该值。调用者统一按移动后重新获取 String 视图处理。视图不冻结容器，不提供并发保护，也不能无条件跨协程挂起保存。直接对临时 Array/String 取 `view()` 及从临时 String 构造 StringView 被禁止；C++ 调用者仍须保证其他借用路径有效。
+
+## 同步借用与作用域工具
+
+- [FunctionRef](../modules/core/foundation/include/foundation/function_ref.hpp) 的 `FunctionRef<R(Args...)>` 和 `FunctionRef<R(Args...) noexcept>` 是两字借用，不复制闭包、不分配、不提供空态；空函数指针为 contract-fatal。支持左值和右值 callable、普通函数指针、move-only 捕获及 `std::invoke` 语义。noexcept 特化仅接受调用及结果转换不抛的 callable。只作同步参数使用，不能存为成员或跨调用保存；临时闭包只保证活到整个调用表达式结束。`Window::poll` 已采用此接口，现有四处临时 lambda 无需命名或复制，窗口不保存回调。
+- [ScopeExit](../modules/core/foundation/include/foundation/scope_exit.hpp) 拥有一个无参、不抛的清理动作，禁止复制；移动转移清理义务，`release()` 放弃自动执行。正常 return（包括 Result 失败）析构执行一次，fatal 不保证清理。构造、移动和析构的 callable 操作都须不抛。此为 C 类预留：首个计划消费者是 W4 CONTROL 的结果化 Security；当前无提前返回的 Security 不作无效迁移。
+- [flags](../modules/core/foundation/include/foundation/flags.hpp) 以 `enable_enum_flags<E> = true` 显式启用枚举，提供 `flags_or/flags_and/flags_xor/flags_without/has_any/has_all`，均 constexpr/noexcept，不添加全局运算符，不屏蔽未知位。零 mask 的 any 为 false、all 为 true。OperatorFlag 和 StyleState 的消费侧迁移等待 W4 IO 集成后由 P4-flags 小片完成；前者现有 `has_flag` 是 any 语义。
 
 ## Optional 的原生合同
 

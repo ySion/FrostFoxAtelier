@@ -2,9 +2,9 @@
 
 #include <Windows.h>
 #include "ui/session.hpp"
+#include "foundation/function_ref.hpp"
 #include <array>
 #include <exception>
-#include <functional>
 #include <vector>
 
 namespace atelier::application {
@@ -76,7 +76,8 @@ public:
     // Main windows pump the thread queue and drain owned records after each
     // Dispatch. Owned popups only drain records queued by that pump or synchronous
     // callbacks, including callback failures. The consumer never runs from WndProc.
-    void poll(const std::function<void(NativeEvent&&)>&);
+    // The callback is borrowed only until poll returns, never retained.
+    void poll(FunctionRef<void(NativeEvent&&)>);
 
     bool closing() const noexcept { return closing_; }
 

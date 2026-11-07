@@ -4,9 +4,13 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <charconv>
+#include <concepts>
 #include <cstring>
 #include <expected>
+#include <initializer_list>
 #include <iterator>
+#include <limits>
 #include <string_view>
 #include <type_traits>
 
@@ -21,6 +25,22 @@ struct StringPartition;
 class StringSplit;
 
 class CodePointRange;
+
+namespace detail {
+template <class T>
+concept TextInteger = std::integral<T> && requires(const char* input, char* output, T& value) {
+    std::from_chars(input, input, value, 10);
+    std::to_chars(output, output, value, 10);
+};
+
+constexpr char ascii_lower(char value) noexcept {
+    return value >= 'A' && value <= 'Z' ? static_cast<char>(value + ('a' - 'A')) : value;
+}
+
+constexpr char ascii_upper(char value) noexcept {
+    return value >= 'a' && value <= 'z' ? static_cast<char>(value - ('a' - 'A')) : value;
+}
+}
 
 // A byte range interpreted as UTF-8 by text consumers. A view may cover external,
 // unvalidated bytes or a partial code point; it never promises a trailing zero.
@@ -74,6 +94,67 @@ public:
 
     [[nodiscard]] constexpr bool ends_with(StringView value) const noexcept {
         return std_view().ends_with(value.std_view());
+    }
+
+    [[nodiscard]] constexpr bool starts_with(char value) const noexcept { return std_view().starts_with(value); }
+
+    [[nodiscard]] constexpr bool ends_with(char value) const noexcept { return std_view().ends_with(value); }
+
+    [[nodiscard]] constexpr bool starts_with_any(std::initializer_list<StringView> values) const noexcept {
+        for (auto value : values)
+            if (starts_with(value))
+                return true;
+        return false;
+    }
+
+    [[nodiscard]] constexpr bool ends_with_any(std::initializer_list<StringView> values) const noexcept {
+        for (auto value : values)
+            if (ends_with(value))
+                return true;
+        return false;
+    }
+
+    [[nodiscard]] constexpr bool equals_ascii_case_insensitive(StringView value) const noexcept {
+        if (size_ != value.size_)
+            return false;
+        for (std::size_t i = 0; i != size_; ++i)
+            if (detail::ascii_lower(data_[i]) != detail::ascii_lower(value.data_[i]))
+                return false;
+        return true;
+    }
+
+    [[nodiscard]] constexpr bool starts_with_ascii_case_insensitive(StringView value) const noexcept {
+        return size_ >= value.size_ && StringView{data_, value.size_}.equals_ascii_case_insensitive(value);
+    }
+
+    [[nodiscard]] constexpr bool ends_with_ascii_case_insensitive(StringView value) const noexcept {
+        return size_ >= value.size_ &&
+               StringView{data_ + size_ - value.size_, value.size_}.equals_ascii_case_insensitive(value);
+    }
+
+    // Whole-input parsing, without trimming, locale, leading '+' or base prefixes.
+    template <detail::TextInteger T>
+    [[nodiscard]] std::expected<T, std::errc> parse_number(int base = 10) const noexcept {
+        if (base < 2 || base > 36)
+            return std::unexpected(std::errc::invalid_argument);
+        T value;
+        const auto result = std::from_chars(begin(), end(), value, base);
+        if (result.ptr != end())
+            return std::unexpected(std::errc::invalid_argument);
+        if (result.ec != std::errc{})
+            return std::unexpected(result.ec);
+        return value;
+    }
+
+    template <std::floating_point T>
+    [[nodiscard]] std::expected<T, std::errc> parse_number() const noexcept {
+        T value;
+        const auto result = std::from_chars(begin(), end(), value, std::chars_format::general);
+        if (result.ptr != end())
+            return std::unexpected(std::errc::invalid_argument);
+        if (result.ec != std::errc{})
+            return std::unexpected(result.ec);
+        return value;
     }
 
     [[nodiscard]] constexpr std::size_t find(StringView value, std::size_t from = 0) const noexcept {
@@ -340,6 +421,27 @@ public:
 
     [[nodiscard]] static std::expected<String, StringError> from_utf8(StringView text) noexcept;
 
+    template <detail::TextInteger T>
+    [[nodiscard]] static std::expected<String, std::errc> from_number(T value, int base = 10) noexcept {
+        if (base < 2 || base > 36)
+            return std::unexpected(std::errc::invalid_argument);
+        char bytes[std::numeric_limits<T>::digits + 3];
+        const auto result = std::to_chars(bytes, bytes + sizeof(bytes), value, base);
+        String text;
+        text.write_validated({bytes, static_cast<std::size_t>(result.ptr - bytes)}, 0);
+        return text;
+    }
+
+    // Shortest general representation that round-trips through from_chars.
+    template <std::floating_point T>
+    [[nodiscard]] static String from_number(T value) noexcept {
+        char bytes[std::numeric_limits<T>::max_digits10 + 16];
+        const auto result = std::to_chars(bytes, bytes + sizeof(bytes), value, std::chars_format::general);
+        String text;
+        text.write_validated({bytes, static_cast<std::size_t>(result.ptr - bytes)}, 0);
+        return text;
+    }
+
     // The template parameter object has static storage duration. Its module
     // must remain loaded until every copy dies; JIT text must use from_utf8.
     template <detail::StringLiteral Text>
@@ -398,6 +500,20 @@ public:
     // views, including slices of this String, still use the checked overload.
     void append(const String& text) noexcept { write_validated(text.view(), size()); }
 
+    // Byte range must be in bounds. Splitting a code point or malformed replacement
+    // returns invalid_utf8 without changing this value. Aliased inputs are supported.
+    [[nodiscard]] std::expected<void, StringError> replace(std::size_t first, std::size_t count,
+                                                           StringView replacement) noexcept;
+
+    // Left-to-right, nonoverlapping matches. Empty search is a no-op, not insertion
+    // between bytes. Both views must contain valid UTF-8, even when no match exists.
+    [[nodiscard]] std::expected<std::size_t, StringError> replace_all(StringView search,
+                                                                      StringView replacement) noexcept;
+
+    void to_ascii_lower() noexcept;
+
+    void to_ascii_upper() noexcept;
+
     [[nodiscard]] bool contains(StringView text) const noexcept { return view().contains(text); }
 
     friend bool operator==(const String& left, const String& right) noexcept { return left.view() == right.view(); }
@@ -437,6 +553,8 @@ private:
     void reallocate(std::size_t capacity) noexcept;
 
     void write_validated(StringView text, std::size_t prefix) noexcept;
+
+    void change_ascii_case(bool upper) noexcept;
 
     void move_from(String& other) noexcept;
 
