@@ -59,7 +59,7 @@ names.squeeze();                    // 显式收紧容量；空数组释放缓�
 
 谓词接口仅在调用期间借用谓词，不复制或保存它；支持 move-only 闭包，并按 `std::invoke` 调用（包括成员投影）。
 
-三种数组共用元素构造/销毁/搬移、增长容量计算、自视图区间识别及先后缀后前缀的扩展实现。`InlineArray<T,N>` 与 `FixedArray<T,N>` 共用内联序列实现，提供上述序列操作及 `back/pop`。两者默认 size 为 0、capacity 为 N；N=0 合法。FixedArray 不是恰好 N 个活元素的 `std::array`，超过固定容量属于调用前置条件违例。业务输入应先检查预算，不把 fatal 当作输入拒绝。
+三种数组共用元素构造/销毁/搬移、增长容量计算、自视图区间识别及先后缀后前缀的扩展实现。`InlineArray<T,N>` 与 `FixedArray<T,N>` 共用内联序列实现，提供上述序列操作及 `back/pop`。两者默认 size 为 0、capacity 为 N；N=0 合法。FixedArray 不是恰好 N 个活元素的 `std::array`，超过固定容量属于调用前置条件违例。恰好 N 个活值的固定元组使用 `std::array`，不属于拥有型容器的迁移对象。业务输入应先检查预算，不把 fatal 当作输入拒绝。
 
 - InlineArray 的 `clear` 保留堆容量；`release` 清空并返回内联；`squeeze` 在 size≤N 时搬回内联，否则收紧堆块。FixedArray 的 `clear/release` 均析构活前缀，`squeeze` 无操作，`reserve` 仅检查是否超过 N。
 - 内联移动不保存来源对象的内联地址，源变空且可复用。移动赋值先分离来源，允许来源由目标元素间接拥有。移动、交换以及使元素搬移的结构变化终止相关借用；临时数组不能取得 view。与 Array 一样，普通元素要求不抛析构，提供不抛移动或可复制构造；移动和交换均为 noexcept，不提供异常恢复。

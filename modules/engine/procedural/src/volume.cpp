@@ -59,9 +59,10 @@ Result<void> validate_shells(const Geometry& surface) {
         std::uint32_t corner;
     };
     const auto points = surface.vertex_points();
-    std::vector<Edge> edges;
+    Array<Edge> edges;
     edges.reserve(points.size());
-    std::vector<std::uint32_t> next(points.size());
+    Array<std::uint32_t> next;
+    next.resize(points.size());
     for (std::uint32_t p = 0; p < surface.count(Layer::primitive); ++p) {
         const auto face = surface.primitive(p);
         for (std::uint32_t i = 0; i < face.count; ++i) {
@@ -69,11 +70,12 @@ Result<void> validate_shells(const Geometry& surface) {
             next[c] = face.first + (i + 1 == face.count ? 0 : i + 1);
             const auto a = points[c];
             const auto b = points[next[c]];
-            edges.push_back({(std::uint64_t{std::min(a, b)} << 32) | std::max(a, b), c});
+            edges.add({(std::uint64_t{std::min(a, b)} << 32) | std::max(a, b), c});
         }
     }
     std::ranges::sort(edges, {}, &Edge::key);
-    std::vector<std::uint32_t> around(points.size());
+    Array<std::uint32_t> around;
+    around.resize(points.size());
     for (std::size_t i = 0; i < edges.size(); i += 2) {
         if (i + 1 == edges.size() || edges[i].key != edges[i + 1].key ||
             (i + 2 < edges.size() && edges[i].key == edges[i + 2].key))
@@ -106,7 +108,7 @@ struct Triangle {
     std::array<Vector3d, 3> points;
 };
 
-Result<std::vector<Triangle>> prepare(const Geometry& surface) {
+Result<Array<Triangle>> prepare(const Geometry& surface) {
     if (!surface.count(Layer::primitive) || surface.count(Layer::instance))
         return failure("Volume requires polygon shells without instances.");
     for (const auto p : surface.positions())
@@ -114,7 +116,7 @@ Result<std::vector<Triangle>> prepare(const Geometry& surface) {
             return failure("Volume positions must be finite.");
     ATELIER_TRY_BIND(view, detail::TriangleView::create(surface, true));
     ATELIER_TRY(validate_shells(surface));
-    std::vector<Triangle> triangles;
+    Array<Triangle> triangles;
     triangles.reserve(view->size());
     const auto origin = widen(surface.positions()[surface.vertex_points()[0]]);
     Sum volume;
@@ -130,7 +132,7 @@ Result<std::vector<Triangle>> prepare(const Geometry& surface) {
         if (!area) // A valid polygon may contain forward collinear corners.
             continue;
         volume.add(math::dot(a - origin, math::cross(b - origin, c - origin)));
-        triangles.push_back(t);
+        triangles.add(t);
     }
     if (!(volume.value > 0))
         return failure("Volume needs positive aggregate signed volume; inward cavities are allowed.");
@@ -230,7 +232,8 @@ Result<Geometry> volume_scatter(const Geometry& surface, const VolumeScatterSett
         return failure("Volume exceeds 1,048,576 candidates before filtering.");
     const auto whole = static_cast<std::uint32_t>(std::floor(expected));
     // Keep zero-count cells in the prefix. A dense single cell may span many blocks.
-    std::vector<std::uint32_t> offsets(static_cast<std::size_t>(cells) + 1);
+    Array<std::uint32_t> offsets;
+    offsets.resize(static_cast<std::size_t>(cells) + 1);
     for (std::uint32_t i = 0; i < cells; ++i) {
         const auto count = whole + (unit(hash(cell_seed(coordinate(i)), 0)) < expected - whole);
         if (count > work_limit - offsets[i])
@@ -246,8 +249,10 @@ Result<Geometry> volume_scatter(const Geometry& surface, const VolumeScatterSett
     }
     Array<Vector3> candidate_positions;
     candidate_positions.resize(candidates);
-    std::vector<Classification> states(candidates);
-    std::vector<Block> blocks((candidates + block_size - 1) / block_size);
+    Array<Classification> states;
+    states.resize(candidates);
+    Array<Block> blocks;
+    blocks.resize((candidates + block_size - 1) / block_size);
     {
         timing::Scope classification{phases::classify};
         const auto classified = tasks::parallel_for(
@@ -312,7 +317,8 @@ Result<Geometry> volume_scatter(const Geometry& surface, const VolumeScatterSett
         if (totals.fallback)
             timing::record(phases::fallback, {}, totals.fallback);
     }
-    std::vector<std::uint32_t> output_offsets(blocks.size() + 1);
+    Array<std::uint32_t> output_offsets;
+    output_offsets.resize(blocks.size() + 1);
     for (std::size_t b = 0; b < blocks.size(); ++b)
         output_offsets[b + 1] = output_offsets[b] + blocks[b].retained;
     const auto retained = output_offsets.back();
