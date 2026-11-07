@@ -1,4 +1,5 @@
 #include "procedural/operations.hpp"
+#include "foundation/bit_vector.hpp"
 #include "foundation/result.hpp"
 #include "foundation/tasks.hpp"
 #include "procedural/bvh.hpp"
@@ -84,17 +85,17 @@ Result<void> validate_shells(const Geometry& surface) {
         around[a] = next[b];
         around[b] = next[a];
     }
-    std::vector<bool> seen_corner(points.size());
-    std::vector<bool> seen_point(surface.count(Layer::point));
+    BitVector seen_corner(points.size());
+    BitVector seen_point(surface.count(Layer::point));
     for (std::uint32_t start = 0; start < points.size(); ++start) {
         if (seen_corner[start])
             continue;
         if (seen_point[points[start]])
             return failure("Volume needs a single face fan at each used point.");
-        seen_point[points[start]] = true;
+        seen_point.set(points[start]);
         auto c = start;
         do {
-            seen_corner[c] = true;
+            seen_corner.set(c);
             c = around[c];
         } while (c != start);
     }

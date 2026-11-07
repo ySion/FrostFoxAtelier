@@ -82,7 +82,7 @@ names.squeeze();                    // 显式收紧容量；空数组释放缓�
 - 复制从 const 元素来源构造，保留下标、空洞和下次复用顺序，不选用可变来源的复制重载；元素地址统一用 std::addressof，支持重载或删除 operator& 的 T。移动接管全部存储，源为空。移动赋值先分离来源再释放旧资源，支持资源子树提升。`clear` 析构全部活值并令 size/extent 为0，保留容量；`release` 另释放槽和位图。无 compact/重排/连续 T 视图。
 - 稳定下标不是稳定地址或永久身份：增长可使全部元素引用失效，删除的数字可被重新分配。不提供代际、GC、弱引用、并发或持久化格式。两类型均未新增 Runtime/Source/反射/JIT 注册，不改变已有容器 ABI。
 
-本片真实基础消费者为 SparseArray 自身的占用位图和 foundation 的资源槽消费序列。首批产品迁移候选是 `procedural/volume.cpp` 的 seen_corner/seen_point（BitVector）与 `runtime.cpp` 的 RootState.entries（SparseArray）；这些替换归 W4/A1，尚未实施。RootState 迁移须保留 value_entries、移除回调、trace 队列与身份上限；Runtime 对象槽/UI 带代际槽不能直接按此替换。
+真实消费者包括 SparseArray 自身的占用位图、foundation 的资源槽消费序列，以及 `procedural/volume.cpp` 的 seen_corner/seen_point（BitVector）。`runtime.cpp` 的 RootState.entries（SparseArray）仍待 W4/A1 迁移，须保留 value_entries、移除回调、trace 队列与身份上限；Runtime 对象槽/UI 带代际槽不能直接按此替换。
 
 ## 共享不可变数组
 
