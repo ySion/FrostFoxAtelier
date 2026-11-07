@@ -1,9 +1,9 @@
 #pragma once
 
+#include "foundation/array.hpp"
 #include "procedural/geometry.hpp"
 
 #include <optional>
-#include <vector>
 
 namespace atelier::procedural {
 
@@ -70,14 +70,14 @@ private:
         std::uint32_t triangle;
     };
 
-    std::vector<Node> nodes_;
+    Array<Node> nodes_;
 
-    std::vector<Triangle> triangles_;
+    Array<Triangle> triangles_;
 
     // Parallel metadata keeps the existing nearest-hit traversal's node/triangle layout.
-    std::vector<double> node_tolerances_;
+    Array<double> node_tolerances_;
 
-    std::vector<double> polygon_tolerances_;
+    Array<double> polygon_tolerances_;
 };
 
 }

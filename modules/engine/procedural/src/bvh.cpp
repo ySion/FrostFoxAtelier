@@ -220,7 +220,7 @@ Result<Bvh> Bvh::build(const Geometry& surface) {
         return result;
     result.polygon_tolerances_.reserve(surface.count(Layer::primitive));
     for (std::uint32_t p = 0; p < surface.count(Layer::primitive); ++p)
-        result.polygon_tolerances_.push_back(detail::polygon_scale(surface, surface.primitive(p)).tolerance);
+        result.polygon_tolerances_.add(detail::polygon_scale(surface, surface.primitive(p)).tolerance);
     Array<Box> bounds;
     bounds.resize(count);
     Array<Vector3> centers;
@@ -245,9 +245,9 @@ Result<Bvh> Bvh::build(const Geometry& surface) {
     };
     InlineArray<Task, 64> tasks{{0, 0, count, 0}};
     result.nodes_.reserve(2 * std::size_t{count} / leaf_size + 1);
-    result.nodes_.push_back({});
+    result.nodes_.add({});
     result.node_tolerances_.reserve(result.nodes_.capacity());
-    result.node_tolerances_.push_back(0);
+    result.node_tolerances_.add(0);
     while (!tasks.empty()) {
         const auto [node, begin, end, depth] = tasks.back();
         tasks.pop();
@@ -322,16 +322,16 @@ Result<Bvh> Bvh::build(const Geometry& surface) {
         const auto child = static_cast<std::uint32_t>(result.nodes_.size());
         result.nodes_[node].first = child;
         result.nodes_[node].count = 0;
-        result.nodes_.push_back({});
-        result.nodes_.push_back({});
-        result.node_tolerances_.push_back(0);
-        result.node_tolerances_.push_back(0);
+        result.nodes_.add({});
+        result.nodes_.add({});
+        result.node_tolerances_.add(0);
+        result.node_tolerances_.add(0);
         tasks.add({child + 1, middle, end, depth + 1});
         tasks.add({child, begin, middle, depth + 1});
     }
     result.triangles_.reserve(count);
     for (const auto i : order)
-        result.triangles_.push_back(triangles[i]);
+        result.triangles_.add(triangles[i]);
     return result;
 }
 
