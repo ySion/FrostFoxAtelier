@@ -150,16 +150,27 @@ void verify_viewport_fly(Application& app, const std::filesystem::path& output) 
         };
         const auto begin_fly = [&] {
             require_foreground();
+            const auto input_before = Access::input_snapshot(app);
+            const auto queue_before = Access::input_queue_snapshot(app);
             pointer(ui::EventKind::pointer_move, origin);
             Access::input(app, {.kind = ui::EventKind::key_down, .shift = true}, VK_OEM_3);
             Access::input(app, {.kind = ui::EventKind::key_up, .shift = true}, VK_OEM_3);
             Access::input(app, {.kind = ui::EventKind::key_up}, VK_SHIFT);
             require(GetCapture() == app.window() && !Access::menu_open(app),
                     "Shift+accent-grave did not capture fly navigation.");
+            const auto input_entered = Access::input_snapshot(app);
+            const auto queue_entered = Access::input_queue_snapshot(app);
             tick(app, 2);
+            const auto input_after = Access::input_snapshot(app);
+            const auto queue_after = Access::input_queue_snapshot(app);
             if (!Access::camera_flying(app))
                 throw std::runtime_error("Fly lost ownership on its entry frames: " +
-                                         atelier::application::diagnostic_text(app.status_text()));
+                                         atelier::application::diagnostic_text(app.status_text()) +
+                                         Access::fly_cancellation_diagnostic(app) +
+                                         input_before.describe("before_entry") + queue_before.describe("before_entry") +
+                                         input_entered.describe("before_tick") + queue_entered.describe("before_tick") +
+                                         input_after.describe("after_tick") + queue_after.describe("after_tick") +
+                                         "; failure_sample: " + input_failure_diagnostic(app));
             snapshot("viewport-fly-entry.png");
             verify_fly_ui(true);
         };

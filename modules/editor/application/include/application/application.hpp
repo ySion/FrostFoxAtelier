@@ -287,7 +287,16 @@ private:
 
     std::optional<ui::PointerButton> camera_fly_release_;
 
-    void finish_camera_fly(bool accept);
+    struct CameraFlyCancellation {
+        std::source_location caller;
+
+        std::string input_event;
+    };
+
+    std::optional<CameraFlyCancellation> camera_fly_cancellation_;
+
+    void finish_camera_fly(bool accept, std::source_location caller = std::source_location::current(),
+                           std::string_view input_event = {});
 
     void update_camera_fly();
 

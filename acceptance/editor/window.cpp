@@ -12,6 +12,7 @@
 #include "platform/utf.hpp"
 #include "foundation/sha256.hpp"
 #include <wincodec.h>
+#include <windowsx.h>
 #include <wrl/client.h>
 #include <msctf.h>
 #include <imm.h>
@@ -36,6 +37,105 @@ struct PlayProcessAcceptanceAccess {
 
 struct EditorAcceptanceAccess {
     static void input(Application& app, ui::Event event, WPARAM key = 0) { app.input(event, key); }
+
+    static void clear_status(Application& app) { app.workspace_.status.clear(); }
+
+    struct InputSnapshot {
+        bool ready{};
+
+        ui::Surface current;
+
+        std::optional<ui::Surface> presented;
+
+        std::uint64_t frame_id{};
+
+        bool captured{};
+
+        bool focused{};
+
+        bool foreground{};
+
+        WORD pending{};
+
+        std::string describe(std::string_view stage) const {
+            const auto frame = presented.value_or(ui::Surface{});
+            return std::format("; {}: pointer_ready={}; presented={}; frame_id={}; extent_equals_client={}; "
+                               "extent=({},{}); client=({},{}); surface_revision={}/{}; dpi={}/{} (frame/current); "
+                               "capture_is_editor={}; focus_is_editor={}; foreground_is_editor={}; QS_current={:#06x}",
+                               stage, ready, presented.has_value(), frame_id,
+                               presented && frame.extent == current.extent, frame.extent.width, frame.extent.height,
+                               current.extent.width, current.extent.height, frame.revision, current.revision,
+                               frame.dpi_scale, current.dpi_scale, captured, focused, foreground, pending);
+        }
+    };
+
+    static InputSnapshot input_snapshot(const Application& app) {
+        InputSnapshot snapshot;
+        snapshot.ready = app.pointer_ready();
+        RECT client{};
+        if (!IsIconic(app.window()))
+            GetClientRect(app.window(), &client);
+        snapshot.current = {{static_cast<std::uint32_t>(client.right), static_cast<std::uint32_t>(client.bottom)},
+                            app.window_.dpi_scale(),
+                            app.surface_revision_};
+        if (const auto& frame = app.presented()) {
+            snapshot.presented =
+                ui::Surface{frame->drawing->extent, frame->drawing->dpi_scale, frame->drawing->surface_revision};
+            snapshot.frame_id = frame->drawing->id;
+        }
+        snapshot.captured = GetCapture() == app.window();
+        snapshot.focused = GetFocus() == app.window();
+        snapshot.foreground = GetForegroundWindow() == app.window();
+        // Unlike PeekMessage, this does not dispatch sent messages. It does clear the queue's new bits.
+        snapshot.pending = HIWORD(GetQueueStatus(QS_ALLINPUT));
+        return snapshot;
+    }
+
+    struct InputQueueSnapshot {
+        std::size_t size{};
+
+        std::vector<std::pair<std::size_t, NativeEvent>> events;
+
+        std::string describe(std::string_view stage) const {
+            auto text = std::format("; {}: Window::events_.size={}; input_events=[", stage, size);
+            for (const auto& [index, event] : events) {
+                text += std::format(" {{index={}; message={:#06x}; ", index, event.message);
+                if (event.relative_motion)
+                    text +=
+                        std::format("raw_relative_delta=({},{})", event.relative_motion->x, event.relative_motion->y);
+                else if (event.message >= WM_MOUSEFIRST && event.message <= WM_MOUSELAST)
+                    text += std::format("{}=({},{})", event.message == WM_MOUSEWHEEL ? "screen_px" : "client_px",
+                                        GET_X_LPARAM(event.lparam), GET_Y_LPARAM(event.lparam));
+                else
+                    text += std::format("wparam={:#x}; lparam={:#x}", event.wparam, event.lparam);
+                text += "}";
+            }
+            return text + " ]";
+        }
+    };
+
+    static InputQueueSnapshot input_queue_snapshot(const Application& app) {
+        const auto& events = app.window_.events_;
+        InputQueueSnapshot snapshot{events.size(), {}};
+        for (std::size_t index = 0; index < events.size(); ++index) {
+            const auto& event = events[index];
+            if ((event.message >= WM_MOUSEFIRST && event.message <= WM_MOUSELAST) || event.message == WM_MOUSELEAVE ||
+                event.relative_motion || (event.message >= WM_KEYFIRST && event.message <= WM_KEYLAST) ||
+                event.message == WM_CANCELMODE || event.message == WM_KILLFOCUS || event.message == WM_CAPTURECHANGED ||
+                event.message == WM_ACTIVATEAPP || event.message == WM_MOVE || event.message == WM_SIZE ||
+                event.message == WM_DPICHANGED)
+                snapshot.events.emplace_back(index, event);
+        }
+        return snapshot;
+    }
+
+    static std::string fly_cancellation_diagnostic(const Application& app) {
+        if (!app.camera_fly_cancellation_)
+            return "; fly_cancellation=none";
+        const auto& cancellation = *app.camera_fly_cancellation_;
+        return std::format("; fly_cancellation={}:{}; input_event={}", cancellation.caller.file_name(),
+                           cancellation.caller.line(), cancellation.input_event);
+    }
 
     static bool menu_open(const Application& app) { return app.workspace_.menu.has_value(); }
 
@@ -1278,7 +1378,107 @@ void verify_style_changes(Application& app, const std::filesystem::path& output,
     tick(app, 1);
 }
 
-void verify_shared_text(Application& app, const std::filesystem::path& output, atelier::ObjectId object) {
+class AcceptanceInputMonitor {
+    static inline thread_local AcceptanceInputMonitor* current_{};
+
+    std::atomic<std::uint64_t> mouse_{};
+
+    std::atomic<std::uint64_t> keyboard_{};
+
+    std::atomic<bool> ready_{};
+
+    std::atomic<bool> available_{};
+
+    HANDLE stop_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+
+    std::thread thread_;
+
+    static LRESULT CALLBACK mouse(int code, WPARAM message, LPARAM data) noexcept {
+        if (code == HC_ACTION && !(reinterpret_cast<const MSLLHOOKSTRUCT*>(data)->flags & LLMHF_INJECTED))
+            current_->mouse_.fetch_add(1, std::memory_order_relaxed);
+        return CallNextHookEx(nullptr, code, message, data);
+    }
+
+    static LRESULT CALLBACK keyboard(int code, WPARAM message, LPARAM data) noexcept {
+        if (code == HC_ACTION && !(reinterpret_cast<const KBDLLHOOKSTRUCT*>(data)->flags & LLKHF_INJECTED))
+            current_->keyboard_.fetch_add(1, std::memory_order_relaxed);
+        return CallNextHookEx(nullptr, code, message, data);
+    }
+
+public:
+    AcceptanceInputMonitor() {
+        if (!stop_)
+            return;
+        try {
+            thread_ = std::thread([this] {
+                // Low-level callbacks must not wait for the acceptance thread's rendering or PNG writes.
+                current_ = this;
+                MSG message{};
+                PeekMessageW(&message, nullptr, 0, 0, PM_NOREMOVE);
+                const auto module = GetModuleHandleW(nullptr);
+                const auto mouse_hook = SetWindowsHookExW(WH_MOUSE_LL, mouse, module, 0);
+                const auto keyboard_hook = SetWindowsHookExW(WH_KEYBOARD_LL, keyboard, module, 0);
+                available_.store(mouse_hook && keyboard_hook);
+                ready_.store(true);
+                ready_.notify_one();
+                if (available_.load()) {
+                    for (;;) {
+                        const auto result =
+                            MsgWaitForMultipleObjectsEx(1, &stop_, INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+                        if (result != WAIT_OBJECT_0 + 1) {
+                            if (result != WAIT_OBJECT_0)
+                                available_.store(false);
+                            break;
+                        }
+                        while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+                            TranslateMessage(&message);
+                            DispatchMessageW(&message);
+                        }
+                    }
+                }
+                if (keyboard_hook)
+                    UnhookWindowsHookEx(keyboard_hook);
+                if (mouse_hook)
+                    UnhookWindowsHookEx(mouse_hook);
+                current_ = nullptr;
+            });
+            ready_.wait(false);
+        } catch (const std::exception&) {
+            // Diagnostic setup failure must not change the acceptance outcome.
+        }
+    }
+
+    ~AcceptanceInputMonitor() {
+        if (thread_.joinable()) {
+            SetEvent(stop_);
+            thread_.join();
+        }
+        if (stop_)
+            CloseHandle(stop_);
+    }
+
+    struct Counts {
+        std::uint64_t mouse{};
+
+        std::uint64_t keyboard{};
+    };
+
+    std::optional<Counts> counts() const {
+        if (!available_.load())
+            return std::nullopt;
+        return Counts{mouse_.load(std::memory_order_relaxed), keyboard_.load(std::memory_order_relaxed)};
+    }
+
+    std::string diagnostic() const {
+        const auto sample = counts();
+        if (!sample)
+            return "input monitor unavailable";
+        return std::format("non-injected mouse/keyboard events: {}/{}", sample->mouse, sample->keyboard);
+    }
+};
+
+void verify_shared_text(Application& app, const std::filesystem::path& output, atelier::ObjectId object,
+                        const AcceptanceInputMonitor& monitor) {
     auto field = property_control(app, object, 0);
     const auto original_position = x(app, object);
     const auto original_history = app.document().undo_count();
@@ -1335,10 +1535,33 @@ void verify_shared_text(Application& app, const std::filesystem::path& output, a
         require(app.query() == graphemes && app.status_text().find(L"Input operation failed") != std::wstring::npos,
                 "Failed native clipboard read changed the draft or lost its error.");
     }
+    const auto clipboard_failure_diagnostic = [&] {
+        const auto window = GetOpenClipboardWindow();
+        DWORD process{};
+        if (window)
+            GetWindowThreadProcessId(window, &process);
+        return std::format("; status={}; failure_sample: open_clipboard_hwnd={:#x}; open_clipboard_pid={}",
+                           atelier::application::diagnostic_text(app.status_text()),
+                           reinterpret_cast<std::uintptr_t>(window), process);
+    };
+    const auto cut_before = monitor.counts();
+    Access::clear_status(app);
     key(app, 'X', true);
-    require(app.query().empty(), "Successful native clipboard cut did not remove its selection.");
+    const auto cut_after = monitor.counts();
+    if (!app.query().empty()) {
+        const auto input_delta = cut_before && cut_after ? std::format("{}/{}", cut_after->mouse - cut_before->mouse,
+                                                                       cut_after->keyboard - cut_before->keyboard)
+                                                         : "unavailable";
+        throw std::runtime_error("Successful native clipboard cut did not remove its selection." +
+                                 clipboard_failure_diagnostic() +
+                                 std::format("; query_utf16_length={}; query_equals_graphemes={}; "
+                                             "cut_non_injected_mouse/keyboard_delta={}",
+                                             app.query().size(), app.query() == graphemes, input_delta));
+    }
     key(app, 'V', true);
-    require(app.query() == graphemes, "Native Unicode clipboard paste did not restore the exact text.");
+    if (app.query() != graphemes)
+        throw std::runtime_error("Native Unicode clipboard paste did not restore the exact text." +
+                                 clipboard_failure_diagnostic());
     {
         KeyStateScope unrelated_shift(false, true);
         key(app, 'Z', true);
@@ -1677,93 +1900,6 @@ int capture_editor_snapshot(Application& app, const char* output_directory) {
     std::puts("Editor snapshot: written");
     return 0;
 }
-
-class AcceptanceInputMonitor {
-    static inline thread_local AcceptanceInputMonitor* current_{};
-
-    std::atomic<std::uint64_t> mouse_{};
-
-    std::atomic<std::uint64_t> keyboard_{};
-
-    std::atomic<bool> ready_{};
-
-    std::atomic<bool> available_{};
-
-    HANDLE stop_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-
-    std::thread thread_;
-
-    static LRESULT CALLBACK mouse(int code, WPARAM message, LPARAM data) noexcept {
-        if (code == HC_ACTION && !(reinterpret_cast<const MSLLHOOKSTRUCT*>(data)->flags & LLMHF_INJECTED))
-            current_->mouse_.fetch_add(1, std::memory_order_relaxed);
-        return CallNextHookEx(nullptr, code, message, data);
-    }
-
-    static LRESULT CALLBACK keyboard(int code, WPARAM message, LPARAM data) noexcept {
-        if (code == HC_ACTION && !(reinterpret_cast<const KBDLLHOOKSTRUCT*>(data)->flags & LLKHF_INJECTED))
-            current_->keyboard_.fetch_add(1, std::memory_order_relaxed);
-        return CallNextHookEx(nullptr, code, message, data);
-    }
-
-public:
-    AcceptanceInputMonitor() {
-        if (!stop_)
-            return;
-        try {
-            thread_ = std::thread([this] {
-                // Low-level callbacks must not wait for the acceptance thread's rendering or PNG writes.
-                current_ = this;
-                MSG message{};
-                PeekMessageW(&message, nullptr, 0, 0, PM_NOREMOVE);
-                const auto module = GetModuleHandleW(nullptr);
-                const auto mouse_hook = SetWindowsHookExW(WH_MOUSE_LL, mouse, module, 0);
-                const auto keyboard_hook = SetWindowsHookExW(WH_KEYBOARD_LL, keyboard, module, 0);
-                available_.store(mouse_hook && keyboard_hook);
-                ready_.store(true);
-                ready_.notify_one();
-                if (available_.load()) {
-                    for (;;) {
-                        const auto result =
-                            MsgWaitForMultipleObjectsEx(1, &stop_, INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
-                        if (result != WAIT_OBJECT_0 + 1) {
-                            if (result != WAIT_OBJECT_0)
-                                available_.store(false);
-                            break;
-                        }
-                        while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
-                            TranslateMessage(&message);
-                            DispatchMessageW(&message);
-                        }
-                    }
-                }
-                if (keyboard_hook)
-                    UnhookWindowsHookEx(keyboard_hook);
-                if (mouse_hook)
-                    UnhookWindowsHookEx(mouse_hook);
-                current_ = nullptr;
-            });
-            ready_.wait(false);
-        } catch (const std::exception&) {
-            // Diagnostic setup failure must not change the acceptance outcome.
-        }
-    }
-
-    ~AcceptanceInputMonitor() {
-        if (thread_.joinable()) {
-            SetEvent(stop_);
-            thread_.join();
-        }
-        if (stop_)
-            CloseHandle(stop_);
-    }
-
-    std::string diagnostic() const {
-        if (!available_.load())
-            return "input monitor unavailable";
-        return std::format("non-injected mouse/keyboard events: {}/{}", mouse_.load(std::memory_order_relaxed),
-                           keyboard_.load(std::memory_order_relaxed));
-    }
-};
 
 #include "performance.inl"
 #include "surfaces.inl"
@@ -2483,7 +2619,7 @@ int verify_editor_window(Application& app, const char* output_directory) {
         verify_stow_alignment(app);
         verify_retired_field(app, output, object);
         verify_style_changes(app, output, object);
-        verify_shared_text(app, output, object);
+        verify_shared_text(app, output, object, monitor);
         verify_docking(app, output, object);
         verify_native_menus(app, output, object);
         verify_basic_controls(app, output, object);

@@ -30,12 +30,13 @@ void Application::show_menu(editor::MenuKind menu) {
     request_menu({viewport, groups[static_cast<std::size_t>(menu)], pointer_position_.x, pointer_position_.y});
 }
 
-void Application::finish_camera_fly(bool accept) {
+void Application::finish_camera_fly(bool accept, std::source_location caller, std::string_view input_event) {
     if (!camera_fly_)
         return;
     const auto entry = camera_fly_->entry;
     camera_fly_.reset(); // Retire modal ownership before ReleaseCapture can call back.
     if (!accept) {
+        camera_fly_cancellation_ = CameraFlyCancellation{caller, std::string(input_event)};
         camera_ = entry;
         camera_cut_ = true;
     }
@@ -175,6 +176,7 @@ bool Application::viewport_input(const ui::Event& event, std::uint32_t native_ke
                 return true;
             }
             camera_fly_ = CameraFly{.entry = entry, .fast = event.shift, .previous = std::chrono::steady_clock::now()};
+            camera_fly_cancellation_.reset();
             workspace_.status =
                 L"Fly · WASD move · Q/E down/up · Wheel speed · Shift fast · Enter/LMB confirm · Esc/RMB cancel";
             return true;

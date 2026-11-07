@@ -59,15 +59,35 @@ Renderer 与 Editor 合计每个渲染特性只保留一张代表图；只有必
 
 ## 未定因的窗口失败
 
-材质接入期的窗口间歇失败仍未关闭。以下是 Windows x64、RX 6800 XT 上已记录的事实；原始日志位于本机 `out/acceptance-gate/<运行号>/`，只证明当时版本、配置与场景，不作为当前门禁结果。
+窗口间歇失败仍有未定因记录。以下是 Windows x64、RX 6800 XT 上已记录的事实；原始日志位于本机 `out/acceptance-gate/<运行号>/`，只证明当时版本、配置与场景，不作为当前门禁结果。
 
 **已确认：**
 
 - Project 组合目标在 `20261028-233948-063-67820` 因菜单子命令失败仍记 FAIL，后续 `20261029-044822-174-17612` 的 Release Project 原生窗口完整 PASS。Renderer Dev default 在 `20261028-231018-738-28932` 失败，后续 `20261028-233948-063-67820` 全入口 GBV PASS；原失败与后续通过是不同运行，后者不关闭前者的归因问题。
 - Editor 受控反例 `20261029-044541-153-32708` 在 F10 与 Left 之间短暂失焦再恢复，真实 WM_KILLFOCUS/capture changed 关闭菜单；后续键盘入口焦点检查仍通过，却出现同一导航失败。
 - Dev Renderer 诊断 `20261029-043215-721-19504` 对同一已准备 Lit 输入观察到：正常焦点、移交焦点、完全覆盖均 accepted；最小化为 skipped/draws=0，恢复后 accepted。该诊断子集省略完整 PASS 标记，运行器记录 FAIL 是预期，不能算完整 Renderer 验收通过。
+- P4 首跑 gate `20261107-083244-448-147744` 的 Dev `editor_acceptance` 在 Fly 入口失败，run_id `ca268d80ff652266365b663c1f5671e3`、PID 127796。event 19 原文为 `Host failure: Fly lost ownership on its entry frames: Fly navigation cancelled; non-injected mouse/keyboard events: 0/0`；event 20 为 `Business exit code 1`，health 为 final/finished，flush 与 summary 成功。首跑没有取得 Editor 的 OS 原始退出码；0/0 仅为监视器的非注入输入计数，不能排除焦点或捕获变化。
+- 同一 Dev 窗口叶的基线 `a2c8d0dd` 与候选 `ad0d2620` 各三轮交替对照均通过双侧各自的 Dev all 与窗口叶，六个 Editor OS 原始退出码均为 0。基线 gates 为 `20261107-090144-489-124924`、`20261107-090923-738-142068`、`20261107-091625-128-134424`；候选 gates 为 `20261107-090534-031-138272`、`20261107-091302-010-115096`、`20261107-091950-599-148456`。首败及对照归档在 `.amp/in/artifacts/p4-review/`，详见 [P4 复审与对照报告](https://ampcode.com/artifacts/p4-4418538a-0c46-4b2c-9ffd-e6ec2d198523)。六轮通过只说明未复现，不能证明首败与 P4 无关或已经修复。
+- Fly 诊断片 gate `20261107-185340-457-148620` 的 Release `editor_acceptance` 在 Fly 段已输出 PASS 后，失败于剪贴板争用作用域结束后的剪切断言。run `9829c16224ec9800e91d20c7d6b2dc62` 的 event 94 为 `Host failure: Successful native clipboard cut did not remove its selection.; non-injected mouse/keyboard events: 0/0`，event 95 为 `Business exit code 1`；health final/finished，flush 与 summary 成功。0/0 不排除环境影响；当时没有失败 status 或剪贴板占用者采样，原因未定，不据 Fly 段通过排除诊断的时序影响。
+- 同一 gate 的 Dev `editor_acceptance` PASS，run `7b4080d3e702c3670f3a2d3770ac189c` 的 Business exit code 为 0，但有三条业务 error：event 92 `A field edit is already active.`、event 330 `Nothing to undo.`、event 440 非法 JSON 资产刷新错误。入口通过不等于日志零错误，也不关闭 Release 的失败归因。原始 gate/run/health 保存在 Fly 诊断工作树 `.amp/in/artifacts/fly-diagnostics/`。
+- 主树集成 gate `20261107-195648-368-118700` 的 Release 再次在 cut 断言 FAIL（19.23s）。run `b864d262da551875169b0b7f6e6b78d9` 的 event 94 输出 `status=Input operation failed (Windows 5).; failure_sample: open_clipboard_hwnd=0x0; open_clipboard_pid=0; non-injected mouse/keyboard events: 0/47`，event 95 为 Business exit code 1，health final/finished、flush/summary 成功。前一步预期争用粘贴可能留下同样的 status，故该 Windows 5 不能认定来自 cut；占用者是失败后采样，0 不排除此前争用，0/47 也不是人工操作或根因证明。原始证据在主树 `.amp/in/artifacts/fly-r2-review/`。
 
-**未确认：**受控失焦仅证明这种机制足以致错，**不证明历史 Editor 失败由它引起**。旧 Renderer 失败缺少当帧 status/capture/draws/HRESULT，至今未定因；窗口状态观测及后续 PASS 不能补足旧失败的缺失证据。
+同机 Release 受控对照按 B1→C1→B2→C2→B3→C3 执行，没有追加运行。B 为 `a75178a2` 加剪贴板诊断，不含本次 Fly 诊断；C 为包含 Fly 诊断的候选。两侧完整 shared-text 夹具及输入监视器相同：在 Ctrl+X 前清空遗留显示 status，失败时追加 query 的 UTF-16 长度、与 graphemes 的相等性和现有监视器的 cut 前后计数差；成功不格式化。两侧均保留原 Fly 验收和剪贴板序列，不增等待、重试或放宽断言。
+
+| 轮次 | Gate | run_id | Release editor_acceptance | Business / OS |
+|---|---|---|---|---|
+| B1 | `20261107-210442-720-144716` | `ff9509eda5f568260cd67f473751fdba` | PASS 120.45s | 0 / 0 |
+| C1 | `20261107-210748-595-151328` | `d2fc708ca9e0c2bbb4f0d72075d3d99b` | PASS 93.20s | 0 / 0 |
+| B2 | `20261107-211027-051-102164` | `dcc161ece8e1930163e1d282e6812fa0` | PASS 78.61s | 0 / 0 |
+| C2 | `20261107-211250-899-127768` | `04ecef58ae14f86bc04c15036a2ec38e` | PASS 79.39s | 0 / 0 |
+| B3 | `20261107-211515-698-154568` | `7aa59b67954c02eaf24f73f0692f21a2` | PASS 83.26s | 0 / 0 |
+| C3 | `20261107-211744-794-151144` | `7bf98bef1e5dcbd67eb614382bacbb67` | FAIL 74.74s | 1 / 1 |
+
+C3 已越过剪贴板检查，event 453 为 `Host failure: Acceptance interrupted by external focus loss; no further synthetic input was sent.`，当时前台是 `chrome.exe`（PID 99968），focus/capture 均为 0，累计非注入鼠标/键盘计数为 744/4；event 454 为 Business exit code 1。该 FAIL 不改记 PASS，也不用于解释旧 cut 失败或推定是谁切换前台。六轮均未触发 cut/paste 失败诊断，因此没有新的 Windows 码、占用者或 cut 计数差样本，不能确认或排除剪贴板监听者争用或诊断的时序影响。
+
+六轮 health 均 final/finished、flush/summary 成功，各有上述三条业务 error；C3 另有两条 critical。OS 码由退出前保留的 Editor 进程句柄取得，不由 Business 码推算。普通锁释放至下一次取锁的五个间隔为 64.944/64.940/64.957/65.598/64.949s，末轮已释锁，进程树清空。对照前后本机 `EnableClipboardHistory=1`、`cbdhsvc_183187` 运行中，但没有监听者与 cut 重叠的直接证据。原始 gate/run/health、失败原文、逐轮进程退出码及两侧源码身份保存在 Fly 诊断工作树 `.amp/in/artifacts/fly-diagnostics-r3/`。
+
+**未确认：**受控失焦仅证明这种机制足以致错，**不证明历史 Editor 失败由它引起**。旧 Renderer 失败缺少当帧 status/capture/draws/HRESULT，P4 首败缺少 Fly 取消来源与当时焦点/捕获明细，至今未定因；窗口状态观测及后续 PASS 不能补足旧失败的缺失证据。
 
 **处理规则：**当时调查未增加 sleep、盲重试、放宽断言或改变产品失焦语义；后续处理也不以这些方式换取通过。保留原始失败与后续通过的区别，依据失败当帧证据定位；证据不足时保持“未定因”，不以重跑通过宣称问题关闭。
 

@@ -1320,7 +1320,7 @@ void Application::cancel_interaction(const ui::Reply& reply, std::string_view in
                                      std::source_location caller) {
     // Session distinguishes native focus/capture loss from a forced UI cancellation.
     // Application-owned gestures must end for either kind before capture is released.
-    finish_camera_fly(false);
+    finish_camera_fly(false, caller, input_event);
     camera_fly_release_.reset();
     camera_drag_.reset();
     workspace_.lighting.cancel();
