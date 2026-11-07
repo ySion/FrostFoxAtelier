@@ -1612,7 +1612,7 @@ struct EditorControl::Impl {
             for (const auto& [flag, name] : {std::pair{editor::OperatorFlag::undo, "undo"},
                                              {editor::OperatorFlag::history, "history"},
                                              {editor::OperatorFlag::replaces_document, "replaces_document"}})
-                if (editor::has_flag(info.flags, flag))
+                if (has_any(info.flags, flag))
                     flags.push_back(name);
             auto parameters = editor::parameter_schema(app.document_->world().runtime(), info);
             if (!parameters)
@@ -1705,7 +1705,7 @@ struct EditorControl::Impl {
             request.context = context_override(args.at("context"));
         // Build preserves in-memory author values and dirty state; rebuild:true explicitly retires history.
         // Unlike Open/New it saves Source drafts and materials itself, without discarding the scene.
-        if (editor::has_flag(info->flags, editor::OperatorFlag::replaces_document) && request.id != "project.build")
+        if (has_any(info->flags, editor::OperatorFlag::replaces_document) && request.id != "project.build")
             replaceable();
         const editor::ResolveReference resolve = [&](const Json& value, TypeId type,
                                                      ValueForm form) -> std::optional<ObjectReference> {

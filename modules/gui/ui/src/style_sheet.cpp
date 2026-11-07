@@ -3,6 +3,7 @@
 #include "foundation/result.hpp"
 #include "platform/utf.hpp"
 #include <algorithm>
+#include <bit>
 #include <charconv>
 #include <cmath>
 #include <map>
@@ -26,7 +27,8 @@ bool invalid_state_properties(const StyleProperties& p, StyleState states) {
         return false;
     // Persistent value/selection states may change weight; pointer/focus/error
     // transitions must not move text or hit geometry.
-    const auto transient = static_cast<unsigned>(states) & (4u | 8u | 16u | 64u);
+    const auto transient = has_any(states, flags_or(flags_or(StyleState::hover, StyleState::pressed),
+                                                    flags_or(StyleState::focus, StyleState::invalid)));
     return p.tree_row_height || p.tree_indent || p.font_family || p.font_locale || p.font_size || p.padding ||
            p.text_align || p.text_vertical_align || p.indicator_size || p.icon_placement || p.scrollbar_width ||
            p.scrollbar_inset || p.scrollbar_min_thumb || p.scrollbar_button_size || p.scrollbar_gutter ||
@@ -34,9 +36,7 @@ bool invalid_state_properties(const StyleProperties& p, StyleState states) {
 }
 
 unsigned specificity(const StyleSelector& s) {
-    unsigned states = 0;
-    for (auto bits = static_cast<unsigned>(s.states); bits; bits >>= 1)
-        states += bits & 1;
+    const auto states = static_cast<unsigned>(std::popcount(std::to_underlying(s.states)));
     return static_cast<unsigned>(s.classes.size()) * 100 + states * 100 + (s.kind ? 1 : 0) + (s.role ? 1 : 0);
 }
 
@@ -200,22 +200,26 @@ class Parser {
                     return fail("Unknown or duplicate role");
                 result.role = static_cast<Role>(found - std::begin(roles));
             } else {
-                constexpr std::string_view names[] = {"enabled", "disabled", "hover",   "pressed",
-                                                      "focus",   "selected", "invalid", "modified"};
-                const auto found = std::find(std::begin(names), std::end(names), *id);
+                constexpr std::pair<std::string_view, StyleState> names[] = {
+                    {"enabled", StyleState::enabled}, {"disabled", StyleState::disabled},
+                    {"hover", StyleState::hover},     {"pressed", StyleState::pressed},
+                    {"focus", StyleState::focus},     {"selected", StyleState::selected},
+                    {"invalid", StyleState::invalid}, {"modified", StyleState::modified}};
+                const auto found = std::find_if(std::begin(names), std::end(names),
+                                                [&](const auto& name) { return name.first == *id; });
                 if (found == std::end(names))
                     return fail("Unknown state: " + *id);
-                const auto bit = static_cast<StyleState>(1u << (found - std::begin(names)));
-                if ((static_cast<unsigned>(result.states) & static_cast<unsigned>(bit)) != 0)
+                const auto bit = found->second;
+                if (has_any(result.states, bit))
                     return fail("Duplicate state: " + *id);
-                result.states = result.states | bit;
+                result.states = flags_or(result.states, bit);
             }
         }
         if (!any)
             return fail("Expected a selector");
         if (result.classes.size() > 16)
             return fail("A selector supports at most 16 classes");
-        if ((static_cast<unsigned>(result.states) & 3) == 3)
+        if (has_all(result.states, flags_or(StyleState::enabled, StyleState::disabled)))
             return fail("A selector cannot be both enabled and disabled");
         return result;
     }
@@ -726,7 +730,8 @@ StyleSheet::Result StyleSheet::create(std::vector<StyleRule> rules) {
         if (!valid_properties(rule.properties) ||
             (s.kind && static_cast<unsigned>(*s.kind) > static_cast<unsigned>(ControlKind::code_editor)) ||
             (s.role && static_cast<unsigned>(*s.role) > static_cast<unsigned>(Role::caption)) || bits > 255 ||
-            (bits & 3) == 3 || invalid_state_properties(rule.properties, s.states) || s.classes.size() > 16 ||
+            has_all(s.states, flags_or(StyleState::enabled, StyleState::disabled)) ||
+            invalid_state_properties(rule.properties, s.states) || s.classes.size() > 16 ||
             !std::all_of(s.classes.begin(), s.classes.end(), [](const auto& id) { return valid_class(id); }))
             return std::unexpected(StyleDiagnostic{0, 0, "Invalid selector or style properties"});
         std::sort(s.classes.begin(), s.classes.end());

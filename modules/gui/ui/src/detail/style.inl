@@ -259,18 +259,18 @@ bool matches(const StyleSelector& selector, const Control& control, VisualState 
     for (const auto& name : selector.classes)
         if (std::find(control.classes.begin(), control.classes.end(), name) == control.classes.end())
             return false;
-    unsigned bits = state.enabled ? 1u : 2u;
+    auto states = state.enabled ? StyleState::enabled : StyleState::disabled;
     if (state.hover)
-        bits |= 4;
+        states = flags_or(states, StyleState::hover);
     if (state.pressed)
-        bits |= 8;
+        states = flags_or(states, StyleState::pressed);
     if (state.focus)
-        bits |= 16;
+        states = flags_or(states, StyleState::focus);
     if (state.selected)
-        bits |= 32;
+        states = flags_or(states, StyleState::selected);
     if (state.invalid)
-        bits |= 64;
+        states = flags_or(states, StyleState::invalid);
     if (state.modified)
-        bits |= 128;
-    return (bits & static_cast<unsigned>(selector.states)) == static_cast<unsigned>(selector.states);
+        states = flags_or(states, StyleState::modified);
+    return has_all(states, selector.states);
 }

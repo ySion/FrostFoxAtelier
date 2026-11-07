@@ -1,4 +1,5 @@
 #pragma once
+#include "foundation/flags.hpp"
 #include "ui/style.hpp"
 #include <expected>
 #include <optional>
@@ -19,9 +20,12 @@ enum class StyleState : std::uint16_t {
     modified = 128
 };
 
-constexpr StyleState operator|(StyleState a, StyleState b) noexcept {
-    return static_cast<StyleState>(static_cast<unsigned>(a) | static_cast<unsigned>(b));
 }
+
+template <>
+inline constexpr bool atelier::enable_enum_flags<atelier::ui::StyleState> = true;
+
+namespace atelier::ui {
 
 // Unspecified properties fall back to lower rules. Clear an override by removing
 // its optional value; a transparent color is a specified value, not "unset".

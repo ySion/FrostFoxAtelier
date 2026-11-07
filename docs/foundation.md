@@ -217,7 +217,7 @@ Span 构造、索引和切片均 constexpr/noexcept。空指针配非零数量�
 
 - [FunctionRef](../modules/core/foundation/include/foundation/function_ref.hpp) 的 `FunctionRef<R(Args...)>` 和 `FunctionRef<R(Args...) noexcept>` 是两字借用，不复制闭包、不分配、不提供空态；空函数指针为 contract-fatal。支持左值和右值 callable、普通函数指针、move-only 捕获及 `std::invoke` 语义。noexcept 特化仅接受调用及结果转换不抛的 callable。只作同步参数使用，不能存为成员或跨调用保存；临时闭包只保证活到整个调用表达式结束。`Window::poll` 已采用此接口，现有四处临时 lambda 无需命名或复制，窗口不保存回调。
 - [ScopeExit](../modules/core/foundation/include/foundation/scope_exit.hpp) 拥有一个无参、不抛的清理动作，禁止复制；移动转移清理义务，`release()` 放弃自动执行。正常 return（包括 Result 失败）析构执行一次，fatal 不保证清理。构造、移动和析构的 callable 操作都须不抛。此为 C 类预留：首个计划消费者是 W4 CONTROL 的结果化 Security；当前无提前返回的 Security 不作无效迁移。
-- [flags](../modules/core/foundation/include/foundation/flags.hpp) 以 `enable_enum_flags<E> = true` 显式启用枚举，提供 `flags_or/flags_and/flags_xor/flags_without/has_any/has_all`，均 constexpr/noexcept，不添加全局运算符，不屏蔽未知位。零 mask 的 any 为 false、all 为 true。OperatorFlag 和 StyleState 的消费侧迁移等待 W4 IO 集成后由 P4-flags 小片完成；前者现有 `has_flag` 是 any 语义。
+- [flags](../modules/core/foundation/include/foundation/flags.hpp) 以 `enable_enum_flags<E> = true` 显式启用枚举，提供 `flags_or/flags_and/flags_xor/flags_without/has_any/has_all`，均 constexpr/noexcept，不添加全局运算符，不屏蔽未知位。零 mask 的 any 为 false、all 为 true。OperatorFlag 与 StyleState 已显式启用并直接消费共用函数；操作标记使用 any，样式选择器使用 all。旧 has_flag、StyleState operator| 和手写集合运算已删除；非法外部样式状态仍由解析/创建边界返回错误，flags 不替业务校验。
 
 ## Optional 的原生合同
 

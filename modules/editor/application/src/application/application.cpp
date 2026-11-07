@@ -276,7 +276,7 @@ Result<editor::OperatorReport> Application::call_operator(const editor::Operator
     // call owns Runtime-backed values. Only now may a host operation retire their Session.
     auto replacement = take_document_request();
     if (report && report->status == editor::OperatorStatus::finished && replacement) {
-        if (!editor::has_flag(workspace_.operators.find(request.id)->flags, editor::OperatorFlag::replaces_document))
+        if (!has_any(workspace_.operators.find(request.id)->flags, editor::OperatorFlag::replaces_document))
             return std::unexpected(
                 Error{ErrorCode::invalid_definition, "Only a replacing operator may request a document replacement."});
         ATELIER_TRY(apply_document_request(*replacement));

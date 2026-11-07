@@ -1,4 +1,5 @@
 #pragma once
+#include "foundation/flags.hpp"
 #include "editor/camera.hpp"
 #include "assets/json_format.hpp"
 #include "editor/operator_parameters.hpp"
@@ -28,9 +29,12 @@ enum class OperatorFlag : std::uint32_t {
     replaces_document = 4, // Asks the host to replace the document after the call returns.
 };
 
-constexpr bool has_flag(OperatorFlag set, OperatorFlag flag) noexcept {
-    return (static_cast<std::uint32_t>(set) & static_cast<std::uint32_t>(flag)) != 0;
 }
+
+template <>
+inline constexpr bool atelier::enable_enum_flags<atelier::editor::OperatorFlag> = true;
+
+namespace atelier::editor {
 
 std::span<const std::string_view> region_names() noexcept; // Indexed by RegionKind.
 

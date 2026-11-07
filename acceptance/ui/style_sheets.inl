@@ -17,6 +17,20 @@ void style_sheets() {
                 gradient->pixels.back() == 0,
             "gradient did not encode a premultiplied image");
 
+    accepted(
+        c.ui.set_style_sheet(sheet("button { background: #ff0000; } button:selected:modified { background: #0000ff; } "
+                                   "button:selected { background: #00ff00; }")));
+    c.prepare();
+    require(c.frame->find(1)->style->background == ui::Color{1, 0, 0, 1}, "Empty state selector did not match.");
+    c.controls[0].selected = true;
+    c.prepare();
+    require(c.frame->find(1)->style->background == ui::Color{0, 1, 0, 1},
+            "Combined state selector matched only one required flag.");
+    c.controls[0].modified = true;
+    c.prepare();
+    require(c.frame->find(1)->style->background == ui::Color{0, 0, 1, 1},
+            "Combined state selector or state specificity lost precedence.");
+
     Consumer scrolling;
     ui::Control list;
     list.key = 10;

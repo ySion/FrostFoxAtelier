@@ -128,12 +128,12 @@ std::string history_violation(const OperatorInfo& info, std::uint64_t recorded, 
     const bool unchanged = entries == 0 && undo_after == undo && redo_after == redo;
     bool valid = unchanged;
     std::string_view flag = "none";
-    if (has_flag(info.flags, OperatorFlag::replaces_document))
+    if (has_any(info.flags, OperatorFlag::replaces_document))
         return {};
-    if (has_flag(info.flags, OperatorFlag::undo)) {
+    if (has_any(info.flags, OperatorFlag::undo)) {
         flag = "undo";
         valid = unchanged || (entries == 1 && redo_after == 0);
-    } else if (has_flag(info.flags, OperatorFlag::history)) {
+    } else if (has_any(info.flags, OperatorFlag::history)) {
         flag = "history";
         valid = entries == 0 && undo_after + redo_after == undo + redo &&
                 (undo_after > undo ? undo_after - undo : undo - undo_after) <= 1;
@@ -170,9 +170,9 @@ Result<void> OperatorRegistry::add(OperatorInfo info) {
             invalid("Conditional interaction needs a direct operator, record and guidance: " + info.id));
     if (!info.requires_interaction && !info.interaction.empty())
         return std::unexpected(invalid("Interaction guidance needs a parameter condition: " + info.id));
-    const auto exclusive = int(has_flag(info.flags, OperatorFlag::undo)) +
-                           int(has_flag(info.flags, OperatorFlag::history)) +
-                           int(has_flag(info.flags, OperatorFlag::replaces_document));
+    const auto exclusive = int(has_any(info.flags, OperatorFlag::undo)) +
+                           int(has_any(info.flags, OperatorFlag::history)) +
+                           int(has_any(info.flags, OperatorFlag::replaces_document));
     if (exclusive > 1)
         return std::unexpected(invalid("Operator history flags are exclusive: " + info.id));
     operators_.push_back(std::move(info));
