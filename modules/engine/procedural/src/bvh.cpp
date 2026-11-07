@@ -205,7 +205,7 @@ Result<Bvh> Bvh::build(const Geometry& surface) {
     const auto& positions = surface.positions();
     const auto corners = surface.vertex_points();
     Bvh result;
-    std::vector<Triangle> triangles;
+    Array<Triangle> triangles;
     triangles.reserve(view->size());
     for (const auto& [p, j, vertices] : *view) {
         const Triangle triangle{positions[corners[vertices[0]]], positions[corners[vertices[1]]],
@@ -213,7 +213,7 @@ Result<Bvh> Bvh::build(const Geometry& surface) {
         // A zero-area triangle has no surface to hit or project onto.
         const auto a = widen(triangle.a);
         if (math::cross(widen(triangle.b) - a, widen(triangle.c) - a) != Vector3d{})
-            triangles.push_back(triangle);
+            triangles.add(triangle);
     }
     const auto count = static_cast<std::uint32_t>(triangles.size());
     if (!count)
@@ -221,9 +221,12 @@ Result<Bvh> Bvh::build(const Geometry& surface) {
     result.polygon_tolerances_.reserve(surface.count(Layer::primitive));
     for (std::uint32_t p = 0; p < surface.count(Layer::primitive); ++p)
         result.polygon_tolerances_.push_back(detail::polygon_scale(surface, surface.primitive(p)).tolerance);
-    std::vector<Box> bounds(count);
-    std::vector<Vector3> centers(count);
-    std::vector<std::uint32_t> order(count);
+    Array<Box> bounds;
+    bounds.resize(count);
+    Array<Vector3> centers;
+    centers.resize(count);
+    Array<std::uint32_t> order;
+    order.resize(count);
     for (std::uint32_t i = 0; i < count; ++i) {
         bounds[i].add(triangles[i].a);
         bounds[i].add(triangles[i].b);
