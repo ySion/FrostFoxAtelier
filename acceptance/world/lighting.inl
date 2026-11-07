@@ -10,14 +10,17 @@ void environment_and_group_writes() {
     const std::array environment_group{w::Attachment{environment.id()}};
     committed(world.attach_components(owner.id(), environment_group));
     committed(world.attach(owner.id()));
+    const auto intensity_path = path("sky_intensity");
 
     // Reject after all leaves are written, then verify their original bytes, including NaN and -0.
     take(world.add_admission(
         types.environment_component,
         [&](const w::World& owner_world, std::span<const w::World::AdmissionCandidate> candidates) -> Result<void> {
-            for (const auto& candidate : candidates)
-                if (std::get<float>(take(owner_world.runtime().read(candidate.component, path("sky_intensity")))) > 5)
+            for (const auto& candidate : candidates) {
+                ATELIER_TRY_BIND(intensity, owner_world.runtime().read(candidate.component, intensity_path));
+                if (std::get<float>(*intensity) > 5)
                     return std::unexpected(Error{ErrorCode::invalid_member, "Test admission rejects bright skies."});
+            }
             return {};
         }));
     const auto payload = std::bit_cast<float>(0x7fc00123u);

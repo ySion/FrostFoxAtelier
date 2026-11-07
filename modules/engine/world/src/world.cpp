@@ -1,5 +1,6 @@
 #include "world/detail.hpp"
 #include "foundation/set.hpp"
+#include "memory/fatal.hpp"
 #include <algorithm>
 #include <bit>
 #include <cmath>
@@ -197,7 +198,7 @@ Result<void> World::Impl::admit_edit(ObjectId object) const {
     return {};
 }
 
-Result<void> World::Impl::relocate(ObjectId edited) try {
+Result<void> World::Impl::relocate(ObjectId edited) {
     const auto systems = simulations;
     for (const auto& entry : systems) {
         if (!entry.simulation || !entry.simulation->relocated)
@@ -221,12 +222,6 @@ Result<void> World::Impl::relocate(ObjectId edited) try {
         ATELIER_TRY_BIND(relocated, entry.simulation->relocated(moved));
     }
     return {};
-} catch (const std::bad_alloc&) {
-    return error(ErrorCode::capacity_exceeded, "World simulation relocation ran out of memory.");
-} catch (const std::exception& exception) {
-    return error(ErrorCode::invocation_failed, exception.what());
-} catch (...) {
-    return error(ErrorCode::invocation_failed, "World simulation relocation threw an unknown exception.");
 }
 
 void World::Impl::changed(bool spatial) noexcept {
@@ -485,12 +480,11 @@ std::optional<Error> World::Impl::notify(Lifecycle event, ObjectId object) {
     const auto invoke = [&](const LifecycleObserver& callback) {
         if (!callback)
             return;
-        auto error = detail::callback_error([&] { return callback(world, event, object); },
-                                            "World lifecycle observer ran out of memory.",
-                                            "World lifecycle observer threw an unknown exception.");
-        if (error && !contain(*error, DiagnosticKind::observer_failed, DiagnosticPhase::lifecycle, object, owner()) &&
+        auto result = callback(world, event, object);
+        if (!result &&
+            !contain(result.error(), DiagnosticKind::observer_failed, DiagnosticPhase::lifecycle, object, owner()) &&
             !failure)
-            failure = std::move(error);
+            failure = result.error();
     };
     invoke(observer);
     for (const auto& entry : subscriptions) {
@@ -524,7 +518,7 @@ World::~World() {
         const auto result = close();
         // Destruction during a dispatch would leave dangling member_world links.
         if (!result)
-            std::terminate();
+            fatal("World destruction failed to close safely.");
     }
 }
 
@@ -665,18 +659,7 @@ Result<void> World::Impl::check_admissions(std::span<const ObjectId> candidates,
         }
         if (selected.empty())
             continue;
-        Result<void> admitted;
-        try {
-            admitted = admission(world, selected);
-        } catch (const std::bad_alloc&) {
-            return error(ErrorCode::capacity_exceeded, "A World admission ran out of memory.");
-        } catch (const std::exception& exception) {
-            return error(ErrorCode::invocation_failed, exception.what());
-        } catch (...) {
-            return error(ErrorCode::invocation_failed, "A World admission threw an unknown exception.");
-        }
-        if (!admitted)
-            return admitted;
+        ATELIER_TRY(admission(world, selected));
     }
     return {};
 }

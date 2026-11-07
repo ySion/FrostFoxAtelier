@@ -510,6 +510,9 @@ class World final {
     struct Impl;
 
 public:
+    // Callback failures are explicit Result values. World preserves their code,
+    // message, source and first-failure policy; C++ exceptions are not a
+    // business-error channel at this boundary.
     struct Behavior {
         std::function<Result<void>(Runtime&, ObjectId)> begin{};
 

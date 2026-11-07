@@ -378,15 +378,17 @@ void failures_and_reentry() {
     auto entity = take(w::create_entity(runtime));
     committed(world.attach(entity.id()));
     std::size_t close_callbacks{};
+    bool detached{true};
     take(world.observe_lifecycle([&](w::World&, w::Lifecycle event, ObjectId target) -> Result<void> {
         if (event == w::Lifecycle::detached) {
             ++close_callbacks;
-            require(take(w::inspect_entity(runtime, target)).state == w::EntityState::detached,
-                    "Close notification did not expose the complete Detached state.");
+            ATELIER_TRY_BIND(status, w::inspect_entity(runtime, target));
+            detached &= status->state == w::EntityState::detached;
         }
         return {};
     }));
     committed(world.close());
+    require(detached, "Close notification did not expose the complete Detached state.");
     require(close_callbacks == 1 && w::detail::Access::state(world).tasks.size() == 0, "Close was not complete.");
     committed(w::destroy_entity(runtime, entity.id()));
     std::puts("[pass] World close: exit callback observes the complete Detached state");
@@ -495,12 +497,13 @@ void isolated_failures() {
     const auto m_id = m.id();
     take(world.set_transform(g.id(), {}));
     // A registered simulation owns g's pose, as PhysicsScene does for bodies.
-    bool throw_relocation{};
+    bool fail_relocation{};
     take(world.add_simulation({.step = [](float) -> Result<void> { return {}; },
                                .writes_pose = [g = g.id()](ObjectId entity) { return entity == g; },
                                .relocated = [&](std::span<const ObjectId>) -> Result<void> {
-                                   if (throw_relocation)
-                                       throw std::runtime_error("Intentional relocation exception.");
+                                   if (fail_relocation)
+                                       return std::unexpected(
+                                           Error{ErrorCode::invocation_failed, "Intentional relocation failure."});
                                    return {};
                                }}));
     const std::array e_group{w::Attachment{a_id}, w::Attachment{b_id}, w::Attachment{c_id}};
@@ -568,25 +571,25 @@ void isolated_failures() {
     require(events == std::vector<Event>{{'T', a_id}, {'T', b_id}, {'T', c_id}, {'T', d_id}, {'T', m_id}},
             "Cleared objects did not resume Tick.");
     take(world.set_transform(g.id(), {{0, 5, 0}, {}, {1, 1, 1}}));
-    const auto before_exception = take(w::read_transform(runtime, g.id()));
-    throw_relocation = true;
+    const auto before_failure = take(w::read_transform(runtime, g.id()));
+    fail_relocation = true;
     try {
-        (void)world.set_transform(g.id(), {{2, 9, -3}, {0, 0, 1, 0}, {2, 3, 4}});
-        require(world.running() && take(w::read_transform(runtime, g.id())) == before_exception,
-                "A relocation exception changed the TRS or stopped the World.");
-        throw_relocation = false;
-        const w::Trs after_exception{{-2, 6, 3}, {}, {1, 2, 1}};
-        take(world.set_transform(g.id(), after_exception));
-        require(take(w::read_transform(runtime, g.id())) == after_exception,
-                "An edit after a relocation exception did not publish its transform.");
+        const auto rejected_relocation = world.set_transform(g.id(), {{2, 9, -3}, {0, 0, 1, 0}, {2, 3, 4}});
+        require(!rejected_relocation && world.running() && take(w::read_transform(runtime, g.id())) == before_failure,
+                "A relocation failure changed the TRS or stopped the World.");
+        fail_relocation = false;
+        const w::Trs after_failure{{-2, 6, 3}, {}, {1, 2, 1}};
+        take(world.set_transform(g.id(), after_failure));
+        require(take(w::read_transform(runtime, g.id())) == after_failure,
+                "An edit after a relocation failure did not publish its transform.");
     } catch (const std::exception& exception) {
         // A broken relocation guard also blocks World destruction. Preserve the
         // first failure and exit nonzero without unwinding through that World.
-        std::fprintf(stderr, "World acceptance: FAIL (relocation exception recovery): %s\n", exception.what());
+        std::fprintf(stderr, "World acceptance: FAIL (relocation failure recovery): %s\n", exception.what());
         std::fflush(nullptr);
         std::_Exit(EXIT_FAILURE);
     } catch (...) {
-        std::fputs("World acceptance: FAIL (relocation exception recovery): unknown exception\n", stderr);
+        std::fputs("World acceptance: FAIL (relocation failure recovery): unknown exception\n", stderr);
         std::fflush(nullptr);
         std::_Exit(EXIT_FAILURE);
     }
@@ -602,7 +605,7 @@ void isolated_failures() {
             "A Begin-faulted object received End.");
     committed(world.close());
     std::puts(
-        "[pass] Object isolation: Source task cleanup, fault recovery, relocation exception recovery and End pairing");
+        "[pass] Object isolation: Source task cleanup, fault recovery, relocation failure recovery and End pairing");
 }
 
 #include "lifecycle.inl"

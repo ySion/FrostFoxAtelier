@@ -31,6 +31,7 @@ void hierarchical_lifecycle() {
     std::vector<Event> registrations;
     std::vector<ObjectId> activations;
     std::vector<ObjectId> deactivations;
+    bool deactivation_graph_complete{true};
     ObjectId fail_begin;
     ObjectId fail_end;
     const auto hook = [&](char phase, ObjectId id, ObjectId failure) -> Result<void> {
@@ -49,15 +50,17 @@ void hierarchical_lifecycle() {
             registrations.emplace_back('R', id);
         if (phase == w::Lifecycle::detached)
             registrations.emplace_back('U', id);
-        const auto entity = take(runtime.is_a(take(runtime.type_of(id)), types.entity));
-        if (phase == w::Lifecycle::activated && entity)
+        ATELIER_TRY_BIND(type, runtime.type_of(id));
+        ATELIER_TRY_BIND(entity, runtime.is_a(*type, types.entity));
+        if (phase == w::Lifecycle::activated && *entity)
             activations.push_back(id);
-        if (phase == w::Lifecycle::deactivated && entity) {
+        if (phase == w::Lifecycle::deactivated && *entity) {
             deactivations.push_back(id);
-            require(take(current.query(types.counter)).size() == 4 && take(current.members()).size() == 4,
-                    "Deactivated cleanup could not inspect complete registered graph, including close.");
-            take(w::components(runtime, id));
-            take(w::parent_entity(runtime, id));
+            ATELIER_TRY_BIND(counters, current.query(types.counter));
+            ATELIER_TRY_BIND(members, current.members());
+            deactivation_graph_complete &= counters->size() == 4 && members->size() == 4;
+            ATELIER_TRY(w::components(runtime, id));
+            ATELIER_TRY(w::parent_entity(runtime, id));
         }
         return {};
     }));
@@ -140,6 +143,8 @@ void hierarchical_lifecycle() {
     committed(world.start());
     registrations.clear();
     committed(world.close());
+    require(deactivation_graph_complete,
+            "Deactivated cleanup could not inspect complete registered graph, including close.");
     std::vector<Event> unregister;
     for (const auto& event : reverse)
         unregister.emplace_back('U', event.second);
@@ -280,6 +285,8 @@ void forest_publication() {
     committed(world.set_space_reference(x.id(), y.id(), w::ReparentRule::keep_local));
     using Event = std::pair<char, ObjectId>;
     std::vector<Event> events;
+    bool forest_members_complete{true};
+    bool forest_space_complete{true};
     const w::World::Behavior behavior{.begin = [&](Runtime&, ObjectId id) -> Result<void> {
                                           events.emplace_back('B', id);
                                           return {};
@@ -300,17 +307,21 @@ void forest_publication() {
         if (phase != w::Lifecycle::attached)
             return {};
         events.emplace_back('R', id);
-        require(take(current.members()).size() == 6 && take(current.query(types.counter)).size() == 2,
-                "Forest observer saw only part of the member/capability publication.");
-        require(take(w::parent_entity(runtime, x.id())) == p.id() &&
-                    take(w::parent_entity(runtime, y.id())) == q.id() &&
-                    near(take(w::world_matrix(runtime, x.id()))[12], 211) &&
-                    near(take(w::world_matrix(runtime, z.id()))[12], 213),
-                "Forest observer saw incomplete parent sequences or unresolved cross-root space.");
+        ATELIER_TRY_BIND(members, current.members());
+        ATELIER_TRY_BIND(counters, current.query(types.counter));
+        forest_members_complete &= members->size() == 6 && counters->size() == 2;
+        ATELIER_TRY_BIND(x_parent, w::parent_entity(runtime, x.id()));
+        ATELIER_TRY_BIND(y_parent, w::parent_entity(runtime, y.id()));
+        ATELIER_TRY_BIND(x_matrix, w::world_matrix(runtime, x.id()));
+        ATELIER_TRY_BIND(z_matrix, w::world_matrix(runtime, z.id()));
+        forest_space_complete &=
+            *x_parent == p.id() && *y_parent == q.id() && near((*x_matrix)[12], 211) && near((*z_matrix)[12], 213);
         return {};
     }));
     const std::array forest{w::EntityAttachment{x.id(), p.id(), 0}, w::EntityAttachment{y.id(), q.id()}};
     committed(world.attach_batch(forest));
+    require(forest_members_complete, "Forest observer saw only part of the member/capability publication.");
+    require(forest_space_complete, "Forest observer saw incomplete parent sequences or unresolved cross-root space.");
     events.clear();
     const std::array reverse_selection{y.id(), x.id()};
     auto forest_history = take(world.detach_batch(reverse_selection));
@@ -362,13 +373,15 @@ void attachment_space_and_authoring() {
     committed(world.attach_components(child.id(), counter_parts));
     ObjectId a_id{};
     ObjectId b_id{};
+    bool space_boundary_complete{true};
     take(world.bind_behavior(types.entity, {.begin = [&](Runtime&, ObjectId object) -> Result<void> {
                                  if (object == a_id || object == b_id) {
-                                     require(take(w::space_reference(runtime, a_id)) == std::optional<ObjectId>{b_id} &&
-                                                 take(w::space_reference(runtime, b_id)) ==
-                                                     std::optional<ObjectId>{ObjectId{}} &&
-                                                 near(take(w::world_matrix(runtime, a_id))[12], 7),
-                                             "Begin saw a temporary spatial cycle or incomplete origins.");
+                                     ATELIER_TRY_BIND(a_space, w::space_reference(runtime, a_id));
+                                     ATELIER_TRY_BIND(b_space, w::space_reference(runtime, b_id));
+                                     ATELIER_TRY_BIND(a_matrix, w::world_matrix(runtime, a_id));
+                                     space_boundary_complete &= *a_space == std::optional<ObjectId>{b_id} &&
+                                                                *b_space == std::optional<ObjectId>{ObjectId{}} &&
+                                                                near((*a_matrix)[12], 7);
                                  }
                                  return {};
                              }}));
@@ -399,6 +412,7 @@ void attachment_space_and_authoring() {
     require(matrices.size() == 2 && near(matrices.front().second[12], 7) && !take(w::space_reference(runtime, a_id)),
             "Prospective preview changed live relations or computed a temporary graph.");
     committed(world.attach_batch(forest, complete));
+    require(space_boundary_complete, "Begin saw a temporary spatial cycle or incomplete origins.");
     committed(world.close());
     std::puts("[pass] Final space plans: preview matrices, inherited Transform removal and real task continuity");
 }

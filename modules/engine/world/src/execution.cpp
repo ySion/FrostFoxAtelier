@@ -120,10 +120,11 @@ std::optional<Error> World::Impl::invoke(const Scheduled& item, bool beginning) 
     detail::DispatchScope dispatch{dispatch_depth};
     if (item.behavior) {
         const auto& callback = beginning ? item.behavior->begin : item.behavior->end;
-        if (callback)
-            return detail::callback_error([&] { return callback(runtime, item.object); },
-                                          "World object lifecycle callback ran out of memory.",
-                                          "World object lifecycle callback threw an unknown exception.");
+        if (callback) {
+            auto result = callback(runtime, item.object);
+            if (!result)
+                return std::move(result).error();
+        }
     }
     return {};
 }
@@ -443,16 +444,10 @@ Result<void> World::start_task(ObjectId object, const TaskStart& starter) {
     state.tasks.reserve(state.tasks.size() + 1);
     ATELIER_TRY_BIND(execution, ExecutionScope::enter(runtime()));
     detail::DispatchScope dispatch{state.dispatch_depth};
-    try {
-        ATELIER_TRY_BIND(task, starter(runtime(), object));
-        if (task->state() != CoroutineState::ready && task->state() != CoroutineState::suspended)
-            return error(ErrorCode::argument_mismatch, "World accepts only ready or suspended tasks.");
-        state.tasks.push_back({object, entity_id, std::move(*task)});
-    } catch (const std::exception& exception) {
-        return error(ErrorCode::invocation_failed, exception.what());
-    } catch (...) {
-        return error(ErrorCode::invocation_failed, "Task starter threw an unknown exception.");
-    }
+    ATELIER_TRY_BIND(task, starter(runtime(), object));
+    if (task->state() != CoroutineState::ready && task->state() != CoroutineState::suspended)
+        return error(ErrorCode::argument_mismatch, "World accepts only ready or suspended tasks.");
+    state.tasks.push_back({object, entity_id, std::move(*task)});
     return {};
 }
 
@@ -498,13 +493,11 @@ std::optional<Error> World::Impl::run_phase(TickPhase phase, float amount) {
             const auto& tick = phase == TickPhase::pre_physics    ? item.behavior->tick
                                : phase == TickPhase::post_physics ? item.behavior->post_physics_tick
                                                                   : item.behavior->late_tick;
-            auto error = detail::callback_error([&] { return tick(runtime, object, amount); },
-                                                "World object Tick ran out of memory.",
-                                                "World object Tick threw an unknown exception.");
-            if (!error)
+            auto result = tick(runtime, object, amount);
+            if (result)
                 continue;
-            if (!contain(*error, DiagnosticKind::behavior_failed, DiagnosticPhase::tick, object, item.entity)) {
-                failure = std::move(error);
+            if (!contain(result.error(), DiagnosticKind::behavior_failed, DiagnosticPhase::tick, object, item.entity)) {
+                failure = result.error();
                 break;
             }
             fault_tick(object, item.entity);
@@ -580,11 +573,9 @@ Result<void> World::update(float amount) {
             return {};
         if (std::ranges::none_of(state.simulations, [&](const auto& entry) { return entry.simulation == system; }))
             continue;
-        auto failure =
-            detail::callback_error([&] { return system->step(amount); }, "World simulation step ran out of memory.",
-                                   "World simulation step threw an unknown exception.");
-        if (failure)
-            return fail(std::move(*failure));
+        auto result = system->step(amount);
+        if (!result)
+            return fail(std::move(result).error());
     }
     simulating.reset();
     for (const auto phase : {TickPhase::post_physics, TickPhase::late}) {

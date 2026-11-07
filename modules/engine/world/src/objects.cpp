@@ -2,7 +2,6 @@
 #include "runtime/native.hpp"
 #include <algorithm>
 #include <cmath>
-#include <exception>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -307,18 +306,9 @@ Result<Commit> destroy_entity(Runtime& runtime, ObjectId object) {
         ATELIER_TRY_BIND(unlinked, detail::unlink_parent(runtime, object));
     }
     const auto cleanup = [&](auto&& operation) {
-        try {
-            auto result = operation();
-            if (!result && !committed.notification_error)
-                committed.notification_error = result.error();
-        } catch (const std::exception& exception) {
-            if (!committed.notification_error)
-                committed.notification_error = Error{ErrorCode::invocation_failed, exception.what()};
-        } catch (...) {
-            if (!committed.notification_error)
-                committed.notification_error =
-                    Error{ErrorCode::invocation_failed, "Entity termination cleanup threw an unknown exception."};
-        }
+        auto result = operation();
+        if (!result && !committed.notification_error)
+            committed.notification_error = result.error();
     };
     // Clear all owning and observing edges while every target is still held.
     // An outer native borrow protects the reference locators for each batch.

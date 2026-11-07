@@ -63,8 +63,8 @@ void frame_phases() {
                                       return {};
                                   queued = true;
                                   nested_bind = !world.bind_behavior(types.counter, {});
-                                  take(world.request({.kind = w::RequestKind::destroy_entity, .target = d_id}));
-                                  take(world.request(
+                                  ATELIER_TRY(world.request({.kind = w::RequestKind::destroy_entity, .target = d_id}));
+                                  ATELIER_TRY(world.request(
                                       {.kind = w::RequestKind::entity_enabled, .target = d_id, .enabled = false}));
                                   return {};
                               },
