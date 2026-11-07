@@ -1,4 +1,6 @@
 #include "procedural/bvh.hpp"
+#include "foundation/fixed_array.hpp"
+#include "foundation/inline_array.hpp"
 #include "detail/triangles.hpp"
 
 #include <algorithm>
@@ -238,14 +240,14 @@ Result<Bvh> Bvh::build(const Geometry& surface) {
 
         std::uint32_t depth;
     };
-    std::vector<Task> tasks{{0, 0, count, 0}};
+    InlineArray<Task, 64> tasks{{0, 0, count, 0}};
     result.nodes_.reserve(2 * std::size_t{count} / leaf_size + 1);
     result.nodes_.push_back({});
     result.node_tolerances_.reserve(result.nodes_.capacity());
     result.node_tolerances_.push_back(0);
     while (!tasks.empty()) {
         const auto [node, begin, end, depth] = tasks.back();
-        tasks.pop_back();
+        tasks.pop();
         Box box;
         Box spread;
         double tolerance = 0;
@@ -321,8 +323,8 @@ Result<Bvh> Bvh::build(const Geometry& surface) {
         result.nodes_.push_back({});
         result.node_tolerances_.push_back(0);
         result.node_tolerances_.push_back(0);
-        tasks.push_back({child + 1, middle, end, depth + 1});
-        tasks.push_back({child, begin, middle, depth + 1});
+        tasks.add({child + 1, middle, end, depth + 1});
+        tasks.add({child, begin, middle, depth + 1});
     }
     result.triangles_.reserve(count);
     for (const auto i : order)
@@ -362,12 +364,12 @@ std::optional<Hit> Bvh::ray(Vector3 origin_float, Vector3 direction_float, float
         return near <= far ? near : infinity;
     };
     std::optional<Hit> hit;
-    std::array<std::pair<std::uint32_t, float>, stack_size> stack;
-    std::size_t top = 0;
+    FixedArray<std::pair<std::uint32_t, float>, stack_size> stack;
     if (const float entry = enter(nodes_[0]); entry != infinity)
-        stack[top++] = {0, entry};
-    while (top) {
-        const auto [index, entry] = stack[--top];
+        stack.add({0, entry});
+    while (!stack.empty()) {
+        const auto [index, entry] = stack.back();
+        stack.pop();
         if (entry > bound)
             continue;
         const auto& node = nodes_[index];
@@ -411,9 +413,9 @@ std::optional<Hit> Bvh::ray(Vector3 origin_float, Vector3 direction_float, float
         const std::pair<std::uint32_t, float> near{left_first ? node.first : node.first + 1, left_first ? left : right};
         const std::pair<std::uint32_t, float> far{left_first ? node.first + 1 : node.first, left_first ? right : left};
         if (far.second != infinity)
-            stack[top++] = far;
+            stack.add(far);
         if (near.second != infinity)
-            stack[top++] = near;
+            stack.add(near);
     }
     return hit;
 }
@@ -433,11 +435,11 @@ std::optional<Hit> Bvh::closest(Vector3 point_float, float max_distance) const n
         return sum;
     };
     std::optional<Hit> hit;
-    std::array<std::pair<std::uint32_t, double>, stack_size> stack;
-    std::size_t top = 0;
-    stack[top++] = {0, distance(nodes_[0])};
-    while (top) {
-        const auto [index, gap] = stack[--top];
+    FixedArray<std::pair<std::uint32_t, double>, stack_size> stack;
+    stack.add({0, distance(nodes_[0])});
+    while (!stack.empty()) {
+        const auto [index, gap] = stack.back();
+        stack.pop();
         if (gap > best)
             continue;
         const auto& node = nodes_[index];
@@ -464,8 +466,8 @@ std::optional<Hit> Bvh::closest(Vector3 point_float, float max_distance) const n
         const double left = distance(nodes_[node.first]);
         const double right = distance(nodes_[node.first + 1]);
         const bool left_first = left <= right;
-        stack[top++] = {left_first ? node.first + 1 : node.first, left_first ? right : left};
-        stack[top++] = {left_first ? node.first : node.first + 1, left_first ? left : right};
+        stack.add({left_first ? node.first + 1 : node.first, left_first ? right : left});
+        stack.add({left_first ? node.first : node.first + 1, left_first ? left : right});
     }
     return hit;
 }
@@ -474,11 +476,10 @@ bool Bvh::on_surface_band(Vector3 point) const noexcept {
     if (nodes_.empty())
         return false;
     const auto q = widen(point);
-    std::array<std::uint32_t, stack_size> stack;
-    std::size_t top = 0;
-    stack[top++] = 0;
-    while (top) {
-        const auto index = stack[--top];
+    FixedArray<std::uint32_t, stack_size> stack{0};
+    while (!stack.empty()) {
+        const auto index = stack.back();
+        stack.pop();
         const auto& node = nodes_[index];
         if (!band_box(node.minimum, node.maximum, node_tolerances_[index], point))
             continue;
@@ -504,8 +505,8 @@ bool Bvh::on_surface_band(Vector3 point) const noexcept {
             }
             continue;
         }
-        stack[top++] = node.first + 1;
-        stack[top++] = node.first;
+        stack.add(node.first + 1);
+        stack.add(node.first);
     }
     return false;
 }
@@ -517,11 +518,11 @@ std::optional<std::int64_t> Bvh::signed_crossings(Vector3 point, Vector3 directi
     // Float inputs widen exactly and keep all degree-three products within double range.
     const auto direction = widen(direction_float);
     const Interval3 d{Interval{direction.x}, Interval{direction.y}, Interval{direction.z}};
-    std::array<std::uint32_t, stack_size> stack;
-    std::size_t top = 0;
-    stack[top++] = 0;
-    while (top) {
-        const auto& node = nodes_[stack[--top]];
+    FixedArray<std::uint32_t, stack_size> stack{0};
+    while (!stack.empty()) {
+        const auto index = stack.back();
+        stack.pop();
+        const auto& node = nodes_[index];
         if (!ray_box(node.minimum, node.maximum, point, direction))
             continue;
         if (node.count) {
@@ -550,8 +551,8 @@ std::optional<std::int64_t> Bvh::signed_crossings(Vector3 point, Vector3 directi
             }
             continue;
         }
-        stack[top++] = node.first + 1;
-        stack[top++] = node.first;
+        stack.add(node.first + 1);
+        stack.add(node.first);
     }
     return count;
 }

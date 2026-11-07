@@ -63,7 +63,7 @@ names.squeeze();                    // 显式收紧容量；空数组释放缓�
 
 - InlineArray 的 `clear` 保留堆容量；`release` 清空并返回内联；`squeeze` 在 size≤N 时搬回内联，否则收紧堆块。FixedArray 的 `clear/release` 均析构活前缀，`squeeze` 无操作，`reserve` 仅检查是否超过 N。
 - 内联移动不保存来源对象的内联地址，源变空且可复用。移动赋值先分离来源，允许来源由目标元素间接拥有。移动、交换以及使元素搬移的结构变化终止相关借用；临时数组不能取得 view。与 Array 一样，普通元素要求不抛析构，提供不抛移动或可复制构造；移动和交换均为 noexcept，不提供异常恢复。
-- FixedArray 保存 size 和按 T 对齐的原始内联区；InlineArray 另存堆指针/容量。两种新类型不承诺跨 T/N 的固定 ABI，不注册为 Array 的相同表示，暂不开放 Source/反射实例化。后续真实消费者是程序化 BVH 的构建栈和有界查询栈，产品迁移归 W4/A1。
+- FixedArray 保存 size 和按 T 对齐的原始内联区；InlineArray 另存堆指针/容量。两种新类型不承诺跨 T/N 的固定 ABI，不注册为 Array 的相同表示，暂不开放 Source/反射实例化。程序化 BVH 构建栈已使用 `InlineArray<Task,64>`，四个查询栈使用 `FixedArray<原元素类型,128>`，公开 Bvh 布局不变。
 - realloc 只用于平凡可复制且属于隐式生存期的元素。锁定工具链缺少 `is_implicit_lifetime_v`，具名 concept `ReallocatableArrayElement` 使用已批准的充分条件：平凡可复制，且 aggregate 或默认/复制/移动构造之一平凡；依据为 [c.malloc] 的隐式对象创建。工具链提供标准 trait 后直接替换此条件，不保留回退矩阵。String、智能指针等资源元素仍逐元素构析，没有业务自定义的重定位 trait。
 - 实际 realloc 还要求所选搬移构造平凡，复用 `byte_relocate` 的判定；仅有平凡默认构造不能跳过非平凡搬移的副作用。只有配对分配入口的堆块进入 realloc；内联区从不传给它。零容量显式 free，不以 realloc(p,0) 判断 OOM。只保证正确性和减少可避免的逐元素搬移，尚无本轮性能提升测量。
 
