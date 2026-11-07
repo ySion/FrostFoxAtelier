@@ -1,12 +1,29 @@
 #pragma once
 #include <array>
 #include <cstdint>
+#include <expected>
 #include <memory>
 #include <span>
+#include <string>
 #include <string_view>
 #include <vector>
 
 namespace atelier::rendering {
+
+enum class ErrorCode { invalid_argument, invalid_storage };
+
+struct Error {
+    ErrorCode code;
+
+    std::string message;
+};
+
+template <class T>
+using Result = std::expected<T, Error>;
+
+class SkyMap;
+
+using SkyMapRef = std::shared_ptr<const SkyMap>;
 
 // Immutable equirectangular sky radiance, linear RGB relative to sky_color * sky_intensity.
 // Map space: row 0 is +Y and rows run to -Y; u = 0.5 faces +Z and u = 0.75 faces +X.
@@ -21,7 +38,9 @@ public:
 
     // width * height RGB floats from row 0; width must be 2 * height. Sources wider than
     // width_limit are box-downsampled 2x2 once; mean and cube use the full source.
-    SkyMap(std::uint32_t width, std::uint32_t height, std::span<const float> rgb);
+    // Invalid dimensions or radiance return an error without publishing a resource.
+    [[nodiscard]] static Result<SkyMapRef> create(std::uint32_t width, std::uint32_t height,
+                                                  std::span<const float> rgb);
 
     SkyMap(const SkyMap&) = delete;
 
@@ -44,6 +63,8 @@ public:
     std::span<const float> cube() const noexcept { return cube_; }
 
 private:
+    SkyMap(std::uint32_t width, std::uint32_t height, std::span<const float> rgb);
+
     std::uint32_t width_{};
 
     std::uint32_t height_{};
@@ -57,9 +78,7 @@ private:
     std::vector<float> cube_;
 };
 
-using SkyMapRef = std::shared_ptr<const SkyMap>;
-
 // Radiance RGBE (.hdr) with flat, old or new run-length scanlines in -Y H +X W order.
-SkyMapRef decode_radiance_hdr(std::string_view bytes);
+[[nodiscard]] Result<SkyMapRef> decode_radiance_hdr(std::string_view bytes);
 
 } // namespace atelier::rendering

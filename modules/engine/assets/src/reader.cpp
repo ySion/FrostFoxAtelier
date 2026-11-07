@@ -322,11 +322,10 @@ Result<SkyAsset> Reader::sky_map(std::string_view key) {
     auto bytes = path ? read_file(*path, std::size_t(256) << 20) : Result<std::string>{std::unexpected(path.error())};
     if (!bytes)
         return failure("Sky map " + *relative + " could not be read: " + bytes.error().message);
-    try {
-        asset.map = rendering::decode_radiance_hdr(*bytes);
-    } catch (const std::exception& error) {
-        return failure("Sky map " + *relative + " is not a valid Radiance HDR file: " + error.what());
-    }
+    auto decoded = rendering::decode_radiance_hdr(*bytes);
+    if (!decoded)
+        return failure("Sky map " + *relative + " is not a valid Radiance HDR file: " + decoded.error().message);
+    asset.map = std::move(*decoded);
     sky_maps_.emplace(at->key, asset.map);
     return asset;
 }

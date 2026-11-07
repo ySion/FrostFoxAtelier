@@ -1,11 +1,11 @@
 #include "rendering/sky_map.hpp"
 #include "rendering/scene_lighting.hpp"
+#include "foundation/result.hpp"
 #include <algorithm>
 #include <bit>
 #include <charconv>
 #include <cmath>
 #include <numbers>
-#include <stdexcept>
 
 namespace atelier::rendering {
 namespace {
@@ -51,15 +51,23 @@ std::size_t cube_texel(double x, double y, double z) noexcept {
 }
 }
 
-SkyMap::SkyMap(std::uint32_t width, std::uint32_t height, std::span<const float> rgb) {
+Result<SkyMapRef> SkyMap::create(std::uint32_t width, std::uint32_t height, std::span<const float> rgb) {
     if (!height || width > source_width_limit || width != 2ull * height ||
         rgb.size() != std::size_t(width) * height * 3)
-        throw std::invalid_argument("Sky map must be a 2:1 equirectangular RGB image at most 8192 pixels wide.");
+        return std::unexpected(Error{ErrorCode::invalid_argument,
+                                     "Sky map must be a 2:1 equirectangular RGB image at most 8192 pixels wide."});
     if (width > width_limit && height % 2)
-        throw std::invalid_argument("Sky maps wider than 4096 pixels need an even height.");
+        return std::unexpected(
+            Error{ErrorCode::invalid_argument, "Sky maps wider than 4096 pixels need an even height."});
     for (float value : rgb)
         if (!(value >= 0 && value <= analytic_light_radiance_limit))
-            throw std::invalid_argument("Sky map radiance must be finite, non-negative and at most 2^32 per channel.");
+            return std::unexpected(
+                Error{ErrorCode::invalid_argument,
+                      "Sky map radiance must be finite, non-negative and at most 2^32 per channel."});
+    return SkyMapRef(new SkyMap(width, height, rgb));
+}
+
+SkyMap::SkyMap(std::uint32_t width, std::uint32_t height, std::span<const float> rgb) {
     constexpr double pi = std::numbers::pi;
 
     std::array<double, 3> sum{};
@@ -148,53 +156,64 @@ SkyMap::SkyMap(std::uint32_t width, std::uint32_t height, std::span<const float>
     }
 }
 
-SkyMapRef decode_radiance_hdr(std::string_view bytes) {
-    const auto require = [](bool valid, const char* message) {
-        if (!valid)
-            throw std::runtime_error(message);
-    };
-    require(bytes.size() <= std::size_t(256) << 20, "Radiance HDR source exceeds 256 MiB.");
+Result<SkyMapRef> decode_radiance_hdr(std::string_view bytes) {
+    if (bytes.size() > std::size_t(256) << 20)
+        return std::unexpected(Error{ErrorCode::invalid_storage, "Radiance HDR source exceeds 256 MiB."});
     std::size_t at = 0;
-    const auto line = [&] {
+    const auto line = [&]() -> Result<std::string_view> {
         const auto end = bytes.find('\n', at);
-        require(end != std::string_view::npos, "Truncated Radiance HDR header.");
+        if (end == std::string_view::npos)
+            return std::unexpected(Error{ErrorCode::invalid_storage, "Truncated Radiance HDR header."});
         auto text = bytes.substr(at, end - at);
         at = end + 1;
         if (!text.empty() && text.back() == '\r')
             text.remove_suffix(1);
         return text;
     };
-    const auto magic = line();
-    require(magic == "#?RADIANCE" || magic == "#?RGBE", "Not a Radiance HDR file.");
-    for (auto entry = line(); !entry.empty(); entry = line())
-        require(!entry.starts_with("FORMAT=") || entry == "FORMAT=32-bit_rle_rgbe",
-                "Radiance HDR must use the 32-bit_rle_rgbe format.");
-    const auto resolution = line();
+    ATELIER_TRY_BIND(magic, line());
+    if (*magic != "#?RADIANCE" && *magic != "#?RGBE")
+        return std::unexpected(Error{ErrorCode::invalid_storage, "Not a Radiance HDR file."});
+    for (;;) {
+        ATELIER_TRY_BIND(entry, line());
+        if (entry->empty())
+            break;
+        if (entry->starts_with("FORMAT=") && *entry != "FORMAT=32-bit_rle_rgbe")
+            return std::unexpected(
+                Error{ErrorCode::invalid_storage, "Radiance HDR must use the 32-bit_rle_rgbe format."});
+    }
+    ATELIER_TRY_BIND(resolution, line());
     std::uint32_t width{};
     std::uint32_t height{};
     {
-        const char* cursor = resolution.data();
-        const char* const end = cursor + resolution.size();
-        const auto token = [&](std::string_view expected) {
-            require(std::string_view(cursor, end).starts_with(expected), "Radiance HDR orientation must be -Y H +X W.");
+        const char* cursor = resolution->data();
+        const char* const end = cursor + resolution->size();
+        const auto token = [&](std::string_view expected) -> Result<void> {
+            if (!std::string_view(cursor, end).starts_with(expected))
+                return std::unexpected(
+                    Error{ErrorCode::invalid_storage, "Radiance HDR orientation must be -Y H +X W."});
             cursor += expected.size();
+            return {};
         };
-        const auto number = [&](std::uint32_t& value) {
+        const auto number = [&](std::uint32_t& value) -> Result<void> {
             const auto [next, error] = std::from_chars(cursor, end, value);
-            require(error == std::errc{} && next != cursor, "Invalid Radiance HDR resolution.");
+            if (error != std::errc{} || next == cursor)
+                return std::unexpected(Error{ErrorCode::invalid_storage, "Invalid Radiance HDR resolution."});
             cursor = next;
+            return {};
         };
-        token("-Y ");
-        number(height);
-        token(" +X ");
-        number(width);
-        require(cursor == end, "Invalid Radiance HDR resolution.");
+        ATELIER_TRY(token("-Y "));
+        ATELIER_TRY(number(height));
+        ATELIER_TRY(token(" +X "));
+        ATELIER_TRY(number(width));
+        if (cursor != end)
+            return std::unexpected(Error{ErrorCode::invalid_storage, "Invalid Radiance HDR resolution."});
     }
-    require(width && height && width <= SkyMap::source_width_limit && height <= SkyMap::source_width_limit / 2,
-            "Radiance HDR exceeds 8192x4096 pixels.");
+    if (!width || !height || width > SkyMap::source_width_limit || height > SkyMap::source_width_limit / 2)
+        return std::unexpected(Error{ErrorCode::invalid_storage, "Radiance HDR exceeds 8192x4096 pixels."});
 
-    const auto byte = [&] {
-        require(at < bytes.size(), "Truncated Radiance HDR scanline data.");
+    const auto byte = [&]() -> Result<std::uint8_t> {
+        if (at >= bytes.size())
+            return std::unexpected(Error{ErrorCode::invalid_storage, "Truncated Radiance HDR scanline data."});
         return static_cast<std::uint8_t>(bytes[at++]);
     };
     std::vector<float> rgb(std::size_t(width) * height * 3);
@@ -204,33 +223,46 @@ SkyMapRef decode_radiance_hdr(std::string_view bytes) {
         if (width >= 8 && width < 32768 && bytes.size() - at >= 4 && bytes[at] == 2 && bytes[at + 1] == 2 &&
             !(bytes[at + 2] & 0x80)) {
             at += 2;
-            const std::uint32_t high = byte();
-            const std::uint32_t low = byte();
-            require((high << 8 | low) == width, "Radiance HDR scanline width does not match the header.");
+            ATELIER_TRY_BIND(high, byte());
+            ATELIER_TRY_BIND(low, byte());
+            if (std::uint32_t(*high << 8 | *low) != width)
+                return std::unexpected(
+                    Error{ErrorCode::invalid_storage, "Radiance HDR scanline width does not match the header."});
             for (std::size_t channel = 0; channel < 4; ++channel)
                 for (std::size_t x = 0; x < width;) {
-                    const std::uint32_t count = byte();
-                    if (count > 128) {
-                        require(count - 128 <= width - x, "Radiance HDR run exceeds its scanline.");
-                        const std::uint8_t value = byte();
-                        for (std::uint32_t i = 128; i < count; ++i)
-                            scanline[x++ * 4 + channel] = value;
+                    ATELIER_TRY_BIND(count, byte());
+                    if (*count > 128) {
+                        if (std::size_t(*count - 128) > width - x)
+                            return std::unexpected(
+                                Error{ErrorCode::invalid_storage, "Radiance HDR run exceeds its scanline."});
+                        ATELIER_TRY_BIND(value, byte());
+                        for (std::uint32_t i = 128; i < *count; ++i)
+                            scanline[x++ * 4 + channel] = *value;
                     } else {
-                        require(count && count <= width - x, "Radiance HDR run exceeds its scanline.");
-                        for (std::uint32_t i = 0; i < count; ++i)
-                            scanline[x++ * 4 + channel] = byte();
+                        if (!*count || *count > width - x)
+                            return std::unexpected(
+                                Error{ErrorCode::invalid_storage, "Radiance HDR run exceeds its scanline."});
+                        for (std::uint32_t i = 0; i < *count; ++i) {
+                            ATELIER_TRY_BIND(value, byte());
+                            scanline[x++ * 4 + channel] = *value;
+                        }
                     }
                 }
         } else {
             unsigned shift = 0;
             for (std::size_t x = 0; x < width;) {
                 std::array<std::uint8_t, 4> pixel{};
-                for (auto& component : pixel)
-                    component = byte();
+                for (auto& component : pixel) {
+                    ATELIER_TRY_BIND(value, byte());
+                    component = *value;
+                }
                 if (pixel[0] == 1 && pixel[1] == 1 && pixel[2] == 1) {
-                    require(x > 0 && shift < 32, "Invalid Radiance HDR repeat run.");
+                    if (!x || shift >= 32)
+                        return std::unexpected(Error{ErrorCode::invalid_storage, "Invalid Radiance HDR repeat run."});
                     const std::uint64_t run = std::uint64_t(pixel[3]) << shift;
-                    require(run <= width - x, "Radiance HDR run exceeds its scanline.");
+                    if (run > width - x)
+                        return std::unexpected(
+                            Error{ErrorCode::invalid_storage, "Radiance HDR run exceeds its scanline."});
                     for (std::uint64_t i = 0; i < run; ++i, ++x)
                         std::copy_n(&scanline[(x - 1) * 4], 4, &scanline[x * 4]);
                     shift += 8;
@@ -248,7 +280,10 @@ SkyMapRef decode_radiance_hdr(std::string_view bytes) {
                 rgb[(std::size_t(y) * width + x) * 3 + c] = scanline[x * 4 + c] * scale;
         }
     }
-    return std::make_shared<const SkyMap>(width, height, rgb);
+    auto map = SkyMap::create(width, height, rgb);
+    if (!map)
+        return std::unexpected(Error{ErrorCode::invalid_storage, map.error().message});
+    return std::move(*map);
 }
 
 } // namespace atelier::rendering

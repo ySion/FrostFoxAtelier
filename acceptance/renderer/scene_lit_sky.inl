@@ -14,7 +14,9 @@ atelier::rendering::SkyMapRef sky_map(std::uint32_t width, Radiance&& radiance) 
             for (unsigned c = 0; c < 3; ++c)
                 rgb[(std::size_t(y) * width + x) * 3 + c] = value[c];
         }
-    return std::make_shared<const atelier::rendering::SkyMap>(width, height, rgb);
+    auto result = atelier::rendering::SkyMap::create(width, height, rgb);
+    check(result.has_value(), "construct fixed sky map input");
+    return std::move(*result);
 }
 
 SkyDirection sky_yawed(const SkyDirection& d, double degrees) {
@@ -134,7 +136,9 @@ atelier::rendering::SkyMapRef sky_real_map() {
     std::ifstream input(path, std::ios::binary);
     check(input.good(), "the bundled kloppenheim_05 HDRI is readable");
     const std::string bytes{std::istreambuf_iterator<char>(input), {}};
-    return atelier::rendering::decode_radiance_hdr(bytes);
+    auto result = atelier::rendering::decode_radiance_hdr(bytes);
+    check(result.has_value(), "decode bundled HDRI");
+    return std::move(*result);
 }
 
 // Cost of the real HDRI on the benchmark room: composition and the DDGI primary
