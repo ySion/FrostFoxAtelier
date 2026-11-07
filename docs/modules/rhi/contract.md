@@ -7,7 +7,7 @@
 - `Context::open` 按高性能顺序筛选同时支持 FL12_1、Mesh Shader、DXR 1.1、SV_Barycentrics 与 Shader Model 6.5 的硬件 adapter，跳过不合格候选；无合格硬件，或创建后的 gfx 设备拿不到 DXR 接口，都返回 unsupported，没有 WARP 或无光追回退。尺寸、窗口、验证模式和有限正 wait budget 在进入 gfx 前检查。
 - 一个 Context 对应一个 owned gfx context、一个 owner 线程、一条 DIRECT queue。`frame` 异步推进 gfx 帧槽；`finish` 提交当前工作并等待完成。
 - `Context`、`Pipeline` 不可复制，可移动。Pipeline 持有 Program/Kernel 和执行域；Context 外壳消失不提前销毁仍被 Pipeline 持有的执行域。最后一个所有者负责有限排空与释放。
-- 所有改变状态的操作及最终销毁在创建线程进行。宿主方法拒绝异线程执行；Pipeline/执行域的违规最终销毁 fail-fast。借用的 gfx 函数仍由调用者遵守线程契约，不逐函数增加代理检查。Context 内部的准备工作线程不触碰 gfx context，见“异步准备与 DXIL 磁盘缓存”。
+- 所有改变状态的操作及最终销毁在创建线程进行。宿主方法拒绝异线程执行；Pipeline/执行域的违规最终销毁、无法安全完成的清理或观测器脱离失败，直接调用项目唯一 fatal 出口，不经本地 stderr/abort。借用的 gfx 函数仍由调用者遵守线程契约，不逐函数增加代理检查。Context 内部的准备工作线程不触碰 gfx context，见“异步准备与 DXIL 磁盘缓存”。
 - 验证设置涉及进程级 D3D12 debug 配置，应在创建图形设备的初始化阶段确定；不支持并发切换验证配置。
 - `Validation::gpu` 映射到上游明确的 `EnableGPUBasedValidation` 标志，保留宿主在设备创建前的能力检查。进程环境变量 `ATELIER_GPU_VALIDATION` 在 `Context::open` 读取：`debug` 把请求的 `gpu` 降为 `debug_layer`，并向 stderr 写一行说明；未设置或 `gbv` 保持请求；其他值使 `open` 返回 `invalid_argument`。它只降级，从不提高宿主请求的级别；验收门禁用它按目标选择 GBV 范围，见 [README](../../../README.md#构建与端到端验收)。上游创建标志位值会随升级变化，调用方使用具名常量并随依赖一起重编译，不持久化裸位值。项目扩展的 `ForceRGBA8SwapChain` 使用不与上游标志冲突的位；DRED 保留上游实现，当前 Context 不默认开启额外设备移除诊断。
 
@@ -31,7 +31,7 @@
 - owner 线程在 `submit` 中按 `prepare` 的规则检查描述，复制源码、名称和 DrawState；文件模式在此读入阶段文件。返回后描述不再被借用。
 - 工作线程在第一次 `submit` 时启动，至多 min(8, 硬件线程数) 个，各自持有 DXC 实例。线程启动失败按宿主资源耗尽 fatal，不返回 creation_failed 或降级为部分线程池。它们只做编译（或缓存命中）、反射、root signature 与 PSO 创建，只接触自己的作业和 device，不触碰 gfx context。
 - `Validation::gpu` 时，工作线程在一个从不执行的命令列表上为每条管线录制一次 `Set*RootSignature` + `SetPipelineState`。GBV 在任何命令列表第一次设置某个 PSO 时生成补丁版本，这一步把该成本移出 owner 线程的第一次录制；执行时仍由 GBV 校验，覆盖面不变。在创建 PSO 时就打补丁的做法会让当前 SDK Layers 崩溃，不采用。
-- `take(job)` 只在 owner 线程调用，从不等待：作业未完成时返回空；完成后恰好一次返回 Pipeline 或失败。Program/Kernel 只在 owner 线程登记进 gfx。工作线程上的失败以值返回，不跨线程抛异常。已取走的作业或属于其他 Context 的作业返回 invalid_argument。
+- `take(job)` 只在 owner 线程调用，从不等待：作业未完成时返回空；完成后恰好一次返回 Pipeline 或失败。Program/Kernel 只在 owner 线程登记进 gfx。DXC/GFX 可恢复失败保留原有错误码与诊断，经作业错误值返回，不跨线程抛异常；同步准备复用同一路径。宿主 CPU 分配失败终止，不再捕获任意异常并统一伪装为 creation_failed/OutOfMemory。已取走的作业或属于其他 Context 的作业返回 invalid_argument。
 - 作业不是 Pipeline，不会让 `close` 返回 busy。丢弃 PipelineJob 即取消：排队的作业直接丢弃，正在运行的步骤做完后释放产物。
 - 没有 Pipeline 时，`close` 先取消所有排队作业，等正在运行的步骤结束，释放未取走的产物，然后销毁执行域；之后 `take` 返回 closed。运行中的单个步骤不能中断：普通情况下是一次编译或 PSO 创建；GBV 下的一次预热在 8 线程争用时最长实测约 128 s。
 

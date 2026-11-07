@@ -1,6 +1,7 @@
 #include "rhi/rhi.hpp"
 #include "detail/shader_compiler.hpp"
 #include "foundation/result.hpp"
+#include "memory/fatal.hpp"
 #include "platform/utf.hpp"
 
 #include <d3d12sdklayers.h>
@@ -11,7 +12,6 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstdio>
-#include <cstdlib>
 #include <deque>
 #include <exception>
 #include <fstream>
@@ -25,11 +25,6 @@
 namespace atelier::rhi {
 namespace {
 using Microsoft::WRL::ComPtr;
-
-[[noreturn]] void lifetime_failure(const char* message) noexcept {
-    std::fprintf(stderr, "RHI lifetime violation: %s\n", message);
-    std::abort();
-}
 
 Error execution_error(GfxResult result) {
     return {result == kGfxResult_Timeout ? ErrorCode::timeout : ErrorCode::execution_failed, result,
@@ -209,46 +204,41 @@ private:
         worker.release();
     }
 
-    // Failures become the job's error value; nothing escapes to the thread.
+    // Recoverable failures become job errors; host resource exhaustion is fatal.
     void run(PreparationJob& job, Worker& worker) noexcept {
-        try {
-            if (!worker.compiler) {
-                auto compiler = ShaderCompiler::open(config_.cache);
-                if (!compiler) {
-                    job.error = compiler.error();
-                    return;
-                }
-                worker.compiler.emplace(std::move(*compiler));
+        if (!worker.compiler) {
+            auto compiler = ShaderCompiler::open(config_.cache);
+            if (!compiler) {
+                job.error = compiler.error();
+                return;
             }
-            for (const auto& [stage, source] : job.stages) {
-                if (job.cancel)
-                    return;
-                auto compiled = worker.compiler->compile(source);
-                if (!compiled) {
-                    job.error = std::move(compiled.error());
-                    return;
-                }
-                if (gfxKernelBuildSetStage(job.build, stage, compiled->bytecode.Get(), compiled->reflection.Get()) !=
-                    kGfxResult_NoError) {
-                    job.error = Error{ErrorCode::shader_failed, kGfxResult_InvalidParameter,
-                                      "duplicate shader stage for `" + job.name + "'"};
-                    return;
-                }
-            }
+            worker.compiler.emplace(std::move(*compiler));
+        }
+        for (const auto& [stage, source] : job.stages) {
             if (job.cancel)
                 return;
-            if (gfxKernelBuildFinish(job.build) != kGfxResult_NoError || !gfxKernelBuildGetRootSignature(job.build) ||
-                !gfxKernelBuildGetPipelineState(job.build)) {
-                job.error = Error{ErrorCode::shader_failed, kGfxResult_InvalidParameter,
-                                  "root signature or pipeline state creation failed for `" + job.name + "'"};
+            auto compiled = worker.compiler->compile(source);
+            if (!compiled) {
+                job.error = std::move(compiled.error());
                 return;
             }
-            if (config_.gpu_validation && !job.cancel)
-                warm(job, worker);
-        } catch (...) {
-            job.error =
-                Error{ErrorCode::creation_failed, kGfxResult_OutOfMemory, "pipeline preparation failed to allocate"};
+            if (gfxKernelBuildSetStage(job.build, stage, compiled->bytecode.Get(), compiled->reflection.Get()) !=
+                kGfxResult_NoError) {
+                job.error = Error{ErrorCode::shader_failed, kGfxResult_InvalidParameter,
+                                  "duplicate shader stage for `" + job.name + "'"};
+                return;
+            }
         }
+        if (job.cancel)
+            return;
+        if (gfxKernelBuildFinish(job.build) != kGfxResult_NoError || !gfxKernelBuildGetRootSignature(job.build) ||
+            !gfxKernelBuildGetPipelineState(job.build)) {
+            job.error = Error{ErrorCode::shader_failed, kGfxResult_InvalidParameter,
+                              "root signature or pipeline state creation failed for `" + job.name + "'"};
+            return;
+        }
+        if (config_.gpu_validation && !job.cancel)
+            warm(job, worker);
     }
 
     // GPU-based validation creates its patched pipeline at the first
@@ -316,11 +306,11 @@ struct ContextState {
         if (!context)
             return;
         if (!on_owner())
-            lifetime_failure("final context destruction on a foreign thread");
+            fatal("RHI lifetime violation: final context destruction on a foreign thread");
         if (preparer)
             preparer->stop();
         if (gfxDestroyContext(context) != kGfxResult_NoError)
-            lifetime_failure("final context destruction cannot prove GPU completion; use close first");
+            fatal("RHI lifetime violation: final context destruction cannot prove GPU completion; use close first");
         if (frame_latency)
             CloseHandle(frame_latency);
     }
@@ -354,10 +344,10 @@ void Pipeline::reset() noexcept {
     if (!state_)
         return;
     if (!state_->on_owner())
-        lifetime_failure("pipeline destruction on a foreign thread");
+        fatal("RHI lifetime violation: pipeline destruction on a foreign thread");
     if (gfxDestroyKernel(state_->context, kernel_) != kGfxResult_NoError ||
         gfxDestroyProgram(state_->context, program_) != kGfxResult_NoError)
-        lifetime_failure("pipeline cleanup failed");
+        fatal("RHI lifetime violation: pipeline cleanup failed");
     kernel_ = {};
     program_ = {};
     --state_->pipelines;
@@ -927,7 +917,7 @@ CommandTraceScope::~CommandTraceScope() {
     if (!context_)
         return;
     if (gfxSetComputeObserver(context_, nullptr) != kGfxResult_NoError)
-        lifetime_failure("command observer detached after context destruction");
+        fatal("RHI lifetime violation: command observer detached after context destruction");
     auto& data = *trace_.storage_;
     data.info.closed = true;
     data.info.interrupted |= data.pending || std::uncaught_exceptions() > exceptions_;
