@@ -204,6 +204,13 @@ void verify_value_operations() {
 struct SignatureNative {
     std::uint32_t value{};
 
+    std::uint32_t weighted(std::uint32_t a, std::uint32_t b, std::uint32_t c, std::uint32_t d, std::uint32_t e,
+                           std::uint32_t f, std::uint32_t g, std::uint32_t h, std::uint32_t i) noexcept {
+        return a + 2 * b + 3 * c + 4 * d + 5 * e + 6 * f + 7 * g + 8 * h + 9 * i;
+    }
+
+    void store(std::uint32_t amount) noexcept { value = amount; }
+
     Result<std::uint32_t> fail(std::uint32_t amount) noexcept {
         value += amount;
         return std::unexpected(Error{ErrorCode::capacity_exceeded, "Native scalar result failure."});
@@ -214,6 +221,8 @@ void verify_method_results() {
     Runtime runtime;
     const auto native = take(NativeRegistration<SignatureNative>{runtime, "signature.Native", TypeKind::object}
                                  .field<&SignatureNative::value>("value")
+                                 .method<&SignatureNative::weighted>("weighted")
+                                 .method<&SignatureNative::store>("store")
                                  .method<&SignatureNative::fail>("fail")
                                  .publish());
     auto object = take(runtime.create(native));
@@ -227,6 +236,14 @@ void verify_method_results() {
             "Native scalar call lost its explicit failure.");
     require(output == sentinel && std::get<std::uint32_t>(take(runtime.read(object.id(), value))) == 9,
             "Native failure changed output or rolled back prior side effects.");
+    const std::array<Scalar, 9> expanded{std::uint32_t{2},  std::uint32_t{3},  std::uint32_t{5},
+                                         std::uint32_t{7},  std::uint32_t{11}, std::uint32_t{13},
+                                         std::uint32_t{17}, std::uint32_t{19}, std::uint32_t{23}};
+    take(runtime.call(object.id(), take(runtime.find_method(native, "weighted")), expanded, &output));
+    require(std::get<std::uint32_t>(output) == 662, "Spilled scalar arguments changed order or value.");
+    take(runtime.call(object.id(), take(runtime.find_method(native, "store")), arguments, ValueOutput{}));
+    require(std::get<std::uint32_t>(take(runtime.read(object.id(), value))) == 3,
+            "Inline scalar arguments did not reach the typed-output call overload.");
     std::cout << "[pass] Native result failure leaves caller output untouched\n";
 }
 

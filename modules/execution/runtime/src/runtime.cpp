@@ -1,3 +1,4 @@
+#include "foundation/inline_array.hpp"
 #include "foundation/map.hpp"
 #include "foundation/sparse_array.hpp"
 #include "foundation/string.hpp"
@@ -219,7 +220,7 @@ struct RootState {
     SparseArray<Entry> entries;
 
     // Dense live value roots only: object roots and retired entries cannot own this storage.
-    std::vector<std::uint32_t> value_entries;
+    Array<std::uint32_t> value_entries;
 
     std::size_t traversals{};
 
@@ -247,7 +248,7 @@ struct RootState {
         const auto index = static_cast<std::uint32_t>(entries.emplace(Entry{std::move(value)}));
         if (is_value) {
             entries[index].value_index = static_cast<std::uint32_t>(value_entries.size());
-            value_entries.push_back(index);
+            value_entries.add(index);
         }
         if (added)
             added(observer, index);
@@ -263,7 +264,7 @@ struct RootState {
             const auto moved = value_entries.back();
             value_entries[entry.value_index] = moved;
             entries[moved].value_index = entry.value_index;
-            value_entries.pop_back();
+            value_entries.pop();
         }
         entries.erase(index);
     }
@@ -574,7 +575,7 @@ struct Runtime::Impl {
         std::size_t next_element{};
     };
 
-    std::vector<TraceFrame> trace_stack;
+    Array<TraceFrame> trace_stack;
 
     std::size_t maximum_trace_depth{};
 
@@ -594,12 +595,12 @@ struct Runtime::Impl {
         std::size_t next_field{};
     };
 
-    // Synchronous walks use disjoint suffixes; callbacks may grow this vector.
+    // Synchronous walks use disjoint suffixes; callbacks may grow this array.
     // No reference into it survives a callback. GC's suspended cursor stays separate.
-    std::vector<WalkFrame> walk_stack;
+    Array<WalkFrame> walk_stack;
 
     struct WalkScope {
-        std::vector<WalkFrame>& stack;
+        Array<WalkFrame>& stack;
 
         const std::size_t base{stack.size()};
 
@@ -736,12 +737,12 @@ struct Runtime::Impl {
         if (!marking() || type.trace_fields.empty())
             return;
         WalkScope scope{walk_stack};
-        walk_stack.push_back({&type, static_cast<std::byte*>(const_cast<void*>(storage))});
+        walk_stack.add({&type, static_cast<std::byte*>(const_cast<void*>(storage))});
         while (walk_stack.size() != scope.base) {
             const auto index = walk_stack.size() - 1;
             const auto frame = walk_stack[index];
             if (frame.next_field == frame.type->trace_fields.size()) {
-                walk_stack.pop_back();
+                walk_stack.pop();
                 continue;
             }
             ++walk_stack[index].next_field;
@@ -753,7 +754,7 @@ struct Runtime::Impl {
                 for (const auto object : static_cast<const ReferenceSequence*>(address)->objects_)
                     shade(object);
             } else {
-                walk_stack.push_back({field.type, static_cast<std::byte*>(address)});
+                walk_stack.add({field.type, static_cast<std::byte*>(address)});
             }
         }
     }
@@ -764,7 +765,7 @@ struct Runtime::Impl {
         trace_owner = owner;
         trace_owner_index = index;
         // begin_collection reserved the maximum depth of every published layout.
-        trace_stack.push_back({&type, storage});
+        trace_stack.add({&type, storage});
     }
 
     void trace_one() noexcept {
@@ -779,7 +780,7 @@ struct Runtime::Impl {
             return;
         }
         if (frame.next_field == frame.type->trace_fields.size()) {
-            trace_stack.pop_back();
+            trace_stack.pop();
             if (trace_stack.empty())
                 cancel_cursor();
             return;
@@ -796,7 +797,7 @@ struct Runtime::Impl {
             frame.sequence = static_cast<const ReferenceSequence*>(address);
             frame.next_element = 0;
         } else {
-            trace_stack.push_back({field.type, address});
+            trace_stack.add({field.type, address});
         }
     }
 
@@ -1329,13 +1330,13 @@ struct Runtime::Impl {
             return {};
         }
         WalkScope scope{walk_stack};
-        walk_stack.push_back({&type, static_cast<std::byte*>(storage), static_cast<const std::byte*>(source)});
+        walk_stack.add({&type, static_cast<std::byte*>(storage), static_cast<const std::byte*>(source)});
         Result<void> result;
         while (walk_stack.size() != scope.base) {
             const auto index = walk_stack.size() - 1;
             const auto frame = walk_stack[index];
             if (frame.next_field == frame.type->fields.size()) {
-                walk_stack.pop_back();
+                walk_stack.pop();
                 if (walk_stack.size() != scope.base)
                     ++walk_stack.back().next_field;
                 continue;
@@ -1360,7 +1361,7 @@ struct Runtime::Impl {
                 } else if (field.type->scalar_leaf) {
                     construct_scalar_block(*field.type, destination, origin);
                 } else {
-                    walk_stack.push_back({field.type, destination, origin});
+                    walk_stack.add({field.type, destination, origin});
                     continue;
                 }
                 if (!origin) {
@@ -1391,7 +1392,7 @@ struct Runtime::Impl {
                 const auto index = walk_stack.size() - 1;
                 const auto frame = walk_stack[index];
                 if (frame.next_field == 0) {
-                    walk_stack.pop_back();
+                    walk_stack.pop();
                     continue;
                 }
                 --walk_stack[index].next_field;
@@ -1426,12 +1427,12 @@ struct Runtime::Impl {
             return {};
         }
         WalkScope scope{walk_stack};
-        walk_stack.push_back({&type, static_cast<std::byte*>(storage), static_cast<const std::byte*>(source)});
+        walk_stack.add({&type, static_cast<std::byte*>(storage), static_cast<const std::byte*>(source)});
         while (walk_stack.size() != scope.base) {
             const auto index = walk_stack.size() - 1;
             const auto frame = walk_stack[index];
             if (frame.next_field == frame.type->fields.size()) {
-                walk_stack.pop_back();
+                walk_stack.pop();
                 continue;
             }
             ++walk_stack[index].next_field;
@@ -1444,7 +1445,7 @@ struct Runtime::Impl {
                 } else if (field.type->scalar_leaf)
                     std::memcpy(destination, origin, field.type->info.size);
                 else
-                    walk_stack.push_back({field.type, destination, origin});
+                    walk_stack.add({field.type, destination, origin});
             } else {
                 *reinterpret_cast<ReferenceSlot*>(destination) = *reinterpret_cast<const ReferenceSlot*>(origin);
             }
@@ -1460,12 +1461,12 @@ struct Runtime::Impl {
             return;
         }
         WalkScope scope{walk_stack};
-        walk_stack.push_back({&type, static_cast<std::byte*>(storage), nullptr, type.destroy_fields.size()});
+        walk_stack.add({&type, static_cast<std::byte*>(storage), nullptr, type.destroy_fields.size()});
         while (walk_stack.size() != scope.base) {
             const auto index = walk_stack.size() - 1;
             const auto frame = walk_stack[index];
             if (frame.next_field == 0) {
-                walk_stack.pop_back();
+                walk_stack.pop();
                 continue;
             }
             --walk_stack[index].next_field;
@@ -1476,7 +1477,7 @@ struct Runtime::Impl {
             else if (field.type->native.destroy)
                 field.type->native.destroy(address);
             else
-                walk_stack.push_back({field.type, address, nullptr, field.type->destroy_fields.size()});
+                walk_stack.add({field.type, address, nullptr, field.type->destroy_fields.size()});
         }
     }
 
@@ -1485,12 +1486,12 @@ struct Runtime::Impl {
             return {};
         prepare_walk(type);
         WalkScope scope{walk_stack};
-        walk_stack.push_back({&type, static_cast<std::byte*>(const_cast<void*>(storage))});
+        walk_stack.add({&type, static_cast<std::byte*>(const_cast<void*>(storage))});
         while (walk_stack.size() != scope.base) {
             const auto index = walk_stack.size() - 1;
             const auto frame = walk_stack[index];
             if (frame.next_field == frame.type->fields.size()) {
-                walk_stack.pop_back();
+                walk_stack.pop();
                 continue;
             }
             ++walk_stack[index].next_field;
@@ -1499,7 +1500,7 @@ struct Runtime::Impl {
             auto* address = field.address ? field.address(frame.storage) : frame.storage + field.offset;
             if (field.value.form == ValueForm::inline_value) {
                 if (field.type->info.contains_references) {
-                    walk_stack.push_back({field.type, static_cast<std::byte*>(address)});
+                    walk_stack.add({field.type, static_cast<std::byte*>(address)});
                 }
             } else {
                 if (field.value.form == ValueForm::strong_sequence) {
@@ -2239,13 +2240,14 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
 
         std::size_t next_field;
     };
-    std::vector<LayoutState> states(staged.size(), LayoutState::unseen);
-    std::vector<LayoutFrame> stack;
+    Array<LayoutState> states;
+    states.resize(staged.size(), LayoutState::unseen);
+    Array<LayoutFrame> stack;
     for (std::size_t start = 0; start != staged.size(); ++start) {
         if (states[start] == LayoutState::complete)
             continue;
         states[start] = LayoutState::active;
-        stack.push_back({start, 0});
+        stack.add({start, 0});
         while (!stack.empty()) {
             auto& frame = stack.back();
             auto& type = *staged[frame.type];
@@ -2263,7 +2265,7 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
                 }
                 if (states[dependency] == LayoutState::unseen) {
                     states[dependency] = LayoutState::active;
-                    stack.push_back({dependency, 0});
+                    stack.add({dependency, 0});
                     descended = true;
                     break;
                 }
@@ -2454,7 +2456,7 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
                 }
             }
             states[frame.type] = LayoutState::complete;
-            stack.pop_back();
+            stack.pop();
         }
     }
 
@@ -2637,12 +2639,12 @@ Result<ReferenceField> Runtime::native_reference_field(ObjectId object, const vo
 
         std::size_t depth{};
     };
-    std::vector<Cursor> cursors{{impl_->lookup(slot.type), slot.storage}};
+    Array<Cursor> cursors{{impl_->lookup(slot.type), slot.storage}};
     std::vector<FieldId> path;
     while (!cursors.empty()) {
         auto& cursor = cursors.back();
         if (cursor.next == cursor.type->fields.size()) {
-            cursors.pop_back();
+            cursors.pop();
             continue;
         }
         path.resize(cursor.depth);
@@ -2655,7 +2657,7 @@ Result<ReferenceField> Runtime::native_reference_field(ObjectId object, const vo
             path.push_back(FieldId{cursor.type->info.id, field_index});
         if (field.value.form == ValueForm::inline_value) {
             if (field.type->info.contains_references)
-                cursors.push_back({field.type, address, 0, path.size()});
+                cursors.add({field.type, address, 0, path.size()});
         } else if (address == storage && (field.value.form == ValueForm::strong_sequence) == sequence) {
             ReferenceField result;
             result.object_ = object;
@@ -3814,20 +3816,16 @@ Result<void> Runtime::prepare_arguments(const FunctionSignature& signature, std:
 }
 
 Result<void> Runtime::call(ObjectId object, MethodId method, std::span<const Scalar> arguments, Scalar* output) {
-    std::array<Argument, 8> local;
-    std::vector<Argument> expanded(arguments.size() > local.size() ? arguments.size() : 0);
-    auto values =
-        (expanded.empty() ? std::span<Argument>{local} : std::span<Argument>{expanded}).first(arguments.size());
+    InlineArray<Argument, 8> values;
+    values.resize(arguments.size());
     for (std::size_t i = 0; i < arguments.size(); ++i)
         values[i] = Argument{arguments[i]};
     return call_arguments(object, method, values, output);
 }
 
 Result<void> Runtime::call(ObjectId object, MethodId method, std::span<const Scalar> arguments, ValueOutput output) {
-    std::array<Argument, 8> local;
-    std::vector<Argument> expanded(arguments.size() > local.size() ? arguments.size() : 0);
-    auto values =
-        (expanded.empty() ? std::span<Argument>{local} : std::span<Argument>{expanded}).first(arguments.size());
+    InlineArray<Argument, 8> values;
+    values.resize(arguments.size());
     for (std::size_t i = 0; i < arguments.size(); ++i)
         values[i] = Argument{arguments[i]};
     return call_arguments(object, method, values, nullptr, output);
