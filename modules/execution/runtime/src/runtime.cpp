@@ -423,15 +423,15 @@ struct Runtime::Impl {
 
         // An internal leading base segment reuses layout/lifetime/trace walkers.
         // Native constructors still own their complete C++ object themselves.
-        std::vector<FieldStorage> fields;
+        Array<FieldStorage> fields;
 
-        std::vector<Invoker> methods;
+        Array<Invoker> methods;
 
-        std::vector<std::uint32_t> trace_fields;
+        Array<std::uint32_t> trace_fields;
 
         std::size_t trace_depth{1};
 
-        std::vector<std::uint32_t> destroy_fields;
+        Array<std::uint32_t> destroy_fields;
 
         std::size_t walk_depth{1};
 
@@ -441,12 +441,12 @@ struct Runtime::Impl {
         const Type* scalar_leaf{};
 
         // Every hard-bounded leaf (and Array of them), so whole-value writes and validate() can enforce them.
-        std::vector<ConstrainedLeaf> constrained_leaves;
+        Array<ConstrainedLeaf> constrained_leaves;
 
         Result<void> (*validate)(const void*) noexcept {};
 
         // Post-order: base segment, inline records and Arrays innermost first, the type's own validator last.
-        std::vector<ValidatorStep> validators;
+        Array<ValidatorStep> validators;
 
         // Non-trivial values only: byte ranges (null swap) and native swaps that exchange two
         // values without throwing. Empty when the type cannot, so writes fall back to assignment.
@@ -458,7 +458,7 @@ struct Runtime::Impl {
             void (*swap)(void*, void*) noexcept;
         };
 
-        std::vector<SwapPart> swap_parts;
+        Array<SwapPart> swap_parts;
     };
 
     // Ordered to stay at 64 bytes.
@@ -487,7 +487,7 @@ struct Runtime::Impl {
 
     std::uint64_t context{next_context.fetch_add(1, std::memory_order_relaxed)};
 
-    std::vector<std::unique_ptr<Type>> types;
+    Array<std::unique_ptr<Type>> types;
 
     // Published C++ representation -> types index; registration keeps representations unique.
     Map<const void*, std::uint32_t> representations;
@@ -495,7 +495,7 @@ struct Runtime::Impl {
     // Published name -> types index. Keys view the immutable name inside each heap Type.
     Map<StringView, std::uint32_t> names;
 
-    std::vector<Slot> slots;
+    Array<Slot> slots;
 
     // Write stamps. write_pages[i] is the newest stamp among slots [64i, 64i + 64), so
     // changed_objects() skips unchanged pages. Sized with slots before creation commits.
@@ -503,7 +503,7 @@ struct Runtime::Impl {
 
     std::uint64_t write_epoch{1};
 
-    std::vector<std::uint64_t> write_pages;
+    Array<std::uint64_t> write_pages;
 
     void stamp(std::uint32_t index) noexcept {
         slots[index].written = write_epoch;
@@ -1279,7 +1279,7 @@ struct Runtime::Impl {
                         }};
         representations.try_emplace(type->native.representation, id.index_);
         names.try_emplace(StringView{std::string_view{type->info.name}}, id.index_);
-        types.push_back(std::move(type));
+        types.add(std::move(type));
         return id;
     }
 
@@ -1568,7 +1568,7 @@ Runtime::Runtime() noexcept {
     auto root = std::make_unique<Impl::Type>();
     root->info = {impl_->object, "core.Object", TypeKind::object, 1, 1, {}, {}};
     impl_->names.try_emplace(StringView{std::string_view{root->info.name}}, impl_->object.index_);
-    impl_->types.push_back(std::move(root));
+    impl_->types.add(std::move(root));
     const auto registered = register_types(math::type_definitions(*this));
     if (!registered)
         fatal(registered.error().message);
@@ -1743,9 +1743,9 @@ struct detail::TypePublication::State {
 
     std::size_t first_index{};
 
-    std::vector<std::unique_ptr<Runtime::Impl::Type>> staged;
+    Array<std::unique_ptr<Runtime::Impl::Type>> staged;
 
-    std::vector<const TypeInfo*> catalog;
+    Array<const TypeInfo*> catalog;
 
     bool reserved{};
 
@@ -1813,7 +1813,7 @@ void detail::TypePublication::commit(Runtime& runtime) noexcept {
         if (type->native.representation)
             impl.representations.try_emplace(type->native.representation, index);
         impl.names.try_emplace(StringView{std::string_view{type->info.name}}, index);
-        impl.types.push_back(std::move(type));
+        impl.types.add(std::move(type));
     }
     state_->staged.clear();
     state_->committed = true;
@@ -1983,7 +1983,7 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
         type->info.sequence_view = native.sequence_view;
         type->info.sequence_mutate = native.sequence_mutate;
         type->info.value_operations_preserve_borrows = native.value_operations_preserve_borrows;
-        staged.push_back(std::move(type));
+        staged.add(std::move(type));
     }
 
     // Only this transaction sees staged identities. Published TypeId inputs cannot name them.
@@ -2043,7 +2043,7 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
                 return failure(ErrorCode::invalid_definition,
                                "The storage-free Object root has no native base adapter.");
             if (type.base->info.id != impl_->object)
-                type.fields.push_back({0, type.native.base_address, {*type.info.base}});
+                type.fields.add({0, type.native.base_address, {*type.info.base}});
         }
         type.info.fields.reserve(definition.fields.size());
         type.fields.reserve(type.fields.size() + definition.fields.size());
@@ -2196,9 +2196,9 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
                             return invalid("default lies outside hard bounds");
                     }
             }
-            type.fields.push_back({0, field.native_address, value, nullptr, std::move(field.default_leaves),
-                                   field.range.constrains() ? std::make_unique<const FieldRange>(field.range) : nullptr,
-                                   field.default_text});
+            type.fields.add({0, field.native_address, value, nullptr, std::move(field.default_leaves),
+                             field.range.constrains() ? std::make_unique<const FieldRange>(field.range) : nullptr,
+                             field.default_text});
             if (field.exposed)
                 type.info.fields.push_back(
                     {FieldId{id, index}, std::move(field.name), value, field.native_offset, std::move(published_leaves),
@@ -2228,7 +2228,7 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
             type.info.methods.push_back({MethodId{id, static_cast<std::uint32_t>(type.info.methods.size())},
                                          std::move(method.name), std::move(*signature), method.preserves_borrows,
                                          std::move(method.description), std::move(names), method.native_entry});
-            type.methods.push_back(method.invoke);
+            type.methods.add(method.invoke);
         }
     }
 
@@ -2299,9 +2299,9 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
                         "Reflected Array elements must be copyable values without GC references; use ReferenceSequence for object references.");
                 // The element layout is complete; its rules apply to every element.
                 if (!element_type->constrained_leaves.empty())
-                    type.constrained_leaves.push_back({{}, nullptr, {}, &type});
+                    type.constrained_leaves.add({{}, nullptr, {}, &type});
                 if (!element_type->validators.empty())
-                    type.validators.push_back({{}, {}, nullptr, &type});
+                    type.validators.add({{}, {}, nullptr, &type});
             }
             type.needs_destroy = is_native;
             if (!is_native && type.info.kind == TypeKind::record)
@@ -2329,19 +2329,19 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
                     };
                     if (const auto* range = type.fields[field_index].hard.get()) {
                         if (target->info.kind == TypeKind::scalar)
-                            type.constrained_leaves.push_back({{index}, range, reported({})});
+                            type.constrained_leaves.add({{index}, range, reported({})});
                         else if (target->info.kind == TypeKind::array)
-                            type.constrained_leaves.push_back({{index}, range, reported({}), target});
+                            type.constrained_leaves.add({{index}, range, reported({}), target});
                         else
                             for (std::uint32_t component = 0; component != target->info.math.components(); ++component)
-                                type.constrained_leaves.push_back(
+                                type.constrained_leaves.add(
                                     {{index, component}, range, reported({FieldId{target->info.id, component}})});
                     } else
                         for (const auto& leaf : target->constrained_leaves)
-                            type.constrained_leaves.push_back(
+                            type.constrained_leaves.add(
                                 {stored(leaf.path), leaf.range, reported(leaf.field), leaf.array});
                     for (const auto& step : target->validators)
-                        type.validators.push_back({stored(step.path), reported(step.field), step.validate, step.array});
+                        type.validators.add({stored(step.path), reported(step.field), step.validate, step.array});
                 }
                 if (!is_native && type.info.kind == TypeKind::record)
                     type.info.value_operations_preserve_borrows &=
@@ -2355,17 +2355,17 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
                 if (!reference) {
                     type.walk_depth = std::max(type.walk_depth, target->walk_depth + 1);
                     if (!is_native && target->needs_destroy) {
-                        type.destroy_fields.push_back(static_cast<std::uint32_t>(field_index));
+                        type.destroy_fields.add(static_cast<std::uint32_t>(field_index));
                         type.needs_destroy = true;
                     }
                 }
                 if (!is_native && value.form == ValueForm::strong_sequence) {
-                    type.destroy_fields.push_back(static_cast<std::uint32_t>(field_index));
+                    type.destroy_fields.add(static_cast<std::uint32_t>(field_index));
                     type.needs_destroy = true;
                 }
                 if (value.form == ValueForm::strong_reference || value.form == ValueForm::strong_sequence ||
                     (!reference && !target->trace_fields.empty())) {
-                    type.trace_fields.push_back(static_cast<std::uint32_t>(field_index));
+                    type.trace_fields.add(static_cast<std::uint32_t>(field_index));
                     if (!reference)
                         type.trace_depth = std::max(type.trace_depth, target->trace_depth + 1);
                 }
@@ -2392,7 +2392,7 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
                 }
             }
             if (type.validate)
-                type.validators.push_back({{}, {}, type.validate});
+                type.validators.add({{}, {}, type.validate});
             // Direct offsets are published only after every dependent layout is complete.
             for (auto& field : type.info.fields) {
                 if (field.id.owner_ != type.info.id)
@@ -2420,7 +2420,7 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
                     return std::unexpected(size.error());
                 type.info.size = *size;
                 if (!type.fields.empty()) {
-                    const auto* scalar = type.fields.front().type->scalar_leaf;
+                    const auto* scalar = type.fields[0].type->scalar_leaf;
                     std::size_t end = 0;
                     for (const auto& field : type.fields) {
                         if (!scalar || !field.default_leaves.empty() || field.value.form != ValueForm::inline_value ||
@@ -2445,13 +2445,13 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
                     for (const auto& field : type.fields) {
                         const auto& target = *field.type;
                         if (target.info.plain_value || target.info.kind == TypeKind::scalar)
-                            type.swap_parts.push_back({field.offset, target.info.size, nullptr});
+                            type.swap_parts.add({field.offset, target.info.size, nullptr});
                         else if (target.swap_parts.empty()) {
                             type.swap_parts.clear();
                             break;
                         } else
                             for (const auto& part : target.swap_parts)
-                                type.swap_parts.push_back({field.offset + part.offset, part.size, part.swap});
+                                type.swap_parts.add({field.offset + part.offset, part.size, part.swap});
                     }
                 }
             }
@@ -2470,9 +2470,9 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
     auto& catalog = publication->state_->catalog;
     catalog.reserve(first_index + staged.size());
     for (const auto& type : impl_->types)
-        catalog.push_back(&type->info);
+        catalog.add(&type->info);
     for (const auto& type : staged)
-        catalog.push_back(&type->info);
+        catalog.add(&type->info);
     return publication;
 }
 
@@ -2734,10 +2734,10 @@ Result<void> Runtime::apply_reference_changes(std::span<const ReferenceChange> c
 
         std::size_t final_size{};
 
-        std::vector<ObjectId> inserted;
+        Array<ObjectId> inserted;
     };
-    std::vector<Prepared> prepared;
-    if (changes.size() > prepared.max_size())
+    Array<Prepared> prepared;
+    if (changes.size() > prepared.max_size)
         return failure(ErrorCode::capacity_exceeded, "Reference batch is too large.");
     prepared.reserve(changes.size());
     for (const auto& change : changes) {
@@ -2768,10 +2768,10 @@ Result<void> Runtime::apply_reference_changes(std::span<const ReferenceChange> c
             for (const auto& reference : splice.inserted) {
                 ATELIER_TRY(
                     validate_reference_assignment({address->value.type, ValueForm::strong_reference}, reference));
-                plan.inserted.push_back(reference.id());
+                plan.inserted.add(reference.id());
             }
         }
-        prepared.push_back(std::move(plan));
+        prepared.add(std::move(plan));
     }
     // All incoming values have been copied before any storage can move.
     for (auto& plan : prepared) {
@@ -3000,7 +3000,7 @@ Result<ObjectRoot> Runtime::create(TypeId type_id) {
     const auto root_index = impl_->roots->add(ObjectReference{{type_id, ValueForm::strong_reference}, object});
     ObjectRoot root{impl_->roots, root_index};
     if (index == impl_->slots.size())
-        impl_->slots.emplace_back();
+        impl_->slots.emplace();
     else
         impl_->free_head = impl_->slots[index].next_free;
     auto& slot = impl_->slots[index];
