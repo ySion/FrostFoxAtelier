@@ -1084,12 +1084,13 @@ struct SceneLit::State {
         // Overflow beyond a quarter of the receivers gathers inline in the upsampling pass.
         probe_fallback_capacity = std::uint32_t((std::uint64_t(w) * h + 3) / 4);
         probe_fallback = gfxCreateBuffer<std::uint32_t>(gfx, std::uint64_t(probe_fallback_capacity) + 1);
+        ATELIER_TRY(allocation(bool(probe_fallback), "Scene Lit GPU allocation failed"));
         probe_fallback_arguments = gfxCreateBuffer<std::uint32_t>(gfx, 3);
-        ATELIER_TRY(
-            allocation(bool(probe_fallback) && bool(probe_fallback_arguments), "Scene Lit GPU allocation failed"));
+        ATELIER_TRY(allocation(bool(probe_fallback_arguments), "Scene Lit GPU allocation failed"));
         sun_trace_list = gfxCreateBuffer<std::uint32_t>(gfx, std::uint64_t(w) * h);
+        ATELIER_TRY(allocation(bool(sun_trace_list), "Scene Lit GPU allocation failed"));
         sun_trace_arguments = gfxCreateBuffer<std::uint32_t>(gfx, 3);
-        ATELIER_TRY(allocation(bool(sun_trace_list) && bool(sun_trace_arguments), "Scene Lit GPU allocation failed"));
+        ATELIER_TRY(allocation(bool(sun_trace_arguments), "Scene Lit GPU allocation failed"));
         ATELIER_TRY(texture(reflection_hit_trace, w, h, DXGI_FORMAT_R32G32_UINT));
         ATELIER_TRY(texture(ao_texture, w, h, DXGI_FORMAT_R16_FLOAT));
         ATELIER_TRY(texture(ao_raw, w, h, DXGI_FORMAT_R16_FLOAT));
@@ -1128,10 +1129,11 @@ struct SceneLit::State {
             ph = (ph + 1) / 2;
         }
         reflection_work = gfxCreateBuffer<std::uint32_t>(gfx, w * h);
+        ATELIER_TRY(allocation(bool(reflection_work), "Scene Lit GPU allocation failed"));
         reflection_counter = gfxCreateBuffer<std::uint32_t>(gfx, 1);
+        ATELIER_TRY(allocation(bool(reflection_counter), "Scene Lit GPU allocation failed"));
         reflection_arguments = gfxCreateBuffer<std::uint32_t>(gfx, 3);
-        ATELIER_TRY(allocation(bool(reflection_work) && bool(reflection_counter) && bool(reflection_arguments),
-                               "Scene Lit GPU allocation failed"));
+        ATELIER_TRY(allocation(bool(reflection_arguments), "Scene Lit GPU allocation failed"));
         history_valid = false;
         reset_events++;
         return {};

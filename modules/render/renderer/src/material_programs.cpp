@@ -398,10 +398,12 @@ Result<Preparation> MaterialProgramSet::preparation(rhi::Context& context) {
 Result<void> MaterialBatchState::upload() {
     surface_buffer = gfxCreateBuffer<ProgramSurfaceRecord>(context.borrow(), static_cast<std::uint32_t>(records.size()),
                                                            records.data());
+    ATELIER_TRY(allocation(bool(surface_buffer), "Material batch table upload failed"));
     parameter_buffer = gfxCreateBuffer(context.borrow(), parameters.size(), parameters.data());
+    ATELIER_TRY(allocation(bool(parameter_buffer), "Material batch table upload failed"));
     input_buffer =
         gfxCreateBuffer<ProgramInputRecord>(context.borrow(), static_cast<std::uint32_t>(inputs.size()), inputs.data());
-    ATELIER_TRY(allocation(surface_buffer && parameter_buffer && input_buffer, "Material batch table upload failed"));
+    ATELIER_TRY(allocation(bool(input_buffer), "Material batch table upload failed"));
     ready = true;
     return {};
 }
