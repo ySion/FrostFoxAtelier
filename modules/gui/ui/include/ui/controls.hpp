@@ -84,7 +84,9 @@ void append_parameter_row(std::vector<Control>&, const ParameterRow&, float body
 
 // Append 1–4 fields. The caption uses group_key when supplied; its context menu
 // and Ctrl+middle reset address that stable identity. The host owns group undo.
-void append_number_row(std::vector<Control>&, ParameterRow, std::span<const NumberField>);
+// Invalid fields return invalid_control with a static diagnostic. Failure may
+// leave partially appended controls; the caller must discard that candidate.
+Result<void> append_number_row(std::vector<Control>&, ParameterRow, std::span<const NumberField>);
 
 struct MenuItem {
     ControlKey key{};

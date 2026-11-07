@@ -79,6 +79,10 @@ DSL 的 `PanePath`、`ObjectHeader` 和内容页签 用普通 row/column、label
 
 [controls.hpp](../../../modules/gui/ui/include/ui/controls.hpp) 的 `append_parameter_row` 建立统一标题列和字段容器；文本、下拉与数值行共用此组合。`append_number_row` 在该容器中加入 1–4 个普通 number，传入各自的 key、值、默认值、范围和步长。标题宽 160 DIP，字段最小高 23 DIP；字号增大时数值行可随内容增高；分量紧邻排列，名称保留在描述中，不占用单独标签列。窄宽度通过现有 Flex wrap 将标题和字段分行，分量仍保持一行；重新排布不更换字段身份。主体最低宽度为每字段 24 DIP 加 2 DIP 间距，四字段为 102 DIP。组合层不创建焦点、草稿、业务对象或历史。
 
+`append_number_row` 返回 `ui::Result<void>`，字段数量、轴或滑条范围无效时返回 `invalid_control` 与原诊断。`ui::Error::message` 是只借用静态存储期文本的 `string_view`，不拥有内存；原有错误默认无文本，错误值仍可平凡复制。组合失败可能已追加部分控件，调用方必须丢弃该候选，不能发布半行。UI-COMP 保留源码名、节点名和首因，映射为 `invalid_definition`；空 `EditBinding` 仍省略数值行。
+
+声明式组件仅在确实需要新身份时分配 Key；零和最大值不能分配，耗尽通过现有结果链返回 `capacity_exceeded`。失败创建清理临时实例，失败更新保留已接受控件，已消耗编号不回退；别名和旧身份复用不额外要求剩余容量。生成执行中的类型、阶段或活动上下文前提被破坏时直接走唯一 fatal，不能把合法输入拒绝归为这种内部故障。
+
 `Control.modified` 表示权威值与声明默认值不同，基础主题使用 `Palette.modified`，SS 可通过 `:modified` 覆盖颜色和字重。修改状态可通过字重影响文字测量，不代替非法输入状态。标题使用稳定的 `group_key` 作为身份，右键可请求整组菜单；Ctrl+中键发出 `reset(group_key)`，整组写入与一次撤销由宿主负责。宿主只展示字段子集时，通过 `ParameterRow.group_modified` 提供完整组状态；未提供时数值组合从传入字段推导。各字段始终独立比较自己的默认值。
 
 名称、搜索与数值字段统一使用 `single_line_layout`，默认最低 23 DIP；采用相同字号和内容内距，字号增大时可随测量增长。标签可通过 `text-vertical-align: center` 对齐编辑框的内容中心，说明段落仍保持顶部对齐。

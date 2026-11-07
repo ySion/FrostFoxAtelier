@@ -3,13 +3,13 @@
 #include "runtime/foundation.hpp"
 #include "foundation/result.hpp"
 #include "foundation/string.hpp"
+#include "memory/fatal.hpp"
 #include "platform/utf.hpp"
 #include <algorithm>
 #include <cmath>
 #include <limits>
 #include <map>
 #include <functional>
-#include <stdexcept>
 
 namespace atelier::ui_language {
 namespace {
@@ -103,7 +103,7 @@ InputValue initial(InputKind kind) {
     case InputKind::tree_row:
         return TreeRowBinding{};
     }
-    throw std::logic_error("Unknown UI input kind.");
+    fatal("Unknown UI input kind.");
 }
 }
 
@@ -266,7 +266,7 @@ struct Context {
 
     DefinitionState& data() const {
         if (!owner || !owner->open || !owner->executing)
-            throw std::runtime_error("UI component has no active invocation.");
+            fatal("UI component has no active invocation.");
         return *owner->executing;
     }
 
@@ -379,7 +379,7 @@ struct Context {
     void write_bool(std::uint32_t index, bool value) {
         auto& d = data();
         if (!d.initializing && !d.handling_event)
-            throw std::runtime_error("A binding cannot modify component state.");
+            fatal("A binding cannot modify component state.");
         auto& target = std::get<bool>(d.states.at(index));
         if (target != value) {
             target = value;
@@ -402,14 +402,14 @@ struct Context {
     bool event_bool() const {
         auto& d = data();
         if (!d.handling_event)
-            throw std::runtime_error("No active UI event.");
+            fatal("No active UI event.");
         return d.event_checked;
     }
 
     void create_node(std::uint32_t slot, std::uint32_t parent, std::uint32_t kind) {
         auto& d = data();
         if (!d.initializing)
-            throw std::runtime_error("UI structure is created only at mount.");
+            fatal("UI structure is created only at mount.");
         auto& node = d.nodes.at(slot).control;
         node.parent = parent ? (d.declaration().nodes.at(parent - 1).kind == NodeKind::parameter_row
                                     ? d.nodes.at(parent - 1).body
@@ -458,7 +458,7 @@ struct Context {
     NodeState& target(std::uint32_t slot) {
         auto& d = data();
         if (!d.evaluating)
-            throw std::runtime_error("UI properties are owned by bindings.");
+            fatal("UI properties are owned by bindings.");
         auto& node = d.nodes.at(slot);
         node.dirty = true;
         return node;
@@ -763,7 +763,7 @@ struct Context {
             node.layout.height = ui_layout::Axis::content(value ? ui::single_line_height : 0.f);
             break;
         default:
-            throw std::runtime_error("Invalid boolean UI property.");
+            fatal("Invalid boolean UI property.");
         }
     }
 
@@ -1318,9 +1318,9 @@ Result<std::unique_ptr<detail::PreparedUpdate>> detail::InstanceData::prepare(st
         next->aliases.assign(aliases.begin(), aliases.end());
         next->code = definition->impl_->code;
         next->nodes.resize(declaration.nodes.size());
-        const auto allocate = [&] {
+        const auto allocate = [&]() -> Result<ui::ControlKey> {
             if (!*next_key || *next_key == std::numeric_limits<ui::ControlKey>::max())
-                throw std::runtime_error("UI control keys exhausted.");
+                return std::unexpected(Error{ErrorCode::capacity_exceeded, "UI control keys exhausted."});
             return (*next_key)++;
         };
         for (std::size_t i = 0; i < next->nodes.size(); ++i) {
@@ -1337,9 +1337,14 @@ Result<std::unique_ptr<detail::PreparedUpdate>> detail::InstanceData::prepare(st
                 if (old != before.end())
                     node.previous = &value->nodes[static_cast<std::size_t>(old - before.begin())];
             }
-            node.control.key = alias != aliases.end() && alias->key ? alias->key
-                               : node.previous                      ? node.previous->control.key
-                                                                    : allocate();
+            if (alias != aliases.end() && alias->key)
+                node.control.key = alias->key;
+            else if (node.previous)
+                node.control.key = node.previous->control.key;
+            else {
+                ATELIER_TRY_BIND(key, allocate());
+                node.control.key = *key;
+            }
             if (const auto& type = definition->impl_->children[i])
                 for (const auto& input : type->declaration().inputs)
                     node.arguments.push_back(initial(input.kind));
@@ -1350,12 +1355,22 @@ Result<std::unique_ptr<detail::PreparedUpdate>> detail::InstanceData::prepare(st
                         node.aliases.push_back({key.node.substr(prefix.size()), key.key, key.label, key.body});
             }
             if (declared.kind == NodeKind::number_row || declared.kind == NodeKind::parameter_row) {
-                node.label = alias != aliases.end() && alias->label ? alias->label
-                             : node.previous                        ? node.previous->label
-                                                                    : allocate();
-                node.body = alias != aliases.end() && alias->body ? alias->body
-                            : node.previous                       ? node.previous->body
-                                                                  : allocate();
+                if (alias != aliases.end() && alias->label)
+                    node.label = alias->label;
+                else if (node.previous)
+                    node.label = node.previous->label;
+                else {
+                    ATELIER_TRY_BIND(key, allocate());
+                    node.label = *key;
+                }
+                if (alias != aliases.end() && alias->body)
+                    node.body = alias->body;
+                else if (node.previous)
+                    node.body = node.previous->body;
+                else {
+                    ATELIER_TRY_BIND(key, allocate());
+                    node.body = *key;
+                }
             }
         }
         for (const auto& state : declaration.states)
@@ -1519,15 +1534,14 @@ Result<std::unique_ptr<detail::PreparedUpdate>> detail::InstanceData::prepare(st
         } else if (kind != NodeKind::number_row)
             output.push_back(node.control);
         else if (!node.edit.fields.empty()) {
-            try {
-                ui::append_number_row(output,
-                                      {node.control.key, node.label, node.body, node.edit.group, node.control.parent,
-                                       node.control.text, node.control.enabled && node.edit.enabled,
-                                       node.edit.modified},
-                                      node.edit.fields);
-            } catch (const std::invalid_argument& error) {
-                return failure(declaration.source_name + ": " + declaration.nodes[i].name + ": " + error.what());
-            }
+            auto appended = ui::append_number_row(output,
+                                                  {node.control.key, node.label, node.body, node.edit.group,
+                                                   node.control.parent, node.control.text,
+                                                   node.control.enabled && node.edit.enabled, node.edit.modified},
+                                                  node.edit.fields);
+            if (!appended)
+                return failure(declaration.source_name + ": " + declaration.nodes[i].name + ": " +
+                               std::string(appended.error().message));
             output.front().layout.collapsed = node.control.layout.collapsed;
             output.front().tooltip = node.control.tooltip;
             output.front().classes.insert(output.front().classes.end(), node.control.classes.begin(),

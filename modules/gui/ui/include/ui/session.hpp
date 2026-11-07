@@ -11,6 +11,7 @@
 #include <limits>
 #include <span>
 #include <string>
+#include <string_view>
 #include <variant>
 
 namespace atelier::ui {
@@ -633,6 +634,9 @@ struct Error {
     ControlKey key{};
 
     std::uint32_t native_code{};
+
+    // Non-owning; nonempty messages must refer to static-storage text (string literals).
+    std::string_view message{};
 };
 
 template <class T>

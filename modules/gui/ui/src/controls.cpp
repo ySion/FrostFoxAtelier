@@ -45,12 +45,13 @@ void append_parameter_row(std::vector<Control>& controls, const ParameterRow& ro
     append(row.body_key, row.key, ControlKind::container, body);
 }
 
-void append_number_row(std::vector<Control>& controls, ParameterRow row, std::span<const NumberField> fields) {
+Result<void> append_number_row(std::vector<Control>& controls, ParameterRow row, std::span<const NumberField> fields) {
     if (fields.empty() || fields.size() > 4)
-        throw std::invalid_argument("A number row requires 1–4 fields.");
+        return std::unexpected(Error{ErrorCode::invalid_control, row.key, 0, "A number row requires 1–4 fields."});
     for (const auto& field : fields)
         if (static_cast<unsigned>(field.axis) > static_cast<unsigned>(VectorAxis::w))
-            throw std::invalid_argument("A number field requires a valid vector axis.");
+            return std::unexpected(
+                Error{ErrorCode::invalid_control, field.key, 0, "A number field requires a valid vector axis."});
     row.group_modified = row.group_modified.value_or(std::any_of(
         fields.begin(), fields.end(), [](const auto& field) { return field.value != field.default_value; }));
     constexpr float field_minimum = 24;
@@ -62,8 +63,9 @@ void append_number_row(std::vector<Control>& controls, ParameterRow row, std::sp
         if (field.slider &&
             (fields.size() != 1 || !field.slider->key || field.slider->minimum >= field.slider->maximum ||
              field.slider->minimum < field.minimum || field.slider->maximum > field.maximum))
-            throw std::invalid_argument(
-                "A scalar slider requires a unique key and a range within the number's legal range.");
+            return std::unexpected(
+                Error{ErrorCode::invalid_control, field.key, 0,
+                      "A scalar slider requires a unique key and a range within the number's legal range."});
         Control number;
         number.key = field.key;
         number.parent = row.body_key;
@@ -109,6 +111,7 @@ void append_number_row(std::vector<Control>& controls, ParameterRow row, std::sp
             controls.push_back(std::move(slider));
         }
     }
+    return {};
 }
 
 namespace {
