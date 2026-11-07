@@ -203,8 +203,6 @@ int main(int argc, char** argv) try {
     _set_error_mode(_OUT_TO_STDERR);
     _set_abort_behavior(0, _CALL_REPORTFAULT);
     SetErrorMode(GetErrorMode() | SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
-    (void)_CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
-    (void)_CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     if (argc > 1) {
         const std::string_view mode{argv[1]};

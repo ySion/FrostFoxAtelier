@@ -73,7 +73,7 @@
 
 项目控制的终止路径统一调用一个由基础层提供的 `[[noreturn]]`、`noexcept` fatal 出口，不能各模块再造 stderr/abort/exit 变体。出口只接受静态诊断或已有有效的借用字节，以固定格式尽力输出最小诊断，然后执行 `__fastfail(FAST_FAIL_FATAL_APP_EXIT)`；不再调用 abort，避免回到信号处理器。不分配内存，不格式化拥有型字符串，不取业务锁，不进入日志系统、Runtime、用户回调或正常关停流程。诊断输出失败、递归调用或多个线程同时失败也不能阻止终止。fail-fast 接入系统 WER/调试通道，是否生成 dump 取决于系统配置，不是项目保证。它不承诺析构、join、保存文档、刷日志或回滚；这些保证只属于正常返回的成功、失败与取消路径。
 
-每个自有 exe 在开始业务工作前调用同一个安装函数，以 `signal(SIGABRT, ...)` 将所在 CRT 域的 abort 接入上述出口。处理器仅以固定原因 `abort` 调用 fatal，不解包异常、不调用 `what()`、不构造 Error，也不返回。安装失败直接 fatal；安装函数同时关闭 `_WRITE_ABORT_MSG`，避免 debug CRT 在发出信号前弹窗。此后项目与依赖不得覆盖或忽略该信号处理器。静态初始化不承担可能失败的业务启动；已有清理失败、任务关闭失败及 dev fail-fast 诊断直接归并到 fatal。
+每个自有 exe 在开始业务工作前调用同一个安装函数，以 `signal(SIGABRT, ...)` 将所在 CRT 域的 abort 接入上述出口。处理器仅以固定原因 `abort` 调用 fatal，不解包异常、不调用 `what()`、不构造 Error，也不返回。安装失败直接 fatal；安装函数同时关闭 `_WRITE_ABORT_MSG`，避免 debug CRT 在发出信号前弹窗。debug CRT 的断言和错误报告也通过报告钩子携带原消息进入唯一 fatal 出口，不弹窗；警告报告保持原行为。此后项目与依赖不得覆盖或忽略该信号处理器。静态初始化不承担可能失败的业务启动；已有清理失败、任务关闭失败及 dev fail-fast 诊断直接归并到 fatal。
 
 锁定 UCRT 的 SIGABRT action 按 CRT 域全局共享，不按线程保存。安装完成且 action 有效时，同一域任意线程调用 abort 都可接入：包括 `_HAS_EXCEPTIONS=0` 的 `std::terminate`、TBB 的终止路径、JSON_NOEXCEPTION 的 abort，以及预编译 STL helper 抛错后无人处理而经 CRT terminate 到 abort 的路径。TBB 与宿主采用匹配的 `/MD(d)`：release 共享 UCRT，dev 共享 debug UCRT；它们不是两个独立的静态 CRT。无需逐线程 set_terminate；无异常 STL 的 `std::set_terminate` 本身是空实现，不能作为安装入口。
 

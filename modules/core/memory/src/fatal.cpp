@@ -2,6 +2,7 @@
 
 #include <windows.h>
 #include <intrin.h>
+#include <crtdbg.h>
 #include <atomic>
 #include <csignal>
 #include <cstdlib>
@@ -13,6 +14,12 @@ std::atomic_flag reporting = ATOMIC_FLAG_INIT;
 
 void abort_handler(int) noexcept {
     fatal("abort");
+}
+
+[[maybe_unused]] int __cdecl report_handler(int type, char* message, int*) noexcept {
+    if (type == _CRT_ASSERT || type == _CRT_ERROR)
+        fatal(message);
+    return 0;
 }
 
 }
@@ -40,6 +47,8 @@ void abort_handler(int) noexcept {
 void install_fatal_handler() noexcept {
     // Debug CRT emits its report before raising SIGABRT unless this is disabled.
     _set_abort_behavior(0, _WRITE_ABORT_MSG);
+    if (_CrtSetReportHook2(_CRT_RPTHOOK_INSTALL, report_handler) == -1)
+        fatal("could not install CRT report hook");
     if (std::signal(SIGABRT, abort_handler) == SIG_ERR)
         fatal("could not install SIGABRT handler");
 }
