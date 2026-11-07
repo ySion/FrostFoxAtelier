@@ -1,5 +1,5 @@
 void virtual_range_and_anchor() {
-    VirtualList list(110, 2);
+    auto list = accepted(VirtualList::create(110, 2));
     accepted(list.reset(100, 20));
     accepted(list.set_viewport(225, 100, 22));
     const auto range = list.range();

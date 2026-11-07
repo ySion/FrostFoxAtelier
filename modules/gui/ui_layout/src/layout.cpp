@@ -5,7 +5,6 @@
 #include <atomic>
 #include <bit>
 #include <cmath>
-#include <new>
 #include <stdexcept>
 #include <type_traits>
 #include <utility>
@@ -496,14 +495,7 @@ struct LayoutDocument::Impl {
             ++statistics.intrinsic_queries;
         if (!measure)
             return std::unexpected(Error{ErrorCode::measurement_failed, id(index)});
-        MeasureResult result = std::unexpected(MeasureError{});
-        try {
-            result = measure(context, query);
-        } catch (const std::bad_alloc&) {
-            throw;
-        } catch (...) {
-            return std::unexpected(Error{ErrorCode::measurement_failed, id(index)});
-        }
+        const auto result = measure(context, query);
         if (!result)
             return std::unexpected(Error{ErrorCode::measurement_failed, id(index), result.error().code});
         if (!nonnegative(result->width) || !nonnegative(result->height) ||
@@ -1861,9 +1853,10 @@ bool list_height(double value) {
 }
 }
 
-VirtualList::VirtualList(std::size_t max_items, double gap) : max_items_(max_items), gap_(gap) {
+Result<VirtualList> VirtualList::create(std::size_t max_items, double gap) {
     if (max_items == 0 || max_items >= no_slot || !nonnegative(gap) || gap > std::numeric_limits<float>::max())
-        throw std::invalid_argument("Invalid virtual list capacity or gap");
+        return std::unexpected(Error{ErrorCode::invalid_input});
+    return VirtualList(max_items, gap);
 }
 
 Result<void> VirtualList::revision_available() const {

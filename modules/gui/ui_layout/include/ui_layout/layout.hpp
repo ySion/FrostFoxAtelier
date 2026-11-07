@@ -367,6 +367,7 @@ struct MeasuredSize {
 
 using MeasureResult = std::expected<MeasuredSize, MeasureError>;
 
+// Report callback failures with MeasureError, not exceptions.
 using Measure = MeasureResult (*)(void*, const MeasureQuery&);
 
 struct LayoutBox {
@@ -553,7 +554,7 @@ struct VisibleRange {
 
 class VirtualList {
 public:
-    explicit VirtualList(std::size_t max_items, double gap = 0);
+    static Result<VirtualList> create(std::size_t max_items, double gap = 0);
 
     Result<void> reset(std::size_t count, double estimated_height);
 
@@ -575,6 +576,8 @@ public:
     std::size_t size() const noexcept { return heights_.size(); }
 
 private:
+    VirtualList(std::size_t max_items, double gap) : max_items_(max_items), gap_(gap) {}
+
     double prefix(std::size_t count) const noexcept;
 
     double extent() const noexcept;

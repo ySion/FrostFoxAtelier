@@ -119,32 +119,45 @@ struct TextProvider {
         require(found != FALSE, "Segoe UI unavailable");
     }
 
-    ComPtr<IDWriteTextLayout> create(const Content& value) {
+    std::expected<ComPtr<IDWriteTextLayout>, MeasureError> create(const Content& value) {
         ComPtr<IDWriteTextFormat> format;
-        hr(factory->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
-                                     DWRITE_FONT_STRETCH_NORMAL, value.font_size * scale, L"en-US",
-                                     format.GetAddressOf()));
-        hr(format->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP));
+        if (const auto status = factory->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
+                                                          DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+                                                          value.font_size * scale, L"en-US", format.GetAddressOf());
+            FAILED(status))
+            return std::unexpected(MeasureError{static_cast<std::uint32_t>(status)});
+        if (const auto status = format->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP); FAILED(status))
+            return std::unexpected(MeasureError{static_cast<std::uint32_t>(status)});
         ComPtr<IDWriteTextLayout> result;
-        hr(factory->CreateTextLayout(value.text.data(), static_cast<UINT32>(value.text.size()), format.Get(), 0, 0,
-                                     result.GetAddressOf()));
+        if (const auto status = factory->CreateTextLayout(value.text.data(), static_cast<UINT32>(value.text.size()),
+                                                          format.Get(), 0, 0, result.GetAddressOf());
+            FAILED(status))
+            return std::unexpected(MeasureError{static_cast<std::uint32_t>(status)});
         return result;
     }
 
-    Size metrics(IDWriteTextLayout* layout, std::optional<float> width) {
+    MeasureResult metrics(IDWriteTextLayout* layout, std::optional<float> width) {
         const auto wrapping = width ? DWRITE_WORD_WRAPPING_WRAP : DWRITE_WORD_WRAPPING_NO_WRAP;
-        if (layout->GetWordWrapping() != wrapping)
-            hr(layout->SetWordWrapping(wrapping));
-        if (layout->GetMaxWidth() != width.value_or(0))
-            hr(layout->SetMaxWidth(width.value_or(0)));
+        if (layout->GetWordWrapping() != wrapping) {
+            if (const auto status = layout->SetWordWrapping(wrapping); FAILED(status))
+                return std::unexpected(MeasureError{static_cast<std::uint32_t>(status)});
+        }
+        if (layout->GetMaxWidth() != width.value_or(0)) {
+            if (const auto status = layout->SetMaxWidth(width.value_or(0)); FAILED(status))
+                return std::unexpected(MeasureError{static_cast<std::uint32_t>(status)});
+        }
         DWRITE_TEXT_METRICS value{};
-        hr(layout->GetMetrics(&value));
-        return {value.widthIncludingTrailingWhitespace, value.height};
+        if (const auto status = layout->GetMetrics(&value); FAILED(status))
+            return std::unexpected(MeasureError{static_cast<std::uint32_t>(status)});
+        return MeasuredSize{value.widthIncludingTrailingWhitespace, value.height};
     }
 
     Size fresh(std::uint64_t key, std::optional<float> width) {
         const auto layout = create(content.at(key));
-        return metrics(layout.Get(), width);
+        require(layout.has_value(), "fresh DirectWrite layout failed");
+        const auto size = metrics(layout->Get(), width);
+        require(size.has_value(), "fresh DirectWrite metrics failed");
+        return {size->width, size->height};
     }
 
     static MeasureResult measure(void* context, const MeasureQuery& query) {
@@ -158,10 +171,13 @@ struct TextProvider {
             return std::unexpected(MeasureError{91});
         auto& paragraph = self.paragraphs[query.content_key];
         if (!paragraph.layout || paragraph.content_revision != query.content_revision ||
-            paragraph.provider_revision != query.provider_revision)
-            paragraph = {self.create(found->second), query.content_revision, query.provider_revision};
-        const auto size = self.metrics(paragraph.layout.Get(), query.width);
-        return MeasuredSize{size.width, size.height, std::nullopt};
+            paragraph.provider_revision != query.provider_revision) {
+            const auto layout = self.create(found->second);
+            if (!layout)
+                return std::unexpected(layout.error());
+            paragraph = {*layout, query.content_revision, query.provider_revision};
+        }
+        return self.metrics(paragraph.layout.Get(), query.width);
     }
 };
 

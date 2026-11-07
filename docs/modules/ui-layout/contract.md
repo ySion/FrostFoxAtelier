@@ -83,7 +83,9 @@
 
 `MeasureQuery` 为内容key/revision、provider revision及可选内容宽度。宽度缺省表示独立不换行需求，存在表示确定内容宽度下的自然尺寸；宽度可以为0，**不附带viewport高度限制**。返回的内容宽度不改变已解析外框宽度。
 
-`MeasureResult` 返回MeasuredSize或`MeasureError`；原provider可继续return Size。自然宽高必须有限非负，可选first_baseline必须有限且在[0,height]内；MeasureQuery.first_baseline表示本次需要基线。provider失败保留其32位code，并在布局Error中标明触发节点；无效尺寸或基线返回 `invalid_measurement`。普通回调异常转为 `measurement_failed`；`std::bad_alloc`继续传播，不伪装为测量成功或零框。
+`MeasureResult` 返回MeasuredSize或`MeasureError`；provider可直接return Size。自然宽高必须有限非负，可选first_baseline必须有限且在[0,height]内；MeasureQuery.first_baseline表示本次需要基线。未提供measure回调时返回 `measurement_failed`；回调返回MeasureError时同样映射为 `measurement_failed`，保留其32位code作为provider_code，并在布局Error中标明触发节点。无效尺寸或基线返回 `invalid_measurement`。
+
+回调失败必须返回 `MeasureError`，不能用异常传递；布局不捕获或翻译回调异常。CPU分配失败遵循[工程指南](../../engineering.md#错误处理)的fatal合同，不返回measurement_failed或零框。生产TextStore内部的异常迁移属于UI-TEXT，不改变此处的Result边界。
 
 provider拥有实际文字、字体与排版对象；core只存纯值键和结果。所有影响度量的变化必须推进内容或provider版本。每个活节点分别缓存独立查询和最近一次确定宽度查询；查询种类、宽度、内容key/revision、provider revision共同决定命中。同一计算内的新度量放入私有日志，重复相同查询可复用；不保证每叶只调用一次。节点移除清除其已提交缓存，slot复用不继承旧节点缓存。
 
@@ -102,7 +104,7 @@ provider拥有实际文字、字体与排版对象；core只存纯值键和结�
 
 ## 6. 资源、错误与成本
 
-`Limits.max_nodes` 必须在[1, UINT32_MAX−1]，包含根及代际耗尽的退役slot；超限构造参数抛`invalid_argument`。`max_depth`明确给出，根深度0；创建及移动先检查节点容量/所有受影响后代深度。没有隐含产品节点数或帧预算。构造时Document身份耗尽抛`overflow_error`，其他内存分配异常正常传播。
+`Limits.max_nodes` 必须在[1, UINT32_MAX−1]，包含根及代际耗尽的退役slot；超限构造参数目前仍抛`invalid_argument`。`max_depth`明确给出，根深度0；创建及移动先检查节点容量/所有受影响后代深度。没有隐含产品节点数或帧预算。构造时Document身份耗尽目前仍抛`overflow_error`；这两处LayoutDocument创建错误留待后续UI-BASE创建片迁移，不代表长期异常合同。CPU分配失败按工程指南处理。
 
 输入校验拒绝NaN/Inf、负尺寸、非法枚举/范围及结构；计算中检查中间值/输出转换，无法表达的量返回`numeric_overflow`。这不是对所有极端数值组合的数学完备性证明。错误码及附带节点/provider_code见公开头文件。
 

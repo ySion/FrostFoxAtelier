@@ -4,9 +4,9 @@ VirtualList只拥有逻辑行高与滚动索引，业务数据、布局实例和
 
 ## VirtualList契约
 
-`VirtualList(max_items, gap)`管理紧凑行高数组和Fenwick前缀和索引。索引中的行号是位置，不是业务对象或新的稳定身份。调用者以自己的业务key对应这些位置，并在同一个LayoutDocument内实例化range返回的行。
+`VirtualList::create(max_items, gap)`返回 `Result<VirtualList>`，成功值管理紧凑行高数组和Fenwick前缀和索引。索引中的行号是位置，不是业务对象或新的稳定身份。调用者以自己的业务key对应这些位置，并在同一个LayoutDocument内实例化range返回的行。
 
-- 容量必须在[1, UINT32_MAX−1]，gap有限非负；行高必须正且有限，不超过float最大值。构造非法参数抛invalid_argument，其余可恢复错误使用现有Result/Error；内存异常正常传播。
+- 容量必须在[1, UINT32_MAX−1]，gap有限非负且不超过float最大值；行高必须正且有限，不超过float最大值。非法创建参数返回现有 `ErrorCode::invalid_input`，不产生半初始化值；其余可恢复错误同样使用Result/Error。CPU分配失败遵循[工程指南](../../engineering.md#错误处理)的fatal合同。
 - `reset(count, estimated_height)`替换集合并将scroll归零。`set_height(row,height)`更新单行高度；它不自行判定高度是精确测量还是调用方估计。
 - `set_viewport(scroll,height,overscan)`接收逻辑像素，height/overscan有限非负且不超过float最大值。scroll有限非负，超过末端时夹到`max(0,extent-height)`。零高viewport返回空范围。
 - `range()`返回半开区间[begin,end)、首实例相对viewport的local_origin、scroll、extent和revision。范围包括overscan，gap算入行的区间；可少量包含与间隙相邻的行。extent是现有行高和间距之和，末尾没有gap；未测行使用估计时，总extent也只是估计。
