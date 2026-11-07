@@ -389,7 +389,9 @@ struct Context {
 
     Result<void> write_number(std::uint32_t index, double value) noexcept {
         auto& d = data();
-        if ((!d.initializing && !d.handling_event) || !std::isfinite(value))
+        if (!d.initializing && !d.handling_event)
+            fatal("A binding cannot modify component state.");
+        if (!std::isfinite(value))
             return failure("Invalid component state write.");
         auto& target = std::get<double>(d.states.at(index));
         if (target != value) {

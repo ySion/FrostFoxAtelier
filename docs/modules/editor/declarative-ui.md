@@ -65,6 +65,10 @@ Dev 和 Release 开发工作树的构建均优先读取 `assets/editor.ui.source
 
 UI 原生 Context 的可恢复拒绝通过 `Result` 返回，不向 `noexcept` 原生 thunk 抛异常：包括文本转换、样式类、表格视图、菜单行为、数值属性、非有限 state 写入及零 selection group。失败保留源码位置并沿原事务恢复输入、局部状态和已接受控件；修正后可继续更新或处理事件。内存耗尽仍遵循基础层 fatal 合同，不伪装成绑定错误。
 
+声明式组件仅在确实需要新身份时分配 Key；零和最大值不能分配，耗尽通过现有结果链返回 `capacity_exceeded`。失败创建清理临时实例，失败更新保留已接受控件，已消耗编号不回退；别名和旧身份复用不额外要求剩余容量。生成执行中的类型、阶段或活动上下文前提被破坏时直接走唯一 fatal；布尔和数值 state 只能在初始化或事件处理期间写入，违反阶段前提不是可恢复的输入错误，合法阶段的非有限数值写入仍返回上述 `Result`。
+
+声明式组件将数值行组合失败映射为 `invalid_definition`，保留源码名、节点名和首因；候选控件随失败丢弃，不发布半行。空 `EditBinding` 仍省略数值行。底层追加状态与静态诊断借用合同见 [UI 参数行](../ui/README.md)。
+
 ```text
 ui Query(in TextEditBinding edit) {
     Row row {
