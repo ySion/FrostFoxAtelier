@@ -1475,13 +1475,7 @@ Result<void> PhysicsScene::step(float elapsed) {
         timing::Scope substep{phases::substep};
         if (before_step_) {
             ATELIER_TRY_BIND(opened, runtime.change_cursor());
-            try {
-                ATELIER_TRY_BIND(called, before_step_(completed_step_ + 1, fixed));
-            } catch (const std::exception& error) {
-                return failure(ErrorCode::invocation_failed, error.what());
-            } catch (...) {
-                return failure(ErrorCode::invocation_failed, "Before-step handler threw an unknown exception.");
-            }
+            ATELIER_TRY(before_step_(completed_step_ + 1, fixed));
             if (!world_.running())
                 return finish_stopped();
             ATELIER_TRY(follow_handler(*opened));
@@ -1680,13 +1674,7 @@ Result<void> PhysicsScene::step(float elapsed) {
         impl_->collect_contacts(completed_step_, scene_id_);
         if (after_step_) {
             ATELIER_TRY_BIND(opened, runtime.change_cursor());
-            try {
-                ATELIER_TRY_BIND(called, after_step_(completed_step_, fixed));
-            } catch (const std::exception& error) {
-                return failure(ErrorCode::invocation_failed, error.what());
-            } catch (...) {
-                return failure(ErrorCode::invocation_failed, "After-step handler threw an unknown exception.");
-            }
+            ATELIER_TRY(after_step_(completed_step_, fixed));
             if (!world_.running())
                 return finish_stopped();
             ATELIER_TRY(follow_handler(*opened));
@@ -1707,13 +1695,7 @@ Result<void> PhysicsScene::step(float elapsed) {
             break;
         if (!world_.runtime().type_of(event.first.entity) || !world_.runtime().type_of(event.second.entity))
             continue;
-        try {
-            ATELIER_TRY_BIND(delivered, handler_(event));
-        } catch (const std::exception& error) {
-            return failure(ErrorCode::invocation_failed, error.what());
-        } catch (...) {
-            return failure(ErrorCode::invocation_failed, "Contact handler threw an unknown exception.");
-        }
+        ATELIER_TRY(handler_(event));
         if (!world_.running())
             return finish_stopped();
     }

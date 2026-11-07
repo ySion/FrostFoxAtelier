@@ -80,6 +80,8 @@ struct ContactEvent {
     ContactExitReason exit_reason{ContactExitReason::separated};
 };
 
+// Host handlers report failures through Result, never C++ exceptions. The first
+// failure stops the World without changing its error or rolling back completed solves.
 using ContactHandler = std::function<Result<void>(const ContactEvent&)>;
 
 using StepHandler = std::function<Result<void>(std::uint64_t step_id, float fixed_delta)>;

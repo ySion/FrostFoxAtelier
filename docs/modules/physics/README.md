@@ -34,6 +34,10 @@ step 的 CPU 墙钟记为[帧阶段计时](../../foundation.md#帧阶段计时)�
 
 前步、后步或接触宿主回调成功调用 `World::stop/close` 后，本次 update 成功结束，不继续求解、回写或派发剩余接触。`last_step` 保留本次已完成的子步与累计步号，剩余时间归零；停止期间产生的待交付 ended 也被丢弃，重启不补旧步或旧事件。World 仍运行时普通对象停用、移除产生的 ended 不受此规则影响。
 
+组件注册、绑定、协调、输入和查询的可恢复失败均显式返回 `Result`，不借 C++ 异常传错；前步、后步及接触宿主回调也必须返回 `Result<void>`，场景不再捕获任意异常并翻译为业务错误。原结果的 code、message、source 沿已有隔离或停机路径传递；注册仍逐项发布，失败不回滚已发布类型。组件移除时查询祖先的既有特殊映射保留：`parent_entity` 的 busy 中止该链查找，其他失败返回 invalid_member 和原 message，不携带 source。
+
+协调先验证所有位姿占用，再创建后端；成员拒绝撤销本成员的计划和占用，重复控制器只保留查询计划。旧 Entry 仍在原替换位置释放，未确认的旧项在末尾按加入序清理。jump、初始冲量和运动学计时只在对应操作成功后消费或前进；查询先清旧结果，失败保留待处理请求，成功才发布并消费。业务容量失败仍不可隔离；宿主 CPU 分配耗尽遵循[工程错误合同](../../engineering.md#错误处理)，不再映射为可恢复的 capacity_exceeded，也不承诺 fatal 时完成补偿清理。
+
 ### 渲染插值
 
 模拟按 60 Hz 固定步推进，显示帧率更高时 World 的位姿每隔几帧才变一次。`presented_poses()` 给出本帧的呈现位姿，交给 `presentation::Scene::update`（见[呈现位姿](../presentation/README.md#呈现位姿)）：最近一个发布了位姿的固定子步里，每个被 World 接受的 Entity 一条，位置在上一位姿和本步位姿之间线性插值，旋转沿短弧 nlerp，比例为 `remaining / step`（剩余时间除以步长，∈ [0, 1)），所以画面最多比模拟晚一步，不外推。只有呈现结果插值：World 的 TRS、玩法、查询、TRS 逐位比较都看本步的权威位姿。
@@ -98,5 +102,7 @@ cmake --build --preset release --target physics_acceptance editor_document_accep
 `physics_acceptance` 按独立场景逐项输出 RUN/PASS/FAIL，只保留当前 Cook 往返、每类数学行为一个独立真值代表和必要生命周期/故障清理序列。当前保留范围与单场景重跑方法见[物理验收](acceptance.md)。`editor_document_acceptance` 覆盖工程缓存、Primitive 配置历史和场景文档；`editor_acceptance` 的真实窗口用例包含 Entity Structure 添加/删除 CollisionComponent 及撤销，运行时需要可授予前台焦点的桌面会话。
 
 编辑器接入的覆盖范围见[场景模型验收](../editor/README.md#场景模型验收)，逐次日志由根 README 的验收门禁记录。
+
+当前仍保留 PhysicsScene 构造期间的 Jolt 注册租约异常补偿，以及普通 body 登记的异常补偿；这两条初始化路径尚未迁移。验收宿主的断言和异常入口也尚未迁移，不代表物理组件或宿主回调另有异常业务通道。
 
 尚未提供 Convex/Compound/Heightfield、焊接、独立查询/模拟参与开关、具名碰撞 Profile、异步查询或专用服务器可执行宿主。刚体逐个加入（`CreateAndAddBody`，约 0.5 µs 一个）；已有刚体的运行中一次生成大批刚体（例如关卡流式加载、一次实例化很多预制体）时也会出现前两步的建树尖峰，Jolt 为此提供批量加入（`AddBodiesPrepare` / `AddBodiesFinalize`），出现运行中大批生成的需求时再测量、再接入。验收代表不等于全部公开行为的组合矩阵，没有测量大规模吞吐，也不承诺跨平台位级确定性；`physics-cpu` 作为独立测量入口保留，不进入验收或 Full 清单。

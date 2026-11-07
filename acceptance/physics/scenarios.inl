@@ -109,7 +109,9 @@ void before_step_exit(bool close) {
     unsigned exits{};
     unsigned after_calls{};
     f.scene->on_before_step([&](std::uint64_t, float) -> atelier::Result<void> {
-        committed(close ? f.world.close() : f.world.stop());
+        ATELIER_TRY_BIND(stopped, close ? f.world.close() : f.world.stop());
+        if (stopped->notification_error)
+            return std::unexpected(*stopped->notification_error);
         ++exits;
         return {};
     });
@@ -160,20 +162,23 @@ void callback_exit(bool contact, bool close) {
     unsigned exits{};
     unsigned after_calls{};
     unsigned contacts{};
-    const auto exit = [&] {
-        committed(close ? f.world.close() : f.world.stop());
+    const auto exit = [&]() -> atelier::Result<void> {
+        ATELIER_TRY_BIND(stopped, close ? f.world.close() : f.world.stop());
+        if (stopped->notification_error)
+            return std::unexpected(*stopped->notification_error);
         ++exits;
+        return {};
     };
     f.scene->on_after_step([&](std::uint64_t, float) -> atelier::Result<void> {
         ++after_calls;
         if (!contact && !exits)
-            exit();
+            return exit();
         return {};
     });
     f.scene->on_contact([&](const p::ContactEvent&) -> atelier::Result<void> {
         ++contacts;
         if (contact && !exits)
-            exit();
+            return exit();
         return {};
     });
     // Contact dispatch follows all three solves; after-step stops after the first.
@@ -232,8 +237,9 @@ void fixed_step() {
     f.scene->on_before_step({});
     f.start();
     require(step(f.world, *f.scene, 0).steps == 0, "a stopped World discards its pending single step");
-    f.scene->on_after_step(
-        [](std::uint64_t, float) -> atelier::Result<void> { throw std::runtime_error("expected after-step failure"); });
+    f.scene->on_after_step([](std::uint64_t, float) -> atelier::Result<void> {
+        return std::unexpected(atelier::Error{atelier::ErrorCode::invocation_failed, "expected after-step failure"});
+    });
     f.scene->step_once();
     require(!f.world.update(0) && f.scene->completed_step() == pending + 1 && !f.world.running(),
             "a failed post-step keeps the completed solve and stops the World");
