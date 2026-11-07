@@ -10,6 +10,9 @@ std::wstring diagnostic_text(std::string_view message) noexcept;
 
 std::string diagnostic_text(std::wstring_view message) noexcept;
 
+// Borrows valid input unchanged, otherwise returns the static diagnostic placeholder.
+std::string_view diagnostic_utf8(std::string_view message) noexcept;
+
 // These bridges own the domain payload, not the underlying diagnostic policy.
 // Draining is performed by the host exactly once at its existing boundary.
 logging::SourceLocation diagnostic_source(const SourceLocation&);

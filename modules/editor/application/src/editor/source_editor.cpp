@@ -415,7 +415,7 @@ void SourceEditor::append(std::vector<ui::Control>& controls, ui::ControlKey par
         conflict,
         source_control::files,
         action({"source.open"}),
-        action({"file.save", assets::json_format::Json::object(), {.selection = {}, .region = RegionKind::code}}),
+        action({"file.save", json::Document{}, {.selection = {}, .region = RegionKind::code}}),
         action({"source.close"}),
         action({"source.reload"}),
         action({"source.new_component"}),

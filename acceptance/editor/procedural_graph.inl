@@ -6,8 +6,7 @@ public:
 
 void verify_procedural_graph() {
     using namespace procedural;
-    using Json = nlohmann::json;
-    const auto authored = Json::parse(R"({
+    const auto& authored = json::Document::literal<R"({
         "version": 1,
         "settings": {"seed": 7, "display": "moved"},
         "nodes": {
@@ -77,8 +76,9 @@ void verify_procedural_graph() {
                 "inputs": {"sources": ["tube.output", "sphere.output"], "points": "remap.output"}
             }
         }
-    })");
-    const auto text = authored.dump(2) + "\n";
+    })">();
+    const auto text_bytes = json::write(authored.root(), {true, true});
+    const std::string text{text_bytes.data(), text_bytes.size()};
     Runtime runtime;
     take(register_types(runtime));
     auto program = take(source::Program::create(runtime));
@@ -128,7 +128,7 @@ void verify_procedural_graph() {
             String value;
             take(runtime.read(id, take(runtime.find_field(owner, name)),
                               ValueOutput{take(runtime.native_type<String>()), &value}));
-            require(value.view().std_view() == authored["nodes"][node]["properties"][name].get<std::string>(),
+            require(authored.root().string({"nodes", node, "properties", name}) == value.view().std_view(),
                     "An authored Source selector did not reach its String field.");
         }
     }
@@ -162,12 +162,16 @@ void verify_procedural_graph() {
         "The authored display, edge or canonical v1 bytes changed.");
 
     // The only tolerant fixture: a missing type stays null and keeps all of its frozen JSON.
-    auto missing = authored;
-    missing["nodes"]["mystery"] = {{"type", "game.Missing"},
-                                   {"position", {10.5, 20.0}},
-                                   {"properties", {{"x", 1}}},
-                                   {"inputs", {{"source", "grid.output"}}}};
-    const auto missing_text = missing.dump(2) + "\n";
+    json::Builder missing{authored};
+    require(missing
+                .set(*missing.root().at("nodes"), "mystery",
+                     json::Document::literal<R"({"type":"game.Missing","position":[10.5,20.0],
+                            "properties":{"x":1},"inputs":{"source":"grid.output"}})">()
+                         .root())
+                .has_value(),
+            "Missing-node fixture construction failed.");
+    const auto missing_bytes = json::write(missing.root(), {true, true});
+    const std::string missing_text{missing_bytes.data(), missing_bytes.size()};
     auto tolerant = take(editor::load_graph(runtime, missing_text));
     const auto mystery = std::ranges::find(tolerant.nodes, std::string{"mystery"}, &editor::GraphNode::name);
     require(mystery != tolerant.nodes.end() && !mystery->node.registered() &&
@@ -185,10 +189,13 @@ void verify_procedural_graph() {
         return std::unexpected(Error{ErrorCode::construction_failed, "This node cannot be constructed."});
     };
     take(runtime.register_type(std::move(rejected)));
-    auto invalid = authored;
-    invalid["nodes"]["grid"]["type"] = "graphAcceptance.Rejected";
-    invalid["nodes"]["grid"]["properties"] = Json::object();
-    const auto failed = editor::load_graph(runtime, invalid.dump());
+    json::Builder invalid{authored};
+    const auto invalid_grid = invalid.root().path({"nodes", "grid"});
+    require(invalid_grid && invalid.set(*invalid_grid, "type", "graphAcceptance.Rejected") &&
+                invalid.set(*invalid_grid, "properties", json::Document::literal<"{}">().root()),
+            "Rejected-node fixture construction failed.");
+    const auto invalid_bytes = json::write(invalid.root());
+    const auto failed = editor::load_graph(runtime, {invalid_bytes.data(), invalid_bytes.size()});
     require(!failed && failed.error().code == ErrorCode::construction_failed,
             "A node that failed to construct was kept as an unknown type.");
     std::puts("Procedural graph files: PASS (authored v1 bytes, missing-type frozen roundtrip, constructor failure)");

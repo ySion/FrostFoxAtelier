@@ -9,7 +9,6 @@ constexpr std::array<timing::Marker*, 1> profile_markers{&profile_calibration};
 // the Play start and each of the first five frames.
 void profile_physics_cpu(const std::filesystem::path& root, std::string_view scene,
                          const std::filesystem::path& output) {
-    using Json = nlohmann::json;
     require(output.is_absolute() && !std::filesystem::exists(output), "Choose a new absolute physics profile file.");
     application::install_frame_timing(profile_markers);
     timing::Recorder recorder;
@@ -28,7 +27,8 @@ void profile_physics_cpu(const std::filesystem::path& root, std::string_view sce
     std::array<std::vector<double>, 5> active;
     std::array<std::vector<double>, 5> sleeping;
     // Costs that only the first steps pay, such as building the broad phase, vanish in the medians.
-    Json first_frames = Json::array();
+    json::Builder report;
+    const auto first_frames = take(report.array(report.root(), "first_frames"));
     application::SceneSnapshot snapshot;
     std::size_t steps{};
     std::size_t quiet{};
@@ -45,12 +45,15 @@ void profile_physics_cpu(const std::filesystem::path& root, std::string_view sce
                     "Physics profile recorded a misplaced or unregistered phase.");
         }
         steps += physics.last_step().steps;
-        if (frames < 5)
-            first_frames.push_back(
-                {{"step_ms",
-                  std::chrono::duration<double, std::milli>(recorder.last().time(physics::phases::step)).count()},
-                 {"solve_ms",
-                  std::chrono::duration<double, std::milli>(recorder.last().time(physics::phases::solve)).count()}});
+        if (frames < 5) {
+            const auto frame = report.append_object(first_frames);
+            take(report.set(
+                frame, "step_ms",
+                std::chrono::duration<double, std::milli>(recorder.last().time(physics::phases::step)).count()));
+            take(report.set(
+                frame, "solve_ms",
+                std::chrono::duration<double, std::milli>(recorder.last().time(physics::phases::solve)).count()));
+        }
         const bool awake = physics.active_body_count() != 0;
         auto& bucket = awake ? active : sleeping;
         for (std::size_t i = 0; i < phases.size(); ++i)
@@ -61,49 +64,51 @@ void profile_physics_cpu(const std::filesystem::path& root, std::string_view sce
     }
     const auto root_text = platform::utf16_to_utf8(root.native());
     require(bool(root_text), "Invalid UTF-16 profile root.");
-    Json report{{"schema", "atelier.editor.physics-cpu.v1"},
-                {"project", *root_text},
-                {"scene", scene},
-                {"bodies", physics.body_count()},
-                {"frames", frames},
-                {"steps", steps},
-                {"active_frames", active[0].size()},
-                {"sleeping_frames", sleeping[0].size()},
-                {"start_ms", started.count()},
-                {"first_frames", first_frames}};
+    take(report.set(report.root(), "schema", "atelier.editor.physics-cpu.v1"));
+    take(report.set(report.root(), "project", *root_text));
+    take(report.set(report.root(), "scene", scene));
+    take(report.set(report.root(), "bodies", physics.body_count()));
+    take(report.set(report.root(), "frames", frames));
+    take(report.set(report.root(), "steps", steps));
+    take(report.set(report.root(), "active_frames", active[0].size()));
+    take(report.set(report.root(), "sleeping_frames", sleeping[0].size()));
+    take(report.set(report.root(), "start_ms", started.count()));
 #ifdef NDEBUG
-    report["configuration"] = "release";
+    take(report.set(report.root(), "configuration", "release"));
 #else
-    report["configuration"] = "dev";
+    take(report.set(report.root(), "configuration", "dev"));
 #endif
     for (const auto& [name, bucket] : {std::pair{"active", &active}, std::pair{"sleeping", &sleeping}}) {
         if ((*bucket)[0].empty())
             continue;
+        const auto group = take(report.object(report.root(), name));
         for (std::size_t i = 0; i < phases.size(); ++i) {
             auto values = (*bucket)[i];
             std::ranges::sort(values);
-            report[name][std::string(phases[i]->key())] = {{"median_ms", values[values.size() / 2]},
-                                                           {"p95_ms", values[values.size() * 95 / 100]}};
+            const auto phase = take(report.object(group, phases[i]->key()));
+            take(report.set(phase, "median_ms", values[values.size() / 2]));
+            take(report.set(phase, "p95_ms", values[values.size() * 95 / 100]));
         }
         auto refreshes = (*bucket)[4];
         std::ranges::sort(refreshes);
-        report[name]["snapshot.refresh"] = {{"median_ms", refreshes[refreshes.size() / 2]},
-                                            {"p95_ms", refreshes[refreshes.size() * 95 / 100]}};
+        const auto refresh = take(report.object(group, "snapshot.refresh"));
+        take(report.set(refresh, "median_ms", refreshes[refreshes.size() / 2]));
+        take(report.set(refresh, "p95_ms", refreshes[refreshes.size() * 95 / 100]));
         std::printf("Physics CPU %s frames %zu: reconcile %.3f, solve %.3f, write_back %.3f, snapshot %.3f ms median\n",
-                    name, (*bucket)[0].size(), report[name]["physics.reconcile"]["median_ms"].get<double>(),
-                    report[name]["physics.solve"]["median_ms"].get<double>(),
-                    report[name]["physics.write_back"]["median_ms"].get<double>(),
-                    report[name]["snapshot.refresh"]["median_ms"].get<double>());
+                    name, (*bucket)[0].size(), take(group.number({"physics.reconcile", "median_ms"})),
+                    take(group.number({"physics.solve", "median_ms"})),
+                    take(group.number({"physics.write_back", "median_ms"})),
+                    take(group.number({"snapshot.refresh", "median_ms"})));
     }
     changed(play->stop());
-    take(editor::write_file(output, report.dump(2) + "\n"));
+    const auto bytes = json::write(report.root(), {.pretty = true, .trailing_lf = true});
+    take(editor::write_file(output, {bytes.data(), bytes.size()}));
 }
 
 // Loads the real project through Session and measures existing CPU consumers.
 // No window, graphics device or author edits; only the Play stages use a second World.
 void profile_scene_cpu(const std::filesystem::path& root, std::string_view scene, const std::filesystem::path& output,
                        const std::filesystem::path& camera_report) {
-    using Json = nlohmann::json;
     require(output.is_absolute() && !std::filesystem::exists(output), "Choose a new absolute CPU profile file.");
     application::install_frame_timing(profile_markers);
     timing::Recorder recorder;
@@ -161,35 +166,34 @@ void profile_scene_cpu(const std::filesystem::path& root, std::string_view scene
     // inputs use typed values; only an entirely empty table needs one sentinel.
     const auto root_text = platform::utf16_to_utf8(root.native());
     require(bool(root_text), "Invalid UTF-16 profile root.");
-    Json report{
-        {"schema", "atelier.editor.scene-cpu.v4"},
-        {"project", *root_text},
-        {"scene", scene},
-        {"gpu", false},
-        {"samples", 121},
-        {"warmup", 20},
-        {"source_bytes", source.size()},
-        {"entities", take(document->world().members()).size()},
-        {"selected_entities", document->selected_entities().size()},
-        {"meshes", snapshot.meshes.size()},
-        {"unique_geometries", unique.size()},
-        {"instance_triangles", triangles},
-        {"unique_sampled_images", sampled_images},
-        {"material_texture_table_entries", std::max(std::size_t{1}, sampled_images)},
-        {"material_bindings", material_bindings},
-        {"unique_bound_materials", materials.size()},
-        {"semantics",
-         "Independent CPU calls, including temporary destruction, in one loaded project; each sample is one frame-timing Recorder frame. No GPU, Present or FPS estimate. Workspace stages include DSL commit without an accepted UI frame; ui_docked adds headless Session set_controls, prepare and accept."}};
+    json::Builder report{
+        json::Document::literal<R"({"schema":"atelier.editor.scene-cpu.v4","gpu":false,"samples":121,"warmup":20})">()};
+    take(report.set(report.root(), "project", *root_text));
+    take(report.set(report.root(), "scene", scene));
+    take(report.set(report.root(), "source_bytes", source.size()));
+    take(report.set(report.root(), "entities", take(document->world().members()).size()));
+    take(report.set(report.root(), "selected_entities", document->selected_entities().size()));
+    take(report.set(report.root(), "meshes", snapshot.meshes.size()));
+    take(report.set(report.root(), "unique_geometries", unique.size()));
+    take(report.set(report.root(), "instance_triangles", triangles));
+    take(report.set(report.root(), "unique_sampled_images", sampled_images));
+    take(report.set(report.root(), "material_texture_table_entries", std::max(std::size_t{1}, sampled_images)));
+    take(report.set(report.root(), "material_bindings", material_bindings));
+    take(report.set(report.root(), "unique_bound_materials", materials.size()));
+    take(report.set(
+        report.root(), "semantics",
+        "Independent CPU calls, including temporary destruction, in one loaded project; each sample is one frame-timing Recorder frame. No GPU, Present or FPS estimate. Workspace stages include DSL commit without an accepted UI frame; ui_docked adds headless Session set_controls, prepare and accept."));
     if (!camera_report.empty()) {
         // Consume the accepted product matrices, including its actual aspect.
-        const auto reference = Json::parse(take(assets::read_file(camera_report)));
-        const auto& viewport = reference.at("viewport");
-        const auto& camera = reference.at("camera");
-        const auto width = viewport.at("receiver_pixel_extent").at(0).get<float>();
-        const auto height = viewport.at("receiver_pixel_extent").at(1).get<float>();
-        const renderer::detail::SceneFrustum frustum(camera.at("view_matrix").get<std::array<float, 16>>(),
-                                                     camera.at("projection_matrix").get<std::array<float, 16>>(), width,
-                                                     height, camera.at("far_depth").get<float>());
+        const auto reference = take(assets::json_format::parse(take(assets::read_file(camera_report))));
+        const auto viewport = take(reference.root().path({"viewport", "receiver_pixel_extent"}));
+        const auto camera = take(reference.root().at("camera"));
+        const auto width = take(take(viewport.at(0)).f32());
+        const auto height = take(take(viewport.at(1)).f32());
+        const renderer::detail::SceneFrustum frustum(
+            take(assets::json_format::vector<16>(take(camera.at("view_matrix")))),
+            take(assets::json_format::vector<16>(take(camera.at("projection_matrix")))), width, height,
+            take(camera.f32({"far_depth"})));
         // The Renderer draws each visible geometry once per surface pass; parts count its material slots in use.
         std::unordered_set<const geometry::Mesh*> drawn;
         std::size_t visible{};
@@ -205,20 +209,24 @@ void profile_scene_cpu(const std::filesystem::path& root, std::string_view scene
         }
         const auto camera_report_text = platform::utf16_to_utf8(camera_report.native());
         require(bool(camera_report_text), "Invalid UTF-16 camera report path.");
-        report["visibility"] = {{"camera_report", *camera_report_text},
-                                {"camera", camera},
-                                {"pixel_extent", {width, height}},
-                                {"visible_instances", visible},
-                                {"culled_instances", snapshot.meshes.size() - visible},
-                                {"visible_geometries", drawn.size()},
-                                {"visible_geometry_parts", visible_geometry_parts},
-                                {"visible_instance_triangles", visible_triangles}};
+        const auto visibility = take(report.object(report.root(), "visibility"));
+        take(report.set(visibility, "camera_report", *camera_report_text));
+        take(report.set(visibility, "camera", camera));
+        const auto extent = take(report.array(visibility, "pixel_extent"));
+        take(report.append(extent, width));
+        take(report.append(extent, height));
+        take(report.set(visibility, "visible_instances", visible));
+        take(report.set(visibility, "culled_instances", snapshot.meshes.size() - visible));
+        take(report.set(visibility, "visible_geometries", drawn.size()));
+        take(report.set(visibility, "visible_geometry_parts", visible_geometry_parts));
+        take(report.set(visibility, "visible_instance_triangles", visible_triangles));
     }
 #ifdef NDEBUG
-    report["configuration"] = "release";
+    take(report.set(report.root(), "configuration", "release"));
 #else
-    report["configuration"] = "dev";
+    take(report.set(report.root(), "configuration", "dev"));
 #endif
+    const auto stages = take(report.object(report.root(), "stages"));
     // An optional inspector receives each sample's frame record, warmup included.
     const auto measure = [&](std::string_view name, auto&& operation, auto&&... inspect) {
         std::vector<double> samples;
@@ -231,8 +239,10 @@ void profile_scene_cpu(const std::filesystem::path& root, std::string_view scene
         }
         const auto total = std::accumulate(samples.begin(), samples.end(), 0.);
         std::ranges::sort(samples);
-        report["stages"][name] = {
-            {"mean_ms", total / samples.size()}, {"median_ms", samples[60]}, {"p95_ms", samples[114]}};
+        const auto stage = take(report.object(stages, name));
+        take(report.set(stage, "mean_ms", total / samples.size()));
+        take(report.set(stage, "median_ms", samples[60]));
+        take(report.set(stage, "p95_ms", samples[114]));
         std::printf("Scene CPU %.*s: %.3f ms median\n", static_cast<int>(name.size()), name.data(), samples[60]);
     };
     measure("render_items", [&] { take(document->presentation().render_items()); });
@@ -286,7 +296,7 @@ void profile_scene_cpu(const std::filesystem::path& root, std::string_view scene
             spatial += take(world::has_transform(runtime, member.id()));
         }
         require(leaf != ObjectId{}, "CPU profile requires a leaf Entity.");
-        report["spatial_entities"] = spatial;
+        take(report.set(report.root(), "spatial_entities", spatial));
         const bool enabled = take(world::inspect_entity(runtime, leaf)).enabled;
         measure("enabled_toggle_pair", [&] {
             changed(world.set_enabled(leaf, !enabled));
@@ -303,7 +313,7 @@ void profile_scene_cpu(const std::filesystem::path& root, std::string_view scene
         });
         const auto once = [&](std::string_view name, auto&& operation) {
             const auto elapsed = sample(operation);
-            report["stages"][name] = {{"single_ms", elapsed}};
+            take(report.set(take(report.object(stages, name)), "single_ms", elapsed));
             std::printf("Scene CPU %.*s: %.3f ms single\n", static_cast<int>(name.size()), name.data(), elapsed);
         };
         // Like the Play process, Play runs on its own copy of the source, so dynamic bodies leave the document unchanged.
@@ -342,14 +352,16 @@ void profile_scene_cpu(const std::filesystem::path& root, std::string_view scene
                 for (const auto* marker : timing::catalog())
                     phases[marker->index()].push_back(milliseconds(record.time(*marker)));
             });
+        const auto phase_records = take(report.object(take(stages.at("play_update")), "phases"));
         for (const auto module : {std::span<timing::Marker* const>(world::phases::markers),
                                   std::span<timing::Marker* const>(physics::phases::markers)})
             for (const auto* marker : module) {
                 auto& values = phases[marker->index()];
                 values.erase(values.begin(), values.begin() + 20);
                 std::ranges::sort(values);
-                report["stages"]["play_update"]["phases"][std::string(marker->key())] = {{"median_ms", values[60]},
-                                                                                         {"p95_ms", values[114]}};
+                const auto record = take(report.object(phase_records, marker->key()));
+                take(report.set(record, "median_ms", values[60]));
+                take(report.set(record, "p95_ms", values[114]));
             }
         once("play_stop", [&] { changed(play->stop()); });
     }
@@ -384,8 +396,8 @@ void profile_scene_cpu(const std::filesystem::path& root, std::string_view scene
             controls = described.size();
             rows = (*frame)->tree_rows.size();
         });
-        report["stages"]["ui_docked"]["controls"] = controls;
-        report["stages"]["ui_docked"]["tree_rows"] = rows;
+        take(report.set(take(stages.at("ui_docked")), "controls", controls));
+        take(report.set(take(stages.at("ui_docked")), "tree_rows", rows));
         std::printf("Scene CPU ui_docked: %zu controls, %zu tree rows\n", controls, rows);
     }
     {
@@ -403,16 +415,18 @@ void profile_scene_cpu(const std::filesystem::path& root, std::string_view scene
                 samples.push_back(double(record.time(timing::frame).count()) / scopes);
         }
         std::ranges::sort(samples);
-        report["timing_scope_ns"] = {
-            {"median", samples[15]},
-            {"scopes_per_sample", scopes},
-            {"semantics", "Frame root time divided by sequential empty scopes, including loop overhead."}};
+        const auto timing_scope = take(report.object(report.root(), "timing_scope_ns"));
+        take(report.set(timing_scope, "median", samples[15]));
+        take(report.set(timing_scope, "scopes_per_sample", scopes));
+        take(report.set(timing_scope, "semantics",
+                        "Frame root time divided by sequential empty scopes, including loop overhead."));
         std::printf("Scene CPU timing scope: %.1f ns median\n", samples[15]);
     }
     require(take(document->serialize()) == original && take(assets::read_file(path)) == source && !document->dirty() &&
                 document->undo_count() == 0 && document->redo_count() == 0,
             "CPU profile changed the document or source Scene.");
-    report["status"] = "pass";
+    take(report.set(report.root(), "status", "pass"));
     std::filesystem::create_directories(output.parent_path());
-    take(editor::write_file(output, report.dump(2) + "\n", editor::WriteMode::create));
+    const auto bytes = json::write(report.root(), {.pretty = true, .trailing_lf = true});
+    take(editor::write_file(output, {bytes.data(), bytes.size()}, editor::WriteMode::create));
 }

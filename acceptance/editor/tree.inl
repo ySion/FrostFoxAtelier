@@ -34,7 +34,7 @@ void verify_tree_view(Application& app, const std::filesystem::path& output, ate
     key(app, VK_LEFT);
     require(!app.presented()->find(entity_key), "World collapse did not hide its Entities");
     key(app, 'W', true);
-    click(app, operator_item(app, "layout.show", {{"tab", "scene_tree"}}));
+    click(app, operator_item(app, "layout.show", atelier::json::Document::literal<R"({"tab":"scene_tree"})">()));
     require(!row(control::tree_world).expanded && !app.presented()->find(entity_key),
             "Reopening Scene Tree lost its expansion state");
     click(app, control::tree_world);
@@ -46,7 +46,7 @@ void verify_tree_view(Application& app, const std::filesystem::path& output, ate
     const auto root =
         component_object(app.document(), entity, app.document().presentation_types().static_mesh_component);
     const auto members = model(atelier::world::components(app.document().world().runtime(), entity)).size();
-    click(app, operator_item(app, "layout.show", {{"tab", "structure"}}));
+    click(app, operator_item(app, "layout.show", atelier::json::Document::literal<R"({"tab":"structure"})">()));
     const auto structure_entity = Access::structure_control(app, entity);
     const auto structure_root = Access::structure_control(app, root);
     require(structure_entity && structure_root && child_of(structure_root, structure_entity) &&
@@ -111,7 +111,7 @@ void verify_tree_view(Application& app, const std::filesystem::path& output, ate
                     root,
             "Undoing structure creation changed the Entity's original root or composition.");
     capture(app, output / "entity-structure.png");
-    click(app, operator_item(app, "layout.show", {{"tab", "scene_tree"}}));
+    click(app, operator_item(app, "layout.show", atelier::json::Document::literal<R"({"tab":"scene_tree"})">()));
     click(app, app.object_control(entity));
     const auto in_scene_tree = [&](ControlKey key) {
         while (const auto* box = app.presented()->find(key)) {

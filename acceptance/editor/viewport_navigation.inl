@@ -44,7 +44,7 @@ void verify_viewport_navigation(Application& app, const std::filesystem::path& o
     require(Access::menu_open(app) && app.presented()->popup == control::viewport_pie,
             "Accent-grave did not open the viewport axis pie.");
     capture(app, output / "view-axis-pie.png");
-    click(centre(Access::operator_item(app, "view.axis", {{"view", "perspective"}})));
+    click(centre(Access::operator_item(app, "view.axis", json::Document::literal<R"({"view":"perspective"})">())));
     require(!Access::menu_open(app) && Access::camera_mode(app) == editor::CameraView::perspective,
             "Axis pie selected the wrong camera view or retained the menu.");
     pointer(ui::EventKind::pointer_move, origin);

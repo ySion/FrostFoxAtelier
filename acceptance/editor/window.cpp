@@ -199,13 +199,11 @@ struct EditorAcceptanceAccess {
         app.document_->mark_saved();
     }
 
-    static Result<void> invoke(Application& app, std::string id,
-                               assets::json_format::Json args = assets::json_format::Json::object()) {
+    static Result<void> invoke(Application& app, std::string id, json::Document args = {}) {
         return app.run_operator({std::move(id), std::move(args)}, true);
     }
 
-    static ui::ControlKey operator_item(const Application& app, std::string id,
-                                        assets::json_format::Json args = assets::json_format::Json::object()) {
+    static ui::ControlKey operator_item(const Application& app, std::string id, json::Document args = {}) {
         const auto matches = [&](ui::ControlKey key) {
             const auto* binding = app.workspace_.binding(key);
             return binding && binding->call && binding->call->request.id == id && binding->call->request.args == args;
@@ -1102,8 +1100,7 @@ void click(Application& app, ControlKey key) {
     click_at(app, point);
 }
 
-ControlKey operator_item(Application& app, std::string id,
-                         atelier::assets::json_format::Json args = atelier::assets::json_format::Json::object()) {
+ControlKey operator_item(Application& app, std::string id, atelier::json::Document args = {}) {
     using Access = atelier::application::EditorAcceptanceAccess;
     auto key = Access::operator_item(app, id, args);
     if (app.presented()->find(key) || command_tool(app, key) || (app.menu_frame() && app.menu_frame()->find(key)))
@@ -1303,7 +1300,7 @@ void verify_retired_field(Application& app, const std::filesystem::path& output,
     const auto field = property_control(app, object, 0);
     const auto before = x(app, object);
     click(app, app.object_control(object));
-    click(app, operator_item(app, "scene.delete", {{"target", "object"}}));
+    click(app, operator_item(app, "scene.delete", atelier::json::Document::literal<R"({"target":"object"})">()));
     const auto disabled = std::ranges::find_if(app.presented()->controls, [](const auto& control) {
         return control.parent == 51 && control.kind == atelier::ui::ControlKind::text_edit;
     });
@@ -1638,10 +1635,10 @@ void verify_list_workload(Application& app, const std::filesystem::path& output)
     // Populate through the real Create menu and its native popup surface.
     while (entities(app).size() + 1 < 256) {
         const auto before_count = entities(app).size();
-        click(app, operator_item(app, "scene.add", {{"kind", "entity"}}));
+        click(app, operator_item(app, "scene.add", atelier::json::Document::literal<R"({"kind":"entity"})">()));
         require(entities(app).size() == before_count + 1, "Create menu failed to populate the real list workload.");
     }
-    click(app, operator_item(app, "scene.add", {{"kind", "mesh"}}));
+    click(app, operator_item(app, "scene.add", atelier::json::Document::literal<R"({"kind":"mesh"})">()));
     const auto first = entities(app).front().id();
     const auto last = entities(app).back().id();
     // Scene Tree describes rows near its viewport; an undescribed row emits no text.
@@ -1820,7 +1817,7 @@ int capture_editor_snapshot(Application& app, const char* output_directory) {
         png(image, output / name);
     };
     settle();
-    model(Access::invoke(app, "scene.add", {{"kind", "mesh"}}));
+    model(Access::invoke(app, "scene.add", atelier::json::Document::literal<R"({"kind":"mesh"})">()));
     Access::set_cursor(app, {1.4f, 0, -1.1f});
     Access::set_tool(app, atelier::editor::TransformTool::rotate);
     shot("snapshot-rotate.png");
@@ -1853,7 +1850,7 @@ int capture_editor_snapshot(Application& app, const char* output_directory) {
     shot("snapshot-modal-rotate.png");
     Access::tool_cancel(app);
     // An enum menu and colour swatch row, through the real light creation command.
-    model(Access::invoke(app, "scene.add", {{"kind", "rectangle"}}));
+    model(Access::invoke(app, "scene.add", atelier::json::Document::literal<R"({"kind":"rectangle"})">()));
     shot("snapshot-light-parameters.png");
     if (const auto pick = Access::color_pick(app)) {
         model(Access::ui_action(app, pick));
@@ -1925,7 +1922,8 @@ int verify_editor_shortcuts(Application& app, const char* output_directory) {
         std::filesystem::create_directories(output);
         tick(app);
         verify_viewport_splitter_drag(app);
-        require(bool(Access::invoke(app, "scene.add", {{"kind", "mesh"}})), "Shortcut scene creation failed.");
+        require(bool(Access::invoke(app, "scene.add", atelier::json::Document::literal<R"({"kind":"mesh"})">())),
+                "Shortcut scene creation failed.");
         tick(app);
         verify_viewport_navigation(app, output);
         verify_menu_input_transitions(app);
@@ -2030,14 +2028,17 @@ int verify_editor_shortcuts(Application& app, const char* output_directory) {
         key('X');
         tick(app);
         require(app.menu_frame() &&
-                    app.menu_frame()->find(Access::operator_item(app, "scene.delete", {{"target", "entities"}})),
+                    app.menu_frame()->find(Access::operator_item(
+                        app, "scene.delete", atelier::json::Document::literal<R"({"target":"entities"})">())),
                 "X did not open its confirmation menu.");
         RECT popup{};
         GetWindowRect(app.menu_window(), &popup);
         POINT client{static_cast<LONG>(x), static_cast<LONG>(y)};
         ClientToScreen(app.window(), &client);
-        const auto item =
-            app.menu_frame()->find(Access::operator_item(app, "scene.delete", {{"target", "entities"}}))->bounds;
+        const auto item = app.menu_frame()
+                              ->find(Access::operator_item(
+                                  app, "scene.delete", atelier::json::Document::literal<R"({"target":"entities"})">()))
+                              ->bounds;
         require(client.x - popup.left >= item.x && client.x - popup.left < item.x + item.width &&
                     client.y - popup.top >= item.y && client.y - popup.top < item.y + item.height,
                 "Delete confirmation did not place its action under the invocation point.");
@@ -2198,7 +2199,7 @@ int verify_editor_output(Application& app, const char* output_directory) {
     std::filesystem::create_directories(output);
     await_acceptance_activation(app, output, "Output");
     tick(app);
-    click(app, operator_item(app, "scene.add", {{"kind", "mesh"}}));
+    click(app, operator_item(app, "scene.add", atelier::json::Document::literal<R"({"kind":"mesh"})">()));
     verify_output_window(app, output);
     Access::mark_saved(app);
     SendMessageW(app.window(), WM_CLOSE, 0, 0);
@@ -2221,7 +2222,7 @@ int verify_editor_source(Application& app, const char* output_directory) {
     const auto path = output / "editor.ui.source";
     Access::ui_source(app, path);
     await_acceptance_activation(app, output, "source");
-    click(app, operator_item(app, "scene.add", {{"kind", "mesh"}}));
+    click(app, operator_item(app, "scene.add", atelier::json::Document::literal<R"({"kind":"mesh"})">()));
     const auto scene_history = app.document().undo_count();
     click(app, operator_item(app, "source.open_editor_ui"));
     tick(app, 3);
@@ -2379,7 +2380,7 @@ int verify_editor_window(Application& app, const char* output_directory) {
         click(app, control::file_menu);
         require(app.menu_window() == retained_popup, "Warm open replaced the native popup window.");
         key(app, VK_ESCAPE);
-        click(app, operator_item(app, "scene.add", {{"kind", "mesh"}}));
+        click(app, operator_item(app, "scene.add", atelier::json::Document::literal<R"({"kind":"mesh"})">()));
         require(entities(app).size() == 1 && app.document().undo_count() == 1,
                 "Static mesh creation was not a single document command.");
         require(model(app.document().world().runtime().type_of(app.document().selection().entity)) ==
@@ -2512,7 +2513,7 @@ int verify_editor_window(Application& app, const char* output_directory) {
         const auto old_entity_control = app.object_control(object);
         const auto old_field_control = field;
         click(app, app.object_control(object));
-        click(app, operator_item(app, "scene.delete", {{"target", "object"}}));
+        click(app, operator_item(app, "scene.delete", atelier::json::Document::literal<R"({"target":"object"})">()));
         require(!contains(app, object), "Deleted object remained a member.");
         tick(app, 64); // host GC crosses complete cycles while only history holds this object
         click(app, operator_item(app, "edit.undo"));
@@ -3037,7 +3038,7 @@ int verify_editor_ime(Application& app, const char* output_directory) try {
     physical_key(VK_ESCAPE);
     require(app.query() == L"位置", "Clean-state Space cancellation did not restore the committed query.");
     if (entities(app).empty())
-        click(app, operator_item(app, "scene.add", {{"kind", "mesh"}}));
+        click(app, operator_item(app, "scene.add", atelier::json::Document::literal<R"({"kind":"mesh"})">()));
     const auto object = app.document().selection().entity;
     click(app, property_control(app, object, 0));
     compose_position();
@@ -3110,7 +3111,7 @@ int verify_editor_ime(Application& app, const char* output_directory) try {
     require(x(app, object) == 0, "Space after switching editable fields changed the old object's value.");
     require(!app.document().editing(), "Space in the search field retained a numeric business edit.");
     physical_key(VK_ESCAPE);
-    click(app, operator_item(app, "scene.add", {{"kind", "mesh"}}));
+    click(app, operator_item(app, "scene.add", atelier::json::Document::literal<R"({"kind":"mesh"})">()));
     const auto other = app.document().selection().entity;
     const auto other_x = x(app, other);
     click(app, app.object_control(object));

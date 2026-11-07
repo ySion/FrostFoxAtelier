@@ -24,17 +24,26 @@ void verify_entity_composition() {
         play->enter_play();
         grouped.set_live_forwarding(true);
         const auto sync = [&] {
-            using nlohmann::json;
-            auto ops = json::array();
-            for (const auto& op : take(grouped.take_live_ops()))
-                ops.push_back(json::parse(op.text));
-            require(!ops.empty() && take(play->apply_live(json{{"ops", ops}}.dump(), project)).empty(),
+            json::Builder batch;
+            const auto ops = batch.array(batch.root(), "ops");
+            require(ops.has_value(), "Live operation array construction failed.");
+            for (const auto& op : take(grouped.take_live_ops())) {
+                const auto parsed = assets::json_format::parse(op.text);
+                require(parsed.has_value(), "Recorded Live operation failed to parse.");
+                batch.append(*ops, parsed->root());
+            }
+            const auto bytes = json::write(batch.root());
+            require(ops->size() != 0 && take(play->apply_live({bytes.data(), bytes.size()}, project)).empty(),
                     "Group reparent Live failed to apply the recorded moves.");
-            auto actual = json::parse(take(play->serialize()));
-            auto expected = json::parse(take(grouped.serialize()));
-            actual.erase("next_id");
-            expected.erase("next_id");
-            require(actual == expected, "Group reparent Live diverged in order, transforms or object identities.");
+            const auto actual_json = assets::json_format::parse(take(play->serialize()));
+            const auto expected_json = assets::json_format::parse(take(grouped.serialize()));
+            require(actual_json && expected_json, "Live scene serialization failed to parse.");
+            json::Builder actual{*actual_json};
+            json::Builder expected{*expected_json};
+            actual.erase(actual.root(), "next_id");
+            expected.erase(expected.root(), "next_id");
+            require(actual.root() == expected.root(),
+                    "Group reparent Live diverged in order, transforms or object identities.");
         };
         const auto history = grouped.undo_count();
         const auto recorded = grouped.recorded();
@@ -424,14 +433,17 @@ void verify_entity_composition() {
                 take(world::children(runtime, copy)).size() == 1,
             "Duplicating a complete Entity did not clone its recursive subtree.");
     changed(document.undo());
-    auto undone = nlohmann::json::parse(take(document.serialize()));
-    auto original_graph = nlohmann::json::parse(original);
-    require(std::stoull(undone["next_id"].get<std::string>()) >=
-                std::stoull(original_graph["next_id"].get<std::string>()),
+    const auto undone_json = assets::json_format::parse(take(document.serialize()));
+    const auto original_json = assets::json_format::parse(original);
+    require(undone_json && original_json, "Duplicate scene serialization failed to parse.");
+    json::Builder undone{*undone_json};
+    json::Builder original_graph{*original_json};
+    require(std::stoull(std::string(*undone.root().string({"next_id"}))) >=
+                std::stoull(std::string(*original_graph.root().string({"next_id"}))),
             "Undo reused persistent local IDs.");
-    undone.erase("next_id");
-    original_graph.erase("next_id");
-    require(undone == original_graph, "Duplicate Undo did not preserve original graph identities.");
+    undone.erase(undone.root(), "next_id");
+    original_graph.erase(original_graph.root(), "next_id");
+    require(undone.root() == original_graph.root(), "Duplicate Undo did not preserve original graph identities.");
     changed(document.redo());
     require(document.selection().entity == copy, "Duplicate Redo replaced copied root identity.");
     take(document.select_entities(selection, child));
@@ -636,9 +648,11 @@ void verify_entity_composition() {
         const auto descendant = forest.selection().entity;
         changed(forest.reparent(descendant, follower, world::ReparentRule::keep_local));
         const auto graph = [&] {
-            auto value = nlohmann::json::parse(take(forest.serialize()));
-            value.erase("next_id");
-            return value;
+            const auto parsed = assets::json_format::parse(take(forest.serialize()));
+            require(parsed.has_value(), "Forest serialization failed to parse.");
+            json::Builder value{*parsed};
+            value.erase(value.root(), "next_id");
+            return value.finish();
         };
         const auto children = [&](ObjectId parent) {
             std::vector<ObjectId> ids;
@@ -733,24 +747,35 @@ void verify_entity_composition() {
                         ValueForm::strong_reference,
                 "Subtree acceptance did not exercise a real reflected weak reference and strong reference sequence.");
         const auto subtree = take(graph.serialize_subtree(original));
-        const auto subtree_json = nlohmann::json::parse(subtree);
-        const auto row = [](const nlohmann::json& source, const std::string& id) -> const nlohmann::json& {
-            for (const auto& entity : source.at("entities"))
-                if (entity.at("id") == id)
+        const auto subtree_json = assets::json_format::parse(subtree);
+        require(subtree_json.has_value(), "Subtree serialization failed to parse.");
+        const auto row = [](json::Value source, std::string_view id) {
+            const auto entities = source.at("entities")->array();
+            require(entities.has_value(), "Subtree entities must be an array.");
+            for (auto entity : *entities)
+                if (entity.string({"id"}) == id)
                     return entity;
             throw std::runtime_error("Expected stable Entity local ID is absent.");
         };
-        const auto root_id = subtree_json.at("roots")[0].get<std::string>();
-        const auto child_ids = row(subtree_json, root_id).at("children");
+        const auto root_id = *subtree_json->root().at("roots")->at(0)->string();
+        const auto child_ids = row(subtree_json->root(), root_id).at("children");
+        const auto first_id = *child_ids->at(0)->string();
+        const auto second_id = *child_ids->at(1)->string();
+        json::Builder target;
+        require(target.set(target.root(), "$ref", second_id).has_value(), "Reference fixture construction failed.");
+        json::Builder targets{json::Kind::array};
+        targets.append(targets.root(), target.root());
+        require(target.set(target.root(), "$ref", first_id).has_value(), "Reference fixture construction failed.");
+        targets.append(targets.root(), target.root());
         bool ordinary_weak{};
         bool ordinary_sequence{};
-        for (const auto& value : row(subtree_json, child_ids[0].get<std::string>()).at("components")) {
-            if (value.at("type") == "physics.DistanceConstraintComponent")
-                ordinary_weak = value.at("properties").at("target") == nlohmann::json{{"$ref", child_ids[1]}};
-            if (value.at("type") == "physics.SceneQueryComponent")
-                ordinary_sequence = value.at("properties").at("ignored_entities") ==
-                                    nlohmann::json::array({nlohmann::json{{"$ref", child_ids[1]}},
-                                                           nlohmann::json{{"$ref", child_ids[0]}}});
+        const auto parts = row(subtree_json->root(), first_id).at("components")->array();
+        require(parts.has_value(), "Subtree components must be an array.");
+        for (auto value : *parts) {
+            if (value.string({"type"}) == "physics.DistanceConstraintComponent")
+                ordinary_weak = *value.path({"properties", "target"}) == *targets.root().at(0);
+            if (value.string({"type"}) == "physics.SceneQueryComponent")
+                ordinary_sequence = *value.path({"properties", "ignored_entities"}) == targets.root();
         }
         require(ordinary_weak && ordinary_sequence,
                 "Subtree codec omitted ordinary reflected reference fields or persisted them outside properties.");
@@ -791,25 +816,33 @@ void verify_entity_composition() {
             for (const auto object : check_instance(graph, root))
                 require(identities.insert(object).second,
                         "Repeated composition import reused a Runtime object from another instance.");
-        const auto before = nlohmann::json::parse(take(graph.serialize()));
-        const auto imported_first_id = before.at("roots")[1].get<std::string>();
-        const auto imported_second_id = before.at("roots")[2].get<std::string>();
+        const auto before = assets::json_format::parse(take(graph.serialize()));
+        require(before.has_value(), "Imported scene failed to parse.");
+        const auto imported_first_id = *before->root().at("roots")->at(1)->string();
+        const auto imported_second_id = *before->root().at("roots")->at(2)->string();
         require(root_id != imported_first_id && root_id != imported_second_id &&
                     imported_first_id != imported_second_id,
                 "Repeated composition import reused a persistent local ID.");
         take(graph.rename(imported_first, L"Imported First"));
         take(graph.rename(imported_second, L"Imported Second"));
         changed(graph.reparent(imported_second, {}, world::ReparentRule::keep_local, 0));
-        const auto after = nlohmann::json::parse(take(graph.serialize()));
-        require(after.at("roots") == nlohmann::json::array({imported_second_id, root_id, imported_first_id}) &&
-                    after.at("next_id") == before.at("next_id"),
+        const auto after = assets::json_format::parse(take(graph.serialize()));
+        json::Builder roots{json::Kind::array};
+        require(roots.append(roots.root(), imported_second_id) && roots.append(roots.root(), root_id) &&
+                    roots.append(roots.root(), imported_first_id),
+                "Root order fixture construction failed.");
+        require(after && *after->root().at("roots") == roots.root() &&
+                    *after->root().at("next_id") == *before->root().at("next_id"),
                 "Rename/reorder replaced root local IDs or allocated new identities.");
-        for (auto entity : before.at("entities")) {
-            if (entity.at("id") == imported_first_id)
-                entity["name"] = "Imported First";
-            if (entity.at("id") == imported_second_id)
-                entity["name"] = "Imported Second";
-            require(row(after, entity.at("id").get<std::string>()) == entity,
+        const auto entities_before = before->root().at("entities")->array();
+        require(entities_before.has_value(), "Imported entities must be an array.");
+        for (auto entity : *entities_before) {
+            json::Builder expected{entity};
+            if (entity.string({"id"}) == imported_first_id)
+                require(expected.set(expected.root(), "name", "Imported First").has_value(), "Rename fixture failed.");
+            if (entity.string({"id"}) == imported_second_id)
+                require(expected.set(expected.root(), "name", "Imported Second").has_value(), "Rename fixture failed.");
+            require(row(after->root(), *entity.string({"id"})) == expected.root(),
                     "Rename/reorder changed local IDs, child/component identities, or reflected references.");
         }
         const auto saved = take(graph.serialize());

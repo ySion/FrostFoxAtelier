@@ -1,7 +1,7 @@
 #pragma once
 #include "foundation/flags.hpp"
 #include "editor/camera.hpp"
-#include "assets/json_format.hpp"
+#include "json/json.hpp"
 #include "editor/operator_parameters.hpp"
 #include "editor/properties.hpp"
 #include "editor/session.hpp"
@@ -293,7 +293,7 @@ void register_builtin_operators(OperatorRegistry&);
 struct OperatorCall {
     std::string id;
 
-    assets::json_format::Json args = assets::json_format::Json::object();
+    json::Document args{};
 
     ContextOverride context{};
 
@@ -334,7 +334,7 @@ struct OperatorReport {
 
     std::string message; // Poll or admission reason; execution failures retain their original Error.
 
-    assets::json_format::Json result = assets::json_format::Json::object();
+    json::Document result{};
 };
 
 // Poll, then seed or default-construct the parameters and decode the arguments strictly
@@ -350,7 +350,7 @@ Result<OperatorReport> call(const OperatorRegistry&, OperatorHost&, const Contex
 // JSON schema of an operator's arguments, from its parameter record in this Runtime:
 // field names, kinds, enum members, hard bounds as minimum/maximum, the UI range, and
 // defaults; a seeded operator has no defaults and reports "seeded": true instead.
-Result<assets::json_format::Json> parameter_schema(Runtime&, const OperatorInfo&);
+Result<json::Document> parameter_schema(Runtime&, const OperatorInfo&);
 
-Result<assets::json_format::Json> result_schema(Runtime&, const OperatorInfo&);
+Result<json::Document> result_schema(Runtime&, const OperatorInfo&);
 }

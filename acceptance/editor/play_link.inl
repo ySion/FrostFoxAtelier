@@ -1,5 +1,4 @@
 // Included by project_execution.cpp: the editor-to-Play change link.
-using LinkJson = assets::json_format::Json;
 
 // Plays the other end of a link: queues what arrives so tests read one message at a time.
 struct LinkPeer {
@@ -7,7 +6,7 @@ struct LinkPeer {
 
     std::deque<std::string> arrived;
 
-    LinkJson next(application::PlayProcess* process = nullptr) {
+    json::Document next(application::PlayProcess* process = nullptr) {
         const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(60);
         while (arrived.empty()) {
             for (auto& text : link->receive())
@@ -20,7 +19,9 @@ struct LinkPeer {
         }
         auto text = std::move(arrived.front());
         arrived.pop_front();
-        return LinkJson::parse(text);
+        auto parsed = assets::json_format::parse(text);
+        require(parsed.has_value(), "The link peer received invalid JSON.");
+        return std::move(*parsed);
     }
 
     bool idle() {
@@ -30,7 +31,10 @@ struct LinkPeer {
         return arrived.empty();
     }
 
-    void send(const LinkJson& message) { link->send(message.dump()); }
+    void send(const json::Document& message) {
+        const auto bytes = json::write(message.root());
+        link->send({bytes.data(), bytes.size()});
+    }
 };
 
 std::pair<std::unique_ptr<application::LiveLink>, LinkPeer> link_pair() {
@@ -45,12 +49,17 @@ std::pair<std::unique_ptr<application::LiveLink>, LinkPeer> link_pair() {
             LinkPeer{std::make_unique<application::LiveLink>(peer_read, peer_write), {}}};
 }
 
-LinkJson ack(std::uint64_t seq, std::string_view severity = {}) {
-    LinkJson message = {{"type", "ack"}, {"seq", seq}, {"diagnostics", LinkJson::array()}};
-    if (!severity.empty())
-        message["diagnostics"].push_back(
-            {{"severity", severity}, {"kind", "command_rejected"}, {"message", "Play change 0 #7: rejected."}});
-    return message;
+json::Document ack(std::uint64_t seq, std::string_view severity = {}) {
+    json::Builder message{json::Document::literal<R"({"type":"ack","diagnostics":[]})">()};
+    require(message.set(message.root(), "seq", seq).has_value(), "ACK sequence construction failed.");
+    if (!severity.empty()) {
+        json::Builder diagnostic{
+            json::Document::literal<R"({"kind":"command_rejected","message":"Play change 0 #7: rejected."})">()};
+        require(diagnostic.set(diagnostic.root(), "severity", severity).has_value(),
+                "ACK severity construction failed.");
+        message.append(*message.root().at("diagnostics"), diagnostic.root());
+    }
+    return message.finish();
 }
 
 void settle(application::PlayLink& link) {
@@ -77,8 +86,9 @@ void verify_link_protocol(const std::filesystem::path& root) {
         link.forward({name_op, remove_op});
         link.forward({});
         const auto batch = peer.next();
-        require(batch.at("type") == "batch" && batch.at("seq") == 1 && batch.at("ops").size() == 2 &&
-                    batch.at("ops")[1].at("op") == "remove" && link.unacknowledged() == 1 && peer.idle(),
+        require(batch.root().string({"type"}) == "batch" && batch.root().u64({"seq"}) == 1 &&
+                    batch.root().at("ops")->size() == 2 && batch.root().at("ops")->at(1)->string({"op"}) == "remove" &&
+                    link.unacknowledged() == 1 && peer.idle(),
                 "One step's ops did not travel as one numbered batch.");
         // Warnings are Play's business; only an error acknowledgement is divergence.
         peer.send(ack(1, "warning"));
@@ -88,17 +98,17 @@ void verify_link_protocol(const std::filesystem::path& root) {
         const auto nine = large_op(9 << 20);
         link.forward({five});
         const auto spilled = peer.next();
-        require(spilled.at("seq") == 2 && spilled.contains("file") && !spilled.contains("ops"),
+        require(spilled.root().u64({"seq"}) == 2 && spilled.root().at("file") && !spilled.root().at("ops"),
                 "A batch over one message was not spilled to a file.");
-        const std::filesystem::path file = platform::utf8_to_utf16_validated(spilled.at("file").get<std::string>());
+        const std::filesystem::path file = platform::utf8_to_utf16_validated(*spilled.root().string({"file"}));
         require(file.parent_path() == spill && take(assets::read_file(file)) == R"({"ops":[)" + five.text + "]}",
                 "The spilled file is not the batch Play applies.");
         // Past the 16 MiB batch limit the ops split at their boundary into consecutive batches.
         link.forward({nine, nine});
         const auto first = peer.next();
         const auto second = peer.next();
-        require(first.at("seq") == 3 && second.at("seq") == 4 && link.unacknowledged() == 3 &&
-                    take(assets::read_file(platform::utf8_to_utf16_validated(second.at("file").get<std::string>()))) ==
+        require(first.root().u64({"seq"}) == 3 && second.root().u64({"seq"}) == 4 && link.unacknowledged() == 3 &&
+                    take(assets::read_file(platform::utf8_to_utf16_validated(*second.root().string({"file"})))) ==
                         R"({"ops":[)" + nine.text + "]}",
                 "Oversized ops were not split into consecutive batches.");
         peer.send(ack(2));
@@ -107,7 +117,8 @@ void verify_link_protocol(const std::filesystem::path& root) {
         settle(link);
         require(std::filesystem::is_empty(spill), "The sender retained acknowledged batch files.");
         link.forward({name_op});
-        require(peer.next().at("seq") == 5, "Batches lost their numbering.");
+        const auto last = peer.next();
+        require(last.root().u64({"seq"}) == 5, "Batches lost their numbering.");
         peer.send(ack(5, "error"));
         settle(link);
         require(!link.divergence().empty() && link.unacknowledged() == 0, "An error acknowledgement did not diverge.");
@@ -330,9 +341,12 @@ void verify_texture_link(const std::filesystem::path& root) {
     fs::resize_file(mesh_file, 12);
     const auto mesh_path_text = platform::utf16_to_utf8(mesh_file.native());
     require(bool(mesh_path_text), "Invalid UTF-16 mesh fixture path.");
-    const auto diagnostics = take(play.apply_live(
-        LinkJson{{"ops", LinkJson::array({{{"op", "mesh"}, {"key", mesh_key}, {"file", *mesh_path_text}}})}}.dump(),
-        play_project));
+    json::Builder malformed{json::Document::literal<R"({"ops":[{"op":"mesh"}]})">()};
+    const auto malformed_op = *malformed.root().at("ops")->at(0);
+    require(malformed.set(malformed_op, "key", mesh_key) && malformed.set(malformed_op, "file", *mesh_path_text),
+            "Malformed mesh fixture construction failed.");
+    const auto malformed_bytes = json::write(malformed.root());
+    const auto diagnostics = take(play.apply_live({malformed_bytes.data(), malformed_bytes.size()}, play_project));
     require(diagnostics.size() == 1 && diagnostics[0].severity == world::Severity::error &&
                 current_mesh() == received.mesh,
             "Malformed mesh payload changed the accepted geometry.");
@@ -341,9 +355,11 @@ void verify_texture_link(const std::filesystem::path& root) {
         "Manual resource reimport/Live: PASS (exact RGBA/mesh bits, >16 MiB, current identity, parameter Undo, ACK/close retirement)");
 }
 
-const LinkJson& graph_entity(const LinkJson& graph, std::uint64_t identity) {
-    for (const auto& item : graph.at("entities"))
-        if (item.at("id") == std::to_string(identity))
+json::Value graph_entity(json::Value graph, std::uint64_t identity) {
+    const auto entities = graph.at("entities")->array();
+    require(entities.has_value(), "Inspected entities must be an array.");
+    for (auto item : *entities)
+        if (item.string({"id"}) == std::to_string(identity))
             return item;
     throw std::runtime_error("The inspected graph lacks its Entity.");
 }
@@ -368,7 +384,7 @@ void verify_play_link(const std::filesystem::path& root, editor::Project& projec
             throw std::runtime_error("Play stopped following the document: " + link.divergence());
         }
     };
-    const auto inspect = [&](ObjectId object) -> std::optional<LinkJson> {
+    const auto inspect = [&](ObjectId object) -> std::optional<json::Document> {
         const auto identity = *document.document_identity(object);
         const auto request = link.inspect(identity);
         const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(60);
@@ -377,7 +393,9 @@ void verify_play_link(const std::filesystem::path& root, editor::Project& projec
             if (auto reply = link.inspected(request)) {
                 if (reply->starts_with("error: "))
                     return {};
-                return graph_entity(LinkJson::parse(*reply), identity);
+                const auto parsed = assets::json_format::parse(*reply);
+                require(parsed.has_value(), "Play inspection returned invalid JSON.");
+                return json::Document{graph_entity(parsed->root(), identity)};
             }
             require(std::chrono::steady_clock::now() < until, "Play did not answer an inspection.");
             Sleep(2);
@@ -395,9 +413,16 @@ void verify_play_link(const std::filesystem::path& root, editor::Project& projec
         // ACK precedes the frame's camera resolution. Observe an actual tick
         // boundary so consecutive camera changes cannot coalesce in that frame.
         const auto ticks = [&] {
-            for (const auto& part : inspect(mover)->at("components"))
-                if (part.at("type") == "project.Move")
-                    return part.at("properties").at("ticks").get<std::uint64_t>();
+            const auto inspected = inspect(mover);
+            require(inspected.has_value(), "Play lost its ticking Entity.");
+            const auto parts = inspected->root().at("components")->array();
+            require(parts.has_value(), "Inspected components must be an array.");
+            for (auto part : *parts)
+                if (part.string({"type"}) == "project.Move") {
+                    const auto ticks = part.u64({"properties", "ticks"});
+                    require(ticks.has_value(), "Play tick counter has invalid type.");
+                    return *ticks;
+                }
             throw std::runtime_error("Play lost its ticking Source component.");
         };
         const auto previous = ticks();
@@ -409,7 +434,7 @@ void verify_play_link(const std::filesystem::path& root, editor::Project& projec
     // Play is still loading: the change waits in the link and applies before Play starts.
     take(document.rename(mover, L"Runner"));
     forward();
-    require(inspect(mover)->at("name") == "Runner", "A change made while Play loaded did not reach it.");
+    require(inspect(mover)->root().string({"name"}) == "Runner", "A change made while Play loaded did not reach it.");
     const auto ids = [&] {
         std::vector<ObjectId> result;
         for (const auto& member : take(document.world().members()))
@@ -431,9 +456,16 @@ void verify_play_link(const std::filesystem::path& root, editor::Project& projec
     forward();
     require(inspect(created).has_value(), "Redoing a creation did not restore it in Play.");
     const auto speed_of = [&] {
-        for (const auto& component : inspect(mover)->at("components"))
-            if (component.at("type") == "project.Move")
-                return component.at("properties").at("speed").get<float>();
+        const auto inspected = inspect(mover);
+        require(inspected.has_value(), "Play lost the moving Entity.");
+        const auto parts = inspected->root().at("components")->array();
+        require(parts.has_value(), "Inspected components must be an array.");
+        for (auto component : *parts)
+            if (component.string({"type"}) == "project.Move") {
+                const auto speed = component.f32({"properties", "speed"});
+                require(speed.has_value(), "Play speed has invalid type.");
+                return *speed;
+            }
         throw std::runtime_error("Play lost the Source component.");
     };
     const auto move = behavior(document);
@@ -452,21 +484,31 @@ void verify_play_link(const std::filesystem::path& root, editor::Project& projec
         editor::Session source;
         complete(source.create_camera({2, 3, 4}));
         take(source.set_main_camera(source.selection().entity));
-        auto forest = LinkJson::parse(take(source.serialize()));
+        const auto parsed_forest = assets::json_format::parse(take(source.serialize()));
+        require(parsed_forest.has_value(), "Camera forest serialization failed to parse.");
+        json::Builder forest{*parsed_forest};
         const auto environment = take(world::inspect_component(source.world().runtime(), source.environment())).owner;
-        forest["roots"] = LinkJson::array({std::to_string(*source.document_identity(environment)),
-                                           std::to_string(*source.document_identity(source.selection().entity))});
-        complete(document.instantiate_subtree(forest.dump(), project));
+        const auto roots = forest.array(forest.root(), "roots");
+        require(roots && forest.append(*roots, std::to_string(*source.document_identity(environment))) &&
+                    forest.append(*roots, std::to_string(*source.document_identity(source.selection().entity))),
+                "Camera forest root construction failed.");
+        const auto forest_bytes = json::write(forest.root());
+        complete(document.instantiate_subtree({forest_bytes.data(), forest_bytes.size()}, project));
         const auto imported_camera = take(document.main_camera());
         const auto imported_environment = take(world::inspect_component(runtime, document.environment())).owner;
         const auto verify_import = [&] {
             const auto environment = inspect(imported_environment);
             const auto camera = inspect(imported_camera);
             require(environment && camera, "A camera forest import lost a root over Play IPC.");
-            for (const auto& part : environment->at("components"))
-                if (part.at("type") == "world.EnvironmentComponent") {
-                    require(part.at("properties").at("main_camera") ==
-                                LinkJson{{"$ref", std::to_string(*document.document_identity(imported_camera))}},
+            const auto parts = environment->root().at("components")->array();
+            require(parts.has_value(), "Inspected environment components must be an array.");
+            json::Builder expected;
+            require(expected.set(expected.root(), "$ref", std::to_string(*document.document_identity(imported_camera)))
+                        .has_value(),
+                    "Camera reference fixture construction failed.");
+            for (auto part : *parts)
+                if (part.string({"type"}) == "world.EnvironmentComponent") {
+                    require(*part.path({"properties", "main_camera"}) == expected.root(),
                             "A camera forest import lost its document-identity selection over Play IPC.");
                     return;
                 }
@@ -499,16 +541,21 @@ void verify_play_link(const std::filesystem::path& root, editor::Project& projec
     forward();
     const auto environment = document.environment();
     const auto environment_owner = take(world::inspect_component(runtime, environment)).owner;
-    const auto main_reference = [&]() -> LinkJson {
+    const auto main_reference = [&]() -> json::Document {
         const auto inspected = inspect(environment_owner);
         require(inspected.has_value(), "Play lost the Environment Entity.");
-        for (const auto& component : inspected->at("components"))
-            if (component.at("type") == "world.EnvironmentComponent")
-                return component.at("properties").at("main_camera");
+        const auto parts = inspected->root().at("components")->array();
+        require(parts.has_value(), "Inspected environment components must be an array.");
+        for (auto component : *parts)
+            if (component.string({"type"}) == "world.EnvironmentComponent")
+                return json::Document{*component.path({"properties", "main_camera"})};
         throw std::runtime_error("Play lost the EnvironmentComponent.");
     };
     const auto reference = [&](ObjectId entity) {
-        return LinkJson{{"$ref", std::to_string(*document.document_identity(entity))}};
+        json::Builder result;
+        require(result.set(result.root(), "$ref", std::to_string(*document.document_identity(entity))).has_value(),
+                "Camera reference fixture construction failed.");
+        return result.finish();
     };
     require(main_reference() == reference(camera_a), "First Set Main Camera did not transfer its reference.");
     complete(document.undo());
@@ -522,19 +569,19 @@ void verify_play_link(const std::filesystem::path& root, editor::Project& projec
     require(main_reference() == reference(camera_b), "Set B did not replace A in Play.");
     take(document.set_main_camera({}));
     forward();
-    require(main_reference().is_null(), "Clear Main Camera did not reach Play.");
+    require(main_reference() == json::Document::literal<"null">(), "Clear Main Camera did not reach Play.");
     complete(document.undo());
     forward();
     require(main_reference() == reference(camera_b), "Undo Clear did not restore B in Play.");
     complete(document.redo());
     forward();
-    require(main_reference().is_null(), "Redo Clear did not clear Play.");
+    require(main_reference() == json::Document::literal<"null">(), "Redo Clear did not clear Play.");
     take(document.set_main_camera(camera_a));
     forward();
     take(document.select_entities(std::array{camera_a}, camera_a));
     complete(document.erase_entities(document.selected_entities()));
     forward();
-    require(main_reference().is_null() && !inspect(camera_a),
+    require(main_reference() == json::Document::literal<"null">() && !inspect(camera_a),
             "Deleting the main camera did not clear Play before removal.");
     static_cast<void>(take(document.serialize()));
     document.mark_saved();
@@ -544,7 +591,8 @@ void verify_play_link(const std::filesystem::path& root, editor::Project& projec
             "Undo after save did not restore both Play graph and reference.");
     complete(document.redo());
     forward();
-    require(main_reference().is_null() && !inspect(camera_a), "Redo deletion did not clear and remove in Play.");
+    require(main_reference() == json::Document::literal<"null">() && !inspect(camera_a),
+            "Redo deletion did not clear and remove in Play.");
     complete(document.create_camera({1, 4, 9}));
     const auto later_camera = document.selection().entity;
     forward();
@@ -584,36 +632,62 @@ void verify_play_link(const std::filesystem::path& root, editor::Project& projec
     LinkPeer play{std::move(raw), {}};
     const auto id = std::to_string(*document.document_identity(mover));
     const auto rename = [&](std::string_view name) {
-        return LinkJson::array({{{"op", "set"}, {"id", id}, {"name", name}}});
+        json::Builder ops{json::Document::literal<R"([{"op":"set"}])">()};
+        const auto op = *ops.root().at(0);
+        require(ops.set(op, "id", id) && ops.set(op, "name", name), "Rename fixture construction failed.");
+        return ops.finish();
     };
     const auto file = root / "Cache/Play/raw-batch.json";
-    take(editor::write_file(file, LinkJson{{"ops", rename("Spilled")}}.dump()));
+    json::Builder batch;
+    const auto spilled_ops = rename("Spilled");
+    require(batch.set(batch.root(), "ops", spilled_ops.root()).has_value(), "Spilled fixture construction failed.");
+    const auto bytes = json::write(batch.root());
+    take(editor::write_file(file, {bytes.data(), bytes.size()}));
     const auto file_text = platform::utf16_to_utf8(file.native());
     require(bool(file_text), "Invalid UTF-16 batch fixture path.");
-    play.send({{"type", "batch"}, {"seq", 1}, {"file", *file_text}});
+    json::Builder request{json::Document::literal<R"({"type":"batch","seq":1})">()};
+    require(request.set(request.root(), "file", *file_text).has_value(), "Batch fixture construction failed.");
+    play.send(request.finish());
     auto reply = play.next(&process);
-    require(reply.at("type") == "ack" && reply.at("seq") == 1 && reply.at("diagnostics").empty() &&
-                std::filesystem::exists(file),
+    require(reply.root().string({"type"}) == "ack" && reply.root().u64({"seq"}) == 1 &&
+                reply.root().at("diagnostics")->size() == 0 && std::filesystem::exists(file),
             "Play did not acknowledge the spilled batch or deleted sender-owned content.");
     // This scripted sender owns its file just as PlayLink::Pending does.
     require(std::filesystem::remove(file), "The scripted sender could not retire its acknowledged batch.");
     const auto play_name = [&] {
-        play.send({{"type", "inspect"}, {"id", 9}, {"object", *document.document_identity(mover)}});
+        json::Builder inspection{json::Document::literal<R"({"type":"inspect","id":9})">()};
+        require(inspection.set(inspection.root(), "object", *document.document_identity(mover)).has_value(),
+                "Inspection fixture construction failed.");
+        play.send(inspection.finish());
         const auto answer = play.next(&process);
-        require(answer.at("type") == "inspect" && answer.at("id") == 9, "Play answered another request.");
-        return graph_entity(LinkJson::parse(answer.at("graph").get<std::string>()), *document.document_identity(mover))
-            .at("name")
-            .get<std::string>();
+        require(answer.root().string({"type"}) == "inspect" && answer.root().u64({"id"}) == 9,
+                "Play answered another request.");
+        const auto text = answer.root().string({"graph"});
+        require(text.has_value(), "Inspection omitted graph text.");
+        const auto graph = assets::json_format::parse(*text);
+        require(graph.has_value(), "Inspected graph failed to parse.");
+        const auto name = graph_entity(graph->root(), *document.document_identity(mover)).string({"name"});
+        require(name.has_value(), "Inspected entity omitted its name.");
+        return std::string(*name);
     };
     require(play_name() == "Spilled", "Play did not apply the spilled batch.");
-    play.send({{"type", "batch"}, {"seq", 3}, {"ops", rename("Late")}});
+    request.erase(request.root(), "file");
+    const auto late_ops = rename("Late");
+    require(request.set(request.root(), "seq", std::uint64_t{3}) && request.set(request.root(), "ops", late_ops.root()),
+            "Late batch fixture construction failed.");
+    play.send(request.finish());
     reply = play.next(&process);
-    require(reply.at("seq") == 3 && reply.at("diagnostics").size() == 1 &&
-                reply.at("diagnostics")[0].at("severity") == "error",
+    require(reply.root().u64({"seq"}) == 3 && reply.root().at("diagnostics")->size() == 1 &&
+                reply.root().at("diagnostics")->at(0)->string({"severity"}) == "error",
             "Play did not reject a sequence gap.");
-    play.send({{"type", "batch"}, {"seq", 2}, {"ops", rename("Later")}});
+    const auto later_ops = rename("Later");
+    require(request.set(request.root(), "seq", std::uint64_t{2}) &&
+                request.set(request.root(), "ops", later_ops.root()),
+            "Diverged batch fixture construction failed.");
+    play.send(request.finish());
     reply = play.next(&process);
-    require(reply.at("seq") == 2 && reply.at("diagnostics")[0].at("severity") == "error" && play_name() == "Spilled",
+    require(reply.root().u64({"seq"}) == 2 && reply.root().at("diagnostics")->at(0)->string({"severity"}) == "error" &&
+                play_name() == "Spilled",
             "Play applied a batch after diverging.");
     process.stop();
     wait(process, std::chrono::seconds(10));

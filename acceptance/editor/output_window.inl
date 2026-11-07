@@ -159,7 +159,10 @@ void verify_output_window(Application& app, const std::filesystem::path& evidenc
     const std::filesystem::path material_path = L"Content/Materials/错误.ms.material";
     model(editor::write_file(model(project.resolve(platform::utf8_to_utf16_validated(material_source.source_path))),
                              source_file.source));
-    model(editor::write_file(model(project.resolve(material_path)), assets::material_format::encode(material).dump(2)));
+    const auto material_json = assets::material_format::encode(material);
+    require(material_json.has_value(), "Material fixture failed to encode.");
+    const auto material_bytes = json::write(material_json->root(), {true});
+    model(editor::write_file(model(project.resolve(material_path)), {material_bytes.data(), material_bytes.size()}));
     model(project.refresh());
     const auto entry = std::ranges::find(project.entries(), material_path, &assets::ProjectEntry::path);
     require(entry != project.entries().end(), "The Unicode material fixture was not published by the Reader.");

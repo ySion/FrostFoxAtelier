@@ -19,7 +19,7 @@ struct GraphNode {
 
     // Saved JSON written over the node's own on save: its whole entry when `node` is null,
     // otherwise the property leaves that did not decode and the input ports that did not connect.
-    assets::json_format::Json kept = assets::json_format::Json::object();
+    json::Document kept{};
 };
 
 // A procedural graph file opened into a Runtime. Its roots must not outlive that Runtime.
@@ -30,7 +30,7 @@ struct GraphDocument {
 
     // Saved settings written over the graph's own on save: leaves that did not decode, and a
     // display naming no loaded node.
-    assets::json_format::Json kept = assets::json_format::Json::object();
+    json::Document kept{};
 
     std::vector<world::Diagnostic> issues; // From the load.
 };

@@ -1,4 +1,5 @@
 #include "application/diagnostics.hpp"
+#include "foundation/string.hpp"
 #include "platform/utf.hpp"
 #include <array>
 #include <cstdio>
@@ -11,6 +12,10 @@ std::wstring diagnostic_text(std::string_view message) noexcept {
 
 std::string diagnostic_text(std::wstring_view message) noexcept {
     return platform::utf16_to_utf8(message).value_or("(诊断文本不是有效 UTF-16)");
+}
+
+std::string_view diagnostic_utf8(std::string_view message) noexcept {
+    return StringView{message}.is_valid_utf8() ? message : "(诊断文本不是有效 UTF-8)";
 }
 
 namespace {

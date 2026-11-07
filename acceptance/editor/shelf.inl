@@ -29,7 +29,8 @@ void verify_tool_shelf(Application& app, const std::filesystem::path& output) {
     const auto members = entities(app).size();
     const auto shelf = app.presented()->find(control::shelf)->bounds;
     const auto viewport = app.presented()->find(control::viewport)->bounds;
-    const auto add_entity = Access::operator_item(app, "scene.add", {{"kind", "entity"}});
+    const auto add_entity =
+        Access::operator_item(app, "scene.add", atelier::json::Document::literal<R"({"kind":"entity"})">());
     const auto* tool = command_tool(app, add_entity);
     require(tool && tool->key != add_entity, "DSL shelf command retained its command ID as the visual identity.");
     require(std::abs(shelf.height / dpi - 56) < .1f && std::abs(tool->bounds.width / dpi - 64) < .1f &&

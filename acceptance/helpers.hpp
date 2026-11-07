@@ -9,14 +9,15 @@ inline void require(bool condition, const char* message) {
         throw std::runtime_error(message);
 }
 
-template <class T>
-T take(Result<T> result) {
+template <class T, class E>
+T take(std::expected<T, E> result) {
     if (!result)
         throw std::runtime_error(result.error().message);
     return std::move(*result);
 }
 
-inline void take(Result<void> result) {
+template <class E>
+void take(std::expected<void, E> result) {
     if (!result)
         throw std::runtime_error(result.error().message);
 }

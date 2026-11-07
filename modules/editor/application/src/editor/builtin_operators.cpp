@@ -598,12 +598,15 @@ Result<void> new_material(OperatorHost& host, const Context& context, const P& p
     auto& project = *context.project;
     assets::MaterialAsset author;
     if constexpr (!source) {
-        try {
-            std::get<assets::MaterialInstanceAsset>(author.author).entries =
-                assets::material_format::decode_entries(assets::json_format::Json::parse(p.entries.json.c_str()));
-        } catch (const std::exception& error) {
-            return std::unexpected(detail::caught_error(error, ErrorCode::argument_mismatch));
-        }
+        const auto parsed =
+            json::Document::parse({p.entries.json.c_str(), p.entries.json.size()},
+                                  {std::numeric_limits<std::size_t>::max(), json::DepthPolicy::containers, true});
+        if (!parsed)
+            return std::unexpected(Error{ErrorCode::argument_mismatch, parsed.error().describe()});
+        auto entries = assets::material_format::decode_entries(parsed->root());
+        if (!entries)
+            return std::unexpected(Error{ErrorCode::argument_mismatch, entries.error().describe()});
+        std::get<assets::MaterialInstanceAsset>(author.author).entries = std::move(*entries);
     }
     ATELIER_TRY_BIND(chosen, operation_path(host, p.path,
                                             source ? PathPurpose::material_source_save : PathPurpose::material_save,

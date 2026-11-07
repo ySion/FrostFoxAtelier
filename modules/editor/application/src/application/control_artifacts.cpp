@@ -22,8 +22,6 @@
 
 namespace atelier::application::control_artifacts {
 namespace {
-using control::Json;
-
 using control::Failure;
 
 template <class T>
@@ -59,12 +57,13 @@ bool generated_cache(const std::filesystem::path& relative) {
     return part != relative.end() && *part == L"Cache";
 }
 
-Json engine_source_hashes(std::span<const language::SourceFile> files) {
-    auto hashes = Json::object();
+json::Result<json::Document> engine_source_hashes(std::span<const language::SourceFile> files) {
+    json::Builder hashes;
     for (const auto& file : files)
         if (file.path.starts_with("engine/"))
-            hashes[file.path] = foundation::sha256(std::as_bytes(std::span(file.source)));
-    return hashes;
+            ATELIER_TRY(
+                hashes.set(hashes.root(), file.path, foundation::sha256(std::as_bytes(std::span(file.source)))));
+    return hashes.finish();
 }
 
 std::string mesh_hash(const assets::MeshAsset& asset) try {
@@ -89,58 +88,66 @@ assets::EngineDependency installed_asset(std::string_view key, assets::AssetKind
     throw Failure("storage_error", error.what());
 }
 
-Json engine_assets_json(std::span<const assets::EngineDependency> assets) {
-    auto records = Json::array();
-    for (const auto& asset : assets)
-        records.push_back({{"key", asset.key},
-                           {"kind", asset.kind == assets::AssetKind::material ? "material" : "mesh"},
-                           {"semantic_version", asset.semantic_version},
-                           {"digest_version", asset.digest_version},
-                           {"content_sha256", asset.content_sha256}});
-    return {{"version", 1}, {"records", std::move(records)}};
+json::Result<json::Document> engine_assets_json(std::span<const assets::EngineDependency> assets) {
+    json::Builder result;
+    ATELIER_TRY(result.set(result.root(), "version", 1u));
+    ATELIER_TRY_BIND(records, result.array(result.root(), "records"));
+    for (const auto& asset : assets) {
+        const auto record = result.append_object(*records);
+        ATELIER_TRY(result.set(record, "key", asset.key));
+        result.set_validated(record, "kind", asset.kind == assets::AssetKind::material ? "material" : "mesh");
+        ATELIER_TRY(result.set(record, "semantic_version", asset.semantic_version));
+        ATELIER_TRY(result.set(record, "digest_version", asset.digest_version));
+        ATELIER_TRY(result.set(record, "content_sha256", asset.content_sha256));
+    }
+    return result.finish();
 }
 
-std::vector<assets::EngineDependency> installed_assets(const Json& manifest) {
-    if (!manifest.contains("engine_assets"))
+std::expected<std::vector<assets::EngineDependency>, Failure> installed_assets(json::Value manifest) {
+    ATELIER_TRY_BIND(found, manifest.find("engine_assets"));
+    if (!*found)
         throw Failure("invalid_request", "Repro lacks engine assets; export it again");
-    const auto version = [](const Json& value) -> std::uint32_t {
-        if (!value.is_number_integer() ||
-            (value.is_number_integer() && !value.is_number_unsigned() && value.get<std::int64_t>() <= 0) ||
-            value.get<std::uint64_t>() == 0 || value.get<std::uint64_t>() > UINT32_MAX)
+    const auto version = [](json::Value value) -> std::expected<std::uint32_t, Failure> {
+        ATELIER_TRY_BIND(number, value.u32());
+        if (*number == 0)
             throw Failure("invalid_request", "Engine asset versions require positive uint32 integers");
-        return value.get<std::uint32_t>();
+        return *number;
     };
-    const auto& object = manifest.at("engine_assets");
-    control::fields(object, {"version", "records"});
-    if (version(object.at("version")) != 1)
+    const auto object = **found;
+    ATELIER_TRY(object.allowed_members({"version", "records"}));
+    ATELIER_TRY_BIND(schema_value, object.at("version"));
+    ATELIER_TRY_BIND(schema, version(*schema_value));
+    if (*schema != 1)
         throw Failure("invalid_request", "Unknown engine assets schema; export it again");
-    const auto& records = object.at("records");
-    if (!records.is_array())
-        throw Failure("invalid_request", "Engine assets require a record array");
+    ATELIER_TRY_BIND(records_value, object.at("records"));
+    ATELIER_TRY_BIND(records, records_value->array());
     std::set<std::string> keys;
     std::vector<assets::EngineDependency> result;
-    for (const auto& record : records) {
-        control::fields(record, {"key", "kind", "semantic_version", "digest_version", "content_sha256"});
-        const auto key = record.at("key").get<std::string>();
+    for (const auto record : *records) {
+        ATELIER_TRY(record.allowed_members({"key", "kind", "semantic_version", "digest_version", "content_sha256"}));
+        ATELIER_TRY_BIND(key_text, record.string({"key"}));
+        const std::string key{*key_text};
         if (!keys.insert(key).second)
             throw Failure("invalid_request", "Duplicate engine asset: " + key);
-        const auto semantic = version(record.at("semantic_version"));
-        const auto encoding = version(record.at("digest_version"));
-        const auto name = record.at("kind").get<std::string>();
-        if (name != "mesh" && name != "material")
+        ATELIER_TRY_BIND(semantic_value, record.at("semantic_version"));
+        ATELIER_TRY_BIND(semantic, version(*semantic_value));
+        ATELIER_TRY_BIND(encoding_value, record.at("digest_version"));
+        ATELIER_TRY_BIND(encoding, version(*encoding_value));
+        ATELIER_TRY_BIND(name, record.string({"kind"}));
+        if (*name != "mesh" && *name != "material")
             throw Failure("dependency_mismatch", "Installed engine asset kind differs: " + key);
-        const auto kind = name == "material" ? assets::AssetKind::material : assets::AssetKind::mesh;
-        if (encoding !=
+        const auto kind = *name == "material" ? assets::AssetKind::material : assets::AssetKind::mesh;
+        if (*encoding !=
             (kind == assets::AssetKind::material ? assets::material_digest_version : assets::mesh_digest_version))
             throw Failure("invalid_request", "Unknown engine asset digest encoding; export it again");
-        const auto digest = record.at("content_sha256").get<std::string>();
-        if (digest.size() != 64 ||
-            !std::ranges::all_of(digest, [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); }))
+        ATELIER_TRY_BIND(digest, record.string({"content_sha256"}));
+        if (digest->size() != 64 ||
+            !std::ranges::all_of(*digest, [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); }))
             throw Failure("invalid_request", "Invalid engine asset SHA-256: " + key);
         auto current = installed_asset(key, kind);
-        if (current.semantic_version != semantic)
+        if (current.semantic_version != *semantic)
             throw Failure("dependency_mismatch", "Installed engine asset semantic version differs: " + key);
-        if (current.content_sha256 != digest)
+        if (current.content_sha256 != *digest)
             throw Failure("dependency_mismatch", "Installed engine asset content differs: " + key);
         result.push_back(std::move(current));
     }
@@ -148,47 +155,52 @@ std::vector<assets::EngineDependency> installed_assets(const Json& manifest) {
     return result;
 }
 
-const Json& material_records(const Json& manifest) {
-    const auto at = manifest.find("material_resources");
-    if (at == manifest.end() || !at->is_object())
+std::expected<json::Value, Failure> material_records(json::Value manifest) {
+    ATELIER_TRY_BIND(at, manifest.find("material_resources"));
+    if (!*at || (**at).kind() != json::Kind::object)
         throw Failure("invalid_request", "Repro lacks material content digests; export it again");
-    control::fields(*at, {"version", "records"});
-    if (!at->contains("version") || !at->contains("records") || !at->at("version").is_number_integer() ||
-        at->at("version") != 1 || !at->at("records").is_object())
+    const auto object = **at;
+    ATELIER_TRY(object.allowed_members({"version", "records"}));
+    ATELIER_TRY_BIND(version, object.u32({"version"}));
+    if (*version != assets::json_format::json_bytes_version)
         throw Failure("invalid_request", "Unknown material content digest schema; export it again");
-    for (const auto& [key, value] : at->at("records").items()) {
-        if (key.empty() || !value.is_string())
+    ATELIER_TRY_BIND(records, object.at("records"));
+    ATELIER_TRY_BIND(items, records->object_items());
+    for (const auto& [key, value] : *items) {
+        if (key.empty() || value.kind() != json::Kind::string)
             throw Failure("invalid_request", "Invalid material content digest record");
-        const auto& digest = value.get_ref<const std::string&>();
+        const auto digest = *value.string();
         if (digest.size() != 64 ||
             !std::ranges::all_of(digest, [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); }))
-            throw Failure("invalid_request", "Invalid material content SHA-256: " + key);
+            throw Failure("invalid_request", "Invalid material content SHA-256: " + std::string{key});
     }
-    return *at;
+    return object;
 }
 
-std::string string_field(const Json& object, const char* name) {
+std::string string_field(json::Value object, std::string_view name) {
     const auto at = object.find(name);
-    return at != object.end() && at->is_string() ? at->get<std::string>() : std::string{};
+    return at && *at && (**at).kind() == json::Kind::string ? std::string{*(**at).string()} : std::string{};
 }
 
 // Only schema resource slots are references. Do not inspect arbitrary strings,
 // cached drafts, copied files or unknown extension properties.
 template <class Reference>
-void scene_references(const Json& scene, const Reference& reference) {
-    if (const auto materials = scene.find("materials"); materials != scene.end() && materials->is_array())
-        for (const auto& definition : *materials)
-            if (definition.is_object()) {
+void scene_references(json::Value scene, const Reference& reference) {
+    if (const auto materials = scene.find("materials");
+        materials && *materials && (**materials).kind() == json::Kind::array)
+        for (const auto definition : *(**materials).array())
+            if (definition.kind() == json::Kind::object) {
                 reference(assets::AssetKind::material, string_field(definition, "source"));
                 reference(assets::AssetKind::material, string_field(definition, "parent"));
                 // Entries need their terminal MS declaration before a texture value
                 // can be considered an execution dependency.
             }
-    if (const auto entities = scene.find("entities"); entities != scene.end() && entities->is_array())
-        for (const auto& entity : *entities)
-            if (const auto components = entity.find("components"); components != entity.end() && components->is_array())
-                for (const auto& component : *components)
-                    if (component.is_object()) {
+    if (const auto entities = scene.find("entities"); entities && *entities && (**entities).kind() == json::Kind::array)
+        for (const auto entity : *(**entities).array())
+            if (const auto components = entity.find("components");
+                components && *components && (**components).kind() == json::Kind::array)
+                for (const auto component : *(**components).array())
+                    if (component.kind() == json::Kind::object) {
                         reference(assets::AssetKind::mesh, string_field(component, "mesh"));
                         reference(assets::AssetKind::sky, string_field(component, "sky_map"));
                     }
@@ -197,7 +209,7 @@ void scene_references(const Json& scene, const Reference& reference) {
 // Only inspect published Scene resource slots and their mesh defaults/material
 // inputs, never all copied files. The strict loader still owns project failures;
 // this preflight identifies invalid engine keys before it can reject the load.
-void preflight_resources(editor::Project& project, const Json& scene) {
+std::expected<void, Failure> preflight_resources(editor::Project& project, json::Value scene) {
     std::set<std::pair<assets::AssetKind, std::string>> references;
     std::vector<std::string> materials;
     const auto reference = [&](assets::AssetKind kind, const std::string& key) {
@@ -254,14 +266,20 @@ void preflight_resources(editor::Project& project, const Json& scene) {
     for (const auto& [key, asset] : authors)
         if (const auto* instance = std::get_if<assets::MaterialInstanceAsset>(&asset.author))
             entries(instance->entries, source_author(key));
-    if (const auto definitions = scene.find("materials"); definitions != scene.end() && definitions->is_array()) {
-        std::map<std::string, const Json*> locals;
-        for (const auto& definition : *definitions)
-            locals.emplace(definition.at("id").get<std::string>(), &definition);
-        for (const auto& definition : *definitions)
-            if (definition.contains("entries")) {
-                const Json* current = &definition;
-                std::set<const Json*> visited;
+    ATELIER_TRY_BIND(definitions, scene.find("materials"));
+    if (*definitions && (**definitions).kind() == json::Kind::array) {
+        ATELIER_TRY_BIND(items, (**definitions).array());
+        std::map<std::string, json::Value, std::less<>> locals;
+        for (const auto definition : *items) {
+            ATELIER_TRY_BIND(id, definition.string({"id"}));
+            locals.emplace(*id, definition);
+        }
+        for (const auto definition : *items) {
+            ATELIER_TRY_BIND(values, definition.find("entries"));
+            if (*values) {
+                // Wrappers live for this walk; all views borrow the immutable scene.
+                const json::Value* current = &definition;
+                std::set<const json::Value*> visited;
                 const assets::MaterialSourceAsset* source{};
                 while (current && visited.insert(current).second) {
                     const auto key = string_field(*current, "source");
@@ -269,56 +287,70 @@ void preflight_resources(editor::Project& project, const Json& scene) {
                         source = source_author(key);
                         break;
                     }
-                    const auto parent = current->find("parent");
-                    if (parent == current->end())
+                    ATELIER_TRY_BIND(parent, current->find("parent"));
+                    if (!*parent)
                         break;
-                    if (parent->is_string()) {
-                        source = source_author(parent->get<std::string>());
+                    if ((**parent).kind() == json::Kind::string) {
+                        source = source_author(std::string{*(**parent).string()});
                         break;
                     }
-                    if (!parent->is_object() || !parent->contains("$ref"))
+                    if ((**parent).kind() != json::Kind::object)
                         break;
-                    const auto at = locals.find(parent->at("$ref").get<std::string>());
-                    current = at == locals.end() ? nullptr : at->second;
+                    ATELIER_TRY_BIND(ref, (**parent).find("$ref"));
+                    if (!*ref)
+                        break;
+                    ATELIER_TRY_BIND(id, (**ref).string());
+                    const auto at = locals.find(*id);
+                    current = at == locals.end() ? nullptr : &at->second;
                 }
-                entries(assets::material_format::decode_entries(definition.at("entries")), source);
+                ATELIER_TRY_BIND(decoded, assets::material_format::decode_entries(**values));
+                entries(*decoded, source);
             }
+        }
     }
+    return {};
 }
 
-Json image_content(const material::ImageRef& image) {
+json::Result<json::Document> image_content(const material::ImageRef& image) {
     if (!image)
-        return nullptr;
-    return {{"width", image->width()},
-            {"height", image->height()},
-            {"rgba_sha256", foundation::sha256(std::as_bytes(image->pixels()))}};
+        return json::Builder{json::Kind::null}.finish();
+    json::Builder content;
+    ATELIER_TRY(content.set(content.root(), "width", image->width()));
+    ATELIER_TRY(content.set(content.root(), "height", image->height()));
+    content.set_validated(content.root(), "rgba_sha256", foundation::sha256(std::as_bytes(image->pixels())));
+    return content.finish();
 }
 
-std::string json_hash(const Json& value) {
-    const auto bytes = value.dump();
-    return foundation::sha256(std::as_bytes(std::span(bytes)));
+std::string json_hash(json::Value value) {
+    const auto bytes = json::write(value);
+    return foundation::sha256(std::as_bytes(std::span{bytes.data(), bytes.size()}));
 }
 
-std::string source_material_hash(const assets::MaterialAsset& asset, const language::SourceFile& file) {
+json::Result<std::string> source_material_hash(const assets::MaterialAsset& asset, const language::SourceFile& file) {
     // The installed MS producer's versioned author/text encoding, not a runtime
     // program hash. Project/scene records additionally digest the input pixels.
-    return json_hash({{"domain", "Atelier.MaterialSource"},
-                      {"digest_version", assets::material_digest_version},
-                      {"key", asset.key},
-                      {"author", assets::material_format::encode(asset)},
-                      {"source_path", file.path},
-                      {"source", file.source}});
+    json::Builder content;
+    content.set_validated(content.root(), "domain", "Atelier.MaterialSource");
+    ATELIER_TRY(content.set(content.root(), "digest_version", assets::material_digest_version));
+    ATELIER_TRY(content.set(content.root(), "key", asset.key));
+    ATELIER_TRY_BIND(author, assets::material_format::encode(asset));
+    content.set_validated(content.root(), "author", author->root());
+    ATELIER_TRY(content.set(content.root(), "source_path", file.path));
+    ATELIER_TRY(content.set(content.root(), "source", file.source));
+    return json_hash(content.root());
 }
 
-std::string sky_hash(const rendering::SkyMap& map) {
-    const auto bytes = Json{{"width", map.width()},
-                            {"height", map.height()},
-                            {"scale_exponent", map.scale_exponent()},
-                            {"mean", map.mean()},
-                            {"pixels", foundation::sha256(std::as_bytes(map.pixels()))},
-                            {"cube", foundation::sha256(std::as_bytes(map.cube()))}}
-                           .dump();
-    return foundation::sha256(std::as_bytes(std::span(bytes)));
+json::Result<std::string> sky_hash(const rendering::SkyMap& map) {
+    json::Builder content;
+    ATELIER_TRY(content.set(content.root(), "width", map.width()));
+    ATELIER_TRY(content.set(content.root(), "height", map.height()));
+    ATELIER_TRY(content.set(content.root(), "scale_exponent", std::int64_t{map.scale_exponent()}));
+    ATELIER_TRY_BIND(mean, content.array(content.root(), "mean"));
+    for (const auto value : map.mean())
+        ATELIER_TRY(content.append(*mean, value));
+    content.set_validated(content.root(), "pixels", foundation::sha256(std::as_bytes(map.pixels())));
+    content.set_validated(content.root(), "cube", foundation::sha256(std::as_bytes(map.cube())));
+    return json_hash(content.root());
 }
 
 struct Com {
@@ -367,10 +399,10 @@ std::expected<void, Failure> png(std::uint32_t width, std::uint32_t height, std:
     return {};
 }
 
-std::expected<void, Failure> finish(const std::filesystem::path& directory, Json& manifest,
+std::expected<void, Failure> finish(const std::filesystem::path& directory, json::Builder& manifest,
                                     const std::atomic_bool& cancel) {
     checkpoint(cancel);
-    auto files = Json::array();
+    ATELIER_TRY_BIND(files, manifest.array(manifest.root(), "files"));
     std::error_code error;
     auto entry = std::filesystem::recursive_directory_iterator(directory, error);
     if (error)
@@ -391,19 +423,22 @@ std::expected<void, Failure> finish(const std::filesystem::path& directory, Json
             const auto digest = foundation::sha256_file(item.path());
             if (!digest)
                 return std::unexpected(Failure("storage_error", digest.error()));
-            files.push_back({{"path", *path}, {"bytes", bytes}, {"sha256", *digest}});
+            const auto file = manifest.append_object(*files);
+            manifest.set_validated(file, "path", *path);
+            ATELIER_TRY(manifest.set(file, "bytes", bytes));
+            manifest.set_validated(file, "sha256", *digest);
         }
         entry.increment(error);
         if (error)
             return std::unexpected(Failure("storage_error", platform::error_message(error)));
     }
     checkpoint(cancel);
-    manifest["files"] = std::move(files);
-    manifest["complete"] = true;
-    const auto encoded = manifest.dump(2) + "\n";
+    ATELIER_TRY(manifest.set(manifest.root(), "json_bytes_version", assets::json_format::json_bytes_version));
+    ATELIER_TRY(manifest.set(manifest.root(), "complete", true));
+    const auto encoded = json::write(manifest.root(), {true, true});
     if (encoded.size() > assets::json_format::maximum_bytes)
         throw Failure("resource_limit", "Artifact manifest exceeds the 16 MiB file limit");
-    return write(directory / "manifest.json", encoded);
+    return write(directory / "manifest.json", {encoded.data(), encoded.size()});
 }
 
 std::string html_text(std::string_view text) {
@@ -434,7 +469,7 @@ std::string html_text(std::string_view text) {
 
 // This view consumes only the exported facts. It has no pass names, settings
 // branches, resource-state model or inferred producer/consumer edges.
-std::string trace_html(const Json& trace) {
+std::string trace_html(json::Value trace) {
     std::string html = R"HTML(<!doctype html>
 <html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'">
@@ -455,93 +490,103 @@ th{color:#eee}td code{overflow-wrap:anywhere}caption{text-align:left;margin-bott
 <p>CPU command recording only. This is not GPU completion or proof of display.
 Solid arrows show recording order; dashed lines show bindings, not dependencies.</p>
 )HTML";
-    const auto text = [](const Json& value) {
-        return html_text(value.is_string() ? value.get<std::string>() : value.dump());
+    // The trace writer supplies every field below; this is its presentation,
+    // not a second schema decoder or an external JSON entry point.
+    const auto text = [](json::Value value) {
+        if (value.kind() == json::Kind::string)
+            return html_text(*value.string());
+        const auto bytes = json::write(value);
+        return html_text({bytes.data(), bytes.size()});
     };
-    html += "<div class=\"facts\">Scope: <code>" + text(trace.at("scope")) +
-            "</code><br>Recording sequence: " + text(trace.at("recording_sequence")) +
-            " · UI frame: " + text(trace.at("ui_frame_id")) + "<br>Attempt: " + text(trace.at("attempt")) +
-            " · Frame result: <strong>" + text(trace.at("frame_status")) + "</strong> · Observation: <strong>" +
-            text(trace.at("observation").at("status")) + "</strong></div>";
-    if (trace.contains("error"))
-        html += "<pre class=\"notice\">" + html_text(trace.at("error").dump(2)) + "</pre>";
-    if (trace.at("observation").at("status") != "complete")
+    html += "<div class=\"facts\">Scope: <code>" + text(*trace.at("scope")) +
+            "</code><br>Recording sequence: " + text(*trace.at("recording_sequence")) +
+            " · UI frame: " + text(*trace.at("ui_frame_id")) + "<br>Attempt: " + text(*trace.at("attempt")) +
+            " · Frame result: <strong>" + text(*trace.at("frame_status")) + "</strong> · Observation: <strong>" +
+            text(*trace.path({"observation", "status"})) + "</strong></div>";
+    if (const auto error = *trace.find("error")) {
+        const auto bytes = json::write(*error, {true});
+        html += "<pre class=\"notice\">" + html_text({bytes.data(), bytes.size()}) + "</pre>";
+    }
+    if (*trace.string({"observation", "status"}) != "complete")
         html += "<p class=\"notice\">This observation is not complete. Missing commands or bindings are not inferred. "
                 "See observation flags in the snapshot metadata below.</p>";
-    const auto& commands = trace.at("commands");
+    const auto commands = *trace.at("commands")->array();
     html += "<h2>Recording order</h2>";
-    if (commands.empty())
+    if (commands.size() == 0)
         html += "<p>No dispatch was observed in this scope for this render attempt. No pipeline template is shown.</p>";
     else {
         html +=
             "<div class=\"scroll\"><svg role=\"img\" aria-label=\"Actual dispatch recording order\" viewBox=\"0 0 1000 " +
             std::to_string(commands.size() * 60) + "\">";
-        for (std::size_t i = 0; i < commands.size(); ++i) {
+        std::size_t i = 0;
+        for (const auto command : commands) {
             const auto y = std::to_string(i * 60);
-            const auto& command = commands[i];
-            html += "<g transform=\"translate(0 " + y + ")\" id=\"command-" + text(command.at("ordinal")) +
+            html += "<g transform=\"translate(0 " + y + ")\" id=\"command-" + text(*command.at("ordinal")) +
                     "\"><rect x=\"40\" y=\"2\" width=\"510\" height=\"40\"/>";
-            html += "<text x=\"54\" y=\"28\">" + text(command.at("ordinal")) + " · " + text(command.at("entry")) +
-                    "</text><text x=\"580\" y=\"28\">" + text(command.at("kind")) + " · groups " +
-                    text(command.at("groups")) + "</text>";
+            html += "<text x=\"54\" y=\"28\">" + text(*command.at("ordinal")) + " · " + text(*command.at("entry")) +
+                    "</text><text x=\"580\" y=\"28\">" + text(*command.at("kind")) + " · groups " +
+                    text(*command.at("groups")) + "</text>";
             if (i + 1 < commands.size())
                 html += "<path d=\"M56 42 V55\"/><path class=\"arrow\" d=\"M52 52 L56 58 L60 52 Z\"/>";
             html += "</g>";
+            ++i;
         }
         html += "</svg></div><h2>Actual bindings</h2><p>Expand a command to inspect its binding ports and view ranges. "
                 "R numbers identify resources only within this snapshot. Resource origins are not inferred.</p>";
     }
-    for (const auto& command : commands) {
-        const auto& bindings = command.at("bindings");
-        html += "<details><summary><code>" + text(command.at("ordinal")) + " · " + text(command.at("entry")) +
+    for (const auto command : commands) {
+        const auto bindings = *command.at("bindings")->array();
+        html += "<details><summary><code>" + text(*command.at("ordinal")) + " · " + text(*command.at("entry")) +
                 "</code> — " + std::to_string(bindings.size()) + " bindings</summary>";
         html += "<div class=\"scroll\"><svg role=\"img\" aria-label=\"Actual resource bindings\" viewBox=\"0 0 1000 " +
                 std::to_string(std::max<std::size_t>(80, bindings.size() * 36 + 12)) + "\">";
         html += "<rect x=\"8\" y=\"8\" width=\"110\" height=\"40\"/><text x=\"20\" y=\"34\">Command " +
-                text(command.at("ordinal")) + "</text>";
-        for (std::size_t i = 0; i < bindings.size(); ++i) {
-            const auto& binding = bindings[i];
+                text(*command.at("ordinal")) + "</text>";
+        std::size_t i = 0;
+        for (const auto binding : bindings) {
             const auto y = std::to_string(i * 36 + 28);
             const auto label =
-                binding.at("resource").is_null() ? text(binding.at("status")) : "R" + text(binding.at("resource"));
-            html += "<g id=\"binding-" + text(command.at("ordinal")) + "-" + text(binding.at("root_parameter")) + "-" +
-                    text(binding.at("array_index")) + "\">";
+                binding.at("resource")->is_null() ? text(*binding.at("status")) : "R" + text(*binding.at("resource"));
+            html += "<g id=\"binding-" + text(*command.at("ordinal")) + "-" + text(*binding.at("root_parameter")) +
+                    "-" + text(*binding.at("array_index")) + "\">";
             html += "<path class=\"binding\" d=\"M118 28 H140 V" + y + " H170 M720 " + y + " H760\"/>";
             html += "<text x=\"178\" y=\"" + std::to_string(i * 36 + 33) + "\">root " +
-                    text(binding.at("root_parameter")) + ", " + text(binding.at("kind")) + " · " +
-                    text(binding.at("name")) + "[" + text(binding.at("array_index")) + "]</text>";
+                    text(*binding.at("root_parameter")) + ", " + text(*binding.at("kind")) + " · " +
+                    text(*binding.at("name")) + "[" + text(*binding.at("array_index")) + "]</text>";
             html += "<rect x=\"760\" y=\"" + std::to_string(i * 36 + 12) +
                     "\" width=\"220\" height=\"30\"/><text x=\"774\" y=\"" + std::to_string(i * 36 + 33) + "\">" +
                     label + "</text></g>";
+            ++i;
         }
         html +=
             "</svg></div><div class=\"scroll\"><table><caption>Installed binding details</caption>"
             "<thead><tr><th>Root / element</th><th>Name</th><th>Kind / status</th><th>Resource</th><th>View</th></tr></thead><tbody>";
-        for (const auto& binding : bindings)
-            html += "<tr><td>" + text(binding.at("root_parameter")) + " / " + text(binding.at("array_index")) +
-                    "</td><td><code>" + text(binding.at("name")) + "</code></td><td>" + text(binding.at("kind")) +
-                    " / " + text(binding.at("status")) + "</td><td>" + text(binding.at("resource")) +
-                    "</td><td><code>" + text(binding.at("view")) + "</code></td></tr>";
+        for (const auto binding : bindings)
+            html += "<tr><td>" + text(*binding.at("root_parameter")) + " / " + text(*binding.at("array_index")) +
+                    "</td><td><code>" + text(*binding.at("name")) + "</code></td><td>" + text(*binding.at("kind")) +
+                    " / " + text(*binding.at("status")) + "</td><td>" + text(*binding.at("resource")) +
+                    "</td><td><code>" + text(*binding.at("view")) + "</code></td></tr>";
         html += "</tbody></table></div></details>";
     }
     html +=
         "<h2>Resources</h2><div class=\"scroll\"><table><thead><tr><th>ID</th><th>Kind / name</th><th>Extent / DXGI format</th></tr></thead><tbody>";
-    for (const auto& resource : trace.at("resources"))
-        html += "<tr><td>R" + text(resource.at("index")) + "</td><td>" + text(resource.at("kind")) + " / <code>" +
-                text(resource.at("name")) + "</code></td><td>" + text(resource.at("extent")) + " / " +
-                text(resource.at("format")) + "</td></tr>";
+    for (const auto resource : *trace.at("resources")->array())
+        html += "<tr><td>R" + text(*resource.at("index")) + "</td><td>" + text(*resource.at("kind")) + " / <code>" +
+                text(*resource.at("name")) + "</code></td><td>" + text(*resource.at("extent")) + " / " +
+                text(*resource.at("format")) + "</td></tr>";
     html += "</tbody></table></div><details><summary>Snapshot metadata</summary><pre>";
-    auto metadata = trace;
-    metadata.erase("commands");
-    metadata.erase("resources");
-    return html + html_text(metadata.dump(2)) + "</pre></details></main></html>\n";
+    json::Builder metadata{trace};
+    metadata.erase(metadata.root(), "commands");
+    metadata.erase(metadata.root(), "resources");
+    const auto bytes = json::write(metadata.root(), {true});
+    return html + html_text({bytes.data(), bytes.size()}) + "</pre></details></main></html>\n";
 }
 }
 
-Repro snapshot_resources(const editor::Session& document) try {
+std::expected<Repro, Failure> snapshot_resources(const editor::Session& document) try {
     Repro data;
     data.scene = take(document.serialize());
-    const auto scene = assets::json_format::parse(data.scene);
+    ATELIER_TRY_BIND(scene, assets::json_format::parse(data.scene));
     std::map<std::string, assets::EngineDependency, std::less<>> engine;
     std::set<std::pair<assets::AssetKind, std::string>> references;
     std::vector<ObjectId> pending;
@@ -561,12 +606,16 @@ Repro snapshot_resources(const editor::Session& document) try {
     };
     // The serialized graph includes retained resource definitions, but not every
     // material a browser happened to load. Ordinary properties are not references.
-    scene_references(scene, reference);
+    scene_references(scene->root(), reference);
     auto& runtime = document.world().runtime();
-    std::map<std::string, const Json*> locals;
-    for (const auto& definition : scene.at("materials"))
-        if (string_field(definition, "source").empty())
-            locals.emplace(definition.at("id").get<std::string>(), &definition);
+    std::map<std::string, json::Value> locals;
+    ATELIER_TRY_BIND(materials, scene->root().at("materials"));
+    ATELIER_TRY_BIND(definitions, materials->array());
+    for (const auto definition : *definitions)
+        if (string_field(definition, "source").empty()) {
+            ATELIER_TRY_BIND(id, definition.string({"id"}));
+            locals.emplace(*id, definition);
+        }
     if (!locals.empty()) {
         // local_object intentionally admits only Entities/Components. Enumerate
         // identities, but admit only the material LocalIds in the serialized graph
@@ -623,7 +672,9 @@ Repro snapshot_resources(const editor::Session& document) try {
             }
         }
     std::unordered_set<ObjectId> visited;
-    auto records = Json::object();
+    json::Builder resources;
+    ATELIER_TRY(resources.set(resources.root(), "version", assets::json_format::json_bytes_version));
+    ATELIER_TRY_BIND(records, resources.object(resources.root(), "records"));
     const auto identity = [&](ObjectId object) -> std::string {
         auto key = take(material::material_key(runtime, object));
         if (!key.empty())
@@ -633,7 +684,8 @@ Repro snapshot_resources(const editor::Session& document) try {
             throw Failure("dependency_mismatch", "Material parent is outside the serialized scene closure");
         return "scene/" + std::to_string(*id);
     };
-    const auto texture = [&](std::string_view path, const std::string& key, const ObjectRoot& root, Json& inputs) {
+    const auto texture = [&](std::string_view path, const std::string& key, const ObjectRoot& root,
+                             json::Builder& content, json::Value inputs) -> json::Result<void> {
         reference(assets::AssetKind::texture, key);
         material::ImageRef image;
         if (root.registered()) {
@@ -642,14 +694,21 @@ Repro snapshot_resources(const editor::Session& document) try {
                 throw Failure("dependency_mismatch", "Material input is bound to a different texture key: " + key);
             image = std::move(state.image);
         }
-        inputs[std::string(path)] = {{"key", key}, {"image", image_content(image)}};
+        ATELIER_TRY_BIND(input, content.object(inputs, path));
+        ATELIER_TRY(content.set(*input, "key", key));
+        ATELIER_TRY_BIND(pixels, image_content(image));
+        content.set_validated(*input, "image", pixels->root());
         if (!image)
-            return;
+            return {};
         const auto at = std::ranges::find(data.textures, key, &assets::TextureAsset::key);
         if (at == data.textures.end())
             data.textures.push_back({key, {}, std::move(image)});
-        else if (at->image != image && image_content(at->image) != image_content(image))
-            throw Failure("dependency_mismatch", "One texture key has distinct loaded input pixels: " + key);
+        else if (at->image != image) {
+            ATELIER_TRY_BIND(previous, image_content(at->image));
+            if (*previous != *pixels)
+                throw Failure("dependency_mismatch", "One texture key has distinct loaded input pixels: " + key);
+        }
+        return {};
     };
     for (std::size_t i = 0; i < pending.size(); ++i) {
         const auto object = pending[i];
@@ -660,38 +719,50 @@ Repro snapshot_resources(const editor::Session& document) try {
         if (document.unavailable(assets::AssetKind::material, key))
             continue;
         auto asset = take(document.material_asset(object));
-        Json content = {{"author", assets::material_format::encode(asset)}, {"inputs", Json::object()}};
+        json::Builder content;
+        ATELIER_TRY_BIND(encoded, assets::material_format::encode(asset));
+        content.set_validated(content.root(), "author", encoded->root());
+        ATELIER_TRY_BIND(inputs, content.object(content.root(), "inputs"));
         if (std::holds_alternative<assets::MaterialSourceAsset>(asset.author)) {
             const auto state = take(material::read_source(runtime, object));
             const auto view = take(document.inspect_material(object));
-            content["source"] = nullptr;
+            ATELIER_TRY(content.set_null(content.root(), "source"));
             if (view.source_file) {
                 const auto& file = *view.source_file;
-                content["source"] = {{"path", file.path}, {"text", file.source}};
+                const auto source = content.object_validated(content.root(), "source");
+                ATELIER_TRY(content.set(source, "path", file.path));
+                ATELIER_TRY(content.set(source, "text", file.source));
                 const auto at = std::ranges::find(data.material_sources, file.path, &language::SourceFile::path);
                 if (at == data.material_sources.end())
                     data.material_sources.push_back(file);
                 else if (at->source != file.source)
                     throw Failure("dependency_mismatch", "One MS Source path has distinct loaded text: " + file.path);
-                if (key.starts_with("builtin/") && source_material_hash(asset, file) != engine.at(key).content_sha256)
-                    throw Failure("dependency_mismatch",
-                                  "Loaded engine material differs from its installed producer: " + key);
+                if (key.starts_with("builtin/")) {
+                    ATELIER_TRY_BIND(hash, source_material_hash(asset, file));
+                    if (*hash != engine.at(key).content_sha256)
+                        throw Failure("dependency_mismatch",
+                                      "Loaded engine material differs from its installed producer: " + key);
+                }
             } else if (key.starts_with("builtin/"))
                 throw Failure("dependency_mismatch", "Loaded engine material has no Source snapshot: " + key);
             if (state.definition)
                 for (std::size_t input = 0; input < state.definition->textures().size(); ++input) {
                     const auto& value = state.definition->textures()[input];
-                    texture(value.path, value.binding.asset_key, state.default_textures.at(input), content["inputs"]);
+                    ATELIER_TRY(texture(value.path, value.binding.asset_key, state.default_textures.at(input), content,
+                                        *inputs));
                 }
         } else {
             const auto state = take(material::read_instance(runtime, object));
             const auto& author = std::get<assets::MaterialInstanceAsset>(asset.author);
             reference(assets::AssetKind::material, author.parent_key);
-            content["parent"] = state.parent.registered() ? Json(identity(state.parent.id())) : Json();
-            if (state.parent.registered())
+            if (state.parent.registered()) {
+                ATELIER_TRY(content.set(content.root(), "parent", identity(state.parent.id())));
                 pending.push_back(state.parent.id());
+            } else
+                ATELIER_TRY(content.set_null(content.root(), "parent"));
             if (key.empty())
-                content["author"] = *locals.at(std::to_string(*document.document_identity(object)));
+                content.set_validated(content.root(), "author",
+                                      locals.at(std::to_string(*document.document_identity(object))));
             const auto surface = take(material::capture_program(runtime, object));
             if (!surface->uses_default_material())
                 for (std::size_t entry = 0; entry < state.entries.size(); ++entry) {
@@ -700,10 +771,11 @@ Repro snapshot_resources(const editor::Session& document) try {
                     if (value.enabled && binding &&
                         std::ranges::find(surface->program().textures(), value.path,
                                           &source::MaterialTextureInput::key) != surface->program().textures().end())
-                        texture(value.path, binding->asset_key, state.textures.at(entry), content["inputs"]);
+                        ATELIER_TRY(
+                            texture(value.path, binding->asset_key, state.textures.at(entry), content, *inputs));
                 }
         }
-        records[identity(object)] = json_hash(content);
+        ATELIER_TRY(resources.set(*records, identity(object), json_hash(content.root())));
         if (!key.empty() && !key.starts_with("builtin/"))
             data.materials.push_back(std::move(asset));
     }
@@ -718,7 +790,7 @@ Repro snapshot_resources(const editor::Session& document) try {
         data.engine_assets.push_back(std::move(dependency));
     }
     data.references.assign(references.begin(), references.end());
-    data.material_resources = {{"version", 1}, {"records", std::move(records)}};
+    data.material_resources = resources.finish();
     return data;
 } catch (const Failure&) {
     throw;
@@ -726,23 +798,26 @@ Repro snapshot_resources(const editor::Session& document) try {
     throw Failure("storage_error", error.what());
 }
 
-void validate_candidate_assets(const editor::Session& candidate, const Json& manifest) {
-    const auto expected = installed_assets(manifest);
-    const auto actual = snapshot_resources(candidate);
-    for (const auto& item : actual.engine_assets)
-        if (std::ranges::find(expected, item) == expected.end())
+std::expected<void, Failure> validate_candidate_assets(const editor::Session& candidate, json::Value manifest) {
+    ATELIER_TRY_BIND(expected, installed_assets(manifest));
+    ATELIER_TRY_BIND(actual, snapshot_resources(candidate));
+    for (const auto& item : actual->engine_assets)
+        if (std::ranges::find(*expected, item) == expected->end())
             throw Failure("dependency_mismatch", "Repro omits or changes an actual engine dependency: " + item.key);
-    for (const auto& item : expected)
-        if (std::ranges::find(actual.engine_assets, item) == actual.engine_assets.end())
+    for (const auto& item : *expected)
+        if (std::ranges::find(actual->engine_assets, item) == actual->engine_assets.end())
             throw Failure("dependency_mismatch", "Repro declares an unused engine dependency: " + item.key);
-    if (material_records(manifest) != actual.material_resources)
+    ATELIER_TRY_BIND(records, material_records(manifest));
+    if (*records != actual->material_resources.root())
         throw Failure("dependency_mismatch",
                       "Repro material author, Source, parent or input pixels differ from the frozen content");
+    return {};
 }
 
-std::expected<Json, Failure> export_repro(const std::filesystem::path& output, Repro data,
-                                          const std::atomic_bool& cancel) {
+std::expected<json::Document, Failure> export_repro(const std::filesystem::path& output, Repro data,
+                                                    const std::atomic_bool& cancel) {
     checkpoint(cancel);
+    json::Builder manifest{data.manifest};
     std::optional<Com> com;
     if (!data.textures.empty())
         com.emplace();
@@ -807,7 +882,7 @@ std::expected<Json, Failure> export_repro(const std::filesystem::path& output, R
     } else {
         std::uintmax_t bytes{};
         std::size_t files{};
-        Json input_files = Json::array();
+        ATELIER_TRY_BIND(input_files, manifest.array(manifest.root(), "input_files"));
         const auto link = [](const std::filesystem::path& path) {
             // Both roots were normalized above; all callers append native children.
             const auto flags = GetFileAttributesW(path.c_str());
@@ -850,7 +925,9 @@ std::expected<Json, Failure> export_repro(const std::filesystem::path& output, R
                     const auto bytes = assets::read_file(identity);
                     if (!bytes)
                         return std::unexpected(Failure("storage_error", bytes.error().message));
-                    const auto key = "project/" + assets::json_format::parse(*bytes).at("id").get<std::string>();
+                    ATELIER_TRY_BIND(identity_data, assets::json_format::parse(*bytes));
+                    ATELIER_TRY_BIND(id, identity_data->root().string({"id"}));
+                    const auto key = "project/" + std::string{*id};
                     if (const auto at = std::ranges::find(data.textures, key, &assets::TextureAsset::key);
                         at != data.textures.end())
                         image = at->image;
@@ -879,7 +956,10 @@ std::expected<Json, Failure> export_repro(const std::filesystem::path& output, R
                 const auto digest = foundation::sha256_file(target);
                 if (!digest)
                     return std::unexpected(Failure("storage_error", digest.error()));
-                input_files.push_back({{"path", *name}, {"sha256", *digest}, {"snapshot", true}});
+                const auto file = manifest.append_object(*input_files);
+                manifest.set_validated(file, "path", *name);
+                manifest.set_validated(file, "sha256", *digest);
+                ATELIER_TRY(manifest.set(file, "snapshot", true));
                 return {};
             }
             const auto current_status = std::filesystem::status(item, error);
@@ -930,7 +1010,9 @@ std::expected<Json, Failure> export_repro(const std::filesystem::path& output, R
             const auto name = platform::utf16_to_utf8(relative.generic_wstring());
             if (!name)
                 return std::unexpected(Failure("invalid_request", "Invalid UTF-16 text"));
-            input_files.push_back({{"path", *name}, {"sha256", *hash}});
+            const auto file = manifest.append_object(*input_files);
+            manifest.set_validated(file, "path", *name);
+            manifest.set_validated(file, "sha256", *hash);
             return {};
         };
         // Config and Source are copied whole: the configuration is rewritten and the
@@ -984,18 +1066,17 @@ std::expected<Json, Failure> export_repro(const std::filesystem::path& output, R
         }
         if (current_files != sections)
             throw Failure("dependency_mismatch", "Project file set changed during export");
-        for (const auto& file : input_files) {
+        for (const auto file : *input_files->array()) {
             checkpoint(cancel);
-            if (file.value("snapshot", false))
+            if (*file.find("snapshot"))
                 continue;
-            const auto hash = foundation::sha256_file(
-                data.project / platform::utf8_to_utf16_validated(file.at("path").get<std::string>()));
+            const auto hash =
+                foundation::sha256_file(data.project / platform::utf8_to_utf16_validated(*file.string({"path"})));
             if (!hash)
                 return std::unexpected(Failure("storage_error", hash.error()));
-            if (*hash != file.at("sha256").get<std::string>())
+            if (*hash != *file.string({"sha256"}))
                 throw Failure("dependency_mismatch", "Project changed during export");
         }
-        data.manifest["input_files"] = std::move(input_files);
     }
     checkpoint(cancel);
     // Reproduce the code actually published into this Runtime. Drafts are separate.
@@ -1064,13 +1145,15 @@ std::expected<Json, Failure> export_repro(const std::filesystem::path& output, R
     };
     // Engine definitions stay installation-owned. Pin the published inputs rather
     // than copying them into project scope or silently using a newer installation.
-    if (data.sources)
-        data.manifest["engine_sources"] = engine_source_hashes(data.sources->files);
-    else {
+    if (data.sources) {
+        ATELIER_TRY_BIND(hashes, engine_source_hashes(data.sources->files));
+        manifest.set_validated(manifest.root(), "engine_sources", hashes->root());
+    } else {
         const auto files = source::engine_sources(source::default_engine_root());
         if (!files)
             return std::unexpected(Failure("storage_error", files.error().message));
-        data.manifest["engine_sources"] = engine_source_hashes(*files);
+        ATELIER_TRY_BIND(hashes, engine_source_hashes(*files));
+        manifest.set_validated(manifest.root(), "engine_sources", hashes->root());
     }
     if (data.sources)
         for (const auto& file : data.sources->files)
@@ -1110,31 +1193,34 @@ std::expected<Json, Failure> export_repro(const std::filesystem::path& output, R
     const auto config_text = assets::read_file(project / "Config/Project.json");
     if (!config_text)
         return std::unexpected(Failure("storage_error", config_text.error().message));
-    auto config = assets::json_format::parse(*config_text);
+    ATELIER_TRY_BIND(config_document, assets::json_format::parse(*config_text));
+    json::Builder config{*config_document};
     if (data.ui_source)
-        config["ui_source"] = data.ui_source->path;
+        ATELIER_TRY(config.set(config.root(), "ui_source", data.ui_source->path));
     else
-        config.erase("ui_source");
+        config.erase(config.root(), "ui_source");
     const auto scene_name = platform::utf16_to_utf8(scene_path.generic_wstring());
     if (!scene_name)
         return std::unexpected(Failure("invalid_request", "Invalid UTF-16 text"));
-    config["startup_scene"] = *scene_name;
-    const auto saved = editor::write_file(project / "Config/Project.json", config.dump(2) + "\n");
+    config.set_validated(config.root(), "startup_scene", *scene_name);
+    const auto config_bytes = json::write(config.root(), {true, true});
+    const auto saved = editor::write_file(project / "Config/Project.json", {config_bytes.data(), config_bytes.size()});
     if (!saved)
         return std::unexpected(Failure("storage_error", saved.error().message));
     auto opened = editor::Project::open(output / "Project");
     if (!opened)
         return std::unexpected(Failure("storage_error", opened.error().message));
     auto& clone = *opened;
-    auto resources = Json::array();
+    ATELIER_TRY_BIND(resources, manifest.array(manifest.root(), "resources"));
     for (const auto& material : data.materials) {
         checkpoint(cancel);
         // Publish the live draft only in this independent bundle, never in the source project.
         const auto saved = clone.save_material(material);
         if (!saved)
             return std::unexpected(Failure("storage_error", saved.error().message));
-        if (assets::material_format::encode(take(clone.assets().material(material.key))) !=
-            assets::material_format::encode(material))
+        ATELIER_TRY_BIND(actual, assets::material_format::encode(take(clone.assets().material(material.key))));
+        ATELIER_TRY_BIND(expected, assets::material_format::encode(material));
+        if (*actual != *expected)
             throw Failure("dependency_mismatch", "Exported material author differs from its snapshot: " + material.key);
     }
     for (const auto& file : data.material_sources) {
@@ -1156,7 +1242,9 @@ std::expected<Json, Failure> export_repro(const std::filesystem::path& output, R
     for (const auto& texture : data.textures) {
         checkpoint(cancel);
         const auto copied = take(clone.assets().texture(texture.key)).image;
-        if (image_content(copied) != image_content(texture.image))
+        ATELIER_TRY_BIND(actual, image_content(copied));
+        ATELIER_TRY_BIND(expected, image_content(texture.image));
+        if (*actual != *expected)
             throw Failure("dependency_mismatch", "Exported texture differs from the loaded RGBA input: " + texture.key);
     }
     std::set<std::string> recorded;
@@ -1173,27 +1261,39 @@ std::expected<Json, Failure> export_repro(const std::filesystem::path& output, R
                 at->content_sha256 != expected)
                 throw Failure("dependency_mismatch",
                               "Frozen engine declaration differs from the loaded mesh: " + mesh.key);
-        } else if (recorded.insert(mesh.key).second)
-            resources.push_back(
-                {{"key", mesh.key}, {"digest_version", assets::mesh_digest_version}, {"content_sha256", expected}});
+        } else if (recorded.insert(mesh.key).second) {
+            const auto resource = manifest.append_object(*resources);
+            ATELIER_TRY(manifest.set(resource, "key", mesh.key));
+            ATELIER_TRY(manifest.set(resource, "digest_version", assets::mesh_digest_version));
+            manifest.set_validated(resource, "content_sha256", expected);
+        }
     }
     for (const auto& [key, map] : data.skies) {
         checkpoint(cancel);
         const auto loaded = take(clone.assets().sky_map(key)).map;
-        const auto expected = sky_hash(*map);
-        if (!loaded || sky_hash(*loaded) != expected)
+        if (!loaded)
             throw Failure("dependency_mismatch", "Copied dependency differs from the loaded sky map: " + key);
-        if (recorded.insert(key).second)
-            resources.push_back({{"key", key}, {"content_sha256", expected}});
+        ATELIER_TRY_BIND(expected, sky_hash(*map));
+        ATELIER_TRY_BIND(actual, sky_hash(*loaded));
+        if (*actual != *expected)
+            throw Failure("dependency_mismatch", "Copied dependency differs from the loaded sky map: " + key);
+        if (recorded.insert(key).second) {
+            const auto resource = manifest.append_object(*resources);
+            ATELIER_TRY(manifest.set(resource, "key", key));
+            ATELIER_TRY(manifest.set(resource, "digest_version", assets::json_format::json_bytes_version));
+            manifest.set_validated(resource, "content_sha256", *expected);
+        }
     }
-    data.manifest["engine_assets"] = engine_assets_json(data.engine_assets);
-    data.manifest["material_resources"] = std::move(data.material_resources);
-    data.manifest["resources"] = std::move(resources);
-    data.manifest["project"] = "Project";
-    data.manifest["scene"] = *scene_name;
-    if (!data.drafts.empty())
-        ATELIER_TRY(write(directory / "drafts.json", data.drafts.dump(2) + "\n"));
-    ATELIER_TRY(finish(directory, data.manifest, cancel));
+    ATELIER_TRY_BIND(engine_assets, engine_assets_json(data.engine_assets));
+    manifest.set_validated(manifest.root(), "engine_assets", engine_assets->root());
+    manifest.set_validated(manifest.root(), "material_resources", data.material_resources.root());
+    manifest.set_validated(manifest.root(), "project", "Project");
+    manifest.set_validated(manifest.root(), "scene", *scene_name);
+    if (data.drafts.root().size() != 0) {
+        const auto bytes = json::write(data.drafts.root(), {true, true});
+        ATELIER_TRY(write(directory / "drafts.json", {bytes.data(), bytes.size()}));
+    }
+    ATELIER_TRY(finish(directory, manifest, cancel));
     const auto output_name = platform::utf16_to_utf8(output.generic_wstring());
     if (!output_name)
         return std::unexpected(Failure("invalid_request", "Invalid UTF-16 text"));
@@ -1203,10 +1303,14 @@ std::expected<Json, Failure> export_repro(const std::filesystem::path& output, R
     const auto project_name = platform::utf16_to_utf8((output / "Project").generic_wstring());
     if (!project_name)
         return std::unexpected(Failure("invalid_request", "Invalid UTF-16 text"));
-    return Json{{"directory", *output_name}, {"manifest", *manifest_name}, {"project", *project_name}};
+    json::Builder result;
+    result.set_validated(result.root(), "directory", *output_name);
+    result.set_validated(result.root(), "manifest", *manifest_name);
+    result.set_validated(result.root(), "project", *project_name);
+    return result.finish();
 }
 
-std::expected<Json, Failure> validate_repro(const std::filesystem::path& input) {
+std::expected<json::Document, Failure> validate_repro(const std::filesystem::path& input) {
     const auto native = platform::windows_file_path(input);
     if (!native)
         return std::unexpected(Failure("operation_failed", platform::error_message(native.error())));
@@ -1214,36 +1318,49 @@ std::expected<Json, Failure> validate_repro(const std::filesystem::path& input) 
     const auto text = assets::read_file(directory / "manifest.json");
     if (!text)
         return std::unexpected(Failure("storage_error", text.error().message));
-    Json manifest;
     // Format-limit and duplicate-field failures are input errors, not I/O failures.
-    try {
-        manifest = assets::json_format::parse(*text);
-    } catch (const std::runtime_error& error) {
-        throw Failure("invalid_request", error.what());
-    }
-    if (manifest.value("kind", "") != "repro" || !manifest.value("complete", false) ||
-        manifest.at("protocol") != control::protocol_version || manifest.at("project") != "Project")
+    ATELIER_TRY_BIND(document, assets::json_format::parse(*text));
+    const auto manifest = document->root();
+    ATELIER_TRY_BIND(kind, manifest.string({"kind"}));
+    ATELIER_TRY_BIND(complete, manifest.boolean({"complete"}));
+    ATELIER_TRY_BIND(protocol, manifest.u32({"protocol"}));
+    ATELIER_TRY_BIND(project_name, manifest.string({"project"}));
+    ATELIER_TRY_BIND(bytes_version, manifest.u32({"json_bytes_version"}));
+    if (*kind != "repro" || !*complete || *protocol != control::protocol_version || *project_name != "Project" ||
+        *bytes_version != assets::json_format::json_bytes_version)
         throw Failure("invalid_request", "Not a completed compatible repro bundle");
-    static_cast<void>(installed_assets(manifest));
-    static_cast<void>(material_records(manifest));
-    if (!manifest.contains("engine_sources") || !manifest.at("engine_sources").is_object())
+    ATELIER_TRY(installed_assets(manifest));
+    ATELIER_TRY(material_records(manifest));
+    ATELIER_TRY_BIND(resources_value, manifest.at("resources"));
+    ATELIER_TRY_BIND(resources, resources_value->array());
+    for (const auto resource : *resources) {
+        ATELIER_TRY_BIND(version, resource.u32({"digest_version"}));
+        if (*version != assets::mesh_digest_version && *version != assets::json_format::json_bytes_version)
+            throw Failure("invalid_request", "Unknown resource digest encoding; export it again");
+    }
+    ATELIER_TRY_BIND(engine_sources, manifest.find("engine_sources"));
+    if (!*engine_sources || (**engine_sources).kind() != json::Kind::object)
         throw Failure("invalid_request", "Repro lacks engine Source dependencies; export it again");
     const auto engine = source::engine_sources(source::default_engine_root());
-    if (!engine || engine_source_hashes(*engine) != manifest.at("engine_sources"))
+    if (!engine)
         throw Failure("dependency_mismatch", "Installed engine Source differs from the published repro inputs");
-    const auto& files = manifest.at("files");
-    if (!files.is_array() || files.size() > 11000)
+    ATELIER_TRY_BIND(hashes, engine_source_hashes(*engine));
+    if (hashes->root() != **engine_sources)
+        throw Failure("dependency_mismatch", "Installed engine Source differs from the published repro inputs");
+    ATELIER_TRY_BIND(files_value, manifest.at("files"));
+    ATELIER_TRY_BIND(files, files_value->array());
+    if (files->size() > 11000)
         throw Failure("invalid_request", "Invalid repro file list");
-    std::unordered_map<std::string, const Json*> expected;
-    for (const auto& file : files) {
-        const auto name = file.at("path").get<std::string>();
-        const std::filesystem::path path = platform::utf8_to_utf16_validated(name);
+    std::unordered_map<std::string, json::Value> expected;
+    for (const auto file : *files) {
+        ATELIER_TRY_BIND(name, file.string({"path"}));
+        const std::filesystem::path path = platform::utf8_to_utf16_validated(*name);
         const auto generic = platform::utf16_to_utf8(path.generic_wstring());
         if (!generic)
             return std::unexpected(Failure("invalid_request", "Invalid UTF-16 text"));
         if (path.empty() || path.has_root_path() || path.lexically_normal() != path || *path.begin() == L".." ||
-            name.find(':') != std::string::npos || path == L"manifest.json" || generated_cache(path) ||
-            !expected.emplace(*generic, &file).second)
+            name->find(':') != std::string::npos || path == L"manifest.json" || generated_cache(path) ||
+            !expected.emplace(*generic, file).second)
             throw Failure("invalid_request", "Invalid or duplicate bundle path");
     }
     // Reject additions as well as missing/modified inputs. Generated Cache is
@@ -1279,12 +1396,14 @@ std::expected<Json, Failure> validate_repro(const std::filesystem::path& input) 
         const auto bytes = it->file_size(error);
         if (error)
             return std::unexpected(Failure("operation_failed", platform::error_message(error)));
-        if (bytes != found->second->at("bytes").get<std::uintmax_t>())
+        ATELIER_TRY_BIND(expected_bytes, found->second.u64({"bytes"}));
+        if (bytes != *expected_bytes)
             throw Failure("dependency_mismatch", "Repro bundle file set or content changed");
         const auto digest = foundation::sha256_file(it->path());
         if (!digest)
             return std::unexpected(Failure("storage_error", digest.error()));
-        if (*digest != found->second->at("sha256").get<std::string>())
+        ATELIER_TRY_BIND(expected_digest, found->second.string({"sha256"}));
+        if (*digest != *expected_digest)
             throw Failure("dependency_mismatch", "Repro bundle file set or content changed");
         expected.erase(found);
     }
@@ -1301,12 +1420,13 @@ std::expected<Json, Failure> validate_repro(const std::filesystem::path& input) 
     const auto scene_text = assets::read_file(*scene);
     if (!scene_text)
         return std::unexpected(Failure("storage_error", scene_text.error().message));
-    preflight_resources(*project, assets::json_format::parse(*scene_text));
-    return manifest;
+    ATELIER_TRY_BIND(scene_document, assets::json_format::parse(*scene_text));
+    ATELIER_TRY(preflight_resources(*project, scene_document->root()));
+    return std::move(*document);
 }
 
-std::expected<Json, Failure> write_samples(const std::filesystem::path& output, std::vector<Sample> samples,
-                                           Json manifest, const std::atomic_bool& cancel) {
+std::expected<json::Document, Failure> write_samples(const std::filesystem::path& output, std::vector<Sample> samples,
+                                                     json::Document metadata, const std::atomic_bool& cancel) {
     const auto native = platform::windows_file_path(output);
     if (!native)
         return std::unexpected(Failure("storage_error", platform::error_message(native.error())));
@@ -1319,7 +1439,8 @@ std::expected<Json, Failure> write_samples(const std::filesystem::path& output, 
         return std::unexpected(Failure("storage_error", platform::error_message(error)));
     if (!created)
         return std::unexpected(Failure("storage_error", "Artifact directory already exists"));
-    manifest["samples"] = Json::array();
+    json::Builder manifest{metadata};
+    ATELIER_TRY_BIND(records, manifest.array(manifest.root(), "samples"));
     std::size_t index{};
     for (auto& sample : samples) {
         checkpoint(cancel);
@@ -1332,14 +1453,19 @@ std::expected<Json, Failure> write_samples(const std::filesystem::path& output, 
         checkpoint(cancel);
         ATELIER_TRY(write(directory / (name + ".depth.f32"),
                           {reinterpret_cast<const char*>(pixels.depth.data()), pixels.depth.size() * sizeof(float)}));
-        sample.metadata["color"] = name + ".png";
-        sample.metadata["depth"] = name + ".depth.f32";
-        sample.metadata["extent"] = {pixels.extent.width, pixels.extent.height};
-        sample.metadata["depth_format"] =
-            "float32-le, top-left, tightly packed, reversed-Z near=1 background=0; camera.far_depth is the geometry clipping boundary; unjittered";
-        sample.metadata["color_format"] = "sRGB RGBA8, top-left; complete editor client area";
-        ATELIER_TRY(write(directory / (name + ".json"), sample.metadata.dump(2) + "\n"));
-        manifest["samples"].push_back(std::move(sample.metadata));
+        json::Builder record{sample.metadata};
+        record.set_validated(record.root(), "color", name + ".png");
+        record.set_validated(record.root(), "depth", name + ".depth.f32");
+        ATELIER_TRY_BIND(extent, record.array(record.root(), "extent"));
+        record.append(*extent, std::uint64_t{pixels.extent.width});
+        record.append(*extent, std::uint64_t{pixels.extent.height});
+        record.set_validated(
+            record.root(), "depth_format",
+            "float32-le, top-left, tightly packed, reversed-Z near=1 background=0; camera.far_depth is the geometry clipping boundary; unjittered");
+        record.set_validated(record.root(), "color_format", "sRGB RGBA8, top-left; complete editor client area");
+        const auto bytes = json::write(record.root(), {true, true});
+        ATELIER_TRY(write(directory / (name + ".json"), {bytes.data(), bytes.size()}));
+        manifest.append(*records, record.root());
     }
     ATELIER_TRY(finish(directory, manifest, cancel));
     const auto output_name = platform::utf16_to_utf8(output.generic_wstring());
@@ -1348,12 +1474,20 @@ std::expected<Json, Failure> write_samples(const std::filesystem::path& output, 
     const auto manifest_name = platform::utf16_to_utf8((output / "manifest.json").generic_wstring());
     if (!manifest_name)
         return std::unexpected(Failure("invalid_request", "Invalid UTF-16 text"));
-    return Json{{"directory", *output_name}, {"manifest", *manifest_name}, {"samples", manifest["samples"]}};
+    json::Builder result;
+    result.set_validated(result.root(), "directory", *output_name);
+    result.set_validated(result.root(), "manifest", *manifest_name);
+    result.set_validated(result.root(), "samples", *records);
+    return result.finish();
 }
 
-std::expected<Json, Failure> write_trace(const std::filesystem::path& output, rhi::CommandTrace snapshot, Json manifest,
-                                         const std::atomic_bool& cancel) {
+std::expected<json::Document, Failure> write_trace(const std::filesystem::path& output, rhi::CommandTrace snapshot,
+                                                   json::Document metadata, const std::atomic_bool& cancel) {
     checkpoint(cancel);
+    // These fields come from the capture owner, not the command recorder.
+    // Admit their presence once before the HTML presentation consumes them.
+    for (const auto name : {"scope", "ui_frame_id", "attempt", "frame_status"})
+        ATELIER_TRY(metadata.root().at(name));
     const auto native = platform::windows_file_path(output);
     if (!native)
         return std::unexpected(Failure("storage_error", platform::error_message(native.error())));
@@ -1362,21 +1496,22 @@ std::expected<Json, Failure> write_trace(const std::filesystem::path& output, rh
     std::filesystem::create_directories(directory, error);
     if (error)
         return std::unexpected(Failure("storage_error", platform::error_message(error)));
-    auto trace = manifest;
-    trace["schema"] = "atelier.render.trace";
-    trace["version"] = 1;
+    json::Builder trace{metadata};
+    trace.set_validated(trace.root(), "schema", "atelier.render.trace");
+    ATELIER_TRY(trace.set(trace.root(), "version", 1u));
     const auto& info = snapshot.info();
     const auto status = !info.entered                                                                   ? "not_entered"
                         : !info.closed || info.truncated || info.unobserved_binding || info.interrupted ? "incomplete"
                                                                                                         : "complete";
-    trace["recording_sequence"] = info.recording_sequence;
-    trace["observation"] = {{"status", status},
-                            {"truncated", info.truncated},
-                            {"unobserved_binding", info.unobserved_binding},
-                            {"interrupted", info.interrupted},
-                            {"closed", info.closed}};
-    trace["commands"] = Json::array();
-    trace["resources"] = Json::array();
+    ATELIER_TRY(trace.set(trace.root(), "recording_sequence", info.recording_sequence));
+    const auto observation = trace.object_validated(trace.root(), "observation");
+    trace.set_validated(observation, "status", status);
+    ATELIER_TRY(trace.set(observation, "truncated", info.truncated));
+    ATELIER_TRY(trace.set(observation, "unobserved_binding", info.unobserved_binding));
+    ATELIER_TRY(trace.set(observation, "interrupted", info.interrupted));
+    ATELIER_TRY(trace.set(observation, "closed", info.closed));
+    ATELIER_TRY_BIND(commands, trace.array(trace.root(), "commands"));
+    ATELIER_TRY_BIND(resource_records, trace.array(trace.root(), "resources"));
     std::map<std::pair<int, std::uint64_t>, std::size_t> resources;
     std::map<std::uint64_t, std::size_t> kernels;
     constexpr std::array kinds{"unsupported", "texture_srv", "texture_uav",       "sampler",
@@ -1385,52 +1520,65 @@ std::expected<Json, Failure> write_trace(const std::filesystem::path& output, rh
     for (const auto& command : snapshot.commands()) {
         checkpoint(cancel);
         const auto [kernel, inserted] = kernels.try_emplace(command.kernel_key, kernels.size() + 1);
-        Json record{{"ordinal", trace["commands"].size() + 1},
-                    {"kernel", kernel->second},
-                    {"entry", command.entry.data()},
-                    {"kind", command.indirect ? "dispatch_indirect" : "dispatch"},
-                    {"groups", command.indirect ? Json(nullptr) : Json(command.groups)},
-                    {"bindings", Json::array()}};
+        const auto record = trace.append_object(*commands);
+        ATELIER_TRY(trace.set(record, "ordinal", commands->size()));
+        ATELIER_TRY(trace.set(record, "kernel", kernel->second));
+        ATELIER_TRY(trace.set(record, "entry", std::string_view{command.entry.data()}));
+        trace.set_validated(record, "kind", command.indirect ? "dispatch_indirect" : "dispatch");
+        if (command.indirect)
+            ATELIER_TRY(trace.set_null(record, "groups"));
+        else {
+            ATELIER_TRY_BIND(groups, trace.array(record, "groups"));
+            for (const auto count : command.groups)
+                trace.append(*groups, std::uint64_t{count});
+        }
+        ATELIER_TRY_BIND(bindings, trace.array(record, "bindings"));
         for (const auto& owned : snapshot.bindings().subspan(command.first_binding, command.binding_count)) {
             const auto& binding = owned.detail;
-            Json resource = nullptr;
+            const auto entry = trace.append_object(*bindings);
+            ATELIER_TRY(trace.set_null(entry, "resource"));
             if (binding.resource_key && binding.status == kGfxObserved_Valid) {
                 // SRV and UAV views share texture identity; sampler slots and GPU
                 // allocations use separate namespaces. Native keys never escape.
                 const auto kind = binding.kind == kGfxObserved_TextureUAV ? kGfxObserved_TextureSRV : binding.kind;
                 const auto [item, added] = resources.try_emplace({kind, binding.resource_key}, resources.size() + 1);
-                resource = item->second;
-                if (added)
-                    trace["resources"].push_back({{"index", item->second},
-                                                  {"kind", kind == kGfxObserved_TextureSRV ? "texture" : kinds[kind]},
-                                                  {"name", owned.resource_name.data()},
-                                                  {"extent", {binding.width, binding.height, binding.depth}},
-                                                  {"format", static_cast<std::uint32_t>(binding.resource_format)}});
+                ATELIER_TRY(trace.set(entry, "resource", item->second));
+                if (added) {
+                    const auto resource = trace.append_object(*resource_records);
+                    ATELIER_TRY(trace.set(resource, "index", item->second));
+                    trace.set_validated(resource, "kind", kind == kGfxObserved_TextureSRV ? "texture" : kinds[kind]);
+                    ATELIER_TRY(trace.set(resource, "name", std::string_view{owned.resource_name.data()}));
+                    ATELIER_TRY_BIND(extent, trace.array(resource, "extent"));
+                    for (const auto size : std::array<std::uint64_t, 3>{binding.width, binding.height, binding.depth})
+                        trace.append(*extent, size);
+                    ATELIER_TRY(trace.set(resource, "format", static_cast<std::uint32_t>(binding.resource_format)));
+                }
             }
-            record["bindings"].push_back({{"name", owned.name.data()},
-                                          {"root_parameter", binding.root_parameter},
-                                          {"array_index", binding.array_index},
-                                          {"kind", kinds[binding.kind]},
-                                          {"status", statuses[binding.status]},
-                                          {"resource", std::move(resource)},
-                                          {"view",
-                                           {{"format", static_cast<std::uint32_t>(binding.format)},
-                                            {"first_mip", binding.first_mip},
-                                            {"mip_count", binding.mip_count},
-                                            {"first_slice", binding.first_slice},
-                                            {"slice_count", binding.slice_count},
-                                            {"byte_offset", binding.byte_offset},
-                                            {"byte_size", binding.byte_size}}}});
+            ATELIER_TRY(trace.set(entry, "name", std::string_view{owned.name.data()}));
+            ATELIER_TRY(trace.set(entry, "root_parameter", binding.root_parameter));
+            ATELIER_TRY(trace.set(entry, "array_index", binding.array_index));
+            trace.set_validated(entry, "kind", kinds[binding.kind]);
+            trace.set_validated(entry, "status", statuses[binding.status]);
+            const auto view = trace.object_validated(entry, "view");
+            ATELIER_TRY(trace.set(view, "format", static_cast<std::uint32_t>(binding.format)));
+            ATELIER_TRY(trace.set(view, "first_mip", binding.first_mip));
+            ATELIER_TRY(trace.set(view, "mip_count", binding.mip_count));
+            ATELIER_TRY(trace.set(view, "first_slice", binding.first_slice));
+            ATELIER_TRY(trace.set(view, "slice_count", binding.slice_count));
+            ATELIER_TRY(trace.set(view, "byte_offset", binding.byte_offset));
+            ATELIER_TRY(trace.set(view, "byte_size", binding.byte_size));
         }
-        trace["commands"].push_back(std::move(record));
     }
-    ATELIER_TRY(write(directory / "trace.json", trace.dump(2) + "\n"));
+    const auto bytes = json::write(trace.root(), {true, true});
+    ATELIER_TRY(write(directory / "trace.json", {bytes.data(), bytes.size()}));
     checkpoint(cancel);
-    ATELIER_TRY(write(directory / "trace.html", trace_html(trace)));
-    manifest["trace"] = {{"json", "trace.json"},
-                         {"html", "trace.html"},
-                         {"observation", status},
-                         {"command_count", trace["commands"].size()}};
+    ATELIER_TRY(write(directory / "trace.html", trace_html(trace.root())));
+    json::Builder manifest{metadata};
+    const auto entry = manifest.object_validated(manifest.root(), "trace");
+    manifest.set_validated(entry, "json", "trace.json");
+    manifest.set_validated(entry, "html", "trace.html");
+    manifest.set_validated(entry, "observation", status);
+    ATELIER_TRY(manifest.set(entry, "command_count", commands->size()));
     ATELIER_TRY(finish(directory, manifest, cancel));
     const auto output_name = platform::utf16_to_utf8(output.generic_wstring());
     if (!output_name)
@@ -1444,7 +1592,13 @@ std::expected<Json, Failure> write_trace(const std::filesystem::path& output, rh
     const auto html_name = platform::utf16_to_utf8((output / "trace.html").generic_wstring());
     if (!html_name)
         return std::unexpected(Failure("invalid_request", "Invalid UTF-16 text"));
-    return Json{{"directory", *output_name}, {"manifest", *manifest_name}, {"json", *json_name},
-                {"html", *html_name},        {"observation", status},      {"frame_status", trace["frame_status"]}};
+    json::Builder result;
+    result.set_validated(result.root(), "directory", *output_name);
+    result.set_validated(result.root(), "manifest", *manifest_name);
+    result.set_validated(result.root(), "json", *json_name);
+    result.set_validated(result.root(), "html", *html_name);
+    result.set_validated(result.root(), "observation", status);
+    result.set_validated(result.root(), "frame_status", *trace.root().at("frame_status"));
+    return result.finish();
 }
 }

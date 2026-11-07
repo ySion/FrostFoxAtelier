@@ -236,10 +236,17 @@ Result<ObjectRoot> Session::publish_material(assets::Reader& reader, const asset
     } loading{loading_materials_};
     try {
         const auto encoded = assets::material_format::encode(asset);
+        if (!encoded)
+            return failure(encoded.error().describe());
         if (asset.key.starts_with("builtin/")) {
             const auto installed = assets::material_assets();
             const auto at = std::ranges::find(installed, asset.key, &assets::MaterialAsset::key);
-            if (at == installed.end() || assets::material_format::encode(*at) != encoded)
+            if (at == installed.end())
+                return failure("An installed material key cannot be invented or its author data replaced.");
+            const auto expected = assets::material_format::encode(*at);
+            if (!expected)
+                return failure(expected.error().describe());
+            if (*expected != *encoded)
                 return failure("An installed material key cannot be invented or its author data replaced.");
             if (exact_source) {
                 const auto* author = std::get_if<assets::MaterialSourceAsset>(&at->author);
@@ -643,11 +650,10 @@ Result<void> Session::preview_material_entry(std::uint64_t control, std::string_
                                              std::optional<material::Override> entry) {
     if (!material_edit_ || material_edit_->control != control)
         return failure("No matching material edit.");
-    try {
-        if (entry)
-            static_cast<void>(assets::material_format::encode_entries(std::span(&*entry, 1)));
-    } catch (const std::exception& error) {
-        return failure(error.what());
+    if (entry) {
+        const auto encoded = assets::material_format::encode_entries(std::span(&*entry, 1));
+        if (!encoded)
+            return failure(encoded.error().describe());
     }
     ATELIER_TRY_BIND(state, material::read_instance(runtime_, material_edit_->root.id()));
     auto changes = material_edit_->entries;

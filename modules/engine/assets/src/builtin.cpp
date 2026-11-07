@@ -93,22 +93,23 @@ Result<EngineDependency> Reader::engine_dependency(std::string_view key, AssetKi
             if (!source_file)
                 return std::unexpected(Error{ErrorCode::invalid_definition,
                                              "Installed material Source is missing: " + author->source_path});
-            std::string encoded;
-            try {
-                // v1 material digest: canonical JSON author data plus the actual Source
-                // bytes. No runtime IDs, compiled code, display name or project fallback.
-                encoded = json_format::Json{{"domain", "Atelier.MaterialSource"},
-                                            {"digest_version", material_digest_version},
-                                            {"key", asset.key},
-                                            {"author", material_format::encode(asset)},
-                                            {"source_path", source_file->path},
-                                            {"source", source_file->source}}
-                              .dump();
-            } catch (const std::exception& error) {
-                return std::unexpected(Error{ErrorCode::invalid_definition, error.what()});
-            }
+            // v2 canonical JSON author data plus actual Source bytes; no runtime IDs.
+            auto encoded = [&]() -> json::Result<Array<char>> {
+                json::Builder builder;
+                const auto root = builder.root();
+                builder.set_validated(root, "domain", "Atelier.MaterialSource");
+                ATELIER_TRY(builder.set(root, "digest_version", material_digest_version));
+                ATELIER_TRY_BIND(author_node, builder.object(root, "author"));
+                ATELIER_TRY(material_format::encode(builder, *author_node, asset));
+                builder.set_validated(root, "key", asset.key);
+                ATELIER_TRY(builder.set(root, "source_path", source_file->path));
+                ATELIER_TRY(builder.set(root, "source", source_file->source));
+                return json::write(root);
+            }();
+            if (!encoded)
+                return std::unexpected(Error{ErrorCode::invalid_definition, encoded.error().describe()});
             return EngineDependency{asset.key, AssetKind::material, 1, material_digest_version,
-                                    foundation::sha256(std::as_bytes(std::span(encoded)))};
+                                    foundation::sha256(std::as_bytes(std::span(encoded->data(), encoded->size())))};
         }
     const auto at = std::ranges::find(producers, key, &Producer::key);
     if (at == producers.end())

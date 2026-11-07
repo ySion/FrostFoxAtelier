@@ -98,7 +98,7 @@ Runtime 中的 Texture/MS/MI 根和可变作者历史由 Session/宿主持有。
 
 ### 引擎依赖摘要
 
-`Reader::engine_dependency(key, expected_kind)` 查询本安装精确生产者，返回拥有型 `EngineDependency`（key、kind、semantic_version、digest_version、content_sha256）；不回退工程目录。内建网格由 `assets/builtin.cpp` 的生产者表维护，内建材质由 `assets/builtin_materials.cpp` 提供；材质摘要 v1 包含真实 MS 作者数据及 Source 文本。语义版本与摘要编码版本独立演进；摘要根据实际发布内容计算，不认证未来 C++/shader 行为。无 Project/Runtime/设备即可读取，安装不产生可写目录或材质文档。
+`Reader::engine_dependency(key, expected_kind)` 查询本安装精确生产者，返回拥有型 `EngineDependency`（key、kind、semantic_version、digest_version、content_sha256）；不回退工程目录。内建网格由 `assets/builtin.cpp` 的生产者表维护，内建材质由 `assets/builtin_materials.cpp` 提供；材质摘要 v2 包含真实 MS 作者数据及 Source 文本，使用当前确定性 JSON writer 编码。语义版本与摘要编码版本独立演进；摘要根据实际发布内容计算，不认证未来 C++/shader 行为。无 Project/Runtime/设备即可读取，安装不产生可写目录或材质文档。
 
 `mesh_content_sha256` 的编码 v2 使用 `Atelier.Mesh` 域字节、u32 编码版本；整数小端，长度/数量为 u64，bool 为 u8，有限 float 为保留正负零的 IEEE-754 u32 位。字符串是长度前缀的原 UTF-8 字节。不哈希 padding、指针或容器布局。64 KiB 有界缓冲批量送入共用 `foundation::Sha256`，只在依赖核对冷路径计算。
 

@@ -13,7 +13,7 @@
 #include <mutex>
 #include <thread>
 #include <utility>
-#include <unordered_set>
+#include <vector>
 
 namespace atelier::control {
 namespace {
@@ -57,12 +57,15 @@ std::uint64_t started(HANDLE process) {
     return (std::uint64_t(creation.dwHighDateTime) << 32) | creation.dwLowDateTime;
 }
 
-bool live(const Json& instance) {
+bool live(json::Value instance) {
+    const auto pid = instance.u32({"pid"});
+    const auto identity = instance.u64({"started"});
+    if (!pid || !identity)
+        return false;
     try {
-        const auto pid = instance.at("pid").get<DWORD>();
-        Handle process(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, pid));
+        Handle process(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, *pid));
         return process.value && WaitForSingleObject(process.value, 0) == WAIT_TIMEOUT &&
-               started(process.value) == instance.at("started").get<std::uint64_t>();
+               started(process.value) == *identity;
     } catch (...) {
         return false;
     }
@@ -139,7 +142,7 @@ void transfer(HANDLE pipe, void* storage, std::size_t bytes, bool write, HANDLE 
     }
 }
 
-Json receive(HANDLE pipe, HANDLE stop, DWORD timeout) {
+json::Result<json::Document> receive(HANDLE pipe, HANDLE stop, DWORD timeout) {
     std::uint32_t bytes{};
     transfer(pipe, &bytes, sizeof(bytes), false, stop, timeout);
     if (!bytes || bytes > maximum_message)
@@ -149,8 +152,8 @@ Json receive(HANDLE pipe, HANDLE stop, DWORD timeout) {
     return parse(text);
 }
 
-void send(HANDLE pipe, const Json& value, HANDLE stop, DWORD timeout) {
-    auto text = value.dump();
+void send(HANDLE pipe, json::Value value, HANDLE stop, DWORD timeout) {
+    auto text = json::write(value);
     if (text.size() > maximum_message)
         throw Failure("result_too_large", "Control response exceeds its size limit");
     auto bytes = static_cast<std::uint32_t>(text.size());
@@ -175,45 +178,26 @@ std::string unique_id() {
     return hex({reinterpret_cast<const unsigned char*>(&value), sizeof(value)});
 }
 
-void fields(const Json& value, std::initializer_list<std::string_view> allowed) {
-    if (!value.is_object())
-        throw Failure("invalid_request", "Expected an object");
-    for (const auto& item : value.items())
-        if (std::ranges::find(allowed, item.key()) == allowed.end())
-            throw Failure("invalid_request", "Unknown field: " + item.key());
+json::Result<json::Document> failure(std::string_view code, std::string_view message) {
+    json::Builder builder;
+    builder.set_validated(builder.root(), "status", "error");
+    const auto detail = builder.object_validated(builder.root(), "error");
+    ATELIER_TRY(builder.set(detail, "code", code));
+    ATELIER_TRY(builder.set(detail, "message", message));
+    return builder.finish();
 }
 
-Json failure(std::string_view code, std::string_view message) {
-    return {{"status", "error"}, {"error", {{"code", code}, {"message", message}}}};
-}
-
-Json parse(std::string_view text) {
+json::Result<json::Document> parse(std::string_view text) {
     if (text.size() > maximum_message)
-        throw Failure("invalid_request", "Message exceeds 4 MiB");
-    std::vector<std::unordered_set<std::string>> objects;
-    try {
-        return Json::parse(text, [&](int depth, Json::parse_event_t event, Json& parsed) {
-            using enum Json::parse_event_t;
-            if ((event == object_start || event == array_start) && depth >= 32)
-                throw Failure("invalid_request", "JSON nesting exceeds 32");
-            if (event == object_start)
-                objects.emplace_back();
-            else if (event == object_end)
-                objects.pop_back();
-            else if (event == key && !objects.back().insert(parsed.get<std::string>()).second)
-                throw Failure("invalid_request", "Duplicate JSON field");
-            return true;
-        });
-    } catch (const Json::exception& error) {
-        throw Failure("invalid_request", error.what());
-    }
+        return std::unexpected(json::Error{json::Fault::range, "Message exceeds 4 MiB", {}, {}});
+    return json::Document::parse(text, {32, json::DepthPolicy::containers, true});
 }
 
 struct Server::Impl {
     struct Pending {
-        Json request;
+        json::Document request;
 
-        Json response;
+        json::Document response;
 
         std::shared_ptr<Peer> peer;
 
@@ -226,7 +210,7 @@ struct Server::Impl {
 
     std::filesystem::path descriptor_path;
 
-    Json identity;
+    json::Document identity;
 
     std::wstring pipe_name;
 
@@ -242,7 +226,7 @@ struct Server::Impl {
 
     Handle ready{CreateEventW(nullptr, TRUE, FALSE, nullptr)};
 
-    std::expected<void, Failure> open(const std::filesystem::path& directory, Json build) {
+    std::expected<void, Failure> open(const std::filesystem::path& directory, json::Document build) {
         std::error_code error;
         root = std::filesystem::absolute(directory, error).lexically_normal();
         if (error)
@@ -261,14 +245,16 @@ struct Server::Impl {
         const auto digest = foundation::sha256_file(executable);
         if (!digest)
             return std::unexpected(Failure("storage_error", digest.error()));
-        identity = {{"protocol", protocol_version},
-                    {"instance_id", instance},
-                    {"pid", GetCurrentProcessId()},
-                    {"started", started(GetCurrentProcess())},
-                    {"executable", *executable_text},
-                    {"executable_sha256", *digest},
-                    {"pipe", pipe_text},
-                    {"build", std::move(build)}};
+        json::Builder record;
+        (void)record.set(record.root(), "protocol", protocol_version);
+        record.set_validated(record.root(), "instance_id", instance);
+        (void)record.set(record.root(), "pid", static_cast<std::uint32_t>(GetCurrentProcessId()));
+        (void)record.set(record.root(), "started", started(GetCurrentProcess()));
+        record.set_validated(record.root(), "executable", *executable_text);
+        record.set_validated(record.root(), "executable_sha256", *digest);
+        record.set_validated(record.root(), "pipe", pipe_text);
+        record.set_validated(record.root(), "build", build.root());
+        identity = record.finish();
         auto native = platform::windows_file_path(root / "instances");
         if (!native)
             return std::unexpected(Failure("storage_error", platform::error_message(native.error())));
@@ -281,7 +267,8 @@ struct Server::Impl {
         if (!startup_error.empty())
             throw Failure("transport_error", startup_error);
         std::ofstream descriptor(descriptor_path, std::ios::binary | std::ios::trunc);
-        descriptor << identity.dump(2);
+        const auto bytes = json::write(identity.root(), {.pretty = true});
+        descriptor.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
         descriptor.close();
         if (!descriptor)
             return std::unexpected(Failure("storage_error", "Cannot publish editor instance"));
@@ -330,14 +317,13 @@ struct Server::Impl {
                         auto pending = std::make_shared<Pending>();
                         pending->peer = peer;
                         check(pending->ready.value != nullptr, "Create request completion event");
-                        try {
-                            pending->request = receive(pipe.value, stop.value, 120000);
-                        } catch (const Failure& error) {
-                            if (error.code != "invalid_request")
-                                throw;
-                            send(pipe.value, failure(error.code, error.what()), stop.value, 5000);
+                        auto received = receive(pipe.value, stop.value, 120000);
+                        if (!received) {
+                            const auto rejected = failure("invalid_request", received.error().describe());
+                            send(pipe.value, rejected->root(), stop.value, 5000);
                             continue;
                         }
+                        pending->request = std::move(*received);
                         pending->deadline =
                             std::chrono::steady_clock::now() + std::chrono::milliseconds(maximum_timeout_ms);
                         {
@@ -360,7 +346,7 @@ struct Server::Impl {
                             if (!PeekNamedPipe(pipe.value, nullptr, 0, nullptr, &available, nullptr))
                                 throw Failure("disconnected", "Control client left before execution");
                         }
-                        send(pipe.value, pending->response, stop.value, 5000);
+                        send(pipe.value, pending->response.root(), stop.value, 5000);
                     }
                 } catch (
                     const std::
@@ -377,7 +363,7 @@ struct Server::Impl {
     }
 };
 
-std::expected<Server, Failure> Server::create(const std::filesystem::path& directory, Json build) {
+std::expected<Server, Failure> Server::create(const std::filesystem::path& directory, json::Document build) {
     auto impl = std::make_unique<Impl>();
     auto opened = impl->open(directory, std::move(build));
     if (!opened)
@@ -399,7 +385,7 @@ void Server::stop() noexcept {
     std::filesystem::remove(impl_->descriptor_path, ignored);
 }
 
-const Json& Server::identity() const noexcept {
+const json::Document& Server::identity() const noexcept {
     return impl_->identity;
 }
 
@@ -416,73 +402,95 @@ void Server::poll(const Handler& handler) {
         request = std::move(impl_->queue.front());
         impl_->queue.pop_front();
     }
+    json::Result<json::Document> result;
     if (!request->peer->connected.load() || std::chrono::steady_clock::now() >= request->deadline)
-        request->response = failure("cancelled", "Request expired before execution");
+        result = failure("cancelled", "Request expired before execution");
     else
         try {
-            request->response = handler(request->request, request->peer);
+            result = handler(request->request.root(), request->peer);
         } catch (const Failure& error) {
-            request->response = failure(error.code, error.what());
+            result = failure(error.code, error.what());
         } catch (const std::exception& error) {
-            request->response = failure("internal_error", error.what());
+            result = failure("internal_error", error.what());
         }
-    request->response["protocol"] = protocol_version;
-    request->response["instance_id"] = impl_->identity.at("instance_id");
-    if (request->request.is_object() && request->request.contains("request_id"))
-        request->response["request_id"] = request->request["request_id"];
-    if (request->response.dump().size() > maximum_message) {
-        const auto token = request->response.value("state_token", Json{});
-        request->response = failure("result_too_large", "Result exceeds the 4 MiB protocol limit");
-        request->response["protocol"] = protocol_version;
-        request->response["instance_id"] = impl_->identity.at("instance_id");
-        request->response["request_id"] = request->request.value("request_id", Json{});
-        request->response["state_token"] = token;
+    if (!result)
+        result = failure("invalid_request", result.error().describe());
+    // A handler may report an invalid raw key in its diagnostic path. That path
+    // cannot itself be emitted as JSON text; keep the protocol response valid.
+    if (!result)
+        result = failure("internal_error", "Response diagnostic contains invalid UTF-8");
+    json::Builder response(*result);
+    (void)response.set(response.root(), "protocol", protocol_version);
+    response.set_validated(response.root(), "instance_id", *impl_->identity.root().at("instance_id"));
+    std::optional<json::Value> request_id;
+    if (request->request.root().kind() == json::Kind::object)
+        request_id = *request->request.root().find("request_id");
+    if (request_id)
+        response.set_validated(response.root(), "request_id", *request_id);
+    if (json::write(response.root()).size() > maximum_message) {
+        const auto token = *response.root().find("state_token");
+        const auto rejected = failure("result_too_large", "Result exceeds the 4 MiB protocol limit");
+        json::Builder limited(*rejected);
+        (void)limited.set(limited.root(), "protocol", protocol_version);
+        limited.set_validated(limited.root(), "instance_id", *impl_->identity.root().at("instance_id"));
+        if (request_id)
+            limited.set_validated(limited.root(), "request_id", *request_id);
+        else
+            (void)limited.set_null(limited.root(), "request_id");
+        if (token)
+            limited.set_validated(limited.root(), "state_token", *token);
+        else
+            (void)limited.set_null(limited.root(), "state_token");
+        response = std::move(limited);
     }
+    request->response = response.finish();
     SetEvent(request->ready.value);
 }
 
 struct Client::Impl {
-    Json instance;
+    json::Document instance;
 
     Handle pipe;
 
     DWORD timeout{};
 
-    std::expected<void, Failure> open(Json descriptor, std::chrono::milliseconds wait) {
+    std::expected<void, Failure> open(json::Document descriptor, std::chrono::milliseconds wait) {
         instance = std::move(descriptor);
         timeout = static_cast<DWORD>(std::clamp<std::int64_t>(wait.count(), 1, maximum_timeout_ms));
-        if (!live(instance))
+        if (!live(instance.root()))
             throw Failure("stale_instance", "Editor instance is no longer running");
-        const auto name = platform::utf8_to_utf16(instance.at("pipe").get<std::string>());
-        if (!name)
-            return std::unexpected(Failure("invalid_request", "Invalid UTF-8 text"));
-        const auto instance_id = platform::utf8_to_utf16(instance.at("instance_id").get<std::string>());
-        if (!instance_id)
-            return std::unexpected(Failure("invalid_request", "Invalid UTF-8 text"));
-        const auto expected = L"\\\\.\\pipe\\FrostFoxAtelier.Control." + *instance_id;
-        if (*name != expected)
+        const auto pipe_text = instance.root().string({"pipe"});
+        if (!pipe_text)
+            return std::unexpected(Failure("invalid_request", pipe_text.error().describe()));
+        const auto id_text = instance.root().string({"instance_id"});
+        if (!id_text)
+            return std::unexpected(Failure("invalid_request", id_text.error().describe()));
+        const auto name = platform::utf8_to_utf16_validated(*pipe_text);
+        const auto instance_id = platform::utf8_to_utf16_validated(*id_text);
+        const auto expected = L"\\\\.\\pipe\\FrostFoxAtelier.Control." + instance_id;
+        if (name != expected)
             throw Failure("invalid_instance", "Invalid editor endpoint descriptor");
         const auto deadline =
             std::chrono::steady_clock::now() + std::chrono::milliseconds(std::min<DWORD>(timeout, 5000));
         do {
-            pipe.value = CreateFileW(name->c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
+            pipe.value = CreateFileW(name.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
                                      FILE_FLAG_OVERLAPPED, nullptr);
             if (pipe.value != INVALID_HANDLE_VALUE) {
                 ULONG pid{};
                 check(GetNamedPipeServerProcessId(pipe.value, &pid) != FALSE, "Read server process identity");
-                if (pid != instance.at("pid").get<DWORD>())
+                if (pid != *instance.root().u32({"pid"}))
                     throw Failure("stale_instance", "Pipe belongs to another process");
                 return {};
             }
             if (GetLastError() != ERROR_PIPE_BUSY && GetLastError() != ERROR_FILE_NOT_FOUND)
                 break;
-            WaitNamedPipeW(name->c_str(), 50);
+            WaitNamedPipeW(name.c_str(), 50);
         } while (std::chrono::steady_clock::now() < deadline);
         throw Failure("busy", "Editor control endpoint is busy or unavailable");
     }
 };
 
-std::expected<Client, Failure> Client::create(const Json& instance, std::chrono::milliseconds timeout) {
+std::expected<Client, Failure> Client::create(const json::Document& instance, std::chrono::milliseconds timeout) {
     auto impl = std::make_unique<Impl>();
     auto opened = impl->open(instance, timeout);
     if (!opened)
@@ -496,31 +504,36 @@ Client::Client(Client&&) noexcept = default;
 
 Client::~Client() = default;
 
-Json Client::call(Json request) {
-    if (!request.is_object())
-        throw Failure("invalid_request", "Expected a request object");
-    if (!request.contains("request_id"))
-        request["request_id"] = unique_id();
-    request["protocol"] = protocol_version;
-    request["instance_id"] = impl_->instance.at("instance_id");
-    send(impl_->pipe.value, request, nullptr, impl_->timeout);
+std::expected<json::Document, Failure> Client::call(json::Document request) {
+    if (request.root().kind() != json::Kind::object)
+        return std::unexpected(Failure("invalid_request", "Expected a request object"));
+    json::Builder outbound(request);
+    if (!*outbound.root().find("request_id"))
+        outbound.set_validated(outbound.root(), "request_id", unique_id());
+    (void)outbound.set(outbound.root(), "protocol", protocol_version);
+    outbound.set_validated(outbound.root(), "instance_id", *impl_->instance.root().at("instance_id"));
+    send(impl_->pipe.value, outbound.root(), nullptr, impl_->timeout);
     auto response = receive(impl_->pipe.value, nullptr, impl_->timeout);
-    if (response.value("instance_id", "") != impl_->instance.at("instance_id").get<std::string>() ||
-        response.value("request_id", Json{}) != request["request_id"] ||
-        response.value("protocol", 0u) != protocol_version)
+    if (!response)
+        return std::unexpected(Failure("invalid_request", response.error().describe()));
+    const auto instance_id = response->root().string({"instance_id"});
+    const auto request_id = response->root().at("request_id");
+    const auto version = response->root().u32({"protocol"});
+    if (!instance_id || *instance_id != *impl_->instance.root().string({"instance_id"}) || !request_id ||
+        *request_id != *outbound.root().at("request_id") || !version || *version != protocol_version)
         throw Failure("protocol_mismatch", "Response belongs to a different request or editor instance");
-    return response;
+    return std::move(*response);
 }
 
-std::expected<Json, Failure> discover(const std::filesystem::path& directory) {
-    auto result = Json::array();
+std::expected<json::Document, Failure> discover(const std::filesystem::path& directory) {
+    json::Builder result(json::Kind::array);
     const auto native = platform::windows_file_path(directory / "instances");
     if (!native)
         return std::unexpected(Failure("invalid_request", platform::error_message(native.error())));
     std::error_code error;
     auto entry = std::filesystem::directory_iterator(*native, error);
     if (error)
-        return result;
+        return result.finish();
     for (; entry != std::filesystem::directory_iterator{}; entry.increment(error)) {
         const auto& item = *entry;
         if (item.path().extension() != ".json")
@@ -535,16 +548,19 @@ std::expected<Json, Failure> discover(const std::filesystem::path& directory) {
             return std::unexpected(Failure("invalid_request", platform::error_message(error)));
         if (size > 65536)
             continue;
-        try {
-            std::ifstream stream(item.path(), std::ios::binary);
-            auto value = Json::parse(stream);
-            if (live(value))
-                result.push_back(std::move(value));
-        } catch (const std::exception&) { /* Stale or interrupted discovery records do not identify a live endpoint. */
-        }
+        std::ifstream stream(item.path(), std::ios::binary);
+        std::string bytes(static_cast<std::size_t>(size), '\0');
+        if (!stream.read(bytes.data(), static_cast<std::streamsize>(bytes.size())) ||
+            stream.peek() != std::char_traits<char>::eof())
+            continue;
+        // Discovery has no depth limit. Malformed or interrupted records are skipped.
+        const auto value = json::Document::parse(
+            bytes, {std::numeric_limits<std::size_t>::max(), json::DepthPolicy::containers, true});
+        if (value && live(value->root()))
+            result.append(result.root(), value->root());
     }
     if (error)
         return std::unexpected(Failure("invalid_request", platform::error_message(error)));
-    return result;
+    return result.finish();
 }
 }

@@ -42,28 +42,27 @@ private:
 // One decoded inline leaf: a scalar or enum within its hard bounds, a String, or a whole Array.
 using PropertyLeaf = std::variant<Scalar, String, ArrayLeaf>;
 
-// The reference of the field's type and form that a saved value names, or nullopt when it names none.
-using ResolveReference =
-    std::function<std::optional<ObjectReference>(const assets::json_format::Json&, TypeId, ValueForm)>;
+// Malformed identities fail; nullopt means the target does not fit the field.
+using ResolveReference = std::function<json::Result<std::optional<ObjectReference>>(json::Value, TypeId, ValueForm)>;
 
 // Stores one decoded inline leaf; by default it is written to the target through the Runtime.
 using WriteLeaf = std::function<Result<void>(std::span<const FieldId>, const PropertyLeaf&)>;
 
 // The saved form of one referenced object, called with a null id for an empty reference;
 // the caller's side effects, such as assigning document identities, belong here.
-using EncodeReference = std::function<assets::json_format::Json(ObjectId)>;
+using EncodeReference = std::function<Result<json::Document>(ObjectId)>;
 
 // The properties record of `object` over `fields`, nested by field names: the same leaf encoder
 // as scene saves. Non-finite values fail.
-[[nodiscard]] Result<assets::json_format::Json> encode_properties(Runtime&, ObjectId object,
-                                                                  std::span<const detail::ScalarField> fields,
-                                                                  const EncodeReference& reference);
+[[nodiscard]] Result<json::Document> encode_properties(Runtime&, ObjectId object,
+                                                       std::span<const detail::ScalarField> fields,
+                                                       const EncodeReference& reference);
 
 // The same encoder for a caller-owned parameter/result record. Array and sequence
 // fields are object-only, as in the Runtime's indexed read interface.
-[[nodiscard]] Result<assets::json_format::Json> encode_properties(Runtime&, const PropertyTarget&,
-                                                                  std::span<const detail::ScalarField> fields,
-                                                                  const EncodeReference& reference);
+[[nodiscard]] Result<json::Document> encode_properties(Runtime&, const PropertyTarget&,
+                                                       std::span<const detail::ScalarField> fields,
+                                                       const EncodeReference& reference);
 
 // Strict decoding of a sparse properties record, through the same leaf decoder as scene loads.
 // An unknown field, a value of another type, a value outside a hard bound and a write the target
@@ -72,24 +71,21 @@ using EncodeReference = std::function<assets::json_format::Json(ObjectId)>;
 // `record` keep their values. A failure can leave the leaves decoded before it written. A write
 // hook receives inline leaves only, so it cannot be combined with `resolve`: reference leaves
 // would bypass it.
-[[nodiscard]] Result<void> decode_properties(Runtime&, const PropertyTarget&, const assets::json_format::Json& record,
+[[nodiscard]] Result<void> decode_properties(Runtime&, const PropertyTarget&, json::Value record,
                                              const ResolveReference& = {}, const WriteLeaf& = {});
 
 // How a tolerant decode reports a saved leaf it does not apply as saved; paths start at the record.
 struct PropertyReport {
     // The saved value is kept; the field keeps its value, or takes the clamped value of a leaf outside its hard bounds.
-    std::function<void(std::vector<std::string>, const assets::json_format::Json&, world::DiagnosticKind,
-                       const std::string&)>
-        keep;
+    std::function<void(std::vector<std::string>, json::Value, world::DiagnosticKind, const std::string&)> keep;
 
     // An integral number written as a float was converted exactly.
-    std::function<void(std::vector<std::string>, const assets::json_format::Json&)> converted;
+    std::function<void(std::vector<std::string>, json::Value)> converted;
 };
 
 // Tolerant decoding over `fields`, as scene loads do: a leaf that does not fit goes to `report`
 // instead of failing. Only Runtime failures fail.
 [[nodiscard]] Result<void> decode_properties(Runtime&, const PropertyTarget&,
-                                             std::span<const detail::ScalarField> fields,
-                                             const assets::json_format::Json& record, const PropertyReport& report,
-                                             const ResolveReference& = {});
+                                             std::span<const detail::ScalarField> fields, json::Value record,
+                                             const PropertyReport& report, const ResolveReference& = {});
 }

@@ -1,7 +1,6 @@
 void verify_gltf_import() {
     namespace fs = std::filesystem;
     namespace mat = atelier::material;
-    using Json = nlohmann::json;
     const auto evidence = fs::current_path() / "project-document-evidence" /
                           ("gltf-" + std::to_string(std::chrono::system_clock::now().time_since_epoch().count()));
     const auto source = evidence / "source";
@@ -53,65 +52,43 @@ void verify_gltf_import() {
         bin.append(reinterpret_cast<const char*>(&i), 4);
     require(bin.size() == 276, "glTF fixture buffer layout changed.");
     take(editor::write_file(source / "scene.bin", bin));
-    const auto accessor = [](int view, int offset, const char* type, int component, int count) {
-        return Json{{"bufferView", view},
-                    {"byteOffset", offset},
-                    {"type", type},
-                    {"componentType", component},
-                    {"count", count}};
-    };
-    const Json fixture{
-        {"asset", {{"version", "2.0"}}},
-        {"scenes", {{{"nodes", {0, 2, 3}}}}},
-        {"nodes",
-         {{{"translation", {1, 2, 3}}, {"children", {1}}},
-          {{"rotation", {0, d, 0, d}}, {"scale", {2, 1, 1}}, {"mesh", 0}},
-          {{"scale", {-1, 1, 1}}, {"mesh", 1}},
-          {{"mesh", 1}}}},
-        {"meshes",
-         {{{"primitives",
-            {{{"attributes", {{"POSITION", 0}, {"NORMAL", 1}, {"TANGENT", 2}, {"TEXCOORD_0", 3}}},
-              {"indices", 4},
-              {"material", 0}},
-             {{"attributes", {{"POSITION", 0}, {"TEXCOORD_0", 3}}}, {"indices", 4}, {"material", 1}}}}},
-          {{"primitives", {{{"attributes", {{"POSITION", 5}, {"TEXCOORD_0", 6}}}, {"indices", 7}, {"material", 2}}}}}}},
-        {"materials",
-         {{{"name", "opaque"},
-           {"doubleSided", true},
-           {"emissiveFactor", {.1, .2, .3}},
-           {"pbrMetallicRoughness",
-            {{"baseColorFactor", {1, .5, .25, 1}},
-             {"baseColorTexture", {{"index", 0}}},
-             {"roughnessFactor", .5},
-             {"metallicRoughnessTexture", {{"index", 1}}}}},
-           {"normalTexture", {{"index", 2}, {"scale", .5}}}},
-          {{"name", "glass"}, {"alphaMode", "BLEND"}},
-          {{"name", "leaf"},
-           {"alphaMode", "MASK"},
-           {"alphaCutoff", .3},
-           {"pbrMetallicRoughness", {{"baseColorTexture", {{"index", 3}}}, {"metallicFactor", 0}}}},
-          {{"name", "unused"}, {"pbrMetallicRoughness", {{"baseColorTexture", {{"index", 4}}}}}}}},
-        {"textures",
-         {{{"source", 0}, {"sampler", 0}}, {{"source", 1}}, {{"source", 2}}, {{"source", 3}}, {{"source", 4}}}},
-        {"samplers", {{{"wrapS", 33071}, {"wrapT", 33071}}}},
-        {"images",
-         {{{"uri", "textures/color%20map.bmp"}},
-          {{"uri", "textures/packed.bmp"}},
-          {{"uri", "textures/normal.bmp"}},
-          {{"uri", "textures/color%20copy.bmp"}},
-          {{"uri", "textures/missing.bmp"}}}},
-        {"buffers", {{{"uri", "scene.bin"}, {"byteLength", 276}}}},
-        {"bufferViews",
-         {{{"buffer", 0}, {"byteOffset", 0}, {"byteLength", 192}, {"byteStride", 48}},
-          {{"buffer", 0}, {"byteOffset", 192}, {"byteLength", 12}},
-          {{"buffer", 0}, {"byteOffset", 204}, {"byteLength", 36}},
-          {{"buffer", 0}, {"byteOffset", 240}, {"byteLength", 24}},
-          {{"buffer", 0}, {"byteOffset", 264}, {"byteLength", 12}}}},
-        {"accessors",
-         {accessor(0, 0, "VEC3", 5126, 4), accessor(0, 12, "VEC3", 5126, 4), accessor(0, 24, "VEC4", 5126, 4),
-          accessor(0, 40, "VEC2", 5126, 4), accessor(1, 0, "SCALAR", 5123, 6), accessor(2, 0, "VEC3", 5126, 3),
-          accessor(3, 0, "VEC2", 5126, 3), accessor(4, 0, "SCALAR", 5125, 3)}}};
-    take(editor::write_file(source / "scene.gltf", fixture.dump()));
+    json::Builder fixture{json::Document::literal<R"({
+        "asset":{"version":"2.0"}, "scenes":[{"nodes":[0,2,3]}],
+        "nodes":[{"translation":[1,2,3],"children":[1]},
+                 {"scale":[2,1,1],"mesh":0},{"scale":[-1,1,1],"mesh":1},{"mesh":1}],
+        "meshes":[{"primitives":[
+            {"attributes":{"POSITION":0,"NORMAL":1,"TANGENT":2,"TEXCOORD_0":3},"indices":4,"material":0},
+            {"attributes":{"POSITION":0,"TEXCOORD_0":3},"indices":4,"material":1}]},
+            {"primitives":[{"attributes":{"POSITION":5,"TEXCOORD_0":6},"indices":7,"material":2}]}],
+        "materials":[{"name":"opaque","doubleSided":true,"emissiveFactor":[0.1,0.2,0.3],
+            "pbrMetallicRoughness":{"baseColorFactor":[1,0.5,0.25,1],"baseColorTexture":{"index":0},
+                "roughnessFactor":0.5,"metallicRoughnessTexture":{"index":1}},"normalTexture":{"index":2,"scale":0.5}},
+            {"name":"glass","alphaMode":"BLEND"},
+            {"name":"leaf","alphaMode":"MASK","alphaCutoff":0.3,
+                "pbrMetallicRoughness":{"baseColorTexture":{"index":3},"metallicFactor":0}},
+            {"name":"unused","pbrMetallicRoughness":{"baseColorTexture":{"index":4}}}],
+        "textures":[{"source":0,"sampler":0},{"source":1},{"source":2},{"source":3},{"source":4}],
+        "samplers":[{"wrapS":33071,"wrapT":33071}],
+        "images":[{"uri":"textures/color%20map.bmp"},{"uri":"textures/packed.bmp"},
+                  {"uri":"textures/normal.bmp"},{"uri":"textures/color%20copy.bmp"},{"uri":"textures/missing.bmp"}],
+        "buffers":[{"uri":"scene.bin","byteLength":276}],
+        "bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":192,"byteStride":48},
+            {"buffer":0,"byteOffset":192,"byteLength":12},{"buffer":0,"byteOffset":204,"byteLength":36},
+            {"buffer":0,"byteOffset":240,"byteLength":24},{"buffer":0,"byteOffset":264,"byteLength":12}],
+        "accessors":[{"bufferView":0,"byteOffset":0,"type":"VEC3","componentType":5126,"count":4},
+            {"bufferView":0,"byteOffset":12,"type":"VEC3","componentType":5126,"count":4},
+            {"bufferView":0,"byteOffset":24,"type":"VEC4","componentType":5126,"count":4},
+            {"bufferView":0,"byteOffset":40,"type":"VEC2","componentType":5126,"count":4},
+            {"bufferView":1,"byteOffset":0,"type":"SCALAR","componentType":5123,"count":6},
+            {"bufferView":2,"byteOffset":0,"type":"VEC3","componentType":5126,"count":3},
+            {"bufferView":3,"byteOffset":0,"type":"VEC2","componentType":5126,"count":3},
+            {"bufferView":4,"byteOffset":0,"type":"SCALAR","componentType":5125,"count":3}]
+    })">()};
+    const auto rotation = take(fixture.array(*fixture.root().at("nodes")->at(1), "rotation"));
+    for (double value : {0., double(d), 0., double(d)})
+        take(fixture.append(rotation, value));
+    const auto fixture_bytes = json::write(fixture.root());
+    take(editor::write_file(source / "scene.gltf", {fixture_bytes.data(), fixture_bytes.size()}));
     const auto close = [](const auto& actual, std::initializer_list<double> expected) {
         std::size_t i = 0;
         for (const double e : expected)
@@ -246,9 +223,10 @@ void verify_gltf_import() {
                     "A long authored tangent parallel to its normal kept its rounding residual as the tangent.");
     }
 
-    auto variant = fixture;
-    variant["meshes"][1]["primitives"][0].erase("material");
-    take(editor::write_file(source / "variant.gltf", variant.dump()));
+    json::Builder variant{fixture.root()};
+    variant.erase(*variant.root().at("meshes")->at(1)->at("primitives")->at(0), "material");
+    const auto variant_bytes = json::write(variant.root());
+    take(editor::write_file(source / "variant.gltf", {variant_bytes.data(), variant_bytes.size()}));
     {
         const auto implicit = take(assets::load_gltf(source / "variant.gltf"));
         const auto& fallback = implicit.mesh->materials().back();
@@ -352,14 +330,16 @@ void verify_gltf_import() {
                     take(project.assets().texture(texture(opaque, "base_color").asset_key)).image ==
                         take(project.assets().texture(texture(leaf, "base_color").asset_key)).image,
                 "Identical imported texture bytes did not share pixels in the initial or reopened Project.");
-        require(assets::material_format::encode(take(reopened.assets().material(opaque_key))) ==
-                        assets::material_format::encode(opaque_asset) &&
-                    assets::material_format::encode(take(reopened.assets().material(leaf_key))) ==
-                        assets::material_format::encode(leaf_asset),
+        const auto reopened_opaque = assets::material_format::encode(take(reopened.assets().material(opaque_key)));
+        const auto original_opaque = assets::material_format::encode(opaque_asset);
+        const auto reopened_leaf = assets::material_format::encode(take(reopened.assets().material(leaf_key)));
+        const auto original_leaf = assets::material_format::encode(leaf_asset);
+        require(reopened_opaque && original_opaque && reopened_leaf && original_leaf &&
+                    *reopened_opaque == *original_opaque && *reopened_leaf == *original_leaf,
                 "Reopening changed generated material identities or typed author content.");
     }
     // A write that fails after earlier files were published removes every file the import wrote.
-    take(editor::write_file(source / "blocked.gltf", fixture.dump()));
+    take(editor::write_file(source / "blocked.gltf", {fixture_bytes.data(), fixture_bytes.size()}));
     const auto blocked = project.root() / "Content" / "Meshes" / "blocked";
     take(editor::write_file(blocked / "Materials", "not a folder"));
     fs::create_directory(blocked / "textures");
@@ -437,8 +417,9 @@ void verify_gltf_import() {
     take(document.material_undo(opaque_key));
     require(drawn() == .5f, "Undoing a default material edit did not reach the drawn mesh.");
     const auto saved = take(document.serialize());
-    const auto scene = nlohmann::json::parse(saved);
-    require(scene["materials"].empty() && scene["entities"][0]["components"][0]["materials"].empty(),
+    const auto scene = take(assets::json_format::parse(saved));
+    require(scene.root().at("materials")->size() == 0 &&
+                scene.root().at("entities")->at(0)->at("components")->at(0)->at("materials")->size() == 0,
             "Saving wrote mesh default materials into the scene.");
     {
         auto loaded = take(editor::Session::deserialize(saved, project, {}, editor::LoadPolicy::strict));
@@ -489,9 +470,10 @@ void verify_gltf_import() {
     auto sidecar = imported / "scene.gltf";
     sidecar += L".asset.json";
     const auto sidecar_text = take(assets::read_file(sidecar));
-    auto mapping = nlohmann::json::parse(sidecar_text);
-    mapping["materials"]["leaf"] = opaque_key;
-    take(editor::write_file(sidecar, mapping.dump(2)));
+    json::Builder mapping{take(assets::json_format::parse(sidecar_text))};
+    take(mapping.set(take(mapping.root().at("materials")), "leaf", opaque_key));
+    const auto mapping_bytes = json::write(mapping.root(), {.pretty = true});
+    take(editor::write_file(sidecar, {mapping_bytes.data(), mapping_bytes.size()}));
     const auto catalog = project.revision();
     take(project.refresh());
     const auto remapped = take(project.assets().mesh(key));

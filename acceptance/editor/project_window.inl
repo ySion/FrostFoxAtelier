@@ -17,12 +17,14 @@ void verify_project_window(Application& app, const std::filesystem::path& output
     access::EditorAcceptanceAccess::mark_saved(app);
     const auto folder_text = atelier::platform::utf16_to_utf8(folder.native());
     require(bool(folder_text), "Invalid UTF-16 project fixture path.");
-    model(Access::invoke(app, existing ? "project.open" : "project.new", {{"path", *folder_text}}));
+    atelier::json::Builder project_args;
+    require(project_args.set(project_args.root(), "path", *folder_text).has_value(), "Invalid project path argument.");
+    model(Access::invoke(app, existing ? "project.open" : "project.new", project_args.finish()));
     tick(app, 4);
     const auto initial_count = entities(app).size();
     require((existing || initial_count == 0) && !app.document().dirty(),
             "Project did not publish its clean initial scene.");
-    click(app, operator_item(app, "scene.add", {{"kind", "mesh"}}));
+    click(app, operator_item(app, "scene.add", atelier::json::Document::literal<R"({"kind":"mesh"})">()));
     const auto entity = app.document().selection().entity;
     const auto field = property_control(app, entity, 0);
     click(app, field);
@@ -114,9 +116,9 @@ void verify_project_window(Application& app, const std::filesystem::path& output
             return std::get<float>(at->value);
         };
         click(app, app.object_control(current));
-        click(app, operator_item(app, "layout.show", {{"tab", "structure"}}));
+        click(app, operator_item(app, "layout.show", atelier::json::Document::literal<R"({"tab":"structure"})">()));
         click(app, Access::structure_control(app, mesh));
-        click(app, operator_item(app, "layout.show", {{"tab", "parameters"}}));
+        click(app, operator_item(app, "layout.show", atelier::json::Document::literal<R"({"tab":"parameters"})">()));
         const auto field = Access::material_control(app, material, "roughness");
         require(field && roughness(material) == .25f, "Component Parameters did not expose the shared MI field");
         click(app, field);
@@ -161,7 +163,7 @@ void verify_project_window(Application& app, const std::filesystem::path& output
         click(app, field);
         type(app, L"0.5");
         key(app, VK_RETURN);
-        click(app, operator_item(app, "layout.show", {{"tab", "scene_tree"}}));
+        click(app, operator_item(app, "layout.show", atelier::json::Document::literal<R"({"tab":"scene_tree"})">()));
         click(app, app.object_control(current));
         key(app, 'Z', true);
         require(document.undo_count() == history - 1 && document.name(current) != L"Scene history sentinel" &&
@@ -182,9 +184,9 @@ void verify_project_window(Application& app, const std::filesystem::path& output
         require(x(app, current) == 9 && !document.dirty() && document.material_dirty(asset) &&
                     model(atelier::assets::read_file(folder / "Content/Scenes/Main.scene")) == scene_position,
                 "Scene-field Ctrl+S saved the old material target instead of the scene");
-        click(app, operator_item(app, "layout.show", {{"tab", "structure"}}));
+        click(app, operator_item(app, "layout.show", atelier::json::Document::literal<R"({"tab":"structure"})">()));
         click(app, Access::structure_control(app, mesh));
-        click(app, operator_item(app, "layout.show", {{"tab", "parameters"}}));
+        click(app, operator_item(app, "layout.show", atelier::json::Document::literal<R"({"tab":"parameters"})">()));
         click(app, Access::material_control(app, material, "roughness"));
         key(app, VK_RETURN);
         key(app, 'Z', true);
@@ -218,7 +220,7 @@ void verify_project_window(Application& app, const std::filesystem::path& output
         std::puts("Scene MI Undo/Redo/Save ownership: PASS");
         std::fflush(stdout);
     }
-    click(app, operator_item(app, "layout.show", {{"tab", "scene_tree"}}));
+    click(app, operator_item(app, "layout.show", atelier::json::Document::literal<R"({"tab":"scene_tree"})">()));
     click(app, app.object_control(current));
     // Restore the position framed by open_project before the remaining capture cases.
     click(app, property_control(app, current, 0));
@@ -352,7 +354,9 @@ void verify_project_window(Application& app, const std::filesystem::path& output
     model(atelier::editor::write_file(external, "v 0 0 0\nv 2 0 0\nv 0 2 0\nf 1 2 3\n"));
     const auto external_text = atelier::platform::utf16_to_utf8(external.native());
     require(bool(external_text), "Invalid UTF-16 external mesh fixture path.");
-    model(Access::invoke(app, "asset.import", {{"kind", "mesh"}, {"path", *external_text}}));
+    atelier::json::Builder import_args{atelier::json::Document::literal<R"({"kind":"mesh"})">()};
+    require(import_args.set(import_args.root(), "path", *external_text).has_value(), "Invalid import path argument.");
+    model(Access::invoke(app, "asset.import", import_args.finish()));
     tick(app, 3);
     require(app.presented()->find(access::EditorAcceptanceAccess::directory_key(app, "Content/Meshes"))->selected,
             "Import did not reveal the project's mesh folder.");
@@ -397,7 +401,7 @@ void verify_project_window(Application& app, const std::filesystem::path& output
     const auto metadata = folder / "Content/Meshes/Imported.obj.asset.json";
     const auto metadata_text = model(atelier::assets::read_file(metadata));
     model(atelier::editor::write_file(metadata, "{broken"));
-    model(Access::invoke(app, "scene.add", {{"kind", "entity"}}));
+    model(Access::invoke(app, "scene.add", atelier::json::Document::literal<R"({"kind":"entity"})">()));
     saved = app.document().serialize();
     require(saved.has_value(), "Cannot inspect the modified scene.");
     model(Access::invoke(app, "scene.save"));

@@ -335,22 +335,25 @@ void verify_viewport_duplication() {
     const std::array selected{first, second};
     take(document.select_entities(selected, second));
     const auto history = document.undo_count();
-    const auto before = nlohmann::json::parse(take(document.serialize()));
+    const auto before = take(assets::json_format::parse(take(document.serialize())));
     changed(document.duplicate_entities(document.selected_entities()));
     const std::vector copies(document.selected_entities().begin(), document.selected_entities().end());
     require(copies.size() == 2 && copies[0] != first && copies[1] != second && document.undo_count() == history + 1,
             "Duplicate did not create independent identities in one history entry.");
-    auto after = nlohmann::json::parse(take(document.serialize()));
+    json::Builder after{take(assets::json_format::parse(take(document.serialize())))};
     for (std::size_t i = 0; i < 2; ++i) {
-        after["entities"][i + 2]["name"] = before["entities"][i]["name"];
-        auto& clone = after["entities"][i + 2];
-        const auto& original = before["entities"][i];
-        require(clone["id"] != original["id"], "Duplicate reused its source Entity local ID.");
-        clone["id"] = original["id"];
-        for (std::size_t j = 0; j < clone["components"].size(); ++j) {
-            require(clone["components"][j]["id"] != original["components"][j]["id"],
-                    "Duplicate reused a source Component local ID.");
-            clone["components"][j]["id"] = original["components"][j]["id"];
+        const auto clone = take(take(after.root().at("entities")).at(i + 2));
+        const auto original = take(take(before.root().at("entities")).at(i));
+        take(after.set(clone, "name", take(original.at("name"))));
+        require(take(clone.at("id")) != take(original.at("id")), "Duplicate reused its source Entity local ID.");
+        take(after.set(clone, "id", take(original.at("id"))));
+        const auto components = take(clone.at("components"));
+        const auto sources = take(original.at("components"));
+        for (std::size_t j = 0; j < components.size(); ++j) {
+            const auto component = take(components.at(j));
+            const auto source_id = take(take(sources.at(j)).at("id"));
+            require(take(component.at("id")) != source_id, "Duplicate reused a source Component local ID.");
+            take(after.set(component, "id", source_id));
         }
         require(clone == original, "Duplicate lost component state, links, physics settings or reflected properties.");
     }

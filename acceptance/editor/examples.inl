@@ -10,10 +10,10 @@ void verify_examples() {
     take(editor::write_file(saved, take(document->serialize())));
     auto reopened =
         take(editor::Session::deserialize(take(assets::read_file(saved)), project, {}, editor::LoadPolicy::strict));
-    const auto authored = nlohmann::json::parse(original);
-    const auto restored = nlohmann::json::parse(take(reopened->serialize()));
-    require(restored.at("entities").at(0).at("components").at(0).at("mesh") ==
-                    authored.at("entities").at(0).at("components").at(0).at("mesh") &&
+    const auto authored = take(assets::json_format::parse(original));
+    const auto restored = take(assets::json_format::parse(take(reopened->serialize())));
+    require(*restored.root().at("entities")->at(0)->at("components")->at(0)->at("mesh") ==
+                    *authored.root().at("entities")->at(0)->at("components")->at(0)->at("mesh") &&
                 take(assets::read_file(path)) == original,
             "Sponza save/reopen lost its authored mesh identity or changed the source scene.");
     std::puts("Examples document acceptance: PASS (Sponza authored mesh identity, isolated save/reopen)");

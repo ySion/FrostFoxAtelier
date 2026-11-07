@@ -376,7 +376,13 @@ Result<MaterialAsset> Reader::material(std::string_view key) {
             return failure("Material assets require a .material file.");
         ATELIER_TRY_BIND(path, resolve(item.path));
         ATELIER_TRY_BIND(bytes, read_file(*path));
-        auto asset = material_format::decode(json_format::parse(*bytes));
+        const auto document = json_format::parse(*bytes);
+        if (!document)
+            return failure(document.error().describe());
+        auto decoded = material_format::decode(document->root());
+        if (!decoded)
+            return failure(decoded.error().describe());
+        auto asset = std::move(*decoded);
         const bool is_source = is_material_source_path(item.path);
         if (is_source != std::holds_alternative<MaterialSourceAsset>(asset.author))
             return failure(

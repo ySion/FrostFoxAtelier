@@ -34,7 +34,7 @@ void verify_pane_handles(Application& app, const std::filesystem::path& output, 
     click_outer(DockSpace::collapse_second_button(vertical), true);
     require(!app.presented()->find(field) && app.presented()->find(control::viewport), "Collapse second side failed.");
     // Showing a registered view must reveal all its collapsed ancestors.
-    click(app, operator_item(app, "layout.show", {{"tab", "parameters"}}));
+    click(app, operator_item(app, "layout.show", atelier::json::Document::literal<R"({"tab":"parameters"})">()));
     require(app.presented()->find(field) && app.presented()->find(parameters)->bounds == parameter_bounds,
             "Show Parameters did not reveal a collapsed ancestor.");
     click_outer(DockSpace::divider_grip(horizontal), true);

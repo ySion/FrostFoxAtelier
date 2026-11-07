@@ -14,7 +14,7 @@ atelier_target(atelier_assets)
 target_include_directories(atelier_assets PUBLIC "${PROJECT_SOURCE_DIR}/modules/engine/assets/include")
 # No editor, presentation, physics, Renderer or device dependency belongs here.
 target_link_libraries(atelier_assets PUBLIC atelier_runtime atelier_geometry atelier_rendering atelier_source atelier_material
-    atelier_platform PRIVATE atelier_foundation windowscodecs ole32 nlohmann_json::nlohmann_json)
+    atelier_platform atelier_core_json PRIVATE atelier_foundation windowscodecs ole32 nlohmann_json::nlohmann_json)
 
 add_executable(atelier_mesh_import_acceptance "${PROJECT_SOURCE_DIR}/acceptance/assets/mesh_import.cpp")
 atelier_target(atelier_mesh_import_acceptance)

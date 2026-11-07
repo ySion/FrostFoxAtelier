@@ -12,7 +12,8 @@ int verify_editor_tooltips(Application& app, const char* output_directory) {
     const auto output = std::filesystem::absolute(*output_text);
     std::filesystem::create_directories(output);
     tick(app);
-    require(bool(Access::invoke(app, "scene.add", {{"kind", "mesh"}})), "Tooltip fixture could not create its mesh.");
+    require(bool(Access::invoke(app, "scene.add", json::Document::literal<R"({"kind":"mesh"})">())),
+            "Tooltip fixture could not create its mesh.");
     tick(app);
     const auto history = app.document().undo_count();
     const auto point = [&](const ui::ControlBox& box) {
@@ -58,7 +59,7 @@ int verify_editor_tooltips(Application& app, const char* output_directory) {
                     app.document().undo_count() == history,
                 "Tooltip changed the Scene View target or authored history.");
     };
-    require(bool(Access::invoke(app, "layout.show", {{"tab", "world"}})),
+    require(bool(Access::invoke(app, "layout.show", json::Document::literal<R"({"tab":"world"})">())),
             "Tooltip fixture could not open World settings.");
     tick(app);
     hover_capture(L"Exposure (EV)", "world-exposure-tooltip.png");
@@ -78,7 +79,8 @@ int verify_editor_tooltips(Application& app, const char* output_directory) {
             "Menu dismissal resurrected help or changed scene history.");
 
     // Exercise the colour form through Application input and its real DSL controls.
-    require(bool(Access::invoke(app, "scene.add", {{"kind", "point"}})), "Colour fixture could not create a light.");
+    require(bool(Access::invoke(app, "scene.add", json::Document::literal<R"({"kind":"point"})">())),
+            "Colour fixture could not create a light.");
     auto& document = Access::physics_document(app);
     const auto light = component(app, document.selection().entity, document.presentation_types().light_component);
     std::array<world::FieldPath, 3> channels;

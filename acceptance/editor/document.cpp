@@ -21,7 +21,6 @@
 #include "renderer/scene_visibility.hpp"
 #include "application/recovery.hpp"
 #include "ui/text.hpp"
-#include <nlohmann/json.hpp>
 #include <algorithm>
 #include <chrono>
 #include <cstring>

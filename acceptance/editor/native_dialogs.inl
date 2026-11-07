@@ -7,7 +7,8 @@ int verify_editor_dialogs(Application& app, const char* output_directory) {
     const auto output = std::filesystem::absolute(*output_text);
     std::filesystem::create_directories(output);
     tick(app);
-    require(bool(Access::invoke(app, "scene.add", {{"kind", "mesh"}})), "Dialog scene creation failed.");
+    require(bool(Access::invoke(app, "scene.add", json::Document::literal<R"({"kind":"mesh"})">())),
+            "Dialog scene creation failed.");
     Access::mark_saved(app);
     tick(app);
     const auto owner = app.window();
@@ -16,7 +17,7 @@ int verify_editor_dialogs(Application& app, const char* output_directory) {
     const ExpectedNativeDialogs expected;
     for (const std::string_view command : {"project.open", "app.quit"}) {
         if (command == "app.quit") {
-            require(bool(Access::invoke(app, "scene.add", {{"kind", "entity"}})),
+            require(bool(Access::invoke(app, "scene.add", json::Document::literal<R"({"kind":"entity"})">())),
                     "Unsaved dialog scene creation failed.");
             tick(app);
         }

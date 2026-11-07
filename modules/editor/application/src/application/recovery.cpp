@@ -5,6 +5,7 @@
 #include "platform/error.hpp"
 #include "platform/utf.hpp"
 #include "logging/logging.hpp"
+#include "json/json.hpp"
 #include <chrono>
 #include <cstdio>
 
@@ -96,20 +97,33 @@ const SceneRecovery::Outcome& SceneRecovery::preserve(editor::Session& document,
             outcome_->value().warning += " Recovery metadata: Invalid UTF-16 text";
             return outcome_;
         }
-        const control::Json metadata{{"version", 1},
-                                     {"kind", "author_scene_recovery"},
-                                     {"scene", "Scene.scene"},
-                                     {"original_project", *original_project},
-                                     {"original_scene", *original_scene},
-                                     {"reason", reason},
-                                     {"unix_time_ms", std::chrono::duration_cast<std::chrono::milliseconds>(
-                                                          std::chrono::system_clock::now().time_since_epoch())
-                                                          .count()},
-                                     {"unfinished_edit_cancelled", unfinished},
-                                     {"assets_validated", false},
-                                     {"dirty_material_assets", document.dirty_materials()}};
-        if (auto saved =
-                editor::write_file(folder / "recovery.json", metadata.dump(2) + "\n", editor::WriteMode::create);
+        json::Builder metadata;
+        const auto value = metadata.root();
+        static_cast<void>(metadata.set(value, "version", std::uint32_t{1}));
+        metadata.set_validated(value, "kind", "author_scene_recovery");
+        metadata.set_validated(value, "scene", "Scene.scene");
+        metadata.set_validated(value, "original_project", *original_project);
+        metadata.set_validated(value, "original_scene", *original_scene);
+        if (auto written = metadata.set(value, "reason", reason); !written) {
+            outcome_->value().warning += " Recovery metadata: " + written.error().describe();
+            return outcome_;
+        }
+        const auto time =
+            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
+                .count();
+        static_cast<void>(metadata.set(value, "unix_time_ms", static_cast<std::int64_t>(time)));
+        static_cast<void>(metadata.set(value, "unfinished_edit_cancelled", unfinished));
+        static_cast<void>(metadata.set(value, "assets_validated", false));
+        const auto dirty = *metadata.array(value, "dirty_material_assets");
+        for (const auto& key : document.dirty_materials()) {
+            if (auto written = metadata.append(dirty, key); !written) {
+                outcome_->value().warning += " Recovery metadata: " + written.error().describe();
+                return outcome_;
+            }
+        }
+        const auto encoded = json::write(value, {true, true});
+        if (auto saved = editor::write_file(folder / "recovery.json", {encoded.data(), encoded.size()},
+                                            editor::WriteMode::create);
             !saved)
             outcome_->value().warning += " Recovery metadata: " + saved.error().message;
     } catch (const std::exception& error) {

@@ -297,9 +297,8 @@ Result<void> Workspace::select_object(Session& session, OperatorHost& host, Obje
         }
         selection = {entity, object, {entity}};
     }
-    auto result =
-        call(operators, host, operator_context(session, nullptr, true),
-             {"scene.select", assets::json_format::Json::object(), {.selection = std::move(selection), .region = {}}});
+    auto result = call(operators, host, operator_context(session, nullptr, true),
+                       {"scene.select", json::Document{}, {.selection = std::move(selection), .region = {}}});
     if (!result)
         return std::unexpected(result.error());
     inspecting_asset = false;
@@ -340,7 +339,7 @@ Result<void> Workspace::select_tree(Session& session, OperatorHost& host, ui::Co
                                                                                           : selected.back();
         auto result = call(operators, host, operator_context(session, nullptr, true),
                            {"scene.select",
-                            assets::json_format::Json::object(),
+                            json::Document{},
                             {.selection = SelectionContext{active, active, std::move(selected)}, .region = {}}});
         return result ? Result<void>{} : std::unexpected(result.error());
     }
@@ -501,19 +500,22 @@ Result<bool> Workspace::apply_view(Session& session, OperatorHost& host, const u
     const auto publish = [&]() -> Result<bool> {
         if (candidate == view)
             return true;
-        auto patch = assets::json_format::Json::object();
+        json::Builder patch;
         for (const auto& option : view_options()) {
             const auto value = view_value(candidate, option.option);
             if (value == view_value(view, option.option))
                 continue;
+            json::Result<void> added;
             if (option.kind == ViewValueKind::enumeration)
-                patch[option.name] = option.choices[static_cast<std::size_t>(value)];
+                patch.set_validated(patch.root(), option.name, option.choices[static_cast<std::size_t>(value)]);
             else if (option.kind == ViewValueKind::boolean)
-                patch[option.name] = value != 0;
+                added = patch.set(patch.root(), option.name, value != 0);
             else
-                patch[option.name] = value;
+                added = patch.set(patch.root(), option.name, value);
+            if (!added)
+                return std::unexpected(Error{ErrorCode::invalid_definition, added.error().describe()});
         }
-        auto result = call(operators, host, operator_context(session, nullptr, true), {"view.set", std::move(patch)});
+        auto result = call(operators, host, operator_context(session, nullptr, true), {"view.set", patch.finish()});
         return result ? Result<bool>{true} : std::unexpected(result.error());
     };
     const auto edited = lighting.apply(action, candidate);
@@ -940,7 +942,8 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
         if (!shelf_items_[index])
             shelf_items_[index] = next_binding_++;
         const auto title = definition.shelf_title.empty() ? definition.title : definition.shelf_title;
-        const auto kind = definition.call.args.value("kind", std::string{});
+        const auto kind_field = *definition.call.args.root().find("kind");
+        const auto kind = kind_field ? *kind_field->string() : std::string_view{};
         const auto icon = kind == "point"         ? ui::ControlIcon::point_light
                           : kind == "rectangle"   ? ui::ControlIcon::area_light
                           : kind == "directional" ? ui::ControlIcon::sun_light
@@ -1058,7 +1061,9 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
                                        ui::ControlIcon::rotate, ui::ControlIcon::scale};
             constexpr std::array tools{"select", "transform", "move", "rotate", "scale"};
             for (std::size_t i = 0; i < icons.size(); ++i) {
-                const auto binding = action({"tool.settings", {{"tool", tools[i]}}});
+                json::Builder args;
+                args.set_validated(args.root(), "tool", tools[i]);
+                const auto binding = action({"tool.settings", args.finish()});
                 modes->push_back(
                     {binding.target,
                      {binding, double(icons[i]), std::size_t(viewport_settings.tool) == i, control::viewport_modes,
@@ -1097,9 +1102,11 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
                                               ui::ControlIcon::select_intersect};
             constexpr std::array selections{"set", "extend", "subtract", "invert", "intersect"};
             for (std::size_t i = 0; i < select_icons.size(); ++i) {
+                json::Builder args;
+                args.set_validated(args.root(), "select_mode", selections[i]);
                 select_modes->push_back(
                     {990 + i,
-                     {action({"tool.settings", {{"select_mode", selections[i]}}}), double(select_icons[i]),
+                     {action({"tool.settings", args.finish()}), double(select_icons[i]),
                       std::size_t(viewport_settings.select_mode) == i, control::viewport_select_modes,
                       std::wstring(i == 0                         ? L"viewport-segment-item first"
                                    : i + 1 == select_icons.size() ? L"viewport-segment-item last"
@@ -1120,8 +1127,10 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
                  {control::display_lit, ui::ControlIcon::shade_lit, lit, false},
                  {control::display_fps, ui::ControlIcon::fps, show_fps, true}}};
             for (std::size_t index = 0; const auto& [key, icon, selected, grouped] : display) {
-                const auto binding = key == control::display_fps ? action({"view.toggle", {{"option", "fps"}}})
-                                                                 : ui_language::ActionBinding{key, true};
+                const auto binding =
+                    key == control::display_fps
+                        ? action({"view.toggle", json::Document{json::Document::literal<R"({"option":"fps"})">()}})
+                        : ui_language::ActionBinding{key, true};
                 display_toggles->push_back({control::display_toggle_first + index++,
                                             {binding, double(icon), selected,
                                              std::wstring(grouped ? L"display-toggle grouped" : L"display-toggle")}});
@@ -1151,16 +1160,16 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
                                  ? L"Local"
                                  : L"Global"),
                 std::wstring(viewport_settings.pivot == PivotMode::median ? L"Selection Center" : L"3D Cursor"),
-                action({"tool.toggle", {{"setting", "grid_snap"}}}),
+                action({"tool.toggle", json::Document{json::Document::literal<R"({"setting":"grid_snap"})">()}}),
                 double(ui::ControlIcon::magnet),
                 viewport_settings.grid_snap,
                 step_name,
                 menu && menu->source == control::viewport_snap,
                 viewport_settings.cursor_surface,
-                action({"tool.toggle", {{"setting", "cursor_surface"}}}),
+                action({"tool.toggle", json::Document{json::Document::literal<R"({"setting":"cursor_surface"})">()}}),
                 std::wstring(camera_view_name(camera_view)),
                 menu && menu->source == control::viewport_camera,
-                action({"view.toggle", {{"option", "options"}}}),
+                action({"view.toggle", json::Document{json::Document::literal<R"({"option":"options"})">()}}),
                 viewport_options_collapsed,
                 double(ui::ControlIcon::up),
                 double(ui::ControlIcon::down),
@@ -1401,7 +1410,7 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
                 selected != ObjectId{},
                 selected != ObjectId{} && entity_status.can_edit,
                 control::add_component,
-                action({"scene.delete", {{"target", "object"}}}),
+                action({"scene.delete", json::Document{json::Document::literal<R"({"target":"object"})">()}}),
                 double(ui::ControlIcon::close)};
             const std::array<ui_language::KeyBinding, 2> keys{
                 {{"tree", control::structure_tree}, {"add", control::add_component}}};
@@ -2155,52 +2164,57 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
                 return result;
             };
             const auto viewport_calls = [&](ui::ControlKey key) {
+                // These exact literals are initialized by menu_bindings at startup.
                 switch (key) {
                 case control::viewport_tools_menu:
-                    return calls({{"tool.settings", {{"tool", "select"}}},
-                                  {"tool.settings", {{"tool", "transform"}}},
-                                  {"tool.settings", {{"tool", "move"}}},
-                                  {"tool.settings", {{"tool", "rotate"}}},
-                                  {"tool.settings", {{"tool", "scale"}}}});
+                    return calls(
+                        {{"tool.settings", json::Document{json::Document::literal<R"({"tool":"select"})">()}},
+                         {"tool.settings", json::Document{json::Document::literal<R"({"tool":"transform"})">()}},
+                         {"tool.settings", json::Document{json::Document::literal<R"({"tool":"move"})">()}},
+                         {"tool.settings", json::Document{json::Document::literal<R"({"tool":"rotate"})">()}},
+                         {"tool.settings", json::Document{json::Document::literal<R"({"tool":"scale"})">()}}});
                 case control::viewport_snap:
-                    return calls({{"tool.toggle", {{"setting", "grid_snap"}}},
-                                  {"tool.settings", {{"grid_spacing", .1}}},
-                                  {"tool.settings", {{"grid_spacing", .2}}},
-                                  {"tool.settings", {{"grid_spacing", .5}}},
-                                  {"tool.settings", {{"grid_spacing", 1.}}},
-                                  {"tool.toggle", {{"setting", "snap_move"}}},
-                                  {"tool.toggle", {{"setting", "snap_rotate"}}},
-                                  {"tool.toggle", {{"setting", "snap_scale"}}},
-                                  {"tool.settings", {{"rotation_step", 1.}}},
-                                  {"tool.settings", {{"rotation_step", 5.}}},
-                                  {"tool.settings", {{"rotation_step", 15.}}},
-                                  {"tool.settings", {{"rotation_step", 45.}}},
-                                  {"scene.snap_selection", {{"to", "grid"}}},
-                                  {"scene.snap_selection", {{"to", "cursor"}}},
-                                  {"cursor.to_selection"},
-                                  {"cursor.reset"},
-                                  {"cursor.to_grid"},
-                                  {"tool.toggle", {{"setting", "cursor_surface"}}}});
+                    return calls(
+                        {{"tool.toggle", json::Document{json::Document::literal<R"({"setting":"grid_snap"})">()}},
+                         {"tool.settings", json::Document{json::Document::literal<R"({"grid_spacing":0.1})">()}},
+                         {"tool.settings", json::Document{json::Document::literal<R"({"grid_spacing":0.2})">()}},
+                         {"tool.settings", json::Document{json::Document::literal<R"({"grid_spacing":0.5})">()}},
+                         {"tool.settings", json::Document{json::Document::literal<R"({"grid_spacing":1.0})">()}},
+                         {"tool.toggle", json::Document{json::Document::literal<R"({"setting":"snap_move"})">()}},
+                         {"tool.toggle", json::Document{json::Document::literal<R"({"setting":"snap_rotate"})">()}},
+                         {"tool.toggle", json::Document{json::Document::literal<R"({"setting":"snap_scale"})">()}},
+                         {"tool.settings", json::Document{json::Document::literal<R"({"rotation_step":1.0})">()}},
+                         {"tool.settings", json::Document{json::Document::literal<R"({"rotation_step":5.0})">()}},
+                         {"tool.settings", json::Document{json::Document::literal<R"({"rotation_step":15.0})">()}},
+                         {"tool.settings", json::Document{json::Document::literal<R"({"rotation_step":45.0})">()}},
+                         {"scene.snap_selection", json::Document{json::Document::literal<R"({"to":"grid"})">()}},
+                         {"scene.snap_selection", json::Document{json::Document::literal<R"({"to":"cursor"})">()}},
+                         {"cursor.to_selection"},
+                         {"cursor.reset"},
+                         {"cursor.to_grid"},
+                         {"tool.toggle",
+                          json::Document{json::Document::literal<R"({"setting":"cursor_surface"})">()}}});
                 case control::viewport_camera:
-                    return calls({{"view.axis", {{"view", "perspective"}}},
-                                  {"view.axis", {{"view", "front"}}},
-                                  {"view.axis", {{"view", "back"}}},
-                                  {"view.axis", {{"view", "left"}}},
-                                  {"view.axis", {{"view", "right"}}},
-                                  {"view.axis", {{"view", "top"}}},
-                                  {"view.axis", {{"view", "bottom"}}},
+                    return calls({{"view.axis", json::Document{json::Document::literal<R"({"view":"perspective"})">()}},
+                                  {"view.axis", json::Document{json::Document::literal<R"({"view":"front"})">()}},
+                                  {"view.axis", json::Document{json::Document::literal<R"({"view":"back"})">()}},
+                                  {"view.axis", json::Document{json::Document::literal<R"({"view":"left"})">()}},
+                                  {"view.axis", json::Document{json::Document::literal<R"({"view":"right"})">()}},
+                                  {"view.axis", json::Document{json::Document::literal<R"({"view":"top"})">()}},
+                                  {"view.axis", json::Document{json::Document::literal<R"({"view":"bottom"})">()}},
                                   {"view.frame_selected"},
                                   {"view.from_camera"},
                                   {"view.reset"}});
                 case control::viewport_pivot:
-                    return calls({{"tool.settings", {{"pivot", "median"}}},
-                                  {"tool.settings", {{"pivot", "cursor"}}},
+                    return calls({{"tool.settings", json::Document{json::Document::literal<R"({"pivot":"median"})">()}},
+                                  {"tool.settings", json::Document{json::Document::literal<R"({"pivot":"cursor"})">()}},
                                   {"cursor.to_selection"},
                                   {"cursor.reset"},
                                   {"cursor.to_grid"}});
                 case control::viewport_orientation: {
-                    auto items = calls({{"tool.settings", {{"orientation", "global"}}},
-                                        {"tool.settings", {{"orientation", "local"}}}});
+                    auto items = calls(
+                        {{"tool.settings", json::Document{json::Document::literal<R"({"orientation":"global"})">()}},
+                         {"tool.settings", json::Document{json::Document::literal<R"({"orientation":"local"})">()}}});
                     items.front().separator_before = false;
                     items.front().heading = L"Transform Orientations";
                     return items;
@@ -2225,23 +2239,27 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
                     items.push_back(submenu(control::view_viewpoint_menu, L"Viewpoint",
                                             viewport_calls(control::viewport_camera), true));
                     auto options =
-                        calls({{"view.toggle", {{"option", "options"}}}, {"view.toggle", {{"option", "fps"}}}});
+                        calls({{"view.toggle", json::Document{json::Document::literal<R"({"option":"options"})">()}},
+                               {"view.toggle", json::Document{json::Document::literal<R"({"option":"fps"})">()}}});
                     options.front().separator_before = true;
                     for (auto& item : options)
                         items.push_back(std::move(item));
                     return items;
                 }
                 if (key == control::viewport_select_menu) {
-                    auto items = calls({{"scene.select_all", {{"action", "select"}}},
-                                        {"scene.select_all", {{"action", "deselect"}}},
-                                        {"scene.select_all", {{"action", "invert"}}},
-                                        {"view.select_box"}});
+                    auto items = calls(
+                        {{"scene.select_all", json::Document{json::Document::literal<R"({"action":"select"})">()}},
+                         {"scene.select_all", json::Document{json::Document::literal<R"({"action":"deselect"})">()}},
+                         {"scene.select_all", json::Document{json::Document::literal<R"({"action":"invert"})">()}},
+                         {"view.select_box"}});
                     items.front().separator_before = false;
-                    auto modes = calls({{"tool.settings", {{"select_mode", "set"}}},
-                                        {"tool.settings", {{"select_mode", "extend"}}},
-                                        {"tool.settings", {{"select_mode", "subtract"}}},
-                                        {"tool.settings", {{"select_mode", "invert"}}},
-                                        {"tool.settings", {{"select_mode", "intersect"}}}});
+                    auto modes = calls(
+                        {{"tool.settings", json::Document{json::Document::literal<R"({"select_mode":"set"})">()}},
+                         {"tool.settings", json::Document{json::Document::literal<R"({"select_mode":"extend"})">()}},
+                         {"tool.settings", json::Document{json::Document::literal<R"({"select_mode":"subtract"})">()}},
+                         {"tool.settings", json::Document{json::Document::literal<R"({"select_mode":"invert"})">()}},
+                         {"tool.settings",
+                          json::Document{json::Document::literal<R"({"select_mode":"intersect"})">()}}});
                     modes.front().separator_before = false;
                     items.push_back(submenu(control::select_mode_menu, L"Selection Mode", std::move(modes), true));
                     return items;
@@ -2254,18 +2272,24 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
                     return items;
                 }
                 if (key == control::viewport_object_menu) {
-                    auto items = calls({{"scene.duplicate"}, {"scene.delete", {{"target", "entities"}}}});
+                    auto items = calls(
+                        {{"scene.duplicate"},
+                         {"scene.delete", json::Document{json::Document::literal<R"({"target":"entities"})">()}}});
                     items.front().separator_before = false;
-                    auto clear = calls({{"scene.transform_clear", {{"channel", "location"}}},
-                                        {"scene.transform_clear", {{"channel", "rotation"}}},
-                                        {"scene.transform_clear", {{"channel", "scale"}}}});
+                    auto clear = calls({{"scene.transform_clear",
+                                         json::Document{json::Document::literal<R"({"channel":"location"})">()}},
+                                        {"scene.transform_clear",
+                                         json::Document{json::Document::literal<R"({"channel":"rotation"})">()}},
+                                        {"scene.transform_clear",
+                                         json::Document{json::Document::literal<R"({"channel":"scale"})">()}}});
                     clear.front().separator_before = false;
                     items.push_back(submenu(control::object_clear_menu, L"Clear", std::move(clear), true));
-                    auto snap = calls({{"scene.snap_selection", {{"to", "grid"}}},
-                                       {"scene.snap_selection", {{"to", "cursor"}}},
-                                       {"cursor.to_selection"},
-                                       {"cursor.to_grid"},
-                                       {"cursor.reset"}});
+                    auto snap = calls(
+                        {{"scene.snap_selection", json::Document{json::Document::literal<R"({"to":"grid"})">()}},
+                         {"scene.snap_selection", json::Document{json::Document::literal<R"({"to":"cursor"})">()}},
+                         {"cursor.to_selection"},
+                         {"cursor.to_grid"},
+                         {"cursor.reset"}});
                     for (auto& item : snap)
                         item.separator_before = false;
                     items.push_back(submenu(control::object_snap_menu, L"Snap", std::move(snap)));
@@ -2280,7 +2304,8 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
             std::vector<ui::MenuItem> items = dock.menu_items(source->key, frame);
             if ((source->context_target ? source->context_target : source->key) == world_control::setup) {
                 items = calls(
-                    {{"view.lighting_fit", {{"mode", "scene"}}}, {"view.lighting_fit", {{"mode", "scene_focus"}}}});
+                    {{"view.lighting_fit", json::Document{json::Document::literal<R"({"mode":"scene"})">()}},
+                     {"view.lighting_fit", json::Document{json::Document::literal<R"({"mode":"scene_focus"})">()}}});
                 items[0].text = L"Fit Scene";
                 items[1].text = L"Scene + Follow Focus";
             } else if (auto lighting_items =
@@ -2294,8 +2319,8 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
                                                                source->kind == ui::ControlKind::tree_item) {
                 items = calls({{"scene.rename"},
                                {"scene.duplicate"},
-                               {"scene.delete", {{"target", "entities"}}},
-                               {"scene.parent_set", {{"parent", nullptr}}},
+                               {"scene.delete", json::Document{json::Document::literal<R"({"target":"entities"})">()}},
+                               {"scene.parent_set", json::Document{json::Document::literal<R"({"parent":null})">()}},
                                {"view.frame_selected"}});
                 for (auto& item : items)
                     item.separator_before = false;
@@ -2316,7 +2341,8 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
                                          .text = std::wstring(title),
                                          .edit_command = {},
                                          .children = viewport_calls(key)});
-                    items.push_back(operator_item({"view.toggle", {{"option", "options"}}}));
+                    items.push_back(operator_item(
+                        {"view.toggle", json::Document{json::Document::literal<R"({"option":"options"})">()}}));
                 } else {
                     for (const auto& definition : menu_bindings)
                         if (definition.group == group->id) {
@@ -2337,20 +2363,21 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
                     items.push_back(std::move(item));
                 }
             } else if (source->key == control::viewport && menu->group == control::viewport_delete_menu) {
-                auto item = operator_item({"scene.delete", {{"target", "entities"}}});
+                auto item = operator_item(
+                    {"scene.delete", json::Document{json::Document::literal<R"({"target":"entities"})">()}});
                 item.separator_before = false;
                 item.text = session.selected_entities().size() == 1
                                 ? L"Delete Entity"
                                 : L"Delete " + std::to_wstring(session.selected_entities().size()) + L" Entities";
                 items.push_back(std::move(item));
             } else if (source->key == control::viewport && menu->group == control::viewport_axis_pie) {
-                items = calls({{"view.axis", {{"view", "left"}}},
-                               {"view.axis", {{"view", "right"}}},
-                               {"view.axis", {{"view", "bottom"}}},
-                               {"view.axis", {{"view", "top"}}},
-                               {"view.axis", {{"view", "front"}}},
-                               {"view.axis", {{"view", "back"}}},
-                               {"view.axis", {{"view", "perspective"}}},
+                items = calls({{"view.axis", json::Document{json::Document::literal<R"({"view":"left"})">()}},
+                               {"view.axis", json::Document{json::Document::literal<R"({"view":"right"})">()}},
+                               {"view.axis", json::Document{json::Document::literal<R"({"view":"bottom"})">()}},
+                               {"view.axis", json::Document{json::Document::literal<R"({"view":"top"})">()}},
+                               {"view.axis", json::Document{json::Document::literal<R"({"view":"front"})">()}},
+                               {"view.axis", json::Document{json::Document::literal<R"({"view":"back"})">()}},
+                               {"view.axis", json::Document{json::Document::literal<R"({"view":"perspective"})">()}},
                                {"view.frame_selected"}});
                 items.back().text = L"Focus";
             } else if (source->key == control::viewport && menu->group == control::viewport_add_menu) {
@@ -2365,33 +2392,39 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
                                      .text = L"Snap",
                                      .edit_command = {},
                                      .children = viewport_calls(control::viewport_snap)});
-                    for (auto item : calls({{"view.frame_selected"},
-                                            {"scene.add", {{"kind", "mesh"}}},
-                                            {"scene.duplicate"},
-                                            {"scene.delete", {{"target", "entities"}}}}))
+                    for (auto item : calls(
+                             {{"view.frame_selected"},
+                              {"scene.add", json::Document{json::Document::literal<R"({"kind":"mesh"})">()}},
+                              {"scene.duplicate"},
+                              {"scene.delete", json::Document{json::Document::literal<R"({"target":"entities"})">()}}}))
                         items.push_back(std::move(item));
                 }
             } else if (source->key == control::viewport_snap) {
                 items = viewport_calls(source->key);
                 for (auto& item : items) {
                     const auto& call = binding(item.key)->call->request;
-                    const auto setting = call.args.value("setting", std::string{});
+                    const auto args = call.args.root();
+                    const auto setting_field = *args.find("setting");
+                    const auto setting = setting_field ? *setting_field->string() : std::string_view{};
+                    const auto grid = *args.find("grid_spacing");
+                    const auto rotation = *args.find("rotation_step");
+                    const auto destination = *args.find("to");
                     item.separator_before = false;
                     if (setting == "grid_snap")
                         item.heading = L"Snapping";
-                    else if (call.args.value("grid_spacing", 0.) == .1)
+                    else if (grid && *grid->number() == .1)
                         item.heading = L"Increment";
                     else if (setting == "snap_move")
                         item.heading = L"Affect";
-                    else if (call.args.value("rotation_step", 0.) == 1.)
+                    else if (rotation && *rotation->number() == 1.)
                         item.heading = L"Rotation Increment";
-                    else if (call.id == "scene.snap_selection" && call.args["to"] == "grid")
+                    else if (call.id == "scene.snap_selection" && destination && *destination->string() == "grid")
                         item.heading = L"Snap Selection / Cursor";
                     item.separator_before = !item.heading.empty() && setting != "grid_snap";
                     // The section caption carries the context; rows show just the choice.
                     if (setting.starts_with("snap_"))
                         item.text = item.text.substr(5);
-                    else if (call.args.contains("rotation_step"))
+                    else if (rotation)
                         item.text = item.text.substr(9);
                 }
             } else if (source->key == control::viewport_camera || source->key == control::viewport_pivot ||
@@ -2417,15 +2450,20 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
                 if (value)
                     if (const auto* enumeration = std::get_if<EnumValue>(&*value)) {
                         OperatorCall call{"scene.set_properties",
-                                          assets::json_format::Json::object(),
+                                          json::Document{},
                                           {.selection = SelectionContext{selected, target->object, {selected}},
                                            .region = RegionKind::parameters}};
                         auto type = take(runtime.type_of(target->object));
-                        auto* argument = &call.args;
-                        for (const auto field : target->path) {
+                        json::Builder args;
+                        auto argument = args.root();
+                        std::string_view name;
+                        for (std::size_t i = 0; i < target->path.size(); ++i) {
                             const auto info = take(runtime.describe(type));
-                            const auto at = std::ranges::find(info->fields, field, &FieldInfo::id);
-                            argument = &(*argument)[at->name];
+                            const auto at = std::ranges::find(info->fields, target->path[i], &FieldInfo::id);
+                            if (i + 1 < target->path.size())
+                                argument = args.object_validated(argument, at->name);
+                            else
+                                name = at->name;
                             type = at->value.type;
                         }
                         auto context = operator_context(session, project, true, command_focus);
@@ -2433,7 +2471,8 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
                         context.region = *call.context.region;
                         const bool available = operators.find(call.id)->poll(context).has_value();
                         for (const auto& member : take(runtime.describe(enumeration->type))->enumeration->values) {
-                            *argument = member.first;
+                            args.set_validated(argument, name, member.first);
+                            call.args = args.finish();
                             ui::MenuItem item{bind_operator(call),
                                               parameter_label(member.first),
                                               available,
@@ -2526,7 +2565,8 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
                                  {}});
                 items.push_back({control::guide_grid, L"Reference Grid", true, view.reference_grid, {}});
                 items.push_back({control::guide_axes, L"Origin Axes", true, view.origin_axes, {}});
-                items.push_back(operator_item({"view.toggle", {{"option", "fps"}}}));
+                items.push_back(
+                    operator_item({"view.toggle", json::Document{json::Document::literal<R"({"option":"fps"})">()}}));
                 for (auto& item : items)
                     item.behavior = ui::MenuBehavior::checkbox;
             } else if (!items.empty()) {

@@ -29,13 +29,16 @@ void verify_scene_recovery() {
                 reopened->name(take(reopened->world().members()).front().id()) == L"Recovered entity",
             "Recovered scene did not reopen through the real scene loader.");
     const auto metadata = assets::json_format::parse(take(assets::read_file(path.parent_path() / "recovery.json")));
-    require(metadata.at("reason") == "renderer execution failed" && metadata.at("unfinished_edit_cancelled") == true &&
-                metadata.at("assets_validated") == false,
+    require(metadata && metadata->root().string({"reason"}) == "renderer execution failed" &&
+                metadata->root().boolean({"unfinished_edit_cancelled"}) == true &&
+                metadata->root().boolean({"assets_validated"}) == false,
             "Recovery origin or failure reason was lost.");
     const auto& repeated =
         recovery.preserve(document, project.root(), project.startup_scene(), "cleanup failed", evidence / "Other");
+    const auto repeated_metadata =
+        assets::json_format::parse(take(assets::read_file(path.parent_path() / "recovery.json")));
     require(repeated && *repeated && repeated->value().scene == path && !fs::exists(evidence / "Other") &&
-                assets::json_format::parse(take(assets::read_file(path.parent_path() / "recovery.json"))) == metadata,
+                repeated_metadata && *repeated_metadata == *metadata,
             "Repeated failure rewrote the snapshot or replaced its first cause.");
 
     editor::Session missing;

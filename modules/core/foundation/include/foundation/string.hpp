@@ -88,6 +88,16 @@ public:
         return {data_ + first, count == npos ? size_ - first : count};
     }
 
+    // The entire view must already be valid UTF-8. Only the cut is adjusted;
+    // this does not validate bytes or detect a violated precondition.
+    [[nodiscard]] constexpr StringView utf8_prefix(std::size_t maximum_bytes) const noexcept {
+        if (size_ <= maximum_bytes)
+            return *this;
+        while (maximum_bytes && (static_cast<unsigned char>(data_[maximum_bytes]) & 0xc0) == 0x80)
+            --maximum_bytes;
+        return {data_, maximum_bytes};
+    }
+
     [[nodiscard]] constexpr bool starts_with(StringView value) const noexcept {
         return std_view().starts_with(value.std_view());
     }
@@ -420,6 +430,10 @@ public:
     String() noexcept = default;
 
     [[nodiscard]] static std::expected<String, StringError> from_utf8(StringView text) noexcept;
+
+    // Caller guarantees complete, valid UTF-8. Copies without scanning in either
+    // configuration; invalid encoding violates the contract and is not detected.
+    [[nodiscard]] static String from_utf8_validated(StringView text) noexcept;
 
     template <detail::TextInteger T>
     [[nodiscard]] static std::expected<String, std::errc> from_number(T value, int base = 10) noexcept {

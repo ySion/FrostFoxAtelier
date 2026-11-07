@@ -175,7 +175,8 @@ void verify_menu_input_transitions(Application& app) {
     require(live_menu()->find(control::viewport_camera), "View menu is missing its Camera View branch.");
     key(ui::Key::right, VK_RIGHT);
     require(app.menu_window() != parent &&
-                live_menu()->find(Access::operator_item(app, "view.axis", {{"view", "perspective"}})),
+                live_menu()->find(Access::operator_item(
+                    app, "view.axis", atelier::json::Document::literal<R"({"view":"perspective"})">())),
             "Right from a top-level menu branch switched menu groups instead of opening its child.");
     key(ui::Key::escape, VK_ESCAPE);
     require(app.menu_window() == parent && live_menu()->find(control::viewport_camera),
@@ -296,7 +297,8 @@ void verify_native_menus(Application& app, const std::filesystem::path& output, 
     key(app, VK_RIGHT);
     require(live_menu()->find(Access::operator_item(app, "edit.undo")), "Right arrow did not switch to Edit.");
     key(app, VK_RIGHT);
-    require(live_menu()->find(Access::operator_item(app, "scene.add", {{"kind", "entity"}})) &&
+    require(live_menu()->find(
+                Access::operator_item(app, "scene.add", atelier::json::Document::literal<R"({"kind":"entity"})">())) &&
                 app.menu_window() == native_popup,
             "Menu switching rebuilt its native host.");
     mouse(app, WM_MOUSEMOVE, centre(app, control::view_menu));

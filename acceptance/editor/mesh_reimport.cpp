@@ -115,7 +115,10 @@ void run(const fs::path& root) {
     const auto trim_key = binding(first, "Trim");
     const auto mesh_relative = project.entry(key)->path;
     const auto mesh_file = take(project.resolve(mesh_relative));
-    const auto mesh_identity = assets::json_format::parse(read(sidecar(mesh_file))).at("id");
+    const auto mesh_metadata = assets::json_format::parse(read(sidecar(mesh_file)));
+    require(bool(mesh_metadata), "Imported mesh metadata is invalid JSON.");
+    const auto mesh_identity = mesh_metadata->root().string({"id"});
+    require(bool(mesh_identity), "Imported mesh metadata has no identity.");
     auto paint = take(project.assets().material(paint_key));
     parameter(paint, "roughness").value = .23f;
     parameter(paint, "base_color").value = math::Vector4{.12f, .34f, .56f, .78f};
@@ -164,9 +167,11 @@ void run(const fs::path& root) {
             "Reimport did not replace geometry and reorder slots without mutating the old snapshot.");
     require(binding(update.mesh, "Paint") == paint_key && binding(update.mesh, "Trim") == trim_key,
             "Reimport matched defaults by source ordinal instead of slot name.");
+    const auto updated_metadata = assets::json_format::parse(read(sidecar(mesh_file)));
+    require(bool(updated_metadata), "Reimported mesh metadata is invalid JSON.");
     require(read(paint_file) == painted_bytes && read(sidecar(paint_file)) == paint_identity &&
                 read(sidecar(texture_file)) == texture_identity &&
-                assets::json_format::parse(read(sidecar(mesh_file))).at("id") == mesh_identity,
+                updated_metadata->root().string({"id"}) == *mesh_identity,
             "Reimport overwrote manual MI parameters, policy, disabled values or persistent identities.");
     require(update.materials.size() == 2 && update.textures.size() == 1 && update.textures[0].key == texture_key &&
                 update.textures[0].image->pixels()[2] == 220 &&
@@ -303,9 +308,13 @@ void run(const fs::path& root) {
     require(live.revision() == accepted_revision && take(live.assets().mesh(key)).mesh == first.mesh,
             "Invalid exact mesh publication changed the accepted snapshot.");
     write(mesh_file, "newer invalid disk geometry");
-    auto newer_metadata = assets::json_format::parse(read(sidecar(mesh_file)));
-    newer_metadata["materials"] = {{"missing slot", paint_key}};
-    write(sidecar(mesh_file), newer_metadata.dump());
+    const auto parsed_metadata = assets::json_format::parse(read(sidecar(mesh_file)));
+    require(bool(parsed_metadata), "Mesh metadata fixture is invalid JSON.");
+    json::Builder newer_metadata{*parsed_metadata};
+    const auto bindings = newer_metadata.object_validated(newer_metadata.root(), "materials");
+    require(bool(newer_metadata.set(bindings, "missing slot", paint_key)), "Cannot build mesh metadata fixture.");
+    const auto metadata_bytes = json::write(newer_metadata.root());
+    write(sidecar(mesh_file), {metadata_bytes.data(), metadata_bytes.size()});
     write(project.root() / "Content/Other.obj", "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n");
     take(live.refresh());
     const auto exact_again = take(live.assets().mesh(key));
@@ -317,20 +326,21 @@ void run(const fs::path& root) {
 
 void gltf(const fs::path& root) {
     const auto source = root / "gltf";
-    auto document = assets::json_format::parse(R"({
+    json::Builder document{json::Document::literal<R"({
         "asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],"nodes":[{"mesh":0}],
         "buffers":[{"uri":"geometry.bin","byteLength":36}],
         "bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":36}],
         "accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}],
         "materials":[{"name":"Body"},{"name":"Trim","alphaMode":"MASK","doubleSided":false}],
         "meshes":[{"primitives":[{"attributes":{"POSITION":0},"material":0},{"attributes":{"POSITION":0},"material":1}]}]
-    })");
+    })">()};
     const auto geometry = [&](float width) {
         const float positions[]{0, 0, 0, width, 0, 0, 0, 1, 0};
         write(source / "geometry.bin", std::string_view(reinterpret_cast<const char*>(positions), sizeof(positions)));
     };
     geometry(1);
-    write(source / "model.gltf", document.dump());
+    const auto original_bytes = json::write(document.root());
+    write(source / "model.gltf", {original_bytes.data(), original_bytes.size()});
     auto project = take(editor::Project::create(root / "gltf-project"));
     const auto key = take(project.import_mesh(source / "model.gltf"));
     const auto first = take(project.assets().mesh(key));
@@ -346,9 +356,16 @@ void gltf(const fs::path& root) {
     parameter(author, "roughness").value = .19f;
     take(project.save_material(author));
     const auto saved = read(take(project.resolve(project.entry(trim)->path)));
-    std::swap(document["materials"][0], document["materials"][1]);
+    const auto original_materials = document.root().at("materials");
+    require(bool(original_materials), "glTF fixture has no materials.");
+    const json::Document original_bindings{*original_materials};
+    const auto reversed = document.array(document.root(), "materials");
+    require(bool(reversed), "Cannot build reordered materials.");
+    document.append(*reversed, *original_bindings.root().at(1));
+    document.append(*reversed, *original_bindings.root().at(0));
     geometry(3);
-    write(source / "model.gltf", document.dump());
+    const auto updated_bytes = json::write(document.root());
+    write(source / "model.gltf", {updated_bytes.data(), updated_bytes.size()});
     const auto updated = take(project.reimport_mesh(key, source / "model.gltf"));
     // glTF +X becomes engine -X; both bounds distinguish replaced from stale geometry.
     require(updated.mesh.mesh->bounds().minimum[0] == -3 && updated.mesh.mesh->bounds().maximum[0] == 0 &&

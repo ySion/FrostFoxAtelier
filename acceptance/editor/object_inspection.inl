@@ -187,7 +187,7 @@ class inspection.Stats : world.Component { float energy = 5.0f; }
     const auto* selected = workspace.binding(choice_key);
     require(selected && selected->kind == editor::Workspace::Binding::Kind::operator_call && selected->call &&
                 selected->call->request.id == "scene.set_properties" &&
-                selected->call->request.args == assets::json_format::Json{{"mode", "Active"}} &&
+                selected->call->request.args == json::Document::literal<R"({"mode":"Active"})">() &&
                 selected->call->request.context.selection == editor::SelectionContext{entity, settings, {entity}},
             "Enum menu lost the exact typed property target.");
     const auto call = selected->call->request;
@@ -218,22 +218,23 @@ class inspection.Stats : world.Component { float energy = 5.0f; }
     {
         // Saved data the types cannot apply stays visible: placeholder titles, a Saved Data group,
         // a marked Scene Tree row and an undoable discard.
-        auto altered = nlohmann::json::parse(saved);
+        json::Builder altered{take(assets::json_format::parse(saved))};
         bool renamed{};
         bool extended{};
-        for (auto& item : altered["entities"])
-            for (auto& component : item["components"]) {
-                if (component["type"] == "inspection.Stats") {
-                    component["type"] = "inspection.Gone";
+        for (auto item : *altered.root().at("entities")->array())
+            for (auto component : *item.at("components")->array()) {
+                if (component.string({"type"}) == "inspection.Stats") {
+                    take(altered.set(component, "type", "inspection.Gone"));
                     renamed = true;
                 }
-                if (component["type"] == "inspection.Settings") {
-                    component["properties"]["legacy"] = 3;
+                if (component.string({"type"}) == "inspection.Settings") {
+                    take(altered.set(take(component.at("properties")), "legacy", 3u));
                     extended = true;
                 }
             }
         require(renamed && extended, "Saved data inspection did not alter real components.");
-        auto kept = take(editor::Session::deserialize(altered.dump(), project, prepare));
+        const auto altered_bytes = json::write(altered.root());
+        auto kept = take(editor::Session::deserialize({altered_bytes.data(), altered_bytes.size()}, project, prepare));
         auto& kept_runtime = kept->world().runtime();
         const auto kept_settings = take(kept_runtime.find_type("inspection.Settings"));
         ObjectId owner;

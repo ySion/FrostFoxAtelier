@@ -145,7 +145,6 @@ bool same(const editor::ToolSettings& a, const editor::ToolSettings& b) {
 }
 
 void verify_operator_parameters() {
-    using assets::json_format::Json;
     using namespace operator_parameters;
     editor::Session document({}, editor::SessionRole::editor);
     auto& runtime = document.world().runtime();
@@ -161,36 +160,42 @@ void verify_operator_parameters() {
         editor::Session resources({}, editor::SessionRole::editor);
         Host host(resources);
         auto context = host.panels.operator_context(resources, &project, false);
-        const auto invoke = [&](Json args, std::optional<std::string> parent = {}) {
+        const auto invoke = [&](json::Document args, std::optional<std::string> parent = {}) {
             editor::ContextOverride overrides;
             overrides.asset = std::move(parent);
             return editor::call(registry, host, context, {"asset.new_material", std::move(args), std::move(overrides)});
         };
         const auto before = project.entries().size();
-        const auto refused = take(invoke(Json::object()));
+        const auto refused = take(invoke({}));
         require(refused.status == editor::OperatorStatus::interaction_required && project.entries().size() == before,
                 "Noninteractive material creation prompted or changed files without a path.");
-        const auto source =
-            take(editor::call(registry, host, context,
-                              {"asset.new_material_source",
-                               {{"path", "Content/Materials/Parent.ms.material"}, {"source", "struct Params {"}}}));
-        const auto parent = source.result.at("asset").get<std::string>();
+        const auto source = take(
+            editor::call(registry, host, context,
+                         {"asset.new_material_source",
+                          json::Document::literal<
+                              R"({"path":"Content/Materials/Parent.ms.material","source":"struct Params {"})">()}));
+        const auto parent_arg = source.result.root().string({"asset"});
+        require(parent_arg.has_value(), "Material source result omitted its asset identity.");
+        const std::string parent(*parent_arg);
         require(source.status == editor::OperatorStatus::finished && project.entry(parent) &&
                     project.entry(parent)->path == L"Content/Materials/Parent.ms.material" &&
                     take(assets::read_file(folder / "Content/Materials/Parent.ms.source")) == "struct Params {" &&
                     std::holds_alternative<assets::MaterialSourceAsset>(take(project.assets().material(parent)).author),
                 "Material source creation did not return the published asset's exact identity.");
         context.asset = "builtin/material/standard-opaque-double";
-        Json entries =
-            Json::array({{{"path", "gain"}, {"type", "float"}, {"enabled", true}, {"value", .375}},
-                         {{"path", "tint"}, {"type", "vector3"}, {"enabled", false}, {"value", {.25, .5, .75}}},
-                         {{"path", "removed"},
-                          {"type", "texture"},
-                          {"enabled", true},
-                          {"value", {{"asset_key", ""}, {"address", "mirror"}}}}});
+        const auto& entries = json::Document::literal<R"([
+            {"path":"gain","type":"float","enabled":true,"value":0.375},
+            {"path":"tint","type":"vector3","enabled":false,"value":[0.25,0.5,0.75]},
+            {"path":"removed","type":"texture","enabled":true,"value":{"asset_key":"","address":"mirror"}}
+        ])">();
+        json::Builder child_args;
+        child_args.set_validated(child_args.root(), "path", "Content/Materials/子材质.material");
+        child_args.set_validated(child_args.root(), "entries", entries.root());
         const auto before_child = project.entries().size();
-        const auto child = take(invoke({{"path", "Content/Materials/子材质.material"}, {"entries", entries}}, parent));
-        const auto key = child.result.at("asset").get<std::string>();
+        const auto child = take(invoke(child_args.finish(), parent));
+        const auto key_arg = child.result.root().string({"asset"});
+        require(key_arg.has_value(), "Material creation result omitted its asset identity.");
+        const std::string key(*key_arg);
         const auto author = take(project.assets().material(key));
         require(child.status == editor::OperatorStatus::finished && key != parent &&
                     project.entry(key)->path == L"Content/Materials/子材质.material" &&
@@ -200,22 +205,25 @@ void verify_operator_parameters() {
                     resources.undo_count() == 0 && resources.redo_count() == 0 && resources.recorded() == 0,
                 "Material creation lost UTF-8, ignored its context parent, or entered scene history.");
         const auto unchanged = project.entries().size();
-        const auto saved = assets::json_format::Json::parse(
+        const auto saved = assets::json_format::parse(
             take(assets::read_file(take(project.resolve(project.entry(key)->path)), 1024 * 1024)));
-        require(unchanged == before_child + 1 && saved.at("entries") == entries &&
-                    assets::material_format::encode_entries(
-                        std::get<assets::MaterialInstanceAsset>(author.author).entries) == entries,
+        const auto encoded =
+            assets::material_format::encode_entries(std::get<assets::MaterialInstanceAsset>(author.author).entries);
+        require(unchanged == before_child + 1 && saved && saved->root().at("entries") &&
+                    *saved->root().at("entries") == entries.root() && encoded && *encoded == entries,
                 "Initial entries were not published intact in the single created material.");
-        entries.back()["value"]["address"] = "invalid";
-        (void)invoke({{"path", "Content/Materials/BadEntries.material"}, {"entries", entries}}, parent);
+        child_args.set_validated(child_args.root(), "path", "Content/Materials/BadEntries.material");
+        const auto last = *child_args.root().at("entries")->at(2);
+        child_args.set_validated(*last.at("value"), "address", "invalid");
+        (void)invoke(child_args.finish(), parent);
         require(project.entries().size() == unchanged &&
                     !std::filesystem::exists(folder / "Content/Materials/BadEntries.material") &&
                     !std::filesystem::exists(folder / "Content/Materials/BadEntries.material.asset.json") &&
                     resources.recorded() == 0,
                 "An invalid final entry published a partial material or history.");
-        (void)invoke({{"path", "Content/Materials/Rejected.material"}}, "missing-parent");
+        (void)invoke(json::Document::literal<R"({"path":"Content/Materials/Rejected.material"})">(), "missing-parent");
         require(project.entries().size() == unchanged, "An invalid context asset reached filesystem publication.");
-        (void)editor::call(registry, host, context, {"scene.open", Json::object(), {}});
+        (void)editor::call(registry, host, context, {"scene.open", {}, {}});
         require(!resources.dirty() && resources.recorded() == 0 && project.entries().size() == unchanged,
                 "Noninteractive document opening changed accepted state without a path.");
     }
@@ -238,37 +246,39 @@ void verify_operator_parameters() {
         return editor::Context{document, nullptr, {},    editor::RegionKind::viewport, {}, {}, {}, true,
                                false,    current, cursor};
     };
-    const auto call = [&](std::string id, Json args) {
+    const auto call = [&](std::string id, json::Document args) {
         return editor::call(registry, host, context(), {std::move(id), std::move(args), {}});
     };
     host.panels.dock.reset();
-    take(call("layout.show", {{"tab", "code"}}));
+    take(call("layout.show", json::Document::literal<R"({"tab":"code"})">()));
     require(host.panels.dock.focused_tab() == editor::source_control::tab,
             "layout.show did not select the requested page.");
     host.panels.dock.select(editor::control::parameters_tab);
     auto region_context = context();
     region_context.region = editor::RegionKind::code;
-    take(editor::call(registry, host, region_context, {"layout.cycle_tab", {{"direction", -1}}, {}}));
+    take(editor::call(registry, host, region_context,
+                      {"layout.cycle_tab", json::Document::literal<R"({"direction":-1})">(), {}}));
     require(host.panels.dock.focused_tab() == editor::control::assets_tab,
             "layout.cycle_tab used the focused page instead of its explicit region.");
     region_context.region = editor::RegionKind::assets;
-    take(editor::call(registry, host, region_context, {"layout.cycle_tab", {{"direction", 1}}, {}}));
+    take(editor::call(registry, host, region_context,
+                      {"layout.cycle_tab", json::Document::literal<R"({"direction":1})">(), {}}));
     require(host.panels.dock.focused_tab() == editor::source_control::tab && document.undo_count() == 0 &&
                 document.redo_count() == 0,
             "Layout navigation did not move forward without scene history.");
     const auto undo = document.undo_count();
     const auto changes = host.tool_changes;
-    (void)call("tool.settings", {{"grid_spacing", 0}});
+    (void)call("tool.settings", json::Document::literal<R"({"grid_spacing":0})">());
     require(document.undo_count() == undo && take(document.world().members()).empty() && host.tool_changes == changes,
             "A rejected operator call changed the document or the tools.");
 
     // A seeded call changes only the named leaf; every other field differs from its default.
-    take(call("tool.settings", {{"grid_spacing", .5}}));
+    take(call("tool.settings", json::Document::literal<R"({"grid_spacing":0.5})">()));
     auto expected = current;
     expected.grid_spacing = .5f;
     require(host.tool_changes == 1 && same(host.tools, expected), "tool.settings changed fields it was not given.");
     require(document.undo_count() == 0, "tool.settings recorded scene history.");
-    const auto added = take(call("scene.add", {{"kind", "point"}}));
+    const auto added = take(call("scene.add", json::Document::literal<R"({"kind":"point"})">()));
     const auto light = document.selection().entity;
     require(added.status == editor::OperatorStatus::finished && document.undo_count() == 1 &&
                 take(document.world().members()).size() == 1 && light != ObjectId{} && host.scene_changes == 1,
@@ -280,28 +290,28 @@ void verify_operator_parameters() {
     const auto at = take(world::world_matrix(runtime, light));
     require(at[12] == cursor.x && at[13] == cursor.y && at[14] == cursor.z,
             "scene.add did not place the light at the 3D cursor.");
-    take(call("scene.add", {{"kind", "mesh"}}));
+    take(call("scene.add", json::Document::literal<R"({"kind":"mesh"})">()));
     require(document.undo_count() == 2 &&
                 take(runtime.type_of(document.selection().entity)) == document.presentation_types().static_mesh_entity,
             "scene.add {kind: mesh} did not add the default static mesh.");
-    static_cast<void>(call("scene.add", {{"kind", "mesh"}, {"mesh", "missing"}}));
+    static_cast<void>(call("scene.add", json::Document::literal<R"({"kind":"mesh","mesh":"missing"})">()));
     require(document.undo_count() == 2, "Rejected scene.add changed history.");
 
     const auto target = host.view.state().target;
-    take(call("view.axis", {{"view", "left"}}));
+    take(call("view.axis", json::Document::literal<R"({"view":"left"})">()));
     require(host.view.view() == editor::CameraView::left && host.view.state().target == target &&
                 document.undo_count() == 2 && document.redo_count() == 0,
             "view.axis did not switch the view around its target without history.");
 
     // Scene camera operations share the UI/Control operator path. Viewing copies
     // the full orientation including roll, not just eye/target.
-    take(call("scene.add", {{"kind", "camera"}}));
+    take(call("scene.add", json::Document::literal<R"({"kind":"camera"})">()));
     const auto camera_entity = document.selection().entity;
     const auto camera_component = take(world::components(runtime, camera_entity)).front().id();
     const auto camera_call = [&](std::string id) {
         auto selected = context();
         selected.selection = {camera_entity, camera_entity, std::vector{camera_entity}};
-        const auto result = take(editor::call(registry, host, selected, {std::move(id), Json::object(), {}}));
+        const auto result = take(editor::call(registry, host, selected, {std::move(id), {}, {}}));
         require(result.status == editor::OperatorStatus::finished, "A camera operator was unexpectedly unavailable.");
     };
     take(runtime.write(camera_component,
@@ -324,11 +334,13 @@ void verify_operator_parameters() {
             take(editor::encode_properties(runtime, {type, {}, std::as_writable_bytes(std::span{&state, 1})},
                                            take(editor::detail::author_fields(runtime, type)), {}));
         take(call("view.look_at",
-                  {{"eye", {{"x", 9}, {"y", 4}, {"z", -2}}}, {"target", {{"x", 1}, {"y", -2}, {"z", 3}}}}));
+                  json::Document::literal<R"({"eye":{"x":9,"y":4,"z":-2},"target":{"x":1,"y":-2,"z":3}})">()));
         require(host.view.target() == math::Vector3{1, -2, 3} &&
                     math::length(host.view.eye() - math::Vector3{9, 4, -2}) < .0001f,
                 "Look At lost the explicit eye or target.");
-        take(call("view.camera_set", {{"state", encoded}}));
+        json::Builder camera_args;
+        camera_args.set_validated(camera_args.root(), "state", encoded.root());
+        take(call("view.camera_set", camera_args.finish()));
         require(host.view.state() == state && document.undo_count() == history && take(document.serialize()) == saved,
                 "Camera state roundtrip lost projection/roll or changed author history.");
     }
@@ -364,26 +376,26 @@ void verify_operator_parameters() {
         context.tools.grid_spacing = .5f;
         editor::ContextOverride override;
         override.selection = editor::SelectionContext{first, first, {first, second}};
-        const auto invoke = [&](std::string id, Json args = Json::object()) {
+        const auto invoke = [&](std::string id, json::Document args = {}) {
             // Undo intentionally selects its edited objects; re-establish a different UI selection for each call.
             take(edited.select(unrelated));
             auto result = take(editor::call(registry, controls, context, {std::move(id), std::move(args), override}));
             require(result.status == editor::OperatorStatus::finished, "Explicit-target operator was unavailable.");
         };
         const auto pose = [&](ObjectId entity) { return take(world::read_transform(rt, entity)); };
-        invoke("scene.snap_selection", {{"to", "grid"}});
+        invoke("scene.snap_selection", json::Document::literal<R"({"to":"grid"})">());
         require(pose(first).position == math::Vector3{1.5f, 3, -.5f} &&
                     pose(second).position == math::Vector3{-4, 8.5f, 2.5f} && pose(unrelated) == unrelated_pose &&
                     edited.selection().entity == unrelated && edited.undo_count() == history + 1,
                 "Grid snap used document selection, changed selection, or recorded multiple entries.");
         changed(edited.undo());
-        invoke("scene.snap_selection", {{"to", "cursor"}});
+        invoke("scene.snap_selection", json::Document::literal<R"({"to":"cursor"})">());
         require(math::length(pose(first).position - math::Vector3{12.5f, .25f, -3.6f}) < .0001f &&
                     math::length(pose(second).position - math::Vector3{7.5f, 5.75f, -.4f}) < .0001f &&
                     pose(unrelated) == unrelated_pose && edited.undo_count() == history + 1,
                 "Cursor snap ignored the context cursor or failed to preserve group offsets.");
         changed(edited.undo());
-        invoke("scene.transform_clear", {{"channel", "scale"}});
+        invoke("scene.transform_clear", json::Document::literal<R"({"channel":"scale"})">());
         auto expected_first = first_pose;
         auto expected_second = second_pose;
         expected_first.scale = expected_second.scale = {1, 1, 1};
@@ -402,7 +414,7 @@ void verify_operator_parameters() {
         invoke("cursor.reset");
         require(controls.viewport.cursor == math::Vector3{} && controls.viewport.cursor_rotation == math::Quaternion{},
                 "Reset Cursor kept position or orientation.");
-        invoke("scene.select_all", {{"action", "invert"}});
+        invoke("scene.select_all", json::Document::literal<R"({"action":"invert"})">());
         require(edited.selected_entities().size() == 1 && edited.selection().entity == unrelated &&
                     edited.undo_count() == history && edited.redo_count() == 1,
                 "Invert used document selection rather than the explicit context or moved author history.");
@@ -425,7 +437,8 @@ void verify_operator_parameters() {
         editor::ContextOverride override;
         override.selection = editor::SelectionContext{child, child, {parent, child}};
         const auto deleted =
-            take(editor::call(registry, controls, context, {"scene.delete", {{"target", "entities"}}, override}));
+            take(editor::call(registry, controls, context,
+                              {"scene.delete", json::Document::literal<R"({"target":"entities"})">(), override}));
         const auto remaining = take(erased.world().members());
         require(deleted.status == editor::OperatorStatus::finished && remaining.size() == 1 &&
                     remaining.front().id() == kept && erased.selection().entity == kept &&
@@ -437,7 +450,7 @@ void verify_operator_parameters() {
         take(erased.select(kept));
         const auto component_context = controls.panels.operator_context(erased, nullptr, false);
         override.selection = editor::SelectionContext{parent, camera, {parent}};
-        take(editor::call(registry, controls, component_context, {"scene.delete", Json::object(), override}));
+        take(editor::call(registry, controls, component_context, {"scene.delete", {}, override}));
         require(take(erased.world().members()).size() == 3 &&
                     take(world::components(erased.world().runtime(), parent)).empty() &&
                     erased.selection().entity == kept && erased.undo_count() == history + 1,
@@ -465,13 +478,13 @@ void verify_operator_parameters() {
         controls.viewport.arm_box_select({311, 217}, false);
         require(controls.viewport.active(), "Admission guard needs an active viewport gesture.");
         const auto refused =
-            take(editor::call(registry, controls, context, {"scene.duplicate", {{"place", true}}, override}));
+            take(editor::call(registry, controls, context,
+                              {"scene.duplicate", json::Document::literal<R"({"place":true})">(), override}));
         require(refused.status == editor::OperatorStatus::interaction_required && copied.undo_count() == history &&
                     take(copied.serialize()) == before && copied.selection().entity == unrelated &&
                     controls.viewport.active() && same(controls.tools, tools),
                 "Refused duplicate placement retired the existing gesture or changed author state/tool settings.");
-        const auto direct =
-            take(editor::call(registry, controls, context, {"scene.duplicate", Json::object(), override}));
+        const auto direct = take(editor::call(registry, controls, context, {"scene.duplicate", {}, override}));
         const auto clone = copied.selection().entity;
         require(direct.status == editor::OperatorStatus::finished && !controls.viewport.active() && clone != source &&
                     clone != unrelated && take(copied.world().members()).size() == 3 &&
@@ -486,7 +499,8 @@ void verify_operator_parameters() {
         require(copied.selection().entity == clone && take(copied.world().members()).size() == 3,
                 "Explicit duplicate Redo changed the new identity.");
         context.interactive = true;
-        take(editor::call(registry, controls, context, {"scene.duplicate", {{"place", true}}, override}));
+        take(editor::call(registry, controls, context,
+                          {"scene.duplicate", json::Document::literal<R"({"place":true})">(), override}));
         const auto placed = copied.selection().entity;
         require(controls.viewport.active() && copied.undo_count() == history + 2,
                 "Viewport duplicate did not enter the existing placement gesture in one history item.");
@@ -508,10 +522,12 @@ void verify_operator_parameters() {
         editor::ContextOverride override;
         override.selection = editor::SelectionContext{target, target, {target}};
         static_cast<void>(
-            editor::call(registry, controls, context, {"scene.add_component", {{"type", "world.Entity"}}, override}));
+            editor::call(registry, controls, context,
+                         {"scene.add_component", json::Document::literal<R"({"type":"world.Entity"})">(), override}));
         require(composed.undo_count() == history, "Add Component changed history on refusal.");
-        take(editor::call(registry, controls, context,
-                          {"scene.add_component", {{"type", "world.CameraComponent"}}, override}));
+        take(editor::call(
+            registry, controls, context,
+            {"scene.add_component", json::Document::literal<R"({"type":"world.CameraComponent"})">(), override}));
         const auto camera = composed.selection().object;
         auto& rt = composed.world().runtime();
         require(composed.selection().entity == target && camera != target &&
@@ -539,16 +555,18 @@ void verify_operator_parameters() {
         const auto context = controls.panels.operator_context(transformed, nullptr, false);
         editor::ContextOverride override;
         override.selection = editor::SelectionContext{target, target, {target}};
-        const auto invoke = [&](Json args) {
+        const auto invoke = [&](json::Document args) {
             return editor::call(registry, controls, context, {"scene.transform_set", std::move(args), override});
         };
         auto& rt = transformed.world().runtime();
-        static_cast<void>(invoke({{"position", {{"x", 7}}}, {"rotation", {{"w", 0}}}}));
+        static_cast<void>(invoke(json::Document::literal<R"({"position":{"x":7},"rotation":{"w":0}})">()));
         require(!take(world::has_transform(rt, target)) && transformed.undo_count() == history,
                 "Rejected transform created spatial state or scene history.");
-        const Json values{{"position", {{"x", 3}, {"y", -2}, {"z", 5}}},
-                          {"rotation", {{"x", 0}, {"y", 0}, {"z", 1}, {"w", 0}}},
-                          {"scale", {{"x", -2}, {"y", 0}, {"z", 4}}}};
+        const auto& values = json::Document::literal<R"({
+            "position":{"x":3,"y":-2,"z":5},
+            "rotation":{"x":0,"y":0,"z":1,"w":0},
+            "scale":{"x":-2,"y":0,"z":4}
+        })">();
         const world::Trs expected{{3, -2, 5}, {0, 0, 1, 0}, {-2, 0, 4}};
         take(invoke(values));
         require(take(world::read_transform(rt, target)) == expected &&
@@ -582,24 +600,25 @@ void verify_operator_parameters() {
         const auto context = controls.panels.operator_context(spaces, nullptr, false);
         editor::ContextOverride override;
         override.selection = editor::SelectionContext{target, target, {target}};
-        const editor::ResolveReference resolve = [&](const Json& value, TypeId,
-                                                     ValueForm) -> std::optional<ObjectReference> {
-            return value == "origin" ? std::optional{take(rt.observe(take(rt.hold(origin)).reference()))}
+        const editor::ResolveReference resolve = [&](json::Value value, TypeId,
+                                                     ValueForm) -> json::Result<std::optional<ObjectReference>> {
+            ATELIER_TRY_BIND(name, value.string());
+            return *name == "origin" ? std::optional{take(rt.observe(take(rt.hold(origin)).reference()))}
                                      : std::nullopt;
         };
-        const auto invoke = [&](Json args) {
+        const auto invoke = [&](json::Document args) {
             return editor::call(registry, controls, context, {"scene.space_reference_set", std::move(args), override},
                                 resolve);
         };
-        static_cast<void>(invoke({{"origin", "origin"}, {"world_space", true}}));
+        static_cast<void>(invoke(json::Document::literal<R"({"origin":"origin","world_space":true})">()));
         require(!take(world::space_reference(rt, target)) && spaces.undo_count() == history,
                 "Conflicting spatial origins changed the document or history.");
-        take(invoke({{"world_space", true}}));
+        take(invoke(json::Document::literal<R"({"world_space":true})">()));
         require(take(world::space_reference(rt, target)) == std::optional{ObjectId{}} &&
                     take(world::read_transform(rt, target)).position == math::Vector3{12, 1, 0} &&
                     take(world::parent_entity(rt, target)) == parent && spaces.undo_count() == history + 1,
                 "Explicit World space became inherited space, changed composition, or lost world position.");
-        take(invoke({{"origin", "origin"}}));
+        take(invoke(json::Document::literal<R"({"origin":"origin"})">()));
         require(take(world::space_reference(rt, target)) == std::optional{origin} &&
                     take(world::read_transform(rt, target)).position == math::Vector3{16, -2, 0} &&
                     take(world::read_transform(rt, origin)).position == math::Vector3{-4, 3, 0} &&
@@ -610,7 +629,7 @@ void verify_operator_parameters() {
                     take(world::read_transform(rt, target)).position == math::Vector3{12, 1, 0},
                 "Space-reference Undo did not restore explicit World space and its local pose.");
         changed(spaces.redo());
-        take(invoke({{"keep_world", false}}));
+        take(invoke(json::Document::literal<R"({"keep_world":false})">()));
         require(!take(world::space_reference(rt, target)) &&
                     take(world::read_transform(rt, target)).position == math::Vector3{16, -2, 0} &&
                     take(world::world_matrix(rt, target))[12] == 26 && spaces.undo_count() == history + 3,
@@ -629,17 +648,17 @@ void verify_operator_parameters() {
         const auto context = controls.panels.operator_context(named, nullptr, false);
         editor::ContextOverride override;
         override.selection = editor::SelectionContext{target, target, {target}};
-        const auto invoke = [&](Json args) {
+        const auto invoke = [&](json::Document args) {
             return editor::call(registry, controls, context, {"scene.rename", std::move(args), override});
         };
-        static_cast<void>(invoke(Json::object()));
+        static_cast<void>(invoke({}));
         require(named.undo_count() == history && named.name(target) == before,
                 "Noninteractive Rename without a name did not fail without editing.");
-        take(invoke({{"name", "房间 · North"}}));
+        take(invoke(json::Document::literal<R"({"name":"房间 · North"})">()));
         require(named.name(target) == L"房间 · North" && named.name(unrelated) == other &&
                     named.selection().entity == unrelated && named.undo_count() == history + 1,
                 "Rename used document selection, changed selection, or lost Unicode/history.");
-        take(invoke({{"name", "房间 · North"}}));
+        take(invoke(json::Document::literal<R"({"name":"房间 · North"})">()));
         require(named.undo_count() == history + 1, "Repeated Rename added history.");
         changed(named.undo());
         require(named.name(target) == before, "Rename Undo did not restore the original label.");
@@ -677,7 +696,7 @@ class patch.Fields : world.Component { float position = 4.0f; float rotation = 5
         const auto history = patched.undo_count();
         const auto redo = patched.redo_count();
         const auto recorded = patched.recorded();
-        const auto invoke = [&](ObjectId object, Json args) {
+        const auto invoke = [&](ObjectId object, json::Document args) {
             auto context = controls.panels.operator_context(patched, &project, false);
             editor::ContextOverride override;
             override.selection = editor::SelectionContext{entity, object, {entity}};
@@ -686,7 +705,7 @@ class patch.Fields : world.Component { float position = 4.0f; float rotation = 5
         take(patched.begin_edit(entity, a, 102));
         take(patched.preview_edit(102, Scalar{std::int32_t{5}}));
         // JSON visits a before the forbidden position: rejecting the tail must preserve the active edit.
-        static_cast<void>(invoke(entity, {{"a", 8}, {"position", {{"x", 90}}}}));
+        static_cast<void>(invoke(entity, json::Document::literal<R"({"a":8,"position":{"x":90}})">()));
         require(take(world::read_transform(rt, entity)) == pose &&
                     take(rt.read(entity, a)) == Scalar{std::int32_t{5}} &&
                     take(rt.read(entity, z)) == Scalar{std::int32_t{11}} && patched.owns_edit(102) && patched.dirty() &&
@@ -694,11 +713,11 @@ class patch.Fields : world.Component { float position = 4.0f; float rotation = 5
                 "A Transform patch changed values, cancelled the existing edit, or changed history.");
         take(patched.cancel_edit());
         require(!patched.dirty(), "Transform refusal invalidated the saved cursor.");
-        static_cast<void>(invoke(entity, {{"position", {{"x", 90}}}}));
+        static_cast<void>(invoke(entity, json::Document::literal<R"({"position":{"x":90}})">()));
         require(!patched.dirty() && patched.undo_count() == history && patched.redo_count() == redo &&
                     patched.recorded() == recorded,
                 "Pure Transform patch dirtied a clean document or changed history.");
-        take(invoke(entity, {{"a", 8}, {"z", 23}}));
+        take(invoke(entity, json::Document::literal<R"({"a":8,"z":23})">()));
         require(take(rt.read(entity, a)) == Scalar{std::int32_t{8}} &&
                     take(rt.read(entity, z)) == Scalar{std::int32_t{23}} &&
                     take(world::read_transform(rt, entity)) == pose && patched.undo_count() == history + 1 &&
@@ -715,7 +734,7 @@ class patch.Fields : world.Component { float position = 4.0f; float rotation = 5
         const auto fields_type = take(rt.find_type("patch.Fields"));
         changed(patched.add_component(entity, fields_type));
         const auto fields = patched.selection().object;
-        take(invoke(fields, {{"position", 7}, {"rotation", 8}, {"scale", 9}}));
+        take(invoke(fields, json::Document::literal<R"({"position":7,"rotation":8,"scale":9})">()));
         for (const auto& [name, expected] :
              std::array{std::pair{"position", 7.f}, std::pair{"rotation", 8.f}, std::pair{"scale", 9.f}})
             require(take(rt.read(fields, std::array{take(rt.find_field(fields_type, name))})) == Scalar{expected},
@@ -727,7 +746,8 @@ class patch.Fields : world.Component { float position = 4.0f; float rotation = 5
         settings.overlap_categories = 2;
         take(patched.configure_body(collision, settings));
         const auto body_history = patched.undo_count();
-        take(invoke(collision, {{"body", {{"ignore_categories", 2}, {"overlap_categories", 1}}}}));
+        take(
+            invoke(collision, json::Document::literal<R"({"body":{"ignore_categories":2,"overlap_categories":1}})">()));
         auto swapped = settings;
         swapped.ignore_categories = 2;
         swapped.overlap_categories = 1;
@@ -741,7 +761,8 @@ class patch.Fields : world.Component { float position = 4.0f; float rotation = 5
         for (const auto* mask : {"ignore_categories", "overlap_categories"})
             take(rt.write(invalid_component.id(), std::array{body, take(rt.find_field(body_type, mask))}, Scalar{2u}));
         const auto cause = take(rt.validate(invalid_component.id()));
-        const auto refused = invoke(collision, {{"body", {{"ignore_categories", 2}, {"overlap_categories", 2}}}});
+        const auto refused =
+            invoke(collision, json::Document::literal<R"({"body":{"ignore_categories":2,"overlap_categories":2}})">());
         require(cause && !refused && refused.error().code == cause->error.code &&
                     refused.error().message == cause->error.message && !refused.error().source &&
                     !cause->error.source && take(physics::read_settings(rt, collision)) == swapped &&
@@ -763,24 +784,24 @@ class patch.Fields : world.Component { float position = 4.0f; float rotation = 5
         before.cavity.ridge = .35f;
         take(controls.panels.set_view_settings(display, before));
         const auto history = display.undo_count();
-        const auto invoke = [&](Json args) {
+        const auto invoke = [&](json::Document args) {
             return editor::call(registry, controls, controls.panels.operator_context(display, nullptr, false),
                                 {"view.set", std::move(args), {}});
         };
-        take(invoke({{"shading", "flat"}, {"origin_axes", false}}));
+        take(invoke(json::Document::literal<R"({"shading":"flat","origin_axes":false})">()));
         auto expected_view = before;
         expected_view.shading = renderer::Shading::flat;
         expected_view.origin_axes = false;
         require(controls.panels.view == expected_view && display.undo_count() == history,
                 "view.set overwrote an unnamed display field or recorded display-only history.");
-        take(invoke({{"exposure_ev", 2.5}, {"sky_intensity", 3.25}}));
+        take(invoke(json::Document::literal<R"({"exposure_ev":2.5,"sky_intensity":3.25})">()));
         const auto environment = take(display.presentation().environment());
         require(environment.exposure_ev == 2.5f && environment.sky_intensity == 3.25f &&
                     display.undo_count() == history + 1,
                 "view.set did not group World author fields into one history entry.");
         const auto published = controls.panels.view;
         const auto saved = take(display.serialize());
-        static_cast<void>(invoke({{"probe_volume_0_min_x", 10000}, {"wire_width", .75}}));
+        static_cast<void>(invoke(json::Document::literal<R"({"probe_volume_0_min_x":10000,"wire_width":0.75})">()));
         require(controls.panels.view == published && take(display.serialize()) == saved &&
                     display.undo_count() == history + 1,
                 "A rejected view combination partially changed display or World author state.");
@@ -813,26 +834,30 @@ class patch.Fields : world.Component { float position = 4.0f; float rotation = 5
         const auto history = parents.undo_count();
         const auto* op = registry.find("scene.parent_set");
         require(op != nullptr, "scene.parent_set is not registered.");
-        const auto moved = editor::call(registry, host, target, {"scene.parent_set", {{"parent", nullptr}}, {}});
+        const auto moved = editor::call(registry, host, target,
+                                        {"scene.parent_set", json::Document::literal<R"({"parent":null})">(), {}});
         require(moved && moved->status == editor::OperatorStatus::finished && parents.undo_count() == history + 1 &&
                     take(world::parent_entity(rt, first)) == ObjectId{} &&
                     take(world::parent_entity(rt, second)) == ObjectId{},
                 "scene.parent_set did not unparent its explicit selection in one history entry.");
-        const editor::ResolveReference resolve = [&](const Json& value, TypeId type,
-                                                     ValueForm form) -> std::optional<ObjectReference> {
+        const editor::ResolveReference resolve = [&](json::Value value, TypeId type,
+                                                     ValueForm form) -> json::Result<std::optional<ObjectReference>> {
             require(type == parents.types().entity && form == ValueForm::weak_reference,
                     "The parent token was not resolved as a weak Entity reference.");
-            if (value != "parent")
-                return {};
-            return take(rt.observe(take(rt.hold(parent)).reference()));
+            ATELIER_TRY_BIND(name, value.string());
+            if (*name != "parent")
+                return std::nullopt;
+            return std::optional{take(rt.observe(take(rt.hold(parent)).reference()))};
         };
         const auto before = take(parents.serialize());
-        static_cast<void>(
-            editor::call(registry, host, target, {"scene.parent_set", {{"parent", "unknown"}}, {}}, resolve));
+        static_cast<void>(editor::call(registry, host, target,
+                                       {"scene.parent_set", json::Document::literal<R"({"parent":"unknown"})">(), {}},
+                                       resolve));
         require(parents.undo_count() == history + 1 && take(parents.serialize()) == before,
                 "An unresolved parent token changed the scene or its history.");
         const auto attached = editor::call(
-            registry, host, target, {"scene.parent_set", {{"parent", "parent"}, {"keep_world", false}}, {}}, resolve);
+            registry, host, target,
+            {"scene.parent_set", json::Document::literal<R"({"parent":"parent","keep_world":false})">(), {}}, resolve);
         require(attached && attached->status == editor::OperatorStatus::finished &&
                     parents.undo_count() == history + 2 && take(world::parent_entity(rt, first)) == parent &&
                     take(world::parent_entity(rt, second)) == parent,
@@ -871,9 +896,9 @@ class patch.Fields : world.Component { float position = 4.0f; float rotation = 5
             require(found != branch->children.end(), "Expected menu call is absent.");
             return *found;
         };
-        const editor::OperatorCall top{"view.axis", {{"view", "top"}}};
-        const editor::OperatorCall snap{"tool.toggle", {{"setting", "grid_snap"}}};
-        const editor::OperatorCall spacing{"tool.settings", {{"grid_spacing", .5}}};
+        const editor::OperatorCall top{"view.axis", json::Document::literal<R"({"view":"top"})">()};
+        const editor::OperatorCall snap{"tool.toggle", json::Document::literal<R"({"setting":"grid_snap"})">()};
+        const editor::OperatorCall spacing{"tool.settings", json::Document::literal<R"({"grid_spacing":0.5})">()};
         workspace.camera_view = editor::CameraView::front;
         workspace.viewport_settings.grid_snap = false;
         workspace.viewport_settings.grid_spacing = .5f;

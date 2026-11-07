@@ -1,10 +1,8 @@
-include(${CMAKE_CURRENT_LIST_DIR}/json.cmake)
-
 function(atelier_add_editor)
     add_library(atelier_control_transport STATIC "${PROJECT_SOURCE_DIR}/modules/editor/control/src/control.cpp")
     atelier_target(atelier_control_transport)
     target_include_directories(atelier_control_transport PUBLIC "${PROJECT_SOURCE_DIR}/modules/editor/control/include")
-    target_link_libraries(atelier_control_transport PUBLIC nlohmann_json::nlohmann_json PRIVATE atelier_foundation atelier_platform advapi32 ole32)
+    target_link_libraries(atelier_control_transport PUBLIC atelier_core_json PRIVATE atelier_foundation atelier_platform advapi32 ole32)
     include(${PROJECT_SOURCE_DIR}/cmake/assets.cmake)
     add_executable(atelier_control "${PROJECT_SOURCE_DIR}/apps/control/main.cpp")
     atelier_target(atelier_control)
@@ -41,7 +39,7 @@ function(atelier_add_editor)
     # Core uses the CPU overlay/view-settings headers, not the renderer implementation.
     target_include_directories(atelier_editor_core PUBLIC "${PROJECT_SOURCE_DIR}/modules/editor/core/include"
         "${PROJECT_SOURCE_DIR}/modules/render/renderer/include")
-    target_link_libraries(atelier_editor_core PUBLIC atelier_assets atelier_presentation atelier_ui_language atelier_physics atelier_procedural PRIVATE atelier_logging atelier_control_transport atelier_platform ole32 shell32 nlohmann_json::nlohmann_json)
+    target_link_libraries(atelier_editor_core PUBLIC atelier_assets atelier_presentation atelier_ui_language atelier_physics atelier_procedural PRIVATE atelier_logging atelier_control_transport atelier_platform ole32 shell32)
     add_library(atelier_editor_application STATIC
         "${PROJECT_SOURCE_DIR}/modules/editor/application/src/application/window.cpp"
         "${PROJECT_SOURCE_DIR}/modules/editor/application/src/application/input.cpp"
@@ -86,7 +84,7 @@ function(atelier_add_editor)
     atelier_target(atelier_editor)
     target_include_directories(atelier_editor PRIVATE "${PROJECT_SOURCE_DIR}/modules/gui/ui/internal"
         "${PROJECT_SOURCE_DIR}/modules/render/renderer/internal")
-    target_link_libraries(atelier_editor PRIVATE atelier_editor_application atelier_ui atelier_renderer nlohmann_json::nlohmann_json user32 ole32 shell32 windowscodecs imm32 uuid gdi32)
+    target_link_libraries(atelier_editor PRIVATE atelier_editor_application atelier_ui atelier_renderer user32 ole32 shell32 windowscodecs imm32 uuid gdi32)
     atelier_deploy_rhi_runtime(atelier_editor)
     add_executable(atelier_editor_control_acceptance "${PROJECT_SOURCE_DIR}/acceptance/editor/control.cpp")
     atelier_target(atelier_editor_control_acceptance)
@@ -109,7 +107,7 @@ function(atelier_add_editor)
     atelier_target(atelier_editor_document_acceptance)
     target_include_directories(atelier_editor_document_acceptance PRIVATE "${PROJECT_SOURCE_DIR}/modules/gui/ui/internal"
         "${PROJECT_SOURCE_DIR}/modules/render/renderer/internal")
-    target_link_libraries(atelier_editor_document_acceptance PRIVATE atelier_editor_application nlohmann_json::nlohmann_json)
+    target_link_libraries(atelier_editor_document_acceptance PRIVATE atelier_editor_application)
     atelier_headless_acceptance(editor_document_acceptance
         COMMAND $<TARGET_FILE:atelier_editor_document_acceptance>
         DEPENDS atelier_editor_document_acceptance)
@@ -127,13 +125,13 @@ function(atelier_add_editor)
         DEPENDS atelier_editor_document_acceptance)
     add_executable(atelier_project_scene_acceptance "${PROJECT_SOURCE_DIR}/acceptance/editor/project_scene.cpp")
     atelier_target(atelier_project_scene_acceptance)
-    target_link_libraries(atelier_project_scene_acceptance PRIVATE atelier_editor_core atelier_source atelier_physics nlohmann_json::nlohmann_json)
+    target_link_libraries(atelier_project_scene_acceptance PRIVATE atelier_editor_core atelier_source atelier_physics)
     atelier_headless_acceptance(project_scene_acceptance
         COMMAND $<TARGET_FILE:atelier_project_scene_acceptance>
         DEPENDS atelier_project_scene_acceptance)
     add_executable(atelier_mesh_reimport_acceptance "${PROJECT_SOURCE_DIR}/acceptance/editor/mesh_reimport.cpp")
     atelier_target(atelier_mesh_reimport_acceptance)
-    target_link_libraries(atelier_mesh_reimport_acceptance PRIVATE atelier_editor_core nlohmann_json::nlohmann_json)
+    target_link_libraries(atelier_mesh_reimport_acceptance PRIVATE atelier_editor_core)
     atelier_headless_acceptance(mesh_reimport_acceptance
         COMMAND $<TARGET_FILE:atelier_mesh_reimport_acceptance>
         DEPENDS atelier_mesh_reimport_acceptance)

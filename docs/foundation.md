@@ -184,7 +184,9 @@ String 的 `size/capacity` 不含末尾零字符，所有索引、查找和切�
 
 String 的末字节 tag 为 0–30（内联长度）、0xFE（堆）、0xFF（literal）；长描述符通过字节复制读写，不读取未激活 union 成员。虽然大小/对齐未变，表示 ABI 已改变；必须与 Runtime NativeLayout 结果化联合重编译、重建反射/JIT 并重启进程，不能混入旧对象和旧代码。
 
-StringView 的 `slice/find/starts_with/ends_with/contains` 都按字节工作，切片可能截断码点；`is_valid_utf8()` 可明确检查。转成 String 时重新校验。`std_view()` 是对标准库消费者的显式借用适配，不创造另一份拥有存储。Unicode 大小写折叠、规范化、字符/字素索引和本地化文本未实现。
+StringView 的 `slice/find/starts_with/ends_with/contains` 都按字节工作，切片可能截断码点；`is_valid_utf8()` 可明确检查。通过 `from_utf8` 转成 String 时重新校验；`String::from_utf8_validated(StringView) noexcept` 直接复制并返回 String，调用方必须保证完整有效的 UTF-8，dev/release 均不重扫、不检测编码前提违例，超过 `max_size` 仍沿用存储写入的 fatal。`std_view()` 是对标准库消费者的显式借用适配，不创造另一份拥有存储。Unicode 大小写折叠、规范化、字符/字素索引和本地化文本未实现。
+
+`StringView::utf8_prefix(maximum_bytes)` 为 constexpr/noexcept；调用方保证全文有效 UTF-8，返回不超过字节上限的完整码点借用前缀，上限为 0 返回空、足够大返回全文，否则只在截断处回退最多 3 个续字节，不扫描全文、不检测编码前提违例。
 
 - `String::replace(first,count,replacement)` 返回 `expected<void,StringError>`；范围越界为 contract-fatal，切断码点或 replacement 非法返回 invalid_utf8，失败保旧。`replace_all(search,replacement)` 返回替换数，按从左到右非重叠匹配；空 search 不插入、返回 0。两个参数即使未命中也须有效 UTF-8。候选成功才交换，支持参数引用自身内容；实际替换后重新取得视图。
 - `String::to_ascii_lower/to_ascii_upper` 原地只改 A–Z/a–z，保留所有非 ASCII 字节和嵌入 NUL；literal 只有实际改变时才分离。StringView 的 `equals_ascii_case_insensitive/starts_with_ascii_case_insensitive/ends_with_ascii_case_insensitive` 使用同一 ASCII 规则。`starts_with/ends_with` 另接受单字节，`starts_with_any/ends_with_any` 接受 `initializer_list<StringView>`，空集合返回 false，包含空串时匹配成功。

@@ -19,11 +19,11 @@ void verify_project_authoring_window(Application& app, const std::filesystem::pa
 )"));
     model(app.build_project(true));
     tick(app, 2);
-    click(app, operator_item(app, "scene.add", {{"kind", "mesh"}}));
+    click(app, operator_item(app, "scene.add", atelier::json::Document::literal<R"({"kind":"mesh"})">()));
     const auto entity = app.document().selection().entity;
-    click(app, operator_item(app, "layout.show", {{"tab", "parameters"}}));
+    click(app, operator_item(app, "layout.show", atelier::json::Document::literal<R"({"tab":"parameters"})">()));
     require(!app.presented()->find(control::add_component), "Parameters still exposes component creation.");
-    click(app, operator_item(app, "layout.show", {{"tab", "structure"}}));
+    click(app, operator_item(app, "layout.show", atelier::json::Document::literal<R"({"tab":"structure"})">()));
     click(app, control::add_component);
     const auto choice = Access::menu_item(app, L"project.Move");
     require(choice, "Project component was absent from Add Component.");
@@ -131,9 +131,13 @@ void verify_project_authoring_window(Application& app, const std::filesystem::pa
     wait([&] { return !Access::project_running(app); }, "Project UI preview did not stop.");
 
     {
-        auto replacement = atelier::control::Json::parse(saved);
-        replacement.at("entities").front()["name"] = "Restart replacement";
-        model(atelier::editor::write_file(folder / "Content/Scenes/RestartTarget.scene", replacement.dump(2)));
+        const auto parsed = atelier::assets::json_format::parse(saved);
+        require(parsed.has_value(), "Restart scene fixture failed to parse.");
+        atelier::json::Builder replacement{*parsed};
+        require(replacement.set(*replacement.root().at("entities")->at(0), "name", "Restart replacement").has_value(),
+                "Restart scene fixture mutation failed.");
+        const auto bytes = atelier::json::write(replacement.root(), {true});
+        model(atelier::editor::write_file(folder / "Content/Scenes/RestartTarget.scene", {bytes.data(), bytes.size()}));
         const auto launches = [&] {
             return std::ranges::count_if(Access::output(app).records(), [](const auto& item) {
                 return item.record.entry.event_code == "play.launched";

@@ -150,12 +150,16 @@ void verify_project_document() {
                     take(assets::read_file(collision_file)) == *collision_bytes,
                 "A corrupt Cook cache rejected the scene instead of being rebuilt from its source mesh.");
     }
-    const auto serialized = nlohmann::json::parse(saved);
-    auto invalid = serialized;
-    const auto at = nlohmann::json::json_pointer("/entities/0/space/position");
-    invalid[at].push_back(999);
-    auto kept = take(editor::Session::deserialize(invalid.dump(), project));
-    require(nlohmann::json::parse(take(kept->serialize()))[at] == invalid[at],
+    const auto serialized = assets::json_format::parse(saved);
+    require(serialized.has_value(), "Saved scene JSON failed to parse.");
+    json::Builder invalid{*serialized};
+    const auto position = invalid.root().at("entities")->at(0)->path({"space", "position"});
+    require(position.has_value(), "Saved position was missing.");
+    invalid.append(*position, std::int64_t{999});
+    const auto invalid_bytes = json::write(invalid.root());
+    auto kept = take(editor::Session::deserialize({invalid_bytes.data(), invalid_bytes.size()}, project));
+    const auto kept_json = assets::json_format::parse(take(kept->serialize()));
+    require(kept_json && *kept_json->root().at("entities")->at(0)->path({"space", "position"}) == *position,
             "Tolerant scene loading did not keep a mismatched saved value.");
     static_cast<void>(editor::write_file(folder / "Content/Scenes/Main.scene", "overwrite", editor::WriteMode::create));
     require(take(assets::read_file(folder / "Content/Scenes/Main.scene")) == saved,
@@ -205,9 +209,13 @@ void verify_project_document() {
         take(editor::write_file(
             source / "Refresh.obj",
             "mtllib scene.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nvt 0 0\nvt 1 0\nvt 0 1\nusemtl red\nf 1/1 2/2 3/3\n"));
-        auto invalid_metadata = nlohmann::json::parse(metadata_text);
-        invalid_metadata["version"] = 2;
-        const auto broken = invalid_metadata.dump();
+        const auto parsed_metadata = assets::json_format::parse(metadata_text);
+        require(parsed_metadata.has_value(), "Mesh metadata fixture failed to parse.");
+        json::Builder invalid_metadata{*parsed_metadata};
+        require(invalid_metadata.set(invalid_metadata.root(), "version", std::uint32_t{2}).has_value(),
+                "Metadata fixture mutation failed.");
+        const auto broken_bytes = json::write(invalid_metadata.root());
+        const std::string broken{broken_bytes.data(), broken_bytes.size()};
         take(editor::write_file(target / "color.bmp.asset.json", broken));
         take(project.refresh());
         const auto revision = project.revision();

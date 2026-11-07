@@ -7,7 +7,7 @@
 #include "foundation/result.hpp"
 #include "logging/native.hpp"
 #include "assets/file.hpp"
-#include "assets/json_format.hpp"
+#include "json/json.hpp"
 #include "atelier/build_info.hpp"
 #include "platform/utf.hpp"
 #include <windowsx.h>
@@ -510,9 +510,11 @@ Result<void> Application::action(const ui::Action& source) {
         auto name = platform::utf16_to_utf8(*text);
         if (!name)
             return std::unexpected(Error{ErrorCode::invalid_storage, "Invalid UTF-16 text."});
+        json::Builder args;
+        args.set_validated(args.root(), "name", *name);
         return done(
             run_operator({"scene.rename",
-                          {{"name", std::move(*name)}},
+                          args.finish(),
                           {.selection = editor::SelectionContext{rename->object, rename->object, {rename->object}},
                            .region = {}}},
                          true, false),
@@ -558,8 +560,9 @@ Result<void> Application::action(const ui::Action& source) {
             const auto info = document_->world().runtime().describe(*type);
             if (!info)
                 return std::unexpected(info.error());
-            return done(run_operator({"scene.add_component", {{"type", std::string((*info)->name)}}, {}}, true),
-                        L"Component added");
+            json::Builder args;
+            args.set_validated(args.root(), "type", (*info)->name);
+            return done(run_operator({"scene.add_component", args.finish(), {}}, true), L"Component added");
         }
     if (event.kind == ui::ActionKind::activate)
         if (const auto* binding = workspace_.binding(event.key);
@@ -631,8 +634,14 @@ Result<void> Application::action(const ui::Action& source) {
         if (const auto* cell = std::get_if<ui::TableSelection>(&event.value);
             cell && workspace_.assets.row_key(selected->key) != cell->row)
             return {};
-        if (event.key == editor::browser_control::add && selected->kind == assets::AssetKind::mesh)
-            return run_operator({"scene.add", {{"kind", "mesh"}, {"mesh", selected->key}}});
+        if (event.key == editor::browser_control::add && selected->kind == assets::AssetKind::mesh) {
+            json::Builder args;
+            args.set_validated(args.root(), "kind", "mesh");
+            const auto key = args.set(args.root(), "mesh", selected->key);
+            if (!key)
+                return std::unexpected(Error{ErrorCode::invalid_storage, key.error().describe()});
+            return run_operator({"scene.add", args.finish()});
+        }
         if (selected->kind == assets::AssetKind::folder)
             workspace_.assets.navigate(selected->path);
         else if (selected->kind == assets::AssetKind::material && project_) {
@@ -688,8 +697,11 @@ Result<void> Application::action(const ui::Action& source) {
         return workspace_.set_tree_expanded(*document_, tree, std::span{&row->object, 1}, *expanded);
     }
     // The rail snap toggle is a second view of the shared snapping command.
-    if (event.kind == ui::ActionKind::activate && event.key == viewport_rail_snap)
-        return run_operator({"tool.toggle", {{"setting", "grid_snap"}}});
+    if (event.kind == ui::ActionKind::activate && event.key == viewport_rail_snap) {
+        json::Builder args;
+        args.set_validated(args.root(), "setting", "grid_snap");
+        return run_operator({"tool.toggle", args.finish()});
+    }
     if (event.kind == ui::ActionKind::activate && (event.key == shelf_create || event.key == shelf_view)) {
         workspace_.shelf_page = event.key;
         return {};
@@ -787,7 +799,7 @@ Result<void> Application::action(const ui::Action& source) {
             workspace_.dock.select(editor::control::entities_tab);
             return run_operator(
                 {"scene.rename",
-                 assets::json_format::Json::object(),
+                 {},
                  {.selection = editor::SelectionContext{binding->object, binding->object, {binding->object}},
                   .region = editor::RegionKind::scene_tree}});
         }
@@ -813,10 +825,12 @@ Result<void> Application::action(const ui::Action& source) {
                 auto name = platform::utf16_to_utf8(std::get<std::wstring>(event.value));
                 if (!name)
                     return std::unexpected(Error{ErrorCode::invalid_storage, "Invalid UTF-16 text."});
+                json::Builder args;
+                args.set_validated(args.root(), "name", *name);
                 return done(
                     run_operator(
                         {"scene.rename",
-                         {{"name", std::move(*name)}},
+                         args.finish(),
                          {.selection = editor::SelectionContext{binding->object, binding->object, {binding->object}},
                           .region = {}}},
                         true, false),
@@ -883,8 +897,8 @@ Result<void> Application::action(const ui::Action& source) {
             if (const auto* checked = std::get_if<bool>(&event.value)) {
                 auto& runtime = document_->world().runtime();
                 auto type = runtime.type_of(binding->object);
-                auto args = assets::json_format::Json::object();
-                auto* value = &args;
+                json::Builder args;
+                auto value = args.root();
                 for (const auto field : binding->path) {
                     if (!type)
                         return std::unexpected(type.error());
@@ -892,13 +906,16 @@ Result<void> Application::action(const ui::Action& source) {
                     if (!info)
                         return std::unexpected(info.error());
                     const auto at = std::ranges::find((*info)->fields, field, &FieldInfo::id);
-                    value = &(*value)[at->name];
+                    const auto next = args.object(value, at->name);
+                    if (!next)
+                        return std::unexpected(Error{ErrorCode::invalid_definition, next.error().describe()});
+                    value = *next;
                     type = at->value.type;
                 }
-                *value = *checked;
+                args.set(value, *checked);
                 const auto entity = document_->selection().entity;
                 return done(run_operator({"scene.set_properties",
-                                          std::move(args),
+                                          args.finish(),
                                           {.selection = editor::SelectionContext{entity, binding->object, {entity}},
                                            .region = editor::RegionKind::parameters}}),
                             L"Property changed");

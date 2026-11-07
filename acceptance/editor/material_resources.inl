@@ -451,9 +451,9 @@ void verify_material_resources() {
                     take(take(material::capture_program(r, restored_local.id()))->evaluate({})).base_color ==
                         math::Vector3{0, 0, .4f},
                 "Source repair did not reassemble both named descendants and scene-local overrides.");
-        require(missing.empty() && assets::material_format::encode(take(session.material_asset(root.id()))) == before &&
-                    session.material_dirty(mi) && take(session.serialize()) == scene_before &&
-                    session.undo_count() == history,
+        const auto after = assets::material_format::encode(take(session.material_asset(root.id())));
+        require(missing.empty() && before && after && *after == *before && session.material_dirty(mi) &&
+                    take(session.serialize()) == scene_before && session.undo_count() == history,
                 "Source repair changed unsaved author entries, dirty state or scene history.");
         take(session.material_undo(mi));
         changed(session.undo());

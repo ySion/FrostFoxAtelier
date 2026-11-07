@@ -129,7 +129,11 @@ Result<std::string> Project::create_material(const std::filesystem::path& relati
             ATELIER_TRY(assets_.source(*path));
         } else
             static_cast<void>(take(assets_.material(std::get<assets::MaterialInstanceAsset>(asset.author).parent_key)));
-        ATELIER_TRY(write_file(*target, assets::material_format::encode(asset).dump(2) + "\n", WriteMode::create));
+        const auto document = assets::material_format::encode(asset);
+        if (!document)
+            return failed_import(document.error().describe(), created);
+        const auto bytes = json::write(document->root(), {true, true});
+        ATELIER_TRY(write_file(*target, {bytes.data(), bytes.size()}, WriteMode::create));
         created.push_back(*target);
         auto refreshed = refresh();
         if (std::filesystem::exists(metadata, error))
@@ -188,7 +192,11 @@ Result<void> Project::save_material(const assets::MaterialAsset& asset) {
             assets::is_material_source_path(item.path))
             throw std::runtime_error("Saving cannot change an asset between Material Source and Material Instance.");
         ATELIER_TRY_BIND(target, resolve(item.path));
-        ATELIER_TRY(write_file(*target, assets::material_format::encode(asset).dump(2) + "\n"));
+        const auto document = assets::material_format::encode(asset);
+        if (!document)
+            return std::unexpected(Error{ErrorCode::invalid_storage, document.error().describe()});
+        const auto bytes = json::write(document->root(), {true, true});
+        ATELIER_TRY(write_file(*target, {bytes.data(), bytes.size()}));
         return {}; // The caller records the successful save before refreshing the catalog.
     } catch (const std::exception& error) {
         return failure(error);

@@ -13,6 +13,12 @@ std::expected<String, StringError> String::from_utf8(StringView text) noexcept {
     return result;
 }
 
+String String::from_utf8_validated(StringView text) noexcept {
+    String result;
+    result.write_validated(text, 0);
+    return result;
+}
+
 String::String(const String& other) noexcept {
     if (other.tag() == literal_tag)
         std::memcpy(bytes_, other.bytes_, sizeof(bytes_));

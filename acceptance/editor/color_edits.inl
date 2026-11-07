@@ -61,7 +61,9 @@ void verify_color_edits() {
         return std::get<math::Vector4>(at->value);
     };
     const auto entries = [&](ObjectId object) {
-        return assets::material_format::encode_entries(take(document.inspect_material(object)).entries);
+        auto encoded = assets::material_format::encode_entries(take(document.inspect_material(object)).entries);
+        require(encoded.has_value(), "Material entries failed to encode.");
+        return std::move(*encoded);
     };
     const auto preview = [&](std::uint64_t control, math::Vector4 value) {
         return document.preview_material_entry(control, {"base_color", value, true});
@@ -78,8 +80,8 @@ void verify_color_edits() {
     (void)preview(9010, non_finite);
     require(color(document, material.id()) == first_color, "Rejected material color left a partial preview.");
     take(document.cancel_material_edit());
-    require(entries(material.id()).empty() && color(document, material.id()) == material_before &&
-                !document.material_dirty(key),
+    require(entries(material.id()) == json::Document::literal<"[]">() &&
+                color(document, material.id()) == material_before && !document.material_dirty(key),
             "Cancelling a first asset color preview did not restore sparse absence.");
     take(document.begin_material_edit(material.id(), 9011));
     take(preview(9011, last_color));

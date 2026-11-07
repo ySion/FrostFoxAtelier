@@ -257,11 +257,11 @@ repro.export 读取 Session::serialize() 的内存场景，保留原路径、dir
 
 引擎 `engine/...` Source 仍由安装提供（开发态优先源码树的 `assets/engine`，部署态为可执行文件旁的 `engine`），不复制进副本的项目 Source。manifest 的 `engine_sources` 逐路径记录成功发布时的引擎源码文本 SHA256（按源码读取规则去除 UTF-8 BOM），不是导出时重新读取磁盘的版本。没有工程时记录当前安装的引擎输入。`repro.open` 要求当前安装的引擎源码路径集合和文本指纹完全一致；增删或内容不同返回 `dependency_mismatch`，不替换当前文档。依赖检查至候选编译期间要求安装输入保持不变，不提供并发安装更新的原子快照。不支持用复现包覆盖引擎源码；缺少此依赖字段的旧包须重新导出。
 
-manifest 必须含 `engine_assets: {version: 1, records: [...]}`，空集合也写出。每条记录为 `key`、`kind: "mesh" | "material"`、`semantic_version`、`digest_version`、`content_sha256`；按 key 排序输出，输入顺序无语义。仅接受本安装注册的精确内建网格和材质键，不承认任意 `builtin/` 前缀。mesh 摘要 v2 描述几何、槽及默认关系；material 摘要 v1 包含 MS 作者数据与 Source 文本。未绑定的网格槽声明隐式 DefaultWorldGrid 依赖。语义版本由生产者维护，编码见[资源读取](projects.md#引擎依赖摘要)；它们不认证任意 C++/shader 实现，也不是安装二进制签名。
+manifest 必须含 `engine_assets: {version: 1, records: [...]}`，空集合也写出。每条记录为 `key`、`kind: "mesh" | "material"`、`semantic_version`、`digest_version`、`content_sha256`；按 key 排序输出，输入顺序无语义。仅接受本安装注册的精确内建网格和材质键，不承认任意 `builtin/` 前缀。mesh 摘要 v2 描述几何、槽及默认关系；material 摘要 v2 包含 MS 作者数据与 Source 文本，以当前确定性 JSON writer 编码。未绑定的网格槽声明隐式 DefaultWorldGrid 依赖。语义版本由生产者维护，编码见[资源读取](projects.md#引擎依赖摘要)；它们不认证任意 C++/shader 实现，也不是安装二进制签名。
 
 严格根集是冻结 Scene 的资源位及全部 World 成员（含停用成员）的网格/默认关系，再按身份取相应材质的当前草稿；不包括整个会话材质缓存或全部复制文件。普通名字/属性字符串不是资产协议。导出逐份核对加载的引擎资源，再写唯一依赖记录；重开先预检实际 Scene 资源位及其默认材质/有效贴图中的引擎键，候选发表前使用与导出相同的实际集合收集器，与清单双向比较。因此删一条或清空 records 不能绕过真实使用项，多报未使用项也拒绝。
 
-`material_resources: {version: 1, records: {...}}` 同样必需，核对可达材质的作者记录（包括休眠条目和 enabled 标记）、父身份、精确 Source 文本及有效图片尺寸/RGBA 摘要。缺少必需依赖字段的旧包、未知 schema/编码版本返回 `invalid_request` 并要求重新导出；重复键、非正整数版本、非法摘要也是 `invalid_request`。未知/错种类引擎键、语义版本/内容不同、实际集合缺项/多项返回 `dependency_mismatch`。真正文件读取或密码提供者失败为 `storage_error`，不伪装成内容不一致。dirty、材质/Source 草稿与运行 Play 的替换前置拒绝保持不变；候选验证失败不关闭旧文档或改变历史、选择和相机。只支持 Scene v10、材质 v2，不提供旧格式转换。
+`material_resources: {version: 2, records: {...}}` 同样必需，核对可达材质的作者记录（包括休眠条目和 enabled 标记）、父身份、精确 Source 文本及有效图片尺寸/RGBA 摘要。manifest 的 `json_bytes_version: 2`、material_resources 版本与天空资源 `digest_version: 2` 共用 `assets::json_format::json_bytes_version`；网格仍使用独立的二进制摘要 v2。缺少必需依赖字段的旧包、未知 schema/编码版本返回 `invalid_request` 并要求重新导出；重复键、非正整数版本、非法摘要也是 `invalid_request`。未知/错种类引擎键、语义版本/内容不同、实际集合缺项/多项返回 `dependency_mismatch`。真正文件读取或密码提供者失败为 `storage_error`，不伪装成内容不一致。dirty、材质/Source 草稿与运行 Play 的替换前置拒绝保持不变；候选验证失败不关闭旧文档或改变历史、选择和相机。只支持 Scene v10、材质 v2，不提供旧格式转换。
 
 复制期间复核普通文件集合和内容，精确 Source/图片快照不与后来改变的源文件混用。在副本中重新加载资源，与文档实际持有的 Mesh 顶点、边、分段、槽和默认材质键比较；天空贴图比较纹素、2^k 缩放、均值和 cube。同键的不同已加载版本都必须匹配，不能只检查第一个；即使依赖文件集合相同，槽→材质关系不同也返回 `dependency_mismatch`。导出不按磁盘新关系重绑当前文档，不改变原文件、dirty 或 Undo。材质当前作者草稿只写入副本；严格加载允许正常保留的休眠/声明失配条目并提供诊断，但不把有效依赖缺失当成功。
 

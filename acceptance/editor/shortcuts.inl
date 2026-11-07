@@ -33,7 +33,7 @@ void verify_shortcut_input_boundaries(Application& app) {
     };
     Access::mark_saved(app);
     model(Access::invoke(app, "layout.reset"));
-    model(Access::invoke(app, "layout.show", {{"tab", "viewport"}}));
+    model(Access::invoke(app, "layout.show", json::Document::literal<R"({"tab":"viewport"})">()));
     tick(app);
 
     // Exercise the actual HWND -> owned native queue -> Application path, with
@@ -52,11 +52,11 @@ void verify_shortcut_input_boundaries(Application& app) {
 
     const auto parent = app.document().selection().entity;
     require(parent != ObjectId{}, "Shortcut parent fixture needs a selected Entity.");
-    model(Access::invoke(app, "scene.add", {{"kind", "entity"}}));
+    model(Access::invoke(app, "scene.add", json::Document::literal<R"({"kind":"entity"})">()));
     const auto child = app.document().selection().entity;
     auto& document = Access::physics_document(app);
     model(document.reparent(child, parent));
-    model(Access::invoke(app, "layout.show", {{"tab", "scene_tree"}}));
+    model(Access::invoke(app, "layout.show", json::Document::literal<R"({"tab":"scene_tree"})">()));
     tick(app);
     click_control(control::tree_world);
     model(Access::select_entity(app, child));
@@ -82,7 +82,7 @@ void verify_shortcut_input_boundaries(Application& app) {
             "Ctrl+Alt text chord was dispatched as a menu mnemonic or scene command.");
 
     model(Access::select_entity(app, child));
-    model(Access::invoke(app, "layout.show", {{"tab", "parameters"}}));
+    model(Access::invoke(app, "layout.show", json::Document::literal<R"({"tab":"parameters"})">()));
     tick(app);
     const auto name_key = Access::name_control(app, child);
     const std::wstring name_before{app.document().name(child)};
@@ -114,7 +114,7 @@ void verify_shortcut_input_boundaries(Application& app) {
     require(renamed, "One-shot shortcut filtering swallowed repeated text deletion or its single name commit.");
     tap(VK_ESCAPE);
 
-    model(Access::invoke(app, "layout.show", {{"tab", "viewport"}}));
+    model(Access::invoke(app, "layout.show", json::Document::literal<R"({"tab":"viewport"})">()));
     tick(app);
     native_key('B', false, false, true);
     require(maximized(), "Ctrl+B did not maximize the focused pane.");
@@ -133,7 +133,7 @@ void verify_shortcut_input_boundaries(Application& app) {
     tap('W', true);
     require(pane_count() == tabs - 2, "Fresh Ctrl+W failed after the preceding held sequence.");
     model(Access::invoke(app, "layout.reset"));
-    model(Access::invoke(app, "layout.show", {{"tab", "viewport"}}));
+    model(Access::invoke(app, "layout.show", json::Document::literal<R"({"tab":"viewport"})">()));
     tick(app);
 
     const auto view = app.presented()->find(control::viewport)->bounds;

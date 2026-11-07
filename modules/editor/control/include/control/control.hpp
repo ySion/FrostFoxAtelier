@@ -1,6 +1,6 @@
 #pragma once
 
-#include <nlohmann/json.hpp>
+#include "json/json.hpp"
 #include <atomic>
 #include <chrono>
 #include <expected>
@@ -12,8 +12,6 @@
 #include <string_view>
 
 namespace atelier::control {
-using Json = nlohmann::json;
-
 inline constexpr unsigned protocol_version = 1;
 
 inline constexpr std::size_t maximum_message = 4 * 1024 * 1024;
@@ -25,6 +23,8 @@ struct Failure final : std::runtime_error {
 
     Failure(std::string category, std::string message)
         : std::runtime_error(std::move(message)), code(std::move(category)) {}
+
+    Failure(const json::Error& error) : std::runtime_error(error.describe()), code("invalid_request") {}
 };
 
 struct Peer final {
@@ -35,17 +35,15 @@ std::expected<std::filesystem::path, Failure> default_directory();
 
 std::string unique_id();
 
-void fields(const Json&, std::initializer_list<std::string_view> allowed);
+json::Result<json::Document> failure(std::string_view code, std::string_view message);
 
-Json failure(std::string_view code, std::string_view message);
-
-Json parse(std::string_view);
+json::Result<json::Document> parse(std::string_view);
 
 // Local transport owns no engine objects. poll() is called only by the host's
 // owner thread. The I/O worker never invokes the handler or retains its borrows.
 class Server final {
 public:
-    static std::expected<Server, Failure> create(const std::filesystem::path& directory, Json build);
+    static std::expected<Server, Failure> create(const std::filesystem::path& directory, json::Document build);
 
     Server(Server&&) noexcept;
 
@@ -55,13 +53,13 @@ public:
 
     Server& operator=(const Server&) = delete;
 
-    using Handler = std::function<Json(const Json&, const std::shared_ptr<Peer>&)>;
+    using Handler = std::function<json::Result<json::Document>(json::Value, const std::shared_ptr<Peer>&)>;
 
     void poll(const Handler&);
 
     void stop() noexcept;
 
-    const Json& identity() const noexcept;
+    const json::Document& identity() const noexcept;
 
     const std::filesystem::path& directory() const noexcept;
 
@@ -77,7 +75,7 @@ private:
 // that connection cancels its experiment at the next host checkpoint.
 class Client final {
 public:
-    static std::expected<Client, Failure> create(const Json& instance,
+    static std::expected<Client, Failure> create(const json::Document& instance,
                                                  std::chrono::milliseconds timeout = std::chrono::seconds(120));
 
     Client(Client&&) noexcept;
@@ -88,7 +86,7 @@ public:
 
     Client& operator=(const Client&) = delete;
 
-    Json call(Json request);
+    std::expected<json::Document, Failure> call(json::Document request);
 
 private:
     struct Impl;
@@ -98,5 +96,5 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
-std::expected<Json, Failure> discover(const std::filesystem::path& directory);
+std::expected<json::Document, Failure> discover(const std::filesystem::path& directory);
 }

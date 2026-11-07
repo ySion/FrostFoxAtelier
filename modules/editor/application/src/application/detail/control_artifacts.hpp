@@ -43,40 +43,40 @@ struct Repro {
     // Dormant or declaration-mismatched texture entries are not dependencies.
     std::vector<std::pair<assets::AssetKind, std::string>> references;
 
-    control::Json material_resources;
+    json::Document material_resources;
 
     std::vector<assets::EngineDependency> engine_assets;
 
-    control::Json manifest;
+    json::Document manifest;
 
-    control::Json drafts;
+    json::Document drafts;
 };
 
 struct Sample {
     renderer::Capture pixels;
 
-    control::Json metadata;
+    json::Document metadata;
 };
 
 // Owner-thread snapshots of actual Scene roots, never all cached material drafts.
 // The same collection admits a repro candidate before replacing the document.
 // These entry points adapt provider failures to control::Failure(storage_error).
-Repro snapshot_resources(const editor::Session&);
+std::expected<Repro, control::Failure> snapshot_resources(const editor::Session&);
 
-void validate_candidate_assets(const editor::Session&, const control::Json& manifest);
+std::expected<void, control::Failure> validate_candidate_assets(const editor::Session&, json::Value manifest);
 
 // Inputs are owned snapshots/immutable resources. Cancellation is checked
 // between bounded file operations. manifest.json is the completion marker.
-std::expected<control::Json, control::Failure> export_repro(const std::filesystem::path&, Repro,
-                                                            const std::atomic_bool& cancel);
+std::expected<json::Document, control::Failure> export_repro(const std::filesystem::path&, Repro,
+                                                             const std::atomic_bool& cancel);
 
 // Validate the complete dependency set before publishing a replacement document.
-std::expected<control::Json, control::Failure> validate_repro(const std::filesystem::path&);
+std::expected<json::Document, control::Failure> validate_repro(const std::filesystem::path&);
 
-std::expected<control::Json, control::Failure> write_samples(const std::filesystem::path&, std::vector<Sample>,
-                                                             control::Json, const std::atomic_bool& cancel);
+std::expected<json::Document, control::Failure> write_samples(const std::filesystem::path&, std::vector<Sample>,
+                                                              json::Document, const std::atomic_bool& cancel);
 
 // No GPU readback. The worker receives only owned CPU observations and metadata.
-std::expected<control::Json, control::Failure> write_trace(const std::filesystem::path&, rhi::CommandTrace,
-                                                           control::Json, const std::atomic_bool& cancel);
+std::expected<json::Document, control::Failure> write_trace(const std::filesystem::path&, rhi::CommandTrace,
+                                                            json::Document, const std::atomic_bool& cancel);
 }

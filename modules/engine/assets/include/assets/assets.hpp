@@ -29,7 +29,7 @@ struct EngineDependency {
 
 inline constexpr std::uint32_t mesh_digest_version = 2;
 
-inline constexpr std::uint32_t material_digest_version = 1;
+inline constexpr std::uint32_t material_digest_version = 2;
 
 // A mesh slot's default material: the material asset key its sidecar names for the slot.
 struct SlotMaterial {

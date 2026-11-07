@@ -202,7 +202,7 @@ Result<std::optional<bool>> OperatorBinding::state(const OperatorRegistry& regis
     ATELIER_TRY_BIND(value, parameters(runtime, info->parameters));
     if (info->seed)
         ATELIER_TRY(info->seed(context, {(*value)->type, (*value)->bytes.data()}));
-    ATELIER_TRY(decode_properties(runtime, {(*value)->type, {}, (*value)->bytes}, request.args, {}));
+    ATELIER_TRY(decode_properties(runtime, {(*value)->type, {}, (*value)->bytes}, request.args.root(), {}));
     const auto selected = info->state(context, {(*value)->type, (*value)->bytes.data()});
     // A seeded record depends on current Context; a rooted record must not
     // prolong an object's life just because its menu remains open.
@@ -217,10 +217,13 @@ Result<OperatorReport> call(const OperatorRegistry& registry, OperatorHost& host
     const auto* info = registry.find(request.id);
     if (!info)
         return std::unexpected(rejected("Unknown operator: " + request.id));
-    if (!request.args.is_object())
+    const auto args = request.args.root();
+    const auto members = args.object_items();
+    if (!members)
         return std::unexpected(rejected("Operator arguments must be an object."));
-    if (info->parameters.empty() && !request.args.empty())
-        return std::unexpected(rejected("Unknown argument for " + request.id + ": " + request.args.begin().key()));
+    if (info->parameters.empty() && !members->empty())
+        return std::unexpected(
+            rejected("Unknown argument for " + request.id + ": " + std::string((*members)[0].first)));
     ATELIER_TRY(admit(base, request.context));
     Context context = base;
     if (request.context.selection)
@@ -247,7 +250,7 @@ Result<OperatorReport> call(const OperatorRegistry& registry, OperatorHost& host
         // Reject even empty Transform records before ending the host's interaction.
         // Inherited field identity, not its spelling, distinguishes Transform from business fields.
         if (*entity)
-            for (const auto& [name, _] : request.args.items()) {
+            for (const auto& [name, _] : *members) {
                 const auto field = runtime.find_field(*type, name);
                 if (field && (*field == document.types().position_fields.front().front() ||
                               *field == document.types().rotation_fields.front().front() ||
@@ -255,7 +258,7 @@ Result<OperatorReport> call(const OperatorRegistry& registry, OperatorHost& host
                     return std::unexpected(rejected("Transform fields require scene.transform_set/clear/remove."));
             }
         const auto decoded =
-            decode_properties(runtime, PropertyTarget{*type, object}, request.args, {},
+            decode_properties(runtime, PropertyTarget{*type, object}, args, {},
                               [&](std::span<const FieldId> path, const PropertyLeaf& leaf) -> Result<void> {
                                   const auto* scalar = std::get_if<Scalar>(&leaf);
                                   if (!scalar)
@@ -271,14 +274,16 @@ Result<OperatorReport> call(const OperatorRegistry& registry, OperatorHost& host
         if (info->seed)
             ATELIER_TRY(info->seed(context, ValueOutput{value->type, value->bytes.data()}));
         const ResolveReference reference = [&](const auto& json, TypeId type,
-                                               ValueForm form) -> std::optional<ObjectReference> {
+                                               ValueForm form) -> json::Result<std::optional<ObjectReference>> {
             if (json.is_null()) {
                 auto null = runtime.null_reference(type, form);
                 return null ? std::optional{*null} : std::nullopt;
             }
-            return resolve ? resolve(json, type, form) : std::nullopt;
+            if (resolve)
+                return resolve(json, type, form);
+            return std::nullopt;
         };
-        ATELIER_TRY(decode_properties(runtime, PropertyTarget{value->type, {}, value->bytes}, request.args, reference));
+        ATELIER_TRY(decode_properties(runtime, PropertyTarget{value->type, {}, value->bytes}, args, reference));
     }
     const OperatorParameters decoded{value ? ValueInput{value->type, value->bytes.data()} : ValueInput{}, patch};
     if (!context.interactive && (info->kind == OperatorKind::interactive ||
@@ -316,127 +321,165 @@ Result<OperatorReport> call(const OperatorRegistry& registry, OperatorHost& host
 }
 
 namespace {
-using assets::json_format::Json;
-
-Json scalar_json(Runtime& runtime, const Scalar& value) {
+json::Result<void> scalar_json(Runtime& runtime, json::Builder& builder, json::Value object, std::string_view key,
+                               const Scalar& value) {
     return std::visit(
-        [&](const auto& leaf) -> Json {
+        [&](const auto& leaf) -> json::Result<void> {
             if constexpr (std::same_as<std::decay_t<decltype(leaf)>, EnumValue>) {
                 if (const auto info = runtime.describe(leaf.type); info && (*info)->enumeration)
                     for (const auto& [name, bits] : (*info)->enumeration->values)
                         if (bits == leaf.bits)
-                            return name;
-                return leaf.bits;
+                            return builder.set(object, key, name);
+                return builder.set(object, key, static_cast<std::uint64_t>(leaf.bits));
+            } else if constexpr (std::is_integral_v<std::decay_t<decltype(leaf)>> &&
+                                 !std::same_as<std::decay_t<decltype(leaf)>, bool>) {
+                if constexpr (std::is_signed_v<std::decay_t<decltype(leaf)>>)
+                    return builder.set(object, key, static_cast<std::int64_t>(leaf));
+                else
+                    return builder.set(object, key, static_cast<std::uint64_t>(leaf));
             } else
-                return leaf;
+                return builder.set(object, key, leaf);
         },
         value);
 }
 
 // The fields of the record at `path` inside a live parameter value; with `defaults`, their current values.
-Result<Json> record_schema(const detail::OperatorValue& value, TypeId record, std::vector<FieldId>& path,
-                           bool defaults) {
+Result<void> record_schema(const detail::OperatorValue& value, TypeId record, std::vector<FieldId>& path, bool defaults,
+                           json::Builder& builder, json::Value target) {
     auto& runtime = value.runtime;
     const auto info = runtime.describe(record);
     if (!info)
         return std::unexpected(info.error());
-    auto properties = Json::object();
+    builder.set_validated(target, "type", "object");
+    const auto additional = builder.set(target, "additionalProperties", false);
+    if (!additional)
+        return std::unexpected(invalid(additional.error().describe()));
+    const auto properties = builder.object_validated(target, "properties");
     for (const auto& field : (*info)->fields) {
         const auto leaf = runtime.describe(field.value.type);
         if (!leaf)
             return std::unexpected(leaf.error());
         path.push_back(field.id);
-        Json schema;
-        if (field.value.form != ValueForm::inline_value) {
-            schema = {{"type", Json::array({"string", "null"})},
-                      {"reference", (*leaf)->name},
-                      {"weak", field.value.form == ValueForm::weak_reference}};
-            if (defaults)
-                schema["default"] = nullptr;
-        } else
-            switch ((*leaf)->kind) {
-            case TypeKind::record: {
-                if (field.value.type == runtime.native_type<MaterialEntriesJson>().value_or(TypeId{})) {
-                    schema = {{"type", "array"}, {"format", "material.entries"}, {"default", Json::array()}};
-                    break;
-                }
-                ATELIER_TRY_BIND(nested, record_schema(value, field.value.type, path, defaults));
-                schema = std::move(*nested);
-                break;
-            }
-            case TypeKind::string: {
-                schema = {{"type", "string"}};
-                if (!defaults)
-                    break;
-                String text;
+        const auto made = builder.object(properties, field.name);
+        if (!made)
+            return std::unexpected(invalid(made.error().describe()));
+        const auto schema = *made;
+        const bool material_entries = field.value.type == runtime.native_type<MaterialEntriesJson>().value_or(TypeId{});
+        String text;
+        std::optional<Scalar> current;
+        if (field.value.form == ValueForm::inline_value) {
+            if ((*leaf)->kind == TypeKind::record && !material_entries) {
+                ATELIER_TRY(record_schema(value, field.value.type, path, defaults, builder, schema));
+            } else if ((*leaf)->kind == TypeKind::string && defaults) {
                 ATELIER_TRY(runtime.read(value.type, value.bytes, path, ValueOutput{field.value.type, &text}));
-                schema["default"] = std::string(text.c_str(), text.size());
-                break;
-            }
-            case TypeKind::scalar:
-            case TypeKind::enumeration: {
-                const auto current = runtime.read(value.type, value.bytes, path);
-                if (!current)
-                    return std::unexpected(current.error());
-                if ((*leaf)->enumeration) {
-                    auto names = Json::array();
-                    for (const auto& member : (*leaf)->enumeration->values)
-                        names.push_back(member.first);
-                    schema = {{"enum", std::move(names)}};
-                } else {
-                    const bool number =
-                        std::holds_alternative<float>(*current) || std::holds_alternative<double>(*current);
-                    schema = {{"type", std::holds_alternative<bool>(*current) ? "boolean"
-                                       : number                               ? "number"
-                                                                              : "integer"}};
-                }
-                const auto bound = [&](const char* key, const std::optional<Scalar>& limit) {
-                    if (limit)
-                        schema[key] = scalar_json(runtime, *limit);
-                };
-                bound("minimum", field.range.hard_min);
-                bound("maximum", field.range.hard_max);
-                bound("ui_min", field.range.ui_min);
-                bound("ui_max", field.range.ui_max);
-                if (defaults)
-                    schema["default"] = scalar_json(runtime, *current);
-                break;
-            }
-            default:
+            } else if ((*leaf)->kind == TypeKind::scalar || (*leaf)->kind == TypeKind::enumeration) {
+                ATELIER_TRY_BIND(read, runtime.read(value.type, value.bytes, path));
+                current = *read;
+            } else if ((*leaf)->kind != TypeKind::record && (*leaf)->kind != TypeKind::string) {
                 return std::unexpected(
                     invalid("Operator parameters hold records, strings, scalars and enums only: " + field.name));
             }
+        }
+        const auto emitted = [&]() -> json::Result<void> {
+            if (!field.description.empty())
+                ATELIER_TRY(builder.set(schema, "description", field.description));
+            if (field.value.form != ValueForm::inline_value) {
+                ATELIER_TRY_BIND(types, builder.array(schema, "type"));
+                ATELIER_TRY(builder.append(*types, "string"));
+                ATELIER_TRY(builder.append(*types, "null"));
+                ATELIER_TRY(builder.set(schema, "reference", (*leaf)->name));
+                ATELIER_TRY(builder.set(schema, "weak", field.value.form == ValueForm::weak_reference));
+                if (defaults)
+                    ATELIER_TRY(builder.set_null(schema, "default"));
+                return {};
+            }
+            switch ((*leaf)->kind) {
+            case TypeKind::record:
+                if (material_entries) {
+                    builder.set_validated(schema, "type", "array");
+                    builder.set_validated(schema, "format", "material.entries");
+                    ATELIER_TRY(builder.array(schema, "default"));
+                }
+                break;
+            case TypeKind::string:
+                builder.set_validated(schema, "type", "string");
+                if (defaults)
+                    builder.set_validated(schema, "default", std::string_view{text.c_str(), text.size()});
+                break;
+            case TypeKind::scalar:
+            case TypeKind::enumeration: {
+                if ((*leaf)->enumeration) {
+                    ATELIER_TRY_BIND(names, builder.array(schema, "enum"));
+                    for (const auto& member : (*leaf)->enumeration->values)
+                        ATELIER_TRY(builder.append(*names, member.first));
+                } else {
+                    const bool number =
+                        std::holds_alternative<float>(*current) || std::holds_alternative<double>(*current);
+                    builder.set_validated(schema, "type",
+                                          std::holds_alternative<bool>(*current) ? "boolean"
+                                          : number                               ? "number"
+                                                                                 : "integer");
+                }
+                const auto bound = [&](const char* key, const std::optional<Scalar>& limit) -> json::Result<void> {
+                    if (limit)
+                        return scalar_json(runtime, builder, schema, key, *limit);
+                    return {};
+                };
+                ATELIER_TRY(bound("minimum", field.range.hard_min));
+                ATELIER_TRY(bound("maximum", field.range.hard_max));
+                ATELIER_TRY(bound("ui_min", field.range.ui_min));
+                ATELIER_TRY(bound("ui_max", field.range.ui_max));
+                if (defaults)
+                    ATELIER_TRY(scalar_json(runtime, builder, schema, "default", *current));
+                break;
+            }
+            default:
+                break; // Unsupported Runtime kinds were rejected before writing.
+            }
+            return {};
+        }();
+        if (!emitted)
+            return std::unexpected(invalid(emitted.error().describe()));
         path.pop_back();
-        if (!field.description.empty())
-            schema["description"] = field.description;
-        properties[field.name] = std::move(schema);
     }
-    return Json{{"type", "object"}, {"additionalProperties", false}, {"properties", std::move(properties)}};
+    return {};
+}
+
+Result<json::Document> schema(Runtime& runtime, std::string_view record, bool defaults, bool seeded) {
+    json::Builder builder;
+    const auto root = builder.root();
+    if (record.empty()) {
+        builder.set_validated(root, "type", "object");
+        const auto additional = builder.set(root, "additionalProperties", false);
+        if (!additional)
+            return std::unexpected(invalid(additional.error().describe()));
+        (void)builder.object_validated(root, "properties");
+        return builder.finish();
+    }
+    if (record == "@context.object") {
+        builder.set_validated(root, "dynamic", "context.object");
+        return builder.finish();
+    }
+    ATELIER_TRY_BIND(value, parameters(runtime, record));
+    std::vector<FieldId> path;
+    ATELIER_TRY(record_schema(**value, (*value)->type, path, defaults, builder, root));
+    const auto title = builder.set(root, "title", record);
+    if (!title)
+        return std::unexpected(invalid(title.error().describe()));
+    if (seeded) {
+        const auto wrote = builder.set(root, "seeded", true);
+        if (!wrote)
+            return std::unexpected(invalid(wrote.error().describe()));
+    }
+    return builder.finish();
 }
 }
 
-Result<assets::json_format::Json> parameter_schema(Runtime& runtime, const OperatorInfo& op) {
-    if (op.parameters.empty())
-        return Json{{"type", "object"}, {"additionalProperties", false}, {"properties", Json::object()}};
-    if (op.parameters == "@context.object")
-        return Json{{"dynamic", "context.object"}};
-    ATELIER_TRY_BIND(value, parameters(runtime, op.parameters));
-    std::vector<FieldId> path;
-    ATELIER_TRY_BIND(schema, record_schema(**value, (*value)->type, path, !op.seed));
-    (*schema)["title"] = op.parameters;
-    if (op.seed)
-        (*schema)["seeded"] = true;
-    return schema;
+Result<json::Document> parameter_schema(Runtime& runtime, const OperatorInfo& op) {
+    return schema(runtime, op.parameters, !op.seed, bool(op.seed));
 }
 
-Result<assets::json_format::Json> result_schema(Runtime& runtime, const OperatorInfo& op) {
-    if (op.result.empty())
-        return Json{{"type", "object"}, {"additionalProperties", false}, {"properties", Json::object()}};
-    ATELIER_TRY_BIND(value, parameters(runtime, op.result));
-    std::vector<FieldId> path;
-    auto schema = record_schema(**value, (*value)->type, path, false);
-    if (schema)
-        (*schema)["title"] = op.result;
-    return schema;
+Result<json::Document> result_schema(Runtime& runtime, const OperatorInfo& op) {
+    return schema(runtime, op.result, false, false);
 }
 }

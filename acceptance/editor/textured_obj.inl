@@ -173,10 +173,12 @@ void verify_textured_obj() {
     // sibling explicitly shares the original named defaults in its real sidecar.
     auto sibling_metadata = sibling;
     sibling_metadata += L".asset.json";
-    auto mapping = nlohmann::json::parse(take(assets::read_file(sibling_metadata)));
+    json::Builder mapping{take(assets::json_format::parse(take(assets::read_file(sibling_metadata))))};
+    const auto materials = mapping.object_validated(mapping.root(), "materials");
     for (const auto& binding : asset.materials)
-        mapping["materials"][binding.slot] = binding.key;
-    take(editor::write_file(sibling_metadata, mapping.dump(2)));
+        take(mapping.set(materials, binding.slot, binding.key));
+    const auto mapping_bytes = json::write(mapping.root(), {.pretty = true});
+    take(editor::write_file(sibling_metadata, {mapping_bytes.data(), mapping_bytes.size()}));
     take(project.refresh());
     const auto sibling_asset = take(project.assets().mesh(sibling_key));
     const auto sibling_mesh = sibling_asset.mesh;
@@ -222,11 +224,12 @@ void verify_textured_obj() {
     take(project.refresh());
     const auto edited = take(project.assets().mesh(key));
     const auto source_author = take(assets::load_obj(project.root() / "Content/Meshes/scene/scene.obj"));
+    const auto current_material = assets::material_format::encode(take(project.assets().material(red_asset.key)));
+    const auto original_material = assets::material_format::encode(red_asset);
     require(edited.mesh != changed_asset.mesh &&
                 imported_material_value<math::Vector4>(*source_author.materials[1], "base_color") ==
                     math::Vector4{0, 1, 0, 1} &&
-                assets::material_format::encode(take(project.assets().material(red_asset.key))) ==
-                    assets::material_format::encode(red_asset) &&
+                current_material && original_material && *current_material == *original_material &&
                 take(assets::mesh_content_sha256(edited)) == take(assets::mesh_content_sha256(asset)),
             "MTL refresh failed to invalidate its dependency or silently overwrote the independent MI author data.");
     take(editor::write_file(source / "bad.obj", "mtllib ../outside.mtl\nv 0 0 0\n"));

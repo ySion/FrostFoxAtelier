@@ -14,17 +14,17 @@ void verify_viewport_edit_window(Application& app, const std::filesystem::path& 
             SendMessageW(app.window(), WM_CHAR, static_cast<WPARAM>(*text++), 0);
         tick(app, 1);
     };
-    click(app, operator_item(app, "scene.add", {{"kind", "mesh"}}));
+    click(app, operator_item(app, "scene.add", atelier::json::Document::literal<R"({"kind":"mesh"})">()));
     const auto first = app.document().selection().entity;
     click(app, property_control(app, first, 0));
     type(app, L"-1.5");
     key(app, VK_RETURN);
-    click(app, operator_item(app, "scene.add", {{"kind", "mesh"}}));
+    click(app, operator_item(app, "scene.add", atelier::json::Document::literal<R"({"kind":"mesh"})">()));
     const auto second = app.document().selection().entity;
     click(app, property_control(app, second, 0));
     type(app, L"1.5");
     key(app, VK_RETURN);
-    click(app, operator_item(app, "tool.settings", {{"tool", "select"}}));
+    click(app, operator_item(app, "tool.settings", atelier::json::Document::literal<R"({"tool":"select"})">()));
     mouse(app, WM_RBUTTONDOWN, Access::viewport_point(app, position(first)));
     mouse(app, WM_RBUTTONUP, Access::viewport_point(app, position(first)));
     {
@@ -36,7 +36,7 @@ void verify_viewport_edit_window(Application& app, const std::filesystem::path& 
         tick(app, 2);
     }
     require(app.document().selected_entities().size() == 2, "Native Shift click lost multi-selection.");
-    click(app, operator_item(app, "tool.settings", {{"tool", "transform"}}));
+    click(app, operator_item(app, "tool.settings", atelier::json::Document::literal<R"({"tool":"transform"})">()));
     const auto history = app.document().undo_count();
     hover({0, 0, 0});
     key(app, 'G');
@@ -62,7 +62,7 @@ void verify_viewport_edit_window(Application& app, const std::filesystem::path& 
     digits(L"2");
     key(app, VK_RETURN);
     key(app, 'Z', true);
-    click(app, operator_item(app, "tool.settings", {{"tool", "move"}}));
+    click(app, operator_item(app, "tool.settings", atelier::json::Document::literal<R"({"tool":"move"})">()));
     auto center = Access::viewport_point(app, {0, 0, 0});
     const auto drag_history = app.document().undo_count();
     mouse(app, WM_LBUTTONDOWN, center);
@@ -131,7 +131,7 @@ void verify_viewport_edit_window(Application& app, const std::filesystem::path& 
             "Euler conversion exposed avoidable float intermediate noise.");
     capture(app, output / "transform-parameters.png");
     key(app, 'Z', true);
-    click(app, operator_item(app, "tool.settings", {{"tool", "select"}}));
+    click(app, operator_item(app, "tool.settings", atelier::json::Document::literal<R"({"tool":"select"})">()));
     const auto bounds = app.presented()->find(control::viewport)->bounds;
     POINT start{static_cast<LONG>(bounds.x + 3), static_cast<LONG>(bounds.y + 3)};
     POINT end{static_cast<LONG>(bounds.x + bounds.width - 4), static_cast<LONG>(bounds.y + bounds.height - 4)};
@@ -175,12 +175,12 @@ void verify_viewport_edit_window(Application& app, const std::filesystem::path& 
     key(app, VK_ESCAPE);
     click(app, control::viewport_camera);
     require(Access::cursor_position(app) == cursor, "The viewport overlay menu click leaked into cursor placement.");
-    click(app, operator_item(app, "view.axis", {{"view", "front"}}));
+    click(app, operator_item(app, "view.axis", atelier::json::Document::literal<R"({"view":"front"})">()));
     require(Access::camera_mode(app) == atelier::editor::CameraView::front,
             "Front view command did not change camera projection.");
     click(app, control::viewport_snap);
-    click(app, operator_item(app, "tool.settings", {{"grid_spacing", 1.}}));
-    click(app, operator_item(app, "tool.toggle", {{"setting", "grid_snap"}}));
+    click(app, operator_item(app, "tool.settings", atelier::json::Document::literal<R"({"grid_spacing":1.0})">()));
+    click(app, operator_item(app, "tool.toggle", atelier::json::Document::literal<R"({"setting":"grid_snap"})">()));
     require(Access::viewport_settings(app).grid_snap && Access::viewport_settings(app).grid_spacing == 1,
             "Grid controls lost their shared settings.");
     hover(position(second));
@@ -212,7 +212,7 @@ void verify_viewport_edit_window(Application& app, const std::filesystem::path& 
         require(std::abs(x(app, second) - 1.5f) < .001f, "Alt+G did not undo.");
         system_key('A');
         require(app.document().selected_entities().empty(), "Native Alt+A did not deselect all.");
-        click(app, operator_item(app, "tool.settings", {{"tool", "select"}}));
+        click(app, operator_item(app, "tool.settings", atelier::json::Document::literal<R"({"tool":"select"})">()));
         mouse(app, WM_RBUTTONDOWN, Access::viewport_point(app, position(second)));
         mouse(app, WM_RBUTTONUP, Access::viewport_point(app, position(second)));
         // A modal gesture swaps the tool options for Blender's live header readout.
@@ -227,10 +227,10 @@ void verify_viewport_edit_window(Application& app, const std::filesystem::path& 
                 "Esc after readout capture left a draft.");
     }
     const auto expanded_height = app.presented()->find(control::viewport)->bounds.height;
-    click(app, operator_item(app, "view.toggle", {{"option", "options"}}));
+    click(app, operator_item(app, "view.toggle", atelier::json::Document::literal<R"({"option":"options"})">()));
     require(app.presented()->find(control::viewport)->bounds.height > expanded_height,
             "Collapsing tool options did not return height to the viewport.");
-    click(app, operator_item(app, "view.toggle", {{"option", "options"}}));
+    click(app, operator_item(app, "view.toggle", atelier::json::Document::literal<R"({"option":"options"})">()));
     require(Access::ui_error(app).empty(), "Viewport chrome produced a rejected DSL/layout candidate.");
     auto orbit = centre(app, control::viewport);
     const auto orbit_before = Access::camera_view(app);

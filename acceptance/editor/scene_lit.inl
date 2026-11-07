@@ -195,7 +195,8 @@ void verify_environment_sky_application() {
     auto reopened = take(Session::deserialize(take(assets::read_file(file)), project));
     snapshot.reset();
     take(snapshot.refresh(*reopened));
-    require(sky(*reopened) == radiance && snapshot.lights.size() == 1 && !nlohmann::json::parse(text).contains("world"),
+    const auto saved = take(assets::json_format::parse(text));
+    require(sky(*reopened) == radiance && snapshot.lights.size() == 1 && !take(saved.root().find("world")),
             "The Environment sky changed after saved scene reopen.");
     std::puts(
         "Environment sky application acceptance: PASS (first edit creates it, unique, enable/remove/undo, scene save/reopen)");
@@ -346,26 +347,30 @@ void verify_scene_lit_application(const std::filesystem::path& source_example = 
                 scene_lit_material(snapshot_surface(loaded)).metallic == .6f && loaded.lights[0].intensity == 80 &&
                 loaded.lights[2].source_radius == .0046f,
             "Project scene reopen lost material or light settings.");
-    auto data = nlohmann::json::parse(text);
-    std::string roughness_path;
-    for (std::size_t i = 0; i < data.at("materials").size(); ++i)
-        if (data["materials"][i].at("source") == "") {
-            auto& entries = data["materials"][i].at("entries");
+    json::Builder data{take(assets::json_format::parse(text))};
+    std::optional<std::pair<std::size_t, std::size_t>> roughness_path;
+    const auto definitions = take(data.root().at("materials"));
+    for (std::size_t i = 0; i < definitions.size(); ++i)
+        if (take(definitions.at(i)).string({"source"}) == "") {
+            const auto entries = take(take(definitions.at(i)).at("entries"));
             for (std::size_t j = 0; j < entries.size(); ++j)
-                if (entries[j].at("path") == "roughness") {
-                    entries[j]["type"] = "vector2";
-                    entries[j]["value"] = nlohmann::json::array({2, 3});
-                    roughness_path = "/materials/" + std::to_string(i) + "/entries/" + std::to_string(j);
+                if (take(entries.at(j)).string({"path"}) == "roughness") {
+                    const auto entry = take(entries.at(j));
+                    take(data.set(entry, "type", "vector2"));
+                    take(data.set(entry, "value", json::Document::literal<"[2,3]">().root()));
+                    roughness_path = {i, j};
                 }
         }
-    require(!roughness_path.empty(), "Saved scene MI lost its roughness entry.");
+    require(roughness_path.has_value(), "Saved scene MI lost its roughness entry.");
     // A declaration mismatch is preserved author intent, not a malformed file.
     {
-        auto kept = take(Session::deserialize(data.dump(), project));
+        const auto bytes = json::write(data.root());
+        auto kept = take(Session::deserialize({bytes.data(), bytes.size()}, project));
         const auto items = take(kept->presentation().render_items());
+        const auto restored = take(assets::json_format::parse(take(kept->serialize())));
+        const auto [i, j] = *roughness_path;
         require(
-            nlohmann::json::parse(take(kept->serialize()))[nlohmann::json::json_pointer(roughness_path)] ==
-                    data[nlohmann::json::json_pointer(roughness_path)] &&
+            *restored.root().at("materials")->at(i)->at("entries")->at(j) == *definitions.at(i)->at("entries")->at(j) &&
                 std::ranges::any_of(kept->load_issues(),
                                     [](const auto& issue) {
                                         return issue.kind == world::DiagnosticKind::mismatch &&
@@ -375,17 +380,21 @@ void verify_scene_lit_application(const std::filesystem::path& source_example = 
                 scene_lit_material(items.front().surfaces->front()).metallic == .6f,
             "A mismatched sparse material entry lost its author value/diagnostic or changed valid material parameters.");
     }
-    data = nlohmann::json::parse(text);
-    data["entities"][1]["components"][0]["properties"]["settings"]["range"] = 0;
-    auto kept = take(Session::deserialize(data.dump(), project));
-    require(nlohmann::json::parse(
-                take(kept->serialize()))["entities"][1]["components"][0]["properties"]["settings"]["range"] == 0,
+    data = json::Builder{take(assets::json_format::parse(text))};
+    take(data.set(*data.root().at("entities")->at(1)->at("components")->at(0)->path({"properties", "settings"}),
+                  "range", 0u));
+    const auto invalid_bytes = json::write(data.root());
+    auto kept = take(Session::deserialize({invalid_bytes.data(), invalid_bytes.size()}, project));
+    const auto retained = take(assets::json_format::parse(take(kept->serialize())));
+    require(retained.root().at("entities")->at(1)->at("components")->at(0)->u32({"properties", "settings", "range"}) ==
+                0,
             "Tolerant loading did not retain the authored invalid light range.");
-    data = nlohmann::json::parse(text);
-    for (auto& definition : data.at("materials"))
-        if (definition.at("source") == "")
-            definition["entries"] = nlohmann::json::array();
-    auto defaulted = take(Session::deserialize(data.dump(), project));
+    data = json::Builder{take(assets::json_format::parse(text))};
+    for (auto definition : *data.root().at("materials")->array())
+        if (definition.string({"source"}) == "")
+            take(data.set(definition, "entries", json::Document::literal<"[]">().root()));
+    const auto default_bytes = json::write(data.root());
+    auto defaulted = take(Session::deserialize({default_bytes.data(), default_bytes.size()}, project));
     const auto defaulted_items = take(defaulted->presentation().render_items());
     const auto defaults = scene_lit_material(defaulted_items[0].surfaces->front());
     require(defaults.roughness == .65f && defaults.emissive == math::Vector3{},
@@ -507,11 +516,11 @@ void verify_scene_lit_application(const std::filesystem::path& source_example = 
         // World Settings edits are Environment property edits; their Undo selects the Environment.
         const auto selected = document.selection().entity;
         const auto settings = [](const Session& session) { return take(session.presentation().environment()); };
-        const auto environment_record = [](const nlohmann::json& scene) -> const nlohmann::json& {
-            for (const auto& entity : scene.at("entities"))
-                for (const auto& part : entity.at("components"))
-                    if (part.at("type") == "world.EnvironmentComponent")
-                        return part.at("properties");
+        const auto environment_record = [](json::Value scene) {
+            for (auto entity : take(take(scene.at("entities")).array()))
+                for (auto part : take(take(entity.at("components")).array()))
+                    if (part.string({"type"}) == "world.EnvironmentComponent")
+                        return take(part.at("properties"));
             throw std::runtime_error("The saved scene has no Environment.");
         };
         const auto before = settings(document);
@@ -539,23 +548,22 @@ void verify_scene_lit_application(const std::filesystem::path& source_example = 
         take(workspace.set_view_settings(document, diagnostic_view));
         require(document.undo_count() == stable_history && take(document.serialize()) == saved,
                 "Viewport diagnostics entered the scene or Undo stack.");
-        const auto saved_json = nlohmann::json::parse(saved);
-        require(saved_json.at("version") == 10 && !saved_json.contains("world") &&
-                    !environment_record(saved_json).contains("direct_reference") &&
-                    !environment_record(saved_json).contains("probe_debug"),
+        const auto saved_json = take(assets::json_format::parse(saved));
+        require(saved_json.root().u32({"version"}) == 10 && !take(saved_json.root().find("world")) &&
+                    !take(environment_record(saved_json.root()).find("direct_reference")) &&
+                    !take(environment_record(saved_json.root()).find("probe_debug")),
                 "Scene v10 kept a world section or saved viewport diagnostics.");
         // Unknown Environment data survives tolerant loading verbatim.
         {
             constexpr auto key = "probe_debug";
-            auto json = saved_json;
-            for (auto& entity : json.at("entities"))
-                for (auto& part : entity.at("components"))
-                    if (part.at("type") == "world.EnvironmentComponent")
-                        part.at("properties")[key] = true;
-            auto tolerated = take(Session::deserialize(json.dump(), project));
+            json::Builder altered{saved_json};
+            take(altered.set(environment_record(altered.root()), key, true));
+            const auto bytes = json::write(altered.root());
+            auto tolerated = take(Session::deserialize({bytes.data(), bytes.size()}, project));
+            const auto retained = take(assets::json_format::parse(take(tolerated->serialize())));
             require(tolerated->load_issues().size() == 1 &&
                         tolerated->load_issues().front().kind == world::DiagnosticKind::unknown_field &&
-                        environment_record(nlohmann::json::parse(take(tolerated->serialize()))).at(key) == true,
+                        environment_record(retained.root()).boolean({key}) == true,
                     "Tolerant loading did not keep an unknown World setting as saved Environment data.");
         }
         auto invalid = candidate;

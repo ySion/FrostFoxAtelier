@@ -10,7 +10,7 @@
 #include "source/program.hpp"
 #include "physics/physics.hpp"
 #include "platform/utf.hpp"
-#include <nlohmann/json.hpp>
+#include "assets/json_format.hpp"
 #include <bit>
 #include <chrono>
 #include <fstream>
@@ -19,8 +19,6 @@
 
 namespace {
 using namespace atelier;
-
-using Json = nlohmann::json;
 
 const char* acceptance_phase = "document initialization";
 
@@ -265,10 +263,12 @@ void verify_primitive_source(editor::Project& project) {
     require(settings.enabled && settings.half_extents.x == 2.f && settings.material.friction == .6f,
             "Source did not write the Primitive's shared reflected body configuration.");
     const auto saved = take(document.serialize());
-    const auto data = Json::parse(saved);
-    require(data["entities"][0]["components"].size() == 1 &&
-                data["entities"][0]["components"][0]["properties"]["body"]["enabled"] == true &&
-                !data["entities"][0]["components"][0].contains("body"),
+    const auto data = assets::json_format::parse(saved);
+    require(bool(data), "Saved Primitive JSON is invalid.");
+    const auto components = data->root().at("entities")->at(0)->at("components");
+    require(components && components->size() == 1 &&
+                components->at(0)->boolean({"properties", "body", "enabled"}) == true &&
+                !*components->at(0)->find("body"),
             "Primitive physics acquired a separate component or a second serialization path.");
     auto reopened = take(editor::Session::deserialize(saved, project));
     changed(reopened->start());
@@ -308,21 +308,25 @@ void verify_query_source(editor::Project& project) {
                                  }}));
         return std::static_pointer_cast<void>(code);
     };
-    auto scene = Json::parse(take(
+    const auto parsed = assets::json_format::parse(take(
         assets::read_file(std::filesystem::path{ATELIER_EXAMPLE_PROJECT} / "Content/Physic/Scenes/Raycasts.scene")));
+    require(bool(parsed), "Raycast fixture JSON is invalid.");
+    json::Builder scene{*parsed};
     unsigned authored_probes{};
-    for (auto& entity : scene["entities"]) {
-        for (auto& component : entity["components"])
-            if (component["type"] == "physics.SceneQueryComponent" &&
-                component["properties"]["settings"]["mode"] == "single") {
-                component["type"] = "game.QueryProbe";
-                component["properties"]["automatic"] = false;
+    for (auto entity : *scene.root().at("entities")->array()) {
+        for (auto component : *entity.at("components")->array())
+            if (component.string({"type"}) == "physics.SceneQueryComponent" &&
+                component.string({"properties", "settings", "mode"}) == "single") {
+                require(scene.set(component, "type", "game.QueryProbe") &&
+                            scene.set(*component.at("properties"), "automatic", false),
+                        "Cannot construct query fixture.");
                 ++authored_probes;
             }
     }
     require(authored_probes == 1,
             "Raycast fixture must contain exactly one single-query capability to become the Source probe.");
-    auto document = take(editor::Session::deserialize(scene.dump(), project, query_code));
+    const auto scene_bytes = json::write(scene.root());
+    auto document = take(editor::Session::deserialize({scene_bytes.data(), scene_bytes.size()}, project, query_code));
     ObjectId probe{};
     for (const auto& entity : take(document->world().members()))
         for (const auto& component : take(world::components(document->world().runtime(), entity.id())))
@@ -468,7 +472,9 @@ void verify_codec_graph(editor::Project& project) {
         auto reopened = take(editor::Session::deserialize(saved, project));
         require(take(reopened->serialize()) == saved && take(world::world_matrix(runtime, parent))[12] == 10,
                 "A valid final spatial DAG was rejected because its restoration passed through a temporary cycle.");
-        const auto parent_id = Json::parse(saved)["roots"][0].get<std::string>();
+        const auto parsed = assets::json_format::parse(saved);
+        require(bool(parsed), "Spatial DAG JSON is invalid.");
+        const auto parent_id = std::string{*parsed->root().at("roots")->at(0)->string()};
         const auto restored = take(reopened->local_object(std::stoull(parent_id)));
         require(take(world::world_matrix(reopened->world().runtime(), restored))[12] == 10,
                 "Final spatial origin plans were not published with membership.");
@@ -520,8 +526,8 @@ void verify_codec_graph(editor::Project& project) {
             take(presentation::set_material_bindings(runtime, meshes[i], bindings));
         }
         const auto saved = take(document.serialize());
-        const auto data = Json::parse(saved);
-        require(data["materials"].size() == 2,
+        const auto data = assets::json_format::parse(saved);
+        require(data && data->root().at("materials")->size() == 2,
                 "Scene material definitions did not preserve shared and equal-but-independent identities.");
         auto reopened = take(editor::Session::deserialize(saved, project));
         require(take(reopened->serialize()) == saved, "Material document identities changed after save/reload.");
@@ -571,9 +577,16 @@ void verify_codec_graph(editor::Project& project) {
         // A scene parent is an identity edge, not a copied set of resolved values.
         const auto child = take(document.create_scene_material(meshes[0], "slot/0"));
         material_float(document, instance.id(), "roughness", .27f, 834);
-        auto hierarchy = Json::parse(take(document.serialize()));
-        std::reverse(hierarchy["materials"].begin(), hierarchy["materials"].end());
-        auto ordered = take(editor::Session::deserialize(hierarchy.dump(), project, {}, editor::LoadPolicy::strict));
+        const auto parsed = assets::json_format::parse(take(document.serialize()));
+        require(bool(parsed), "Material hierarchy JSON is invalid.");
+        json::Builder hierarchy{*parsed};
+        const auto materials = *parsed->root().at("materials");
+        const auto reversed = *hierarchy.array(hierarchy.root(), "materials");
+        for (auto i = materials.size(); i > 0; --i)
+            hierarchy.append(reversed, *materials.at(i - 1));
+        const auto hierarchy_bytes = json::write(hierarchy.root());
+        auto ordered = take(editor::Session::deserialize({hierarchy_bytes.data(), hierarchy_bytes.size()}, project, {},
+                                                         editor::LoadPolicy::strict));
         const auto ordered_child = take(ordered->local_object(*document.document_identity(child.id())));
         const auto ordered_parent = take(ordered->local_object(*document.document_identity(instance.id())));
         require(take(material::read_instance(ordered->world().runtime(), ordered_child)).parent.id() ==
@@ -613,8 +626,12 @@ void verify_codec_graph(editor::Project& project) {
         take(source.assign_material(project, member(source, source.presentation_types().static_mesh_component),
                                     "slot/0", incoming));
         changed(source.add_entity());
-        auto invalid = Json::parse(take(source.serialize()));
-        invalid["entities"][1]["properties"]["unknown_business_field"] = {{"$ref", "999999"}};
+        const auto parsed = assets::json_format::parse(take(source.serialize()));
+        require(bool(parsed), "Source composition JSON is invalid.");
+        json::Builder invalid{*parsed};
+        require(bool(invalid.set(*invalid.root().at("entities")->at(1)->at("properties"), "unknown_business_field",
+                                 json::Document::literal<R"({"$ref":"999999"})">().root())),
+                "Cannot damage composition fixture.");
         editor::Session target;
         changed(target.add_entity());
         const auto original = target.selection().entity;
@@ -627,15 +644,21 @@ void verify_codec_graph(editor::Project& project) {
         for (unsigned i = 0; i < 8; ++i)
             take(target.collect_step());
         const auto objects = target.world().runtime().live_objects();
-        require(!target.instantiate_subtree(invalid.dump(), project),
+        const auto invalid_bytes = json::write(invalid.root());
+        require(!target.instantiate_subtree({invalid_bytes.data(), invalid_bytes.size()}, project),
                 "Invalid late business data unexpectedly published a graph.");
-        auto cyclic = Json::parse(take(source.serialize()));
-        cyclic["entities"][0]["space"]["origin"] = cyclic["entities"][1]["id"];
-        cyclic["entities"][1]["space"] = {{"position", Json::array({0, 0, 0})},
-                                          {"rotation", Json::array({0, 0, 0, 1})},
-                                          {"scale", Json::array({1, 1, 1})},
-                                          {"origin", cyclic["entities"][0]["id"]}};
-        require(!target.instantiate_subtree(cyclic.dump(), project),
+        json::Builder cyclic{*parsed};
+        const auto first = *cyclic.root().at("entities")->at(0);
+        const auto second = *cyclic.root().at("entities")->at(1);
+        require(
+            cyclic.set(*first.at("space"), "origin", *second.at("id")) &&
+                cyclic.set(
+                    second, "space",
+                    json::Document::literal<R"({"position":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]})">().root()) &&
+                cyclic.set(*second.at("space"), "origin", *first.at("id")),
+            "Cannot construct cyclic fixture.");
+        const auto cyclic_bytes = json::write(cyclic.root());
+        require(!target.instantiate_subtree({cyclic_bytes.data(), cyclic_bytes.size()}, project),
                 "A candidate spatial cycle was partially published after resource preparation.");
         for (unsigned i = 0; i < 8; ++i)
             take(target.collect_step());
@@ -657,20 +680,22 @@ void verify_codec_graph(editor::Project& project) {
 }
 
 // Every value in expected exists in actual at the same path; actual may add defaults.
-bool subset(const Json& actual, const Json& expected) {
-    if (expected.is_object()) {
-        if (!actual.is_object())
+bool subset(json::Value actual, json::Value expected) {
+    if (expected.kind() == json::Kind::object) {
+        if (actual.kind() != json::Kind::object)
             return false;
-        for (const auto& [key, value] : expected.items())
-            if (!actual.contains(key) || !subset(actual.at(key), value))
+        for (const auto& [key, value] : *expected.object_items()) {
+            const auto field = actual.at(key);
+            if (!field || !subset(*field, value))
                 return false;
+        }
         return true;
     }
-    if (expected.is_array()) {
-        if (!actual.is_array() || actual.size() != expected.size())
+    if (expected.kind() == json::Kind::array) {
+        if (actual.kind() != json::Kind::array || actual.size() != expected.size())
             return false;
         for (std::size_t i = 0; i < expected.size(); ++i)
-            if (!subset(actual[i], expected[i]))
+            if (!subset(*actual.at(i), *expected.at(i)))
                 return false;
         return true;
     }
@@ -681,63 +706,63 @@ std::size_t count(std::span<const world::Diagnostic> issues, world::DiagnosticKi
     return static_cast<std::size_t>(std::ranges::count(issues, kind, &world::Diagnostic::kind));
 }
 
-const Json* find_entity(const Json& scene, const std::string& id) {
-    for (const auto& entity : scene["entities"])
-        if (entity["id"] == id)
-            return &entity;
-    return nullptr;
+std::optional<json::Value> find_entity(json::Value scene, const std::string& id) {
+    for (const auto entity : *scene.at("entities")->array())
+        if (entity.string({"id"}) == id)
+            return entity;
+    return {};
 }
 
-void verify_retained_data(editor::Project& project, const Json& baseline, const std::shared_ptr<Evidence>& evidence) {
+void verify_retained_data(editor::Project& project, const json::Document& baseline,
+                          const std::shared_ptr<Evidence>& evidence) {
     acceptance_phase = "retained scene data";
     using enum world::DiagnosticKind;
-    auto scene = baseline;
-    auto next = std::stoull(scene["next_id"].get<std::string>());
+    json::Builder scene{baseline};
+    const auto root = scene.root();
+    auto next = std::stoull(std::string{*root.string({"next_id"})});
     const auto fresh = [&] { return std::to_string(next++); };
-    auto& entity = scene["entities"][0];
-    auto& move = entity["components"][1];
-    const auto entity_id = entity["id"].get<std::string>();
-    const auto move_id = move["id"].get<std::string>();
-    move["properties"]["legacy_speed"] = 9.5;
-    move["properties"]["count"] = -1;
-    move["properties"]["allowed"] = "yes";
-    entity["properties"]["health"] = 75.0;
-    entity["tags"] = Json::array({"a", "b"});
-    entity["space"]["pivot"] = Json::array({0, 0, 0});
+    const auto entity = *root.at("entities")->at(0);
+    const auto move = *entity.at("components")->at(1);
+    const std::string entity_id{*entity.string({"id"})};
+    const std::string move_id{*move.string({"id"})};
+    const auto properties = *move.at("properties");
+    require(scene.set(properties, "legacy_speed", 9.5) && scene.set(properties, "count", std::int64_t{-1}) &&
+                scene.set(properties, "allowed", "yes") && scene.set(*entity.at("properties"), "health", 75.0) &&
+                scene.set(entity, "tags", json::Document::literal<R"(["a","b"])">().root()) &&
+                scene.set(*entity.at("space"), "pivot", json::Document::literal<"[0,0,0]">().root()),
+            "Cannot construct retained fields.");
     const auto missing_id = fresh();
     const auto mesh_id = fresh();
     const auto constraint_id = fresh();
     const auto gone_id = fresh();
-    entity["components"].push_back({{"id", missing_id},
-                                    {"type", "game.Missing"},
-                                    {"name", ""},
-                                    {"enabled", true},
-                                    {"properties", {{"power", 3}, {"owner_ref", {{"$ref", entity_id}}}}}});
-    entity["components"].push_back({{"id", mesh_id},
-                                    {"type", "game.MissingMesh"},
-                                    {"name", ""},
-                                    {"enabled", true},
-                                    {"properties", {{"glow", 1.5}}},
-                                    {"mesh", "builtin/cube"},
-                                    {"materials", Json::array()}});
-    entity["components"].push_back({{"id", constraint_id},
-                                    {"type", "physics.DistanceConstraintComponent"},
-                                    {"name", ""},
-                                    {"enabled", true},
-                                    {"properties", {{"target", {{"$ref", move_id}}}}}});
-    scene["entities"].push_back({{"id", gone_id},
-                                 {"type", "game.Gone"},
-                                 {"name", "Gone"},
-                                 {"enabled", true},
-                                 {"space", nullptr},
-                                 {"children", Json::array()},
-                                 {"components", Json::array()},
-                                 {"properties", {{"peer", {{"$ref", entity_id}}}}}});
-    scene["roots"].push_back(gone_id);
-    scene["next_id"] = std::to_string(next);
-    scene["editor_meta"] = {{"layout", 1}};
-    scene["world"]["future_option"] = 3;
-    const auto text = scene.dump();
+    json::Builder missing{json::Document::literal<
+        R"({"type":"game.Missing","name":"","enabled":true,"properties":{"power":3,"owner_ref":{}}})">()};
+    require(missing.set(missing.root(), "id", missing_id) &&
+                missing.set(*missing.root().path({"properties", "owner_ref"}), "$ref", entity_id),
+            "Cannot construct missing component.");
+    scene.append(*entity.at("components"), missing.root());
+    json::Builder mesh{json::Document::literal<
+        R"({"type":"game.MissingMesh","name":"","enabled":true,"properties":{"glow":1.5},"mesh":"builtin/cube","materials":[]})">()};
+    require(bool(mesh.set(mesh.root(), "id", mesh_id)), "Cannot construct missing mesh.");
+    scene.append(*entity.at("components"), mesh.root());
+    json::Builder constraint_data{json::Document::literal<
+        R"({"type":"physics.DistanceConstraintComponent","name":"","enabled":true,"properties":{"target":{}}})">()};
+    require(constraint_data.set(constraint_data.root(), "id", constraint_id) &&
+                constraint_data.set(*constraint_data.root().path({"properties", "target"}), "$ref", move_id),
+            "Cannot construct constraint.");
+    scene.append(*entity.at("components"), constraint_data.root());
+    json::Builder gone{json::Document::literal<
+        R"({"type":"game.Gone","name":"Gone","enabled":true,"space":null,"children":[],"components":[],"properties":{"peer":{}}})">()};
+    require(gone.set(gone.root(), "id", gone_id) &&
+                gone.set(*gone.root().path({"properties", "peer"}), "$ref", entity_id),
+            "Cannot construct missing entity.");
+    scene.append(*root.at("entities"), gone.root());
+    require(scene.append(*root.at("roots"), gone_id) && scene.set(root, "next_id", std::to_string(next)) &&
+                scene.set(root, "editor_meta", json::Document::literal<R"({"layout":1})">().root()) &&
+                scene.set(root, "world", json::Document::literal<R"({"future_option":3})">().root()),
+            "Cannot construct retained scene.");
+    const auto bytes = json::write(root);
+    const std::string_view text{bytes.data(), bytes.size()};
 
     auto document = take(editor::Session::deserialize(text, project, prepare(evidence)));
     auto& runtime = document->world().runtime();
@@ -764,19 +789,24 @@ void verify_retained_data(editor::Project& project, const Json& baseline, const 
                 std::ranges::count(view.entries, mismatch, &editor::RetainedEntry::kind) == 2,
             "Retained view misclassified saved data.");
 
-    auto expected = scene;
-    expected["entities"][0]["properties"]["health"] = 75;
-    const auto first = Json::parse(take(document->serialize()));
-    require(subset(first, expected), "Saving dropped or altered retained scene data.");
-    auto reopened = take(editor::Session::deserialize(first.dump(), project, prepare(evidence)));
-    require(reopened->load_issues().size() == 15 && Json::parse(take(reopened->serialize())) == first,
+    json::Builder expected{root};
+    require(bool(expected.set(*expected.root().at("entities")->at(0)->at("properties"), "health", 75u)),
+            "Cannot construct expected health.");
+    const auto first_text = take(document->serialize());
+    const auto first = assets::json_format::parse(first_text);
+    require(first && subset(first->root(), expected.root()), "Saving dropped or altered retained scene data.");
+    auto reopened = take(editor::Session::deserialize(first_text, project, prepare(evidence)));
+    const auto reopened_json = assets::json_format::parse(take(reopened->serialize()));
+    require(reopened->load_issues().size() == 15 && reopened_json && *reopened_json == *first,
             "Retained data did not round-trip stably.");
 
     acceptance_phase = "retained data released by edits";
     take(document->select(entity_object));
     edit(*document, move_object, field(*document, move_type, "count"), Scalar{std::uint32_t{9}}, 901);
     const auto count_of = [&] {
-        return Json::parse(take(document->serialize()))["entities"][0]["components"][1]["properties"]["count"];
+        const auto parsed = assets::json_format::parse(take(document->serialize()));
+        require(bool(parsed), "Edited scene JSON is invalid.");
+        return parsed->root().at("entities")->at(0)->at("components")->at(1)->i64({"properties", "count"});
     };
     require(count_of() == 9, "An edit did not replace the retained value.");
     changed(document->undo());
@@ -784,12 +814,18 @@ void verify_retained_data(editor::Project& project, const Json& baseline, const 
     changed(document->redo());
     require(count_of() == 9, "Redo did not release the retained value again.");
     take(document->discard_retained(move_object));
-    auto discarded = Json::parse(take(document->serialize()))["entities"][0]["components"][1]["properties"];
-    require(!discarded.contains("legacy_speed") && discarded["allowed"] == true && discarded["count"] == 9,
+    auto discarded = assets::json_format::parse(take(document->serialize()));
+    require(bool(discarded), "Discarded scene JSON is invalid.");
+    auto discarded_properties = *discarded->root().at("entities")->at(0)->at("components")->at(1)->at("properties");
+    require(!*discarded_properties.find("legacy_speed") && discarded_properties.boolean({"allowed"}) == true &&
+                discarded_properties.i64({"count"}) == 9,
             "Discard did not drop the object's retained data.");
     changed(document->undo());
-    discarded = Json::parse(take(document->serialize()))["entities"][0]["components"][1]["properties"];
-    require(discarded["legacy_speed"] == 9.5 && discarded["allowed"] == "yes", "Undo did not restore discarded data.");
+    discarded = assets::json_format::parse(take(document->serialize()));
+    require(bool(discarded), "Undo scene JSON is invalid.");
+    discarded_properties = *discarded->root().at("entities")->at(0)->at("components")->at(1)->at("properties");
+    require(discarded_properties.number({"legacy_speed"}) == 9.5 && discarded_properties.string({"allowed"}) == "yes",
+            "Undo did not restore discarded data.");
 
     acceptance_phase = "retained data in duplicates";
     {
@@ -799,12 +835,14 @@ void verify_retained_data(editor::Project& project, const Json& baseline, const 
         changed(copy->duplicate_entities(copy->selected_entities()));
         const auto duplicate = copy->selected_entities().back();
         const auto duplicate_id = std::to_string(*copy->document_identity(duplicate));
-        const auto saved = Json::parse(take(copy->serialize()));
-        const auto* record = find_entity(saved, duplicate_id);
-        require(record && (*record)["components"].size() == 5 && (*record)["components"][2]["type"] == "game.Missing" &&
-                    (*record)["components"][2]["properties"]["owner_ref"]["$ref"] == duplicate_id &&
-                    (*record)["components"][3]["type"] == "game.MissingMesh" &&
-                    (*record)["tags"] == Json::array({"a", "b"}),
+        const auto saved = assets::json_format::parse(take(copy->serialize()));
+        require(bool(saved), "Duplicate scene JSON is invalid.");
+        const auto record = find_entity(saved->root(), duplicate_id);
+        require(record && record->at("components")->size() == 5 &&
+                    record->at("components")->at(2)->string({"type"}) == "game.Missing" &&
+                    record->at("components")->at(2)->string({"properties", "owner_ref", "$ref"}) == duplicate_id &&
+                    record->at("components")->at(3)->string({"type"}) == "game.MissingMesh" &&
+                    *record->at("tags") == json::Document::literal<R"(["a","b"])">().root(),
                 "Duplicate lost retained data or did not remap a reference inside the copy.");
         require(copy->load_issues().size() == 16, "Duplicating reported its retained data as a new load.");
     }
@@ -817,14 +855,17 @@ void verify_retained_data(editor::Project& project, const Json& baseline, const 
         take(deleted->select_entities(targets, target));
         changed(deleted->erase_entities(deleted->selected_entities()));
         const auto saved = take(deleted->serialize());
-        require((*find_entity(Json::parse(saved), gone_id))["properties"]["peer"].is_null() &&
+        const auto parsed = assets::json_format::parse(saved);
+        require(bool(parsed), "Deleted scene JSON is invalid.");
+        require(find_entity(parsed->root(), gone_id)->path({"properties", "peer"})->is_null() &&
                     count(deleted->issues(), reference_dropped) == 1,
                 "A retained reference to a deleted object was not written as null and reported.");
         require(editor::Session::deserialize(saved, project, prepare(evidence)).has_value(),
                 "Saving after a deletion produced an unloadable scene.");
         changed(deleted->undo());
-        require((*find_entity(Json::parse(take(deleted->serialize())), gone_id))["properties"]["peer"]["$ref"] ==
-                    entity_id,
+        const auto undone = assets::json_format::parse(take(deleted->serialize()));
+        require(bool(undone), "Undo deletion JSON is invalid.");
+        require(find_entity(undone->root(), gone_id)->string({"properties", "peer", "$ref"}) == entity_id,
                 "Undoing the deletion did not restore the retained reference.");
     }
 }
@@ -867,34 +908,39 @@ void verify_string_properties(editor::Project& project, const std::shared_ptr<Ev
         take(owner.read(object, path(session, leaf), ValueOutput{take(owner.native_type<String>()), &value}));
         return std::string{value.c_str(), value.size()};
     };
-    const auto label_json = [](Json& scene) -> Json& {
-        for (auto& part : scene["entities"][0]["components"])
-            if (part["type"] == "game.Label")
+    const auto label_json = [](json::Value scene) {
+        for (auto part : *scene.at("entities")->at(0)->at("components")->array())
+            if (part.string({"type"}) == "game.Label")
                 return part;
         throw std::runtime_error("The saved scene lost its Label component.");
     };
     const std::string gate = "Gate \"north\" \xE5\x8C\x97\xE9\x97\xA8";
     set(label, title, gate);
     set(label, text, "line\nbreak");
-    auto saved = Json::parse(take(document.serialize()));
-    const auto label_id = std::stoull(label_json(saved)["id"].get<std::string>());
-    require(subset(label_json(saved)["properties"],
-                   {{"title", gate}, {"caption", {{"text", "line\nbreak"}, {"size", 1.0}, {"lines", 1}}}}),
+    const auto saved_text = take(document.serialize());
+    const auto saved = assets::json_format::parse(saved_text);
+    require(bool(saved), "Label scene JSON is invalid.");
+    const auto label_id = std::stoull(std::string{*label_json(saved->root()).string({"id"})});
+    require(subset(*label_json(saved->root()).at("properties"),
+                   json::Document::literal<
+                       R"({"title":"Gate \"north\" 北门","caption":{"text":"line\nbreak","size":1.0,"lines":1}})">()
+                       .root()),
             "String fields were not saved as JSON strings beside their record siblings.");
     {
-        auto reopened = take(editor::Session::deserialize(saved.dump(), project, prepare(evidence)));
+        auto reopened = take(editor::Session::deserialize(saved_text, project, prepare(evidence)));
         const auto copy = take(reopened->local_object(label_id));
         require(reopened->load_issues().empty() && get(*reopened, copy, "title") == gate &&
                     get(*reopened, copy, "text") == "line\nbreak",
                 "String fields did not round-trip through a scene load.");
     }
     {
-        auto damaged = saved;
-        auto& properties = label_json(damaged)["properties"];
-        properties["title"] = 5;
-        properties["caption"]["size"] = 50;
-        properties["caption"]["lines"] = 2.0;
-        auto tolerant = take(editor::Session::deserialize(damaged.dump(), project, prepare(evidence)));
+        json::Builder damaged{*saved};
+        const auto properties = *label_json(damaged.root()).at("properties");
+        require(damaged.set(properties, "title", 5u) && damaged.set(*properties.at("caption"), "size", 50u) &&
+                    damaged.set(*properties.at("caption"), "lines", 2.0),
+                "Cannot damage Label fixture.");
+        const auto bytes = json::write(damaged.root());
+        auto tolerant = take(editor::Session::deserialize({bytes.data(), bytes.size()}, project, prepare(evidence)));
         const auto copy = take(tolerant->local_object(label_id));
         const auto issues = tolerant->load_issues();
         auto& owner = tolerant->world().runtime();
@@ -903,10 +949,11 @@ void verify_string_properties(editor::Project& project, const std::shared_ptr<Ev
                     std::get<float>(take(owner.read(copy, path(*tolerant, "size")))) == 10 &&
                     std::get<std::uint32_t>(take(owner.read(copy, path(*tolerant, "lines")))) == 2,
                 "A mistyped String did not keep its default, or its record siblings were not decoded.");
-        auto resaved_scene = Json::parse(take(tolerant->serialize()));
-        const auto& resaved = label_json(resaved_scene)["properties"];
-        require(resaved["title"] == 5 && resaved["caption"]["size"] == 50 &&
-                    resaved["caption"]["text"] == "line\nbreak",
+        const auto resaved_scene = assets::json_format::parse(take(tolerant->serialize()));
+        require(bool(resaved_scene), "Resaved Label JSON is invalid.");
+        const auto resaved = *label_json(resaved_scene->root()).at("properties");
+        require(resaved.i64({"title"}) == 5 && resaved.i64({"caption", "size"}) == 50 &&
+                    resaved.string({"caption", "text"}) == "line\nbreak",
                 "The saved values of mismatched leaves were not written back.");
     }
 
@@ -917,29 +964,31 @@ void verify_string_properties(editor::Project& project, const std::shared_ptr<Ev
     const auto value_of = [&](const world::FieldPath& path) {
         return take(runtime.read(caption_type, storage, std::span(path).subspan(1)));
     };
-    take(editor::decode_properties(runtime, record, {{"text", "hi"}, {"size", 3}, {"lines", 2.0}}));
+    take(editor::decode_properties(runtime, record,
+                                   json::Document::literal<R"({"text":"hi","size":3,"lines":2.0})">().root()));
     String decoded;
     take(runtime.read(caption_type, storage, std::span(text).subspan(1), ValueOutput{string_type, &decoded}));
     require(std::string{decoded.c_str(), decoded.size()} == "hi" && value_of(size) == Scalar{3.f} &&
                 value_of(lines) == Scalar{std::uint32_t{2}},
             "Strict decoding did not write a caller-owned record, or rejected an exact integral conversion.");
-    require(!editor::decode_properties(runtime, record, {{"size", 50}}) && value_of(size) == Scalar{3.f},
+    require(!editor::decode_properties(runtime, record, json::Document::literal<R"({"size":50})">().root()) &&
+                value_of(size) == Scalar{3.f},
             "A rejected strict decode clamped and wrote its value.");
-    const auto invalid_text = editor::decode_properties(runtime, record, {{"text", std::string{"\xc0\xaf"}}});
+    const auto invalid_text = assets::json_format::parse("{\"text\":\"\xc0\xaf\"}");
     take(runtime.read(caption_type, storage, std::span(text).subspan(1), ValueOutput{string_type, &decoded}));
-    require(!invalid_text && invalid_text.error().code == ErrorCode::argument_mismatch &&
-                invalid_text.error().message == "text: Expected UTF-8 text." && decoded.view() == "hi",
-            "Strict decoding did not preserve the String and report its relative path on invalid UTF-8.");
+    require(!invalid_text && invalid_text.error().fault == json::Fault::encoding && invalid_text.error().offset == 9 &&
+                decoded.view() == "hi" && value_of(size) == Scalar{3.f} && value_of(lines) == Scalar{std::uint32_t{2}},
+            "Invalid UTF-8 reached property decoding or changed the record instead of failing at its byte offset.");
     take(runtime.destroy_value(caption_type, storage));
 
     // A write hook turns an object decode into a patch without touching the object.
     std::vector<std::pair<world::FieldPath, editor::PropertyLeaf>> patch;
-    take(
-        editor::decode_properties(runtime, {label_type, label}, {{"title", "patched"}, {"caption", {{"size", 4}}}}, {},
-                                  [&](std::span<const FieldId> path, const editor::PropertyLeaf& leaf) -> Result<void> {
-                                      patch.emplace_back(world::FieldPath(path.begin(), path.end()), leaf);
-                                      return {};
-                                  }));
+    take(editor::decode_properties(
+        runtime, {label_type, label}, json::Document::literal<R"({"title":"patched","caption":{"size":4}})">().root(),
+        {}, [&](std::span<const FieldId> path, const editor::PropertyLeaf& leaf) -> Result<void> {
+            patch.emplace_back(world::FieldPath(path.begin(), path.end()), leaf);
+            return {};
+        }));
     const auto leaf = [&](const world::FieldPath& path) -> const editor::PropertyLeaf* {
         const auto at = std::ranges::find(patch, path, &std::pair<world::FieldPath, editor::PropertyLeaf>::first);
         return at == patch.end() ? nullptr : &at->second;
@@ -1007,9 +1056,9 @@ void verify_array_properties(editor::Project& project, const std::shared_ptr<Evi
         take(runtime.read(object, counts, ValueOutput{take(runtime.find_type("game.Counts")), &value}));
         return std::vector<std::uint32_t>(value.begin(), value.end());
     };
-    const auto tags_json = [](Json& scene) -> Json& {
-        for (auto& part : scene["entities"][0]["components"])
-            if (part["type"] == "game.Tags")
+    const auto tags_json = [](json::Value scene) {
+        for (auto part : *scene.at("entities")->at(0)->at("components")->array())
+            if (part.string({"type"}) == "game.Tags")
                 return part;
         throw std::runtime_error("The saved scene lost its Tags component.");
     };
@@ -1029,25 +1078,31 @@ void verify_array_properties(editor::Project& project, const std::shared_ptr<Evi
         take(runtime.write(tags, f.names, ValueInput{f.strings, &stored}));
         take(runtime.write(tags, f.weights, ValueInput{f.floats, &bounded}));
     }
-    auto saved = Json::parse(take(document.serialize()));
-    const auto tags_id = std::stoull(tags_json(saved)["id"].get<std::string>());
-    require(subset(tags_json(saved)["properties"],
-                   {{"names", Json::array({names[0], names[1]})}, {"weights", Json::array({.25, 1.0, .5})}}),
+    const auto saved_text = take(document.serialize());
+    const auto saved = assets::json_format::parse(saved_text);
+    require(bool(saved), "Tags scene JSON is invalid.");
+    const auto tags_id = std::stoull(std::string{*tags_json(saved->root()).string({"id"})});
+    require(subset(*tags_json(saved->root()).at("properties"),
+                   json::Document::literal<R"({"names":["north","北"],"weights":[0.25,1.0,0.5]})">().root()) &&
+                tags_json(saved->root()).path({"properties", "weights"})->at(1)->kind() == json::Kind::real,
             "Inline Arrays were not saved as JSON arrays of their elements.");
     {
-        auto reopened = take(editor::Session::deserialize(saved.dump(), project, prepare_tags(evidence)));
+        auto reopened = take(editor::Session::deserialize(saved_text, project, prepare_tags(evidence)));
         const auto copy = take(reopened->local_object(tags_id));
         auto& owner = reopened->world().runtime();
         require(reopened->load_issues().empty() && names_of(owner, copy) == names && weights_of(owner, copy) == weights,
                 "Inline Arrays did not round-trip through a scene load.");
     }
     {
-        auto damaged = saved;
-        auto& properties = tags_json(damaged)["properties"];
-        properties["names"] = Json::array({"kept", 5});
-        properties["weights"] = Json::array({.5, 2.0, -1.0});
-        properties["counts"] = Json::array({2.0, 5.0});
-        auto tolerant = take(editor::Session::deserialize(damaged.dump(), project, prepare_tags(evidence)));
+        json::Builder damaged{*saved};
+        const auto properties = *tags_json(damaged.root()).at("properties");
+        require(damaged.set(properties, "names", json::Document::literal<R"(["kept",5])">().root()) &&
+                    damaged.set(properties, "weights", json::Document::literal<"[0.5,2.0,-1.0]">().root()) &&
+                    damaged.set(properties, "counts", json::Document::literal<"[2.0,5.0]">().root()),
+                "Cannot damage Tags fixture.");
+        const auto bytes = json::write(damaged.root());
+        auto tolerant =
+            take(editor::Session::deserialize({bytes.data(), bytes.size()}, project, prepare_tags(evidence)));
         const auto copy = take(tolerant->local_object(tags_id));
         const auto issues = tolerant->load_issues();
         auto& owner = tolerant->world().runtime();
@@ -1057,23 +1112,25 @@ void verify_array_properties(editor::Project& project, const std::shared_ptr<Evi
                 weights_of(owner, copy) == std::vector<float>{.5f, 1.f, 0.f} &&
                 counts_of(owner, copy) == std::vector<std::uint32_t>{2, 3},
             "A mistyped element did not leave its Array at the default, or elements outside the hard bounds were not clamped once.");
-        require(Json::parse(take(tolerant->serialize())) == damaged,
+        const auto resaved = assets::json_format::parse(take(tolerant->serialize()));
+        require(resaved && resaved->root() == damaged.root(),
                 "The saved values of mismatched Arrays were not written back unchanged.");
     }
 
     acceptance_phase = "Array properties decoding";
     const auto unchanged = [&] { return names_of(runtime, tags) == names && weights_of(runtime, tags) == weights; };
-    require(!editor::decode_properties(runtime, {f.tags, tags}, {{"weights", Json::array({.5, 2.0})}}) && unchanged(),
+    require(!editor::decode_properties(runtime, {f.tags, tags},
+                                       json::Document::literal<R"({"weights":[0.5,2.0]})">().root()) &&
+                unchanged(),
             "Strict decoding partly wrote an invalid Array.");
-    const Json invalid_names = Json::array({"valid prefix", std::string{"\xed\xa0\x80"}});
-    const auto invalid_array = editor::decode_properties(runtime, {f.tags, tags}, {{"names", invalid_names}});
-    require(!invalid_array && invalid_array.error().code == ErrorCode::argument_mismatch &&
-                invalid_array.error().message == "names: Expected an array of UTF-8 strings." && unchanged(),
-            "Strict decoding published a partial String Array or lost its UTF-8 error.");
+    const auto invalid_array = assets::json_format::parse("{\"names\":[\"valid prefix\",\"\xed\xa0\x80\"]}");
+    require(!invalid_array && invalid_array.error().fault == json::Fault::encoding &&
+                invalid_array.error().offset == 26 && unchanged(),
+            "Invalid UTF-8 reached Array decoding or changed its valid prefix instead of failing at its byte offset.");
     // A write hook receives each Array as one whole leaf and leaves the object as it was.
     std::vector<std::pair<world::FieldPath, editor::PropertyLeaf>> patch;
     take(editor::decode_properties(
-        runtime, {f.tags, tags}, {{"names", Json::array({"patched"})}, {"weights", Json::array({.75})}}, {},
+        runtime, {f.tags, tags}, json::Document::literal<R"({"names":["patched"],"weights":[0.75]})">().root(), {},
         [&](std::span<const FieldId> path, const editor::PropertyLeaf& leaf) -> Result<void> {
             patch.emplace_back(world::FieldPath(path.begin(), path.end()), leaf);
             return {};
@@ -1096,15 +1153,14 @@ void verify_array_properties(editor::Project& project, const std::shared_ptr<Evi
     std::vector<std::vector<std::string>> kept;
     std::vector<std::vector<std::string>> conversions;
     const editor::PropertyReport report{
-        [&](std::vector<std::string> at, const Json&, world::DiagnosticKind kind, const std::string&) {
+        [&](std::vector<std::string> at, json::Value, world::DiagnosticKind kind, const std::string&) {
             if (kind == mismatch)
                 kept.push_back(std::move(at));
         },
-        [&](std::vector<std::string> at, const Json&) { conversions.push_back(std::move(at)); }};
+        [&](std::vector<std::string> at, json::Value) { conversions.push_back(std::move(at)); }};
     take(editor::decode_properties(
         runtime, {f.tags, tags}, take(editor::detail::author_fields(runtime, f.tags)),
-        {{"names", Json::array({"a", 3})}, {"weights", Json::array({.75, 2.0})}, {"counts", Json::array({1.0})}},
-        report));
+        json::Document::literal<R"({"names":["a",3],"weights":[0.75,2.0],"counts":[1.0]})">().root(), report));
     require(
         kept == std::vector<std::vector<std::string>>{{"names"}, {"weights"}} &&
             conversions == std::vector<std::vector<std::string>>{{"counts"}} && names_of(runtime, tags) == names &&
@@ -1112,34 +1168,22 @@ void verify_array_properties(editor::Project& project, const std::shared_ptr<Evi
             counts_of(runtime, tags) == std::vector<std::uint32_t>{1},
         "A tolerant decode did not report its leaves from the record, or did not apply the clamped and converted Arrays.");
 
-    kept.clear();
-    conversions.clear();
-    Json rejected_names;
-    const editor::PropertyReport utf8_report{
-        [&](std::vector<std::string> at, const Json& item, world::DiagnosticKind kind, const std::string&) {
-            require(kind == mismatch, "Invalid UTF-8 was not reported as a leaf mismatch.");
-            kept.push_back(std::move(at));
-            rejected_names = item;
-        },
-        [&](std::vector<std::string> at, const Json&) { conversions.push_back(std::move(at)); }};
-    take(editor::decode_properties(runtime, {f.tags, tags}, take(editor::detail::author_fields(runtime, f.tags)),
-                                   {{"names", invalid_names}, {"weights", Json::array({.125})}}, utf8_report));
-    require(kept == std::vector<std::vector<std::string>>{{"names"}} && conversions.empty() &&
-                rejected_names == invalid_names && names_of(runtime, tags) == names &&
-                weights_of(runtime, tags) == std::vector<float>{.125f},
-            "Tolerant UTF-8 rejection did not keep the complete leaf and continue with its next sibling.");
-
     acceptance_phase = "Array properties in Play";
     auto play_project = take(editor::Project::open(project.root()));
-    auto b = take(editor::Session::deserialize(saved.dump(), play_project, prepare_tags(evidence)));
+    auto b = take(editor::Session::deserialize(saved_text, play_project, prepare_tags(evidence)));
     b->enter_play();
     auto& rb = b->world().runtime();
     const auto b_tags = take(b->local_object(tags_id));
-    const auto apply = [&](Json properties) {
-        const Json op = {{"op", "set"}, {"id", std::to_string(tags_id)}, {"properties", std::move(properties)}};
-        return take(b->apply_live(Json{{"ops", Json::array({op})}}.dump(), play_project));
+    const auto apply = [&](const json::Document& properties) {
+        json::Builder batch{json::Document::literal<R"({"ops":[{"op":"set"}]})">()};
+        const auto op = *batch.root().at("ops")->at(0);
+        require(batch.set(op, "id", std::to_string(tags_id)) && batch.set(op, "properties", properties.root()),
+                "Cannot construct Tags live patch.");
+        const auto bytes = json::write(batch.root());
+        return take(b->apply_live({bytes.data(), bytes.size()}, play_project));
     };
-    require(apply({{"weights", Json::array({.5})}}).empty() && weights_of(rb, b_tags) == std::vector<float>{.5f},
+    require(apply(json::Document::literal<R"({"weights":[0.5]})">()).empty() &&
+                weights_of(rb, b_tags) == std::vector<float>{.5f},
             "A Play set did not shorten an Array to its one element.");
     take(const_cast<world::World&>(b->world())
              .add_admission(fields(rb).tags,
@@ -1152,11 +1196,11 @@ void verify_array_properties(editor::Project& project, const std::shared_ptr<Evi
                                             Error{ErrorCode::invalid_member, "Tags cannot name Closed."});
                                 return {};
                             }));
-    const auto rejected = apply({{"names", Json::array({"open", "Closed"})}});
+    const auto rejected = apply(json::Document::literal<R"({"names":["open","Closed"]})">());
     require(rejected.size() == 1 && rejected[0].severity == world::Severity::error &&
                 rejected[0].kind == command_rejected && names_of(rb, b_tags) == names,
             "A Play Array change the type's rules reject did not keep the whole previous Array.");
-    const auto clamped = apply({{"weights", Json::array({.25, 2.0})}});
+    const auto clamped = apply(json::Document::literal<R"({"weights":[0.25,2.0]})">());
     require(clamped.size() == 1 && clamped[0].kind == command_rejected &&
                 weights_of(rb, b_tags) == std::vector<float>{.5f},
             "A Play Array change outside the hard bounds was clamped and applied.");
@@ -1199,21 +1243,28 @@ void verify_play_changes(editor::Project& project, const std::shared_ptr<Evidenc
     lighting.exposure_ev = 1.5f;
     take(a.set_environment(lighting));
     const auto environment = a.environment();
-    const auto saved = Json::parse(take(a.serialize()));
+    const auto saved_text = take(a.serialize());
+    const auto saved = assets::json_format::parse(saved_text);
+    require(bool(saved), "Play source JSON is invalid.");
     const auto id = [&](ObjectId object) { return std::to_string(*a.document_identity(object)); };
-    require(find_entity(saved, id(falling))->at("components")[0]["properties"]["body"]["motion"] == "dynamic",
-            "Body motion is not saved by member name.");
+    require(
+        find_entity(saved->root(), id(falling))->at("components")->at(0)->string({"properties", "body", "motion"}) ==
+            "dynamic",
+        "Body motion is not saved by member name.");
 
     auto play_project = take(editor::Project::open(project.root()));
-    auto b = take(editor::Session::deserialize(saved.dump(), play_project, prepare(evidence)));
+    auto b = take(editor::Session::deserialize(saved_text, play_project, prepare(evidence)));
     b->enter_play();
     auto& rb = b->world().runtime();
     const auto in_b = [&](ObjectId object) { return take(b->local_object(*a.document_identity(object))); };
-    const auto apply = [&](Json ops) {
-        return take(b->apply_live(Json{{"ops", std::move(ops)}}.dump(), play_project));
+    const auto apply = [&](json::Value ops) {
+        json::Builder batch;
+        require(bool(batch.set(batch.root(), "ops", ops)), "Cannot construct Play batch.");
+        const auto bytes = json::write(batch.root());
+        return take(b->apply_live({bytes.data(), bytes.size()}, play_project));
     };
-    const auto applied = [&](Json ops) {
-        const auto issues = apply(std::move(ops));
+    const auto applied = [&](json::Value ops) {
+        const auto issues = apply(ops);
         if (!issues.empty())
             throw std::runtime_error(issues.front().message);
     };
@@ -1230,15 +1281,20 @@ void verify_play_changes(editor::Project& project, const std::shared_ptr<Evidenc
     const auto b_move = in_b(move);
     const auto b_mover = in_b(mover);
     take(rb.write(b_move, count, Scalar{std::uint32_t{42}}));
-    applied({{{"op", "set"}, {"id", id(move)}, {"properties", {{"speed", 5.f}}}, {"enabled", false}},
-             {{"op", "set"}, {"id", id(mover)}, {"name", "Runner"}}});
+    json::Builder ops{json::Document::literal<
+        R"([{"op":"set","properties":{"speed":5.0},"enabled":false},{"op":"set","name":"Runner"}])">()};
+    require(ops.set(*ops.root().at(0), "id", id(move)) && ops.set(*ops.root().at(1), "id", id(mover)),
+            "Cannot construct field batch.");
+    applied(ops.root());
     require(std::get<float>(take(rb.read(b_move, speed))) == 5 &&
                 std::get<std::uint32_t>(take(rb.read(b_move, count))) == 42 && b->name(b_mover) == L"Runner",
             "A Play field or name change was lost, or overwrote a runtime value.");
     const auto paused = position(b_mover).x;
     step();
     require(position(b_mover).x == paused, "A disabled component kept ticking.");
-    applied({{{"op", "set"}, {"id", id(move)}, {"enabled", true}}});
+    ops = json::Builder{json::Document::literal<R"([{"op":"set","enabled":true}])">()};
+    require(bool(ops.set(*ops.root().at(0), "id", id(move))), "Cannot construct enable batch.");
+    applied(ops.root());
     step();
     require(std::abs(position(b_mover).x - paused - 5.f / 60) < 1e-5f,
             "A re-enabled component did not tick with its new speed.");
@@ -1252,7 +1308,9 @@ void verify_play_changes(editor::Project& project, const std::shared_ptr<Evidenc
         return std::string{value.c_str(), value.size()};
     };
     const auto b_label = in_b(label);
-    applied({{{"op", "set"}, {"id", id(label)}, {"properties", {{"title", "North gate"}}}}});
+    ops = json::Builder{json::Document::literal<R"([{"op":"set","properties":{"title":"North gate"}}])">()};
+    require(bool(ops.set(*ops.root().at(0), "id", id(label))), "Cannot construct title batch.");
+    applied(ops.root());
     require(title_of(b->world(), b_label) == "North gate", "A Play String field change was not applied.");
     take(const_cast<world::World&>(b->world())
              .add_admission(b_label_type,
@@ -1264,7 +1322,8 @@ void verify_play_changes(editor::Project& project, const std::shared_ptr<Evidenc
                                             Error{ErrorCode::invalid_member, "A Label cannot be titled Closed."});
                                 return {};
                             }));
-    const auto closed = apply({{{"op", "set"}, {"id", id(label)}, {"properties", {{"title", "Closed"}}}}});
+    require(bool(ops.set(*ops.root().at(0)->at("properties"), "title", "Closed")), "Cannot change title fixture.");
+    const auto closed = apply(ops.root());
     require(closed.size() == 1 && closed[0].severity == world::Severity::error && closed[0].kind == command_rejected &&
                 title_of(b->world(), b_label) == "North gate",
             "A rejected Play String change did not restore the whole previous value.");
@@ -1272,12 +1331,16 @@ void verify_play_changes(editor::Project& project, const std::shared_ptr<Evidenc
     // An authored pose replaces the simulated one, and body settings reach physics.
     const auto b_falling = in_b(falling);
     require(position(b_falling).y < 5, "The dynamic body did not fall.");
-    applied({{{"op", "set"}, {"id", id(falling)}, {"space", {{"position", {3, 10, 0}}}}}});
+    ops = json::Builder{json::Document::literal<R"([{"op":"set","space":{"position":[3,10,0]}}])">()};
+    require(bool(ops.set(*ops.root().at(0), "id", id(falling))), "Cannot construct pose batch.");
+    applied(ops.root());
     step();
     const auto teleported = position(b_falling);
     require(std::abs(teleported.x - 3) < 1e-4f && teleported.y > 9.5f && teleported.y < 10,
             "A moved dynamic body snapped back to its simulated pose.");
-    applied({{{"op", "set"}, {"id", id(body)}, {"properties", {{"body", {{"motion", "stationary"}}}}}}});
+    ops = json::Builder{json::Document::literal<R"([{"op":"set","properties":{"body":{"motion":"stationary"}}}])">()};
+    require(bool(ops.set(*ops.root().at(0), "id", id(body))), "Cannot construct body batch.");
+    applied(ops.root());
     step();
     const auto resting = position(b_falling);
     step();
@@ -1285,53 +1348,62 @@ void verify_play_changes(editor::Project& project, const std::shared_ptr<Evidenc
     require(position(b_falling) == resting, "A Play body setting did not reach physics.");
 
     // Scalar leaves of one set are one group: moving a probe volume past its old bounds fails leaf by leaf in either order.
-    applied({{{"op", "set"},
-              {"id", id(environment)},
-              {"properties",
-               {{"volume0", {{"minimum", {{"x", -20}, {"y", 10}}}, {"maximum", {{"x", -10}, {"y", 20}}}}}}}}});
+    ops = json::Builder{json::Document::literal<
+        R"([{"op":"set","properties":{"volume0":{"minimum":{"x":-20,"y":10},"maximum":{"x":-10,"y":20}}}}])">()};
+    require(bool(ops.set(*ops.root().at(0), "id", id(environment))), "Cannot construct volume batch.");
+    applied(ops.root());
     const auto moved_volume = take(b->presentation().environment()).probe_volumes[0];
     require(moved_volume.minimum[0] == -20 && moved_volume.maximum[0] == -10 && moved_volume.minimum[1] == 10 &&
                 moved_volume.maximum[1] == 20 && take(b->presentation().environment()).exposure_ev == 1.5f,
             "A Play set did not write a moved probe volume as one group.");
-    require(
-        !apply({{{"op", "set"}, {"id", id(environment)}, {"properties", {{"volume0", {{"maximum", {{"x", -30}}}}}}}}})
-                .empty() &&
-            take(b->presentation().environment()).probe_volumes[0].maximum[0] == -10,
-        "A Play set that breaks the Environment's rules was applied.");
+    require(bool(ops.set(*ops.root().at(0), "properties",
+                         json::Document::literal<R"({"volume0":{"maximum":{"x":-30}}})">().root())),
+            "Cannot damage volume batch.");
+    require(!apply(ops.root()).empty() && take(b->presentation().environment()).probe_volumes[0].maximum[0] == -10,
+            "A Play set that breaks the Environment's rules was applied.");
     const auto key = take(project.create_material("Content/Materials/Live.material"));
     require(b->loaded_material(key) == ObjectId{}, "Play loaded an unreferenced material.");
     assets::MaterialAsset asset;
     std::get<assets::MaterialInstanceAsset>(asset.author).entries = {{"roughness", .25f, true}};
-    applied({{{"op", "resource"}, {"key", key}, {"material", assets::material_format::encode(asset)}}});
+    ops = json::Builder{json::Document::literal<R"([{"op":"resource"}])">()};
+    auto material_json = assets::material_format::encode(asset);
+    require(material_json && ops.set(*ops.root().at(0), "key", key) &&
+                ops.set(*ops.root().at(0), "material", material_json->root()),
+            "Cannot construct material batch.");
+    applied(ops.root());
     const auto loaded = b->loaded_material(key);
     require(loaded != ObjectId{} && roughness(*b, loaded) == .25f, "A new material asset did not reach Play.");
     std::get<assets::MaterialInstanceAsset>(asset.author).entries = {{"roughness", .75f, true}};
-    applied({{{"op", "resource"}, {"key", key}, {"material", assets::material_format::encode(asset)}}});
+    material_json = assets::material_format::encode(asset);
+    require(material_json && ops.set(*ops.root().at(0), "material", material_json->root()),
+            "Cannot update material batch.");
+    applied(ops.root());
     require(b->loaded_material(key) == loaded && roughness(*b, loaded) == .75f,
             "A material asset edit did not update the loaded material in place.");
 
     // Added objects Begin once with their editor identity; removal Ends them and frees the identity.
     const auto runner = added({0, 0, 8});
     changed(a.add_component(runner, move_type));
-    const Json add = {{"op", "add"},
-                      {"parent", nullptr},
-                      {"index", nullptr},
-                      {"graph", Json::parse(take(a.serialize_live_subtree(runner)))}};
+    json::Builder add{json::Document::literal<R"([{"op":"add","parent":null,"index":null}])">()};
+    const auto runner_graph = assets::json_format::parse(take(a.serialize_live_subtree(runner)));
+    require(runner_graph && add.set(*add.root().at(0), "graph", runner_graph->root()), "Cannot construct add batch.");
     auto begins = evidence->begins;
-    applied({add});
+    applied(add.root());
     require(evidence->begins == begins + 1, "An added Entity did not Begin exactly once.");
     step();
     require(position(in_b(runner)).x > 0, "An added Entity did not tick.");
     const auto ends = evidence->ends;
-    applied({{{"op", "remove"}, {"id", id(runner)}}});
+    ops = json::Builder{json::Document::literal<R"([{"op":"remove"}])">()};
+    require(bool(ops.set(*ops.root().at(0), "id", id(runner))), "Cannot construct remove batch.");
+    applied(ops.root());
     require(evidence->ends == ends + 1 && !b->local_object(*a.document_identity(runner)),
             "A removed Entity did not End or stayed alive.");
     begins = evidence->begins;
-    applied({add});
+    applied(add.root());
     require(evidence->begins == begins + 1 && b->local_object(*a.document_identity(runner)),
             "Restoring a removed identity failed.");
     const auto members = take(b->world().members()).size();
-    const auto rejected = apply({add});
+    const auto rejected = apply(add.root());
     require(rejected.size() == 1 && rejected[0].severity == world::Severity::error &&
                 rejected[0].kind == command_rejected && take(b->world().members()).size() == members,
             "An add of an identity Play already has created a second object.");
@@ -1340,21 +1412,26 @@ void verify_play_changes(editor::Project& project, const std::shared_ptr<Evidenc
     changed(a.add_component(mover, spatial_type));
     const auto spatial = member(a, spatial_type);
     edit(a, spatial, field(a, spatial_type, "offset"), Scalar{9.f}, 31);
-    applied({{{"op", "attach"},
-              {"entity", id(mover)},
-              {"index", nullptr},
-              {"graph", Json::parse(take(a.serialize_live_components(mover, std::array{spatial})))}}});
+    ops = json::Builder{json::Document::literal<R"([{"op":"attach","index":null}])">()};
+    const auto spatial_graph =
+        assets::json_format::parse(take(a.serialize_live_components(mover, std::array{spatial})));
+    require(spatial_graph && ops.set(*ops.root().at(0), "entity", id(mover)) &&
+                ops.set(*ops.root().at(0), "graph", spatial_graph->root()),
+            "Cannot construct attach batch.");
+    applied(ops.root());
     const auto b_spatial = in_b(spatial);
     require(take(world::inspect_component(rb, b_spatial)).owner == b_mover &&
                 std::get<float>(
                     take(rb.read(b_spatial, {take(rb.find_field(take(rb.find_type("game.Spatial")), "offset"))}))) == 9,
             "An attached component lost its owner or values.");
     changed(a.reparent(runner, mover));
-    applied({{{"op", "move"},
-              {"id", id(runner)},
-              {"parent", id(mover)},
-              {"index", nullptr},
-              {"space", Json::parse(take(a.serialize_live_subtree(runner)))["entities"][0]["space"]}}});
+    ops = json::Builder{json::Document::literal<R"([{"op":"move","index":null}])">()};
+    const auto moved_graph = assets::json_format::parse(take(a.serialize_live_subtree(runner)));
+    require(moved_graph && ops.set(*ops.root().at(0), "id", id(runner)) &&
+                ops.set(*ops.root().at(0), "parent", id(mover)) &&
+                ops.set(*ops.root().at(0), "space", *moved_graph->root().at("entities")->at(0)->at("space")),
+            "Cannot construct move batch.");
+    applied(ops.root());
     require(take(world::parent_entity(rb, in_b(runner))) == b_mover &&
                 take(world::read_transform(rb, in_b(runner))) == take(world::read_transform(ra, runner)),
             "A Play reparent did not keep the editor's parent and local transform.");
@@ -1373,28 +1450,34 @@ void verify_play_changes(editor::Project& project, const std::shared_ptr<Evidenc
             result.push_back(child.id());
         return result;
     };
-    const auto placed = [&](Json parent, Json index) {
+    const auto placed = [&](std::optional<std::string> parent, std::uint32_t index) {
         const auto entity = added({});
-        applied({{{"op", "add"},
-                  {"parent", parent},
-                  {"index", index},
-                  {"graph", Json::parse(take(a.serialize_live_subtree(entity)))}}});
+        json::Builder batch{json::Document::literal<R"([{"op":"add","parent":null}])">()};
+        const auto graph = assets::json_format::parse(take(a.serialize_live_subtree(entity)));
+        const auto op = *batch.root().at(0);
+        require(graph && batch.set(op, "index", index) && batch.set(op, "graph", graph->root()) &&
+                    (!parent || batch.set(op, "parent", *parent)),
+                "Cannot construct indexed add.");
+        applied(batch.root());
         return entity;
     };
     const auto b_doomed = in_b(doomed);
     const auto b_runner = in_b(runner);
     const auto b_environment = take(world::inspect_component(rb, in_b(environment))).owner;
     // Member position 1 is the mover's child, so a root ordinal read as a member position fails here.
-    const auto second = placed(nullptr, 1);
-    const auto last = placed(nullptr, 99);
+    const auto second = placed({}, 1);
+    const auto last = placed({}, 99);
     const auto first_child = placed(id(mover), 0);
     const auto last_child = placed(id(mover), 99);
     require(roots() == std::vector{b_mover, in_b(second), b_doomed, b_falling, b_environment, in_b(last)} &&
                 children_of(b_mover) == std::vector{in_b(first_child), b_runner, in_b(last_child)},
             "An add index is not the final position in its destination list, or did not clamp.");
-    applied({{{"op", "move"}, {"id", id(last)}, {"parent", nullptr}, {"index", 0}, {"space", nullptr}},
-             {{"op", "move"}, {"id", id(second)}, {"parent", nullptr}, {"index", 99}, {"space", nullptr}},
-             {{"op", "move"}, {"id", id(first_child)}, {"parent", id(mover)}, {"index", 99}, {"space", nullptr}}});
+    ops = json::Builder{json::Document::literal<
+        R"([{"op":"move","parent":null,"index":0,"space":null},{"op":"move","parent":null,"index":99,"space":null},{"op":"move","index":99,"space":null}])">()};
+    require(ops.set(*ops.root().at(0), "id", id(last)) && ops.set(*ops.root().at(1), "id", id(second)) &&
+                ops.set(*ops.root().at(2), "id", id(first_child)) && ops.set(*ops.root().at(2), "parent", id(mover)),
+            "Cannot construct indexed moves.");
+    applied(ops.root());
     require(roots() == std::vector{in_b(last), b_mover, b_doomed, b_falling, b_environment, in_b(second)} &&
                 children_of(b_mover) == std::vector{b_runner, in_b(last_child), in_b(first_child)},
             "A move index is not the final position in its destination list, or did not clamp.");
@@ -1410,18 +1493,20 @@ void verify_play_changes(editor::Project& project, const std::shared_ptr<Evidenc
     physics::BodySettings triangle;
     triangle.shape = physics::ShapeKind::triangle_mesh;
     take(a.configure_body(member(a, take(ra.find_type("world.StaticMeshComponent"))), triangle));
-    applied({{{"op", "add"},
-              {"parent", nullptr},
-              {"index", nullptr},
-              {"graph", Json::parse(take(a.serialize_live_subtree(imported)))}}});
+    ops = json::Builder{json::Document::literal<R"([{"op":"add","parent":null,"index":null}])">()};
+    const auto imported_graph = assets::json_format::parse(take(a.serialize_live_subtree(imported)));
+    require(imported_graph && ops.set(*ops.root().at(0), "graph", imported_graph->root()),
+            "Cannot construct imported add.");
+    applied(ops.root());
     require(std::ranges::any_of(take(b->presentation().render_items()),
                                 [&](const auto& item) { return item.entity == in_b(imported); }),
             "A mesh imported during Play did not resolve in the Play copy.");
     // A rescale outgrows the shape cooked at load; physics cooks the new scale once instead of dropping the body.
     auto& simulation = *b->physics_scene();
-    applied({{{"op", "set"},
-              {"id", id(imported)},
-              {"space", {{"position", {20, 0, 0}}, {"rotation", {0, 0, 0, 1}}, {"scale", {2, 2, 2}}}}}});
+    ops = json::Builder{json::Document::literal<
+        R"([{"op":"set","space":{"position":[20,0,0],"rotation":[0,0,0,1],"scale":[2,2,2]}}])">()};
+    require(bool(ops.set(*ops.root().at(0), "id", id(imported))), "Cannot construct rescale.");
+    applied(ops.root());
     step();
     const auto cooks = simulation.last_step().runtime_cooks;
     step();
@@ -1432,8 +1517,10 @@ void verify_play_changes(editor::Project& project, const std::shared_ptr<Evidenc
 
     // The game's own destruction skips that item only.
     changed(world::destroy_entity(rb, in_b(doomed)));
-    const auto skipped = apply({{{"op", "set"}, {"id", id(doomed)}, {"name", "Gone"}},
-                                {{"op", "set"}, {"id", id(mover)}, {"name", "Still here"}}});
+    ops = json::Builder{json::Document::literal<R"([{"op":"set","name":"Gone"},{"op":"set","name":"Still here"}])">()};
+    require(ops.set(*ops.root().at(0), "id", id(doomed)) && ops.set(*ops.root().at(1), "id", id(mover)),
+            "Cannot construct skipped batch.");
+    const auto skipped = apply(ops.root());
     require(skipped.size() == 1 && skipped[0].severity == world::Severity::warning &&
                 skipped[0].kind == reference_dropped && b->name(b_mover) == L"Still here",
             "A change to an object the game destroyed was not skipped and reported alone.");
@@ -1442,12 +1529,16 @@ void verify_play_changes(editor::Project& project, const std::shared_ptr<Evidenc
     const auto tethered = added({0, 0, 12});
     changed(a.add_component(tethered, constraint_type));
     const auto constraint = member(a, constraint_type);
-    auto tether = Json::parse(take(a.serialize_live_subtree(tethered)));
-    auto& tether_properties = tether["entities"][0]["components"][0]["properties"];
-    tether_properties["target"] = {{"$ref", id(doomed)}};
-    tether_properties["minimum"] = 2.f;
-    tether_properties["maximum"] = 3.f;
-    const auto dropped = apply({{{"op", "add"}, {"parent", nullptr}, {"index", nullptr}, {"graph", tether}}});
+    const auto tether_json = assets::json_format::parse(take(a.serialize_live_subtree(tethered)));
+    require(bool(tether_json), "Tether JSON is invalid.");
+    json::Builder tether{*tether_json};
+    const auto tether_properties = *tether.root().at("entities")->at(0)->at("components")->at(0)->at("properties");
+    require(tether.set(*tether.object(tether_properties, "target"), "$ref", id(doomed)) &&
+                tether.set(tether_properties, "minimum", 2.f) && tether.set(tether_properties, "maximum", 3.f),
+            "Cannot construct dropped reference.");
+    ops = json::Builder{json::Document::literal<R"([{"op":"add","parent":null,"index":null}])">()};
+    require(bool(ops.set(*ops.root().at(0), "graph", tether.root())), "Cannot construct tether add.");
+    const auto dropped = apply(ops.root());
     const auto b_constraint = in_b(constraint);
     const auto b_constraint_type = take(rb.find_type("physics.DistanceConstraintComponent"));
     require(dropped.size() == 1 && dropped[0].severity == world::Severity::warning &&
@@ -1464,16 +1555,19 @@ void verify_play_changes(editor::Project& project, const std::shared_ptr<Evidenc
     require(!b->instantiate_subtree(take(a.serialize_subtree(mover)), play_project),
             "A Play copy imported with new document identities.");
     std::unordered_set<std::string> ids;
-    const auto collect = [&](const Json& scene, auto&& visit) {
-        for (const auto& entity : scene["entities"]) {
-            visit(entity["id"]);
-            for (const auto& part : entity["components"])
-                visit(part["id"]);
+    const auto collect = [&](json::Value scene, auto&& visit) {
+        for (const auto entity : *scene.at("entities")->array()) {
+            visit(*entity.string({"id"}));
+            for (const auto part : *entity.at("components")->array())
+                visit(*part.string({"id"}));
         }
     };
-    collect(Json::parse(take(a.serialize())), [&](const Json& value) { ids.insert(value.get<std::string>()); });
-    collect(Json::parse(take(b->serialize())), [&](const Json& value) {
-        if (!ids.contains(value.get<std::string>()))
+    const auto author_json = assets::json_format::parse(take(a.serialize()));
+    const auto play_json = assets::json_format::parse(take(b->serialize()));
+    require(author_json && play_json, "Identity comparison JSON is invalid.");
+    collect(author_json->root(), [&](std::string_view value) { ids.emplace(value); });
+    collect(play_json->root(), [&](std::string_view value) {
+        if (!ids.contains(std::string{value}))
             throw std::runtime_error("A Play copy wrote an identity the editor never assigned.");
     });
     changed(b->close());
@@ -1483,10 +1577,12 @@ void verify_play_changes(editor::Project& project, const std::shared_ptr<Evidenc
     const auto ragdoll_scene =
         take(assets::read_file(std::filesystem::path{ATELIER_EXAMPLE_PROJECT} / "Content/Physic/Scenes/Ragdoll.scene"));
     std::string ragdoll;
-    for (const auto& entity : Json::parse(ragdoll_scene)["entities"])
-        for (const auto& part : entity["components"])
-            if (part["type"] == "physics.RagdollComponent")
-                ragdoll = entity["id"];
+    const auto ragdoll_json = assets::json_format::parse(ragdoll_scene);
+    require(bool(ragdoll_json), "Ragdoll JSON is invalid.");
+    for (const auto entity : *ragdoll_json->root().at("entities")->array())
+        for (const auto part : *entity.at("components")->array())
+            if (part.string({"type"}) == "physics.RagdollComponent")
+                ragdoll = *entity.string({"id"});
     auto ragdolls = take(editor::Session::deserialize(ragdoll_scene, play_project));
     ragdolls->enter_play();
     const auto ragdoll_root = take(ragdolls->local_object(std::stoull(ragdoll)));
@@ -1494,8 +1590,11 @@ void verify_play_changes(editor::Project& project, const std::shared_ptr<Evidenc
     for (int frame = 0; frame < 3; ++frame)
         take(ragdolls->update(1.f / 60));
     const auto posed = take(world::read_transform(ragdolls->world().runtime(), ragdoll_root));
-    const auto refused = take(ragdolls->apply_live(
-        Json{{"ops", {{{"op", "set"}, {"id", ragdoll}, {"space", {{"position", {1, 2, 3}}}}}}}}.dump(), play_project));
+    json::Builder ragdoll_batch{json::Document::literal<R"({"ops":[{"op":"set","space":{"position":[1,2,3]}}]})">()};
+    require(bool(ragdoll_batch.set(*ragdoll_batch.root().at("ops")->at(0), "id", ragdoll)),
+            "Cannot construct ragdoll move.");
+    const auto ragdoll_bytes = json::write(ragdoll_batch.root());
+    const auto refused = take(ragdolls->apply_live({ragdoll_bytes.data(), ragdoll_bytes.size()}, play_project));
     require(refused.size() == 1 && refused[0].severity == world::Severity::warning &&
                 refused[0].kind == command_rejected &&
                 take(world::read_transform(ragdolls->world().runtime(), ragdoll_root)) == posed,
@@ -1537,15 +1636,22 @@ void verify_live_forwarding(editor::Project& project, const std::shared_ptr<Evid
     require(take(a.take_live_ops()).empty(), "A document recorded Play changes before forwarding started.");
     a.set_live_forwarding(true);
     const auto scene = [](const editor::Session& session) {
-        auto value = Json::parse(take(session.serialize()));
-        value.erase("next_id");
-        return value;
+        const auto parsed = assets::json_format::parse(take(session.serialize()));
+        require(bool(parsed), "Forwarded scene JSON is invalid.");
+        json::Builder value{*parsed};
+        value.erase(value.root(), "next_id");
+        return value.finish();
     };
     const auto sync = [&](const std::string& step, bool compare = true) {
-        Json ops = Json::array();
-        for (const auto& op : take(a.take_live_ops()))
-            ops.push_back(Json::parse(op.text));
-        const auto issues = take(b->apply_live(Json{{"ops", ops}}.dump(), play_project));
+        json::Builder batch;
+        const auto ops = *batch.array(batch.root(), "ops");
+        for (const auto& op : take(a.take_live_ops())) {
+            const auto parsed = assets::json_format::parse(op.text);
+            require(bool(parsed), "Forwarded operation JSON is invalid.");
+            batch.append(ops, parsed->root());
+        }
+        const auto bytes = json::write(batch.root());
+        const auto issues = take(b->apply_live({bytes.data(), bytes.size()}, play_project));
         if (!issues.empty())
             throw std::runtime_error(step + ": " + issues.front().message);
         if (compare && scene(a) != scene(*b))
@@ -1599,11 +1705,12 @@ void verify_live_forwarding(editor::Project& project, const std::shared_ptr<Evid
             "An added Environment did not carry its sky map key to Play.");
     // A key Play cannot resolve keeps its authored identity until a valid map arrives.
     const auto environment_id = std::to_string(*a.document_identity(a.environment()));
-    const auto set_play_sky = [&](Json value) {
-        return take(b->apply_live(
-            Json{{"ops", Json::array({Json{{"op", "set"}, {"id", environment_id}, {"sky_map", std::move(value)}}})}}
-                .dump(),
-            play_project));
+    const auto set_play_sky = [&](std::string_view value) {
+        json::Builder batch{json::Document::literal<R"({"ops":[{"op":"set"}]})">()};
+        const auto op = *batch.root().at("ops")->at(0);
+        require(batch.set(op, "id", environment_id) && batch.set(op, "sky_map", value), "Cannot construct sky patch.");
+        const auto bytes = json::write(batch.root());
+        return take(b->apply_live({bytes.data(), bytes.size()}, play_project));
     };
     const auto missing_sky = set_play_sky("project/{00000000-0000-0000-0000-000000000000}");
     require(missing_sky.size() == 1 && missing_sky[0].severity == world::Severity::warning &&
@@ -1747,13 +1854,13 @@ void verify_environment_document(editor::Project& project) {
     acceptance_phase = "Environment document";
     using enum world::DiagnosticKind;
     const auto settings = [](const editor::Session& session) { return take(session.presentation().environment()); };
-    const Json empty_scene = {{"version", 10},
-                              {"next_id", "1"},
-                              {"roots", Json::array()},
-                              {"entities", Json::array()},
-                              {"materials", Json::array()}};
-    const auto load = [&](const Json& data) { return take(editor::Session::deserialize(data.dump(), project)); };
-    auto opened = load(empty_scene);
+    const auto& empty_scene =
+        json::Document::literal<R"({"version":10,"next_id":"1","roots":[],"entities":[],"materials":[]})">();
+    const auto load = [&](json::Value data) {
+        const auto bytes = json::write(data);
+        return take(editor::Session::deserialize({bytes.data(), bytes.size()}, project));
+    };
+    auto opened = load(empty_scene.root());
     require(opened->environment() == ObjectId{} && opened->load_issues().empty() &&
                 settings(*opened) == rendering::SceneLightingSettings{},
             "A document without an Environment did not use the default World settings.");
@@ -1772,76 +1879,90 @@ void verify_environment_document(editor::Project& project) {
     require(opened->environment() == ObjectId{}, "Undo did not remove the authored Environment.");
     changed(opened->redo());
     require(settings(*opened) == fitted, "Redo did not restore the authored Environment settings.");
-    const auto saved = Json::parse(take(opened->serialize()));
-    auto reopened = load(saved);
-    require(saved.at("version") == 10 && settings(*reopened) == fitted && reopened->load_issues().empty(),
+    const auto saved = assets::json_format::parse(take(opened->serialize()));
+    require(bool(saved), "Environment scene JSON is invalid.");
+    auto reopened = load(saved->root());
+    require(saved->root().u32({"version"}) == 10 && settings(*reopened) == fitted && reopened->load_issues().empty(),
             "A saved Environment did not reopen with the same settings.");
     {
         acceptance_phase = "Environment sky map";
-        const auto environment_record = [](Json& data,
-                                           const std::string& type = "world.EnvironmentComponent") -> Json& {
-            for (auto& node : data.at("entities"))
-                for (auto& part : node.at("components"))
-                    if (part.at("type") == type)
+        const auto environment_record = [](json::Value data, const std::string& type = "world.EnvironmentComponent") {
+            for (auto node : *data.at("entities")->array())
+                for (auto part : *node.at("components")->array())
+                    if (part.string({"type"}) == type)
                         return part;
             throw std::runtime_error("The scene has no Environment record.");
         };
-        auto current = saved;
-        require(environment_record(current).at("sky_map") == "",
+        const auto current = saved->root();
+        require(environment_record(current).string({"sky_map"}) == "",
                 "A saved Environment did not write an empty sky map key.");
-        auto derived = current;
-        environment_record(derived)["type"] = "game.Environment";
-        auto derived_document = take(editor::Session::deserialize(
-            derived.dump(), project, prepare(std::make_shared<Evidence>()), editor::LoadPolicy::strict));
-        require(derived_document->environment() != ObjectId{} &&
-                    Json::parse(take(derived_document->serialize())) == derived,
+        json::Builder derived{current};
+        require(bool(derived.set(environment_record(derived.root()), "type", "game.Environment")),
+                "Cannot construct derived Environment.");
+        const auto derived_bytes = json::write(derived.root());
+        auto derived_document =
+            take(editor::Session::deserialize({derived_bytes.data(), derived_bytes.size()}, project,
+                                              prepare(std::make_shared<Evidence>()), editor::LoadPolicy::strict));
+        const auto derived_saved = assets::json_format::parse(take(derived_document->serialize()));
+        require(derived_document->environment() != ObjectId{} && derived_saved &&
+                    derived_saved->root() == derived.root(),
                 "An Environment of a derived type did not load as the Environment or did not save unchanged.");
         // A key resolves through the Project's cache; a missing one renders without its map and is saved unchanged.
         const auto key = sky_asset(project, "Content/Sky/Scene.hdr", radiance(1, char(129)));
         const auto map = take(project.assets().sky_map(key)).map;
-        auto mapped = current;
-        environment_record(mapped)["sky_map"] = key;
-        auto bound = load(mapped);
-        require(map && settings(*bound).sky_map == map && bound->load_issues().empty() &&
-                    Json::parse(take(bound->serialize())) == mapped,
+        json::Builder mapped{current};
+        require(bool(mapped.set(environment_record(mapped.root()), "sky_map", key)),
+                "Cannot construct mapped Environment.");
+        auto bound = load(mapped.root());
+        const auto bound_saved = assets::json_format::parse(take(bound->serialize()));
+        require(map && settings(*bound).sky_map == map && bound->load_issues().empty() && bound_saved &&
+                    bound_saved->root() == mapped.root(),
                 "A sky map key did not resolve to the Project's map or did not save unchanged.");
-        auto missing = current;
-        environment_record(missing)["sky_map"] = "project/{00000000-0000-0000-0000-000000000000}";
-        auto unresolved = load(missing);
+        json::Builder missing{current};
+        require(bool(missing.set(environment_record(missing.root()), "sky_map",
+                                 "project/{00000000-0000-0000-0000-000000000000}")),
+                "Cannot construct missing sky.");
+        auto unresolved = load(missing.root());
+        const auto unresolved_saved = assets::json_format::parse(take(unresolved->serialize()));
         const auto& issues = unresolved->load_issues();
         require(issues.size() == 1 && issues[0].kind == missing_resource &&
                     issues[0].severity == world::Severity::warning &&
                     issues[0].field == std::vector<std::string>{"sky_map"} && !settings(*unresolved).sky_map &&
-                    Json::parse(take(unresolved->serialize())) == missing,
+                    unresolved_saved && unresolved_saved->root() == missing.root(),
                 "A missing sky map was not one warning, or its key did not save unchanged.");
-        auto malformed = current;
-        environment_record(malformed)["sky_map"] = 5;
-        auto kept = load(malformed);
-        require(kept->load_issues().size() == 1 && kept->load_issues()[0].kind == mismatch &&
-                    Json::parse(take(kept->serialize())) == malformed &&
+        json::Builder malformed{current};
+        require(bool(malformed.set(environment_record(malformed.root()), "sky_map", 5u)),
+                "Cannot construct malformed sky.");
+        auto kept = load(malformed.root());
+        auto kept_saved = assets::json_format::parse(take(kept->serialize()));
+        require(kept->load_issues().size() == 1 && kept->load_issues()[0].kind == mismatch && kept_saved &&
+                    kept_saved->root() == malformed.root() &&
                     take(kept->retained(kept->environment())).entries.at(0).kind == mismatch,
                 "A malformed sky map key was not reported and kept as a mismatch.");
         // set_sky_map is one history item that releases the kept value; undo and redo restore the stored map.
         const auto asset = take(project.assets().sky_map(key));
         take(kept->set_sky_map(asset));
-        require(settings(*kept).sky_map == map && kept->undo_count() == 1 &&
-                    Json::parse(take(kept->serialize())) == mapped,
+        kept_saved = assets::json_format::parse(take(kept->serialize()));
+        require(settings(*kept).sky_map == map && kept->undo_count() == 1 && kept_saved &&
+                    kept_saved->root() == mapped.root(),
                 "Setting a sky map did not bind it as one history item or kept the malformed value.");
         changed(kept->undo());
-        require(!settings(*kept).sky_map && Json::parse(take(kept->serialize())) == malformed,
+        kept_saved = assets::json_format::parse(take(kept->serialize()));
+        require(!settings(*kept).sky_map && kept_saved && kept_saved->root() == malformed.root(),
                 "Undoing a sky map did not restore the kept value.");
         changed(kept->redo());
         require(settings(*kept).sky_map == map, "Redoing a sky map did not restore the same map.");
         take(kept->set_sky_map({}));
-        auto cleared = Json::parse(take(kept->serialize()));
-        require(!settings(*kept).sky_map && environment_record(cleared).at("sky_map") == "" && kept->undo_count() == 2,
+        const auto cleared = assets::json_format::parse(take(kept->serialize()));
+        require(!settings(*kept).sky_map && cleared && environment_record(cleared->root()).string({"sky_map"}) == "" &&
+                    kept->undo_count() == 2,
                 "An empty sky asset did not clear the sky map.");
         changed(kept->undo());
         require(settings(*kept).sky_map == map, "Undoing a cleared sky map did not restore the same map.");
         take(kept->set_sky_map(asset));
         require(kept->undo_count() == 1 && kept->redo_count() == 1, "An unchanged sky map created history.");
         // Without an Environment the first sky map creates one in the same history item.
-        auto empty = load(empty_scene);
+        auto empty = load(empty_scene.root());
         take(empty->set_sky_map({}));
         require(empty->environment() == ObjectId{} && empty->undo_count() == 0,
                 "Clearing an absent sky map created an Environment.");
@@ -1889,24 +2010,31 @@ void verify_camera_loading(editor::Project& project) {
     };
     editor::Session source;
     changed(source.create_camera({2, 3, 4}));
-    const auto baseline = Json::parse(take(source.serialize()));
+    const auto baseline = assets::json_format::parse(take(source.serialize()));
+    require(bool(baseline), "Camera baseline JSON is invalid.");
     const auto entity_id = *source.document_identity(source.selection().entity);
     bool passed = true;
     for (const float far : {2.f, 9.f}) {
-        auto input = baseline;
-        auto& part = input["entities"][0]["components"][0];
-        part["type"] = "game.Camera";
-        part["properties"]["near_clip"] = 5;
-        part["properties"]["far_clip"] = far;
-        part["properties"]["vertical_fov"] = 70;
-        const Json target = {{"$ref", std::to_string(entity_id)}};
-        part["properties"]["target"] = target;
-        part["properties"]["held_target"] = target;
-        part["properties"]["targets"] = Json::array({target, nullptr, target});
-        part["properties"]["weights"] = Json::array({2.f, 3.f, 5.f});
-        const auto component_id = std::stoull(part["id"].get<std::string>());
+        json::Builder input{*baseline};
+        const auto part = *input.root().at("entities")->at(0)->at("components")->at(0);
+        const auto properties = *part.at("properties");
+        json::Builder target;
+        require(target.set(target.root(), "$ref", std::to_string(entity_id)) &&
+                    input.set(part, "type", "game.Camera") && input.set(properties, "near_clip", 5u) &&
+                    input.set(properties, "far_clip", far) && input.set(properties, "vertical_fov", 70u) &&
+                    input.set(properties, "target", target.root()) &&
+                    input.set(properties, "held_target", target.root()) &&
+                    input.set(properties, "weights", json::Document::literal<"[2.0,3.0,5.0]">().root()),
+                "Cannot construct camera fixture.");
+        const auto targets = *input.array(properties, "targets");
+        input.append(targets, target.root());
+        input.append_null(targets);
+        input.append(targets, target.root());
+        const auto component_id = std::stoull(std::string{*part.string({"id"})});
         const bool valid = far > 5;
-        auto document = take(editor::Session::deserialize(input.dump(), project, camera_type));
+        const auto input_bytes = json::write(input.root());
+        auto document =
+            take(editor::Session::deserialize({input_bytes.data(), input_bytes.size()}, project, camera_type));
         bool tolerant_ok = true;
         bool references_ok = true;
         bool sequence_ok = true;
@@ -1942,7 +2070,8 @@ void verify_camera_loading(editor::Project& project) {
             array_ok &= valid ? weights.size() == 3 && weights[0] == 2.f && weights[1] == 3.f && weights[2] == 5.f
                               : weights.size() == 2 && weights[0] == .25f && weights[1] == .75f;
             const auto saved = take(document->serialize());
-            roundtrip_ok &= Json::parse(saved) == input;
+            const auto parsed = assets::json_format::parse(saved);
+            roundtrip_ok &= parsed && parsed->root() == input.root();
             if (pass == 0)
                 document = take(editor::Session::deserialize(saved, project, camera_type));
         }
@@ -1956,22 +2085,32 @@ void verify_camera_import(editor::Project& project) {
     editor::Session source;
     changed(source.create_camera({2, 3, 4}));
     take(source.set_main_camera(source.selection().entity));
-    auto forest = Json::parse(take(source.serialize()));
+    const auto parsed = assets::json_format::parse(take(source.serialize()));
+    require(bool(parsed), "Camera forest JSON is invalid.");
+    json::Builder forest{*parsed};
     const auto environment = take(world::inspect_component(source.world().runtime(), source.environment())).owner;
-    forest["roots"] = Json::array({std::to_string(*source.document_identity(environment)),
-                                   std::to_string(*source.document_identity(source.selection().entity))});
+    const auto roots = *forest.array(forest.root(), "roots");
+    require(forest.append(roots, std::to_string(*source.document_identity(environment))) &&
+                forest.append(roots, std::to_string(*source.document_identity(source.selection().entity))),
+            "Cannot order camera roots.");
     editor::Session author;
     changed(author.add_entity());
     auto play = take(editor::Session::deserialize(take(author.serialize()), project));
     play->enter_play();
     author.set_live_forwarding(true);
-    changed(author.instantiate_subtree(forest.dump(), project));
+    const auto forest_bytes = json::write(forest.root());
+    changed(author.instantiate_subtree({forest_bytes.data(), forest_bytes.size()}, project));
     const auto target = take(author.main_camera());
     const auto sync = [&](bool present) {
-        Json ops = Json::array();
-        for (const auto& op : take(author.take_live_ops()))
-            ops.push_back(Json::parse(op.text));
-        const auto issues = take(play->apply_live(Json{{"ops", ops}}.dump(), project));
+        json::Builder batch;
+        const auto ops = *batch.array(batch.root(), "ops");
+        for (const auto& op : take(author.take_live_ops())) {
+            const auto value = assets::json_format::parse(op.text);
+            require(bool(value), "Camera import operation JSON is invalid.");
+            batch.append(ops, value->root());
+        }
+        const auto bytes = json::write(batch.root());
+        const auto issues = take(play->apply_live({bytes.data(), bytes.size()}, project));
         const auto selected = take(play->main_camera());
         bool correct = issues.empty();
         if (present) {
@@ -2006,17 +2145,23 @@ void verify_camera_document(editor::Project& project) {
     a.set_live_forwarding(true);
     const auto in_b = [&](ObjectId object) { return take(b->local_object(*a.document_identity(object))); };
     const auto sync = [&] {
-        Json ops = Json::array();
-        for (const auto& op : take(a.take_live_ops()))
-            ops.push_back(Json::parse(op.text));
-        const auto issues = take(b->apply_live(Json{{"ops", ops}}.dump(), project));
+        json::Builder batch;
+        const auto ops = *batch.array(batch.root(), "ops");
+        for (const auto& op : take(a.take_live_ops())) {
+            const auto parsed = assets::json_format::parse(op.text);
+            require(bool(parsed), "Camera operation JSON is invalid.");
+            batch.append(ops, parsed->root());
+        }
+        const auto bytes = json::write(batch.root());
+        const auto issues = take(b->apply_live({bytes.data(), bytes.size()}, project));
         if (!issues.empty())
             throw std::runtime_error(issues.front().message);
-        return ops;
+        return json::Document{ops};
     };
     const auto before = a.undo_count();
     take(a.set_main_camera(first));
-    require(sync().size() == 1 && a.undo_count() == before + 1 &&
+    const auto initial = sync();
+    require(initial.root().size() == 1 && a.undo_count() == before + 1 &&
                 take(b->presentation().main_camera()).entity == in_b(first),
             "First Set did not create and forward the Environment with its selection in one history item.");
     changed(a.undo());
@@ -2027,13 +2172,16 @@ void verify_camera_document(editor::Project& project) {
     require(take(b->presentation().main_camera()).entity == in_b(first), "First Set redo lost the reference.");
     take(a.set_main_camera(second));
     const auto set = sync();
-    require(set.size() == 1 && set[0]["properties"].size() == 1 &&
-                set[0]["properties"]["main_camera"]["$ref"] == std::to_string(*a.document_identity(second)) &&
+    require(set.root().size() == 1 && set.root().at(0)->at("properties")->size() == 1 &&
+                set.root().at(0)->string({"properties", "main_camera", "$ref"}) ==
+                    std::to_string(*a.document_identity(second)) &&
                 take(b->presentation().main_camera()).entity == in_b(second),
             "Set did not forward only the changed reference by document identity.");
     const auto stable = a.undo_count();
     take(a.set_main_camera(second));
-    require(a.undo_count() == stable && sync().empty(), "Unchanged main selection created history or IPC.");
+    const auto unchanged = sync();
+    require(a.undo_count() == stable && unchanged.root().size() == 0,
+            "Unchanged main selection created history or IPC.");
     take(a.set_main_camera({}));
     sync();
     require(!b->presentation().main_camera(), "Clear chose a Play fallback.");
@@ -2106,10 +2254,15 @@ void verify_camera_document(editor::Project& project) {
     // reference instead of recreating that target or reusing an ObjectId.
     changed(world::destroy_entity(rb, in_b(first)));
     take(a.set_main_camera(first));
-    Json missing = Json::array();
-    for (const auto& op : take(a.take_live_ops()))
-        missing.push_back(Json::parse(op.text));
-    const auto dropped = take(b->apply_live(Json{{"ops", missing}}.dump(), project));
+    json::Builder missing;
+    const auto missing_ops = *missing.array(missing.root(), "ops");
+    for (const auto& op : take(a.take_live_ops())) {
+        const auto parsed = assets::json_format::parse(op.text);
+        require(bool(parsed), "Missing camera operation JSON is invalid.");
+        missing.append(missing_ops, parsed->root());
+    }
+    const auto missing_bytes = json::write(missing.root());
+    const auto dropped = take(b->apply_live({missing_bytes.data(), missing_bytes.size()}, project));
     require(dropped.size() == 1 && dropped[0].kind == world::DiagnosticKind::reference_dropped &&
                 take(b->main_camera()) == ObjectId{},
             "Setting a game-destroyed camera resurrected it or omitted its diagnostic.");
@@ -2122,18 +2275,23 @@ void verify_camera_document(editor::Project& project) {
     require(!b->local_object(*a.document_identity(first)) && take(b->main_camera()) == ObjectId{},
             "An unrelated add/history resurrected a game-deleted camera outside its batch.");
 
-    auto malformed = Json::parse(saved);
-    for (auto& entity : malformed["entities"])
-        for (auto& part : entity["components"])
-            if (part["type"] == "world.EnvironmentComponent")
-                part["properties"]["main_camera"] = "not a reference";
-    auto retained = take(editor::Session::deserialize(malformed.dump(), project));
+    const auto parsed = assets::json_format::parse(saved);
+    require(bool(parsed), "Saved camera scene JSON is invalid.");
+    json::Builder malformed{*parsed};
+    for (auto entity : *malformed.root().at("entities")->array())
+        for (auto part : *entity.at("components")->array())
+            if (part.string({"type"}) == "world.EnvironmentComponent")
+                require(bool(malformed.set(*part.at("properties"), "main_camera", "not a reference")),
+                        "Cannot damage camera reference.");
+    const auto malformed_bytes = json::write(malformed.root());
+    auto retained = take(editor::Session::deserialize({malformed_bytes.data(), malformed_bytes.size()}, project));
     const auto env = retained->environment();
     require(retained->has_retained(env), "Malformed main camera was not retained.");
     take(retained->set_main_camera({}));
     require(!retained->has_retained(env), "Clear did not release retained reference data.");
     changed(retained->undo());
-    require(Json::parse(take(retained->serialize())) == malformed, "Reference undo lost retained data.");
+    const auto undone = assets::json_format::parse(take(retained->serialize()));
+    require(undone && undone->root() == malformed.root(), "Reference undo lost retained data.");
     const auto target = take(retained->local_object(*a.document_identity(second)));
     auto& rr = retained->world().runtime();
     auto held = take(rr.hold(target, retained->world().types().entity));
@@ -2193,11 +2351,13 @@ void run() {
     take(document.cancel_edit());
     require(std::get<float>(take(document.read_property(move, speed))) == 4, "Cancel failed to restore scalar value.");
     const auto saved = take(document.serialize());
-    const auto saved_json = Json::parse(saved);
-    require(saved_json["version"] == 10 && saved_json["entities"][0]["properties"]["health"] == 75,
+    const auto saved_json = assets::json_format::parse(saved);
+    require(saved_json && saved_json->root().u32({"version"}) == 10 &&
+                saved_json->root().at("entities")->at(0)->i64({"properties", "health"}) == 75,
             "Scene did not save real Entity properties.");
     auto reopened = take(editor::Session::deserialize(saved, project, prepare(evidence)));
-    require(Json::parse(take(reopened->serialize())) == saved_json,
+    const auto reopened_json = assets::json_format::parse(take(reopened->serialize()));
+    require(reopened_json && *reopened_json == *saved_json,
             "Derived scene roundtrip changed type, fields or composition.");
     {
         // A float field is written as its shortest decimal and reads back bit for bit; a double keeps its full value.
@@ -2206,7 +2366,11 @@ void run() {
         take(runtime.write(move, speed, Scalar{value}));
         take(runtime.write(move, mass, Scalar{double(.1f)}));
         const auto text = take(document.serialize());
-        const auto written = Json::parse(text).at("entities").at(0).at("components").at(1).at("properties");
+        const auto parsed = assets::json_format::parse(text);
+        require(bool(parsed), "Written numeric scene JSON is invalid.");
+        const auto written = *parsed->root().at("entities")->at(0)->at("components")->at(1)->at("properties");
+        const auto speed_bytes = json::write(*written.at("speed"));
+        const auto mass_bytes = json::write(*written.at("mass"));
         auto loaded = take(editor::Session::deserialize(text, project, prepare(evidence)));
         take(loaded->select(take(loaded->world().members()).front().id()));
         const auto loaded_type = take(loaded->world().runtime().find_type("game.Move"));
@@ -2217,29 +2381,36 @@ void run() {
             std::bit_cast<std::uint32_t>(back) == std::bit_cast<std::uint32_t>(value) &&
                 std::get<double>(take(loaded->read_property(loaded_move, field(*loaded, loaded_type, "mass")))) ==
                     double(.1f) &&
-                written["speed"].dump() == "0.1" && written["mass"].dump() == "0.10000000149011612",
+                std::string_view{speed_bytes.data(), speed_bytes.size()} == "0.1" &&
+                std::string_view{mass_bytes.data(), mass_bytes.size()} == "0.10000000149011612",
             "A float field was not saved as its shortest decimal, or a float or double field changed across save and reload.");
         take(runtime.write(move, speed, Scalar{4.f}));
         take(runtime.write(move, mass, Scalar{3.5}));
     }
-    auto defaults = saved_json;
-    defaults["entities"][0]["components"][1]["properties"].erase("speed");
-    auto defaulted = take(editor::Session::deserialize(defaults.dump(), project, prepare(evidence)));
+    json::Builder defaults{*saved_json};
+    defaults.erase(*defaults.root().at("entities")->at(0)->at("components")->at(1)->at("properties"), "speed");
+    const auto default_bytes = json::write(defaults.root());
+    auto defaulted =
+        take(editor::Session::deserialize({default_bytes.data(), default_bytes.size()}, project, prepare(evidence)));
     const auto default_entity = take(defaulted->world().members()).front().id();
     take(defaulted->select(default_entity));
     const auto default_type = take(defaulted->world().runtime().find_type("game.Move"));
     require(std::get<float>(take(defaulted->read_property(member(*defaulted, default_type),
                                                           field(*defaulted, default_type, "speed")))) == 2,
             "Absent field did not preserve the constructor default.");
-    auto bad = saved_json;
-    bad["entities"][0]["components"][1]["properties"]["deleted_field"] = 1;
+    json::Builder bad{*saved_json};
+    require(bool(bad.set(*bad.root().at("entities")->at(0)->at("components")->at(1)->at("properties"), "deleted_field",
+                         1u)),
+            "Cannot construct unknown-property fixture.");
+    const auto bad_bytes = json::write(bad.root());
     const auto releases = evidence->destroyed;
-    require(!editor::Session::deserialize(bad.dump(), project, prepare(evidence), editor::LoadPolicy::strict),
+    require(!editor::Session::deserialize({bad_bytes.data(), bad_bytes.size()}, project, prepare(evidence),
+                                          editor::LoadPolicy::strict),
             "Strict load accepted an unknown saved property.");
     require(evidence->destroyed == releases + 1 && evidence->live_runtime_on_release,
             "Failed load released Runtime before its prepared code.");
     require(take(document.serialize()) == saved, "Failed candidate load changed the edit document.");
-    verify_retained_data(project, saved_json, evidence);
+    verify_retained_data(project, *saved_json, evidence);
     verify_play_changes(project, evidence);
     verify_string_properties(project, evidence);
     verify_array_properties(project, evidence);

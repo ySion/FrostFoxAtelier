@@ -24,8 +24,6 @@
 
 namespace atelier::editor {
 namespace {
-using assets::json_format::Json;
-
 auto failure(std::string text) {
     return std::unexpected(Error{ErrorCode::invalid_storage, std::move(text)});
 }
@@ -50,9 +48,12 @@ T take(Result<T> value) {
         return std::move(*value);
 }
 
-Result<Json> read_json(const std::filesystem::path& path) {
+Result<json::Document> read_json(const std::filesystem::path& path) {
     ATELIER_TRY_BIND(bytes, assets::read_file(path));
-    return assets::json_format::parse(*bytes);
+    auto parsed = assets::json_format::parse(*bytes);
+    if (!parsed)
+        return failure(parsed.error().describe());
+    return std::move(*parsed);
 }
 
 // A generated material's file name: valid on Windows and unique among `taken`, compared as the file system does (ordinal, ignoring case).
@@ -174,13 +175,17 @@ Result<Project> Project::create(const std::filesystem::path& folder) {
         auto name = platform::utf16_to_utf8(canonical.filename().native());
         if (!name)
             return failure("Invalid UTF-16 text.");
-        const Json config = {{"version", 1}, {"name", *name}, {"startup_scene", "Content/Scenes/Main.scene"}};
+        json::Builder config;
+        static_cast<void>(config.set(config.root(), "version", std::uint32_t{1}));
+        config.set_validated(config.root(), "name", *name);
+        config.set_validated(config.root(), "startup_scene", "Content/Scenes/Main.scene");
         Session empty_scene;
         ATELIER_TRY_BIND(scene, empty_scene.serialize());
         ATELIER_TRY(write_file(folder / "Content/Scenes/Main.scene", *scene, WriteMode::create));
         ATELIER_TRY(write_file(folder / ".gitignore", "/Cache/\n", WriteMode::create));
         // Marker is published last.
-        ATELIER_TRY(write_file(folder / "Config/Project.json", config.dump(2) + "\n", WriteMode::create));
+        const auto bytes = json::write(config.root(), {true, true});
+        ATELIER_TRY(write_file(folder / "Config/Project.json", {bytes.data(), bytes.size()}, WriteMode::create));
         return open(folder);
     } catch (const std::exception& error) {
         return failure(error.what());
@@ -200,13 +205,27 @@ Result<Project> Project::open(const std::filesystem::path& folder) {
         project.assets_ = assets::Reader(project.root_);
         ATELIER_TRY_BIND(config_path, project.resolve("Config/Project.json"));
         ATELIER_TRY_BIND(config, read_json(*config_path));
-        assets::json_format::fields(*config, {"version", "name", "startup_scene", "ui_source"});
-        if (assets::json_format::identity(config->at("version")) != 1)
+        const auto root = config->root();
+        if (auto fields = root.allowed_members({"version", "name", "startup_scene", "ui_source"}); !fields)
+            return failure(fields.error().describe());
+        const auto version = root.u64({"version"});
+        if (!version)
+            return failure(version.error().describe());
+        if (*version != 1)
             return failure("Unsupported project format version.");
-        project.name_ = platform::utf8_to_utf16_validated(config->at("name").get<std::string>());
-        project.startup_ = platform::utf8_to_utf16_validated(config->at("startup_scene").get<std::string>());
-        if (config->contains("ui_source")) {
-            project.ui_source_ = platform::utf8_to_utf16_validated(config->at("ui_source").get<std::string>());
+        const auto name = root.string({"name"});
+        if (!name)
+            return failure(name.error().describe());
+        const auto startup = root.string({"startup_scene"});
+        if (!startup)
+            return failure(startup.error().describe());
+        project.name_ = platform::utf8_to_utf16_validated(*name);
+        project.startup_ = platform::utf8_to_utf16_validated(*startup);
+        if (const auto ui = *root.find("ui_source")) {
+            const auto text = ui->string();
+            if (!text)
+                return failure(text.error().describe());
+            project.ui_source_ = platform::utf8_to_utf16_validated(*text);
             if (!project.ui_source_.empty() && (*project.ui_source_.begin() != L"Source" ||
                                                 !project.ui_source_.filename().wstring().ends_with(L".ui.source")))
                 return failure("Project UI must be a .ui.source file inside Source.");
@@ -294,35 +313,55 @@ Result<void> Project::set_ui_source(const std::filesystem::path& relative) {
     try {
         ATELIER_TRY_BIND(path, resolve("Config/Project.json"));
         ATELIER_TRY_BIND(config, read_json(*path));
-        assets::json_format::fields(*config, {"version", "name", "startup_scene", "ui_source"});
+        const auto root = config->root();
+        if (auto fields = root.allowed_members({"version", "name", "startup_scene", "ui_source"}); !fields)
+            return failure(fields.error().describe());
         constexpr auto changed =
             "Project configuration changed on disk. Reopen the project before changing its UI entry.";
-        if (assets::json_format::identity(config->at("version")) != 1)
+        const auto version = root.u64({"version"});
+        if (!version)
+            return failure(version.error().describe());
+        if (*version != 1)
             return failure(changed);
         auto name = platform::utf16_to_utf8(name_);
         if (!name)
             return failure("Invalid UTF-16 text.");
-        if (config->at("name") != *name)
+        const auto saved_name = root.string({"name"});
+        if (!saved_name)
+            return failure(saved_name.error().describe());
+        if (*saved_name != *name)
             return failure(changed);
         auto startup = platform::utf16_to_utf8(startup_.generic_wstring());
         if (!startup)
             return failure("Invalid UTF-16 text.");
-        if (config->at("startup_scene") != *startup)
+        const auto saved_startup = root.string({"startup_scene"});
+        if (!saved_startup)
+            return failure(saved_startup.error().describe());
+        if (*saved_startup != *startup)
             return failure(changed);
         auto ui_source = platform::utf16_to_utf8(ui_source_.generic_wstring());
         if (!ui_source)
             return failure("Invalid UTF-16 text.");
-        if (config->value("ui_source", std::string{}) != *ui_source)
+        std::string_view saved_ui;
+        if (const auto ui = *root.find("ui_source")) {
+            const auto text = ui->string();
+            if (!text)
+                return failure(text.error().describe());
+            saved_ui = *text;
+        }
+        if (saved_ui != *ui_source)
             return failure(changed);
+        json::Builder next_config(*config);
         if (relative.empty())
-            config->erase("ui_source");
+            next_config.erase(next_config.root(), "ui_source");
         else {
             auto next = platform::utf16_to_utf8(relative.generic_wstring());
             if (!next)
                 return failure("Invalid UTF-16 text.");
-            (*config)["ui_source"] = std::move(*next);
+            next_config.set_validated(next_config.root(), "ui_source", *next);
         }
-        ATELIER_TRY(write_file(*path, config->dump(2) + "\n"));
+        const auto bytes = json::write(next_config.root(), {true, true});
+        ATELIER_TRY(write_file(*path, {bytes.data(), bytes.size()}));
         ui_source_ = relative;
         return {};
     } catch (const std::exception& error) {
@@ -443,8 +482,11 @@ Result<std::vector<assets::ProjectEntry>> Project::scan_entries(bool create_iden
                             return failure("Asset identity is missing; refresh the project before importing: " +
                                            meta_name);
                         ATELIER_TRY_BIND(new_id, identity());
-                        const auto created = write_file(*metadata, Json{{"version", 1}, {"id", *new_id}}.dump(2) + "\n",
-                                                        WriteMode::create);
+                        json::Builder info;
+                        static_cast<void>(info.set(info.root(), "version", std::uint32_t{1}));
+                        info.set_validated(info.root(), "id", *new_id);
+                        const auto bytes = json::write(info.root(), {true, true});
+                        const auto created = write_file(*metadata, {bytes.data(), bytes.size()}, WriteMode::create);
                         if (!created) {
                             const auto appeared = std::filesystem::exists(*metadata, error);
                             if (error)
@@ -454,10 +496,18 @@ Result<std::vector<assets::ProjectEntry>> Project::scan_entries(bool create_iden
                         }
                     }
                     ATELIER_TRY_BIND(info, read_json(*metadata));
-                    assets::json_format::fields(*info, {"version", "id", "materials"});
-                    if (assets::json_format::identity(info->at("version")) != 1)
+                    const auto record = info->root();
+                    if (auto fields = record.allowed_members({"version", "id", "materials"}); !fields)
+                        return failure(fields.error().describe());
+                    const auto version = record.u64({"version"});
+                    if (!version)
+                        return failure(version.error().describe());
+                    if (*version != 1)
                         return failure("Unsupported resource metadata version.");
-                    const auto raw = platform::utf8_to_utf16_validated(info->at("id").get<std::string>());
+                    const auto text = record.string({"id"});
+                    if (!text)
+                        return failure(text.error().describe());
+                    const auto raw = platform::utf8_to_utf16_validated(*text);
                     GUID id{};
                     if (raw.size() != 38 || raw.front() != L'{' || raw.back() != L'}' ||
                         FAILED(CLSIDFromString(raw.c_str(), &id)))
@@ -470,15 +520,17 @@ Result<std::vector<assets::ProjectEntry>> Project::scan_entries(bool create_iden
                     key = "project/" + *canonical_name;
                     if (!keys.insert(key).second)
                         return failure("Duplicate resource identity; import or create an independent asset.");
-                    if (const auto mapping = info->find("materials"); mapping != info->end()) {
-                        if (kind != assets::AssetKind::mesh || !mapping->is_object())
+                    if (const auto mapping = *record.find("materials")) {
+                        if (kind != assets::AssetKind::mesh || mapping->kind() != json::Kind::object)
                             return failure(
                                 "Only mesh metadata lists default materials, as slot names to material keys: " +
                                 meta_name);
-                        for (const auto& [slot, material] : mapping->items()) {
-                            if (slot.empty() || !material.is_string())
+                        const auto items = mapping->object_items();
+                        for (const auto& [slot, material] : *items) {
+                            const auto key = material.string();
+                            if (slot.empty() || !key)
                                 return failure("Invalid default material in " + meta_name);
-                            materials.push_back({slot, material.get<std::string>()});
+                            materials.push_back({std::string(slot), std::string(*key)});
                         }
                     }
                 }
@@ -593,10 +645,11 @@ Result<MeshImportPublication> Project::import_mesh_files(const std::filesystem::
             path += L".asset.json";
             return path;
         };
-        const auto identity_file = [](const std::string& key, Json extra = Json::object()) {
-            extra["version"] = 1;
-            extra["id"] = key.substr(8);
-            return extra.dump(2) + "\n";
+        const auto identity_file = [](std::string_view key, json::Builder extra = json::Builder{}) {
+            static_cast<void>(extra.set(extra.root(), "version", std::uint32_t{1}));
+            extra.set_validated(extra.root(), "id", key.substr(8));
+            const auto bytes = json::write(extra.root(), {true, true});
+            return std::string(bytes.data(), bytes.size());
         };
         auto relative = std::filesystem::path("Content/Meshes");
         if (loaded.files.size() > 1)
@@ -607,8 +660,8 @@ Result<MeshImportPublication> Project::import_mesh_files(const std::filesystem::
             ATELIER_TRY_BIND(id, identity());
             resource = "project/" + *id;
         }
-        Json metadata = Json::object();
-        Json defaults = Json::object();
+        json::Builder metadata;
+        json::Builder defaults;
         std::vector<std::filesystem::path> owned;
         std::string dependency_error;
         if (!requested.empty()) {
@@ -621,7 +674,7 @@ Result<MeshImportPublication> Project::import_mesh_files(const std::filesystem::
                 return failure("Reimport must retain the mesh format (.obj or .gltf).");
             ATELIER_TRY_BIND(metadata_path, resolve(sidecar(target_relative)));
             ATELIER_TRY_BIND(previous_metadata, read_json(*metadata_path));
-            metadata = std::move(*previous_metadata);
+            metadata = json::Builder(*previous_metadata);
             owned.push_back(target_relative);
             // Current raw dependencies, not material closure, prove which existing
             // files this operation may replace. There is no import ownership history.
@@ -757,13 +810,27 @@ Result<MeshImportPublication> Project::import_mesh_files(const std::filesystem::
         for (const auto& entry : *catalog)
             if (same_path(entry.path.parent_path(), relative / "Materials"))
                 names.push_back(entry.path.filename().wstring());
+        const auto mapping = metadata.root().find("materials");
+        if (!mapping)
+            return failure(mapping.error().describe());
         for (std::size_t i = 0; i < loaded.mesh->materials().size(); ++i) {
             const auto slot = geometry::material_slot_name(*loaded.mesh, i);
             if (!slots.insert(slot).second)
                 return failure("Reimport requires unique material slot names.");
-            if (metadata.contains("materials") && metadata["materials"].contains(slot)) {
-                const auto key = metadata["materials"][slot].get<std::string>();
-                defaults[slot] = key;
+            std::optional<json::Value> saved;
+            if (*mapping) {
+                const auto at = (*mapping)->find(slot);
+                if (!at)
+                    return failure(at.error().describe());
+                saved = *at;
+            }
+            if (saved) {
+                const auto text = saved->string();
+                if (!text)
+                    return failure(text.error().describe());
+                const std::string key(*text);
+                if (auto written = defaults.set(defaults.root(), slot, *saved); !written)
+                    return failure(written.error().describe());
                 loaded.notes.push_back("Preserved material binding and author values for slot '" + slot +
                                        "'; source material changes were not merged.");
                 if (returned_materials.insert(key).second) {
@@ -797,15 +864,20 @@ Result<MeshImportPublication> Project::import_mesh_files(const std::filesystem::
             ATELIER_TRY_BIND(id, identity());
             const auto key = "project/" + *id;
             assets::MaterialAsset asset{key, path.stem().wstring(), std::move(author)};
-            ATELIER_TRY(queue(path, assets::material_format::encode(asset).dump(2) + "\n", false));
+            const auto encoded = assets::material_format::encode(asset);
+            if (!encoded)
+                return failure(encoded.error().describe());
+            const auto bytes = json::write(encoded->root(), {true, true});
+            ATELIER_TRY(queue(path, {bytes.data(), bytes.size()}, false));
             ATELIER_TRY(queue(sidecar(path), identity_file(key), false));
-            defaults[slot] = key;
+            if (auto written = defaults.set(defaults.root(), slot, key); !written)
+                return failure(written.error().describe());
             result.materials.push_back(std::move(asset));
         }
-        if (!defaults.empty())
-            metadata["materials"] = std::move(defaults);
+        if (defaults.root().size())
+            metadata.set_validated(metadata.root(), "materials", defaults.root());
         else
-            metadata.erase("materials");
+            metadata.erase(metadata.root(), "materials");
         ATELIER_TRY(queue(sidecar(target_relative), identity_file(resource, std::move(metadata)), !requested.empty()));
         result.notes = loaded.notes;
         for (const auto& write : writes)

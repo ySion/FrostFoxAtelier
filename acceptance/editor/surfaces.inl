@@ -13,7 +13,8 @@ int verify_editor_surfaces(Application& app, const char* output_directory) {
     const auto output = std::filesystem::absolute(*output_text);
     std::filesystem::create_directories(output);
     tick(app);
-    require(bool(Access::invoke(app, "scene.add", {{"kind", "mesh"}})), "Surface scene creation failed.");
+    require(bool(Access::invoke(app, "scene.add", json::Document::literal<R"({"kind":"mesh"})">())),
+            "Surface scene creation failed.");
     tick(app);
     const auto point = [&](ui::ControlKey key) {
         const auto* control = app.presented()->find(key);
@@ -157,8 +158,10 @@ int verify_editor_surfaces(Application& app, const char* output_directory) {
         const auto members = model(app.document().world().members()).size();
         constexpr unsigned created = 120; // Stays below Session's 128 undo entries so undo removes them all.
         for (unsigned i = 0; i < created; ++i)
-            require(bool(Access::invoke(app, "scene.add", {{"kind", "entity"}})), "Scene Tree population failed.");
-        require(bool(Access::invoke(app, "layout.show", {{"tab", "scene_tree"}})), "Scene Tree did not open.");
+            require(bool(Access::invoke(app, "scene.add", json::Document::literal<R"({"kind":"entity"})">())),
+                    "Scene Tree population failed.");
+        require(bool(Access::invoke(app, "layout.show", json::Document::literal<R"({"tab":"scene_tree"})">())),
+                "Scene Tree did not open.");
         tick(app, 2);
         const auto missing = [&] {
             const auto viewport = Access::tree_viewport(app, control::entity_tree);
@@ -260,9 +263,13 @@ int verify_editor_surfaces(Application& app, const char* output_directory) {
     model(app.enable_control(directory));
     const auto instances = api::discover(directory);
     require(bool(instances), instances ? "" : instances.error().what());
-    const auto instance = std::ranges::find_if(
-        *instances, [](const auto& item) { return item.at("pid").template get<DWORD>() == GetCurrentProcessId(); });
-    require(instance != instances->end(), "Camera acceptance Control endpoint is absent.");
+    std::optional<json::Document> instance;
+    const auto descriptors = instances->root().array();
+    require(descriptors.has_value(), "Control discovery did not return an array.");
+    for (auto item : *descriptors)
+        if (item.u32({"pid"}) == GetCurrentProcessId())
+            instance.emplace(item);
+    require(instance.has_value(), "Camera acceptance Control endpoint is absent.");
     const auto control_reply = [&] {
         auto pending = std::async(std::launch::async, [descriptor = *instance] {
             auto client = api::Client::create(descriptor, std::chrono::seconds(5));
@@ -270,12 +277,18 @@ int verify_editor_surfaces(Application& app, const char* output_directory) {
             // Native input can advance the token between these two pipe calls.
             // Refresh only stale requests; a fresh request must still prove busy/idle.
             for (unsigned attempt = 0; attempt < 8; ++attempt) {
-                const auto state = client->call({{"op", "editor.inspect"}, {"args", {{"detail", "summary"}}}});
-                auto reply = client->call({{"op", "op.call"},
-                                           {"state_token", state.at("state_token")},
-                                           {"args", {{"id", "view.set"}, {"args", api::Json::object()}}}});
-                if (reply.at("status") != "error" || reply.at("error").at("code") != "stale_state")
-                    return reply;
+                const auto state =
+                    client->call(json::Document::literal<R"({"op":"editor.inspect","args":{"detail":"summary"}})">());
+                require(bool(state), state ? "" : state.error().what());
+                json::Builder request{
+                    json::Document::literal<R"({"op":"op.call","args":{"id":"view.set","args":{}}})">()};
+                const auto token = state->root().string({"state_token"});
+                require(token && request.set(request.root(), "state_token", *token), "Missing inspection state token.");
+                auto reply = client->call(request.finish());
+                require(bool(reply), reply ? "" : reply.error().what());
+                if (reply->root().string({"status"}) != "error" ||
+                    reply->root().string({"error", "code"}) != "stale_state")
+                    return std::move(*reply);
             }
             throw std::runtime_error("Camera Control acceptance could not obtain a stable state token.");
         });
@@ -291,26 +304,36 @@ int verify_editor_surfaces(Application& app, const char* output_directory) {
                             .button = ui::PointerButton::middle,
                             .shift = true});
         const auto busy = control_reply();
-        if (busy.at("status") != "error" || busy.at("error").at("code") != "busy")
+        if (busy.root().string({"status"}) != "error" || busy.root().string({"error", "code"}) != "busy") {
+            const auto bytes = json::write(busy.root());
             throw std::runtime_error("Control lost camera pan ending " + std::to_string(ending) +
                                      ", foreground=" + std::to_string(GetForegroundWindow() == app.window()) +
-                                     ", capture=" + std::to_string(GetCapture() == app.window()) + ": " + busy.dump());
-        const auto& reasons = busy.at("error").at("busy_reasons");
-        require(std::ranges::find(reasons, "camera_pan") != reasons.end() &&
-                    std::ranges::find(reasons, "camera_orbit") == reasons.end(),
-                "Control reported the wrong camera gesture.");
+                                     ", capture=" + std::to_string(GetCapture() == app.window()) + ": " +
+                                     std::string(bytes.data(), bytes.size()));
+        }
+        const auto reasons = busy.root().path({"error", "busy_reasons"})->array();
+        require(reasons.has_value(), "Busy reasons must be an array.");
+        bool pan = false;
+        bool orbit = false;
+        for (auto reason : *reasons) {
+            pan |= reason.string() == "camera_pan";
+            orbit |= reason.string() == "camera_orbit";
+        }
+        require(pan && !orbit, "Control reported the wrong camera gesture.");
         Access::input(app, {.kind = ui::EventKind::pointer_up,
                             .x = camera_point.x,
                             .y = camera_point.y,
                             .button = ui::PointerButton::secondary});
-        require(control_reply().at("status") == "error", "Unrelated mouse release ended a camera gesture.");
+        const auto unrelated = control_reply();
+        require(unrelated.root().string({"status"}) == "error", "Unrelated mouse release ended a camera gesture.");
         if (ending == 1 || ending == 2)
             Access::input(app, {.kind = ending == 1 ? ui::EventKind::focus_lost : ui::EventKind::capture_lost});
         else if (ending == 3) {
             Access::input(app, {.kind = ui::EventKind::key_down, .key = ui::Key::f10}, VK_F10);
             tick(app, 1);
             const auto menu = control_reply();
-            require(menu.at("status") == "error" && menu.at("error").at("busy_reasons") == api::Json::array({"menu"}),
+            require(menu.root().string({"status"}) == "error" &&
+                        *menu.root().path({"error", "busy_reasons"}) == json::Document::literal<R"(["menu"])">().root(),
                     "Opening a menu retained the old camera gesture or lost menu protection.");
             escape();
             tick(app, 1);
@@ -320,8 +343,11 @@ int verify_editor_surfaces(Application& app, const char* output_directory) {
                             .y = camera_point.y,
                             .button = ui::PointerButton::middle});
         const auto released = control_reply();
-        if (released.at("status") != "ok")
-            throw std::runtime_error("Ended camera gesture left Control busy: " + released.dump());
+        if (released.root().string({"status"}) != "ok") {
+            const auto bytes = json::write(released.root());
+            throw std::runtime_error("Ended camera gesture left Control busy: " +
+                                     std::string(bytes.data(), bytes.size()));
+        }
         const auto stopped = Access::camera_view(app);
         Access::input(app, {.kind = ui::EventKind::pointer_move, .x = camera_point.x + 8, .y = camera_point.y + 8});
         tick(app, 1);
@@ -329,7 +355,8 @@ int verify_editor_surfaces(Application& app, const char* output_directory) {
                 "Ended camera gesture resumed on late movement.");
     }
     require(app.document().undo_count() == history, "Camera gestures entered scene history.");
-    require(bool(Access::invoke(app, "layout.show", {{"tab", "world"}})), "Lighting page command failed.");
+    require(bool(Access::invoke(app, "layout.show", json::Document::literal<R"({"tab":"world"})">())),
+            "Lighting page command failed.");
     tick(app, 1);
     capture(app, output / "world-lighting.png");
     const auto press_tab = [&](ui::ControlKey key) {
@@ -379,27 +406,36 @@ int verify_editor_surfaces(Application& app, const char* output_directory) {
     type_number(L"10");
     require(Access::scene_lit_view(app) == lighting_before, "Lighting text preview rebuilt the probe configuration.");
     const auto pending_edit = control_reply();
-    require(pending_edit.at("status") == "error" &&
-                std::ranges::find(pending_edit.at("error").at("busy_reasons"), "view_edit") !=
-                    pending_edit.at("error").at("busy_reasons").end(),
+    const auto edit_reasons = pending_edit.root().path({"error", "busy_reasons"})->array();
+    require(edit_reasons.has_value(), "Edit busy reasons must be an array.");
+    bool view_edit = false;
+    for (auto reason : *edit_reasons)
+        view_edit |= reason.string() == "view_edit";
+    require(pending_edit.root().string({"status"}) == "error" && view_edit,
             "Control did not protect the uncommitted Lighting edit.");
     escape();
     tick(app, 1);
-    require(Access::scene_lit_view(app) == lighting_before && control_reply().at("status") == "ok",
+    const auto cancelled_edit = control_reply();
+    require(Access::scene_lit_view(app) == lighting_before && cancelled_edit.root().string({"status"}) == "ok",
             "Cancelled Lighting draft retained settings or busy state.");
     type_number(L"10");
     Access::input(app, {.kind = ui::EventKind::key_down, .key = ui::Key::enter}, VK_RETURN);
     Access::input(app, {.kind = ui::EventKind::key_up, .key = ui::Key::enter}, VK_RETURN);
     tick(app, 1);
-    require(Access::scene_lit_view(app).lit.probe_volumes[0].counts[0] == 10 && control_reply().at("status") == "ok",
+    const auto committed_edit = control_reply();
+    require(Access::scene_lit_view(app).lit.probe_volumes[0].counts[0] == 10 &&
+                committed_edit.root().string({"status"}) == "ok",
             "Lighting Enter commit failed to publish or left an active draft.");
     type_number(L"12");
     Access::input(app, {.kind = ui::EventKind::key_down, .control = true}, 'W');
     Access::input(app, {.kind = ui::EventKind::key_up, .control = true}, 'W');
     tick(app, 1);
-    require(Access::scene_lit_view(app).lit.probe_volumes[0].counts[0] == 10 && control_reply().at("status") == "ok",
+    const auto closed_edit = control_reply();
+    require(Access::scene_lit_view(app).lit.probe_volumes[0].counts[0] == 10 &&
+                closed_edit.root().string({"status"}) == "ok",
             "Closing Lighting committed a pending number or kept Control busy.");
-    require(bool(Access::invoke(app, "layout.show", {{"tab", "world"}})), "Lighting page did not reopen.");
+    require(bool(Access::invoke(app, "layout.show", json::Document::literal<R"({"tab":"world"})">())),
+            "Lighting page did not reopen.");
     tick(app, 1);
     const auto slot = point(editor::world_control::slot);
     pointer(ui::EventKind::pointer_down, slot);
@@ -413,7 +449,8 @@ int verify_editor_surfaces(Application& app, const char* output_directory) {
             "Changing the volume did not replace the DSL row bindings.");
     require(app.document().undo_count() == world_history + 1,
             "World controls did not commit exactly one scene history entry.");
-    require(bool(Access::invoke(app, "layout.show", {{"tab", "parameters"}})), "Parameters did not reopen.");
+    require(bool(Access::invoke(app, "layout.show", json::Document::literal<R"({"tab":"parameters"})">())),
+            "Parameters did not reopen.");
     tick(app, 1);
     const auto entity = app.document().selection().entity;
     const auto position_key = property_control(app, entity, 0);
@@ -442,11 +479,12 @@ int verify_editor_surfaces(Application& app, const char* output_directory) {
     auto inspection = std::async(std::launch::async, [descriptor = *instance] {
         auto client = api::Client::create(descriptor, std::chrono::seconds(5));
         require(bool(client), client ? "" : client.error().what());
-        return client->call({{"op", "editor.inspect"}, {"args", {{"detail", "summary"}}}});
+        return client->call(json::Document::literal<R"({"op":"editor.inspect","args":{"detail":"summary"}})">());
     });
     while (inspection.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready)
         require(app.step(), "Render retry blocked the Control inspection service.");
-    require(inspection.get().at("status") == "ok" && app.accepted_frames() == accepted &&
+    const auto inspected = inspection.get();
+    require(inspected && inspected->root().string({"status"}) == "ok" && app.accepted_frames() == accepted &&
                 Access::render_retry_delay(app) == held_delay,
             "Host service processing bypassed the render retry gate.");
     // Schedule one genuine failure deadline after the forced service hold, then

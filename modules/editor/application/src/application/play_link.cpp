@@ -1,4 +1,5 @@
 #include "application/play_link.hpp"
+#include "application/diagnostics.hpp"
 #include "assets/file.hpp"
 #include "assets/json_format.hpp"
 #include "assets/mesh_format.hpp"
@@ -12,8 +13,6 @@
 
 namespace atelier::application {
 namespace {
-using Json = assets::json_format::Json;
-
 bool transfer(HANDLE pipe, void* storage, std::size_t bytes, bool write) {
     auto* cursor = static_cast<char*>(storage);
     while (bytes) {
@@ -29,9 +28,6 @@ bool transfer(HANDLE pipe, void* storage, std::size_t bytes, bool write) {
     return true;
 }
 
-std::string dump(const Json& value) {
-    return value.dump(-1, ' ', false, Json::error_handler_t::replace);
-}
 }
 
 struct LiveLink::Impl {
@@ -184,28 +180,51 @@ void PlayLink::forward(const std::vector<editor::LiveChange>& ops) {
                     fail("Play stopped acknowledging resource publications (256 MiB resource budget exhausted).");
                     return;
                 }
-                auto texture = assets::json_format::parse(text);
-                assets::json_format::fields(texture, {"op", "key"});
-                if (texture.at("op") != "texture" || texture.at("key").get_ref<const std::string&>().empty())
-                    throw std::runtime_error("Image content requires a texture change with an asset key.");
                 file = spill_ / (L"texture-" + std::to_wstring(next_texture_++) + L".rgba");
-                texture["width"] = op.texture->width();
-                texture["height"] = op.texture->height();
                 auto path = platform::utf16_to_utf8(file.native());
                 if (!path) {
                     fail("Cannot forward Play changes: Invalid UTF-16 text.");
                     return;
                 }
-                texture["file"] = std::move(*path);
-                encoded = dump(texture);
+                const auto written = [&]() -> json::Result<Array<char>> {
+                    ATELIER_TRY_BIND(texture, assets::json_format::parse(text));
+                    const auto root = texture->root();
+                    ATELIER_TRY(root.allowed_members({"op", "key"}));
+                    ATELIER_TRY_BIND(kind, root.string({"op"}));
+                    ATELIER_TRY_BIND(key, root.string({"key"}));
+                    if (*kind != "texture" || key->empty())
+                        return std::unexpected(root.error(
+                            json::Fault::range, "Image content requires a texture change with an asset key."));
+                    json::Builder result(*texture);
+                    ATELIER_TRY(result.set(result.root(), "width", op.texture->width()));
+                    ATELIER_TRY(result.set(result.root(), "height", op.texture->height()));
+                    result.set_validated(result.root(), "file", *path);
+                    return json::write(result.root());
+                }();
+                if (!written) {
+                    fail("Cannot forward Play changes: " + written.error().describe());
+                    return;
+                }
+                encoded.assign(written->data(), written->size());
                 text = encoded;
                 const auto pixels = op.texture->pixels();
                 content = {reinterpret_cast<const char*>(pixels.data()), pixels.size()};
             } else if (op.mesh) {
-                auto mesh = assets::json_format::parse(text);
-                assets::json_format::fields(mesh, {"op", "key"});
-                if (mesh.at("op") != "mesh" || mesh.at("key").get_ref<const std::string&>() != op.mesh->key)
-                    throw std::runtime_error("Mesh content requires a mesh change with the same asset key.");
+                const auto parsed = [&]() -> json::Result<json::Document> {
+                    ATELIER_TRY_BIND(mesh, assets::json_format::parse(text));
+                    const auto root = mesh->root();
+                    ATELIER_TRY(root.allowed_members({"op", "key"}));
+                    ATELIER_TRY_BIND(kind, root.string({"op"}));
+                    ATELIER_TRY_BIND(key, root.string({"key"}));
+                    if (*kind != "mesh" || *key != op.mesh->key)
+                        return std::unexpected(root.error(
+                            json::Fault::range, "Mesh content requires a mesh change with the same asset key."));
+                    return std::move(*mesh);
+                }();
+                if (!parsed) {
+                    fail("Cannot forward Play changes: " + parsed.error().describe());
+                    return;
+                }
                 // Encoding checks its full size against the shared remaining budget
                 // before allocating the payload. Never revisit project source files.
                 auto snapshot = assets::mesh_format::encode(*op.mesh, available);
@@ -222,8 +241,10 @@ void PlayLink::forward(const std::vector<editor::LiveChange>& ops) {
                     fail("Cannot forward Play changes: Invalid UTF-16 text.");
                     return;
                 }
-                mesh["file"] = std::move(*path);
-                encoded = dump(mesh);
+                json::Builder mesh(*parsed);
+                mesh.set_validated(mesh.root(), "file", *path);
+                const auto bytes = json::write(mesh.root());
+                encoded.assign(bytes.data(), bytes.size());
                 text = encoded;
             }
             if (text.size() + envelope > maximum_batch) {
@@ -280,7 +301,12 @@ void PlayLink::send(std::string_view ops, Pending&& resources) {
             fail("Cannot forward Play changes: Invalid UTF-16 text.");
             return;
         }
-        message = dump(Json{{"type", "batch"}, {"seq", seq}, {"file", std::move(*path)}});
+        json::Builder notice;
+        notice.set_validated(notice.root(), "type", "batch");
+        (void)notice.set(notice.root(), "seq", seq);
+        notice.set_validated(notice.root(), "file", *path);
+        const auto encoded = json::write(notice.root());
+        message.assign(encoded.data(), encoded.size());
     }
     // Transfer ownership before queuing: once sent, even a disconnect cannot retire
     // files the peer may still be reading. Only ACK or closing this run releases them.
@@ -305,28 +331,46 @@ void PlayLink::poll(bool running, bool stopping) {
         return;
     for (const auto& text : link_->receive()) {
         try {
-            const auto message = assets::json_format::parse(text);
-            const auto& type = message.at("type").get_ref<const std::string&>();
-            if (type == "inspect") {
-                inspected_[message.at("id").get<std::uint64_t>()] =
-                    message.contains("graph") ? message.at("graph").get<std::string>()
-                                              : "error: " + message.at("error").get<std::string>();
-            } else if (type == "error")
-                fail(message.at("message").get<std::string>());
-            else if (type == "ack") {
-                const auto seq = message.at("seq").get<std::uint64_t>();
-                if (pending_.empty() || pending_.front().seq != seq)
-                    throw std::runtime_error("batch " + std::to_string(seq) + " acknowledged out of order");
-                pending_bytes_ -= pending_.front().bytes;
-                pending_resource_bytes_ -= pending_.front().resource_bytes;
-                pending_.pop_front();
-                for (const auto& item : message.at("diagnostics"))
-                    if (item.at("severity") == "error") {
-                        fail(item.at("message").get<std::string>());
-                        break;
+            const auto read = [&]() -> json::Result<void> {
+                ATELIER_TRY_BIND(message, assets::json_format::parse(text));
+                const auto root = message->root();
+                ATELIER_TRY_BIND(type, root.string({"type"}));
+                if (*type == "inspect") {
+                    ATELIER_TRY_BIND(id, root.u64({"id"}));
+                    ATELIER_TRY_BIND(graph, root.find("graph"));
+                    if (*graph) {
+                        ATELIER_TRY_BIND(value, (**graph).string());
+                        inspected_[*id] = *value;
+                    } else {
+                        ATELIER_TRY_BIND(error, root.string({"error"}));
+                        inspected_[*id] = "error: " + std::string(*error);
                     }
-            } else
-                throw std::runtime_error("unknown message type");
+                } else if (*type == "error") {
+                    ATELIER_TRY_BIND(error, root.string({"message"}));
+                    fail(std::string(*error));
+                } else if (*type == "ack") {
+                    ATELIER_TRY_BIND(seq, root.u64({"seq"}));
+                    if (pending_.empty() || pending_.front().seq != *seq)
+                        throw std::runtime_error("batch " + std::to_string(*seq) + " acknowledged out of order");
+                    pending_bytes_ -= pending_.front().bytes;
+                    pending_resource_bytes_ -= pending_.front().resource_bytes;
+                    pending_.pop_front();
+                    ATELIER_TRY_BIND(diagnostics, root.at("diagnostics"));
+                    ATELIER_TRY_BIND(items, diagnostics->array());
+                    for (auto item : *items) {
+                        ATELIER_TRY_BIND(severity, item.string({"severity"}));
+                        if (*severity == "error") {
+                            ATELIER_TRY_BIND(error, item.string({"message"}));
+                            fail(std::string(*error));
+                            break;
+                        }
+                    }
+                } else
+                    throw std::runtime_error("unknown message type");
+                return {};
+            }();
+            if (!read)
+                fail("Unreadable Play reply: " + read.error().describe());
         } catch (const std::exception& error) {
             fail(std::string("Unreadable Play reply: ") + error.what());
         }
@@ -363,7 +407,12 @@ std::uint64_t PlayLink::inspect(std::uint64_t identity) {
     if (!link_)
         return 0;
     const auto request = next_request_++;
-    link_->send(dump(Json{{"type", "inspect"}, {"id", request}, {"object", identity}}));
+    json::Builder message;
+    message.set_validated(message.root(), "type", "inspect");
+    (void)message.set(message.root(), "id", request);
+    (void)message.set(message.root(), "object", identity);
+    const auto bytes = json::write(message.root());
+    link_->send(std::string(bytes.data(), bytes.size()));
     return request;
 }
 
@@ -378,109 +427,138 @@ std::optional<std::string> PlayLink::inspected(std::uint64_t request) {
 
 void PlayEnd::service(editor::Session& document, editor::Project& project, const Report& report) {
     for (auto& text : link_->receive()) {
-        Json reply;
-        const auto reject = [&](std::string message, bool print) {
+        json::Builder reply;
+        const auto reject = [&](const std::string& message, bool print) {
             diverged_ = true;
             world::Diagnostic item;
             item.severity = world::Severity::error;
             item.kind = world::DiagnosticKind::command_rejected;
             item.phase = world::DiagnosticPhase::command;
-            item.message = std::move(message);
+            item.message = message;
             if (print)
                 report({&item, 1});
-            return Json{{"severity", "error"}, {"kind", "command_rejected"}, {"message", item.message}};
+        };
+        const auto error_reply = [&](std::string message) {
+            reject(message, true);
+            reply = json::Builder{};
+            reply.set_validated(reply.root(), "type", "error");
+            reply.set_validated(reply.root(), "message", diagnostic_utf8(message));
         };
         try {
-            auto message = assets::json_format::parse(text);
-            const auto type = message.at("type").get<std::string>();
-            if (type == "inspect") {
-                reply = {{"type", "inspect"}, {"id", message.at("id")}};
-                auto graph =
-                    document.local_object(message.at("object").get<std::uint64_t>()).and_then([&](ObjectId object) {
-                        return document.serialize_live_subtree(object);
-                    });
-                if (!graph)
-                    reply["error"] = graph.error().message;
-                else if (graph->size() > LiveLink::maximum_message / 2)
-                    reply["error"] = "The inspected graph exceeds the reply limit.";
-                else
-                    reply["graph"] = std::move(*graph);
-            } else if (type == "batch") {
-                const auto seq = message.at("seq").get<std::uint64_t>();
-                reply = {{"type", "ack"}, {"seq", seq}, {"diagnostics", Json::array()}};
-                auto& out = reply["diagnostics"];
-                if (diverged_)
-                    out.push_back(reject(
-                        "Play diverged before change batch " + std::to_string(seq) + "; nothing was applied.", false));
-                else if (seq != expected_)
-                    out.push_back(reject("Play change sequence gap: expected batch " + std::to_string(expected_) +
-                                             ", received " + std::to_string(seq) + ".",
-                                         true));
-                else {
-                    ++expected_;
-                    std::string batch;
-                    if (message.contains("file")) {
-                        const std::filesystem::path file =
-                            platform::utf8_to_utf16_validated(message.at("file").get<std::string>());
-                        auto read = assets::read_file(file);
-                        if (read)
-                            batch = std::move(*read);
-                        else
-                            out.push_back(reject("Cannot read Play change batch " + std::to_string(seq) + ": " +
-                                                     read.error().message,
-                                                 true));
-                    } else
-                        batch = dump(Json{{"ops", std::move(message.at("ops"))}});
-                    if (!batch.empty()) {
-                        auto applied = document.apply_live(batch, project);
-                        if (!applied)
-                            out.push_back(reject("Play change batch " + std::to_string(seq) +
-                                                     " failed: " + applied.error().message,
-                                                 true));
-                        else {
-                            report(*applied);
-                            for (const auto& item : *applied) {
-                                if (item.severity == world::Severity::error)
-                                    diverged_ = true;
-                                auto description = editor::describe_diagnostic(document, item);
-                                if (!description) {
-                                    const auto invalid =
-                                        reject("Unreadable editor message: " + description.error().message, true);
-                                    reply = {{"type", "error"}, {"message", invalid.at("message")}};
-                                    break;
+            const auto handled = [&]() -> json::Result<void> {
+                ATELIER_TRY_BIND(message, assets::json_format::parse(text));
+                const auto root = message->root();
+                ATELIER_TRY_BIND(type, root.string({"type"}));
+                if (*type == "inspect") {
+                    reply.set_validated(reply.root(), "type", "inspect");
+                    ATELIER_TRY_BIND(id, root.at("id"));
+                    reply.set_validated(reply.root(), "id", *id);
+                    ATELIER_TRY_BIND(identity, root.u64({"object"}));
+                    auto graph = document.local_object(*identity).and_then(
+                        [&](ObjectId object) { return document.serialize_live_subtree(object); });
+                    if (!graph)
+                        reply.set_validated(reply.root(), "error", diagnostic_utf8(graph.error().message));
+                    else if (graph->size() > LiveLink::maximum_message / 2)
+                        reply.set_validated(reply.root(), "error", "The inspected graph exceeds the reply limit.");
+                    else
+                        reply.set_validated(reply.root(), "graph", *graph);
+                } else if (*type == "batch") {
+                    ATELIER_TRY_BIND(sequence, root.u64({"seq"}));
+                    const auto seq = *sequence;
+                    reply.set_validated(reply.root(), "type", "ack");
+                    ATELIER_TRY(reply.set(reply.root(), "seq", seq));
+                    ATELIER_TRY_BIND(out, reply.array(reply.root(), "diagnostics"));
+                    const auto refused = [&](std::string message, bool print) {
+                        reject(message, print);
+                        const auto item = reply.append_object(*out);
+                        reply.set_validated(item, "severity", "error");
+                        reply.set_validated(item, "kind", "command_rejected");
+                        reply.set_validated(item, "message", diagnostic_utf8(message));
+                    };
+                    if (diverged_) {
+                        refused("Play diverged before change batch " + std::to_string(seq) + "; nothing was applied.",
+                                false);
+                    } else if (seq != expected_) {
+                        refused("Play change sequence gap: expected batch " + std::to_string(expected_) +
+                                    ", received " + std::to_string(seq) + ".",
+                                true);
+                    } else {
+                        ++expected_;
+                        std::string batch;
+                        ATELIER_TRY_BIND(file, root.find("file"));
+                        if (*file) {
+                            ATELIER_TRY_BIND(path, (**file).string());
+                            auto read = assets::read_file(platform::utf8_to_utf16_validated(*path));
+                            if (read)
+                                batch = std::move(*read);
+                            else {
+                                refused("Cannot read Play change batch " + std::to_string(seq) + ": " +
+                                            read.error().message,
+                                        true);
+                            }
+                        } else {
+                            ATELIER_TRY_BIND(ops, root.at("ops"));
+                            json::Builder envelope;
+                            envelope.set_validated(envelope.root(), "ops", *ops);
+                            const auto bytes = json::write(envelope.root());
+                            batch.assign(bytes.data(), bytes.size());
+                        }
+                        if (!batch.empty()) {
+                            auto applied = document.apply_live(batch, project);
+                            if (!applied) {
+                                refused("Play change batch " + std::to_string(seq) +
+                                            " failed: " + applied.error().message,
+                                        true);
+                            } else {
+                                report(*applied);
+                                for (const auto& item : *applied) {
+                                    if (item.severity == world::Severity::error)
+                                        diverged_ = true;
+                                    auto description = editor::describe_diagnostic(document, item);
+                                    if (!description) {
+                                        error_reply("Unreadable editor message: " + description.error().message);
+                                        break;
+                                    }
+                                    const auto entry = reply.append_object(*out);
+                                    reply.set_validated(entry, "severity", world::name(item.severity));
+                                    reply.set_validated(entry, "kind", world::name(item.kind));
+                                    reply.set_validated(entry, "message", diagnostic_utf8(*description));
                                 }
-                                out.push_back({{"severity", world::name(item.severity)},
-                                               {"kind", world::name(item.kind)},
-                                               {"message", std::move(*description)}});
                             }
                         }
                     }
-                }
-            } else
-                throw std::runtime_error("Unknown editor message type.");
+                } else
+                    throw std::runtime_error("Unknown editor message type.");
+                return {};
+            }();
+            if (!handled)
+                error_reply("Unreadable editor message: " + handled.error().describe());
         } catch (const std::exception& error) {
             // A message without a readable number cannot be acknowledged; the editor treats this as divergence.
-            const auto item = reject(std::string("Unreadable editor message: ") + error.what(), true);
-            reply = {{"type", "error"}, {"message", item.at("message")}};
+            error_reply(std::string("Unreadable editor message: ") + error.what());
         }
         try {
-            auto text = dump(reply);
+            auto bytes = json::write(reply.root());
             // Every diagnostic is already in the output; an oversized acknowledgement keeps only its verdict.
-            if (text.size() > LiveLink::maximum_message && reply.contains("diagnostics")) {
-                Json summary = Json::array();
-                for (const auto& item : reply["diagnostics"])
-                    if (item.at("severity") == "error") {
-                        summary.push_back({{"severity", "error"},
-                                           {"kind", item.at("kind")},
-                                           {"message", item.at("message").get<std::string>().substr(0, 4096)}});
+            const auto diagnostics = *reply.root().find("diagnostics");
+            if (bytes.size() > LiveLink::maximum_message && diagnostics) {
+                json::Builder summary(json::Kind::array);
+                const auto items = *diagnostics->array();
+                for (auto item : items)
+                    if (*item.string({"severity"}) == "error") {
+                        const auto entry = summary.append_object(summary.root());
+                        summary.set_validated(entry, "severity", "error");
+                        summary.set_validated(entry, "kind", *item.string({"kind"}));
+                        const auto message = *item.string({"message"});
+                        summary.set_validated(entry, "message", StringView{message}.utf8_prefix(4096).std_view());
                         break;
                     }
-                reply["diagnostics"] = std::move(summary);
-                text = dump(reply);
+                reply.set_validated(reply.root(), "diagnostics", summary.root());
+                bytes = json::write(reply.root());
             }
-            link_->send(std::move(text));
+            link_->send(std::string(bytes.data(), bytes.size()));
         } catch (const std::exception& error) {
-            static_cast<void>(reject(std::string("Cannot reply to the editor: ") + error.what(), true));
+            reject(std::string("Cannot reply to the editor: ") + error.what(), true);
         }
     }
 }
