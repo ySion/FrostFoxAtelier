@@ -2,7 +2,7 @@
 
 当前提供 `atelier::Array<T>`、`SharedArray<T>`、`Span<T>`、`String`、`StringView`、`Map<K,V>`、`Set<T>` 和 `Hash/Equal`。它们服务于连续数据、共享不可变数据、文本、唯一键索引与共享 Runtime 值存储。独立目标为 `atelier_foundation`，不依赖 Runtime、World、UI 或 JIT；反射适配位于 `runtime/foundation.hpp`。Map/Set 当前服务原生 C++ 消费者，尚未开放反射或源码容器定义。完整 STL 兼容与 Unicode 排版尚未提供。源码已能同步借用原生 String/Array 并访问同一缓冲，也能创建有作用域生命周期的拥有型局部，规则见[原生值借用](native-value-borrows.md)。
 
-容器能力和迁移由真实消费者与测量驱动，不以减少 `std::` 数量为目标。成熟原子、类型特征、构析原语和算法可直接复用；第三方与平台类型的转换留在各模块接入边界。选型依据见[工业基础库研究](research/foundation-stl-industrial-research.md)。
+产品代码中的拥有型 STL 容器按 A1 决定逐模块迁移到自有容器；这不要求替换成熟原子、类型特征、构析原语和算法。容器、字符串等基础函数库提供语义清楚、经过代表验收的完整常用操作，可以为明确的功能类别预留，不必等首个业务消费者才补齐；不建立兼容转发层或重复实现。第三方与平台类型的转换留在各模块接入边界，性能结论仍以真实工作负载测量为准。选型依据见[工业基础库研究](research/foundation-stl-industrial-research.md)。
 
 ## 类型与所有权
 
@@ -51,7 +51,7 @@ names.squeeze();                    // 显式收紧容量；空数组释放缓�
 - 预留容量中的单元素 emplace 直接构造并在成功后增加大小。符合 realloc 条件时，增长前先保存候选值或自视图区间偏移，增长后重新定位，保留自身元素、子对象或视图作为来源的合同；其余增长先构造新增后缀，再处理旧前缀。remove_if 仍逐元素交替调用谓词与搬移，谓词可以观察之前已经压缩的位置。
 - 普通容器操作均为 `noexcept`，元素构造、复制、赋值和谓词不得以异常表达业务失败；CPU OOM 为 fatal。旧异常回滚路径已删除。`emplace/add` 仍允许移动自身元素，来源随后处于合法 moved-from 状态。
 - `find/find_last/find_if/find_last_if` 返回索引或 `npos`；`contains/contains_if` 查询存在性；`index_of(pointer)` 将活元素地址转成索引，外部地址或尾后地址返回 `npos`。`add_unique` 返回既有或新增索引。`remove/remove_last/remove_swap/remove_last_swap` 删除首个或最后一个匹配并返回是否删除；`remove_all/remove_all_swap` 返回删除数，按值保存比较键以支持键来自自身元素。谓词版本为 `remove_first_if/remove_last_if/remove_swap_if/remove_all_swap_if`；既有 `remove_if` 保持删除全部匹配且保序的语义。swap 删除不保序。
-- 三种数组自身的非法索引/删除范围、不可表示的内部容量及 CPU 分配失败在两种配置均走唯一 fatal 出口；借用视图的 `Span::slice` 仍按其当前错误出口，尚未迁移。Runtime 适配已采用 `noexcept` 结果回调，并在调用容器前检查业务范围与容量；不再捕获 C++ 异常转成 `Result`，异常越过回调会终止进程。可恢复的元素业务失败必须由显式结果回调及相应容器适配处理，按操作合同清理未发布候选、保留旧值或处理部分赋值；不能假设普通 C++ Array 会调用元素的结果回调。
+- 三种数组自身的非法索引/删除范围、不可表示的内部容量及 CPU 分配失败在两种配置均走唯一 fatal 出口；借用视图的 `Span::slice` 越界同样为合同 fatal。Runtime 适配已采用 `noexcept` 结果回调，并在调用容器前检查业务范围与容量；不再捕获 C++ 异常转成 `Result`，异常越过回调会终止进程。可恢复的元素业务失败必须由显式结果回调及相应容器适配处理，按操作合同清理未发布候选、保留旧值或处理部分赋值；不能假设普通 C++ Array 会调用元素的结果回调。
 
 ### 内联数组与受限 realloc
 
@@ -112,7 +112,7 @@ seen.remove(7u);                            // 返回是否移除了成员
 - `try_emplace` 先查键，命中时不构造键/值，不消费转入的资源；C++ 实参表达式本身仍先求值。`insert_or_assign` 先构造完整替换值，再以不抛移动提交。支持 move-only 元素，此时容器复制接口不可用；复制赋值先构造副本再替换，不依赖元素复制赋值。
 - Map 遍历返回只读键、可写值的借用代理；推荐示例中的结构化绑定。const Map 遍历的值也只读；Set 遍历仅只读成员。普通遍历期间不得结构修改容器。迭代器不暴露上游类型，也不承诺随机访问。
 - 插入、删除、预留容量、clear/release、赋值、移动和 swap 后，调用者重新取得迭代器、元素指针与引用；结构操作失败也可能已经搬动缓冲。即使部分操作在当前容量下没有搬移，也不额外保证借用稳定。删除会以尾元素填洞，遍历顺序和地址不作为业务身份。
-- `reserve(n)` 按总条目数准备存储，不构造元素。删除和 clear 不自动缩容，release 释放存储。超过底层可索引范围的 reserve 抛 `std::length_error`，不静默截断。默认空表不动态分配索引；沿既有全局 new/delete 使用 mimalloc。
+- `reserve(n)` 按总条目数准备存储，不构造元素，声明 noexcept。删除和 clear 不自动缩容，release 释放存储。超过底层 max_size 的内部容量为合同 fatal，不静默截断；外部输入的容量与预算拒绝仍由调用方显式返回错误。默认空表不动态分配索引；沿既有全局 new/delete 使用 mimalloc，CPU OOM 为 fatal。
 - 不提供并发保护；同一容器不能在读/遍历时被另一线程修改。复制指针或身份值不复制其目标，也不自动登记 Runtime 根。
 
 ### Hash/Equal 与失败合同
@@ -125,7 +125,7 @@ Equal 必须是键域上的等价关系，相等键必须同哈希；键留在�
 
 String/StringView 共用同一按长度的字节哈希和比较，包含嵌入零，不做大小写折叠或 Unicode 规范化；零结尾字符指针作为便利用法，在首个零处结束，空指针按空串处理。透明查询不创建拥有存储，也不验证 UTF-8；插入 String 键时才建立其 UTF-8 不变量。持久文本键使用 String，StringView 作为键则仍由调用方保证外部字节存续且内容不变。自定义透明策略必须使查询表示与拥有键的相等和哈希一致；结构体不能默认哈希含 padding 的原始表示。
 
-构造/复制/分配失败沿 C++ 异常传播。插入失败不发布新成员；复制赋值或替换值构造失败保留目标的原值，部分构造的资源会清理。reserve 失败保留成员内容，但可能已经改变缓冲与容量。调用者主动移动表内资源或构造函数修改实参属于用户副作用，不由容器回滚。Hash/Equal 不保存输入借用、不修改表、不重入结构操作；不能通过错误的 noexcept 声明掩盖会抛异常的实现。
+Map/Set 的元素构造和复制入口尚未整体迁移到禁异常合同，现有 C++ 元素异常仍沿这些入口传播：插入失败不发布新成员；复制赋值或替换值构造失败保留目标的原值，部分构造的资源会清理。这不包含 CPU OOM 或 reserve 内部容量违例，两者为 fatal，不承诺回滚。调用者主动移动表内资源或构造函数修改实参属于用户副作用，不由容器回滚。Hash/Equal 不保存输入借用、不修改表、不重入结构操作；不能通过错误的 noexcept 声明掩盖会抛异常的实现。
 
 底层使用锁定的 `ankerl::unordered_dense` 分组索引与连续值存储，不暴露 bucket/load-factor、持久化私有布局或后端入口。版本、下载与校验值统一在[依赖锁文件](../cmake/dependencies-lock.json)，构建复制 `LICENSE.unordered_dense.txt`，当前无上游补丁。内部复用上游标准容器，不另建分配器注册表。哈希值与遍历顺序不属于持久格式或跨版本协议；确定性输出显式排序。
 
@@ -180,6 +180,8 @@ StringView 的 `slice/find/starts_with/ends_with/contains` 都按字节工作，
 
 Span 的 `slice(first,count)` 按元素切片；`Span<T>` 可转 `Span<const T>`，反向不允许。`const Span<T>` 只冻结描述本身，不冻结元素。只读元素必须写 `Span<const T>`。
 
+Span 构造、索引和切片均 constexpr/noexcept。空指针配非零数量、超过可表示的元素范围、越界索引或切片在 dev/release 都为合同 fatal；外部输入先由所属业务边界验证。合法的空 Span 与尾后空切片可用。切片复用来源的合法存储不变量，不重复验证构造条件。
+
 **借用有效期由拥有者和修改行为决定。** 销毁、释放、替换存储及实际扩容使原地址失效；删除和压缩可能让相同地址对应不同元素；clear 结束全部元素生命周期。Array 和堆 String 移动转移缓冲后，原地址若仍使用便依赖新拥有者；内联 String 移动复制字节到目标对象，旧视图不能跟随该值。调用者统一按移动后重新获取 String 视图处理。视图不冻结容器，不提供并发保护，也不能无条件跨协程挂起保存。直接对临时 Array/String 取 `view()` 及从临时 String 构造 StringView 被禁止；C++ 调用者仍须保证其他借用路径有效。
 
 ## 同步借用与作用域工具
@@ -193,6 +195,8 @@ Span 的 `slice(first,count)` 按元素切片；`Span<T>` 可转 `Span<const T>`
 Optional 不承载错误；空值不构造 T，也不要求 T 默认可构造。payload 从偏移零开始，占 sizeof(T)，随后是 1 字节 engaged（0/1），总大小按 alignof(T) 向上补齐；不使用 niche 或 padding 压缩。复制、移动、赋值、emplace 和 swap 按 T 对应的 nothrow 能力提供。emplace 先销毁旧值，参数不能借用该旧值；reset/emplace/赋值使 payload 借用失效。
 
 `has_value/bool` 查询状态；`try_get() &/const&` 缺席时返回 nullptr。`operator*/operator->` 空访问为合同 fatal，所有这些借用接口禁止临时对象。移动保留源 engaged；Optional<String> 的源含一个空 String，而不是空 Optional。不提供抛 bad_optional_access 的 value()。Runtime/Source 的接线由 Runtime 负责：通过回调访问，不读取 engaged 私有偏移，也不能自动把 Optional 中的引用作为 GC 根。
+
+原生操作集为默认/`nullopt`/值/`in_place` 构造、复制/移动构造和赋值、`nullopt` 赋值、`reset/emplace/swap`，以及上述查询和借用接口。普通操作均 noexcept；`emplace` 返回新值引用，不能保存临时 Optional 的该引用到完整表达式之后。该类型表示缺席而不是可恢复失败；业务失败使用 Result。原生寿命验收覆盖 move-only 资源、两种对齐布局、移动保留源 engaged、空/有值交换、复制保活及 reset 释放。本轮收口不改其布局或 API，也不声称已完成 Runtime/Source/反射/JIT 注册。
 
 ## 共享反射与 Runtime
 
@@ -298,7 +302,7 @@ Volume 的块级计数槽只累计普通数值；位置不能表示的业务失�
 
 [frame_timing.hpp](../modules/core/foundation/include/foundation/frame_timing.hpp) 提供常开的 CPU 帧阶段计时机制，dev 与 release 行为一致。foundation 只拥有根标记 `timing::frame`；各模块在自己的 `timing.hpp` 中以 `inline constinit timing::Marker` 声明阶段，给出键名、显示标题和父标记，例如 [renderer/timing.hpp](../modules/render/renderer/include/renderer/timing.hpp) 的 `render` 以 `timing::frame` 为父项。父标记只引用本模块或其依赖模块的标记，依赖方向与链接一致。
 
-宿主在启动时、任何线程记录之前调用一次 `timing::install({module_a::markers, module_b::markers})`：先登记 `frame`，再按参数顺序登记各模块标记，由此确定进程内唯一的目录、下标和显示行序。重复调用、空标记、同一标记重复登记、键名重复、父项未先登记或超过 64 项都会拒绝，被拒绝的调用不登记任何项。没有静态自动注册，不依赖静态初始化顺序。`catalog()` 按下标返回已登记标记，`depth()` 给出层级深度。
+宿主在启动时、任何线程记录之前调用一次 noexcept 的 `timing::install({module_a::markers, module_b::markers})`：先登记 `frame`，再按参数顺序登记各模块标记，由此确定进程内唯一的目录、下标和显示行序。输入是编译进产品的 constinit 固定表，不是运行时业务输入；重复调用、空标记、同一标记重复登记、键名重复、父项未先登记或超过 64 项均为固定注册损坏，在 dev/release 都走唯一 fatal 出口，不回滚、不重试。有标记的错误以栈上有界诊断带出 key，不分配诊断字符串。没有静态自动注册，不依赖静态初始化顺序。`catalog()` 按下标返回已登记标记，`depth()` 给出层级深度。
 
 宿主线程每帧用 `Recorder::Frame` 绑定一个 `Recorder` 并打开 `frame`，`finish()` 或析构时关闭并解绑；`last()` 保留最近一个完成帧的 `FrameRecord`。`Scope` 只读取标记预先分配的下标和父下标，与当前打开的阶段比较后读两次 `steady_clock`，不分配、不查找、不加锁。计时为包含式：父阶段包含子阶段；同一帧多次进入同一阶段时累加时长并增加 `entries`。`record(marker, total_duration, entries = 1) noexcept` 把其他时钟测得的分段（例如 RHI 帧调用内部的提交与等待）记为当前阶段的子项，遵守同一父项规则。总时长只加一次，不乘 `entries`；后者是本帧事件／进入次数，不是帧样本数，不改变消费者按帧计算 mean/p95 的口径。
 

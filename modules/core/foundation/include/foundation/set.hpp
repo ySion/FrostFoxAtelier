@@ -1,6 +1,7 @@
 #pragma once
 
 #include "foundation/hash.hpp"
+#include "memory/fatal.hpp"
 
 #include <ankerl/unordered_dense.h>
 #include <memory>
@@ -53,9 +54,9 @@ public:
 
     [[nodiscard]] bool empty() const noexcept { return storage_.empty(); }
 
-    void reserve(std::size_t total) {
+    void reserve(std::size_t total) noexcept {
         if (total > storage_.max_size())
-            throw std::length_error("Set capacity.");
+            fatal("Set capacity.");
         if (total)
             storage_.reserve(total);
     }

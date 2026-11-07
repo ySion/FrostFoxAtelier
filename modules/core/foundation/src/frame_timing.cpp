@@ -1,7 +1,7 @@
 #include "foundation/frame_timing.hpp"
+#include "memory/fatal.hpp"
 
-#include <stdexcept>
-#include <string>
+#include <algorithm>
 
 namespace atelier::timing {
 namespace {
@@ -16,40 +16,39 @@ const FrameRecord empty_record{};
 
 constinit thread_local Recorder* detail::bound{};
 
-void install(std::initializer_list<std::span<Marker* const>> modules) {
+void install(std::initializer_list<std::span<Marker* const>> modules) noexcept {
     if (frozen)
-        throw std::logic_error("The frame timing catalog is already installed.");
-    std::array<Marker*, capacity> order{};
-    std::size_t size{};
-    // Roll back before building the message, which can throw.
-    const auto reject = [&](std::string_view reason, std::string_view key = {}) {
-        for (std::size_t i = 0; i < size; ++i)
-            order[i]->index_ = order[i]->parent_index_ = unregistered;
-        throw std::invalid_argument(std::string(reason).append(key));
+        fatal("The frame timing catalog is already installed.");
+    // Bounded stack diagnostic: fixed declarations can identify a damaged key
+    // without allocating or entering the logger on the fatal path.
+    const auto reject = [](std::string_view reason, std::string_view key) {
+        char message[256];
+        const auto prefix = std::min(reason.size(), sizeof(message));
+        std::copy_n(reason.data(), prefix, message);
+        const auto suffix = std::min(key.size(), sizeof(message) - prefix);
+        std::copy_n(key.data(), suffix, message + prefix);
+        fatal({message, prefix + suffix});
     };
     const auto add = [&](Marker* marker) {
         if (!marker)
-            reject("A frame timing marker is null.");
-        if (size == capacity)
-            reject("The frame timing catalog exceeds its capacity.");
+            fatal("A frame timing marker is null.");
+        if (installed_size == capacity)
+            reject("The frame timing catalog exceeds its capacity: ", marker->key_);
         if (marker->index_ != unregistered)
             reject("Frame timing marker is registered twice: ", marker->key_);
-        for (std::size_t i = 0; i < size; ++i)
-            if (order[i]->key_ == marker->key_)
+        for (std::size_t i = 0; i < installed_size; ++i)
+            if (installed[i]->key_ == marker->key_)
                 reject("Frame timing key is not unique: ", marker->key_);
         if (marker != &frame && (!marker->parent_ || marker->parent_->index_ == unregistered))
             reject("Frame timing parent must be registered before ", marker->key_);
-        marker->index_ = static_cast<std::uint8_t>(size);
+        marker->index_ = static_cast<std::uint8_t>(installed_size);
         marker->parent_index_ = marker->parent_ ? marker->parent_->index_ : unregistered;
-        order[size++] = marker;
+        installed[installed_size++] = marker;
     };
     add(&frame);
     for (const auto module : modules)
         for (auto* marker : module)
             add(marker);
-    for (std::size_t i = 0; i < size; ++i)
-        installed[i] = order[i];
-    installed_size = size;
     frozen = true;
 }
 

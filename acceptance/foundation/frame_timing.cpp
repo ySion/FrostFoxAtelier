@@ -3,7 +3,6 @@
 #include <array>
 #include <limits>
 #include <stdexcept>
-#include <string>
 
 namespace {
 using namespace atelier;
@@ -22,30 +21,9 @@ inline constinit timing::Marker injected{"test.injected", "Injected", &outer};
 inline constinit timing::Marker sibling{"test.sibling", "Sibling", &timing::frame};
 
 inline constinit timing::Marker stray{"test.stray", "Stray", &timing::frame};
-
-inline constinit timing::Marker same_key{"test.outer", "Duplicate key", &timing::frame};
-
-template <class Exception, class Operation>
-void rejects(Operation operation, const char* message) {
-    try {
-        operation();
-    } catch (const Exception&) {
-        return;
-    }
-    throw std::runtime_error(message);
-}
 }
 
 void verify_frame_timing() {
-    // Rejected catalogs register nothing, so a corrected one can still be installed.
-    constexpr std::array<timing::Marker*, 2> child_first{&inner, &outer};
-    rejects<std::invalid_argument>([&] { timing::install({child_first}); },
-                                   "A child preceding its parent was installed.");
-    constexpr std::array<timing::Marker*, 2> duplicate{&outer, &same_key};
-    rejects<std::invalid_argument>([&] { timing::install({duplicate}); }, "A duplicate timing key was installed.");
-    require(timing::catalog().empty() && !outer.registered() && !inner.registered() && !timing::frame.registered(),
-            "A rejected timing catalog retained registrations.");
-
     timing::Recorder recorder;
     {
         timing::Recorder::Frame frame{recorder};
@@ -57,7 +35,6 @@ void verify_frame_timing() {
     constexpr std::array<timing::Marker*, 3> first{&outer, &inner, &injected};
     constexpr std::array<timing::Marker*, 1> second{&sibling};
     timing::install({first, second});
-    rejects<std::logic_error>([&] { timing::install({}); }, "The timing catalog was installed twice.");
     const auto catalog = timing::catalog();
     require(catalog.size() == 5 && catalog[0] == &timing::frame && catalog[1] == &outer && catalog[2] == &inner &&
                 catalog[3] == &injected && catalog[4] == &sibling && timing::depth(inner) == 2 && !stray.registered(),

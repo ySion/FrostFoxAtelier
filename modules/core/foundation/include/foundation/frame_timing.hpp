@@ -49,7 +49,7 @@ private:
 
     friend class Scope;
 
-    friend void install(std::initializer_list<std::span<Marker* const>>);
+    friend void install(std::initializer_list<std::span<Marker* const>>) noexcept;
 
     friend void record(const Marker&, std::chrono::nanoseconds, std::uint32_t) noexcept;
 
@@ -69,10 +69,10 @@ inline constinit Marker frame{"frame", "Frame", nullptr};
 
 // Registers `frame` followed by each module's markers in order, then freezes the
 // catalog. Call once per process at host startup, before any thread records.
-// Throws std::logic_error on a second call and std::invalid_argument for a null
-// or repeated marker, a duplicate key, a parent not registered earlier, or more
-// than `capacity` markers; a rejected call registers nothing.
-void install(std::initializer_list<std::span<Marker* const>> modules);
+// These are compiled-in declarations, not runtime input. A second call, null or
+// repeated marker, duplicate key, parent not registered earlier, or more than
+// `capacity` markers is contract-fatal, with no rollback or retry.
+void install(std::initializer_list<std::span<Marker* const>> modules) noexcept;
 
 // Installed markers in index order (frame first); empty before install().
 [[nodiscard]] std::span<const Marker* const> catalog() noexcept;
