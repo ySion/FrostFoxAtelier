@@ -614,6 +614,46 @@ void verify_collection_cursor_lifetimes() {
     require(CollectionNode::live == 0 && !survivor.registered() && survivor.reference() == identity,
             "Shutdown during collection leaked objects or left a root attached to the dead runtime.");
     survivor.reset();
+    {
+        Runtime sparse;
+        const auto type = take(sparse.register_type({"roots.Sparse", TypeKind::object, {}, {}, {}}));
+        std::array<ObjectRoot, 70> roots;
+        roots[0] = take(sparse.create(type));
+        for (std::size_t i = 1; i < roots.size(); ++i)
+            roots[i] = roots[0];
+        roots[1].reset();
+        roots.back().reset();
+        require(sparse.root_count() == 68, "Sparse roots counted holes as live registrations.");
+        take(sparse.begin_collection());
+        for (std::size_t i = 0; i < roots.size(); ++i) {
+            require(take(sparse.collect_step({1})).work_done == 1 &&
+                        sparse.collection_phase() == CollectionPhase::roots,
+                    "Root collection skipped a hole or truncated the original slot extent.");
+        }
+        require(finish_collection(sparse) == 0 && sparse.live_objects() == 1,
+                "Sparse root traversal lost the shared live object.");
+        struct Visit {
+            std::array<ObjectRoot, 70>& roots;
+
+            ObjectReference expected;
+
+            std::size_t count{};
+
+            bool preserved{};
+        } visit{roots, roots[0].reference()};
+        take(sparse.visit_roots({&visit, [](void* context, const ObjectReference& reference) noexcept -> Result<void> {
+                                     auto& visit = *static_cast<Visit*>(context);
+                                     for (auto& root : visit.roots)
+                                         root.reset();
+                                     ++visit.count;
+                                     visit.preserved = reference == visit.expected;
+                                     return {};
+                                 }}));
+        require(visit.count == 1 && visit.preserved && sparse.root_count() == 0,
+                "A visitor lost its copied descriptor or visited roots removed by its callback.");
+        take(sparse.begin_collection());
+        require(finish_collection(sparse) == 1, "Visitor removal retained the unrooted object.");
+    }
     std::cout << "[pass] Paused trace cursors tolerate destruction, root removal/reuse and shutdown\n";
 }
 

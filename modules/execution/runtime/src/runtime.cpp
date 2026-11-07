@@ -1,4 +1,5 @@
 #include "foundation/map.hpp"
+#include "foundation/sparse_array.hpp"
 #include "foundation/string.hpp"
 #include "runtime/runtime.hpp"
 #include "runtime/execution.hpp"
@@ -206,10 +207,6 @@ struct RootState {
     struct Entry {
         Value value;
 
-        std::uint32_t next_free{no_slot};
-
-        bool active{true};
-
         std::uint32_t trace_next{no_slot};
 
         std::uint32_t trace_previous{no_slot};
@@ -219,14 +216,10 @@ struct RootState {
         std::uint32_t value_index{no_slot};
     };
 
-    std::vector<Entry> entries;
+    SparseArray<Entry> entries;
 
     // Dense live value roots only: object roots and retired entries cannot own this storage.
     std::vector<std::uint32_t> value_entries;
-
-    std::uint32_t free_head{no_slot};
-
-    std::size_t count{};
 
     std::size_t traversals{};
 
@@ -238,7 +231,7 @@ struct RootState {
 
     void (*removing)(void*, std::uint32_t) noexcept {};
 
-    bool has_capacity() const noexcept { return free_head != no_slot || entries.size() < no_slot; }
+    bool has_capacity() const noexcept { return entries.size() < no_slot; }
 
     std::uint32_t add(Value value) noexcept {
         assert_serial_access();
@@ -251,22 +244,11 @@ struct RootState {
             value_entries.reserve(
                 std::min<std::size_t>(no_slot, std::max<std::size_t>(8, value_entries.capacity() * 2)));
         }
-        auto index = free_head;
-        if (index == no_slot) {
-            index = static_cast<std::uint32_t>(entries.size());
-            entries.push_back({std::move(value)});
-        } else {
-            auto& entry = entries[index];
-            free_head = entry.next_free;
-            entry.value = std::move(value);
-            entry.next_free = no_slot;
-            entry.active = true;
-        }
+        const auto index = static_cast<std::uint32_t>(entries.emplace(Entry{std::move(value)}));
         if (is_value) {
             entries[index].value_index = static_cast<std::uint32_t>(value_entries.size());
             value_entries.push_back(index);
         }
-        ++count;
         if (added)
             added(observer, index);
         return index;
@@ -282,16 +264,8 @@ struct RootState {
             value_entries[entry.value_index] = moved;
             entries[moved].value_index = entry.value_index;
             value_entries.pop_back();
-            entry.value_index = no_slot;
         }
-        entry.value = ObjectReference{};
-        entry.active = false;
-        entry.next_free = free_head;
-        entry.trace_next = no_slot;
-        entry.trace_previous = no_slot;
-        entry.trace_queued = false;
-        free_head = index;
-        --count;
+        entries.erase(index);
     }
 
     bool overlaps_storage(const void* storage, std::size_t size) const noexcept {
@@ -636,7 +610,8 @@ struct Runtime::Impl {
         walk_stack.reserve(1);
         roots->observer = this;
         roots->added = [](void* context, std::uint32_t index) noexcept {
-            static_cast<Impl*>(context)->root_added(index);
+            auto& impl = *static_cast<Impl*>(context);
+            impl.root_added(index, impl.roots->entries[index]);
         };
         roots->removing = [](void* context, std::uint32_t index) noexcept {
             static_cast<Impl*>(context)->root_removing(index);
@@ -731,10 +706,9 @@ struct Runtime::Impl {
         entry.trace_queued = false;
     }
 
-    void root_added(std::uint32_t index) noexcept {
+    void root_added(std::uint32_t index, detail::RootState::Entry& entry) noexcept {
         if (!marking())
             return;
-        auto& entry = roots->entries[index];
         if (const auto* reference = std::get_if<ObjectReference>(&entry.value)) {
             shade(reference->id());
             return;
@@ -840,8 +814,8 @@ struct Runtime::Impl {
         if (phase == CollectionPhase::roots) {
             if (root_cursor != root_limit) {
                 const auto index = static_cast<std::uint32_t>(root_cursor++);
-                if (roots->entries[index].active)
-                    root_added(index);
+                if (auto* entry = roots->entries.try_at(index))
+                    root_added(index, *entry);
             } else {
                 phase = CollectionPhase::mark;
             }
@@ -1703,7 +1677,7 @@ Result<void> Runtime::begin_collection() {
     impl_->marked = 0;
     impl_->pending = 0;
     impl_->root_cursor = 0;
-    impl_->root_limit = impl_->roots->entries.size();
+    impl_->root_limit = impl_->roots->entries.extent();
     impl_->phase = CollectionPhase::roots;
     return {};
 }
@@ -3207,12 +3181,13 @@ Result<void> Runtime::visit_roots(ReferenceVisitor visitor) const {
     if (!impl_->roots->alive)
         return failure(ErrorCode::busy, "Runtime is shutting down.");
     return impl_->visit_guarded(visitor, [&]() -> Result<void> {
-        const auto limit = impl_->roots->entries.size();
+        const auto limit = impl_->roots->entries.extent();
         for (std::size_t i = 0; i != limit; ++i) {
-            if (!impl_->roots->entries[i].active)
+            const auto* entry = impl_->roots->entries.try_at(i);
+            if (!entry)
                 continue;
             // A visitor may release a root; keep the current descriptor independent.
-            const auto value = impl_->roots->entries[i].value;
+            const auto value = entry->value;
             if (const auto* reference = std::get_if<ObjectReference>(&value)) {
                 if (!reference->is_null()) {
                     const auto result = visitor.visit(visitor.context, *reference);
@@ -3248,7 +3223,7 @@ Result<void> Runtime::visit_references(TypeId type_id, std::span<const std::byte
 }
 
 std::size_t Runtime::root_count() const noexcept {
-    return impl_->roots->count;
+    return impl_->roots->entries.size();
 }
 
 Result<Runtime::Address> Runtime::resolve_field(ObjectId object, std::span<const FieldId> path) const {
