@@ -385,6 +385,8 @@ Play 的 World Tick/协程按宿主调用推进，物理累积器不代表整个
 
 总 `acceptance` 目标中每项检查只运行一次：独立文档模式（`--recovery`、`--materials`、`--textured-obj`、`--gltf`、`--viewport-edit`、`--scene-lit` 等）不再重复进入默认文档链；`--examples`、`--dungeons` 与 `--textured-obj` 归入无窗口目标 `editor_examples_acceptance`。`--profile-*` 是测量入口，不进入总入口。
 
+Control 验收夹具关闭编辑器时，投递 `WM_CLOSE` 后最多等待 300 秒，必须确认进程结束且退出码为 0；超时仍失败，并沿原 RAII 路径清理子进程。该期限包含关闭时等待当前不可中断的管线准备步骤，是验收上限，不是产品关闭时延承诺；[RHI 关闭合同](../rhi/contract.md#异步准备与-dxil-磁盘缓存)不变。析构中强制终止后的等待及 CLI 等待期限不变。
+
 `editor_scene_lit_acceptance` 先运行光照作者模型的 CPU 代表，再在 Scene Lit Room 隔离副本上执行原生 Scene Lit/MatCap 菜单切换与中键轨道手势，检查显示切换不改变生命周期、场景数据和历史。保留 `07-scene-lit-edit.png`、`09-middle-orbit.png` 作为操作状态记录，不用它们判定渲染特性；独立像素真值代表由 [Renderer 验收](../renderer/acceptance.md) 维护。
 
 `editor_dialogs_acceptance` 使用正式编辑器菜单打开工程目录选择，以及 File → Exit 触发的未保存场景确认。它检查原生窗口响应、模态期间主窗口不再持有鼠标、取消后输入与接受帧恢复、场景和撤销历史保留；看门狗对无响应给出有界失败。About 的原生生命周期由普通窗口链检查。单独入口为 `atelier_editor --acceptance-dialogs <输出目录>`，不注入桌面键鼠，报告写入 `dialog-evidence/dialogs.txt`。仅检查 WM_NULL 响应不足以识别输入被主窗口捕获的问题，因此同时读取线程的原生捕获状态。

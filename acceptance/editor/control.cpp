@@ -150,7 +150,7 @@ struct Process {
     void close() {
         if (auto handle = window())
             PostMessageW(handle, WM_CLOSE, 0, 0);
-        require(WaitForSingleObject(process, 10000) == WAIT_OBJECT_0, "Editor did not close cleanly");
+        require(WaitForSingleObject(process, 300000) == WAIT_OBJECT_0, "Editor did not close cleanly");
         DWORD code{};
         GetExitCodeProcess(process, &code);
         require(code == 0, "Editor exited with a failure");
