@@ -37,6 +37,8 @@ Undo/Redo 重新启用当前声明匹配的纹理项时，宿主传入当前 Pro
 
 ## 资源发布与默认替代
 
+Material 的定义创建、纯候选解析、资源创建与单对象发布沿现有 `Result` 返回输入、编译及 Runtime 错误，不捕获任意异常并重映射成 `invalid_definition`；CPU 分配失败遵循[统一 fatal 合同](../../engineering.md#唯一-fatal-出口)。`update_source` / `update_instance` 失败保留本对象的作者数据、引用边和 Surface，不额外回滚祖先派生缓存或 Runtime 写代号。Grid 与品红默认材质仍缓存首次准备的 Result，准备失败继续返回原错误，不用默认替代掩盖该失败。
+
 `Session::publish_material` 对同键同角色原位发布，传入的精确 Source 文本优先于磁盘。`publish_texture` / 手动 Texture Reimport 更新同一 Texture 身份；新捕获读新像素，旧快照仍持有旧像素直到消费者退休。模型 Reimport 按真实槽名保留既有 MI，不覆盖用户作者文件；文件失败沿事务回滚。导入不进入参数 Undo，不自动监控文件系统。
 
 MS 成功发布时，Session 按新声明补齐其已加载命名子链和场景 MI 中已启用、类型匹配且尚未装配的纹理引用。冷加载时 Source 编译失败或声明缺失不会使这些作者键永久停留在空绑定；修复只更新消费资源，不重载子 MI 作者文件、不清除未保存编辑或参数历史，休眠与失配项仍不读取图片。

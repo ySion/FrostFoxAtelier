@@ -514,30 +514,25 @@ SourceDefinition::SourceDefinition(std::shared_ptr<const source::MaterialProgram
 
 Result<DefinitionRef> make_definition(std::shared_ptr<const source::MaterialProgram> program, Policy policy,
                                       std::span<const TextureDefault> textures) {
-    try {
-        if (!program || policy.coverage > Coverage::mask)
-            return failure("Invalid material program or coverage policy.");
-        if (program->context_layout().size != sizeof(Context) ||
-            program->context_layout().alignment != alignof(Context) ||
-            program->output_layout().size != sizeof(Output) || program->output_layout().alignment != alignof(Output))
-            return failure("Program does not use the material Context/Output layout.");
-        if (textures.size() != program->textures().size())
-            return failure("All declared texture defaults must be specified exactly once.");
-        std::vector<TextureDefault> ordered;
-        ordered.reserve(textures.size());
-        for (const auto& input : program->textures()) {
-            auto found = std::ranges::find(textures, input.key, &TextureDefault::path);
-            if (found == textures.end() || std::ranges::count(textures, input.key, &TextureDefault::path) != 1)
-                return failure("Missing or repeated material texture default: " + input.key);
-            if (!valid_key(found->binding.asset_key) || found->binding.address > Address::mirror ||
-                found->color > TextureColor::srgb || !finite(found->empty_value))
-                return failure("Invalid material texture default: " + input.key);
-            ordered.push_back(*found);
-        }
-        return DefinitionRef(new SourceDefinition(std::move(program), policy, std::move(ordered)));
-    } catch (const std::exception& error) {
-        return failure(error.what());
+    if (!program || policy.coverage > Coverage::mask)
+        return failure("Invalid material program or coverage policy.");
+    if (program->context_layout().size != sizeof(Context) || program->context_layout().alignment != alignof(Context) ||
+        program->output_layout().size != sizeof(Output) || program->output_layout().alignment != alignof(Output))
+        return failure("Program does not use the material Context/Output layout.");
+    if (textures.size() != program->textures().size())
+        return failure("All declared texture defaults must be specified exactly once.");
+    std::vector<TextureDefault> ordered;
+    ordered.reserve(textures.size());
+    for (const auto& input : program->textures()) {
+        auto found = std::ranges::find(textures, input.key, &TextureDefault::path);
+        if (found == textures.end() || std::ranges::count(textures, input.key, &TextureDefault::path) != 1)
+            return failure("Missing or repeated material texture default: " + input.key);
+        if (!valid_key(found->binding.asset_key) || found->binding.address > Address::mirror ||
+            found->color > TextureColor::srgb || !finite(found->empty_value))
+            return failure("Invalid material texture default: " + input.key);
+        ordered.push_back(*found);
     }
+    return DefinitionRef(new SourceDefinition(std::move(program), policy, std::move(ordered)));
 }
 
 ProgramSurface::ProgramSurface(DefinitionRef definition, std::vector<std::byte> parameters,
@@ -584,35 +579,30 @@ material.Output shade(material.Context context,Params p) {
 }
 
 Result<ProgramSurfaceRef> default_world_surface() {
-    try {
-        static const auto prepared = []() -> Result<ProgramSurfaceRef> {
-            Runtime compiler;
-            ATELIER_TRY(register_program_types(compiler));
-            ATELIER_TRY_BIND(context, compiler.native_type<Context>());
-            ATELIER_TRY_BIND(output, compiler.native_type<Output>());
-            ATELIER_TRY_BIND(texture, compiler.native_type<TextureInput>());
-            ATELIER_TRY_BIND(program,
-                             source::compile_material(compiler, *context, *output, *texture,
-                                                      "builtin/material/default-grid.source", default_world_source()));
-            ATELIER_TRY_BIND(definition, make_definition(std::move(*program), default_world_policy, {}));
-            return resolve_source(std::move(*definition), {});
-        }();
-        return prepared;
-    } catch (const std::exception& error) {
-        return failure(error.what());
-    }
+    static const auto prepared = []() -> Result<ProgramSurfaceRef> {
+        Runtime compiler;
+        ATELIER_TRY(register_program_types(compiler));
+        ATELIER_TRY_BIND(context, compiler.native_type<Context>());
+        ATELIER_TRY_BIND(output, compiler.native_type<Output>());
+        ATELIER_TRY_BIND(texture, compiler.native_type<TextureInput>());
+        ATELIER_TRY_BIND(program,
+                         source::compile_material(compiler, *context, *output, *texture,
+                                                  "builtin/material/default-grid.source", default_world_source()));
+        ATELIER_TRY_BIND(definition, make_definition(std::move(*program), default_world_policy, {}));
+        return resolve_source(std::move(*definition), {});
+    }();
+    return prepared;
 }
 
 Result<ProgramSurfaceRef> default_program_surface() {
-    try {
-        static const auto prepared = []() -> Result<ProgramSurfaceRef> {
-            Runtime compiler;
-            ATELIER_TRY(register_program_types(compiler));
-            ATELIER_TRY_BIND(context, compiler.native_type<Context>());
-            ATELIER_TRY_BIND(output, compiler.native_type<Output>());
-            ATELIER_TRY_BIND(texture, compiler.native_type<TextureInput>());
-            auto program =
-                source::compile_material(compiler, *context, *output, *texture, "engine/default-material.source", R"(
+    static const auto prepared = []() -> Result<ProgramSurfaceRef> {
+        Runtime compiler;
+        ATELIER_TRY(register_program_types(compiler));
+        ATELIER_TRY_BIND(context, compiler.native_type<Context>());
+        ATELIER_TRY_BIND(output, compiler.native_type<Output>());
+        ATELIER_TRY_BIND(texture, compiler.native_type<TextureInput>());
+        auto program =
+            source::compile_material(compiler, *context, *output, *texture, "engine/default-material.source", R"(
 struct Params { float marker; };
 Params defaults() { Params p; p.marker=0.0; return p; }
 material.Output shade(material.Context c, Params p) {
@@ -621,128 +611,117 @@ material.Output shade(material.Context c, Params p) {
     o.roughness=0.65; o.metallic=0.0; o.coverage=1.0; o.normal_world=c.normal_world;
     return o;
 })");
-            if (!program)
-                return std::unexpected(program.error());
-            ATELIER_TRY_BIND(definition, make_definition(std::move(*program), {}, {}));
-            const auto parameters = (*definition)->program().default_parameters();
-            return detail::ProgramAccess::surface(
-                std::move(*definition), {parameters.begin(), parameters.end()}, {},
-                {{"", "Material definition is unavailable; using the engine default material."}}, true);
-        }();
-        return prepared;
-    } catch (const std::exception& error) {
-        return failure(error.what());
-    }
+        if (!program)
+            return std::unexpected(program.error());
+        ATELIER_TRY_BIND(definition, make_definition(std::move(*program), {}, {}));
+        const auto parameters = (*definition)->program().default_parameters();
+        return detail::ProgramAccess::surface(
+            std::move(*definition), {parameters.begin(), parameters.end()}, {},
+            {{"", "Material definition is unavailable; using the engine default material."}}, true);
+    }();
+    return prepared;
 }
 
 Result<ProgramSurfaceRef> resolve_source(DefinitionRef definition, std::span<const ImageRef> images) {
-    try {
-        if (images.size() != (definition ? definition->textures().size() : 0))
-            return failure("Source image table does not match its definition.");
-        if (!definition)
-            return default_program_surface();
-        std::vector<SurfaceInput> inputs;
-        std::vector<AuthorDiagnostic> diagnostics;
-        inputs.reserve(images.size());
-        for (std::size_t i = 0; i < images.size(); ++i) {
-            const auto& input = definition->textures()[i];
-            if (auto valid = validate_binding(input.binding, images[i]); !valid)
-                return failure(input.path + ": " + valid.error().message);
-            if (!input.binding.asset_key.empty() && !images[i])
-                diagnostics.push_back(
-                    {input.path, "Texture '" + input.binding.asset_key +
-                                     "' has no available image content; using the MS typed empty/default sample."});
-            inputs.push_back({images[i], input.binding.address, input.color, input.empty_value});
-        }
-        const auto defaults = definition->program().default_parameters();
-        return detail::ProgramAccess::surface(std::move(definition), {defaults.begin(), defaults.end()},
-                                              std::move(inputs), std::move(diagnostics));
-    } catch (const std::exception& error) {
-        return failure(error.what());
+    if (images.size() != (definition ? definition->textures().size() : 0))
+        return failure("Source image table does not match its definition.");
+    if (!definition)
+        return default_program_surface();
+    std::vector<SurfaceInput> inputs;
+    std::vector<AuthorDiagnostic> diagnostics;
+    inputs.reserve(images.size());
+    for (std::size_t i = 0; i < images.size(); ++i) {
+        const auto& input = definition->textures()[i];
+        if (auto valid = validate_binding(input.binding, images[i]); !valid)
+            return failure(input.path + ": " + valid.error().message);
+        if (!input.binding.asset_key.empty() && !images[i])
+            diagnostics.push_back(
+                {input.path, "Texture '" + input.binding.asset_key +
+                                 "' has no available image content; using the MS typed empty/default sample."});
+        inputs.push_back({images[i], input.binding.address, input.color, input.empty_value});
     }
+    const auto defaults = definition->program().default_parameters();
+    return detail::ProgramAccess::surface(std::move(definition), {defaults.begin(), defaults.end()}, std::move(inputs),
+                                          std::move(diagnostics));
 }
 
 Result<ProgramSurfaceRef> resolve_instance(ProgramSurfaceRef parent, std::span<const Override> entries,
                                            std::span<const ImageRef> images) {
-    try {
-        if (!parent || images.size() != entries.size())
-            return failure("Instance resolution requires a parent candidate and one image slot per author entry.");
-        if (entries.empty())
-            return parent;
-        std::vector<std::byte> parameters(parent->parameters().begin(), parent->parameters().end());
-        std::vector<SurfaceInput> inputs(parent->inputs().begin(), parent->inputs().end());
-        std::vector<AuthorDiagnostic> diagnostics(parent->diagnostics().begin(), parent->diagnostics().end());
-        // The engine default is a complete replacement, not an author interface
-        // that accidentally accepts an old entry with a matching field name.
-        const auto numeric = parent->uses_default_material() ? std::span<const source::MaterialParameter>{}
-                                                             : parent->program().parameters();
-        const auto textures = parent->uses_default_material() ? std::span<const source::MaterialTextureInput>{}
-                                                              : parent->program().textures();
-        for (std::size_t i = 0; i < entries.size(); ++i) {
-            const auto& entry = entries[i];
-            if (entry.path.empty() || !valid_key(entry.path) ||
-                std::ranges::find(entries.first(i), entry.path, &Override::path) != entries.first(i).end())
-                return failure("Author override paths must be nonempty and unique.");
-            const auto parameter = std::ranges::find(numeric, entry.path, &source::MaterialParameter::key);
-            const auto texture = std::ranges::find(textures, entry.path, &source::MaterialTextureInput::key);
-            std::string issue;
-            const auto* binding = std::get_if<TextureBinding>(&entry.value);
-            if (binding) {
-                if (auto valid = validate_binding(*binding, images[i]); !valid)
-                    return failure(entry.path + ": " + valid.error().message);
-                if (texture == textures.end())
-                    issue = "Texture declaration is absent or has a different type.";
-                else if (!binding->asset_key.empty() && !images[i])
-                    issue = "Texture '" + binding->asset_key + "' has no available image content.";
-                if (issue.empty() && entry.enabled) {
-                    auto& input = inputs[static_cast<std::size_t>(texture - textures.begin())];
-                    input.image = images[i];
-                    input.address = binding->address;
-                }
-            } else {
-                if (images[i])
-                    return failure(entry.path + ": numeric author entry cannot carry image content.");
-                std::visit(
-                    [&](const auto& value) {
-                        using T = std::decay_t<decltype(value)>;
-                        if constexpr (!std::same_as<T, TextureBinding>) {
-                            constexpr std::size_t count = sizeof(T) / sizeof(float);
-                            bool valid = true;
-                            if constexpr (std::same_as<T, float>)
-                                valid = std::isfinite(value);
-                            else
-                                for (std::size_t c = 0; c < count; ++c)
-                                    valid &= std::isfinite(value[c]);
-                            if (!valid)
-                                issue = "Numeric author values must be finite.";
-                            else if (parameter == numeric.end() || parameter->components != count)
-                                issue = "Numeric declaration is absent or has a different type.";
-                            else if (entry.enabled)
-                                std::memcpy(parameters.data() + parameter->offset, &value, sizeof(T));
-                        }
-                    },
-                    entry.value);
+    if (!parent || images.size() != entries.size())
+        return failure("Instance resolution requires a parent candidate and one image slot per author entry.");
+    if (entries.empty())
+        return parent;
+    std::vector<std::byte> parameters(parent->parameters().begin(), parent->parameters().end());
+    std::vector<SurfaceInput> inputs(parent->inputs().begin(), parent->inputs().end());
+    std::vector<AuthorDiagnostic> diagnostics(parent->diagnostics().begin(), parent->diagnostics().end());
+    // The engine default is a complete replacement, not an author interface
+    // that accidentally accepts an old entry with a matching field name.
+    const auto numeric =
+        parent->uses_default_material() ? std::span<const source::MaterialParameter>{} : parent->program().parameters();
+    const auto textures = parent->uses_default_material() ? std::span<const source::MaterialTextureInput>{}
+                                                          : parent->program().textures();
+    for (std::size_t i = 0; i < entries.size(); ++i) {
+        const auto& entry = entries[i];
+        if (entry.path.empty() || !valid_key(entry.path) ||
+            std::ranges::find(entries.first(i), entry.path, &Override::path) != entries.first(i).end())
+            return failure("Author override paths must be nonempty and unique.");
+        const auto parameter = std::ranges::find(numeric, entry.path, &source::MaterialParameter::key);
+        const auto texture = std::ranges::find(textures, entry.path, &source::MaterialTextureInput::key);
+        std::string issue;
+        const auto* binding = std::get_if<TextureBinding>(&entry.value);
+        if (binding) {
+            if (auto valid = validate_binding(*binding, images[i]); !valid)
+                return failure(entry.path + ": " + valid.error().message);
+            if (texture == textures.end())
+                issue = "Texture declaration is absent or has a different type.";
+            else if (!binding->asset_key.empty() && !images[i])
+                issue = "Texture '" + binding->asset_key + "' has no available image content.";
+            if (issue.empty() && entry.enabled) {
+                auto& input = inputs[static_cast<std::size_t>(texture - textures.begin())];
+                input.image = images[i];
+                input.address = binding->address;
             }
-            if (!issue.empty()) {
-                if (!entry.enabled)
-                    issue += " Override is disabled; using the current inherited value.";
-                else if (texture != textures.end()) {
-                    const auto& input = inputs[static_cast<std::size_t>(texture - textures.begin())];
-                    issue += input.image ? " Using the current inherited texture input."
-                                         : " Using the MS typed empty/default sample.";
-                } else if (parameter != numeric.end())
-                    issue += " Using the current inherited/default parameter value.";
-                else
-                    issue += " Override is ignored by the current declaration.";
-                diagnostics.push_back({entry.path, std::move(issue)});
-            }
+        } else {
+            if (images[i])
+                return failure(entry.path + ": numeric author entry cannot carry image content.");
+            std::visit(
+                [&](const auto& value) {
+                    using T = std::decay_t<decltype(value)>;
+                    if constexpr (!std::same_as<T, TextureBinding>) {
+                        constexpr std::size_t count = sizeof(T) / sizeof(float);
+                        bool valid = true;
+                        if constexpr (std::same_as<T, float>)
+                            valid = std::isfinite(value);
+                        else
+                            for (std::size_t c = 0; c < count; ++c)
+                                valid &= std::isfinite(value[c]);
+                        if (!valid)
+                            issue = "Numeric author values must be finite.";
+                        else if (parameter == numeric.end() || parameter->components != count)
+                            issue = "Numeric declaration is absent or has a different type.";
+                        else if (entry.enabled)
+                            std::memcpy(parameters.data() + parameter->offset, &value, sizeof(T));
+                    }
+                },
+                entry.value);
         }
-        auto next = detail::ProgramAccess::surface(parent->definition(), std::move(parameters), std::move(inputs),
-                                                   std::move(diagnostics), parent->uses_default_material());
-        return reuse(std::move(parent), std::move(next));
-    } catch (const std::exception& error) {
-        return failure(error.what());
+        if (!issue.empty()) {
+            if (!entry.enabled)
+                issue += " Override is disabled; using the current inherited value.";
+            else if (texture != textures.end()) {
+                const auto& input = inputs[static_cast<std::size_t>(texture - textures.begin())];
+                issue += input.image ? " Using the current inherited texture input."
+                                     : " Using the MS typed empty/default sample.";
+            } else if (parameter != numeric.end())
+                issue += " Using the current inherited/default parameter value.";
+            else
+                issue += " Override is ignored by the current declaration.";
+            diagnostics.push_back({entry.path, std::move(issue)});
+        }
     }
+    auto next = detail::ProgramAccess::surface(parent->definition(), std::move(parameters), std::move(inputs),
+                                               std::move(diagnostics), parent->uses_default_material());
+    return reuse(std::move(parent), std::move(next));
 }
 
 Result<void> register_resource_types(Runtime& runtime) {
@@ -756,19 +735,11 @@ Result<void> register_resource_types(Runtime& runtime) {
 }
 
 Result<ObjectRoot> create_source(Runtime& runtime, std::string_view key, const SourceState& state) {
-    try {
-        return detail::ProgramAccess::create<MaterialSource>(runtime, key, state);
-    } catch (const std::exception& error) {
-        return failure(error.what());
-    }
+    return detail::ProgramAccess::create<MaterialSource>(runtime, key, state);
 }
 
 Result<ObjectRoot> create_instance(Runtime& runtime, std::string_view key, const InstanceState& state) {
-    try {
-        return detail::ProgramAccess::create<MaterialInstance>(runtime, key, state);
-    } catch (const std::exception& error) {
-        return failure(error.what());
-    }
+    return detail::ProgramAccess::create<MaterialInstance>(runtime, key, state);
 }
 
 Result<std::string> material_key(Runtime& runtime, ObjectId id) {
@@ -789,21 +760,13 @@ Result<InstanceState> read_instance(Runtime& runtime, ObjectId id) {
 Result<void> update_source(Runtime& runtime, ObjectId id, const SourceState& state) {
     ATELIER_TRY(runtime.check_code_publication());
     ATELIER_TRY(exact_type<MaterialSource>(runtime, id));
-    try {
-        return detail::ProgramAccess::update_source(runtime, id, state);
-    } catch (const std::exception& error) {
-        return failure(error.what());
-    }
+    return detail::ProgramAccess::update_source(runtime, id, state);
 }
 
 Result<void> update_instance(Runtime& runtime, ObjectId id, const InstanceState& state) {
     ATELIER_TRY(runtime.check_code_publication());
     ATELIER_TRY(exact_type<MaterialInstance>(runtime, id));
-    try {
-        return detail::ProgramAccess::update_instance(runtime, id, state);
-    } catch (const std::exception& error) {
-        return failure(error.what());
-    }
+    return detail::ProgramAccess::update_instance(runtime, id, state);
 }
 
 Result<ProgramSurfaceRef> capture_program(Runtime& runtime, ObjectId id) {
