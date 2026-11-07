@@ -43,15 +43,16 @@ void verify_project_source_diagnostics(const std::filesystem::path& folder, ui::
     require(error && error->source && error->source->path == "Source/Math.source",
             "Project diagnostic lost its source file.");
     frame();
-    require(target->document == old_document && target->document->text() == assets::wide(saved) && !target->dirty(),
+    require(target->document == old_document && target->document->text() == platform::utf8_to_utf16_validated(saved) &&
+                !target->dirty(),
             "Project diagnostic setup did not retain the stale clean buffer.");
     require(workspace.source_editor.problem_current() && workspace.source_editor.locate_problem(),
             "Project diagnostic did not refresh the clean target to its compiled source.");
     const auto current = target->document;
     require(workspace.source_editor.active() == target && current != old_document &&
-                current->text() == assets::wide(broken) && !target->dirty(),
+                current->text() == platform::utf8_to_utf16_validated(broken) && !target->dirty(),
             "Project diagnostic selected stale source or dirtied its refreshed buffer.");
-    require(current->edit().current().caret.offset == assets::wide(broken).find(L"missing"),
+    require(current->edit().current().caret.offset == platform::utf8_to_utf16_validated(broken).find(L"missing"),
             "Project diagnostic caret does not identify the compiled source location.");
 
     require(current->edit().replace(L"draft_") == ui::detail::TextEdit::Change::text && target->dirty(),
@@ -68,7 +69,7 @@ void verify_project_source_diagnostics(const std::filesystem::path& folder, ui::
     frame();
     take(editor::write_file(helper, saved));
     static_cast<void>(workspace.source_editor.locate_problem());
-    require(target->document == current && current->text() == assets::wide(broken),
+    require(target->document == current && current->text() == platform::utf8_to_utf16_validated(broken),
             "Project diagnostic used a source version that changed after compilation.");
     take(loaded.code->poll(project, true));
     workspace.project_build = loaded.code->report();

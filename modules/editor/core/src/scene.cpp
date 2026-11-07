@@ -8,6 +8,7 @@
 #include "assets/material_format.hpp"
 #include "assets/mesh_format.hpp"
 #include "physics/physics.hpp"
+#include "platform/utf.hpp"
 #include "runtime/detail/value_storage.hpp"
 #include <limits>
 #include <charconv>
@@ -837,8 +838,8 @@ struct Session::GraphCodec {
         return id;
     }
 
-    static Graph capture(const Session& session, std::span<const ObjectId> requested, bool persistent,
-                         bool document = false, bool live = false) {
+    static Result<Graph> capture(const Session& session, std::span<const ObjectId> requested, bool persistent,
+                                 bool document = false, bool live = false) {
         struct IdentityRollback {
             const Session& session;
 
@@ -1041,9 +1042,13 @@ struct Session::GraphCodec {
                     take(world::validate_body_settings(runtime, body));
                     graph.bodies.emplace(key, std::move(body));
                 }
+                auto type = type_name(runtime, state.type);
+                auto name = platform::utf16_to_utf8(session.name(part.id()));
+                if (!name)
+                    return std::unexpected(Error{ErrorCode::invalid_storage, "Invalid UTF-16 text."});
                 Json value = {{"id", key},
-                              {"type", type_name(runtime, state.type)},
-                              {"name", assets::utf8(session.name(part.id()))},
+                              {"type", std::move(type)},
+                              {"name", std::move(*name)},
                               {"enabled", state.enabled},
                               {"properties", properties(part.id(), state.type)}};
                 if (derives(runtime, state.type, session.presentation_types_.static_mesh_component)) {
@@ -1072,8 +1077,15 @@ struct Session::GraphCodec {
                 parts.push_back(std::move(value));
             }
             const auto label = session.name(object);
-            const auto name = label.empty() ? type_name(runtime, status.type) + " " + std::to_string(ids.at(object))
-                                            : assets::utf8(label);
+            std::string name;
+            if (label.empty())
+                name = type_name(runtime, status.type) + " " + std::to_string(ids.at(object));
+            else {
+                auto converted = platform::utf16_to_utf8(label);
+                if (!converted)
+                    return std::unexpected(Error{ErrorCode::invalid_storage, "Invalid UTF-16 text."});
+                name = std::move(*converted);
+            }
             Json value = {{"id", std::to_string(ids.at(object))},
                           {"type", type_name(runtime, status.type)},
                           {"name", name},
@@ -1127,12 +1139,12 @@ struct Session::GraphCodec {
     }
 
     // The graph of an attach change: the Entity record lists only these components.
-    static Json live_components(const Session& session, ObjectId entity, std::span<const ObjectId> components) {
+    static Result<Json> live_components(const Session& session, ObjectId entity, std::span<const ObjectId> components) {
         for (const auto component : components)
             if (take(world::inspect_component(session.world_.runtime(), component)).owner != entity)
                 throw std::runtime_error("The Component does not belong to the Entity.");
-        auto graph = capture(session, {&entity, 1}, true, false, true);
-        auto& data = graph.data;
+        ATELIER_TRY_BIND(graph, capture(session, {&entity, 1}, true, false, true));
+        auto& data = graph->data;
         std::unordered_set<std::string> wanted;
         for (const auto component : components)
             wanted.insert(std::to_string(session.local_ids_.at(component)));
@@ -1495,7 +1507,7 @@ struct Session::GraphCodec {
                 try {
                     if (!at->is_string())
                         throw Mismatch("Expected a name string.");
-                    label = assets::wide(at->get<std::string>());
+                    label = platform::utf8_to_utf16_validated(at->get<std::string>());
                     if (entity || !label.empty())
                         if (auto valid = validate_name(label); !valid)
                             throw Mismatch(valid.error().message);
@@ -1510,7 +1522,8 @@ struct Session::GraphCodec {
             }
             if (entity && label.empty()) {
                 const auto dot = name.find_last_of('.');
-                label = assets::wide(dot == name.npos ? name : name.substr(dot + 1)) + L" " + std::to_wstring(key);
+                label = platform::utf8_to_utf16_validated(dot == name.npos ? name : name.substr(dot + 1)) + L" " +
+                        std::to_wstring(key);
                 if (!validate_name(label))
                     label = L"Entity " + std::to_wstring(key);
             }
@@ -2460,7 +2473,7 @@ struct Session::GraphCodec {
                 const bool entity = derives(runtime, type, session.types_.entity);
                 load.policy = LoadPolicy::strict;
                 if (const auto at = op.find("name"); at != op.end()) {
-                    auto label = assets::wide(at->get<std::string>());
+                    auto label = platform::utf8_to_utf16_validated(at->get<std::string>());
                     if (entity || !label.empty())
                         take(validate_name(label));
                     if (label.empty())
@@ -2653,19 +2666,32 @@ struct Session::GraphCodec {
                 if (!width || !height || width > 8192 || height > 8192)
                     throw std::runtime_error("Invalid Play texture dimensions.");
                 const auto bytes = width * height * 4;
-                const auto rgba = take(assets::read_file(assets::wide(op.at("file").get<std::string>()), bytes));
-                if (rgba.size() != bytes)
+                const auto rgba =
+                    assets::read_file(platform::utf8_to_utf16_validated(op.at("file").get<std::string>()), bytes);
+                if (!rgba) {
+                    note(world::Severity::error, world::DiagnosticKind::command_rejected, rgba.error().message,
+                         &rgba.error());
+                    return;
+                }
+                if (rgba->size() != bytes)
                     throw std::runtime_error("Play texture RGBA byte count does not match its dimensions.");
                 auto image = std::make_shared<const material::Image>(
                     static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height),
-                    std::vector<std::uint8_t>(rgba.begin(), rgba.end()));
+                    std::vector<std::uint8_t>(rgba->begin(), rgba->end()));
                 take(session.publish_texture(key, std::move(image)));
             } else if (kind == "mesh") {
                 fields(op, {"op", "key", "file"});
                 const auto key = op.at("key").get<std::string>();
                 subject += " " + key;
-                auto mesh = assets::mesh_format::decode(take(assets::read_file(
-                    assets::wide(op.at("file").get<std::string>()), assets::mesh_format::maximum_bytes)));
+                const auto bytes =
+                    assets::read_file(platform::utf8_to_utf16_validated(op.at("file").get<std::string>()),
+                                      assets::mesh_format::maximum_bytes);
+                if (!bytes) {
+                    note(world::Severity::error, world::DiagnosticKind::command_rejected, bytes.error().message,
+                         &bytes.error());
+                    return;
+                }
+                auto mesh = assets::mesh_format::decode(*bytes);
                 if (mesh.key != key)
                     throw std::runtime_error("Play mesh content does not match its asset key.");
                 take(project.refresh());
@@ -2722,8 +2748,8 @@ Result<std::string> Session::serialize() const {
         for (const auto& member : take(world_.members()))
             if (take(world::parent_entity(world_.runtime(), member.id())) == ObjectId{})
                 roots.push_back(member.id());
-        auto graph = GraphCodec::capture(*this, roots, true, true);
-        auto text = graph.data.dump(2) + "\n";
+        ATELIER_TRY_BIND(graph, GraphCodec::capture(*this, roots, true, true));
+        auto text = graph->data.dump(2) + "\n";
         if (text.size() > assets::json_format::maximum_bytes)
             throw std::runtime_error("Scene exceeds the 16 MiB file limit.");
         return text;
@@ -2736,8 +2762,8 @@ Result<std::string> Session::serialize_subtree(ObjectId root) const {
     try {
         if (editing())
             throw std::runtime_error("Finish the active edit before saving a composition.");
-        auto graph = GraphCodec::capture(*this, {&root, 1}, true);
-        auto text = graph.data.dump(2) + "\n";
+        ATELIER_TRY_BIND(graph, GraphCodec::capture(*this, {&root, 1}, true));
+        auto text = graph->data.dump(2) + "\n";
         if (text.size() > assets::json_format::maximum_bytes)
             throw std::runtime_error("Composition exceeds the 16 MiB file limit.");
         return text;
@@ -2748,8 +2774,8 @@ Result<std::string> Session::serialize_subtree(ObjectId root) const {
 
 Result<std::string> Session::serialize_live_subtree(ObjectId root) const {
     try {
-        auto graph = GraphCodec::capture(*this, {&root, 1}, true, false, true);
-        auto text = graph.data.dump();
+        ATELIER_TRY_BIND(graph, GraphCodec::capture(*this, {&root, 1}, true, false, true));
+        auto text = graph->data.dump();
         if (text.size() > assets::json_format::maximum_bytes)
             throw std::runtime_error("The Entity exceeds the 16 MiB change limit.");
         return text;
@@ -2760,7 +2786,8 @@ Result<std::string> Session::serialize_live_subtree(ObjectId root) const {
 
 Result<std::string> Session::serialize_live_components(ObjectId entity, std::span<const ObjectId> components) const {
     try {
-        auto text = GraphCodec::live_components(*this, entity, components).dump();
+        ATELIER_TRY_BIND(graph, GraphCodec::live_components(*this, entity, components));
+        auto text = graph->dump();
         if (text.size() > assets::json_format::maximum_bytes)
             throw std::runtime_error("The Components exceed the 16 MiB change limit.");
         return text;
@@ -2806,8 +2833,8 @@ void Session::forward_change(const Change& change, bool forward) {
             push(set(entity, "space", C::space_leaves(take(world::read_transform(runtime_, entity)), mask)));
     };
     try {
-        std::visit(
-            [&](const auto& item) {
+        auto result = std::visit(
+            [&](const auto& item) -> Result<void> {
                 using T = std::decay_t<decltype(item)>;
                 if constexpr (std::is_same_v<T, EntityChange>) {
                     const auto camera = [&] {
@@ -2820,7 +2847,7 @@ void Session::forward_change(const Change& change, bool forward) {
                         camera();
                         for (const auto& removal : item.removals)
                             push({{"op", "remove"}, {"id", C::live_id(*this, removal.id())}});
-                        return;
+                        return {};
                     }
                     struct Add {
                         std::uint64_t parent;
@@ -2835,7 +2862,8 @@ void Session::forward_change(const Change& change, bool forward) {
                         const auto root = removal.id();
                         const auto parent = take(world::parent_entity(runtime_, root));
                         const auto index = C::live_position(*this, root, parent);
-                        auto graph = C::capture(*this, {&root, 1}, true, false, true).data;
+                        ATELIER_TRY_BIND(captured, C::capture(*this, {&root, 1}, true, false, true));
+                        auto graph = std::move(captured->data);
                         for (const auto& entity : graph.at("entities"))
                             added_entities.emplace(entity.at("id").template get<std::string>(), adds.size());
                         // This transaction restores its camera reference after all roots.
@@ -2896,10 +2924,9 @@ void Session::forward_change(const Change& change, bool forward) {
                                 break;
                             ++index;
                         }
-                        push({{"op", "attach"},
-                              {"entity", C::live_id(*this, owner)},
-                              {"index", index},
-                              {"graph", C::live_components(*this, owner, {&component, 1})}});
+                        const auto entity = C::live_id(*this, owner);
+                        ATELIER_TRY_BIND(graph, C::live_components(*this, owner, {&component, 1}));
+                        push({{"op", "attach"}, {"entity", entity}, {"index", index}, {"graph", std::move(*graph)}});
                     } else {
                         push({{"op", "remove"}, {"id", C::live_id(*this, component)}});
                         if (item.created_transform)
@@ -2917,9 +2944,12 @@ void Session::forward_change(const Change& change, bool forward) {
                 else if constexpr (std::is_same_v<T, TransformChange>) {
                     for (const auto& entry : item.entries)
                         leaves(entry.root.id(), entry.before, entry.after);
-                } else if constexpr (std::is_same_v<T, NameChange>)
-                    push(set(item.root.id(), "name", assets::utf8(name(item.root.id()))));
-                else if constexpr (std::is_same_v<T, BodyChange>)
+                } else if constexpr (std::is_same_v<T, NameChange>) {
+                    auto text = platform::utf16_to_utf8(name(item.root.id()));
+                    if (!text)
+                        return std::unexpected(Error{ErrorCode::invalid_storage, "Invalid UTF-16 text."});
+                    push(set(item.root.id(), "name", std::move(*text)));
+                } else if constexpr (std::is_same_v<T, BodyChange>)
                     push(C::live_body(*this, item.root.id()));
                 else if constexpr (std::is_same_v<T, TransformPresenceChange>)
                     push(set(item.root.id(), "space", C::live_space(*this, item.root.id())));
@@ -2975,12 +3005,16 @@ void Session::forward_change(const Change& change, bool forward) {
                 else
                     static_assert(std::is_same_v<T, RetainedChange>,
                                   "Every change kind is forwarded to Play or explicitly not.");
+                return {};
             },
             change);
+        if (!result)
+            live_failure_ = std::move(result.error());
     } catch (const std::exception& error) {
         live_failure_ = failed(error).error();
-        live_ops_.clear();
     }
+    if (live_failure_)
+        live_ops_.clear();
 }
 
 void Session::forward_material(ObjectId object) {
@@ -3267,9 +3301,9 @@ Result<world::Commit> Session::duplicate_entities(std::span<const ObjectId> enti
             throw std::runtime_error("Finish the active edit before duplicating.");
         if (entities.empty())
             return world::Commit{};
-        auto graph = GraphCodec::capture(*this, entities, false);
+        ATELIER_TRY_BIND(graph, GraphCodec::capture(*this, entities, false));
         GraphCodec::Load load;
-        auto prepared = GraphCodec::construct(*this, graph, nullptr, false, load);
+        auto prepared = GraphCodec::construct(*this, *graph, nullptr, false, load);
         for (auto root : prepared.roots) {
             const auto original = prepared.labels.at(root);
             for (std::size_t suffix = 1;; ++suffix) {
@@ -3286,7 +3320,7 @@ Result<world::Commit> Session::duplicate_entities(std::span<const ObjectId> enti
                 }
             }
         }
-        return GraphCodec::publish(*this, prepared, graph, {}, true, load);
+        return GraphCodec::publish(*this, prepared, *graph, {}, true, load);
     } catch (const std::exception& error) {
         return failed(error);
     }

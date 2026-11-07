@@ -5,6 +5,8 @@
 #include "editor/view_options.hpp"
 #include "assets/json_format.hpp"
 #include "assets/material_format.hpp"
+#include "platform/error.hpp"
+#include "platform/utf.hpp"
 #include "platform/windows_path.hpp"
 #include "atelier/build_info.hpp"
 #include <Windows.h>
@@ -49,7 +51,6 @@ std::string text(const Json& value, std::size_t maximum = 4096) {
     auto result = value.get<std::string>();
     if (result.size() > maximum || result.find('\0') != result.npos)
         throw Failure("invalid_request", "Invalid string length or NUL");
-    static_cast<void>(control::wide(result));
     return result;
 }
 
@@ -610,7 +611,7 @@ struct EditorControl::Impl {
 
         Json response;
 
-        std::future<Json> writer;
+        std::future<std::expected<Json, Failure>> writer;
 
         std::unique_ptr<rhi::CommandTrace> trace;
 
@@ -722,13 +723,7 @@ struct EditorControl::Impl {
                   {"probe_rays", s.scene_lit_probe_rays}}}};
     }
 
-    Impl(Application& owner, const std::filesystem::path& directory)
-        : app(owner),
-          server(directory, {{"revision", build_info::revision}, {"configuration", build_info::configuration}}) {
-        std::filesystem::create_directories(platform::windows_file_path(
-            server.directory() / "artifacts" / server.identity().at("instance_id").get<std::string>()));
-        observe();
-    }
+    Impl(Application& owner, control::Server transport) : app(owner), server(std::move(transport)) { observe(); }
 
     ~Impl() {
         server.stop();
@@ -952,8 +947,12 @@ struct EditorControl::Impl {
             if (job->writer.valid() && job->writer.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
                 try {
                     auto result = job->writer.get();
-                    if (!job->cancel->load())
-                        job->response = {{"status", "ok"}, {"result", std::move(result)}};
+                    if (!job->cancel->load()) {
+                        if (result)
+                            job->response = {{"status", "ok"}, {"result", std::move(*result)}};
+                        else
+                            job->response = control::failure(result.error().code, result.error().what());
+                    }
                 } catch (const Failure& error) {
                     if (!job->cancel->load())
                         job->response = control::failure(error.code, error.what());
@@ -1039,8 +1038,12 @@ struct EditorControl::Impl {
         return found->second;
     }
 
-    Json object_header(ObjectId id, std::string_view type) {
-        Json header{{"handle", handle(id)}, {"name", control::utf8(app.document_->name(id))}, {"type", type}};
+    std::expected<Json, Failure> object_header(ObjectId id, std::string_view type) {
+        const auto object_handle = handle(id);
+        const auto name = platform::utf16_to_utf8(app.document_->name(id));
+        if (!name)
+            return std::unexpected(Failure("invalid_request", "Invalid UTF-16 text"));
+        Json header{{"handle", object_handle}, {"name", *name}, {"type", type}};
         // A placeholder stands in for a saved type the current build does not register.
         if (app.document_->has_retained(id))
             if (const auto saved = app.document_->retained(id); saved && !saved->type.empty()) {
@@ -1050,10 +1053,11 @@ struct EditorControl::Impl {
         return header;
     }
 
-    Json object_json(ObjectId id) {
+    std::expected<Json, Failure> object_json(ObjectId id) {
         auto& runtime = app.document_->world().runtime();
         const auto* type = take(runtime.describe(take(runtime.type_of(id))));
-        auto result = object_header(id, type->name);
+        ATELIER_TRY_BIND(header, object_header(id, type->name));
+        auto result = std::move(*header);
         result["type_description"] = type->description;
         result["properties"] = Json::array();
         if (app.document_->is_material(id)) {
@@ -1162,19 +1166,23 @@ struct EditorControl::Impl {
     }
 
     // Full and paged inspection share the existing builtin-then-project entry contract.
-    Json asset_json(std::size_t index) const {
+    std::expected<Json, Failure> asset_json(std::size_t index) const {
         const auto builtins = assets::mesh_assets();
         if (index < builtins.size()) {
             const auto& asset = builtins[index];
-            return {{"key", asset.key}, {"name", control::utf8(asset.name)}, {"kind", "mesh"}};
+            const auto name = platform::utf16_to_utf8(asset.name);
+            if (!name)
+                return std::unexpected(Failure("invalid_request", "Invalid UTF-16 text"));
+            return Json{{"key", asset.key}, {"name", *name}, {"kind", "mesh"}};
         }
         const auto& entry = app.project_->entries()[index - builtins.size()];
-        return {{"key", entry.key},
-                {"path", control::utf8(entry.path.generic_wstring())},
-                {"kind", static_cast<unsigned>(entry.kind)}};
+        const auto path = platform::utf16_to_utf8(entry.path.generic_wstring());
+        if (!path)
+            return std::unexpected(Failure("invalid_request", "Invalid UTF-16 text"));
+        return Json{{"key", entry.key}, {"path", *path}, {"kind", static_cast<unsigned>(entry.kind)}};
     }
 
-    Json inspect_assets(const Json& args) {
+    std::expected<Json, Failure> inspect_assets(const Json& args) {
         control::fields(args, {"detail", "limit", "cursor"});
         const auto limit = args.contains("limit") ? integer(args.at("limit"), 1, inspect_page_items) : 64u;
         const auto revision = app.project_ ? app.project_->revision() : 0;
@@ -1207,7 +1215,8 @@ struct EditorControl::Impl {
         for (; index < count; ++index) {
             if (entries.size() == limit)
                 break;
-            auto entry = asset_json(index);
+            ATELIER_TRY_BIND(value, asset_json(index));
+            auto& entry = *value;
             const auto size = entry.dump().size() + 1;
             if (size > inspect_page_bytes)
                 throw Failure("result_too_large", "One asset directory entry exceeds the page byte limit");
@@ -1225,7 +1234,7 @@ struct EditorControl::Impl {
         return result;
     }
 
-    Json inspect_objects(const Json& args) {
+    std::expected<Json, Failure> inspect_objects(const Json& args) {
         control::fields(args, {"detail", "entity_name", "type", "limit", "cursor"});
         const auto limit = args.contains("limit") ? integer(args.at("limit"), 1, inspect_page_items) : 64u;
         const auto revision = app.document_->revision();
@@ -1254,8 +1263,9 @@ struct EditorControl::Impl {
         };
         const auto entity_filter = filter("entity_name");
         const auto type_filter = filter("type");
-        const auto entity_name =
-            entity_filter.is_null() ? std::wstring{} : control::wide(entity_filter.get<std::string>());
+        const auto entity_name = entity_filter.is_null()
+                                     ? std::wstring{}
+                                     : platform::utf8_to_utf16_validated(entity_filter.get<std::string>());
         const auto entities = take(app.document_->world().members());
         if (entity_index > entities.size() || (entity_index == entities.size() && object_index))
             throw Failure("invalid_request", "Object directory cursor is outside the document");
@@ -1281,7 +1291,8 @@ struct EditorControl::Impl {
                 const auto* type = take(runtime.describe(take(runtime.type_of(id))));
                 if (!type_filter.is_null() && type->name != type_filter.get_ref<const std::string&>())
                     continue;
-                auto entry = object_header(id, type->name);
+                ATELIER_TRY_BIND(header, object_header(id, type->name));
+                auto& entry = *header;
                 entry["kind"] = object_index ? "component" : "entity";
                 entry["entity"] = handle(entity);
                 if (!object_index)
@@ -1303,10 +1314,16 @@ struct EditorControl::Impl {
         return result;
     }
 
-    Json inspect(bool summary = false) {
+    std::expected<Json, Failure> inspect(bool summary = false) {
+        const auto project = platform::utf16_to_utf8(app.project_ ? app.project_->root().generic_wstring() : L"");
+        if (!project)
+            return std::unexpected(Failure("invalid_request", "Invalid UTF-16 text"));
+        const auto scene = platform::utf16_to_utf8(app.scene_path_.generic_wstring());
+        if (!scene)
+            return std::unexpected(Failure("invalid_request", "Invalid UTF-16 text"));
         Json result{{"identity", server.identity()},
-                    {"project", app.project_ ? control::utf8(app.project_->root().generic_wstring()) : ""},
-                    {"scene_path", control::utf8(app.scene_path_.generic_wstring())},
+                    {"project", *project},
+                    {"scene_path", *scene},
                     {"dirty", app.document_->dirty()},
                     {"busy", busy()},
                     {"busy_reasons", busy_reasons()},
@@ -1328,10 +1345,13 @@ struct EditorControl::Impl {
         for (const char* field : {"entities", "selection", "assets", "component_types"})
             result[field] = Json::array();
         for (const auto& entity : take(app.document_->world().members())) {
-            auto value = object_json(entity.id());
+            ATELIER_TRY_BIND(object, object_json(entity.id()));
+            auto& value = *object;
             value["components"] = Json::array();
-            for (const auto& component : take(world::components(app.document_->world().runtime(), entity.id())))
-                value["components"].push_back(object_json(component.id()));
+            for (const auto& component : take(world::components(app.document_->world().runtime(), entity.id()))) {
+                ATELIER_TRY_BIND(item, object_json(component.id()));
+                value["components"].push_back(std::move(*item));
+            }
             const auto parent = take(world::parent_entity(app.document_->world().runtime(), entity.id()));
             value["parent"] = parent != ObjectId{} ? handle(parent) : "";
             value["children"] = Json::array();
@@ -1348,8 +1368,10 @@ struct EditorControl::Impl {
         for (const auto& type : take(app.document_->component_types()))
             result["component_types"].push_back(type.name);
         const auto count = assets::mesh_assets().size() + (app.project_ ? app.project_->entries().size() : 0);
-        for (std::size_t i = 0; i < count; ++i)
-            result["assets"].push_back(asset_json(i));
+        for (std::size_t i = 0; i < count; ++i) {
+            ATELIER_TRY_BIND(asset, asset_json(i));
+            result["assets"].push_back(std::move(*asset));
+        }
         return result;
     }
 
@@ -1381,7 +1403,7 @@ struct EditorControl::Impl {
         return *jobs.back();
     }
 
-    Json start_export(const std::string& id, const std::shared_ptr<control::Peer>& peer) {
+    std::expected<Json, Failure> start_export(const std::string& id, const std::shared_ptr<control::Peer>& peer) {
         auto data = control_artifacts::snapshot_resources(*app.document_);
         if (app.project_) {
             if (!app.project_code_ || !app.project_code_->published_build() || !app.workspace_.scene_available)
@@ -1394,10 +1416,15 @@ struct EditorControl::Impl {
         }
         data.drafts = Json::array();
         for (const auto& file : app.workspace_.source_editor.files())
-            if (file->dirty())
-                data.drafts.push_back({{"path", control::utf8(file->path.generic_wstring())},
-                                       {"text", control::utf8(file->document->text())},
-                                       {"conflict", file->conflict}});
+            if (file->dirty()) {
+                const auto path = platform::utf16_to_utf8(file->path.generic_wstring());
+                if (!path)
+                    return std::unexpected(Failure("invalid_request", "Invalid UTF-16 text"));
+                const auto source = platform::utf16_to_utf8(file->document->text());
+                if (!source)
+                    return std::unexpected(Failure("invalid_request", "Invalid UTF-16 text"));
+                data.drafts.push_back({{"path", *path}, {"text", *source}, {"conflict", file->conflict}});
+            }
         if (app.project_) {
             data.roots.assign(app.project_->roots().begin(), app.project_->roots().end());
             // snapshot_resources already walked the actual parent/default closure
@@ -1411,7 +1438,7 @@ struct EditorControl::Impl {
             };
             const auto less = [&](const auto& a, const auto& b) { return compare(a, b) == CSTR_LESS_THAN; };
             std::set<std::filesystem::path, decltype(less)> listed(less);
-            const auto add = [&](const std::filesystem::path& named) {
+            const auto add = [&](const std::filesystem::path& named) -> std::expected<void, Failure> {
                 // Raw mesh references may use a different case than the catalogue.
                 // Copy each Windows file once, preserving keyed companions' identities.
                 const auto entries = app.project_->entries();
@@ -1419,18 +1446,31 @@ struct EditorControl::Impl {
                     entries, [&](const auto& entry) { return compare(named, entry.path) == CSTR_EQUAL; });
                 const auto& path = at == entries.end() ? named : at->path;
                 if (!listed.insert(path).second)
-                    return;
+                    return {};
                 data.files.push_back(path);
                 if (at != entries.end() &&
                     (at->kind == assets::AssetKind::mesh || at->kind == assets::AssetKind::material ||
                      at->kind == assets::AssetKind::texture || at->kind == assets::AssetKind::sky)) {
                     auto sidecar = path;
                     sidecar += L".asset.json";
-                    if (!std::filesystem::exists(platform::windows_file_path(take(app.project_->resolve(sidecar)))))
+                    const auto resolved = app.project_->resolve(sidecar);
+                    if (!resolved) {
+                        app.report_error(resolved.error(), "editor.control_failed");
+                        return std::unexpected(Failure("operation_failed", resolved.error().message));
+                    }
+                    const auto native = platform::windows_file_path(*resolved);
+                    if (!native)
+                        return std::unexpected(Failure("operation_failed", platform::error_message(native.error())));
+                    std::error_code error;
+                    const auto exists = std::filesystem::exists(*native, error);
+                    if (error)
+                        return std::unexpected(Failure("operation_failed", platform::error_message(error)));
+                    if (!exists)
                         throw Failure("dependency_mismatch", "Asset identity file is missing: " + at->key);
                     if (listed.insert(sidecar).second)
                         data.files.push_back(std::move(sidecar));
                 }
+                return {};
             };
             for (const auto& [kind, key] : data.references) {
                 if (key.empty() || key.starts_with("builtin/"))
@@ -1441,18 +1481,21 @@ struct EditorControl::Impl {
                         continue;
                     throw Failure("dependency_mismatch", "A captured resource is no longer in the project: " + key);
                 }
-                add(entry->path);
+                ATELIER_TRY(add(entry->path));
                 // Raw geometry companions are not MS/MI execution dependencies.
                 // Use the Reader's prepared mesh closure, never saved material walks.
                 if (kind == assets::AssetKind::mesh && !doc.unavailable(kind, key))
                     for (const auto& path : take(app.project_->assets().mesh_dependency_files(key)))
-                        add(path);
+                        ATELIER_TRY(add(path));
             }
         }
         auto& job = new_job(id, peer);
         data.manifest = job.manifest;
         data.manifest["kind"] = "repro";
-        data.manifest["original_scene_path"] = control::utf8(app.scene_path_.generic_wstring());
+        const auto scene = platform::utf16_to_utf8(app.scene_path_.generic_wstring());
+        if (!scene)
+            return std::unexpected(Failure("invalid_request", "Invalid UTF-16 text"));
+        data.manifest["original_scene_path"] = *scene;
         data.manifest["original_dirty"] = app.document_->dirty();
         data.manifest["selection_indices"] = Json::array();
         const auto members = take(app.document_->world().members());
@@ -1481,7 +1524,7 @@ struct EditorControl::Impl {
             cancel(job, "storage_error", error.what());
             return job.response;
         }
-        return {{"status", "pending"}, {"job_id", id}};
+        return Json{{"status", "pending"}, {"job_id", id}};
     }
 
     Json start_trace(const std::string& id, const std::shared_ptr<control::Peer>& peer, const Json& args) {
@@ -1562,7 +1605,7 @@ struct EditorControl::Impl {
         return {{"status", "pending"}, {"job_id", id}, {"result", {{"phase", prepare ? "preparing" : "rendering"}}}};
     }
 
-    Json operator_list() const {
+    std::expected<Json, Failure> operator_list() const {
         auto operators = Json::array();
         for (const auto& info : app.workspace_.operators.all()) {
             auto flags = Json::array();
@@ -1580,8 +1623,11 @@ struct EditorControl::Impl {
             auto kinds = Json::array({operator_kind_names[static_cast<std::size_t>(info.kind)]});
             if (info.requires_interaction)
                 kinds.push_back("interactive");
+            const auto title = platform::utf16_to_utf8(info.title);
+            if (!title)
+                return std::unexpected(Failure("invalid_request", "Invalid UTF-16 text"));
             operators.push_back({{"id", info.id},
-                                 {"title", control::utf8(info.title)},
+                                 {"title", *title},
                                  {"description", info.description},
                                  {"kinds", std::move(kinds)},
                                  {"flags", flags},
@@ -1594,22 +1640,22 @@ struct EditorControl::Impl {
         for (const auto name : editor::region_names())
             regions.push_back(name);
         const Json handle{{"type", "string"}};
-        return {{"operators", std::move(operators)},
-                {"context",
-                 {{"type", "object"},
-                  {"additionalProperties", false},
-                  {"properties",
-                   {{"selection",
+        return Json{{"operators", std::move(operators)},
+                    {"context",
                      {{"type", "object"},
                       {"additionalProperties", false},
-                      {"required", {"entities"}},
                       {"properties",
-                       {{"entities",
-                         {{"type", "array"}, {"items", handle}, {"maxItems", editor::Session::maximum_entities}}},
-                        {"active", handle},
-                        {"object", handle}}}}},
-                    {"region", {{"enum", std::move(regions)}}},
-                    {"asset", {{"type", "string"}}}}}}}};
+                       {{"selection",
+                         {{"type", "object"},
+                          {"additionalProperties", false},
+                          {"required", {"entities"}},
+                          {"properties",
+                           {{"entities",
+                             {{"type", "array"}, {"items", handle}, {"maxItems", editor::Session::maximum_entities}}},
+                            {"active", handle},
+                            {"object", handle}}}}},
+                        {"region", {{"enum", std::move(regions)}}},
+                        {"asset", {{"type", "string"}}}}}}}};
     }
 
     editor::ContextOverride context_override(const Json& value) {
@@ -1696,8 +1742,8 @@ struct EditorControl::Impl {
                   {"inspected_object", handle(app.document_->selection().object)}}}};
     }
 
-    Json dispatch(std::string_view op, const Json& args, const std::string& id,
-                  const std::shared_ptr<control::Peer>& peer) {
+    std::expected<Json, Failure> dispatch(std::string_view op, const Json& args, const std::string& id,
+                                          const std::shared_ptr<control::Peer>& peer) {
         auto& doc = *app.document_;
         auto& runtime = doc.world().runtime();
         if (op == "capabilities")
@@ -1712,7 +1758,8 @@ struct EditorControl::Impl {
                 return inspect_objects(args);
             if (detail == "object") {
                 control::fields(args, {"detail", "object"});
-                return {{"detail", "object"}, {"object", object_json(object(args.at("object")))}};
+                ATELIER_TRY_BIND(value, object_json(object(args.at("object"))));
+                return Json{{"detail", "object"}, {"object", std::move(*value)}};
             }
             control::fields(args, {"detail"});
             if (detail != "full" && detail != "summary")
@@ -1751,7 +1798,7 @@ struct EditorControl::Impl {
                             progress["compiled"] = prepared->done;
                             progress["total"] = prepared->total;
                         }
-                    return {{"status", "pending"}, {"job_id", job->id}, {"result", std::move(progress)}};
+                    return Json{{"status", "pending"}, {"job_id", job->id}, {"result", std::move(progress)}};
                 }
             throw Failure("unknown_job", "Job expired or belongs to another instance");
         }
@@ -1760,7 +1807,7 @@ struct EditorControl::Impl {
             return call_operator(args);
         if (op.starts_with("material.")) {
             if (op == "material.create_scene")
-                return {
+                return Json{
                     {"object",
                      handle(
                          take(doc.create_scene_material(object(args.at("component")), text(args.at("slot")))).id())}};
@@ -1827,8 +1874,9 @@ struct EditorControl::Impl {
             return start_render(id, peer, args, op == "render.compare", op == "render.prepare");
         else if (op == "repro.open") {
             replaceable();
-            const std::filesystem::path root = control::wide(text(args.at("directory")));
-            const auto manifest = control_artifacts::validate_repro(root);
+            const std::filesystem::path root = platform::utf8_to_utf16_validated(text(args.at("directory")));
+            ATELIER_TRY_BIND(validated, control_artifacts::validate_repro(root));
+            const auto& manifest = *validated;
             if (manifest.value("view_schema", Json()) != repro_view_schema)
                 throw Failure("invalid_request", "Repro view schema is not current; export the repro again");
             auto camera = app.camera_;
@@ -1950,10 +1998,12 @@ struct EditorControl::Impl {
                     throw Failure("stale_state", stale_message(request.value("state_token", ""), name, args));
             }
             auto result = dispatch(name, args, id, peer);
-            if (result.contains("status"))
-                response = std::move(result);
+            if (!result)
+                response = control::failure(result.error().code, result.error().what());
+            else if (result->contains("status"))
+                response = std::move(*result);
             else
-                response = {{"status", "ok"}, {"result", std::move(result)}};
+                response = {{"status", "ok"}, {"result", std::move(*result)}};
         } catch (const editor::detail::Failure& error) {
             app.report_error(error.error, "editor.control_failed");
             response = control::failure("operation_failed", error.what());
@@ -1978,8 +2028,26 @@ struct EditorControl::Impl {
     }
 };
 
-EditorControl::EditorControl(Application& app, const std::filesystem::path& directory)
-    : impl_(std::make_unique<Impl>(app, directory)) {}
+std::expected<EditorControl, control::Failure> EditorControl::create(Application& app,
+                                                                     const std::filesystem::path& directory) {
+    auto server = control::Server::create(
+        directory, {{"revision", build_info::revision}, {"configuration", build_info::configuration}});
+    if (!server)
+        return std::unexpected(std::move(server.error()));
+    const auto native = platform::windows_file_path(server->directory() / "artifacts" /
+                                                    server->identity().at("instance_id").get<std::string>());
+    if (!native)
+        return std::unexpected(Failure("storage_error", platform::error_message(native.error())));
+    std::error_code error;
+    std::filesystem::create_directories(*native, error);
+    if (error)
+        return std::unexpected(Failure("storage_error", platform::error_message(error)));
+    return EditorControl(std::make_unique<Impl>(app, std::move(*server)));
+}
+
+EditorControl::EditorControl(std::unique_ptr<Impl> impl) noexcept : impl_(std::move(impl)) {}
+
+EditorControl::EditorControl(EditorControl&&) noexcept = default;
 
 EditorControl::~EditorControl() = default;
 

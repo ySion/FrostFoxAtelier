@@ -1,5 +1,5 @@
 #pragma once
-#include "assets/file.hpp"
+#include "platform/utf.hpp"
 #include "ui_language/component.hpp"
 #include <algorithm>
 #include <array>
@@ -81,8 +81,8 @@ public:
         if (!entry.help || entry.help->title != title || entry.help->identity != identity ||
             entry.description != description) {
             entry.description = description;
-            entry.help = std::make_shared<const ui::Tooltip>(
-                ui::Tooltip{std::wstring(title), std::wstring(identity), assets::wide(description)});
+            entry.help = std::make_shared<const ui::Tooltip>(ui::Tooltip{
+                std::wstring(title), std::wstring(identity), platform::utf8_to_utf16_validated(description)});
         }
         return entry.help;
     }

@@ -1,5 +1,5 @@
 #include "editor/world_panel.hpp"
-#include "assets/file.hpp"
+#include "platform/utf.hpp"
 #include <algorithm>
 #include <format>
 
@@ -200,7 +200,7 @@ void WorldPanel::append(std::vector<ui::Control>& controls, ui::ControlKey paren
         const auto* option = view_option(options.front());
         const auto id = key::field(option->option);
         if (label.empty())
-            label = assets::wide(option->label);
+            label = platform::utf8_to_utf16_validated(option->label);
         const bool boolean = option->kind == ViewValueKind::boolean;
         const bool enumeration =
             option->kind == ViewValueKind::enumeration || option->option == ViewOption::probe_debug_volume;
@@ -224,7 +224,7 @@ void WorldPanel::append(std::vector<ui::Control>& controls, ui::ControlKey paren
         for (std::size_t i = 0; i < options.size(); ++i) {
             if (i)
                 identity += L" / ";
-            identity += assets::wide(view_option(options[i])->name);
+            identity += platform::utf8_to_utf16_validated(view_option(options[i])->name);
         }
         constexpr std::array kinds{L"bool", L"number", L"integer", L"enum"};
         identity += L" · ";
@@ -274,7 +274,8 @@ void WorldPanel::append(std::vector<ui::Control>& controls, ui::ControlKey paren
     scalar(*global, ViewOption::probe_rays);
     scalar(*global, ViewOption::probe_bounce);
     scalar(*global, ViewOption::indirect_gain);
-    group(key::root + 101, assets::wide(view_option(ViewOption::ddgi)->category), std::move(global));
+    group(key::root + 101, platform::utf8_to_utf16_validated(view_option(ViewOption::ddgi)->category),
+          std::move(global));
     auto propagation = groups;
     groups = std::make_shared<std::vector<Item>>();
     auto debug = std::make_shared<std::vector<Item>>();
@@ -288,19 +289,22 @@ void WorldPanel::append(std::vector<ui::Control>& controls, ui::ControlKey paren
     scalar(*debug, ViewOption::probe_relocation);
     scalar(*debug, ViewOption::probe_xray);
     scalar(*debug, ViewOption::probe_radius);
-    group(key::root + 102, assets::wide(view_option(ViewOption::probe_debug)->category), std::move(debug));
+    group(key::root + 102, platform::utf8_to_utf16_validated(view_option(ViewOption::probe_debug)->category),
+          std::move(debug));
     auto diagnostics = groups;
     groups = std::make_shared<std::vector<Item>>();
     auto lighting = std::make_shared<std::vector<Item>>();
     scalar(*lighting, ViewOption::exposure_ev);
     scalar(*lighting, ViewOption::shadows);
     scalar(*lighting, ViewOption::direct_candidates);
-    group(key::root + 103, assets::wide(view_option(ViewOption::shadows)->category), std::move(lighting));
+    group(key::root + 103, platform::utf8_to_utf16_validated(view_option(ViewOption::shadows)->category),
+          std::move(lighting));
     auto sky = std::make_shared<std::vector<Item>>();
     scalar(*sky, ViewOption::sky_enabled);
     scalar(*sky, ViewOption::sky_intensity);
     row(*sky, std::array{ViewOption::sky_color_x, ViewOption::sky_color_y, ViewOption::sky_color_z});
-    group(key::root + 105, assets::wide(view_option(ViewOption::sky_enabled)->category), std::move(sky));
+    group(key::root + 105, platform::utf8_to_utf16_validated(view_option(ViewOption::sky_enabled)->category),
+          std::move(sky));
     auto lighting_groups = groups;
     groups = std::make_shared<std::vector<Item>>();
     auto effects = std::make_shared<std::vector<Item>>();
@@ -311,7 +315,8 @@ void WorldPanel::append(std::vector<ui::Control>& controls, ui::ControlKey paren
     scalar(*effects, ViewOption::reflection_distance);
     scalar(*effects, ViewOption::reflection_roughness);
     scalar(*effects, ViewOption::bloom);
-    group(key::root + 104, assets::wide(view_option(ViewOption::antialiasing)->category), std::move(effects));
+    group(key::root + 104, platform::utf8_to_utf16_validated(view_option(ViewOption::antialiasing)->category),
+          std::move(effects));
     auto actual = std::make_shared<std::vector<Item>>();
     constexpr std::array labels{L"Placement",   L"World min (m)",  L"World max (m)",
                                 L"Spacing (m)", L"Resident (CPU)", L"This frame (CPU)"};

@@ -13,6 +13,7 @@
 #include "editor/project_ui.hpp"
 #include "renderer/renderer.hpp"
 #include "logging/native.hpp"
+#include "platform/utf.hpp"
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
@@ -180,16 +181,40 @@ int run_project(const RunOptions& options) {
                 if (!GetHandleInformation(event, &flags))
                     throw std::runtime_error("Invalid inherited stop/ack event.");
             }
-        auto project = take(editor::Project::open(options.project));
+        auto opened = editor::Project::open(options.project);
+        if (!opened) {
+            static_cast<void>(ATELIER_LOG(logging::Severity::error, "runner", "runner.failed", "Project run: {}",
+                                          opened.error().message));
+            return 1;
+        }
+        auto project = std::move(*opened);
+        auto root = platform::utf16_to_utf8(project.root().generic_wstring());
+        auto native_root = platform::utf16_to_utf8(project.root().native());
+        if (!root || !native_root) {
+            static_cast<void>(
+                ATELIER_LOG(logging::Severity::error, "runner", "runner.failed", "Project run: Invalid UTF-16 text."));
+            return 1;
+        }
         editor::ProjectDocument loaded;
         if (options.preview_ui) {
             if (project.ui_source().empty())
                 throw std::runtime_error("Configure a project UI source before previewing.");
             loaded.session = std::make_unique<editor::Session>();
         } else {
-            const auto scene = options.scene_snapshot.empty() ? take(project.resolve(project.startup_scene()))
-                                                              : options.scene_snapshot;
-            loaded = editor::load_project_scene(project, take(assets::read_file(scene)));
+            const auto scene = options.scene_snapshot.empty() ? project.resolve(project.startup_scene())
+                                                              : Result<std::filesystem::path>{options.scene_snapshot};
+            if (!scene) {
+                static_cast<void>(ATELIER_LOG(logging::Severity::error, "runner", "runner.failed", "Project run: {}",
+                                              scene.error().message));
+                return 1;
+            }
+            const auto bytes = assets::read_file(*scene);
+            if (!bytes) {
+                static_cast<void>(ATELIER_LOG(logging::Severity::error, "runner", "runner.failed", "Project run: {}",
+                                              bytes.error().message));
+                return 1;
+            }
+            loaded = editor::load_project_scene(project, *bytes);
         }
         if (!loaded.session)
             throw std::runtime_error(loaded.error ? loaded.error->message : "Project scene was not loaded.");
@@ -402,12 +427,12 @@ int run_project(const RunOptions& options) {
                     complete(std::move(begun));
                 }
                 started = true;
-                const std::array fields{logging::Field{"project_root", assets::utf8(project.root().generic_wstring())},
+                const std::array fields{logging::Field{"project_root", *root},
                                         logging::Field{"document", document.presentation().identity()},
                                         logging::Field{"preview_ui", options.preview_ui}};
                 static_cast<void>(ATELIER_LOG_WITH(logging::Severity::info, "runner", "runner.started",
                                                    logging::native::Context{fields}, "Project started: {}",
-                                                   assets::utf8(project.root().wstring())));
+                                                   *native_root));
                 startup_checkpoint();
                 static_cast<void>(ATELIER_LOG(logging::Severity::info, "runner", "runner.startup_complete",
                                               "Startup checkpoint completed"));
@@ -591,8 +616,14 @@ int run_project(const RunOptions& options) {
             report_diagnostics();
             complete(std::move(stopped));
         }
-        if (!options.report.empty())
-            take(editor::write_file(options.report, take(document.serialize())));
+        if (!options.report.empty()) {
+            const auto saved = editor::write_file(options.report, take(document.serialize()));
+            if (!saved) {
+                static_cast<void>(ATELIER_LOG(logging::Severity::error, "runner", "runner.failed", "Project run: {}",
+                                              saved.error().message));
+                return 1;
+            }
+        }
         performance.publish();
         report_performance(performance, frame);
         const std::array fields{logging::Field{"frames", frame},

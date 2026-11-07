@@ -3,10 +3,10 @@
 #include <nlohmann/json.hpp>
 #include <atomic>
 #include <chrono>
+#include <expected>
 #include <filesystem>
 #include <functional>
 #include <memory>
-#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -31,17 +31,9 @@ struct Peer final {
     std::atomic_bool connected{true};
 };
 
-std::filesystem::path default_directory();
+std::expected<std::filesystem::path, Failure> default_directory();
 
 std::string unique_id();
-
-std::string sha256(std::span<const std::byte>);
-
-std::string sha256_file(const std::filesystem::path&);
-
-std::string utf8(std::wstring_view);
-
-std::wstring wide(std::string_view);
 
 void fields(const Json&, std::initializer_list<std::string_view> allowed);
 
@@ -53,7 +45,9 @@ Json parse(std::string_view);
 // owner thread. The I/O worker never invokes the handler or retains its borrows.
 class Server final {
 public:
-    Server(const std::filesystem::path& directory, Json build);
+    static std::expected<Server, Failure> create(const std::filesystem::path& directory, Json build);
+
+    Server(Server&&) noexcept;
 
     ~Server();
 
@@ -74,6 +68,8 @@ public:
 private:
     struct Impl;
 
+    explicit Server(std::unique_ptr<Impl>) noexcept;
+
     std::unique_ptr<Impl> impl_;
 };
 
@@ -81,7 +77,10 @@ private:
 // that connection cancels its experiment at the next host checkpoint.
 class Client final {
 public:
-    Client(const Json& instance, std::chrono::milliseconds timeout = std::chrono::seconds(120));
+    static std::expected<Client, Failure> create(const Json& instance,
+                                                 std::chrono::milliseconds timeout = std::chrono::seconds(120));
+
+    Client(Client&&) noexcept;
 
     ~Client();
 
@@ -94,8 +93,10 @@ public:
 private:
     struct Impl;
 
+    explicit Client(std::unique_ptr<Impl>) noexcept;
+
     std::unique_ptr<Impl> impl_;
 };
 
-Json discover(const std::filesystem::path& directory);
+std::expected<Json, Failure> discover(const std::filesystem::path& directory);
 }

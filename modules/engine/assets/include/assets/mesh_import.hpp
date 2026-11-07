@@ -2,6 +2,7 @@
 #include "assets/assets.hpp"
 #include "assets/image_decode.hpp"
 #include "geometry/mesh.hpp"
+#include "runtime/runtime.hpp"
 #include <array>
 #include <filesystem>
 #include <optional>
@@ -40,11 +41,12 @@ struct MeshImport {
 // Wavefront OBJ/MTL or glTF 2.0 (.gltf with external buffers and images).
 bool is_mesh_path(const std::filesystem::path&);
 
-// Throws with context on invalid input. All dependencies must remain inside
-// the source directory, including after resolving links. No disk mutations.
-MeshImport load_mesh(const std::filesystem::path& source, ImageCache* images = nullptr);
+// IO/encoding failures return invalid_storage; format/decoding failures still
+// throw until ASSET-LOAD migration. Dependencies stay inside the source directory,
+// including after resolving links. No disk mutations or partial publication.
+Result<MeshImport> load_mesh(const std::filesystem::path& source, ImageCache* images = nullptr);
 
-MeshImport load_obj(const std::filesystem::path& source, ImageCache* images = nullptr);
+Result<MeshImport> load_obj(const std::filesystem::path& source, ImageCache* images = nullptr);
 
-MeshImport load_gltf(const std::filesystem::path& source, ImageCache* images = nullptr);
+Result<MeshImport> load_gltf(const std::filesystem::path& source, ImageCache* images = nullptr);
 }

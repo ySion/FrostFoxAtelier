@@ -1,10 +1,18 @@
 #include "application/diagnostics.hpp"
-#include "assets/file.hpp"
+#include "platform/utf.hpp"
 #include <array>
 #include <cstdio>
 #include <limits>
 
 namespace atelier::application {
+std::wstring diagnostic_text(std::string_view message) noexcept {
+    return platform::utf8_to_utf16(message).value_or(L"(诊断文本不是有效 UTF-8)");
+}
+
+std::string diagnostic_text(std::wstring_view message) noexcept {
+    return platform::utf16_to_utf8(message).value_or("(诊断文本不是有效 UTF-16)");
+}
+
 namespace {
 void bridge_failed() noexcept {
     std::fputs("Host diagnostic capture failed; business result is unchanged.\n", stderr);
@@ -50,20 +58,22 @@ logging::SourceLocation diagnostic_source(const SourceLocation& value) {
     return result;
 }
 
-logging::Entry error_diagnostic(const Error& error, std::string_view event, const std::filesystem::path& root) {
+Result<logging::Entry> error_diagnostic(const Error& error, std::string_view event, const std::filesystem::path& root) {
     logging::Entry entry{.severity = logging::Severity::error,
                          .category = "editor",
                          .event_code = std::string(event),
                          .message = error.message};
-    entry.fields = {{"error_code", static_cast<std::uint64_t>(error.code)},
-                    {"project_root", assets::utf8(root.generic_wstring())}};
+    auto path = platform::utf16_to_utf8(root.generic_wstring());
+    if (!path)
+        return std::unexpected(Error{ErrorCode::invalid_storage, "Invalid UTF-16 text."});
+    entry.fields = {{"error_code", static_cast<std::uint64_t>(error.code)}, {"project_root", std::move(*path)}};
     if (error.source)
         error_source(entry, *error.source);
     return entry;
 }
 
-logging::Entry world_diagnostic(const editor::Session& session, const world::Diagnostic& item,
-                                const std::filesystem::path& root, std::string_view origin) {
+Result<logging::Entry> world_diagnostic(const editor::Session& session, const world::Diagnostic& item,
+                                        const std::filesystem::path& root, std::string_view origin) {
     logging::Entry entry;
     entry.severity = item.severity == world::Severity::error     ? logging::Severity::error
                      : item.severity == world::Severity::warning ? logging::Severity::warning
@@ -74,8 +84,11 @@ logging::Entry world_diagnostic(const editor::Session& session, const world::Dia
     if (item.source)
         entry.source = diagnostic_source(*item.source);
     const auto document = session.presentation().identity();
+    auto path = platform::utf16_to_utf8(root.generic_wstring());
+    if (!path)
+        return std::unexpected(Error{ErrorCode::invalid_storage, "Invalid UTF-16 text."});
     entry.fields = {{"document", document},
-                    {"project_root", assets::utf8(root.generic_wstring())},
+                    {"project_root", std::move(*path)},
                     {"origin", std::string(origin)},
                     {"serial", item.serial},
                     {"phase", std::string(world::name(item.phase))},
@@ -107,46 +120,45 @@ logging::Entry world_diagnostic(const editor::Session& session, const world::Dia
 
 void report_world(const editor::Session& session, std::span<const world::Diagnostic> items,
                   const std::filesystem::path& root, std::string_view origin) noexcept {
-    try {
-        for (const auto& item : items)
-            static_cast<void>(logging::submit(world_diagnostic(session, item, root, origin)));
-    } catch (...) {
-        bridge_failed();
+    for (const auto& item : items) {
+        auto entry = world_diagnostic(session, item, root, origin);
+        if (!entry) {
+            bridge_failed();
+            return;
+        }
+        static_cast<void>(logging::submit(std::move(*entry)));
     }
 }
 
 void drain_world(editor::Session& session, const std::filesystem::path& root, std::uint64_t& dropped) noexcept {
-    try {
-        report_world(session, session.take_diagnostics(), root);
-        const auto total = session.world().dropped_diagnostics();
-        if (total != dropped) {
-            logging::Entry entry{.severity = logging::Severity::warning,
-                                 .category = "world",
-                                 .event_code = "world.diagnostics_dropped",
-                                 .message = "World diagnostics exceeded their retention capacity."};
-            entry.fields = {{"document", session.presentation().identity()},
-                            {"dropped_total", total},
-                            {"dropped_delta", total - dropped}};
-            static_cast<void>(logging::submit(std::move(entry)));
-            dropped = total;
-        }
-    } catch (...) {
-        bridge_failed();
+    report_world(session, session.take_diagnostics(), root);
+    const auto total = session.world().dropped_diagnostics();
+    if (total != dropped) {
+        logging::Entry entry{.severity = logging::Severity::warning,
+                             .category = "world",
+                             .event_code = "world.diagnostics_dropped",
+                             .message = "World diagnostics exceeded their retention capacity."};
+        entry.fields = {{"document", session.presentation().identity()},
+                        {"dropped_total", total},
+                        {"dropped_delta", total - dropped}};
+        static_cast<void>(logging::submit(std::move(entry)));
+        dropped = total;
     }
 }
 
 void report_load(const editor::Session& session, const std::filesystem::path& root) noexcept {
-    try {
-        logging::Entry entry{.category = "world", .event_code = "world.scene_loaded", .message = "Scene loaded."};
-        entry.fields = {{"document", session.presentation().identity()},
-                        {"placeholders", std::uint64_t{session.placeholder_count()}},
-                        {"issues", std::uint64_t{session.load_issues().size()}},
-                        {"project_root", assets::utf8(root.generic_wstring())}};
-        static_cast<void>(logging::submit(std::move(entry)));
-        report_world(session, session.load_issues(), root, "load");
-    } catch (...) {
+    auto path = platform::utf16_to_utf8(root.generic_wstring());
+    if (!path) {
         bridge_failed();
+        return;
     }
+    logging::Entry entry{.category = "world", .event_code = "world.scene_loaded", .message = "Scene loaded."};
+    entry.fields = {{"document", session.presentation().identity()},
+                    {"placeholders", std::uint64_t{session.placeholder_count()}},
+                    {"issues", std::uint64_t{session.load_issues().size()}},
+                    {"project_root", std::move(*path)}};
+    static_cast<void>(logging::submit(std::move(entry)));
+    report_world(session, session.load_issues(), root, "load");
 }
 
 void report_source_capture(const source::DiagnosticReport& report, const std::filesystem::path& root) noexcept {
@@ -177,10 +189,15 @@ void report_source_capture(const source::DiagnosticReport& report, const std::fi
                              .category = "source",
                              .event_code = "source.capture",
                              .message = report.error ? report.error->message : "Explicit Source diagnostic capture."};
+        auto path = platform::utf16_to_utf8(root.generic_wstring());
+        if (!path) {
+            bridge_failed();
+            return;
+        }
         entry.fields = {{"program_id", report.program_id},
                         {"code_version", report.code_version},
                         {"entry", report.entry},
-                        {"project_root", assets::utf8(root.generic_wstring())},
+                        {"project_root", std::move(*path)},
                         {"source_name", report.source_name},
                         {"status", std::string(status.at(static_cast<std::size_t>(report.status)))},
                         {"resumes", report.resumes},

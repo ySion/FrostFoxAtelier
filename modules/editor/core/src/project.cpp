@@ -1,5 +1,7 @@
 #include "editor/project.hpp"
 #include "editor/session.hpp"
+#include "platform/error.hpp"
+#include "platform/utf.hpp"
 #include "platform/windows_path.hpp"
 #include "assets/file.hpp"
 #include "assets/mesh_import.hpp"
@@ -28,13 +30,16 @@ auto failure(std::string text) {
     return std::unexpected(Error{ErrorCode::invalid_storage, std::move(text)});
 }
 
-std::string identity() {
+Result<std::string> identity() {
     GUID id{};
     if (FAILED(CoCreateGuid(&id)))
-        throw std::runtime_error("Cannot create asset identity.");
+        return failure("Cannot create asset identity.");
     wchar_t text[40]{};
     StringFromGUID2(id, text, 40);
-    return assets::utf8(text);
+    auto value = platform::utf16_to_utf8(text);
+    if (!value)
+        return failure("Invalid UTF-16 text.");
+    return std::move(*value);
 }
 
 template <class T>
@@ -45,13 +50,17 @@ T take(Result<T> value) {
         return std::move(*value);
 }
 
-Json read_json(const std::filesystem::path& path) {
-    return assets::json_format::parse(take(assets::read_file(path)));
+Result<Json> read_json(const std::filesystem::path& path) {
+    ATELIER_TRY_BIND(bytes, assets::read_file(path));
+    return assets::json_format::parse(*bytes);
 }
 
 // A generated material's file name: valid on Windows and unique among `taken`, compared as the file system does (ordinal, ignoring case).
-std::wstring material_file(std::string_view slot, std::vector<std::wstring>& taken) {
-    auto name = assets::wide(slot);
+Result<std::wstring> material_file(std::string_view slot, std::vector<std::wstring>& taken) {
+    auto converted = platform::utf8_to_utf16(slot);
+    if (!converted)
+        return failure("Invalid UTF-8 text.");
+    auto name = std::move(*converted);
     for (auto& c : name)
         if (c < 32 || std::wstring_view(L"\\/:*?\"<>|").find(c) != std::wstring_view::npos)
             c = L'_';
@@ -87,36 +96,41 @@ std::wstring material_file(std::string_view slot, std::vector<std::wstring>& tak
 }
 
 Result<void> write_file(const std::filesystem::path& path, std::string_view text, WriteMode mode) {
-    std::filesystem::path temporary;
-    try {
-        const auto native = platform::windows_file_path(path);
-        std::filesystem::create_directories(native.parent_path());
-        temporary = native;
-        temporary += L"." + assets::wide(identity()) + L".tmp";
-        const auto file =
-            CreateFileW(temporary.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (file == INVALID_HANDLE_VALUE)
-            return failure("Cannot create temporary file for " + assets::utf8(path.wstring()) + " (Windows error " +
-                           std::to_string(GetLastError()) + ").");
-        DWORD written{};
-        const bool ok = text.size() <= MAXDWORD &&
-                        WriteFile(file, text.data(), static_cast<DWORD>(text.size()), &written, nullptr) &&
-                        written == text.size() && FlushFileBuffers(file);
-        const auto write_error = GetLastError();
-        CloseHandle(file);
-        const DWORD flags = MOVEFILE_WRITE_THROUGH | (mode == WriteMode::replace ? MOVEFILE_REPLACE_EXISTING : 0);
-        if (!ok || !MoveFileExW(temporary.c_str(), native.c_str(), flags)) {
-            const auto error = ok ? GetLastError() : write_error;
-            DeleteFileW(temporary.c_str());
-            return failure("Cannot save " + assets::utf8(path.wstring()) + " (Windows error " + std::to_string(error) +
-                           ").");
-        }
-        return {};
-    } catch (const std::exception& error) {
-        if (!temporary.empty())
-            DeleteFileW(temporary.c_str());
-        return failure(error.what());
+    auto native = platform::windows_file_path(path);
+    if (!native)
+        return failure(platform::error_message(native.error()));
+    std::error_code directory_error;
+    std::filesystem::create_directories(native->parent_path(), directory_error);
+    if (directory_error)
+        return failure(platform::error_message(directory_error));
+    ATELIER_TRY_BIND(id, identity());
+    auto temporary = *native;
+    temporary += L"." + platform::utf8_to_utf16_validated(*id) + L".tmp";
+    const auto file =
+        CreateFileW(temporary.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        const auto error = GetLastError();
+        auto name = platform::utf16_to_utf8(path.native());
+        if (!name)
+            return failure("Invalid UTF-16 text.");
+        return failure("Cannot create temporary file for " + *name + " (Windows error " + std::to_string(error) + ").");
     }
+    DWORD written{};
+    const bool ok = text.size() <= MAXDWORD &&
+                    WriteFile(file, text.data(), static_cast<DWORD>(text.size()), &written, nullptr) &&
+                    written == text.size() && FlushFileBuffers(file);
+    const auto write_error = GetLastError();
+    CloseHandle(file);
+    const DWORD flags = MOVEFILE_WRITE_THROUGH | (mode == WriteMode::replace ? MOVEFILE_REPLACE_EXISTING : 0);
+    if (!ok || !MoveFileExW(temporary.c_str(), native->c_str(), flags)) {
+        const auto error = ok ? GetLastError() : write_error;
+        DeleteFileW(temporary.c_str());
+        auto name = platform::utf16_to_utf8(path.native());
+        if (!name)
+            return failure("Invalid UTF-16 text.");
+        return failure("Cannot save " + *name + " (Windows error " + std::to_string(error) + ").");
+    }
+    return {};
 }
 
 Result<std::filesystem::path> Project::resolve(const std::filesystem::path& relative) const {
@@ -128,19 +142,45 @@ Result<Project> Project::create(const std::filesystem::path& folder) {
         if (folder.empty())
             return failure("Choose an empty project folder.");
         const auto native = platform::windows_file_path(folder);
-        if (std::filesystem::exists(native) &&
-            (!std::filesystem::is_directory(native) || !std::filesystem::is_empty(native)))
-            return failure("Create Project requires an empty folder; existing files were not changed.");
-        for (const auto* directory : {L"Config", L"Content/Scenes", L"Source", L"Cache"})
-            std::filesystem::create_directories(platform::windows_file_path(folder / directory));
-        const Json config = {{"version", 1},
-                             {"name", assets::utf8(std::filesystem::canonical(native).filename().wstring())},
-                             {"startup_scene", "Content/Scenes/Main.scene"}};
+        if (!native)
+            return failure(platform::error_message(native.error()));
+        std::error_code error;
+        const auto exists = std::filesystem::exists(*native, error);
+        if (error)
+            return failure(platform::error_message(error));
+        if (exists) {
+            const auto status = std::filesystem::status(*native, error);
+            if (error && !std::filesystem::status_known(status))
+                return failure(platform::error_message(error));
+            const auto directory = std::filesystem::is_directory(status);
+            error.clear();
+            const auto empty = directory && std::filesystem::is_empty(*native, error);
+            if (error)
+                return failure(platform::error_message(error));
+            if (!empty)
+                return failure("Create Project requires an empty folder; existing files were not changed.");
+        }
+        for (const auto* directory : {L"Config", L"Content/Scenes", L"Source", L"Cache"}) {
+            const auto path = platform::windows_file_path(folder / directory);
+            if (!path)
+                return failure(platform::error_message(path.error()));
+            std::filesystem::create_directories(*path, error);
+            if (error)
+                return failure(platform::error_message(error));
+        }
+        const auto canonical = std::filesystem::canonical(*native, error);
+        if (error)
+            return failure(platform::error_message(error));
+        auto name = platform::utf16_to_utf8(canonical.filename().native());
+        if (!name)
+            return failure("Invalid UTF-16 text.");
+        const Json config = {{"version", 1}, {"name", *name}, {"startup_scene", "Content/Scenes/Main.scene"}};
         Session empty_scene;
-        take(write_file(folder / "Content/Scenes/Main.scene", take(empty_scene.serialize()), WriteMode::create));
-        take(write_file(folder / ".gitignore", "/Cache/\n", WriteMode::create));
-        take(write_file(folder / "Config/Project.json", config.dump(2) + "\n",
-                        WriteMode::create)); // Marker is published last.
+        ATELIER_TRY_BIND(scene, empty_scene.serialize());
+        ATELIER_TRY(write_file(folder / "Content/Scenes/Main.scene", *scene, WriteMode::create));
+        ATELIER_TRY(write_file(folder / ".gitignore", "/Cache/\n", WriteMode::create));
+        // Marker is published last.
+        ATELIER_TRY(write_file(folder / "Config/Project.json", config.dump(2) + "\n", WriteMode::create));
         return open(folder);
     } catch (const std::exception& error) {
         return failure(error.what());
@@ -150,31 +190,46 @@ Result<Project> Project::create(const std::filesystem::path& folder) {
 Result<Project> Project::open(const std::filesystem::path& folder) {
     try {
         Project project;
-        project.root_ = std::filesystem::canonical(platform::windows_file_path(folder));
+        const auto native = platform::windows_file_path(folder);
+        if (!native)
+            return failure(platform::error_message(native.error()));
+        std::error_code error;
+        project.root_ = std::filesystem::canonical(*native, error);
+        if (error)
+            return failure(platform::error_message(error));
         project.assets_ = assets::Reader(project.root_);
-        const auto config = read_json(take(project.resolve("Config/Project.json")));
-        assets::json_format::fields(config, {"version", "name", "startup_scene", "ui_source"});
-        if (assets::json_format::identity(config.at("version")) != 1)
+        ATELIER_TRY_BIND(config_path, project.resolve("Config/Project.json"));
+        ATELIER_TRY_BIND(config, read_json(*config_path));
+        assets::json_format::fields(*config, {"version", "name", "startup_scene", "ui_source"});
+        if (assets::json_format::identity(config->at("version")) != 1)
             return failure("Unsupported project format version.");
-        project.name_ = assets::wide(config.at("name").get<std::string>());
-        project.startup_ = assets::wide(config.at("startup_scene").get<std::string>());
-        if (config.contains("ui_source")) {
-            project.ui_source_ = assets::wide(config.at("ui_source").get<std::string>());
+        project.name_ = platform::utf8_to_utf16_validated(config->at("name").get<std::string>());
+        project.startup_ = platform::utf8_to_utf16_validated(config->at("startup_scene").get<std::string>());
+        if (config->contains("ui_source")) {
+            project.ui_source_ = platform::utf8_to_utf16_validated(config->at("ui_source").get<std::string>());
             if (!project.ui_source_.empty() && (*project.ui_source_.begin() != L"Source" ||
                                                 !project.ui_source_.filename().wstring().ends_with(L".ui.source")))
                 return failure("Project UI must be a .ui.source file inside Source.");
             if (!project.ui_source_.empty())
-                take(project.resolve(project.ui_source_));
+                ATELIER_TRY(project.resolve(project.ui_source_));
         }
         if (project.name_.empty() || project.name_.size() > 256 ||
             std::ranges::any_of(project.name_, [](wchar_t c) { return c < 32 || c == 127; }) ||
             !is_scene_path(project.startup_))
             return failure("Invalid project name or startup scene.");
-        take(project.resolve(project.startup_));
-        for (const auto* directory : {L"Config", L"Content", L"Source"})
-            if (!std::filesystem::is_directory(platform::windows_file_path(take(project.resolve(directory)))))
+        ATELIER_TRY(project.resolve(project.startup_));
+        for (const auto* directory : {L"Config", L"Content", L"Source"}) {
+            ATELIER_TRY_BIND(path, project.resolve(directory));
+            const auto native_directory = platform::windows_file_path(*path);
+            if (!native_directory)
+                return failure(platform::error_message(native_directory.error()));
+            const auto status = std::filesystem::status(*native_directory, error);
+            if (error && !std::filesystem::status_known(status))
+                return failure(platform::error_message(error));
+            if (!std::filesystem::is_directory(status))
                 return failure("Project is missing Config, Content or Source.");
-        take(project.refresh());
+        }
+        ATELIER_TRY(project.refresh());
         return project;
     } catch (const std::exception& error) {
         return failure(error.what());
@@ -182,26 +237,38 @@ Result<Project> Project::open(const std::filesystem::path& folder) {
 }
 
 Result<std::vector<std::filesystem::path>> Project::source_paths() const {
-    try {
-        std::vector<std::filesystem::path> paths;
-        const auto native_root = platform::windows_file_path(root_);
-        const auto directory = platform::windows_file_path(take(resolve("Source")));
-        for (const auto& entry : std::filesystem::recursive_directory_iterator(directory)) {
-            if (entry.is_symlink() || !entry.is_regular_file())
-                continue;
-            if (entry.path().extension() != L".source" || entry.path().filename().wstring().ends_with(L".ui.source"))
-                continue;
-            const auto relative = entry.path().lexically_relative(native_root);
-            take(resolve(relative));
-            if (paths.size() >= 256)
-                return failure("Project exceeds the 256 Source file limit.");
-            paths.push_back(relative);
+    std::vector<std::filesystem::path> paths;
+    const auto native_root = platform::windows_file_path(root_);
+    if (!native_root)
+        return failure(platform::error_message(native_root.error()));
+    ATELIER_TRY_BIND(source, resolve("Source"));
+    const auto directory = platform::windows_file_path(*source);
+    if (!directory)
+        return failure(platform::error_message(directory.error()));
+    std::error_code error;
+    std::filesystem::recursive_directory_iterator entry(*directory, error);
+    if (error)
+        return failure(platform::error_message(error));
+    while (entry != std::filesystem::recursive_directory_iterator{}) {
+        const auto status = entry->symlink_status(error);
+        if (error && !std::filesystem::status_known(status))
+            return failure(platform::error_message(error));
+        if (!std::filesystem::is_symlink(status)) {
+            if (std::filesystem::is_regular_file(status) && entry->path().extension() == L".source" &&
+                !entry->path().filename().wstring().ends_with(L".ui.source")) {
+                const auto relative = entry->path().lexically_relative(*native_root);
+                ATELIER_TRY(resolve(relative));
+                if (paths.size() >= 256)
+                    return failure("Project exceeds the 256 Source file limit.");
+                paths.push_back(relative);
+            }
         }
-        std::ranges::sort(paths);
-        return paths;
-    } catch (const std::exception& error) {
-        return failure(error.what());
+        entry.increment(error);
+        if (error)
+            return failure(platform::error_message(error));
     }
+    std::ranges::sort(paths);
+    return paths;
 }
 
 Result<void> Project::create_source(const std::filesystem::path& relative, std::string_view text) {
@@ -212,11 +279,8 @@ Result<void> Project::create_source(const std::filesystem::path& relative, std::
         return std::unexpected(path.error());
     if (text.size() > 1024 * 1024)
         return failure("Source file exceeds the 1 MiB limit.");
-    try {
-        static_cast<void>(assets::wide(text));
-    } catch (const std::exception& error) {
-        return failure(error.what());
-    }
+    if (!StringView(text).is_valid_utf8())
+        return failure("Invalid UTF-8 text.");
     return write_file(*path, text, WriteMode::create);
 }
 
@@ -228,18 +292,37 @@ Result<void> Project::set_ui_source(const std::filesystem::path& relative) {
         ATELIER_TRY_BIND(path, resolve(relative));
     }
     try {
-        const auto path = take(resolve("Config/Project.json"));
-        auto config = read_json(path);
-        assets::json_format::fields(config, {"version", "name", "startup_scene", "ui_source"});
-        if (assets::json_format::identity(config.at("version")) != 1 || config.at("name") != assets::utf8(name_) ||
-            config.at("startup_scene") != assets::utf8(startup_.generic_wstring()) ||
-            config.value("ui_source", std::string{}) != assets::utf8(ui_source_.generic_wstring()))
-            return failure("Project configuration changed on disk. Reopen the project before changing its UI entry.");
+        ATELIER_TRY_BIND(path, resolve("Config/Project.json"));
+        ATELIER_TRY_BIND(config, read_json(*path));
+        assets::json_format::fields(*config, {"version", "name", "startup_scene", "ui_source"});
+        constexpr auto changed =
+            "Project configuration changed on disk. Reopen the project before changing its UI entry.";
+        if (assets::json_format::identity(config->at("version")) != 1)
+            return failure(changed);
+        auto name = platform::utf16_to_utf8(name_);
+        if (!name)
+            return failure("Invalid UTF-16 text.");
+        if (config->at("name") != *name)
+            return failure(changed);
+        auto startup = platform::utf16_to_utf8(startup_.generic_wstring());
+        if (!startup)
+            return failure("Invalid UTF-16 text.");
+        if (config->at("startup_scene") != *startup)
+            return failure(changed);
+        auto ui_source = platform::utf16_to_utf8(ui_source_.generic_wstring());
+        if (!ui_source)
+            return failure("Invalid UTF-16 text.");
+        if (config->value("ui_source", std::string{}) != *ui_source)
+            return failure(changed);
         if (relative.empty())
-            config.erase("ui_source");
-        else
-            config["ui_source"] = assets::utf8(relative.generic_wstring());
-        ATELIER_TRY_BIND(saved, write_file(path, config.dump(2) + "\n"));
+            config->erase("ui_source");
+        else {
+            auto next = platform::utf16_to_utf8(relative.generic_wstring());
+            if (!next)
+                return failure("Invalid UTF-16 text.");
+            (*config)["ui_source"] = std::move(*next);
+        }
+        ATELIER_TRY(write_file(*path, config->dump(2) + "\n"));
         ui_source_ = relative;
         return {};
     } catch (const std::exception& error) {
@@ -265,29 +348,33 @@ Result<std::filesystem::path> Project::rename(const std::filesystem::path& relat
     if (!target)
         return std::unexpected(target.error());
     const auto native_source = platform::windows_file_path(*source);
+    if (!native_source)
+        return failure(platform::error_message(native_source.error()));
     const auto native_target = platform::windows_file_path(*target);
+    if (!native_target)
+        return failure(platform::error_message(native_target.error()));
     std::error_code error;
-    if (!std::filesystem::exists(native_source, error))
+    if (!std::filesystem::exists(*native_source, error))
         return failure("The asset no longer exists on disk.");
     // Case-only renames are the same file on Windows; anything else must not overwrite.
-    if (std::filesystem::exists(native_target, error) &&
-        !std::filesystem::equivalent(native_source, native_target, error))
+    if (std::filesystem::exists(*native_target, error) &&
+        !std::filesystem::equivalent(*native_source, *native_target, error))
         return failure("Another file or folder already has that name.");
     const auto sidecar = [&](const std::filesystem::path& path) {
         auto result = path;
         result += L".asset.json";
         return result;
     };
-    const bool has_sidecar =
-        !std::filesystem::is_directory(native_source, error) && std::filesystem::exists(sidecar(native_source), error);
-    std::filesystem::rename(native_source, native_target, error);
+    const bool has_sidecar = !std::filesystem::is_directory(*native_source, error) &&
+                             std::filesystem::exists(sidecar(*native_source), error);
+    std::filesystem::rename(*native_source, *native_target, error);
     if (error)
         return failure("The file could not be renamed; it may be open in another program.");
     if (has_sidecar) {
-        std::filesystem::rename(sidecar(native_source), sidecar(native_target), error);
+        std::filesystem::rename(sidecar(*native_source), sidecar(*native_target), error);
         if (error) {
             std::error_code undo;
-            std::filesystem::rename(native_target, native_source, undo);
+            std::filesystem::rename(*native_target, *native_source, undo);
             return failure("The asset identity file could not be moved; the rename was undone.");
         }
     }
@@ -300,19 +387,36 @@ Result<std::vector<assets::ProjectEntry>> Project::scan_entries(bool create_iden
         std::vector<assets::ProjectEntry> entries;
         std::unordered_set<std::string> keys;
         const auto native_root = platform::windows_file_path(root_);
+        if (!native_root)
+            return failure(platform::error_message(native_root.error()));
+        std::error_code error;
         std::vector<std::filesystem::path> roots{"Content", "Source", "Config"};
         for (const auto& directory : roots) {
-            const auto root = platform::windows_file_path(take(resolve(directory)));
-            entries.push_back({directory, assets::utf8(directory.generic_wstring()), assets::AssetKind::folder});
-            for (const auto& entry : std::filesystem::recursive_directory_iterator(root)) {
-                if (entry.is_symlink())
+            ATELIER_TRY_BIND(resolved, resolve(directory));
+            const auto root = platform::windows_file_path(*resolved);
+            if (!root)
+                return failure(platform::error_message(root.error()));
+            auto directory_name = platform::utf16_to_utf8(directory.generic_wstring());
+            if (!directory_name)
+                return failure("Invalid UTF-16 text.");
+            entries.push_back({directory, std::move(*directory_name), assets::AssetKind::folder});
+            std::filesystem::recursive_directory_iterator iterator(*root, error);
+            if (error)
+                return failure(platform::error_message(error));
+            for (; iterator != std::filesystem::recursive_directory_iterator{}; iterator.increment(error)) {
+                const auto& entry = *iterator;
+                const auto status = entry.symlink_status(error);
+                if (error && !std::filesystem::status_known(status))
+                    return failure(platform::error_message(error));
+                if (std::filesystem::is_symlink(status))
                     continue;
-                const auto relative = entry.path().lexically_relative(native_root);
-                take(resolve(relative));
+                const auto relative = entry.path().lexically_relative(*native_root);
+                ATELIER_TRY(resolve(relative));
                 const auto filename = entry.path().filename().wstring();
                 if (filename.ends_with(L".asset.json") || filename.ends_with(L".meta") || filename.ends_with(L".tmp"))
                     continue;
-                auto kind = entry.is_directory()                       ? assets::AssetKind::folder
+                const auto is_directory = std::filesystem::is_directory(status);
+                auto kind = is_directory                               ? assets::AssetKind::folder
                             : assets::is_mesh_path(entry.path())       ? assets::AssetKind::mesh
                             : entry.path().extension() == L".material" ? assets::AssetKind::material
                             : assets::is_texture_path(entry.path())    ? assets::AssetKind::texture
@@ -320,54 +424,78 @@ Result<std::vector<assets::ProjectEntry>> Project::scan_entries(bool create_iden
                             : entry.path().extension() == L".scene"    ? assets::AssetKind::scene
                             : directory == L"Source"                   ? assets::AssetKind::source
                                                                        : assets::AssetKind::file;
-                std::string key = assets::utf8(relative.generic_wstring());
+                auto relative_name = platform::utf16_to_utf8(relative.generic_wstring());
+                if (!relative_name)
+                    return failure("Invalid UTF-16 text.");
+                std::string key = *relative_name;
                 std::vector<assets::SlotMaterial> materials;
                 if (kind == assets::AssetKind::mesh || kind == assets::AssetKind::material ||
                     kind == assets::AssetKind::texture || kind == assets::AssetKind::sky) {
                     auto meta_relative = relative;
                     meta_relative += L".asset.json";
-                    auto metadata = take(resolve(meta_relative));
-                    if (!std::filesystem::exists(metadata)) {
+                    ATELIER_TRY_BIND(metadata, resolve(meta_relative));
+                    const auto meta_name = *relative_name + ".asset.json";
+                    const auto exists = std::filesystem::exists(*metadata, error);
+                    if (error)
+                        return failure(platform::error_message(error));
+                    if (!exists) {
                         if (!create_identities)
                             return failure("Asset identity is missing; refresh the project before importing: " +
-                                           assets::utf8(meta_relative.generic_wstring()));
-                        const auto created = write_file(
-                            metadata, Json{{"version", 1}, {"id", identity()}}.dump(2) + "\n", WriteMode::create);
-                        if (!created && !std::filesystem::exists(metadata))
-                            return std::unexpected(created.error());
+                                           meta_name);
+                        ATELIER_TRY_BIND(new_id, identity());
+                        const auto created = write_file(*metadata, Json{{"version", 1}, {"id", *new_id}}.dump(2) + "\n",
+                                                        WriteMode::create);
+                        if (!created) {
+                            const auto appeared = std::filesystem::exists(*metadata, error);
+                            if (error)
+                                return failure(platform::error_message(error));
+                            if (!appeared)
+                                return std::unexpected(created.error());
+                        }
                     }
-                    const auto info = read_json(metadata);
-                    assets::json_format::fields(info, {"version", "id", "materials"});
-                    if (assets::json_format::identity(info.at("version")) != 1)
+                    ATELIER_TRY_BIND(info, read_json(*metadata));
+                    assets::json_format::fields(*info, {"version", "id", "materials"});
+                    if (assets::json_format::identity(info->at("version")) != 1)
                         return failure("Unsupported resource metadata version.");
-                    const auto raw = assets::wide(info.at("id").get<std::string>());
+                    const auto raw = platform::utf8_to_utf16_validated(info->at("id").get<std::string>());
                     GUID id{};
                     if (raw.size() != 38 || raw.front() != L'{' || raw.back() != L'}' ||
                         FAILED(CLSIDFromString(raw.c_str(), &id)))
                         return failure("Invalid resource identity metadata.");
                     wchar_t canonical[40]{};
                     StringFromGUID2(id, canonical, 40);
-                    key = "project/" + assets::utf8(canonical);
+                    auto canonical_name = platform::utf16_to_utf8(canonical);
+                    if (!canonical_name)
+                        return failure("Invalid UTF-16 text.");
+                    key = "project/" + *canonical_name;
                     if (!keys.insert(key).second)
                         return failure("Duplicate resource identity; import or create an independent asset.");
-                    if (const auto mapping = info.find("materials"); mapping != info.end()) {
+                    if (const auto mapping = info->find("materials"); mapping != info->end()) {
                         if (kind != assets::AssetKind::mesh || !mapping->is_object())
                             return failure(
                                 "Only mesh metadata lists default materials, as slot names to material keys: " +
-                                assets::utf8(meta_relative.generic_wstring()));
+                                meta_name);
                         for (const auto& [slot, material] : mapping->items()) {
                             if (slot.empty() || !material.is_string())
-                                return failure("Invalid default material in " +
-                                               assets::utf8(meta_relative.generic_wstring()));
+                                return failure("Invalid default material in " + meta_name);
                             materials.push_back({slot, material.get<std::string>()});
                         }
                     }
                 }
-                entries.push_back(
-                    {relative, std::move(key), kind, kind == assets::AssetKind::folder ? 0 : entry.file_size(),
-                     kind != assets::AssetKind::folder ? entry.last_write_time() : std::filesystem::file_time_type{},
-                     std::move(materials)});
+                std::uintmax_t bytes{};
+                std::filesystem::file_time_type modified{};
+                if (kind != assets::AssetKind::folder) {
+                    bytes = entry.file_size(error);
+                    if (error)
+                        return failure(platform::error_message(error));
+                    modified = entry.last_write_time(error);
+                    if (error)
+                        return failure(platform::error_message(error));
+                }
+                entries.push_back({relative, std::move(key), kind, bytes, modified, std::move(materials)});
             }
+            if (error)
+                return failure(platform::error_message(error));
         }
         std::sort(entries.begin(), entries.end(), [](const auto& a, const auto& b) { return a.path < b.path; });
         return entries;
@@ -379,7 +507,8 @@ Result<std::vector<assets::ProjectEntry>> Project::scan_entries(bool create_iden
 Result<void> Project::refresh() {
     try {
         auto roots = std::vector<std::filesystem::path>{"Content", "Source", "Config"};
-        take(assets_.publish(take(scan_entries(true))));
+        ATELIER_TRY_BIND(entries, scan_entries(true));
+        take(assets_.publish(*entries));
         roots_ = std::move(roots);
         return {};
     } catch (const std::exception& error) {
@@ -413,13 +542,43 @@ Result<MeshImportPublication> Project::import_mesh_files(const std::filesystem::
     };
     std::vector<Write> writes;
     std::vector<std::filesystem::path> directories;
+    const auto rollback = [&](std::string message) {
+        for (auto it = writes.rbegin(); it != writes.rend(); ++it)
+            if (it->written) {
+                std::error_code cleanup;
+                if (it->before) {
+                    auto restored = write_file(it->path, *it->before);
+                    if (!restored) {
+                        message += "; import rollback failed: " + restored.error().message;
+                        continue;
+                    }
+                    std::filesystem::last_write_time(it->path, it->modified, cleanup);
+                } else
+                    std::filesystem::remove(it->path, cleanup);
+                if (cleanup)
+                    message += "; import rollback failed: " + platform::error_message(cleanup);
+            }
+        for (const auto& directory : directories) {
+            std::error_code cleanup;
+            if (std::filesystem::exists(directory, cleanup) && std::filesystem::is_directory(directory, cleanup))
+                std::filesystem::remove(directory, cleanup); // Only empty directories planned above.
+            if (cleanup)
+                message += "; import directory cleanup failed: " + platform::error_message(cleanup);
+        }
+        return failure(std::move(message));
+    };
     try {
         if (!assets::is_mesh_path(source))
             return failure("Import Mesh accepts Wavefront OBJ or glTF 2.0 (.gltf) geometry and its dependencies.");
         const std::string requested(existing_key); // The caller may borrow its key from this Reader.
-        auto loaded = assets_.prepare_mesh(std::filesystem::absolute(source));
+        std::error_code error;
+        const auto absolute = std::filesystem::absolute(source, error);
+        if (error)
+            return failure(platform::error_message(error));
+        ATELIER_TRY_BIND(prepared, assets_.prepare_mesh(absolute));
+        auto loaded = std::move(*prepared);
         // A read-only scan cannot create unrelated sidecars during a failed import.
-        const auto catalog = take(scan_entries(false));
+        ATELIER_TRY_BIND(catalog, scan_entries(false));
         const auto same_path = [](const std::filesystem::path& a, const std::filesystem::path& b) {
             const auto left = a.lexically_normal().generic_wstring();
             const auto right = b.lexically_normal().generic_wstring();
@@ -427,8 +586,8 @@ Result<MeshImportPublication> Project::import_mesh_files(const std::filesystem::
         };
         const auto file_entry = [&](const std::filesystem::path& path) -> const assets::ProjectEntry* {
             const auto at =
-                std::ranges::find_if(catalog, [&](const auto& entry) { return same_path(entry.path, path); });
-            return at == catalog.end() ? nullptr : &*at;
+                std::ranges::find_if(*catalog, [&](const auto& entry) { return same_path(entry.path, path); });
+            return at == catalog->end() ? nullptr : &*at;
         };
         const auto sidecar = [](std::filesystem::path path) {
             path += L".asset.json";
@@ -443,73 +602,112 @@ Result<MeshImportPublication> Project::import_mesh_files(const std::filesystem::
         if (loaded.files.size() > 1)
             relative /= source.stem();
         auto target_relative = relative / source.filename();
-        std::string resource = requested.empty() ? "project/" + identity() : requested;
+        std::string resource = requested;
+        if (requested.empty()) {
+            ATELIER_TRY_BIND(id, identity());
+            resource = "project/" + *id;
+        }
         Json metadata = Json::object();
         Json defaults = Json::object();
         std::vector<std::filesystem::path> owned;
         std::string dependency_error;
         if (!requested.empty()) {
-            const auto at = std::ranges::find(catalog, requested, &assets::ProjectEntry::key);
-            if (at == catalog.end() || at->kind != assets::AssetKind::mesh)
+            const auto at = std::ranges::find(*catalog, requested, &assets::ProjectEntry::key);
+            if (at == catalog->end() || at->kind != assets::AssetKind::mesh)
                 return failure("Reimport requires an existing project mesh identity.");
             target_relative = at->path;
             relative = target_relative.parent_path();
             if (!same_path(source.extension(), target_relative.extension()))
                 return failure("Reimport must retain the mesh format (.obj or .gltf).");
-            metadata = read_json(take(resolve(sidecar(target_relative))));
+            ATELIER_TRY_BIND(metadata_path, resolve(sidecar(target_relative)));
+            ATELIER_TRY_BIND(previous_metadata, read_json(*metadata_path));
+            metadata = std::move(*previous_metadata);
             owned.push_back(target_relative);
             // Current raw dependencies, not material closure, prove which existing
             // files this operation may replace. There is no import ownership history.
             try {
-                const auto previous = assets_.prepare_mesh(take(resolve(target_relative)));
-                for (const auto& file : previous.files)
-                    owned.push_back(relative / file.relative);
+                const auto previous_path = resolve(target_relative);
+                if (!previous_path)
+                    dependency_error =
+                        "Existing mesh dependencies could not be verified: " + previous_path.error().message;
+                else {
+                    const auto previous = assets_.prepare_mesh(*previous_path);
+                    if (!previous)
+                        dependency_error =
+                            "Existing mesh dependencies could not be verified: " + previous.error().message;
+                    else
+                        for (const auto& file : previous->files)
+                            owned.push_back(relative / file.relative);
+                }
             } catch (const std::exception& error) {
                 dependency_error = "Existing mesh dependencies could not be verified: " + std::string(error.what());
-                loaded.notes.push_back(dependency_error + "; only unchanged existing dependencies may be reused.");
             }
+            if (!dependency_error.empty())
+                loaded.notes.push_back(dependency_error + "; only unchanged existing dependencies may be reused.");
             auto main = std::ranges::find(loaded.files, source.filename(), &assets::ImportedFile::relative);
             if (main == loaded.files.end())
                 return failure("Prepared mesh has no source file.");
             main->relative = target_relative.filename();
         }
-        const auto queue = [&](const std::filesystem::path& relative_path, std::string bytes, bool replace) {
-            auto path = take(resolve(relative_path));
-            if (std::ranges::any_of(writes, [&](const auto& write) { return same_path(write.path, path); }))
-                throw std::runtime_error("Import outputs collide: " + assets::utf8(relative_path.generic_wstring()));
-            Write write{std::move(path), std::move(bytes), {}};
-            if (std::filesystem::exists(write.path)) {
-                write.modified = std::filesystem::last_write_time(write.path);
-                write.before = take(assets::read_file(write.path, 512ull << 20));
-                if (!replace && (requested.empty() || *write.before != write.bytes))
-                    throw std::runtime_error("Import would overwrite an unrelated or unverified file: " +
-                                             assets::utf8(relative_path.generic_wstring()) +
-                                             (dependency_error.empty() ? std::string{} : "; " + dependency_error));
+        const auto queue = [&](const std::filesystem::path& relative_path, std::string bytes,
+                               bool replace) -> Result<void> {
+            ATELIER_TRY_BIND(path, resolve(relative_path));
+            if (std::ranges::any_of(writes, [&](const auto& write) { return same_path(write.path, *path); })) {
+                auto name = platform::utf16_to_utf8(relative_path.generic_wstring());
+                if (!name)
+                    return failure("Invalid UTF-16 text.");
+                return failure("Import outputs collide: " + *name);
+            }
+            Write write{std::move(*path), std::move(bytes), {}};
+            const auto exists = std::filesystem::exists(write.path, error);
+            if (error)
+                return failure(platform::error_message(error));
+            if (exists) {
+                write.modified = std::filesystem::last_write_time(write.path, error);
+                if (error)
+                    return failure(platform::error_message(error));
+                ATELIER_TRY_BIND(before, assets::read_file(write.path, 512ull << 20));
+                write.before = std::move(*before);
+                if (!replace && (requested.empty() || *write.before != write.bytes)) {
+                    auto name = platform::utf16_to_utf8(relative_path.generic_wstring());
+                    if (!name)
+                        return failure("Invalid UTF-16 text.");
+                    return failure("Import would overwrite an unrelated or unverified file: " + *name +
+                                   (dependency_error.empty() ? std::string{} : "; " + dependency_error));
+                }
             }
             writes.push_back(std::move(write));
+            return {};
         };
         // Prepare exact input pixels and persistent texture keys before moving the
         // immutable file bytes into the common create/replace transaction.
         std::map<std::filesystem::path, std::string> texture_keys;
         std::vector<std::string_view> image_bytes;
         MeshImportPublication result;
-        const auto prepare_texture = [&](const std::filesystem::path& file) {
+        const auto prepare_texture = [&](const std::filesystem::path& file) -> Result<void> {
             if (file.empty() || texture_keys.contains(file))
-                return;
+                return {};
             const auto* existing = file_entry(relative / file);
             if (existing && existing->kind != assets::AssetKind::texture)
                 throw std::runtime_error("Imported texture path names another resource kind.");
-            const auto key = existing ? existing->key : "project/" + identity();
+            std::string key;
+            if (existing)
+                key = existing->key;
+            else {
+                ATELIER_TRY_BIND(id, identity());
+                key = "project/" + *id;
+            }
             texture_keys.emplace(file, key);
             const auto bytes = std::ranges::find(loaded.files, file, &assets::ImportedFile::relative);
             if (bytes == loaded.files.end())
                 throw std::runtime_error("Imported texture is absent from the prepared bundle.");
             image_bytes.push_back(bytes->bytes);
             result.textures.push_back({key, file.stem().wstring(), {}});
+            return {};
         };
         for (const auto& inputs : loaded.textures)
             for (const auto& file : inputs)
-                prepare_texture(file);
+                ATELIER_TRY(prepare_texture(file));
         // Saved or unsaved user MIs may still reference a bundle texture that the
         // new source material stopped sampling. Publish every existing texture
         // asset touched by this reimport, not only the new source's active inputs.
@@ -517,7 +715,7 @@ Result<MeshImportPublication> Project::import_mesh_files(const std::filesystem::
             for (const auto& file : loaded.files)
                 if (const auto* existing = file_entry(relative / file.relative);
                     existing && existing->kind == assets::AssetKind::texture)
-                    prepare_texture(file.relative);
+                    ATELIER_TRY(prepare_texture(file.relative));
         const auto images = assets_.prepare_images(image_bytes, 2ull << 30);
         for (std::size_t i = 0; i < images.size(); ++i)
             result.textures[i].image = images[i];
@@ -533,24 +731,30 @@ Result<MeshImportPublication> Project::import_mesh_files(const std::filesystem::
             const auto* existing = file_entry(path);
             if (existing && existing->kind == assets::AssetKind::material)
                 return failure("Import cannot overwrite an existing material author file.");
-            queue(path, std::move(file.bytes), replace);
+            ATELIER_TRY(queue(path, std::move(file.bytes), replace));
             if (same_path(path, target_relative))
                 continue;
             if (assets::is_texture_path(path) || assets::is_mesh_path(path) || assets::is_sky_path(path) ||
                 path.extension() == L".material") {
                 if (!file_entry(path)) {
                     const auto texture = texture_keys.find(file.relative);
-                    const auto key = texture != texture_keys.end() ? texture->second : "project/" + identity();
-                    queue(sidecar(path), identity_file(key), false);
+                    std::string key;
+                    if (texture != texture_keys.end())
+                        key = texture->second;
+                    else {
+                        ATELIER_TRY_BIND(id, identity());
+                        key = "project/" + *id;
+                    }
+                    ATELIER_TRY(queue(sidecar(path), identity_file(key), false));
                 }
             }
         }
         assets::Reader current = assets_;
-        take(current.publish(catalog));
+        take(current.publish(*catalog));
         std::set<std::string> returned_materials;
         std::set<std::string> slots;
         std::vector<std::wstring> names;
-        for (const auto& entry : catalog)
+        for (const auto& entry : *catalog)
             if (same_path(entry.path.parent_path(), relative / "Materials"))
                 names.push_back(entry.path.filename().wstring());
         for (std::size_t i = 0; i < loaded.mesh->materials().size(); ++i) {
@@ -583,14 +787,18 @@ Result<MeshImportPublication> Project::import_mesh_files(const std::filesystem::
                         return failure("Imported texture has no typed MI override.");
                     std::get<material::TextureBinding>(entry->value).asset_key = texture_keys.at(file);
                 }
-            auto filename = material_file(slot, names);
-            if (assets::is_material_source_path(filename))
+            ATELIER_TRY_BIND(filename, material_file(slot, names));
+            if (assets::is_material_source_path(*filename)) {
                 filename = material_file(slot + " (MI)", names);
-            const auto path = relative / "Materials" / filename;
-            const auto key = "project/" + identity();
+                if (!filename)
+                    return std::unexpected(std::move(filename.error()));
+            }
+            const auto path = relative / "Materials" / *filename;
+            ATELIER_TRY_BIND(id, identity());
+            const auto key = "project/" + *id;
             assets::MaterialAsset asset{key, path.stem().wstring(), std::move(author)};
-            queue(path, assets::material_format::encode(asset).dump(2) + "\n", false);
-            queue(sidecar(path), identity_file(key), false);
+            ATELIER_TRY(queue(path, assets::material_format::encode(asset).dump(2) + "\n", false));
+            ATELIER_TRY(queue(sidecar(path), identity_file(key), false));
             defaults[slot] = key;
             result.materials.push_back(std::move(asset));
         }
@@ -598,13 +806,18 @@ Result<MeshImportPublication> Project::import_mesh_files(const std::filesystem::
             metadata["materials"] = std::move(defaults);
         else
             metadata.erase("materials");
-        queue(sidecar(target_relative), identity_file(resource, std::move(metadata)), !requested.empty());
+        ATELIER_TRY(queue(sidecar(target_relative), identity_file(resource, std::move(metadata)), !requested.empty()));
         result.notes = loaded.notes;
         for (const auto& write : writes)
-            for (auto parent = write.path.parent_path(); !std::filesystem::exists(parent);
-                 parent = parent.parent_path())
+            for (auto parent = write.path.parent_path();; parent = parent.parent_path()) {
+                const auto exists = std::filesystem::exists(parent, error);
+                if (error)
+                    return rollback(platform::error_message(error));
+                if (exists)
+                    break;
                 if (std::ranges::find(directories, parent) == directories.end())
                     directories.push_back(parent);
+            }
         std::ranges::sort(directories,
                           [](const auto& a, const auto& b) { return a.native().size() > b.native().size(); });
         // Every decode, author decision, identity and backup is ready. Both initial
@@ -612,36 +825,19 @@ Result<MeshImportPublication> Project::import_mesh_files(const std::filesystem::
         for (auto& write : writes) {
             if (write.before && *write.before == write.bytes)
                 continue;
-            take(write_file(write.path, write.bytes, write.before ? WriteMode::replace : WriteMode::create));
+            const auto saved =
+                write_file(write.path, write.bytes, write.before ? WriteMode::replace : WriteMode::create);
+            if (!saved)
+                return rollback(saved.error().message);
             write.written = true;
         }
-        result.mesh = take(assets_.publish_mesh(take(scan_entries(false)), resource, loaded, result.textures));
+        auto updated = scan_entries(false);
+        if (!updated)
+            return rollback(updated.error().message);
+        result.mesh = take(assets_.publish_mesh(*updated, resource, loaded, result.textures));
         return result;
     } catch (const std::exception& error) {
-        std::string message = error.what();
-        for (auto it = writes.rbegin(); it != writes.rend(); ++it)
-            if (it->written) {
-                std::error_code cleanup;
-                if (it->before) {
-                    auto restored = write_file(it->path, *it->before);
-                    if (!restored) {
-                        message += "; import rollback failed: " + restored.error().message;
-                        continue;
-                    }
-                    std::filesystem::last_write_time(it->path, it->modified, cleanup);
-                } else
-                    std::filesystem::remove(it->path, cleanup);
-                if (cleanup)
-                    message += "; import rollback failed: " + cleanup.message();
-            }
-        for (const auto& directory : directories) {
-            std::error_code cleanup;
-            if (std::filesystem::exists(directory, cleanup) && std::filesystem::is_directory(directory, cleanup))
-                std::filesystem::remove(directory, cleanup); // Only empty directories planned above.
-            if (cleanup)
-                message += "; import directory cleanup failed: " + cleanup.message();
-        }
-        return failure(std::move(message));
+        return rollback(error.what());
     }
 }
 

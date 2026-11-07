@@ -1,6 +1,9 @@
 #include "memory/fatal.hpp"
 #include "control/control.hpp"
 #include "logging/logging.hpp"
+#include "foundation/sha256.hpp"
+#include "platform/error.hpp"
+#include "platform/utf.hpp"
 #include "platform/windows_path.hpp"
 #include <Windows.h>
 #include <algorithm>
@@ -15,6 +18,14 @@
 namespace {
 using namespace atelier::control;
 
+namespace platform = atelier::platform;
+
+using atelier::foundation::sha256;
+
+using atelier::foundation::sha256_file;
+
+using atelier::platform::utf8_to_utf16_validated;
+
 using namespace std::chrono_literals;
 
 void require(bool ok, std::string_view message) {
@@ -23,14 +34,20 @@ void require(bool ok, std::string_view message) {
 }
 
 Json read(const std::filesystem::path& path) {
-    std::ifstream stream(atelier::platform::windows_file_path(path), std::ios::binary);
-    require(bool(stream), "Cannot read E2E artifact: " + utf8(path.wstring()));
+    const auto native = platform::windows_file_path(path);
+    require(bool(native), native ? "" : platform::error_message(native.error()));
+    std::ifstream stream(*native, std::ios::binary);
+    const auto text = platform::utf16_to_utf8(path.native());
+    require(bool(text), "Invalid UTF-16 E2E artifact path");
+    require(bool(stream), "Cannot read E2E artifact: " + *text);
     return Json::parse(stream);
 }
 
 void write(const std::filesystem::path& path, std::string_view text) {
-    std::filesystem::create_directories(atelier::platform::windows_file_path(path.parent_path()));
-    std::ofstream stream(atelier::platform::windows_file_path(path), std::ios::binary | std::ios::trunc);
+    const auto native = platform::windows_file_path(path);
+    require(bool(native), native ? "" : platform::error_message(native.error()));
+    std::filesystem::create_directories(native->parent_path());
+    std::ofstream stream(*native, std::ios::binary | std::ios::trunc);
     stream.write(text.data(), static_cast<std::streamsize>(text.size()));
     require(bool(stream), "Cannot write E2E fixture");
 }
@@ -148,8 +165,11 @@ struct Driver {
 
     Json descriptor;
 
-    explicit Driver(Json instance)
-        : client(std::make_unique<Client>(instance, 600s)), descriptor(std::move(instance)) {}
+    explicit Driver(Json instance) : descriptor(std::move(instance)) {
+        auto connected = Client::create(descriptor, 600s);
+        require(bool(connected), connected ? "" : connected.error().what());
+        client = std::make_unique<Client>(std::move(*connected));
+    }
 
     Json call(std::string op, Json args = Json::object(), std::string id = {}) {
         const auto name = op == "op.call" && args.is_object() && args.contains("id") && args.at("id").is_string()
@@ -228,7 +248,7 @@ void verify_post_trace(Driver& d) {
         const auto finished = d.wait(id);
         require(finished.at("status") == "ok", finished.dump());
         const auto& result = finished.at("result");
-        const auto trace = read(wide(result.at("json").get<std::string>()));
+        const auto trace = read(utf8_to_utf16_validated(result.at("json").get<std::string>()));
         require(trace.at("schema") == "atelier.render.trace" && trace.at("version") == 1 &&
                     trace.at("observation").at("status") == "complete" && trace.at("frame_status") == "accepted" &&
                     trace.at("attempt") == "first_requested_view" && trace.at("ui_frame_id") != 0 &&
@@ -236,7 +256,7 @@ void verify_post_trace(Driver& d) {
                 "Post trace did not preserve the complete actual render attempt: " + trace.dump());
         const auto& commands = trace.at("commands");
         require(commands.size() == entries[state].size(), "Post trace has a missing or invented dispatch");
-        std::ifstream page(wide(result.at("html").get<std::string>()), std::ios::binary);
+        std::ifstream page(utf8_to_utf16_validated(result.at("html").get<std::string>()), std::ios::binary);
         require(bool(page), "Trace HTML is missing");
         const std::string html{std::istreambuf_iterator<char>(page), std::istreambuf_iterator<char>()};
         std::size_t position{};
@@ -323,7 +343,9 @@ void verify_post_trace(Driver& d) {
 Json discover_editor(const Process& editor, const std::filesystem::path& directory) {
     const auto deadline = std::chrono::steady_clock::now() + 60s;
     while (std::chrono::steady_clock::now() < deadline) {
-        for (const auto& instance : discover(directory))
+        const auto instances = discover(directory);
+        require(bool(instances), instances ? "" : instances.error().what());
+        for (const auto& instance : *instances)
             if (instance.at("pid").get<DWORD>() == editor.pid)
                 return instance;
         require(WaitForSingleObject(editor.process, 0) == WAIT_TIMEOUT,
@@ -336,6 +358,8 @@ Json discover_editor(const Process& editor, const std::filesystem::path& directo
 struct SmokeLog {
     std::filesystem::path directory;
 
+    std::string directory_text;
+
     std::unique_ptr<atelier::logging::Reader> reader;
 
     atelier::logging::ReadBatch latest;
@@ -343,13 +367,16 @@ struct SmokeLog {
     std::vector<atelier::logging::Record> records;
 
     explicit SmokeLog(std::filesystem::path path) : directory(std::move(path)) {
+        auto text = platform::utf16_to_utf8(directory.native());
+        require(bool(text), "Invalid UTF-16 smoke log directory");
+        directory_text = std::move(*text);
         auto opened = atelier::logging::Reader::open(directory);
         require(bool(opened), opened ? "" : opened.error().message);
         reader = std::move(*opened);
     }
 
     void check(bool value, std::string_view message) const {
-        require(value, utf8(directory.wstring()) + ": " + std::string(message));
+        require(value, directory_text + ": " + std::string(message));
     }
 
     void poll() {
@@ -384,9 +411,12 @@ struct SmokeLog {
             std::this_thread::sleep_for(5ms);
         } while (std::chrono::steady_clock::now() < deadline);
         const auto& status = latest.status;
-        if (status.latest_issue)
-            check(false, utf8(status.latest_issue->file.wstring()) + ":" + std::to_string(status.latest_issue->offset) +
-                             " " + status.latest_issue->message);
+        if (status.latest_issue) {
+            const auto text = platform::utf16_to_utf8(status.latest_issue->file.native());
+            require(bool(text), "Invalid UTF-16 log issue path");
+            check(false,
+                  *text + ":" + std::to_string(status.latest_issue->offset) + " " + status.latest_issue->message);
+        }
         check(latest.run && status.finished && status.has_final_summary && !status.incomplete &&
                   !status.waiting_for_run && !status.partial_line && !status.unquantified_loss &&
                   !status.invalid_lines && !status.invalid_metadata && !status.oversized_lines &&
@@ -422,10 +452,12 @@ void verify_smoke_logs(SmokeLog& parent, SmokeLog& child, const std::filesystem:
     parent.finish();
     const auto& attached = parent.one("play.run_attached");
     const auto& ended = parent.one("play.process_ended");
-    const auto child_path = utf8(child.directory.generic_wstring());
-    parent.check(smoke_field<std::string>(attached, "directory") == child_path &&
-                     smoke_field<std::string>(attached, "project_root") == utf8(project.generic_wstring()) &&
-                     smoke_field<std::string>(ended, "directory") == child_path &&
+    const auto child_path = platform::utf16_to_utf8(child.directory.generic_wstring());
+    const auto project_path = platform::utf16_to_utf8(project.generic_wstring());
+    require(child_path && project_path, "Invalid UTF-16 smoke log paths");
+    parent.check(smoke_field<std::string>(attached, "directory") == *child_path &&
+                     smoke_field<std::string>(attached, "project_root") == *project_path &&
+                     smoke_field<std::string>(ended, "directory") == *child_path &&
                      !smoke_field<bool>(ended, "forced") && smoke_field<std::uint64_t>(ended, "exit_code") == 0,
                  "Play did not end normally in its attached run");
     child.finish();
@@ -445,7 +477,7 @@ void verify_smoke_logs(SmokeLog& parent, SmokeLog& child, const std::filesystem:
     parent.check(runs == std::set{parent.directory, child.directory}, "Unattached or missing product run");
     const auto& started = child.one("runner.started");
     const auto& stopped = child.one("runner.stopped");
-    child.check(smoke_field<std::string>(started, "project_root") == utf8(project.generic_wstring()) &&
+    child.check(smoke_field<std::string>(started, "project_root") == *project_path &&
                     !smoke_field<bool>(started, "preview_ui") && child.count("runner.stop_observed") == 1 &&
                     smoke_field<std::uint64_t>(started, "document") == smoke_field<std::uint64_t>(stopped, "document"),
                 "Play did not start and observe cooperative stop in the same game document");
@@ -455,7 +487,10 @@ void smoke_logs(const std::filesystem::path& executable, const std::filesystem::
     const auto project = root / "Project";
     const auto directory = root / "Control";
     const auto logs = root / "Logs" / "editor";
-    std::cout << "Editor log smoke evidence: " << utf8(root.wstring()) << '\n' << std::flush;
+    const auto root_text = platform::utf16_to_utf8(root.native());
+    const auto project_text = platform::utf16_to_utf8(project.generic_wstring());
+    require(root_text && project_text, "Invalid UTF-16 smoke fixture path");
+    std::cout << "Editor log smoke evidence: " << *root_text << '\n' << std::flush;
     std::filesystem::create_directories(project);
     for (const auto* name : {L"Config", L"Source", L"Content"})
         std::filesystem::copy(std::filesystem::path(ATELIER_EXAMPLE_PROJECT) / name, project / name,
@@ -471,7 +506,7 @@ void smoke_logs(const std::filesystem::path& executable, const std::filesystem::
     try {
         Driver d(discover_editor(editor, directory));
         const auto state = d.settle();
-        require(state.at("project") == utf8(project.generic_wstring()) &&
+        require(state.at("project") == *project_text &&
                     state.at("scene_path") == read(project / "Config/Project.json").at("startup_scene") &&
                     !state.at("last_frame").empty(),
                 "Examples did not open with its startup scene and an accepted frame");
@@ -481,8 +516,8 @@ void smoke_logs(const std::filesystem::path& executable, const std::filesystem::
         do {
             parent.poll();
             if (!child && parent.count("play.run_attached")) {
-                const auto path =
-                    std::filesystem::path(wide(smoke_field<std::string>(parent.one("play.run_attached"), "directory")));
+                const auto path = std::filesystem::path(
+                    utf8_to_utf16_validated(smoke_field<std::string>(parent.one("play.run_attached"), "directory")));
                 require(path.parent_path() == logs, "Play log is outside this Editor run");
                 child = std::make_unique<SmokeLog>(path);
             }
@@ -512,7 +547,7 @@ void smoke_logs(const std::filesystem::path& executable, const std::filesystem::
     if (failure)
         std::rethrow_exception(failure);
     verify_smoke_logs(parent, *child, project, editor.pid);
-    std::cout << "Editor log smoke: PASS | " << utf8(root.wstring()) << '\n';
+    std::cout << "Editor log smoke: PASS | " << *root_text << '\n';
 }
 
 void error(const Json& result, std::string_view expected) {
@@ -545,9 +580,11 @@ void repro_engine_assets(Driver& d, const std::filesystem::path& root) {
                 "Engine repro export did not start");
         const auto done = d.wait(id);
         require(done.at("status") == "ok", done.dump());
-        return std::filesystem::path(wide(done.at("result").at("directory").get<std::string>()));
+        return std::filesystem::path(utf8_to_utf16_validated(done.at("result").at("directory").get<std::string>()));
     };
     const auto empty = exported();
+    const auto empty_text = platform::utf16_to_utf8(empty.native());
+    require(bool(empty_text), "Invalid UTF-16 empty repro path");
     require(read(empty / "manifest.json").at("engine_assets") == Json{{"version", 1}, {"records", Json::array()}},
             "An empty no-project document acquired unused installation assets");
     require(read(empty / "manifest.json").at("material_resources") == Json{{"version", 1}, {"records", Json::object()}},
@@ -566,20 +603,28 @@ void repro_engine_assets(Driver& d, const std::filesystem::path& root) {
                 "Engine manifest did not identify material digest v1 and mesh digest v2");
     }
     const auto copy = root / "EngineRepro";
-    std::filesystem::copy(bundle, copy, std::filesystem::copy_options::recursive);
-    const auto scene_path = copy / "Project" / wide(original.at("scene").get<std::string>());
+    const auto native_bundle = platform::windows_file_path(bundle);
+    const auto native_copy = platform::windows_file_path(copy);
+    require(native_bundle && native_copy, "Cannot resolve repro copy paths");
+    std::filesystem::copy(*native_bundle, *native_copy, std::filesystem::copy_options::recursive);
+    const auto bundle_text = platform::utf16_to_utf8(bundle.native());
+    const auto copy_text = platform::utf16_to_utf8(copy.native());
+    require(bundle_text && copy_text, "Invalid UTF-16 repro copy path");
+    const auto scene_path = copy / "Project" / utf8_to_utf16_validated(original.at("scene").get<std::string>());
     const auto scene = read(scene_path);
     const auto publish = [&](Json manifest, const Json& value) {
         write(scene_path, value.dump(2));
         for (auto& file : manifest.at("files"))
-            if (copy / wide(file.at("path").get<std::string>()) == scene_path) {
-                file["sha256"] = sha256_file(scene_path);
+            if (copy / utf8_to_utf16_validated(file.at("path").get<std::string>()) == scene_path) {
+                const auto hash = sha256_file(scene_path);
+                require(bool(hash), hash ? "" : hash.error());
+                file["sha256"] = *hash;
                 file["bytes"] = std::filesystem::file_size(scene_path);
             }
         write(copy / "manifest.json", manifest.dump(2));
     };
     d.op("edit.undo");
-    d.ok("repro.open", {{"directory", utf8(bundle.wstring())}});
+    d.ok("repro.open", {{"directory", *bundle_text}});
     const auto entity = d.inspect().at("entities")[0].at("handle").get<std::string>();
     d.op("scene.rename", {{"name", "Saved with history"}}, selection(entity));
     d.op("scene.save");
@@ -595,26 +640,28 @@ void repro_engine_assets(Driver& d, const std::filesystem::path& root) {
         require(!before.at("dirty").get<bool>() && before.at("undo").get<unsigned>() > 0 &&
                     !before.at("selection").empty(),
                 "Dependency atomicity fixture is not a saved, replaceable document with history and selection");
-        static_cast<void>(d.call("repro.open", {{"directory", utf8(copy.wstring())}}));
+        static_cast<void>(d.call("repro.open", {{"directory", *copy_text}}));
         const auto after = d.inspect();
         for (const auto* field : {"project", "entities", "selection", "camera", "view", "undo", "redo", "dirty"})
             require(after.at(field) == before.at(field), "Rejected engine dependency changed " + std::string(field));
         require(d.token == token, "Rejected engine dependency changed the state token");
     }
     publish(original, scene);
-    d.ok("repro.open", {{"directory", utf8(copy.wstring())}});
+    d.ok("repro.open", {{"directory", *copy_text}});
     const auto recovered = d.inspect();
     require(recovered.at("entities").size() == scene.at("entities").size() && recovered.at("undo") == 0 &&
                 recovered.at("entities")[0].at("name") == scene.at("entities")[0].at("name"),
             "Restoring a valid manifest did not reopen the original document after dependency rejection");
-    d.ok("repro.open", {{"directory", utf8(empty.wstring())}});
+    d.ok("repro.open", {{"directory", *empty_text}});
     require(d.inspect().at("entities").empty(), "Empty engine dependency set did not reopen");
 
     // A cached but unused material and an obsolete disk texture are not roots.
     // Only the referenced, published draft belongs to the frozen document.
     const auto project = root / "EngineDraftProject";
     project_fixture(project);
-    d.op("project.open", {{"path", utf8(project.wstring())}});
+    const auto project_text = platform::utf16_to_utf8(project.native());
+    require(bool(project_text), "Invalid UTF-16 draft project path");
+    d.op("project.open", {{"path", *project_text}});
     const auto used = d.op("asset.new_material", {{"path", "Content/Materials/Used.material"}}, {{"asset", ""}})
                           .at("result")
                           .at("asset");
@@ -630,7 +677,7 @@ void repro_engine_assets(Driver& d, const std::filesystem::path& root) {
                                          {"value", {{"asset_key", "builtin/unknown"}, {"address", "repeat"}}}}});
         write(file, value.dump(2));
     }
-    d.op("project.open", {{"path", utf8(project.wstring())}});
+    d.op("project.open", {{"path", *project_text}});
     d.ok("material.inspect", {{"asset", cached}});
     const auto loaded = d.ok("material.inspect", {{"asset", used}});
     require(material_issue(loaded, "builtin/unknown"),
@@ -650,7 +697,9 @@ void repro_engine_assets(Driver& d, const std::filesystem::path& root) {
                         .at("asset_key") == "builtin/unknown",
             "Frozen draft roots included an unused cache, ignored the live draft or changed its source file");
     d.op("edit.undo", Json::object(), {{"region", "parameters"}, {"asset", used}});
-    d.ok("repro.open", {{"directory", utf8(draft.wstring())}});
+    const auto draft_text = platform::utf16_to_utf8(draft.native());
+    require(bool(draft_text), "Invalid UTF-16 draft repro path");
+    d.ok("repro.open", {{"directory", *draft_text}});
     require(d.ok("material.inspect", {{"asset", used}}).at("diagnostics").empty(),
             "Published draft did not reopen strictly");
     write(root / "engine-assets.json",
@@ -730,6 +779,7 @@ void verify_asset_directory(Driver& d, HWND window, const std::filesystem::path&
         require(stable == 5, "Refresh did not settle");
     };
     const auto saved = sha256_file(project / "Content/Scenes/Main.scene");
+    require(bool(saved), saved ? "" : saved.error());
     const auto full = d.inspect();
     const auto page = [&](Json args = Json::object()) {
         args["detail"] = "assets";
@@ -748,7 +798,7 @@ void verify_asset_directory(Driver& d, HWND window, const std::filesystem::path&
     fs::remove(project / "Content/bad.bmp");
     refresh();
     require(d.inspect().at("assets") == full.at("assets") &&
-                sha256_file(project / "Content/Scenes/Main.scene") == saved,
+                sha256_file(project / "Content/Scenes/Main.scene") == *saved,
             "Failed refresh or fixture cleanup changed the original saved document/catalog");
 }
 
@@ -794,22 +844,27 @@ void repro_sky(Driver& d, const std::filesystem::path& project) {
     environment_of(scene)["sky_map"] = key;
     environment_of(scene)["properties"]["sky_rotation"] = 30;
     write(project / "Content/Scenes/Main.scene", scene.dump(2));
-    d.op("project.open", {{"path", utf8(project.wstring())}});
+    const auto project_text = platform::utf16_to_utf8(project.native());
+    require(bool(project_text), "Invalid UTF-16 sky project path");
+    d.op("project.open", {{"path", *project_text}});
     const auto exported = [&] {
         const auto id = unique_id();
         require(d.call("repro.export", Json::object(), id).at("status") == "pending", "Sky repro export did not start");
         const auto done = d.wait(id);
         require(done.at("status") == "ok", done.dump());
-        const std::filesystem::path bundle = wide(done.at("result").at("directory").get<std::string>());
+        const std::filesystem::path bundle =
+            utf8_to_utf16_validated(done.at("result").at("directory").get<std::string>());
         const auto manifest = read(bundle / "manifest.json");
-        auto frozen = read(bundle / "Project" / wide(manifest.at("scene").get<std::string>()));
+        auto frozen = read(bundle / "Project" / utf8_to_utf16_validated(manifest.at("scene").get<std::string>()));
         const auto& sky = environment_of(frozen);
         require(sky.at("sky_map") == key && sky.at("properties").at("sky_rotation") == 30,
                 "A sky repro lost its scene's sky map key or rotation");
         return bundle;
     };
     const auto bundle = exported();
-    d.ok("repro.open", {{"directory", utf8(bundle.wstring())}});
+    const auto bundle_text = platform::utf16_to_utf8(bundle.native());
+    require(bool(bundle_text), "Invalid UTF-16 sky repro path");
+    d.ok("repro.open", {{"directory", *bundle_text}});
     exported();
 }
 
@@ -818,9 +873,12 @@ void repro_sky(Driver& d, const std::filesystem::path& project) {
 // missing still exports, the copy holds the draft and reopens strictly, and the source asset stays
 // unchanged. A material the session loaded but the scene does not reference stays out.
 void repro_material_draft(Driver& d, const std::filesystem::path& project, const std::filesystem::path& root) {
-    d.op("project.open", {{"path", utf8(project.wstring())}});
+    const auto project_text = platform::utf16_to_utf8(project.native());
+    const auto texture_text = platform::utf16_to_utf8((root / "Draft.png").native());
+    require(project_text && texture_text, "Invalid UTF-16 material draft fixture path");
+    d.op("project.open", {{"path", *project_text}});
     write(root / "Draft.png", std::string(tiny_png.begin(), tiny_png.end()));
-    const auto texture = d.op("asset.import", {{"kind", "texture"}, {"path", utf8((root / "Draft.png").wstring())}})
+    const auto texture = d.op("asset.import", {{"kind", "texture"}, {"path", *texture_text}})
                              .at("result")
                              .at("asset")
                              .get<std::string>();
@@ -845,9 +903,12 @@ void repro_material_draft(Driver& d, const std::filesystem::path& project, const
     d.op("scene.save");
     const auto saved = project / "Content/Materials/Draft.material";
     const auto saved_text = read(saved).dump();
-    for (const auto* file : {L"Content/Textures/Draft.png", L"Content/Textures/Draft.png.asset.json"})
-        std::filesystem::remove(atelier::platform::windows_file_path(project / file));
-    d.op("project.open", {{"path", utf8(project.wstring())}});
+    for (const auto* file : {L"Content/Textures/Draft.png", L"Content/Textures/Draft.png.asset.json"}) {
+        const auto path = platform::windows_file_path(project / file);
+        require(bool(path), path ? "" : platform::error_message(path.error()));
+        std::filesystem::remove(*path);
+    }
+    d.op("project.open", {{"path", *project_text}});
     const auto opened = d.ok("material.inspect", {{"asset", asset}});
     require(material_issue(opened, texture), "The draft fixture did not lose its texture: " + opened.dump());
     d.ok("material.inspect", {{"asset", unused}});
@@ -856,14 +917,15 @@ void repro_material_draft(Driver& d, const std::filesystem::path& project, const
     require(d.call("repro.export", Json::object(), id).at("status") == "pending", "Draft repro export did not start");
     const auto done = d.wait(id);
     require(done.at("status") == "ok", "A material draft without its missing texture did not export: " + done.dump());
-    const std::filesystem::path bundle = wide(done.at("result").at("directory").get<std::string>());
+    const std::filesystem::path bundle = utf8_to_utf16_validated(done.at("result").at("directory").get<std::string>());
     require(material_entry(read(bundle / "Project/Content/Materials/Draft.material"), "base_color_texture")
                         .at("value")
                         .at("asset_key") == "" &&
                 read(saved).dump() == saved_text,
             "A draft repro did not carry the draft, or changed the saved material");
-    require(!std::filesystem::exists(
-                atelier::platform::windows_file_path(bundle / "Project/Content/Materials/Unused.material")) &&
+    const auto unused_path = platform::windows_file_path(bundle / "Project/Content/Materials/Unused.material");
+    require(bool(unused_path), unused_path ? "" : platform::error_message(unused_path.error()));
+    require(!std::filesystem::exists(*unused_path) &&
                 std::ranges::none_of(read(bundle / "manifest.json").at("input_files"),
                                      [](const Json& file) {
                                          return file.at("path").get<std::string>().starts_with(
@@ -871,7 +933,9 @@ void repro_material_draft(Driver& d, const std::filesystem::path& project, const
                                      }),
             "A repro copied a material the session loaded but the scene does not reference");
     d.op("edit.undo", Json::object(), {{"region", "parameters"}, {"asset", asset}});
-    d.ok("repro.open", {{"directory", utf8(bundle.wstring())}});
+    const auto bundle_text = platform::utf16_to_utf8(bundle.native());
+    require(bool(bundle_text), "Invalid UTF-16 material draft repro path");
+    d.ok("repro.open", {{"directory", *bundle_text}});
     require(d.ok("material.inspect", {{"asset", asset}}).at("diagnostics").empty(),
             "A draft repro did not reopen without the missing texture");
 }
@@ -881,7 +945,9 @@ void repro_material_draft(Driver& d, const std::filesystem::path& project, const
 void repro_material_inputs(Driver& d, const std::filesystem::path& root) {
     const auto project = root / "Project";
     project_fixture(project);
-    d.op("project.open", {{"path", utf8(project.wstring())}});
+    const auto project_text = platform::utf16_to_utf8(project.native());
+    require(bool(project_text), "Invalid UTF-16 material input fixture path");
+    d.op("project.open", {{"path", *project_text}});
     const std::array<std::uint8_t, 16> first_pixels{17, 53, 201, 0, 254, 1, 127, 85, 64, 192, 9, 170, 203, 87, 38, 255};
     const std::array<std::uint8_t, 16> next_pixels{225, 13, 87, 255, 41, 219, 3, 170, 99, 7, 181, 85, 6, 149, 231, 0};
     const auto bitmap = [](const std::array<std::uint8_t, 16>& rgba) {
@@ -912,11 +978,12 @@ void repro_material_inputs(Driver& d, const std::filesystem::path& root) {
     };
     write(root / "Active.bmp", bitmap(first_pixels));
     write(root / "Dormant.bmp", bitmap(next_pixels));
-    const auto texture = d.op("asset.import", {{"kind", "texture"}, {"path", utf8((root / "Active.bmp").wstring())}})
-                             .at("result")
-                             .at("asset")
-                             .get<std::string>();
-    const auto dormant = d.op("asset.import", {{"kind", "texture"}, {"path", utf8((root / "Dormant.bmp").wstring())}})
+    const auto active_text = platform::utf16_to_utf8((root / "Active.bmp").native());
+    const auto dormant_text = platform::utf16_to_utf8((root / "Dormant.bmp").native());
+    require(active_text && dormant_text, "Invalid UTF-16 texture fixture path");
+    const auto texture =
+        d.op("asset.import", {{"kind", "texture"}, {"path", *active_text}}).at("result").at("asset").get<std::string>();
+    const auto dormant = d.op("asset.import", {{"kind", "texture"}, {"path", *dormant_text}})
                              .at("result")
                              .at("asset")
                              .get<std::string>();
@@ -939,6 +1006,7 @@ material.Output shade(material.Context context,Params p,Inputs inputs) {
                             .get<std::string>();
     auto source_author = read(project / source_file);
     const auto source_path = source_author.at("source_path").get<std::string>();
+    const auto native_source_path = utf8_to_utf16_validated(source_path);
     source_author["policy"]["double_sided"] = true;
     source_author["inputs"] = Json::array();
     for (const auto* path : {"pigment", "dormant"})
@@ -1023,11 +1091,12 @@ material.Output shade(material.Context context,Params p,Inputs inputs) {
                 "Material input repro export did not start");
         const auto done = d.wait(id);
         require(done.at("status") == "ok", done.dump());
-        const std::filesystem::path bundle = wide(done.at("result").at("directory").get<std::string>());
+        const std::filesystem::path bundle =
+            utf8_to_utf16_validated(done.at("result").at("directory").get<std::string>());
         const auto manifest = read(bundle / "manifest.json");
         require(manifest.at("material_resources") == expected(pixels),
                 "Repro digests changed MS text/policy, sparse entries, parents or exact RGBA pixels");
-        require(sha256_file(bundle / "Project" / wide(source_path)) == sha256(std::as_bytes(std::span(source_text))),
+        require(sha256_file(bundle / "Project" / native_source_path) == sha256(std::as_bytes(std::span(source_text))),
                 "Repro reread the MS Source instead of freezing its loaded text");
         require(read(bundle / "Project" / leaf_file) == leaf_author &&
                     read(bundle / "Project" / parent_file) == parent_author &&
@@ -1058,12 +1127,15 @@ material.Output shade(material.Context context,Params p,Inputs inputs) {
                                 {"entry", {{"path", "gain"}, {"type", "float"}, {"enabled", true}, {"value", 0.25}}}});
     const auto before_reimport = d.inspect();
     const auto identity_hash = sha256_file(project / (texture_file + ".asset.json"));
+    require(bool(identity_hash), identity_hash ? "" : identity_hash.error());
     write(root / "Replacement.bmp", bitmap(next_pixels));
-    d.op("asset.reimport", {{"path", utf8((root / "Replacement.bmp").wstring())}}, {{"asset", texture}});
+    const auto replacement_text = platform::utf16_to_utf8((root / "Replacement.bmp").native());
+    require(bool(replacement_text), "Invalid UTF-16 texture replacement path");
+    d.op("asset.reimport", {{"path", *replacement_text}}, {{"asset", texture}});
     const auto after_reimport = d.inspect();
     for (const auto* field : {"undo", "redo", "dirty", "dirty_materials"})
         require(before_reimport.at(field) == after_reimport.at(field), "Texture Reimport entered parameter history");
-    require(sha256_file(project / (texture_file + ".asset.json")) == identity_hash,
+    require(sha256_file(project / (texture_file + ".asset.json")) == *identity_hash,
             "Texture Reimport rewrote its identity sidecar");
     d.op("edit.undo", Json::object(), {{"region", "parameters"}, {"asset", parent}});
     require(!d.ok("material.inspect", {{"asset", parent}}).at("dirty").get<bool>(),
@@ -1071,16 +1143,19 @@ material.Output shade(material.Context context,Params p,Inputs inputs) {
     // Saved files now disagree with the loaded MS and imported pixels. Neither
     // this ordinary parameter Undo nor exporting may restore/read those files.
     const auto disk_text = source_text + "\n// saved after the MS was loaded\n";
-    write(project / wide(source_path), disk_text);
+    write(project / native_source_path, disk_text);
     write(project / texture_file, bitmap(first_pixels));
     const auto disk_image = sha256_file(project / texture_file);
+    require(bool(disk_image), disk_image ? "" : disk_image.error());
     const auto frozen = exported(next_pixels);
     const auto manifest = read(frozen / "manifest.json");
-    require(sha256_file(project / wide(source_path)) == sha256(std::as_bytes(std::span(disk_text))) &&
-                sha256_file(project / texture_file) == disk_image,
+    require(sha256_file(project / native_source_path) == sha256(std::as_bytes(std::span(disk_text))) &&
+                sha256_file(project / texture_file) == *disk_image,
             "Export modified the source project's saved Source or texture");
     const auto reopened = [&](const std::filesystem::path& bundle) {
-        d.ok("repro.open", {{"directory", utf8(bundle.wstring())}});
+        const auto bundle_text = platform::utf16_to_utf8(bundle.native());
+        require(bool(bundle_text), "Invalid UTF-16 material input repro path");
+        d.ok("repro.open", {{"directory", *bundle_text}});
         const auto view = d.ok("material.inspect", {{"asset", leaf}});
         require(view.at("source").at("text") == source_text && view.at("entries") == leaf_author.at("entries") &&
                     !view.at("default_material").get<bool>(),
@@ -1095,24 +1170,32 @@ material.Output shade(material.Context context,Params p,Inputs inputs) {
     reopened(frozen);
     exported(next_pixels);
     const auto changed = root / "ChangedBundle";
-    std::filesystem::copy(atelier::platform::windows_file_path(frozen), atelier::platform::windows_file_path(changed),
-                          std::filesystem::copy_options::recursive);
+    const auto native_frozen = platform::windows_file_path(frozen);
+    const auto native_changed = platform::windows_file_path(changed);
+    require(native_frozen && native_changed, "Cannot resolve material repro copy paths");
+    std::filesystem::copy(*native_frozen, *native_changed, std::filesystem::copy_options::recursive);
     d.settle();
-    const auto target = changed / "Project" / wide(source_path);
+    const auto native_target = platform::windows_file_path(changed / "Project" / native_source_path);
+    require(bool(native_target), "Cannot resolve changed material Source path");
+    const auto& target = *native_target;
     write(target, source_text + "\n// valid changed Source\n");
     auto modified = manifest;
     bool listed = false;
     for (auto& file : modified.at("files"))
         if (file.at("path") == "Project/" + source_path) {
-            file["sha256"] = sha256_file(target);
-            file["bytes"] = std::filesystem::file_size(atelier::platform::windows_file_path(target));
+            const auto hash = sha256_file(target);
+            require(bool(hash), hash ? "" : hash.error());
+            file["sha256"] = *hash;
+            file["bytes"] = std::filesystem::file_size(target);
             listed = true;
         }
     require(listed, "Changed material input is absent from the manifest");
     write(changed / "manifest.json", modified.dump(2));
     const auto before = d.inspect();
     const auto token = d.token;
-    static_cast<void>(d.call("repro.open", {{"directory", utf8(changed.wstring())}}));
+    const auto changed_text = platform::utf16_to_utf8(changed.native());
+    require(bool(changed_text), "Invalid UTF-16 changed repro path");
+    static_cast<void>(d.call("repro.open", {{"directory", *changed_text}}));
     const auto after = d.inspect();
     for (const auto* field : {"project", "scene_path", "entities", "selection", "camera", "view", "dirty",
                               "dirty_materials", "undo", "redo"})
@@ -1152,7 +1235,9 @@ void repro_lighting(const std::filesystem::path& executable, const std::filesyst
     repro_material_draft(d, project, root);
     d.client.reset();
     editor.close();
-    std::cout << "Editor Repro Lighting E2E: PASS | " << utf8(root.wstring()) << '\n';
+    const auto root_text = platform::utf16_to_utf8(root.native());
+    require(bool(root_text), "Invalid UTF-16 lighting evidence path");
+    std::cout << "Editor Repro Lighting E2E: PASS | " << *root_text << '\n';
 }
 
 void reject_nested_destination(const std::filesystem::path& executable, const std::filesystem::path& root) {
@@ -1168,9 +1253,10 @@ void reject_nested_destination(const std::filesystem::path& executable, const st
     const auto started = d.call("repro.export", Json::object(), id);
     require(started.at("status") == "pending", "Nested output fixture did not start: " + started.dump());
     static_cast<void>(d.wait(id));
-    require(std::filesystem::is_empty(atelier::platform::windows_file_path(
-                directory / "artifacts" / wide(d.descriptor.at("instance_id").get<std::string>()))),
-            "Rejected nested export left a recursive output");
+    const auto artifacts = platform::windows_file_path(
+        directory / "artifacts" / utf8_to_utf16_validated(d.descriptor.at("instance_id").get<std::string>()));
+    require(bool(artifacts), artifacts ? "" : platform::error_message(artifacts.error()));
+    require(std::filesystem::is_empty(*artifacts), "Rejected nested export left a recursive output");
     d.client.reset();
     editor.close();
 }
@@ -1184,10 +1270,11 @@ void repro_examples(const std::filesystem::path& executable, const std::filesyst
     const auto project = root / "Project";
     const auto directory = root / "Control";
     for (const auto* folder : {L"Config", L"Source", L"Content/Sponza", L"Content/Physic"}) {
-        std::filesystem::create_directories(atelier::platform::windows_file_path((project / folder).parent_path()));
-        std::filesystem::copy(atelier::platform::windows_file_path(shipped / folder),
-                              atelier::platform::windows_file_path(project / folder),
-                              std::filesystem::copy_options::recursive);
+        const auto source = platform::windows_file_path(shipped / folder);
+        const auto target = platform::windows_file_path(project / folder);
+        require(source && target, "Cannot resolve Examples copy paths");
+        std::filesystem::create_directories(target->parent_path());
+        std::filesystem::copy(*source, *target, std::filesystem::copy_options::recursive);
     }
     const std::string sponza = "Content/Sponza/";
     const std::string building = sponza + "NewSponza/NewSponza_Main_glTF_003.gltf";
@@ -1196,7 +1283,9 @@ void repro_examples(const std::filesystem::path& executable, const std::filesyst
     const std::string image = "textures/arch_stone_wall_01_BaseColor.png";
     const std::string alias = "Textures/Arch_Stone_Wall_01_BaseColor.png";
     {
-        std::ifstream stream(atelier::platform::windows_file_path(project / building), std::ios::binary);
+        const auto path = platform::windows_file_path(project / building);
+        require(bool(path), path ? "" : platform::error_message(path.error()));
+        std::ifstream stream(*path, std::ios::binary);
         std::string text(std::istreambuf_iterator<char>(stream), {});
         const auto at = text.find("\"" + image + "\"");
         require(at != std::string::npos, "The New Sponza glTF fixture changed");
@@ -1206,15 +1295,18 @@ void repro_examples(const std::filesystem::path& executable, const std::filesyst
     // Every slot default the two mesh sidecars name, by the material file that holds its identity.
     std::map<std::string, std::string> material_files;
     std::set<std::string> defaults;
-    for (const auto& entry :
-         std::filesystem::recursive_directory_iterator(atelier::platform::windows_file_path(project / sponza)))
-        if (auto path =
-                utf8(entry.path().lexically_relative(atelier::platform::windows_file_path(project)).generic_wstring());
-            path.ends_with(".material.asset.json")) {
+    const auto native_project = platform::windows_file_path(project);
+    const auto native_sponza = platform::windows_file_path(project / sponza);
+    require(native_project && native_sponza, "Cannot resolve Examples material paths");
+    for (const auto& entry : std::filesystem::recursive_directory_iterator(*native_sponza)) {
+        auto path = platform::utf16_to_utf8(entry.path().lexically_relative(*native_project).generic_wstring());
+        require(bool(path), "Invalid UTF-16 Examples material path");
+        if (path->ends_with(".material.asset.json")) {
             const auto key = "project/" + read(entry.path()).at("id").get<std::string>();
-            path.resize(path.size() - 11);
-            material_files[key] = std::move(path);
+            path->resize(path->size() - 11);
+            material_files[key] = std::move(*path);
         }
+    }
     for (const auto& mesh : {building, curtains})
         for (const auto& [slot, key] : read(project / (mesh + ".asset.json")).at("materials").items())
             defaults.insert(material_files.at(key.get<std::string>()));
@@ -1232,7 +1324,8 @@ void repro_examples(const std::filesystem::path& executable, const std::filesyst
             require(started.at("status") == "pending", started.dump());
             const auto done = d.wait(id);
             require(done.at("status") == "ok", done.dump());
-            const std::filesystem::path bundle = wide(done.at("result").at("directory").get<std::string>());
+            const std::filesystem::path bundle =
+                utf8_to_utf16_validated(done.at("result").at("directory").get<std::string>());
             const auto manifest = read(bundle / "manifest.json");
             std::set<std::string> copied;
             std::map<std::string, std::string> hashes;
@@ -1271,14 +1364,20 @@ void repro_examples(const std::filesystem::path& executable, const std::filesyst
         require(manifest.at("resources").size() == 3,
                 "An Examples repro did not check Sponza's two meshes and its sky map: " +
                     manifest.at("resources").dump());
-        d.ok("repro.open", {{"directory", utf8(bundle.wstring())}});
+        const auto bundle_text = platform::utf16_to_utf8(bundle.native());
+        require(bool(bundle_text), "Invalid UTF-16 Examples repro path");
+        d.ok("repro.open", {{"directory", *bundle_text}});
         exported();
         d.client.reset();
         editor.close();
     }
-    std::filesystem::remove_all(atelier::platform::windows_file_path(root));
+    const auto native_root = platform::windows_file_path(root);
+    require(bool(native_root), native_root ? "" : platform::error_message(native_root.error()));
+    std::filesystem::remove_all(*native_root);
 } catch (...) {
-    std::fprintf(stderr, "Examples repro failure evidence retained at %s\n", utf8(root.wstring()).c_str());
+    const auto root_text = platform::utf16_to_utf8(root.native());
+    std::fprintf(stderr, "Examples repro failure evidence retained at %s\n",
+                 root_text ? root_text->c_str() : "(evidence path is not valid UTF-16)");
     throw;
 }
 
@@ -1335,10 +1434,10 @@ void repro_gltf_defaults(const std::filesystem::path& executable, const std::fil
                    root / "editor.log");
     Driver d(discover_editor(editor, directory));
     d.settle();
-    const auto mesh = d.op("asset.import", {{"kind", "mesh"}, {"path", utf8((source / "scene.gltf").wstring())}})
-                          .at("result")
-                          .at("asset")
-                          .get<std::string>();
+    const auto source_text = platform::utf16_to_utf8((source / "scene.gltf").native());
+    require(bool(source_text), "Invalid UTF-16 glTF source path");
+    const auto mesh =
+        d.op("asset.import", {{"kind", "mesh"}, {"path", *source_text}}).at("result").at("asset").get<std::string>();
     d.ok("op.call", {{"id", "scene.add"}, {"args", {{"kind", "mesh"}, {"mesh", mesh}}}});
     const std::string folder = "Content/Meshes/scene/";
     const std::string material = folder + "Materials/paint.material";
@@ -1357,7 +1456,8 @@ void repro_gltf_defaults(const std::filesystem::path& executable, const std::fil
                 "glTF repro export did not start");
         const auto done = d.wait(id);
         require(done.at("status") == "ok", done.dump());
-        const std::filesystem::path bundle = wide(done.at("result").at("directory").get<std::string>());
+        const std::filesystem::path bundle =
+            utf8_to_utf16_validated(done.at("result").at("directory").get<std::string>());
         std::set<std::string> copied;
         for (const auto& file : read(bundle / "manifest.json").at("input_files"))
             copied.insert(file.at("path").get<std::string>());
@@ -1391,8 +1491,11 @@ void repro_gltf_defaults(const std::filesystem::path& executable, const std::fil
         const auto details = component_details();
         std::map<std::filesystem::path, std::string> hashes;
         for (const auto& file : std::filesystem::recursive_directory_iterator(project))
-            if (file.is_regular_file() && *file.path().lexically_relative(project).begin() != L"Cache")
-                hashes.emplace(file.path(), sha256_file(file.path()));
+            if (file.is_regular_file() && *file.path().lexically_relative(project).begin() != L"Cache") {
+                auto hash = sha256_file(file.path());
+                require(bool(hash), hash ? "" : hash.error());
+                hashes.emplace(file.path(), std::move(*hash));
+            }
         const auto id = unique_id();
         auto response = d.call("repro.export", Json::object(), id);
         if (response.at("status") == "pending")
@@ -1445,7 +1548,9 @@ void repro_gltf_defaults(const std::filesystem::path& executable, const std::fil
     // The export froze the unsaved mesh; undoing it leaves the source scene clean so the repro may replace it.
     d.op("edit.undo");
     require(!d.inspect().at("dirty").get<bool>(), "Undoing the placed glTF mesh did not restore the saved scene");
-    d.ok("repro.open", {{"directory", utf8(bundle.wstring())}});
+    const auto bundle_text = platform::utf16_to_utf8(bundle.native());
+    require(bool(bundle_text), "Invalid UTF-16 glTF repro path");
+    d.ok("repro.open", {{"directory", *bundle_text}});
     exported();
     auto reopened_defaults = Json::object();
     for (const auto& binding : component_details()[0].at("object").at("mesh").at("default_materials"))
@@ -1454,6 +1559,7 @@ void repro_gltf_defaults(const std::filesystem::path& executable, const std::fil
     // Live material drafts are intentionally frozen, unlike external dependency drift.
     const auto draft_source = bundle / "Project" / trim;
     const auto saved_material = sha256_file(draft_source);
+    require(bool(saved_material), saved_material ? "" : saved_material.error());
     const auto trim_key = defaults.at("trim").get<std::string>();
     const auto handle = d.ok("material.inspect", {{"asset", trim_key}}).at("handle");
     d.ok("material.set_entry",
@@ -1461,18 +1567,22 @@ void repro_gltf_defaults(const std::filesystem::path& executable, const std::fil
           {"entry", {{"path", "roughness"}, {"type", "float"}, {"enabled", true}, {"value", 0.625}}}});
     const auto draft_bundle = exported();
     require(material_entry(read(draft_bundle / "Project" / trim), "roughness").at("value") == 0.625 &&
-                sha256_file(draft_source) == saved_material &&
+                sha256_file(draft_source) == *saved_material &&
                 d.ok("material.inspect", {{"asset", trim_key}}).at("dirty") == true,
             "Repro lost or saved the source material draft");
     d.op("edit.undo", Json::object(), {{"region", "parameters"}, {"asset", trim_key}});
-    d.ok("repro.open", {{"directory", utf8(draft_bundle.wstring())}});
+    const auto draft_text = platform::utf16_to_utf8(draft_bundle.native());
+    require(bool(draft_text), "Invalid UTF-16 material draft repro path");
+    d.ok("repro.open", {{"directory", *draft_text}});
     const auto reopened_material = d.ok("material.inspect", {{"asset", trim_key}});
     require(std::ranges::any_of(reopened_material.at("declarations"),
                                 [](const Json& p) { return p.at("path") == "roughness" && p.at("value") == 0.625; }),
             "Repro did not load the frozen material draft");
     // A component keeps its material bindings while its mesh is missing. Only the scene names the
     // bound material then, and the repro still carries it.
-    d.op("project.open", {{"path", utf8(project.wstring())}});
+    const auto project_text = platform::utf16_to_utf8(project.native());
+    require(bool(project_text), "Invalid UTF-16 glTF project path");
+    d.op("project.open", {{"path", *project_text}});
     const auto bound = d.op("asset.new_material", {{"path", "Content/Materials/Bound.material"}}, {{"asset", ""}})
                            .at("result")
                            .at("asset")
@@ -1488,24 +1598,27 @@ void repro_gltf_defaults(const std::filesystem::path& executable, const std::fil
     // Missing defaults remain missing, rather than being rebound or preventing diagnostic export.
     const auto trim_bytes = read(project / trim).dump();
     std::filesystem::remove(project / trim);
-    d.op("project.open", {{"path", utf8(project.wstring())}});
+    d.op("project.open", {{"path", *project_text}});
     const auto missing_id = unique_id();
     require(d.call("repro.export", Json::object(), missing_id).at("status") == "pending",
             "Missing-default export did not start");
     const auto missing_done = d.wait(missing_id);
     require(missing_done.at("status") == "ok", missing_done.dump());
-    const std::filesystem::path missing_bundle = wide(missing_done.at("result").at("directory").get<std::string>());
+    const std::filesystem::path missing_bundle =
+        utf8_to_utf16_validated(missing_done.at("result").at("directory").get<std::string>());
     require(!std::filesystem::exists(missing_bundle / "Project" / trim) &&
                 read(missing_bundle / "Project" / (folder + "scene.gltf.asset.json")).at("materials") == defaults,
             "Missing-default export synthesized a material or rebound the slots");
     const auto before_missing_open = d.inspect();
-    error(d.call("repro.open", {{"directory", utf8(missing_bundle.wstring())}}), "operation_failed");
+    error(d.call("repro.open", {{"directory", missing_done.at("result").at("directory")}}), "operation_failed");
     require(d.inspect().at("entities") == before_missing_open.at("entities") &&
                 d.inspect().at("project") == before_missing_open.at("project"),
             "Strict missing-default reopen replaced the document");
     write(project / trim, trim_bytes);
-    std::filesystem::remove(atelier::platform::windows_file_path(project / (folder + "scene.gltf")));
-    d.op("project.open", {{"path", utf8(project.wstring())}});
+    const auto mesh_path = platform::windows_file_path(project / (folder + "scene.gltf"));
+    require(bool(mesh_path), mesh_path ? "" : platform::error_message(mesh_path.error()));
+    std::filesystem::remove(*mesh_path);
+    d.op("project.open", {{"path", *project_text}});
     const auto id = unique_id();
     require(d.call("repro.export", Json::object(), id).at("status") == "pending",
             "Missing-mesh repro export did not start");
@@ -1513,7 +1626,8 @@ void repro_gltf_defaults(const std::filesystem::path& executable, const std::fil
     require(done.at("status") == "ok", done.dump());
     std::set<std::string> copied;
     for (const auto& file :
-         read(std::filesystem::path(wide(done.at("result").at("directory").get<std::string>())) / "manifest.json")
+         read(std::filesystem::path(utf8_to_utf16_validated(done.at("result").at("directory").get<std::string>())) /
+              "manifest.json")
              .at("input_files"))
         copied.insert(file.at("path").get<std::string>());
     require(copied.contains("Content/Materials/Bound.material") &&
@@ -1543,6 +1657,8 @@ int wmain(int argc, wchar_t** argv) {
                                     (std::filesystem::absolute(argv[1]).parent_path() / L"shader-cache").c_str());
         const auto root = std::filesystem::absolute(argv[2]) / unique_id();
         std::filesystem::create_directories(root);
+        const auto root_text = platform::utf16_to_utf8(root.native());
+        require(bool(root_text), "Invalid UTF-16 Control evidence path");
         if (argc == 4 && std::wstring_view(argv[3]) == L"--smoke-logs") {
             smoke_logs(argv[1], root);
             return 0;
@@ -1603,7 +1719,9 @@ int wmain(int argc, wchar_t** argv) {
             repro_engine_assets(d, root);
             repro_material_inputs(d, root / "MaterialInputs");
         }
-        const auto opened = d.ok("op.call", {{"id", "project.open"}, {"args", {{"path", utf8(project.wstring())}}}});
+        const auto project_text = platform::utf16_to_utf8(project.native());
+        require(bool(project_text), "Invalid UTF-16 Control project path");
+        const auto opened = d.ok("op.call", {{"id", "project.open"}, {"args", {{"path", *project_text}}}});
         require(opened.at("status") == "finished" && opened.at("selection").empty(),
                 "Project open did not complete its replacement before returning the operator report");
         d.settle();
@@ -1625,6 +1743,7 @@ int wmain(int argc, wchar_t** argv) {
         const auto original_scene = read(project / "Content/Scenes/Main.scene");
         const auto original_scene_hash =
             descriptions ? sha256_file(project / "Content/Scenes/Main.scene") : std::string{};
+        require(bool(original_scene_hash), original_scene_hash ? "" : original_scene_hash.error());
         Json request{{"op", "op.call"},
                      {"args", {{"id", "scene.add"}, {"args", {{"kind", "mesh"}}}}},
                      {"state_token", d.token},
@@ -1686,11 +1805,13 @@ int wmain(int argc, wchar_t** argv) {
                     "Object inspection did not report a placeholder's saved data.");
             d.client.reset();
             editor.close();
-            require(discover(directory).empty(), "Description editor descriptor remained live after close.");
+            const auto remaining = discover(directory);
+            require(bool(remaining), remaining ? "" : remaining.error().what());
+            require(remaining->empty(), "Description editor descriptor remained live after close.");
             require(read(project / "Content/Scenes/Main.scene") == original_scene &&
-                        sha256_file(project / "Content/Scenes/Main.scene") == original_scene_hash,
+                        sha256_file(project / "Content/Scenes/Main.scene") == *original_scene_hash,
                     "Description inspection changed the original saved scene.");
-            std::cout << "Editor Control descriptions E2E: PASS | " << utf8(root.wstring()) << '\n';
+            std::cout << "Editor Control descriptions E2E: PASS | " << *root_text << '\n';
             return 0;
         }
         auto entity = current.at("entities")[0].at("handle").get<std::string>();
@@ -1740,9 +1861,10 @@ int wmain(int argc, wchar_t** argv) {
         require(d.call("repro.export", Json::object(), export_id).at("status") == "pending", "Export did not start");
         auto exported = d.wait(export_id);
         require(exported.at("status") == "ok", exported.dump());
-        const std::filesystem::path repro = wide(exported.at("result").at("directory").get<std::string>());
+        const auto repro_text = exported.at("result").at("directory").get<std::string>();
+        const std::filesystem::path repro = utf8_to_utf16_validated(repro_text);
         const auto manifest = read(repro / "manifest.json");
-        const auto frozen = read(repro / "Project" / wide(manifest.at("scene").get<std::string>()));
+        const auto frozen = read(repro / "Project" / utf8_to_utf16_validated(manifest.at("scene").get<std::string>()));
         require(!std::filesystem::exists(repro / "Project/Source/NeverPublished.source") &&
                     std::filesystem::exists(repro / "unpublished/Source/NeverPublished.source") &&
                     std::filesystem::exists(repro / "unpublished/Source/Published.ui.source") &&
@@ -1789,12 +1911,15 @@ int wmain(int argc, wchar_t** argv) {
                 "Accepted frame ordinals are incorrect");
         const auto& sample = samples[0];
         require(sample.at("effective_view").at("shading") == "scene_lit", "Scene Lit settings changed");
-        const std::filesystem::path output = wide(compared.at("result").at("directory").get<std::string>());
+        const std::filesystem::path output =
+            utf8_to_utf16_validated(compared.at("result").at("directory").get<std::string>());
         const auto width = sample.at("extent")[0].get<std::uint64_t>();
         const auto height = sample.at("extent")[1].get<std::uint64_t>();
-        require(std::filesystem::file_size(output / wide(sample.at("depth").get<std::string>())) == width * height * 4,
+        require(std::filesystem::file_size(output / utf8_to_utf16_validated(sample.at("depth").get<std::string>())) ==
+                    width * height * 4,
                 "Depth readback size is incorrect");
-        require(std::filesystem::file_size(output / wide(sample.at("color").get<std::string>())) > 100,
+        require(std::filesystem::file_size(output / utf8_to_utf16_validated(sample.at("color").get<std::string>())) >
+                    100,
                 "PNG readback is missing");
         current = d.inspect();
         require(current.at("view") == base_view && current.at("undo") == dirty_undo,
@@ -1835,7 +1960,9 @@ int wmain(int argc, wchar_t** argv) {
         require(pending.at("status") == "pending", pending.dump());
         d.client.reset();
         std::this_thread::sleep_for(80ms);
-        d.client = std::make_unique<Client>(descriptor);
+        auto reconnected = Client::create(descriptor);
+        require(bool(reconnected), reconnected ? "" : reconnected.error().what());
+        d.client = std::make_unique<Client>(std::move(*reconnected));
         error(d.wait(disconnected_id), "cancelled");
         d.inspect();
         d.op("scene.save");
@@ -1848,11 +1975,13 @@ int wmain(int argc, wchar_t** argv) {
         auto broken = manifest;
         for (auto& file : broken.at("files"))
             if (file.at("path") == "Project/Source/Published.source") {
-                file["sha256"] = sha256_file(repro / "Project/Source/Published.source");
+                const auto hash = sha256_file(repro / "Project/Source/Published.source");
+                require(bool(hash), hash ? "" : hash.error());
+                file["sha256"] = *hash;
                 file["bytes"] = std::filesystem::file_size(repro / "Project/Source/Published.source");
             }
         write(repro / "manifest.json", broken.dump());
-        error(d.call("repro.open", {{"directory", utf8(repro.wstring())}}), "operation_failed");
+        error(d.call("repro.open", {{"directory", repro_text}}), "operation_failed");
         current = d.inspect();
         require(current.at("project") == before_failed_open.at("project") &&
                     current.at("entities") == before_failed_open.at("entities") &&
@@ -1860,7 +1989,7 @@ int wmain(int argc, wchar_t** argv) {
                 "Failed repro open replaced the current document");
         write(repro / "Project/Source/Published.source", published_code);
         write(repro / "manifest.json", manifest.dump());
-        d.ok("repro.open", {{"directory", utf8(repro.wstring())}});
+        d.ok("repro.open", {{"directory", repro_text}});
         current = d.inspect();
         require(current.at("entities").size() == 2 && current.at("entities")[0].at("name") == "Control cube" &&
                     !current.at("dirty").get<bool>(),
@@ -1884,21 +2013,25 @@ int wmain(int argc, wchar_t** argv) {
         }
         Process cli_capture(std::filesystem::path(argv[1]).parent_path() / "atelier_control.exe",
                             L"--directory " + quote(directory) + L" --instance " +
-                                wide(descriptor.at("instance_id").get<std::string>()) + L" --request " +
-                                quote(root / "capture-request.json"),
+                                utf8_to_utf16_validated(descriptor.at("instance_id").get<std::string>()) +
+                                L" --request " + quote(root / "capture-request.json"),
                             root / "cli-capture.json");
         require(WaitForSingleObject(cli_capture.process, 30000) == WAIT_OBJECT_0, "CLI capture did not finish");
         const auto cli_result = read(root / "cli-capture.json");
         require(cli_result.at("status") == "ok" && cli_result.at("result").at("samples").size() == 1,
                 "CLI did not await its capture job");
         // Every editor step of the run, Control captures included, kept the timing hierarchy.
-        d.client = std::make_unique<Client>(descriptor);
+        auto observer = Client::create(descriptor);
+        require(bool(observer), observer ? "" : observer.error().what());
+        d.client = std::make_unique<Client>(std::move(*observer));
         const auto cpu = d.inspect().at("performance").at("cpu");
         require(cpu.at("structure_errors") == 0 && cpu.at("first_structure_error").is_null(),
                 "An editor step recorded a frame timing phase under the wrong parent: " + cpu.dump());
         editor.close();
-        require(discover(directory).empty(), "Closed editor descriptor remained live");
-        std::cout << "Editor Control E2E: PASS | " << utf8(root.wstring()) << '\n';
+        const auto live_instances = discover(directory);
+        require(bool(live_instances), live_instances ? "" : live_instances.error().what());
+        require(live_instances->empty(), "Closed editor descriptor remained live");
+        std::cout << "Editor Control E2E: PASS | " << *root_text << '\n';
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "Editor Control E2E: FAIL: " << error.what() << '\n';

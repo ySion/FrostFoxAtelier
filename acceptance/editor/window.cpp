@@ -1,4 +1,5 @@
 #include "application/application.hpp"
+#include "application/diagnostics.hpp"
 #include "application/editor_control.hpp"
 #include "assets/file.hpp"
 #include "assets/material_format.hpp"
@@ -8,6 +9,8 @@
 #include "renderer/raster_viewport.hpp"
 #include "renderer/timing.hpp"
 #include "ui/text.hpp"
+#include "platform/utf.hpp"
+#include "foundation/sha256.hpp"
 #include <wincodec.h>
 #include <wrl/client.h>
 #include <msctf.h>
@@ -153,9 +156,11 @@ struct EditorAcceptanceAccess {
     }
 
     static bool output_contains(const Application& app, std::wstring_view text) {
-        const auto utf8 = assets::utf8(text);
+        const auto utf8 = platform::utf16_to_utf8(text);
+        if (!utf8)
+            throw std::runtime_error("Invalid UTF-16 Output query fixture.");
         for (const auto& item : app.workspace_.output.records())
-            if (item.record.entry.message.find(utf8) != std::string::npos)
+            if (item.record.entry.message.find(*utf8) != std::string::npos)
                 return true;
         return false;
     }
@@ -565,10 +570,10 @@ LRESULT CALLBACK native_dialog_guard(int code, WPARAM window, LPARAM parameter) 
             const std::wstring_view title =
                 created.lpszName && !IS_INTRESOURCE(created.lpszName) ? created.lpszName : L"";
             // The hook runs inside a Win32 callback: an unconvertible title must not throw past it.
-            try {
-                std::fprintf(stderr, "Editor acceptance: FAIL: unexpected native dialog \"%s\"\n",
-                             atelier::assets::utf8(title).c_str());
-            } catch (...) {
+            const auto text = atelier::platform::utf16_to_utf8(title);
+            if (text) {
+                std::fprintf(stderr, "Editor acceptance: FAIL: unexpected native dialog \"%s\"\n", text->c_str());
+            } else {
                 std::fputs("Editor acceptance: FAIL: unexpected native dialog (title not printable)\n", stderr);
             }
             std::fflush(stderr);
@@ -664,19 +669,19 @@ struct ForegroundTrace {
             const auto& change = changes[index % changes.size()];
             if (change.sequence != index + 1)
                 continue;
-            result +=
-                "\nforeground_event sequence=" + std::to_string(change.sequence) +
-                "; event_ms32=" + std::to_string(change.event_ms) +
-                "; observed_uptime_ms=" + std::to_string(change.observed_ms) + "; hwnd=" +
-                (change.window ? std::to_string(reinterpret_cast<std::uintptr_t>(change.window))
-                               : "none (无前台窗口)") +
-                "; pid=" + std::to_string(change.process) + "; exe=" +
-                (change.window && !change.process_error
-                     ? atelier::assets::utf8(change.executable.data())
-                     : "unknown (Win32=" + std::to_string(change.process_error) + ")") +
-                "; class=" +
-                (change.window && !change.class_error ? atelier::assets::utf8(change.window_class.data())
-                                                      : "unknown (Win32=" + std::to_string(change.class_error) + ")");
+            result += "\nforeground_event sequence=" + std::to_string(change.sequence) +
+                      "; event_ms32=" + std::to_string(change.event_ms) +
+                      "; observed_uptime_ms=" + std::to_string(change.observed_ms) + "; hwnd=" +
+                      (change.window ? std::to_string(reinterpret_cast<std::uintptr_t>(change.window))
+                                     : "none (无前台窗口)") +
+                      "; pid=" + std::to_string(change.process) + "; exe=" +
+                      (change.window && !change.process_error
+                           ? atelier::application::diagnostic_text(std::wstring_view(change.executable.data()))
+                           : "unknown (Win32=" + std::to_string(change.process_error) + ")") +
+                      "; class=" +
+                      (change.window && !change.class_error
+                           ? atelier::application::diagnostic_text(std::wstring_view(change.window_class.data()))
+                           : "unknown (Win32=" + std::to_string(change.class_error) + ")");
         }
         return result;
     }
@@ -705,11 +710,11 @@ std::string input_failure_diagnostic(Application& app) {
         CloseHandle(process);
     } else
         process_error = GetLastError();
-    const auto executable = process_error
-                                ? std::string("unknown (Win32=") + std::to_string(process_error) + ")"
-                                : atelier::assets::utf8(std::filesystem::path(process_name).filename().wstring());
-    const auto window_class =
-        class_size ? atelier::assets::utf8(class_name) : "unknown (Win32=" + std::to_string(class_error) + ")";
+    const auto executable =
+        process_error ? std::string("unknown (Win32=") + std::to_string(process_error) + ")"
+                      : atelier::application::diagnostic_text(std::filesystem::path(process_name).filename().native());
+    const auto window_class = class_size ? atelier::application::diagnostic_text(std::wstring_view(class_name))
+                                         : "unknown (Win32=" + std::to_string(class_error) + ")";
     return "editor_pid=" + std::to_string(GetCurrentProcessId()) +
            "; play_running=" + std::to_string(Access::project_running(app)) +
            "; play_pid=" + std::to_string(Access::project_process_id(app)) + "; foreground=" +
@@ -775,7 +780,7 @@ void tick(Application& app, unsigned count = 2) {
         require(app.step(), "Editor closed during input acceptance.");
         ++steps;
         // Observe the existing result text once; another prepare() could adopt or upload the batch.
-        notice = atelier::assets::utf8(Access::render_notice(app));
+        notice = atelier::application::diagnostic_text(Access::render_notice(app));
         material_progress.reset();
         constexpr std::string_view prefix = "Compiling materials ";
         if (notice.starts_with(prefix)) {
@@ -1544,7 +1549,9 @@ int verify_editor_scene_lit(Application& app, const char* output_directory, cons
     struct ComScope {
         ~ComScope() { CoUninitialize(); }
     } com_scope;
-    const auto output = std::filesystem::absolute(atelier::assets::wide(output_directory));
+    const auto output_text = atelier::platform::utf8_to_utf16(output_directory);
+    require(bool(output_text), "Invalid UTF-8 evidence directory.");
+    const auto output = std::filesystem::absolute(*output_text);
     std::filesystem::create_directories(output);
     await_acceptance_activation(app, output, "Scene Lit");
     verify_scene_lit_window(app, output,
@@ -1573,7 +1580,9 @@ int capture_editor_snapshot(Application& app, const char* output_directory) {
     struct ComScope {
         ~ComScope() { CoUninitialize(); }
     } com_scope;
-    const auto output = std::filesystem::absolute(atelier::assets::wide(output_directory));
+    const auto output_text = atelier::platform::utf8_to_utf16(output_directory);
+    require(bool(output_text), "Invalid UTF-8 evidence directory.");
+    const auto output = std::filesystem::absolute(*output_text);
     std::filesystem::create_directories(output);
     const auto settle = [&] {
         for (int i = 0; i < 6; ++i)
@@ -1774,7 +1783,9 @@ int verify_editor_shortcuts(Application& app, const char* output_directory) {
         struct ComScope {
             ~ComScope() { CoUninitialize(); }
         } com_scope;
-        const auto output = std::filesystem::absolute(assets::wide(output_directory));
+        const auto output_text = platform::utf8_to_utf16(output_directory);
+        require(bool(output_text), "Invalid UTF-8 evidence directory.");
+        const auto output = std::filesystem::absolute(*output_text);
         std::filesystem::create_directories(output);
         tick(app);
         verify_viewport_splitter_drag(app);
@@ -1905,13 +1916,13 @@ int verify_editor_shortcuts(Application& app, const char* output_directory) {
         const bool reopen_requested = Access::menu_open(app);
         tick(app);
         if (app.menu_window() != popup_hwnd)
-            throw std::runtime_error("Delete menu did not reuse its native window: old=" +
-                                     std::to_string(reinterpret_cast<std::uintptr_t>(popup_hwnd)) +
-                                     ", new=" + std::to_string(reinterpret_cast<std::uintptr_t>(app.menu_window())) +
-                                     ", requested=" + std::to_string(reopen_requested) +
-                                     ", menu=" + std::to_string(Access::menu_open(app)) +
-                                     ", status=" + assets::utf8(app.status_text()) + "; before=[" + before_reopen +
-                                     "]; after=[" + Access::menu_input_diagnostic(app) + "].");
+            throw std::runtime_error(
+                "Delete menu did not reuse its native window: old=" +
+                std::to_string(reinterpret_cast<std::uintptr_t>(popup_hwnd)) +
+                ", new=" + std::to_string(reinterpret_cast<std::uintptr_t>(app.menu_window())) +
+                ", requested=" + std::to_string(reopen_requested) + ", menu=" + std::to_string(Access::menu_open(app)) +
+                ", status=" + atelier::application::diagnostic_text(app.status_text()) + "; before=[" + before_reopen +
+                "]; after=[" + Access::menu_input_diagnostic(app) + "].");
         Access::input(app, {.kind = ui::EventKind::pointer_down, .x = x, .y = y});
         Access::input(app, {.kind = ui::EventKind::pointer_up, .x = x, .y = y});
         tick(app);
@@ -2020,7 +2031,9 @@ int verify_editor_edit_mode(Application& app, const char* output_directory) {
     struct ComScope {
         ~ComScope() { CoUninitialize(); }
     } com_scope;
-    const auto output = std::filesystem::absolute(atelier::assets::wide(output_directory));
+    const auto output_text = atelier::platform::utf8_to_utf16(output_directory);
+    require(bool(output_text), "Invalid UTF-8 evidence directory.");
+    const auto output = std::filesystem::absolute(*output_text);
     std::filesystem::create_directories(output);
     await_acceptance_activation(app, output, "edit mode");
     tick(app);
@@ -2043,7 +2056,9 @@ int verify_editor_output(Application& app, const char* output_directory) {
     struct ComScope {
         ~ComScope() { CoUninitialize(); }
     } com_scope;
-    const auto output = std::filesystem::absolute(atelier::assets::wide(output_directory));
+    const auto output_text = atelier::platform::utf8_to_utf16(output_directory);
+    require(bool(output_text), "Invalid UTF-8 evidence directory.");
+    const auto output = std::filesystem::absolute(*output_text);
     std::filesystem::create_directories(output);
     await_acceptance_activation(app, output, "Output");
     tick(app);
@@ -2063,7 +2078,9 @@ int verify_editor_output(Application& app, const char* output_directory) {
 int verify_editor_source(Application& app, const char* output_directory) {
     using Access = atelier::application::EditorAcceptanceAccess;
     namespace source = atelier::editor::source_control;
-    const auto output = std::filesystem::absolute(atelier::assets::wide(output_directory));
+    const auto output_text = atelier::platform::utf8_to_utf16(output_directory);
+    require(bool(output_text), "Invalid UTF-8 evidence directory.");
+    const auto output = std::filesystem::absolute(*output_text);
     std::filesystem::create_directories(output);
     const auto path = output / "editor.ui.source";
     Access::ui_source(app, path);
@@ -2164,7 +2181,9 @@ int verify_editor_project(Application& app, const char* output_directory, const 
     struct ComScope {
         ~ComScope() { CoUninitialize(); }
     } com_scope;
-    const auto base = std::filesystem::weakly_canonical(atelier::assets::wide(output_directory));
+    const auto output_text = atelier::platform::utf8_to_utf16(output_directory);
+    require(bool(output_text), "Invalid UTF-8 evidence directory.");
+    const auto base = std::filesystem::weakly_canonical(*output_text);
     const auto output =
         base / (L"run-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
     if (source_project) {
@@ -2190,15 +2209,17 @@ int verify_editor_project(Application& app, const char* output_directory, const 
     atelier::application::EditorAcceptanceAccess::mark_saved(app);
     SendMessageW(app.window(), WM_CLOSE, 0, 0);
     require(!app.step(), "Project acceptance did not close the editor.");
+    const auto source_text = atelier::platform::utf16_to_utf8(source_project ? source_project : L"new fixture");
+    const auto evidence_text = atelier::platform::utf16_to_utf8(output.native());
+    require(source_text && evidence_text, "Invalid UTF-16 project evidence path.");
     std::ofstream report(output / "acceptance.txt");
     report
         << "Editor project acceptance: PASS\nBuild: " << atelier::build_info::revision
-        << "\nConfiguration: " << atelier::build_info::configuration
-        << "\nSource project: " << (source_project ? atelier::assets::utf8(source_project) : "new fixture")
+        << "\nConfiguration: " << atelier::build_info::configuration << "\nSource project: " << *source_text
         << "\nSource project is read only; Config/Content/Source copied without links or Cache.\n"
         << "Project commands, About identity/current root, Entity creation, active-field save, retired asset selection/menu, OBJ import/create, Scene Tree selection, position edit/undo/redo, save/reopen, failed open, refresh failure after save, movable project and disposable Cache.\n"
         << "Native UI authoring: real file save/recompile/present, compile-error retention/recovery, repeated tree rows, foldout state and active text token retained.\n";
-    std::printf("Editor project acceptance: PASS; evidence: %s\n", atelier::assets::utf8(output.wstring()).c_str());
+    std::printf("Editor project acceptance: PASS; evidence: %s\n", evidence_text->c_str());
     return 0;
 }
 

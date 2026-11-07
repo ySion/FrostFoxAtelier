@@ -6,6 +6,7 @@
 #include "editor/error.hpp"
 #include "assets/file.hpp"
 #include "control/control.hpp"
+#include "platform/utf.hpp"
 #include "logging/native.hpp"
 #include "atelier/build_info.hpp"
 #include <cstdio>
@@ -45,7 +46,7 @@ int verify_editor_scene_lit(atelier::application::Application&, const char* outp
 void guard_acceptance_native_dialogs();
 
 namespace {
-int host_main(int argc, wchar_t** argv) {
+atelier::Result<int> host_main(int argc, wchar_t** argv) {
     atelier::application::install_frame_timing();
     if (argc == 2 && std::wstring_view(argv[1]) == L"--version") {
         std::printf("FrostFox Atelier | %s | %s\n", atelier::build_info::revision, atelier::build_info::configuration);
@@ -53,7 +54,10 @@ int host_main(int argc, wchar_t** argv) {
     }
     if (argc >= 3 && std::wstring_view(argv[1]) == L"--run-project")
         return atelier::application::run_project_command({argv + 2, static_cast<std::size_t>(argc - 2)});
-    auto control_directory = atelier::control::default_directory();
+    auto storage = atelier::control::default_directory();
+    if (!storage)
+        return std::unexpected(atelier::Error{atelier::ErrorCode::invalid_storage, storage.error().what()});
+    auto& control_directory = *storage;
     bool no_control{};
     bool no_activate{};
     bool gpu_validation{};
@@ -173,35 +177,45 @@ int host_main(int argc, wchar_t** argv) {
         if (!view)
             throw std::runtime_error(view.error().message);
     }
+    std::string output_directory;
+    if (render_performance_output || harness) {
+        auto converted = atelier::platform::utf16_to_utf8(
+            render_performance_output ? render_performance_output->native() : std::wstring_view(argv[2]));
+        if (!converted)
+            return std::unexpected(atelier::Error{atelier::ErrorCode::invalid_storage, "Invalid UTF-16 text"});
+        output_directory = std::move(*converted);
+    }
     if (render_performance_output)
-        return profile_editor_render_performance(app,
-                                                 atelier::assets::utf8(render_performance_output->wstring()).c_str());
+        return profile_editor_render_performance(app, output_directory.c_str());
     if (source)
-        return verify_editor_source(app, atelier::assets::utf8(argv[2]).c_str());
+        return verify_editor_source(app, output_directory.c_str());
     if (edit)
-        return verify_editor_edit_mode(app, atelier::assets::utf8(argv[2]).c_str());
+        return verify_editor_edit_mode(app, output_directory.c_str());
     if (shortcuts)
-        return verify_editor_shortcuts(app, atelier::assets::utf8(argv[2]).c_str());
+        return verify_editor_shortcuts(app, output_directory.c_str());
     if (surfaces)
-        return verify_editor_surfaces(app, atelier::assets::utf8(argv[2]).c_str());
+        return verify_editor_surfaces(app, output_directory.c_str());
     if (tooltips)
-        return verify_editor_tooltips(app, atelier::assets::utf8(argv[2]).c_str());
+        return verify_editor_tooltips(app, output_directory.c_str());
     if (dialogs)
-        return verify_editor_dialogs(app, atelier::assets::utf8(argv[2]).c_str());
+        return verify_editor_dialogs(app, output_directory.c_str());
     if (snapshot)
-        return capture_editor_snapshot(app, atelier::assets::utf8(argv[2]).c_str());
+        return capture_editor_snapshot(app, output_directory.c_str());
     if (acceptance)
-        return verify_editor_window(app, atelier::assets::utf8(argv[2]).c_str());
+        return verify_editor_window(app, output_directory.c_str());
     if (output)
-        return verify_editor_output(app, atelier::assets::utf8(argv[2]).c_str());
+        return verify_editor_output(app, output_directory.c_str());
     if (ime)
-        return verify_editor_ime(app, atelier::assets::utf8(argv[2]).c_str());
+        return verify_editor_ime(app, output_directory.c_str());
     if (project_acceptance)
-        return verify_editor_project(app, atelier::assets::utf8(argv[2]).c_str(), argc == 4 ? argv[3] : nullptr);
+        return verify_editor_project(app, output_directory.c_str(), argc == 4 ? argv[3] : nullptr);
     if (scene_lit)
-        return verify_editor_scene_lit(app, atelier::assets::utf8(argv[2]).c_str(), argc == 4 ? argv[3] : nullptr);
-    if (!no_control)
-        app.enable_control(control_directory);
+        return verify_editor_scene_lit(app, output_directory.c_str(), argc == 4 ? argv[3] : nullptr);
+    if (!no_control) {
+        const auto enabled = app.enable_control(control_directory);
+        if (!enabled)
+            return std::unexpected(enabled.error());
+    }
     while (app.step()) {
     }
     return 0;
@@ -225,8 +239,14 @@ int wmain(int argc, wchar_t** argv) {
                     throw std::runtime_error("Missing logging option value.");
                 if (option == L"--log-directory")
                     options.directory = argv[i];
-                else
-                    options.parent_run_id = atelier::assets::utf8(argv[i]);
+                else {
+                    auto converted = atelier::platform::utf16_to_utf8(argv[i]);
+                    if (!converted) {
+                        std::fputs("Host failure: Invalid UTF-16 text\n", stderr);
+                        return 1;
+                    }
+                    options.parent_run_id = std::move(*converted);
+                }
             } else
                 arguments.push_back(argv[i]);
         }
@@ -243,11 +263,21 @@ int wmain(int argc, wchar_t** argv) {
         static_cast<void>(ATELIER_LOG(log::Severity::info, "application", "application.started",
                                       "FrostFox Atelier | {} | {}", atelier::build_info::revision,
                                       atelier::build_info::configuration));
-        result = host_main(static_cast<int>(arguments.size()), arguments.data());
+        const auto hosted = host_main(static_cast<int>(arguments.size()), arguments.data());
+        if (hosted)
+            result = *hosted;
+        else {
+            auto entry = atelier::application::error_diagnostic(hosted.error(), "application.failed", {});
+            if (entry)
+                entry->severity = log::Severity::critical;
+            if (!entry || log::submit(std::move(*entry)).status != log::SubmitStatus::accepted)
+                std::fprintf(stderr, "Host failure: %s\n", hosted.error().message.c_str());
+        }
     } catch (const atelier::editor::detail::Failure& error) {
         auto entry = atelier::application::error_diagnostic(error.error, "application.failed", {});
-        entry.severity = log::Severity::critical;
-        if (log::submit(std::move(entry)).status != log::SubmitStatus::accepted)
+        if (entry)
+            entry->severity = log::Severity::critical;
+        if (!entry || log::submit(std::move(*entry)).status != log::SubmitStatus::accepted)
             std::fprintf(stderr, "Host failure: %s\n", error.what());
     } catch (const std::exception& error) {
         const auto submitted = ATELIER_LOG(log::Severity::critical, "application", "application.failed",

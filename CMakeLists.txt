@@ -68,8 +68,9 @@ target_include_directories(atelier_math INTERFACE modules/core/math/include)
 # Numerical consumers rely on separate multiply/add rounding (notably Volume/BVH bounds).
 target_compile_options(atelier_math INTERFACE /clang:-ffp-contract=off)
 
-add_library(atelier_platform INTERFACE)
-target_include_directories(atelier_platform INTERFACE modules/core/platform/include)
+add_library(atelier_platform STATIC modules/core/platform/src/utf.cpp modules/core/platform/src/error.cpp)
+target_include_directories(atelier_platform PUBLIC modules/core/platform/include)
+atelier_target(atelier_platform)
 
 add_library(atelier_execution_contracts INTERFACE)
 target_include_directories(atelier_execution_contracts INTERFACE modules/execution/contracts/include)

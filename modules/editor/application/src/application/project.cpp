@@ -5,6 +5,7 @@
 #include "foundation/result.hpp"
 #include "logging/native.hpp"
 #include "assets/file.hpp"
+#include "platform/utf.hpp"
 #include <cstdio>
 #include <shobjidl.h>
 #include <wrl/client.h>
@@ -136,8 +137,9 @@ Result<bool> Application::confirm_discard(bool sources, bool interactive) {
                 return false;
         }
     for (const auto& key : document_->dirty_materials()) {
-        const auto response = MessageBoxW(window(), (L"Save changes to material " + assets::wide(key) + L"?").c_str(),
-                                          L"Unsaved material", MB_YESNOCANCEL | MB_ICONQUESTION);
+        const auto response = MessageBoxW(
+            window(), (L"Save changes to material " + platform::utf8_to_utf16_validated(key) + L"?").c_str(),
+            L"Unsaved material", MB_YESNOCANCEL | MB_ICONQUESTION);
         if (response == IDCANCEL)
             return false;
         if (response == IDYES) {
@@ -158,7 +160,7 @@ Result<bool> Application::confirm_discard(bool sources, bool interactive) {
         return true;
     const auto saved = save_scene();
     if (!saved) {
-        workspace_.status = assets::wide(saved.error().message);
+        workspace_.status = diagnostic_text(saved.error().message);
         MessageBoxW(window(), workspace_.status.c_str(), L"Scene was not saved", MB_OK | MB_ICONERROR);
         return std::unexpected(saved.error());
     }
@@ -206,10 +208,16 @@ void Application::publish_document(std::unique_ptr<editor::Session> next, editor
     invalidate_surface();
     dropped_diagnostics_ = 0;
     document_root_ = project_ ? project_->root() : std::filesystem::path{};
+    auto root = platform::utf16_to_utf8(document_root_.generic_wstring());
+    auto scene = platform::utf16_to_utf8(scene_path_.generic_wstring());
+    if (!root || !scene) {
+        std::fputs("Cannot log document adoption: invalid UTF-16 path; the adopted document is unchanged.\n", stderr);
+        return;
+    }
     const std::array fields{logging::Field{"previous_document", previous_document},
                             logging::Field{"document", document_->presentation().identity()},
-                            logging::Field{"project_root", assets::utf8(document_root_.generic_wstring())},
-                            logging::Field{"scene", assets::utf8(scene_path_.generic_wstring())}};
+                            logging::Field{"project_root", std::move(*root)},
+                            logging::Field{"scene", std::move(*scene)}};
     static_cast<void>(ATELIER_LOG_WITH(logging::Severity::info, "application", "document.adopted",
                                        logging::native::Context{fields}, "Editor document adopted"));
 }
@@ -283,7 +291,8 @@ Result<void> Application::load_project(const std::filesystem::path& folder, bool
     if (candidate.error) {
         workspace_.dock.select(editor::source_control::tab);
         if (candidate.build && candidate.build->sources && !candidate.build->sources->files.empty()) {
-            auto source_path = project_->resolve(assets::wide(candidate.build->sources->files.front().path));
+            auto name = platform::utf8_to_utf16(candidate.build->sources->files.front().path);
+            auto source_path = name ? project_->resolve(*name) : failed("Invalid UTF-8 text.");
             if (source_path)
                 static_cast<void>(open_source(*source_path));
         }
@@ -349,8 +358,8 @@ Result<void> Application::save_scene(const std::filesystem::path& relative) {
     const auto refreshed = project_->refresh();
     if (!refreshed)
         report_error(refreshed.error(), "editor.asset_refresh_failed");
-    workspace_.status =
-        refreshed ? L"Scene saved" : L"Scene saved; asset refresh failed: " + assets::wide(refreshed.error().message);
+    workspace_.status = refreshed ? L"Scene saved"
+                                  : L"Scene saved; asset refresh failed: " + diagnostic_text(refreshed.error().message);
     auto pending = document_->issues();
     const auto kept = pending.size();
     std::erase_if(pending, [](const auto& item) { return item.kind != world::DiagnosticKind::reference_dropped; });
@@ -386,7 +395,7 @@ Result<std::string> Application::import_asset(editor::ImportKind kind, const std
     }
     ATELIER_TRY_BIND(imported, project_->import_mesh(path));
     for (const auto& note : project_->assets().mesh_notes(*imported))
-        notice("asset.mesh_import_note", L"Import Mesh: " + assets::wide(note));
+        notice("asset.mesh_import_note", L"Import Mesh: " + diagnostic_text(note));
     workspace_.assets.reset(true);
     workspace_.assets.navigate(L"Content/Meshes");
     return imported;
@@ -424,14 +433,19 @@ Result<void> Application::save_source(editor::SourceEditor::File& file, bool int
                 const auto* author = std::get_if<assets::MaterialSourceAsset>(&asset.author);
                 if (!author || author->source_path.starts_with("builtin/"))
                     continue;
-                const auto path = project_->resolve(assets::wide(author->source_path));
+                const auto path = project_->resolve(platform::utf8_to_utf16_validated(author->source_path));
                 if (!path || _wcsicmp(path->lexically_normal().c_str(), file.path.lexically_normal().c_str()) != 0)
                     continue;
                 // The saved editor buffer is authoritative; another disk write
                 // must not change the publication or the subsequent Live payload.
-                auto text = assets::utf8(file.document->text());
-                source::SourceFile exact{author->source_path, source::content_hash(text), std::move(text),
-                                         assets::utf8(file.path.generic_wstring())};
+                auto text = platform::utf16_to_utf8(file.document->text());
+                if (!text)
+                    return failed("Invalid UTF-16 text.");
+                auto disk_path = platform::utf16_to_utf8(file.path.generic_wstring());
+                if (!disk_path)
+                    return failed("Invalid UTF-16 text.");
+                source::SourceFile exact{author->source_path, source::content_hash(*text), std::move(*text),
+                                         std::move(*disk_path)};
                 std::vector<editor::MissingResource> missing;
                 ATELIER_TRY_BIND(published,
                                  document_->publish_material(project_->assets(), asset, std::move(exact), &missing));
@@ -459,7 +473,7 @@ Result<bool> Application::confirm_source(editor::SourceEditor::File& file, bool 
         return true;
     const auto saved = save_source(file);
     if (!saved) {
-        workspace_.status = assets::wide(saved.error().message);
+        workspace_.status = diagnostic_text(saved.error().message);
         MessageBoxW(window(), workspace_.status.c_str(), L"Source was not saved", MB_OK | MB_ICONERROR);
         return std::unexpected(saved.error());
     }

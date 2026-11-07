@@ -1,5 +1,7 @@
 #include "control/control.hpp"
 #include "foundation/sha256.hpp"
+#include "platform/error.hpp"
+#include "platform/utf.hpp"
 #include "platform/windows_path.hpp"
 #include <Windows.h>
 #include <objbase.h>
@@ -157,37 +159,11 @@ void send(HANDLE pipe, const Json& value, HANDLE stop, DWORD timeout) {
 }
 }
 
-std::string utf8(std::wstring_view text) {
-    if (text.empty())
-        return {};
-    const auto count = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()),
-                                           nullptr, 0, nullptr, nullptr);
-    if (!count)
-        throw Failure("invalid_request", "Invalid UTF-16 text");
-    std::string result(static_cast<std::size_t>(count), '\0');
-    WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()), result.data(), count,
-                        nullptr, nullptr);
-    return result;
-}
-
-std::wstring wide(std::string_view text) {
-    if (text.empty())
-        return {};
-    const auto count =
-        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()), nullptr, 0);
-    if (!count)
-        throw Failure("invalid_request", "Invalid UTF-8 text");
-    std::wstring result(static_cast<std::size_t>(count), L'\0');
-    MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()), result.data(),
-                        count);
-    return result;
-}
-
-std::filesystem::path default_directory() {
+std::expected<std::filesystem::path, Failure> default_directory() {
     std::wstring value(32768, L'\0');
     const auto count = GetEnvironmentVariableW(L"LOCALAPPDATA", value.data(), static_cast<DWORD>(value.size()));
     if (!count || count >= value.size())
-        throw Failure("storage_error", "LOCALAPPDATA is unavailable");
+        return std::unexpected(Failure("storage_error", "LOCALAPPDATA is unavailable"));
     value.resize(count);
     return std::filesystem::path(value) / L"FrostFoxAtelier/Control";
 }
@@ -197,18 +173,6 @@ std::string unique_id() {
     if (FAILED(CoCreateGuid(&value)))
         throw Failure("storage_error", "Cannot allocate control identity");
     return hex({reinterpret_cast<const unsigned char*>(&value), sizeof(value)});
-}
-
-std::string sha256(std::span<const std::byte> bytes) try {
-    return foundation::sha256(bytes);
-} catch (const std::exception& error) {
-    throw Failure("storage_error", error.what());
-}
-
-std::string sha256_file(const std::filesystem::path& path) try {
-    return foundation::sha256_file(path);
-} catch (const std::exception& error) {
-    throw Failure("storage_error", error.what());
 }
 
 void fields(const Json& value, std::initializer_list<std::string_view> allowed) {
@@ -278,38 +242,50 @@ struct Server::Impl {
 
     Handle ready{CreateEventW(nullptr, TRUE, FALSE, nullptr)};
 
-    explicit Impl(std::filesystem::path directory, Json build)
-        : root(std::filesystem::absolute(directory).lexically_normal()) {
+    std::expected<void, Failure> open(const std::filesystem::path& directory, Json build) {
+        std::error_code error;
+        root = std::filesystem::absolute(directory, error).lexically_normal();
+        if (error)
+            return std::unexpected(Failure("storage_error", platform::error_message(error)));
         check(stop.value && ready.value, "Create control lifecycle events");
         const auto instance = unique_id();
-        pipe_name = L"\\\\.\\pipe\\FrostFoxAtelier.Control." + wide(instance);
+        const auto pipe_text = "\\\\.\\pipe\\FrostFoxAtelier.Control." + instance;
+        pipe_name = platform::utf8_to_utf16_validated(pipe_text);
         std::wstring executable(32768, L'\0');
         const auto count = GetModuleFileNameW(nullptr, executable.data(), static_cast<DWORD>(executable.size()));
         check(count && count < executable.size(), "Read executable path");
         executable.resize(count);
-        identity = {{"protocol", protocol_version},   {"instance_id", instance},
-                    {"pid", GetCurrentProcessId()},   {"started", started(GetCurrentProcess())},
-                    {"executable", utf8(executable)}, {"executable_sha256", sha256_file(executable)},
-                    {"pipe", utf8(pipe_name)},        {"build", std::move(build)}};
-        std::filesystem::create_directories(platform::windows_file_path(root / "instances"));
-        descriptor_path = platform::windows_file_path(root / "instances" / (instance + ".json"));
+        const auto executable_text = platform::utf16_to_utf8(executable);
+        if (!executable_text)
+            return std::unexpected(Failure("invalid_request", "Invalid UTF-16 text"));
+        const auto digest = foundation::sha256_file(executable);
+        if (!digest)
+            return std::unexpected(Failure("storage_error", digest.error()));
+        identity = {{"protocol", protocol_version},
+                    {"instance_id", instance},
+                    {"pid", GetCurrentProcessId()},
+                    {"started", started(GetCurrentProcess())},
+                    {"executable", *executable_text},
+                    {"executable_sha256", *digest},
+                    {"pipe", pipe_text},
+                    {"build", std::move(build)}};
+        auto native = platform::windows_file_path(root / "instances");
+        if (!native)
+            return std::unexpected(Failure("storage_error", platform::error_message(native.error())));
+        std::filesystem::create_directories(*native, error);
+        if (error)
+            return std::unexpected(Failure("storage_error", platform::error_message(error)));
+        descriptor_path = *native / (instance + ".json");
         worker = std::thread([this] { serve(); });
-        try {
-            WaitForSingleObject(ready.value, INFINITE);
-            if (!startup_error.empty())
-                throw Failure("transport_error", startup_error);
-            std::ofstream descriptor(descriptor_path, std::ios::binary | std::ios::trunc);
-            descriptor << identity.dump(2);
-            descriptor.close();
-            if (!descriptor)
-                throw Failure("storage_error", "Cannot publish editor instance");
-        } catch (...) {
-            SetEvent(stop.value);
-            worker.join();
-            std::error_code ignored;
-            std::filesystem::remove(descriptor_path, ignored);
-            throw;
-        }
+        WaitForSingleObject(ready.value, INFINITE);
+        if (!startup_error.empty())
+            throw Failure("transport_error", startup_error);
+        std::ofstream descriptor(descriptor_path, std::ios::binary | std::ios::trunc);
+        descriptor << identity.dump(2);
+        descriptor.close();
+        if (!descriptor)
+            return std::unexpected(Failure("storage_error", "Cannot publish editor instance"));
+        return {};
     }
 
     ~Impl() {
@@ -401,8 +377,17 @@ struct Server::Impl {
     }
 };
 
-Server::Server(const std::filesystem::path& directory, Json build)
-    : impl_(std::make_unique<Impl>(directory, std::move(build))) {}
+std::expected<Server, Failure> Server::create(const std::filesystem::path& directory, Json build) {
+    auto impl = std::make_unique<Impl>();
+    auto opened = impl->open(directory, std::move(build));
+    if (!opened)
+        return std::unexpected(std::move(opened.error()));
+    return Server(std::move(impl));
+}
+
+Server::Server(std::unique_ptr<Impl> impl) noexcept : impl_(std::move(impl)) {}
+
+Server::Server(Server&&) noexcept = default;
 
 Server::~Server() = default;
 
@@ -463,38 +448,51 @@ struct Client::Impl {
 
     DWORD timeout{};
 
-    Impl(Json descriptor, std::chrono::milliseconds wait)
-        : instance(std::move(descriptor)),
-          timeout(static_cast<DWORD>(std::clamp<std::int64_t>(wait.count(), 1, maximum_timeout_ms))) {
+    std::expected<void, Failure> open(Json descriptor, std::chrono::milliseconds wait) {
+        instance = std::move(descriptor);
+        timeout = static_cast<DWORD>(std::clamp<std::int64_t>(wait.count(), 1, maximum_timeout_ms));
         if (!live(instance))
             throw Failure("stale_instance", "Editor instance is no longer running");
-        const auto name = wide(instance.at("pipe").get<std::string>());
-        const auto expected =
-            L"\\\\.\\pipe\\FrostFoxAtelier.Control." + wide(instance.at("instance_id").get<std::string>());
-        if (name != expected)
+        const auto name = platform::utf8_to_utf16(instance.at("pipe").get<std::string>());
+        if (!name)
+            return std::unexpected(Failure("invalid_request", "Invalid UTF-8 text"));
+        const auto instance_id = platform::utf8_to_utf16(instance.at("instance_id").get<std::string>());
+        if (!instance_id)
+            return std::unexpected(Failure("invalid_request", "Invalid UTF-8 text"));
+        const auto expected = L"\\\\.\\pipe\\FrostFoxAtelier.Control." + *instance_id;
+        if (*name != expected)
             throw Failure("invalid_instance", "Invalid editor endpoint descriptor");
         const auto deadline =
             std::chrono::steady_clock::now() + std::chrono::milliseconds(std::min<DWORD>(timeout, 5000));
         do {
-            pipe.value = CreateFileW(name.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
+            pipe.value = CreateFileW(name->c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
                                      FILE_FLAG_OVERLAPPED, nullptr);
             if (pipe.value != INVALID_HANDLE_VALUE) {
                 ULONG pid{};
                 check(GetNamedPipeServerProcessId(pipe.value, &pid) != FALSE, "Read server process identity");
                 if (pid != instance.at("pid").get<DWORD>())
                     throw Failure("stale_instance", "Pipe belongs to another process");
-                return;
+                return {};
             }
             if (GetLastError() != ERROR_PIPE_BUSY && GetLastError() != ERROR_FILE_NOT_FOUND)
                 break;
-            WaitNamedPipeW(name.c_str(), 50);
+            WaitNamedPipeW(name->c_str(), 50);
         } while (std::chrono::steady_clock::now() < deadline);
         throw Failure("busy", "Editor control endpoint is busy or unavailable");
     }
 };
 
-Client::Client(const Json& instance, std::chrono::milliseconds timeout)
-    : impl_(std::make_unique<Impl>(instance, timeout)) {}
+std::expected<Client, Failure> Client::create(const Json& instance, std::chrono::milliseconds timeout) {
+    auto impl = std::make_unique<Impl>();
+    auto opened = impl->open(instance, timeout);
+    if (!opened)
+        return std::unexpected(std::move(opened.error()));
+    return Client(std::move(impl));
+}
+
+Client::Client(std::unique_ptr<Impl> impl) noexcept : impl_(std::move(impl)) {}
+
+Client::Client(Client&&) noexcept = default;
 
 Client::~Client() = default;
 
@@ -514,15 +512,28 @@ Json Client::call(Json request) {
     return response;
 }
 
-Json discover(const std::filesystem::path& directory) {
+std::expected<Json, Failure> discover(const std::filesystem::path& directory) {
     auto result = Json::array();
+    const auto native = platform::windows_file_path(directory / "instances");
+    if (!native)
+        return std::unexpected(Failure("invalid_request", platform::error_message(native.error())));
     std::error_code error;
-    const auto entries =
-        std::filesystem::directory_iterator(platform::windows_file_path(directory / "instances"), error);
+    auto entry = std::filesystem::directory_iterator(*native, error);
     if (error)
         return result;
-    for (const auto& item : entries) {
-        if (item.path().extension() != ".json" || !item.is_regular_file() || item.file_size() > 65536)
+    for (; entry != std::filesystem::directory_iterator{}; entry.increment(error)) {
+        const auto& item = *entry;
+        if (item.path().extension() != ".json")
+            continue;
+        const auto status = item.status(error);
+        if (error && !std::filesystem::status_known(status))
+            return std::unexpected(Failure("invalid_request", platform::error_message(error)));
+        if (!std::filesystem::is_regular_file(status))
+            continue;
+        const auto size = item.file_size(error);
+        if (error)
+            return std::unexpected(Failure("invalid_request", platform::error_message(error)));
+        if (size > 65536)
             continue;
         try {
             std::ifstream stream(item.path(), std::ios::binary);
@@ -532,6 +543,8 @@ Json discover(const std::filesystem::path& directory) {
         } catch (const std::exception&) { /* Stale or interrupted discovery records do not identify a live endpoint. */
         }
     }
+    if (error)
+        return std::unexpected(Failure("invalid_request", platform::error_message(error)));
     return result;
 }
 }

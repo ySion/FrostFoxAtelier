@@ -67,15 +67,16 @@ void validate_candidate_assets(const editor::Session&, const control::Json& mani
 
 // Inputs are owned snapshots/immutable resources. Cancellation is checked
 // between bounded file operations. manifest.json is the completion marker.
-control::Json export_repro(const std::filesystem::path&, Repro, const std::atomic_bool& cancel);
+std::expected<control::Json, control::Failure> export_repro(const std::filesystem::path&, Repro,
+                                                            const std::atomic_bool& cancel);
 
 // Validate the complete dependency set before publishing a replacement document.
-control::Json validate_repro(const std::filesystem::path&);
+std::expected<control::Json, control::Failure> validate_repro(const std::filesystem::path&);
 
-control::Json write_samples(const std::filesystem::path&, std::vector<Sample>, control::Json,
-                            const std::atomic_bool& cancel);
+std::expected<control::Json, control::Failure> write_samples(const std::filesystem::path&, std::vector<Sample>,
+                                                             control::Json, const std::atomic_bool& cancel);
 
 // No GPU readback. The worker receives only owned CPU observations and metadata.
-control::Json write_trace(const std::filesystem::path&, rhi::CommandTrace, control::Json,
-                          const std::atomic_bool& cancel);
+std::expected<control::Json, control::Failure> write_trace(const std::filesystem::path&, rhi::CommandTrace,
+                                                           control::Json, const std::atomic_bool& cancel);
 }

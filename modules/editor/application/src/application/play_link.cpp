@@ -4,6 +4,7 @@
 #include "assets/mesh_format.hpp"
 #include "editor/project_code.hpp"
 #include "editor/session.hpp"
+#include "platform/utf.hpp"
 #include <atomic>
 #include <condition_variable>
 #include <mutex>
@@ -190,7 +191,12 @@ void PlayLink::forward(const std::vector<editor::LiveChange>& ops) {
                 file = spill_ / (L"texture-" + std::to_wstring(next_texture_++) + L".rgba");
                 texture["width"] = op.texture->width();
                 texture["height"] = op.texture->height();
-                texture["file"] = assets::utf8(file.wstring());
+                auto path = platform::utf16_to_utf8(file.native());
+                if (!path) {
+                    fail("Cannot forward Play changes: Invalid UTF-16 text.");
+                    return;
+                }
+                texture["file"] = std::move(*path);
                 encoded = dump(texture);
                 text = encoded;
                 const auto pixels = op.texture->pixels();
@@ -202,11 +208,21 @@ void PlayLink::forward(const std::vector<editor::LiveChange>& ops) {
                     throw std::runtime_error("Mesh content requires a mesh change with the same asset key.");
                 // Encoding checks its full size against the shared remaining budget
                 // before allocating the payload. Never revisit project source files.
-                mesh_bytes = assets::mesh_format::encode(*op.mesh, available);
+                auto snapshot = assets::mesh_format::encode(*op.mesh, available);
+                if (!snapshot) {
+                    fail("Cannot forward Play changes: " + snapshot.error().message);
+                    return;
+                }
+                mesh_bytes = std::move(*snapshot);
                 content = mesh_bytes;
                 resource_bytes = content.size();
                 file = spill_ / (L"mesh-" + std::to_wstring(next_mesh_++) + L".mesh");
-                mesh["file"] = assets::utf8(file.wstring());
+                auto path = platform::utf16_to_utf8(file.native());
+                if (!path) {
+                    fail("Cannot forward Play changes: Invalid UTF-16 text.");
+                    return;
+                }
+                mesh["file"] = std::move(*path);
                 encoded = dump(mesh);
                 text = encoded;
             }
@@ -259,7 +275,12 @@ void PlayLink::send(std::string_view ops, Pending&& resources) {
             fail("Cannot write a large Play change batch: " + saved.error().message);
             return;
         }
-        message = dump(Json{{"type", "batch"}, {"seq", seq}, {"file", assets::utf8(file.wstring())}});
+        auto path = platform::utf16_to_utf8(file.native());
+        if (!path) {
+            fail("Cannot forward Play changes: Invalid UTF-16 text.");
+            return;
+        }
+        message = dump(Json{{"type", "batch"}, {"seq", seq}, {"file", std::move(*path)}});
     }
     // Transfer ownership before queuing: once sent, even a disconnect cannot retire
     // files the peer may still be reading. Only ACK or closing this run releases them.
@@ -399,7 +420,8 @@ void PlayEnd::service(editor::Session& document, editor::Project& project, const
                     ++expected_;
                     std::string batch;
                     if (message.contains("file")) {
-                        const std::filesystem::path file = assets::wide(message.at("file").get<std::string>());
+                        const std::filesystem::path file =
+                            platform::utf8_to_utf16_validated(message.at("file").get<std::string>());
                         auto read = assets::read_file(file);
                         if (read)
                             batch = std::move(*read);
@@ -420,9 +442,16 @@ void PlayEnd::service(editor::Session& document, editor::Project& project, const
                             for (const auto& item : *applied) {
                                 if (item.severity == world::Severity::error)
                                     diverged_ = true;
+                                auto description = editor::describe_diagnostic(document, item);
+                                if (!description) {
+                                    const auto invalid =
+                                        reject("Unreadable editor message: " + description.error().message, true);
+                                    reply = {{"type", "error"}, {"message", invalid.at("message")}};
+                                    break;
+                                }
                                 out.push_back({{"severity", world::name(item.severity)},
                                                {"kind", world::name(item.kind)},
-                                               {"message", assets::utf8(editor::describe_diagnostic(document, item))}});
+                                               {"message", std::move(*description)}});
                             }
                         }
                     }

@@ -90,7 +90,7 @@ void verify_link_protocol(const std::filesystem::path& root) {
         const auto spilled = peer.next();
         require(spilled.at("seq") == 2 && spilled.contains("file") && !spilled.contains("ops"),
                 "A batch over one message was not spilled to a file.");
-        const std::filesystem::path file = assets::wide(spilled.at("file").get<std::string>());
+        const std::filesystem::path file = platform::utf8_to_utf16_validated(spilled.at("file").get<std::string>());
         require(file.parent_path() == spill && take(assets::read_file(file)) == R"({"ops":[)" + five.text + "]}",
                 "The spilled file is not the batch Play applies.");
         // Past the 16 MiB batch limit the ops split at their boundary into consecutive batches.
@@ -98,7 +98,7 @@ void verify_link_protocol(const std::filesystem::path& root) {
         const auto first = peer.next();
         const auto second = peer.next();
         require(first.at("seq") == 3 && second.at("seq") == 4 && link.unacknowledged() == 3 &&
-                    take(assets::read_file(assets::wide(second.at("file").get<std::string>()))) ==
+                    take(assets::read_file(platform::utf8_to_utf16_validated(second.at("file").get<std::string>()))) ==
                         R"({"ops":[)" + nine.text + "]}",
                 "Oversized ops were not split into consecutive batches.");
         peer.send(ack(2));
@@ -328,10 +328,10 @@ void verify_texture_link(const std::filesystem::path& root) {
             mesh_file = file.path();
     require(!mesh_file.empty(), "Mixed resource publication omitted its mesh payload.");
     fs::resize_file(mesh_file, 12);
+    const auto mesh_path_text = platform::utf16_to_utf8(mesh_file.native());
+    require(bool(mesh_path_text), "Invalid UTF-16 mesh fixture path.");
     const auto diagnostics = take(play.apply_live(
-        LinkJson{{"ops",
-                  LinkJson::array({{{"op", "mesh"}, {"key", mesh_key}, {"file", assets::utf8(mesh_file.wstring())}}})}}
-            .dump(),
+        LinkJson{{"ops", LinkJson::array({{{"op", "mesh"}, {"key", mesh_key}, {"file", *mesh_path_text}}})}}.dump(),
         play_project));
     require(diagnostics.size() == 1 && diagnostics[0].severity == world::Severity::error &&
                 current_mesh() == received.mesh,
@@ -588,7 +588,9 @@ void verify_play_link(const std::filesystem::path& root, editor::Project& projec
     };
     const auto file = root / "Cache/Play/raw-batch.json";
     take(editor::write_file(file, LinkJson{{"ops", rename("Spilled")}}.dump()));
-    play.send({{"type", "batch"}, {"seq", 1}, {"file", assets::utf8(file.wstring())}});
+    const auto file_text = platform::utf16_to_utf8(file.native());
+    require(bool(file_text), "Invalid UTF-16 batch fixture path.");
+    play.send({{"type", "batch"}, {"seq", 1}, {"file", *file_text}});
     auto reply = play.next(&process);
     require(reply.at("type") == "ack" && reply.at("seq") == 1 && reply.at("diagnostics").empty() &&
                 std::filesystem::exists(file),

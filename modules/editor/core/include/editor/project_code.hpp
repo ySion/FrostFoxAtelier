@@ -91,6 +91,6 @@ struct ProjectDocument {
 ProjectDocument load_project_scene(Project&, std::string_view, LoadPolicy = LoadPolicy::tolerant,
                                    bool allow_failed_build = false, SessionRole = SessionRole::runtime);
 
-// One Project Output line for a World object diagnostic.
-std::wstring describe_diagnostic(const Session&, const world::Diagnostic&);
+// One UTF-8 Project Output line; invalid entity text or diagnostic bytes are rejected.
+Result<std::string> describe_diagnostic(const Session&, const world::Diagnostic&);
 }

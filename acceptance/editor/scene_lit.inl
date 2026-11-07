@@ -96,8 +96,10 @@ void verify_scene_lit_example(const std::filesystem::path& requested) {
     require(take(assets::read_file(source_scene)) == source_text &&
                 take(assets::read_file(source / "Config/Project.json")) == source_config,
             "Scene Lit example acceptance modified the source project.");
+    const auto source_text_path = platform::utf16_to_utf8(source.native());
+    require(bool(source_text_path), "Invalid UTF-16 Scene Lit fixture path.");
     std::ofstream(copy / "acceptance.txt")
-        << "Scene Lit example Project/Scene: PASS\nSource read only: " << assets::utf8(source.wstring())
+        << "Scene Lit example Project/Scene: PASS\nSource read only: " << *source_text_path
         << "\nTemporary saved Scene: Content/Scenes/Acceptance.scene\n10 meshes, 4 shadow lights, sky in the Environment; HDR/metal/roughness and edited material survive reopening.\n";
     std::puts("Scene Lit example Project/Scene acceptance: PASS (source read only, temporary save/reopen)");
 }

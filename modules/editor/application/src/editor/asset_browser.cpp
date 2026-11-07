@@ -1,7 +1,7 @@
 #include "editor/asset_browser.hpp"
 #include "ui_language/live_document.hpp"
-#include "assets/file.hpp"
 #include "assets/builtin_materials.hpp"
+#include "platform/utf.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cwctype>
@@ -117,7 +117,10 @@ ui::ControlKey AssetBrowser::key_for(const std::string& value) {
 ui::ControlKey AssetBrowser::directory_control(const std::filesystem::path& path) const {
     if (path.empty())
         return browser_control::project;
-    const auto name = "nav:" + assets::utf8(path.generic_wstring());
+    const auto text = platform::utf16_to_utf8(path.generic_wstring());
+    if (!text)
+        return 0; // No published Project directory has an invalid Unicode key.
+    const auto name = "nav:" + *text;
     const auto* key = keys_.find(StringView{name});
     return key ? *key : 0;
 }
@@ -176,7 +179,7 @@ void AssetBrowser::update_directories(const Project* project) {
         for (const auto& entry : project->entries())
             if (entry.kind == assets::AssetKind::folder) {
                 directories_.push_back({entry.key, entry.path, entry.path.filename().wstring(), entry.kind, 0});
-                targets_.push_back({key_for("nav:" + assets::utf8(entry.path.generic_wstring())), directories_.back()});
+                targets_.push_back({key_for("nav:" + entry.key), directories_.back()});
                 // A directory first appears expanded when it is or holds the current directory.
                 if (!engine_ && !listed(previous, entry.path))
                     if (const auto relative = directory_.lexically_relative(entry.path);

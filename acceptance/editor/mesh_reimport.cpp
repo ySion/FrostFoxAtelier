@@ -1,6 +1,7 @@
 #include "memory/fatal.hpp"
 #include "editor/project.hpp"
 #include "assets/material_format.hpp"
+#include "platform/utf.hpp"
 #include <Windows.h>
 #include <chrono>
 #include <cstdio>
@@ -70,7 +71,7 @@ void fixture(const fs::path& source, std::string_view filename, int width,
             mtl += "map_d unrelated.bmp\n";
         geometry += "usemtl " + std::string(slot) + "\nf 1/1 2/2 3/3\n";
     }
-    write(source / assets::wide(filename), geometry);
+    write(source / platform::utf8_to_utf16_validated(filename), geometry);
     write(source / "model.mtl", mtl);
     write(source / "color.bmp", bmp(red, 64, blue));
     if (extra_texture)

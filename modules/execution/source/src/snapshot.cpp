@@ -1,5 +1,7 @@
 #include "source/snapshot.hpp"
 #include "foundation/string.hpp"
+#include "platform/error.hpp"
+#include "platform/utf.hpp"
 #include "platform/windows_path.hpp"
 #include <algorithm>
 #include <fstream>
@@ -7,11 +9,6 @@
 
 namespace atelier::source {
 namespace {
-std::string utf8(const std::filesystem::path& path) {
-    const auto text = path.generic_u8string();
-    return {text.begin(), text.end()};
-}
-
 std::unexpected<Error> fail(std::string message) {
     return std::unexpected(Error{ErrorCode::invalid_definition, std::move(message)});
 }
@@ -27,48 +24,74 @@ std::uint64_t content_hash(std::string_view text, std::uint64_t seed) noexcept {
 
 Result<SourceFile> read_source_file(const std::filesystem::path& path, std::string snapshot_path) {
     constexpr std::uint64_t limit = 1024 * 1024;
-    std::ifstream file(platform::windows_file_path(path), std::ios::binary | std::ios::ate);
+    auto native = platform::windows_file_path(path);
+    if (!native)
+        return fail(platform::error_message(native.error()));
+    auto name = platform::utf16_to_utf8(path.generic_wstring());
+    if (!name)
+        return fail("Source file path is not valid UTF-16.");
+    std::ifstream file(*native, std::ios::binary | std::ios::ate);
     if (!file)
-        return fail("Cannot read " + utf8(path));
+        return fail("Cannot read " + *name);
     const auto size = file.tellg();
     if (size < 0 || static_cast<std::uint64_t>(size) > limit)
-        return fail("Source file exceeds the 1 MiB limit: " + utf8(path));
+        return fail("Source file exceeds the 1 MiB limit: " + *name);
     std::string text(static_cast<std::size_t>(size), '\0');
     file.seekg(0);
     if (!file.read(text.data(), static_cast<std::streamsize>(text.size())))
-        return fail("Could not read the complete file " + utf8(path));
+        return fail("Could not read the complete file " + *name);
     if (!StringView(std::string_view(text)).is_valid_utf8())
-        return fail("Source file is not valid UTF-8: " + utf8(path));
+        return fail("Source file is not valid UTF-8: " + *name);
     const auto version = content_hash(text);
     if (text.starts_with("\xef\xbb\xbf"))
         text.erase(0, 3);
-    return SourceFile{std::move(snapshot_path), version, std::move(text),
-                      utf8(std::filesystem::absolute(path).lexically_normal())};
+    std::error_code error;
+    const auto absolute = std::filesystem::absolute(path, error);
+    if (error)
+        return fail(platform::error_message(error));
+    auto location = platform::utf16_to_utf8(absolute.lexically_normal().generic_wstring());
+    if (!location)
+        return fail("Absolute source file path is not valid UTF-16.");
+    return SourceFile{std::move(snapshot_path), version, std::move(text), std::move(*location)};
 }
 
 Result<std::vector<std::filesystem::path>> engine_source_paths(const std::filesystem::path& root) {
-    try {
-        const auto native = platform::windows_file_path(root);
-        std::vector<std::filesystem::path> paths;
-        if (!std::filesystem::exists(native))
-            return paths;
-        for (const auto& entry : std::filesystem::recursive_directory_iterator(native)) {
-            if (entry.is_symlink() || !entry.is_regular_file() || entry.path().extension() != L".source")
-                continue;
-            paths.push_back(entry.path().lexically_relative(native));
-        }
-        std::ranges::sort(paths);
+    auto native = platform::windows_file_path(root);
+    if (!native)
+        return fail(platform::error_message(native.error()));
+    std::vector<std::filesystem::path> paths;
+    std::error_code error;
+    const auto exists = std::filesystem::exists(*native, error);
+    if (error)
+        return fail(platform::error_message(error));
+    if (!exists)
         return paths;
-    } catch (const std::exception& error) {
-        return fail(error.what());
+    std::filesystem::recursive_directory_iterator entry(*native, error);
+    std::filesystem::recursive_directory_iterator end;
+    if (error)
+        return fail(platform::error_message(error));
+    while (entry != end) {
+        const auto status = entry->symlink_status(error);
+        if (error && !std::filesystem::status_known(status))
+            return fail(platform::error_message(error));
+        if (std::filesystem::is_regular_file(status) && entry->path().extension() == L".source")
+            paths.push_back(entry->path().lexically_relative(*native));
+        entry.increment(error);
+        if (error)
+            return fail(platform::error_message(error));
     }
+    std::ranges::sort(paths);
+    return paths;
 }
 
 Result<std::vector<SourceFile>> engine_sources(const std::filesystem::path& root) {
     ATELIER_TRY_BIND(paths, engine_source_paths(root));
     std::vector<SourceFile> files;
     for (const auto& relative : *paths) {
-        ATELIER_TRY_BIND(file, read_source_file(root / relative, "engine/" + utf8(relative)));
+        auto name = platform::utf16_to_utf8(relative.generic_wstring());
+        if (!name)
+            return fail("Engine source file path is not valid UTF-16.");
+        ATELIER_TRY_BIND(file, read_source_file(root / relative, "engine/" + *name));
         files.push_back(std::move(*file));
     }
     return files;

@@ -5,6 +5,10 @@
 #include "assets/json_format.hpp"
 #include "assets/material_format.hpp"
 #include "material/resources.hpp"
+#include "foundation/sha256.hpp"
+#include "foundation/result.hpp"
+#include "platform/error.hpp"
+#include "platform/utf.hpp"
 #include "platform/windows_path.hpp"
 #include "source/snapshot.hpp"
 #include <Windows.h>
@@ -29,24 +33,23 @@ T take(Result<T> value) {
     return std::move(*value);
 }
 
-void take(Result<void> value) {
-    if (!value)
-        throw Failure("storage_error", value.error().message);
-}
-
 void checkpoint(const std::atomic_bool& cancelled) {
     if (cancelled.load())
         throw Failure("cancelled", "Artifact export cancelled");
 }
 
-void write(const std::filesystem::path& path, std::string_view bytes) {
+std::expected<void, Failure> write(const std::filesystem::path& path, std::string_view bytes) {
     const auto native = platform::windows_file_path(path);
-    std::filesystem::create_directories(native.parent_path());
-    take(editor::write_file(native, bytes, editor::WriteMode::create));
-}
-
-std::string path_text(const std::filesystem::path& path) {
-    return control::utf8(path.generic_wstring());
+    if (!native)
+        return std::unexpected(Failure("storage_error", platform::error_message(native.error())));
+    std::error_code error;
+    std::filesystem::create_directories(native->parent_path(), error);
+    if (error)
+        return std::unexpected(Failure("storage_error", platform::error_message(error)));
+    const auto saved = editor::write_file(*native, bytes, editor::WriteMode::create);
+    if (!saved)
+        return std::unexpected(Failure("storage_error", saved.error().message));
+    return {};
 }
 
 bool generated_cache(const std::filesystem::path& relative) {
@@ -60,7 +63,7 @@ Json engine_source_hashes(std::span<const language::SourceFile> files) {
     auto hashes = Json::object();
     for (const auto& file : files)
         if (file.path.starts_with("engine/"))
-            hashes[file.path] = control::sha256(std::as_bytes(std::span(file.source)));
+            hashes[file.path] = foundation::sha256(std::as_bytes(std::span(file.source)));
     return hashes;
 }
 
@@ -288,12 +291,12 @@ Json image_content(const material::ImageRef& image) {
         return nullptr;
     return {{"width", image->width()},
             {"height", image->height()},
-            {"rgba_sha256", control::sha256(std::as_bytes(image->pixels()))}};
+            {"rgba_sha256", foundation::sha256(std::as_bytes(image->pixels()))}};
 }
 
 std::string json_hash(const Json& value) {
     const auto bytes = value.dump();
-    return control::sha256(std::as_bytes(std::span(bytes)));
+    return foundation::sha256(std::as_bytes(std::span(bytes)));
 }
 
 std::string source_material_hash(const assets::MaterialAsset& asset, const language::SourceFile& file) {
@@ -312,10 +315,10 @@ std::string sky_hash(const rendering::SkyMap& map) {
                             {"height", map.height()},
                             {"scale_exponent", map.scale_exponent()},
                             {"mean", map.mean()},
-                            {"pixels", control::sha256(std::as_bytes(map.pixels()))},
-                            {"cube", control::sha256(std::as_bytes(map.cube()))}}
+                            {"pixels", foundation::sha256(std::as_bytes(map.pixels()))},
+                            {"cube", foundation::sha256(std::as_bytes(map.cube()))}}
                            .dump();
-    return control::sha256(std::as_bytes(std::span(bytes)));
+    return foundation::sha256(std::as_bytes(std::span(bytes)));
 }
 
 struct Com {
@@ -327,8 +330,8 @@ struct Com {
     ~Com() { CoUninitialize(); }
 };
 
-void png(std::uint32_t width, std::uint32_t height, std::span<const std::uint8_t> rgba,
-         const std::filesystem::path& path) {
+std::expected<void, Failure> png(std::uint32_t width, std::uint32_t height, std::span<const std::uint8_t> rgba,
+                                 const std::filesystem::path& path) {
     using Microsoft::WRL::ComPtr;
     const auto hr = [](HRESULT result) {
         if (FAILED(result))
@@ -338,7 +341,10 @@ void png(std::uint32_t width, std::uint32_t height, std::span<const std::uint8_t
     hr(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory)));
     ComPtr<IWICStream> stream;
     hr(factory->CreateStream(&stream));
-    hr(stream->InitializeFromFilename(platform::windows_file_path(path).c_str(), GENERIC_WRITE));
+    const auto native = platform::windows_file_path(path);
+    if (!native)
+        return std::unexpected(Failure("storage_error", platform::error_message(native.error())));
+    hr(stream->InitializeFromFilename(native->c_str(), GENERIC_WRITE));
     ComPtr<IWICBitmapEncoder> encoder;
     hr(factory->CreateEncoder(GUID_ContainerFormatPng, nullptr, &encoder));
     hr(encoder->Initialize(stream.Get(), WICBitmapEncoderNoCache));
@@ -358,25 +364,46 @@ void png(std::uint32_t width, std::uint32_t height, std::span<const std::uint8_t
     hr(frame->WritePixels(height, width * 4, static_cast<UINT>(bgra.size()), bgra.data()));
     hr(frame->Commit());
     hr(encoder->Commit());
+    return {};
 }
 
-void finish(const std::filesystem::path& directory, Json& manifest, const std::atomic_bool& cancel) {
+std::expected<void, Failure> finish(const std::filesystem::path& directory, Json& manifest,
+                                    const std::atomic_bool& cancel) {
     checkpoint(cancel);
     auto files = Json::array();
-    for (const auto& item : std::filesystem::recursive_directory_iterator(directory))
-        if (item.is_regular_file() && !generated_cache(item.path().lexically_relative(directory))) {
+    std::error_code error;
+    auto entry = std::filesystem::recursive_directory_iterator(directory, error);
+    if (error)
+        return std::unexpected(Failure("storage_error", platform::error_message(error)));
+    while (entry != std::filesystem::recursive_directory_iterator{}) {
+        const auto& item = *entry;
+        const auto status = item.status(error);
+        if (error && !std::filesystem::status_known(status))
+            return std::unexpected(Failure("storage_error", platform::error_message(error)));
+        if (std::filesystem::is_regular_file(status) && !generated_cache(item.path().lexically_relative(directory))) {
             checkpoint(cancel);
-            files.push_back({{"path", path_text(item.path().lexically_relative(directory))},
-                             {"bytes", item.file_size()},
-                             {"sha256", control::sha256_file(item.path())}});
+            const auto path = platform::utf16_to_utf8(item.path().lexically_relative(directory).generic_wstring());
+            if (!path)
+                return std::unexpected(Failure("invalid_request", "Invalid UTF-16 text"));
+            const auto bytes = item.file_size(error);
+            if (error)
+                return std::unexpected(Failure("storage_error", platform::error_message(error)));
+            const auto digest = foundation::sha256_file(item.path());
+            if (!digest)
+                return std::unexpected(Failure("storage_error", digest.error()));
+            files.push_back({{"path", *path}, {"bytes", bytes}, {"sha256", *digest}});
         }
+        entry.increment(error);
+        if (error)
+            return std::unexpected(Failure("storage_error", platform::error_message(error)));
+    }
     checkpoint(cancel);
     manifest["files"] = std::move(files);
     manifest["complete"] = true;
     const auto encoded = manifest.dump(2) + "\n";
     if (encoded.size() > assets::json_format::maximum_bytes)
         throw Failure("resource_limit", "Artifact manifest exceeds the 16 MiB file limit");
-    write(directory / "manifest.json", encoded);
+    return write(directory / "manifest.json", encoded);
 }
 
 std::string html_text(std::string_view text) {
@@ -713,7 +740,8 @@ void validate_candidate_assets(const editor::Session& candidate, const Json& man
                       "Repro material author, Source, parent or input pixels differ from the frozen content");
 }
 
-Json export_repro(const std::filesystem::path& output, Repro data, const std::atomic_bool& cancel) {
+std::expected<Json, Failure> export_repro(const std::filesystem::path& output, Repro data,
+                                          const std::atomic_bool& cancel) {
     checkpoint(cancel);
     std::optional<Com> com;
     if (!data.textures.empty())
@@ -721,18 +749,44 @@ Json export_repro(const std::filesystem::path& output, Repro data, const std::at
     // Keep all worker filesystem operations in the Win32 extended namespace,
     // including metadata reads and directory entries. Public paths keep their
     // original spelling; relative manifest identities never contain the prefix.
-    const auto directory = platform::windows_file_path(output);
-    if (!data.project.empty())
-        data.project = platform::windows_file_path(data.project);
+    const auto native = platform::windows_file_path(output);
+    if (!native)
+        return std::unexpected(Failure("storage_error", platform::error_message(native.error())));
+    const auto& directory = *native;
+    if (!data.project.empty()) {
+        auto input = platform::windows_file_path(data.project);
+        if (!input)
+            return std::unexpected(Failure("storage_error", platform::error_message(input.error())));
+        data.project = std::move(*input);
+    }
+    std::error_code error;
     // Resolve existing ancestors by identity, including case aliases/junctions,
     // before creating any output that a source traversal could encounter.
     if (!data.project.empty()) {
         for (const auto& section : data.roots) {
-            const auto input = platform::windows_file_path(std::filesystem::canonical(data.project / section));
-            for (auto parent = std::filesystem::canonical(directory.parent_path());;) {
-                if (std::filesystem::equivalent(platform::windows_file_path(parent), input))
+            const auto resolved = std::filesystem::canonical(data.project / section, error);
+            if (error)
+                return std::unexpected(Failure("storage_error", platform::error_message(error)));
+            const auto input = platform::windows_file_path(resolved);
+            if (!input)
+                return std::unexpected(Failure("storage_error", platform::error_message(input.error())));
+            auto parent = std::filesystem::canonical(directory.parent_path(), error);
+            if (error)
+                return std::unexpected(Failure("storage_error", platform::error_message(error)));
+            for (;;) {
+                const auto native_parent = platform::windows_file_path(parent);
+                if (!native_parent)
+                    return std::unexpected(Failure("storage_error", platform::error_message(native_parent.error())));
+                const auto same = std::filesystem::equivalent(*native_parent, *input, error);
+                if (error)
+                    return std::unexpected(Failure("storage_error", platform::error_message(error)));
+                if (same) {
+                    const auto name = platform::utf16_to_utf8(section.generic_wstring());
+                    if (!name)
+                        return std::unexpected(Failure("invalid_request", "Invalid UTF-16 text"));
                     throw Failure("invalid_destination",
-                                  "Repro output cannot be inside a project folder (" + path_text(section) + ")");
+                                  "Repro output cannot be inside a project folder (" + *name + ")");
+                }
                 const auto next = parent.parent_path();
                 if (next == parent || next.empty())
                     break;
@@ -740,81 +794,144 @@ Json export_repro(const std::filesystem::path& output, Repro data, const std::at
             }
         }
     }
-    if (!std::filesystem::create_directory(directory))
-        throw Failure("storage_error", "Artifact directory already exists");
+    const auto created = std::filesystem::create_directory(directory, error);
+    if (error)
+        return std::unexpected(Failure("storage_error", platform::error_message(error)));
+    if (!created)
+        return std::unexpected(Failure("storage_error", "Artifact directory already exists"));
     const auto project = directory / "Project";
-    if (data.project.empty())
-        take(editor::Project::create(output / "Project"));
-    else {
+    if (data.project.empty()) {
+        const auto initialized = editor::Project::create(output / "Project");
+        if (!initialized)
+            return std::unexpected(Failure("storage_error", initialized.error().message));
+    } else {
         std::uintmax_t bytes{};
         std::size_t files{};
         Json input_files = Json::array();
         const auto link = [](const std::filesystem::path& path) {
-            const auto flags = GetFileAttributesW(platform::windows_file_path(path).c_str());
+            // Both roots were normalized above; all callers append native children.
+            const auto flags = GetFileAttributesW(path.c_str());
             return flags != INVALID_FILE_ATTRIBUTES && (flags & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
         };
-        const auto copy = [&](const std::filesystem::path& item) {
+        const auto copy = [&](const std::filesystem::path& item) -> std::expected<void, Failure> {
             checkpoint(cancel);
             if (link(item))
                 throw Failure("dependency_mismatch", "Repro export does not follow links");
             const auto relative = item.lexically_relative(data.project);
-            const auto target = platform::windows_file_path(project / relative);
-            if (std::filesystem::is_directory(item)) {
-                std::filesystem::create_directories(target);
-                return;
+            const auto target = project / relative;
+            const auto status = std::filesystem::status(item, error);
+            if (error && !std::filesystem::status_known(status))
+                return std::unexpected(Failure("storage_error", platform::error_message(error)));
+            if (std::filesystem::is_directory(status)) {
+                std::filesystem::create_directories(target, error);
+                if (error)
+                    return std::unexpected(Failure("storage_error", platform::error_message(error)));
+                return {};
             }
-            const auto source = std::ranges::find_if(data.material_sources, [&](const auto& file) {
-                const auto named = control::wide(file.path);
+            auto source = data.material_sources.begin();
+            for (; source != data.material_sources.end(); ++source) {
+                const auto named = platform::utf8_to_utf16(source->path);
+                if (!named)
+                    return std::unexpected(Failure("invalid_request", "Invalid UTF-8 text"));
                 const auto path = relative.generic_wstring();
-                return CompareStringOrdinal(named.c_str(), -1, path.c_str(), -1, TRUE) == CSTR_EQUAL;
-            });
+                if (CompareStringOrdinal(named->c_str(), -1, path.c_str(), -1, TRUE) == CSTR_EQUAL)
+                    break;
+            }
             material::ImageRef image;
             if (assets::is_texture_path(relative)) {
                 auto identity = item;
                 identity += L".asset.json";
                 if (link(identity))
                     throw Failure("dependency_mismatch", "Repro export does not follow links");
-                if (std::filesystem::is_regular_file(identity)) {
-                    const auto key =
-                        "project/" +
-                        assets::json_format::parse(take(assets::read_file(identity))).at("id").get<std::string>();
+                const auto status = std::filesystem::status(identity, error);
+                if (error && !std::filesystem::status_known(status))
+                    return std::unexpected(Failure("storage_error", platform::error_message(error)));
+                if (std::filesystem::is_regular_file(status)) {
+                    const auto bytes = assets::read_file(identity);
+                    if (!bytes)
+                        return std::unexpected(Failure("storage_error", bytes.error().message));
+                    const auto key = "project/" + assets::json_format::parse(*bytes).at("id").get<std::string>();
                     if (const auto at = std::ranges::find(data.textures, key, &assets::TextureAsset::key);
                         at != data.textures.end())
                         image = at->image;
                 }
             }
             if (source != data.material_sources.end() || image) {
-                std::filesystem::create_directories(target.parent_path());
+                std::filesystem::create_directories(target.parent_path(), error);
+                if (error)
+                    return std::unexpected(Failure("storage_error", platform::error_message(error)));
                 // The asset key/path and sidecar stay unchanged. WIC detects the
                 // lossless PNG container even when the original suffix was JPEG.
                 if (image)
-                    png(image->width(), image->height(), image->pixels(), target);
+                    ATELIER_TRY(png(image->width(), image->height(), image->pixels(), target));
                 else
-                    write(target, source->source);
+                    ATELIER_TRY(write(target, source->source));
                 // This is a file budget, not the decoded in-memory RGBA size.
-                const auto length = std::filesystem::file_size(target);
+                const auto length = std::filesystem::file_size(target, error);
+                if (error)
+                    return std::unexpected(Failure("storage_error", platform::error_message(error)));
                 bytes += length;
                 if (++files > 10000 || length > 256 * 1024 * 1024 || bytes > 1024ull * 1024 * 1024)
                     throw Failure("resource_limit", "Repro exceeds 10000 files / 1 GiB / 256 MiB per file");
-                input_files.push_back(
-                    {{"path", path_text(relative)}, {"sha256", control::sha256_file(target)}, {"snapshot", true}});
-                return;
+                const auto name = platform::utf16_to_utf8(relative.generic_wstring());
+                if (!name)
+                    return std::unexpected(Failure("invalid_request", "Invalid UTF-16 text"));
+                const auto digest = foundation::sha256_file(target);
+                if (!digest)
+                    return std::unexpected(Failure("storage_error", digest.error()));
+                input_files.push_back({{"path", *name}, {"sha256", *digest}, {"snapshot", true}});
+                return {};
             }
-            if (!std::filesystem::is_regular_file(item))
+            const auto current_status = std::filesystem::status(item, error);
+            if (error && !std::filesystem::status_known(current_status))
+                return std::unexpected(Failure("storage_error", platform::error_message(error)));
+            if (!std::filesystem::is_regular_file(current_status))
                 throw Failure("dependency_mismatch", "Unsupported project file");
-            const auto length = std::filesystem::file_size(item);
+            const auto length = std::filesystem::file_size(item, error);
+            if (error)
+                return std::unexpected(Failure("storage_error", platform::error_message(error)));
             bytes += length;
             if (++files > 10000 || length > 256 * 1024 * 1024 || bytes > 1024ull * 1024 * 1024)
                 throw Failure("resource_limit", "Repro exceeds 10000 files / 1 GiB / 256 MiB per file");
-            const auto stamp = std::filesystem::last_write_time(item);
-            const auto hash = control::sha256_file(item);
-            std::filesystem::create_directories(target.parent_path());
-            if (!std::filesystem::copy_file(item, target))
-                throw Failure("storage_error", "Cannot copy project dependency");
-            if (stamp != std::filesystem::last_write_time(item) || length != std::filesystem::file_size(item) ||
-                hash != control::sha256_file(item) || hash != control::sha256_file(project / relative))
+            const auto stamp = std::filesystem::last_write_time(item, error);
+            if (error)
+                return std::unexpected(Failure("storage_error", platform::error_message(error)));
+            const auto hash = foundation::sha256_file(item);
+            if (!hash)
+                return std::unexpected(Failure("storage_error", hash.error()));
+            std::filesystem::create_directories(target.parent_path(), error);
+            if (error)
+                return std::unexpected(Failure("storage_error", platform::error_message(error)));
+            const auto copied = std::filesystem::copy_file(item, target, error);
+            if (error)
+                return std::unexpected(Failure("storage_error", platform::error_message(error)));
+            if (!copied)
+                return std::unexpected(Failure("storage_error", "Cannot copy project dependency"));
+            const auto current_stamp = std::filesystem::last_write_time(item, error);
+            if (error)
+                return std::unexpected(Failure("storage_error", platform::error_message(error)));
+            if (stamp != current_stamp)
                 throw Failure("dependency_mismatch", "Project dependency changed during export");
-            input_files.push_back({{"path", path_text(relative)}, {"sha256", hash}});
+            const auto current_size = std::filesystem::file_size(item, error);
+            if (error)
+                return std::unexpected(Failure("storage_error", platform::error_message(error)));
+            if (length != current_size)
+                throw Failure("dependency_mismatch", "Project dependency changed during export");
+            const auto current_hash = foundation::sha256_file(item);
+            if (!current_hash)
+                return std::unexpected(Failure("storage_error", current_hash.error()));
+            if (*hash != *current_hash)
+                throw Failure("dependency_mismatch", "Project dependency changed during export");
+            const auto copied_hash = foundation::sha256_file(target);
+            if (!copied_hash)
+                return std::unexpected(Failure("storage_error", copied_hash.error()));
+            if (*hash != *copied_hash)
+                throw Failure("dependency_mismatch", "Project dependency changed during export");
+            const auto name = platform::utf16_to_utf8(relative.generic_wstring());
+            if (!name)
+                return std::unexpected(Failure("invalid_request", "Invalid UTF-16 text"));
+            input_files.push_back({{"path", *name}, {"sha256", *hash}});
+            return {};
         };
         // Config and Source are copied whole: the configuration is rewritten and the
         // published code replaces Source below. Other folders hold assets; only the
@@ -823,9 +940,18 @@ Json export_repro(const std::filesystem::path& output, Repro data, const std::at
             const auto root = data.project / section;
             if (link(root))
                 throw Failure("dependency_mismatch", "Project sections cannot be links");
-            std::filesystem::create_directories(project / section);
-            for (const auto& item : std::filesystem::recursive_directory_iterator(root))
-                copy(item.path());
+            std::filesystem::create_directories(project / section, error);
+            if (error)
+                return std::unexpected(Failure("storage_error", platform::error_message(error)));
+            auto entry = std::filesystem::recursive_directory_iterator(root, error);
+            if (error)
+                return std::unexpected(Failure("storage_error", platform::error_message(error)));
+            while (entry != std::filesystem::recursive_directory_iterator{}) {
+                ATELIER_TRY(copy(entry->path()));
+                entry.increment(error);
+                if (error)
+                    return std::unexpected(Failure("storage_error", platform::error_message(error)));
+            }
         }
         const auto sections = files;
         for (const auto& relative : data.files) {
@@ -834,23 +960,39 @@ Json export_repro(const std::filesystem::path& output, Repro data, const std::at
             for (auto parent = relative.parent_path(); !parent.empty(); parent = parent.parent_path())
                 if (link(data.project / parent))
                     throw Failure("dependency_mismatch", "Repro export does not follow links");
-            copy(data.project / relative);
+            ATELIER_TRY(copy(data.project / relative));
         }
-        std::filesystem::create_directories(project / "Content");
+        std::filesystem::create_directories(project / "Content", error);
+        if (error)
+            return std::unexpected(Failure("storage_error", platform::error_message(error)));
         // Recheck the copied set after copying, including additions/removals in Config and Source.
         std::size_t current_files{};
-        for (const auto* section : {"Config", "Source"})
-            for (const auto& item : std::filesystem::recursive_directory_iterator(data.project / section))
-                if (item.is_regular_file())
+        for (const auto* section : {"Config", "Source"}) {
+            auto entry = std::filesystem::recursive_directory_iterator(data.project / section, error);
+            if (error)
+                return std::unexpected(Failure("storage_error", platform::error_message(error)));
+            while (entry != std::filesystem::recursive_directory_iterator{}) {
+                const auto status = entry->status(error);
+                if (error && !std::filesystem::status_known(status))
+                    return std::unexpected(Failure("storage_error", platform::error_message(error)));
+                if (std::filesystem::is_regular_file(status))
                     ++current_files;
+                entry.increment(error);
+                if (error)
+                    return std::unexpected(Failure("storage_error", platform::error_message(error)));
+            }
+        }
         if (current_files != sections)
             throw Failure("dependency_mismatch", "Project file set changed during export");
         for (const auto& file : input_files) {
             checkpoint(cancel);
             if (file.value("snapshot", false))
                 continue;
-            if (control::sha256_file(data.project / control::wide(file.at("path").get<std::string>())) !=
-                file.at("sha256").get<std::string>())
+            const auto hash = foundation::sha256_file(
+                data.project / platform::utf8_to_utf16_validated(file.at("path").get<std::string>()));
+            if (!hash)
+                return std::unexpected(Failure("storage_error", hash.error()));
+            if (*hash != file.at("sha256").get<std::string>())
                 throw Failure("dependency_mismatch", "Project changed during export");
         }
         data.manifest["input_files"] = std::move(input_files);
@@ -866,40 +1008,76 @@ Json export_repro(const std::filesystem::path& output, Repro data, const std::at
     if (data.ui_source)
         published.emplace(data.ui_source->path, &*data.ui_source);
     std::vector<std::filesystem::path> copied_code;
-    for (const auto& entry : std::filesystem::recursive_directory_iterator(project / "Source"))
-        if (entry.is_regular_file() && entry.path().extension() == L".source")
-            copied_code.push_back(entry.path());
+    auto entry = std::filesystem::recursive_directory_iterator(project / "Source", error);
+    if (error)
+        return std::unexpected(Failure("storage_error", platform::error_message(error)));
+    while (entry != std::filesystem::recursive_directory_iterator{}) {
+        const auto status = entry->status(error);
+        if (error && !std::filesystem::status_known(status))
+            return std::unexpected(Failure("storage_error", platform::error_message(error)));
+        if (std::filesystem::is_regular_file(status) && entry->path().extension() == L".source")
+            copied_code.push_back(entry->path());
+        entry.increment(error);
+        if (error)
+            return std::unexpected(Failure("storage_error", platform::error_message(error)));
+    }
     for (const auto& path : copied_code) {
         checkpoint(cancel);
         const auto relative = path.lexically_relative(project);
-        const auto found = published.find(path_text(relative));
-        if (found != published.end() && std::filesystem::file_size(path) == found->second->source.size() &&
-            take(assets::read_file(path)) == found->second->source) {
-            std::filesystem::remove(path);
-            continue;
+        const auto name = platform::utf16_to_utf8(relative.generic_wstring());
+        if (!name)
+            return std::unexpected(Failure("invalid_request", "Invalid UTF-16 text"));
+        const auto found = published.find(*name);
+        if (found != published.end()) {
+            const auto bytes = std::filesystem::file_size(path, error);
+            if (error)
+                return std::unexpected(Failure("storage_error", platform::error_message(error)));
+            if (bytes == found->second->source.size()) {
+                const auto text = assets::read_file(path);
+                if (!text)
+                    return std::unexpected(Failure("storage_error", text.error().message));
+                if (*text == found->second->source) {
+                    std::filesystem::remove(path, error);
+                    if (error)
+                        return std::unexpected(Failure("storage_error", platform::error_message(error)));
+                    continue;
+                }
+            }
         }
-        const auto archive = platform::windows_file_path(directory / "unpublished" / relative);
-        std::filesystem::create_directories(archive.parent_path());
-        std::filesystem::rename(path, archive);
+        const auto archive = directory / "unpublished" / relative;
+        std::filesystem::create_directories(archive.parent_path(), error);
+        if (error)
+            return std::unexpected(Failure("storage_error", platform::error_message(error)));
+        std::filesystem::rename(path, archive, error);
+        if (error)
+            return std::unexpected(Failure("storage_error", platform::error_message(error)));
     }
-    const auto publish_source = [&](const language::SourceFile& file) {
-        const std::filesystem::path relative = control::wide(file.path);
+    const auto publish_source = [&](const language::SourceFile& file) -> std::expected<void, Failure> {
+        const auto name = platform::utf8_to_utf16(file.path);
+        if (!name)
+            return std::unexpected(Failure("invalid_request", "Invalid UTF-8 text"));
+        const std::filesystem::path relative = *name;
         if (relative.is_absolute() || relative.empty() || *relative.begin() != L"Source" ||
             relative.lexically_normal() != relative)
             throw Failure("dependency_mismatch", "Published source is not project relative");
-        write(project / relative, file.source);
+        return write(project / relative, file.source);
     };
     // Engine definitions stay installation-owned. Pin the published inputs rather
     // than copying them into project scope or silently using a newer installation.
-    data.manifest["engine_sources"] =
-        data.sources ? engine_source_hashes(data.sources->files)
-                     : engine_source_hashes(take(source::engine_sources(source::default_engine_root())));
+    if (data.sources)
+        data.manifest["engine_sources"] = engine_source_hashes(data.sources->files);
+    else {
+        const auto files = source::engine_sources(source::default_engine_root());
+        if (!files)
+            return std::unexpected(Failure("storage_error", files.error().message));
+        data.manifest["engine_sources"] = engine_source_hashes(*files);
+    }
     if (data.sources)
         for (const auto& file : data.sources->files)
             if (!file.path.starts_with("engine/"))
-                publish_source(file);
+                ATELIER_TRY(publish_source(file));
     if (data.ui_source)
-        publish_source(*data.ui_source);
+        ATELIER_TRY(publish_source(*data.ui_source));
     for (const auto& file : data.material_sources) {
         checkpoint(cancel);
         if (file.path.starts_with("builtin/"))
@@ -908,34 +1086,71 @@ Json export_repro(const std::filesystem::path& output, Repro data, const std::at
             throw Failure("dependency_mismatch",
                           "Gameplay and material Source captured different text at " + file.path);
         // Containment compares canonical paths, not the worker's extended Win32 spelling.
-        const auto target =
-            take(assets::resolve_project_path(std::filesystem::canonical(project), control::wide(file.path)));
-        std::filesystem::create_directories(platform::windows_file_path(target.parent_path()));
-        take(editor::write_file(target, file.source));
+        const auto canonical = std::filesystem::canonical(project, error);
+        if (error)
+            return std::unexpected(Failure("storage_error", platform::error_message(error)));
+        const auto name = platform::utf8_to_utf16(file.path);
+        if (!name)
+            return std::unexpected(Failure("invalid_request", "Invalid UTF-8 text"));
+        const auto target = assets::resolve_project_path(canonical, *name);
+        if (!target)
+            return std::unexpected(Failure("storage_error", target.error().message));
+        const auto parent = platform::windows_file_path(target->parent_path());
+        if (!parent)
+            return std::unexpected(Failure("storage_error", platform::error_message(parent.error())));
+        std::filesystem::create_directories(*parent, error);
+        if (error)
+            return std::unexpected(Failure("storage_error", platform::error_message(error)));
+        const auto saved = editor::write_file(*target, file.source);
+        if (!saved)
+            return std::unexpected(Failure("storage_error", saved.error().message));
     }
     const auto scene_path = std::filesystem::path("Content/Scenes") / ("Control-" + control::unique_id() + ".scene");
-    write(project / scene_path, data.scene);
-    auto config = assets::json_format::parse(take(assets::read_file(project / "Config/Project.json")));
+    ATELIER_TRY(write(project / scene_path, data.scene));
+    const auto config_text = assets::read_file(project / "Config/Project.json");
+    if (!config_text)
+        return std::unexpected(Failure("storage_error", config_text.error().message));
+    auto config = assets::json_format::parse(*config_text);
     if (data.ui_source)
         config["ui_source"] = data.ui_source->path;
     else
         config.erase("ui_source");
-    config["startup_scene"] = path_text(scene_path);
-    take(editor::write_file(project / "Config/Project.json", config.dump(2) + "\n"));
-    auto clone = take(editor::Project::open(output / "Project"));
+    const auto scene_name = platform::utf16_to_utf8(scene_path.generic_wstring());
+    if (!scene_name)
+        return std::unexpected(Failure("invalid_request", "Invalid UTF-16 text"));
+    config["startup_scene"] = *scene_name;
+    const auto saved = editor::write_file(project / "Config/Project.json", config.dump(2) + "\n");
+    if (!saved)
+        return std::unexpected(Failure("storage_error", saved.error().message));
+    auto opened = editor::Project::open(output / "Project");
+    if (!opened)
+        return std::unexpected(Failure("storage_error", opened.error().message));
+    auto& clone = *opened;
     auto resources = Json::array();
     for (const auto& material : data.materials) {
         checkpoint(cancel);
         // Publish the live draft only in this independent bundle, never in the source project.
-        take(clone.save_material(material));
+        const auto saved = clone.save_material(material);
+        if (!saved)
+            return std::unexpected(Failure("storage_error", saved.error().message));
         if (assets::material_format::encode(take(clone.assets().material(material.key))) !=
             assets::material_format::encode(material))
             throw Failure("dependency_mismatch", "Exported material author differs from its snapshot: " + material.key);
     }
     for (const auto& file : data.material_sources) {
         checkpoint(cancel);
-        const auto loaded = take(clone.assets().source(control::wide(file.path)));
-        if (loaded.path != file.path || loaded.source != file.source)
+        std::wstring name;
+        if (file.path.starts_with("builtin/")) {
+            auto converted = platform::utf8_to_utf16(file.path);
+            if (!converted)
+                return std::unexpected(Failure("invalid_request", "Invalid UTF-8 text"));
+            name = std::move(*converted);
+        } else
+            name = platform::utf8_to_utf16_validated(file.path); // Checked before publishing this unchanged path.
+        const auto loaded = clone.assets().source(name);
+        if (!loaded)
+            return std::unexpected(Failure("storage_error", loaded.error().message));
+        if (loaded->path != file.path || loaded->source != file.source)
             throw Failure("dependency_mismatch", "Exported MS Source differs from its loaded text: " + file.path);
     }
     for (const auto& texture : data.textures) {
@@ -975,22 +1190,34 @@ Json export_repro(const std::filesystem::path& output, Repro data, const std::at
     data.manifest["material_resources"] = std::move(data.material_resources);
     data.manifest["resources"] = std::move(resources);
     data.manifest["project"] = "Project";
-    data.manifest["scene"] = path_text(scene_path);
+    data.manifest["scene"] = *scene_name;
     if (!data.drafts.empty())
-        write(directory / "drafts.json", data.drafts.dump(2) + "\n");
-    finish(directory, data.manifest, cancel);
-    return {{"directory", path_text(output)},
-            {"manifest", path_text(output / "manifest.json")},
-            {"project", path_text(output / "Project")}};
+        ATELIER_TRY(write(directory / "drafts.json", data.drafts.dump(2) + "\n"));
+    ATELIER_TRY(finish(directory, data.manifest, cancel));
+    const auto output_name = platform::utf16_to_utf8(output.generic_wstring());
+    if (!output_name)
+        return std::unexpected(Failure("invalid_request", "Invalid UTF-16 text"));
+    const auto manifest_name = platform::utf16_to_utf8((output / "manifest.json").generic_wstring());
+    if (!manifest_name)
+        return std::unexpected(Failure("invalid_request", "Invalid UTF-16 text"));
+    const auto project_name = platform::utf16_to_utf8((output / "Project").generic_wstring());
+    if (!project_name)
+        return std::unexpected(Failure("invalid_request", "Invalid UTF-16 text"));
+    return Json{{"directory", *output_name}, {"manifest", *manifest_name}, {"project", *project_name}};
 }
 
-Json validate_repro(const std::filesystem::path& input) {
-    const auto directory = platform::windows_file_path(input);
-    const auto text = take(assets::read_file(directory / "manifest.json"));
+std::expected<Json, Failure> validate_repro(const std::filesystem::path& input) {
+    const auto native = platform::windows_file_path(input);
+    if (!native)
+        return std::unexpected(Failure("operation_failed", platform::error_message(native.error())));
+    const auto& directory = *native;
+    const auto text = assets::read_file(directory / "manifest.json");
+    if (!text)
+        return std::unexpected(Failure("storage_error", text.error().message));
     Json manifest;
     // Format-limit and duplicate-field failures are input errors, not I/O failures.
     try {
-        manifest = assets::json_format::parse(text);
+        manifest = assets::json_format::parse(*text);
     } catch (const std::runtime_error& error) {
         throw Failure("invalid_request", error.what());
     }
@@ -1010,50 +1237,88 @@ Json validate_repro(const std::filesystem::path& input) {
     std::unordered_map<std::string, const Json*> expected;
     for (const auto& file : files) {
         const auto name = file.at("path").get<std::string>();
-        const std::filesystem::path path = control::wide(name);
+        const std::filesystem::path path = platform::utf8_to_utf16_validated(name);
+        const auto generic = platform::utf16_to_utf8(path.generic_wstring());
+        if (!generic)
+            return std::unexpected(Failure("invalid_request", "Invalid UTF-16 text"));
         if (path.empty() || path.has_root_path() || path.lexically_normal() != path || *path.begin() == L".." ||
             name.find(':') != std::string::npos || path == L"manifest.json" || generated_cache(path) ||
-            !expected.emplace(path_text(path), &file).second)
+            !expected.emplace(*generic, &file).second)
             throw Failure("invalid_request", "Invalid or duplicate bundle path");
     }
     // Reject additions as well as missing/modified inputs. Generated Cache is
     // outside the publication and may be created when opening the project.
-    for (auto it = std::filesystem::recursive_directory_iterator(directory);
-         it != std::filesystem::recursive_directory_iterator(); ++it) {
+    std::error_code error;
+    auto it = std::filesystem::recursive_directory_iterator(directory, error);
+    if (error)
+        return std::unexpected(Failure("operation_failed", platform::error_message(error)));
+    for (; it != std::filesystem::recursive_directory_iterator{}; it.increment(error)) {
+        if (error)
+            return std::unexpected(Failure("operation_failed", platform::error_message(error)));
         const auto relative = it->path().lexically_relative(directory);
         if (relative == L"manifest.json")
             continue;
-        if (GetFileAttributesW(platform::windows_file_path(it->path()).c_str()) & FILE_ATTRIBUTE_REPARSE_POINT)
+        if (GetFileAttributesW(it->path().c_str()) & FILE_ATTRIBUTE_REPARSE_POINT)
             throw Failure("dependency_mismatch", "Repro bundle cannot contain links");
+        const auto status = it->status(error);
+        if (error && !std::filesystem::status_known(status))
+            return std::unexpected(Failure("operation_failed", platform::error_message(error)));
         if (generated_cache(relative)) {
-            if (it->is_directory())
+            if (std::filesystem::is_directory(status))
                 it.disable_recursion_pending();
             continue;
         }
-        if (it->is_directory())
+        if (std::filesystem::is_directory(status))
             continue;
-        const auto found = expected.find(path_text(relative));
-        if (!it->is_regular_file() || found == expected.end() ||
-            it->file_size() != found->second->at("bytes").get<std::uintmax_t>() ||
-            control::sha256_file(it->path()) != found->second->at("sha256").get<std::string>())
+        const auto name = platform::utf16_to_utf8(relative.generic_wstring());
+        if (!name)
+            return std::unexpected(Failure("invalid_request", "Invalid UTF-16 text"));
+        const auto found = expected.find(*name);
+        if (!std::filesystem::is_regular_file(status) || found == expected.end())
+            throw Failure("dependency_mismatch", "Repro bundle file set or content changed");
+        const auto bytes = it->file_size(error);
+        if (error)
+            return std::unexpected(Failure("operation_failed", platform::error_message(error)));
+        if (bytes != found->second->at("bytes").get<std::uintmax_t>())
+            throw Failure("dependency_mismatch", "Repro bundle file set or content changed");
+        const auto digest = foundation::sha256_file(it->path());
+        if (!digest)
+            return std::unexpected(Failure("storage_error", digest.error()));
+        if (*digest != found->second->at("sha256").get<std::string>())
             throw Failure("dependency_mismatch", "Repro bundle file set or content changed");
         expected.erase(found);
     }
+    if (error)
+        return std::unexpected(Failure("operation_failed", platform::error_message(error)));
     if (!expected.empty())
         throw Failure("dependency_mismatch", "Repro bundle file is missing");
-    auto project = take(editor::Project::open(input / "Project"));
-    const auto scene = take(project.resolve(project.startup_scene()));
-    preflight_resources(project, assets::json_format::parse(take(assets::read_file(scene))));
+    auto project = editor::Project::open(input / "Project");
+    if (!project)
+        return std::unexpected(Failure("storage_error", project.error().message));
+    const auto scene = project->resolve(project->startup_scene());
+    if (!scene)
+        return std::unexpected(Failure("storage_error", scene.error().message));
+    const auto scene_text = assets::read_file(*scene);
+    if (!scene_text)
+        return std::unexpected(Failure("storage_error", scene_text.error().message));
+    preflight_resources(*project, assets::json_format::parse(*scene_text));
     return manifest;
 }
 
-Json write_samples(const std::filesystem::path& output, std::vector<Sample> samples, Json manifest,
-                   const std::atomic_bool& cancel) {
-    const auto directory = platform::windows_file_path(output);
+std::expected<Json, Failure> write_samples(const std::filesystem::path& output, std::vector<Sample> samples,
+                                           Json manifest, const std::atomic_bool& cancel) {
+    const auto native = platform::windows_file_path(output);
+    if (!native)
+        return std::unexpected(Failure("storage_error", platform::error_message(native.error())));
+    const auto& directory = *native;
     checkpoint(cancel);
     Com com;
-    if (!std::filesystem::create_directory(directory))
-        throw Failure("storage_error", "Artifact directory already exists");
+    std::error_code error;
+    const auto created = std::filesystem::create_directory(directory, error);
+    if (error)
+        return std::unexpected(Failure("storage_error", platform::error_message(error)));
+    if (!created)
+        return std::unexpected(Failure("storage_error", "Artifact directory already exists"));
     manifest["samples"] = Json::array();
     std::size_t index{};
     for (auto& sample : samples) {
@@ -1063,30 +1328,40 @@ Json write_samples(const std::filesystem::path& output, std::vector<Sample> samp
         const auto count = std::uint64_t(pixels.extent.width) * pixels.extent.height;
         if (!count || count * 4 != pixels.rgba.size() || count != pixels.depth.size())
             throw Failure("render_failure", "Capture size does not match accepted extent");
-        png(pixels.extent.width, pixels.extent.height, pixels.rgba, directory / (name + ".png"));
+        ATELIER_TRY(png(pixels.extent.width, pixels.extent.height, pixels.rgba, directory / (name + ".png")));
         checkpoint(cancel);
-        write(directory / (name + ".depth.f32"),
-              {reinterpret_cast<const char*>(pixels.depth.data()), pixels.depth.size() * sizeof(float)});
+        ATELIER_TRY(write(directory / (name + ".depth.f32"),
+                          {reinterpret_cast<const char*>(pixels.depth.data()), pixels.depth.size() * sizeof(float)}));
         sample.metadata["color"] = name + ".png";
         sample.metadata["depth"] = name + ".depth.f32";
         sample.metadata["extent"] = {pixels.extent.width, pixels.extent.height};
         sample.metadata["depth_format"] =
             "float32-le, top-left, tightly packed, reversed-Z near=1 background=0; camera.far_depth is the geometry clipping boundary; unjittered";
         sample.metadata["color_format"] = "sRGB RGBA8, top-left; complete editor client area";
-        write(directory / (name + ".json"), sample.metadata.dump(2) + "\n");
+        ATELIER_TRY(write(directory / (name + ".json"), sample.metadata.dump(2) + "\n"));
         manifest["samples"].push_back(std::move(sample.metadata));
     }
-    finish(directory, manifest, cancel);
-    return {{"directory", path_text(output)},
-            {"manifest", path_text(output / "manifest.json")},
-            {"samples", manifest["samples"]}};
+    ATELIER_TRY(finish(directory, manifest, cancel));
+    const auto output_name = platform::utf16_to_utf8(output.generic_wstring());
+    if (!output_name)
+        return std::unexpected(Failure("invalid_request", "Invalid UTF-16 text"));
+    const auto manifest_name = platform::utf16_to_utf8((output / "manifest.json").generic_wstring());
+    if (!manifest_name)
+        return std::unexpected(Failure("invalid_request", "Invalid UTF-16 text"));
+    return Json{{"directory", *output_name}, {"manifest", *manifest_name}, {"samples", manifest["samples"]}};
 }
 
-Json write_trace(const std::filesystem::path& output, rhi::CommandTrace snapshot, Json manifest,
-                 const std::atomic_bool& cancel) {
+std::expected<Json, Failure> write_trace(const std::filesystem::path& output, rhi::CommandTrace snapshot, Json manifest,
+                                         const std::atomic_bool& cancel) {
     checkpoint(cancel);
-    const auto directory = platform::windows_file_path(output);
-    std::filesystem::create_directories(directory);
+    const auto native = platform::windows_file_path(output);
+    if (!native)
+        return std::unexpected(Failure("storage_error", platform::error_message(native.error())));
+    const auto& directory = *native;
+    std::error_code error;
+    std::filesystem::create_directories(directory, error);
+    if (error)
+        return std::unexpected(Failure("storage_error", platform::error_message(error)));
     auto trace = manifest;
     trace["schema"] = "atelier.render.trace";
     trace["version"] = 1;
@@ -1149,19 +1424,27 @@ Json write_trace(const std::filesystem::path& output, rhi::CommandTrace snapshot
         }
         trace["commands"].push_back(std::move(record));
     }
-    write(directory / "trace.json", trace.dump(2) + "\n");
+    ATELIER_TRY(write(directory / "trace.json", trace.dump(2) + "\n"));
     checkpoint(cancel);
-    write(directory / "trace.html", trace_html(trace));
+    ATELIER_TRY(write(directory / "trace.html", trace_html(trace)));
     manifest["trace"] = {{"json", "trace.json"},
                          {"html", "trace.html"},
                          {"observation", status},
                          {"command_count", trace["commands"].size()}};
-    finish(directory, manifest, cancel);
-    return {{"directory", path_text(output)},
-            {"manifest", path_text(output / "manifest.json")},
-            {"json", path_text(output / "trace.json")},
-            {"html", path_text(output / "trace.html")},
-            {"observation", status},
-            {"frame_status", trace["frame_status"]}};
+    ATELIER_TRY(finish(directory, manifest, cancel));
+    const auto output_name = platform::utf16_to_utf8(output.generic_wstring());
+    if (!output_name)
+        return std::unexpected(Failure("invalid_request", "Invalid UTF-16 text"));
+    const auto manifest_name = platform::utf16_to_utf8((output / "manifest.json").generic_wstring());
+    if (!manifest_name)
+        return std::unexpected(Failure("invalid_request", "Invalid UTF-16 text"));
+    const auto json_name = platform::utf16_to_utf8((output / "trace.json").generic_wstring());
+    if (!json_name)
+        return std::unexpected(Failure("invalid_request", "Invalid UTF-16 text"));
+    const auto html_name = platform::utf16_to_utf8((output / "trace.html").generic_wstring());
+    if (!html_name)
+        return std::unexpected(Failure("invalid_request", "Invalid UTF-16 text"));
+    return Json{{"directory", *output_name}, {"manifest", *manifest_name}, {"json", *json_name},
+                {"html", *html_name},        {"observation", status},      {"frame_status", trace["frame_status"]}};
 }
 }

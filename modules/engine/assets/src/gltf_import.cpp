@@ -1,6 +1,8 @@
 #include "assets/mesh_import.hpp"
 #include "assets/assets.hpp"
 #include "assets/file.hpp"
+#include "platform/error.hpp"
+#include "platform/utf.hpp"
 #include <nlohmann/json.hpp>
 #include <algorithm>
 #include <charconv>
@@ -84,7 +86,7 @@ std::array<float, N> numbers(const Json& object, std::string_view key, std::arra
 }
 
 // RFC 3986 percent-decoding; the result is a relative path inside the source directory.
-std::filesystem::path dependency(const Json& uri) {
+Result<std::filesystem::path> dependency(const Json& uri) {
     require(uri.is_string(), "uri must be a string.");
     const auto text = uri.get<std::string>();
     require(!text.starts_with("data:"), "embedded data URIs are not supported.");
@@ -101,7 +103,10 @@ std::filesystem::path dependency(const Json& uri) {
         decoded += static_cast<char>(value);
         i += 2;
     }
-    const auto path = std::filesystem::path(wide(decoded));
+    auto converted = platform::utf8_to_utf16(decoded);
+    if (!converted)
+        return std::unexpected(Error{ErrorCode::invalid_storage, "Invalid UTF-8 text."});
+    const auto path = std::filesystem::path(std::move(*converted));
     require(!path.empty() && !path.has_root_path(), "dependency must be a relative path.");
     for (const auto& part : path)
         require(part != L".." && part.wstring().find(L':') == std::wstring::npos,
@@ -232,29 +237,33 @@ std::string material_name(const Json& material, std::size_t index) {
 }
 }
 
-MeshImport load_gltf(const std::filesystem::path& source, ImageCache* shared_images) {
+Result<MeshImport> load_gltf(const std::filesystem::path& source, ImageCache* shared_images) {
     MeshImport result;
-    const auto root = std::filesystem::canonical(source.parent_path());
+    std::error_code error;
+    const auto root = std::filesystem::canonical(source.parent_path(), error);
+    if (error)
+        return std::unexpected(Error{ErrorCode::invalid_storage, platform::error_message(error)});
     std::unordered_map<std::wstring, std::size_t> read_files;
-    const auto read = [&](const std::filesystem::path& relative, std::size_t maximum) {
+    const auto read = [&](const std::filesystem::path& relative, std::size_t maximum) -> Result<std::size_t> {
         if (const auto found = read_files.find(relative.generic_wstring()); found != read_files.end()) {
             require(result.files[found->second].bytes.size() <= maximum, "a dependency exceeds its size limit.");
             return found->second;
         }
-        const auto path = std::filesystem::weakly_canonical(root / relative);
+        const auto path = std::filesystem::weakly_canonical(root / relative, error);
+        if (error)
+            return std::unexpected(Error{ErrorCode::invalid_storage, platform::error_message(error)});
         const auto within = path.lexically_relative(root);
         require(!within.empty() && !within.has_root_path() && *within.begin() != L"..",
                 "dependency escapes through a link.");
-        auto bytes = read_file(path, maximum);
-        if (!bytes)
-            throw std::runtime_error(bytes.error().message);
+        ATELIER_TRY_BIND(bytes, read_file(path, maximum));
         read_files.emplace(relative.generic_wstring(), result.files.size());
         result.files.push_back({relative, std::move(*bytes)});
         return result.files.size() - 1;
     };
     Json gltf;
     try {
-        gltf = Json::parse(result.files[read(source.filename(), maximum_document)].bytes);
+        ATELIER_TRY_BIND(file, read(source.filename(), maximum_document));
+        gltf = Json::parse(result.files[*file].bytes);
     } catch (const Json::exception& error) {
         throw std::runtime_error("glTF: invalid JSON: " + std::string(error.what()));
     }
@@ -342,15 +351,16 @@ MeshImport load_gltf(const std::filesystem::path& source, ImageCache* shared_ima
         std::vector<std::size_t> buffer_files;
         std::size_t buffer_bytes{};
         for (const auto& buffer : field(gltf, "buffers", empty_array)) {
-            const auto file = read(dependency(member(buffer, "uri")), maximum_buffers - buffer_bytes);
-            buffer_bytes += result.files[file].bytes.size();
-            require(member(buffer, "byteLength").get<std::uint64_t>() <= result.files[file].bytes.size(),
+            ATELIER_TRY_BIND(path, dependency(member(buffer, "uri")));
+            ATELIER_TRY_BIND(file, read(*path, maximum_buffers - buffer_bytes));
+            buffer_bytes += result.files[*file].bytes.size();
+            require(member(buffer, "byteLength").get<std::uint64_t>() <= result.files[*file].bytes.size(),
                     "buffer is shorter than its byteLength.");
-            buffer_files.push_back(file);
+            buffer_files.push_back(*file);
         }
         std::vector<std::size_t> image_slot(field(gltf, "images", empty_array).size(), no_slot);
         std::vector<std::size_t> image_files;
-        const auto texture_image = [&](const Json& info) {
+        const auto texture_image = [&](const Json& info) -> Result<std::size_t> {
             require(info.value("texCoord", 0) == 0, "textures must use TEXCOORD_0.");
             const auto& texture = element(gltf, "textures", member(info, "index"));
             const auto& image = element(gltf, "images", member(texture, "source"));
@@ -358,11 +368,12 @@ MeshImport load_gltf(const std::filesystem::path& source, ImageCache* shared_ima
             if (slot == no_slot) {
                 require(image_files.size() < maximum_images, "too many images.");
                 require(!image.contains("bufferView"), "images stored in buffers are not supported.");
-                const auto path = dependency(member(image, "uri"));
+                ATELIER_TRY_BIND(path, dependency(member(image, "uri")));
                 // Generated materials reference the image as a Project texture asset.
-                require(is_texture_path(path), "images must be PNG, JPEG, BMP or TIFF files.");
+                require(is_texture_path(*path), "images must be PNG, JPEG, BMP or TIFF files.");
                 slot = image_files.size();
-                image_files.push_back(read(path, maximum_image_file));
+                ATELIER_TRY_BIND(file, read(*path, maximum_image_file));
+                image_files.push_back(*file);
             }
             return slot;
         };
@@ -374,10 +385,10 @@ MeshImport load_gltf(const std::filesystem::path& source, ImageCache* shared_ima
                 const auto& pbr = pbr_of(materials[m]);
                 for (const auto* key : {"baseColorTexture", "metallicRoughnessTexture"})
                     if (pbr.contains(key))
-                        texture_image(pbr[key]);
+                        ATELIER_TRY(texture_image(pbr[key]));
                 for (const auto* key : {"normalTexture", "emissiveTexture"})
                     if (materials[m].contains(key))
-                        texture_image(materials[m][key]);
+                        ATELIER_TRY(texture_image(materials[m][key]));
             }
         std::vector<std::string_view> buffers;
         std::vector<std::string_view> image_sources;
@@ -392,9 +403,11 @@ MeshImport load_gltf(const std::filesystem::path& source, ImageCache* shared_ima
                                   std::array<std::filesystem::path, imported_material_inputs.size()>& files) {
             MaterialInstanceAsset author;
             const auto texture = [&](std::size_t input, const Json& info, float channel = 0.f) {
-                const auto image = texture_image(info);
-                files[input] = result.files[image_files[image]].relative;
+                // Every used material texture was resolved above, before taking
+                // views into result.files. Publication only consumes that snapshot.
                 const auto& source_texture = element(gltf, "textures", info["index"]);
+                const auto image = image_slot[source_texture["source"].get<std::size_t>()];
+                files[input] = result.files[image_files[image]].relative;
                 const auto& sampler = source_texture.contains("sampler")
                                           ? element(gltf, "samplers", source_texture["sampler"])
                                           : empty_object;
@@ -612,7 +625,7 @@ bool is_mesh_path(const std::filesystem::path& path) {
     return path.extension() == L".obj" || path.extension() == L".gltf";
 }
 
-MeshImport load_mesh(const std::filesystem::path& source, ImageCache* images) {
+Result<MeshImport> load_mesh(const std::filesystem::path& source, ImageCache* images) {
     if (source.extension() == L".gltf")
         return load_gltf(source, images);
     if (source.extension() == L".obj")

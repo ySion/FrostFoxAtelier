@@ -7,7 +7,9 @@ int verify_editor_tooltips(Application& app, const char* output_directory) {
         ~ComScope() { CoUninitialize(); }
     } com_scope;
     ExternalMouseFilter external_mouse;
-    const auto output = std::filesystem::absolute(assets::wide(output_directory));
+    const auto output_text = platform::utf8_to_utf16(output_directory);
+    require(bool(output_text), "Invalid UTF-8 evidence directory.");
+    const auto output = std::filesystem::absolute(*output_text);
     std::filesystem::create_directories(output);
     tick(app);
     require(bool(Access::invoke(app, "scene.add", {{"kind", "mesh"}})), "Tooltip fixture could not create its mesh.");

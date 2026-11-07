@@ -329,6 +329,8 @@ auto published = runtime.register_types(std::move(definitions));
 
 `register_types` 返回按输入顺序排列的类型标识；空批次拒绝。先在事务内解析全部类型身份，校验字段、方法与原生表示，再按内联依赖完成布局和能力汇总。内联边与容器元素依赖参与环检查，持有/观察引用边不递归展开目标实例。所有可能分配存储的准备工作完成后才提交；失败不公开临时身份、名称或 C++ 表示映射，已发布的元数据保持有效。单条 `register_type` 复用同一个事务入口。
 
+`prepare_types` 在这个唯一注册边界验证类型名、字段名、方法名、参数名、枚举项名以及字段 label/category 的 UTF-8，失败返回 `invalid_definition`。合法 Unicode 名称、原空值和重名政策不变；已发布的这些文本可由显示层直接使用 Platform 已验证转换入口，不在消费方重复校验。
+
 `NativeRegistration<T>::build()` 消费定义生产者并交出 `TypeDefinition`，可与描述型定义一起提交；默认 `field` 通过 C++ 表示延迟解析，支持同批尚未发布的原生记录。显式 `field<成员指针>(名称, ValueDefinition)` 可指定同批目标和值形式，发布时仍校验成员的实际 C++ 表示。原生构造和用户方法不在发布过程中执行。
 
 引用字段按 `ReferenceSlot` 的尺寸和对齐布局，原生引用字段也必须提供相同的 C++ 表示，裸 `ObjectId` 成员不是引用槽。`TypeInfo::contains_references` 从所有已声明字段及内联依赖传播，包括 `hidden_field`，用于引用遍历；它不限制实例化或复制能力。原生代码仍须完整报告引用，运行时不会从任意 C++ 裸指针推断持有关系。

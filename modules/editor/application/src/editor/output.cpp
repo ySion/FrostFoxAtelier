@@ -1,6 +1,7 @@
 #include "editor/output.hpp"
-#include "assets/file.hpp"
+#include "application/diagnostics.hpp"
 #include "foundation/string.hpp"
+#include "platform/utf.hpp"
 #include <Windows.h>
 #include <algorithm>
 #include <atomic>
@@ -19,8 +20,7 @@ std::uint64_t now_ns() {
         .count();
 }
 
-std::wstring visible_text(std::string_view text, bool one_line = false) {
-    const auto input = assets::wide(text);
+std::wstring visible_text(std::wstring_view input, bool one_line = false) {
     std::wstring result;
     result.reserve(input.size());
     constexpr wchar_t hex[] = L"0123456789abcdef";
@@ -35,6 +35,10 @@ std::wstring visible_text(std::string_view text, bool one_line = false) {
             result += c;
     }
     return result;
+}
+
+std::wstring visible_text(std::string_view text, bool one_line = false) {
+    return visible_text(platform::utf8_to_utf16_validated(text), one_line);
 }
 
 std::wstring short_text(std::wstring text, std::size_t limit = 256) {
@@ -85,6 +89,8 @@ std::wstring submission_name(logging::SubmitStatus status) {
 struct Output::Stream {
     std::filesystem::path directory;
 
+    std::string directory_text;
+
     std::unique_ptr<logging::Reader> reader;
 
     logging::ReaderStatus status;
@@ -121,11 +127,17 @@ logging::Result<void> Output::add_run(std::filesystem::path directory) {
     health_dirty_ = pending_change_ = true;
     auto opened = logging::Reader::open(directory);
     if (!opened) {
-        attachment_error_ = assets::wide(opened.error().message);
+        attachment_error_ = application::diagnostic_text(opened.error().message);
         return std::unexpected(opened.error());
+    }
+    auto text = platform::utf16_to_utf8(directory.generic_wstring());
+    if (!text) {
+        attachment_error_ = L"Cannot attach run: invalid UTF-16 directory.";
+        return std::unexpected(logging::Error{logging::ErrorCode::io_failed, "Invalid UTF-16 text."});
     }
     auto stream = std::make_unique<Stream>();
     stream->directory = std::move(directory);
+    stream->directory_text = std::move(*text);
     stream->reader = std::move(*opened);
     streams_.push_back(std::move(stream));
     attachment_error_.clear();
@@ -181,9 +193,7 @@ bool Output::accept_owned(logging::Record record) {
         ++statistics_.invalid_owned;
         return false;
     }
-    try {
-        static_cast<void>(assets::wide(record.run_id));
-    } catch (const std::runtime_error&) {
+    if (!StringView(record.run_id).is_valid_utf8()) {
         ++statistics_.invalid_owned;
         return false;
     }
@@ -291,7 +301,7 @@ void Output::capture_raw(const std::filesystem::path& directory, bool standard_e
         logging::Entry entry{.category = "process.raw",
                              .event_code = standard_error ? "raw.stderr" : "raw.stdout",
                              .message = std::move(message)};
-        entry.fields = {{"directory", assets::utf8(directory.generic_wstring())},
+        entry.fields = {{"directory", (*at)->directory_text},
                         {"offset", tail.offset + begin},
                         {"bytes", static_cast<std::uint64_t>(consumed - begin)},
                         {"encoding", std::string("utf8-escaped")}};
@@ -359,9 +369,9 @@ void Output::rebuild() const {
         const auto& record = value.record;
         const auto& entry = record.entry;
         if (entry.severity < minimum_ ||
-            (!category_.empty() && !contains_folded(assets::wide(entry.category), category_)) ||
+            (!category_.empty() && !contains_folded(platform::utf8_to_utf16_validated(entry.category), category_)) ||
             (!query_.empty() && !contains_folded(visible_text(entry.message), query_) &&
-             !contains_folded(assets::wide(entry.event_code), query_)))
+             !contains_folded(platform::utf8_to_utf16_validated(entry.event_code), query_)))
             continue;
         if (entry.repeat) {
             Group group{record.run_id, record.process_id, entry.category, entry.event_code, entry.repeat->identity};
@@ -393,15 +403,16 @@ void Output::rebuild() const {
         if (entry.source.line)
             source += L":" + std::to_wstring(entry.source.line) +
                       (entry.source.column ? L":" + std::to_wstring(entry.source.column) : L"");
-        auto delivery = record.persistence == logging::Persistence::jsonl ? L"JSONL · " + assets::wide(record.run_id)
-                                                                          : L"Not persisted";
+        auto delivery = record.persistence == logging::Persistence::jsonl
+                            ? L"JSONL · " + platform::utf8_to_utf16_validated(record.run_id)
+                            : L"Not persisted";
         if (value.rejection)
             delivery += L" · " + submission_name(*value.rejection);
         // Cell identity is table-wide, unlike the stable column keys above.
         const auto cell = row.key * 8;
         table->rows.push_back({row.key,
-                               {{cell + 1, assets::wide(logging::name(entry.severity))},
-                                {cell + 2, assets::wide(entry.category)},
+                               {{cell + 1, platform::utf8_to_utf16_validated(logging::name(entry.severity))},
+                                {cell + 2, platform::utf8_to_utf16_validated(entry.category)},
                                 {cell + 3, std::move(message)},
                                 {cell + 4, short_text(std::move(source), 1024)},
                                 {cell + 5, short_text(std::move(delivery))}}});
@@ -509,7 +520,7 @@ void Output::update_health() const {
         incomplete += s.incomplete;
         finals += s.has_final_summary;
         if (s.latest_issue)
-            issue = short_text(visible_text(s.latest_issue->message, true), 200);
+            issue = short_text(visible_text(application::diagnostic_text(s.latest_issue->message), true), 200);
         if (stream->health) {
             const auto& health = stream->health->report.health;
             rejected += health.rejected_queue_full + health.rejected_producer_limit + health.rejected_record_too_large +
@@ -594,12 +605,14 @@ void Output::append(std::vector<ui::Control>& controls, ui::ControlKey parent, u
     using namespace ui_language;
     rebuild();
     const auto* selected = selected_record();
-    const auto detail = selected ? short_text(L"Read only · " + assets::wide(selected->entry.event_code) + L" · " +
-                                                  visible_text(selected->entry.source.file, true),
-                                              2048)
-                                 : L"Select a record to inspect its complete body.";
-    const auto level = minimum_ == logging::Severity::trace ? L"Level: All"
-                                                            : L"Level: " + assets::wide(logging::name(minimum_)) + L"+";
+    const auto detail =
+        selected ? short_text(L"Read only · " + platform::utf8_to_utf16_validated(selected->entry.event_code) + L" · " +
+                                  visible_text(selected->entry.source.file, true),
+                              2048)
+                 : L"Select a record to inspect its complete body.";
+    const auto level = minimum_ == logging::Severity::trace
+                           ? L"Level: All"
+                           : L"Level: " + platform::utf8_to_utf16_validated(logging::name(minimum_)) + L"+";
     const double list_height = std::max(40.f, selected ? (height - 124) * .4f : height - 96);
     const std::array<InputValue, 15> inputs{
         TableBinding{table_, {selected_, 3}},

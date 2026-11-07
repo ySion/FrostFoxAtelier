@@ -59,8 +59,10 @@ void profile_physics_cpu(const std::filesystem::path& root, std::string_view sce
             std::chrono::duration<double, std::milli>(recorder.last().time(application::phases::scene)).count());
         quiet = awake ? 0 : quiet + 1;
     }
+    const auto root_text = platform::utf16_to_utf8(root.native());
+    require(bool(root_text), "Invalid UTF-16 profile root.");
     Json report{{"schema", "atelier.editor.physics-cpu.v1"},
-                {"project", assets::utf8(root.wstring())},
+                {"project", *root_text},
                 {"scene", scene},
                 {"bodies", physics.body_count()},
                 {"frames", frames},
@@ -157,9 +159,11 @@ void profile_scene_cpu(const std::filesystem::path& root, std::string_view scene
         }
     // MaterialBatch deduplicates by image and declared transfer function. Empty
     // inputs use typed values; only an entirely empty table needs one sentinel.
+    const auto root_text = platform::utf16_to_utf8(root.native());
+    require(bool(root_text), "Invalid UTF-16 profile root.");
     Json report{
         {"schema", "atelier.editor.scene-cpu.v4"},
-        {"project", assets::utf8(root.wstring())},
+        {"project", *root_text},
         {"scene", scene},
         {"gpu", false},
         {"samples", 121},
@@ -199,7 +203,9 @@ void profile_scene_cpu(const std::filesystem::path& root, std::string_view scene
             if (drawn.insert(mesh.geometry.get()).second)
                 visible_geometry_parts += mesh.geometry->parts().size();
         }
-        report["visibility"] = {{"camera_report", assets::utf8(camera_report.wstring())},
+        const auto camera_report_text = platform::utf16_to_utf8(camera_report.native());
+        require(bool(camera_report_text), "Invalid UTF-16 camera report path.");
+        report["visibility"] = {{"camera_report", *camera_report_text},
                                 {"camera", camera},
                                 {"pixel_extent", {width, height}},
                                 {"visible_instances", visible},

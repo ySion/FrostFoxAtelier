@@ -113,7 +113,7 @@ void obj(const fs::path& root) {
     const std::string geometry_text = "v 0 0 0\nv 1 0 0\nv 0 1 0\nvt 0 0\nvt 1 0\nvt 0 1\n";
     write(root / "scene.obj",
           "mtllib scene.mtl\n" + geometry_text + "f 1 2 3\nusemtl White\nf 1 2 3\nusemtl Leaf\nf 1/1 2/2 3/3\n");
-    const auto imported = assets::load_obj(root / "scene.obj");
+    const auto imported = take(assets::load_obj(root / "scene.obj"));
     aligned(imported);
     require(imported.mesh->vertices().size() == 9 && imported.mesh->parts().size() == 3 &&
                 imported.materials.size() == 3,
@@ -138,16 +138,27 @@ void obj(const fs::path& root) {
     const auto original = take(assets::mesh_content_sha256({"mesh/one", L"first", imported.mesh, {}}));
     write(root / "scene.mtl",
           "newmtl White\nKd .8 .7 .6\nnewmtl Leaf\nKd .2 .3 .4\nmap_Kd color.bmp\nmap_d opacity.bmp\n");
-    const auto edited = assets::load_obj(root / "scene.obj");
+    const auto edited = take(assets::load_obj(root / "scene.obj"));
     require(value<math::Vector4>(*edited.materials[1], "base_color").x == .8f &&
                 take(assets::mesh_content_sha256({"mesh/two", L"second", edited.mesh, {}})) == original,
             "MI author edits still changed geometry content or identity leaked into its digest.");
     write(root / "bad.obj", "mtllib ../escape.mtl\n" + geometry_text + "f 1 2 3\n");
-    rejects([&] { assets::load_obj(root / "bad.obj"); }, "inside the source directory");
+    rejects([&] { static_cast<void>(assets::load_obj(root / "bad.obj")); }, "inside the source directory");
     write(root / "bad.obj", "mtllib scene.mtl\n" + geometry_text + "usemtl Leaf\nf 1 2 3\n");
-    rejects([&] { assets::load_obj(root / "bad.obj"); }, "requires UV");
+    rejects([&] { static_cast<void>(assets::load_obj(root / "bad.obj")); }, "requires UV");
     write(root / "scene.mtl", "newmtl White\nKd 2 1 1\nnewmtl Leaf\nKd 1 1 1\n");
-    rejects([&] { assets::load_obj(root / "scene.obj"); }, "Invalid MTL base color");
+    rejects([&] { static_cast<void>(assets::load_obj(root / "scene.obj")); }, "Invalid MTL base color");
+
+    write(root / "scene.obj", "mtllib scene.mtl\n" + geometry_text + "usemtl White\nf 1 2 3\n");
+    write(root / "scene.mtl", "newmtl White\nKd 1 1 1\nnewmtl 中🦊\nKd .2 .3 .4\n");
+    const auto unused = take(assets::load_obj(root / "scene.obj"));
+    require(unused.mesh->materials().size() == 3 && unused.mesh->material_slot(0) == 1 &&
+                geometry::material_slot_name(*unused.mesh, 2) == "中🦊",
+            "OBJ lost an unused Unicode material slot.");
+    write(root / "scene.mtl", "newmtl White\nKd 1 1 1\nnewmtl \xFF\nKd .2 .3 .4\n");
+    const auto invalid_name = assets::load_obj(root / "scene.obj");
+    require(!invalid_name && invalid_name.error().code == ErrorCode::invalid_storage,
+            "OBJ accepted invalid UTF-8 in an unused material slot.");
 }
 
 void gltf(const fs::path& root) {
@@ -189,7 +200,7 @@ void gltf(const fs::path& root) {
             {"bufferView":0,"byteOffset":24,"componentType":5126,"count":3,"type":"VEC4"},
             {"bufferView":0,"byteOffset":40,"componentType":5126,"count":3,"type":"VEC2"}]})");
     write(root / "scene.gltf", fixture.dump());
-    const auto imported = assets::load_gltf(root / "scene.gltf");
+    const auto imported = take(assets::load_gltf(root / "scene.gltf"));
     aligned(imported);
     require(imported.mesh->vertices().size() == 18 && imported.mesh->parts().size() == 6 &&
                 imported.materials.size() == 3 && imported.mesh->materials()[1].name == "white (2)" &&
@@ -229,13 +240,13 @@ void gltf(const fs::path& root) {
     variant["materials"][0]["doubleSided"] = false;
     variant["materials"][1]["doubleSided"] = true;
     write(root / "variant.gltf", variant.dump());
-    const auto sided = assets::load_gltf(root / "variant.gltf");
+    const auto sided = take(assets::load_gltf(root / "variant.gltf"));
     require(sided.materials[0]->parent_key == "builtin/material/standard-opaque-single" &&
                 sided.materials[1]->parent_key == "builtin/material/standard-mask-double",
             "glTF did not select the other StandardPBR policy sources.");
     const auto reject = [&](Json variant, std::string_view reason) {
         write(root / "variant.gltf", variant.dump());
-        rejects([&] { assets::load_gltf(root / "variant.gltf"); }, reason);
+        rejects([&] { static_cast<void>(assets::load_gltf(root / "variant.gltf")); }, reason);
     };
     variant = fixture;
     variant["buffers"][0]["uri"] = "%2e%2e/outside.bin";

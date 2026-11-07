@@ -53,12 +53,15 @@ void verify_output_window(Application& app, const std::filesystem::path& evidenc
         long_entry.message += std::string(96, 'x') + "\n";
     long_entry.message.resize(logging::maximum_message_bytes - 4);
     long_entry.message += "END!";
+    const auto evidence_text = platform::utf16_to_utf8(evidence.native());
+    const auto source_path_text = platform::utf16_to_utf8(source.generic_wstring());
+    require(evidence_text && source_path_text, "Invalid UTF-16 Output fixture path.");
     long_entry.source = {.file = "output-location.source",
-                         .root = assets::utf8(evidence.wstring()),
+                         .root = *evidence_text,
                          .line = 2,
                          .column = 7,
                          .version = atelier::source::content_hash(source_text),
-                         .disk_path = assets::utf8(source.generic_wstring())};
+                         .disk_path = *source_path_text};
     submit(long_entry);
     flush();
     Access::output_layout(app);
@@ -118,7 +121,7 @@ void verify_output_window(Application& app, const std::filesystem::path& evidenc
     click(app, controls::locate);
     tick(app, 2);
     const auto* code = app.presented()->find(editor::source_control::buffer);
-    require(code && !code->read_only && code->code->text() == assets::wide(source_text) &&
+    require(code && !code->read_only && code->code->text() == platform::utf8_to_utf16_validated(source_text) &&
                 code->code->edit().current().caret.offset == 19,
             "Output Locate lost original root/UTF-8 column or made SourceEditor read-only.");
     require(Access::focused(app) == editor::source_control::buffer && Access::text_input(app),
@@ -126,9 +129,11 @@ void verify_output_window(Application& app, const std::filesystem::path& evidenc
     const auto editable = code->code;
     click(app, editor::source_control::buffer);
     type(app, L"editable");
-    require(editable->text() != assets::wide(source_text), "SourceEditor stopped accepting ordinary edits.");
+    require(editable->text() != platform::utf8_to_utf16_validated(source_text),
+            "SourceEditor stopped accepting ordinary edits.");
     key(app, 'Z', true);
-    require(editable->text() == assets::wide(source_text), "SourceEditor undo did not restore the source fixture.");
+    require(editable->text() == platform::utf8_to_utf16_validated(source_text),
+            "SourceEditor undo did not restore the source fixture.");
     Access::select_tab(app, control::output_tab);
     tick(app, 2);
 
@@ -146,10 +151,14 @@ void verify_output_window(Application& app, const std::filesystem::path& evidenc
     // Prepare valid author files independently of the material-creation UI.
     auto material = model(project.assets().material("builtin/material/default-grid"));
     auto& material_source = std::get<assets::MaterialSourceAsset>(material.author);
-    const auto source_file = model(project.assets().source(assets::wide(material_source.source_path)));
-    material_source.source_path = assets::utf8(L"Content/Materials/错误.ms.source");
+    const auto source_file =
+        model(project.assets().source(platform::utf8_to_utf16_validated(material_source.source_path)));
+    const auto material_source_text = platform::utf16_to_utf8(L"Content/Materials/错误.ms.source");
+    require(bool(material_source_text), "Invalid UTF-16 material Source fixture path.");
+    material_source.source_path = *material_source_text;
     const std::filesystem::path material_path = L"Content/Materials/错误.ms.material";
-    model(editor::write_file(model(project.resolve(assets::wide(material_source.source_path))), source_file.source));
+    model(editor::write_file(model(project.resolve(platform::utf8_to_utf16_validated(material_source.source_path))),
+                             source_file.source));
     model(editor::write_file(model(project.resolve(material_path)), assets::material_format::encode(material).dump(2)));
     model(project.refresh());
     const auto entry = std::ranges::find(project.entries(), material_path, &assets::ProjectEntry::path);
@@ -163,8 +172,8 @@ void verify_output_window(Application& app, const std::filesystem::path& evidenc
     model(editor::write_file(model(project.resolve(project.startup_scene())), model(authored.serialize())));
     const auto author = model(project.assets().material(material_key));
     const auto source_path = std::get<assets::MaterialSourceAsset>(author.author).source_path;
-    std::filesystem::remove(model(project.resolve(assets::wide(source_path))));
-    const auto unreadable = project.assets().source(assets::wide(source_path));
+    std::filesystem::remove(model(project.resolve(platform::utf8_to_utf16_validated(source_path))));
+    const auto unreadable = project.assets().source(platform::utf8_to_utf16_validated(source_path));
     require(!unreadable, "Deleted material Source remained readable.");
     Access::mark_saved(app); // The earlier UI fixture's cube is not part of this document-load case.
     model(app.open_project(project.root()));
@@ -184,7 +193,8 @@ void verify_output_window(Application& app, const std::filesystem::path& evidenc
                 std::get<std::uint64_t>(error_code->value) == static_cast<std::uint64_t>(unreadable.error().code),
             "Material load error was reduced to a warning label or had its original code/body replaced.");
     select_row(error_key);
-    require(output.body()->text() == assets::wide(unreadable.error().message) && !app.document().dirty(),
+    require(output.body()->text() == platform::utf8_to_utf16_validated(unreadable.error().message) &&
+                !app.document().dirty(),
             "Output changed the material error body or tolerant loading dirtied the author document.");
     capture(app, evidence / "output-material-error.png");
 }

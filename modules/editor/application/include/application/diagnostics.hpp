@@ -4,14 +4,20 @@
 #include "source/diagnostics.hpp"
 
 namespace atelier::application {
+// Presentation of an existing failure only. Callers retain its original Error
+// and display prefix; invalid diagnostic bytes must not cause a second failure.
+std::wstring diagnostic_text(std::string_view message) noexcept;
+
+std::string diagnostic_text(std::wstring_view message) noexcept;
+
 // These bridges own the domain payload, not the underlying diagnostic policy.
 // Draining is performed by the host exactly once at its existing boundary.
 logging::SourceLocation diagnostic_source(const SourceLocation&);
 
-logging::Entry error_diagnostic(const Error&, std::string_view event, const std::filesystem::path& root);
+Result<logging::Entry> error_diagnostic(const Error&, std::string_view event, const std::filesystem::path& root);
 
-logging::Entry world_diagnostic(const editor::Session&, const world::Diagnostic&, const std::filesystem::path& root,
-                                std::string_view origin = "world");
+Result<logging::Entry> world_diagnostic(const editor::Session&, const world::Diagnostic&,
+                                        const std::filesystem::path& root, std::string_view origin = "world");
 
 void report_world(const editor::Session&, std::span<const world::Diagnostic>, const std::filesystem::path& root,
                   std::string_view origin = "world") noexcept;

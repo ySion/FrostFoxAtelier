@@ -11,6 +11,7 @@ void client_size(const std::filesystem::path& executable, const std::filesystem:
     const auto project = root / "Project";
     project_fixture(project);
     const auto original_scene = sha256_file(project / "Content/Scenes/Main.scene");
+    require(bool(original_scene), original_scene ? "" : original_scene.error());
     struct Extent {
         unsigned width;
 
@@ -82,12 +83,16 @@ void client_size(const std::filesystem::path& executable, const std::filesystem:
              {"foreground_preserved", true}});
         driver.client.reset();
         child.close();
-        require(discover(directory).empty(), "Closed size fixture retained its Control endpoint");
-        require(sha256_file(project / "Content/Scenes/Main.scene") == original_scene,
+        const auto remaining = discover(directory);
+        require(bool(remaining), remaining ? "" : remaining.error().what());
+        require(remaining->empty(), "Closed size fixture retained its Control endpoint");
+        require(sha256_file(project / "Content/Scenes/Main.scene") == *original_scene,
                 "Size fixture modified its saved scene");
         std::cout << "Client-size case " << i << ": " << expected.width << 'x' << expected.height << ", DPI " << dpi
                   << ", viewport " << stable_viewport.dump() << std::endl;
     }
     write(root / "result.json", Json{{"status", "passed"}, {"windows", observations}}.dump(2));
-    std::cout << "Editor client-size E2E: PASS | " << utf8(root.wstring()) << '\n';
+    const auto root_text = platform::utf16_to_utf8(root.native());
+    require(bool(root_text), "Invalid UTF-16 client-size evidence path");
+    std::cout << "Editor client-size E2E: PASS | " << *root_text << '\n';
 }

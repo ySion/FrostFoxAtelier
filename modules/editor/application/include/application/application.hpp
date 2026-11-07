@@ -30,7 +30,7 @@ public:
 
     bool step(renderer::Capture* = nullptr);
 
-    void enable_control(const std::filesystem::path& directory);
+    Result<void> enable_control(const std::filesystem::path& directory);
 
     // A require_scene open also checks the loaded scene with dmit before retiring the current document.
     Result<void> open_project(const std::filesystem::path&, bool create = false,

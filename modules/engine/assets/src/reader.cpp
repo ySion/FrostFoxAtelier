@@ -1,6 +1,7 @@
 #include "assets/reader.hpp"
 #include "assets/builtin_materials.hpp"
 #include "assets/material_format.hpp"
+#include "platform/utf.hpp"
 #include <Windows.h>
 #include <cwctype>
 #include <map>
@@ -144,7 +145,7 @@ Result<MeshAsset> Reader::publish_mesh(std::vector<ProjectEntry> entries, std::s
         CachedMesh cached{loaded.mesh, {}, loaded.notes};
         for (const auto& file : loaded.files) {
             const auto path = item.path.parent_path() / file.relative;
-            take(candidate.resolve(path));
+            ATELIER_TRY(candidate.resolve(path));
             changed.push_back(path);
             if (file.relative != item.path.filename())
                 cached.dependencies.push_back(path);
@@ -217,7 +218,7 @@ const ProjectEntry* Reader::entry(std::string_view key) const {
     return at == entry_index_.end() ? nullptr : &entries_[at->second];
 }
 
-MeshImport Reader::prepare_mesh(const std::filesystem::path& source) {
+Result<MeshImport> Reader::prepare_mesh(const std::filesystem::path& source) {
     return load_mesh(source, &images_);
 }
 
@@ -245,8 +246,9 @@ Result<MeshAsset> Reader::mesh(std::string_view key) {
         const auto& entry = *item;
         auto found_mesh = meshes_.find(entry.key);
         if (found_mesh == meshes_.end()) {
-            auto loaded = prepare_mesh(take(resolve(entry.path)));
-            retain_import(entry.key, entry.path, loaded);
+            ATELIER_TRY_BIND(path, resolve(entry.path));
+            ATELIER_TRY_BIND(loaded, prepare_mesh(*path));
+            retain_import(entry.key, entry.path, *loaded);
             found_mesh = meshes_.find(entry.key);
         }
         // In slot order, so every consumer lists the defaults as the mesh lists its slots.
@@ -291,8 +293,9 @@ Result<std::vector<std::filesystem::path>> Reader::mesh_dependency_files(std::st
         const auto& item = listed(*this, key, AssetKind::mesh);
         auto cached = meshes_.find(item.key);
         if (cached == meshes_.end()) {
-            auto loaded = prepare_mesh(take(resolve(item.path)));
-            retain_import(item.key, item.path, loaded);
+            ATELIER_TRY_BIND(path, resolve(item.path));
+            ATELIER_TRY_BIND(loaded, prepare_mesh(*path));
+            retain_import(item.key, item.path, *loaded);
             cached = meshes_.find(item.key);
         }
         return cached->second.dependencies;
@@ -303,11 +306,13 @@ Result<std::vector<std::filesystem::path>> Reader::mesh_dependency_files(std::st
 
 Result<SkyAsset> Reader::sky_map(std::string_view key) {
     const auto* at = entry(key);
-    if (!at || at->kind != AssetKind::sky)
-        return failure(!at ? "Sky map key is not a Radiance .hdr asset of this project: " + std::string(key)
-                           : "Sky map key names " + utf8(at->path.generic_wstring()) +
-                                 ", which is not a Radiance .hdr asset.");
-    const auto relative = utf8(at->path.generic_wstring());
+    if (!at)
+        return failure("Sky map key is not a Radiance .hdr asset of this project: " + std::string(key));
+    const auto relative = platform::utf16_to_utf8(at->path.generic_wstring());
+    if (!relative)
+        return failure("Invalid UTF-16 text.");
+    if (at->kind != AssetKind::sky)
+        return failure("Sky map key names " + *relative + ", which is not a Radiance .hdr asset.");
     SkyAsset asset{at->key, at->path.stem().wstring(), {}};
     if (const auto cached = sky_maps_.find(at->key); cached != sky_maps_.end()) {
         asset.map = cached->second;
@@ -316,11 +321,11 @@ Result<SkyAsset> Reader::sky_map(std::string_view key) {
     auto path = resolve(at->path);
     auto bytes = path ? read_file(*path, std::size_t(256) << 20) : Result<std::string>{std::unexpected(path.error())};
     if (!bytes)
-        return failure("Sky map " + relative + " could not be read: " + bytes.error().message);
+        return failure("Sky map " + *relative + " could not be read: " + bytes.error().message);
     try {
         asset.map = rendering::decode_radiance_hdr(*bytes);
     } catch (const std::exception& error) {
-        return failure("Sky map " + relative + " is not a valid Radiance HDR file: " + error.what());
+        return failure("Sky map " + *relative + " is not a valid Radiance HDR file: " + error.what());
     }
     sky_maps_.emplace(at->key, asset.map);
     return asset;
@@ -332,8 +337,9 @@ Result<TextureAsset> Reader::texture(std::string_view key) {
         auto at = textures_.find(item.key);
         if (at == textures_.end()) {
             // Through the image cache: a mesh import that decoded the same bytes shares its pixels.
-            const auto bytes = take(read_file(take(resolve(item.path)), 128 * 1024 * 1024));
-            const std::array<std::string_view, 1> source{bytes};
+            ATELIER_TRY_BIND(path, resolve(item.path));
+            ATELIER_TRY_BIND(bytes, read_file(*path, 128 * 1024 * 1024));
+            const std::array<std::string_view, 1> source{*bytes};
             at = textures_.emplace(item.key, decode_images(source, &images_).front()).first;
         }
         return TextureAsset{item.key, item.path.stem().wstring(), at->second};
@@ -369,7 +375,9 @@ Result<MaterialAsset> Reader::material(std::string_view key) {
             c = static_cast<wchar_t>(std::towlower(c));
         if (extension != L".material")
             return failure("Material assets require a .material file.");
-        auto asset = material_format::decode(json_format::parse(take(read_file(take(resolve(item.path))))));
+        ATELIER_TRY_BIND(path, resolve(item.path));
+        ATELIER_TRY_BIND(bytes, read_file(*path));
+        auto asset = material_format::decode(json_format::parse(*bytes));
         const bool is_source = is_material_source_path(item.path);
         if (is_source != std::holds_alternative<MaterialSourceAsset>(asset.author))
             return failure(
@@ -383,22 +391,23 @@ Result<MaterialAsset> Reader::material(std::string_view key) {
 }
 
 Result<source::SourceFile> Reader::source(const std::filesystem::path& project_relative) const {
-    try {
-        const auto named = utf8(project_relative.generic_wstring());
-        if (named.starts_with("builtin/")) {
-            auto builtin = builtin_material_source(named);
-            if (!builtin)
-                return failure("Unknown installed material Source: " + named);
-            return std::move(*builtin);
-        }
-        if (root_.empty())
-            return failure("Reading project Source requires a project root.");
-        if (!is_source_path(project_relative))
-            return failure("Source requires an explicit project-relative .source path.");
-        const auto resolved = take(resolve(project_relative));
-        return source::read_source_file(resolved, utf8(project_relative.lexically_normal().generic_wstring()));
-    } catch (const std::exception& error) {
-        return failure(error.what());
+    const auto named = platform::utf16_to_utf8(project_relative.generic_wstring());
+    if (!named)
+        return failure("Invalid UTF-16 text.");
+    if (named->starts_with("builtin/")) {
+        auto builtin = builtin_material_source(*named);
+        if (!builtin)
+            return failure("Unknown installed material Source: " + *named);
+        return std::move(*builtin);
     }
+    if (root_.empty())
+        return failure("Reading project Source requires a project root.");
+    if (!is_source_path(project_relative))
+        return failure("Source requires an explicit project-relative .source path.");
+    ATELIER_TRY_BIND(resolved, resolve(project_relative));
+    auto normalized = platform::utf16_to_utf8(project_relative.lexically_normal().generic_wstring());
+    if (!normalized)
+        return failure("Invalid UTF-16 text.");
+    return source::read_source_file(*resolved, std::move(*normalized));
 }
 }

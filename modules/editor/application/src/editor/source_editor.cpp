@@ -1,9 +1,10 @@
 #include "editor/source_editor.hpp"
 #include "editor/project_code.hpp"
 #include "assets/file.hpp"
+#include "application/diagnostics.hpp"
+#include "platform/utf.hpp"
 #include <algorithm>
 #include <charconv>
-#include <stdexcept>
 
 namespace atelier::editor {
 namespace {
@@ -11,23 +12,25 @@ auto failure(std::string message) {
     return std::unexpected(Error{ErrorCode::invalid_storage, std::move(message)});
 }
 
-std::wstring normalized(std::string_view bytes) {
+Result<std::wstring> normalized(std::string_view bytes) {
     if (bytes.starts_with("\xef\xbb\xbf"))
         bytes.remove_prefix(3);
-    auto value = assets::wide(bytes);
+    auto value = platform::utf8_to_utf16(bytes);
+    if (!value)
+        return failure("Invalid UTF-8 text.");
     std::wstring result;
-    result.reserve(value.size());
-    for (std::size_t i = 0; i < value.size(); ++i) {
-        if (value[i] == L'\r') {
+    result.reserve(value->size());
+    for (std::size_t i = 0; i < value->size(); ++i) {
+        if ((*value)[i] == L'\r') {
             result += L'\n';
-            if (i + 1 < value.size() && value[i + 1] == L'\n')
+            if (i + 1 < value->size() && (*value)[i + 1] == L'\n')
                 ++i;
         } else
-            result += value[i];
+            result += (*value)[i];
     }
     if (!ui::detail::valid_text(result, false) ||
         std::ranges::any_of(result, [](wchar_t c) { return (c < 32 && c != L'\t' && c != L'\n') || c == 127; }))
-        throw std::runtime_error("Open a UTF-8 text file; binary/control characters are not editable.");
+        return failure("Open a UTF-8 text file; binary/control characters are not editable.");
     return result;
 }
 
@@ -47,26 +50,22 @@ bool SourceEditor::File::dirty() const {
 }
 
 Result<void> SourceEditor::load(File& file, std::string bytes) {
-    try {
-        auto text = normalized(bytes);
-        auto document = std::make_shared<ui::CodeDocument>(text);
-        if (file.document) {
-            const auto& old = file.document->edit();
-            const auto offset = old.current().caret.offset;
-            document->locate(old.line_at(offset) + 1, offset - old.line_start(old.line_at(offset)) + 1);
-        }
-        file.bom = bytes.starts_with("\xef\xbb\xbf");
-        file.crlf = bytes.find("\r\n") != bytes.npos;
-        file.disk = std::move(bytes);
-        file.saved_text = std::move(text);
-        file.document = std::move(document);
-        file.checked_revision = 0;
-        file.conflict = false;
-        file.storage_error.clear();
-        return {};
-    } catch (const std::exception& error) {
-        return failure(error.what());
+    ATELIER_TRY_BIND(text, normalized(bytes));
+    auto document = std::make_shared<ui::CodeDocument>(*text);
+    if (file.document) {
+        const auto& old = file.document->edit();
+        const auto offset = old.current().caret.offset;
+        document->locate(old.line_at(offset) + 1, offset - old.line_start(old.line_at(offset)) + 1);
     }
+    file.bom = bytes.starts_with("\xef\xbb\xbf");
+    file.crlf = bytes.find("\r\n") != bytes.npos;
+    file.disk = std::move(bytes);
+    file.saved_text = std::move(*text);
+    file.document = std::move(document);
+    file.checked_revision = 0;
+    file.conflict = false;
+    file.storage_error.clear();
+    return {};
 }
 
 SourceEditor::File* SourceEditor::active() const noexcept {
@@ -77,8 +76,12 @@ SourceEditor::File* SourceEditor::active() const noexcept {
 Result<void> SourceEditor::open(const std::filesystem::path& path) {
     std::error_code error;
     const auto canonical = std::filesystem::canonical(path, error);
-    if (error)
-        return failure("Cannot open source file: " + assets::utf8(path.wstring()));
+    if (error) {
+        const auto name = platform::utf16_to_utf8(path.native());
+        if (!name)
+            return failure("Invalid UTF-16 text.");
+        return failure("Cannot open source file: " + *name);
+    }
     for (const auto& file : files_) {
         if (std::filesystem::equivalent(file->path, canonical, error) && !error) {
             selected_ = file->key;
@@ -106,33 +109,31 @@ Result<void> SourceEditor::save(File& file, bool overwrite) {
         file.conflict = true;
         return failure("The file changed on disk. Reload it or confirm overwriting the external changes.");
     }
-    try {
-        auto text = assets::utf8(file.document->text());
-        if (file.crlf) {
-            std::string converted;
-            converted.reserve(text.size() + file.document->edit().line_count());
-            for (auto c : text) {
-                if (c == '\n')
-                    converted += '\r';
-                converted += c;
-            }
-            text = std::move(converted);
+    auto text = platform::utf16_to_utf8(file.document->text());
+    if (!text)
+        return failure("Invalid UTF-16 text.");
+    if (file.crlf) {
+        std::string converted;
+        converted.reserve(text->size() + file.document->edit().line_count());
+        for (auto c : *text) {
+            if (c == '\n')
+                converted += '\r';
+            converted += c;
         }
-        if (file.bom)
-            text.insert(0, "\xef\xbb\xbf");
-        if (text.size() > 1024 * 1024)
-            return failure("Source file exceeds 1 MiB of UTF-8 text.");
-        ATELIER_TRY(write_file(file.path, text));
-        file.document->edit().break_group();
-        file.disk = std::move(text);
-        file.saved_text = file.document->text();
-        file.checked_revision = 0;
-        file.conflict = false;
-        file.storage_error.clear();
-        return {};
-    } catch (const std::exception& error) {
-        return failure(error.what());
+        *text = std::move(converted);
     }
+    if (file.bom)
+        text->insert(0, "\xef\xbb\xbf");
+    if (text->size() > 1024 * 1024)
+        return failure("Source file exceeds 1 MiB of UTF-8 text.");
+    ATELIER_TRY(write_file(file.path, *text));
+    file.document->edit().break_group();
+    file.disk = std::move(*text);
+    file.saved_text = file.document->text();
+    file.checked_revision = 0;
+    file.conflict = false;
+    file.storage_error.clear();
+    return {};
 }
 
 Result<void> SourceEditor::reload(File& file) {
@@ -248,60 +249,67 @@ bool SourceEditor::locate_problem() {
     const auto& buffer = file->document->edit();
     const auto line = buffer.line(std::min(problem_line_ - 1, buffer.line_count() - 1));
     // Compiler columns count UTF-8 bytes; the native editor uses UTF-16 offsets.
-    const auto bytes = assets::utf8(line);
-    auto count = std::min(problem_column_ ? problem_column_ - 1 : 0, bytes.size());
-    while (count && count < bytes.size() && (static_cast<unsigned char>(bytes[count]) & 0xc0) == 0x80)
+    const auto bytes = platform::utf16_to_utf8(line);
+    if (!bytes)
+        return false;
+    auto count = std::min(problem_column_ ? problem_column_ - 1 : 0, bytes->size());
+    while (count && count < bytes->size() && (static_cast<unsigned char>((*bytes)[count]) & 0xc0) == 0x80)
         --count;
-    file->document->locate(problem_line_, assets::wide(std::string_view(bytes).substr(0, count)).size() + 1);
+    file->document->locate(problem_line_,
+                           platform::utf8_to_utf16_validated(std::string_view(*bytes).substr(0, count)).size() + 1);
     return true;
 }
 
 Result<void> SourceEditor::locate(const logging::SourceLocation& location) {
-    try {
-        if (location.file.empty() || location.file.find('\0') != std::string::npos)
-            return failure("This record has no usable disk source path.");
-        if (location.version && location.disk_path.empty())
-            return failure("This Source version has no saved-file mapping; it cannot be located on disk.");
-        auto path =
-            std::filesystem::path{assets::wide(location.disk_path.empty() ? location.file : location.disk_path)};
-        if (!path.is_absolute()) {
-            const auto root = std::filesystem::path{assets::wide(location.root)};
-            if (!root.is_absolute() || path.has_root_path())
-                return failure("Relative log source has no original absolute root.");
-            path = root / path;
-        }
-        ATELIER_TRY_BIND(disk, assets::read_file(path, 1024 * 1024));
-        if (location.version && source::content_hash(*disk) != *location.version)
-            return failure("The recorded source version is stale; no location was applied.");
-        ATELIER_TRY(open(path));
-        auto* file = active();
-        if (!file || file->dirty())
-            return failure("Save or discard the source draft before locating a recorded position.");
-        if (file->disk != *disk)
-            ATELIER_TRY(load(*file, *disk));
-        auto& buffer = file->document->edit();
-        if (!location.line && location.offset) {
-            if (*location.offset > disk->size())
-                return failure("The recorded source byte offset is outside the file.");
-            auto offset = static_cast<std::size_t>(*location.offset);
-            while (offset && offset < disk->size() && (static_cast<unsigned char>((*disk)[offset]) & 0xc0) == 0x80)
-                --offset;
-            const auto prefix = normalized(std::string_view(*disk).substr(0, offset));
-            buffer.select({static_cast<std::uint32_t>(prefix.size()), false}, false);
-            return {};
-        }
-        const auto row = location.line ? location.line : 1;
-        if (row > buffer.line_count())
-            return failure("The recorded source line is outside the file.");
-        const auto bytes = assets::utf8(buffer.line(row - 1));
-        auto column = std::min<std::size_t>(location.column ? location.column - 1 : 0, bytes.size());
-        while (column && column < bytes.size() && (static_cast<unsigned char>(bytes[column]) & 0xc0) == 0x80)
-            --column;
-        file->document->locate(row, assets::wide(std::string_view(bytes).substr(0, column)).size() + 1);
-        return {};
-    } catch (const std::exception& error) {
-        return failure(error.what());
+    if (location.file.empty() || location.file.find('\0') != std::string::npos)
+        return failure("This record has no usable disk source path.");
+    if (location.version && location.disk_path.empty())
+        return failure("This Source version has no saved-file mapping; it cannot be located on disk.");
+    auto name = platform::utf8_to_utf16(location.disk_path.empty() ? location.file : location.disk_path);
+    if (!name)
+        return failure("Invalid UTF-8 text.");
+    auto path = std::filesystem::path{std::move(*name)};
+    if (!path.is_absolute()) {
+        auto root_name = platform::utf8_to_utf16(location.root);
+        if (!root_name)
+            return failure("Invalid UTF-8 text.");
+        const auto root = std::filesystem::path{std::move(*root_name)};
+        if (!root.is_absolute() || path.has_root_path())
+            return failure("Relative log source has no original absolute root.");
+        path = root / path;
     }
+    ATELIER_TRY_BIND(disk, assets::read_file(path, 1024 * 1024));
+    if (location.version && source::content_hash(*disk) != *location.version)
+        return failure("The recorded source version is stale; no location was applied.");
+    ATELIER_TRY(open(path));
+    auto* file = active();
+    if (!file || file->dirty())
+        return failure("Save or discard the source draft before locating a recorded position.");
+    if (file->disk != *disk)
+        ATELIER_TRY(load(*file, *disk));
+    auto& buffer = file->document->edit();
+    if (!location.line && location.offset) {
+        if (*location.offset > disk->size())
+            return failure("The recorded source byte offset is outside the file.");
+        auto offset = static_cast<std::size_t>(*location.offset);
+        while (offset && offset < disk->size() && (static_cast<unsigned char>((*disk)[offset]) & 0xc0) == 0x80)
+            --offset;
+        ATELIER_TRY_BIND(prefix, normalized(std::string_view(*disk).substr(0, offset)));
+        buffer.select({static_cast<std::uint32_t>(prefix->size()), false}, false);
+        return {};
+    }
+    const auto row = location.line ? location.line : 1;
+    if (row > buffer.line_count())
+        return failure("The recorded source line is outside the file.");
+    const auto bytes = platform::utf16_to_utf8(buffer.line(row - 1));
+    if (!bytes)
+        return failure("Invalid UTF-16 text.");
+    auto column = std::min<std::size_t>(location.column ? location.column - 1 : 0, bytes->size());
+    while (column && column < bytes->size() && (static_cast<unsigned char>((*bytes)[column]) & 0xc0) == 0x80)
+        --column;
+    file->document->locate(row,
+                           platform::utf8_to_utf16_validated(std::string_view(*bytes).substr(0, column)).size() + 1);
+    return {};
 }
 
 void SourceEditor::append(std::vector<ui::Control>& controls, ui::ControlKey parent, ui_language::LiveDocument& live,
@@ -329,7 +337,7 @@ void SourceEditor::append(std::vector<ui::Control>& controls, ui::ControlKey par
         if (conflict)
             diagnostic = L"File changed on disk. Reload discards this draft; Save asks before overwriting.";
         else if (!file->storage_error.empty())
-            diagnostic = assets::wide(file->storage_error);
+            diagnostic = application::diagnostic_text(file->storage_error);
         std::error_code error;
         const auto* ui_source = &live;
         error.clear();
@@ -340,14 +348,14 @@ void SourceEditor::append(std::vector<ui::Control>& controls, ui::ControlKey par
             status += (file->dirty() ? L"  |  Unsaved" : L"  |  Saved");
             status += L"  |  UI revision " + std::to_wstring(ui_source->revision());
             if (!ui_source->diagnostic().empty() && diagnostic.empty()) {
-                diagnostic = assets::wide(ui_source->diagnostic());
+                diagnostic = application::diagnostic_text(ui_source->diagnostic());
                 if (!current)
                     diagnostic = L"Previous saved version: " + diagnostic;
                 else {
-                    const auto prefix = assets::utf8(ui_source->path().filename().wstring()) + ":";
+                    const auto name = platform::utf16_to_utf8(ui_source->path().filename().native());
                     auto message = ui_source->diagnostic();
-                    if (message.starts_with(prefix)) {
-                        message.remove_prefix(prefix.size());
+                    if (name && message.starts_with(*name + ":")) {
+                        message.remove_prefix(name->size() + 1);
                         const auto first =
                             std::from_chars(message.data(), message.data() + message.size(), problem_line_);
                         if (first.ec == std::errc{} && first.ptr != message.data() + message.size() &&
@@ -373,14 +381,15 @@ void SourceEditor::append(std::vector<ui::Control>& controls, ui::ControlKey par
                   : build->state == BuildState::rebuild_required ? L" · Rebuild required"
                                                                  : L" · Build failed";
         if (build->error && diagnostic.empty()) {
-            diagnostic = assets::wide(build->error->message);
+            diagnostic = application::diagnostic_text(build->error->message);
             if (const auto& location = build->error->source; location && build->sources) {
                 const auto at = std::ranges::find(build->sources->files, location->path, &source::SourceFile::path);
                 const auto* input = at != build->sources->files.end()                              ? &*at
                                     : build->ui_source && build->ui_source->path == location->path ? &*build->ui_source
                                                                                                    : nullptr;
                 if (input && input->version == location->version) {
-                    auto path = project->resolve(assets::wide(location->path));
+                    auto name = platform::utf8_to_utf16(location->path);
+                    auto path = name ? project->resolve(*name) : failure("Invalid UTF-8 text.");
                     if (path) {
                         problem_path_ = *path;
                         problem_source_ = input->source;

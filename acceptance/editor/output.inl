@@ -55,12 +55,15 @@ void verify_output_projection() {
     take(editor::write_file(path, source_text));
     editor::Session scene;
     editor::Workspace workspace;
+    const auto folder_utf8 = platform::utf16_to_utf8(folder.native());
+    const auto path_utf8 = platform::utf16_to_utf8(path.generic_wstring());
+    require(folder_utf8 && path_utf8, "Output fixture paths must be valid UTF-16.");
     first.entry.source = {.file = "original.source",
-                          .root = assets::utf8(folder.wstring()),
+                          .root = *folder_utf8,
                           .line = 2,
                           .column = 7,
                           .version = source::content_hash(source_text),
-                          .disk_path = assets::utf8(path.generic_wstring())};
+                          .disk_path = *path_utf8};
     require(workspace.output.accept_owned(first), "Workspace lost a standalone record.");
     logging::Record independent;
     independent.entry = {
@@ -122,11 +125,11 @@ void verify_output_projection() {
             "An accepted submission bypassed JSONL or was not accepted.");
     auto flushed = run->flush();
     require(flushed.backend_acknowledged && flushed.sink_flush_succeeded, "Output real logging flush failed.");
-    const Error cause{
-        ErrorCode::assignment_failed, "完整业务原因\n" + std::string(2048, 'x') + "\n末尾",
-        SourceLocation{"original.source", 18446744073709551610ULL, 123, 7, 13, assets::utf8(path.generic_wstring())}};
-    require(hosted.submit_owned(application::error_diagnostic(cause, "editor.operation_failed", folder)).status ==
-                logging::SubmitStatus::accepted,
+    const Error cause{ErrorCode::assignment_failed, "完整业务原因\n" + std::string(2048, 'x') + "\n末尾",
+                      SourceLocation{"original.source", 18446744073709551610ULL, 123, 7, 13, *path_utf8}};
+    auto diagnostic = application::error_diagnostic(cause, "editor.operation_failed", folder);
+    require(bool(diagnostic), "The original Error record could not be created.");
+    require(hosted.submit_owned(std::move(*diagnostic)).status == logging::SubmitStatus::accepted,
             "The original Error record could not be submitted.");
     flushed = run->finish();
     require(flushed.backend_acknowledged && flushed.sink_flush_succeeded && flushed.summary_published,
@@ -152,7 +155,8 @@ void verify_output_projection() {
     const auto code = std::ranges::find(captured.fields, "error_code", &logging::Field::key);
     require(code != captured.fields.end() &&
                 std::get<std::uint64_t>(code->value) == static_cast<std::uint64_t>(ErrorCode::assignment_failed) &&
-                hosted.select(hosted.records()[1].key) && hosted.body()->text() == assets::wide(cause.message),
+                hosted.select(hosted.records()[1].key) &&
+                hosted.body()->text() == platform::utf8_to_utf16_validated(cause.message),
             "Project Output changed the original Error code or selected full body.");
     hosted.source_ended(directory); // Also valid after the completed Reader retires.
     const auto before = hosted.records().size();

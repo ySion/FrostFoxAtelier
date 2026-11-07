@@ -2,6 +2,7 @@
 #include "assets/assets.hpp"
 #include "assets/file.hpp"
 #include "foundation/string.hpp"
+#include "platform/utf.hpp"
 #include <bit>
 #include <map>
 
@@ -175,21 +176,24 @@ inline constexpr std::uint32_t magic = 0x534d5441; // ATMS, little endian.
 // Layout: magic, version, key/name text, vertices (12 floats each), edge masks,
 // slot names, parts (first/count/material), defaults (slot/key text). Every text
 // and array has a uint32 count; bounds are derived again from unchanged positions.
-// Both functions throw on malformed/oversized content; no project reads or roots.
+// Encoding returns invalid_storage for invalid UTF-16 names. Other malformed or
+// oversized content still throws until ASSET-LOAD migration; no project reads or roots.
 // maximum can lower the encoder's limit to the caller's remaining spill budget.
-inline std::string encode(const MeshAsset& asset, std::size_t maximum = maximum_bytes) {
+inline Result<std::string> encode(const MeshAsset& asset, std::size_t maximum = maximum_bytes) {
     if (!asset.mesh)
         throw std::runtime_error("Cannot encode an unresolved mesh snapshot.");
     maximum = std::min(maximum, maximum_bytes);
     detail::key(asset.key);
     if (asset.name.size() > maximum_text_bytes)
         throw std::length_error("Mesh snapshot name is too long.");
-    const auto name = assets::utf8(asset.name);
+    const auto name = platform::utf16_to_utf8(asset.name);
+    if (!name)
+        return std::unexpected(Error{ErrorCode::invalid_storage, "Invalid UTF-16 text."});
     const auto& mesh = *asset.mesh;
     std::size_t size{};
     detail::add_size(size, 2, 4, maximum);
     detail::text_size(size, asset.key, maximum);
-    detail::text_size(size, name, maximum);
+    detail::text_size(size, *name, maximum);
     detail::array_size<geometry::Vertex>(size, mesh.vertices().size(), 12 * 4, maximum);
     detail::array_size<std::uint8_t>(size, mesh.vertices().size() / 3, 1, maximum);
     detail::array_size<geometry::MaterialSlot>(size, mesh.materials().size(), 4, maximum);
@@ -212,7 +216,7 @@ inline std::string encode(const MeshAsset& asset, std::size_t maximum = maximum_
     out.u32(detail::magic);
     out.u32(version);
     out.text(asset.key);
-    out.text(name);
+    out.text(*name);
     out.count(mesh.vertices().size());
     for (const auto& vertex : mesh.vertices()) {
         out.floats(vertex.position);
@@ -247,7 +251,7 @@ inline MeshAsset decode(std::string_view bytes) {
     MeshAsset asset;
     asset.key = in.text();
     detail::key(asset.key);
-    asset.name = assets::wide(in.text());
+    asset.name = platform::utf8_to_utf16_validated(in.text());
     const auto vertex_count = in.count<geometry::Vertex>(12 * 4);
     if (!vertex_count || vertex_count % 3 || vertex_count > std::numeric_limits<int>::max())
         throw std::runtime_error("Mesh snapshot requires a nonempty triangle list.");

@@ -171,7 +171,9 @@ void verify_project_workspace(editor::Project& project) {
     workspace.dock.maximize(editor::control::assets_tab);
     workspace.assets.apply({ui::ActionKind::activate, browser::project, {}});
     const std::wstring unicode_name = L"Entry00000_材质\U0001F98A.txt";
-    const auto unicode_resource = "Source/" + assets::utf8(unicode_name);
+    const auto unicode_text = platform::utf16_to_utf8(unicode_name);
+    require(bool(unicode_text), "Invalid UTF-16 catalog fixture.");
+    const auto unicode_resource = "Source/" + *unicode_text;
     std::ofstream(project.root() / "Source" / unicode_name) << "// Unicode catalog fixture\n";
     for (unsigned i = 0; i < 64; ++i)
         std::ofstream(project.root() / "Source" / ("Entry" + std::to_string(10000 + i) + ".txt"))

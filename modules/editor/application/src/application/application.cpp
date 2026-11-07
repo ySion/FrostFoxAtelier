@@ -9,6 +9,7 @@
 #include "assets/file.hpp"
 #include "assets/json_format.hpp"
 #include "atelier/build_info.hpp"
+#include "platform/utf.hpp"
 #include <windowsx.h>
 #include <shellapi.h>
 #include <algorithm>
@@ -58,10 +59,6 @@ T graphics(renderer::Result<T> result) {
     if (!result)
         throw std::runtime_error(result.error().cause.message);
     return std::move(*result);
-}
-
-std::wstring widen(const std::string& value) {
-    return assets::wide(value);
 }
 
 Result<Scalar> scalar_value(const Scalar& prototype, double value) {
@@ -150,37 +147,42 @@ Application::~Application() {
 }
 
 void Application::notice(std::string_view code, std::wstring_view message, logging::Severity severity) noexcept {
-    try {
-        logging::Entry entry{.severity = severity,
-                             .category = "application",
-                             .event_code = std::string(code),
-                             .message = assets::utf8(message)};
-        entry.fields = {{"document", document_->presentation().identity()},
-                        {"project_root", assets::utf8(document_root_.generic_wstring())}};
-        static_cast<void>(workspace_.output.submit_owned(std::move(entry)));
-    } catch (...) {
+    auto text = platform::utf16_to_utf8(message);
+    if (!text) {
         std::fputs("Editor notice capture failed.\n", stderr);
+        return;
     }
+    auto root = platform::utf16_to_utf8(document_root_.generic_wstring());
+    if (!root) {
+        std::fputs("Editor notice capture failed.\n", stderr);
+        return;
+    }
+    logging::Entry entry{
+        .severity = severity, .category = "application", .event_code = std::string(code), .message = std::move(*text)};
+    entry.fields = {{"document", document_->presentation().identity()}, {"project_root", std::move(*root)}};
+    static_cast<void>(workspace_.output.submit_owned(std::move(entry)));
 }
 
 void Application::diagnostics() noexcept {
-    try {
-        for (const auto& item : document_->take_diagnostics())
-            static_cast<void>(workspace_.output.submit_owned(world_diagnostic(*document_, item, document_root_)));
-        const auto total = document_->world().dropped_diagnostics();
-        if (total != dropped_diagnostics_) {
-            logging::Entry entry{.severity = logging::Severity::warning,
-                                 .category = "world",
-                                 .event_code = "world.diagnostics_dropped",
-                                 .message = "World diagnostics exceeded their retention capacity."};
-            entry.fields = {{"document", document_->presentation().identity()},
-                            {"dropped_total", total},
-                            {"dropped_delta", total - dropped_diagnostics_}};
-            static_cast<void>(workspace_.output.submit_owned(std::move(entry)));
-            dropped_diagnostics_ = total;
+    for (const auto& item : document_->take_diagnostics()) {
+        auto entry = world_diagnostic(*document_, item, document_root_);
+        if (!entry) {
+            std::fputs("Editor diagnostic capture failed.\n", stderr);
+            return;
         }
-    } catch (...) {
-        std::fputs("Editor diagnostic capture failed.\n", stderr);
+        static_cast<void>(workspace_.output.submit_owned(std::move(*entry)));
+    }
+    const auto total = document_->world().dropped_diagnostics();
+    if (total != dropped_diagnostics_) {
+        logging::Entry entry{.severity = logging::Severity::warning,
+                             .category = "world",
+                             .event_code = "world.diagnostics_dropped",
+                             .message = "World diagnostics exceeded their retention capacity."};
+        entry.fields = {{"document", document_->presentation().identity()},
+                        {"dropped_total", total},
+                        {"dropped_delta", total - dropped_diagnostics_}};
+        static_cast<void>(workspace_.output.submit_owned(std::move(entry)));
+        dropped_diagnostics_ = total;
     }
 }
 
@@ -208,19 +210,19 @@ void Application::preserve_failure(std::string_view reason) noexcept {
 }
 
 void Application::report_error(const Error& error, std::string_view event, logging::Severity severity) noexcept {
-    try {
-        auto entry = error_diagnostic(error, event, document_root_);
-        entry.severity = severity;
-        static_cast<void>(workspace_.output.submit_owned(std::move(entry)));
-    } catch (...) {
+    auto entry = error_diagnostic(error, event, document_root_);
+    if (!entry) {
         std::fputs("Cannot capture editor error; business result is unchanged.\n", stderr);
+        return;
     }
+    entry->severity = severity;
+    static_cast<void>(workspace_.output.submit_owned(std::move(*entry)));
 }
 
 void Application::status(Result<void> result, const wchar_t* success) {
     if (!result)
         report_error(result.error());
-    workspace_.status = result ? success : widen(result.error().message);
+    workspace_.status = result ? success : diagnostic_text(result.error().message);
 }
 
 void Application::status(Result<world::Commit> result, const wchar_t* success) {
@@ -505,9 +507,12 @@ Result<void> Application::action(const ui::Action& source) {
         const auto* text = std::get_if<std::wstring>(&event.value);
         if (event.kind == ui::ActionKind::edit_cancel || !text || *text == document_->name(rename->object))
             return {};
+        auto name = platform::utf16_to_utf8(*text);
+        if (!name)
+            return std::unexpected(Error{ErrorCode::invalid_storage, "Invalid UTF-16 text."});
         return done(
             run_operator({"scene.rename",
-                          {{"name", assets::utf8(*text)}},
+                          {{"name", std::move(*name)}},
                           {.selection = editor::SelectionContext{rename->object, rename->object, {rename->object}},
                            .region = {}}},
                          true, false),
@@ -804,15 +809,19 @@ Result<void> Application::action(const ui::Action& source) {
             return {};
         }
         if (binding->kind == editor::Workspace::Binding::Kind::name) {
-            if (event.kind == ui::ActionKind::edit_commit)
+            if (event.kind == ui::ActionKind::edit_commit) {
+                auto name = platform::utf16_to_utf8(std::get<std::wstring>(event.value));
+                if (!name)
+                    return std::unexpected(Error{ErrorCode::invalid_storage, "Invalid UTF-16 text."});
                 return done(
                     run_operator(
                         {"scene.rename",
-                         {{"name", assets::utf8(std::get<std::wstring>(event.value))}},
+                         {{"name", std::move(*name)}},
                          {.selection = editor::SelectionContext{binding->object, binding->object, {binding->object}},
                           .region = {}}},
                         true, false),
                     L"Entity renamed / Undo restores its name");
+            }
             return {};
         }
         if (binding->kind == editor::Workspace::Binding::Kind::position_default) {
@@ -1155,7 +1164,7 @@ Result<void> Application::rename_asset(std::string_view key, std::string_view na
         }
         return {};
     }
-    ATELIER_TRY_BIND(renamed, project_->rename(entry->path, assets::wide(name)));
+    ATELIER_TRY_BIND(renamed, project_->rename(entry->path, platform::utf8_to_utf16_validated(name)));
     workspace_.assets.reselect(*renamed);
     workspace_.status = L"Renamed to " + renamed->filename().wstring();
     return {};
@@ -1179,10 +1188,10 @@ Result<void> Application::fit_lighting(bool follow_focus) {
 
 void Application::about() {
     close_menu(false);
-    const auto details = L"FrostFox Atelier\n\nBuild: " + assets::wide(build_info::revision) + L"\nConfiguration: " +
-                         assets::wide(build_info::configuration) + L"\n\nProject:\n" +
-                         (project_ ? project_->root().wstring() : L"No project open") + L"\n\nScene:\n" +
-                         (scene_path_.empty() ? L"Untitled" : scene_path_.generic_wstring());
+    const auto details = L"FrostFox Atelier\n\nBuild: " + platform::utf8_to_utf16_validated(build_info::revision) +
+                         L"\nConfiguration: " + platform::utf8_to_utf16_validated(build_info::configuration) +
+                         L"\n\nProject:\n" + (project_ ? project_->root().wstring() : L"No project open") +
+                         L"\n\nScene:\n" + (scene_path_.empty() ? L"Untitled" : scene_path_.generic_wstring());
     MessageBoxW(window(), details.c_str(), L"About FrostFox Atelier", MB_OK | MB_ICONINFORMATION);
 }
 
@@ -1233,9 +1242,9 @@ bool Application::effects(const ui::Reply& reply) {
                 if (!result) {
                     report_error(result.error(), cleanup ? "editor.rollback_failed" : "editor.operation_failed");
                     if (cleanup)
-                        first_error += L"; rollback failed: " + widen(result.error().message);
+                        first_error += L"; rollback failed: " + diagnostic_text(result.error().message);
                     else {
-                        remember(widen(result.error().message));
+                        remember(diagnostic_text(result.error().message));
                         business_failed = true;
                     }
                 }
@@ -1282,13 +1291,13 @@ bool Application::effects(const ui::Reply& reply) {
         const auto color_cancelled = finish_color_edit(false);
         if (!color_cancelled) {
             report_error(color_cancelled.error(), "editor.rollback_failed");
-            first_error += L"; rollback failed: " + widen(color_cancelled.error().message);
+            first_error += L"; rollback failed: " + diagnostic_text(color_cancelled.error().message);
         }
         apply(apply, ui_.cancel_interaction(), true);
         const auto cancelled = document_->cancel_edit();
         if (!cancelled) {
             report_error(cancelled.error(), "editor.rollback_failed");
-            first_error += L"; rollback failed: " + widen(cancelled.error().message);
+            first_error += L"; rollback failed: " + diagnostic_text(cancelled.error().message);
         }
         window_.capture(false);
     }
@@ -1320,17 +1329,17 @@ void Application::cancel_interaction(const ui::Reply& reply, std::string_view in
     effects(reply);
     if (!color_cancelled) {
         report_error(color_cancelled.error(), "editor.rollback_failed");
-        workspace_.status += L"; rollback failed: " + widen(color_cancelled.error().message);
+        workspace_.status += L"; rollback failed: " + diagnostic_text(color_cancelled.error().message);
     }
     const auto cancelled = document_->cancel_edit();
     if (!cancelled) {
         report_error(cancelled.error(), "editor.rollback_failed");
-        workspace_.status += L"; rollback failed: " + widen(cancelled.error().message);
+        workspace_.status += L"; rollback failed: " + diagnostic_text(cancelled.error().message);
     }
     const auto tool_cancelled = viewport_tool_.cancel(*document_);
     if (!tool_cancelled) {
         report_error(tool_cancelled.error(), "editor.rollback_failed");
-        workspace_.status = L"Viewport rollback failed: " + widen(tool_cancelled.error().message);
+        workspace_.status = L"Viewport rollback failed: " + diagnostic_text(tool_cancelled.error().message);
     }
     window_.capture(false);
     window_.cursor(ui::Cursor::arrow);
@@ -1464,7 +1473,7 @@ void Application::update_menu() {
                                 logging::Field{"diagnostic", std::string(popup_->diagnostic())}};
         static_cast<void>(ATELIER_LOG_WITH(logging::Severity::warning, "menu", "menu.rejected",
                                            logging::native::Context{fields}, "Popup update rejected"));
-        workspace_.status = L"UI: " + assets::wide(std::string(popup_->diagnostic()));
+        workspace_.status = L"UI: " + diagnostic_text(popup_->diagnostic());
         close_menu(false);
         return;
     }
@@ -1492,7 +1501,7 @@ void Application::update_menu() {
         child.update(at->key, {corners[0].x, corners[0].y, corners[1].x, corners[1].y}, false, at->children,
                      ui_.style(), style_sheet_, workspace_.ui_component("PopupMenu"));
         if (!child.visible()) {
-            workspace_.status = L"UI: " + assets::wide(std::string(child.diagnostic()));
+            workspace_.status = L"UI: " + diagnostic_text(child.diagnostic());
             menu_path_.resize(depth);
             break;
         }
@@ -1903,9 +1912,14 @@ void Application::input(const ui::Event& event, WPARAM native_key) {
     }
 }
 
-void Application::enable_control(const std::filesystem::path& directory) {
-    if (!control_)
-        control_ = std::make_unique<EditorControl>(*this, directory);
+Result<void> Application::enable_control(const std::filesystem::path& directory) {
+    if (!control_) {
+        auto created = EditorControl::create(*this, directory);
+        if (!created)
+            return std::unexpected(Error{ErrorCode::invalid_storage, created.error().what()});
+        control_ = std::make_unique<EditorControl>(std::move(*created));
+    }
+    return {};
 }
 
 bool Application::step(renderer::Capture* capture) {
@@ -2018,7 +2032,7 @@ bool Application::run_step(renderer::Capture* capture) try {
                                                        : renderer::GridPlane::xz;
     // After its pipelines are ready this is a bit check; before, the frame draws a fallback.
     if (const auto preparation = renderer_.preparation(control_ ? control_->view() : workspace_.view); !preparation)
-        workspace_.render_notice = L"Shader preparation failed: " + widen(preparation.error().cause.message);
+        workspace_.render_notice = L"Shader preparation failed: " + diagnostic_text(preparation.error().cause.message);
     else if (!preparation->ready)
         workspace_.render_notice =
             L"Compiling shaders " + std::to_wstring(preparation->done) + L"/" + std::to_wstring(preparation->total);
@@ -2041,8 +2055,8 @@ bool Application::run_step(renderer::Capture* capture) try {
                 throw editor::detail::Failure(std::move(cancelled.error()));
             controls = workspace_.describe(*document_, view_size, ui_.presented().get(),
                                            project_ ? &*project_ : nullptr, &ui_, command_focus());
-            workspace_.status =
-                L"Colour editor could not open" + (diagnostic.empty() ? std::wstring{} : L": " + widen(diagnostic));
+            workspace_.status = L"Colour editor could not open" +
+                                (diagnostic.empty() ? std::wstring{} : L": " + diagnostic_text(diagnostic));
         }
         return controls;
     };
@@ -2131,7 +2145,7 @@ bool Application::run_step(renderer::Capture* capture) try {
                 if (material_preparation.error().terminal)
                     throw std::runtime_error("Renderer stopped: " + material_preparation.error().cause.message);
                 workspace_.render_notice =
-                    L"Material preparation failed: " + widen(material_preparation.error().cause.message);
+                    L"Material preparation failed: " + diagnostic_text(material_preparation.error().cause.message);
                 if (control_)
                     control_->render_failed(material_preparation.error().cause.message);
             } else if (!material_preparation->ready)
@@ -2204,7 +2218,7 @@ bool Application::run_step(renderer::Capture* capture) try {
             std::min(render_retry_delay_.count() ? render_retry_delay_ * 2 : std::chrono::milliseconds(20),
                      std::chrono::milliseconds(250));
         render_retry_at_ = Clock::now() + render_retry_delay_;
-        workspace_.status = widen(drawn.error().cause.message);
+        workspace_.status = diagnostic_text(drawn.error().cause.message);
         return true;
     }
     const auto& rendered = drawn->result;

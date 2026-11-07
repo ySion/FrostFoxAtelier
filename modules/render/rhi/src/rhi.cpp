@@ -1,6 +1,7 @@
 #include "rhi/rhi.hpp"
 #include "detail/shader_compiler.hpp"
 #include "foundation/result.hpp"
+#include "platform/utf.hpp"
 
 #include <d3d12sdklayers.h>
 #include <wrl/client.h>
@@ -49,15 +50,6 @@ bool valid_shader_model(const char* value) {
         if (i != separator && (model[i] < '0' || model[i] > '9'))
             return false;
     return true;
-}
-
-std::wstring widen(std::string_view text) {
-    if (text.empty())
-        return {};
-    const int size = MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0);
-    std::wstring result(static_cast<std::size_t>(std::max(size, 0)), L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), result.data(), size);
-    return result;
 }
 
 bool meets_hardware_floor(ID3D12Device& device) {
@@ -578,19 +570,26 @@ Result<std::shared_ptr<detail::PreparationJob>> Context::job(const PipelineDesc&
     job->kind = desc.kind;
     job->model = desc.shader_model;
     job->name = desc.file_name ? desc.file_name : desc.name ? desc.name : "pipeline";
-    const std::wstring model = widen(desc.shader_model);
-    const std::wstring entry = widen(desc.entry_point);
+    const auto model = platform::utf8_to_utf16_validated(desc.shader_model); // valid_shader_model accepted ASCII.
+    const auto entry = platform::utf8_to_utf16(desc.entry_point);
+    if (!entry)
+        return std::unexpected(
+            Error{ErrorCode::invalid_argument, kGfxResult_InvalidParameter, "shader entry point is not valid UTF-8"});
     std::error_code error;
     const auto directory = desc.file_name ? std::filesystem::absolute(desc.file_path ? desc.file_path : ".", error)
                                           : std::filesystem::path{};
     if (error)
         return std::unexpected(
             Error{ErrorCode::shader_failed, kGfxResult_InvalidParameter, "shader directory is unusable"});
+    const auto name = platform::utf8_to_utf16(job->name);
+    if (!name)
+        return std::unexpected(
+            Error{ErrorCode::invalid_argument, kGfxResult_InvalidParameter, "shader name is not valid UTF-8"});
     for (const auto& stage : stages) {
-        detail::ShaderSource source{{}, {}, stage.profile + model, entry};
+        detail::ShaderSource source{{}, {}, stage.profile + model, *entry};
         if (desc.file_name) {
             // Like gfx: an absent optional stage file is skipped; any other access failure is an error.
-            const auto path = directory / (widen(desc.file_name) + stage.extension);
+            const auto path = directory / (*name + stage.extension);
             const bool exists = std::filesystem::exists(path, error);
             if (error || (!exists && stage.primary))
                 return std::unexpected(Error{ErrorCode::shader_failed, kGfxResult_InvalidParameter,
@@ -607,7 +606,7 @@ Result<std::shared_ptr<detail::PreparationJob>> Context::job(const PipelineDesc&
             if (!stage.source)
                 continue;
             source.text = stage.source;
-            source.name = widen(job->name) + stage.extension;
+            source.name = *name + stage.extension;
         }
         job->stages.emplace_back(stage.stage, std::move(source));
     }

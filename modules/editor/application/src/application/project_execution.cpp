@@ -2,6 +2,8 @@
 #include "application/diagnostics.hpp"
 #include "assets/file.hpp"
 #include "foundation/result.hpp"
+#include "platform/error.hpp"
+#include "platform/utf.hpp"
 #include <algorithm>
 #include <atomic>
 #include <cstdio>
@@ -27,12 +29,18 @@ void Application::attach_play_output() noexcept try {
     play_output_status_ = {};
     const auto attached = workspace_.output.add_run(play_.log_directory());
     if (!attached)
-        notice("play.log_attachment_failed", assets::wide(attached.error().message), logging::Severity::warning);
+        notice("play.log_attachment_failed", diagnostic_text(attached.error().message), logging::Severity::warning);
+    auto directory = platform::utf16_to_utf8(play_.log_directory().generic_wstring());
+    auto root = platform::utf16_to_utf8(project_->root().generic_wstring());
+    if (!directory || !root) {
+        std::fputs("Cannot attach the Runner output: invalid UTF-16 path; the process launch result is unchanged.\n",
+                   stderr);
+        return;
+    }
     logging::Entry entry{.category = "play",
                          .event_code = "play.run_attached",
                          .message = "Runner process launched; waiting for its startup evidence."};
-    entry.fields = {{"directory", assets::utf8(play_.log_directory().generic_wstring())},
-                    {"project_root", assets::utf8(project_->root().generic_wstring())}};
+    entry.fields = {{"directory", std::move(*directory)}, {"project_root", std::move(*root)}};
     static_cast<void>(workspace_.output.submit_owned(std::move(entry)));
 } catch (...) {
     std::fputs("Cannot attach the Runner output; the process launch result is unchanged.\n", stderr);
@@ -55,12 +63,17 @@ void Application::consume_play_output() noexcept try {
         // Byte counts accompany data records. Publish transport transitions even
         // with no body, but not a second status record for every successful read.
         if (loss || state.eof != previous.eof) {
+            auto directory = platform::utf16_to_utf8(play_.log_directory().generic_wstring());
+            if (!directory) {
+                std::fputs("Cannot capture Runner transport status: invalid UTF-16 path.\n", stderr);
+                return;
+            }
             logging::Entry entry{.severity = loss ? logging::Severity::warning : logging::Severity::info,
                                  .category = "process.raw",
                                  .event_code = "raw.transport",
                                  .message =
                                      loss ? "Raw process output is incomplete." : "Raw process stream reached EOF."};
-            entry.fields = {{"directory", assets::utf8(play_.log_directory().generic_wstring())},
+            entry.fields = {{"directory", std::move(*directory)},
                             {"stream", std::string(standard_error ? "stderr" : "stdout")},
                             {"received_bytes", state.received_bytes},
                             {"dropped_bytes", state.dropped_bytes},
@@ -87,7 +100,7 @@ void Application::publish_build(std::shared_ptr<const editor::ProjectBuild> repo
         return;
     workspace_.project_build = std::move(report);
     if (workspace_.project_build->error)
-        workspace_.status = assets::wide(workspace_.project_build->error->message);
+        workspace_.status = diagnostic_text(workspace_.project_build->error->message);
     else
         workspace_.status = L"Project build ready";
     // ProjectCode records the authoritative request/publication, not this UI projection.
@@ -175,21 +188,23 @@ Result<void> Application::build_project(bool rebuild) {
 Result<void> Application::create_source(const std::filesystem::path& relative, bool is_ui) {
     if (!project_)
         return failure("Open a project folder first.");
-    const auto stem = assets::utf8(relative.stem().wstring());
-    if (!is_ui && (stem.empty() ||
-                   !((stem.front() >= 'A' && stem.front() <= 'Z') || (stem.front() >= 'a' && stem.front() <= 'z') ||
-                     stem.front() == '_') ||
-                   std::ranges::any_of(stem, [](unsigned char c) {
+    const auto stem = platform::utf16_to_utf8(relative.stem().native());
+    if (!stem)
+        return failure("Invalid UTF-16 text.");
+    if (!is_ui && (stem->empty() ||
+                   !((stem->front() >= 'A' && stem->front() <= 'Z') || (stem->front() >= 'a' && stem->front() <= 'z') ||
+                     stem->front() == '_') ||
+                   std::ranges::any_of(*stem, [](unsigned char c) {
                        return !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_');
                    })))
         return failure("Use a Source identifier as the component file name (letters, digits and underscore).");
     ATELIER_TRY(project_->create_source(relative, is_ui ? editor::ProjectCode::ui_source()
-                                                        : editor::ProjectCode::component_source(stem)));
+                                                        : editor::ProjectCode::component_source(*stem)));
     if (is_ui) {
         auto configured = project_->set_ui_source(relative);
         if (!configured) {
             notice("source.ui_configuration_failed",
-                   L"UI file created; project entry was not changed: " + assets::wide(configured.error().message),
+                   L"UI file created; project entry was not changed: " + diagnostic_text(configured.error().message),
                    logging::Severity::error);
             return configured;
         }
@@ -202,7 +217,7 @@ Result<void> Application::create_source(const std::filesystem::path& relative, b
     auto refreshed = project_->refresh();
     if (!refreshed)
         notice("source.browser_refresh_failed",
-               L"Source created; browser refresh failed: " + assets::wide(refreshed.error().message),
+               L"Source created; browser refresh failed: " + diagnostic_text(refreshed.error().message),
                logging::Severity::warning);
     source_build_pending_ = true;
     workspace_.status = is_ui ? L"Project UI created"
@@ -299,7 +314,7 @@ void Application::poll_project() {
     if (!live_.divergence().empty() && !workspace_.play_diverged) {
         workspace_.play_diverged = true;
         document_->set_live_forwarding(false);
-        workspace_.status = L"Play no longer follows the scene: " + assets::wide(live_.divergence());
+        workspace_.status = L"Play no longer follows the scene: " + diagnostic_text(live_.divergence());
         notice("play.diverged", workspace_.status + L" Restart Play to continue.", logging::Severity::error);
     }
     if (was_running && !play_.running()) {
@@ -312,7 +327,8 @@ void Application::poll_project() {
     if (!play_.running() && live_.active()) {
         document_->set_live_forwarding(false);
         if (const auto error = live_.close())
-            notice("play.cleanup_failed", L"Cannot remove the run's change files: " + assets::wide(error.message()),
+            notice("play.cleanup_failed",
+                   L"Cannot remove the run's change files: " + diagnostic_text(platform::error_message(error)),
                    logging::Severity::warning);
     }
     workspace_.play_pending = live_.active() ? std::optional(live_.unacknowledged()) : std::nullopt;
@@ -321,14 +337,15 @@ void Application::poll_project() {
         std::error_code error;
         std::filesystem::remove(play_snapshot_, error);
         if (error)
-            notice("play.cleanup_failed", L"Cannot remove the run snapshot: " + assets::wide(error.message()),
+            notice("play.cleanup_failed",
+                   L"Cannot remove the run snapshot: " + diagnostic_text(platform::error_message(error)),
                    logging::Severity::warning);
         play_snapshot_.clear();
     }
     if (restart_play_ && !play_.running()) {
         restart_play_ = false;
         if (auto restarted = run_project(); !restarted) {
-            workspace_.status = L"Cannot restart Play: " + assets::wide(restarted.error().message);
+            workspace_.status = L"Cannot restart Play: " + diagnostic_text(restarted.error().message);
             notice("play.restart_failed", workspace_.status, logging::Severity::error);
         } else
             workspace_.status = L"Play restarted";

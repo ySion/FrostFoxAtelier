@@ -15,8 +15,9 @@ void verify_project_window(Application& app, const std::filesystem::path& output
         std::filesystem::remove_all(folder);
     std::filesystem::remove_all(moved);
     access::EditorAcceptanceAccess::mark_saved(app);
-    model(Access::invoke(app, existing ? "project.open" : "project.new",
-                         {{"path", atelier::assets::utf8(folder.wstring())}}));
+    const auto folder_text = atelier::platform::utf16_to_utf8(folder.native());
+    require(bool(folder_text), "Invalid UTF-16 project fixture path.");
+    model(Access::invoke(app, existing ? "project.open" : "project.new", {{"path", *folder_text}}));
     tick(app, 4);
     const auto initial_count = entities(app).size();
     require((existing || initial_count == 0) && !app.document().dirty(),
@@ -295,8 +296,9 @@ void verify_project_window(Application& app, const std::filesystem::path& output
     const auto content_tree = access::EditorAcceptanceAccess::directory_key(app, "Content");
     const auto selected_tree = access::EditorAcceptanceAccess::directory_key(app, selection_folder);
     click(app, content_tree);
-    const auto directory =
-        access::EditorAcceptanceAccess::asset_key(app, atelier::assets::utf8(selection_folder.generic_wstring()));
+    const auto selection_text = atelier::platform::utf16_to_utf8(selection_folder.generic_wstring());
+    require(bool(selection_text), "Invalid UTF-16 selected directory fixture.");
+    const auto directory = access::EditorAcceptanceAccess::asset_key(app, *selection_text);
     click(app, directory);
     require(action_enabled(browser::open), "Selected project folder could not be opened.");
     click(app, browser::search);
@@ -348,7 +350,9 @@ void verify_project_window(Application& app, const std::filesystem::path& output
     require(!action_enabled(browser::open), "Refreshing retained an executable removed directory.");
     const auto external = std::filesystem::absolute(output / "Imported.obj");
     model(atelier::editor::write_file(external, "v 0 0 0\nv 2 0 0\nv 0 2 0\nf 1 2 3\n"));
-    model(Access::invoke(app, "asset.import", {{"kind", "mesh"}, {"path", atelier::assets::utf8(external.wstring())}}));
+    const auto external_text = atelier::platform::utf16_to_utf8(external.native());
+    require(bool(external_text), "Invalid UTF-16 external mesh fixture path.");
+    model(Access::invoke(app, "asset.import", {{"kind", "mesh"}, {"path", *external_text}}));
     tick(app, 3);
     require(app.presented()->find(access::EditorAcceptanceAccess::directory_key(app, "Content/Meshes"))->selected,
             "Import did not reveal the project's mesh folder.");

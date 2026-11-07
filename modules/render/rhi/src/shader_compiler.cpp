@@ -1,4 +1,5 @@
 #include "detail/shader_compiler.hpp"
+#include "platform/utf.hpp"
 
 #include <bcrypt.h>
 #include <combaseapi.h>
@@ -93,16 +94,6 @@ std::optional<Digest> checksum(std::string_view bytecode, std::string_view refle
     hash.add(bytecode.data(), bytecode.size());
     hash.add(reflection.data(), reflection.size());
     return hash.finish();
-}
-
-std::string utf8(std::wstring_view text) {
-    if (text.empty())
-        return {};
-    const int size =
-        WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0, nullptr, nullptr);
-    std::string result(static_cast<std::size_t>(std::max(size, 0)), '\0');
-    WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), result.data(), size, nullptr, nullptr);
-    return result;
 }
 
 std::string_view bytes(IDxcBlob& blob) {
@@ -283,14 +274,22 @@ Result<CompiledShader> ShaderCompiler::compile(const ShaderSource& source) {
         }
     }
 
+    const auto name = platform::utf16_to_utf8(source.name);
+    if (!name)
+        return std::unexpected(
+            Error{ErrorCode::shader_failed, kGfxResult_InvalidParameter, "shader source name is not valid UTF-16"});
+    const auto entry_point = platform::utf16_to_utf8(source.entry);
+    if (!entry_point)
+        return std::unexpected(
+            Error{ErrorCode::shader_failed, kGfxResult_InvalidParameter, "shader entry point is not valid UTF-16"});
     const DxcBuffer buffer{source.text.data(), source.text.size(), DXC_CP_ACP};
     IncludeProbe probe(*includes_.Get());
     ComPtr<IDxcResult> result;
     if (FAILED(compiler_->Compile(&buffer, arguments.data(), static_cast<UINT32>(arguments.size()), &probe,
                                   IID_PPV_ARGS(&result))) ||
         !result)
-        return std::unexpected(Error{ErrorCode::shader_failed, kGfxResult_InternalError,
-                                     "DXC could not run for `" + utf8(source.name) + "'"});
+        return std::unexpected(
+            Error{ErrorCode::shader_failed, kGfxResult_InternalError, "DXC could not run for `" + *name + "'"});
     HRESULT status = E_FAIL;
     result->GetStatus(&status);
     ComPtr<IDxcBlobEncoding> diagnostics;
@@ -298,7 +297,7 @@ Result<CompiledShader> ShaderCompiler::compile(const ShaderSource& source) {
     std::string text = diagnostics ? std::string(bytes(*diagnostics.Get())) : std::string{};
     while (!text.empty() && (text.back() == '\0' || text.back() == '\n' || text.back() == '\r'))
         text.pop_back();
-    const auto described = "`" + utf8(source.name) + "' for entry point `" + utf8(source.entry) + "'";
+    const auto described = "`" + *name + "' for entry point `" + *entry_point + "'";
     if (FAILED(status))
         return std::unexpected(Error{ErrorCode::shader_failed, kGfxResult_InvalidParameter,
                                      "Failed to compile " + described + (text.empty() ? "" : ":\n" + text)});

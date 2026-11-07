@@ -8,7 +8,9 @@ int verify_editor_surfaces(Application& app, const char* output_directory) {
         ~ComScope() { CoUninitialize(); }
     } com_scope;
     ExternalMouseFilter external_mouse;
-    const auto output = std::filesystem::absolute(assets::wide(output_directory));
+    const auto output_text = platform::utf8_to_utf16(output_directory);
+    require(bool(output_text), "Invalid UTF-8 evidence directory.");
+    const auto output = std::filesystem::absolute(*output_text);
     std::filesystem::create_directories(output);
     tick(app);
     require(bool(Access::invoke(app, "scene.add", {{"kind", "mesh"}})), "Surface scene creation failed.");
@@ -255,21 +257,23 @@ int verify_editor_surfaces(Application& app, const char* output_directory) {
     // client thread owns only protocol data; Application stays on this thread.
     namespace api = atelier::control;
     const auto directory = output / "Control";
-    app.enable_control(directory);
+    model(app.enable_control(directory));
     const auto instances = api::discover(directory);
+    require(bool(instances), instances ? "" : instances.error().what());
     const auto instance = std::ranges::find_if(
-        instances, [](const auto& item) { return item.at("pid").template get<DWORD>() == GetCurrentProcessId(); });
-    require(instance != instances.end(), "Camera acceptance Control endpoint is absent.");
+        *instances, [](const auto& item) { return item.at("pid").template get<DWORD>() == GetCurrentProcessId(); });
+    require(instance != instances->end(), "Camera acceptance Control endpoint is absent.");
     const auto control_reply = [&] {
         auto pending = std::async(std::launch::async, [descriptor = *instance] {
-            api::Client client(descriptor, std::chrono::seconds(5));
+            auto client = api::Client::create(descriptor, std::chrono::seconds(5));
+            require(bool(client), client ? "" : client.error().what());
             // Native input can advance the token between these two pipe calls.
             // Refresh only stale requests; a fresh request must still prove busy/idle.
             for (unsigned attempt = 0; attempt < 8; ++attempt) {
-                const auto state = client.call({{"op", "editor.inspect"}, {"args", {{"detail", "summary"}}}});
-                auto reply = client.call({{"op", "op.call"},
-                                          {"state_token", state.at("state_token")},
-                                          {"args", {{"id", "view.set"}, {"args", api::Json::object()}}}});
+                const auto state = client->call({{"op", "editor.inspect"}, {"args", {{"detail", "summary"}}}});
+                auto reply = client->call({{"op", "op.call"},
+                                           {"state_token", state.at("state_token")},
+                                           {"args", {{"id", "view.set"}, {"args", api::Json::object()}}}});
                 if (reply.at("status") != "error" || reply.at("error").at("code") != "stale_state")
                     return reply;
             }
@@ -436,8 +440,9 @@ int verify_editor_surfaces(Application& app, const char* output_directory) {
     const auto held_delay = Access::render_retry_delay(app);
     Access::render_retry_deadline(app, std::chrono::steady_clock::now() + std::chrono::seconds(20));
     auto inspection = std::async(std::launch::async, [descriptor = *instance] {
-        api::Client client(descriptor, std::chrono::seconds(5));
-        return client.call({{"op", "editor.inspect"}, {"args", {{"detail", "summary"}}}});
+        auto client = api::Client::create(descriptor, std::chrono::seconds(5));
+        require(bool(client), client ? "" : client.error().what());
+        return client->call({{"op", "editor.inspect"}, {"args", {{"detail", "summary"}}}});
     });
     while (inspection.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready)
         require(app.step(), "Render retry blocked the Control inspection service.");

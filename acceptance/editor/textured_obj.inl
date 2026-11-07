@@ -221,7 +221,7 @@ void verify_textured_obj() {
                             "newmtl red\nKd 0 1 0\nmap_Kd color.bmp\nnewmtl other\nKd 1 1 1\n"));
     take(project.refresh());
     const auto edited = take(project.assets().mesh(key));
-    const auto source_author = assets::load_obj(project.root() / "Content/Meshes/scene/scene.obj");
+    const auto source_author = take(assets::load_obj(project.root() / "Content/Meshes/scene/scene.obj"));
     require(edited.mesh != changed_asset.mesh &&
                 imported_material_value<math::Vector4>(*source_author.materials[1], "base_color") ==
                     math::Vector4{0, 1, 0, 1} &&

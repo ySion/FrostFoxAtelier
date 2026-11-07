@@ -158,7 +158,8 @@ void verify_viewport_fly(Application& app, const std::filesystem::path& output) 
                     "Shift+accent-grave did not capture fly navigation.");
             tick(app, 2);
             if (!Access::camera_flying(app))
-                throw std::runtime_error("Fly lost ownership on its entry frames: " + assets::utf8(app.status_text()));
+                throw std::runtime_error("Fly lost ownership on its entry frames: " +
+                                         atelier::application::diagnostic_text(app.status_text()));
             snapshot("viewport-fly-entry.png");
             verify_fly_ui(true);
         };

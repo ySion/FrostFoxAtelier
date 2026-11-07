@@ -1,5 +1,6 @@
 #pragma once
 #include "renderer/renderer.hpp"
+#include "control/control.hpp"
 #include <filesystem>
 
 namespace atelier::application {
@@ -9,7 +10,9 @@ class Application;
 // never borrow Application, Runtime, UI or GPU state.
 class EditorControl final {
 public:
-    EditorControl(Application&, const std::filesystem::path&);
+    static std::expected<EditorControl, control::Failure> create(Application&, const std::filesystem::path&);
+
+    EditorControl(EditorControl&&) noexcept;
 
     ~EditorControl();
 
@@ -37,6 +40,8 @@ public:
 
 private:
     struct Impl;
+
+    explicit EditorControl(std::unique_ptr<Impl>) noexcept;
 
     std::unique_ptr<Impl> impl_;
 };

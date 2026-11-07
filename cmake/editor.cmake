@@ -75,7 +75,7 @@ function(atelier_add_editor)
     add_dependencies(atelier_editor_application atelier_editor_build_info)
     target_include_directories(atelier_editor_application PUBLIC "${CMAKE_BINARY_DIR}/generated"
         "${PROJECT_SOURCE_DIR}/modules/editor/application/include")
-    target_link_libraries(atelier_editor_application PRIVATE atelier_platform)
+    target_link_libraries(atelier_editor_application PUBLIC atelier_platform)
     target_compile_definitions(atelier_editor_application PUBLIC UNICODE _UNICODE)
     target_compile_definitions(atelier_editor_application PRIVATE "ATELIER_UI_AUTHORING_PATH=L\"${PROJECT_SOURCE_DIR}/assets/editor.ui.source\"")
     target_link_libraries(atelier_editor_application PUBLIC atelier_logging atelier_editor_core atelier_ui atelier_rhi atelier_control_transport atelier_renderer PRIVATE imm32)

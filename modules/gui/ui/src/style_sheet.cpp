@@ -1,6 +1,7 @@
 #include "ui/style_sheet.hpp"
 #include "ui/text.hpp"
-#include <Windows.h>
+#include "foundation/result.hpp"
+#include "platform/utf.hpp"
 #include <algorithm>
 #include <charconv>
 #include <cmath>
@@ -45,11 +46,8 @@ std::string_view trim(std::string_view value) {
     return first == value.npos ? std::string_view{} : value.substr(first, value.find_last_not_of(space) - first + 1);
 }
 
-struct ParseFailure {
-    std::size_t position;
-
-    std::string message;
-};
+template <class T>
+using ParseResult = std::expected<T, StyleDiagnostic>;
 
 class Parser {
     struct Value {
@@ -82,11 +80,19 @@ class Parser {
 
     std::vector<Block> blocks_;
 
-    [[noreturn]] void fail(std::string message, std::size_t position) const {
-        throw ParseFailure{position, std::move(message)};
+    std::unexpected<StyleDiagnostic> fail(std::string message, std::size_t position) const {
+        StyleDiagnostic error{1, 1, std::move(message)};
+        for (std::size_t i = 0; i < std::min(position, source_.size()); ++i) {
+            if (source_[i] == '\n') {
+                ++error.line;
+                error.column = 1;
+            } else
+                ++error.column;
+        }
+        return std::unexpected(std::move(error));
     }
 
-    [[noreturn]] void fail(std::string message) const { fail(std::move(message), at_); }
+    std::unexpected<StyleDiagnostic> fail(std::string message) const { return fail(std::move(message), at_); }
 
     void space() {
         while (at_ < source_.size() && std::string_view(" \t\r\n").find(source_[at_]) != std::string_view::npos)
@@ -102,12 +108,13 @@ class Parser {
         return false;
     }
 
-    void expect(char c) {
+    ParseResult<void> expect(char c) {
         if (!take(c))
-            fail(std::string("Expected '") + c + "'");
+            return fail(std::string("Expected '") + c + "'");
+        return {};
     }
 
-    std::string identifier() {
+    ParseResult<std::string> identifier() {
         space();
         const auto start = at_;
         while (at_ < source_.size()) {
@@ -118,11 +125,11 @@ class Parser {
         }
         auto value = source_.substr(start, at_ - start);
         if (!StyleSheet::valid_class(value))
-            fail("Expected an identifier", start);
+            return fail("Expected an identifier", start);
         return value;
     }
 
-    Value value() {
+    ParseResult<Value> value() {
         space();
         const auto start = at_;
         bool quoted = false;
@@ -138,25 +145,25 @@ class Parser {
                 quote = c;
             } else if (c == '(') {
                 if (++depth > 8)
-                    fail("Value nesting is too deep");
+                    return fail("Value nesting is too deep");
             } else if (c == ')') {
                 if (!depth)
-                    fail("Unexpected ')'");
+                    return fail("Unexpected ')'");
                 --depth;
             } else if ((c == ';' || c == '}') && !depth)
                 break;
             ++at_;
         }
         if (quoted || depth)
-            fail("Unterminated value", start);
+            return fail("Unterminated value", start);
         auto text = trim(std::string_view(source_).substr(start, at_ - start));
         if (text.empty() || text.size() > 4096)
-            fail("Empty or oversized value", start);
-        expect(';');
-        return {text, start};
+            return fail("Empty or oversized value", start);
+        ATELIER_TRY(expect(';'));
+        return Value{text, start};
     }
 
-    StyleSelector selector() {
+    ParseResult<StyleSelector> selector() {
         StyleSelector result;
         bool any = false;
         space();
@@ -164,141 +171,141 @@ class Parser {
             if (take('*'))
                 any = true;
             else {
-                const auto type = identifier();
+                ATELIER_TRY_BIND(type, identifier());
                 any = true;
                 constexpr std::string_view kinds[] = {"container", "label",    "button",    "list",      "item",
                                                       "number",    "splitter", "viewport",  "text_edit", "checkbox",
                                                       "foldout",   "popup",    "menu_item", "combo",     "tab",
                                                       "slider",    "tree",     "tree_item", "table",     "code_editor"};
-                const auto found = std::find(std::begin(kinds), std::end(kinds), type);
+                const auto found = std::find(std::begin(kinds), std::end(kinds), *type);
                 if (found == std::end(kinds))
-                    fail("Unknown control type: " + type);
+                    return fail("Unknown control type: " + *type);
                 result.kind = static_cast<ControlKind>(found - std::begin(kinds));
             }
         }
         // A compound selector targets one node. Whitespace never means descendant matching.
         while (at_ < source_.size() && (source_[at_] == '.' || source_[at_] == ':')) {
             const auto prefix = source_[at_++];
-            const auto id = identifier();
+            ATELIER_TRY_BIND(id, identifier());
             any = true;
             if (prefix == '.')
-                result.classes.push_back(id);
-            else if (id == "role") {
-                expect('(');
-                const auto role = identifier();
-                expect(')');
+                result.classes.push_back(*id);
+            else if (*id == "role") {
+                ATELIER_TRY(expect('('));
+                ATELIER_TRY_BIND(role, identifier());
+                ATELIER_TRY(expect(')'));
                 constexpr std::string_view roles[] = {"normal", "panel", "title", "caption"};
-                const auto found = std::find(std::begin(roles), std::end(roles), role);
+                const auto found = std::find(std::begin(roles), std::end(roles), *role);
                 if (found == std::end(roles) || result.role)
-                    fail("Unknown or duplicate role");
+                    return fail("Unknown or duplicate role");
                 result.role = static_cast<Role>(found - std::begin(roles));
             } else {
                 constexpr std::string_view names[] = {"enabled", "disabled", "hover",   "pressed",
                                                       "focus",   "selected", "invalid", "modified"};
-                const auto found = std::find(std::begin(names), std::end(names), id);
+                const auto found = std::find(std::begin(names), std::end(names), *id);
                 if (found == std::end(names))
-                    fail("Unknown state: " + id);
+                    return fail("Unknown state: " + *id);
                 const auto bit = static_cast<StyleState>(1u << (found - std::begin(names)));
                 if ((static_cast<unsigned>(result.states) & static_cast<unsigned>(bit)) != 0)
-                    fail("Duplicate state: " + id);
+                    return fail("Duplicate state: " + *id);
                 result.states = result.states | bit;
             }
         }
         if (!any)
-            fail("Expected a selector");
+            return fail("Expected a selector");
         if (result.classes.size() > 16)
-            fail("A selector supports at most 16 classes");
+            return fail("A selector supports at most 16 classes");
         if ((static_cast<unsigned>(result.states) & 3) == 3)
-            fail("A selector cannot be both enabled and disabled");
+            return fail("A selector cannot be both enabled and disabled");
         return result;
     }
 
-    Value resolve(Value input, unsigned depth = 0) const {
+    ParseResult<Value> resolve(Value input, unsigned depth = 0) const {
         if (!input.text.starts_with("token("))
             return input;
         if (depth >= 32 || !input.text.ends_with(')'))
-            fail("Invalid or cyclic token reference", input.position);
+            return fail("Invalid or cyclic token reference", input.position);
         const auto key = trim(input.text.substr(6, input.text.size() - 7));
         const auto found = tokens_.find(key);
         if (found == tokens_.end())
-            fail("Unknown token: " + std::string(key), input.position);
+            return fail("Unknown token: " + std::string(key), input.position);
         return resolve(found->second, depth + 1);
     }
 
-    float number(Value input, bool length = true) const {
-        input = resolve(input);
+    ParseResult<float> number(Value input, bool length = true) const {
+        ATELIER_TRY_BIND(resolved, resolve(input));
+        input = *resolved;
         auto text = input.text;
         if (length && text.ends_with("dip"))
             text.remove_suffix(3);
         float result{};
         const auto parsed = std::from_chars(text.data(), text.data() + text.size(), result);
         if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size() || !std::isfinite(result))
-            fail("Expected a finite number", input.position);
+            return fail("Expected a finite number", input.position);
         return result;
     }
 
-    std::vector<float> lengths(Value input) const {
-        input = resolve(input);
+    ParseResult<std::vector<float>> lengths(Value input) const {
+        ATELIER_TRY_BIND(resolved, resolve(input));
+        input = *resolved;
         auto remaining = input.text;
         std::vector<float> values;
         while (!remaining.empty()) {
             const auto end = remaining.find_first_of(" \t\r\n");
-            values.push_back(number({remaining.substr(0, end), input.position}));
+            ATELIER_TRY_BIND(value, number({remaining.substr(0, end), input.position}));
+            values.push_back(*value);
             if (values.size() > 4)
-                fail("Expected one, two or four lengths", input.position);
+                return fail("Expected one, two or four lengths", input.position);
             remaining = end == remaining.npos ? std::string_view{} : trim(remaining.substr(end));
         }
         if (values.size() != 1 && values.size() != 2 && values.size() != 4)
-            fail("Expected one, two or four lengths", input.position);
+            return fail("Expected one, two or four lengths", input.position);
         return values;
     }
 
-    Color color(Value input) const {
-        input = resolve(input);
+    ParseResult<Color> color(Value input) const {
+        ATELIER_TRY_BIND(resolved, resolve(input));
+        input = *resolved;
         if (input.text == "transparent" || input.text == "none")
-            return {0, 0, 0, 0};
+            return Color{0, 0, 0, 0};
         if (!input.text.starts_with('#') || (input.text.size() != 7 && input.text.size() != 9))
-            fail("Expected #RRGGBB, #RRGGBBAA or transparent", input.position);
+            return fail("Expected #RRGGBB, #RRGGBBAA or transparent", input.position);
         unsigned channels[4] = {0, 0, 0, 255};
         for (std::size_t i = 0; i < (input.text.size() - 1) / 2; ++i) {
             const auto piece = input.text.substr(1 + i * 2, 2);
             const auto parsed = std::from_chars(piece.data(), piece.data() + 2, channels[i], 16);
             if (parsed.ec != std::errc{} || parsed.ptr != piece.data() + 2)
-                fail("Invalid hexadecimal color", input.position);
+                return fail("Invalid hexadecimal color", input.position);
         }
         const auto linear = [](unsigned byte) {
             const auto x = byte / 255.f;
             return x <= .04045f ? x / 12.92f : std::pow((x + .055f) / 1.055f, 2.4f);
         };
-        return {linear(channels[0]), linear(channels[1]), linear(channels[2]), channels[3] / 255.f};
+        return Color{linear(channels[0]), linear(channels[1]), linear(channels[2]), channels[3] / 255.f};
     }
 
-    std::wstring string(Value input) const {
-        input = resolve(input);
+    ParseResult<std::wstring> string(Value input) const {
+        ATELIER_TRY_BIND(resolved, resolve(input));
+        input = *resolved;
         auto text = input.text;
         if (text.size() < 2 || (text.front() != '\'' && text.front() != '"') || text.back() != text.front())
-            fail("Expected a quoted UTF-8 string", input.position);
+            return fail("Expected a quoted UTF-8 string", input.position);
         text.remove_prefix(1);
         text.remove_suffix(1);
         if (text.find('\\') != text.npos)
-            fail("String escapes are not supported", input.position);
-        const auto count =
-            MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()), nullptr, 0);
-        if (!count)
-            fail("Invalid or empty UTF-8 string", input.position);
-        std::wstring result(static_cast<std::size_t>(count), L'\0');
-        if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()),
-                                result.data(), count) != count)
-            fail("Invalid UTF-8 string", input.position);
-        return result;
+            return fail("String escapes are not supported", input.position);
+        auto result = platform::utf8_to_utf16(text);
+        if (text.empty() || !result)
+            return fail("Invalid or empty UTF-8 string", input.position);
+        return std::move(*result);
     }
 
-    std::shared_ptr<const ColorImage> gradient(Value value) {
-        const auto input = resolve(value);
-        const std::string key(input.text);
+    ParseResult<std::shared_ptr<const ColorImage>> gradient(Value value) {
+        ATELIER_TRY_BIND(input, resolve(value));
+        const std::string key(input->text);
         if (const auto found = gradients_.find(key); found != gradients_.end())
             return found->second;
-        auto stops = trim(input.text.substr(16, input.text.size() - 17));
+        auto stops = trim(input->text.substr(16, input->text.size() - 17));
         bool horizontal = false;
         if (stops.starts_with("to right,")) {
             horizontal = true;
@@ -307,9 +314,9 @@ class Parser {
             stops = trim(stops.substr(10));
         const auto comma = stops.find(',');
         if (comma == stops.npos || stops.find(',', comma + 1) != stops.npos)
-            fail("Expected two gradient colors", input.position);
-        const auto a = color({trim(stops.substr(0, comma)), input.position});
-        const auto b = color({trim(stops.substr(comma + 1)), input.position});
+            return fail("Expected two gradient colors", input->position);
+        ATELIER_TRY_BIND(a, color({trim(stops.substr(0, comma)), input->position}));
+        ATELIER_TRY_BIND(b, color({trim(stops.substr(comma + 1)), input->position}));
         auto image = std::make_shared<ColorImage>();
         image->identity = detail::new_identity();
         image->revision = 1;
@@ -323,32 +330,39 @@ class Parser {
         };
         for (unsigned row = 0; row < 64; ++row) {
             const float t = static_cast<float>(row) / 63;
-            for (auto pair :
-                 {std::pair{a.r * a.a, b.r * b.a}, std::pair{a.g * a.a, b.g * b.a}, std::pair{a.b * a.a, b.b * b.a}})
+            for (auto pair : {std::pair{a->r * a->a, b->r * b->a}, std::pair{a->g * a->a, b->g * b->a},
+                              std::pair{a->b * a->a, b->b * b->a}})
                 image->pixels.push_back(encode(std::lerp(pair.first, pair.second, t)));
-            image->pixels.push_back(static_cast<std::uint8_t>(std::lround(std::lerp(a.a, b.a, t) * 255)));
+            image->pixels.push_back(static_cast<std::uint8_t>(std::lround(std::lerp(a->a, b->a, t) * 255)));
         }
         gradients_.emplace(key, image);
         return image;
     }
 
-    void property(StyleProperties& p, const Declaration& d) {
+    ParseResult<void> property(StyleProperties& p, const Declaration& d) {
         const auto& name = d.name;
         const auto v = d.value;
-        if (name == "color")
-            p.foreground = color(v);
-        else if (name == "background")
-            p.background = color(v);
-        else if (name == "border-color")
-            p.border = color(v);
-        else if (name == "border-inner-color")
-            p.border_inner = color(v);
-        else if (name == "border-shadow-color")
-            p.border_shadow = color(v);
-        else if (name == "text-shadow-color")
-            p.text_shadow = color(v);
-        else if (name == "border-edges") {
-            auto input = resolve(v).text;
+        if (name == "color") {
+            ATELIER_TRY_BIND(value, color(v));
+            p.foreground = *value;
+        } else if (name == "background") {
+            ATELIER_TRY_BIND(value, color(v));
+            p.background = *value;
+        } else if (name == "border-color") {
+            ATELIER_TRY_BIND(value, color(v));
+            p.border = *value;
+        } else if (name == "border-inner-color") {
+            ATELIER_TRY_BIND(value, color(v));
+            p.border_inner = *value;
+        } else if (name == "border-shadow-color") {
+            ATELIER_TRY_BIND(value, color(v));
+            p.border_shadow = *value;
+        } else if (name == "text-shadow-color") {
+            ATELIER_TRY_BIND(value, color(v));
+            p.text_shadow = *value;
+        } else if (name == "border-edges") {
+            ATELIER_TRY_BIND(resolved, resolve(v));
+            auto input = resolved->text;
             unsigned edges{};
             if (input == "all")
                 edges = 15;
@@ -362,13 +376,14 @@ class Parser {
                                          : word == "left"   ? 8
                                                             : 0;
                     if (!bit || (edges & bit))
-                        fail("Expected unique top/right/bottom/left edges, all or none", v.position);
+                        return fail("Expected unique top/right/bottom/left edges, all or none", v.position);
                     edges |= bit;
                     input = end == input.npos ? std::string_view{} : trim(input.substr(end));
                 }
             p.border_edges = static_cast<BorderEdges>(edges);
         } else if (name == "combo-indicator") {
-            const auto value = resolve(v).text;
+            ATELIER_TRY_BIND(resolved, resolve(v));
+            const auto value = resolved->text;
             if (value == "down")
                 p.combo_indicator = ComboIndicator::down;
             else if (value == "arrows")
@@ -378,35 +393,46 @@ class Parser {
             else if (value == "none")
                 p.combo_indicator = ComboIndicator::none;
             else
-                fail("Expected down, arrows, caret or none", v.position);
+                return fail("Expected down, arrows, caret or none", v.position);
         } else if (name == "icon-placement") {
-            const auto value = resolve(v).text;
+            ATELIER_TRY_BIND(resolved, resolve(v));
+            const auto value = resolved->text;
             if (value == "leading")
                 p.icon_placement = IconPlacement::leading;
             else if (value == "above")
                 p.icon_placement = IconPlacement::above;
             else
-                fail("Expected leading or above", v.position);
-        } else if (name == "selection-color")
-            p.selection = color(v);
-        else if (name == "caret-color")
-            p.caret = color(v);
-        else if (name == "scrollbar-color")
-            p.scrollbar = color(v);
-        else if (name == "indicator-background")
-            p.indicator_background = color(v);
-        else if (name == "indicator-border-color")
-            p.indicator_border = color(v);
-        else if (name == "indicator-color")
-            p.indicator_foreground = color(v);
-        else if (name == "indicator-size")
-            p.indicator_size = number(v);
-        else if (name == "accent-color")
-            p.accent = color(v);
-        else if (name == "accent-width")
-            p.accent_width = number(v);
-        else if (name == "border-style") {
-            const auto value = resolve(v).text;
+                return fail("Expected leading or above", v.position);
+        } else if (name == "selection-color") {
+            ATELIER_TRY_BIND(value, color(v));
+            p.selection = *value;
+        } else if (name == "caret-color") {
+            ATELIER_TRY_BIND(value, color(v));
+            p.caret = *value;
+        } else if (name == "scrollbar-color") {
+            ATELIER_TRY_BIND(value, color(v));
+            p.scrollbar = *value;
+        } else if (name == "indicator-background") {
+            ATELIER_TRY_BIND(value, color(v));
+            p.indicator_background = *value;
+        } else if (name == "indicator-border-color") {
+            ATELIER_TRY_BIND(value, color(v));
+            p.indicator_border = *value;
+        } else if (name == "indicator-color") {
+            ATELIER_TRY_BIND(value, color(v));
+            p.indicator_foreground = *value;
+        } else if (name == "indicator-size") {
+            ATELIER_TRY_BIND(value, number(v));
+            p.indicator_size = *value;
+        } else if (name == "accent-color") {
+            ATELIER_TRY_BIND(value, color(v));
+            p.accent = *value;
+        } else if (name == "accent-width") {
+            ATELIER_TRY_BIND(value, number(v));
+            p.accent_width = *value;
+        } else if (name == "border-style") {
+            ATELIER_TRY_BIND(resolved, resolve(v));
+            const auto value = resolved->text;
             if (value == "solid")
                 p.border_style = BorderStyle::solid;
             else if (value == "inset")
@@ -414,23 +440,28 @@ class Parser {
             else if (value == "outset")
                 p.border_style = BorderStyle::outset;
             else
-                fail("Expected solid, inset or outset", v.position);
-        } else if (name == "font-family")
-            p.font_family = string(v);
-        else if (name == "font-locale")
-            p.font_locale = string(v);
-        else if (name == "font-size")
-            p.font_size = number(v);
-        else if (name == "font-style") {
-            const auto value = resolve(v).text;
+                return fail("Expected solid, inset or outset", v.position);
+        } else if (name == "font-family") {
+            ATELIER_TRY_BIND(value, string(v));
+            p.font_family = std::move(*value);
+        } else if (name == "font-locale") {
+            ATELIER_TRY_BIND(value, string(v));
+            p.font_locale = std::move(*value);
+        } else if (name == "font-size") {
+            ATELIER_TRY_BIND(value, number(v));
+            p.font_size = *value;
+        } else if (name == "font-style") {
+            ATELIER_TRY_BIND(resolved, resolve(v));
+            const auto value = resolved->text;
             if (value == "normal")
                 p.font_style = FontStyle::normal;
             else if (value == "italic")
                 p.font_style = FontStyle::italic;
             else
-                fail("Expected normal or italic", v.position);
+                return fail("Expected normal or italic", v.position);
         } else if (name == "text-align" || name == "icon-align") {
-            const auto value = resolve(v).text;
+            ATELIER_TRY_BIND(resolved, resolve(v));
+            const auto value = resolved->text;
             auto& alignment = name == "text-align" ? p.text_align : p.icon_align;
             if (value == "left")
                 alignment = TextAlign::left;
@@ -439,9 +470,10 @@ class Parser {
             else if (value == "right")
                 alignment = TextAlign::right;
             else
-                fail("Expected left, center or right", v.position);
+                return fail("Expected left, center or right", v.position);
         } else if (name == "text-vertical-align") {
-            const auto value = resolve(v).text;
+            ATELIER_TRY_BIND(resolved, resolve(v));
+            const auto value = resolved->text;
             if (value == "top")
                 p.text_vertical_align = TextVerticalAlign::top;
             else if (value == "center")
@@ -449,75 +481,89 @@ class Parser {
             else if (value == "bottom")
                 p.text_vertical_align = TextVerticalAlign::bottom;
             else
-                fail("Expected top, center or bottom", v.position);
+                return fail("Expected top, center or bottom", v.position);
         } else if (name == "font-weight") {
-            const auto weight = number(v, false);
-            if (weight < 1 || weight > 999 || weight != std::floor(weight))
-                fail("Font weight must be an integer in 1..999", v.position);
-            p.font_weight = static_cast<std::uint16_t>(weight);
+            ATELIER_TRY_BIND(weight, number(v, false));
+            if (*weight < 1 || *weight > 999 || *weight != std::floor(*weight))
+                return fail("Font weight must be an integer in 1..999", v.position);
+            p.font_weight = static_cast<std::uint16_t>(*weight);
         } else if (name == "padding") {
-            const auto n = lengths(v);
-            p.padding = n.size() == 1   ? ui_layout::Insets{n[0], n[0], n[0], n[0]}
-                        : n.size() == 2 ? ui_layout::Insets{n[1], n[0], n[1], n[0]}
-                                        : ui_layout::Insets{n[3], n[0], n[1], n[2]};
+            ATELIER_TRY_BIND(n, lengths(v));
+            p.padding = n->size() == 1   ? ui_layout::Insets{(*n)[0], (*n)[0], (*n)[0], (*n)[0]}
+                        : n->size() == 2 ? ui_layout::Insets{(*n)[1], (*n)[0], (*n)[1], (*n)[0]}
+                                         : ui_layout::Insets{(*n)[3], (*n)[0], (*n)[1], (*n)[2]};
         } else if (name == "border-radius") {
-            const auto n = lengths(v);
-            p.radius = n.size() == 1   ? CornerRadii{n[0], n[0], n[0], n[0]}
-                       : n.size() == 2 ? CornerRadii{n[0], n[1], n[0], n[1]}
-                                       : CornerRadii{n[0], n[1], n[2], n[3]};
-        } else if (name == "border-width")
-            p.border_width = number(v);
-        else if (name == "caret-width")
-            p.caret_width = number(v);
-        else if (name == "tree-row-height")
-            p.tree_row_height = number(v);
-        else if (name == "tree-indent")
-            p.tree_indent = number(v);
-        else if (name == "tree-alternate-color")
-            p.tree_alternate = color(v);
-        else if (name == "tree-line-color")
-            p.tree_line = color(v);
-        else if (name == "scrollbar-width")
-            p.scrollbar_width = number(v);
-        else if (name == "scrollbar-inset")
-            p.scrollbar_inset = number(v);
-        else if (name == "scrollbar-min-thumb")
-            p.scrollbar_min_thumb = number(v);
-        else if (name == "scrollbar-button-size")
-            p.scrollbar_button_size = number(v);
-        else if (name == "scrollbar-gutter") {
-            const auto input = resolve(v);
-            if (input.text == "stable")
+            ATELIER_TRY_BIND(n, lengths(v));
+            p.radius = n->size() == 1   ? CornerRadii{(*n)[0], (*n)[0], (*n)[0], (*n)[0]}
+                       : n->size() == 2 ? CornerRadii{(*n)[0], (*n)[1], (*n)[0], (*n)[1]}
+                                        : CornerRadii{(*n)[0], (*n)[1], (*n)[2], (*n)[3]};
+        } else if (name == "border-width") {
+            ATELIER_TRY_BIND(value, number(v));
+            p.border_width = *value;
+        } else if (name == "caret-width") {
+            ATELIER_TRY_BIND(value, number(v));
+            p.caret_width = *value;
+        } else if (name == "tree-row-height") {
+            ATELIER_TRY_BIND(value, number(v));
+            p.tree_row_height = *value;
+        } else if (name == "tree-indent") {
+            ATELIER_TRY_BIND(value, number(v));
+            p.tree_indent = *value;
+        } else if (name == "tree-alternate-color") {
+            ATELIER_TRY_BIND(value, color(v));
+            p.tree_alternate = *value;
+        } else if (name == "tree-line-color") {
+            ATELIER_TRY_BIND(value, color(v));
+            p.tree_line = *value;
+        } else if (name == "scrollbar-width") {
+            ATELIER_TRY_BIND(value, number(v));
+            p.scrollbar_width = *value;
+        } else if (name == "scrollbar-inset") {
+            ATELIER_TRY_BIND(value, number(v));
+            p.scrollbar_inset = *value;
+        } else if (name == "scrollbar-min-thumb") {
+            ATELIER_TRY_BIND(value, number(v));
+            p.scrollbar_min_thumb = *value;
+        } else if (name == "scrollbar-button-size") {
+            ATELIER_TRY_BIND(value, number(v));
+            p.scrollbar_button_size = *value;
+        } else if (name == "scrollbar-gutter") {
+            ATELIER_TRY_BIND(input, resolve(v));
+            if (input->text == "stable")
                 p.scrollbar_gutter = ScrollbarGutter::stable;
-            else if (input.text == "overlay")
+            else if (input->text == "overlay")
                 p.scrollbar_gutter = ScrollbarGutter::overlay;
             else
-                fail("Expected stable or overlay", input.position);
+                return fail("Expected stable or overlay", input->position);
         } else if (name == "background-image" || name == "scrollbar-image") {
             auto& image_property = name == "background-image" ? p.image : p.scrollbar_image;
-            const auto input = resolve(v);
-            if (input.text == "none")
+            ATELIER_TRY_BIND(input, resolve(v));
+            if (input->text == "none")
                 image_property = std::shared_ptr<const ColorImage>{};
-            else if (input.text.starts_with("linear-gradient(") && input.text.ends_with(')'))
-                image_property = gradient(input);
-            else {
-                if (!input.text.starts_with("image(") || !input.text.ends_with(')'))
-                    fail("Expected image(name) or none", v.position);
-                const auto id = trim(input.text.substr(6, input.text.size() - 7));
+            else if (input->text.starts_with("linear-gradient(") && input->text.ends_with(')')) {
+                ATELIER_TRY_BIND(image, gradient(*input));
+                image_property = std::move(*image);
+            } else {
+                if (!input->text.starts_with("image(") || !input->text.ends_with(')'))
+                    return fail("Expected image(name) or none", v.position);
+                const auto id = trim(input->text.substr(6, input->text.size() - 7));
                 const auto found =
                     std::find_if(images_.begin(), images_.end(), [&](const auto& image) { return image.name == id; });
                 if (found == images_.end() || !found->image)
-                    fail("Unknown image resource: " + std::string(id), v.position);
+                    return fail("Unknown image resource: " + std::string(id), v.position);
                 image_property = found->image;
             }
         } else
-            fail("Unknown property: " + name, v.position);
+            return fail("Unknown property: " + name, v.position);
         if (!StyleSheet::valid_properties(p))
-            fail("Property value is outside the supported range: " + name, v.position);
+            return fail("Property value is outside the supported range: " + name, v.position);
+        return {};
     }
 
 public:
-    Parser(std::string_view source, std::span<const NamedImage> images) : source_(source), images_(images) {
+    Parser(std::string_view source, std::span<const NamedImage> images) : source_(source), images_(images) {}
+
+    ParseResult<std::vector<StyleRule>> run() {
         // Replace comments with spaces to retain exact source locations and value views.
         bool quoted = false;
         char quote = 0;
@@ -536,63 +582,63 @@ public:
             if (c == '/' && i + 1 < source_.size() && source_[i + 1] == '*') {
                 const auto end = source_.find("*/", i + 2);
                 if (end == source_.npos)
-                    fail("Unterminated comment", i);
+                    return fail("Unterminated comment", i);
                 for (auto j = i; j < end + 2; ++j)
                     if (source_[j] != '\n' && source_[j] != '\r')
                         source_[j] = ' ';
                 i = end + 1;
             }
         }
-    }
-
-    std::vector<StyleRule> run() {
         while (true) {
             space();
             if (at_ == source_.size())
                 break;
             if (take('@')) {
-                if (identifier() != "tokens")
-                    fail("Only @tokens is supported");
-                expect('{');
+                ATELIER_TRY_BIND(directive, identifier());
+                if (*directive != "tokens")
+                    return fail("Only @tokens is supported");
+                ATELIER_TRY(expect('{'));
                 while (!take('}')) {
-                    const auto id = identifier();
-                    expect(':');
-                    const auto item = value();
-                    if (!tokens_.emplace(id, item).second)
-                        fail("Duplicate token: " + id, item.position);
+                    ATELIER_TRY_BIND(id, identifier());
+                    ATELIER_TRY(expect(':'));
+                    ATELIER_TRY_BIND(item, value());
+                    if (!tokens_.emplace(*id, *item).second)
+                        return fail("Duplicate token: " + *id, item->position);
                 }
                 continue;
             }
             Block block;
             do {
-                block.selectors.push_back(selector());
+                ATELIER_TRY_BIND(selected, selector());
+                block.selectors.push_back(std::move(*selected));
             } while (take(','));
-            expect('{');
+            ATELIER_TRY(expect('{'));
             while (!take('}')) {
-                const auto id = identifier();
-                expect(':');
-                block.declarations.push_back({id, value()});
+                ATELIER_TRY_BIND(id, identifier());
+                ATELIER_TRY(expect(':'));
+                ATELIER_TRY_BIND(item, value());
+                block.declarations.push_back({std::move(*id), *item});
             }
             blocks_.push_back(std::move(block));
             if (blocks_.size() > 1024)
-                fail("Too many style blocks");
+                return fail("Too many style blocks");
         }
         for (const auto& [name, item] : tokens_) {
             (void)name;
-            resolve(item);
+            ATELIER_TRY(resolve(item));
         }
         std::vector<StyleRule> rules;
         for (const auto& block : blocks_) {
             StyleProperties properties;
             for (const auto& d : block.declarations)
-                property(properties, d);
+                ATELIER_TRY(property(properties, d));
             for (const auto& selector : block.selectors) {
                 if (invalid_state_properties(properties, selector.states))
-                    fail("State selectors may only change paint properties",
-                         block.declarations.empty() ? 0 : block.declarations.front().value.position);
+                    return fail("State selectors may only change paint properties",
+                                block.declarations.empty() ? 0 : block.declarations.front().value.position);
                 rules.push_back({selector, properties});
                 if (rules.size() > 4096)
-                    fail("Too many style rules");
+                    return fail("Too many style rules");
             }
         }
         return rules;
@@ -694,18 +740,7 @@ StyleSheet::Result StyleSheet::create(std::vector<StyleRule> rules) {
 StyleSheet::Result StyleSheet::parse(std::string_view source, std::span<const NamedImage> images) {
     if (source.size() > 1024 * 1024 || source.find('\0') != source.npos)
         return std::unexpected(StyleDiagnostic{1, 1, "Invalid or oversized style source"});
-    try {
-        return create(Parser(source, images).run());
-    } catch (const ParseFailure& failure) {
-        StyleDiagnostic error{1, 1, failure.message};
-        for (std::size_t i = 0; i < std::min(failure.position, source.size()); ++i) {
-            if (source[i] == '\n') {
-                ++error.line;
-                error.column = 1;
-            } else
-                ++error.column;
-        }
-        return std::unexpected(std::move(error));
-    }
+    ATELIER_TRY_BIND(rules, Parser(source, images).run());
+    return create(std::move(*rules));
 }
 } // namespace atelier::ui

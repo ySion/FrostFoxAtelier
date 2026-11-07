@@ -3,13 +3,13 @@
 #include "runtime/foundation.hpp"
 #include "foundation/result.hpp"
 #include "foundation/string.hpp"
+#include "platform/utf.hpp"
 #include <algorithm>
 #include <cmath>
 #include <limits>
 #include <map>
 #include <functional>
 #include <stdexcept>
-#include <windows.h>
 
 namespace atelier::ui_language {
 namespace {
@@ -30,14 +30,10 @@ Result<std::wstring> wide(const String& value) noexcept {
         return {};
     if (text.size() > 4096 * 4)
         return failure("UI text exceeds the control limit.");
-    const auto count =
-        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()), nullptr, 0);
-    if (!count || count > 4096)
+    auto result = platform::utf8_to_utf16(text.std_view(), 4096);
+    if (!result)
         return failure("Invalid or excessive UI text.");
-    std::wstring result(static_cast<std::size_t>(count), L'\0');
-    MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()), result.data(),
-                        count);
-    return result;
+    return std::move(*result);
 }
 
 struct EditReference {

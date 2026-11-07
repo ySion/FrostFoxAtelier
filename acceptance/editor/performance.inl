@@ -11,14 +11,18 @@ int profile_editor_render_performance(Application& app, const char* output_direc
     struct ComScope {
         ~ComScope() { CoUninitialize(); }
     } com_scope;
-    const auto output = std::filesystem::path(assets::wide(output_directory));
+    const auto output_text = platform::utf8_to_utf16(output_directory);
+    require(bool(output_text), "Invalid UTF-8 performance evidence directory.");
+    const auto output = std::filesystem::path(*output_text);
     require(output.is_absolute(), "Render performance evidence needs an absolute directory.");
     std::filesystem::create_directories(output);
     const auto project = Access::project_root(app);
     const auto scene = Access::scene_path(app);
     require(!project.empty() && !scene.empty(), "Render performance requires a loaded project Scene.");
     const auto scene_file = project / scene;
-    const auto file_hash = atelier::control::sha256_file(scene_file);
+    const auto file_hash = foundation::sha256_file(scene_file);
+    if (!file_hash)
+        throw std::runtime_error(file_hash.error());
     // Lock authoring state before either a product frame or a diagnostic write.
     const auto original_scene = model(app.document().serialize());
     const auto original_world = model(app.document().presentation().environment());
@@ -45,8 +49,10 @@ int profile_editor_render_performance(Application& app, const char* output_direc
     const auto unchanged_scene = [&] {
         unchanged_author();
         require(model(app.document().serialize()) == original_scene, "Performance comparison changed Scene contents.");
-        require(atelier::control::sha256_file(scene_file) == file_hash,
-                "Performance comparison changed the source Scene file.");
+        const auto current_hash = foundation::sha256_file(scene_file);
+        if (!current_hash)
+            throw std::runtime_error(current_hash.error());
+        require(*current_hash == *file_hash, "Performance comparison changed the source Scene file.");
     };
     const auto apply_view = [&](const renderer::ViewSettings& candidate) {
         unchanged_author();
@@ -55,14 +61,17 @@ int profile_editor_render_performance(Application& app, const char* output_direc
         model(Access::performance_view(app, candidate));
         unchanged_author();
     };
+    const auto project_text = platform::utf16_to_utf8(project.native());
+    const auto scene_text = platform::utf16_to_utf8(scene.native());
+    require(project_text && scene_text, "Invalid UTF-16 performance input path.");
     Json report{
         {"schema", "atelier.editor.render-performance.v7"},
         {"status", "preparing"},
         {"revision", build_info::revision},
         {"configuration", build_info::configuration},
-        {"project", assets::utf8(project.wstring())},
-        {"scene", assets::utf8(scene.wstring())},
-        {"scene_sha256", file_hash},
+        {"project", *project_text},
+        {"scene", *scene_text},
+        {"scene_sha256", *file_hash},
         {"authoring_baseline",
          {{"loaded_environment", loaded_environment},
           {"undo", history},
@@ -129,7 +138,7 @@ int profile_editor_render_performance(Application& app, const char* output_direc
                     " encode=" + std::to_string(record.count(renderer::phases::encode)) +
                     " frame=" + std::to_string(record.count(renderer::phases::frame)) +
                     " accepted_frame=" + std::to_string(app.presented()->drawing->id) + " preparation=\"" +
-                    assets::utf8(Access::render_notice(app)) + "\"");
+                    application::diagnostic_text(Access::render_notice(app)) + "\"");
             return frame_end(record);
         };
         // Let the product publish its loaded World into the accepted UI/view.
@@ -290,9 +299,9 @@ int profile_editor_render_performance(Application& app, const char* output_direc
                 if (pane.active) {
                     if (pane.bounds.width <= 0 || pane.bounds.height <= 0)
                         continue;
-                    panes.push_back({{"tab", pane.active->key},
-                                     {"title", assets::utf8(pane.active->title)},
-                                     {"maximized", pane.maximized}});
+                    const auto title = platform::utf16_to_utf8(pane.active->title);
+                    require(bool(title), "Invalid UTF-16 profile pane title.");
+                    panes.push_back({{"tab", pane.active->key}, {"title", *title}, {"maximized", pane.maximized}});
                 }
             return panes;
         };

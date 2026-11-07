@@ -120,7 +120,7 @@ void verify_gltf_import() {
         return true;
     };
     assets::ImageCache cache;
-    const auto loaded = assets::load_gltf(source / "scene.gltf", &cache);
+    const auto loaded = take(assets::load_gltf(source / "scene.gltf", &cache));
     const auto& mesh = *loaded.mesh;
     const auto vertices = mesh.vertices();
     const auto parts = mesh.parts();
@@ -196,9 +196,9 @@ void verify_gltf_import() {
             "glTF packed data was modified during decoding.");
     require(pixels[3] == pixels[0] && cache.entries.size() == 3,
             "Images with the same bytes did not share decoded pixels.");
-    require(decoded(assets::load_gltf(source / "scene.gltf", &cache), &cache)[0] == pixels[0],
-            "A second import did not reuse cached pixels.");
-    const auto uncached = assets::load_gltf(source / "scene.gltf");
+    const auto repeated = take(assets::load_gltf(source / "scene.gltf", &cache));
+    require(decoded(repeated, &cache)[0] == pixels[0], "A second import did not reuse cached pixels.");
+    const auto uncached = take(assets::load_gltf(source / "scene.gltf"));
     require(decoded(uncached, nullptr)[3] != pixels[0], "Uncached glTF loads shared pixels through hidden state.");
     {
         const std::string pixels = bmp(1, 2, 3);
@@ -250,7 +250,7 @@ void verify_gltf_import() {
     variant["meshes"][1]["primitives"][0].erase("material");
     take(editor::write_file(source / "variant.gltf", variant.dump()));
     {
-        const auto implicit = assets::load_gltf(source / "variant.gltf");
+        const auto implicit = take(assets::load_gltf(source / "variant.gltf"));
         const auto& fallback = implicit.mesh->materials().back();
         require(implicit.mesh->materials().size() == 2 && fallback.name == "default" &&
                     implicit.materials.size() == 2 && !implicit.materials.back() &&

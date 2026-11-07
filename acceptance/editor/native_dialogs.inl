@@ -2,7 +2,9 @@ int verify_editor_dialogs(Application& app, const char* output_directory) {
     using namespace atelier;
     namespace control = atelier::editor::control;
     using Access = application::EditorAcceptanceAccess;
-    const auto output = std::filesystem::absolute(assets::wide(output_directory));
+    const auto output_text = platform::utf8_to_utf16(output_directory);
+    require(bool(output_text), "Invalid UTF-8 evidence directory.");
+    const auto output = std::filesystem::absolute(*output_text);
     std::filesystem::create_directories(output);
     tick(app);
     require(bool(Access::invoke(app, "scene.add", {{"kind", "mesh"}})), "Dialog scene creation failed.");

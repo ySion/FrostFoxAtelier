@@ -16,6 +16,24 @@ using namespace atelier;
 
 using namespace atelier::acceptance::helpers;
 
+void verify_registration_text() {
+    Runtime runtime;
+    const auto scalar = runtime.native_type<std::uint32_t>();
+    if (!scalar)
+        fatal("Registration text fixture requires core.u32.");
+    TypeDefinition definition{"文本.记录", TypeKind::record, {{"数量", {*scalar}}}, {}, {}};
+    definition.fields[0].label = "数量（个）";
+    definition.fields[0].category = "属性";
+    const auto registered = runtime.register_type(definition);
+    if (!registered || !runtime.find_field(*registered, "数量"))
+        fatal("Valid non-ASCII registration text was rejected or changed.");
+    definition.name = "文本.拒绝";
+    definition.fields[0].name = "\xc0\xaf";
+    const auto rejected = runtime.register_type(std::move(definition));
+    if (rejected || rejected.error().code != ErrorCode::invalid_definition || runtime.find_type("文本.拒绝"))
+        fatal("Invalid UTF-8 field name was accepted or published a partial type.");
+}
+
 struct alignas(32) ValueResource {
     static inline int live{};
 
@@ -878,6 +896,7 @@ int main() {
     atelier::install_fatal_handler();
     try {
         atelier::acceptance::verify_default_allocator();
+        verify_registration_text();
         verify_method_results();
         verify_root_handles();
         verify_value_operations();

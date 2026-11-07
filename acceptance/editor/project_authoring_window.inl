@@ -93,7 +93,7 @@ void verify_project_authoring_window(Application& app, const std::filesystem::pa
     key(app, 'A', true);
     {
         KeyStateScope modifiers;
-        for (const auto c : atelier::assets::wide(math))
+        for (const auto c : atelier::platform::utf8_to_utf16_validated(math))
             SendMessageW(app.window(), WM_CHAR, c, 0);
         tick(app, 2);
     }

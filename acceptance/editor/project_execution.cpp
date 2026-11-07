@@ -1,15 +1,16 @@
-#include "memory/fatal.hpp"
 #include "assets/file.hpp"
 #include "assets/json_format.hpp"
 #include "editor/project_code.hpp"
 #include "editor/project_ui.hpp"
 #include "editor/workspace.hpp"
+#include "application/diagnostics.hpp"
 #include "application/play_process.hpp"
 #include "application/project_runner.hpp"
 #include "application/timing.hpp"
 #include "application/presentation.hpp"
 #include "logging/logging.hpp"
 #include "ui/session.hpp"
+#include "platform/utf.hpp"
 #include <Windows.h>
 #include <chrono>
 #include <cstdio>
@@ -633,10 +634,12 @@ void run(const std::filesystem::path& root) {
     auto described = ui.set_controls(controls);
     if (!described) {
         for (const auto& control : controls)
-            if (control.key == described.error().key || control.parent == described.error().key)
+            if (control.key == described.error().key || control.parent == described.error().key) {
+                const auto text = application::diagnostic_text(control.text);
                 std::printf("Control %llu parent %llu kind %u text %s\n", static_cast<unsigned long long>(control.key),
                             static_cast<unsigned long long>(control.parent), static_cast<unsigned>(control.kind),
-                            assets::utf8(control.text).c_str());
+                            text.c_str());
+            }
     }
     display(std::move(described));
     workspace.commit_ui_controls();
@@ -953,6 +956,8 @@ void run(const std::filesystem::path& root) {
                 faulted.finish(true, {no_camera, fault, {"runner", "runner.failed", logging::Severity::error, 1}});
             else
                 faulted.finish(true, {no_camera, fault});
+            const auto component_path = platform::utf16_to_utf8(component.generic_wstring());
+            require(bool(component_path), "Invalid UTF-16 Source fixture path.");
             require(faulted.count("world.behavior_failed") == 1 &&
                         faulted.has("world.behavior_failed",
                                     [&](const auto& record) {
@@ -960,8 +965,7 @@ void run(const std::filesystem::path& root) {
                                                RunLog::text(record, "phase", "tick") &&
                                                RunLog::text(record, "type", "project.Move") &&
                                                !record.entry.source.file.empty() &&
-                                               record.entry.source.disk_path ==
-                                                   assets::utf8(component.generic_wstring()) &&
+                                               record.entry.source.disk_path == *component_path &&
                                                record.entry.source.version && record.entry.source.offset &&
                                                RunLog::field(record, "object") && RunLog::field(record, "entity");
                                     }),
@@ -1036,9 +1040,11 @@ ui ProjectUI(in Text title, in double elapsed, in double entities) {
     auto relocated = editor::load_project_scene(reopened, take(assets::read_file(moved / "Content/Scenes/Main.scene")));
     require(relocated.session != nullptr && std::get<float>(field(*relocated.session, "speed")) == 2,
             "Moving the project broke source or scene association.");
+    const auto moved_text = platform::utf16_to_utf8(moved.native());
+    require(bool(moved_text), "Invalid UTF-16 relocation evidence path.");
     std::printf(
         "Project integration: PASS (Source classes, files, properties, scene, hot update, diagnostics, saved data across Source changes, placeholders, UI, process, stop, relocation)\nEvidence: %s\n",
-        assets::utf8(moved.wstring()).c_str());
+        moved_text->c_str());
 }
 }
 

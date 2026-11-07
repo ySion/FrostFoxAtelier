@@ -7,6 +7,7 @@
 #include "editor/project.hpp"
 #include "editor/view_options.hpp"
 #include "editor/viewport_tool.hpp"
+#include "platform/utf.hpp"
 #include <limits>
 #include <stdexcept>
 #include <unordered_set>
@@ -290,7 +291,8 @@ Result<void> scene_transform(OperatorHost& host, const Context& context, const S
 Result<void> scene_rename(OperatorHost& host, const Context& context, const SceneRename& p) {
     if (p.name.empty())
         return host.begin_entity_rename(context.selection.active, context.region);
-    auto result = context.document.rename(context.selection.active, assets::wide({p.name.c_str(), p.name.size()}));
+    auto result = context.document.rename(context.selection.active,
+                                          platform::utf8_to_utf16_validated({p.name.c_str(), p.name.size()}));
     host.scene_changed();
     return result;
 }
@@ -501,7 +503,7 @@ Result<std::optional<std::filesystem::path>> operation_path(OperatorHost& host, 
                                                             PathPurpose purpose, const std::filesystem::path& initial,
                                                             std::wstring_view filename = {}) {
     if (!value.empty())
-        return std::optional<std::filesystem::path>{assets::wide(std::string_view{value.c_str(), value.size()})};
+        return std::optional<std::filesystem::path>{platform::utf8_to_utf16_validated({value.c_str(), value.size()})};
     auto chosen = host.choose_path(purpose, initial, filename);
     if (chosen && !*chosen)
         host.cancel_operator();

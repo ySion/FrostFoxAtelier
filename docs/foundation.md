@@ -203,6 +203,16 @@ Span 构造、索引和切片均 constexpr/noexcept。空指针配非零数量�
 
 **借用有效期由拥有者和修改行为决定。** 销毁、释放、替换存储及实际扩容使原地址失效；删除和压缩可能让相同地址对应不同元素；clear 结束全部元素生命周期。Array 和堆 String 移动转移缓冲后，原地址若仍使用便依赖新拥有者；内联 String 移动复制字节到目标对象，旧视图不能跟随该值。调用者统一按移动后重新获取 String 视图处理。视图不冻结容器，不提供并发保护，也不能无条件跨协程挂起保存。直接对临时 Array/String 取 `view()` 及从临时 String 构造 StringView 被禁止；C++ 调用者仍须保证其他借用路径有效。
 
+## Windows 文本、路径与文件摘要
+
+[platform/utf.hpp](../modules/core/platform/include/platform/utf.hpp) 统一负责严格 UTF-8↔UTF-16 转换，不提供有损模式。`utf8_to_utf16` 返回 `expected<std::wstring, UtfError>`，`utf16_to_utf8` 返回 `expected<std::string, UtfError>`；空输入成功，嵌入 NUL 按长度保留，字符串另有尾 NUL。非法编码、Win32 长度不可表示、输出预算超限和转换 API 失败显式返回错误。UTF-16 方向的 `maximum_units` 不计尾 NUL，在分配前检查；UI 仍先查 16384 UTF-8 字节，再查 4096 UTF-16 单元。当前 std 返回类型直接衔接 Win32、filesystem 和现有文本存储，后续 A1 统一迁移自有类型。
+
+`utf8_to_utf16_validated` 仅接受所属边界已验证且长度可表示的文本，违约为 contract-fatal；String、已解析 JSON、Runtime 注册文本和字面量可复用其保证，任意字节切片不能沿用。OS 路径、用户 UTF-16 输入及原始文件/管道/二进制文本走严格 Result。旧 Assets/Control `wide/utf8` 入口已删除；已有失败的诊断显示回退由 Application 的 `diagnostic_text` 集中负责，不替代业务 Result 或严格输入验证。
+
+[platform/windows_path.hpp](../modules/core/platform/include/platform/windows_path.hpp) 的唯一 `windows_file_path` 返回 `expected<filesystem::path, error_code>`：绝对化失败显式返回，成功后规范化并保留已有扩展前缀、转换 UNC 或添加长路径前缀。它只处理拼写，不承担存在性、包含关系和链接验证。[platform/error.hpp](../modules/core/platform/include/platform/error.hpp) 的 `error_message` 对系统错误使用 FormatMessageW 和严格 UTF-8 输出，避免 filesystem 异常 `what()` 中的 ANSI 路径；非系统类别保留原类别消息，未知系统码保留数字身份。
+
+[foundation/sha256.hpp](../modules/core/foundation/include/foundation/sha256.hpp) 的 `Sha256` 构造、`add`、`finish` 和 `sha256(bytes)` 均 noexcept；内存哈希没有可恢复的输入失败，CNG 原语失败直接 fatal。流式对象在最后一次 `add` 后只调用一次 `finish`。仅 `sha256_file` 返回 `expected<std::string, std::string>`，报告路径、打开和读取失败；上层自行映射业务码。内存哈希复用 CNG SHA-256 伪句柄，不逐次打开算法 provider。
+
 ## 同步借用与作用域工具
 
 - [FunctionRef](../modules/core/foundation/include/foundation/function_ref.hpp) 的 `FunctionRef<R(Args...)>` 和 `FunctionRef<R(Args...) noexcept>` 是两字借用，不复制闭包、不分配、不提供空态；空函数指针为 contract-fatal。支持左值和右值 callable、普通函数指针、move-only 捕获及 `std::invoke` 语义。noexcept 特化仅接受调用及结果转换不抛的 callable。只作同步参数使用，不能存为成员或跨调用保存；临时闭包只保证活到整个调用表达式结束。`Window::poll` 已采用此接口，现有四处临时 lambda 无需命名或复制，窗口不保存回调。

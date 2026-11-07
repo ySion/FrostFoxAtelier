@@ -4,6 +4,7 @@
 #include "assets/builtin_materials.hpp"
 #include "assets/material_format.hpp"
 #include "material/resources.hpp"
+#include "platform/utf.hpp"
 #include <cstdio>
 #include <cstring>
 #include <limits>
@@ -261,7 +262,7 @@ Result<ObjectRoot> Session::publish_material(assets::Reader& reader, const asset
                 return failure("Material Source snapshot path does not match its author record.");
             material::SourceState state;
             auto source_file = exact_source ? Result<source::SourceFile>(std::move(*exact_source))
-                                            : reader.source(assets::wide(author->source_path));
+                                            : reader.source(platform::utf8_to_utf16_validated(author->source_path));
             if (!source_file)
                 document.error = std::move(source_file.error());
             else {

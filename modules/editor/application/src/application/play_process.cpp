@@ -1,6 +1,7 @@
 #include "application/play_process.hpp"
 #include "control/control.hpp"
-#include "assets/file.hpp"
+#include "platform/error.hpp"
+#include "platform/utf.hpp"
 #include "logging/native.hpp"
 #include <array>
 #include <algorithm>
@@ -21,17 +22,20 @@ void report_os_failure(std::string_view operation, DWORD error) noexcept {
 }
 
 void report_forced(const std::filesystem::path& directory, std::chrono::steady_clock::duration waited, bool exited,
-                   std::optional<DWORD> exit_code, bool acknowledged) noexcept try {
+                   std::optional<DWORD> exit_code, bool acknowledged) noexcept {
+    const auto path = platform::utf16_to_utf8(directory.generic_wstring());
+    if (!path) {
+        std::fputs("Play termination diagnostic capture failed.\n", stderr);
+        return;
+    }
     const std::array fields{
-        logging::Field{"directory", assets::utf8(directory.generic_wstring())},
+        logging::Field{"directory", *path},
         logging::Field{"waited_ms", std::chrono::duration_cast<std::chrono::milliseconds>(waited).count()},
         logging::Field{"exited", exited}, logging::Field{"exit_code", exit_code ? std::int64_t{*exit_code} : -1},
         logging::Field{"acknowledged", acknowledged}};
     static_cast<void>(ATELIER_LOG_WITH(logging::Severity::warning, "play", "play.forced",
                                        logging::native::Context{.fields = fields},
                                        "Play stop acknowledgement or exit timed out; terminating its process group"));
-} catch (...) {
-    std::fputs("Play termination diagnostic capture failed.\n", stderr);
 }
 
 void report_exit_unobserved(std::chrono::steady_clock::duration waited, bool forced, bool acknowledged,
@@ -127,15 +131,24 @@ Result<void> PlayProcess::start(const std::filesystem::path& project, const std:
     executable = (std::filesystem::path(executable).parent_path() / L"atelier_editor.exe").wstring();
     static std::uint64_t launch{}; // Owner thread only; not an object identity.
     const auto* parent = logging::current_run();
-    auto directory =
-        parent ? parent->info().directory / (L"runner-" + std::to_wstring(++launch))
-               : std::filesystem::absolute(control::default_directory().parent_path() / "Logs" / control::unique_id());
+    std::filesystem::path directory;
+    if (parent)
+        directory = parent->info().directory / (L"runner-" + std::to_wstring(++launch));
+    else {
+        const auto storage = control::default_directory();
+        if (!storage)
+            return std::unexpected(Error{ErrorCode::invalid_storage, storage.error().what()});
+        std::error_code error;
+        directory = std::filesystem::absolute(storage->parent_path() / "Logs" / control::unique_id(), error);
+        if (error)
+            return std::unexpected(Error{ErrorCode::invalid_storage, platform::error_message(error)});
+    }
     auto command = argument(executable) + L" --run-project " + argument(project.wstring()) + L" --stop-event " +
                    std::to_wstring(reinterpret_cast<std::uintptr_t>(stop.value)) + L" --stop-ack-event " +
                    std::to_wstring(reinterpret_cast<std::uintptr_t>(stop_ack.value)) + L" --log-directory " +
                    argument(directory.wstring());
     if (parent)
-        command += L" --parent-run " + argument(assets::wide(parent->info().run_id));
+        command += L" --parent-run " + argument(platform::utf8_to_utf16_validated(parent->info().run_id));
     if (!scene.empty())
         command += L" --scene-snapshot " + argument(scene.wstring());
     if (preview_ui)
@@ -219,11 +232,12 @@ Result<void> PlayProcess::start(const std::filesystem::path& project, const std:
 void PlayProcess::stop() noexcept {
     if (!process_ || exited_ || stopping_)
         return;
-    try {
-        const std::array fields{logging::Field{"directory", assets::utf8(log_directory_.generic_wstring())}};
+    const auto path = platform::utf16_to_utf8(log_directory_.generic_wstring());
+    if (path) {
+        const std::array fields{logging::Field{"directory", *path}};
         static_cast<void>(ATELIER_LOG_WITH(logging::Severity::info, "play", "play.stop_requested",
                                            logging::native::Context{.fields = fields}, "Play stop requested"));
-    } catch (...) {
+    } else {
         std::fputs("Play stop diagnostic capture failed.\n", stderr);
     }
     stopping_ = true;
@@ -321,13 +335,14 @@ DWORD PlayProcess::observe_exit(DWORD timeout_ms) noexcept {
     exited_ = true;
     exit_code_ = code;
     // Observation owns the event, including a late exit after close's budget.
-    try {
-        const std::array fields{logging::Field{"directory", assets::utf8(log_directory_.generic_wstring())},
-                                logging::Field{"forced", forced_}, logging::Field{"exit_code", std::uint64_t{code}}};
+    const auto path = platform::utf16_to_utf8(log_directory_.generic_wstring());
+    if (path) {
+        const std::array fields{logging::Field{"directory", *path}, logging::Field{"forced", forced_},
+                                logging::Field{"exit_code", std::uint64_t{code}}};
         static_cast<void>(ATELIER_LOG_WITH(logging::Severity::info, "play", "play.process_ended",
                                            logging::native::Context{.fields = fields},
                                            "Runner process ended; retained JSONL tail remains readable."));
-    } catch (...) {
+    } else {
         std::fputs("Play exit diagnostic capture failed.\n", stderr);
     }
     // Preserve the existing process-tree ownership: descendants do not outlive

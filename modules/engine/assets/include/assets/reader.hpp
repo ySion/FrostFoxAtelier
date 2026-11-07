@@ -6,7 +6,7 @@
 
 namespace atelier::assets {
 // Cold-path, bounded-memory canonical encoding of actual content and slot defaults.
-// Invalid content returns an error; SHA provider failures throw std::runtime_error.
+// Invalid content returns an error; memory SHA primitive failures are fatal.
 Result<std::string> mesh_content_sha256(const MeshAsset&);
 
 // Synchronous asset reads, independent of author documents, Runtime objects and devices.
@@ -45,7 +45,7 @@ public:
 
     Result<MeshAsset> mesh(std::string_view);
 
-    // Exact installed identity and kind, never a project fallback. SHA failures throw.
+    // Exact installed identity and kind, never a project fallback. SHA failures are fatal.
     Result<EngineDependency> engine_dependency(std::string_view, AssetKind expected) const;
 
     Result<TextureAsset> texture(std::string_view);
@@ -72,7 +72,7 @@ public:
 
     // Candidate preparation shares the Reader's weak image cache. It neither
     // publishes geometry nor writes files; the owner commits through publish_mesh.
-    MeshImport prepare_mesh(const std::filesystem::path& source);
+    Result<MeshImport> prepare_mesh(const std::filesystem::path& source);
 
     std::vector<material::ImageRef> prepare_images(std::span<const std::string_view>, std::uint64_t pixel_budget);
 

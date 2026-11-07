@@ -1903,6 +1903,8 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
             return failure(ErrorCode::invalid_definition,
                            "A named record, object, enum, string or array type is required.");
         }
+        if (!StringView{std::string_view{definition.name}}.is_valid_utf8())
+            return failure(ErrorCode::invalid_definition, "Type names require valid UTF-8.");
         const auto invalid_description = [](const std::string& owner) {
             return failure(ErrorCode::invalid_definition,
                            "Description requires valid UTF-8 without controls other than line breaks and tabs: " +
@@ -1911,6 +1913,11 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
         if (!normalize_description(definition.description))
             return invalid_description(definition.name);
         for (auto& field : definition.fields) {
+            if (!StringView{std::string_view{field.name}}.is_valid_utf8() ||
+                !StringView{std::string_view{field.label}}.is_valid_utf8() ||
+                !StringView{std::string_view{field.category}}.is_valid_utf8())
+                return failure(ErrorCode::invalid_definition,
+                               "Field names, labels and categories require valid UTF-8.");
             if (!normalize_description(field.description))
                 return invalid_description(definition.name + "." + field.name);
             const auto normalized = field.normalize_metadata();
@@ -1918,9 +1925,12 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
                 return failure(normalized.error().code,
                                normalized.error().message + ": " + definition.name + "." + field.name);
         }
-        for (auto& method : definition.methods)
+        for (auto& method : definition.methods) {
+            if (!StringView{std::string_view{method.name}}.is_valid_utf8())
+                return failure(ErrorCode::invalid_definition, "Method names require valid UTF-8.");
             if (!normalize_description(method.description))
                 return invalid_description(definition.name + "." + method.name);
+        }
         const auto same_name = [&](const auto& type) { return type->info.name == definition.name; };
         if (impl_->named(definition.name) || std::ranges::any_of(staged, same_name)) {
             return failure(ErrorCode::duplicate_name, "Type already defined: " + definition.name);
@@ -2019,6 +2029,8 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
             for (std::size_t e = 0; e < values.size(); ++e) {
                 if (values[e].first.empty())
                     return failure(ErrorCode::invalid_definition, "Enum names cannot be empty.");
+                if (!StringView{std::string_view{values[e].first}}.is_valid_utf8())
+                    return failure(ErrorCode::invalid_definition, "Enum names require valid UTF-8.");
                 for (std::size_t j = 0; j < e; ++j)
                     if (values[j].first == values[e].first)
                         return failure(ErrorCode::duplicate_name, "Duplicate enum name: " + values[e].first);
@@ -2230,10 +2242,13 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
             if (!names.empty() && names.size() != signature->parameters.size())
                 return failure(ErrorCode::invalid_definition,
                                "Parameter names must match the parameters of method: " + method.name);
-            for (std::size_t i = 0; i < names.size(); ++i)
+            for (std::size_t i = 0; i < names.size(); ++i) {
+                if (!StringView{std::string_view{names[i]}}.is_valid_utf8())
+                    return failure(ErrorCode::invalid_definition, "Parameter names require valid UTF-8.");
                 if (!names[i].empty() && std::find(names.begin(), names.begin() + i, names[i]) != names.begin() + i)
                     return failure(ErrorCode::duplicate_name,
                                    "Duplicate parameter " + names[i] + " in method: " + method.name);
+            }
             names.resize(signature->parameters.size());
             type.info.methods.push_back({MethodId{id, static_cast<std::uint32_t>(type.info.methods.size())},
                                          std::move(method.name), std::move(*signature), method.preserves_borrows,

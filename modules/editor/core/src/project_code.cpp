@@ -1,5 +1,6 @@
 #include "editor/project_code.hpp"
-#include "assets/file.hpp"
+#include "foundation/string.hpp"
+#include "platform/utf.hpp"
 #include "platform/windows_path.hpp"
 #include "procedural/graph.hpp"
 #include "ui_language/component.hpp"
@@ -68,7 +69,10 @@ Result<source::SourceSnapshot> ProjectCode::snapshot(const Project& project) {
     ATELIER_TRY_BIND(paths, project.source_paths());
     ATELIER_TRY_BIND(engine, source::engine_sources(source::default_engine_root()));
     source::SourceSnapshot result;
-    result.name = assets::utf8(project.name());
+    auto name = platform::utf16_to_utf8(project.name());
+    if (!name)
+        return fail("Invalid UTF-16 text.");
+    result.name = std::move(*name);
     result.version = 14695981039346656037ULL;
     std::size_t bytes{};
     const auto add = [&](source::SourceFile file) {
@@ -81,7 +85,10 @@ Result<source::SourceSnapshot> ProjectCode::snapshot(const Project& project) {
     };
     for (const auto& relative : *paths) {
         ATELIER_TRY_BIND(path, project.resolve(relative));
-        ATELIER_TRY_BIND(file, source::read_source_file(*path, assets::utf8(relative.generic_wstring())));
+        auto relative_name = platform::utf16_to_utf8(relative.generic_wstring());
+        if (!relative_name)
+            return fail("Invalid UTF-16 text.");
+        ATELIER_TRY_BIND(file, source::read_source_file(*path, std::move(*relative_name)));
         if (!add(std::move(*file)))
             return fail("Project and engine Source exceed the 16 MiB compilation limit.");
     }
@@ -95,7 +102,10 @@ Result<std::optional<source::SourceFile>> ProjectCode::ui_snapshot(const Project
     if (project.ui_source().empty())
         return std::optional<source::SourceFile>{};
     ATELIER_TRY_BIND(path, project.resolve(project.ui_source()));
-    ATELIER_TRY_BIND(file, source::read_source_file(*path, assets::utf8(project.ui_source().generic_wstring())));
+    auto name = platform::utf16_to_utf8(project.ui_source().generic_wstring());
+    if (!name)
+        return fail("Invalid UTF-16 text.");
+    ATELIER_TRY_BIND(file, source::read_source_file(*path, std::move(*name)));
     return std::optional<source::SourceFile>{std::move(*file)};
 }
 
@@ -105,43 +115,44 @@ Result<void> ProjectCode::build(const Project& project) {
     std::uint64_t request_sequence{};
     std::string_view phase = "snapshot";
     const auto record = [&](std::string_view code, const Error* error = nullptr) noexcept {
-        try {
-            logging::Entry entry{.severity = error ? logging::Severity::error : logging::Severity::info,
-                                 .category = "source",
-                                 .event_code = std::string(code),
-                                 .message = error ? error->message : "Project Source build transition."};
-            entry.fields = {{"project_root", assets::utf8(project.root().generic_wstring())},
-                            {"phase", std::string(phase)},
-                            {"snapshot_version", next->sources ? next->sources->version : 0},
-                            {"published_content_version", next->published_version}};
-            if (request_sequence)
-                entry.fields.push_back({"request_sequence", request_sequence});
-            if (code == "source.published")
-                entry.fields.push_back({"code_version", request_sequence});
-            if (error) {
-                entry.fields.push_back({"error_code", static_cast<std::uint64_t>(error->code)});
-                if (error->source) {
-                    const auto& location = *error->source;
-                    entry.source = {location.path,
-                                    {},
-                                    {},
-                                    location.line <= UINT32_MAX ? static_cast<std::uint32_t>(location.line) : 0,
-                                    location.column <= UINT32_MAX ? static_cast<std::uint32_t>(location.column) : 0,
-                                    location.version,
-                                    location.offset,
-                                    location.disk_path};
-                    entry.fields.insert(entry.fields.end(), {{"error.path", location.path},
-                                                             {"error.version", location.version},
-                                                             {"error.offset", std::uint64_t{location.offset}},
-                                                             {"error.line", std::uint64_t{location.line}},
-                                                             {"error.column", std::uint64_t{location.column}},
-                                                             {"error.disk_path", location.disk_path}});
-                }
-            }
-            static_cast<void>(logging::submit(std::move(entry)));
-        } catch (...) {
+        auto root = platform::utf16_to_utf8(project.root().generic_wstring());
+        if (!root) {
             std::fputs("Source build diagnostic capture failed.\n", stderr);
+            return;
         }
+        logging::Entry entry{.severity = error ? logging::Severity::error : logging::Severity::info,
+                             .category = "source",
+                             .event_code = std::string(code),
+                             .message = error ? error->message : "Project Source build transition."};
+        entry.fields = {{"project_root", std::move(*root)},
+                        {"phase", std::string(phase)},
+                        {"snapshot_version", next->sources ? next->sources->version : 0},
+                        {"published_content_version", next->published_version}};
+        if (request_sequence)
+            entry.fields.push_back({"request_sequence", request_sequence});
+        if (code == "source.published")
+            entry.fields.push_back({"code_version", request_sequence});
+        if (error) {
+            entry.fields.push_back({"error_code", static_cast<std::uint64_t>(error->code)});
+            if (error->source) {
+                const auto& location = *error->source;
+                entry.source = {location.path,
+                                {},
+                                {},
+                                location.line <= UINT32_MAX ? static_cast<std::uint32_t>(location.line) : 0,
+                                location.column <= UINT32_MAX ? static_cast<std::uint32_t>(location.column) : 0,
+                                location.version,
+                                location.offset,
+                                location.disk_path};
+                entry.fields.insert(entry.fields.end(), {{"error.path", location.path},
+                                                         {"error.version", location.version},
+                                                         {"error.offset", std::uint64_t{location.offset}},
+                                                         {"error.line", std::uint64_t{location.line}},
+                                                         {"error.column", std::uint64_t{location.column}},
+                                                         {"error.disk_path", location.disk_path}});
+            }
+        }
+        static_cast<void>(logging::submit(std::move(entry)));
     };
     const auto reject = [&](Error error) -> Result<void> {
         next->state = error.code == ErrorCode::rebuild_required ? BuildState::rebuild_required : BuildState::failed;
@@ -321,20 +332,34 @@ Result<void> ProjectCode::poll(const Project& project, bool force) {
         return build(project);
     std::vector<Stamp> stamps;
     stamps.reserve(paths->size() + engine->size());
-    try {
-        for (const auto& relative : *paths) {
-            const auto path = project.resolve(relative);
-            if (!path)
-                return build(project);
-            const auto native = platform::windows_file_path(*path);
-            stamps.push_back({relative, std::filesystem::last_write_time(native), std::filesystem::file_size(native)});
-        }
-        for (const auto& relative : *engine) {
-            const auto native = platform::windows_file_path(engine_root / relative);
-            stamps.push_back({native, std::filesystem::last_write_time(native), std::filesystem::file_size(native)});
-        }
-    } catch (const std::exception&) {
-        return build(project);
+    for (const auto& relative : *paths) {
+        const auto path = project.resolve(relative);
+        if (!path)
+            return build(project);
+        const auto native = platform::windows_file_path(*path);
+        if (!native)
+            return build(project);
+        std::error_code error;
+        const auto modified = std::filesystem::last_write_time(*native, error);
+        if (error)
+            return build(project);
+        const auto size = std::filesystem::file_size(*native, error);
+        if (error)
+            return build(project);
+        stamps.push_back({relative, modified, size});
+    }
+    for (const auto& relative : *engine) {
+        const auto native = platform::windows_file_path(engine_root / relative);
+        if (!native)
+            return build(project);
+        std::error_code error;
+        const auto modified = std::filesystem::last_write_time(*native, error);
+        if (error)
+            return build(project);
+        const auto size = std::filesystem::file_size(*native, error);
+        if (error)
+            return build(project);
+        stamps.push_back({*native, modified, size});
     }
     if (!force && stamps == stamps_)
         return {};
@@ -373,25 +398,30 @@ ProjectDocument load_project_scene(Project& project, std::string_view source, Lo
     return result;
 }
 
-std::wstring describe_diagnostic(const Session& session, const world::Diagnostic& item) {
-    auto line = L"Diagnostic [" + assets::wide(world::name(item.severity)) + L"] " +
-                assets::wide(world::name(item.kind)) + L" in " + assets::wide(world::name(item.phase));
+Result<std::string> describe_diagnostic(const Session& session, const world::Diagnostic& item) {
+    auto line = "Diagnostic [" + std::string(world::name(item.severity)) + "] " + std::string(world::name(item.kind)) +
+                " in " + std::string(world::name(item.phase));
     if (item.entity != ObjectId{}) {
         const auto label = session.name(item.entity);
-        line += label.empty() ? std::wstring(L" Entity") : L" \"" + std::wstring(label) + L"\"";
+        auto name = platform::utf16_to_utf8(label);
+        if (!name)
+            return fail("Invalid UTF-16 text.");
+        line += label.empty() ? " Entity" : " \"" + *name + "\"";
     }
     if (!item.type.empty())
-        line += L" (" + assets::wide(item.type) + L")";
+        line += " (" + item.type + ")";
     for (std::size_t i = 0; i < item.field.size(); ++i)
-        line += (i ? L"." : L" ") + assets::wide(item.field[i]);
-    line += L": " + assets::wide(item.message);
+        line += (i ? "." : " ") + item.field[i];
+    line += ": " + item.message;
     if (!item.value.empty())
-        line += L" Value: " + assets::wide(item.value);
+        line += " Value: " + item.value;
     if (item.source)
-        line += L" at " + assets::wide(item.source->path) + L":" + std::to_wstring(item.source->line) + L":" +
-                std::to_wstring(item.source->column);
+        line += " at " + item.source->path + ":" + std::to_string(item.source->line) + ":" +
+                std::to_string(item.source->column);
     if (item.repeats > 1)
-        line += L" (×" + std::to_wstring(item.repeats) + L")";
+        line += " (×" + std::to_string(item.repeats) + ")";
+    if (!StringView(std::string_view(line)).is_valid_utf8())
+        return fail("Invalid UTF-8 text in World diagnostic.");
     return line;
 }
 

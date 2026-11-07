@@ -1,9 +1,10 @@
 #include "editor/workspace.hpp"
 #include "editor/assets.hpp"
-#include "assets/file.hpp"
+#include "application/diagnostics.hpp"
 #include "editor/fields.hpp"
 #include "editor/view_options.hpp"
 #include "foundation/set.hpp"
+#include "platform/utf.hpp"
 #include <stdexcept>
 #include <algorithm>
 #include <limits>
@@ -877,7 +878,7 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
     if (!render_notice.empty())
         status_text += L"  |  " + render_notice;
     if (!ui_error().empty()) {
-        auto diagnostic = assets::wide(std::string(ui_error()));
+        auto diagnostic = application::diagnostic_text(ui_error());
         if (diagnostic.size() > 512) {
             diagnostic.resize(512);
             if (diagnostic.back() >= 0xd800 && diagnostic.back() <= 0xdbff)
@@ -1336,7 +1337,7 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
             auto name = take(runtime.describe(take(runtime.type_of(object))))->name;
             if (const auto dot = name.find_last_of('.'); dot != name.npos)
                 name = name.substr(dot + 1);
-            return assets::wide(name);
+            return platform::utf8_to_utf16_validated(name);
         };
         // Placeholders show the saved type they stand in for.
         const auto object_title = [&](ObjectId object) {
@@ -1345,7 +1346,7 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
                     auto name = saved->type;
                     if (const auto dot = name.find_last_of('.'); dot != name.npos)
                         name = name.substr(dot + 1);
-                    return assets::wide(name) + L" (missing type)";
+                    return platform::utf8_to_utf16_validated(name) + L" (missing type)";
                 }
             return short_type(object);
         };
@@ -1426,7 +1427,7 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
                        : asset->kind == assets::AssetKind::texture  ? L"Texture"
                                                                     : L"File";
                 add(0, L"Type", kind);
-                add(1, L"Resource", assets::wide(asset->key));
+                add(1, L"Resource", platform::utf8_to_utf16_validated(asset->key));
                 add(2, L"Location", asset->path.empty() ? L"Engine" : asset->path.generic_wstring());
                 if (!asset->path.empty() && asset->kind != assets::AssetKind::folder)
                     add(3, L"Size", std::to_wstring(asset->bytes) + L" bytes");
@@ -1467,10 +1468,10 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
             const auto asset_name = [&](const std::string& key) {
                 if (const auto* entry = project ? project->entry(key) : nullptr)
                     return entry->path.stem().wstring();
-                return assets::wide(key);
+                return platform::utf8_to_utf16_validated(key);
             };
             const auto property_caption = [&](std::string_view name, std::string_view declared) {
-                return declared.empty() ? parameter_label(name) : assets::wide(declared);
+                return declared.empty() ? parameter_label(name) : platform::utf8_to_utf16_validated(declared);
             };
             const auto property_key = [&](std::span<const FieldId> path, Binding::Kind kind = Binding::Kind::field) {
                 return bind(object, path, kind);
@@ -1530,15 +1531,16 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
                                            : math::Vector3{};
                     std::vector<ui::NumberField> tuple;
                     bool matches =
-                        group_matches ||
-                        lowercase(assets::wide(name + " " + property.label + " " + property.category)).find(folded) !=
-                            std::wstring::npos;
+                        group_matches || lowercase(platform::utf8_to_utf16_validated(name + " " + property.label + " " +
+                                                                                     property.category))
+                                                 .find(folded) != std::wstring::npos;
                     for (std::size_t lane = 0; lane < count && index + lane < schema.size(); ++lane) {
                         const auto& field = schema[index + lane];
                         if (field.path.size() != property.path.size() ||
                             !std::equal(prefix.begin(), prefix.end(), field.path.begin()))
                             break;
-                        matches |= lowercase(assets::wide(field.name)).find(folded) != std::wstring::npos;
+                        matches |=
+                            lowercase(platform::utf8_to_utf16_validated(field.name)).find(folded) != std::wstring::npos;
                         if (spatial_rotation && lane == 3)
                             continue;
                         const auto value =
@@ -1598,11 +1600,13 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
                             std::ranges::find(bindings_, row.pick.target, &Binding::key)->color_maximum =
                                 row.edit.fields.front().maximum;
                         }
-                        row.help = property_help_.get(row.key, row.title,
-                                                      assets::wide(take(runtime.describe(type))->name) + L"." +
-                                                          assets::wide(name) + L" : " + assets::wide(parent->name) +
-                                                          (spatial_rotation ? L" · Euler (°)" : L""),
-                                                      described(property.description, property.range));
+                        row.help =
+                            property_help_.get(row.key, row.title,
+                                               platform::utf8_to_utf16_validated(take(runtime.describe(type))->name) +
+                                                   L"." + platform::utf8_to_utf16_validated(name) + L" : " +
+                                                   platform::utf8_to_utf16_validated(parent->name) +
+                                                   (spatial_rotation ? L" · Euler (°)" : L""),
+                                               described(property.description, property.range));
                         properties->push_back(std::move(row).item());
                     }
                     continue;
@@ -1631,8 +1635,9 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
                         caption = L"Cast Shadows";
                 }
                 if (!group_matches &&
-                    lowercase(caption + L" " + assets::wide(property.name + " " + property.category)).find(folded) ==
-                        std::wstring::npos)
+                    lowercase(caption + L" " +
+                              platform::utf8_to_utf16_validated(property.name + " " + property.category))
+                            .find(folded) == std::wstring::npos)
                     continue;
                 std::optional<Scalar> default_value;
                 auto owner = type;
@@ -1682,11 +1687,12 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
                 row.change = {key, editable};
                 row.choice = std::move(choice);
                 row.target = key;
-                row.help = property_help_.get(row.key, row.title,
-                                              assets::wide(take(runtime.describe(type))->name) + L"." +
-                                                  assets::wide(property.name) + L" : " +
-                                                  assets::wide(take(runtime.describe(property.type))->name),
-                                              described(property.description, property.range));
+                row.help = property_help_.get(
+                    row.key, row.title,
+                    platform::utf8_to_utf16_validated(take(runtime.describe(type))->name) + L"." +
+                        platform::utf8_to_utf16_validated(property.name) + L" : " +
+                        platform::utf8_to_utf16_validated(take(runtime.describe(property.type))->name),
+                    described(property.description, property.range));
                 properties->push_back(std::move(row).item());
             }
             properties = parameter_by_category_ && material_object == ObjectId{} && material_bindings
@@ -1715,14 +1721,15 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
             if (material_bindings) {
                 if (!mesh->mesh.resolved && !mesh->mesh.source.empty() &&
                     (group_matches ||
-                     lowercase(L"Mesh " + assets::wide(mesh->mesh.source)).find(folded) != std::wstring::npos)) {
+                     lowercase(L"Mesh " + platform::utf8_to_utf16_validated(mesh->mesh.source)).find(folded) !=
+                         std::wstring::npos)) {
                     PropertyRow row;
                     row.key = bind_material(object, {}, Binding::Kind::saved_data, {}, "mesh");
                     row.title = L"Mesh";
                     row.kind = PropertyRow::Kind::enumeration;
                     row.enabled = false;
                     row.change = {row.key, false};
-                    row.choice = assets::wide(mesh->mesh.source);
+                    row.choice = platform::utf8_to_utf16_validated(mesh->mesh.source);
                     mark_unavailable(assets::AssetKind::mesh, mesh->mesh.source, row.choice);
                     row.target = row.key;
                     row.help = property_help_.get(
@@ -1750,7 +1757,7 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
                         }
                         selector(
                             bind_material(object, {}, Binding::Kind::material_slot, {}, slot_name),
-                            L"Material · " + assets::wide(slot_name), std::move(choice),
+                            L"Material · " + platform::utf8_to_utf16_validated(slot_name), std::move(choice),
                             "为这个 Mesh slot 选择 Material 资源。Mesh Default 恢复网格自带材质；修改参与当前 Scene 的撤销与保存。");
                     }
             }
@@ -1771,7 +1778,7 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
                 std::string path;
                 for (const auto& part : entry.path)
                     path += (path.empty() ? "" : ".") + part;
-                const auto caption = assets::wide(path);
+                const auto caption = platform::utf8_to_utf16_validated(path);
                 if (!group_matches && lowercase(caption).find(folded) == std::wstring::npos)
                     continue;
                 PropertyRow row;
@@ -1780,10 +1787,10 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
                 row.kind = PropertyRow::Kind::enumeration;
                 row.enabled = false;
                 row.change = {row.key, false};
-                row.choice = assets::wide(entry.value);
+                row.choice = platform::utf8_to_utf16_validated(entry.value);
                 row.target = row.key;
                 row.help = property_help_.get(
-                    row.key, row.title, L"Saved data · " + assets::wide(world::name(entry.kind)),
+                    row.key, row.title, L"Saved data · " + platform::utf8_to_utf16_validated(world::name(entry.kind)),
                     entry.kind == world::DiagnosticKind::missing_resource ||
                             entry.kind == world::DiagnosticKind::unreadable_resource
                         ? "依赖的资源缺失或无法读取，这些数据无法应用，会原样写回文件。恢复资源后重新打开场景即可应用；Edit > Discard Saved Data 可丢弃。"
@@ -1801,7 +1808,7 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
             const auto title = (material.source  ? L"Material Source"
                                 : material.scene ? L"Scene Material Instance"
                                                  : L"Material Instance") +
-                               (slot.empty() ? std::wstring{} : L" · " + assets::wide(slot));
+                               (slot.empty() ? std::wstring{} : L" · " + platform::utf8_to_utf16_validated(slot));
             const bool editable = !material.source && !session.world().running();
             auto rows = std::make_shared<std::vector<ui_language::Item>>();
             const auto key = [&](std::string_view path, Binding::Kind kind, std::size_t lane = 0) {
@@ -1821,14 +1828,15 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
                     value);
             };
             for (const auto& field : material.declarations) {
-                if (lowercase(title + L" " + assets::wide(field.path)).find(folded) == std::wstring::npos)
+                if (lowercase(title + L" " + platform::utf8_to_utf16_validated(field.path)).find(folded) ==
+                    std::wstring::npos)
                     continue;
                 const auto local = std::ranges::find(material.entries, field.path, &material::Override::path);
                 const bool overridden = local != material.entries.end() && local->enabled;
                 // Disabled/mismatched local entries remain in the owning view; numbers show effective values.
                 PropertyRow row;
                 row.key = key(field.path, Binding::Kind::property_row);
-                row.title = assets::wide(field.path);
+                row.title = platform::utf8_to_utf16_validated(field.path);
                 row.enabled = editable && overridden;
                 row.override_available = !material.source;
                 row.overridden = overridden;
@@ -1841,7 +1849,7 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
                     const auto* entry = project ? project->entry(binding.asset_key) : nullptr;
                     row.choice = binding.asset_key.empty() ? L"None"
                                  : entry                   ? entry->path.stem().wstring()
-                                                           : assets::wide(binding.asset_key);
+                                                           : platform::utf8_to_utf16_validated(binding.asset_key);
                     if (session.unavailable(assets::AssetKind::texture, binding.asset_key))
                         row.choice = L"(missing) " + row.choice;
                 } else {
@@ -1868,7 +1876,7 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
                     }
                 }
                 row.help = property_help_.get(
-                    row.key, row.title, L"Material declaration · " + assets::wide(field.path),
+                    row.key, row.title, L"Material declaration · " + platform::utf8_to_utf16_validated(field.path),
                     "数值显示当前有效值。关闭覆盖会保留本地值；右键 Discard Local Entry 删除本地条目并恢复继承。");
                 rows->push_back(std::move(row).item());
             }
@@ -1877,7 +1885,7 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
                     material.declarations.end()) {
                     PropertyRow row;
                     row.key = key(entry.path, Binding::Kind::property_row);
-                    row.title = assets::wide(entry.path) + L" (Undeclared)";
+                    row.title = platform::utf8_to_utf16_validated(entry.path) + L" (Undeclared)";
                     row.kind = PropertyRow::Kind::enumeration;
                     row.choice = L"Retained local entry";
                     row.target = row.key;
@@ -1892,9 +1900,9 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
                 const auto& diagnostic = material.diagnostics[i];
                 PropertyRow row;
                 row.key = key(diagnostic.path, Binding::Kind::saved_data, i);
-                row.title = assets::wide(diagnostic.path);
+                row.title = platform::utf8_to_utf16_validated(diagnostic.path);
                 row.kind = PropertyRow::Kind::enumeration;
-                row.choice = assets::wide(diagnostic.message);
+                row.choice = application::diagnostic_text(diagnostic.message);
                 row.target = row.key;
                 row.enabled = false;
                 row.change = {row.key, false};
@@ -1905,7 +1913,7 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
         };
         if (material_object != ObjectId{}) {
             append_material(material_object);
-            std::wstring name = assets::wide(material_inspection);
+            std::wstring name = platform::utf8_to_utf16_validated(material_inspection);
             if (const auto* entry = project ? project->entry(material_inspection) : nullptr)
                 name = entry->path.stem().wstring();
             const std::array<ui_language::InputValue, 7> inputs{
@@ -1955,7 +1963,8 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
                 auto& key = category_keys_[category];
                 if (!key)
                     key = next_binding_++;
-                groups->push_back({key, {assets::wide(category), 0., ui_language::ItemList{std::move(rows)}}});
+                groups->push_back(
+                    {key, {platform::utf8_to_utf16_validated(category), 0., ui_language::ItemList{std::move(rows)}}});
             }
         constexpr std::array aliases{L"transform entity position 变换 位置 x", L"transform entity position 变换 位置 y",
                                      L"transform entity position 变换 位置 z"};
@@ -2022,15 +2031,17 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
                 field = &*std::ranges::find(owner->fields, lane[depth], &FieldInfo::id);
                 owner = take(runtime.describe(field->value.type));
             }
-            return property_help_.get(key, title,
-                                      assets::wide(type->name) + L"." + assets::wide(field->name) + L" : " +
-                                          assets::wide(owner->name) + (rotation ? L" · Euler (°)" : L""),
-                                      field->description);
+            return property_help_.get(
+                key, title,
+                platform::utf8_to_utf16_validated(type->name) + L"." + platform::utf8_to_utf16_validated(field->name) +
+                    L" : " + platform::utf8_to_utf16_validated(owner->name) + (rotation ? L" · Euler (°)" : L""),
+                field->description);
         };
         ui_language::TooltipBinding type_help;
         if (inspected != ObjectId{}) {
             const auto type = take(runtime.describe(take(runtime.type_of(inspected))));
-            type_help = property_help_.get(52, short_type(inspected), assets::wide(type->name), type->description);
+            type_help = property_help_.get(52, short_type(inspected), platform::utf8_to_utf16_validated(type->name),
+                                           type->description);
         }
         const std::array transform_descriptions{
             transform_help(session.types().position_fields[0], 70, L"Position (m)"),
@@ -2502,7 +2513,7 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
                 component_choices_ = take(session.component_types());
                 for (std::size_t i = 0; i < component_choices_.size(); ++i)
                     items.push_back({control::component_choice_first + i,
-                                     assets::wide(component_choices_[i].name),
+                                     platform::utf8_to_utf16_validated(component_choices_[i].name),
                                      selected != ObjectId{},
                                      false,
                                      {}});

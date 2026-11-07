@@ -4,6 +4,7 @@
 #include "editor/project.hpp"
 #include "editor/assets.hpp"
 #include "assets/file.hpp"
+#include "platform/utf.hpp"
 #include "foundation/frame_timing.hpp"
 #include "physics/timing.hpp"
 #include "editor/workspace.hpp"

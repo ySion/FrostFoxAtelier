@@ -9,6 +9,7 @@
 #include "runtime/native.hpp"
 #include "source/program.hpp"
 #include "physics/physics.hpp"
+#include "platform/utf.hpp"
 #include <nlohmann/json.hpp>
 #include <bit>
 #include <chrono>
@@ -436,9 +437,10 @@ void verify_codec_graph(editor::Project& project) {
     {
         editor::Session document;
         const auto saved = take(document.serialize());
+        const auto cause_path = platform::utf16_to_utf8((project.root() / "Source/cause.source").generic_wstring());
+        require(bool(cause_path), "Invalid UTF-16 source diagnostic fixture path.");
         const Error original{ErrorCode::assignment_failed, "准备失败\n" + std::string(1024, 'x') + "\n完整原因",
-                             SourceLocation{"Source/cause.source", 9123, 137, 8, 19,
-                                            assets::utf8((project.root() / "Source/cause.source").generic_wstring())}};
+                             SourceLocation{"Source/cause.source", 9123, 137, 8, 19, *cause_path}};
         auto rejected = editor::Session::deserialize(
             saved, project, [&](world::World&) -> Result<std::shared_ptr<void>> { return std::unexpected(original); },
             editor::LoadPolicy::strict);
