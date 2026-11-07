@@ -41,8 +41,8 @@ struct TypeDeclaration {
 namespace detail {
 class Tokens;
 
-TypeName parse_type_name(Tokens&);
+std::expected<TypeName, Diagnostic> parse_type_name(Tokens&);
 
-TypeDeclaration parse_type_declaration(Tokens&);
+std::expected<TypeDeclaration, Diagnostic> parse_type_declaration(Tokens&);
 }
 }

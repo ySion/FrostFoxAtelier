@@ -1,6 +1,7 @@
 #include "language/module.hpp"
 #include "language/lexer.hpp"
 #include "language/declarations.hpp"
+#include <cassert>
 #include <algorithm>
 #include <unordered_map>
 
@@ -25,148 +26,169 @@ void MappedSource::append(const SourceFile& source, std::uint32_t file, std::siz
 namespace {
 using namespace detail;
 
-void body(Tokens& tokens) {
-    tokens.expect("{");
+std::expected<void, Diagnostic> body(Tokens& tokens) {
+    ATELIER_TRY(tokens.expect("{"));
     std::size_t depth = 1;
     while (depth) {
         if (tokens.token_.kind == Token::Kind::end)
-            reject(tokens.token_.position, "Expected '}' to close a function body.");
-        if (tokens.accept("{"))
+            return reject(tokens.token_.position, "Expected '}' to close a function body.");
+        if (tokens.token_.text == "{")
             ++depth;
-        else if (tokens.accept("}"))
+        else if (tokens.token_.text == "}")
             --depth;
-        else
-            tokens.consume();
+        ATELIER_TRY(tokens.consume());
     }
+    return {};
 }
 
 // Consumes one expression up to a top-level ',' or `close`, which stay unconsumed.
-void expression_until(Tokens& tokens, std::string_view close, SourcePosition owner, const char* message) {
+std::expected<void, Diagnostic> expression_until(Tokens& tokens, std::string_view close, SourcePosition owner,
+                                                 const char* message) {
     std::size_t depth = 0;
     while (depth || (tokens.token_.text != "," && tokens.token_.text != close)) {
         const auto text = tokens.token_.text;
         if (tokens.token_.kind == Token::Kind::end || text == ";" || text == "{" || text == "}")
-            reject(owner, message);
+            return reject(owner, message);
         if (text == "(" || text == "[")
             ++depth;
         else if (text == ")" || text == "]") {
             if (!depth)
-                reject(owner, message);
+                return reject(owner, message);
             --depth;
         }
-        tokens.consume();
+        ATELIER_TRY(tokens.consume());
     }
+    return {};
 }
 
 // [Min = e, Max = e, LockMin, LockMax, HardMin = e, HardMax = e, Label = "...", Category = "...", DESC = "..."]
-void field_attributes(Tokens& tokens, const SourceFile& unit, std::uint32_t file, ClassField& field) {
+std::expected<void, Diagnostic> field_attributes(Tokens& tokens, const SourceFile& unit, std::uint32_t file,
+                                                 ClassField& field) {
     constexpr std::array<std::string_view, 4> bounds{"Min", "Max", "HardMin", "HardMax"};
     std::vector<Token> seen;
     const auto find = [&](std::string_view name) { return std::ranges::find(seen, name, &Token::text); };
-    do {
-        const auto option = tokens.identifier();
+    for (;;) {
+        ATELIER_TRY_BIND(parsed_option, tokens.identifier());
+        const auto option = *parsed_option;
         if (option.text != "Meta" && find(option.text) != seen.end())
-            reject(option.position, "Duplicate field attribute: " + std::string(option.text));
+            return reject(option.position, "Duplicate field attribute: " + std::string(option.text));
         seen.push_back(option);
         const auto bound = std::ranges::find(bounds, option.text);
         const bool lock = option.text == "LockMin" || option.text == "LockMax";
         if ((lock || bound != bounds.end()) && !field.range)
             field.range = option.position;
         if (option.text == "Meta") {
-            tokens.expect("(");
+            ATELIER_TRY(tokens.expect("("));
             std::array<std::string, 2> values;
             for (std::size_t i = 0; i < values.size(); ++i) {
                 if (tokens.token_.kind != Token::Kind::string)
-                    reject(tokens.token_.position, "Meta requires a string literal key and value.");
-                values[i] = string_value(tokens.consume());
-                tokens.expect(i == 0 ? "," : ")");
+                    return reject(tokens.token_.position, "Meta requires a string literal key and value.");
+                ATELIER_TRY_BIND(token, tokens.consume());
+                ATELIER_TRY_BIND(value, string_value(*token));
+                values[i] = std::move(*value);
+                ATELIER_TRY(tokens.expect(i == 0 ? "," : ")"));
             }
             field.metadata.emplace_back(std::move(values[0]), std::move(values[1]));
         } else if (lock) {
             if (tokens.token_.text == "=")
-                reject(option.position, std::string(option.text) + " is a flag without a value.");
+                return reject(option.position, std::string(option.text) + " is a flag without a value.");
         } else if (option.text == "Label" || option.text == "Category" || option.text == "DESC") {
-            tokens.expect("=");
+            ATELIER_TRY(tokens.expect("="));
             if (tokens.token_.kind != Token::Kind::string)
-                reject(tokens.token_.position, std::string(option.text) + " requires a string literal.");
-            auto text = string_value(tokens.consume());
-            if (option.text != "DESC" && std::ranges::any_of(text, [](unsigned char c) { return c < 32; }))
-                reject(option.position, std::string(option.text) + " must not contain control characters.");
+                return reject(tokens.token_.position, std::string(option.text) + " requires a string literal.");
+            ATELIER_TRY_BIND(token, tokens.consume());
+            ATELIER_TRY_BIND(text, string_value(*token));
+            if (option.text != "DESC" && std::ranges::any_of(*text, [](unsigned char c) { return c < 32; }))
+                return reject(option.position, std::string(option.text) + " must not contain control characters.");
             (option.text == "Label"      ? field.label
              : option.text == "Category" ? field.category
-                                         : field.description) = std::move(text);
+                                         : field.description) = std::move(*text);
         } else if (bound != bounds.end()) {
-            tokens.expect("=");
+            ATELIER_TRY(tokens.expect("="));
             const auto begin = tokens.token_.position;
-            expression_until(tokens, "]", option.position, "Expected ']' to close field attributes.");
+            ATELIER_TRY(expression_until(tokens, "]", option.position, "Expected ']' to close field attributes."));
             if (tokens.token_.position.offset == begin.offset)
-                reject(option.position, std::string(option.text) + " requires a value.");
+                return reject(option.position, std::string(option.text) + " requires a value.");
             field.bounds[static_cast<std::size_t>(bound - bounds.begin())].append(unit, file, begin.offset,
                                                                                   tokens.token_.position.offset);
         } else
-            reject(option.position, "Unknown field attribute: " + std::string(option.text));
-    } while (tokens.accept(","));
-    tokens.expect("]");
+            return reject(option.position, "Unknown field attribute: " + std::string(option.text));
+        ATELIER_TRY_BIND(more, tokens.accept(","));
+        if (!*more)
+            break;
+    }
+    ATELIER_TRY(tokens.expect("]"));
     // A locked side uses its UI bound as the hard bound too (Houdini strict range).
     for (std::size_t side = 0; side < 2; ++side) {
         const auto lock = find(side ? "LockMax" : "LockMin");
         if (lock == seen.end())
             continue;
         if (find(bounds[side]) == seen.end() || find(bounds[side + 2]) != seen.end())
-            reject(lock->position, std::string(lock->text) + " requires " + std::string(bounds[side]) +
-                                       " and excludes " + std::string(bounds[side + 2]) + ".");
+            return reject(lock->position, std::string(lock->text) + " requires " + std::string(bounds[side]) +
+                                              " and excludes " + std::string(bounds[side + 2]) + ".");
         field.bounds[side + 2] = field.bounds[side];
     }
+    return {};
 }
 
 // Records `name(arguments)` or `name::item` when that spelling is the whole initializer.
-void initializer_shape(Tokens& tokens, const SourceFile& unit, std::uint32_t file, ClassField& field) {
-    auto name = tokens.qualified_identifier();
-    if (tokens.accept("::")) {
+std::expected<void, Diagnostic> initializer_shape(Tokens& tokens, const SourceFile& unit, std::uint32_t file,
+                                                  ClassField& field) {
+    ATELIER_TRY_BIND(name, tokens.qualified_identifier());
+    ATELIER_TRY_BIND(enumerator, tokens.accept("::"));
+    if (*enumerator) {
         if (tokens.token_.kind != Token::Kind::identifier)
-            return;
-        auto item = std::string(tokens.consume().text);
+            return {};
+        ATELIER_TRY_BIND(item, tokens.consume());
         if (tokens.token_.text == ";") {
-            field.initializer_name = std::move(name);
-            field.initializer_item = std::move(item);
+            field.initializer_name = std::move(*name);
+            field.initializer_item = std::string(item->text);
         }
-        return;
+        return {};
     }
-    if (!tokens.accept("("))
-        return;
+    ATELIER_TRY_BIND(call, tokens.accept("("));
+    if (!*call)
+        return {};
     std::vector<MappedSource> arguments;
-    if (!tokens.accept(")"))
+    ATELIER_TRY_BIND(empty, tokens.accept(")"));
+    if (!*empty)
         for (;;) {
             const auto begin = tokens.token_.position;
-            expression_until(tokens, ")", begin, "Expected ')' to close a field default.");
+            ATELIER_TRY(expression_until(tokens, ")", begin, "Expected ')' to close a field default."));
             arguments.emplace_back().append(unit, file, begin.offset, tokens.token_.position.offset);
-            if (tokens.accept(")"))
+            ATELIER_TRY_BIND(closed, tokens.accept(")"));
+            if (*closed)
                 break;
-            tokens.expect(",");
+            ATELIER_TRY(tokens.expect(","));
         }
     if (tokens.token_.text == ";") {
-        field.initializer_name = std::move(name);
+        field.initializer_name = std::move(*name);
         field.initializer_arguments = std::move(arguments);
     }
+    return {};
 }
 
-std::string function_signature(Tokens& tokens, const TypeName& type, std::vector<std::string>& parameters,
-                               TopLevel* declaration = nullptr) {
+std::expected<std::string, Diagnostic> function_signature(Tokens& tokens, const TypeName& type,
+                                                          std::vector<std::string>& parameters,
+                                                          TopLevel* declaration = nullptr) {
     std::string signature = type.name + ":" + std::to_string(type.array_depth) + "(";
     bool writable_parameter = false;
-    tokens.expect("(");
-    if (!tokens.accept(")"))
+    ATELIER_TRY(tokens.expect("("));
+    ATELIER_TRY_BIND(empty, tokens.accept(")"));
+    if (!*empty)
         for (;;) {
-            const bool constant = tokens.accept("const");
-            auto parameter = parse_type_name(tokens);
-            const bool reference = tokens.accept("&");
-            writable_parameter |= reference && !constant;
-            parameters.emplace_back(tokens.identifier().text);
-            signature += (constant ? "const " : "") + parameter.name + ":" + std::to_string(parameter.array_depth) +
-                         (reference ? "&;" : ";");
-            if (tokens.accept(")"))
+            ATELIER_TRY_BIND(constant, tokens.accept("const"));
+            ATELIER_TRY_BIND(parameter, parse_type_name(tokens));
+            ATELIER_TRY_BIND(reference, tokens.accept("&"));
+            writable_parameter |= *reference && !*constant;
+            ATELIER_TRY_BIND(name, tokens.identifier());
+            parameters.emplace_back(name->text);
+            signature += (*constant ? "const " : "") + parameter->name + ":" + std::to_string(parameter->array_depth) +
+                         (*reference ? "&;" : ";");
+            ATELIER_TRY_BIND(closed, tokens.accept(")"));
+            if (*closed)
                 break;
-            tokens.expect(",");
+            ATELIER_TRY(tokens.expect(","));
         }
     if (declaration)
         declaration->property =
@@ -201,7 +223,13 @@ void spelled(std::string_view text, const Names& names, std::vector<std::uint32_
     Lexer lexer(text);
     std::string chain;
     bool dotted = false;
-    for (auto token = lexer.next(); token.kind != Token::Kind::end; token = lexer.next()) {
+    for (;;) {
+        const auto parsed = lexer.next();
+        // These fragments were tokenized successfully by the collector below.
+        assert(parsed);
+        const auto token = *parsed;
+        if (token.kind == Token::Kind::end)
+            break;
         if (token.kind == Token::Kind::identifier) {
             if (dotted)
                 chain += '.';
@@ -258,79 +286,92 @@ std::expected<SourceModule, ModuleDiagnostic> collect_module(const SourceSnapsho
             engine_modules.push_back(name);
     for (std::uint32_t file = 0; file < snapshot.files.size(); ++file) {
         const auto& unit = snapshot.files[file];
-        try {
+        const auto collected = [&]() -> std::expected<void, Diagnostic> {
             if (unit.path.empty() || unit.path.front() == '/' || unit.path.back() == '/' ||
                 unit.path.find_first_of("\\:\0", 0, 3) != std::string::npos)
-                reject({}, "Source paths must be project-relative UTF-8 paths using '/'.");
+                return reject({}, "Source paths must be project-relative UTF-8 paths using '/'.");
             for (std::size_t begin = 0; begin < unit.path.size();) {
                 const auto end = unit.path.find('/', begin);
                 const auto part = std::string_view(unit.path).substr(
                     begin, end == std::string::npos ? unit.path.size() - begin : end - begin);
                 if (part.empty() || part == "." || part == "..")
-                    reject({}, "Source paths must be normalized project-relative paths.");
+                    return reject({}, "Source paths must be normalized project-relative paths.");
                 if (end == std::string::npos)
                     break;
                 begin = end + 1;
             }
             for (std::uint32_t previous = 0; previous < file; ++previous)
                 if (snapshot.files[previous].path == unit.path)
-                    reject({}, "Duplicate source file path.");
+                    return reject({}, "Duplicate source file path.");
             const auto own = engine_module(unit.path);
             if (own.empty() && unit.path.starts_with("engine/"))
-                reject(
+                return reject(
                     {},
                     "Engine source paths must be engine/<module>/<file>, where <module> is an identifier other than core, math or editor.");
-            const auto declare = [&](const std::string& name, SourcePosition position) {
+            const auto declare = [&](const std::string& name,
+                                     SourcePosition position) -> std::expected<void, Diagnostic> {
                 if (!own.empty() && !in_namespace(name, own))
-                    reject(position, "Engine sources under engine/" + std::string(own) +
-                                         "/ may only declare names in the " + std::string(own) +
-                                         ". namespace: " + name);
+                    return reject(position, "Engine sources under engine/" + std::string(own) +
+                                                "/ may only declare names in the " + std::string(own) +
+                                                ". namespace: " + name);
                 if (own.empty())
                     for (const auto space : engine_modules)
                         if (in_namespace(name, space))
-                            reject(position, "Only engine sources under engine/" + std::string(space) +
-                                                 "/ may declare names in the " + std::string(space) +
-                                                 ". namespace: " + name);
+                            return reject(position, "Only engine sources under engine/" + std::string(space) +
+                                                        "/ may declare names in the " + std::string(space) +
+                                                        ". namespace: " + name);
+                return {};
             };
-            Tokens tokens(unit.source);
+            ATELIER_TRY_BIND(created, Tokens::create(unit.source));
+            auto& tokens = *created;
             while (tokens.token_.kind != Token::Kind::end) {
                 const auto begin = tokens.token_.position;
-                if (!tokens.accept("class")) {
+                ATELIER_TRY_BIND(object, tokens.accept("class"));
+                if (!*object) {
                     // A top-level declaration ends at ';' or a complete body.
                     TopLevel declaration{TopLevel::Kind::function, {}, std::string(own), file, {}, {}, {}, {}};
                     const bool function =
                         tokens.token_.text != "struct" && tokens.token_.text != "enum" && tokens.token_.text != "const";
                     if (function) {
-                        if (tokens.accept("async"))
-                            reject(begin, "Project exports must be synchronous.");
-                        const auto type = tokens.accept("void") ? TypeName{"void"} : parse_type_name(tokens);
+                        ATELIER_TRY_BIND(async, tokens.accept("async"));
+                        if (*async)
+                            return reject(begin, "Project exports must be synchronous.");
+                        ATELIER_TRY_BIND(void_result, tokens.accept("void"));
+                        ATELIER_TRY_BIND(type, *void_result ? std::expected<TypeName, Diagnostic>{TypeName{"void"}}
+                                                            : parse_type_name(tokens));
                         declaration.position = tokens.token_.position;
-                        declaration.name = tokens.qualified_identifier();
-                        declare(declaration.name, declaration.position);
+                        ATELIER_TRY_BIND(name, tokens.qualified_identifier());
+                        declaration.name = std::move(*name);
+                        ATELIER_TRY(declare(declaration.name, declaration.position));
                         FunctionDeclaration exported{declaration.name, {}, {}};
-                        exported.signature = function_signature(tokens, type, exported.parameters, &declaration);
+                        ATELIER_TRY_BIND(signature,
+                                         function_signature(tokens, *type, exported.parameters, &declaration));
+                        exported.signature = std::move(*signature);
                         // Engine functions serve Source calls only; project functions are the global entries.
                         if (own.empty())
                             result.functions.push_back(std::move(exported));
                     } else {
-                        const bool constant = tokens.accept("const");
-                        if (constant)
-                            parse_type_name(tokens);
-                        else
-                            tokens.consume();
-                        declaration.kind = constant ? TopLevel::Kind::constant : TopLevel::Kind::type;
+                        ATELIER_TRY_BIND(constant, tokens.accept("const"));
+                        if (*constant) {
+                            ATELIER_TRY(parse_type_name(tokens));
+                        } else {
+                            ATELIER_TRY(tokens.consume());
+                        }
+                        declaration.kind = *constant ? TopLevel::Kind::constant : TopLevel::Kind::type;
                         declaration.position = tokens.token_.position;
-                        declaration.name = tokens.qualified_identifier();
-                        declare(declaration.name, declaration.position);
+                        ATELIER_TRY_BIND(name, tokens.qualified_identifier());
+                        declaration.name = std::move(*name);
+                        ATELIER_TRY(declare(declaration.name, declaration.position));
                         while (tokens.token_.text != ";" && tokens.token_.text != "{") {
                             if (tokens.token_.kind == Token::Kind::end)
-                                reject(begin, "Incomplete source declaration.");
-                            tokens.consume();
+                                return reject(begin, "Incomplete source declaration.");
+                            ATELIER_TRY(tokens.consume());
                         }
                     }
-                    if (tokens.token_.text == "{")
-                        body(tokens);
-                    tokens.accept(";");
+                    if (tokens.token_.text == "{") {
+                        ATELIER_TRY(body(tokens));
+                    }
+                    ATELIER_TRY(tokens.accept(";"));
                     declaration.source.append(unit, file, begin.offset, tokens.token_.position.offset);
                     result.declarations.push_back(std::move(declaration));
                     continue;
@@ -339,79 +380,94 @@ std::expected<SourceModule, ModuleDiagnostic> collect_module(const SourceSnapsho
                 declaration.position = begin;
                 declaration.file = file;
                 const auto name_position = tokens.token_.position;
-                declaration.name = tokens.qualified_identifier();
-                declare(declaration.name, name_position);
+                ATELIER_TRY_BIND(class_name, tokens.qualified_identifier());
+                declaration.name = std::move(*class_name);
+                ATELIER_TRY(declare(declaration.name, name_position));
                 if (declaration.name == "String" || declaration.name == "Array" ||
                     declaration.name.starts_with("core.") || declaration.name.starts_with("math.") ||
                     declaration.name.starts_with("__source_"))
-                    reject(begin, "Source classes cannot replace reserved types.");
+                    return reject(begin, "Source classes cannot replace reserved types.");
                 if (editor_reserved(declaration.name))
-                    reject(begin, "Source classes cannot use the editor. prefix; it is reserved for editor types.");
+                    return reject(begin,
+                                  "Source classes cannot use the editor. prefix; it is reserved for editor types.");
                 if (std::ranges::any_of(result.classes, [&](const auto& c) { return c.name == declaration.name; }))
-                    reject(begin, "Duplicate source class name.");
-                tokens.expect(":");
-                declaration.base = tokens.qualified_identifier();
-                tokens.expect("{");
-                while (!tokens.accept("}")) {
+                    return reject(begin, "Duplicate source class name.");
+                ATELIER_TRY(tokens.expect(":"));
+                ATELIER_TRY_BIND(base, tokens.qualified_identifier());
+                declaration.base = std::move(*base);
+                ATELIER_TRY(tokens.expect("{"));
+                for (;;) {
+                    ATELIER_TRY_BIND(closed, tokens.accept("}"));
+                    if (*closed)
+                        break;
                     ClassField field;
                     const auto attributes = tokens.token_.position;
-                    const bool attributed = tokens.accept("[");
-                    if (attributed)
-                        field_attributes(tokens, unit, file, field);
+                    ATELIER_TRY_BIND(attributed, tokens.accept("["));
+                    if (*attributed) {
+                        ATELIER_TRY(field_attributes(tokens, unit, file, field));
+                    }
                     const auto start = tokens.token_.position;
-                    if (tokens.accept("async"))
-                        reject(start, "Source class methods must be synchronous.");
-                    const auto type = tokens.accept("void") ? TypeName{"void"} : parse_type_name(tokens);
-                    const auto name = tokens.identifier();
-                    if (name.text.starts_with("__source_"))
-                        reject(name.position, "Reserved source member name.");
-                    if (std::ranges::any_of(declaration.fields, [&](const auto& f) { return f.name == name.text; }) ||
-                        std::ranges::any_of(declaration.methods, [&](const auto& m) { return m.name == name.text; }))
-                        reject(name.position, "Duplicate source class member.");
+                    ATELIER_TRY_BIND(async, tokens.accept("async"));
+                    if (*async)
+                        return reject(start, "Source class methods must be synchronous.");
+                    ATELIER_TRY_BIND(void_result, tokens.accept("void"));
+                    ATELIER_TRY_BIND(type, *void_result ? std::expected<TypeName, Diagnostic>{TypeName{"void"}}
+                                                        : parse_type_name(tokens));
+                    ATELIER_TRY_BIND(name, tokens.identifier());
+                    if (name->text.starts_with("__source_"))
+                        return reject(name->position, "Reserved source member name.");
+                    if (std::ranges::any_of(declaration.fields, [&](const auto& f) { return f.name == name->text; }) ||
+                        std::ranges::any_of(declaration.methods, [&](const auto& m) { return m.name == name->text; }))
+                        return reject(name->position, "Duplicate source class member.");
                     if (tokens.token_.text == "(") {
-                        if (attributed)
-                            reject(attributes, "Attributes apply only to class fields.");
-                        ClassMethod method{std::string(name.text), {}, start, {}, {}};
-                        method.signature = function_signature(tokens, type, method.parameters);
-                        body(tokens);
+                        if (*attributed)
+                            return reject(attributes, "Attributes apply only to class fields.");
+                        ClassMethod method{std::string(name->text), {}, start, {}, {}};
+                        ATELIER_TRY_BIND(signature, function_signature(tokens, *type, method.parameters));
+                        method.signature = std::move(*signature);
+                        ATELIER_TRY(body(tokens));
                         method.source.append(unit, file, start.offset, tokens.token_.position.offset);
                         declaration.methods.push_back(std::move(method));
                     } else {
-                        if (type.array_depth || type.name == "void")
-                            reject(
+                        if (type->array_depth || type->name == "void")
+                            return reject(
                                 start,
                                 "Source object fields require bool, int, uint, float, double, a float or double vector, an enum, or String.");
-                        field.name = name.text;
-                        field.type = type.name;
+                        field.name = name->text;
+                        field.type = type->name;
                         field.position = start;
-                        if (tokens.accept("=")) {
+                        ATELIER_TRY_BIND(initializer, tokens.accept("="));
+                        if (*initializer) {
                             const auto expression = tokens.token_.position;
                             if (tokens.token_.kind == Token::Kind::string) {
-                                auto text = string_value(tokens.consume());
+                                ATELIER_TRY_BIND(token, tokens.consume());
+                                ATELIER_TRY_BIND(text, string_value(*token));
                                 if (tokens.token_.text == ";")
-                                    field.initializer_text = std::move(text);
-                            } else if (tokens.token_.kind == Token::Kind::identifier && !reserved(tokens.token_.text))
-                                initializer_shape(tokens, unit, file, field);
+                                    field.initializer_text = std::move(*text);
+                            } else if (tokens.token_.kind == Token::Kind::identifier && !reserved(tokens.token_.text)) {
+                                ATELIER_TRY(initializer_shape(tokens, unit, file, field));
+                            }
                             while (tokens.token_.text != ";") {
                                 if (tokens.token_.kind == Token::Kind::end || tokens.token_.text == "{" ||
                                     tokens.token_.text == "}")
-                                    reject(start, "Expected ';' after a field initializer.");
-                                tokens.consume();
+                                    return reject(start, "Expected ';' after a field initializer.");
+                                ATELIER_TRY(tokens.consume());
                             }
                             field.initializer.append(unit, file, expression.offset, tokens.token_.position.offset);
                         }
-                        tokens.expect(";");
+                        ATELIER_TRY(tokens.expect(";"));
                         declaration.fields.push_back(std::move(field));
                     }
                 }
-                tokens.accept(";");
+                ATELIER_TRY(tokens.accept(";"));
                 if (result.classes.size() == 1024)
-                    reject(begin, "A source snapshot supports at most 1024 classes.");
+                    return reject(begin, "A source snapshot supports at most 1024 classes.");
                 result.classes.push_back(std::move(declaration));
             }
-        } catch (const Rejected& error) {
-            return std::unexpected(ModuleDiagnostic{file, error.diagnostic});
-        }
+            return {};
+        }();
+        if (!collected)
+            return std::unexpected(ModuleDiagnostic{file, collected.error()});
     }
     Names names;
     for (std::uint32_t i = 0; i < result.declarations.size(); ++i) {

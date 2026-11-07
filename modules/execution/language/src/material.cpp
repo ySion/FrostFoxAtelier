@@ -1,6 +1,8 @@
 #include "language/material.hpp"
+#include "language/lexer.hpp"
 #include "detail/material_footprint.hpp"
 #include "foundation/result.hpp"
+#include "memory/fatal.hpp"
 
 #include <algorithm>
 #include <bit>
@@ -9,13 +11,10 @@
 #include <functional>
 #include <map>
 #include <set>
-#include <stdexcept>
 
 namespace atelier::language {
 namespace {
-[[noreturn]] void reject(SourcePosition position, std::string message) {
-    throw Diagnostic{position, std::move(message)};
-}
+using detail::reject;
 
 std::string number(std::uint32_t bits) {
     return "asfloat(" + std::to_string(bits) + "u)";
@@ -75,7 +74,7 @@ class Coverage {
                 return begin;
             begin += width(field.type);
         }
-        throw std::logic_error("Missing typed coverage field.");
+        fatal("Missing typed coverage field.");
     }
 
     NodeId add(Expression expression) {
@@ -269,7 +268,7 @@ class Coverage {
             return unpack(add(std::move(sample)));
         }
         default:
-            throw std::logic_error("Unvalidated coverage expression.");
+            fatal("Unvalidated coverage expression.");
         }
     }
 
@@ -339,7 +338,7 @@ class Coverage {
             break;
         }
         default:
-            throw std::logic_error("Unvalidated coverage statement.");
+            fatal("Unvalidated coverage statement.");
         }
     }
 
@@ -532,7 +531,7 @@ class Hlsl {
             return "ms_Type" + std::to_string(value.type_index);
         }
         default:
-            throw std::logic_error("Unvalidated material type.");
+            fatal("Unvalidated material type.");
         }
     }
 
@@ -618,7 +617,7 @@ class Hlsl {
         case Operation::logical_or:
             return "||";
         default:
-            throw std::logic_error("Unvalidated material operation.");
+            fatal("Unvalidated material operation.");
         }
     }
 
@@ -680,7 +679,7 @@ class Hlsl {
             const auto field =
                 std::ranges::find_if(layout.fields, [&](const auto& value) { return value.offset == node.offset; });
             if (field == layout.fields.end())
-                throw std::logic_error("Missing typed material field.");
+                fatal("Missing typed material field.");
             return "(" + operand(node.left) + ")." + (layout.math ? "" : "ms_") + field->name;
         }
         case Kind::unary:
@@ -719,7 +718,7 @@ class Hlsl {
             return result + ")";
         }
         default:
-            throw std::logic_error("Unvalidated material expression.");
+            fatal("Unvalidated material expression.");
         }
     }
 
@@ -761,7 +760,7 @@ class Hlsl {
             }
             break;
         default:
-            throw std::logic_error("Unvalidated material statement.");
+            fatal("Unvalidated material statement.");
         }
     }
 
@@ -777,7 +776,7 @@ class Hlsl {
         const auto field =
             std::ranges::find_if(layout.fields, [&](const auto& value) { return value.offset == node.offset; });
         if (field == layout.fields.end())
-            throw std::logic_error("Missing typed material field.");
+            fatal("Missing typed material field.");
         return (layout.math ? "" : "ms_") + field->name;
     }
 
@@ -1008,7 +1007,7 @@ class Hlsl {
             return emit(result + ")");
         }
         default:
-            throw std::logic_error("Unvalidated material footprint expression.");
+            fatal("Unvalidated material footprint expression.");
         }
     }
 
@@ -1018,7 +1017,7 @@ class Hlsl {
             return "ms_v" + std::to_string(node.value) + (continuous(node.type) ? "." + std::string(part) : "");
         if (node.kind == Expression::Kind::value_field)
             return differential_target(function, node.left, part) + "." + field_name(function, node);
-        throw std::logic_error("Unvalidated material footprint assignment target.");
+        fatal("Unvalidated material footprint assignment target.");
     }
 
     void differential_statement(const Function& function, NodeId id) {
@@ -1071,7 +1070,7 @@ class Hlsl {
             break;
         }
         default:
-            throw std::logic_error("Unvalidated material footprint statement.");
+            fatal("Unvalidated material footprint statement.");
         }
     }
 
@@ -1193,180 +1192,190 @@ public:
 std::expected<MaterialModule, Diagnostic> compile_material(std::string_view name, std::string_view source,
                                                            std::span<const ValueLayout> values, std::uint32_t context,
                                                            std::uint32_t output, std::uint32_t texture_input) {
-    try {
-        const ValueType token{ValueType::record, texture_input};
-        const auto& token_layout = values[texture_input];
-        if (!token_layout.plain_value || !token_layout.can_own || token_layout.math ||
-            token_layout.fields.size() != 1 || token_layout.fields[0].name != "slot" ||
-            token_layout.fields[0].type != ValueType::u32)
-            reject({}, "Material TextureInput requires its registered plain uint slot field.");
-        const auto slot_offset = token_layout.fields[0].offset;
-        ATELIER_TRY_BIND(tree, compile_source(name, source, {{}, {}, {}, {}, values, true, token}, "shade"));
-        const std::string_view entries[]{"shade", "defaults"};
-        ATELIER_TRY(export_functions(*tree, entries, false));
-        const auto& shade = tree->functions[tree->exports[0]];
-        const auto& defaults = tree->functions[tree->exports[1]];
-        if ((shade.parameters.size() != 2 && shade.parameters.size() != 3) ||
-            shade.parameters[0].type != ValueType{ValueType::record, context} ||
-            shade.result != ValueType{ValueType::record, output} || shade.parameters[1].type.kind != ValueType::record)
-            reject(
-                shade.position,
-                "Material requires Output shade(Context, Params[, Resources]), with exact registered Context/Output types.");
-        const auto params = shade.parameters[1].type;
-        if (context == output || params.type_index == context || params.type_index == output ||
-            values[params.type_index].math)
-            reject(shade.position, "Material Context, Output and Params must be distinct plain structs.");
-        if (!defaults.parameters.empty() || defaults.result != params)
-            reject(defaults.position, "Material requires Params defaults() with no arguments.");
-        std::function<bool(ValueType)> contains_texture = [&](ValueType type) {
-            if (type == token)
-                return true;
-            if (type.kind != ValueType::record)
-                return false;
-            return std::ranges::any_of(values[type.type_index].fields,
-                                       [&](const auto& field) { return contains_texture(field.type); });
-        };
-        if (contains_texture({ValueType::record, context}) || contains_texture({ValueType::record, output}))
-            reject(shade.position, "Material Context/Output cannot contain texture inputs.");
-        std::vector<bool> checked(values.size());
-        std::function<void(ValueType, SourcePosition)> check_type = [&](ValueType type, SourcePosition position) {
-            if (type == ValueType::f32 || type == ValueType::boolean || type == ValueType::void_value || type == token)
-                return;
-            if (type.kind != ValueType::record)
-                reject(position, "Material values require float, bool, float vectors or plain structs.");
-            const auto& layout = values[type.type_index];
-            if (checked[type.type_index])
-                return;
-            checked[type.type_index] = true;
-            if (!layout.plain_value || !layout.can_own ||
-                (layout.math && (!layout.math.vector() || layout.math.precision != math::Precision::f32)))
-                reject(position,
-                       "Material values cannot contain Runtime resources, references or unsupported math types.");
-            if (layout.fields.empty())
-                reject(position, "Material structs must expose their value fields.");
-            for (const auto& field : layout.fields)
-                check_type(field.type, position);
-        };
-        check_type(params, shade.position);
-        std::set<std::string> keys;
-        std::function<void(ValueType, std::string)> check_parameters = [&](ValueType type, std::string path) {
-            if (type == ValueType::f32 || (type.kind == ValueType::record && values[type.type_index].math)) {
-                keys.insert(std::move(path));
-                return;
-            }
-            if (type.kind != ValueType::record || type == token)
-                reject(shade.position,
-                       "Material parameters require float scalars, vectors or nested structs, not texture inputs.");
-            for (const auto& field : values[type.type_index].fields)
-                check_parameters(field.type, path.empty() ? field.name : path + "." + field.name);
-        };
-        check_parameters(params, {});
-        std::uint32_t resources = UINT32_MAX;
-        std::vector<MaterialTextureInput> textures;
-        if (shade.parameters.size() == 3) {
-            const auto type = shade.parameters[2].type;
-            if (type.kind != ValueType::record || type == token || values[type.type_index].math)
-                reject(shade.position, "Material Resources must be a struct of TextureInput leaves.");
-            resources = type.type_index;
-            check_type(type, shade.position);
-            std::function<void(ValueType, std::string, std::size_t)> collect = [&](ValueType value, std::string path,
-                                                                                   std::size_t offset) {
-                if (value == token) {
-                    if (!keys.insert(path).second)
-                        reject(shade.position, "Material numeric/resource parameter key conflict: " + path);
-                    textures.push_back(
-                        {std::move(path), static_cast<std::uint32_t>(textures.size()), offset + slot_offset});
-                    return;
-                }
-                if (value.kind != ValueType::record || values[value.type_index].math)
-                    reject(shade.position, "Material Resources require TextureInput leaves, not numeric parameters.");
-                for (const auto& field : values[value.type_index].fields)
-                    collect(field.type, path.empty() ? field.name : path + "." + field.name, offset + field.offset);
-            };
-            collect(type, {}, 0);
+    const ValueType token{ValueType::record, texture_input};
+    const auto& token_layout = values[texture_input];
+    if (!token_layout.plain_value || !token_layout.can_own || token_layout.math || token_layout.fields.size() != 1 ||
+        token_layout.fields[0].name != "slot" || token_layout.fields[0].type != ValueType::u32)
+        return reject({}, "Material TextureInput requires its registered plain uint slot field.");
+    const auto slot_offset = token_layout.fields[0].offset;
+    ATELIER_TRY_BIND(tree, compile_source(name, source, {{}, {}, {}, {}, values, true, token}, "shade"));
+    const std::string_view entries[]{"shade", "defaults"};
+    ATELIER_TRY(export_functions(*tree, entries, false));
+    const auto& shade = tree->functions[tree->exports[0]];
+    const auto& defaults = tree->functions[tree->exports[1]];
+    if ((shade.parameters.size() != 2 && shade.parameters.size() != 3) ||
+        shade.parameters[0].type != ValueType{ValueType::record, context} ||
+        shade.result != ValueType{ValueType::record, output} || shade.parameters[1].type.kind != ValueType::record)
+        return reject(
+            shade.position,
+            "Material requires Output shade(Context, Params[, Resources]), with exact registered Context/Output types.");
+    const auto params = shade.parameters[1].type;
+    if (context == output || params.type_index == context || params.type_index == output ||
+        values[params.type_index].math)
+        return reject(shade.position, "Material Context, Output and Params must be distinct plain structs.");
+    if (!defaults.parameters.empty() || defaults.result != params)
+        return reject(defaults.position, "Material requires Params defaults() with no arguments.");
+    std::function<bool(ValueType)> contains_texture = [&](ValueType type) {
+        if (type == token)
+            return true;
+        if (type.kind != ValueType::record)
+            return false;
+        return std::ranges::any_of(values[type.type_index].fields,
+                                   [&](const auto& field) { return contains_texture(field.type); });
+    };
+    if (contains_texture({ValueType::record, context}) || contains_texture({ValueType::record, output}))
+        return reject(shade.position, "Material Context/Output cannot contain texture inputs.");
+    std::vector<bool> checked(values.size());
+    std::function<std::expected<void, Diagnostic>(ValueType, SourcePosition)> check_type =
+        [&](ValueType type, SourcePosition position) -> std::expected<void, Diagnostic> {
+        if (type == ValueType::f32 || type == ValueType::boolean || type == ValueType::void_value || type == token)
+            return {};
+        if (type.kind != ValueType::record)
+            return reject(position, "Material values require float, bool, float vectors or plain structs.");
+        const auto& layout = values[type.type_index];
+        if (checked[type.type_index])
+            return {};
+        checked[type.type_index] = true;
+        if (!layout.plain_value || !layout.can_own ||
+            (layout.math && (!layout.math.vector() || layout.math.precision != math::Precision::f32)))
+            return reject(position,
+                          "Material values cannot contain Runtime resources, references or unsupported math types.");
+        if (layout.fields.empty())
+            return reject(position, "Material structs must expose their value fields.");
+        for (const auto& field : layout.fields) {
+            ATELIER_TRY(check_type(field.type, position));
         }
-        std::vector<bool> visited(tree->functions.size());
-        std::function<void(std::uint32_t)> check_defaults = [&](std::uint32_t index) {
-            if (visited[index])
-                return;
-            visited[index] = true;
-            const auto& function = tree->functions[index];
-            if (contains_texture(function.result) ||
-                std::ranges::any_of(function.locals, [&](const auto& local) { return contains_texture(local.type); }))
-                reject(function.position, "Material defaults cannot contain texture inputs.");
-            for (const auto& node : function.expressions) {
-                if (node.kind == Expression::Kind::texture_sample)
-                    reject(node.position, "Material defaults cannot sample textures.");
-                if (node.kind == Expression::Kind::texture_orientation)
-                    reject(node.position, "Material defaults cannot query texture orientation.");
-                if (node.kind == Expression::Kind::source_call)
-                    check_defaults(node.value);
-            }
-        };
-        check_defaults(tree->exports[1]);
-        for (std::size_t index = 0; index < tree->functions.size(); ++index) {
-            if (!tree->reachable[index])
-                continue;
-            auto& function = tree->functions[index];
-            if (function.is_coroutine || function.requires_receiver)
-                reject(function.position, "Material functions cannot use objects or coroutines.");
-            check_type(function.result, function.position);
-            for (const auto& local : function.locals)
-                check_type(local.type, function.position);
-            for (const auto& parameter : function.parameters)
-                if (parameter.passing != ParameterPassing::value)
-                    reject(function.position, "Material function parameters are values, not borrows.");
-            for (const auto& node : function.statements) {
-                if (node.kind == Statement::Kind::loop || node.kind == Statement::Kind::yield ||
-                    node.kind == Statement::Kind::break_loop || node.kind == Statement::Kind::continue_loop)
-                    reject(node.position, "Material does not support loops or suspension.");
-                if (node.kind == Statement::Kind::declare && node.expression == no_node &&
-                    contains_texture(function.locals[node.target].type))
-                    reject(node.position, "Texture inputs cannot be default constructed; copy an injected value.");
-            }
-            for (auto& node : function.expressions) {
-                using Kind = Expression::Kind;
-                if (node.kind == Kind::value_field && function.expressions[node.left].type == token)
-                    reject(node.position,
-                           "TextureInput members are compiler-owned, not accessible to material Source.");
-                if (!(node.kind == Kind::literal && node.type == ValueType::u32))
-                    check_type(node.type, node.position);
-                switch (node.kind) {
-                case Kind::literal:
-                case Kind::local:
-                case Kind::value_field:
-                case Kind::math_construct:
-                case Kind::source_call:
-                    break;
-                case Kind::unary:
-                case Kind::binary:
-                    if (node.operation == Operation::remainder ||
-                        (node.operation >= Operation::bitwise_and && node.operation <= Operation::shift_right))
-                        reject(node.position, "Material integer arithmetic is not supported.");
-                    break;
-                case Kind::scalar_cast:
-                    if (node.type != ValueType::f32)
-                        reject(node.position, "Material conversions only produce float.");
-                    break;
-                case Kind::math_intrinsic:
-                    if (!Hlsl::supports(node.math_operation))
-                        reject(node.position, "This math operation is not in the material subset.");
-                    break;
-                case Kind::texture_sample:
-                case Kind::texture_orientation:
-                    node.offset = slot_offset;
-                    break;
-                default:
-                    reject(node.position, "Operation is not part of the pure material subset.");
-                }
-            }
+        return {};
+    };
+    ATELIER_TRY(check_type(params, shade.position));
+    std::set<std::string> keys;
+    std::function<std::expected<void, Diagnostic>(ValueType, std::string)> check_parameters =
+        [&](ValueType type, std::string path) -> std::expected<void, Diagnostic> {
+        if (type == ValueType::f32 || (type.kind == ValueType::record && values[type.type_index].math)) {
+            keys.insert(std::move(path));
+            return {};
         }
-        tree->material = true;
-        return MaterialModule{std::move(*tree), context,   params.type_index,  output,
-                              texture_input,    resources, std::move(textures)};
-    } catch (Diagnostic& diagnostic) {
-        return std::unexpected(std::move(diagnostic));
+        if (type.kind != ValueType::record || type == token)
+            return reject(shade.position,
+                          "Material parameters require float scalars, vectors or nested structs, not texture inputs.");
+        for (const auto& field : values[type.type_index].fields) {
+            ATELIER_TRY(check_parameters(field.type, path.empty() ? field.name : path + "." + field.name));
+        }
+        return {};
+    };
+    ATELIER_TRY(check_parameters(params, {}));
+    std::uint32_t resources = UINT32_MAX;
+    std::vector<MaterialTextureInput> textures;
+    if (shade.parameters.size() == 3) {
+        const auto type = shade.parameters[2].type;
+        if (type.kind != ValueType::record || type == token || values[type.type_index].math)
+            return reject(shade.position, "Material Resources must be a struct of TextureInput leaves.");
+        resources = type.type_index;
+        ATELIER_TRY(check_type(type, shade.position));
+        std::function<std::expected<void, Diagnostic>(ValueType, std::string, std::size_t)> collect =
+            [&](ValueType value, std::string path, std::size_t offset) -> std::expected<void, Diagnostic> {
+            if (value == token) {
+                if (!keys.insert(path).second)
+                    return reject(shade.position, "Material numeric/resource parameter key conflict: " + path);
+                textures.push_back(
+                    {std::move(path), static_cast<std::uint32_t>(textures.size()), offset + slot_offset});
+                return {};
+            }
+            if (value.kind != ValueType::record || values[value.type_index].math)
+                return reject(shade.position,
+                              "Material Resources require TextureInput leaves, not numeric parameters.");
+            for (const auto& field : values[value.type_index].fields) {
+                ATELIER_TRY(
+                    collect(field.type, path.empty() ? field.name : path + "." + field.name, offset + field.offset));
+            }
+            return {};
+        };
+        ATELIER_TRY(collect(type, {}, 0));
     }
+    std::vector<bool> visited(tree->functions.size());
+    std::function<std::expected<void, Diagnostic>(std::uint32_t)> check_defaults =
+        [&](std::uint32_t index) -> std::expected<void, Diagnostic> {
+        if (visited[index])
+            return {};
+        visited[index] = true;
+        const auto& function = tree->functions[index];
+        if (contains_texture(function.result) ||
+            std::ranges::any_of(function.locals, [&](const auto& local) { return contains_texture(local.type); }))
+            return reject(function.position, "Material defaults cannot contain texture inputs.");
+        for (const auto& node : function.expressions) {
+            if (node.kind == Expression::Kind::texture_sample)
+                return reject(node.position, "Material defaults cannot sample textures.");
+            if (node.kind == Expression::Kind::texture_orientation)
+                return reject(node.position, "Material defaults cannot query texture orientation.");
+            if (node.kind == Expression::Kind::source_call) {
+                ATELIER_TRY(check_defaults(node.value));
+            }
+        }
+        return {};
+    };
+    ATELIER_TRY(check_defaults(tree->exports[1]));
+    for (std::size_t index = 0; index < tree->functions.size(); ++index) {
+        if (!tree->reachable[index])
+            continue;
+        auto& function = tree->functions[index];
+        if (function.is_coroutine || function.requires_receiver)
+            return reject(function.position, "Material functions cannot use objects or coroutines.");
+        ATELIER_TRY(check_type(function.result, function.position));
+        for (const auto& local : function.locals) {
+            ATELIER_TRY(check_type(local.type, function.position));
+        }
+        for (const auto& parameter : function.parameters)
+            if (parameter.passing != ParameterPassing::value)
+                return reject(function.position, "Material function parameters are values, not borrows.");
+        for (const auto& node : function.statements) {
+            if (node.kind == Statement::Kind::loop || node.kind == Statement::Kind::yield ||
+                node.kind == Statement::Kind::break_loop || node.kind == Statement::Kind::continue_loop)
+                return reject(node.position, "Material does not support loops or suspension.");
+            if (node.kind == Statement::Kind::declare && node.expression == no_node &&
+                contains_texture(function.locals[node.target].type))
+                return reject(node.position, "Texture inputs cannot be default constructed; copy an injected value.");
+        }
+        for (auto& node : function.expressions) {
+            using Kind = Expression::Kind;
+            if (node.kind == Kind::value_field && function.expressions[node.left].type == token)
+                return reject(node.position,
+                              "TextureInput members are compiler-owned, not accessible to material Source.");
+            if (!(node.kind == Kind::literal && node.type == ValueType::u32)) {
+                ATELIER_TRY(check_type(node.type, node.position));
+            }
+            switch (node.kind) {
+            case Kind::literal:
+            case Kind::local:
+            case Kind::value_field:
+            case Kind::math_construct:
+            case Kind::source_call:
+                break;
+            case Kind::unary:
+            case Kind::binary:
+                if (node.operation == Operation::remainder ||
+                    (node.operation >= Operation::bitwise_and && node.operation <= Operation::shift_right))
+                    return reject(node.position, "Material integer arithmetic is not supported.");
+                break;
+            case Kind::scalar_cast:
+                if (node.type != ValueType::f32)
+                    return reject(node.position, "Material conversions only produce float.");
+                break;
+            case Kind::math_intrinsic:
+                if (!Hlsl::supports(node.math_operation))
+                    return reject(node.position, "This math operation is not in the material subset.");
+                break;
+            case Kind::texture_sample:
+            case Kind::texture_orientation:
+                node.offset = slot_offset;
+                break;
+            default:
+                return reject(node.position, "Operation is not part of the pure material subset.");
+            }
+        }
+    }
+    tree->material = true;
+    return MaterialModule{std::move(*tree), context,   params.type_index,  output,
+                          texture_input,    resources, std::move(textures)};
 }
 
 std::string material_hlsl(const MaterialModule& material) {

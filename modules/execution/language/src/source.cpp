@@ -68,13 +68,13 @@ BinaryOperator binary_operator(std::string_view text) noexcept {
 
 class Parser : private Tokens {
 public:
-    Parser(std::string_view name, std::string_view source, Environment environment)
-        : Tokens(source), environment_(environment) {
+    Parser(std::string_view name, Tokens tokens, Environment environment)
+        : Tokens(std::move(tokens)), environment_(environment) {
         module_.source_name = name;
     }
 
-    Program parse(std::string_view entry_name, bool allow_declarations) {
-        validate_environment();
+    std::expected<Program, Diagnostic> parse(std::string_view entry_name, bool allow_declarations) {
+        ATELIER_TRY(validate_environment());
         module_.object_type_name = environment_.object_type_name;
         module_.value_layouts.assign(environment_.values.begin(), environment_.values.end());
         struct Body {
@@ -86,82 +86,87 @@ public:
         std::vector<std::string> type_names;
         while (token_.kind != Token::Kind::end) {
             if (token_.text == "struct" || token_.text == "enum") {
-                auto declaration = parse_type_declaration(*this);
+                ATELIER_TRY_BIND(declaration, parse_type_declaration(*this));
                 if (type_names.size() == 1024)
-                    reject(declaration.position, "A source module supports at most 1024 type declarations.");
-                if (std::ranges::find(type_names, declaration.name) != type_names.end())
-                    reject(declaration.position, "Duplicate source type name.");
-                validate_declaration(declaration);
-                type_names.push_back(std::move(declaration.name));
+                    return reject(declaration->position, "A source module supports at most 1024 type declarations.");
+                if (std::ranges::find(type_names, declaration->name) != type_names.end())
+                    return reject(declaration->position, "Duplicate source type name.");
+                ATELIER_TRY(validate_declaration(*declaration));
+                type_names.push_back(std::move(declaration->name));
                 continue;
             }
-            if (accept("const")) {
+            ATELIER_TRY_BIND(constant, accept("const"));
+            if (*constant) {
                 const auto position = token_.position;
-                const auto type = parameter_type();
-                if (!scalar(type))
-                    reject(position, "Module constants require a scalar or enum type.");
+                ATELIER_TRY_BIND(type, parameter_type());
+                if (!scalar(*type))
+                    return reject(position, "Module constants require a scalar or enum type.");
                 const auto name_position = token_.position;
-                const auto name = qualified_identifier();
-                if (math_reserved_name(name))
-                    reject(name_position, "Module constants cannot replace built-in math names.");
-                if (std::ranges::any_of(constants_, [&](const auto& value) { return value.name == name; }))
-                    reject(name_position, "Duplicate module constant name.");
+                ATELIER_TRY_BIND(name, qualified_identifier());
+                if (math_reserved_name(*name))
+                    return reject(name_position, "Module constants cannot replace built-in math names.");
+                if (std::ranges::any_of(constants_, [&](const auto& value) { return value.name == *name; }))
+                    return reject(name_position, "Duplicate module constant name.");
                 if (constants_.size() == 1024)
-                    reject(position, "A source module supports at most 1024 constants.");
-                expect("=");
-                constants_.push_back({name, type, name_position, lexer_, token_});
-                while (!accept(";")) {
+                    return reject(position, "A source module supports at most 1024 constants.");
+                ATELIER_TRY(expect("="));
+                constants_.push_back({std::move(*name), *type, name_position, lexer_, token_});
+                for (;;) {
+                    ATELIER_TRY_BIND(closed, accept(";"));
+                    if (*closed)
+                        break;
                     if (token_.kind == Token::Kind::end || token_.text == "{" || token_.text == "}")
-                        reject(token_.position, "Expected ';' to close a module constant.");
-                    consume();
+                        return reject(token_.position, "Expected ';' to close a module constant.");
+                    ATELIER_TRY(consume());
                 }
                 continue;
             }
             if (module_.functions.size() >= 1024)
-                reject(token_.position, "A source module supports at most 1024 functions.");
+                return reject(token_.position, "A source module supports at most 1024 functions.");
             function_ = {};
             function_.position = token_.position;
             visible_.clear();
-            signature();
+            ATELIER_TRY(signature());
             for (const auto& previous : module_.functions)
                 if (previous.function_name == function_.function_name)
-                    reject(function_.position, "Duplicate source function name.");
+                    return reject(function_.position, "Duplicate source function name.");
             bodies.push_back({lexer_, token_});
             module_.functions.push_back(std::move(function_));
-            expect("{");
+            ATELIER_TRY(expect("{"));
             std::size_t braces = 1;
             while (braces != 0) {
                 if (token_.kind == Token::Kind::end)
-                    reject(token_.position, "Expected '}' to close the function body.");
+                    return reject(token_.position, "Expected '}' to close the function body.");
                 if (token_.text == "{")
                     ++braces;
                 if (token_.text == "}")
                     --braces;
-                consume();
+                ATELIER_TRY(consume());
             }
         }
         if (module_.functions.empty() && !allow_declarations)
-            reject(token_.position, "Source module requires an entry function.");
+            return reject(token_.position, "Source module requires an entry function.");
         for (const auto& function : module_.functions)
             if (std::ranges::find(type_names, function.function_name) != type_names.end())
-                reject(function.position, "A source function and type cannot have the same name.");
+                return reject(function.position, "A source function and type cannot have the same name.");
         for (const auto& value : constants_) {
             if (std::ranges::find(type_names, value.name) != type_names.end() ||
                 std::ranges::any_of(module_.functions,
                                     [&](const auto& function) { return function.function_name == value.name; }))
-                reject(value.position, "A module constant cannot share a name with a source type or function.");
+                return reject(value.position, "A module constant cannot share a name with a source type or function.");
             for (const auto& function : module_.functions)
                 for (const auto& parameter : function.locals)
                     if (parameter.name == value.name)
-                        reject(function.position, "Parameters cannot shadow a module constant.");
+                        return reject(function.position, "Parameters cannot shadow a module constant.");
         }
-        collect_properties();
-        for (std::size_t i = 0; i < constants_.size(); ++i)
-            resolve_constant(i);
+        ATELIER_TRY(collect_properties());
+        for (std::size_t i = 0; i < constants_.size(); ++i) {
+            ATELIER_TRY(resolve_constant(i));
+        }
         if (module_.functions.empty())
             return std::move(module_);
         if (entry_name.empty() && module_.functions.size() != 1 && !allow_declarations)
-            reject({}, "A multi-function module requires an explicit host entry name.");
+            return reject({}, "A multi-function module requires an explicit host entry name.");
         bool found = entry_name.empty();
         for (std::size_t i = 0; i < module_.functions.size(); ++i) {
             function_ = module_.functions[i];
@@ -175,15 +180,16 @@ public:
             expression_heights_.clear();
             for (std::uint32_t j = 0; j < function_.parameters.size(); ++j)
                 visible_.push_back(j);
-            function_.body = block();
-            finish_properties();
+            ATELIER_TRY_BIND(body, block());
+            function_.body = *body;
+            ATELIER_TRY(finish_properties());
             if (function_.result != ValueType::void_value && !returns(function_.body))
-                reject(function_.position, "Non-void function can reach the end without a return value.");
+                return reject(function_.position, "Non-void function can reach the end without a return value.");
             module_.functions[i] = std::move(function_);
         }
         if (!found)
-            reject({}, "Selected entry function was not declared in this module.");
-        analyze_calls();
+            return reject({}, "Selected entry function was not declared in this module.");
+        ATELIER_TRY(analyze_calls());
         return std::move(module_);
     }
 
@@ -218,7 +224,7 @@ private:
         return name == "math" || name.starts_with("math.") || math_named_type(name) != ValueType::void_value;
     }
 
-    ValueType named_type(std::string_view name, SourcePosition position) const {
+    std::expected<ValueType, Diagnostic> named_type(std::string_view name, SourcePosition position) const {
         if (name == "bool")
             return ValueType::boolean;
         if (name == "float")
@@ -234,107 +240,126 @@ private:
         for (std::uint32_t i = 0; i < environment_.values.size(); ++i)
             if (environment_.values[i].name == name ||
                 (name == "String" && environment_.values[i].kind == ValueType::string))
-                return {environment_.values[i].kind, i};
+                return ValueType{environment_.values[i].kind, i};
         for (std::uint32_t i = 0; i < environment_.enumerations.size(); ++i)
             if (environment_.enumerations[i].name == name)
-                return {ValueType::enumeration, i};
+                return ValueType{ValueType::enumeration, i};
         const auto math = math_named_type(name);
         if (math != ValueType::void_value)
             return math;
-        reject(position, "Unknown registered value type '" + std::string(name) + "'.");
+        return reject(position, "Unknown registered value type '" + std::string(name) + "'.");
     }
 
-    ValueType declared_type(const TypeName& name, SourcePosition position) const {
-        auto type = named_type(name.name, position);
+    std::expected<ValueType, Diagnostic> declared_type(const TypeName& name, SourcePosition position) const {
+        ATELIER_TRY_BIND(type, named_type(name.name, position));
         for (std::uint32_t depth = 0; depth < name.array_depth; ++depth) {
             const auto array = std::ranges::find_if(environment_.values, [&](const auto& value) {
-                return value.kind == ValueType::array && value.element == type;
+                return value.kind == ValueType::array && value.element == *type;
             });
             if (array == environment_.values.end())
-                reject(position, "This Array element type has not been registered in the Runtime.");
-            type = {ValueType::array, static_cast<std::uint32_t>(array - environment_.values.begin())};
+                return reject(position, "This Array element type has not been registered in the Runtime.");
+            *type = {ValueType::array, static_cast<std::uint32_t>(array - environment_.values.begin())};
         }
         return type;
     }
 
-    void validate_declaration(const TypeDeclaration& declaration) const {
-        const auto type = named_type(declaration.name, declaration.position);
+    std::expected<void, Diagnostic> validate_declaration(const TypeDeclaration& declaration) const {
+        ATELIER_TRY_BIND(type, named_type(declaration.name, declaration.position));
         if (declaration.enumeration) {
-            if (type.kind != ValueType::enumeration)
-                reject(declaration.position, "Source enum conflicts with its Runtime type.");
-            const auto& layout = environment_.enumerations[type.type_index];
+            if (type->kind != ValueType::enumeration)
+                return reject(declaration.position, "Source enum conflicts with its Runtime type.");
+            const auto& layout = environment_.enumerations[type->type_index];
             if (layout.underlying != (declaration.signed_enum ? ValueType::i32 : ValueType::u32) ||
                 layout.values.size() != declaration.enumerators.size())
-                reject(declaration.position, "Source enum differs from its prepared Runtime definition.");
+                return reject(declaration.position, "Source enum differs from its prepared Runtime definition.");
             for (std::size_t i = 0; i < layout.values.size(); ++i)
                 if (layout.values[i].name != declaration.enumerators[i].first ||
                     layout.values[i].bits != declaration.enumerators[i].second)
-                    reject(declaration.position, "Source enum differs from its prepared Runtime definition.");
+                    return reject(declaration.position, "Source enum differs from its prepared Runtime definition.");
         } else {
-            if (type.kind != ValueType::record)
-                reject(declaration.position, "Source struct conflicts with its Runtime type.");
-            const auto& layout = environment_.values[type.type_index];
+            if (type->kind != ValueType::record)
+                return reject(declaration.position, "Source struct conflicts with its Runtime type.");
+            const auto& layout = environment_.values[type->type_index];
             if (layout.fields.size() != declaration.fields.size())
-                reject(declaration.position, "Source struct differs from its prepared Runtime definition.");
-            for (std::size_t i = 0; i < layout.fields.size(); ++i)
-                if (layout.fields[i].name != declaration.fields[i].first ||
-                    layout.fields[i].type != declared_type(declaration.fields[i].second, declaration.position))
-                    reject(declaration.position, "Source struct differs from its prepared Runtime definition.");
+                return reject(declaration.position, "Source struct differs from its prepared Runtime definition.");
+            for (std::size_t i = 0; i < layout.fields.size(); ++i) {
+                if (layout.fields[i].name != declaration.fields[i].first)
+                    return reject(declaration.position, "Source struct differs from its prepared Runtime definition.");
+                ATELIER_TRY_BIND(field_type, declared_type(declaration.fields[i].second, declaration.position));
+                if (layout.fields[i].type != *field_type)
+                    return reject(declaration.position, "Source struct differs from its prepared Runtime definition.");
+            }
         }
+        return {};
     }
 
-    void signature() {
-        function_.is_coroutine = accept("async");
-        function_.result = accept("void") ? ValueType::void_value : result_type();
+    std::expected<void, Diagnostic> signature() {
+        ATELIER_TRY_BIND(asynchronous, accept("async"));
+        function_.is_coroutine = *asynchronous;
+        ATELIER_TRY_BIND(void_result, accept("void"));
+        if (*void_result)
+            function_.result = ValueType::void_value;
+        else {
+            ATELIER_TRY_BIND(result, result_type());
+            function_.result = *result;
+        }
         if (function_.is_coroutine && aggregate(function_.result))
-            reject(function_.position, "async aggregate results are not supported by the task result contract.");
+            return reject(function_.position, "async aggregate results are not supported by the task result contract.");
         if (plain_record(function_.result) && !math_type(function_.result))
             function_.uses_scoped_values = true;
         const auto name_position = token_.position;
-        const auto name = qualified_identifier();
-        if (math_reserved_name(name))
-            reject(name_position, "Source functions cannot replace math constructors or the math namespace.");
-        function_.function_name = name;
-        expect("(");
-        if (!accept(")")) {
-            do {
+        ATELIER_TRY_BIND(name, qualified_identifier());
+        if (math_reserved_name(*name))
+            return reject(name_position, "Source functions cannot replace math constructors or the math namespace.");
+        function_.function_name = std::move(*name);
+        ATELIER_TRY(expect("("));
+        ATELIER_TRY_BIND(empty, accept(")"));
+        if (!*empty) {
+            for (;;) {
                 const auto position = token_.position;
-                const bool read_only = accept("const");
-                const auto type = parameter_type();
-                if (reference_type(type))
-                    reject(position, "Object reference parameters are not supported.");
-                const bool reference = accept("&");
-                if (read_only && !reference)
-                    reject(position, "const parameters require a reference in this source slice.");
-                const auto passing = reference ? (read_only ? ParameterPassing::read_only : ParameterPassing::reference)
-                                               : ParameterPassing::value;
-                if (function_.is_coroutine && reference)
-                    reject(position, "async parameters cannot borrow caller storage.");
-                if (aggregate(type)) {
+                ATELIER_TRY_BIND(read_only, accept("const"));
+                ATELIER_TRY_BIND(type, parameter_type());
+                if (reference_type(*type))
+                    return reject(position, "Object reference parameters are not supported.");
+                ATELIER_TRY_BIND(reference, accept("&"));
+                if (*read_only && !*reference)
+                    return reject(position, "const parameters require a reference in this source slice.");
+                const auto passing = *reference
+                                         ? (*read_only ? ParameterPassing::read_only : ParameterPassing::reference)
+                                         : ParameterPassing::value;
+                if (function_.is_coroutine && *reference)
+                    return reject(position, "async parameters cannot borrow caller storage.");
+                if (aggregate(*type)) {
                     if (function_.is_coroutine)
-                        reject(position, "async aggregate parameters are not supported by the task argument contract.");
-                    if (!reference && !plain_record(type))
-                        reject(
+                        return reject(position,
+                                      "async aggregate parameters are not supported by the task argument contract.");
+                    if (!*reference && !plain_record(*type))
+                        return reject(
                             position,
                             "Only plain records support value parameters; other native values require Type& or const Type&.");
-                    if (!reference && !math_type(type) && !environment_.values[type.type_index].can_own)
-                        reject(
+                    if (!*reference && !math_type(*type) && !environment_.values[type->type_index].can_own)
+                        return reject(
                             position,
                             "Plain record value parameters require borrow-preserving copy and lifecycle operations.");
-                    if (type.kind == ValueType::string && !read_only)
-                        reject(position, "String borrowing requires const String&.");
-                    if (reference || !math_type(type))
+                    if (type->kind == ValueType::string && !*read_only)
+                        return reject(position, "String borrowing requires const String&.");
+                    if (*reference || !math_type(*type))
                         function_.uses_scoped_values = true;
                 }
-                const auto index = local(identifier(), type);
-                function_.locals[index].read_only = read_only;
-                function_.parameters.push_back({type, passing});
-            } while (accept(","));
-            expect(")");
+                ATELIER_TRY_BIND(parameter_name, identifier());
+                ATELIER_TRY_BIND(index, local(*parameter_name, *type));
+                function_.locals[*index].read_only = *read_only;
+                function_.parameters.push_back({*type, passing});
+                ATELIER_TRY_BIND(more, accept(","));
+                if (!*more)
+                    break;
+            }
+            ATELIER_TRY(expect(")"));
         }
+        return {};
     }
 
-    void analyze_calls() {
+    std::expected<void, Diagnostic> analyze_calls() {
         // Summarize direct effects before propagating callee effects bottom-up.
         for (auto& function : module_.functions) {
             // A self node preserves borrows only if every use is a BorrowSafe call or a by-value field
@@ -395,7 +420,7 @@ private:
                 if (cursor.next < function.expressions.size()) {
                     const auto& call = function.expressions[cursor.next];
                     if (states[call.value] == State::active)
-                        reject(call.position, "Recursive source calls are not supported in this module stage.");
+                        return reject(call.position, "Recursive source calls are not supported in this module stage.");
                     if (states[call.value] == State::fresh) {
                         states[call.value] = State::active;
                         stack.push_back({call.value});
@@ -408,7 +433,7 @@ private:
                     ++cursor.next;
                 } else {
                     if (function.uses_scoped_values && (function.is_coroutine || !function.preserves_borrows))
-                        reject(
+                        return reject(
                             function.position,
                             "Scoped value execution in '" + function.function_name +
                                 "' reaches suspension, an object operation other than reading a self field, or a native call without BorrowSafe.");
@@ -429,33 +454,41 @@ private:
                 if (call.kind == Expression::Kind::source_call)
                     pending.push_back(call.value);
         }
+        return {};
     }
 
-    std::vector<NodeId> call_arguments(std::span<const ParameterType> parameters) {
+    std::expected<std::vector<NodeId>, Diagnostic> call_arguments(std::span<const ParameterType> parameters) {
         std::vector<NodeId> arguments;
-        if (!accept(")")) {
-            do {
+        ATELIER_TRY_BIND(empty, accept(")"));
+        if (!*empty) {
+            for (;;) {
                 if (arguments.size() >= parameters.size())
-                    reject(token_.position, "Call argument count mismatch.");
-                arguments.push_back(expression());
-            } while (accept(","));
-            expect(")");
+                    return reject(token_.position, "Call argument count mismatch.");
+                ATELIER_TRY_BIND(argument, expression());
+                arguments.push_back(*argument);
+                ATELIER_TRY_BIND(more, accept(","));
+                if (!*more)
+                    break;
+            }
+            ATELIER_TRY(expect(")"));
         }
         if (arguments.size() != parameters.size())
-            reject(token_.position, "Call argument count mismatch.");
+            return reject(token_.position, "Call argument count mismatch.");
         return arguments;
     }
 
-    Expression call_expression(bool native, std::uint32_t index, SourcePosition position, NodeId receiver,
-                               std::vector<NodeId> arguments) {
+    std::expected<Expression, Diagnostic> call_expression(bool native, std::uint32_t index, SourcePosition position,
+                                                          NodeId receiver, std::vector<NodeId> arguments) {
         const auto parameters = native ? environment_.methods[index].parameters
                                        : std::span<const ParameterType>{module_.functions[index].parameters};
         const auto result = native ? environment_.methods[index].result : module_.functions[index].result;
         if (!native && module_.functions[index].is_coroutine)
-            reject(position, "Source calls require a synchronous function; async entries are started by the host.");
+            return reject(position,
+                          "Source calls require a synchronous function; async entries are started by the host.");
         if (plain_record(result) && !math_type(result)) {
             if (!environment_.values[result.type_index].can_own)
-                reject(position, "Plain record results require borrow-preserving copy and lifecycle operations.");
+                return reject(position,
+                              "Plain record results require borrow-preserving copy and lifecycle operations.");
             function_.uses_scoped_values = true;
         }
         Expression call{native ? Expression::Kind::call : Expression::Kind::source_call,
@@ -468,21 +501,23 @@ private:
                         receiver};
         for (std::size_t i = 0; i < arguments.size(); ++i) {
             const auto& parameter = parameters[i];
-            auto argument = converted(arguments[i], parameter.type);
-            const auto& node = function_.expressions[argument];
+            ATELIER_TRY_BIND(argument, converted(arguments[i], parameter.type));
+            const auto& node = function_.expressions[*argument];
             if (parameter.passing == ParameterPassing::value && plain_record(parameter.type) &&
                 !math_type(parameter.type) && !environment_.values[parameter.type.type_index].can_own)
-                reject(node.position,
-                       "Plain record value arguments require borrow-preserving copy and lifecycle operations.");
-            if (parameter.passing == ParameterPassing::reference && !writable_storage(argument))
-                reject(node.position, "Writable reference requires a mutable lvalue.");
+                return reject(node.position,
+                              "Plain record value arguments require borrow-preserving copy and lifecycle operations.");
+            if (parameter.passing == ParameterPassing::reference && !writable_storage(*argument))
+                return reject(node.position, "Writable reference requires a mutable lvalue.");
             if (parameter.passing != ParameterPassing::value && node.kind == Expression::Kind::field) {
                 if (!native)
-                    reject(node.position, "Runtime object fields may only be borrowed by protected native calls.");
+                    return reject(node.position,
+                                  "Runtime object fields may only be borrowed by protected native calls.");
                 if (parameter.passing == ParameterPassing::reference && environment_.fields[node.value].constrained)
-                    reject(node.position, "Hard-bounded fields cannot be borrowed writably; assign the field instead.");
+                    return reject(node.position,
+                                  "Hard-bounded fields cannot be borrowed writably; assign the field instead.");
             }
-            call.arguments.push_back(argument);
+            call.arguments.push_back(*argument);
             call.argument_passing.push_back(parameter.passing);
         }
         return call;
@@ -517,13 +552,14 @@ private:
         return nullptr;
     }
 
-    void collect_properties() {
+    std::expected<void, Diagnostic> collect_properties() {
         const auto collect = [&](std::string_view name, std::span<const ParameterType> parameters, ValueType result,
-                                 bool native, std::uint32_t index, SourcePosition position) {
+                                 bool native, std::uint32_t index,
+                                 SourcePosition position) -> std::expected<void, Diagnostic> {
             auto alias = property_name(name, parameters.size(), result == ValueType::void_value,
                                        parameters.size() == 1 && parameters[0].passing == ParameterPassing::reference);
             if (alias.empty())
-                return;
+                return {};
             const auto start = name.rfind('.') == std::string_view::npos ? 0 : name.rfind('.') + 1;
             const bool getter = name.substr(start).starts_with("Get");
             const auto type = getter ? result : parameters[0].type;
@@ -534,21 +570,24 @@ private:
                 property = properties_.end() - 1;
             }
             if (property->type != type)
-                reject(position, "Property getter and setter types differ: " + property->name);
+                return reject(position, "Property getter and setter types differ: " + property->name);
             (getter ? property->getter : property->setter) = index;
+            return {};
         };
         for (std::uint32_t i = 0; i < environment_.methods.size(); ++i) {
             const auto& method = environment_.methods[i];
-            collect(method.name, method.parameters, method.result, true, i, {});
+            ATELIER_TRY(collect(method.name, method.parameters, method.result, true, i, {}));
         }
         for (std::uint32_t i = 0; i < module_.functions.size(); ++i) {
             const auto& function = module_.functions[i];
-            if (!function.is_coroutine)
-                collect(function.function_name, function.parameters, function.result, false, i, function.position);
+            if (!function.is_coroutine) {
+                ATELIER_TRY(
+                    collect(function.function_name, function.parameters, function.result, false, i, function.position));
+            }
         }
         for (const auto& property : properties_) {
             const auto conflict = [&] {
-                reject({}, "Property conflicts with a visible declaration: " + property.name);
+                return reject({}, "Property conflicts with a visible declaration: " + property.name);
             };
             const auto hidden = [&](std::string_view name) {
                 return name == property.name ||
@@ -557,64 +596,69 @@ private:
             };
             for (const auto& other : properties_)
                 if (&other != &property && other.native == property.native && hidden(other.name))
-                    conflict();
+                    return conflict();
             for (const auto& field : environment_.fields)
                 if (hidden(field.name))
-                    conflict();
+                    return conflict();
             if (property.native) {
                 for (const auto& method : environment_.methods)
                     if (hidden(method.name))
-                        conflict();
+                        return conflict();
                 continue;
             }
             if (math_reserved_name(property.name) || hidden(environment_.object_type_name))
-                conflict();
+                return conflict();
             for (const auto& type : environment_.values)
                 if (hidden(type.name))
-                    conflict();
+                    return conflict();
             for (const auto& type : environment_.enumerations)
                 if (hidden(type.name))
-                    conflict();
+                    return conflict();
             for (const auto& constant : constants_)
                 if (hidden(constant.name))
-                    conflict();
+                    return conflict();
             for (const auto& function : module_.functions) {
                 if (hidden(function.function_name))
-                    conflict();
+                    return conflict();
                 for (const auto& parameter : function.locals)
                     if (parameter.name == property.name)
-                        conflict();
+                        return conflict();
             }
         }
+        return {};
     }
 
-    NodeId property_access(const Property& property, SourcePosition position, NodeId receiver = no_node) {
+    std::expected<NodeId, Diagnostic> property_access(const Property& property, SourcePosition position,
+                                                      NodeId receiver = no_node) {
         // Keep only a call-shaped placeholder until assignment vs. read is known.
         // No speculative getter call may enter effect analysis or the call graph.
-        const auto node = add(Expression{property.native ? Expression::Kind::call : Expression::Kind::source_call,
-                                         property.type, position, no_node, no_node, 0, Operation::add, receiver});
-        property_uses_.push_back({node, static_cast<std::size_t>(&property - properties_.data())});
+        ATELIER_TRY_BIND(node, add(Expression{property.native ? Expression::Kind::call : Expression::Kind::source_call,
+                                              property.type, position, no_node, no_node, 0, Operation::add, receiver}));
+        property_uses_.push_back({*node, static_cast<std::size_t>(&property - properties_.data())});
         return node;
     }
 
-    void finish_properties() {
+    std::expected<void, Diagnostic> finish_properties() {
         for (const auto& use : property_uses_) {
             const auto& property = properties_[use.property];
             const auto node = function_.expressions[use.node];
             if (property.getter == UINT32_MAX)
-                reject(node.position, "Property is write-only: " + property.name);
-            function_.expressions[use.node] =
-                call_expression(property.native, property.getter, node.position, node.receiver, {});
+                return reject(node.position, "Property is write-only: " + property.name);
+            ATELIER_TRY_BIND(call, call_expression(property.native, property.getter, node.position, node.receiver, {}));
+            function_.expressions[use.node] = std::move(*call);
         }
         property_uses_.clear();
+        return {};
     }
 
-    std::string expression_name(bool native) {
-        std::string name(identifier().text);
+    std::expected<std::string, Diagnostic> expression_name(bool native) {
+        ATELIER_TRY_BIND(first, identifier());
+        std::string name(first->text);
         while (token_.text == "." && !find_property(name, native)) {
-            consume();
+            ATELIER_TRY(consume());
             name += '.';
-            name += identifier().text;
+            ATELIER_TRY_BIND(part, identifier());
+            name += part->text;
         }
         return name;
     }
@@ -622,33 +666,31 @@ private:
     struct Depth {
         std::size_t& value;
 
-        Depth(std::size_t& depth, SourcePosition position) : value(depth) {
-            if (++value > 128)
-                reject(position, "Source nesting exceeds the compiler limit of 128.");
-        }
+        explicit Depth(std::size_t& depth) : value(depth) { ++value; }
 
         ~Depth() { --value; }
     };
 
-    void validate_name(std::string_view name, bool optional) const {
+    std::expected<void, Diagnostic> validate_name(std::string_view name, bool optional) const {
         if (name.empty() && !optional)
-            reject({}, "Host member name cannot be empty.");
+            return reject({}, "Host member name cannot be empty.");
         for (std::size_t start = 0; start < name.size();) {
             auto end = name.find('.', start);
             if (end == std::string_view::npos)
                 end = name.size();
             const auto segment = name.substr(start, end - start);
             if (segment.empty() || !letter(segment.front()) || reserved(segment))
-                reject({}, "Host binding name requires non-reserved identifier segments.");
+                return reject({}, "Host binding name requires non-reserved identifier segments.");
             for (const auto character : segment)
                 if (!letter(character) && !digit(character))
-                    reject({}, "Host binding name requires non-reserved identifier segments.");
+                    return reject({}, "Host binding name requires non-reserved identifier segments.");
             if (end == name.size())
                 break;
             start = end + 1;
             if (start == name.size())
-                reject({}, "Host binding name cannot end with '.'.");
+                return reject({}, "Host binding name cannot end with '.'.");
         }
+        return {};
     }
 
     bool scalar(ValueType type) const {
@@ -675,132 +717,136 @@ private:
                                             : 4;
     }
 
-    void validate_environment() const {
-        validate_name(environment_.object_type_name, true);
+    std::expected<void, Diagnostic> validate_environment() const {
+        ATELIER_TRY(validate_name(environment_.object_type_name, true));
         for (std::size_t i = 0; i < environment_.enumerations.size(); ++i) {
             const auto& enumeration = environment_.enumerations[i];
-            validate_name(enumeration.name, false);
+            ATELIER_TRY(validate_name(enumeration.name, false));
             if (enumeration.underlying != ValueType::i32 && enumeration.underlying != ValueType::u32)
-                reject({}, "Enum requires i32/u32 representation.");
+                return reject({}, "Enum requires i32/u32 representation.");
             for (std::size_t j = 0; j < i; ++j)
                 if (environment_.enumerations[j].name == enumeration.name)
-                    reject({}, "Duplicate enum type name.");
+                    return reject({}, "Duplicate enum type name.");
             for (std::size_t j = 0; j < enumeration.values.size(); ++j) {
-                validate_name(enumeration.values[j].name, false);
+                ATELIER_TRY(validate_name(enumeration.values[j].name, false));
                 if (enumeration.values[j].name.find('.') != std::string_view::npos)
-                    reject({}, "Enum item must be a simple identifier.");
+                    return reject({}, "Enum item must be a simple identifier.");
                 for (std::size_t k = 0; k < j; ++k)
                     if (enumeration.values[k].name == enumeration.values[j].name)
-                        reject({}, "Duplicate enum item name.");
+                        return reject({}, "Duplicate enum item name.");
             }
         }
         if (environment_.values.size() > std::numeric_limits<std::uint32_t>::max())
-            reject({}, "Value catalog is too large.");
+            return reject({}, "Value catalog is too large.");
         for (std::size_t i = 0; i < environment_.values.size(); ++i) {
             const auto& value = environment_.values[i];
-            validate_name(value.name, false);
+            ATELIER_TRY(validate_name(value.name, false));
             if (!aggregate({value.kind, static_cast<std::uint32_t>(i)}) || !value.size ||
                 !std::has_single_bit(value.alignment) || value.size % value.alignment ||
                 value.size > static_cast<std::size_t>(PTRDIFF_MAX))
-                reject({}, "Invalid native value layout.");
+                return reject({}, "Invalid native value layout.");
             if ((value.kind == ValueType::array || value.kind == ValueType::string) && !value.sequence_view)
-                reject({}, "Sequence layout requires its native view operation.");
+                return reject({}, "Sequence layout requires its native view operation.");
             if (value.kind == ValueType::array && !supported_value(value.element))
-                reject({}, "Invalid array element type.");
+                return reject({}, "Invalid array element type.");
             if (value.math) {
                 if (value.kind != ValueType::record || value.name != math::name(value.math) ||
                     value.math.components() == 0 || value.size != value.math.size() ||
                     value.alignment != value.math.scalar_size() || value.fields.size() != value.math.components() ||
                     (value.math.precision != math::Precision::f32 && value.math.precision != math::Precision::f64))
-                    reject({}, "Invalid canonical math value layout.");
+                    return reject({}, "Invalid canonical math value layout.");
                 for (std::size_t component = 0; component < value.fields.size(); ++component)
                     if (value.fields[component].type != math_scalar(value.math) ||
                         value.fields[component].offset != component * value.math.scalar_size())
-                        reject({}, "Math components require contiguous scalar layout.");
+                        return reject({}, "Math components require contiguous scalar layout.");
                 const auto alias = math::short_name(value.math);
                 if (environment_.object_type_name == alias)
-                    reject({}, "Object type conflicts with a built-in math type alias.");
+                    return reject({}, "Object type conflicts with a built-in math type alias.");
                 for (const auto& other : environment_.values)
                     if (&other != &value && (other.math == value.math || other.name == alias))
-                        reject({}, "Ambiguous built-in math type or alias.");
+                        return reject({}, "Ambiguous built-in math type or alias.");
                 for (const auto& enumeration : environment_.enumerations)
                     if (enumeration.name == alias || enumeration.name == value.name)
-                        reject({}, "Enum type conflicts with a built-in math type or alias.");
+                        return reject({}, "Enum type conflicts with a built-in math type or alias.");
             }
             for (std::size_t j = 0; j < i; ++j)
                 if (environment_.values[j].name == value.name)
-                    reject({}, "Duplicate native value name.");
+                    return reject({}, "Duplicate native value name.");
             for (std::size_t j = 0; j < value.fields.size(); ++j) {
                 const auto& field = value.fields[j];
-                validate_name(field.name, false);
+                ATELIER_TRY(validate_name(field.name, false));
                 if (value.kind != ValueType::record || field.name.find('.') != std::string::npos ||
                     !supported_value(field.type) || field.offset > value.size ||
                     value_size(field.type) > value.size - field.offset || field.offset % value_alignment(field.type) ||
                     value.alignment < value_alignment(field.type))
-                    reject({}, "Invalid direct native field layout.");
+                    return reject({}, "Invalid direct native field layout.");
                 for (std::size_t k = 0; k < j; ++k)
                     if (value.fields[k].name == field.name)
-                        reject({}, "Duplicate native value field.");
+                        return reject({}, "Duplicate native value field.");
             }
         }
         if (environment_.fields.size() > std::numeric_limits<std::uint32_t>::max() ||
             environment_.methods.size() > std::numeric_limits<std::uint32_t>::max())
-            reject({}, "Host member catalog exceeds its index range.");
+            return reject({}, "Host member catalog exceeds its index range.");
         for (std::size_t i = 0; i < environment_.fields.size(); ++i) {
             const auto& field = environment_.fields[i];
-            validate_name(field.name, false);
+            ATELIER_TRY(validate_name(field.name, false));
             if (!scalar(field.type) && !math_type(field.type))
-                reject({}, "Host fields require scalar or built-in math value types.");
+                return reject({}, "Host fields require scalar or built-in math value types.");
             for (std::size_t j = 0; j < i; ++j)
                 if (environment_.fields[j].name == field.name)
-                    reject({}, "Ambiguous host field binding.");
+                    return reject({}, "Ambiguous host field binding.");
         }
         for (std::size_t i = 0; i < environment_.methods.size(); ++i) {
             const auto& method = environment_.methods[i];
-            validate_name(method.name, false);
+            ATELIER_TRY(validate_name(method.name, false));
             if (method.parameters.size() > std::numeric_limits<std::uint32_t>::max())
-                reject({}, "Host parameter list exceeds its index range.");
+                return reject({}, "Host parameter list exceeds its index range.");
             for (const auto& parameter : method.parameters)
                 if (!supported_value(parameter.type) ||
                     (aggregate(parameter.type) && parameter.passing == ParameterPassing::value &&
                      !plain_record(parameter.type)) ||
                     (parameter.passing != ParameterPassing::value && parameter.passing != ParameterPassing::read_only &&
                      parameter.passing != ParameterPassing::reference))
-                    reject({}, "Host method has an unsupported parameter type or passing mode.");
+                    return reject({}, "Host method has an unsupported parameter type or passing mode.");
             if (method.result != ValueType::void_value && !scalar(method.result) && !plain_record(method.result))
-                reject({}, "Host method has an unsupported result type.");
+                return reject({}, "Host method has an unsupported result type.");
             for (std::size_t j = 0; j < i; ++j)
                 if (environment_.methods[j].name == method.name)
-                    reject({}, "Ambiguous host method binding.");
+                    return reject({}, "Ambiguous host method binding.");
         }
+        return {};
     }
 
-    void object_type() {
+    std::expected<void, Diagnostic> object_type() {
         const auto position = token_.position;
-        const auto name = qualified_identifier();
+        ATELIER_TRY_BIND(name, qualified_identifier());
         if (environment_.object_type_name.empty())
-            reject(position, "The host environment does not expose a named object type.");
-        if (name != environment_.object_type_name)
-            reject(position, "Unknown object type '" + name + "'.");
+            return reject(position, "The host environment does not expose a named object type.");
+        if (*name != environment_.object_type_name)
+            return reject(position, "Unknown object type '" + *name + "'.");
+        return {};
     }
 
-    bool reference_declaration() const {
+    std::expected<bool, Diagnostic> reference_declaration() const {
         if (token_.kind != Token::Kind::identifier || reserved(token_.text))
             return false;
         auto lookahead = lexer_;
-        auto next = lookahead.next();
-        if (token_.text == "Array" && next.text == "<")
+        ATELIER_TRY_BIND(next, lookahead.next());
+        if (token_.text == "Array" && next->text == "<")
             return true;
-        while (next.text == ".") {
-            const auto segment = lookahead.next();
-            if (segment.kind != Token::Kind::identifier || reserved(segment.text))
+        while (next->text == ".") {
+            ATELIER_TRY_BIND(segment, lookahead.next());
+            if (segment->kind != Token::Kind::identifier || reserved(segment->text))
                 return false;
             next = lookahead.next();
+            if (!next)
+                return std::unexpected(std::move(next.error()));
         }
-        return next.kind == Token::Kind::identifier && !reserved(next.text);
+        return next->kind == Token::Kind::identifier && !reserved(next->text);
     }
 
-    NodeId add(Expression expression) {
+    std::expected<NodeId, Diagnostic> add(Expression expression) {
         std::size_t height = 1;
         for (const auto child : {expression.left, expression.right, expression.receiver})
             if (child != no_node && expression_heights_[child] + 1 > height)
@@ -809,13 +855,13 @@ private:
             if (expression_heights_[argument] + 1 > height)
                 height = expression_heights_[argument] + 1;
         if (height > 128)
-            reject(expression.position, "Expression tree exceeds the compiler limit of 128.");
+            return reject(expression.position, "Expression tree exceeds the compiler limit of 128.");
         function_.expressions.push_back(std::move(expression));
         expression_heights_.push_back(height);
         return function_.expressions.size() - 1;
     }
 
-    NodeId literal(ValueType type, SourcePosition position, std::uint64_t bits) {
+    std::expected<NodeId, Diagnostic> literal(ValueType type, SourcePosition position, std::uint64_t bits) {
         Expression expression{Expression::Kind::literal, type, position};
         expression.bits = bits;
         return add(std::move(expression));
@@ -826,48 +872,53 @@ private:
         return function_.statements.size() - 1;
     }
 
-    void unused_name(const Token& name) const {
+    std::expected<void, Diagnostic> unused_name(const Token& name) const {
         if (math_reserved_name(name.text))
-            reject(name.position, "Locals cannot replace math constructors or the math namespace.");
+            return reject(name.position, "Locals cannot replace math constructors or the math namespace.");
         if (find_property(name.text, false))
-            reject(name.position, "Locals cannot shadow a property.");
+            return reject(name.position, "Locals cannot shadow a property.");
         for (const auto& value : constants_)
             if (value.name == name.text)
-                reject(name.position,
-                       "A module constant with this name is already visible; shadowing is not supported.");
+                return reject(name.position,
+                              "A module constant with this name is already visible; shadowing is not supported.");
         for (const auto index : visible_)
             if (function_.locals[index].name == name.text)
-                reject(name.position,
-                       "A local or parameter with this name is already visible; shadowing is not supported.");
+                return reject(name.position,
+                              "A local or parameter with this name is already visible; shadowing is not supported.");
+        return {};
     }
 
-    std::uint32_t local(const Token& name, ValueType type) {
-        unused_name(name);
+    std::expected<std::uint32_t, Diagnostic> local(const Token& name, ValueType type) {
+        ATELIER_TRY(unused_name(name));
         if (function_.locals.size() >= std::numeric_limits<std::uint32_t>::max())
-            reject(name.position, "Too many source locals.");
+            return reject(name.position, "Too many source locals.");
         const auto index = static_cast<std::uint32_t>(function_.locals.size());
         function_.locals.push_back({std::string(name.text), type});
         visible_.push_back(index);
         return index;
     }
 
-    ValueType result_type() {
+    std::expected<ValueType, Diagnostic> result_type() {
         const auto position = token_.position;
-        const auto type = parameter_type();
-        if (scalar(type) || math_type(type))
+        ATELIER_TRY_BIND(type, parameter_type());
+        if (scalar(*type) || math_type(*type))
             return type;
-        if (plain_record(type)) {
-            if (!environment_.values[type.type_index].can_own)
-                reject(position, "Plain record results require borrow-preserving copy and lifecycle operations.");
+        if (plain_record(*type)) {
+            if (!environment_.values[type->type_index].can_own)
+                return reject(position,
+                              "Plain record results require borrow-preserving copy and lifecycle operations.");
             return type;
         }
-        reject(position, "Function results require a scalar, enum or plain record value type.");
+        return reject(position, "Function results require a scalar, enum or plain record value type.");
     }
 
-    ValueType parameter_type() {
-        Depth guard(depth_, token_.position);
+    std::expected<ValueType, Diagnostic> parameter_type() {
+        Depth guard(depth_);
+        if (depth_ > 128)
+            return reject(token_.position, "Source nesting exceeds the compiler limit of 128.");
         const auto position = token_.position;
-        return declared_type(parse_type_name(*this), position);
+        ATELIER_TRY_BIND(name, parse_type_name(*this));
+        return declared_type(*name, position);
     }
 
     bool returns(NodeId id) const {
@@ -942,7 +993,7 @@ private:
             signed_constant(node.right);
     }
 
-    NodeId converted(NodeId expression, ValueType required) {
+    std::expected<NodeId, Diagnostic> converted(NodeId expression, ValueType required) {
         if (required == ValueType::i32 && integer_constant(expression))
             signed_constant(expression);
         const auto actual = function_.expressions[expression].type;
@@ -952,11 +1003,11 @@ private:
             return add(Expression{Expression::Kind::observe_reference, required,
                                   function_.expressions[expression].position, expression});
         if (reference_type(required) || reference_type(actual))
-            reject(
+            return reject(
                 function_.expressions[expression].position,
                 "Type mismatch; only strong-to-weak reference conversion is implicit; use try_acquire to strengthen.");
-        reject(function_.expressions[expression].position,
-               "Type mismatch; typed numeric values and distinct enum types do not convert implicitly.");
+        return reject(function_.expressions[expression].position,
+                      "Type mismatch; typed numeric values and distinct enum types do not convert implicitly.");
     }
 
     static long double numeric_value(ValueType type, std::uint64_t bits) {
@@ -969,7 +1020,8 @@ private:
         return static_cast<std::uint32_t>(bits);
     }
 
-    static std::uint64_t convert_constant(ValueType from, ValueType to, std::uint64_t bits, SourcePosition position) {
+    static std::expected<std::uint64_t, Diagnostic> convert_constant(ValueType from, ValueType to, std::uint64_t bits,
+                                                                     SourcePosition position) {
         if (from == to)
             return bits;
         auto value = numeric_value(from, bits);
@@ -981,13 +1033,14 @@ private:
         const auto minimum = to == ValueType::i32 ? -2147483648.0L : 0.0L;
         const auto maximum = to == ValueType::i32 ? 2147483647.0L : 4294967295.0L;
         if (!std::isfinite(value) || value < minimum || value > maximum)
-            reject(position, "Constant numeric conversion exceeds its integer destination range.");
+            return reject(position, "Constant numeric conversion exceeds its integer destination range.");
         return to == ValueType::i32 ? static_cast<std::uint32_t>(static_cast<std::int32_t>(value))
                                     : static_cast<std::uint32_t>(value);
     }
 
     template <class T>
-    static std::uint64_t fold_arithmetic(Operation operation, T left, T right, SourcePosition position) {
+    static std::expected<std::uint64_t, Diagnostic> fold_arithmetic(Operation operation, T left, T right,
+                                                                    SourcePosition position) {
         if (operation == Operation::equal)
             return left == right;
         if (operation == Operation::not_equal)
@@ -1016,7 +1069,7 @@ private:
                 result = left / right;
                 break;
             default:
-                reject(position, "Unsupported constant floating operation.");
+                return reject(position, "Unsupported constant floating operation.");
             }
             if constexpr (sizeof(T) == 8)
                 return std::bit_cast<std::uint64_t>(result);
@@ -1041,33 +1094,37 @@ private:
             case Operation::divide:
             case Operation::remainder:
                 if (right == 0)
-                    reject(position, "Constant integer division or remainder by zero.");
+                    return reject(position, "Constant integer division or remainder by zero.");
                 if constexpr (std::is_signed_v<T>)
                     if (left == std::numeric_limits<std::int32_t>::min() && right == -1)
-                        reject(position, "Constant signed division or remainder overflows.");
+                        return reject(position, "Constant signed division or remainder overflows.");
                 return static_cast<std::uint32_t>(operation == Operation::divide ? left / right : left % right);
             default:
-                reject(position, "Unsupported constant integer operation.");
+                return reject(position, "Unsupported constant integer operation.");
             }
         }
     }
 
-    void validate_constant(NodeId id) const {
+    std::expected<void, Diagnostic> validate_constant(NodeId id) const {
         const auto& node = function_.expressions[id];
         if (node.kind != Expression::Kind::literal && node.kind != Expression::Kind::unary &&
             node.kind != Expression::Kind::binary && node.kind != Expression::Kind::scalar_cast)
-            reject(node.position, "Module constant initializers require compile-time pure scalar expressions.");
-        if (node.left != no_node)
-            validate_constant(node.left);
-        if (node.right != no_node)
-            validate_constant(node.right);
+            return reject(node.position, "Module constant initializers require compile-time pure scalar expressions.");
+        if (node.left != no_node) {
+            ATELIER_TRY(validate_constant(node.left));
+        }
+        if (node.right != no_node) {
+            ATELIER_TRY(validate_constant(node.right));
+        }
+        return {};
     }
 
-    std::uint64_t fold_constant(NodeId id) const {
+    std::expected<std::uint64_t, Diagnostic> fold_constant(NodeId id) const {
         const auto& node = function_.expressions[id];
         if (node.kind == Expression::Kind::literal)
             return node.bits;
-        const auto left = fold_constant(node.left);
+        ATELIER_TRY_BIND(left_result, fold_constant(node.left));
+        const auto left = *left_result;
         const auto input = function_.expressions[node.left].type;
         if (node.kind == Expression::Kind::scalar_cast)
             return convert_constant(input, node.type, left, node.position);
@@ -1086,21 +1143,22 @@ private:
                     return std::bit_cast<std::uint64_t>(-std::bit_cast<double>(left));
                 return 0u - static_cast<std::uint32_t>(left);
             default:
-                reject(node.position, "Unsupported constant unary operation.");
+                return reject(node.position, "Unsupported constant unary operation.");
             }
         }
         if (node.operation == Operation::logical_and && !left)
             return 0;
         if (node.operation == Operation::logical_or && left)
             return 1;
-        const auto right = fold_constant(node.right);
+        ATELIER_TRY_BIND(right_result, fold_constant(node.right));
+        const auto right = *right_result;
         if (node.operation == Operation::logical_and || node.operation == Operation::logical_or)
             return right != 0;
         if (node.operation == Operation::shift_left || node.operation == Operation::shift_right) {
             const auto count_type = function_.expressions[node.right].type;
             if (right > 31 ||
                 (count_type == ValueType::i32 && std::bit_cast<std::int32_t>(static_cast<std::uint32_t>(right)) < 0))
-                reject(node.position, "Constant shift count is outside 0..31.");
+                return reject(node.position, "Constant shift count is outside 0..31.");
             const auto value = static_cast<std::uint32_t>(left);
             const auto count = static_cast<std::uint32_t>(right);
             if (node.operation == Operation::shift_left)
@@ -1122,12 +1180,12 @@ private:
                                node.position);
     }
 
-    void resolve_constant(std::size_t index) {
+    std::expected<void, Diagnostic> resolve_constant(std::size_t index) {
         auto& value = constants_[index];
         if (value.state == Constant::State::complete)
-            return;
+            return {};
         if (value.state == Constant::State::active)
-            reject(value.position, "Circular module constant dependency.");
+            return reject(value.position, "Circular module constant dependency.");
         value.state = Constant::State::active;
         const auto saved_lexer = lexer_;
         const auto saved_token = token_;
@@ -1139,156 +1197,195 @@ private:
         visible_.clear();
         lexer_ = value.lexer;
         token_ = value.token;
-        const auto initializer = converted(expression(), value.type);
-        expect(";");
-        validate_constant(initializer);
-        value.bits = fold_constant(initializer);
+        ATELIER_TRY_BIND(parsed, expression());
+        ATELIER_TRY_BIND(initializer, converted(*parsed, value.type));
+        ATELIER_TRY(expect(";"));
+        ATELIER_TRY(validate_constant(*initializer));
+        ATELIER_TRY_BIND(bits, fold_constant(*initializer));
+        value.bits = *bits;
         value.state = Constant::State::complete;
         lexer_ = saved_lexer;
         token_ = saved_token;
         function_ = std::move(saved_function);
         expression_heights_ = std::move(saved_heights);
         visible_ = std::move(saved_visible);
+        return {};
     }
 
-    NodeId block() {
-        Depth guard(depth_, token_.position);
-        Statement result{Statement::Kind::block, expect("{").position, no_node, no_node, no_node, no_node, {}};
+    std::expected<NodeId, Diagnostic> block() {
+        Depth guard(depth_);
+        if (depth_ > 128)
+            return reject(token_.position, "Source nesting exceeds the compiler limit of 128.");
+        ATELIER_TRY_BIND(open, expect("{"));
+        Statement result{Statement::Kind::block, open->position, no_node, no_node, no_node, no_node, {}};
         const auto visible_before = visible_.size();
         while (token_.text != "}") {
             if (token_.kind == Token::Kind::end)
-                reject(token_.position, "Expected '}' before end of source.");
-            result.children.push_back(statement());
+                return reject(token_.position, "Expected '}' before end of source.");
+            ATELIER_TRY_BIND(child, statement());
+            result.children.push_back(*child);
         }
-        consume();
+        ATELIER_TRY(consume());
         result.locals.assign(visible_.begin() + visible_before, visible_.end());
         visible_.resize(visible_before);
         return add(std::move(result));
     }
 
-    bool starts_declaration() const {
-        return token_.text == "const" || token_.text == "bool" || token_.text == "float" || token_.text == "double" ||
-               token_.text == "uint" || token_.text == "int" || token_.text == "weak" || reference_declaration();
+    std::expected<bool, Diagnostic> starts_declaration() const {
+        if (token_.text == "const" || token_.text == "bool" || token_.text == "float" || token_.text == "double" ||
+            token_.text == "uint" || token_.text == "int" || token_.text == "weak")
+            return true;
+        return reference_declaration();
     }
 
-    NodeId simple_statement(std::string_view terminator, bool allow_declaration = true) {
+    std::expected<NodeId, Diagnostic> simple_statement(std::string_view terminator, bool allow_declaration = true) {
         const auto position = token_.position;
-        if (starts_declaration()) {
+        ATELIER_TRY_BIND(declaration, starts_declaration());
+        if (*declaration) {
             if (!allow_declaration)
-                reject(position, "A for step accepts assignment, call or an empty clause.");
-            const bool read_only = accept("const");
-            const bool weak = accept("weak");
-            auto type = parameter_type();
-            if (weak) {
+                return reject(position, "A for step accepts assignment, call or an empty clause.");
+            ATELIER_TRY_BIND(read_only, accept("const"));
+            ATELIER_TRY_BIND(weak, accept("weak"));
+            ATELIER_TRY_BIND(parsed_type, parameter_type());
+            auto type = *parsed_type;
+            if (*weak) {
                 if (type != ValueType::strong_reference)
-                    reject(position, "weak requires an object type.");
+                    return reject(position, "weak requires an object type.");
                 type = ValueType::weak_reference;
             }
-            if (read_only && reference_type(type))
-                reject(position, "const object reference locals are not supported.");
+            if (*read_only && reference_type(type))
+                return reject(position, "const object reference locals are not supported.");
             if (aggregate(type) && !math_type(type)) {
                 if (!environment_.values[type.type_index].can_own)
-                    reject(position,
-                           "Owned locals require values with borrow-preserving copy and lifecycle operations.");
+                    return reject(position,
+                                  "Owned locals require values with borrow-preserving copy and lifecycle operations.");
                 function_.uses_scoped_values = true;
             }
-            const auto name = identifier();
-            unused_name(name);
-            const auto initialized = accept("=");
-            if (read_only && !initialized)
-                reject(token_.position, "const locals require an initializer.");
-            if (!initialized && !reference_type(type) && !aggregate(type))
-                reject(token_.position, "Expected '='.");
+            ATELIER_TRY_BIND(name, identifier());
+            ATELIER_TRY(unused_name(*name));
+            ATELIER_TRY_BIND(initialized, accept("="));
+            if (*read_only && !*initialized)
+                return reject(token_.position, "const locals require an initializer.");
+            if (!*initialized && !reference_type(type) && !aggregate(type))
+                return reject(token_.position, "Expected '='.");
             NodeId initializer = no_node;
-            if (initialized)
-                initializer = expression();
-            else if (reference_type(type))
-                initializer =
-                    add(Expression{Expression::Kind::null_reference, ValueType::null_reference, name.position});
-            if (initializer != no_node)
-                initializer = converted(initializer, type);
-            expect(terminator);
-            const auto index = local(name, type);
-            function_.locals[index].read_only = read_only;
-            return add(Statement{Statement::Kind::declare, position, index, initializer, no_node, no_node, {}});
+            if (*initialized) {
+                ATELIER_TRY_BIND(parsed, expression());
+                initializer = *parsed;
+            } else if (reference_type(type)) {
+                ATELIER_TRY_BIND(
+                    null, add(Expression{Expression::Kind::null_reference, ValueType::null_reference, name->position}));
+                initializer = *null;
+            }
+            if (initializer != no_node) {
+                ATELIER_TRY_BIND(value, converted(initializer, type));
+                initializer = *value;
+            }
+            ATELIER_TRY(expect(terminator));
+            ATELIER_TRY_BIND(index, local(*name, type));
+            function_.locals[*index].read_only = *read_only;
+            return add(Statement{Statement::Kind::declare, position, *index, initializer, no_node, no_node, {}});
         }
-        const auto target = expression();
-        if (accept("=")) {
+        ATELIER_TRY_BIND(parsed_target, expression());
+        const auto target = *parsed_target;
+        ATELIER_TRY_BIND(assigned, accept("="));
+        if (*assigned) {
             const auto use = std::ranges::find(property_uses_, target, &PropertyUse::node);
             if (use != property_uses_.end()) {
                 const auto property = properties_[use->property];
                 const auto node = function_.expressions[target];
                 if (property.setter == UINT32_MAX)
-                    reject(position, "Property is read-only: " + property.name);
+                    return reject(position, "Property is read-only: " + property.name);
                 property_uses_.erase(use);
-                auto call =
-                    call_expression(property.native, property.setter, node.position, node.receiver, {expression()});
+                ATELIER_TRY_BIND(value, expression());
+                ATELIER_TRY_BIND(
+                    call, call_expression(property.native, property.setter, node.position, node.receiver, {*value}));
                 // The RHS can be deeper than the original property placeholder.
-                if (expression_heights_[call.arguments[0]] >= 128)
-                    reject(position, "Expression tree exceeds the compiler limit of 128.");
-                function_.expressions[target] = std::move(call);
-                expect(terminator);
+                if (expression_heights_[call->arguments[0]] >= 128)
+                    return reject(position, "Expression tree exceeds the compiler limit of 128.");
+                function_.expressions[target] = std::move(*call);
+                ATELIER_TRY(expect(terminator));
                 return add(Statement{Statement::Kind::call, position, no_node, target, no_node, no_node, {}});
             }
             if (!writable(target))
-                reject(position, "Assignment requires a writable local or field.");
-            const auto value = converted(expression(), function_.expressions[target].type);
-            expect(terminator);
-            return add(Statement{Statement::Kind::assign, position, target, value, no_node, no_node, {}});
+                return reject(position, "Assignment requires a writable local or field.");
+            const auto type = function_.expressions[target].type;
+            ATELIER_TRY_BIND(parsed, expression());
+            ATELIER_TRY_BIND(value, converted(*parsed, type));
+            ATELIER_TRY(expect(terminator));
+            return add(Statement{Statement::Kind::assign, position, target, *value, no_node, no_node, {}});
         }
         if (function_.expressions[target].kind != Expression::Kind::call &&
             function_.expressions[target].kind != Expression::Kind::source_call &&
             function_.expressions[target].kind != Expression::Kind::sequence_mutation)
-            reject(position, "Only calls and sequence modifications can be used as expression statements.");
-        expect(terminator);
+            return reject(position, "Only calls and sequence modifications can be used as expression statements.");
+        ATELIER_TRY(expect(terminator));
         return add(Statement{Statement::Kind::call, position, no_node, target, no_node, no_node, {}});
     }
 
-    NodeId statement() {
-        Depth guard(depth_, token_.position);
+    std::expected<NodeId, Diagnostic> statement() {
+        Depth guard(depth_);
+        if (depth_ > 128)
+            return reject(token_.position, "Source nesting exceeds the compiler limit of 128.");
         const auto position = token_.position;
         if (token_.text == "{")
             return block();
-        if (starts_declaration())
+        ATELIER_TRY_BIND(declaration, starts_declaration());
+        if (*declaration)
             return simple_statement(";");
-        if (accept("if")) {
-            expect("(");
-            const auto condition = expression();
-            if (function_.expressions[condition].type != ValueType::boolean)
-                reject(position, "An if condition requires bool.");
-            expect(")");
-            const auto body = block();
+        ATELIER_TRY_BIND(conditional, accept("if"));
+        if (*conditional) {
+            ATELIER_TRY(expect("("));
+            ATELIER_TRY_BIND(condition, expression());
+            if (function_.expressions[*condition].type != ValueType::boolean)
+                return reject(position, "An if condition requires bool.");
+            ATELIER_TRY(expect(")"));
+            ATELIER_TRY_BIND(body, block());
             NodeId alternative = no_node;
-            if (accept("else"))
-                alternative = token_.text == "if" ? statement() : block();
-            return add(Statement{Statement::Kind::condition, position, no_node, condition, body, alternative, {}});
+            ATELIER_TRY_BIND(otherwise, accept("else"));
+            if (*otherwise) {
+                ATELIER_TRY_BIND(parsed, token_.text == "if" ? statement() : block());
+                alternative = *parsed;
+            }
+            return add(Statement{Statement::Kind::condition, position, no_node, *condition, *body, alternative, {}});
         }
-        if (accept("while")) {
-            expect("(");
-            const auto condition = expression();
-            if (function_.expressions[condition].type != ValueType::boolean)
-                reject(position, "A while condition requires bool.");
-            expect(")");
+        ATELIER_TRY_BIND(while_loop, accept("while"));
+        if (*while_loop) {
+            ATELIER_TRY(expect("("));
+            ATELIER_TRY_BIND(condition, expression());
+            if (function_.expressions[*condition].type != ValueType::boolean)
+                return reject(position, "A while condition requires bool.");
+            ATELIER_TRY(expect(")"));
             ++loop_depth_;
-            const auto body = block();
+            ATELIER_TRY_BIND(body, block());
             --loop_depth_;
-            return add(Statement{Statement::Kind::loop, position, no_node, condition, body, no_node, {}});
+            return add(Statement{Statement::Kind::loop, position, no_node, *condition, *body, no_node, {}});
         }
-        if (accept("for")) {
-            expect("(");
+        ATELIER_TRY_BIND(for_loop, accept("for"));
+        if (*for_loop) {
+            ATELIER_TRY(expect("("));
             const auto visible_before = visible_.size();
             Statement scope{Statement::Kind::block, position, no_node, no_node, no_node, no_node, {}};
-            if (!accept(";"))
-                scope.children.push_back(simple_statement(";"));
-            const auto condition = token_.text == ";" ? literal(ValueType::boolean, token_.position, 1) : expression();
-            if (function_.expressions[condition].type != ValueType::boolean)
-                reject(position, "A for condition requires bool.");
-            expect(";");
-            const auto step = accept(")") ? no_node : simple_statement(")", false);
+            ATELIER_TRY_BIND(empty, accept(";"));
+            if (!*empty) {
+                ATELIER_TRY_BIND(initializer, simple_statement(";"));
+                scope.children.push_back(*initializer);
+            }
+            ATELIER_TRY_BIND(condition,
+                             token_.text == ";" ? literal(ValueType::boolean, token_.position, 1) : expression());
+            if (function_.expressions[*condition].type != ValueType::boolean)
+                return reject(position, "A for condition requires bool.");
+            ATELIER_TRY(expect(";"));
+            ATELIER_TRY_BIND(closed, accept(")"));
+            NodeId step = no_node;
+            if (!*closed) {
+                ATELIER_TRY_BIND(parsed, simple_statement(")", false));
+                step = *parsed;
+            }
             ++loop_depth_;
-            const auto body = block();
+            ATELIER_TRY_BIND(body, block());
             --loop_depth_;
-            Statement loop{Statement::Kind::loop, position, no_node, condition, body, no_node, {}};
+            Statement loop{Statement::Kind::loop, position, no_node, *condition, *body, no_node, {}};
             loop.step = step;
             scope.children.push_back(add(std::move(loop)));
             scope.locals.assign(visible_.begin() + visible_before, visible_.end());
@@ -1296,49 +1393,58 @@ private:
             return add(std::move(scope));
         }
         if (token_.text == "break" || token_.text == "continue") {
-            const auto keyword = consume();
+            ATELIER_TRY_BIND(keyword, consume());
             if (loop_depth_ == 0)
-                reject(position, "break and continue require an enclosing loop.");
-            expect(";");
-            return add(Statement{keyword.text == "break" ? Statement::Kind::break_loop : Statement::Kind::continue_loop,
-                                 position,
-                                 no_node,
-                                 no_node,
-                                 no_node,
-                                 no_node,
-                                 {}});
+                return reject(position, "break and continue require an enclosing loop.");
+            ATELIER_TRY(expect(";"));
+            return add(
+                Statement{keyword->text == "break" ? Statement::Kind::break_loop : Statement::Kind::continue_loop,
+                          position,
+                          no_node,
+                          no_node,
+                          no_node,
+                          no_node,
+                          {}});
         }
-        if (accept("yield")) {
+        ATELIER_TRY_BIND(yield, accept("yield"));
+        if (*yield) {
             if (!function_.is_coroutine)
-                reject(position, "yield requires an async entry.");
-            expect(";");
+                return reject(position, "yield requires an async entry.");
+            ATELIER_TRY(expect(";"));
             return add(Statement{Statement::Kind::yield, position, no_node, no_node, no_node, no_node, {}});
         }
-        if (accept("return")) {
+        ATELIER_TRY_BIND(return_value, accept("return"));
+        if (*return_value) {
             NodeId value = no_node;
             if (function_.result == ValueType::void_value) {
                 if (token_.text != ";")
-                    reject(token_.position, "This void entry cannot return a value.");
+                    return reject(token_.position, "This void entry cannot return a value.");
             } else {
                 if (token_.text == ";")
-                    reject(token_.position, "Non-void entry requires a return value.");
-                value = converted(expression(), function_.result);
+                    return reject(token_.position, "Non-void entry requires a return value.");
+                ATELIER_TRY_BIND(parsed, expression());
+                ATELIER_TRY_BIND(converted_value, converted(*parsed, function_.result));
+                value = *converted_value;
             }
-            expect(";");
+            ATELIER_TRY(expect(";"));
             return add(Statement{Statement::Kind::return_value, position, no_node, value, no_node, no_node, {}});
         }
         return simple_statement(";");
     }
 
-    NodeId expression(int minimum = 0) {
-        Depth guard(depth_, token_.position);
-        auto left = unary();
+    std::expected<NodeId, Diagnostic> expression(int minimum = 0) {
+        Depth guard(depth_);
+        if (depth_ > 128)
+            return reject(token_.position, "Source nesting exceeds the compiler limit of 128.");
+        ATELIER_TRY_BIND(parsed_left, unary());
+        auto left = *parsed_left;
         for (;;) {
             const auto operation = binary_operator(token_.text);
             if (operation.precedence < minimum)
                 return left;
-            const auto symbol = consume();
-            const auto right = expression(operation.precedence + 1);
+            ATELIER_TRY_BIND(symbol, consume());
+            ATELIER_TRY_BIND(parsed_right, expression(operation.precedence + 1));
+            const auto right = *parsed_right;
             const bool shift =
                 operation.operation == Operation::shift_left || operation.operation == Operation::shift_right;
             if (!shift && function_.expressions[left].type == ValueType::i32 && integer_constant(right))
@@ -1350,16 +1456,17 @@ private:
             auto result_type = operation.comparison ? ValueType{ValueType::boolean} : type;
             if (operation.operation == Operation::logical_and || operation.operation == Operation::logical_or) {
                 if (type != ValueType::boolean || right_type != ValueType::boolean)
-                    reject(symbol.position, "Logical operators require bool operands.");
+                    return reject(symbol->position, "Logical operators require bool operands.");
                 result_type = ValueType::boolean;
             } else if (shift) {
                 if ((type != ValueType::i32 && type != ValueType::u32) ||
                     (right_type != ValueType::i32 && right_type != ValueType::u32))
-                    reject(symbol.position, "Shift operands require int or uint.");
+                    return reject(symbol->position, "Shift operands require int or uint.");
             } else if (reference_type(type) || reference_type(right_type)) {
                 if (!reference_type(type) || !reference_type(right_type) ||
                     (operation.operation != Operation::equal && operation.operation != Operation::not_equal))
-                    reject(symbol.position, "References support only == and != with another reference or null.");
+                    return reject(symbol->position,
+                                  "References support only == and != with another reference or null.");
             } else if (math_type(type) || math_type(right_type)) {
                 const auto left_math = math_type(type);
                 const auto right_math = math_type(right_type);
@@ -1378,125 +1485,143 @@ private:
                 } else if (right_math.vector() && type == math_scalar(right_math) && op == Operation::multiply) {
                     result_type = right_type;
                 } else
-                    reject(symbol.position, "Unsupported math operation or mismatched component precision.");
+                    return reject(symbol->position, "Unsupported math operation or mismatched component precision.");
             } else if (!scalar(type) || right_type != type ||
                        ((type.kind == ValueType::enumeration || type == ValueType::boolean) &&
                         operation.operation != Operation::equal && operation.operation != Operation::not_equal)) {
-                reject(symbol.position,
-                       "Binary operands require matching numeric types; bool and enums support equality only.");
+                return reject(symbol->position,
+                              "Binary operands require matching numeric types; bool and enums support equality only.");
             } else if ((operation.operation == Operation::remainder || operation.operation == Operation::bitwise_and ||
                         operation.operation == Operation::bitwise_or ||
                         operation.operation == Operation::bitwise_xor) &&
                        type != ValueType::i32 && type != ValueType::u32)
-                reject(symbol.position, "Remainder and bitwise operators require int or uint.");
-            left = add(Expression{Expression::Kind::binary, result_type, symbol.position, left, right, 0,
-                                  operation.operation});
+                return reject(symbol->position, "Remainder and bitwise operators require int or uint.");
+            ATELIER_TRY_BIND(combined, add(Expression{Expression::Kind::binary, result_type, symbol->position, left,
+                                                      right, 0, operation.operation}));
+            left = *combined;
         }
     }
 
-    NodeId unary() {
-        Depth guard(depth_, token_.position);
+    std::expected<NodeId, Diagnostic> unary() {
+        Depth guard(depth_);
+        if (depth_ > 128)
+            return reject(token_.position, "Source nesting exceeds the compiler limit of 128.");
         if (token_.text == "!" || token_.text == "~") {
-            const auto symbol = consume();
-            const auto operand = unary();
+            ATELIER_TRY_BIND(symbol, consume());
+            ATELIER_TRY_BIND(parsed_operand, unary());
+            const auto operand = *parsed_operand;
             const auto type = function_.expressions[operand].type;
-            if (symbol.text == "!" && type != ValueType::boolean)
-                reject(symbol.position, "Logical negation requires bool.");
-            if (symbol.text == "~" && type != ValueType::i32 && type != ValueType::u32)
-                reject(symbol.position, "Bitwise negation requires int or uint.");
-            return add(Expression{Expression::Kind::unary, type, symbol.position, operand, no_node, 0,
-                                  symbol.text == "!" ? Operation::logical_not : Operation::bitwise_not});
+            if (symbol->text == "!" && type != ValueType::boolean)
+                return reject(symbol->position, "Logical negation requires bool.");
+            if (symbol->text == "~" && type != ValueType::i32 && type != ValueType::u32)
+                return reject(symbol->position, "Bitwise negation requires int or uint.");
+            return add(Expression{Expression::Kind::unary, type, symbol->position, operand, no_node, 0,
+                                  symbol->text == "!" ? Operation::logical_not : Operation::bitwise_not});
         }
         if (token_.text == "+" || token_.text == "-") {
-            const auto symbol = consume();
-            const auto operand = unary();
-            if (symbol.text == "-" && function_.expressions[operand].kind == Expression::Kind::literal &&
+            ATELIER_TRY_BIND(symbol, consume());
+            ATELIER_TRY_BIND(parsed_operand, unary());
+            const auto operand = *parsed_operand;
+            if (symbol->text == "-" && function_.expressions[operand].kind == Expression::Kind::literal &&
                 !function_.expressions[operand].typed_constant &&
                 function_.expressions[operand].type == ValueType::u32 &&
                 function_.expressions[operand].bits == 2147483648u)
-                return literal(ValueType::i32, symbol.position, 2147483648u);
-            if (symbol.text == "-" && integer_constant(operand))
+                return literal(ValueType::i32, symbol->position, 2147483648u);
+            if (symbol->text == "-" && integer_constant(operand))
                 signed_constant(operand);
             const auto type = function_.expressions[operand].type;
             if (!floating(type) && type != ValueType::u32 && type != ValueType::i32 && !math_type(type))
-                reject(symbol.position, "Unary arithmetic requires a numeric operand.");
-            if (symbol.text == "-" && type == ValueType::u32)
-                reject(symbol.position,
-                       "Unary minus requires a signed numeric value; use uint subtraction for modulo arithmetic.");
-            return add(Expression{Expression::Kind::unary, type, symbol.position, operand, no_node, 0,
-                                  symbol.text == "+" ? Operation::positive : Operation::negate});
+                return reject(symbol->position, "Unary arithmetic requires a numeric operand.");
+            if (symbol->text == "-" && type == ValueType::u32)
+                return reject(
+                    symbol->position,
+                    "Unary minus requires a signed numeric value; use uint subtraction for modulo arithmetic.");
+            return add(Expression{Expression::Kind::unary, type, symbol->position, operand, no_node, 0,
+                                  symbol->text == "+" ? Operation::positive : Operation::negate});
         }
-        return postfix();
+        ATELIER_TRY_BIND(receiver, primary());
+        return postfix(*receiver);
     }
 
-    NodeId postfix() {
-        auto receiver = primary();
+    std::expected<NodeId, Diagnostic> postfix(NodeId receiver) {
         while (token_.text == "." || token_.text == "[") {
             const auto position = function_.expressions[receiver].position;
             const auto type = function_.expressions[receiver].type;
-            if (accept("[")) {
+            ATELIER_TRY_BIND(indexing, accept("["));
+            if (*indexing) {
                 if (type.kind != ValueType::array && type.kind != ValueType::string)
-                    reject(position, "Indexing requires Array or String.");
-                const auto index = expression();
-                expect("]");
+                    return reject(position, "Indexing requires Array or String.");
+                ATELIER_TRY_BIND(parsed_index, expression());
+                const auto index = *parsed_index;
+                ATELIER_TRY(expect("]"));
                 if (function_.expressions[index].type != ValueType::u32 &&
                     function_.expressions[index].type != ValueType::i32)
-                    reject(position, "A sequence index requires uint or int.");
+                    return reject(position, "A sequence index requires uint or int.");
                 const auto element = type.kind == ValueType::string ? ValueType{ValueType::u32}
                                                                     : environment_.values[type.type_index].element;
-                receiver = add(Expression{Expression::Kind::index, element, position, receiver, index});
+                ATELIER_TRY_BIND(indexed, add(Expression{Expression::Kind::index, element, position, receiver, index}));
+                receiver = *indexed;
                 continue;
             }
-            expect(".");
+            ATELIER_TRY(expect("."));
             if (aggregate(type)) {
-                const auto member = identifier();
+                ATELIER_TRY_BIND(member, identifier());
                 if (type.kind == ValueType::array || type.kind == ValueType::string) {
-                    expect("(");
-                    if (member.text == "size") {
-                        expect(")");
-                        receiver = add(Expression{Expression::Kind::length, ValueType::u32, position, receiver});
+                    ATELIER_TRY(expect("("));
+                    if (member->text == "size") {
+                        ATELIER_TRY(expect(")"));
+                        ATELIER_TRY_BIND(length,
+                                         add(Expression{Expression::Kind::length, ValueType::u32, position, receiver}));
+                        receiver = *length;
                     } else {
                         if (!owned_storage(receiver) || !environment_.values[type.type_index].can_own ||
                             !environment_.values[type.type_index].can_mutate)
-                            reject(member.position, "Structural mutation requires a locally owned sequence.");
+                            return reject(member->position, "Structural mutation requires a locally owned sequence.");
                         SequenceMutation operation;
-                        if (member.text == "reserve")
+                        if (member->text == "reserve")
                             operation = SequenceMutation::reserve;
-                        else if (member.text == "resize" && type.kind == ValueType::array)
+                        else if (member->text == "resize" && type.kind == ValueType::array)
                             operation = SequenceMutation::resize;
-                        else if (member.text == "clear")
+                        else if (member->text == "clear")
                             operation = SequenceMutation::clear;
-                        else if (member.text == "add" && type.kind == ValueType::array)
+                        else if (member->text == "add" && type.kind == ValueType::array)
                             operation = SequenceMutation::add;
-                        else if (member.text == "append")
+                        else if (member->text == "append")
                             operation = SequenceMutation::append;
                         else
-                            reject(member.position, "Unknown native sequence operation.");
+                            return reject(member->position, "Unknown native sequence operation.");
                         NodeId input = no_node;
                         if (operation != SequenceMutation::clear) {
-                            input = expression();
+                            ATELIER_TRY_BIND(parsed_input, expression());
+                            input = *parsed_input;
                             if (operation == SequenceMutation::reserve || operation == SequenceMutation::resize) {
                                 const auto input_type = function_.expressions[input].type;
                                 if (input_type != ValueType::u32 && input_type != ValueType::i32)
-                                    reject(member.position, "Sequence capacity requires uint or int.");
-                            } else
-                                input = converted(input, operation == SequenceMutation::add
-                                                             ? environment_.values[type.type_index].element
-                                                             : type);
+                                    return reject(member->position, "Sequence capacity requires uint or int.");
+                            } else {
+                                auto converted_input =
+                                    converted(input, operation == SequenceMutation::add
+                                                         ? environment_.values[type.type_index].element
+                                                         : type);
+                                if (!converted_input)
+                                    return std::unexpected(std::move(converted_input).error());
+                                input = *converted_input;
+                            }
                         }
-                        expect(")");
+                        ATELIER_TRY(expect(")"));
                         Expression mutation{Expression::Kind::sequence_mutation, ValueType::void_value, position,
                                             receiver, input};
                         mutation.mutation = operation;
-                        receiver = add(std::move(mutation));
+                        ATELIER_TRY_BIND(mutated, add(std::move(mutation)));
+                        receiver = *mutated;
                     }
                 } else {
                     const auto& fields = environment_.values[type.type_index].fields;
                     const auto field = std::find_if(fields.begin(), fields.end(), [&](const auto& candidate) {
-                        return candidate.name == member.text;
+                        return candidate.name == member->text;
                     });
                     if (field == fields.end())
-                        reject(member.position, "Field has no published direct native layout.");
+                        return reject(member->position, "Field has no published direct native layout.");
                     const auto& owner = function_.expressions[receiver];
                     if (owner.kind == Expression::Kind::field) {
                         const auto path = std::string(environment_.fields[owner.value].name) + "." + field->name;
@@ -1504,50 +1629,63 @@ private:
                             return candidate.name == path && candidate.type == field->type;
                         });
                         if (projection != environment_.fields.end()) {
-                            receiver =
+                            auto projected =
                                 add(Expression{Expression::Kind::field, projection->type, position, no_node, no_node,
                                                static_cast<std::uint32_t>(projection - environment_.fields.begin()),
                                                Operation::add, owner.receiver});
+                            if (!projected)
+                                return std::unexpected(std::move(projected).error());
+                            receiver = *projected;
                             continue;
                         }
                     }
                     Expression access{Expression::Kind::value_field, field->type, position, receiver};
                     access.offset = field->offset;
-                    receiver = add(std::move(access));
+                    ATELIER_TRY_BIND(accessed, add(std::move(access)));
+                    receiver = *accessed;
                 }
                 continue;
             }
             if (function_.expressions[receiver].type != ValueType::strong_reference &&
                 function_.expressions[receiver].type != ValueType::weak_reference)
-                reject(position, "Member access requires a typed object reference.");
-            const auto member = expression_name(true);
-            if (accept("(")) {
+                return reject(position, "Member access requires a typed object reference.");
+            ATELIER_TRY_BIND(member, expression_name(true));
+            ATELIER_TRY_BIND(calling, accept("("));
+            if (*calling) {
                 const MethodBinding* method{};
                 for (const auto& candidate : environment_.methods)
-                    if (candidate.name == member)
+                    if (candidate.name == *member)
                         method = &candidate;
                 if (!method)
-                    reject(position, "Unknown native method '" + member + "'.");
-                receiver = add(call_expression(true, static_cast<std::uint32_t>(method - environment_.methods.data()),
-                                               position, receiver, call_arguments(method->parameters)));
-            } else if (const auto* property = find_property(member, true)) {
-                receiver = property_access(*property, position, receiver);
+                    return reject(position, "Unknown native method '" + *member + "'.");
+                ATELIER_TRY_BIND(arguments, call_arguments(method->parameters));
+                ATELIER_TRY_BIND(node,
+                                 call_expression(true, static_cast<std::uint32_t>(method - environment_.methods.data()),
+                                                 position, receiver, std::move(*arguments)));
+                ATELIER_TRY_BIND(call, add(std::move(*node)));
+                receiver = *call;
+            } else if (const auto* property = find_property(*member, true)) {
+                ATELIER_TRY_BIND(access, property_access(*property, position, receiver));
+                receiver = *access;
             } else {
                 const FieldBinding* field{};
                 for (const auto& candidate : environment_.fields)
-                    if (candidate.name == member)
+                    if (candidate.name == *member)
                         field = &candidate;
                 if (!field)
-                    reject(position, "Unknown receiver field '" + member + "'.");
-                receiver = add(Expression{Expression::Kind::field, field->type, position, no_node, no_node,
-                                          static_cast<std::uint32_t>(field - environment_.fields.data()),
-                                          Operation::add, receiver});
+                    return reject(position, "Unknown receiver field '" + *member + "'.");
+                auto access = add(Expression{Expression::Kind::field, field->type, position, no_node, no_node,
+                                             static_cast<std::uint32_t>(field - environment_.fields.data()),
+                                             Operation::add, receiver});
+                if (!access)
+                    return std::unexpected(std::move(access).error());
+                receiver = *access;
             }
         }
         return receiver;
     }
 
-    NodeId numeric_literal(const Token& token) {
+    std::expected<NodeId, Diagnostic> numeric_literal(const Token& token) {
         auto text = token.text;
         const auto suffix = text.back();
         const bool is_double = suffix == 'd' || suffix == 'D';
@@ -1558,42 +1696,49 @@ private:
             double value{};
             const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
             if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size() || !std::isfinite(value))
-                reject(token.position, "Double literal is out of range or invalid.");
+                return reject(token.position, "Double literal is out of range or invalid.");
             return literal(ValueType::f64, token.position, std::bit_cast<std::uint64_t>(value));
         }
         if (is_float || text.find_first_of(".eE") != std::string_view::npos) {
             float value{};
             const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
             if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size() || !std::isfinite(value))
-                reject(token.position, "Float literal is out of range or invalid.");
+                return reject(token.position, "Float literal is out of range or invalid.");
             return literal(ValueType::f32, token.position, std::bit_cast<std::uint32_t>(value));
         }
         std::uint32_t value{};
         const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
         if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size())
-            reject(token.position, "Uint literal is outside 0..4294967295.");
+            return reject(token.position, "Uint literal is outside 0..4294967295.");
         return literal(ValueType::u32, token.position, value);
     }
 
-    NodeId math_call(std::string_view name, SourcePosition position, ValueType constructed) {
+    std::expected<NodeId, Diagnostic> math_call(std::string_view name, SourcePosition position, ValueType constructed) {
         std::vector<NodeId> arguments;
-        if (!accept(")")) {
-            do {
+        ATELIER_TRY_BIND(empty, accept(")"));
+        if (!*empty) {
+            for (;;) {
                 if (arguments.size() == 16)
-                    reject(token_.position, "A math call accepts at most 16 scalar components or operands.");
-                arguments.push_back(expression());
-            } while (accept(","));
-            expect(")");
+                    return reject(token_.position, "A math call accepts at most 16 scalar components or operands.");
+                ATELIER_TRY_BIND(argument, expression());
+                arguments.push_back(*argument);
+                ATELIER_TRY_BIND(more, accept(","));
+                if (!*more)
+                    break;
+            }
+            ATELIER_TRY(expect(")"));
         }
         if (constructed != ValueType::void_value) {
             const auto descriptor = math_type(constructed);
             if (!arguments.empty() && arguments.size() != descriptor.components() &&
                 !(descriptor.shape == math::Shape::matrix4 && arguments.size() == 1))
-                reject(
+                return reject(
                     position,
                     "Math construction requires no arguments, one scalar per component, or one diagonal scalar for a matrix.");
-            for (auto& argument : arguments)
-                argument = converted(argument, math_scalar(descriptor));
+            for (auto& argument : arguments) {
+                ATELIER_TRY_BIND(value, converted(argument, math_scalar(descriptor)));
+                argument = *value;
+            }
             Expression result{Expression::Kind::math_construct, constructed, position};
             result.arguments = std::move(arguments);
             return add(std::move(result));
@@ -1670,9 +1815,9 @@ private:
             operation = MathOperation::pow;
             arity = 2;
         } else
-            reject(position, "Unknown built-in math operation '" + std::string(name) + "'.");
+            return reject(position, "Unknown built-in math operation '" + std::string(name) + "'.");
         if (arguments.size() != arity)
-            reject(position, "Math operation argument count mismatch.");
+            return reject(position, "Math operation argument count mismatch.");
         const auto first = function_.expressions[arguments[0]].type;
         const auto descriptor = math_type(first);
         auto result_type = first;
@@ -1688,11 +1833,11 @@ private:
             }
             const auto lane = math_type(result_type).vector() ? math_scalar(math_type(result_type)) : result_type;
             if (!floating(lane))
-                reject(position, std::string(name) + " requires float or double scalars or vectors.");
+                return reject(position, std::string(name) + " requires float or double scalars or vectors.");
             for (const auto argument : arguments) {
                 const auto type = function_.expressions[argument].type;
                 if (type != result_type && type != lane)
-                    reject(
+                    return reject(
                         function_.expressions[argument].position,
                         std::string(name) +
                             " arguments must have the result type or its component type; numeric types and precision do not convert implicitly.");
@@ -1700,35 +1845,38 @@ private:
         } else
             switch (operation) {
             case MathOperation::dot:
-            case MathOperation::cross:
+            case MathOperation::cross: {
                 if (!descriptor.vector() ||
                     (operation == MathOperation::cross && descriptor.shape != math::Shape::vector3))
-                    reject(position, "math.dot requires vectors; math.cross requires vector3.");
-                arguments[1] = converted(arguments[1], first);
+                    return reject(position, "math.dot requires vectors; math.cross requires vector3.");
+                ATELIER_TRY_BIND(value, converted(arguments[1], first));
+                arguments[1] = *value;
                 if (operation == MathOperation::dot)
                     result_type = math_scalar(descriptor);
                 break;
+            }
             case MathOperation::length:
             case MathOperation::normalize_or_zero:
                 if (!descriptor.vector() && descriptor.shape != math::Shape::quaternion)
-                    reject(position, "Length and normalization require a vector or quaternion.");
+                    return reject(position, "Length and normalization require a vector or quaternion.");
                 if (operation == MathOperation::length)
                     result_type = math_scalar(descriptor);
                 break;
             case MathOperation::conjugate:
                 if (descriptor.shape != math::Shape::quaternion)
-                    reject(position, "math.conjugate requires a quaternion.");
+                    return reject(position, "math.conjugate requires a quaternion.");
                 break;
             case MathOperation::transpose:
                 if (descriptor.shape != math::Shape::matrix4)
-                    reject(position, "math.transpose requires a matrix4.");
+                    return reject(position, "math.transpose requires a matrix4.");
                 break;
             case MathOperation::rotate: {
                 const auto second = function_.expressions[arguments[1]].type;
                 const auto vector = math_type(second);
                 if (descriptor.shape != math::Shape::quaternion || vector.shape != math::Shape::vector3 ||
                     descriptor.precision != vector.precision)
-                    reject(position, "math.rotate requires a quaternion followed by a vector3 of matching precision.");
+                    return reject(position,
+                                  "math.rotate requires a quaternion followed by a vector3 of matching precision.");
                 result_type = second;
                 break;
             }
@@ -1738,8 +1886,9 @@ private:
                 const auto matrix = math_type(second);
                 if (descriptor.shape != math::Shape::vector3 || matrix.shape != math::Shape::matrix4 ||
                     descriptor.precision != matrix.precision)
-                    reject(position,
-                           "Transform operations require a vector3 followed by a matrix4 of matching precision.");
+                    return reject(
+                        position,
+                        "Transform operations require a vector3 followed by a matrix4 of matching precision.");
                 break;
             }
             default:
@@ -1751,104 +1900,140 @@ private:
         return add(std::move(result));
     }
 
-    NodeId primary() {
-        const auto token = token_;
-        if (accept("(")) {
-            const auto result = expression();
-            expect(")");
+    std::expected<NodeId, Diagnostic> primary() {
+        // Keep non-grouping temporaries off the stack while parsing nested parentheses.
+        ATELIER_TRY_BIND(parenthesized, accept("("));
+        if (*parenthesized) {
+            ATELIER_TRY_BIND(result, expression());
+            ATELIER_TRY(expect(")"));
             return result;
         }
+        return atom();
+    }
+
+    std::expected<NodeId, Diagnostic> material_sample(const Token& token) {
+        const bool orientation = token.text == "sample_orientation";
+        const auto label = "Material " + std::string(token.text);
+        ATELIER_TRY(consume());
+        ATELIER_TRY(expect("("));
+        ATELIER_TRY_BIND(parsed_input, expression());
+        const auto input = *parsed_input;
+        if (function_.expressions[input].type != environment_.texture_input)
+            return reject(token.position, label + " requires the registered TextureInput value, not a numeric slot.");
+        ATELIER_TRY(expect(","));
+        ATELIER_TRY_BIND(parsed_uv, expression());
+        const auto uv = *parsed_uv;
+        ATELIER_TRY(expect(")"));
+        if (function_.expressions[uv].type != math_named_type("vector2"))
+            return reject(token.position, label + " coordinates require vector2.");
+        return add(Expression{orientation ? Expression::Kind::texture_orientation : Expression::Kind::texture_sample,
+                              math_named_type(orientation ? "vector2" : "vector4"), token.position, uv, input});
+    }
+
+    std::expected<NodeId, Diagnostic> scalar_cast(const Token& token) {
+        ATELIER_TRY(consume());
+        ATELIER_TRY(expect("("));
+        ATELIER_TRY_BIND(parsed_argument, expression());
+        const auto argument = *parsed_argument;
+        ATELIER_TRY(expect(")"));
+        const auto type = function_.expressions[argument].type;
+        if (!floating(type) && type != ValueType::i32 && type != ValueType::u32)
+            return reject(token.position, "Numeric conversion requires float, double, int or uint.");
+        ATELIER_TRY_BIND(target_type, named_type(token.text, token.position));
+        return add(Expression{Expression::Kind::scalar_cast, *target_type, token.position, argument});
+    }
+
+    std::expected<NodeId, Diagnostic> reference_operation(const Token& token) {
+        const auto observe = token.text == "observe";
+        ATELIER_TRY(expect("("));
+        if (token_.text == ")")
+            return reject(token_.position, "Reference operation requires one argument.");
+        ATELIER_TRY_BIND(parsed_argument, expression());
+        const auto argument = *parsed_argument;
+        const auto required = observe ? ValueType::strong_reference : ValueType::weak_reference;
+        if (function_.expressions[argument].type != required)
+            return reject(function_.expressions[argument].position,
+                          observe ? "observe requires a strong reference argument."
+                                  : "try_acquire requires a weak reference argument.");
+        if (token_.text == ",")
+            return reject(token_.position, "Reference operation requires exactly one argument.");
+        ATELIER_TRY(expect(")"));
+        return add(Expression{observe ? Expression::Kind::observe_reference : Expression::Kind::acquire_reference,
+                              observe ? ValueType::weak_reference : ValueType::strong_reference, token.position,
+                              argument});
+    }
+
+    std::expected<NodeId, Diagnostic> atom() {
+        const auto token = token_;
         if (token.kind == Token::Kind::string) {
-            consume();
-            auto value = string_value(token);
+            ATELIER_TRY(consume());
+            ATELIER_TRY_BIND(value, string_value(token));
             for (std::uint32_t i = 0; i < environment_.values.size(); ++i) {
                 if (environment_.values[i].kind != ValueType::string || !environment_.values[i].can_own ||
                     !environment_.values[i].can_mutate)
                     continue;
                 function_.uses_scoped_values = true;
                 const auto index = static_cast<std::uint32_t>(function_.strings.size());
-                function_.strings.push_back(std::move(value));
+                function_.strings.push_back(std::move(*value));
                 return add(Expression{
                     Expression::Kind::string_literal, {ValueType::string, i}, token.position, no_node, no_node, index});
             }
-            reject(token.position, "String literals require the registered foundation String.");
+            return reject(token.position, "String literals require the registered foundation String.");
         }
         if (token.kind == Token::Kind::number) {
-            consume();
+            ATELIER_TRY(consume());
             return numeric_literal(token);
         }
         if (token.kind != Token::Kind::identifier)
-            reject(token.position, "Expected an expression.");
-        if (environment_.material && (token.text == "sample" || token.text == "sample_orientation")) {
-            const bool orientation = token.text == "sample_orientation";
-            const auto label = "Material " + std::string(token.text);
-            consume();
-            expect("(");
-            const auto input = expression();
-            if (function_.expressions[input].type != environment_.texture_input)
-                reject(token.position, label + " requires the registered TextureInput value, not a numeric slot.");
-            expect(",");
-            const auto uv = expression();
-            expect(")");
-            if (function_.expressions[uv].type != math_named_type("vector2"))
-                reject(token.position, label + " coordinates require vector2.");
-            return add(
-                Expression{orientation ? Expression::Kind::texture_orientation : Expression::Kind::texture_sample,
-                           math_named_type(orientation ? "vector2" : "vector4"), token.position, uv, input});
-        }
-        if (token.text == "float" || token.text == "double" || token.text == "int" || token.text == "uint") {
-            consume();
-            expect("(");
-            const auto argument = expression();
-            expect(")");
-            const auto type = function_.expressions[argument].type;
-            if (!floating(type) && type != ValueType::i32 && type != ValueType::u32)
-                reject(token.position, "Numeric conversion requires float, double, int or uint.");
-            return add(Expression{Expression::Kind::scalar_cast, named_type(token.text, token.position), token.position,
-                                  argument});
-        }
+            return reject(token.position, "Expected an expression.");
+        if (environment_.material && (token.text == "sample" || token.text == "sample_orientation"))
+            return material_sample(token);
+        if (token.text == "float" || token.text == "double" || token.text == "int" || token.text == "uint")
+            return scalar_cast(token);
         {
             auto lookahead = lexer_;
-            auto next = lookahead.next();
+            ATELIER_TRY_BIND(next, lookahead.next());
             std::string name(token.text);
-            while (next.text == ".") {
-                const auto segment = lookahead.next();
+            while (next->text == ".") {
+                ATELIER_TRY_BIND(segment, lookahead.next());
                 name += ".";
-                name += segment.text;
+                name += segment->text;
                 next = lookahead.next();
+                ATELIER_TRY(next);
             }
-            if (next.text == "(" && (name.starts_with("math.") || math_named_type(name) != ValueType::void_value)) {
+            if (next->text == "(" && (name.starts_with("math.") || math_named_type(name) != ValueType::void_value)) {
                 const auto constructed = math_named_type(name);
-                const auto actual_name = qualified_identifier();
-                expect("(");
-                return math_call(actual_name, token.position, constructed);
+                ATELIER_TRY_BIND(actual_name, qualified_identifier());
+                ATELIER_TRY(expect("("));
+                return math_call(*actual_name, token.position, constructed);
             }
-            if (next.text == "::") {
-                const auto name_actual = qualified_identifier();
-                expect("::");
-                const auto item = identifier();
+            if (next->text == "::") {
+                ATELIER_TRY_BIND(name_actual, qualified_identifier());
+                ATELIER_TRY(expect("::"));
+                ATELIER_TRY_BIND(item, identifier());
                 for (std::uint32_t i = 0; i < environment_.enumerations.size(); ++i) {
                     const auto& enumeration = environment_.enumerations[i];
-                    if (enumeration.name != name_actual)
+                    if (enumeration.name != *name_actual)
                         continue;
                     for (const auto& value : enumeration.values)
-                        if (value.name == item.text)
+                        if (value.name == item->text)
                             return literal({ValueType::enumeration, i}, token.position, value.bits);
-                    reject(item.position, "Unknown enumerator.");
+                    return reject(item->position, "Unknown enumerator.");
                 }
-                reject(token.position, "Unknown enum type.");
+                return reject(token.position, "Unknown enum type.");
             }
             // Any other dotted name not led by a local or self is a qualified module function or constant.
             if (name.size() != token.text.size() && token.text != "self" &&
                 std::ranges::none_of(visible_,
                                      [&](auto local) { return function_.locals[local].name == token.text; })) {
-                const auto qualified = expression_name(false);
-                if (accept("("))
-                    return source_call(qualified, token.position);
-                return module_constant(qualified, token.position);
+                ATELIER_TRY_BIND(qualified, expression_name(false));
+                ATELIER_TRY_BIND(calling, accept("("));
+                if (*calling)
+                    return source_call(*qualified, token.position);
+                return module_constant(*qualified, token.position);
             }
         }
-        consume();
+        ATELIER_TRY(consume());
         if (token.text == "true" || token.text == "false")
             return literal(ValueType::boolean, token.position, token.text == "true" ? 1 : 0);
         if (token.text == "self")
@@ -1856,65 +2041,52 @@ private:
         if (token.text == "null")
             return add(Expression{Expression::Kind::null_reference, ValueType::null_reference, token.position});
         if (token.text == "new") {
-            object_type();
-            expect("(");
+            ATELIER_TRY(object_type());
+            ATELIER_TRY(expect("("));
             if (token_.text != ")")
-                reject(token_.position, "Object creation does not accept constructor arguments.");
-            consume();
+                return reject(token_.position, "Object creation does not accept constructor arguments.");
+            ATELIER_TRY(consume());
             return add(Expression{Expression::Kind::create_reference, ValueType::strong_reference, token.position});
         }
-        if (token.text == "observe" || token.text == "try_acquire") {
-            const auto observe = token.text == "observe";
-            expect("(");
-            if (token_.text == ")")
-                reject(token_.position, "Reference operation requires one argument.");
-            const auto argument = expression();
-            const auto required = observe ? ValueType::strong_reference : ValueType::weak_reference;
-            if (function_.expressions[argument].type != required)
-                reject(function_.expressions[argument].position,
-                       observe ? "observe requires a strong reference argument."
-                               : "try_acquire requires a weak reference argument.");
-            if (token_.text == ",")
-                reject(token_.position, "Reference operation requires exactly one argument.");
-            expect(")");
-            return add(Expression{observe ? Expression::Kind::observe_reference : Expression::Kind::acquire_reference,
-                                  observe ? ValueType::weak_reference : ValueType::strong_reference, token.position,
-                                  argument});
-        }
+        if (token.text == "observe" || token.text == "try_acquire")
+            return reference_operation(token);
         for (auto iterator = visible_.rbegin(); iterator != visible_.rend(); ++iterator) {
             const auto& local_value = function_.locals[*iterator];
             if (local_value.name == token.text)
                 return add(
                     Expression{Expression::Kind::local, local_value.type, token.position, no_node, no_node, *iterator});
         }
-        if (accept("("))
+        ATELIER_TRY_BIND(calling, accept("("));
+        if (*calling)
             return source_call(token.text, token.position);
         return module_constant(token.text, token.position);
     }
 
-    NodeId module_constant(std::string_view name, SourcePosition position) {
+    std::expected<NodeId, Diagnostic> module_constant(std::string_view name, SourcePosition position) {
         if (const auto* property = find_property(name, false))
             return property_access(*property, position);
         for (std::size_t i = 0; i < constants_.size(); ++i) {
             if (constants_[i].name != name)
                 continue;
-            resolve_constant(i);
-            const auto node = literal(constants_[i].type, position, constants_[i].bits);
-            function_.expressions[node].typed_constant = true;
+            ATELIER_TRY(resolve_constant(i));
+            ATELIER_TRY_BIND(node, literal(constants_[i].type, position, constants_[i].bits));
+            function_.expressions[*node].typed_constant = true;
             return node;
         }
-        reject(position, "Unknown identifier '" + std::string(name) + "'.");
+        return reject(position, "Unknown identifier '" + std::string(name) + "'.");
     }
 
     // Called after the opening parenthesis.
-    NodeId source_call(std::string_view name, SourcePosition position) {
+    std::expected<NodeId, Diagnostic> source_call(std::string_view name, SourcePosition position) {
         for (std::uint32_t i = 0; i < module_.functions.size(); ++i) {
             const auto& target = module_.functions[i];
             if (target.function_name != name)
                 continue;
-            return add(call_expression(false, i, position, no_node, call_arguments(target.parameters)));
+            ATELIER_TRY_BIND(arguments, call_arguments(target.parameters));
+            ATELIER_TRY_BIND(call, call_expression(false, i, position, no_node, std::move(*arguments)));
+            return add(std::move(*call));
         }
-        reject(position, "Unknown source function '" + std::string(name) + "'.");
+        return reject(position, "Unknown source function '" + std::string(name) + "'.");
     }
 
     Environment environment_;
@@ -1954,11 +2126,8 @@ private:
 std::expected<Program, Diagnostic> compile_source(std::string_view source_name, std::string_view source,
                                                   Environment environment, std::string_view entry_name,
                                                   bool allow_declarations) {
-    try {
-        return Parser(source_name, source, environment).parse(entry_name, allow_declarations);
-    } catch (Rejected& rejected) {
-        return std::unexpected(std::move(rejected.diagnostic));
-    }
+    ATELIER_TRY_BIND(tokens, Tokens::create(source));
+    return Parser(source_name, std::move(*tokens), environment).parse(entry_name, allow_declarations);
 }
 
 std::expected<void, Diagnostic> export_functions(Program& program, std::span<const std::string_view> names,

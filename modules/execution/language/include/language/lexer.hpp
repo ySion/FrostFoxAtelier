@@ -1,13 +1,10 @@
 #pragma once
 #include "language/source.hpp"
+#include "foundation/result.hpp"
 
 namespace atelier::language::detail {
-struct Rejected {
-    Diagnostic diagnostic;
-};
-
-[[noreturn]] inline void reject(SourcePosition position, std::string message) {
-    throw Rejected{{position, std::move(message)}};
+inline std::unexpected<Diagnostic> reject(SourcePosition position, std::string message) {
+    return std::unexpected(Diagnostic{position, std::move(message)});
 }
 
 inline bool letter(char value) noexcept {
@@ -66,7 +63,7 @@ class Lexer {
 public:
     explicit Lexer(std::string_view source) : source_(source) {}
 
-    Token next() {
+    std::expected<Token, Diagnostic> next() {
         for (;;) {
             while (peek() == ' ' || peek() == '\t' || peek() == '\r' || peek() == '\n' || peek() == '\v' ||
                    peek() == '\f')
@@ -81,7 +78,7 @@ public:
                 while (!at_end() && !(peek() == '*' && peek(1) == '/'))
                     advance();
                 if (at_end())
-                    reject(start, "Unterminated block comment.");
+                    return reject(start, "Unterminated block comment.");
                 advance();
                 advance();
             } else
@@ -89,13 +86,13 @@ public:
         }
         const auto start = position_;
         if (at_end())
-            return {Token::Kind::end, {}, start};
+            return Token{Token::Kind::end, {}, start};
         const auto first = peek();
         if (first == '"') {
             advance();
             while (!at_end() && peek() != '"') {
                 if (peek() == '\n' || peek() == '\r' || peek() == '\0')
-                    reject(start, "Invalid character in string literal.");
+                    return reject(start, "Invalid character in string literal.");
                 if (peek() == '\\') {
                     advance();
                     if (at_end())
@@ -104,7 +101,7 @@ public:
                 advance();
             }
             if (at_end())
-                reject(start, "Unterminated string literal.");
+                return reject(start, "Unterminated string literal.");
             advance();
             return token(Token::Kind::string, start);
         }
@@ -128,14 +125,14 @@ public:
                 if (peek() == '+' || peek() == '-')
                     advance();
                 if (!digit(peek()))
-                    reject(start, "A numeric exponent requires digits.");
+                    return reject(start, "A numeric exponent requires digits.");
                 while (digit(peek()))
                     advance();
             }
             if (peek() == 'f' || peek() == 'F' || peek() == 'd' || peek() == 'D')
                 advance();
             if (letter(peek()) || digit(peek()))
-                reject(start, "Invalid numeric literal suffix.");
+                return reject(start, "Invalid numeric literal suffix.");
             return token(Token::Kind::number, start);
         }
         if (first == '=' || first == '!' || first == '<' || first == '>') {
@@ -149,7 +146,7 @@ public:
         if (first == '+' || first == '-') {
             advance();
             if (peek() == first)
-                reject(start, "Increment and decrement operators are not supported; use assignment.");
+                return reject(start, "Increment and decrement operators are not supported; use assignment.");
             return token(Token::Kind::punctuation, start);
         }
         if (first == '&' || first == '|') {
@@ -168,7 +165,7 @@ public:
             advance();
             return token(Token::Kind::punctuation, start);
         }
-        reject(start, "Unsupported source character.");
+        return reject(start, "Unsupported source character.");
     }
 
 private:
@@ -197,7 +194,7 @@ private:
 };
 
 // A string token's UTF-8 bytes, with the escapes \\ \" \n \r \t \0 decoded.
-inline std::string string_value(const Token& token) {
+inline std::expected<std::string, Diagnostic> string_value(const Token& token) {
     std::string value;
     for (std::size_t i = 1; i + 1 < token.text.size(); ++i) {
         char c = token.text[i];
@@ -219,7 +216,7 @@ inline std::string string_value(const Token& token) {
                 c = '\0';
                 break;
             default:
-                reject(token.position, "Unsupported string escape.");
+                return reject(token.position, "Unsupported string escape.");
             }
         }
         value.push_back(c);
@@ -229,22 +226,27 @@ inline std::string string_value(const Token& token) {
 
 class Tokens {
 public:
-    explicit Tokens(std::string_view source) : lexer_(source), token_(lexer_.next()) {}
+    static std::expected<Tokens, Diagnostic> create(std::string_view source) {
+        Lexer lexer(source);
+        ATELIER_TRY_BIND(token, lexer.next());
+        return Tokens{lexer, *token};
+    }
 
-    Token consume() {
+    std::expected<Token, Diagnostic> consume() {
         auto previous = token_;
-        token_ = lexer_.next();
+        ATELIER_TRY_BIND(next, lexer_.next());
+        token_ = *next;
         return previous;
     }
 
-    bool accept(std::string_view text) {
+    std::expected<bool, Diagnostic> accept(std::string_view text) {
         if (token_.text != text)
             return false;
-        consume();
+        ATELIER_TRY(consume());
         return true;
     }
 
-    Token expect(std::string_view text) {
+    std::expected<Token, Diagnostic> expect(std::string_view text) {
         if (text == ">" && token_.text == ">>") {
             auto first = token_;
             first.text = first.text.substr(0, 1);
@@ -254,21 +256,26 @@ public:
             return first;
         }
         if (token_.text != text)
-            reject(token_.position, "Expected '" + std::string(text) + "'.");
+            return reject(token_.position, "Expected '" + std::string(text) + "'.");
         return consume();
     }
 
-    Token identifier() {
+    std::expected<Token, Diagnostic> identifier() {
         if (token_.kind != Token::Kind::identifier || reserved(token_.text))
-            reject(token_.position, "Expected a non-reserved identifier.");
+            return reject(token_.position, "Expected a non-reserved identifier.");
         return consume();
     }
 
-    std::string qualified_identifier() {
-        std::string name(identifier().text);
-        while (accept(".")) {
+    std::expected<std::string, Diagnostic> qualified_identifier() {
+        ATELIER_TRY_BIND(first, identifier());
+        std::string name(first->text);
+        for (;;) {
+            ATELIER_TRY_BIND(dot, accept("."));
+            if (!*dot)
+                break;
             name += '.';
-            name += identifier().text;
+            ATELIER_TRY_BIND(part, identifier());
+            name += part->text;
         }
         return name;
     }
@@ -276,5 +283,8 @@ public:
     Lexer lexer_;
 
     Token token_;
+
+private:
+    Tokens(Lexer lexer, Token token) : lexer_(lexer), token_(token) {}
 };
 }
