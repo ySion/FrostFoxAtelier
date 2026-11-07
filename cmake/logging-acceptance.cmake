@@ -1,8 +1,4 @@
 # Included after the formal atelier_logging target has been defined.
-if(NOT TARGET nlohmann_json::nlohmann_json)
-    include("${PROJECT_SOURCE_DIR}/cmake/json.cmake")
-endif()
-
 add_executable(atelier_logging_acceptance
     "${PROJECT_SOURCE_DIR}/acceptance/logging/main.cpp"
     "${PROJECT_SOURCE_DIR}/acceptance/logging/contracts.cpp"
@@ -11,7 +7,7 @@ add_executable(atelier_logging_acceptance
     "${PROJECT_SOURCE_DIR}/acceptance/logging/reader_cases.cpp"
     "${PROJECT_SOURCE_DIR}/acceptance/logging/dll.cpp")
 atelier_target(atelier_logging_acceptance)
-target_link_libraries(atelier_logging_acceptance PRIVATE atelier_logging nlohmann_json::nlohmann_json)
+target_link_libraries(atelier_logging_acceptance PRIVATE atelier_logging atelier_core_json)
 
 # This DLL deliberately does not link the logger or include native.hpp. The EXE
 # supplies the resident entry point, using the same configured compiler/CRT.

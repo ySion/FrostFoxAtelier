@@ -29,7 +29,7 @@
 1. **每进程最多一次成功 start**；失败的初始化完整回滚后才允许重试。无同进程 restart；多个 Runtime 共享此进程设施而不是共享业务上下文。start/flush/finish 由同一宿主线程串行调用。
 2. Run 必须在 Application、Project、World、设备等业务拥有者创建前存在。业务作用域销毁、worker join、最外层 catch 中记录原始异常均发生在 finish 之前。调用方停止一切生产者后才能 finish，接口不代替线程协调。全局静态析构不再记录。
 3. `current_run()` 在成功 start 后非空，在 finish 完成后为空；指针仅在宿主保证的生命周期中借用，不能与 shutdown 竞争。finish 幂等，Run 对象中的 info/最终 health 仍可查询。析构只能做紧急收尾；未显式 finish 要保存 `lifecycle_violation`、走非递归紧急输出，不能写出“已审查成功”。
-4. `RunOptions.directory` 空时创建 `%LOCALAPPDATA%\FrostFoxAtelier\Logs\<run_id>`。已给目录必须绝对且尚不存在，以独占创建拒绝复用；不回退到工作目录，不截断旧 run。`run_id` 是不复用的日志运行标识，不是新的业务对象身份。
+4. `RunOptions.directory` 空时创建 `%LOCALAPPDATA%\FrostFoxAtelier\Logs\<run_id>`。已给目录必须绝对且尚不存在，含 NUL 在任何 IO 前返回 `invalid_options`，以独占创建拒绝复用；不回退到工作目录，不截断旧 run。`run_id` 是不复用的日志运行标识，不是新的业务对象身份。
 5. Editor 为 Runner 预选自己的 run 目录下尚不存在的 `runner-<launch ordinal>` 子目录，通过进程启动参数传该路径及父 `run_id`。Runner 自己 start、写盘和 finish。Editor 可在启动子进程前 open 对应 Reader；日志不进入 Live ACK 或 Control 链路。具体命令行拼写由 Application 集成实现，公共类型不依赖它。
 6. 每 run 有 `run.json`、`events.jsonl`、最多八个 `events.1.jsonl`…`events.8.jsonl`、`health.json` 和活动锁。`.1` 是最近的轮转文件；文件名会移位，**不是文件身份**。文件名本身不承担记录顺序。
 7. 默认根目录保留最近 20 个已结束 run；只清理本模块 manifest 合法、最终标记存在且能独占获取活动锁的目录，启动时执行。显式目录的跨 run 保留归调用者，本模块仍执行该 run 的文件轮转。活动、异常未完成或未知目录不自动删除，因此“20”不是根目录总硬上限；不能仅凭 PID 或目录年龄判死。活动锁在整个 Run 生命周期保持。
@@ -62,6 +62,8 @@ Source 的 `path/version/offset/line/column/disk_path` 完整转入上述对应�
 **稳定原生**：只有整个 run 生命周期都不卸载、并链接进同一宿主二进制的代码使用 native.hpp（包括宿主链接的静态库）。当前 `atelier_logging` 为静态目标，不能把它另行链接到 DLL 后期待共享同一个进程服务；header-only Quill 的 registry/TLS 也不能在 DLL 中复制。包括常驻 DLL 在内的其他二进制模块，均通过宿主提供的稳定 submit 入口提交。Dev 编译最低级别 trace，Release 为 info；运行时再按 RunOptions.minimum 与最多 64 项 category 精确覆盖过滤，阈值启动后固定。宏只在运行时过滤时计算 category 一次，event code、Context 和格式参数都在过滤通过后求值；编译裁掉的级别不求值 category。每个启用参数求值一次。
 
 `fmtquill::format_string` 必须真的参与调用的编译期检查；禁止绕为 runtime format。参数仅受约束的算术标量、char 数组、std::string、std::string_view，拒绝任意类/枚举/裸指针/自定义 deferred codec；枚举显式转成稳定数值或名称，char 数组要求有效 NUL 终止，带 NUL 文本用显式长度视图。正文格式化在后台，字符串与 Context 在调用返回前编码复制。source metadata、decoder、内部 envelope codec 都必须驻留。不要为了适配 schema 把所有普通原生正文提前 std::format。
+
+Entry 的文本在准入边界校验；编码与已准入诊断快照使用 JSON 的已验证写入入口，不重复扫描 UTF-8。快照截断只保留完整码点。后台新生成的正文先单次校验 UTF-8，再检查大小，再按已验证文本写入；两者同时失败时，首因仍为 `invalid_utf8`。JSON Value 只借用稳定 DOM，正常导航不拼路径，失败才定位并生成含数组下标的 JSON Pointer；移动 owner 保留借用，销毁 owner 或替换子树使对应旧借用失效。
 
 **动态/JIT/可卸载 DLL**：提交拥有型 Entry 到稳定宿主中的 `submit`。库宏、metadata、decoder 模板实例化均在不可卸载宿主；不得借用业务对象、DLL 内静态 metadata、函数指针或 DeferredFormatCodec 对象。动态 file/root/function/message 都复制到队列；返回后可释放源文本及卸载生产模块。此入口是当前锁定工具链/同 CRT 的 C++ 合同，不宣称跨编译器或语言 ABI；JIT 的既有宿主桥负责组包，不把 std::string ABI 写入语言定义。
 
@@ -124,6 +126,12 @@ const auto final_report = run->finish();
 ## 持久格式 v1
 
 `events.jsonl` 为 UTF-8、无 BOM、每条一个 JSON object + LF；message 必须是 **rendered 正文**，不是 Quill 默认 JsonSink 的格式模板。关闭 Quill ASCII 字符转义 sanitizer；JSON 层按标准转义引号、反斜杠、NUL/控制字符，读回须逐字节还原合法 UTF-8 正文。不能在正文前拼接不可逆元数据再靠字符串拆解。
+
+文本链使用 [core/json](../../../modules/core/json/include/json/json.hpp) 的 yyjson DOM 和显式 Result，不再依赖 nlohmann。对象键按 UTF-8 字节序写出，控制字符的十六进制用小写，非 ASCII 和 `/` 不转义；有限 double 使用 yyjson 的最短往返输出。日志保持 compact，只有 JSONL 行追加 LF。共享 writer 同时提供 2 空格 pretty 和独立的末尾 LF 选项，排序只暂存成员引用，不复制整棵 DOM；输出为字节 Array，不重复验证 UTF-8 或转换成 String。
+
+JSON core 拥有语法、UTF-8、解码后重名键和入口传入的 event-depth 检查；logging 仍使用上限 16，并拥有文件/行大小及 schema 规则。schema 解码不重复检查深度或重名。语法错误带字节位置，重名和类型错误带 JSON Pointer 结构路径。Document/Builder 独占 DOM；Value 和字符串视图不得超过所属 DOM 的寿命，Builder 的节点不能跨 owner 使用。
+
+本次只改变写出字节，不改变日志 schema v1 或字段含义；日志没有持久化 JSON 字节摘要。Reader 对合法成员顺序、空白和数值拼写不作 writer 字节比较，因此同一 schema 的旧日志直接经当前解析路径读取，不增加旧格式分支。Quill 与原生 IO 的异常路径仍留给独立的 LOG/IO 迁移片。
 
 固定顶层成员：`schema`、`run_id`、`process_id`、`thread_id`、`producer_id`、`producer_sequence`、`record_sequence`、`timestamp_unix_ns`、`severity`、`category`、`event_code`、`message`、`source`、`fields`、`repeat`。映射至 Record / Entry；`persistence` 不落 JSON，由 Reader 成功解析完整行后设置为 jsonl。
 

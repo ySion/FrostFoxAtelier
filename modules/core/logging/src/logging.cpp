@@ -8,6 +8,7 @@
 #include <bcrypt.h>
 #include <array>
 #include <atomic>
+#include <cassert>
 #include <cstdio>
 #include <exception>
 #include <mutex>
@@ -232,7 +233,13 @@ struct State {
         try {
             std::lock_guard lock{publication_mutex};
             PublishedHealth published{unix_ns(), final, {health(), acknowledged, flushed, true}};
-            atomic_write(info.directory / L"health.json", health_json(info, published).dump());
+            auto document = health_json(info, published);
+            if (!document) {
+                fault(FacilityFault::summary_failed, document.error().message);
+                return false;
+            }
+            const auto bytes = json::write(document->root());
+            atomic_write(info.directory / L"health.json", {bytes.data(), bytes.size()});
             return true;
         } catch (const std::system_error& error) {
             fault(FacilityFault::summary_failed, error.what(), static_cast<std::uint32_t>(error.code().value()));
@@ -372,11 +379,17 @@ protected:
                 state_->fault(FacilityFault::output_too_large, "Rendered message exceeds 128 KiB");
                 return;
             }
-            auto json = parse_json(metadata->tags());
-            json["message"] = message;
-            json["record_sequence"] = std::to_string(state_->sequence.fetch_add(1) + 1);
-            auto line = json.dump();
-            line.push_back('\n');
+            auto document = json::Document::parse(metadata->tags(), {16});
+            if (!document) {
+                state_->fault(FacilityFault::encoding_failed, document.error().message);
+                return;
+            }
+            json::Builder builder{*document};
+            builder.set_validated(builder.root(), "message", message);
+            [[maybe_unused]] const auto sequence =
+                builder.set(builder.root(), "record_sequence", std::to_string(state_->sequence.fetch_add(1) + 1));
+            assert(sequence); // Generated decimal ASCII cannot fail UTF-8 validation.
+            auto line = json::write(builder.root(), {.trailing_lf = true});
             if (line.size() > maximum_json_line_bytes) {
                 state_->fault(FacilityFault::output_too_large, "Encoded JSONL line exceeds limit");
                 return;
@@ -388,7 +401,7 @@ protected:
             if (size_ && size_ + line.size() > rotation_bytes && !rotate())
                 return;
             try {
-                write_all(file_.get(), line);
+                write_all(file_.get(), {line.data(), line.size()});
                 size_ += line.size();
             } catch (const std::system_error& error) {
                 write_failed_ = true;
@@ -506,12 +519,12 @@ void retain_runs(State& state, const std::filesystem::path& root) noexcept {
             if (!item.is_directory() || item.is_symlink() || item.path() == state.info.directory)
                 continue;
             try {
-                const auto info = read_run(parse_json(read_small(item.path() / L"run.json")));
-                if (info.directory != item.path())
+                const auto info = read_run(read_small(item.path() / L"run.json"));
+                if (!info || info->directory != item.path())
                     continue;
-                const auto health = read_health(parse_json(read_small(item.path() / L"health.json", 256 * 1024)), info);
-                if (health.final)
-                    completed.push_back({item.path(), info.started_unix_ns});
+                const auto health = read_health(read_small(item.path() / L"health.json", 256 * 1024), *info);
+                if (health && health->final)
+                    completed.push_back({item.path(), info->started_unix_ns});
             } catch (...) { /* Unknown/incomplete directories are never candidates. */
             }
         }
@@ -618,6 +631,8 @@ Result<std::unique_ptr<Run>> start_run(RunOptions options) {
     ErrorCode failure = ErrorCode::invalid_options;
     std::unique_ptr<Run> run;
     bool created{};
+    if (options.directory.native().find(L'\0') != std::wstring::npos)
+        return std::unexpected(Error{ErrorCode::invalid_options, "Invalid UTF-8 path", {}});
     try {
         Entry probe;
         probe.category = "logging";
@@ -649,7 +664,12 @@ Result<std::unique_ptr<Run>> start_run(RunOptions options) {
         const bool default_directory = state.options.directory.empty();
         state.info.directory =
             default_directory ? default_root() / state.info.run_id : state.options.directory.lexically_normal();
-        static_cast<void>(read_run(run_json(state.info)));
+        auto manifest = run_json(state.info);
+        if (!manifest) {
+            emergency();
+            return std::unexpected(Error{ErrorCode::invalid_options, manifest.error().message, {}});
+        }
+        const auto manifest_bytes = json::write(manifest->root());
         failure = ErrorCode::io_failed;
         std::filesystem::create_directories(state.info.directory.parent_path());
         if (!CreateDirectoryW(state.info.directory.c_str(), nullptr)) {
@@ -664,7 +684,7 @@ Result<std::unique_ptr<Run>> start_run(RunOptions options) {
                                            FILE_ATTRIBUTE_NORMAL, nullptr));
         if (!run->impl_->lock)
             io_error("Create active run lock");
-        atomic_write(state.info.directory / L"run.json", run_json(state.info).dump());
+        atomic_write(state.info.directory / L"run.json", {manifest_bytes.data(), manifest_bytes.size()});
         if (default_directory)
             retain_runs(state, state.info.directory.parent_path());
         run->impl_->sink = std::make_shared<JsonSink>(run->impl_->state);
@@ -846,7 +866,11 @@ void prepare(Ticket& ticket, const Entry& entry, bool is_template) {
     record.producer_sequence = producer.sequence;
     record.timestamp_unix_ns = unix_ns();
     // Do not copy the message into the envelope; Quill owns its encoded argument.
-    ticket.envelope = record_envelope(record, entry).dump();
+    auto envelope = record_envelope(record, entry);
+    assert(envelope); // Entry was validated before admission and capture.
+    const auto bytes = json::write(envelope->root());
+    // Quill's tag storage is an owning std::string, not a validated String.
+    ticket.envelope.assign(bytes.data(), bytes.size());
     ticket.logger = state->logger;
 }
 }

@@ -1,17 +1,21 @@
 #pragma once
 
 #include "logging/logging.hpp"
-#include <nlohmann/json.hpp>
-#include <stdexcept>
+#include "json/json.hpp"
 
 namespace atelier::logging::detail {
-using Json = nlohmann::json;
-
-struct FormatError final : std::runtime_error {
+struct FormatError {
     ReaderFault fault;
 
-    FormatError(ReaderFault kind, const char* message) : std::runtime_error(message), fault(kind) {}
+    std::string message;
+
+    FormatError(ReaderFault kind, std::string text) : fault(kind), message(std::move(text)) {}
+
+    FormatError(json::Error error);
 };
+
+template <class T>
+using FormatResult = std::expected<T, FormatError>;
 
 bool valid_utf8(std::string_view text) noexcept;
 
@@ -21,21 +25,15 @@ std::filesystem::path text_path(std::string_view text);
 
 std::uint64_t unix_ns() noexcept;
 
-Json parse_json(std::string_view text);
+FormatResult<json::Builder> record_envelope(const Record& identity, const Entry& entry);
 
-Json entry_json(const Entry& entry, bool omit_message = false);
+FormatResult<Record> read_record(std::string_view bytes);
 
-Entry read_entry(const Json& json);
+FormatResult<json::Builder> run_json(const RunInfo& info);
 
-Json record_envelope(const Record& identity, const Entry& entry);
+FormatResult<RunInfo> read_run(std::string_view bytes);
 
-Record read_record(const Json& json);
+FormatResult<json::Builder> health_json(const RunInfo& info, const PublishedHealth& health);
 
-Json run_json(const RunInfo& info);
-
-RunInfo read_run(const Json& json);
-
-Json health_json(const RunInfo& info, const PublishedHealth& health);
-
-PublishedHealth read_health(const Json& json, const RunInfo& info);
+FormatResult<PublishedHealth> read_health(std::string_view bytes, const RunInfo& info);
 }

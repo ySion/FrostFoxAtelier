@@ -1,26 +1,56 @@
 #include "support.hpp"
 #include "logging/native.hpp"
-#include <nlohmann/json.hpp>
+#include "json/json.hpp"
 #include <limits>
 
 namespace logging_acceptance {
 namespace {
-using Json = nlohmann::json;
+namespace json = atelier::json;
 
-std::vector<Json> independent_json(const fs::path& file) {
+template <class T>
+T decoded(json::Result<T> result) {
+    require(result.has_value(), "JSON contract failed.");
+    return std::move(*result);
+}
+
+std::vector<json::Document> read_json_lines(const fs::path& file) {
     std::ifstream input(file, std::ios::binary);
-    require(input.is_open(), "Independent JSON consumer cannot open events.");
-    std::vector<Json> result;
+    require(input.is_open(), "JSON consumer cannot open events.");
+    std::vector<json::Document> result;
     for (std::string line; std::getline(input, line);) {
         require(!line.empty(), "JSONL contains an empty physical line.");
-        result.push_back(Json::parse(line));
+        result.push_back(decoded(json::Document::parse(line, {16})));
     }
-    require(input.eof() && !input.bad(), "Independent JSON consumer did not reach EOF.");
+    require(input.eof() && !input.bad(), "JSON consumer did not reach EOF.");
     return result;
+}
+
+void writer_contract() {
+    const auto document = decoded(
+        json::Document::parse(R"({"z":[{"b":false,"a":null},{}],"é":"中文/\u001f\n","a":18446744073709551615})", {16}));
+    const auto compact = json::write(document.root());
+    require(std::string_view{compact.data(), compact.size()} ==
+                R"({"a":18446744073709551615,"z":[{"a":null,"b":false},{}],"é":"中文/\u001f\n"})",
+            "Compact writer ordering, escaping or integer precision changed.");
+    const auto pretty = json::write(document.root(), {true, true});
+    require(
+        std::string_view{pretty.data(), pretty.size()} ==
+            "{\n  \"a\": 18446744073709551615,\n  \"z\": [\n    {\n      \"a\": null,\n      \"b\": false\n    },\n    {}\n  ],\n  \"é\": \"中文/\\u001f\\n\"\n}\n",
+        "Pretty writer must use sorted keys, two spaces and one requested terminal LF.");
+    json::Builder built;
+    require(built.set(built.root(), "empty", std::string_view{}).has_value() &&
+                built.set(built.root(), "literal", "text").has_value() &&
+                built.set(built.root(), std::string_view{}, "key").has_value(),
+            "String construction failed.");
+    require(decoded(decoded(built.root().at(std::string_view{})).string()) == "key", "Empty key lookup failed.");
+    const auto strings = json::write(built.root());
+    require(std::string_view{strings.data(), strings.size()} == R"({"":"key","empty":"","literal":"text"})",
+            "Empty views and string literals must remain strings, not missing members or booleans.");
 }
 }
 
 void roundtrip(const fs::path& root) {
+    writer_contract();
     const auto directory = root / "run";
     auto reader = take(log::Reader::open(directory));
     auto run = start(directory);
@@ -83,21 +113,24 @@ void roundtrip(const fs::path& root) {
                 fs::path{formatted.entry.source.file}.filename() == "contracts.cpp",
             "Native formatting, call-site source or context did not survive asynchronous delivery.");
 
-    // Independent parser: catches Writer and Reader sharing the same lossy conversion.
-    const auto json = independent_json(directory / "events.jsonl");
-    require(json.size() == 2 && json[0].at("message").get<std::string>() == expected.message &&
-                json[1].at("message").get<std::string>() == expected_native,
-            "Independent JSON text roundtrip failed.");
-    const auto& values = json[0].at("fields");
-    require(values.size() == expected.fields.size() && values.at("identity").at("type") == "u64" &&
-                values.at("identity").at("value") == "18446744073709551612" &&
-                values.at("negative").at("value") == "-9223372036854775791" &&
-                values.at("positive_signed").at("type") == "i64" && values.at("positive_signed").at("value") == "19" &&
-                json[0].at("source").at("version") == "9007199254741017" && json[0].at("repeat").at("count") == "3",
-            "Independent JSON consumer lost scalar types or 64-bit identity.");
-    const auto health = Json::parse(read_bytes(directory / "health.json"));
-    require(health.at("final") == true && health.at("report").at("health").at("accepted") == "2",
-            "Independent final health lost the two submitted records.");
+    // Check the public wire schema separately from logging's domain decoder.
+    const auto documents = read_json_lines(directory / "events.jsonl");
+    require(documents.size() == 2 && decoded(documents[0].root().string({"message"})) == expected.message &&
+                decoded(documents[1].root().string({"message"})) == expected_native,
+            "JSON text roundtrip failed.");
+    const auto values = decoded(documents[0].root().at("fields"));
+    require(values.size() == expected.fields.size() && decoded(values.string({"identity", "type"})) == "u64" &&
+                decoded(values.string({"identity", "value"})) == "18446744073709551612" &&
+                decoded(values.string({"negative", "value"})) == "-9223372036854775791" &&
+                decoded(values.string({"positive_signed", "type"})) == "i64" &&
+                decoded(values.string({"positive_signed", "value"})) == "19" &&
+                decoded(documents[0].root().string({"source", "version"})) == "9007199254741017" &&
+                decoded(documents[0].root().string({"repeat", "count"})) == "3",
+            "JSON consumer lost scalar types or 64-bit identity.");
+    const auto health = decoded(json::Document::parse(read_bytes(directory / "health.json"), {16}));
+    require(decoded(health.root().boolean({"final"})) &&
+                decoded(health.root().string({"report", "health", "accepted"})) == "2",
+            "Final health lost the two submitted records.");
     reader.reset();
     run.reset();
     same_entry(read.records[0].entry, expected);

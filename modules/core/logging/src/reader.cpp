@@ -203,33 +203,34 @@ struct Reader::Impl {
             if (item.buffer.size() != item.reading.size)
                 return false;
             item.handle.reset();
-            try {
-                if (is_manifest) {
-                    auto decoded = read_run(parse_json(item.buffer));
-                    if (run && (decoded.run_id != run->run_id || decoded.process_id != run->process_id))
-                        throw FormatError{ReaderFault::invalid_record, "Run manifest changed identity"};
-                    run = std::move(decoded);
-                } else if (run) {
-                    auto decoded = read_health(parse_json(item.buffer), *run);
-                    if (health && health->final && !decoded.final)
-                        throw FormatError{ReaderFault::invalid_summary, "Health regressed after final evidence"};
+            const auto rejected = [&](ReaderFault fault, std::string_view message) {
+                ++status.invalid_metadata;
+                issue(is_manifest ? fault : ReaderFault::invalid_summary, std::string{message}, path);
+            };
+            if (is_manifest) {
+                auto decoded = read_run(item.buffer);
+                if (!decoded)
+                    rejected(decoded.error().fault, decoded.error().message);
+                else if (run && (decoded->run_id != run->run_id || decoded->process_id != run->process_id))
+                    rejected(ReaderFault::invalid_record, "Run manifest changed identity");
+                else
+                    run = std::move(*decoded);
+            } else if (run) {
+                auto decoded = read_health(item.buffer, *run);
+                if (!decoded)
+                    rejected(decoded.error().fault, decoded.error().message);
+                else if (health && health->final && !decoded->final)
+                    rejected(ReaderFault::invalid_summary, "Health regressed after final evidence");
+                else {
                     // Atomic file replacement orders these snapshots. Wall-clock
                     // corrections must not make a later final snapshot disappear.
-                    health = std::move(decoded);
+                    health = std::move(*decoded);
                     if (health->final) {
                         status.has_final_summary = true;
                         status.source_ended = true;
                     }
                 }
-            } catch (const FormatError& error) {
-                ++status.invalid_metadata;
-                issue(is_manifest ? error.fault : ReaderFault::invalid_summary, error.what(), path);
-            } catch (const Json::exception& error) {
-                ++status.invalid_metadata;
-                issue(is_manifest ? ReaderFault::invalid_json : ReaderFault::invalid_summary, error.what(), path);
             }
-            // An allocation exception must leave this version retryable rather
-            // than permanently marking an unexamined manifest as loaded.
             item.loaded = item.reading;
             item.buffer.clear();
             return true;
@@ -311,42 +312,44 @@ struct Reader::Impl {
     }
 
     void line(std::vector<Record>& records) {
-        try {
-            auto value = read_record(parse_json(tail));
-            if (value.run_id != run->run_id || value.process_id != run->process_id)
-                throw FormatError{ReaderFault::invalid_record, "Record identity does not match run manifest"};
-            const Key key{value.producer_id, value.producer_sequence};
-            if (keys.contains(key)) {
-                issue(ReaderFault::duplicate_record, "Duplicate unique record identity", current->path, line_start);
-                return;
-            }
-            if (value.record_sequence <= high_water) {
-                issue(ReaderFault::out_of_order, "Record precedes output high-water mark", current->path, line_start);
-                return;
-            }
-            if (value.record_sequence != high_water + 1)
-                issue(ReaderFault::sequence_gap, "Output sequence discontinuity; not a queue drop count", current->path,
-                      line_start);
-            const auto previous = std::find_if(recent.rbegin(), recent.rend(),
-                                               [&](const auto& prior) { return prior.first == key.first; });
-            if (previous != recent.rend() && key.second != previous->second + 1)
-                issue(ReaderFault::sequence_gap, "Producer sequence discontinuity; cause is not inferred",
-                      current->path, line_start);
-            high_water = value.record_sequence;
-            recent.push_back(key);
-            keys.insert(key);
-            if (recent.size() > 4096) {
-                keys.erase(recent.front());
-                recent.pop_front();
-            }
-            records.push_back(std::move(value));
-        } catch (const FormatError& error) {
+        auto decoded = read_record(tail);
+        if (!decoded) {
             ++status.invalid_lines;
-            issue(error.fault, error.what(), current->path, line_start);
-        } catch (const Json::exception& error) {
-            ++status.invalid_lines;
-            issue(ReaderFault::invalid_json, error.what(), current->path, line_start);
+            issue(decoded.error().fault, decoded.error().message, current->path, line_start);
+            return;
         }
+        auto& value = *decoded;
+        if (value.run_id != run->run_id || value.process_id != run->process_id) {
+            ++status.invalid_lines;
+            issue(ReaderFault::invalid_record, "Record identity does not match run manifest", current->path,
+                  line_start);
+            return;
+        }
+        const Key key{value.producer_id, value.producer_sequence};
+        if (keys.contains(key)) {
+            issue(ReaderFault::duplicate_record, "Duplicate unique record identity", current->path, line_start);
+            return;
+        }
+        if (value.record_sequence <= high_water) {
+            issue(ReaderFault::out_of_order, "Record precedes output high-water mark", current->path, line_start);
+            return;
+        }
+        if (value.record_sequence != high_water + 1)
+            issue(ReaderFault::sequence_gap, "Output sequence discontinuity; not a queue drop count", current->path,
+                  line_start);
+        const auto previous =
+            std::find_if(recent.rbegin(), recent.rend(), [&](const auto& prior) { return prior.first == key.first; });
+        if (previous != recent.rend() && key.second != previous->second + 1)
+            issue(ReaderFault::sequence_gap, "Producer sequence discontinuity; cause is not inferred", current->path,
+                  line_start);
+        high_water = value.record_sequence;
+        recent.push_back(key);
+        keys.insert(key);
+        if (recent.size() > 4096) {
+            keys.erase(recent.front());
+            recent.pop_front();
+        }
+        records.push_back(std::move(value));
     }
 
     void consume(Budget& budget, std::vector<Record>& records) {
