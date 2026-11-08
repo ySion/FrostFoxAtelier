@@ -229,6 +229,10 @@ focus、文字模式和编辑事务分开。number普通拖动仍在超过原指
 
 平台由Window/Application持有，UI不持HWND/HIMC。剪贴板请求含kind、唯一operation_id及`EditToken{key,incarnation,generation,revision}`；只结算匹配的当前请求一次。文字或普通caret/selection变化推进revision；结束/重绑上下文换generation。cut仅在匹配成功结果后删除请求时选区；paste成功沿统一插入。失败、重复、过期结果不改草稿，同revision不同operation也不能误配。
 
+Windows宿主仅在`OpenClipboard`返回`ERROR_ACCESS_DENIED`时重试获取：最多5次尝试，失败且仍可重试时`Sleep(5)`，最后一次失败不再等待。获取成功清除此前错误，后续读写只执行一次，不重试`EmptyClipboard`或`SetClipboardData`。最终失败保留原生错误及草稿、选区和已有历史内容，命令原有断组与待处理请求消费不变。
+
+重试在原UI线程同步执行，不泵消息。最多4次、名义合计20ms的睡眠是有界等待预算，不是硬性的墙钟上限；系统计时精度与调度可能延长实际耗时，也不约束后续读取的OS延迟。此行为容忍短暂获取争用，不代表历史剪贴板失败的根因已经查明或修复；写入在`EmptyClipboard`成功后仍可能失败，不承诺恢复旧系统剪贴板内容。
+
 IME使用独立composition_id和固定起始token/替换范围；`CompositionEvent`的start/update/end/cancel以及可选result/preedit区分缺失、空和取消。Preedit拥有text/cursor/逐码元属性，只作暂态文字和选区/下划线显示；确认result进入普通编辑与历史。同事件可先确认一个片段，再开始新preedit；后段绑定更新后的token。UI请求complete/cancel的成功回报只代表平台调用成功，不能凭此合成文字。IME期间Enter/Esc先确认/取消组合，不同时提交/取消字段，终止键重复及keyup保持归属；普通焦点或选择变化取消未确认组合。结束/取消使旧绑定失效，迟到事件不能复活原组合。
 
 `UiFrame.caret`保存该帧的token、客户区物理Rect和clip。`Session::text_input()`给出当前输入token/是否组合，只有当前身份、焦点、token、Surface及组合编号/显示版本匹配时才附带已接受帧的caret；候选prepare不改变平台位置。应用据此更新系统候选位置，窗口消息逐条复制、顺序投递和执行effects，不重入UI，也不把整个poll盖上同一旧revision。

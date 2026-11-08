@@ -673,9 +673,17 @@ void Window::composition(UINT message, LPARAM flags) {
 
 ui::ClipboardResult Window::clipboard(const ui::ClipboardRequest& request) {
     ui::ClipboardResult result{request.kind, request.operation_id, request.token, false, 0, {}};
-    if (!OpenClipboard(handle_)) {
+    // Retry only acquisition, without pumping messages or repeating a clipboard write.
+    // Four 5 ms waits are a bounded budget, not a wall-clock deadline.
+    for (unsigned attempt = 0; attempt < 5; ++attempt) {
+        if (OpenClipboard(handle_)) {
+            result.native_error = 0;
+            break;
+        }
         result.native_error = native_error();
-        return result;
+        if (result.native_error != ERROR_ACCESS_DENIED || attempt == 4)
+            return result;
+        Sleep(5);
     }
     ClipboardScope close;
     const auto limit = std::min<std::size_t>(request.limit, 1024 * 1024);
