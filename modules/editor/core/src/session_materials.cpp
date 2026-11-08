@@ -1,11 +1,10 @@
 #include "editor/session.hpp"
-#include "editor/error.hpp"
 #include "editor/project.hpp"
 #include "assets/builtin_materials.hpp"
 #include "assets/material_format.hpp"
 #include "material/resources.hpp"
+#include "memory/fatal.hpp"
 #include "platform/utf.hpp"
-#include <cstdio>
 #include <cstring>
 #include <limits>
 #include <unordered_set>
@@ -16,14 +15,6 @@ auto failure(std::string text) {
     return std::unexpected(Error{ErrorCode::invalid_definition, std::move(text)});
 }
 
-template <class T>
-T take(Result<T> value) {
-    if (!value)
-        throw detail::Failure(std::move(value.error()));
-    if constexpr (!std::is_void_v<T>)
-        return std::move(*value);
-}
-
 auto stand_in(const MissingResource& item) {
     return std::unexpected(item.error);
 }
@@ -31,21 +22,17 @@ auto stand_in(const MissingResource& item) {
 // Explicit resource loads without a caller-owned issue list publish through the
 // same diagnostic queue as scene loading, not a second logging/cache owner.
 void report_resources(world::World& world, ObjectId object, std::span<const MissingResource> missing) noexcept {
-    try {
-        for (const auto& item : missing) {
-            world::Diagnostic diagnostic;
-            diagnostic.severity = world::Severity::warning;
-            diagnostic.kind = item.kind;
-            diagnostic.phase = world::DiagnosticPhase::load;
-            diagnostic.object = object;
-            diagnostic.value = item.key;
-            diagnostic.message = item.error.message;
-            diagnostic.source = item.error.source;
-            diagnostic.error_code = item.error.code;
-            world.report(std::move(diagnostic));
-        }
-    } catch (...) {
-        std::fputs("Cannot capture material resource warnings; author state is unchanged.\n", stderr);
+    for (const auto& item : missing) {
+        world::Diagnostic diagnostic;
+        diagnostic.severity = world::Severity::warning;
+        diagnostic.kind = item.kind;
+        diagnostic.phase = world::DiagnosticPhase::load;
+        diagnostic.object = object;
+        diagnostic.value = item.key;
+        diagnostic.message = item.error.message;
+        diagnostic.source = item.error.source;
+        diagnostic.error_code = item.error.code;
+        world.report(std::move(diagnostic));
     }
 }
 
@@ -89,7 +76,7 @@ material::LocalValue parameter_value(const source::MaterialParameter& parameter,
     case 4:
         return read.template operator()<math::Vector4>();
     default:
-        throw std::runtime_error("Invalid compiled material parameter shape.");
+        fatal("Invalid compiled material parameter shape.");
     }
 }
 }
@@ -234,178 +221,195 @@ Result<ObjectRoot> Session::publish_material(assets::Reader& reader, const asset
 
         ~Loading() { keys.pop_back(); }
     } loading{loading_materials_};
-    try {
-        const auto encoded = assets::material_format::encode(asset);
-        if (!encoded)
-            return failure(encoded.error().describe());
-        if (asset.key.starts_with("builtin/")) {
-            const auto installed = assets::material_assets();
-            const auto at = std::ranges::find(installed, asset.key, &assets::MaterialAsset::key);
-            if (at == installed.end())
-                return failure("An installed material key cannot be invented or its author data replaced.");
-            const auto expected = assets::material_format::encode(*at);
-            if (!expected)
-                return failure(expected.error().describe());
-            if (*expected != *encoded)
-                return failure("An installed material key cannot be invented or its author data replaced.");
-            if (exact_source) {
-                const auto* author = std::get_if<assets::MaterialSourceAsset>(&at->author);
-                const auto source = author ? assets::builtin_material_source(author->source_path) : std::nullopt;
-                if (!source || source->path != exact_source->path || source->source != exact_source->source)
-                    return failure("An installed Material Source snapshot cannot replace the installed text.");
-            }
+    const auto encoded = assets::material_format::encode(asset);
+    if (!encoded)
+        return failure(encoded.error().describe());
+    if (asset.key.starts_with("builtin/")) {
+        const auto installed = assets::material_assets();
+        const auto at = std::ranges::find(installed, asset.key, &assets::MaterialAsset::key);
+        if (at == installed.end())
+            return failure("An installed material key cannot be invented or its author data replaced.");
+        const auto expected = assets::material_format::encode(*at);
+        if (!expected)
+            return failure(expected.error().describe());
+        if (*expected != *encoded)
+            return failure("An installed material key cannot be invented or its author data replaced.");
+        if (exact_source) {
+            const auto* author = std::get_if<assets::MaterialSourceAsset>(&at->author);
+            const auto source = author ? assets::builtin_material_source(author->source_path) : std::nullopt;
+            if (!source || source->path != exact_source->path || source->source != exact_source->source)
+                return failure("An installed Material Source snapshot cannot replace the installed text.");
         }
-        MaterialDocument document;
-        document.author = asset;
-        if (const auto at = materials_.find(asset.key); at != materials_.end()) {
-            if (at->second.author.author.index() != asset.author.index())
-                return failure("Material publication cannot change its MS/MI role.");
-            document.root = at->second.root;
-        }
-        if (const auto* author = std::get_if<assets::MaterialSourceAsset>(&asset.author)) {
-            if (asset.key.empty())
-                return failure("A scene-local material must be an instance, not a Source.");
-            if (exact_source && exact_source->path != author->source_path)
-                return failure("Material Source snapshot path does not match its author record.");
-            material::SourceState state;
-            auto source_file = exact_source ? Result<source::SourceFile>(std::move(*exact_source))
-                                            : reader.source(platform::utf8_to_utf16_validated(author->source_path));
-            if (!source_file)
-                document.error = std::move(source_file.error());
-            else {
-                document.source_file = std::move(*source_file);
-                Runtime compiler;
-                take(material::register_program_types(compiler));
-                auto program = source::compile_material(compiler, take(compiler.native_type<material::Context>()),
-                                                        take(compiler.native_type<material::Output>()),
-                                                        take(compiler.native_type<material::TextureInput>()),
-                                                        document.source_file->path, document.source_file->source);
-                if (!program)
-                    document.error = std::move(program.error());
-                else {
-                    auto definition = material::make_definition(std::move(*program), author->policy, author->inputs);
-                    if (!definition)
-                        document.error = std::move(definition.error());
-                    else {
-                        state.definition = std::move(*definition);
-                        for (const auto& input : state.definition->textures())
-                            state.default_textures.push_back(
-                                input.binding.asset_key.empty()
-                                    ? ObjectRoot{}
-                                    : take(texture_resource(reader, input.binding.asset_key, missing,
-                                                            state.default_textures.size())));
-                    }
-                }
-            }
-            if (document.error) {
-                auto& error = *document.error;
-                // Only associate a saved file when the cause identifies this
-                // exact input; a business callback may refer to another source.
-                if (error.source && document.source_file && error.source->disk_path.empty() &&
-                    error.source->path == document.source_file->path &&
-                    error.source->version == document.source_file->version)
-                    error.source->disk_path = document.source_file->disk_path;
-                document.diagnostics.push_back({author->source_path, error.message});
-                if (!missing)
-                    return std::unexpected(error);
-                missing->push_back({asset.key, error, std::nullopt, world::DiagnosticKind::unreadable_resource});
-            }
-            // A cold fallback (or an absent declaration) may have left enabled
-            // child bindings unresolved. Prepare those roots against the new
-            // declaration without replacing child authors, history or images.
-            std::vector<std::pair<ObjectRoot, material::InstanceState>> children;
-            if (document.root.registered() && state.definition) {
-                const auto instance_type = take(runtime_.native_type<material::MaterialInstance>());
-                const auto prepare_child = [&](ObjectId object) {
-                    const auto type = runtime_.type_of(object);
-                    if (!type || !take(runtime_.is_a(*type, instance_type)))
-                        return;
-                    auto child = take(material::read_instance(runtime_, object));
-                    auto parent = child.parent;
-                    while (parent.registered() && parent.id() != document.root.id()) {
-                        const auto parent_type = runtime_.type_of(parent.id());
-                        if (!parent_type || !take(runtime_.is_a(*parent_type, instance_type)))
-                            return;
-                        parent = take(material::read_instance(runtime_, parent.id())).parent;
-                    }
-                    if (!parent.registered())
-                        return;
-                    bool changed = false;
-                    for (std::size_t i = 0; i < child.entries.size(); ++i) {
-                        const auto& entry = child.entries[i];
-                        const auto* texture = std::get_if<material::TextureBinding>(&entry.value);
-                        if (!entry.enabled || !texture || texture->asset_key.empty() || child.textures[i].registered())
-                            continue;
-                        if (std::ranges::find(state.definition->textures(), entry.path,
-                                              &material::TextureDefault::path) == state.definition->textures().end())
-                            continue;
-                        child.textures[i] = take(texture_resource(reader, texture->asset_key, missing, i));
-                        changed = true;
-                    }
-                    if (changed)
-                        children.emplace_back(take(runtime_.hold(object)), std::move(child));
-                };
-                for (const auto& [key, child] : materials_) {
-                    static_cast<void>(key);
-                    prepare_child(child.root.id());
-                }
-                for (const auto& [object, parent] : scene_material_parents_) {
-                    static_cast<void>(parent);
-                    prepare_child(object);
-                }
-            }
-            if (document.root.registered())
-                take(material::update_source(runtime_, document.root.id(), state));
-            else
-                document.root = take(material::create_source(runtime_, asset.key, state));
-            for (const auto& [child, prepared] : children)
-                take(material::update_instance(runtime_, child.id(), prepared));
-        } else {
-            if (exact_source)
-                return failure("A Material Instance cannot carry Source text.");
-            const auto& instance_author = std::get<assets::MaterialInstanceAsset>(asset.author);
-            if (instance_author.parent_key.empty())
-                return failure("A material asset instance requires its parent's asset key.");
-            material::InstanceState state;
-            state.parent = take(material_resource(reader, instance_author.parent_key, missing));
-            state.entries = instance_author.entries;
-            const auto parent = take(material::capture_program(runtime_, state.parent.id()));
-            for (const auto& entry : state.entries) {
-                const auto* texture = std::get_if<material::TextureBinding>(&entry.value);
-                const bool declared =
-                    !parent->uses_default_material() &&
-                    std::ranges::find(parent->definition()->textures(), entry.path, &material::TextureDefault::path) !=
-                        parent->definition()->textures().end();
-                state.textures.push_back(
-                    !entry.enabled || !declared || !texture || texture->asset_key.empty()
-                        ? ObjectRoot{}
-                        : take(texture_resource(reader, texture->asset_key, missing, state.textures.size())));
-            }
-            if (document.root.registered())
-                take(material::update_instance(runtime_, document.root.id(), state));
-            else
-                document.root = take(material::create_instance(runtime_, asset.key, state));
-            document.saved = instance_author.entries;
-        }
-        auto root = document.root;
-        if (asset.key.empty())
-            scene_material_parents_.emplace(root.id(),
-                                            std::get<assets::MaterialInstanceAsset>(asset.author).parent_key);
-        else {
-            // Recursive parent loads can rehash the map; only look it up again now.
-            if (const auto at = materials_.find(asset.key); at != materials_.end()) {
-                document.history = std::move(at->second.history);
-                document.cursor = at->second.cursor;
-            }
-            materials_.insert_or_assign(asset.key, std::move(document));
-            unavailable_.erase(std::pair{assets::AssetKind::material, asset.key});
-        }
-        ++revision_;
-        forward_material(root.id());
-        return root;
-    } catch (const std::exception& error) {
-        return std::unexpected(detail::caught_error(error, ErrorCode::invalid_definition));
     }
+    MaterialDocument document;
+    document.author = asset;
+    if (const auto at = materials_.find(asset.key); at != materials_.end()) {
+        if (at->second.author.author.index() != asset.author.index())
+            return failure("Material publication cannot change its MS/MI role.");
+        document.root = at->second.root;
+    }
+    if (const auto* author = std::get_if<assets::MaterialSourceAsset>(&asset.author)) {
+        if (asset.key.empty())
+            return failure("A scene-local material must be an instance, not a Source.");
+        if (exact_source && exact_source->path != author->source_path)
+            return failure("Material Source snapshot path does not match its author record.");
+        material::SourceState state;
+        auto source_file = exact_source ? Result<source::SourceFile>(std::move(*exact_source))
+                                        : reader.source(platform::utf8_to_utf16_validated(author->source_path));
+        if (!source_file)
+            document.error = std::move(source_file.error());
+        else {
+            document.source_file = std::move(*source_file);
+            Runtime compiler;
+            ATELIER_TRY(material::register_program_types(compiler));
+            ATELIER_TRY_BIND(context_type, compiler.native_type<material::Context>());
+            ATELIER_TRY_BIND(output_type, compiler.native_type<material::Output>());
+            ATELIER_TRY_BIND(texture_type, compiler.native_type<material::TextureInput>());
+            auto program = source::compile_material(compiler, *context_type, *output_type, *texture_type,
+                                                    document.source_file->path, document.source_file->source);
+            if (!program)
+                document.error = std::move(program.error());
+            else {
+                auto definition = material::make_definition(std::move(*program), author->policy, author->inputs);
+                if (!definition)
+                    document.error = std::move(definition.error());
+                else {
+                    state.definition = std::move(*definition);
+                    for (const auto& input : state.definition->textures()) {
+                        ObjectRoot root;
+                        if (!input.binding.asset_key.empty()) {
+                            ATELIER_TRY_BIND(texture, texture_resource(reader, input.binding.asset_key, missing,
+                                                                       state.default_textures.size()));
+                            root = std::move(*texture);
+                        }
+                        state.default_textures.push_back(std::move(root));
+                    }
+                }
+            }
+        }
+        if (document.error) {
+            auto& error = *document.error;
+            // Only associate a saved file when the cause identifies this
+            // exact input; a business callback may refer to another source.
+            if (error.source && document.source_file && error.source->disk_path.empty() &&
+                error.source->path == document.source_file->path &&
+                error.source->version == document.source_file->version)
+                error.source->disk_path = document.source_file->disk_path;
+            document.diagnostics.push_back({author->source_path, error.message});
+            if (!missing)
+                return std::unexpected(error);
+            missing->push_back({asset.key, error, std::nullopt, world::DiagnosticKind::unreadable_resource});
+        }
+        // A cold fallback (or an absent declaration) may have left enabled
+        // child bindings unresolved. Prepare those roots against the new
+        // declaration without replacing child authors, history or images.
+        std::vector<std::pair<ObjectRoot, material::InstanceState>> children;
+        if (document.root.registered() && state.definition) {
+            ATELIER_TRY_BIND(instance_type, runtime_.native_type<material::MaterialInstance>());
+            const auto prepare_child = [&](ObjectId object) -> Result<void> {
+                const auto type = runtime_.type_of(object);
+                if (!type)
+                    return {};
+                ATELIER_TRY_BIND(is_instance, runtime_.is_a(*type, *instance_type));
+                if (!*is_instance)
+                    return {};
+                ATELIER_TRY_BIND(child, material::read_instance(runtime_, object));
+                auto parent = child->parent;
+                while (parent.registered() && parent.id() != document.root.id()) {
+                    const auto parent_type = runtime_.type_of(parent.id());
+                    if (!parent_type)
+                        return {};
+                    ATELIER_TRY_BIND(parent_is_instance, runtime_.is_a(*parent_type, *instance_type));
+                    if (!*parent_is_instance)
+                        return {};
+                    ATELIER_TRY_BIND(parent_state, material::read_instance(runtime_, parent.id()));
+                    parent = std::move(parent_state->parent);
+                }
+                if (!parent.registered())
+                    return {};
+                bool changed = false;
+                for (std::size_t i = 0; i < child->entries.size(); ++i) {
+                    const auto& entry = child->entries[i];
+                    const auto* texture = std::get_if<material::TextureBinding>(&entry.value);
+                    if (!entry.enabled || !texture || texture->asset_key.empty() || child->textures[i].registered())
+                        continue;
+                    if (std::ranges::find(state.definition->textures(), entry.path, &material::TextureDefault::path) ==
+                        state.definition->textures().end())
+                        continue;
+                    ATELIER_TRY_BIND(root, texture_resource(reader, texture->asset_key, missing, i));
+                    child->textures[i] = std::move(*root);
+                    changed = true;
+                }
+                if (changed) {
+                    ATELIER_TRY_BIND(root, runtime_.hold(object));
+                    children.emplace_back(std::move(*root), std::move(*child));
+                }
+                return {};
+            };
+            for (const auto& [key, child] : materials_) {
+                static_cast<void>(key);
+                ATELIER_TRY(prepare_child(child.root.id()));
+            }
+            for (const auto& [object, parent] : scene_material_parents_) {
+                static_cast<void>(parent);
+                ATELIER_TRY(prepare_child(object));
+            }
+        }
+        if (document.root.registered())
+            ATELIER_TRY(material::update_source(runtime_, document.root.id(), state));
+        else {
+            ATELIER_TRY_BIND(root, material::create_source(runtime_, asset.key, state));
+            document.root = std::move(*root);
+        }
+        for (const auto& [child, prepared] : children)
+            ATELIER_TRY(material::update_instance(runtime_, child.id(), prepared));
+    } else {
+        if (exact_source)
+            return failure("A Material Instance cannot carry Source text.");
+        const auto& instance_author = std::get<assets::MaterialInstanceAsset>(asset.author);
+        if (instance_author.parent_key.empty())
+            return failure("A material asset instance requires its parent's asset key.");
+        material::InstanceState state;
+        ATELIER_TRY_BIND(parent_root, material_resource(reader, instance_author.parent_key, missing));
+        state.parent = std::move(*parent_root);
+        state.entries = instance_author.entries;
+        ATELIER_TRY_BIND(parent, material::capture_program(runtime_, state.parent.id()));
+        for (const auto& entry : state.entries) {
+            const auto* texture = std::get_if<material::TextureBinding>(&entry.value);
+            const bool declared =
+                !(*parent)->uses_default_material() &&
+                std::ranges::find((*parent)->definition()->textures(), entry.path, &material::TextureDefault::path) !=
+                    (*parent)->definition()->textures().end();
+            ObjectRoot root;
+            if (entry.enabled && declared && texture && !texture->asset_key.empty()) {
+                ATELIER_TRY_BIND(loaded, texture_resource(reader, texture->asset_key, missing, state.textures.size()));
+                root = std::move(*loaded);
+            }
+            state.textures.push_back(std::move(root));
+        }
+        if (document.root.registered())
+            ATELIER_TRY(material::update_instance(runtime_, document.root.id(), state));
+        else {
+            ATELIER_TRY_BIND(root, material::create_instance(runtime_, asset.key, state));
+            document.root = std::move(*root);
+        }
+        document.saved = instance_author.entries;
+    }
+    auto root = document.root;
+    if (asset.key.empty())
+        scene_material_parents_.emplace(root.id(), std::get<assets::MaterialInstanceAsset>(asset.author).parent_key);
+    else {
+        // Recursive parent loads can rehash the map; only look it up again now.
+        if (const auto at = materials_.find(asset.key); at != materials_.end()) {
+            document.history = std::move(at->second.history);
+            document.cursor = at->second.cursor;
+        }
+        materials_.insert_or_assign(asset.key, std::move(document));
+        unavailable_.erase(std::pair{assets::AssetKind::material, asset.key});
+    }
+    ++revision_;
+    forward_material(root.id());
+    return root;
 }
 
 Result<std::vector<presentation::MaterialBinding>>
@@ -481,73 +485,71 @@ std::vector<source::SourceFile> Session::material_sources() const {
 }
 
 Result<MaterialView> Session::inspect_material(ObjectId object) const {
-    try {
-        auto& runtime = world_.runtime();
-        const auto asset = take(material_asset(object));
-        const auto surface = take(material::capture_program(runtime, object));
-        MaterialView view;
-        view.asset_key = asset.key;
-        view.scene = asset.key.empty();
-        view.source = std::holds_alternative<assets::MaterialSourceAsset>(asset.author);
-        view.default_material = surface->uses_default_material();
-        view.diagnostics.assign(surface->diagnostics().begin(), surface->diagnostics().end());
-        if (const auto* instance = std::get_if<assets::MaterialInstanceAsset>(&asset.author)) {
-            view.parent_key = instance->parent_key;
-            view.entries = instance->entries;
-        }
-        std::vector<material::InstanceState> chain;
-        std::unordered_set<ObjectId> visited;
-        auto current = object;
-        for (;;) {
-            if (!visited.insert(current).second)
-                return failure("Material parent cycle during inspection.");
-            const auto key = take(material::material_key(runtime, current));
-            if (const auto at = materials_.find(key); at != materials_.end()) {
-                view.diagnostics.insert(view.diagnostics.end(), at->second.diagnostics.begin(),
-                                        at->second.diagnostics.end());
-                if (at->second.source_file)
-                    view.source_file = at->second.source_file;
-            }
-            const auto type = take(runtime.type_of(current));
-            if (take(runtime.is_a(type, take(runtime.native_type<material::MaterialSource>()))))
-                break;
-            auto state = take(material::read_instance(runtime, current));
-            const auto parent = state.parent.id();
-            chain.push_back(std::move(state));
-            if (parent == ObjectId{} || !runtime.type_of(parent))
-                break;
-            current = parent;
-        }
-        if (view.default_material)
-            return view;
-        for (const auto& parameter : surface->program().parameters())
-            view.declarations.push_back({parameter.key, parameter.components,
-                                         parameter_value(parameter, surface->parameters()),
-                                         parameter_value(parameter, surface->program().default_parameters())});
-        for (const auto& input : surface->definition()->textures()) {
-            auto binding = input.binding;
-            for (auto at = chain.rbegin(); at != chain.rend(); ++at)
-                for (std::size_t i = 0; i < at->entries.size(); ++i) {
-                    const auto& entry = at->entries[i];
-                    if (entry.path != input.path || !entry.enabled)
-                        continue;
-                    const auto* value = std::get_if<material::TextureBinding>(&entry.value);
-                    if (!value)
-                        continue;
-                    if (value->asset_key.empty())
-                        binding = *value;
-                    else if (at->textures[i].registered()) {
-                        auto texture = material::read_texture(runtime, at->textures[i].id());
-                        if (texture && texture->image)
-                            binding = *value;
-                    }
-                }
-            view.declarations.push_back({input.path, 0, binding, input.binding});
-        }
-        return view;
-    } catch (const std::exception& error) {
-        return std::unexpected(detail::caught_error(error, ErrorCode::invalid_definition));
+    auto& runtime = world_.runtime();
+    ATELIER_TRY_BIND(asset, material_asset(object));
+    ATELIER_TRY_BIND(surface, material::capture_program(runtime, object));
+    MaterialView view;
+    view.asset_key = asset->key;
+    view.scene = asset->key.empty();
+    view.source = std::holds_alternative<assets::MaterialSourceAsset>(asset->author);
+    view.default_material = (*surface)->uses_default_material();
+    view.diagnostics.assign((*surface)->diagnostics().begin(), (*surface)->diagnostics().end());
+    if (const auto* instance = std::get_if<assets::MaterialInstanceAsset>(&asset->author)) {
+        view.parent_key = instance->parent_key;
+        view.entries = instance->entries;
     }
+    std::vector<material::InstanceState> chain;
+    std::unordered_set<ObjectId> visited;
+    auto current = object;
+    for (;;) {
+        if (!visited.insert(current).second)
+            return failure("Material parent cycle during inspection.");
+        ATELIER_TRY_BIND(key, material::material_key(runtime, current));
+        if (const auto at = materials_.find(*key); at != materials_.end()) {
+            view.diagnostics.insert(view.diagnostics.end(), at->second.diagnostics.begin(),
+                                    at->second.diagnostics.end());
+            if (at->second.source_file)
+                view.source_file = at->second.source_file;
+        }
+        ATELIER_TRY_BIND(type, runtime.type_of(current));
+        ATELIER_TRY_BIND(source_type, runtime.native_type<material::MaterialSource>());
+        ATELIER_TRY_BIND(is_source, runtime.is_a(*type, *source_type));
+        if (*is_source)
+            break;
+        ATELIER_TRY_BIND(state, material::read_instance(runtime, current));
+        const auto parent = state->parent.id();
+        chain.push_back(std::move(*state));
+        if (parent == ObjectId{} || !runtime.type_of(parent))
+            break;
+        current = parent;
+    }
+    if (view.default_material)
+        return view;
+    for (const auto& parameter : (*surface)->program().parameters())
+        view.declarations.push_back({parameter.key, parameter.components,
+                                     parameter_value(parameter, (*surface)->parameters()),
+                                     parameter_value(parameter, (*surface)->program().default_parameters())});
+    for (const auto& input : (*surface)->definition()->textures()) {
+        auto binding = input.binding;
+        for (auto at = chain.rbegin(); at != chain.rend(); ++at)
+            for (std::size_t i = 0; i < at->entries.size(); ++i) {
+                const auto& entry = at->entries[i];
+                if (entry.path != input.path || !entry.enabled)
+                    continue;
+                const auto* value = std::get_if<material::TextureBinding>(&entry.value);
+                if (!value)
+                    continue;
+                if (value->asset_key.empty())
+                    binding = *value;
+                else if (at->textures[i].registered()) {
+                    auto texture = material::read_texture(runtime, at->textures[i].id());
+                    if (texture && texture->image)
+                        binding = *value;
+                }
+            }
+        view.declarations.push_back({input.path, 0, binding, input.binding});
+    }
+    return view;
 }
 
 std::vector<ObjectId> Session::material_objects() const {
