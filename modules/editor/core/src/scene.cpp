@@ -2929,8 +2929,7 @@ struct Session::GraphCodec {
                         material::Image::create(static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height),
                                                 std::vector<std::uint8_t>(rgba->begin(), rgba->end()));
                     if (!image) {
-                        note(world::Severity::error, world::DiagnosticKind::command_rejected, image.error().message,
-                             &image.error());
+                        note(world::Severity::error, world::DiagnosticKind::command_rejected, image.error().message);
                         return {};
                     }
                     take(session.publish_texture(key, std::move(*image)));
@@ -2949,8 +2948,7 @@ struct Session::GraphCodec {
                     }
                     auto mesh = assets::mesh_format::decode(*bytes);
                     if (!mesh) {
-                        note(world::Severity::error, world::DiagnosticKind::command_rejected, mesh.error().message,
-                             &mesh.error());
+                        note(world::Severity::error, world::DiagnosticKind::command_rejected, mesh.error().message);
                         return {};
                     }
                     if (mesh->key != key)
