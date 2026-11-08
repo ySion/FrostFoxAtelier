@@ -97,6 +97,12 @@ LLVM 后端采用 `/MT`，其 CRT 信号状态独立：在现有后端初始化�
 
 自有目标最终统一 `/EHs-c-` 与 `_HAS_EXCEPTIONS=0`，不留下长期开异常的自有包装目标或异常兼容层。两者分别控制编译器与 MSVC STL 头文件，不能相互替代，也不会改写预编译库；同一链接模块内的头文件配置一致，配置在 PCH 和首次 include 前生效。使用 CMake 目标级配置，不把自有禁异常选项全局泄漏给保持上游构建的依赖。oneTBB 的获准例外及所需边界只在 [oneTBB 二进制边界](foundation.md#onetbb-二进制边界)定义。
 
+第三方源码依赖确有必要时允许修改。改动必须有实际收益：消除异常岛、兼容层、消费侧绕行或重复逻辑，或者修正影响本项目的缺陷。方案须写明上游版本、改动范围及升级时的重放方式，不为非必要的诊断或个人偏好修改第三方。
+
+小而局部的改动沿用现有机制：锁定上游版本，在 `third_party/<库>/atelier.patch` 维护可重放补丁，参见 [quill](../third_party/quill/atelier.patch)、[gfx](../third_party/gfx/atelier.patch)、[mimalloc](../third_party/mimalloc/atelier.patch)。改动较大或需要长期维护时，在项目组织下建立 fork，由 [dependencies-lock.json](../cmake/dependencies-lock.json) 锁定 fork 的提交和下载内容校验值。补丁和 fork 均照常复制许可证并遵守其要求。
+
+LLVM、DXC、Agility 等预编译二进制若需修改，必须具备可修改的源码并自行构建替代产物，单独评估源码可得性、许可、构建和维护成本；消费侧编译开关不能改写既有二进制。
+
 仍有可恢复失败的标准库调用改用显式错误入口，例如 filesystem 的 `error_code` 重载、整数解析的 `from_chars`；路径转换和其他隐含分配另按 CPU 分配合同处理。不得用 `stoi` 或必抛的越界访问承载输入验证。`_HAS_EXCEPTIONS=0` 不保证预编译 STL 的 `_Xlength_error`、`_Throw_Cpp_error` 等变成不抛异常，需避开可恢复路径上的这些调用；无法继续的二进制故障才交给 terminate。
 
 JSON 的非法输入通过公开无异常解析/校验通道返回错误，保留大小、深度、重名键及 UTF-8 约束，不能把 parser abort 当作输入拒绝。LLVM 的 `Error/Expected` 保持显式传递而非再包装成 throw；保留现有 `/MT` 隔离 DLL、固定 ABI、创建方释放规则和 Windows unwind 元数据。WIC、DXC、gfx 及系统边界沿各自 HRESULT、状态或句柄；其公开错误不自动等于宿主堆耗尽。不要求未知第三方二进制内部没有 EH，只要求本项目不借其异常恢复业务或跨自有模块传错。
