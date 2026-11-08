@@ -6,7 +6,6 @@
 
 #include <array>
 #include <cstring>
-#include <exception>
 #include <iostream>
 #include <new>
 #include <utility>
@@ -731,8 +730,6 @@ struct ReentrantValue {
 
     static inline bool inside{};
 
-    static inline bool failed{};
-
     static inline std::size_t calls{};
 
     static void run() noexcept {
@@ -740,11 +737,7 @@ struct ReentrantValue {
             return;
         inside = true;
         ++calls;
-        try {
-            exercise(context);
-        } catch (...) {
-            failed = true;
-        }
+        exercise(context);
         inside = false;
     }
 
@@ -806,7 +799,7 @@ void verify_deep_value_walks() {
     take(runtime.initialize_value(deep, source));
     take(runtime.copy_construct_value(deep, destination, source));
     take(runtime.assign_value(deep, destination, source));
-    require(!ReentrantValue::failed && ReentrantValue::calls == 3 && ValueResource::live == 4,
+    require(ReentrantValue::calls == 3 && ValueResource::live == 4,
             "Reentrant value operations damaged their enclosing walk.");
     auto strong = take(runtime.create(types[2]));
     auto weak = take(runtime.create(types[2]));
@@ -866,7 +859,7 @@ void verify_deep_value_walks() {
     require(runtime.live_objects() == 0, "Unrooted value graph survived a fresh collection.");
     take(runtime.destroy_value(deep, destination));
     take(runtime.destroy_value(deep, source));
-    require(ValueResource::live == 0 && !ReentrantValue::failed, "Reentrant destruction leaked resources.");
+    require(ValueResource::live == 0, "Reentrant destruction leaked resources.");
     ReentrantValue::exercise = nullptr;
     ReentrantValue::context = nullptr;
     std::cout << "[pass] Nested reentrant value walks recover from visitor failure and release their graph\n";
@@ -951,30 +944,25 @@ void verify_write_stamps();
 
 int main() {
     atelier::install_fatal_handler();
-    try {
-        atelier::acceptance::verify_default_allocator();
-        verify_registration_text();
-        verify_method_results();
-        verify_root_handles();
-        verify_value_operations();
-        verify_collection_cycle();
-        verify_late_registration();
-        verify_collection_mutations();
-        verify_collection_value_mutations();
-        verify_collection_cursor_lifetimes();
-        verify_locator_boundaries();
-        verify_deep_value_walks();
-        verify_native_member_address();
-        verify_runtime_inheritance();
-        verify_reference_sequences();
-        verify_field_ranges();
-        verify_array_elements();
-        verify_value_paths();
-        verify_write_stamps();
-        std::cout << "Runtime acceptance: PASS\n";
-        return 0;
-    } catch (const std::exception& error) {
-        std::cerr << "Runtime acceptance: FAIL: " << error.what() << '\n';
-        return 1;
-    }
+    atelier::acceptance::verify_default_allocator();
+    verify_registration_text();
+    verify_method_results();
+    verify_root_handles();
+    verify_value_operations();
+    verify_collection_cycle();
+    verify_late_registration();
+    verify_collection_mutations();
+    verify_collection_value_mutations();
+    verify_collection_cursor_lifetimes();
+    verify_locator_boundaries();
+    verify_deep_value_walks();
+    verify_native_member_address();
+    verify_runtime_inheritance();
+    verify_reference_sequences();
+    verify_field_ranges();
+    verify_array_elements();
+    verify_value_paths();
+    verify_write_stamps();
+    std::cout << "Runtime acceptance: PASS\n";
+    return 0;
 }

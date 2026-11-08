@@ -1,5 +1,6 @@
 #include "acceptance.hpp"
 #include "crt_client.hpp"
+#include "../helpers.hpp"
 
 #include <mimalloc.h>
 
@@ -7,16 +8,12 @@
 #include <cstdlib>
 #include <iostream>
 #include <memory>
-#include <stdexcept>
 #include <thread>
 
 namespace atelier::acceptance {
 namespace {
 
-void require(bool condition, const char* message) {
-    if (!condition)
-        throw std::runtime_error(message);
-}
+using helpers::require;
 
 void require_mimalloc(const void* block) {
     require(block != nullptr && mi_is_in_heap_region(block), "Default allocation did not reach mimalloc.");
@@ -46,7 +43,7 @@ void verify_default_allocator() {
     void* resized = atelier_crt_resize(block, 4096);
     if (!resized) {
         std::free(block);
-        throw std::runtime_error("Cross-DLL realloc failed.");
+        fatal("Cross-DLL realloc failed.");
     }
     require_mimalloc(resized);
     require(static_cast<std::uint64_t*>(resized)[0] == 123, "Cross-DLL realloc lost contents.");

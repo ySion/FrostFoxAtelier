@@ -5,7 +5,6 @@
 #include <array>
 #include <cstdio>
 #include <memory>
-#include <stdexcept>
 
 void verify_associative_containers();
 
@@ -155,18 +154,13 @@ void reflection_workload() {
 
 int main() {
     atelier::install_fatal_handler();
-    try {
-        native_workload();
-        reflection_workload();
-        verify_associative_containers();
-        verify_container_lifecycle();
-        verify_frame_timing();
-        verify_tasks();
-        std::puts(
-            "Foundation acceptance: PASS (owning aliases, failure cleanup, shared lifetime, GC, frame timing, tasks)");
-        return 0;
-    } catch (const std::exception& error) {
-        std::fprintf(stderr, "Foundation acceptance: FAIL: %s\n", error.what());
-        return 1;
-    }
+    native_workload();
+    reflection_workload();
+    verify_associative_containers();
+    verify_container_lifecycle();
+    verify_frame_timing();
+    verify_tasks();
+    std::puts(
+        "Foundation acceptance: PASS (owning aliases, failure cleanup, shared lifetime, GC, frame timing, tasks)");
+    return 0;
 }

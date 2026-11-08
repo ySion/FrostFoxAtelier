@@ -126,10 +126,12 @@ void before_step_exit(bool close) {
     f.scene->on_before_step({});
     f.scene->on_after_step({});
     require(exits == 1, "before-step did not complete exactly one requested World exit");
-    if (!updated)
-        throw std::runtime_error(std::string(close ? "successful before-step close made update fail: "
-                                                   : "successful before-step stop made update fail: ") +
-                                 updated.error().message);
+    if (!updated) {
+        char message[1024];
+        std::snprintf(message, sizeof(message), "successful before-step %s made update fail: %s",
+                      close ? "close" : "stop", updated.error().message.c_str());
+        atelier::fatal(message);
+    }
     require(!f.world.running() && f.world.closed() == close && f.scene->body_count() == 0 &&
                 !f.scene->read_body_state(handle),
             "successful before-step exit retained World participation or a physical body");

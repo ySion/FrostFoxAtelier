@@ -1,29 +1,22 @@
 #include "foundation/array.hpp"
 #include "foundation/optional.hpp"
 #include "foundation/shared_array.hpp"
+#include "../helpers.hpp"
 
 #include <array>
 #include <atomic>
-#include <cstdio>
-#include <cstdlib>
 #include <memory>
-#include <stdexcept>
 #include <thread>
 
 namespace {
 using namespace atelier;
 
-void require(bool condition, const char* message) {
-    if (!condition)
-        throw std::runtime_error(message);
-}
+using acceptance::helpers::require;
 
 // Diagnose the lifetime violation before accessing the destroyed nested source.
 void require_detached(bool watched, bool empty) noexcept {
-    if (watched && !empty) {
-        std::fputs("Owned move source was destroyed before its storage was transferred.\n", stderr);
-        std::exit(EXIT_FAILURE);
-    }
+    if (watched && !empty)
+        fatal("Owned move source was destroyed before its storage was transferred.");
 }
 
 struct ArrayOwner {

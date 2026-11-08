@@ -1,4 +1,5 @@
 #include "memory/fatal.hpp"
+#include "../helpers.hpp"
 #include "material/program_resources.hpp"
 #include "material/resources.hpp"
 
@@ -12,18 +13,7 @@ using namespace atelier::material;
 
 using Program = std::shared_ptr<const source::MaterialProgram>;
 
-void require(bool condition, const char* message) {
-    if (!condition)
-        throw std::runtime_error(message);
-}
-
-template <class T>
-T take(Result<T> value) {
-    if (!value)
-        throw std::runtime_error(value.error().message);
-    if constexpr (!std::is_void_v<T>)
-        return std::move(*value);
-}
+using namespace atelier::acceptance::helpers;
 
 void near(float actual, float expected) {
     require(std::isfinite(actual) && std::abs(actual - expected) < 2e-6f,
@@ -651,17 +641,12 @@ void capture_dependencies() {
 
 int main() {
     atelier::install_fatal_handler();
-    try {
-        resources();
-        ownership_and_filtering();
-        whole_material_fallback();
-        fallback_boundaries();
-        capture_dependencies();
-        std::puts(
-            "Material resources: PASS (MS/MI/MI, sparse intent, typed/default fallback, ancestor diagnostics, destruction/recovery, structural rejection, const capture, owning CPU/HLSL surface; GPU group adoption not covered)");
-        return 0;
-    } catch (const std::exception& error) {
-        std::fprintf(stderr, "Material resources: FAIL: %s\n", error.what());
-        return 1;
-    }
+    resources();
+    ownership_and_filtering();
+    whole_material_fallback();
+    fallback_boundaries();
+    capture_dependencies();
+    std::puts(
+        "Material resources: PASS (MS/MI/MI, sparse intent, typed/default fallback, ancestor diagnostics, destruction/recovery, structural rejection, const capture, owning CPU/HLSL surface; GPU group adoption not covered)");
+    return 0;
 }

@@ -8,10 +8,8 @@
 #include <algorithm>
 #include <bit>
 #include <cmath>
-#include <cstdlib>
 #include <cstring>
 #include <cstdio>
-#include <stdexcept>
 #include <tuple>
 
 namespace {
@@ -26,7 +24,7 @@ using namespace atelier::acceptance::helpers;
 void committed(Result<w::Commit> result) {
     const auto commit = take(std::move(result));
     if (commit.notification_error)
-        throw std::runtime_error(commit.notification_error->message);
+        fatal(commit.notification_error->message);
 }
 
 template <class T>
@@ -586,26 +584,16 @@ void isolated_failures() {
     take(world.set_transform(g.id(), {{0, 5, 0}, {}, {1, 1, 1}}));
     const auto before_failure = take(w::read_transform(runtime, g.id()));
     fail_relocation = true;
-    try {
-        const auto rejected_relocation = world.set_transform(g.id(), {{2, 9, -3}, {0, 0, 1, 0}, {2, 3, 4}});
-        require(!rejected_relocation && world.running() && take(w::read_transform(runtime, g.id())) == before_failure,
-                "A relocation failure changed the TRS or stopped the World.");
-        fail_relocation = false;
-        const w::Trs after_failure{{-2, 6, 3}, {}, {1, 2, 1}};
-        take(world.set_transform(g.id(), after_failure));
-        require(take(w::read_transform(runtime, g.id())) == after_failure,
-                "An edit after a relocation failure did not publish its transform.");
-    } catch (const std::exception& exception) {
-        // A broken relocation guard also blocks World destruction. Preserve the
-        // first failure and exit nonzero without unwinding through that World.
-        std::fprintf(stderr, "World acceptance: FAIL (relocation failure recovery): %s\n", exception.what());
-        std::fflush(nullptr);
-        std::_Exit(EXIT_FAILURE);
-    } catch (...) {
-        std::fputs("World acceptance: FAIL (relocation failure recovery): unknown exception\n", stderr);
-        std::fflush(nullptr);
-        std::_Exit(EXIT_FAILURE);
-    }
+    // Failed acceptance checks terminate without unwinding through a potentially
+    // broken relocation guard; the expected Result failure remains recoverable.
+    const auto rejected_relocation = world.set_transform(g.id(), {{2, 9, -3}, {0, 0, 1, 0}, {2, 3, 4}});
+    require(!rejected_relocation && world.running() && take(w::read_transform(runtime, g.id())) == before_failure,
+            "A relocation failure changed the TRS or stopped the World.");
+    fail_relocation = false;
+    const w::Trs after_failure{{-2, 6, 3}, {}, {1, 2, 1}};
+    take(world.set_transform(g.id(), after_failure));
+    require(take(w::read_transform(runtime, g.id())) == after_failure,
+            "An edit after a relocation failure did not publish its transform.");
     events.clear();
     committed(world.stop());
     require(events == std::vector<Event>{{'E', m_id}, {'E', d_id}, {'E', c_id}, {'E', b_id}, {'E', a_id}},
@@ -669,30 +657,25 @@ void spatial_tree_and_mesh() {
 
 int main() {
     atelier::install_fatal_handler();
-    try {
-        editing_and_execution();
-        reference_lifetime();
-        worlds_and_requests();
-        lifecycle_subscription_unsubscribe();
-        failures_and_reentry();
-        ordered_lifecycle();
-        isolated_failures();
-        entity_lifecycle_and_detached_graph();
-        spatial_tree_and_mesh();
-        static_mesh_entity_creation();
-        environment_and_group_writes();
-        material_dependency_updates();
-        hierarchical_lifecycle();
-        hierarchical_reference_lifetime();
-        hierarchical_space_boundaries();
-        forest_publication();
-        attachment_space_and_authoring();
-        mirrored_and_degenerate_space();
-        frame_phases();
-        std::puts("World acceptance: PASS (19/19)");
-        return 0;
-    } catch (const std::exception& exception) {
-        std::fprintf(stderr, "World acceptance: FAIL: %s\n", exception.what());
-        return 1;
-    }
+    editing_and_execution();
+    reference_lifetime();
+    worlds_and_requests();
+    lifecycle_subscription_unsubscribe();
+    failures_and_reentry();
+    ordered_lifecycle();
+    isolated_failures();
+    entity_lifecycle_and_detached_graph();
+    spatial_tree_and_mesh();
+    static_mesh_entity_creation();
+    environment_and_group_writes();
+    material_dependency_updates();
+    hierarchical_lifecycle();
+    hierarchical_reference_lifetime();
+    hierarchical_space_boundaries();
+    forest_publication();
+    attachment_space_and_authoring();
+    mirrored_and_degenerate_space();
+    frame_phases();
+    std::puts("World acceptance: PASS (19/19)");
+    return 0;
 }

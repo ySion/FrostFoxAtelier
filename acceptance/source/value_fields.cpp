@@ -5,7 +5,6 @@
 #include <array>
 #include <cstdio>
 #include <new>
-#include <stdexcept>
 
 namespace {
 using namespace atelier;
@@ -18,7 +17,7 @@ const FieldInfo& field(const TypeInfo& type, std::string_view name) {
     for (const auto& value : type.fields)
         if (value.name == name)
             return value;
-    throw std::runtime_error("Missing composed source field.");
+    fatal("Missing composed source field.");
 }
 
 struct StoredValue {
@@ -34,15 +33,14 @@ struct StoredValue {
         const auto result = runtime.initialize_value(id, {data, type.size});
         if (!result) {
             ::operator delete(data, std::align_val_t{type.alignment});
-            throw std::runtime_error(result.error().message);
+            fatal(result.error().message);
         }
     }
 
     StoredValue(const StoredValue&) = delete;
 
     ~StoredValue() {
-        if (!runtime.destroy_value(type.id, {data, type.size}))
-            std::terminate();
+        take(runtime.destroy_value(type.id, {data, type.size}));
         ::operator delete(data, std::align_val_t{type.alignment});
     }
 

@@ -97,25 +97,20 @@ void verify_failed_borrow(Runtime& runtime) {
 
 int main() {
     atelier::install_fatal_handler();
-    try {
-        Runtime runtime;
-        const auto types = take(runtime.register_types({atelier::reflection::Definition<Sample>::build(runtime),
-                                                        atelier::reflection::Definition<Counter>::build(runtime),
-                                                        atelier::reflection::Definition<CallProbe>::build(runtime),
-                                                        atelier::reflection::Definition<Mode>::build(runtime),
-                                                        atelier::reflection::Definition<PlainRecord>::build(runtime)}));
-        verify_descriptions();
-        auto object = take(runtime.create(types[1]));
-        require(Counter::live == 1, "Generated native construction did not run exactly once.");
-        verify_record_call(runtime);
-        verify_failed_borrow(runtime);
-        verify_shared_calls(runtime);
-        take(runtime.destroy(object.id()));
-        require(Counter::live == 0, "Generated native destruction failed.");
-        std::puts("Reflection consumer: PASS (generated ABI, borrowed failure cleanup and owned metadata)");
-        return 0;
-    } catch (const std::exception& error) {
-        std::fprintf(stderr, "Reflection consumer: FAIL: %s\n", error.what());
-        return 1;
-    }
+    Runtime runtime;
+    const auto types = take(runtime.register_types({atelier::reflection::Definition<Sample>::build(runtime),
+                                                    atelier::reflection::Definition<Counter>::build(runtime),
+                                                    atelier::reflection::Definition<CallProbe>::build(runtime),
+                                                    atelier::reflection::Definition<Mode>::build(runtime),
+                                                    atelier::reflection::Definition<PlainRecord>::build(runtime)}));
+    verify_descriptions();
+    auto object = take(runtime.create(types[1]));
+    require(Counter::live == 1, "Generated native construction did not run exactly once.");
+    verify_record_call(runtime);
+    verify_failed_borrow(runtime);
+    verify_shared_calls(runtime);
+    take(runtime.destroy(object.id()));
+    require(Counter::live == 0, "Generated native destruction failed.");
+    std::puts("Reflection consumer: PASS (generated ABI, borrowed failure cleanup and owned metadata)");
+    return 0;
 }

@@ -1,4 +1,5 @@
 #include "memory/fatal.hpp"
+#include "../helpers.hpp"
 #include "assets/mesh_import.hpp"
 #include "assets/reader.hpp"
 #include "json/json.hpp"
@@ -12,18 +13,7 @@ using namespace atelier;
 
 namespace fs = std::filesystem;
 
-void require(bool condition, const char* message) {
-    if (!condition)
-        throw std::runtime_error(message);
-}
-
-template <class T, class E>
-T take(std::expected<T, E> result) {
-    if (!result)
-        throw std::runtime_error(result.error().message);
-    if constexpr (!std::is_void_v<T>)
-        return std::move(*result);
-}
+using namespace atelier::acceptance::helpers;
 
 void write(const fs::path& path, std::string_view bytes) {
     std::ofstream stream(path, std::ios::binary);
@@ -329,18 +319,15 @@ int main() {
     atelier::install_fatal_handler();
     const auto root = fs::absolute("mesh-import-evidence/" +
                                    std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
-    try {
-        fs::create_directories(root / "obj");
-        fs::create_directories(root / "gltf");
-        obj(root / "obj");
-        gltf(root / "gltf");
-        digest();
-        fs::remove_all(root);
-        std::puts(
-            "Mesh import acceptance: PASS (geometry-only slots, typed OBJ/glTF MI, paths, policy, tangents, digest v2)");
-        return 0;
-    } catch (const std::exception& error) {
-        std::fprintf(stderr, "Mesh import acceptance: FAIL: %s\nEvidence: %s\n", error.what(), root.string().c_str());
-        return 1;
-    }
+    std::printf("Mesh import evidence: %s\n", root.string().c_str());
+    std::fflush(stdout);
+    fs::create_directories(root / "obj");
+    fs::create_directories(root / "gltf");
+    obj(root / "obj");
+    gltf(root / "gltf");
+    digest();
+    fs::remove_all(root);
+    std::puts(
+        "Mesh import acceptance: PASS (geometry-only slots, typed OBJ/glTF MI, paths, policy, tangents, digest v2)");
+    return 0;
 }

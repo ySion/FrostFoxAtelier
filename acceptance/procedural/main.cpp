@@ -24,7 +24,6 @@
 #include <map>
 #include <numbers>
 #include <optional>
-#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -2125,34 +2124,29 @@ void profile(const char* path) {
 
 int main(int argc, char** argv) {
     atelier::install_fatal_handler();
-    try {
-        if (argc == 3 && std::string_view{argv[1]} == "--profile-procedural") {
-            profile(argv[2]);
-            return 0;
-        }
-        require(argc == 1, "Usage: atelier_procedural_acceptance [--profile-procedural new-output.json]");
-        convex_surface();
-        scatter_counts_and_spacing();
-        transform_by_usage();
-        removal_merge_and_promotion();
-        copy_to_points_and_publication();
-        realized_geometry();
-        bvh_queries();
-        ray_node();
-        native_constructors();
-        volume_boundary();
-        volume_sampling();
-        volume_degenerate_rays();
-        realization_chain();
-        record_parameter_abi();
-        graph_evaluation();
-        native_columns();
-        source_nodes();
-        source_noise_remap();
-    } catch (const std::exception& error) {
-        std::fprintf(stderr, "procedural acceptance failed: %s\n", error.what());
-        return 1;
+    if (argc == 3 && std::string_view{argv[1]} == "--profile-procedural") {
+        profile(argv[2]);
+        return 0;
     }
+    require(argc == 1, "Usage: atelier_procedural_acceptance [--profile-procedural new-output.json]");
+    convex_surface();
+    scatter_counts_and_spacing();
+    transform_by_usage();
+    removal_merge_and_promotion();
+    copy_to_points_and_publication();
+    realized_geometry();
+    bvh_queries();
+    ray_node();
+    native_constructors();
+    volume_boundary();
+    volume_sampling();
+    volume_degenerate_rays();
+    realization_chain();
+    record_parameter_abi();
+    graph_evaluation();
+    native_columns();
+    source_nodes();
+    source_noise_remap();
     std::puts("procedural acceptance passed");
     return 0;
 }

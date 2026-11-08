@@ -1,4 +1,5 @@
 #include "foundation/map.hpp"
+#include "../helpers.hpp"
 
 #include <memory>
 #include <stdexcept>
@@ -6,10 +7,7 @@
 namespace {
 using namespace atelier;
 
-void require(bool condition, const char* message) {
-    if (!condition)
-        throw std::runtime_error(message);
-}
+using acceptance::helpers::require;
 
 struct alignas(64) Resource {
     static inline int live{};

@@ -17,7 +17,6 @@
 #include <cstdio>
 #include <limits>
 #include <memory>
-#include <stdexcept>
 
 namespace {
 using namespace atelier;
@@ -69,11 +68,11 @@ public:
         data_ =
             static_cast<std::byte*>(VirtualAlloc(nullptr, page_size_ * 2, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
         if (!data_)
-            throw std::runtime_error("Math guard page allocation failed.");
+            fatal("Math guard page allocation failed.");
         DWORD previous{};
         if (!VirtualProtect(data_ + page_size_, page_size_, PAGE_NOACCESS, &previous)) {
             VirtualFree(data_, 0, MEM_RELEASE);
-            throw std::runtime_error("Math guard page protection failed.");
+            fatal("Math guard page protection failed.");
         }
     }
 

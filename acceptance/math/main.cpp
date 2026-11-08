@@ -1,17 +1,14 @@
 #include "memory/fatal.hpp"
 #include "math/math.hpp"
+#include "../helpers.hpp"
 
 #include <cstdio>
 #include <limits>
-#include <stdexcept>
 
 namespace {
 using namespace atelier::math;
 
-void require(bool condition, const char* message) {
-    if (!condition)
-        throw std::runtime_error(message);
-}
+using atelier::acceptance::helpers::require;
 
 bool near(float a, float b) {
     return std::abs(a - b) <= std::numeric_limits<float>::epsilon() * 64 * std::max(1.f, std::abs(b));
@@ -54,12 +51,7 @@ void scene() {
 
 int main() {
     atelier::install_fatal_handler();
-    try {
-        scene();
-        std::puts("Native math acceptance: PASS (analytic vector, quaternion and matrix representatives)");
-        return 0;
-    } catch (const std::exception& error) {
-        std::fprintf(stderr, "Native math acceptance: FAIL: %s\n", error.what());
-        return 1;
-    }
+    scene();
+    std::puts("Native math acceptance: PASS (analytic vector, quaternion and matrix representatives)");
+    return 0;
 }

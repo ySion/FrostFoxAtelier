@@ -1,16 +1,13 @@
 #include "foundation/frame_timing.hpp"
+#include "../helpers.hpp"
 
 #include <array>
 #include <limits>
-#include <stdexcept>
 
 namespace {
 using namespace atelier;
 
-void require(bool condition, const char* message) {
-    if (!condition)
-        throw std::runtime_error(message);
-}
+using acceptance::helpers::require;
 
 inline constinit timing::Marker outer{"test.outer", "Outer", &timing::frame};
 

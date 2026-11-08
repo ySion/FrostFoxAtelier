@@ -12,7 +12,6 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
-#include <stdexcept>
 #include <vector>
 #include <string_view>
 
@@ -23,7 +22,7 @@ using namespace atelier::acceptance::helpers;
 void committed(atelier::Result<atelier::world::Commit> result) {
     const auto value = take(std::move(result));
     if (value.notification_error)
-        throw std::runtime_error(value.notification_error->message);
+        atelier::fatal(value.notification_error->message);
 }
 
 atelier::ObjectId mesh_component(atelier::Runtime& runtime, atelier::ObjectId entity) {
@@ -31,7 +30,7 @@ atelier::ObjectId mesh_component(atelier::Runtime& runtime, atelier::ObjectId en
     for (const auto& component : take(atelier::world::components(runtime, entity)))
         if (take(runtime.is_a(take(runtime.type_of(component.id())), type)))
             return component.id();
-    throw std::runtime_error("Expected a mesh component on the Entity.");
+    atelier::fatal("Expected a mesh component on the Entity.");
 }
 
 // World::update is the only frame entry; it steps the registered PhysicsScene.
@@ -86,31 +85,20 @@ int main(int argc, char** argv) {
     }
     if (argc == 3 && std::string_view(argv[1]) == "--scenario")
         selected = argv[2];
-    else if (argc != 1) {
-        std::fputs("Usage: atelier_physics_acceptance [--list | --scenario NAME]\n", stderr);
-        return EXIT_FAILURE;
-    }
-    if (argc == 3 && std::ranges::none_of(scenarios, [&](const auto& s) { return s.name == selected; })) {
-        std::fputs("Unknown physics scenario; use --list.\n", stderr);
-        return EXIT_FAILURE;
-    }
+    else
+        require(argc == 1, "Usage: atelier_physics_acceptance [--list | --scenario NAME]");
+    require(argc != 3 || std::ranges::any_of(scenarios, [&](const auto& s) { return s.name == selected; }),
+            "Unknown physics scenario; use --list.");
     unsigned passed = 0;
-    unsigned failed = 0;
     for (const auto& scenario : scenarios) {
         if (!selected.empty() && selected != scenario.name)
             continue;
         std::printf("Physics scenario: %.*s RUN\n", int(scenario.name.size()), scenario.name.data());
         std::fflush(stdout);
-        try {
-            scenario.run();
-            ++passed;
-            std::printf("Physics scenario: %.*s PASS\n", int(scenario.name.size()), scenario.name.data());
-        } catch (const std::exception& error) {
-            ++failed;
-            std::fprintf(stderr, "Physics scenario: %.*s FAIL (%s)\n", int(scenario.name.size()), scenario.name.data(),
-                         error.what());
-        }
+        scenario.run();
+        ++passed;
+        std::printf("Physics scenario: %.*s PASS\n", int(scenario.name.size()), scenario.name.data());
     }
-    std::printf("Physics acceptance: %s (%u/%u scenarios)\n", failed ? "FAIL" : "PASS", passed, passed + failed);
-    return failed ? EXIT_FAILURE : EXIT_SUCCESS;
+    std::printf("Physics acceptance: PASS (%u/%u scenarios)\n", passed, passed);
+    return EXIT_SUCCESS;
 }

@@ -188,7 +188,7 @@ void render_interpolation() {
         for (const auto& value : f.shown.mesh_slots())
             if (value.item && value.item->entity == entity.id())
                 return value;
-        throw std::runtime_error("A mesh lost its presentation.");
+        atelier::fatal("A mesh lost its presentation.");
     };
     const auto drawn = [&](const atelier::ObjectRoot& entity) {
         const auto& value = slot(entity);
