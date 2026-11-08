@@ -40,7 +40,6 @@
 #include <map>
 #include <mutex>
 #include <optional>
-#include <stdexcept>
 #include <string_view>
 #include <thread>
 #include <unordered_map>
@@ -826,13 +825,7 @@ Result<std::unique_ptr<PhysicsScene>> PhysicsScene::create(world::World& world, 
         capacity.contact_constraints = std::max(capacity.contact_constraints, 4u);
     }
     ATELIER_TRY(acquire_jolt());
-    std::unique_ptr<PhysicsScene> result;
-    try {
-        result.reset(new PhysicsScene(world, types, mesh_reader, capacity));
-    } catch (...) {
-        release_jolt();
-        throw;
-    }
+    std::unique_ptr<PhysicsScene> result{new PhysicsScene(world, types, mesh_reader, capacity)};
     auto subscribed =
         world.subscribe_lifecycle([scene = result.get()](world::World&, world::Lifecycle phase, ObjectId object) {
             return scene->lifecycle(phase, object);
@@ -1278,25 +1271,14 @@ Result<void> PhysicsScene::reconcile_component(ObjectId entity, ObjectId compone
         return failure(ErrorCode::capacity_exceeded, "Jolt could not create a physical body.");
     remove(component);
     remove_special(entity);
-    try {
-        impl_->bodies.emplace(component, Impl::Body{id, entity, component, settings->motion, *settings, std::move(mesh),
-                                                    next_revision_++, scale, *canonical, owner_local,
-                                                    std::move(ancestors), *canonical});
-        impl_->body_order.invalidate();
-        impl_->dependents_stale = true;
-        impl_->entity_bodies.emplace(entity, component);
-        impl_->body_components.emplace(id, component);
-        hold_poses(std::array{world::SimulationPose{entity, canonical->position, canonical->rotation}});
-    } catch (...) {
-        if (impl_->bodies.contains(component))
-            remove(component);
-        else {
-            bodies.RemoveBody(id);
-            bodies.DestroyBody(id);
-            unbuilt_ |= impl_->system.GetNumBodies() == 0;
-        }
-        throw;
-    }
+    impl_->bodies.emplace(component, Impl::Body{id, entity, component, settings->motion, *settings, std::move(mesh),
+                                                next_revision_++, scale, *canonical, owner_local, std::move(ancestors),
+                                                *canonical});
+    impl_->body_order.invalidate();
+    impl_->dependents_stale = true;
+    impl_->entity_bodies.emplace(entity, component);
+    impl_->body_components.emplace(id, component);
+    hold_poses(std::array{world::SimulationPose{entity, canonical->position, canonical->rotation}});
     return {};
 }
 

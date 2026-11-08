@@ -103,6 +103,6 @@ cmake --build --preset release --target physics_acceptance editor_document_accep
 
 编辑器接入的覆盖范围见[场景模型验收](../editor/README.md#场景模型验收)，逐次日志由根 README 的验收门禁记录。
 
-当前仍保留 PhysicsScene 构造期间的 Jolt 注册租约异常补偿，以及普通 body 登记的异常补偿；这两条初始化路径尚未迁移。验收宿主的断言和异常入口也尚未迁移，不代表物理组件或宿主回调另有异常业务通道。
+验收宿主的断言和异常入口尚未迁移，不代表物理组件或宿主回调另有异常业务通道。Jolt 可空分配与线程失败的致命接线仍待独立核验。
 
 尚未提供 Convex/Compound/Heightfield、焊接、独立查询/模拟参与开关、具名碰撞 Profile、异步查询或专用服务器可执行宿主。刚体逐个加入（`CreateAndAddBody`，约 0.5 µs 一个）；已有刚体的运行中一次生成大批刚体（例如关卡流式加载、一次实例化很多预制体）时也会出现前两步的建树尖峰，Jolt 为此提供批量加入（`AddBodiesPrepare` / `AddBodiesFinalize`），出现运行中大批生成的需求时再测量、再接入。验收代表不等于全部公开行为的组合矩阵，没有测量大规模吞吐，也不承诺跨平台位级确定性；`physics-cpu` 作为独立测量入口保留，不进入验收或 Full 清单。
