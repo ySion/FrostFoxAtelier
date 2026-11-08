@@ -1,5 +1,7 @@
 #pragma once
 
+#include "logging/logging.hpp"
+#include "platform/error.hpp"
 #include <Windows.h>
 #include <algorithm>
 #include <cstddef>
@@ -48,6 +50,12 @@ public:
 private:
     HANDLE value_{INVALID_HANDLE_VALUE};
 };
+
+inline Error io_failure(const char* operation, DWORD code = GetLastError()) {
+    return {ErrorCode::io_failed,
+            std::string{operation} + ": " + platform::error_message({static_cast<int>(code), std::system_category()}),
+            code};
+}
 
 [[noreturn]] inline void io_error(const char* operation, DWORD code = GetLastError()) {
     throw std::system_error{static_cast<int>(code), std::system_category(), operation};
@@ -122,10 +130,10 @@ struct FileIdentity {
     bool operator==(const FileIdentity&) const = default;
 };
 
-inline FileIdentity file_identity(HANDLE handle) {
+inline Result<FileIdentity> file_identity(HANDLE handle) {
     BY_HANDLE_FILE_INFORMATION info{};
     if (!GetFileInformationByHandle(handle, &info))
-        io_error("File identity");
-    return {info.dwVolumeSerialNumber, info.nFileIndexHigh, info.nFileIndexLow};
+        return std::unexpected(io_failure("File identity"));
+    return FileIdentity{info.dwVolumeSerialNumber, info.nFileIndexHigh, info.nFileIndexLow};
 }
 }

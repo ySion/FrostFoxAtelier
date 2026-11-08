@@ -14,8 +14,6 @@ bool missing(DWORD code) noexcept {
     return code == ERROR_FILE_NOT_FOUND || code == ERROR_PATH_NOT_FOUND;
 }
 
-struct SnapshotChanged {};
-
 struct Fingerprint {
     FileIdentity identity;
 
@@ -26,13 +24,13 @@ struct Fingerprint {
     bool operator==(const Fingerprint&) const = default;
 };
 
-Fingerprint fingerprint(HANDLE handle) {
+Result<Fingerprint> fingerprint(HANDLE handle) {
     BY_HANDLE_FILE_INFORMATION info{};
     if (!GetFileInformationByHandle(handle, &info))
-        io_error("Inspect log input");
-    return {{info.dwVolumeSerialNumber, info.nFileIndexHigh, info.nFileIndexLow},
-            (std::uint64_t{info.nFileSizeHigh} << 32) | info.nFileSizeLow,
-            (std::uint64_t{info.ftLastWriteTime.dwHighDateTime} << 32) | info.ftLastWriteTime.dwLowDateTime};
+        return std::unexpected(io_failure("Inspect log input"));
+    return Fingerprint{{info.dwVolumeSerialNumber, info.nFileIndexHigh, info.nFileIndexLow},
+                       (std::uint64_t{info.nFileSizeHigh} << 32) | info.nFileSizeLow,
+                       (std::uint64_t{info.ftLastWriteTime.dwHighDateTime} << 32) | info.ftLastWriteTime.dwLowDateTime};
 }
 
 struct Budget {
@@ -160,23 +158,23 @@ struct Reader::Impl {
     // True means the current metadata version was fully examined (or absent).
     // Every byte read, including metadata, consumes the same per-poll budget.
     bool metadata(Metadata& item, const std::filesystem::path& path, bool is_manifest, Budget& budget) {
-        try {
+        const auto read_version = [&]() -> Result<bool> {
             if (!item.handle) {
                 auto file = open_read(path);
                 if (!file) {
                     const auto code = GetLastError();
                     if (missing(code))
                         return true;
-                    io_error("Open reader metadata", code);
+                    return std::unexpected(io_failure("Open reader metadata", code));
                 }
-                const auto stamp = fingerprint(file.get());
-                if (item.loaded == stamp)
+                ATELIER_TRY_BIND(stamp, fingerprint(file.get()));
+                if (item.loaded == *stamp)
                     return true;
-                item.reading = stamp;
+                item.reading = *stamp;
                 item.handle = std::move(file);
                 item.buffer.clear();
-                if (stamp.size > 256 * 1024) {
-                    item.loaded = stamp;
+                if (stamp->size > 256 * 1024) {
+                    item.loaded = *stamp;
                     item.handle.reset();
                     ++status.invalid_metadata;
                     issue(is_manifest ? ReaderFault::invalid_record : ReaderFault::invalid_summary,
@@ -192,9 +190,9 @@ struct Reader::Impl {
                                           static_cast<std::size_t>(item.reading.size - item.buffer.size())));
                 DWORD read{};
                 if (!ReadFile(item.handle.get(), buffer.data(), static_cast<DWORD>(count), &read, nullptr))
-                    io_error("Read metadata");
+                    return std::unexpected(io_failure("Read metadata"));
                 if (read == 0)
-                    io_error("Metadata truncated during read", ERROR_HANDLE_EOF);
+                    return std::unexpected(io_failure("Metadata truncated during read", ERROR_HANDLE_EOF));
                 budget.bytes += read;
                 budget.worked = true;
                 status.bytes_read += read;
@@ -234,15 +232,18 @@ struct Reader::Impl {
             item.loaded = item.reading;
             item.buffer.clear();
             return true;
-        } catch (const std::system_error& error) {
+        };
+        auto result = read_version();
+        if (!result) {
             item.handle.reset();
             item.buffer.clear();
-            issue(ReaderFault::io_failed, error.what(), path);
+            issue(ReaderFault::io_failed, std::move(result.error().message), path);
             return false;
         }
+        return *result;
     }
 
-    std::vector<Segment> scan() {
+    Result<std::optional<std::vector<Segment>>> scan() {
         std::vector<Segment> result;
         for (unsigned i = static_cast<unsigned>(retained_rotated_files) + 1; i-- != 0;) {
             auto path = directory / (i == 0 ? "events.jsonl" : "events." + std::to_string(i) + ".jsonl");
@@ -251,16 +252,16 @@ struct Reader::Impl {
                 const auto code = GetLastError();
                 if (missing(code))
                     continue;
-                io_error("Open log segment", code);
+                return std::unexpected(io_failure("Open log segment", code));
             }
-            auto identity = file_identity(handle.get());
-            if (std::ranges::any_of(result, [&](const auto& item) { return item.identity == identity; })) {
+            ATELIER_TRY_BIND(identity, file_identity(handle.get()));
+            if (std::ranges::any_of(result, [&](const auto& item) { return item.identity == *identity; })) {
                 if (!status.source_ended)
-                    throw SnapshotChanged{};
+                    return std::nullopt;
                 issue(ReaderFault::rotation_loss, "Closed archive aliases two segment names to one file", path);
                 continue;
             }
-            result.push_back({std::move(handle), identity, std::move(path), i});
+            result.push_back({std::move(handle), *identity, std::move(path), i});
         }
         // Verify that names still identify this snapshot. A rename race is a retry,
         // not corruption or permission to splice two different file tails. Verify
@@ -275,19 +276,21 @@ struct Reader::Impl {
                 if (missing(code)) {
                     if (item == result.end())
                         continue;
-                    throw SnapshotChanged{};
+                    return std::nullopt;
                 }
-                io_error("Recheck log segment", code);
+                return std::unexpected(io_failure("Recheck log segment", code));
             }
             if (item == result.end()) {
-                if (status.source_ended && std::ranges::any_of(result, [&](const auto& value) {
-                        return value.identity == file_identity(check.get());
-                    }))
-                    continue;
-                throw SnapshotChanged{};
+                if (status.source_ended && !result.empty()) {
+                    ATELIER_TRY_BIND(identity, file_identity(check.get()));
+                    if (std::ranges::any_of(result, [&](const auto& value) { return value.identity == *identity; }))
+                        continue;
+                }
+                return std::nullopt;
             }
-            if (file_identity(check.get()) != item->identity)
-                throw SnapshotChanged{};
+            ATELIER_TRY_BIND(identity, file_identity(check.get()));
+            if (*identity != item->identity)
+                return std::nullopt;
         }
         return result;
     }
@@ -421,8 +424,12 @@ struct Reader::Impl {
             if (manifest_ready)
                 end_input();
         } else if (manifest_ready && summary_ready && budget.available()) {
-            try {
-                auto files = scan();
+            const auto read_segments = [&]() -> Result<void> {
+                ATELIER_TRY_BIND(snapshot, scan());
+                // A racing snapshot is not EOF: leave all cursor state for the next poll.
+                if (!*snapshot)
+                    return {};
+                auto& files = **snapshot;
                 if (status.source_ended && !missing_segment_reported && !files.empty()) {
                     bool gap = files.back().index != 0;
                     for (std::size_t i = 1; i < files.size(); ++i)
@@ -457,22 +464,22 @@ struct Reader::Impl {
                     consume(budget, records);
                     if (!chunk.empty() || !budget.available())
                         break;
-                    const auto stamp = fingerprint(current->handle.get());
-                    if (stamp.size < offset) {
+                    ATELIER_TRY_BIND(stamp, fingerprint(current->handle.get()));
+                    if (stamp->size < offset) {
                         issue(ReaderFault::rotation_loss, "Log segment was truncated in place", current->path, offset);
                         finish_segment();
                         continue;
                     }
-                    if (offset < stamp.size) {
+                    if (offset < stamp->size) {
                         std::array<char, 16 * 1024> buffer;
                         const auto count =
                             (std::min)(buffer.size(), (std::min)(limit.bytes - budget.bytes,
-                                                                 static_cast<std::size_t>(stamp.size - offset)));
+                                                                 static_cast<std::size_t>(stamp->size - offset)));
                         DWORD read{};
                         if (!ReadFile(current->handle.get(), buffer.data(), static_cast<DWORD>(count), &read, nullptr))
-                            io_error("Read log segment");
+                            return std::unexpected(io_failure("Read log segment"));
                         if (!read)
-                            io_error("Log file shortened while reading", ERROR_HANDLE_EOF);
+                            return std::unexpected(io_failure("Log file shortened while reading", ERROR_HANDLE_EOF));
                         offset += read;
                         budget.bytes += read;
                         budget.worked = true;
@@ -503,12 +510,12 @@ struct Reader::Impl {
                     end_input();
                     break;
                 }
-            } catch (const std::system_error& error) {
-                issue(ReaderFault::io_failed, error.what(), current ? current->path : directory, offset);
-            } catch (const SnapshotChanged&) {
-                // A scan observed rotation in progress; preserve the cursor and
-                // retry next poll. No fabricated loss or EOF from a racing name.
-            }
+                return {};
+            };
+            auto result = read_segments();
+            if (!result)
+                issue(ReaderFault::io_failed, std::move(result.error().message), current ? current->path : directory,
+                      offset);
         }
         status.partial_line = !tail.empty() || oversized;
         status.budget_exhausted =
@@ -527,12 +534,13 @@ Result<std::unique_ptr<Reader>> Reader::open(std::filesystem::path directory) {
     std::error_code error;
     const auto exists = std::filesystem::exists(directory, error);
     if (error)
-        return std::unexpected(Error{ErrorCode::io_failed, error.message(), static_cast<std::uint32_t>(error.value())});
+        return std::unexpected(
+            Error{ErrorCode::io_failed, platform::error_message(error), static_cast<std::uint32_t>(error.value())});
     if (exists) {
         const auto is_directory = std::filesystem::is_directory(directory, error);
         if (error)
             return std::unexpected(
-                Error{ErrorCode::io_failed, error.message(), static_cast<std::uint32_t>(error.value())});
+                Error{ErrorCode::io_failed, platform::error_message(error), static_cast<std::uint32_t>(error.value())});
         if (!is_directory)
             return std::unexpected(Error{ErrorCode::invalid_options, "Reader input is not a directory", {}});
     }
@@ -543,16 +551,7 @@ Result<std::unique_ptr<Reader>> Reader::open(std::filesystem::path directory) {
 }
 
 ReadBatch Reader::poll(ReadBudget budget) {
-    try {
-        return impl_->poll(budget);
-    } catch (...) {
-        // Producing the owning batch can allocate after advancing the cursor.
-        // Preserve that delivery uncertainty even when no further allocation is
-        // possible; do not replace the original exception with another message.
-        impl_->status.incomplete = true;
-        impl_->status.unquantified_loss = true;
-        throw;
-    }
+    return impl_->poll(budget);
 }
 
 void Reader::source_ended() noexcept {

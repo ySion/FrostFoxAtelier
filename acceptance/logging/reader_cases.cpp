@@ -1,4 +1,6 @@
 #include "support.hpp"
+#include "foundation/scope_exit.hpp"
+#include <Windows.h>
 
 namespace logging_acceptance {
 void reader_cases(const fs::path& root) {
@@ -33,6 +35,29 @@ void reader_cases(const fs::path& root) {
     require(ended.records.empty(), "Final health caused a completed record to be delivered twice.");
     reader.reset();
     same_entry(completed.records.front().entry, expected);
+
+    auto blocked_reader = take(log::Reader::open(source));
+    {
+        const auto locked = CreateFileW((source / "run.json").c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING,
+                                        FILE_ATTRIBUTE_NORMAL, nullptr);
+        require(locked != INVALID_HANDLE_VALUE, "Cannot hold the Reader manifest without sharing.");
+        atelier::ScopeExit release{[&]() noexcept { CloseHandle(locked); }};
+        const auto blocked = blocked_reader->poll({1024 * 1024, 256, std::chrono::milliseconds{50}});
+        require(blocked.records.empty() && blocked.status.io_failures == 1 && blocked.status.latest_issue &&
+                    blocked.status.latest_issue->fault == log::ReaderFault::io_failed &&
+                    blocked.status.latest_issue->file == source / "run.json" && blocked.status.waiting_for_run &&
+                    !blocked.status.caught_up && !blocked.status.finished && !blocked.status.has_final_summary,
+                "Sharing rejection was not reported as retryable Reader I/O failure.");
+    }
+    const auto recovered = drain(*blocked_reader);
+    require(recovered.records.size() == 1 && recovered.status.finished && recovered.status.has_final_summary &&
+                recovered.status.io_failures == 1 && recovered.status.incomplete &&
+                recovered.status.duplicate_records == 0 && recovered.status.sequence_gaps == 0,
+            "Reader did not recover exactly once after releasing the manifest.");
+    same_entry(recovered.records.front().entry, expected);
+    const auto repeated = blocked_reader->poll();
+    require(repeated.records.empty() && repeated.status.io_failures == 1 && repeated.status.finished,
+            "A recovered Reader redelivered its record or repeated the I/O failure.");
 }
 
 void rotation(const fs::path& root) {

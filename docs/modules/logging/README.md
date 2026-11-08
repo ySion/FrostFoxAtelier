@@ -168,7 +168,11 @@ Reader 不在后台 sink 中调用 UI，也不经 UI 反向背压唯一 Quill wo
 | 已确认重复唯一记录键 | duplicate_records 增加并不再次返回该 Record，不让 repeat 累加两次 |
 | 低于已交付输出序号高水位的其他记录 | out_of_order_records 增加并跳过；可能重放或坏文件倒序，不凭有界历史断言它必然曾交付 |
 | I/O 错误 | io_failures + latest_issue，保留可重试游标，不伪造 EOF 或 final |
-| poll 分配/快照构造异常 | 不替换原异常；在无须分配的状态位保留 incomplete + unquantified_loss，因为游标可能已前进而该批尚未交付。元数据未完成解析的版本仍可重读 |
+| poll 分配/快照构造的 CPU 内存耗尽 | 按唯一 fatal 合同终止，不作为可恢复批次交付错误；不承诺致命退出后的游标恢复或继续交付 |
+
+Reader 的 I/O 失败经显式结果进入原状态通道；元数据读取失败关闭当前句柄、清理未完成缓冲，保留已加载版本，后续 poll 可重读。扫描中的轮转竞态只结束本次扫描并留待下次 poll，不是空文件集、EOF 或新增错误码；本批已有记录仍正常交付。Reader 与 sink 的文件身份检查复用同一个显式结果入口；sink 的 flush 检查失败仍记录 `file_flush_failed` 和原 native_code，并将本次结果置为失败，成功的身份检查也不能抹掉先前写失败。
+
+Reader 打开/读取与 sink flush 检查的系统错误文本统一经 Platform 输出 UTF-8，不再沿 `what()` 或 CRT 本地编码；这是有意的诊断文本变化，错误分类、操作名及既有原生错误码通道不变。其余写入、原子快照、Run 生命周期、Quill/TLS 和原生路径异常仍待独立迁移，本节不表示整个 Logging 已无异常。
 
 Reader 打开文件时允许 writer 的 read/write/delete sharing，以 Windows 文件身份与偏移跟踪 rename；不能仅按 events.N 的名字续读。按最旧保留文件到当前文件消费，新旧目录快照不一致时重扫而不拼接。利用输出序号高水位与文件游标定位进度，最近 4096 个唯一记录键作有界去重；已经离开这个窗口的旧输出序号只能判重放/倒序，不假称精确知道过去是否交付。producer 只受并发预算限制，不能用“run 一生只有 128 个 producer”作为 Reader 内存有界的前提。重复/倒序异常均须可见，不能以无限 set 掩盖问题。运行中 health 只有最新成功快照，UI 显示 updated_unix_ns/是否 final，过期不被解释为健康。
 

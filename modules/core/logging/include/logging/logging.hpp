@@ -446,6 +446,8 @@ struct ReadBatch {
 // One directory, one owner thread. Independent of a local Run/Quill backend.
 // Missing directory is allowed so the Editor can attach before Runner startup.
 // Returned record storage survives poll(), rotation, Reader and process teardown.
+// I/O failures use open's Result or poll's status; retryable cursors are retained.
+// CPU allocation failure is fatal, not a recoverable batch-delivery exception.
 class Reader final {
 public:
     [[nodiscard]] static Result<std::unique_ptr<Reader>> open(std::filesystem::path directory);

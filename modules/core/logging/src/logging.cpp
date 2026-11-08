@@ -338,25 +338,24 @@ public:
     }
 
     void flush_sink() override {
-        bool succeeded = false;
-        try {
+        const auto check_file = [&]() -> Result<void> {
             if (!file_)
-                io_error("Log file unavailable", ERROR_INVALID_HANDLE);
+                return std::unexpected(io_failure("Log file unavailable", ERROR_INVALID_HANDLE));
             // Writes go directly to the OS, with no C stdio/userspace buffering.
             // This checks reachability, not durable media (no FlushFileBuffers).
             auto visible = open_read(paths_[0]);
             if (!visible)
-                io_error("Current log file is no longer reachable");
-            if (file_identity(visible.get()) != file_identity(file_.get()))
-                io_error("Current log file was replaced", ERROR_FILE_INVALID);
-            succeeded = !write_failed_;
-        } catch (const std::system_error& error) {
-            state_->fault(FacilityFault::file_flush_failed, error.what(),
-                          static_cast<std::uint32_t>(error.code().value()));
-        } catch (...) {
-            state_->fault(FacilityFault::file_flush_failed, "Unexpected sink flush failure");
-        }
-        state_->last_flush.store(succeeded);
+                return std::unexpected(io_failure("Current log file is no longer reachable"));
+            ATELIER_TRY_BIND(visible_identity, file_identity(visible.get()));
+            ATELIER_TRY_BIND(open_identity, file_identity(file_.get()));
+            if (*visible_identity != *open_identity)
+                return std::unexpected(io_failure("Current log file was replaced", ERROR_FILE_INVALID));
+            return {};
+        };
+        const auto result = check_file();
+        if (!result)
+            state_->fault(FacilityFault::file_flush_failed, result.error().message, result.error().native_code);
+        state_->last_flush.store(result && !write_failed_);
     }
 
     void flush_sink(quill::SinkFlushReason reason) override {
