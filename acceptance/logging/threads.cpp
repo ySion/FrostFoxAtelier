@@ -1,6 +1,5 @@
 #include "support.hpp"
 #include <array>
-#include <exception>
 #include <thread>
 
 namespace logging_acceptance {
@@ -9,18 +8,10 @@ void producer_churn(const fs::path& root) {
     const std::array expected{entry("thread.retired", "first producer", 7001),
                               entry("thread.retired", "second producer", 7002)};
     for (const auto& value : expected) {
-        std::exception_ptr failure;
-        std::jthread worker([&] {
-            try {
-                require(log::submit(value).status == log::SubmitStatus::accepted,
-                        "Short-lived producer record was not admitted.");
-            } catch (...) {
-                failure = std::current_exception();
-            }
-        });
+        auto status = log::SubmitStatus::no_active_run;
+        std::jthread worker([&] { status = log::submit(value).status; });
         worker.join();
-        if (failure)
-            std::rethrow_exception(failure);
+        require(status == log::SubmitStatus::accepted, "Short-lived producer record was not admitted.");
     }
     // No pre-flush: finish must drain both producers after their threads exit.
     healthy(run->finish());

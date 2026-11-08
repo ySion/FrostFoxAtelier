@@ -1,11 +1,11 @@
 #pragma once
 
+#include "../helpers.hpp"
 #include "logging/logging.hpp"
 #include <algorithm>
 #include <cstdio>
 #include <fstream>
 #include <iterator>
-#include <stdexcept>
 #include <utility>
 
 namespace logging_acceptance {
@@ -13,17 +13,9 @@ namespace log = atelier::logging;
 
 namespace fs = std::filesystem;
 
-inline void require(bool condition, const char* message) {
-    if (!condition)
-        throw std::runtime_error(message);
-}
+using atelier::acceptance::helpers::require;
 
-template <class T>
-T take(log::Result<T> result) {
-    if (!result)
-        throw std::runtime_error(result.error().message);
-    return std::move(*result);
-}
+using atelier::acceptance::helpers::take;
 
 inline log::Entry entry(std::string code, std::string message, std::uint64_t context = 71) {
     log::Entry value;
@@ -89,7 +81,7 @@ inline log::ReadBatch drain(log::Reader& reader, bool final = true,
         if (final ? collected.status.finished : collected.status.caught_up && !collected.status.waiting_for_run)
             return collected;
     }
-    throw std::runtime_error("Reader made no bounded completion progress; see retained case files.");
+    atelier::fatal("Reader made no bounded completion progress; see retained case files.");
 }
 
 inline log::ReadBatch read_finished(const fs::path& directory) {
