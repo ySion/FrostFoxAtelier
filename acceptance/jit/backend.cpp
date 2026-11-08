@@ -556,20 +556,15 @@ void run(const ProbeCallbacks& callbacks) {
 
 }
 
-std::uint32_t atelier_run_jit_acceptance(const ProbeCallbacks* callbacks, char* error,
-                                         std::uint32_t error_capacity) noexcept {
+void atelier_run_jit_acceptance(const ProbeCallbacks* callbacks) noexcept {
     static const bool handlers_installed = [] {
         atelier::install_fatal_handler();
         llvm::install_fatal_error_handler([](void*, const char*, bool) { atelier::fatal("llvm fatal error"); });
         return true;
     }();
     (void)handlers_installed;
-    if (!error || error_capacity == 0)
-        return 1;
-    error[0] = '\0';
     require(callbacks && callbacks->host_bias && callbacks->native_calculate && callbacks->native_capture &&
                 callbacks->log,
             "Invalid JIT acceptance callbacks.");
     run(*callbacks);
-    return 0;
 }

@@ -22,10 +22,9 @@ struct ProbeCallbacks {
 #define ATELIER_JIT_PROBE __declspec(dllimport)
 #endif
 
-// The SDK's C++ objects, exceptions and allocator ownership stay inside this DLL.
-// Callbacks and caller-owned error storage remain valid until this call returns.
-extern "C" ATELIER_JIT_PROBE std::uint32_t
-atelier_run_jit_acceptance(const atelier::jit_acceptance::ProbeCallbacks* callbacks, char* error,
-                           std::uint32_t error_capacity) noexcept;
+// The SDK's C++ objects and allocator ownership stay inside this DLL.
+// Callbacks remain valid until this call returns; acceptance failure is fatal.
+extern "C" ATELIER_JIT_PROBE void
+atelier_run_jit_acceptance(const atelier::jit_acceptance::ProbeCallbacks* callbacks) noexcept;
 
 #undef ATELIER_JIT_PROBE

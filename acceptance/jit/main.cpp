@@ -28,9 +28,7 @@ int main() {
         atelier::fatal("JIT acceptance: native callback must reside in a separate DLL.");
     const atelier::jit_acceptance::ProbeCallbacks callbacks{&host_bias, &atelier_jit_native_calculate,
                                                             &atelier_jit_native_capture, &log_result};
-    char error[4096]{};
-    if (atelier_run_jit_acceptance(&callbacks, error, sizeof(error)) != 0)
-        atelier::fatal(error);
+    atelier_run_jit_acceptance(&callbacks);
     atelier::jit_acceptance::verify_business_execution();
     std::printf("JIT acceptance: PASS\n");
     return 0;
