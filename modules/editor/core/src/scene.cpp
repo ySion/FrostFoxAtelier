@@ -1436,12 +1436,14 @@ struct Session::GraphCodec {
             const auto at = op.object_path_validated(properties, field->names);
             if (field->form == ValueForm::strong_reference || field->form == ValueForm::weak_reference) {
                 const auto reference = take(runtime.read_reference(object, path));
-                json::Document saved = json::Builder(json::Kind::null).finish();
-                if (!reference.is_null()) {
+                if (reference.is_null()) {
+                    const auto saved = json::Builder(json::Kind::null).finish();
+                    op.replace(at, saved.root());
+                } else {
                     ATELIER_TRY_BIND(id, identity(session, reference.id()));
-                    saved = ref_key(*id);
+                    const auto saved = ref_key(*id);
+                    op.replace(at, saved.root());
                 }
-                op.replace(at, saved.root());
             } else {
                 ATELIER_TRY(encode_scalar(runtime, op, at, take(runtime.read(object, path))));
             }
