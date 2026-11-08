@@ -45,8 +45,9 @@ class FormatString {
     static_assert(maximum_message_bytes < std::numeric_limits<int>::max() - 1024);
 
     struct Policy {
-        std::array<fmtquill::detail::type, sizeof...(Args)> types{
-            fmtquill::detail::mapped_type_constant<Args, char>::value...};
+        std::array<fmtquill::detail::type, sizeof...(Args)> types{fmtquill::detail::mapped_type_constant<
+            std::remove_cvref_t<decltype(*detail::argument(std::declval<const std::remove_cvref_t<Args>&>()))>,
+            char>::value...};
 
         fmtquill::detail::compile_parse_context<char> context;
 

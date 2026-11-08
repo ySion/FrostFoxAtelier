@@ -229,6 +229,7 @@ W5 前仍保持 `QUILL_NO_EXCEPTIONS=OFF`，不提前改变全仓 EH 设置。QU
 | 锁定 Quill / bundled fmt 的残留点 | 本项目不可恢复或不可达的依据 |
 |---|---|
 | fmt `parse_arg_id`、`parse_dynamic_spec`、`parse_format_specs`、`parse_replacement_field`、`check_char_specs`、`format_string_checker`、`report_error` | 字面量的语法、类型、引用及本项目政策在 consteval 内检查；运行时格式、命名参数、自定义 formatter 不受支持 |
+| char 数组的 cstring/string presentation 差异 | 数组经 `detail::argument` 编码时归一化为 `string_view`；政策检查从实际编码后的类型推导，拒绝 `{:p}` 等后台字符串格式不支持的规格，外层原始参数类型检查仍保留 |
 | fmt `dynamic_spec_getter`、`handle_dynamic_spec` | 所有动态宽度/精度编译期拒绝，不靠运行时实参值侥幸通过 |
 | fmt `adjust_precision`，`format_dragon` / `format_float` 的两处调用，以及浮点 `write` 的 e/E 精度 +1 | 静态精度 ≤131072，Windows 浮点范围由静态断言限定，远离 int 溢出；不是把格式输入错误改成 abort |
 | fmt 字符串空指针、`default_arg_formatter` 缺参、UTF-16 转换和 FILE/console 错误 | 原生参数转为有效借用视图且先校验；参数数量已静态检查；不使用 fmt 宽字符/文件输出，日志 IO 由自有 Win32 Result 路径承担 |
