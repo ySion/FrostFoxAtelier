@@ -71,9 +71,9 @@ private:
 };
 }
 
-Result<std::string> mesh_content_sha256(const MeshAsset& asset) try {
+Result<std::string> mesh_content_sha256(const MeshAsset& asset) {
     if (!asset.mesh)
-        throw std::invalid_argument("Cannot digest an unresolved mesh.");
+        return std::unexpected(Error{ErrorCode::invalid_definition, "Cannot digest an unresolved mesh."});
     const auto& mesh = *asset.mesh;
     std::map<std::string, std::size_t, std::less<>> slots;
     for (std::size_t i = 0; i < mesh.materials().size(); ++i)
@@ -83,7 +83,8 @@ Result<std::string> mesh_content_sha256(const MeshAsset& asset) try {
     for (const auto& binding : asset.materials) {
         const auto at = slots.find(binding.slot);
         if (at == slots.end() || at->second == defaults.size() || defaults[at->second])
-            throw std::invalid_argument("Mesh default names a missing, ambiguous or duplicate slot: " + binding.slot);
+            return std::unexpected(Error{ErrorCode::invalid_definition,
+                                         "Mesh default names a missing, ambiguous or duplicate slot: " + binding.slot});
         defaults[at->second] = &binding.key;
     }
     Encoding out;
@@ -118,7 +119,5 @@ Result<std::string> mesh_content_sha256(const MeshAsset& asset) try {
             out.text(*key);
     }
     return out.finish();
-} catch (const std::invalid_argument& error) {
-    return std::unexpected(Error{ErrorCode::invalid_definition, error.what()});
 }
 }
