@@ -1,5 +1,4 @@
 #include "editor/session.hpp"
-#include "editor/error.hpp"
 #include "editor/project.hpp"
 #include "editor/fields.hpp"
 #include "editor/operator_parameters.hpp"
@@ -8,20 +7,12 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
-#include <stdexcept>
 #include <type_traits>
 
 namespace atelier::editor {
 namespace {
 auto invalid(std::string message) {
     return std::unexpected(Error{ErrorCode::invalid_definition, std::move(message)});
-}
-
-template <class T>
-T take(Result<T> result) {
-    if (!result)
-        throw detail::Failure(std::move(result.error()));
-    return std::move(*result);
 }
 }
 
@@ -425,29 +416,34 @@ Result<void> Session::set_transform(ObjectId entity, world::Trs value) {
     ATELIER_TRY(admit_entity_edit(entity));
     ATELIER_TRY_BIND(canonical, world::canonical_transform(value));
     ATELIER_TRY(cancel_edit());
-    const bool spatial = take(world::has_transform(runtime_, entity));
-    const auto before = spatial ? std::optional(take(world::read_transform(runtime_, entity))) : std::nullopt;
-    const auto before_origin = take(world::space_reference(runtime_, entity));
+    ATELIER_TRY_BIND(spatial, world::has_transform(runtime_, entity));
+    std::optional<world::Trs> before;
+    if (*spatial) {
+        ATELIER_TRY_BIND(transform, world::read_transform(runtime_, entity));
+        before = *transform;
+    }
+    ATELIER_TRY_BIND(before_origin, world::space_reference(runtime_, entity));
     if (before && *before == *canonical)
         return {};
     ATELIER_TRY_BIND(root, runtime_.hold(entity));
     ATELIER_TRY(world_.set_transform(entity, *canonical));
-    remember(TransformPresenceChange{std::move(*root), before, *canonical, before_origin,
-                                     take(world::space_reference(runtime_, entity))});
+    ATELIER_TRY_BIND(after_origin, world::space_reference(runtime_, entity));
+    remember(TransformPresenceChange{std::move(*root), before, *canonical, *before_origin, *after_origin});
     return {};
 }
 
 Result<void> Session::remove_transform(ObjectId entity) {
     ATELIER_TRY(admit_entity_edit(entity));
     ATELIER_TRY(cancel_edit());
-    if (!take(world::has_transform(runtime_, entity)))
+    ATELIER_TRY_BIND(spatial, world::has_transform(runtime_, entity));
+    if (!*spatial)
         return {};
-    const auto before = take(world::read_transform(runtime_, entity));
-    const auto before_origin = take(world::space_reference(runtime_, entity));
+    ATELIER_TRY_BIND(before, world::read_transform(runtime_, entity));
+    ATELIER_TRY_BIND(before_origin, world::space_reference(runtime_, entity));
     ATELIER_TRY_BIND(root, runtime_.hold(entity));
     ATELIER_TRY(world_.remove_transform(entity));
-    remember(TransformPresenceChange{
-        std::move(*root), before, {}, before_origin, take(world::space_reference(runtime_, entity))});
+    ATELIER_TRY_BIND(after_origin, world::space_reference(runtime_, entity));
+    remember(TransformPresenceChange{std::move(*root), *before, {}, *before_origin, *after_origin});
     return {};
 }
 
@@ -458,16 +454,24 @@ Result<world::Commit> Session::set_space_reference(ObjectId entity, std::optiona
         ATELIER_TRY(admit_entity_edit(*origin));
     ATELIER_TRY(cancel_edit());
     SpaceReferenceChange change;
-    change.root = take(runtime_.hold(entity));
-    change.before_origin = take(world::space_reference(runtime_, entity));
-    change.spatial = take(world::has_transform(runtime_, entity));
-    if (change.spatial)
-        change.before = take(world::read_transform(runtime_, entity));
+    ATELIER_TRY_BIND(root, runtime_.hold(entity));
+    change.root = std::move(*root);
+    ATELIER_TRY_BIND(before_origin, world::space_reference(runtime_, entity));
+    change.before_origin = *before_origin;
+    ATELIER_TRY_BIND(spatial, world::has_transform(runtime_, entity));
+    change.spatial = *spatial;
+    if (change.spatial) {
+        ATELIER_TRY_BIND(before, world::read_transform(runtime_, entity));
+        change.before = *before;
+    }
     ATELIER_TRY_BIND(changed, world_.set_space_reference(entity, origin, rule));
     if (changed->changed) {
-        change.after_origin = take(world::space_reference(runtime_, entity));
-        if (change.spatial)
-            change.after = take(world::read_transform(runtime_, entity));
+        ATELIER_TRY_BIND(after_origin, world::space_reference(runtime_, entity));
+        change.after_origin = *after_origin;
+        if (change.spatial) {
+            ATELIER_TRY_BIND(after, world::read_transform(runtime_, entity));
+            change.after = *after;
+        }
         set_selection({entity, entity});
         remember(std::move(change));
     }
@@ -484,21 +488,26 @@ Result<world::Commit> Session::reparent(std::span<const ObjectId> entities, Obje
     const std::vector<ObjectId> targets(entities.begin(), entities.end());
     if (parent != ObjectId{})
         ATELIER_TRY(admit_entity_edit(parent));
-    const auto sibling_index = [&](ObjectId target, ObjectId owner) {
+    const auto sibling_index = [&](ObjectId target, ObjectId owner) -> Result<std::size_t> {
         std::size_t result{};
-        if (owner != ObjectId{})
-            for (const auto& child : take(world::children(runtime_, owner))) {
+        if (owner != ObjectId{}) {
+            ATELIER_TRY_BIND(children, world::children(runtime_, owner));
+            for (const auto& child : *children) {
                 if (child.id() == target)
                     return result;
                 ++result;
             }
-        else
-            for (const auto& member : take(world_.members()))
-                if (take(world::parent_entity(runtime_, member.id())) == ObjectId{}) {
+        } else {
+            ATELIER_TRY_BIND(members, world_.members());
+            for (const auto& member : *members) {
+                ATELIER_TRY_BIND(parent, world::parent_entity(runtime_, member.id()));
+                if (*parent == ObjectId{}) {
                     if (member.id() == target)
                         return result;
                     ++result;
                 }
+            }
+        }
         return result;
     };
     ReparentChange change;
@@ -508,27 +517,38 @@ Result<world::Commit> Session::reparent(std::span<const ObjectId> entities, Obje
             ATELIER_TRY(admit_entity_edit(entity));
             ATELIER_TRY(cancel_edit());
             ReparentChange::Move move;
-            move.root = take(runtime_.hold(entity));
-            move.before_parent = take(world::parent_entity(runtime_, entity));
-            move.before_index = sibling_index(entity, move.before_parent);
+            ATELIER_TRY_BIND(root, runtime_.hold(entity));
+            move.root = std::move(*root);
+            ATELIER_TRY_BIND(before_parent, world::parent_entity(runtime_, entity));
+            move.before_parent = *before_parent;
+            ATELIER_TRY_BIND(before_index, sibling_index(entity, move.before_parent));
+            move.before_index = *before_index;
             std::vector<ObjectId> pending{entity};
             while (!pending.empty()) {
                 const auto object = pending.back();
                 pending.pop_back();
-                if (take(world::has_transform(runtime_, object))) {
-                    const auto before = take(world::read_transform(runtime_, object));
-                    move.transforms.push_back({take(runtime_.hold(object)), before, before});
+                ATELIER_TRY_BIND(spatial, world::has_transform(runtime_, object));
+                if (*spatial) {
+                    ATELIER_TRY_BIND(before, world::read_transform(runtime_, object));
+                    ATELIER_TRY_BIND(held, runtime_.hold(object));
+                    move.transforms.push_back({std::move(*held), *before, *before});
                 }
-                if (rule == world::ReparentRule::keep_world)
-                    for (const auto& child : take(world::children(runtime_, object)))
+                if (rule == world::ReparentRule::keep_world) {
+                    ATELIER_TRY_BIND(children, world::children(runtime_, object));
+                    for (const auto& child : *children)
                         pending.push_back(child.id());
+                }
             }
             ATELIER_TRY_BIND(changed, world_.reparent(entity, parent, rule, index));
             if (changed->changed) {
-                move.after_parent = take(world::parent_entity(runtime_, entity));
-                move.after_index = sibling_index(entity, move.after_parent);
-                for (auto& transform : move.transforms)
-                    transform.after = take(world::read_transform(runtime_, transform.root.id()));
+                ATELIER_TRY_BIND(after_parent, world::parent_entity(runtime_, entity));
+                move.after_parent = *after_parent;
+                ATELIER_TRY_BIND(after_index, sibling_index(entity, move.after_parent));
+                move.after_index = *after_index;
+                for (auto& transform : move.transforms) {
+                    ATELIER_TRY_BIND(after, world::read_transform(runtime_, transform.root.id()));
+                    transform.after = *after;
+                }
                 // Live forwarding needs this move's root pose, not the final pose after later moves.
                 std::erase_if(move.transforms, [entity](const auto& transform) {
                     return transform.root.id() != entity && transform.before == transform.after;
@@ -628,14 +648,14 @@ Result<world::Commit> Session::erase_entities(std::span<const ObjectId> entities
     std::vector<ObjectId> targets;
     for (const auto entity : requested) {
         ATELIER_TRY(admit_entity_edit(entity));
-        auto parent = take(world::parent_entity(runtime_, entity));
+        ATELIER_TRY_BIND(parent, world::parent_entity(runtime_, entity));
         bool included{};
-        while (parent != ObjectId{}) {
-            if (std::ranges::find(requested, parent) != requested.end()) {
+        while (*parent != ObjectId{}) {
+            if (std::ranges::find(requested, *parent) != requested.end()) {
                 included = true;
                 break;
             }
-            parent = take(world::parent_entity(runtime_, parent));
+            ATELIER_TRY(parent = world::parent_entity(runtime_, *parent));
         }
         if (!included)
             targets.push_back(entity);
@@ -749,10 +769,14 @@ Result<std::vector<Property>> Session::properties(ObjectId object) const {
     ATELIER_TRY_BIND(type, runtime_.type_of(object));
     ATELIER_TRY_BIND(fields, detail::scalar_fields(world_.runtime(), *type));
     std::vector<Property> result;
-    const bool entity = take(runtime_.is_a(*type, types_.entity));
-    const bool spatial = entity && take(world::has_transform(world_.runtime(), object));
+    ATELIER_TRY_BIND(entity, runtime_.is_a(*type, types_.entity));
+    bool spatial{};
+    if (*entity) {
+        ATELIER_TRY_BIND(has_space, world::has_transform(world_.runtime(), object));
+        spatial = *has_space;
+    }
     for (auto& field : *fields) {
-        if (entity && !spatial && detail::transform_path(types_, field.path))
+        if (*entity && !spatial && detail::transform_path(types_, field.path))
             continue;
         ATELIER_TRY_BIND(value, read_property(object, field.path));
         std::string name;

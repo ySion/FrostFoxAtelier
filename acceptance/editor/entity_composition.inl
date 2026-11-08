@@ -85,11 +85,21 @@ void verify_entity_composition() {
         const auto before = take(grouped.serialize());
         const auto history = grouped.undo_count();
         const auto recorded = grouped.recorded();
-        static_cast<void>(grouped.reparent(std::array{second, first}, {}));
+        const auto first_rejected = grouped.reparent(std::array{second, first}, {});
+        require(!first_rejected && first_rejected.error().code == ErrorCode::argument_mismatch &&
+                    first_rejected.error().message ==
+                        "Keeping the world transform requires a finite, nonsingular local TRS without shear." &&
+                    !first_rejected.error().source,
+                "First-item reparent rejection did not preserve the World error.");
         require(take(grouped.serialize()) == before && grouped.undo_count() == history &&
                     grouped.recorded() == recorded && grouped.redo_count() == 0,
                 "First-item reparent rejection published a move or added history.");
-        static_cast<void>(grouped.reparent(std::array{first, second}, {}));
+        const auto second_rejected = grouped.reparent(std::array{first, second}, {});
+        require(!second_rejected && second_rejected.error().code == ErrorCode::argument_mismatch &&
+                    second_rejected.error().message ==
+                        "Keeping the world transform requires a finite, nonsingular local TRS without shear." &&
+                    !second_rejected.error().source,
+                "Second-item reparent rejection did not preserve the World error.");
         require(take(world::parent_entity(runtime, first)) == ObjectId{} &&
                     take(world::read_transform(runtime, first)).position.x == 4 &&
                     take(world::parent_entity(runtime, second)) == parent &&

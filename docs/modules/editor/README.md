@@ -48,6 +48,7 @@ World 的原生类型与字段元数据由[自动反射](../../reflection.md)生
 [Session](../../../modules/editor/core/include/editor/session.hpp)是文档唯一写入口，保存 `{entity, object}` 选择和统一的 Entity、组件、字段历史。字段事务捕获具体对象 ObjectId、正式 FieldPath 和控制会话，不再从当前选择或类型顺序猜目标。一次拖调连续改真实字段，提交只记一次历史。Entity 的空间字段可能使四元数其他分量规范化，所以记录完整 TRS 前后值，经 World 原子恢复；不是删除时的对象图快照。属性 undo/redo 恢复该字段所属对象作为检查目标，并保留其 Entity 上下文。同一目标重复选择不取消草稿；换目标先取消事务。
 Entity 删除记录保存完整子树根、原组合父与成员位置；组件独立移除记录保存组件根及 owner/组成顺序。Undo 恢复同一 ObjectId 的当前组成与成员资格，重新生成 UI 绑定。裁剪历史/redo 与关闭文档只释放持有，不隐式 destroy。历史最多128项，编辑器最多256个 Entity；只有 World 成员可编辑，没有离线写入或多写者冲突机制。
 World 操作的 Result 失败表示提交未完成；成功 Commit 中的 notification_error 表示关系已改变。Session 先记录变化并更新选择，应用再报告通知错误并停止后续动作，不把它当成未提交或重做一次。成员 span 只在结构变化前借用，UI/renderer 不持有它。
+Session 的 `set_transform`、`remove_transform`、`set_space_reference`、多项 `reparent`、`erase_entities` 和 `properties` 直接传播 Runtime/World 的 Result 错误，保留 code、message 和 source，不经异常中转。多项 reparent 仍按输入顺序发布：后项拒绝时先将已提交前缀记为一次历史，再返回原拒绝；不回滚前缀、不执行或重试后缀。已提交项的 notification_error 同样在记录历史后交付，并停止后续对象，不降为成功或替换首因。
 宿主同线程逐帧以32工作单位推进 GC；普通根保活不表示对象仍参与 World。文档关闭先结束活动编辑，再关闭 World、释放历史；World close 撤成员/参与和根，Runtime 生命周期随后由宿主管理。
 
 Session 默认构造只建立空壳，在稳定地址上调用一次 `initialize(Prepare, SessionRole)`，以 `Result<void>` 传递引擎/编辑器类型注册、World、呈现与 Prepare 的完整错误。只有成功后才能使用文档方法；失败后只允许析构，不承诺重试，因为类型注册可能已部分改变 Runtime。这与初始化失败后可重试的 World 不同。析构在呈现已建立时先关闭 World，再按原成员顺序退役物理、呈现、World、Prepare 返回的代码所有者和 Runtime；更早失败由已构造成员清理。
