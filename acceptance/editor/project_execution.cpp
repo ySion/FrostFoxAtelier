@@ -481,11 +481,41 @@ void verify_raw_output() {
         wait(child.process, std::chrono::seconds(5));
         const auto output = child.process.take_raw_output();
         const auto& state = output.status.standard_output;
-        require(output.standard_output.bytes == std::string(64 * 1024, 'o') &&
-                    output.standard_output.offset == 2 * 64 * 1024 + 17 && state.received_bytes == 3 * 64 * 1024 + 17 &&
-                    state.dropped_bytes == 2 * 64 * 1024 + 17 && !state.abandoned_bytes && state.eof &&
-                    !state.tail_loss_unknown && !state.read_error,
-                "Raw retention did not account for the exact evicted byte prefix.");
+        const bool retained = output.standard_output.bytes == std::string(64 * 1024, 'o') &&
+                              output.standard_output.offset == 2 * 64 * 1024 + 17 &&
+                              state.received_bytes == 3 * 64 * 1024 + 17 && state.dropped_bytes == 2 * 64 * 1024 + 17 &&
+                              !state.abandoned_bytes && state.eof && !state.tail_loss_unknown && !state.read_error;
+        if (!retained) {
+            auto different = output.standard_output.bytes.find_first_not_of('o');
+            if (different == std::string::npos && output.standard_output.bytes.size() < 64 * 1024)
+                different = output.standard_output.bytes.size();
+            if (output.standard_output.bytes.size() > 64 * 1024 && different > 64 * 1024)
+                different = 64 * 1024;
+            const auto& err = output.status.standard_error;
+            const auto exit = child.process.exit_code();
+            // first_diff is relative to the retained bytes; -1 means an exact match (stderr expects empty).
+            std::fprintf(stderr,
+                         "[PROC-RAW] stdout={bytes=%zu first_diff=%lld offset=%llu received=%llu dropped=%llu "
+                         "abandoned=%llu eof=%d read_error=%lu tail_loss_unknown=%d} "
+                         "stderr={bytes=%zu first_diff=%d offset=%llu received=%llu dropped=%llu abandoned=%llu "
+                         "eof=%d read_error=%lu tail_loss_unknown=%d} "
+                         "process_exited=%d pending=%d running=%d forced=%d exit_code=%lld\n",
+                         output.standard_output.bytes.size(),
+                         different == std::string::npos ? -1LL : static_cast<long long>(different),
+                         static_cast<unsigned long long>(output.standard_output.offset),
+                         static_cast<unsigned long long>(state.received_bytes),
+                         static_cast<unsigned long long>(state.dropped_bytes),
+                         static_cast<unsigned long long>(state.abandoned_bytes), state.eof, state.read_error,
+                         state.tail_loss_unknown, output.standard_error.bytes.size(),
+                         output.standard_error.bytes.empty() ? -1 : 0,
+                         static_cast<unsigned long long>(output.standard_error.offset),
+                         static_cast<unsigned long long>(err.received_bytes),
+                         static_cast<unsigned long long>(err.dropped_bytes),
+                         static_cast<unsigned long long>(err.abandoned_bytes), err.eof, err.read_error,
+                         err.tail_loss_unknown, output.status.process_exited, output.status.pending,
+                         child.process.running(), child.process.forced(), exit ? static_cast<long long>(*exit) : -1LL);
+        }
+        require(retained, "Raw retention did not account for the exact evicted byte prefix.");
     }
     {
         RawChild child{L"cooperative"};
