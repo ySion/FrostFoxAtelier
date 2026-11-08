@@ -129,6 +129,8 @@ const auto final_report = run->finish();
 
 sink 构造只建立值，创建者在交给 Quill 前显式打开文件；每次完整写入成功后才更新文件大小。写入、打开及轮转拒绝保留原 `FacilityFault` 和 native_code，写失败状态不会被后续 flush/finish 应答抹掉。健康快照发布也消费原子写结果：写临时文件或 rename 失败不破坏旧目标；rename 后关闭句柄失败仍报告失败，但目标可能已被替换，不宣称回滚。临时文件处理沿原政策，不新增重试或清理策略。
 
+现有 sink 的 `close()` 若关闭失败，会记录 `file_flush_failed` 和原 `native_code`；轮转的 close 步骤不据此短路，只有后续 delete、rename、open 按既有规则判定为拒绝时才停止后续轮转，不保证关闭失败后停止或回滚。
+
 ## 持久格式 v1
 
 `events.jsonl` 为 UTF-8、无 BOM、每条一个 JSON object + LF；message 必须是 **rendered 正文**，不是 Quill 默认 JsonSink 的格式模板。关闭 Quill ASCII 字符转义 sanitizer；JSON 层按标准转义引号、反斜杠、NUL/控制字符，读回须逐字节还原合法 UTF-8 正文。不能在正文前拼接不可逆元数据再靠字符串拆解。
