@@ -73,8 +73,8 @@ void mirrored_scale() {
         return v;
     };
     // An asymmetric ramp over x in [1,2] whose front faces +X and up: mirroring X must move it and turn its front to -X.
-    const auto ramp = std::make_shared<const atelier::geometry::Mesh>(std::vector{
-        vertex(1, 2, -1), vertex(2, 0, -1), vertex(2, 0, 1), vertex(1, 2, -1), vertex(2, 0, 1), vertex(1, 2, 1)});
+    const auto ramp = take(atelier::geometry::Mesh::create(std::vector{
+        vertex(1, 2, -1), vertex(2, 0, -1), vertex(2, 0, 1), vertex(1, 2, -1), vertex(2, 0, 1), vertex(1, 2, 1)}));
     const Vector3 mirror{-1, 1, 1};
     auto entity = take(pr::create_static_mesh_entity(
         f.world, {.mesh = ramp, .transform = {{0, 0, 0}, {0, 0, 0, 1}, mirror}, .mesh_source = "acceptance/ramp"}));

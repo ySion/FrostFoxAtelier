@@ -31,7 +31,7 @@ void simulate_world() {
     std::vector<atelier::geometry::Vertex> vertices(old_vertices.begin(), old_vertices.end());
     for (auto& vertex : vertices)
         vertex.position[0] *= .5f;
-    auto narrower = std::make_shared<const atelier::geometry::Mesh>(std::move(vertices));
+    auto narrower = take(atelier::geometry::Mesh::create(std::move(vertices)));
     take(pr::set_mesh_binding(runtime, floor_mesh, {captured.source, narrower}));
     step(world, *scene, 0);
     require(take(scene->raycast({3, 4, 0}, {3, -2, 0})).hits.empty() &&

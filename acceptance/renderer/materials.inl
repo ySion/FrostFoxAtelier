@@ -19,24 +19,24 @@ void material_cases(render::Renderer& renderer) {
                                          {{-1, -1, z}, {0, 0, -1}, {-1, 1}},
                                          {{1, 1, z}, {0, 0, -1}, {0, 0}},
                                          {{1, -1, z}, {0, 0, -1}, {0, 1}}});
-    auto image = std::make_shared<const material::Image>(
-        2, 2, std::vector<std::uint8_t>{255, 0, 0, 255, 255, 255, 255, 0, 0, 0, 255, 255, 255, 255, 0, 255});
+    auto image = take(material::Image::create(
+        2, 2, std::vector<std::uint8_t>{255, 0, 0, 255, 255, 255, 255, 0, 0, 0, 255, 255, 255, 255, 0, 255}));
     std::weak_ptr<const material::Image> observer = image;
     auto base_surfaces = std::make_shared<const std::vector<material::SurfaceRef>>(
         std::vector{surface({1, 1, 1, 1}, image), surface({0, 1, 0, 1})});
     std::array<render::MeshInstance, 1> meshes{};
     meshes[0].color = {1, 1, 1, 1};
     meshes[0].surfaces = base_surfaces;
-    meshes[0].geometry = std::make_shared<const geometry::Mesh>(
-        vertices, std::vector<std::uint8_t>{}, std::vector<geometry::MaterialSlot>{{"cutout"}, {"background"}},
-        std::vector<geometry::MeshPart>{{0, 6, 0}, {6, 6, 1}});
+    meshes[0].geometry = take(geometry::Mesh::create(vertices, std::vector<std::uint8_t>{},
+                                                     std::vector<geometry::MaterialSlot>{{"cutout"}, {"background"}},
+                                                     std::vector<geometry::MeshPart>{{0, 6, 0}, {6, 6, 1}}));
     image.reset();
     render::Frame frame{drawing, {}, {0, 0, float(drawing.extent.width), float(drawing.extent.height)}, meshes};
     take(prepared_render(renderer, frame));
-    auto opaque = std::make_shared<const material::Image>(
-        2, 2, std::vector<std::uint8_t>{255, 0, 0, 255, 255, 255, 255, 255, 0, 0, 255, 255, 255, 255, 0, 255});
-    auto opacity = std::make_shared<const material::Image>(
-        2, 2, std::vector<std::uint8_t>{255, 255, 255, 255, 0, 0, 0, 255, 160, 160, 160, 255, 255, 255, 255, 255});
+    auto opaque = take(material::Image::create(
+        2, 2, std::vector<std::uint8_t>{255, 0, 0, 255, 255, 255, 255, 255, 0, 0, 255, 255, 255, 255, 0, 255}));
+    auto opacity = take(material::Image::create(
+        2, 2, std::vector<std::uint8_t>{255, 255, 255, 255, 0, 0, 0, 255, 160, 160, 160, 255, 255, 255, 255, 255}));
     std::weak_ptr<const material::Image> opacity_observer = opacity;
     base_surfaces = std::make_shared<const std::vector<material::SurfaceRef>>(
         std::vector{surface({1, 1, 1, 1}, opaque, opacity), surface({0, 1, 0, 1})});

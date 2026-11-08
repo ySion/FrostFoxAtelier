@@ -730,12 +730,12 @@ void verify_viewport_editing() {
         // One sloped polygon crosses far=4 at x=0; reject the distant half,
         // not the entire mesh. Authored sample depths straddle that plane.
         Session clipped;
-        auto mesh = std::make_shared<const geometry::Mesh>(std::vector<geometry::Vertex>{{{-2, -1, 2}, {1, 0, -1}},
-                                                                                         {{-2, 1, 2}, {1, 0, -1}},
-                                                                                         {{2, 1, 6}, {1, 0, -1}},
-                                                                                         {{-2, -1, 2}, {1, 0, -1}},
-                                                                                         {{2, 1, 6}, {1, 0, -1}},
-                                                                                         {{2, -1, 6}, {1, 0, -1}}});
+        auto mesh = take(geometry::Mesh::create(std::vector<geometry::Vertex>{{{-2, -1, 2}, {1, 0, -1}},
+                                                                              {{-2, 1, 2}, {1, 0, -1}},
+                                                                              {{2, 1, 6}, {1, 0, -1}},
+                                                                              {{-2, -1, 2}, {1, 0, -1}},
+                                                                              {{2, 1, 6}, {1, 0, -1}},
+                                                                              {{2, -1, 6}, {1, 0, -1}}}));
         changed(clipped.create_static_mesh({{}, L"Far crossing", mesh}));
         const auto entity = clipped.selection().entity;
         application::SceneSnapshot clipped_scene;

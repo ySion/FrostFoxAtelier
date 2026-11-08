@@ -17,12 +17,12 @@ void shadow_cases(Fixture& f) {
     f.room.meshes.assign(2, {});
     auto& receiver = f.room.meshes[0];
     receiver.stable_key = 1;
-    receiver.geometry = std::make_shared<const Mesh>(std::vector<Vertex>{{{-.5f, -.5f, 0}, {0, 0, -1}},
-                                                                         {{.5f, -.5f, 0}, {0, 0, -1}},
-                                                                         {{.5f, .5f, 0}, {0, 0, -1}},
-                                                                         {{-.5f, -.5f, 0}, {0, 0, -1}},
-                                                                         {{.5f, .5f, 0}, {0, 0, -1}},
-                                                                         {{-.5f, .5f, 0}, {0, 0, -1}}});
+    receiver.geometry = take(Mesh::create(std::vector<Vertex>{{{-.5f, -.5f, 0}, {0, 0, -1}},
+                                                              {{.5f, -.5f, 0}, {0, 0, -1}},
+                                                              {{.5f, .5f, 0}, {0, 0, -1}},
+                                                              {{-.5f, -.5f, 0}, {0, 0, -1}},
+                                                              {{.5f, .5f, 0}, {0, 0, -1}},
+                                                              {{-.5f, .5f, 0}, {0, 0, -1}}}));
     receiver.world = box(0, 0, 4, 12, 8, 1);
     receiver.color = {.5f, .5f, .5f, 1};
     receiver.material.roughness = 1;

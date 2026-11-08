@@ -257,8 +257,8 @@ void transform_by_usage() {
     // One input triangle supplies the independent corner order and vertex attributes.
     const auto source = geometry::cube_mesh();
     const auto vertices = source->vertices().first(3);
-    const geometry::Mesh mesh{std::vector<geometry::Vertex>{vertices.begin(), vertices.end()}};
-    const auto triangle = import_mesh(mesh);
+    const auto mesh = take(geometry::Mesh::create(std::vector<geometry::Vertex>{vertices.begin(), vertices.end()}));
+    const auto triangle = import_mesh(*mesh);
     auto mirrored = triangle;
     take(transform(mirrored, {}, {}, {-1, 1, 1}));
     const auto& old_normals = column<Vector3>(triangle, "N", Layer::vertex);
@@ -362,8 +362,8 @@ bool near(const Matrix4& a, const Matrix4& b) {
 
 void copy_to_points_and_publication() {
     const auto mesh_a = geometry::cube_mesh();
-    const auto mesh_b = std::make_shared<const geometry::Mesh>(
-        std::vector<geometry::Vertex>(mesh_a->vertices().begin(), mesh_a->vertices().end()));
+    const auto mesh_b = take(
+        geometry::Mesh::create(std::vector<geometry::Vertex>(mesh_a->vertices().begin(), mesh_a->vertices().end())));
     const std::vector<Reference> references{{String::literal<"fixture/a">(), mesh_a},
                                             {String::literal<"fixture/b">(), mesh_b}};
 
@@ -1861,7 +1861,7 @@ geometry::MeshRef terrain_mesh(std::uint32_t quads, float size) {
                 for (const auto& p : corners)
                     vertices.push_back({{p.x, p.y, p.z}, {n.x, n.y, n.z}});
             }
-    return std::make_shared<const geometry::Mesh>(std::move(vertices));
+    return take(geometry::Mesh::create(std::move(vertices)));
 }
 
 // Median milliseconds of `samples` runs after two warmups; `prepare` runs untimed before each.

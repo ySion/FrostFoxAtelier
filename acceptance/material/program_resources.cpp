@@ -70,7 +70,7 @@ DefinitionRef definition(Program program) {
 }
 
 ImageRef pixel(std::array<std::uint8_t, 4> rgba) {
-    return std::make_shared<const Image>(1, 1, std::vector<std::uint8_t>(rgba.begin(), rgba.end()));
+    return take(Image::create(1, 1, std::vector<std::uint8_t>(rgba.begin(), rgba.end())));
 }
 
 SourceState source_state(DefinitionRef def, const ObjectRoot& color, const ObjectRoot& data) {
@@ -410,7 +410,7 @@ void ownership_and_filtering() {
             "Surface accidentally rooted Runtime objects.");
     near(color_red(saved), .5f);
 
-    const auto colors = std::make_shared<const Image>(2, 1, std::vector<std::uint8_t>{255, 0, 0, 255, 0, 128, 0, 64});
+    const auto colors = take(Image::create(2, 1, std::vector<std::uint8_t>{255, 0, 0, 255, 0, 128, 0, 64}));
     const auto data = pixel({0, 0, 0, 255});
     std::vector<ImageRef> images;
     for (const auto& input : def->textures())

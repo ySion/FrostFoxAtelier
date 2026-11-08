@@ -39,11 +39,14 @@ std::filesystem::path shader_cache_directory() {
     return std::filesystem::path(executable).parent_path() / L"renderer-shader-cache";
 }
 
-template <class T>
-T take(render::Result<T> result) {
+template <class T, class E>
+T take(std::expected<T, E> result) {
     if (!result) {
-        throw std::runtime_error("Renderer error: " + result.error().cause.message +
-                                 " (terminal=" + std::to_string(result.error().terminal) + ")");
+        if constexpr (std::is_same_v<E, render::Error>)
+            throw std::runtime_error("Renderer error: " + result.error().cause.message +
+                                     " (terminal=" + std::to_string(result.error().terminal) + ")");
+        else
+            throw std::runtime_error(result.error().message);
     }
     if constexpr (!std::is_void_v<T>)
         return std::move(*result);

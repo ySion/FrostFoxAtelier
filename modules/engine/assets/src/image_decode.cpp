@@ -82,7 +82,7 @@ Result<material::ImageRef> decode(std::string_view bytes, PixelBudget* budget) {
     ATELIER_TRY(
         require(SUCCEEDED(converter->CopyPixels(nullptr, width * 4, static_cast<UINT>(pixels.size()), pixels.data())),
                 "Cannot read texture pixels."));
-    return std::make_shared<const material::Image>(width, height, std::move(pixels));
+    return material::Image::create(width, height, std::move(pixels));
 }
 }
 

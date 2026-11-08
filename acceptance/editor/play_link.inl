@@ -243,7 +243,7 @@ void verify_texture_link(const std::filesystem::path& root) {
     }
     pixels[4] = 29;
     pixels[pixels.size() - 2] = 211;
-    auto large = std::make_shared<const material::Image>(2304, 2304, std::move(pixels));
+    auto large = take(material::Image::create(2304, 2304, std::move(pixels)));
     take(author.publish_texture(key, large));
     auto changes = take(author.take_live_ops());
     require(changes.size() == 1 && changes[0].text.size() < 1024 && changes[0].texture == large &&
@@ -309,8 +309,10 @@ void verify_texture_link(const std::filesystem::path& root) {
         vertices.insert(vertices.end(), imported.mesh->vertices().begin(), imported.mesh->vertices().end());
     auto published = imported;
     published.materials = {{"slot/0", material_key}};
-    published.mesh = geometry::Mesh::restore_published(std::move(vertices), std::vector<std::uint8_t>(120000, 5), {{}},
-                                                       {{0, 360000, 0}});
+    auto restored = geometry::Mesh::restore_published(std::move(vertices), std::vector<std::uint8_t>(120000, 5), {{}},
+                                                      {{0, 360000, 0}});
+    require(bool(restored), "Published mesh fixture could not be restored.");
+    published.mesh = std::move(*restored);
     require(published.mesh->vertices().size() * sizeof(geometry::Vertex) > application::PlayLink::maximum_batch,
             "Mesh fixture did not exceed JSON limits.");
     take(author.publish_mesh(project.assets(), published));

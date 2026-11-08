@@ -831,9 +831,12 @@ struct Renderer::State {
 
     Result<GfxTexture> material_texture(material::ImageRef source, bool srgb) {
         if (!source) {
-            if (!white_image)
-                white_image =
-                    std::make_shared<const material::Image>(1, 1, std::vector<std::uint8_t>{255, 255, 255, 255});
+            if (!white_image) {
+                auto image = material::Image::create(1, 1, std::vector<std::uint8_t>{255, 255, 255, 255});
+                if (!image)
+                    fatal(image.error().message);
+                white_image = std::move(*image);
+            }
             source = white_image;
         }
         const auto key = std::pair{source.get(), srgb};

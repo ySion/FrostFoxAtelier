@@ -371,8 +371,10 @@ Result<MeshImport> load_obj(const std::filesystem::path& source, ImageCache* sha
                     instance.entries.push_back({"opacity_channel", 0.f});
             }
     }
-    result.mesh = std::make_shared<const geometry::Mesh>(std::move(vertices), std::move(masks), std::move(materials),
-                                                         std::move(parts));
+    auto mesh = geometry::Mesh::create(std::move(vertices), std::move(masks), std::move(materials), std::move(parts));
+    if (!mesh)
+        return std::unexpected(Error{ErrorCode::invalid_storage, std::move(mesh.error().message)});
+    result.mesh = std::move(*mesh);
     return result;
 }
 }

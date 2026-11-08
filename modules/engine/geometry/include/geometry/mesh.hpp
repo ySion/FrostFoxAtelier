@@ -1,17 +1,23 @@
 #pragma once
 
+#include "foundation/result.hpp"
+#include "memory/fatal.hpp"
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <expected>
 #include <limits>
 #include <memory>
 #include <span>
 #include <string>
-#include <stdexcept>
 #include <vector>
 
 namespace atelier::geometry {
+
+struct MeshError {
+    std::string message;
+};
 
 struct Vertex {
     float position[3];
@@ -23,11 +29,14 @@ struct Vertex {
     float tangent[4]{}; // Tangent and handedness: MikkTSpace on publication, or authored (Tangents::authored).
 };
 
+// Requires a nonempty triangle list with at most INT_MAX vertices, finite
+// positions/UVs and unit normals. CPU allocation failure is fatal.
 void generate_tangents(std::span<Vertex>);
 
 // Keeps each authored handedness; orthogonalizes XYZ against the unit normal and normalizes it.
 // A zero tangent, or one parallel to its normal at any length, takes the same fallback as degenerate UVs.
-void adopt_tangents(std::span<Vertex>);
+// On failure the processed prefix may have changed; discard the unpublished candidate.
+[[nodiscard]] std::expected<void, MeshError> adopt_tangents(std::span<Vertex>);
 
 enum class Tangents : std::uint8_t { generate, authored };
 
@@ -56,36 +65,45 @@ public:
     // One optional mask per triangle: bit i displays the edge opposite vertex i.
     // No masks means all triangle edges. Producers preserve polygon boundaries
     // during triangulation; the renderer never guesses connectivity from positions.
-    explicit Mesh(std::vector<Vertex> vertices, std::vector<std::uint8_t> edge_masks = {},
-                  std::vector<MaterialSlot> materials = {}, std::vector<MeshPart> parts = {},
-                  Tangents tangents = Tangents::generate)
-        : Mesh(std::move(vertices), std::move(edge_masks), std::move(materials), std::move(parts), tangents, false) {}
+    // Failure destroys the candidate without publishing a resource.
+    [[nodiscard]] static std::expected<std::shared_ptr<const Mesh>, MeshError>
+    create(std::vector<Vertex> vertices, std::vector<std::uint8_t> edge_masks = {},
+           std::vector<MaterialSlot> materials = {}, std::vector<MeshPart> parts = {},
+           Tangents tangents = Tangents::generate) {
+        auto candidate = std::shared_ptr<Mesh>(
+            new Mesh(std::move(vertices), std::move(edge_masks), std::move(materials), std::move(parts)));
+        ATELIER_TRY(candidate->initialize(tangents, false));
+        return candidate;
+    }
 
     // Restores an already published snapshot: validates the triangle partition and
     // finite, orthonormal tangent frames, but never renormalizes any float bits.
     // Unlike author construction, slots and parts must already be explicit.
-    [[nodiscard]] static std::shared_ptr<const Mesh> restore_published(std::vector<Vertex> vertices,
-                                                                       std::vector<std::uint8_t> edge_masks,
-                                                                       std::vector<MaterialSlot> materials,
-                                                                       std::vector<MeshPart> parts) {
-        return std::shared_ptr<const Mesh>(new Mesh(std::move(vertices), std::move(edge_masks), std::move(materials),
-                                                    std::move(parts), Tangents::authored, true));
+    [[nodiscard]] static std::expected<std::shared_ptr<const Mesh>, MeshError>
+    restore_published(std::vector<Vertex> vertices, std::vector<std::uint8_t> edge_masks,
+                      std::vector<MaterialSlot> materials, std::vector<MeshPart> parts) {
+        auto candidate = std::shared_ptr<Mesh>(
+            new Mesh(std::move(vertices), std::move(edge_masks), std::move(materials), std::move(parts)));
+        ATELIER_TRY(candidate->initialize(Tangents::authored, true));
+        return candidate;
     }
 
 private:
     Mesh(std::vector<Vertex> vertices, std::vector<std::uint8_t> edge_masks, std::vector<MaterialSlot> materials,
-         std::vector<MeshPart> parts, Tangents tangents, bool published)
+         std::vector<MeshPart> parts)
         : vertices_(std::move(vertices)), edge_masks_(std::move(edge_masks)), materials_(std::move(materials)),
-          parts_(std::move(parts)) {
+          parts_(std::move(parts)) {}
+
+    std::expected<void, MeshError> initialize(Tangents tangents, bool published) {
         if (vertices_.empty() || vertices_.size() % 3 != 0 || vertices_.size() > std::numeric_limits<int>::max())
-            throw std::invalid_argument("Mesh requires a nonempty triangle list.");
+            return std::unexpected(MeshError{"Mesh requires a nonempty triangle list."});
         if (!edge_masks_.empty() && edge_masks_.size() != vertices_.size() / 3)
-            throw std::invalid_argument("Mesh requires one edge mask per triangle.");
+            return std::unexpected(MeshError{"Mesh requires one edge mask per triangle."});
         for (auto mask : edge_masks_)
             if (mask > 7)
-                throw std::invalid_argument("Mesh edge mask uses only three bits.");
+                return std::unexpected(MeshError{"Mesh edge mask uses only three bits."});
         if (published && (materials_.empty() || parts_.empty()))
-            throw std::invalid_argument("Published mesh requires explicit material slots and parts.");
+            return std::unexpected(MeshError{"Published mesh requires explicit material slots and parts."});
         if (materials_.empty())
             materials_.push_back({});
         if (parts_.empty())
@@ -94,35 +112,35 @@ private:
         for (const auto& part : parts_) {
             if (part.first_vertex != end || !part.vertex_count || part.vertex_count % 3 ||
                 part.material >= materials_.size())
-                throw std::invalid_argument("Mesh parts must partition complete triangles with valid materials.");
+                return std::unexpected(MeshError{"Mesh parts must partition complete triangles with valid materials."});
             end += part.vertex_count;
         }
         if (end != vertices_.size())
-            throw std::invalid_argument("Mesh parts must cover every vertex exactly once.");
+            return std::unexpected(MeshError{"Mesh parts must cover every vertex exactly once."});
         std::copy_n(vertices_.front().position, 3, bounds_.minimum.begin());
         bounds_.maximum = bounds_.minimum;
         for (auto& vertex : vertices_) {
             for (float value : vertex.uv)
                 if (!std::isfinite(value))
-                    throw std::invalid_argument("Mesh UV must be finite.");
+                    return std::unexpected(MeshError{"Mesh UV must be finite."});
             for (float value : vertex.position)
                 if (!std::isfinite(value))
-                    throw std::invalid_argument("Mesh position must be finite.");
+                    return std::unexpected(MeshError{"Mesh position must be finite."});
             for (std::size_t axis = 0; axis < 3; ++axis) {
                 bounds_.minimum[axis] = std::min(bounds_.minimum[axis], vertex.position[axis]);
                 bounds_.maximum[axis] = std::max(bounds_.maximum[axis], vertex.position[axis]);
             }
             for (float value : vertex.normal)
                 if (!std::isfinite(value))
-                    throw std::invalid_argument("Mesh normal must be finite.");
+                    return std::unexpected(MeshError{"Mesh normal must be finite."});
             const double length =
                 std::hypot(double(vertex.normal[0]), double(vertex.normal[1]), double(vertex.normal[2]));
             if (length == 0)
-                throw std::invalid_argument("Mesh normal must be nonzero.");
+                return std::unexpected(MeshError{"Mesh normal must be nonzero."});
             if (published) {
                 for (float value : vertex.tangent)
                     if (!std::isfinite(value))
-                        throw std::invalid_argument("Published mesh tangent must be finite.");
+                        return std::unexpected(MeshError{"Published mesh tangent must be finite."});
                 const auto* t = vertex.tangent;
                 const auto* n = vertex.normal;
                 const double tangent_length = std::hypot(double(t[0]), double(t[1]), double(t[2]));
@@ -130,18 +148,19 @@ private:
                 // Published float frames include rounding from normalization/projection.
                 if (std::abs(length - 1) > 1e-5 || std::abs(tangent_length - 1) > 1e-5 || std::abs(projection) > 1e-5 ||
                     (t[3] != 1 && t[3] != -1))
-                    throw std::invalid_argument(
-                        "Published mesh requires an orthonormal tangent frame and handedness of 1 or -1.");
+                    return std::unexpected(
+                        MeshError{"Published mesh requires an orthonormal tangent frame and handedness of 1 or -1."});
             } else
                 for (float& value : vertex.normal)
                     value = static_cast<float>(value / length);
         }
         if (!published) {
             if (tangents == Tangents::authored)
-                adopt_tangents(vertices_);
+                ATELIER_TRY(adopt_tangents(vertices_));
             else
                 generate_tangents(vertices_);
         }
+        return {};
     }
 
 public:
@@ -215,8 +234,10 @@ struct MeshSource {
                 constexpr float uv[4][2] = {{0, 1}, {0, 0}, {1, 0}, {1, 1}};
                 std::copy_n(uv[indices[i]], 2, vertex.uv);
             }
-        return std::make_shared<const Mesh>(std::move(vertices),
-                                            std::vector<std::uint8_t>{5, 3, 5, 3, 5, 3, 5, 3, 5, 3, 5, 3});
+        auto mesh = Mesh::create(std::move(vertices), std::vector<std::uint8_t>{5, 3, 5, 3, 5, 3, 5, 3, 5, 3, 5, 3});
+        if (!mesh)
+            fatal(mesh.error().message);
+        return std::move(*mesh);
     }();
     return resource;
 }

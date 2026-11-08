@@ -13,11 +13,11 @@ void fallback_tangent(Vertex& vertex) {
 }
 }
 
-void adopt_tangents(std::span<Vertex> vertices) {
+std::expected<void, MeshError> adopt_tangents(std::span<Vertex> vertices) {
     for (auto& vertex : vertices) {
         auto& t = vertex.tangent;
         if (!std::isfinite(t[0]) || !std::isfinite(t[1]) || !std::isfinite(t[2]) || (t[3] != 1 && t[3] != -1))
-            throw std::invalid_argument("Authored mesh tangent requires finite XYZ and a handedness of 1 or -1.");
+            return std::unexpected(MeshError{"Authored mesh tangent requires finite XYZ and a handedness of 1 or -1."});
         const auto* n = vertex.normal;
         // Float normals are only nearly unit; without the division a parallel tangent leaves a residual above the fallback threshold.
         const double projection = (double(t[0]) * n[0] + double(t[1]) * n[1] + double(t[2]) * n[2]) /
@@ -33,6 +33,7 @@ void adopt_tangents(std::span<Vertex> vertices) {
         for (std::size_t i = 0; i < 3; ++i)
             t[i] = static_cast<float>(orthogonal[i] / length);
     }
+    return {};
 }
 
 void generate_tangents(std::span<Vertex> vertices) {
@@ -76,6 +77,6 @@ void generate_tangents(std::span<Vertex> vertices) {
     };
     SMikkTSpaceContext context{&callbacks, &vertices};
     if (!genTangSpaceDefault(&context))
-        throw std::runtime_error("Cannot generate mesh tangent space.");
+        fatal("Cannot generate mesh tangent space.");
 }
 }

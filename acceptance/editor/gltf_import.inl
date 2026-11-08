@@ -196,8 +196,9 @@ void verify_gltf_import() {
             v.tangent[0] = v.tangent[2] = d;
             v.tangent[3] = 1;
         }
-        const atelier::geometry::Mesh parallel(std::move(triangle), {}, {}, {}, atelier::geometry::Tangents::authored);
-        for (const auto& v : parallel.vertices())
+        const auto parallel = take(
+            atelier::geometry::Mesh::create(std::move(triangle), {}, {}, {}, atelier::geometry::Tangents::authored));
+        for (const auto& v : parallel->vertices())
             require(std::abs(v.tangent[0] * v.normal[0] + v.tangent[1] * v.normal[1] + v.tangent[2] * v.normal[2]) <
                             1e-5f &&
                         std::abs(std::hypot(v.tangent[0], v.tangent[1], v.tangent[2]) - 1) < 1e-5f,
@@ -212,9 +213,9 @@ void verify_gltf_import() {
             v.tangent[2] = 1000;
             v.tangent[3] = 1;
         }
-        const atelier::geometry::Mesh long_parallel(std::move(scaled), {}, {}, {},
-                                                    atelier::geometry::Tangents::authored);
-        for (const auto& v : long_parallel.vertices())
+        const auto long_parallel =
+            take(atelier::geometry::Mesh::create(std::move(scaled), {}, {}, {}, atelier::geometry::Tangents::authored));
+        for (const auto& v : long_parallel->vertices())
             require(close(v.tangent, {1, 0, 0, 1}),
                     "A long authored tangent parallel to its normal kept its rounding residual as the tangent.");
     }

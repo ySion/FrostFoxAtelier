@@ -32,18 +32,6 @@ void write(const fs::path& path, std::string_view bytes) {
     require(bool(stream), "Could not write import acceptance fixture.");
 }
 
-template <class F>
-void rejects(F&& action, std::string_view reason) {
-    try {
-        action();
-    } catch (const std::exception& error) {
-        if (std::string_view(error.what()).find(reason) != std::string_view::npos)
-            return;
-        throw;
-    }
-    throw std::runtime_error("Import accepted invalid input: " + std::string(reason));
-}
-
 template <class T>
 const T& value(const assets::MaterialInstanceAsset& instance, std::string_view path) {
     const auto at = std::ranges::find(instance.entries, path, &material::Override::path);
@@ -305,9 +293,9 @@ void digest() {
     require(assets::mesh_digest_version == 2, "Mesh-only digest schema must be version 2.");
     const auto cube = geometry::cube_mesh();
     std::vector<geometry::Vertex> vertices(cube->vertices().begin(), cube->vertices().end());
-    const auto mesh = std::make_shared<const geometry::Mesh>(vertices, std::vector<std::uint8_t>{},
-                                                             std::vector<geometry::MaterialSlot>{{"paint"}, {"trim"}},
-                                                             std::vector<geometry::MeshPart>{{0, 18, 0}, {18, 18, 1}});
+    const auto mesh = take(geometry::Mesh::create(vertices, std::vector<std::uint8_t>{},
+                                                  std::vector<geometry::MaterialSlot>{{"paint"}, {"trim"}},
+                                                  std::vector<geometry::MeshPart>{{0, 18, 0}, {18, 18, 1}}));
     assets::MeshAsset asset{"mesh/a", L"A", mesh, {{"paint", "material/a"}, {"trim", "material/b"}}};
     const auto initial = take(assets::mesh_content_sha256(asset));
     auto changed = asset;
@@ -322,16 +310,18 @@ void digest() {
     changed.materials.push_back(changed.materials.front());
     require(!assets::mesh_content_sha256(changed), "Digest accepted duplicate bindings.");
     changed = asset;
-    changed.mesh = std::make_shared<const geometry::Mesh>(vertices, std::vector<std::uint8_t>(12, 3),
-                                                          std::vector<geometry::MaterialSlot>{{"paint"}, {"trim"}},
-                                                          std::vector<geometry::MeshPart>{{0, 18, 0}, {18, 18, 1}});
+    changed.mesh = take(geometry::Mesh::create(vertices, std::vector<std::uint8_t>(12, 3),
+                                               std::vector<geometry::MaterialSlot>{{"paint"}, {"trim"}},
+                                               std::vector<geometry::MeshPart>{{0, 18, 0}, {18, 18, 1}}));
     require(take(assets::mesh_content_sha256(changed)) != initial, "Digest omitted edge masks.");
     changed = asset;
-    changed.mesh = std::make_shared<const geometry::Mesh>(vertices, std::vector<std::uint8_t>{},
-                                                          std::vector<geometry::MaterialSlot>{{"paint"}, {"trim"}},
-                                                          std::vector<geometry::MeshPart>{{0, 18, 1}, {18, 18, 0}});
+    changed.mesh = take(geometry::Mesh::create(vertices, std::vector<std::uint8_t>{},
+                                               std::vector<geometry::MaterialSlot>{{"paint"}, {"trim"}},
+                                               std::vector<geometry::MeshPart>{{0, 18, 1}, {18, 18, 0}}));
     require(take(assets::mesh_content_sha256(changed)) != initial, "Digest omitted triangle-to-slot relationships.");
-    rejects([&] { geometry::Mesh invalid(vertices, {}, {{"only"}}, {{0, 36, 1}}); }, "valid materials");
+    const auto invalid = geometry::Mesh::create(vertices, {}, {{"only"}}, {{0, 36, 1}});
+    require(!invalid && invalid.error().message.find("valid materials") != std::string::npos,
+            "Mesh accepted an invalid material partition.");
 }
 }
 

@@ -746,9 +746,11 @@ Result<MeshImport> load_gltf(const std::filesystem::path& source, ImageCache* sh
             }
         }
         ATELIER_TRY(require(!vertices.empty(), "the scene has no importable triangles."));
-        result.mesh =
-            std::make_shared<const geometry::Mesh>(std::move(vertices), std::vector<std::uint8_t>{}, std::move(slots),
-                                                   std::move(parts), geometry::Tangents::authored);
+        auto mesh = geometry::Mesh::create(std::move(vertices), std::vector<std::uint8_t>{}, std::move(slots),
+                                           std::move(parts), geometry::Tangents::authored);
+        if (!mesh)
+            return std::unexpected(Error{ErrorCode::invalid_storage, std::move(mesh.error().message)});
+        result.mesh = std::move(*mesh);
         return {};
     }();
     if (!imported) {

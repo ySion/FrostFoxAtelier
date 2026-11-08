@@ -3,21 +3,21 @@ void quality_contracts(Fixture& f) {
     using atelier::geometry::Vertex;
     using atelier::geometry::Mesh;
     const auto plane = [](float z) {
-        return std::make_shared<const Mesh>(std::vector<Vertex>{{{-6, -4, z}, {0, 0, -1}},
-                                                                {{6, -4, z}, {0, 0, -1}},
-                                                                {{6, 4, z}, {0, 0, -1}},
-                                                                {{-6, -4, z}, {0, 0, -1}},
-                                                                {{6, 4, z}, {0, 0, -1}},
-                                                                {{-6, 4, z}, {0, 0, -1}}});
+        return take(Mesh::create(std::vector<Vertex>{{{-6, -4, z}, {0, 0, -1}},
+                                                     {{6, -4, z}, {0, 0, -1}},
+                                                     {{6, 4, z}, {0, 0, -1}},
+                                                     {{-6, -4, z}, {0, 0, -1}},
+                                                     {{6, 4, z}, {0, 0, -1}},
+                                                     {{-6, 4, z}, {0, 0, -1}}}));
     };
     f.restore();
     f.room.meshes.assign(1, {});
-    f.room.meshes.front().geometry = std::make_shared<const Mesh>(std::vector<Vertex>{{{-.4f, 0, -.4f}, {0, 1, 0}},
-                                                                                      {{.4f, 0, -.4f}, {0, 1, 0}},
-                                                                                      {{.4f, 0, .4f}, {0, 1, 0}},
-                                                                                      {{-.4f, 0, -.4f}, {0, 1, 0}},
-                                                                                      {{.4f, 0, .4f}, {0, 1, 0}},
-                                                                                      {{-.4f, 0, .4f}, {0, 1, 0}}});
+    f.room.meshes.front().geometry = take(Mesh::create(std::vector<Vertex>{{{-.4f, 0, -.4f}, {0, 1, 0}},
+                                                                           {{.4f, 0, -.4f}, {0, 1, 0}},
+                                                                           {{.4f, 0, .4f}, {0, 1, 0}},
+                                                                           {{-.4f, 0, -.4f}, {0, 1, 0}},
+                                                                           {{.4f, 0, .4f}, {0, 1, 0}},
+                                                                           {{-.4f, 0, .4f}, {0, 1, 0}}}));
     f.room.meshes.front().stable_key = 1;
     f.room.meshes.front().color = {.7f, .7f, .7f, 1};
     f.room.meshes.front().material.roughness = 1;

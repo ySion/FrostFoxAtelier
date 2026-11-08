@@ -66,13 +66,13 @@ std::vector<material::ProgramSurfaceRef> surfaces(const std::filesystem::path& o
     };
     const auto mask = compile("NativeMask", true);
     const auto opaque = compile("NativeOpaque", false);
-    const auto white = std::make_shared<const material::Image>(1, 1, std::vector<std::uint8_t>{255, 255, 255, 255});
+    const auto white = take(material::Image::create(1, 1, std::vector<std::uint8_t>{255, 255, 255, 255}));
     std::vector<std::uint8_t> ramp(256 * 4);
     for (unsigned i = 0; i < 256; ++i) {
         ramp[i * 4] = ramp[i * 4 + 1] = ramp[i * 4 + 2] = static_cast<std::uint8_t>(i);
         ramp[i * 4 + 3] = 255;
     }
-    const auto coverage_image = std::make_shared<const material::Image>(256, 1, std::move(ramp));
+    const auto coverage_image = take(material::Image::create(256, 1, std::move(ramp)));
     const auto source_surface = [&](auto program, material::Policy policy) {
         const auto definition = need(material::make_definition(
             program, policy,
@@ -125,9 +125,9 @@ void run(HWND window, const std::filesystem::path& output) {
                                          {{1, 1, z}, {0, 0, -1}, {1, 0}, {1, 0, 0, 1}},
                                          {{1, -1, z}, {0, 0, -1}, {1, 1}, {1, 0, 0, 1}}});
     std::array<render::MeshInstance, 1> meshes{};
-    meshes[0].geometry = std::make_shared<const geometry::Mesh>(
-        vertices, std::vector<std::uint8_t>{}, std::vector<geometry::MaterialSlot>{{"front"}, {"back"}},
-        std::vector<geometry::MeshPart>{{0, 6, 0}, {6, 6, 1}});
+    meshes[0].geometry = take(geometry::Mesh::create(vertices, std::vector<std::uint8_t>{},
+                                                     std::vector<geometry::MaterialSlot>{{"front"}, {"back"}},
+                                                     std::vector<geometry::MeshPart>{{0, 6, 0}, {6, 6, 1}}));
     meshes[0].stable_key = 1;
     meshes[0].material_slots = slots({0, 1});
     render::Frame frame{drawing, {}, {0, 0, float(drawing.extent.width), float(drawing.extent.height)}, meshes};
@@ -166,8 +166,7 @@ void run(HWND window, const std::filesystem::path& output) {
             checks[at + 3] = 255;
         }
     auto next_table = table;
-    next_table[0] =
-        texture_override(table[2], "aColor", std::make_shared<const material::Image>(256, 256, std::move(checks)));
+    next_table[0] = texture_override(table[2], "aColor", take(material::Image::create(256, 256, std::move(checks))));
     next_table[0] = need(material::resolve_instance(
         next_table[0],
         std::array{material::Override{"color", atelier::math::Vector3{1, 1, 1}, true},
@@ -193,13 +192,12 @@ void run(HWND window, const std::filesystem::path& output) {
     std::vector<render::MeshInstance> room;
     for (const auto& mesh : scene_lit_e2e::Room{}.meshes)
         room.push_back({mesh.world, mesh.selected, mesh.geometry, mesh.stable_key, slots({3})});
-    room[7].geometry =
-        std::make_shared<const geometry::Mesh>(std::vector<geometry::Vertex>{{{-2, 6, -2}, {0, -1, 0}, {0, 0}},
-                                                                             {{2, 6, -2}, {0, -1, 0}, {1, 0}},
-                                                                             {{2, 6, 2}, {0, -1, 0}, {1, 1}},
-                                                                             {{-2, 6, -2}, {0, -1, 0}, {0, 0}},
-                                                                             {{2, 6, 2}, {0, -1, 0}, {1, 1}},
-                                                                             {{-2, 6, 2}, {0, -1, 0}, {0, 1}}});
+    room[7].geometry = take(geometry::Mesh::create(std::vector<geometry::Vertex>{{{-2, 6, -2}, {0, -1, 0}, {0, 0}},
+                                                                                 {{2, 6, -2}, {0, -1, 0}, {1, 0}},
+                                                                                 {{2, 6, 2}, {0, -1, 0}, {1, 1}},
+                                                                                 {{-2, 6, -2}, {0, -1, 0}, {0, 0}},
+                                                                                 {{2, 6, 2}, {0, -1, 0}, {1, 1}},
+                                                                                 {{-2, 6, 2}, {0, -1, 0}, {0, 1}}}));
     room[7].world = scene_lit_e2e::box(0, 0, 0, 1, 1, 1);
     room[7].material_slots = slots({4});
     frame.meshes = room;

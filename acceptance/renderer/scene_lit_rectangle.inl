@@ -18,12 +18,12 @@ void rectangle_cases(Fixture& f) {
     auto& plane = f.room.meshes.front();
     plane.stable_key = 1;
     plane.world = box(0, 0, 0, 1, 1, 1);
-    plane.geometry = std::make_shared<const Mesh>(std::vector<Vertex>{{{-6, -4, 4}, {0, 0, -1}},
-                                                                      {{6, -4, 4}, {0, 0, -1}},
-                                                                      {{6, 4, 4}, {0, 0, -1}},
-                                                                      {{-6, -4, 4}, {0, 0, -1}},
-                                                                      {{6, 4, 4}, {0, 0, -1}},
-                                                                      {{-6, 4, 4}, {0, 0, -1}}});
+    plane.geometry = take(Mesh::create(std::vector<Vertex>{{{-6, -4, 4}, {0, 0, -1}},
+                                                           {{6, -4, 4}, {0, 0, -1}},
+                                                           {{6, 4, 4}, {0, 0, -1}},
+                                                           {{-6, -4, 4}, {0, 0, -1}},
+                                                           {{6, 4, 4}, {0, 0, -1}},
+                                                           {{-6, 4, 4}, {0, 0, -1}}}));
     plane.color = {.5f, .5f, .5f, 1};
     plane.material = {.roughness = .5f, .metallic = 0};
     f.lights.assign(1, {.stable_key = 100, .kind = render::LightKind::rectangle});

@@ -638,8 +638,8 @@ void spatial_tree_and_mesh() {
     auto child = take(w::create_entity(runtime));
     auto leaf = take(w::create_entity(runtime));
     auto mesh = take(w::create_component(runtime, types.static_mesh_component));
-    auto triangle = std::make_shared<const geometry::Mesh>(
-        std::vector<geometry::Vertex>{{{0, 0, 0}, {0, 0, -1}}, {{1, 0, 0}, {0, 0, -1}}, {{0, 1, 0}, {0, 0, -1}}});
+    auto triangle = take(geometry::Mesh::create(
+        std::vector<geometry::Vertex>{{{0, 0, 0}, {0, 0, -1}}, {{1, 0, 0}, {0, 0, -1}}, {{0, 1, 0}, {0, 0, -1}}}));
     take(p::set_geometry(runtime, mesh.id(), triangle));
     const std::array attachments{w::Attachment{mesh.id()}};
     take(world.set_transform(child.id(), {{1, 0, 0}, {}, {1, 1, 1}}));

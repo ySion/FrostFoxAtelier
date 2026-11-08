@@ -33,10 +33,10 @@ void verify_material_picking() {
     const std::vector<atelier::geometry::Vertex> vertices{
         {{-1, -1, 0}, {0, 0, -1}, {0, 1}}, {{-1, 1, 0}, {0, 0, -1}, {0, 0}}, {{1, 1, 0}, {0, 0, -1}, {1, 0}},
         {{-1, -1, 0}, {0, 0, -1}, {0, 1}}, {{1, 1, 0}, {0, 0, -1}, {1, 0}},  {{1, -1, 0}, {0, 0, -1}, {1, 1}}};
-    const auto opacity = std::make_shared<const mat::Image>(
-        2, 2, std::vector<std::uint8_t>{0, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255});
-    const auto mesh = std::make_shared<const atelier::geometry::Mesh>(vertices, std::vector<std::uint8_t>{},
-                                                                      std::vector<geometry::MaterialSlot>{{"surface"}});
+    const auto opacity = take(mat::Image::create(
+        2, 2, std::vector<std::uint8_t>{0, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255}));
+    const auto mesh = take(atelier::geometry::Mesh::create(vertices, std::vector<std::uint8_t>{},
+                                                           std::vector<geometry::MaterialSlot>{{"surface"}}));
     editor::Session document;
     assets::Reader installed;
     take(document.publish_texture("fixture/opacity", opacity));

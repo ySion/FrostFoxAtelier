@@ -9,13 +9,13 @@ void selection_clipping_cases(render::Renderer& renderer, ui::PixelExtent extent
     floor.selected = true;
     // The authored polygon crosses far=4 at x=0. A whole-mesh rejection
     // loses the left half; missing clipping leaks color/depth into the right.
-    floor.geometry = std::make_shared<const Mesh>(std::vector<Vertex>{{{-2, -1, 2}, {0, 0, -1}},
-                                                                      {{-2, 1, 2}, {0, 0, -1}},
-                                                                      {{2, 1, 6}, {0, 0, -1}},
-                                                                      {{-2, -1, 2}, {0, 0, -1}},
-                                                                      {{2, 1, 6}, {0, 0, -1}},
-                                                                      {{2, -1, 6}, {0, 0, -1}}},
-                                                  std::vector<std::uint8_t>{5, 3});
+    floor.geometry = take(Mesh::create(std::vector<Vertex>{{{-2, -1, 2}, {0, 0, -1}},
+                                                           {{-2, 1, 2}, {0, 0, -1}},
+                                                           {{2, 1, 6}, {0, 0, -1}},
+                                                           {{-2, -1, 2}, {0, 0, -1}},
+                                                           {{2, 1, 6}, {0, 0, -1}},
+                                                           {{2, -1, 6}, {0, 0, -1}}},
+                                       std::vector<std::uint8_t>{5, 3}));
     render::Frame frame{drawing, {}, {0, 0, float(extent.width), float(extent.height)}, {&floor, 1}};
     frame.camera.projection = {1, 0, 0, 0, 0, 1.5f, 0, 0, 0, 0, 0, 1, 0, 0, .25f, 0};
     frame.camera.far_depth = .25f / 4;

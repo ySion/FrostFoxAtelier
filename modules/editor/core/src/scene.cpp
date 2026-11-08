@@ -2925,10 +2925,15 @@ struct Session::GraphCodec {
                     }
                     if (rgba->size() != bytes)
                         throw std::runtime_error("Play texture RGBA byte count does not match its dimensions.");
-                    auto image = std::make_shared<const material::Image>(
-                        static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height),
-                        std::vector<std::uint8_t>(rgba->begin(), rgba->end()));
-                    take(session.publish_texture(key, std::move(image)));
+                    auto image =
+                        material::Image::create(static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height),
+                                                std::vector<std::uint8_t>(rgba->begin(), rgba->end()));
+                    if (!image) {
+                        note(world::Severity::error, world::DiagnosticKind::command_rejected, image.error().message,
+                             &image.error());
+                        return {};
+                    }
+                    take(session.publish_texture(key, std::move(*image)));
                 } else if (kind == "mesh") {
                     ATELIER_TRY(op.members({"op", "key", "file"}));
                     ATELIER_TRY_BIND(key_value, op.string({"key"}));
@@ -2943,10 +2948,15 @@ struct Session::GraphCodec {
                         return {};
                     }
                     auto mesh = assets::mesh_format::decode(*bytes);
-                    if (mesh.key != key)
+                    if (!mesh) {
+                        note(world::Severity::error, world::DiagnosticKind::command_rejected, mesh.error().message,
+                             &mesh.error());
+                        return {};
+                    }
+                    if (mesh->key != key)
                         throw std::runtime_error("Play mesh content does not match its asset key.");
                     take(project.refresh());
-                    take(session.publish_mesh(project.assets(), mesh));
+                    take(session.publish_mesh(project.assets(), *mesh));
                 } else if (kind == "resource") {
                     ATELIER_TRY(op.allowed_members({"op", "key", "material", "source"}));
                     ATELIER_TRY_BIND(key_value, op.string({"key"}));

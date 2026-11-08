@@ -19,6 +19,8 @@
 
 ## Geometry
 
+宿主提供的不可变 `geometry::Mesh` 通过 `Mesh::create` 创建，返回 `std::expected<MeshRef, geometry::MeshError>`；错误只有诊断 message，不依赖 Runtime。失败候选被丢弃，`import_mesh(const Mesh&)` 仍只读取已发布资源。固定 `cube_mesh()` 保持 MeshRef 返回值，工厂失败按内部不变量 fatal；程序化 Geometry 自身的值、COW 与发布合同不变。
+
 `procedural.Geometry` 是 Runtime 记录类型（`ASTRUCT`，没有反射字段），作为节点端口按引用传递。它是一个值：用 [SharedArray](../../foundation.md#共享不可变数组) 共享属性、拓扑和实例列，写入共享列时才复制成独占；已有独占列原地写。每个写入者必须独占自己的 Geometry，但无需先在单线程上复制列。这个存储能力不改变求值器在 Runtime 线程上串行执行的规则。
 
 - **五层**：point、vertex（图元的角）、primitive、detail（恰好一个元素）、instance。每层是“名字 → 列”，名字在整个 Geometry 内唯一，必须是标识符。点位置是 point 层的 `P`，总是存在且是第一列。

@@ -136,7 +136,9 @@ glTF 上限：文档 16 MiB，buffer 合计 512 MiB，单个图片文件 64 MiB�
 
 glTF 由 core/json 的专用政策入口解析：UTF-8 严格、允许 BOM、不另设嵌套深度限制，重复的解码后成员键沿用后值覆盖。这遵循 [glTF 2.0 JSON Encoding 与整数字段规则](https://github.com/KhronosGroup/glTF/blob/9ec408bd03f6c622a026a8989d24257a83311835/specification/2.0/Specification.adoc)（KhronosGroup/glTF@9ec408bd03f6c622a026a8989d24257a83311835）：键唯一与后值覆盖均为 SHOULD。索引、计数等整数字段接受有限、非负、无小数且在目标范围内的数值，包括 `100.0`、`1e2`，不再截断小数。OBJ/MTL 自有格式、glTF 格式/schema、未知网格扩展名、图片解码及像素预算拒绝返回 `invalid_storage`，保留原错误文本。批解码在全部 worker join 后返回第一个已记录的错误，不返回部分图片；线程启动失败仍致命，不降级。失败时缓存可留下弱引用，既有外部像素所有者不受影响。
 
-GEOM 构造异常仍后置：OBJ/glTF 尾部 Mesh 构造及 tangent 校验尚可能抛异常（例如空 OBJ、零法线），不以输入扫描或 catch 桥接重复几何规则。Image 构造也尚未迁移；WIC 路径已经保证其尺寸和 RGBA 字节数前提。Reader 与 Project 的其他异常链不由这次导入/解码迁移清零。
+OBJ/glTF 尾部调用 `geometry::Mesh::create`；空 OBJ、零法线及无效作者切线等构造拒绝映射为 `invalid_storage`，保留原诊断，不以消费侧扫描或 catch 桥接复制几何规则。`material::Image::create` 也通过 Result 返回尺寸/RGBA 存储拒绝；WIC 解码前的尺寸与预算预检仍保留。工厂失败不发布候选，Reader 与 Project 的其他异常链不由这次迁移清零。
+
+`generate_tangents` 的调用前提是有限位置/UV、单位法线、非空且顶点数不超过 `INT_MAX` 的三角形列表。Mesh 工厂验证几何；glTF 在展开前限制总顶点数不超过 2400 万，随后按 primitive 调用，不重复扫描。固定回调和有效输入下 MikkTSpace 返回失败走 CPU 分配 fatal；其内部可空 malloc 失败转慢路径仍是第三方分配适配残留。
 
 属性类型按 schema 检查，`null` 不等同于缺省：`images`、`materials`、`extensionsRequired` 必须是数组，消费到的 `pbrMetallicRoughness` 必须是对象。类型错误返回带 JSON 路径的 `invalid_storage`；本片不增加 minItems 检查，空数组仍按既有消费规则处理。
 
@@ -292,6 +294,8 @@ Stop Play 先发送合作停止请求，UI 始终非阻塞轮询；从请求起 
 | `resource` | `key`、`material`（v2 作者记录）、MS 必需的 `source: {path,text}` | 同键同角色原地发布 MS/MI，传入精确 Source 文本，不用接收时磁盘内容替换。引用它的实例随之重新解析，未加载的键登记供之后使用。 |
 | `texture` | `key`、`width`、`height`、`file` | 读取本次发布的 RGBA8 spill，严格核对尺寸和字节数，更新同一 Texture 身份。 |
 | `mesh` | `key`、`file` | 读取本次发布的 ATMS v1 二进制快照，核对键、几何、槽和默认关系；不回读项目模型，不重算已发布 normal/tangent。 |
+
+ATMS 编解码的格式、文本、长度和预算拒绝返回 `invalid_storage`；解码只在完整校验后交付 MeshAsset，失败不会替换既有资源。v1 字节布局、4 KiB 文本/256 MiB 上限和 spill 剩余预算不变；`Mesh::restore_published` 验证已发布帧而不归一化，保留浮点位（包括负零）。
 
 `index` 是对象在目标列表中的最终序号，null 表示末尾。`add`/`move` 的目标列表是父级的子级，`parent` 为 null 时是根列表；`attach` 的目标列表是该 Entity 的组件列表；`move` 计数时不含被移动的对象本身。游戏生成或销毁对象会让 Play 的列表合法地不同于文档，所以超出范围的序号夹到末尾，不报诊断。同一批中的多个 `add` 按（父级，序号）升序发送；Play 的列表与文档相同时，顺序与文档一致。
 

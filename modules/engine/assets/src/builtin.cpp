@@ -7,13 +7,16 @@
 namespace atelier::assets {
 namespace {
 geometry::MeshRef plane() {
-    return std::make_shared<const geometry::Mesh>(std::vector<geometry::Vertex>{{{-1, 0, -1}, {0, 1, 0}, {0, 1}},
-                                                                                {{-1, 0, 1}, {0, 1, 0}, {0, 0}},
-                                                                                {{1, 0, 1}, {0, 1, 0}, {1, 0}},
-                                                                                {{-1, 0, -1}, {0, 1, 0}, {0, 1}},
-                                                                                {{1, 0, 1}, {0, 1, 0}, {1, 0}},
-                                                                                {{1, 0, -1}, {0, 1, 0}, {1, 1}}},
-                                                  std::vector<std::uint8_t>{5, 3});
+    auto mesh = geometry::Mesh::create(std::vector<geometry::Vertex>{{{-1, 0, -1}, {0, 1, 0}, {0, 1}},
+                                                                     {{-1, 0, 1}, {0, 1, 0}, {0, 0}},
+                                                                     {{1, 0, 1}, {0, 1, 0}, {1, 0}},
+                                                                     {{-1, 0, -1}, {0, 1, 0}, {0, 1}},
+                                                                     {{1, 0, 1}, {0, 1, 0}, {1, 0}},
+                                                                     {{1, 0, -1}, {0, 1, 0}, {1, 1}}},
+                                       std::vector<std::uint8_t>{5, 3});
+    if (!mesh)
+        fatal(mesh.error().message);
+    return std::move(*mesh);
 }
 
 geometry::MeshRef sphere() {
@@ -47,7 +50,10 @@ geometry::MeshRef sphere() {
                 edges.push_back(y == 0 ? 7 : 5);
             }
         }
-    return std::make_shared<const geometry::Mesh>(std::move(vertices), std::move(edges));
+    auto mesh = geometry::Mesh::create(std::move(vertices), std::move(edges));
+    if (!mesh)
+        fatal(mesh.error().message);
+    return std::move(*mesh);
 }
 
 struct Producer {

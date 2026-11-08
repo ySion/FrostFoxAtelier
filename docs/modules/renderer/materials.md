@@ -9,6 +9,8 @@
 - Runtime 中的 `material.Source` / `material.Instance` 共用 `material.Resource` 角色；Texture 也是正式 Runtime 对象。`TextureInput` 只是程序局部计算值，不是业务资源或 GPU 描述符。
 - `SourceDefinition`、`ProgramSurface`、`Image` 是不可变内容。`ProgramSurface` 自持代码、参数和精确图片，不持有 Runtime 根；局部槽属于该编译版本，不持久化。声明重排按路径重绑，不能以输入数组下标代替 descriptor 的真实 slot。
 
+`Image::create` 返回 `atelier::Result<ImageRef>`：宽高须在 1～8192，RGBA8 字节数须精确匹配；失败为 `invalid_storage`，不发布候选。成功后像素、尺寸和透明度摘要不可变。Renderer 的固定 1×1 白图也走此工厂，其失败属于程序内不变量并走 fatal。
+
 网格只保存几何、命名槽及默认材质关联。每槽依次使用组件显式绑定、网格默认材质、内置 **Default World Grid**。损坏材质使用独立的品红错误材质，不把正常未绑定网格当错误。组件没有内联固定 StandardPBR 参数，也不再将组件颜色乘入网格表面。
 
 `resolve_source` / `resolve_instance` 只消费明确的定义、父快照、作者项和图片；`capture_program` 从活 Runtime 捕获并复用未变内容。两条入口都返回 `ProgramSurface`，不会回读磁盘或回写作者值。
