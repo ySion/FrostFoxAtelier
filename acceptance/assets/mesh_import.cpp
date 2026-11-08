@@ -142,11 +142,17 @@ void obj(const fs::path& root) {
                 take(assets::mesh_content_sha256({"mesh/two", L"second", edited.mesh, {}})) == original,
             "MI author edits still changed geometry content or identity leaked into its digest.");
     write(root / "bad.obj", "mtllib ../escape.mtl\n" + geometry_text + "f 1 2 3\n");
-    rejects([&] { static_cast<void>(assets::load_obj(root / "bad.obj")); }, "inside the source directory");
+    const auto escaped = assets::load_obj(root / "bad.obj");
+    require(!escaped && escaped.error().message.find("inside the source directory") != std::string::npos,
+            "Import accepted an escaping dependency.");
     write(root / "bad.obj", "mtllib scene.mtl\n" + geometry_text + "usemtl Leaf\nf 1 2 3\n");
-    rejects([&] { static_cast<void>(assets::load_obj(root / "bad.obj")); }, "requires UV");
+    const auto missing_uv = assets::load_obj(root / "bad.obj");
+    require(!missing_uv && missing_uv.error().message.find("requires UV") != std::string::npos,
+            "Import accepted a textured face without UV.");
     write(root / "scene.mtl", "newmtl White\nKd 2 1 1\nnewmtl Leaf\nKd 1 1 1\n");
-    rejects([&] { static_cast<void>(assets::load_obj(root / "scene.obj")); }, "Invalid MTL base color");
+    const auto invalid_color = assets::load_obj(root / "scene.obj");
+    require(!invalid_color && invalid_color.error().message.find("Invalid MTL base color") != std::string::npos,
+            "Import accepted an invalid MTL base color.");
 
     write(root / "scene.obj", "mtllib scene.mtl\n" + geometry_text + "usemtl White\nf 1 2 3\n");
     write(root / "scene.mtl", "newmtl White\nKd 1 1 1\nnewmtl 中🦊\nKd .2 .3 .4\n");
@@ -228,7 +234,7 @@ void gltf(const fs::path& root) {
                 value<math::Vector3>(opaque, "emissive") == math::Vector3{.1f, .2f, .3f},
             "glTF typed samplers, normals or emission changed.");
     const auto file = std::ranges::find(imported.files, fs::path("packed.bmp"), &assets::ImportedFile::relative);
-    const auto decoded = assets::decode_image(file->bytes);
+    const auto decoded = take(assets::decode_image(file->bytes));
     require(decoded->pixels()[1] == 90 && decoded->pixels()[2] == 200 && file->bytes == bmp(0, 90, 200),
             "Import baked a transfer function into packed data.");
     const auto vertices = imported.mesh->vertices();
@@ -290,7 +296,9 @@ void gltf(const fs::path& root) {
     take(variant.set(take(take(variant.root().at("images")).at(0)), "uri", "broken.bmp"));
     const auto broken_bytes = json::write(variant.root());
     write(root / "variant.gltf", {broken_bytes.data(), broken_bytes.size()});
-    rejects([&] { static_cast<void>(assets::load_gltf(root / "variant.gltf")); }, "Cannot decode texture");
+    const auto invalid_image = assets::load_gltf(root / "variant.gltf");
+    require(!invalid_image && invalid_image.error().message.find("Cannot decode texture") != std::string::npos,
+            "Import accepted an invalid texture.");
 }
 
 void digest() {

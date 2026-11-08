@@ -770,8 +770,10 @@ Result<MeshImportPublication> Project::import_mesh_files(const std::filesystem::
                     existing && existing->kind == assets::AssetKind::texture)
                     ATELIER_TRY(prepare_texture(file.relative));
         const auto images = assets_.prepare_images(image_bytes, 2ull << 30);
-        for (std::size_t i = 0; i < images.size(); ++i)
-            result.textures[i].image = images[i];
+        if (!images)
+            return failure(images.error().message);
+        for (std::size_t i = 0; i < images->size(); ++i)
+            result.textures[i].image = (*images)[i];
         for (auto& file : loaded.files) {
             const auto path = relative / file.relative;
             auto filename = path.filename().wstring();

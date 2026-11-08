@@ -134,7 +134,9 @@ glTF 材质映射：baseColorFactor 乘 sRGB 的 baseColorTexture；metallicRoug
 
 glTF 上限：文档 16 MiB，buffer 合计 512 MiB，单个图片文件 64 MiB，最多 256 张图片，解码像素合计 2 GiB，最多 800 万个三角形、65536 个节点。依赖规则与 OBJ 相同：URI 百分号解码后必须是源目录内的相对路径。上限按官方 Sponza 的 2K 数据留约一倍余量：其中最大的主体文件约 375 万个三角形、134 MiB buffer、72 张图、1.1 GiB 解码像素。图片在最多 8 个线程（不超过逻辑核数的一半）上并行解码；任一张失败时停止其余解码，报告第一个错误。
 
-glTF 由 core/json 的专用政策入口解析：UTF-8 严格、允许 BOM、不另设嵌套深度限制，重复的解码后成员键沿用后值覆盖。这遵循 [glTF 2.0 JSON Encoding 与整数字段规则](https://github.com/KhronosGroup/glTF/blob/9ec408bd03f6c622a026a8989d24257a83311835/specification/2.0/Specification.adoc)（KhronosGroup/glTF@9ec408bd03f6c622a026a8989d24257a83311835）：键唯一与后值覆盖均为 SHOULD。索引、计数等整数字段接受有限、非负、无小数且在目标范围内的数值，包括 `100.0`、`1e2`，不再截断小数。格式/schema 拒绝返回 `invalid_storage`；OBJ 格式拒绝与图片解码失败仍会抛异常，归 ASSET-LOAD 后续迁移。
+glTF 由 core/json 的专用政策入口解析：UTF-8 严格、允许 BOM、不另设嵌套深度限制，重复的解码后成员键沿用后值覆盖。这遵循 [glTF 2.0 JSON Encoding 与整数字段规则](https://github.com/KhronosGroup/glTF/blob/9ec408bd03f6c622a026a8989d24257a83311835/specification/2.0/Specification.adoc)（KhronosGroup/glTF@9ec408bd03f6c622a026a8989d24257a83311835）：键唯一与后值覆盖均为 SHOULD。索引、计数等整数字段接受有限、非负、无小数且在目标范围内的数值，包括 `100.0`、`1e2`，不再截断小数。OBJ/MTL 自有格式、glTF 格式/schema、未知网格扩展名、图片解码及像素预算拒绝返回 `invalid_storage`，保留原错误文本。批解码在全部 worker join 后返回第一个已记录的错误，不返回部分图片；线程启动失败仍致命，不降级。失败时缓存可留下弱引用，既有外部像素所有者不受影响。
+
+GEOM 构造异常仍后置：OBJ/glTF 尾部 Mesh 构造及 tangent 校验尚可能抛异常（例如空 OBJ、零法线），不以输入扫描或 catch 桥接重复几何规则。Image 构造也尚未迁移；WIC 路径已经保证其尺寸和 RGBA 字节数前提。Reader 与 Project 的其他异常链不由这次导入/解码迁移清零。
 
 属性类型按 schema 检查，`null` 不等同于缺省：`images`、`materials`、`extensionsRequired` 必须是数组，消费到的 `pbrMetallicRoughness` 必须是对象。类型错误返回带 JSON 路径的 `invalid_storage`；本片不增加 minItems 检查，空数组仍按既有消费规则处理。
 

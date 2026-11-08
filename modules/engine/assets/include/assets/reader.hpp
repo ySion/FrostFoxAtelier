@@ -74,7 +74,8 @@ public:
     // publishes geometry nor writes files; the owner commits through publish_mesh.
     Result<MeshImport> prepare_mesh(const std::filesystem::path& source);
 
-    std::vector<material::ImageRef> prepare_images(std::span<const std::string_view>, std::uint64_t pixel_budget);
+    Result<std::vector<material::ImageRef>> prepare_images(std::span<const std::string_view>,
+                                                           std::uint64_t pixel_budget);
 
 private:
     void retain_import(std::string key, const std::filesystem::path& relative, MeshImport&);

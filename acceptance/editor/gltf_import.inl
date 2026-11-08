@@ -166,7 +166,7 @@ void verify_gltf_import() {
             require(at != imported.files.end(), "A typed glTF texture has no bytes in its import bundle.");
             bytes.push_back(at->bytes);
         }
-        return assets::decode_images(bytes, images);
+        return take(assets::decode_images(bytes, images));
     };
     const auto pixels = decoded(loaded, &cache);
     require(pixels[1]->pixels()[1] == 90 && pixels[1]->pixels()[2] == 200,
@@ -180,13 +180,9 @@ void verify_gltf_import() {
     {
         const std::string pixels = bmp(1, 2, 3);
         const std::array<std::string_view, 2> two{pixels, pixels};
-        bool limited = false;
-        try {
-            static_cast<void>(assets::decode_images(two, nullptr, 31));
-        } catch (const std::runtime_error& error) {
-            limited = std::string_view(error.what()).starts_with("Decoded textures exceed");
-        }
-        require(limited && assets::decode_images(two, nullptr, 32).size() == 2,
+        const auto limited = assets::decode_images(two, nullptr, 31);
+        require(!limited && limited.error().message.starts_with("Decoded textures exceed") &&
+                    take(assets::decode_images(two, nullptr, 32)).size() == 2,
                 "Image decoding did not hold its pixel budget.");
     }
     {

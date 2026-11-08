@@ -222,8 +222,8 @@ Result<MeshImport> Reader::prepare_mesh(const std::filesystem::path& source) {
     return load_mesh(source, &images_);
 }
 
-std::vector<material::ImageRef> Reader::prepare_images(std::span<const std::string_view> sources,
-                                                       std::uint64_t pixel_budget) {
+Result<std::vector<material::ImageRef>> Reader::prepare_images(std::span<const std::string_view> sources,
+                                                               std::uint64_t pixel_budget) {
     return decode_images(sources, &images_, pixel_budget);
 }
 
@@ -339,7 +339,8 @@ Result<TextureAsset> Reader::texture(std::string_view key) {
             ATELIER_TRY_BIND(path, resolve(item.path));
             ATELIER_TRY_BIND(bytes, read_file(*path, 128 * 1024 * 1024));
             const std::array<std::string_view, 1> source{*bytes};
-            at = textures_.emplace(item.key, decode_images(source, &images_).front()).first;
+            ATELIER_TRY_BIND(decoded, decode_images(source, &images_));
+            at = textures_.emplace(item.key, decoded->front()).first;
         }
         return TextureAsset{item.key, item.path.stem().wstring(), at->second};
     } catch (const std::exception& error) {

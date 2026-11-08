@@ -10,9 +10,10 @@
 
 namespace atelier::assets {
 namespace {
-void require(bool ok, const char* message) {
+Result<void> require(bool ok, const char* message) {
     if (!ok)
-        throw std::runtime_error(message);
+        return std::unexpected(Error{ErrorCode::invalid_storage, message});
+    return {};
 }
 
 std::string rest(std::istringstream& row) {
@@ -25,36 +26,36 @@ std::string rest(std::istringstream& row) {
     return value;
 }
 
-std::filesystem::path relative_path(std::wstring value) {
+Result<std::filesystem::path> relative_path(std::wstring value) {
     std::ranges::replace(value, L'\\', L'/');
     if (value.size() > 1 && value.front() == L'"' && value.back() == L'"')
         value = value.substr(1, value.size() - 2);
     auto path = std::filesystem::path(std::move(value));
-    require(!path.empty() && !path.has_root_path(), "OBJ dependency must be relative.");
+    ATELIER_TRY(require(!path.empty() && !path.has_root_path(), "OBJ dependency must be relative."));
     for (const auto& part : path)
-        require(part != L".." && part.wstring().find(L':') == std::wstring::npos,
-                "OBJ dependency must stay inside the source directory.");
+        ATELIER_TRY(require(part != L".." && part.wstring().find(L':') == std::wstring::npos,
+                            "OBJ dependency must stay inside the source directory."));
     return path.lexically_normal();
 }
 
-std::size_t index(std::string_view text, std::size_t count) {
+Result<std::size_t> index(std::string_view text, std::size_t count) {
     std::int64_t value{};
     auto [end, ec] = std::from_chars(text.data(), text.data() + text.size(), value);
-    require(ec == std::errc{} && end == text.data() + text.size() && value != 0, "Invalid OBJ index.");
+    ATELIER_TRY(require(ec == std::errc{} && end == text.data() + text.size() && value != 0, "Invalid OBJ index."));
     value = value > 0 ? value - 1 : static_cast<std::int64_t>(count) + value;
-    require(value >= 0 && std::uint64_t(value) < count, "OBJ index is out of range.");
+    ATELIER_TRY(require(value >= 0 && std::uint64_t(value) < count, "OBJ index is out of range."));
     return static_cast<std::size_t>(value);
 }
 
-float scalar(std::istringstream& row) {
+Result<float> scalar(std::istringstream& row) {
     float v{};
-    require(bool(row >> v) && std::isfinite(v), "Invalid OBJ/MTL number.");
+    ATELIER_TRY(require(bool(row >> v) && std::isfinite(v), "Invalid OBJ/MTL number."));
     return v;
 }
 
-std::vector<std::array<unsigned, 3>> triangulate(const std::vector<geometry::Vertex>& face) {
+Result<std::vector<std::array<unsigned, 3>>> triangulate(const std::vector<geometry::Vertex>& face) {
     if (face.size() == 3)
-        return {{0, 1, 2}};
+        return std::vector<std::array<unsigned, 3>>{{0, 1, 2}};
     std::array<double, 3> normal{};
     for (std::size_t i = 0; i < face.size(); ++i) {
         const auto& a = face[i].position;
@@ -102,7 +103,7 @@ std::vector<std::array<unsigned, 3>> triangulate(const std::vector<geometry::Ver
             found = true;
             break;
         }
-        require(found, "OBJ polygon cannot be triangulated.");
+        ATELIER_TRY(require(found, "OBJ polygon cannot be triangulated."));
     }
     triangles.push_back({remaining[0], remaining[1], remaining[2]});
     return triangles;
@@ -125,15 +126,16 @@ Result<MeshImport> load_obj(const std::filesystem::path& source, ImageCache* sha
             return std::unexpected(Error{ErrorCode::invalid_storage, "Invalid UTF-16 text."});
         if (const auto found = files.find(*key); found != files.end())
             return found->second;
-        require(files.size() < 512, "OBJ has too many dependencies.");
+        ATELIER_TRY(require(files.size() < 512, "OBJ has too many dependencies."));
         const auto path = std::filesystem::weakly_canonical(root / relative, error);
         if (error)
             return std::unexpected(Error{ErrorCode::invalid_storage, platform::error_message(error)});
         const auto within = path.lexically_relative(root);
-        require(!within.empty() && !within.has_root_path() && *within.begin() != L"..",
-                "OBJ dependency escapes through a link.");
+        ATELIER_TRY(require(!within.empty() && !within.has_root_path() && *within.begin() != L"..",
+                            "OBJ dependency escapes through a link."));
         ATELIER_TRY_BIND(bytes, read_file(path, 128 * 1024 * 1024));
-        require(total_bytes + bytes->size() <= 512ull * 1024 * 1024, "OBJ dependency bytes exceed 512 MiB.");
+        ATELIER_TRY(
+            require(total_bytes + bytes->size() <= 512ull * 1024 * 1024, "OBJ dependency bytes exceed 512 MiB."));
         total_bytes += bytes->size();
         const auto slot = result.files.size();
         files.emplace(*key, slot);
@@ -148,8 +150,10 @@ Result<MeshImport> load_obj(const std::filesystem::path& source, ImageCache* sha
             return found->second;
         ATELIER_TRY_BIND(slot, read(relative));
         const std::string_view bytes = result.files[*slot].bytes;
-        auto loaded = decode_images(std::span(&bytes, 1), shared_images).front();
-        require(image_bytes + loaded->pixels().size() <= 768ull * 1024 * 1024, "Decoded OBJ textures exceed 768 MiB.");
+        ATELIER_TRY_BIND(decoded, decode_images(std::span(&bytes, 1), shared_images));
+        auto loaded = decoded->front();
+        ATELIER_TRY(require(image_bytes + loaded->pixels().size() <= 768ull * 1024 * 1024,
+                            "Decoded OBJ textures exceed 768 MiB."));
         image_bytes += loaded->pixels().size();
         images.emplace(*key, loaded);
         return loaded;
@@ -181,11 +185,12 @@ Result<MeshImport> load_obj(const std::filesystem::path& source, ImageCache* sha
                 continue;
             if (kind == "newmtl") {
                 auto name = rest(row);
-                require(!name.empty() && material_names.size() < 1024, "Invalid or excessive MTL material names.");
+                ATELIER_TRY(
+                    require(!name.empty() && material_names.size() < 1024, "Invalid or excessive MTL material names."));
                 if (!StringView(name).is_valid_utf8())
                     return std::unexpected(Error{ErrorCode::invalid_storage, "Invalid UTF-8 MTL material name."});
-                require(material_names.emplace(name, static_cast<std::uint32_t>(materials.size())).second,
-                        "Duplicate MTL material name.");
+                ATELIER_TRY(require(material_names.emplace(name, static_cast<std::uint32_t>(materials.size())).second,
+                                    "Duplicate MTL material name."));
                 current_slot = materials.size();
                 materials.push_back({std::move(name)});
                 authors.emplace_back();
@@ -193,20 +198,23 @@ Result<MeshImport> load_obj(const std::filesystem::path& source, ImageCache* sha
                 result.materials.emplace_back(MaterialInstanceAsset{});
                 result.textures.emplace_back();
             } else {
-                require(current != nullptr, "MTL property precedes newmtl.");
+                ATELIER_TRY(require(current != nullptr, "MTL property precedes newmtl."));
                 if (kind == "Kd")
-                    for (unsigned i = 0; i < 3; ++i)
-                        current->color[i] = scalar(row);
+                    for (unsigned i = 0; i < 3; ++i) {
+                        ATELIER_TRY_BIND(value, scalar(row));
+                        current->color[i] = *value;
+                    }
                 else if (kind == "d" || kind == "Tr") {
-                    const auto v = scalar(row);
-                    current->color[3] = kind == "d" ? v : 1 - v;
+                    ATELIER_TRY_BIND(v, scalar(row));
+                    current->color[3] = kind == "d" ? *v : 1 - *v;
                 } else if (kind.starts_with("map_") || kind == "bump") {
                     auto name = rest(row);
-                    require(!name.empty() && name.front() != '-', "MTL map options are not supported.");
+                    ATELIER_TRY(require(!name.empty() && name.front() != '-', "MTL map options are not supported."));
                     auto dependency = platform::utf8_to_utf16(name);
                     if (!dependency)
                         return std::unexpected(Error{ErrorCode::invalid_storage, "Invalid UTF-8 text."});
-                    const auto path = relative.parent_path() / relative_path(std::move(*dependency));
+                    ATELIER_TRY_BIND(relative_dependency, relative_path(std::move(*dependency)));
+                    const auto path = relative.parent_path() / *relative_dependency;
                     if (kind == "map_Kd") {
                         ATELIER_TRY_BIND(loaded, image(path));
                         current->color_alpha = (*loaded)->has_alpha();
@@ -218,12 +226,13 @@ Result<MeshImport> load_obj(const std::filesystem::path& source, ImageCache* sha
                         ATELIER_TRY(read(path)); // Preserve unrendered source maps during import.
                 } else if (kind != "Ka" && kind != "Ks" && kind != "Ke" && kind != "Ns" && kind != "Ni" &&
                            kind != "Tf" && kind != "illum")
-                    throw std::runtime_error("Unsupported MTL record: " + kind);
+                    return std::unexpected(Error{ErrorCode::invalid_storage, "Unsupported MTL record: " + kind});
             }
         }
         return {};
     };
-    ATELIER_TRY_BIND(source_slot, read(relative_path(source.filename().native())));
+    ATELIER_TRY_BIND(source_path, relative_path(source.filename().native()));
+    ATELIER_TRY_BIND(source_slot, read(*source_path));
     std::istringstream input(result.files[*source_slot].bytes);
     input.imbue(std::locale::classic());
     std::vector<std::array<float, 3>> positions;
@@ -244,53 +253,63 @@ Result<MeshImport> load_obj(const std::filesystem::path& source, ImageCache* sha
             continue;
         if (kind == "v" || kind == "vn") {
             auto& target = kind == "v" ? positions : normals;
-            require(target.size() < 1000000, "OBJ exceeds the vertex limit.");
-            target.push_back({scalar(row), scalar(row), scalar(row)});
+            ATELIER_TRY(require(target.size() < 1000000, "OBJ exceeds the vertex limit."));
+            ATELIER_TRY_BIND(x, scalar(row));
+            ATELIER_TRY_BIND(y, scalar(row));
+            ATELIER_TRY_BIND(z, scalar(row));
+            target.push_back({*x, *y, *z});
         } else if (kind == "vt") {
-            require(uv.size() < 1000000, "OBJ exceeds the UV limit.");
-            uv.push_back({scalar(row), 1 - scalar(row)});
+            ATELIER_TRY(require(uv.size() < 1000000, "OBJ exceeds the UV limit."));
+            ATELIER_TRY_BIND(u, scalar(row));
+            ATELIER_TRY_BIND(v, scalar(row));
+            uv.push_back({*u, 1 - *v});
         } else if (kind == "mtllib") {
             auto path = platform::utf8_to_utf16(rest(row));
             if (!path)
                 return std::unexpected(Error{ErrorCode::invalid_storage, "Invalid UTF-8 text."});
-            ATELIER_TRY(mtl(relative_path(std::move(*path))));
+            ATELIER_TRY_BIND(relative, relative_path(std::move(*path)));
+            ATELIER_TRY(mtl(*relative));
         } else if (kind == "usemtl") {
             const auto found = material_names.find(rest(row));
-            require(found != material_names.end(), "OBJ references an unknown material.");
+            ATELIER_TRY(require(found != material_names.end(), "OBJ references an unknown material."));
             material = found->second;
         } else if (kind == "f") {
             std::vector<geometry::Vertex> face;
             std::vector<bool> has_normal;
             std::string token;
             while (row >> token) {
-                require(face.size() < 64, "OBJ polygon exceeds 64 corners.");
+                ATELIER_TRY(require(face.size() < 64, "OBJ polygon exceeds 64 corners."));
                 geometry::Vertex vertex{};
                 const auto a = token.find('/');
                 const auto b = a == token.npos ? token.npos : token.find('/', a + 1);
-                std::ranges::copy(positions.at(index(std::string_view(token).substr(0, a), positions.size())),
-                                  vertex.position);
-                if (a != token.npos && a + 1 < (b == token.npos ? token.size() : b))
-                    std::ranges::copy(
-                        uv.at(index(std::string_view(token).substr(a + 1, b == token.npos ? token.npos : b - a - 1),
-                                    uv.size())),
-                        vertex.uv);
-                else
-                    require(
+                ATELIER_TRY_BIND(position, index(std::string_view(token).substr(0, a), positions.size()));
+                std::ranges::copy(positions[*position], vertex.position);
+                if (a != token.npos && a + 1 < (b == token.npos ? token.size() : b)) {
+                    ATELIER_TRY_BIND(
+                        texcoord, index(std::string_view(token).substr(a + 1, b == token.npos ? token.npos : b - a - 1),
+                                        uv.size()));
+                    std::ranges::copy(uv[*texcoord], vertex.uv);
+                } else {
+                    const auto valid = require(
                         std::ranges::all_of(result.textures[material], [](const auto& path) { return path.empty(); }),
                         "Textured OBJ face requires UV indices.");
+                    if (!valid)
+                        return std::unexpected(valid.error());
+                }
                 const bool normal = b != token.npos && b + 1 < token.size();
-                if (normal)
-                    std::ranges::copy(normals.at(index(std::string_view(token).substr(b + 1), normals.size())),
-                                      vertex.normal);
+                if (normal) {
+                    ATELIER_TRY_BIND(direction, index(std::string_view(token).substr(b + 1), normals.size()));
+                    std::ranges::copy(normals[*direction], vertex.normal);
+                }
                 face.push_back(vertex);
                 has_normal.push_back(normal);
             }
-            require(face.size() >= 3, "OBJ face requires at least three corners.");
-            const auto triangles = triangulate(face);
-            require(vertices.size() + triangles.size() * 3 <= 3000000, "OBJ exceeds the triangle limit.");
+            ATELIER_TRY(require(face.size() >= 3, "OBJ face requires at least three corners."));
+            ATELIER_TRY_BIND(triangles, triangulate(face));
+            ATELIER_TRY(require(vertices.size() + triangles->size() * 3 <= 3000000, "OBJ exceeds the triangle limit."));
             if (parts.empty() || parts.back().material != material)
                 parts.push_back({static_cast<std::uint32_t>(vertices.size()), 0, material});
-            for (const auto& t : triangles) {
+            for (const auto& t : *triangles) {
                 std::array<geometry::Vertex, 3> triangle{face[t[0]], face[t[1]], face[t[2]]};
                 std::array<double, 3> a{};
                 std::array<double, 3> b{};
@@ -304,7 +323,7 @@ Result<MeshImport> load_obj(const std::filesystem::path& source, ImageCache* sha
                 std::uint8_t mask = 0;
                 for (unsigned i = 0; i < 3; ++i) {
                     if (!has_normal[t[i]]) {
-                        require(length > 0, "Degenerate OBJ face needs explicit normals.");
+                        ATELIER_TRY(require(length > 0, "Degenerate OBJ face needs explicit normals."));
                         for (unsigned j = 0; j < 3; ++j)
                             triangle[i].normal[j] = static_cast<float>(n[j] / length);
                     }
@@ -318,14 +337,16 @@ Result<MeshImport> load_obj(const std::filesystem::path& source, ImageCache* sha
                 parts.back().vertex_count += 3;
             }
         } else if (kind != "o" && kind != "g" && kind != "s")
-            throw std::runtime_error("Unsupported OBJ record: " + kind);
+            return std::unexpected(Error{ErrorCode::invalid_storage, "Unsupported OBJ record: " + kind});
     }
     for (std::size_t i = 1; i < materials.size(); ++i) {
         const auto& value = authors[i];
         const auto& color = value.color;
         auto& instance = *result.materials[i];
-        require(std::ranges::all_of(color, [](float v) { return v >= 0 && v <= 1; }),
-                "Invalid MTL base color or opacity.");
+        const auto valid = require(std::ranges::all_of(color, [](float v) { return v >= 0 && v <= 1; }),
+                                   "Invalid MTL base color or opacity.");
+        if (!valid)
+            return std::unexpected(valid.error());
         const bool alpha = color[3] < 1 || value.color_alpha || !result.textures[i][5].empty();
         instance.parent_key =
             alpha ? "builtin/material/standard-mask-double" : "builtin/material/standard-opaque-double";

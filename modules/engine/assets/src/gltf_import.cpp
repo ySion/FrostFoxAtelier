@@ -298,7 +298,7 @@ Result<MeshImport> load_gltf(const std::filesystem::path& source, ImageCache* sh
         result.files.push_back({relative, std::move(*bytes)});
         return result.files.size() - 1;
     };
-    const auto imported = [&]() -> json::Result<void> {
+    const auto imported = [&]() -> std::expected<void, std::variant<json::Error, Error>> {
         ATELIER_TRY_BIND(file, read(source.filename(), maximum_document));
         ATELIER_TRY_BIND(document, json::Document::parse_gltf(result.files[*file].bytes));
         const auto gltf = document->root();
@@ -493,7 +493,7 @@ Result<MeshImport> load_gltf(const std::filesystem::path& source, ImageCache* sh
             image_sources.push_back(result.files[file].bytes);
         // Decode to validate the same images and byte budget. Author MI values
         // carry paths/keys, never decoded pixels or a second surface definition.
-        static_cast<void>(decode_images(image_sources, shared_images, maximum_decoded));
+        ATELIER_TRY(decode_images(image_sources, shared_images, maximum_decoded));
         const auto instance = [&](json::Value source_material,
                                   std::array<std::filesystem::path, imported_material_inputs.size()>& files)
             -> json::Result<MaterialInstanceAsset> {
@@ -751,8 +751,11 @@ Result<MeshImport> load_gltf(const std::filesystem::path& source, ImageCache* sh
                                                    std::move(parts), geometry::Tangents::authored);
         return {};
     }();
-    if (!imported)
-        return std::unexpected(Error{ErrorCode::invalid_storage, "glTF: " + imported.error().describe()});
+    if (!imported) {
+        if (const auto* error = std::get_if<json::Error>(&imported.error()))
+            return std::unexpected(Error{ErrorCode::invalid_storage, "glTF: " + error->describe()});
+        return std::unexpected(std::get<Error>(imported.error()));
+    }
     return result;
 }
 
@@ -765,6 +768,6 @@ Result<MeshImport> load_mesh(const std::filesystem::path& source, ImageCache* im
         return load_gltf(source, images);
     if (source.extension() == L".obj")
         return load_obj(source, images);
-    throw std::runtime_error("Mesh sources are Wavefront OBJ or glTF 2.0 (.gltf).");
+    return std::unexpected(Error{ErrorCode::invalid_storage, "Mesh sources are Wavefront OBJ or glTF 2.0 (.gltf)."});
 }
 }

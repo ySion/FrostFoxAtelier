@@ -43,7 +43,8 @@ Result<std::string> Project::import_texture(const std::filesystem::path& source)
         if (!assets::is_texture_path(source))
             throw std::runtime_error("Import a PNG, JPEG, BMP or TIFF texture.");
         ATELIER_TRY_BIND(bytes, assets::read_file(source, 128 * 1024 * 1024));
-        static_cast<void>(assets::decode_image(*bytes));
+        if (const auto decoded = assets::decode_image(*bytes); !decoded)
+            return failed_import(decoded.error().message, created);
         auto relative = std::filesystem::path("Content/Textures") / source.filename();
         ATELIER_TRY_BIND(target, resolve(relative));
         auto metadata = *target;
@@ -80,6 +81,8 @@ Result<assets::TextureAsset> Project::reimport_texture(std::string_view key, con
             throw std::runtime_error("Reimport a PNG, JPEG, BMP or TIFF texture.");
         ATELIER_TRY_BIND(bytes, assets::read_file(source, 128 * 1024 * 1024));
         auto image = assets::decode_image(*bytes);
+        if (!image)
+            return std::unexpected(Error{ErrorCode::invalid_storage, image.error().message});
         ATELIER_TRY_BIND(target, resolve(item.path));
         // No new sidecar, asset key or import-history entry. The old committed
         // file remains intact until both decode and the atomic write succeed.
@@ -89,8 +92,8 @@ Result<assets::TextureAsset> Project::reimport_texture(std::string_view key, con
         item.modified = std::filesystem::last_write_time(*target, error);
         if (error)
             return std::unexpected(Error{ErrorCode::invalid_storage, platform::error_message(error)});
-        auto result = assets::TextureAsset{item.key, item.path.stem().wstring(), image};
-        take(assets_.publish_texture(std::move(item), std::move(image)));
+        auto result = assets::TextureAsset{item.key, item.path.stem().wstring(), *image};
+        take(assets_.publish_texture(std::move(item), std::move(*image)));
         return result;
     } catch (const std::exception& error) {
         return failure(error);
