@@ -58,10 +58,24 @@ json::Result<std::uint64_t> integer(json::Value value, std::uint64_t maximum = U
     return std::unexpected(value.error(json::Fault::range, "Expected nonnegative integral value in range"));
 }
 
-json::Result<json::Value> element(json::Value gltf, std::string_view array, json::Value index) {
-    ATELIER_TRY_BIND(items, gltf.at(array));
+// Build each top-level index only when it is actually consumed. Unused fields
+// remain unvalidated, and entries borrow the immutable import document.
+json::Result<json::Value> element(json::Value root, std::unordered_map<std::string_view, Array<json::Value>>& arrays,
+                                  std::string_view name, json::Value index) {
     ATELIER_TRY_BIND(position, integer(index));
-    return items->at(*position);
+    auto found = arrays.find(name);
+    if (found == arrays.end()) {
+        ATELIER_TRY_BIND(value, root.at(name));
+        ATELIER_TRY_BIND(items, value->array());
+        Array<json::Value> entries;
+        entries.reserve(items->size());
+        for (auto item : *items)
+            entries.emplace(item);
+        found = arrays.emplace(name, std::move(entries)).first;
+    }
+    if (*position >= found->second.size())
+        return std::unexpected(index.error(json::Fault::range, "Array index out of range"));
+    return found->second[*position];
 }
 
 json::Result<double> number(json::Value object, std::string_view key, double fallback) {
@@ -170,9 +184,10 @@ std::size_t component_size(std::uint32_t type) {
     return type == 5121 ? 1 : type == 5123 ? 2 : 4;
 }
 
-json::Result<Accessor> accessor(json::Value gltf, std::span<const std::string_view> buffers, json::Value index,
-                                std::string_view type, std::initializer_list<std::uint32_t> components) {
-    ATELIER_TRY_BIND(a, element(gltf, "accessors", index));
+json::Result<Accessor> accessor(json::Value gltf, std::unordered_map<std::string_view, Array<json::Value>>& indexed,
+                                std::span<const std::string_view> buffers, json::Value index, std::string_view type,
+                                std::initializer_list<std::uint32_t> components) {
+    ATELIER_TRY_BIND(a, element(gltf, indexed, "accessors", index));
     ATELIER_TRY_BIND(sparse, a->find("sparse"));
     ATELIER_TRY(require(!*sparse, "sparse accessors are not supported."));
     ATELIER_TRY_BIND(actual_type, a->string({"type"}));
@@ -187,7 +202,7 @@ json::Result<Accessor> accessor(json::Value gltf, std::span<const std::string_vi
         ATELIER_TRY(require(!*enabled, "normalized accessors are not supported."));
     }
     ATELIER_TRY_BIND(view_index, a->at("bufferView"));
-    ATELIER_TRY_BIND(view, element(gltf, "bufferViews", *view_index));
+    ATELIER_TRY_BIND(view, element(gltf, indexed, "bufferViews", *view_index));
     ATELIER_TRY_BIND(buffer_value, view->at("buffer"));
     ATELIER_TRY_BIND(buffer, integer(*buffer_value));
     ATELIER_TRY(require(*buffer < buffers.size(), "invalid buffer index."));
@@ -287,6 +302,7 @@ Result<MeshImport> load_gltf(const std::filesystem::path& source, ImageCache* sh
         ATELIER_TRY_BIND(file, read(source.filename(), maximum_document));
         ATELIER_TRY_BIND(document, json::Document::parse_gltf(result.files[*file].bytes));
         const auto gltf = document->root();
+        std::unordered_map<std::string_view, Array<json::Value>> indexed;
         const json::Builder array_default{json::Kind::array};
         const json::Builder object_default;
         const auto empty_array = array_default.root();
@@ -348,7 +364,7 @@ Result<MeshImport> load_gltf(const std::filesystem::path& source, ImageCache* sh
         }
         const auto primitives = [&](std::size_t node) -> json::Result<json::ArrayView> {
             ATELIER_TRY_BIND(index, nodes[node].at("mesh"));
-            ATELIER_TRY_BIND(mesh, element(gltf, "meshes", *index));
+            ATELIER_TRY_BIND(mesh, element(gltf, indexed, "meshes", *index));
             ATELIER_TRY_BIND(items, mesh->at("primitives"));
             return items->array();
         };
@@ -356,7 +372,7 @@ Result<MeshImport> load_gltf(const std::filesystem::path& source, ImageCache* sh
             ATELIER_TRY_BIND(indices, primitive.find("indices"));
             ATELIER_TRY_BIND(index, *indices ? json::Result<json::Value>{**indices}
                                              : primitive.path({"attributes", "POSITION"}));
-            ATELIER_TRY_BIND(access, element(gltf, "accessors", *index));
+            ATELIER_TRY_BIND(access, element(gltf, indexed, "accessors", *index));
             ATELIER_TRY_BIND(count, access->at("count"));
             return integer(*count);
         };
@@ -423,17 +439,21 @@ Result<MeshImport> load_gltf(const std::filesystem::path& source, ImageCache* sh
         }
         ATELIER_TRY_BIND(images_value, field(gltf, "images", empty_array));
         ATELIER_TRY_BIND(image_items, images_value->array());
-        std::vector<std::size_t> image_slot(image_items->size(), no_slot);
+        auto& images = indexed["images"];
+        images.reserve(image_items->size());
+        for (auto image : *image_items)
+            images.emplace(image);
+        std::vector<std::size_t> image_slot(images.size(), no_slot);
         std::vector<std::size_t> image_files;
         const auto texture_image = [&](json::Value info) -> json::Result<std::size_t> {
             ATELIER_TRY_BIND(coord_value, info.find("texCoord"));
             ATELIER_TRY_BIND(coord, *coord_value ? integer(**coord_value) : json::Result<std::uint64_t>{0});
             ATELIER_TRY(require(*coord == 0, "textures must use TEXCOORD_0."));
             ATELIER_TRY_BIND(index, info.at("index"));
-            ATELIER_TRY_BIND(texture, element(gltf, "textures", *index));
+            ATELIER_TRY_BIND(texture, element(gltf, indexed, "textures", *index));
             ATELIER_TRY_BIND(source_value, texture->at("source"));
             ATELIER_TRY_BIND(source_index, integer(*source_value));
-            ATELIER_TRY_BIND(image, images_value->at(*source_index));
+            ATELIER_TRY_BIND(image, element(gltf, indexed, "images", *source_value));
             auto& slot = image_slot[*source_index];
             if (slot == no_slot) {
                 ATELIER_TRY(require(image_files.size() < maximum_images, "too many images."));
@@ -480,13 +500,13 @@ Result<MeshImport> load_gltf(const std::filesystem::path& source, ImageCache* sh
                 // Every used material texture was resolved above, before taking
                 // views into result.files. Publication only consumes that snapshot.
                 ATELIER_TRY_BIND(index, info.at("index"));
-                ATELIER_TRY_BIND(source_texture, element(gltf, "textures", *index));
+                ATELIER_TRY_BIND(source_texture, element(gltf, indexed, "textures", *index));
                 ATELIER_TRY_BIND(source_value, source_texture->at("source"));
                 ATELIER_TRY_BIND(source_index, integer(*source_value));
                 const auto image = image_slot[*source_index];
                 files[input] = result.files[image_files[image]].relative;
                 ATELIER_TRY_BIND(sampler_index, source_texture->find("sampler"));
-                ATELIER_TRY_BIND(sampler, *sampler_index ? element(gltf, "samplers", **sampler_index)
+                ATELIER_TRY_BIND(sampler, *sampler_index ? element(gltf, indexed, "samplers", **sampler_index)
                                                          : json::Result<json::Value>{empty_object});
                 ATELIER_TRY_BIND(wrap_s, sampler->find("wrapS"));
                 ATELIER_TRY_BIND(wrap_t, sampler->find("wrapT"));
@@ -631,13 +651,13 @@ Result<MeshImport> load_gltf(const std::filesystem::path& source, ImageCache* sh
                     continue; // BLEND, reported in notes.
                 ATELIER_TRY_BIND(attributes, primitive.at("attributes"));
                 ATELIER_TRY_BIND(position_index, attributes->at("POSITION"));
-                ATELIER_TRY_BIND(position, accessor(gltf, buffers, *position_index, "VEC3", {5126}));
+                ATELIER_TRY_BIND(position, accessor(gltf, indexed, buffers, *position_index, "VEC3", {5126}));
                 const auto optional = [&](const char* name,
                                           std::string_view type) -> json::Result<std::optional<Accessor>> {
                     std::optional<Accessor> a;
                     ATELIER_TRY_BIND(value, attributes->find(name));
                     if (*value) {
-                        ATELIER_TRY_BIND(found, accessor(gltf, buffers, **value, type, {5126}));
+                        ATELIER_TRY_BIND(found, accessor(gltf, indexed, buffers, **value, type, {5126}));
                         a = *found;
                         ATELIER_TRY(require(a->count == position->count, "vertex attributes differ in count."));
                     }
@@ -678,7 +698,8 @@ Result<MeshImport> load_gltf(const std::filesystem::path& source, ImageCache* sh
                 std::optional<Accessor> indices;
                 ATELIER_TRY_BIND(indices_value, primitive.find("indices"));
                 if (*indices_value) {
-                    ATELIER_TRY_BIND(found, accessor(gltf, buffers, **indices_value, "SCALAR", {5121, 5123, 5125}));
+                    ATELIER_TRY_BIND(found,
+                                     accessor(gltf, indexed, buffers, **indices_value, "SCALAR", {5121, 5123, 5125}));
                     indices = *found;
                 }
                 const auto count = indices ? indices->count : position->count;

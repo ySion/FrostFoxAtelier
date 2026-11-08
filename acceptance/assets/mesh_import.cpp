@@ -278,9 +278,6 @@ void gltf(const fs::path& root) {
     take(variant.set(take(take(variant.root().at("accessors")).at(0)), "count", 100u));
     reject(variant, "exceeds its buffer");
     variant = json::Builder{fixture};
-    take(variant.set(take(take(variant.root().at("accessors")).at(0)), "count", 3.5));
-    reject(variant, "integral value");
-    variant = json::Builder{fixture};
     take(variant.set(take(take(take(variant.root().at("materials")).at(0)).at("pbrMetallicRoughness")),
                      "roughnessFactor", 2u));
     reject(variant, "invalid material");

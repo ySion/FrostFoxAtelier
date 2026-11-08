@@ -136,6 +136,8 @@ glTF 上限：文档 16 MiB，buffer 合计 512 MiB，单个图片文件 64 MiB�
 
 glTF 由 core/json 的专用政策入口解析：UTF-8 严格、允许 BOM、不另设嵌套深度限制，重复的解码后成员键沿用后值覆盖。这遵循 [glTF 2.0 JSON Encoding 与整数字段规则](https://github.com/KhronosGroup/glTF/blob/9ec408bd03f6c622a026a8989d24257a83311835/specification/2.0/Specification.adoc)（KhronosGroup/glTF@9ec408bd03f6c622a026a8989d24257a83311835）：键唯一与后值覆盖均为 SHOULD。索引、计数等整数字段接受有限、非负、无小数且在目标范围内的数值，包括 `100.0`、`1e2`，不再截断小数。格式/schema 拒绝返回 `invalid_storage`；OBJ 格式拒绝与图片解码失败仍会抛异常，归 ASSET-LOAD 后续迁移。
 
+属性类型按 schema 检查，`null` 不等同于缺省：`images`、`materials`、`extensionsRequired` 必须是数组，消费到的 `pbrMetallicRoughness` 必须是对象。类型错误返回带 JSON 路径的 `invalid_storage`；本片不增加 minItems 检查，空数组仍按既有消费规则处理。
+
 Refresh/F5 重新扫描目录，不在 UI 每帧访问磁盘，也不自动向已加载的 Session 导入新版本。普通磁盘缓存按大小/修改时间失效，未变化刷新保留 revision 和资源；显式发布的精确网格快照跨目录刷新保留，不退回较新的磁盘内容。图片按 SHA-256 共享不可变解码内容，弱缓存不额外延长像素寿命。时间戳未变的外部改写不保证由普通 Refresh 发现，手动 Reimport 则读取实际内容。
 
 手动 Mesh Reimport 保持网格身份，按唯一同名槽保留既有 MI 文件及用户编辑；仅新作者槽创建 MI，不推断重命名或合并源材质参数。Session 先发布本次图片，再解析新材质，最后发布几何和默认表；已打开的未保存 MI 不被覆盖。暂时消失的显式槽绑定保留为休眠作者数据，同名槽回来时恢复。Live 传输精确几何快照，不要求接收端重读磁盘。导入不进入 Undo，也没有文件系统自动导入器。
