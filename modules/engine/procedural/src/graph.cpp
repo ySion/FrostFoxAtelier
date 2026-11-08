@@ -8,6 +8,10 @@
 namespace atelier::procedural {
 namespace detail {
 struct Access {
+    static Result<Contents> contents(Runtime&, ObjectId);
+
+    static Result<std::vector<Input>> inputs(Runtime&, ObjectId);
+
     template <class N>
     static auto& inputs(N& node) {
         return node.inputs_;
@@ -38,14 +42,14 @@ std::unexpected<Error> error(ErrorCode code, std::string message) {
 }
 
 Result<bool> member(Runtime& runtime, ObjectId graph, ObjectId node) {
-    auto listed = contents(runtime, graph);
+    auto listed = Access::contents(runtime, graph);
     if (!listed)
         return std::unexpected(listed.error());
-    return std::ranges::find(listed->nodes, node) != listed->nodes.end();
+    return listed->contains(node);
 }
 
 // True when `target` is `from` or feeds it through any path of connections.
-Result<bool> upstream(Runtime& runtime, ObjectId from, ObjectId target) {
+Result<bool> upstream(Runtime& runtime, const Contents& graph, ObjectId from, ObjectId target) {
     std::vector<ObjectId> pending{from};
     std::unordered_set<ObjectId> seen;
     while (!pending.empty()) {
@@ -55,7 +59,7 @@ Result<bool> upstream(Runtime& runtime, ObjectId from, ObjectId target) {
             return true;
         if (!seen.insert(node).second)
             continue;
-        auto into = inputs(runtime, node);
+        auto into = inputs(runtime, graph, node);
         if (!into)
             return std::unexpected(into.error());
         for (const auto& input : *into)
@@ -215,12 +219,15 @@ Result<Ports> ports(Runtime& runtime, TypeId type) {
     return result;
 }
 
-Result<std::vector<Input>> inputs(Runtime& runtime, ObjectId node) {
+Result<std::vector<Input>> detail::Access::inputs(Runtime& runtime, ObjectId node) {
     return runtime.with_native<const Node>(node, [&](const Node& value) -> Result<std::vector<Input>> {
         auto field = runtime.reference_field(node, Access::inputs(value));
         if (!field)
             return std::unexpected(field.error());
         const auto& connections = Access::connections(value);
+        ATELIER_TRY_BIND(count, runtime.sequence_size(*field));
+        if (*count != connections.size())
+            return error(ErrorCode::argument_mismatch, "Graph input references do not match its connections.");
         std::vector<Input> result;
         result.reserve(connections.size());
         for (std::size_t i = 0; i < connections.size(); ++i) {
@@ -233,7 +240,7 @@ Result<std::vector<Input>> inputs(Runtime& runtime, ObjectId node) {
     });
 }
 
-Result<Contents> contents(Runtime& runtime, ObjectId graph) {
+Result<Contents> detail::Access::contents(Runtime& runtime, ObjectId graph) {
     return runtime.with_native<const Graph>(graph, [&](const Graph& value) -> Result<Contents> {
         auto field = runtime.reference_field(graph, Access::nodes(value));
         if (!field)
@@ -242,12 +249,13 @@ Result<Contents> contents(Runtime& runtime, ObjectId graph) {
         if (!count)
             return std::unexpected(count.error());
         Contents result;
-        result.nodes.reserve(*count);
+        result.nodes_.reserve(*count);
         for (std::size_t i = 0; i < *count; ++i) {
             auto node = runtime.sequence_read(*field, i);
             if (!node)
                 return std::unexpected(node.error());
-            result.nodes.push_back(node->id());
+            result.nodes_.push_back(node->id());
+            result.members_.insert(node->id());
         }
         auto slot = runtime.reference_field(graph, Access::display(value));
         if (!slot)
@@ -255,9 +263,31 @@ Result<Contents> contents(Runtime& runtime, ObjectId graph) {
         auto display = runtime.read_reference(*slot);
         if (!display)
             return std::unexpected(display.error());
-        result.display = display->id();
+        result.display_ = display->id();
         return result;
     });
+}
+
+Result<void> Contents::check(std::span<const Input> connections) const {
+    for (const auto& input : connections)
+        if (!contains(input.from))
+            return error(ErrorCode::argument_mismatch, "Graph input connects a node outside this graph.");
+    return {};
+}
+
+Result<Contents> contents(Runtime& runtime, ObjectId graph) {
+    ATELIER_TRY_BIND(result, Access::contents(runtime, graph));
+    if (result->display() != ObjectId{} && !result->contains(result->display()))
+        return error(ErrorCode::argument_mismatch, "Graph display names a node outside this graph.");
+    return std::move(*result);
+}
+
+Result<std::vector<Input>> inputs(Runtime& runtime, const Contents& graph, ObjectId node) {
+    if (!graph.contains(node))
+        return error(ErrorCode::argument_mismatch, "The node is not in this graph.");
+    ATELIER_TRY_BIND(result, Access::inputs(runtime, node));
+    ATELIER_TRY(graph.check(*result));
+    return std::move(*result);
 }
 
 Result<ObjectRoot> add_node(Runtime& runtime, ObjectId graph, TypeId type) {
@@ -283,14 +313,14 @@ Result<ObjectRoot> add_node(Runtime& runtime, ObjectId graph, TypeId type) {
 }
 
 Result<void> remove_node(Runtime& runtime, ObjectId graph, ObjectId node) {
-    auto listed = contents(runtime, graph);
+    auto listed = Access::contents(runtime, graph);
     if (!listed)
         return std::unexpected(listed.error());
-    const auto position = std::ranges::find(listed->nodes, node);
-    if (position == listed->nodes.end())
+    const auto position = std::ranges::find(listed->nodes(), node);
+    if (position == listed->nodes().end())
         return error(ErrorCode::invalid_member, "The node is not in this graph.");
-    for (const auto other : listed->nodes) {
-        auto into = inputs(runtime, other);
+    for (const auto other : listed->nodes()) {
+        auto into = Access::inputs(runtime, other);
         if (!into)
             return std::unexpected(into.error());
         if (std::ranges::none_of(*into, [&](const Input& input) { return input.from == node; }))
@@ -334,8 +364,8 @@ Result<void> remove_node(Runtime& runtime, ObjectId graph, ObjectId node) {
         if (!slot)
             return std::unexpected(slot.error());
         std::vector<ReferenceChange> changes{
-            SequenceSplice{*field, std::size_t(position - listed->nodes.begin()), 1, {}}};
-        if (listed->display == node)
+            SequenceSplice{*field, std::size_t(position - listed->nodes().begin()), 1, {}}};
+        if (listed->display() == node)
             changes.push_back(ReferenceWrite{*slot, *none});
         return runtime.apply_reference_changes(changes);
     });
@@ -347,7 +377,7 @@ Result<void> connect(Runtime& runtime, ObjectId graph, ObjectId from, std::uint3
     if (!listed)
         return std::unexpected(listed.error());
     for (const auto node : {from, to})
-        if (std::ranges::find(listed->nodes, node) == listed->nodes.end())
+        if (!listed->contains(node))
             return error(ErrorCode::invalid_member, "Connected nodes must be in the graph.");
     auto from_type = runtime.type_of(from);
     auto to_type = runtime.type_of(to);
@@ -363,7 +393,7 @@ Result<void> connect(Runtime& runtime, ObjectId graph, ObjectId from, std::uint3
         return error(ErrorCode::argument_mismatch, "The upstream node has no output " + std::to_string(output) + ".");
     if (input >= target->inputs.size())
         return error(ErrorCode::argument_mismatch, "The downstream node has no input " + std::to_string(input) + ".");
-    auto cycle = upstream(runtime, from, to);
+    auto cycle = upstream(runtime, *listed, from, to);
     if (!cycle)
         return std::unexpected(cycle.error());
     if (*cycle)
@@ -400,7 +430,7 @@ Result<void> connect(Runtime& runtime, ObjectId graph, ObjectId from, std::uint3
 }
 
 Result<void> disconnect(Runtime& runtime, ObjectId from, std::uint32_t output, ObjectId to, std::uint32_t input) {
-    auto into = inputs(runtime, to);
+    auto into = Access::inputs(runtime, to);
     if (!into)
         return std::unexpected(into.error());
     const auto found = std::ranges::find_if(*into, [&](const Input& value) {

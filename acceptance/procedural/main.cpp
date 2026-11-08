@@ -1098,6 +1098,34 @@ void graph_evaluation() {
     };
     verify_output();
 
+    // Generic reference edits bypass graph membership; reads must reject until repaired.
+    const auto outside = take(runtime.create(type<Grid>(runtime)));
+    const auto definition = reflection::Definition<Node>::build(runtime);
+    const auto input_field = std::ranges::find(definition.fields, "inputs", &FieldDefinition::name);
+    take(runtime.with_native<Node>(moved, [&](Node& node) -> Result<void> {
+        ATELIER_TRY_BIND(
+            at, runtime.reference_field(moved, *static_cast<ReferenceSequence*>(input_field->native_address(&node))));
+        const auto reference = outside.reference();
+        const ReferenceChange edit = SequenceSplice{*at, 0, 1, {&reference, 1}};
+        return runtime.apply_reference_changes({&edit, 1});
+    }));
+    const auto listed = take(contents(runtime, graph));
+    const auto read = inputs(runtime, listed, moved);
+    require(!read && read.error().code == ErrorCode::argument_mismatch &&
+                read.error().message == "Graph input connects a node outside this graph.",
+            "Graph reads accepted an external input.");
+    const auto* retained = evaluator.output();
+    for (int attempt = 0; attempt != 2; ++attempt) {
+        const auto rejected = evaluator.evaluate();
+        require(!rejected && rejected.error().code == ErrorCode::argument_mismatch &&
+                    rejected.error().message == read.error().message && evaluator.output() == retained,
+                "A repeated topology failure advanced the evaluator or replaced its output.");
+    }
+    take(disconnect(runtime, outside.id(), 0, moved, 0));
+    take(connect(runtime, graph, grid_node, 0, moved, 0));
+    take(evaluator.evaluate());
+    verify_output();
+
     // A native invoke failure must leave the previous publication alive and readable.
     const auto* shown = evaluator.output();
     write_vector(moved, scale, {std::nanf(""), 1, 1});
@@ -1119,7 +1147,7 @@ void graph_evaluation() {
 
     // The sole guard against silently retaining a deleted display's output and status.
     take(remove_node(runtime, graph, copied));
-    require(take(contents(runtime, graph)).display == ObjectId{}, "Removing the display node left it displayed.");
+    require(take(contents(runtime, graph)).display() == ObjectId{}, "Removing the display node left it displayed.");
     take(evaluator.evaluate());
     require(evaluator.output() == nullptr && evaluator.status(copied) == nullptr,
             "A removed display node is still evaluated.");

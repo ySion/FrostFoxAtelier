@@ -148,7 +148,7 @@ struct Evaluator::Impl {
 
     ObjectId display;
 
-    std::vector<ObjectId> members;
+    Contents members;
 
     std::unordered_map<ObjectId, State> nodes;
 
@@ -265,29 +265,16 @@ struct Evaluator::Impl {
     }
 
     Result<void> read(ObjectId id, State& state) {
-        auto type = runtime.type_of(id);
-        if (!type)
-            return std::unexpected(type.error());
-        auto known = types.find(*type);
-        if (known == types.end())
-            known = types.emplace(*type, procedural::ports(runtime, *type)).first;
-        if (!known->second)
-            return std::unexpected(known->second.error());
-        auto info = runtime.describe(*type);
+        if (!state.ports)
+            return std::unexpected(*state.fault);
+        auto info = runtime.describe(state.type);
         if (!info)
             return std::unexpected(info.error());
-        state.type = *type;
-        state.ports = &*known->second;
-        // Graph traversal still needs current connections when this node's binding fails.
-        auto into = inputs(runtime, id);
-        if (!into)
-            return std::unexpected(into.error());
-        state.inputs = std::move(*into);
         // Validate the declaration before field keying can reject an invalid selector's value type.
         if (state.ports->evaluate == MethodId{}) {
-            auto bound = kernels.find(*type);
+            auto bound = kernels.find(state.type);
             if (bound == kernels.end())
-                bound = kernels.emplace(*type, bind(*type)).first;
+                bound = kernels.emplace(state.type, bind(state.type)).first;
             if (!bound->second)
                 return std::unexpected(bound->second.error());
         }
@@ -640,7 +627,7 @@ struct Evaluator::Impl {
     }
 
     // Upstream first, ending at the display node.
-    Result<std::vector<ObjectId>> order() const {
+    Result<std::vector<ObjectId>> order(ObjectId display, const std::unordered_map<ObjectId, State>& changed) const {
         std::vector<ObjectId> result;
         if (display == ObjectId{})
             return result;
@@ -654,11 +641,10 @@ struct Evaluator::Impl {
         finished.emplace(display, false);
         while (!path.empty()) {
             const auto id = path.back().id;
-            const auto found = nodes.find(id);
-            if (found == nodes.end())
-                return error(ErrorCode::invalid_member, "A connection leaves the graph.");
-            if (path.back().next < found->second.inputs.size()) {
-                const auto from = found->second.inputs[path.back().next++].from;
+            const auto found = changed.find(id);
+            const auto& state = found != changed.end() ? found->second : nodes.at(id);
+            if (path.back().next < state.inputs.size()) {
+                const auto from = state.inputs[path.back().next++].from;
                 const auto [mark, added] = finished.emplace(from, false);
                 if (added)
                     path.push_back({from, 0});
@@ -681,11 +667,9 @@ struct Evaluator::Impl {
         bool dirty = !cursor || resources.revision() != revision;
         // A publication may change any Source node's code; rebinding finds which did.
         const bool republished = program && program->revision() != code_revision;
-        if (republished) {
-            code_revision = program->revision();
-            std::erase_if(kernels, [](const auto& item) { return !item.second || item.second->method == MethodId{}; });
-            dirty = true;
-        }
+        dirty = dirty || republished;
+        std::optional<Contents> refreshed;
+        auto next_seed = seed;
         if (!cursor || runtime.changed_since(id, *cursor)) {
             auto listed = contents(runtime, id);
             if (!listed)
@@ -699,35 +683,104 @@ struct Evaluator::Impl {
             auto value = runtime.read(id, *field);
             if (!value)
                 return std::unexpected(value.error());
-            seed = std::get<std::uint32_t>(*value);
-            display = listed->display;
-            members = std::move(listed->nodes);
-            std::erase_if(nodes,
-                          [&](const auto& node) { return std::ranges::find(members, node.first) == members.end(); });
+            next_seed = std::get<std::uint32_t>(*value);
+            refreshed = std::move(*listed);
             dirty = true;
         }
-        for (const auto node : members) {
-            auto [found, added] = nodes.try_emplace(node);
-            auto& state = found->second;
-            // Every instance must refresh a possible binding fault, not only the first of its type.
-            const bool stale_code = republished && state.ports && state.ports->evaluate == MethodId{};
-            if (!added && !stale_code && !runtime.changed_since(node, *cursor))
+        const auto& next_members = refreshed ? *refreshed : members;
+        for (const auto node : next_members.nodes())
+            dirty = dirty || !nodes.contains(node) || runtime.changed_since(node, *cursor);
+        if (!dirty) {
+            cursor = *now;
+            return {};
+        }
+        // Stage only reread nodes; untouched states and their local strings stay in place.
+        std::unordered_map<ObjectId, State> candidate;
+        const bool membership_changed = refreshed && !std::ranges::equal(members.nodes(), refreshed->nodes());
+        for (const auto node : next_members.nodes()) {
+            const auto prior = nodes.find(node);
+            const bool added = prior == nodes.end();
+            const bool reread = added || !cursor || runtime.changed_since(node, *cursor);
+            const bool stale_code =
+                republished && !added && prior->second.ports && prior->second.ports->evaluate == MethodId{};
+            if (!reread && membership_changed)
+                ATELIER_TRY(next_members.check(prior->second.inputs));
+            if (!reread && !stale_code)
                 continue;
-            const auto local = state.local;
-            const auto connections = state.inputs;
+            auto& state = candidate.try_emplace(node).first->second;
+            if (reread) {
+                ATELIER_TRY_BIND(into, inputs(runtime, next_members, node));
+                state.inputs = std::move(*into);
+            } else {
+                state.type = prior->second.type;
+                state.ports = prior->second.ports;
+                state.inputs = prior->second.inputs;
+            }
+            // TypeInfo is immutable; changed objects may name a different published type.
+            // Metadata belongs to the existing type cache; a bad declaration remains a node fault.
+            if (reread) {
+                state.ports = nullptr;
+                state.fault.reset();
+                auto type = runtime.type_of(node);
+                if (!type) {
+                    state.fault = type.error();
+                    continue;
+                }
+                state.type = *type;
+                auto known = types.find(*type);
+                if (known == types.end())
+                    known = types.emplace(*type, procedural::ports(runtime, *type)).first;
+                if (known->second)
+                    state.ports = &*known->second;
+                else
+                    state.fault = known->second.error();
+            }
+        }
+        const auto current = [&](ObjectId node) -> const State& {
+            const auto found = candidate.find(node);
+            return found != candidate.end() ? found->second : nodes.at(node);
+        };
+        for (const auto node : next_members.nodes())
+            for (const auto& connection : current(node).inputs) {
+                const auto& source = current(connection.from);
+                if (source.ports && connection.output >= source.ports->outputs.size())
+                    return error(ErrorCode::argument_mismatch, "Graph input names a missing output port.");
+            }
+        ATELIER_TRY_BIND(sequence, order(next_members.display(), candidate));
+        if (republished) {
+            std::erase_if(kernels, [](const auto& item) { return !item.second || item.second->method == MethodId{}; });
+        }
+        bool changed = !cursor || refreshed || republished || resources.revision() != revision;
+        for (auto& [node, state] : candidate) {
+            const bool added = !nodes.contains(node);
             auto read = this->read(node, state);
             state.fault.reset();
             if (!read)
                 state.fault = read.error();
-            dirty = dirty || added || !read || state.local != local || state.inputs != connections;
+            changed = changed || added || !read || state.local != nodes.at(node).local ||
+                      state.inputs != nodes.at(node).inputs;
         }
+        for (auto& [node, state] : candidate) {
+            auto& target = nodes[node];
+            target.type = state.type;
+            target.ports = state.ports;
+            target.inputs = std::move(state.inputs);
+            target.fault = std::move(state.fault);
+            if (!target.fault)
+                target.local = std::move(state.local);
+        }
+        if (membership_changed)
+            std::erase_if(nodes, [&](const auto& node) { return !next_members.contains(node.first); });
+        display = next_members.display();
+        if (refreshed)
+            members = std::move(*refreshed);
+        seed = next_seed;
         cursor = *now;
-        if (!dirty)
+        if (republished)
+            code_revision = program->revision();
+        if (!changed)
             return {};
         revision = resources.revision();
-        auto sequence = order();
-        if (!sequence)
-            return std::unexpected(sequence.error());
         for (const auto node : *sequence)
             update(node, nodes.at(node), record_timings);
         if (display == ObjectId{})

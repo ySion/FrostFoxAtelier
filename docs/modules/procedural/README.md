@@ -212,7 +212,17 @@ Remap 四端点须有限、输入两端不同，输出两端可以相同。按 `
 - **缓存**：按键查找结果，以条目为单位按最近使用淘汰，条目大小为输出的 `bytes()` 加两份键（条目与查找表各一份）、依赖表和条目开销，总量不超过 `cache_bytes`（默认 256 MiB）。撤销把参数改回旧值时直接命中旧结果，不再求值；节点持有的当前结果不受淘汰影响。
 - **资源**：节点经 Context 读到的网格连同解析结果记在结果上。`Resources::revision()` 变化后，复用结果之前重新解析这些键；解析结果不同就重新求值，相同就继续复用。
 - **失败**：节点失败时它的下游不求值，状态记为输入失败，`output()` 保留上一次的结果。失败的键在资源版本不变时不再重试，键变化（例如参数改回）或资源版本变化后再试。
-- **调度**：每个需要的节点每次求值最多调用一次 evaluate，按上游在前的顺序执行。环在建立连接时就被拒绝，求值时遇到环或指向图外的连接返回错误。
+- **调度**：每个需要的节点每次求值最多调用一次 evaluate，按上游在前的顺序执行。每次发现变化后，对全图连接检查来源输出号；环检测仍只遍历 display 的上游闭包。
+
+### 通用反射编辑后的图校验
+
+通用 `apply_reference_changes` 仍允许把 display 或 inputs 写成图外节点，不提供图的写侧保证。`contents` 返回只读 `Contents` 快照（有序 nodes 与成员索引），检查 display；`inputs(runtime, contents, node)` 检查节点及其来源都属于快照，并检查引用序列和连接记录等长。成员或 display 改变后须刷新快照。读取、保存和求值遇到这些无效结构返回 `argument_mismatch`，修复后恢复；`set_display`、`disconnect` 和 `remove_node` 使用内部原始读取，不因旧的图外引用阻止修复。长度不一致须先修复引用序列，不能靠忽略多余引用继续读取。
+
+输出端口有效性由持有当前端口的消费者检查：求值器复用唯一的 types 缓存与 `state.ports`，保存沿原有逐边 `ports()` 读取输出名。`inputs` 不读取端口。端口来自 Runtime 已发布的不可变 TypeInfo；现有对象不支持原地类型布局迁移，Source 兼容发布不改变签名，PointNode 的图端口固定为 input/output。Source 重发布即使不给下游盖章，也由 Program revision 触发全图输出检查及内核重绑定；新节点按其 TypeId 查现有缓存。声明或绑定故障仍记入 NodeStatus；只有端口已知而输出号越界才成为外层拓扑错误。
+
+脏图只为本轮重读或重绑定的节点暂存 local、inputs、类型与 ports、读取故障，先检查全部连接及 display 闭包的环，再写回这些字段、成员和 cursor；失败不推进这些状态或结果缓存，旧发布保留，连续无修改求值仍失败。成员变化时，未写过的节点用已缓存的 inputs 对新集合复核，不重读 Runtime。不可变类型元数据仍可按需记入现有 types 缓存，不创建第二份端口缓存。只改一个节点参数时仅重新生成该节点的 local 及连接，其他节点原地借读；重绑定未写节点才复制其已有连接。候选量随改动节点及其数据大小增长，不是整表 O(V) 复制，不复制旧 local、NodeStatus、结果条目或 Geometry 缓冲。脏图的发现和全图拓扑检查仍需 O(V+E) 遍历。
+
+可观察变化：图外连接由旧 `invalid_member / A connection leaves the graph.` 改为 `argument_mismatch / Graph input connects a node outside this graph.`；display 图外、引用长度不一致、来源输出越界也显式拒绝。已修复输出号越界时直接读取 `entry->outputs[connection.output]`，以及旧 cursor 在拓扑排序前推进、导致第二次无变化求值误报成功的问题。PROC-GRAPH 残留：display 闭包外的环可保存，但加载时 `connect` 会拒绝形成环的边并沿原宽容诊断保留；本片不扩大环检测范围。
 
 ## 图文件
 

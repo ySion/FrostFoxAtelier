@@ -146,20 +146,23 @@ void verify_procedural_graph() {
             std::get<float>(scalar("remap", "input_min")) == -1 && std::get<float>(scalar("remap", "input_max")) == 2 &&
             std::get<float>(scalar("remap", "output_min")) == 4 && std::get<float>(scalar("remap", "output_max")) == -2,
         "Authored Noise/Remap numeric parameters did not load.");
-    require(
-        take(contents(runtime, document.graph.id())).display == moved.node.id() &&
-            take(inputs(runtime, moved.node.id())) == std::vector<Input>{{grid.node.id(), 0, 0}} &&
-            take(inputs(runtime, entry("path").node.id())) == std::vector<Input>{{entry("line").node.id(), 0, 0}} &&
-            take(inputs(runtime, entry("volume").node.id())) == std::vector<Input>{{entry("box").node.id(), 0, 0}} &&
-            take(inputs(runtime, entry("noise").node.id())) ==
-                std::vector<Input>{{entry("selected").node.id(), 0, 0}} &&
-            take(inputs(runtime, entry("remap").node.id())) == std::vector<Input>{{entry("noise").node.id(), 0, 0}} &&
-            take(inputs(runtime, entry("realized").node.id())) ==
-                std::vector<Input>{{entry("tube").node.id(), 0, 0},
-                                   {entry("sphere").node.id(), 0, 0},
-                                   {entry("remap").node.id(), 0, 1}} &&
-            take(editor::save_graph(runtime, document)) == text,
-        "The authored display, edge or canonical v1 bytes changed.");
+    const auto graph_contents = take(contents(runtime, document.graph.id()));
+    require(graph_contents.display() == moved.node.id() &&
+                take(inputs(runtime, graph_contents, moved.node.id())) == std::vector<Input>{{grid.node.id(), 0, 0}} &&
+                take(inputs(runtime, graph_contents, entry("path").node.id())) ==
+                    std::vector<Input>{{entry("line").node.id(), 0, 0}} &&
+                take(inputs(runtime, graph_contents, entry("volume").node.id())) ==
+                    std::vector<Input>{{entry("box").node.id(), 0, 0}} &&
+                take(inputs(runtime, graph_contents, entry("noise").node.id())) ==
+                    std::vector<Input>{{entry("selected").node.id(), 0, 0}} &&
+                take(inputs(runtime, graph_contents, entry("remap").node.id())) ==
+                    std::vector<Input>{{entry("noise").node.id(), 0, 0}} &&
+                take(inputs(runtime, graph_contents, entry("realized").node.id())) ==
+                    std::vector<Input>{{entry("tube").node.id(), 0, 0},
+                                       {entry("sphere").node.id(), 0, 0},
+                                       {entry("remap").node.id(), 0, 1}} &&
+                take(editor::save_graph(runtime, document)) == text,
+            "The authored display, edge or canonical v1 bytes changed.");
 
     // The only tolerant fixture: a missing type stays null and keeps all of its frozen JSON.
     json::Builder missing{authored};

@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "procedural/graph.gen.hpp"
@@ -162,16 +163,34 @@ struct Input {
     bool operator==(const Input&) const = default;
 };
 
-// Connections into `node`, ordered by input port; a multiple port keeps connection order.
-Result<std::vector<Input>> inputs(Runtime& runtime, ObjectId node);
+// A membership snapshot. Refresh after changing the graph's members or display.
+// Does not root objects; the caller keeps the graph alive.
+class Contents {
+public:
+    [[nodiscard]] std::span<const ObjectId> nodes() const noexcept { return nodes_; }
 
-struct Contents {
-    std::vector<ObjectId> nodes;
+    [[nodiscard]] ObjectId display() const noexcept { return display_; }
 
-    ObjectId display; // Null when unset.
+    [[nodiscard]] bool contains(ObjectId node) const { return members_.contains(node); }
+
+    // Recheck cached connections after a membership change, without rereading the node.
+    [[nodiscard]] Result<void> check(std::span<const Input> connections) const;
+
+private:
+    friend struct detail::Access;
+
+    std::vector<ObjectId> nodes_;
+
+    std::unordered_set<ObjectId> members_;
+
+    ObjectId display_;
 };
 
 Result<Contents> contents(Runtime& runtime, ObjectId graph);
+
+// Connections into a member of this snapshot. Checks membership and reference/connection
+// lengths, not output port numbers; consumers check against their current source ports.
+Result<std::vector<Input>> inputs(Runtime& runtime, const Contents& graph, ObjectId node);
 
 // Graph edits. Each writes only the objects it changes: the graph for its node list and
 // display, a node for the connections into it. The graph holds its nodes and a node holds

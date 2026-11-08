@@ -284,8 +284,8 @@ Result<std::string> save_graph(Runtime& runtime, const GraphDocument& document) 
             return std::unexpected(Error{ErrorCode::argument_mismatch,
                                          item.name + ": an entry names a loaded node once, or keeps a saved one."});
     }
-    if (by_node.size() != contents.nodes.size() ||
-        !std::ranges::all_of(contents.nodes, [&](ObjectId node) { return by_node.contains(node); }))
+    if (by_node.size() != contents.nodes().size() ||
+        !std::ranges::all_of(contents.nodes(), [&](ObjectId node) { return by_node.contains(node); }))
         return std::unexpected(
             Error{ErrorCode::argument_mismatch, "Every graph node needs exactly one document entry."});
     const EncodeReference no_reference = [](ObjectId) -> Result<json::Document> {
@@ -298,13 +298,8 @@ Result<std::string> save_graph(Runtime& runtime, const GraphDocument& document) 
     static_cast<void>(result.set(result.root(), "version", std::uint32_t{1}));
     result.set_validated(result.root(), "settings", settings->root());
     const auto settings_node = *result.root().at("settings");
-    if (contents.display != ObjectId{}) {
-        const auto shown = by_node.find(contents.display);
-        if (shown == by_node.end())
-            return std::unexpected(
-                Error{ErrorCode::argument_mismatch, "Graph display names a node outside this graph."});
-        result.set_validated(settings_node, "display", shown->second->name);
-    }
+    if (contents.display() != ObjectId{})
+        result.set_validated(settings_node, "display", by_node.at(contents.display())->name);
     assets::json_format::overlay(result, settings_node, document.kept.root());
     const auto nodes = result.object_validated(result.root(), "nodes");
     for (const auto& [name, item] : by_name) {
@@ -315,18 +310,14 @@ Result<std::string> save_graph(Runtime& runtime, const GraphDocument& document) 
             ATELIER_TRY_BIND(port_result, procedural::ports(runtime, *type));
             const auto& ports = *port_result;
             const auto inputs = result.object_validated(entry, "inputs");
-            ATELIER_TRY_BIND(connections, procedural::inputs(runtime, node));
+            ATELIER_TRY_BIND(connections, procedural::inputs(runtime, contents, node));
             for (const auto& input : *connections) {
                 ATELIER_TRY_BIND(source_type, runtime.type_of(input.from));
                 ATELIER_TRY_BIND(from, procedural::ports(runtime, *source_type));
-                const auto source = by_node.find(input.from);
-                if (source == by_node.end())
-                    return std::unexpected(
-                        Error{ErrorCode::argument_mismatch, "Graph input connects a node outside this graph."});
                 if (input.output >= from->outputs.size())
                     return std::unexpected(
                         Error{ErrorCode::argument_mismatch, "Graph input names a missing output port."});
-                auto connection = source->second->name + "." + from->outputs[input.output];
+                auto connection = by_node.at(input.from)->name + "." + from->outputs[input.output];
                 const auto& port_name = ports.inputs.at(input.input);
                 if (ports.multiple[input.input]) {
                     const auto found = *inputs.find(port_name);
