@@ -26,8 +26,10 @@ T take(Result<T> result) {
 
 Session::Session(Prepare prepare, SessionRole role)
     : types_(take(world::register_types(runtime_))), presentation_types_(take(presentation::register_types(runtime_))),
-      physics_types_(take(physics::register_types(runtime_))), world_(runtime_, types_),
-      presentation_(take(presentation::Scene::create(world_, presentation_types_))),
+      physics_types_(take(physics::register_types(runtime_))), presentation_(take([&]() -> Result<presentation::Scene> {
+          ATELIER_TRY(world_.initialize(runtime_, types_));
+          return presentation::Scene::create(world_, presentation_types_);
+      }())),
       parameters_{Parameter{"X", "m", types_.position_fields[0]}, Parameter{"Y", "m", types_.position_fields[1]},
                   Parameter{"Z", "m", types_.position_fields[2]}} {
     static_assert(std::is_nothrow_move_constructible_v<Change> && std::is_nothrow_move_assignable_v<Change>);

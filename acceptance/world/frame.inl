@@ -1,7 +1,8 @@
 void frame_phases() {
     Runtime runtime;
     const auto types = register_test_types(runtime);
-    w::World world(runtime, types);
+    w::World world;
+    take(world.initialize(runtime, types));
     using Event = std::tuple<char, ObjectId, float>;
     std::vector<Event> events;
     const auto record = [&events](char phase) {
@@ -116,7 +117,8 @@ void frame_phases() {
     // Execution prevents GC, not explicit native destruction. The next Tick must
     // still reject a dead receiver before entering even a callback that ignores it.
     {
-        w::World invalidated(runtime, types);
+        w::World invalidated;
+        take(invalidated.initialize(runtime, types));
         auto owner = take(w::create_entity(runtime));
         auto first = take(w::create_component(runtime, types.counter));
         auto next = take(w::create_component(runtime, types.counter));

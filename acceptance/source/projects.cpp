@@ -154,7 +154,8 @@ void verify_world_project() {
     auto program = take(Program::create(runtime));
     publish(*program, sources());
     const auto type = take(runtime.find_type("game.Move"));
-    w::World world(runtime, world_types);
+    w::World world;
+    take(world.initialize(runtime, world_types));
     auto owner = take(w::create_entity(runtime));
     auto instance = take(w::create_component(runtime, type));
     take(world.set_transform(owner.id(), {}));

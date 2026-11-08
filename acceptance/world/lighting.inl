@@ -1,7 +1,8 @@
 void environment_and_group_writes() {
     Runtime runtime;
     const auto types = register_all_types(runtime);
-    w::World world(runtime, types);
+    w::World world;
+    take(world.initialize(runtime, types));
     const auto scene = take(p::Scene::create(world, types));
     const auto field = [&](TypeId type, std::string_view name) { return take(runtime.find_field(type, name)); };
     const auto path = [&](std::string_view name) { return w::FieldPath{field(types.environment_component, name)}; };
@@ -50,7 +51,8 @@ void environment_and_group_writes() {
 void material_dependency_updates() {
     Runtime runtime;
     const auto types = register_all_types(runtime);
-    w::World world(runtime, types);
+    w::World world;
+    take(world.initialize(runtime, types));
     const auto scene = take(p::Scene::create(world, types));
     auto source = take(material::create_source(runtime, "source", {mesh_material_definition(), {}}));
     auto a = take(material::create_instance(runtime, "a", {source, {}, {}}));

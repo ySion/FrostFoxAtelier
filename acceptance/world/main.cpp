@@ -149,7 +149,8 @@ void editing_and_execution() {
                  .base<Counter>()
                  .field<&DerivedCounter::extra>("extra")
                  .publish());
-    w::World world(runtime, types);
+    w::World world;
+    take(world.initialize(runtime, types));
     const auto scene = take(p::Scene::create(world, types));
     auto entity = take(w::create_entity(runtime));
     committed(world.attach(entity.id()));
@@ -239,7 +240,8 @@ void reference_lifetime() {
     ObjectId cube_id;
     ObjectId sibling_id;
     {
-        w::World world(runtime, types);
+        w::World world;
+        take(world.initialize(runtime, types));
         auto entity = take(w::create_entity(runtime));
         entity_id = entity.id();
         committed(world.attach(entity_id));
@@ -281,7 +283,8 @@ void reference_lifetime() {
 
     // Independent sample: no explicit destroy, including the Entity<->Component cycle.
     {
-        w::World world(runtime, types);
+        w::World world;
+        take(world.initialize(runtime, types));
         auto entity = take(w::create_entity(runtime));
         entity_id = entity.id();
         committed(world.attach(entity_id));
@@ -300,9 +303,15 @@ void reference_lifetime() {
 
 void worlds_and_requests() {
     Runtime runtime;
+    w::World first;
+    const auto unregistered = first.initialize(runtime, {});
+    require(!unregistered && unregistered.error().code == ErrorCode::type_mismatch &&
+                unregistered.error().message == "World types must be registered in its Runtime.",
+            "World initialization did not preserve its registration rejection.");
     const auto types = register_all_types(runtime);
-    w::World first(runtime, types);
-    w::World second(runtime, types);
+    take(first.initialize(runtime, types));
+    w::World second;
+    take(second.initialize(runtime, types));
     const auto second_scene = take(p::Scene::create(second, types));
     auto entity = take(w::create_entity(runtime));
     committed(first.attach(entity.id()));
@@ -330,7 +339,8 @@ void worlds_and_requests() {
 void lifecycle_subscription_unsubscribe() {
     Runtime runtime;
     const auto types = register_all_types(runtime);
-    w::World world(runtime, types);
+    w::World world;
+    take(world.initialize(runtime, types));
     auto entity = take(w::create_entity(runtime));
     auto component = take(w::create_component(runtime, types.component));
     std::uint64_t skipped{};
@@ -373,7 +383,8 @@ void lifecycle_subscription_unsubscribe() {
 void failures_and_reentry() {
     Runtime runtime;
     const auto types = register_all_types(runtime);
-    w::World world(runtime, types);
+    w::World world;
+    take(world.initialize(runtime, types));
     take(world.set_failure_policy(w::FailurePolicy::halt));
     auto entity = take(w::create_entity(runtime));
     committed(world.attach(entity.id()));
@@ -406,7 +417,8 @@ void ordered_lifecycle() {
     std::vector<Event> events;
     ObjectId fail_begin;
     ObjectId fail_end;
-    w::World world(runtime, types);
+    w::World world;
+    take(world.initialize(runtime, types));
     take(world.set_failure_policy(w::FailurePolicy::halt));
     auto entity = take(w::create_entity(runtime));
     auto second_entity = take(w::create_entity(runtime));
@@ -481,7 +493,8 @@ void isolated_failures() {
     const auto script = take(ticking->pin());
     const auto later = waiting->entry();
     const auto steps = take(runtime.find_field(types.counter, "steps"));
-    w::World world(runtime, types);
+    w::World world;
+    take(world.initialize(runtime, types));
     auto e = take(w::create_entity(runtime));
     auto f = take(w::create_entity(runtime));
     auto g = take(w::create_entity(runtime));
@@ -617,7 +630,8 @@ void isolated_failures() {
 void spatial_tree_and_mesh() {
     Runtime runtime;
     const auto types = register_all_types(runtime);
-    w::World world(runtime, types);
+    w::World world;
+    take(world.initialize(runtime, types));
     const auto scene = take(p::Scene::create(world, types));
     auto entity = take(p::create_static_mesh_entity(
         world, {geometry::cube_mesh(), {{10, 0, 0}, {0, 0, std::sqrt(.5f), std::sqrt(.5f)}, {2, 2, 2}}}));

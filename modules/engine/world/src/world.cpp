@@ -3,10 +3,10 @@
 #include "memory/fatal.hpp"
 #include <algorithm>
 #include <bit>
+#include <cassert>
 #include <cmath>
 #include <format>
 #include <queue>
-#include <stdexcept>
 #include <unordered_set>
 
 namespace atelier::world {
@@ -507,14 +507,19 @@ Commit World::Impl::finish(bool changed, std::optional<Error> failure) {
     return {changed, std::move(failure)};
 }
 
-World::World(Runtime& runtime, const Types& types) : impl_(std::make_unique<Impl>(runtime, types, *this)) {
+World::World() = default;
+
+Result<void> World::initialize(Runtime& runtime, const Types& types) {
+    assert(!impl_ && "World initialization requires an empty World.");
     const auto registered = runtime.native_type<Entity>();
     if (!registered || *registered != types.entity)
-        throw std::invalid_argument("World types must be registered in its Runtime.");
+        return error(ErrorCode::type_mismatch, "World types must be registered in its Runtime.");
+    impl_ = std::make_unique<Impl>(runtime, types, *this);
+    return {};
 }
 
 World::~World() {
-    if (!impl_->closed) {
+    if (impl_ && !impl_->closed) {
         const auto result = close();
         // Destruction during a dispatch would leave dangling member_world links.
         if (!result)

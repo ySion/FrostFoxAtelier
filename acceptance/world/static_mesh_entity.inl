@@ -1,7 +1,8 @@
 void static_mesh_entity_creation() {
     Runtime runtime;
     const auto types = register_all_types(runtime);
-    w::World world(runtime, types);
+    w::World world;
+    take(world.initialize(runtime, types));
     const auto scene = take(p::Scene::create(world, types));
     p::StaticMeshEntityDesc invalid;
     invalid.mesh_source = std::string_view("mesh\0key", 8);

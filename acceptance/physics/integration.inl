@@ -6,7 +6,8 @@ void simulate_world() {
     const auto world_types = take(w::register_types(runtime));
     (void)take(pr::register_types(runtime));
     const auto physics_types = take(p::register_types(runtime));
-    w::World world(runtime, world_types);
+    w::World world;
+    take(world.initialize(runtime, world_types));
     auto scene = take(p::PhysicsScene::create(world, physics_types, pr::read_mesh_source));
 
     pr::StaticMeshEntityDesc floor_desc;
@@ -65,7 +66,8 @@ void simulate_cooked_assets() {
         const auto world_types = take(w::register_types(runtime));
         (void)take(pr::register_types(runtime));
         const auto physics_types = take(p::register_types(runtime));
-        w::World world(runtime, world_types);
+        w::World world;
+        take(world.initialize(runtime, world_types));
         pr::StaticMeshEntityDesc desc;
         desc.mesh = mesh;
         desc.mesh_source = source;
@@ -100,7 +102,8 @@ void simulate_special_systems() {
     const auto world_types = take(w::register_types(runtime));
     (void)take(pr::register_types(runtime));
     const auto physics_types = take(p::register_types(runtime));
-    w::World world(runtime, world_types);
+    w::World world;
+    take(world.initialize(runtime, world_types));
     auto scene = take(p::PhysicsScene::create(world, physics_types, pr::read_mesh_source));
     auto make_entity = [&](atelier::math::Vector3 position, bool body_enabled, p::BodySettings settings = {}) {
         auto entity = take(w::create_entity(runtime));

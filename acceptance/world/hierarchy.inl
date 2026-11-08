@@ -4,7 +4,8 @@ void hierarchical_lifecycle() {
     auto program = take(source::Program::create(runtime, types.counter));
     publish(*program, "async void later() { yield; self.advance(50.0); }");
     const auto later = program->entry();
-    w::World world(runtime, types);
+    w::World world;
+    take(world.initialize(runtime, types));
     take(world.set_failure_policy(w::FailurePolicy::halt));
     auto root = take(w::create_entity(runtime));
     auto child = take(w::create_entity(runtime));
@@ -158,7 +159,8 @@ void hierarchical_lifecycle() {
 void hierarchical_reference_lifetime() {
     Runtime runtime;
     const auto types = register_test_types(runtime);
-    w::World world(runtime, types);
+    w::World world;
+    take(world.initialize(runtime, types));
     auto parent = take(w::create_entity(runtime));
     auto child = take(w::create_entity(runtime));
     auto leaf = take(w::create_entity(runtime));
@@ -190,7 +192,8 @@ void hierarchical_reference_lifetime() {
 void hierarchical_space_boundaries() {
     Runtime runtime;
     const auto types = register_all_types(runtime);
-    w::World world(runtime, types);
+    w::World world;
+    take(world.initialize(runtime, types));
     auto a = take(w::create_entity(runtime));
     auto b = take(w::create_entity(runtime));
     auto group = take(w::create_entity(runtime));
@@ -260,7 +263,8 @@ void hierarchical_space_boundaries() {
 void forest_publication() {
     Runtime runtime;
     const auto types = register_test_types(runtime);
-    w::World world(runtime, types);
+    w::World world;
+    take(world.initialize(runtime, types));
     auto p = take(w::create_entity(runtime));
     auto q = take(w::create_entity(runtime));
     auto existing = take(w::create_entity(runtime));
@@ -344,7 +348,8 @@ void forest_publication() {
 void attachment_space_and_authoring() {
     Runtime runtime;
     const auto types = register_test_types(runtime);
-    w::World world(runtime, types);
+    w::World world;
+    take(world.initialize(runtime, types));
     auto task_program = take(source::Program::create(runtime, types.counter));
     publish(*task_program, "async void later() { yield; self.advance(50.0); }");
     const auto later = task_program->entry();
@@ -420,7 +425,8 @@ void attachment_space_and_authoring() {
 void mirrored_and_degenerate_space() {
     Runtime runtime;
     const auto types = register_all_types(runtime);
-    w::World world(runtime, types);
+    w::World world;
+    take(world.initialize(runtime, types));
     const auto scene = take(p::Scene::create(world, types));
     const auto item = [&](ObjectId entity) -> std::optional<p::RenderItem> {
         for (const auto& value : take(scene.render_items()))

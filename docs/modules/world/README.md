@@ -116,7 +116,9 @@ halt 保持首错即停：任一 Begin、Tick 或任务首错停止后续执行�
 
 `destroy_entity / destroy_component` 是游戏对象终结入口：先退出 World，再清理组成并调用 Runtime；可信宿主不得绕过它直接销毁活跃成员。detach 保留对象图；历史裁剪只释放根，不隐式 destroy。close 退出所有子树、释放成员根后不可重启，重复 close 无副作用。
 
-World 析构时若尚未关闭则调用 close；若该调用被拒、无法安全解除成员关系，直接 fatal。正常 close 的 Result 与 Commit 通知错误仍由调用者处理。构造时 Entity 类型未在对应 Runtime 登记或与传入 Types 不匹配的拒绝目前仍抛出 `invalid_argument`，尚未迁移为可失败初始化入口。
+World 默认构造为空壳，由 `initialize(Runtime&, const Types&)` 在原地址初始化并返回 Result。Entity 类型未在对应 Runtime 登记或与传入 Types.entity 不匹配时返回 `type_mismatch`，诊断保持 `World types must be registered in its Runtime.`；失败不发布实现状态，空壳可安全析构，修正输入后可重试。initialize 只能对未初始化的空壳调用；成功后（包括 close 后）再次调用违反前提，dev 用 assert 诊断，不是可恢复的 busy。除初始化和析构之外的操作都要求初始化已成功；World 仍不可复制或移动，Runtime 必须覆盖其使用期。
+
+空壳析构无操作。已初始化的 World 析构时若尚未关闭则调用 close；若该调用被拒、无法安全解除成员关系，直接 fatal。正常 close 的 Result 与 Commit 通知错误仍由调用者处理。
 
 网格绑定、材质、灯参数与环境的合同见 [presentation](../presentation/README.md)，场景格式见[项目场景](project-scenes.md)。
 

@@ -18,9 +18,12 @@ struct PhysicsFixture {
 
     p::Types physics_types = take(p::register_types(runtime));
 
-    w::World world{runtime, world_types};
+    w::World world;
 
-    pr::Scene shown = take(pr::Scene::create(world, presentation_types));
+    pr::Scene shown = take([&]() -> atelier::Result<pr::Scene> {
+        ATELIER_TRY(world.initialize(runtime, world_types));
+        return pr::Scene::create(world, presentation_types);
+    }());
 
     std::unique_ptr<p::PhysicsScene> scene = take(p::PhysicsScene::create(world, physics_types, pr::read_mesh_source));
 

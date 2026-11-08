@@ -20,8 +20,10 @@ void entity_lifecycle_and_detached_graph() {
             .base<LifecycleEntity>()
             .publish());
     const auto value_field = take(runtime.find_field(entity_type, "value"));
-    w::World world(runtime, types);
-    w::World foreign(runtime, types);
+    w::World world;
+    take(world.initialize(runtime, types));
+    w::World foreign;
+    take(foreign.initialize(runtime, types));
     take(world.set_failure_policy(w::FailurePolicy::halt));
     auto entity = take(w::create_entity(runtime, derived_type));
     auto second = take(w::create_entity(runtime, entity_type));

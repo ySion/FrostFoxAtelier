@@ -529,7 +529,9 @@ public:
 
     using TaskStart = std::function<Result<Coroutine>(Runtime&, ObjectId)>;
 
-    World(Runtime&, const Types&);
+    // An empty World may only be initialized or destroyed. All other operations
+    // require successful initialization; the World stays at its original address.
+    World();
 
     ~World();
 
@@ -540,6 +542,11 @@ public:
     World(World&&) = delete;
 
     World& operator=(World&&) = delete;
+
+    // Call only on an uninitialized empty World, never after successful initialization
+    // (even after close). Unregistered or mismatched Entity types return type_mismatch;
+    // failure leaves it empty, safe to destroy or initialize again with corrected inputs.
+    [[nodiscard]] Result<void> initialize(Runtime&, const Types&);
 
     [[nodiscard]] Runtime& runtime() const noexcept;
 
