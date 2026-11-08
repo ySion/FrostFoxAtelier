@@ -3,7 +3,9 @@
 #include "logging/logging.hpp"
 #include "logging/detail/native.hpp"
 #include <quill/bundled/fmt/base.h>
+#include <array>
 #include <concepts>
+#include <limits>
 #include <span>
 #include <type_traits>
 
@@ -34,6 +36,70 @@ struct Context {
     std::optional<Repeat> repeat{};
 };
 
+template <class... Args>
+class FormatString {
+    // The pinned Windows floating types leave room for fmt's precision + exponent.
+    static_assert(std::numeric_limits<long double>::digits <= 53 &&
+                  std::numeric_limits<long double>::max_exponent <= 1024);
+
+    static_assert(maximum_message_bytes < std::numeric_limits<int>::max() - 1024);
+
+    struct Policy {
+        std::array<fmtquill::detail::type, sizeof...(Args)> types{
+            fmtquill::detail::mapped_type_constant<Args, char>::value...};
+
+        fmtquill::detail::compile_parse_context<char> context;
+
+        constexpr explicit Policy(fmtquill::string_view text)
+            : context(text, static_cast<int>(sizeof...(Args)), types.data()) {}
+
+        constexpr void on_text(const char*, const char*) {}
+
+        constexpr int on_arg_id() { return context.next_arg_id(); }
+
+        constexpr int on_arg_id(int id) {
+            context.check_arg_id(id);
+            return id;
+        }
+
+        int on_arg_id(fmtquill::string_view) {
+            fmtquill::report_error("Named arguments are not supported in native log formats");
+            return -1;
+        }
+
+        constexpr void on_replacement_field(int, const char*) {}
+
+        constexpr const char* on_format_specs(int id, const char* begin, const char* end) {
+            context.advance_to(begin);
+            fmtquill::detail::dynamic_format_specs<char> specs;
+            const auto type = types[static_cast<std::size_t>(id)];
+            const auto next = fmtquill::detail::parse_format_specs(begin, end, specs, context, type);
+            if (specs.dynamic_width() != fmtquill::arg_id_kind::none)
+                fmtquill::report_error("Dynamic width is not supported in native log formats");
+            if (specs.dynamic_precision() != fmtquill::arg_id_kind::none)
+                fmtquill::report_error("Dynamic precision is not supported in native log formats");
+            if (fmtquill::detail::in(type, fmtquill::detail::float_set) &&
+                specs.precision > static_cast<int>(maximum_message_bytes))
+                fmtquill::report_error("Floating precision exceeds maximum_message_bytes in native log format");
+            return next;
+        }
+
+        void on_error(const char* message) { fmtquill::report_error(message); }
+    };
+
+    fmtquill::format_string<Args...> format_;
+
+public:
+    template <std::size_t N>
+    consteval FormatString(const char (&spelling)[N]) : format_(spelling) {
+        const fmtquill::string_view text{spelling, N - 1};
+        // Reuse fmt's grammar after its full type check; only policy is local.
+        fmtquill::detail::parse_format_string(text, Policy{text});
+    }
+
+    [[nodiscard]] fmtquill::string_view get() const noexcept { return format_.get(); }
+};
+
 // Positional, compile-time-checked format; no named/runtime formats or user codecs.
 // Copy strings, fields and repeat into the queue before return; format the message
 // on the backend. Direct calls evaluate arguments first; use ATELIER_LOG[_WITH]
@@ -41,7 +107,7 @@ struct Context {
 template <Severity Level, Argument... Args>
     requires(Level != Severity::off && sizeof...(Args) <= 16)
 [[nodiscard]] SubmitResult write(std::string_view category, std::string_view event_code, const Context& context,
-                                 std::source_location source, fmtquill::format_string<Args...> format,
+                                 std::source_location source, std::type_identity_t<FormatString<Args...>> format,
                                  Args&&... args) noexcept {
     if constexpr (Level < minimum_severity)
         return {SubmitStatus::filtered};
@@ -92,7 +158,7 @@ template <Severity Level, Argument... Args>
                 return {::atelier::logging::SubmitStatus::filtered};                                                   \
             }                                                                                                          \
             return [&]<class... Args>(Args&&... atelier_log_args) {                                                    \
-                constexpr fmtquill::format_string<Args...> atelier_log_format{format};                                 \
+                constexpr ::atelier::logging::native::FormatString<Args...> atelier_log_format{format};                \
                 return ::atelier::logging::native::write<(level)>(atelier_log_category, (code), (context),             \
                                                                   atelier_log_source, atelier_log_format,              \
                                                                   std::forward<Args>(atelier_log_args)...);            \

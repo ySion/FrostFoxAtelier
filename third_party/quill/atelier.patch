@@ -58,3 +58,24 @@ index a16a867..3b7baf5 100644
 +    // Atelier owns filtering and sets TraceL3 immediately after logger creation.
 +    // Do not let an inherited environment value reject startup or alter filtering.
      _env_log_level_parsed = true;
+diff --git a/include/quill/backend/BackendWorker.h b/include/quill/backend/BackendWorker.h
+--- a/include/quill/backend/BackendWorker.h
++++ b/include/quill/backend/BackendWorker.h
+@@ -454,8 +454,15 @@
+   {
+     char ts[24];
+     time_t t = time(nullptr);
+     tm p;
+-    localtime_rs(std::addressof(t), std::addressof(p));
+-    strftime(ts, 24, "%X", std::addressof(p));
++#if defined(_WIN32)
++    bool const converted = localtime_s(std::addressof(p), std::addressof(t)) == 0;
++#else
++    bool const converted = localtime_r(std::addressof(t), std::addressof(p)) != nullptr;
++#endif
++    if (!converted || strftime(ts, sizeof(ts), "%X", std::addressof(p)) == 0)
++    {
++      return "[time-unavailable]";
++    }
+     return std::string{ts};
+   }

@@ -22,7 +22,7 @@
 | Output | `ReadBatch Reader::poll(ReadBudget budget = {})` | 增量读取、拥有型 Record、累计 Reader 状态与最近健康文件快照 |
 | Application / Output | `void Reader::source_ended() noexcept` | 宿主确认生产进程实际退出后通知；没有正常 final 也能排空并标不完整收尾 |
 
-`native::write` 的签名是 `template<Severity Level, Argument... Args> SubmitResult write(std::string_view category, std::string_view event_code, const Context& context, std::source_location source, fmtquill::format_string<Args...> format, Args&&... args) noexcept`，要求 `Level != off` 且至多 16 个参数。
+`native::write` 的签名是 `template<Severity Level, Argument... Args> SubmitResult write(std::string_view category, std::string_view event_code, const Context& context, std::source_location source, std::type_identity_t<native::FormatString<Args...>> format, Args&&... args) noexcept`，要求 `Level != off` 且至多 16 个参数；格式参数不参与类型推导。
 
 ## 生命周期与目录
 
@@ -65,7 +65,9 @@ Source 的 `path/version/offset/line/column/disk_path` 完整转入上述对应�
 
 **稳定原生**：只有整个 run 生命周期都不卸载、并链接进同一宿主二进制的代码使用 native.hpp（包括宿主链接的静态库）。当前 `atelier_logging` 为静态目标，不能把它另行链接到 DLL 后期待共享同一个进程服务；header-only Quill 的 registry/TLS 也不能在 DLL 中复制。包括常驻 DLL 在内的其他二进制模块，均通过宿主提供的稳定 submit 入口提交。Dev 编译最低级别 trace，Release 为 info；运行时再按 RunOptions.minimum 与最多 64 项 category 精确覆盖过滤，阈值启动后固定。宏只在运行时过滤时计算 category 一次，event code、Context 和格式参数都在过滤通过后求值；编译裁掉的级别不求值 category。每个启用参数求值一次。
 
-`fmtquill::format_string` 必须真的参与调用的编译期检查；禁止绕为 runtime format。参数仅受约束的算术标量、char 数组、std::string、std::string_view，拒绝任意类/枚举/裸指针/自定义 deferred codec；枚举显式转成稳定数值或名称，char 数组要求有效 NUL 终止，带 NUL 文本用显式长度视图。正文格式化在后台，字符串与 Context 在调用返回前编码复制。source metadata、decoder、内部 envelope codec 都必须驻留。不要为了适配 schema 把所有普通原生正文提前 std::format。
+`native::FormatString` 只从编译期字符数组构造，内部 `fmtquill::format_string` 仍执行完整类型/语法检查；随后在 consteval 内复用 fmt 的解析器检查本项目政策，不复制语法、不在前台格式化。宏与直接 write 使用同一类型，不接受 runtime format、外部 fmt 格式对象或运行时 string_view。参数仅受约束的算术标量、char 数组、std::string、std::string_view，拒绝任意类/枚举/裸指针/自定义 deferred codec；枚举显式转成稳定数值或名称，char 数组要求有效 NUL 终止，带 NUL 文本用显式长度视图。正文格式化在后台，字符串与 Context 在调用返回前编码复制。source metadata、decoder、内部 envelope codec 都必须驻留。不要为了适配 schema 把所有普通原生正文提前 std::format。
+
+动态宽度、动态精度（包括 `{:{}}`、`{:.{}}`、`{0:{1}}`、`{0:.{1}f}`）一律编译期拒绝，诊断区分宽度和精度。所有浮点格式的静态精度不得超过 `maximum_message_bytes`（131072），超限诊断指出浮点精度；默认精度、字符串精度、静态宽度及转义括号保持 fmt 语义。这是有意的保守收窄：NaN/Inf 和去尾零后原本很短的有限值也受限，例如旧 `{:.131073g}` 配 1.25 可以输出 `1.25`，现在拒绝编译；不是静默截断。精度上限避免 fmt 精度与指数运算溢出，不保证最终正文不超限。允许的精度配 f/e/a 或静态大宽度仍可能展开超过 128 KiB，交由原 sink 记录 `output_too_large`，不输出截断正文。
 
 Entry 的文本在准入边界校验；编码与已准入诊断快照使用 JSON 的已验证写入入口，不重复扫描 UTF-8。快照截断只保留完整码点。后台新生成的正文先单次校验 UTF-8，再检查大小，再按已验证文本写入；两者同时失败时，首因仍为 `invalid_utf8`。JSON Value 只借用稳定 DOM，正常导航不拼路径，失败才定位并生成含数组下标的 JSON Pointer；移动 owner 保留借用，销毁 owner 或替换子树使对应旧借用失效。
 
@@ -216,11 +218,28 @@ CodeDocument 上限为 1 Mi UTF-16 code units 且拒 NUL，因此 UI 对控制�
 - **轮转取舍**：固定版本 Quill RotatingFileSink 某些删除路径忽略错误，不能作为 typed health 权威。采用一个自有 Quill Sink 内的固定 Win32 write/rename/delete/close 政策，逐项检查结果；不引入另一条生产队列、可切换后端或通用 sink 框架。本文的命名/轮转容量公共合同不变。
 - [quill.cmake](../../../cmake/quill.cmake) 按 [dependencies-lock.json](../../../cmake/dependencies-lock.json) 的 URL 和 SHA256 获取并校验官方 commit 归档，不引用 Temp 克隆。headers 标为 SYSTEM，关闭 upstream 示例/测试/安装；构建输出目录部署 `LICENSE.quill.txt`、`LICENSE.quill-fmt.txt`，保留 bundled fmt 完整首部许可。JSON 的既有许可证接线继续复用。
 
-Quill 的 [atelier.patch](../../../third_party/quill/atelier.patch) 只改 `LoggerManager::parse_log_level_from_env`：不读取 `QUILL_LOG_LEVEL`，直接记为已解析。这是有意删除第三方环境配置功能；宿主创建 logger 后立即设 TraceL3，实际过滤唯一来自 RunOptions，合法环境值原本就会被覆盖，现在非法值也不再拒绝启动。构建保存原始 header 与补丁 hash，每次补丁变化从原像重放并校验，部署 `atelier.quill.patch`。升级 Quill 必须重新核对该唯一读取点、创建至 TraceL3 之间无消费者、补丁重放及以下选项和异常路径，不能复用旧版本原像。
+Quill 的 [atelier.patch](../../../third_party/quill/atelier.patch) 修改两个原位入口。`LoggerManager::parse_log_level_from_env` 不读取 `QUILL_LOG_LEVEL`，直接记为已解析。这是有意删除第三方环境配置功能；宿主创建 logger 后立即设 TraceL3，实际过滤唯一来自 RunOptions，合法环境值原本就会被覆盖，现在非法值也不再拒绝启动。`BackendWorker::_get_local_time_str` 在 localtime 转换失败或 strftime 返回 0 时给出 `[time-unavailable]`，成功仍使用原 `%X`；数量、thread_id、5 秒相同通知去重和 error_notifier 流程不变。此 helper 也服务后台 warning 和 unbounded queue 通知；不更改共享 TimeUtilities、文件名时间或结构化 timestamp_unix_ns。准确丢弃计数仍来自提交结果，不从时间前缀或通知数量反推。
+
+构建保存两个原始 header 与补丁 hash，每次补丁变化从原像重放并校验，部署 `atelier.quill.patch`。升级 Quill 必须重新核对环境变量唯一读取点、创建至 TraceL3 之间无消费者、时间 helper 的所有消费者、补丁重放及以下选项和异常路径，不能复用旧版本原像。`FormatString` 直接复用 bundled fmt 的 detail 解析接口；升级还必须重新核对类型映射、编译期解析上下文、精度/指数范围证明及编译拒绝和成功字节验收，不能仅以 patch 能应用作为兼容证明。
 
 采用两个上游支持的开关：`check_backend_singleton_instance=false` 失去跨模块重复 Quill 副本的检测，单常驻宿主合同仍必须遵守；`QUILL_NO_THREAD_NAME_SUPPORT=ON` 失去 Quill 线程名字，持久 schema 只使用 thread_id，不改变身份。它们不关闭日志文件锁，也不使多个 Quill registry 合法。
 
-W5 前仍保持 `QUILL_NO_EXCEPTIONS=OFF`。编译期合法格式的动态宽度/精度、极端浮点精度，以及 queue-drop 通知的 localtime 转换仍可能可恢复失败，登记为 **QUILL-RESULT**；必须另行决定编译期限制动态规格或在 fmt 层补显式结果，并处理时间转换后，才能统一禁异常。自有 catch 清零不表示第三方路径已 W5-ready，不把这些拒绝直接改为 abort。
+W5 前仍保持 `QUILL_NO_EXCEPTIONS=OFF`，不提前改变全仓 EH 设置。QUILL-RESULT 的编译期格式合同与诊断时间降级已消除本模块先前登记的可恢复异常来源；在下表固定合同继续成立的前提下，W5 将 `QUILL_NO_EXCEPTIONS=ON` 与独立的 `FMTQUILL_USE_EXCEPTIONS=0` 配合 `/EHs-c-`、`_HAS_EXCEPTIONS=0` 使用的本模块前置条件已满足。剩余不变量违例和 CPU 分配/线程建立失败按 fatal 处理，而不是继续运行。整仓 W5 仍需其他前置片、有效编译命令和双配置完整门禁；不宣称所有未使用的 Quill 功能都已无异常。
+
+| 锁定 Quill / bundled fmt 的残留点 | 本项目不可恢复或不可达的依据 |
+|---|---|
+| fmt `parse_arg_id`、`parse_dynamic_spec`、`parse_format_specs`、`parse_replacement_field`、`check_char_specs`、`format_string_checker`、`report_error` | 字面量的语法、类型、引用及本项目政策在 consteval 内检查；运行时格式、命名参数、自定义 formatter 不受支持 |
+| fmt `dynamic_spec_getter`、`handle_dynamic_spec` | 所有动态宽度/精度编译期拒绝，不靠运行时实参值侥幸通过 |
+| fmt `adjust_precision`，`format_dragon` / `format_float` 的两处调用，以及浮点 `write` 的 e/E 精度 +1 | 静态精度 ≤131072，Windows 浮点范围由静态断言限定，远离 int 溢出；不是把格式输入错误改成 abort |
+| fmt 字符串空指针、`default_arg_formatter` 缺参、UTF-16 转换和 FILE/console 错误 | 原生参数转为有效借用视图且先校验；参数数量已静态检查；不使用 fmt 宽字符/文件输出，日志 IO 由自有 Win32 Result 路径承担 |
+| `LoggerManager` 重名/pending-removal；`LoggerBase` 空 sink/Backtrace；`Frontend` cast/source logger | 唯一成功 start、唯一 run_id、单一 FrontendOptions、先打开有效 sink 再发布；不使用 logger 复制和 Backtrace |
+| `BackendWorker` 配置校验/递归 stop/错误 metadata；`Logger` 递归 flush/控制消息装不下 | 固定合法 8/8/8 staging 与非负时间选项，宿主串行 flush/finish，固定 runtime metadata，控制记录适配固定队列 |
+| `BackendWorkerLock`；`BackendUtilities` affinity/线程名；`ThreadUtilities` 线程名查询 | singleton 检查关闭，不设置 CPU affinity，线程名支持关闭 |
+| `PatternFormatter`、`TimestampFormatter`、`StringFromTime`、`BackendMdcState` 格式配置 | 固定合法配置；正文 pattern 仅 `%(message)`，不启用 Time 属性或用户 MDC |
+| `TimeUtilities` 的 localtime/gmtime/timegm | 通知原位消费系统返回值；不使用共享转换器生成日志正文时间，亦不使用 Quill 文件 sink |
+| `InlinedVector` 容量/下标；`BoundedSPSCQueue` 容量 | 固定合法队列配置、内部索引/长度不变量；损坏不能当可恢复输入 |
+| `BoundedSPSCQueue` 对齐分配；fmt/STL 分配与 std::thread 建立 | 宿主 CPU 资源耗尽走 fatal，不承诺异常退栈或正常关闭 |
+| MetricManager、SinkManager 命名工厂、UnboundedSPSCQueue、Filesystem、SignalHandler、独立 File/RotatingSink | 项目不开放这些第三方功能；自有 sink 直接构造、BoundedDropping、无 Quill signal 接管。未来启用必须重新审计 |
 
 ## 验收入口与限制
 
@@ -237,4 +256,4 @@ W5 前仍保持 `QUILL_NO_EXCEPTIONS=OFF`。编译期合法格式的动态宽度
 pwsh -NoProfile -File .\tools\acceptance-gate.ps1 -Targets dev:logging_acceptance,release:logging_acceptance
 ```
 
-验收不代替业务 Result：预期隔离故障仍可成功退出，正常案例中的额外 warning/error 则失败。DLL 验收只证明稳定宿主的拥有型边界与真实卸载，不保证所有解码都发生在卸载之后，也不扩大为任意 JIT/DLL formatter 安全。原生动态格式宽度展开的瞬时内存仍由 Quill/fmt 分配，不承诺严格临时峰值；文件系统 I/O、flush 与 finish 无硬超时或崩溃保证。所有未知后台 notice 继续作为健康不确定性保留。
+验收不代替业务 Result：预期隔离故障仍可成功退出，正常案例中的额外 warning/error 则失败。DLL 验收只证明稳定宿主的拥有型边界与真实卸载，不保证所有解码都发生在卸载之后，也不扩大为任意 JIT/DLL formatter 安全。原生静态格式宽度展开的瞬时内存仍由 Quill/fmt 分配，不承诺严格临时峰值；文件系统 I/O、flush 与 finish 无硬超时或崩溃保证。所有未知后台 notice 继续作为健康不确定性保留。

@@ -94,11 +94,11 @@ void roundtrip(const fs::path& root) {
     // Keep the next two physical lines adjacent: source_location must match __LINE__ + 1.
     // clang-format off
     const auto native_line = __LINE__ + 1;
-    const auto native = ATELIER_LOG_WITH(log::Severity::error, "acceptance.cpu", "text.native", context, "native {} / {}", std::string_view{native_text}, 37);
+    const auto native = ATELIER_LOG_WITH(log::Severity::error, "acceptance.cpu", "text.native", context, "native {0} / {1:04d} / {2:.2f} / {{}}", std::string_view{native_text}, 37, 1.25);
     // clang-format on
     require(native.status == log::SubmitStatus::accepted && native.producer_sequence == 2,
             "Native format record was not admitted exactly after the owned record.");
-    const auto expected_native = std::string{"native "} + native_text + " / 37";
+    const auto expected_native = std::string{"native "} + native_text + " / 0037 / 1.25 / {}";
     native_text.assign(native_text.size(), 'z');
     fields[0].value = std::string{"destroyed"};
 
