@@ -29,6 +29,16 @@ using assets::json_format::preview;
 using detail::Failure;
 
 template <class T>
+Result<T> scene_result(json::Result<T> value) {
+    if (!value)
+        return std::unexpected(Error{ErrorCode::invalid_storage, value.error().describe()});
+    if constexpr (std::is_void_v<T>)
+        return {};
+    else
+        return std::move(*value);
+}
+
+template <class T>
 T take(Result<T> value) {
     if (!value)
         throw Failure(std::move(value.error()));
@@ -176,7 +186,7 @@ bool reference_value(json::Value value) {
 }
 
 template <class F>
-json::Result<void> each_reference(json::Value value, F&& visit) {
+auto each_reference(json::Value value, F&& visit) -> decltype(visit(value)) {
     if (reference_value(value)) {
         return visit(value);
     }
@@ -881,21 +891,23 @@ struct Session::GraphCodec {
         }
     };
 
-    static std::uint64_t identity(const Session& session, ObjectId object) {
+    static json::Result<std::uint64_t> identity(const Session& session, ObjectId object) {
         if (auto at = session.local_ids_.find(object); at != session.local_ids_.end())
             return at->second;
         // The editor allocates every identity; Play objects without one use runtime handles.
         if (session.play_)
-            throw std::runtime_error("A Play copy does not assign document identities.");
+            return std::unexpected(
+                json::Error{json::Fault::range, "A Play copy does not assign document identities.", {}, {}});
         if (session.next_local_id_ == std::numeric_limits<std::uint64_t>::max())
-            throw std::runtime_error("Document object identity space is exhausted.");
+            return std::unexpected(
+                json::Error{json::Fault::range, "Document object identity space is exhausted.", {}, {}});
         const auto id = session.next_local_id_++;
         session.local_ids_.emplace(object, id);
         return id;
     }
 
-    static json::Result<Graph> capture(const Session& session, std::span<const ObjectId> requested, bool persistent,
-                                       bool document = false, bool live = false) {
+    static Result<Graph> capture(const Session& session, std::span<const ObjectId> requested, bool persistent,
+                                 bool document = false, bool live = false) {
         struct IdentityRollback {
             const Session& session;
 
@@ -951,29 +963,35 @@ struct Session::GraphCodec {
             walk(walk, root);
         std::unordered_map<ObjectId, std::uint64_t> ids;
         for (auto object : nodes) {
-            ids.emplace(object, identity(session, object));
+            ATELIER_TRY_BIND(key, scene_result(identity(session, object)));
+            ids.emplace(object, *key);
             const auto parts = take(world::components(runtime, object));
             if (parts.size() > maximum_components)
                 throw std::runtime_error("Scene exceeds the Component limit.");
-            for (const auto& part : parts)
-                if (!ids.emplace(part.id(), identity(session, part.id())).second)
+            for (const auto& part : parts) {
+                ATELIER_TRY_BIND(part_key, scene_result(identity(session, part.id())));
+                if (!ids.emplace(part.id(), *part_key).second)
                     throw std::runtime_error("Component identity appears twice.");
+            }
         }
         json::Builder builder;
         const auto root = builder.root();
         const auto material_values = *builder.array(root, "materials");
-        const auto reference = [&](ObjectId object) -> json::Document {
+        const auto reference = [&](ObjectId object) -> Result<json::Document> {
             if (object == ObjectId{})
                 return json::Builder(json::Kind::null).finish();
             take(runtime.type_of(object));
             if (auto at = ids.find(object); at != ids.end())
                 return ref_key(at->second);
-            if (live)
-                return ref_key(identity(session, object));
+            if (live) {
+                ATELIER_TRY_BIND(key, scene_result(identity(session, object)));
+                return ref_key(*key);
+            }
             if (persistent)
                 throw std::runtime_error(
                     "Object reference leaves the captured graph; supply an explicit binding or include its target.");
-            const auto key = std::to_string(identity(session, object));
+            ATELIER_TRY_BIND(id, scene_result(identity(session, object)));
+            const auto key = std::to_string(*id);
             if (!graph.external.contains(key))
                 graph.external.emplace(key, take(runtime.hold(object)));
             json::Builder external;
@@ -994,15 +1012,15 @@ struct Session::GraphCodec {
             const auto component = world::inspect_component(runtime, object);
             return component && component->valid && members.contains(component->owner);
         };
-        std::function<json::Result<std::uint64_t>(ObjectId)> archive_material;
-        const auto restore_references = [&](std::string_view text) -> json::Result<json::Builder> {
-            ATELIER_TRY_BIND(parsed, json::Document::parse(text, {std::numeric_limits<std::size_t>::max(),
-                                                                  json::DepthPolicy::containers, true}));
+        std::function<Result<std::uint64_t>(ObjectId)> archive_material;
+        const auto restore_references = [&](std::string_view text) -> Result<json::Builder> {
+            ATELIER_TRY_BIND(parsed, scene_result(json::Document::parse(text, {std::numeric_limits<std::size_t>::max(),
+                                                                               json::DepthPolicy::containers, true})));
             json::Builder value(*parsed);
-            const auto restored = each_reference(value.root(), [&](json::Value node) -> json::Result<void> {
+            const auto restored = each_reference(value.root(), [&](json::Value node) -> Result<void> {
                 ObjectId object;
                 if (const auto at = *node.find("$ref")) {
-                    ATELIER_TRY_BIND(key, local_key(*at));
+                    ATELIER_TRY_BIND(key, scene_result(local_key(*at)));
                     if (const auto found = by_key.find(*key); found != by_key.end())
                         object = found->second;
                 }
@@ -1014,14 +1032,14 @@ struct Session::GraphCodec {
                 if (session.is_material(object)) {
                     ATELIER_TRY(archive_material(object));
                 }
-                const auto saved = reference(object);
-                value.replace(node, saved.root());
+                ATELIER_TRY_BIND(saved, reference(object));
+                value.replace(node, saved->root());
                 return {};
             });
             ATELIER_TRY(restored);
             return value;
         };
-        const auto merge_retained = [&](json::Value value, ObjectId object) -> json::Result<void> {
+        const auto merge_retained = [&](json::Value value, ObjectId object) -> Result<void> {
             const auto at = session.retained_.find(object);
             if (at == session.retained_.end())
                 return {};
@@ -1041,21 +1059,21 @@ struct Session::GraphCodec {
                 ATELIER_TRY_BIND(slots, restore_references(kept.slots));
                 const auto items = *entries->array();
                 for (auto entry : items) {
-                    ATELIER_TRY_BIND(slot, entry.string({"slot"}));
-                    ATELIER_TRY_BIND(extra, slots->root().find(*slot));
+                    ATELIER_TRY_BIND(slot, scene_result(entry.string({"slot"})));
+                    ATELIER_TRY_BIND(extra, scene_result(slots->root().find(*slot)));
                     if (*extra)
                         overlay(builder, entry, **extra);
                 }
             }
             return {};
         };
-        archive_material = [&](ObjectId object) -> json::Result<std::uint64_t> {
+        archive_material = [&](ObjectId object) -> Result<std::uint64_t> {
             if (auto at = ids.find(object); at != ids.end())
                 return at->second;
             const auto source = take(material::material_key(runtime, object));
-            const auto key = identity(session, object);
-            ids.emplace(object, key);
-            graph.materials.emplace(std::to_string(key), take(runtime.hold(object)));
+            ATELIER_TRY_BIND(key, scene_result(identity(session, object)));
+            ids.emplace(object, *key);
+            graph.materials.emplace(std::to_string(*key), take(runtime.hold(object)));
             if (source.empty()) {
                 const auto state = take(material::read_instance(runtime, object));
                 const auto parent = session.scene_material_parents_.find(object);
@@ -1066,11 +1084,11 @@ struct Session::GraphCodec {
                 }
             }
             const auto value = builder.append_object(material_values);
-            ATELIER_TRY(material_definition(session, object, key, builder, value));
+            ATELIER_TRY(scene_result(material_definition(session, object, *key, builder, value)));
             ATELIER_TRY(merge_retained(value, object));
-            return key;
+            return *key;
         };
-        const auto encoded = [&]() -> json::Result<void> {
+        const auto encoded = [&]() -> Result<void> {
             for (auto object : nodes)
                 for (const auto& part : take(world::components(runtime, object)))
                     if (derives(runtime, take(runtime.type_of(part.id())),
@@ -1084,15 +1102,15 @@ struct Session::GraphCodec {
                         ATELIER_TRY(archive_material(material.id()));
                     }
             const auto properties = [&](ObjectId object, TypeId type) {
-                return take(encode_properties(
-                    runtime, object, business_fields(runtime, session.types_, session.presentation_types_, type),
-                    reference));
+                return encode_properties(runtime, object,
+                                         business_fields(runtime, session.types_, session.presentation_types_, type),
+                                         reference);
             };
             const auto values = *builder.array(root, "entities");
             const auto root_keys = *builder.array(root, "roots");
             for (auto object : roots) {
                 const auto key = std::to_string(ids.at(object));
-                ATELIER_TRY(builder.append(root_keys, key));
+                ATELIER_TRY(scene_result(builder.append(root_keys, key)));
                 graph.parents.emplace(key, take(world::parent_entity(runtime, object)));
             }
             for (auto object : nodes) {
@@ -1100,24 +1118,24 @@ struct Session::GraphCodec {
                 const auto entity = builder.append_object(values);
                 if (take(world::has_transform(runtime, object))) {
                     const auto space = builder.object_validated(entity, "space");
-                    ATELIER_TRY(trs_json(builder, space, take(world::read_transform(runtime, object))));
+                    ATELIER_TRY(scene_result(trs_json(builder, space, take(world::read_transform(runtime, object)))));
                     const auto origin = take(world::space_reference(runtime, object));
                     if (origin) {
                         if (*origin == ObjectId{})
                             builder.set_validated(space, "origin", "0");
                         else {
-                            const auto ref = reference(*origin);
-                            const auto local = *ref.root().find("$ref");
-                            builder.set_validated(space, "origin", local ? *local : ref.root());
+                            ATELIER_TRY_BIND(ref, reference(*origin));
+                            const auto local = *ref->root().find("$ref");
+                            builder.set_validated(space, "origin", local ? *local : ref->root());
                         }
                     }
                 } else {
-                    ATELIER_TRY(builder.set_null(entity, "space"));
+                    ATELIER_TRY(scene_result(builder.set_null(entity, "space")));
                 }
                 const auto children = *builder.array(entity, "children");
                 const auto parts = *builder.array(entity, "components");
                 for (const auto& child : take(world::children(runtime, object))) {
-                    ATELIER_TRY(builder.append(children, std::to_string(ids.at(child.id()))));
+                    ATELIER_TRY(scene_result(builder.append(children, std::to_string(ids.at(child.id())))));
                 }
                 for (const auto& part : take(world::components(runtime, object))) {
                     const auto state = take(world::inspect_component(runtime, part.id()));
@@ -1132,14 +1150,15 @@ struct Session::GraphCodec {
                     auto type = type_name(runtime, state.type);
                     auto name = platform::utf16_to_utf8(session.name(part.id()));
                     if (!name)
-                        return std::unexpected(root.error(json::Fault::encoding, "Invalid UTF-16 text."));
+                        return scene_result(json::Result<void>{
+                            std::unexpected(root.error(json::Fault::encoding, "Invalid UTF-16 text."))});
                     const auto value = builder.append_object(parts);
                     builder.set_validated(value, "id", key);
-                    ATELIER_TRY(builder.set(value, "type", type));
+                    ATELIER_TRY(scene_result(builder.set(value, "type", type)));
                     builder.set_validated(value, "name", *name);
-                    ATELIER_TRY(builder.set(value, "enabled", state.enabled));
-                    const auto record = properties(part.id(), state.type);
-                    builder.set_validated(value, "properties", record.root());
+                    ATELIER_TRY(scene_result(builder.set(value, "enabled", state.enabled)));
+                    ATELIER_TRY_BIND(record, properties(part.id(), state.type));
+                    builder.set_validated(value, "properties", record->root());
                     if (derives(runtime, state.type, session.presentation_types_.static_mesh_component)) {
                         auto mesh = take(presentation::read_static_mesh(runtime, part.id()));
                         if (persistent && mesh.mesh.resolved && mesh.mesh.source.empty())
@@ -1147,18 +1166,18 @@ struct Session::GraphCodec {
                                 "A procedural mesh has no persistent source; save/import it before archiving.");
                         auto bindings = take(presentation::read_material_bindings(runtime, part.id()));
                         graph.meshes.emplace(key, MeshCopy{mesh, bindings});
-                        ATELIER_TRY(builder.set(value, "mesh", mesh.mesh.source));
+                        ATELIER_TRY(scene_result(builder.set(value, "mesh", mesh.mesh.source)));
                         const auto entries = *builder.array(value, "materials");
                         for (const auto& binding : bindings) {
                             const auto entry = builder.append_object(entries);
-                            ATELIER_TRY(builder.set(entry, "slot", binding.slot));
+                            ATELIER_TRY(scene_result(builder.set(entry, "slot", binding.slot)));
                             builder.set_validated(entry, "resource", std::to_string(ids.at(binding.resource.id())));
-                            ATELIER_TRY(builder.set(entry, "overridden", binding.overridden));
+                            ATELIER_TRY(scene_result(builder.set(entry, "overridden", binding.overridden)));
                         }
                     }
                     if (derives(runtime, state.type, session.presentation_types_.environment_component)) {
                         auto sky = take(presentation::read_sky_map(runtime, part.id()));
-                        ATELIER_TRY(builder.set(value, "sky_map", sky.source));
+                        ATELIER_TRY(scene_result(builder.set(value, "sky_map", sky.source)));
                         graph.skies.emplace(key, std::move(sky));
                     }
                     ATELIER_TRY(merge_retained(value, part.id()));
@@ -1170,18 +1189,19 @@ struct Session::GraphCodec {
                 else {
                     auto converted = platform::utf16_to_utf8(label);
                     if (!converted)
-                        return std::unexpected(root.error(json::Fault::encoding, "Invalid UTF-16 text."));
+                        return scene_result(json::Result<void>{
+                            std::unexpected(root.error(json::Fault::encoding, "Invalid UTF-16 text."))});
                     name = std::move(*converted);
                 }
                 builder.set_validated(entity, "id", std::to_string(ids.at(object)));
-                ATELIER_TRY(builder.set(entity, "type", type_name(runtime, status.type)));
-                ATELIER_TRY(builder.set(entity, "name", name));
-                ATELIER_TRY(builder.set(entity, "enabled", status.enabled));
-                const auto record = properties(object, status.type);
-                builder.set_validated(entity, "properties", record.root());
+                ATELIER_TRY(scene_result(builder.set(entity, "type", type_name(runtime, status.type))));
+                ATELIER_TRY(scene_result(builder.set(entity, "name", name)));
+                ATELIER_TRY(scene_result(builder.set(entity, "enabled", status.enabled)));
+                ATELIER_TRY_BIND(record, properties(object, status.type));
+                builder.set_validated(entity, "properties", record->root());
                 ATELIER_TRY(merge_retained(entity, object));
             }
-            ATELIER_TRY(builder.set(root, "version", std::uint32_t{10}));
+            ATELIER_TRY(scene_result(builder.set(root, "version", std::uint32_t{10})));
             builder.set_validated(root, "next_id", std::to_string(session.next_local_id_));
             if (document && !session.retained_document_.record.empty()) {
                 ATELIER_TRY_BIND(kept, restore_references(session.retained_document_.record));
@@ -1208,7 +1228,8 @@ struct Session::GraphCodec {
             if (authored == session.scene_material_parents_.end())
                 throw std::runtime_error("Scene instance has no author parent identity.");
             if (authored->second.empty()) {
-                const auto parent = ref_key(identity(session, state.parent.id()));
+                ATELIER_TRY_BIND(parent_key, identity(session, state.parent.id()));
+                const auto parent = ref_key(*parent_key);
                 builder.set_validated(value, "parent", parent.root());
             } else {
                 ATELIER_TRY(builder.set(value, "parent", authored->second));
@@ -1226,7 +1247,8 @@ struct Session::GraphCodec {
         if (!seen.insert(object).second)
             return {};
         json::Builder value;
-        ATELIER_TRY(material_definition(session, object, identity(session, object), value, value.root()));
+        ATELIER_TRY_BIND(key, identity(session, object));
+        ATELIER_TRY(material_definition(session, object, *key, value, value.root()));
         if (const auto parent = *value.root().find("parent"); parent && reference_value(*parent)) {
             ATELIER_TRY(material_definitions(
                 session, take(material::read_instance(session.world_.runtime(), object)).parent.id(), builder, values,
@@ -1237,8 +1259,8 @@ struct Session::GraphCodec {
     }
 
     // The graph of an attach change: the Entity record lists only these components.
-    static json::Result<json::Document> live_components(const Session& session, ObjectId entity,
-                                                        std::span<const ObjectId> components) {
+    static Result<json::Document> live_components(const Session& session, ObjectId entity,
+                                                  std::span<const ObjectId> components) {
         for (const auto component : components)
             if (take(world::inspect_component(session.world_.runtime(), component)).owner != entity)
                 throw std::runtime_error("The Component does not belong to the Entity.");
@@ -1270,13 +1292,13 @@ struct Session::GraphCodec {
                 if (const auto at = *part.find("materials")) {
                     if (at->kind() == json::Kind::object) {
                         for (const auto& [key, entry] : *at->object_items()) {
-                            ATELIER_TRY_BIND(resource, entry.string({"resource"}));
+                            ATELIER_TRY_BIND(resource, scene_result(entry.string({"resource"})));
                             used.emplace(*resource);
                         }
                     } else if (!at->is_null()) {
-                        ATELIER_TRY_BIND(entries, at->array());
+                        ATELIER_TRY_BIND(entries, scene_result(at->array()));
                         for (auto entry : *entries) {
-                            ATELIER_TRY_BIND(resource, entry.string({"resource"}));
+                            ATELIER_TRY_BIND(resource, scene_result(entry.string({"resource"})));
                             used.emplace(*resource);
                         }
                     }
@@ -1286,7 +1308,7 @@ struct Session::GraphCodec {
                         used.emplace(*at->string());
                     return {};
                 });
-                ATELIER_TRY(refs);
+                ATELIER_TRY(scene_result(refs));
                 builder.append(parts, part);
             }
         }
@@ -1322,8 +1344,9 @@ struct Session::GraphCodec {
             {std::move(key), {{bytes.data(), bytes.size()}, std::move(texture), std::move(mesh)}});
     }
 
-    static std::string live_id(const Session& session, ObjectId object) {
-        return std::to_string(identity(session, object));
+    static json::Result<std::string> live_id(const Session& session, ObjectId object) {
+        ATELIER_TRY_BIND(key, identity(session, object));
+        return std::to_string(*key);
     }
 
     // The final position among the parent's children, or among the roots.
@@ -1345,12 +1368,17 @@ struct Session::GraphCodec {
         throw std::runtime_error("The Entity is missing from its parent's list.");
     }
 
-    static json::Document live_origin(Session& session, ObjectId entity) {
+    static json::Result<json::Document> live_origin(Session& session, ObjectId entity) {
         const auto origin = take(world::space_reference(session.runtime_, entity));
         if (!origin)
             return json::Builder(json::Kind::null).finish();
         json::Builder builder;
-        builder.set_validated(builder.root(), *origin == ObjectId{} ? "0" : live_id(session, *origin));
+        std::string key = "0";
+        if (*origin != ObjectId{}) {
+            ATELIER_TRY_BIND(id, live_id(session, *origin));
+            key = std::move(*id);
+        }
+        builder.set_validated(builder.root(), key);
         return builder.finish();
     }
 
@@ -1359,8 +1387,8 @@ struct Session::GraphCodec {
             return json::Builder(json::Kind::null).finish();
         json::Builder space;
         ATELIER_TRY(trs_json(space, space.root(), take(world::read_transform(session.runtime_, entity))));
-        const auto origin = live_origin(session, entity);
-        space.set_validated(space.root(), "origin", origin.root());
+        ATELIER_TRY_BIND(origin, live_origin(session, entity));
+        space.set_validated(space.root(), "origin", origin->root());
         return space.finish();
     }
 
@@ -1393,11 +1421,11 @@ struct Session::GraphCodec {
         json::Builder op;
         const auto root = op.root();
         op.set_validated(root, "op", "set");
-        const auto id = live_id(session, object);
-        op.set_validated(root, "id", id);
+        ATELIER_TRY_BIND(id, live_id(session, object));
+        op.set_validated(root, "id", *id);
         const auto properties = op.object_validated(root, "properties");
         if (key)
-            *key = "field " + id;
+            *key = "field " + *id;
         for (const auto& path : paths) {
             const auto field =
                 std::ranges::find_if(fields, [&](const auto& item) { return std::ranges::equal(item.path, path); });
@@ -1408,8 +1436,11 @@ struct Session::GraphCodec {
             const auto at = op.object_path_validated(properties, field->names);
             if (field->form == ValueForm::strong_reference || field->form == ValueForm::weak_reference) {
                 const auto reference = take(runtime.read_reference(object, path));
-                const auto saved = reference.is_null() ? json::Builder(json::Kind::null).finish()
-                                                       : ref_key(identity(session, reference.id()));
+                json::Document saved = json::Builder(json::Kind::null).finish();
+                if (!reference.is_null()) {
+                    ATELIER_TRY_BIND(id, identity(session, reference.id()));
+                    saved = ref_key(*id);
+                }
                 op.replace(at, saved.root());
             } else {
                 ATELIER_TRY(encode_scalar(runtime, op, at, take(runtime.read(object, path))));
@@ -1425,7 +1456,8 @@ struct Session::GraphCodec {
         json::Builder op;
         const auto root = op.root();
         op.set_validated(root, "op", "set");
-        op.set_validated(root, "id", live_id(session, component));
+        ATELIER_TRY_BIND(id, live_id(session, component));
+        op.set_validated(root, "id", *id);
         const auto properties = op.object_validated(root, "properties");
         const auto body = op.object_validated(properties, "body");
         for (const auto& field :
@@ -1642,7 +1674,7 @@ struct Session::GraphCodec {
             if (keep_ids)
                 session.local_ids_.emplace(object, key);
             else
-                (void)identity(session, object);
+                ATELIER_TRY(identity(session, object));
             load.owners.emplace(object, entity ? object : owner);
             load.types.emplace(object, name);
             load.keys.emplace(object, key);
@@ -1833,7 +1865,7 @@ struct Session::GraphCodec {
                 if (!session.local_ids_.emplace(resource.id(), key).second)
                     throw std::runtime_error("One material asset has multiple document identities.");
             } else if (!keep_ids)
-                (void)identity(session, resource.id());
+                ATELIER_TRY(identity(session, resource.id()));
             load.types.emplace(resource.id(), type_name(runtime, take(runtime.type_of(resource.id()))));
             load.keys.emplace(resource.id(), key);
             report_missing(resource.id(), {}, definition, missing);
@@ -2104,7 +2136,8 @@ struct Session::GraphCodec {
                     throw std::runtime_error("Material binding references an unknown scene resource.");
                 used_materials.insert(key);
                 held.push_back(found->second);
-                kept.set_validated(**at, std::to_string(identity(session, found->second.id())));
+                ATELIER_TRY_BIND(id, identity(session, found->second.id()));
+                kept.set_validated(**at, std::to_string(*id));
             }
             load.store(object, std::array{std::string("materials")}, kept.root());
             return {};
@@ -2367,7 +2400,8 @@ struct Session::GraphCodec {
                                 throw std::runtime_error("External object references cannot be loaded from a file.");
                             target = found->second.id();
                         }
-                        const auto reference = ref_key(identity(session, target));
+                        ATELIER_TRY_BIND(id, identity(session, target));
+                        const auto reference = ref_key(*id);
                         entry.replace(node, reference.root());
                         return {};
                     });
@@ -3014,9 +3048,7 @@ Result<std::string> Session::serialize() const {
         for (const auto& member : take(world_.members()))
             if (take(world::parent_entity(world_.runtime(), member.id())) == ObjectId{})
                 roots.push_back(member.id());
-        const auto graph = GraphCodec::capture(*this, roots, true, true);
-        if (!graph)
-            return std::unexpected(Error{ErrorCode::invalid_storage, graph.error().describe()});
+        ATELIER_TRY_BIND(graph, GraphCodec::capture(*this, roots, true, true));
         const auto text = json::write(graph->data.root(), {true, true});
         if (text.size() > assets::json_format::maximum_bytes)
             throw std::runtime_error("Scene exceeds the 16 MiB file limit.");
@@ -3030,9 +3062,7 @@ Result<std::string> Session::serialize_subtree(ObjectId root) const {
     try {
         if (editing())
             throw std::runtime_error("Finish the active edit before saving a composition.");
-        const auto graph = GraphCodec::capture(*this, {&root, 1}, true);
-        if (!graph)
-            return std::unexpected(Error{ErrorCode::invalid_storage, graph.error().describe()});
+        ATELIER_TRY_BIND(graph, GraphCodec::capture(*this, {&root, 1}, true));
         const auto text = json::write(graph->data.root(), {true, true});
         if (text.size() > assets::json_format::maximum_bytes)
             throw std::runtime_error("Composition exceeds the 16 MiB file limit.");
@@ -3044,9 +3074,7 @@ Result<std::string> Session::serialize_subtree(ObjectId root) const {
 
 Result<std::string> Session::serialize_live_subtree(ObjectId root) const {
     try {
-        const auto graph = GraphCodec::capture(*this, {&root, 1}, true, false, true);
-        if (!graph)
-            return std::unexpected(Error{ErrorCode::invalid_storage, graph.error().describe()});
+        ATELIER_TRY_BIND(graph, GraphCodec::capture(*this, {&root, 1}, true, false, true));
         const auto text = json::write(graph->data.root());
         if (text.size() > assets::json_format::maximum_bytes)
             throw std::runtime_error("The Entity exceeds the 16 MiB change limit.");
@@ -3058,9 +3086,7 @@ Result<std::string> Session::serialize_live_subtree(ObjectId root) const {
 
 Result<std::string> Session::serialize_live_components(ObjectId entity, std::span<const ObjectId> components) const {
     try {
-        const auto graph = GraphCodec::live_components(*this, entity, components);
-        if (!graph)
-            return std::unexpected(Error{ErrorCode::invalid_storage, graph.error().describe()});
+        ATELIER_TRY_BIND(graph, GraphCodec::live_components(*this, entity, components));
         const auto text = json::write(graph->root());
         if (text.size() > assets::json_format::maximum_bytes)
             throw std::runtime_error("The Components exceed the 16 MiB change limit.");
@@ -3093,36 +3119,38 @@ void Session::forward_change(const Change& change, bool forward) {
         return;
     using C = GraphCodec;
     const auto push = [&](json::Value op) { C::live_push(*this, {}, op); };
-    const auto set = [&](ObjectId object, const char* name, const auto& value) -> json::Result<void> {
+    const auto set = [&](ObjectId object, const char* name, const auto& value) -> Result<void> {
         json::Builder op;
         op.set_validated(op.root(), "op", "set");
-        op.set_validated(op.root(), "id", C::live_id(*this, object));
-        ATELIER_TRY(op.set(op.root(), name, value));
+        ATELIER_TRY_BIND(id, scene_result(C::live_id(*this, object)));
+        op.set_validated(op.root(), "id", *id);
+        ATELIER_TRY(scene_result(op.set(op.root(), name, value)));
         push(op.root());
         return {};
     };
     // A commit also sends every leaf its previews sent, including leaves that returned to their start.
-    const auto leaves = [&](ObjectId entity, const world::Trs& before, const world::Trs& after) -> json::Result<void> {
+    const auto leaves = [&](ObjectId entity, const world::Trs& before, const world::Trs& after) -> Result<void> {
         auto mask = C::leaf_mask(before, after);
         if (const auto at = live_leaves_.find(entity); at != live_leaves_.end()) {
             mask |= at->second;
             live_leaves_.erase(at);
         }
         if (mask) {
-            ATELIER_TRY_BIND(space, C::space_leaves(take(world::read_transform(runtime_, entity)), mask));
+            ATELIER_TRY_BIND(space, scene_result(C::space_leaves(take(world::read_transform(runtime_, entity)), mask)));
             ATELIER_TRY(set(entity, "space", space->root()));
         }
         return {};
     };
     try {
         auto result = std::visit(
-            [&](const auto& item) -> json::Result<void> {
+            [&](const auto& item) -> Result<void> {
                 using T = std::decay_t<decltype(item)>;
                 if constexpr (std::is_same_v<T, EntityChange>) {
-                    const auto camera = [&]() -> json::Result<void> {
+                    const auto camera = [&]() -> Result<void> {
                         if (item.cleared_camera) {
                             const auto& edit = *item.cleared_camera;
-                            ATELIER_TRY_BIND(op, C::live_properties(*this, edit.root.id(), {&edit.path, 1}));
+                            ATELIER_TRY_BIND(op,
+                                             scene_result(C::live_properties(*this, edit.root.id(), {&edit.path, 1})));
                             push(op->root());
                         }
                         return {};
@@ -3132,7 +3160,8 @@ void Session::forward_change(const Change& change, bool forward) {
                         for (const auto& removal : item.removals) {
                             json::Builder op;
                             op.set_validated(op.root(), "op", "remove");
-                            op.set_validated(op.root(), "id", C::live_id(*this, removal.id()));
+                            ATELIER_TRY_BIND(id, scene_result(C::live_id(*this, removal.id())));
+                            op.set_validated(op.root(), "id", *id);
                             push(op.root());
                         }
                         return {};
@@ -3158,39 +3187,47 @@ void Session::forward_change(const Change& change, bool forward) {
                         // This transaction restores its camera reference after all roots.
                         // An earlier Environment add must not refer to the still-missing target.
                         if (item.cleared_camera) {
-                            const auto component = C::live_id(*this, item.cleared_camera->root.id());
+                            ATELIER_TRY_BIND(component,
+                                             scene_result(C::live_id(*this, item.cleared_camera->root.id())));
                             for (auto entity : entities) {
                                 const auto components = *entity.at("components")->array();
                                 for (auto part : components)
-                                    if (*part.string({"id"}) == component) {
-                                        ATELIER_TRY_BIND(properties, part.at("properties"));
-                                        ATELIER_TRY(graph.set_null(*properties, "main_camera"));
+                                    if (*part.string({"id"}) == *component) {
+                                        ATELIER_TRY_BIND(properties, scene_result(part.at("properties")));
+                                        ATELIER_TRY(scene_result(graph.set_null(*properties, "main_camera")));
                                     }
                             }
                         }
                         json::Builder op;
                         op.set_validated(op.root(), "op", "add");
                         if (parent == ObjectId{})
-                            ATELIER_TRY(op.set_null(op.root(), "parent"));
-                        else
-                            op.set_validated(op.root(), "parent", C::live_id(*this, parent));
-                        ATELIER_TRY(op.set(op.root(), "index", std::uint64_t(index)));
+                            ATELIER_TRY(scene_result(op.set_null(op.root(), "parent")));
+                        else {
+                            ATELIER_TRY_BIND(id, scene_result(C::live_id(*this, parent)));
+                            op.set_validated(op.root(), "parent", *id);
+                        }
+                        ATELIER_TRY(scene_result(op.set(op.root(), "index", std::uint64_t(index))));
                         op.set_validated(op.root(), "graph", graph.root());
-                        adds.push_back({parent == ObjectId{} ? 0 : C::identity(*this, parent), index, std::move(op)});
+                        std::uint64_t parent_key{};
+                        if (parent != ObjectId{}) {
+                            ATELIER_TRY_BIND(id, scene_result(C::identity(*this, parent)));
+                            parent_key = *id;
+                        }
+                        adds.push_back({parent_key, index, std::move(op)});
                     }
                     // Import and Redo also own references inside their incoming forest.
                     // Defer only main_camera across its roots; never resend an existing
                     // Environment or pull a target outside this batch back into Play.
                     std::optional<json::Builder> imported_camera;
                     if (const auto env = environment(); env != ObjectId{}) {
-                        const auto component = C::live_id(*this, env);
+                        ATELIER_TRY_BIND(component, scene_result(C::live_id(*this, env)));
                         for (std::size_t i = 0; i < adds.size(); ++i) {
                             auto& op = adds[i].op;
                             const auto entities = *op.root().path({"graph", "entities"})->array();
                             for (auto entity : entities) {
                                 const auto components = *entity.at("components")->array();
                                 for (auto part : components)
-                                    if (*part.string({"id"}) == component) {
+                                    if (*part.string({"id"}) == *component) {
                                         const auto properties = *part.at("properties");
                                         if (properties.kind() != json::Kind::object)
                                             continue; // A retained malformed record may replace properties.
@@ -3203,11 +3240,11 @@ void Session::forward_change(const Change& change, bool forward) {
                                                 imported_camera.emplace();
                                                 auto& deferred = *imported_camera;
                                                 deferred.set_validated(deferred.root(), "op", "set");
-                                                deferred.set_validated(deferred.root(), "id", component);
+                                                deferred.set_validated(deferred.root(), "id", *component);
                                                 const auto props =
                                                     deferred.object_validated(deferred.root(), "properties");
                                                 deferred.set_validated(props, "main_camera", *reference);
-                                                ATELIER_TRY(op.set_null(properties, "main_camera"));
+                                                ATELIER_TRY(scene_result(op.set_null(properties, "main_camera")));
                                             }
                                     }
                             }
@@ -3224,7 +3261,7 @@ void Session::forward_change(const Change& change, bool forward) {
                     const auto component = item.removal.id();
                     if (item.added == forward) {
                         if (item.created_transform) {
-                            ATELIER_TRY_BIND(space, C::live_space(*this, owner));
+                            ATELIER_TRY_BIND(space, scene_result(C::live_space(*this, owner)));
                             ATELIER_TRY(set(owner, "space", space->root()));
                         }
                         std::size_t index{};
@@ -3233,18 +3270,19 @@ void Session::forward_change(const Change& change, bool forward) {
                                 break;
                             ++index;
                         }
-                        const auto entity = C::live_id(*this, owner);
+                        ATELIER_TRY_BIND(entity, scene_result(C::live_id(*this, owner)));
                         ATELIER_TRY_BIND(graph, C::live_components(*this, owner, {&component, 1}));
                         json::Builder op;
                         op.set_validated(op.root(), "op", "attach");
-                        op.set_validated(op.root(), "entity", entity);
-                        ATELIER_TRY(op.set(op.root(), "index", std::uint64_t(index)));
+                        op.set_validated(op.root(), "entity", *entity);
+                        ATELIER_TRY(scene_result(op.set(op.root(), "index", std::uint64_t(index))));
                         op.set_validated(op.root(), "graph", graph->root());
                         push(op.root());
                     } else {
                         json::Builder op;
                         op.set_validated(op.root(), "op", "remove");
-                        op.set_validated(op.root(), "id", C::live_id(*this, component));
+                        ATELIER_TRY_BIND(id, scene_result(C::live_id(*this, component)));
+                        op.set_validated(op.root(), "id", *id);
                         push(op.root());
                         if (item.created_transform) {
                             const json::Builder null(json::Kind::null);
@@ -3255,14 +3293,14 @@ void Session::forward_change(const Change& change, bool forward) {
                     if (const auto* after = std::get_if<world::Trs>(&item.after))
                         ATELIER_TRY(leaves(item.root.id(), std::get<world::Trs>(item.before), *after));
                     else {
-                        ATELIER_TRY_BIND(op, C::live_properties(*this, item.root.id(), {&item.path, 1}));
+                        ATELIER_TRY_BIND(op, scene_result(C::live_properties(*this, item.root.id(), {&item.path, 1})));
                         push(op->root());
                     }
                 } else if constexpr (std::is_same_v<T, ReferenceFieldChange>) {
-                    ATELIER_TRY_BIND(op, C::live_properties(*this, item.root.id(), {&item.path, 1}));
+                    ATELIER_TRY_BIND(op, scene_result(C::live_properties(*this, item.root.id(), {&item.path, 1})));
                     push(op->root());
                 } else if constexpr (std::is_same_v<T, FieldGroupChange>) {
-                    ATELIER_TRY_BIND(op, C::live_properties(*this, item.root.id(), item.paths));
+                    ATELIER_TRY_BIND(op, scene_result(C::live_properties(*this, item.root.id(), item.paths)));
                     push(op->root());
                 } else if constexpr (std::is_same_v<T, TransformChange>) {
                     for (const auto& entry : item.entries)
@@ -3270,24 +3308,26 @@ void Session::forward_change(const Change& change, bool forward) {
                 } else if constexpr (std::is_same_v<T, NameChange>) {
                     auto text = platform::utf16_to_utf8(name(item.root.id()));
                     if (!text)
-                        return std::unexpected(json::Error{json::Fault::encoding, "Invalid UTF-16 text.", {}, {}});
+                        return scene_result(json::Result<void>{
+                            std::unexpected(json::Error{json::Fault::encoding, "Invalid UTF-16 text.", {}, {}})});
                     ATELIER_TRY(set(item.root.id(), "name", *text));
                 } else if constexpr (std::is_same_v<T, BodyChange>) {
-                    ATELIER_TRY_BIND(op, C::live_body(*this, item.root.id()));
+                    ATELIER_TRY_BIND(op, scene_result(C::live_body(*this, item.root.id())));
                     push(op->root());
                 } else if constexpr (std::is_same_v<T, TransformPresenceChange>) {
-                    ATELIER_TRY_BIND(space, C::live_space(*this, item.root.id()));
+                    ATELIER_TRY_BIND(space, scene_result(C::live_space(*this, item.root.id())));
                     ATELIER_TRY(set(item.root.id(), "space", space->root()));
                 } else if constexpr (std::is_same_v<T, SpaceReferenceChange>) {
                     const auto entity = item.root.id();
                     json::Builder space;
                     if (item.spatial) {
-                        ATELIER_TRY_BIND(value, C::space_leaves(take(world::read_transform(runtime_, entity)),
-                                                                C::leaf_mask(item.before, item.after)));
+                        ATELIER_TRY_BIND(value,
+                                         scene_result(C::space_leaves(take(world::read_transform(runtime_, entity)),
+                                                                      C::leaf_mask(item.before, item.after))));
                         space.replace(space.root(), value->root());
                     }
-                    const auto origin = C::live_origin(*this, entity);
-                    space.set_validated(space.root(), "origin", origin.root());
+                    ATELIER_TRY_BIND(origin, scene_result(C::live_origin(*this, entity)));
+                    space.set_validated(space.root(), "origin", origin->root());
                     ATELIER_TRY(set(entity, "space", space.root()));
                 } else if constexpr (std::is_same_v<T, ReparentChange>) {
                     for (std::size_t i = 0; i < item.moves.size(); ++i) {
@@ -3298,23 +3338,28 @@ void Session::forward_change(const Change& change, bool forward) {
                             move.transforms, [&](const auto& entry) { return entry.root.id() == root; });
                         json::Builder op;
                         op.set_validated(op.root(), "op", "move");
-                        op.set_validated(op.root(), "id", C::live_id(*this, root));
+                        ATELIER_TRY_BIND(id, scene_result(C::live_id(*this, root)));
+                        op.set_validated(op.root(), "id", *id);
                         if (parent == ObjectId{})
-                            ATELIER_TRY(op.set_null(op.root(), "parent"));
-                        else
-                            op.set_validated(op.root(), "parent", C::live_id(*this, parent));
-                        ATELIER_TRY(
-                            op.set(op.root(), "index", std::uint64_t(forward ? move.after_index : move.before_index)));
+                            ATELIER_TRY(scene_result(op.set_null(op.root(), "parent")));
+                        else {
+                            ATELIER_TRY_BIND(parent_id, scene_result(C::live_id(*this, parent)));
+                            op.set_validated(op.root(), "parent", *parent_id);
+                        }
+                        ATELIER_TRY(scene_result(
+                            op.set(op.root(), "index", std::uint64_t(forward ? move.after_index : move.before_index))));
                         if (transform != move.transforms.end()) {
-                            ATELIER_TRY_BIND(space, C::space_leaves(forward ? transform->after : transform->before, 7));
+                            ATELIER_TRY_BIND(space, scene_result(C::space_leaves(
+                                                        forward ? transform->after : transform->before, 7)));
                             op.set_validated(op.root(), "space", space->root());
                         } else
-                            ATELIER_TRY(op.set_null(op.root(), "space"));
+                            ATELIER_TRY(scene_result(op.set_null(op.root(), "space")));
                         push(op.root());
                         for (const auto& entry : move.transforms)
                             if (entry.root.id() != root) {
-                                ATELIER_TRY_BIND(space, C::space_leaves(forward ? entry.after : entry.before,
-                                                                        C::leaf_mask(entry.before, entry.after)));
+                                ATELIER_TRY_BIND(
+                                    space, scene_result(C::space_leaves(forward ? entry.after : entry.before,
+                                                                        C::leaf_mask(entry.before, entry.after))));
                                 ATELIER_TRY(set(entry.root.id(), "space", space->root()));
                             }
                     }
@@ -3329,11 +3374,12 @@ void Session::forward_change(const Change& change, bool forward) {
                     std::unordered_set<ObjectId> defined;
                     for (const auto& binding : bindings) {
                         const auto resource = binding.resource.id();
-                        ATELIER_TRY(C::material_definitions(*this, resource, op, definitions, defined));
+                        ATELIER_TRY(scene_result(C::material_definitions(*this, resource, op, definitions, defined)));
                         const auto entry = table.append_object(table.root());
-                        ATELIER_TRY(table.set(entry, "slot", binding.slot));
-                        table.set_validated(entry, "resource", C::live_id(*this, resource));
-                        ATELIER_TRY(table.set(entry, "overridden", binding.overridden));
+                        ATELIER_TRY(scene_result(table.set(entry, "slot", binding.slot)));
+                        ATELIER_TRY_BIND(id, scene_result(C::live_id(*this, resource)));
+                        table.set_validated(entry, "resource", *id);
+                        ATELIER_TRY(scene_result(table.set(entry, "overridden", binding.overridden)));
                     }
                     if (definitions.size())
                         push(op.root());
@@ -3350,7 +3396,7 @@ void Session::forward_change(const Change& change, bool forward) {
             },
             change);
         if (!result)
-            live_failure_ = Error{ErrorCode::invalid_storage, result.error().describe()};
+            live_failure_ = std::move(result.error());
     } catch (const std::exception& error) {
         live_failure_ = failed(error).error();
     }
@@ -3377,17 +3423,17 @@ void Session::forward_material(ObjectId object) {
                 }
                 GraphCodec::live_push(*this, "resource " + asset_key, op.root());
             } else {
-                const auto key = GraphCodec::identity(*this, object);
+                ATELIER_TRY_BIND(key, GraphCodec::identity(*this, object));
                 op.set_validated(op.root(), "op", "materials");
                 const auto definitions = *op.array(op.root(), "materials");
                 std::unordered_set<ObjectId> defined;
                 ATELIER_TRY(GraphCodec::material_definitions(*this, object, op, definitions, defined));
-                GraphCodec::live_push(*this, "material " + std::to_string(key), op.root());
+                GraphCodec::live_push(*this, "material " + std::to_string(*key), op.root());
             }
             return {};
         }();
-        if (!encoded)
-            live_failure_ = Error{ErrorCode::invalid_storage, encoded.error().describe()};
+        if (auto result = scene_result(encoded); !result)
+            live_failure_ = std::move(result.error());
     } catch (const std::exception& error) {
         live_failure_ = failed(error).error();
     }
@@ -3535,8 +3581,8 @@ Result<void> Session::publish_mesh(assets::Reader& reader, const assets::MeshAss
                     for (const auto& binding : bindings) {
                         const auto entry = record.append_object(table);
                         ATELIER_TRY(record.set(entry, "slot", binding.slot));
-                        record.set_validated(entry, "resource",
-                                             std::to_string(GraphCodec::identity(*this, binding.resource.id())));
+                        ATELIER_TRY_BIND(id, GraphCodec::identity(*this, binding.resource.id()));
+                        record.set_validated(entry, "resource", std::to_string(*id));
                         ATELIER_TRY(record.set(entry, "overridden", binding.overridden));
                         kept.materials.push_back(binding.resource);
                     }
@@ -3545,9 +3591,8 @@ Result<void> Session::publish_mesh(assets::Reader& reader, const assets::MeshAss
                 kept.record = dump_retained(record.root());
                 return Replacement{object, std::move(active), std::move(kept)};
             }();
-            if (!changed)
-                return std::unexpected(Error{ErrorCode::invalid_storage, changed.error().describe()});
-            replacements.push_back(std::move(*changed));
+            ATELIER_TRY_BIND(replacement, scene_result(std::move(changed)));
+            replacements.push_back(std::move(*replacement));
         }
         take(reader.publish_mesh_content(asset));
         for (auto& replacement : replacements) {
@@ -3576,15 +3621,15 @@ void Session::forward_edit() {
         const auto current = take(world::read_transform(runtime_, entity));
         auto& sent = live_leaves_[entity];
         sent |= C::leaf_mask(before, current);
-        const auto id = C::live_id(*this, entity);
+        ATELIER_TRY_BIND(id, C::live_id(*this, entity));
         for (const unsigned leaf : {1u, 2u, 4u})
             if (sent & leaf) {
                 ATELIER_TRY_BIND(value, C::space_leaves(current, leaf));
                 json::Builder op;
                 op.set_validated(op.root(), "op", "set");
-                op.set_validated(op.root(), "id", id);
+                op.set_validated(op.root(), "id", *id);
                 op.set_validated(op.root(), "space", value->root());
-                C::live_push(*this, "space " + id + " " + std::to_string(leaf), op.root());
+                C::live_push(*this, "space " + *id + " " + std::to_string(leaf), op.root());
             }
         return {};
     };
@@ -3611,8 +3656,8 @@ void Session::forward_edit() {
             }
             return {};
         }();
-        if (!encoded)
-            live_failure_ = Error{ErrorCode::invalid_storage, encoded.error().describe()};
+        if (auto result = scene_result(encoded); !result)
+            live_failure_ = std::move(result.error());
     } catch (const std::exception& error) {
         live_failure_ = failed(error).error();
     }
@@ -3656,18 +3701,14 @@ Result<std::unique_ptr<Session>> Session::deserialize(std::string_view text, Pro
                                                       LoadPolicy policy, SessionRole role) {
     try {
         GraphCodec::Graph graph;
-        auto parsed = assets::json_format::parse(text);
-        if (!parsed)
-            return std::unexpected(Error{ErrorCode::invalid_storage, parsed.error().describe()});
+        ATELIER_TRY_BIND(parsed, scene_result(assets::json_format::parse(text)));
         graph.data = std::move(*parsed);
         auto session = std::make_unique<Session>();
         ATELIER_TRY(session->initialize(std::move(prepare), role));
         GraphCodec::Load load;
         load.policy = policy;
         load.document = true;
-        auto built = GraphCodec::construct(*session, graph, &project, true, load);
-        if (!built)
-            return std::unexpected(Error{ErrorCode::invalid_storage, built.error().describe()});
+        ATELIER_TRY_BIND(built, scene_result(GraphCodec::construct(*session, graph, &project, true, load)));
         auto& prepared = *built;
         for (const auto& [object, label] : prepared.labels)
             session->names_.emplace(object, label);
@@ -3698,14 +3739,10 @@ Result<world::Commit> Session::instantiate_subtree(std::string_view text, Projec
         if (parent != ObjectId{})
             take(admit_entity_edit(parent));
         GraphCodec::Graph graph;
-        auto parsed = assets::json_format::parse(text);
-        if (!parsed)
-            return std::unexpected(Error{ErrorCode::invalid_storage, parsed.error().describe()});
+        ATELIER_TRY_BIND(parsed, scene_result(assets::json_format::parse(text)));
         graph.data = std::move(*parsed);
         GraphCodec::Load load;
-        auto prepared = GraphCodec::construct(*this, graph, &project, false, load);
-        if (!prepared)
-            return std::unexpected(Error{ErrorCode::invalid_storage, prepared.error().describe()});
+        ATELIER_TRY_BIND(prepared, scene_result(GraphCodec::construct(*this, graph, &project, false, load)));
         if (prepared->roots.empty())
             return world::Commit{};
         return GraphCodec::publish(*this, *prepared, graph, parent, false, load);
@@ -3720,13 +3757,9 @@ Result<world::Commit> Session::duplicate_entities(std::span<const ObjectId> enti
             throw std::runtime_error("Finish the active edit before duplicating.");
         if (entities.empty())
             return world::Commit{};
-        const auto graph = GraphCodec::capture(*this, entities, false);
-        if (!graph)
-            return std::unexpected(Error{ErrorCode::invalid_storage, graph.error().describe()});
+        ATELIER_TRY_BIND(graph, GraphCodec::capture(*this, entities, false));
         GraphCodec::Load load;
-        auto built = GraphCodec::construct(*this, *graph, nullptr, false, load);
-        if (!built)
-            return std::unexpected(Error{ErrorCode::invalid_storage, built.error().describe()});
+        ATELIER_TRY_BIND(built, scene_result(GraphCodec::construct(*this, *graph, nullptr, false, load)));
         auto& prepared = *built;
         for (auto root : prepared.roots) {
             const auto original = prepared.labels.at(root);
