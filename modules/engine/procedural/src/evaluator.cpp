@@ -146,8 +146,6 @@ struct Evaluator::Impl {
 
     std::uint32_t seed{};
 
-    ObjectId display;
-
     Contents members;
 
     std::unordered_map<ObjectId, State> nodes;
@@ -688,12 +686,6 @@ struct Evaluator::Impl {
             dirty = true;
         }
         const auto& next_members = refreshed ? *refreshed : members;
-        for (const auto node : next_members.nodes())
-            dirty = dirty || !nodes.contains(node) || runtime.changed_since(node, *cursor);
-        if (!dirty) {
-            cursor = *now;
-            return {};
-        }
         // Stage only reread nodes; untouched states and their local strings stay in place.
         std::unordered_map<ObjectId, State> candidate;
         const bool membership_changed = refreshed && !std::ranges::equal(members.nodes(), refreshed->nodes());
@@ -701,6 +693,7 @@ struct Evaluator::Impl {
             const auto prior = nodes.find(node);
             const bool added = prior == nodes.end();
             const bool reread = added || !cursor || runtime.changed_since(node, *cursor);
+            dirty = dirty || reread;
             const bool stale_code =
                 republished && !added && prior->second.ports && prior->second.ports->evaluate == MethodId{};
             if (!reread && membership_changed)
@@ -708,10 +701,7 @@ struct Evaluator::Impl {
             if (!reread && !stale_code)
                 continue;
             auto& state = candidate.try_emplace(node).first->second;
-            if (reread) {
-                ATELIER_TRY_BIND(into, inputs(runtime, next_members, node));
-                state.inputs = std::move(*into);
-            } else {
+            if (!reread) {
                 state.type = prior->second.type;
                 state.ports = prior->second.ports;
                 state.inputs = prior->second.inputs;
@@ -724,6 +714,11 @@ struct Evaluator::Impl {
                 auto type = runtime.type_of(node);
                 if (!type) {
                     state.fault = type.error();
+                    if (!added) {
+                        state.inputs = prior->second.inputs;
+                        if (membership_changed)
+                            ATELIER_TRY(next_members.check(state.inputs));
+                    }
                     continue;
                 }
                 state.type = *type;
@@ -734,7 +729,13 @@ struct Evaluator::Impl {
                     state.ports = &*known->second;
                 else
                     state.fault = known->second.error();
+                ATELIER_TRY_BIND(into, inputs(runtime, next_members, node));
+                state.inputs = std::move(*into);
             }
+        }
+        if (!dirty && candidate.empty()) {
+            cursor = *now;
+            return {};
         }
         const auto current = [&](ObjectId node) -> const State& {
             const auto found = candidate.find(node);
@@ -771,7 +772,6 @@ struct Evaluator::Impl {
         }
         if (membership_changed)
             std::erase_if(nodes, [&](const auto& node) { return !next_members.contains(node.first); });
-        display = next_members.display();
         if (refreshed)
             members = std::move(*refreshed);
         seed = next_seed;
@@ -783,6 +783,7 @@ struct Evaluator::Impl {
         revision = resources.revision();
         for (const auto node : *sequence)
             update(node, nodes.at(node), record_timings);
+        const auto display = members.display();
         if (display == ObjectId{})
             published.reset();
         else if (const auto& shown = nodes.at(display); !shown.status.error && shown.entry)

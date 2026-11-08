@@ -288,6 +288,7 @@ Result<std::string> save_graph(Runtime& runtime, const GraphDocument& document) 
         !std::ranges::all_of(contents.nodes(), [&](ObjectId node) { return by_node.contains(node); }))
         return std::unexpected(
             Error{ErrorCode::argument_mismatch, "Every graph node needs exactly one document entry."});
+    // contents/inputs guarantee membership; the coverage above guarantees every by_node lookup below.
     const EncodeReference no_reference = [](ObjectId) -> Result<json::Document> {
         return std::unexpected(Error{ErrorCode::unsupported_operation, "Graph files keep no object references."});
     };
