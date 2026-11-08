@@ -5,6 +5,7 @@ struct EntityDirectionalLight : presentation::LightComponent {
 void verify_entity_composition() {
     {
         editor::Session grouped;
+        take(grouped.initialize());
         auto& runtime = grouped.world().runtime();
         const auto add = [&](float x) {
             changed(grouped.add_entity());
@@ -68,6 +69,7 @@ void verify_entity_composition() {
     }
     {
         editor::Session grouped;
+        take(grouped.initialize());
         auto& runtime = grouped.world().runtime();
         changed(grouped.add_entity());
         const auto parent = grouped.selection().entity;
@@ -114,7 +116,8 @@ void verify_entity_composition() {
         world::World* current{};
         bool armed{};
         bool cleanup_failed{};
-        editor::Session grouped([&](world::World& world) -> Result<std::shared_ptr<void>> {
+        editor::Session grouped;
+        take(grouped.initialize([&](world::World& world) -> Result<std::shared_ptr<void>> {
             current = &world;
             take(world.observe_lifecycle([&](world::World&, world::Lifecycle phase, ObjectId object) -> Result<void> {
                 if (armed && phase == world::Lifecycle::deactivated) {
@@ -128,7 +131,7 @@ void verify_entity_composition() {
                 return {};
             }));
             return std::shared_ptr<void>{};
-        });
+        }));
         auto& runtime = grouped.world().runtime();
         changed(grouped.add_entity());
         const auto disabled = grouped.selection().entity;
@@ -170,6 +173,7 @@ void verify_entity_composition() {
     }
     {
         editor::Session document;
+        take(document.initialize());
         auto& runtime = document.world().runtime();
         changed(document.add_entity());
         const auto parent = document.selection().entity;
@@ -246,6 +250,7 @@ void verify_entity_composition() {
     }
     {
         editor::Session inherited;
+        take(inherited.initialize());
         auto& rt = inherited.world().runtime();
         changed(inherited.add_entity());
         const auto parent = inherited.selection().entity;
@@ -315,7 +320,8 @@ void verify_entity_composition() {
     }
     {
         TypeId sky_type;
-        editor::Session sky([&](world::World& world) -> Result<std::shared_ptr<void>> {
+        editor::Session sky;
+        take(sky.initialize([&](world::World& world) -> Result<std::shared_ptr<void>> {
             TypeDefinition type;
             type.name = "acceptance.EntityDirectionalLight";
             type.base = TypeReference::native<presentation::LightComponent>();
@@ -335,7 +341,7 @@ void verify_entity_composition() {
                 return std::unexpected(registered.error());
             sky_type = *registered;
             return std::shared_ptr<void>{};
-        });
+        }));
         changed(sky.add_entity());
         const auto entity = sky.selection().entity;
         sky.mark_saved();
@@ -355,7 +361,8 @@ void verify_entity_composition() {
         require(sky.selection().object == light && take(world::has_transform(sky.world().runtime(), entity)),
                 "Derived spatial component Redo replaced identity or lost its space.");
     }
-    editor::Session document({}, editor::SessionRole::editor);
+    editor::Session document;
+    take(document.initialize({}, editor::SessionRole::editor));
     auto& runtime = document.world().runtime();
     changed(document.add_entity());
     const auto group = document.selection().entity;
@@ -457,6 +464,7 @@ void verify_entity_composition() {
             "Delete/collect/Undo did not restore recursive object identities.");
     {
         editor::Session affine;
+        take(affine.initialize());
         auto& rt = affine.world().runtime();
         changed(affine.add_entity());
         const auto parent = affine.selection().entity;
@@ -483,6 +491,7 @@ void verify_entity_composition() {
     }
     {
         editor::Session optional_space;
+        take(optional_space.initialize());
         auto& rt = optional_space.world().runtime();
         changed(optional_space.add_entity());
         const auto origin = optional_space.selection().entity;
@@ -513,6 +522,7 @@ void verify_entity_composition() {
     }
     {
         editor::Session ordered;
+        take(ordered.initialize());
         auto& rt = ordered.world().runtime();
         const auto add = [&] {
             changed(ordered.add_entity());
@@ -557,6 +567,7 @@ void verify_entity_composition() {
     }
     {
         editor::Session organized;
+        take(organized.initialize());
         auto& rt = organized.world().runtime();
         const auto add = [&] {
             changed(organized.add_entity());
@@ -630,6 +641,7 @@ void verify_entity_composition() {
     }
     {
         editor::Session forest;
+        take(forest.initialize());
         auto& rt = forest.world().runtime();
         changed(forest.add_entity());
         const auto first_parent = forest.selection().entity;
@@ -721,6 +733,7 @@ void verify_entity_composition() {
             std::filesystem::current_path() / "out/editor-subtree-evidence" / std::to_string(GetTickCount64());
         auto project = take(editor::Project::create(folder));
         editor::Session graph;
+        take(graph.initialize());
         auto& rt = graph.world().runtime();
         changed(graph.add_entity());
         const auto original = graph.selection().entity;

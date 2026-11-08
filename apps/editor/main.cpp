@@ -152,8 +152,10 @@ atelier::Result<int> host_main(int argc, wchar_t** argv) {
         guard_acceptance_native_dialogs();
     if (harness || render_performance_output)
         atelier::application::isolate_shader_cache();
+    auto document = std::make_unique<atelier::editor::Session>();
+    ATELIER_TRY(document->initialize({}, atelier::editor::SessionRole::editor));
     atelier::application::Application app(
-        gpu_validation || acceptance || source || edit || ime || project_acceptance || scene_lit,
+        std::move(document), gpu_validation || acceptance || source || edit || ime || project_acceptance || scene_lit,
         !snapshot && !shortcuts && !surfaces && !tooltips && !dialogs && !no_activate && !render_performance_output,
         initial_client, !render_performance_output);
     if (project || create) {

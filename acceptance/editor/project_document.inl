@@ -49,6 +49,7 @@ void verify_project_document() {
             "An unchanged refresh changed catalog identity or discarded a live mesh.");
     verify_project_workspace(project);
     editor::Session document;
+    take(document.initialize());
     changed(document.create_static_mesh(take(project.assets().mesh(resource))));
     const auto entity = document.selection().entity;
     take(document.rename(entity, L"主角 Triangle"));
@@ -69,6 +70,7 @@ void verify_project_document() {
             "Scene roundtrip lost identity relations, names, transforms or null meshes.");
     {
         editor::Session built_in;
+        take(built_in.initialize());
         changed(built_in.create_static_mesh(take(project.assets().mesh("builtin/sphere"))));
         const auto built_in_entity = built_in.selection().entity;
         const auto body = component(built_in, built_in_entity, built_in.presentation_types().static_mesh_component);
@@ -91,6 +93,7 @@ void verify_project_document() {
     }
     {
         editor::Session physical;
+        take(physical.initialize());
         changed(physical.create_static_mesh(take(project.assets().mesh(resource))));
         const auto physical_entity = physical.selection().entity;
         take(const_cast<world::World&>(physical.world())
@@ -107,6 +110,7 @@ void verify_project_document() {
         const auto physical_scene = take(physical.serialize());
         {
             editor::Session imported;
+            take(imported.initialize());
             changed(imported.add_entity());
             const auto parent = imported.selection().entity;
             take(imported.set_transform(parent, {{10, 0, 0}, {}, {2, 2, 2}}));
@@ -286,6 +290,7 @@ void verify_project_document() {
     {
         // Material vectors now belong to typed scene MI entries, not mesh-component fields.
         editor::Session authored;
+        take(authored.initialize());
         changed(authored.create_static_mesh(assets::mesh_assets().front()));
         const auto body =
             component(authored, authored.selection().entity, authored.presentation_types().static_mesh_component);

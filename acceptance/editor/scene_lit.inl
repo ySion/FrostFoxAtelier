@@ -107,10 +107,11 @@ void verify_scene_lit_example(const std::filesystem::path& requested) {
 void verify_environment_sky_application() {
     using namespace editor;
     world::World* sky_world{};
-    Session document([&](world::World& scene) -> Result<std::shared_ptr<void>> {
+    Session document;
+    take(document.initialize([&](world::World& scene) -> Result<std::shared_ptr<void>> {
         sky_world = &scene;
         return std::shared_ptr<void>{};
-    });
+    }));
     application::SceneSnapshot snapshot;
     const std::array<float, 3> dark{};
     const std::array<float, 3> radiance{.025f, .05f, .075f};
@@ -205,6 +206,7 @@ void verify_environment_sky_application() {
 void verify_scene_snapshot_updates() {
     using namespace editor;
     Session document;
+    take(document.initialize());
     auto& world = const_cast<world::World&>(document.world());
     changed(document.create_static_mesh(assets::mesh_assets().front()));
     const auto first = document.selection().entity;
@@ -251,7 +253,8 @@ void verify_scene_lit_application(const std::filesystem::path& source_example = 
     const auto folder = std::filesystem::current_path() / "out/scene-lit-application-evidence" /
                         std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
     auto project = take(Project::create(folder));
-    Session document({}, SessionRole::editor);
+    Session document;
+    take(document.initialize({}, SessionRole::editor));
     auto& runtime = document.world().runtime();
     changed(document.create_static_mesh(assets::mesh_assets().front()));
     const auto mesh_entity = document.selection().entity;

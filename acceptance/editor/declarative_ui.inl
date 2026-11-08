@@ -141,6 +141,7 @@ void verify_declarative_parameters() {
     Runtime runtime;
     take(ui_language::register_types(runtime));
     editor::Session document;
+    take(document.initialize());
     editor::Workspace workspace;
     const std::array fonts{(editor::asset_directory() / "fonts/SarasaUiSC-Regular.ttf").wstring()};
     ui::Session ui(fonts);

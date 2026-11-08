@@ -2637,7 +2637,9 @@ int verify_editor_window(Application& app, const char* output_directory) {
         SendMessageW(app.window(), WM_CLOSE, 0, 0);
         require(!app.step(), "WM_CLOSE did not close the application.");
         {
-            Application quit_app(true);
+            auto document = std::make_unique<atelier::editor::Session>();
+            model(document->initialize({}, atelier::editor::SessionRole::editor));
+            Application quit_app(std::move(document), true);
             SetForegroundWindow(quit_app.window());
             SetFocus(quit_app.window());
             RECT quit_host{};

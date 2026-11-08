@@ -1,6 +1,7 @@
 void verify_ui_actions() {
     namespace language = ui_language;
     editor::Session document;
+    take(document.initialize());
     Runtime runtime;
     take(language::register_types(runtime));
     constexpr auto source = R"(

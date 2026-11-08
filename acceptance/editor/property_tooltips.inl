@@ -2,6 +2,7 @@
 // geometry and delayed help. This path needs no GPU or desktop input injection.
 void verify_property_tooltips() {
     editor::Session document;
+    take(document.initialize());
     changed(document.create_static_mesh(assets::mesh_assets().front()));
     const auto mesh = document.selection().entity;
     changed(document.create_light(presentation::LightKind::point));

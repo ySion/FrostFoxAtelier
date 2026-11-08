@@ -76,6 +76,7 @@ void verify_material_resources() {
     (void)project.create_material("Content/../../Escaped.material", author);
     require(!fs::exists(evidence / "Escaped.material"), "Material creation escaped Content.");
     editor::Session document;
+    take(document.initialize());
     auto& runtime = document.world().runtime();
     const auto resource = take(document.open_material(project, key));
     require(take(document.open_material(project, key)).id() == resource.id(),
@@ -240,6 +241,7 @@ void verify_material_resources() {
         const auto source_path = std::get<assets::MaterialSourceAsset>(ms_author.author).source_path;
         auto exact = take(published.assets().source(source_path));
         editor::Session session;
+        take(session.initialize());
         auto& r = session.world().runtime();
         const auto ms_root = take(session.material_resource(published.assets(), ms));
         const auto old_surface = take(material::capture_program(r, ms_root.id()));
@@ -327,6 +329,7 @@ void verify_material_resources() {
         instance.entries = {{"albedo", material::TextureBinding{image_key}, true}};
         const auto material_key = take(imports.create_material("Content/Shared.material", asset));
         editor::Session session;
+        take(session.initialize());
         auto& r = session.world().runtime();
         const auto root = take(session.open_material(imports, material_key));
         changed(session.create_static_mesh(take(imports.assets().mesh("builtin/cube"))));
@@ -411,6 +414,7 @@ void verify_material_resources() {
         const auto child = take(recovery.create_material("Content/Child.material", asset));
         const auto blue = take(recovery.import_texture(evidence / "Blue.bmp"));
         editor::Session original;
+        take(original.initialize());
         changed(original.create_static_mesh(take(recovery.assets().mesh("builtin/cube"))));
         const auto mesh =
             component(original, original.selection().entity, original.presentation_types().static_mesh_component);
@@ -438,6 +442,7 @@ void verify_material_resources() {
         std::vector<editor::MissingResource> missing;
         take(session.publish_material(recovery.assets(), ms_author, exact, &missing));
         editor::Session reopened;
+        take(reopened.initialize());
         const auto reopened_root = take(reopened.open_material(recovery, mi));
         const auto control = take(material::capture_program(reopened.world().runtime(), reopened_root.id()));
         require(control->inputs().front().image && take(control->evaluate({})).base_color == math::Vector3{.2f, 0, 0},
@@ -525,6 +530,7 @@ void verify_missing_resources() {
     const auto wall = take(project.assets().mesh(take(project.import_mesh(evidence / "Wall.obj"))));
     const auto wall_slot = presentation::material_slot_name(*wall.mesh, wall.mesh->parts().front().material);
     editor::Session document;
+    take(document.initialize());
     changed(document.create_static_mesh(take(project.assets().mesh("builtin/cube"))));
     const auto textured =
         component(document, document.selection().entity, document.presentation_types().static_mesh_component);
@@ -617,12 +623,14 @@ void verify_missing_resources() {
             "Restoring assets failed to resolve bindings or rebuild collision.");
     const auto broken_ms = take(repaired.create_material_source("Content/Broken.ms.material", "not source"));
     editor::Session compiler_failure;
+    take(compiler_failure.initialize());
     const auto broken_root = take(compiler_failure.open_material(repaired, broken_ms));
     const auto broken_view = take(compiler_failure.inspect_material(broken_root.id()));
     require(broken_view.default_material && !broken_view.diagnostics.empty() && broken_view.source_file &&
                 broken_view.source_file->source == "not source",
             "MS compile failure lost exact source/diagnostic or failed to use the default surface.");
     editor::Session strict_compiler;
+    take(strict_compiler.initialize());
     const auto compile_error = strict_compiler.material_resource(repaired.assets(), broken_ms);
     require(!compile_error && !compiler_failure.material_resource(repaired.assets(), broken_ms),
             "Strict material loading accepted fresh or cached compile fallback.");
@@ -643,7 +651,9 @@ void verify_missing_resources() {
     const auto read_error = repaired.assets().source(source_path);
     require(!read_error, "Deleted material source remained readable.");
     editor::Session strict_missing;
+    take(strict_missing.initialize());
     editor::Session tolerant_missing;
+    take(tolerant_missing.initialize());
     const auto fresh_error = strict_missing.material_resource(repaired.assets(), broken_ms);
     std::vector<editor::MissingResource> absent_source;
     take(tolerant_missing.material_resource(repaired.assets(), broken_ms, &absent_source));

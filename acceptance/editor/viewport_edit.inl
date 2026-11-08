@@ -3,6 +3,7 @@
 void verify_rotated_viewport_transforms() {
     using namespace editor;
     Session document;
+    take(document.initialize());
     changed(document.create_light(presentation::LightKind::directional));
     const auto entity = document.selection().entity;
     const world::Trs authored{{-5.8103158e-9f, 2.9999993f, -1.532578e-7f},
@@ -55,6 +56,7 @@ void verify_rotated_viewport_transforms() {
 void verify_mirrored_viewport_transforms() {
     using namespace editor;
     Session document;
+    take(document.initialize());
     changed(document.create_static_mesh(assets::mesh_assets().front()));
     const auto entity = document.selection().entity;
     const auto pose = [&] { return take(world::read_transform(document.world().runtime(), entity)); };
@@ -138,6 +140,7 @@ void verify_mirrored_viewport_transforms() {
 void verify_viewport_local_constraints() {
     using namespace editor;
     Session document;
+    take(document.initialize());
     changed(document.create_static_mesh(assets::mesh_assets().front()));
     const auto entity = document.selection().entity;
     take(document.set_transform(entity, {{}, from_euler_degrees({0, 0, 90}), {1, 1, 1}}));
@@ -195,7 +198,8 @@ void verify_viewport_local_constraints() {
 
 void verify_viewport_gesture_input() {
     using namespace editor;
-    Session document({}, SessionRole::editor);
+    Session document;
+    take(document.initialize({}, SessionRole::editor));
     changed(document.create_static_mesh(assets::mesh_assets().front()));
     const auto first = document.selection().entity;
     changed(document.create_static_mesh(assets::mesh_assets().front(), {2, 0, 0}));
@@ -322,6 +326,7 @@ void verify_viewport_gesture_input() {
 
 void verify_viewport_duplication() {
     editor::Session document;
+    take(document.initialize());
     changed(document.create_static_mesh(assets::mesh_assets().front(), {1, 2, 3}));
     const auto first = document.selection().entity;
     changed(document.add_component(first, document.types().component));
@@ -406,6 +411,7 @@ void verify_viewport_duplication() {
     changed(document.duplicate_entities(document.selected_entities()));
     require(document.undo_count() == count, "Empty duplicate changed history.");
     editor::Session restricted;
+    take(restricted.initialize());
     changed(restricted.create_static_mesh(assets::mesh_assets().front()));
     const auto mesh_entity = restricted.selection().entity;
     // A World keeps one Environment, so copying it with a mesh fails as one group.
@@ -431,7 +437,8 @@ void verify_viewport_editing() {
     verify_viewport_gesture_input();
     verify_viewport_duplication();
     using namespace editor;
-    Session document({}, SessionRole::editor);
+    Session document;
+    take(document.initialize({}, SessionRole::editor));
     const auto create = [&](math::Vector3 at) {
         changed(document.create_static_mesh(assets::mesh_assets().front(), at));
         return document.selection().entity;
@@ -730,6 +737,7 @@ void verify_viewport_editing() {
         // One sloped polygon crosses far=4 at x=0; reject the distant half,
         // not the entire mesh. Authored sample depths straddle that plane.
         Session clipped;
+        take(clipped.initialize());
         auto mesh = take(geometry::Mesh::create(std::vector<geometry::Vertex>{{{-2, -1, 2}, {1, 0, -1}},
                                                                               {{-2, 1, 2}, {1, 0, -1}},
                                                                               {{2, 1, 6}, {1, 0, -1}},

@@ -260,6 +260,11 @@ Result<void> Application::load_project(const std::filesystem::path& folder, bool
                                : failed("Project did not produce a complete scene.");
     if (reproducible && admit)
         ATELIER_TRY(admit(*candidate.session));
+    const bool scene_available = candidate.session != nullptr;
+    if (!scene_available) {
+        candidate.session = std::make_unique<editor::Session>();
+        ATELIER_TRY(candidate.session->initialize({}, editor::SessionRole::editor));
+    }
     play_.close();
     consume_play_output();
     workspace_.source_editor.clear();
@@ -267,11 +272,8 @@ Result<void> Application::load_project(const std::filesystem::path& folder, bool
     scene_path_ = initial_scene;
     workspace_.project_open = true;
     pending_scene_ = *content;
-    workspace_.scene_available = candidate.session != nullptr;
-    if (candidate.session)
-        publish_document(std::move(candidate.session), candidate.code);
-    else
-        publish_document(std::make_unique<editor::Session>(editor::Session::Prepare{}, editor::SessionRole::editor));
+    workspace_.scene_available = scene_available;
+    publish_document(std::move(candidate.session), candidate.code);
     if (candidate.error) {
         auto report = std::make_shared<editor::ProjectBuild>();
         if (candidate.build)

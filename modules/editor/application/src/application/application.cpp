@@ -112,8 +112,10 @@ ui::PixelExtent client_extent(HWND window) {
 }
 }
 
-Application::Application(bool validation, bool activate, std::optional<ui::PixelExtent> initial_client, bool vsync)
-    : window_(nullptr, initial_client), ui_(editor_fonts()), gpu_validation_(validation), vsync_(vsync) {
+Application::Application(std::unique_ptr<editor::Session> document, bool validation, bool activate,
+                         std::optional<ui::PixelExtent> initial_client, bool vsync)
+    : window_(nullptr, initial_client), document_(std::move(document)), ui_(editor_fonts()),
+      gpu_validation_(validation), vsync_(vsync) {
     require_frame_timing();
     auto style = ui_.style();
     style.font.family = L"Sarasa UI SC";

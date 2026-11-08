@@ -200,6 +200,11 @@ int run_project(const RunOptions& options) {
             if (project.ui_source().empty())
                 throw std::runtime_error("Configure a project UI source before previewing.");
             loaded.session = std::make_unique<editor::Session>();
+            if (auto initialized = loaded.session->initialize(); !initialized) {
+                static_cast<void>(ATELIER_LOG(logging::Severity::error, "runner", "runner.failed", "Project run: {}",
+                                              initialized.error().message));
+                return 1;
+            }
         } else {
             const auto scene = options.scene_snapshot.empty() ? project.resolve(project.startup_scene())
                                                               : Result<std::filesystem::path>{options.scene_snapshot};

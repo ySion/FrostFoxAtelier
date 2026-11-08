@@ -6,6 +6,7 @@
 #include "editor/view_options.hpp"
 #include "physics/physics.hpp"
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <stdexcept>
 #include <type_traits>
@@ -24,29 +25,33 @@ T take(Result<T> result) {
 }
 }
 
-Session::Session(Prepare prepare, SessionRole role)
-    : types_(take(world::register_types(runtime_))), presentation_types_(take(presentation::register_types(runtime_))),
-      physics_types_(take(physics::register_types(runtime_))), presentation_(take([&]() -> Result<presentation::Scene> {
-          ATELIER_TRY(world_.initialize(runtime_, types_));
-          return presentation::Scene::create(world_, presentation_types_);
-      }())),
-      parameters_{Parameter{"X", "m", types_.position_fields[0]}, Parameter{"Y", "m", types_.position_fields[1]},
-                  Parameter{"Z", "m", types_.position_fields[2]}} {
+Result<void> Session::initialize(Prepare prepare, SessionRole role) {
+    assert(!presentation_);
+    ATELIER_TRY_BIND(types, world::register_types(runtime_));
+    types_ = *types;
+    ATELIER_TRY_BIND(presentation_types, presentation::register_types(runtime_));
+    presentation_types_ = *presentation_types;
+    ATELIER_TRY_BIND(physics_types, physics::register_types(runtime_));
+    physics_types_ = *physics_types;
+    ATELIER_TRY(world_.initialize(runtime_, types_));
+    ATELIER_TRY_BIND(presentation, presentation::Scene::create(world_, presentation_types_));
+    presentation_ = std::move(*presentation);
+    parameters_ = {Parameter{"X", "m", types_.position_fields[0]}, Parameter{"Y", "m", types_.position_fields[1]},
+                   Parameter{"Z", "m", types_.position_fields[2]}};
     static_assert(std::is_nothrow_move_constructible_v<Change> && std::is_nothrow_move_assignable_v<Change>);
     history_.reserve(history_limit + 1);
     if (role == SessionRole::editor)
-        if (auto registered = register_editor_types(runtime_); !registered)
-            throw detail::Failure(std::move(registered.error()));
+        ATELIER_TRY(register_editor_types(runtime_));
     if (prepare) {
-        auto ready = prepare(world_);
-        if (!ready)
-            throw detail::Failure(std::move(ready.error()));
+        ATELIER_TRY_BIND(ready, prepare(world_));
         prepared_ = std::move(*ready);
     }
+    return {};
 }
 
 Session::~Session() {
-    (void)world_.close();
+    if (presentation_)
+        (void)world_.close();
 }
 
 void Session::remember(Change change) {
@@ -147,7 +152,7 @@ Result<void> Session::set_main_camera(ObjectId target) {
     ATELIER_TRY_BIND(reference, runtime_.null_reference(types_.entity, ValueForm::weak_reference));
     if (target != ObjectId{}) {
         ATELIER_TRY(admit_entity_edit(target));
-        ATELIER_TRY_BIND(cameras, world_.members(presentation_.cameras()));
+        ATELIER_TRY_BIND(cameras, world_.members(presentation_->cameras()));
         if (std::ranges::count(*cameras, target, &world::CapabilityMember::entity) != 1)
             return invalid("Set as Main Camera requires an Entity with exactly one CameraComponent.");
         ATELIER_TRY_BIND(held, runtime_.hold(target, types_.entity));
@@ -203,7 +208,7 @@ Result<std::optional<Session::ReferenceFieldChange>> Session::main_camera_remova
 }
 
 Result<Session::EnvironmentEdit> Session::environment_edit(const rendering::SceneLightingSettings& settings) const {
-    ATELIER_TRY_BIND(current, presentation_.environment());
+    ATELIER_TRY_BIND(current, presentation_->environment());
     renderer::ViewSettings before;
     renderer::ViewSettings after;
     static_cast<rendering::SceneLightingSettings&>(before.lit) = *current;

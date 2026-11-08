@@ -93,6 +93,7 @@ void verify_source_editor() {
         }
     } cleanup{folder};
     editor::Session scene;
+    take(scene.initialize());
     editor::Workspace workspace;
     const auto original = take(assets::read_file(workspace.ui_source()));
     const auto path = folder / "editor.ui.source";
@@ -245,6 +246,7 @@ void verify_source_editor() {
             "An empty Code panel routed save/undo to the scene.");
     take(editor::write_file(path, "ui Broken( {"));
     editor::Session cold_scene;
+    take(cold_scene.initialize());
     editor::Workspace cold;
     cold.set_ui_source(path);
     take(cold.source_editor.open(path));

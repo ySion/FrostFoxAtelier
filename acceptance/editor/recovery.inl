@@ -7,6 +7,7 @@ void verify_scene_recovery() {
     const auto original = take(project.resolve(project.startup_scene()));
     const auto original_bytes = take(assets::read_file(original));
     editor::Session document;
+    take(document.initialize());
     changed(document.create_static_mesh(take(project.assets().mesh("builtin/cube"))));
     take(document.rename(document.selection().entity, L"Recovered entity"));
     const auto entity = document.selection().entity;
@@ -42,6 +43,7 @@ void verify_scene_recovery() {
             "Repeated failure rewrote the snapshot or replaced its first cause.");
 
     editor::Session missing;
+    take(missing.initialize());
     const auto mesh = take(project.assets().mesh("builtin/cube"));
     changed(missing.create_static_mesh(mesh));
     const auto missing_root =

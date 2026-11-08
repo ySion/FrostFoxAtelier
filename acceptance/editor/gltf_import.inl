@@ -232,6 +232,7 @@ void verify_gltf_import() {
                     std::ranges::all_of(implicit.textures.back(), [](const auto& path) { return path.empty(); }),
                 "A primitive without a material acquired authored MI values or texture dependencies.");
         editor::Session unbound;
+        take(unbound.initialize());
         assets::Reader installed;
         const auto surfaces =
             take(unbound.mesh_surfaces(installed, {"fixture/implicit", L"Implicit", implicit.mesh, {}}));
@@ -295,6 +296,7 @@ void verify_gltf_import() {
                     file(texture(leaf, "base_color").asset_key) == L"color copy.bmp",
                 "Generated materials lost the glTF channels, factors, samplers or their own texture files.");
         editor::Session resolved;
+        take(resolved.initialize());
         const auto opaque_root = take(resolved.material_resource(reopened.assets(), opaque_key));
         const auto leaf_root = take(resolved.material_resource(reopened.assets(), leaf_key));
         const auto p = take(mat::capture_program(resolved.world().runtime(), opaque_root.id()));
@@ -363,6 +365,7 @@ void verify_gltf_import() {
     // Mesh defaults are resolved at runtime and never written to scenes.
     const auto placed = take(project.assets().mesh(key));
     editor::Session document;
+    take(document.initialize());
     auto& runtime = document.world().runtime();
     require(placed.materials.size() == 2 && placed.materials[0].slot == "opaque" && placed.materials[1].slot == "leaf",
             "Mesh defaults are not listed in the mesh's slot order.");

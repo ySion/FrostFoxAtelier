@@ -54,6 +54,7 @@ void verify_output_projection() {
     const std::string source_text = "// original\n中文x\n";
     take(editor::write_file(path, source_text));
     editor::Session scene;
+    take(scene.initialize());
     editor::Workspace workspace;
     const auto folder_utf8 = platform::utf16_to_utf8(folder.native());
     const auto path_utf8 = platform::utf16_to_utf8(path.generic_wstring());

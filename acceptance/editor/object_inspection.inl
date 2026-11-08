@@ -25,7 +25,8 @@ class inspection.Stats : world.Component { float energy = 5.0f; }
         take(code->build(project));
         return std::static_pointer_cast<void>(code);
     };
-    editor::Session document(prepare);
+    editor::Session document;
+    take(document.initialize(prepare));
     auto& runtime = document.world().runtime();
     const auto entity_type = take(runtime.find_type("inspection.Agent"));
     const auto stats_type = take(runtime.find_type("inspection.Stats"));

@@ -164,7 +164,11 @@ public:
     // code owner is released after World End, always before its Runtime.
     using Prepare = std::function<Result<std::shared_ptr<void>>(world::World&)>;
 
-    explicit Session(Prepare = {}, SessionRole = SessionRole::runtime);
+    Session() = default;
+
+    // Call once on an empty shell. Failure permits destruction only, not retry:
+    // registration may have partially changed the Runtime. Other methods require success.
+    Result<void> initialize(Prepare = {}, SessionRole = SessionRole::runtime);
 
     ~Session();
 
@@ -180,7 +184,7 @@ public:
 
     const physics::Types& physics_types() const noexcept { return physics_types_; }
 
-    const presentation::Scene& presentation() const noexcept { return presentation_; }
+    const presentation::Scene& presentation() const noexcept { return *presentation_; }
 
     // Borrowed running scene; invalidated by stop, close, or a failed update.
     physics::PhysicsScene* physics_scene() noexcept { return physics_.get(); }
@@ -741,21 +745,21 @@ private:
 
     Runtime runtime_;
 
-    world::Types types_;
+    world::Types types_{};
 
-    presentation::Types presentation_types_;
+    presentation::Types presentation_types_{};
 
-    physics::Types physics_types_;
+    physics::Types physics_types_{};
 
     std::shared_ptr<void> prepared_;
 
     world::World world_;
 
-    presentation::Scene presentation_;
+    std::optional<presentation::Scene> presentation_;
 
     std::unique_ptr<physics::PhysicsScene> physics_;
 
-    std::array<Parameter, 3> parameters_;
+    std::array<Parameter, 3> parameters_{};
 
     std::vector<Entry> history_;
 

@@ -3660,7 +3660,8 @@ Result<std::unique_ptr<Session>> Session::deserialize(std::string_view text, Pro
         if (!parsed)
             return std::unexpected(Error{ErrorCode::invalid_storage, parsed.error().describe()});
         graph.data = std::move(*parsed);
-        auto session = std::make_unique<Session>(std::move(prepare), role);
+        auto session = std::make_unique<Session>();
+        ATELIER_TRY(session->initialize(std::move(prepare), role));
         GraphCodec::Load load;
         load.policy = policy;
         load.document = true;

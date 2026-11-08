@@ -146,7 +146,8 @@ bool same(const editor::ToolSettings& a, const editor::ToolSettings& b) {
 
 void verify_operator_parameters() {
     using namespace operator_parameters;
-    editor::Session document({}, editor::SessionRole::editor);
+    editor::Session document;
+    take(document.initialize({}, editor::SessionRole::editor));
     auto& runtime = document.world().runtime();
     editor::OperatorRegistry registry;
     editor::register_builtin_operators(registry);
@@ -157,7 +158,8 @@ void verify_operator_parameters() {
         const auto folder = std::filesystem::current_path() / "out/operator-result-evidence" /
                             std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
         auto project = take(editor::Project::create(folder));
-        editor::Session resources({}, editor::SessionRole::editor);
+        editor::Session resources;
+        take(resources.initialize({}, editor::SessionRole::editor));
         Host host(resources);
         auto context = host.panels.operator_context(resources, &project, false);
         const auto invoke = [&](json::Document args, std::optional<std::string> parent = {}) {
@@ -355,7 +357,8 @@ void verify_operator_parameters() {
     camera_call("scene.main_camera_clear");
     require(take(document.main_camera()) == ObjectId{}, "Clear Main Camera kept the selection.");
     {
-        editor::Session edited({}, editor::SessionRole::editor);
+        editor::Session edited;
+        take(edited.initialize({}, editor::SessionRole::editor));
         Host controls(edited);
         auto& rt = edited.world().runtime();
         changed(edited.add_entity());
@@ -420,7 +423,8 @@ void verify_operator_parameters() {
                 "Invert used document selection rather than the explicit context or moved author history.");
     }
     {
-        editor::Session erased({}, editor::SessionRole::editor);
+        editor::Session erased;
+        take(erased.initialize({}, editor::SessionRole::editor));
         Host controls(erased);
         changed(erased.add_entity());
         const auto parent = erased.selection().entity;
@@ -460,7 +464,8 @@ void verify_operator_parameters() {
                 "Component deletion Undo did not restore its identity and author data.");
     }
     {
-        editor::Session copied({}, editor::SessionRole::editor);
+        editor::Session copied;
+        take(copied.initialize({}, editor::SessionRole::editor));
         Host controls(copied);
         changed(copied.add_entity());
         const auto source = copied.selection().entity;
@@ -511,7 +516,8 @@ void verify_operator_parameters() {
                 "Cancelling placement deleted the copy or changed its original transform/history.");
     }
     {
-        editor::Session composed({}, editor::SessionRole::editor);
+        editor::Session composed;
+        take(composed.initialize({}, editor::SessionRole::editor));
         Host controls(composed);
         changed(composed.add_entity());
         const auto target = composed.selection().entity;
@@ -543,7 +549,8 @@ void verify_operator_parameters() {
                 "Add Component Redo lost component identity or required Transform.");
     }
     {
-        editor::Session transformed({}, editor::SessionRole::editor);
+        editor::Session transformed;
+        take(transformed.initialize({}, editor::SessionRole::editor));
         Host controls(transformed);
         changed(transformed.add_entity());
         const auto target = transformed.selection().entity;
@@ -583,7 +590,8 @@ void verify_operator_parameters() {
                 "Transform Redo lost the explicit rotation, mirrored axis or zero scale.");
     }
     {
-        editor::Session spaces({}, editor::SessionRole::editor);
+        editor::Session spaces;
+        take(spaces.initialize({}, editor::SessionRole::editor));
         Host controls(spaces);
         changed(spaces.add_entity());
         const auto parent = spaces.selection().entity;
@@ -636,7 +644,8 @@ void verify_operator_parameters() {
                 "Null origin did not restore inheritance while preserving the requested local pose.");
     }
     {
-        editor::Session named({}, editor::SessionRole::editor);
+        editor::Session named;
+        take(named.initialize({}, editor::SessionRole::editor));
         Host controls(named);
         changed(named.add_entity());
         const auto target = named.selection().entity;
@@ -673,14 +682,15 @@ void verify_operator_parameters() {
 class patch.Actor : world.Entity { int a = 3; int z = 11; }
 class patch.Fields : world.Component { float position = 4.0f; float rotation = 5.0f; float scale = 6.0f; }
 )"));
-        editor::Session patched(
+        editor::Session patched;
+        take(patched.initialize(
             [&](world::World& world) -> Result<std::shared_ptr<void>> {
                 auto code = std::make_shared<editor::ProjectCode>(world);
                 if (auto built = code->build(project); !built)
                     return std::unexpected(built.error());
                 return std::static_pointer_cast<void>(code);
             },
-            editor::SessionRole::editor);
+            editor::SessionRole::editor));
         Host controls(patched);
         auto& rt = patched.world().runtime();
         const auto actor_type = take(rt.find_type("patch.Actor"));
@@ -776,7 +786,8 @@ class patch.Fields : world.Component { float position = 4.0f; float rotation = 5
                 "Body patch Redo did not replay both masks together.");
     }
     {
-        editor::Session display({}, editor::SessionRole::editor);
+        editor::Session display;
+        take(display.initialize({}, editor::SessionRole::editor));
         Host controls(display);
         auto before = controls.panels.view;
         before.wire_width = 2.25f;
@@ -811,7 +822,8 @@ class patch.Fields : world.Component { float position = 4.0f; float rotation = 5
                 "Undo did not restore World fields while preserving non-history display fields.");
     }
     {
-        editor::Session parents({}, editor::SessionRole::editor);
+        editor::Session parents;
+        take(parents.initialize({}, editor::SessionRole::editor));
         auto& rt = parents.world().runtime();
         changed(parents.add_entity());
         const auto parent = parents.selection().entity;
@@ -868,7 +880,8 @@ class patch.Fields : world.Component { float position = 4.0f; float rotation = 5
     {
         // Real menu projection: fixed parameters may persist, but checked state
         // and seeded unnamed fields must follow the current document/context.
-        auto menus = std::make_unique<editor::Session>(editor::Session::Prepare{}, editor::SessionRole::editor);
+        auto menus = std::make_unique<editor::Session>();
+        take(menus->initialize({}, editor::SessionRole::editor));
         editor::Workspace workspace;
         const std::array fonts{(editor::asset_directory() / "fonts/SarasaUiSC-Regular.ttf").wstring()};
         ui::Session surface(fonts);
@@ -924,7 +937,8 @@ class patch.Fields : world.Component { float position = 4.0f; float rotation = 5
         present();
         workspace.reset_document();
         changed(menus->close());
-        menus = std::make_unique<editor::Session>(editor::Session::Prepare{}, editor::SessionRole::editor);
+        menus = std::make_unique<editor::Session>();
+        take(menus->initialize({}, editor::SessionRole::editor));
         workspace.camera_view = editor::CameraView::left;
         workspace.menu = ui::ContextMenuRequest{editor::control::view_menu};
         present();

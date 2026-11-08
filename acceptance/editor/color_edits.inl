@@ -6,6 +6,7 @@ void verify_color_edits() {
                                   std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     auto project = take(editor::Project::create(root / "Project"));
     editor::Session document;
+    take(document.initialize());
     auto& runtime = document.world().runtime();
     const auto paths = [&](ObjectId object, std::string_view prefix) {
         std::vector<world::FieldPath> result;
@@ -95,6 +96,7 @@ void verify_color_edits() {
     require(!document.material_dirty(key), "Asset color did not use the material save path.");
     auto opened = take(editor::Project::open(project.root()));
     editor::Session reloaded;
+    take(reloaded.initialize());
     const auto reloaded_material = take(reloaded.material_resource(opened.assets(), key));
     require(color(reloaded, reloaded_material.id()) == last_color,
             "Saved color or its untouched alpha did not survive material reopen.");

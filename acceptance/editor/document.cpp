@@ -188,6 +188,7 @@ int main(int argc, char** argv) {
         stage = "document history";
         {
             editor::Session single;
+            take(single.initialize());
             changed(single.create_static_mesh(assets::mesh_assets().front()));
             require(single.undo_count() == 1 && take(single.world().runtime().type_of(single.selection().entity)) ==
                                                     single.presentation_types().static_mesh_entity,
@@ -245,6 +246,7 @@ int main(int argc, char** argv) {
             changed(single.close());
         }
         editor::Session document;
+        take(document.initialize());
         changed(document.add_entity());
         const auto entity = document.selection().entity;
         auto& runtime = document.world().runtime();

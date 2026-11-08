@@ -180,6 +180,8 @@ Result<Project> Project::create(const std::filesystem::path& folder) {
         config.set_validated(config.root(), "name", *name);
         config.set_validated(config.root(), "startup_scene", "Content/Scenes/Main.scene");
         Session empty_scene;
+        if (auto initialized = empty_scene.initialize(); !initialized)
+            return failure(initialized.error().message);
         ATELIER_TRY_BIND(scene, empty_scene.serialize());
         ATELIER_TRY(write_file(folder / "Content/Scenes/Main.scene", *scene, WriteMode::create));
         ATELIER_TRY(write_file(folder / ".gitignore", "/Cache/\n", WriteMode::create));

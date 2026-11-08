@@ -23,7 +23,8 @@ enum class ProjectOpenPolicy { allow_repair, require_scene };
 
 class Application final : private editor::OperatorHost {
 public:
-    explicit Application(bool gpu_validation = false, bool activate = true,
+    // Takes an already initialized editor document, before creating the Window.
+    explicit Application(std::unique_ptr<editor::Session>, bool gpu_validation = false, bool activate = true,
                          std::optional<ui::PixelExtent> initial_client = {}, bool vsync = true);
 
     ~Application();
@@ -140,8 +141,7 @@ private:
 
     Window window_;
 
-    std::unique_ptr<editor::Session> document_{
-        std::make_unique<editor::Session>(editor::Session::Prepare{}, editor::SessionRole::editor)};
+    std::unique_ptr<editor::Session> document_;
 
     SceneRecovery recovery_;
 

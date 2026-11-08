@@ -50,6 +50,9 @@ Entity 删除记录保存完整子树根、原组合父与成员位置；组件�
 World 操作的 Result 失败表示提交未完成；成功 Commit 中的 notification_error 表示关系已改变。Session 先记录变化并更新选择，应用再报告通知错误并停止后续动作，不把它当成未提交或重做一次。成员 span 只在结构变化前借用，UI/renderer 不持有它。
 宿主同线程逐帧以32工作单位推进 GC；普通根保活不表示对象仍参与 World。文档关闭先结束活动编辑，再关闭 World、释放历史；World close 撤成员/参与和根，Runtime 生命周期随后由宿主管理。
 
+Session 默认构造只建立空壳，在稳定地址上调用一次 `initialize(Prepare, SessionRole)`，以 `Result<void>` 传递引擎/编辑器类型注册、World、呈现与 Prepare 的完整错误。只有成功后才能使用文档方法；失败后只允许析构，不承诺重试，因为类型注册可能已部分改变 Runtime。这与初始化失败后可重试的 World 不同。析构在呈现已建立时先关闭 World，再按原成员顺序退役物理、呈现、World、Prepare 返回的代码所有者和 Runtime；更早失败由已构造成员清理。
+Application 接收已初始化的独占 Session；两个宿主创建入口都先初始化 Session，再创建 Window，文档初始化失败不会打开窗口。之后的 Window、UI、Renderer 顺序不变。工程修复用的空文档同样先准备成功，再退役旧文档；`deserialize` 保持先解析 JSON、后执行 Prepare，`Project::create` 对初始化错误仍只返回 `invalid_storage` 与原 message，不带 source。
+
 ## 参数和坐标
 
 MS/MI、槽菜单、共享编辑、独立资产历史和实例覆盖使用同一 DSL/Runtime/Session 链。参数按 MS 声明生成，覆盖复选框明确表达继承意图；组件不再有固定整体材质控件。文件入口、Scene v10、保存与实际限制见[材质资源工作流](projects.md#材质与贴图资源)。

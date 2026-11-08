@@ -180,7 +180,9 @@ void verify_texture_link(const std::filesystem::path& root) {
         .entries.push_back({"base_color_texture", material::TextureBinding{key}, true});
     const auto material_key = take(project.create_material("Content/Shared.material", asset));
     editor::Session author;
+    take(author.initialize());
     editor::Session play;
+    take(play.initialize());
     play.enter_play();
     auto play_project = take(editor::Project::open(root));
     const auto author_root = take(author.open_material(project, material_key));
@@ -484,6 +486,7 @@ void verify_play_link(const std::filesystem::path& root, editor::Project& projec
     // Environment precedes its camera, including when Redo reuses document IDs.
     {
         editor::Session source;
+        take(source.initialize());
         complete(source.create_camera({2, 3, 4}));
         take(source.set_main_camera(source.selection().entity));
         const auto parsed_forest = assets::json_format::parse(take(source.serialize()));

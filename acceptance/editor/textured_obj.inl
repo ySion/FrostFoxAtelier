@@ -38,6 +38,7 @@ void verify_material_picking() {
     const auto mesh = take(atelier::geometry::Mesh::create(vertices, std::vector<std::uint8_t>{},
                                                            std::vector<geometry::MaterialSlot>{{"surface"}}));
     editor::Session document;
+    take(document.initialize());
     assets::Reader installed;
     take(document.publish_texture("fixture/opacity", opacity));
     assets::MaterialAsset cutout{
@@ -126,6 +127,7 @@ void verify_textured_obj() {
     const auto asset = take(project.assets().mesh(key));
     const auto old = asset.mesh;
     editor::Session original;
+    take(original.initialize());
     const auto original_surfaces = take(original.mesh_surfaces(project.assets(), asset));
     require(original_surfaces && original_surfaces->size() == 3, "OBJ resolved material table lost a geometry slot.");
     const auto& red = (*original_surfaces)[1];
@@ -190,6 +192,7 @@ void verify_textured_obj() {
     const auto shared_a = take(shared_project.assets().mesh(key));
     const auto shared_b = take(shared_project.assets().mesh(sibling_key));
     editor::Session shared;
+    take(shared.initialize());
     const auto surfaces_a = take(shared.mesh_surfaces(shared_project.assets(), shared_a));
     const auto surfaces_b = take(shared.mesh_surfaces(shared_project.assets(), shared_b));
     require(shared_a.mesh != shared_b.mesh && material_input(*(*surfaces_a)[1], "base_color_texture").image ==
@@ -206,6 +209,7 @@ void verify_textured_obj() {
     const auto changed_asset = take(project.assets().mesh(key));
     const auto sibling_changed = take(project.assets().mesh(sibling_key));
     editor::Session refreshed;
+    take(refreshed.initialize());
     const auto current = take(refreshed.mesh_surfaces(project.assets(), changed_asset));
     const auto current_sibling = take(refreshed.mesh_surfaces(project.assets(), sibling_changed));
     const auto changed_pixels = material_input(*(*current)[1], "base_color_texture").image;

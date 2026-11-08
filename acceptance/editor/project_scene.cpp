@@ -249,6 +249,7 @@ std::string sky_asset(editor::Project& project, const std::filesystem::path& rel
 void verify_primitive_source(editor::Project& project) {
     acceptance_phase = "Primitive Source reflection and persistence";
     editor::Session document;
+    take(document.initialize());
     auto& runtime = document.world().runtime();
     auto program = take(source::Program::create(runtime, document.presentation_types().static_mesh_component));
     auto candidate = take(source::Program::prepare(take(program->request(
@@ -378,7 +379,8 @@ void verify_stop_reentry() {
     bool fail_tick{};
     unsigned ends{};
     unsigned live_ends{};
-    editor::Session document([&](world::World& world) -> Result<std::shared_ptr<void>> {
+    editor::Session document;
+    take(document.initialize([&](world::World& world) -> Result<std::shared_ptr<void>> {
         take(world.set_failure_policy(world::FailurePolicy::halt));
         take(world.bind_behavior(
             world.types().entity,
@@ -402,7 +404,7 @@ void verify_stop_reentry() {
                  return {};
              }}));
         return std::shared_ptr<void>{};
-    });
+    }));
     current = &document;
     changed(document.add_entity());
     take(document.set_transform(document.selection().entity, {}));
@@ -440,13 +442,21 @@ void verify_codec_graph(editor::Project& project) {
     acceptance_phase = "final spatial graph persistence";
     {
         editor::Session document;
+        take(document.initialize());
         const auto saved = take(document.serialize());
         const auto cause_path = platform::utf16_to_utf8((project.root() / "Source/cause.source").generic_wstring());
         require(bool(cause_path), "Invalid UTF-16 source diagnostic fixture path.");
         const Error original{ErrorCode::assignment_failed, "准备失败\n" + std::string(1024, 'x') + "\n完整原因",
                              SourceLocation{"Source/cause.source", 9123, 137, 8, 19, *cause_path}};
+        ObjectRoot partial;
         auto rejected = editor::Session::deserialize(
-            saved, project, [&](world::World&) -> Result<std::shared_ptr<void>> { return std::unexpected(original); },
+            saved, project,
+            [&](world::World& world) -> Result<std::shared_ptr<void>> {
+                ATELIER_TRY_BIND(entity, world::create_entity(world.runtime(), world.types().entity));
+                partial = std::move(*entity);
+                ATELIER_TRY(world.attach(partial.id()));
+                return std::unexpected(original);
+            },
             editor::LoadPolicy::strict);
         require(!rejected && rejected.error().code == original.code && rejected.error().message == original.message &&
                     rejected.error().source,
@@ -455,9 +465,14 @@ void verify_codec_graph(editor::Project& project) {
         require(source.path == original.source->path && source.version == 9123 && source.offset == 137 &&
                     source.line == 8 && source.column == 19 && source.disk_path == original.source->disk_path,
                 "Session preparation changed the original source identity or position.");
+        require(!partial.registered(), "Failed Session preparation left its partial object registered.");
+        auto fresh = take(editor::Session::deserialize(saved, project));
+        require(take(fresh->serialize()) == saved && take(document.serialize()) == saved,
+                "Failed Session preparation changed another document or prevented a fresh load.");
     }
     {
         editor::Session document;
+        take(document.initialize());
         auto& runtime = document.world().runtime();
         changed(document.add_entity());
         const auto parent = document.selection().entity;
@@ -481,6 +496,7 @@ void verify_codec_graph(editor::Project& project) {
     }
     {
         editor::Session document;
+        take(document.initialize());
         auto& runtime = document.world().runtime();
         changed(document.add_entity());
         const auto origin = document.selection().entity;
@@ -508,6 +524,7 @@ void verify_codec_graph(editor::Project& project) {
     acceptance_phase = "material graph identity persistence";
     {
         editor::Session document;
+        take(document.initialize());
         auto& runtime = document.world().runtime();
         std::array<ObjectId, 3> entities;
         std::array<ObjectId, 3> meshes;
@@ -622,6 +639,7 @@ void verify_codec_graph(editor::Project& project) {
         const auto incoming = take(project.create_material("Content/Materials/Codec-incoming.material", asset));
         const auto retained = take(project.create_material("Content/Materials/Codec-retained.material"));
         editor::Session source;
+        take(source.initialize());
         changed(source.create_static_mesh(take(project.assets().mesh("builtin/cube"))));
         take(source.assign_material(project, member(source, source.presentation_types().static_mesh_component),
                                     "slot/0", incoming));
@@ -633,6 +651,7 @@ void verify_codec_graph(editor::Project& project) {
                                  json::Document::literal<R"({"$ref":"999999"})">().root())),
                 "Cannot damage composition fixture.");
         editor::Session target;
+        take(target.initialize());
         changed(target.add_entity());
         const auto original = target.selection().entity;
         const auto resource = take(target.material_resource(project.assets(), retained));
@@ -874,7 +893,8 @@ void verify_retained_data(editor::Project& project, const json::Document& baseli
 void verify_string_properties(editor::Project& project, const std::shared_ptr<Evidence>& evidence) {
     acceptance_phase = "String properties";
     using enum world::DiagnosticKind;
-    editor::Session document(prepare(evidence));
+    editor::Session document;
+    take(document.initialize(prepare(evidence)));
     auto& runtime = document.world().runtime();
     const auto label_type = take(runtime.find_type("game.Label"));
     const auto caption_type = take(runtime.find_type("game.Caption"));
@@ -1062,7 +1082,8 @@ void verify_array_properties(editor::Project& project, const std::shared_ptr<Evi
                 return part;
         throw std::runtime_error("The saved scene lost its Tags component.");
     };
-    editor::Session document(prepare_tags(evidence));
+    editor::Session document;
+    take(document.initialize(prepare_tags(evidence)));
     auto& runtime = document.world().runtime();
     const auto f = fields(runtime);
     changed(document.add_entity());
@@ -1212,7 +1233,8 @@ void verify_array_properties(editor::Project& project, const std::shared_ptr<Evi
 void verify_play_changes(editor::Project& project, const std::shared_ptr<Evidence>& evidence) {
     acceptance_phase = "Play change batches";
     using enum world::DiagnosticKind;
-    editor::Session a(prepare(evidence));
+    editor::Session a;
+    take(a.initialize(prepare(evidence)));
     auto& ra = a.world().runtime();
     const auto entity_type = take(ra.find_type("game.Entity"));
     const auto move_type = take(ra.find_type("game.Move"));
@@ -1606,7 +1628,8 @@ void verify_play_changes(editor::Project& project, const std::shared_ptr<Evidenc
 void verify_live_forwarding(editor::Project& project, const std::shared_ptr<Evidence>& evidence) {
     acceptance_phase = "Play change forwarding";
     const auto material_key = take(project.create_material("Content/Materials/Forwarded.material"));
-    editor::Session a(prepare(evidence));
+    editor::Session a;
+    take(a.initialize(prepare(evidence)));
     auto& ra = a.world().runtime();
     const auto entity_type = take(ra.find_type("game.Entity"));
     const auto move_type = take(ra.find_type("game.Move"));
@@ -2009,6 +2032,7 @@ void verify_camera_loading(editor::Project& project) {
         return {};
     };
     editor::Session source;
+    take(source.initialize());
     changed(source.create_camera({2, 3, 4}));
     const auto baseline = assets::json_format::parse(take(source.serialize()));
     require(bool(baseline), "Camera baseline JSON is invalid.");
@@ -2083,6 +2107,7 @@ void verify_camera_loading(editor::Project& project) {
 void verify_camera_import(editor::Project& project) {
     acceptance_phase = "Camera forest import forwarding";
     editor::Session source;
+    take(source.initialize());
     changed(source.create_camera({2, 3, 4}));
     take(source.set_main_camera(source.selection().entity));
     const auto parsed = assets::json_format::parse(take(source.serialize()));
@@ -2094,6 +2119,7 @@ void verify_camera_import(editor::Project& project) {
                 forest.append(roots, std::to_string(*source.document_identity(source.selection().entity))),
             "Cannot order camera roots.");
     editor::Session author;
+    take(author.initialize());
     changed(author.add_entity());
     auto play = take(editor::Session::deserialize(take(author.serialize()), project));
     play->enter_play();
@@ -2133,6 +2159,7 @@ void verify_camera_import(editor::Project& project) {
 void verify_camera_document(editor::Project& project) {
     acceptance_phase = "Camera authoring, reference history and sparse Play changes";
     editor::Session a;
+    take(a.initialize());
     take(a.set_main_camera({}));
     require(a.environment() == ObjectId{} && a.undo_count() == 0, "Clear created an absent Environment.");
     changed(a.create_camera({2, 3, -4}));
@@ -2321,7 +2348,8 @@ void run() {
     verify_codec_graph(project);
     acceptance_phase = "Source document fields and history";
     auto evidence = std::make_shared<Evidence>();
-    editor::Session document(prepare(evidence));
+    editor::Session document;
+    take(document.initialize(prepare(evidence)));
     auto& runtime = document.world().runtime();
     const auto entity_type = take(runtime.find_type("game.Entity"));
     const auto move_type = take(runtime.find_type("game.Move"));

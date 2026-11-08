@@ -168,6 +168,7 @@ void verify_output_window(Application& app, const std::filesystem::path& evidenc
     require(entry != project.entries().end(), "The Unicode material fixture was not published by the Reader.");
     const auto material_key = entry->key;
     editor::Session authored;
+    model(authored.initialize());
     model(authored.create_static_mesh(model(project.assets().mesh("builtin/cube"))));
     const auto parts = model(world::components(authored.world().runtime(), authored.selection().entity));
     require(parts.size() == 1, "Error fixture did not create the builtin cube's mesh component.");

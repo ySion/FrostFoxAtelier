@@ -3,6 +3,7 @@
 void verify_project_workspace(editor::Project& project) {
     namespace browser = editor::browser_control;
     editor::Session document;
+    take(document.initialize());
     editor::Workspace workspace;
     workspace.project_open = true;
     workspace.assets.reset(true);
