@@ -10,6 +10,8 @@ parse 的大小及深度政策由入口负责。解析检查 UTF-8、重名键�
 
 parse、校验和错误定位不受嵌套深度的调用栈限制；复制、冻结、比较和写出仍是递归的，深层值的上限由各入口的深度政策负责。
 
+`Document::parse_gltf` 是唯一的 glTF 重名键政策入口，唯一产品调用方为 glTF 导入。它允许 BOM，校验 JSON/UTF-8，以解码后的键比较并保留最后一个成员；不增加深度上限。所有 glTF 输入都用公开的迭代复制入口转入 yyjson mutable 存储，迭代去重后作为只读 Document 发布，析构用 `yyjson_mut_doc_free`；不经过冻结、文本桥接、比较或 writer。存储布局与写权限分开，Value 大小不变；Builder 的写入口只接受自身可写 DOM 的节点，不能改写只读 Document 或其他 Builder。普通 parse 仍拒绝重名键。
+
 writer 返回字节缓冲，按成员键的字节序排序引用，不复制整树。文件或管道直接消费字节；只有真正需要拥有型 String 的消费者才转换。
 
 数组按输入顺序遍历与追加；`ArrayView` 不分配节点集合。i64/u64 读取检查整数种类与范围，不经过 double；浮点到整数不隐式截断。f32 读取允许舍入但拒绝溢出。float 构造使用最短十进制值转成 double；若读回 float 不同则使用原 float 的精确 double 值，保留负零，始终存为 real。double 使用 yyjson 原生写出，不降精度为 float。

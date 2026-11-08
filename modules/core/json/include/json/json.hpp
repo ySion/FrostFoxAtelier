@@ -98,12 +98,14 @@ private:
 
     friend struct Access;
 
-    Value(const void* node, bool mutable_node, const void* root = nullptr)
-        : node_(node), mutable_(mutable_node), root_(root ? root : node) {}
+    enum class Storage : unsigned char { immutable, readonly_mutable, writable };
+
+    Value(const void* node, Storage storage, const void* root = nullptr)
+        : node_(node), storage_(storage), root_(root ? root : node) {}
 
     const void* node_;
 
-    bool mutable_;
+    Storage storage_;
 
     const void* root_;
 };
@@ -167,6 +169,10 @@ public:
 
     [[nodiscard]] static Result<Document> parse(std::string_view bytes, ParseOptions options);
 
+    // glTF import only: strict JSON with BOM allowed and last decoded key wins.
+    // No nesting cap; normalization and destruction do not recurse.
+    [[nodiscard]] static Result<Document> parse_gltf(std::string_view bytes);
+
     // Startup table data, parsed once and shared immutably. Referencing modules
     // must remain loaded while references or copies survive. Runtime input uses parse().
     template <atelier::detail::StringLiteral Text>
@@ -199,7 +205,11 @@ private:
 
     explicit Document(void* doc);
 
+    Document(void* doc, Value::Storage storage);
+
     std::shared_ptr<void> doc_;
+
+    Value::Storage storage_{Value::Storage::immutable};
 };
 
 // A short-lived construction transaction. Strings and keys are copied and
@@ -346,6 +356,8 @@ public:
     [[nodiscard]] Result<void> set_null(Value parent, std::string_view key);
 
 private:
+    void require_writable(Value target) const;
+
     void replace_node(Value target, const void* source);
 
     Result<void> put(Value parent, std::string_view key, void* value);

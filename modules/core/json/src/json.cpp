@@ -10,6 +10,7 @@
 #include <charconv>
 #include <cmath>
 #include <limits>
+#include <unordered_map>
 #include <unordered_set>
 
 namespace atelier::json {
@@ -50,6 +51,8 @@ std::string child_path(std::string_view parent, std::string_view key) {
 }
 
 struct Access {
+    static bool mutable_layout(Value value) { return value.storage_ != Value::Storage::immutable; }
+
     static yyjson_val* scalar(const Value& value) { return static_cast<yyjson_val*>(const_cast<void*>(value.node_)); }
 
     static yyjson_mut_val* mutable_node(const Value& value) {
@@ -60,16 +63,17 @@ struct Access {
     static void object(const Value& value, F&& visit) {
         std::size_t index;
         std::size_t count;
-        if (value.mutable_) {
+        if (mutable_layout(value)) {
             yyjson_mut_val* key;
             yyjson_mut_val* child;
-            yyjson_mut_obj_foreach(mutable_node(value), index, count, key, child) visit(
-                std::string_view{yyjson_mut_get_str(key), yyjson_mut_get_len(key)}, Value{child, true, value.root_});
+            yyjson_mut_obj_foreach(mutable_node(value), index, count, key, child)
+                visit(std::string_view{yyjson_mut_get_str(key), yyjson_mut_get_len(key)},
+                      Value{child, value.storage_, value.root_});
         } else {
             yyjson_val* key;
             yyjson_val* child;
-            yyjson_obj_foreach(scalar(value), index, count, key, child)
-                visit(std::string_view{yyjson_get_str(key), yyjson_get_len(key)}, Value{child, false, value.root_});
+            yyjson_obj_foreach(scalar(value), index, count, key, child) visit(
+                std::string_view{yyjson_get_str(key), yyjson_get_len(key)}, Value{child, value.storage_, value.root_});
         }
     }
 
@@ -77,13 +81,14 @@ struct Access {
     static void array(const Value& value, F&& visit) {
         std::size_t index;
         std::size_t count;
-        if (value.mutable_) {
+        if (mutable_layout(value)) {
             yyjson_mut_val* child;
             yyjson_mut_arr_foreach(mutable_node(value), index, count, child)
-                visit(index, Value{child, true, value.root_});
+                visit(index, Value{child, value.storage_, value.root_});
         } else {
             yyjson_val* child;
-            yyjson_arr_foreach(scalar(value), index, count, child) visit(index, Value{child, false, value.root_});
+            yyjson_arr_foreach(scalar(value), index, count, child)
+                visit(index, Value{child, value.storage_, value.root_});
         }
     }
 
@@ -126,7 +131,7 @@ struct Access {
 
     static std::string location(Value value) {
         std::string path;
-        [[maybe_unused]] const bool found = locate({value.root_, value.mutable_}, value.node_, path);
+        [[maybe_unused]] const bool found = locate({value.root_, value.storage_}, value.node_, path);
         assert(found); // Detached/replaced nodes are invalid borrows.
         return path;
     }
@@ -183,20 +188,22 @@ Result<Value> Value::at(std::size_t index) const {
         return std::unexpected(error(Fault::type, "Expected array"));
     if (index >= size())
         return std::unexpected(member_error(*this, std::to_string(index), Fault::range, "Array index out of range"));
-    const void* child = mutable_ ? static_cast<void*>(yyjson_mut_arr_get(Access::mutable_node(*this), index))
-                                 : static_cast<void*>(yyjson_arr_get(Access::scalar(*this), index));
-    return Value{child, mutable_, root_};
+    const void* child = Access::mutable_layout(*this)
+                            ? static_cast<void*>(yyjson_mut_arr_get(Access::mutable_node(*this), index))
+                            : static_cast<void*>(yyjson_arr_get(Access::scalar(*this), index));
+    return Value{child, storage_, root_};
 }
 
 Result<std::optional<Value>> Value::find(std::string_view key) const {
     if (!yyjson_is_obj(Access::scalar(*this)))
         return std::unexpected(error(Fault::type, "Expected object"));
     const auto* name = key.empty() ? "" : key.data();
-    void* child = mutable_ ? static_cast<void*>(yyjson_mut_obj_getn(Access::mutable_node(*this), name, key.size()))
-                           : static_cast<void*>(yyjson_obj_getn(Access::scalar(*this), name, key.size()));
+    void* child = Access::mutable_layout(*this)
+                      ? static_cast<void*>(yyjson_mut_obj_getn(Access::mutable_node(*this), name, key.size()))
+                      : static_cast<void*>(yyjson_obj_getn(Access::scalar(*this), name, key.size()));
     if (!child)
         return std::nullopt;
-    return Value{child, mutable_, root_};
+    return Value{child, storage_, root_};
 }
 
 Result<Value> Value::at(std::string_view key) const {
@@ -327,9 +334,10 @@ Result<ArrayView> Value::array() const {
 }
 
 ArrayView::Iterator ArrayView::begin() const {
-    const void* first = value_.mutable_ ? static_cast<void*>(yyjson_mut_arr_get_first(Access::mutable_node(value_)))
-                                        : static_cast<void*>(yyjson_arr_get_first(Access::scalar(value_)));
-    return {Value{first, value_.mutable_, value_.root_}, size()};
+    const void* first = Access::mutable_layout(value_)
+                            ? static_cast<void*>(yyjson_mut_arr_get_first(Access::mutable_node(value_)))
+                            : static_cast<void*>(yyjson_arr_get_first(Access::scalar(value_)));
+    return {Value{first, value_.storage_, value_.root_}, size()};
 }
 
 Value ArrayView::Iterator::operator*() const {
@@ -340,8 +348,9 @@ Value ArrayView::Iterator::operator*() const {
 ArrayView::Iterator& ArrayView::Iterator::operator++() {
     assert(remaining_);
     if (--remaining_) {
-        current_.node_ = current_.mutable_ ? static_cast<void*>(Access::mutable_node(current_)->next)
-                                           : static_cast<void*>(unsafe_yyjson_get_next(Access::scalar(current_)));
+        current_.node_ = Access::mutable_layout(current_)
+                             ? static_cast<void*>(Access::mutable_node(current_)->next)
+                             : static_cast<void*>(unsafe_yyjson_get_next(Access::scalar(current_)));
     }
     return *this;
 }
@@ -419,15 +428,37 @@ bool Value::operator==(Value other) const {
 
 Document::Document(void* doc) : doc_(doc, [](void* value) { yyjson_doc_free(static_cast<yyjson_doc*>(value)); }) {}
 
+Document::Document(void* doc, Value::Storage storage)
+    : doc_(doc, [](void* value) { yyjson_mut_doc_free(static_cast<yyjson_mut_doc*>(value)); }), storage_(storage) {}
+
 Document::Document() : Document(Builder{}.finish()) {}
 
 Document::Document(Value source) : Document(Builder{source}.finish()) {}
 
 Value Document::root() const& {
-    return {yyjson_doc_get_root(static_cast<yyjson_doc*>(doc_.get())), false};
+    return {storage_ == Value::Storage::immutable
+                ? static_cast<void*>(yyjson_doc_get_root(static_cast<yyjson_doc*>(doc_.get())))
+                : static_cast<void*>(yyjson_mut_doc_get_root(static_cast<yyjson_mut_doc*>(doc_.get()))),
+            storage_};
 }
 
 namespace {
+Result<yyjson_doc*> read_document(std::string_view bytes, bool allow_bom) {
+    yyjson_read_err error{};
+    auto* doc = yyjson_read_opts(const_cast<char*>(bytes.data()), bytes.size(), allow_bom ? YYJSON_READ_ALLOW_BOM : 0,
+                                 &allocator, &error);
+    if (!doc) {
+        const auto fault = error.code == YYJSON_READ_ERROR_INVALID_STRING && error.pos < bytes.size() &&
+                                   static_cast<unsigned char>(bytes[error.pos]) >= 0x80
+                               ? Fault::encoding
+                               : Fault::syntax;
+        Error result{fault, error.msg, {}, error.pos};
+        yyjson_locate_pos(bytes.data(), bytes.size(), error.pos, &result.line, &result.column, nullptr);
+        return std::unexpected(std::move(result));
+    }
+    return doc;
+}
+
 Result<void> validate(Value value, std::size_t depth, ParseOptions options) {
     struct Frame {
         Value value;
@@ -497,21 +528,41 @@ Result<Document> Document::parse(std::string_view bytes, ParseOptions options) {
         } else if ((c == ']' || c == '}') && depth)
             --depth;
     }
-    yyjson_read_err error{};
-    auto* doc = yyjson_read_opts(const_cast<char*>(bytes.data()), bytes.size(),
-                                 options.allow_bom ? YYJSON_READ_ALLOW_BOM : 0, &allocator, &error);
-    if (!doc) {
-        // yyjson points at the non-ASCII byte when string UTF-8 validation fails.
-        const auto fault = error.code == YYJSON_READ_ERROR_INVALID_STRING && error.pos < bytes.size() &&
-                                   static_cast<unsigned char>(bytes[error.pos]) >= 0x80
-                               ? Fault::encoding
-                               : Fault::syntax;
-        Error result{fault, error.msg, {}, error.pos};
-        yyjson_locate_pos(bytes.data(), bytes.size(), error.pos, &result.line, &result.column, nullptr);
-        return std::unexpected(std::move(result));
-    }
-    Document result{doc};
+    ATELIER_TRY_BIND(doc, read_document(bytes, options.allow_bom));
+    Document result{*doc};
     ATELIER_TRY(validate(result.root(), 0, options));
+    return result;
+}
+
+Result<Document> Document::parse_gltf(std::string_view bytes) {
+    ATELIER_TRY_BIND(parsed, read_document(bytes, true));
+    auto* doc = yyjson_doc_mut_copy(*parsed, &allocator);
+    yyjson_doc_free(*parsed);
+    Document result{doc, Value::Storage::readonly_mutable};
+    Array<yyjson_mut_val*> pending;
+    pending.emplace(yyjson_mut_doc_get_root(doc));
+    std::unordered_map<std::string_view, yyjson_mut_val*> last;
+    while (!pending.empty()) {
+        auto* node = pending.back();
+        pending.pop();
+        if (yyjson_mut_is_obj(node)) {
+            last.clear();
+            auto scan = yyjson_mut_obj_iter_with(node);
+            while (auto* key = yyjson_mut_obj_iter_next(&scan))
+                last[{yyjson_mut_get_str(key), yyjson_mut_get_len(key)}] = key;
+            auto iter = yyjson_mut_obj_iter_with(node);
+            while (auto* key = yyjson_mut_obj_iter_next(&iter)) {
+                if (last.at({yyjson_mut_get_str(key), yyjson_mut_get_len(key)}) != key)
+                    yyjson_mut_obj_iter_remove(&iter);
+                else
+                    pending.emplace(yyjson_mut_obj_iter_get_val(key));
+            }
+        } else if (yyjson_mut_is_arr(node)) {
+            auto iter = yyjson_mut_arr_iter_with(node);
+            while (auto* child = yyjson_mut_arr_iter_next(&iter))
+                pending.emplace(child);
+        }
+    }
     return result;
 }
 
@@ -523,8 +574,7 @@ Builder::Builder(Kind root) : doc_(yyjson_mut_doc_new(&allocator)) {
                                                        : yyjson_mut_null(doc));
 }
 
-Builder::Builder(const Document& source)
-    : doc_(yyjson_doc_mut_copy(static_cast<yyjson_doc*>(source.doc_.get()), &allocator)) {}
+Builder::Builder(const Document& source) : Builder(source.root()) {}
 
 Builder::Builder(Value source) : doc_(yyjson_mut_doc_new(&allocator)) {
     yyjson_mut_doc_set_root(static_cast<yyjson_mut_doc*>(doc_), static_cast<yyjson_mut_val*>(copy(source)));
@@ -532,8 +582,8 @@ Builder::Builder(Value source) : doc_(yyjson_mut_doc_new(&allocator)) {
 
 void* Builder::copy(Value source) {
     auto* doc = static_cast<yyjson_mut_doc*>(doc_);
-    return source.mutable_ ? yyjson_mut_val_mut_copy(doc, Access::mutable_node(source))
-                           : yyjson_val_mut_copy(doc, Access::scalar(source));
+    return Access::mutable_layout(source) ? yyjson_mut_val_mut_copy(doc, Access::mutable_node(source))
+                                          : yyjson_val_mut_copy(doc, Access::scalar(source));
 }
 
 Document Builder::finish() const {
@@ -552,7 +602,12 @@ Builder& Builder::operator=(Builder&& other) noexcept {
 }
 
 Value Builder::root() const& {
-    return {yyjson_mut_doc_get_root(static_cast<yyjson_mut_doc*>(doc_)), true};
+    return {yyjson_mut_doc_get_root(static_cast<yyjson_mut_doc*>(doc_)), Value::Storage::writable};
+}
+
+void Builder::require_writable(Value target) const {
+    if (target.storage_ != Value::Storage::writable || target.root_ != root().node_)
+        fatal("JSON write requires a node owned by this Builder");
 }
 
 Result<void> Builder::put(Value parent, std::string_view key, void* value) {
@@ -563,7 +618,8 @@ Result<void> Builder::put(Value parent, std::string_view key, void* value) {
 }
 
 void Builder::put_validated(Value parent, std::string_view key, void* value) {
-    assert(parent.mutable_ && yyjson_is_obj(Access::scalar(parent)));
+    require_writable(parent);
+    assert(yyjson_is_obj(Access::scalar(parent)));
     auto* doc = static_cast<yyjson_mut_doc*>(doc_);
     auto* name = yyjson_mut_strncpy(doc, key.empty() ? "" : key.data(), key.size());
     yyjson_mut_obj_put(Access::mutable_node(parent), name, static_cast<yyjson_mut_val*>(value));
@@ -578,11 +634,11 @@ Result<Value> Builder::object(Value parent, std::string_view key) {
 Value Builder::object_validated(Value parent, std::string_view key) {
     auto* child = yyjson_mut_obj(static_cast<yyjson_mut_doc*>(doc_));
     put_validated(parent, key, child);
-    return Value{child, true, parent.root_};
+    return Value{child, Value::Storage::writable, parent.root_};
 }
 
 Value Builder::object_path_validated(Value parent, std::span<const std::string> keys) {
-    assert(parent.mutable_);
+    require_writable(parent);
     for (const auto& key : keys) {
         if (parent.kind() != Kind::object)
             replace_node(parent, yyjson_mut_obj(static_cast<yyjson_mut_doc*>(doc_)));
@@ -627,14 +683,15 @@ Result<void> Builder::set_null(Value parent, std::string_view key) {
 Result<Value> Builder::array(Value parent, std::string_view key) {
     auto* child = yyjson_mut_arr(static_cast<yyjson_mut_doc*>(doc_));
     ATELIER_TRY(put(parent, key, child));
-    return Value{child, true, parent.root_};
+    return Value{child, Value::Storage::writable, parent.root_};
 }
 
 Value Builder::push(Value parent, void* value) {
-    assert(parent.mutable_ && parent.kind() == Kind::array);
+    require_writable(parent);
+    assert(parent.kind() == Kind::array);
     auto* child = static_cast<yyjson_mut_val*>(value);
     yyjson_mut_arr_append(Access::mutable_node(parent), child);
-    return Value{child, true, parent.root_};
+    return Value{child, Value::Storage::writable, parent.root_};
 }
 
 Value Builder::append_object(Value parent) {
@@ -658,7 +715,7 @@ void Builder::replace(Value target, Value source) {
 }
 
 void Builder::replace_node(Value target, const void* source) {
-    assert(target.mutable_);
+    require_writable(target);
     const auto* replacement = static_cast<const yyjson_mut_val*>(source);
     auto* value = Access::mutable_node(target);
     value->tag = replacement->tag;
@@ -697,7 +754,8 @@ Result<void> Builder::set(Value target, double value) {
 }
 
 bool Builder::erase(Value parent, std::string_view key) {
-    assert(parent.mutable_ && parent.kind() == Kind::object);
+    require_writable(parent);
+    assert(parent.kind() == Kind::object);
     return yyjson_mut_obj_remove_keyn(Access::mutable_node(parent), key.empty() ? "" : key.data(), key.size()) !=
            nullptr;
 }

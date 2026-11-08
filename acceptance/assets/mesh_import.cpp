@@ -1,7 +1,7 @@
 #include "memory/fatal.hpp"
 #include "assets/mesh_import.hpp"
 #include "assets/reader.hpp"
-#include <nlohmann/json.hpp>
+#include "json/json.hpp"
 #include <chrono>
 #include <cstdio>
 #include <fstream>
@@ -12,18 +12,17 @@ using namespace atelier;
 
 namespace fs = std::filesystem;
 
-using Json = nlohmann::json;
-
 void require(bool condition, const char* message) {
     if (!condition)
         throw std::runtime_error(message);
 }
 
-template <class T>
-T take(Result<T> result) {
+template <class T, class E>
+T take(std::expected<T, E> result) {
     if (!result)
         throw std::runtime_error(result.error().message);
-    return std::move(*result);
+    if constexpr (!std::is_void_v<T>)
+        return std::move(*result);
 }
 
 void write(const fs::path& path, std::string_view bytes) {
@@ -173,7 +172,7 @@ void gltf(const fs::path& root) {
              {positions[i][0], positions[i][1], positions[i][2], 0.f, 0.f, 1.f, 1.f, 0.f, 0.f, 1.f, uv[i][0], uv[i][1]})
             bin.append(reinterpret_cast<const char*>(&v), sizeof(v));
     write(root / "scene.bin", bin);
-    const Json fixture = Json::parse(R"({
+    const auto& fixture = json::Document::literal<R"({
         "asset":{"version":"2.0"},"scenes":[{"nodes":[0,1]}],
         "nodes":[{"mesh":0},{"mesh":0,"scale":[-1,1,1]}],
         "meshes":[{"primitives":[
@@ -198,8 +197,9 @@ void gltf(const fs::path& root) {
             {"bufferView":0,"byteOffset":0,"componentType":5126,"count":3,"type":"VEC3"},
             {"bufferView":0,"byteOffset":12,"componentType":5126,"count":3,"type":"VEC3"},
             {"bufferView":0,"byteOffset":24,"componentType":5126,"count":3,"type":"VEC4"},
-            {"bufferView":0,"byteOffset":40,"componentType":5126,"count":3,"type":"VEC2"}]})");
-    write(root / "scene.gltf", fixture.dump());
+            {"bufferView":0,"byteOffset":40,"componentType":5126,"count":3,"type":"VEC2"}]})">();
+    const auto fixture_bytes = json::write(fixture.root());
+    write(root / "scene.gltf", {fixture_bytes.data(), fixture_bytes.size()});
     const auto imported = take(assets::load_gltf(root / "scene.gltf"));
     aligned(imported);
     require(imported.mesh->vertices().size() == 18 && imported.mesh->parts().size() == 6 &&
@@ -236,34 +236,64 @@ void gltf(const fs::path& root) {
                 vertices[0].tangent[0] == -1 && vertices[0].tangent[3] == -1 && vertices[9].tangent[0] == 1 &&
                 vertices[9].tangent[3] == 1 && vertices[6].tangent[3] == 1 && vertices[15].tangent[3] == -1,
             "glTF mirror or authored/generated tangent handedness changed.");
-    auto variant = fixture;
-    variant["materials"][0]["doubleSided"] = false;
-    variant["materials"][1]["doubleSided"] = true;
-    write(root / "variant.gltf", variant.dump());
+    json::Builder variant{fixture};
+    auto materials = take(variant.root().at("materials"));
+    take(variant.set(take(materials.at(0)), "doubleSided", false));
+    take(variant.set(take(materials.at(1)), "doubleSided", true));
+    const auto variant_bytes = json::write(variant.root());
+    write(root / "variant.gltf", {variant_bytes.data(), variant_bytes.size()});
     const auto sided = take(assets::load_gltf(root / "variant.gltf"));
     require(sided.materials[0]->parent_key == "builtin/material/standard-opaque-single" &&
                 sided.materials[1]->parent_key == "builtin/material/standard-mask-double",
             "glTF did not select the other StandardPBR policy sources.");
-    const auto reject = [&](Json variant, std::string_view reason) {
-        write(root / "variant.gltf", variant.dump());
-        rejects([&] { static_cast<void>(assets::load_gltf(root / "variant.gltf")); }, reason);
+    // Decoded duplicate keys keep the last value, including nested objects.
+    std::string duplicate{fixture_bytes.data(), fixture_bytes.size()};
+    duplicate.insert(1, R"("nodes":null,"scene":999,"sc\u0065ne":0.0,)");
+    const auto asset = duplicate.find(R"("asset":{)") + std::string_view{R"("asset":{)"}.size();
+    duplicate.insert(asset, R"("version":"unsupported",)");
+    write(root / "variant.gltf", duplicate);
+    const auto repeated = take(assets::load_gltf(root / "variant.gltf"));
+    require(repeated.mesh->vertices().size() == vertices.size() &&
+                repeated.materials.size() == imported.materials.size(),
+            "glTF duplicate members did not keep their last decoded value.");
+    variant = json::Builder{fixture};
+    const auto scene_nodes = take(take(take(variant.root().at("scenes")).at(0)).at("nodes"));
+    take(variant.set(take(scene_nodes.at(0)), 0.0));
+    const auto real_index_bytes = json::write(variant.root());
+    write(root / "variant.gltf", {real_index_bytes.data(), real_index_bytes.size()});
+    require(take(assets::load_gltf(root / "variant.gltf")).mesh->vertices().size() == vertices.size(),
+            "glTF rejected an integral real node index.");
+    const auto reject = [&](const json::Builder& variant, std::string_view reason) {
+        const auto bytes = json::write(variant.root());
+        write(root / "variant.gltf", {bytes.data(), bytes.size()});
+        const auto loaded = assets::load_gltf(root / "variant.gltf");
+        require(!loaded && loaded.error().code == ErrorCode::invalid_storage &&
+                    loaded.error().message.find(reason) != std::string::npos,
+                "glTF rejection did not return the expected error.");
     };
-    variant = fixture;
-    variant["buffers"][0]["uri"] = "%2e%2e/outside.bin";
+    variant = json::Builder{fixture};
+    take(variant.set(take(take(variant.root().at("buffers")).at(0)), "uri", "%2e%2e/outside.bin"));
     reject(variant, "inside the source directory");
-    variant = fixture;
-    variant["accessors"][0]["count"] = 100;
+    variant = json::Builder{fixture};
+    take(variant.set(take(take(variant.root().at("accessors")).at(0)), "count", 100u));
     reject(variant, "exceeds its buffer");
-    variant = fixture;
-    variant["materials"][0]["pbrMetallicRoughness"]["roughnessFactor"] = 2;
+    variant = json::Builder{fixture};
+    take(variant.set(take(take(variant.root().at("accessors")).at(0)), "count", 3.5));
+    reject(variant, "integral value");
+    variant = json::Builder{fixture};
+    take(variant.set(take(take(take(variant.root().at("materials")).at(0)).at("pbrMetallicRoughness")),
+                     "roughnessFactor", 2u));
     reject(variant, "invalid material");
-    variant = fixture;
-    variant["meshes"][0]["primitives"][0]["attributes"].erase("TEXCOORD_0");
+    variant = json::Builder{fixture};
+    const auto primitive = take(take(take(take(variant.root().at("meshes")).at(0)).at("primitives")).at(0));
+    variant.erase(take(primitive.at("attributes")), "TEXCOORD_0");
     reject(variant, "no TEXCOORD_0");
     write(root / "broken.bmp", "not an image");
-    variant = fixture;
-    variant["images"][0]["uri"] = "broken.bmp";
-    reject(variant, "Cannot decode texture");
+    variant = json::Builder{fixture};
+    take(variant.set(take(take(variant.root().at("images")).at(0)), "uri", "broken.bmp"));
+    const auto broken_bytes = json::write(variant.root());
+    write(root / "variant.gltf", {broken_bytes.data(), broken_bytes.size()});
+    rejects([&] { static_cast<void>(assets::load_gltf(root / "variant.gltf")); }, "Cannot decode texture");
 }
 
 void digest() {

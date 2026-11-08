@@ -1,6 +1,6 @@
 # JSON 库选型研究
 
-核查日期：2026-10-03。本文记录候选和选择依据；截至该日工程仍使用 nlohmann/json 3.12.0。本片已将 Project、Scene 与 Control 的 JSON DOM 迁移到锁定的 yyjson；本页保留为历史选型记录。
+核查日期：2026-10-03。本文记录候选和选择依据；截至该日工程仍使用 nlohmann/json 3.12.0。当前 Project、Scene、Control 和 glTF 导入均已迁移到 core/json 与锁定的 yyjson，nlohmann 构建依赖已删除；本页保留为历史选型记录。
 
 ## 结论
 

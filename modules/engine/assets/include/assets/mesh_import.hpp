@@ -41,8 +41,9 @@ struct MeshImport {
 // Wavefront OBJ/MTL or glTF 2.0 (.gltf with external buffers and images).
 bool is_mesh_path(const std::filesystem::path&);
 
-// IO/encoding failures return invalid_storage; format/decoding failures still
-// throw until ASSET-LOAD migration. Dependencies stay inside the source directory,
+// IO/encoding and glTF format/schema failures return invalid_storage. OBJ format
+// and image decoding failures still throw until ASSET-LOAD migration.
+// Dependencies stay inside the source directory,
 // including after resolving links. No disk mutations or partial publication.
 Result<MeshImport> load_mesh(const std::filesystem::path& source, ImageCache* images = nullptr);
 
