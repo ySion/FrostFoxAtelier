@@ -453,13 +453,15 @@ Result<MeshImport> load_gltf(const std::filesystem::path& source, ImageCache* sh
             ATELIER_TRY_BIND(texture, element(gltf, indexed, "textures", *index));
             ATELIER_TRY_BIND(source_value, texture->at("source"));
             ATELIER_TRY_BIND(source_index, integer(*source_value));
-            ATELIER_TRY_BIND(image, element(gltf, indexed, "images", *source_value));
+            if (*source_index >= images.size())
+                return std::unexpected(source_value->error(json::Fault::range, "Array index out of range"));
+            const auto image = images[*source_index];
             auto& slot = image_slot[*source_index];
             if (slot == no_slot) {
                 ATELIER_TRY(require(image_files.size() < maximum_images, "too many images."));
-                ATELIER_TRY_BIND(view, image->find("bufferView"));
+                ATELIER_TRY_BIND(view, image.find("bufferView"));
                 ATELIER_TRY(require(!*view, "images stored in buffers are not supported."));
-                ATELIER_TRY_BIND(uri, image->at("uri"));
+                ATELIER_TRY_BIND(uri, image.at("uri"));
                 ATELIER_TRY_BIND(path, dependency(*uri));
                 // Generated materials reference the image as a Project texture asset.
                 ATELIER_TRY(require(is_texture_path(*path), "images must be PNG, JPEG, BMP or TIFF files."));
