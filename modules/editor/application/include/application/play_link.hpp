@@ -31,6 +31,8 @@ public:
 
     LiveLink& operator=(const LiveLink&) = delete;
 
+    // Internal precondition: a nonempty frame of at most maximum_message bytes.
+    // Protocol producers must reject oversized encoded replies before sending.
     void send(std::string);
 
     std::vector<std::string> receive();
