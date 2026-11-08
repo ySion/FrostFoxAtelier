@@ -5,9 +5,9 @@
 #include "ui/style_sheet.hpp"
 #include "ui/table.hpp"
 #include "ui/code_document.hpp"
+#include "ui/error.hpp"
 #include "ui_layout/layout.hpp"
 #include <bitset>
-#include <expected>
 #include <limits>
 #include <span>
 #include <string>
@@ -19,8 +19,6 @@ namespace atelier::ui {
 namespace detail {
 class TextSnapshot;
 }
-
-using ControlKey = std::uint64_t; // Application key; zero denotes the layout root.
 
 enum class DragAxis { horizontal, vertical };
 
@@ -615,32 +613,6 @@ struct CompositionEvent {
 using PlatformRequest = std::variant<ClipboardRequest, ImeRequest>;
 
 using Effect = std::variant<Action, PlatformRequest>;
-
-enum class ErrorCode {
-    invalid_surface,
-    unavailable_surface,
-    invalid_control,
-    layout_failed,
-    text_failed,
-    capacity_exceeded,
-    invalid_style,
-    invalid_text,
-    platform_failed
-};
-
-struct Error {
-    ErrorCode code{};
-
-    ControlKey key{};
-
-    std::uint32_t native_code{};
-
-    // Non-owning; nonempty messages must refer to static-storage text (string literals).
-    std::string_view message{};
-};
-
-template <class T>
-using Result = std::expected<T, Error>;
 
 // Validate a producer's descriptor before publishing it. This does not inspect
 // tree row order, table contents or solve layout; Session remains the complete batch boundary.

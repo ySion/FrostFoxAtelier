@@ -103,7 +103,7 @@ private:
 
     Clock::time_point next_poll_{};
 
-    std::shared_ptr<ui::CodeDocument> empty_{std::make_shared<ui::CodeDocument>(L"")};
+    std::shared_ptr<ui::CodeDocument> empty_{std::make_shared<ui::CodeDocument>()};
 
     std::size_t problem_line_{};
 

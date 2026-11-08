@@ -21,6 +21,10 @@ struct DockTab {
 // UI Session owns every gesture/capture. apply() consumes its accepted-frame actions.
 class DockSpace {
 public:
+    // Fixed registry: 1..64 views, nonzero base with room for base+5'000'256.
+    // Each key/content is nonzero, globally distinct and outside that closed range.
+    // Titles are nonempty; finite minimum sizes are at least 120x60.
+    // Empty/oversized registries and overflowing key ranges are fatal; other violations assert.
     DockSpace(ControlKey key_base, std::vector<DockTab>);
 
     ~DockSpace();

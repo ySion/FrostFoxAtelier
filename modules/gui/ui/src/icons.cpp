@@ -1,8 +1,8 @@
 #include "ui/icons.hpp"
+#include "memory/fatal.hpp"
 #include <algorithm>
 #include <array>
 #include <cmath>
-#include <stdexcept>
 
 namespace atelier::ui {
 namespace {
@@ -95,13 +95,13 @@ std::span<const Run> data(Icon icon) {
     case Icon::unparent:
         return unparent_runs;
     }
-    throw std::invalid_argument("Unknown UI icon");
+    fatal("Unknown UI icon");
 }
 }
 
 void raster_icon(Icon icon, std::uint32_t pixels, std::span<std::uint8_t> alpha) {
     if (!pixels || pixels > 256 || alpha.size() != std::size_t(pixels) * pixels)
-        throw std::invalid_argument("Invalid UI icon raster extent");
+        fatal("Invalid UI icon raster extent");
     constexpr unsigned source_size = icon_source_size;
     std::array<std::uint8_t, source_size * source_size> source;
     auto destination = source.begin();

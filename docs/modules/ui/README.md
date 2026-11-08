@@ -58,6 +58,12 @@
 
 `ControlKind::code_editor` 使用 `Control::code` 指向宿主持有的 `CodeDocument`。文档跨控件挂载保持文本和增量历史；Session 共用原有焦点、捕获、Clipboard/IME token 与平台请求。`UiFrame::find_code` 返回可见行、文档版本和接受帧几何。单行字段继续使用其原有事务，源码已确认输入不会因失焦或隐藏回滚。作者与文件层契约见[源码工作流](../editor/source-editor.md)。
 
+`CodeDocument::create` 接收最多 1,048,576 个 UTF-16 码元；要求有效 Unicode、LF 行尾，拒绝 NUL、CR、除 LF/tab 外的 C0 和 DEL。拒绝返回 `ui::ErrorCode::invalid_text` 与原静态诊断，不发布文档；无参构造只创建合法空文档。`ControlKey`、`ErrorCode`、`Error`、`Result` 的原声明归入 [error.hpp](../../../modules/gui/ui/include/ui/error.hpp)，`session.hpp` 继续传递导出，名字和布局不变。宿主只在 create 成功后将值移入共享稳定存储，发布后不搬动对象。
+
+字符判定只由 `CodeDocument::valid_text` 实现，不含长度预算。SourceEditor 的正规化只做 BOM、UTF-8 和 CRLF→LF 转换；load 由 create 校验一次，日志定位前缀与编译快照比较在转换后复用字符谓词，保留旧拒绝、文案和比较语义。Output 保留日志准入及可见转义；其最多 128 KiB 正文转义后不超过 786,432 个码元，违反此转换后置条件直接 fatal，不新增错误展示。ICU 字素边界失败仍可能抛 `TextFailure`，属于 UI-TEXT，create 整条链尚未完成去异常。
+
+已知残留 **CODE-DOC-EDIT**：公开 `edit()` 与粘贴写入尚未执行 CodeDocument 的完整字符合同，可能保存出之后无法重新打开的文件。该问题归后续 UI-TEXT/TextEdit，本片不收窄 TextEdit；创建时通过校验不代表后续内容始终合法。
+
 ## 可组合参数控件
 
 DSL 的 `PanePath`、`ObjectHeader` 和内容页签 用普通 row/column、label、text_edit、button 组合路径、类型＋名称与内容页签。对象字段仍由宿主绑定实际身份和历史。内容页签使用 `selection_group`：左右键/Home/End 切换，Tab 只访问组内选中项；宿主保存选择并折叠对应内容容器。它与可拖动的工作区 `tab` 职责分开，多层页签和折叠组可直接嵌套在同一布局树中。
@@ -139,6 +145,8 @@ list/tree/popup 默认使用 `scrollbar-gutter: stable`，布局时保留 `scrol
 
 视口工具图标与语义指针共用精选 [Tabler Outline](https://github.com/tabler/tabler-icons) 图形（MIT）。原始 SVG、透明 PNG、版本与许可保存在 [assets/icons](../../../assets/icons/README.md)。构建使用离线生成的压缩 alpha，继续经过 `ControlIcon → TextStore::Symbol → Coverage` 的既有缓存与主题着色；不引入运行时 SVG/PNG 解码器或另一套图标资源管理。
 
+`raster_icon` 的调用前置条件是有效 `Icon`、1…256 像素及恰好 pixels² 字节的输出 span；违例在采样/写入前 fatal，接口仍为 void。TextStore 的运行时尺寸拒绝及 Window 的 DPI 尺寸夹取不变。
+
 范围与轨道像素分开的参照见 [QScrollBar](https://doc.qt.io/qt-6/qscrollbar.html)。原生指针的处理依据为 [WM_SETCURSOR](https://learn.microsoft.com/en-us/windows/win32/menurc/wm-setcursor)、[About Cursors](https://learn.microsoft.com/en-us/windows/win32/menurc/about-cursors)和 [SetCursor](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setcursor)；静态截图不能证明捕获期间的指针行为。
 
 ### 菜单与下拉
@@ -160,6 +168,8 @@ PopupHost另保留一个隔离的measurement Session，用工作区约束及同�
 ## 停靠与标签
 
 [docking.hpp](../../../modules/gui/ui/include/ui/docking.hpp) 的 `DockSpace` 拥有单宿主的分割树、标签顺序、当前标签、最大化目标和拖放预览。宿主注册稳定的 `DockTab.key/content`、标题与最低尺寸，通过 `presentation` 提供分割尺寸、页签与内容槽数据，由编辑器 DSL 描述全部界面结构。它不拥有业务对象、相机、草稿或历史；同类型多实例由宿主注册不同身份才能存在，不能通过复制 key 创建副本。
+
+registry 是代码配置前置条件：1…64 个视图，非零 base 且 base+5,000,256 不溢出；所有 key/content 非零、互异且不落入该闭区间，标题非空、minimum 有限且至少 120×60。空/过大 registry 或范围溢出直接 fatal，其余违例在 dev 断言；release 不保留查重扫描。`reset/split` 的累计身份耗尽仍是 UI-BASE-B 的未迁移路径，本片不改变额度或复用身份。
 
 - 分割是横/纵方向、比例和两个孩子；叶子是标签组。移动后清理空组与单子分割；最后一组可为空，并仍能从菜单打开内容。最大化不改动原树。
 - `tab` 复用 Session 的焦点、键盘激活、命中和捕获。超过 4 DIP 拖动阈值后产生 `drag_begin/preview/commit/cancel`，`DragPoint` 是已接受客户区的物理坐标。`DockSpace::apply` 使用同一接受帧决定目标，拖放预览不修改布局，松开才提交；Esc、捕获/焦点/Surface 丢失取消。

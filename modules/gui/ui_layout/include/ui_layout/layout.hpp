@@ -483,7 +483,9 @@ struct TreeNodeInput {
 // alive and stable throughout compute; destruction from a callback is forbidden.
 class LayoutDocument {
 public:
-    // Invalid capacity throws invalid_argument; allocation failure propagates.
+    // Fixed configuration: max_nodes/max_grid_tracks in [1, UINT32_MAX-1],
+    // max_grid_cells > 0. max_depth may be zero (root only).
+    // Document identity exhaustion and CPU allocation failure are fatal.
     LayoutDocument(Measure measure, void* context, Limits limits);
 
     ~LayoutDocument();

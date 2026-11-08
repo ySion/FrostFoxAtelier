@@ -46,8 +46,8 @@ enum class Icon {
     unparent
 };
 
-// Rasterizes the bundled Tabler mask into tightly packed R8 alpha. Requires
-// 1..256 pixels and exactly pixels*pixels output bytes; throws on invalid input.
+// Rasterizes the bundled Tabler mask into tightly packed R8 alpha. Requires a
+// declared Icon, 1..256 pixels and exactly pixels*pixels bytes; violations are fatal.
 // Call on a cache miss, never per frame. No window or text backend is required.
 void raster_icon(Icon, std::uint32_t pixels, std::span<std::uint8_t> alpha);
 }

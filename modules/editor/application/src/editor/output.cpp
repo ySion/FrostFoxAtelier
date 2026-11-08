@@ -1,6 +1,7 @@
 #include "editor/output.hpp"
 #include "application/diagnostics.hpp"
 #include "foundation/string.hpp"
+#include "memory/fatal.hpp"
 #include "platform/utf.hpp"
 #include <Windows.h>
 #include <algorithm>
@@ -110,7 +111,7 @@ Output::Output() {
     static std::atomic<std::uint64_t> sessions{};
     memory_run_ = "memory-" + std::to_string(GetCurrentProcessId()) + "-" + std::to_string(now_ns()) + "-" +
                   std::to_string(++sessions);
-    body_ = std::make_shared<ui::CodeDocument>(L"");
+    body_ = std::make_shared<ui::CodeDocument>();
     if (const auto* run = logging::current_run()) {
         // Mode is chosen once, not silently switched on each log operation.
         host_ = run->info();
@@ -481,7 +482,10 @@ std::shared_ptr<ui::CodeDocument> Output::body() const {
     const auto at = std::ranges::find(rows_, selected_, &Row::key);
     const auto key = at == rows_.end() ? 0 : at->record_key;
     if (key != body_key_) {
-        body_ = std::make_shared<ui::CodeDocument>(key ? visible_text(item(key)->record.entry.message) : L"");
+        auto document = ui::CodeDocument::create(key ? visible_text(item(key)->record.entry.message) : L"");
+        if (!document)
+            fatal(document.error().message); // Escaped, bounded log text must satisfy the document contract.
+        body_ = std::make_shared<ui::CodeDocument>(std::move(*document));
         body_key_ = key;
     }
     return body_;

@@ -28,9 +28,6 @@ Result<std::wstring> normalized(std::string_view bytes) {
         } else
             result += (*value)[i];
     }
-    if (!ui::detail::valid_text(result, false) ||
-        std::ranges::any_of(result, [](wchar_t c) { return (c < 32 && c != L'\t' && c != L'\n') || c == 127; }))
-        return failure("Open a UTF-8 text file; binary/control characters are not editable.");
     return result;
 }
 
@@ -51,7 +48,10 @@ bool SourceEditor::File::dirty() const {
 
 Result<void> SourceEditor::load(File& file, std::string bytes) {
     ATELIER_TRY_BIND(text, normalized(bytes));
-    auto document = std::make_shared<ui::CodeDocument>(*text);
+    auto created = ui::CodeDocument::create(*text);
+    if (!created)
+        return failure("Open a UTF-8 text file; binary/control characters are not editable.");
+    auto document = std::make_shared<ui::CodeDocument>(std::move(*created));
     if (file.document) {
         const auto& old = file.document->edit();
         const auto offset = old.current().caret.offset;
@@ -295,6 +295,8 @@ Result<void> SourceEditor::locate(const logging::SourceLocation& location) {
         while (offset && offset < disk->size() && (static_cast<unsigned char>((*disk)[offset]) & 0xc0) == 0x80)
             --offset;
         ATELIER_TRY_BIND(prefix, normalized(std::string_view(*disk).substr(0, offset)));
+        if (!ui::CodeDocument::valid_text(*prefix))
+            return failure("Open a UTF-8 text file; binary/control characters are not editable.");
         buffer.select({static_cast<std::uint32_t>(prefix->size()), false}, false);
         return {};
     }
@@ -395,10 +397,17 @@ void SourceEditor::append(std::vector<ui::Control>& controls, ui::ControlKey par
                         problem_source_ = input->source;
                         problem_line_ = location->line;
                         problem_column_ = location->column;
-                        if (file && file->path == problem_path_ &&
-                            (file->dirty() || normalized(problem_source_) != file->document->text())) {
-                            diagnostic = L"Previous saved version: " + diagnostic;
-                            problem_line_ = 0;
+                        if (file && file->path == problem_path_) {
+                            bool previous = file->dirty();
+                            if (!previous) {
+                                const auto text = normalized(problem_source_);
+                                previous =
+                                    !text || !ui::CodeDocument::valid_text(*text) || *text != file->document->text();
+                            }
+                            if (previous) {
+                                diagnostic = L"Previous saved version: " + diagnostic;
+                                problem_line_ = 0;
+                            }
                         }
                     }
                 }

@@ -104,7 +104,7 @@ provider拥有实际文字、字体与排版对象；core只存纯值键和结�
 
 ## 6. 资源、错误与成本
 
-`Limits.max_nodes` 必须在[1, UINT32_MAX−1]，包含根及代际耗尽的退役slot；超限构造参数目前仍抛`invalid_argument`。`max_depth`明确给出，根深度0；创建及移动先检查节点容量/所有受影响后代深度。没有隐含产品节点数或帧预算。构造时Document身份耗尽目前仍抛`overflow_error`；这两处LayoutDocument创建错误留待后续UI-BASE创建片迁移，不代表长期异常合同。CPU分配失败按工程指南处理。
+`Limits` 是固定配置前置条件：`max_nodes` 和 `max_grid_tracks` 均在[1, UINT32_MAX−1]，`max_grid_cells>0`；dev 断言诊断违例。节点额度包含根及代际耗尽的退役slot。`max_depth`明确给出，可为0（仅根）；创建及移动先检查节点容量/所有受影响后代深度，Grid 计算继续显式返回轨道/工作区超限的 Result。没有隐含产品节点数或帧预算。Document身份耗尽直接 fatal，不回绕；CPU分配失败按工程指南处理。合法配置的构造、编辑与几何发布行为不变。
 
 输入校验拒绝NaN/Inf、负尺寸、非法枚举/范围及结构；计算中检查中间值/输出转换，无法表达的量返回`numeric_overflow`。这不是对所有极端数值组合的数学完备性证明。错误码及附带节点/provider_code见公开头文件。
 

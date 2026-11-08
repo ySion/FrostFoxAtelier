@@ -1,15 +1,28 @@
 #pragma once
 #include "ui/detail/text_edit.hpp"
+#include "ui/error.hpp"
 #include <algorithm>
-#include <stdexcept>
 
 namespace atelier::ui {
 // The host owns document lifetime. A CodeEditor borrows it through a shared
 // descriptor; hiding, docking or replacing UI scopes never discards its edits.
 class CodeDocument {
 public:
-    explicit CodeDocument(std::wstring text) : buffer_(validated(std::move(text)), 1024 * 1024, false, false) {
-        buffer_.select({}, false);
+    CodeDocument() : CodeDocument(std::wstring{}) {}
+
+    // Text admission only; ICU failures still belong to the text backend.
+    static Result<CodeDocument> create(std::wstring text) {
+        if (text.size() > 1024 * 1024 || !valid_text(text))
+            return std::unexpected(Error{ErrorCode::invalid_text, 0, 0,
+                                         "CodeDocument requires bounded Unicode text with LF line endings."});
+        return CodeDocument(std::move(text));
+    }
+
+    // Character contract, without the document-size budget. Editing does not
+    // reapply this predicate; hosts also use it for non-creating text consumers.
+    static bool valid_text(std::wstring_view text) noexcept {
+        return detail::valid_text(text, false) &&
+               std::ranges::none_of(text, [](wchar_t c) { return (c < 32 && c != L'\n' && c != L'\t') || c == 127; });
     }
 
     const std::wstring& text() const noexcept { return buffer_.current().text; }
@@ -28,11 +41,8 @@ public:
     }
 
 private:
-    static std::wstring validated(std::wstring text) {
-        if (text.size() > 1024 * 1024 || !detail::valid_text(text, false) ||
-            std::ranges::any_of(text, [](wchar_t c) { return (c < 32 && c != L'\n' && c != L'\t') || c == 127; }))
-            throw std::invalid_argument("CodeDocument requires bounded Unicode text with LF line endings.");
-        return text;
+    explicit CodeDocument(std::wstring text) : buffer_(std::move(text), 1024 * 1024, false, false) {
+        buffer_.select({}, false);
     }
 
     detail::TextEdit buffer_;

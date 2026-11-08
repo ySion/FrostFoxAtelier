@@ -1,5 +1,7 @@
 #include "ui/docking.hpp"
+#include "memory/fatal.hpp"
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <stdexcept>
 
@@ -38,21 +40,30 @@ SplitRange split_range(float size, float first, float second) {
 }
 
 DockSpace::DockSpace(ControlKey base, std::vector<DockTab> tabs) : base_(base), next_(base), tabs_(std::move(tabs)) {
-    if (!base || base > std::numeric_limits<ControlKey>::max() - command_offset - 256 || tabs_.empty() ||
-        tabs_.size() > 64)
-        throw std::invalid_argument("Invalid dock registry or key range.");
-    std::vector<ControlKey> keys;
-    for (const auto& view : tabs_) {
-        if (!view.key || !view.content || view.title.empty() || !std::isfinite(view.minimum.width) ||
-            !std::isfinite(view.minimum.height) || view.minimum.width < 120 || view.minimum.height < 60)
-            throw std::invalid_argument("Invalid dock view.");
-        for (auto key : {view.key, view.content}) {
-            if ((key >= base && key <= base + command_offset + 256) ||
-                std::find(keys.begin(), keys.end(), key) != keys.end())
-                throw std::invalid_argument("Overlapping dock identities.");
-            keys.push_back(key);
-        }
-    }
+    // Empty registries cannot reset; oversized registries/ranges can overlap or wrap generated keys.
+    if (base > std::numeric_limits<ControlKey>::max() - command_offset - 256 || tabs_.empty() || tabs_.size() > 64)
+        fatal("Invalid dock registry or key range.");
+    assert(base && "Invalid dock registry or key range.");
+    assert(std::ranges::all_of(tabs_,
+                               [](const DockTab& view) {
+                                   return view.key && view.content && !view.title.empty() &&
+                                          std::isfinite(view.minimum.width) && std::isfinite(view.minimum.height) &&
+                                          view.minimum.width >= 120 && view.minimum.height >= 60;
+                               }) &&
+           "Invalid dock view.");
+    assert(std::ranges::all_of(tabs_,
+                               [&](const DockTab& view) {
+                                   if (view.key == view.content ||
+                                       (view.key >= base && view.key <= base + command_offset + 256) ||
+                                       (view.content >= base && view.content <= base + command_offset + 256))
+                                       return false;
+                                   return std::ranges::none_of(tabs_, [&](const DockTab& other) {
+                                       return &other != &view &&
+                                              (view.key == other.key || view.key == other.content ||
+                                               view.content == other.key || view.content == other.content);
+                                   });
+                               }) &&
+           "Overlapping dock identities.");
     reset();
 }
 

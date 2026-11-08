@@ -1,11 +1,12 @@
 #include "ui_layout/layout.hpp"
 #include "foundation/result.hpp"
+#include "memory/fatal.hpp"
 
 #include <algorithm>
 #include <atomic>
 #include <bit>
+#include <cassert>
 #include <cmath>
-#include <stdexcept>
 #include <type_traits>
 #include <utility>
 
@@ -21,7 +22,7 @@ std::uint64_t document_identity() {
     auto value = next_document.load(std::memory_order_relaxed);
     for (;;) {
         if (value == std::numeric_limits<std::uint64_t>::max())
-            throw std::overflow_error("Layout document identities exhausted");
+            fatal("Layout document identities exhausted");
         if (next_document.compare_exchange_weak(value, value + 1, std::memory_order_relaxed))
             return value;
     }
@@ -1262,9 +1263,9 @@ struct LayoutDocument::Impl {
 };
 
 LayoutDocument::LayoutDocument(Measure measure, void* context, Limits limits) {
-    if (limits.max_nodes == 0 || limits.max_nodes == no_slot || limits.max_grid_tracks == 0 ||
-        limits.max_grid_tracks == no_slot || limits.max_grid_cells == 0)
-        throw std::invalid_argument("Layout max_nodes must include the root and fit slot identities");
+    assert(limits.max_nodes != 0 && limits.max_nodes != no_slot && limits.max_grid_tracks != 0 &&
+           limits.max_grid_tracks != no_slot && limits.max_grid_cells != 0 &&
+           "Layout max_nodes must include the root and fit slot identities");
     impl_ = std::make_unique<Impl>(measure, context, limits);
 }
 
