@@ -36,6 +36,10 @@
 
 `start_run` 的可恢复配置、路径、后端启动失败返回 expected 错误。`submit`/native::write 的内部异常转换为提交状态与宿主健康；构造实参、复制拥有型快照和其他未标 noexcept 的 API 仍可能抛分配异常。业务异常不能被日志设施异常替换。初始化失败或紧急故障用不递归的 stderr/系统输出，并由宿主决定退出，不再调用同一 logger。
 
+自有配置检查、身份生成、默认目录、文件打开/写入/原子发布通过显式结果传错；`start_run` 在发布活动 Run 前检查每一步，正常失败共用作用域回滚：退休已建 logger、关闭 sink 和活动锁、清宿主 producer，只删除本次确实创建的 run 目录，不删除已存在的目录或父目录。Quill 启动异常，以及 `run_json → path_text` 的 UTF-16 路径转换异常，暂由原启动 catch 处理，归后续 WRITE-NATIVE；不通过异常搬运自有 IO 结果。CPU 分配失败不作为自有 IO 的可恢复故障。
+
+默认根保留使用显式的目录枚举、条目查询和递增错误；枚举失败中止本次保留，不按部分候选表删除。未知、无法读取、超限或未完成的元数据不列为候选；活动锁共享拒绝不删除对应目录，其余锁/删除失败保留原 `retention_failed` 分类。
+
 ## 记录、身份与源码
 
 `Entry` 是领域提交数据；`Record` 额外保存 run/process/thread/producer 序号、时间和输出序号，所有可变文本及字段都有自己的所有权。
@@ -123,6 +127,8 @@ const auto final_report = run->finish();
 
 当前 sink 使用直接 Win32 `WriteFile`，没有额外 stdio 用户缓冲；`sink_flush_succeeded` 检查本次操作的句柄、当前路径与文件身份，并保留此前写失败。它不是 `FlushFileBuffers`/耐久性证明。显式 flush 结果与周期 flush 分别保存，后台周期检查不会覆盖该次显式结果。写失败可能已写半行，故停止该文件后续输出，不自动重试拼接；轮转失败也停止该 sink 后续文件修改，保留 typed health。析构紧急收尾保存 `lifecycle_violation`，只发布非 final 快照，不能冒充显式 finish。设施详情和首条 notice 限 2048 字节；合法 UTF-8 保留原文前缀，罕见非法 UTF-8 以 `raw-bytes-hex:` 保留可逆字节前缀，仍不推断分类。
 
+sink 构造只建立值，创建者在交给 Quill 前显式打开文件；每次完整写入成功后才更新文件大小。写入、打开及轮转拒绝保留原 `FacilityFault` 和 native_code，写失败状态不会被后续 flush/finish 应答抹掉。健康快照发布也消费原子写结果：写临时文件或 rename 失败不破坏旧目标；rename 后关闭句柄失败仍报告失败，但目标可能已被替换，不宣称回滚。临时文件处理沿原政策，不新增重试或清理策略。
+
 ## 持久格式 v1
 
 `events.jsonl` 为 UTF-8、无 BOM、每条一个 JSON object + LF；message 必须是 **rendered 正文**，不是 Quill 默认 JsonSink 的格式模板。关闭 Quill ASCII 字符转义 sanitizer；JSON 层按标准转义引号、反斜杠、NUL/控制字符，读回须逐字节还原合法 UTF-8 正文。不能在正文前拼接不可逆元数据再靠字符串拆解。
@@ -131,7 +137,7 @@ const auto final_report = run->finish();
 
 JSON core 拥有语法、UTF-8、解码后重名键和入口传入的 event-depth 检查；logging 仍使用上限 16，并拥有文件/行大小及 schema 规则。schema 解码不重复检查深度或重名。语法错误带字节位置，重名和类型错误带 JSON Pointer 结构路径。Document/Builder 独占 DOM；Value 和字符串视图不得超过所属 DOM 的寿命，Builder 的节点不能跨 owner 使用。
 
-本次只改变写出字节，不改变日志 schema v1 或字段含义；日志没有持久化 JSON 字节摘要。Reader 对合法成员顺序、空白和数值拼写不作 writer 字节比较，因此同一 schema 的旧日志直接经当前解析路径读取，不增加旧格式分支。Quill 与原生 IO 的异常路径仍留给独立的 LOG/IO 迁移片。
+JSON writer 迁移只改变写出字节，不改变日志 schema v1 或字段含义；日志没有持久化 JSON 字节摘要。Reader 对合法成员顺序、空白和数值拼写不作 writer 字节比较，因此同一 schema 的旧日志直接经当前解析路径读取，不增加旧格式分支。自有 IO 的结果迁移不改变合法 JSON 字节；Quill/TLS、native 路径与生命周期的残留异常归 WRITE-NATIVE。
 
 固定顶层成员：`schema`、`run_id`、`process_id`、`thread_id`、`producer_id`、`producer_sequence`、`record_sequence`、`timestamp_unix_ns`、`severity`、`category`、`event_code`、`message`、`source`、`fields`、`repeat`。映射至 Record / Entry；`persistence` 不落 JSON，由 Reader 成功解析完整行后设置为 jsonl。
 
@@ -172,7 +178,7 @@ Reader 不在后台 sink 中调用 UI，也不经 UI 反向背压唯一 Quill wo
 
 Reader 的 I/O 失败经显式结果进入原状态通道；元数据读取失败关闭当前句柄、清理未完成缓冲，保留已加载版本，后续 poll 可重读。扫描中的轮转竞态只结束本次扫描并留待下次 poll，不是空文件集、EOF 或新增错误码；本批已有记录仍正常交付。Reader 与 sink 的文件身份检查复用同一个显式结果入口；sink 的 flush 检查失败仍记录 `file_flush_failed` 和原 native_code，并将本次结果置为失败，成功的身份检查也不能抹掉先前写失败。
 
-Reader 打开/读取与 sink flush 检查的系统错误文本统一经 Platform 输出 UTF-8，不再沿 `what()` 或 CRT 本地编码；这是有意的诊断文本变化，错误分类、操作名及既有原生错误码通道不变。其余写入、原子快照、Run 生命周期、Quill/TLS 和原生路径异常仍待独立迁移，本节不表示整个 Logging 已无异常。
+Reader 打开/读取、sink 检查/写入、原子快照及启动 IO 的系统错误文本统一经 Platform 输出 UTF-8，不再沿 `what()` 或 CRT 本地编码；这是有意的诊断文本变化，错误分类及既有原生错误码通道不变。Run 生命周期、Quill/TLS 与 `path_text`/`text_path` 原生路径异常仍待 WRITE-NATIVE，本节不表示整个 Logging 已无异常。
 
 Reader 打开文件时允许 writer 的 read/write/delete sharing，以 Windows 文件身份与偏移跟踪 rename；不能仅按 events.N 的名字续读。按最旧保留文件到当前文件消费，新旧目录快照不一致时重扫而不拼接。利用输出序号高水位与文件游标定位进度，最近 4096 个唯一记录键作有界去重；已经离开这个窗口的旧输出序号只能判重放/倒序，不假称精确知道过去是否交付。producer 只受并发预算限制，不能用“run 一生只有 128 个 producer”作为 Reader 内存有界的前提。重复/倒序异常均须可见，不能以无限 set 掩盖问题。运行中 health 只有最新成功快照，UI 显示 updated_unix_ns/是否 final，过期不被解释为健康。
 

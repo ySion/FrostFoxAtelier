@@ -1,6 +1,7 @@
 #include "logging/detail/native.hpp"
 #include "detail/format.hpp"
 #include "detail/io.hpp"
+#include "foundation/scope_exit.hpp"
 
 #include <quill/Backend.h>
 #include <quill/Frontend.h>
@@ -230,23 +231,18 @@ struct State {
     }
 
     bool publish(bool final, bool acknowledged, bool flushed) noexcept {
-        try {
-            std::lock_guard lock{publication_mutex};
-            PublishedHealth published{unix_ns(), final, {health(), acknowledged, flushed, true}};
-            auto document = health_json(info, published);
-            if (!document) {
-                fault(FacilityFault::summary_failed, document.error().message);
-                return false;
-            }
-            const auto bytes = json::write(document->root());
-            atomic_write(info.directory / L"health.json", {bytes.data(), bytes.size()});
-            return true;
-        } catch (const std::system_error& error) {
-            fault(FacilityFault::summary_failed, error.what(), static_cast<std::uint32_t>(error.code().value()));
-        } catch (...) {
-            fault(FacilityFault::summary_failed, "Cannot encode/publish health snapshot");
+        std::lock_guard lock{publication_mutex};
+        PublishedHealth published{unix_ns(), final, {health(), acknowledged, flushed, true}};
+        auto document = health_json(info, published);
+        if (!document) {
+            fault(FacilityFault::summary_failed, document.error().message);
+            return false;
         }
-        return false;
+        const auto bytes = json::write(document->root());
+        const auto result = atomic_write(info.directory / L"health.json", {bytes.data(), bytes.size()});
+        if (!result)
+            fault(FacilityFault::summary_failed, result.error().message, result.error().native_code);
+        return result.has_value();
     }
 };
 
@@ -329,7 +325,19 @@ public:
     explicit JsonSink(std::shared_ptr<State> state) : state_(std::move(state)) {
         for (std::size_t i = 0; i <= retained_rotated_files; ++i)
             paths_[i] = state_->info.directory / (i == 0 ? "events.jsonl" : "events." + std::to_string(i) + ".jsonl");
-        open();
+    }
+
+    Result<void> open() {
+        file_.reset(CreateFileW(paths_[0].c_str(), GENERIC_WRITE,
+                                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, CREATE_NEW,
+                                FILE_ATTRIBUTE_NORMAL, nullptr));
+        if (!file_) {
+            const auto code = GetLastError();
+            state_->fault(FacilityFault::file_open_failed, "Create log file", code);
+            return std::unexpected(io_failure("Create log file", code));
+        }
+        size_ = 0;
+        return {};
     }
 
     void close() noexcept {
@@ -369,51 +377,44 @@ protected:
                    const std::string&, std::string_view, quill::LogLevel, std::string_view, std::string_view,
                    const std::vector<std::pair<std::string, std::string>>*, std::string_view message,
                    std::string_view) override {
-        try {
-            if (!valid_utf8(message)) {
-                state_->fault(FacilityFault::invalid_utf8, "Rendered message is not UTF-8");
-                return;
-            }
-            if (message.size() > maximum_message_bytes) {
-                state_->fault(FacilityFault::output_too_large, "Rendered message exceeds 128 KiB");
-                return;
-            }
-            auto document = json::Document::parse(metadata->tags(), {16});
-            if (!document) {
-                state_->fault(FacilityFault::encoding_failed, document.error().message);
-                return;
-            }
-            json::Builder builder{*document};
-            builder.set_validated(builder.root(), "message", message);
-            [[maybe_unused]] const auto sequence =
-                builder.set(builder.root(), "record_sequence", std::to_string(state_->sequence.fetch_add(1) + 1));
-            assert(sequence); // Generated decimal ASCII cannot fail UTF-8 validation.
-            auto line = json::write(builder.root(), {.trailing_lf = true});
-            if (line.size() > maximum_json_line_bytes) {
-                state_->fault(FacilityFault::output_too_large, "Encoded JSONL line exceeds limit");
-                return;
-            }
-            if (!file_) {
-                state_->fault(FacilityFault::file_write_failed, "No writable log file");
-                return;
-            }
-            if (size_ && size_ + line.size() > rotation_bytes && !rotate())
-                return;
-            try {
-                write_all(file_.get(), {line.data(), line.size()});
-                size_ += line.size();
-            } catch (const std::system_error& error) {
-                write_failed_ = true;
-                state_->fault(FacilityFault::file_write_failed, error.what(),
-                              static_cast<std::uint32_t>(error.code().value()));
-                // A partial line must never be followed by a seemingly valid record.
-                close();
-            }
-        } catch (const std::bad_alloc&) {
-            state_->fault(FacilityFault::allocation_failed, "Backend serialization allocation failed");
-        } catch (...) {
-            state_->fault(FacilityFault::encoding_failed, "Backend record serialization failed");
+        if (!valid_utf8(message)) {
+            state_->fault(FacilityFault::invalid_utf8, "Rendered message is not UTF-8");
+            return;
         }
+        if (message.size() > maximum_message_bytes) {
+            state_->fault(FacilityFault::output_too_large, "Rendered message exceeds 128 KiB");
+            return;
+        }
+        auto document = json::Document::parse(metadata->tags(), {16});
+        if (!document) {
+            state_->fault(FacilityFault::encoding_failed, document.error().message);
+            return;
+        }
+        json::Builder builder{*document};
+        builder.set_validated(builder.root(), "message", message);
+        [[maybe_unused]] const auto sequence =
+            builder.set(builder.root(), "record_sequence", std::to_string(state_->sequence.fetch_add(1) + 1));
+        assert(sequence); // Generated decimal ASCII cannot fail UTF-8 validation.
+        auto line = json::write(builder.root(), {.trailing_lf = true});
+        if (line.size() > maximum_json_line_bytes) {
+            state_->fault(FacilityFault::output_too_large, "Encoded JSONL line exceeds limit");
+            return;
+        }
+        if (!file_) {
+            state_->fault(FacilityFault::file_write_failed, "No writable log file");
+            return;
+        }
+        if (size_ && size_ + line.size() > rotation_bytes && !rotate())
+            return;
+        const auto result = write_all(file_.get(), {line.data(), line.size()});
+        if (!result) {
+            write_failed_ = true;
+            state_->fault(FacilityFault::file_write_failed, result.error().message, result.error().native_code);
+            // A partial line must never be followed by a seemingly valid record.
+            close();
+            return;
+        }
+        size_ += line.size();
     }
 
     void run_periodic_tasks() override {
@@ -425,18 +426,6 @@ protected:
     }
 
 private:
-    void open() {
-        file_.reset(CreateFileW(paths_[0].c_str(), GENERIC_WRITE,
-                                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, CREATE_NEW,
-                                FILE_ATTRIBUTE_NORMAL, nullptr));
-        if (!file_) {
-            const auto code = GetLastError();
-            state_->fault(FacilityFault::file_open_failed, "Create log file", code);
-            io_error("Create log file", code);
-        }
-        size_ = 0;
-    }
-
     bool rotate() noexcept {
         close();
         const auto& oldest = paths_.back();
@@ -456,12 +445,7 @@ private:
                 }
             }
         }
-        try {
-            open();
-            return true;
-        } catch (...) {
-            return false;
-        }
+        return open().has_value();
     }
 
     std::shared_ptr<State> state_;
@@ -477,10 +461,10 @@ private:
     std::chrono::steady_clock::time_point last_publication_{std::chrono::steady_clock::now()};
 };
 
-std::string make_run_id() {
+Result<std::string> make_run_id() {
     std::array<unsigned char, 16> random{};
     if (BCryptGenRandom(nullptr, random.data(), static_cast<ULONG>(random.size()), BCRYPT_USE_SYSTEM_PREFERRED_RNG) < 0)
-        throw std::runtime_error{"Cannot generate run identity"};
+        return std::unexpected(Error{ErrorCode::invalid_options, "Cannot generate run identity"});
     std::string result;
     result.reserve(32);
     constexpr char digits[] = "0123456789abcdef";
@@ -491,61 +475,74 @@ std::string make_run_id() {
     return result;
 }
 
-std::filesystem::path default_root() {
+Result<std::filesystem::path> default_root() {
     const auto count = GetEnvironmentVariableW(L"LOCALAPPDATA", nullptr, 0);
     if (!count)
-        io_error("LOCALAPPDATA is not available");
+        return std::unexpected(io_failure("LOCALAPPDATA is not available"));
     std::wstring value(count, L'\0');
     const auto copied = GetEnvironmentVariableW(L"LOCALAPPDATA", value.data(), count);
     if (!copied || copied >= count)
-        io_error("LOCALAPPDATA changed");
+        return std::unexpected(io_failure("LOCALAPPDATA changed"));
     value.resize(copied);
     auto result = std::filesystem::path{value} / L"FrostFoxAtelier" / L"Logs";
     if (!result.is_absolute())
-        throw std::invalid_argument{"LOCALAPPDATA must be absolute"};
+        return std::unexpected(Error{ErrorCode::invalid_options, "LOCALAPPDATA must be absolute"});
     return result;
 }
 
 void retain_runs(State& state, const std::filesystem::path& root) noexcept {
-    try {
-        struct Candidate {
-            std::filesystem::path path;
+    struct Candidate {
+        std::filesystem::path path;
 
-            std::uint64_t time;
-        };
-        std::vector<Candidate> completed;
-        for (const auto& item : std::filesystem::directory_iterator{root}) {
-            if (!item.is_directory() || item.is_symlink() || item.path() == state.info.directory)
-                continue;
-            try {
-                const auto info = read_run(read_small(item.path() / L"run.json"));
-                if (!info || info->directory != item.path())
-                    continue;
-                const auto health = read_health(read_small(item.path() / L"health.json", 256 * 1024), *info);
-                if (health && health->final)
-                    completed.push_back({item.path(), info->started_unix_ns});
-            } catch (...) { /* Unknown/incomplete directories are never candidates. */
-            }
-        }
-        std::sort(completed.begin(), completed.end(), [](const auto& a, const auto& b) { return a.time > b.time; });
-        for (std::size_t i = retained_completed_runs; i < completed.size(); ++i) {
-            const auto& directory = completed[i].path;
-            Handle lock{CreateFileW((directory / L"active.lock").c_str(), GENERIC_READ, FILE_SHARE_DELETE, nullptr,
-                                    OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr)};
-            if (!lock) {
-                const auto code = GetLastError();
-                if (code != ERROR_SHARING_VIOLATION)
-                    state.fault(FacilityFault::retention_failed, "Acquire completed run lock", code);
-                continue;
-            }
-            std::error_code error;
-            std::filesystem::remove_all(directory, error);
-            if (error)
-                state.fault(FacilityFault::retention_failed, "Remove completed run directory",
-                            static_cast<std::uint32_t>(error.value()));
-        }
-    } catch (...) {
+        std::uint64_t time;
+    };
+    std::vector<Candidate> completed;
+    std::error_code error;
+    for (std::filesystem::directory_iterator iterator{root, error};
+         !error && iterator != std::filesystem::directory_iterator{}; iterator.increment(error)) {
+        const auto& item = *iterator;
+        const auto directory = item.is_directory(error);
+        if (error)
+            break;
+        if (!directory)
+            continue;
+        const auto symlink = item.is_symlink(error);
+        if (error)
+            break;
+        if (symlink || item.path() == state.info.directory)
+            continue;
+        const auto manifest = read_small(item.path() / L"run.json");
+        if (!manifest)
+            continue; // Unknown/incomplete directories are never candidates.
+        const auto info = read_run(*manifest);
+        if (!info || info->directory != item.path())
+            continue;
+        const auto summary = read_small(item.path() / L"health.json", 256 * 1024);
+        if (!summary)
+            continue;
+        const auto health = read_health(*summary, *info);
+        if (health && health->final)
+            completed.push_back({item.path(), info->started_unix_ns});
+    }
+    if (error) {
         state.fault(FacilityFault::retention_failed, "Enumerate completed run directories");
+        return; // Never delete from a partial candidate list.
+    }
+    std::sort(completed.begin(), completed.end(), [](const auto& a, const auto& b) { return a.time > b.time; });
+    for (std::size_t i = retained_completed_runs; i < completed.size(); ++i) {
+        const auto& directory = completed[i].path;
+        Handle lock{CreateFileW((directory / L"active.lock").c_str(), GENERIC_READ, FILE_SHARE_DELETE, nullptr,
+                                OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr)};
+        if (!lock) {
+            const auto code = GetLastError();
+            if (code != ERROR_SHARING_VIOLATION)
+                state.fault(FacilityFault::retention_failed, "Acquire completed run lock", code);
+            continue;
+        }
+        std::filesystem::remove_all(directory, error);
+        if (error)
+            state.fault(FacilityFault::retention_failed, "Remove completed run directory",
+                        static_cast<std::uint32_t>(error.value()));
     }
 }
 }
@@ -632,61 +629,82 @@ Result<std::unique_ptr<Run>> start_run(RunOptions options) {
     bool created{};
     if (options.directory.native().find(L'\0') != std::wstring::npos)
         return std::unexpected(Error{ErrorCode::invalid_options, "Invalid UTF-8 path", {}});
+    ScopeExit rollback{[&]() noexcept {
+        if (run) {
+            retire_logger(*run->impl_->state);
+            if (run->impl_->sink)
+                run->impl_->sink->close();
+            run->impl_->sink.reset();
+            run->impl_->lock.reset();
+            producer = {};
+            if (created) {
+                std::error_code ignored;
+                std::filesystem::remove_all(run->info().directory, ignored);
+            }
+        }
+        emergency();
+    }};
     try {
         Entry probe;
         probe.category = "logging";
         probe.event_code = "logging.options";
         if (options.minimum > Severity::off || options.categories.size() > 64)
-            throw std::invalid_argument{"Invalid thresholds"};
+            return std::unexpected(Error{ErrorCode::invalid_options, "Invalid thresholds"});
         for (std::size_t i = 0; i < options.categories.size(); ++i) {
             const auto& rule = options.categories[i];
             probe.category = rule.category;
             if (const auto problem = entry_problem(probe); !problem.empty())
-                throw std::invalid_argument{problem.data()};
+                return std::unexpected(Error{ErrorCode::invalid_options, std::string{problem}});
             if (rule.minimum > Severity::off)
-                throw std::invalid_argument{"Invalid category threshold"};
+                return std::unexpected(Error{ErrorCode::invalid_options, "Invalid category threshold"});
             for (std::size_t j = 0; j < i; ++j)
                 if (options.categories[j].category == rule.category)
-                    throw std::invalid_argument{"Duplicate category threshold"};
+                    return std::unexpected(Error{ErrorCode::invalid_options, "Duplicate category threshold"});
         }
         if (!options.directory.empty() && !options.directory.is_absolute())
-            throw std::invalid_argument{"Run directory must be absolute"};
+            return std::unexpected(Error{ErrorCode::invalid_options, "Run directory must be absolute"});
         run.reset(new Run);
         auto& state = *run->impl_->state;
         state.options = std::move(options);
-        state.info = {make_run_id(),
-                      state.options.process_name,
-                      GetCurrentProcessId(),
-                      unix_ns(),
-                      {},
+        ATELIER_TRY_BIND(identity, make_run_id());
+        state.info = {std::move(*identity),       state.options.process_name, GetCurrentProcessId(), unix_ns(), {},
                       state.options.parent_run_id};
         const bool default_directory = state.options.directory.empty();
-        state.info.directory =
-            default_directory ? default_root() / state.info.run_id : state.options.directory.lexically_normal();
+        if (default_directory) {
+            auto root = default_root();
+            if (!root) {
+                root.error().code = ErrorCode::invalid_options;
+                return std::unexpected(std::move(root.error()));
+            }
+            state.info.directory = *root / state.info.run_id;
+        } else
+            state.info.directory = state.options.directory.lexically_normal();
         auto manifest = run_json(state.info);
-        if (!manifest) {
-            emergency();
+        if (!manifest)
             return std::unexpected(Error{ErrorCode::invalid_options, manifest.error().message, {}});
-        }
         const auto manifest_bytes = json::write(manifest->root());
-        failure = ErrorCode::io_failed;
-        std::filesystem::create_directories(state.info.directory.parent_path());
+        std::error_code error;
+        std::filesystem::create_directories(state.info.directory.parent_path(), error);
+        if (error)
+            return std::unexpected(io_failure("Create run parent directories", static_cast<DWORD>(error.value())));
         if (!CreateDirectoryW(state.info.directory.c_str(), nullptr)) {
             const auto code = GetLastError();
+            auto rejected = io_failure("Create fresh run directory", code);
             if (code == ERROR_ALREADY_EXISTS)
-                failure = ErrorCode::directory_in_use;
-            io_error("Create fresh run directory", code);
+                rejected.code = ErrorCode::directory_in_use;
+            return std::unexpected(std::move(rejected));
         }
         created = true;
         run->impl_->lock.reset(CreateFileW((state.info.directory / L"active.lock").c_str(),
                                            GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_NEW,
                                            FILE_ATTRIBUTE_NORMAL, nullptr));
         if (!run->impl_->lock)
-            io_error("Create active run lock");
-        atomic_write(state.info.directory / L"run.json", {manifest_bytes.data(), manifest_bytes.size()});
+            return std::unexpected(io_failure("Create active run lock"));
+        ATELIER_TRY(atomic_write(state.info.directory / L"run.json", {manifest_bytes.data(), manifest_bytes.size()}));
         if (default_directory)
             retain_runs(state, state.info.directory.parent_path());
         run->impl_->sink = std::make_shared<JsonSink>(run->impl_->state);
+        ATELIER_TRY(run->impl_->sink->open());
         failure = ErrorCode::backend_start_failed;
         state.logger = Frontend::create_or_get_logger("atelier-" + state.info.run_id, run->impl_->sink,
                                                       quill::PatternFormatterOptions{"%(message)"},
@@ -708,30 +726,20 @@ Result<std::unique_ptr<Run>> start_run(RunOptions options) {
         };
         quill::Backend::start(backend);
         if (!quill::Backend::is_running())
-            throw std::runtime_error{"Quill backend did not start"};
+            return std::unexpected(Error{ErrorCode::backend_start_failed, "Quill backend did not start"});
         run->impl_->backend_started = true;
         started_once = true;
         active_state.store(&state, std::memory_order_release);
         active_run.store(run.get(), std::memory_order_release);
         state.publish(false, false, false);
+        rollback.release();
         return run;
     } catch (const std::exception& error) {
+        // WRITE-NATIVE owns the remaining Quill startup and run_json -> path_text
+        // conversion exceptions. Owned configuration and IO already return results.
         std::optional<std::uint32_t> native;
         if (const auto* io = dynamic_cast<const std::system_error*>(&error))
             native = static_cast<std::uint32_t>(io->code().value());
-        if (run) {
-            retire_logger(*run->impl_->state);
-            if (run->impl_->sink)
-                run->impl_->sink->close();
-            run->impl_->sink.reset();
-            run->impl_->lock.reset();
-            producer = {};
-            if (created) {
-                std::error_code ignored;
-                std::filesystem::remove_all(run->info().directory, ignored);
-            }
-        }
-        emergency();
         return std::unexpected(Error{failure, error.what(), native});
     }
 }

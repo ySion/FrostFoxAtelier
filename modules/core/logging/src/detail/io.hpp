@@ -57,39 +57,39 @@ inline Error io_failure(const char* operation, DWORD code = GetLastError()) {
             code};
 }
 
-[[noreturn]] inline void io_error(const char* operation, DWORD code = GetLastError()) {
-    throw std::system_error{static_cast<int>(code), std::system_category(), operation};
-}
-
 inline Handle open_read(const std::filesystem::path& path) {
     return Handle{CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                               nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr)};
 }
 
-inline void write_all(HANDLE handle, std::string_view bytes) {
+inline Result<void> write_all(HANDLE handle, std::string_view bytes) {
     while (!bytes.empty()) {
         const auto count = static_cast<DWORD>((std::min)(bytes.size(), std::size_t{1024 * 1024}));
         DWORD written{};
         if (!WriteFile(handle, bytes.data(), count, &written, nullptr))
-            io_error("WriteFile");
+            return std::unexpected(io_failure("WriteFile"));
         if (written == 0)
-            io_error("WriteFile made no progress", ERROR_WRITE_FAULT);
+            return std::unexpected(io_failure("WriteFile made no progress", ERROR_WRITE_FAULT));
         bytes.remove_prefix(written);
     }
+    return {};
 }
 
-inline void atomic_write(const std::filesystem::path& path, std::string_view bytes) {
+inline Result<void> atomic_write(const std::filesystem::path& path, std::string_view bytes) {
     auto temporary = path;
     temporary += L".tmp";
     Handle file{CreateFileW(temporary.c_str(), GENERIC_WRITE | DELETE,
                             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, CREATE_ALWAYS,
                             FILE_ATTRIBUTE_NORMAL, nullptr)};
     if (!file)
-        io_error("Create summary temporary file");
-    write_all(file.get(), bytes);
+        return std::unexpected(io_failure("Create summary temporary file"));
+    ATELIER_TRY(write_all(file.get(), bytes));
     // Readers may still hold the previous immutable snapshot. POSIX rename
     // replaces its name without leaving that name delete-pending until close.
-    const auto destination = std::filesystem::absolute(path).native();
+    std::error_code error;
+    const auto destination = std::filesystem::absolute(path, error).native();
+    if (error)
+        return std::unexpected(io_failure("Resolve summary destination", static_cast<DWORD>(error.value())));
     const auto length = destination.size() * sizeof(wchar_t);
     std::vector<std::byte> storage(offsetof(FILE_RENAME_INFO, FileName) + length + sizeof(wchar_t));
     auto* rename = reinterpret_cast<FILE_RENAME_INFO*>(storage.data());
@@ -97,26 +97,27 @@ inline void atomic_write(const std::filesystem::path& path, std::string_view byt
     rename->FileNameLength = static_cast<DWORD>(length);
     std::memcpy(rename->FileName, destination.data(), length);
     if (!SetFileInformationByHandle(file.get(), FileRenameInfoEx, rename, static_cast<DWORD>(storage.size())))
-        io_error("Publish summary");
+        return std::unexpected(io_failure("Publish summary"));
     if (!CloseHandle(file.release()))
-        io_error("Close summary temporary file");
+        return std::unexpected(io_failure("Close summary temporary file"));
+    return {};
 }
 
-inline std::string read_small(const std::filesystem::path& path, std::size_t maximum = 64 * 1024) {
+inline Result<std::string> read_small(const std::filesystem::path& path, std::size_t maximum = 64 * 1024) {
     auto file = open_read(path);
     if (!file)
-        io_error("Open metadata");
+        return std::unexpected(io_failure("Open metadata"));
     LARGE_INTEGER size{};
     if (!GetFileSizeEx(file.get(), &size))
-        io_error("Metadata size");
+        return std::unexpected(io_failure("Metadata size"));
     if (size.QuadPart < 0 || static_cast<std::uint64_t>(size.QuadPart) > maximum)
-        throw std::runtime_error{"Metadata exceeds limit"};
+        return std::unexpected(Error{ErrorCode::invalid_manifest, "Metadata exceeds limit"});
     std::string result(static_cast<std::size_t>(size.QuadPart), '\0');
     DWORD read{};
     if (!ReadFile(file.get(), result.data(), static_cast<DWORD>(result.size()), &read, nullptr))
-        io_error("Read metadata");
+        return std::unexpected(io_failure("Read metadata"));
     if (read != result.size())
-        throw std::runtime_error{"Metadata changed during read"};
+        return std::unexpected(Error{ErrorCode::invalid_manifest, "Metadata changed during read"});
     return result;
 }
 
