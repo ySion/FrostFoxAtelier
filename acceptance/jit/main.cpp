@@ -5,7 +5,6 @@
 #include <windows.h>
 
 #include <cstdio>
-#include <exception>
 
 namespace {
 
@@ -25,23 +24,14 @@ int main() {
     HMODULE native_module{};
     if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
                             reinterpret_cast<LPCWSTR>(&atelier_jit_native_calculate), &native_module) ||
-        native_module == GetModuleHandleW(nullptr)) {
-        std::fprintf(stderr, "JIT acceptance: FAIL: native callback must reside in a separate DLL.\n");
-        return 1;
-    }
+        native_module == GetModuleHandleW(nullptr))
+        atelier::fatal("JIT acceptance: native callback must reside in a separate DLL.");
     const atelier::jit_acceptance::ProbeCallbacks callbacks{&host_bias, &atelier_jit_native_calculate,
                                                             &atelier_jit_native_capture, &log_result};
     char error[4096]{};
-    if (atelier_run_jit_acceptance(&callbacks, error, sizeof(error)) != 0) {
-        std::fprintf(stderr, "JIT acceptance: FAIL: %s\n", error);
-        return 1;
-    }
-    try {
-        atelier::jit_acceptance::verify_business_execution();
-    } catch (const std::exception& error) {
-        std::fprintf(stderr, "Business execution acceptance: FAIL: %s\n", error.what());
-        return 1;
-    }
+    if (atelier_run_jit_acceptance(&callbacks, error, sizeof(error)) != 0)
+        atelier::fatal(error);
+    atelier::jit_acceptance::verify_business_execution();
     std::printf("JIT acceptance: PASS\n");
     return 0;
 }

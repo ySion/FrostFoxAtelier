@@ -3,8 +3,7 @@
 #include <windows.h>
 
 #include <cstddef>
-#include <cstdio>
-#include <stdexcept>
+#include <cstring>
 
 namespace {
 
@@ -36,21 +35,16 @@ std::uint32_t atelier_jit_native_calculate(std::uint32_t fail, std::int32_t valu
         return invalid_storage;
     diagnostic->cleanups = 0;
     diagnostic->message[0] = '\0';
-    try {
-        CleanupProbe cleanup{*diagnostic};
-        if (fail)
-            throw std::runtime_error("Requested native failure.");
-        const ProbeRecord result{input->total + static_cast<double>(value) + static_cast<double>(fraction) * scale,
-                                 input->checksum + offset, input->amount + fraction, input->count + 1};
-        *output = result;
-        return native_success;
-    } catch (const std::exception& error) {
-        std::snprintf(diagnostic->message, sizeof(diagnostic->message), "%s", error.what());
-        return native_failure;
-    } catch (...) {
-        std::snprintf(diagnostic->message, sizeof(diagnostic->message), "%s", "Unknown native failure.");
+    CleanupProbe cleanup{*diagnostic};
+    if (fail) {
+        constexpr char message[] = "Requested native failure.";
+        std::memcpy(diagnostic->message, message, sizeof(message));
         return native_failure;
     }
+    const ProbeRecord result{input->total + static_cast<double>(value) + static_cast<double>(fraction) * scale,
+                             input->checksum + offset, input->amount + fraction, input->count + 1};
+    *output = result;
+    return native_success;
 }
 
 std::uint32_t atelier_jit_native_capture(StackSnapshot* snapshot) noexcept {

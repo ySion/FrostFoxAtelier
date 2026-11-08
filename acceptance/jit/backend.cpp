@@ -20,12 +20,11 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
-#include <cstdio>
 #include <cstring>
 #include <limits>
 #include <memory>
-#include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 
 namespace {
@@ -40,20 +39,43 @@ using llvm::orc::ResourceTrackerSP;
 
 using llvm::orc::ThreadSafeModule;
 
+class DiagnosticBuffer final : public llvm::raw_ostream {
+public:
+    DiagnosticBuffer() : llvm::raw_ostream(true) {}
+
+    std::string_view view() const { return {bytes_, size_}; }
+
+private:
+    void write_impl(const char* bytes, std::size_t size) override {
+        const auto count = std::min(size, sizeof(bytes_) - size_);
+        std::memcpy(bytes_ + size_, bytes, count);
+        size_ += count;
+    }
+
+    std::uint64_t current_pos() const override { return size_; }
+
+    char bytes_[1024];
+
+    std::size_t size_{};
+};
+
 void require(bool condition, const char* message) {
     if (!condition)
-        throw std::runtime_error(message);
+        atelier::fatal(message);
 }
 
 void take(llvm::Error error) {
-    if (error)
-        throw std::runtime_error(llvm::toString(std::move(error)));
+    if (error) {
+        DiagnosticBuffer diagnostic;
+        llvm::handleAllErrors(std::move(error), [&](const llvm::ErrorInfoBase& info) { info.log(diagnostic); });
+        atelier::fatal(diagnostic.view());
+    }
 }
 
 template <class T>
 T take(llvm::Expected<T> result) {
     if (!result)
-        throw std::runtime_error(llvm::toString(result.takeError()));
+        take(result.takeError());
     return std::move(*result);
 }
 
@@ -306,10 +328,9 @@ ThreadSafeModule create_module(LLJIT& jit, const std::string& stem, std::uint32_
                          sizeof(StackSnapshot));
     builder.CreateRet(builder.CreateAdd(frames, builder.getInt32(17)));
 
-    std::string diagnostic;
-    llvm::raw_string_ostream errors(diagnostic);
-    if (llvm::verifyModule(*module, &errors))
-        throw std::runtime_error(diagnostic);
+    DiagnosticBuffer diagnostic;
+    if (llvm::verifyModule(*module, &diagnostic))
+        atelier::fatal(diagnostic.view());
     return ThreadSafeModule(std::move(module), std::move(context));
 }
 
@@ -353,8 +374,9 @@ void verify_calls(const Unit& unit) {
             "Mixed scalar, 64-bit return, aligned-record ABI or cleanup mismatch.");
     output = ProbeRecord{77.0, 99, 18.0f, 25};
     require(function(1, -3, 1.25f, 2.0, 40, &input, &output, &diagnostic) == native_failure,
-            "Native C++ exception did not become an explicit failure status.");
-    require(diagnostic.cleanups == 1, "Native exception cleanup was lost.");
+            "Native failure did not return its explicit status.");
+    require(diagnostic.cleanups == 1 && std::strcmp(diagnostic.message, "Requested native failure.") == 0,
+            "Native failure lost its diagnostic or cleanup.");
     require(output.total == 77.0 && output.checksum == 99 && output.amount == 18.0f && output.count == 25,
             "Failed native call exposed or copied an uninitialized result.");
     require(*unit.counter.toPtr<const std::uint64_t*>() == 1, "Failed invocation changed generated mutable state.");
@@ -490,7 +512,7 @@ void run(const ProbeCallbacks& callbacks) {
     auto second = add_unit(*jit, 2);
     verify_calls(first);
     pass(callbacks, "Host -> JIT -> host/DLL: mixed scalars, wide values and aligned records");
-    pass(callbacks, "Native exceptions become explicit errors; failed results stay untouched");
+    pass(callbacks, "Native failures return explicit status and clean up once; failed results stay untouched");
     verify_cross_unit(*jit, first);
     pass(callbacks, "Cross-unit generated calls preserve results and Windows unwind metadata");
     verify_protection(first);
@@ -545,17 +567,9 @@ std::uint32_t atelier_run_jit_acceptance(const ProbeCallbacks* callbacks, char* 
     if (!error || error_capacity == 0)
         return 1;
     error[0] = '\0';
-    try {
-        require(callbacks && callbacks->host_bias && callbacks->native_calculate && callbacks->native_capture &&
-                    callbacks->log,
-                "Invalid JIT acceptance callbacks.");
-        run(*callbacks);
-        return 0;
-    } catch (const std::exception& failure) {
-        std::snprintf(error, error_capacity, "%s", failure.what());
-        return 1;
-    } catch (...) {
-        std::snprintf(error, error_capacity, "%s", "Unknown JIT acceptance failure.");
-        return 1;
-    }
+    require(callbacks && callbacks->host_bias && callbacks->native_calculate && callbacks->native_capture &&
+                callbacks->log,
+            "Invalid JIT acceptance callbacks.");
+    run(*callbacks);
+    return 0;
 }

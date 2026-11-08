@@ -12,7 +12,6 @@
 #include <limits>
 #include <memory>
 #include <optional>
-#include <stdexcept>
 #include <string>
 #include <utility>
 
@@ -50,7 +49,7 @@ CodeOwner compile_bound(const Binding& binding, std::string_view text, const cha
     char diagnostic[1024]{};
     if (atelier_compile_business(&callbacks, name, text.data(), static_cast<std::uint32_t>(text.size()), &environment,
                                  &output, diagnostic, sizeof(diagnostic), entry) != 0)
-        throw std::runtime_error(diagnostic);
+        fatal(diagnostic);
     return CodeOwner{output, &atelier_destroy_business};
 }
 
@@ -165,14 +164,14 @@ void verify_frame_protocol() {
     }
     require(runtime.root_count() == 2, "Transferred root did not outlive its producer frame.");
     transferred.reset();
-    try {
+    const auto failed = [&]() -> Result<void> {
         std::array<ObjectRoot, 1> roots;
         ExecutionFrame frame(runtime, roots);
         take(frame.hold(0, receiver.id()));
-        throw std::runtime_error("Host scope exit.");
-    } catch (const std::runtime_error&) {
-    }
-    require(runtime.root_count() == 1, "Host exception bypassed frame RAII cleanup.");
+        return std::unexpected(Error{ErrorCode::invocation_failed, "Host scope exit."});
+    }();
+    require(!failed && failed.error().code == ErrorCode::invocation_failed && runtime.root_count() == 1,
+            "Host failure bypassed frame RAII cleanup.");
 }
 
 void verify_reference_returns(Runtime& runtime, const Binding& binding) {
