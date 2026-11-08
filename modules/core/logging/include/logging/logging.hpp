@@ -68,8 +68,6 @@ struct SourceLocation {
     std::string disk_path{};
 };
 
-[[nodiscard]] SourceLocation native_source(std::source_location location = std::source_location::current());
-
 // At most 64 unique, named scalar fields, also bounded by the record byte budget.
 // No callbacks, pointers, reflection,
 // formatter objects or new object IDs. Producers define keys/units per event code.
@@ -174,6 +172,9 @@ struct Error {
 
 template <class T>
 using Result = std::expected<T, Error>;
+
+[[nodiscard]] Result<SourceLocation>
+native_source(std::source_location location = std::source_location::current()) noexcept;
 
 enum class SubmitStatus : std::uint8_t {
     accepted,
@@ -297,11 +298,12 @@ struct FlushReport {
 
 class Run;
 
-[[nodiscard]] Result<std::unique_ptr<Run>> start_run(RunOptions options = {});
+[[nodiscard]] Result<std::unique_ptr<Run>> start_run(RunOptions options = {}) noexcept;
 
 // One successful run per process. Host owner thread starts it before creating
-// Application and finishes it after business destruction, worker join and outer
-// catch. No concurrent start/finish, no lazy initialization, no restart in-process.
+// Application and finishes it after business destruction and worker join.
+// No concurrent start/finish, no lazy initialization, no restart in-process.
+// CPU allocation/thread creation and broken shutdown invariants are fatal.
 class Run final {
 public:
     ~Run(); // Emergency cleanup only; an omitted finish() is not audited success.
@@ -316,13 +318,13 @@ public:
 
     // Blocking, owner-thread only, not a concurrent-producer global barrier.
     // No deadline, crash guarantee, fsync guarantee or implicit business success.
-    [[nodiscard]] FlushReport flush();
+    [[nodiscard]] FlushReport flush() noexcept;
 
     // Requires all producers quiescent. Idempotent; final health stays queryable.
-    [[nodiscard]] FlushReport finish();
+    [[nodiscard]] FlushReport finish() noexcept;
 
 private:
-    friend Result<std::unique_ptr<Run>> start_run(RunOptions);
+    friend Result<std::unique_ptr<Run>> start_run(RunOptions) noexcept;
 
     Run();
 
@@ -340,8 +342,8 @@ private:
 // Stable, non-template host entry for dynamic/JIT/unloadable producers. All
 // encoding and deferred code live in the non-unloadable host. No argument borrow
 // survives return. Same-toolchain C++ ABI, not a language or cross-CRT ABI.
-// Internal failures become status + host health; constructing Entry can throw
-// before entering this function. Argument evaluation is not lazily filtered.
+// Input/budget refusal returns status; CPU allocation failure is fatal.
+// Argument evaluation is not lazily filtered.
 [[nodiscard]] SubmitResult submit(Entry entry) noexcept;
 
 struct ReadBudget {

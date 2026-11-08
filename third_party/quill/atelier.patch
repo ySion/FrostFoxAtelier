@@ -1,0 +1,60 @@
+diff --git a/include/quill/core/LoggerManager.h b/include/quill/core/LoggerManager.h
+index a16a867..3b7baf5 100644
+--- a/include/quill/core/LoggerManager.h
++++ b/include/quill/core/LoggerManager.h
+@@ -356,53 +356,4 @@ public:
+   {
+-    constexpr char const* field = "QUILL_LOG_LEVEL";
+-
+-    std::string log_level;
+-    std::optional<LogLevel> env_log_level;
+-
+-#if defined(_MSC_VER)
+-    size_t len = 0;
+-    char buf[128]{};
+-    bool const ok = ::getenv_s(&len, buf, sizeof(buf), field) == 0;
+-    if (ok && len > 0)
+-    {
+-      log_level = buf;
+-    }
+-#else // revert to getenv
+-    char* buf = ::getenv(field);
+-    if (buf)
+-    {
+-      log_level = buf;
+-    }
+-#endif
+-
+-    if (!log_level.empty())
+-    {
+-      QUILL_TRY
+-      {
+-        LogLevel const parsed_log_level = loglevel_from_string(log_level);
+-
+-        if (parsed_log_level == LogLevel::Backtrace)
+-        {
+-          // set_log_level() rejects Backtrace, but by the time it runs the logger is already
+-          // registered, leaving a half-configured logger behind. Fail here instead so the
+-          // error is attributed to the environment variable
+-          QUILL_THROW(QuillError{"LogLevel::Backtrace is only used internally"});
+-        }
+-
+-        env_log_level = parsed_log_level;
+-      }
+-#if !defined(QUILL_NO_EXCEPTIONS)
+-      QUILL_CATCH(QuillError const& e)
+-      {
+-        // Add the environment variable name to the error, otherwise the failure surfaces from
+-        // the first logger creation with no hint about where the invalid value came from
+-        QUILL_THROW(QuillError{
+-          std::string{"invalid \"QUILL_LOG_LEVEL\" environment variable value - "} + e.what()});
+-      }
+-#endif
+-    }
+-
+-    // Commit only after parsing and validation succeed. If parsing throws, first logger creation
+-    // can be retried after the environment is corrected without retaining partial state.
+-    _env_log_level = env_log_level;
++    // Atelier owns filtering and sets TraceL3 immediately after logger creation.
++    // Do not let an inherited environment value reject startup or alter filtering.
+     _env_log_level_parsed = true;

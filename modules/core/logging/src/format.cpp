@@ -1,11 +1,11 @@
 #include "detail/format.hpp"
 
 #include "foundation/string.hpp"
+#include "platform/utf.hpp"
 #include <algorithm>
 #include <array>
 #include <charconv>
 #include <cmath>
-#include <stdexcept>
 
 namespace atelier::logging {
 std::string_view name(Severity severity) noexcept {
@@ -32,16 +32,12 @@ bool valid_utf8(std::string_view value) noexcept {
     return StringView{value}.is_valid_utf8();
 }
 
-std::string path_text(const std::filesystem::path& path) {
-    auto value = path.generic_u8string();
-    return {reinterpret_cast<const char*>(value.data()), value.size()};
-}
-
-std::filesystem::path text_path(std::string_view value) {
-    // This native path entry remains part of the separately scheduled IO slice.
-    if (!valid_utf8(value) || value.find('\0') != std::string_view::npos)
-        throw std::invalid_argument("Invalid UTF-8 path");
-    return std::filesystem::path{std::u8string{reinterpret_cast<const char8_t*>(value.data()), value.size()}};
+FormatResult<std::string> path_text(const std::filesystem::path& path) {
+    auto value = platform::utf16_to_utf8(path.generic_wstring());
+    if (!value)
+        return std::unexpected(
+            FormatError{ReaderFault::invalid_record, "Invalid UTF-16 path", value.error().system_code});
+    return std::move(*value);
 }
 
 std::uint64_t unix_ns() noexcept {
@@ -363,7 +359,8 @@ FormatResult<json::Builder> run_json(const RunInfo& value) {
     ATELIER_TRY(builder.set(*run, "process_name", value.process_name));
     ATELIER_TRY(builder.set(*run, "process_id", value.process_id));
     ATELIER_TRY(builder.set(*run, "started_unix_ns", std::to_string(value.started_unix_ns)));
-    ATELIER_TRY(builder.set(*run, "directory", path_text(value.directory)));
+    ATELIER_TRY_BIND(directory, path_text(value.directory));
+    ATELIER_TRY(builder.set(*run, "directory", *directory));
     if (value.parent_run_id)
         ATELIER_TRY(builder.set(*run, "parent_run_id", *value.parent_run_id));
     else

@@ -49,29 +49,28 @@ template <Severity Level, Argument... Args>
         return {SubmitStatus::no_active_run};
     if (!enabled(Level, category))
         return {SubmitStatus::filtered};
-    try {
-        const auto spelling = format.get();
-        Entry entry;
-        entry.severity = Level;
-        entry.category = category;
-        entry.event_code = event_code;
-        entry.message.assign(spelling.data(), spelling.size());
-        if (entry.message.find('\0') != std::string::npos)
-            return detail::complete({}, SubmitStatus::invalid_record);
-        entry.source = native_source(source);
-        entry.fields.assign(context.fields.begin(), context.fields.end());
-        entry.repeat = context.repeat;
-        const auto values = std::tuple{detail::argument(args)...};
-        return std::apply(
-            [&](const auto&... value) { return detail::enqueue(entry, true, entry.message.c_str(), value...); },
-            values);
-    } catch (const std::bad_alloc&) {
-        return detail::internal_failure({}, true);
-    } catch (const std::invalid_argument&) {
+    const auto spelling = format.get();
+    Entry entry;
+    entry.severity = Level;
+    entry.category = category;
+    entry.event_code = event_code;
+    entry.message.assign(spelling.data(), spelling.size());
+    if (entry.message.find('\0') != std::string::npos)
         return detail::complete({}, SubmitStatus::invalid_record);
-    } catch (...) {
-        return detail::internal_failure({}, false);
-    }
+    auto location = native_source(source);
+    if (!location)
+        return detail::complete({}, SubmitStatus::invalid_record);
+    entry.source = std::move(*location);
+    entry.fields.assign(context.fields.begin(), context.fields.end());
+    entry.repeat = context.repeat;
+    const auto values = std::tuple{detail::argument(args)...};
+    return std::apply(
+        [&](const auto&... value) {
+            if (!(value.has_value() && ...))
+                return detail::complete({}, SubmitStatus::invalid_record);
+            return detail::enqueue(entry, true, entry.message.c_str(), *value...);
+        },
+        values);
 }
 
 }

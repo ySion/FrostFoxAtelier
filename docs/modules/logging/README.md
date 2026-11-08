@@ -10,10 +10,10 @@
 
 | 调用方 | 入口 | 责任 |
 |---|---|---|
-| 宿主 | `Result<std::unique_ptr<Run>> start_run(RunOptions options = {})` | 显式开始进程 run，返回唯一拥有者 |
+| 宿主 | `Result<std::unique_ptr<Run>> start_run(RunOptions options = {}) noexcept` | 显式开始进程 run，返回唯一拥有者 |
 | 宿主 / 查询 | `Run* current_run() noexcept` | 借用受控的活动入口，不自动初始化 |
 | 宿主 / UI | `const RunInfo& Run::info() const noexcept`；`Health Run::health() const` | 目录、运行身份与拥有型健康快照 |
-| 宿主 | `FlushReport Run::flush()`；`FlushReport Run::finish()` | 显式完成应答、sink 检查、健康发布；不能用返回 void 代表成功 |
+| 宿主 | `FlushReport Run::flush() noexcept`；`FlushReport Run::finish() noexcept` | 显式完成应答、sink 检查、健康发布；不能用返回 void 代表成功 |
 | 普通动态文本 / JIT 桥 | `SubmitResult submit(Entry entry) noexcept` | 非模板稳定宿主入口，拥有正文及动态源码信息 |
 | 调用方过滤 | `bool enabled(Severity severity, std::string_view category) noexcept` | 不分配、无 I/O；直接 submit 调用不会阻止实参先求值 |
 | 稳定原生 | `ATELIER_LOG(level, category, code, format, ...)` | 先过滤后求值，返回 SubmitResult；位置格式编译期校验 |
@@ -34,9 +34,9 @@
 6. 每 run 有 `run.json`、`events.jsonl`、最多八个 `events.1.jsonl`…`events.8.jsonl`、`health.json` 和活动锁。`.1` 是最近的轮转文件；文件名会移位，**不是文件身份**。文件名本身不承担记录顺序。
 7. 默认根目录保留最近 20 个已结束 run；只清理本模块 manifest 合法、最终标记存在且能独占获取活动锁的目录，启动时执行。显式目录的跨 run 保留归调用者，本模块仍执行该 run 的文件轮转。活动、异常未完成或未知目录不自动删除，因此“20”不是根目录总硬上限；不能仅凭 PID 或目录年龄判死。活动锁在整个 Run 生命周期保持。
 
-`start_run` 的可恢复配置、路径、后端启动失败返回 expected 错误。`submit`/native::write 的内部异常转换为提交状态与宿主健康；构造实参、复制拥有型快照和其他未标 noexcept 的 API 仍可能抛分配异常。业务异常不能被日志设施异常替换。初始化失败或紧急故障用不递归的 stderr/系统输出，并由宿主决定退出，不再调用同一 logger。
+`start_run` 的可恢复配置、路径和 IO 拒绝返回 expected 错误；`submit`/native::write 的输入与预算拒绝返回提交状态。CPU 分配、线程建立失败，以及 Quill 固定配置或生命周期不变量破坏走唯一 fatal，不转换成 `internal_failure` 后继续。`finish` 仍等待真实排空和 join；若 stop 返回后 backend 仍在运行则 fatal，不发布伪完成。初始化正常失败仍用不递归的 stderr/系统输出报告，由宿主消费结果。
 
-自有配置检查、身份生成、默认目录、文件打开/写入/原子发布通过显式结果传错；`start_run` 在发布活动 Run 前检查每一步，正常失败共用作用域回滚：退休已建 logger、关闭 sink 和活动锁、清宿主 producer，只删除本次确实创建的 run 目录，不删除已存在的目录或父目录。Quill 启动异常，以及 `run_json → path_text` 的 UTF-16 路径转换异常，暂由原启动 catch 处理，归后续 WRITE-NATIVE；不通过异常搬运自有 IO 结果。CPU 分配失败不作为自有 IO 的可恢复故障。
+自有配置检查、身份生成、默认目录、文件打开/写入/原子发布通过显式结果传错；`start_run` 在发布活动 Run 前检查每一步，正常失败共用作用域回滚：退休已建 logger、关闭 sink 和活动锁、清宿主 producer，只删除本次确实创建的 run 目录，不删除已存在的目录或父目录。`run_json → path_text` 直接消费 Platform 严格 UTF-16 转换结果，孤立代理项仍为 `invalid_options` 并保留 native_code，合法路径保留 generic `/` 字节；不通过异常搬运 IO 或路径错误。
 
 默认根保留使用显式的目录枚举、条目查询和递增错误；枚举失败中止本次保留，不按部分候选表删除。未知、无法读取、超限或未完成的元数据不列为候选；活动锁共享拒绝不删除对应目录，其余锁/删除失败保留原 `retention_failed` 分类。
 
@@ -115,9 +115,9 @@ const auto final_report = run->finish();
 
 短命线程的槽位通过固定版本 Quill `ThreadContextManager` 协调退休：新 producer 准入时，在 manager 锁内比较已登记 context 身份；只有 Quill 已移除 context 才回收槽位。该版本后台仅在线程已退出、SPSC 和 transit buffer 均排空后移除 context。比较不解引用过期指针；准入串行化，并在创建新 TLS context 后清除可能在扫描后被后台退休、恰好被新分配复用地址的旧槽位，避免 ABA 产生永久占位。producer ID 单调不复用。宿主控制线程在 start 预留一个槽位，flush 不绕过并发预算。整个进程不能另用其他 Quill frontend/自行启停 backend。这是与锁定版本内部机制的明确耦合，升级必须重查；并发预算不是进程总硬内存上限。
 
-若 Quill TLS context 初始化抛错，该线程保留原异常；之后的提交继续返回内部失败，不再次触发上游已置位的 Dev 初始化断言。不会把失败线程算作已准入 producer，也不会把这种失败误计为队列满或并发名额耗尽。
+Quill TLS context 初始化中的 CPU 分配失败走 fatal，不缓存 exception_ptr，也不重试半初始化的线程状态。队列满与并发名额耗尽仍分别显式拒绝，不与 CPU 内存耗尽混同。持久格式中的 `internal_failure`/`allocation_failed` 枚举保留以读取旧证据，不再作为本机 CPU OOM 的恢复通道。
 
-- **精确拒绝计数**来自本模块每次提交的真实返回：Quill log_statement 的 bool、准入/大小/有效性检查或内部异常；不从英文 notice 反推。filtered 和无 run 不计作队列丢失；每次失败只落一个提交拒绝分类。串行 finish 后计数为最终精确值；生产中的 Health 各计数单调，但不承诺跨字段同一时刻的事务快照。
+- **精确拒绝计数**来自本模块每次提交的真实返回：Quill log_statement 的 bool、准入/大小/有效性检查；不从英文 notice 反推。filtered 和无 run 不计作队列丢失；每次失败只落一个提交拒绝分类。串行 finish 后计数为最终精确值；生产中的 Health 各计数单调，但不承诺跨字段同一时刻的事务快照。
 - 设施故障单独计数并保存 `first_facility_issue`。自有 sink 在真实 open/write/flush/rotation/summary 边界记录 typed fault；不能依赖 Quill 将异常转成英文通知后再解析。Quill `error_notifier` 只增加 `backend_notifications` 并保留首条原文，这些可能是正常丢弃 notice，也可能是格式化失败，**未分类即仍有不确定性**，不能一概当业务失败或一概忽略。固定版本内部吞掉的失败路径必须另作边界观测，不能假称成功。
 - 同步首因在通过过滤和结构校验后、队列容量决定前保存。因此队列满或尺寸拒绝不抹掉首因；已过滤、无效输入和 producer-limit 拒绝不保证捕获领域首因。首个 error/critical 是**最先抢到宿主保存槽的合格提交**，不声称跨线程真实因果最早；业务 Result 原始失败仍由业务拥有者保存。
 - 原生首因只保存模板与领域 metadata/fields，`message_is_template=true`，不为此同步格式化所有原生 error；拥有型路径保留已给正文。8 KiB 限制按 UTF-8 边界裁剪快照、设置 truncated，不冒充完整正文。内部存储在 start 时预留，故障记录不得依赖再次成功入队。**不提供诊断选择器、匹配计数或订阅回调**；验收同步锁存业务结果，checkpoint 读取结构化文件核对必要日志与精确期望，不让产品 logger 承担验收观察框架。
@@ -139,7 +139,7 @@ sink 构造只建立值，创建者在交给 Quill 前显式打开文件；每�
 
 JSON core 拥有语法、UTF-8、解码后重名键和入口传入的 event-depth 检查；logging 仍使用上限 16，并拥有文件/行大小及 schema 规则。schema 解码不重复检查深度或重名。语法错误带字节位置，重名和类型错误带 JSON Pointer 结构路径。Document/Builder 独占 DOM；Value 和字符串视图不得超过所属 DOM 的寿命，Builder 的节点不能跨 owner 使用。
 
-JSON writer 迁移只改变写出字节，不改变日志 schema v1 或字段含义；日志没有持久化 JSON 字节摘要。Reader 对合法成员顺序、空白和数值拼写不作 writer 字节比较，因此同一 schema 的旧日志直接经当前解析路径读取，不增加旧格式分支。自有 IO 的结果迁移不改变合法 JSON 字节；Quill/TLS、native 路径与生命周期的残留异常归 WRITE-NATIVE。
+JSON writer 迁移只改变写出字节，不改变日志 schema v1 或字段含义；日志没有持久化 JSON 字节摘要。Reader 对合法成员顺序、空白和数值拼写不作 writer 字节比较，因此同一 schema 的旧日志直接经当前解析路径读取，不增加旧格式分支。自有 IO 和 native 路径的结果迁移不改变合法 JSON 字节。
 
 固定顶层成员：`schema`、`run_id`、`process_id`、`thread_id`、`producer_id`、`producer_sequence`、`record_sequence`、`timestamp_unix_ns`、`severity`、`category`、`event_code`、`message`、`source`、`fields`、`repeat`。映射至 Record / Entry；`persistence` 不落 JSON，由 Reader 成功解析完整行后设置为 jsonl。
 
@@ -180,7 +180,7 @@ Reader 不在后台 sink 中调用 UI，也不经 UI 反向背压唯一 Quill wo
 
 Reader 的 I/O 失败经显式结果进入原状态通道；元数据读取失败关闭当前句柄、清理未完成缓冲，保留已加载版本，后续 poll 可重读。扫描中的轮转竞态只结束本次扫描并留待下次 poll，不是空文件集、EOF 或新增错误码；本批已有记录仍正常交付。Reader 与 sink 的文件身份检查复用同一个显式结果入口；sink 的 flush 检查失败仍记录 `file_flush_failed` 和原 native_code，并将本次结果置为失败，成功的身份检查也不能抹掉先前写失败。
 
-Reader 打开/读取、sink 检查/写入、原子快照及启动 IO 的系统错误文本统一经 Platform 输出 UTF-8，不再沿 `what()` 或 CRT 本地编码；这是有意的诊断文本变化，错误分类及既有原生错误码通道不变。Run 生命周期、Quill/TLS 与 `path_text`/`text_path` 原生路径异常仍待 WRITE-NATIVE，本节不表示整个 Logging 已无异常。
+Reader 打开/读取、sink 检查/写入、原子快照及启动 IO 的系统错误文本统一经 Platform 输出 UTF-8，不再沿 `what()` 或 CRT 本地编码；这是有意的诊断文本变化，错误分类及既有原生错误码通道不变。自有 Logging 已不以异常传错；Quill 后台内部仍有异常边界，见下方 W5 限制。
 
 Reader 打开文件时允许 writer 的 read/write/delete sharing，以 Windows 文件身份与偏移跟踪 rename；不能仅按 events.N 的名字续读。按最旧保留文件到当前文件消费，新旧目录快照不一致时重扫而不拼接。利用输出序号高水位与文件游标定位进度，最近 4096 个唯一记录键作有界去重；已经离开这个窗口的旧输出序号只能判重放/倒序，不假称精确知道过去是否交付。producer 只受并发预算限制，不能用“run 一生只有 128 个 producer”作为 Reader 内存有界的前提。重复/倒序异常均须可见，不能以无限 set 掩盖问题。运行中 health 只有最新成功快照，UI 显示 updated_unix_ns/是否 final，过期不被解释为健康。
 
@@ -210,11 +210,17 @@ CodeDocument 上限为 1 Mi UTF-16 code units 且拒 NUL，因此 UI 对控制�
 ## 实现位置与明确取舍
 
 - [logging.cpp](../../../modules/core/logging/src/logging.cpp)：显式唯一 Run、固定过滤、producer 准入/退休、同步首因、精确拒绝计数、typed sink 健康、轮转/默认根保留、原子健康快照及 finish。首因文本/字段预算是 8 KiB；为了首因保存不再次分配，start 预留字段/字符串容量，其实际 backing 与 STL 开销大于 8 KiB，不冒充进程内存硬上限。
-- [detail/native.hpp](../../../modules/core/logging/include/logging/detail/native.hpp)：唯一 BoundedDropping frontend、实际编码尺寸检查及 resident decoder 提交。metadata 常量由宿主 cpp 定义；结构化 envelope 放入深拷贝 runtime tags，正文/标量参数仍由后台格式化。没有用正文前缀拼接元数据。`native_source` 对未获证明的编译器列填 0；相对文件名携带构建时固定的编译工作目录，不读取运行中的工程或 cwd。
+- [detail/native.hpp](../../../modules/core/logging/include/logging/detail/native.hpp)：唯一 BoundedDropping frontend、实际编码尺寸检查及 resident decoder 提交。metadata 常量由宿主 cpp 定义；结构化 envelope 放入深拷贝 runtime tags，正文/标量参数仍由后台格式化。没有用正文前缀拼接元数据。`native_source` 返回 `Result<SourceLocation>`，来源路径拒绝在 native::write 映射为 `invalid_record`；对未获证明的编译器列填 0，相对文件名携带构建时固定的编译工作目录，不读取运行中的工程或 cwd。无 NUL 终止的 char 数组在准入前显式拒绝，不消耗 producer 序号或覆盖首因。
 - [format.cpp](../../../modules/core/logging/src/format.cpp)：共享 schema、UTF-8、命名标量和规范十进制校验；拒绝重复 JSON key、BOM、未知成员及超过 16 层的异常嵌套。native.hpp 不包含 JSON 库；JSON 是模块私有依赖。
 - [reader.cpp](../../../modules/core/logging/src/reader.cpp)：Windows 共享读/写/删除句柄及文件身份游标；目录快照同时复核存在与缺失的名字，轮转竞态留待下次 poll，不拼接文件。保留一个跨 poll 活动句柄，扫描最多九段；字节预算包含分片读取的 manifest/health（单个最多 256 KiB），记录预算包含坏行；半行有界至 2 MiB，去重窗口 4096 个键。无 Runtime、UI、Quill backend 或 UI 历史依赖。
 - **轮转取舍**：固定版本 Quill RotatingFileSink 某些删除路径忽略错误，不能作为 typed health 权威。采用一个自有 Quill Sink 内的固定 Win32 write/rename/delete/close 政策，逐项检查结果；不引入另一条生产队列、可切换后端或通用 sink 框架。本文的命名/轮转容量公共合同不变。
 - [quill.cmake](../../../cmake/quill.cmake) 按 [dependencies-lock.json](../../../cmake/dependencies-lock.json) 的 URL 和 SHA256 获取并校验官方 commit 归档，不引用 Temp 克隆。headers 标为 SYSTEM，关闭 upstream 示例/测试/安装；构建输出目录部署 `LICENSE.quill.txt`、`LICENSE.quill-fmt.txt`，保留 bundled fmt 完整首部许可。JSON 的既有许可证接线继续复用。
+
+Quill 的 [atelier.patch](../../../third_party/quill/atelier.patch) 只改 `LoggerManager::parse_log_level_from_env`：不读取 `QUILL_LOG_LEVEL`，直接记为已解析。这是有意删除第三方环境配置功能；宿主创建 logger 后立即设 TraceL3，实际过滤唯一来自 RunOptions，合法环境值原本就会被覆盖，现在非法值也不再拒绝启动。构建保存原始 header 与补丁 hash，每次补丁变化从原像重放并校验，部署 `atelier.quill.patch`。升级 Quill 必须重新核对该唯一读取点、创建至 TraceL3 之间无消费者、补丁重放及以下选项和异常路径，不能复用旧版本原像。
+
+采用两个上游支持的开关：`check_backend_singleton_instance=false` 失去跨模块重复 Quill 副本的检测，单常驻宿主合同仍必须遵守；`QUILL_NO_THREAD_NAME_SUPPORT=ON` 失去 Quill 线程名字，持久 schema 只使用 thread_id，不改变身份。它们不关闭日志文件锁，也不使多个 Quill registry 合法。
+
+W5 前仍保持 `QUILL_NO_EXCEPTIONS=OFF`。编译期合法格式的动态宽度/精度、极端浮点精度，以及 queue-drop 通知的 localtime 转换仍可能可恢复失败，登记为 **QUILL-RESULT**；必须另行决定编译期限制动态规格或在 fmt 层补显式结果，并处理时间转换后，才能统一禁异常。自有 catch 清零不表示第三方路径已 W5-ready，不把这些拒绝直接改为 abort。
 
 ## 验收入口与限制
 

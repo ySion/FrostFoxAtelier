@@ -9,7 +9,10 @@ struct FormatError {
 
     std::string message;
 
-    FormatError(ReaderFault kind, std::string text) : fault(kind), message(std::move(text)) {}
+    std::optional<std::uint32_t> native_code;
+
+    FormatError(ReaderFault kind, std::string text, std::optional<std::uint32_t> native = {})
+        : fault(kind), message(std::move(text)), native_code(native) {}
 
     FormatError(json::Error error);
 };
@@ -19,9 +22,7 @@ using FormatResult = std::expected<T, FormatError>;
 
 bool valid_utf8(std::string_view text) noexcept;
 
-std::string path_text(const std::filesystem::path& path);
-
-std::filesystem::path text_path(std::string_view text);
+FormatResult<std::string> path_text(const std::filesystem::path& path);
 
 std::uint64_t unix_ns() noexcept;
 

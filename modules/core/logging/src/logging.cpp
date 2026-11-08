@@ -2,6 +2,8 @@
 #include "detail/format.hpp"
 #include "detail/io.hpp"
 #include "foundation/scope_exit.hpp"
+#include "foundation/string.hpp"
+#include "platform/utf.hpp"
 
 #include <quill/Backend.h>
 #include <quill/Frontend.h>
@@ -11,7 +13,6 @@
 #include <atomic>
 #include <cassert>
 #include <cstdio>
-#include <exception>
 #include <mutex>
 
 namespace atelier::logging {
@@ -33,16 +34,9 @@ void emergency() noexcept {
     OutputDebugStringA(message);
 }
 
-std::string_view prefix(std::string_view text, std::size_t maximum) noexcept {
-    auto count = (std::min)(text.size(), maximum);
-    while (count && count < text.size() && (static_cast<unsigned char>(text[count]) & 0xc0) == 0x80)
-        --count;
-    return text.substr(0, count);
-}
-
 void copy_detail(std::string& destination, std::string_view input) noexcept {
     if (valid_utf8(input)) {
-        destination.assign(prefix(input, 2048));
+        destination.assign(StringView{input}.utf8_prefix(2048).std_view());
         return;
     }
     // Preserve unclassified bytes in a reversible representation instead of
@@ -151,7 +145,7 @@ struct State {
         auto& target = first_error.entry;
         std::size_t remaining = maximum_diagnostic_snapshot_bytes - 128;
         auto copy = [&](std::string& destination, std::string_view input) {
-            const auto part = prefix(input, remaining);
+            const auto part = StringView{input}.utf8_prefix(remaining).std_view();
             destination.assign(part);
             remaining -= part.size();
             first_error.truncated |= part.size() != input.size();
@@ -258,14 +252,7 @@ struct Producer {
 
 thread_local Producer producer;
 
-thread_local std::exception_ptr producer_context_error;
-
-bool admit(State& state) {
-    // Quill's debug TLS construction guard is set before registry allocation.
-    // If that allocation throws, retrying construction would assert instead of
-    // returning a logging failure. Preserve the original failure for this thread.
-    if (producer_context_error)
-        std::rethrow_exception(producer_context_error);
+bool admit(State& state) noexcept {
     if (producer.state == &state && producer.id != 0)
         return true;
     std::lock_guard lock{state.producers_mutex};
@@ -287,13 +274,7 @@ bool admit(State& state) {
     // this new TLS allocation can reuse that address. No other admission can
     // run here, so any matching old slot is retired, not another live producer.
     // Remove that stale identity before publishing the new context's slot.
-    quill::detail::ThreadContext* context;
-    try {
-        context = quill::detail::get_local_thread_context<detail::FrontendOptions>();
-    } catch (...) {
-        producer_context_error = std::current_exception();
-        throw;
-    }
+    auto* context = quill::detail::get_local_thread_context<detail::FrontendOptions>();
     for (auto& existing : state.producers)
         if (existing == context)
             existing = nullptr;
@@ -307,15 +288,10 @@ void retire_logger(State& state) noexcept {
     // no queued references. The sole frontend is this module's fixed policy.
     if (!state.logger)
         return;
-    try {
-        Frontend::remove_logger(state.logger);
-        std::vector<std::string> removed;
-        auto retired =
-            quill::detail::LoggerManager::instance().cleanup_invalidated_loggers([] { return true; }, removed);
-        static_cast<void>(retired);
-    } catch (...) {
-        state.fault(FacilityFault::lifecycle_violation, "Logger registry retirement failed");
-    }
+    Frontend::remove_logger(state.logger);
+    std::vector<std::string> removed;
+    auto retired = quill::detail::LoggerManager::instance().cleanup_invalidated_loggers([] { return true; }, removed);
+    static_cast<void>(retired);
 }
 
 // The pinned rotating sink swallows some remove failures. Own the small fixed
@@ -575,11 +551,7 @@ Run::~Run() {
     impl_->emergency_cleanup = true;
     impl_->state->fault(FacilityFault::lifecycle_violation,
                         "Run destroyed without explicit finish; producers must already be stopped");
-    try {
-        static_cast<void>(finish());
-    } catch (...) {
-        emergency();
-    }
+    static_cast<void>(finish());
     active_run.store(nullptr, std::memory_order_release);
     active_state.store(nullptr, std::memory_order_release);
 }
@@ -609,22 +581,27 @@ bool enabled(Severity severity, std::string_view category) noexcept {
     return severity >= minimum && minimum != Severity::off;
 }
 
-SourceLocation native_source(std::source_location location) {
+Result<SourceLocation> native_source(std::source_location location) noexcept {
     SourceLocation result;
     result.file = location.file_name();
     result.function = location.function_name();
     result.line = location.line();
     // Clang's source_location column is not promised to be a UTF-8 byte column.
     result.column = 0;
-    if (!result.file.empty() && !detail::text_path(result.file).is_absolute())
-        result.root = ATELIER_LOGGING_SOURCE_ROOT;
+    if (!result.file.empty()) {
+        auto path = platform::utf8_to_utf16(result.file);
+        if (!path)
+            return std::unexpected(
+                Error{ErrorCode::invalid_options, "Invalid UTF-8 source path", path.error().system_code});
+        if (!std::filesystem::path{*path}.is_absolute())
+            result.root = ATELIER_LOGGING_SOURCE_ROOT;
+    }
     return result;
 }
 
-Result<std::unique_ptr<Run>> start_run(RunOptions options) {
+Result<std::unique_ptr<Run>> start_run(RunOptions options) noexcept {
     if (started_once || current_run())
         return std::unexpected(Error{ErrorCode::already_started, "A logging run has already started", {}});
-    ErrorCode failure = ErrorCode::invalid_options;
     std::unique_ptr<Run> run;
     bool created{};
     if (options.directory.native().find(L'\0') != std::wstring::npos)
@@ -644,107 +621,99 @@ Result<std::unique_ptr<Run>> start_run(RunOptions options) {
         }
         emergency();
     }};
-    try {
-        Entry probe;
-        probe.category = "logging";
-        probe.event_code = "logging.options";
-        if (options.minimum > Severity::off || options.categories.size() > 64)
-            return std::unexpected(Error{ErrorCode::invalid_options, "Invalid thresholds"});
-        for (std::size_t i = 0; i < options.categories.size(); ++i) {
-            const auto& rule = options.categories[i];
-            probe.category = rule.category;
-            if (const auto problem = entry_problem(probe); !problem.empty())
-                return std::unexpected(Error{ErrorCode::invalid_options, std::string{problem}});
-            if (rule.minimum > Severity::off)
-                return std::unexpected(Error{ErrorCode::invalid_options, "Invalid category threshold"});
-            for (std::size_t j = 0; j < i; ++j)
-                if (options.categories[j].category == rule.category)
-                    return std::unexpected(Error{ErrorCode::invalid_options, "Duplicate category threshold"});
-        }
-        if (!options.directory.empty() && !options.directory.is_absolute())
-            return std::unexpected(Error{ErrorCode::invalid_options, "Run directory must be absolute"});
-        run.reset(new Run);
-        auto& state = *run->impl_->state;
-        state.options = std::move(options);
-        ATELIER_TRY_BIND(identity, make_run_id());
-        state.info = {std::move(*identity),       state.options.process_name, GetCurrentProcessId(), unix_ns(), {},
-                      state.options.parent_run_id};
-        const bool default_directory = state.options.directory.empty();
-        if (default_directory) {
-            auto root = default_root();
-            if (!root) {
-                root.error().code = ErrorCode::invalid_options;
-                return std::unexpected(std::move(root.error()));
-            }
-            state.info.directory = *root / state.info.run_id;
-        } else
-            state.info.directory = state.options.directory.lexically_normal();
-        auto manifest = run_json(state.info);
-        if (!manifest)
-            return std::unexpected(Error{ErrorCode::invalid_options, manifest.error().message, {}});
-        const auto manifest_bytes = json::write(manifest->root());
-        std::error_code error;
-        std::filesystem::create_directories(state.info.directory.parent_path(), error);
-        if (error)
-            return std::unexpected(io_failure("Create run parent directories", static_cast<DWORD>(error.value())));
-        if (!CreateDirectoryW(state.info.directory.c_str(), nullptr)) {
-            const auto code = GetLastError();
-            auto rejected = io_failure("Create fresh run directory", code);
-            if (code == ERROR_ALREADY_EXISTS)
-                rejected.code = ErrorCode::directory_in_use;
-            return std::unexpected(std::move(rejected));
-        }
-        created = true;
-        run->impl_->lock.reset(CreateFileW((state.info.directory / L"active.lock").c_str(),
-                                           GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_NEW,
-                                           FILE_ATTRIBUTE_NORMAL, nullptr));
-        if (!run->impl_->lock)
-            return std::unexpected(io_failure("Create active run lock"));
-        ATELIER_TRY(atomic_write(state.info.directory / L"run.json", {manifest_bytes.data(), manifest_bytes.size()}));
-        if (default_directory)
-            retain_runs(state, state.info.directory.parent_path());
-        run->impl_->sink = std::make_shared<JsonSink>(run->impl_->state);
-        ATELIER_TRY(run->impl_->sink->open());
-        failure = ErrorCode::backend_start_failed;
-        state.logger = Frontend::create_or_get_logger("atelier-" + state.info.run_id, run->impl_->sink,
-                                                      quill::PatternFormatterOptions{"%(message)"},
-                                                      quill::ClockSourceType::System);
-        state.logger->set_log_level(quill::LogLevel::TraceL3);
-        // Reserve the owner/control producer before other threads can submit.
-        static_cast<void>(admit(state));
-        quill::BackendOptions backend;
-        backend.transit_event_buffer_initial_capacity = 8;
-        backend.transit_events_hard_limit = 8;
-        // Quill v13.1.0 requires soft <= hard even though soft is global and hard
-        // is per producer. Keep the small per-producer staging allocation.
-        backend.transit_events_soft_limit = 8;
-        backend.sleep_duration = std::chrono::microseconds{100};
-        backend.wait_for_queues_to_empty_before_exit = true;
-        backend.check_printable_char = {};
-        backend.error_notifier = [state = run->impl_->state](const std::string& message) noexcept {
-            state->notice(message);
-        };
-        quill::Backend::start(backend);
-        if (!quill::Backend::is_running())
-            return std::unexpected(Error{ErrorCode::backend_start_failed, "Quill backend did not start"});
-        run->impl_->backend_started = true;
-        started_once = true;
-        active_state.store(&state, std::memory_order_release);
-        active_run.store(run.get(), std::memory_order_release);
-        state.publish(false, false, false);
-        rollback.release();
-        return run;
-    } catch (const std::exception& error) {
-        // WRITE-NATIVE owns the remaining Quill startup and run_json -> path_text
-        // conversion exceptions. Owned configuration and IO already return results.
-        std::optional<std::uint32_t> native;
-        if (const auto* io = dynamic_cast<const std::system_error*>(&error))
-            native = static_cast<std::uint32_t>(io->code().value());
-        return std::unexpected(Error{failure, error.what(), native});
+    Entry probe;
+    probe.category = "logging";
+    probe.event_code = "logging.options";
+    if (options.minimum > Severity::off || options.categories.size() > 64)
+        return std::unexpected(Error{ErrorCode::invalid_options, "Invalid thresholds"});
+    for (std::size_t i = 0; i < options.categories.size(); ++i) {
+        const auto& rule = options.categories[i];
+        probe.category = rule.category;
+        if (const auto problem = entry_problem(probe); !problem.empty())
+            return std::unexpected(Error{ErrorCode::invalid_options, std::string{problem}});
+        if (rule.minimum > Severity::off)
+            return std::unexpected(Error{ErrorCode::invalid_options, "Invalid category threshold"});
+        for (std::size_t j = 0; j < i; ++j)
+            if (options.categories[j].category == rule.category)
+                return std::unexpected(Error{ErrorCode::invalid_options, "Duplicate category threshold"});
     }
+    if (!options.directory.empty() && !options.directory.is_absolute())
+        return std::unexpected(Error{ErrorCode::invalid_options, "Run directory must be absolute"});
+    run.reset(new Run);
+    auto& state = *run->impl_->state;
+    state.options = std::move(options);
+    ATELIER_TRY_BIND(identity, make_run_id());
+    state.info = {std::move(*identity),       state.options.process_name, GetCurrentProcessId(), unix_ns(), {},
+                  state.options.parent_run_id};
+    const bool default_directory = state.options.directory.empty();
+    if (default_directory) {
+        auto root = default_root();
+        if (!root) {
+            root.error().code = ErrorCode::invalid_options;
+            return std::unexpected(std::move(root.error()));
+        }
+        state.info.directory = *root / state.info.run_id;
+    } else
+        state.info.directory = state.options.directory.lexically_normal();
+    auto manifest = run_json(state.info);
+    if (!manifest)
+        return std::unexpected(
+            Error{ErrorCode::invalid_options, manifest.error().message, manifest.error().native_code});
+    const auto manifest_bytes = json::write(manifest->root());
+    std::error_code error;
+    std::filesystem::create_directories(state.info.directory.parent_path(), error);
+    if (error)
+        return std::unexpected(io_failure("Create run parent directories", static_cast<DWORD>(error.value())));
+    if (!CreateDirectoryW(state.info.directory.c_str(), nullptr)) {
+        const auto code = GetLastError();
+        auto rejected = io_failure("Create fresh run directory", code);
+        if (code == ERROR_ALREADY_EXISTS)
+            rejected.code = ErrorCode::directory_in_use;
+        return std::unexpected(std::move(rejected));
+    }
+    created = true;
+    run->impl_->lock.reset(CreateFileW((state.info.directory / L"active.lock").c_str(), GENERIC_READ | GENERIC_WRITE,
+                                       FILE_SHARE_READ, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr));
+    if (!run->impl_->lock)
+        return std::unexpected(io_failure("Create active run lock"));
+    ATELIER_TRY(atomic_write(state.info.directory / L"run.json", {manifest_bytes.data(), manifest_bytes.size()}));
+    if (default_directory)
+        retain_runs(state, state.info.directory.parent_path());
+    run->impl_->sink = std::make_shared<JsonSink>(run->impl_->state);
+    ATELIER_TRY(run->impl_->sink->open());
+    state.logger =
+        Frontend::create_or_get_logger("atelier-" + state.info.run_id, run->impl_->sink,
+                                       quill::PatternFormatterOptions{"%(message)"}, quill::ClockSourceType::System);
+    state.logger->set_log_level(quill::LogLevel::TraceL3);
+    // Reserve the owner/control producer before other threads can submit.
+    static_cast<void>(admit(state));
+    quill::BackendOptions backend;
+    backend.transit_event_buffer_initial_capacity = 8;
+    backend.transit_events_hard_limit = 8;
+    // Quill v13.1.0 requires soft <= hard even though soft is global and hard
+    // is per producer. Keep the small per-producer staging allocation.
+    backend.transit_events_soft_limit = 8;
+    backend.sleep_duration = std::chrono::microseconds{100};
+    backend.wait_for_queues_to_empty_before_exit = true;
+    // Only the resident host owns Quill; DLL/JIT producers use submit().
+    backend.check_backend_singleton_instance = false;
+    backend.check_printable_char = {};
+    backend.error_notifier = [state = run->impl_->state](const std::string& message) noexcept {
+        state->notice(message);
+    };
+    quill::Backend::start(backend);
+    if (!quill::Backend::is_running())
+        fatal("Quill backend did not start.");
+    run->impl_->backend_started = true;
+    started_once = true;
+    active_state.store(&state, std::memory_order_release);
+    active_run.store(run.get(), std::memory_order_release);
+    state.publish(false, false, false);
+    rollback.release();
+    return run;
 }
 
-FlushReport Run::flush() {
+FlushReport Run::flush() noexcept {
     auto& state = *impl_->state;
     if (state.lifecycle.load() == RunState::finished)
         return {state.health(), impl_->acknowledged, impl_->flushed, impl_->summary_published};
@@ -752,20 +721,15 @@ FlushReport Run::flush() {
         state.fault(FacilityFault::lifecycle_violation, "flush must be called by the run owner");
         return {state.health(), false, false, false};
     }
-    bool acknowledged{};
     state.explicit_flush.store(false);
-    try {
-        state.logger->flush_log();
-        acknowledged = true;
-    } catch (...) {
-        state.fault(FacilityFault::file_flush_failed, "Backend flush request failed");
-    }
+    state.logger->flush_log();
+    const bool acknowledged = true;
     const bool flushed = acknowledged && state.explicit_flush.load();
     const bool published = state.publish(false, acknowledged, flushed);
     return {state.health(), acknowledged, flushed, published};
 }
 
-FlushReport Run::finish() {
+FlushReport Run::finish() noexcept {
     auto& state = *impl_->state;
     if (state.lifecycle.load() == RunState::finished)
         return {state.health(), impl_->acknowledged, impl_->flushed, impl_->summary_published};
@@ -776,23 +740,11 @@ FlushReport Run::finish() {
     state.lifecycle.store(RunState::finishing);
     // The host has joined all producers. Backend::stop drains every queue/transit
     // buffer, unlike treating one producer's flush as a global barrier.
-    try {
-        state.logger->flush_log();
-        impl_->acknowledged = true;
-    } catch (...) {
-        state.fault(FacilityFault::file_flush_failed, "Final backend flush request failed");
-    }
-    try {
-        quill::Backend::stop();
-    } catch (...) {
-        state.fault(FacilityFault::lifecycle_violation, "Backend shutdown failed");
-        impl_->acknowledged = false;
-    }
-    if (quill::Backend::is_running()) {
-        state.fault(FacilityFault::lifecycle_violation, "Backend still running; no final evidence published");
-        const bool published = state.publish(false, false, false);
-        return {state.health(), false, false, published};
-    }
+    state.logger->flush_log();
+    impl_->acknowledged = true;
+    quill::Backend::stop();
+    if (quill::Backend::is_running())
+        fatal("Quill backend still running after stop.");
     impl_->sink->flush_sink();
     const auto failures_before_close = state.failures.load();
     impl_->sink->close();
@@ -838,13 +790,6 @@ SubmitResult complete(SubmitResult result, SubmitStatus status) noexcept {
         state && status != SubmitStatus::filtered && status != SubmitStatus::no_active_run)
         state->submissions[static_cast<std::size_t>(status)].fetch_add(1, std::memory_order_relaxed);
     return result;
-}
-
-SubmitResult internal_failure(SubmitResult result, bool allocation) noexcept {
-    if (auto* state = active_state.load(std::memory_order_acquire))
-        state->fault(allocation ? FacilityFault::allocation_failed : FacilityFault::encoding_failed,
-                     "Frontend record encoding failed");
-    return complete(result, SubmitStatus::internal_failure);
 }
 
 void prepare(Ticket& ticket, const Entry& entry, bool is_template) {

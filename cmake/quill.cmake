@@ -8,12 +8,41 @@ foreach(_option BUILD_EXAMPLES BUILD_MODULE BUILD_TESTS BUILD_BENCHMARKS BUILD_F
     set(QUILL_${_option} OFF CACHE BOOL "" FORCE)
 endforeach()
 set(QUILL_NO_EXCEPTIONS OFF CACHE BOOL "" FORCE)
+set(QUILL_NO_THREAD_NAME_SUPPORT ON CACHE BOOL "" FORCE)
 set(QUILL_DISABLE_NON_PREFIXED_MACROS ON CACHE BOOL "" FORCE)
 FetchContent_Declare(atelier_quill
     URL "${_quill_url}" URL_HASH "SHA256=${_quill_sha256}"
     DOWNLOAD_NAME "${_quill_filename}"
     DOWNLOAD_DIR "${PROJECT_SOURCE_DIR}/.tools/downloads" EXCLUDE_FROM_ALL SYSTEM)
 FetchContent_MakeAvailable(atelier_quill)
+
+# Filtering belongs to the host; an inherited QUILL_LOG_LEVEL is not configuration.
+find_package(Git REQUIRED)
+set(_patch "${PROJECT_SOURCE_DIR}/third_party/quill/atelier.patch")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_patch}")
+file(SHA256 "${_patch}" _patch_sha)
+set(_stamp "${atelier_quill_SOURCE_DIR}/.atelier-patch-sha256")
+set(_applied_sha "")
+if(EXISTS "${_stamp}")
+    file(READ "${_stamp}" _applied_sha)
+endif()
+if(NOT _applied_sha STREQUAL _patch_sha)
+    file(REMOVE "${_stamp}")
+    file(MAKE_DIRECTORY "${atelier_quill_SOURCE_DIR}/.atelier-upstream")
+    set(_file "${atelier_quill_SOURCE_DIR}/include/quill/core/LoggerManager.h")
+    set(_original "${atelier_quill_SOURCE_DIR}/.atelier-upstream/LoggerManager.h")
+    if(EXISTS "${_original}")
+        file(COPY_FILE "${_original}" "${_file}" ONLY_IF_DIFFERENT)
+    else()
+        file(COPY_FILE "${_file}" "${_original}")
+    endif()
+    execute_process(COMMAND "${GIT_EXECUTABLE}" apply --check --unsafe-paths "--directory=${atelier_quill_SOURCE_DIR}" "${_patch}"
+        WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}" COMMAND_ERROR_IS_FATAL ANY)
+    execute_process(COMMAND "${GIT_EXECUTABLE}" apply --unsafe-paths "--directory=${atelier_quill_SOURCE_DIR}" "${_patch}"
+        WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}" COMMAND_ERROR_IS_FATAL ANY)
+    file(WRITE "${_stamp}" "${_patch_sha}")
+endif()
+configure_file("${_patch}" "${CMAKE_BINARY_DIR}/atelier.quill.patch" COPYONLY)
 configure_file("${atelier_quill_SOURCE_DIR}/LICENSE" "${CMAKE_BINARY_DIR}/LICENSE.quill.txt" COPYONLY)
 # The bundled fmt license (including its optional object-code exception) is the
 # opening comment, not a separately shipped LICENSE file. Preserve it verbatim.

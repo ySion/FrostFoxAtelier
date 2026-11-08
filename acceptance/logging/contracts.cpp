@@ -81,6 +81,13 @@ void roundtrip(const fs::path& root) {
     original.repeat.reset();
     healthy(run->flush());
 
+    const char unterminated[]{'b', 'a', 'd'};
+    const auto rejected = ATELIER_LOG(log::Severity::error, "acceptance.cpu", "text.invalid", "{}", unterminated);
+    require(rejected.status == log::SubmitStatus::invalid_record && rejected.producer_id == 0 &&
+                rejected.producer_sequence == 0 && run->health().rejected_invalid_record == 1 &&
+                !run->health().first_error,
+            "An unterminated native string must be rejected before identity or diagnostic capture.");
+
     std::string native_text{"原生\0text", sizeof("原生\0text") - 1};
     std::vector<log::Field> fields{{"phase", std::string{"native"}}, {"context", std::uint64_t{97}}};
     const log::native::Context context{fields, log::Repeat{"native/97", 5}};
@@ -89,18 +96,27 @@ void roundtrip(const fs::path& root) {
     const auto native_line = __LINE__ + 1;
     const auto native = ATELIER_LOG_WITH(log::Severity::error, "acceptance.cpu", "text.native", context, "native {} / {}", std::string_view{native_text}, 37);
     // clang-format on
-    require(native.status == log::SubmitStatus::accepted, "Native format record was not admitted.");
+    require(native.status == log::SubmitStatus::accepted && native.producer_sequence == 2,
+            "Native format record was not admitted exactly after the owned record.");
     const auto expected_native = std::string{"native "} + native_text + " / 37";
     native_text.assign(native_text.size(), 'z');
     fields[0].value = std::string{"destroyed"};
 
     const auto final = run->finish();
-    healthy(final);
     require(final.health.accepted == 2 && final.health.state == log::RunState::finished,
             "Final host accounting changed the two submitted records.");
     auto read = drain(*reader);
     clean_reader(read);
-    healthy(read.health->report);
+    const log::FlushReport* reports[]{&final, &read.health->report};
+    for (const auto* report : reports) {
+        const auto& h = report->health;
+        require(report->backend_acknowledged && report->sink_flush_succeeded && report->summary_published &&
+                    h.facility_failures == 0 && !h.first_facility_issue && h.backend_notifications == 0 &&
+                    h.rejected_queue_full == 0 && h.rejected_producer_limit == 0 && h.rejected_record_too_large == 0 &&
+                    h.rejected_invalid_record == 1 && h.rejected_internal_failure == 0 && h.first_error &&
+                    h.first_error->entry.event_code == "text.native",
+                "Final health must contain only the expected input rejection and valid native diagnostic.");
+    }
     require(read.records.size() == 2, "Reader lost or duplicated a record.");
     same_entry(read.records[0].entry, expected);
     const auto& formatted = read.records[1];
