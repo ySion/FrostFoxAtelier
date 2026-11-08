@@ -3485,133 +3485,141 @@ void Session::forward_mesh(const assets::MeshAsset& asset) {
 }
 
 Result<void> Session::reimport_mesh(Project& project, std::string_view key, const std::filesystem::path& source) {
-    try {
-        if (world_.closed() || world_.running() || editing())
-            throw std::runtime_error("Finish the active edit and stop the editor World before reimporting.");
-        const auto publication = take(project.reimport_mesh(key, source));
-        for (const auto& texture : publication.textures)
-            take(publish_texture(texture.key, texture.image));
-        // Existing documents may have unsaved author edits. Importing geometry
-        // must not replace those edits with the material file's saved values.
-        std::vector<MissingResource> missing;
-        for (const auto& asset : publication.materials) {
-            auto root = take(material_resource(project.assets(), asset, &missing));
-            forward_material(root.id());
-        }
-        return publish_mesh(project.assets(), publication.mesh);
-    } catch (const std::exception& error) {
-        return failed(error);
+    if (world_.closed() || world_.running() || editing())
+        return std::unexpected(
+            Error{ErrorCode::invalid_storage, "Finish the active edit and stop the editor World before reimporting."});
+    ATELIER_TRY_BIND(publication, project.reimport_mesh(key, source));
+    for (const auto& texture : publication->textures)
+        ATELIER_TRY(publish_texture(texture.key, texture.image));
+    // Existing documents may have unsaved author edits. Importing geometry
+    // must not replace those edits with the material file's saved values.
+    std::vector<MissingResource> missing;
+    for (const auto& asset : publication->materials) {
+        ATELIER_TRY_BIND(root, material_resource(project.assets(), asset, &missing));
+        forward_material(root->id());
     }
+    return publish_mesh(project.assets(), publication->mesh);
 }
 
 Result<void> Session::publish_mesh(assets::Reader& reader, const assets::MeshAsset& asset) {
-    try {
-        if (world_.closed() || asset.key.empty() || !asset.mesh)
-            throw std::runtime_error("Mesh publication needs a live Session, asset key and complete geometry.");
-        std::vector<MissingResource> missing;
-        const auto defaults = take(mesh_defaults(reader, asset, &missing));
-        struct Replacement {
-            ObjectId object;
+    if (world_.closed() || asset.key.empty() || !asset.mesh)
+        return std::unexpected(Error{ErrorCode::invalid_storage,
+                                     "Mesh publication needs a live Session, asset key and complete geometry."});
+    std::vector<MissingResource> missing;
+    ATELIER_TRY_BIND(defaults, mesh_defaults(reader, asset, &missing));
+    struct Replacement {
+        ObjectId object;
 
-            std::vector<presentation::MaterialBinding> active;
+        std::vector<presentation::MaterialBinding> active;
 
-            Retained kept;
-        };
-        std::vector<Replacement> replacements;
-        // Include detached history objects with a document identity: later Undo
-        // reattaches the current mesh rather than resurrecting an imported version.
-        std::unordered_set<ObjectId> components;
-        for (const auto& [object, id] : local_ids_) {
-            static_cast<void>(id);
-            const auto type = runtime_.type_of(object);
-            if (type && derives(runtime_, *type, presentation_types_.static_mesh_component))
-                components.insert(object);
-        }
-        for (const auto& entity : take(world_.members()))
-            for (const auto& component : take(world::components(runtime_, entity.id()))) {
-                if (derives(runtime_, take(runtime_.type_of(component.id())),
-                            presentation_types_.static_mesh_component))
+        Retained kept;
+    };
+    std::vector<Replacement> replacements;
+    // Include detached history objects with a document identity: later Undo
+    // reattaches the current mesh rather than resurrecting an imported version.
+    std::unordered_set<ObjectId> components;
+    for (const auto& [object, id] : local_ids_) {
+        static_cast<void>(id);
+        const auto type = runtime_.type_of(object);
+        if (!type)
+            continue;
+        ATELIER_TRY_BIND(matches, runtime_.is_a(*type, presentation_types_.static_mesh_component));
+        if (*matches)
+            components.insert(object);
+    }
+    {
+        ATELIER_TRY_BIND(members, world_.members());
+        for (const auto& entity : *members) {
+            ATELIER_TRY_BIND(parts, world::components(runtime_, entity.id()));
+            for (const auto& component : *parts) {
+                ATELIER_TRY_BIND(type, runtime_.type_of(component.id()));
+                ATELIER_TRY_BIND(matches, runtime_.is_a(*type, presentation_types_.static_mesh_component));
+                if (*matches)
                     components.insert(component.id());
             }
-        for (const auto object : components) {
-            if (take(presentation::read_static_mesh(runtime_, object)).mesh.source != asset.key)
-                continue;
-            auto bindings = take(presentation::read_material_bindings(runtime_, object));
-            Retained kept;
-            if (const auto at = retained_.find(object); at != retained_.end())
-                kept = at->second;
-            auto changed = [&]() -> json::Result<Replacement> {
-                json::Builder record;
-                if (!kept.record.empty()) {
-                    ATELIER_TRY_BIND(parsed,
-                                     json::Document::parse(kept.record, {std::numeric_limits<std::size_t>::max(),
-                                                                         json::DepthPolicy::containers, true}));
-                    record = json::Builder(*parsed);
-                }
-                if (const auto at = *record.root().find("materials"); at && at->kind() == json::Kind::array) {
-                    const auto items = *at->array();
-                    for (auto item : items) {
-                        ATELIER_TRY_BIND(slot_value, item.string({"slot"}));
-                        const auto slot = std::string(*slot_value);
-                        if (std::ranges::find(bindings, slot, &presentation::MaterialBinding::slot) != bindings.end())
-                            continue;
-                        ATELIER_TRY_BIND(resource, item.at("resource"));
-                        ATELIER_TRY_BIND(key, local_key(*resource));
-                        const auto id = take(local_object(*key));
-                        bool overridden = false;
-                        if (const auto flag = *item.find("overridden")) {
-                            ATELIER_TRY_BIND(value, flag->boolean());
-                            overridden = *value;
-                        }
-                        bindings.push_back({slot, take(runtime_.hold(id)), overridden});
-                    }
-                }
-                std::vector<presentation::MaterialBinding> active;
-                bool dormant{};
-                for (const auto& binding : bindings) {
-                    std::size_t matches{};
-                    for (std::size_t i = 0; i < asset.mesh->materials().size(); ++i)
-                        matches += geometry::material_slot_name(*asset.mesh, i) == binding.slot;
-                    if (matches == 1)
-                        active.push_back(binding);
-                    else
-                        dormant = true;
-                }
-                kept.materials.clear();
-                if (dormant) {
-                    const auto table = *record.array(record.root(), "materials");
-                    for (const auto& binding : bindings) {
-                        const auto entry = record.append_object(table);
-                        ATELIER_TRY(record.set(entry, "slot", binding.slot));
-                        ATELIER_TRY_BIND(id, GraphCodec::identity(*this, binding.resource.id()));
-                        record.set_validated(entry, "resource", std::to_string(*id));
-                        ATELIER_TRY(record.set(entry, "overridden", binding.overridden));
-                        kept.materials.push_back(binding.resource);
-                    }
-                } else
-                    record.erase(record.root(), "materials");
-                kept.record = dump_retained(record.root());
-                return Replacement{object, std::move(active), std::move(kept)};
-            }();
-            ATELIER_TRY_BIND(replacement, scene_result(std::move(changed)));
-            replacements.push_back(std::move(*replacement));
         }
-        take(reader.publish_mesh_content(asset));
-        for (auto& replacement : replacements) {
-            take(presentation::set_mesh_binding(runtime_, replacement.object, {asset.key, asset.mesh, defaults}));
-            take(presentation::set_material_bindings(runtime_, replacement.object, replacement.active));
-            if (replacement.kept.empty())
-                retained_.erase(replacement.object);
-            else
-                retained_.insert_or_assign(replacement.object, std::move(replacement.kept));
-        }
-        unavailable_.erase(std::pair{assets::AssetKind::mesh, asset.key});
-        ++revision_;
-        forward_mesh(asset);
-        return {};
-    } catch (const std::exception& error) {
-        return failed(error);
     }
+    for (const auto object : components) {
+        {
+            ATELIER_TRY_BIND(mesh, presentation::read_static_mesh(runtime_, object));
+            if (mesh->mesh.source != asset.key)
+                continue;
+        }
+        ATELIER_TRY_BIND(bindings, presentation::read_material_bindings(runtime_, object));
+        Retained kept;
+        if (const auto at = retained_.find(object); at != retained_.end())
+            kept = at->second;
+        auto changed = [&]() -> Result<Replacement> {
+            json::Builder record;
+            if (!kept.record.empty()) {
+                ATELIER_TRY_BIND(
+                    parsed, scene_result(json::Document::parse(kept.record, {std::numeric_limits<std::size_t>::max(),
+                                                                             json::DepthPolicy::containers, true})));
+                record = json::Builder(*parsed);
+            }
+            if (const auto at = *record.root().find("materials"); at && at->kind() == json::Kind::array) {
+                const auto items = *at->array();
+                for (auto item : items) {
+                    ATELIER_TRY_BIND(slot_value, scene_result(item.string({"slot"})));
+                    const auto slot = std::string(*slot_value);
+                    if (std::ranges::find(*bindings, slot, &presentation::MaterialBinding::slot) != bindings->end())
+                        continue;
+                    ATELIER_TRY_BIND(resource, scene_result(item.at("resource")));
+                    ATELIER_TRY_BIND(key, scene_result(local_key(*resource)));
+                    ATELIER_TRY_BIND(id, local_object(*key));
+                    bool overridden = false;
+                    if (const auto flag = *item.find("overridden")) {
+                        ATELIER_TRY_BIND(value, scene_result(flag->boolean()));
+                        overridden = *value;
+                    }
+                    ATELIER_TRY_BIND(root, runtime_.hold(*id));
+                    bindings->push_back({slot, std::move(*root), overridden});
+                }
+            }
+            std::vector<presentation::MaterialBinding> active;
+            bool dormant{};
+            for (const auto& binding : *bindings) {
+                std::size_t matches{};
+                for (std::size_t i = 0; i < asset.mesh->materials().size(); ++i)
+                    matches += geometry::material_slot_name(*asset.mesh, i) == binding.slot;
+                if (matches == 1)
+                    active.push_back(binding);
+                else
+                    dormant = true;
+            }
+            kept.materials.clear();
+            if (dormant) {
+                const auto table = *record.array(record.root(), "materials");
+                for (const auto& binding : *bindings) {
+                    const auto entry = record.append_object(table);
+                    ATELIER_TRY(scene_result(record.set(entry, "slot", binding.slot)));
+                    ATELIER_TRY_BIND(id, scene_result(GraphCodec::identity(*this, binding.resource.id())));
+                    record.set_validated(entry, "resource", std::to_string(*id));
+                    ATELIER_TRY(scene_result(record.set(entry, "overridden", binding.overridden)));
+                    kept.materials.push_back(binding.resource);
+                }
+            } else
+                record.erase(record.root(), "materials");
+            kept.record = dump_retained(record.root());
+            return Replacement{object, std::move(active), std::move(kept)};
+        }();
+        if (!changed)
+            return std::unexpected(std::move(changed.error()));
+        replacements.push_back(std::move(*changed));
+    }
+    ATELIER_TRY(reader.publish_mesh_content(asset));
+    for (auto& replacement : replacements) {
+        ATELIER_TRY(presentation::set_mesh_binding(runtime_, replacement.object, {asset.key, asset.mesh, *defaults}));
+        ATELIER_TRY(presentation::set_material_bindings(runtime_, replacement.object, replacement.active));
+        if (replacement.kept.empty())
+            retained_.erase(replacement.object);
+        else
+            retained_.insert_or_assign(replacement.object, std::move(replacement.kept));
+    }
+    unavailable_.erase(std::pair{assets::AssetKind::mesh, asset.key});
+    ++revision_;
+    forward_mesh(asset);
+    return {};
 }
 
 void Session::forward_edit() {
