@@ -1,26 +1,26 @@
 #include "memory/fatal.hpp"
+#include "../helpers.hpp"
 #include "ui/session.hpp"
 #include "ui/text.hpp"
 #include <Windows.h>
 #include <cmath>
 #include <cstdio>
-#include <stdexcept>
 #include <string>
 #include <vector>
 
 using namespace atelier;
 
 namespace {
-void require(bool value, const char* message) {
-    if (!value)
-        throw std::runtime_error(message);
-}
+using acceptance::helpers::require;
 
 template <class T>
 T accepted(ui::Result<T> result) {
-    if (!result)
-        throw std::runtime_error("UI error " + std::to_string(static_cast<int>(result.error().code)) + " native " +
-                                 std::to_string(result.error().native_code));
+    if (!result) {
+        char message[128];
+        std::snprintf(message, sizeof(message), "UI error %d native %u", static_cast<int>(result.error().code),
+                      static_cast<unsigned>(result.error().native_code));
+        fatal(message);
+    }
     return std::move(*result);
 }
 
@@ -32,7 +32,7 @@ const ui::DrawQuad& first_text(const ui::UiFrame& frame) {
     for (const auto& draw : frame.drawing->draws)
         if (draw.coverage)
             return draw;
-    throw std::runtime_error("frame has no text");
+    fatal("frame has no text");
 }
 
 ui::Control leaf(std::uint64_t key, ui::ControlKind kind, float y, std::wstring text = {}) {
@@ -104,20 +104,14 @@ void identity_and_lifetime() {
 
 int main() {
     atelier::install_fatal_handler();
-    unsigned failures = 0;
     const std::pair<const char*, void (*)()> cases[] = {{"identity_and_lifetime", identity_and_lifetime},
                                                         {"accepted_text_style_snapshot", accepted_text_style_snapshot},
                                                         {"style_sheets", style_sheets},
                                                         {"tooltip_contracts", tooltip_contracts}};
-    for (const auto& [name, run] : cases)
-        try {
-            run();
-            std::printf("UI %s: PASS\n", name);
-        } catch (const std::exception& error) {
-            ++failures;
-            std::printf("UI %s: FAIL %s\n", name, error.what());
-        }
-    std::printf("UI acceptance: %s (%zu/%zu)\n", failures ? "FAIL" : "PASS", std::size(cases) - failures,
-                std::size(cases));
-    return failures ? 1 : 0;
+    for (const auto& [name, run] : cases) {
+        run();
+        std::printf("UI %s: PASS\n", name);
+    }
+    std::printf("UI acceptance: PASS (%zu/%zu)\n", std::size(cases), std::size(cases));
+    return 0;
 }

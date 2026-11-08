@@ -1,4 +1,5 @@
 #include "memory/fatal.hpp"
+#include "../helpers.hpp"
 #include "ui_layout/layout.hpp"
 
 #include <Windows.h>
@@ -9,7 +10,6 @@
 #include <cmath>
 #include <cstdio>
 #include <map>
-#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -19,14 +19,15 @@ using namespace atelier::ui_layout;
 using Microsoft::WRL::ComPtr;
 
 namespace {
-void require(bool condition, std::string_view message) {
-    if (!condition)
-        throw std::runtime_error(std::string(message));
-}
+using atelier::acceptance::helpers::require;
 
-void check_error(const Error& error) {
-    throw std::runtime_error(std::string(describe(error.code)) + ": " + std::string(describe(error.field)) +
-                             "; provider=" + std::to_string(error.provider_code));
+[[noreturn]] void check_error(const Error& error) {
+    const auto code = describe(error.code);
+    const auto field = describe(error.field);
+    char message[1024];
+    std::snprintf(message, sizeof(message), "%.*s: %.*s; provider=%u", static_cast<int>(code.size()), code.data(),
+                  static_cast<int>(field.size()), field.data(), static_cast<unsigned>(error.provider_code));
+    atelier::fatal(message);
 }
 
 void accepted(Result<void> result) {
@@ -73,8 +74,11 @@ NodeInput column() {
 }
 
 void hr(HRESULT result) {
-    if (FAILED(result))
-        throw std::runtime_error("DirectWrite HRESULT " + std::to_string(static_cast<unsigned long>(result)));
+    if (FAILED(result)) {
+        char message[64];
+        std::snprintf(message, sizeof(message), "DirectWrite HRESULT %lu", static_cast<unsigned long>(result));
+        atelier::fatal(message);
+    }
 }
 
 struct TextProvider {
@@ -308,40 +312,27 @@ void owned_geometry_lifetime() {
 int main() {
     atelier::install_fatal_handler();
     SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
-    try {
-        const std::pair<const char*, void (*)()> cases[]{
-            {"bounded_allocation", bounded_allocation},
-            {"slots_padding_and_columns", slots_padding_and_columns},
-            {"known_width_natural_height", known_width_natural_height},
-            {"transactional_failure_and_reentry", transactional_failure_and_reentry},
-            {"anchors_and_logical_precision", anchors_and_logical_precision},
-            {"owned_geometry_lifetime", owned_geometry_lifetime},
-            {"shared_columns_structure_and_intrinsic", shared_columns_structure_and_intrinsic},
-            {"wrap_flow_and_repeated_grid", wrap_flow_and_repeated_grid},
-            {"virtual_range_and_anchor", virtual_range_and_anchor},
-            {"flex_allocation_and_distribution", flex_allocation_and_distribution},
-            {"flex_wrapping_and_alignment", flex_wrapping_and_alignment},
-            {"grid_tracks_spans_and_placement", grid_tracks_spans_and_placement},
-            {"grid_collision_boundaries", grid_collision_boundaries},
-            {"final_tree_transactions", final_tree_transactions}};
-        unsigned passed = 0;
-        unsigned failed = 0;
-        for (const auto& [name, run] : cases) {
-            try {
-                run();
-                ++passed;
-                std::printf("{\"kind\":\"case\",\"name\":\"%s\",\"status\":\"PASS\"}\n", name);
-            } catch (const std::exception& error) {
-                ++failed;
-                std::printf("{\"kind\":\"case\",\"name\":\"%s\",\"status\":\"FAIL\",\"error\":\"%s\"}\n", name,
-                            error.what());
-            }
-        }
-        std::printf("{\"kind\":\"summary\",\"passed\":%u,\"failed\":%u}\nUI layout acceptance: %s\n", passed, failed,
-                    failed ? "FAIL" : "PASS");
-        return failed ? 2 : 0;
-    } catch (const std::exception& error) {
-        std::fprintf(stderr, "UI layout acceptance fatal: %s\n", error.what());
-        return 3;
+    const std::pair<const char*, void (*)()> cases[]{
+        {"bounded_allocation", bounded_allocation},
+        {"slots_padding_and_columns", slots_padding_and_columns},
+        {"known_width_natural_height", known_width_natural_height},
+        {"transactional_failure_and_reentry", transactional_failure_and_reentry},
+        {"anchors_and_logical_precision", anchors_and_logical_precision},
+        {"owned_geometry_lifetime", owned_geometry_lifetime},
+        {"shared_columns_structure_and_intrinsic", shared_columns_structure_and_intrinsic},
+        {"wrap_flow_and_repeated_grid", wrap_flow_and_repeated_grid},
+        {"virtual_range_and_anchor", virtual_range_and_anchor},
+        {"flex_allocation_and_distribution", flex_allocation_and_distribution},
+        {"flex_wrapping_and_alignment", flex_wrapping_and_alignment},
+        {"grid_tracks_spans_and_placement", grid_tracks_spans_and_placement},
+        {"grid_collision_boundaries", grid_collision_boundaries},
+        {"final_tree_transactions", final_tree_transactions}};
+    unsigned passed = 0;
+    for (const auto& [name, run] : cases) {
+        run();
+        ++passed;
+        std::printf("{\"kind\":\"case\",\"name\":\"%s\",\"status\":\"PASS\"}\n", name);
     }
+    std::printf("{\"kind\":\"summary\",\"passed\":%u,\"failed\":0}\nUI layout acceptance: PASS\n", passed);
+    return 0;
 }

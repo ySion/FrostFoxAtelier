@@ -1,8 +1,11 @@
 std::shared_ptr<const ui::StyleSheet> sheet(std::string_view source) {
     auto result = ui::StyleSheet::parse(source);
-    if (!result)
-        throw std::runtime_error("SS " + std::to_string(result.error().line) + ":" +
-                                 std::to_string(result.error().column) + " " + result.error().message);
+    if (!result) {
+        char message[1024];
+        std::snprintf(message, sizeof(message), "SS %zu:%zu %s", result.error().line, result.error().column,
+                      result.error().message.c_str());
+        fatal(message);
+    }
     return std::move(*result);
 }
 
