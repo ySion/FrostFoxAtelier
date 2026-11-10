@@ -126,7 +126,7 @@ Result<bool> Application::confirm_discard(bool sources, bool interactive) {
         if (!effects(*edit))
             return failed("The active field could not be committed.");
     } else
-        return failed("Finish the active field before replacing the document.");
+        return failed("Finish the active field before replacing the document. " + ui_error(edit.error()).message);
     ATELIER_TRY(finish_color_edit(true));
     if (sources)
         for (const auto& file : workspace_.source_editor.files()) {
@@ -167,7 +167,7 @@ Result<bool> Application::confirm_discard(bool sources, bool interactive) {
     return true;
 }
 
-void Application::publish_document(std::unique_ptr<editor::Session> next, editor::ProjectCode* code) {
+Result<void> Application::publish_document(std::unique_ptr<editor::Session> next, editor::ProjectCode* code) {
     const auto previous_document = document_->presentation().identity();
     restart_play_ = false;
     finish_camera_fly(false);
@@ -178,26 +178,31 @@ void Application::publish_document(std::unique_ptr<editor::Session> next, editor
         control_->document_replaced();
     const auto cancelled = viewport_tool_.cancel(*document_);
     if (!cancelled)
-        throw editor::detail::Failure(cancelled.error());
+        return std::unexpected(cancelled.error());
     viewport_tool_.cursor = {};
     accepted_view_.reset();
     cancel_interaction(ui_.cancel_interaction());
     auto cleared = ui_.set_controls({});
-    if (!cleared)
-        throw std::runtime_error("Cannot retire the previous document UI.");
+    if (!cleared) {
+        auto error = ui_error(cleared.error());
+        error.message = "Cannot retire the previous document UI. " + error.message;
+        return std::unexpected(std::move(error));
+    }
     effects(*cleared);
+    if (cleared->error)
+        return std::unexpected(ui_error(*cleared->error));
     sync_text_input();
     if (popup_)
-        popup_->reset_document();
+        ATELIER_TRY(popup_->reset_document());
     for (auto& popup : submenus_)
-        popup->reset_document();
+        ATELIER_TRY(popup->reset_document());
     workspace_.reset_document();
     project_code_ = nullptr;
     diagnostics();
     const auto closed = document_->close();
     diagnostics();
     if (!closed)
-        throw editor::detail::Failure(closed.error());
+        return std::unexpected(closed.error());
     document_ = std::move(next);
     project_code_ = code;
     scene_.reset();
@@ -212,7 +217,7 @@ void Application::publish_document(std::unique_ptr<editor::Session> next, editor
     auto scene = platform::utf16_to_utf8(scene_path_.generic_wstring());
     if (!root || !scene) {
         std::fputs("Cannot log document adoption: invalid UTF-16 path; the adopted document is unchanged.\n", stderr);
-        return;
+        return {};
     }
     const std::array fields{logging::Field{"previous_document", previous_document},
                             logging::Field{"document", document_->presentation().identity()},
@@ -220,6 +225,7 @@ void Application::publish_document(std::unique_ptr<editor::Session> next, editor
                             logging::Field{"scene", std::move(*scene)}};
     static_cast<void>(ATELIER_LOG_WITH(logging::Severity::info, "application", "document.adopted",
                                        logging::native::Context{fields}, "Editor document adopted"));
+    return {};
 }
 
 Result<void> Application::open_project(const std::filesystem::path& folder, bool create, ProjectOpenPolicy policy,
@@ -267,13 +273,25 @@ Result<void> Application::load_project(const std::filesystem::path& folder, bool
     }
     play_.close();
     consume_play_output();
-    workspace_.source_editor.clear();
+    auto previous_project = std::move(project_);
+    auto previous_scene = std::move(scene_path_);
+    auto previous_pending = std::move(pending_scene_);
+    const auto previous_open = workspace_.project_open;
+    const auto previous_available = workspace_.scene_available;
     project_ = std::move(*project);
     scene_path_ = initial_scene;
     workspace_.project_open = true;
     pending_scene_ = *content;
     workspace_.scene_available = scene_available;
-    publish_document(std::move(candidate.session), candidate.code);
+    if (auto adopted = publish_document(std::move(candidate.session), candidate.code); !adopted) {
+        project_ = std::move(previous_project);
+        scene_path_ = std::move(previous_scene);
+        pending_scene_ = std::move(previous_pending);
+        workspace_.project_open = previous_open;
+        workspace_.scene_available = previous_available;
+        return adopted;
+    }
+    workspace_.source_editor.clear();
     if (candidate.error) {
         auto report = std::make_shared<editor::ProjectBuild>();
         if (candidate.build)
@@ -322,10 +340,18 @@ Result<void> Application::open_scene(const std::filesystem::path& relative, bool
     }
     play_.close();
     consume_play_output();
+    auto previous_scene = std::move(scene_path_);
+    auto previous_pending = std::move(pending_scene_);
+    const auto previous_available = workspace_.scene_available;
     scene_path_ = relative;
     pending_scene_ = *text;
     workspace_.scene_available = true;
-    publish_document(std::move(next.session), next.code);
+    if (auto adopted = publish_document(std::move(next.session), next.code); !adopted) {
+        scene_path_ = std::move(previous_scene);
+        pending_scene_ = std::move(previous_pending);
+        workspace_.scene_available = previous_available;
+        return adopted;
+    }
     publish_build(next.build);
     if (next.error)
         notice("document.placeholders", placeholder_notice, logging::Severity::warning);
@@ -341,7 +367,7 @@ Result<void> Application::save_scene(const std::filesystem::path& relative) {
             "Repair the project build and reload its scene before saving. The original scene has been preserved.");
     const auto edit = ui_.commit_edit();
     if (!edit)
-        return failed("Correct the active field before saving.");
+        return failed("Correct the active field before saving. " + ui_error(edit.error()).message);
     if (!effects(*edit))
         return failed("The active field could not be committed; the scene was not saved.");
     ATELIER_TRY(finish_color_edit(true));

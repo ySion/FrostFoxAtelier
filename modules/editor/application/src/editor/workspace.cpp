@@ -771,9 +771,9 @@ std::wstring parameter_label(std::string_view path) {
 }
 }
 
-std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size size, const ui::UiFrame* frame,
-                                             Project* project, const ui::Session* ui,
-                                             const ui::ControlBox* command_focus) {
+Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout::Size size, const ui::UiFrame* frame,
+                                                     Project* project, const ui::Session* ui,
+                                                     const ui::ControlBox* command_focus) {
     property_help_.begin();
     sync_world(session);
     if (!command_focus && frame && ui)
@@ -1235,7 +1235,13 @@ std::vector<ui::Control> Workspace::describe(Session& session, ui_layout::Size s
             continue;
         }
         if (view.key == control::output_tab) {
-            output.append(result, view.content, *ui_document_, pane.bounds.height - 22);
+            auto appended = output.append(result, view.content, *ui_document_, pane.bounds.height - 22);
+            if (!appended) {
+                auto error = application::ui_error(appended.error());
+                reject_ui_controls(error.message);
+                property_help_.end();
+                return std::unexpected(std::move(error));
+            }
             continue;
         }
         if (view.key == control::workbench) {

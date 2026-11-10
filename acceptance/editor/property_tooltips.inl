@@ -11,13 +11,14 @@ void verify_property_tooltips() {
 
     editor::Workspace workspace;
     const std::array fonts{(editor::asset_directory() / "fonts/SarasaUiSC-Regular.ttf").wstring()};
-    ui::Session surface(fonts);
+    ui::Session surface;
+    take(surface.initialize(fonts));
     const auto theme = ui::StyleSheet::parse(take(assets::read_file(editor::asset_directory() / "editor.ss")));
     require(theme && surface.set_style_sheet(*theme) && surface.set_surface({{1600, 1000}, 1, 1}),
             "Property tooltip editor surface failed.");
     std::vector<ui::Control> controls;
     const auto publish = [&] {
-        controls = workspace.describe(document, {1600, 1000}, surface.presented().get());
+        controls = take(workspace.describe(document, {1600, 1000}, surface.presented().get()));
         require(workspace.ui_error().empty(), "Property tooltip production DSL failed.");
         auto described = surface.set_controls(controls);
         require(described.has_value(), "Property tooltip descriptors were rejected.");

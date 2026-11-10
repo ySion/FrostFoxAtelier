@@ -23,6 +23,7 @@ ui Results(in TableBinding model, in Text view, in double width) {
     const language::KeyBinding alias{"results", 41};
     auto instance = take(language::Instance::create(module->find("Results"), 0, next, std::span{&alias, 1}, inputs));
     ui::Session surface;
+    take(surface.initialize());
     constexpr float scale = 1.5f;
     const auto present = [&] {
         require(surface
@@ -151,6 +152,7 @@ ui Board(in TableBinding model, in ActionBinding open, in Key context,
     const std::array<language::KeyBinding, 2> keys{{{"primary.grid", table_key}, {"layout", 702}}};
     auto instance = take(language::Instance::create(module->find("Board"), 0, next, keys, inputs));
     ui::Session surface;
+    take(surface.initialize());
     require(surface.set_surface({{640, 480}, 1, 1}).has_value(), "Table DSL surface failed.");
     std::vector<ui::Action> actions;
     const auto route = [&](const ui::Reply& reply) {

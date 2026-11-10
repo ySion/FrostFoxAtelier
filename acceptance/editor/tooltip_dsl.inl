@@ -46,7 +46,8 @@ ui TooltipDsl(in TooltipBinding help, in Items<HelpEntry> entries, in EditBindin
     ui::ControlKey next_key = 10000;
     language::LiveDocument live(runtime, path, next_key);
     const std::array fonts{(editor::asset_directory() / "fonts/SarasaUiSC-Regular.ttf").wstring()};
-    ui::Session surface(fonts);
+    ui::Session surface;
+    take(surface.initialize(fonts));
     require(surface.set_surface({{960, 720}, 1, 1}).has_value(), "Tooltip DSL surface failed.");
     const language::TooltipBinding original = std::make_shared<const ui::Tooltip>(
         ui::Tooltip{L"Position 位置", L"Entity.position · Vector3", L"相对于 Space Reference 的位置。\n单位 m。"});

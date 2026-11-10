@@ -1,6 +1,7 @@
 #pragma once
 #include "ui/detail/text_edit.hpp"
 #include "ui/error.hpp"
+#include "foundation/result.hpp"
 #include <algorithm>
 
 namespace atelier::ui {
@@ -8,22 +9,20 @@ namespace atelier::ui {
 // descriptor; hiding, docking or replacing UI scopes never discards its edits.
 class CodeDocument {
 public:
-    CodeDocument() : CodeDocument(std::wstring{}) {}
+    CodeDocument() { buffer_.select({}, false); }
 
-    // Text admission only; ICU failures still belong to the text backend.
+    // Admission and ICU segmentation complete before publishing the document.
     static Result<CodeDocument> create(std::wstring text) {
         if (text.size() > 1024 * 1024 || !valid_text(text))
             return std::unexpected(Error{ErrorCode::invalid_text, 0, 0,
                                          "CodeDocument requires bounded Unicode text with LF line endings."});
-        return CodeDocument(std::move(text));
+        ATELIER_TRY_BIND(buffer, detail::TextEdit::create(std::move(text), 1024 * 1024, false, false));
+        return CodeDocument(std::move(*buffer));
     }
 
-    // Character contract, without the document-size budget. Editing does not
-    // reapply this predicate; hosts also use it for non-creating text consumers.
-    static bool valid_text(std::wstring_view text) noexcept {
-        return detail::valid_text(text, false) &&
-               std::ranges::none_of(text, [](wchar_t c) { return (c < 32 && c != L'\n' && c != L'\t') || c == 127; });
-    }
+    // The same character contract governs creation and edits. Hosts may use it
+    // without imposing the document-size budget on non-creating consumers.
+    static bool valid_text(std::wstring_view text) noexcept { return detail::valid_document_text(text); }
 
     const std::wstring& text() const noexcept { return buffer_.current().text; }
 
@@ -41,10 +40,8 @@ public:
     }
 
 private:
-    explicit CodeDocument(std::wstring text) : buffer_(std::move(text), 1024 * 1024, false, false) {
-        buffer_.select({}, false);
-    }
+    explicit CodeDocument(detail::TextEdit buffer) : buffer_(std::move(buffer)) { buffer_.select({}, false); }
 
-    detail::TextEdit buffer_;
+    detail::TextEdit buffer_{1024 * 1024, false};
 };
 }

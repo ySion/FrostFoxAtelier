@@ -121,7 +121,7 @@ int profile_editor_render_performance(Application& app, const char* output_direc
             // is a frame of the current measured request. Application owns prepare/draw.
             while (app.accepted_frames() == before || Access::fallback_presented(app) || !current_group_presented()) {
                 require(Clock::now() < deadline, "Render performance timed out waiting for an accepted product frame.");
-                require(app.step(), "Render performance editor closed before completion.");
+                require(take(app.step()), "Render performance editor closed before completion.");
                 unchanged_author();
                 // A popup renders its own surface within the step. The profile never opens one, so it came from external input.
                 require(
@@ -772,7 +772,7 @@ int profile_editor_render_performance(Application& app, const char* output_direc
         require(bool(report.set(root, "status", "pass")), "Cannot record final status.");
         settings_json(root, "restored_view", Access::scene_lit_view(app));
         write_report();
-        app.close();
+        take(app.close());
         std::puts(
             "Editor render performance profile: written (native 1440p, VSync off, maximized Lit/Smooth/MatCap, restored Dock Smooth/MatCap, CPU stage timings)");
         return 0;

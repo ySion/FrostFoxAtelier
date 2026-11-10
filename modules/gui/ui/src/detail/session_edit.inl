@@ -3,10 +3,16 @@
         reply.effects.emplace_back(Action{kind,key,std::move(value),target,keep_menu_open});
     }
     static void platform(Reply& reply, PlatformRequest request) { reply.effects.emplace_back(std::move(request)); }
-    void begin_edit(ControlKey key, bool mode, bool select_all = false) {
+    template<class T> static bool text_ok(Reply& reply,const Result<T>& result,ControlKey key) {
+        if (!result && !reply.error) {reply.error=result.error();reply.error->key=key;}
+        return result.has_value();
+    }
+    bool begin_edit(Reply& reply,ControlKey key, bool mode, bool select_all = false) {
         const auto& state=states.at(key);
-        edit.emplace(state,state.control.kind==ControlKind::number?format(state.control.value,state.control.single_precision):state.control.text,
+        auto candidate=Edit::create(state,state.control.kind==ControlKind::number?format(state.control.value,state.control.single_precision):state.control.text,
             state.control.value,mode,select_all);
+        if (!text_ok(reply,candidate,key)) return false;
+        edit.emplace(std::move(*candidate));return true;
     }
     void revise() {
         edit->token.revision=detail::new_identity();
@@ -33,7 +39,7 @@
         const auto& state=states.at(key);
         if (edit->document) {
             edit->buffer().break_group();edit.reset();
-            if (keep_context && focus==key) begin_edit(key,true);
+            if (keep_context && focus==key && !begin_edit(reply,key,true)) return false;
             reply.redraw=true;return true;
         }
         const bool numeric=state.control.kind==ControlKind::number;
@@ -45,7 +51,11 @@
             numeric?ActionValue{value}:
                 ActionValue{content});
         edit.reset();
-        if (keep_context && focus==key) edit.emplace(state,numeric?format(value,state.control.single_precision):std::move(content),value,!numeric,false);
+        if (keep_context && focus==key) {
+            auto candidate=Edit::create(state,numeric?format(value,state.control.single_precision):std::move(content),value,!numeric,false);
+            if (!text_ok(reply,candidate,key)) return false;
+            edit.emplace(std::move(*candidate));
+        }
         reply.redraw=true; return true;
     }
     Reply cancel() {
@@ -59,14 +69,20 @@
                 if (states.at(old.key).control.kind==ControlKind::tab || states.at(old.key).control.kind==ControlKind::tree_item)
                     action(reply,ActionKind::drag_cancel,old.key,DragPoint{old.last_x,old.last_y});
                 else action(reply,ActionKind::edit_cancel,old.key,old.original);
-                if (focus==old.key && states.at(old.key).control.kind==ControlKind::number)
-                    edit.emplace(states.at(old.key),format(old.original,states.at(old.key).control.single_precision),old.original,false,false);
+                if (focus==old.key && states.at(old.key).control.kind==ControlKind::number) {
+                    auto candidate=Edit::create(states.at(old.key),format(old.original,states.at(old.key).control.single_precision),old.original,false,false);
+                    if (text_ok(reply,candidate,old.key)) edit.emplace(std::move(*candidate));
+                }
             }
         }
-        finish_edit(reply,false,true); retire_keyboard(reply); terminal_key=Key::none; hover=0; dismiss_popup(reply);
+        if (!reply.error) finish_edit(reply,false,true);
+        else {cancel_composition(reply);edit.reset();}
+        retire_keyboard(reply); terminal_key=Key::none; hover=0; dismiss_popup(reply);
         return reply;
     }
-    void changed(Reply& reply, detail::TextEdit::Change change, bool was_active) {
+    void changed(Reply& reply, const Result<detail::TextEdit::Change>& result, bool was_active) {
+        if (!text_ok(reply,result,edit->key)) return;
+        const auto change=*result;
         if (change==detail::TextEdit::Change::rejected) {
             reply.error=Error{ErrorCode::invalid_text,edit->key}; return;
         }
@@ -93,7 +109,6 @@
             normalized.reserve(value.size());
             for (std::size_t i=0;i<value.size();++i) {
                 if (value[i]==L'\r') {normalized+=L'\n';if (i+1<value.size() && value[i+1]==L'\n') ++i;}
-                else if ((value[i]<32 && value[i]!=L'\n' && value[i]!=L'\t') || value[i]==127) {reply.error=Error{ErrorCode::invalid_text,edit->key};return;}
                 else normalized+=value[i];
             }
             value=normalized;
@@ -114,12 +129,12 @@
         }
         return state.control.kind==ControlKind::number?format(state.control.value,state.control.single_precision):state.control.text;
     }
-    detail::TextPosition display_caret() const {
+    Result<detail::TextPosition> display_caret() const {
         if (!edit->composition) return edit->buffer().current().caret;
         const auto& c=*edit->composition;
-        const auto boundaries=detail::character_boundaries(c.preedit.text);
-        const auto at=std::lower_bound(boundaries.begin(),boundaries.end(),std::min<std::uint32_t>(c.preedit.cursor,static_cast<std::uint32_t>(c.preedit.text.size())));
-        return {c.first+*at,*at!=0};
+        ATELIER_TRY_BIND(boundaries,detail::character_boundaries(c.preedit.text));
+        const auto at=std::lower_bound(boundaries->begin(),boundaries->end(),std::min<std::uint32_t>(c.preedit.cursor,static_cast<std::uint32_t>(c.preedit.text.size())));
+        return detail::TextPosition{c.first+*at,*at!=0};
     }
     const TextGeometry* edit_geometry() const {
         if (!edit || !active()) return nullptr;
@@ -135,7 +150,8 @@
         const auto* geometry=edit_geometry();
         if (!geometry || !geometry->paragraph->matches(edit->buffer().current().text)) { reply.redraw=true; return; }
         const auto position=geometry->paragraph->hit((x-geometry->x)/geometry->dpi_scale,(y-geometry->y)/geometry->dpi_scale);
-        if (edit->buffer().select(position,extend)) { revise(); reply.redraw=true; }
+        if (!text_ok(reply,position,edit->key)) return;
+        if (edit->buffer().select(*position,extend)) { revise(); reply.redraw=true; }
     }
     void clipboard_command(Reply& reply, ClipboardKind kind) {
         if (kind!=ClipboardKind::copy && states.at(edit->key).control.read_only) {
@@ -158,6 +174,7 @@
         edit->clipboard.reset(); reply.consumed=true;
         if (!result.success) { edit->commit_paste=false; reply.error=Error{ErrorCode::platform_failed,edit->key,result.native_error}; return; }
         if (result.kind!=ClipboardKind::copy) insert(reply,result.kind==ClipboardKind::cut?std::wstring_view{}:result.text,detail::TextEdit::Group::isolated);
+        if (reply.error) {if (edit) edit->commit_paste=false;return;}
         if (edit && edit->commit_paste && result.kind==ClipboardKind::read) {
             edit->commit_paste=false;
             finish_edit(reply,true,true,true);

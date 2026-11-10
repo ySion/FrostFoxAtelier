@@ -1,5 +1,7 @@
 #include "ui/text.hpp"
 #include "ui/icons.hpp"
+#include "memory/fatal.hpp"
+#include "foundation/result.hpp"
 #include <Windows.h>
 #include <dwrite_3.h>
 #include <wrl/client.h>
@@ -7,7 +9,6 @@
 #include <array>
 #include <atomic>
 #include <cmath>
-#include <exception>
 #include <map>
 #include <optional>
 #include <string>
@@ -17,9 +18,11 @@ namespace atelier::ui::detail {
 using Microsoft::WRL::ComPtr;
 
 namespace {
-void check(HRESULT status) {
+Result<void> check(HRESULT status) {
     if (FAILED(status))
-        throw TextFailure{static_cast<std::uint32_t>(status)};
+        return std::unexpected(
+            Error{ErrorCode::text_failed, 0, static_cast<std::uint32_t>(status), "UI text/resource operation failed"});
+    return {};
 }
 
 std::atomic<std::uint64_t> next_identity{1};
@@ -76,7 +79,7 @@ struct Rasterizer final : IDWriteTextRenderer {
 
     std::vector<Run> runs;
 
-    std::exception_ptr failure;
+    HRESULT failure{S_OK};
 
     Rasterizer(IDWriteFactory2* value, float dpi, std::optional<Clip> clip)
         : factory(value), scale(dpi), viewport(clip) {}
@@ -116,35 +119,38 @@ struct Rasterizer final : IDWriteTextRenderer {
     HRESULT STDMETHODCALLTYPE DrawGlyphRun(void*, FLOAT x, FLOAT y, DWRITE_MEASURING_MODE mode,
                                            const DWRITE_GLYPH_RUN* glyphs, const DWRITE_GLYPH_RUN_DESCRIPTION*,
                                            IUnknown*) noexcept override {
-        try {
-            ComPtr<IDWriteGlyphRunAnalysis> analysis;
-            const DWRITE_MATRIX transform{scale, 0, 0, scale, 0, 0};
-            check(factory->CreateGlyphRunAnalysis(glyphs, &transform, DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC, mode,
+        if (FAILED(failure))
+            return failure;
+        ComPtr<IDWriteGlyphRunAnalysis> analysis;
+        const DWRITE_MATRIX transform{scale, 0, 0, scale, 0, 0};
+        failure = factory->CreateGlyphRunAnalysis(glyphs, &transform, DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC, mode,
                                                   DWRITE_GRID_FIT_MODE_DISABLED, DWRITE_TEXT_ANTIALIAS_MODE_GRAYSCALE,
-                                                  x, y, &analysis));
-            Run run;
-            check(analysis->GetAlphaTextureBounds(DWRITE_TEXTURE_ALIASED_1x1, &run.bounds));
-            if (viewport) {
-                run.bounds.left = std::max<LONG>(run.bounds.left, viewport->left);
-                run.bounds.top = std::max<LONG>(run.bounds.top, viewport->top);
-                run.bounds.right = std::min<LONG>(run.bounds.right, viewport->right);
-                run.bounds.bottom = std::min<LONG>(run.bounds.bottom, viewport->bottom);
-            }
-            const auto width = static_cast<std::int64_t>(run.bounds.right) - run.bounds.left;
-            const auto height = static_cast<std::int64_t>(run.bounds.bottom) - run.bounds.top;
-            if (width <= 0 || height <= 0)
-                return S_OK;
-            if (width > 32768 || height > 32768 || width * height > max_bitmap_bytes)
-                return E_OUTOFMEMORY;
-            run.pixels.resize(static_cast<std::size_t>(width * height));
-            check(analysis->CreateAlphaTexture(DWRITE_TEXTURE_ALIASED_1x1, &run.bounds, run.pixels.data(),
-                                               static_cast<UINT32>(run.pixels.size())));
-            runs.push_back(std::move(run));
-            return S_OK;
-        } catch (...) {
-            failure = std::current_exception();
-            return E_FAIL;
+                                                  x, y, &analysis);
+        if (FAILED(failure))
+            return failure;
+        Run run;
+        failure = analysis->GetAlphaTextureBounds(DWRITE_TEXTURE_ALIASED_1x1, &run.bounds);
+        if (FAILED(failure))
+            return failure;
+        if (viewport) {
+            run.bounds.left = std::max<LONG>(run.bounds.left, viewport->left);
+            run.bounds.top = std::max<LONG>(run.bounds.top, viewport->top);
+            run.bounds.right = std::min<LONG>(run.bounds.right, viewport->right);
+            run.bounds.bottom = std::min<LONG>(run.bounds.bottom, viewport->bottom);
         }
+        const auto width = static_cast<std::int64_t>(run.bounds.right) - run.bounds.left;
+        const auto height = static_cast<std::int64_t>(run.bounds.bottom) - run.bounds.top;
+        if (width <= 0 || height <= 0)
+            return S_OK;
+        if (width > 32768 || height > 32768 || width * height > max_bitmap_bytes)
+            return failure = E_OUTOFMEMORY;
+        run.pixels.resize(static_cast<std::size_t>(width * height));
+        failure = analysis->CreateAlphaTexture(DWRITE_TEXTURE_ALIASED_1x1, &run.bounds, run.pixels.data(),
+                                               static_cast<UINT32>(run.pixels.size()));
+        if (FAILED(failure))
+            return failure;
+        runs.push_back(std::move(run));
+        return S_OK;
     }
 
     HRESULT STDMETHODCALLTYPE DrawUnderline(void*, FLOAT, FLOAT, const DWRITE_UNDERLINE*, IUnknown*) noexcept override {
@@ -167,7 +173,7 @@ std::uint64_t new_identity() {
     auto value = next_identity.load(std::memory_order_relaxed);
     do {
         if (value == UINT64_MAX)
-            throw TextFailure{static_cast<std::uint32_t>(E_FAIL)};
+            fatal("UI text identity exhausted.");
     } while (!next_identity.compare_exchange_weak(value, value + 1, std::memory_order_relaxed));
     return value;
 }
@@ -225,82 +231,86 @@ struct TextStore::Impl {
 
     std::shared_ptr<CoverageAccounting> accounting{std::make_shared<CoverageAccounting>()};
 
-    explicit Impl(std::span<const std::wstring> font_files) {
-        check(DWriteCreateFactory(DWRITE_FACTORY_TYPE_ISOLATED, __uuidof(IDWriteFactory2),
-                                  reinterpret_cast<IUnknown**>(factory.GetAddressOf())));
+    Result<void> initialize(std::span<const std::wstring> font_files) {
+        ATELIER_TRY(check(DWriteCreateFactory(DWRITE_FACTORY_TYPE_ISOLATED, __uuidof(IDWriteFactory2),
+                                              reinterpret_cast<IUnknown**>(factory.GetAddressOf()))));
         if (!font_files.empty()) {
             ComPtr<IDWriteFactory5> loader;
-            check(factory.As(&loader));
+            ATELIER_TRY(check(factory.As(&loader)));
             ComPtr<IDWriteFontSetBuilder1> builder;
-            check(loader->CreateFontSetBuilder(&builder));
+            ATELIER_TRY(check(loader->CreateFontSetBuilder(&builder)));
             for (const auto& path : font_files) {
                 ComPtr<IDWriteFontFile> file;
-                check(loader->CreateFontFileReference(path.c_str(), nullptr, &file));
-                check(builder->AddFontFile(file.Get()));
+                ATELIER_TRY(check(loader->CreateFontFileReference(path.c_str(), nullptr, &file)));
+                ATELIER_TRY(check(builder->AddFontFile(file.Get())));
             }
             ComPtr<IDWriteFontSet> system;
-            check(loader->GetSystemFontSet(&system));
-            check(builder->AddFontSet(system.Get()));
+            ATELIER_TRY(check(loader->GetSystemFontSet(&system)));
+            ATELIER_TRY(check(builder->AddFontSet(system.Get())));
             ComPtr<IDWriteFontSet> fonts;
-            check(builder->CreateFontSet(&fonts));
-            check(loader->CreateFontCollectionFromFontSet(fonts.Get(), &font_collection));
+            ATELIER_TRY(check(builder->CreateFontSet(&fonts)));
+            ATELIER_TRY(check(loader->CreateFontCollectionFromFontSet(fonts.Get(), &font_collection)));
         }
+        return {};
     }
 
-    Paragraph& resolve(TextKey key, std::optional<float> width) {
+    Result<Paragraph*> resolve(TextKey key, std::optional<float> width) {
         auto found = entries.find(key);
         if (found == entries.end())
-            throw TextFailure{static_cast<std::uint32_t>(E_INVALIDARG)};
+            fatal("UI text key is missing.");
         auto& entry = found->second;
-        auto& paragraph = entry.paragraphs[width ? 1 : 0];
-        if (paragraph.layout && paragraph.valid && paragraph.width == width)
-            return paragraph;
+        auto& cached = entry.paragraphs[width ? 1 : 0];
+        if (cached.layout && cached.valid && cached.width == width)
+            return &cached;
         // Published snapshots can retain this native layout. Width changes create
         // a new layout instead of mutating geometry still used by an older frame.
-        paragraph = {};
+        Paragraph paragraph;
         auto& format = formats[entry.font];
         if (!format) {
-            check(factory->CreateTextFormat(
+            const auto result = check(factory->CreateTextFormat(
                 entry.font.family.c_str(), font_collection.Get(), static_cast<DWRITE_FONT_WEIGHT>(entry.font.weight),
                 entry.font.style == FontStyle::italic ? DWRITE_FONT_STYLE_ITALIC : DWRITE_FONT_STYLE_NORMAL,
                 DWRITE_FONT_STRETCH_NORMAL, entry.font.size, entry.font.locale.c_str(), &format));
+            ATELIER_TRY(result);
         }
-        check(factory->CreateTextLayout(entry.text.data(), static_cast<UINT32>(entry.text.size()), format.Get(),
-                                        width.value_or(0), 0, &paragraph.layout));
+        ATELIER_TRY(check(factory->CreateTextLayout(entry.text.data(), static_cast<UINT32>(entry.text.size()),
+                                                    format.Get(), width.value_or(0), 0, &paragraph.layout)));
         ++statistics.text_layouts;
-        check(paragraph.layout->SetIncrementalTabStop(entry.font.size * 2.4f));
-        check(paragraph.layout->SetWordWrapping(width && entry.wrap ? DWRITE_WORD_WRAPPING_WRAP
-                                                                    : DWRITE_WORD_WRAPPING_NO_WRAP));
+        ATELIER_TRY(check(paragraph.layout->SetIncrementalTabStop(entry.font.size * 2.4f)));
+        ATELIER_TRY(check(paragraph.layout->SetWordWrapping(width && entry.wrap ? DWRITE_WORD_WRAPPING_WRAP
+                                                                                : DWRITE_WORD_WRAPPING_NO_WRAP)));
         if (width)
-            check(paragraph.layout->SetTextAlignment(
+            ATELIER_TRY(check(paragraph.layout->SetTextAlignment(
                 entry.alignment == TextAlign::right    ? DWRITE_TEXT_ALIGNMENT_TRAILING
                 : entry.alignment == TextAlign::center ? DWRITE_TEXT_ALIGNMENT_CENTER
-                                                       : DWRITE_TEXT_ALIGNMENT_LEADING));
+                                                       : DWRITE_TEXT_ALIGNMENT_LEADING)));
         DWRITE_TEXT_METRICS metrics{};
-        check(paragraph.layout->GetMetrics(&metrics));
+        ATELIER_TRY(check(paragraph.layout->GetMetrics(&metrics)));
         UINT32 count{};
         const auto status = paragraph.layout->GetLineMetrics(nullptr, 0, &count);
         if (status != HRESULT_FROM_WIN32(ERROR_INSUFFICIENT_BUFFER))
-            check(status);
+            ATELIER_TRY(check(status));
         lines.resize(count);
-        check(paragraph.layout->GetLineMetrics(lines.data(), count, &count));
+        ATELIER_TRY(check(paragraph.layout->GetLineMetrics(lines.data(), count, &count)));
         paragraph.metrics = {metrics.widthIncludingTrailingWhitespace, metrics.height, count ? lines[0].baseline : 0};
         if (width && entry.ellipsis) {
             // Layout measures the complete line. Trimming is paint only; feeding
             // trimmed metrics back into intrinsic sizing progressively shortens labels.
             if (metrics.widthIncludingTrailingWhitespace <= *width + .01f)
-                check(paragraph.layout->SetMaxWidth(std::max(*width, metrics.widthIncludingTrailingWhitespace)));
+                ATELIER_TRY(
+                    check(paragraph.layout->SetMaxWidth(std::max(*width, metrics.widthIncludingTrailingWhitespace))));
             else {
                 ComPtr<IDWriteInlineObject> sign;
-                check(factory->CreateEllipsisTrimmingSign(format.Get(), &sign));
+                ATELIER_TRY(check(factory->CreateEllipsisTrimmingSign(format.Get(), &sign)));
                 const DWRITE_TRIMMING trimming{DWRITE_TRIMMING_GRANULARITY_CHARACTER, 0, 0};
-                check(paragraph.layout->SetMaxHeight(32768.f));
-                check(paragraph.layout->SetTrimming(&trimming, sign.Get()));
+                ATELIER_TRY(check(paragraph.layout->SetMaxHeight(32768.f)));
+                ATELIER_TRY(check(paragraph.layout->SetTrimming(&trimming, sign.Get())));
             }
         }
         paragraph.width = width;
         paragraph.valid = true;
-        return paragraph;
+        cached = std::move(paragraph);
+        return &cached;
     }
 };
 
@@ -323,29 +333,33 @@ struct TextSnapshot::Impl {
 
     mutable std::vector<Stop> stops; // Owner-thread query cache; paragraph geometry stays immutable.
 
-    Rect caret_box(TextPosition position) const {
+    Result<Rect> caret_box(TextPosition position) const {
         FLOAT x{};
         FLOAT y{};
         DWRITE_HIT_TEST_METRICS metrics{};
         const bool trailing = position.trailing && position.offset != 0;
-        check(layout->HitTestTextPosition(position.offset - (trailing ? 1 : 0), trailing, &x, &y, &metrics));
-        return {x, y, 1, metrics.height};
+        ATELIER_TRY(
+            check(layout->HitTestTextPosition(position.offset - (trailing ? 1 : 0), trailing, &x, &y, &metrics)));
+        return Rect{x, y, 1, metrics.height};
     }
 
-    void resolve_stops() const {
+    Result<void> resolve_stops() const {
         if (!stops.empty())
-            return;
-        const auto boundaries = character_boundaries(text);
-        for (auto offset : boundaries) {
+            return {};
+        ATELIER_TRY_BIND(boundaries, character_boundaries(text));
+        std::vector<Stop> candidate;
+        for (auto offset : *boundaries) {
             const TextPosition leading{offset, false};
             const TextPosition trailing{offset, offset != 0};
-            const auto first = caret_box(leading);
-            const auto last = caret_box(trailing);
-            stops.push_back({leading, first.x});
-            if (std::abs(first.x - last.x) > .01f)
-                stops.push_back({trailing, last.x});
+            ATELIER_TRY_BIND(first, caret_box(leading));
+            ATELIER_TRY_BIND(last, caret_box(trailing));
+            candidate.push_back({leading, first->x});
+            if (std::abs(first->x - last->x) > .01f)
+                candidate.push_back({trailing, last->x});
         }
-        std::stable_sort(stops.begin(), stops.end(), [](auto a, auto b) { return a.x < b.x; });
+        std::stable_sort(candidate.begin(), candidate.end(), [](auto a, auto b) { return a.x < b.x; });
+        stops = std::move(candidate);
+        return {};
     }
 };
 
@@ -355,9 +369,16 @@ bool TextSnapshot::matches(std::wstring_view text) const noexcept {
     return impl_->text == text;
 }
 
-TextStore::TextStore(std::span<const std::wstring> files) : impl_(std::make_unique<Impl>(files)) {}
+TextStore::TextStore() = default;
 
 TextStore::~TextStore() = default;
+
+Result<void> TextStore::initialize(std::span<const std::wstring> files) {
+    auto candidate = std::make_unique<Impl>();
+    ATELIER_TRY(candidate->initialize(files));
+    impl_ = std::move(candidate);
+    return {};
+}
 
 std::uint64_t TextStore::set(TextKey key, std::wstring_view text, const Font& font, bool wrap, TextAlign alignment,
                              bool ellipsis) {
@@ -381,7 +402,7 @@ void TextStore::erase(TextKey key) {
 
 std::shared_ptr<const Coverage> TextStore::symbol(Symbol symbol, std::uint32_t pixels) {
     if (!pixels || pixels > 256)
-        throw TextFailure{static_cast<std::uint32_t>(E_INVALIDARG)};
+        fatal("UI symbol pixels must be in 1..256.");
     const auto key = std::pair{symbol, pixels};
     if (const auto found = impl_->symbols.find(key); found != impl_->symbols.end()) {
         ++impl_->statistics.coverage_cache_hits;
@@ -607,19 +628,20 @@ ui_layout::MeasureResult TextStore::measure(void* context, const ui_layout::Meas
     if (found == impl.entries.end() || found->second.revision != query.content_revision ||
         query.provider_revision != impl.provider_revision)
         return std::unexpected(ui_layout::MeasureError{static_cast<std::uint32_t>(E_INVALIDARG)});
-    try {
-        return impl.resolve(query.content_key, query.width).metrics;
-    } catch (const TextFailure& failure) {
-        return std::unexpected(ui_layout::MeasureError{failure.code});
-    }
+    const auto paragraph = impl.resolve(query.content_key, query.width);
+    if (!paragraph)
+        return std::unexpected(ui_layout::MeasureError{paragraph.error().native_code});
+    return (*paragraph)->metrics;
 }
 
-ui_layout::MeasuredSize TextStore::metrics(TextKey key, float width) {
-    return impl_->resolve(key, width).metrics;
+Result<ui_layout::MeasuredSize> TextStore::metrics(TextKey key, float width) {
+    ATELIER_TRY_BIND(paragraph, impl_->resolve(key, width));
+    return (*paragraph)->metrics;
 }
 
-RasterText TextStore::raster(TextKey key, float width, float dpi, std::optional<Clip> viewport) {
-    auto& paragraph = impl_->resolve(key, width);
+Result<RasterText> TextStore::raster(TextKey key, float width, float dpi, std::optional<Clip> viewport) {
+    ATELIER_TRY_BIND(resolved, impl_->resolve(key, width));
+    auto& paragraph = **resolved;
     if (paragraph.raster_scale == dpi && paragraph.raster_viewport == viewport) {
         ++impl_->statistics.coverage_cache_hits;
         return paragraph.raster;
@@ -627,9 +649,8 @@ RasterText TextStore::raster(TextKey key, float width, float dpi, std::optional<
     ++impl_->statistics.rasterizations;
     Rasterizer rasterizer(impl_->factory.Get(), dpi, viewport);
     const auto result = paragraph.layout->Draw(nullptr, &rasterizer, 0, 0);
-    if (rasterizer.failure)
-        std::rethrow_exception(rasterizer.failure);
-    check(result);
+    ATELIER_TRY(check(rasterizer.failure));
+    ATELIER_TRY(check(result));
     RasterText output;
     if (!rasterizer.runs.empty()) {
         auto bounds = rasterizer.runs.front().bounds;
@@ -642,7 +663,7 @@ RasterText TextStore::raster(TextKey key, float width, float dpi, std::optional<
         const auto width_px = static_cast<std::int64_t>(bounds.right) - bounds.left;
         const auto height_px = static_cast<std::int64_t>(bounds.bottom) - bounds.top;
         if (width_px > 32768 || height_px > 32768 || width_px * height_px > max_bitmap_bytes)
-            throw TextFailure{static_cast<std::uint32_t>(E_OUTOFMEMORY)};
+            return std::unexpected(check(E_OUTOFMEMORY).error());
         auto coverage = std::make_shared<TrackedCoverage>(impl_->accounting, static_cast<std::uint32_t>(width_px),
                                                           static_cast<std::uint32_t>(height_px));
         for (const auto& run : rasterizer.runs) {
@@ -670,8 +691,9 @@ RasterText TextStore::raster(TextKey key, float width, float dpi, std::optional<
     return output;
 }
 
-std::shared_ptr<const TextSnapshot> TextStore::snapshot(TextKey key, float width) {
-    auto& paragraph = impl_->resolve(key, width);
+Result<std::shared_ptr<const TextSnapshot>> TextStore::snapshot(TextKey key, float width) {
+    ATELIER_TRY_BIND(resolved, impl_->resolve(key, width));
+    auto& paragraph = **resolved;
     if (!paragraph.snapshot) {
         auto data = std::make_shared<TextSnapshot::Impl>();
         data->layout = paragraph.layout;
@@ -684,33 +706,33 @@ std::shared_ptr<const TextSnapshot> TextStore::snapshot(TextKey key, float width
     return paragraph.snapshot;
 }
 
-std::shared_ptr<const TextSnapshot> TextStore::edited_snapshot(std::uint64_t key, const TextSnapshot& displayed,
-                                                               std::wstring_view value) {
+Result<std::shared_ptr<const TextSnapshot>> TextStore::edited_snapshot(std::uint64_t key, const TextSnapshot& displayed,
+                                                                       std::wstring_view value) {
     const auto& policy = *displayed.impl_;
     set(key, value, policy.font, false, policy.alignment);
     return snapshot(key, policy.width);
 }
 
-Rect TextSnapshot::caret(TextPosition position) const {
+Result<Rect> TextSnapshot::caret(TextPosition position) const {
     return impl_->caret_box(position);
 }
 
-Rect TextSnapshot::character(std::uint32_t position) const {
+Result<Rect> TextSnapshot::character(std::uint32_t position) const {
     FLOAT x{};
     FLOAT y{};
     DWRITE_HIT_TEST_METRICS metrics{};
-    check(impl_->layout->HitTestTextPosition(position, FALSE, &x, &y, &metrics));
+    ATELIER_TRY(check(impl_->layout->HitTestTextPosition(position, FALSE, &x, &y, &metrics)));
     // The leading caret of an RTL run is its right edge. Native character
     // position requests need the actual enclosing character's upper-left.
-    return {metrics.left, metrics.top, metrics.width, metrics.height};
+    return Rect{metrics.left, metrics.top, metrics.width, metrics.height};
 }
 
-TextPosition TextSnapshot::hit(float x, float y) const {
-    impl_->resolve_stops();
+Result<TextPosition> TextSnapshot::hit(float x, float y) const {
+    ATELIER_TRY(impl_->resolve_stops());
     BOOL trailing{};
     BOOL inside{};
     DWRITE_HIT_TEST_METRICS metrics{};
-    check(impl_->layout->HitTestPoint(x, y, &trailing, &inside, &metrics));
+    ATELIER_TRY(check(impl_->layout->HitTestPoint(x, y, &trailing, &inside, &metrics)));
     (void)inside;
     const TextPosition candidate{metrics.textPosition + (trailing ? metrics.length : 0), trailing != FALSE};
     auto selected = impl_->stops.front();
@@ -723,12 +745,13 @@ TextPosition TextSnapshot::hit(float x, float y) const {
     return selected.position;
 }
 
-TextPosition TextSnapshot::move(TextPosition position, int direction, bool edge) const {
-    impl_->resolve_stops();
+Result<TextPosition> TextSnapshot::move(TextPosition position, int direction, bool edge) const {
+    ATELIER_TRY(impl_->resolve_stops());
     const auto& stops = impl_->stops;
     if (edge)
         return direction < 0 ? stops.front().position : stops.back().position;
-    const float x = impl_->caret_box(position).x;
+    ATELIER_TRY_BIND(caret, impl_->caret_box(position));
+    const float x = caret->x;
     if (direction < 0) {
         for (auto at = stops.rbegin(); at != stops.rend(); ++at)
             if (at->x < x - .01f)
@@ -740,15 +763,15 @@ TextPosition TextSnapshot::move(TextPosition position, int direction, bool edge)
     return position;
 }
 
-std::vector<Rect> TextSnapshot::selection(std::uint32_t first, std::uint32_t last) const {
+Result<std::vector<Rect>> TextSnapshot::selection(std::uint32_t first, std::uint32_t last) const {
     if (first == last)
         return {};
     UINT32 count{};
     const auto status = impl_->layout->HitTestTextRange(first, last - first, 0, 0, nullptr, 0, &count);
     if (status != HRESULT_FROM_WIN32(ERROR_INSUFFICIENT_BUFFER))
-        check(status);
+        ATELIER_TRY(check(status));
     std::vector<DWRITE_HIT_TEST_METRICS> metrics(count);
-    check(impl_->layout->HitTestTextRange(first, last - first, 0, 0, metrics.data(), count, &count));
+    ATELIER_TRY(check(impl_->layout->HitTestTextRange(first, last - first, 0, 0, metrics.data(), count, &count)));
     std::vector<Rect> result;
     result.reserve(count);
     for (const auto& metric : metrics)

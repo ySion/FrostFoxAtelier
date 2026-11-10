@@ -125,7 +125,7 @@ int verify_editor_dialogs(Application& app, const char* output_directory) {
     }
     report.close();
     Access::mark_saved(app);
-    app.close();
+    take(app.close());
     std::puts("Editor native dialogs acceptance: PASS");
     std::fflush(stdout);
     return 0;

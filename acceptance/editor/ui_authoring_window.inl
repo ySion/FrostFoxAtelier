@@ -291,12 +291,12 @@ void verify_ui_authoring_window(Application& app, const std::filesystem::path& o
     require_input_focus(app);
     const auto minimized_revision = Access::ui_revision(app);
     ShowWindow(app.window(), SW_MINIMIZE);
-    require(app.step() && IsIconic(app.window()), "Could not minimize the live authoring window.");
+    require(take(app.step()) && IsIconic(app.window()), "Could not minimize the live authoring window.");
     const auto minimized_frames = app.accepted_frames();
     model(atelier::editor::write_file(path, minimized_source));
     const auto minimized_start = GetTickCount64();
     do {
-        require(app.step(), "Editor closed while a saved UI awaited a drawable surface.");
+        require(take(app.step()), "Editor closed while a saved UI awaited a drawable surface.");
     } while (GetTickCount64() - minimized_start < 400);
     require(Access::ui_revision(app) == minimized_revision && app.accepted_frames() == minimized_frames,
             "Minimized authoring published a UI candidate without preparing its layout.");

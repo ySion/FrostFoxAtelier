@@ -6,6 +6,7 @@
 #include "editor/keymap.hpp"
 #include "foundation/result.hpp"
 #include "logging/native.hpp"
+#include "memory/fatal.hpp"
 #include "assets/file.hpp"
 #include "json/json.hpp"
 #include "atelier/build_info.hpp"
@@ -112,40 +113,58 @@ ui::PixelExtent client_extent(HWND window) {
 }
 }
 
-Application::Application(std::unique_ptr<editor::Session> document, bool validation, bool activate,
-                         std::optional<ui::PixelExtent> initial_client, bool vsync)
-    : window_(nullptr, initial_client), document_(std::move(document)), ui_(editor_fonts()),
-      gpu_validation_(validation), vsync_(vsync) {
+Application::Application() = default;
+
+Result<void> Application::initialize(std::unique_ptr<editor::Session> document, bool validation, bool activate,
+                                     std::optional<ui::PixelExtent> initial_client, bool vsync) {
+    document_ = std::move(document);
+    gpu_validation_ = validation;
+    vsync_ = vsync;
+    ATELIER_TRY(window_.initialize(nullptr, initial_client));
+    ATELIER_TRY(ui_.initialize(editor_fonts()).transform_error(ui_error));
     require_frame_timing();
     auto style = ui_.style();
     style.font.family = L"Sarasa UI SC";
     style.font.size = 12.5f;
     style.caption_scale = 1;
     style.title_scale = 7.f / 6;
-    if (!ui_.set_style(style))
-        throw std::runtime_error("Cannot publish editor typography");
-    style_sheet_ = editor_styles();
-    if (!ui_.set_style_sheet(style_sheet_))
-        throw std::runtime_error("Cannot publish editor style sheet");
+    if (auto styled = ui_.set_style(style); !styled) {
+        auto error = ui_error(styled.error());
+        error.message = "Cannot publish editor typography: " + error.message;
+        return std::unexpected(std::move(error));
+    }
+    ATELIER_TRY_BIND(styles, editor_styles());
+    style_sheet_ = std::move(*styles);
+    if (auto styled = ui_.set_style_sheet(style_sheet_); !styled) {
+        auto error = ui_error(styled.error());
+        error.message = "Cannot publish editor style sheet: " + error.message;
+        return std::unexpected(std::move(error));
+    }
     renderer::Options options;
     options.validation = validation ? rhi::Validation::gpu : rhi::Validation::disabled;
     options.vsync = vsync_;
     options.frame_latency_waitable = true;
     options.shader_cache = shader_cache_directory();
-    renderer_ = graphics(renderer::Renderer::open(window_.handle(), options));
-    popup_ = std::make_unique<PopupHost>(window(), editor_fonts(), gpu_validation_);
-    submenus_.push_back(std::make_unique<PopupHost>(window(), editor_fonts(), gpu_validation_));
+    ATELIER_TRY_BIND(renderer, renderer::Renderer::open(window_.handle(), options).transform_error(renderer_error));
+    renderer_ = std::move(*renderer);
+    auto popup = std::make_unique<PopupHost>();
+    ATELIER_TRY(popup->initialize(window(), editor_fonts(), gpu_validation_));
+    popup_ = std::move(popup);
+    auto submenu = std::make_unique<PopupHost>();
+    ATELIER_TRY(submenu->initialize(window(), editor_fonts(), gpu_validation_));
+    submenus_.push_back(std::move(submenu));
+    closed_ = false;
     window_.show(activate);
+    return {};
 }
 
 Application::~Application() {
     if (std::uncaught_exceptions())
         preserve_failure("Unhandled editor failure outside the frame loop");
-    try {
-        close();
-    } catch (const std::exception& error) {
-        report_error(editor::detail::caught_error(error, ErrorCode::invalid_storage), "application.cleanup_failed");
-    }
+    // External cleanup errors remain diagnostics. World/Renderer destructors
+    // enforce fatal only when their own necessary retirement cannot complete.
+    if (auto result = close(); !result)
+        report_error(result.error(), "application.cleanup_failed");
 }
 
 void Application::notice(std::string_view code, std::wstring_view message, logging::Severity severity) noexcept {
@@ -311,7 +330,7 @@ Result<void> Application::end_interaction() {
 }
 
 Result<void> Application::source_history(bool redo) {
-    workspace_.source_editor.active()->document->edit().history(redo);
+    ATELIER_TRY(workspace_.source_editor.active()->document->edit().history(redo).transform_error(ui_error));
     pending_source_focus_ = true;
     return {};
 }
@@ -1243,12 +1262,19 @@ bool Application::effects(const ui::Reply& reply) {
     const auto apply = [&](auto&& self, const ui::Reply& current, bool cleanup) -> void {
         if (current.error) {
             const auto& error = *current.error;
+            report_error(ui_error(error), "editor.input_failed");
             if (error.code == ui::ErrorCode::platform_failed)
                 remember(L"Input operation failed (Windows " + std::to_wstring(error.native_code) + L").");
             else if (error.code == ui::ErrorCode::capacity_exceeded)
                 remember(L"Input is too long.");
+            else if (error.code == ui::ErrorCode::text_failed)
+                remember(diagnostic_text(ui_error(error).message));
             else
                 remember(L"Input must be valid single-line text.");
+            if (!cleanup && error.code == ui::ErrorCode::text_failed) {
+                business_failed = true;
+                cleanup = true; // Keep cancellation effects already retired by Session; skip new business actions.
+            }
         }
         for (const auto& effect : current.effects) {
             if (business_failed && !cleanup)
@@ -1428,10 +1454,12 @@ void Application::close_menu(bool restore_focus, std::source_location caller, st
     workspace_.menu.reset();
     workspace_.menu_items.clear();
     for (auto& submenu : submenus_)
-        submenu->hide();
+        if (auto hidden = submenu->hide(); !hidden)
+            report_error(hidden.error(), "menu.cleanup_failed");
     menu_path_.clear();
     if (popup_)
-        popup_->hide();
+        if (auto hidden = popup_->hide(); !hidden)
+            report_error(hidden.error(), "menu.cleanup_failed");
     if (was_open) {
         window_.capture(false);
         if (restore_focus)
@@ -1443,10 +1471,10 @@ void Application::close_menu(bool restore_focus, std::source_location caller, st
     menu_table_layout_ = {};
 }
 
-void Application::update_menu() {
+Result<void> Application::update_menu() {
     if (!workspace_.menu || workspace_.menu_items.empty()) {
         close_menu();
-        return;
+        return {};
     }
     const auto request = *workspace_.menu;
     const auto* source = ui_.presented()->find(request.source);
@@ -1455,11 +1483,11 @@ void Application::update_menu() {
         source->table_layout != menu_table_layout_ || !live_table_context(*ui_.presented(), request, true) ||
         source->bounds.y >= source->clip.bottom || source->bounds.y + source->bounds.height <= source->clip.top) {
         close_menu();
-        return;
+        return {};
     }
     if (workspace_.pie_menu()) {
         if (popup_)
-            popup_->hide();
+            ATELIER_TRY(popup_->hide());
         window_.capture(true);
         if (ui_.presented()->popup == editor::control::viewport_pie) {
             effects(ui_.focus(pie_hot_));
@@ -1472,7 +1500,7 @@ void Application::update_menu() {
                 }
             }
         }
-        return;
+        return {};
     }
     const bool below = editor::control::is_menu(source->key) || source->kind == ui::ControlKind::combo;
     POINT points[2];
@@ -1483,9 +1511,9 @@ void Application::update_menu() {
     } else
         points[0] = points[1] = {static_cast<LONG>(request.x), static_cast<LONG>(request.y)};
     MapWindowPoints(window(), nullptr, points, 2);
-    popup_->update(source->key, {points[0].x, points[0].y, points[1].x, points[1].y}, below, workspace_.menu_items,
-                   ui_.style(), style_sheet_, workspace_.ui_component("PopupMenu"),
-                   request.group == editor::control::viewport_delete_menu);
+    ATELIER_TRY(popup_->update(source->key, {points[0].x, points[0].y, points[1].x, points[1].y}, below,
+                               workspace_.menu_items, ui_.style(), style_sheet_, workspace_.ui_component("PopupMenu"),
+                               request.group == editor::control::viewport_delete_menu));
     if (!popup_->visible()) {
         const std::array fields{logging::Field{"source_control", source->key},
                                 logging::Field{"incarnation", menu_incarnation_},
@@ -1494,10 +1522,10 @@ void Application::update_menu() {
                                            logging::native::Context{fields}, "Popup update rejected"));
         workspace_.status = L"UI: " + diagnostic_text(popup_->diagnostic());
         close_menu(false);
-        return;
+        return {};
     }
     window_.capture(true);
-    popup_->render();
+    ATELIER_TRY(popup_->render());
     auto items = std::span<const ui::MenuItem>(workspace_.menu_items);
     auto* parent = popup_.get();
     for (std::size_t depth = 0; depth < menu_path_.size(); ++depth) {
@@ -1510,29 +1538,33 @@ void Application::update_menu() {
             menu_path_.resize(depth);
             break;
         }
-        if (depth == submenus_.size())
-            submenus_.push_back(std::make_unique<PopupHost>(window(), editor_fonts(), gpu_validation_));
+        if (depth == submenus_.size()) {
+            auto child = std::make_unique<PopupHost>();
+            ATELIER_TRY(child->initialize(window(), editor_fonts(), gpu_validation_));
+            submenus_.push_back(std::move(child));
+        }
         POINT corners[2]{{static_cast<LONG>(box->bounds.x), static_cast<LONG>(box->bounds.y)},
                          {static_cast<LONG>(box->bounds.x + box->bounds.width),
                           static_cast<LONG>(box->bounds.y + box->bounds.height)}};
         MapWindowPoints(parent->window(), nullptr, corners, 2);
         auto& child = *submenus_[depth];
-        child.update(at->key, {corners[0].x, corners[0].y, corners[1].x, corners[1].y}, false, at->children,
-                     ui_.style(), style_sheet_, workspace_.ui_component("PopupMenu"));
+        ATELIER_TRY(child.update(at->key, {corners[0].x, corners[0].y, corners[1].x, corners[1].y}, false, at->children,
+                                 ui_.style(), style_sheet_, workspace_.ui_component("PopupMenu")));
         if (!child.visible()) {
             workspace_.status = L"UI: " + diagnostic_text(child.diagnostic());
             menu_path_.resize(depth);
             break;
         }
-        child.render();
+        ATELIER_TRY(child.render());
         parent = &child;
         items = at->children;
     }
     for (std::size_t depth = menu_path_.size(); depth < submenus_.size(); ++depth)
-        submenus_[depth]->hide();
+        ATELIER_TRY(submenus_[depth]->hide());
+    return {};
 }
 
-bool Application::menu_input(const ui::Event& input, WPARAM native_key) {
+Result<bool> Application::menu_input(const ui::Event& input, WPARAM native_key) {
     if (!workspace_.menu)
         return false;
     if (workspace_.pie_menu())
@@ -1596,7 +1628,7 @@ bool Application::menu_input(const ui::Event& input, WPARAM native_key) {
         }
     if (input.kind == ui::EventKind::key_down && !menu_path_.empty() &&
         (input.key == ui::Key::left || input.key == ui::Key::escape)) {
-        submenus_[menu_path_.size() - 1]->hide();
+        ATELIER_TRY(submenus_[menu_path_.size() - 1]->hide());
         menu_path_.pop_back();
         return true;
     }
@@ -1616,6 +1648,10 @@ bool Application::menu_input(const ui::Event& input, WPARAM native_key) {
     event.x = static_cast<float>(screen.x);
     event.y = static_cast<float>(screen.y);
     const auto reply = host->input(event);
+    if (reply.error) {
+        close_menu();
+        return std::unexpected(ui_error(*reply.error));
+    }
     for (const auto& effect : reply.effects)
         if (const auto* command = std::get_if<ui::Action>(&effect)) {
             if (command->kind == ui::ActionKind::activate) {
@@ -1626,7 +1662,7 @@ bool Application::menu_input(const ui::Event& input, WPARAM native_key) {
                 if (!at->children.empty()) {
                     menu_path_.resize(level);
                     menu_path_.push_back(at->key);
-                    update_menu();
+                    ATELIER_TRY(update_menu());
                     return true;
                 }
                 invoke_menu(*command, items);
@@ -1774,32 +1810,32 @@ bool Application::pie_input(const ui::Event& input, WPARAM native_key) {
     return true;
 }
 
-void Application::native(NativeEvent message) {
+Result<void> Application::native(NativeEvent message) {
     if (control_)
         control_->input(message.message, message.wparam);
     if (message.relative_motion) {
         ui_.dismiss_tooltip();
         look_camera_fly(message.relative_motion->x, message.relative_motion->y);
-        return;
+        return {};
     }
     if (message.message == WM_SIZE || message.message == WM_DPICHANGED) {
         invalidate_surface();
-        return;
+        return {};
     }
     if (message.message == WM_MOVE) {
         ui_.dismiss_tooltip();
         finish_camera_fly(false);
         close_menu(false);
-        return;
+        return {};
     }
     if (message.message == WM_CANCELMODE || (message.message == WM_ACTIVATEAPP && !message.wparam)) {
         cancel_interaction(ui_.cancel_interaction());
-        return;
+        return {};
     }
     if (message.message == WM_SETFOCUS)
-        return;
+        return {};
     if (message.ime_owned)
-        return;
+        return {};
     if (message.composition) {
         ui::Event composition;
         composition.kind = ui::EventKind::composition;
@@ -1808,25 +1844,25 @@ void Application::native(NativeEvent message) {
         if (message.error)
             reply.error = ui::Error{ui::ErrorCode::platform_failed, 0, message.error};
         effects(reply);
-        return;
+        return {};
     }
     if (message.error) {
         workspace_.status = L"Invalid native text input.";
-        return;
+        return {};
     }
     const auto native_key = message.wparam;
     auto mapped = input_event(std::move(message), window());
     if (!mapped)
-        return;
-    input(*mapped, native_key);
+        return {};
+    return input(*mapped, native_key);
 }
 
-void Application::input(const ui::Event& event, WPARAM native_key) {
+Result<void> Application::input(const ui::Event& event, WPARAM native_key) {
     if (event.kind != ui::EventKind::pointer_move)
         ui_.dismiss_tooltip();
     if (event.kind == ui::EventKind::pointer_leave) {
         effects(ui_.input(event));
-        return;
+        return {};
     }
     const bool pointer = event.kind == ui::EventKind::pointer_move || event.kind == ui::EventKind::pointer_down ||
                          event.kind == ui::EventKind::pointer_up || event.kind == ui::EventKind::wheel;
@@ -1835,37 +1871,38 @@ void Application::input(const ui::Event& event, WPARAM native_key) {
         if (ui_.presented())
             workspace_.dock.focus_control(ui_.focused_control(), *ui_.presented());
         cancel_interaction(reply, event.kind == ui::EventKind::focus_lost ? "focus_lost" : "capture_lost");
-        return;
+        return {};
     }
     // Menu toggles must ignore repeats on both sides of menu_input(), including
     // repeats arriving after Escape has closed the original menu.
     if (event.kind == ui::EventKind::key_down && event.repeat && (event.key == ui::Key::f10 || native_key == VK_MENU))
-        return;
+        return {};
     if (event.kind == ui::EventKind::pointer_down)
         camera_fly_release_.reset();
     if (camera_fly_release_ && event.kind == ui::EventKind::pointer_up && event.button == *camera_fly_release_) {
         camera_fly_release_.reset();
-        return;
+        return {};
     }
     if (camera_fly_ && event.kind == ui::EventKind::key_down &&
         (event.key == ui::Key::f10 || event.alt || (event.control && (native_key == VK_TAB || native_key == 'W'))))
         finish_camera_fly(false);
-    if (menu_input(event, native_key)) {
+    ATELIER_TRY_BIND(menu_handled, menu_input(event, native_key));
+    if (*menu_handled) {
         ui_.dismiss_tooltip();
-        return;
+        return {};
     }
     if (pointer)
         pointer_position_ = {event.x, event.y};
     if ((camera_fly_ || viewport_tool_.active()) && viewport_input(event, static_cast<std::uint32_t>(native_key))) {
         ui_.dismiss_tooltip();
-        return;
+        return {};
     }
     // Scene Tree owns Clear Parent; text fields and other panes retain the
     // Project mnemonic. Resolve this context before opening a top-level menu.
     const auto region = editor::region_of(workspace_.dock.focused_tab());
     if (region == editor::RegionKind::scene_tree &&
         key_input(event, static_cast<std::uint32_t>(native_key), region, editor::KeyPhase::before_controls))
-        return;
+        return {};
     ui::ControlKey requested_menu{};
     if (event.kind == ui::EventKind::key_down) {
         if (event.key == ui::Key::f10 && !event.shift)
@@ -1879,7 +1916,7 @@ void Application::input(const ui::Event& event, WPARAM native_key) {
     }
     if (requested_menu) {
         if (event.repeat)
-            return;
+            return {};
         const auto menu = requested_menu;
         menu_return_focus_ = ui_.focused_control();
         if (workspace_.menu_bar_collapsed) {
@@ -1889,7 +1926,7 @@ void Application::input(const ui::Event& event, WPARAM native_key) {
             effects(ui_.focus(menu));
             request_menu({menu, 0, 0, 0});
         }
-        return;
+        return {};
     }
     if (event.kind == ui::EventKind::pointer_down && ui_.presented())
         for (const auto& box : ui_.presented()->controls)
@@ -1900,35 +1937,37 @@ void Application::input(const ui::Event& event, WPARAM native_key) {
     const bool release = event.kind == ui::EventKind::pointer_up;
     if (pointer && !release && !pointer_ready()) {
         ui_.dismiss_tooltip();
-        return;
+        return {};
     }
     if (event.kind == ui::EventKind::pointer_down && event.button == ui::PointerButton::primary) {
         const auto menu = ui_.pointer_target(event.x, event.y);
         if (editor::control::is_menu(menu)) {
             effects(ui_.focus(menu));
             request_menu({menu, 0, 0, 0});
-            return;
+            return {};
         }
     }
     if (!workspace_.menu && key_input(event, static_cast<std::uint32_t>(native_key), editor::RegionKind::none,
                                       editor::KeyPhase::before_controls))
-        return;
+        return {};
     if (viewport_input(event, static_cast<std::uint32_t>(native_key))) {
         ui_.dismiss_tooltip();
-        return;
+        return {};
     }
     auto reply = ui_.input(event);
     if (ui_.presented())
         workspace_.dock.focus_control(ui_.focused_control(), *ui_.presented());
-    effects(reply);
+    if (!effects(reply))
+        return {};
     if (!reply.consumed && event.kind == ui::EventKind::key_down) {
         if (key_input(event, static_cast<std::uint32_t>(native_key), region, editor::KeyPhase::after_controls) ||
             key_input(event, static_cast<std::uint32_t>(native_key), editor::RegionKind::none,
                       editor::KeyPhase::after_controls))
-            return;
+            return {};
         if (!workspace_.sample_history() && !event.repeat && event.key == ui::Key::escape)
             status(document_->cancel_edit(), L"Edit cancelled");
     }
+    return {};
 }
 
 Result<void> Application::enable_control(const std::filesystem::path& directory) {
@@ -1941,11 +1980,16 @@ Result<void> Application::enable_control(const std::filesystem::path& directory)
     return {};
 }
 
-bool Application::step(renderer::Capture* capture) {
+Result<bool> Application::step(renderer::Capture* capture) {
     // The frame closes after run_step, so the retirement of its frame-local containers is included.
     timing::Recorder::Frame frame{recorder_};
     sampled_frame_.reset();
-    const bool running = run_step(capture);
+    auto running = run_step(capture);
+    if (!running) {
+        close_menu(false);
+        report_error(running.error(), "editor.frame_failed");
+        preserve_failure(running.error().message);
+    }
     auto& performance = workspace_.lighting.performance();
     performance.observe(frame.finish(), sampled_frame_);
     // Only a sampled step shows a reading, so readback and stalls never appear as the live FPS.
@@ -1960,7 +2004,7 @@ bool Application::step(renderer::Capture* capture) {
     return running;
 }
 
-bool Application::run_step(renderer::Capture* capture) try {
+Result<bool> Application::run_step(renderer::Capture* capture) try {
     using Clock = std::chrono::steady_clock;
     frame_statistics_ = {};
     if (closed_)
@@ -1979,13 +2023,18 @@ bool Application::run_step(renderer::Capture* capture) try {
     } forward_live{*this};
     {
         timing::Scope input{phases::input};
-        window_.poll([&](NativeEvent&& event) { native(std::move(event)); });
+        Result<void> polled;
+        window_.poll([&](NativeEvent&& event) {
+            if (polled)
+                polled = native(std::move(event));
+        });
+        ATELIER_TRY(polled);
         if (window_.closing()) {
             const auto confirmed = confirm_discard();
             if (!confirmed)
                 status(Result<void>{std::unexpected(confirmed.error())}, L"");
             else if (*confirmed) {
-                close();
+                ATELIER_TRY(close());
                 return false;
             }
             window_.cancel_close();
@@ -2012,9 +2061,14 @@ bool Application::run_step(renderer::Capture* capture) try {
     const auto extent = target.drawable ? target.extent : ui::PixelExtent{};
     surface_ = {extent, window_.dpi_scale(), surface_revision_};
     auto updated = ui_.set_surface(surface_);
-    if (!updated)
-        throw std::runtime_error("UI rejected the window surface.");
+    if (!updated) {
+        auto error = ui_error(updated.error());
+        error.message = "UI rejected the window surface. " + error.message;
+        return std::unexpected(std::move(error));
+    }
     effects(*updated);
+    if (updated->error)
+        return std::unexpected(ui_error(*updated->error));
     {
         timing::Scope collecting{phases::gc};
         auto gc = document_->collect_step();
@@ -2059,14 +2113,14 @@ bool Application::run_step(renderer::Capture* capture) try {
     // the next poll is after layout, which may cancel a live viewport edit.
     else if (!scene_.picking() || (scene_.draw() && scene_.draw()->picking == scene_.picking()))
         workspace_.render_notice.clear();
-    const auto describe = [&] {
+    const auto describe = [&]() -> Result<std::vector<ui::Control>> {
         // Selection/document commands can cancel the business edit before the next UI frame.
         if (workspace_.color_edit && !document_->owns_edit(editor::control::color_group))
             workspace_.color_edit.reset();
-        auto controls = workspace_.describe(*document_, view_size, ui_.presented().get(),
-                                            project_ ? &*project_ : nullptr, &ui_, command_focus());
+        ATELIER_TRY_BIND(controls, workspace_.describe(*document_, view_size, ui_.presented().get(),
+                                                       project_ ? &*project_ : nullptr, &ui_, command_focus()));
         if (workspace_.color_edit &&
-            (workspace_.color_edit->composition_failed || std::ranges::none_of(controls, [](const auto& control) {
+            (workspace_.color_edit->composition_failed || std::ranges::none_of(*controls, [](const auto& control) {
                  return control.key == editor::control::color_editor;
              }))) {
             const auto diagnostic = std::string(workspace_.ui_error());
@@ -2074,45 +2128,62 @@ bool Application::run_step(renderer::Capture* capture) try {
                 throw editor::detail::Failure(std::move(cancelled.error()));
             controls = workspace_.describe(*document_, view_size, ui_.presented().get(),
                                            project_ ? &*project_ : nullptr, &ui_, command_focus());
+            ATELIER_TRY(controls);
             workspace_.status = L"Colour editor could not open" +
                                 (diagnostic.empty() ? std::wstring{} : L": " + diagnostic_text(diagnostic));
         }
         return controls;
     };
     std::optional<timing::Scope> stage{std::in_place, phases::ui};
-    auto controls = describe();
-    auto described = ui_.set_controls(controls);
-    if (!described &&
-        workspace_.reject_ui_controls("UI candidate rejected at control " + std::to_string(described.error().key))) {
+    ATELIER_TRY_BIND(controls, describe());
+    auto described = ui_.set_controls(*controls);
+    if (!described && described.error().code != ui::ErrorCode::text_failed &&
+        workspace_.reject_ui_controls("UI candidate rejected at control " + std::to_string(described.error().key) +
+                                      ": " + ui_error(described.error()).message)) {
         controls = describe();
-        described = ui_.set_controls(controls);
+        ATELIER_TRY(controls);
+        described = ui_.set_controls(*controls);
     }
-    if (!described)
-        throw std::runtime_error("UI rejected editor controls (key " + std::to_string(described.error().key) + ").");
+    if (!described) {
+        auto error = ui_error(described.error());
+        error.message =
+            "UI rejected editor controls (key " + std::to_string(described.error().key) + "). " + error.message;
+        return std::unexpected(std::move(error));
+    }
     effects(*described);
+    if (described->error)
+        return std::unexpected(ui_error(*described->error));
     if (workspace_.pie_menu())
         effects(ui_.focus(pie_hot_));
     stage.emplace(phases::layout);
     auto prepared = ui_.prepare();
-    if (!prepared && workspace_.reject_ui_controls("Editor layout candidate rejected at control " +
-                                                   std::to_string(prepared.error().key))) {
+    if (!prepared && prepared.error().code != ui::ErrorCode::text_failed &&
+        workspace_.reject_ui_controls("Editor layout candidate rejected at control " +
+                                      std::to_string(prepared.error().key) + ": " +
+                                      ui_error(prepared.error()).message)) {
         controls = describe();
-        described = ui_.set_controls(controls);
-        if (!described)
-            throw std::runtime_error("UI rejected restored editor controls (key " +
-                                     std::to_string(described.error().key) + ").");
+        ATELIER_TRY(controls);
+        described = ui_.set_controls(*controls);
+        if (!described) {
+            auto error = ui_error(described.error());
+            error.message = "UI rejected restored editor controls (key " + std::to_string(described.error().key) +
+                            "). " + error.message;
+            return std::unexpected(std::move(error));
+        }
         effects(*described);
+        if (described->error)
+            return std::unexpected(ui_error(*described->error));
         prepared = ui_.prepare();
     }
     if (!prepared) {
         stage.reset();
         lighting_clock_.reset();
-        if (!ui_.presented())
-            throw std::runtime_error("Initial editor frame preparation failed (UI code " +
-                                     std::to_string(static_cast<int>(prepared.error().code)) + ").");
-        workspace_.status = L"Frame preparation failed; previous frame retained";
-        MsgWaitForMultipleObjectsEx(0, nullptr, 20, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
-        return true;
+        auto error = ui_error(prepared.error());
+        error.message = (ui_.presented() ? "Frame preparation failed; previous frame retained: "
+                                         : "Initial editor frame preparation failed (UI code " +
+                                               std::to_string(static_cast<int>(prepared.error().code)) + "). ") +
+                        error.message;
+        return std::unexpected(std::move(error));
     }
     const auto previous_ui_revision = workspace_.ui_revision();
     workspace_.commit_ui_controls();
@@ -2122,9 +2193,9 @@ bool Application::run_step(renderer::Capture* capture) try {
             prepared = ui_.prepare();
             if (!prepared) {
                 stage.reset();
-                workspace_.status = L"Frame preparation failed; previous frame retained";
-                MsgWaitForMultipleObjectsEx(0, nullptr, 20, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
-                return true;
+                auto error = ui_error(prepared.error());
+                error.message = "Frame preparation failed; previous frame retained: " + error.message;
+                return std::unexpected(std::move(error));
             }
         }
     }
@@ -2134,7 +2205,7 @@ bool Application::run_step(renderer::Capture* capture) try {
     stage.reset();
     if (!workspace_.pie_menu() && !pending_menu_) {
         timing::Scope menus{phases::popup};
-        update_menu();
+        ATELIER_TRY(update_menu());
     }
     // A message or service timeout is not permission to submit a host frame.
     // Keep the refreshed model and popup, but leave accepted host geometry alone.
@@ -2309,7 +2380,7 @@ bool Application::run_step(renderer::Capture* capture) try {
             effects(ui_.focus(menu));
             request_menu({menu, 0, 0, 0});
         } else
-            update_menu();
+            ATELIER_TRY(update_menu());
     } else {
         lighting_clock_.reset();
         if (control_ && !drawn->fallback && !material_pending)
@@ -2326,9 +2397,18 @@ bool Application::run_step(renderer::Capture* capture) try {
     throw;
 }
 
-void Application::close() {
+Result<void> Application::close() {
     if (closed_)
-        return;
+        return {};
+    Result<void> result;
+    const auto retire = [&](Result<void> next) {
+        if (next)
+            return;
+        if (result)
+            result = std::move(next);
+        else
+            report_error(next.error(), "application.cleanup_failed");
+    };
     finish_camera_fly(false);
     closed_ = true;
     control_.reset();
@@ -2342,23 +2422,20 @@ void Application::close() {
     }
     close_menu(false);
     for (auto& submenu : submenus_)
-        submenu->close();
+        retire(submenu->close());
     if (popup_)
-        popup_->close();
+        retire(popup_->close());
     cancel_interaction(ui_.cancel_interaction());
-    const auto cancelled = document_->cancel_edit();
-    if (!cancelled)
-        throw editor::detail::Failure(cancelled.error());
+    retire(document_->cancel_edit());
     window_.capture(false);
     workspace_.reset_document();
     project_code_ = nullptr;
     diagnostics();
     const auto closed = document_->close();
     diagnostics();
-    take(completion(closed));
+    retire(completion(closed));
     scene_.reset();
-    const auto stopped = renderer_.close();
-    if (!stopped)
-        throw std::runtime_error(stopped.error().cause.message);
+    retire(renderer_.close().transform_error(renderer_error));
+    return result;
 }
 }

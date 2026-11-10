@@ -23,13 +23,14 @@ void verify_project_ui_reload(const std::filesystem::path& evidence) {
         style.font.size = 12.5f;
         style.caption_scale = 1;
         display(session.set_style(style));
-        display(session.set_style_sheet(application::editor_styles()));
+        display(session.set_style_sheet(take(application::editor_styles())));
     };
     take(editor::write_file(path, source(23)));
     take(project.set_ui_source("Source/Main.ui.source"));
     editor::ProjectUI project_ui;
     project_ui.sync(&project);
-    ui::Session session(application::editor_fonts());
+    ui::Session session;
+    display(session.initialize(application::editor_fonts()));
     configure(session);
     const auto effects = [&](const ui::Reply& reply) {
         require(!reply.error, "Project UI reload input failed.");
@@ -102,7 +103,8 @@ void verify_project_ui_reload(const std::filesystem::path& evidence) {
             "Surface restoration lost the last valid layout.");
     editor::ProjectUI cold;
     cold.sync(&project);
-    ui::Session cold_session(application::editor_fonts());
+    ui::Session cold_session;
+    display(cold_session.initialize(application::editor_fonts()));
     configure(cold_session);
     require(!cold.prepare(cold_session, {{640, 480}, 1, 1}, 0, 0, [](const ui::Reply&) {}) && cold.revision() == 0,
             "An invalid cold UI was treated as an accepted empty page.");

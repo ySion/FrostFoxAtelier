@@ -24,6 +24,7 @@ ui Actions(in ActionBinding first, in ActionBinding second, in bool available) {
                                                language::ActionBinding{create, true}, true};
     auto instance = take(language::Instance::create(component, 0, next, keys, inputs));
     ui::Session surface;
+    take(surface.initialize());
     require(surface.set_surface({{500, 240}, 1, 1}).has_value(), "Action surface failed.");
     std::vector<ui::Action> emitted;
     const auto dispatch = [&](ui::Reply reply) {

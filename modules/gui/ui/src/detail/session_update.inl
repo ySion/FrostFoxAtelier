@@ -188,10 +188,13 @@
         Reply reply;
         std::size_t applied{};
         bool inserted=false,reordered=false;
-        try {
-            // Cleanup can allocate owned effects/history. Retain descriptors and
-            // interaction until those fallible steps finish.
-            if (cancelling) { reply=cancel(); edit.reset(); }
+        const auto apply=[&]() -> Result<void> {
+            // Keep descriptors and interactions until text-service work finishes.
+            // Effects from a rejected candidate never escape this transaction.
+            if (cancelling) {
+                reply=cancel();edit.reset();
+                if (reply.error) return std::unexpected(*reply.error);
+            }
             if (clear_focus) set_focus(reply,0);
             if (clear_keyboard) retire_keyboard(reply);
             for (auto key:removed_keys) removed.insert(states.extract(key));
@@ -202,11 +205,16 @@
             if (refresh_edit && edit) {
                 const auto caret=edit->buffer().current().caret,anchor=edit->buffer().current().anchor;
                 const auto key=edit->key; const bool mode=edit->text_mode;
-                begin_edit(key,mode); edit->buffer().select(anchor,false); edit->buffer().select(caret,true);
+                if (!begin_edit(reply,key,mode)) return std::unexpected(*reply.error);
+                edit->buffer().select(anchor,false); edit->buffer().select(caret,true);
             }
             update_popup(next_popup,reply);
+            if (reply.error) return std::unexpected(*reply.error);
             if (popup && popup_invalid) dismiss_popup(reply);
-        } catch (...) {
+            return {};
+        };
+        const auto changed=apply();
+        if (!changed) {
             // std::map node transfers keep State addresses and allocate nothing.
             if (reordered) order.swap(next_order);
             for (std::size_t i=0;i<applied;++i) std::swap(changes[i].state->control,changes[i].value);
@@ -219,7 +227,7 @@
                 keyboard_key=old_keyboard_key; terminal_key=old_terminal;
                 popup=old_popup; popup_return_focus=old_popup_focus; popup_dismissed=old_dismissed;
             }
-            throw;
+            return std::unexpected(changed.error());
         }
         // No allocation or callbacks after this point. Text resources remain
         // owned by old frames even when the mutable store drops its cache.

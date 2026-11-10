@@ -72,7 +72,7 @@
                 if (paint) quad(table.header,header_clip,appearance.indicator_background);
                 std::vector<detail::TextKey> visible_text;
                 const auto paint_text=[&](TableKey id,bool header,std::wstring_view value,Rect cell,Clip cell_clip,
-                    TextAlign alignment,ControlIcon icon,bool row_enabled,float trailing=0.f,bool above=false) {
+                    TextAlign alignment,ControlIcon icon,bool row_enabled,float trailing=0.f,bool above=false) -> Result<void> {
                     float x=cell.x+std::max(4.f,appearance.padding.left)*scale;
                     auto width=std::max(0.f,cell.width-(std::max(4.f,appearance.padding.left)+std::max(4.f,appearance.padding.right)+trailing)*scale);
                     const auto color=row_enabled?appearance.foreground:self.style.palette.muted;
@@ -93,18 +93,19 @@
                             else {x+=size+4*scale; width=std::max(0.f,width-size-4*scale);}
                         }
                     }
-                    if (value.empty() || width<=0 || !visible({x,cell.y,width,cell.height},cell_clip)) return;
+                    if (value.empty() || width<=0 || !visible({x,cell.y,width,cell.height},cell_clip)) return {};
                     const detail::TextKey text_key{key,id,header}; visible_text.push_back(text_key);
                     self.text.set(text_key,value,appearance.font,false,alignment);
-                    const auto metrics=self.text.metrics(text_key,width/scale);
-                    const auto y=cell.y+std::max(0.f,cell.height-metrics.height*scale)*.5f;
-                    if (!paint) return;
+                    ATELIER_TRY_BIND(metrics,self.text.metrics(text_key,width/scale));
+                    const auto y=cell.y+std::max(0.f,cell.height-metrics->height*scale)*.5f;
+                    if (!paint) return {};
                     const auto text_clip=intersect(cell_clip,clip_rect({x,cell.y,width,cell.height}));
                     const Clip viewport{static_cast<int>(std::floor(text_clip.left-x)),static_cast<int>(std::floor(text_clip.top-y)),
                         static_cast<int>(std::ceil(text_clip.right-x)),static_cast<int>(std::ceil(text_clip.bottom-y))};
-                    const auto raster=self.text.raster(text_key,width/scale,scale,viewport);
-                    if (raster.coverage) quad({x+raster.left,y+raster.top,static_cast<float>(raster.coverage->width),
-                        static_cast<float>(raster.coverage->height)},text_clip,color,raster.coverage);
+                    ATELIER_TRY_BIND(raster,self.text.raster(text_key,width/scale,scale,viewport));
+                    if (raster->coverage) quad({x+raster->left,y+raster->top,static_cast<float>(raster->coverage->width),
+                        static_cast<float>(raster->coverage->height)},text_clip,color,raster->coverage);
+                    return {};
                 };
                 float column_x=inner.x-static_cast<float>(state.scroll_x)*scale;
                 if (details) for (std::size_t column=0;column<data.columns.size();++column) {
@@ -113,8 +114,8 @@
                     if (visible(header,header_clip)) {
                         const auto cell_clip=intersect(header_clip,clip_rect(header));
                         table.columns.push_back({descriptor.key,header,{header.x+header.width-3*scale,header.y,6*scale,header.height},header_clip});
-                        paint_text(descriptor.key,true,descriptor.title,header,cell_clip,descriptor.alignment,ControlIcon::none,enabled,
-                            data.sort.column==descriptor.key?12.f:0.f);
+                        ATELIER_TRY(paint_text(descriptor.key,true,descriptor.title,header,cell_clip,descriptor.alignment,ControlIcon::none,enabled,
+                            data.sort.column==descriptor.key?12.f:0.f));
                         if (paint && data.sort.column==descriptor.key) {
                             const auto size=std::min(10*scale,header_height);
                             quad({header.x+header.width-size-5*scale,header.y+(header.height-size)*.5f,size,size},cell_clip,appearance.foreground,
@@ -138,8 +139,8 @@
                         const auto& content=descriptor.cells.front();
                         table.cells.push_back({descriptor.key,data.columns.front().key,content.key,cell,cell_clip});
                         if (paint && descriptor.key==selection.row) quad(cell,cell_clip,appearance.selection);
-                        paint_text(content.key,false,content.text,cell,cell_clip,tiles?TextAlign::center:TextAlign::left,content.icon,
-                            enabled && descriptor.enabled,0,tiles);
+                        ATELIER_TRY(paint_text(content.key,false,content.text,cell,cell_clip,tiles?TextAlign::center:TextAlign::left,content.icon,
+                            enabled && descriptor.enabled,0,tiles));
                         if (paint && self.focus==key && descriptor.key==selection.row)
                             paint_box(cell,cell_clip,{0,0,0,0},{},{},std::max(1.f,scale),appearance.border,BorderStyle::solid);
                         continue;
@@ -153,7 +154,7 @@
                         const auto& content=descriptor.cells[column];
                         const auto cell_clip=intersect(body_clip,clip_rect(cell));
                         table.cells.push_back({descriptor.key,data.columns[column].key,content.key,cell,cell_clip});
-                        paint_text(content.key,false,content.text,cell,cell_clip,data.columns[column].alignment,content.icon,enabled && descriptor.enabled);
+                        ATELIER_TRY(paint_text(content.key,false,content.text,cell,cell_clip,data.columns[column].alignment,content.icon,enabled && descriptor.enabled));
                         if (paint && self.focus==key && selection.row==descriptor.key && selection.column==data.columns[column].key)
                             paint_box(cell,cell_clip,{0,0,0,0},{},{},std::max(1.f,scale),appearance.border,BorderStyle::solid);
                     }
@@ -167,8 +168,8 @@
                     }
                     if (details) quad({inner.x,inner.y+header_height-scale,body_width,scale},header_clip,appearance.tree_line);
                 }
-                if (data.rows.empty()) paint_text(0,false,state.control.text,
-                    {table.body.x,table.body.y,body_width,layout.row_height*scale},body_clip,TextAlign::left,ControlIcon::none,false);
+                if (data.rows.empty()) ATELIER_TRY(paint_text(0,false,state.control.text,
+                    {table.body.x,table.body.y,body_width,layout.row_height*scale},body_clip,TextAlign::left,ControlIcon::none,false));
                 const auto paint_bar=[&](bool horizontal_bar,Rect bar_bounds,double maximum,double value,double page) {
                     if (maximum<=0 || bar_bounds.width<=0 || bar_bounds.height<=0) return;
                     ScrollbarGeometry bar;

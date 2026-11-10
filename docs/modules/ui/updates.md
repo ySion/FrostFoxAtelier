@@ -10,7 +10,7 @@
 - 不接受改变`kind/parent/layout.kind`、`tree_row_count/tree_index/tree_depth/tree_branch/tree_expanded`、`popup_owner/selection_group`、`context_target/context_group/edit_command/menu_branch`。这些定义种类、结构或命令目标；结构更新仍使用完整描述，业务重绑使用新key。
 - text、value、enabled、selected、modified、`tree_lines`、`tree_primary`、layout尺寸/对齐、classes、style和style_scope沿现有Control合同更新。
 - 同值提交不推进描述版本、不计入更新次数。完整描述入口仍有全值比较的快速返回。
-- 一批先验证全部控件和相关引用，再准备发生变化的描述与新节点。非法批次不会应用前面的有效项。候选数据及清理effects准备失败时，恢复描述、交互与树状态，分配异常继续传播；不执行宿主回调。
+- 一批先验证全部控件和相关引用，再准备发生变化的描述与新节点。非法批次不会应用前面的有效项。文字服务准备失败时显式返回 Result，恢复描述、交互与树状态，不发布候选清理 effects；不执行宿主回调。宿主 CPU 分配失败按工程合同 fatal，不靠 catch/退栈恢复。
 - 只有全部准备成功才推进`controls_revision`并返回有序Reply。宿主应在旧binding仍可查询时处理取消effects，再退役旧映射。
 
 以下是已有描述的定点更新；`field`和对应业务绑定由调用者保存：
@@ -54,6 +54,8 @@ apply_effects(*changed);
 `prepare → render → accept`期间保持单线程更新阶段，不重入描述修改；renderer最终accepted后才接受对应UiFrame。`accept`返回false不能解释成GPU画面回滚，宿主必须处理该失败。
 
 描述提交与完整帧发布是两个阶段。NodeInput规则、布局依赖、实际文字资源等仍在`prepare`解析。出帧失败保留已接受UiFrame及资源，但不会撤销已成功提交的描述或取消effects，也不会自动恢复已取消的草稿。Session此时暂停交互激活；只有失败之后准备的新候选被接受，才恢复输入。每次准备开始即预留现有单调Frame.id，失败时记录该边界，因此重交此前的帧也不能解除暂停，即使描述、主题和Surface均未变。失焦/捕获丢失和带token的平台结果继续沿原清理协议处理。
+
+TextStore 的段落候选和 TextSnapshot 的 caret stops 在全部系统调用成功后才发布到缓存；失败不标记半份结果为有效。已接受帧继续独立拥有旧 DirectWrite 段落和 Coverage。输入失败保留 `Reply.error` 的原码，宿主停止后续普通动作，但仍执行已产生的取消编辑、释放 capture、IME 取消及键盘 latch 退休。
 
 没有失败的普通候选准备仍保持原合同：同一活身份可以按已接受几何交互，候选坐标不会提前参与命中。移除/重建的key由incarnation检查拦截；业务对象或字段变化须由生产者换key，不能仅替换外部binding表。
 

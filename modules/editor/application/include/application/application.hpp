@@ -23,13 +23,15 @@ enum class ProjectOpenPolicy { allow_repair, require_scene };
 
 class Application final : private editor::OperatorHost {
 public:
-    // Takes an already initialized editor document, before creating the Window.
-    explicit Application(std::unique_ptr<editor::Session>, bool gpu_validation = false, bool activate = true,
-                         std::optional<ui::PixelExtent> initial_client = {}, bool vsync = true);
+    Application();
+
+    // Takes an initialized document at this stable address. Failure permits destruction only.
+    Result<void> initialize(std::unique_ptr<editor::Session>, bool gpu_validation = false, bool activate = true,
+                            std::optional<ui::PixelExtent> initial_client = {}, bool vsync = true);
 
     ~Application();
 
-    bool step(renderer::Capture* = nullptr);
+    Result<bool> step(renderer::Capture* = nullptr);
 
     Result<void> enable_control(const std::filesystem::path& directory);
 
@@ -63,7 +65,7 @@ public:
         play_.stop();
     }
 
-    void close();
+    Result<void> close();
 
     HWND window() const noexcept { return window_.handle(); }
 
@@ -81,9 +83,10 @@ public:
         return host ? host->presented().get() : nullptr;
     }
 
-    void capture_menu(renderer::Capture& capture) {
+    Result<void> capture_menu(renderer::Capture& capture) {
         if (auto* host = menu_host())
-            host->render(&capture);
+            return host->render(&capture);
+        return {};
     }
 
     ui::ControlKey object_control(ObjectId entity) const noexcept { return workspace_.object_control(entity); }
@@ -259,7 +262,7 @@ private:
 
     std::uint64_t accepted_frames_{};
 
-    bool closed_{};
+    bool closed_{true}; // Unpublished until initialize succeeds; failed initialization uses member destruction.
 
     struct CameraDrag {
         ui::PointerButton button;
@@ -308,7 +311,7 @@ private:
 
     double fps_interval_{}; // The frame interval the FPS text was formatted from.
 
-    bool run_step(renderer::Capture*);
+    Result<bool> run_step(renderer::Capture*);
 
     std::chrono::steady_clock::time_point render_retry_at_{};
 
@@ -328,9 +331,9 @@ private:
         return popup_ && popup_->visible() ? popup_.get() : nullptr;
     }
 
-    void native(NativeEvent);
+    Result<void> native(NativeEvent);
 
-    void input(const ui::Event&, WPARAM native_key);
+    Result<void> input(const ui::Event&, WPARAM native_key);
 
     bool key_input(const ui::Event&, std::uint32_t, editor::RegionKind, editor::KeyPhase);
 
@@ -339,9 +342,9 @@ private:
     void close_menu(bool restore_focus = true, std::source_location caller = std::source_location::current(),
                     std::string_view input_event = {});
 
-    void update_menu();
+    Result<void> update_menu();
 
-    bool menu_input(const ui::Event&, WPARAM);
+    Result<bool> menu_input(const ui::Event&, WPARAM);
 
     bool pie_input(const ui::Event&, WPARAM);
 
@@ -467,7 +470,7 @@ private:
 
     void publish_build(std::shared_ptr<const editor::ProjectBuild>);
 
-    void publish_document(std::unique_ptr<editor::Session>, editor::ProjectCode* = nullptr);
+    Result<void> publish_document(std::unique_ptr<editor::Session>, editor::ProjectCode* = nullptr);
 
     Result<void> load_project(const std::filesystem::path&, bool create = false,
                               const std::filesystem::path& scene = {},

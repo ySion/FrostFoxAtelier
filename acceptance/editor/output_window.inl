@@ -197,7 +197,7 @@ void verify_output_window(Application& app, const std::filesystem::path& evidenc
                 std::get<std::uint64_t>(error_code->value) == static_cast<std::uint64_t>(unreadable.error().code),
             "Material load error was reduced to a warning label or had its original code/body replaced.");
     select_row(error_key);
-    require(output.body()->text() == platform::utf8_to_utf16_validated(unreadable.error().message) &&
+    require(take(output.body())->text() == platform::utf8_to_utf16_validated(unreadable.error().message) &&
                 !app.document().dirty(),
             "Output changed the material error body or tolerant loading dirtied the author document.");
     capture(app, evidence / "output-material-error.png");

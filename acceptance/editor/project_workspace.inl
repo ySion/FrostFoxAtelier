@@ -8,7 +8,8 @@ void verify_project_workspace(editor::Project& project) {
     workspace.project_open = true;
     workspace.assets.reset(true);
     const std::array fonts{(std::filesystem::current_path() / "fonts/SarasaUiSC-Regular.ttf").wstring()};
-    ui::Session surface(fonts);
+    ui::Session surface;
+    take(surface.initialize(fonts));
     auto theme = ui::StyleSheet::parse(take(assets::read_file("editor.ss")));
     require(theme.has_value(), "Project UI theme failed to parse.");
     require(surface.set_style_sheet(*theme).has_value(), "Project UI theme failed to resolve.");
@@ -21,8 +22,8 @@ void verify_project_workspace(editor::Project& project) {
         current_extent = extent;
         current_scale = scale;
         require(surface.set_surface({extent, scale, surface_revision}).has_value(), "Project UI rejected its surface.");
-        const auto controls = workspace.describe(document, {extent.width / scale, extent.height / scale},
-                                                 surface.presented().get(), &project);
+        const auto controls = take(workspace.describe(document, {extent.width / scale, extent.height / scale},
+                                                      surface.presented().get(), &project));
         auto described = surface.set_controls(controls);
         if (!described)
             throw std::runtime_error("Project UI invalid control " + std::to_string(described.error().key));

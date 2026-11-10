@@ -436,7 +436,7 @@ void verify_entity_composition() {
     editor::Workspace workspace;
     take(document.select(group));
     take(workspace.set_tree_expanded(document, editor::Workspace::EntityTree::scene_tree, std::array{group}, true));
-    const auto controls = workspace.describe(document, {1600, 1000}, nullptr);
+    const auto controls = take(workspace.describe(document, {1600, 1000}, nullptr));
     const auto group_control = std::ranges::find(controls, workspace.object_control(group), &ui::Control::key);
     const auto child_control = std::ranges::find(controls, workspace.object_control(child), &ui::Control::key);
     require(group_control != controls.end() && child_control != controls.end() &&

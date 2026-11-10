@@ -18,11 +18,11 @@
                     if (!body.empty() && !help.description.empty()) body+=L'\n';
                     body+=help.description;
                     self.text.set(tooltip_body_key,body,self.style.font,true);
-                    if (!help.title.empty()) candidate.title_size=self.text.metrics(tooltip_title_key,width);
-                    if (!body.empty()) candidate.body_size=self.text.metrics(tooltip_body_key,width);
+                    if (!help.title.empty()) {ATELIER_TRY_BIND(metrics,self.text.metrics(tooltip_title_key,width));candidate.title_size=*metrics;}
+                    if (!body.empty()) {ATELIER_TRY_BIND(metrics,self.text.metrics(tooltip_body_key,width));candidate.body_size=*metrics;}
                     const Clip text_view{0,0,static_cast<std::int32_t>(std::ceil(maximum_width)),static_cast<std::int32_t>(std::ceil(maximum_height))};
-                    if (!help.title.empty()) candidate.title=self.text.raster(tooltip_title_key,width,scale,text_view);
-                    if (!body.empty()) candidate.body=self.text.raster(tooltip_body_key,width,scale,text_view);
+                    if (!help.title.empty()) {ATELIER_TRY_BIND(raster,self.text.raster(tooltip_title_key,width,scale,text_view));candidate.title=*raster;}
+                    if (!body.empty()) {ATELIER_TRY_BIND(raster,self.text.raster(tooltip_body_key,width,scale,text_view));candidate.body=*raster;}
                     cached=std::move(candidate);
                 }
                 const bool has_title=!help.title.empty(),has_body=!help.identity.empty() || !help.description.empty();

@@ -369,7 +369,7 @@ void profile_scene_cpu(const std::filesystem::path& root, std::string_view scene
     workspace.project_open = true;
     workspace.dock.maximize(editor::control::scene_tab);
     const auto describe = [&] {
-        auto controls = workspace.describe(*document, {1779, 1154}, nullptr, &project);
+        auto controls = take(workspace.describe(*document, {1779, 1154}, nullptr, &project));
         require(workspace.ui_error().empty() && !controls.empty(), "CPU profile UI description failed.");
         workspace.commit_ui_controls();
     };
@@ -379,7 +379,8 @@ void profile_scene_cpu(const std::filesystem::path& root, std::string_view scene
     {
         // The docked editor's UI step on a headless Session: description against the accepted frame, then layout.
         const std::array fonts{(editor::asset_directory() / "fonts/SarasaUiSC-Regular.ttf").wstring()};
-        ui::Session surface(fonts);
+        ui::Session surface;
+        take(surface.initialize(fonts));
         const auto theme = ui::StyleSheet::parse(take(assets::read_file(editor::asset_directory() / "editor.ss")));
         require(theme && surface.set_style_sheet(*theme) && surface.set_surface({{1779, 1154}, 1, 1}),
                 "CPU profile UI surface failed.");
@@ -387,7 +388,7 @@ void profile_scene_cpu(const std::filesystem::path& root, std::string_view scene
         std::size_t rows{};
         measure("ui_docked", [&] {
             const auto described =
-                workspace.describe(*document, {1779, 1154}, surface.presented().get(), &project, &surface);
+                take(workspace.describe(*document, {1779, 1154}, surface.presented().get(), &project, &surface));
             require(workspace.ui_error().empty() && surface.set_controls(described),
                     "CPU profile UI description was refused.");
             workspace.commit_ui_controls();

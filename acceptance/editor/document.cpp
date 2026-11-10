@@ -371,11 +371,6 @@ int main(int argc, char** argv) {
         std::puts(
             "Editor document acceptance: PASS (Entity/component identity, name/field history, membership, retirement, close)");
         return 0;
-    } catch (const ui::detail::TextFailure& error) {
-        std::fprintf(stderr, "Editor document acceptance: FAIL [%.*s]: %s (HRESULT 0x%08lx)\n",
-                     static_cast<int>(stage.size()), stage.data(), error.what(),
-                     static_cast<unsigned long>(error.code));
-        return 1;
     } catch (const std::exception& error) {
         std::fprintf(stderr, "Editor document acceptance: FAIL [%.*s]: %s\n", static_cast<int>(stage.size()),
                      stage.data(), error.what());

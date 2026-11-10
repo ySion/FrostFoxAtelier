@@ -154,22 +154,23 @@ atelier::Result<int> host_main(int argc, wchar_t** argv) {
         atelier::application::isolate_shader_cache();
     auto document = std::make_unique<atelier::editor::Session>();
     ATELIER_TRY(document->initialize({}, atelier::editor::SessionRole::editor));
-    atelier::application::Application app(
+    atelier::application::Application app;
+    const auto initialized = app.initialize(
         std::move(document), gpu_validation || acceptance || source || edit || ime || project_acceptance || scene_lit,
         !snapshot && !shortcuts && !surfaces && !tooltips && !dialogs && !no_activate && !render_performance_output,
         initial_client, !render_performance_output);
+    if (!initialized)
+        return std::unexpected(initialized.error());
     if (project || create) {
         const auto opened =
             app.open_project(argv[2], create,
                              render_performance_output ? atelier::application::ProjectOpenPolicy::require_scene
                                                        : atelier::application::ProjectOpenPolicy::allow_repair);
         if (!opened)
-            throw std::runtime_error(opened.error().message);
+            return std::unexpected(opened.error());
     }
     if (scene_argument) {
-        auto opened = app.open_scene(argv[4]);
-        if (!opened)
-            throw std::runtime_error(opened.error().message);
+        ATELIER_TRY(app.open_scene(argv[4]));
     }
     if (preview) {
         const bool lit = std::wstring_view(argv[5]) == L"--scene-lit-camera";
@@ -218,8 +219,12 @@ atelier::Result<int> host_main(int argc, wchar_t** argv) {
         if (!enabled)
             return std::unexpected(enabled.error());
     }
-    while (app.step()) {
+    for (;;) {
+        ATELIER_TRY_BIND(running, app.step());
+        if (!*running)
+            break;
     }
+    ATELIER_TRY(app.close());
     return 0;
 }
 }

@@ -52,7 +52,9 @@ Session 的 `set_transform`、`remove_transform`、`set_space_reference`、多�
 宿主同线程逐帧以32工作单位推进 GC；普通根保活不表示对象仍参与 World。文档关闭先结束活动编辑，再关闭 World、释放历史；World close 撤成员/参与和根，Runtime 生命周期随后由宿主管理。
 
 Session 默认构造只建立空壳，在稳定地址上调用一次 `initialize(Prepare, SessionRole)`，以 `Result<void>` 传递引擎/编辑器类型注册、World、呈现与 Prepare 的完整错误。只有成功后才能使用文档方法；失败后只允许析构，不承诺重试，因为类型注册可能已部分改变 Runtime。这与初始化失败后可重试的 World 不同。析构在呈现已建立时先关闭 World，再按原成员顺序退役物理、呈现、World、Prepare 返回的代码所有者和 Runtime；更早失败由已构造成员清理。
-Application 接收已初始化的独占 Session；两个宿主创建入口都先初始化 Session，再创建 Window，文档初始化失败不会打开窗口。之后的 Window、UI、Renderer 顺序不变。工程修复用的空文档同样先准备成功，再退役旧文档；`deserialize` 保持先解析 JSON、后执行 Prepare，`Project::create` 对初始化错误仍只返回 `invalid_storage` 与原 message，不带 source。
+Application 的稳定空壳通过 `initialize` 接收已初始化的独占 Session；两个宿主创建入口都先初始化 Session，再创建 Window，文档初始化失败不会打开窗口。Window、UI、Renderer、主/子 Popup 的顺序不变，全部成功后才显示主窗口，部分初始化失败只允许析构。Win32 初始化错误保存当时的错误码，UI 诊断保留 code/key/native/message，Renderer 诊断保留 cause code/native_result/message；宿主 Error 无原生码字段，这些值写入诊断文本。工程修复用的空文档同样先准备成功，再退役旧文档；`deserialize` 保持先解析 JSON、后执行 Prepare，`Project::create` 对初始化错误仍只返回 `invalid_storage` 与原 message，不带 source。
+
+部署文件 `editor.ss` 的打开、大小（上限 1 MiB）和读取失败由 `editor_styles()` 返回 `invalid_storage`，解析失败返回 `invalid_definition` 并保留行列和 parser 原文；不再通过异常传递。Runner 在这些启动失败时写 `runner.failed` 后正常返回，World 和 Renderer 沿正常作用域清理。
 
 ## 参数和坐标
 
@@ -280,6 +282,8 @@ Parameters 的 Component / Category 子页切换组织方式。`AFIELD(Label="Po
 
 菜单切换请求立即退役旧菜单的输入身份；新菜单首帧接受前只消费过渡输入，不能执行旧条目。普通命令先关闭旧菜单，再接管输入或捕获；checkbox 的 keep-open 路径仍保留当前菜单。原生事件与菜单生命周期的回归共用 `--acceptance-shortcuts`，不注入桌面键鼠。
 
+Popup 的文字、样式、显示器查询、定位/尺寸与 GPU 失败通过 Result 返回；GPU terminal 在转换诊断前关闭该宿主。hide 先隐藏原生窗口并停止输入，再收集取消和 suspend 的错误；reset 释放 JIT scope，close 在 HWND 析构前退休 GPU。主菜单/子菜单清理收齐首错并记录后续错误，不因首个失败跳过必要清理。prepare→render→accept 不允许重入修改，UI 拒绝已经被 GPU accepted 的帧是 contract-fatal，不能声称画面可回滚。
+
 菜单生命周期沿统一进程日志的 `menu` 分类记录，不以逐帧日志代替业务状态：
 
 | event_code | 级别与时机 | 字段 |
@@ -366,6 +370,12 @@ accepted extent 固定为录制/呈现时尺寸，frame末尾resize后的新尺�
 尺寸/DPI过渡期取消press/capture并暂停指针命中，释放/失焦/捕获丢失继续处理；匹配帧接受后恢复。
 上传也是录制；录制开始后的错误没有回滚，终态错误停止新交互与后续帧。普通帧不调用finish，诊断截图才显式同步。
 关闭停止输入并取消编辑，释放renderer拥有的资源后关闭RHI，最后销毁窗口；成员/历史根先于Runtime析构。
+
+`Application::step` 返回 `Result<bool>`：成功 false 是正常退出，unexpected 是失败。Window.poll 的回调只在该调用栈保存首错，之后不派发业务输入；帧失败先关闭菜单、报告原错并执行 preserve_failure，再由入口正常关闭。析构中的外部清理错误记录诊断，不能安全完成 World/Renderer 退休时由资源拥有者 fatal。作者源码错误仍可恢复旧定义；系统文字服务失败不当成坏源码重试。
+
+Output 新记录正文的字符/长度转换后置条件破坏是 fatal，ICU 失败则返回错误并保留旧缓存，不把旧正文冒充新选择的成功结果。`Workspace::describe` 返回 Result，失败拒绝候选并结束 property-help 轮次；不发布半份控件。它本来会改绑定缓存，不保证整个 Workspace 回滚，因此错误继续传给 step 并结束运行。替换文档失败时仍拥有旧 document，不能提前销毁其 Runtime 或宣称新文档已采用。
+
+本轮三族迁移不表示整个编辑器已满足 W5：Workspace::describe 内原有 take、DSL 拒绝及树路径留给 UI-BASE-B/WORKSPACE；Workspace/ProjectUI 注册、Application 其余业务/主 GPU 桥、Window 非初始化异常运输、Output::capture_raw 等仍待后续迁移。
 
 ### 后续调度与成本边界
 

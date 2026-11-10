@@ -29,10 +29,11 @@
                     return text_key;
                 };
                 const auto caret_key=cache_line(caret_row);
-                const auto caret_paragraph=self.text.snapshot(caret_key,0);
+                ATELIER_TRY_BIND(caret_paragraph,self.text.snapshot(caret_key,0));
                 auto caret_position=selection.caret;caret_position.offset=caret_offset-buffer.line_start(caret_row);
                 if (composition) caret_position.offset+=composition->preedit.cursor;
-                const auto caret=caret_paragraph->caret(caret_position);
+                ATELIER_TRY_BIND(caret_result,(*caret_paragraph)->caret(caret_position));
+                const auto& caret=*caret_result;
                 state.scroll_limit=std::max(0.0,static_cast<double>(buffer.line_count()*line_height-body.height/scale));
                 if (state.code_selection_revision!=buffer.selection_revision() && body.height>0 && body.width>0) {
                     const auto y=caret_row*line_height;
@@ -46,44 +47,52 @@
                 CodeGeometry code{key,document.revision(),buffer.selection_revision(),body,line_height*scale,scale,{}};
                 const auto first_row=std::min(buffer.line_count()-1,static_cast<std::size_t>(state.scroll/line_height));
                 const auto end_row=std::min(buffer.line_count(),first_row+static_cast<std::size_t>(std::ceil(body.height/(line_height*scale)))+1);
-                float width=self.text.metrics(caret_key,0).width;
-                for (auto row=first_row;row<end_row;++row) {const auto line_key=cache_line(row);width=std::max(width,self.text.metrics(line_key,0).width);}
+                ATELIER_TRY_BIND(caret_metrics,self.text.metrics(caret_key,0));
+                float width=caret_metrics->width;
+                for (auto row=first_row;row<end_row;++row) {
+                    const auto line_key=cache_line(row);ATELIER_TRY_BIND(metrics,self.text.metrics(line_key,0));width=std::max(width,metrics->width);
+                }
                 state.code_width=std::max(state.code_width,width+appearance.caret_width+4);
                 state.scroll_x_limit=std::max(0.0,static_cast<double>(state.code_width-body.width/scale));
                 state.scroll_x=std::clamp(state.scroll_x,0.0,state.scroll_x_limit);
                 const auto first=std::min(selection.caret.offset,selection.anchor.offset),last=std::max(selection.caret.offset,selection.anchor.offset);
                 for (auto row=first_row;row<end_row;++row) {
                     const detail::TextKey line_key{key,row+1,false},number_key{key,row+1,true};
-                    const auto paragraph=self.text.snapshot(line_key,0);
+                    ATELIER_TRY_BIND(paragraph_result,self.text.snapshot(line_key,0));
+                    const auto& paragraph=*paragraph_result;
                     const auto x=body.x-static_cast<float>(state.scroll_x)*scale,y=body.y+(row*line_height-static_cast<float>(state.scroll))*scale;
                     const auto start=buffer.line_start(row),end=start+static_cast<std::uint32_t>(buffer.line(row).size());
                     code.lines.push_back({row,start,paragraph,x,y});
                     if (paint && row==caret_row && editing) quad({body.x,y,body.width,line_height*scale},body_clip,appearance.tree_alternate);
                     if (paint && first!=last && first<=end && last>=start && !composition) {
-                        for (auto range:paragraph->selection(std::max(first,start)-start,std::min(last,end)-start))
+                        ATELIER_TRY_BIND(ranges,paragraph->selection(std::max(first,start)-start,std::min(last,end)-start));
+                        for (auto range:*ranges)
                             quad({x+range.x*scale,y+range.y*scale,range.width*scale,line_height*scale},body_clip,appearance.selection);
-                        if (last>end) {const auto line_end=paragraph->caret({end-start,true});quad({x+line_end.x*scale,y,appearance.font.size*.6f*scale,line_height*scale},body_clip,appearance.selection);}
+                        if (last>end) {ATELIER_TRY_BIND(line_end,paragraph->caret({end-start,true}));quad({x+line_end->x*scale,y,appearance.font.size*.6f*scale,line_height*scale},body_clip,appearance.selection);}
                     }
                     if (paint) {
-                        const auto raster=self.text.raster(line_key,0,scale,clip_rect({static_cast<float>(body_clip.left)-x,static_cast<float>(body_clip.top)-y,
-                            static_cast<float>(body_clip.right-body_clip.left),static_cast<float>(body_clip.bottom-body_clip.top)}));
-                        if (raster.coverage) quad({x+raster.left,y+raster.top,static_cast<float>(raster.coverage->width),static_cast<float>(raster.coverage->height)},body_clip,appearance.foreground,raster.coverage);
+                        ATELIER_TRY_BIND(raster,self.text.raster(line_key,0,scale,clip_rect({static_cast<float>(body_clip.left)-x,static_cast<float>(body_clip.top)-y,
+                            static_cast<float>(body_clip.right-body_clip.left),static_cast<float>(body_clip.bottom-body_clip.top)})));
+                        if (raster->coverage) quad({x+raster->left,y+raster->top,static_cast<float>(raster->coverage->width),static_cast<float>(raster->coverage->height)},body_clip,appearance.foreground,raster->coverage);
                     }
                     self.text.set(number_key,std::to_wstring(row+1),appearance.font,false,TextAlign::right);visible_text.push_back(number_key);
                     if (paint) {
-                        const auto numbers=self.text.raster(number_key,margin/scale-8,scale);
-                        if (numbers.coverage) quad({bounds.x+numbers.left,y+numbers.top,static_cast<float>(numbers.coverage->width),static_cast<float>(numbers.coverage->height)},
-                            intersect(clip,clip_rect({bounds.x,body.y,margin-4*scale,body.height})),appearance.indicator_foreground.value_or(appearance.foreground),numbers.coverage);
+                        ATELIER_TRY_BIND(numbers,self.text.raster(number_key,margin/scale-8,scale));
+                        if (numbers->coverage) quad({bounds.x+numbers->left,y+numbers->top,static_cast<float>(numbers->coverage->width),static_cast<float>(numbers->coverage->height)},
+                            intersect(clip,clip_rect({bounds.x,body.y,margin-4*scale,body.height})),appearance.indicator_foreground.value_or(appearance.foreground),numbers->coverage);
                     }
                     if (row==caret_row && editing) {
                         const Rect physical{x+caret.x*scale,y+caret.y*scale,appearance.caret_width*scale,std::max(caret.height,line_height)*scale};
                         if (paint) quad(physical,body_clip,appearance.caret);
                         if (visible(physical,body_clip)) output->caret=TextCaret{self.edit->token,physical,body_clip};
-                        const auto anchor=composition?paragraph->caret({composition->first-start,false}):caret;
+                        ATELIER_TRY_BIND(anchor,composition?paragraph->caret({composition->first-start,false}):Result<Rect>{caret});
                         if (!state.control.read_only) output->input_anchor=TextInputAnchor{self.edit->token,composition?composition->id:0,composition?composition->revision:0,
-                            {x+anchor.x*scale,y+anchor.y*scale,anchor.width*scale,line_height*scale},body_clip};
-                        if (paint && composition) for (auto range:paragraph->selection(composition->first-start,composition->first-start+static_cast<std::uint32_t>(composition->preedit.text.size())))
+                            {x+anchor->x*scale,y+anchor->y*scale,anchor->width*scale,line_height*scale},body_clip};
+                        if (paint && composition) {
+                            ATELIER_TRY_BIND(ranges,paragraph->selection(composition->first-start,composition->first-start+static_cast<std::uint32_t>(composition->preedit.text.size())));
+                            for (auto range:*ranges)
                             quad({x+range.x*scale,y+line_height*scale-scale,range.width*scale,scale},body_clip,appearance.caret);
+                        }
                     }
                 }
                 output->code_editors.push_back(std::move(code));

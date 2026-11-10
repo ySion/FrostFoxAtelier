@@ -3,6 +3,7 @@
 #include <Windows.h>
 #include "ui/session.hpp"
 #include "foundation/function_ref.hpp"
+#include "runtime/runtime.hpp"
 #include <array>
 #include <exception>
 #include <vector>
@@ -60,8 +61,11 @@ std::optional<ui::Event> input_event(NativeEvent, HWND);
 // close the renderer before this owner destroys the HWND.
 class Window final {
 public:
+    Window() = default;
+
     // Optional initial main-window client extent is in physical pixels, independent of DPI.
-    explicit Window(HWND popup_owner = nullptr, std::optional<ui::PixelExtent> initial_client = {});
+    // Initialize once at this stable address; failure leaves no HWND and permits destruction only.
+    Result<void> initialize(HWND popup_owner = nullptr, std::optional<ui::PixelExtent> initial_client = {});
 
     ~Window();
 

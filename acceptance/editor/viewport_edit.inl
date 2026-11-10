@@ -783,14 +783,15 @@ void verify_viewport_editing() {
     operator_parameters::Host host(document);
     auto& workspace = host.panels;
     const std::array fonts{(editor::asset_directory() / "fonts/SarasaUiSC-Regular.ttf").wstring()};
-    ui::Session ui(fonts);
+    ui::Session ui;
+    take(ui.initialize(fonts));
     const auto theme = ui::StyleSheet::parse(take(assets::read_file(editor::asset_directory() / "editor.ss")));
     if (!theme)
         throw std::runtime_error("Viewport UI theme failed at " + std::to_string(theme.error().line) + ": " +
                                  theme.error().message);
     require(bool(ui.set_style_sheet(*theme)), "Viewport UI theme could not be applied.");
     require(bool(ui.set_surface({{1200, 800}, 1, 1})), "Viewport UI surface failed.");
-    const auto controls = workspace.describe(document, {1200, 800}, nullptr);
+    const auto controls = take(workspace.describe(document, {1200, 800}, nullptr));
     require(bool(ui.set_controls(controls)), "Viewport/parameter DSL could not be published.");
     const auto frame = ui.prepare();
     if (!frame)
@@ -819,7 +820,7 @@ void verify_viewport_editing() {
             "Viewport chrome did not distinguish passive mode text from the interactive camera menu.");
     const auto expanded_height = ui.presented()->find(control::viewport)->bounds.height;
     const auto publish = [&](ui_layout::Size size = {1200, 800}) {
-        auto controls = workspace.describe(document, size, ui.presented().get(), nullptr, &ui);
+        auto controls = take(workspace.describe(document, size, ui.presented().get(), nullptr, &ui));
         require(bool(ui.set_controls(controls)), "Updated viewport chrome was refused.");
         const auto frame = ui.prepare();
         require(frame && ui.accept(*frame), "Updated viewport chrome did not lay out.");

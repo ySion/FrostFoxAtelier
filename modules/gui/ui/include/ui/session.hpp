@@ -770,9 +770,12 @@ enum class Preparation { complete, geometry };
 // Keep returned frames through render(); accept only after final renderer accepted.
 class Session {
 public:
+    Session();
+
     // Optional application fonts join the system collection for this Session.
     // Files must remain available for its lifetime; no global font installation.
-    explicit Session(std::span<const std::wstring> font_files = {});
+    // Initialize once at its stable address. On failure only destruction is allowed.
+    Result<void> initialize(std::span<const std::wstring> font_files = {});
 
     ~Session();
 

@@ -91,7 +91,8 @@
             if (event.kind==EventKind::pointer_down) {
                 reply.consumed=true;
                 if (event.button!=PointerButton::primary && event.button!=PointerButton::secondary) return true;
-                finish_edit(reply,true); retire_keyboard(reply); set_focus(reply,hit->key);
+                if (!finish_edit(reply,true)) return true;
+                retire_keyboard(reply); set_focus(reply,hit->key);
                 const auto* cell=table_cell(*geometry,event.x,event.y);
                 if (cell && !table_row_enabled(state,cell->row)) return true;
                 if (event.button==PointerButton::secondary) {

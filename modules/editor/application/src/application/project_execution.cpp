@@ -126,7 +126,9 @@ Result<void> Application::apply_document_request(const editor::DocumentRequest& 
             return {};
         }
         const auto edit = ui_.commit_edit();
-        if (!edit || !effects(*edit))
+        if (!edit)
+            return std::unexpected(ui_error(edit.error()));
+        if (!effects(*edit))
             return failure("Finish the current edit before rebuilding types.");
     }
     for (const auto& file : workspace_.source_editor.files()) {
@@ -177,9 +179,9 @@ Result<void> Application::build_project(bool rebuild) {
     // Preserve the unsaved marker independently of the retired history roots.
     if (dirty)
         next.session->mark_modified();
+    ATELIER_TRY(publish_document(std::move(next.session), next.code));
     workspace_.scene_available = true;
     pending_scene_ = *text;
-    publish_document(std::move(next.session), next.code);
     publish_build(next.build);
     report_load(*document_, document_root_);
     return {};

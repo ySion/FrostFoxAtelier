@@ -2,8 +2,19 @@
 #include "editor/session.hpp"
 #include "logging/logging.hpp"
 #include "source/diagnostics.hpp"
+#include "ui/error.hpp"
+
+namespace atelier::renderer {
+struct Error;
+}
 
 namespace atelier::application {
+// Preserve the UI domain payload in the host's existing owning diagnostic.
+Error ui_error(const ui::Error&);
+
+// The caller handles terminal state before converting its diagnostic.
+Error renderer_error(const renderer::Error&);
+
 // Presentation of an existing failure only. Callers retain its original Error
 // and display prefix; invalid diagnostic bytes must not cause a second failure.
 std::wstring diagnostic_text(std::string_view message) noexcept;

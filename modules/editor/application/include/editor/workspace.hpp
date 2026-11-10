@@ -538,8 +538,10 @@ struct Workspace {
     }
 
     // ui supplies tree scroll and focus; trees describe only rows near their viewport.
-    std::vector<ui::Control> describe(Session&, ui_layout::Size, const ui::UiFrame*, Project* = nullptr,
-                                      const ui::Session* ui = nullptr, const ui::ControlBox* command_focus = nullptr);
+    // Failure rejects the UI candidate; bindings may have changed, so the host must stop this frame.
+    Result<std::vector<ui::Control>> describe(Session&, ui_layout::Size, const ui::UiFrame*, Project* = nullptr,
+                                              const ui::Session* ui = nullptr,
+                                              const ui::ControlBox* command_focus = nullptr);
 
     void reset_document();
 

@@ -1,11 +1,26 @@
 #include "application/diagnostics.hpp"
 #include "foundation/string.hpp"
 #include "platform/utf.hpp"
+#include "renderer/renderer.hpp"
 #include <array>
 #include <cstdio>
 #include <limits>
 
 namespace atelier::application {
+Error ui_error(const ui::Error& error) {
+    const auto detail = "UI error " + std::to_string(static_cast<unsigned>(error.code)) + " at control " +
+                        std::to_string(error.key) + " (native " + std::to_string(error.native_code) + ")";
+    return {ErrorCode::invalid_definition, error.code == ui::ErrorCode::text_failed
+                                               ? std::string(error.message) + "; " + detail
+                                               : detail + ": " + std::string(error.message)};
+}
+
+Error renderer_error(const renderer::Error& error) {
+    return {ErrorCode::invalid_storage,
+            error.cause.message + " (Renderer error " + std::to_string(static_cast<unsigned>(error.cause.code)) +
+                ", native " + std::to_string(error.cause.native_result) + (error.terminal ? ", terminal)." : ").")};
+}
+
 std::wstring diagnostic_text(std::string_view message) noexcept {
     return platform::utf8_to_utf16(message).value_or(L"(诊断文本不是有效 UTF-8)");
 }

@@ -9,23 +9,26 @@ namespace atelier::application {
 // this surface uses the ordinary Session/SS/renderer and its own accepted frame.
 class PopupHost final {
 public:
-    PopupHost(HWND owner, std::span<const std::wstring> fonts, bool validation);
+    PopupHost() = default;
+
+    // Initialize once at a stable address. On failure the owner destroys this unpublished host.
+    Result<void> initialize(HWND owner, std::span<const std::wstring> fonts, bool validation);
 
     ~PopupHost() = default; // Renderer member retires before the Window member.
 
-    void update(ui::ControlKey source, RECT anchor, bool below, std::span<const ui::MenuItem>, const ui::Style&,
-                std::shared_ptr<const ui::StyleSheet>, std::shared_ptr<ui_language::Component>,
-                bool center_first_item = false);
+    Result<void> update(ui::ControlKey source, RECT anchor, bool below, std::span<const ui::MenuItem>, const ui::Style&,
+                        std::shared_ptr<const ui::StyleSheet>, std::shared_ptr<ui_language::Component>,
+                        bool center_first_item = false);
 
-    void render(renderer::Capture* = nullptr);
+    Result<void> render(renderer::Capture* = nullptr);
 
-    void hide();
+    Result<void> hide();
 
-    void reset_document(); // Retire JIT scopes before the owner Runtime is closed.
+    Result<void> reset_document(); // Retire JIT scopes before the owner Runtime is closed, even on failure.
 
     std::string_view diagnostic() const noexcept { return diagnostic_; }
 
-    void close(); // Retire GPU work before HWND destruction.
+    Result<void> close(); // Retire GPU work before HWND destruction.
 
     unsigned open_present_count() const noexcept { return open_present_count_; }
 
@@ -92,8 +95,10 @@ private:
 
     ui::PixelExtent measured_area_;
 
-    void suspend();
+    Result<void> suspend();
 
-    void retarget(ui::PixelExtent);
+    Result<void> retarget(ui::PixelExtent);
+
+    Error graphics_failure(const renderer::Error&); // Terminal failure retires this host before conversion.
 };
 }

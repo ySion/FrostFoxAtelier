@@ -40,7 +40,8 @@ ui Late(in double rows) { Tree tree { rows: input.rows; TreeItem item {} } }
     ui::ControlKey next_key = 20000;
     language::LiveDocument live(runtime, path, next_key);
     const std::array fonts{(editor::asset_directory() / "fonts/SarasaUiSC-Regular.ttf").wstring()};
-    ui::Session surface(fonts);
+    ui::Session surface;
+    take(surface.initialize(fonts));
     require(surface.set_surface({{640, 480}, 1, 1}).has_value(), "Transaction surface failed.");
     // A row outside its tree's row count is Session-invalid topology.
     const auto inputs = [](bool visible, ui::ControlKey edit = 7001, double rows = 1) {

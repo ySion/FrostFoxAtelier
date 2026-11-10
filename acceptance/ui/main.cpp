@@ -55,7 +55,10 @@ struct Consumer {
 
     std::shared_ptr<const ui::UiFrame> frame;
 
-    Consumer() { accepted(ui.set_surface({{640, 480}, 1, 1})); }
+    Consumer() {
+        accepted(ui.initialize());
+        accepted(ui.set_surface({{640, 480}, 1, 1}));
+    }
 
     void prepare() {
         accepted(ui.set_controls(controls));

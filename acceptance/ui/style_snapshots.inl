@@ -7,6 +7,6 @@ void accepted_text_style_snapshot() {
         const auto* displayed = retained->find_text(1);
         require(displayed && displayed->paragraph, "editable frame has no paragraph snapshot");
     }
-    require(retained->find_text(1)->paragraph->caret({2, false}).x > 0,
+    require(accepted(retained->find_text(1)->paragraph->caret({2, false})).x > 0,
             "retained paragraph depended on a destroyed text store");
 }

@@ -44,7 +44,8 @@ ui Board(in bool visible, in Items<Card> rows, in Key group) {
     ui::ControlKey next_key = 10000;
     language::LiveDocument live(runtime, path, next_key);
     const std::array fonts{(editor::asset_directory() / "fonts/SarasaUiSC-Regular.ttf").wstring()};
-    ui::Session surface(fonts);
+    ui::Session surface;
+    take(surface.initialize(fonts));
     require(surface.set_surface({{640, 480}, 1, 1}).has_value(), "Composition surface failed.");
     std::vector<language::Item> rows{{1001, {std::wstring{L"A"}, language::TextEditBinding{6001, L"one"}}},
                                      {1002, {std::wstring{L"B"}, language::TextEditBinding{6002, L"two"}}}};

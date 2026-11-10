@@ -4,18 +4,9 @@
 #include "ui/detail/text_edit.hpp"
 #include "ui_layout/layout.hpp"
 #include <string_view>
-#include <exception>
 #include <compare>
 
 namespace atelier::ui::detail {
-struct TextFailure final : std::exception {
-    std::uint32_t code;
-
-    explicit TextFailure(std::uint32_t value) : code(value) {}
-
-    const char* what() const noexcept override { return "UI text/resource operation failed"; }
-};
-
 std::uint64_t new_identity();
 
 struct RasterText {
@@ -62,15 +53,15 @@ class TextSnapshot {
 public:
     bool matches(std::wstring_view) const noexcept;
 
-    Rect caret(TextPosition) const;
+    Result<Rect> caret(TextPosition) const;
 
-    Rect character(std::uint32_t) const;
+    Result<Rect> character(std::uint32_t) const;
 
-    TextPosition hit(float x, float y) const;
+    Result<TextPosition> hit(float x, float y) const;
 
-    TextPosition move(TextPosition, int direction, bool edge) const;
+    Result<TextPosition> move(TextPosition, int direction, bool edge) const;
 
-    std::vector<Rect> selection(std::uint32_t first, std::uint32_t last) const;
+    Result<std::vector<Rect>> selection(std::uint32_t first, std::uint32_t last) const;
 
 private:
     struct Impl;
@@ -85,9 +76,12 @@ private:
 // One DWrite layout supplies metrics, caret positions and grayscale pixels.
 class TextStore {
 public:
-    explicit TextStore(std::span<const std::wstring> font_files = {});
+    TextStore();
 
     ~TextStore();
+
+    // Stable-address storage; failure leaves only a destructible empty store.
+    Result<void> initialize(std::span<const std::wstring> font_files = {});
 
     std::uint64_t set(TextKey key, std::wstring_view, const Font&, bool wrap, TextAlign = TextAlign::left,
                       bool ellipsis = false);
@@ -164,15 +158,16 @@ public:
 
     void erase(TextKey key);
 
-    ui_layout::MeasuredSize metrics(TextKey key, float width);
+    Result<ui_layout::MeasuredSize> metrics(TextKey key, float width);
 
-    RasterText raster(TextKey key, float width, float dpi, std::optional<Clip> viewport = {});
+    Result<RasterText> raster(TextKey key, float width, float dpi, std::optional<Clip> viewport = {});
 
-    std::shared_ptr<const TextSnapshot> snapshot(TextKey key, float width);
+    Result<std::shared_ptr<const TextSnapshot>> snapshot(TextKey key, float width);
 
     // Keyboard edits may arrive before repaint. Shape the current draft using
     // the displayed paragraph's font/width policy, never the pending style.
-    std::shared_ptr<const TextSnapshot> edited_snapshot(std::uint64_t key, const TextSnapshot&, std::wstring_view);
+    Result<std::shared_ptr<const TextSnapshot>> edited_snapshot(std::uint64_t key, const TextSnapshot&,
+                                                                std::wstring_view);
 
     static ui_layout::MeasureResult measure(void*, const ui_layout::MeasureQuery&);
 

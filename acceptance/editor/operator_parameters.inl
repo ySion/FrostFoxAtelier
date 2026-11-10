@@ -884,12 +884,13 @@ class patch.Fields : world.Component { float position = 4.0f; float rotation = 5
         take(menus->initialize({}, editor::SessionRole::editor));
         editor::Workspace workspace;
         const std::array fonts{(editor::asset_directory() / "fonts/SarasaUiSC-Regular.ttf").wstring()};
-        ui::Session surface(fonts);
+        ui::Session surface;
+        take(surface.initialize(fonts));
         const auto theme = ui::StyleSheet::parse(take(assets::read_file(editor::asset_directory() / "editor.ss")));
         require(theme && surface.set_style_sheet(*theme), "Menu stylesheet failed.");
         require(surface.set_surface({{1600, 1000}, 1, 1}).has_value(), "Menu surface failed.");
         const auto present = [&] {
-            const auto controls = workspace.describe(*menus, {1600, 1000}, surface.presented().get());
+            const auto controls = take(workspace.describe(*menus, {1600, 1000}, surface.presented().get()));
             require(surface.set_controls(controls).has_value(), "Menu controls were rejected.");
             workspace.commit_ui_controls();
             const auto frame = surface.prepare();

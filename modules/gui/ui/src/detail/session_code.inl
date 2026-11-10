@@ -8,8 +8,9 @@
             return std::abs(y-(a.y+geometry->line_height*.5f))<std::abs(y-(b.y+geometry->line_height*.5f));
         });
         auto position=at->paragraph->hit((x-at->x)/geometry->scale,(y-at->y)/geometry->scale);
-        position.offset+=at->start;
-        if (edit->buffer().select(position,extend)) {revise();reply.redraw=true;}
+        if (!text_ok(reply,position,edit->key)) return;
+        position->offset+=at->start;
+        if (edit->buffer().select(*position,extend)) {revise();reply.redraw=true;}
     }
     bool code_input(Reply& reply,const Event& event,const ControlBox* hit) {
         if (event.kind==EventKind::wheel && hit && hit->kind==ControlKind::code_editor) {
@@ -26,7 +27,7 @@
         // A read-only document participates in ordinary Tab focus navigation,
         // rather than the editable CodeEditor's indentation command.
         if (state->control.read_only && event.key==Key::tab) return false;
-        if (!edit) begin_edit(focus,true);
+        if (!edit && !begin_edit(reply,focus,true)) return true;
         auto& buffer=edit->buffer();const auto& selected=buffer.current();
         const auto row=buffer.line_at(selected.caret.offset);
         if (!event.control && event.key==Key::enter) {

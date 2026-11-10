@@ -14,7 +14,7 @@ void verify_output_projection() {
     const auto& saved = output.records().front().record;
     require(!saved.run_id.empty() && saved.producer_id && saved.producer_sequence,
             "Standalone records have no distinct stream identity.");
-    require(output.select(output.rows().front().key) && output.body()->text() == L"完整正文\nline\\u0000tail",
+    require(output.select(output.rows().front().key) && take(output.body())->text() == L"完整正文\nline\\u0000tail",
             "Output did not retain the complete escaped multiline body.");
     require(output.accept_owned(first) && output.rows().size() == 2,
             "Equal messages without Repeat were incorrectly coalesced.");
@@ -75,19 +75,20 @@ void verify_output_projection() {
     auto* file = workspace.source_editor.active();
     require(file && file->document->edit().current().caret.offset == 14,
             "Log source UTF-8 byte column was not converted to UTF-16.");
-    file->document->edit().replace(L"draft");
+    take(file->document->edit().replace(L"draft"));
     const auto draft = file->document->text();
     static_cast<void>(workspace.locate_output());
     require(file->document->text() == draft, "Output navigation overwrote an unsaved source draft.");
-    file->document->edit().history(false);
+    take(file->document->edit().history(false));
     workspace.dock.select(editor::control::output_tab);
     workspace.dock.maximize(editor::control::output_tab);
     const std::array fonts{(editor::asset_directory() / "fonts/SarasaUiSC-Regular.ttf").wstring(),
                            (editor::asset_directory() / "fonts/SourceCodePro-Regular.otf").wstring()};
-    ui::Session surface(fonts);
+    ui::Session surface;
+    take(surface.initialize(fonts));
     require(surface.set_surface({{1000, 720}, 1, 1}).has_value(), "Output surface failed.");
     const auto frame = [&] {
-        const auto controls = workspace.describe(scene, {1000, 720}, surface.presented().get());
+        const auto controls = take(workspace.describe(scene, {1000, 720}, surface.presented().get()));
         require(surface.set_controls(controls).has_value(), "Output DSL controls failed.");
         auto prepared = surface.prepare();
         require(prepared && surface.accept(*prepared), "Output DSL frame failed.");
@@ -157,7 +158,7 @@ void verify_output_projection() {
     require(code != captured.fields.end() &&
                 std::get<std::uint64_t>(code->value) == static_cast<std::uint64_t>(ErrorCode::assignment_failed) &&
                 hosted.select(hosted.records()[1].key) &&
-                hosted.body()->text() == platform::utf8_to_utf16_validated(cause.message),
+                take(hosted.body())->text() == platform::utf8_to_utf16_validated(cause.message),
             "Project Output changed the original Error code or selected full body.");
     hosted.source_ended(directory); // Also valid after the completed Reader retires.
     const auto before = hosted.records().size();

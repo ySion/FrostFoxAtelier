@@ -19,6 +19,7 @@ ui PositionRead(in bool choose_left, in double left, in double right) {
     ui::ControlKey next_key = 1;
     auto instance = take(ui_language::Instance::create(component, 0, next_key, {}, inputs()));
     ui::Session surface;
+    take(surface.initialize());
     require(surface.set_surface({{640, 480}, 1, 1}).has_value(), "Dynamic UI read surface failed.");
     const auto publish = [&] {
         take(instance->update(inputs()));
@@ -144,7 +145,8 @@ void verify_declarative_parameters() {
     take(document.initialize());
     editor::Workspace workspace;
     const std::array fonts{(editor::asset_directory() / "fonts/SarasaUiSC-Regular.ttf").wstring()};
-    ui::Session ui(fonts);
+    ui::Session ui;
+    take(ui.initialize(fonts));
     auto theme = ui::StyleSheet::parse(take(assets::read_file(editor::asset_directory() / "editor.ss")));
     require(theme.has_value() && ui.set_style_sheet(*theme).has_value(), "Declarative Parameters theme failed.");
     changed(document.create_static_mesh(assets::mesh_assets().front()));
@@ -154,7 +156,7 @@ void verify_declarative_parameters() {
     require(surface.has_value(), "Declarative UI surface failed.");
     std::vector<ui::Control> controls;
     const auto publish = [&] {
-        controls = workspace.describe(document, {1600, 1000}, ui.presented().get());
+        controls = take(workspace.describe(document, {1600, 1000}, ui.presented().get()));
         if (!workspace.ui_error().empty())
             throw std::runtime_error(std::string(workspace.ui_error()));
         auto described = ui.set_controls(controls);
@@ -366,7 +368,8 @@ void verify_declarative_parameters() {
         auto popup =
             take(ui_language::Instance::create(workspace.ui_component("PopupMenu"), 0, next, keys,
                                                std::array<ui_language::InputValue, 1>{ui_language::ItemList{rows}}));
-        ui::Session surface(fonts);
+        ui::Session surface;
+        take(surface.initialize(fonts));
         require(surface.set_surface({{600, 500}, 1, 1}).has_value(), "Popup surface failed.");
         require(surface.set_controls(popup->controls()).has_value(), "Authored popup descriptors were rejected.");
         popup->commit_controls();

@@ -1,5 +1,5 @@
 #include "ui/detail/text_edit.hpp"
-#include "ui/text.hpp"
+#include "foundation/result.hpp"
 #include <Windows.h>
 #include <icu.h>
 #include <algorithm>
@@ -20,7 +20,12 @@ bool valid_text(std::wstring_view text, bool single_line) noexcept {
     return true;
 }
 
-std::vector<std::uint32_t> character_boundaries(std::wstring_view text) {
+bool valid_document_text(std::wstring_view text) noexcept {
+    return valid_text(text, false) &&
+           std::ranges::none_of(text, [](wchar_t c) { return (c < 32 && c != L'\n' && c != L'\t') || c == 127; });
+}
+
+Result<std::vector<std::uint32_t>> character_boundaries(std::wstring_view text) {
     // ICU retains the source until close. An explicit conversion avoids aliasing
     // wchar_t storage as UChar when these are distinct C++ types.
     const std::vector<UChar> input(text.begin(), text.end());
@@ -28,25 +33,29 @@ std::vector<std::uint32_t> character_boundaries(std::wstring_view text) {
     std::unique_ptr<UBreakIterator, decltype(&ubrk_close)> iterator(
         ubrk_open(UBRK_CHARACTER, "root", input.data(), static_cast<std::int32_t>(input.size()), &error), ubrk_close);
     if (U_FAILURE(error) || !iterator)
-        throw TextFailure{static_cast<std::uint32_t>(E_FAIL)};
+        return std::unexpected(
+            Error{ErrorCode::text_failed, 0, static_cast<std::uint32_t>(E_FAIL), "UI text/resource operation failed"});
     std::vector<std::uint32_t> result;
     for (auto at = ubrk_first(iterator.get()); at != UBRK_DONE; at = ubrk_next(iterator.get()))
         result.push_back(static_cast<std::uint32_t>(at));
     return result;
 }
 
-TextEdit::TextEdit(std::wstring text, std::size_t limit, bool select_all, bool single_line)
-    : current_{std::move(text), {}, {}}, limit_(limit), single_line_(single_line) {
-    current_.caret = {static_cast<std::uint32_t>(current_.text.size()), true};
-    if (!select_all)
-        current_.anchor = current_.caret;
+Result<TextEdit> TextEdit::create(std::wstring text, std::size_t limit, bool select_all, bool single_line) {
+    TextEdit result(limit, single_line);
+    result.current_.text = std::move(text);
+    result.current_.caret = {static_cast<std::uint32_t>(result.current_.text.size()), true};
+    result.current_.anchor = select_all ? TextPosition{} : result.current_.caret;
     if (single_line)
-        original_ = current_.text;
-    boundaries_ = character_boundaries(current_.text);
-    lines_.push_back(0);
-    for (std::size_t i = 0; i < current_.text.size(); ++i)
-        if (current_.text[i] == L'\n')
-            lines_.push_back(static_cast<std::uint32_t>(i + 1));
+        result.original_ = result.current_.text;
+    if (!result.current_.text.empty()) {
+        ATELIER_TRY_BIND(boundaries, character_boundaries(result.current_.text));
+        result.boundaries_ = std::move(*boundaries);
+    }
+    for (std::size_t i = 0; i < result.current_.text.size(); ++i)
+        if (result.current_.text[i] == L'\n')
+            result.lines_.push_back(static_cast<std::uint32_t>(i + 1));
+    return result;
 }
 
 std::size_t TextEdit::line_at(std::uint32_t offset) const noexcept {
@@ -97,7 +106,7 @@ bool TextEdit::select_all() {
     return changed;
 }
 
-void TextEdit::splice(std::uint32_t first, std::uint32_t last, std::wstring_view inserted) {
+Result<void> TextEdit::splice(std::uint32_t first, std::uint32_t last, std::wstring_view inserted) {
     // Re-segment only the touched logical lines. Newlines isolate grapheme
     // clusters; unchanged suffix offsets need a shift, not another ICU scan.
     const auto start = line_start(line_at(first));
@@ -105,22 +114,22 @@ void TextEdit::splice(std::uint32_t first, std::uint32_t last, std::wstring_view
     auto segment = current_.text.substr(start, first - start);
     segment.append(inserted);
     segment.append(current_.text, last, end - last);
-    auto local = character_boundaries(segment);
-    for (auto& offset : local)
+    ATELIER_TRY_BIND(local, character_boundaries(segment));
+    for (auto& offset : *local)
         offset += start;
     const auto delta = static_cast<std::int64_t>(inserted.size()) - (last - first);
     std::vector<std::uint32_t> new_lines;
     for (std::size_t i = 0; i < segment.size(); ++i)
         if (segment[i] == L'\n')
             new_lines.push_back(start + static_cast<std::uint32_t>(i + 1));
-    boundaries_.reserve(boundaries_.size() + local.size());
+    boundaries_.reserve(boundaries_.size() + local->size());
     lines_.reserve(lines_.size() + new_lines.size());
     current_.text.replace(first, last - first, inserted);
     auto at = boundaries_.erase(std::lower_bound(boundaries_.begin(), boundaries_.end(), start),
                                 std::upper_bound(boundaries_.begin(), boundaries_.end(), end));
     for (auto tail = at; tail != boundaries_.end(); ++tail)
         *tail = static_cast<std::uint32_t>(*tail + delta);
-    boundaries_.insert(at, local.begin(), local.end());
+    boundaries_.insert(at, local->begin(), local->end());
     auto row = lines_.erase(std::upper_bound(lines_.begin(), lines_.end(), start),
                             std::upper_bound(lines_.begin(), lines_.end(), end));
     for (auto tail = row; tail != lines_.end(); ++tail)
@@ -128,16 +137,18 @@ void TextEdit::splice(std::uint32_t first, std::uint32_t last, std::wstring_view
     lines_.insert(row, new_lines.begin(), new_lines.end());
     ++revision_;
     ++selection_revision_;
+    return {};
 }
 
-TextEdit::Change TextEdit::replace(std::wstring_view inserted, Group group) {
+Result<TextEdit::Change> TextEdit::replace(std::wstring_view inserted, Group group) {
     return replace_range(std::min(current_.caret.offset, current_.anchor.offset),
                          std::max(current_.caret.offset, current_.anchor.offset), inserted, group);
 }
 
-TextEdit::Change TextEdit::replace_range(std::uint32_t first, std::uint32_t last, std::wstring_view inserted,
-                                         Group group) {
-    if (!valid_text(inserted, single_line_) || current_.text.size() - (last - first) + inserted.size() > limit_)
+Result<TextEdit::Change> TextEdit::replace_range(std::uint32_t first, std::uint32_t last, std::wstring_view inserted,
+                                                 Group group) {
+    if (!(single_line_ ? valid_text(inserted) : valid_document_text(inserted)) ||
+        current_.text.size() - (last - first) + inserted.size() > limit_)
         return Change::rejected;
     if (std::wstring_view(current_.text).substr(first, last - first) == inserted) {
         const bool changed = select(snap(first + static_cast<std::uint32_t>(inserted.size()), true), false);
@@ -166,7 +177,7 @@ TextEdit::Change TextEdit::replace_range(std::uint32_t first, std::uint32_t last
             next.before = previous.before;
     }
     history_.reserve(history_.size() + 1);
-    splice(first, last, inserted);
+    ATELIER_TRY(splice(first, last, inserted));
     current_.caret = current_.anchor = snap(first + static_cast<std::uint32_t>(inserted.size()), true);
     next.after = {current_.caret, current_.anchor};
     const auto cost = [](const Entry& entry) { return 2 * (entry.removed.size() + entry.inserted.size()); };
@@ -191,7 +202,7 @@ TextEdit::Change TextEdit::replace_range(std::uint32_t first, std::uint32_t last
     return Change::text;
 }
 
-TextEdit::Change TextEdit::erase(bool backwards) {
+Result<TextEdit::Change> TextEdit::erase(bool backwards) {
     auto first = std::min(current_.caret.offset, current_.anchor.offset);
     auto last = std::max(current_.caret.offset, current_.anchor.offset);
     if (first == last) {
@@ -209,13 +220,14 @@ TextEdit::Change TextEdit::erase(bool backwards) {
     return replace_range(first, last, {}, backwards ? Group::backspace : Group::delete_forward);
 }
 
-TextEdit::Change TextEdit::history(bool redo) {
+Result<TextEdit::Change> TextEdit::history(bool redo) {
     break_group();
     if ((!redo && !applied_) || (redo && applied_ == history_.size()))
         return Change::none;
     const auto& entry = history_[redo ? applied_ : applied_ - 1];
-    splice(entry.first, entry.first + static_cast<std::uint32_t>(redo ? entry.removed.size() : entry.inserted.size()),
-           redo ? entry.inserted : entry.removed);
+    ATELIER_TRY(splice(entry.first,
+                       entry.first + static_cast<std::uint32_t>(redo ? entry.removed.size() : entry.inserted.size()),
+                       redo ? entry.inserted : entry.removed));
     const auto selection = redo ? entry.after : entry.before;
     current_.caret = selection.caret;
     current_.anchor = selection.anchor;

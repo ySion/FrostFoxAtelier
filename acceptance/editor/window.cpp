@@ -1,3 +1,4 @@
+#include "../helpers.hpp"
 #include "application/application.hpp"
 #include "application/diagnostics.hpp"
 #include "application/editor_control.hpp"
@@ -30,13 +31,15 @@
 #include <stdexcept>
 #include <thread>
 
+using atelier::acceptance::helpers::take;
+
 namespace atelier::application {
 struct PlayProcessAcceptanceAccess {
     static DWORD process_id(const PlayProcess& run) { return run.running() ? GetProcessId(run.process_) : 0; }
 };
 
 struct EditorAcceptanceAccess {
-    static void input(Application& app, ui::Event event, WPARAM key = 0) { app.input(event, key); }
+    static void input(Application& app, ui::Event event, WPARAM key = 0) { take(app.input(event, key)); }
 
     static void clear_status(Application& app) { app.workspace_.status.clear(); }
 
@@ -541,7 +544,7 @@ struct EditorAcceptanceAccess {
                 if (event.message == WM_MOUSEMOVE)
                     delivered = static_cast<short>(LOWORD(event.lparam)) == target.x &&
                                 static_cast<short>(HIWORD(event.lparam)) == target.y;
-                app.native(std::move(event));
+                take(app.native(std::move(event)));
             });
             if (delivered || !changed)
                 break;
@@ -561,8 +564,8 @@ struct EditorAcceptanceAccess {
         if (!GetWindowRect(app.menu_window(), &anchor))
             throw std::runtime_error("Cannot locate native menu fixture.");
         anchor.bottom = anchor.top;
-        app.popup_->update(app.workspace_.menu->source, anchor, false, items, app.ui_.style(), app.style_sheet_,
-                           app.workspace_.ui_component("PopupMenu"));
+        take(app.popup_->update(app.workspace_.menu->source, anchor, false, items, app.ui_.style(), app.style_sheet_,
+                                app.workspace_.ui_component("PopupMenu")));
     }
 
     static void invalidate_menu_measurement(Application& app) {
@@ -875,7 +878,7 @@ void tick(Application& app, unsigned count = 2) {
     while (accepted < count && attempts < 180) {
         const bool view_preparing = Access::view_preparing(app);
         const auto before = app.accepted_frames();
-        require(app.step(), "Editor closed during input acceptance.");
+        require(take(app.step()), "Editor closed during input acceptance.");
         ++steps;
         // Observe the existing result text once; another prepare() could adopt or upload the batch.
         notice = atelier::application::diagnostic_text(Access::render_notice(app));
@@ -1256,7 +1259,7 @@ atelier::renderer::Capture capture(Application& app) {
     const auto deadline = GetTickCount64() + 10000;
     do {
         // A serviced input wakeup need not have permission to submit a host frame.
-        require(app.step(&image), "Editor closed before capture.");
+        require(take(app.step(&image)), "Editor closed before capture.");
         require(!atelier::application::EditorAcceptanceAccess::view_preparing(app),
                 "Capture met a previous scene or unprepared view; tick first.");
         require(image.frame_id || GetTickCount64() < deadline, "Renderer did not capture an accepted frame.");
@@ -1277,7 +1280,7 @@ void capture(Application& app, const std::filesystem::path& path) {
     png(image, path);
     if (app.menu_window()) {
         atelier::renderer::Capture popup;
-        app.capture_menu(popup);
+        take(app.capture_menu(popup));
         png(popup, path.parent_path() / (path.stem().wstring() + L"-popup.png"));
     }
 }
@@ -1726,7 +1729,7 @@ RECT await_acceptance_activation(Application& app, const std::filesystem::path& 
     tick(app);
     const auto deadline = GetTickCount64() + 120000;
     while ((GetForegroundWindow() != app.window() || GetFocus() != app.window()) && GetTickCount64() < deadline)
-        require(app.step(), "Editor closed while waiting for initial foreground.");
+        require(take(app.step()), "Editor closed while waiting for initial foreground.");
     if (GetFocus() != app.window() || GetForegroundWindow() != app.window()) {
         const auto foreground = GetForegroundWindow();
         DWORD process{};
@@ -1778,7 +1781,7 @@ int verify_editor_scene_lit(Application& app, const char* output_directory, cons
                             source_project ? std::filesystem::path{source_project} : std::filesystem::path{});
     atelier::application::EditorAcceptanceAccess::mark_saved(app);
     SendMessageW(app.window(), WM_CLOSE, 0, 0);
-    require(!app.step(), "Scene Lit acceptance did not close normally.");
+    require(!take(app.step()), "Scene Lit acceptance did not close normally.");
     std::ofstream report(output / "acceptance.txt");
     report
         << "Editor Scene Lit window acceptance: PASS\nBuild: " << atelier::build_info::revision
@@ -1806,13 +1809,13 @@ int capture_editor_snapshot(Application& app, const char* output_directory) {
     std::filesystem::create_directories(output);
     const auto settle = [&] {
         for (int i = 0; i < 6; ++i)
-            require(app.step(), "Snapshot editor closed.");
+            require(take(app.step()), "Snapshot editor closed.");
     };
     const auto shot = [&](const char* name) {
         settle();
         atelier::renderer::Capture image;
         for (int attempt = 0; attempt < 30 && !image.frame_id; ++attempt)
-            require(app.step(&image), "Snapshot editor closed.");
+            require(take(app.step(&image)), "Snapshot editor closed.");
         require(image.frame_id != 0, "Snapshot frame was not accepted (window occluded?).");
         png(image, output / name);
     };
@@ -1872,7 +1875,7 @@ int capture_editor_snapshot(Application& app, const char* output_directory) {
     settle();
     {
         atelier::renderer::Capture menu;
-        app.capture_menu(menu);
+        take(app.capture_menu(menu));
         if (!menu.rgba.empty())
             png(menu, output / "snapshot-snap-menu.png");
     }
@@ -1881,7 +1884,7 @@ int capture_editor_snapshot(Application& app, const char* output_directory) {
     settle();
     {
         atelier::renderer::Capture menu;
-        app.capture_menu(menu);
+        take(app.capture_menu(menu));
         if (!menu.rgba.empty())
             png(menu, output / "snapshot-orientation-menu.png");
     }
@@ -1892,7 +1895,7 @@ int capture_editor_snapshot(Application& app, const char* output_directory) {
     shot("snapshot-controls.png");
     Access::mark_saved(app);
     SendMessageW(app.window(), WM_CLOSE, 0, 0);
-    while (app.step()) {
+    while (take(app.step())) {
     }
     std::puts("Editor snapshot: written");
     return 0;
@@ -2147,7 +2150,7 @@ int verify_editor_shortcuts(Application& app, const char* output_directory) {
         require(Access::performance(app).structure_errors() == 0,
                 "A shortcut step recorded a frame timing phase under the wrong parent.");
         Access::mark_saved(app);
-        app.close();
+        take(app.close());
         std::ofstream(output / "acceptance.txt")
             << "Viewport shortcut acceptance: PASS\nConfiguration: " << build_info::configuration
             << "\nMenu transitions: queued replacement, top-level branch, command capture transfer."
@@ -2177,7 +2180,7 @@ int verify_editor_edit_mode(Application& app, const char* output_directory) {
     verify_viewport_edit_window(app, output);
     atelier::application::EditorAcceptanceAccess::mark_saved(app);
     SendMessageW(app.window(), WM_CLOSE, 0, 0);
-    require(!app.step(), "Edit-mode acceptance did not close normally.");
+    require(!take(app.step()), "Edit-mode acceptance did not close normally.");
     std::ofstream(output / "acceptance.txt")
         << "Editor edit-mode window acceptance: PASS\nBuild: " << atelier::build_info::revision
         << "\nConfiguration: " << atelier::build_info::configuration
@@ -2203,7 +2206,7 @@ int verify_editor_output(Application& app, const char* output_directory) {
     verify_output_window(app, output);
     Access::mark_saved(app);
     SendMessageW(app.window(), WM_CLOSE, 0, 0);
-    require(!app.step(), "Output acceptance did not close cleanly.");
+    require(!take(app.step()), "Output acceptance did not close cleanly.");
     std::ofstream(output / "acceptance.txt")
         << "Editor Output window acceptance: PASS\nBuild: " << atelier::build_info::revision
         << "\nConfiguration: " << atelier::build_info::configuration << "\nAccepted frames: " << app.accepted_frames()
@@ -2303,7 +2306,7 @@ int verify_editor_source(Application& app, const char* output_directory) {
     verify_project_authoring_window(app, output);
     Access::mark_saved(app);
     SendMessageW(app.window(), WM_CLOSE, 0, 0);
-    require(!app.step(), "Source acceptance did not close cleanly.");
+    require(!take(app.step()), "Source acceptance did not close cleanly.");
     std::ofstream(output / "acceptance.txt")
         << "Editor source window acceptance: PASS\nConfiguration: " << atelier::build_info::configuration
         << "\nAccepted frames: " << app.accepted_frames()
@@ -2345,7 +2348,7 @@ int verify_editor_project(Application& app, const char* output_directory, const 
     verify_ui_authoring_window(app, output, ui_source);
     atelier::application::EditorAcceptanceAccess::mark_saved(app);
     SendMessageW(app.window(), WM_CLOSE, 0, 0);
-    require(!app.step(), "Project acceptance did not close the editor.");
+    require(!take(app.step()), "Project acceptance did not close the editor.");
     const auto source_text = atelier::platform::utf16_to_utf8(source_project ? source_project : L"new fixture");
     const auto evidence_text = atelier::platform::utf16_to_utf8(output.native());
     require(source_text && evidence_text, "Invalid UTF-16 project evidence path.");
@@ -2599,8 +2602,8 @@ int verify_editor_window(Application& app, const char* output_directory) {
         require(!app.document().editing() && x(app, object) == before_resize, "Resize retained a partial edit.");
         ShowWindow(app.window(), SW_MINIMIZE);
         const auto accepted = app.accepted_frames();
-        app.step();
-        app.step();
+        take(app.step());
+        take(app.step());
         require(app.accepted_frames() == accepted, "Minimized window accepted an interactive frame.");
         ShowWindow(app.window(), SW_RESTORE);
         tick(app, 4);
@@ -2635,11 +2638,12 @@ int verify_editor_window(Application& app, const char* output_directory) {
         verify_project_window(app, output);
         atelier::application::EditorAcceptanceAccess::mark_saved(app);
         SendMessageW(app.window(), WM_CLOSE, 0, 0);
-        require(!app.step(), "WM_CLOSE did not close the application.");
+        require(!take(app.step()), "WM_CLOSE did not close the application.");
         {
             auto document = std::make_unique<atelier::editor::Session>();
             model(document->initialize({}, atelier::editor::SessionRole::editor));
-            Application quit_app(std::move(document), true);
+            Application quit_app;
+            take(quit_app.initialize(std::move(document), true));
             SetForegroundWindow(quit_app.window());
             SetFocus(quit_app.window());
             RECT quit_host{};
@@ -2652,9 +2656,9 @@ int verify_editor_window(Application& app, const char* output_directory) {
                     "Quit acceptance did not open an accepted native menu.");
             PostQuitMessage(0);
             atelier::renderer::Capture quit_capture;
-            quit_app.capture_menu(quit_capture);
+            take(quit_app.capture_menu(quit_capture));
             require(quit_capture.frame_id != 0, "Quit acceptance did not render the native menu capture.");
-            require(!quit_app.step(), "Native menu capture consumed the thread quit before the main window.");
+            require(!take(quit_app.step()), "Native menu capture consumed the thread quit before the main window.");
             require(!quit_app.menu_window() && GetCapture() != quit_app.window(),
                     "Thread quit retained an interactive native menu.");
             require(atelier::application::EditorAcceptanceAccess::performance(quit_app).structure_errors() == 0,
@@ -2762,7 +2766,7 @@ int verify_editor_ime(Application& app, const char* output_directory) try {
     tick(app);
     const auto foreground_deadline = GetTickCount64() + 20000;
     while (GetForegroundWindow() != app.window() && GetTickCount64() < foreground_deadline)
-        require(app.step(), "Editor closed while waiting for initial foreground.");
+        require(take(app.step()), "Editor closed while waiting for initial foreground.");
     require_foreground(); // Wait for the user once; never repeatedly seize foreground.
     click(app, control::parameter_search_toggle);
     click(app, control::parameter_search);
@@ -2954,7 +2958,7 @@ int verify_editor_ime(Application& app, const char* output_directory) try {
         const auto deadline = GetTickCount64() + 5000;
         while (!predicate() && GetTickCount64() < deadline) {
             require_foreground();
-            require(app.step(), "Editor closed during real IME acceptance.");
+            require(take(app.step()), "Editor closed during real IME acceptance.");
         }
         if (!predicate()) {
             record_input(message);
@@ -3198,7 +3202,7 @@ int verify_editor_ime(Application& app, const char* output_directory) try {
                    restored_profile);
     atelier::application::EditorAcceptanceAccess::mark_saved(app);
     SendMessageW(app.window(), WM_CLOSE, 0, 0);
-    require(!app.step(), "IME acceptance did not close normally.");
+    require(!take(app.step()), "IME acceptance did not close normally.");
     std::ofstream report(output / "ime-acceptance.txt");
     report
         << "Sogou Pinyin acceptance: PASS\n"

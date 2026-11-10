@@ -45,6 +45,10 @@ Workspace 独立拥有编辑器 UI Runtime；场景切换清理旧业务绑定�
 - 文件保持原有 UTF-8 BOM 和主要 LF/CRLF 约定，内存统一 LF；粘贴时规范化换行。文件删除、读取失败、无效 UTF-8 与超限不会清除当前草稿。
 - 保存使用既有同目录临时文件、刷新与替换机制。磁盘比较与替换尚不是跨进程事务锁，不承诺多个外部写者同时提交时的严格串行化。
 
+CodeDocument 创建、公开 `edit().replace` 和剪贴板/IME 的实际替换共用 [文档字符政策](../ui/README.md#多行源码编辑)：有效 Unicode、LF/tab，拒绝其余 C0、DEL 和直接 CR；粘贴先保留原有换行转换。非法直接编辑不会改变正文、版本或撤销/重做记录，不能再保存出违反创建字符合同的文件。长度预算只在创建或替换时检查，日志定位前缀与编译快照比较继续只检查字符。
+
+加载先正规化、再由 CodeDocument 创建检查一次。只有 `invalid_text` 映射为原 binary/control 提示；ICU 分段失败保留系统错误诊断，不冒充文件格式错误。失败保留旧文档、BOM、磁盘版本与 saved_text。ICU 编辑/历史失败不发布部分正文或半次历史；缩进前选区与 history 的分组结束仍按既有行为执行，不扩大为所有交互完全事务化。
+
 ## 轻量后端取舍
 
 评估了 [Scintilla](https://www.scintilla.org/ScintillaDoc.html)、[Lexilla](https://scintilla.org/LexillaDoc.html) 和 [Tree-sitter](https://github.com/tree-sitter/tree-sitter)。Scintilla 的 Windows 接口是独立原生控件；Lexilla 提供不依赖显示系统的词法器；Tree-sitter 提供增量语法树，均不直接提供本项目的 Source 类型语义。

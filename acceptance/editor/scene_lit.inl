@@ -410,14 +410,15 @@ void verify_scene_lit_application(const std::filesystem::path& source_example = 
     operator_parameters::Host host(document);
     auto& workspace = host.panels;
     const std::array fonts{(asset_directory() / "fonts/SarasaUiSC-Regular.ttf").wstring()};
-    ui::Session surface(fonts);
+    ui::Session surface;
+    take(surface.initialize(fonts));
     const auto theme = ui::StyleSheet::parse(take(assets::read_file(asset_directory() / "editor.ss")));
     require(theme.has_value() && surface.set_style_sheet(*theme).has_value(),
             "Lighting production editor.ss failed to resolve.");
     require(bool(surface.set_surface({{1500, 1000}, 1, 1})), "Lighting UI surface failed.");
     std::vector<ui::Control> controls;
     const auto publish = [&] {
-        controls = workspace.describe(document, {1500, 1000}, surface.presented().get(), &project);
+        controls = take(workspace.describe(document, {1500, 1000}, surface.presented().get(), &project));
         if (!workspace.ui_error().empty())
             throw std::runtime_error("Lighting DSL describe failed: " + std::string(workspace.ui_error()));
         const auto error = [](const ui::Error& value) {

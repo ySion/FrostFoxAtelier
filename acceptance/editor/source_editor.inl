@@ -25,7 +25,8 @@ void verify_project_source_diagnostics(const std::filesystem::path& folder, ui::
     const auto caller = workspace.source_editor.active()->key;
     surface.focus(0);
     const auto frame = [&] {
-        const auto controls = workspace.describe(*loaded.session, {1200, 800}, surface.presented().get(), &project);
+        const auto controls =
+            take(workspace.describe(*loaded.session, {1200, 800}, surface.presented().get(), &project));
         require(surface.set_controls(controls).has_value(), "Project diagnostic controls failed.");
         workspace.commit_ui_controls();
         const auto next = surface.prepare();
@@ -55,7 +56,7 @@ void verify_project_source_diagnostics(const std::filesystem::path& folder, ui::
     require(current->edit().current().caret.offset == platform::utf8_to_utf16_validated(broken).find(L"missing"),
             "Project diagnostic caret does not identify the compiled source location.");
 
-    require(current->edit().replace(L"draft_") == ui::detail::TextEdit::Change::text && target->dirty(),
+    require(take(current->edit().replace(L"draft_")) == ui::detail::TextEdit::Change::text && target->dirty(),
             "Could not create the diagnostic target draft.");
     const auto draft = current->text();
     require(workspace.source_editor.select(caller), "Could not return to the diagnostic caller.");
@@ -63,7 +64,7 @@ void verify_project_source_diagnostics(const std::filesystem::path& folder, ui::
     static_cast<void>(workspace.source_editor.locate_problem());
     require(target->document == current && current->text() == draft && target->dirty(),
             "Cross-file diagnostic overwrote an unsaved target draft.");
-    require(current->edit().history(false) == ui::detail::TextEdit::Change::text && !target->dirty(),
+    require(take(current->edit().history(false)) == ui::detail::TextEdit::Change::text && !target->dirty(),
             "Could not undo the target draft.");
     require(workspace.source_editor.select(caller), "Could not select caller before the disk-version check.");
     frame();
@@ -109,13 +110,14 @@ void verify_source_editor() {
     require(workspace.source_editor.files().size() == 1, "Repeated source open created a second buffer.");
     const std::array fonts{(editor::asset_directory() / "fonts/SarasaUiSC-Regular.ttf").wstring(),
                            (editor::asset_directory() / "fonts/SourceCodePro-Regular.otf").wstring()};
-    ui::Session surface(fonts);
+    ui::Session surface;
+    take(surface.initialize(fonts));
     require(surface.set_surface({{1200, 800}, 1, 1}).has_value(), "Source surface failed.");
     auto theme = ui::StyleSheet::parse(take(assets::read_file(editor::asset_directory() / "editor.ss")));
     require(theme.has_value(), "Source theme failed.");
     require(surface.set_style_sheet(*theme).has_value(), "Source theme publication failed.");
     const auto frame = [&] {
-        const auto controls = workspace.describe(scene, {1200, 800}, surface.presented().get());
+        const auto controls = take(workspace.describe(scene, {1200, 800}, surface.presented().get()));
         auto reply = surface.set_controls(controls);
         require(reply.has_value(), "Source control publication failed.");
         workspace.commit_ui_controls();
@@ -175,6 +177,20 @@ void verify_source_editor() {
     wait_for([&] { return workspace.ui_revision() > good_revision && workspace.ui_error().empty(); },
              "Source error recovery failed");
     const auto saved = document->text();
+    // Direct edits use the same document policy as clipboard input; a refusal
+    // must not become a hidden undo entry or alter the active selection.
+    auto& edit = document->edit();
+    const auto before_rejection = edit.current();
+    const auto before_revision = edit.revision();
+    const auto before_undo = edit.can_undo();
+    const auto before_redo = edit.can_redo();
+    require(take(edit.replace(L"\1")) == ui::detail::TextEdit::Change::rejected && edit.current() == before_rejection &&
+                edit.revision() == before_revision && edit.can_undo() == before_undo && edit.can_redo() == before_redo,
+            "Rejected direct document edit changed text, selection or history.");
+    require(take(edit.replace(L"// direct\t e\u0301 中文 😀\n")) == ui::detail::TextEdit::Change::text,
+            "Direct document edit rejected legal Unicode, tab or LF.");
+    require(take(edit.history(false)) == ui::detail::TextEdit::Change::text && edit.current() == before_rejection,
+            "Direct Unicode document undo did not restore text and selection.");
     // Clipboard and IME retain the same token/accepted-caret protocol as fields.
     surface.focus(editor::source_control::buffer);
     key(ui::Key::end, true);
@@ -251,7 +267,7 @@ void verify_source_editor() {
     cold.set_ui_source(path);
     take(cold.source_editor.open(path));
     cold.dock.select(editor::source_control::tab);
-    const auto recovered = cold.describe(cold_scene, {1200, 800}, nullptr);
+    const auto recovered = take(cold.describe(cold_scene, {1200, 800}, nullptr));
     require(!cold.ui_error().empty() &&
                 std::ranges::any_of(recovered,
                                     [](const auto& control) { return control.kind == ui::ControlKind::code_editor; }),
@@ -262,7 +278,7 @@ void verify_source_editor() {
     require(recovery_frame.has_value() && surface.accept(*recovery_frame),
             "Recovery UI did not produce an accepted frame.");
     cold.reset_document();
-    const auto restarted = cold.describe(cold_scene, {1200, 800}, nullptr);
+    const auto restarted = take(cold.describe(cold_scene, {1200, 800}, nullptr));
     require(std::ranges::any_of(restarted,
                                 [](const auto& control) { return control.kind == ui::ControlKind::code_editor; }),
             "Recreating UI scopes lost the committed source recovery checkpoint.");

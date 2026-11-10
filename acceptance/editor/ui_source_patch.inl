@@ -50,7 +50,8 @@ ui Late() { Text label { text: "Late"; height: 17; } }
     take(editor::write_file(path, source));
     ui::ControlKey keys = 50000;
     const std::array fonts{(editor::asset_directory() / "fonts/SarasaUiSC-Regular.ttf").wstring()};
-    ui::Session surface(fonts);
+    ui::Session surface;
+    take(surface.initialize(fonts));
     require(surface.set_surface({{640, 480}, 1, 1}).has_value(), "Patch surface failed.");
     {
         language::LiveDocument live(runtime, path, keys);

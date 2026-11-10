@@ -477,14 +477,17 @@ std::shared_ptr<const ui::TableData> Output::table() const {
     return table_;
 }
 
-std::shared_ptr<ui::CodeDocument> Output::body() const {
+ui::Result<std::shared_ptr<ui::CodeDocument>> Output::body() const {
     rebuild();
     const auto at = std::ranges::find(rows_, selected_, &Row::key);
     const auto key = at == rows_.end() ? 0 : at->record_key;
     if (key != body_key_) {
         auto document = ui::CodeDocument::create(key ? visible_text(item(key)->record.entry.message) : L"");
-        if (!document)
-            fatal(document.error().message); // Escaped, bounded log text must satisfy the document contract.
+        if (!document) {
+            if (document.error().code == ui::ErrorCode::invalid_text)
+                fatal(document.error().message); // Escaped, bounded log text must satisfy the document contract.
+            return std::unexpected(document.error());
+        }
         body_ = std::make_shared<ui::CodeDocument>(std::move(*document));
         body_key_ = key;
     }
@@ -604,10 +607,11 @@ bool Output::apply(const ui::Action& action) {
     return false;
 }
 
-void Output::append(std::vector<ui::Control>& controls, ui::ControlKey parent, ui_language::LiveDocument& live,
-                    float height) {
+ui::Result<void> Output::append(std::vector<ui::Control>& controls, ui::ControlKey parent,
+                                ui_language::LiveDocument& live, float height) {
     using namespace ui_language;
     rebuild();
+    ATELIER_TRY_BIND(document, body());
     const auto* selected = selected_record();
     const auto detail =
         selected ? short_text(L"Read only · " + platform::utf8_to_utf16_validated(selected->entry.event_code) + L" · " +
@@ -620,7 +624,7 @@ void Output::append(std::vector<ui::Control>& controls, ui::ControlKey parent, u
     const double list_height = std::max(40.f, selected ? (height - 124) * .4f : height - 96);
     const std::array<InputValue, 15> inputs{
         TableBinding{table_, {selected_, 3}},
-        CodeBinding{body(), true, true},
+        CodeBinding{std::move(*document), true, true},
         TextEditBinding{output_control::category, category_},
         TextEditBinding{output_control::search, query_},
         level,
@@ -643,5 +647,6 @@ void Output::append(std::vector<ui::Control>& controls, ui::ControlKey parent, u
                                           {"logs", output_control::open_directory},
                                           {"clear", output_control::clear_filters}}};
     static_cast<void>(live.append("ProjectOutput", parent, keys, inputs, controls));
+    return {};
 }
 }

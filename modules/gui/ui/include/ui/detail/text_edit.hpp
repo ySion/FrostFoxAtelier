@@ -1,4 +1,5 @@
 #pragma once
+#include "ui/error.hpp"
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -15,7 +16,9 @@ struct TextPosition {
 
 bool valid_text(std::wstring_view, bool single_line = true) noexcept;
 
-std::vector<std::uint32_t> character_boundaries(std::wstring_view);
+bool valid_document_text(std::wstring_view) noexcept;
+
+Result<std::vector<std::uint32_t>> character_boundaries(std::wstring_view);
 
 // Shared Unicode editing mechanics. Documents retain this buffer across views;
 // fields own a short-lived buffer. History stores splices, never whole documents.
@@ -35,7 +38,11 @@ public:
         bool operator==(const Snapshot&) const = default;
     };
 
-    TextEdit(std::wstring text, std::size_t limit, bool select_all, bool single_line = true);
+    // Empty buffers need no system service. Nonempty creation segments with ICU.
+    explicit TextEdit(std::size_t limit, bool single_line = true)
+        : current_{{}, {0, true}, {0, true}}, limit_(limit), single_line_(single_line) {}
+
+    static Result<TextEdit> create(std::wstring text, std::size_t limit, bool select_all, bool single_line = true);
 
     const Snapshot& current() const noexcept { return current_; }
 
@@ -67,11 +74,11 @@ public:
 
     TextPosition snap(std::uint32_t, bool trailing = false) const noexcept;
 
-    Change replace(std::wstring_view, Group = Group::isolated);
+    Result<Change> replace(std::wstring_view, Group = Group::isolated);
 
-    Change erase(bool backwards);
+    Result<Change> erase(bool backwards);
 
-    Change history(bool redo);
+    Result<Change> history(bool redo);
 
     void break_group() noexcept { merge_ = false; }
 
@@ -102,9 +109,9 @@ private:
 
     std::wstring original_;
 
-    std::vector<std::uint32_t> boundaries_;
+    std::vector<std::uint32_t> boundaries_{0};
 
-    std::vector<std::uint32_t> lines_;
+    std::vector<std::uint32_t> lines_{0};
 
     std::vector<Entry> history_;
 
@@ -124,8 +131,8 @@ private:
 
     std::uint64_t selection_revision_{1};
 
-    void splice(std::uint32_t, std::uint32_t, std::wstring_view);
+    Result<void> splice(std::uint32_t, std::uint32_t, std::wstring_view);
 
-    Change replace_range(std::uint32_t, std::uint32_t, std::wstring_view, Group);
+    Result<Change> replace_range(std::uint32_t, std::uint32_t, std::wstring_view, Group);
 };
 }

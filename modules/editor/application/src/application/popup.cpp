@@ -1,56 +1,81 @@
 #include "application/popup.hpp"
+#include "application/diagnostics.hpp"
 #include "foundation/frame_timing.hpp"
 #include "logging/native.hpp"
+#include "memory/fatal.hpp"
 #include <algorithm>
 #include <array>
 #include <cmath>
-#include <stdexcept>
 
 namespace atelier::application {
 namespace {
-template <class T>
-T take(ui::Result<T> result) {
-    if (!result)
-        throw std::runtime_error("Popup UI failure (code " + std::to_string(static_cast<int>(result.error().code)) +
-                                 ", key " + std::to_string(result.error().key) + ", native " +
-                                 std::to_string(result.error().native_code) + ").");
-    return std::move(*result);
+Error popup_error(const ui::Error& error) {
+    return {ErrorCode::invalid_definition, "Popup UI failure (code " + std::to_string(static_cast<int>(error.code)) +
+                                               ", key " + std::to_string(error.key) + ", native " +
+                                               std::to_string(error.native_code) + "). " + std::string(error.message)};
 }
 
-void take(ui::Result<void> result) {
+Result<void> checked(ui::Result<ui::Reply> result) {
     if (!result)
-        throw std::runtime_error("Popup UI rejected its style.");
+        return std::unexpected(popup_error(result.error()));
+    if (result->error)
+        return std::unexpected(popup_error(*result->error));
+    return {};
 }
 
-template <class T>
-T graphics(renderer::Result<T> result) {
-    if (!result)
-        throw std::runtime_error(result.error().cause.message);
-    return std::move(*result);
+Result<void> checked(ui::Result<void> result) {
+    if (!result) {
+        auto error = ui_error(result.error());
+        error.message = "Popup UI rejected its style. " + error.message;
+        return std::unexpected(std::move(error));
+    }
+    return {};
+}
+
+void retain_failure(Result<void>& first, Result<void> next) {
+    if (next)
+        return;
+    if (first)
+        first = std::move(next);
+    else
+        static_cast<void>(logging::submit({.severity = logging::Severity::error,
+                                           .category = "menu",
+                                           .event_code = "menu.cleanup_failed",
+                                           .message = std::move(next.error().message)}));
+}
+
+auto window_failure(const char* message) {
+    const auto code = GetLastError();
+    return std::unexpected(
+        Error{ErrorCode::invalid_storage, std::string(message) + " (Win32 " + std::to_string(code) + ")."});
 }
 }
 
-PopupHost::PopupHost(HWND owner, std::span<const std::wstring> fonts, bool validation)
-    : window_(owner), ui_(fonts), measurement_(fonts) {
+Result<void> PopupHost::initialize(HWND owner, std::span<const std::wstring> fonts, bool validation) {
+    ATELIER_TRY(window_.initialize(owner));
+    ATELIER_TRY(ui_.initialize(fonts).transform_error(ui_error));
+    ATELIER_TRY(measurement_.initialize(fonts).transform_error(ui_error));
     renderer::Options options;
     options.validation = validation ? rhi::Validation::gpu : rhi::Validation::disabled;
     options.vsync = false; // The main surface owns frame pacing.
-    renderer_ = graphics(renderer::Renderer::open(window_.handle(), options));
+    ATELIER_TRY_BIND(opened, renderer::Renderer::open(window_.handle(), options).transform_error(renderer_error));
+    renderer_ = std::move(*opened);
+    return {};
 }
 
-void PopupHost::update(ui::ControlKey source, RECT anchor, bool below, std::span<const ui::MenuItem> items,
-                       const ui::Style& style, std::shared_ptr<const ui::StyleSheet> sheet,
-                       std::shared_ptr<ui_language::Component> component, bool center_first_item) {
+Result<void> PopupHost::update(ui::ControlKey source, RECT anchor, bool below, std::span<const ui::MenuItem> items,
+                               const ui::Style& style, std::shared_ptr<const ui::StyleSheet> sheet,
+                               std::shared_ptr<ui_language::Component> component, bool center_first_item) {
     const auto reject = [&](std::string message) {
         diagnostic_ = std::move(message);
         if (instance_)
             instance_->reject_controls();
-        hide();
+        auto hidden = hide();
         measured_dpi_ = 0; // A refused projection must never reuse the old geometry for new items.
+        return hidden;
     };
     if (!component) {
-        reject("PopupMenu is missing from the accepted UI authoring module.");
-        return;
+        return reject("PopupMenu is missing from the accepted UI authoring module.");
     }
     const bool continuing = visible_ && source_ == source;
     const auto previous_focus = continuing ? ui_.focused_control() : 0;
@@ -58,7 +83,7 @@ void PopupHost::update(ui::ControlKey source, RECT anchor, bool below, std::span
     MONITORINFO monitor{};
     monitor.cbSize = sizeof(monitor);
     if (!GetMonitorInfoW(monitor_handle, &monitor))
-        throw std::runtime_error("Cannot query popup monitor.");
+        return window_failure("Cannot query popup monitor.");
     const auto area = monitor.rcWork;
     const ui::PixelExtent work_area{static_cast<std::uint32_t>(area.right - area.left),
                                     static_cast<std::uint32_t>(area.bottom - area.top)};
@@ -66,7 +91,7 @@ void PopupHost::update(ui::ControlKey source, RECT anchor, bool below, std::span
     // the visible menu to its anchor and then back to its fitted position.
     if (MonitorFromWindow(window(), MONITOR_DEFAULTTONEAREST) != monitor_handle &&
         !SetWindowPos(window(), nullptr, anchor.left, anchor.bottom, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER))
-        throw std::runtime_error("Cannot position popup window.");
+        return window_failure("Cannot position popup window.");
     const auto dpi = window_.dpi_scale();
     const bool measure = controls_.empty() || !std::ranges::equal(items, items_) || style != ui_.style() ||
                          sheet_ != sheet || measured_dpi_ != dpi || measured_area_ != work_area ||
@@ -102,50 +127,56 @@ void PopupHost::update(ui::ControlKey source, RECT anchor, bool below, std::span
             const std::array<ui_language::KeyBinding, 1> keys{{{"menu", 500}}};
             auto instance = ui_language::Instance::create(component, 0, next_key_, keys, inputs);
             if (!instance) {
-                reject(instance.error().message);
-                return;
+                return reject(instance.error().message);
             }
             instance_ = std::move(*instance);
         } else if (auto update = instance_->update(inputs, component); !update) {
-            reject(update.error().message);
-            return;
+            return reject(update.error().message);
         }
         std::vector<ui::Control> controls(instance_->controls().begin(), instance_->controls().end());
         if (controls.empty() || controls.front().key != 500 || controls.front().kind != ui::ControlKind::popup ||
             controls.front().parent) {
-            reject("PopupMenu requires its named root to be a standalone Popup.");
-            return;
+            return reject("PopupMenu requires its named root to be a standalone Popup.");
         }
         // Intrinsic measurement has its own retained CPU session. A checked/enabled
         // update must not resize the live input surface to the monitor and back.
-        take(measurement_.set_style(style));
-        take(measurement_.set_style_sheet(sheet));
+        ATELIER_TRY(checked(measurement_.set_style(style)));
+        ATELIER_TRY(checked(measurement_.set_style_sheet(sheet)));
         if (!measurement_revision_ || measured_dpi_ != dpi || measured_area_ != work_area) {
             // Surface changes dismiss modal input. Retire the measurement-only tree
             // first so the new projection opens its root in the new DPI/work area.
             // The live popup Session and its accepted input identities stay intact.
-            take(measurement_.set_controls({}));
+            ATELIER_TRY(checked(measurement_.set_controls({})));
             ++measurement_revision_;
         }
-        take(measurement_.set_surface({work_area, dpi, measurement_revision_}));
+        ATELIER_TRY(checked(measurement_.set_surface({work_area, dpi, measurement_revision_})));
         // Measure both text columns with the same SS/font/layout path used to draw.
         for (auto& control : controls)
             if (control.kind == ui::ControlKind::menu_item)
                 control.layout.width = ui_layout::Axis::content();
-        if (auto accepted = measurement_.set_controls(controls); !accepted) {
-            reject("PopupMenu controls were rejected at key " + std::to_string(accepted.error().key));
-            return;
+        auto accepted = measurement_.set_controls(controls);
+        if (!accepted || accepted->error) {
+            const auto& cause = accepted ? *accepted->error : accepted.error();
+            auto error = ui_error(cause);
+            error.message =
+                "PopupMenu controls were rejected at key " + std::to_string(cause.key) + ": " + error.message;
+            Result<void> failed = std::unexpected(std::move(error));
+            retain_failure(failed, reject(failed.error().message));
+            return failed;
         }
         const auto prepared = measurement_.prepare(ui::Preparation::geometry);
         if (!prepared) {
-            reject("PopupMenu layout failed at key " + std::to_string(prepared.error().key));
-            return;
+            auto error = ui_error(prepared.error());
+            error.message =
+                "PopupMenu layout failed at key " + std::to_string(prepared.error().key) + ": " + error.message;
+            Result<void> failed = std::unexpected(std::move(error));
+            retain_failure(failed, reject(failed.error().message));
+            return failed;
         }
         const auto& measurement = *prepared;
         const auto* menu = measurement->find(500);
         if (!menu) {
-            reject("PopupMenu requires a visible menu root.");
-            return;
+            return reject("PopupMenu requires a visible menu root.");
         }
         float title_width{};
         float shortcut_width{};
@@ -179,8 +210,8 @@ void PopupHost::update(ui::ControlKey source, RECT anchor, bool below, std::span
         controls_ = std::move(controls);
         measured_dpi_ = dpi;
         measured_area_ = work_area;
-        take(ui_.set_style(style));
-        take(ui_.set_style_sheet(sheet));
+        ATELIER_TRY(checked(ui_.set_style(style)));
+        ATELIER_TRY(checked(ui_.set_style_sheet(sheet)));
         sheet_ = std::move(sheet);
         instance_->commit_controls();
         component_ = std::move(component);
@@ -208,17 +239,20 @@ void PopupHost::update(ui::ControlKey source, RECT anchor, bool below, std::span
     // A scrolling parent can move this anchor without changing menu content.
     // Reuse its measured extent, but still resolve placement before returning.
     if (!measure && !place && !resize_surface)
-        return;
+        return {};
     if (place && !SetWindowPos(window(), HWND_TOP, x, y, width, height, SWP_NOACTIVATE))
-        throw std::runtime_error("Cannot size popup window.");
+        return window_failure("Cannot size popup window.");
     // Match the client before showing a newly opened popup; never paint its old-sized canvas.
-    if (place)
-        static_cast<void>(graphics(renderer_.sync_window_target()));
+    if (place) {
+        auto target = renderer_.sync_window_target();
+        if (!target)
+            return std::unexpected(graphics_failure(target.error()));
+    }
     if (resize_surface) {
-        retarget(extent);
+        ATELIER_TRY(retarget(extent));
         restore_focus_ = previous_focus;
     } else if (measure)
-        take(ui_.set_controls(controls_));
+        ATELIER_TRY(checked(ui_.set_controls(controls_)));
     if (!continuing) {
         window_.show();
         opening_ = true;
@@ -226,62 +260,72 @@ void PopupHost::update(ui::ControlKey source, RECT anchor, bool below, std::span
     }
     visible_ = true;
     dirty_ |= measure || resize_surface;
+    return {};
 }
 
-void PopupHost::suspend() {
+Result<void> PopupHost::suspend() {
     if (controls_.empty())
-        return;
+        return {};
     controls_.front().layout.collapsed = true;
-    take(ui_.set_controls(controls_));
+    return checked(ui_.set_controls(controls_));
 }
 
-void PopupHost::retarget(ui::PixelExtent extent) {
+Result<void> PopupHost::retarget(ui::PixelExtent extent) {
     // Retire modal input while retaining text/layout caches and stable identities.
-    suspend();
-    take(ui_.set_surface({extent, window_.dpi_scale(), ++revision_}));
+    ATELIER_TRY(suspend());
+    ATELIER_TRY(checked(ui_.set_surface({extent, window_.dpi_scale(), ++revision_})));
     controls_.front().layout.collapsed = false;
-    take(ui_.set_controls(controls_));
+    ATELIER_TRY(checked(ui_.set_controls(controls_)));
     extent_ = extent;
     surface_dpi_ = window_.dpi_scale();
+    return {};
 }
 
-void PopupHost::render(renderer::Capture* capture) {
+Result<void> PopupHost::render(renderer::Capture* capture) {
     if (!visible_)
-        return;
+        return {};
     window_.poll([&](NativeEvent&& event) {
         if (event.message == WM_SIZE || event.message == WM_DPICHANGED)
             dirty_ = true;
     });
     if (!dirty_ && !capture)
-        return;
+        return {};
     // The popup surface is part of whichever host phase opened or updated it.
     timing::Suspend whole;
-    const auto target = graphics(renderer_.sync_window_target());
-    if (!target.drawable)
-        return;
-    if (target.extent != extent_)
-        retarget(target.extent);
-    const auto candidate = take(ui_.prepare());
-    const auto result = graphics(renderer_.render({*candidate->drawing, {}, {}, {}}, capture));
+    const auto target = renderer_.sync_window_target();
+    if (!target)
+        return std::unexpected(graphics_failure(target.error()));
+    if (!target->drawable)
+        return {};
+    if (target->extent != extent_)
+        ATELIER_TRY(retarget(target->extent));
+    ATELIER_TRY_BIND(candidate, ui_.prepare().transform_error(popup_error));
+    const auto result = renderer_.render({*(*candidate)->drawing, {}, {}, {}}, capture);
+    if (!result)
+        return std::unexpected(graphics_failure(result.error()));
     if (opening_)
         ++open_present_count_;
-    if (result.status == renderer::FrameStatus::accepted) {
-        if (!ui_.accept(candidate))
-            throw std::runtime_error("Popup rejected its accepted GPU frame.");
+    if (result->status == renderer::FrameStatus::accepted) {
+        if (!ui_.accept(*candidate))
+            fatal("Popup rejected its accepted GPU frame.");
         if (opening_) {
             const std::array fields{logging::Field{"source_control", source_},
                                     logging::Field{"surface_revision", revision_},
-                                    logging::Field{"frame", result.accepted_id},
+                                    logging::Field{"frame", result->accepted_id},
                                     logging::Field{"present_attempts", std::uint64_t{open_present_count_}}};
             static_cast<void>(ATELIER_LOG_WITH(logging::Severity::info, "menu", "menu.frame_accepted",
                                                logging::native::Context{fields}, "Menu opening frame accepted"));
         }
         opening_ = dirty_ = false;
         if (restore_focus_) {
-            dirty_ |= ui_.focus(restore_focus_).redraw;
+            const auto focused = ui_.focus(restore_focus_);
+            dirty_ |= focused.redraw;
             restore_focus_ = 0;
+            if (focused.error)
+                return std::unexpected(ui_error(*focused.error));
         }
     }
+    return {};
 }
 
 ui::Reply PopupHost::input(ui::Event event) {
@@ -301,9 +345,9 @@ ui::Reply PopupHost::input(ui::Event event) {
     return reply;
 }
 
-void PopupHost::hide() {
+Result<void> PopupHost::hide() {
     if (!visible_)
-        return;
+        return {};
     ShowWindow(window(), SW_HIDE);
     visible_ = false;
     source_ = restore_focus_ = 0;
@@ -311,29 +355,37 @@ void PopupHost::hide() {
     // key latch now, so the next opening does not swallow its first Escape.
     ui::Event loss;
     loss.kind = ui::EventKind::focus_lost;
-    static_cast<void>(ui_.input(loss));
-    suspend();
+    auto result = checked(ui_.input(loss));
+    retain_failure(result, suspend());
+    return result;
 }
 
-void PopupHost::reset_document() {
-    hide();
-    take(ui_.set_controls({}));
-    take(measurement_.set_controls({}));
+Result<void> PopupHost::reset_document() {
+    auto result = hide();
+    retain_failure(result, checked(ui_.set_controls({})));
+    retain_failure(result, checked(measurement_.set_controls({})));
     controls_.clear();
     items_.clear();
     row_keys_.clear();
     instance_.reset();
     component_.reset();
     diagnostic_.clear();
+    return result;
 }
 
-void PopupHost::close() {
+Result<void> PopupHost::close() {
     if (closed_)
-        return;
-    reset_document();
-    const auto result = renderer_.close();
+        return {};
+    auto result = reset_document();
+    retain_failure(result, renderer_.close().transform_error(renderer_error));
     closed_ = true;
-    if (!result)
-        throw std::runtime_error(result.error().cause.message);
+    return result;
+}
+
+Error PopupHost::graphics_failure(const renderer::Error& error) {
+    Result<void> result = std::unexpected(renderer_error(error));
+    if (error.terminal)
+        retain_failure(result, close());
+    return std::move(result.error());
 }
 }

@@ -298,7 +298,7 @@ int verify_editor_surfaces(Application& app, const char* output_directory) {
             throw std::runtime_error("Camera Control acceptance could not obtain a stable state token.");
         });
         while (pending.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready)
-            require(app.step(), "Editor closed during camera Control acceptance.");
+            require(take(app.step()), "Editor closed during camera Control acceptance.");
         return pending.get();
     };
     const auto camera_point = point(control::viewport);
@@ -473,7 +473,7 @@ int verify_editor_surfaces(Application& app, const char* output_directory) {
     Access::unchecked_cavity_radius(app, .25f);
     for (unsigned attempt = 0; attempt < 7; ++attempt) {
         Access::render_retry_deadline(app, {});
-        require(app.step() && app.accepted_frames() == accepted,
+        require(take(app.step()) && app.accepted_frames() == accepted,
                 "Recoverable render validation failure closed or accepted a frame.");
         require(Access::render_retry_delay(app) > std::chrono::milliseconds(0) &&
                     Access::render_retry_delay(app) <= std::chrono::milliseconds(250),
@@ -487,7 +487,7 @@ int verify_editor_surfaces(Application& app, const char* output_directory) {
         return client->call(json::Document::literal<R"({"op":"editor.inspect","args":{"detail":"summary"}})">());
     });
     while (inspection.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready)
-        require(app.step(), "Render retry blocked the Control inspection service.");
+        require(take(app.step()), "Render retry blocked the Control inspection service.");
     const auto inspected = inspection.get();
     require(inspected && inspected->root().string({"status"}) == "ok" && app.accepted_frames() == accepted &&
                 Access::render_retry_delay(app) == held_delay,
@@ -495,21 +495,21 @@ int verify_editor_surfaces(Application& app, const char* output_directory) {
     // Schedule one genuine failure deadline after the forced service hold, then
     // leave that deadline untouched while the repaired input recovers naturally.
     Access::render_retry_deadline(app, {});
-    require(app.step() && app.accepted_frames() == accepted, "Render validation did not schedule a fresh retry.");
+    require(take(app.step()) && app.accepted_frames() == accepted, "Render validation did not schedule a fresh retry.");
     const auto recovery_deadline = Access::render_retry_deadline(app);
     Access::unchecked_cavity_radius(app, radius);
     while (app.accepted_frames() == accepted &&
            std::chrono::steady_clock::now() < recovery_deadline + std::chrono::seconds(10))
-        require(app.step(), "Editor closed while waiting for natural render retry recovery.");
+        require(take(app.step()), "Editor closed while waiting for natural render retry recovery.");
     require(app.accepted_frames() > accepted, "Rendering did not recover after its natural retry deadline.");
     require(std::chrono::steady_clock::now() >= recovery_deadline, "Rendering recovered before its retry deadline.");
     require(Access::render_retry_delay(app) == std::chrono::milliseconds(0),
             "Successful rendering retained failure backoff.");
     Access::unchecked_cavity_radius(app, .25f);
-    require(app.step(), "Second recoverable render error became terminal.");
+    require(take(app.step()), "Second recoverable render error became terminal.");
     Access::mark_saved(app);
     PostMessageW(app.window(), WM_CLOSE, 0, 0);
-    require(!app.step(), "A native close request could not pass the render retry gate.");
+    require(!take(app.step()), "A native close request could not pass the render retry gate.");
     std::printf("Editor surfaces: drag resized %u/8 frames; external mouse messages dropped %u\n", resized_during_drag,
                 ExternalMouseFilter::discarded);
     require(resized_during_drag == 0, "Dock dragging resized the live viewport before release.");

@@ -45,14 +45,6 @@ T graphics(renderer::Result<T> result) {
         return std::move(*result);
 }
 
-template <class T>
-T presentation(ui::Result<T> result) {
-    if (!result)
-        throw std::runtime_error("Project UI failed at control " + std::to_string(result.error().key) + ".");
-    if constexpr (!std::is_void_v<T>)
-        return std::move(*result);
-}
-
 std::uint64_t number(std::wstring_view text) {
     std::uint64_t value{};
     if (text.empty())
@@ -165,6 +157,11 @@ int run_project_command(std::span<wchar_t*> arguments) {
 }
 
 int run_project(const RunOptions& options) {
+    const auto rejected = [](const Error& error) {
+        static_cast<void>(
+            ATELIER_LOG(logging::Severity::error, "runner", "runner.failed", "Project run: {}", error.message));
+        return 1;
+    };
     struct StopEvent {
         HANDLE value;
 
@@ -261,22 +258,40 @@ int run_project(const RunOptions& options) {
         } stop_world{document, project.root(), dropped};
         editor::ProjectUI project_ui;
         project_ui.sync(&project);
-        ui::Session ui(editor_fonts());
+        ui::Session ui;
+        if (auto initialized = ui.initialize(editor_fonts()); !initialized)
+            return rejected(ui_error(initialized.error()));
         auto style = ui.style();
         style.font.family = L"Sarasa UI SC";
         style.font.size = 12.5f;
         style.caption_scale = 1;
-        presentation(ui.set_style(style));
-        presentation(ui.set_style_sheet(editor_styles()));
+        if (auto styled = ui.set_style(style); !styled) {
+            auto error = ui_error(styled.error());
+            error.message = "Project UI failed at control " + std::to_string(styled.error().key) + ". " + error.message;
+            return rejected(error);
+        }
+        auto styles = editor_styles();
+        if (!styles)
+            return rejected(styles.error());
+        if (auto styled = ui.set_style_sheet(*styles); !styled) {
+            auto error = ui_error(styled.error());
+            error.message = "Project UI failed at control " + std::to_string(styled.error().key) + ". " + error.message;
+            return rejected(error);
+        }
         std::unique_ptr<Window> window;
         std::optional<renderer::Renderer> renderer;
         if (!options.headless) {
             window = std::make_unique<Window>();
+            if (auto initialized = window->initialize(); !initialized)
+                return rejected(initialized.error());
             SetWindowTextW(window->handle(),
                            (project.name() + (options.preview_ui ? L" — UI Preview" : L" — Running")).c_str());
             renderer::Options render_options;
             render_options.shader_cache = shader_cache_directory();
-            renderer.emplace(graphics(renderer::Renderer::open(window->handle(), render_options)));
+            auto opened = renderer::Renderer::open(window->handle(), render_options);
+            if (!opened)
+                return rejected(renderer_error(opened.error()));
+            renderer.emplace(std::move(*opened));
             window->show();
         }
         struct CloseRenderer {
@@ -289,8 +304,13 @@ int run_project(const RunOptions& options) {
         } close_renderer{renderer};
         std::function<void(const ui::Reply&)> effects;
         effects = [&](const ui::Reply& reply) {
+            if (reply.error)
+                static_cast<void>(rejected(ui_error(*reply.error)));
             for (const auto& effect : reply.effects) {
                 if (const auto* action = std::get_if<ui::Action>(&effect)) {
+                    if (reply.error && action->kind != ui::ActionKind::edit_cancel &&
+                        action->kind != ui::ActionKind::dismiss && action->kind != ui::ActionKind::drag_cancel)
+                        continue;
                     const auto handled = project_ui.event(*action);
                     if (!handled)
                         static_cast<void>(ATELIER_LOG(logging::Severity::error, "runner", "runner.ui_action_failed",
@@ -299,11 +319,16 @@ int run_project(const RunOptions& options) {
                     std::visit(
                         [&](const auto& request) {
                             using T = std::decay_t<decltype(request)>;
-                            if constexpr (std::same_as<T, ui::ClipboardRequest>)
+                            if constexpr (std::same_as<T, ui::ClipboardRequest>) {
+                                if (reply.error)
+                                    return;
                                 effects(ui.input(
                                     {.kind = ui::EventKind::clipboard_result, .data = window->clipboard(request)}));
-                            else
+                            } else {
+                                if (reply.error && request.kind != ui::ImeKind::cancel)
+                                    return;
                                 effects(ui.input({.kind = ui::EventKind::ime_result, .data = window->ime(request)}));
+                            }
                         },
                         std::get<ui::PlatformRequest>(effect));
             }
@@ -412,12 +437,15 @@ int run_project(const RunOptions& options) {
             previous = now;
             if (started || target.drawable)
                 elapsed += dt;
-            auto prepared = [&] {
+            auto preparation = [&] {
                 timing::Scope describing{phases::ui};
                 project_ui.sync(&project);
-                return take(project_ui.prepare(ui, {extent, window ? window->dpi_scale() : 1.f, surface_revision},
-                                               elapsed, take(document.world().members()).size(), effects));
+                return project_ui.prepare(ui, {extent, window ? window->dpi_scale() : 1.f, surface_revision}, elapsed,
+                                          take(document.world().members()).size(), effects);
             }();
+            if (!preparation)
+                return rejected(preparation.error());
+            const auto& prepared = *preparation;
             if (options.channel && !options.preview_ui) {
                 timing::Scope linking{phases::control};
                 options.channel->service(document, project, report);

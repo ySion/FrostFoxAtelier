@@ -279,7 +279,7 @@ void verify_native_menus(Application& app, const std::filesystem::path& output, 
     require(app.menu_window() != parent_popup && live_menu()->scrollbars.empty(),
             "Pane type submenu did not open as a separate, bounded popup.");
     atelier::renderer::Capture submenu_pixels;
-    app.capture_menu(submenu_pixels);
+    take(app.capture_menu(submenu_pixels));
     png(submenu_pixels, output / "pane-types.png");
     key(app, VK_ESCAPE);
     require(app.menu_window() == parent_popup, "Escape did not return from the submenu to its parent.");
@@ -305,7 +305,7 @@ void verify_native_menus(Application& app, const std::filesystem::path& output, 
     require(live_menu()->find(Access::operator_item(app, "view.frame_selected")),
             "Menubar hover did not switch the open dropdown.");
     atelier::renderer::Capture menu_pixels;
-    app.capture_menu(menu_pixels);
+    take(app.capture_menu(menu_pixels));
     require(menu_pixels.extent.width > 0 && !menu_pixels.rgba.empty(), "Native menu did not render through the GPU.");
     png(menu_pixels, output / "native-menu-view.png");
     require(live_menu()->scrollbars.empty(), "Short native menu retained an empty scrollbar.");
@@ -364,7 +364,7 @@ void verify_native_menus(Application& app, const std::filesystem::path& output, 
     require(popup.right > owner.right, "Context menu remained confined to the editor rectangle.");
     require(!app.presented()->find(control::parameter_menu),
             "Native menu still has a clipped copy in the main surface.");
-    app.capture_menu(menu_pixels);
+    take(app.capture_menu(menu_pixels));
     png(menu_pixels, output / "native-menu-parameter.png");
     click(app, control::menu_copy);
     require(!app.menu_window(), "Selecting a menu item outside the editor did not dismiss it.");
@@ -391,7 +391,7 @@ void verify_native_menus(Application& app, const std::filesystem::path& output, 
             9000001, L"A substantially longer editor command title", true, false, {}, L"Ctrl+Alt+Shift+F12"},
         atelier::ui::MenuItem{9000002, L"Unavailable command", false, false, {}, L"Ctrl+Shift+F11"}};
     atelier::application::EditorAcceptanceAccess::menu_items(app, long_items);
-    app.capture_menu(menu_pixels);
+    take(app.capture_menu(menu_pixels));
     require(menu_pixels.frame_id && menu_pixels.extent.width > ordinary_width && live_menu()->scrollbars.empty(),
             "Native menu did not fit long title and shortcut columns.");
     for (const auto& box : live_menu()->controls)
@@ -417,10 +417,10 @@ void verify_native_menus(Application& app, const std::filesystem::path& output, 
     for (unsigned i = 0; i < count; ++i)
         overflow_items.push_back({9100000 + i, L"Menu entry " + std::to_wstring(i + 1), true, false, {}});
     atelier::application::EditorAcceptanceAccess::menu_items(app, overflow_items);
-    app.capture_menu(menu_pixels);
+    take(app.capture_menu(menu_pixels));
     require(menu_pixels.frame_id && !live_menu()->scrollbars.empty(), "Screen-limited native menu lost its scrollbar.");
     atelier::application::EditorAcceptanceAccess::menu_end(app);
-    app.capture_menu(menu_pixels);
+    take(app.capture_menu(menu_pixels));
     const auto* last = live_menu()->find(overflow_items.back().key);
     require(last && last->bounds.y >= last->clip.top && last->bounds.y + last->bounds.height <= last->clip.bottom + .1f,
             "Native menu End navigation did not reveal the final command.");

@@ -43,7 +43,8 @@ class inspection.Stats : world.Component { float energy = 5.0f; }
     auto& workspace = host.panels;
     workspace.project_open = true;
     const std::array fonts{(editor::asset_directory() / "fonts/SarasaUiSC-Regular.ttf").wstring()};
-    ui::Session surface(fonts);
+    ui::Session surface;
+    take(surface.initialize(fonts));
     auto theme = ui::StyleSheet::parse(take(assets::read_file(editor::asset_directory() / "editor.ss")));
     require(theme && surface.set_style_sheet(*theme) && surface.set_surface({{1600, 1000}, 1, 1}),
             "Object inspection surface failed.");
@@ -63,7 +64,7 @@ class inspection.Stats : world.Component { float energy = 5.0f; }
             }
     };
     const auto publish = [&] {
-        controls = workspace.describe(document, {1600, 1000}, surface.presented().get(), &project);
+        controls = take(workspace.describe(document, {1600, 1000}, surface.presented().get(), &project));
         require(workspace.ui_error().empty(), "Object inspection failed to evaluate its authored panels.");
         auto described = surface.set_controls(controls);
         require(described.has_value(), "Object inspection descriptors failed.");
@@ -254,7 +255,7 @@ class inspection.Stats : world.Component { float energy = 5.0f; }
             return std::ranges::any_of(items, [&](const auto& item) { return item.text == text; });
         };
         require(inspector.dock.select(editor::control::parameters_tab), "Parameters is not a dockable tab.");
-        auto items = inspector.describe(*kept, {1600, 1000}, nullptr, &project);
+        auto items = take(inspector.describe(*kept, {1600, 1000}, nullptr, &project));
         require(inspector.ui_error().empty() && has_text(items, L"Saved Data · Gone (missing type)") &&
                     has_text(items, L"properties.energy") && has_text(items, L"Saved Data · Settings") &&
                     has_text(items, L"properties.legacy") && has_text(items, L"3"),
@@ -263,7 +264,7 @@ class inspection.Stats : world.Component { float energy = 5.0f; }
                      ->poll(inspector.operator_context(*kept, &project, true)),
                 "Discard Saved Data targeted an Entity without saved data.");
         require(inspector.dock.select(editor::control::entities_tab), "Scene Tree is not a dockable tab.");
-        items = inspector.describe(*kept, {1600, 1000}, nullptr, &project);
+        items = take(inspector.describe(*kept, {1600, 1000}, nullptr, &project));
         require(std::ranges::any_of(items,
                                     [&](const auto& item) {
                                         return item.kind == ui::ControlKind::tree_item &&

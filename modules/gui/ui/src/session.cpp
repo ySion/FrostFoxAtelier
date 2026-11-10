@@ -448,15 +448,23 @@ struct Session::Impl {
 
         bool commit_paste{};
 
-        Edit(const State& state, std::wstring value, double numeric, bool mode, bool select_all)
+        Edit(const State& state, double numeric, bool mode)
             : key(state.control.key), token{key, state.incarnation, detail::new_identity(), detail::new_identity()},
               document(state.control.code), original_value(numeric), preview_value(numeric),
               text_mode(mode || document != nullptr) {
             if (document)
                 document_selection = buffer().selection_revision();
-            else
-                field_buffer.emplace(std::move(value), state.control.kind == ControlKind::number ? 64 : 4096,
-                                     select_all);
+        }
+
+        static Result<Edit> create(const State& state, std::wstring value, double numeric, bool mode, bool select_all) {
+            Edit result(state, numeric, mode);
+            if (!result.document) {
+                ATELIER_TRY_BIND(buffer, detail::TextEdit::create(std::move(value),
+                                                                  state.control.kind == ControlKind::number ? 64 : 4096,
+                                                                  select_all));
+                result.field_buffer.emplace(std::move(*buffer));
+            }
+            return result;
         }
     };
 
@@ -566,9 +574,7 @@ struct Session::Impl {
 
     std::optional<TooltipCache> tooltip_cache;
 
-    explicit Impl(std::span<const std::wstring> fonts) : text(fonts) {
-        static_cast<void>(layout.set_root({ui_layout::Kind::overlay}));
-    }
+    Impl() { static_cast<void>(layout.set_root({ui_layout::Kind::overlay})); }
 
     bool active() const {
         return !failed_frame_id && published && published->drawing->extent == surface.extent &&
@@ -801,9 +807,16 @@ struct Session::Impl {
     }
 };
 
-Session::Session(std::span<const std::wstring> fonts) : impl_(std::make_unique<Impl>(fonts)) {}
+Session::Session() = default;
 
 Session::~Session() = default;
+
+Result<void> Session::initialize(std::span<const std::wstring> fonts) {
+    auto candidate = std::make_unique<Impl>();
+    ATELIER_TRY(candidate->text.initialize(fonts));
+    impl_ = std::move(candidate);
+    return {};
+}
 
 Result<void> Session::set_style(const Style& style) {
     if (!valid_style(style))
@@ -915,680 +928,683 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare(Preparation preparation)
     } attempt{self.failed_frame_id, frame_id};
     if (!self.surface.extent.width || !self.surface.extent.height)
         return std::unexpected(Error{ErrorCode::unavailable_surface});
-    try {
-        self.sync_code_edit();
-        ATELIER_TRY(self.synchronize());
-        const float scale = self.surface.dpi_scale;
-        const auto geometry = self.layout.compute(
-            {self.surface.extent.width / scale, self.surface.extent.height / scale}, self.text.provider_revision());
-        if (!geometry)
-            return std::unexpected(Error{ErrorCode::layout_failed, 0, geometry.error().provider_code});
-        auto output = std::make_shared<UiFrame>();
-        std::shared_ptr<Frame> draws;
-        output->controls.reserve(self.order.size());
-        if (paint) {
-            draws = std::make_shared<Frame>();
-            draws->draws.reserve(self.order.size() * 3);
-            draws->id = frame_id;
-            draws->extent = self.surface.extent;
-            draws->dpi_scale = scale;
-            draws->surface_revision = self.surface.revision;
+    self.sync_code_edit();
+    ATELIER_TRY(self.synchronize());
+    const float scale = self.surface.dpi_scale;
+    const auto geometry = self.layout.compute({self.surface.extent.width / scale, self.surface.extent.height / scale},
+                                              self.text.provider_revision());
+    if (!geometry)
+        return std::unexpected(Error{ErrorCode::layout_failed, 0, geometry.error().provider_code});
+    auto output = std::make_shared<UiFrame>();
+    std::shared_ptr<Frame> draws;
+    output->controls.reserve(self.order.size());
+    if (paint) {
+        draws = std::make_shared<Frame>();
+        draws->draws.reserve(self.order.size() * 3);
+        draws->id = frame_id;
+        draws->extent = self.surface.extent;
+        draws->dpi_scale = scale;
+        draws->surface_revision = self.surface.revision;
+    }
+    output->session_identity = self.identity;
+    output->controls_revision = self.controls_revision;
+    output->style_revision = self.style_revision;
+    output->measure_provider_revision = self.text.provider_revision();
+    const Clip target{0, 0, static_cast<std::int32_t>(self.surface.extent.width),
+                      static_cast<std::int32_t>(self.surface.extent.height)};
+    for (auto key : self.order) {
+        auto& state = self.states.at(key);
+        state.frame_index = std::numeric_limits<std::size_t>::max();
+        state.content_bottom = 0;
+    }
+    for (auto key : self.order) {
+        const auto& state = self.states.at(key);
+        if (state.control.parent && scrolling(self.states.at(state.control.parent).control.kind))
+            if (const auto* box = geometry->find(state.node))
+                self.states.at(state.control.parent).content_bottom =
+                    std::max(self.states.at(state.control.parent).content_bottom, box->y + box->height);
+    }
+    for (auto key : self.order) {
+        auto& state = self.states.at(key);
+        if (scrolling(state.control.kind))
+            if (const auto* box = geometry->find(state.node)) {
+                const auto padding = effective_padding(state.control, *state.resolved);
+                // Trees scroll over every host row, described or not.
+                if (state.control.kind == ControlKind::tree)
+                    state.content_bottom =
+                        std::max(state.content_bottom,
+                                 static_cast<float>(padding.top + static_cast<double>(state.control.tree_row_count) *
+                                                                      state.resolved->tree_row_height));
+                state.viewport_height = std::max(0.f, box->height - padding.top - padding.bottom);
+                const auto content_end = state.content_bottom + padding.bottom;
+                const auto overflow = content_end - box->height;
+                // Measurement and placement can accumulate fractional rows in
+                // different orders. Discard float roundoff, not real overflow.
+                const auto roundoff =
+                    4 * std::numeric_limits<float>::epsilon() * std::max({1.f, content_end, box->height});
+                state.scroll_limit = overflow > roundoff ? overflow : 0.f;
+                state.scroll = std::clamp(state.scroll, 0.0, state.scroll_limit);
+            }
+    }
+    for (auto key : self.order) {
+        auto& state = self.states.at(key);
+        if (state.control.kind != ControlKind::tree_item || !state.tree_reveal)
+            continue;
+        auto& tree = self.states.at(state.control.parent);
+        const auto* row = geometry->find(state.node);
+        const auto* owner = geometry->find(tree.node);
+        if (!row || !owner || owner->height <= 0)
+            continue;
+        if (row->y < tree.scroll)
+            tree.scroll = row->y;
+        if (row->y + row->height > tree.scroll + owner->height)
+            tree.scroll = row->y + row->height - owner->height;
+        tree.scroll = std::clamp(tree.scroll, 0.0, tree.scroll_limit);
+        state.tree_reveal = false;
+    }
+    auto quad = [&](Rect bounds, Clip clip, Color color, std::shared_ptr<const Coverage> coverage = {}) {
+        clip = intersect(clip, target);
+        if (visible(bounds, clip) && color.a > 0)
+            draws->draws.push_back({bounds, clip, color, {0, 0, 1, 1}, std::move(coverage)});
+    };
+    const auto paint_box = [&](Rect bounds, Clip clip, Color background, std::shared_ptr<const ColorImage> image,
+                               CornerRadii radius, float border, Color edge, BorderStyle relief,
+                               BorderEdges edges = BorderEdges::all, std::optional<Color> inner = {},
+                               std::optional<Color> shadow = {}) {
+        const bool beveled = relief != BorderStyle::solid;
+        const bool square = beveled || edges != BorderEdges::all || radius == CornerRadii{};
+        if (square && border > 0) {
+            const auto right = std::round(bounds.x + bounds.width);
+            const auto bottom = std::round(bounds.y + bounds.height);
+            bounds.x = std::round(bounds.x);
+            bounds.y = std::round(bounds.y);
+            bounds.width = std::max(0.f, right - bounds.x);
+            bounds.height = std::max(0.f, bottom - bounds.y);
+            border = std::min({std::max(1.f, std::round(border)), bounds.width * .5f, bounds.height * .5f});
         }
-        output->session_identity = self.identity;
-        output->controls_revision = self.controls_revision;
-        output->style_revision = self.style_revision;
-        output->measure_provider_revision = self.text.provider_revision();
-        const Clip target{0, 0, static_cast<std::int32_t>(self.surface.extent.width),
-                          static_cast<std::int32_t>(self.surface.extent.height)};
-        for (auto key : self.order) {
-            auto& state = self.states.at(key);
-            state.frame_index = std::numeric_limits<std::size_t>::max();
-            state.content_bottom = 0;
+        const bool separate = beveled || edges != BorderEdges::all;
+        draws->draws.push_back({bounds,
+                                clip,
+                                image ? Color{1, 1, 1, 1} : background,
+                                {0, 0, 1, 1},
+                                {},
+                                square ? CornerRadii{} : radius,
+                                separate ? 0 : border,
+                                edge,
+                                std::move(image),
+                                background});
+        if (border <= 0)
+            return;
+        if (separate) {
+            const auto dark = shadow.value_or(Color{edge.r * .15f, edge.g * .15f, edge.b * .15f, edge.a});
+            const auto near = relief == BorderStyle::inset ? dark : edge;
+            const auto far = relief == BorderStyle::outset ? dark : edge;
+            const auto top = has_edge(edges, BorderEdges::top) ? border : 0.f;
+            const auto bottom = has_edge(edges, BorderEdges::bottom) ? border : 0.f;
+            if (top)
+                quad({bounds.x, bounds.y, bounds.width, border}, clip, near);
+            if (bottom)
+                quad({bounds.x, bounds.y + bounds.height - border, bounds.width, border}, clip, far);
+            if (has_edge(edges, BorderEdges::left))
+                quad({bounds.x, bounds.y + top, border, std::max(0.f, bounds.height - top - bottom)}, clip, near);
+            if (has_edge(edges, BorderEdges::right))
+                quad({bounds.x + bounds.width - border, bounds.y + top, border,
+                      std::max(0.f, bounds.height - top - bottom)},
+                     clip, far);
         }
-        for (auto key : self.order) {
-            const auto& state = self.states.at(key);
-            if (state.control.parent && scrolling(self.states.at(state.control.parent).control.kind))
-                if (const auto* box = geometry->find(state.node))
-                    self.states.at(state.control.parent).content_bottom =
-                        std::max(self.states.at(state.control.parent).content_bottom, box->y + box->height);
+        // Square frames can carry an independent top/left inner relief.
+        if (square && inner) {
+            if (has_edge(edges, BorderEdges::top))
+                quad({bounds.x + border, bounds.y + border, std::max(0.f, bounds.width - 2 * border), border}, clip,
+                     *inner);
+            if (has_edge(edges, BorderEdges::left))
+                quad({bounds.x + border, bounds.y + 2 * border, border, std::max(0.f, bounds.height - 3 * border)},
+                     clip, *inner);
         }
-        for (auto key : self.order) {
-            auto& state = self.states.at(key);
-            if (scrolling(state.control.kind))
-                if (const auto* box = geometry->find(state.node)) {
-                    const auto padding = effective_padding(state.control, *state.resolved);
-                    // Trees scroll over every host row, described or not.
-                    if (state.control.kind == ControlKind::tree)
-                        state.content_bottom = std::max(
-                            state.content_bottom,
-                            static_cast<float>(padding.top + static_cast<double>(state.control.tree_row_count) *
-                                                                 state.resolved->tree_row_height));
-                    state.viewport_height = std::max(0.f, box->height - padding.top - padding.bottom);
-                    const auto content_end = state.content_bottom + padding.bottom;
-                    const auto overflow = content_end - box->height;
-                    // Measurement and placement can accumulate fractional rows in
-                    // different orders. Discard float roundoff, not real overflow.
-                    const auto roundoff =
-                        4 * std::numeric_limits<float>::epsilon() * std::max({1.f, content_end, box->height});
-                    state.scroll_limit = overflow > roundoff ? overflow : 0.f;
-                    state.scroll = std::clamp(state.scroll, 0.0, state.scroll_limit);
+    };
+    const auto prepare_scrollbar = [&](ScrollbarGeometry bar, const ResolvedStyle& appearance, bool enabled) {
+        const auto width = bar.horizontal ? bar.bounds.height : bar.bounds.width;
+        const auto span = bar.horizontal ? bar.bounds.width : bar.bounds.height;
+        if (bar.maximum <= 0 || width <= 0 || span <= 0)
+            return;
+        const auto step = std::min(appearance.scrollbar_button_size > 0 ? appearance.scrollbar_button_size * scale
+                                                                        : (width >= 8 * scale ? width : 0.f),
+                                   span / 3);
+        const auto segment = [&](float offset, float length) {
+            return bar.horizontal ? Rect{bar.bounds.x + offset, bar.bounds.y, length, width}
+                                  : Rect{bar.bounds.x, bar.bounds.y + offset, width, length};
+        };
+        const auto track_span = span - 2 * step;
+        bar.track = segment(0, track_span);
+        bar.decrement = segment(track_span, step);
+        bar.increment = segment(track_span + step, step);
+        const auto length =
+            std::min(track_span, std::max(appearance.scrollbar_min_thumb * scale,
+                                          track_span * static_cast<float>(bar.page / (bar.page + bar.maximum))));
+        bar.thumb = segment(static_cast<float>(bar.value / bar.maximum) * (track_span - length), length);
+        output->scrollbars.push_back(bar);
+        if (!paint)
+            return;
+        const auto stroke = std::max(1.f, std::round(scale * 2.f / 3));
+        const Color shadow{0, 0, 0, appearance.indicator_border.a};
+        paint_box(bar.track, bar.clip, appearance.indicator_background, {}, {}, stroke, shadow, BorderStyle::solid);
+        paint_box(bar.thumb, bar.clip, appearance.scrollbar, appearance.scrollbar_image, {}, stroke,
+                  appearance.indicator_border, BorderStyle::solid);
+        if (length > 12 * scale && width > 7 * scale) {
+            const auto pitch = std::max(2.f, std::round(scale * 4.f / 3));
+            const auto center_x = bar.thumb.x + bar.thumb.width * .5f;
+            const auto center_y = bar.thumb.y + bar.thumb.height * .5f;
+            for (int row = 0; row < 4; ++row)
+                for (int column = 0; column < 3; ++column) {
+                    const auto across = (column - 1) * pitch;
+                    const auto along = (row - 1.5f) * pitch;
+                    const auto x = std::round(center_x + (bar.horizontal ? along : across));
+                    const auto y = std::round(center_y + (bar.horizontal ? across : along));
+                    quad({x + stroke, y + stroke, stroke, stroke}, bar.clip, appearance.indicator_border);
+                    quad({x, y, stroke, stroke}, bar.clip, shadow);
                 }
         }
-        for (auto key : self.order) {
-            auto& state = self.states.at(key);
-            if (state.control.kind != ControlKind::tree_item || !state.tree_reveal)
+        for (const auto [button, decrement] : {std::pair{bar.decrement, true}, std::pair{bar.increment, false}}) {
+            if (step <= 0)
                 continue;
-            auto& tree = self.states.at(state.control.parent);
-            const auto* row = geometry->find(state.node);
-            const auto* owner = geometry->find(tree.node);
-            if (!row || !owner || owner->height <= 0)
-                continue;
-            if (row->y < tree.scroll)
-                tree.scroll = row->y;
-            if (row->y + row->height > tree.scroll + owner->height)
-                tree.scroll = row->y + row->height - owner->height;
-            tree.scroll = std::clamp(tree.scroll, 0.0, tree.scroll_limit);
-            state.tree_reveal = false;
+            const bool available = enabled && (decrement ? bar.value > 0 : bar.value < bar.maximum);
+            paint_box(button, bar.clip, appearance.scrollbar, available ? appearance.scrollbar_image : nullptr, {},
+                      stroke, available ? appearance.indicator_border : appearance.scrollbar, BorderStyle::solid);
+            const auto size = std::min(16.f * scale, std::min(step, width));
+            auto arrow = appearance.foreground;
+            const auto tone = available ? .5f : .085f;
+            arrow.r *= tone;
+            arrow.g *= tone;
+            arrow.b *= tone;
+            const auto symbol = bar.horizontal
+                                    ? (decrement ? detail::TextStore::Symbol::left : detail::TextStore::Symbol::right)
+                                    : (decrement ? detail::TextStore::Symbol::up : detail::TextStore::Symbol::down);
+            quad({button.x + (button.width - size) * .5f, button.y + (button.height - size) * .5f, size, size},
+                 bar.clip, arrow, self.text.symbol(symbol, static_cast<std::uint32_t>(std::ceil(size))));
         }
-        auto quad = [&](Rect bounds, Clip clip, Color color, std::shared_ptr<const Coverage> coverage = {}) {
-            clip = intersect(clip, target);
-            if (visible(bounds, clip) && color.a > 0)
-                draws->draws.push_back({bounds, clip, color, {0, 0, 1, 1}, std::move(coverage)});
-        };
-        const auto paint_box = [&](Rect bounds, Clip clip, Color background, std::shared_ptr<const ColorImage> image,
-                                   CornerRadii radius, float border, Color edge, BorderStyle relief,
-                                   BorderEdges edges = BorderEdges::all, std::optional<Color> inner = {},
-                                   std::optional<Color> shadow = {}) {
-            const bool beveled = relief != BorderStyle::solid;
-            const bool square = beveled || edges != BorderEdges::all || radius == CornerRadii{};
-            if (square && border > 0) {
-                const auto right = std::round(bounds.x + bounds.width);
-                const auto bottom = std::round(bounds.y + bounds.height);
-                bounds.x = std::round(bounds.x);
-                bounds.y = std::round(bounds.y);
-                bounds.width = std::max(0.f, right - bounds.x);
-                bounds.height = std::max(0.f, bottom - bounds.y);
-                border = std::min({std::max(1.f, std::round(border)), bounds.width * .5f, bounds.height * .5f});
+    };
+    std::size_t popup_draw_begin = std::numeric_limits<std::size_t>::max();
+    for (auto key : self.order) {
+        auto& state = self.states.at(key);
+        if (state.control.kind == ControlKind::popup && self.popup_dismissed)
+            continue;
+        const auto* box = geometry->find(state.node);
+        if (!box)
+            continue;
+        Rect bounds{box->x * scale, box->y * scale, box->width * scale, box->height * scale};
+        Clip clip = target;
+        bool enabled = state.control.enabled;
+        if (state.control.parent) {
+            const auto& parent_state = self.states.at(state.control.parent);
+            if (parent_state.frame_index == std::numeric_limits<std::size_t>::max())
+                continue;
+            const auto& parent_box = output->controls[parent_state.frame_index];
+            bounds.x += parent_box.bounds.x;
+            bounds.y += parent_box.bounds.y;
+            clip = intersect(parent_box.clip, clip_rect(parent_box.bounds));
+            enabled &= parent_box.enabled;
+            if (scrolling(parent_state.control.kind)) {
+                bounds.y -= static_cast<float>(parent_state.scroll) * scale;
+                const auto& style = *parent_state.resolved;
+                if (style.scrollbar_gutter == ScrollbarGutter::stable)
+                    clip.right = std::min(clip.right,
+                                          static_cast<std::int32_t>(
+                                              std::floor(parent_box.bounds.x + parent_box.bounds.width -
+                                                         (style.scrollbar_width + style.scrollbar_inset * 2) * scale)));
             }
-            const bool separate = beveled || edges != BorderEdges::all;
-            draws->draws.push_back({bounds,
+        }
+        if (state.control.kind == ControlKind::popup) {
+            bounds.x =
+                std::clamp(bounds.x, 0.f, std::max(0.f, static_cast<float>(self.surface.extent.width) - bounds.width));
+            bounds.y = std::clamp(bounds.y, 0.f,
+                                  std::max(0.f, static_cast<float>(self.surface.extent.height) - bounds.height));
+            output->popup = key;
+            popup_draw_begin = paint ? draws->draws.size() : 0;
+        }
+        // Cap before conversion to integer clip; layout can legally overflow.
+        if (!std::isfinite(bounds.x) || !std::isfinite(bounds.y) || std::abs(bounds.x) > 1e8f ||
+            std::abs(bounds.y) > 1e8f || bounds.width > 1e8f || bounds.height > 1e8f)
+            return std::unexpected(Error{ErrorCode::invalid_control, key});
+        state.frame_index = output->controls.size();
+        output->controls.push_back({key,
+                                    state.control.parent,
+                                    state.control.kind,
+                                    bounds,
                                     clip,
-                                    image ? Color{1, 1, 1, 1} : background,
-                                    {0, 0, 1, 1},
-                                    {},
-                                    square ? CornerRadii{} : radius,
-                                    separate ? 0 : border,
-                                    edge,
-                                    std::move(image),
-                                    background});
-            if (border <= 0)
-                return;
-            if (separate) {
-                const auto dark = shadow.value_or(Color{edge.r * .15f, edge.g * .15f, edge.b * .15f, edge.a});
-                const auto near = relief == BorderStyle::inset ? dark : edge;
-                const auto far = relief == BorderStyle::outset ? dark : edge;
-                const auto top = has_edge(edges, BorderEdges::top) ? border : 0.f;
-                const auto bottom = has_edge(edges, BorderEdges::bottom) ? border : 0.f;
-                if (top)
-                    quad({bounds.x, bounds.y, bounds.width, border}, clip, near);
-                if (bottom)
-                    quad({bounds.x, bounds.y + bounds.height - border, bounds.width, border}, clip, far);
-                if (has_edge(edges, BorderEdges::left))
-                    quad({bounds.x, bounds.y + top, border, std::max(0.f, bounds.height - top - bottom)}, clip, near);
-                if (has_edge(edges, BorderEdges::right))
-                    quad({bounds.x + bounds.width - border, bounds.y + top, border,
-                          std::max(0.f, bounds.height - top - bottom)},
-                         clip, far);
+                                    enabled,
+                                    state.incarnation,
+                                    state.resolved,
+                                    state.control.selected,
+                                    state.control.action_target,
+                                    state.control.button_behavior,
+                                    state.control.menu_behavior,
+                                    state.control.radio_group,
+                                    state.control.table,
+                                    state.control.table_selection,
+                                    state.control.context_target,
+                                    state.control.context_group,
+                                    state.control.table_layout,
+                                    state.control.code,
+                                    state.control.tooltip,
+                                    state.control.read_only});
+        const auto kind = state.control.kind;
+        if (kind == ControlKind::tree_item) {
+            const auto indent = self.states.at(state.control.parent).resolved->tree_indent * scale;
+            const auto x = bounds.x + (state.control.layout.padding.left + state.resolved->padding.left) * scale +
+                           state.control.tree_depth * indent;
+            output->tree_rows.push_back({key, state.control.tree_index, state.control.tree_depth,
+                                         state.control.tree_branch ? Rect{x, bounds.y, indent, bounds.height} : Rect{},
+                                         state.control.tree_expanded});
+        }
+        // Keep every arranged box and its parent transform. Only painting is culled.
+        if (!visible(bounds, clip)) {
+            if (text_kind(kind))
+                ++self.culled_text_controls;
+            continue;
+        }
+        const auto& appearance = *state.resolved;
+        const float border = std::min({appearance.border_width * scale, bounds.width * .5f, bounds.height * .5f});
+        // Resolve text geometry once for either mode; painting consumes the
+        // same width/metrics rather than resolving an alternate layout path.
+        const auto text_padding = text_kind(kind) ? self.padding_for(state) : ui_layout::Insets{};
+        const float text_width = std::max(0.f, box->width - (text_padding.left + text_padding.right));
+        ATELIER_TRY_BIND(text_metrics_result, text_kind(kind)
+                                                  ? self.text.metrics(key, text_width)
+                                                  : Result<ui_layout::MeasuredSize>{ui_layout::MeasuredSize{}});
+        const auto& text_metrics = *text_metrics_result;
+        if (paint) {
+            const CornerRadii radius{appearance.radius.top_left * scale, appearance.radius.top_right * scale,
+                                     appearance.radius.bottom_right * scale, appearance.radius.bottom_left * scale};
+            if (appearance.background || appearance.image || (border > 0 && appearance.border.a > 0)) {
+                const auto background = appearance.background.value_or(Color{0, 0, 0, 0});
+                paint_box(bounds, clip, background, appearance.image, radius, border, appearance.border,
+                          appearance.border_style, appearance.border_edges, appearance.border_inner,
+                          appearance.border_shadow);
             }
-            // Square frames can carry an independent top/left inner relief.
-            if (square && inner) {
-                if (has_edge(edges, BorderEdges::top))
-                    quad({bounds.x + border, bounds.y + border, std::max(0.f, bounds.width - 2 * border), border}, clip,
-                         *inner);
-                if (has_edge(edges, BorderEdges::left))
-                    quad({bounds.x + border, bounds.y + 2 * border, border, std::max(0.f, bounds.height - 3 * border)},
-                         clip, *inner);
+            if (kind == ControlKind::tree) {
+                const auto padding = effective_padding(state.control, appearance);
+                const auto row_height = appearance.tree_row_height * scale;
+                auto stripe_clip = intersect(clip, clip_rect(bounds));
+                if (appearance.scrollbar_gutter == ScrollbarGutter::stable)
+                    stripe_clip.right = std::min(
+                        stripe_clip.right,
+                        static_cast<int>(bounds.x + bounds.width -
+                                         (appearance.scrollbar_width + 2 * appearance.scrollbar_inset) * scale));
+                const auto origin = bounds.y + padding.top * scale - static_cast<float>(state.scroll) * scale;
+                const auto first = std::max(0, static_cast<int>(std::floor((stripe_clip.top - origin) / row_height)));
+                for (auto row = first; origin + row * row_height < stripe_clip.bottom; ++row)
+                    if (row % 2)
+                        quad({bounds.x, origin + row * row_height, bounds.width, row_height}, stripe_clip,
+                             appearance.tree_alternate);
             }
-        };
-        const auto prepare_scrollbar = [&](ScrollbarGeometry bar, const ResolvedStyle& appearance, bool enabled) {
-            const auto width = bar.horizontal ? bar.bounds.height : bar.bounds.width;
-            const auto span = bar.horizontal ? bar.bounds.width : bar.bounds.height;
-            if (bar.maximum <= 0 || width <= 0 || span <= 0)
-                return;
-            const auto step = std::min(appearance.scrollbar_button_size > 0 ? appearance.scrollbar_button_size * scale
-                                                                            : (width >= 8 * scale ? width : 0.f),
-                                       span / 3);
-            const auto segment = [&](float offset, float length) {
-                return bar.horizontal ? Rect{bar.bounds.x + offset, bar.bounds.y, length, width}
-                                      : Rect{bar.bounds.x, bar.bounds.y + offset, width, length};
-            };
-            const auto track_span = span - 2 * step;
-            bar.track = segment(0, track_span);
-            bar.decrement = segment(track_span, step);
-            bar.increment = segment(track_span + step, step);
-            const auto length =
-                std::min(track_span, std::max(appearance.scrollbar_min_thumb * scale,
-                                              track_span * static_cast<float>(bar.page / (bar.page + bar.maximum))));
-            bar.thumb = segment(static_cast<float>(bar.value / bar.maximum) * (track_span - length), length);
-            output->scrollbars.push_back(bar);
-            if (!paint)
-                return;
-            const auto stroke = std::max(1.f, std::round(scale * 2.f / 3));
-            const Color shadow{0, 0, 0, appearance.indicator_border.a};
-            paint_box(bar.track, bar.clip, appearance.indicator_background, {}, {}, stroke, shadow, BorderStyle::solid);
-            paint_box(bar.thumb, bar.clip, appearance.scrollbar, appearance.scrollbar_image, {}, stroke,
-                      appearance.indicator_border, BorderStyle::solid);
-            if (length > 12 * scale && width > 7 * scale) {
-                const auto pitch = std::max(2.f, std::round(scale * 4.f / 3));
-                const auto center_x = bar.thumb.x + bar.thumb.width * .5f;
-                const auto center_y = bar.thumb.y + bar.thumb.height * .5f;
-                for (int row = 0; row < 4; ++row)
-                    for (int column = 0; column < 3; ++column) {
-                        const auto across = (column - 1) * pitch;
-                        const auto along = (row - 1.5f) * pitch;
-                        const auto x = std::round(center_x + (bar.horizontal ? along : across));
-                        const auto y = std::round(center_y + (bar.horizontal ? across : along));
-                        quad({x + stroke, y + stroke, stroke, stroke}, bar.clip, appearance.indicator_border);
-                        quad({x, y, stroke, stroke}, bar.clip, shadow);
-                    }
-            }
-            for (const auto [button, decrement] : {std::pair{bar.decrement, true}, std::pair{bar.increment, false}}) {
-                if (step <= 0)
-                    continue;
-                const bool available = enabled && (decrement ? bar.value > 0 : bar.value < bar.maximum);
-                paint_box(button, bar.clip, appearance.scrollbar, available ? appearance.scrollbar_image : nullptr, {},
-                          stroke, available ? appearance.indicator_border : appearance.scrollbar, BorderStyle::solid);
-                const auto size = std::min(16.f * scale, std::min(step, width));
-                auto arrow = appearance.foreground;
-                const auto tone = available ? .5f : .085f;
-                arrow.r *= tone;
-                arrow.g *= tone;
-                arrow.b *= tone;
-                const auto symbol =
-                    bar.horizontal ? (decrement ? detail::TextStore::Symbol::left : detail::TextStore::Symbol::right)
-                                   : (decrement ? detail::TextStore::Symbol::up : detail::TextStore::Symbol::down);
-                quad({button.x + (button.width - size) * .5f, button.y + (button.height - size) * .5f, size, size},
-                     bar.clip, arrow, self.text.symbol(symbol, static_cast<std::uint32_t>(std::ceil(size))));
-            }
-        };
-        std::size_t popup_draw_begin = std::numeric_limits<std::size_t>::max();
-        for (auto key : self.order) {
-            auto& state = self.states.at(key);
-            if (state.control.kind == ControlKind::popup && self.popup_dismissed)
-                continue;
-            const auto* box = geometry->find(state.node);
-            if (!box)
-                continue;
-            Rect bounds{box->x * scale, box->y * scale, box->width * scale, box->height * scale};
-            Clip clip = target;
-            bool enabled = state.control.enabled;
-            if (state.control.parent) {
-                const auto& parent_state = self.states.at(state.control.parent);
-                if (parent_state.frame_index == std::numeric_limits<std::size_t>::max())
-                    continue;
-                const auto& parent_box = output->controls[parent_state.frame_index];
-                bounds.x += parent_box.bounds.x;
-                bounds.y += parent_box.bounds.y;
-                clip = intersect(parent_box.clip, clip_rect(parent_box.bounds));
-                enabled &= parent_box.enabled;
-                if (scrolling(parent_state.control.kind)) {
-                    bounds.y -= static_cast<float>(parent_state.scroll) * scale;
-                    const auto& style = *parent_state.resolved;
-                    if (style.scrollbar_gutter == ScrollbarGutter::stable)
-                        clip.right =
-                            std::min(clip.right, static_cast<std::int32_t>(std::floor(
-                                                     parent_box.bounds.x + parent_box.bounds.width -
-                                                     (style.scrollbar_width + style.scrollbar_inset * 2) * scale)));
-                }
-            }
-            if (state.control.kind == ControlKind::popup) {
-                bounds.x = std::clamp(bounds.x, 0.f,
-                                      std::max(0.f, static_cast<float>(self.surface.extent.width) - bounds.width));
-                bounds.y = std::clamp(bounds.y, 0.f,
-                                      std::max(0.f, static_cast<float>(self.surface.extent.height) - bounds.height));
-                output->popup = key;
-                popup_draw_begin = paint ? draws->draws.size() : 0;
-            }
-            // Cap before conversion to integer clip; layout can legally overflow.
-            if (!std::isfinite(bounds.x) || !std::isfinite(bounds.y) || std::abs(bounds.x) > 1e8f ||
-                std::abs(bounds.y) > 1e8f || bounds.width > 1e8f || bounds.height > 1e8f)
-                return std::unexpected(Error{ErrorCode::invalid_control, key});
-            state.frame_index = output->controls.size();
-            output->controls.push_back({key,
-                                        state.control.parent,
-                                        state.control.kind,
-                                        bounds,
-                                        clip,
-                                        enabled,
-                                        state.incarnation,
-                                        state.resolved,
-                                        state.control.selected,
-                                        state.control.action_target,
-                                        state.control.button_behavior,
-                                        state.control.menu_behavior,
-                                        state.control.radio_group,
-                                        state.control.table,
-                                        state.control.table_selection,
-                                        state.control.context_target,
-                                        state.control.context_group,
-                                        state.control.table_layout,
-                                        state.control.code,
-                                        state.control.tooltip,
-                                        state.control.read_only});
-            const auto kind = state.control.kind;
             if (kind == ControlKind::tree_item) {
-                const auto indent = self.states.at(state.control.parent).resolved->tree_indent * scale;
-                const auto x = bounds.x + (state.control.layout.padding.left + state.resolved->padding.left) * scale +
-                               state.control.tree_depth * indent;
-                output->tree_rows.push_back(
-                    {key, state.control.tree_index, state.control.tree_depth,
-                     state.control.tree_branch ? Rect{x, bounds.y, indent, bounds.height} : Rect{},
-                     state.control.tree_expanded});
-            }
-            // Keep every arranged box and its parent transform. Only painting is culled.
-            if (!visible(bounds, clip)) {
-                if (text_kind(kind))
-                    ++self.culled_text_controls;
-                continue;
-            }
-            const auto& appearance = *state.resolved;
-            const float border = std::min({appearance.border_width * scale, bounds.width * .5f, bounds.height * .5f});
-            // Resolve text geometry once for either mode; painting consumes the
-            // same width/metrics rather than resolving an alternate layout path.
-            const auto text_padding = text_kind(kind) ? self.padding_for(state) : ui_layout::Insets{};
-            const float text_width = std::max(0.f, box->width - (text_padding.left + text_padding.right));
-            const auto text_metrics = text_kind(kind) ? self.text.metrics(key, text_width) : ui_layout::MeasuredSize{};
-            if (paint) {
-                const CornerRadii radius{appearance.radius.top_left * scale, appearance.radius.top_right * scale,
-                                         appearance.radius.bottom_right * scale, appearance.radius.bottom_left * scale};
-                if (appearance.background || appearance.image || (border > 0 && appearance.border.a > 0)) {
-                    const auto background = appearance.background.value_or(Color{0, 0, 0, 0});
-                    paint_box(bounds, clip, background, appearance.image, radius, border, appearance.border,
-                              appearance.border_style, appearance.border_edges, appearance.border_inner,
-                              appearance.border_shadow);
+                const auto& tree_style = *self.states.at(state.control.parent).resolved;
+                const auto indent = tree_style.tree_indent * scale;
+                const auto start = bounds.x + (state.control.layout.padding.left + appearance.padding.left) * scale;
+                const auto depth = state.control.tree_depth;
+                const auto cx = std::round(start + (depth + .5f) * indent);
+                const auto cy = std::round(bounds.y + bounds.height * .5f);
+                const auto tree_clip = intersect(clip, clip_rect(bounds));
+                const auto stroke = std::max(1.f, std::round(scale * .667f));
+                if (depth) {
+                    const auto px = std::round(cx - indent);
+                    quad({px, bounds.y, stroke, (state.control.tree_lines[depth] ? bounds.height : cy - bounds.y)},
+                         tree_clip, tree_style.tree_line);
+                    quad({px, cy, indent + (state.control.tree_branch ? 0 : indent * .5f), stroke}, tree_clip,
+                         tree_style.tree_line);
+                    for (std::uint32_t level = 1; level < depth; ++level)
+                        if (state.control.tree_lines[level])
+                            quad({std::round(start + (level - .5f) * indent), bounds.y, stroke, bounds.height},
+                                 tree_clip, tree_style.tree_line);
                 }
-                if (kind == ControlKind::tree) {
-                    const auto padding = effective_padding(state.control, appearance);
-                    const auto row_height = appearance.tree_row_height * scale;
-                    auto stripe_clip = intersect(clip, clip_rect(bounds));
-                    if (appearance.scrollbar_gutter == ScrollbarGutter::stable)
-                        stripe_clip.right = std::min(
-                            stripe_clip.right,
-                            static_cast<int>(bounds.x + bounds.width -
-                                             (appearance.scrollbar_width + 2 * appearance.scrollbar_inset) * scale));
-                    const auto origin = bounds.y + padding.top * scale - static_cast<float>(state.scroll) * scale;
-                    const auto first =
-                        std::max(0, static_cast<int>(std::floor((stripe_clip.top - origin) / row_height)));
-                    for (auto row = first; origin + row * row_height < stripe_clip.bottom; ++row)
-                        if (row % 2)
-                            quad({bounds.x, origin + row * row_height, bounds.width, row_height}, stripe_clip,
-                                 appearance.tree_alternate);
-                }
-                if (kind == ControlKind::tree_item) {
-                    const auto& tree_style = *self.states.at(state.control.parent).resolved;
-                    const auto indent = tree_style.tree_indent * scale;
-                    const auto start = bounds.x + (state.control.layout.padding.left + appearance.padding.left) * scale;
-                    const auto depth = state.control.tree_depth;
-                    const auto cx = std::round(start + (depth + .5f) * indent);
-                    const auto cy = std::round(bounds.y + bounds.height * .5f);
-                    const auto tree_clip = intersect(clip, clip_rect(bounds));
-                    const auto stroke = std::max(1.f, std::round(scale * .667f));
-                    if (depth) {
-                        const auto px = std::round(cx - indent);
-                        quad({px, bounds.y, stroke, (state.control.tree_lines[depth] ? bounds.height : cy - bounds.y)},
-                             tree_clip, tree_style.tree_line);
-                        quad({px, cy, indent + (state.control.tree_branch ? 0 : indent * .5f), stroke}, tree_clip,
-                             tree_style.tree_line);
-                        for (std::uint32_t level = 1; level < depth; ++level)
-                            if (state.control.tree_lines[level])
-                                quad({std::round(start + (level - .5f) * indent), bounds.y, stroke, bounds.height},
-                                     tree_clip, tree_style.tree_line);
-                    }
-                    if (state.control.tree_branch) {
-                        const bool expanded = state.control.tree_expanded;
-                        if (expanded)
-                            quad({cx, cy, stroke, bounds.y + bounds.height - cy}, tree_clip, tree_style.tree_line);
-                        const auto diameter = std::min(9 * scale, indent - 2 * scale);
-                        const auto radius = diameter * .5f;
-                        paint_box({cx - radius, cy - radius, diameter, diameter}, tree_clip,
-                                  appearance.indicator_background, {}, {radius, radius, radius, radius}, 0, {},
-                                  BorderStyle::solid);
-                        quad({cx - 2.5f * scale, cy - stroke * .5f, 5 * scale, stroke}, tree_clip,
+                if (state.control.tree_branch) {
+                    const bool expanded = state.control.tree_expanded;
+                    if (expanded)
+                        quad({cx, cy, stroke, bounds.y + bounds.height - cy}, tree_clip, tree_style.tree_line);
+                    const auto diameter = std::min(9 * scale, indent - 2 * scale);
+                    const auto radius = diameter * .5f;
+                    paint_box({cx - radius, cy - radius, diameter, diameter}, tree_clip,
+                              appearance.indicator_background, {}, {radius, radius, radius, radius}, 0, {},
+                              BorderStyle::solid);
+                    quad({cx - 2.5f * scale, cy - stroke * .5f, 5 * scale, stroke}, tree_clip,
+                         appearance.indicator_border);
+                    if (!expanded)
+                        quad({cx - stroke * .5f, cy - 2.5f * scale, stroke, 5 * scale}, tree_clip,
                              appearance.indicator_border);
-                        if (!expanded)
-                            quad({cx - stroke * .5f, cy - 2.5f * scale, stroke, 5 * scale}, tree_clip,
-                                 appearance.indicator_border);
-                    }
-                }
-                if (appearance.accent_width > 0) {
-                    const auto height = std::min(appearance.accent_width * scale, bounds.height);
-                    quad({bounds.x, bounds.y + bounds.height - height, bounds.width, height},
-                         intersect(clip, clip_rect(bounds)), appearance.accent);
-                }
-                if (kind == ControlKind::slider) {
-                    const auto track = slider_track(bounds, scale);
-                    const auto value = self.press && self.press->key == key ? self.press->value : state.control.value;
-                    const auto fraction = static_cast<float>(std::clamp(
-                        (value - state.control.minimum) / (state.control.maximum - state.control.minimum), 0.0, 1.0));
-                    const auto slider_clip = intersect(clip, clip_rect(bounds));
-                    quad(track, slider_clip, appearance.border);
-                    quad({track.x, track.y, track.width * fraction, track.height}, slider_clip, appearance.accent);
-                    const auto height = std::min(16 * scale, bounds.height);
-                    paint_box({track.x + track.width * fraction - 2.5f * scale,
-                               bounds.y + (bounds.height - height) * .5f, 5 * scale, height},
-                              slider_clip, appearance.indicator_background, {}, {}, scale, appearance.indicator_border,
-                              BorderStyle::outset);
-                }
-                if (state.control.icon != ControlIcon::none) {
-                    using Icon = ControlIcon;
-                    const auto icon = state.control.icon;
-                    const auto icon_clip = intersect(clip, clip_rect(bounds));
-                    if (icon == Icon::grip_horizontal || icon == Icon::grip_vertical) {
-                        const bool vertical = icon == Icon::grip_vertical;
-                        const auto length =
-                            std::min(appearance.indicator_size * scale, vertical ? bounds.height : bounds.width);
-                        const auto dot = std::min({std::max(1.f, std::round(scale * 4.f / 3)), length,
-                                                   vertical ? bounds.width : bounds.height});
-                        const auto pitch = std::round((length - dot) / 6);
-                        for (int i = 0; i < 7 && dot > 0; ++i) {
-                            const float offset = (static_cast<float>(i) - 3) * pitch;
-                            const auto x =
-                                std::round(bounds.x + bounds.width * .5f - dot * .5f + (vertical ? 0 : offset));
-                            const auto y =
-                                std::round(bounds.y + bounds.height * .5f - dot * .5f + (vertical ? offset : 0));
-                            quad({x, y, dot, dot}, icon_clip, appearance.foreground);
-                        }
-                    } else {
-                        const auto symbol = icon_symbol(icon);
-                        auto padding = self.padding_for(state);
-                        const bool captioned = !state.control.text.empty();
-                        const bool above = captioned && appearance.icon_placement == IconPlacement::above;
-                        const bool leading = captioned && !above;
-                        if (leading)
-                            padding.left -= appearance.indicator_size + 6;
-                        if (above)
-                            padding.top -= appearance.indicator_size + 2;
-                        const float width = std::max(0.f, bounds.width - (padding.left + padding.right) * scale);
-                        const float height = std::max(0.f, bounds.height - (padding.top + padding.bottom) * scale);
-                        const float size = std::min({appearance.indicator_size * scale, width, height});
-                        const auto alignment = captioned ? TextAlign::center : appearance.icon_align;
-                        const float offset = alignment == TextAlign::left    ? 0
-                                             : alignment == TextAlign::right ? width - size
-                                                                             : (width - size) * .5f;
-                        const float x = bounds.x + padding.left * scale + (leading ? 0 : offset);
-                        const float y = bounds.y + padding.top * scale + (above ? 0 : (height - size) * .5f);
-                        if (size > 0) {
-                            if (icon == Icon::maximize)
-                                quad({x + size * .15f, y + size * .225f, size * .7f, size * .55f}, icon_clip,
-                                     appearance.indicator_background);
-                            if (icon == Icon::back || icon == Icon::forward) {
-                                quad({x, y, size, size}, icon_clip, appearance.indicator_border,
-                                     self.text.symbol(symbol, static_cast<std::uint32_t>(std::ceil(size))));
-                                const auto stroke = std::max(1.f, std::round(scale));
-                                if (size > stroke * 2)
-                                    quad({x + stroke, y + stroke, size - 2 * stroke, size - 2 * stroke}, icon_clip,
-                                         appearance.foreground,
-                                         self.text.symbol(symbol,
-                                                          static_cast<std::uint32_t>(std::ceil(size - 2 * stroke))));
-                            } else
-                                quad({x, y, size, size}, icon_clip,
-                                     appearance.indicator_foreground.value_or(appearance.foreground),
-                                     self.text.symbol(symbol, static_cast<std::uint32_t>(std::ceil(size))));
-                        }
-                    }
-                }
-                if (toggle_kind(kind) ||
-                    (kind == ControlKind::menu_item && state.control.menu_behavior == MenuBehavior::checkbox)) {
-                    const auto marker_clip = intersect(clip, clip_rect(bounds));
-                    const float x = bounds.x + (state.control.layout.padding.left + appearance.padding.left) * scale;
-                    const float size = appearance.indicator_size * scale;
-                    const float y = bounds.y + (bounds.height - size) * .5f;
-                    const float glyph = std::max(2.f, appearance.indicator_size - 2) * scale;
-                    if (kind == ControlKind::checkbox || kind == ControlKind::menu_item) {
-                        paint_box({x, y, size, size}, marker_clip, appearance.indicator_background, {}, {}, scale,
-                                  appearance.indicator_border.a > 0 ? appearance.indicator_border
-                                                                    : appearance.foreground,
-                                  kind == ControlKind::menu_item      ? BorderStyle::solid
-                                  : appearance.indicator_border.a > 0 ? BorderStyle::inset
-                                                                      : BorderStyle::solid);
-                        if (state.control.selected)
-                            quad({x + scale, y + scale, glyph, glyph}, marker_clip,
-                                 appearance.indicator_foreground.value_or(appearance.foreground),
-                                 self.text.symbol(detail::TextStore::Symbol::check,
-                                                  static_cast<std::uint32_t>(std::ceil(glyph))));
-                    } else {
-                        quad({x, y, size, size}, marker_clip,
-                             appearance.indicator_foreground.value_or(appearance.foreground),
-                             self.text.symbol(state.control.selected ? detail::TextStore::Symbol::disclosure_down
-                                                                     : detail::TextStore::Symbol::disclosure_right,
-                                              static_cast<std::uint32_t>(std::ceil(size))));
-                    }
                 }
             }
-            if (kind == ControlKind::table) {
-#include "detail/session_table_draw.inl"
-                continue;
+            if (appearance.accent_width > 0) {
+                const auto height = std::min(appearance.accent_width * scale, bounds.height);
+                quad({bounds.x, bounds.y + bounds.height - height, bounds.width, height},
+                     intersect(clip, clip_rect(bounds)), appearance.accent);
             }
-            if (paint) {
-                if (kind == ControlKind::menu_item && state.control.menu_behavior == MenuBehavior::radio) {
-                    using Symbol = detail::TextStore::Symbol;
-                    const auto size = appearance.indicator_size * scale;
-                    const auto x = bounds.x + (state.control.layout.padding.left + appearance.padding.left) * scale;
-                    const auto y = bounds.y + (bounds.height - size) * .5f;
-                    const auto symbol = state.control.selected ? Symbol::radio_checked : Symbol::radio;
-                    if (size > 0)
-                        quad({x, y, size, size}, intersect(clip, clip_rect(bounds)), appearance.foreground,
-                             self.text.symbol(symbol, static_cast<std::uint32_t>(std::ceil(size))));
-                }
-                if (kind == ControlKind::combo && state.control.icon != ControlIcon::none &&
-                    state.control.text.empty()) {
-                    const auto size = std::min({7.f * scale, bounds.width * .3f, bounds.height * .3f});
-                    if (size > 0)
-                        quad({bounds.x + bounds.width - size - 2 * scale, bounds.y + bounds.height - size - 2 * scale,
-                              size, size},
-                             intersect(clip, clip_rect(bounds)),
-                             appearance.indicator_foreground.value_or(appearance.foreground),
-                             self.text.symbol(detail::TextStore::Symbol::down,
-                                              static_cast<std::uint32_t>(std::ceil(size))));
-                }
-                if (kind == ControlKind::combo && appearance.combo_indicator != ComboIndicator::none &&
-                    (state.control.icon == ControlIcon::none || !state.control.text.empty())) {
-                    // Houdini's dropdown arrow stays ~9 px whatever the combo's icon size.
-                    const float size = std::min(appearance.indicator_size,
-                                                appearance.combo_indicator == ComboIndicator::caret ? 14.f : 9.f) *
-                                       scale;
-                    const auto arrow_clip = intersect(clip, clip_rect(bounds));
-                    if (appearance.combo_indicator == ComboIndicator::caret) {
-                        // Inline caret immediately after the label; no separate arrow well.
-                        const float x = bounds.x + (text_padding.left + text_metrics.width + 1) * scale;
-                        if (size > 0)
-                            quad({x, bounds.y + (bounds.height - size) * .5f + scale, size, size}, arrow_clip,
-                                 appearance.indicator_foreground.value_or(appearance.foreground),
-                                 self.text.symbol(detail::TextStore::Symbol::caret,
-                                                  static_cast<std::uint32_t>(std::ceil(size))));
-                    } else {
-                        quad({bounds.x + bounds.width - 15 * scale, bounds.y + border, 15 * scale - border,
-                              std::max(0.f, bounds.height - 2 * border)},
-                             arrow_clip, {0, 0, 0, .17f});
-                        const auto arrow = [&](detail::TextStore::Symbol symbol, float cy) {
-                            quad({bounds.x + bounds.width - (15 * scale + size) * .5f, cy - size * .5f, size, size},
-                                 arrow_clip, appearance.indicator_foreground.value_or(appearance.foreground),
+            if (kind == ControlKind::slider) {
+                const auto track = slider_track(bounds, scale);
+                const auto value = self.press && self.press->key == key ? self.press->value : state.control.value;
+                const auto fraction = static_cast<float>(std::clamp(
+                    (value - state.control.minimum) / (state.control.maximum - state.control.minimum), 0.0, 1.0));
+                const auto slider_clip = intersect(clip, clip_rect(bounds));
+                quad(track, slider_clip, appearance.border);
+                quad({track.x, track.y, track.width * fraction, track.height}, slider_clip, appearance.accent);
+                const auto height = std::min(16 * scale, bounds.height);
+                paint_box({track.x + track.width * fraction - 2.5f * scale, bounds.y + (bounds.height - height) * .5f,
+                           5 * scale, height},
+                          slider_clip, appearance.indicator_background, {}, {}, scale, appearance.indicator_border,
+                          BorderStyle::outset);
+            }
+            if (state.control.icon != ControlIcon::none) {
+                using Icon = ControlIcon;
+                const auto icon = state.control.icon;
+                const auto icon_clip = intersect(clip, clip_rect(bounds));
+                if (icon == Icon::grip_horizontal || icon == Icon::grip_vertical) {
+                    const bool vertical = icon == Icon::grip_vertical;
+                    const auto length =
+                        std::min(appearance.indicator_size * scale, vertical ? bounds.height : bounds.width);
+                    const auto dot = std::min(
+                        {std::max(1.f, std::round(scale * 4.f / 3)), length, vertical ? bounds.width : bounds.height});
+                    const auto pitch = std::round((length - dot) / 6);
+                    for (int i = 0; i < 7 && dot > 0; ++i) {
+                        const float offset = (static_cast<float>(i) - 3) * pitch;
+                        const auto x = std::round(bounds.x + bounds.width * .5f - dot * .5f + (vertical ? 0 : offset));
+                        const auto y = std::round(bounds.y + bounds.height * .5f - dot * .5f + (vertical ? offset : 0));
+                        quad({x, y, dot, dot}, icon_clip, appearance.foreground);
+                    }
+                } else {
+                    const auto symbol = icon_symbol(icon);
+                    auto padding = self.padding_for(state);
+                    const bool captioned = !state.control.text.empty();
+                    const bool above = captioned && appearance.icon_placement == IconPlacement::above;
+                    const bool leading = captioned && !above;
+                    if (leading)
+                        padding.left -= appearance.indicator_size + 6;
+                    if (above)
+                        padding.top -= appearance.indicator_size + 2;
+                    const float width = std::max(0.f, bounds.width - (padding.left + padding.right) * scale);
+                    const float height = std::max(0.f, bounds.height - (padding.top + padding.bottom) * scale);
+                    const float size = std::min({appearance.indicator_size * scale, width, height});
+                    const auto alignment = captioned ? TextAlign::center : appearance.icon_align;
+                    const float offset = alignment == TextAlign::left    ? 0
+                                         : alignment == TextAlign::right ? width - size
+                                                                         : (width - size) * .5f;
+                    const float x = bounds.x + padding.left * scale + (leading ? 0 : offset);
+                    const float y = bounds.y + padding.top * scale + (above ? 0 : (height - size) * .5f);
+                    if (size > 0) {
+                        if (icon == Icon::maximize)
+                            quad({x + size * .15f, y + size * .225f, size * .7f, size * .55f}, icon_clip,
+                                 appearance.indicator_background);
+                        if (icon == Icon::back || icon == Icon::forward) {
+                            quad({x, y, size, size}, icon_clip, appearance.indicator_border,
                                  self.text.symbol(symbol, static_cast<std::uint32_t>(std::ceil(size))));
-                        };
-                        if (appearance.combo_indicator == ComboIndicator::arrows) {
-                            arrow(detail::TextStore::Symbol::up, bounds.y + bounds.height * .5f - 3.5f * scale);
-                            arrow(detail::TextStore::Symbol::down, bounds.y + bounds.height * .5f + 3.5f * scale);
+                            const auto stroke = std::max(1.f, std::round(scale));
+                            if (size > stroke * 2)
+                                quad(
+                                    {x + stroke, y + stroke, size - 2 * stroke, size - 2 * stroke}, icon_clip,
+                                    appearance.foreground,
+                                    self.text.symbol(symbol, static_cast<std::uint32_t>(std::ceil(size - 2 * stroke))));
                         } else
-                            arrow(detail::TextStore::Symbol::down, bounds.y + bounds.height * .5f);
+                            quad({x, y, size, size}, icon_clip,
+                                 appearance.indicator_foreground.value_or(appearance.foreground),
+                                 self.text.symbol(symbol, static_cast<std::uint32_t>(std::ceil(size))));
                     }
                 }
             }
-            if (kind == ControlKind::code_editor) {
-#include "detail/session_code_draw.inl"
-            }
-            if (text_kind(kind)) {
-                const auto padding = text_padding;
-                const float width = text_width;
-                const auto metrics = text_metrics;
-                const auto paragraph = text_field(kind) ? self.text.snapshot(key, width) : nullptr;
-                float x = bounds.x + padding.left * scale;
-                float y = bounds.y + padding.top * scale;
-                const float content_height = std::max(0.f, box->height - (padding.top + padding.bottom));
-                // Baseline contexts use the same top origin as layout measurement,
-                // including text contributing a nested container's first baseline.
-                if (!state.baseline_content) {
-                    const auto alignment = appearance.text_vertical_align;
-                    const float offset = alignment == TextVerticalAlign::center   ? .5f
-                                         : alignment == TextVerticalAlign::bottom ? 1.f
-                                                                                  : 0.f;
-                    y += std::max(0.f, content_height - metrics.height) * offset * scale;
-                }
-                const auto text_clip =
-                    intersect(clip, clip_rect(text_field(kind) ? Rect{bounds.x + padding.left * scale,
-                                                                      bounds.y + padding.top * scale, width * scale,
-                                                                      content_height * scale}
-                                                               : bounds));
-                const bool editing = self.edit && self.edit->key == key && self.edit->text_mode;
-                float scroll = editing ? self.edit->scroll : 0;
-                Rect caret;
-                if (editing) {
-                    caret = paragraph->caret(self.display_caret());
-                    scroll = std::clamp(scroll, 0.f, std::max(0.f, metrics.width + appearance.caret_width - width));
-                    if (caret.x < scroll)
-                        scroll = caret.x;
-                    if (caret.x + appearance.caret_width > scroll + width)
-                        scroll = std::max(0.f, caret.x + appearance.caret_width - width);
-                    x -= scroll * scale;
-                    if (paint) {
-                        if (!self.edit->composition) {
-                            const auto& s = self.edit->buffer().current();
-                            for (auto range : paragraph->selection(std::min(s.caret.offset, s.anchor.offset),
-                                                                   std::max(s.caret.offset, s.anchor.offset)))
-                                quad({x + range.x * scale, y + range.y * scale, range.width * scale,
-                                      range.height * scale},
-                                     text_clip, appearance.selection);
-                        } else {
-                            const auto& c = *self.edit->composition;
-                            for (std::size_t first = 0; first < c.preedit.attributes.size();) {
-                                auto last = first + 1;
-                                while (last < c.preedit.attributes.size() &&
-                                       c.preedit.attributes[last] == c.preedit.attributes[first])
-                                    ++last;
-                                if (c.preedit.attributes[first] == 1 || c.preedit.attributes[first] == 3)
-                                    for (auto range : paragraph->selection(c.first + static_cast<std::uint32_t>(first),
-                                                                           c.first + static_cast<std::uint32_t>(last)))
-                                        quad({x + range.x * scale, y + range.y * scale, range.width * scale,
-                                              range.height * scale},
-                                             text_clip, appearance.selection);
-                                first = last;
-                            }
-                        }
-                    }
-                }
-                if (text_field(kind)) {
-                    const bool bound = self.edit && self.edit->key == key;
-                    output->text_geometry.push_back({key, state.incarnation, paragraph, x, y, scale, scroll,
-                                                     bound ? self.edit->token : EditToken{},
-                                                     bound && self.edit->composition ? self.edit->composition->id : 0});
-                }
-                if (paint) {
-                    const auto raster = self.text.raster(
-                        key, width, scale,
-                        text_field(kind)
-                            ? std::optional<Clip>{clip_rect({static_cast<float>(text_clip.left) - x,
-                                                             static_cast<float>(text_clip.top) - y,
-                                                             static_cast<float>(text_clip.right - text_clip.left),
-                                                             static_cast<float>(text_clip.bottom - text_clip.top)})}
-                            : std::nullopt);
-                    if (raster.coverage && appearance.text_shadow) {
-                        const auto offset = std::max(1.f, std::round(scale));
-                        quad({x + raster.left + offset, y + raster.top + offset,
-                              static_cast<float>(raster.coverage->width), static_cast<float>(raster.coverage->height)},
-                             text_clip, *appearance.text_shadow, raster.coverage);
-                    }
-                    if (raster.coverage)
-                        quad({x + raster.left, y + raster.top, static_cast<float>(raster.coverage->width),
-                              static_cast<float>(raster.coverage->height)},
-                             text_clip, appearance.foreground, raster.coverage);
-                }
-                if (editing) {
-                    if (paint && self.edit->composition) {
-                        const auto& c = *self.edit->composition;
-                        for (auto range :
-                             paragraph->selection(c.first, c.first + static_cast<std::uint32_t>(c.preedit.text.size())))
-                            quad({x + range.x * scale, y + (range.y + range.height) * scale - scale,
-                                  range.width * scale, scale},
-                                 text_clip, appearance.caret);
-                    }
-                    const Rect physical{x + caret.x * scale, y + caret.y * scale, appearance.caret_width * scale,
-                                        std::max(1.f, caret.height * scale)};
-                    if (paint)
-                        quad(physical, text_clip, appearance.caret);
-                    if (visible(physical, text_clip))
-                        output->caret = TextCaret{self.edit->token, physical, text_clip};
-                    TextInputAnchor anchor{self.edit->token, 0, 0, {}, text_clip};
-                    Rect start;
-                    if (self.edit->composition) {
-                        const auto& c = *self.edit->composition;
-                        anchor.composition_id = c.id;
-                        anchor.composition_revision = c.revision;
-                        start =
-                            c.preedit.text.empty() ? paragraph->caret({c.first, false}) : paragraph->character(c.first);
-                    } else {
-                        const auto& selection = self.edit->buffer().current();
-                        const auto position =
-                            selection.caret.offset == selection.anchor.offset
-                                ? selection.caret
-                                : detail::TextPosition{std::min(selection.caret.offset, selection.anchor.offset),
-                                                       false};
-                        start = paragraph->caret(position);
-                    }
-                    anchor.bounds = {x + start.x * scale, y + start.y * scale, start.width * scale,
-                                     start.height * scale};
-                    output->input_anchor = anchor;
+            if (toggle_kind(kind) ||
+                (kind == ControlKind::menu_item && state.control.menu_behavior == MenuBehavior::checkbox)) {
+                const auto marker_clip = intersect(clip, clip_rect(bounds));
+                const float x = bounds.x + (state.control.layout.padding.left + appearance.padding.left) * scale;
+                const float size = appearance.indicator_size * scale;
+                const float y = bounds.y + (bounds.height - size) * .5f;
+                const float glyph = std::max(2.f, appearance.indicator_size - 2) * scale;
+                if (kind == ControlKind::checkbox || kind == ControlKind::menu_item) {
+                    paint_box({x, y, size, size}, marker_clip, appearance.indicator_background, {}, {}, scale,
+                              appearance.indicator_border.a > 0 ? appearance.indicator_border : appearance.foreground,
+                              kind == ControlKind::menu_item      ? BorderStyle::solid
+                              : appearance.indicator_border.a > 0 ? BorderStyle::inset
+                                                                  : BorderStyle::solid);
+                    if (state.control.selected)
+                        quad({x + scale, y + scale, glyph, glyph}, marker_clip,
+                             appearance.indicator_foreground.value_or(appearance.foreground),
+                             self.text.symbol(detail::TextStore::Symbol::check,
+                                              static_cast<std::uint32_t>(std::ceil(glyph))));
+                } else {
+                    quad({x, y, size, size}, marker_clip,
+                         appearance.indicator_foreground.value_or(appearance.foreground),
+                         self.text.symbol(state.control.selected ? detail::TextStore::Symbol::disclosure_down
+                                                                 : detail::TextStore::Symbol::disclosure_right,
+                                          static_cast<std::uint32_t>(std::ceil(size))));
                 }
             }
         }
-        const auto popup_draw_end = paint ? draws->draws.size() : 0;
-        const auto scrollbar = [&](const auto& state) {
-            if (state.frame_index == std::numeric_limits<std::size_t>::max())
-                return;
-            const auto& bounds = output->controls[state.frame_index];
-            const auto& appearance = *state.resolved;
-            if (state.scroll_limit <= 0 || !visible(bounds.bounds, bounds.clip))
-                return;
-            ScrollbarGeometry bar;
-            bar.key = bounds.key;
-            bar.clip = intersect(bounds.clip, clip_rect(bounds.bounds));
-            const auto width = appearance.scrollbar_width * scale;
-            const auto inset = appearance.scrollbar_inset * scale;
-            bar.bounds = {bounds.bounds.x + bounds.bounds.width - width - inset, bounds.bounds.y + inset, width,
-                          std::max(0.f, bounds.bounds.height - 2 * inset)};
-            bar.maximum = state.scroll_limit;
-            bar.value = state.scroll;
-            bar.page = bounds.bounds.height / scale;
-            prepare_scrollbar(bar, appearance, bounds.enabled);
-        };
-        for (auto key : self.order)
-            if (scrolling(self.states.at(key).control.kind) && self.states.at(key).control.kind != ControlKind::popup)
-                scrollbar(self.states.at(key));
-        if (popup_draw_begin != std::numeric_limits<std::size_t>::max()) {
-            // Root popup owns the top layer, including over ordinary list bars.
-            if (paint)
-                std::rotate(draws->draws.begin() + static_cast<std::ptrdiff_t>(popup_draw_begin),
-                            draws->draws.begin() + static_cast<std::ptrdiff_t>(popup_draw_end), draws->draws.end());
-            scrollbar(self.states.at(output->popup));
+        if (kind == ControlKind::table) {
+#include "detail/session_table_draw.inl"
+            continue;
         }
         if (paint) {
+            if (kind == ControlKind::menu_item && state.control.menu_behavior == MenuBehavior::radio) {
+                using Symbol = detail::TextStore::Symbol;
+                const auto size = appearance.indicator_size * scale;
+                const auto x = bounds.x + (state.control.layout.padding.left + appearance.padding.left) * scale;
+                const auto y = bounds.y + (bounds.height - size) * .5f;
+                const auto symbol = state.control.selected ? Symbol::radio_checked : Symbol::radio;
+                if (size > 0)
+                    quad({x, y, size, size}, intersect(clip, clip_rect(bounds)), appearance.foreground,
+                         self.text.symbol(symbol, static_cast<std::uint32_t>(std::ceil(size))));
+            }
+            if (kind == ControlKind::combo && state.control.icon != ControlIcon::none && state.control.text.empty()) {
+                const auto size = std::min({7.f * scale, bounds.width * .3f, bounds.height * .3f});
+                if (size > 0)
+                    quad(
+                        {bounds.x + bounds.width - size - 2 * scale, bounds.y + bounds.height - size - 2 * scale, size,
+                         size},
+                        intersect(clip, clip_rect(bounds)),
+                        appearance.indicator_foreground.value_or(appearance.foreground),
+                        self.text.symbol(detail::TextStore::Symbol::down, static_cast<std::uint32_t>(std::ceil(size))));
+            }
+            if (kind == ControlKind::combo && appearance.combo_indicator != ComboIndicator::none &&
+                (state.control.icon == ControlIcon::none || !state.control.text.empty())) {
+                // Houdini's dropdown arrow stays ~9 px whatever the combo's icon size.
+                const float size = std::min(appearance.indicator_size,
+                                            appearance.combo_indicator == ComboIndicator::caret ? 14.f : 9.f) *
+                                   scale;
+                const auto arrow_clip = intersect(clip, clip_rect(bounds));
+                if (appearance.combo_indicator == ComboIndicator::caret) {
+                    // Inline caret immediately after the label; no separate arrow well.
+                    const float x = bounds.x + (text_padding.left + text_metrics.width + 1) * scale;
+                    if (size > 0)
+                        quad({x, bounds.y + (bounds.height - size) * .5f + scale, size, size}, arrow_clip,
+                             appearance.indicator_foreground.value_or(appearance.foreground),
+                             self.text.symbol(detail::TextStore::Symbol::caret,
+                                              static_cast<std::uint32_t>(std::ceil(size))));
+                } else {
+                    quad({bounds.x + bounds.width - 15 * scale, bounds.y + border, 15 * scale - border,
+                          std::max(0.f, bounds.height - 2 * border)},
+                         arrow_clip, {0, 0, 0, .17f});
+                    const auto arrow = [&](detail::TextStore::Symbol symbol, float cy) {
+                        quad({bounds.x + bounds.width - (15 * scale + size) * .5f, cy - size * .5f, size, size},
+                             arrow_clip, appearance.indicator_foreground.value_or(appearance.foreground),
+                             self.text.symbol(symbol, static_cast<std::uint32_t>(std::ceil(size))));
+                    };
+                    if (appearance.combo_indicator == ComboIndicator::arrows) {
+                        arrow(detail::TextStore::Symbol::up, bounds.y + bounds.height * .5f - 3.5f * scale);
+                        arrow(detail::TextStore::Symbol::down, bounds.y + bounds.height * .5f + 3.5f * scale);
+                    } else
+                        arrow(detail::TextStore::Symbol::down, bounds.y + bounds.height * .5f);
+                }
+            }
+        }
+        if (kind == ControlKind::code_editor) {
+#include "detail/session_code_draw.inl"
+        }
+        if (text_kind(kind)) {
+            const auto padding = text_padding;
+            const float width = text_width;
+            const auto metrics = text_metrics;
+            ATELIER_TRY_BIND(paragraph_result, text_field(kind)
+                                                   ? self.text.snapshot(key, width)
+                                                   : Result<std::shared_ptr<const detail::TextSnapshot>>{});
+            const auto& paragraph = *paragraph_result;
+            float x = bounds.x + padding.left * scale;
+            float y = bounds.y + padding.top * scale;
+            const float content_height = std::max(0.f, box->height - (padding.top + padding.bottom));
+            // Baseline contexts use the same top origin as layout measurement,
+            // including text contributing a nested container's first baseline.
+            if (!state.baseline_content) {
+                const auto alignment = appearance.text_vertical_align;
+                const float offset = alignment == TextVerticalAlign::center   ? .5f
+                                     : alignment == TextVerticalAlign::bottom ? 1.f
+                                                                              : 0.f;
+                y += std::max(0.f, content_height - metrics.height) * offset * scale;
+            }
+            const auto text_clip = intersect(
+                clip, clip_rect(text_field(kind) ? Rect{bounds.x + padding.left * scale, bounds.y + padding.top * scale,
+                                                        width * scale, content_height * scale}
+                                                 : bounds));
+            const bool editing = self.edit && self.edit->key == key && self.edit->text_mode;
+            float scroll = editing ? self.edit->scroll : 0;
+            Rect caret;
+            if (editing) {
+                ATELIER_TRY_BIND(position, self.display_caret());
+                ATELIER_TRY_BIND(caret_result, paragraph->caret(*position));
+                caret = *caret_result;
+                scroll = std::clamp(scroll, 0.f, std::max(0.f, metrics.width + appearance.caret_width - width));
+                if (caret.x < scroll)
+                    scroll = caret.x;
+                if (caret.x + appearance.caret_width > scroll + width)
+                    scroll = std::max(0.f, caret.x + appearance.caret_width - width);
+                x -= scroll * scale;
+                if (paint) {
+                    if (!self.edit->composition) {
+                        const auto& s = self.edit->buffer().current();
+                        ATELIER_TRY_BIND(ranges, paragraph->selection(std::min(s.caret.offset, s.anchor.offset),
+                                                                      std::max(s.caret.offset, s.anchor.offset)));
+                        for (auto range : *ranges)
+                            quad({x + range.x * scale, y + range.y * scale, range.width * scale, range.height * scale},
+                                 text_clip, appearance.selection);
+                    } else {
+                        const auto& c = *self.edit->composition;
+                        for (std::size_t first = 0; first < c.preedit.attributes.size();) {
+                            auto last = first + 1;
+                            while (last < c.preedit.attributes.size() &&
+                                   c.preedit.attributes[last] == c.preedit.attributes[first])
+                                ++last;
+                            if (c.preedit.attributes[first] == 1 || c.preedit.attributes[first] == 3) {
+                                ATELIER_TRY_BIND(ranges,
+                                                 paragraph->selection(c.first + static_cast<std::uint32_t>(first),
+                                                                      c.first + static_cast<std::uint32_t>(last)));
+                                for (auto range : *ranges)
+                                    quad({x + range.x * scale, y + range.y * scale, range.width * scale,
+                                          range.height * scale},
+                                         text_clip, appearance.selection);
+                            }
+                            first = last;
+                        }
+                    }
+                }
+            }
+            if (text_field(kind)) {
+                const bool bound = self.edit && self.edit->key == key;
+                output->text_geometry.push_back({key, state.incarnation, paragraph, x, y, scale, scroll,
+                                                 bound ? self.edit->token : EditToken{},
+                                                 bound && self.edit->composition ? self.edit->composition->id : 0});
+            }
+            if (paint) {
+                const auto raster_result = self.text.raster(
+                    key, width, scale,
+                    text_field(kind)
+                        ? std::optional<Clip>{clip_rect({static_cast<float>(text_clip.left) - x,
+                                                         static_cast<float>(text_clip.top) - y,
+                                                         static_cast<float>(text_clip.right - text_clip.left),
+                                                         static_cast<float>(text_clip.bottom - text_clip.top)})}
+                        : std::nullopt);
+                ATELIER_TRY(raster_result);
+                const auto& raster = *raster_result;
+                if (raster.coverage && appearance.text_shadow) {
+                    const auto offset = std::max(1.f, std::round(scale));
+                    quad({x + raster.left + offset, y + raster.top + offset, static_cast<float>(raster.coverage->width),
+                          static_cast<float>(raster.coverage->height)},
+                         text_clip, *appearance.text_shadow, raster.coverage);
+                }
+                if (raster.coverage)
+                    quad({x + raster.left, y + raster.top, static_cast<float>(raster.coverage->width),
+                          static_cast<float>(raster.coverage->height)},
+                         text_clip, appearance.foreground, raster.coverage);
+            }
+            if (editing) {
+                if (paint && self.edit->composition) {
+                    const auto& c = *self.edit->composition;
+                    ATELIER_TRY_BIND(ranges, paragraph->selection(
+                                                 c.first, c.first + static_cast<std::uint32_t>(c.preedit.text.size())));
+                    for (auto range : *ranges)
+                        quad({x + range.x * scale, y + (range.y + range.height) * scale - scale, range.width * scale,
+                              scale},
+                             text_clip, appearance.caret);
+                }
+                const Rect physical{x + caret.x * scale, y + caret.y * scale, appearance.caret_width * scale,
+                                    std::max(1.f, caret.height * scale)};
+                if (paint)
+                    quad(physical, text_clip, appearance.caret);
+                if (visible(physical, text_clip))
+                    output->caret = TextCaret{self.edit->token, physical, text_clip};
+                TextInputAnchor anchor{self.edit->token, 0, 0, {}, text_clip};
+                Rect start;
+                if (self.edit->composition) {
+                    const auto& c = *self.edit->composition;
+                    anchor.composition_id = c.id;
+                    anchor.composition_revision = c.revision;
+                    ATELIER_TRY_BIND(start_result, c.preedit.text.empty() ? paragraph->caret({c.first, false})
+                                                                          : paragraph->character(c.first));
+                    start = *start_result;
+                } else {
+                    const auto& selection = self.edit->buffer().current();
+                    const auto position =
+                        selection.caret.offset == selection.anchor.offset
+                            ? selection.caret
+                            : detail::TextPosition{std::min(selection.caret.offset, selection.anchor.offset), false};
+                    ATELIER_TRY_BIND(start_result, paragraph->caret(position));
+                    start = *start_result;
+                }
+                anchor.bounds = {x + start.x * scale, y + start.y * scale, start.width * scale, start.height * scale};
+                output->input_anchor = anchor;
+            }
+        }
+    }
+    const auto popup_draw_end = paint ? draws->draws.size() : 0;
+    const auto scrollbar = [&](const auto& state) {
+        if (state.frame_index == std::numeric_limits<std::size_t>::max())
+            return;
+        const auto& bounds = output->controls[state.frame_index];
+        const auto& appearance = *state.resolved;
+        if (state.scroll_limit <= 0 || !visible(bounds.bounds, bounds.clip))
+            return;
+        ScrollbarGeometry bar;
+        bar.key = bounds.key;
+        bar.clip = intersect(bounds.clip, clip_rect(bounds.bounds));
+        const auto width = appearance.scrollbar_width * scale;
+        const auto inset = appearance.scrollbar_inset * scale;
+        bar.bounds = {bounds.bounds.x + bounds.bounds.width - width - inset, bounds.bounds.y + inset, width,
+                      std::max(0.f, bounds.bounds.height - 2 * inset)};
+        bar.maximum = state.scroll_limit;
+        bar.value = state.scroll;
+        bar.page = bounds.bounds.height / scale;
+        prepare_scrollbar(bar, appearance, bounds.enabled);
+    };
+    for (auto key : self.order)
+        if (scrolling(self.states.at(key).control.kind) && self.states.at(key).control.kind != ControlKind::popup)
+            scrollbar(self.states.at(key));
+    if (popup_draw_begin != std::numeric_limits<std::size_t>::max()) {
+        // Root popup owns the top layer, including over ordinary list bars.
+        if (paint)
+            std::rotate(draws->draws.begin() + static_cast<std::ptrdiff_t>(popup_draw_begin),
+                        draws->draws.begin() + static_cast<std::ptrdiff_t>(popup_draw_end), draws->draws.end());
+        scrollbar(self.states.at(output->popup));
+    }
+    if (paint) {
 #include "detail/session_ladder.inl"
 #include "detail/session_tooltip_draw.inl"
-        }
-        output->drawing = std::move(draws);
-        attempt.completed = true;
-        return std::shared_ptr<const UiFrame>(std::move(output));
-    } catch (const detail::TextFailure& failure) {
-        return std::unexpected(Error{ErrorCode::text_failed, 0, failure.code});
     }
+    output->drawing = std::move(draws);
+    attempt.completed = true;
+    return std::shared_ptr<const UiFrame>(std::move(output));
 }
 
 bool Session::accept(std::shared_ptr<const UiFrame> frame) {
@@ -1632,7 +1648,7 @@ void Session::dismiss_tooltip() noexcept {
 Result<Reply> Session::commit_edit() {
     Reply reply;
     if (!impl_->finish_edit(reply, true, false, true))
-        return std::unexpected(Error{ErrorCode::invalid_text, impl_->focus});
+        return std::unexpected(reply.error.value_or(Error{ErrorCode::invalid_text, impl_->focus}));
     return reply;
 }
 
@@ -1642,11 +1658,11 @@ Reply Session::focus(ControlKey key) {
     if (key && (!impl_->active() || !box || !impl_->current(*box) || !focusable(box->kind) ||
                 !visible(box->bounds, box->clip)))
         return reply;
-    if (impl_->focus != key)
-        impl_->finish_edit(reply, true);
+    if (impl_->focus != key && !impl_->finish_edit(reply, true))
+        return reply;
     impl_->set_focus(reply, key);
     if (key && text_field(box->kind) && !impl_->edit)
-        impl_->begin_edit(key, box->kind == ControlKind::text_edit);
+        impl_->begin_edit(reply, key, box->kind == ControlKind::text_edit);
     reply.redraw = true;
     return reply;
 }

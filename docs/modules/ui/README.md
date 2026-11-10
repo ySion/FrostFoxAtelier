@@ -14,6 +14,10 @@
 
 [session.hpp](../../../modules/gui/ui/include/ui/session.hpp)的`ui::Session`管理同一窗口UI的布局节点、内容、焦点、按压、编辑缓冲和滚动。应用按稳定key提供父节点在前的平坦`Control`描述；控件布局直接复用`ui_layout::NodeInput`。零key表示隐式overlay根。普通容器可使用现有row/column/Flex/Grid；label/button/item/number/text_edit/checkbox/foldout/menu_item/combo/tab/tree_item 是文字叶，list、tree 和 popup 是带裁剪和滚动的 column，table 是持有共享数据快照的虚拟表格，code_editor 是持有共享源码文档的多行编辑叶，splitter/slider/viewport是盒。viewport不自动填色。
 
+`Session` 默认构造为空壳，在稳定地址调用一次 `initialize(font_files)`；失败返回 `ui::Result<void>`，不发布 Impl，之后只允许析构，不承诺重试。初始化成功后才能使用其他方法。文字存储与 LayoutDocument 的 context 地址不变，不通过移动 Session 传递初始化结果。
+
+DirectWrite 创建、度量、字形与命中失败保留 HRESULT 于 `Error.native_code`；ICU 字素分段失败沿原合同使用 E_FAIL。帧准备经 Result，输入经已有 `Reply.error`，不再使用 TextFailure 或 exception_ptr。内部文字身份耗尽、缺失 TextKey、symbol 像素超出 1…256 是 contract-fatal；测量协议对失效查询仍返回 E_INVALIDARG，不把外部输入拒绝改为 fatal。
+
 应用拥有业务值、撤销和重做，控件状态不持有业务对象。数字编辑只保存这次操作的起始值、文本缓冲与预览值；每次新场景投影不会覆盖尚未提交的文字。参数及菜单项 key 绑定具体业务目标，切换绑定时更换或退役旧 key。控件删除再出现会获得新 incarnation，旧帧命中不能误派给重用 key。
 
 普通 button 可提供 `action_target`，把宿主动作身份与控件实例 key 分开。激活 Action 保留来源 `key`，另外携带 `target`（零表示沿用 key）；宿主在现有分发入口解析一次，继续检查业务可用性。该绑定与其他属性同批提交；改变 target 会取消旧鼠标/键盘按下状态，接受帧也保存 target，尚未绘制的新目标不能被旧画面触发。多个按钮可以指向同一命令，UI 不持有命令回调或业务对象。
@@ -60,9 +64,9 @@
 
 `CodeDocument::create` 接收最多 1,048,576 个 UTF-16 码元；要求有效 Unicode、LF 行尾，拒绝 NUL、CR、除 LF/tab 外的 C0 和 DEL。拒绝返回 `ui::ErrorCode::invalid_text` 与原静态诊断，不发布文档；无参构造只创建合法空文档。`ControlKey`、`ErrorCode`、`Error`、`Result` 的原声明归入 [error.hpp](../../../modules/gui/ui/include/ui/error.hpp)，`session.hpp` 继续传递导出，名字和布局不变。宿主只在 create 成功后将值移入共享稳定存储，发布后不搬动对象。
 
-字符判定只由 `CodeDocument::valid_text` 实现，不含长度预算。SourceEditor 的正规化只做 BOM、UTF-8 和 CRLF→LF 转换；load 由 create 校验一次，日志定位前缀与编译快照比较在转换后复用字符谓词，保留旧拒绝、文案和比较语义。Output 保留日志准入及可见转义；其最多 128 KiB 正文转义后不超过 786,432 个码元，违反此转换后置条件直接 fatal，不新增错误展示。ICU 字素边界失败仍可能抛 `TextFailure`，属于 UI-TEXT，create 整条链尚未完成去异常。
+字符判定只由 TextEdit 模块的 `valid_document_text` 实现，`CodeDocument::valid_text` 委托它，不含长度预算。SourceEditor 的正规化只做 BOM、UTF-8 和 CRLF→LF 转换；load 由 create 校验一次，日志定位前缀与编译快照比较在转换后复用字符谓词，保留旧拒绝、文案和比较语义。Output 保留日志准入及可见转义；其最多 128 KiB 正文转义后不超过 786,432 个码元，违反此转换后置条件直接 fatal，不新增错误展示。ICU 失败则返回 `text_failed`，不属于转换后置条件破坏；合法空文档直接建立空文本与 `{0}` 边界/行索引，不调用 ICU。
 
-已知残留 **CODE-DOC-EDIT**：公开 `edit()` 与粘贴写入尚未执行 CodeDocument 的完整字符合同，可能保存出之后无法重新打开的文件。该问题归后续 UI-TEXT/TextEdit，本片不收窄 TextEdit；创建时通过校验不代表后续内容始终合法。
+公开 `edit().replace` 和粘贴在同一 TextEdit 替换入口执行文档字符政策；直接 CR 被拒绝，粘贴保留 CRLF/CR→LF 转换。替换、删除、history 返回 `Result<Change>`：字符或长度拒绝是 `Change::rejected`，ICU 失败是 unexpected，不能混为 no-op。分段成功后才发布正文、索引与历史；失败不产生半次编辑。history 的 break-group、缩进前的 select 仍保留原语义，不宣称所有失败都完全回滚选择和合并组。普通 label/table 和单行字段规则不变。
 
 ## 可组合参数控件
 
@@ -273,7 +277,7 @@ IME使用独立composition_id和固定起始token/替换范围；`CompositionEve
 - K3：高 100 DIP 的列表，底部布局边距 3 与样式边距 20，滚至末尾后尾行底部为 `(100−3−20)×1.5=115.5` 物理像素。
 - K3：固定 640×480、DPI 1.5 的右下角 Tooltip，显示边界位于输入客户区以内；等待只用于到达显示态，不检验延迟合同。
 
-单Session最多10,000个控件、布局深度128；Surface每轴最多32,768物理像素，DPI倍率0.25–8；普通 Control.text 最多4,096个UTF-16码元，单张CPU覆盖率最多16MiB。单行text_edit缓冲最多4096个UTF-16码元，number最多64个；CodeDocument 的文档限制由其[源码工作流](../editor/source-editor.md)和公开接口定义，不套用单行字段上限。字素边界和完整数值解析分别负责编辑与业务有效性。可恢复错误通过Result返回，内存分配失败正常传播。Session单拥有者线程；发布后不修改UiFrame/Coverage，也不保留可变别名。
+单Session最多10,000个控件、布局深度128；Surface每轴最多32,768物理像素，DPI倍率0.25–8；普通 Control.text 最多4,096个UTF-16码元，单张CPU覆盖率最多16MiB。单行text_edit缓冲最多4096个UTF-16码元，number最多64个；CodeDocument 的文档限制由其[源码工作流](../editor/source-editor.md)和公开接口定义，不套用单行字段上限。字素边界和完整数值解析分别负责编辑与业务有效性。可恢复错误通过Result返回，宿主CPU分配失败按工程合同fatal，字形覆盖率预算超限仍为Result的E_OUTOFMEMORY。Session单拥有者线程；发布后不修改UiFrame/Coverage，也不保留可变别名。
 
 正式消费者使用真实 Session、LayoutDocument 和 DirectWrite，检查在 Dev/Release 中均有效。撤销重做由 Editor 验收负责；基础层不重复保留历史、普通交互、错误/拒绝、计数、规模与参数矩阵。菜单形状指纹和产品输出互比不作为独立真值；产品协议与功能不因验收缩减而改变。
 

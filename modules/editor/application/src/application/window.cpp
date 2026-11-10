@@ -119,11 +119,19 @@ std::expected<std::wstring, DWORD> composition_text(HIMC context, DWORD index) {
 }
 }
 
-Window::Window(HWND popup_owner, std::optional<ui::PixelExtent> initial_client) : popup_(popup_owner != nullptr) {
+Result<void> Window::initialize(HWND popup_owner, std::optional<ui::PixelExtent> initial_client) {
+    popup_ = popup_owner != nullptr;
+    const auto failed = [&](const char* message, DWORD code) {
+        if (handle_)
+            DestroyWindow(handle_);
+        handle_ = nullptr;
+        return std::unexpected(
+            Error{ErrorCode::invalid_storage, std::string(message) + " (Win32 " + std::to_string(code) + ")."});
+    };
     if (initial_client && (popup_ || !initial_client->width || !initial_client->height ||
                            initial_client->width > 32768 || initial_client->height > 32768))
-        throw std::runtime_error(
-            "Initial client size requires a main window and dimensions in 1..32768 physical pixels.");
+        return failed("Initial client size requires a main window and dimensions in 1..32768 physical pixels.",
+                      ERROR_INVALID_PARAMETER);
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     WNDCLASSEXW cls{};
     cls.cbSize = sizeof(cls);
@@ -132,45 +140,48 @@ Window::Window(HWND popup_owner, std::optional<ui::PixelExtent> initial_client) 
     cls.lpfnWndProc = procedure;
     cls.lpszClassName = window_class;
     cls.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-    if (!RegisterClassExW(&cls) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS)
-        throw std::runtime_error("Cannot register editor window class.");
+    if (!RegisterClassExW(&cls)) {
+        const auto code = GetLastError();
+        if (code != ERROR_CLASS_ALREADY_EXISTS)
+            return failed("Cannot register editor window class.", code);
+    }
     const auto dpi = GetDpiForSystem();
     RECT size{0, 0, MulDiv(1280, static_cast<int>(dpi), 96), MulDiv(840, static_cast<int>(dpi), 96)};
-    AdjustWindowRectExForDpi(&size, WS_OVERLAPPEDWINDOW, FALSE, 0, GetDpiForSystem());
+    if (!AdjustWindowRectExForDpi(&size, WS_OVERLAPPEDWINDOW, FALSE, 0, GetDpiForSystem()))
+        return failed("Cannot calculate the initial editor window size.", native_error());
     handle_ = CreateWindowExW(popup_ ? WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE : 0, window_class,
                               popup_ ? L"FrostFox Atelier | Menu" : L"FrostFox Atelier | Scene",
                               popup_ ? WS_POPUP : WS_OVERLAPPEDWINDOW, popup_ ? 0 : CW_USEDEFAULT,
                               popup_ ? 0 : CW_USEDEFAULT, popup_ ? 32 : size.right - size.left,
                               popup_ ? 32 : size.bottom - size.top, popup_owner, nullptr, cls.hInstance, this);
     if (!handle_)
-        throw std::runtime_error("Cannot create editor window.");
-    if (initial_client)
-        try {
-            // The HWND's monitor determines the actual DPI. Apply the requested
-            // client area before showing the window or creating its swap chain.
-            RECT bounds{0, 0, static_cast<LONG>(initial_client->width), static_cast<LONG>(initial_client->height)};
-            if (!AdjustWindowRectExForDpi(
-                    &bounds, static_cast<DWORD>(GetWindowLongPtrW(handle_, GWL_STYLE)), GetMenu(handle_) != nullptr,
-                    static_cast<DWORD>(GetWindowLongPtrW(handle_, GWL_EXSTYLE)), GetDpiForWindow(handle_)))
-                throw std::runtime_error("Cannot calculate the requested initial client size.");
-            MINMAXINFO limits{};
-            SendMessageW(handle_, WM_GETMINMAXINFO, 0, reinterpret_cast<LPARAM>(&limits));
-            if (bounds.right - bounds.left < limits.ptMinTrackSize.x ||
-                bounds.bottom - bounds.top < limits.ptMinTrackSize.y)
-                throw std::runtime_error("Requested client size is below the editor minimum at this display DPI.");
-            if (!SetWindowPos(handle_, nullptr, 0, 0, bounds.right - bounds.left, bounds.bottom - bounds.top,
-                              SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE))
-                throw std::runtime_error("Cannot apply the requested initial client size.");
-            RECT actual{};
-            if (!GetClientRect(handle_, &actual) ||
-                actual.right - actual.left != static_cast<LONG>(initial_client->width) ||
-                actual.bottom - actual.top != static_cast<LONG>(initial_client->height))
-                throw std::runtime_error("Requested client size is not supported by this window and display DPI.");
-        } catch (...) {
-            DestroyWindow(handle_);
-            handle_ = nullptr;
-            throw;
-        }
+        return failed("Cannot create editor window.", native_error());
+    if (initial_client) {
+        // The HWND's monitor determines the actual DPI. Apply the requested
+        // client area before showing the window or creating its swap chain.
+        RECT bounds{0, 0, static_cast<LONG>(initial_client->width), static_cast<LONG>(initial_client->height)};
+        if (!AdjustWindowRectExForDpi(
+                &bounds, static_cast<DWORD>(GetWindowLongPtrW(handle_, GWL_STYLE)), GetMenu(handle_) != nullptr,
+                static_cast<DWORD>(GetWindowLongPtrW(handle_, GWL_EXSTYLE)), GetDpiForWindow(handle_)))
+            return failed("Cannot calculate the requested initial client size.", native_error());
+        MINMAXINFO limits{};
+        SendMessageW(handle_, WM_GETMINMAXINFO, 0, reinterpret_cast<LPARAM>(&limits));
+        if (bounds.right - bounds.left < limits.ptMinTrackSize.x ||
+            bounds.bottom - bounds.top < limits.ptMinTrackSize.y)
+            return failed("Requested client size is below the editor minimum at this display DPI.",
+                          ERROR_INVALID_PARAMETER);
+        if (!SetWindowPos(handle_, nullptr, 0, 0, bounds.right - bounds.left, bounds.bottom - bounds.top,
+                          SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE))
+            return failed("Cannot apply the requested initial client size.", native_error());
+        RECT actual{};
+        if (!GetClientRect(handle_, &actual))
+            return failed("Requested client size is not supported by this window and display DPI.", native_error());
+        if (actual.right - actual.left != static_cast<LONG>(initial_client->width) ||
+            actual.bottom - actual.top != static_cast<LONG>(initial_client->height))
+            return failed("Requested client size is not supported by this window and display DPI.",
+                          ERROR_INVALID_PARAMETER);
+    }
+    return {};
 }
 
 Window::~Window() {

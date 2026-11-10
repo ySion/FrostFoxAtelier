@@ -1,4 +1,5 @@
 #include "editor/project_ui.hpp"
+#include "application/diagnostics.hpp"
 #include <array>
 
 namespace atelier::editor {
@@ -37,12 +38,14 @@ Result<std::shared_ptr<const ui::UiFrame>> ProjectUI::prepare(ui::Session& sessi
     };
     const auto describe = [](std::string_view stage, const ui::Error& error) {
         return "Project UI " + std::string(stage) + " failed at control " + std::to_string(error.key) + " (UI error " +
-               std::to_string(static_cast<unsigned>(error.code)) + ").";
+               std::to_string(static_cast<unsigned>(error.code)) + "). " + application::ui_error(error).message;
     };
     auto resized = session.set_surface(surface);
     if (!resized)
         return failed(describe("surface", resized.error()));
     effects(*resized);
+    if (resized->error)
+        return failed(describe("surface", *resized->error));
     // Do not publish a candidate that cannot yet be checked by the real layout
     // engine. In particular, minimizing cannot turn a bad source into active UI.
     if (!surface.extent.width || !surface.extent.height)
@@ -57,6 +60,8 @@ Result<std::shared_ptr<const ui::UiFrame>> ProjectUI::prepare(ui::Session& sessi
         if (!restored)
             return failed(describe("restore", restored.error()));
         effects(*restored);
+        if (restored->error)
+            return failed(describe("restore", *restored->error));
         auto frame = session.prepare();
         if (!frame)
             return failed(describe("restored layout", frame.error()));
@@ -75,10 +80,18 @@ Result<std::shared_ptr<const ui::UiFrame>> ProjectUI::prepare(ui::Session& sessi
     } else if (configured())
         return failed(error_);
     auto described = session.set_controls(controls);
+    if (!described && described.error().code == ui::ErrorCode::text_failed)
+        return failed(describe("controls", described.error()));
     if (!described)
         return restore(describe("controls", described.error()));
     effects(*described);
+    if (described->error && described->error->code == ui::ErrorCode::text_failed)
+        return failed(describe("controls", *described->error));
+    if (described->error)
+        return restore(describe("controls", *described->error));
     auto frame = session.prepare();
+    if (!frame && frame.error().code == ui::ErrorCode::text_failed)
+        return failed(describe("layout", frame.error()));
     if (!frame)
         return restore(describe("layout", frame.error()));
     if (document_)

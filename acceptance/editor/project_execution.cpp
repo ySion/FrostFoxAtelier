@@ -1,3 +1,4 @@
+#include "../helpers.hpp"
 #include "assets/file.hpp"
 #include "assets/json_format.hpp"
 #include "editor/project_code.hpp"
@@ -41,19 +42,12 @@ struct PlayProcessAcceptanceAccess {
 using namespace atelier;
 
 namespace {
-template <class T>
-T take(Result<T> result) {
-    if (!result)
-        throw std::runtime_error(result.error().message);
-    if constexpr (!std::is_void_v<T>)
-        return std::move(*result);
-}
+using acceptance::helpers::take;
 
 template <class T>
 T display(ui::Result<T> result) {
     if (!result)
-        throw std::runtime_error("UI error " + std::to_string(static_cast<int>(result.error().code)) + " at control " +
-                                 std::to_string(result.error().key));
+        fatal(application::ui_error(result.error()).message);
     if constexpr (!std::is_void_v<T>)
         return std::move(*result);
 }
@@ -651,16 +645,17 @@ void run(const std::filesystem::path& root) {
     editor::Workspace workspace;
     workspace.project_open = true;
     workspace.project_build = loaded.code->report();
-    ui::Session ui(application::editor_fonts());
+    ui::Session ui;
+    display(ui.initialize(application::editor_fonts()));
     auto style = ui.style();
     style.font.family = L"Sarasa UI SC";
     style.font.size = 12.5f;
     style.caption_scale = 1;
     style.title_scale = 7.f / 6;
     display(ui.set_style(style));
-    display(ui.set_style_sheet(application::editor_styles()));
+    display(ui.set_style_sheet(take(application::editor_styles())));
     display(ui.set_surface({{1280, 800}, 1, 1}));
-    auto controls = workspace.describe(document, {1280, 800}, nullptr, &project);
+    auto controls = take(workspace.describe(document, {1280, 800}, nullptr, &project));
     auto described = ui.set_controls(controls);
     if (!described) {
         for (const auto& control : controls)
@@ -733,7 +728,7 @@ void run(const std::filesystem::path& root) {
     take(workspace.source_editor.open(component));
     workspace.project_build = playing.code->report();
     workspace.dock.select(editor::source_control::tab);
-    controls = workspace.describe(document, {1280, 800}, ui.presented().get(), &project);
+    controls = take(workspace.describe(document, {1280, 800}, ui.presented().get(), &project));
     display(ui.set_controls(controls));
     workspace.commit_ui_controls();
     require(workspace.source_editor.locate_problem(), "Cross-file compiler diagnostic could not open its source.");

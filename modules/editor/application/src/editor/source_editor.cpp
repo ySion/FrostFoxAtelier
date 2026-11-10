@@ -49,8 +49,11 @@ bool SourceEditor::File::dirty() const {
 Result<void> SourceEditor::load(File& file, std::string bytes) {
     ATELIER_TRY_BIND(text, normalized(bytes));
     auto created = ui::CodeDocument::create(*text);
-    if (!created)
-        return failure("Open a UTF-8 text file; binary/control characters are not editable.");
+    if (!created) {
+        if (created.error().code == ui::ErrorCode::invalid_text)
+            return failure("Open a UTF-8 text file; binary/control characters are not editable.");
+        return std::unexpected(application::ui_error(created.error()));
+    }
     auto document = std::make_shared<ui::CodeDocument>(std::move(*created));
     if (file.document) {
         const auto& old = file.document->edit();

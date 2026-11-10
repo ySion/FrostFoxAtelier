@@ -204,7 +204,7 @@ void verify_material_resources() {
     workspace.assets.reset(true);
     workspace.inspecting_asset = true;
     workspace.material_inspection = key;
-    const auto controls = workspace.describe(document, {1200, 800}, nullptr, &project);
+    const auto controls = take(workspace.describe(document, {1200, 800}, nullptr, &project));
     require(workspace.ui_error().empty() && !controls.empty(), "Arbitrary material DSL projection failed.");
     const auto bound = [&](std::string_view path, editor::Workspace::Binding::Kind kind) {
         return std::ranges::any_of(controls, [&](const auto& control) {
@@ -218,7 +218,7 @@ void verify_material_resources() {
             "UI did not create stable-path numeric/vector controls.");
     workspace.inspecting_asset = false;
     take(document.select(entity_a));
-    static_cast<void>(workspace.describe(document, {1200, 800}, nullptr, &project));
+    take(workspace.describe(document, {1200, 800}, nullptr, &project));
     require(workspace.ui_error().empty(), "Scene MI projection failed.");
     const auto paused = take(material::capture_program(runtime, resource.id()));
     take(document.start());

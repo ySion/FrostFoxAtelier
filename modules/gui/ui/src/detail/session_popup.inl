@@ -16,11 +16,12 @@
         if (next && press) {
             auto cancelled=cancel(); reply.capture=cancelled.capture;
             for (auto& effect:cancelled.effects) reply.effects.push_back(std::move(effect));
+            if (cancelled.error) {reply.error=cancelled.error;return;}
         }
         if (popup && !popup_dismissed) restore_popup_focus(reply);
         popup=next; popup_dismissed=false;
         if (!popup) { popup_return_focus=0; return; }
-        finish_edit(reply,true);
+        if (!finish_edit(reply,true)) return;
         popup_return_focus=focus; set_focus(reply,0); hover=0;
         bool selected_radio=false;
         for (auto key:order) {
@@ -35,7 +36,7 @@
         reply.redraw=true;
     }
     void context_request(Reply& reply, const ControlBox& box, float x, float y, std::optional<TableSelection> table={}) {
-        finish_edit(reply,true);
+        if (!finish_edit(reply,true)) return;
         if (focusable(box.kind)) set_focus(reply,box.key);
         action(reply,ActionKind::context_menu,box.context_target?box.context_target:box.key,
             ContextMenuRequest{box.key,box.context_group,x,y,table});
@@ -45,12 +46,13 @@
         auto* state=live(command.target);
         const auto* box=published?published->find(command.target):nullptr;
         if (!state || !box || !current(*box) || !text_field(state->control.kind)) return;
-        finish_edit(reply,true);
+        if (!finish_edit(reply,true)) return;
         set_focus(reply,command.target);
-        begin_edit(command.target,true,true);
+        if (!begin_edit(reply,command.target,true,true)) return;
         if (command.kind==EditCommandKind::reset) {
             if (!state->control.default_value) return;
             insert(reply,format(*state->control.default_value,state->control.single_precision),detail::TextEdit::Group::isolated);
+            if (reply.error) return;
             finish_edit(reply,true,true);
         } else {
             edit->commit_paste=command.kind==EditCommandKind::paste;

@@ -231,8 +231,8 @@ int verify_editor_tooltips(Application& app, const char* output_directory) {
                 "Normal colour dismissal no longer restores through one undo.");
     }
     Access::mark_saved(app);
-    app.close();
-    require(!app.step(), "Tooltip acceptance did not close its owned editor normally.");
+    take(app.close());
+    require(!take(app.step()), "Tooltip acceptance did not close its owned editor normally.");
     std::puts(
         "Editor tooltip acceptance: PASS (World help retirement, HDR colour group history/cancellation, stable viewport/undo)");
     return 0;
