@@ -2768,6 +2768,8 @@ int verify_editor_ime(Application& app, const char* output_directory) try {
     while (GetForegroundWindow() != app.window() && GetTickCount64() < foreground_deadline)
         require(take(app.step()), "Editor closed while waiting for initial foreground.");
     require_foreground(); // Wait for the user once; never repeatedly seize foreground.
+    if (entities(app).empty())
+        click(app, operator_item(app, "scene.add", atelier::json::Document::literal<R"({"kind":"mesh"})">()));
     click(app, control::parameter_search_toggle);
     click(app, control::parameter_search);
     ComPtr<ITfInputProcessorProfileMgr> manager;
@@ -2966,17 +2968,24 @@ int verify_editor_ime(Application& app, const char* output_directory) try {
         }
         require(predicate(), message);
     };
-    const auto candidate_count = [&] {
+    const auto record_utf16 = [&](const char* label, std::wstring_view text) {
+        setup << label << " UTF16:";
+        for (const auto unit : text)
+            setup << ' ' << std::hex << static_cast<unsigned>(unit);
+        setup << std::endl;
+    };
+    struct ContextScope {
+        HWND window;
+
+        HIMC context;
+
+        ~ContextScope() { ImmReleaseContext(window, context); }
+    };
+    const auto candidate_count = [&](std::wstring* selected = nullptr, WORD* position_key = nullptr) {
         const auto context = ImmGetContext(app.window());
         if (!context)
             return DWORD{0};
-        struct ContextScope {
-            HWND window;
-
-            HIMC context;
-
-            ~ContextScope() { ImmReleaseContext(window, context); }
-        } context_scope{app.window(), context};
+        ContextScope context_scope{app.window(), context};
         const auto bytes = ImmGetCandidateListW(context, 0, nullptr, 0);
         if (bytes < sizeof(CANDIDATELIST))
             return DWORD{0};
@@ -2984,6 +2993,41 @@ int verify_editor_ime(Application& app, const char* output_directory) try {
         std::vector<DWORD> storage((bytes + sizeof(DWORD) - 1) / sizeof(DWORD));
         auto* candidates = reinterpret_cast<CANDIDATELIST*>(storage.data());
         require(ImmGetCandidateListW(context, 0, candidates, bytes) == bytes, "Cannot inspect native candidate state.");
+        if (selected || position_key) {
+            setup << "Native candidates: count=" << std::dec << candidates->dwCount
+                  << "; page-start=" << candidates->dwPageStart << "; selection=" << candidates->dwSelection
+                  << "; page-size=" << candidates->dwPageSize << std::endl;
+            require(candidates->dwSize == bytes &&
+                        candidates->dwCount <= (bytes - offsetof(CANDIDATELIST, dwOffset)) / sizeof(DWORD) &&
+                        candidates->dwSelection < candidates->dwCount && candidates->dwPageStart < candidates->dwCount,
+                    "Invalid native candidate header.");
+            const auto page_size = std::min(candidates->dwPageSize ? candidates->dwPageSize : DWORD{9}, DWORD{9});
+            for (DWORD item = 0; item < std::min(page_size, candidates->dwCount - candidates->dwPageStart); ++item) {
+                const auto index = candidates->dwPageStart + item;
+                const auto offset = candidates->dwOffset[index];
+                setup << "Candidate index=" << std::dec << index << "; offset=" << offset << std::endl;
+                std::wstring value;
+                if (offset) {
+                    require(offset >= offsetof(CANDIDATELIST, dwOffset) + candidates->dwCount * sizeof(DWORD) &&
+                                offset < bytes && offset % sizeof(wchar_t) == 0 && bytes % sizeof(wchar_t) == 0,
+                            "Invalid native candidate text offset.");
+                    const auto* text =
+                        reinterpret_cast<const wchar_t*>(reinterpret_cast<const std::byte*>(candidates) + offset);
+                    const auto* end = std::find(text, text + (bytes - offset) / sizeof(wchar_t), L'\0');
+                    require(end != text + (bytes - offset) / sizeof(wchar_t), "Unterminated native candidate text.");
+                    value.assign(text, end);
+                }
+                record_utf16("Candidate", value);
+                value.erase(value.find_last_not_of(L' ') + 1);
+                if (selected && index == candidates->dwSelection)
+                    *selected = value;
+                if (position_key && value == L"位置") {
+                    *position_key = static_cast<WORD>('1' + item);
+                    setup << "Position candidate index=" << std::dec << index
+                          << "; key=" << static_cast<char>(*position_key) << std::endl;
+                }
+            }
+        }
         return candidates->dwCount;
     };
     const auto compose_position = [&] {
@@ -2991,13 +3035,48 @@ int verify_editor_ime(Application& app, const char* output_directory) try {
             physical_key(static_cast<WORD>(code));
         wait_for([&] { return candidate_count() != 0; }, "System IME did not produce candidates.");
     };
+    const auto confirm_candidate = [&](WORD key, std::wstring_view expected, const auto& value, const char* message) {
+        const auto context = ImmGetContext(app.window());
+        require(context != nullptr, "No native context for confirmed result inspection.");
+        ContextScope result_context{app.window(), context};
+        const auto results_before = app.input_statistics().results;
+        record_utf16("Expected", expected);
+        physical_key(key);
+        wait_for(
+            [&] {
+                return value() == expected && app.text_input() && !app.text_input()->composing &&
+                       app.input_statistics().results == results_before + 1;
+            },
+            message);
+        record_utf16("Confirmed", value());
+        record_input("Candidate confirmed");
+        const auto result_bytes = ImmGetCompositionStringW(context, GCS_RESULTSTR, nullptr, 0);
+        setup << "Native result bytes=" << std::dec << result_bytes << std::endl;
+        if (result_bytes == 0 || result_bytes == IMM_ERROR_NODATA)
+            return;
+        require(result_bytes > 0, ("Native IME result size failed: " + std::to_string(result_bytes)).c_str());
+        require(result_bytes <= 65536 && result_bytes % sizeof(wchar_t) == 0, "Invalid native result byte count.");
+        std::wstring native_result(result_bytes / sizeof(wchar_t), L'\0');
+        const auto read = ImmGetCompositionStringW(context, GCS_RESULTSTR, native_result.data(), result_bytes);
+        setup << "Native result read bytes=" << std::dec << read << std::endl;
+        if (read == 0 || read == IMM_ERROR_NODATA)
+            return;
+        require(read > 0, ("Native IME result read failed: " + std::to_string(read)).c_str());
+        require(read == result_bytes, "Native result byte count changed during inspection.");
+        record_utf16("Native result", native_result);
+        require(native_result == value(), "Native IME result differs from editor query.");
+    };
     const auto native_before = app.input_statistics();
     compose_position();
+    const std::wstring expected = L"位置";
+    WORD position_key{};
+    require(candidate_count(nullptr, &position_key) != 0 && position_key,
+            "Position candidate was not on the current native page.");
     capture(app, output / "s2-ime-preedit.png");
     capture_native_candidate("s2-ime-native-candidate.png");
-    physical_key(VK_SPACE); // The captured local Sogou candidate page shows position as item 1.
-    wait_for([&] { return app.query() == L"位置" && app.text_input() && !app.text_input()->composing; },
-             "Pinyin candidate did not confirm exactly one position query.");
+    confirm_candidate(
+        position_key, expected, [&] { return app.query(); },
+        "Pinyin candidate did not confirm exactly one position query.");
     require(entities(app).size() == 1, "IME confirmation triggered a scene command.");
     capture(app, output / "s2-ime-confirmed.png");
     const auto confirmed_results = app.input_statistics().results;
@@ -3005,14 +3084,14 @@ int verify_editor_ime(Application& app, const char* output_directory) try {
     wait_for([&] { return candidate_count() != 0; }, "Sogou cancel scenario did not show candidates.");
     const auto reading_history = app.document().undo_count();
     physical_key('Z', true);
-    require(app.query() == L"位置" && app.document().undo_count() == reading_history,
+    require(app.query() == expected && app.document().undo_count() == reading_history,
             "Ctrl+Z during native candidates changed the field or scene history.");
     if (!candidate_count()) {
         physical_key('X');
         wait_for([&] { return candidate_count() != 0; }, "Sogou redo scenario did not show candidates.");
     }
     physical_key('Y', true);
-    require(app.query() == L"位置" && app.document().undo_count() == reading_history,
+    require(app.query() == expected && app.document().undo_count() == reading_history,
             "Ctrl+Y during native candidates changed the field or scene history.");
     if (!candidate_count()) {
         physical_key('X');
@@ -3021,7 +3100,7 @@ int verify_editor_ime(Application& app, const char* output_directory) try {
     physical_key(VK_ESCAPE);
     wait_for([&] { return candidate_count() == 0 && app.text_input() && !app.text_input()->composing; },
              "IME Escape did not close candidates.");
-    require(app.query() == L"位置", "Cancelling IME also cancelled confirmed field text.");
+    require(app.query() == expected, "Cancelling IME also cancelled confirmed field text.");
     physical_key('A');
     physical_key('B');
     physical_key('C');
@@ -3034,21 +3113,19 @@ int verify_editor_ime(Application& app, const char* output_directory) try {
         },
         "IME Enter did not produce a confirmed result.");
     key(app, 'Z', true);
-    require(app.query() == L"位置" && entities(app).size() == 1,
+    require(app.query() == expected && entities(app).size() == 1,
             "IME Enter also committed the field or reached scene history.");
     physical_key(VK_RETURN); // A new key sequence commits the search field.
     physical_key(VK_SPACE);
     const auto clean_space_query = app.query();
-    require(clean_space_query.size() > 2 && clean_space_query.starts_with(L"位置"),
+    require(clean_space_query.size() > expected.size() && clean_space_query.starts_with(expected),
             "Clean-state Space did not insert text at the search caret.");
     physical_key(VK_ESCAPE);
-    require(app.query() == L"位置", "Clean-state Space cancellation did not restore the committed query.");
-    if (entities(app).empty())
-        click(app, operator_item(app, "scene.add", atelier::json::Document::literal<R"({"kind":"mesh"})">()));
+    require(app.query() == expected, "Clean-state Space cancellation did not restore the committed query.");
     const auto object = app.document().selection().entity;
     click(app, property_control(app, object, 0));
     compose_position();
-    physical_key(VK_SPACE); // The captured local Sogou candidate page shows position as item 1.
+    physical_key(VK_SPACE);
     wait_for([&] { return app.text_input() && !app.text_input()->composing; },
              "Numeric Pinyin result did not end composition.");
     const auto history = app.document().undo_count();
@@ -3067,7 +3144,7 @@ int verify_editor_ime(Application& app, const char* output_directory) try {
         SendMessageW(app.window(), WM_IME_REQUEST, IMR_QUERYCHARPOSITION, reinterpret_cast<LPARAM>(&stale_origin)) == 0,
         "Native focus loss retained an input-origin snapshot before UI delivery.");
     tick(app, 2);
-    require(!app.text_input() && app.query() == L"位置",
+    require(!app.text_input() && app.query() == expected,
             "OS blur did not cancel the real composition and retain the committed query.");
     require_foreground();
     SetFocus(app.window());
@@ -3085,7 +3162,7 @@ int verify_editor_ime(Application& app, const char* output_directory) try {
         SendMessageW(app.window(), WM_IME_REQUEST, IMR_QUERYCHARPOSITION, reinterpret_cast<LPARAM>(&stale_origin)) == 0,
         "Native surface change retained an input-origin snapshot before UI delivery.");
     tick(app, 3);
-    require((!app.text_input() || !app.text_input()->composing) && app.query() == L"位置",
+    require((!app.text_input() || !app.text_input()->composing) && app.query() == expected,
             "Surface change retained a real composition or changed the query.");
     SetWindowPos(app.window(), nullptr, 0, 0, original_bounds.right - original_bounds.left,
                  original_bounds.bottom - original_bounds.top, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
@@ -3103,14 +3180,9 @@ int verify_editor_ime(Application& app, const char* output_directory) try {
     require(app.text_input() && app.text_input()->token.key == control::parameter_search,
             "Field-switch input target is not the search field.");
     physical_key(VK_SPACE);
-    setup << "Field-switch expected UTF16:";
-    for (const auto unit : clean_space_query)
-        setup << ' ' << std::hex << static_cast<unsigned>(unit);
-    setup << "\nField-switch actual UTF16:";
-    for (const auto unit : app.query())
-        setup << ' ' << std::hex << static_cast<unsigned>(unit);
-    setup << "\nOld object X=" << x(app, object) << "; business editing=" << app.document().editing() << '\n';
-    setup.flush();
+    record_utf16("Field-switch expected", clean_space_query);
+    record_utf16("Field-switch actual", app.query());
+    setup << "Old object X=" << x(app, object) << "; business editing=" << app.document().editing() << std::endl;
     if (app.query() != clean_space_query || x(app, object) != 0 || app.document().editing())
         capture(app, output / "s2-ime-field-switch-failure.png");
     require(app.query() == clean_space_query, "Space after switching editable fields differed from clean-state input.");
@@ -3170,23 +3242,23 @@ int verify_editor_ime(Application& app, const char* output_directory) try {
     key(app, VK_RETURN);
     compose_position();
     verify_native_origin();
-    physical_key(VK_SPACE);
-    wait_for(
-        [&] {
-            return app.control_workbench().values().name == L"位置" && app.text_input() && !app.text_input()->composing;
-        },
+    std::wstring workbench_expected;
+    require(candidate_count(&workbench_expected) != 0 && !workbench_expected.empty(),
+            "Selected native candidate was not on the current page.");
+    confirm_candidate(
+        VK_SPACE, workbench_expected, [&] { return app.control_workbench().values().name; },
         "Workbench IME Space did not confirm the selected candidate.");
     physical_key(VK_RETURN);
     compose_position();
     click(app, sample::disable);
     require(!app.text_input() && !app.presented()->find(sample::name)->enabled &&
-                app.control_workbench().values().name == L"位置",
+                app.control_workbench().values().name == workbench_expected,
             "Disabling the workbench retained native composition or changed confirmed text.");
     key(app, VK_SPACE);
     click(app, sample::name);
     compose_position();
     click(app, control::parameters_tab);
-    require(!app.text_input() && app.control_workbench().values().name == L"位置" &&
+    require(!app.text_input() && app.control_workbench().values().name == workbench_expected &&
                 app.document().undo_count() == scene_history,
             "Switching from workbench to scene retained composition or changed scene history.");
     click(app, control::workbench);

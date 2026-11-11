@@ -435,7 +435,7 @@ DPI 验收覆盖当前显示器上的 WM_DPICHANGED 过渡政策，不据此声�
 
 驱动保存原线程 profile，必要时仅在本线程选择已启用搜狗，退出时恢复并核对原文本服务或键盘布局；不修改用户默认、输入列表或启用状态。SendInput 扫描码经系统 IME 生成拥有式 IMM32 快照，再进入正式共享编辑路径。`ime-platform.txt` 记录本轮 profile、位置应答及跨字段结果，`ime-acceptance.txt` 记录组合/结果/候选通知；`s2-ime-native-candidate.png` 保存原生候选窗，应用预编辑文字来自 GPU 截图。
 
-验收使用 WEIZHI 的已观察首候选“位置”。候选 reading 可早于 START 或 GCS 组合，不以 `Session::composing` 或候选数量单独判断是否清理。失焦、surface 改变、字段切换和目标更换后，Space 的结果分别与同一 IME 的 `clean_space_query` 比较，并核对旧对象值和业务编辑状态；同时检查滚动后的候选位置与接受帧 caret 一致，以及 Controls 工作台和场景历史隔离。
+验收输入 WEIZHI，读取并校验原生候选列表，记录数量、页起点、selection、页大小及当前页至多9项的index/原始UTF-16并立即flush。搜狗候选文本末尾带空格，比较前仅去掉尾随U+0020；搜索框按文字查找当前页的“位置”，记录index和数字键后通过物理键选择，页大小为0时按9项处理，不在当前页即失败。首次查询必须为“位置”、组合结束且结果数恰好增加1，并保留场景命令隔离检查，使后续数值步骤具有Position过滤结果。Controls工作台保留Space确认，以去掉尾随空格的原生selection文本为期望；两处均由验收从同一HIMC独立读取 `GCS_RESULTSTR`，记录并flush实际文本及原生结果，非空原生结果必须与实际文本相等。工作台的后续禁用和切换检查沿用该selection期望，数值字段的Space确认不变。候选 reading 可早于 START 或 GCS 组合，不以 `Session::composing` 或候选数量单独判断是否清理。失焦、surface 改变、字段切换和目标更换后，Space 的结果分别与同一 IME 的 `clean_space_query` 比较，并核对旧对象值和业务编辑状态；同时检查滚动后的候选位置与接受帧 caret 一致，以及 Controls 工作台和场景历史隔离。
 
 Window 的单起点 `IMR_QUERYCHARPOSITION`、原生边界立即失效和绑定切换的取消/解绑顺序见[共享单行编辑](../ui/README.md#共享单行编辑)与[平台交接](../ui/README.md#剪贴板组合与平台位置)。系统 IME、协议注入和静态环境检查分别报告；一次运行只证明所记录的本机输入法版本与候选顺序，不证明微软拼音或其他 IME，也不替代普通窗口链。实机运行须重新记录环境，不沿用旧版本通过表。
 
