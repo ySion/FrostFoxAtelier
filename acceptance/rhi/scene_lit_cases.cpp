@@ -6,21 +6,7 @@
 #include <utility>
 
 namespace rhi_acceptance {
-namespace {
 using namespace atelier::rhi;
-
-template <class T>
-T take(Result<T> result) {
-    if (!result)
-        throw std::runtime_error(result.error().message);
-    return std::move(*result);
-}
-
-void complete(Result<void> result) {
-    if (!result)
-        throw std::runtime_error(result.error().message);
-}
-}
 
 void scene_lit_cases() {
     ContextOptions options;
@@ -140,7 +126,7 @@ RWStructuredBuffer<uint> indirect_values; uint frame_tag;
     check(gfxCommandBindKernel(gfx, indirect.kernel()));
     check(gfxCommandDispatchIndirect(gfx, args));
     check(gfxCommandCopyBuffer(gfx, indirect_readback, indirect_values));
-    complete(owner.finish());
+    take(owner.finish());
     const auto* sample_data = gfxBufferGetData<std::uint32_t>(gfx, sample_readback);
     const auto* color_data = gfxBufferGetData<std::uint16_t>(gfx, color_readback);
     const auto* normal_data = gfxBufferGetData<std::uint16_t>(gfx, normal_readback);
@@ -174,7 +160,7 @@ RWStructuredBuffer<uint> indirect_values; uint frame_tag;
     mip_read = {};
     generate_args = {};
     indirect = {};
-    complete(owner.close());
+    take(owner.close());
     check_debug(debug.Get());
     std::puts("scene-lit-resources: FP16-MRT/D32-SRV/mip-2-UAV-SRV/GPU-indirect=PASS");
 }

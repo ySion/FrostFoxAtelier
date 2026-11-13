@@ -8,14 +8,6 @@ namespace geometry = atelier::geometry;
 
 namespace source = atelier::source;
 
-template <class T, class E>
-T need(std::expected<T, E> result) {
-    if (!result)
-        throw std::runtime_error(result.error().message);
-    if constexpr (!std::is_void_v<T>)
-        return std::move(*result);
-}
-
 void wait(render::Renderer& renderer, render::MaterialBatch& batch) {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::minutes(20);
     while (!take(renderer.preparation(batch)).ready) {
@@ -31,14 +23,14 @@ std::shared_ptr<const std::vector<std::uint32_t>> slots(std::initializer_list<st
 
 material::ProgramSurfaceRef texture_override(material::ProgramSurfaceRef parent, const char* path,
                                              material::ImageRef image) {
-    return need(material::resolve_instance(
+    return take(material::resolve_instance(
         parent, std::array{material::Override{path, material::TextureBinding{"native/image"}, true}},
         std::array{image}));
 }
 
 std::vector<material::ProgramSurfaceRef> surfaces(const std::filesystem::path& output) {
     atelier::Runtime compiler;
-    need(material::register_program_types(compiler));
+    take(material::register_program_types(compiler));
     const auto compile = [&](const char* name, bool masked) {
         const std::string text =
             std::string(
@@ -60,9 +52,9 @@ std::vector<material::ProgramSurfaceRef> surfaces(const std::filesystem::path& o
         std::ofstream file(output / (std::string(name) + ".source"));
         file << text;
         check(file.good(), "write native source evidence");
-        return need(source::compile_material(compiler, need(compiler.native_type<material::Context>()),
-                                             need(compiler.native_type<material::Output>()),
-                                             need(compiler.native_type<material::TextureInput>()), name, text));
+        return take(source::compile_material(compiler, take(compiler.native_type<material::Context>()),
+                                             take(compiler.native_type<material::Output>()),
+                                             take(compiler.native_type<material::TextureInput>()), name, text));
     };
     const auto mask = compile("NativeMask", true);
     const auto opaque = compile("NativeOpaque", false);
@@ -74,7 +66,7 @@ std::vector<material::ProgramSurfaceRef> surfaces(const std::filesystem::path& o
     }
     const auto coverage_image = take(material::Image::create(256, 1, std::move(ramp)));
     const auto source_surface = [&](auto program, material::Policy policy) {
-        const auto definition = need(material::make_definition(
+        const auto definition = take(material::make_definition(
             program, policy,
             std::array{material::TextureDefault{
                            "mData", {"native/white"}, material::TextureColor::linear, {.25f, .5f, .75f, 1}},
@@ -87,12 +79,12 @@ std::vector<material::ProgramSurfaceRef> surfaces(const std::filesystem::path& o
         std::vector<material::ImageRef> images;
         for (const auto& input : definition->textures())
             images.push_back(input.path == "zCoverage" ? coverage_image : white);
-        return need(material::resolve_source(definition, images));
+        return take(material::resolve_source(definition, images));
     };
     const auto masked = source_surface(mask, {material::Coverage::mask, true, true});
     const auto solid = source_surface(opaque, {material::Coverage::opaque, true, true});
     const auto override = [&](auto parent, std::vector<material::Override> entries) {
-        return need(material::resolve_instance(parent, entries, std::vector<material::ImageRef>(entries.size())));
+        return take(material::resolve_instance(parent, entries, std::vector<material::ImageRef>(entries.size())));
     };
     const auto emitter = override(masked, {{"cutoff", 0.f, true},
                                            {"color", atelier::math::Vector3{}, true},
@@ -102,7 +94,7 @@ std::vector<material::ProgramSurfaceRef> surfaces(const std::filesystem::path& o
             source_surface(mask, {material::Coverage::opaque, true, true}),
             override(solid, {{"color", atelier::math::Vector3{.65f, .65f, .65f}, true}}),
             texture_override(emitter, "zCoverage", white),
-            need(material::resolve_source({}, {}))};
+            take(material::resolve_source({}, {}))};
 }
 
 void run(HWND window, const std::filesystem::path& output) {
@@ -167,7 +159,7 @@ void run(HWND window, const std::filesystem::path& output) {
         }
     auto next_table = table;
     next_table[0] = texture_override(table[2], "aColor", take(material::Image::create(256, 256, std::move(checks))));
-    next_table[0] = need(material::resolve_instance(
+    next_table[0] = take(material::resolve_instance(
         next_table[0],
         std::array{material::Override{"color", atelier::math::Vector3{1, 1, 1}, true},
                    material::Override{"mode", 1.f, true}, material::Override{"frequency", 64.f, true}},

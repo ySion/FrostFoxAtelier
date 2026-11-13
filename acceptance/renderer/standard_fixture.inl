@@ -64,35 +64,27 @@ struct Description {
     const Texture& texture(Input input) const { return textures[static_cast<std::size_t>(input)]; }
 };
 
-template <class T, class E>
-T need(std::expected<T, E> result) {
-    if (!result)
-        throw std::runtime_error(result.error().message);
-    if constexpr (!std::is_void_v<T>)
-        return std::move(*result);
-}
-
 atelier::material::ProgramSurfaceRef capture(const Description& value) {
     namespace m = atelier::material;
     namespace math = atelier::math;
     static const auto program = [] {
         atelier::Runtime compiler;
-        need(m::register_program_types(compiler));
+        take(m::register_program_types(compiler));
         const auto catalog = atelier::assets::material_assets();
         const auto& author = std::get<atelier::assets::MaterialSourceAsset>(catalog.front().author);
         const auto file = atelier::assets::builtin_material_source(author.source_path);
         check(bool(file), "StandardPBR source belongs to the real builtin catalog");
-        return need(atelier::source::compile_material(
-            compiler, need(compiler.native_type<m::Context>()), need(compiler.native_type<m::Output>()),
-            need(compiler.native_type<m::TextureInput>()), file->path, file->source));
+        return take(atelier::source::compile_material(
+            compiler, take(compiler.native_type<m::Context>()), take(compiler.native_type<m::Output>()),
+            take(compiler.native_type<m::TextureInput>()), file->path, file->source));
     }();
     const auto& p = value.parameters;
     const auto catalog = atelier::assets::material_assets();
     const auto& author = std::get<atelier::assets::MaterialSourceAsset>(
         catalog[(p.coverage == Coverage::mask ? 2 : 0) + (p.double_sided ? 0 : 1)].author);
     const auto definition =
-        need(m::make_definition(program, {p.coverage, p.double_sided, p.emission_two_sided}, author.inputs));
-    const auto parent = need(m::resolve_source(definition, std::vector<ImageRef>(definition->textures().size())));
+        take(m::make_definition(program, {p.coverage, p.double_sided, p.emission_two_sided}, author.inputs));
+    const auto parent = take(m::resolve_source(definition, std::vector<ImageRef>(definition->textures().size())));
     std::vector<m::Override> entries;
     std::vector<ImageRef> images;
     const auto add = [&](std::string path, m::LocalValue v, ImageRef image = {}) {
@@ -117,7 +109,7 @@ atelier::material::ProgramSurfaceRef capture(const Description& value) {
         if (i == 1 || i == 2 || i == 5)
             add(name + "_channel", float(t.channel));
     }
-    auto result = need(m::resolve_instance(parent, entries, images));
+    auto result = take(m::resolve_instance(parent, entries, images));
     check(result->diagnostics().empty(), "fixture StandardPBR MI resolves every typed author entry");
     return result;
 }

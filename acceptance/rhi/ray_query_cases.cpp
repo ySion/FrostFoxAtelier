@@ -10,18 +10,6 @@ namespace rhi_acceptance {
 namespace {
 using namespace atelier::rhi;
 
-template <class T>
-T take(Result<T> result) {
-    if (!result)
-        throw std::runtime_error(result.error().message);
-    return std::move(*result);
-}
-
-void complete(Result<void> result) {
-    if (!result)
-        throw std::runtime_error(result.error().message);
-}
-
 struct Vertex {
     float x;
 
@@ -191,12 +179,12 @@ float origin_shift;
     for (auto buffer : {vertices, replacement, output})
         check(gfxDestroyBuffer(gfx, buffer));
     pipeline = {};
-    complete(owner.finish());
+    take(owner.finish());
     verify(gfxBufferGetData<Hit>(gfx, initial_readback), 2.0f);
     verify(gfxBufferGetData<Hit>(gfx, readback), 4.0f);
     check(gfxDestroyBuffer(gfx, initial_readback));
     check(gfxDestroyBuffer(gfx, readback));
-    complete(owner.close());
+    take(owner.close());
     check_debug(debug.Get());
     std::puts(
         "inline-ray-query: compute-SM6.5 BLAS/TLAS-build/trace/update/trace single-submission hit/miss/mask/instance/primitive/barycentric/closest-distance/first-hit-visibility retirement-before-finish=PASS");

@@ -25,18 +25,6 @@ void preparation_cases();
 }
 
 namespace {
-template <class T>
-T take(Result<T> result) {
-    if (!result)
-        throw std::runtime_error(result.error().message);
-    return std::move(*result);
-}
-
-void check(Result<void> result) {
-    if (!result)
-        throw std::runtime_error(result.error().message);
-}
-
 PipelineDesc graphics_desc(PipelineKind kind) {
     PipelineDesc desc;
     desc.kind = kind;
@@ -112,11 +100,11 @@ void scene(Context& context, Pipeline& compute, Pipeline& mesh, Pipeline& vertex
         rhi_acceptance::check(gfxCommandCopyBuffer(gfx, out, 44, draw_args, 0, 16));
         for (auto buffer : {a, b, mesh_args, draw_args})
             rhi_acceptance::check(gfxDestroyBuffer(gfx, buffer));
-        check(context.frame());
+        take(context.frame());
         if (frame == 1)
             vertex = take(context.prepare(graphics_desc(PipelineKind::vertex)));
     }
-    check(context.finish());
+    take(context.finish());
     const auto* red = gfxBufferGetData<std::uint8_t>(gfx, mesh_color);
     const auto* green = gfxBufferGetData<std::uint8_t>(gfx, vertex_color);
     const auto* z = gfxBufferGetData<float>(gfx, depth_readback);
@@ -151,61 +139,55 @@ void scene(Context& context, Pipeline& compute, Pipeline& mesh, Pipeline& vertex
 
 int main() {
     atelier::install_fatal_handler();
-    try {
-        ContextOptions options;
-        options.validation = Validation::gpu;
-        auto context = take(Context::open(options));
-        for (unsigned repeat = 0; repeat < 2; ++repeat) {
-            const auto target = take(context.sync_window_target());
-            require(!target.windowed && target.drawable && target.width == options.width &&
-                        target.height == options.height,
-                    "headless target synchronization changed the target");
-            require(gfxGetRecordingFrameSequence(context.borrow()) == 1, "headless synchronization advanced a frame");
-        }
-        require(context.info().debug_layer && context.info().gpu_validation == expected_gpu_validation(),
-                "validation differs from the requested mode");
-        print_adapter(context.borrow());
-        auto debug = debug_queue(context.borrow());
-        std::printf("debug-layer=%u gpu-validation=%u\n", unsigned(context.info().debug_layer),
-                    unsigned(context.info().gpu_validation));
-        PipelineDesc compute_desc;
-        compute_desc.source.cs = compute_source;
-        auto compute = take(context.prepare(compute_desc));
-        auto mesh = take(context.prepare(graphics_desc(PipelineKind::mesh)));
-        auto vertex = take(context.prepare(graphics_desc(PipelineKind::vertex)));
-        scene(context, compute, mesh, vertex);
-        compute = {};
-        mesh = {};
-        vertex = {};
-        check(context.finish());
-        check_debug(debug.Get());
-        check(context.close());
-        check_debug(debug.Get());
-        debug.Reset();
-        Pipeline survivor;
-        GfxContext retained;
-        ComPtr<ID3D12InfoQueue> retained_debug;
-        {
-            auto temporary = take(Context::open(options));
-            retained = temporary.borrow();
-            retained_debug = debug_queue(retained);
-            survivor = take(temporary.prepare(compute_desc));
-        }
-        require(survivor && gfxKernelGetPipelineState(retained, survivor.kernel()),
-                "pipeline did not keep its execution domain alive");
-        survivor = {};
-        check_debug(retained_debug.Get());
-        retained_debug.Reset();
-        resource_cases();
-        ray_query_cases();
-        scene_lit_cases();
-        shadow_cases();
-        preparation_cases();
-        std::puts("pipeline-retains-domain=PASS debug-warnings=0 debug-errors=0");
-        std::puts("RHI acceptance: PASS");
-        return 0;
-    } catch (const std::exception& error) {
-        std::fprintf(stderr, "RHI acceptance: FAIL: %s\n", error.what());
-        return 1;
+    ContextOptions options;
+    options.validation = Validation::gpu;
+    auto context = take(Context::open(options));
+    for (unsigned repeat = 0; repeat < 2; ++repeat) {
+        const auto target = take(context.sync_window_target());
+        require(!target.windowed && target.drawable && target.width == options.width && target.height == options.height,
+                "headless target synchronization changed the target");
+        require(gfxGetRecordingFrameSequence(context.borrow()) == 1, "headless synchronization advanced a frame");
     }
+    require(context.info().debug_layer && context.info().gpu_validation == expected_gpu_validation(),
+            "validation differs from the requested mode");
+    print_adapter(context.borrow());
+    auto debug = debug_queue(context.borrow());
+    std::printf("debug-layer=%u gpu-validation=%u\n", unsigned(context.info().debug_layer),
+                unsigned(context.info().gpu_validation));
+    PipelineDesc compute_desc;
+    compute_desc.source.cs = compute_source;
+    auto compute = take(context.prepare(compute_desc));
+    auto mesh = take(context.prepare(graphics_desc(PipelineKind::mesh)));
+    auto vertex = take(context.prepare(graphics_desc(PipelineKind::vertex)));
+    scene(context, compute, mesh, vertex);
+    compute = {};
+    mesh = {};
+    vertex = {};
+    take(context.finish());
+    check_debug(debug.Get());
+    take(context.close());
+    check_debug(debug.Get());
+    debug.Reset();
+    Pipeline survivor;
+    GfxContext retained;
+    ComPtr<ID3D12InfoQueue> retained_debug;
+    {
+        auto temporary = take(Context::open(options));
+        retained = temporary.borrow();
+        retained_debug = debug_queue(retained);
+        survivor = take(temporary.prepare(compute_desc));
+    }
+    require(survivor && gfxKernelGetPipelineState(retained, survivor.kernel()),
+            "pipeline did not keep its execution domain alive");
+    survivor = {};
+    check_debug(retained_debug.Get());
+    retained_debug.Reset();
+    resource_cases();
+    ray_query_cases();
+    scene_lit_cases();
+    shadow_cases();
+    preparation_cases();
+    std::puts("pipeline-retains-domain=PASS debug-warnings=0 debug-errors=0");
+    std::puts("RHI acceptance: PASS");
+    return 0;
 }

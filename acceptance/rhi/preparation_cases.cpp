@@ -19,18 +19,6 @@ using namespace atelier::rhi;
 
 using Clock = std::chrono::steady_clock;
 
-template <class T>
-T take_value(Result<T> result) {
-    if (!result)
-        throw std::runtime_error(result.error().message);
-    return std::move(*result);
-}
-
-void complete(Result<void> result) {
-    if (!result)
-        throw std::runtime_error(result.error().message);
-}
-
 Result<Pipeline> wait(Context& context, PipelineJob& job) {
     const auto deadline = Clock::now() + std::chrono::seconds(60);
     for (;;) {
@@ -58,7 +46,7 @@ std::uint32_t dispatch(Context& context, const Pipeline& pipeline, std::uint32_t
     check(gfxCommandBindKernel(gfx, pipeline.kernel()));
     check(gfxCommandDispatch(gfx, 1, 1, 1));
     check(gfxCommandCopyBuffer(gfx, readback, counter));
-    complete(context.finish());
+    take(context.finish());
     const auto* value = gfxBufferGetData<std::uint32_t>(gfx, readback);
     require(value != nullptr, "dispatch readback unavailable");
     const auto result = *value;
@@ -132,14 +120,14 @@ void cache() {
     ContextOptions options;
     options.validation = Validation::gpu;
     options.shader_cache = directory;
-    auto context = take_value(Context::open(options));
+    auto context = take(Context::open(options));
     auto debug = debug_queue(context.borrow());
     const auto run = [&](bool asynchronous) {
         auto pipeline = asynchronous ? [&] {
-            auto job = take_value(context.submit(compute(increment_source)));
-            return take_value(wait(context, job));
+            auto job = take(context.submit(compute(increment_source)));
+            return take(wait(context, job));
         }()
-                                     : take_value(context.prepare(compute(increment_source)));
+                                     : take(context.prepare(compute(increment_source)));
         require(dispatch(context, pipeline, 7) == 8, "cached kernel produced a wrong value");
     };
     run(false);
@@ -164,11 +152,11 @@ void cache() {
 
     const char included[] =
         "#include \"rhi-shader-include.hlsli\"\nRWStructuredBuffer<uint> counter;\n[numthreads(1,1,1)] void main() { counter[0] += increment(); }\n";
-    auto pipeline = take_value(context.prepare(compute(included)));
+    auto pipeline = take(context.prepare(compute(included)));
     require(dispatch(context, pipeline, 9) == 10, "kernel with an include produced a wrong value");
     require(entries(directory).size() == 1, "a stage that loaded an include file was cached");
     pipeline = {};
-    complete(context.close());
+    take(context.close());
     check_debug(debug.Get());
     std::puts(
         "preparation-cache: miss-store=PASS hit-unchanged=PASS truncated/corrupt-replaced=PASS includes-uncached=PASS");
@@ -177,7 +165,7 @@ void cache() {
 void close_while_preparing() {
     ContextOptions options;
     options.validation = Validation::gpu;
-    auto context = take_value(Context::open(options));
+    auto context = take(Context::open(options));
     ComPtr<ID3D12Device> device = gfxGetDevice(context.borrow());
     auto debug = debug_queue(context.borrow());
     std::vector<std::string> sources;
@@ -185,8 +173,8 @@ void close_while_preparing() {
         sources.push_back(std::string(increment_source) + "// variant " + std::to_string(i) + "\n");
     std::vector<PipelineJob> jobs;
     for (const auto& source : sources)
-        jobs.push_back(take_value(context.submit(compute(source.c_str()))));
-    auto first = take_value(wait(context, jobs.front()));
+        jobs.push_back(take(context.submit(compute(source.c_str()))));
+    auto first = take(wait(context, jobs.front()));
     check_debug(debug.Get());
     ComPtr<ID3D12DebugDevice> device_debug;
     check_hr(device.As(&device_debug));
@@ -195,7 +183,7 @@ void close_while_preparing() {
     first = {};
     for (std::size_t i = 1; i < jobs.size(); i += 2)
         jobs[i] = {};
-    complete(context.close());
+    take(context.close());
     jobs.clear();
     check_hr(device_debug->ReportLiveDeviceObjects(D3D12_RLDO_DETAIL | D3D12_RLDO_IGNORE_INTERNAL));
     const auto leaked = live_objects(debug.Get());

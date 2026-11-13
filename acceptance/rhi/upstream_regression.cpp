@@ -4,7 +4,6 @@
 
 #include <cstdint>
 #include <cstring>
-#include <cstdlib>
 #include <utility>
 
 using namespace rhi_acceptance;
@@ -15,7 +14,7 @@ struct NativeOwner {
 
     ~NativeOwner() {
         if (value && gfxDestroyContext(value) != kGfxResult_NoError)
-            std::abort();
+            atelier::fatal("native gfx context cleanup failed");
     }
 
     void close() {
@@ -52,11 +51,6 @@ void timeout_once() {
     auto* device = gfxGetDevice(gfx);
     ComPtr<ID3D12Fence> gate;
     check_hr(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&gate)));
-    struct GateRelease {
-        ID3D12Fence* fence;
-
-        ~GateRelease() { fence->Signal(1); }
-    } release{gate.Get()};
     D3D12_HEAP_PROPERTIES heap{};
     heap.Type = D3D12_HEAP_TYPE_READBACK;
     heap.CreationNodeMask = heap.VisibleNodeMask = 1;
@@ -81,15 +75,16 @@ void timeout_once() {
     // Commit initialization separately. The blocked list may only increment once.
     check(gfxFinish(gfx));
     check_hr(gfxGetCommandQueue(gfx)->Wait(gate.Get(), 1));
-    check(gfxSetWaitTimeout(gfx, 1));
-    check(gfxProgramSetParameter(gfx, program, "counter", counter));
-    check(gfxCommandBindKernel(gfx, kernel));
-    check(gfxCommandDispatch(gfx, 1, 1, 1));
-    check(gfxCommandCopyBuffer(gfx, readback, counter));
-    require(gfxFinish(gfx) == kGfxResult_Timeout, "blocked finish did not time out");
-    require(gfxDestroyContext(gfx) == kGfxResult_Timeout, "blocked destruction did not retain the context");
-    require(gfxContextIsValid(gfx), "timeout discarded a valid device");
-    check_hr(gate->Signal(1));
+    const BlockedQueue blocked{gate.Get()};
+    blocked.check(gfxSetWaitTimeout(gfx, 1));
+    blocked.check(gfxProgramSetParameter(gfx, program, "counter", counter));
+    blocked.check(gfxCommandBindKernel(gfx, kernel));
+    blocked.check(gfxCommandDispatch(gfx, 1, 1, 1));
+    blocked.check(gfxCommandCopyBuffer(gfx, readback, counter));
+    blocked.require(gfxFinish(gfx) == kGfxResult_Timeout, "blocked finish did not time out");
+    blocked.require(gfxDestroyContext(gfx) == kGfxResult_Timeout, "blocked destruction did not retain the context");
+    blocked.require(gfxContextIsValid(gfx), "timeout discarded a valid device");
+    blocked.check_hr(gate->Signal(1));
     check(gfxSetWaitTimeout(gfx, 10000));
     check(gfxDestroyBuffer(gfx, counter));
     check(gfxDestroyBuffer(gfx, readback));
@@ -110,18 +105,13 @@ void timeout_once() {
 
 int main(int argc, char** argv) {
     atelier::install_fatal_handler();
-    try {
-        require(argc == 2, "expected --null-list or --timeout");
-        if (std::strcmp(argv[1], "--null-list") == 0)
-            null_list();
-        else if (std::strcmp(argv[1], "--timeout") == 0)
-            timeout_once();
-        else
-            throw std::runtime_error("unknown regression case");
-        std::puts("gfx regression: PASS");
-        return 0;
-    } catch (const std::exception& error) {
-        std::fprintf(stderr, "gfx regression: FAIL: %s\n", error.what());
-        return 1;
-    }
+    require(argc == 2, "expected --null-list or --timeout");
+    if (std::strcmp(argv[1], "--null-list") == 0)
+        null_list();
+    else if (std::strcmp(argv[1], "--timeout") == 0)
+        timeout_once();
+    else
+        atelier::fatal("unknown regression case");
+    std::puts("gfx regression: PASS");
+    return 0;
 }

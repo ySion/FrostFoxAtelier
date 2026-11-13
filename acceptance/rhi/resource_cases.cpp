@@ -10,18 +10,6 @@ namespace rhi_acceptance {
 namespace {
 using namespace atelier::rhi;
 
-template <class T>
-T take(Result<T> result) {
-    if (!result)
-        throw std::runtime_error(result.error().message);
-    return std::move(*result);
-}
-
-void complete(Result<void> result) {
-    if (!result)
-        throw std::runtime_error(result.error().message);
-}
-
 Context open_context() {
     ContextOptions options;
     options.validation = Validation::gpu;
@@ -76,7 +64,7 @@ float4 main(float4 position : SV_Position, nointerpolation uint value : COLOR) :
     check(gfxCommandBindKernel(gfx, pipeline.kernel()));
     check(gfxCommandDraw(gfx, 3));
     check(gfxCommandCopyTextureToBuffer(gfx, readback, texture));
-    complete(owner.finish());
+    take(owner.finish());
     const auto* pixels = gfxBufferGetData<std::uint8_t>(gfx, readback);
     require(pixels != nullptr, "root budget graphics readback unavailable");
     for (std::size_t i = 0; i < 64 * 32; ++i)
@@ -86,7 +74,7 @@ float4 main(float4 position : SV_Position, nointerpolation uint value : COLOR) :
     check(gfxDestroyBuffer(gfx, readback));
     check(gfxDestroyTexture(gfx, texture));
     pipeline = {};
-    complete(owner.close());
+    take(owner.close());
     check_debug(debug.Get());
     std::puts("root-budget-graphics: VS/PS-globals=32+32 SRV-table=1 shared-offsets/pixels=PASS");
 }
@@ -151,7 +139,7 @@ RWStructuredBuffer<uint4> result;
     const auto finished = owner.finish();
     if (!finished)
         check_debug(debug.Get());
-    complete(finished);
+    take(finished);
     const auto* values = gfxBufferGetData<Quad>(gfx, readback);
     require(values != nullptr, "RAW/Structured SRV readback unavailable");
     const std::array<Quad, 8> expected{{{23, 47, 71, 101},
@@ -171,7 +159,7 @@ RWStructuredBuffer<uint4> result;
     for (auto buffer : {tail, range, full, result, readback})
         check(gfxDestroyBuffer(gfx, buffer));
     pipeline = {};
-    complete(owner.close());
+    take(owner.close());
     check_debug(debug.Get());
     require(correct, "RAW byte addressing, range bounds or Structured control disagreed");
     std::puts(
@@ -206,13 +194,13 @@ RWStructuredBuffer<uint> output_value;
     check(gfxCommandBindKernel(gfx, pipeline.kernel()));
     check(gfxCommandDispatchIndirect(gfx, args));
     check(gfxCommandCopyBuffer(gfx, readback, output));
-    complete(owner.finish());
+    take(owner.finish());
     const auto* value = gfxBufferGetData<std::uint32_t>(gfx, readback);
     require(value && *value == 73, "cold indirect dispatch lost its arguments or large constants");
     for (auto buffer : {args, output, readback, filler})
         check(gfxDestroyBuffer(gfx, buffer));
     pipeline = {};
-    complete(owner.close());
+    take(owner.close());
     check_debug(debug.Get());
     std::puts("indirect-constants: cold-buffer-table-growth GPU-value=73 PASS");
 }
@@ -249,7 +237,7 @@ float4 main() : SV_Target { return float4(float(large[31].x) / 255.0, 0, 0, 1); 
     check(gfxCommandBindIndexBuffer(gfx, indices));
     check(gfxCommandMultiDrawIndexedIndirect(gfx, args, 1));
     check(gfxCommandCopyTextureToBuffer(gfx, readback, texture));
-    complete(owner.finish());
+    take(owner.finish());
     const auto* pixels = gfxBufferGetData<std::uint8_t>(gfx, readback);
     require(pixels != nullptr, "indirect graphics readback unavailable");
     for (std::size_t i = 0; i < 64 * 32; ++i)
@@ -259,7 +247,7 @@ float4 main() : SV_Target { return float4(float(large[31].x) / 255.0, 0, 0, 1); 
         check(gfxDestroyBuffer(gfx, buffer));
     check(gfxDestroyTexture(gfx, texture));
     pipeline = {};
-    complete(owner.close());
+    take(owner.close());
     check_debug(debug.Get());
     std::puts("indirect-graphics: indexed-vertex pixels=2048 PASS");
 }
@@ -290,7 +278,7 @@ void texture_ranges() {
     require(sentinel_upload && readback && target, "range readback resources unavailable");
     check(gfxCommandCopyBuffer(gfx, readback, sentinel_upload));
     check(gfxCommandCopyTextureToBuffer(gfx, target, texture));
-    complete(owner.finish());
+    take(owner.finish());
     const auto* data = gfxBufferGetData<std::uint8_t>(gfx, readback);
     require(data != nullptr, "range readback unavailable");
     for (std::uint32_t i = 0; i < sentinel.size(); ++i) {
@@ -302,7 +290,7 @@ void texture_ranges() {
     for (auto buffer : {source, upload, filler_a, filler_b, target, readback, sentinel_upload})
         check(gfxDestroyBuffer(gfx, buffer));
     check(gfxDestroyTexture(gfx, texture));
-    complete(owner.close());
+    take(owner.close());
     check_debug(debug.Get());
     std::puts("texture-ranges: upload-offset=256 readback-offset=512 image-bytes=8192 prefix/trailer=PASS");
 }
@@ -331,10 +319,9 @@ void window_target_sync() {
             UnregisterClassW(L"AtelierRhiTargetSyncAcceptance", instance);
         }
 
-        void size(int width, int height) const {
-            require(SetWindowPos(handle, nullptr, 0, 0, width, height, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE) !=
-                        FALSE,
-                    "window resize failed");
+        bool size(int width, int height) const {
+            return SetWindowPos(handle, nullptr, 0, 0, width, height, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE) !=
+                   FALSE;
         }
     } window;
     ContextOptions options;
@@ -373,7 +360,7 @@ float4 main(uint id : SV_VertexID) : SV_Position {
                                std::pair{320u, 96u}, std::pair{641u, 73u},  std::pair{257u, 181u}};
     for (const auto [width, height] : sizes) {
         ShowWindow(window.handle, SW_HIDE);
-        window.size(static_cast<int>(width), static_cast<int>(height));
+        require(window.size(static_cast<int>(width), static_cast<int>(height)), "window resize failed");
         const auto sequence = gfxGetRecordingFrameSequence(gfx);
         const auto last_present = gfxGetLastPresentResult(gfx);
         const auto target = take(owner.sync_window_target());
@@ -411,7 +398,7 @@ float4 main(uint id : SV_VertexID) : SV_Position {
         check(gfxCommandDraw(gfx, 3));
         check(gfxCommandCopyBackBufferToBuffer(gfx, readback, pitch));
         FrameInfo frame;
-        complete(owner.frame(false, &frame));
+        take(owner.frame(false, &frame));
         const auto& cpu = frame.cpu;
         double stage_sum = 0;
         for (double us : {cpu.prepare_us, cpu.submit_us, cpu.present_us, cpu.wait_us, cpu.resize_us, cpu.recycle_us,
@@ -426,7 +413,7 @@ float4 main(uint id : SV_VertexID) : SV_Position {
                     frame.next.height == height && gfxGetRecordingFrameSequence(gfx) == sequence + 1,
                 "first Present after resize used an obsolete target");
     }
-    complete(owner.finish());
+    take(owner.finish());
     std::uint64_t pixels = 0;
     for (const auto& capture : captures) {
         const auto* bytes = gfxBufferGetData<std::uint8_t>(gfx, capture.buffer);
@@ -444,44 +431,41 @@ float4 main(uint id : SV_VertexID) : SV_Position {
     // A blocked real queue makes any accidental no-op drain fail deterministically.
     ComPtr<ID3D12Fence> gate;
     check_hr(gfxGetDevice(gfx)->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&gate)));
-    struct ReleaseGate {
-        ID3D12Fence* fence;
-
-        ~ReleaseGate() { fence->Signal(1); }
-    } release{gate.Get()};
     check_hr(gfxGetCommandQueue(gfx)->Wait(gate.Get(), 1));
-    check(gfxSetWaitTimeout(gfx, 5));
+    const BlockedQueue blocked{gate.Get()};
+    blocked.check(gfxSetWaitTimeout(gfx, 5));
     const auto sequence = gfxGetRecordingFrameSequence(gfx);
     for (unsigned repeat = 0; repeat < 2; ++repeat)
-        (void)take(owner.sync_window_target());
+        (void)blocked.take(owner.sync_window_target());
     ShowWindow(window.handle, SW_HIDE);
-    require(!take(owner.sync_window_target()).drawable, "hidden no-op target became drawable");
-    window.size(0, 0);
-    const auto zero = take(owner.sync_window_target());
-    require(!zero.drawable && zero.width == sizes.back().first && zero.height == sizes.back().second,
-            "zero client size resized the swap chain");
-    window.size(401, 109);
+    blocked.require(!blocked.take(owner.sync_window_target()).drawable, "hidden no-op target became drawable");
+    blocked.require(window.size(0, 0), "window resize failed");
+    const auto zero = blocked.take(owner.sync_window_target());
+    blocked.require(!zero.drawable && zero.width == sizes.back().first && zero.height == sizes.back().second,
+                    "zero client size resized the swap chain");
+    blocked.require(window.size(401, 109), "window resize failed");
     ShowWindow(window.handle, SW_SHOWMINNOACTIVE);
-    require(IsIconic(window.handle) != FALSE && !take(owner.sync_window_target()).drawable,
-            "minimized target synchronization did not skip resize");
-    require(gfxGetRecordingFrameSequence(gfx) == sequence, "no-op synchronization advanced a frame");
+    blocked.require(IsIconic(window.handle) != FALSE && !blocked.take(owner.sync_window_target()).drawable,
+                    "minimized target synchronization did not skip resize");
+    blocked.require(gfxGetRecordingFrameSequence(gfx) == sequence, "no-op synchronization advanced a frame");
     ShowWindow(window.handle, SW_SHOWNOACTIVATE);
     ShowWindow(window.handle, SW_HIDE);
-    window.size(401, 109);
+    blocked.require(window.size(401, 109), "window resize failed");
     for (unsigned repeat = 0; repeat < 2; ++repeat) {
         const auto failed = owner.sync_window_target();
-        require(!failed && failed.error().code == ErrorCode::timeout, "resize timeout did not retain terminal failure");
+        blocked.require(!failed && failed.error().code == ErrorCode::timeout,
+                        "resize timeout did not retain terminal failure");
     }
-    require(!owner.borrow(), "failed resize remained borrowable");
-    check(gfxDestroyTexture(gfx, automatic));
+    blocked.require(!owner.borrow(), "failed resize remained borrowable");
+    blocked.check(gfxDestroyTexture(gfx, automatic));
     pipeline = {};
     const auto blocked_close = owner.close();
-    require(!blocked_close && blocked_close.error().code == ErrorCode::timeout,
-            "blocked close did not retain its execution domain");
-    check_hr(gate->Signal(1));
+    blocked.require(!blocked_close && blocked_close.error().code == ErrorCode::timeout,
+                    "blocked close did not retain its execution domain");
+    blocked.check_hr(gate->Signal(1));
     check(gfxSetWaitTimeout(gfx, 10000)); // Cleanup budget only; does not clear failure.
-    complete(owner.close());
-    complete(owner.close());
+    take(owner.close());
+    take(owner.close());
     check_debug(debug.Get());
     std::printf(
         "window-target-sync: hidden-resizes=6 single-present=PASS image-pixels=%llu no-op/no-wait=PASS resize-timeout/drain-only=PASS debug-warnings=0 debug-errors=0\n",

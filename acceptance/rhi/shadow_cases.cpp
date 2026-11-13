@@ -10,18 +10,6 @@ namespace rhi_acceptance {
 namespace {
 using namespace atelier::rhi;
 
-template <class T>
-T take(Result<T> result) {
-    if (!result)
-        throw std::runtime_error(result.error().message);
-    return std::move(*result);
-}
-
-void complete(Result<void> result) {
-    if (!result)
-        throw std::runtime_error(result.error().message);
-}
-
 constexpr char plane_vs[] = R"(
 
 float plane_base; float plane_slope;
@@ -128,7 +116,7 @@ SamplerComparisonState shadow_sampler; RWStructuredBuffer<uint> values; uint4 vi
     sample = {};
     depth_draw = {};
     color_draw = {};
-    complete(owner.finish());
+    take(owner.finish());
     const auto* data = gfxBufferGetData<std::uint32_t>(gfx, readback);
     require(data != nullptr, "shadow atlas readback is unavailable");
     offset = 0;
@@ -175,7 +163,7 @@ void raster_bias(Context& owner) {
     check(gfxCommandCopyTextureToBuffer(gfx, readback, depth));
     check(gfxDestroyTexture(gfx, depth));
     pipeline = {};
-    complete(owner.finish());
+    take(owner.finish());
     const auto* data = gfxBufferGetData<float>(gfx, readback);
     require(data != nullptr, "depth bias readback is unavailable");
     for (std::size_t p = 0; p < 64 * 32; ++p) {
@@ -194,9 +182,9 @@ void shadow_cases() {
     auto debug = debug_queue(owner.borrow());
     atlas_rectangles(owner);
     raster_bias(owner);
-    complete(owner.finish());
+    take(owner.finish());
     check_debug(debug.Get());
-    complete(owner.close());
+    take(owner.close());
     check_debug(debug.Get());
     std::puts("Shadow atlas RHI acceptance: PASS");
 }

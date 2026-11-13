@@ -26,13 +26,7 @@ using rhi_acceptance::require;
 
 using Program = std::shared_ptr<const source::MaterialProgram>;
 
-template <class T, class E>
-T need(std::expected<T, E> result) {
-    if (!result)
-        throw std::runtime_error(result.error().message);
-    if constexpr (!std::is_void_v<T>)
-        return std::move(*result);
-}
+using rhi_acceptance::take;
 
 void write(const std::filesystem::path& path, std::string_view text) {
     std::ofstream file(path, std::ios::binary);
@@ -42,12 +36,12 @@ void write(const std::filesystem::path& path, std::string_view text) {
 
 // Boundary loads/stores follow registered native declarations, not a second ABI.
 std::string adapter(Runtime& runtime, TypeId type, std::string_view ns, bool input) {
-    const auto* info = need(runtime.describe(type));
+    const auto* info = take(runtime.describe(type));
     const std::string qualified = std::string(ns) + (input ? "::ms_Context" : "::ms_Output");
     std::string code = input ? qualified + " load_" + std::string(ns) + "(uint base) {\n" + qualified + " value;\n"
                              : "void store_" + std::string(ns) + "(uint base," + qualified + " value) {\n";
     for (const auto& field : info->fields) {
-        const auto* leaf = need(runtime.describe(field.value.type));
+        const auto* leaf = take(runtime.describe(field.value.type));
         const auto components = leaf->math ? leaf->math.components() : 1;
         require(field.offset && components <= 4 && leaf->size == components * sizeof(float),
                 "material boundary must contain native float/vector leaves");
@@ -91,16 +85,16 @@ struct Compiled {
 
 Compiled compile(const char* name, std::string_view text, const std::filesystem::path& evidence, bool coverage) {
     Runtime runtime;
-    need(material::register_program_types(runtime));
-    const auto context = need(runtime.native_type<material::Context>());
-    const auto output = need(runtime.native_type<material::Output>());
-    const auto texture = need(runtime.native_type<material::TextureInput>());
-    auto program = need(source::compile_material(runtime, context, output, texture, name, text));
-    std::string shader = std::string(sampling_shader) + need(program->hlsl(name)) +
+    take(material::register_program_types(runtime));
+    const auto context = take(runtime.native_type<material::Context>());
+    const auto output = take(runtime.native_type<material::Output>());
+    const auto texture = take(runtime.native_type<material::TextureInput>());
+    auto program = take(source::compile_material(runtime, context, output, texture, name, text));
+    std::string shader = std::string(sampling_shader) + take(program->hlsl(name)) +
                          adapter(runtime, context, name, true) + adapter(runtime, output, name, false);
     const std::string ns = name;
     if (coverage)
-        shader += need(program->hlsl_coverage("Coverage")) + adapter(runtime, context, "Coverage", true);
+        shader += take(program->hlsl_coverage("Coverage")) + adapter(runtime, context, "Coverage", true);
     shader += "[numthreads(1,1,1)] void main() { store_" + ns + "(0," + ns + "::ms_shade(0,load_" + ns + "(0)," + ns +
               "::ms_load_parameters(parameters,0)));\n";
     if (coverage)
@@ -126,7 +120,7 @@ struct Device {
     GfxSamplerState sampler{};
 
     Device(HWND window, const std::filesystem::path& shader_cache)
-        : owner(need(rhi::Context::open(
+        : owner(take(rhi::Context::open(
               {.window = window, .validation = rhi::Validation::gpu, .shader_cache = shader_cache}))),
           debug(rhi_acceptance::debug_queue(owner.borrow())) {
         require(owner.info().debug_layer && owner.info().gpu_validation == rhi_acceptance::expected_gpu_validation(),
@@ -158,8 +152,8 @@ struct Device {
         }
         check(gfxDestroySamplerState(owner.borrow(), sampler));
         sampler = {};
-        need(owner.finish());
-        need(owner.close());
+        take(owner.finish());
+        take(owner.close());
         rhi_acceptance::check_debug(debug.Get());
     }
 
@@ -174,11 +168,11 @@ struct Device {
         rhi::PipelineDesc desc;
         desc.name = "B0 material programs";
         desc.source.cs = text.c_str();
-        auto job = need(owner.submit(desc));
+        auto job = take(owner.submit(desc));
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::minutes(20);
         for (;;) {
             if (auto result = owner.take(job)) {
-                pipeline = need(std::move(*result));
+                pipeline = take(std::move(*result));
                 return;
             }
             require(std::chrono::steady_clock::now() < deadline, "B0 material pipeline preparation timed out");
@@ -218,7 +212,7 @@ struct Device {
         check(gfxCommandBindKernel(gfx, pipeline.kernel()));
         check(gfxCommandDispatch(gfx, 1, 1, 1));
         check(gfxCommandCopyBuffer(gfx, readback, result));
-        need(owner.finish());
+        take(owner.finish());
         const auto* mapped = gfxBufferGetData<std::byte>(gfx, readback);
         require(mapped != nullptr, "B0 output readback unavailable");
         material::Output output;

@@ -1,4 +1,4 @@
-#include "memory/fatal.hpp"
+#include "../helpers.hpp"
 #include "renderer/renderer.hpp"
 #include "assets/builtin_materials.hpp"
 
@@ -13,7 +13,6 @@
 #include <filesystem>
 #include <limits>
 #include <numbers>
-#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -25,9 +24,21 @@ using namespace atelier::renderer;
 
 namespace ui = atelier::ui;
 
-void check(bool condition, const char* text) {
-    if (!condition) {
-        throw std::runtime_error(text);
+constexpr auto& check = atelier::acceptance::helpers::require;
+
+template <class T, class E>
+T take(std::expected<T, E> result) {
+    if constexpr (std::is_same_v<E, render::Error>) {
+        if (!result) {
+            char message[1024]{};
+            std::snprintf(message, sizeof(message), "Renderer error: %.980s (terminal=%u)",
+                          result.error().cause.message.c_str(), unsigned(result.error().terminal));
+            atelier::fatal(message);
+        }
+        if constexpr (!std::is_void_v<T>)
+            return std::move(*result);
+    } else {
+        return atelier::acceptance::helpers::take(std::move(result));
     }
 }
 
@@ -37,19 +48,6 @@ std::filesystem::path shader_cache_directory() {
     check(length && length < executable.size(), "locate Renderer acceptance shader cache");
     executable.resize(length);
     return std::filesystem::path(executable).parent_path() / L"renderer-shader-cache";
-}
-
-template <class T, class E>
-T take(std::expected<T, E> result) {
-    if (!result) {
-        if constexpr (std::is_same_v<E, render::Error>)
-            throw std::runtime_error("Renderer error: " + result.error().cause.message +
-                                     " (terminal=" + std::to_string(result.error().terminal) + ")");
-        else
-            throw std::runtime_error(result.error().message);
-    }
-    if constexpr (!std::is_void_v<T>)
-        return std::move(*result);
 }
 
 void pump() {
@@ -201,7 +199,7 @@ namespace material_program_e2e {
 void run(HWND, const std::filesystem::path&);
 }
 
-int main(int argc, char** argv) try {
+int main(int argc, char** argv) {
     atelier::install_fatal_handler();
     _set_error_mode(_OUT_TO_STDERR);
     _set_abort_behavior(0, _CALL_REPORTFAULT);
@@ -286,7 +284,4 @@ int main(int argc, char** argv) try {
     check(bool(closed), "drain and close a cancelled Renderer before HWND destruction");
     std::puts(
         "Renderer acceptance: PASS (cold preparation, resize, camera ABI, UI, selection, ownership, cancellation)");
-} catch (const std::exception& error) {
-    std::fprintf(stderr, "Renderer acceptance FAILED: %s\n", error.what());
-    return 1;
 }
