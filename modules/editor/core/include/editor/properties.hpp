@@ -43,7 +43,7 @@ private:
 using PropertyLeaf = std::variant<Scalar, String, ArrayLeaf>;
 
 // Malformed identities fail; nullopt means the target does not fit the field.
-using ResolveReference = std::function<json::Result<std::optional<ObjectReference>>(json::Value, TypeId, ValueForm)>;
+using ResolveReference = std::function<Result<std::optional<ObjectReference>>(json::Value, TypeId, ValueForm)>;
 
 // Stores one decoded inline leaf; by default it is written to the target through the Runtime.
 using WriteLeaf = std::function<Result<void>(std::span<const FieldId>, const PropertyLeaf&)>;
@@ -77,14 +77,15 @@ using EncodeReference = std::function<Result<json::Document>(ObjectId)>;
 // How a tolerant decode reports a saved leaf it does not apply as saved; paths start at the record.
 struct PropertyReport {
     // The saved value is kept; the field keeps its value, or takes the clamped value of a leaf outside its hard bounds.
-    std::function<void(std::vector<std::string>, json::Value, world::DiagnosticKind, const std::string&)> keep;
+    std::function<Result<void>(std::vector<std::string>, json::Value, world::DiagnosticKind, const std::string&)> keep;
 
     // An integral number written as a float was converted exactly.
-    std::function<void(std::vector<std::string>, json::Value)> converted;
+    std::function<Result<void>(std::vector<std::string>, json::Value)> converted;
 };
 
 // Tolerant decoding over `fields`, as scene loads do: a leaf that does not fit goes to `report`
-// instead of failing. Only Runtime failures fail.
+// instead of failing. Runtime and report failures propagate unchanged. Reports may reject after
+// earlier leaves were written; scalar clamps and conversions report after writing, Array clamps before writing.
 [[nodiscard]] Result<void> decode_properties(Runtime&, const PropertyTarget&,
                                              std::span<const detail::ScalarField> fields, json::Value record,
                                              const PropertyReport& report, const ResolveReference& = {});

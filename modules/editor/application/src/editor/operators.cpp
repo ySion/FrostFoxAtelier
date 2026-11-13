@@ -274,7 +274,7 @@ Result<OperatorReport> call(const OperatorRegistry& registry, OperatorHost& host
         if (info->seed)
             ATELIER_TRY(info->seed(context, ValueOutput{value->type, value->bytes.data()}));
         const ResolveReference reference = [&](const auto& json, TypeId type,
-                                               ValueForm form) -> json::Result<std::optional<ObjectReference>> {
+                                               ValueForm form) -> Result<std::optional<ObjectReference>> {
             if (json.is_null()) {
                 auto null = runtime.null_reference(type, form);
                 return null ? std::optional{*null} : std::nullopt;

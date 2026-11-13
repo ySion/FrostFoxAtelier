@@ -1174,11 +1174,15 @@ void verify_array_properties(editor::Project& project, const std::shared_ptr<Evi
     std::vector<std::vector<std::string>> kept;
     std::vector<std::vector<std::string>> conversions;
     const editor::PropertyReport report{
-        [&](std::vector<std::string> at, json::Value, world::DiagnosticKind kind, const std::string&) {
+        [&](std::vector<std::string> at, json::Value, world::DiagnosticKind kind, const std::string&) -> Result<void> {
             if (kind == mismatch)
                 kept.push_back(std::move(at));
+            return {};
         },
-        [&](std::vector<std::string> at, json::Value) { conversions.push_back(std::move(at)); }};
+        [&](std::vector<std::string> at, json::Value) -> Result<void> {
+            conversions.push_back(std::move(at));
+            return {};
+        }};
     take(editor::decode_properties(
         runtime, {f.tags, tags}, take(editor::detail::author_fields(runtime, f.tags)),
         json::Document::literal<R"({"names":["a",3],"weights":[0.75,2.0],"counts":[1.0]})">().root(), report));
@@ -1188,6 +1192,33 @@ void verify_array_properties(editor::Project& project, const std::shared_ptr<Evi
             weights_of(runtime, tags) == std::vector<float>{.75f, 1.f} &&
             counts_of(runtime, tags) == std::vector<std::uint32_t>{1},
         "A tolerant decode did not report its leaves from the record, or did not apply the clamped and converted Arrays.");
+
+    const Error report_rejected{ErrorCode::busy, "Property report refused.",
+                                SourceLocation{"report", 7, 3, 2, 4, "report.src"}};
+    const editor::PropertyReport rejecting{
+        [&](std::vector<std::string>, json::Value, world::DiagnosticKind, const std::string&) -> Result<void> {
+            return std::unexpected(report_rejected);
+        },
+        [&](std::vector<std::string>, json::Value) -> Result<void> { return std::unexpected(report_rejected); }};
+    const auto schema = editor::detail::author_fields(runtime, f.tags);
+    require(bool(schema), "Cannot inspect report refusal fixture.");
+    const auto refused = [&](const Result<void>& result) {
+        return !result && result.error().code == report_rejected.code &&
+               result.error().message == report_rejected.message && result.error().source &&
+               result.error().source->path == "report" && result.error().source->version == 7 &&
+               result.error().source->offset == 3 && result.error().source->line == 2 &&
+               result.error().source->column == 4 && result.error().source->disk_path == "report.src";
+    };
+    const auto clamp_refused = editor::decode_properties(
+        runtime, {f.tags, tags}, *schema, json::Document::literal<R"({"weights":[0.25,2.0]})">().root(), rejecting);
+    require(refused(clamp_refused) && weights_of(runtime, tags) == std::vector<float>{.75f, 1.f},
+            "An Array clamp wrote before its report accepted, or lost the report Error.");
+    const auto conversion_refused =
+        editor::decode_properties(runtime, {f.tags, tags}, *schema,
+                                  json::Document::literal<R"({"counts":[2.0],"weights":[0.125]})">().root(), rejecting);
+    require(refused(conversion_refused) && counts_of(runtime, tags) == std::vector<std::uint32_t>{2} &&
+                weights_of(runtime, tags) == std::vector<float>{.75f, 1.f},
+            "A conversion refusal rolled back its written leaf or continued to the next leaf.");
 
     acceptance_phase = "Array properties in Play";
     auto play_project = take(editor::Project::open(project.root()));

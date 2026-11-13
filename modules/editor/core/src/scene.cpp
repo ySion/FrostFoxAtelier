@@ -114,22 +114,26 @@ struct Mismatch : std::runtime_error {
     using std::runtime_error::runtime_error;
 };
 
-Scalar decode_scalar(Runtime& runtime, const Scalar& prototype, json::Value value, bool* converted = nullptr) {
+// A schema mismatch is a saved value to keep, not a Runtime failure.
+using DecodedScalar = std::variant<Scalar, std::string>;
+
+Result<DecodedScalar> decode_scalar(Runtime& runtime, const Scalar& prototype, json::Value value,
+                                    bool* converted = nullptr) {
     return std::visit(
-        [&](const auto& original) -> Scalar {
+        [&](const auto& original) -> Result<DecodedScalar> {
             using T = std::decay_t<decltype(original)>;
             if constexpr (std::same_as<T, bool>) {
                 if (value.kind() != json::Kind::boolean)
-                    throw Mismatch("Expected a boolean property.");
-                return *value.boolean();
+                    return std::string("Expected a boolean property.");
+                return Scalar{*value.boolean()};
             } else if constexpr (std::same_as<T, EnumValue>) {
                 if (value.kind() != json::Kind::string)
-                    throw Mismatch("Expected a declared enum member name.");
-                const auto info = take(runtime.describe(original.type));
-                for (const auto& [name, bits] : info->enumeration->values)
+                    return std::string("Expected a declared enum member name.");
+                ATELIER_TRY_BIND(info, runtime.describe(original.type));
+                for (const auto& [name, bits] : (*info)->enumeration->values)
                     if (*value.string() == name)
-                        return EnumValue{original.type, bits};
-                throw Mismatch("Unknown scene enum member.");
+                        return Scalar{EnumValue{original.type, bits}};
+                return std::string("Unknown scene enum member.");
             } else if constexpr (std::is_integral_v<T>) {
                 if (value.kind() == json::Kind::real) {
                     // Lossless only: an integral value written by an earlier float field.
@@ -137,26 +141,26 @@ Scalar decode_scalar(Runtime& runtime, const Scalar& prototype, json::Value valu
                     if (!std::isfinite(number) || std::trunc(number) != number ||
                         number < static_cast<double>(std::numeric_limits<T>::min()) ||
                         number > static_cast<double>(std::numeric_limits<T>::max()))
-                        throw Mismatch("Expected an integer property.");
+                        return std::string("Expected an integer property.");
                     if (converted)
                         *converted = true;
-                    return static_cast<T>(number);
+                    return Scalar{static_cast<T>(number)};
                 }
                 if (value.kind() != json::Kind::integer)
-                    throw Mismatch("Expected an integer property.");
+                    return std::string("Expected an integer property.");
                 // Runtime scalar integers are 32-bit; every accepted value fits i64.
                 const auto number = value.i64();
                 if (!number || *number < static_cast<std::int64_t>(std::numeric_limits<T>::min()) ||
                     *number > static_cast<std::int64_t>(std::numeric_limits<T>::max()))
-                    throw Mismatch("Integer property is out of range.");
-                return static_cast<T>(*number);
+                    return std::string("Integer property is out of range.");
+                return Scalar{static_cast<T>(*number)};
             } else {
                 if (value.kind() != json::Kind::integer && value.kind() != json::Kind::real)
-                    throw Mismatch("Expected a numeric property.");
+                    return std::string("Expected a numeric property.");
                 const auto number = static_cast<T>(*value.number());
                 if (!std::isfinite(number))
-                    throw Mismatch("Scene property values must be finite and representable.");
-                return number;
+                    return std::string("Scene property values must be finite and representable.");
+                return Scalar{number};
             }
         },
         prototype);
@@ -279,9 +283,10 @@ Result<void> read_record(Runtime& runtime, const PropertyTarget& target, std::sp
                                   : runtime.write(target.type, target.storage, path, value);
                 else {
                     ValueInput input;
-                    if constexpr (std::same_as<T, String>)
-                        input = {take(runtime.native_type<String>()), &value};
-                    else
+                    if constexpr (std::same_as<T, String>) {
+                        ATELIER_TRY_BIND(type, runtime.native_type<String>());
+                        input = {*type, &value};
+                    } else
                         input = value.input();
                     return object ? runtime.write(target.object, path, input)
                                   : runtime.write(target.type, target.storage, path, input);
@@ -294,8 +299,7 @@ Result<void> read_record(Runtime& runtime, const PropertyTarget& target, std::sp
         if (!report)
             return std::unexpected(
                 Error{ErrorCode::argument_mismatch, dotted(std::span(at).subspan(prefix.size())) + ": " + problem});
-        report->keep(std::move(at), item, kind, kept);
-        return {};
+        return report->keep(std::move(at), item, kind, kept);
     };
     const auto read = [&](auto&& self, json::Value value, const std::vector<std::string>& path) -> Result<void> {
         const auto members = value.object_items();
@@ -321,12 +325,11 @@ Result<void> read_record(Runtime& runtime, const PropertyTarget& target, std::sp
                 continue;
             }
             bool converted{};
-            std::string problem;
             std::optional<Scalar> clamped;
-            try {
+            const auto decoded = [&]() -> Result<std::string> {
                 if (field->form == ValueForm::inline_value && field->kind == TypeKind::string) {
                     if (!field->material_entries_json && item.kind() != json::Kind::string)
-                        throw Mismatch("Expected a string property.");
+                        return "Expected a string property.";
                     String stored;
                     if (field->material_entries_json) {
                         const auto bytes = json::write(item);
@@ -334,48 +337,54 @@ Result<void> read_record(Runtime& runtime, const PropertyTarget& target, std::sp
                     } else
                         stored = String::from_utf8_validated(StringView{*item.string()});
                     if (auto written = store(field->path, stored); !written)
-                        problem = written.error().message;
+                        return written.error().message;
                 } else if (field->form == ValueForm::inline_value && field->kind == TypeKind::array) {
                     // The whole Array is built aside and stored as one leaf, so a rejected write leaves the field as it was.
                     if (item.kind() != json::Kind::array)
-                        throw Mismatch("Expected an array property.");
-                    const auto leaf = take(ArrayLeaf::create(runtime, field->type));
-                    const auto element = *take(runtime.describe(field->type))->element;
-                    const bool text = take(runtime.describe(element))->kind == TypeKind::string;
-                    take(runtime.mutate_sequence(field->type, leaf.storage(), SequenceMutation::resize, {}, {},
-                                                 item.size()));
+                        return "Expected an array property.";
+                    ATELIER_TRY_BIND(leaf, ArrayLeaf::create(runtime, field->type));
+                    ATELIER_TRY_BIND(info, runtime.describe(field->type));
+                    const auto element = *(*info)->element;
+                    ATELIER_TRY_BIND(element_info, runtime.describe(element));
+                    const bool text = (*element_info)->kind == TypeKind::string;
+                    ATELIER_TRY(runtime.mutate_sequence(field->type, leaf->storage(), SequenceMutation::resize, {}, {},
+                                                        item.size()));
                     // Every element takes the field's hard bounds, which constrain() reads through any element selector.
                     auto bounded = field->path;
-                    bounded.push_back(take(runtime.element(field->type, 0)));
+                    ATELIER_TRY_BIND(first, runtime.element(field->type, 0));
+                    bounded.push_back(*first);
                     bool clamped_elements{};
                     std::uint32_t index = 0;
                     const auto items = *item.array();
                     for (auto value : items) {
-                        const std::array selector{take(runtime.element(field->type, index++))};
+                        ATELIER_TRY_BIND(selected, runtime.element(field->type, index++));
+                        const std::array selector{*selected};
                         if (text) {
-                            if (value.kind() != json::Kind::string) {
-                                problem = "Expected an array of strings.";
-                                break;
-                            }
+                            if (value.kind() != json::Kind::string)
+                                return "Expected an array of strings.";
                             auto stored = String::from_utf8_validated(StringView{*value.string()});
-                            take(runtime.write(field->type, leaf.storage(), selector, ValueInput{element, &stored}));
+                            ATELIER_TRY(
+                                runtime.write(field->type, leaf->storage(), selector, ValueInput{element, &stored}));
                             continue;
                         }
-                        const auto scalar = decode_scalar(
-                            runtime, take(runtime.read(field->type, leaf.storage(), selector)), value, &converted);
+                        ATELIER_TRY_BIND(current, runtime.read(field->type, leaf->storage(), selector));
+                        ATELIER_TRY_BIND(parsed, decode_scalar(runtime, *current, value, &converted));
+                        if (const auto* mismatch = std::get_if<std::string>(&*parsed))
+                            return *mismatch;
+                        const auto& scalar = std::get<Scalar>(*parsed);
                         auto stored = runtime.constrain(target.type, bounded, scalar);
                         if (!stored)
-                            throw Mismatch(stored.error().message);
+                            return stored.error().message;
                         if (*stored != scalar) {
                             if (!report)
-                                throw Mismatch("An element is outside the field's hard bounds.");
+                                return "An element is outside the field's hard bounds.";
                             clamped_elements = true;
                         }
-                        take(runtime.write(field->type, leaf.storage(), selector, *stored));
+                        ATELIER_TRY(runtime.write(field->type, leaf->storage(), selector, *stored));
                     }
                     // Reported before the store: a strict report (a Play change) rejects the clamp with the field unchanged.
                     // As for a scalar, the clamp is the one report, whatever elements converted.
-                    if (problem.empty() && clamped_elements) {
+                    if (clamped_elements) {
                         auto reported = issue(
                             at, item, world::DiagnosticKind::mismatch, {},
                             "An element is outside the field's hard bounds; the clamped Array is used and the saved value is kept.");
@@ -383,61 +392,62 @@ Result<void> read_record(Runtime& runtime, const PropertyTarget& target, std::sp
                             return std::unexpected(reported.error());
                         converted = false;
                     }
-                    if (problem.empty()) {
-                        if (auto written = store(field->path, leaf); !written)
-                            throw Mismatch(written.error().message);
-                    }
+                    if (auto written = store(field->path, *leaf); !written)
+                        return written.error().message;
                 } else if (field->form == ValueForm::inline_value) {
                     const auto current = object ? runtime.read(target.object, field->path)
                                                 : runtime.read(target.type, target.storage, field->path);
-                    const auto scalar = decode_scalar(runtime, take(current), item, &converted);
+                    if (!current)
+                        return std::unexpected(current.error());
+                    ATELIER_TRY_BIND(parsed, decode_scalar(runtime, *current, item, &converted));
+                    if (const auto* mismatch = std::get_if<std::string>(&*parsed))
+                        return *mismatch;
+                    const auto& scalar = std::get<Scalar>(*parsed);
                     auto stored = runtime.constrain(target.type, field->path, scalar);
                     if (!stored)
-                        throw Mismatch(stored.error().message);
+                        return stored.error().message;
                     if (*stored != scalar) {
                         if (!report)
-                            throw Mismatch("Outside the field's hard bounds.");
+                            return "Outside the field's hard bounds.";
                         clamped = *stored;
                     }
                     if (auto written = store(field->path, *stored); !written)
-                        throw Mismatch(written.error().message);
+                        return written.error().message;
                 } else if (!resolve) {
-                    throw Mismatch("This decode does not accept object references.");
+                    return "This decode does not accept object references.";
                 } else if (field->form == ValueForm::strong_sequence) {
                     if (item.kind() != json::Kind::array ||
                         item.size() > Session::maximum_entities * Session::maximum_components)
-                        throw Mismatch("Expected an object reference sequence.");
+                        return "Expected an object reference sequence.";
                     std::vector<ObjectReference> refs;
                     refs.reserve(item.size());
                     const auto items = *item.array();
                     for (auto ref : items) {
-                        auto resolved = resolve(ref, field->type, ValueForm::strong_reference);
-                        if (!resolved)
-                            return std::unexpected(Error{ErrorCode::invalid_storage, resolved.error().describe()});
+                        ATELIER_TRY_BIND(resolved, resolve(ref, field->type, ValueForm::strong_reference));
                         if (!*resolved)
-                            throw Mismatch("A sequence element is not a reference of the field's type.");
+                            return "A sequence element is not a reference of the field's type.";
                         refs.push_back(std::move(**resolved));
                     }
-                    const auto locator = take(runtime.reference_field(target.object, field->path));
-                    const ReferenceChange change =
-                        SequenceSplice{locator, 0, take(runtime.sequence_size(locator)), refs};
+                    ATELIER_TRY_BIND(locator, runtime.reference_field(target.object, field->path));
+                    ATELIER_TRY_BIND(count, runtime.sequence_size(*locator));
+                    const ReferenceChange change = SequenceSplice{*locator, 0, *count, refs};
                     if (auto applied = runtime.apply_reference_changes({&change, 1}); !applied)
-                        throw Mismatch(applied.error().message);
+                        return applied.error().message;
                 } else {
-                    auto resolved = resolve(item, field->type, field->form);
-                    if (!resolved)
-                        return std::unexpected(Error{ErrorCode::invalid_storage, resolved.error().describe()});
+                    ATELIER_TRY_BIND(resolved, resolve(item, field->type, field->form));
                     if (!*resolved)
-                        throw Mismatch("Expected a reference of the field's type.");
+                        return "Expected a reference of the field's type.";
                     auto written = object
                                        ? runtime.write_reference(target.object, field->path, **resolved)
                                        : runtime.write_reference(target.type, target.storage, field->path, **resolved);
                     if (!written)
-                        throw Mismatch(written.error().message);
+                        return written.error().message;
                 }
-            } catch (const Mismatch& error) {
-                problem = error.what();
-            }
+                return std::string{};
+            }();
+            if (!decoded)
+                return std::unexpected(decoded.error());
+            const auto& problem = *decoded;
             if (!problem.empty())
                 ATELIER_TRY(issue(std::move(at), item, world::DiagnosticKind::mismatch, problem,
                                   problem + " The default is used and the saved value is kept."));
@@ -451,7 +461,7 @@ Result<void> read_record(Runtime& runtime, const PropertyTarget& target, std::sp
                                   "Outside the field's hard bounds; " + std::string(bytes.data(), bytes.size()) +
                                       " is used and the saved value is kept."));
             } else if (converted && report)
-                report->converted(std::move(at), item);
+                ATELIER_TRY(report->converted(std::move(at), item));
         }
         return {};
     };
@@ -636,9 +646,12 @@ Result<void> decode_properties(Runtime& runtime, const PropertyTarget& target, j
             return std::unexpected(
                 Error{ErrorCode::argument_mismatch,
                       "A write hook does not receive reference leaves; decode references without one."});
-        if (target.object != ObjectId{} && take(runtime.type_of(target.object)) != target.type)
-            return std::unexpected(
-                Error{ErrorCode::type_mismatch, "A properties target object must have the target type."});
+        if (target.object != ObjectId{}) {
+            ATELIER_TRY_BIND(type, runtime.type_of(target.object));
+            if (*type != target.type)
+                return std::unexpected(
+                    Error{ErrorCode::type_mismatch, "A properties target object must have the target type."});
+        }
         if (record.kind() != json::Kind::object)
             return std::unexpected(Error{ErrorCode::argument_mismatch, "Expected a property record."});
         ATELIER_TRY_BIND(schema, detail::author_fields(runtime, target.type));
@@ -655,9 +668,12 @@ Result<void> decode_properties(Runtime& runtime, const PropertyTarget& target,
         if ((target.object == ObjectId{}) == target.storage.empty())
             return std::unexpected(
                 Error{ErrorCode::argument_mismatch, "A properties target is either an object or a record value."});
-        if (target.object != ObjectId{} && take(runtime.type_of(target.object)) != target.type)
-            return std::unexpected(
-                Error{ErrorCode::type_mismatch, "A properties target object must have the target type."});
+        if (target.object != ObjectId{}) {
+            ATELIER_TRY_BIND(type, runtime.type_of(target.object));
+            if (*type != target.type)
+                return std::unexpected(
+                    Error{ErrorCode::type_mismatch, "A properties target object must have the target type."});
+        }
         if (record.kind() != json::Kind::object)
             return std::unexpected(Error{ErrorCode::argument_mismatch, "Expected a property record."});
         return read_record(runtime, target, fields, record, {}, resolve, {}, &report);
@@ -1476,14 +1492,17 @@ struct Session::GraphCodec {
                                 const ResolveReference& resolve, const WriteLeaf& write = {}) {
         auto& runtime = session.runtime_;
         const auto type = take(runtime.type_of(object));
-        const PropertyReport report{
-            [&](std::vector<std::string> at, json::Value item, world::DiagnosticKind kind, const std::string& detail) {
-                load.keep(object, std::move(at), item, kind, detail);
-            },
-            [&](std::vector<std::string> at, json::Value item) {
-                load.report(world::Severity::info, world::DiagnosticKind::converted, object, std::move(at), &item,
-                            "Integral number converted exactly to the field's integer type.");
-            }};
+        const PropertyReport report{[&](std::vector<std::string> at, json::Value item, world::DiagnosticKind kind,
+                                        const std::string& detail) -> Result<void> {
+                                        load.keep(object, std::move(at), item, kind, detail);
+                                        return {};
+                                    },
+                                    [&](std::vector<std::string> at, json::Value item) -> Result<void> {
+                                        load.report(world::Severity::info, world::DiagnosticKind::converted, object,
+                                                    std::move(at), &item,
+                                                    "Integral number converted exactly to the field's integer type.");
+                                        return {};
+                                    }};
         take(read_record(runtime, {type, object},
                          business_fields(runtime, session.types_, session.presentation_types_, type), record,
                          {"properties"}, resolve, write, &report));
@@ -1964,11 +1983,7 @@ struct Session::GraphCodec {
         }
         // Dangling or malformed identities are structural damage. A target whose
         // type does not satisfy the field is schema drift: nullopt, not an error.
-        const auto resolve = [&](json::Value value, TypeId target,
-                                 ValueForm form) -> json::Result<std::optional<ObjectReference>> {
-            if (value.is_null())
-                return std::optional{take(runtime.null_reference(
-                    target, form == ValueForm::weak_reference ? form : ValueForm::strong_reference))};
+        const auto locate = [&](json::Value value) -> json::Result<std::optional<ObjectId>> {
             ObjectId object;
             if (value.kind() == json::Kind::object && *value.find("$ref")) {
                 ATELIER_TRY(value.members({"$ref"}));
@@ -1981,8 +1996,7 @@ struct Session::GraphCodec {
                 else if (const auto live = live_reference(session, key, load))
                     object = *live;
                 else
-                    return std::optional{take(runtime.null_reference(
-                        target, form == ValueForm::weak_reference ? form : ValueForm::strong_reference))};
+                    return std::optional{ObjectId{}};
                 if (material_ids.contains(key))
                     used_materials.insert(key);
             } else if (value.kind() == json::Kind::object && *value.find("$external")) {
@@ -1994,11 +2008,33 @@ struct Session::GraphCodec {
                 object = at->second.id();
             } else
                 return std::nullopt;
-            auto held = runtime.hold(object, target);
+            return std::optional{object};
+        };
+        const auto resolve = [&](json::Value value, TypeId target,
+                                 ValueForm form) -> Result<std::optional<ObjectReference>> {
+            if (value.is_null()) {
+                ATELIER_TRY_BIND(reference, runtime.null_reference(target, form == ValueForm::weak_reference
+                                                                               ? form
+                                                                               : ValueForm::strong_reference));
+                return std::optional{*reference};
+            }
+            ATELIER_TRY_BIND(found, scene_result(locate(value)));
+            if (!*found)
+                return std::nullopt;
+            if (**found == ObjectId{}) {
+                ATELIER_TRY_BIND(reference, runtime.null_reference(target, form == ValueForm::weak_reference
+                                                                               ? form
+                                                                               : ValueForm::strong_reference));
+                return std::optional{*reference};
+            }
+            auto held = runtime.hold(**found, target);
             if (!held)
                 return std::nullopt;
-            return std::optional{form == ValueForm::weak_reference ? take(runtime.observe(held->reference()))
-                                                                   : held->reference()};
+            if (form == ValueForm::weak_reference) {
+                ATELIER_TRY_BIND(reference, runtime.observe(held->reference()));
+                return std::optional{*reference};
+            }
+            return std::optional{held->reference()};
         };
         for (const auto& entity : entities) {
             const auto space = *entity.find("space");
@@ -2017,10 +2053,10 @@ struct Session::GraphCodec {
                         else
                             target = live_reference(session, key, load);
                     } else {
-                        ATELIER_TRY_BIND(resolved, resolve(*origin, session.types_.entity, ValueForm::weak_reference));
-                        if (!*resolved)
+                        ATELIER_TRY_BIND(found, locate(*origin));
+                        if (!*found || (**found != ObjectId{} && !runtime.hold(**found, session.types_.entity)))
                             throw std::runtime_error("Space reference must target an Entity in this graph.");
-                        target = (*resolved)->id();
+                        target = **found;
                     }
                 }
             result.spaces.push_back({ids.at(*local_key(*entity.at("id"))), target});
@@ -2753,29 +2789,33 @@ struct Session::GraphCodec {
                     if (const auto at = *op.find("properties")) {
                         if (at->kind() != json::Kind::object)
                             throw std::runtime_error("Expected a property record.");
-                        const ResolveReference resolve =
-                            [&](json::Value value, TypeId field_type,
-                                ValueForm form) -> json::Result<std::optional<ObjectReference>> {
+                        const ResolveReference resolve = [&](json::Value value, TypeId field_type,
+                                                             ValueForm form) -> Result<std::optional<ObjectReference>> {
                             const auto null = [&] {
-                                return take(runtime.null_reference(field_type, form == ValueForm::weak_reference
-                                                                                   ? form
-                                                                                   : ValueForm::strong_reference));
+                                return runtime.null_reference(
+                                    field_type, form == ValueForm::weak_reference ? form : ValueForm::strong_reference);
                             };
-                            if (value.is_null())
-                                return std::optional{null()};
+                            if (value.is_null()) {
+                                ATELIER_TRY_BIND(reference, null());
+                                return std::optional{*reference};
+                            }
                             if (value.kind() != json::Kind::object || !*value.find("$ref"))
                                 return std::nullopt;
-                            ATELIER_TRY(value.members({"$ref"}));
-                            ATELIER_TRY_BIND(key, local_key(*value.at("$ref")));
+                            ATELIER_TRY(scene_result(value.members({"$ref"})));
+                            ATELIER_TRY_BIND(key, scene_result(local_key(*value.at("$ref"))));
                             const auto live = live_reference(session, *key, load);
-                            if (!live)
-                                return std::optional{null()};
+                            if (!live) {
+                                ATELIER_TRY_BIND(reference, null());
+                                return std::optional{*reference};
+                            }
                             auto held = runtime.hold(*live, field_type);
                             if (!held)
                                 return std::nullopt;
-                            return std::optional{form == ValueForm::weak_reference
-                                                     ? take(runtime.observe(held->reference()))
-                                                     : held->reference()};
+                            if (form == ValueForm::weak_reference) {
+                                ATELIER_TRY_BIND(reference, runtime.observe(held->reference()));
+                                return std::optional{*reference};
+                            }
+                            return std::optional{held->reference()};
                         };
                         // Scalar leaves are one group write: a type's rules can span them, as when a probe volume moves.
                         std::vector<world::FieldPath> paths;

@@ -2025,11 +2025,13 @@ struct EditorControl::Impl {
         if (has_any(info->flags, editor::OperatorFlag::replaces_document) && request.id != "project.build")
             replaceable();
         const editor::ResolveReference resolve = [&](json::Value value, TypeId type,
-                                                     ValueForm form) -> json::Result<std::optional<ObjectReference>> {
+                                                     ValueForm form) -> Result<std::optional<ObjectReference>> {
             if (value.kind() != json::Kind::string)
                 return std::nullopt;
             auto& runtime = app.document_->world().runtime();
-            ATELIER_TRY_BIND(id, object(value));
+            const auto id = object(value);
+            if (!id)
+                return std::unexpected(Error{ErrorCode::invalid_storage, id.error().describe()});
             const auto target = runtime.hold(*id, type);
             if (!target)
                 return std::nullopt;

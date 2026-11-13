@@ -609,10 +609,15 @@ void verify_operator_parameters() {
         editor::ContextOverride override;
         override.selection = editor::SelectionContext{target, target, {target}};
         const editor::ResolveReference resolve = [&](json::Value value, TypeId,
-                                                     ValueForm) -> json::Result<std::optional<ObjectReference>> {
-            ATELIER_TRY_BIND(name, value.string());
-            return *name == "origin" ? std::optional{take(rt.observe(take(rt.hold(origin)).reference()))}
-                                     : std::nullopt;
+                                                     ValueForm) -> Result<std::optional<ObjectReference>> {
+            const auto name = value.string();
+            if (!name)
+                return std::unexpected(Error{ErrorCode::invalid_storage, name.error().describe()});
+            if (*name != "origin")
+                return std::nullopt;
+            ATELIER_TRY_BIND(held, rt.hold(origin));
+            ATELIER_TRY_BIND(reference, rt.observe(held->reference()));
+            return std::optional{*reference};
         };
         const auto invoke = [&](json::Document args) {
             return editor::call(registry, controls, context, {"scene.space_reference_set", std::move(args), override},
@@ -853,13 +858,17 @@ class patch.Fields : world.Component { float position = 4.0f; float rotation = 5
                     take(world::parent_entity(rt, second)) == ObjectId{},
                 "scene.parent_set did not unparent its explicit selection in one history entry.");
         const editor::ResolveReference resolve = [&](json::Value value, TypeId type,
-                                                     ValueForm form) -> json::Result<std::optional<ObjectReference>> {
+                                                     ValueForm form) -> Result<std::optional<ObjectReference>> {
             require(type == parents.types().entity && form == ValueForm::weak_reference,
                     "The parent token was not resolved as a weak Entity reference.");
-            ATELIER_TRY_BIND(name, value.string());
+            const auto name = value.string();
+            if (!name)
+                return std::unexpected(Error{ErrorCode::invalid_storage, name.error().describe()});
             if (*name != "parent")
                 return std::nullopt;
-            return std::optional{take(rt.observe(take(rt.hold(parent)).reference()))};
+            ATELIER_TRY_BIND(held, rt.hold(parent));
+            ATELIER_TRY_BIND(reference, rt.observe(held->reference()));
+            return std::optional{*reference};
         };
         const auto before = take(parents.serialize());
         static_cast<void>(editor::call(registry, host, target,

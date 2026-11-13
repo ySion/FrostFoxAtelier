@@ -120,21 +120,23 @@ Result<GraphDocument> load_graph(Runtime& runtime, std::string_view text) {
     // Leaves that do not decode are kept at their path under `kept` and reported under `prefix`.
     const auto keeping = [&](json::Builder& kept, json::Value target, ObjectId object, const std::string& type,
                              std::vector<std::string> prefix) {
-        return PropertyReport{[&, target, object, type, prefix](std::vector<std::string> at, json::Value item,
-                                                                world::DiagnosticKind kind, const std::string& detail) {
-                                  const auto slot = kept.object_path_validated(target, at);
-                                  kept.replace(slot, item);
-                                  auto field = prefix;
-                                  field.insert(field.end(), at.begin(), at.end());
-                                  report(world::Severity::warning, kind, object, type, std::move(field), &item, detail);
-                              },
-                              [&, object, type, prefix](std::vector<std::string> at, json::Value item) {
-                                  auto field = prefix;
-                                  field.insert(field.end(), at.begin(), at.end());
-                                  report(world::Severity::info, world::DiagnosticKind::converted, object, type,
-                                         std::move(field), &item,
-                                         "Integral number converted exactly to the field's integer type.");
-                              }};
+        return PropertyReport{
+            [&, target, object, type, prefix](std::vector<std::string> at, json::Value item, world::DiagnosticKind kind,
+                                              const std::string& detail) -> Result<void> {
+                const auto slot = kept.object_path_validated(target, at);
+                kept.replace(slot, item);
+                auto field = prefix;
+                field.insert(field.end(), at.begin(), at.end());
+                report(world::Severity::warning, kind, object, type, std::move(field), &item, detail);
+                return {};
+            },
+            [&, object, type, prefix](std::vector<std::string> at, json::Value item) -> Result<void> {
+                auto field = prefix;
+                field.insert(field.end(), at.begin(), at.end());
+                report(world::Severity::info, world::DiagnosticKind::converted, object, type, std::move(field), &item,
+                       "Integral number converted exactly to the field's integer type.");
+                return {};
+            }};
     };
     json::Builder own(settings);
     own.erase(own.root(), "display");
