@@ -167,7 +167,7 @@ PopupHost另保留一个隔离的measurement Session，用工作区约束及同�
 
 同 surface 的 `menu_item.edit_command` 仍由 Session 直接处理；独立菜单宿主关闭菜单后调用原 Session 的 `execute(command, incarnation)`。该入口检查原控件的已接受身份和当前有效性，之后进入原 TextEdit、原生剪贴板与业务事务。有效数字粘贴立即提交一次，非法数字保留可取消草稿。控件被替换后不能把旧菜单命令派给新绑定。`focus(0)` 清除焦点，非零目标须为当前可见、已接受控件；切换焦点结束前一草稿，同目标保留草稿、选区和组合，文本字段立即绑定输入，数值字段保留被动焦点。取消交互同时清除键盘按下与终止键状态。
 
-`Session(font_files)` 可在构造时将应用字体与系统字体合成一个私有 DirectWrite 集合，不安装系统字体。字体文件在 Session 生命周期内保持可读；已接受段落持有其原生布局，继续遵守旧帧寿命。默认构造仍只使用系统字体；未知字体名与中文缺字保持 DirectWrite 的系统回退。当前编辑器随程序部署 Sarasa UI SC 与 Source Code Pro，来源和许可证在 [字体资源](../../../assets/fonts/README.md)。
+`Session` 默认构造为空壳，随后须在稳定地址调用一次 `initialize(font_files)`，将应用字体与系统字体合成一个私有 DirectWrite 集合，不安装系统字体；初始化失败后仅允许销毁。不传字体文件的 `initialize()` 只使用系统字体。字体文件在 Session 生命周期内保持可读；已接受段落持有其原生布局，继续遵守旧帧寿命。未知字体名与中文缺字保持 DirectWrite 的系统回退。当前编辑器随程序部署 Sarasa UI SC 与 Source Code Pro，来源和许可证在 [字体资源](../../../assets/fonts/README.md)。
 
 ## 停靠与标签
 

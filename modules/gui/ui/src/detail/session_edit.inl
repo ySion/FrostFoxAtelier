@@ -47,15 +47,19 @@
         commit=commit && (!numeric || parsed.has_value());
         const auto value=numeric?(commit?*parsed:edit->original_value):0.0;
         auto content=commit?edit->buffer().current().text:edit->buffer().original();
-        if (edit->buffer().active()) action(reply,commit?ActionKind::edit_commit:ActionKind::edit_cancel,key,
-            numeric?ActionValue{value}:
-                ActionValue{content});
-        edit.reset();
+        std::optional<Edit> next;
         if (keep_context && focus==key) {
-            auto candidate=Edit::create(state,numeric?format(value,state.control.single_precision):std::move(content),value,!numeric,false);
-            if (!text_ok(reply,candidate,key)) return false;
-            edit.emplace(std::move(*candidate));
+            auto candidate=Edit::create(state,numeric?format(value,state.control.single_precision):content,value,!numeric,false);
+            if (!text_ok(reply,candidate,key)) {
+                if (edit->buffer().active()) action(reply,ActionKind::edit_cancel,key,
+                    numeric?ActionValue{edit->original_value}:ActionValue{edit->buffer().original()});
+                edit.reset();return false;
+            }
+            next.emplace(std::move(*candidate));
         }
+        if (edit->buffer().active()) action(reply,commit?ActionKind::edit_commit:ActionKind::edit_cancel,key,
+            numeric?ActionValue{value}:ActionValue{content});
+        edit=std::move(next);
         reply.redraw=true; return true;
     }
     Reply cancel() {

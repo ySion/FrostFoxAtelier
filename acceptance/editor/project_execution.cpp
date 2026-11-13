@@ -731,7 +731,8 @@ void run(const std::filesystem::path& root) {
     controls = take(workspace.describe(document, {1280, 800}, ui.presented().get(), &project));
     display(ui.set_controls(controls));
     workspace.commit_ui_controls();
-    require(workspace.source_editor.locate_problem(), "Cross-file compiler diagnostic could not open its source.");
+    require(take(workspace.source_editor.locate_problem()),
+            "Cross-file compiler diagnostic could not open its source.");
     require(workspace.source_editor.active()->path == std::filesystem::canonical(helper),
             "Diagnostic opened the wrong file.");
 

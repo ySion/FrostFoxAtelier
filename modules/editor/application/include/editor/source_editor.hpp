@@ -83,7 +83,7 @@ public:
 
     std::vector<ui::MenuItem> menu_items() const;
 
-    bool locate_problem();
+    Result<bool> locate_problem();
 
     // Original absolute path/root, optional Source content version and UTF-8
     // byte column. Refuses stale locations and never overwrites a dirty draft.

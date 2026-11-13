@@ -47,7 +47,7 @@ void verify_project_source_diagnostics(const std::filesystem::path& folder, ui::
     require(target->document == old_document && target->document->text() == platform::utf8_to_utf16_validated(saved) &&
                 !target->dirty(),
             "Project diagnostic setup did not retain the stale clean buffer.");
-    require(workspace.source_editor.problem_current() && workspace.source_editor.locate_problem(),
+    require(workspace.source_editor.problem_current() && take(workspace.source_editor.locate_problem()),
             "Project diagnostic did not refresh the clean target to its compiled source.");
     const auto current = target->document;
     require(workspace.source_editor.active() == target && current != old_document &&
@@ -61,7 +61,7 @@ void verify_project_source_diagnostics(const std::filesystem::path& folder, ui::
     const auto draft = current->text();
     require(workspace.source_editor.select(caller), "Could not return to the diagnostic caller.");
     frame();
-    static_cast<void>(workspace.source_editor.locate_problem());
+    static_cast<void>(take(workspace.source_editor.locate_problem()));
     require(target->document == current && current->text() == draft && target->dirty(),
             "Cross-file diagnostic overwrote an unsaved target draft.");
     require(take(current->edit().history(false)) == ui::detail::TextEdit::Change::text && !target->dirty(),
@@ -69,7 +69,7 @@ void verify_project_source_diagnostics(const std::filesystem::path& folder, ui::
     require(workspace.source_editor.select(caller), "Could not select caller before the disk-version check.");
     frame();
     take(editor::write_file(helper, saved));
-    static_cast<void>(workspace.source_editor.locate_problem());
+    static_cast<void>(take(workspace.source_editor.locate_problem()));
     require(target->document == current && current->text() == platform::utf8_to_utf16_validated(broken),
             "Project diagnostic used a source version that changed after compilation.");
     take(loaded.code->poll(project, true));
@@ -164,7 +164,7 @@ void verify_source_editor() {
     const auto good_revision = workspace.ui_revision();
     wait_for([&] { return !workspace.ui_error().empty(); }, "Invalid saved source produced no compiler diagnostic");
     require(workspace.ui_revision() == good_revision && workspace.source_editor.problem_current() &&
-                workspace.source_editor.locate_problem(),
+                take(workspace.source_editor.locate_problem()),
             "Failed publication lost the old UI or its actionable source location.");
     require(document->edit().line_at(document->edit().current().caret.offset) > 500,
             "Diagnostic navigation did not locate the source error.");

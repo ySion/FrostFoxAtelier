@@ -215,7 +215,7 @@ std::vector<ui::MenuItem> SourceEditor::menu_items() const {
     return result;
 }
 
-bool SourceEditor::locate_problem() {
+Result<bool> SourceEditor::locate_problem() {
     if (!problem_line_)
         return false;
     if (!problem_path_.empty()) {
@@ -231,15 +231,15 @@ bool SourceEditor::locate_problem() {
             bytes.remove_prefix(3);
         if (bytes != source)
             return false;
-        if (!open(path))
-            return false;
+        ATELIER_TRY(open(path));
         auto* selected = active();
         if (!selected || selected->dirty())
             return false;
         // A forced build can see a newer file before the document poll does.
         // Locate in the exact checked bytes, without replacing an unsaved draft.
-        if (selected->disk != *disk && !load(*selected, std::move(*disk)))
-            return false;
+        if (selected->disk != *disk) {
+            ATELIER_TRY(load(*selected, std::move(*disk)));
+        }
         problem_line_ = line;
         problem_column_ = column;
         problem_document_ = selected->document;

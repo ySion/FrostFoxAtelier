@@ -570,7 +570,8 @@ Result<void> Application::action(const ui::Action& source) {
         return {};
     }
     if (event.kind == ui::ActionKind::activate && event.key == editor::source_control::problem) {
-        if (workspace_.source_editor.locate_problem())
+        ATELIER_TRY_BIND(located, workspace_.source_editor.locate_problem());
+        if (*located)
             pending_source_focus_ = true;
         return {};
     }

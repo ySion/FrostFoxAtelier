@@ -314,7 +314,7 @@ Result<void> Application::load_project(const std::filesystem::path& folder, bool
             auto name = platform::utf8_to_utf16(candidate.build->sources->files.front().path);
             auto source_path = name ? project_->resolve(*name) : failed("Invalid UTF-8 text.");
             if (source_path)
-                static_cast<void>(open_source(*source_path));
+                return open_source(*source_path);
         }
     }
     return {};

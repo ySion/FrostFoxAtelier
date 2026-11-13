@@ -410,15 +410,17 @@ Reply Session::input(const Event& event) {
                                self.states.at(press.key).control.kind == ControlKind::tree_item)) {
             Impl::action(reply, ActionKind::drag_commit, press.key, DragPoint{event.x, event.y});
         } else if (press.dragging) {
-            Impl::action(reply, ActionKind::edit_commit, press.key, press.value);
             if (self.focus == press.key && self.states.at(press.key).control.kind == ControlKind::number) {
                 auto candidate = Impl::Edit::create(
                     self.states.at(press.key), format(press.value, self.states.at(press.key).control.single_precision),
                     press.value, false, false);
-                if (!self.text_ok(reply, candidate, self.focus))
+                if (!self.text_ok(reply, candidate, self.focus)) {
+                    Impl::action(reply, ActionKind::edit_cancel, press.key, press.original);
                     return reply;
+                }
                 self.edit.emplace(std::move(*candidate));
             }
+            Impl::action(reply, ActionKind::edit_commit, press.key, press.value);
         } else if (!press.selecting && hit && hit->key == press.key) {
             if (hit->kind == ControlKind::tree_item && press.tree_disclosure) {
                 if (const auto* row = self.tree_row(hit->key); row && contains(row->disclosure, event.x, event.y))
