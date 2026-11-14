@@ -39,20 +39,6 @@ struct NativeEvent {
     std::optional<Motion> relative_motion;
 };
 
-struct NativeInputStatistics {
-    std::uint64_t compositions{};
-
-    std::uint64_t updates{};
-
-    std::uint64_t results{};
-
-    std::uint64_t cancellations{};
-
-    std::uint64_t candidate_opens{};
-
-    std::uint64_t candidate_changes{};
-};
-
 // Shared translation for editor and project windows. The caller handles
 // surface changes and application commands before dispatching UI input.
 std::optional<ui::Event> input_event(NativeEvent, HWND);
@@ -102,11 +88,7 @@ public:
 
     std::uint32_t text_input(const std::optional<ui::TextInputState>&);
 
-    const NativeInputStatistics& input_statistics() const noexcept { return input_statistics_; }
-
 private:
-    friend struct EditorAcceptanceAccess;
-
     HWND handle_{};
 
     HCURSOR cursor_{};
@@ -164,8 +146,6 @@ private:
     bool input_enabled_{true};
 
     std::optional<RECT> candidate_rect_;
-
-    NativeInputStatistics input_statistics_;
 
     NativeEvent event(UINT, WPARAM = 0, LPARAM = 0) const;
 

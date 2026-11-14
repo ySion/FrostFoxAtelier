@@ -521,12 +521,6 @@ LRESULT Window::receive(UINT message, WPARAM wparam, LPARAM lparam) {
         return 0;
     case WM_IME_CHAR:
         return 0; // Confirmed strings have one owner: GCS_RESULTSTR.
-    case WM_IME_NOTIFY:
-        if (wparam == IMN_OPENCANDIDATE)
-            ++input_statistics_.candidate_opens;
-        if (wparam == IMN_CHANGECANDIDATE)
-            ++input_statistics_.candidate_changes;
-        return DefWindowProcW(handle_, message, wparam, lparam);
     case WM_INPUTLANGCHANGE:
         input_anchor_.reset();
         candidate_rect_.reset();
@@ -625,7 +619,6 @@ void Window::composition(UINT message, LPARAM flags) {
         native_composition_token_ = input_token_.value_or(ui::EditToken{});
         record.composition =
             ui::CompositionEvent{ui::CompositionKind::start, native_composition_id_, native_composition_token_, {}, {}};
-        ++input_statistics_.compositions;
     } else if (native_composition_id_) {
         auto& value = record.composition.emplace();
         value.composition_id = native_composition_id_;
@@ -636,20 +629,17 @@ void Window::composition(UINT message, LPARAM flags) {
         } else if (!flags) {
             value.kind = ui::CompositionKind::cancel;
             native_composition_id_ = 0;
-            ++input_statistics_.cancellations;
         } else {
             value.kind = ui::CompositionKind::update;
-            ++input_statistics_.updates;
             InputContext input(handle_);
             if (!input.context)
                 record.error = ERROR_INVALID_HANDLE;
             else {
                 if (flags & GCS_RESULTSTR) {
                     auto text = composition_text(input.context, GCS_RESULTSTR);
-                    if (text) {
+                    if (text)
                         value.result = std::move(*text);
-                        ++input_statistics_.results;
-                    } else
+                    else
                         record.error = text.error();
                 }
                 if (flags & (GCS_COMPSTR | GCS_COMPATTR | GCS_CURSORPOS)) {
@@ -758,7 +748,6 @@ std::uint32_t Window::cancel_ime() {
     if (composition_id_ || native_composition_id_ || ImmGetOpenStatus(input.context)) {
         if (!ImmNotifyIME(input.context, NI_COMPOSITIONSTR, CPS_CANCEL, 0))
             return native_error();
-        ++input_statistics_.cancellations;
     }
     composition_id_ = native_composition_id_ = 0;
     candidate_rect_.reset();

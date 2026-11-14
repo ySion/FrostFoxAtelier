@@ -30,8 +30,6 @@ public:
 
     Result<void> close(); // Retire GPU work before HWND destruction.
 
-    unsigned open_present_count() const noexcept { return open_present_count_; }
-
     bool visible() const noexcept { return visible_; }
 
     HWND window() const noexcept { return window_.handle(); }
@@ -43,8 +41,6 @@ public:
     ui::ControlKey source() const noexcept { return source_; }
 
 private:
-    friend struct EditorAcceptanceAccess;
-
     Window window_;
 
     ui::Session ui_;

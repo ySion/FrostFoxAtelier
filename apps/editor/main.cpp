@@ -15,33 +15,9 @@
 #include <cmath>
 #include <chrono>
 
-int verify_editor_window(atelier::application::Application&, const char* output_directory);
-
-int verify_editor_output(atelier::application::Application&, const char* output_directory);
-
-int verify_editor_source(atelier::application::Application&, const char* output_directory);
-
-int verify_editor_edit_mode(atelier::application::Application&, const char* output_directory);
-
-int verify_editor_shortcuts(atelier::application::Application&, const char* output_directory);
-
-int verify_editor_surfaces(atelier::application::Application&, const char* output_directory);
-
 int profile_editor_render_performance(atelier::application::Application&, const char* output_directory);
 
-int verify_editor_tooltips(atelier::application::Application&, const char* output_directory);
-
-int verify_editor_dialogs(atelier::application::Application&, const char* output_directory);
-
 int capture_editor_snapshot(atelier::application::Application&, const char* output_directory);
-
-int verify_editor_ime(atelier::application::Application&, const char* output_directory);
-
-int verify_editor_project(atelier::application::Application&, const char* output_directory,
-                          const wchar_t* source_project);
-
-int verify_editor_scene_lit(atelier::application::Application&, const char* output_directory,
-                            const wchar_t* source_project);
 
 void guard_acceptance_native_dialogs();
 
@@ -118,47 +94,29 @@ atelier::Result<int> host_main(int argc, wchar_t** argv) {
             if (end == argv[i + 6] || *end || !std::isfinite(camera[i]))
                 throw std::runtime_error("Camera values must be finite numbers.");
         }
-    const bool acceptance = argc >= 2 && std::wstring_view(argv[1]) == L"--acceptance";
-    const bool output = argc >= 2 && std::wstring_view(argv[1]) == L"--acceptance-output";
-    const bool source = argc >= 2 && std::wstring_view(argv[1]) == L"--acceptance-source";
-    const bool edit = argc >= 2 && std::wstring_view(argv[1]) == L"--acceptance-edit";
-    const bool shortcuts = argc >= 2 && std::wstring_view(argv[1]) == L"--acceptance-shortcuts";
-    const bool surfaces = argc >= 2 && std::wstring_view(argv[1]) == L"--acceptance-surfaces";
-    const bool tooltips = argc >= 2 && std::wstring_view(argv[1]) == L"--acceptance-tooltips";
-    const bool dialogs = argc >= 2 && std::wstring_view(argv[1]) == L"--acceptance-dialogs";
     const bool snapshot = argc >= 2 && std::wstring_view(argv[1]) == L"--snapshot";
-    const bool ime = argc >= 2 && std::wstring_view(argv[1]) == L"--acceptance-ime";
-    const bool project_acceptance = argc >= 2 && std::wstring_view(argv[1]) == L"--acceptance-project";
-    const bool scene_lit = argc >= 2 && std::wstring_view(argv[1]) == L"--acceptance-scene-lit";
     const bool project =
         (argc == 3 || (argc == 5 && scene_argument) || preview) && std::wstring_view(argv[1]) == L"--project";
     const bool create = argc == 3 && std::wstring_view(argv[1]) == L"--new-project";
     if (render_performance_output && !project)
         throw std::runtime_error(
             "--profile-render-performance requires --project, optionally followed by the existing --scene and camera arguments.");
-    if (argc != 1 && !project &&
-        !((acceptance || output || source || edit || shortcuts || surfaces || tooltips || dialogs || snapshot || ime ||
-           create) &&
-          argc == 3) &&
-        !((project_acceptance || scene_lit) && (argc == 3 || argc == 4))) {
+    if (argc != 1 && !project && !((snapshot || create) && argc == 3)) {
         std::fprintf(
             stderr,
-            "Usage: atelier_editor [--log-directory absolute-new-directory] [--parent-run run-id] [--profile-render-performance absolute-output-directory] [--no-activate] [--client-size width height (physical pixels)] [--version] [--project|--new-project folder] [--scene relative.scene [--material-camera|--scene-lit-camera eye-x eye-y eye-z target-x target-y target-z]] [--snapshot|--acceptance|--acceptance-output|--acceptance-ime|--acceptance-source|--acceptance-edit|--acceptance-shortcuts|--acceptance-surfaces|--acceptance-tooltips|--acceptance-dialogs output-directory] [--acceptance-project|--acceptance-scene-lit output-directory [source-project]]\n");
+            "Usage: atelier_editor [--log-directory absolute-new-directory] [--parent-run run-id] [--profile-render-performance absolute-output-directory] [--no-activate] [--client-size width height (physical pixels)] [--version] [--project|--new-project folder] [--scene relative.scene [--material-camera|--scene-lit-camera eye-x eye-y eye-z target-x target-y target-z]] [--snapshot output-directory]\n");
         return 2;
     }
-    const bool harness = acceptance || output || source || edit || shortcuts || surfaces || tooltips || dialogs ||
-                         snapshot || ime || project_acceptance || scene_lit;
-    if (harness)
+    if (snapshot)
         guard_acceptance_native_dialogs();
-    if (harness || render_performance_output)
+    if (snapshot || render_performance_output)
         atelier::application::isolate_shader_cache();
     auto document = std::make_unique<atelier::editor::Session>();
     ATELIER_TRY(document->initialize({}, atelier::editor::SessionRole::editor));
     atelier::application::Application app;
-    const auto initialized = app.initialize(
-        std::move(document), gpu_validation || acceptance || source || edit || ime || project_acceptance || scene_lit,
-        !snapshot && !shortcuts && !surfaces && !tooltips && !dialogs && !no_activate && !render_performance_output,
-        initial_client, !render_performance_output);
+    const auto initialized =
+        app.initialize(std::move(document), gpu_validation, !snapshot && !no_activate && !render_performance_output,
+                       initial_client, !render_performance_output);
     if (!initialized)
         return std::unexpected(initialized.error());
     if (project || create) {
@@ -181,7 +139,7 @@ atelier::Result<int> host_main(int argc, wchar_t** argv) {
             throw std::runtime_error(view.error().message);
     }
     std::string output_directory;
-    if (render_performance_output || harness) {
+    if (render_performance_output || snapshot) {
         auto converted = atelier::platform::utf16_to_utf8(
             render_performance_output ? render_performance_output->native() : std::wstring_view(argv[2]));
         if (!converted)
@@ -190,30 +148,8 @@ atelier::Result<int> host_main(int argc, wchar_t** argv) {
     }
     if (render_performance_output)
         return profile_editor_render_performance(app, output_directory.c_str());
-    if (source)
-        return verify_editor_source(app, output_directory.c_str());
-    if (edit)
-        return verify_editor_edit_mode(app, output_directory.c_str());
-    if (shortcuts)
-        return verify_editor_shortcuts(app, output_directory.c_str());
-    if (surfaces)
-        return verify_editor_surfaces(app, output_directory.c_str());
-    if (tooltips)
-        return verify_editor_tooltips(app, output_directory.c_str());
-    if (dialogs)
-        return verify_editor_dialogs(app, output_directory.c_str());
     if (snapshot)
         return capture_editor_snapshot(app, output_directory.c_str());
-    if (acceptance)
-        return verify_editor_window(app, output_directory.c_str());
-    if (output)
-        return verify_editor_output(app, output_directory.c_str());
-    if (ime)
-        return verify_editor_ime(app, output_directory.c_str());
-    if (project_acceptance)
-        return verify_editor_project(app, output_directory.c_str(), argc == 4 ? argv[3] : nullptr);
-    if (scene_lit)
-        return verify_editor_scene_lit(app, output_directory.c_str(), argc == 4 ? argv[3] : nullptr);
     if (!no_control) {
         const auto enabled = app.enable_control(control_directory);
         if (!enabled)

@@ -78,65 +78,22 @@ public:
         return host ? host->window() : nullptr;
     }
 
-    const ui::UiFrame* menu_frame() const noexcept {
-        const auto* host = menu_host();
-        return host ? host->presented().get() : nullptr;
-    }
-
     Result<void> capture_menu(renderer::Capture& capture) {
         if (auto* host = menu_host())
             return host->render(&capture);
         return {};
     }
 
-    ui::ControlKey object_control(ObjectId entity) const noexcept { return workspace_.object_control(entity); }
-
-    ui::ControlKey field_control(ObjectId component, std::span<const FieldId> path) const noexcept {
-        return workspace_.field_control(component, path);
-    }
-
-    float parameter_width() const noexcept {
-        const auto& frame = ui_.presented();
-        const auto* pane = frame ? frame->find(workspace_.dock.pane(editor::control::parameters_tab)) : nullptr;
-        return pane ? pane->bounds.width / frame->drawing->dpi_scale : 0;
-    }
-
-    ui::ControlKey parameter_splitter() const noexcept {
-        return workspace_.dock.divider(editor::control::parameters_tab, ui::DragAxis::horizontal);
-    }
-
-    const ui::DockSpace& docking() const noexcept { return workspace_.dock; }
-
-    ui::ControlKey reset_control(ObjectId component) const noexcept { return workspace_.reset_control(component); }
-
-    bool workbench_visible() const noexcept { return workspace_.show_workbench(); }
-
-    const editor::ControlWorkbench& control_workbench() const noexcept { return workspace_.workbench; }
-
-    bool wants_keyboard() const noexcept { return ui_.wants_keyboard(); }
-
-    const std::wstring& query() const noexcept { return workspace_.query; }
-
-    const std::wstring& status_text() const noexcept { return workspace_.status; }
-
-    std::optional<ui::TextInputState> text_input() const noexcept { return ui_.text_input(); }
-
-    const NativeInputStatistics& input_statistics() const noexcept { return window_.input_statistics(); }
-
     std::uint64_t accepted_frames() const noexcept { return accepted_frames_; }
 
     // The frame timing record of the most recent step, sampled or not.
     const timing::FrameRecord& frame_record() const noexcept { return recorder_.last(); }
 
-    ui::Result<void> set_style(const ui::Style& style) { return ui_.set_style(style); }
-
-    const ui::Style& style() const noexcept { return ui_.style(); }
-
     // Most recent step's render result; zero when that step did not render.
     const renderer::FrameStats& frame_statistics() const noexcept { return frame_statistics_; }
 
 private:
-    friend struct EditorAcceptanceAccess; // Seeds real backend failures in the window E2E.
+    friend struct EditorAcceptanceAccess; // Drives snapshots and render-performance measurements.
 
     friend class EditorControl;
 
@@ -290,16 +247,7 @@ private:
 
     std::optional<ui::PointerButton> camera_fly_release_;
 
-    struct CameraFlyCancellation {
-        std::source_location caller;
-
-        std::string input_event;
-    };
-
-    std::optional<CameraFlyCancellation> camera_fly_cancellation_;
-
-    void finish_camera_fly(bool accept, std::source_location caller = std::source_location::current(),
-                           std::string_view input_event = {});
+    void finish_camera_fly(bool accept);
 
     void update_camera_fly();
 

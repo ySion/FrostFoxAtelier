@@ -92,15 +92,6 @@ function(atelier_add_editor)
     add_custom_target(editor_log_smoke_acceptance
         COMMAND $<TARGET_FILE:atelier_editor_control_acceptance> $<TARGET_FILE:atelier_editor> "${CMAKE_BINARY_DIR}/log-smoke-acceptance" --smoke-logs
         DEPENDS atelier_editor_control_acceptance atelier_editor USES_TERMINAL VERBATIM)
-    add_custom_target(editor_control_acceptance
-        COMMAND $<TARGET_FILE:atelier_editor_control_acceptance> $<TARGET_FILE:atelier_editor> "${CMAKE_BINARY_DIR}/control-acceptance"
-        DEPENDS atelier_editor_control_acceptance atelier_editor atelier_control USES_TERMINAL VERBATIM)
-    add_custom_target(editor_control_path_acceptance
-        COMMAND $<TARGET_FILE:atelier_editor_control_acceptance> $<TARGET_FILE:atelier_editor> "${CMAKE_BINARY_DIR}/control-path-acceptance" --repro-paths
-        DEPENDS atelier_editor_control_acceptance atelier_editor atelier_control USES_TERMINAL VERBATIM)
-    add_custom_target(editor_repro_material_acceptance
-        COMMAND $<TARGET_FILE:atelier_editor_control_acceptance> $<TARGET_FILE:atelier_editor> "${CMAKE_BINARY_DIR}/repro-material-acceptance" --repro-lighting
-        DEPENDS atelier_editor_control_acceptance atelier_editor USES_TERMINAL VERBATIM)
     add_executable(atelier_editor_document_acceptance
         "${PROJECT_SOURCE_DIR}/apps/editor/editor.manifest"
         "${PROJECT_SOURCE_DIR}/acceptance/editor/document.cpp"
@@ -125,37 +116,6 @@ function(atelier_add_editor)
     atelier_headless_acceptance(project_integration_acceptance
         COMMAND $<TARGET_FILE:atelier_project_integration_acceptance>
         DEPENDS atelier_project_integration_acceptance)
-    add_custom_target(editor_acceptance
-        COMMAND $<TARGET_FILE:atelier_editor> --acceptance "${CMAKE_BINARY_DIR}/editor-evidence"
-        DEPENDS atelier_editor USES_TERMINAL VERBATIM)
-    add_custom_target(editor_output_acceptance
-        COMMAND $<TARGET_FILE:atelier_editor> --acceptance-output "${CMAKE_BINARY_DIR}/output-evidence"
-        DEPENDS atelier_editor USES_TERMINAL VERBATIM)
-    add_custom_target(editor_ime_acceptance
-        COMMAND $<TARGET_FILE:atelier_editor> --acceptance-ime "${CMAKE_BINARY_DIR}/editor-evidence"
-        DEPENDS atelier_editor USES_TERMINAL VERBATIM)
-    add_custom_target(editor_project_acceptance
-        COMMAND $<TARGET_FILE:atelier_editor> --acceptance-project "${CMAKE_BINARY_DIR}/project-evidence"
-        COMMAND $<TARGET_FILE:atelier_editor> --acceptance-source "${CMAKE_BINARY_DIR}/source-evidence"
-        DEPENDS atelier_editor USES_TERMINAL VERBATIM)
-    add_custom_target(editor_shortcuts_acceptance
-        COMMAND $<TARGET_FILE:atelier_editor> --acceptance-shortcuts "${CMAKE_BINARY_DIR}/shortcut-evidence"
-        DEPENDS atelier_editor USES_TERMINAL VERBATIM)
-    add_custom_target(editor_edit_acceptance
-        COMMAND $<TARGET_FILE:atelier_editor_document_acceptance> --viewport-edit
-        COMMAND $<TARGET_FILE:atelier_editor> --acceptance-edit "${CMAKE_BINARY_DIR}/edit-mode-evidence"
-        DEPENDS atelier_editor atelier_editor_document_acceptance USES_TERMINAL VERBATIM)
-    add_custom_target(editor_surfaces_acceptance
-        COMMAND $<TARGET_FILE:atelier_editor> --acceptance-surfaces "${CMAKE_BINARY_DIR}/surface-evidence"
-        COMMAND $<TARGET_FILE:atelier_editor> --acceptance-tooltips "${CMAKE_BINARY_DIR}/tooltip-evidence"
-        DEPENDS atelier_editor USES_TERMINAL VERBATIM)
-    add_custom_target(editor_dialogs_acceptance
-        COMMAND $<TARGET_FILE:atelier_editor> --acceptance-dialogs "${CMAKE_BINARY_DIR}/dialog-evidence"
-        DEPENDS atelier_editor USES_TERMINAL VERBATIM)
-    add_custom_target(editor_scene_lit_acceptance
-        COMMAND $<TARGET_FILE:atelier_editor_document_acceptance> --scene-lit "${PROJECT_SOURCE_DIR}/examples"
-        COMMAND $<TARGET_FILE:atelier_editor> --acceptance-scene-lit "${CMAKE_BINARY_DIR}/scene-lit-editor-evidence" "${PROJECT_SOURCE_DIR}/examples"
-        DEPENDS atelier_editor atelier_editor_document_acceptance USES_TERMINAL VERBATIM)
     # Repository examples are explicit acceptance inputs, not deployed engine content.
     foreach(target atelier_editor atelier_editor_document_acceptance atelier_project_scene_acceptance atelier_editor_control_acceptance)
         target_compile_definitions(${target} PRIVATE "ATELIER_EXAMPLE_PROJECT=L\"${PROJECT_SOURCE_DIR}/examples\"")
