@@ -4,10 +4,5 @@ Content/Sponza/*/textures/*.png filter=lfs diff=lfs merge=lfs -text
 # Preserve upstream glTF and license bytes, including original whitespace.
 Content/Sponza/*/*.gltf -text -whitespace
 Content/Sponza/*/credits_license.txt -text -whitespace
-Content/Dungeons/**/*.fbx filter=lfs diff=lfs merge=lfs -text
 Content/Dungeons/**/*.obj filter=lfs diff=lfs merge=lfs -text
 Content/Dungeons/**/*.png filter=lfs diff=lfs merge=lfs -text
-Content/Dungeons/**/*.tga filter=lfs diff=lfs merge=lfs -text
-Content/Dungeons/**/*.tif filter=lfs diff=lfs merge=lfs -text
-# Preserve imported Unity data and metadata bytes for source-hash verification.
-Content/Dungeons/Originals/** -text -whitespace
