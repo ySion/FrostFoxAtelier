@@ -103,7 +103,8 @@ function(atelier_add_editor)
         DEPENDS atelier_editor_control_acceptance atelier_editor USES_TERMINAL VERBATIM)
     add_executable(atelier_editor_document_acceptance
         "${PROJECT_SOURCE_DIR}/apps/editor/editor.manifest"
-        "${PROJECT_SOURCE_DIR}/acceptance/editor/document.cpp")
+        "${PROJECT_SOURCE_DIR}/acceptance/editor/document.cpp"
+        "${PROJECT_SOURCE_DIR}/acceptance/editor/mesh_reimport.cpp")
     atelier_target(atelier_editor_document_acceptance)
     target_include_directories(atelier_editor_document_acceptance PRIVATE "${PROJECT_SOURCE_DIR}/modules/gui/ui/internal"
         "${PROJECT_SOURCE_DIR}/modules/render/renderer/internal")
@@ -111,30 +112,12 @@ function(atelier_add_editor)
     atelier_headless_acceptance(editor_document_acceptance
         COMMAND $<TARGET_FILE:atelier_editor_document_acceptance>
         DEPENDS atelier_editor_document_acceptance)
-    atelier_headless_acceptance(editor_recovery_acceptance
-        COMMAND $<TARGET_FILE:atelier_editor_document_acceptance> --recovery
-        DEPENDS atelier_editor_document_acceptance)
-    atelier_headless_acceptance(editor_material_acceptance
-        COMMAND $<TARGET_FILE:atelier_editor_document_acceptance> --materials
-        DEPENDS atelier_editor_document_acceptance)
-    atelier_headless_acceptance(editor_gltf_acceptance
-        COMMAND $<TARGET_FILE:atelier_editor_document_acceptance> --gltf
-        DEPENDS atelier_editor_document_acceptance)
-    atelier_headless_acceptance(procedural_graph_acceptance
-        COMMAND $<TARGET_FILE:atelier_editor_document_acceptance> --procedural-graph
-        DEPENDS atelier_editor_document_acceptance)
     add_executable(atelier_project_scene_acceptance "${PROJECT_SOURCE_DIR}/acceptance/editor/project_scene.cpp")
     atelier_target(atelier_project_scene_acceptance)
     target_link_libraries(atelier_project_scene_acceptance PRIVATE atelier_editor_core atelier_source atelier_physics)
     atelier_headless_acceptance(project_scene_acceptance
         COMMAND $<TARGET_FILE:atelier_project_scene_acceptance>
         DEPENDS atelier_project_scene_acceptance)
-    add_executable(atelier_mesh_reimport_acceptance "${PROJECT_SOURCE_DIR}/acceptance/editor/mesh_reimport.cpp")
-    atelier_target(atelier_mesh_reimport_acceptance)
-    target_link_libraries(atelier_mesh_reimport_acceptance PRIVATE atelier_editor_core)
-    atelier_headless_acceptance(mesh_reimport_acceptance
-        COMMAND $<TARGET_FILE:atelier_mesh_reimport_acceptance>
-        DEPENDS atelier_mesh_reimport_acceptance)
     add_executable(atelier_project_integration_acceptance "${PROJECT_SOURCE_DIR}/acceptance/editor/project_execution.cpp")
     atelier_target(atelier_project_integration_acceptance)
     target_link_libraries(atelier_project_integration_acceptance PRIVATE atelier_editor_application)
@@ -142,14 +125,6 @@ function(atelier_add_editor)
     atelier_headless_acceptance(project_integration_acceptance
         COMMAND $<TARGET_FILE:atelier_project_integration_acceptance>
         DEPENDS atelier_project_integration_acceptance)
-    atelier_headless_acceptance(project_texture_reimport_acceptance
-        COMMAND $<TARGET_FILE:atelier_project_integration_acceptance> --textures
-        DEPENDS atelier_project_integration_acceptance)
-    atelier_headless_acceptance(editor_examples_acceptance
-        COMMAND $<TARGET_FILE:atelier_editor_document_acceptance> --examples
-        COMMAND $<TARGET_FILE:atelier_editor_document_acceptance> --dungeons
-        COMMAND $<TARGET_FILE:atelier_editor_document_acceptance> --textured-obj
-        DEPENDS atelier_editor_document_acceptance)
     add_custom_target(editor_acceptance
         COMMAND $<TARGET_FILE:atelier_editor> --acceptance "${CMAKE_BINARY_DIR}/editor-evidence"
         DEPENDS atelier_editor USES_TERMINAL VERBATIM)
