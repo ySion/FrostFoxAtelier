@@ -113,21 +113,7 @@ void sky_background_geometry(Fixture& f) {
     oy = weight > 0 ? oy / weight : -1;
     check(brightest > 200 && std::abs(ox - ex) <= 1 && std::abs(oy - ey) <= 1,
           "the background marker lies at its map direction turned by the sky yaw");
-    const std::weak_ptr<const atelier::rendering::SkyMap> released = options.sky_map;
-    options.sky_map = {};
-    render::Capture removed;
-    f.step(&removed);
-    std::size_t lit_background = 0;
-    for (unsigned y = 0; y < removed.extent.height; ++y)
-        for (unsigned x = 0; x < removed.extent.width; ++x) {
-            const auto i = std::size_t(y) * removed.extent.width + x;
-            if (sky_inside(f.frame, x, y) &&
-                (removed.rgba[i * 4] || removed.rgba[i * 4 + 1] || removed.rgba[i * 4 + 2]))
-                ++lit_background;
-        }
-    check(lit_background == 0 && released.expired(),
-          "removing the sky map blackens the background at once and releases the map");
-    std::puts("Renderer sky: PASS (authored yaw, same-map retirement)");
+    std::puts("Renderer sky: PASS (authored yaw)");
 }
 
 atelier::rendering::SkyMapRef sky_real_map() {

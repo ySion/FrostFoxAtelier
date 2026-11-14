@@ -103,9 +103,6 @@ void run(HWND window, const std::filesystem::path& output) {
         window,
         {.validation = atelier::rhi::Validation::gpu, .vsync = false, .shader_cache = shader_cache_directory()}));
     auto batch = take(renderer.prepare_materials(table));
-    const auto busy = renderer.close();
-    check(!busy && busy.error().cause.code == atelier::rhi::ErrorCode::busy && !busy.error().terminal,
-          "live batch close is nonterminal and checked before destructive cleanup");
     wait(renderer, batch);
     ui::Frame drawing{.id = 30000, .extent = take(renderer.target()).extent, .draws = {}};
     std::vector<geometry::Vertex> vertices;

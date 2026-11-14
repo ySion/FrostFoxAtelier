@@ -634,7 +634,6 @@ void benchmark(Fixture& f) {
 
 #include "scene_lit_rectangle.inl"
 #include "scene_lit_shadow.inl"
-#include "scene_lit_contracts.inl"
 #include "scene_lit_debug.inl"
 #include "scene_lit_sky.inl"
 } // namespace scene_lit_e2e
@@ -650,7 +649,6 @@ int scene_lit_acceptance(bool benchmark_mode, const std::filesystem::path& outpu
         scene_lit_e2e::sky_background_geometry(fixture);
         fixture.restore();
         scene_lit_e2e::probe_debug_cases(fixture);
-        scene_lit_e2e::quality_contracts(fixture);
     }
     fixture.close();
     return 0;

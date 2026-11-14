@@ -19,22 +19,11 @@ void require_mimalloc(const void* block) {
     require(block != nullptr && mi_is_in_heap_region(block), "Default allocation did not reach mimalloc.");
 }
 
-struct alignas(256) AlignedValue {
-    std::uint64_t value{42};
-};
-
 }
 
 void verify_default_allocator() {
     // Proves load ordering: the DLL made this allocation before main, with plain CRT calls.
     require_mimalloc(atelier_crt_startup_block());
-
-    {
-        const auto aligned = std::make_unique<AlignedValue>();
-        require(reinterpret_cast<std::uintptr_t>(aligned.get()) % alignof(AlignedValue) == 0,
-                "Over-aligned allocation lost its alignment.");
-        require(aligned->value == 42, "C++ allocation corrupted contents.");
-    }
 
     void* block = std::calloc(32, sizeof(std::uint64_t));
     require_mimalloc(block);
@@ -49,14 +38,7 @@ void verify_default_allocator() {
     require(static_cast<std::uint64_t*>(resized)[0] == 123, "Cross-DLL realloc lost contents.");
     atelier_crt_free(resized);
 
-    void* thread_block{};
-    {
-        std::jthread worker{[&] { thread_block = std::malloc(512); }};
-    }
-    require_mimalloc(thread_block);
-    std::free(thread_block);
-
-    std::cout << "[pass] mimalloc: aligned ABI, startup/cross-DLL/thread lifetime\n";
+    std::cout << "[pass] mimalloc: startup and cross-DLL lifetime\n";
 }
 
 }

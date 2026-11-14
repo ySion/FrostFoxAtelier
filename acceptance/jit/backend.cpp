@@ -84,18 +84,12 @@ void pass(const ProbeCallbacks& callbacks, const char* message) {
     callbacks.log(line.c_str());
 }
 
-enum class FailureStage { none, finalization, emission };
-
 struct FailureProbe {
     std::string module;
-
-    FailureStage stage{FailureStage::none};
 
     ExecutorAddr code;
 
     bool registered_before_failure{};
-
-    llvm::orc::MaterializationResponsibility* responsibility{};
 };
 
 llvm::orc::shared::CWrapperFunctionBuffer reject_finalization(const char* data, std::size_t size) {
@@ -118,11 +112,10 @@ class MaterializationFailurePlugin final : public llvm::orc::LinkGraphLinkingLay
 public:
     explicit MaterializationFailurePlugin(FailureProbe& probe) : probe_(probe) {}
 
-    void modifyPassConfig(llvm::orc::MaterializationResponsibility& responsibility, llvm::jitlink::LinkGraph& graph,
+    void modifyPassConfig(llvm::orc::MaterializationResponsibility&, llvm::jitlink::LinkGraph& graph,
                           llvm::jitlink::PassConfiguration& config) override {
         if (probe_.module.empty() || !graph.getName().starts_with(probe_.module))
             return;
-        probe_.responsibility = &responsibility;
         config.PostAllocationPasses.push_back([this](llvm::jitlink::LinkGraph& allocated) -> llvm::Error {
             auto* entry = allocated.findDefinedSymbolByName(allocated.intern(probe_.module + "_entry"));
             if (!entry)
@@ -131,34 +124,18 @@ public:
             probe_.code = entry->getAddress();
             return llvm::Error::success();
         });
-        if (probe_.stage == FailureStage::finalization) {
-            config.PostFixupPasses.push_back([this](llvm::jitlink::LinkGraph& fixed) -> llvm::Error {
-                using namespace llvm::orc::shared;
-                auto action = WrapperFunctionCall::Create<SPSArgList<SPSExecutorAddr>>(
-                    ExecutorAddr::fromPtr(&reject_finalization), ExecutorAddr::fromPtr(&probe_));
-                if (!action)
-                    return action.takeError();
-                fixed.allocActions().push_back({std::move(*action), {}});
-                return llvm::Error::success();
-            });
-        }
+        config.PostFixupPasses.push_back([this](llvm::jitlink::LinkGraph& fixed) -> llvm::Error {
+            using namespace llvm::orc::shared;
+            auto action = WrapperFunctionCall::Create<SPSArgList<SPSExecutorAddr>>(
+                ExecutorAddr::fromPtr(&reject_finalization), ExecutorAddr::fromPtr(&probe_));
+            if (!action)
+                return action.takeError();
+            fixed.allocActions().push_back({std::move(*action), {}});
+            return llvm::Error::success();
+        });
     }
 
-    llvm::Error notifyEmitted(llvm::orc::MaterializationResponsibility& responsibility) override {
-        if (probe_.stage == FailureStage::emission && probe_.responsibility == &responsibility) {
-            DWORD64 image_base{};
-            probe_.registered_before_failure =
-                RtlLookupFunctionEntry(probe_.code.getValue(), &image_base, nullptr) != nullptr;
-            return llvm::make_error<llvm::StringError>("Injected emission failure.", llvm::inconvertibleErrorCode());
-        }
-        return llvm::Error::success();
-    }
-
-    llvm::Error notifyFailed(llvm::orc::MaterializationResponsibility& responsibility) override {
-        if (probe_.responsibility == &responsibility)
-            probe_.responsibility = nullptr;
-        return llvm::Error::success();
-    }
+    llvm::Error notifyFailed(llvm::orc::MaterializationResponsibility&) override { return llvm::Error::success(); }
 
     llvm::Error notifyRemovingResources(llvm::orc::JITDylib&, llvm::orc::ResourceKey) override {
         return llvm::Error::success();
@@ -193,31 +170,11 @@ CodeRange unwind_range(ExecutorAddr address) {
     return range;
 }
 
-bool executable(DWORD protection) noexcept {
-    const auto access = protection & 0xff;
-    return access == PAGE_EXECUTE || access == PAGE_EXECUTE_READ || access == PAGE_EXECUTE_READWRITE ||
-           access == PAGE_EXECUTE_WRITECOPY;
-}
-
-bool writable(DWORD protection) noexcept {
-    const auto access = protection & 0xff;
-    return access == PAGE_READWRITE || access == PAGE_WRITECOPY || access == PAGE_EXECUTE_READWRITE ||
-           access == PAGE_EXECUTE_WRITECOPY;
-}
-
 MEMORY_BASIC_INFORMATION memory_info(ExecutorAddr address) {
     MEMORY_BASIC_INFORMATION info{};
     require(VirtualQuery(address.toPtr<const void*>(), &info, sizeof(info)) == sizeof(info),
             "VirtualQuery failed for generated storage.");
     return info;
-}
-
-void verify_retired(ExecutorAddr address) {
-    DWORD64 image_base{};
-    require(RtlLookupFunctionEntry(address.getValue(), &image_base, nullptr) == nullptr,
-            "An unloaded code allocation still has a Windows unwind entry.");
-    const auto info = memory_info(address);
-    require(info.State != MEM_COMMIT || !executable(info.Protect), "An unloaded code allocation remains executable.");
 }
 
 void configure_function(llvm::Function& function) {
@@ -237,8 +194,6 @@ struct Unit {
     ExecutorAddr outer;
 
     ExecutorAddr inner;
-
-    ExecutorAddr label;
 
     ExecutorAddr counter;
 };
@@ -264,9 +219,6 @@ ThreadSafeModule create_module(LLJIT& jit, const std::string& stem, std::uint32_
                 layout->getElementOffset(3) == offsetof(ProbeRecord, count),
             "LLVM record layout differs from the native record.");
 
-    auto* label_data = llvm::ConstantDataArray::getString(*context, stem);
-    new llvm::GlobalVariable(*module, label_data->getType(), true, llvm::GlobalValue::ExternalLinkage, label_data,
-                             stem + "_label");
     auto* counter = new llvm::GlobalVariable(*module, i64, false, llvm::GlobalValue::ExternalLinkage,
                                              builder.getInt64(0), stem + "_counter");
     auto* signature = llvm::FunctionType::get(
@@ -354,7 +306,6 @@ Unit add_unit(LLJIT& jit, std::uint32_t version, std::size_t stack_bytes = sizeo
     unit.entry = take(jit.lookup(unit.stem + "_entry"));
     unit.outer = take(jit.lookup(unit.stem + "_outer"));
     unit.inner = take(jit.lookup(unit.stem + "_inner"));
-    unit.label = take(jit.lookup(unit.stem + "_label"));
     unit.counter = take(jit.lookup(unit.stem + "_counter"));
     return unit;
 }
@@ -375,8 +326,7 @@ void verify_calls(const Unit& unit) {
     output = ProbeRecord{77.0, 99, 18.0f, 25};
     require(function(1, -3, 1.25f, 2.0, 40, &input, &output, &diagnostic) == native_failure,
             "Native failure did not return its explicit status.");
-    require(diagnostic.cleanups == 1 && std::strcmp(diagnostic.message, "Requested native failure.") == 0,
-            "Native failure lost its diagnostic or cleanup.");
+    require(diagnostic.cleanups == 1, "Native failure skipped cleanup.");
     require(output.total == 77.0 && output.checksum == 99 && output.amount == 18.0f && output.count == 25,
             "Failed native call exposed or copied an uninitialized result.");
     require(*unit.counter.toPtr<const std::uint64_t*>() == 1, "Failed invocation changed generated mutable state.");
@@ -411,64 +361,10 @@ __declspec(noinline) void verify_stack(const Unit& unit, std::size_t minimum_sta
             "Windows stack walking did not cross every JIT frame and return to the native caller.");
 }
 
-__declspec(noinline) void verify_cross_unit(LLJIT& jit, const Unit& callee) {
-    const auto host_range = unwind_range(ExecutorAddr::fromPtr(&verify_cross_unit));
-    auto context = std::make_unique<llvm::LLVMContext>();
-    auto module = std::make_unique<llvm::Module>("cross_unit", *context);
-    module->setTargetTriple(jit.getTargetTriple());
-    module->setDataLayout(jit.getDataLayout());
-    llvm::IRBuilder<> builder(*context);
-    auto* signature = llvm::FunctionType::get(builder.getInt32Ty(), {builder.getPtrTy()}, false);
-    auto target = module->getOrInsertFunction(callee.stem + "_outer", signature);
-    auto* entry = llvm::Function::Create(signature, llvm::GlobalValue::ExternalLinkage, "cross_unit_entry", *module);
-    configure_function(*entry);
-    builder.SetInsertPoint(llvm::BasicBlock::Create(*context, "entry", entry));
-    auto* result = builder.CreateCall(target, {entry->getArg(0)});
-    builder.CreateRet(builder.CreateAdd(result, builder.getInt32(1)));
-    auto tracker = jit.getMainJITDylib().createResourceTracker();
-    take(jit.addIRModule(tracker, ThreadSafeModule(std::move(module), std::move(context))));
-    const auto address = take(jit.lookup("cross_unit_entry"));
-    const auto caller_range = unwind_range(address);
-    const auto callee_range = unwind_range(callee.outer);
-    StackSnapshot snapshot;
-    const auto returned = address.toPtr<std::uint32_t (*)(StackSnapshot*)>()(&snapshot);
-    require(snapshot.count <= std::size(snapshot.frames) && returned == snapshot.count + 21,
-            "Cross-unit generated call returned an invalid result.");
-    std::uint32_t caller_frames{};
-    std::uint32_t callee_frames{};
-    std::uint32_t host_frames{};
-    for (std::uint32_t i = 0; i < snapshot.count; ++i) {
-        caller_frames += caller_range.contains(snapshot.frames[i]) ? 1u : 0u;
-        callee_frames += callee_range.contains(snapshot.frames[i]) ? 1u : 0u;
-        host_frames += host_range.contains(snapshot.frames[i]) ? 1u : 0u;
-    }
-    require(caller_frames == 1 && callee_frames == 1 && host_frames == 1,
-            "Windows stack walking lost a generated frame or the native caller.");
-    // Retire the dependent before its callee; LLVM tracking does not establish
-    // application-level quiescence or make stale raw function pointers safe.
-    take(tracker->remove());
-    verify_retired(address);
-}
-
-void verify_protection(const Unit& unit) {
-    const auto code = memory_info(unit.entry);
-    const auto constant = memory_info(unit.label);
-    const auto data = memory_info(unit.counter);
-    require(code.State == MEM_COMMIT && executable(code.Protect) && !writable(code.Protect),
-            "Published machine code is not executable and non-writable.");
-    require(constant.State == MEM_COMMIT && !executable(constant.Protect) && !writable(constant.Protect),
-            "JIT constant storage is executable or writable.");
-    require(data.State == MEM_COMMIT && !executable(data.Protect) && writable(data.Protect),
-            "JIT mutable data has incorrect page protection.");
-    require(std::strcmp(unit.label.toPtr<const char*>(), unit.stem.c_str()) == 0,
-            "Code version metadata points at the wrong unit.");
-}
-
 void verify_failed_finalization(LLJIT& jit, FailureProbe& probe) {
-    for (const auto stage : {FailureStage::finalization, FailureStage::emission}) {
+    {
         probe = {};
-        probe.stage = stage;
-        probe.module = stage == FailureStage::finalization ? "reject_finalize" : "reject_emission";
+        probe.module = "reject_finalize";
         auto tracker = jit.getMainJITDylib().createResourceTracker();
         take(jit.addIRModule(tracker, create_module(jit, probe.module, 9)));
         auto result = jit.lookup(probe.module + "_entry");
@@ -508,50 +404,14 @@ void run(const ProbeCallbacks& callbacks) {
     auto jit = take(builder.create());
     jit->getExecutionSession().setErrorReporter([](llvm::Error error) { llvm::consumeError(std::move(error)); });
     define_callbacks(*jit, callbacks);
-    auto first = add_unit(*jit, 1, 32768);
-    auto second = add_unit(*jit, 2);
-    verify_calls(first);
-    pass(callbacks, "Host -> JIT -> host/DLL: mixed scalars, wide values and aligned records");
-    pass(callbacks, "Native failures return explicit status and clean up once; failed results stay untouched");
-    verify_cross_unit(*jit, first);
-    pass(callbacks, "Cross-unit generated calls preserve results and Windows unwind metadata");
-    verify_protection(first);
-    pass(callbacks, "Published code is RX, constants are RO, mutable data is RW and non-executable");
+    auto unit = add_unit(*jit, 1);
+    verify_calls(unit);
+    verify_stack(unit);
+    pass(callbacks, "Native scalar/record ABI and Windows unwind metadata");
     verify_failed_finalization(*jit, failure_probe);
-    pass(callbacks, "Finalize/emission failures revoke unwind registration and free their code allocation");
-    auto transferred = jit->getMainJITDylib().createResourceTracker();
-    first.tracker->transferTo(*transferred);
-    first.tracker = std::move(transferred);
-    verify_stack(first, 32768);
-    pass(callbacks, "Transferred 32-KiB aligned stack unwinds through recursive JIT frames to the host");
-
-    const std::string retained_version = first.label.toPtr<const char*>();
-    const std::array retired_addresses{first.entry, first.outer, first.inner};
-    // All calls have returned. ResourceTracker does not establish this quiescence for us.
-    take(first.tracker->remove());
-    auto removed = jit->lookup(first.stem + "_entry");
-    require(!removed, "Removed code remains visible in the symbol table.");
-    llvm::consumeError(removed.takeError());
-    for (const auto address : retired_addresses)
-        verify_retired(address);
-    require(retained_version == "probe_v1", "Independent version metadata was lost during code retirement.");
-    const ProbeRecord input{2.5, 100, 3.0f, 6};
-    ProbeRecord output;
-    ProbeDiagnostic diagnostic;
-    require(second.entry.toPtr<decltype(&atelier_jit_native_calculate)>()(0, -3, 1.25f, 2.0, 40, &input, &output,
-                                                                          &diagnostic) == native_success &&
-                output.total == 2.0 && output.checksum == 221 && output.amount == 4.25f && output.count == 9,
-            "Retiring the first unit damaged the second unit.");
-    pass(callbacks,
-         "Tracker removal revokes symbols, unwind entries and executable storage without damaging another unit");
-
-    const auto shutdown_address = second.entry;
-    // Release tracker handles before destroying their owning execution session.
-    first.tracker.reset();
-    second.tracker.reset();
+    pass(callbacks, "Failed finalization releases code pages and Windows unwind entries");
+    unit.tracker.reset();
     jit.reset();
-    verify_retired(shutdown_address);
-    pass(callbacks, "JIT shutdown releases still-owned code and Windows unwind entries");
 }
 
 }

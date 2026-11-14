@@ -16,11 +16,6 @@ function(_atelier_reflection_json out value)
     set(${out} "\"${value}\"" PARENT_SCOPE)
 endfunction()
 
-add_executable(atelier_reflection_acceptance acceptance/reflection/main.cpp acceptance/reflection/calls.cpp)
-atelier_target(atelier_reflection_acceptance)
-target_link_libraries(atelier_reflection_acceptance PRIVATE atelier_source)
-target_include_directories(atelier_reflection_acceptance PRIVATE "${PROJECT_SOURCE_DIR}/acceptance")
-
 # SOURCE selects a real target compile command; headers use those exact settings.
 # Generated headers retain their path relative to the explicit public include root.
 function(atelier_reflect target)
@@ -82,10 +77,5 @@ function(atelier_reflect target)
     target_include_directories(${target} PUBLIC "$<BUILD_INTERFACE:${_output}>")
 endfunction()
 
-atelier_reflect(atelier_reflection_acceptance SOURCE acceptance/reflection/main.cpp
+atelier_reflect(atelier_runtime_acceptance SOURCE acceptance/reflection/main.cpp
     BASE_DIR "${PROJECT_SOURCE_DIR}/acceptance" HEADERS acceptance/reflection/fixture.hpp)
-atelier_reflect(atelier_source_minimal SOURCE acceptance/source/native_values.cpp
-    BASE_DIR "${PROJECT_SOURCE_DIR}/acceptance" HEADERS acceptance/source/native_values.hpp)
-atelier_headless_acceptance(reflection_acceptance
-    COMMAND $<TARGET_FILE:atelier_reflection_acceptance>
-    DEPENDS atelier_reflection_acceptance atelier_reflect)

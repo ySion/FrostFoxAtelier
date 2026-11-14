@@ -16,32 +16,6 @@ using atelier::acceptance::helpers::require;
 
 using atelier::acceptance::helpers::take;
 
-// A failed acceptance check must unblock the real queue before fatal skips unwinding.
-struct BlockedQueue {
-    ID3D12Fence* fence;
-
-    [[noreturn]] void fail(std::string_view message) const noexcept {
-        (void)fence->Signal(1); // Best effort: a cleanup failure must not replace the first cause.
-        atelier::fatal(message);
-    }
-
-    void require(bool condition, std::string_view message) const noexcept {
-        if (!condition)
-            fail(message);
-    }
-
-    void check(GfxResult result) const noexcept { require(result == kGfxResult_NoError, "gfx operation failed"); }
-
-    void check_hr(HRESULT result) const noexcept { require(SUCCEEDED(result), "native D3D12 operation failed"); }
-
-    template <class T, class E>
-    T take(std::expected<T, E> result) const {
-        if (!result)
-            fail(result.error().message);
-        return std::move(*result);
-    }
-};
-
 inline void check(GfxResult result) {
     require(result == kGfxResult_NoError, "gfx operation failed");
 }

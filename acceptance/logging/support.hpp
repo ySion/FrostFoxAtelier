@@ -33,13 +33,6 @@ inline std::unique_ptr<log::Run> start(const fs::path& directory) {
     return take(log::start_run(std::move(options)));
 }
 
-template <class T>
-const T& field(const log::Entry& value, std::string_view key) {
-    const auto found = std::ranges::find(value.fields, key, &log::Field::key);
-    require(found != value.fields.end(), "Required structured field is missing.");
-    return std::get<T>(found->value);
-}
-
 inline void healthy(const log::FlushReport& report) {
     require(report.backend_acknowledged && report.sink_flush_succeeded && report.summary_published,
             "Backend acknowledgement, real sink flush or health publication failed.");
@@ -97,14 +90,6 @@ inline std::string read_bytes(const fs::path& path) {
     return bytes;
 }
 
-inline void write_bytes(const fs::path& path, std::string_view bytes, bool append = false) {
-    std::ofstream output(path, std::ios::binary | (append ? std::ios::app : std::ios::trunc));
-    require(output.is_open(), "Cannot create acceptance evidence.");
-    output.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
-    output.close();
-    require(!output.fail(), "Cannot finish writing acceptance evidence.");
-}
-
 inline void same_entry(const log::Entry& actual, const log::Entry& expected) {
     require(actual.severity == expected.severity && actual.category == expected.category &&
                 actual.event_code == expected.event_code && actual.message == expected.message,
@@ -130,11 +115,4 @@ void roundtrip(const fs::path&);
 
 void file_failures(const fs::path&);
 
-void producer_churn(const fs::path&);
-
-void reader_cases(const fs::path&);
-
-void rotation(const fs::path&);
-
-void dll(const fs::path&, const fs::path&);
 }

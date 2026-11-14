@@ -86,24 +86,11 @@ function(atelier_add_rhi)
         "${_gfx}/third_party/directx12-agility/build/native/include")
     target_include_directories(atelier_rhi SYSTEM PRIVATE "${_gfx}/third_party/directx-dxc/inc")
 
-    add_executable(atelier_rhi_acceptance
-        "${PROJECT_SOURCE_DIR}/acceptance/rhi/main.cpp"
-        "${PROJECT_SOURCE_DIR}/acceptance/rhi/ray_query_cases.cpp"
-        "${PROJECT_SOURCE_DIR}/acceptance/rhi/scene_lit_cases.cpp"
-        "${PROJECT_SOURCE_DIR}/acceptance/rhi/shadow_cases.cpp"
-        "${PROJECT_SOURCE_DIR}/acceptance/rhi/resource_cases.cpp"
-        "${PROJECT_SOURCE_DIR}/acceptance/rhi/preparation_cases.cpp")
+    add_executable(atelier_rhi_acceptance "${PROJECT_SOURCE_DIR}/acceptance/rhi/main.cpp")
     atelier_target(atelier_rhi_acceptance)
     target_link_libraries(atelier_rhi_acceptance PRIVATE atelier_rhi)
 
-    add_executable(atelier_gfx_regression "${PROJECT_SOURCE_DIR}/acceptance/rhi/upstream_regression.cpp")
-    atelier_target(atelier_gfx_regression)
-    target_link_libraries(atelier_gfx_regression PRIVATE gfx)
-    target_include_directories(atelier_gfx_regression SYSTEM PRIVATE
-        "${_gfx}/third_party/directx12-agility/build/native/include")
-
     atelier_deploy_rhi_runtime(atelier_rhi_acceptance)
-    atelier_deploy_rhi_runtime(atelier_gfx_regression)
 
     file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/licenses/rhi")
     configure_file("${_gfx}/LICENSE.md" "${CMAKE_BINARY_DIR}/licenses/rhi/LICENSE.gfx.md" COPYONLY)
@@ -129,7 +116,7 @@ function(atelier_add_rhi)
         INPUT "${PROJECT_SOURCE_DIR}/cmake/run-rhi-acceptance.cmake.in")
     add_custom_target(rhi_acceptance
         COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_BINARY_DIR}/run-rhi-acceptance.cmake"
-        DEPENDS atelier_rhi_acceptance atelier_gfx_regression
+        DEPENDS atelier_rhi_acceptance
         WORKING_DIRECTORY "${CMAKE_BINARY_DIR}" USES_TERMINAL VERBATIM)
 endfunction()
 

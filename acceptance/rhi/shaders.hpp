@@ -2,12 +2,12 @@
 namespace rhi_acceptance {
 inline constexpr char compute_source[] = R"(
 
-uint seed; uint3 padding; uint4 large[32];
+uint seed; uint bias;
 RWStructuredBuffer<uint> values;
 RWStructuredBuffer<uint> mesh_args;
 RWStructuredBuffer<uint> draw_args;
 [numthreads(1,1,1)] void main() {
-    values[0] = seed + large[31].x;
+    values[0] = seed + bias;
     values[1] = 0; values[2] = 0; values[3] = 1;
     mesh_args[0] = 1; mesh_args[1] = 1; mesh_args[2] = 1;
     draw_args[0] = 3; draw_args[1] = 1; draw_args[2] = 0; draw_args[3] = 0;
@@ -42,10 +42,5 @@ inline constexpr char vertex_pixel_source[] = R"(
 
 StructuredBuffer<uint> values;
 float4 main() : SV_Target { return float4(0, float(values[0]) / 255.0, 0, 1); }
-)";
-inline constexpr char increment_source[] = R"(
-
-RWStructuredBuffer<uint> counter;
-[numthreads(1,1,1)] void main() { counter[0] += 1; }
 )";
 } // namespace rhi_acceptance

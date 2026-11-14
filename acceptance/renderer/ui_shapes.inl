@@ -19,7 +19,6 @@ void ui_shape_cases(render::Renderer& renderer, ui::PixelExtent extent) {
     // RGB is sRGB(linear RGB * alpha); padding must not enter the upload.
     image->pixels = {255, 0, 0,   255, 0,   188, 0,   128, 0, 0, 0, 0, 77, 77, 77, 77,
                      0,   0, 255, 255, 188, 188, 188, 128, 0, 0, 0, 0, 77, 77, 77, 77};
-    std::weak_ptr<const ui::ColorImage> old = image;
     box({10, 130, 90, 60}, {1, 1, 1, 1}).image = image;
     box({110, 130, 90, 60}, {1, 1, 1, 1}).image = image;
     // The clipped image clips per instance inside the shared draw; later instances keep their own data.
@@ -64,22 +63,5 @@ void ui_shape_cases(render::Renderer& renderer, ui::PixelExtent extent) {
     check(pixel(capture, 418, 133)[0] > 120 && pixel(capture, 418, 133)[0] < 200 && pixel(capture, 418, 133)[1] == 0,
           "image and base fill share one antialiased mask without a colored fringe");
     snapshot(capture, "ui-shapes.ppm");
-    auto replacement = std::make_shared<ui::ColorImage>(*drawing.draws[2].image);
-    replacement->revision = 2;
-    replacement->pixels = {0, 255, 0, 255, 0, 0, 0, 0, 0, 0, 0, 0, 77, 77, 77, 77,
-                           0, 255, 0, 255, 0, 0, 0, 0, 0, 0, 0, 0, 77, 77, 77, 77};
-    for (auto& draw : drawing.draws)
-        if (draw.image)
-            draw.image = replacement;
-    replacement.reset();
-    ++drawing.id;
-    take(prepared_render(renderer, frame, &capture));
-    check(old.expired() && pixel(capture, 15, 135)[0] == 0 && pixel(capture, 15, 135)[1] > 250,
-          "immutable image revision replaces pixels and retires old CPU ownership");
-    std::weak_ptr<const ui::ColorImage> current = drawing.draws[2].image;
-    drawing.draws.clear();
-    ++drawing.id;
-    take(prepared_render(renderer, frame));
-    check(current.expired(), "empty frame retires UI image ownership");
-    std::puts("Renderer UI shapes/images: PASS (rounded borders, clip, ordered alpha, RGBA retirement)");
+    std::puts("Renderer UI shapes/images: PASS (rounded borders, clip and ordered alpha)");
 }

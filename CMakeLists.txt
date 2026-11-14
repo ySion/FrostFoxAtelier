@@ -103,12 +103,7 @@ atelier_target(atelier_allocator_client CRT_ALLOCATOR_PROBE)
 
 add_executable(atelier_runtime_acceptance
     acceptance/runtime/main.cpp
-    acceptance/runtime/inheritance.cpp
-    acceptance/runtime/reference_sequence.cpp
-    acceptance/runtime/field_ranges.cpp
-    acceptance/runtime/arrays.cpp
-    acceptance/runtime/value_paths.cpp
-    acceptance/runtime/write_stamps.cpp
+    acceptance/reflection/main.cpp
     acceptance/memory/acceptance.cpp)
 atelier_target(atelier_runtime_acceptance)
 target_include_directories(atelier_runtime_acceptance PRIVATE acceptance)

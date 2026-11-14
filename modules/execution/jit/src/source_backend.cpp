@@ -6,7 +6,6 @@
 #include "language/material.hpp"
 #include "runtime/detail/value_storage.hpp"
 #include "runtime/execution.hpp"
-#include "jit/source_backend_verification.hpp"
 #include "memory/fatal.hpp"
 
 #include <llvm/ADT/SmallVector.h>
@@ -2200,10 +2199,11 @@ llvm::Expected<llvm::orc::ThreadSafeModule> generate_business(LLJIT& jit, const 
     return llvm::orc::ThreadSafeModule{std::move(module), std::move(context)};
 }
 
-llvm::Expected<std::shared_ptr<CompiledBusiness>>
-compile(const BusinessServices& services, const language::Program& program, language::Environment environment,
-        CompileOptions options, bool omit_poll_for_verification = false,
-        const std::shared_ptr<CompiledBusiness>& shared = {}, const BusinessEnvironment* native_environment = nullptr) {
+llvm::Expected<std::shared_ptr<CompiledBusiness>> compile(const BusinessServices& services,
+                                                          const language::Program& program,
+                                                          language::Environment environment, CompileOptions options,
+                                                          const std::shared_ptr<CompiledBusiness>& shared = {},
+                                                          const BusinessEnvironment* native_environment = nullptr) {
     const auto& entry = program.functions.at(program.entry);
     auto state = std::make_shared<CompiledBusiness>();
     state->function_name = entry.function_name;
@@ -2411,8 +2411,7 @@ compile(const BusinessServices& services, const language::Program& program, lang
         bind("business_native_stamp", services.native_stamp);
         bind("business_native_failure", services.native_failure);
         bind("business_native_segment", services.native_segment);
-        if (!omit_poll_for_verification)
-            bind("business_poll", state->services.poll);
+        bind("business_poll", state->services.poll);
         bind("business_finish", state->services.finish);
         bind("business_clear", state->services.clear);
         bind("business_reference", state->services.reference);
@@ -2584,9 +2583,9 @@ std::uint32_t compile_business_impl(const atelier::source::detail::BusinessServi
                                     const atelier::source::detail::BusinessEnvironment* environment,
                                     atelier::source::detail::BusinessCode** output, char* error,
                                     std::uint32_t error_capacity, const char* entry_name,
-                                    atelier::source::CompileOptions options, bool omit_poll_for_verification = false,
-                                    const char* const* entries = nullptr, std::uint32_t entry_count = 0,
-                                    bool receiver = false, atelier::source::detail::CompileLocation* location = nullptr,
+                                    atelier::source::CompileOptions options, const char* const* entries = nullptr,
+                                    std::uint32_t entry_count = 0, bool receiver = false,
+                                    atelier::source::detail::CompileLocation* location = nullptr,
                                     bool declarations_only = false) noexcept {
     atelier::source::detail::initialize_fatal_handlers();
     if (!error || error_capacity == 0)
@@ -2742,16 +2741,15 @@ std::uint32_t compile_business_impl(const atelier::source::detail::BusinessServi
                                    "Source-owned values require the native value lifecycle services.");
     if (mutates_sequences && !services->mutate_sequence)
         return compilation_failure(error, error_capacity, "Source sequence mutation requires its native service.");
-    auto state = atelier::source::detail::compile(*services, *program, source_environment, options,
-                                                  omit_poll_for_verification, {}, environment);
+    auto state = atelier::source::detail::compile(*services, *program, source_environment, options, {}, environment);
     if (!state)
         return compilation_failure(error, error_capacity, llvm::toString(state.takeError()).c_str());
     std::vector<std::unique_ptr<BusinessCode>> codes;
     codes.push_back(std::make_unique<BusinessCode>(*state));
     for (std::uint32_t i = 1; i < entry_count; ++i) {
         program->entry = program->exports[i];
-        auto next = atelier::source::detail::compile(*services, *program, source_environment, options, false, *state,
-                                                     environment);
+        auto next =
+            atelier::source::detail::compile(*services, *program, source_environment, options, *state, environment);
         if (!next)
             return compilation_failure(error, error_capacity, llvm::toString(next.takeError()).c_str());
         codes.push_back(std::make_unique<BusinessCode>(std::move(*next)));
@@ -2770,8 +2768,8 @@ std::uint32_t atelier_compile_business_entries(
     if (location)
         *location = {};
     return compile_business_impl(services, name, source, size, environment, output, error, capacity,
-                                 entries && count ? entries[0] : nullptr, options, false, entries, count, receiver,
-                                 location, count == 0);
+                                 entries && count ? entries[0] : nullptr, options, entries, count, receiver, location,
+                                 count == 0);
 }
 
 std::uint32_t
@@ -2855,7 +2853,7 @@ atelier_compile_material(const char* name, const char* source, std::uint32_t siz
         return compilation_failure(error, capacity, llvm::toString(shade.takeError()).c_str());
     code->shade.state = std::move(*shade);
     material->program.entry = material->program.exports[1];
-    auto defaults = compile(services, material->program, captured, {}, false, code->shade.state);
+    auto defaults = compile(services, material->program, captured, {}, code->shade.state);
     if (!defaults)
         return compilation_failure(error, capacity, llvm::toString(defaults.takeError()).c_str());
     code->defaults.state = std::move(*defaults);
@@ -2892,15 +2890,6 @@ std::uint32_t atelier_compile_business(const atelier::source::detail::BusinessSe
                                        atelier::source::CompileOptions options) noexcept {
     return compile_business_impl(services, source_name, source, source_size, environment, output, error, error_capacity,
                                  entry_name, options);
-}
-
-std::uint32_t atelier_compile_business_without_poll_for_verification(
-    const atelier::source::detail::BusinessServices* services, const char* source_name, const char* source,
-    std::uint32_t source_size, const atelier::source::detail::BusinessEnvironment* environment,
-    atelier::source::detail::BusinessCode** output, char* error, std::uint32_t error_capacity, const char* entry_name,
-    atelier::source::CompileOptions options) noexcept {
-    return compile_business_impl(services, source_name, source, source_size, environment, output, error, error_capacity,
-                                 entry_name, options, true);
 }
 
 void atelier_query_business_info(atelier::source::detail::BusinessCode* code,

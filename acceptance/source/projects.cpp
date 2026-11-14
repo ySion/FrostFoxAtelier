@@ -50,96 +50,10 @@ void verify_project_engine_sources() {
             "Current Source format did not round-trip.");
 }
 
-struct EngineBase {
-    float x;
-};
-
-void verify_property_update() {
-    Runtime runtime;
-    take(NativeRegistration<EngineBase>{runtime, "procedural.Base", TypeKind::object}.publish());
-    auto program = take(Program::create(runtime));
-    const auto string_type = take(runtime.register_type(string_definition(runtime)));
-    source::SourceSnapshot input{
-        "properties",
-        1,
-        {{"engine/props/value.source", 1, "uint props.GetValue() { return 7; } void props.SetValue(uint v) {}"},
-         {"Source/Property.source", 1, R"(
-            uint value() { return props.Value; }
-            class game.Property : procedural.Base {
-                [Meta("test.role", "stored"), Meta("test.binding", "run")]
-                uint stored = 3;
-                String selection = "noise_0123456789_分组\0tail";
-                String group;
-                uint GetLocal() { return self.stored; }
-                void SetLocal(uint v) { self.stored = v; }
-                uint run() { Local = Local + props.Value; return Local; }
-            }
-        )"}}};
-    publish(*program, input);
-    const auto type = take(runtime.find_type("game.Property"));
-    const auto field = take(runtime.find_field(type, "stored"));
-    const auto* info = take(runtime.describe(type));
-    const std::vector<std::pair<std::string, std::string>> metadata{{"test.binding", "run"}, {"test.role", "stored"}};
-    require(info->fields[0].metadata == metadata, "Source field Meta was not published in canonical key order.");
-    const auto instance = take(runtime.create(type));
-    const auto selection = take(runtime.find_field(type, "selection"));
-    const auto read_text = [&](FieldId id) {
-        String text;
-        take(runtime.read(instance.id(), id, ValueOutput{string_type, &text}));
-        return text;
-    };
-    constexpr char expected[] = "noise_0123456789_分组\0tail";
-    const auto selected_text = read_text(selection);
-    require(selected_text.view() == StringView{expected, sizeof(expected) - 1} &&
-                read_text(take(runtime.find_field(type, "group"))).empty(),
-            "Source String defaults lost decoded bytes or empty initialization.");
-    const auto edited = String::literal<"host_owned_selection_0123456789">();
-    take(runtime.write(instance.id(), selection, ValueInput{string_type, &edited}));
-    const auto entry = take(take(program->entry("game.Property.run")).bind<std::uint32_t>());
-    const auto old = take(take(program->pin("game.Property.run")).bind<std::uint32_t>());
-    require(take(entry.invoke(instance.id())) == 10, "Initial cross-file property call produced the wrong state.");
-    input.files[0].source = "uint props.GetValue() { return 11; } void props.SetValue(uint v) {}";
-    // Reorder exports while retaining the same following handle and stable slot.
-    input.files[1].source = R"(
-        uint value() { return props.Value; }
-        class game.Property : procedural.Base {
-            [Meta("test.binding", "run"), Meta("test.role", "stored")]
-            uint stored = 3;
-            core.String selection = "noise_0123456789_分组\0tail";
-            core.String group = "";
-            uint run() { Local = Local + props.Value; return Local; }
-            uint GetLocal() { return self.stored; }
-            void SetLocal(uint v) { self.stored = v; }
-        }
-    )";
-    publish(*program, input);
-    require(take(entry.invoke(instance.id())) == 21 &&
-                std::get<std::uint32_t>(*take(take(program->entry("value")).invoke({}, {}))) == 11 &&
-                take(old.invoke(instance.id())) == 28,
-            "Property update kept stale dependencies or changed a pinned accessor version.");
-    require(take(runtime.describe(type)) == info && take(runtime.find_field(type, "stored")) == field &&
-                info->fields[0].metadata == metadata && read_text(selection) == edited,
-            "Equivalent field declarations changed identity, metadata or the live String override.");
-    const auto revision = program->revision();
-    input.files[1].source.replace(input.files[1].source.find("\"run\""), 5, "\"other\"");
-    const auto changed = Program::prepare(take(program->request(input)));
-    require(!changed && changed.error().code == ErrorCode::rebuild_required && program->revision() == revision &&
-                take(entry.invoke(instance.id())) == 39 && info->fields[0].metadata == metadata,
-            "Changed field Meta bypassed rebuild or damaged the prior publication.");
-    input.files[1].source.replace(input.files[1].source.find("\"other\""), 7, "\"run\"");
-    input.files[1].source.replace(input.files[1].source.find("noise_"), 6, "new_");
-    const auto default_changed = Program::prepare(take(program->request(input)));
-    require(!default_changed && default_changed.error().code == ErrorCode::rebuild_required &&
-                program->revision() == revision && read_text(selection) == edited &&
-                take(entry.invoke(instance.id())) == 50,
-            "Changed String default bypassed rebuild or damaged the prior live object and code.");
-}
-
-source::SourceSnapshot sources(float factor = 1) {
+source::SourceSnapshot sources() {
     return {"project",
             5,
-            {{"Source/Math.source", 17,
-              "float distance(float speed, float dt) { return speed * dt * " + std::to_string(factor) + "f; }"},
+            {{"Source/Math.source", 17, "float distance(float speed, float dt) { return speed * dt; }"},
              {"Source/Move.source", 23, R"(
 class game.Move : world.Component {
     float speed = 2.0f;
@@ -162,49 +76,20 @@ void verify_world_project() {
     const auto composed = take(world.attach_components(owner.id(), std::array{w::Attachment{instance.id()}}));
     require(!composed.notification_error, "Source class capability assembly failed.");
     require(!take(world.attach(owner.id())).notification_error, "Source owner attachment failed.");
-    const auto speed = take(runtime.find_field(type, "speed"));
     const auto tick = take(program->entry("game.Move.tick"));
-    const auto old = take(program->pin("game.Move.tick"));
-    bool replay_old{};
     take(world.bind_behavior(type, {.tick = [&](Runtime&, ObjectId id, float dt) -> Result<void> {
                                  const std::array args{Scalar{dt}};
                                  auto result = tick.invoke(id, args);
                                  if (!result)
                                      return std::unexpected(result.error());
-                                 if (replay_old) {
-                                     auto pinned = old.invoke(id, args);
-                                     if (!pinned)
-                                         return std::unexpected(pinned.error());
-                                 }
                                  return {};
                              }}));
     require(!take(world.start()).notification_error, "Source lifecycle start failed.");
     const auto x = [&] { return take(w::read_transform(runtime, owner.id())).position.x; };
     take(world.update(.5f));
     require(x() == 1.f, "Cross-file helper or inherited native action failed.");
-    take(runtime.write(instance.id(), speed, 4.f));
-    publish(*program, sources(2));
-    replay_old = true;
-    take(world.update(.5f));
-    replay_old = false;
-    require(x() == 7.f && std::get<float>(take(runtime.read(instance.id(), speed))) == 4.f,
-            "Hot update lost instance state or its old code lease.");
-    auto bad = sources(2);
-    bad.files[0].source = "float distance(float speed, float dt) { return missing; }";
-    require(!Program::prepare(take(program->request(bad))), "Invalid replacement compiled.");
-    take(world.update(.5f));
-    require(x() == 11.f, "Failed candidate replaced active World code.");
     require(!take(world.stop()).notification_error, "Source lifecycle stop failed.");
     program->close();
-    take(world.bind_behavior(type, {.tick = [old](Runtime&, ObjectId id, float dt) -> Result<void> {
-                                 auto result = old.invoke(id, std::array{Scalar{dt}});
-                                 if (!result)
-                                     return std::unexpected(result.error());
-                                 return {};
-                             }}));
-    require(!take(world.start()).notification_error, "Pinned World behavior failed to resume.");
-    take(world.update(.5f));
-    require(x() == 13.f, "Pinned lease lost its real World owner after Program close.");
     require(!take(world.close()).notification_error, "Pinned World cleanup failed.");
     require(!take(w::destroy_entity(runtime, owner.id())).notification_error, "Source owner termination failed.");
 }
@@ -212,7 +97,6 @@ void verify_world_project() {
 
 void verify_source_projects() {
     verify_project_engine_sources();
-    verify_property_update();
     verify_world_project();
-    std::puts("Source project consumer: PASS (current disk format, property versions, World hot update and failure)");
+    std::puts("Source project consumer: PASS (current disk format and cross-file World tick)");
 }

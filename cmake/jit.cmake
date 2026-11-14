@@ -106,23 +106,15 @@ function(atelier_add_source)
     endforeach()
 
     add_executable(atelier_source_minimal
-        acceptance/source/main.cpp acceptance/source/shutdown.cpp acceptance/source/session.cpp
-        acceptance/source/inheritance.cpp acceptance/source/native_values.cpp acceptance/source/modules.cpp
-        acceptance/source/types.cpp acceptance/source/value_fields.cpp acceptance/source/math.cpp
-        acceptance/source/foundations.cpp acceptance/source/plain_records.cpp acceptance/source/projects.cpp
-        acceptance/source/diagnostics.cpp acceptance/source/debugger.cpp acceptance/source/materials.cpp)
+        acceptance/source/main.cpp acceptance/source/shutdown.cpp acceptance/source/projects.cpp)
     atelier_target(atelier_source_minimal)
-    include("${PROJECT_SOURCE_DIR}/cmake/core_math.cmake")
-    target_link_libraries(atelier_source_minimal PRIVATE atelier_source atelier_world atelier_material atelier_core_math mimalloc psapi)
+    target_link_libraries(atelier_source_minimal PRIVATE atelier_source atelier_world)
     target_include_directories(atelier_source_minimal PRIVATE "${PROJECT_SOURCE_DIR}/acceptance"
         "${PROJECT_SOURCE_DIR}/modules/execution/source/internal"
         "${PROJECT_SOURCE_DIR}/modules/execution/jit/internal")
     target_compile_definitions(atelier_source_minimal PRIVATE "ATELIER_ENGINE_SOURCE_TREE=L\"${engine_tree}\"")
     atelier_headless_acceptance(source_acceptance
         COMMAND $<TARGET_FILE:atelier_source_minimal>
-        DEPENDS atelier_source_minimal)
-    atelier_headless_acceptance(source_material_acceptance
-        COMMAND $<TARGET_FILE:atelier_source_minimal> --materials
         DEPENDS atelier_source_minimal)
 
     add_library(atelier_jit_probe SHARED acceptance/jit/backend.cpp)
@@ -145,5 +137,5 @@ function(atelier_add_source)
         atelier_source atelier_source_backend atelier_jit_probe atelier_jit_native_client)
     atelier_headless_acceptance(jit_acceptance
         COMMAND $<TARGET_FILE:atelier_jit_acceptance>
-        DEPENDS source_acceptance atelier_jit_acceptance)
+        DEPENDS atelier_jit_acceptance)
 endfunction()

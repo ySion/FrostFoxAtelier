@@ -15,9 +15,5 @@ target_include_directories(atelier_assets PUBLIC "${PROJECT_SOURCE_DIR}/modules/
 target_link_libraries(atelier_assets PUBLIC atelier_runtime atelier_geometry atelier_rendering atelier_source atelier_material
     atelier_platform atelier_core_json PRIVATE atelier_foundation windowscodecs ole32)
 
-add_executable(atelier_mesh_import_acceptance "${PROJECT_SOURCE_DIR}/acceptance/assets/mesh_import.cpp")
-atelier_target(atelier_mesh_import_acceptance)
-target_link_libraries(atelier_mesh_import_acceptance PRIVATE atelier_assets)
-atelier_headless_acceptance(mesh_import_acceptance
-    COMMAND $<TARGET_FILE:atelier_mesh_import_acceptance>
-    DEPENDS atelier_mesh_import_acceptance)
+target_sources(atelier_world_acceptance PRIVATE "${PROJECT_SOURCE_DIR}/acceptance/assets/mesh_import.cpp")
+target_link_libraries(atelier_world_acceptance PRIVATE atelier_assets)
