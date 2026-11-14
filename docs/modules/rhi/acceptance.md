@@ -8,17 +8,15 @@
 
 ## 当前保留代表与验证范围
 
+`rhi_acceptance` 只运行正式消费者 [main.cpp](../../../acceptance/rhi/main.cpp)：
+
+- 同一帧内两次 compute 写入种子和间接参数，随后 Mesh 间接绘制与 Vertex 多重间接绘制各读回一张 64×32 代表图（红 40、绿 80），深度为 .25，15 个参数字与独立期望一致；输入 buffer 在编码后、提交前释放。
+- Context 析构后，仍存活的 Pipeline 保持其执行域与 PSO。
+- 两段结束时 D3D12 InfoQueue 均无 warning/error。
+
+RAW/Structured 布局、根参数预算、FP16 MRT/D32/mip、RayQuery、阴影 atlas 清除与 depth bias、DXIL 缓存、异步准备、窗口同步和后端回归（null-list、timeout）不再有专项代表；下文各节的记录只证明所列版本。
+
 2026-11-02 的裁剪仅修改验收及运行清单，产品合同和实现不变；冻结件基于本地 `main` 的 `4a488a288add118471d23ba45cc3a03549594a4d`。主树整合同时纠正快速门禁改为 debug 后遗留的 GBV-only 断言，未修改 gate 或产品。`out/acceptance-gate/20261102-072619-099-43904/` 记录 Dev/Release `all` 通过、Release `rhi_acceptance` 在默认 debug 下通过（7.34 秒），主进程与两个后端回归退出 0；双配置实际编译数据库的 `atelier_style` 各 8 个 TU、零发现。本次没有运行 Dev RHI 或 GBV，GBV 留待下一次 `-Full`；不能将此结果当作 GBV 通过或与旧完整矩阵比较提速。
-
-- Compute → Mesh → Vertex 保留 6 帧的提前释放、管线替换和 90 个参数字；Mesh/Vertex 各读回一张代表图，共 4,096 个颜色像素与 2,048 个深度像素。不缩小帧槽回绕序列。
-- RAW/Structured 字节布局与 range 偏移各保留一个原有代表；跨阶段根参数用固定输入核对 RGBA `64/110/37/255`，indexed indirect 用 `91/0/0/255`。冷大 CBV 搬表只派发一次，独立期望为 73，保留 [a1eb44b7](https://github.com/ySion/FrostFoxAtelier/commit/a1eb44b7f3e6f1363fb60e5e6357d32f3908fec7) 中已修 UAF 的受控反例条件，移除 64 次 finish 与 single/multi 矩阵。
-- FP16 MRT、D32 SRV、mip 2 与 GPU 生成 indirect 各保留一个结果；64 个 indirect word 的独立期望为 `i*7+19`。移除 timestamp/profile 矩阵。RayQuery 的 build → trace → update → trace 与提交前退休保留，仅删除 AS DataSize 观察。
-- atlas 固定 mip 2，保留目标 slice 与未改动邻 slice，共 1,536 个字；按输入矩形和固定颜色/深度核对。depth bias 仅留 Vertex 正 clamp 单图，以解析式 `.25+.125*(x+.5)/64+.001` 核对，不再用另一张 GPU 图作为期望。
-- DXIL 缓存 K1 不变；异步成功派发由缓存场景覆盖，准备中采用/丢弃/关闭仍保留 48 作业、live-object 阳性对照及零泄漏检查。普通 warning/error 仍不能被 LIVE 报告吞掉。
-- 后端回归只保留 `null-list` 与 `timeout`；后者仍建立真实阻塞，执行 timeout → 失败销毁保留 → 放行 → 排空，以外部读回计数严格为 1 核对。重复 Mesh PS 图归入主场景；拒绝与错误文本矩阵、额外模式和性能阈值删除。
-- `shared_buffer_reads_and_writes` 按裁定删除，其特定 IA/range 再绑定序列不再由此验收保留；现有 Full GBV 只覆盖实际执行的消费者，不声称等价替代该序列。历史红绿证据保留在下文。
-
-窗口函数与窗口相关正常观察尚未删改，待 Editor 日志零错误冒烟通过后再实施已批准的窗口裁剪；窗口故障造景与 timeout 清理序列继续保留。旧完整矩阵的通过与耗时不能当作本候选通过或提速的证据。
 
 ## 命令与环境
 
@@ -34,7 +32,7 @@ cmake --build --preset release --target rhi_acceptance
 
 快速门禁设置 `ATELIER_GPU_VALIDATION=debug`，正式消费者须报告 `debug-layer=1 gpu-validation=0`；`-Full` 对此目标设置 `gbv`，未设置环境变量的直接运行也保留 GPU 验证请求，须报告两者均为 1。验收期望仅由输入模式推出，实际标志另行核对并打印；debug 通过不代表 GBV 通过。
 
-`rhi_acceptance` 运行正式消费者和 `null-list`、`timeout` 两个独立后端回归。主进程上限 180 秒，各回归上限 60 秒；这与 Context 的单次 GPU 等待预算不同。检查在发布构建中同样有效。以下环境表对应裁剪前的历史运行。
+`rhi_acceptance` 只运行正式消费者，进程上限 180 秒；这与 Context 的单次 GPU 等待预算不同。检查在发布构建中同样有效。以下环境表对应裁剪前的历史运行。
 
 | 项目 | 已验证条件 |
 | --- | --- |
@@ -77,7 +75,7 @@ cmake --build --preset release --target rhi_acceptance
 
 状态：rendering 分支，基线 integration/ec-4 `80de8156`，本地提交，未推送。合同见[异步准备与 DXIL 磁盘缓存](contract.md#异步准备与-dxil-磁盘缓存)。
 
-- 运行：Release `rhi_acceptance`（主进程与三个回归），退出码均为 0，主进程输出 `RHI acceptance: PASS`，D3D12 InfoQueue 的 warning/error 为 0。新增场景在 [preparation_cases.cpp](../../../acceptance/rhi/preparation_cases.cpp)，全部在 GPU-based validation 下运行。
+- 运行：Release `rhi_acceptance`（主进程与三个回归），退出码均为 0，主进程输出 `RHI acceptance: PASS`，D3D12 InfoQueue 的 warning/error 为 0。新增场景在 当时的 `preparation_cases.cpp`（已删除），全部在 GPU-based validation 下运行。
 - 日志中的一批 `Live ID3D12RootSignature/PipelineState` 警告来自阳性对照：故意在 Pipeline 仍存在时调用 `ReportLiveDeviceObjects`，证明泄漏检查能看到对象；关闭后的同一检查计数为 0。
 - Dev 未在本批运行：按分层门禁规则，改到 RHI 的集成轮次由门禁加跑 Dev 窗口层。
 - 准备期间 GBV 预热的成本与收益在 Renderer 层测量，见 [Renderer 验收](../renderer/acceptance.md#运行)。
@@ -86,7 +84,7 @@ cmake --build --preset release --target rhi_acceptance
 
 初版（36548664）受影响的 RHI、Renderer 与编辑器目标在 Dev / Release 构建通过；Release `rhi_acceptance` 主进程与三个后端回归均退出 0。主进程使用 GBV，最终 InfoQueue warning/error 均为 0；Dev 本批只构建，不重复运行窗口矩阵。
 
-[资源消费者](../../../acceptance/rhi/resource_cases.cpp)的初版真实 GPU 循环让同一底层顶点/索引 buffer 经 range 别名交替作为 IA、像素 SRV、compute SRV；两次连续 UAV 读改写之间保留顺序，下一轮由 COPY_DEST 覆写顶点数据，然后重新绘制。四轮逐像素核对 8,192 个 RGBA 像素，并核对四个 compute 读回值，覆盖合并的读状态离开到写状态、UAV → UAV 和写 → 读。既有 BLAS/TLAS build/update → RayQuery 与间接派发消费者同时通过。
+资源消费者（当时的 `resource_cases.cpp`，已删除）的初版真实 GPU 循环让同一底层顶点/索引 buffer 经 range 别名交替作为 IA、像素 SRV、compute SRV；两次连续 UAV 读改写之间保留顺序，下一轮由 COPY_DEST 覆写顶点数据，然后重新绘制。四轮逐像素核对 8,192 个 RGBA 像素，并核对四个 compute 读回值，覆盖合并的读状态离开到写状态、UAV → UAV 和写 → 读。既有 BLAS/TLAS build/update → RayQuery 与间接派发消费者同时通过。
 
 初版日志保存在 `.amp/in/p1/rhi-final.log`；当时 `shared-buffer-reads` 输出 PASS。这些是本工作树的本机证据，不表示其他工作树已经验证。
 
@@ -102,7 +100,7 @@ Dev/Release 的 `atelier_rhi_acceptance`、`atelier_gfx_regression`、`atelier_r
 
 可编程材质 B0 的参数加载使用 `ByteAddressBuffer`。固定 gfx 已识别该反射种类，但原 SRV 分支仍按逻辑 stride 创建 Structured 视图；本批补丁复用 `raw_access_`，为 RAW SRV 设置 `R32_TYPELESS`、零结构 stride、RAW 标志和以四字节为单位的范围。RAW 不再使用逻辑 stride 的准入/警告；最小有效范围是一个四字节 word，Structured 分支保持原样。
 
-[资源消费者](../../../acceptance/rhi/resource_cases.cpp)在同一次 compute/readback 中对照 RAW/Structured：84 字节非对称数据、逻辑 stride=12，公开 range 为 offset=48、size=24，RAW 尾视图为 offset=80、size=4。RAW 视图起点遵守 D3D12 的 16 字节对齐；检查跨记录读取、最后 word、视图字节数及 Structured 元素数/stride。尾视图区分错误使用 size<逻辑stride 拒绝完整 word 的实现。八组 uint4 的实际值和独立期望均写日志，另检查真实 GBV InfoQueue。
+资源消费者（当时的 `resource_cases.cpp`，已删除）在同一次 compute/readback 中对照 RAW/Structured：84 字节非对称数据、逻辑 stride=12，公开 range 为 offset=48、size=24，RAW 尾视图为 offset=80、size=4。RAW 视图起点遵守 D3D12 的 16 字节对齐；检查跨记录读取、最后 word、视图字节数及 Structured 元素数/stride。尾视图区分错误使用 size<逻辑stride 拒绝完整 word 的实现。八组 uint4 的实际值和独立期望均写日志，另检查真实 GBV InfoQueue。
 
 同一验收源码在旧补丁下的 Release 红轮 `20261027-022408-457-78584` 退出 1：RAW dimensions 实际 `7,2,2,12`、期望 `84,24,2,12`；尾读实际全零、期望 `1601,4,0,0`；Structured 对照正确。仅换入修复补丁后，最终门禁 `20261027-022824-128-78336` 的 Dev/Release `all`、两配置 `rhi_acceptance` 与 `renderer_acceptance_material_programs` 全部通过。八组 RAW/Structured 读回全部匹配；RHI 主进程和材质入口均实际启用 GBV，原 null-list/timeout 后端回归仍为 debug layer，Mesh PS 回归为 GBV。RHI 最终 warning/error 均为 0；既有故意超时、非法输入和 live-object 阳性对照诊断不被删去。
 
@@ -114,7 +112,7 @@ Dev/Release 的 `atelier_rhi_acceptance`、`atelier_gfx_regression`、`atelier_r
 
 ## 绘制前窗口同步
 
-[资源与窗口消费者](../../../acceptance/rhi/resource_cases.cpp)创建并管理自己的不激活窗口，依次切换 641×73、257×181、703×97、320×96、641×73、257×181。
+资源与窗口消费者（当时的 `resource_cases.cpp`，已删除）创建并管理自己的不激活窗口，依次切换 641×73、257×181、703×97、320×96、641×73、257×181。
 
 - 隐藏时调用 `sync_window_target()`，返回新尺寸和 `drawable=false`；显示后只调用一次 `frame`，`rendered` 与 `next` 均为新尺寸。
 - 逐像素核对全屏三角形，确认首次呈现没有旧 viewport 留边；auto-resize 纹理同步变化，前次 GPU 使用沿既有退休机制结束。
@@ -127,7 +125,7 @@ Dev/Release 的 `atelier_rhi_acceptance`、`atelier_gfx_regression`、`atelier_r
 
 最近一次配置与完整输出保存在 `out/rhi-window-target-sync/`：`configure-dev.log`、`configure-release.log`、`dev.log`、`release.log`。最终补丁从 pristine 源码重放后的四个 gfx 文件与两种已验收配置的源码 hash 一致。
 
-正式运行器每次更新 `out/<preset>/rhi-acceptance.log` 和 `rhi-regression-{null-list,timeout}.log`；旧 `rhi-regression-mesh-pixel-state.log` 不再更新，不能用于证明当前候选通过。许可证与补丁部署于 `out/<preset>/licenses/rhi/`。`out/` 受 Git 忽略，本机证据不随克隆交付；这些路径不能作为其他工作树已通过的证明。
+正式运行器每次更新 `out/<preset>/rhi-acceptance.log`；旧 `rhi-regression-*.log` 不再更新，不能用于证明当前候选通过。许可证与补丁部署于 `out/<preset>/licenses/rhi/`。`out/` 受 Git 忽略，本机证据不随克隆交付；这些路径不能作为其他工作树已通过的证明。
 
 故意阻塞的 GPU 等待与失败销毁仍会打印预期错误，结果应结合场景检查、退出码与 InfoQueue 判断；坏 shader 与失败后录制矩阵仅在旧日志中出现。null-list 回归刻意将一个 Program/Kernel 留给 Context 清理，会产生上游句柄未显式释放诊断；正式消费者没有该诊断。
 

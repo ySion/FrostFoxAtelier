@@ -76,15 +76,6 @@ uint process(const gameplay.Batch& input) {
 
 ## 验收
 
-[公共消费者](../acceptance/source/types.cpp)保留一份混合 enum/struct 与 C++ 共享存储代表：独立声明推导 16 字节、4 字节对齐及字段偏移；固定输入经源码修改后得到 amount=7、x=6、kind=8、返回值 13。类型拒绝、发布排列、复制与热更新矩阵不再重复覆盖。
+源码 enum/struct 与 C++ 共享存储、值字段组合的故障清理目前没有专项端到端验收。
 
-[项目消费者](../acceptance/source/projects.cpp)保留 String 默认字节、宿主覆盖与兼容更新后旧代码/状态完整性；[Runtime 值消费者](../acceptance/runtime/main.cpp)覆盖后续字段构造失败时已完成 String 的逆序清理；[工程集成](../acceptance/editor/project_execution.cpp)沿真实保存、加载和新上下文重建检查非 SSO、含零字节的 String 覆盖与新增字段默认值。它们分别随 `source_acceptance`、`runtime_acceptance`、`project_integration_acceptance` 无窗口运行，不改变持久格式。
-
-### 值字段组合
-
-[值字段消费者](../acceptance/source/value_fields.cpp)沿同一 `source_acceptance` 入口验证：
-
-- String/Array/记录组合的助手失败、部分复制构造失败和整值赋值失败，各一份清理序列。
-- 每次失败后调用方的固定文本、首元素和拥有值计数不变，最后所有拥有值析构。
-
-运行入口为 `source_acceptance`；该场景输出 `Source value fields: PASS`。这些代表不改变上述类型与生命周期合同。
+[项目消费者](../acceptance/source/projects.cpp)随 `source_acceptance` 无窗口运行，保留当前磁盘格式的保存读回与跨文件 World tick；[工程集成](../acceptance/editor/project_execution.cpp)随 `project_integration_acceptance` 检查一次跨文件 Source 组件 tick。它们不改变持久格式。

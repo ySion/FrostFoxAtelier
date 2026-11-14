@@ -244,24 +244,16 @@ Remap 四端点须有限、输入两端不同，输出两端可以相同。按 `
 - **结构错误**直接失败：版本不是 1、未知键、`nodes` 或 `settings` 不是对象、节点名非法、缺少 `type`、`position` 不是两个有限数、`properties` 不是对象、`inputs` 不是以端口名为键的对象或连接不是 `"节点.输出"` 形式、display 不是节点名。保存时每个图节点必须恰有一个条目，名字合法且不重复，位置有限。
 - 保留的值在文档中一直覆盖写出的值；网络编辑器接入时，编辑一个保留了值的参数或端口要先丢弃这份保留，与 Scene 的规则相同；改名或删除节点时，还要改写或删除保留的连接、display 和保留节点里指向它的名字。
 
-验收的宽容用例只保留“缺失节点类型 → null 节点并保留冻结数据”的往返。未知 leaf、连接、settings 和不能作为节点的已知类型等额外宽容仍是上述现行产品行为，待单独审查；缩减验收不改变这些路径，也不引入旧版本兼容加载。
+缺失节点类型变成 null 节点并保留冻结数据是现行宽容行为；未知 leaf、连接、settings 和不能作为节点的已知类型等额外宽容同样是上述现行产品行为，待单独审查；缩减验收不改变这些路径，也不引入旧版本兼容加载。
 
 图文件不保存派生的 Geometry 缓冲；kind 与扇形视图不改变 JSON v1，也不修改资源保存格式。
 
 ## 验收
 
-`procedural_acceptance`（无窗口，[acceptance/procedural/main.cpp](../../../acceptance/procedural/main.cpp)）保留独立真值和必要生命周期序列，不以被测操作自己的输出生成期望：
+`procedural_acceptance`（无窗口，[acceptance/procedural/main.cpp](../../../acceptance/procedural/main.cpp)）保留两个独立真值代表，不以被测操作自己的输出生成期望：
 
-- **Realize**：两个手写三角形/开放折线源，目标先选源 1 再选源 0、第三点不选；手算两组非对称 S·O·T、余子式法线和旋转复合，核对 12 点/12 角/4 图元、镜像只翻面、vertex 标签、primitive material、point 覆盖/缺列默认值及源端口优先的 detail；改输出后输入仍保持原值。原生图另串通 Box→VolumeScatter→GroupBox→Realize（按 sourceordinal 选 Sphere/Tube）→Transform→Merge，与折线分支合并为 83 点/77 图元/283 角，不重复每个构造的数学验收。
-- **Volume**：同一离线 lowbias32 表的两个格产生 8/7 候选；核对重叠正 Box 全部保留、反向内腔排除、一个面与已知候选精确重合时排除边界，连同 P/id/格来源/ordinal 及压紧顺序。Sphere M4/L3/r2 与 Tube M5/r1/h2 的实际 float 几何经绕 (1,2,3) 旋转 .74 rad、平移 (.125,−.25,.125) 后进入 Volume；独立逆 Rodrigues 变换后的分段方形截面/五边形半空间给真值，分别保留候选 7、11 和候选 11，不用解析球/圆柱代替多面体。Sphere 链同时经真实 Graph/Runtime 节点与图 seed 混合。
-- **原生构造**：Sphere M=4/L=3/r=2 经 Runtime 节点求值，10 点/12 面/40 角、固定角序、径向 N；体积真值为中段 12 加两端各 2，共 16。Box 2×4×6 的手写八角/六面与体积 48；Tube M=5/r=1/h=2 的手写角序、离线五边形坐标、侧/盖法线与体积 5 sin72°。实际 Sphere/Tube 的 float 面进入 BVH，最近点对照已知极点/盖面。Polyline 对照三点两段，GroupBox 的五点对照 `true,true,true,false,false`，包含下/上界且替换已有全 true 组；各构造只留一个代表，不做参数矩阵。
-- **凸面与折线**：前置四边形后的五边形首角扇形面积为 4、8、3，密度 2 产生 8、16、6 点；固定射线命中 p=1/j=1 的重心、距离 3、N=+Z，旧 `3*p` 寻址会得 +Y。表面副本与三点开放折线合并，镜像仅翻面、显式反转同时反线，删除图元/线中点后的 kind、角索引与 vertex 标签对照手写数组，原值不变。
-- **数学与布局**：面积 1、3 的两个三角形按密度 4 分别得到 4、12 点，位置在三角形内且法线为 +Z；一个最小间距样本核对点对距离。非均匀缩放与 Y 轴 90° 旋转的点、向量、法线用解析式，镜像用输入三角形的角顺序与属性作真值。删除、空／混合拓扑合并用固定索引，Promote 的平均值来自源网格顶点；Copy to Points 用手写 S·O·T 矩阵及 N/up 轴，发布分块用已知 floor 结果和 3×4 布局。
-- **概率取整**：面积 1、密度 2.25，取固定种子 0…2235。每次只能得到 2 或 3 点，总平均与 2.25 的误差严格小于 .03。在独立均匀随机的模型下，向上取整数 X 服从 Binomial(2236, .25)，接受区间为 492…626，精确二项求和覆盖率约 99.902133%；2236 是达到 99.9% 覆盖的最小种子数。实际固定种子运行是确定性的，不把统计模型称为实测分布或耗时证据。
-- **BVH 与 Ray**：18 个高度场三角形超过保留叶的 16 上限，一个斜射线和一个最近点查询各与独立 double 暴力公式比较。Ray 用可解析的抬高三角形核对命中与未命中、覆盖已有结果列但不改旧输入、删除未命中点，以及 minimum 模式的已知最近角点。
-- **ABI 与隔离**：plain 记录默认 false/0，经 Runtime 写入 `{true, 3}` 后原生节点产生三点；实例副本只写一个矩阵，原矩阵不变。Source 从 `source::engine_sources` 和保留夹具构建：`hash`／`hash2` 对照离线 lowbias32 常量，`unit(0x80000000)` 为 .5；六点 ColumnBatch 读 P、写 N、新增八列，结果按网格坐标和加法公式核对，旧输入与 Lift 兄弟分支保持各自的解析值。原生和 Source 命名列内核共用六点真值：双只读 P 别名、同名输出、GroupBox mask 与默认填充；写后失败保旧，改为长列名和空组后恢复，核对输入隔离及全选结果。
-- **Noise / Remap**：三点小图用离线整数角值、八角均值和非中心有理权重核对负坐标、种子、负频率与偏移；经 GroupBox → Noise → Remap(pscale) → Realize 核对两个 Box 的缩放角点。随后同名映射、后段溢出失败、反向恢复核对旧发布及输入/兄弟快照，外推与宽有限端点分别以解析公式和中点值为真值，不保留拒绝矩阵。
-- **故障与清理**：原生图 Grid → Transform → Merge ← Line → CopyToPoints 先发布已知 14 个实例，Transform 失败后旧发布仍可读，参数恢复后继续求值；Source 写过所有列后经 `self.fail` 返回业务失败，旧发布仍可读，修正后得到新值；删除 display 后清除输出及节点状态。三种操作序列各保留一份，不附加缓存计数、容量观察或拒绝矩阵。
+- **Ray**：y=0 地面上方另有一块 y=2、朝 +Y 的三角形；从 (1,5,1) 竖直向下的射线停在 (1,2,1)，命中 hitprim 2、hittri 0，距离 3、重心 uv (.25,.25)、法线 +Y。
+- **图求值**：原生图 Grid（3×2、3 行 4 列）→ Transform(+1,0,0) → Merge ← Line → CopyToPoints 发布 14 个实例（12 个格点加 2 个线点），首个实例平移为 (−.5,0,−1)。
 
 跨模块工程 Source 消费的 K5 验收由 Editor 的 `project_execution.cpp` 负责，此入口不重复。`Geometry::bytes()` 的生产缓存预算接口不随容量观察用例删除。
 
@@ -270,11 +262,7 @@ Remap 四端点须有限、输入两端不同，输出两端可以相同。按 `
 cmake --build --preset release --target procedural_acceptance
 ```
 
-`procedural_graph_acceptance`（无窗口，`atelier_editor_document_acceptance --procedural-graph`，[acceptance/editor/procedural_graph.inl](../../../acceptance/editor/procedural_graph.inl)）以手写当前 v1 JSON 为金值，读取 Grid → Transform、Box → VolumeScatter、Sphere/Tube、Line → Polyline → GroupBox → Noise → Remap 及 Realize 的非默认参数、位置、seed、display 与连接；Noise/Remap 从正式引擎 Source 快照注册，显式读回数值及 String 属性/组选择字段；Realize 显式核对 sources 的连接顺序、points 端口和 group/variant/target_attributes，再保存为相同规范字节。只保留 Missing 类型变成 null 节点且冻结 JSON 无损往返，以及构造失败不能吞成缺失类型两条边界。九种严格加载反例和额外宽容矩阵不再作为验收；严格结构规则仍如上，旧版本升级属于外部工具，不在加载器内做兼容迁移。
-
-```powershell
-cmake --build --preset release --target procedural_graph_acceptance
-```
+图文件的读取、保存与 Missing 类型往返目前没有自动验收；严格结构规则仍如上，旧版本升级属于外部工具，不在加载器内做兼容迁移。
 
 ## 测量
 

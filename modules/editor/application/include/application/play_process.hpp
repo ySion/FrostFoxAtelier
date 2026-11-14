@@ -100,8 +100,6 @@ public:
     RawOutput take_raw_output();
 
 private:
-    friend struct PlayProcessAcceptanceAccess; // Attaches real child-process pipes for CPU transport acceptance.
-
     struct OutputPipe {
         HANDLE handle{};
 

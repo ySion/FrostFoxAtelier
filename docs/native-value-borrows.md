@@ -1,10 +1,10 @@
 # 原生值借用与源码直接访问
 
-状态：已实现并通过 dev/release 端到端验收。C++ 持有 `Array<原生记录>`，源码通过引用处理同一缓冲，C++ 直接读取修改结果。所有权和析构仍由原生拥有者负责。
+状态：已实现。C++ 持有 `Array<原生记录>`，源码通过引用处理同一缓冲，C++ 直接读取修改结果。所有权和析构仍由原生拥有者负责。
 
 ## 使用方式
 
-宿主将原生记录、String 和具体 Array 类型提交给同一个 `Runtime::register_types`，然后使用既有 `source::Program` 编译、发布和调用。下面的源码操作[验收中的原生 Particle](../acceptance/source/native_values.hpp)：
+宿主将原生记录、String 和具体 Array 类型提交给同一个 `Runtime::register_types`，然后使用既有 `source::Program` 编译、发布和调用。下面的源码操作宿主持有的原生 Particle 数组：
 
 ```source
 float update(Array<borrow.Particle>& values, float delta) {
@@ -19,7 +19,7 @@ float update(Array<borrow.Particle>& values, float delta) {
 }
 ```
 
-原生入口使用 `program.entry().invoke`，实参为 `Argument::borrow(particles)` 与 `Argument{Scalar{delta}}`，由动态入口核对共享签名。该借用不属于同步按值标量的 Typed 白名单。`Entry::invoke` 返回后，原生 `particles[i].position.x` 即为更新后的值。完整错误处理、注册及调用样例见[公共消费者](../acceptance/source/native_values.cpp)。
+原生入口使用 `program.entry().invoke`，实参为 `Argument::borrow(particles)` 与 `Argument{Scalar{delta}}`，由动态入口核对共享签名。该借用不属于同步按值标量的 Typed 白名单。`Entry::invoke` 返回后，原生 `particles[i].position.x` 即为更新后的值。
 
 Array 泛型拼写解析到已发布具体类型的同一身份；没有独立容器注册表。只读记录和数组使用 `const Type& name`，String 只支持只读长度/字节访问。确切语法、只读传播、索引及同步区间限制由 [LANGUAGE.md](../LANGUAGE.md#原生值借用)维护。
 
@@ -47,17 +47,12 @@ Array 泛型拼写解析到已发布具体类型的同一身份；没有独立�
 
 ## 验收结果
 
-[端到端消费者](../acceptance/source/native_values.cpp)使用正式入口及宏生成的原生类型，验证：
-
-- 一个小型原生记录数组与 C++ `sizeof/offsetof` 共享布局，由只读/可写别名访问后按固定输入检查原地结果。
-- 越界失败前的写入仍保留；借用退出后宿主继续收集，退役对象只析构一次，数组拥有者清空后 `Particle::live` 为零。
-
-规模、复制次数性能观察、拒绝矩阵与重复热更新场景已移除。
+原生记录数组借用目前没有专项端到端验收。[`jit_acceptance`](../acceptance/jit/business.cpp) 只保留一个 bool 的只读/可写借用别名代表：写入经别名可见，相邻字节不被覆盖。规模、复制次数性能观察、拒绝矩阵与重复热更新场景已移除。
 
 ```powershell
 . ./tools/enter-dev.ps1
-cmake --build --preset dev --target source_acceptance
-cmake --build --preset release --target source_acceptance
+cmake --build --preset dev --target jit_acceptance
+cmake --build --preset release --target jit_acceptance
 ```
 
-这些场景验证共享存储、生成访问与生命周期，不证明特定吞吐提升或零调用开销。
+该代表不证明特定吞吐提升或零调用开销。

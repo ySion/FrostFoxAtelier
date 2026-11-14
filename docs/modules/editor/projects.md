@@ -33,7 +33,7 @@ Scene 先写入并刷新到磁盘，随后 `recovery.json` 记录原工程、原
 
 恢复时先保留原工程及快照，将 `Scene.scene` **复制为原工程 Content/Scenes 下的新文件名**，再通过同一工程的 Open Scene 验证类型和资源；确认后再决定保存位置。不要直接覆盖原文件。
 
-独立 CPU 端到端入口：`cmake --build --preset dev --target editor_recovery_acceptance`，发布配置对应 `release`；也可直接运行 `atelier_editor_document_acceptance --recovery`。它使用真实 Session、作者场景序列化、原子文件写入和重新加载，覆盖未确认手势取消、缺失资源、幂等和 IO 失败，不创建设备或启动窗口。真实设备失效后的 Application 调用链需在 GPU 故障风险消除后复验。
+Scene 恢复路径目前没有自动验收；真实设备失效后的 Application 调用链需在 GPU 故障风险消除后复验。
 
 ## 后续方向：可响应加载与多场景文档
 
@@ -165,8 +165,6 @@ Entity/Component 按网格槽提供共享材质指派、Edit Shared Material、U
 
 Scene 统一写出 v10：顶层 `materials` 按文档 ID 保存具名资产引用或场景 MI 作者数据，网格槽引用同一 ID。完整格式见[项目场景](../world/project-scenes.md#scene-v10)。Control Repro 冻结实际可达父链、精确 MS 文本和活动纹理像素，在独立副本中验证，不保存原工程；休眠 entries 保留作者值但不扩大执行依赖闭包。
 
-新增 `editor_material_acceptance` 是真实 Project → Runtime → World → Session → SceneSnapshot/DSL → 文件重开的端到端消费者；同时应运行原 document/project scene 消费者和 renderer GPU 材质验收。新增用例不等于已验收通过，实际结果以本次集成日志为准。
-
 ## 持久格式与责任
 
 本节记录现行格式与加载行为；已裁定的跨模块规则只见[持久化格式规则](../../persistence.md)。下述额外宽容、占位与恢复行为尚待产品审查，本次规则同步没有修改这些实现。
@@ -188,13 +186,7 @@ Scene 统一写出 v10：顶层 `materials` 按文档 ID 保存具名资产引�
 
 ## 验收
 
-`editor_document_acceptance` 直接运行真实 Project → Workspace → Source/JIT → UI 链，不创建桌面窗口。布局代表保留 240 DIP 窄面板、列头与单元格对齐、末行可达；目录代表检查 Unicode 资源身份及已删除目录不留旧导航。文件链覆盖 OBJ 导入、元数据身份、组件和空网格往返、保存点撤销、资源改名、工程搬移与 Cook 缓存重建；tolerant 加载保持原作者数据。
-
-`editor_gltf_acceptance`（`--gltf`）用自建的 glTF 夹具检查节点变换和左手系转换、作者与生成切线、PBR 通道及因子、MASK 与单双面、图片共享；Import Mesh 发布后的材质与贴图身份、失败后文件回滚，以及默认材质的保存重开、编辑传播、覆盖与撤销/重做均有代表。不以格式拒绝或诊断文案矩阵作为通过条件。
-
-导入失败序列保留坏目录和孤立 BMP 身份元数据的故障前置，核对已接受目录、缓存、文件未被破坏，并完成修复后重试。资源内容替换保留旧 owning geometry/图片，撤销作者编辑不回滚当前资源内容。
-
-普通 `editor_acceptance` 通过同一应用检查工程命令、Ctrl+S 提交字段、项目重开、三种浏览视图、搜索和类型过滤、资源选择与场景选择隔离、导入定位、坏场景保留当前文档及工程搬移。每轮使用独立证据目录。
+`editor_document_acceptance` 不创建桌面窗口，默认运行中与工程资源相关的代表为：glTF 节点变换、左手系转换及法线/切线随变换；以及一次 OBJ 网格导入→重新导入，检查网格身份与槽默认材质绑定保持、旧几何不变、新贴图像素发布，且已保存的材质作者值不被覆盖。工程命令、浏览视图、导入失败回滚和工程搬移目前没有自动验收。
 
 ## 性能测量
 
@@ -373,11 +365,9 @@ File → Edit Editor UI Source 是引擎开发命令，用于修改编辑器自�
 
 ### 验收与范围
 
-`project_integration_acceptance` 使用真实磁盘、编译器、Runtime、Workspace、UI 和独立运行进程，覆盖跨文件组件、默认值、属性投影、方法热更、失败后的旧代码运行、跨文件定位、类型重建、字段删除/恢复与构建失败后的占位数据恢复。Source 故障保留 isolate 与 halt 各一个代表，检查首因字段、正常 final 与强制退出残尾的区别；原始 stdout/stderr 检查连续字节、消费边界、尾部和回收，游戏与 UI 的真实死循环仍通过独立进程停止。项目 UI 保留热更失败后旧帧、handler 和代码租约的恢复序列；搬移工程和删除 Cache 后重开仍在入口内。
+`project_integration_acceptance` 使用真实磁盘、Source 编译器、Runtime 和独立运行进程，覆盖一次跨文件 Source 组件的 tick 结果，以及停止时死循环的 Source 子进程在 5 秒内被强制结束。
 
-同一入口的 Play 链路检查批次编号、落盘与按 op 拆分、ACK/close 后发送端文件退休，以及链路关闭宽限。真实 headless Play 覆盖加载期间修改、创建与历史、预览与取消、Environment-first 相机 forest 的跨 IPC 引用与 Undo/Redo、删除后保存再 Undo；序号空缺后的后续修改不得执行，截断资源不得污染已接受内容。超过消息上限的 RGBA 和 mesh 内容、旧 owner 不变及参数 Undo 不复活旧资源保留独立代表。不以错误序号、文案或拒绝矩阵作为通过条件。
-
-`project_scene_acceptance` 覆盖真实类型的字段事务、文档身份、保留数据写回/历史/复制、加载失败清理、stop 重入及 Source/Jolt 生命周期。Play 副本保留非对称的字段、组合/空间、物理位姿、材质与天空资源、销毁目标和稀疏引用变更结果；相机加载检查派生类型的一次合法恢复和一次 retained/default 回退，不承担 GPU 投影验收。相机 forest、main_camera 历史和游戏销毁后不复活的序列仍保留。`editor_document_acceptance` 检查既有 UI、场景和源码编辑链。运行命令与日志位置见[源码工作流验收](source-editor.md#端到端验收)。
+`project_scene_acceptance` 覆盖一次真实注册类型字段值的 Scene 保存/重开往返，以及失败 Tick 中嵌套 stop 时 End 返回后才释放物理查询状态的停止顺序。运行命令与日志位置见[源码工作流验收](source-editor.md#端到端验收)。
 
 当前提供独立运行窗口和 UI 预览。[Runtime/JIT 调试核心](../../source-debugger.md)已实现断点、单步和只读变量检查；编辑器中的交互与 Control 指令仍处于[接入方案](control.md#源码调试接入待实现)阶段。语义补全、查找替换、导出打包、运行画面嵌入编辑器及运行值回写尚未实现。
 
@@ -385,8 +375,8 @@ File → Edit Editor UI Source 是引擎开发命令，用于修改编辑器自�
 
 [Sponza](../../../examples/Content/Sponza/README.md) 与 Scene Lit Room、Physic、Dungeons 同属根目录的普通 [Examples 工程](../../../examples/README.md)，不随引擎部署。无参数启动为空文档；`--project ./examples` 打开工程配置指定的 Sponza，`--scene Content/...` 可明确选择其他场景，不必同时传相机参数。资源浏览器按 `Project / Content / 场景名` 展示目录，场景只保存到 Content。打开场景不自动改变视口模式或拟合 DDGI；每个场景保存自己的主相机，Play 使用该相机。需要固定编辑视图时，可选择 Main Camera 后用 View from Camera，或显式传入 `--material-camera` / `--scene-lit-camera`。
 
-`editor_examples_acceptance` 通过磁盘保存重开，按原场景 JSON 核对 Sponza 的网格资产身份；同目标中的独立小型 OBJ 夹具检查材质、UV、切线及资源寿命。材质颜色、深度和线框的代表见 [Renderer 验收](../renderer/acceptance.md)。
+`editor_log_smoke_acceptance` 打开 Examples 副本的启动场景并做一次添加/保存/撤销冒烟，见[验收入口](README.md#验收入口)。材质与视口显示模式的渲染代表见 [Renderer 验收](../renderer/acceptance.md)。
 
 ## Dungeons 地牢资源
 
-[Dungeons](../../../examples/Content/Dungeons/README.md) 包含完整 Demo 和两个资源总览，使用原始世界变换生成独立 Entity。通过普通 `--project ./examples --scene Content/Dungeons/Scenes/Dungeon.scene` 打开；编辑视口可选择 Smooth 查看贴图。全部非脚本 Unity 资源保留在 Originals，转换后的 2314 个模型资产可通过现有 Asset Browser 添加到场景。导入工具及不支持的 Unity 运行效果见示例说明；`editor_examples_acceptance` 中的 GenericOverview 代表检查网格、材质绑定及纹理资产身份的保存重开。
+[Dungeons](../../../examples/Content/Dungeons/README.md) 包含完整 Demo 和两个资源总览，使用原始世界变换生成独立 Entity。通过普通 `--project ./examples --scene Content/Dungeons/Scenes/Dungeon.scene` 打开；编辑视口可选择 Smooth 查看贴图。全部非脚本 Unity 资源保留在 Originals，转换后的 2314 个模型资产可通过现有 Asset Browser 添加到场景。导入工具及不支持的 Unity 运行效果见示例说明。

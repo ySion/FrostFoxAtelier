@@ -281,14 +281,9 @@ exit `$LASTEXITCODE
     return $result
 }
 
-# Cold-inclusive maxima from recent ec-3 Ninja logs, rounded up to 0.1 minute.
-# Release Control reserves its prior full run plus the observed 310s cold preparation.
-# Keep these floors until shader caching lands; warm-only history must not shrink them.
-# Renderer entries use the default floor: 30 minutes, the runner's own per-entry limit.
-$minutes = @{
-    editor_control_acceptance = @{ dev = 12.9; release = 11.5 }
-    editor_scene_lit_acceptance = @{ dev = 8.7; release = 7.6 }
-}
+# Cold-inclusive maxima, rounded up to 0.1 minute; other entries use the default floor:
+# 30 minutes, the runner's own per-entry limit.
+$minutes = @{}
 
 Push-Location $root
 try {

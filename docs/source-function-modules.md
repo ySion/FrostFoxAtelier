@@ -98,11 +98,6 @@ auto tick = (*program)->entry("game.Move.tick");
 
 ## 端到端验收
 
-[正式消费者](../acceptance/source/modules.cpp)通过公共 Program 接口覆盖：
+同模块函数的故障清理目前没有专项端到端验收；拒绝、精确错误文本、参数矩阵与重复热更新已移除。
 
-- 深层助手的原生失败与参数部分复制失败：已有输入不变，临时拥有值回到独立计数基线。
-- 助手持有对象在失败后解除根，宿主收集后回到零。
-
-模块场景随 `source_acceptance` 运行；拒绝、精确错误文本、参数矩阵与重复热更新已移除。
-
-项目快照消费者见 [projects.cpp](../acceptance/source/projects.cpp)。保留一份 UTF-8+BOM 当前文件往返（版本期望为独立 FNV-1a 常量）、跨文件属性依赖更新和旧租约，以及真实 World owner 的跨文件计算、失败保旧、关闭后已固定代码继续执行。code/revision 复用效率观察和目录/格式拒绝矩阵已移除。可单独运行 `atelier_source_minimal.exe --projects`，默认入口为 `source_acceptance`。
+项目快照消费者见 [projects.cpp](../acceptance/source/projects.cpp)，随 `source_acceptance` 运行：保留一份 UTF-8+BOM 当前文件往返（版本期望为独立 FNV-1a 常量），以及真实 World owner 经跨文件助手与继承的原生动作得到 x=1，随后 stop、close 与 owner 销毁均无通知错误。code/revision 复用效率观察和目录/格式拒绝矩阵已移除。

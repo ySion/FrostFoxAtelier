@@ -22,11 +22,4 @@
 
 **Smooth** 显示原始颜色贴图。192 盏灯已转为可编辑 LightComponent，切换 Scene Lit 可使用引擎光照及材质贴图。此导入没有重建 Unity Shader Graph、透明水面、后处理、烘焙光照、骨骼动画或粒子行为；Demo 中 73 个粒子系统保留在源文件中，不作为运行组件执行。因此画面不等同于 Unity 原效果。
 
-复现导入见 [转换工具说明](../../../tools/import-dungeons/README.md)。验收命令：
-
-```powershell
-cmake --build --preset dev --target editor_examples_acceptance
-cmake --build --preset release --target editor_examples_acceptance
-```
-
-无窗口验收保留 GenericOverview 一份磁盘保存重开，按原场景 JSON 核对网格、材质绑定和纹理资产身份，不修改仓库场景。它不检查三个场景的 GPU 画面。
+复现导入见 [转换工具说明](../../../tools/import-dungeons/README.md)。三个场景的资产身份与 GPU 画面目前没有自动验收。

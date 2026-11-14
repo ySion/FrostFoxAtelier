@@ -57,8 +57,6 @@ CodeDocument 创建、公开 `edit().replace` 和剪贴板/IME 的实际替换�
 
 ## 端到端验收
 
-后台验收包含于 `editor_document_acceptance`。它使用真实作者文件、Source/JIT、Workspace、CodeEditor 和 Session，覆盖编辑/保存/错误保留/定位/恢复、虚拟行、剪贴板协议、文件冲突、换行保持、重复打开和隐藏恢复。
+Code 面板的编辑、保存、诊断定位、剪贴板与窗口交互目前没有自动验收。
 
-真实窗口入口为 `atelier_editor --acceptance-source <输出目录>`，由 `editor_project_acceptance` 运行，要求前台焦点。覆盖菜单打开、原生选区输入、Ctrl+S 发布、错误点击、恢复、大段系统剪贴板、撤销与关闭；同一窗口还创建工程、添加 Source 组件、编辑数值与 bool、跨文件定位、保存重开并启动和停止游戏/UI 预览。每轮导出 PNG。后台协议验收不替代真实系统 IME 或窗口验收。
-
-工程编译、类型发布、热更及独立 runner 的无窗口入口是 `project_integration_acceptance`；场景往返、派生类型、属性历史与保留数据由 `project_scene_acceptance` 覆盖。运行命令和本轮日志位置以[验收门禁](../../../README.md#构建与端到端验收)为准，不将历史版本的 PASS 表作为当前构建结果。
+`project_integration_acceptance` 无窗口地编译真实工程 Source，检查一次跨文件组件 tick，并检查独立 runner 中死循环的 Source 在停止时被强制结束；`project_scene_acceptance` 覆盖一次 Scene 字段值往返。运行命令和本轮日志位置以[验收门禁](../../../README.md#构建与端到端验收)为准，不将历史版本的 PASS 表作为当前构建结果。

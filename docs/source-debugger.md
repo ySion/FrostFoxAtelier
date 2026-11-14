@@ -81,14 +81,4 @@ Program.close、热更新和旧 Lease 遵循原有版本保活契约。源码映
 
 取舍依据：[AngelScript line callback](https://www.angelcode.com/angelscript/sdk/docs/manual/doc_debug.html)支持在回调内处理命令、返回后继续；这不赋予同步原生 JIT 任意弹栈后恢复的能力。[Lua hook](https://www.lua.org/manual/5.4/manual.html#lua_sethook)的回跳与重入边界说明停止点不能仅用显示行号表示；本项目用调用实例和语句身份跟踪单步。[LLVM 源码调试](https://llvm.org/docs/SourceLevelDebugging.html)也不保证优化后所有变量位置仍可用，故本模式显式维护可观察槽及初始化/作用域状态，不能展示陈旧地址的值。暂停始终保留原生栈、执行准入及既有根。
 
-[`acceptance/source/debugger.cpp`](../acceptance/source/debugger.cpp) 通过正式编译、调用和 GC 路径保留 step-into/step-out 的固定值代表、Runtime 销毁后仍可读的拥有型快照、原生失败/处理器 Result 失败/abort 清理及同一会话恢复，以及 async 跨 yield、热发布和 close 后的旧帧完成。拒绝、精确错误文本、快照预算及从 debug_sites 反抄期望的断点矩阵已移除。它纳入 `source_acceptance`，也可单独运行：
-
-```powershell
-. ./tools/enter-dev.ps1
-cmake --build --preset dev --target atelier_source_minimal
-./out/dev/atelier_source_minimal.exe --debugger
-```
-
-发布配置使用相同入口，将 `dev` 替换为 `release`。
-
-跨 `yield` 的参数与局部值按固定输入检查；另保留处理器内释放公开 Debugger 句柄后继续完成并读取快照的生命周期代表。
+调试核心目前没有专项端到端验收；拒绝、精确错误文本、快照预算及从 debug_sites 反抄期望的断点矩阵已移除。

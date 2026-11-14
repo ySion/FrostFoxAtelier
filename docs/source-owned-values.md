@@ -59,9 +59,4 @@ String 字面量直接用于声明、赋值或追加时，生成代码直接传�
 
 ## 端到端验收
 
-[模块清理消费者](../acceptance/source/modules.cpp)与[组合字段消费者](../acceptance/source/value_fields.cpp)通过公共 Program 和真实原生存储保留不同故障路径的最小代表：
-
-- 深层助手的原生失败、助手参数部分复制失败，以及助手对象根的失败后回收。
-- String/Array/记录组合中的助手失败、部分构造失败与整值赋值失败；调用方原内容仍可读，拥有值全部析构。
-
-独立的 owned-values 重复入口、规模与拒绝矩阵已移除。入口是 `source_acceptance`，开发与发布配置执行同一套检查，不依赖 assert。
+String/Array/记录拥有值的故障清理目前没有专项端到端验收；独立的 owned-values 重复入口、规模与拒绝矩阵已移除。

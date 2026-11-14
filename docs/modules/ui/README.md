@@ -111,7 +111,7 @@ DSL 的 EditorShell 和 ToolShelf 用普通容器、按钮和 `collapsed` 组成
 
 折叠标题与内容容器是两个控件；宿主将展开状态映射到内容容器的 `layout.collapsed`。现有祖先有效性检查统一取消隐藏/禁用字段的草稿、组合和捕获；展开后复用仍存续的 key。宿主替换目标时仍须退役旧绑定。
 
-正式编辑器的 Controls 实验台与位置参数行均使用上述接口，真实窗口验收覆盖两者，见[编辑器模块](../editor/README.md#控件实验台)。
+正式编辑器的 Controls 实验台与位置参数行均使用上述接口，见[编辑器模块](../editor/README.md#控件实验台)。
 
 组合依据：[SideFX 参数编辑器](https://www.sidefx.com/docs/houdini/network/parms.html)区分类型、名称、默认值与编辑值；[Operator Type Properties](https://www.sidefx.com/docs/houdini/ref/windows/optype.html)与 [FolderParmTemplate](https://www.sidefx.com/docs/houdini/hom/hou/FolderParmTemplate.html)说明嵌套页签和分组。[数值阶梯](https://www.sidefx.com/docs/houdini/basics/ladder.html)支持垂直选档、水平改值及 Alt 乘法；本项目的具体步距与 Shift 政策以上文为准，不将自己的验收当作 Houdini 实机证明。[QBoxLayout](https://doc.qt.io/qt-6/qboxlayout.html)是方向、伸展、margin/spacing 的组合参考，不是截图能证明的 Houdini 内部实现。
 
@@ -247,7 +247,7 @@ IME使用独立composition_id和固定起始token/替换范围；`CompositionEve
 
 本轮只支持[IMR_QUERYCHARPOSITION](https://learn.microsoft.com/en-us/windows/win32/intl/imr-querycharposition)实测需要的`dwCharPos=0`；Window把bounds左上和clip转换成屏幕坐标，填[IMECHARPOSITION](https://learn.microsoft.com/en-us/windows/win32/api/imm/ns-imm-imecharposition)的pt、cLineHeight和rcDocument。其他offset或无有效快照明确返回0，不夹到offset0，也不以显示caret冒充起点；没有预建逐字符坐标数组。此合同修复本身不证明真实输入法的组合链已经通过。
 
-真实 CF_UNICODETEXT 由应用窗口链覆盖；本机搜狗的系统确认/取消/候选位置有独立的[输入法验收](../editor/README.md#输入法验收)。本模块的合成协议事件不能替代系统输入，旧版本通过记录也不能证明当前环境或其他输入法。
+真实 CF_UNICODETEXT 与系统输入法目前没有自动验收，见[输入法验收](../editor/README.md#输入法验收)。本模块的合成协议事件不能替代系统输入，旧版本通过记录也不能证明当前环境或其他输入法。
 
 ## CPU绘制与文字寿命
 
@@ -269,19 +269,15 @@ IME使用独立composition_id和固定起始token/替换范围；`CompositionEve
 
 ## 限额与验收
 
-正式入口为 `cmake --build --preset dev --target ui_acceptance`，Release 使用同名目标。先按[根 README](../../../README.md)准备工具链和配置。[消费者的 cases 列表](../../../acceptance/ui/main.cpp)包含 4 组场景，承载以下 5 个代表，不创建原生窗口或 GPU 设备：
+正式入口为 `cmake --build --preset dev --target ui_acceptance`，Release 使用同名目标。先按[根 README](../../../README.md)准备工具链和配置。[消费者](../../../acceptance/ui/main.cpp)只保留 1 个代表，不创建原生窗口或 GPU 设备：
 
 - K6：移除并重用控件 key，Session 析构后旧帧仍拥有文字 Coverage；释放最后一帧后弱引用过期。
-- K6：真实 Session/TextStore 析构后，旧帧的 DirectWrite 段落仍能查询输入文字 `ABCDEFGHIJKLMN` 的第三个字符位置。
-- K4：一张半透明红到透明的渐变图；输入 alpha 为 128/255，独立 sRGB 编码公式推出首端红色 188、alpha 128，末端 alpha 0。
-- K3：高 100 DIP 的列表，底部布局边距 3 与样式边距 20，滚至末尾后尾行底部为 `(100−3−20)×1.5=115.5` 物理像素。
-- K3：固定 640×480、DPI 1.5 的右下角 Tooltip，显示边界位于输入客户区以内；等待只用于到达显示态，不检验延迟合同。
 
 单Session最多10,000个控件、布局深度128；Surface每轴最多32,768物理像素，DPI倍率0.25–8；普通 Control.text 最多4,096个UTF-16码元，单张CPU覆盖率最多16MiB。单行text_edit缓冲最多4096个UTF-16码元，number最多64个；CodeDocument 的文档限制由其[源码工作流](../editor/source-editor.md)和公开接口定义，不套用单行字段上限。字素边界和完整数值解析分别负责编辑与业务有效性。可恢复错误通过Result返回，宿主CPU分配失败按工程合同fatal，字形覆盖率预算超限仍为Result的E_OUTOFMEMORY。Session单拥有者线程；发布后不修改UiFrame/Coverage，也不保留可变别名。
 
 正式消费者使用真实 Session、LayoutDocument 和 DirectWrite，检查在 Dev/Release 中均有效。撤销重做由 Editor 验收负责；基础层不重复保留历史、普通交互、错误/拒绝、计数、规模与参数矩阵。菜单形状指纹和产品输出互比不作为独立真值；产品协议与功能不因验收缩减而改变。
 
-历史 S1 的 256 行/96 DIP 窗口首屏栅格化 4 行、裁剪 252 行，滚尾再返回累计栅格化 8 行；S2 的 4096 宽字符/100 DIP 字段保持完整编辑，覆盖率宽度不超过 100 像素。这些是固定历史证据，不是当前保留用例。正式窗口、搜索业务及本机搜狗真实输入的范围见[编辑器端到端验收](../editor/README.md)，不从 UI 协议场景推断其他系统输入法已通过。
+历史 S1 的 256 行/96 DIP 窗口首屏栅格化 4 行、裁剪 252 行，滚尾再返回累计栅格化 8 行；S2 的 4096 宽字符/100 DIP 字段保持完整编辑，覆盖率宽度不超过 100 像素。这些是固定历史证据，不是当前保留用例。真实系统输入法目前没有自动验收（见[输入法验收](../editor/README.md#输入法验收)），不从 UI 协议场景推断系统输入法已通过。
 
 模块、renderer及正式编辑器使用同一源码树和项目固定工具链构建；阶段验收范围与证据见[SS文档](style-sheets.md#验收)。
 

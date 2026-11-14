@@ -346,17 +346,10 @@ Recorder 已绑定时，未登记的标记、未在声明父项下打开的标�
 
 构建与运行方式遵循 [README 的必要性验收](../README.md#构建与端到端验收)，按改动选择以下消费者；这里描述覆盖范围，不记录某次交付的通过状态。
 
-`foundation_acceptance` 保留资源所有权和失败清理的代表序列，检查在 dev/release 中均有效，不依赖 assert：
+`foundation_acceptance` 保留两个代表，检查在 dev/release 中均有效，不依赖 assert：
 
-- [资源目录消费者](../acceptance/foundation/associative.cpp)：Map 部分复制失败后，已有目标和源资源仍存活，退出作用域后全部释放。
-- [生命周期消费者](../acceptance/foundation/lifecycle.cpp)：资源子树提升时的移动赋值顺序，以及 SharedArray 多线程复制、写时分离和线程结束后的共享缓冲释放。原子内存序在 x64 上不能由这项验收区分。
-- [拥有资源消费者](../acceptance/foundation/main.cpp)：Array 自身别名追加/填充、构造与复制失败后的清理，以及宏生成原生 Inventory、描述型 Array 字段、独立快照、Runtime 值复制与 GC 析构资源的链路。
-- [原生任务消费者](../acceptance/foundation/tasks.cpp)：不可变输入与 COW 输出的非对称邻接计算、非零起点和尾块、嵌套 join；取消后已开始任务返回 Failure 的优先传播、用户闭包在提交线程释放及失败后再次调用。原地正向计算反例说明仅写区间互不重叠不足以安全并行，不执行有数据竞争的反例。只检查结果与生命周期，不以耗时或参与线程数判 PASS。
-- [Array 缓冲寿命](../acceptance/foundation/array_lifetime.cpp)与 [String 缓冲寿命](../acceptance/foundation/string_lifetime.cpp)：分别执行一次 Array 拷贝/销毁和一次 String 目录清空，严格比较前后 mimalloc 活分配字节；不是元素 live 计数，也不是性能采样。两个可执行文件随同一个 `foundation_acceptance` 入口运行，不输出计时或性能报告。
-
-[帧阶段计时消费者](../acceptance/foundation/frame_timing.cpp)检查目录组装、层级与记录序列，入口仍为 `foundation_acceptance`。
-
-[源码借用消费者](../acceptance/source/native_values.cpp)通过 `source_acceptance` 保留共享布局、原地写入与别名、失败借用及拥有者析构；[模块消费者](../acceptance/source/modules.cpp)和[组合字段消费者](../acceptance/source/value_fields.cpp)保留 String/Array/记录的深层失败、部分构造与赋值清理。重复 owned-values 入口已移除；Source 目标仍包含在 `jit_acceptance` 中。
+- [拥有资源消费者](../acceptance/foundation/main.cpp)：String 与 Array 追加自身视图时，输入在追加过程中不失效。
+- [原生任务消费者](../acceptance/foundation/tasks.cpp)：任务返回 Failure 后 join 失败、用户闭包在提交线程释放，随后新的 JoinGroup 正常完成。只检查结果与生命周期，不以耗时或参与线程数判 PASS。
 
 设计依据与 UE/Qt 的取舍见[研究记录](research/shared-foundation-types.md#qtue-接口取舍)。
 

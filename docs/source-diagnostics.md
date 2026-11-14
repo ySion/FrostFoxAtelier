@@ -91,13 +91,4 @@ auto report = capture.snapshot(); // owning copy; also available after failure
 
 ## 验收入口
 
-[`acceptance/source/diagnostics.cpp`](../acceptance/source/diagnostics.cpp) 使用正式 Runtime 和 JIT，覆盖诊断调用中的 GC、native 失败时拥有值清理、协程取消与热发布/关闭后的旧任务寿命，以及 Runtime 退役后的报告/产物寿命和 capture 复用。它纳入现有 `source_acceptance`，也可聚焦执行：
-
-```powershell
-. ./tools/enter-dev.ps1
-cmake --build --preset dev --target atelier_source_minimal
-./out/dev/atelier_source_minimal.exe --diagnostics
-# release 使用相同入口，替换配置名。
-```
-
-这些验收以固定输入和独立期望检查资源清理与寿命契约；不提供诊断版本的性能提升结论。插桩会增加指令、分支和存储，也可能影响 LLVM 优化，应使用普通版本做最终性能测量。
+Source 诊断目前没有专项端到端验收；不提供诊断版本的性能提升结论。插桩会增加指令、分支和存储，也可能影响 LLVM 优化，应使用普通版本做最终性能测量。

@@ -202,7 +202,7 @@ Coverage 在色调映射/最终 AA 后显示，仅覆盖有表面的像素，和
 
 `probe_history` 的 `live / hold_irradiance / hold_distance` 仅作视口归因对照，不写 Scene/Undo。前者冻结有效运输与呈现 RGB，后者冻结距离矩；几何身份失效始终优先。它们不能作为生产稳定算法。
 
-现行端到端入口 `atelier_renderer_acceptance --scene-lit --output <绝对目录>` 保留矩形面光、几何阴影、天空方向和探针诊断色的独立真值代表，以及天空/几何退休序列。它不再运行多体积、预算、时序或输出互比矩阵；各入口的覆盖边界见[Renderer 验收](acceptance.md)。Editor 的原生交互守卫由[编辑器验收](../editor/README.md#验收入口)维护，不复制渲染图代表。
+现行端到端入口 `atelier_renderer_acceptance --scene-lit --output <绝对目录>` 保留矩形面光、几何阴影、天空方向和探针诊断色的独立真值代表。它不再运行多体积、预算、时序或输出互比矩阵；各入口的覆盖边界见[Renderer 验收](acceptance.md)。Editor 只保留日志零错误冒烟（见[编辑器验收](../editor/README.md#验收入口)），不复制渲染图代表。
 
 ## 显示菜单与近场策略
 
@@ -261,7 +261,7 @@ GTAO、最终 TAA 以及 SSSR 接收面/来源见证的表面历史共同检查�
 
 空间选灯的当前编码帧统计为 `scene_lit_spatial_sources`（保留源数）、`scene_lit_spatial_cells`（非空 cell 数）、`scene_lit_spatial_bytes`（三个当前 GPU 缓冲的逻辑字节，含空表哨兵）与 `scene_lit_spatial_changed`（本次编码这些表的内容是否变化或首次建立）。Control 将其发布为 `frame_stats.spatial_light_sampling` 的 `retained_sources / nonempty_cells / resource_bytes / uploaded`。这些值不表示裁掉的源数、实际选中数、GPU 完成状态或时间收益；三个缓冲已包含在总资源字节中，不能重复相加。未编码 Scene Lit（例如无几何且不绘制探针诊断）的帧，这四项为零，不代表所有 Scene Lit 缓存均已释放；仍保留的逻辑资源以 `scene_lit_resource_bytes` 总账为准。
 
-Renderer 的端到端验收由 `renderer_acceptance` 目标聚合 `default`（默认入口）、`--scene-lit` 和 `--material-programs` 三个入口；`--scene-lit-benchmark` 是独立测量入口，不进入验收聚合。各入口的覆盖边界与运行方式见[Renderer 验收](acceptance.md)。同步图像读回的耗时不作为性能结果。菜单与工程入口由 `editor_scene_lit_acceptance` 验证。
+Renderer 的端到端验收由 `renderer_acceptance` 目标聚合 `default`（默认入口）、`--scene-lit` 和 `--material-programs` 三个入口；`--scene-lit-benchmark` 是独立测量入口，不进入验收聚合。各入口的覆盖边界与运行方式见[Renderer 验收](acceptance.md)。同步图像读回的耗时不作为性能结果。Scene Lit 的编辑器菜单与工程入口目前没有自动验收。
 
 资源账目包含全部逻辑纹理与缓冲：GBuffer 与表面历史、DDGI atlas、GTAO/SSSR/AA 历史、cluster 列表、阴影 atlas（启用时两张 4096² D32，共 128 MiB）与光源表；直接光没有 reservoir、降噪历史或中间纹理。关闭 SSSR 或 Bloom 仍按前述裁剪工作；保留的可复用纹理继续计入统计。逻辑字节、dispatch 数均不是实际外部带宽或帧时测量。
 

@@ -22,4 +22,4 @@
 
 **Project → Run** 使用场景主相机，不自动取景。编辑视口仍使用默认/当前视图：选择 Main Camera 后 **View from Camera** 可观察同一视点；用显示菜单选择 Scene Lit 或 Smooth。打开场景或使用 `--scene-lit-camera` 不拟合 DDGI，只有 **World Settings → Coverage → Fit Scene** 明确修改作者体积并进入撤销历史。
 
-`editor_examples_acceptance` 是无窗口内容验收：Sponza 与 Dungeons GenericOverview 各保留一份资产身份保存重开，按原场景 JSON 核对；同目标还运行独立小型 OBJ 夹具，不修改仓库场景。`editor_scene_lit_acceptance` 使用 Scene Lit Room 的隔离副本检查原生显示菜单的历史隔离与中键相机手势，不承担示例工程的渲染效果矩阵。
+`editor_log_smoke_acceptance` 复制本工程的 Config、Source 与 Content，在真实编辑器中打开启动场景 Sponza，做一次添加/保存/撤销并在 Play 运行中关闭编辑器，检查日志零错误，不修改仓库场景；它不承担示例工程的渲染效果矩阵。其他示例场景目前没有自动验收。

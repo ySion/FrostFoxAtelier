@@ -14,10 +14,7 @@ Scene Lit 的 RHI 接入已验证 compute inline RayQuery、BLAS/TLAS build/upda
 
 - [公开头文件](../../../modules/render/rhi/include/rhi/rhi.hpp)：`Context::open / prepare / target / sync_window_target / frame / finish / close`，不可复制、可移动的 `Pipeline`。
 - [生产实现](../../../modules/render/rhi/src/rhi.cpp)：选择硬件 adapter，不自动回退 WARP；统一 owner 线程和错误终态。
-- [正式消费者](../../../acceptance/rhi/main.cpp)：同一 Interface 上的六帧 Compute → Mesh → Vertex、间接参数、颜色/深度回读、提前释放与管线替换。
-- [资源与窗口验收](../../../acceptance/rhi/resource_cases.cpp)、[RayQuery 验收](../../../acceptance/rhi/ray_query_cases.cpp)、[Scene Lit 资源验收](../../../acceptance/rhi/scene_lit_cases.cpp)：根参数预算、间接命令、range 复制、首帧窗口尺寸、AS 与时间戳。
-- [后端回归](../../../acceptance/rhi/upstream_regression.cpp)：无 list 的 interop 清理、Mesh PS 资源状态、真实 fence gate 超时与严格一次执行。
-- [阴影 atlas 验收](../../../acceptance/rhi/shadow_cases.cpp)：颜色/深度矩形清除、mip/slice 隔离、比较采样、编码后退休，以及 Vertex/Mesh 的 constant/slope/clamp bias。
+- [正式消费者](../../../acceptance/rhi/main.cpp)：同一 Interface 上一帧 Compute → Mesh → Vertex、间接参数、颜色/深度回读与提前释放，以及 Context 析构后 Pipeline 保持执行域；当前范围见[验收与证据](acceptance.md#当前保留代表与验证范围)。
 - [决策与理由](decisions.md)、[固定来源记录](../../research/rhi-reassessment/README.md)。
 
 ## 构建与运行
@@ -32,7 +29,7 @@ cmake --preset release
 cmake --build --preset release --target rhi_acceptance
 ```
 
-`atelier_rhi` 是静态库；`atelier_rhi_acceptance` 和 `atelier_gfx_regression` 是正式可执行目标。`rhi_acceptance` 编译并运行主场景与三个有超时保护的回归进程。只编译主消费者使用 `--target atelier_rhi_acceptance`。
+`atelier_rhi` 是静态库；`atelier_rhi_acceptance` 是正式可执行目标。`rhi_acceptance` 编译并在 180 秒超时保护下运行主场景。只编译主消费者使用 `--target atelier_rhi_acceptance`。
 
 依赖版本/下载与 hash 的唯一权威是 [dependencies-lock.json](../../../cmake/dependencies-lock.json)，工具链是 [toolchain-lock.json](../../../cmake/toolchain-lock.json)。[cmake/rhi.cmake](../../../cmake/rhi.cmake) 部署 DXC、Agility、PIX 运行库及 `licenses/rhi`；[atelier.patch](../../../third_party/gfx/atelier.patch) 可从固定上游源码重新应用。普通 CPU 分配沿项目 mimalloc 接入，GPU 内存由 gfx/D3D12MA 管理。
 

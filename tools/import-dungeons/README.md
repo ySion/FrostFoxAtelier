@@ -26,4 +26,4 @@ python tools/import-dungeons/convert.py "$conversion/export" examples/Content/Du
 
 `convert.py` 生成全部网格及场景实际用到的材质变体，保留独立模型身份和实例世界变换。每个实例为具有内联空间的 Entity，网格/灯为无空间能力组件；文档统一写出 roots、entities、字符串 ID 与 next_id，导入明细也记录对应 Entity 文档 ID；以源 GUID/local ID/材质槽计算确定性 UUID。Unity 实例的镜像保留为 Entity 的负缩放，网格不另建镜像变体；转换时核对 Unity 世界矩阵与 TRS，拒绝不能表示的剪切。MTL 与 OBJ 位于同一目录，贴图在其子目录，符合现有资源依赖边界。用于颜色的 TGA/TIF 转为 PNG，原文件仍保留。转换数据的范围、数量和未执行的 Unity 功能见 [示例说明](../../examples/Content/Dungeons/README.md)。示例中额外编写的主相机和 Environment 不属于原始资源转换输出，重新生成后应保留或重新编写它们。
 
-运行 Dev/Release 的 `editor_examples_acceptance`，其中的 Dungeons GenericOverview 代表检查网格、材质绑定和纹理资产身份的磁盘保存重开。发布资产的 FBX、OBJ 与图片使用 Git LFS；Originals 禁止换行转换，确保源摘要可核对。
+转换结果目前没有自动验收。发布资产的 FBX、OBJ 与图片使用 Git LFS；Originals 禁止换行转换，确保源摘要可核对。

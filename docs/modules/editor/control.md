@@ -8,11 +8,11 @@ UI 和快捷键直接调用负责业务不变量的执行层；外部调用经�
 
 ## 启动和调用
 
-正常编辑器默认启用本机接口，--no-control 可关闭。发现目录默认为 %LOCALAPPDATA%/FrostFoxAtelier/Control/instances；--control-directory folder 可隔离目录。--no-activate 打开窗口但不抢键盘焦点。窗口验收模式及独立项目运行器不自动开放接口。
+正常编辑器默认启用本机接口，--no-control 可关闭。发现目录默认为 %LOCALAPPDATA%/FrostFoxAtelier/Control/instances；--control-directory folder 可隔离目录。--no-activate 打开窗口但不抢键盘焦点。快照模式及独立项目运行器不自动开放接口。
 
 需要复现固定画布时，可以组合 `--client-size 3840 2054 --no-activate`。宽、高明确是初始 **client 物理像素**，非 DIP 或含边框的窗口尺寸；应用在创建 Renderer 和显示窗口前，按实际 HWND DPI 补上非客户区。省略后仍使用原 1280×840 DIP 默认值。参数只接受 1–32768 的十进制正整数，禁止重复；低于当前 DPI 下编辑器最小窗口尺寸、或系统无法精确兑现的尺寸会在创建图形设备前拒绝，不静默改成其他尺寸。后续手动 resize 与 DPI 变化沿现有窗口规则。
 
-客户区相同不保证 viewport 相同：渲染对照还须核对同一 DPI、停靠布局、工具架状态，以及 `editor.inspect.last_frame.extent` 和 `viewport`。尺寸为启动参数，没有新增 Control 窗口写操作。真实进程验收：`atelier_editor_control_acceptance editor.exe <输出目录> --client-size`，记录默认与 1601×1003 的原生客户区/DPI/接受帧 viewport，并验证焦点与 Scene 保存隔离。
+客户区相同不保证 viewport 相同：渲染对照还须核对同一 DPI、停靠布局、工具架状态，以及 `editor.inspect.last_frame.extent` 和 `viewport`。尺寸为启动参数，没有新增 Control 窗口写操作。
 
     . ./tools/enter-dev.ps1
     cmake --build --preset dev --target atelier_editor atelier_control
@@ -101,8 +101,6 @@ Transform、parent_set 和 space_reference_set 的 Context 目标必须是 Entit
 
 full 仍返回完整 assets，不静默截断；full/summary 不接受分页参数。4 MiB 响应上限、repro 输入文件与 Source 编译限额保持独立，不因工程目录取消项数上限而取消。大工程调用方可先 summary，再逐页读取 assets，并用资源 key 与最新 state_token 沿既有操作编辑。
 
-真实 `editor_control_acceptance` 检查失败 Refresh 保留已发布目录和原 cursor 的后续页，以及清理失败夹具后原目录与已保存场景不变。
-
 ### 大场景对象查询
 
 大场景先用 `summary` 观察状态，再用 `objects` 发现句柄，避免完整场景展开后超过 4 MiB 协议上限：
@@ -124,10 +122,6 @@ full 仍返回完整 assets，不静默截断；full/summary 不接受分页参�
 结果的 `object` 与 full 中同一对象的反射记录一致，复用现有句柄注册与成员有效性检查；删除或替换后失效的 handle 返回 `stale_object`。Scene 文件中的持久 ID 不能替代 Control handle。随后使用 `op.call scene.set_properties` 和 `op.call edit.undo` 等编辑入口。full/summary 不接受分页参数，单对象详情同样受 4 MiB 协议上限约束。
 
 宽容加载为未注册类型创建的占位对象，其对象记录另带 `placeholder: true` 和 `saved_type`（存档中的原类型名），`type` 是其原生基类；普通对象不含这两项。full 与单对象详情另以 `saved_data` 列出无法应用的保存值（`path`、截断预览 `value`、诊断 `kind`）。这些值只读，丢弃仍走编辑器的 Discard Saved Data。网格组件详情带 `mesh: {source, missing, default_materials}`；默认关联包含 slot/object/source/missing。显式 `materials` 项包含 slot/object/asset/parent/scene/assignment_override/default_material，具体材质诊断由该 object 的 `material.inspect` 返回。替代显示不改写保存引用。
-
-描述专项保留空目录、按 Entity 名称筛选的 handle 与尾页、后续 cursor 和对象删除后的寿命，以及占位对象的 `saved_type` / `saved_data`；执行方式见下文[端到端验收](#端到端验收)。
-
-2026-10-16 的 Dev／Release 均通过，日志为 `out/direct-clustered-20261016/control-inspection-{dev,release}.log`。真实 3572 实体地牢另验证了 objects → object → 临时修改太阳属性 → render.compare → undo；最终 dirty=false、undo=0，源 Scene 哈希不变。
 
 材质参数、纹理、赋予和覆盖复用与 UI 相同的事务，不直接写 JSON 或 GPU 数据。`editor.inspect` 返回 `dirty_materials`；替换文档会拒绝未保存材质。`repro.export` 在导出副本中保存场景引用到的材质（含网格默认材质与可达父链）的实际草稿，并核对已载入贴图内容，原工程不变；会话里载入过但场景没有引用的材质不进入副本。MS→MI→MI 继承、稀疏作者项与资源发布合同见[资源工作流](projects.md#材质与贴图资源)。
 
@@ -184,7 +178,7 @@ DDGI 诊断通过相同的入口使用 `probe_visualization`（off/irradiance/st
 
 结果给出 `json`、`html`、`manifest` 路径。`trace.json` 的 `schema: atelier.render.trace`、`version: 1` 包含实例/文档、UI frame、gfx recording sequence、实际请求视图、首轮结果和有序 `commands`；每条命令包含快照内 kernel 标识、entry、groups 和实际绑定。直接 dispatch 的 groups 来自录制参数；间接命令为 null，不猜测 GPU 缓冲内容。绑定记录 root_parameter/array_index、名称、kind、valid/dummy/unknown、resource 和 view 范围。`resources` 的 index 只在这次快照内有效，格式数值为 DXGI_FORMAT；不导出原生地址、常量值或资源内容，不把物理 index 当作者 ID。manifest 的 complete 只代表产物写完，不代表观测完整或 GPU 成功。
 
-`trace.html` 直接由同一事实生成内联 SVG、可展开绑定详情和资源表，不依赖外部脚本、不自动打开。实线箭头仅表示 CPU 命令录制顺序，虚线仅表示绑定；SRV/UAV 不等于完整读写集合，同一资源的多次绑定不推导生产者依赖。没有观察到命令时显示空态，不套用预制流程图。资源来源没有在本范围内证明，图不声称 GPU 完成或显示器显示。采集与有界存储见 [RHI 合同](../rhi/contract.md#按需命令录制观测)，唯一真实验收代表见 [Renderer 验收](../renderer/acceptance.md#编辑器侧的渲染验收)。
+`trace.html` 直接由同一事实生成内联 SVG、可展开绑定详情和资源表，不依赖外部脚本、不自动打开。实线箭头仅表示 CPU 命令录制顺序，虚线仅表示绑定；SRV/UAV 不等于完整读写集合，同一资源的多次绑定不推导生产者依赖。没有观察到命令时显示空态，不套用预制流程图。资源来源没有在本范围内证明，图不声称 GPU 完成或显示器显示。采集与有界存储见 [RHI 合同](../rhi/contract.md#按需命令录制观测)；录制视图目前没有自动验收。
 
 ## 渲染对照
 
@@ -196,7 +190,7 @@ Shadows 开启时，投影光源的可见性一律来自阴影 atlas；普通 vi
 
 当前 Renderer 首次 Scene Lit 绘制同步准备相关管线，同实例可复用；目前没有公开的异步准备入口。同步调用期间主线程无法及时处理状态查询和取消，取消在下一个宿主边界执行。准备阶段与正式采样分开，避免把冷启动混进等待帧；渐进准备和跨进程 shader 缓存由 Renderer/RHI 后续演进。准备进程的 CPU 时长或工作集不能作为 GPU 帧时。
 
-准备耗时应同时记录构建配置、显卡/驱动、是否启用 GPU validation 及管线是否已准备。Control 默认完整端到端验收开启了 --gpu-validation，其耗时不能直接代表普通编辑器启动体验，也不能与未开启验证的样本直接比较。当前协议未返回显卡及验证模式，调用方需随测量记录这些条件；单次工作流观察不等同于性能基准。
+准备耗时应同时记录构建配置、显卡/驱动、是否启用 GPU validation 及管线是否已准备。开启 --gpu-validation 时的耗时不能直接代表普通编辑器启动体验，也不能与未开启验证的样本直接比较。当前协议未返回显卡及验证模式，调用方需随测量记录这些条件；单次工作流观察不等同于性能基准。
 
     {
       "request_id": "shadows-ab-01",
@@ -304,34 +298,15 @@ manifest 标记 `view_schema: 7`，相机或视图快照合同改变时加一。
 
 ## 端到端验收
 
-日志零错误冒烟使用真实 Examples 副本（Config、Source、Content，不复制 Cache），打开启动场景并接受渲染帧后，经 Control 启动 Play。观察到正式 `runner.started` 后，在 Play 仍活动时向编辑器发送 WM_CLOSE；沿用 10 秒退出等待及 exit code 0，不先 Stop、不自动重试请求。通过验收脚本串行运行窗口：
+日志零错误冒烟使用真实 Examples 副本（Config、Source、Content，不复制 Cache），打开启动场景并接受渲染帧后，经 Control 执行一次 `scene.add` → `scene.save` → `edit.undo` 并确认撤销后的新接受帧，再启动 Play。观察到正式 `runner.started` 后，在 Play 仍活动时向编辑器发送 WM_CLOSE；沿用 300 秒退出等待及 exit code 0，不先 Stop、不自动重试请求。通过验收脚本串行运行窗口：
 
     pwsh -NoProfile -File ./tools/acceptance-gate.ps1 -Targets editor_log_smoke_acceptance
 
 该目标调用 Control harness 的 `--smoke-logs`。每次证据保存在构建目录 `log-smoke-acceptance/<唯一目录>/`：`editor.log` 是子进程 stdout/stderr，正式 JSONL 位于 `Logs/editor/` 及其中的 `runner-N/`，成功时也保留。Reader 扫描完整轮转段，核对 Editor PID、父子 run 身份、全部附属 run 和磁盘 manifest；一次 Play 只能对应一个 Runner。父日志的 `play.process_ended` 必须确认该 Runner 的实际正常退出（非 forced、exit code 0），才排空子日志；Editor 则以进程句柄退出为依据。Runner 必须在同一文档中记录 started/stopped，且 `runner.stop_observed` 恰好一次；即时停止允许完成帧数为 0。两个进程都须记录 application.started/finished。
 
-任何 error/critical、日志设施故障、Reader 损坏/丢失、不健康或非 final 的最终 health、缺失日志或退出证据都失败；读取期间的 final=false 不提前判失败。不会以“Reader 能打开目录”、没有 stderr 或进程退出码为唯一通过证据，也不把 warning 文本中的关键词当 fault。该冒烟不能替代 glTF 导出后关闭等特定 K6 序列。
+任何 error/critical、日志设施故障、Reader 损坏/丢失、不健康或非 final 的最终 health、缺失日志或退出证据都失败；读取期间的 final=false 不提前判失败。不会以“Reader 能打开目录”、没有 stderr 或进程退出码为唯一通过证据，也不把 warning 文本中的关键词当 fault。该冒烟不覆盖 glTF 导出后关闭等其他特定 K6 序列。
 
-    cmake --build --preset dev --target editor_control_acceptance
-    cmake --build --preset release --target editor_control_acceptance
-
-默认链使用独立工程和真实编辑器进程，经命名管道验证请求重放、过期身份不重执行、跨管道文档修改和历史、对象句柄与目录 cursor 寿命、失败刷新不替换已发布目录、未保存场景与已发布游戏/UI/材质输入的复现闭包。失败候选不得替换当前文档、历史或 token；多接受帧任务的临时视图必须恢复，取消、上下文变化、超时、断线和关闭各保留清理序列。需要可绘制的独立窗口，不要求键盘焦点或人工输入；证据保存在构建目录 control-acceptance/。捕获只参与任务及状态恢复的验收，不作渲染图片正确性对照。
-
-`--repro-paths` 使用独立真实编辑器验证嵌套输出不留下递归目录、Examples 场景的真实依赖闭包，以及 glTF 默认材质、绑定、草稿导出重开和导出后关闭：
-
-    cmake --build --preset dev --target editor_control_path_acceptance
-    cmake --build --preset release --target editor_control_path_acceptance
-
-`--repro-lighting` 验证 sky 作者资源键与旋转的往返，以及引用材质草稿、缺失纹理清除后的导出与严格重开；构建目标为 `editor_repro_material_acceptance`，执行方式见 [README](../../../README.md#构建与端到端验收)。
-
-相机投影的有限远裁剪数学由 [viewport-edit CPU 验收](../../../acceptance/editor/viewport_edit.inl)的作者几何代表覆盖；GPU 投影由 [Renderer 验收](../renderer/acceptance.md)的 hidden-line 代表覆盖。
-
-描述元数据专项复用同一驱动与真实命名管道，核对 `probe_volume_0_count_x` 为 integer、范围 2–32、scope 为 scene，对照 [ProbeVolume 的 AFIELD 定义](../../../modules/engine/presentation/include/presentation/presentation.hpp)。同时保留对象目录筛选、cursor 与退休 handle、未知类型占位对象的持久数据，以及创建 Mesh 后撤销、关闭和原场景文件不变的守卫。该模式使用 `--no-activate`，不置顶、不启用 GPU validation，不进入渲染对照或复现导出：
-
-    ./out/dev/atelier_editor_control_acceptance.exe ./out/dev/atelier_editor.exe ./out/control-descriptions-dev --descriptions
-    ./out/release/atelier_editor_control_acceptance.exe ./out/release/atelier_editor.exe ./out/control-descriptions-release --descriptions
-
-World 页的输入预览/提交/取消、关闭和槽位切换在既有 `--acceptance-surfaces` 窗口链中验收；`atelier_editor_document_acceptance --scene-lit` 验证正式 DSL 页面与文档交互边界。Control 默认链保留无效批量 patch 不发生部分写入、幂等请求不取消活动任务的守卫。
+相机投影的 GPU 结果由 [Renderer 验收](../renderer/acceptance.md)的 hidden-line 代表覆盖。
 
 ### World 配置与字段显示元数据
 

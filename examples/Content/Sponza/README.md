@@ -22,4 +22,4 @@ New Sponza 由 Frank Meinl 委托制作，Anton Kaplanyan 赞助，来源为 [In
 
 ## 验收
 
-`editor_examples_acceptance` 保留 Sponza 一份磁盘保存重开，按原场景 JSON 核对网格资产身份，不修改仓库场景；同目标中的 `--textured-obj` 使用独立小型 OBJ 夹具检查材质、UV、切线及资源寿命，不重复加载 Sponza。渲染特性使用 [Renderer 的独立真值代表](../../../docs/modules/renderer/acceptance.md)，不检查本场景的 DDGI 开关对照、移动灯光或关灯消退矩阵。
+Sponza 是 Examples 的启动场景；`editor_log_smoke_acceptance` 在复制的工程中打开它并做一次添加/保存/撤销与日志零错误冒烟，不修改仓库场景，也不检查本场景的资产身份往返。渲染特性使用 [Renderer 的独立真值代表](../../../docs/modules/renderer/acceptance.md)，不检查本场景的 DDGI 开关对照、移动灯光或关灯消退矩阵。

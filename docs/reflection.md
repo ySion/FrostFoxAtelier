@@ -173,17 +173,17 @@ Clang/LLVM 包在独立变量作用域中加载，SDK 的静态 CRT 默认值不
 
 ## 验收与边界
 
-`reflection_acceptance` 保留真实生成器、Runtime 和 JIT 路径的 ABI 与生命周期代表，不包含诊断/拒绝矩阵或独立 CLI 验收。
+反射生成器的代表并入 `runtime_acceptance`，不包含诊断/拒绝矩阵或独立 CLI 验收。
 
 ```powershell
 . ./tools/enter-dev.ps1
 cmake --preset dev
-cmake --build --preset dev --target reflection_acceptance world_acceptance
+cmake --build --preset dev --target runtime_acceptance world_acceptance
 cmake --preset release
-cmake --build --preset release --target reflection_acceptance world_acceptance
+cmake --build --preset release --target runtime_acceptance world_acceptance
 ```
 
-[生成消费者](../acceptance/reflection/main.cpp)检查 64 字节对齐且大于 128 字节的记录按值快照/返回、失败后的借用写入与输出不发布及恢复、自动生成构造/析构钩子，以及定义和 Runtime 销毁后的元数据说明寿命。期望来自输入记录、注入故障前的输出和显式 live 计数。[调用链消费者](../acceptance/reflection/calls.cpp)各保留一次 Host→JIT→原生整数别名调用和嵌套调用前按值操作数快照，期望分别为夹具语句直接推导的 20 与 8；不再展开类型、协程或签名更新矩阵。
+[生成消费者](../acceptance/reflection/main.cpp)检查生成的构造/析构钩子各运行一次，以及 Runtime 销毁后字段元数据说明（含内嵌零字节的文本）仍按输入保留。按值快照/返回、借用写入失败与 Host→JIT→原生调用链不再有专项代表。
 
 内联记录与枚举字段的类型须在本生成组中解析；反射基类和引用目标可以来自其他生成组，分别按上文的 `AGENERATED_BODY` 识别和限定名解析，其余跨生成组的语义导入尚未开放。工具升级随工具链锁文件进行；源码实现不承诺跨 Clang AST API 版本二进制兼容。
 

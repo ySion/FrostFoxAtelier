@@ -95,11 +95,11 @@ Character、Ragdoll/RagdollPart、DistanceConstraint、Force、KinematicMotion �
 无窗口真实 World/Jolt 验收使用：
 
 ```powershell
-cmake --build --preset dev --target physics_acceptance editor_document_acceptance
-cmake --build --preset release --target physics_acceptance editor_document_acceptance
+cmake --build --preset dev --target physics_acceptance project_scene_acceptance
+cmake --build --preset release --target physics_acceptance project_scene_acceptance
 ```
 
-`physics_acceptance` 按独立场景逐项输出 RUN/PASS/FAIL，只保留当前 Cook 往返、每类数学行为一个独立真值代表和必要生命周期/故障清理序列。当前保留范围与单场景重跑方法见[物理验收](acceptance.md)。`editor_document_acceptance` 覆盖工程缓存、Primitive 配置历史和场景文档；`editor_acceptance` 的真实窗口用例包含 Entity Structure 添加/删除 CollisionComponent 及撤销，运行时需要可授予前台焦点的桌面会话。
+`physics_acceptance` 按独立场景逐项输出 RUN/PASS，只保留一个刚体落地、当前 Cook 往返和 Tick 失败后的清理序列。当前保留范围与单场景重跑方法见[物理验收](acceptance.md)。`project_scene_acceptance` 保留失败 Tick 中嵌套 stop 的物理停止顺序代表；Entity Structure 添加/删除 CollisionComponent 及 Primitive 配置历史目前没有自动验收。
 
 编辑器接入的覆盖范围见[场景模型验收](../editor/README.md#场景模型验收)，逐次日志由根 README 的验收门禁记录。
 

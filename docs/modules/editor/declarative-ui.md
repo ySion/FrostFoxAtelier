@@ -450,10 +450,8 @@ Parameters、Controls 等区域挂在稳定的业务内容槽内；停靠移动�
 
 ## 验收与成本边界
 
-正式入口为 `cmake --build --preset <dev|release> --target editor_document_acceptance ui_acceptance atelier_editor`，窗口使用 `atelier_editor --acceptance-project output [source-project]`。
-
-[源码 patch 验收](../../../acceptance/editor/ui_source_patch.inl) 使用真实文件、JIT、Runtime 与 Session，核对 Context 身份、子组件增删/换型、state 调整、新事件执行、同帧事件与失败源码、首次挂载失败后的 root 清理、草稿和最终资源回收。[组合验收](../../../acceptance/editor/composed_ui.inl) 覆盖列表重排/重挂、重复项根重命名、输入和草稿；[事务验收](../../../acceptance/editor/ui_reload_transaction.inl) 保留失败回滚与代码拥有者寿命序列；[代码复用验收](../../../acceptance/editor/ui_reload_profile.inl) 检查旧租约执行、当前源码位置、复用后的运行时校验及 helper 函数体变化后的实际执行值，不以编译/复用计数作为通过条件。[窗口验收](../../../acceptance/editor/ui_authoring_window.inl) 保存独立作者文件副本，验证真实画面、错误恢复、输入 token、折叠状态及后续 World 字段编辑。
+声明式 UI 的源码 patch、组合、重载事务、代码复用与作者窗口目前没有自动验收；`ui_acceptance` 只检查已接受帧在 UI Session 退役后仍然有效。
 
 组件只求值失效绑定，输入只复制变化槽位；变化片段可通过 swap 提交或恢复，长度变化时准备新的连续快照。控件 key 序列不变时跳过 key 集合构造与差集统计；稳定帧不递归执行退休清理。源码按组件生成代码复用 JIT，不是一般的函数级增量编译。宿主仍逐帧采样并 describe/set_controls；这不等于整个编辑器只遍历变化节点，也不等于增量布局求解。
 
-现有界面已完成装配迁移；后续按实际需求补齐 Inspector 业务能力、多窗格实例、跨文件组织及独立 HUD；更新调度遵循[默认更新策略](#默认更新策略)。编译及准备提交的采样沿既有 `--profile-ui-reload` 入口，保存到接受帧的延迟须在真实窗口另测；不以小场景耗时或历史通过表推断完整编辑器延迟。
+现有界面已完成装配迁移；后续按实际需求补齐 Inspector 业务能力、多窗格实例、跨文件组织及独立 HUD；更新调度遵循[默认更新策略](#默认更新策略)。保存到接受帧的延迟须在真实窗口另测；不以小场景耗时或历史通过表推断完整编辑器延迟。

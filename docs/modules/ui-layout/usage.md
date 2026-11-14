@@ -25,7 +25,7 @@ Result<PanelNodes> create_panel(LayoutDocument& document,
 }
 ```
 
-多次成功编辑可以合并到下一次compute，但不提供跨调用的自动事务。示例回收显式失败后的半成品子树；内存异常仍正常传播。正式动态Inspector、折叠与完整错误处理在[生产消费者](../../../acceptance/ui_layout/practical.inl)中执行。
+多次成功编辑可以合并到下一次compute，但不提供跨调用的自动事务。示例回收显式失败后的半成品子树；内存异常仍正常传播。
 
 物品格使用 `NodeInput::grid(80, 8, 6)`：最小槽宽80、项间距8、行间距6，随viewport自动改变列数。`NodeInput::wrap(8, 6)`用于不同自然宽度的标签流；描述上的`line_align`为0/0.5/1时分别靠起点、居中、靠终点。更多规则见[合同](contract.md)。
 

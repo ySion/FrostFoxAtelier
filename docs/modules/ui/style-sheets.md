@@ -98,8 +98,7 @@ inset/outset 使用方角背景及四个相邻边缘实例。浅边使用 border
 
 ## 验收
 
-- `ui_acceptance`：真实 Session/DirectWrite 保留 Coverage 和段落跨析构寿命、一张渐变的独立 sRGB 端点、滚动底部边距与固定客户区 Tooltip 边界代表；具体输入与真值见[UI 验收入口](README.md#限额与验收)。不再保留样式解析、作用域/继承/覆盖及错误矩阵。
-- `renderer_acceptance`：真实 D3D12 debug/GBV 与颜色读回，包含非对称圆角、透明填充边框、RGBA 带 padding 行、图片版本与释放、合批/裁剪分界、A/B/A 透明顺序及错误帧恢复。
-- `atelier_editor --acceptance <目录>`：同一产品入口验证 SS 文件接线、交互状态、文字编辑、主题切换、256 Entity 场景和 GPU 捕获。真实系统 IME 有独立验收，本增量不以普通窗口验收替代它。
+- `ui_acceptance`：真实 Session/DirectWrite 保留文字 Coverage 跨 Session 析构的寿命代表；具体输入见[UI 验收入口](README.md#限额与验收)。不再保留样式解析、作用域/继承/覆盖及错误矩阵。
+- `renderer_acceptance`：真实 D3D12 debug/GBV 与颜色读回，包含非对称圆角、透明填充边框、RGBA 带 padding 行、逐实例裁剪及 A/B/A 透明顺序。
 
 图标文字组合支持 `icon-placement: leading | above`，默认 leading 保留已有横向排列。above 在测量时为顶部图标与 2 DIP 间距预留空间，绘制仍使用同一控件 bounds 和点击身份；`indicator-size` 控制图标尺寸，`text-align` / `text-vertical-align` 控制标题。该属性改变布局，不允许在 hover/pressed/focus 等状态规则中切换。

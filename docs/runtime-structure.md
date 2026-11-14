@@ -22,9 +22,9 @@
 | Runtime 桥接 | [bridge.hpp](../modules/execution/source/internal/source/detail/bridge.hpp)、[bridge.cpp](../modules/execution/source/src/detail/bridge.cpp)：Binding、Invocation、目录映射、引用槽与原生服务 | `atelier_source` 内部实现；按需汇总调用计数与拥有值余额。内部策略观察点继续供验收使用，不推进 GC |
 | 调用诊断 | [diagnostics.hpp](../modules/execution/source/include/source/diagnostics.hpp)、[diagnostics.cpp](../modules/execution/source/src/diagnostics.cpp)：采集句柄、版本/源码位置、资源与状态快照 | `atelier_source`；可选编译插桩写固定 POD 记录，Coroutine 最终状态由原有 Runtime 拥有者通知。报告不保活执行代码或 Runtime |
 | 源码调试 | [debugger.hpp](../modules/execution/source/include/source/debugger.hpp)、[debugger.cpp](../modules/execution/source/src/detail/debugger.cpp)：精确断点、动态源码帧、单步及有界快照 | `atelier_source`；JIT 服务复用 Invocation，ExecutionInspection 复用 Runtime 只读准入；暂停保留原生栈，见[调试合同](source-debugger.md) |
-| 端到端消费者 | [公共验收分派入口](../acceptance/source/main.cpp)、[关停消费者](../acceptance/source/shutdown.cpp)、[交错会话](../acceptance/source/session.cpp)、[完整验收](../acceptance/jit/business.cpp)及其 inl 分组 | 业务调用使用正式接口；代码地址观察经内部 ProgramAccess 供 OS 查询验证退休，raw ABI 和故障路径同样通过内部接缝检查，均使用同一正式实现 |
+| 端到端消费者 | [公共验收分派入口](../acceptance/source/main.cpp)、[关停消费者](../acceptance/source/shutdown.cpp)、[项目消费者](../acceptance/source/projects.cpp)、[JIT 业务验收](../acceptance/jit/business.cpp)及其 inl 分组 | 业务调用使用正式接口；代码地址观察经内部 ProgramAccess 供 OS 查询验证退休，raw ABI 和故障路径同样通过内部接缝检查，均使用同一正式实现 |
 
-构建权威来源：[CMakeLists.txt](../CMakeLists.txt)、[jit.cmake](../cmake/jit.cmake)。消费者链接 `atelier_source`，由它接入 `atelier_runtime` 与源码后端 DLL；LLVM 头文件不传播到公共接口。`atelier_jit_probe` 只承担平台验收。后端 DLL 的 [missing-poll 编译入口](../modules/execution/jit/internal/jit/source_backend_verification.hpp)只走编译与链接路径，`jit_acceptance` 用它验证真实链接失败后旧程序仍可执行。
+构建权威来源：[CMakeLists.txt](../CMakeLists.txt)、[jit.cmake](../cmake/jit.cmake)。消费者链接 `atelier_source`，由它接入 `atelier_runtime` 与源码后端 DLL；LLVM 头文件不传播到公共接口。`atelier_jit_probe` 只承担平台验收。
 
 LLVM 编译、IR 验证、链接和 COFF 反汇编的可恢复错误在后端内使用 `llvm::Error/Expected` 传递，不再经 throw/catch 转换；DLL 出口仍只写状态和调用方提供的诊断缓冲区。目录拒绝、引用槽/诊断位置索引容量和材质默认值捕获失败保留显式错误；完整候选成功前不写任何代码输出句柄，失败由 DLL 内 RAII 释放临时代码与 LLVM 资源。定型 AST 的内部不变量破坏直接 fatal，CPU 分配失败遵循统一终止合同。前端尚存的诊断异常由前端后续迁移，不表示跨 DLL 的错误协议。
 

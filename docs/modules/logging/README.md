@@ -246,10 +246,9 @@ W5 前仍保持 `QUILL_NO_EXCEPTIONS=OFF`，不提前改变全仓 EH 设置。QU
 
 | 正式目标 | 验收内容 |
 |---|---|
-| `logging_acceptance` | 六个独立真值代表：文本/字段拥有型往返、合法 UTF-8 半行恢复、一次真实轮转、线程退出与 finish 排空、文件锁故障清理、DLL 拥有型边界；期望取自固定输入 |
-| `project_integration_acceptance` | 真实 Runner 结果与退出码、精确领域 warning/error 期望、完整 final、强杀残尾及原始输出传输 |
-| `editor_document_acceptance` | 共享 Entry 校验、显式 repeat、双缓存预算、源码映射、原始字节转换与增量文件投影 |
-| `editor_output_acceptance` | 正式窗口中的过滤、完整只读正文、复制、源码焦点、慢 UI 淘汰与窄 dock |
+| `logging_acceptance` | 两个独立真值代表：文本/字段拥有型往返（含 UTF-8 与 64 位身份）、文件锁故障清理；期望取自固定输入 |
+| `project_integration_acceptance` | 经 Reader 读取真实 Runner 的 `runner.started`，并检查卡死子进程被强制停止 |
+| `editor_log_smoke_acceptance` | 真实编辑器与 Play Runner 日志零错误、父子 run 身份、Play 正常结束 |
 
 沿用仓库门禁，不直接并行启动窗口目标。例如只验收日志核心：
 
@@ -257,4 +256,4 @@ W5 前仍保持 `QUILL_NO_EXCEPTIONS=OFF`，不提前改变全仓 EH 设置。QU
 pwsh -NoProfile -File .\tools\acceptance-gate.ps1 -Targets dev:logging_acceptance,release:logging_acceptance
 ```
 
-验收不代替业务 Result：预期隔离故障仍可成功退出，正常案例中的额外 warning/error 则失败。DLL 验收只证明稳定宿主的拥有型边界与真实卸载，不保证所有解码都发生在卸载之后，也不扩大为任意 JIT/DLL formatter 安全。原生静态格式宽度展开的瞬时内存仍由 Quill/fmt 分配，不承诺严格临时峰值；文件系统 I/O、flush 与 finish 无硬超时或崩溃保证。所有未知后台 notice 继续作为健康不确定性保留。
+验收不代替业务 Result：预期隔离故障仍可成功退出，正常案例中的额外 warning/error 则失败。DLL 拥有型边界目前没有自动验收，不扩大为任意 JIT/DLL formatter 安全。原生静态格式宽度展开的瞬时内存仍由 Quill/fmt 分配，不承诺严格临时峰值；文件系统 I/O、flush 与 finish 无硬超时或崩溃保证。所有未知后台 notice 继续作为健康不确定性保留。

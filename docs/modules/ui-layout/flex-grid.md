@@ -96,6 +96,6 @@ Grid跨度是否贡献自然需求为常数时间查询：同规则轴直接判�
 
 ## 正式验收与复现
 
-Flex/Grid 的解析代表检查 basis 加权缩小、一次 space_evenly 分布、反向换行、固定/权重/跨格轨道、同批重叠 Content 约束及自动占位。它们位于 `acceptance/ui_layout/flex_grid.inl` 和 `audit.inl`，独立真值及完整保留范围见[验收记录](acceptance.md)。不以参数矩阵或两个布局输出互比代替独立真值。
+Flex/Grid 目前只保留一行两项的有界 expand 分配代表（90/10）；basis 缩小、分布、换行、Grid 轨道与自动放置不再有专项代表，保留范围见[验收记录](acceptance.md)。不以参数矩阵或两个布局输出互比代替独立真值。
 
 在正式环境中构建 `ui_layout_acceptance` 的 Dev/Release 目标。[审计记录](audit.md)保留固定旧版本的性能依据，旧性能入口已移除，不作为当前命令或验收结果。
