@@ -454,7 +454,7 @@ Result<std::vector<assets::ProjectEntry>> Project::scan_entries(bool create_iden
                 const auto relative = entry.path().lexically_relative(*native_root);
                 ATELIER_TRY(resolve(relative));
                 const auto filename = entry.path().filename().wstring();
-                if (filename.ends_with(L".asset.json") || filename.ends_with(L".meta") || filename.ends_with(L".tmp"))
+                if (filename.ends_with(L".asset.json") || filename.ends_with(L".tmp"))
                     continue;
                 const auto is_directory = std::filesystem::is_directory(status);
                 auto kind = is_directory                               ? assets::AssetKind::folder
@@ -781,7 +781,7 @@ Result<MeshImportPublication> Project::import_mesh_files(const std::filesystem::
             auto filename = path.filename().wstring();
             for (auto& c : filename)
                 c = static_cast<wchar_t>(std::towlower(c));
-            if (filename.ends_with(L".asset.json") || filename.ends_with(L".meta") || filename.ends_with(L".tmp"))
+            if (filename.ends_with(L".asset.json") || filename.ends_with(L".tmp"))
                 return failure("Import dependencies cannot replace identity or temporary files.");
             const bool replace = std::ranges::any_of(owned, [&](const auto& old) { return same_path(old, path); });
             // A source dependency is not permission to overwrite a hand-edited MI/MS.

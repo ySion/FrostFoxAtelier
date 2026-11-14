@@ -117,7 +117,6 @@ function(atelier_add_editor)
         COMMAND $<TARGET_FILE:atelier_project_integration_acceptance>
         DEPENDS atelier_project_integration_acceptance)
     # Repository examples are explicit acceptance inputs, not deployed engine content.
-    foreach(target atelier_editor atelier_editor_document_acceptance atelier_project_scene_acceptance atelier_editor_control_acceptance)
-        target_compile_definitions(${target} PRIVATE "ATELIER_EXAMPLE_PROJECT=L\"${PROJECT_SOURCE_DIR}/examples\"")
-    endforeach()
+    target_compile_definitions(atelier_editor_control_acceptance PRIVATE
+        "ATELIER_EXAMPLE_PROJECT=L\"${PROJECT_SOURCE_DIR}/examples\"")
 endfunction()

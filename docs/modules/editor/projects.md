@@ -147,7 +147,7 @@ Refresh/F5 重新扫描目录，不在 UI 每帧访问磁盘，也不自动向�
 手动 Mesh Reimport 保持网格身份，按唯一同名槽保留既有 MI 文件及用户编辑；仅新作者槽创建 MI，不推断重命名或合并源材质参数。Session 先发布本次图片，再解析新材质，最后发布几何和默认表；已打开的未保存 MI 不被覆盖。暂时消失的显式槽绑定保留为休眠作者数据，同名槽回来时恢复。Live 传输精确几何快照，不要求接收端重读磁盘。导入不进入 Undo，也没有文件系统自动导入器。
 
 
-每个 OBJ 旁的 `<文件名>.asset.json` 保存版本和持久 UUID；网格的元数据还可以有 `materials`（槽名到材质键），每个键必须对应网格中唯一的槽，否则网格无法加载。移动、重命名资源时须一同移动该元数据，并保持 MTL/贴图的相对引用；复制资源应使用 Import，以获得独立身份。Refresh 为新增 OBJ 建立元数据，重复 ID 或非法元数据明确报错。导入或新建的资源及其元数据共同位于 Content，需要与源文件一同保存到版本控制；Cache 不承担资源身份。目录索引没有固定项数上限；`.asset.json`、Unity `.meta` 和临时文件不单列于目录索引，原文件保留。查询结果按目录版本缓存；List/Details/Tiles 共用 Table 的可见单元格绘制，不为整个目录建立布局节点。外部调用方可沿 [Control 资产分页](control.md#资产目录分页) 读取同一目录，响应及 repro/Source 的独立限额不变。
+每个 OBJ 旁的 `<文件名>.asset.json` 保存版本和持久 UUID；网格的元数据还可以有 `materials`（槽名到材质键），每个键必须对应网格中唯一的槽，否则网格无法加载。移动、重命名资源时须一同移动该元数据，并保持 MTL/贴图的相对引用；复制资源应使用 Import，以获得独立身份。Refresh 为新增 OBJ 建立元数据，重复 ID 或非法元数据明确报错。导入或新建的资源及其元数据共同位于 Content，需要与源文件一同保存到版本控制；Cache 不承担资源身份。目录索引没有固定项数上限；`.asset.json` 和临时文件不单列于目录索引，原文件保留。查询结果按目录版本缓存；List/Details/Tiles 共用 Table 的可见单元格绘制，不为整个目录建立布局节点。外部调用方可沿 [Control 资产分页](control.md#资产目录分页) 读取同一目录，响应及 repro/Source 的独立限额不变。
 
 ## 材质与贴图资源
 
@@ -379,4 +379,4 @@ File → Edit Editor UI Source 是引擎开发命令，用于修改编辑器自�
 
 ## Dungeons 地牢资源
 
-[Dungeons](../../../examples/Content/Dungeons/README.md) 包含完整 Demo 和两个资源总览，使用原始世界变换生成独立 Entity。通过普通 `--project ./examples --scene Content/Dungeons/Scenes/Dungeon.scene` 打开；编辑视口可选择 Smooth 查看贴图。全部非脚本 Unity 资源保留在 Originals，转换后的 2314 个模型资产可通过现有 Asset Browser 添加到场景。导入工具及不支持的 Unity 运行效果见示例说明。
+[Dungeons](../../../examples/Content/Dungeons/README.md) 包含完整 Demo 和两个资源总览，使用原始世界变换生成独立 Entity。通过普通 `--project ./examples --scene Content/Dungeons/Scenes/Dungeon.scene` 打开；编辑视口可选择 Smooth 查看贴图。转换后的 2314 个模型资产可通过现有 Asset Browser 添加到场景。

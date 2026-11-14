@@ -160,14 +160,23 @@ struct Driver {
     json::Document settle() {
         const auto deadline = std::chrono::steady_clock::now() + 125s;
         auto state = inspect();
+        std::string before = token;
         unsigned stable{};
         while (stable < 5 && std::chrono::steady_clock::now() < deadline) {
-            const auto before = token;
+            before = token;
             std::this_thread::sleep_for(30ms);
             state = inspect();
             stable = before == token && state.root().at("last_frame")->size() != 0 ? stable + 1 : 0;
         }
-        require(stable == 5, "Editor accepted frame did not arrive with a stable state token within 125s");
+        if (stable != 5) {
+            const auto accepted = state.root().u64({"accepted_frames"}).value_or(0);
+            const auto frame_fields = state.root().at("last_frame")->size();
+            const auto busy = state.root().boolean({"busy"}).value_or(false);
+            require(false, "Editor accepted frame did not arrive with a stable state token within 125s (before=" +
+                               before + ", token=" + token + ", accepted_frames=" + std::to_string(accepted) +
+                               ", last_frame_fields=" + std::to_string(frame_fields) +
+                               ", busy=" + (busy ? "true" : "false") + ")");
+        }
         return state;
     }
 
@@ -305,6 +314,27 @@ void verify_smoke_logs(SmokeLog& parent, SmokeLog& child) {
     child.one("runner.stopped");
 }
 
+void prune_passed_smoke_runs(const std::filesystem::path& base, std::size_t keep) {
+    struct Entry {
+        std::filesystem::path path;
+
+        std::filesystem::file_time_type modified{};
+    };
+    std::vector<Entry> passed;
+    std::error_code error;
+    for (const auto& item : std::filesystem::directory_iterator(base, error)) {
+        if (!item.is_directory(error) || std::filesystem::exists(item.path() / "Project", error))
+            continue;
+        const auto modified = item.last_write_time(error);
+        if (!error)
+            passed.push_back({item.path(), modified});
+        error.clear();
+    }
+    std::ranges::sort(passed, [](const Entry& left, const Entry& right) { return left.modified > right.modified; });
+    for (std::size_t index = keep; index < passed.size(); ++index)
+        std::filesystem::remove_all(passed[index].path, error);
+}
+
 void smoke_logs(const std::filesystem::path& executable, const std::filesystem::path& root) {
     const auto project = root / "Project";
     const auto directory = root / "Control";
@@ -313,10 +343,21 @@ void smoke_logs(const std::filesystem::path& executable, const std::filesystem::
     const auto project_text = platform::utf16_to_utf8(project.generic_wstring());
     require(root_text && project_text, "Invalid UTF-16 smoke fixture path");
     std::cout << "Editor log smoke evidence: " << *root_text << '\n' << std::flush;
-    std::filesystem::create_directories(project);
-    for (const auto* name : {L"Config", L"Source", L"Content"})
-        std::filesystem::copy(std::filesystem::path(ATELIER_EXAMPLE_PROJECT) / name, project / name,
-                              std::filesystem::copy_options::recursive);
+    const std::filesystem::path example_root(ATELIER_EXAMPLE_PROJECT);
+    std::filesystem::create_directories(project / "Content");
+    for (const auto* name : {L"Config", L"Source"})
+        std::filesystem::copy(example_root / name, project / name, std::filesystem::copy_options::recursive);
+    const auto config = read(project / "Config/Project.json");
+    const auto startup_scene = config.root().string({"startup_scene"});
+    require(bool(startup_scene), "Examples Config/Project.json is missing startup_scene");
+    const std::filesystem::path startup_relative = utf8_to_utf16_validated(*startup_scene);
+    auto segment = startup_relative.begin();
+    require(segment != startup_relative.end() && *segment == L"Content" && ++segment != startup_relative.end() &&
+                segment->native() != L"." && segment->native() != L"..",
+            "Examples startup_scene must reside under Content/<pack>/");
+    const auto startup_pack = std::filesystem::path(L"Content") / *segment;
+    std::filesystem::copy(example_root / startup_pack, project / startup_pack,
+                          std::filesystem::copy_options::recursive);
     require(!std::filesystem::exists(logs), "Smoke log directory must be fresh");
     Process editor(executable,
                    L"--project " + quote(project) + L" --control-directory " + quote(directory) + L" --log-directory " +
@@ -328,12 +369,11 @@ void smoke_logs(const std::filesystem::path& executable, const std::filesystem::
     try {
         Driver d(discover_editor(editor, directory));
         const auto state = d.settle();
-        const auto config = read(project / "Config/Project.json");
         require(state.root().string({"project"}) == *project_text &&
                     *state.root().at("scene_path") == *config.root().at("startup_scene") &&
                     state.root().at("last_frame")->size() != 0,
                 "Examples did not open with its startup scene and an accepted frame");
-        const auto scene_path = project / utf8_to_utf16_validated(*config.root().string({"startup_scene"}));
+        const auto scene_path = project / startup_relative;
         const auto scene = read(scene_path);
         const auto original_count = scene.root().at("entities")->size();
         require(state.root().at("entities")->size() == original_count, "Example scene membership did not load");
@@ -388,6 +428,10 @@ void smoke_logs(const std::filesystem::path& executable, const std::filesystem::
     if (failure)
         std::rethrow_exception(failure);
     verify_smoke_logs(parent, *child);
+    std::error_code cleanup_error;
+    std::filesystem::remove_all(project, cleanup_error);
+    require(!cleanup_error && !std::filesystem::exists(project),
+            "Failed to remove smoke Project copy: " + platform::error_message(cleanup_error));
     std::cout << "Editor log smoke: PASS (edit/save/undo, accepted frame, zero errors, Play close) | " << *root_text
               << '\n';
 }
@@ -401,9 +445,11 @@ int wmain(int argc, wchar_t** argv) {
         if (!GetEnvironmentVariableW(L"ATELIER_SHADER_CACHE", nullptr, 0))
             SetEnvironmentVariableW(L"ATELIER_SHADER_CACHE",
                                     (std::filesystem::absolute(argv[1]).parent_path() / L"shader-cache").c_str());
-        const auto root = std::filesystem::absolute(argv[2]) / unique_id();
+        const auto base = std::filesystem::absolute(argv[2]);
+        const auto root = base / unique_id();
         std::filesystem::create_directories(root);
         smoke_logs(argv[1], root);
+        prune_passed_smoke_runs(base, 5);
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "Editor log smoke: FAIL: " << error.what() << '\n';
