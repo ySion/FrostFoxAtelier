@@ -68,23 +68,5 @@
     "url": "https://codeload.github.com/odygrd/quill/tar.gz/78c0696c5be589488d882c280796dfa06bdcd492",
     "sha256": "41a26da7c271b0ba583ebf1ac2b5e2efb49b883ed79a9eddd0eb7904e27df9d6",
     "filename": "quill-78c0696c.tar.gz"
-  },
-  "core_math": {
-    "version": "0ce0cbc15935e24c656280e5a46c34e89f301b7a",
-    "url": "https://gitlab.inria.fr/core-math/core-math/-/raw/0ce0cbc15935e24c656280e5a46c34e89f301b7a/",
-    "files": {
-      "LICENSE": "81830875362f4d477637de58eecd6d458db108cc90c40904fca3694807b86de3",
-      "src/binary64/sin/sin.c": "cd772a06d75d1bb8bb4374847065acfab28d5a06c7fb81be3b36127f65d8b1c2",
-      "src/binary64/cos/cos.c": "04bffbc8b483c886f78f2c9ab3f2a1ca318dda78ab637a2983a4a9d82374e9d9",
-      "src/binary64/exp/exp.c": "65af7f572ce97327b63700dd76bd6bf753c087fe326c83c7dbbd674ab168a84d",
-      "src/binary64/log/log.c": "12508dfcdfef1df3e32a2c455400142d4a5e40936862a2b68a801fb572c5937a",
-      "src/binary64/log/dint.h": "0da80a15d311bb1e550035f98edc2266ef31828cd423aec3a2e4507d2dad5e0e",
-      "src/binary64/atan2/atan2.c": "404b0db90e536f8248101544d0fcad9141fd76b2a6cc3d189dd80dbfc865bd91",
-      "src/binary64/atan2/tint.h": "41264d54812a8ce2b3f8ca4c8c033094df7cbf2d214da1c7555783328171b921",
-      "src/binary64/pow/pow.c": "b14c65a1d1367f49a0d3e00e65370c3e9dd0fd004fe00e30cdad2a9887954562",
-      "src/binary64/pow/pow.h": "8e28930b514f1f439011cb201c738c6b8940f321f03f4679362e7f6b7893fd6a",
-      "src/binary64/pow/dint.h": "c62a9788d872c314c743a821602d6819e5c13113b70f6d4a5d0076695dc413ef",
-      "src/binary64/pow/qint.h": "32de9c10388056e2294339e3302c3695cdf4abc87ca790ad48917d9794bfb6e4"
-    }
   }
 }
