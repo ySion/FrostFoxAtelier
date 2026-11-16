@@ -28,8 +28,10 @@ public:
     }
 
     llvm::Value* load(llvm::Value* address, math::Type type) {
+        if (type.components() != 3)
+            return ir_.CreateAlignedLoad(value_type(ir_.getContext(), type), address, llvm::Align(type.scalar_size()));
         llvm::Value* result = llvm::PoisonValue::get(value_type(ir_.getContext(), type));
-        for (unsigned i = 0; i < type.components(); ++i) {
+        for (unsigned i = 0; i < 3; ++i) {
             auto* source = ir_.CreateInBoundsGEP(ir_.getInt8Ty(), address, ir_.getInt64(i * type.scalar_size()));
             result = ir_.CreateInsertElement(
                 result,
@@ -39,7 +41,11 @@ public:
     }
 
     void store(llvm::Value* value, llvm::Value* address, math::Type type) {
-        for (unsigned i = 0; i < type.components(); ++i) {
+        if (type.components() != 3) {
+            ir_.CreateAlignedStore(value, address, llvm::Align(type.scalar_size()));
+            return;
+        }
+        for (unsigned i = 0; i < 3; ++i) {
             auto* target = ir_.CreateInBoundsGEP(ir_.getInt8Ty(), address, ir_.getInt64(i * type.scalar_size()));
             ir_.CreateAlignedStore(lane(value, i), target, llvm::Align(type.scalar_size()));
         }
@@ -99,8 +105,7 @@ public:
         }
     }
 
-    llvm::Value* operation(language::MathOperation operation, std::span<llvm::Value* const> args,
-                           math::Type result_type) {
+    llvm::Value* operation(language::MathOperation operation, std::span<llvm::Value* const> args) {
         using Op = language::MathOperation;
         if (operation >= Op::square_root)
             return elementwise(operation, args);
@@ -113,37 +118,34 @@ public:
             return norm(args[0], false);
         case Op::normalize_or_zero:
             return norm(args[0], true);
-        case Op::conjugate: {
-            auto* result = ir_.CreateFNeg(args[0]);
-            return ir_.CreateInsertElement(result, lane(args[0], 3), 3);
-        }
+        case Op::fast_normalize_or_zero:
+            return fast_normalize(args[0]);
+        case Op::conjugate:
+            return ir_.CreateShuffleVector(ir_.CreateFNeg(args[0]), args[0], {0, 1, 2, 7});
+        case Op::slerp01:
+            return slerp01(args[0], args[1], args[2]);
+        case Op::fast_slerp01:
+            return fast_slerp01(args[0], args[1], args[2]);
         case Op::rotate: {
-            llvm::Value* xyz = llvm::PoisonValue::get(value_type(ir_.getContext(), result_type));
-            for (unsigned i = 0; i < 3; ++i)
-                xyz = ir_.CreateInsertElement(xyz, lane(args[0], i), i);
+            auto* xyz = ir_.CreateShuffleVector(args[0], {0, 1, 2});
             auto* twice = ir_.CreateFMul(cross(xyz, args[1]), llvm::ConstantFP::get(xyz->getType(), 2));
             return ir_.CreateFAdd(
-                ir_.CreateFAdd(args[1], ir_.CreateFMul(twice, ir_.CreateVectorSplat(3, lane(args[0], 3)))),
+                ir_.CreateFAdd(args[1], ir_.CreateFMul(twice, ir_.CreateShuffleVector(args[0], {3, 3, 3}))),
                 cross(xyz, twice));
         }
-        case Op::transpose: {
-            llvm::Value* result = llvm::PoisonValue::get(args[0]->getType());
-            for (unsigned row = 0; row < 4; ++row)
-                for (unsigned col = 0; col < 4; ++col)
-                    result = ir_.CreateInsertElement(result, lane(args[0], col * 4 + row), row * 4 + col);
-            return result;
-        }
+        case Op::transpose:
+            return ir_.CreateIntrinsic(llvm::Intrinsic::matrix_transpose, {args[0]->getType()},
+                                       {args[0], ir_.getInt32(4), ir_.getInt32(4)});
         case Op::transform_point:
         case Op::transform_direction: {
-            llvm::Value* result = llvm::PoisonValue::get(value_type(ir_.getContext(), result_type));
-            for (unsigned col = 0; col < 3; ++col) {
-                auto* value = ir_.CreateFMul(lane(args[0], 0), lane(args[1], col));
-                for (unsigned row = 1; row < 3; ++row)
-                    value = ir_.CreateFAdd(value, ir_.CreateFMul(lane(args[0], row), lane(args[1], row * 4 + col)));
-                if (operation == Op::transform_point)
-                    value = ir_.CreateFAdd(value, lane(args[1], 12 + col));
-                result = ir_.CreateInsertElement(result, value, col);
-            }
+            auto* r0 = ir_.CreateShuffleVector(args[1], {0, 1, 2});
+            auto* r1 = ir_.CreateShuffleVector(args[1], {4, 5, 6});
+            auto* r2 = ir_.CreateShuffleVector(args[1], {8, 9, 10});
+            auto* result = ir_.CreateFMul(ir_.CreateShuffleVector(args[0], {0, 0, 0}), r0);
+            result = ir_.CreateFAdd(result, ir_.CreateFMul(ir_.CreateShuffleVector(args[0], {1, 1, 1}), r1));
+            result = ir_.CreateFAdd(result, ir_.CreateFMul(ir_.CreateShuffleVector(args[0], {2, 2, 2}), r2));
+            if (operation == Op::transform_point)
+                result = ir_.CreateFAdd(result, ir_.CreateShuffleVector(args[1], {12, 13, 14}));
             return result;
         }
         default:
@@ -213,6 +215,8 @@ private:
         switch (operation) {
         case Op::square_root:
             return intrinsic(llvm::Intrinsic::sqrt, a[0]);
+        case Op::fast_rsqrt:
+            return fast_rsqrt(a[0]);
         case Op::floor:
             return intrinsic(llvm::Intrinsic::floor, a[0]);
         case Op::ceil:
@@ -729,34 +733,178 @@ private:
                                 llvm::ConstantFP::getNaN(scalar), result);
     }
 
+    llvm::Value* fast_rsqrt_positive(llvm::Value* x) {
+        auto* type = x->getType();
+        if (!type->getScalarType()->isDoubleTy()) {
+            llvm::FastMathFlags flags;
+            flags.setAllowReciprocal();
+            flags.setApproxFunc();
+            flags.setAllowReassoc();
+            flags.setAllowContract();
+            auto* root = llvm::cast<llvm::CallInst>(intrinsic(llvm::Intrinsic::sqrt, x));
+            root->setFastMathFlags(flags);
+            auto* reciprocal = llvm::cast<llvm::Instruction>(ir_.CreateFDiv(llvm::ConstantFP::get(type, 1), root));
+            reciprocal->setFastMathFlags(flags);
+            return reciprocal;
+        }
+        const auto constant = [&](double value) { return llvm::ConstantFP::get(type, value); };
+        auto* subnormal = ir_.CreateFCmpOLT(x, constant(0x1.0p-1022));
+        auto* xs = ir_.CreateFMul(x, ir_.CreateSelect(subnormal, constant(0x1.0p54), constant(1)));
+        auto* scale = ir_.CreateSelect(subnormal, constant(0x1.0p27), constant(1));
+        auto* magic = integers(type, 0x5fe6eb50c7b537a9LL, 64);
+        auto* y = ir_.CreateBitCast(ir_.CreateSub(magic, ir_.CreateLShr(as_integers(xs), integers(type, 1, 64))), type);
+        auto* neg_half_x = ir_.CreateFMul(xs, constant(-0.5));
+        for (int step = 0; step < 3; ++step)
+            y = ir_.CreateFMul(y, fma(ir_.CreateFMul(neg_half_x, y), y, constant(1.5)));
+        return ir_.CreateFMul(y, scale);
+    }
+
+    llvm::Value* fast_rsqrt(llvm::Value* x) {
+        auto* type = x->getType();
+        const auto constant = [&](double value) { return llvm::ConstantFP::get(type, value); };
+        auto* infinity = constant(INFINITY);
+        auto* signed_infinity = ir_.CreateIntrinsic(llvm::Intrinsic::copysign, {type}, {infinity, x});
+        if (!type->getScalarType()->isDoubleTy()) {
+            // Hardware vrsqrtps + 1 NR step produces NaN for +-0, +inf, negatives, and NaN;
+            // only +-0 and +inf need explicit overrides.
+            auto* raw = fast_rsqrt_positive(x);
+            return ir_.CreateSelect(ir_.CreateFCmpOEQ(x, constant(0)), signed_infinity,
+                                    ir_.CreateSelect(ir_.CreateFCmpOEQ(x, infinity), constant(0), raw));
+        }
+        auto* finite_positive = ir_.CreateAnd(ir_.CreateFCmpOGT(x, constant(0)), ir_.CreateFCmpOLT(x, infinity));
+        auto* refined = fast_rsqrt_positive(ir_.CreateSelect(finite_positive, x, constant(1)));
+        auto* special = ir_.CreateSelect(ir_.CreateFCmpOEQ(x, constant(0)), signed_infinity,
+                                         ir_.CreateSelect(ir_.CreateFCmpOEQ(x, infinity), constant(0), constant(NAN)));
+        return ir_.CreateSelect(finite_positive, refined, special);
+    }
+
+    llvm::Value* fast_normalize(llvm::Value* input) {
+        auto* type = llvm::cast<llvm::FixedVectorType>(input->getType());
+        auto* scalar = type->getElementType();
+        const auto count = type->getNumElements();
+        auto* zero = llvm::ConstantFP::get(scalar, 0);
+        auto* one = llvm::ConstantFP::get(scalar, 1);
+        auto* infinity = llvm::ConstantFP::getInfinity(scalar);
+        auto* squared = dot(input, input);
+        auto* valid = ir_.CreateAnd(ir_.CreateFCmpOGT(squared, zero), ir_.CreateFCmpOLT(squared, infinity));
+        auto* inv_length = ir_.CreateSelect(valid, fast_rsqrt_positive(ir_.CreateSelect(valid, squared, one)), zero);
+        auto* safe = ir_.CreateSelect(valid, input, llvm::Constant::getNullValue(type));
+        return ir_.CreateFMul(safe, ir_.CreateVectorSplat(count, inv_length));
+    }
+
+    llvm::Value* slerp01(llvm::Value* a, llvm::Value* b, llvm::Value* t) {
+        auto* qtype = llvm::cast<llvm::FixedVectorType>(a->getType());
+        auto* scalar = qtype->getElementType();
+        const bool wide = scalar->isDoubleTy();
+        const auto constant = [&](double value) { return llvm::ConstantFP::get(scalar, value); };
+        auto* clamped = maximum(constant(0), minimum(t, constant(1)));
+        auto* u = ir_.CreateFSub(constant(1), clamped);
+        auto* raw_cosine = dot(a, b);
+        auto* flip = ir_.CreateFCmpOLT(raw_cosine, constant(0));
+        auto* target = ir_.CreateSelect(flip, ir_.CreateFNeg(b), b);
+        auto* cosine = ir_.CreateSelect(flip, ir_.CreateFNeg(raw_cosine), raw_cosine);
+        const double threshold = wide ? (1.0 - 1e-10) : static_cast<double>(1.0f - 1e-4f);
+        auto* near_collinear = ir_.CreateFCmpOGT(cosine, constant(threshold));
+        auto* linear = ir_.CreateFAdd(ir_.CreateFMul(a, ir_.CreateVectorSplat(4, u)),
+                                      ir_.CreateFMul(target, ir_.CreateVectorSplat(4, clamped)));
+        auto* sin_sq = maximum(constant(0), fma(ir_.CreateFNeg(cosine), cosine, constant(1)));
+        auto* safe_norm =
+            intrinsic(llvm::Intrinsic::sqrt, ir_.CreateSelect(near_collinear, dot(linear, linear), sin_sq));
+        auto* sine_val = ir_.CreateSelect(near_collinear, constant(0), safe_norm);
+        auto* angle = wide ? arctangent_double(sine_val, cosine) : arctangent(sine_val, cosine);
+        // <2 x float> cues SubtargetVectorScalarizerPass so quaternion loops vectorize 8-wide in AVX2,
+        // while single calls re-vectorize via SLP and <2 x double> evaluates both sines in one XMM pass.
+        auto* pair_type = llvm::FixedVectorType::get(scalar, 2);
+        llvm::Value* angles = llvm::PoisonValue::get(pair_type);
+        angles = ir_.CreateInsertElement(angles, ir_.CreateFMul(u, angle), std::uint64_t{0});
+        angles = ir_.CreateInsertElement(angles, ir_.CreateFMul(clamped, angle), std::uint64_t{1});
+        auto* sines = wide ? sine_double(angles, false) : sine(angles, false);
+        auto* wa = ir_.CreateShuffleVector(sines, {0, 0, 0, 0});
+        auto* wb = ir_.CreateShuffleVector(sines, {1, 1, 1, 1});
+        auto* numerator = ir_.CreateSelect(near_collinear, linear, fma(a, wa, ir_.CreateFMul(target, wb)));
+        return ir_.CreateFDiv(numerator, ir_.CreateVectorSplat(4, safe_norm));
+    }
+
+    llvm::Value* fast_slerp01(llvm::Value* a, llvm::Value* b, llvm::Value* t) {
+        auto* qtype = llvm::cast<llvm::FixedVectorType>(a->getType());
+        auto* scalar = qtype->getElementType();
+        const bool wide = scalar->isDoubleTy();
+        const auto constant = [&](double value) { return llvm::ConstantFP::get(scalar, value); };
+        auto* clamped = maximum(constant(0), minimum(t, constant(1)));
+        auto* u = ir_.CreateFSub(constant(1), clamped);
+        auto* raw_cosine = dot(a, b);
+        auto* flip = ir_.CreateFCmpOLT(raw_cosine, constant(0));
+        auto* target = ir_.CreateSelect(flip, ir_.CreateFNeg(b), b);
+        auto* cosine = ir_.CreateSelect(flip, ir_.CreateFNeg(raw_cosine), raw_cosine);
+        auto* z =
+            ir_.CreateSelect(ir_.CreateFCmpOGT(cosine, constant(1)), constant(0), ir_.CreateFSub(constant(1), cosine));
+        auto* pair_type = llvm::FixedVectorType::get(scalar, 2);
+        llvm::Value* s = llvm::PoisonValue::get(pair_type);
+        s = ir_.CreateInsertElement(s, u, std::uint64_t{0});
+        s = ir_.CreateInsertElement(s, clamped, std::uint64_t{1});
+        auto* s2 = ir_.CreateFMul(s, s);
+        llvm::Value* poly = nullptr;
+        if (!wide) {
+            static constexpr double c0[] = {-0x1.5597fap-2, -0x1.06ea0cp-3, -0x1.581d72p-4, 0x1.f29a3cp-6,
+                                            -0x1.c41f92p-5};
+            static constexpr double c1[] = {-0x1.bf9492p-11, 0x1.67037p-5, -0x1.948e78p-7, 0x1.6b391ep-5};
+            static constexpr double c2[] = {-0x1.12b68p-10, 0x1.65b8dcp-8, -0x1.1bd13cp-7};
+            auto* p0 = ir_.CreateVectorSplat(2, polynomial(z, c0));
+            auto* p1 = ir_.CreateVectorSplat(2, polynomial(z, c1));
+            auto* p2 = ir_.CreateVectorSplat(2, polynomial(z, c2));
+            poly = fma(s2, fma(s2, p2, p1), p0);
+        } else {
+            static constexpr double c0[] = {-0x1.55556e5087672p-2, -0x1.1106eee24dc3bp-3, -0x1.d6bc55d25c563p-5,
+                                            -0x1.77e80b37c0b13p-6, -0x1.634b85c2b89d3p-6, 0x1.345eda48891bap-6,
+                                            -0x1.2670d071ac7bdp-5, 0x1.8ef7d6468286bp-6,  -0x1.304f363d0c806p-7};
+            static constexpr double c1[] = {-0x1.82e7604a3c924p-20, 0x1.1188acce1be50p-5,  0x1.4640a775ca28ep-6,
+                                            0x1.e9f53308a08bep-7,   -0x1.ea01c405b9f51p-8, 0x1.8cbdc98df78b7p-6,
+                                            -0x1.27ace869c9084p-6,  0x1.0d69dd3f8496ep-7};
+            static constexpr double c2[] = {-0x1.125d965a3dee4p-19, 0x1.ed6b7e46b09fdp-15, -0x1.1764fb499fad1p-9,
+                                            0x1.056b857d13e06p-10,  -0x1.6e763331d2ab3p-8, 0x1.351c9fe1cf82dp-8,
+                                            -0x1.511e13b8c042ap-9};
+            static constexpr double c3[] = {-0x1.3bbf40807e05fp-20, 0x1.9bc814adb423bp-16,  -0x1.50fba5662a71fp-13,
+                                            0x1.06311f349fab1p-11,  -0x1.246b1d81fd286p-11, 0x1.70cace8f38834p-12};
+            static constexpr double c4[] = {-0x1.7faf9b6e594d7p-22, 0x1.347c850fd5f82p-18, -0x1.380eea723bbc5p-16,
+                                            0x1.0091e063c6f80p-15, -0x1.495a4a063e900p-16};
+            auto* p0 = ir_.CreateVectorSplat(2, polynomial(z, c0));
+            auto* p1 = ir_.CreateVectorSplat(2, polynomial(z, c1));
+            auto* p2 = ir_.CreateVectorSplat(2, polynomial(z, c2));
+            auto* p3 = ir_.CreateVectorSplat(2, polynomial(z, c3));
+            auto* p4 = ir_.CreateVectorSplat(2, polynomial(z, c4));
+            poly = fma(s2, fma(s2, fma(s2, fma(s2, p4, p3), p2), p1), p0);
+        }
+        auto* factor = ir_.CreateFMul(ir_.CreateFMul(s, ir_.CreateFSub(s2, llvm::ConstantFP::get(pair_type, 1))),
+                                      ir_.CreateVectorSplat(2, z));
+        auto* weights = fma(factor, poly, s);
+        auto* wa = ir_.CreateShuffleVector(weights, {0, 0, 0, 0});
+        auto* wb = ir_.CreateShuffleVector(weights, {1, 1, 1, 1});
+        return fma(a, wa, ir_.CreateFMul(target, wb));
+    }
+
     llvm::Value* quaternion_product(llvm::Value* a, llvm::Value* b) {
-        llvm::Value* result = llvm::PoisonValue::get(a->getType());
-        const auto multiply = [&](unsigned i, unsigned j) { return ir_.CreateFMul(lane(a, i), lane(b, j)); };
-        auto* x = ir_.CreateFSub(ir_.CreateFAdd(ir_.CreateFAdd(multiply(3, 0), multiply(0, 3)), multiply(1, 2)),
-                                 multiply(2, 1));
-        auto* y = ir_.CreateFAdd(ir_.CreateFAdd(ir_.CreateFSub(multiply(3, 1), multiply(0, 2)), multiply(1, 3)),
-                                 multiply(2, 0));
-        auto* z = ir_.CreateFAdd(ir_.CreateFSub(ir_.CreateFAdd(multiply(3, 2), multiply(0, 1)), multiply(1, 0)),
-                                 multiply(2, 3));
-        result = ir_.CreateInsertElement(result, x, std::uint64_t{0});
-        result = ir_.CreateInsertElement(result, y, 1);
-        result = ir_.CreateInsertElement(result, z, 2);
-        auto* w = ir_.CreateFMul(lane(a, 3), lane(b, 3));
-        for (unsigned i = 0; i < 3; ++i)
-            w = ir_.CreateFSub(w, ir_.CreateFMul(lane(a, i), lane(b, i)));
-        return ir_.CreateInsertElement(result, w, 3);
+        auto* t0 = ir_.CreateFMul(ir_.CreateShuffleVector(a, {3, 3, 3, 3}), b);
+        auto* t1 = ir_.CreateFMul(ir_.CreateShuffleVector(a, {0, 0, 0, 0}), ir_.CreateShuffleVector(b, {3, 2, 1, 0}));
+        auto* s1 = ir_.CreateShuffleVector(ir_.CreateFAdd(t0, t1), ir_.CreateFSub(t0, t1), {0, 5, 2, 7});
+        auto* t2 = ir_.CreateFMul(ir_.CreateShuffleVector(a, {1, 1, 1, 1}), ir_.CreateShuffleVector(b, {2, 3, 0, 1}));
+        auto* s2 = ir_.CreateShuffleVector(ir_.CreateFAdd(s1, t2), ir_.CreateFSub(s1, t2), {0, 1, 6, 7});
+        auto* t3 = ir_.CreateFMul(ir_.CreateShuffleVector(a, {2, 2, 2, 2}), ir_.CreateShuffleVector(b, {1, 0, 3, 2}));
+        return ir_.CreateShuffleVector(ir_.CreateFSub(s2, t3), ir_.CreateFAdd(s2, t3), {0, 5, 6, 3});
     }
 
     llvm::Value* matrix_product(llvm::Value* a, llvm::Value* b) {
-        llvm::Value* result = llvm::PoisonValue::get(a->getType());
-        for (unsigned row = 0; row < 4; ++row)
-            for (unsigned col = 0; col < 4; ++col) {
-                auto* v = ir_.CreateFMul(lane(a, row * 4), lane(b, col));
-                for (unsigned k = 1; k < 4; ++k)
-                    v = ir_.CreateFAdd(v, ir_.CreateFMul(lane(a, row * 4 + k), lane(b, k * 4 + col)));
-                result = ir_.CreateInsertElement(result, v, row * 4 + col);
-            }
-        return result;
+        auto* a0 = ir_.CreateShuffleVector(a, {0, 0, 0, 0, 4, 4, 4, 4, 8, 8, 8, 8, 12, 12, 12, 12});
+        auto* b0 = ir_.CreateShuffleVector(b, {0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3});
+        auto* a1 = ir_.CreateShuffleVector(a, {1, 1, 1, 1, 5, 5, 5, 5, 9, 9, 9, 9, 13, 13, 13, 13});
+        auto* b1 = ir_.CreateShuffleVector(b, {4, 5, 6, 7, 4, 5, 6, 7, 4, 5, 6, 7, 4, 5, 6, 7});
+        auto* a2 = ir_.CreateShuffleVector(a, {2, 2, 2, 2, 6, 6, 6, 6, 10, 10, 10, 10, 14, 14, 14, 14});
+        auto* b2 = ir_.CreateShuffleVector(b, {8, 9, 10, 11, 8, 9, 10, 11, 8, 9, 10, 11, 8, 9, 10, 11});
+        auto* a3 = ir_.CreateShuffleVector(a, {3, 3, 3, 3, 7, 7, 7, 7, 11, 11, 11, 11, 15, 15, 15, 15});
+        auto* b3 = ir_.CreateShuffleVector(b, {12, 13, 14, 15, 12, 13, 14, 15, 12, 13, 14, 15, 12, 13, 14, 15});
+        auto* acc = ir_.CreateFMul(a0, b0);
+        acc = ir_.CreateFAdd(acc, ir_.CreateFMul(a1, b1));
+        acc = ir_.CreateFAdd(acc, ir_.CreateFMul(a2, b2));
+        return ir_.CreateFAdd(acc, ir_.CreateFMul(a3, b3));
     }
 
     llvm::IRBuilder<>& ir_;

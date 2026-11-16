@@ -79,7 +79,10 @@ struct ArrayElements {
         return result;
     }
 
-    static void deallocate(T* data) noexcept { mi_free(data); }
+    static void deallocate(T* data) noexcept {
+        if (data)
+            mi_free(data);
+    }
 
     static void destroy(T* data, std::size_t size) noexcept {
         if constexpr (!std::is_trivially_destructible_v<T>)

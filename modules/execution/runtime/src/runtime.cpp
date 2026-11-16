@@ -1611,12 +1611,20 @@ Result<void> Runtime::check_execution_entry() const {
     return {};
 }
 
-Result<void> Runtime::enter_execution() {
-    ATELIER_TRY(check_execution_entry());
-    if (impl_->active_executions == std::numeric_limits<std::size_t>::max())
-        return failure(ErrorCode::capacity_exceeded, "Execution nesting space exhausted.");
+bool Runtime::try_enter_execution() noexcept {
+    detail::assert_serial_access();
+    if (!impl_->roots->alive || impl_->callbacks != 0 || impl_->roots->traversals != 0 ||
+        impl_->active_executions == std::numeric_limits<std::size_t>::max())
+        return false;
     ++impl_->active_executions;
-    return {};
+    return true;
+}
+
+Result<void> Runtime::enter_execution() {
+    if (try_enter_execution())
+        return {};
+    ATELIER_TRY(check_execution_entry());
+    return failure(ErrorCode::capacity_exceeded, "Execution nesting space exhausted.");
 }
 
 void Runtime::leave_execution() noexcept {
@@ -2932,6 +2940,15 @@ Result<void> Runtime::mutate_sequence(TypeId type_id, std::span<std::byte> stora
     return info.sequence_mutate(operation, storage.data(), input.data(), count);
 }
 
+std::uint32_t Runtime::try_resolve_object(ObjectId object) const noexcept {
+    if (!belongs_to_context(object) || object.index_ >= impl_->slots.size())
+        return no_slot;
+    const auto& slot = impl_->slots[object.index_];
+    if (!impl_->is_live(slot) || slot.generation != object.generation_)
+        return no_slot;
+    return object.index_;
+}
+
 Result<std::uint32_t> Runtime::resolve_object(ObjectId object) const {
     if (!belongs_to_context(object) || object.index_ >= impl_->slots.size()) {
         return failure(ErrorCode::invalid_object, "Object does not belong to this runtime.");
@@ -2943,14 +2960,38 @@ Result<std::uint32_t> Runtime::resolve_object(ObjectId object) const {
     return object.index_;
 }
 
+bool NativeContext::try_resolve(Runtime& runtime, ObjectId object, TypeId expected, NativeContext& out) noexcept {
+    if (expected == TypeId{})
+        return false;
+    const auto index = runtime.try_resolve_object(object);
+    if (index == no_slot)
+        return false;
+    auto& impl = *runtime.impl_;
+    const auto& slot = impl.slots[index];
+    const auto* actual = impl.lookup(slot.type);
+    const auto* type = impl.lookup(expected);
+    if (!type || type->info.kind != TypeKind::object || !Runtime::Impl::derives_from(*actual, *type))
+        return false;
+    CallbackScope scope{impl.callbacks};
+    out = NativeContext{&runtime, object, Runtime::Impl::base_storage(*actual, *type, slot.storage), &impl.callbacks,
+                        index};
+    return true;
+}
+
 Result<NativeContext> NativeContext::resolve(Runtime& runtime, ObjectId object, TypeId expected) {
+    if (NativeContext out; try_resolve(runtime, object, expected, out))
+        return out;
     auto& impl = *runtime.impl_;
     ATELIER_TRY_BIND(index, runtime.resolve_object(object));
+    if (expected == TypeId{})
+        return failure(ErrorCode::type_mismatch, "Receiverless source cannot accept an object.");
     const auto& slot = impl.slots[*index];
     const auto* actual = impl.lookup(slot.type);
     const auto* type = impl.lookup(expected);
-    if (!type || !Runtime::Impl::derives_from(*actual, *type))
-        return failure(ErrorCode::type_mismatch, "Generated receiver does not match its compiled type.");
+    if (!type || type->info.kind != TypeKind::object)
+        return failure(ErrorCode::invalid_type, "Ancestry requires object types in this Runtime.");
+    if (!Runtime::Impl::derives_from(*actual, *type))
+        return failure(ErrorCode::type_mismatch, "Source receiver has the wrong type.");
     CallbackScope scope{impl.callbacks};
     return NativeContext{&runtime, object, Runtime::Impl::base_storage(*actual, *type, slot.storage), &impl.callbacks,
                          *index};
@@ -3094,23 +3135,44 @@ Result<void> Runtime::validate_reference(const ObjectReference& reference) const
     return {};
 }
 
+Result<ObjectReference> Runtime::strong_reference(ObjectId object) const {
+    detail::assert_serial_access();
+    const auto index = resolve_object(object);
+    if (!index)
+        return std::unexpected(index.error());
+    if (!impl_->roots->alive || impl_->roots->traversals != 0)
+        return failure(ErrorCode::busy, "Cannot add roots during shutdown or reference traversal.");
+    return ObjectReference{{impl_->slots[*index].type, ValueForm::strong_reference}, object};
+}
+
+Result<ObjectReference> Runtime::strong_reference(ObjectId object, TypeId declared_type) const {
+    detail::assert_serial_access();
+    const auto index = resolve_object(object);
+    if (!index)
+        return std::unexpected(index.error());
+    const auto* actual = impl_->lookup(impl_->slots[*index].type);
+    const auto* expected = impl_->lookup(declared_type);
+    if (!expected || expected->info.kind != TypeKind::object)
+        return failure(ErrorCode::invalid_type, "Ancestry requires object types in this Runtime.");
+    if (!Impl::derives_from(*actual, *expected))
+        return failure(ErrorCode::type_mismatch, "Object does not satisfy the declared root type.");
+    if (!impl_->roots->alive || impl_->roots->traversals != 0)
+        return failure(ErrorCode::busy, "Cannot add roots during shutdown or reference traversal.");
+    return ObjectReference{{declared_type, ValueForm::strong_reference}, object};
+}
+
 Result<ObjectRoot> Runtime::hold(ObjectId object) {
-    const auto type = type_of(object);
-    if (!type)
-        return std::unexpected(type.error());
-    return hold(ObjectReference{{*type, ValueForm::strong_reference}, object});
+    ATELIER_TRY_BIND(reference, strong_reference(object));
+    if (!impl_->roots->has_capacity())
+        return failure(ErrorCode::capacity_exceeded, "Root identity space exhausted.");
+    return ObjectRoot{impl_->roots, impl_->roots->add(*reference)};
 }
 
 Result<ObjectRoot> Runtime::hold(ObjectId object, TypeId declared_type) {
-    const auto actual = type_of(object);
-    if (!actual)
-        return std::unexpected(actual.error());
-    const auto compatible = is_a(*actual, declared_type);
-    if (!compatible)
-        return std::unexpected(compatible.error());
-    if (!*compatible)
-        return failure(ErrorCode::type_mismatch, "Object does not satisfy the declared root type.");
-    return hold(ObjectReference{{declared_type, ValueForm::strong_reference}, object});
+    ATELIER_TRY_BIND(reference, strong_reference(object, declared_type));
+    if (!impl_->roots->has_capacity())
+        return failure(ErrorCode::capacity_exceeded, "Root identity space exhausted.");
+    return ObjectRoot{impl_->roots, impl_->roots->add(*reference)};
 }
 
 Result<ObjectRoot> Runtime::hold(const ObjectReference& reference) {
@@ -3144,7 +3206,7 @@ Result<ObjectReference> Runtime::null_reference(TypeId type_id, ValueForm form) 
     return reference;
 }
 
-Result<std::optional<ObjectRoot>> Runtime::try_acquire(const ObjectReference& reference) {
+Result<ObjectReference> Runtime::try_acquire_reference(const ObjectReference& reference) const {
     detail::assert_serial_access();
     if (!impl_->roots->alive || impl_->roots->traversals != 0) {
         return failure(ErrorCode::busy, "Cannot acquire references during shutdown or reference traversal.");
@@ -3155,12 +3217,17 @@ Result<std::optional<ObjectRoot>> Runtime::try_acquire(const ObjectReference& re
     if (reference.description().form != ValueForm::weak_reference) {
         return failure(ErrorCode::type_mismatch, "try_acquire requires a weak reference.");
     }
-    if (reference.is_null() || !impl_->lookup(reference.id()))
+    const ObjectId id = !reference.is_null() && impl_->lookup(reference.id()) ? reference.id() : ObjectId{};
+    return ObjectReference{{reference.description().type, ValueForm::strong_reference}, id};
+}
+
+Result<std::optional<ObjectRoot>> Runtime::try_acquire(const ObjectReference& reference) {
+    ATELIER_TRY_BIND(strong, try_acquire_reference(reference));
+    if (strong->is_null())
         return std::optional<ObjectRoot>{};
     if (!impl_->roots->has_capacity())
         return failure(ErrorCode::capacity_exceeded, "Root identity space exhausted.");
-    ObjectReference strong{{reference.description().type, ValueForm::strong_reference}, reference.id()};
-    return std::optional<ObjectRoot>{ObjectRoot{impl_->roots, impl_->roots->add(strong)}};
+    return std::optional<ObjectRoot>{ObjectRoot{impl_->roots, impl_->roots->add(*strong)}};
 }
 
 Result<ValueRoot> Runtime::root_value(TypeId type_id, std::span<const std::byte> storage) {
@@ -3707,7 +3774,7 @@ Result<void> Runtime::prepare_arguments(const FunctionSignature& signature, std:
 Result<void> Runtime::prepare_arguments(const FunctionSignature& signature, std::span<const Argument> arguments,
                                         PreparedArguments& prepared, bool fields) const {
     detail::assert_serial_access();
-    prepared.size_ = 0;
+    prepared.views_.clear();
     if (arguments.size() != signature.parameters.size())
         return failure(ErrorCode::argument_mismatch, "Incorrect argument count.");
     std::size_t copied_size{};
@@ -3729,10 +3796,17 @@ Result<void> Runtime::prepare_arguments(const FunctionSignature& signature, std:
         copied_alignment = std::max(copied_alignment, type->info.alignment);
     }
     auto* storage = prepared.storage_.prepare(copied_size, copied_alignment);
-    if (arguments.size() > prepared.inline_views_.size())
-        prepared.views_.resize(arguments.size());
-    auto* views =
-        arguments.size() > prepared.inline_views_.size() ? prepared.views_.data() : prepared.inline_views_.data();
+    prepared.views_.reserve(arguments.size());
+    struct ViewsGuard {
+        InlineArray<ArgumentView, 8>& views;
+
+        bool committed{};
+
+        ~ViewsGuard() {
+            if (!committed)
+                views.clear();
+        }
+    } guard{prepared.views_};
     std::size_t copied_offset{};
     for (std::size_t i = 0; i < arguments.size(); ++i) {
         const auto& argument = arguments[i];
@@ -3807,9 +3881,10 @@ Result<void> Runtime::prepare_arguments(const FunctionSignature& signature, std:
             data = destination;
             writable = nullptr;
         }
-        views[i] = {parameter.type, data, parameter.passing == ParameterPassing::reference ? writable : nullptr};
+        prepared.views_.add(
+            {parameter.type, data, parameter.passing == ParameterPassing::reference ? writable : nullptr});
     }
-    prepared.size_ = arguments.size();
+    guard.committed = true;
     return {};
 }
 

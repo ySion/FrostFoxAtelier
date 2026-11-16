@@ -50,15 +50,14 @@ auto report = capture.snapshot(); // owning copy; also available after failure
 ### 调用计数口径
 
 - `field_read` / `field_write`、`native_call`：生成代码经过的字段访问和原生调用边界；包含直接偏移/固定取址及定型 thunk，不代表调用了动态 Runtime 反射服务。关闭诊断时不生成这些计数。
-- `poll`、`object_create`、引用操作及 `root_clear`：现有 Runtime 执行服务。
+- `object_create`、引用操作及 `root_clear`：现有 Runtime 执行服务。`root_clear` 名称保留，同步调用清除身份槽，协程调用清除根槽。
 - `value_construct` / `value_assign` / `value_destroy`、`sequence_mutation`：源码拥有值和容器生命周期服务。
 - `sequence_view`：直接调用原生容器视图函数，包括绕过普通服务包装的路径。借用参数的视图在函数入口缓存；索引与内联数学不产生逐元素服务调用。
 - `coroutine_allocate` / `coroutine_free`：LLVM 协程生成帧的分配/释放调用，不包含宿主控制块与其它 C++ 分配。
-- `begin` / `finish`：现有执行策略服务；受保护值路径按原合同省略它们和轮询。`poll` 不再推进 GC；`root_clear` 名称保留，同步调用清除身份槽，协程调用清除根槽。
 - `source_call`：语言内部函数调用，与 JIT→C++ 边界分开统计。即使 O2 内联了函数，仍表示源码调用次数。
 - `debug_hook`：启用调试编译时的帧与停点服务。若同时启用执行计时，暂停处理器的等待时间也包含在内。
 
-例如 `N` 次 `self.value = self.value + 1` 循环产生 `N` 次字段读、`N` 次字段写，以及入口和实际循环回边上的 `N + 1` 次 poll。借用 Array 的直接数学循环可只有一次 `sequence_view`。实际脚本应以报告为准，不能用这一例子推断所有调用路径。
+例如 `N` 次 `self.value = self.value + 1` 循环产生 `N` 次字段读与 `N` 次字段写，循环回边不插入宿主轮询调用。借用 Array 的直接数学循环可只有一次 `sequence_view`。实际脚本应以报告为准，不能用这一例子推断所有调用路径。
 
 ## 协程、错误与寿命
 
@@ -73,7 +72,7 @@ auto report = capture.snapshot(); // owning copy; also available after failure
 不启用诊断或调试时，同步调用和协程恢复失败的 `Error.source` 同样给出最内层失败点：函数内检查、原生服务或方法调用、字段访问与内部函数传播都适用。宿主检查在进入生成代码前失败（参数、接收者、准入）时没有源码位置。
 
 - **生成代码。** 每个失败点有独立的冷出口块，只在失败时把位置序号写入入口失败输出；失败分支标记为不太可能执行。生成代码的成功路径不携带位置，也不增加指令。内部函数失败由调用点转发被调方写入的序号。
-- **宿主。** 宿主成功路径每次同步调用多约 5 条指令（`Version::invoke` 与 `execute_admitted` 传递并检查位置序号的出参）；协程 `poll` 不变。
+- **宿主。** 宿主成功路径每次同步调用多约 5 条指令（`Version::invoke` 与 `execute_admitted` 传递并检查位置序号的出参）；协程恢复路径不变。
 - **位置表。** 编译单元始终保留位置表，每个失败点一条 32 字节记录（函数名、合并文本偏移、行、列），由代码版本拥有。宿主只在失败返回后解析序号；单文本请求直接使用请求路径与序号，项目单元按需扫描快照中的原文件换算行列，不额外常驻行索引。
 - **诊断与调试。** 启用诊断或调试的版本预先解析全部位置，用于采集报告与停点；`Error.source` 与无插桩版本使用同一位置序号，结果一致。
 
@@ -81,7 +80,7 @@ auto report = capture.snapshot(); // owning copy; also available after failure
 
 编译时设置 `artifacts = true`，随后通过固定版本的 `Lease::artifacts()` 获取：
 
-- `original_ir`：优化前 LLVM IR；`optimized_ir`：协程转换、Scalarizer 和 O2 后的 LLVM IR。
+- `original_ir`：优化前 LLVM IR；`optimized_ir`：协程转换、按需窄向量展开（三维向量与双分量单精度向量）和 O2 后的 LLVM IR。
 - `entry_symbol`：所选公开入口；`target_triple` 和 `cpu_features`：编译目标信息。
 - `object_code`：该次 JIT 编译实际产生的 x64 COFF 对象；`assembly`：Intel 语法反汇编，包含代码节、原始字节、符号和重定位。
 

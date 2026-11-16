@@ -19,7 +19,7 @@
 | LLVM 降低与代码资源 | [source_backend.cpp](../modules/execution/jit/src/source_backend.cpp)：SourceLowering、协程转换、LLJIT、CompiledBusiness | 正式 DLL `atelier_source_backend`；LLVM、STL 和分配所有权留在 DLL 内 |
 | Windows 展开信息 | [windows_unwind.cpp](../modules/execution/jit/src/windows_unwind.cpp)：JITLink 分配期间登记和撤销动态展开表 | 源码后端和平台探针共用私有 LLVM support OBJECT 目标，各自按分配动作管理资源；没有复制注册表 |
 | 源码程序拥有者 | [program.hpp](../modules/execution/source/include/source/program.hpp)、[program.cpp](../modules/execution/source/src/program.cpp)：Program、声明、候选、发布、入口与租约 | 正式静态库 `atelier_source`；公共调用使用 Scalar 值与 Argument 借用，结果使用 Scalar 或数学值的 ValueOutput，使用已有 Coroutine 表达协程拥有关系 |
-| Runtime 桥接 | [bridge.hpp](../modules/execution/source/internal/source/detail/bridge.hpp)、[bridge.cpp](../modules/execution/source/src/detail/bridge.cpp)：Binding、Invocation、目录映射、引用槽与原生服务 | `atelier_source` 内部实现；按需汇总调用计数与拥有值余额。内部策略观察点继续供验收使用，不推进 GC |
+| Runtime 桥接 | [bridge.hpp](../modules/execution/source/internal/source/detail/bridge.hpp)、[bridge.cpp](../modules/execution/source/src/detail/bridge.cpp)：Binding、Invocation、目录映射、引用槽与原生服务 | `atelier_source` 内部实现；按需汇总调用计数与拥有值余额，执行区间内不推进 GC |
 | 调用诊断 | [diagnostics.hpp](../modules/execution/source/include/source/diagnostics.hpp)、[diagnostics.cpp](../modules/execution/source/src/diagnostics.cpp)：采集句柄、版本/源码位置、资源与状态快照 | `atelier_source`；可选编译插桩写固定 POD 记录，Coroutine 最终状态由原有 Runtime 拥有者通知。报告不保活执行代码或 Runtime |
 | 源码调试 | [debugger.hpp](../modules/execution/source/include/source/debugger.hpp)、[debugger.cpp](../modules/execution/source/src/detail/debugger.cpp)：精确断点、动态源码帧、单步及有界快照 | `atelier_source`；JIT 服务复用 Invocation，ExecutionInspection 复用 Runtime 只读准入；暂停保留原生栈，见[调试合同](source-debugger.md) |
 | 端到端消费者 | [公共验收分派入口](../acceptance/source/main.cpp)、[关停消费者](../acceptance/source/shutdown.cpp)、[项目消费者](../acceptance/source/projects.cpp)、[JIT 业务验收](../acceptance/jit/business.cpp)及其 inl 分组 | 业务调用使用正式接口；代码地址观察经内部 ProgramAccess 供 OS 查询验证退休，raw ABI 和故障路径同样通过内部接缝检查，均使用同一正式实现 |
@@ -51,10 +51,10 @@ flowchart TD
     Publish --> Current[提交类型与当前单入口或项目版本]
 ```
 
-1. `Contract` 从同一 Runtime 捕获继承后的成员目录、完整祖先/内联记录依赖及原生服务地址；类型快照包含 `base`。`request` 拥有源码与声明快照，保存请求号；新增 enum/struct/class 经 Runtime 内部类型批次解析和计算布局，暂不发布，也不运行源码。
-2. `prepare` 调用 DLL 编译接口。前端按 Environment 检查名称与类型，后端从已核对描述物化固定原生 thunk 和字段取址；同步与协程共用 SourceLowering，只有协程经过协程转换。
-3. `Candidate` 已拥有实际链接后的代码。准备阶段按捕获信息检查兼容性；首次发布通过 Runtime 的共享签名解析器建立不可变声明；有新类型时，解析器使用同一未发布批次。
-4. `try_publish` 再检查最新请求、所属程序、声明、Runtime 准入和依赖。签名、版本分配和类型容器预留完成后，无回调提交新类型与当前代码版本。新增类型要求注册仍开放且 GC 空闲；单纯代码更新仍允许暂停 GC。忙时保留候选；新请求失败保留已发布版本，不允许提交过期候选。
+1. `Contract` 从同一 Runtime 捕获继承后的成员目录、内联记录/枚举映射及原生服务地址；类型快照包含 `base`。`request` 拥有源码与声明快照，保存请求号；新增 enum/struct/class 经 Runtime 内部类型批次解析和计算布局，暂不发布，也不运行源码。
+2. `prepare` 调用 DLL 编译接口。前端按 Environment 检查名称与类型，后端从已核对描述物化固定原生 thunk 和字段取址；同步与协程共用 SourceLowering，只有协程经过协程转换。同一编译单元的多入口共享一份目录快照。
+3. `Candidate` 已拥有实际链接后的代码。准备阶段按捕获信息核对环境与签名兼容性；首次发布通过 Runtime 的共享签名解析器建立不可变声明；有新类型时，解析器使用同一未发布批次。
+4. `try_publish` 再检查最新请求、所属程序、声明和 Runtime 准入。Runtime 已发布 `TypeInfo` 不可变；新类型批次由 `TypePublication::reserve_commit` 核对预览目录未发生偏移后无回调提交新类型与当前代码版本。新增类型要求注册仍开放且 GC 空闲；单纯代码更新仍允许暂停 GC。忙时保留候选；新请求失败保留已发布版本，不允许提交过期候选。
 
 项目快照的文件映射与类结构由 [module.cpp](../modules/execution/language/src/module.cpp) 收集，方法体继续交给同一定型前端。每个接收者环境共享一个 LLVM 模块；项目版本一次持有并切换全部入口，公共源码只保留一份，准备每个环境时临时拼接。具名 Entry 按稳定槽位取版本，原调用、错误及资源清理入口不变。详见[项目快照发布](source-function-modules.md#项目快照与多个公开入口)。
 
@@ -73,9 +73,9 @@ Entry.invoke 选择当前 Version / Lease.invoke 使用固定 Version
   → 生成清理 → 检查引用槽已清空 → 提交结果 → 退出执行作用域
 ```
 
-内部 `execute_typed` 执行完整目录/布局检查后也进入 `execute_admitted`，供 raw ABI 等验收使用。已发布 Version 使用自己的已验证元数据。公共入口和内部观察入口共用同一执行与清理实现；正式消费者通过程序入口或版本租约使用已发布代码。
+已发布 Version 使用自己的已验证元数据，正式消费者通过程序入口或版本租约使用已发布代码。未启用诊断和调试时，同步入口通过轻量 `DirectScope` 准入并内联复用同步引用槽、验证接收者（若优化后 IR 证明无接收者的 `_typed` 入口及其可达内部调用完全不读取 `Invocation*`，`DirectScope` 走仅含 `ExecutionScope` 与 `BusinessFailure` 的无状态叶子快路径，跳过 `Invocation` 槽表构造并保留重入保护与失败位置映射）；启用诊断或调试时进入完整捕获路径，共用同一执行与清理合同。
 
-`Lease::bind<R, Args...>` 和 `Entry::bind<R, Args...>` 核对同一共享签名，创建固定或跟随发布的同名 Typed。跟随句柄持有 State 与稳定索引，每次只选一次 Version；固定句柄直接选其持有的 Version，定型地址由版本缓存。定型调用在 Source 端仍进入同一诊断/Debugger 捕获、ExecutionScope 和 `execute_invocation`；宿主栈上的定型实参包由编译期 thunk 展开，直接进入 JIT，不生成通用实参数组。支持的同步标量公开函数只降低一次业务体，原通用导出解包后调用同一个 typed 体；内部函数和非标量/协程入口不改变合同。根槽、原生服务、poll、错误首因、位置映射以及 RAII 兜底前的 `resources_cleared/live_values` 判定均共用，不因绑定而跳过。
+`Lease::bind<R, Args...>` 和 `Entry::bind<R, Args...>` 核对同一共享签名，创建固定或跟随发布的同名 Typed。支持同步按值 `int32/uint32/float/double/bool` 与 32 位底层枚举，以及已支持标量、枚举、数学值、plain record、原生记录/Array 和只读 String 的同步 `const T&` / `T&` 引用；结果为 `void` 或按值标量/枚举。跟随句柄持有 State 与稳定索引，每次只选一次 Version；固定句柄直接选其持有的 Version，定型地址由版本缓存。定型调用在 Source 端仍进入同一诊断/Debugger 捕获、准入和 `execute_invocation`；宿主栈上的定型实参包由编译期 thunk 展开（引用参数传递已校验非空地址，并核对对齐与类型），直接进入 JIT，不生成通用实参数组。支持的公开函数只降低一次业务体，原通用导出解包后调用同一个 typed 体；内部函数和按值聚合/协程入口不改变合同。根槽、原生服务、错误首因、位置映射以及 RAII 兜底前的 `resources_cleared/live_values` 判定均共用，不因绑定而跳过。
 
 私有 Windows x64 ABI 为 `uint32_t(Invocation*, A0, A1, ..., uint64_t* staged_result, BusinessFailure*, BusinessTrace*) noexcept`。业务参数顺序保持声明顺序，i32/u32 只解释低32位，不依赖寄存器高位；浮点分别使用 float/double，bool 使用归一化的 u32 0/1，不借用 LLVM i1 的宿主扩展规则。寄存器/栈分配遵循当前工具链的 Windows x64 C 调用约定，包含首个 Invocation 及尾部三个隐藏参数；trace 参数始终存在，未捕获时可为空。暂存结果使用既有低32位标量位模式/64位 double 位模式，bool 为0/1，void 可传空输出；执行和显式清理完整成功后才构造宿主 `Result<R>`，失败不交付暂存。BusinessFailure 保持原因与最内层位置，C++ Result、string 和异常不跨 JIT ABI。同步 typed 通过 Runtime 活动计数和 Version 析构前的无分配退休链保护代码，最外层执行退出后释放，不逐调用复制 shared_ptr。Runtime、原生服务与后端 DLL 仍须由宿主保活；该入口地址不是业务方可持久保存的裸函数接口。
 
@@ -87,7 +87,7 @@ Entry.invoke 选择当前 Version / Lease.invoke 使用固定 Version
 
 私有 native ABI 为 `uint32_t(NativeContext*, receiver_storage, typed_arguments..., staged_output, NativeFailure*) noexcept`。bool 按值用 u32，bool 借用仍为1字节；枚举按其32位表示。数学/plain record 按值实参是独立对齐活值的地址，C++ thunk 才执行真实按值调用；结果写入独立对齐暂存，仅成功后参与表达式及最终提交。异常在 thunk 内转为固定布局失败，不把 C++ Result/string/异常传过 JIT 边界。字段按已发布偏移或固定取址函数访问，保留硬范围约束和失败前盖章。宿主动态 Runtime::call/read/write 继续提供原反射合同。
 
-Invocation 的地址缓存按执行槽保存 ObjectId、独立对象存储和索引，不保存可扩容槽表的元素地址。实际策略回调使缓存失效，身份变化触发重新解析；每次协程恢复开始新执行段。字段借用在全部实参求值后定位，保留合法同址别名；未知调用没有 readonly/noalias 假设。原生 thunk 只在原生调用期间持回调保护，禁止生命周期操作、GC 与源码重入，不阻止源码本身创建对象。写代号仍在字段写入、授予可写借用/接收者时记录。未启用诊断/调试的 lowering 不生成其事件记录；这是原有按需生成策略的延续，不是新的测量收益。
+Invocation 的地址缓存按执行槽保存 ObjectId、独立对象存储和索引，不保存可扩容槽表的元素地址。引用槽身份变化触发重新解析，每次协程恢复经 `native_segment` 开始新执行段；同步非调试函数在入口解析一次不可重绑的 `self` 存储，并在支配路径上去重接收者写代号盖章。字段借用在全部实参求值后定位，保留合法同址别名；未知调用没有 readonly/noalias 假设。原生 thunk 只在原生调用期间持回调保护，禁止生命周期操作、GC 与源码重入，不阻止源码本身创建对象。写代号仍在字段写入、授予可写借用/接收者时记录。未启用诊断/调试的 lowering 不生成其事件记录；这是原有按需生成策略的延续，不是新的测量收益。
 
 ### 协程
 
@@ -108,9 +108,9 @@ Entry.start / Lease.start → 固定 Version、复制参数、稳定 Frame
 
 `math/math.hpp` 提供纯 C++ 数学值与算法；`math/runtime.hpp` 产出同一 Runtime 的类型定义。Runtime 初始化完成规范布局校验后发布 `TypeInfo::math`，绑定桥将该分类连同字段偏移传给语言目录。编译器仍使用 record + 目录索引，没有第二份数学类型注册表。
 
-数学表达式经 `jit/math_lowering.hpp` 形成 LLVM 向量值；访问内存时只读写真实分量，三维向量不会因 SIMD 宽度越界或改变数组步长。局部数学值、内部按值参数与结果可以由 O2 消除中间存储。原生方法与公开源码入口的数学返回沿同一带类型结果缓冲暂存和提交；double 的私有 ABI payload 为 64 位。一般记录/容器继续使用原有生命周期路径。
+数学表达式经 [math_lowering.hpp](../modules/execution/jit/src/detail/math_lowering.hpp) 形成 LLVM 向量值：2/4/16 分量的二次幂形状（`Vector2`、`Vector4`、`Quaternion`、`Matrix4` 及其双精度形式）按标量对齐执行整向量读写，并在矩阵乘法、四元数乘法、旋转和转置中保持 `ShuffleVector` SIMD 向量运算；三维向量逐分量读写，不会因 SIMD 宽度越界或改变 12/24 字节紧凑数组步长。局部数学值、内部按值参数与结果可以由 O2 消除中间存储。原生方法与公开源码入口的数学返回沿同一带类型结果缓冲暂存和提交；double 的私有 ABI payload 为 64 位。一般记录/容器继续使用原有生命周期路径。
 
-整模块执行普通 O2 管线，协程先完成拆分；数学向量运算先展开分量，使循环向量化可按目标 SIMD 宽度重新组合；内部函数允许优化器内联，公开入口保持稳定地址。没有 fast-math 标志，也不承诺不同 CPU 或 C++ 编译环境的逐位浮点确定性。规范与能力范围见[数学合同](math.md)。
+整模块共享进程缓存的本机目标特征和单个 `TargetMachine` 执行普通 O2 管线，协程先完成拆分；仅含三维向量或双分量单精度向量运算的函数先展开分量，使循环向量化可按交错步长重新组合，其余四元数/矩阵 SIMD 与非数学函数直接进入 O2；内部函数允许优化器内联，公开入口保持稳定地址。没有 fast-math 标志，也不承诺不同 CPU 或 C++ 编译环境的逐位浮点确定性。规范与能力范围见[数学合同](math.md)。
 
 ## 所有权与释放责任
 
@@ -132,7 +132,7 @@ Entry.start / Lease.start → 固定 Version、复制参数、稳定 Frame
 
 - 同步引用槽由最外层执行区间保护，不逐局部登记持久根；跨挂起的持有槽仍接入已有 GC、引用屏障和撤销协议。当前语言尚无通用含引用记录帧，不预先引入 statepoint 或另一个根表。
 - 单源 Program 的每个 Version 独立拥有编译代码。工程模块里，一个编译单元的入口共享该单元的 LLJIT；输入未变的单元沿用已发布的代码，新旧 Version 共同持有，最后一个持有者释放时回收。活动调用、协程与租约保持所在 Version 的恢复/清理入口及展开信息。不同单元之间不共享 LLJIT：共享会改变符号空间、错误归属和独立退休责任，目前没有采用。
-- 发布检查 Runtime 静止，挂起帧保留旧版本；宿主在执行区间外推进 GC，源码轮询既不收集也不暗中换代码。模块内无环调用图已纳入同一代码版本；跨模块调用、内联依赖和结构迁移尚未定义。
+- 发布检查 Runtime 静止，挂起帧保留旧版本；宿主在执行区间外推进 GC，活动执行期间不推进 GC，循环回边也不插入宿主轮询回调。模块内无环调用图已纳入同一代码版本；跨模块调用、内联依赖和结构迁移尚未定义。
 - 原生异常在受控边界转成状态，生成代码显式清理后提交结果。Windows 展开表服务当前栈回溯与代码寿命，不授权 C++ 异常穿越任意生成帧。
 
 这些取舍的直接依据与适用边界：

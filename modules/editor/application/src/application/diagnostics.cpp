@@ -185,25 +185,10 @@ void report_source_capture(const source::DiagnosticReport& report, const std::fi
     try {
         constexpr std::array status{"unused",    "ready",  "running",   "suspended",
                                     "completed", "failed", "cancelled", "rejected"};
-        constexpr std::array counters{"begin",
-                                      "finish",
-                                      "field_read",
-                                      "field_write",
-                                      "native_call",
-                                      "poll",
-                                      "object_create",
-                                      "reference",
-                                      "reference_compare",
-                                      "root_clear",
-                                      "value_construct",
-                                      "value_assign",
-                                      "value_destroy",
-                                      "sequence_mutation",
-                                      "sequence_view",
-                                      "coroutine_allocate",
-                                      "coroutine_free",
-                                      "source_call",
-                                      "debug_hook"};
+        constexpr std::array counters{"field_read",         "field_write",       "native_call",       "object_create",
+                                      "reference",          "reference_compare", "root_clear",        "value_construct",
+                                      "value_assign",       "value_destroy",     "sequence_mutation", "sequence_view",
+                                      "coroutine_allocate", "coroutine_free",    "source_call",       "debug_hook"};
         static_assert(counters.size() == static_cast<std::size_t>(source::DiagnosticCall::count));
         logging::Entry entry{.severity = report.error ? logging::Severity::error : logging::Severity::info,
                              .category = "source",

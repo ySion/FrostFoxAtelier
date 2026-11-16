@@ -354,13 +354,7 @@ enum class ReferenceOperation : std::uint32_t { copy, observe, try_acquire };
 // The null slot is an operand only, never a destination or cleanup target.
 // Field/method operands are indices into the compiled environment's tables.
 struct BusinessServices {
-    std::uint32_t (*begin)(void*) noexcept;
-
     std::uint32_t (*create)(void*, std::uint32_t) noexcept;
-
-    std::uint32_t (*poll)(void*) noexcept;
-
-    std::uint32_t (*finish)(void*) noexcept;
 
     // Cannot fail for this compiler's validated strong or tagged weak slots.
     void (*clear)(void*, std::uint32_t) noexcept;
@@ -402,6 +396,12 @@ struct BusinessServices {
     bool operator==(const BusinessServices&) const = default;
 };
 
+using BusinessEntry = std::uint32_t (*)(void* invocation, const BusinessValue* arguments, void* result,
+                                        BusinessFailure* failure) noexcept;
+
+using BusinessDiagnosticEntry = std::uint32_t (*)(void* invocation, const BusinessValue* arguments, void* result,
+                                                  BusinessFailure* failure, BusinessTrace* trace) noexcept;
+
 struct BusinessCodeInfo {
     // Names, tables and parameter arrays are code-owned, borrowed while an
     // owner or active invocation pin keeps this state alive. This view owns no
@@ -410,7 +410,8 @@ struct BusinessCodeInfo {
 
     const char* source_name;
 
-    // Diagnostic/lifetime inspection only, not a durable callable handle.
+    // Pinned synchronous entry (BusinessEntry or BusinessDiagnosticEntry) or
+    // coroutine entry address; never a standalone durable handle.
     std::uintptr_t entry_address;
 
     // Exact callback values used for this compiled unit's symbol binding.
@@ -437,6 +438,8 @@ struct BusinessCodeInfo {
     const std::uint32_t* debug_sites; // Location IDs for bindable statement/entry sites.
 
     std::uint32_t debug_site_count;
+
+    bool stateless_typed;
 };
 
 struct BusinessFrameLayout {
@@ -568,10 +571,11 @@ atelier_business_layout(atelier::source::detail::BusinessCode* code) noexcept;
 
 // Private pinned-Source fast path, never a standalone public handle. The owner
 // must retain this exact code until the call finishes, including all callbacks.
-// Zero means no supported synchronous scalar signature. Otherwise the signature
+// Zero means no supported synchronous direct signature. Otherwise the signature
 // is u32(Invocation*, typed arguments..., u64* staged_result, BusinessFailure*,
-//       BusinessTrace*). i32/u32 use 32-bit operands, f32/f64 use float/double,
-// bool uses canonical u32 0/1; the trace pointer is present even without captures.
+//       BusinessTrace*). i32/u32/enum use 32-bit operands, f32/f64 use float/double,
+// bool uses canonical u32 0/1, and borrowed reference parameters use aligned pointers;
+// the trace pointer is present even without captures.
 // Result bits use the same low-32/64-bit encoding as the generic path; void may
 // pass null. Source checks explicit cleanup before exposing the staged result.
 extern "C" ATELIER_BUSINESS_BACKEND std::uintptr_t

@@ -30,29 +30,34 @@ struct Padding {
 
 struct Derived : Padding, Counter {};
 
+enum class Mode : std::int32_t { idle = -3, active = 7 };
+
 void scalar_abi() {
     Runtime runtime;
+    take(NativeRegistration<Mode>{runtime, "abi.Mode", TypeKind::enumeration}
+             .enumerator("idle", Mode::idle)
+             .enumerator("active", Mode::active)
+             .publish());
     auto program = take(source::Program::create(runtime));
     publish(*program, R"(
-        double run(int signed_value, float narrow, double wide, uint high, bool enabled, int tail) {
+        double run(int signed_value, float narrow, double wide, uint high, bool enabled, int tail, abi.Mode mode) {
             double value = double(signed_value) * 2.0d + double(narrow) * 3.0d + wide * 5.0d
                          + double(high) + double(tail) * 7.0d;
-            if (enabled) { value = value + 11.0d; }
+            if (enabled && mode == abi.Mode::active) { value = value + 11.0d; }
             return value;
         })");
     const auto call =
-        take(take(program->pin()).bind<double, std::int32_t, float, double, std::uint32_t, bool, std::int32_t>());
+        take(take(program->pin()).bind<double, std::int32_t, float, double, std::uint32_t, bool, std::int32_t, Mode>());
     // Independent arithmetic; the first three values use registers, the rest the stack.
-    require(take(call.invoke({}, -17, 1.25f, -2.5, 0xf0000001u, true, 9)) == 4026531872.25,
+    require(take(call.invoke({}, -17, 1.25f, -2.5, 0xf0000001u, true, 9, Mode::active)) == 4026531872.25,
             "Typed scalar ABI changed register/stack positions or numeric representation.");
 }
 
 void boolean_alias() {
     Runtime runtime;
     auto program = take(source::Program::create(runtime));
-    publish(
-        *program,
-        "bool run(bool copy, const bool& read, bool& write) { write = copy; return read == write && write != !copy; }");
+    publish(*program, "bool run(bool copy, const bool& read, bool& write) { write = copy; return read == write && "
+                      "write != !copy; }");
     struct Guarded {
         bool value{};
 
@@ -68,6 +73,10 @@ void boolean_alias() {
     require(result && std::get<bool>(*result) && storage.value && storage.before && storage.after &&
                 storage.guard == 0xdeadbeef,
             "Bool ABI lost its borrowed alias or overwrote adjacent bytes.");
+    const auto typed = take(program->entry().bind<bool, bool, const bool&, bool&>());
+    require(take(typed.invoke({}, false, std::as_const(storage.value), storage.value)) && !storage.value &&
+                storage.before && storage.after && storage.guard == 0xdeadbeef,
+            "Typed reference ABI lost its borrowed alias or overwrote adjacent bytes.");
 }
 
 void reference_coroutine() {

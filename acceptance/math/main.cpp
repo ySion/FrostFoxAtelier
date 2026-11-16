@@ -50,6 +50,101 @@ void scene() {
     require(near(dot(near_same, near_same), 1.f) && near(dot(near_clamped, near_clamped), 1.f) &&
                 near(near_clamped.z, z_quarter_near.z) && near(near_clamped.w, z_quarter_near.w),
             "Near-collinear slerp01 lost unit norm or clamp.");
+    const auto z_quarter_d = from_axis_angle(Vector3d{0, 0, 1}, std::numbers::pi * 0.5);
+    const auto z_eighth_d = from_axis_angle(Vector3d{0, 0, 1}, std::numbers::pi * 0.25);
+    const auto halfway_d = slerp01(Quaterniond{}, -z_quarter_d, 0.5);
+    require(std::abs(halfway_d.z - z_eighth_d.z) <= 1e-14 && std::abs(halfway_d.w - z_eighth_d.w) <= 1e-14,
+            "Double quaternion slerp01 failed shortest-arc midpoint.");
+
+    // Approximate variants: exact endpoints, explicit error bounds, and special-value contracts.
+    static_assert(fast_slerp01(turn, Quaternion{}, 0.f) == turn);
+    static_assert(fast_slerp01(Quaternion{}, -turn, 1.f) == turn);
+    static_assert(fast_slerp01(turn, Quaternion{}, -4.f) == turn);
+    static_assert(fast_slerp01(Quaternion{}, -turn, 9.f) == turn);
+    static_assert(fast_slerp01(turn, Quaternion{}, std::numeric_limits<float>::quiet_NaN()) == turn);
+    static_assert(fast_slerp01(Quaterniond{0.5, 0.5, 0.5, 0.5}, Quaterniond{}, 0.0) == Quaterniond{0.5, 0.5, 0.5, 0.5});
+    static_assert(fast_slerp01(Quaterniond{}, Quaterniond{-0.5, -0.5, -0.5, -0.5}, 1.0) ==
+                  Quaterniond{0.5, 0.5, 0.5, 0.5});
+    for (int step = 0; step <= 16; ++step) {
+        const float angle_f = static_cast<float>(step) * (std::numbers::pi_v<float> * 0.98f / 16.f);
+        const double angle_d = static_cast<double>(step) * (std::numbers::pi * 0.98 / 16.0);
+        const auto target_f = from_axis_angle(*axis, angle_f);
+        const auto axis_d = *try_normalize(Vector3d{1, -2, 0.5});
+        const auto target_d = from_axis_angle(axis_d, angle_d);
+        for (int k = 0; k <= 8; ++k) {
+            const float tf = static_cast<float>(k) / 8.f;
+            const double td = static_cast<double>(k) / 8.0;
+            const auto exact_f = slerp01(Quaternion{}, (step & 1) ? -target_f : target_f, tf);
+            const auto approx_f = fast_slerp01(Quaternion{}, (step & 1) ? -target_f : target_f, tf);
+            const auto unit_f = *try_normalize(approx_f);
+            const auto aligned_f = dot(exact_f, unit_f) < 0.f ? -unit_f : unit_f;
+            const float angle_err_f =
+                2.f * std::atan2(length(Vector4{exact_f.x - aligned_f.x, exact_f.y - aligned_f.y,
+                                                exact_f.z - aligned_f.z, exact_f.w - aligned_f.w}),
+                                 length(Vector4{exact_f.x + aligned_f.x, exact_f.y + aligned_f.y,
+                                                exact_f.z + aligned_f.z, exact_f.w + aligned_f.w}));
+            require(angle_err_f <= 1e-4f && std::abs(dot(approx_f, approx_f) - 1.f) <= 1e-4f,
+                    "fast_slerp01(float) exceeded angular or norm bound.");
+            const auto exact_d = slerp01(Quaterniond{}, (step & 1) ? -target_d : target_d, td);
+            const auto approx_d = fast_slerp01(Quaterniond{}, (step & 1) ? -target_d : target_d, td);
+            const auto unit_d = *try_normalize(approx_d);
+            const auto aligned_d = dot(exact_d, unit_d) < 0.0 ? -unit_d : unit_d;
+            const double angle_err_d =
+                2.0 * std::atan2(length(Vector4d{exact_d.x - aligned_d.x, exact_d.y - aligned_d.y,
+                                                 exact_d.z - aligned_d.z, exact_d.w - aligned_d.w}),
+                                 length(Vector4d{exact_d.x + aligned_d.x, exact_d.y + aligned_d.y,
+                                                 exact_d.z + aligned_d.z, exact_d.w + aligned_d.w}));
+            require(angle_err_d <= 1e-7 && std::abs(dot(approx_d, approx_d) - 1.0) <= 1e-7,
+                    "fast_slerp01(double) exceeded angular or norm bound.");
+        }
+    }
+
+    constexpr float compile_rsqrt = fast_rsqrt(4.f);
+    static_assert(compile_rsqrt > 0.4999f && compile_rsqrt < 0.5001f);
+    constexpr double compile_rsqrtd = fast_rsqrt(0.25);
+    static_assert(compile_rsqrtd > 1.999999999 && compile_rsqrtd < 2.000000001);
+    for (const float x : {1e-42f, 1e-20f, 0.25f, 1.f, 7.5f, 1e20f, 1e36f}) {
+        const double expected = 1.0 / std::sqrt(static_cast<double>(x));
+        require(std::abs(static_cast<double>(fast_rsqrt(x)) - expected) / expected <= 1.5e-4,
+                "fast_rsqrt(float) exceeded relative error bound.");
+    }
+    for (const double x : {1e-315, 1e-150, 0.25, 1.0, 13.75, 1e150, 1e300}) {
+        const double expected = 1.0 / std::sqrt(x);
+        require(std::abs(fast_rsqrt(x) - expected) / expected <= 1e-10,
+                "fast_rsqrt(double) exceeded relative error bound.");
+    }
+    constexpr float inf_f = std::numeric_limits<float>::infinity();
+    constexpr float nan_f = std::numeric_limits<float>::quiet_NaN();
+    require(fast_rsqrt(0.f) == inf_f && !std::signbit(fast_rsqrt(0.f)) && fast_rsqrt(-0.f) == -inf_f &&
+                fast_rsqrt(inf_f) == 0.f && !std::signbit(fast_rsqrt(inf_f)) && std::isnan(fast_rsqrt(-1.f)) &&
+                std::isnan(fast_rsqrt(-inf_f)) && std::isnan(fast_rsqrt(nan_f)),
+            "fast_rsqrt special values violated contract.");
+    const auto rsqrt_vec = fast_rsqrt(Vector3{4.f, 16.f, 25.f});
+    require(std::abs(rsqrt_vec.x - 0.5f) <= 1e-4f && std::abs(rsqrt_vec.y - 0.25f) <= 1e-4f &&
+                std::abs(rsqrt_vec.z - 0.2f) <= 1e-4f,
+            "Vector fast_rsqrt failed component-wise evaluation.");
+
+    static_assert(fast_normalize_or_zero(Vector3{}) == Vector3{});
+    static_assert(fast_normalize_or_zero(Quaternion{0.f, 0.f, 0.f, 0.f}) == Quaternion{0.f, 0.f, 0.f, 0.f});
+    require(fast_normalize_or_zero(Vector3{inf_f, 1.f, 0.f}) == Vector3{} &&
+                fast_normalize_or_zero(Vector3{nan_f, 1.f, 0.f}) == Vector3{},
+            "Nonfinite Vector3 fast_normalize_or_zero must return zero.");
+    const auto fast_unit_v = fast_normalize_or_zero(Vector3{3.f, -4.f, 12.f});
+    require(std::abs(fast_unit_v.x - 3.f / 13.f) <= 1e-4f && std::abs(fast_unit_v.y + 4.f / 13.f) <= 1e-4f &&
+                std::abs(fast_unit_v.z - 12.f / 13.f) <= 1e-4f,
+            "Vector3 fast_normalize_or_zero exceeded error bound.");
+    const auto fast_small_v = fast_normalize_or_zero(Vector3{1e-18f, 0.f, 0.f});
+    require(std::abs(fast_small_v.x - 1.f) <= 1.5e-4f && fast_small_v.y == 0.f && fast_small_v.z == 0.f,
+            "Small normal-squared Vector3 fast_normalize_or_zero exceeded error bound.");
+    const auto fast_sub_v = fast_normalize_or_zero(Vector3{1e-21f, 0.f, 0.f});
+    require(std::abs(fast_sub_v.x - 1.f) <= 2e-3f && fast_sub_v.y == 0.f && fast_sub_v.z == 0.f,
+            "Subnormal-squared Vector3 fast_normalize_or_zero failed graceful degradation.");
+    require(fast_normalize_or_zero(Vector3{1e25f, 1e25f, 0.f}) == Vector3{},
+            "Overflowing Vector3 fast_normalize_or_zero must return zero.");
+    const auto fast_unit_q = fast_normalize_or_zero(Quaterniond{1.0, 2.0, -2.0, 4.0});
+    require(std::abs(dot(fast_unit_q, fast_unit_q) - 1.0) <= 1e-10 &&
+                fast_normalize_or_zero(Quaterniond{0, 0, 0, 0}) == Quaterniond{0, 0, 0, 0},
+            "Quaterniond fast_normalize_or_zero failed.");
     static_assert(lerp01(Vector2{2.f, -4.f}, Vector2{10.f, 8.f}, 0.25f) == Vector2{4.f, -1.f});
     static_assert(lerp01(Vector2{2.f, -4.f}, Vector2{10.f, 8.f}, -3.f) == Vector2{2.f, -4.f});
     static_assert(lerp01(Vector2{2.f, -4.f}, Vector2{10.f, 8.f}, 5.f) == Vector2{10.f, 8.f});

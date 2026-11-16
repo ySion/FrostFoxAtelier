@@ -23,8 +23,6 @@ struct BusinessTrace;
 // nonterminal coroutines. Closing a program invalidates entries; leases and
 // already-created coroutines retain their own version.
 class Program final {
-    struct Metadata;
-
     struct Contract;
 
     struct Declaration;
@@ -47,8 +45,81 @@ class Program final {
     static constexpr bool direct_scalar = std::same_as<T, std::int32_t> || std::same_as<T, std::uint32_t> ||
                                           std::same_as<T, float> || std::same_as<T, double> || std::same_as<T, bool>;
 
+    template <class T, bool IsEnum = std::is_enum_v<T>>
+    struct DirectEnum : std::false_type {};
+
     template <class T>
-    using DirectScalar = std::conditional_t<std::same_as<T, bool>, std::uint32_t, T>;
+    struct DirectEnum<T, true> : std::bool_constant<std::same_as<std::underlying_type_t<T>, std::int32_t> ||
+                                                    std::same_as<std::underlying_type_t<T>, std::uint32_t>> {};
+
+    template <class T>
+    static constexpr bool direct_enum = DirectEnum<T>::value;
+
+    template <class T>
+    static constexpr bool direct_value = direct_scalar<T> || direct_enum<T>;
+
+    template <class T>
+    static constexpr bool direct_parameter =
+        direct_value<T> || (std::is_lvalue_reference_v<T> && !std::is_volatile_v<std::remove_reference_t<T>>);
+
+    template <class T>
+    using DirectAbi = std::conditional_t<std::is_lvalue_reference_v<T>, const void*,
+                                         std::conditional_t<std::same_as<T, bool> || direct_enum<T>, std::uint32_t, T>>;
+
+    template <class T>
+    static DirectAbi<T> direct_abi(const std::remove_reference_t<T>& value) noexcept {
+        if constexpr (std::is_lvalue_reference_v<T>)
+            return std::addressof(value);
+        else if constexpr (std::same_as<T, bool>)
+            return value ? 1u : 0u;
+        else if constexpr (direct_enum<T>)
+            return static_cast<std::uint32_t>(value);
+        else
+            return value;
+    }
+
+    struct DirectContext {
+        std::uintptr_t address{};
+
+        void* invocation{};
+
+        detail::BusinessFailure* failure{};
+    };
+
+    class DirectScope {
+        struct Stateless;
+
+        struct Active;
+
+        enum class Mode : std::uint8_t { none, stateless, full };
+
+        alignas(16) std::byte storage_[1536];
+
+        Mode mode_{Mode::none};
+
+        void leave() noexcept;
+
+    public:
+        DirectScope() noexcept = default;
+
+        ~DirectScope() {
+            if (mode_ != Mode::none)
+                leave();
+        }
+
+        DirectScope(const DirectScope&) = delete;
+
+        DirectScope& operator=(const DirectScope&) = delete;
+
+        [[nodiscard]] bool try_enter(const Version*, const State*, std::optional<std::size_t>, ObjectId,
+                                     DirectContext&) noexcept;
+
+        [[nodiscard]] Error enter_error(const Version*, const State*, std::optional<std::size_t>, ObjectId);
+
+        [[nodiscard]] bool try_finish(std::uint32_t status) noexcept;
+
+        [[nodiscard]] Error finish_error(std::uint32_t status);
+    };
 
     using DirectCall = std::uint32_t (*)(std::uintptr_t, void*, void*, std::uint64_t*, detail::BusinessFailure*,
                                          detail::BusinessTrace*) noexcept;
@@ -64,7 +135,7 @@ public:
     // One checked synchronous signature: Lease fixes its Version, Entry follows
     // publication. Active execution, not the handle, protects code during callbacks.
     template <class R, class... Args>
-        requires(std::is_void_v<R> || direct_scalar<R>) && (direct_scalar<Args> && ...)
+        requires(std::is_void_v<R> || direct_value<R>) && (direct_parameter<Args> && ...)
     class Typed {
         friend class Lease;
 
@@ -108,29 +179,44 @@ public:
 
         Result<R> invoke(ObjectId receiver, Args... arguments, Diagnostics* diagnostics = nullptr,
                          Debugger* debugger = nullptr) const {
-            std::tuple<Args...> values{arguments...};
-            const auto call = [](std::uintptr_t address, void* context, void* invocation, std::uint64_t* output,
-                                 detail::BusinessFailure* failure, detail::BusinessTrace* trace) noexcept {
-                using Entry = std::uint32_t (*)(void*, DirectScalar<Args>..., std::uint64_t*, detail::BusinessFailure*,
-                                                detail::BusinessTrace*) noexcept;
-                const auto entry = reinterpret_cast<Entry>(address);
-                return std::apply(
-                    [&](Args... values) {
-                        return entry(invocation, static_cast<DirectScalar<Args>>(values)...,
-                                     std::is_void_v<R> ? nullptr : output, failure, trace);
-                    },
-                    *static_cast<std::tuple<Args...>*>(context));
-            };
-            ATELIER_TRY_BIND(result, invoke_bound(version_.get(), owner_.get(), index_, receiver, &values, call,
-                                                  diagnostics, debugger));
+            using Entry = std::uint32_t (*)(void*, DirectAbi<Args>..., std::uint64_t*, detail::BusinessFailure*,
+                                            detail::BusinessTrace*) noexcept;
+            std::uint64_t output{};
+            if (!diagnostics && !debugger) {
+                DirectScope scope;
+                DirectContext direct;
+                if (!scope.try_enter(version_.get(), owner_.get(), index_, receiver, direct)) [[unlikely]]
+                    return std::unexpected(scope.enter_error(version_.get(), owner_.get(), index_, receiver));
+                const auto status = reinterpret_cast<Entry>(direct.address)(
+                    direct.invocation, Program::direct_abi<Args>(arguments)..., std::is_void_v<R> ? nullptr : &output,
+                    direct.failure, nullptr);
+                if (!scope.try_finish(status)) [[unlikely]]
+                    return std::unexpected(scope.finish_error(status));
+            } else {
+                std::tuple<DirectAbi<Args>...> values{Program::direct_abi<Args>(arguments)...};
+                const auto call = [](std::uintptr_t address, void* context, void* invocation, std::uint64_t* staged,
+                                     detail::BusinessFailure* failure, detail::BusinessTrace* trace) noexcept {
+                    const auto entry = reinterpret_cast<Entry>(address);
+                    return std::apply(
+                        [&](DirectAbi<Args>... unpacked) {
+                            return entry(invocation, unpacked..., std::is_void_v<R> ? nullptr : staged, failure, trace);
+                        },
+                        *static_cast<std::tuple<DirectAbi<Args>...>*>(context));
+                };
+                ATELIER_TRY_BIND(result, invoke_bound(version_.get(), owner_.get(), index_, receiver, &values, call,
+                                                      diagnostics, debugger));
+                output = *result;
+            }
             if constexpr (std::is_void_v<R>)
                 return {};
             else if constexpr (std::same_as<R, double>)
-                return std::bit_cast<double>(*result);
+                return std::bit_cast<double>(output);
             else if constexpr (std::same_as<R, bool>)
-                return *result != 0;
+                return output != 0;
+            else if constexpr (direct_enum<R>)
+                return static_cast<R>(static_cast<std::uint32_t>(output));
             else
-                return std::bit_cast<R>(static_cast<std::uint32_t>(*result));
+                return std::bit_cast<R>(static_cast<std::uint32_t>(output));
         }
     };
 
@@ -238,10 +324,11 @@ public:
 
         // Binding checks the shared signature once. No generic-argument fallback.
         template <class R, class... Args>
-            requires(std::is_void_v<R> || direct_scalar<R>) && (direct_scalar<Args> && ...)
+            requires(std::is_void_v<R> || direct_value<R>) && (direct_parameter<Args> && ...)
         Result<Typed<R, Args...>> bind() const {
             SignatureDefinition expected;
-            expected.parameters = {ParameterDefinition{{TypeReference::native<Args>()}, ParameterPassing::value}...};
+            expected.parameters = {
+                ParameterDefinition{{TypeReference::native<std::remove_cvref_t<Args>>()}, parameter_passing<Args>}...};
             if constexpr (!std::is_void_v<R>)
                 expected.result = ValueDefinition{TypeReference::native<R>()};
             ATELIER_TRY(bind_signature(std::move(expected)));
@@ -303,10 +390,11 @@ public:
         // Retains the closed/open control, not a code version. Each invocation
         // selects the current published version once, including after reordering.
         template <class R, class... Args>
-            requires(std::is_void_v<R> || direct_scalar<R>) && (direct_scalar<Args> && ...)
+            requires(std::is_void_v<R> || direct_value<R>) && (direct_parameter<Args> && ...)
         Result<Typed<R, Args...>> bind() const {
             SignatureDefinition expected;
-            expected.parameters = {ParameterDefinition{{TypeReference::native<Args>()}, ParameterPassing::value}...};
+            expected.parameters = {
+                ParameterDefinition{{TypeReference::native<std::remove_cvref_t<Args>>()}, parameter_passing<Args>}...};
             if constexpr (!std::is_void_v<R>)
                 expected.result = ValueDefinition{TypeReference::native<R>()};
             ATELIER_TRY_BIND(owner, bind_signature(std::move(expected)));

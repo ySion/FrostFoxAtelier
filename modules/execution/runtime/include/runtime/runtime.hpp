@@ -3,6 +3,7 @@
 #include "runtime/parameter.hpp"
 #include "runtime/detail/value_storage.hpp"
 #include "foundation/hash.hpp"
+#include "foundation/inline_array.hpp"
 #include "foundation/result.hpp"
 #include "math/type.hpp"
 #include <array>
@@ -356,6 +357,8 @@ public:
 private:
     friend class Runtime;
 
+    friend class ExecutionFrame;
+
     ObjectReference(ValueDescription description, ObjectId object) : description_(description), object_(object) {}
 
     ValueDescription description_{TypeId{}, ValueForm::strong_reference};
@@ -603,7 +606,7 @@ public:
 };
 
 // Typed scratch and validated views share the invocation lifetime. Up to eight
-// arguments with at most 128 copied bytes and alignment <= 8 need no allocation. Addresses cannot
+// arguments with at most 128 copied bytes and alignment <= 32 need no allocation. Addresses cannot
 // survive this owner; borrowed arguments consume no copied storage. All copied
 // values have trivial destruction, so this owner can outlive the Runtime.
 class PreparedArguments {
@@ -611,23 +614,17 @@ class PreparedArguments {
 
     detail::ValueStorage storage_;
 
-    std::array<ArgumentView, 8> inline_views_{};
-
-    std::vector<ArgumentView> views_;
-
-    std::size_t size_{};
+    InlineArray<ArgumentView, 8> views_;
 
 public:
     // Scratch is initialized by each copied value, not eagerly cleared.
-    PreparedArguments() noexcept {}
+    PreparedArguments() noexcept = default;
 
     PreparedArguments(const PreparedArguments&) = delete;
 
     PreparedArguments& operator=(const PreparedArguments&) = delete;
 
-    [[nodiscard]] std::span<const ArgumentView> values() const noexcept {
-        return {size_ > inline_views_.size() ? views_.data() : inline_views_.data(), size_};
-    }
+    [[nodiscard]] std::span<const ArgumentView> values() const noexcept { return views_; }
 };
 
 struct ReceiverDefinition {
@@ -1303,6 +1300,8 @@ private:
 
     [[nodiscard]] Result<void> enter_execution();
 
+    [[nodiscard]] bool try_enter_execution() noexcept;
+
     void leave_execution() noexcept;
 
     friend class source::Program;
@@ -1364,6 +1363,8 @@ private:
 
     [[nodiscard]] Result<TypeId> find_representation(const void* representation) const;
 
+    [[nodiscard]] std::uint32_t try_resolve_object(ObjectId object) const noexcept;
+
     [[nodiscard]] Result<std::uint32_t> resolve_object(ObjectId object) const;
 
     [[nodiscard]] Result<Address> resolve_field(ObjectId object, std::span<const FieldId> path) const;
@@ -1389,6 +1390,12 @@ private:
     [[nodiscard]] Result<void> write_at(const Address& address, ValueInput value, bool object);
 
     [[nodiscard]] Result<void> validate_reference(const ObjectReference& reference) const;
+
+    [[nodiscard]] Result<ObjectReference> strong_reference(ObjectId object) const;
+
+    [[nodiscard]] Result<ObjectReference> strong_reference(ObjectId object, TypeId declared_type) const;
+
+    [[nodiscard]] Result<ObjectReference> try_acquire_reference(const ObjectReference& reference) const;
 
     [[nodiscard]] Result<ObjectReference> read_reference_at(Address address) const;
 

@@ -246,98 +246,10 @@ public:
         if (result_.nodes.empty())
             return reject(token_.position, "A ui component needs at least one node.");
         ATELIER_TRY(rewrite(helpers, false));
-        append("\nvoid __ui_create() {\n", {});
-        for (const auto& init : initializers_) {
-            append("self.write_" + suffix(result_.states[init.slot].kind) + "(" + std::to_string(init.slot) + ", ",
-                   init.source.position);
-            ATELIER_TRY(rewrite(init.source, false));
-            append(");\n", init.source.position);
-        }
-        for (std::uint32_t i = 0; i < result_.nodes.size(); ++i) {
-            const auto& value = result_.nodes[i];
-            append("self.create_node(" + std::to_string(i) + ", " + std::to_string(value.parent) + ", " +
-                       std::to_string(static_cast<unsigned>(value.kind)) + ");\n",
-                   {});
-        }
-        append("}\n", {});
-        for (const auto& evaluation : evaluations_) {
-            append("void __ui_op_" + std::to_string(evaluation.operation) + "() {\n", evaluation.source.position);
-            if (evaluation.property) {
-                const auto property = *evaluation.property;
-                ATELIER_TRY_BIND(parsed_reference, reference_kind(evaluation.source));
-                const auto reference = *parsed_reference;
-                const bool text = property == Property::text || property == Property::classes ||
-                                  property == Property::view || property == Property::empty_text ||
-                                  property == Property::menu_behavior || property == Property::tooltip_title ||
-                                  property == Property::tooltip_identity ||
-                                  (property == Property::tooltip && reference != InputKind::tooltip) ||
-                                  (property == Property::argument && evaluation.kind == InputKind::text);
-                const bool numeric = property == Property::gap || property == Property::height ||
-                                     property == Property::width || property == Property::padding_left ||
-                                     property == Property::icon || property == Property::tree_rows ||
-                                     property == Property::padding_top || property == Property::padding_right ||
-                                     property == Property::padding_bottom || property == Property::content_width ||
-                                     property == Property::content_height || property == Property::min_width ||
-                                     property == Property::shrink_width ||
-                                     (property >= Property::row_height && property <= Property::item_gap) ||
-                                     (property >= Property::offset_x && property <= Property::step) ||
-                                     (property == Property::argument && evaluation.kind == InputKind::number);
-                std::string sink;
-                if (property == Property::argument)
-                    sink = "set_argument_" + suffix(evaluation.kind);
-                else if (text)
-                    sink = "set_text";
-                else if (property == Property::edit)
-                    sink = result_.nodes[evaluation.node].kind == NodeKind::text_field ? "set_text_edit" : "set_edit";
-                else if (property == Property::action)
-                    sink = "set_action";
-                else if (property == Property::model)
-                    sink = "set_model";
-                else if (property == Property::document)
-                    sink = "set_document";
-                else if (property == Property::tooltip)
-                    sink = "set_tooltip";
-                else if (property == Property::context)
-                    sink = reference == InputKind::text_edit ? "set_context_from_edit" : "set_context";
-                else if (property == Property::items)
-                    sink = "set_items";
-                else if (property == Property::tree_row)
-                    sink = "set_tree_row";
-                else if (property == Property::radio_group)
-                    sink = "set_radio_group";
-                else if (property == Property::selection_group)
-                    sink = "set_selection_group";
-                else
-                    sink = numeric ? "set_number" : "set_bool";
-                if (text && reference == InputKind::text)
-                    sink += "_reference";
-                else if (text && reference == InputKind::text_edit)
-                    sink += "_from_edit";
-                append("self." + sink + "(" + std::to_string(evaluation.node) + ", " +
-                           std::to_string(property == Property::argument ? evaluation.argument
-                                                                         : static_cast<unsigned>(property)) +
-                           ", ",
-                       evaluation.source.position);
-                if (numeric)
-                    append("double(", evaluation.source.position);
-                ATELIER_TRY(rewrite(evaluation.source, false));
-                if (numeric)
-                    append(")", evaluation.source.position);
-                append(");\n", evaluation.source.position);
-            } else {
-                const auto kind = result_.nodes[evaluation.node].kind;
-                ATELIER_TRY(rewrite(evaluation.source, true,
-                                    kind == NodeKind::foldout || kind == NodeKind::toggle_button ||
-                                        kind == NodeKind::checkbox));
-                append("\n", evaluation.source.position);
-            }
-            append("}\n", evaluation.source.position);
-        }
-        append("void __ui_dispatch(uint operation) {\nif (operation == 0) { __ui_create(); return; }\n", {});
-        for (const auto& evaluation : evaluations_)
-            append("if (operation == " + std::to_string(evaluation.operation) + ") { __ui_op_" +
-                       std::to_string(evaluation.operation) + "(); return; }\n",
-                   evaluation.source.position);
+        const std::size_t operation_count = evaluations_.size() + 1;
+        append("\nvoid __ui_dispatch(uint __ui_operation) {\n", {});
+        append("if (__ui_operation >= " + std::to_string(operation_count) + ") { return; }\n", {});
+        ATELIER_TRY(emit_dispatch(0, operation_count));
         append("}\n", {});
         return std::move(result_);
     }
@@ -352,6 +264,107 @@ private:
     std::vector<Evaluation> evaluations_;
 
     std::vector<Initializer> initializers_;
+
+    std::expected<void, Diagnostic> emit_operation(std::size_t index) {
+        if (index == 0) {
+            for (const auto& init : initializers_) {
+                append("self.write_" + suffix(result_.states[init.slot].kind) + "(" + std::to_string(init.slot) + ", ",
+                       init.source.position);
+                ATELIER_TRY(rewrite(init.source, false));
+                append(");\n", init.source.position);
+            }
+            for (std::uint32_t i = 0; i < result_.nodes.size(); ++i) {
+                const auto& value = result_.nodes[i];
+                append("self.create_node(" + std::to_string(i) + ", " + std::to_string(value.parent) + ", " +
+                           std::to_string(static_cast<unsigned>(value.kind)) + ");\n",
+                       {});
+            }
+            return {};
+        }
+        const auto& evaluation = evaluations_[index - 1];
+        if (evaluation.property) {
+            const auto property = *evaluation.property;
+            ATELIER_TRY_BIND(parsed_reference, reference_kind(evaluation.source));
+            const auto reference = *parsed_reference;
+            const bool text = property == Property::text || property == Property::classes ||
+                              property == Property::view || property == Property::empty_text ||
+                              property == Property::menu_behavior || property == Property::tooltip_title ||
+                              property == Property::tooltip_identity ||
+                              (property == Property::tooltip && reference != InputKind::tooltip) ||
+                              (property == Property::argument && evaluation.kind == InputKind::text);
+            const bool numeric = property == Property::gap || property == Property::height ||
+                                 property == Property::width || property == Property::padding_left ||
+                                 property == Property::icon || property == Property::tree_rows ||
+                                 property == Property::padding_top || property == Property::padding_right ||
+                                 property == Property::padding_bottom || property == Property::content_width ||
+                                 property == Property::content_height || property == Property::min_width ||
+                                 property == Property::shrink_width ||
+                                 (property >= Property::row_height && property <= Property::item_gap) ||
+                                 (property >= Property::offset_x && property <= Property::step) ||
+                                 (property == Property::argument && evaluation.kind == InputKind::number);
+            std::string sink;
+            if (property == Property::argument)
+                sink = "set_argument_" + suffix(evaluation.kind);
+            else if (text)
+                sink = "set_text";
+            else if (property == Property::edit)
+                sink = result_.nodes[evaluation.node].kind == NodeKind::text_field ? "set_text_edit" : "set_edit";
+            else if (property == Property::action)
+                sink = "set_action";
+            else if (property == Property::model)
+                sink = "set_model";
+            else if (property == Property::document)
+                sink = "set_document";
+            else if (property == Property::tooltip)
+                sink = "set_tooltip";
+            else if (property == Property::context)
+                sink = reference == InputKind::text_edit ? "set_context_from_edit" : "set_context";
+            else if (property == Property::items)
+                sink = "set_items";
+            else if (property == Property::tree_row)
+                sink = "set_tree_row";
+            else if (property == Property::radio_group)
+                sink = "set_radio_group";
+            else if (property == Property::selection_group)
+                sink = "set_selection_group";
+            else
+                sink = numeric ? "set_number" : "set_bool";
+            if (text && reference == InputKind::text)
+                sink += "_reference";
+            else if (text && reference == InputKind::text_edit)
+                sink += "_from_edit";
+            append("self." + sink + "(" + std::to_string(evaluation.node) + ", " +
+                       std::to_string(property == Property::argument ? evaluation.argument
+                                                                     : static_cast<unsigned>(property)) +
+                       ", ",
+                   evaluation.source.position);
+            if (numeric)
+                append("double(", evaluation.source.position);
+            ATELIER_TRY(rewrite(evaluation.source, false));
+            if (numeric)
+                append(")", evaluation.source.position);
+            append(");\n", evaluation.source.position);
+            return {};
+        }
+        const auto kind = result_.nodes[evaluation.node].kind;
+        ATELIER_TRY(
+            rewrite(evaluation.source, true,
+                    kind == NodeKind::foldout || kind == NodeKind::toggle_button || kind == NodeKind::checkbox));
+        append("\n", evaluation.source.position);
+        return {};
+    }
+
+    std::expected<void, Diagnostic> emit_dispatch(std::size_t first, std::size_t last) {
+        if (last - first == 1)
+            return emit_operation(first);
+        const std::size_t middle = first + (last - first) / 2;
+        append("if (__ui_operation < " + std::to_string(middle) + ") {\n", {});
+        ATELIER_TRY(emit_dispatch(first, middle));
+        append("} else {\n", {});
+        ATELIER_TRY(emit_dispatch(middle, last));
+        append("}\n", {});
+        return {};
+    }
 
     template <class T>
     std::expected<void, Diagnostic> unique(Token name, const std::vector<T>& items) {

@@ -190,43 +190,6 @@ Result<std::vector<TypeDefinition>> type_definitions(const std::vector<language:
 }
 }
 
-struct Program::Metadata {
-    const TypeInfo* identity;
-
-    TypeInfo value;
-
-    bool matches(const TypeInfo& actual) const {
-        if (&actual != identity || actual.id != value.id || actual.name != value.name ||
-            actual.enumeration != value.enumeration || actual.kind != value.kind || actual.math != value.math ||
-            actual.plain_value != value.plain_value || actual.base != value.base || actual.size != value.size ||
-            actual.alignment != value.alignment || actual.copy_constructible != value.copy_constructible ||
-            actual.copy_assignable != value.copy_assignable ||
-            actual.contains_references != value.contains_references || actual.element != value.element ||
-            actual.native_storage != value.native_storage || actual.sequence_view != value.sequence_view ||
-            actual.sequence_mutate != value.sequence_mutate || actual.base_address != value.base_address ||
-            actual.value_operations_preserve_borrows != value.value_operations_preserve_borrows ||
-            actual.fields.size() != value.fields.size() || actual.methods.size() != value.methods.size())
-            return false;
-        for (std::size_t i = 0; i < value.fields.size(); ++i) {
-            const auto& a = actual.fields[i];
-            const auto& b = value.fields[i];
-            if (a.id != b.id || a.name != b.name || a.value != b.value || a.offset != b.offset ||
-                a.native_address != b.native_address || a.owner != b.owner || a.range.hard_min != b.range.hard_min ||
-                a.range.hard_max != b.range.hard_max || !same_leaves(a.default_leaves, b.default_leaves) ||
-                a.metadata != b.metadata || a.default_text != b.default_text)
-                return false;
-        }
-        for (std::size_t i = 0; i < value.methods.size(); ++i) {
-            const auto& a = actual.methods[i];
-            const auto& b = value.methods[i];
-            if (a.id != b.id || a.name != b.name || a.signature != b.signature ||
-                a.preserves_borrows != b.preserves_borrows || a.native_entry != b.native_entry)
-                return false;
-        }
-        return true;
-    }
-};
-
 struct Program::Declaration {
     std::string name;
 
@@ -240,28 +203,12 @@ struct Program::Contract {
 
     BusinessServices actual_services;
 
-    std::vector<Metadata> metadata;
-
     std::vector<language::TypeDeclaration> declarations;
 
-    Contract(Binding bound, std::span<const TypeInfo* const> catalog = {},
-             std::vector<language::TypeDeclaration> source_types = {}) noexcept
+    explicit Contract(Binding bound, std::vector<language::TypeDeclaration> source_types = {}) noexcept
         : binding(std::move(bound)), type_name(binding.name), actual_services(services),
           declarations(std::move(source_types)) {
         binding.name = type_name;
-        for (const auto dependency : binding.dependencies) {
-            const TypeInfo* info{};
-            if (catalog.empty())
-                info = *binding.runtime->describe(dependency);
-            else
-                for (const auto* candidate : catalog)
-                    if (candidate->id == dependency) {
-                        info = candidate;
-                        break;
-                    }
-            assert(info);
-            metadata.push_back({info, *info});
-        }
     }
 
     std::optional<ValueDescription> value_description(BusinessType kind) const noexcept {
@@ -273,11 +220,12 @@ struct Program::Contract {
 
     Result<FunctionSignature> resolve_signature(const BusinessCodeInfo& info,
                                                 atelier::detail::TypePublication* publication = nullptr) const {
-        const auto reference = [&](TypeId type) -> TypeReference {
+        const auto reference = [&](BusinessType kind, TypeId type) -> TypeReference {
             if (publication) {
-                for (const auto& item : metadata)
-                    if (item.value.id == type)
-                        return TypeReference{item.value.name};
+                if (kind.kind == ValueKind::enumeration)
+                    return TypeReference{binding.enumerations[kind.type_index].name};
+                if (aggregate(kind))
+                    return TypeReference{binding.values[kind.type_index].name};
             }
             return type;
         };
@@ -286,26 +234,28 @@ struct Program::Contract {
             info.signature.is_coroutine ? FunctionExecution::coroutine : FunctionExecution::synchronous;
         definition.parameters.reserve(info.signature.parameter_count);
         for (std::uint32_t i = 0; i < info.signature.parameter_count; ++i) {
-            const auto value = value_description(info.signature.parameters[i].type);
+            const auto kind = info.signature.parameters[i].type;
+            const auto value = value_description(kind);
             if (!value)
                 return std::unexpected(Error{ErrorCode::invalid_definition, "Unsupported compiled source parameter."});
             definition.parameters.push_back(
-                {{reference(value->type), value->form}, info.signature.parameters[i].passing});
+                {{reference(kind, value->type), value->form}, info.signature.parameters[i].passing});
         }
         if (info.signature.result != ValueKind::void_value) {
             const auto value = value_description(info.signature.result);
             if (!value)
                 return std::unexpected(Error{ErrorCode::invalid_definition, "Unsupported compiled source result."});
-            definition.result = ValueDefinition{reference(value->type), value->form};
+            definition.result = ValueDefinition{reference(info.signature.result, value->type), value->form};
         }
         if (info.requires_receiver)
-            definition.receiver = ReceiverDefinition{reference(binding.type)};
+            definition.receiver =
+                ReceiverDefinition{publication ? TypeReference{type_name} : TypeReference{binding.type}};
         return publication ? publication->resolve_signature(*binding.runtime, definition)
                            : binding.runtime->resolve_signature(definition);
     }
 
-    Result<void> compatible(BusinessCode* code, std::string_view source_name,
-                            const Declaration* declaration = nullptr) const {
+    Result<void> compatible(BusinessCode* code, std::string_view source_name, const Declaration* declaration = nullptr,
+                            bool check_environment = true) const {
         if (!code)
             return std::unexpected(Error{ErrorCode::invalid_definition, "Candidate has no compiled code."});
         const auto info = atelier_business_info(code);
@@ -339,32 +289,12 @@ struct Program::Contract {
         if (declaration && info.requires_receiver && !declaration->signature.receiver)
             return std::unexpected(Error{ErrorCode::invalid_definition,
                                          "Candidate added a receiver to a receiverless source declaration."});
-        if (!same_environment(binding, info.environment))
+        if (check_environment && !same_environment(binding, info.environment))
             return std::unexpected(Error{ErrorCode::invalid_definition, "Candidate changed its bound member catalog."});
         if (layout.strong_slots < business_root_slots || layout.strong_slots >= observation_slot_bit ||
             layout.weak_slots >= observation_slot_bit)
             return std::unexpected(
                 Error{ErrorCode::invalid_definition, "Candidate has an invalid invocation-slot layout."});
-        return {};
-    }
-
-    Result<void> unchanged() const {
-        std::vector<const TypeInfo*> catalog;
-        catalog.reserve(metadata.size());
-        for (const auto& dependency : metadata) {
-            ATELIER_TRY_BIND(info, binding.runtime->describe(dependency.value.id));
-            if (!dependency.matches(**info))
-                return std::unexpected(Error{ErrorCode::invalid_definition, "Bound Runtime metadata changed."});
-            catalog.push_back(*info);
-        }
-        // Other producers may append unrelated types. Revalidate this program's
-        // captured catalog without changing its compiled type-table indices.
-        ATELIER_TRY_BIND(actual, bind_type(*binding.runtime, binding.type, catalog));
-        if (actual->runtime != binding.runtime || actual->type != binding.type || actual->name != type_name ||
-            actual->fields != binding.fields || actual->methods != binding.methods ||
-            actual->enumerations != binding.enumerations || actual->values != binding.values ||
-            actual->dependencies != binding.dependencies)
-            return std::unexpected(Error{ErrorCode::invalid_definition, "Bound member identities changed."});
         return {};
     }
 };
@@ -385,6 +315,8 @@ struct Program::Version : Runtime::RetiredCode {
 
     std::uintptr_t typed_address;
 
+    bool stateless_direct;
+
     std::shared_ptr<const DiagnosticMetadata> diagnostic;
 
     std::shared_ptr<const DebugMetadata> debug;
@@ -398,8 +330,9 @@ struct Program::Version : Runtime::RetiredCode {
                                [](Runtime::RetiredCode* code) noexcept { delete static_cast<Version*>(code); }},
           contract(std::move(bound)), declaration(std::move(declared)), sequence(request), code(std::move(owner)),
           info(atelier_business_info(code.get())), layout(atelier_business_layout(code.get())),
-          typed_address(atelier_business_typed_entry(code.get())), diagnostic(std::move(capture)),
-          debug(std::move(session)), map(std::move(source_map)) {}
+          typed_address(atelier_business_typed_entry(code.get())),
+          stateless_direct(typed_address != 0 && !declaration->signature.receiver.has_value() && info.stateless_typed),
+          diagnostic(std::move(capture)), debug(std::move(session)), map(std::move(source_map)) {}
 
     static void retire(Version* version) noexcept {
         atelier::detail::assert_serial_access();
@@ -416,7 +349,7 @@ struct Program::Version : Runtime::RetiredCode {
                 Error{ErrorCode::argument_mismatch, "Host binding does not match the source signature."});
         if (!typed_address)
             return std::unexpected(
-                Error{ErrorCode::unsupported_operation, "Code has no synchronous scalar typed entry."});
+                Error{ErrorCode::unsupported_operation, "Code has no synchronous direct typed entry."});
         return {};
     }
 
@@ -437,6 +370,8 @@ struct Program::Version : Runtime::RetiredCode {
         auto activation = ExecutionScope::enter(*contract->binding.runtime);
         if (!activation)
             return std::unexpected(reject_invocation(diagnostics, debugger, std::move(activation.error())));
+        if (!diagnostics && !debugger)
+            return body(*activation, nullptr, nullptr);
         auto capture = DiagnosticAccess::begin(diagnostics, diagnostic, *contract->binding.runtime, info.diagnostics);
         if (!capture)
             return std::unexpected(DebugAccess::reject(debugger, std::move(capture.error())));
@@ -445,7 +380,7 @@ struct Program::Version : Runtime::RetiredCode {
         if (!session)
             return scope.complete(Result<T>{std::unexpected(std::move(session.error()))});
         DebugScope debug_scope(std::move(*session));
-        auto result = body(scope, debug_scope);
+        auto result = body(*activation, &scope, &debug_scope);
         if constexpr (std::same_as<T, Coroutine>) {
             if (result) {
                 scope.transfer(DiagnosticStatus::ready);
@@ -461,15 +396,17 @@ struct Program::Version : Runtime::RetiredCode {
                                                 Diagnostics* diagnostics, Debugger* debugger) const {
         return invoke_captured<std::optional<Scalar>>(
             diagnostics, debugger,
-            [&](DiagnosticScope& scope, DebugScope& debug_scope) -> Result<std::optional<Scalar>> {
+            [&](ExecutionScope& activation, DiagnosticScope* scope,
+                DebugScope* debug_scope) -> Result<std::optional<Scalar>> {
                 if (aggregate(info.signature.result))
                     return std::unexpected(Error{ErrorCode::argument_mismatch,
                                                  "Aggregate source results require typed value output storage."});
-                const AbiArguments encoded(contract->binding, declaration->signature, arguments);
+                const AbiArguments encoded(contract->binding, declaration->signature, info.signature, arguments);
                 if (!encoded.status)
                     return std::unexpected(encoded.status.error());
                 ATELIER_TRY_BIND(result,
-                                 invoke(receiver, encoded.values, {}, nullptr, scope.trace(), debug_scope.state()));
+                                 invoke(activation, receiver, encoded.values, nullptr, scope ? scope->trace() : nullptr,
+                                        debug_scope ? debug_scope->state().get() : nullptr));
                 auto decoded = detail::scalar_value(*result, &contract->binding);
                 if (result->kind != info.signature.result || result->storage != ArgumentStorage::value ||
                     (info.signature.result != ValueKind::void_value && !decoded))
@@ -483,7 +420,8 @@ struct Program::Version : Runtime::RetiredCode {
     Result<void> invoke_values(ObjectId receiver, std::span<const T> arguments, ValueOutput output,
                                Diagnostics* diagnostics, Debugger* debugger) const {
         return invoke_captured<void>(
-            diagnostics, debugger, [&](DiagnosticScope& scope, DebugScope& debug_scope) -> Result<void> {
+            diagnostics, debugger,
+            [&](ExecutionScope& activation, DiagnosticScope* scope, DebugScope* debug_scope) -> Result<void> {
                 const auto kind = info.signature.result;
                 const auto& binding = contract->binding;
                 if (!aggregate(kind) || kind.type_index >= binding.values.size() ||
@@ -496,7 +434,7 @@ struct Program::Version : Runtime::RetiredCode {
                     return std::unexpected(
                         Error{ErrorCode::argument_mismatch,
                               "Source output storage does not match its declared value type and alignment."});
-                const AbiArguments encoded(binding, declaration->signature, arguments);
+                const AbiArguments encoded(binding, declaration->signature, info.signature, arguments);
                 if (!encoded.status)
                     return std::unexpected(encoded.status.error());
                 // Only the returned representation enters this buffer. Constructing a
@@ -504,7 +442,8 @@ struct Program::Version : Runtime::RetiredCode {
                 ::atelier::detail::ValueStorage staging_owner;
                 auto* staged = staging_owner.prepare(value.size, value.alignment);
                 ATELIER_TRY_BIND(result,
-                                 invoke(receiver, encoded.values, {}, staged, scope.trace(), debug_scope.state()));
+                                 invoke(activation, receiver, encoded.values, staged, scope ? scope->trace() : nullptr,
+                                        debug_scope ? debug_scope->state().get() : nullptr));
                 if (result->kind != kind || result->storage != ArgumentStorage::value || result->data != staged)
                     return std::unexpected(Error{ErrorCode::invocation_failed,
                                                  "Compiled aggregate result changed its typed output storage."});
@@ -515,21 +454,11 @@ struct Program::Version : Runtime::RetiredCode {
 
     static Result<Coroutine> start_values(std::shared_ptr<const Version> version, ObjectId receiver,
                                           std::span<const Scalar> arguments, Diagnostics* diagnostics,
-                                          Debugger* debugger) {
-        return version->invoke_captured<Coroutine>(
-            diagnostics, debugger, [&](DiagnosticScope& scope, DebugScope& debug_scope) -> Result<Coroutine> {
-                const AbiArguments encoded(version->contract->binding, version->declaration->signature, arguments);
-                if (!encoded.status)
-                    return std::unexpected(encoded.status.error());
-                return ProgramAccess::start_version(version, receiver, encoded.values, {}, scope.state(),
-                                                    debug_scope.state());
-            });
-    }
+                                          Debugger* debugger);
 
-    Result<BusinessValue> invoke(ObjectId receiver, std::span<const BusinessValue> arguments,
-                                 InvocationObserver observer, void* result_data = nullptr,
-                                 BusinessTrace* trace = nullptr,
-                                 std::shared_ptr<DebugSessionState> debugger = {}) const {
+    Result<BusinessValue> invoke(ExecutionScope& activation, ObjectId receiver,
+                                 std::span<const BusinessValue> arguments, void* result_data = nullptr,
+                                 BusinessTrace* trace = nullptr, DebugSessionState* debugger = nullptr) const {
         if (info.signature.is_coroutine)
             return std::unexpected(
                 Error{ErrorCode::invalid_definition, "Coroutine code requires a persistent execution instance."});
@@ -537,12 +466,10 @@ struct Program::Version : Runtime::RetiredCode {
             return std::unexpected(
                 Error{ErrorCode::argument_mismatch, "Aggregate source results require typed value output storage."});
         const auto& binding = contract->binding;
-        ATELIER_TRY_BIND(activation, ExecutionScope::enter(*binding.runtime));
-        ATELIER_TRY(check_source_arguments(binding, info.signature, arguments));
         std::uint32_t site = no_diagnostic_location;
-        auto result = execute_admitted(*activation, *binding.runtime, binding, code.get(), layout,
-                                       declaration->signature.receiver.has_value(), receiver, arguments, observer,
-                                       result_data, trace, std::move(debugger), &site);
+        auto result = execute_admitted(activation, *binding.runtime, binding, info, layout,
+                                       declaration->signature.receiver.has_value(), receiver, arguments, result_data,
+                                       trace, debugger, &site);
         if (!result)
             locate(result.error(), site);
         return result;
@@ -589,6 +516,122 @@ struct Program::State {
     }
 };
 
+struct Program::DirectScope::Stateless {
+    ExecutionScope scope;
+
+    const Version* version;
+
+    BusinessFailure failure{};
+};
+
+struct Program::DirectScope::Active {
+    ExecutionScope scope;
+
+    const Version* version;
+
+    Invocation invocation;
+
+    BusinessFailure failure{};
+
+    Active(ExecutionScope entered, const Version& owner)
+        : scope(std::move(entered)), version(&owner),
+          invocation(*owner.contract->binding.runtime, owner.contract->binding, owner.layout, nullptr, nullptr,
+                     &scope) {}
+};
+
+bool Program::DirectScope::try_enter(const Version* version, const State* owner, std::optional<std::size_t> index,
+                                     ObjectId receiver, DirectContext& out) noexcept {
+    static_assert(sizeof(Stateless) <= sizeof(storage_) && alignof(Stateless) <= 16);
+    static_assert(sizeof(Active) <= sizeof(storage_) && alignof(Active) <= 16);
+    atelier::detail::assert_serial_access();
+    if (owner)
+        version = owner->open ? owner->select(index).get() : nullptr;
+    if (!version)
+        return false;
+    const auto& binding = version->contract->binding;
+    if (version->stateless_direct) {
+        if (receiver != ObjectId{})
+            return false;
+        auto entered = ExecutionScope::try_enter(*binding.runtime);
+        if (!entered)
+            return false;
+        auto* stateless =
+            std::construct_at(reinterpret_cast<Stateless*>(storage_), Stateless{std::move(entered), version, {}});
+        mode_ = Mode::stateless;
+        out = {version->typed_address, nullptr, &stateless->failure};
+        return true;
+    }
+    auto entered = ExecutionScope::try_enter(*binding.runtime);
+    if (!entered)
+        return false;
+    auto* active = std::construct_at(reinterpret_cast<Active*>(storage_), std::move(entered), *version);
+    mode_ = Mode::full;
+    if (!try_bind_receiver(active->invocation, version->declaration->signature.receiver.has_value(), receiver)) {
+        leave();
+        return false;
+    }
+    out = {version->typed_address, &active->invocation, &active->failure};
+    return true;
+}
+
+Error Program::DirectScope::enter_error(const Version* version, const State* owner, std::optional<std::size_t> index,
+                                        ObjectId receiver) {
+    atelier::detail::assert_serial_access();
+    if (owner)
+        version = owner->open ? owner->select(index).get() : nullptr;
+    if (!version)
+        return {ErrorCode::invalid_definition, "Typed entry has no published version."};
+    const auto& binding = version->contract->binding;
+    auto entered = ExecutionScope::enter(*binding.runtime);
+    if (!entered)
+        return std::move(entered.error());
+    Active active(std::move(*entered), *version);
+    auto bound = bind_receiver(active.invocation, version->declaration->signature.receiver.has_value(), receiver);
+    return bound ? Error{ErrorCode::invocation_failed, "Direct entry admission failed."} : std::move(bound.error());
+}
+
+void Program::DirectScope::leave() noexcept {
+    if (mode_ == Mode::stateless)
+        std::destroy_at(std::launder(reinterpret_cast<Stateless*>(storage_)));
+    else if (mode_ == Mode::full)
+        std::destroy_at(std::launder(reinterpret_cast<Active*>(storage_)));
+    mode_ = Mode::none;
+}
+
+bool Program::DirectScope::try_finish(std::uint32_t status) noexcept {
+    if (mode_ == Mode::stateless) {
+        if (status != 0)
+            return false;
+        std::destroy_at(std::launder(reinterpret_cast<Stateless*>(storage_)));
+        mode_ = Mode::none;
+        return true;
+    }
+    auto& active = *std::launder(reinterpret_cast<Active*>(storage_));
+    if (status != 0 || active.invocation.failed || !active.invocation.resources_cleared())
+        return false;
+    leave();
+    return true;
+}
+
+Error Program::DirectScope::finish_error(std::uint32_t status) {
+    if (mode_ == Mode::stateless) {
+        auto& stateless = *std::launder(reinterpret_cast<Stateless*>(storage_));
+        const auto* reason = failure_message(stateless.failure.reason);
+        Error error{ErrorCode::invocation_failed, reason ? reason : "Source execution failed."};
+        stateless.version->locate(error, stateless.failure.location);
+        leave();
+        return error;
+    }
+    auto& active = *std::launder(reinterpret_cast<Active*>(storage_));
+    std::uint32_t site = no_diagnostic_location;
+    auto result = finish_invocation(active.invocation, status, active.failure, &site);
+    Error error = result ? Error{ErrorCode::invocation_failed, "Generated code left execution resources alive."}
+                         : std::move(result.error());
+    active.version->locate(error, site);
+    leave();
+    return error;
+}
+
 Result<std::uint64_t> Program::invoke_bound(const Version* version, const State* owner,
                                             std::optional<std::size_t> index, ObjectId receiver, void* arguments,
                                             DirectCall invoke, Diagnostics* diagnostics, Debugger* debugger) {
@@ -601,7 +644,8 @@ Result<std::uint64_t> Program::invoke_bound(const Version* version, const State*
     // No handle/State access follows this selection. invoke_captured enters before
     // any callback and leaves after error location, diagnostics and value cleanup.
     return version->invoke_captured<std::uint64_t>(
-        diagnostics, debugger, [&](DiagnosticScope& capture, DebugScope& debug) -> Result<std::uint64_t> {
+        diagnostics, debugger,
+        [&](ExecutionScope& activation, DiagnosticScope* capture, DebugScope* debug) -> Result<std::uint64_t> {
             struct Call {
                 std::uintptr_t address;
 
@@ -611,17 +655,16 @@ Result<std::uint64_t> Program::invoke_bound(const Version* version, const State*
 
                 std::uint64_t output{};
             } call{version->typed_address, arguments, invoke};
-            const auto body = [](void* context, Invocation& invocation, BusinessFailure& failure, char*,
-                                 std::uint32_t) noexcept {
+            const auto body = [](void* context, Invocation& invocation, BusinessFailure& failure) noexcept {
                 auto& call = *static_cast<Call*>(context);
                 return call.invoke(call.address, call.arguments, &invocation, &call.output, &failure, invocation.trace);
             };
             const auto& binding = version->contract->binding;
-            ATELIER_TRY_BIND(activation, ExecutionScope::enter(*binding.runtime));
             std::uint32_t site = no_diagnostic_location;
-            auto result = execute_invocation(*activation, *binding.runtime, binding, version->layout,
-                                             version->declaration->signature.receiver.has_value(), receiver, &call,
-                                             body, {}, capture.trace(), debug.state(), &site);
+            auto result =
+                execute_invocation(activation, *binding.runtime, binding, version->layout,
+                                   version->declaration->signature.receiver.has_value(), receiver, &call, body,
+                                   capture ? capture->trace() : nullptr, debug ? debug->state().get() : nullptr, &site);
             if (!result) {
                 version->locate(result.error(), site);
                 return std::unexpected(std::move(result.error()));
@@ -635,12 +678,12 @@ struct Program::Frame final : CoroutineFrame {
 
     std::shared_ptr<DiagnosticState> diagnostic;
 
+    std::shared_ptr<DebugSessionState> debug;
+
     Invocation invocation;
 
     std::unique_ptr<BusinessCoroutine, decltype(&atelier_destroy_business_coroutine)> code_frame{
         nullptr, &atelier_destroy_business_coroutine};
-
-    bool observed_terminal{};
 
     bool captures_owned{};
 
@@ -648,23 +691,22 @@ struct Program::Frame final : CoroutineFrame {
 
     DebugStatus debug_terminal{DebugStatus::cancelled};
 
-    Frame(std::shared_ptr<const Version> owner, InvocationObserver observer, std::shared_ptr<DiagnosticState> capture,
+    Frame(std::shared_ptr<const Version> owner, std::shared_ptr<DiagnosticState> capture,
           std::shared_ptr<DebugSessionState> debugger)
-        : version(std::move(owner)), diagnostic(std::move(capture)),
-          invocation(*version->contract->binding.runtime, version->contract->binding, version->layout, observer,
-                     diagnostic ? &diagnostic->trace : nullptr, std::move(debugger)) {}
+        : version(std::move(owner)), diagnostic(std::move(capture)), debug(std::move(debugger)),
+          invocation(*version->contract->binding.runtime, version->contract->binding, version->layout,
+                     diagnostic ? &diagnostic->trace : nullptr, debug.get()) {}
 
     ~Frame() override {
         // Generated destruction can call host cleanup, so retain Invocation and
         // Version until the DLL frame has finished using them.
         if (diagnostic)
             DiagnosticAccess::running(*diagnostic);
-        if (invocation.debugger)
-            DebugAccess::status(*invocation.debugger, DebugStatus::running);
+        if (debug)
+            DebugAccess::status(*debug, DebugStatus::running);
         const bool generated = code_frame != nullptr;
         code_frame.reset();
-        complete(false);
-        if (!diagnostic && !invocation.debugger)
+        if (!diagnostic && !debug)
             return;
         const bool cleared = generated && invocation.resources_cleared();
         // Report Runtime resources after fallback roots are released, while
@@ -676,8 +718,8 @@ struct Program::Frame final : CoroutineFrame {
         if (captures_owned) {
             if (diagnostic)
                 DiagnosticAccess::finish(*diagnostic, invocation.runtime, terminal);
-            if (invocation.debugger)
-                DebugAccess::finish(*invocation.debugger, debug_terminal);
+            if (debug)
+                DebugAccess::finish(*debug, debug_terminal);
         }
     }
 
@@ -692,15 +734,6 @@ struct Program::Frame final : CoroutineFrame {
             DiagnosticAccess::fail(*diagnostic, *error);
     }
 
-    void complete(bool success) noexcept {
-        if (observed_terminal)
-            return;
-        observed_terminal = true;
-        const auto observer = invocation.observer;
-        if (observer.complete)
-            observer.complete(observer.context, invocation, success);
-    }
-
     Result<CoroutineStep> failure(Error error) {
         if (diagnostic)
             DiagnosticAccess::fail(*diagnostic, error);
@@ -710,8 +743,8 @@ struct Program::Frame final : CoroutineFrame {
     Result<CoroutineStep> resume() noexcept override {
         if (diagnostic)
             DiagnosticAccess::running(*diagnostic, true);
-        if (invocation.debugger)
-            DebugAccess::status(*invocation.debugger, DebugStatus::running);
+        if (debug)
+            DebugAccess::status(*debug, DebugStatus::running);
         char message[512];
         bool suspended{};
         BusinessValue output{};
@@ -728,8 +761,6 @@ struct Program::Frame final : CoroutineFrame {
         const bool terminal_step = status != 0 || !suspended || invocation.failed;
         const bool cleared = (terminal_step || diagnostic) && invocation.resources_cleared();
         invocation.record_resources(cleared);
-        if (terminal_step)
-            complete(cleared && status == 0 && !invocation.failed && !invalid_result);
         if (status != 0 && !invocation.failed && invocation.debug_aborted) {
             if (!cleared)
                 return failure({ErrorCode::invocation_failed, "Aborted coroutine left execution resources alive."});
@@ -747,8 +778,8 @@ struct Program::Frame final : CoroutineFrame {
         if (suspended) {
             if (diagnostic)
                 DiagnosticAccess::pause(*diagnostic, invocation.runtime, DiagnosticStatus::suspended);
-            if (invocation.debugger)
-                DebugAccess::status(*invocation.debugger, DebugStatus::suspended);
+            if (debug)
+                DebugAccess::status(*debug, DebugStatus::suspended);
             return CoroutineStep{CoroutineState::suspended};
         }
         if (invalid_result)
@@ -779,39 +810,39 @@ struct Program::Prepared {
     std::shared_ptr<const DebugMetadata> debug;
 };
 
-Result<Coroutine> ProgramAccess::start_version(std::shared_ptr<const Program::Version> version, ObjectId receiver,
-                                               std::span<const BusinessValue> arguments, InvocationObserver observer,
-                                               std::shared_ptr<DiagnosticState> capture,
-                                               std::shared_ptr<DebugSessionState> debugger) {
-    if (!version || !version->info.signature.is_coroutine)
-        return std::unexpected(
-            Error{ErrorCode::invalid_definition, "Starting a coroutine requires a coroutine declaration."});
-    const auto& binding = version->contract->binding;
-    ATELIER_TRY_BIND(activation, ExecutionScope::enter(*binding.runtime));
-    ATELIER_TRY(check_source_arguments(binding, version->info.signature, arguments));
-    const bool hold_receiver = version->declaration->signature.receiver.has_value() || receiver != ObjectId{};
-    if (hold_receiver) {
-        ATELIER_TRY(check_source_receiver(binding, receiver));
-    }
-    auto frame =
-        std::make_unique<Program::Frame>(std::move(version), observer, std::move(capture), std::move(debugger));
-    if (hold_receiver) {
-        ATELIER_TRY(frame->invocation.frame.hold(receiver_slot, receiver, binding.type));
-    }
-    BusinessCoroutine* compiled{};
-    char diagnostic[512]{};
-    if (atelier_create_business_coroutine(frame->version->code.get(), &frame->invocation, arguments.data(),
-                                          static_cast<std::uint32_t>(arguments.size()), &compiled, diagnostic,
-                                          sizeof(diagnostic), frame->invocation.trace) != 0)
-        return std::unexpected(Error{ErrorCode::invocation_failed, diagnostic});
-    frame->code_frame.reset(compiled);
-    if (frame->diagnostic)
-        frame->invocation.record_resources(frame->invocation.resources_cleared());
-    auto* observed = frame.get();
-    auto result = Coroutine::create(*binding.runtime, std::move(frame));
-    if (result)
-        observed->captures_owned = true;
-    return result;
+Result<Coroutine> Program::Version::start_values(std::shared_ptr<const Version> version, ObjectId receiver,
+                                                 std::span<const Scalar> arguments, Diagnostics* diagnostics,
+                                                 Debugger* debugger) {
+    return version->invoke_captured<Coroutine>(
+        diagnostics, debugger,
+        [&](ExecutionScope&, DiagnosticScope* scope, DebugScope* debug_scope) -> Result<Coroutine> {
+            const AbiArguments encoded(version->contract->binding, version->declaration->signature,
+                                       version->info.signature, arguments);
+            if (!encoded.status)
+                return std::unexpected(encoded.status.error());
+            if (!version->info.signature.is_coroutine)
+                return std::unexpected(
+                    Error{ErrorCode::invalid_definition, "Starting a coroutine requires a coroutine declaration."});
+            const auto& binding = version->contract->binding;
+            const bool requires_receiver = version->declaration->signature.receiver.has_value();
+            auto frame = std::make_unique<Frame>(version, scope ? scope->state() : nullptr,
+                                                 debug_scope ? debug_scope->state() : nullptr);
+            ATELIER_TRY(bind_receiver(frame->invocation, requires_receiver, receiver));
+            BusinessCoroutine* compiled{};
+            char diagnostic[512];
+            if (atelier_create_business_coroutine(frame->version->code.get(), &frame->invocation, encoded.values.data(),
+                                                  static_cast<std::uint32_t>(encoded.values.size()), &compiled,
+                                                  diagnostic, sizeof(diagnostic), frame->invocation.trace) != 0)
+                return std::unexpected(Error{ErrorCode::invocation_failed, diagnostic});
+            frame->code_frame.reset(compiled);
+            if (frame->diagnostic)
+                frame->invocation.record_resources(frame->invocation.resources_cleared());
+            auto* observed = frame.get();
+            auto result = Coroutine::create(*binding.runtime, std::move(frame));
+            if (result)
+                observed->captures_owned = true;
+            return result;
+        });
 }
 
 Program::SourceRequest::SourceRequest(std::weak_ptr<State> owner, std::shared_ptr<const Contract> contract,
@@ -892,38 +923,6 @@ Result<std::vector<DiagnosticLocation>> Program::Lease::debug_sites() const {
         sites.push_back((*version->debug->locations)[index]);
     }
     return sites;
-}
-
-Result<BusinessValue> ProgramAccess::invoke(const Program::Lease& lease, ObjectId receiver,
-                                            std::span<const BusinessValue> arguments, InvocationObserver observer) {
-    atelier::detail::assert_serial_access();
-    const auto version = lease.version_;
-    if (!version)
-        return std::unexpected(Error{ErrorCode::invalid_definition, "Code lease is empty."});
-    // Callback destruction of the lease is safe: only the local pin follows.
-    return version->invoke(receiver, arguments, observer);
-}
-
-Result<BusinessValue> ProgramAccess::invoke(const Program::Entry& entry, ObjectId receiver,
-                                            std::span<const BusinessValue> arguments, InvocationObserver observer) {
-    atelier::detail::assert_serial_access();
-    const auto owner = entry.owner_.lock();
-    if (!owner || !owner->open)
-        return std::unexpected(Error{ErrorCode::invalid_definition, "Business program is closed."});
-    const auto version = owner->select(entry.index_);
-    if (!version)
-        return std::unexpected(Error{ErrorCode::invalid_definition, "Business entry has no published version."});
-    // Select once and never access the entry or program after callbacks start.
-    return version->invoke(receiver, arguments, observer);
-}
-
-Result<Coroutine> ProgramAccess::start(const Program::Entry& entry, ObjectId receiver,
-                                       std::span<const BusinessValue> arguments, InvocationObserver observer) {
-    atelier::detail::assert_serial_access();
-    const auto owner = entry.owner_.lock();
-    if (!owner || !owner->open)
-        return std::unexpected(Error{ErrorCode::invalid_definition, "Business program is closed."});
-    return start_version(owner->select(entry.index_), receiver, arguments, observer);
 }
 
 Result<std::optional<Scalar>> Program::Entry::invoke(ObjectId receiver, std::span<const Scalar> arguments,
@@ -1152,8 +1151,7 @@ Result<Program::Request> Program::request(std::string_view name, std::string_vie
         report(binding.error().message);
         return result;
     }
-    result->compilation_contract_ =
-        std::make_shared<const Contract>(std::move(*binding), (*publication)->catalog(), std::move(*declarations));
+    result->compilation_contract_ = std::make_shared<const Contract>(std::move(*binding), std::move(*declarations));
     return result;
 }
 
@@ -1216,10 +1214,9 @@ Result<void> Program::try_publish(Candidate& candidate) {
     if (prepared.sequence != owner->latest_request || prepared.sequence <= owner->published_request)
         return std::unexpected(
             Error{ErrorCode::invalid_definition, "Candidate is stale or its request was already published."});
-    ATELIER_TRY(
-        prepared.compilation_contract->compatible(prepared.code.get(), prepared.source_name, owner->declaration.get()));
+    ATELIER_TRY(prepared.compilation_contract->compatible(prepared.code.get(), prepared.source_name,
+                                                          owner->declaration.get(), false));
     ATELIER_TRY(owner->contract->binding.runtime->check_code_publication());
-    ATELIER_TRY(owner->contract->unchanged());
     if (prepared.type_publication) {
         ATELIER_TRY(prepared.type_publication->reserve_commit(*owner->contract->binding.runtime));
     }

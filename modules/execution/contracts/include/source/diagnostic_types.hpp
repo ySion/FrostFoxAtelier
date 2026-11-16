@@ -13,12 +13,9 @@ struct CompileOptions {
 };
 
 enum class DiagnosticCall : std::uint32_t {
-    begin,
-    finish,
     field_read,
     field_write,
     native_call,
-    poll,
     object_create,
     reference,
     reference_compare,

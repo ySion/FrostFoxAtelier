@@ -1755,9 +1755,17 @@ private:
             operation = MathOperation::length;
         else if (name == "math.normalize_or_zero")
             operation = MathOperation::normalize_or_zero;
+        else if (name == "math.fast_normalize_or_zero")
+            operation = MathOperation::fast_normalize_or_zero;
         else if (name == "math.conjugate")
             operation = MathOperation::conjugate;
-        else if (name == "math.rotate") {
+        else if (name == "math.slerp01") {
+            operation = MathOperation::slerp01;
+            arity = 3;
+        } else if (name == "math.fast_slerp01") {
+            operation = MathOperation::fast_slerp01;
+            arity = 3;
+        } else if (name == "math.rotate") {
             operation = MathOperation::rotate;
             arity = 2;
         } else if (name == "math.transpose")
@@ -1770,6 +1778,8 @@ private:
             arity = 2;
         } else if (name == "math.sqrt")
             operation = MathOperation::square_root;
+        else if (name == "math.fast_rsqrt")
+            operation = MathOperation::fast_rsqrt;
         else if (name == "math.floor")
             operation = MathOperation::floor;
         else if (name == "math.ceil")
@@ -1857,6 +1867,7 @@ private:
             }
             case MathOperation::length:
             case MathOperation::normalize_or_zero:
+            case MathOperation::fast_normalize_or_zero:
                 if (!descriptor.vector() && descriptor.shape != math::Shape::quaternion)
                     return reject(position, "Length and normalization require a vector or quaternion.");
                 if (operation == MathOperation::length)
@@ -1866,6 +1877,17 @@ private:
                 if (descriptor.shape != math::Shape::quaternion)
                     return reject(position, "math.conjugate requires a quaternion.");
                 break;
+            case MathOperation::slerp01:
+            case MathOperation::fast_slerp01: {
+                if (descriptor.shape != math::Shape::quaternion)
+                    return reject(position, std::string(name) +
+                                                " requires two matching quaternions followed by a matching scalar.");
+                ATELIER_TRY_BIND(second, converted(arguments[1], first));
+                arguments[1] = *second;
+                ATELIER_TRY_BIND(third, converted(arguments[2], math_scalar(descriptor)));
+                arguments[2] = *third;
+                break;
+            }
             case MathOperation::transpose:
                 if (descriptor.shape != math::Shape::matrix4)
                     return reject(position, "math.transpose requires a matrix4.");

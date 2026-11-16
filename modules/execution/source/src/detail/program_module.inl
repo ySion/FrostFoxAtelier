@@ -445,7 +445,7 @@ Result<Program::Request> Program::request(SourceSnapshot snapshot, CompileOption
     auto binding = bind_type(runtime, {}, catalog);
     if (!binding)
         return fail(std::move(binding.error()));
-    request->compilation_contract_ = std::make_shared<const Contract>(std::move(*binding), catalog);
+    request->compilation_contract_ = std::make_shared<const Contract>(std::move(*binding));
     // A unit compiles its own text with the closure of the declarations it spells. Every top-level
     // declaration is checked in its home unit: the project's, whose functions are the global
     // entries, or its engine module's, which only checks.
@@ -495,7 +495,7 @@ Result<Program::Request> Program::request(SourceSnapshot snapshot, CompileOption
         auto binding = bind_type(runtime, info->id, catalog);
         if (!binding)
             return fail(std::move(binding.error()));
-        ModuleRequest::Unit unit{std::make_shared<const Contract>(std::move(*binding), catalog),
+        ModuleRequest::Unit unit{std::make_shared<const Contract>(std::move(*binding)),
                                  module.source.closure(cls.uses),
                                  {},
                                  cls.name,
@@ -596,7 +596,7 @@ Result<Program::Candidate> Program::prepare_module(const Request& request) {
             locations = diagnostic_locations(info, map.get(), request->source_name, request->sequence, &line_starts);
         }
         for (std::size_t i = 0; i < codes.size(); ++i) {
-            ATELIER_TRY(unit.contract->compatible(codes[i].get(), request->source_name));
+            ATELIER_TRY(unit.contract->compatible(codes[i].get(), request->source_name, nullptr, !kept && i == 0));
             auto info = atelier_business_info(codes[i].get());
             ATELIER_TRY_BIND(signature, unit.contract->resolve_signature(info, request->type_publication_.get()));
             const auto& method = unit.names[i];
@@ -657,7 +657,6 @@ Result<void> Program::publish_module(Candidate& candidate) {
         return std::unexpected(
             Error{ErrorCode::invalid_definition, "Source snapshot candidate is stale or already published."});
     ATELIER_TRY_BIND(ready, state_->contract->binding.runtime->check_code_publication());
-    ATELIER_TRY(state_->contract->unchanged());
     if (prepared.type_publication) {
         ready = prepared.type_publication->reserve_commit(*state_->contract->binding.runtime);
         if (!ready)

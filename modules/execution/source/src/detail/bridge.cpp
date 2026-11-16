@@ -1,6 +1,7 @@
 #include "source/detail/bridge.hpp"
 #include "diagnostics.hpp"
 #include "debugger.hpp"
+#include "foundation/map.hpp"
 #include "language/declarations.hpp"
 #include "memory/fatal.hpp"
 
@@ -14,17 +15,20 @@ namespace atelier::source::detail {
 Result<Binding> bind_type(Runtime& runtime, TypeId type, std::span<const TypeInfo* const> catalog) noexcept {
     std::vector<const TypeInfo*> published;
     if (catalog.empty()) {
-        for (const auto id : runtime.types())
+        const auto ids = runtime.types();
+        published.reserve(ids.size());
+        for (const auto id : ids)
             published.push_back(*runtime.describe(id));
         catalog = published;
     }
+    Map<TypeId, const TypeInfo*> info_by_id;
+    info_by_id.reserve(catalog.size());
+    for (const auto* candidate : catalog)
+        info_by_id.insert_or_assign(candidate->id, candidate);
     const TypeInfo* info{};
     if (type != TypeId{}) {
-        for (const auto* candidate : catalog)
-            if (candidate->id == type) {
-                info = candidate;
-                break;
-            }
+        if (const auto* found = info_by_id.find(type))
+            info = *found;
         if (!info || info->kind != TypeKind::object)
             return std::unexpected(
                 Error{ErrorCode::invalid_type, "Source receiver must be an object in this Runtime."});
@@ -32,8 +36,8 @@ Result<Binding> bind_type(Runtime& runtime, TypeId type, std::span<const TypeInf
     // Published and preview catalogs are validated by Runtime. Only the requested
     // receiver is caller input; all following identities are catalog dependencies.
     const auto describe = [&](TypeId id) -> const TypeInfo* {
-        const auto found = std::ranges::find_if(catalog, [&](const auto* info) { return info->id == id; });
-        assert(found != catalog.end());
+        const auto* found = info_by_id.find(id);
+        assert(found != nullptr);
         return *found;
     };
     Binding binding{};
@@ -44,7 +48,13 @@ Result<Binding> bind_type(Runtime& runtime, TypeId type, std::span<const TypeInf
     binding.u32 = *runtime.native_type<std::uint32_t>();
     binding.i32 = *runtime.native_type<std::int32_t>();
     binding.boolean = *runtime.native_type<bool>();
-    binding.dependencies = {binding.f32, binding.f64, binding.u32, binding.i32, binding.boolean};
+    Map<TypeId, BusinessType> kind_by_id;
+    kind_by_id.reserve(catalog.size());
+    kind_by_id.insert_or_assign(binding.f32, ValueKind::f32);
+    kind_by_id.insert_or_assign(binding.f64, ValueKind::f64);
+    kind_by_id.insert_or_assign(binding.u32, ValueKind::u32);
+    kind_by_id.insert_or_assign(binding.i32, ValueKind::i32);
+    kind_by_id.insert_or_assign(binding.boolean, ValueKind::boolean);
     for (const auto* enumeration : catalog) {
         const auto id = enumeration->id;
         if (!enumeration->enumeration || language::editor_reserved(enumeration->name))
@@ -56,8 +66,8 @@ Result<Binding> bind_type(Runtime& runtime, TypeId type, std::span<const TypeInf
     }
     std::sort(binding.enumerations.begin(), binding.enumerations.end(),
               [](const auto& a, const auto& b) { return a.name < b.name; });
-    for (const auto& enumeration : binding.enumerations)
-        binding.dependencies.push_back(enumeration.type);
+    for (std::uint32_t i = 0; i < binding.enumerations.size(); ++i)
+        kind_by_id.insert_or_assign(binding.enumerations[i].type, BusinessType{ValueKind::enumeration, i});
     const auto append_value = [&](const TypeInfo& value, ValueKind kind) {
         binding.values.push_back(
             {value.id,
@@ -72,6 +82,7 @@ Result<Binding> bind_type(Runtime& runtime, TypeId type, std::span<const TypeInf
              value.sequence_mutate != nullptr,
              value.math,
              value.plain_value});
+        kind_by_id.insert_or_assign(value.id, BusinessType{kind, 0});
     };
     std::vector<const TypeInfo*> pending_arrays;
     for (const auto* value : catalog) {
@@ -87,7 +98,7 @@ Result<Binding> bind_type(Runtime& runtime, TypeId type, std::span<const TypeInf
     // A legal Runtime value need not expose a source projection. Admit arrays
     // only after their elements, leaving unavailable dependency chains opaque.
     while (std::erase_if(pending_arrays, [&](const TypeInfo* value) {
-               if (value_kind(binding, *value->element) == ValueKind::void_value)
+               if (!kind_by_id.contains(*value->element))
                    return false;
                append_value(*value, ValueKind::array);
                return true;
@@ -95,17 +106,22 @@ Result<Binding> bind_type(Runtime& runtime, TypeId type, std::span<const TypeInf
     }
     std::sort(binding.values.begin(), binding.values.end(),
               [](const auto& a, const auto& b) { return a.name < b.name; });
+    for (std::uint32_t i = 0; i < binding.values.size(); ++i)
+        kind_by_id.insert_or_assign(binding.values[i].type, BusinessType{binding.values[i].kind, i});
+    const auto lookup_kind = [&](TypeId id) noexcept -> BusinessType {
+        const auto* found = kind_by_id.find(id);
+        return found ? *found : BusinessType{ValueKind::void_value};
+    };
     for (auto& value : binding.values) {
-        binding.dependencies.push_back(value.type);
-        const auto* info = describe(value.type);
-        if (info->element) {
-            value.element = value_kind(binding, *info->element);
+        const auto* value_info = describe(value.type);
+        if (value_info->element) {
+            value.element = lookup_kind(*value_info->element);
             assert(value.element != ValueKind::void_value);
         }
-        for (const auto& field : info->fields) {
+        for (const auto& field : value_info->fields) {
             if (!field.offset || field.value.form != ValueForm::inline_value)
                 continue;
-            const auto kind = value_kind(binding, field.value.type);
+            const auto kind = lookup_kind(field.value.type);
             if (kind != ValueKind::void_value)
                 value.fields.push_back({field.name, kind, *field.offset});
         }
@@ -113,11 +129,6 @@ Result<Binding> bind_type(Runtime& runtime, TypeId type, std::span<const TypeInf
     if (type == TypeId{})
         return binding;
     binding.name = info->name;
-    const auto remember = [&](TypeId dependency) {
-        if (std::find(binding.dependencies.begin(), binding.dependencies.end(), dependency) ==
-            binding.dependencies.end())
-            binding.dependencies.push_back(dependency);
-    };
     const auto append_base = [&](const TypeInfo* actual, TypeId owner, std::vector<BusinessAddressStep>& access) {
         while (actual->id != owner) {
             assert(actual->base.has_value());
@@ -145,11 +156,6 @@ Result<Binding> bind_type(Runtime& runtime, TypeId type, std::span<const TypeInf
     std::vector<FieldId> path;
     std::vector<BusinessAddressStep> access;
     std::string prefix;
-    remember(type);
-    for (auto base = info->base; base;) {
-        remember(*base);
-        base = describe(*base)->base;
-    }
     while (!cursors.empty()) {
         auto& cursor = cursors.back();
         if (cursor.next == cursor.type->fields.size()) {
@@ -167,7 +173,7 @@ Result<Binding> bind_type(Runtime& runtime, TypeId type, std::span<const TypeInf
         access.push_back({field.offset ? nullptr : field.native_address, field.offset.value_or(0)});
         path.push_back(field.id);
         prefix += field.name;
-        const auto field_kind = value_kind(binding, field.value.type);
+        const auto field_kind = lookup_kind(field.value.type);
         const bool typed_field = field_kind.kind == ValueKind::record && binding.values[field_kind.type_index].math;
         const bool constrained = cursor.constrained || field.range.constrains();
         const auto range = field.range.constrains() ? field.range : cursor.type->math ? cursor.range : FieldRange{};
@@ -179,8 +185,6 @@ Result<Binding> bind_type(Runtime& runtime, TypeId type, std::span<const TypeInf
         }
         if (field_kind == ValueKind::void_value || aggregate(field_kind)) {
             const auto* nested = describe(field.value.type);
-            // Rebinding reads this metadata even when the field stays native-only.
-            remember(nested->id);
             if (nested->kind != TypeKind::record)
                 continue;
             prefix += '.';
@@ -192,11 +196,10 @@ Result<Binding> bind_type(Runtime& runtime, TypeId type, std::span<const TypeInf
         assert(signature.receiver.has_value());
         // As with fields, methods whose values have no source projection stay
         // native-only without preventing unrelated source functions from binding.
-        const auto result = signature.result ? value_kind(binding, signature.result->type) : ValueKind::void_value;
+        const auto result = signature.result ? lookup_kind(signature.result->type) : ValueKind::void_value;
         if ((signature.result && result == ValueKind::void_value) ||
-            std::any_of(signature.parameters.begin(), signature.parameters.end(), [&](const auto& parameter) {
-                return value_kind(binding, parameter.type) == ValueKind::void_value;
-            }))
+            std::any_of(signature.parameters.begin(), signature.parameters.end(),
+                        [&](const auto& parameter) { return lookup_kind(parameter.type) == ValueKind::void_value; }))
             continue;
         if (signature.parameters.size() > std::numeric_limits<std::uint32_t>::max())
             return std::unexpected(Error{ErrorCode::capacity_exceeded, "Host signature is too large."});
@@ -205,7 +208,7 @@ Result<Binding> bind_type(Runtime& runtime, TypeId type, std::span<const TypeInf
             method.native_entry};
         append_base(info, signature.receiver->type, bound.receiver_access);
         for (const auto parameter : signature.parameters)
-            bound.parameters.push_back({value_kind(binding, parameter.type), parameter.passing});
+            bound.parameters.push_back({lookup_kind(parameter.type), parameter.passing});
         binding.methods.push_back(std::move(bound));
     }
     if (binding.fields.size() > std::numeric_limits<std::uint32_t>::max() ||
@@ -335,67 +338,133 @@ std::optional<Scalar> scalar_value(BusinessValue value, const Binding* binding) 
     return std::nullopt;
 }
 
-AbiArguments::AbiArguments(const Binding& binding, const FunctionSignature& signature,
-                           std::span<const Scalar> arguments) {
-    std::array<Argument, 8> local;
-    std::vector<Argument> extra(arguments.size() > local.size() ? arguments.size() : 0);
-    auto input = (extra.empty() ? std::span<Argument>{local} : std::span<Argument>{extra}).first(arguments.size());
-    for (std::size_t i = 0; i < arguments.size(); ++i)
-        input[i] = Argument{arguments[i]};
-    initialize(binding, signature, input);
+namespace {
+template <class T, std::size_t N>
+InlineArray<T, N> sized_slots(std::size_t count) noexcept {
+    InlineArray<T, N> slots;
+    if (count)
+        slots.resize(count);
+    return slots;
+}
 }
 
 AbiArguments::AbiArguments(const Binding& binding, const FunctionSignature& signature,
-                           std::span<const Argument> arguments) {
-    initialize(binding, signature, arguments);
+                           const BusinessSignature& compiled, std::span<const Scalar> arguments) {
+    atelier::detail::assert_serial_access();
+    if (arguments.size() != signature.parameters.size()) {
+        status = std::unexpected(Error{ErrorCode::argument_mismatch, "Incorrect argument count."});
+        return;
+    }
+    bool direct_scalars = true;
+    for (std::uint32_t i = 0; i < compiled.parameter_count; ++i) {
+        if (compiled.parameters[i].passing != ParameterPassing::value || aggregate(compiled.parameters[i].type)) {
+            direct_scalars = false;
+            break;
+        }
+    }
+    if (direct_scalars) {
+        values.resize(arguments.size());
+        for (std::size_t i = 0; i < arguments.size(); ++i) {
+            const auto expected = signature.parameters[i].type;
+            const auto kind = compiled.parameters[i].type;
+            bool matched = false;
+            BusinessValue encoded{};
+            std::visit(
+                [&](const auto& item) {
+                    using T = std::remove_cvref_t<decltype(item)>;
+                    if constexpr (std::same_as<T, float>) {
+                        if (expected == binding.f32) {
+                            encoded = scalar(item);
+                            matched = true;
+                        }
+                    } else if constexpr (std::same_as<T, double>) {
+                        if (expected == binding.f64) {
+                            encoded = scalar(item);
+                            matched = true;
+                        }
+                    } else if constexpr (std::same_as<T, std::uint32_t>) {
+                        if (expected == binding.u32) {
+                            encoded = scalar(item);
+                            matched = true;
+                        }
+                    } else if constexpr (std::same_as<T, std::int32_t>) {
+                        if (expected == binding.i32) {
+                            encoded = scalar(item);
+                            matched = true;
+                        }
+                    } else if constexpr (std::same_as<T, bool>) {
+                        if (expected == binding.boolean) {
+                            encoded = scalar(item);
+                            matched = true;
+                        }
+                    } else if constexpr (std::same_as<T, EnumValue>) {
+                        if (kind.kind == ValueKind::enumeration && item.type == expected) {
+                            encoded = {kind, item.bits};
+                            matched = true;
+                        }
+                    }
+                },
+                arguments[i]);
+            if (!matched) {
+                values.clear();
+                status = std::unexpected(
+                    Error{ErrorCode::argument_mismatch, "Argument type does not match parameter " + std::to_string(i)});
+                return;
+            }
+            values[i] = encoded;
+        }
+        return;
+    }
+    InlineArray<Argument, 8> input;
+    input.resize(arguments.size());
+    for (std::size_t i = 0; i < arguments.size(); ++i)
+        input[i] = Argument{arguments[i]};
+    initialize(binding, signature, compiled, input);
+}
+
+AbiArguments::AbiArguments(const Binding& binding, const FunctionSignature& signature,
+                           const BusinessSignature& compiled, std::span<const Argument> arguments) {
+    initialize(binding, signature, compiled, arguments);
 }
 
 void AbiArguments::initialize(const Binding& binding, const FunctionSignature& signature,
-                              std::span<const Argument> arguments) {
+                              const BusinessSignature& compiled, std::span<const Argument> arguments) {
     status = binding.runtime->prepare_arguments(signature, arguments, prepared);
     if (!status)
         return;
-    if (arguments.size() > inline_values.size())
-        expanded.resize(arguments.size());
-    values = (expanded.empty() ? std::span<BusinessValue>{inline_values} : std::span<BusinessValue>{expanded})
-                 .first(arguments.size());
+    values.resize(arguments.size());
     const auto views = prepared.values();
     for (std::size_t i = 0; i < values.size(); ++i) {
-        values[i] = {};
-        values[i].kind = value_kind(binding, views[i].type);
+        BusinessValue encoded{};
+        encoded.kind = compiled.parameters[i].type;
         if (signature.parameters[i].passing == ParameterPassing::value) {
-            if (aggregate(values[i].kind))
-                values[i].data = views[i].data;
-            else if (values[i].kind == ValueKind::boolean)
-                values[i].bits = *static_cast<const bool*>(views[i].data) ? 1u : 0u;
+            if (aggregate(encoded.kind))
+                encoded.data = views[i].data;
+            else if (encoded.kind == ValueKind::boolean)
+                encoded.bits = *static_cast<const bool*>(views[i].data) ? 1u : 0u;
             else
-                std::memcpy(&values[i].bits, views[i].data, values[i].kind == ValueKind::f64 ? 8 : 4);
+                std::memcpy(&encoded.bits, views[i].data, encoded.kind == ValueKind::f64 ? 8 : 4);
         } else {
-            values[i].data = views[i].data;
-            values[i].storage = signature.parameters[i].passing == ParameterPassing::reference
-                                    ? ArgumentStorage::reference
-                                    : ArgumentStorage::read_only;
+            encoded.data = views[i].data;
+            encoded.storage = signature.parameters[i].passing == ParameterPassing::reference
+                                  ? ArgumentStorage::reference
+                                  : ArgumentStorage::read_only;
         }
+        values[i] = encoded;
     }
 }
 
-Invocation::Invocation(Runtime& owner, const Binding& bound, BusinessFrameLayout layout, InvocationObserver observation,
-                       BusinessTrace* capture, std::shared_ptr<DebugSessionState> session, ExecutionScope* scope)
+Invocation::Invocation(Runtime& owner, const Binding& bound, BusinessFrameLayout layout, BusinessTrace* capture,
+                       DebugSessionState* session, ExecutionScope* scope)
     : runtime(owner), binding(bound),
-      expanded_roots(!scope && layout.strong_slots > business_root_slots ? layout.strong_slots : 0),
-      roots(scope                    ? std::span<ObjectRoot>{}
-            : expanded_roots.empty() ? std::span<ObjectRoot>{inline_roots}
-                                     : std::span<ObjectRoot>{expanded_roots}),
-      expanded_references(scope && layout.strong_slots > business_root_slots ? layout.strong_slots : 0),
-      observations(layout.weak_slots),
-      frame(scope
-                ? ExecutionFrame(*scope, expanded_references.empty() ? std::span<ObjectReference>{inline_references}
-                                                                     : std::span<ObjectReference>{expanded_references})
-                : ExecutionFrame(owner, roots)),
-      expanded_native(layout.strong_slots + layout.weak_slots > 1 ? layout.strong_slots + layout.weak_slots : 0),
-      native(expanded_native.empty() ? std::span<NativeContext>{&inline_native, 1}
-                                     : std::span<NativeContext>{expanded_native}),
-      observer(observation), trace(capture), debugger(std::move(session)) {}
+      roots(sized_slots<ObjectRoot, 2>(!scope && bound.type != TypeId{} ? layout.strong_slots : 0)),
+      references(sized_slots<ObjectReference, 4>(scope && bound.type != TypeId{} ? layout.strong_slots : 0)),
+      observations(sized_slots<ObjectReference, 2>(layout.weak_slots)),
+      frame(scope ? ExecutionFrame(*scope, references) : ExecutionFrame(owner, roots)),
+      native(sized_slots<NativeContext, 4>(bound.type != TypeId{} ? layout.strong_slots + layout.weak_slots : 0)),
+      trace(capture), debugger(session) {
+    error[0] = '\0';
+}
 
 bool Invocation::resources_cleared() const noexcept {
     if (!frame.empty() || live_values != 0 || debug_top)
@@ -430,6 +499,14 @@ void Invocation::invalidate_native() noexcept {
 
 std::uint32_t native_receiver(void* context, std::uint32_t slot, NativeContext** output) noexcept {
     auto& invocation = *static_cast<Invocation*>(context);
+    if (slot < invocation.references.size() && slot < invocation.native.size()) {
+        const auto& ref = invocation.references[slot];
+        auto& cached = invocation.native[slot];
+        if (cached.storage && cached.self == ref.id() && !ref.is_null()) {
+            *output = &cached;
+            return 0;
+        }
+    }
     return bridge(invocation, [&]() -> Result<void> {
         ATELIER_TRY_BIND(reference, reference_value(invocation, slot));
         const auto index =
@@ -462,39 +539,6 @@ void native_segment(void* context) noexcept {
 std::uint32_t create_slot(void* context, std::uint32_t slot) noexcept {
     auto& invocation = *static_cast<Invocation*>(context);
     return bridge(invocation, [&] { return invocation.frame.create(slot, invocation.binding.type); });
-}
-
-std::uint32_t begin(void* context) noexcept {
-    auto& invocation = *static_cast<Invocation*>(context);
-    return bridge(invocation, [&]() -> Result<void> {
-        if (invocation.observer.begin) {
-            invocation.invalidate_native();
-            return invocation.observer.begin(invocation.observer.context, invocation);
-        }
-        return {};
-    });
-}
-
-std::uint32_t poll(void* context) noexcept {
-    auto& invocation = *static_cast<Invocation*>(context);
-    return bridge(invocation, [&]() -> Result<void> {
-        if (invocation.observer.poll) {
-            invocation.invalidate_native();
-            return invocation.observer.poll(invocation.observer.context, invocation);
-        }
-        return {};
-    });
-}
-
-std::uint32_t finish(void* context) noexcept {
-    auto& invocation = *static_cast<Invocation*>(context);
-    return bridge(invocation, [&]() -> Result<void> {
-        if (invocation.observer.finish) {
-            invocation.invalidate_native();
-            return invocation.observer.finish(invocation.observer.context, invocation);
-        }
-        return {};
-    });
 }
 
 Result<ObjectReference> reference_value(Invocation& invocation, std::uint32_t slot) {
@@ -537,20 +581,11 @@ std::uint32_t change_reference(void* context, ReferenceOperation operation, std:
                 return std::unexpected(Error{ErrorCode::type_mismatch, "Observation requires a holding reference."});
             value = invocation.runtime.observe(*value);
             break;
-        case ReferenceOperation::try_acquire: {
+        case ReferenceOperation::try_acquire:
             if (weak || value->description().form != ValueForm::weak_reference)
                 return std::unexpected(
                     Error{ErrorCode::type_mismatch, "Acquisition requires an observation reference."});
-            ATELIER_TRY_BIND(acquired, invocation.runtime.try_acquire(*value));
-            if (*acquired) {
-                if (invocation.roots.empty())
-                    return invocation.frame.hold(index, (**acquired).reference());
-                invocation.roots[index] = std::move(**acquired);
-                return {};
-            }
-            value = invocation.runtime.null_reference(invocation.binding.type, ValueForm::strong_reference);
-            break;
-        }
+            return invocation.frame.try_acquire(index, *value);
         default:
             return std::unexpected(Error{ErrorCode::argument_mismatch, "Unknown reference operation."});
         }
@@ -663,11 +698,10 @@ std::uint32_t mutate_sequence(void* context, std::uint32_t type, SequenceMutatio
     });
 }
 
-const BusinessServices services{
-    begin,          create_slot,     poll,         finish,        clear_slot,      change_reference,
-    same_reference, construct_value, assign_value, destroy_value, mutate_sequence, debug_enter,
-    debug_point,    debug_leave,     nullptr,      nullptr,       native_receiver, native_stamp,
-    native_failure, native_segment};
+const BusinessServices services{create_slot,    clear_slot,    change_reference, same_reference,  construct_value,
+                                assign_value,   destroy_value, mutate_sequence,  debug_enter,     debug_point,
+                                debug_leave,    nullptr,       nullptr,          native_receiver, native_stamp,
+                                native_failure, native_segment};
 
 bool same_environment(const Binding& binding, const BusinessEnvironment& environment) {
     if (binding.fields.size() != environment.field_count || binding.methods.size() != environment.method_count ||
@@ -729,74 +763,38 @@ bool same_environment(const Binding& binding, const BusinessEnvironment& environ
     return true;
 }
 
-Result<void> check_source_arguments(const Binding& binding, const BusinessSignature& signature,
-                                    std::span<const BusinessValue> arguments) {
-    if (arguments.size() != signature.parameter_count)
-        return std::unexpected(
-            Error{ErrorCode::argument_mismatch, "Source argument count does not match its signature."});
-    for (std::size_t i = 0; i < arguments.size(); ++i) {
-        const auto& argument = arguments[i];
-        const auto mode = signature.parameters[i].passing;
-        const BoundValue* value = aggregate(argument.kind) && argument.kind.type_index < binding.values.size()
-                                      ? &binding.values[argument.kind.type_index]
-                                      : nullptr;
-        const auto alignment = value                                 ? value->alignment
-                               : argument.kind == ValueKind::boolean ? 1u
-                               : argument.kind == ValueKind::f64     ? 8u
-                                                                     : 4u;
-        const bool has_storage = argument.data && reinterpret_cast<std::uintptr_t>(argument.data) % alignment == 0;
-        const bool valid =
-            mode == ParameterPassing::value
-                ? argument.storage == ArgumentStorage::value &&
-                      (!aggregate(argument.kind) || (value && (value->math || value->plain_value) && has_storage))
-                : has_storage &&
-                      (argument.storage == ArgumentStorage::reference ||
-                       (mode == ParameterPassing::read_only && argument.storage == ArgumentStorage::read_only));
-        if (argument.kind != signature.parameters[i].type || !valid ||
-            (mode == ParameterPassing::value && argument.kind == ValueKind::boolean && argument.bits > 1) ||
-            (mode == ParameterPassing::value && !aggregate(argument.kind) && argument.kind != ValueKind::f64 &&
-             argument.bits > std::numeric_limits<std::uint32_t>::max()))
-            return std::unexpected(
-                Error{ErrorCode::argument_mismatch, "Source argument type or storage does not match its signature."});
+bool try_bind_receiver(Invocation& invocation, bool requires_receiver, ObjectId receiver) noexcept {
+    if (!requires_receiver && receiver == ObjectId{})
+        return true;
+    if (invocation.references.empty())
+        return false;
+    NativeContext resolved;
+    if (!NativeContext::try_resolve(invocation.runtime, receiver, invocation.binding.type, resolved))
+        return false;
+    invocation.frame.set_validated_reference(receiver_slot, invocation.binding.type, receiver);
+    invocation.native[receiver_slot] = resolved;
+    return true;
+}
+
+Result<void> bind_receiver(Invocation& invocation, bool requires_receiver, ObjectId receiver) {
+    if (try_bind_receiver(invocation, requires_receiver, receiver))
+        return {};
+    ATELIER_TRY_BIND(resolved, NativeContext::resolve(invocation.runtime, receiver, invocation.binding.type));
+    if (!invocation.references.empty()) {
+        invocation.frame.set_validated_reference(receiver_slot, invocation.binding.type, receiver);
+        invocation.native[receiver_slot] = *resolved;
+        return {};
     }
+    ATELIER_TRY(invocation.frame.hold(receiver_slot, receiver, invocation.binding.type));
+    invocation.native[receiver_slot] = *resolved;
     return {};
 }
 
-Result<void> check_source_receiver(const Binding& binding, ObjectId receiver) {
-    ATELIER_TRY_BIND(actual, binding.runtime->type_of(receiver));
-    if (binding.type == TypeId{})
-        return std::unexpected(Error{ErrorCode::type_mismatch, "Receiverless source cannot accept an object."});
-    ATELIER_TRY_BIND(compatible, binding.runtime->is_a(*actual, binding.type));
-    if (!*compatible)
-        return std::unexpected(Error{ErrorCode::type_mismatch, "Source receiver has the wrong type."});
-    return {};
-}
-
-// The caller retains admission until invocation roots and observer effects are
-// destroyed. Published versions provide checked metadata from their own code.
-Result<void> execute_invocation(ExecutionScope& scope, Runtime& runtime, const Binding& binding,
-                                BusinessFrameLayout layout, bool requires_receiver, ObjectId receiver, void* context,
-                                InvocationBody body, InvocationObserver observer, BusinessTrace* trace,
-                                std::shared_ptr<DebugSessionState> debugger, std::uint32_t* failure_site) {
-    const bool hold_receiver = requires_receiver || receiver != ObjectId{};
-    if (hold_receiver) {
-        ATELIER_TRY(check_source_receiver(binding, receiver));
-    }
-    Invocation invocation(runtime, binding, layout, observer, trace, std::move(debugger), &scope);
-    if (trace)
-        trace->resources_cleared = false;
-    if (hold_receiver) {
-        ATELIER_TRY(invocation.frame.hold(receiver_slot, receiver, binding.type));
-    }
-    char backend_error[512]{};
-    BusinessFailure failure{};
-    const auto status = body(context, invocation, failure, backend_error, sizeof(backend_error));
-    // Inspect generated cleanup before the RAII fallback. Observers cannot
-    // manufacture success or substitute for this production invariant.
+Result<void> finish_invocation(Invocation& invocation, std::uint32_t status, const BusinessFailure& failure,
+                               std::uint32_t* failure_site) {
+    // Inspect generated cleanup before the RAII fallback.
     const bool cleared = invocation.resources_cleared();
     invocation.record_resources(cleared);
-    if (observer.complete)
-        observer.complete(observer.context, invocation, cleared && status == 0 && !invocation.failed);
     if (status != 0 && !invocation.failed && invocation.debug_aborted) {
         if (!cleared)
             return std::unexpected(
@@ -810,64 +808,54 @@ Result<void> execute_invocation(ExecutionScope& scope, Runtime& runtime, const B
         return std::unexpected(Error{invocation.failed ? invocation.error_code : ErrorCode::invocation_failed,
                                      invocation.failed ? invocation.error
                                      : reason          ? reason
-                                                       : backend_error});
+                                                       : "Source execution failed."});
     }
     if (!cleared)
         return std::unexpected(Error{ErrorCode::invocation_failed, "Generated code left execution resources alive."});
     return {};
 }
 
+// The caller retains admission until invocation roots are destroyed.
+// Published versions provide checked metadata from their own code.
+Result<void> execute_invocation(ExecutionScope& scope, Runtime& runtime, const Binding& binding,
+                                BusinessFrameLayout layout, bool requires_receiver, ObjectId receiver, void* context,
+                                InvocationBody body, BusinessTrace* trace, DebugSessionState* debugger,
+                                std::uint32_t* failure_site) {
+    Invocation invocation(runtime, binding, layout, trace, debugger, &scope);
+    if (trace)
+        trace->resources_cleared = false;
+    ATELIER_TRY(bind_receiver(invocation, requires_receiver, receiver));
+    BusinessFailure failure{};
+    const auto status = body(context, invocation, failure);
+    return finish_invocation(invocation, status, failure, failure_site);
+}
+
 Result<BusinessValue> execute_admitted(ExecutionScope& scope, Runtime& runtime, const Binding& binding,
-                                       BusinessCode* code, BusinessFrameLayout layout, bool requires_receiver,
-                                       ObjectId receiver, std::span<const BusinessValue> arguments,
-                                       InvocationObserver observer, void* result_data, BusinessTrace* trace,
-                                       std::shared_ptr<DebugSessionState> debugger, std::uint32_t* failure_site) {
+                                       const BusinessCodeInfo& info, BusinessFrameLayout layout, bool requires_receiver,
+                                       ObjectId receiver, std::span<const BusinessValue> arguments, void* result_data,
+                                       BusinessTrace* trace, DebugSessionState* debugger, std::uint32_t* failure_site) {
     struct Call {
-        BusinessCode* code;
+        const BusinessCodeInfo& info;
 
         std::span<const BusinessValue> arguments;
 
-        BusinessValue value;
-    } call{code, arguments, {}};
-    call.value.data = result_data;
-    const auto body = [](void* context, Invocation& invocation, BusinessFailure& failure, char* error,
-                         std::uint32_t capacity) noexcept {
-        auto& call = *static_cast<Call*>(context);
-        return atelier_invoke_business(call.code, &invocation, call.arguments.data(),
-                                       static_cast<std::uint32_t>(call.arguments.size()), &call.value, error, capacity,
-                                       invocation.trace, &failure.location);
-    };
-    ATELIER_TRY(execute_invocation(scope, runtime, binding, layout, requires_receiver, receiver, &call, body, observer,
-                                   trace, std::move(debugger), failure_site));
-    return call.value;
-}
+        void* result_data;
 
-Result<BusinessValue> execute_typed(Runtime& runtime, const Binding& binding, BusinessCode* code, ObjectId receiver,
-                                    std::span<const BusinessValue> arguments, InvocationObserver observer) {
-    ATELIER_TRY_BIND(activation, ExecutionScope::enter(runtime));
-    if (binding.runtime != &runtime)
-        return std::unexpected(Error{ErrorCode::invalid_type, "Business binding belongs to another Runtime."});
-    if (!code)
-        return std::unexpected(Error{ErrorCode::invalid_definition, "Business code has not been compiled."});
-    const auto info = atelier_business_info(code);
-    if (info.signature.is_coroutine)
-        return std::unexpected(
-            Error{ErrorCode::invalid_definition, "Coroutine code requires a persistent execution instance."});
-    if (aggregate(info.signature.result))
-        return std::unexpected(
-            Error{ErrorCode::argument_mismatch, "Math source results require typed value output storage."});
-    ATELIER_TRY(check_source_arguments(binding, info.signature, arguments));
-    if (!same_environment(binding, info.environment))
-        return std::unexpected(
-            Error{ErrorCode::invalid_definition, "Compiled member catalog does not match the host binding."});
-    const auto layout = atelier_business_layout(code);
-    if (layout.strong_slots < business_root_slots || layout.strong_slots >= observation_slot_bit ||
-        layout.weak_slots >= observation_slot_bit)
-        return std::unexpected(Error{ErrorCode::invalid_definition, "Business code has an invalid reference layout."});
-    if (layout.object_type_name && *layout.object_type_name && binding.name != layout.object_type_name)
-        return std::unexpected(
-            Error{ErrorCode::type_mismatch, "Business code was compiled for a different object type."});
-    return execute_admitted(*activation, runtime, binding, code, layout, info.requires_receiver, receiver, arguments,
-                            observer);
+        std::uint64_t staged_bits{};
+    } call{info, arguments, result_data};
+    const auto body = [](void* context, Invocation& invocation, BusinessFailure& failure) noexcept {
+        auto& call = *static_cast<Call*>(context);
+        void* output = call.result_data ? call.result_data : &call.staged_bits;
+        if (call.info.diagnostics)
+            return reinterpret_cast<BusinessDiagnosticEntry>(call.info.entry_address)(
+                &invocation, call.arguments.data(), output, &failure, invocation.trace);
+        return reinterpret_cast<BusinessEntry>(call.info.entry_address)(&invocation, call.arguments.data(), output,
+                                                                        &failure);
+    };
+    ATELIER_TRY(execute_invocation(scope, runtime, binding, layout, requires_receiver, receiver, &call, body, trace,
+                                   debugger, failure_site));
+    if (result_data)
+        return BusinessValue{info.signature.result, 0, ArgumentStorage::value, result_data};
+    return BusinessValue{info.signature.result, call.staged_bits};
 }
 }

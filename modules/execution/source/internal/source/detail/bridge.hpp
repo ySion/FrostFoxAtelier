@@ -114,8 +114,6 @@ struct Binding {
 
     std::vector<BoundMethod> methods;
 
-    std::vector<TypeId> dependencies;
-
     std::vector<BoundEnum> enumerations{};
 
     std::vector<BoundValue> values{};
@@ -184,21 +182,17 @@ BusinessValue scalar(const Scalar&, const Binding&);
 std::optional<Scalar> scalar_value(BusinessValue, const Binding* = nullptr);
 
 struct AbiArguments {
-    std::array<BusinessValue, 8> inline_values;
-
-    std::vector<BusinessValue> expanded;
-
-    std::span<BusinessValue> values;
+    InlineArray<BusinessValue, 8> values;
 
     PreparedArguments prepared;
 
     Result<void> status;
 
-    AbiArguments(const Binding&, const FunctionSignature&, std::span<const Scalar>);
+    AbiArguments(const Binding&, const FunctionSignature&, const BusinessSignature&, std::span<const Scalar>);
 
-    AbiArguments(const Binding&, const FunctionSignature&, std::span<const Argument>);
+    AbiArguments(const Binding&, const FunctionSignature&, const BusinessSignature&, std::span<const Argument>);
 
-    void initialize(const Binding&, const FunctionSignature&, std::span<const Argument>);
+    void initialize(const Binding&, const FunctionSignature&, const BusinessSignature&, std::span<const Argument>);
 
     AbiArguments(const AbiArguments&) = delete;
 
@@ -209,53 +203,24 @@ struct AbiArguments {
     AbiArguments& operator=(AbiArguments&&) = delete;
 };
 
-struct Invocation;
-
-// All observer state is borrowed until invocation/frame destruction. Callbacks
-// report failures through Result; complete only observes teardown and cannot
-// fail. No observer owns a second program or changes generated slot layout.
-struct InvocationObserver {
-    void* context{};
-
-    Result<void> (*begin)(void*, Invocation&) noexcept {};
-
-    Result<void> (*poll)(void*, Invocation&) noexcept {};
-
-    Result<void> (*finish)(void*, Invocation&) noexcept {};
-
-    void (*complete)(void*, const Invocation&, bool success) noexcept {};
-};
-
 struct Invocation {
     Runtime& runtime;
 
     const Binding& binding;
 
-    std::array<ObjectRoot, business_root_slots> inline_roots;
+    InlineArray<ObjectRoot, 2> roots;
 
-    std::vector<ObjectRoot> expanded_roots;
+    InlineArray<ObjectReference, 4> references;
 
-    std::span<ObjectRoot> roots;
-
-    std::array<ObjectReference, business_root_slots> inline_references;
-
-    std::vector<ObjectReference> expanded_references;
-
-    std::vector<ObjectReference> observations;
+    InlineArray<ObjectReference, 2> observations;
 
     ExecutionFrame frame;
 
-    NativeContext inline_native{};
-
-    std::vector<NativeContext> expanded_native;
-
-    std::span<NativeContext> native;
-
-    InvocationObserver observer;
+    InlineArray<NativeContext, 4> native;
 
     BusinessTrace* trace{};
 
-    std::shared_ptr<DebugSessionState> debugger;
+    DebugSessionState* debugger{};
 
     BusinessDebugFrame* debug_top{};
 
@@ -269,10 +234,10 @@ struct Invocation {
 
     ErrorCode error_code{ErrorCode::invocation_failed};
 
-    char error[512]{};
+    char error[512];
 
-    Invocation(Runtime&, const Binding&, BusinessFrameLayout, InvocationObserver = {}, BusinessTrace* = nullptr,
-               std::shared_ptr<DebugSessionState> = {}, ExecutionScope* = nullptr);
+    Invocation(Runtime&, const Binding&, BusinessFrameLayout, BusinessTrace* = nullptr, DebugSessionState* = nullptr,
+               ExecutionScope* = nullptr);
 
     bool resources_cleared() const noexcept;
 
@@ -300,12 +265,6 @@ void native_failure(void*, const NativeFailure*) noexcept;
 
 void native_segment(void*) noexcept;
 
-std::uint32_t begin(void*) noexcept;
-
-std::uint32_t poll(void*) noexcept;
-
-std::uint32_t finish(void*) noexcept;
-
 Result<ObjectReference> reference_value(Invocation&, std::uint32_t);
 
 std::uint32_t change_reference(void*, ReferenceOperation, std::uint32_t, std::uint32_t) noexcept;
@@ -318,45 +277,32 @@ extern const BusinessServices services;
 
 bool same_environment(const Binding&, const BusinessEnvironment&);
 
-Result<void> check_source_arguments(const Binding&, const BusinessSignature&, std::span<const BusinessValue>);
+bool try_bind_receiver(Invocation&, bool requires_receiver, ObjectId) noexcept;
 
-Result<void> check_source_receiver(const Binding&, ObjectId);
+Result<void> bind_receiver(Invocation&, bool requires_receiver, ObjectId);
+
+Result<void> finish_invocation(Invocation&, std::uint32_t status, const BusinessFailure&,
+                               std::uint32_t* failure_site = nullptr);
 
 // Parameter transport varies; admission, Invocation lifetime and explicit
 // cleanup are shared by generic and fixed-signature callers.
-using InvocationBody = std::uint32_t (*)(void*, Invocation&, BusinessFailure&, char*, std::uint32_t) noexcept;
+using InvocationBody = std::uint32_t (*)(void*, Invocation&, BusinessFailure&) noexcept;
 
 Result<void> execute_invocation(ExecutionScope&, Runtime&, const Binding&, BusinessFrameLayout, bool requires_receiver,
-                                ObjectId, void*, InvocationBody, InvocationObserver = {}, BusinessTrace* = nullptr,
-                                std::shared_ptr<DebugSessionState> = {}, std::uint32_t* failure_site = nullptr);
+                                ObjectId, void*, InvocationBody, BusinessTrace* = nullptr, DebugSessionState* = nullptr,
+                                std::uint32_t* failure_site = nullptr);
 
-Result<BusinessValue> execute_admitted(ExecutionScope&, Runtime&, const Binding&, BusinessCode*, BusinessFrameLayout,
-                                       bool requires_receiver, ObjectId, std::span<const BusinessValue>,
-                                       InvocationObserver = {}, void* result_data = nullptr, BusinessTrace* = nullptr,
-                                       std::shared_ptr<DebugSessionState> = {}, std::uint32_t* failure_site = nullptr);
-
-Result<BusinessValue> execute_typed(Runtime&, const Binding&, BusinessCode*, ObjectId, std::span<const BusinessValue>,
-                                    InvocationObserver = {});
+Result<BusinessValue> execute_admitted(ExecutionScope&, Runtime&, const Binding&, const BusinessCodeInfo&,
+                                       BusinessFrameLayout, bool requires_receiver, ObjectId,
+                                       std::span<const BusinessValue>, void* result_data = nullptr,
+                                       BusinessTrace* = nullptr, DebugSessionState* = nullptr,
+                                       std::uint32_t* failure_site = nullptr);
 
 struct ProgramAccess {
     using Compiler = decltype(&atelier_compile_business);
 
-    static Result<BusinessValue> invoke(const Program::Entry&, ObjectId, std::span<const BusinessValue>,
-                                        InvocationObserver = {});
-
-    static Result<BusinessValue> invoke(const Program::Lease&, ObjectId, std::span<const BusinessValue>,
-                                        InvocationObserver = {});
-
-    static Result<Coroutine> start(const Program::Entry&, ObjectId, std::span<const BusinessValue>,
-                                   InvocationObserver = {});
-
     static std::uintptr_t address(const Program::Lease&) noexcept;
 
     static Result<Program::Candidate> prepare(const Program::Request&, Compiler);
-
-    static Result<Coroutine> start_version(std::shared_ptr<const Program::Version>, ObjectId,
-                                           std::span<const BusinessValue>, InvocationObserver,
-                                           std::shared_ptr<DiagnosticState> = {},
-                                           std::shared_ptr<DebugSessionState> = {});
 };
 }

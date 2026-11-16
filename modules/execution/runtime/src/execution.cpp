@@ -1,5 +1,6 @@
 #include "runtime/execution.hpp"
 
+#include <cassert>
 #include <utility>
 
 namespace atelier {
@@ -10,8 +11,14 @@ auto invalid_slot() {
 }
 
 Result<ExecutionScope> ExecutionScope::enter(Runtime& runtime) {
+    if (runtime.try_enter_execution())
+        return ExecutionScope(&runtime);
     ATELIER_TRY(runtime.enter_execution());
-    return ExecutionScope(runtime);
+    return ExecutionScope(&runtime);
+}
+
+ExecutionScope ExecutionScope::try_enter(Runtime& runtime) noexcept {
+    return ExecutionScope(runtime.try_enter_execution() ? &runtime : nullptr);
 }
 
 ExecutionScope::~ExecutionScope() {
@@ -52,11 +59,13 @@ Result<void> ExecutionFrame::hold(std::uint32_t slot, ObjectId object_id) {
     detail::assert_serial_access();
     if (slot >= size())
         return invalid_slot();
+    if (!references_.empty()) {
+        ATELIER_TRY_BIND(reference, runtime_.strong_reference(object_id));
+        references_[slot] = *reference;
+        return {};
+    }
     ATELIER_TRY_BIND(root, runtime_.hold(object_id));
-    if (references_.empty())
-        slots_[slot] = std::move(*root);
-    else
-        references_[slot] = root->reference();
+    slots_[slot] = std::move(*root);
     return {};
 }
 
@@ -80,12 +89,34 @@ Result<void> ExecutionFrame::hold(std::uint32_t slot, ObjectId object, TypeId de
     detail::assert_serial_access();
     if (slot >= size())
         return invalid_slot();
+    if (!references_.empty()) {
+        ATELIER_TRY_BIND(reference, runtime_.strong_reference(object, declared_type));
+        references_[slot] = *reference;
+        return {};
+    }
     ATELIER_TRY_BIND(root, runtime_.hold(object, declared_type));
-    if (references_.empty())
-        slots_[slot] = std::move(*root);
-    else
-        references_[slot] = root->reference();
+    slots_[slot] = std::move(*root);
     return {};
+}
+
+Result<void> ExecutionFrame::try_acquire(std::uint32_t slot, const ObjectReference& reference) {
+    detail::assert_serial_access();
+    if (slot >= size())
+        return invalid_slot();
+    ATELIER_TRY_BIND(strong, runtime_.try_acquire_reference(reference));
+    if (!references_.empty()) {
+        references_[slot] = *strong;
+        return {};
+    }
+    ATELIER_TRY_BIND(root, runtime_.hold(*strong));
+    slots_[slot] = std::move(*root);
+    return {};
+}
+
+void ExecutionFrame::set_validated_reference(std::uint32_t slot, TypeId type, ObjectId object) noexcept {
+    detail::assert_serial_access();
+    assert(slot < references_.size());
+    references_[slot] = ObjectReference{{type, ValueForm::strong_reference}, object};
 }
 
 Result<ObjectReference> ExecutionFrame::reference(std::uint32_t slot) const {

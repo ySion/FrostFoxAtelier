@@ -13,44 +13,65 @@ using namespace detail;
 
 namespace {
 struct Samples {
+    static constexpr std::size_t fast_slots = 16;
+
+    const MaterialTexture* indexed[fast_slots];
+
+    bool has_indexed{};
+
     std::span<const MaterialTexture> textures;
 
     // The backend stops at the first failed callback. Owning errors stay on
     // the host side; only the status crosses the C ABI.
     std::optional<Error> error{};
+
+    const MaterialTexture* lookup(std::uint32_t slot) const noexcept {
+        if (has_indexed && slot < fast_slots && indexed[slot])
+            return indexed[slot];
+        const auto found = std::ranges::find(textures, slot, &MaterialTexture::slot);
+        return found == textures.end() ? nullptr : &*found;
+    }
 };
+
+bool finite_float_bits(const void* address) noexcept {
+    std::uint32_t bits;
+    std::memcpy(&bits, address, sizeof(bits));
+    return (bits & 0x7f800000u) != 0x7f800000u;
+}
 
 std::uint32_t sample_texture(void* invocation, std::uint32_t slot, const float* uv, float* result) noexcept {
     auto& samples = *static_cast<Samples*>(invocation);
-    if (!std::isfinite(uv[0]) || !std::isfinite(uv[1])) {
+    if (!finite_float_bits(&uv[0]) || !finite_float_bits(&uv[1])) {
         samples.error = Error{ErrorCode::invocation_failed, "Material sample UV is not finite."};
         return 1;
     }
-    const auto texture = std::ranges::find(samples.textures, slot, &MaterialTexture::slot);
+    const auto* texture = samples.lookup(slot);
     // Source can only copy injected texture tokens; evaluate verified each binding.
-    assert(texture != samples.textures.end() && texture->sample);
+    assert(texture && texture->sample);
     auto value = texture->sample(texture->data, {uv[0], uv[1]});
     if (!value) {
         samples.error = std::move(value.error());
         return 1;
     }
-    for (std::size_t i = 0; i < 4; ++i)
-        if (!std::isfinite((*value)[i])) {
+    for (std::size_t i = 0; i < 4; ++i) {
+        const float lane = (*value)[i];
+        if (!finite_float_bits(&lane)) {
             samples.error = Error{ErrorCode::invocation_failed, "Material sample result is not finite."};
             return 1;
         }
+    }
     std::memcpy(result, &*value, sizeof(*value));
     return 0;
 }
 
 std::uint32_t sample_orientation(void* invocation, std::uint32_t slot, const float* uv, float* result) noexcept {
     auto& samples = *static_cast<Samples*>(invocation);
-    if (!std::isfinite(uv[0]) || !std::isfinite(uv[1])) {
+    if (!finite_float_bits(&uv[0]) || !finite_float_bits(&uv[1])) {
         samples.error = Error{ErrorCode::invocation_failed, "Material sample_orientation UV is not finite."};
         return 1;
     }
-    const auto texture = std::ranges::find(samples.textures, slot, &MaterialTexture::slot);
-    assert(texture != samples.textures.end());
+    const auto* texture = samples.lookup(slot);
+    assert(texture);
     if (!texture->orientation) {
         samples.error = Error{ErrorCode::invocation_failed, "Missing material sample_orientation callback."};
         return 1;
@@ -60,28 +81,49 @@ std::uint32_t sample_orientation(void* invocation, std::uint32_t slot, const flo
         samples.error = std::move(value.error());
         return 1;
     }
-    for (std::size_t i = 0; i < 2; ++i)
-        if (!std::isfinite((*value)[i])) {
+    for (std::size_t i = 0; i < 2; ++i) {
+        const float lane = (*value)[i];
+        if (!finite_float_bits(&lane)) {
             samples.error = Error{ErrorCode::invocation_failed, "Material sample_orientation result is not finite."};
             return 1;
         }
+    }
     std::memcpy(result, &*value, sizeof(*value));
     return 0;
 }
 
-bool finite_value(BusinessType type, const BusinessEnvironment& environment, const std::byte* bytes) {
-    if (type == ValueKind::f32) {
-        float value;
-        std::memcpy(&value, bytes, sizeof(value));
-        return std::isfinite(value);
+struct CheckedLayout {
+    std::vector<std::uint32_t> floats;
+
+    std::vector<std::uint32_t> booleans;
+
+    bool valid(const std::byte* bytes) const noexcept {
+        for (const auto offset : floats)
+            if (!finite_float_bits(bytes + offset))
+                return false;
+        for (const auto offset : booleans)
+            if (static_cast<unsigned char>(bytes[offset]) > 1u)
+                return false;
+        return true;
     }
-    if (type == ValueKind::boolean)
-        return *bytes == std::byte{} || *bytes == std::byte{1};
+};
+
+void collect_checked_layout(BusinessType type, const BusinessEnvironment& environment, std::uint32_t offset,
+                            CheckedLayout& out) {
+    if (type == ValueKind::f32) {
+        out.floats.push_back(offset);
+        return;
+    }
+    if (type == ValueKind::boolean) {
+        out.booleans.push_back(offset);
+        return;
+    }
+    if (type.kind != ValueKind::record)
+        return;
     const auto& layout = environment.values[type.type_index];
     for (std::uint32_t i = 0; i < layout.field_count; ++i)
-        if (!finite_value(layout.fields[i].type, environment, bytes + layout.fields[i].offset))
-            return false;
-    return true;
+        collect_checked_layout(layout.fields[i].type, environment,
+                               offset + static_cast<std::uint32_t>(layout.fields[i].offset), out);
 }
 
 void parameter_fields(BusinessType type, const BusinessEnvironment& environment, std::string path, std::size_t offset,
@@ -105,6 +147,22 @@ void parameter_fields(BusinessType type, const BusinessEnvironment& environment,
 
 struct MaterialProgram::State {
     std::unique_ptr<MaterialCode, decltype(&atelier_destroy_material)> code{nullptr, atelier_destroy_material};
+
+    MaterialCodeView view{};
+
+    BusinessEntry shade_entry{};
+
+    BusinessType context_type{};
+
+    BusinessType parameter_type{};
+
+    BusinessType resource_type{};
+
+    CheckedLayout context_check;
+
+    CheckedLayout parameter_check;
+
+    CheckedLayout output_check;
 
     MaterialLayout context;
 
@@ -178,8 +236,7 @@ Result<std::string> MaterialProgram::generate_hlsl(std::string_view name_space, 
             : "float4 atelier_material_sample(uint environment,uint local_slot,float2 uv);\n#define ATELIER_MATERIAL_FOOTPRINT 0\n";
     result += coverage ? "#define ATELIER_MATERIAL_COVERAGE 1\n" : "#define ATELIER_MATERIAL_COVERAGE 0\n";
     result += "float2 atelier_material_sample_orientation(uint environment,uint local_slot,float2 uv);\n";
-    return result + "namespace " + std::string(name_space) + " {\n" +
-           atelier_material_code_view(state_->code.get()).hlsl +
+    return result + "namespace " + std::string(name_space) + " {\n" + state_->view.hlsl +
            "}\n#undef ATELIER_MATERIAL_FOOTPRINT\n#undef ATELIER_MATERIAL_COVERAGE\n";
 }
 
@@ -191,45 +248,50 @@ Result<void> MaterialProgram::evaluate(std::span<const std::byte> context, std::
         output.size() != state->output.size)
         return std::unexpected(
             Error{ErrorCode::argument_mismatch, "Material input/output byte sizes do not match the captured layouts."});
-    const auto view = atelier_material_code_view(state->code.get());
-    for (const auto& input : state->textures) {
-        const auto found = std::ranges::find(textures, input.slot, &MaterialTexture::slot);
-        if (found == textures.end() || !found->sample)
-            return std::unexpected(Error{ErrorCode::argument_mismatch, "Missing material texture input: " + input.key});
-        if (std::ranges::count(textures, input.slot, &MaterialTexture::slot) != 1)
-            return std::unexpected(
-                Error{ErrorCode::argument_mismatch, "Duplicate material texture input: " + input.key});
+    Samples samples{};
+    samples.textures = textures;
+    if (!state->textures.empty()) {
+        samples.has_indexed = true;
+        for (const auto& input : state->textures) {
+            const MaterialTexture* match = nullptr;
+            std::size_t count = 0;
+            for (const auto& item : textures) {
+                if (item.slot == input.slot) {
+                    if (!match)
+                        match = &item;
+                    ++count;
+                }
+            }
+            if (!match || !match->sample)
+                return std::unexpected(
+                    Error{ErrorCode::argument_mismatch, "Missing material texture input: " + input.key});
+            if (count != 1)
+                return std::unexpected(
+                    Error{ErrorCode::argument_mismatch, "Duplicate material texture input: " + input.key});
+            if (input.slot < Samples::fast_slots)
+                samples.indexed[input.slot] = match;
+        }
     }
-    const auto info = atelier_business_info(view.shade);
-    if (!finite_value(info.signature.parameters[0].type, info.environment, context.data()) ||
-        !finite_value(info.signature.parameters[1].type, info.environment, parameters.data()))
+    if (!state->context_check.valid(context.data()) || !state->parameter_check.valid(parameters.data()))
         return std::unexpected(Error{ErrorCode::argument_mismatch, "Material inputs must be finite values."});
-    atelier::detail::ValueStorage context_storage;
-    atelier::detail::ValueStorage parameter_storage;
     atelier::detail::ValueStorage output_storage;
-    atelier::detail::ValueStorage resource_storage;
-    auto* context_data = context_storage.prepare(context.size(), state->context.alignment);
-    auto* parameter_data = parameter_storage.prepare(parameters.size(), state->parameters.alignment);
     auto* output_data = output_storage.prepare(output.size(), state->output.alignment);
-    std::memcpy(context_data, context.data(), context.size());
-    std::memcpy(parameter_data, parameters.data(), parameters.size());
-    BusinessValue arguments[3]{{info.signature.parameters[0].type, 0, ArgumentStorage::value, context_data},
-                               {info.signature.parameters[1].type, 0, ArgumentStorage::value, parameter_data}};
-    if (view.resources != UINT32_MAX) {
-        auto* data = resource_storage.prepare(state->resources.size, state->resources.alignment);
-        std::memcpy(data, state->resource_values.data(), state->resource_values.size());
-        arguments[2] = {info.signature.parameters[2].type, 0, ArgumentStorage::value, data};
+    std::byte empty{};
+    BusinessValue arguments[3]{
+        {state->context_type, 0, ArgumentStorage::value, context.empty() ? &empty : context.data()},
+        {state->parameter_type, 0, ArgumentStorage::value, parameters.empty() ? &empty : parameters.data()}};
+    if (state->view.resources != UINT32_MAX) {
+        arguments[2] = {state->resource_type, 0, ArgumentStorage::value,
+                        state->resource_values.empty() ? &empty : state->resource_values.data()};
     }
-    BusinessValue result{info.signature.result, 0, ArgumentStorage::value, output_data};
-    Samples samples{textures};
-    char error[1024]{};
-    if (atelier_invoke_business(view.shade, &samples, arguments, info.signature.parameter_count, &result, error,
-                                sizeof(error))) {
+    BusinessFailure failure{};
+    if (state->shade_entry(&samples, arguments, output_data, &failure) != 0) {
         if (samples.error)
             return std::unexpected(std::move(*samples.error));
-        return std::unexpected(Error{ErrorCode::invocation_failed, error});
+        const auto* reason = failure_message(failure.reason);
+        return std::unexpected(Error{ErrorCode::invocation_failed, reason ? reason : "Material evaluation failed."});
     }
-    if (!finite_value(info.signature.result, info.environment, output_data))
+    if (!state->output_check.valid(output_data))
         return std::unexpected(Error{ErrorCode::invocation_failed, "Material output is not finite."});
     std::memcpy(output.data(), output_data, output.size());
     return {};
@@ -267,7 +329,8 @@ Result<std::shared_ptr<const MaterialProgram>> compile_material(Runtime& runtime
     const auto output_type = value_kind(*binding, output);
     const auto texture_type = value_kind(*binding, texture_input);
     if (context_type.kind != ValueKind::record || output_type.kind != ValueKind::record ||
-        texture_type.kind != ValueKind::record)
+        texture_type.kind != ValueKind::record || binding->values[context_type.type_index].math ||
+        binding->values[output_type.type_index].math)
         return fail(Error{ErrorCode::invalid_type,
                           "Material Context/Output/TextureInput must be registered plain records in this Runtime."});
     // Capture ordinary plain defaults while the compile catalog is alive.
@@ -332,6 +395,15 @@ Result<std::shared_ptr<const MaterialProgram>> compile_material(Runtime& runtime
     state->code.reset(code);
     const auto view = atelier_material_code_view(code);
     const auto info = atelier_business_info(view.shade);
+    state->view = view;
+    state->shade_entry = reinterpret_cast<BusinessEntry>(info.entry_address);
+    state->context_type = info.signature.parameters[0].type;
+    state->parameter_type = info.signature.parameters[1].type;
+    if (view.resources != UINT32_MAX)
+        state->resource_type = info.signature.parameters[2].type;
+    collect_checked_layout(state->context_type, info.environment, 0, state->context_check);
+    collect_checked_layout(state->parameter_type, info.environment, 0, state->parameter_check);
+    collect_checked_layout(info.signature.result, info.environment, 0, state->output_check);
     const auto& c = binding->values[context_type.type_index];
     const auto& o = binding->values[output_type.type_index];
     const auto& p = binding->values[view.parameters];
@@ -364,7 +436,7 @@ Result<std::shared_ptr<const MaterialProgram>> compile_material(Runtime& runtime
     Samples samples{};
     if (atelier_invoke_business(view.defaults, &samples, nullptr, 0, &result, error, sizeof(error)))
         return fail(Error{ErrorCode::invocation_failed, error});
-    if (!finite_value(result.kind, info.environment, bytes))
+    if (!state->parameter_check.valid(bytes))
         return fail(Error{ErrorCode::invalid_definition, "Material defaults must be finite."});
     state->defaults.assign(bytes, bytes + p.size);
     return std::shared_ptr<const MaterialProgram>(new MaterialProgram(std::move(state)));

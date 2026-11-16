@@ -11,10 +11,12 @@ namespace atelier::detail {
 // owner neither constructs values nor depends on Runtime metadata. Preparing
 // another layout invalidates previous contents and borrowed addresses.
 class ValueStorage {
-    alignas(double) std::byte inline_[128];
+    static constexpr std::size_t inline_alignment = 32;
+
+    alignas(inline_alignment) std::byte inline_[128];
 
     struct Delete {
-        std::size_t alignment{alignof(double)};
+        std::size_t alignment{inline_alignment};
 
         void operator()(std::byte* storage) const noexcept { ::operator delete(storage, std::align_val_t{alignment}); }
     };
@@ -31,7 +33,7 @@ public:
     ValueStorage& operator=(const ValueStorage&) = delete;
 
     [[nodiscard]] std::byte* prepare(std::size_t size, std::size_t alignment) {
-        if (size <= sizeof(inline_) && alignment <= alignof(double))
+        if (size <= sizeof(inline_) && alignment <= inline_alignment)
             return inline_;
         if (size > capacity_ || alignment > expanded_.get_deleter().alignment) {
             const auto capacity = std::max(size, capacity_);

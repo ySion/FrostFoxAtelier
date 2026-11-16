@@ -21,6 +21,8 @@ struct NativeContext {
 
     [[nodiscard]] static Result<NativeContext> resolve(Runtime&, ObjectId, TypeId);
 
+    [[nodiscard]] static bool try_resolve(Runtime&, ObjectId, TypeId, NativeContext&) noexcept;
+
     // Admission/identity checks already succeeded in this execution segment.
     void stamp() const noexcept;
 };
@@ -64,6 +66,8 @@ class ExecutionScope final {
 public:
     [[nodiscard]] static Result<ExecutionScope> enter(Runtime& runtime);
 
+    [[nodiscard]] static ExecutionScope try_enter(Runtime& runtime) noexcept;
+
     ~ExecutionScope();
 
     ExecutionScope(ExecutionScope&& other) noexcept;
@@ -74,10 +78,12 @@ public:
 
     ExecutionScope& operator=(ExecutionScope&&) = delete;
 
+    [[nodiscard]] explicit operator bool() const noexcept { return runtime_ != nullptr; }
+
 private:
     friend class ExecutionFrame;
 
-    explicit ExecutionScope(Runtime& runtime) noexcept : runtime_(&runtime) {}
+    explicit ExecutionScope(Runtime* runtime) noexcept : runtime_(runtime) {}
 
     Runtime* runtime_;
 };
@@ -131,6 +137,11 @@ public:
 
     // Copy a typed holding value, including null or a preserved stale identity.
     [[nodiscard]] Result<void> hold(std::uint32_t slot, const ObjectReference& reference);
+
+    [[nodiscard]] Result<void> try_acquire(std::uint32_t slot, const ObjectReference& reference);
+
+    // Caller-validated live strong reference for a synchronous ExecutionScope frame.
+    void set_validated_reference(std::uint32_t slot, TypeId type, ObjectId object) noexcept;
 
     [[nodiscard]] Result<ObjectReference> reference(std::uint32_t slot) const;
 
