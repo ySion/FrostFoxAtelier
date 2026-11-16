@@ -19,7 +19,7 @@ if ($atelierMissingFiles.Count -ne 0) {
         throw 'Pinned LLVM is missing or incomplete. Run: . ./tools/enter-dev.ps1 -InstallToolchain'
     }
     New-Item -ItemType Directory -Path $atelierLlvm -Force | Out-Null
-    $atelierArchive = Join-Path $atelierTools "llvm-$($atelierLock.llvm).tar.zst"
+    $atelierArchive = Join-Path $atelierTools "llvm-$($atelierLock.llvm).tar.xz"
     if (-not (Test-Path -LiteralPath $atelierArchive)) {
         & curl.exe --fail --location --retry 2 --retry-all-errors --connect-timeout 20 `
             --speed-time 30 --speed-limit 1024 --continue-at - --progress-bar `
@@ -47,6 +47,11 @@ if ($atelierMissingFiles.Count -ne 0) {
         throw "Pinned LLVM archive does not contain the required SDK files: $($atelierMissingFiles -join ', ')"
     }
     Remove-Item -LiteralPath $atelierArchive
+    Get-ChildItem -LiteralPath $atelierTools -Directory -Filter 'llvm-*' |
+        Where-Object { $_.FullName -ne $atelierLlvm } |
+        Remove-Item -Recurse -Force
+    Get-ChildItem -LiteralPath $atelierTools -File -Filter 'llvm-*.tar.*' |
+        Remove-Item -Force
 }
 
 $atelierVswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'

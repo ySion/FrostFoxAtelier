@@ -138,7 +138,7 @@ Entry.start / Lease.start → 固定 Version、复制参数、稳定 Frame
 这些取舍的直接依据与适用边界：
 
 - [LLVM ORC 资源移除](https://llvm.org/docs/ORCv2.html#how-to-remove-code)不证明活动返回地址或直接调用已经消失，故代码退休同时受 Version 拥有关系和 Runtime 活动执行区间保护；[Windows 动态展开表](https://learn.microsoft.com/en-us/windows/win32/api/winnt/nf-winnt-rtladdfunctiontable)须随可执行分配登记和撤销，而不是为链接成功去掉 `.pdata/.xdata`。
-- 当前采用 COFF/JITLink allocation actions，不依赖完整 COFFPlatform。所核对的 [LLVM COFF runtime](https://github.com/llvm/llvm-project/blob/llvmorg-23.1.1/compiler-rt/lib/orc/coff_platform.cpp)有特定回调异常桥限制；[debugger helper](https://github.com/llvm/llvm-project/blob/llvmorg-23.1.1/llvm/lib/ExecutionEngine/Orc/Debugging/DebuggerSupport.cpp)不接通 COFF 源码调试。版本升级须复核这些路径，不能把平台展开成功当作源码调试或任意 C++ 异常互通。
+- 当前采用 COFF/JITLink allocation actions，不依赖完整 COFFPlatform。所核对的 [LLVM COFF runtime](https://github.com/llvm/llvm-project/blob/llvmorg-23.1.5/compiler-rt/lib/orc/coff_platform.cpp)有特定回调异常桥限制；[debugger helper](https://github.com/llvm/llvm-project/blob/llvmorg-23.1.5/llvm/lib/ExecutionEngine/Orc/Debugging/DebuggerSupport.cpp)不接通 COFF 源码调试。版本升级须复核这些路径，不能把平台展开成功当作源码调试或任意 C++ 异常互通。
 - [LLVM switched-resume](https://llvm.org/docs/Coroutines.html#switched-resume-lowering)复用编译器的帧布局与恢复/销毁拆分；冷启动、同线程推进、合作取消和旧版本 pin 仍由本项目负责。取消请求不等于外部操作已经停止，见 [.NET 合作取消](https://learn.microsoft.com/en-us/dotnet/standard/threading/cancellation-in-managed-threads)。不为假设需求增加有栈执行器，也不把 LLVM 转换等同 GC 或调度器。
 - 共享原生存储不等于相同调用 ABI 或零复制；UE-AS 的[真实 C++ caller 适配](https://github.com/Hazelight/UnrealEngine-Angelscript/blob/a7890667d1abb289bc2cec16b3da075faf836f2d/Engine/Source/Runtime/CoreUObject/Public/UObject/CoreNative.h#L36-L151)提供这一边界的对照。该固定源码需要 Unreal 源码访问权限，本项目仍由共享签名、参数准备与 DLL 私有表示各自承担职责。
 

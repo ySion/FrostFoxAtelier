@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// Atelier backport from llvm-project llvmorg-23.1.1, same upstream path.
+// Atelier backport from llvm-project llvmorg-23.1.5, same upstream path.
 // Upstream SHA-256: a638a2786a41f7552d5df6220b790fd5530ecbc6c262bf90859fe866ee203c56
 // Local change: abandon failed finalization; undo successful actions first
 // if releasing finalization storage fails. Keep normal allocation unchanged.
@@ -19,7 +19,7 @@
 #define DEBUG_TYPE "jitlink"
 
 static_assert(LLVM_VERSION_MAJOR == 23 && LLVM_VERSION_MINOR == 1 &&
-                  LLVM_VERSION_PATCH == 1,
+                  LLVM_VERSION_PATCH == 5,
               "Rebase the JITLink finalization backport before changing LLVM.");
 
 using namespace llvm;

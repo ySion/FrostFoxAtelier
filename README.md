@@ -135,7 +135,7 @@ CMake 的 `acceptance_headless` 和 `acceptance_window` 是两类目标的清单
 . ./tools/enter-dev.ps1 -InstallToolchain
 ```
 
-脚本只在项目 `.tools/` 内下载、校验和解压完整 LLVM SDK（编译工具、开发头文件、CMake 配置和库），并准备当前进程环境，不改系统 PATH 或 PowerShell 配置。已有仅含编译工具的旧目录需要重新执行安装命令补齐 SDK。脚本不负责安装或升级 Visual Studio。`.tools/`、`out/` 和本机用户 presets 均不提交。
+脚本只在项目 `.tools/` 内下载、校验和解压完整 LLVM SDK（编译工具、开发头文件、CMake 配置和库），并准备当前进程环境，不改系统 PATH 或 PowerShell 配置。升级锁定版本后执行安装命令会自动清理 `.tools/` 下未锁定的旧版 `llvm-*` 目录，随后运行 `cmake --preset <配置> --fresh` 刷新工具链缓存。脚本不负责安装或升级 Visual Studio。`.tools/`、`out/` 和本机用户 presets 均不提交。
 
 唯一版本清单位于 [cmake/toolchain-lock.json](cmake/toolchain-lock.json)，版本升级同时更新锁文件并验证构建环境，不在文档中维护第二份版本表。
 
