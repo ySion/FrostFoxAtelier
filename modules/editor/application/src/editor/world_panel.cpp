@@ -36,8 +36,8 @@ bool same(const renderer::ProbeVolumeStats& a, const renderer::ProbeVolumeStats&
            a.reset_probes == b.reset_probes;
 }
 
-std::wstring vector_text(const std::array<float, 3>& v) {
-    return std::format(L"{:.4g} / {:.4g} / {:.4g}", v[0], v[1], v[2]);
+std::wstring vector_text(math::Vector3 v) {
+    return std::format(L"{:.4g} / {:.4g} / {:.4g}", v.x, v.y, v.z);
 }
 }
 

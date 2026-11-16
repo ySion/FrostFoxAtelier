@@ -40,7 +40,7 @@ Result<SourceFile> read_source_file(const std::filesystem::path& path, std::stri
     file.seekg(0);
     if (!file.read(text.data(), static_cast<std::streamsize>(text.size())))
         return fail("Could not read the complete file " + *name);
-    if (!StringView(std::string_view(text)).is_valid_utf8())
+    if (!StringView(text).is_valid_utf8())
         return fail("Source file is not valid UTF-8: " + *name);
     const auto version = content_hash(text);
     if (text.starts_with("\xef\xbb\xbf"))

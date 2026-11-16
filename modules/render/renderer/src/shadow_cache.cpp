@@ -41,67 +41,37 @@ Result<void> check(bool condition, const char* message) {
     return {};
 }
 
-M matrix(const std::array<float, 16>& input) {
-    M result;
-    for (std::size_t i = 0; i < 16; ++i)
-        result.elements[i] = input[i];
+Result<math::Matrix4> packed(const M& input) {
+    const math::Matrix4 result(input);
+    ATELIER_TRY(check(math::is_finite(result), "Shadow projection exceeds GPU float representation"));
     return result;
 }
 
-Result<std::array<float, 16>> packed(const M& input) {
-    std::array<float, 16> result;
-    for (std::size_t i = 0; i < 16; ++i) {
-        result[i] = static_cast<float>(input.elements[i]);
-        ATELIER_TRY(check(std::isfinite(result[i]), "Shadow projection exceeds GPU float representation"));
-    }
-    return result;
-}
-
-double dot(V a, V b) {
-    return a.x * b.x + a.y * b.y + a.z * b.z;
-}
-
-double length(V a) {
-    return std::sqrt(dot(a, a));
-}
-
-V cross(V a, V b) {
-    return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x};
+double fast_length(V a) {
+    return std::sqrt(math::length_squared(a));
 }
 
 Result<V> unit(V a) {
-    const auto l = length(a);
-    ATELIER_TRY(check(l > 0 && std::isfinite(l), "Invalid shadow basis"));
-    return a / l;
+    const auto result = math::try_normalize(a);
+    ATELIER_TRY(check(result.has_value(), "Invalid shadow basis"));
+    return *result;
 }
 
-V corner(const ShadowBounds& b, std::uint32_t i) {
-    return {i & 1 ? b.maximum[0] : b.minimum[0], i & 2 ? b.maximum[1] : b.minimum[1],
-            i & 4 ? b.maximum[2] : b.minimum[2]};
-}
-
-double distance_squared(const ShadowBounds& b, V p) {
-    double result = 0;
-    for (std::size_t axis = 0; axis < 3; ++axis) {
-        const double d = std::max(std::max(double(b.minimum[axis]) - p[axis], p[axis] - b.maximum[axis]), 0.0);
-        result += d * d;
-    }
-    return result;
-}
-
-double far_distance(const ShadowBounds& b, V p) {
+double far_distance(const math::Bounds& b, V p) {
+    const math::Boundsd wide(b);
     double result = 0;
     for (std::uint32_t i = 0; i < 8; ++i)
-        result = std::max(result, length(corner(b, i) - p));
+        result = std::max(result, fast_length(math::corner(wide, i) - p));
     return result;
 }
 
 // Homogeneous plane rejection is conservative for boxes crossing the eye or
 // near plane, unlike projecting only the corners and dividing by w.
-bool intersects(const ShadowBounds& b, const M& vp, double padding = 0, double far_depth = 0) {
+bool intersects(const math::Bounds& b, const M& vp, double padding = 0, double far_depth = 0) {
+    const math::Boundsd wide(b);
     std::array<bool, 6> outside{true, true, true, true, true, true};
     for (std::uint32_t i = 0; i < 8; ++i) {
-        const auto p = corner(b, i);
+        const auto p = math::corner(wide, i);
         const auto q = math::Vector4d{p.x, p.y, p.z, 1} * vp;
         const double w = q.w * (1 + padding);
         // The GPU uses FP32 matrices/world positions. Include dot-product
@@ -121,8 +91,8 @@ bool intersects(const ShadowBounds& b, const M& vp, double padding = 0, double f
     return std::ranges::none_of(outside, [](bool value) { return value; });
 }
 
-ShadowBounds expanded(const ShadowBounds& b, double amount) {
-    ShadowBounds result;
+math::Bounds expanded(const math::Bounds& b, double amount) {
+    math::Bounds result;
     for (std::size_t i = 0; i < 3; ++i) {
         // Outward rounding keeps the float bound conservative.
         result.minimum[i] =
@@ -139,11 +109,9 @@ Result<double> ceil_power_two(double value) {
 }
 
 Result<M> view(V origin, V forward, V up) {
-    ATELIER_TRY_BIND(z, unit(forward));
-    ATELIER_TRY_BIND(x, unit(cross(up, *z)));
-    const auto y = cross(*z, *x);
-    return M{{x->x, y.x, z->x, 0, x->y, y.y, z->y, 0, x->z, y.z, z->z, 0, -dot(origin, *x), -dot(origin, y),
-              -dot(origin, *z), 1}};
+    const auto result = math::try_look_to_lh(origin, forward, up);
+    ATELIER_TRY(check(result.has_value(), "Invalid shadow basis"));
+    return *result;
 }
 
 Result<M> point_projection(V origin, std::uint32_t face, double near_z, double far_z) {
@@ -229,7 +197,7 @@ Result<V> unproject(const M& inverse, double x, double y, double z) {
 // faces from it, so for every receiver the light now reaches, the faces it
 // lies in as seen from there are kept too.
 Result<Request> point_request(const Frame& frame, const GpuLightSource& source, std::span<const ShadowCaster> receivers,
-                              const M& camera_view, const std::array<float, 3>* drawn) {
+                              const M& camera_view, const math::Vector3* drawn) {
     Request request;
     request.kind = 1;
     request.count = 6;
@@ -238,8 +206,8 @@ Result<Request> point_request(const Frame& frame, const GpuLightSource& source, 
     // Match the FP32 minimum in lit_local_range before widening to double.
     const double effective_range = std::max(source.origin_range[3], .001f);
     const double extent = source.meta[0] == 1
-                              ? .5 * (length({source.edge1_area[0], source.edge1_area[1], source.edge1_area[2]}) +
-                                      length({source.edge2[0], source.edge2[1], source.edge2[2]}))
+                              ? .5 * (fast_length({source.edge1_area[0], source.edge1_area[1], source.edge1_area[2]}) +
+                                      fast_length({source.edge2[0], source.edge2[1], source.edge2[2]}))
                               : source.direction_radius[3];
     const double support = effective_range + extent;
     const double rounding_margin = std::max(
@@ -255,7 +223,8 @@ Result<Request> point_request(const Frame& frame, const GpuLightSource& source, 
     }
     const auto mark = [&](V at, const std::array<M, 6>& projections) {
         for (const auto& receiver : receivers) {
-            if (distance_squared(receiver.bounds, origin) > conservative_support * conservative_support)
+            if (math::distance_squared(math::Boundsd(receiver.bounds), origin) >
+                conservative_support * conservative_support)
                 continue;
             const auto bounds =
                 expanded(receiver.bounds, far_distance(receiver.bounds, at) * normal_offset_ratio + rounding_margin);
@@ -265,7 +234,7 @@ Result<Request> point_request(const Frame& frame, const GpuLightSource& source, 
     };
     mark(origin, request.projection);
     if (drawn) {
-        const V at{(*drawn)[0], (*drawn)[1], (*drawn)[2]};
+        const V at(*drawn);
         std::array<M, 6> projections;
         for (std::uint32_t face = 0; face < 6; ++face) {
             ATELIER_TRY_BIND(projection, point_projection(at, face, near_z, far_z));
@@ -274,7 +243,7 @@ Result<Request> point_request(const Frame& frame, const GpuLightSource& source, 
         mark(at, projections);
     }
     const auto eye = math::Vector4d{origin.x, origin.y, origin.z, 1} * camera_view;
-    const auto projection = matrix(frame.camera.projection);
+    const M projection(frame.camera.projection);
     const double pixels = std::max(double(frame.scene_viewport.width) * std::abs(projection.elements[0]),
                                    double(frame.scene_viewport.height) * std::abs(projection.elements[5]));
     const bool perspective = std::abs(projection.elements[11]) > 0;
@@ -284,7 +253,7 @@ Result<Request> point_request(const Frame& frame, const GpuLightSource& source, 
     const double radiance = .2126 * source.radiance[0] + .7152 * source.radiance[1] + .0722 * source.radiance[2];
     const double flux = source.meta[0] == 1 ? std::numbers::pi * source.edge1_area[3] * ((source.meta[1] & 1u) ? 2 : 1)
                                             : 4 * std::numbers::pi;
-    const double camera_distance = length({eye.x, eye.y, eye.z});
+    const double camera_distance = fast_length({eye.x, eye.y, eye.z});
     const double solid_angle =
         camera_distance <= support
             ? 4 * std::numbers::pi
@@ -304,7 +273,7 @@ Result<Request> directional_request(const Frame& frame, const GpuLightSource& so
     request.size = 1024;
     if (receivers.empty())
         return request;
-    const auto inverse_projection = math::try_inverse(matrix(frame.camera.projection));
+    const auto inverse_projection = math::try_inverse(M(frame.camera.projection));
     const auto inverse_view = math::try_inverse(camera_view);
     ATELIER_TRY(check(bool(inverse_projection) && bool(inverse_view), "Invalid shadow camera inverse"));
     std::array<V, 4> near_corners;
@@ -335,11 +304,13 @@ Result<Request> directional_request(const Frame& frame, const GpuLightSource& so
     }
     ATELIER_TRY(check(camera_far > camera_near, "Invalid shadow camera depth interval"));
     double receiver_far = camera_near;
-    for (const auto& receiver : receivers)
+    for (const auto& receiver : receivers) {
+        const math::Boundsd wide(receiver.bounds);
         for (std::uint32_t i = 0; i < 8; ++i) {
-            const auto p = corner(receiver.bounds, i);
+            const auto p = math::corner(wide, i);
             receiver_far = std::max(receiver_far, (math::Vector4d{p.x, p.y, p.z, 1} * camera_view).z);
         }
+    }
     ATELIER_TRY_BIND(receiver_limit, ceil_power_two(std::max(receiver_far, 1e-3)));
     // A receiver touching a power-of-two near plane must still leave a
     // nonzero cascade interval; finite camera far clipping remains authoritative.
@@ -380,12 +351,14 @@ Result<Request> directional_request(const Frame& frame, const GpuLightSource& so
     // avoids rebuilding the static layer for small motion inside scene bounds.
     double low = std::numeric_limits<double>::infinity();
     double high = -low;
-    for (const auto& caster : casters)
+    for (const auto& caster : casters) {
+        const math::Boundsd wide(caster.bounds);
         for (std::uint32_t i = 0; i < 8; ++i) {
-            const double z = dot(corner(caster.bounds, i), request.axis_z);
+            const double z = dot(math::corner(wide, i), request.axis_z);
             low = std::min(low, z);
             high = std::max(high, z);
         }
+    }
     ATELIER_TRY_BIND(extent, ceil_power_two(std::max(high - low, 1.0)));
     const double step = *extent / 16;
     double previous = camera_near;
@@ -406,7 +379,7 @@ Result<Request> directional_request(const Frame& frame, const GpuLightSource& so
         center = center / 8.0;
         double radius = 0;
         for (const auto& p : corners)
-            radius = std::max(radius, length(p - center));
+            radius = std::max(radius, fast_length(p - center));
         // The margin covers snapping and the receiver normal offset at the
         // minimum 128 resolution. It is independent of allocation.
         radius = std::max(.01, std::ceil(radius * 16) / 16) * 1.04;
@@ -436,7 +409,7 @@ struct ShadowCache::State {
 
         std::uint32_t generation{};
 
-        std::array<float, 16> projection{};
+        math::Matrix4 projection{};
 
         std::array<float, 4> depth{}; // GpuShadowFace::depth of the drawn projection.
 
@@ -462,7 +435,7 @@ struct ShadowCache::State {
 
         std::uint32_t waiting{}; // Consecutive frames this light's redraw was deferred.
 
-        std::array<float, 3> origin{}; // Cube centre all drawn faces share.
+        math::Vector3 origin{}; // Cube centre all drawn faces share.
 
         float fade{1}; // Direct-light factor; withheld lights restart at 0.
     };
@@ -707,7 +680,7 @@ struct ShadowCache::State {
     // Publishes the face's drawn projection; the near-plane bit set by prepare is kept.
     void publish(GpuShadowFace& gpu, const Face& face, std::uint32_t source, std::uint32_t index) {
         const float inverse = 1.f / shadow_atlas_extent;
-        gpu.view_projection = face.projection;
+        gpu.view_projection = face.projection.elements;
         gpu.depth = face.depth;
         gpu.atlas = {float(face.size - 2 * shadow_tile_border) * inverse,
                      float(face.size - 2 * shadow_tile_border) * inverse,
@@ -787,7 +760,7 @@ struct ShadowCache::State {
             valid = true;
         }
         face.drawn = true;
-        lights[item.source].origin = {float(request.origin.x), float(request.origin.y), float(request.origin.z)};
+        lights[item.source].origin = math::Vector3(request.origin);
         return {};
     }
 
@@ -823,8 +796,7 @@ struct ShadowCache::State {
                 light.waiting = 0;
                 // Faces kept from an earlier origin would be selected from the new one.
                 const auto& request = requests[first->source];
-                if (request.kind == 1 && light.origin != std::array{float(request.origin.x), float(request.origin.y),
-                                                                    float(request.origin.z)}) {
+                if (request.kind == 1 && light.origin != math::Vector3(request.origin)) {
                     std::array<bool, 6> redrawn{};
                     for (auto item = first; item != last; ++item)
                         redrawn[item->face] = true;
@@ -870,7 +842,7 @@ struct ShadowCache::State {
             light.fade = std::min(1.f, light.fade + 1.f / shadow_fade_frames);
             gpu.meta[3] = std::bit_cast<std::uint32_t>(light.fade);
             if (request.kind == 1)
-                gpu.splits = {light.origin[0], light.origin[1], light.origin[2], 0};
+                gpu.splits = {light.origin.x, light.origin.y, light.origin.z, 0};
         }
         return {};
     }
@@ -932,7 +904,7 @@ Result<const ShadowFramePlan*> ShadowCache::prepare(const Frame& frame, const Li
     for (auto& light : s.lights)
         for (auto& face : light.faces)
             if (face.slot != no_slot) {
-                const auto vp = expanded_projection(matrix(face.projection), face.size);
+                const auto vp = expanded_projection(M(face.projection), face.size);
                 for (const auto& change : changes) {
                     if (!((change.old_present && intersects(change.old_bounds, vp)) ||
                           (change.new_present && intersects(change.new_bounds, vp))))
@@ -943,22 +915,16 @@ Result<const ShadowFramePlan*> ShadowCache::prepare(const Frame& frame, const Li
                         face.dynamic_valid = false;
                 }
             }
-    const auto camera_view = matrix(frame.camera.view);
-    const auto camera_vp = camera_view * matrix(frame.camera.projection);
+    const M camera_view(frame.camera.view);
+    const auto camera_vp = camera_view * M(frame.camera.projection);
     auto& receivers = s.receivers;
     receivers.clear();
     receivers.reserve(casters.size());
     const double camera_padding =
         2.0 / std::max(1.f, std::min(frame.scene_viewport.width, frame.scene_viewport.height));
     for (const auto& caster : casters) {
-        for (std::size_t axis = 0; axis < 3; ++axis) {
-            auto bounds =
-                check(std::isfinite(caster.bounds.minimum[axis]) && std::isfinite(caster.bounds.maximum[axis]) &&
-                          caster.bounds.minimum[axis] <= caster.bounds.maximum[axis],
-                      "Invalid shadow caster bounds");
-            if (!bounds)
-                return std::unexpected(std::move(bounds).error());
-        }
+        ATELIER_TRY(
+            check(math::is_finite(caster.bounds) && !math::is_empty(caster.bounds), "Invalid shadow caster bounds"));
         ATELIER_TRY(check(caster.instance < frame.meshes.size(), "Shadow caster instance exceeds current frame"));
         if (intersects(caster.bounds, camera_vp, camera_padding, frame.camera.far_depth))
             receivers.push_back(caster);
@@ -980,7 +946,7 @@ Result<const ShadowFramePlan*> ShadowCache::prepare(const Frame& frame, const Li
         const auto& held = s.lights[index];
         const bool lagging =
             std::ranges::any_of(held.faces, [](const auto& face) { return face.drawn; }) &&
-            held.origin != std::array{light.origin_range[0], light.origin_range[1], light.origin_range[2]};
+            held.origin != math::Vector3{light.origin_range[0], light.origin_range[1], light.origin_range[2]};
         auto request_result =
             light.meta[0] == 2 ? directional_request(frame, light, receivers, casters, camera_view, s.fitted())
                                : point_request(frame, light, receivers, camera_view, lagging ? &held.origin : nullptr);
@@ -1087,7 +1053,7 @@ Result<const ShadowFramePlan*> ShadowCache::prepare(const Frame& frame, const Li
             const V origin{light.origin_range[0], light.origin_range[1], light.origin_range[2]};
             const double near_z = request.depth[0][0];
             for (const auto& caster : casters)
-                if (distance_squared(caster.bounds, origin) <= near_z * near_z) {
+                if (math::distance_squared(math::Boundsd(caster.bounds), origin) <= near_z * near_z) {
                     near_caster = true;
                     break;
                 }

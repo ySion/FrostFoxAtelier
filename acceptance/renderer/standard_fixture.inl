@@ -147,7 +147,7 @@ struct Material {
 };
 
 struct MeshInstance {
-    std::array<float, 16> world{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    atelier::math::Matrix4 world = atelier::math::Matrix4::identity();
 
     ui::Color color{.2f, .45f, .75f, 1};
 

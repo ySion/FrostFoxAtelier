@@ -415,7 +415,7 @@ Result<bool> set_view_option(renderer::ViewSettings& view, ViewOption option, do
     return view_value(view, option) != previous;
 }
 
-Result<void> validate_view_options(const renderer::ViewSettings& view, std::array<float, 3> focus) {
+Result<void> validate_view_options(const renderer::ViewSettings& view, math::Vector3 focus) {
     for (const auto& option : options) {
         const auto value = view_value(view, option.option);
         if (!std::isfinite(value) || value < option.minimum || value > option.maximum ||

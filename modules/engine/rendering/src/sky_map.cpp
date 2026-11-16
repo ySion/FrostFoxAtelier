@@ -70,23 +70,20 @@ Result<SkyMapRef> SkyMap::create(std::uint32_t width, std::uint32_t height, std:
 SkyMap::SkyMap(std::uint32_t width, std::uint32_t height, std::span<const float> rgb) {
     constexpr double pi = std::numbers::pi;
 
-    std::array<double, 3> sum{};
+    math::Vector3d sum{};
     double total = 0;
     for (std::uint32_t y = 0; y < height; ++y) {
         const double solid_angle =
             2 * pi / width * (std::sin(pi * (.5 - double(y) / height)) - std::sin(pi * (.5 - double(y + 1) / height)));
-        std::array<double, 3> row{};
+        math::Vector3d row{};
         for (std::uint32_t x = 0; x < width; ++x) {
             const float* texel = &rgb[(std::size_t(y) * width + x) * 3];
-            for (std::size_t c = 0; c < 3; ++c)
-                row[c] += texel[c];
+            row += {texel[0], texel[1], texel[2]};
         }
-        for (std::size_t c = 0; c < 3; ++c)
-            sum[c] += row[c] * solid_angle;
+        sum += row * solid_angle;
         total += solid_angle * width;
     }
-    for (std::size_t c = 0; c < 3; ++c)
-        mean_[c] = static_cast<float>(sum[c] / total);
+    mean_ = math::Vector3(sum / total);
 
     // Splat sub-texels of at most 0.5 degrees so every cube texel (at least ~16 degrees)
     // receives many samples. Normalizing by the sampled area reproduces constant maps

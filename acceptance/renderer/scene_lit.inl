@@ -1,6 +1,6 @@
 // Ordinary product snapshots; benchmark samples only completed GPU timestamps.
 namespace scene_lit_e2e {
-using Vec3 = std::array<float, 3>;
+using Vec3 = atelier::math::Vector3;
 
 constexpr unsigned warmup_frames = 96;
 
@@ -62,46 +62,23 @@ void png(const render::Capture& image, const std::filesystem::path& path) {
     check(output.good(), "SceneLit PNG evidence written");
 }
 
-Vec3 subtract(Vec3 a, Vec3 b) {
-    return {a[0] - b[0], a[1] - b[1], a[2] - b[2]};
-}
-
-float dot(Vec3 a, Vec3 b) {
-    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-}
-
-Vec3 cross(Vec3 a, Vec3 b) {
-    return {a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]};
-}
-
-Vec3 normalize(Vec3 value) {
-    const float length = std::sqrt(dot(value, value));
-    return {value[0] / length, value[1] / length, value[2] / length};
-}
-
 render::Camera camera(ui::PixelExtent extent) {
-    const Vec3 eye{0, 3, -7};
-    const Vec3 focus{0, .7f, 3};
-    const auto z = normalize(subtract(focus, eye));
-    const auto x = normalize(cross({0, 1, 0}, z));
-    const auto y = cross(z, x);
     render::Camera result;
-    result.view = {x[0], y[0], z[0], 0, x[1],         y[1],         z[1],         0,
-                   x[2], y[2], z[2], 0, -dot(x, eye), -dot(y, eye), -dot(z, eye), 1};
+    result.view = *atelier::math::try_look_at_lh(Vec3{0, 3, -7}, Vec3{0, .7f, 3}, Vec3{0, 1, 0});
     const float aspect = float(extent.width) / float(extent.height);
-    result.projection = {1.8f / aspect, 0, 0, 0, 0, 1.8f, 0, 0, 0, 0, -.1f / 39.9f, 1, 0, 0, 4 / 39.9f, 0};
+    result.projection = {{1.8f / aspect, 0, 0, 0, 0, 1.8f, 0, 0, 0, 0, -.1f / 39.9f, 1, 0, 0, 4 / 39.9f, 0}};
     return result;
 }
 
-std::array<float, 16> box(float x, float y, float z, float sx, float sy, float sz) {
-    return {sx, 0, 0, 0, 0, sy, 0, 0, 0, 0, sz, 0, x, y, z, 1};
+atelier::math::Matrix4 box(float x, float y, float z, float sx, float sy, float sz) {
+    return {{sx, 0, 0, 0, 0, sy, 0, 0, 0, 0, sz, 0, x, y, z, 1}};
 }
 
 struct Room {
     std::vector<render::MeshInstance> meshes;
 
     Room() {
-        const auto add = [&](std::array<float, 16> transform, ui::Color color) {
+        const auto add = [&](const atelier::math::Matrix4& transform, ui::Color color) {
             render::MeshInstance mesh;
             mesh.geometry = atelier::geometry::cube_mesh();
             mesh.world = transform;
@@ -140,21 +117,14 @@ struct Region {
 
 Region project_region(const render::Camera& camera, ui::Rect viewport, ui::PixelExtent extent, Vec3 point,
                       unsigned radius = 5) {
-    std::array<float, 4> value{point[0], point[1], point[2], 1};
-    for (const auto& matrix : {camera.view, camera.projection}) {
-        std::array<float, 4> next{};
-        for (unsigned column = 0; column < 4; ++column)
-            for (unsigned row = 0; row < 4; ++row)
-                next[column] += value[row] * matrix[row * 4 + column];
-        value = next;
-    }
-    const auto x = static_cast<int>(viewport.x + (value[0] / value[3] * .5f + .5f) * viewport.width);
-    const auto y = static_cast<int>(viewport.y + (.5f - value[1] / value[3] * .5f) * viewport.height);
+    const auto clip = (atelier::math::Vector4{point.x, point.y, point.z, 1} * camera.view) * camera.projection;
+    const auto x = static_cast<int>(viewport.x + (clip.x / clip.w * .5f + .5f) * viewport.width);
+    const auto y = static_cast<int>(viewport.y + (.5f - clip.y / clip.w * .5f) * viewport.height);
     check(x > int(radius) && y > int(radius) && x + int(radius) < int(extent.width) &&
               y + int(radius) < int(extent.height),
           "SceneLit world-space probe projects inside the capture");
     return {unsigned(x) - radius, unsigned(y) - radius, unsigned(x) + radius + 1, unsigned(y) + radius + 1,
-            value[2] / value[3]};
+            clip.z / clip.w};
 }
 
 std::array<double, 3> mean_rgb(const render::Capture& image, Region region) {
@@ -372,7 +342,7 @@ Analytic analytic_rectangle_plane(const render::Frame& frame, const render::Capt
 std::vector<render::Light> room_lights() {
     std::vector<render::Light> lights(4);
     lights[0].kind = render::LightKind::directional;
-    lights[0].direction = normalize({.4f, -1, .6f});
+    lights[0].direction = *atelier::math::try_normalize(Vec3{.4f, -1, .6f});
     lights[0].intensity = 1.5f;
     lights[1].position = {-2.5f, 3, 1};
     lights[1].color = {1, .65f, .35f};

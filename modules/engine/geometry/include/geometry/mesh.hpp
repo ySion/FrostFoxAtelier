@@ -1,9 +1,9 @@
 #pragma once
 
 #include "foundation/result.hpp"
+#include "math/bounds.hpp"
 #include "memory/fatal.hpp"
 #include <algorithm>
-#include <array>
 #include <cmath>
 #include <cstdint>
 #include <expected>
@@ -50,12 +50,6 @@ struct MeshPart {
 
 struct MaterialSlot {
     std::string name;
-};
-
-struct Bounds {
-    std::array<float, 3> minimum{};
-
-    std::array<float, 3> maximum{};
 };
 
 // Immutable CPU mesh resource, independent of World, Runtime and GPU lifetime.
@@ -117,8 +111,9 @@ private:
         }
         if (end != vertices_.size())
             return std::unexpected(MeshError{"Mesh parts must cover every vertex exactly once."});
-        std::copy_n(vertices_.front().position, 3, bounds_.minimum.begin());
-        bounds_.maximum = bounds_.minimum;
+        const math::Vector3 first_position{vertices_.front().position[0], vertices_.front().position[1],
+                                           vertices_.front().position[2]};
+        bounds_ = {first_position, first_position};
         for (auto& vertex : vertices_) {
             for (float value : vertex.uv)
                 if (!std::isfinite(value))
@@ -126,10 +121,8 @@ private:
             for (float value : vertex.position)
                 if (!std::isfinite(value))
                     return std::unexpected(MeshError{"Mesh position must be finite."});
-            for (std::size_t axis = 0; axis < 3; ++axis) {
-                bounds_.minimum[axis] = std::min(bounds_.minimum[axis], vertex.position[axis]);
-                bounds_.maximum[axis] = std::max(bounds_.maximum[axis], vertex.position[axis]);
-            }
+            bounds_ =
+                math::encapsulate(bounds_, math::Vector3{vertex.position[0], vertex.position[1], vertex.position[2]});
             for (float value : vertex.normal)
                 if (!std::isfinite(value))
                     return std::unexpected(MeshError{"Mesh normal must be finite."});
@@ -170,7 +163,7 @@ public:
 
     [[nodiscard]] std::span<const Vertex> vertices() const noexcept { return vertices_; }
 
-    [[nodiscard]] const Bounds& bounds() const noexcept { return bounds_; }
+    [[nodiscard]] const math::Bounds& bounds() const noexcept { return bounds_; }
 
     [[nodiscard]] std::span<const MaterialSlot> materials() const noexcept { return materials_; }
 
@@ -197,7 +190,7 @@ private:
 
     std::vector<MeshPart> parts_;
 
-    Bounds bounds_;
+    math::Bounds bounds_;
 };
 
 using MeshRef = std::shared_ptr<const Mesh>;

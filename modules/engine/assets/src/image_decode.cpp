@@ -106,7 +106,7 @@ Result<std::vector<material::ImageRef>> decode_images(std::span<const std::strin
             auto completed = [&]() -> Result<void> {
                 std::string digest;
                 if (cache) {
-                    digest = foundation::sha256(std::as_bytes(std::span(sources[i].data(), sources[i].size())));
+                    digest = foundation::sha256(std::as_bytes(std::span{sources[i]}));
                     std::scoped_lock lock(guard);
                     if (const auto found = cache->entries.find(digest); found != cache->entries.end())
                         result[i] = found->second.lock();

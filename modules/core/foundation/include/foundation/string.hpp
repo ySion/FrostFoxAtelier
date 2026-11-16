@@ -1,12 +1,15 @@
 #pragma once
 
+#include "foundation/span.hpp"
 #include "memory/fatal.hpp"
 
-#include <cstddef>
-#include <cstdint>
+#include <bit>
 #include <charconv>
 #include <concepts>
+#include <cstddef>
+#include <cstdint>
 #include <cstring>
+#include <emmintrin.h>
 #include <expected>
 #include <initializer_list>
 #include <iterator>
@@ -60,7 +63,7 @@ public:
 
     explicit constexpr StringView(std::string_view text) noexcept : StringView(text.data(), text.size()) {}
 
-    StringView(const String&) noexcept;
+    StringView(const String& text [[clang::lifetimebound]]) noexcept;
 
     StringView(String&&) = delete;
 
@@ -82,10 +85,85 @@ public:
         return data_[index];
     }
 
+    [[nodiscard]] constexpr char front() const noexcept { return (*this)[0]; }
+
+    [[nodiscard]] constexpr char back() const noexcept { return (*this)[size_ - 1]; }
+
+    [[nodiscard]] constexpr StringView first(std::size_t count) const noexcept {
+        if (count > size_)
+            fatal("StringView slice.");
+        return {Unchecked{}, data_, count};
+    }
+
+    [[nodiscard]] constexpr StringView last(std::size_t count) const noexcept {
+        if (count > size_)
+            fatal("StringView slice.");
+        return {Unchecked{}, data_ + (size_ - count), count};
+    }
+
     [[nodiscard]] constexpr StringView slice(std::size_t first, std::size_t count = npos) const noexcept {
         if (first > size_ || (count != npos && count > size_ - first))
             fatal("StringView slice.");
-        return {data_ + first, count == npos ? size_ - first : count};
+        return {Unchecked{}, data_ + first, count == npos ? size_ - first : count};
+    }
+
+    constexpr void remove_prefix(std::size_t count) noexcept {
+        if (count > size_)
+            fatal("StringView slice.");
+        data_ += count;
+        size_ -= count;
+    }
+
+    constexpr void remove_suffix(std::size_t count) noexcept {
+        if (count > size_)
+            fatal("StringView slice.");
+        size_ -= count;
+    }
+
+    constexpr bool strip_prefix(StringView prefix) noexcept {
+        if (!starts_with(prefix))
+            return false;
+        data_ += prefix.size_;
+        size_ -= prefix.size_;
+        return true;
+    }
+
+    constexpr bool strip_prefix(char prefix) noexcept {
+        if (!starts_with(prefix))
+            return false;
+        ++data_;
+        --size_;
+        return true;
+    }
+
+    constexpr bool strip_suffix(StringView suffix) noexcept {
+        if (!ends_with(suffix))
+            return false;
+        size_ -= suffix.size_;
+        return true;
+    }
+
+    constexpr bool strip_suffix(char suffix) noexcept {
+        if (!ends_with(suffix))
+            return false;
+        --size_;
+        return true;
+    }
+
+    [[nodiscard]] constexpr StringView without_prefix(StringView prefix) const noexcept {
+        return starts_with(prefix) ? StringView{Unchecked{}, data_ + prefix.size_, size_ - prefix.size_} : *this;
+    }
+
+    [[nodiscard]] constexpr StringView without_prefix(char prefix) const noexcept {
+        return starts_with(prefix) ? StringView{Unchecked{}, data_ + 1, size_ - 1} : *this;
+    }
+
+    [[nodiscard]] constexpr StringView without_suffix(StringView suffix) const noexcept {
+        return ends_with(suffix) ? StringView{Unchecked{}, data_, size_ - suffix.size_} : *this;
+    }
+
+    [[nodiscard]] constexpr StringView without_suffix(char suffix) const noexcept {
+        return ends_with(suffix) ? StringView{Unchecked{}, data_, size_ - 1} : *this;
     }
 
     // The entire view must already be valid UTF-8. Only the cut is adjusted;
@@ -95,7 +173,7 @@ public:
             return *this;
         while (maximum_bytes && (static_cast<unsigned char>(data_[maximum_bytes]) & 0xc0) == 0x80)
             --maximum_bytes;
-        return {data_, maximum_bytes};
+        return {Unchecked{}, data_, maximum_bytes};
     }
 
     [[nodiscard]] constexpr bool starts_with(StringView value) const noexcept {
@@ -134,12 +212,12 @@ public:
     }
 
     [[nodiscard]] constexpr bool starts_with_ascii_case_insensitive(StringView value) const noexcept {
-        return size_ >= value.size_ && StringView{data_, value.size_}.equals_ascii_case_insensitive(value);
+        return size_ >= value.size_ && StringView{Unchecked{}, data_, value.size_}.equals_ascii_case_insensitive(value);
     }
 
     [[nodiscard]] constexpr bool ends_with_ascii_case_insensitive(StringView value) const noexcept {
         return size_ >= value.size_ &&
-               StringView{data_ + size_ - value.size_, value.size_}.equals_ascii_case_insensitive(value);
+               StringView{Unchecked{}, data_ + size_ - value.size_, value.size_}.equals_ascii_case_insensitive(value);
     }
 
     // Whole-input parsing, without trimming, locale, leading '+' or base prefixes.
@@ -171,17 +249,48 @@ public:
         return std_view().find(value.std_view(), from);
     }
 
+    [[nodiscard]] constexpr std::size_t find(char value, std::size_t from = 0) const noexcept {
+        return std_view().find(value, from);
+    }
+
+    [[nodiscard]] constexpr std::size_t rfind(StringView value, std::size_t from = npos) const noexcept {
+        return std_view().rfind(value.std_view(), from);
+    }
+
+    [[nodiscard]] constexpr std::size_t rfind(char value, std::size_t from = npos) const noexcept {
+        return std_view().rfind(value, from);
+    }
+
+    [[nodiscard]] constexpr std::size_t find_first_of(StringView bytes, std::size_t from = 0) const noexcept {
+        return std_view().find_first_of(bytes.std_view(), from);
+    }
+
+    [[nodiscard]] constexpr std::size_t find_last_of(StringView bytes, std::size_t from = npos) const noexcept {
+        return std_view().find_last_of(bytes.std_view(), from);
+    }
+
+    [[nodiscard]] constexpr std::size_t find_first_not_of(StringView bytes, std::size_t from = 0) const noexcept {
+        return std_view().find_first_not_of(bytes.std_view(), from);
+    }
+
+    [[nodiscard]] constexpr std::size_t find_last_not_of(StringView bytes, std::size_t from = npos) const noexcept {
+        return std_view().find_last_not_of(bytes.std_view(), from);
+    }
+
     [[nodiscard]] constexpr bool contains(StringView value) const noexcept { return find(value) != npos; }
+
+    [[nodiscard]] constexpr bool contains(char value) const noexcept { return find(value) != npos; }
 
     // Byte-set trimming; the default is the six ASCII whitespace bytes, not Unicode whitespace.
     [[nodiscard]] constexpr StringView trim_start(StringView bytes = " \t\r\n\v\f") const noexcept {
-        const auto first = std_view().find_first_not_of(bytes.std_view());
-        return slice(first == npos ? size_ : first);
+        const auto first = find_first_not_of(bytes);
+        return first == npos ? StringView{Unchecked{}, data_ + size_, 0}
+                             : StringView{Unchecked{}, data_ + first, size_ - first};
     }
 
     [[nodiscard]] constexpr StringView trim_end(StringView bytes = " \t\r\n\v\f") const noexcept {
-        const auto last = std_view().find_last_not_of(bytes.std_view());
-        return slice(0, last == npos ? 0 : last + 1);
+        const auto last = find_last_not_of(bytes);
+        return {Unchecked{}, data_, last == npos ? 0 : last + 1};
     }
 
     [[nodiscard]] constexpr StringView trim(StringView bytes = " \t\r\n\v\f") const noexcept {
@@ -190,7 +299,11 @@ public:
 
     [[nodiscard]] constexpr StringPartition partition(StringView delimiter) const noexcept;
 
+    [[nodiscard]] constexpr StringPartition partition(char delimiter) const noexcept;
+
     [[nodiscard]] constexpr StringPartition rpartition(StringView delimiter) const noexcept;
+
+    [[nodiscard]] constexpr StringPartition rpartition(char delimiter) const noexcept;
 
     // Both source and delimiter remain borrowed throughout iteration. Empty pieces are retained;
     // an empty delimiter yields the whole source once, including an empty source.
@@ -203,33 +316,46 @@ public:
 
     [[nodiscard]] constexpr bool is_valid_utf8() const noexcept {
         for (std::size_t i = 0; i < size_;) {
-            if (!std::is_constant_evaluated()) {
-                while (size_ - i >= sizeof(std::uint64_t)) {
-                    std::uint64_t bytes;
-                    std::memcpy(&bytes, data_ + i, sizeof(bytes));
-                    if (bytes & UINT64_C(0x8080808080808080))
+            if !consteval {
+                while (size_ - i >= 16) {
+                    const auto chunk = _mm_loadu_si128(reinterpret_cast<const __m128i*>(data_ + i));
+                    const auto mask = static_cast<unsigned>(_mm_movemask_epi8(chunk));
+                    if (mask) {
+                        i += static_cast<std::size_t>(std::countr_zero(mask));
                         break;
-                    i += sizeof(bytes);
+                    }
+                    i += 16;
                 }
+                if (i == size_)
+                    return true;
             }
-            if (i == size_)
-                return true;
             const auto first = static_cast<unsigned char>(data_[i++]);
             if (first < 0x80)
                 continue;
-            const unsigned count = first >= 0xc2 && first <= 0xdf   ? 1
-                                   : first >= 0xe0 && first <= 0xef ? 2
-                                   : first >= 0xf0 && first <= 0xf4 ? 3
-                                                                    : 0;
-            if (!count || count > size_ - i)
-                return false;
-            const auto second = static_cast<unsigned char>(data_[i]);
-            if ((first == 0xe0 && second < 0xa0) || (first == 0xed && second >= 0xa0) ||
-                (first == 0xf0 && second < 0x90) || (first == 0xf4 && second >= 0x90))
-                return false;
-            for (unsigned j = 0; j != count; ++j)
-                if ((static_cast<unsigned char>(data_[i++]) & 0xc0) != 0x80)
+            if (first <= 0xdf) {
+                if (first < 0xc2 || i == size_ || (static_cast<unsigned char>(data_[i++]) ^ 0x80u) >= 0x40u)
                     return false;
+            } else if (first <= 0xef) {
+                if (size_ - i < 2)
+                    return false;
+                const auto b1 = static_cast<unsigned char>(data_[i]);
+                const auto b2 = static_cast<unsigned char>(data_[i + 1]);
+                if (((b1 ^ 0x80u) | (b2 ^ 0x80u)) >= 0x40u || (first == 0xe0 && b1 < 0xa0) ||
+                    (first == 0xed && b1 >= 0xa0))
+                    return false;
+                i += 2;
+            } else if (first <= 0xf4) {
+                if (size_ - i < 3)
+                    return false;
+                const auto b1 = static_cast<unsigned char>(data_[i]);
+                const auto b2 = static_cast<unsigned char>(data_[i + 1]);
+                const auto b3 = static_cast<unsigned char>(data_[i + 2]);
+                if (((b1 ^ 0x80u) | (b2 ^ 0x80u) | (b3 ^ 0x80u)) >= 0x40u || (first == 0xf0 && b1 < 0x90) ||
+                    (first == 0xf4 && b1 >= 0x90))
+                    return false;
+                i += 3;
+            } else
+                return false;
         }
         return true;
     }
@@ -243,6 +369,12 @@ public:
     }
 
 private:
+    friend class String;
+
+    struct Unchecked {};
+
+    constexpr StringView(Unchecked, const char* data, std::size_t size) noexcept : data_(data), size_(size) {}
+
     const char* data_{""};
 
     std::size_t size_{};
@@ -259,13 +391,33 @@ struct StringPartition {
 constexpr StringPartition StringView::partition(StringView delimiter) const noexcept {
     const auto at = delimiter.empty() ? npos : find(delimiter);
     return at == npos ? StringPartition{*this, {}, {}}
-                      : StringPartition{slice(0, at), slice(at, delimiter.size()), slice(at + delimiter.size())};
+                      : StringPartition{{Unchecked{}, data_, at},
+                                        {Unchecked{}, data_ + at, delimiter.size_},
+                                        {Unchecked{}, data_ + at + delimiter.size_, size_ - at - delimiter.size_}};
+}
+
+constexpr StringPartition StringView::partition(char delimiter) const noexcept {
+    const auto at = find(delimiter);
+    return at == npos ? StringPartition{*this, {}, {}}
+                      : StringPartition{{Unchecked{}, data_, at},
+                                        {Unchecked{}, data_ + at, 1},
+                                        {Unchecked{}, data_ + at + 1, size_ - at - 1}};
 }
 
 constexpr StringPartition StringView::rpartition(StringView delimiter) const noexcept {
-    const auto at = delimiter.empty() ? npos : std_view().rfind(delimiter.std_view());
+    const auto at = delimiter.empty() ? npos : rfind(delimiter);
     return at == npos ? StringPartition{{}, {}, *this}
-                      : StringPartition{slice(0, at), slice(at, delimiter.size()), slice(at + delimiter.size())};
+                      : StringPartition{{Unchecked{}, data_, at},
+                                        {Unchecked{}, data_ + at, delimiter.size_},
+                                        {Unchecked{}, data_ + at + delimiter.size_, size_ - at - delimiter.size_}};
+}
+
+constexpr StringPartition StringView::rpartition(char delimiter) const noexcept {
+    const auto at = rfind(delimiter);
+    return at == npos ? StringPartition{{}, {}, *this}
+                      : StringPartition{{Unchecked{}, data_, at},
+                                        {Unchecked{}, data_ + at, 1},
+                                        {Unchecked{}, data_ + at + 1, size_ - at - 1}};
 }
 
 class StringSplit {
@@ -361,13 +513,15 @@ public:
             const auto first = static_cast<unsigned char>(text_[offset_]);
             const std::size_t count = first < 0x80 ? 1 : first < 0xe0 ? 2 : first < 0xf0 ? 3 : 4;
             char32_t value = first & (count == 1 ? 0x7f : count == 2 ? 0x1f : count == 3 ? 0x0f : 0x07);
+            const char* bytes = text_.data() + offset_;
             for (std::size_t i = 1; i < count; ++i)
-                value = (value << 6) | (static_cast<unsigned char>(text_[offset_ + i]) & 0x3f);
+                value = (value << 6) | (static_cast<unsigned char>(bytes[i]) & 0x3f);
             return {value, offset_, count};
         }
 
         constexpr Iterator& operator++() noexcept {
-            offset_ += (**this).byte_count;
+            const auto first = static_cast<unsigned char>(text_[offset_]);
+            offset_ += first < 0x80 ? 1 : first < 0xe0 ? 2 : first < 0xf0 ? 3 : 4;
             return *this;
         }
 
@@ -417,6 +571,27 @@ struct StringLiteral {
             fatal("String literal requires valid UTF-8 and a trailing zero.");
     }
 };
+
+template <class R>
+concept StringRange = requires(const R& range) {
+    std::begin(range);
+    std::end(range);
+    requires std::same_as<std::remove_cvref_t<decltype(*std::begin(range))>, String>;
+};
+
+template <class R>
+concept StringViewRange = requires(const R& range) {
+    std::begin(range);
+    std::end(range);
+    requires std::convertible_to<decltype(*std::begin(range)), StringView>;
+};
+
+template <class R, class Element>
+concept ContiguousRangeOf = requires(const R& range) {
+    { std::data(range) } -> std::convertible_to<const Element*>;
+    { std::size(range) } -> std::convertible_to<std::size_t>;
+    requires std::same_as<std::remove_cvref_t<decltype(*std::data(range))>, Element>;
+};
 }
 
 // Validated UTF-8, owned or borrowed from fixed literal storage, with a trailing zero. Embedded zeros remain part of
@@ -427,7 +602,7 @@ public:
 
     static constexpr std::size_t max_size = static_cast<std::size_t>(PTRDIFF_MAX) - 1;
 
-    String() noexcept = default;
+    String() noexcept : bytes_{} {}
 
     [[nodiscard]] static std::expected<String, StringError> from_utf8(StringView text) noexcept;
 
@@ -441,9 +616,7 @@ public:
             return std::unexpected(std::errc::invalid_argument);
         char bytes[std::numeric_limits<T>::digits + 3];
         const auto result = std::to_chars(bytes, bytes + sizeof(bytes), value, base);
-        String text;
-        text.write_validated({bytes, static_cast<std::size_t>(result.ptr - bytes)}, 0);
-        return text;
+        return from_utf8_validated({StringView::Unchecked{}, bytes, static_cast<std::size_t>(result.ptr - bytes)});
     }
 
     // Shortest general representation that round-trips through from_chars.
@@ -451,16 +624,14 @@ public:
     [[nodiscard]] static String from_number(T value) noexcept {
         char bytes[std::numeric_limits<T>::max_digits10 + 16];
         const auto result = std::to_chars(bytes, bytes + sizeof(bytes), value, std::chars_format::general);
-        String text;
-        text.write_validated({bytes, static_cast<std::size_t>(result.ptr - bytes)}, 0);
-        return text;
+        return from_utf8_validated({StringView::Unchecked{}, bytes, static_cast<std::size_t>(result.ptr - bytes)});
     }
 
     // The template parameter object has static storage duration. Its module
     // must remain loaded until every copy dies; JIT text must use from_utf8.
     template <detail::StringLiteral Text>
     [[nodiscard]] static String literal() noexcept {
-        String result;
+        String result{Uninitialized{}};
         constexpr auto length = sizeof(Text.bytes) - 1;
         static_assert(length <= max_size && Text.bytes[length] == '\0' &&
                       StringView{Text.bytes, length}.is_valid_utf8());
@@ -468,17 +639,91 @@ public:
         return result;
     }
 
-    String(const String&) noexcept;
+    // Separator is validated even when fewer than two parts are joined.
+    [[nodiscard]] static std::expected<String, StringError> join(std::initializer_list<StringView> parts,
+                                                                 StringView separator) noexcept {
+        return join_views({parts.begin(), parts.size()}, separator);
+    }
 
-    String& operator=(const String&) noexcept;
+    template <detail::StringRange R>
+    [[nodiscard]] static String join(const R& parts, const String& separator) noexcept {
+        if constexpr (detail::ContiguousRangeOf<R, String>)
+            return join_strings({std::data(parts), std::size(parts)}, separator);
+        else {
+            String result;
+            bool first = true;
+            for (const String& part : parts) {
+                if (!first)
+                    result.append(separator);
+                first = false;
+                result.append(part);
+            }
+            return result;
+        }
+    }
 
-    String(String&&) noexcept;
+    template <detail::StringViewRange R>
+    [[nodiscard]] static std::expected<String, StringError> join(const R& parts, StringView separator) noexcept {
+        if constexpr (detail::ContiguousRangeOf<R, String>)
+            return join_strings_with_view({std::data(parts), std::size(parts)}, separator);
+        else if constexpr (detail::ContiguousRangeOf<R, StringView>)
+            return join_views({std::data(parts), std::size(parts)}, separator);
+        else {
+            if (!separator.is_valid_utf8())
+                return std::unexpected(StringError::invalid_utf8);
+            String result;
+            bool first = true;
+            for (decltype(auto) part : parts) {
+                if (!first)
+                    result.write_validated(separator, result.size());
+                first = false;
+                if (const auto status = result.append(StringView{part}); !status)
+                    return std::unexpected(status.error());
+            }
+            return result;
+        }
+    }
 
-    String& operator=(String&&) noexcept;
+    String(const String& other) noexcept {
+        if (other.tag() != heap_tag)
+            std::memcpy(bytes_, other.bytes_, sizeof(bytes_));
+        else
+            copy_heap(other);
+    }
 
-    ~String() { release(); }
+    String& operator=(const String& other) noexcept {
+        if (this != &other) {
+            if (tag() != heap_tag && other.tag() != heap_tag)
+                std::memcpy(bytes_, other.bytes_, sizeof(bytes_));
+            else
+                assign_from(other);
+        }
+        return *this;
+    }
 
-    [[nodiscard]] std::size_t size() const noexcept { return is_inline() ? tag() : long_value().size; }
+    String(String&& other) noexcept { move_from(other); }
+
+    String& operator=(String&& other) noexcept {
+        if (this != &other) {
+            if (tag() == heap_tag)
+                free_heap();
+            move_from(other);
+        }
+        return *this;
+    }
+
+    ~String() {
+        if (tag() == heap_tag)
+            free_heap();
+    }
+
+    [[nodiscard]] std::size_t size() const noexcept {
+        if (is_inline())
+            return tag();
+        std::size_t length;
+        std::memcpy(&length, bytes_ + sizeof(const char*), sizeof(length));
+        return length;
+    }
 
     [[nodiscard]] std::size_t capacity() const noexcept {
         return is_inline() ? inline_capacity : long_value().capacity;
@@ -486,13 +731,35 @@ public:
 
     [[nodiscard]] bool empty() const noexcept { return size() == 0; }
 
-    [[nodiscard]] const char* c_str() const noexcept { return is_inline() ? bytes_ : long_value().data; }
+    [[nodiscard]] const char* c_str() const noexcept [[clang::lifetimebound]] {
+        if (is_inline())
+            return bytes_;
+        const char* pointer;
+        std::memcpy(&pointer, bytes_, sizeof(pointer));
+        return pointer;
+    }
 
-    [[nodiscard]] StringView view() const& noexcept { return {c_str(), size()}; }
+    [[nodiscard]] StringView view() const& noexcept [[clang::lifetimebound]] {
+        if (is_inline())
+            return {StringView::Unchecked{}, bytes_, tag()};
+        const auto value = long_value();
+        return {StringView::Unchecked{}, value.data, value.size};
+    }
 
     StringView view() const&& = delete;
 
-    [[nodiscard]] char operator[](std::size_t index) const noexcept { return StringView{c_str(), size()}[index]; }
+    [[nodiscard]] StringView slice(std::size_t first, std::size_t count = StringView::npos) const& noexcept
+        [[clang::lifetimebound]] {
+        return view().slice(first, count);
+    }
+
+    StringView slice(std::size_t first, std::size_t count = StringView::npos) const&& = delete;
+
+    [[nodiscard]] char operator[](std::size_t index) const noexcept { return view()[index]; }
+
+    [[nodiscard]] char front() const noexcept { return view().front(); }
+
+    [[nodiscard]] char back() const noexcept { return view().back(); }
 
     void reserve(std::size_t bytes) noexcept;
 
@@ -500,9 +767,23 @@ public:
 
     void clear() noexcept;
 
-    void release() noexcept;
+    void release() noexcept {
+        if (tag() == heap_tag)
+            free_heap();
+        bytes_[0] = '\0';
+        bytes_[31] = 0;
+    }
 
-    void swap(String& other) noexcept;
+    void swap(String& other) noexcept {
+        const auto a0 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(bytes_));
+        const auto a1 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(bytes_ + 16));
+        const auto b0 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(other.bytes_));
+        const auto b1 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(other.bytes_ + 16));
+        _mm_storeu_si128(reinterpret_cast<__m128i*>(bytes_), b0);
+        _mm_storeu_si128(reinterpret_cast<__m128i*>(bytes_ + 16), b1);
+        _mm_storeu_si128(reinterpret_cast<__m128i*>(other.bytes_), a0);
+        _mm_storeu_si128(reinterpret_cast<__m128i*>(other.bytes_ + 16), a1);
+    }
 
     [[nodiscard]] std::expected<void, StringError> assign(StringView text) noexcept;
 
@@ -528,13 +809,60 @@ public:
 
     void to_ascii_upper() noexcept;
 
+    [[nodiscard]] bool starts_with(StringView text) const noexcept { return view().starts_with(text); }
+
+    [[nodiscard]] bool starts_with(char value) const noexcept { return view().starts_with(value); }
+
+    [[nodiscard]] bool ends_with(StringView text) const noexcept { return view().ends_with(text); }
+
+    [[nodiscard]] bool ends_with(char value) const noexcept { return view().ends_with(value); }
+
+    [[nodiscard]] bool equals_ascii_case_insensitive(StringView text) const noexcept {
+        return view().equals_ascii_case_insensitive(text);
+    }
+
+    [[nodiscard]] std::size_t find(StringView text, std::size_t from = 0) const noexcept {
+        return view().find(text, from);
+    }
+
+    [[nodiscard]] std::size_t find(char value, std::size_t from = 0) const noexcept { return view().find(value, from); }
+
+    [[nodiscard]] std::size_t rfind(StringView text, std::size_t from = StringView::npos) const noexcept {
+        return view().rfind(text, from);
+    }
+
+    [[nodiscard]] std::size_t rfind(char value, std::size_t from = StringView::npos) const noexcept {
+        return view().rfind(value, from);
+    }
+
     [[nodiscard]] bool contains(StringView text) const noexcept { return view().contains(text); }
+
+    [[nodiscard]] bool contains(char value) const noexcept { return view().contains(value); }
 
     friend bool operator==(const String& left, const String& right) noexcept { return left.view() == right.view(); }
 
+    friend bool operator==(const String& left, StringView right) noexcept { return left.view() == right; }
+
     friend auto operator<=>(const String& left, const String& right) noexcept { return left.view() <=> right.view(); }
 
+    friend auto operator<=>(const String& left, StringView right) noexcept { return left.view() <=> right; }
+
 private:
+    [[nodiscard]] static std::expected<String, StringError> join_views(Span<const StringView> parts,
+                                                                       StringView separator) noexcept;
+
+    [[nodiscard]] static String join_strings(Span<const String> parts, const String& separator) noexcept;
+
+    [[nodiscard]] static std::expected<String, StringError> join_strings_with_view(Span<const String> parts,
+                                                                                   StringView separator) noexcept;
+
+    template <class Part, class ViewOf>
+    [[nodiscard]] static String build_joined(Span<const Part> parts, StringView separator, ViewOf view_of) noexcept;
+
+    struct Uninitialized {};
+
+    explicit String(Uninitialized) noexcept {}
+
     struct LongValue {
         const char* data;
 
@@ -559,8 +887,21 @@ private:
 
     void set_long(LongValue value, unsigned char mode) noexcept {
         std::memcpy(bytes_, &value, sizeof(value));
-        bytes_[31] = static_cast<char>(mode);
+        const std::uint64_t tail = static_cast<std::uint64_t>(mode) << 56;
+        std::memcpy(bytes_ + sizeof(value), &tail, sizeof(tail));
     }
+
+    void move_from(String& other) noexcept {
+        std::memcpy(bytes_, other.bytes_, sizeof(bytes_));
+        other.bytes_[0] = '\0';
+        other.bytes_[31] = 0;
+    }
+
+    void free_heap() noexcept;
+
+    void copy_heap(const String& other) noexcept;
+
+    void assign_from(const String& other) noexcept;
 
     [[nodiscard]] std::size_t grown_capacity(std::size_t minimum) const noexcept;
 
@@ -570,13 +911,15 @@ private:
 
     void change_ascii_case(bool upper) noexcept;
 
-    void move_from(String& other) noexcept;
-
-    alignas(8) char bytes_[32]{};
+    alignas(8) char bytes_[32];
 };
 
 static_assert(sizeof(String) == 32 && alignof(String) == 8);
 
 inline StringView::StringView(const String& text) noexcept : StringView(text.view()) {}
+
+[[nodiscard]] inline Span<const std::byte> as_bytes(StringView text) noexcept {
+    return {reinterpret_cast<const std::byte*>(text.data()), text.size()};
+}
 
 }

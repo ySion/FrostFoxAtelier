@@ -54,11 +54,19 @@ public:
     InlineSequence& operator=(const InlineSequence& other) noexcept
         requires std::is_copy_constructible_v<T>
     {
-        if (this != &other) {
-            InlineSequence incoming(other);
-            release();
-            take_from(incoming);
+        if (this == &other)
+            return *this;
+        if constexpr (Elements::byte_copy && std::is_trivially_copy_assignable_v<T>) {
+            if (other.size_ <= capacity()) {
+                if (other.size_)
+                    std::memcpy(data(), other.data(), other.size_ * sizeof(T));
+                size_ = other.size_;
+                return *this;
+            }
         }
+        InlineSequence incoming(other);
+        release();
+        take_from(incoming);
         return *this;
     }
 
@@ -83,14 +91,16 @@ public:
         return N;
     }
 
-    [[nodiscard]] T* data() noexcept {
+    [[nodiscard]] T* data() noexcept [[clang::lifetimebound]] {
         if constexpr (Spill)
             if (heap_.data)
                 return static_cast<T*>(heap_.data);
         return reinterpret_cast<T*>(inline_);
     }
 
-    [[nodiscard]] const T* data() const noexcept { return const_cast<InlineSequence*>(this)->data(); }
+    [[nodiscard]] const T* data() const noexcept [[clang::lifetimebound]] {
+        return const_cast<InlineSequence*>(this)->data();
+    }
 
     void reserve(std::size_t count) noexcept {
         if (count > capacity())
@@ -99,7 +109,7 @@ public:
 
     void squeeze() noexcept {
         if constexpr (Spill)
-            if (heap_.data && (size_ <= N || size_ < heap_.capacity))
+            if (heap_.data && size_ < heap_.capacity)
                 reallocate(size_);
     }
 
@@ -112,11 +122,18 @@ public:
     }
 
     void swap(InlineSequence& other) noexcept {
-        if (this != &other) {
-            InlineSequence temporary(std::move(other));
-            other = std::move(*this);
-            *this = std::move(temporary);
+        if (this == &other)
+            return;
+        if constexpr (Spill) {
+            if (heap_.data && other.heap_.data) {
+                std::swap(heap_, other.heap_);
+                std::swap(size_, other.size_);
+                return;
+            }
         }
+        InlineSequence temporary(std::move(other));
+        other = std::move(*this);
+        *this = std::move(temporary);
     }
 
 private:

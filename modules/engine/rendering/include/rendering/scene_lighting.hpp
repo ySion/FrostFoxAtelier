@@ -15,12 +15,11 @@ namespace atelier::rendering {
 // the evaluator and initial sum. It does not bound every reservoir W.
 inline constexpr double analytic_light_radiance_limit = 0x1p32;
 
-inline const char* analytic_light_range_error(const std::array<float, 3>& color, float intensity,
-                                              double area = 1) noexcept {
+inline const char* analytic_light_range_error(math::Vector3 color, float intensity, double area = 1) noexcept {
     if (!std::isfinite(area) || area <= 0 || area > std::numeric_limits<float>::max())
         return "Analytic light area exceeds GPU float representation";
-    for (float channel : color) {
-        const double radiance = double(channel) * intensity;
+    for (std::size_t axis = 0; axis < 3; ++axis) {
+        const double radiance = double(color[axis]) * intensity;
         if (!std::isfinite(radiance) || radiance < 0 || radiance > analytic_light_radiance_limit ||
             radiance * area > analytic_light_radiance_limit)
             return "Analytic light color * intensity and rectangle area-weighted radiance must not exceed 2^32 per channel";
@@ -45,9 +44,9 @@ struct ProbeVolumeSettings {
 
     // World bounds for fixed placement; offsets from Frame::lighting_focus
     // for follow_focus. Following snaps to whole cells without changing spacing.
-    std::array<float, 3> minimum{-6.f, -1.f, -6.f};
+    math::Vector3 minimum{-6.f, -1.f, -6.f};
 
-    std::array<float, 3> maximum{6.f, 5.f, 6.f};
+    math::Vector3 maximum{6.f, 5.f, 6.f};
 
     std::array<std::uint32_t, 3> counts{8, 4, 8};
 
@@ -101,7 +100,7 @@ struct SceneLightingSettings {
     // Transform rotation about +Y (+X toward -Z).
     bool sky_enabled{};
 
-    std::array<float, 3> sky_color{1.f, 1.f, 1.f};
+    math::Vector3 sky_color{1.f, 1.f, 1.f};
 
     float sky_intensity{.03f};
 
@@ -111,11 +110,10 @@ struct SceneLightingSettings {
 };
 
 // The Frame environment radiance the host passes to the renderer; zero when the sky is off.
-inline std::array<float, 3> sky_radiance(const SceneLightingSettings& settings) noexcept {
+inline math::Vector3 sky_radiance(const SceneLightingSettings& settings) noexcept {
     if (!settings.sky_enabled)
         return {};
-    return {settings.sky_color[0] * settings.sky_intensity, settings.sky_color[1] * settings.sky_intensity,
-            settings.sky_color[2] * settings.sky_intensity};
+    return settings.sky_color * settings.sky_intensity;
 }
 
 inline const char* probe_layout_error(const SceneLightingSettings& settings) noexcept {
@@ -166,7 +164,8 @@ inline const char* scene_lighting_error(const SceneLightingSettings& settings) n
         return "Invalid World lighting or effects settings";
     if (!range(settings.sky_rotation, -180, 180))
         return "Sky rotation must be finite degrees within [-180, 180]";
-    for (float channel : settings.sky_color) {
+    for (std::size_t axis = 0; axis < 3; ++axis) {
+        const float channel = settings.sky_color[axis];
         const double radiance = double(channel) * settings.sky_intensity;
         if (!std::isfinite(channel) || channel < 0 || !std::isfinite(settings.sky_intensity) ||
             settings.sky_intensity < 0 || radiance > 65504)
@@ -177,13 +176,11 @@ inline const char* scene_lighting_error(const SceneLightingSettings& settings) n
 
 // Validate the candidate settings together with their actual world-space anchor
 // before either is published. Relative bounds alone cannot prove float precision.
-inline const char* scene_lighting_focus_error(const SceneLightingSettings& settings,
-                                              const std::array<float, 3>& focus) noexcept {
+inline const char* scene_lighting_focus_error(const SceneLightingSettings& settings, math::Vector3 focus) noexcept {
     if (const auto* error = probe_layout_error(settings))
         return error;
-    for (float component : focus)
-        if (!std::isfinite(component) || std::abs(component) > 100000)
-            return "Invalid DDGI lighting focus";
+    if (!math::is_finite(focus) || math::max_component(math::cwise_abs(focus)) > 100000)
+        return "Invalid DDGI lighting focus";
     for (const auto& volume : settings.probe_volumes)
         if (volume.enabled && volume.placement == ProbePlacement::follow_focus)
             for (std::size_t axis = 0; axis < 3; ++axis) {

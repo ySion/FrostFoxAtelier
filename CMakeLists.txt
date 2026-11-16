@@ -65,8 +65,6 @@ target_link_libraries(atelier_foundation_headers INTERFACE unordered_dense::unor
 
 add_library(atelier_math INTERFACE)
 target_include_directories(atelier_math INTERFACE modules/core/math/include)
-# Numerical consumers rely on separate multiply/add rounding (notably Volume/BVH bounds).
-target_compile_options(atelier_math INTERFACE /clang:-ffp-contract=off)
 
 add_library(atelier_platform STATIC modules/core/platform/src/utf.cpp modules/core/platform/src/error.cpp)
 target_include_directories(atelier_platform PUBLIC modules/core/platform/include)
@@ -75,7 +73,7 @@ atelier_target(atelier_platform)
 add_library(atelier_execution_contracts INTERFACE)
 target_include_directories(atelier_execution_contracts INTERFACE modules/execution/contracts/include)
 
-add_library(atelier_foundation STATIC modules/core/foundation/src/string.cpp modules/core/foundation/src/hash.cpp modules/core/foundation/src/frame_timing.cpp
+add_library(atelier_foundation STATIC modules/core/foundation/src/string.cpp modules/core/foundation/src/frame_timing.cpp
     modules/core/foundation/src/sha256.cpp modules/core/foundation/src/tasks.cpp)
 target_compile_features(atelier_foundation PUBLIC cxx_std_23)
 target_link_libraries(atelier_foundation PUBLIC atelier_foundation_headers PRIVATE atelier_platform bcrypt TBB::tbb)

@@ -488,7 +488,7 @@ int run_project(const RunOptions& options) {
             std::optional<atelier::presentation::CameraSnapshot> camera;
             renderer::Camera matrices;
             renderer::ViewSettings view;
-            std::array<float, 3> focus{};
+            math::Vector3 focus{};
             std::string unavailable;
             if (!options.preview_ui) {
                 timing::Scope snapshot{phases::scene};
@@ -504,7 +504,7 @@ int run_project(const RunOptions& options) {
                     else if (!environment)
                         unavailable = environment.error().message;
                     else {
-                        focus = {selected->position.x, selected->position.y, selected->position.z};
+                        focus = selected->position;
                         static_cast<rendering::SceneLightingSettings&>(view.lit) = *environment;
                         const auto* invalid = rendering::scene_lighting_focus_error(view.lit, focus);
                         if (!invalid)
@@ -513,7 +513,7 @@ int run_project(const RunOptions& options) {
                             unavailable = invalid;
                         else {
                             camera = *selected;
-                            matrices = {projected->view.elements, projected->projection.elements, projected->far_depth};
+                            matrices = {projected->view, projected->projection, projected->far_depth};
                             view.shading = renderer::Shading::scene_lit;
                         }
                     }

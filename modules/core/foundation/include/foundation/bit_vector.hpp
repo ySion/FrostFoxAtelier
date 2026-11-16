@@ -102,7 +102,12 @@ public:
         return result;
     }
 
-    [[nodiscard]] bool any() const noexcept { return find_first() != npos; }
+    [[nodiscard]] bool any() const noexcept {
+        for (auto word : words_)
+            if (word)
+                return true;
+        return false;
+    }
 
     [[nodiscard]] bool none() const noexcept { return !any(); }
 
@@ -160,7 +165,7 @@ public:
         Iterator end() const noexcept { return {owner, npos}; }
     };
 
-    [[nodiscard]] SetBits set_bits() const& noexcept { return {this}; }
+    [[nodiscard]] SetBits set_bits() const& noexcept [[clang::lifetimebound]] { return {this}; }
 
     SetBits set_bits() const&& = delete;
 

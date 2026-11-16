@@ -89,7 +89,7 @@ struct ProbeField {
 
     // Called before encoding. Configuration validation is performed at the
     // public frame boundary; no GPU ownership or scene mutation lives here.
-    void describe(const SceneLitSettings& settings, const std::array<float, 3>& focus) {
+    void describe(const SceneLitSettings& settings, math::Vector3 focus) {
         const auto old_total = total;
         total = 0;
         for (std::size_t slot = 0; slot < current.size(); ++slot) {

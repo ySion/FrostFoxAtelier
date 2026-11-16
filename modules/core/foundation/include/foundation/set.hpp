@@ -75,7 +75,7 @@ public:
 
     template <class Q>
         requires detail::HashQuery<T, Q, H, E>
-    [[nodiscard]] const T* find(const Q& value) const noexcept {
+    [[nodiscard]] const T* find(const Q& value) const noexcept [[clang::lifetimebound]] {
         const auto at = storage_.find(value);
         return at == storage_.end() ? nullptr : std::addressof(*at);
     }
@@ -98,9 +98,9 @@ public:
         return storage_.erase(value) != 0;
     }
 
-    [[nodiscard]] Iterator begin() const noexcept { return storage_.values().data(); }
+    [[nodiscard]] Iterator begin() const noexcept [[clang::lifetimebound]] { return storage_.values().data(); }
 
-    [[nodiscard]] Iterator end() const noexcept { return empty() ? begin() : begin() + size(); }
+    [[nodiscard]] Iterator end() const noexcept [[clang::lifetimebound]] { return begin() + size(); }
 
 private:
     Storage storage_;

@@ -37,20 +37,6 @@ Result<void> invalid(bool valid, const char* message) {
     return {};
 }
 
-math::Matrix4d matrix(const std::array<float, 16>& value) {
-    math::Matrix4d result;
-    for (std::size_t i = 0; i < 16; i++)
-        result.elements[i] = value[i];
-    return result;
-}
-
-std::array<float, 16> floats(const math::Matrix4d& value) {
-    std::array<float, 16> result;
-    for (std::size_t i = 0; i < 16; i++)
-        result[i] = static_cast<float>(value.elements[i]);
-    return result;
-}
-
 float halton(std::uint32_t index, std::uint32_t base) {
     float value = 0;
     float factor = 1;
@@ -486,7 +472,7 @@ struct SceneLit::State {
 
         const geometry::Mesh* geometry{};
 
-        std::array<float, 16> world{};
+        math::Matrix4 world{};
 
         std::array<float, 4> normal_x{};
 
@@ -496,7 +482,7 @@ struct SceneLit::State {
 
         std::vector<material::ProgramSurfaceRef> program_surfaces;
 
-        ShadowBounds shadow_bounds;
+        math::Bounds shadow_bounds;
 
         bool shadow_dynamic{};
 
@@ -1026,7 +1012,7 @@ struct SceneLit::State {
             ATELIER_TRY(require(gfxCommandSetViewport(gfx, float(r[0]), float(r[1]), float(r[2]), float(r[3])),
                                 "Set shadow tile viewport"));
             ATELIER_TRY(require(gfxCommandSetScissorRect(gfx, r[0], r[1], r[2], r[3]), "Set shadow tile scissor"));
-            ATELIER_TRY(bind(p, "lit_shadow_view_projection", job.view_projection));
+            ATELIER_TRY(bind(p, "lit_shadow_view_projection", job.view_projection.elements));
             const auto last = first + job.instances.size();
             for (std::size_t at = first; at < last;) {
                 const auto draw_index = instance_draws[shadow_instance_indices[at]];
@@ -1139,7 +1125,7 @@ struct SceneLit::State {
         return {};
     }
 
-    Result<void> probes(const SceneLitSettings& settings, const std::array<float, 3>& focus, FrameStats& stats) {
+    Result<void> probes(const SceneLitSettings& settings, math::Vector3 focus, FrameStats& stats) {
         probe_field.describe(settings, focus);
         const auto w = probe_field.width * 8;
         const auto h = probe_field.height * 8;
@@ -1732,7 +1718,7 @@ struct SceneLit::State {
             const bool surfaces_same = materials_same && same_slot;
             // Unchanged object at an unchanged index: its instance, RT state and caster bounds stand.
             if (surfaces_same && object.world == mesh.world && (!shadows_cached || object.shadow_tracked) &&
-                instances[index].previous_world == mesh.world &&
+                instances[index].previous_world == mesh.world.elements &&
                 instances[index].geometry[2] == (correspondence ? 1u : 0u)) {
                 if (shadows_cached)
                     shadow_casters.push_back(
@@ -1742,10 +1728,10 @@ struct SceneLit::State {
                 continue;
             }
             GpuInstance instance{};
-            instance.world = mesh.world;
-            instance.previous_world = correspondence ? object.world : mesh.world;
+            instance.world = mesh.world.elements;
+            instance.previous_world = (correspondence ? object.world : mesh.world).elements;
             if (inserted || object.world != mesh.world) {
-                const auto inverse = math::try_inverse(matrix(mesh.world));
+                const auto inverse = math::try_inverse(math::Matrix4d(mesh.world));
                 ATELIER_TRY(invalid(bool(inverse), "Scene Lit requires an invertible mesh transform"));
                 const auto& inv = inverse->elements;
                 const double determinant = inv[0] * (inv[5] * inv[10] - inv[6] * inv[9]) -
@@ -1791,16 +1777,15 @@ struct SceneLit::State {
                 object.shadow_dynamic = true;
             if (shadows_cached) {
                 if (!object.shadow_tracked || shadow_changed) {
-                    ShadowBounds bounds;
-                    bounds.minimum.fill(std::numeric_limits<float>::max());
-                    bounds.maximum.fill(-std::numeric_limits<float>::max());
+                    auto bounds = math::Bounds::empty();
                     const auto& local = mesh.geometry->bounds();
-                    for (unsigned corner = 0; corner < 8; ++corner)
+                    for (unsigned corner = 0; corner < 8; ++corner) {
+                        const auto local_corner = math::corner(local, corner);
                         for (std::size_t axis = 0; axis < 3; ++axis) {
-                            double value = mesh.world[12 + axis];
-                            for (std::size_t a = 0; a < 3; ++a)
-                                value += double((corner & (1u << a)) ? local.maximum[a] : local.minimum[a]) *
-                                         mesh.world[a * 4 + axis];
+                            const double value = double(mesh.world[12 + axis]) +
+                                                 double(local_corner.x) * mesh.world[axis] +
+                                                 double(local_corner.y) * mesh.world[4 + axis] +
+                                                 double(local_corner.z) * mesh.world[8 + axis];
                             ATELIER_TRY(
                                 invalid(std::isfinite(value) && std::abs(value) < std::numeric_limits<float>::max(),
                                         "Shadow caster bounds exceed GPU float representation"));
@@ -1811,6 +1796,7 @@ struct SceneLit::State {
                                 std::max(bounds.maximum[axis], std::nextafter(static_cast<float>(value),
                                                                               std::numeric_limits<float>::infinity()));
                         }
+                    }
                     shadow_changes.push_back({object.shadow_bounds, bounds, object.shadow_tracked, true,
                                               (object.shadow_tracked && !was_dynamic) || !object.shadow_dynamic,
                                               was_dynamic || object.shadow_dynamic});
@@ -1935,25 +1921,22 @@ struct SceneLit::State {
                                                        dirty_last, "Scene Lit instance"));
         gpu_instances = *written;
         if (geometry_changed || topology_changed || transform_changed) {
-            std::array<double, 3> low;
-            std::array<double, 3> high;
-            low.fill(std::numeric_limits<double>::max());
-            high.fill(-std::numeric_limits<double>::max());
+            auto scene_bounds = math::Boundsd::empty();
             for (const auto& mesh : frame.meshes) {
                 const auto& local = mesh.geometry->bounds();
-                for (unsigned corner = 0; corner < 8; ++corner)
-                    for (std::size_t axis = 0; axis < 3; ++axis) {
-                        double value = mesh.world[12 + axis];
-                        for (std::size_t a = 0; a < 3; ++a)
-                            value += double((corner & (1u << a)) ? local.maximum[a] : local.minimum[a]) *
-                                     mesh.world[a * 4 + axis];
-                        low[axis] = std::min(low[axis], value);
-                        high[axis] = std::max(high[axis], value);
-                    }
+                for (unsigned corner = 0; corner < 8; ++corner) {
+                    const auto local_corner = math::corner(local, corner);
+                    math::Vector3d world_corner;
+                    for (std::size_t axis = 0; axis < 3; ++axis)
+                        world_corner[axis] = double(mesh.world[12 + axis]) + double(local_corner.x) * mesh.world[axis] +
+                                             double(local_corner.y) * mesh.world[4 + axis] +
+                                             double(local_corner.z) * mesh.world[8 + axis];
+                    scene_bounds = math::encapsulate(scene_bounds, world_corner);
+                }
             }
             for (std::size_t axis = 0; axis < 3; ++axis) {
-                probe_scene_min[axis] = static_cast<float>(low[axis]);
-                probe_scene_max[axis] = static_cast<float>(high[axis]);
+                probe_scene_min[axis] = static_cast<float>(scene_bounds.minimum[axis]);
+                probe_scene_max[axis] = static_cast<float>(scene_bounds.maximum[axis]);
             }
         }
         material_revision = material_frame->revision;
@@ -2053,8 +2036,7 @@ struct SceneLit::State {
         // Every lit shadow caster reads the atlas, so it exists whenever one can contribute.
         const bool next_shadows_cached =
             settings.shadows && std::ranges::any_of(frame.lights, [](const Light& light) {
-                return light.casts_shadow && light.intensity > 0 &&
-                       std::ranges::any_of(light.color, [](float channel) { return channel > 0; });
+                return light.casts_shadow && light.intensity > 0 && math::max_component(light.color) > 0;
             });
         const bool shadow_backend_changed = shadows_cached != next_shadows_cached;
         if (shadow_backend_changed)
@@ -2084,10 +2066,10 @@ struct SceneLit::State {
         ATELIER_TRY(lighting(frame));
         const bool visibility_changed = *transform_changed || coverage_changed;
         // Uniform consumers (DDGI-off composition, SSSR fallback) read the map's mean.
-        const auto mean = sky_source ? sky_source->mean() : std::array<float, 3>{1, 1, 1};
-        const std::array<float, 4> next_environment{frame.environment[0] * mean[0], frame.environment[1] * mean[1],
-                                                    frame.environment[2] * mean[2], 1};
-        sky_radiance = {frame.environment[0], frame.environment[1], frame.environment[2], 0};
+        const auto mean = sky_source ? sky_source->mean() : math::Vector3{1, 1, 1};
+        const auto weighted_env = math::cwise_mul(frame.environment, mean);
+        const std::array<float, 4> next_environment{weighted_env.x, weighted_env.y, weighted_env.z, 1};
+        sky_radiance = {frame.environment.x, frame.environment.y, frame.environment.z, 0};
         const bool radiance_changed =
             light_changed || material_changed || emitter_changed || *sky_changed || next_environment != environment;
         // The epoch describes an authored change, never stochastic radiance.
@@ -2097,7 +2079,7 @@ struct SceneLit::State {
                 ATELIER_TRY(require(gfxCommandClearTexture(gfx, probe_response), "Reset wrapped DDGI response epoch"));
         if (visibility_changed)
             probe_geometry_pending = 2 * probe_field.total;
-        auto projection = matrix(frame.camera.projection);
+        math::Matrix4d projection(frame.camera.projection);
         const bool taa_enabled = settings.antialiasing == Antialiasing::taa;
         const bool smaa_temporal = settings.antialiasing == Antialiasing::smaa_t2x;
         const float smaa_jitter = sequence % 2 == 0 ? .25f : -.25f;
@@ -2109,16 +2091,16 @@ struct SceneLit::State {
             projection.elements[row * 4] += 2 * jx / frame.scene_viewport.width * projection.elements[row * 4 + 3];
             projection.elements[row * 4 + 1] -= 2 * jy / frame.scene_viewport.height * projection.elements[row * 4 + 3];
         }
-        camera_view = frame.camera.view;
+        camera_view = frame.camera.view.elements;
         { // Row-vector projection without skew: view x = ndc.x*(z*a+b)+(z*c+d), likewise y; z from device depth.
             const auto& e = projection.elements;
             ao_view_x = {float(e[11] / e[0]), float(e[15] / e[0]), float(-e[8] / e[0]), float(-e[12] / e[0])};
             ao_view_y = {float(e[11] / e[5]), float(e[15] / e[5]), float(-e[9] / e[5]), float(-e[13] / e[5])};
             ao_view_z = {float(e[10]), float(e[14]), float(e[11]), float(e[15])};
         }
-        const auto vp = matrix(camera_view) * projection;
-        view_projection = floats(vp);
-        inverse_view_projection = floats(*math::try_inverse(vp));
+        const auto vp = math::Matrix4d(frame.camera.view) * projection;
+        view_projection = math::Matrix4(vp).elements;
+        inverse_view_projection = math::Matrix4(*math::try_inverse(vp)).elements;
         if (!history_valid) {
             previous_view_projection = view_projection;
             previous_inverse_view_projection = inverse_view_projection;
@@ -2620,7 +2602,8 @@ struct SceneLit::State {
         const auto& v = frame.scene_viewport;
         ATELIER_TRY(bind(p, "raster_viewport_transform", raster_viewport(v).clip_transform));
         ATELIER_TRY(
-            bind(p, "lit_view_projection", floats(matrix(frame.camera.view) * matrix(frame.camera.projection))));
+            bind(p, "lit_view_projection",
+                 math::Matrix4(math::Matrix4d(frame.camera.view) * math::Matrix4d(frame.camera.projection)).elements));
         ATELIER_TRY(bind(p, "lit_far_depth", frame.camera.far_depth));
         ATELIER_TRY(bind(p, "lit_viewport", std::array<float, 4>{v.x, v.y, v.width, v.height}));
         ATELIER_TRY(bind_probe_debug(p));
@@ -2849,8 +2832,8 @@ SceneLit::~SceneLit() {
 }
 
 Result<void> SceneLit::validate(const Frame& frame, bool duplicate_mesh_keys) const {
-    const auto view_inverse = math::try_inverse(matrix(frame.camera.view));
-    const auto vp = matrix(frame.camera.view) * matrix(frame.camera.projection);
+    const auto view_inverse = math::try_inverse(math::Matrix4d(frame.camera.view));
+    const auto vp = math::Matrix4d(frame.camera.view) * math::Matrix4d(frame.camera.projection);
     const auto vp_inverse = math::try_inverse(vp);
     ATELIER_TRY(invalid(bool(view_inverse) && bool(vp_inverse), "Scene Lit requires an invertible camera"));
     for (const auto* value : {&vp, &*vp_inverse, &*view_inverse})
@@ -2871,8 +2854,9 @@ Result<void> SceneLit::validate(const Frame& frame, bool duplicate_mesh_keys) co
                 "Invalid Scene Lit settings");
     if (!settings)
         return std::unexpected(std::move(settings).error());
-    for (float radiance : frame.environment)
-        ATELIER_TRY(invalid(finite(radiance) && radiance >= 0 && radiance <= 65504, "Invalid Scene Lit sky radiance"));
+    ATELIER_TRY(invalid(math::is_finite(frame.environment) && math::min_component(frame.environment) >= 0 &&
+                            math::max_component(frame.environment) <= 65504,
+                        "Invalid Scene Lit sky radiance"));
     ATELIER_TRY(invalid(finite(s.sky_rotation) && s.sky_rotation >= -180 && s.sky_rotation <= 180,
                         "Invalid Scene Lit sky rotation"));
     if (const auto* error = probe_focus_error(s, frame.lighting_focus))
@@ -2889,31 +2873,17 @@ Result<void> SceneLit::validate(const Frame& frame, bool duplicate_mesh_keys) co
         ATELIER_TRY(invalid(l.kind == LightKind::directional || l.range > 0, "Local light range must be positive"));
         ATELIER_TRY(invalid(l.kind != LightKind::rectangle || (l.width > 0 && l.height > 0),
                             "Rectangle dimensions must be positive"));
-        float direction_length = 0;
-        float right_length = 0;
-        float up_length = 0;
-        float orthogonal = 0;
-        for (std::size_t i = 0; i < 3; i++) {
-            ATELIER_TRY(invalid(finite(l.position[i]) && finite(l.direction[i]) && finite(l.color[i]) &&
-                                    l.color[i] >= 0 && finite(l.right[i]) && finite(l.up[i]),
-                                "Invalid Scene Lit light vectors"));
-            direction_length += l.direction[i] * l.direction[i];
-            right_length += l.right[i] * l.right[i];
-            up_length += l.up[i] * l.up[i];
-            orthogonal += l.right[i] * l.up[i];
-        }
-        ATELIER_TRY(invalid(std::abs(direction_length - 1) < .002f, "Light propagation direction must be unit length"));
+        ATELIER_TRY(invalid(math::is_finite(l.position) && math::is_finite(l.direction) && math::is_finite(l.color) &&
+                                math::min_component(l.color) >= 0 && math::is_finite(l.right) && math::is_finite(l.up),
+                            "Invalid Scene Lit light vectors"));
+        ATELIER_TRY(invalid(std::abs(math::length_squared(l.direction) - 1) < .002f,
+                            "Light propagation direction must be unit length"));
         if (l.kind == LightKind::rectangle) {
-            float right_dot = 0;
-            float up_dot = 0;
-            for (std::size_t i = 0; i < 3; i++) {
-                right_dot += l.right[i] * l.direction[i];
-                up_dot += l.up[i] * l.direction[i];
-            }
-            auto axes =
-                invalid(std::abs(right_length - 1) < .002f && std::abs(up_length - 1) < .002f &&
-                            std::abs(orthogonal) < .002f && std::abs(right_dot) < .002f && std::abs(up_dot) < .002f,
-                        "Rectangle light tangent axes and propagation direction must be orthonormal");
+            auto axes = invalid(
+                std::abs(math::length_squared(l.right) - 1) < .002f &&
+                    std::abs(math::length_squared(l.up) - 1) < .002f && std::abs(math::dot(l.right, l.up)) < .002f &&
+                    std::abs(math::dot(l.right, l.direction)) < .002f && std::abs(math::dot(l.up, l.direction)) < .002f,
+                "Rectangle light tangent axes and propagation direction must be orthonormal");
             if (!axes)
                 return std::unexpected(std::move(axes).error());
         }

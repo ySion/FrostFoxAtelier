@@ -760,7 +760,7 @@ Result<std::optional<World::Orientation>> World::SpatialPass::orientation(Object
                 for (auto& axis : negative)
                     axis = !axis;
             result.mirrored ^= odd;
-            math::Quaterniond local{q.x, q.y, q.z, q.w};
+            auto local = math::Quaterniond(q);
             if (negative[0] || negative[1] || negative[2]) {
                 math::Quaterniond turn{0, 0, 0, 0};
                 if (!negative[0])
@@ -795,7 +795,7 @@ Result<std::optional<math::Quaterniond>> World::SpatialPass::rotation(ObjectId e
     for (auto node = entity; node != ObjectId{};) {
         const auto* entry = impl_->space.entry(node);
         const auto& q = entry->local.rotation;
-        const auto local = math::try_normalize(math::Quaterniond{q.x, q.y, q.z, q.w});
+        const auto local = math::try_normalize(math::Quaterniond(q));
         const auto next = local ? math::try_normalize(*local * result) : std::nullopt;
         if (!next) {
             const auto failure = Error{ErrorCode::argument_mismatch, "Space rotation is not finite or normalizable."};

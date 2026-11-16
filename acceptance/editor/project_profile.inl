@@ -191,8 +191,8 @@ void profile_scene_cpu(const std::filesystem::path& root, std::string_view scene
         const auto width = take(take(viewport.at(0)).f32());
         const auto height = take(take(viewport.at(1)).f32());
         const renderer::detail::SceneFrustum frustum(
-            take(assets::json_format::vector<16>(take(camera.at("view_matrix")))),
-            take(assets::json_format::vector<16>(take(camera.at("projection_matrix")))), width, height,
+            math::Matrix4{take(assets::json_format::vector<16>(take(camera.at("view_matrix"))))},
+            math::Matrix4{take(assets::json_format::vector<16>(take(camera.at("projection_matrix"))))}, width, height,
             take(camera.f32({"far_depth"})));
         // The Renderer draws each visible geometry once per surface pass; parts count its material slots in use.
         std::unordered_set<const geometry::Mesh*> drawn;

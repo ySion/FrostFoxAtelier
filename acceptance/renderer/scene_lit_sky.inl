@@ -31,28 +31,19 @@ SkyDirection sky_direction(double longitude_degrees, double latitude_degrees) {
 }
 
 render::Camera sky_look(Vec3 eye, Vec3 forward, Vec3 up, float aspect, float scale) {
-    const auto z = normalize(forward);
-    const auto x = normalize(cross(up, z));
-    const auto y = cross(z, x);
     render::Camera result;
-    result.view = {x[0], y[0], z[0], 0, x[1],         y[1],         z[1],         0,
-                   x[2], y[2], z[2], 0, -dot(x, eye), -dot(y, eye), -dot(z, eye), 1};
-    result.projection = {scale / aspect, 0, 0, 0, 0, scale, 0, 0, 0, 0, -.1f / 39.9f, 1, 0, 0, 4 / 39.9f, 0};
+    result.view = *atelier::math::try_look_to_lh(eye, forward, up);
+    result.projection = {{scale / aspect, 0, 0, 0, 0, scale, 0, 0, 0, 0, -.1f / 39.9f, 1, 0, 0, 4 / 39.9f, 0}};
     return result;
 }
 
 std::array<double, 2> sky_pixel(const render::Frame& frame, const SkyDirection& direction) {
-    std::array<double, 4> value{direction[0], direction[1], direction[2], 0};
-    for (const auto& matrix : {frame.camera.view, frame.camera.projection}) {
-        std::array<double, 4> next{};
-        for (unsigned column = 0; column < 4; ++column)
-            for (unsigned row = 0; row < 4; ++row)
-                next[column] += value[row] * matrix[row * 4 + column];
-        value = next;
-    }
+    const auto clip = (atelier::math::Vector4d{direction[0], direction[1], direction[2], 0} *
+                       atelier::math::Matrix4d(frame.camera.view)) *
+                      atelier::math::Matrix4d(frame.camera.projection);
     const auto& viewport = frame.scene_viewport;
-    return {viewport.x + (value[0] / value[3] * .5 + .5) * viewport.width,
-            viewport.y + (.5 - value[1] / value[3] * .5) * viewport.height};
+    return {viewport.x + (clip.x / clip.w * .5 + .5) * viewport.width,
+            viewport.y + (.5 - clip.y / clip.w * .5) * viewport.height};
 }
 
 bool sky_inside(const render::Frame& frame, unsigned x, unsigned y) {
@@ -139,7 +130,7 @@ void sky_benchmark(Fixture& f) {
     const auto& mean = map->mean();
     const auto set = [&](bool mapped) {
         options.sky_map = mapped ? map : atelier::rendering::SkyMapRef{};
-        f.frame.environment = mapped ? Vec3{uniform[0] / mean[0], uniform[1] / mean[1], uniform[2] / mean[2]} : uniform;
+        f.frame.environment = mapped ? atelier::math::cwise_div(uniform, mean) : uniform;
     };
     const auto timed_step = [&] {
         const auto start = std::chrono::steady_clock::now();

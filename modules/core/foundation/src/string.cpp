@@ -1,84 +1,139 @@
 #include "foundation/string.hpp"
-#include "foundation/result.hpp"
 
 #include <algorithm>
 #include <cstring>
+#include <new>
 #include <utility>
 
 namespace atelier {
 
 std::expected<String, StringError> String::from_utf8(StringView text) noexcept {
-    String result;
-    ATELIER_TRY(result.assign(text));
-    return result;
+    if (text.size() > max_size)
+        fatal("String exceeds addressable storage.");
+    if (!text.is_valid_utf8())
+        return std::unexpected(StringError::invalid_utf8);
+    return from_utf8_validated(text);
 }
 
 String String::from_utf8_validated(StringView text) noexcept {
-    String result;
-    result.write_validated(text, 0);
+    if (text.size() > max_size)
+        fatal("String exceeds addressable storage.");
+    String result{Uninitialized{}};
+    if (text.size() <= inline_capacity) {
+        std::memset(result.bytes_, 0, sizeof(result.bytes_));
+        if (text.size())
+            std::memcpy(result.bytes_, text.data(), text.size());
+        result.bytes_[31] = static_cast<char>(text.size());
+    } else {
+        char* buffer = new char[text.size() + 1];
+        std::memcpy(buffer, text.data(), text.size());
+        buffer[text.size()] = '\0';
+        result.set_long({buffer, text.size(), text.size()}, heap_tag);
+    }
     return result;
 }
 
-String::String(const String& other) noexcept {
-    if (other.tag() == literal_tag)
-        std::memcpy(bytes_, other.bytes_, sizeof(bytes_));
-    else
-        write_validated(other.view(), 0);
-}
-
-String& String::operator=(const String& other) noexcept {
-    if (this != &other) {
-        if (other.tag() == literal_tag) {
-            release();
-            std::memcpy(bytes_, other.bytes_, sizeof(bytes_));
-        } else
-            write_validated(other.view(), 0);
+template <class Part, class ViewOf>
+String String::build_joined(Span<const Part> parts, StringView separator, ViewOf view_of) noexcept {
+    if (parts.empty())
+        return {};
+    std::size_t total{};
+    for (std::size_t i = 0; i != parts.size(); ++i) {
+        if (i) {
+            if (separator.size() > max_size - total)
+                fatal("String exceeds addressable storage.");
+            total += separator.size();
+        }
+        const StringView piece = view_of(parts[i]);
+        if (piece.size() > max_size - total)
+            fatal("String exceeds addressable storage.");
+        total += piece.size();
     }
-    return *this;
+    String result{Uninitialized{}};
+    char* destination{};
+    if (total <= inline_capacity) {
+        std::memset(result.bytes_, 0, sizeof(result.bytes_));
+        result.bytes_[31] = static_cast<char>(total);
+        destination = result.bytes_;
+    } else {
+        destination = new char[total + 1];
+        destination[total] = '\0';
+        result.set_long({destination, total, total}, heap_tag);
+    }
+    for (std::size_t i = 0; i != parts.size(); ++i) {
+        if (i && separator.size()) {
+            std::memcpy(destination, separator.data(), separator.size());
+            destination += separator.size();
+        }
+        const StringView piece = view_of(parts[i]);
+        if (piece.size()) {
+            std::memcpy(destination, piece.data(), piece.size());
+            destination += piece.size();
+        }
+    }
+    return result;
 }
 
-String::String(String&& other) noexcept {
-    move_from(other);
+std::expected<String, StringError> String::join_views(Span<const StringView> parts, StringView separator) noexcept {
+    if (!separator.is_valid_utf8())
+        return std::unexpected(StringError::invalid_utf8);
+    for (const StringView part : parts)
+        if (!part.is_valid_utf8())
+            return std::unexpected(StringError::invalid_utf8);
+    return build_joined(parts, separator, [](StringView part) noexcept { return part; });
 }
 
-String& String::operator=(String&& other) noexcept {
-    if (this != &other) {
+String String::join_strings(Span<const String> parts, const String& separator) noexcept {
+    if (parts.size() == 1)
+        return parts[0];
+    return build_joined(parts, separator.view(), [](const String& part) noexcept { return part.view(); });
+}
+
+std::expected<String, StringError> String::join_strings_with_view(Span<const String> parts,
+                                                                  StringView separator) noexcept {
+    if (!separator.is_valid_utf8())
+        return std::unexpected(StringError::invalid_utf8);
+    if (parts.size() == 1)
+        return parts[0];
+    return build_joined(parts, separator, [](const String& part) noexcept { return part.view(); });
+}
+
+void String::free_heap() noexcept {
+    const auto value = long_value();
+    ::operator delete[](const_cast<char*>(value.data), value.capacity + 1);
+}
+
+void String::copy_heap(const String& other) noexcept {
+    const auto value = other.long_value();
+    if (value.size <= inline_capacity) {
+        std::memset(bytes_, 0, sizeof(bytes_));
+        std::memcpy(bytes_, value.data, value.size + 1);
+        bytes_[31] = static_cast<char>(value.size);
+        return;
+    }
+    char* copy = new char[value.size + 1];
+    std::memcpy(copy, value.data, value.size + 1);
+    set_long({copy, value.size, value.size}, heap_tag);
+}
+
+void String::assign_from(const String& other) noexcept {
+    if (other.tag() == literal_tag) {
         release();
-        move_from(other);
-    }
-    return *this;
-}
-
-void String::move_from(String& other) noexcept {
-    std::memcpy(bytes_, other.bytes_, sizeof(bytes_));
-    other.bytes_[0] = '\0';
-    other.bytes_[31] = 0;
-}
-
-void String::release() noexcept {
-    if (tag() == heap_tag)
-        delete[] long_value().data;
-    bytes_[0] = '\0';
-    bytes_[31] = 0;
+        std::memcpy(bytes_, other.bytes_, sizeof(bytes_));
+    } else
+        write_validated(other.view(), 0);
 }
 
 void String::clear() noexcept {
     if (tag() != heap_tag) {
-        release();
+        bytes_[0] = '\0';
+        bytes_[31] = 0;
         return;
     }
     auto value = long_value();
     const_cast<char*>(value.data)[0] = '\0';
     value.size = 0;
     set_long(value, heap_tag);
-}
-
-void String::swap(String& other) noexcept {
-    if (this == &other)
-        return;
-    String temporary{std::move(other)};
-    other = std::move(*this);
-    *this = std::move(temporary);
 }
 
 std::size_t String::grown_capacity(std::size_t minimum) const noexcept {
@@ -90,7 +145,8 @@ void String::reallocate(std::size_t capacity) noexcept {
     const auto length = size();
     char* replacement = new char[capacity + 1];
     std::memcpy(replacement, c_str(), length + 1);
-    release();
+    if (tag() == heap_tag)
+        free_heap();
     set_long({replacement, length, capacity}, heap_tag);
 }
 
@@ -98,7 +154,7 @@ void String::reserve(std::size_t bytes) noexcept {
     if (bytes > max_size)
         fatal("String exceeds addressable storage.");
     if (bytes > capacity())
-        reallocate(grown_capacity(bytes));
+        reallocate(bytes);
 }
 
 void String::squeeze() noexcept {
@@ -108,7 +164,7 @@ void String::squeeze() noexcept {
     if (value.size <= inline_capacity) {
         std::memcpy(bytes_, value.data, value.size + 1);
         bytes_[31] = static_cast<char>(value.size);
-        delete[] value.data;
+        ::operator delete[](const_cast<char*>(value.data), value.capacity + 1);
     } else if (value.size < value.capacity)
         reallocate(value.size);
 }
@@ -141,7 +197,11 @@ std::expected<void, StringError> String::replace(std::size_t first, std::size_t 
     };
     if (!boundary(first) || !boundary(first + count) || !replacement.is_valid_utf8())
         return std::unexpected(StringError::invalid_utf8);
+    const auto kept = text.size() - count;
+    if (replacement.size() > max_size - kept)
+        fatal("String exceeds addressable storage.");
     String candidate;
+    candidate.reserve(kept + replacement.size());
     candidate.write_validated(text.slice(0, first), 0);
     candidate.write_validated(replacement, candidate.size());
     candidate.write_validated(text.slice(first + count), candidate.size());
@@ -159,6 +219,10 @@ std::expected<std::size_t, StringError> String::replace_all(StringView search, S
     if (at == StringView::npos)
         return 0;
     String candidate;
+    if (replacement.size() <= search.size())
+        candidate.reserve(text.size());
+    else if (const auto delta = replacement.size() - search.size(); delta <= max_size - text.size())
+        candidate.reserve(text.size() + delta);
     std::size_t first{};
     std::size_t replaced{};
     do {
@@ -176,8 +240,9 @@ std::expected<std::size_t, StringError> String::replace_all(StringView search, S
 void String::change_ascii_case(bool upper) noexcept {
     const auto convert = [upper](char byte) { return upper ? detail::ascii_upper(byte) : detail::ascii_lower(byte); };
     const auto length = size();
+    const char* current = c_str();
     std::size_t first{};
-    while (first != length && convert(c_str()[first]) == c_str()[first])
+    while (first != length && convert(current[first]) == current[first])
         ++first;
     if (first == length)
         return;
@@ -216,7 +281,8 @@ void String::write_validated(StringView text, std::size_t prefix) noexcept {
         // Self-views must be consumed before releasing their old buffer.
         std::memcpy(replacement + prefix, text.data(), text.size());
         replacement[total] = '\0';
-        release();
+        if (tag() == heap_tag)
+            free_heap();
         set_long({replacement, total, capacity}, heap_tag);
     } else if (is_inline()) {
         std::memmove(bytes_ + prefix, text.data(), text.size());

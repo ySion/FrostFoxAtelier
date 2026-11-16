@@ -406,7 +406,7 @@ private:
 
     void sync_world_view();
 
-    std::array<float, 3> lighting_focus() const;
+    math::Vector3 lighting_focus() const;
 
     Result<bool> confirm_discard(bool sources = true, bool interactive = true);
 

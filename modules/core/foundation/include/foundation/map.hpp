@@ -152,14 +152,14 @@ public:
 
     template <class Q>
         requires detail::HashQuery<K, Q, H, E>
-    [[nodiscard]] V* find(const Q& key) noexcept {
+    [[nodiscard]] V* find(const Q& key) noexcept [[clang::lifetimebound]] {
         const auto at = storage_.find(key);
         return at == storage_.end() ? nullptr : std::addressof(at->second);
     }
 
     template <class Q>
         requires detail::HashQuery<K, Q, H, E>
-    [[nodiscard]] const V* find(const Q& key) const noexcept {
+    [[nodiscard]] const V* find(const Q& key) const noexcept [[clang::lifetimebound]] {
         const auto at = storage_.find(key);
         return at == storage_.end() ? nullptr : std::addressof(at->second);
     }
@@ -173,14 +173,14 @@ public:
     // Lookup precedes construction: an existing key consumes neither argument.
     template <class Q, class... A>
         requires detail::HashQuery<K, Q, H, E> && std::constructible_from<K, Q&&> && std::constructible_from<V, A&&...>
-    InsertResult try_emplace(Q&& key, A&&... arguments) {
+    InsertResult try_emplace(Q&& key, A&&... arguments) [[clang::lifetimebound]] {
         const auto [at, inserted] = storage_.try_emplace(std::forward<Q>(key), std::forward<A>(arguments)...);
         return {std::addressof(at->second), inserted};
     }
 
     template <class Q, class U>
         requires detail::HashQuery<K, Q, H, E> && std::constructible_from<K, Q&&> && std::constructible_from<V, U&&>
-    InsertResult insert_or_assign(Q&& key, U&& value) {
+    InsertResult insert_or_assign(Q&& key, U&& value) [[clang::lifetimebound]] {
         // Construct before replacing the old value; committing its move cannot throw.
         V replacement(std::forward<U>(value));
         const auto [at, inserted] = storage_.insert_or_assign(std::forward<Q>(key), std::move(replacement));
@@ -193,19 +193,20 @@ public:
         return storage_.erase(key) != 0;
     }
 
-    [[nodiscard]] Iterator begin() noexcept { return Iterator{empty() ? nullptr : std::addressof(*storage_.begin())}; }
+    [[nodiscard]] Iterator begin() noexcept [[clang::lifetimebound]] {
+        return Iterator{empty() ? nullptr : std::addressof(*storage_.begin())};
+    }
 
-    [[nodiscard]] Iterator end() noexcept {
+    [[nodiscard]] Iterator end() noexcept [[clang::lifetimebound]] {
         return Iterator{empty() ? nullptr : std::addressof(*storage_.begin()) + size()};
     }
 
-    [[nodiscard]] ConstIterator begin() const noexcept {
-        return ConstIterator{empty() ? nullptr : storage_.values().data()};
+    [[nodiscard]] ConstIterator begin() const noexcept [[clang::lifetimebound]] {
+        return ConstIterator{storage_.values().data()};
     }
 
-    [[nodiscard]] ConstIterator end() const noexcept {
-        const auto* data = storage_.values().data();
-        return ConstIterator{empty() ? nullptr : data + size()};
+    [[nodiscard]] ConstIterator end() const noexcept [[clang::lifetimebound]] {
+        return ConstIterator{storage_.values().data() + size()};
     }
 
 private:

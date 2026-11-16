@@ -2,6 +2,7 @@
 
 #include "memory/fatal.hpp"
 
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -19,41 +20,97 @@ class Optional {
 
     static_assert(std::is_nothrow_destructible_v<T>);
 
-public:
-    Optional() noexcept = default;
+    static constexpr bool trivial_copy_assign = std::is_trivially_copy_constructible_v<T> &&
+                                                std::is_trivially_copy_assignable_v<T> &&
+                                                std::is_trivially_destructible_v<T>;
 
-    Optional(std::nullopt_t) noexcept {}
+    static constexpr bool trivial_move_assign = std::is_trivially_move_constructible_v<T> &&
+                                                std::is_trivially_move_assignable_v<T> &&
+                                                std::is_trivially_destructible_v<T>;
+
+    union Storage {
+        char empty{};
+
+        T value;
+
+        constexpr Storage() noexcept : empty() {}
+
+        template <class... Args>
+        explicit constexpr Storage(std::in_place_t, Args&&... arguments) noexcept
+            : value(std::forward<Args>(arguments)...) {}
+
+        constexpr Storage(const Storage&) noexcept
+            requires std::is_trivially_copy_constructible_v<T>
+        = default;
+
+        constexpr Storage(Storage&&) noexcept
+            requires std::is_trivially_move_constructible_v<T>
+        = default;
+
+        constexpr Storage& operator=(const Storage&) noexcept
+            requires trivial_copy_assign
+        = default;
+
+        constexpr Storage& operator=(Storage&&) noexcept
+            requires trivial_move_assign
+        = default;
+
+        constexpr ~Storage()
+            requires std::is_trivially_destructible_v<T>
+        = default;
+
+        constexpr ~Storage()
+            requires(!std::is_trivially_destructible_v<T>)
+        {}
+    };
+
+public:
+    constexpr Optional() noexcept = default;
+
+    constexpr Optional(std::nullopt_t) noexcept {}
 
     template <class... Args>
         requires std::is_nothrow_constructible_v<T, Args...>
-    explicit Optional(std::in_place_t, Args&&... arguments) noexcept {
-        emplace(std::forward<Args>(arguments)...);
-    }
+    explicit constexpr Optional(std::in_place_t, Args&&... arguments) noexcept
+        : storage_(std::in_place, std::forward<Args>(arguments)...), engaged_(1) {}
 
-    explicit Optional(const T& value) noexcept
+    explicit constexpr Optional(const T& value) noexcept
         requires std::is_nothrow_copy_constructible_v<T>
         : Optional(std::in_place, value) {}
 
-    explicit Optional(T&& value) noexcept
+    explicit constexpr Optional(T&& value) noexcept
         requires std::is_nothrow_move_constructible_v<T>
         : Optional(std::in_place, std::move(value)) {}
 
-    Optional(const Optional& other) noexcept
-        requires std::is_nothrow_copy_constructible_v<T>
+    constexpr Optional(const Optional&) noexcept
+        requires std::is_trivially_copy_constructible_v<T>
+    = default;
+
+    constexpr Optional(const Optional& other) noexcept
+        requires(std::is_nothrow_copy_constructible_v<T> && !std::is_trivially_copy_constructible_v<T>)
     {
         if (other.engaged_)
             emplace(*other.pointer());
     }
 
-    Optional(Optional&& other) noexcept
-        requires std::is_nothrow_move_constructible_v<T>
+    constexpr Optional(Optional&&) noexcept
+        requires std::is_trivially_move_constructible_v<T>
+    = default;
+
+    constexpr Optional(Optional&& other) noexcept
+        requires(std::is_nothrow_move_constructible_v<T> && !std::is_trivially_move_constructible_v<T>)
     {
         if (other.engaged_)
             emplace(std::move(*other.pointer()));
     }
 
-    Optional& operator=(const Optional& other) noexcept
-        requires(std::is_nothrow_copy_constructible_v<T> && std::is_nothrow_copy_assignable_v<T>)
+    constexpr Optional& operator=(const Optional&) noexcept
+        requires trivial_copy_assign
+    = default;
+
+    constexpr Optional& operator=(const Optional& other) noexcept
+        requires(std::is_nothrow_copy_constructible_v<T> && std::is_nothrow_copy_assignable_v<T> &&
+                 !trivial_copy_assign)
     {
         if (this != &other) {
             if (!other.engaged_)
@@ -66,8 +123,13 @@ public:
         return *this;
     }
 
-    Optional& operator=(Optional&& other) noexcept
-        requires(std::is_nothrow_move_constructible_v<T> && std::is_nothrow_move_assignable_v<T>)
+    constexpr Optional& operator=(Optional&&) noexcept
+        requires trivial_move_assign
+    = default;
+
+    constexpr Optional& operator=(Optional&& other) noexcept
+        requires(std::is_nothrow_move_constructible_v<T> && std::is_nothrow_move_assignable_v<T> &&
+                 !trivial_move_assign)
     {
         if (this != &other) {
             if (!other.engaged_)
@@ -80,40 +142,50 @@ public:
         return *this;
     }
 
-    Optional& operator=(std::nullopt_t) noexcept {
+    constexpr Optional& operator=(std::nullopt_t) noexcept {
         reset();
         return *this;
     }
 
-    ~Optional() { reset(); }
+    constexpr ~Optional()
+        requires std::is_trivially_destructible_v<T>
+    = default;
 
-    [[nodiscard]] bool has_value() const noexcept { return engaged_ != 0; }
+    constexpr ~Optional()
+        requires(!std::is_trivially_destructible_v<T>)
+    {
+        reset();
+    }
 
-    [[nodiscard]] explicit operator bool() const noexcept { return has_value(); }
+    [[nodiscard]] constexpr bool has_value() const noexcept { return engaged_ != 0; }
 
-    [[nodiscard]] T* try_get() & noexcept { return engaged_ ? pointer() : nullptr; }
+    [[nodiscard]] constexpr explicit operator bool() const noexcept { return has_value(); }
 
-    [[nodiscard]] const T* try_get() const& noexcept { return engaged_ ? pointer() : nullptr; }
+    [[nodiscard]] constexpr T* try_get() & noexcept [[clang::lifetimebound]] { return engaged_ ? pointer() : nullptr; }
+
+    [[nodiscard]] constexpr const T* try_get() const& noexcept [[clang::lifetimebound]] {
+        return engaged_ ? pointer() : nullptr;
+    }
 
     T* try_get() && = delete;
 
     const T* try_get() const&& = delete;
 
-    [[nodiscard]] T& operator*() & noexcept { return *operator->(); }
+    [[nodiscard]] constexpr T& operator*() & noexcept [[clang::lifetimebound]] { return *operator->(); }
 
-    [[nodiscard]] const T& operator*() const& noexcept { return *operator->(); }
+    [[nodiscard]] constexpr const T& operator*() const& noexcept [[clang::lifetimebound]] { return *operator->(); }
 
     T& operator*() && = delete;
 
     const T& operator*() const&& = delete;
 
-    [[nodiscard]] T* operator->() & noexcept {
+    [[nodiscard]] constexpr T* operator->() & noexcept [[clang::lifetimebound]] {
         if (!engaged_)
             fatal("Empty Optional access.");
         return pointer();
     }
 
-    [[nodiscard]] const T* operator->() const& noexcept {
+    [[nodiscard]] constexpr const T* operator->() const& noexcept [[clang::lifetimebound]] {
         if (!engaged_)
             fatal("Empty Optional access.");
         return pointer();
@@ -123,9 +195,24 @@ public:
 
     const T* operator->() const&& = delete;
 
-    void reset() noexcept {
+    template <class U = T>
+        requires(std::is_nothrow_copy_constructible_v<T> && std::is_nothrow_constructible_v<T, U>)
+    [[nodiscard]] constexpr T value_or(U&& fallback) const& noexcept {
+        return engaged_ ? *pointer() : static_cast<T>(std::forward<U>(fallback));
+    }
+
+    template <class U = T>
+        requires(std::is_nothrow_move_constructible_v<T> && std::is_nothrow_constructible_v<T, U>)
+    [[nodiscard]] constexpr T value_or(U&& fallback) && noexcept {
+        return engaged_ ? std::move(*pointer()) : static_cast<T>(std::forward<U>(fallback));
+    }
+
+    constexpr void reset() noexcept {
         if (engaged_) {
             std::destroy_at(pointer());
+            if consteval {
+                std::construct_at(std::addressof(storage_.empty));
+            }
             engaged_ = 0;
         }
     }
@@ -134,14 +221,14 @@ public:
     // replacement. Arguments must not borrow that value. No operation may reenter.
     template <class... Args>
         requires std::is_nothrow_constructible_v<T, Args...>
-    T& emplace(Args&&... arguments) noexcept {
+    constexpr T& emplace(Args&&... arguments) noexcept [[clang::lifetimebound]] {
         reset();
-        auto* value = std::construct_at(reinterpret_cast<T*>(storage_), std::forward<Args>(arguments)...);
+        auto* value = std::construct_at(std::addressof(storage_.value), std::forward<Args>(arguments)...);
         engaged_ = 1;
         return *value;
     }
 
-    void swap(Optional& other) noexcept
+    constexpr void swap(Optional& other) noexcept
         requires(std::is_nothrow_move_constructible_v<T> && std::is_nothrow_swappable_v<T>)
     {
         if (this == &other)
@@ -158,18 +245,38 @@ public:
         }
     }
 
-    friend void swap(Optional& left, Optional& right) noexcept
+    friend constexpr void swap(Optional& left, Optional& right) noexcept
         requires(std::is_nothrow_move_constructible_v<T> && std::is_nothrow_swappable_v<T>)
     {
         left.swap(right);
     }
 
+    friend constexpr bool operator==(const Optional& left, const Optional& right) noexcept
+        requires requires(const T& a, const T& b) {
+            { a == b } noexcept -> std::convertible_to<bool>;
+        }
+    {
+        if (left.engaged_ != right.engaged_)
+            return false;
+        return !left.engaged_ || static_cast<bool>(*left.pointer() == *right.pointer());
+    }
+
+    friend constexpr bool operator==(const Optional& left, const T& right) noexcept
+        requires requires(const T& a, const T& b) {
+            { a == b } noexcept -> std::convertible_to<bool>;
+        }
+    {
+        return left.engaged_ && static_cast<bool>(*left.pointer() == right);
+    }
+
+    friend constexpr bool operator==(const Optional& value, std::nullopt_t) noexcept { return !value.engaged_; }
+
 private:
-    [[nodiscard]] T* pointer() noexcept { return std::launder(reinterpret_cast<T*>(storage_)); }
+    [[nodiscard]] constexpr T* pointer() noexcept { return std::addressof(storage_.value); }
 
-    [[nodiscard]] const T* pointer() const noexcept { return std::launder(reinterpret_cast<const T*>(storage_)); }
+    [[nodiscard]] constexpr const T* pointer() const noexcept { return std::addressof(storage_.value); }
 
-    alignas(T) std::byte storage_[sizeof(T)];
+    Storage storage_{};
 
     std::uint8_t engaged_{};
 };

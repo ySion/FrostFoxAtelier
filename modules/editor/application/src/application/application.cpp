@@ -262,14 +262,12 @@ void Application::sync_world_view() {
     }
 }
 
-std::array<float, 3> Application::lighting_focus() const {
-    const auto target = camera_.state().target;
-    return {target.x, target.y, target.z};
+math::Vector3 Application::lighting_focus() const {
+    return camera_.state().target;
 }
 
 Result<void> Application::set_camera(const editor::Camera& camera, bool cut) {
-    const auto target = camera.state().target;
-    if (const auto* error = renderer::probe_focus_error(workspace_.view.lit, {target.x, target.y, target.z}))
+    if (const auto* error = renderer::probe_focus_error(workspace_.view.lit, camera.state().target))
         return std::unexpected(Error{ErrorCode::invalid_definition, error});
     if (camera.state() != camera_.state()) {
         camera_ = camera;
@@ -387,44 +385,23 @@ Result<renderer::ViewSettings> Application::fitted_probe_view(bool follow_focus)
     ATELIER_TRY_BIND(items, document_->presentation().render_items());
     if (items->empty())
         return std::unexpected(Error{ErrorCode::invalid_definition, "DDGI volume fitting requires rendered geometry."});
-    struct Bounds {
-        math::Vector3 low{std::numeric_limits<float>::max(), std::numeric_limits<float>::max(),
-                          std::numeric_limits<float>::max()};
-
-        math::Vector3 high = -low;
-    };
-    Bounds world_bounds;
-    std::unordered_map<const geometry::Mesh*, Bounds> local_bounds;
-    const auto include = [](Bounds& bounds, math::Vector3 point) {
-        for (unsigned axis = 0; axis < 3; ++axis) {
-            bounds.low[axis] = std::min(bounds.low[axis], point[axis]);
-            bounds.high[axis] = std::max(bounds.high[axis], point[axis]);
-        }
-    };
-    for (const auto& item : *items) {
-        const auto [found, inserted] = local_bounds.try_emplace(item.geometry.get());
-        if (inserted)
-            for (const auto& vertex : item.geometry->vertices())
-                include(found->second, {vertex.position[0], vertex.position[1], vertex.position[2]});
-        // Eight corners cover each transformed instance; shared mesh vertices
-        // are scanned once for this explicit layout command.
-        for (unsigned corner = 0; corner < 8; ++corner) {
-            math::Vector3 point;
-            for (unsigned axis = 0; axis < 3; ++axis)
-                point[axis] = (corner & (1u << axis)) ? found->second.high[axis] : found->second.low[axis];
-            include(world_bounds, math::transform_point(point, item.world));
-        }
-    }
+    auto world_bounds = math::Bounds::empty();
+    for (const auto& item : *items)
+        world_bounds = math::encapsulate(world_bounds, math::transform_bounds(item.geometry->bounds(), item.world));
+    if (math::is_empty(world_bounds) || !math::is_finite(world_bounds))
+        return std::unexpected(
+            Error{ErrorCode::invalid_definition, "DDGI volume fitting requires finite scene bounds."});
     auto candidate = workspace_.view;
     auto& lighting = candidate.lit;
     lighting.probe_volumes = {};
     auto& coarse = lighting.probe_volumes[follow_focus ? 1 : 0];
     coarse.enabled = true;
     for (unsigned axis = 0; axis < 3; ++axis) {
-        coarse.minimum[axis] = std::floor(world_bounds.low[axis] - .5f);
-        coarse.maximum[axis] = std::ceil(world_bounds.high[axis] + .5f);
-        coarse.counts[axis] = static_cast<std::uint32_t>(std::clamp(
-            std::ceil((coarse.maximum[axis] - coarse.minimum[axis]) / 2.f) + 1.f, 2.f, follow_focus ? 12.f : 16.f));
+        coarse.minimum[axis] = std::floor(world_bounds.minimum[axis] - .5f);
+        coarse.maximum[axis] = std::ceil(world_bounds.maximum[axis] + .5f);
+        const double span = double(coarse.maximum[axis]) - double(coarse.minimum[axis]);
+        coarse.counts[axis] =
+            static_cast<std::uint32_t>(std::clamp(std::ceil(span * .5) + 1., 2., follow_focus ? 12. : 16.));
     }
     if (follow_focus) {
         auto& focused = lighting.probe_volumes[0];
@@ -446,8 +423,8 @@ Result<void> Application::configure_view(math::Vector3 eye, math::Vector3 target
     if (shading > renderer::Shading::scene_lit || !camera.look_at(eye, target))
         return std::unexpected(Error{ErrorCode::invalid_definition, "Invalid initial camera or shading mode."});
     candidate.shading = shading;
-    ATELIER_TRY(editor::validate_view_options(candidate, {target.x, target.y, target.z}));
-    ATELIER_TRY(workspace_.set_view_settings(*document_, candidate, {target.x, target.y, target.z}));
+    ATELIER_TRY(editor::validate_view_options(candidate, target));
+    ATELIER_TRY(workspace_.set_view_settings(*document_, candidate, target));
     camera_ = camera;
     camera_cut_ = true;
     invalidate_surface();
@@ -2270,10 +2247,9 @@ Result<bool> Application::run_step(renderer::Capture* capture) try {
     const bool capturing_control = control_ && control_->wants_capture();
     auto* frame_capture = capture ? capture : capturing_control ? &control_capture : nullptr;
     const auto effective_view = control_ ? control_->view() : workspace_.view;
-    const auto lighting_focus = camera_.state().target;
     renderer::Frame render_frame{
         *frame.drawing,
-        {camera.view.elements, camera.projection.elements, camera.far_depth},
+        {camera.view, camera.projection, camera.far_depth},
         scene_bounds,
         scene ? std::span<const renderer::MeshInstance>{scene->meshes} : std::span<const renderer::MeshInstance>{},
         effective_view,
@@ -2282,7 +2258,7 @@ Result<bool> Application::run_step(renderer::Capture* capture) try {
         scene ? scene->identity : scene_.identity,
         camera_cut_ || projection_cut,
         rendering::sky_radiance(effective_view.lit),
-        {lighting_focus.x, lighting_focus.y, lighting_focus.z}};
+        lighting_focus()};
     render_frame.materials = scene ? scene->materials.get() : nullptr;
     render_frame.command_trace = control_ ? control_->command_trace() : nullptr;
     std::optional<renderer::Result<renderer::FrameResult>> traced_result;

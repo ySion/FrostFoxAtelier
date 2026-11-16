@@ -181,7 +181,7 @@ private:
 
     Result<void> build_proposals();
 
-    Result<void> update_spatial(const std::array<float, 3>& focus, std::uint64_t sequence);
+    Result<void> update_spatial(math::Vector3 focus, std::uint64_t sequence);
 
     void map_previous();
 };

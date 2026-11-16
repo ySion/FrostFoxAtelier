@@ -15,8 +15,6 @@
 namespace atelier::procedural {
 namespace {
 
-using detail::widen;
-
 using math::Vector3;
 
 using math::Vector3d;
@@ -118,12 +116,12 @@ Result<Array<Triangle>> prepare(const Geometry& surface) {
     ATELIER_TRY(validate_shells(surface));
     Array<Triangle> triangles;
     triangles.reserve(view->size());
-    const auto origin = widen(surface.positions()[surface.vertex_points()[0]]);
+    const auto origin = Vector3d(surface.positions()[surface.vertex_points()[0]]);
     Sum volume;
     for (const auto fan : *view) {
         Triangle t{};
         for (std::size_t i = 0; i < 3; ++i)
-            t.points[i] = widen(surface.positions()[surface.vertex_points()[fan.corners[i]]]);
+            t.points[i] = Vector3d(surface.positions()[surface.vertex_points()[fan.corners[i]]]);
         const auto a = t.points[0];
         const auto b = t.points[1];
         const auto c = t.points[2];
@@ -141,7 +139,7 @@ Result<Array<Triangle>> prepare(const Geometry& surface) {
 
 // Original fixed polygon/fan-order compensated sum, used only after eight uncertain rays.
 bool winding_inside(std::span<const Triangle> triangles, Vector3 position) {
-    const auto q = widen(position);
+    const auto q = Vector3d(position);
     Sum angles;
     for (const auto& t : triangles) {
         const auto a = t.points[0] - q;
@@ -196,12 +194,9 @@ Result<Geometry> volume_scatter(const Geometry& surface, const VolumeScatterSett
     // points bound its cells; loose points cannot spend the sampling budget.
     const auto corners = surface.vertex_points();
     const auto& points = surface.positions();
-    Bounds box{points[corners[0]], points[corners[0]]};
+    math::Bounds box{points[corners[0]], points[corners[0]]};
     for (const auto index : corners)
-        for (std::size_t axis = 0; axis < 3; ++axis) {
-            box.minimum[axis] = std::min(box.minimum[axis], points[index][axis]);
-            box.maximum[axis] = std::max(box.maximum[axis], points[index][axis]);
-        }
+        box = math::encapsulate(box, points[index]);
     const double h = settings.cell_size;
     std::array<std::int64_t, 3> first{};
     std::array<std::uint32_t, 3> widths{};

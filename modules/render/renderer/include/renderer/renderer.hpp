@@ -1,5 +1,6 @@
 #pragma once
 
+#include "math/math.hpp"
 #include "rhi/rhi.hpp"
 #include "geometry/mesh.hpp"
 #include "material/program_resources.hpp"
@@ -87,9 +88,9 @@ struct Target {
 // vectors: p * world * view * projection. Reversed-Z: near=1, background=0.
 // Infinite perspective maps depth=near/view Z; finite orthographic maps far=0.
 struct Camera {
-    std::array<float, 16> view{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    math::Matrix4 view = math::Matrix4::identity();
 
-    std::array<float, 16> projection{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, -1, 0, 0, 0, 1, 1};
+    math::Matrix4 projection{{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, -1, 0, 0, 0, 1, 1}};
 
     // Lower clipping depth: near/far for infinite perspective with a finite far
     // plane, zero for a projection carrying its own far plane (or no far limit).
@@ -104,11 +105,11 @@ struct Light {
 
     LightKind kind{LightKind::point};
 
-    std::array<float, 3> position{};
+    math::Vector3 position{};
 
-    std::array<float, 3> direction{0, 0, 1}; // Unit world propagation direction.
+    math::Vector3 direction{0, 0, 1}; // Unit world propagation direction.
 
-    std::array<float, 3> color{1, 1, 1}; // Linear RGB multiplier.
+    math::Vector3 color{1, 1, 1}; // Linear RGB multiplier.
 
     // Point: candela; rectangle: cd/m² radiance; directional: lux.
     float intensity{100.f};
@@ -117,9 +118,9 @@ struct Light {
 
     float source_radius{}; // Point sphere radius (m); directional angular radius (radians).
 
-    std::array<float, 3> right{1, 0, 0};
+    math::Vector3 right{1, 0, 0};
 
-    std::array<float, 3> up{0, 1, 0}; // Rectangle unit world tangent axes.
+    math::Vector3 up{0, 1, 0}; // Rectangle unit world tangent axes.
 
     float width{1.f};
 
@@ -136,7 +137,7 @@ struct MeshInstance {
     // the renderer. Geometry is an immutable, shareable triangle resource.
     // Non-finite, non-affine, singular or GPU-unrepresentable normal transforms
     // reject the entire frame before encoding. Invertible reflected transforms are supported by this boundary.
-    std::array<float, 16> world{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    math::Matrix4 world = math::Matrix4::identity();
 
     bool selected{};
 
@@ -171,9 +172,9 @@ struct Frame {
     // sky_color * sky_intensity from the scene's environment (rendering::sky_radiance);
     // view.lit.sky_map and sky_rotation shape it by direction. Zero when the sky is
     // off; this is not a viewport ambient-light setting.
-    std::array<float, 3> environment{};
+    math::Vector3 environment{};
 
-    std::array<float, 3> lighting_focus{}; // Editor observation target; Play main camera world position.
+    math::Vector3 lighting_focus{}; // Editor observation target; Play main camera world position.
 
     // Active rendering time since the last accepted frame, independent of Play.
     // Zero restarts a paused/discontinuous clock; fixed-step producers use 1/60.
@@ -209,11 +210,11 @@ struct ProbeVolumeStats {
 
     bool rolling{};
 
-    std::array<float, 3> minimum{};
+    math::Vector3 minimum{};
 
-    std::array<float, 3> maximum{};
+    math::Vector3 maximum{};
 
-    std::array<float, 3> spacing{};
+    math::Vector3 spacing{};
 
     std::array<std::uint32_t, 3> counts{};
 

@@ -36,24 +36,30 @@ public:
     SharedArray(SharedArray&& other) noexcept : block_(std::exchange(other.block_, nullptr)) {}
 
     SharedArray& operator=(const SharedArray& other) noexcept {
-        SharedArray copy{other};
-        swap(copy);
+        if (block_ != other.block_) {
+            SharedArray copy{other};
+            swap(copy);
+        }
         return *this;
     }
 
     SharedArray& operator=(SharedArray&& other) noexcept {
-        SharedArray incoming{std::move(other)};
-        swap(incoming);
+        if (this != &other) {
+            SharedArray incoming{std::move(other)};
+            swap(incoming);
+        }
         return *this;
     }
 
     ~SharedArray() { release(block_); }
 
-    [[nodiscard]] const Array<T>& array() const& noexcept { return block_ ? block_->values : none_; }
+    [[nodiscard]] const Array<T>& array() const& noexcept [[clang::lifetimebound]] {
+        return block_ ? block_->values : none_;
+    }
 
     const Array<T>& array() const&& = delete;
 
-    [[nodiscard]] Span<const T> view() const& noexcept { return array().view(); }
+    [[nodiscard]] Span<const T> view() const& noexcept [[clang::lifetimebound]] { return array().view(); }
 
     Span<const T> view() const&& = delete;
 
@@ -65,7 +71,7 @@ public:
     // The reference is valid until this handle is next
     // copied, assigned, moved or destroyed: a copy made while it is in use would see
     // later writes.
-    Array<T>& write() & noexcept {
+    Array<T>& write() & noexcept [[clang::lifetimebound]] {
         // Acquire pairs with the release decrements of owners dropped on other threads.
         if (block_ && block_->count.load(std::memory_order_acquire) == 1)
             return block_->values;

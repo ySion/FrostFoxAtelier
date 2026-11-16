@@ -443,7 +443,7 @@ struct Workspace {
     // Copies the World's environment into the view's author settings; true when they changed.
     bool sync_world(const Session&);
 
-    Result<void> set_view_settings(Session&, const renderer::ViewSettings&, std::array<float, 3> focus = {});
+    Result<void> set_view_settings(Session&, const renderer::ViewSettings&, math::Vector3 focus = {});
 
     std::uint64_t view_revision() const noexcept { return view_revision_; }
 

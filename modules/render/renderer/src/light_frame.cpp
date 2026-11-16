@@ -64,7 +64,7 @@ std::size_t mix_hash(std::size_t hash, std::size_t value) noexcept {
     return hash ^ (value + std::size_t{0x9e3779b9u} + (hash << 6) + (hash >> 2));
 }
 
-bool light_grid_origin(const std::array<float, 3>& focus, std::array<float, 4>& origin) {
+bool light_grid_origin(math::Vector3 focus, std::array<float, 4>& origin) {
     origin = {0, 0, 0, light_grid_spacing};
     for (std::size_t axis = 0; axis < 3; ++axis) {
         if (!std::isfinite(focus[axis]))
@@ -253,7 +253,7 @@ Result<void> LightFrame::build_proposals() {
     return {};
 }
 
-Result<void> LightFrame::update_spatial(const std::array<float, 3>& focus, std::uint64_t sequence) {
+Result<void> LightFrame::update_spatial(math::Vector3 focus, std::uint64_t sequence) {
     if (!spatial_initialized_ || sequence != spatial_frame_id_)
         spatial_changed = false;
     std::array<float, 4> origin{};

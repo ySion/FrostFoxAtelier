@@ -39,13 +39,13 @@ names.append(names.view());          // 支持自身全部或部分视图
 names.remove_at(0);                  // 保持顺序
 names.remove_at_swap(0);             // 用末尾元素填洞，不保证顺序
 auto removed = names.remove_if([](const atelier::String& name) {
-    return name.view() == "shield";
+    return name == "shield";
 });
 names.clear();                      // 析构元素，保留容量
 names.squeeze();                    // 显式收紧容量；空数组释放缓冲
 ```
 
-- `size/capacity/empty` 查询状态，`data/begin/end/view` 提供连续访问。`operator[]` 在所有构建中检查索引；`try_at` 在越界时返回空指针。`find` 返回索引或 `npos`，`contains` 返回是否存在。
+- `size/capacity/empty` 查询状态，`data/begin/end/view/slice` 提供连续访问与子区间借用。`operator[]` 与 `front/back` 在所有构建中检查索引；`try_at` 在越界时返回空指针。`find` 返回索引或 `npos`，`contains` 返回是否存在。
 - `reserve(n)` 只准备容量；`resize(n)` 对新增元素做值初始化，`resize(n, value)` 从 value 复制构造新增元素，value 可以是本数组的元素；两者都对移除元素做析构。`emplace` 直接构造新增元素。`release()` 清空并释放缓冲。删除不自动缩容。
 - 扩容为几何增长；只构造实际元素，不构造预留槽位。元素要求不抛异常析构，并提供不抛异常的移动构造或复制构造。支持 move-only 元素，但此时复制 Array 的接口不可用。
 - 扩容优先不抛异常移动，否则复制。复制、追加与扩容只在类型 trivially-copyable 且实际选中的构造也平凡时批量复制；有序删除另外要求平凡移动赋值，使用可重叠的 memmove。类型标签不会跳过选中模板构造或赋值的副作用。
@@ -59,13 +59,12 @@ names.squeeze();                    // 显式收紧容量；空数组释放缓�
 
 谓词接口仅在调用期间借用谓词，不复制或保存它；支持 move-only 闭包，并按 `std::invoke` 调用（包括成员投影）。
 
-三种数组共用元素构造/销毁/搬移、增长容量计算、自视图区间识别及先后缀后前缀的扩展实现。`InlineArray<T,N>` 与 `FixedArray<T,N>` 共用内联序列实现，提供上述序列操作及 `back/pop`。两者默认 size 为 0、capacity 为 N；N=0 合法。FixedArray 不是恰好 N 个活元素的 `std::array`，超过固定容量属于调用前置条件违例。恰好 N 个活值的固定元组使用 `std::array`，不属于拥有型容器的迁移对象。业务输入应先检查预算，不把 fatal 当作输入拒绝。
+三种数组共用元素构造/销毁/搬移、增长容量计算、自视图区间识别及先后缀后前缀的扩展实现。`InlineArray<T,N>` 与 `FixedArray<T,N>` 共用内联序列实现，提供上述序列操作及 `front/back/pop`。两者默认 size 为 0、capacity 为 N；N=0 合法。FixedArray 不是恰好 N 个活元素的 `std::array`，超过固定容量属于调用前置条件违例。恰好 N 个活值的固定元组使用 `std::array`，不属于拥有型容器的迁移对象。业务输入应先检查预算，不把 fatal 当作输入拒绝。
 
 - InlineArray 的 `clear` 保留堆容量；`release` 清空并返回内联；`squeeze` 在 size≤N 时搬回内联，否则收紧堆块。FixedArray 的 `clear/release` 均析构活前缀，`squeeze` 无操作，`reserve` 仅检查是否超过 N。
-- 内联移动不保存来源对象的内联地址，源变空且可复用。移动赋值先分离来源，允许来源由目标元素间接拥有。移动、交换以及使元素搬移的结构变化终止相关借用；临时数组不能取得 view。与 Array 一样，普通元素要求不抛析构，提供不抛移动或可复制构造；移动和交换均为 noexcept，不提供异常恢复。
+- 内联移动不保存来源对象的内联地址，源变空且可复用。移动赋值先分离来源，允许来源由目标元素间接拥有。移动、交换以及使元素搬移的结构变化终止相关借用；临时数组不能取得 `view` 或 `slice`。与 Array 一样，普通元素要求不抛析构，提供不抛移动或可复制构造；移动和交换均为 noexcept，不提供异常恢复。
 - FixedArray 保存 size 和按 T 对齐的原始内联区；InlineArray 另存堆指针/容量。两种新类型不承诺跨 T/N 的固定 ABI，不注册为 Array 的相同表示，暂不开放 Source/反射实例化。程序化 BVH 构建栈使用 `InlineArray<Task,64>`，四个查询栈使用 `FixedArray<原元素类型,128>`；局部动态缓冲及节点、三角和容差成员使用 Array。Bvh 成员存储迁移要求所有消费者重编，不承诺与旧布局二进制兼容；没有 Runtime/Source 注册或持久字节格式。
-- realloc 只用于平凡可复制且属于隐式生存期的元素。锁定工具链缺少 `is_implicit_lifetime_v`，具名 concept `ReallocatableArrayElement` 使用已批准的充分条件：平凡可复制，且 aggregate 或默认/复制/移动构造之一平凡；依据为 [c.malloc] 的隐式对象创建。工具链提供标准 trait 后直接替换此条件，不保留回退矩阵。String、智能指针等资源元素仍逐元素构析，没有业务自定义的重定位 trait。
-- 实际 realloc 还要求所选搬移构造平凡，复用 `byte_relocate` 的判定；仅有平凡默认构造不能跳过非平凡搬移的副作用。只有配对分配入口的堆块进入 realloc；内联区从不传给它。零容量显式 free，不以 realloc(p,0) 判断 OOM。只保证正确性和减少可避免的逐元素搬移，尚无本轮性能提升测量。
+- realloc 只用于平凡可复制、满足标准 `std::is_implicit_lifetime_v<T>`（依据 [c.malloc] 的隐式对象创建）且所选搬移构造平凡（复用 `byte_relocate`）的元素；仅有平凡默认构造不能跳过非平凡搬移的副作用。String、智能指针等资源元素仍逐元素构析，没有业务自定义的重定位 trait。只有配对分配入口的堆块进入 realloc；内联区从不传给它。零容量显式 free，不以 realloc(p,0) 判断 OOM。
 
 ## 位集合与稀疏槽
 
@@ -176,34 +175,35 @@ bool found = input.contains("loot");
 
 String 的 `size/capacity` 不含末尾零字符，所有索引、查找和切片位置均为字节。带长度的 StringView 保留嵌入零字节；零结尾构造只扫描首个零。`c_str()` 可用于需要零结尾的接口，但对方可能在嵌入零处停止。
 
-`String::from_utf8(StringView)` 返回 `std::expected<String, StringError>`；`assign(StringView)` 与 `append(StringView)` 返回 `std::expected<void, StringError>`。三个入口均 noexcept，拒绝截断序列、非法续字节、过长编码、代理区和超出 U+10FFFF 的编码，返回唯一编码错误 `StringError::invalid_utf8`，失败不更改原字符串。旧 StringView 构造函数已删除。支持从自身视图追加或赋值。String 不提供可写字符地址。复制有效 String、`assign(const String&)` 或 `append(const String&)` 直接复制已验证字节；任意 StringView，包括来自有效 String 的字节切片，仍需校验。ASCII 校验按完整 8 字节块跳过，残余及非 ASCII 序列继续按 UTF-8 规则处理，不越过视图边界。
+`String::from_utf8(StringView)` 返回 `std::expected<String, StringError>`；`assign(StringView)` 与 `append(StringView)` 返回 `std::expected<void, StringError>`。三个入口均 noexcept，拒绝截断序列、非法续字节、过长编码、代理区和超出 U+10FFFF 的编码，返回唯一编码错误 `StringError::invalid_utf8`，失败不更改原字符串。旧 StringView 构造函数已删除。支持从自身视图追加或赋值。String 不提供可写字符地址。复制有效 String、`assign(const String&)` 或 `append(const String&)` 直接复制已验证字节；任意 StringView，包括来自有效 String 的字节切片，仍需校验。运行期 ASCII 校验按 16 字节 SSE2 块跳过，编译期求值保持逐字节分支，残余及非 ASCII 序列继续按 UTF-8 规则处理，不越过视图边界。
 
-容量不包含末尾零字符。空 String 的内联容量为 30；不超过此字节数的拥有值创建与复制不分配堆缓冲。`reserve` 只准备容量，堆增长采用需求值与约 1.5 倍旧容量的较大值；复制长文本不继承源对象预留的大容量。拥有缓冲容量足够时赋值复用缓冲，变短不会自动缩容。堆值的 `clear` 保留容量，`squeeze` 将堆容量收紧到长度，短值可退回内联存储；`release` 释放堆缓冲并回到空内联表示。业务长度上限在上层预检并返回 Result；容器内部不可表示容量及 CPU OOM 走唯一 fatal 出口，不作为 StringError。
+容量不包含末尾零字符。空 String 的内联容量为 30；不超过此字节数的拥有值创建与复制不分配堆缓冲。`reserve(n)` 精确预留所请求容量，摊还追加写入的堆增长采用需求值与约 1.5 倍旧容量的较大值；释放与收紧统一走带大小 `delete[]` 直达 `mi_free_size`；复制长文本不继承源对象预留的大容量。拥有缓冲容量足够时赋值复用缓冲，变短不会自动缩容。堆值的 `clear` 保留容量，`squeeze` 将堆容量收紧到长度，短值可退回内联存储；`release` 释放堆缓冲并回到空内联表示。业务长度上限在上层预检并返回 Result；容器内部不可表示容量及 CPU OOM 走唯一 fatal 出口，不作为 StringError。
 
 `String::literal<"text">()` 编译期验证完整 UTF-8，借用具有静态存储期的模板参数字节，任意长度构造和复制均不分配。字面量所在原生模块须活到全部副本结束，不能借可卸载模块或 JIT 常量池；Source 文本仍复制。写入先分离，不能写/释放静态区。literal 的 capacity 等于字节长度，不保证下一次写入零分配；reserve 不超过该长度时不分离，clear/release 回空内联，squeeze 不改变 literal。literal 拷贝可共享字节，其他 String 拷贝独占缓冲。
 
 String 的末字节 tag 为 0–30（内联长度）、0xFE（堆）、0xFF（literal）；长描述符通过字节复制读写，不读取未激活 union 成员。虽然大小/对齐未变，表示 ABI 已改变；必须与 Runtime NativeLayout 结果化联合重编译、重建反射/JIT 并重启进程，不能混入旧对象和旧代码。
 
-StringView 的 `slice/find/starts_with/ends_with/contains` 都按字节工作，切片可能截断码点；`is_valid_utf8()` 可明确检查。通过 `from_utf8` 转成 String 时重新校验；`String::from_utf8_validated(StringView) noexcept` 直接复制并返回 String，调用方必须保证完整有效的 UTF-8，dev/release 均不重扫、不检测编码前提违例，超过 `max_size` 仍沿用存储写入的 fatal。`std_view()` 是对标准库消费者的显式借用适配，不创造另一份拥有存储。Unicode 大小写折叠、规范化、字符/字素索引和本地化文本未实现。
+StringView 的 `front/back/first/last/slice`、`remove_prefix/remove_suffix`、`strip_prefix/strip_suffix`、`without_prefix/without_suffix`、`find/rfind`（支持子视图与单字节）、`find_first_of/find_last_of/find_first_not_of/find_last_not_of`、`starts_with/ends_with/contains` 都按字节工作，切片可能截断码点；`is_valid_utf8()` 可明确检查。通过 `from_utf8` 转成 String 时重新校验；`String::from_utf8_validated(StringView) noexcept` 直接复制并返回 String，调用方必须保证完整有效的 UTF-8，dev/release 均不重扫、不检测编码前提违例，超过 `max_size` 仍沿用存储写入的 fatal。显式构造 `StringView(std::string_view)` 可直接借用 `std::string`，无需额外引入 `<string>`；`std_view()` 与 `as_bytes(StringView)` 是对标准库及字节视图消费者的显式借用适配，不创造另一份拥有存储。String 直接支持与 StringView 及字面量的 `==` / `<=>` 异构比较，并提供 `front/back/slice/starts_with/ends_with/equals_ascii_case_insensitive/find/rfind/contains` 只读委托。Unicode 大小写折叠、规范化、字符/字素索引和本地化文本未实现。
 
 `StringView::utf8_prefix(maximum_bytes)` 为 constexpr/noexcept；调用方保证全文有效 UTF-8，返回不超过字节上限的完整码点借用前缀，上限为 0 返回空、足够大返回全文，否则只在截断处回退最多 3 个续字节，不扫描全文、不检测编码前提违例。
 
-- `String::replace(first,count,replacement)` 返回 `expected<void,StringError>`；范围越界为 contract-fatal，切断码点或 replacement 非法返回 invalid_utf8，失败保旧。`replace_all(search,replacement)` 返回替换数，按从左到右非重叠匹配；空 search 不插入、返回 0。两个参数即使未命中也须有效 UTF-8。候选成功才交换，支持参数引用自身内容；实际替换后重新取得视图。
-- `String::to_ascii_lower/to_ascii_upper` 原地只改 A–Z/a–z，保留所有非 ASCII 字节和嵌入 NUL；literal 只有实际改变时才分离。StringView 的 `equals_ascii_case_insensitive/starts_with_ascii_case_insensitive/ends_with_ascii_case_insensitive` 使用同一 ASCII 规则。`starts_with/ends_with` 另接受单字节，`starts_with_any/ends_with_any` 接受 `initializer_list<StringView>`，空集合返回 false，包含空串时匹配成功。
+- `String::join(parts, separator)` 支持初始化列表、连续序列与通用输入范围：当元素与分隔符均为已校验 `String` 时无错返回 `String`；其余重载返回 `expected<String, StringError>`，即使元素少于两项也校验分隔符 UTF-8。连续输入预先计算精确总字节数并完成至多一次分配。
+- `String::replace(first,count,replacement)` 返回 `expected<void,StringError>`；范围越界为 contract-fatal，切断码点或 replacement 非法返回 invalid_utf8，失败保旧。`replace_all(search,replacement)` 返回替换数，按从左到右非重叠匹配；空 search 不插入、返回 0。两个参数即使未命中也须有效 UTF-8。候选预留容量、成功才交换，支持参数引用自身内容；实际替换后重新取得视图。
+- `String::to_ascii_lower/to_ascii_upper` 原地只改 A–Z/a–z，保留所有非 ASCII 字节和嵌入 NUL；literal 只有实际改变时才分离。StringView 的 `equals_ascii_case_insensitive/starts_with_ascii_case_insensitive/ends_with_ascii_case_insensitive` 使用同一 ASCII 规则。`starts_with/ends_with/strip_prefix/strip_suffix/without_prefix/without_suffix` 均支持子视图与单字节，`starts_with_any/ends_with_any` 接受 `initializer_list<StringView>`，空集合返回 false，包含空串时匹配成功。
 - `StringView::parse_number<T>` 返回 `expected<T,std::errc>`，必须消费完整输入，不自动 trim，不接受开头加号或整数基数前缀。整数接受 charconv 支持的非 bool 整数类型及显式 base（默认 10，范围 2–36）；浮点使用 general 格式，包括 charconv 的 inf/nan。非法格式、尾部残余和非法 base 返回 invalid_argument，数值溢出返回 result_out_of_range。
 - `String::from_number(integer,base)` 返回 `expected<String,std::errc>`，唯一可恢复错误是非法 base；`from_number(float/double/long double)` 直接返回 String，使用最短 general 表示，无 locale、精度或格式选项。固定栈缓冲覆盖类型最大表示，输出已经是有效 ASCII，不重复 UTF-8 校验。普通有限值往返保值，不承诺 NaN payload 保留。CPU OOM 仍为 fatal。
 
 这些文本函数补齐 C++ 常用函数库，供后续 A1 文本消费者迁移，不新增 Runtime 注册、Source 语法或 JIT ABI；String 的布局不变。UTF-8↔UTF-16 和 `to_wide` 归统一 IO 的 platform 接口，不在此处另建实现。
 
-`trim/trim_start/trim_end` 默认剪除六种 ASCII 空白（空格、tab、CR、LF、VT、FF），也接受显式字节集合，不按 Unicode 空白分类。`split(delimiter)` 返回零分配惰性输入范围，按完整字节串分隔并保留首尾及相邻分隔符之间的空片段；空输入仍返回一个空片段，空 delimiter 返回整个输入一次。`partition/rpartition` 返回 `{before, separator, after}`；未命中或 delimiter 为空时，前向返回 `{whole, empty, empty}`，反向返回 `{empty, empty, whole}`。所有片段和 split 的 delimiter 都借用原字节，迭代期间不能改变或销毁来源。
+`trim/trim_start/trim_end` 默认剪除六种 ASCII 空白（空格、tab、CR、LF、VT、FF），也接受显式字节集合，不按 Unicode 空白分类。`split(delimiter)` 返回零分配惰性输入范围，按完整字节串分隔并保留首尾及相邻分隔符之间的空片段；空输入仍返回一个空片段，空 delimiter 返回整个输入一次。`partition/rpartition` 支持子视图或单字节分隔符，返回 `{before, separator, after}`；未命中或 delimiter 为空时，前向返回 `{whole, empty, empty}`，反向返回 `{empty, empty, whole}`。所有片段和 split 的 delimiter 都借用原字节，迭代期间不能改变或销毁来源。
 
-`code_points()` 先验证整个视图，返回 `expected<CodePointRange, StringError>`，不以替换字符吞掉坏输入；成功范围逐项给出 `{char32_t value, byte_offset, byte_count}`，偏移与长度均为 UTF-8 字节，不是 UTF-16 单元或字素。空文本产生空范围，嵌入 NUL 是一个正常码点。校验和迭代分两遍且不分配；取得范围后必须保持来源内容不变。新增范围不注册为 Runtime 值，也不新增 Source 字符串遍历语法。
+`code_points()` 先验证整个视图，返回 `expected<CodePointRange, StringError>`，不以替换字符吞掉坏输入；成功范围逐项给出 `{char32_t value, byte_offset, byte_count}`，偏移与长度均为 UTF-8 字节，不是 UTF-16 单元或字素。空文本产生空范围，嵌入 NUL 是一个正常码点。校验后迭代器步进仅按首字节单遍推进且不分配；取得范围后必须保持来源内容不变。新增范围不注册为 Runtime 值，也不新增 Source 字符串遍历语法。
 
-Span 的 `slice(first,count)` 按元素切片；`Span<T>` 可转 `Span<const T>`，反向不允许。`const Span<T>` 只冻结描述本身，不冻结元素。只读元素必须写 `Span<const T>`。
+Span 提供 `size/size_bytes/empty`、`front/back/operator[]/try_at`、`first/last/slice`、`explicit Span(std::span<T>)` 与 `std_span()`，以及 `as_bytes/as_writable_bytes` 字节视图转换。`Span<T>` 可转 `Span<const T>`，反向不允许。`const Span<T>` 只冻结描述本身，不冻结元素。只读元素必须写 `Span<const T>`。
 
-Span 构造、索引和切片均 constexpr/noexcept。空指针配非零数量、超过可表示的元素范围、越界索引或切片在 dev/release 都为合同 fatal；外部输入先由所属业务边界验证。合法的空 Span 与尾后空切片可用。切片复用来源的合法存储不变量，不重复验证构造条件。
+Span 构造、索引和切片均 constexpr/noexcept（字节重解释转换除外）。空指针配非零数量、超过可表示的元素范围、越界索引或切片在 dev/release 都为合同 fatal；外部输入先由所属业务边界验证。合法的空 Span 与尾后空切片可用。切片复用来源的合法存储不变量，不重复验证构造条件。
 
-**借用有效期由拥有者和修改行为决定。** 销毁、释放、替换存储及实际扩容使原地址失效；删除和压缩可能让相同地址对应不同元素；clear 结束全部元素生命周期。Array 和堆 String 移动转移缓冲后，原地址若仍使用便依赖新拥有者；内联 String 移动复制字节到目标对象，旧视图不能跟随该值。调用者统一按移动后重新获取 String 视图处理。视图不冻结容器，不提供并发保护，也不能无条件跨协程挂起保存。直接对临时 Array/String 取 `view()` 及从临时 String 构造 StringView 被禁止；C++ 调用者仍须保证其他借用路径有效。
+**借用有效期由拥有者和修改行为决定。** 销毁、释放、替换存储及实际扩容使原地址失效；删除和压缩可能让相同地址对应不同元素；clear 结束全部元素生命周期。Array 和堆 String 移动转移缓冲后，原地址若仍使用便依赖新拥有者；内联 String 移动复制字节到目标对象，旧视图不能跟随该值。调用者统一按移动后重新获取 String 视图处理。视图不冻结容器，不提供并发保护，也不能无条件跨协程挂起保存。直接对临时 Array/String 取 `view()/slice()` 及从临时 String 构造 StringView 被删除，且拥有型容器、`Optional`、`SharedArray`、`BitVector::set_bits`、`SparseArray`、`Map/Set`、数组引用 `Span` 构造与 `FunctionRef` 对象借用的返回路径统一标注 `[[clang::lifetimebound]]`（`Span/StringView` 的视图到视图切片不标注 `*this`，保留合法临时视图链式切片）；C++ 调用者仍须保证其他借用路径有效。
 
 ## Windows 文本、路径与文件摘要
 
@@ -213,7 +213,7 @@ Span 构造、索引和切片均 constexpr/noexcept。空指针配非零数量�
 
 [platform/windows_path.hpp](../modules/core/platform/include/platform/windows_path.hpp) 的唯一 `windows_file_path` 返回 `expected<filesystem::path, error_code>`：绝对化失败显式返回，成功后规范化并保留已有扩展前缀、转换 UNC 或添加长路径前缀。它只处理拼写，不承担存在性、包含关系和链接验证。[platform/error.hpp](../modules/core/platform/include/platform/error.hpp) 的 `error_message` 对系统错误使用 FormatMessageW 和严格 UTF-8 输出，避免 filesystem 异常 `what()` 中的 ANSI 路径；非系统类别保留原类别消息，未知系统码保留数字身份。
 
-[foundation/sha256.hpp](../modules/core/foundation/include/foundation/sha256.hpp) 的 `Sha256` 构造、`add`、`finish` 和 `sha256(bytes)` 均 noexcept；内存哈希没有可恢复的输入失败，CNG 原语失败直接 fatal。流式对象在最后一次 `add` 后只调用一次 `finish`。仅 `sha256_file` 返回 `expected<std::string, std::string>`，报告路径、打开和读取失败；上层自行映射业务码。内存哈希复用 CNG SHA-256 伪句柄，不逐次打开算法 provider。
+[foundation/sha256.hpp](../modules/core/foundation/include/foundation/sha256.hpp) 的 `Sha256` 构造、`add`、`finish` 和 `sha256(bytes)` 均 noexcept（同时接受 `std::span<const std::byte>` 与 `Span<const std::byte>` / `Span<std::byte>`）；内存哈希没有可恢复的输入失败，CNG 原语失败直接 fatal。流式对象在最后一次 `add` 后只调用一次 `finish`。仅 `sha256_file` 返回 `expected<std::string, std::string>`，报告路径、打开和读取失败；上层自行映射业务码。内存哈希复用 CNG SHA-256 伪句柄，不逐次打开算法 provider。
 
 ## 同步借用与作用域工具
 
@@ -223,11 +223,11 @@ Span 构造、索引和切片均 constexpr/noexcept。空指针配非零数量�
 
 ## Optional 的原生合同
 
-Optional 不承载错误；空值不构造 T，也不要求 T 默认可构造。payload 从偏移零开始，占 sizeof(T)，随后是 1 字节 engaged（0/1），总大小按 alignof(T) 向上补齐；不使用 niche 或 padding 压缩。复制、移动、赋值、emplace 和 swap 按 T 对应的 nothrow 能力提供。emplace 先销毁旧值，参数不能借用该旧值；reset/emplace/赋值使 payload 借用失效。
+Optional 不承载错误；内部采用 `union` 存储，空值不构造 T，也不要求 T 默认可构造。payload 从偏移零开始，占 sizeof(T)，随后是 1 字节 engaged（0/1），总大小按 alignof(T) 向上补齐；不使用 niche 或 padding 压缩。复制、移动、赋值、emplace、`value_or`、`operator==` 和 swap 按 T 对应的 nothrow 能力提供，并全面支持 `constexpr`；当 T 满足对应平凡构析条件时，`Optional<T>` 保留平凡复制、平凡移动、平凡析构与 `std::is_implicit_lifetime_v` 性质。emplace 先销毁旧值，参数不能借用该旧值；reset/emplace/赋值使 payload 借用失效。
 
-`has_value/bool` 查询状态；`try_get() &/const&` 缺席时返回 nullptr。`operator*/operator->` 空访问为合同 fatal，所有这些借用接口禁止临时对象。移动保留源 engaged；Optional<String> 的源含一个空 String，而不是空 Optional。不提供抛 bad_optional_access 的 value()。Runtime/Source 的接线由 Runtime 负责：通过回调访问，不读取 engaged 私有偏移，也不能自动把 Optional 中的引用作为 GC 根。
+`has_value/bool` 查询状态；`try_get() &/const&` 缺席时返回 nullptr，`value_or(fallback)` 按 `const&` 或 `&&` 返回含值副本/移动值或转换后的默认值；`operator==` 支持与另一 `Optional<T>`、`T` 及 `std::nullopt` 比较。`operator*/operator->` 空访问为合同 fatal，所有指针/引用借用接口禁止临时对象。移动保留源 engaged；Optional<String> 的源含一个空 String，而不是空 Optional。不提供抛 bad_optional_access 的 value()。Runtime/Source 的接线由 Runtime 负责：通过回调访问，不读取 engaged 私有偏移，也不能自动把 Optional 中的引用作为 GC 根。
 
-原生操作集为默认/`nullopt`/值/`in_place` 构造、复制/移动构造和赋值、`nullopt` 赋值、`reset/emplace/swap`，以及上述查询和借用接口。普通操作均 noexcept；`emplace` 返回新值引用，不能保存临时 Optional 的该引用到完整表达式之后。该类型表示缺席而不是可恢复失败；业务失败使用 Result。原生寿命验收覆盖 move-only 资源、两种对齐布局、移动保留源 engaged、空/有值交换、复制保活及 reset 释放。本轮收口不改其布局或 API，也不声称已完成 Runtime/Source/反射/JIT 注册。
+原生操作集为默认/`nullopt`/值/`in_place` 构造、复制/移动构造和赋值、`nullopt` 赋值、`reset/emplace/swap`、`value_or`、`operator==`，以及上述查询和借用接口。普通操作均 noexcept；`emplace` 返回新值引用，不能保存临时 Optional 的该引用到完整表达式之后。该类型表示缺席而不是可恢复失败；业务失败使用 Result。尚未开放 Runtime/Source/反射/JIT 注册。
 
 ## 共享反射与 Runtime
 
@@ -348,7 +348,7 @@ Recorder 已绑定时，未登记的标记、未在声明父项下打开的标�
 
 `foundation_acceptance` 保留两个代表，检查在 dev/release 中均有效，不依赖 assert：
 
-- [拥有资源消费者](../acceptance/foundation/main.cpp)：String 与 Array 追加自身视图时，输入在追加过程中不失效。
+- [拥有资源消费者](../acceptance/foundation/main.cpp)：String 与 Array 追加自身视图时输入在追加过程中不失效，`String::join` / `Sha256` 桥接与 `Optional`/`StringView`/`Span` 代表性编译期契约成立。
 - [原生任务消费者](../acceptance/foundation/tasks.cpp)：任务返回 Failure 后 join 失败、用户闭包在提交线程释放，随后新的 JoinGroup 正常完成。只检查结果与生命周期，不以耗时或参与线程数判 PASS。
 
 设计依据与 UE/Qt 的取舍见[研究记录](research/shared-foundation-types.md#qtue-接口取舍)。

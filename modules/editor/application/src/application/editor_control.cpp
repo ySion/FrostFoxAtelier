@@ -95,6 +95,11 @@ json::Result<json::Document> view_json(const renderer::ViewSettings& view) {
     return result.finish();
 }
 
+json::Result<void> numbers(json::Builder& result, json::Value node, std::string_view key, math::Vector3 value) {
+    const std::array values{value.x, value.y, value.z};
+    return result.numbers(node, key, std::span{values});
+}
+
 json::Result<json::Document>
 probe_volumes_json(const std::array<renderer::ProbeVolumeStats, renderer::probe_volume_limit>& volumes) {
     json::Builder result(json::Kind::array);
@@ -104,9 +109,9 @@ probe_volumes_json(const std::array<renderer::ProbeVolumeStats, renderer::probe_
         ATELIER_TRY(result.set(item, "slot", i));
         ATELIER_TRY(result.set(item, "enabled", volume.enabled));
         ATELIER_TRY(result.set(item, "rolling", volume.rolling));
-        ATELIER_TRY(result.numbers(item, "minimum", std::span{volume.minimum}));
-        ATELIER_TRY(result.numbers(item, "maximum", std::span{volume.maximum}));
-        ATELIER_TRY(result.numbers(item, "spacing", std::span{volume.spacing}));
+        ATELIER_TRY(numbers(result, item, "minimum", volume.minimum));
+        ATELIER_TRY(numbers(result, item, "maximum", volume.maximum));
+        ATELIER_TRY(numbers(result, item, "spacing", volume.spacing));
         ATELIER_TRY(result.numbers(item, "counts", std::span{volume.counts}));
         ATELIER_TRY(result.set(item, "resident", volume.resident));
         ATELIER_TRY(result.set(item, "updated", volume.updated));
@@ -301,7 +306,7 @@ json::Result<json::Document> performance_json(const editor::FramePerformance& pe
 }
 
 std::expected<renderer::ViewSettings, Failure> patched_view(renderer::ViewSettings view, json::Value patch,
-                                                            std::array<float, 3> focus) {
+                                                            math::Vector3 focus) {
     ATELIER_TRY_BIND(items, patch.object_items());
     for (const auto& [name, value] : *items) {
         if (std::ranges::find(removed_view_options, name) != removed_view_options.end())
@@ -728,9 +733,9 @@ struct EditorControl::Impl {
 
         renderer::ViewSettings view;
 
-        std::array<float, 3> environment;
+        math::Vector3 environment;
 
-        std::array<float, 3> lighting_focus;
+        math::Vector3 lighting_focus;
 
         renderer::FrameStats stats;
     };
@@ -750,8 +755,8 @@ struct EditorControl::Impl {
         const std::array extent{f.extent.width, f.extent.height};
         ATELIER_TRY(result.numbers(root, "viewport", std::span{viewport}));
         ATELIER_TRY(result.numbers(root, "extent", std::span{extent}));
-        ATELIER_TRY(result.numbers(root, "environment", std::span{f.environment}));
-        ATELIER_TRY(result.numbers(root, "lighting_focus", std::span{f.lighting_focus}));
+        ATELIER_TRY(numbers(result, root, "environment", f.environment));
+        ATELIER_TRY(numbers(result, root, "lighting_focus", f.lighting_focus));
         const auto camera = result.object_validated(root, "camera");
         ATELIER_TRY(result.numbers(camera, "view", std::span{f.camera.view}));
         ATELIER_TRY(result.numbers(camera, "projection", std::span{f.camera.projection}));
@@ -2245,7 +2250,7 @@ struct EditorControl::Impl {
                 throw Failure("invalid_request", "Invalid repro camera");
             const auto focus = camera.state().target;
             ATELIER_TRY_BIND(view_arg, manifest.at("view"));
-            ATELIER_TRY_BIND(view, patched_view({}, *view_arg, {focus.x, focus.y, focus.z}));
+            ATELIER_TRY_BIND(view, patched_view({}, *view_arg, focus));
             std::vector<unsigned> indices;
             ATELIER_TRY_BIND(selection, manifest.at("selection_indices"));
             ATELIER_TRY_BIND(items, selection->array());
@@ -2308,7 +2313,7 @@ struct EditorControl::Impl {
                 });
             if (!opened)
                 throw Failure(mismatch ? "dependency_mismatch" : "operation_failed", opened.error().message);
-            take(app.workspace_.set_view_settings(*app.document_, *view, {focus.x, focus.y, focus.z}));
+            take(app.workspace_.set_view_settings(*app.document_, *view, focus));
             app.document_->mark_saved();
             app.camera_ = camera;
             app.camera_cut_ = true;

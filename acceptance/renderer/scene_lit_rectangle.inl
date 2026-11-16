@@ -4,10 +4,10 @@ void rectangle_cases(Fixture& f) {
     using atelier::geometry::Vertex;
     f.restore();
     f.frame.scene_viewport = {23.25f, 32.75f, 95.5f, 65.25f};
-    f.frame.camera.view = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 4, 1};
+    f.frame.camera.view = {{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 4, 1}};
     const float aspect = f.frame.scene_viewport.width / f.frame.scene_viewport.height;
-    f.frame.camera.projection = {1 / (1.5f * aspect), 0, 0, 0, 0,          1 / 1.5f, 0, 0, 0, 0,
-                                 -1 / 39.9f,          0, 0, 0, 40 / 39.9f, 1};
+    f.frame.camera.projection = {
+        {1 / (1.5f * aspect), 0, 0, 0, 0, 1 / 1.5f, 0, 0, 0, 0, -1 / 39.9f, 0, 0, 0, 40 / 39.9f, 1}};
     f.frame.camera_cut = true;
     f.frame.environment = {};
     auto& options = f.frame.view.lit;

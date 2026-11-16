@@ -17,7 +17,7 @@ void selection_clipping_cases(render::Renderer& renderer, ui::PixelExtent extent
                                                            {{2, -1, 6}, {0, 0, -1}}},
                                        std::vector<std::uint8_t>{5, 3}));
     render::Frame frame{drawing, {}, {0, 0, float(extent.width), float(extent.height)}, {&floor, 1}};
-    frame.camera.projection = {1, 0, 0, 0, 0, 1.5f, 0, 0, 0, 0, 0, 1, 0, 0, .25f, 0};
+    frame.camera.projection = {{1, 0, 0, 0, 0, 1.5f, 0, 0, 0, 0, 0, 1, 0, 0, .25f, 0}};
     frame.camera.far_depth = .25f / 4;
     frame.view.shading = render::Shading::flat;
     frame.view.wire_width = 1.25f;

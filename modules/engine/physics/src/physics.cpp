@@ -1174,7 +1174,7 @@ Result<void> PhysicsScene::reconcile_component(ObjectId entity, ObjectId compone
     // use |scale| and the reflection stays in the decomposition. Offsets or
     // asymmetric shapes would need the reflection applied to the shape itself.
     const auto scale = canonical->scale;
-    const math::Vector3 size{std::abs(scale.x), std::abs(scale.y), std::abs(scale.z)};
+    const auto size = math::cwise_abs(scale);
     if ((settings->shape == ShapeKind::sphere || settings->shape == ShapeKind::capsule) &&
         (std::abs(size.x - size.y) > 1e-5f || std::abs(size.x - size.z) > 1e-5f))
         return failure(ErrorCode::argument_mismatch, "Sphere and capsule collision require uniform world scale.");
@@ -1231,9 +1231,8 @@ Result<void> PhysicsScene::reconcile_component(ObjectId entity, ObjectId compone
             return {};
         }
     }
-    const math::Vector3 dimensions{settings->half_extents.x * size.x, settings->half_extents.y * size.y,
-                                   settings->half_extents.z * size.z};
-    if (!math::is_finite(dimensions) || dimensions.x <= 0 || dimensions.y <= 0 || dimensions.z <= 0 ||
+    const auto dimensions = math::cwise_mul(settings->half_extents, size);
+    if (!math::is_finite(dimensions) || math::min_component(dimensions) <= 0 ||
         !std::isfinite(settings->radius * size.x) || settings->radius * size.x <= 0 ||
         !std::isfinite(settings->capsule_half_height * size.x) || settings->capsule_half_height * size.x <= 0)
         return failure(ErrorCode::argument_mismatch, "Scaled collision dimensions exceed finite range.");

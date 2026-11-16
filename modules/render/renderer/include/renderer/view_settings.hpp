@@ -94,7 +94,7 @@ inline const char* probe_settings_error(const SceneLitSettings& settings) noexce
     return nullptr;
 }
 
-inline const char* probe_focus_error(const SceneLitSettings& settings, const std::array<float, 3>& focus) noexcept {
+inline const char* probe_focus_error(const SceneLitSettings& settings, math::Vector3 focus) noexcept {
     if (const auto* error = probe_settings_error(settings))
         return error;
     return rendering::scene_lighting_focus_error(settings, focus);

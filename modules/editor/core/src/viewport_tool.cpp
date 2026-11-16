@@ -37,19 +37,10 @@ auto invalid(const char* text) {
     return std::unexpected(Error{ErrorCode::invalid_definition, text});
 }
 
-float length(V2 v) {
-    return std::hypot(v.x, v.y);
-}
-
-float distance(V2 p, V2 a, V2 b) {
+float segment_distance(V2 p, V2 a, V2 b) {
     const auto d = b - a;
-    const auto square = math::dot(d, d);
-    return length(p - (a + d * (square > 0 ? std::clamp(math::dot(p - a, d) / square, 0.f, 1.f) : 0.f)));
-}
-
-math::Quaternion rotation(V3 axis, float angle) {
-    const auto s = std::sin(angle * .5f);
-    return {axis.x * s, axis.y * s, axis.z * s, std::cos(angle * .5f)};
+    const auto square = math::length_squared(d);
+    return math::distance(p, a + d * (square > 0 ? std::clamp(math::dot(p - a, d) / square, 0.f, 1.f) : 0.f));
 }
 
 math::Quaternion frame_rotation(V3 x, V3 y, V3 z) {
@@ -151,7 +142,7 @@ void handles(const ViewportView& view, V3 pivot, math::Quaternion orientation, O
             if (!tip)
                 continue;
             const auto d = *tip - *center;
-            const auto size = length(d);
+            const auto size = math::length(d);
             if (size < 8 * scale)
                 continue;
             const auto direction = d / size;
@@ -227,8 +218,7 @@ std::optional<TriangleHit> triangle(const ViewportView::Ray& ray, V3 a, V3 b, V3
 
 math::Vector3 euler_degrees(math::Quaternion value) noexcept {
     // Convert in double and round only at the float storage boundary.
-    const auto q =
-        math::try_normalize(math::Quaterniond{value.x, value.y, value.z, value.w}).value_or(math::Quaterniond{});
+    const auto q = math::try_normalize(math::Quaterniond(value)).value_or(math::Quaterniond{});
     constexpr double degrees = 180 / std::numbers::pi;
     const double y = std::asin(std::clamp(2 * (q.w * q.y - q.z * q.x), -1., 1.));
     if (std::abs(std::cos(y)) < 1e-5)
@@ -239,13 +229,11 @@ math::Vector3 euler_degrees(math::Quaternion value) noexcept {
 }
 
 math::Quaternion from_euler_degrees(math::Vector3 value) noexcept {
-    const auto axis_rotation = [](V3 axis, double degrees) {
-        const auto half_angle = degrees * std::numbers::pi / 360;
-        const auto s = std::sin(half_angle);
-        return math::Quaterniond{axis.x * s, axis.y * s, axis.z * s, std::cos(half_angle)};
-    };
-    const auto q = axis_rotation(axes[2], value.z) * axis_rotation(axes[1], value.y) * axis_rotation(axes[0], value.x);
-    return {float(q.x), float(q.y), float(q.z), float(q.w)};
+    constexpr double radians = std::numbers::pi / 180;
+    const auto q = math::from_axis_angle(math::Vector3d(axes[2]), value.z * radians) *
+                   math::from_axis_angle(math::Vector3d(axes[1]), value.y * radians) *
+                   math::from_axis_angle(math::Vector3d(axes[0]), value.x * radians);
+    return math::Quaternion(q);
 }
 
 ViewportView ViewportView::make(const Camera& camera, ui::Rect bounds, float dpi) {
@@ -259,10 +247,8 @@ ViewportView ViewportView::make(const Camera& camera, ui::Rect bounds, float dpi
     result.view = matrices.view;
     result.projection = matrices.projection;
     result.far_depth = matrices.far_depth;
-    math::Matrix4d vp;
-    const auto m = matrices.view * matrices.projection;
-    std::copy(m.begin(), m.end(), vp.begin());
-    result.inverse = math::try_inverse(vp).value_or(math::Matrix4d::identity());
+    result.inverse =
+        math::try_inverse(math::Matrix4d(matrices.view * matrices.projection)).value_or(math::Matrix4d::identity());
     result.forward = math::try_normalize(camera.target() - camera.eye()).value_or(V3{0, 0, 1});
     result.right = math::try_normalize(math::cross(camera.up_hint(), result.forward)).value_or(V3{1, 0, 0});
     result.up = math::cross(result.forward, result.right);
@@ -401,8 +387,7 @@ Result<void> ViewportTool::preview_world(Session& session, std::uint64_t token, 
             desired[13] = value.position.y;
             desired[14] = value.position.z;
             ATELIER_TRY_BIND(converted, world::relative_transform(desired, matrix, original->scale));
-            for (std::size_t axis = 0; axis < 3; ++axis)
-                converted->scale[axis] = original->scale[axis] * value.scale[axis] / frame->scale[axis];
+            converted->scale = math::cwise_div(math::cwise_mul(original->scale, value.scale), frame->scale);
             local.push_back(*converted);
             continue;
         }
@@ -431,10 +416,10 @@ ViewportTool::Handle ViewportTool::hit(const ViewportView& view, const Targets& 
             [&](Handle handle, const Shape& shape) {
                 float d;
                 if (shape.kind == Shape::Kind::segment)
-                    d = distance(p, {shape.points[0], shape.points[1]}, {shape.points[2], shape.points[3]});
+                    d = segment_distance(p, {shape.points[0], shape.points[1]}, {shape.points[2], shape.points[3]});
                 else
-                    d = length(p -
-                               V2{shape.points[0] + shape.points[2] * .5f, shape.points[1] + shape.points[3] * .5f}) -
+                    d = math::distance(
+                            p, V2{shape.points[0] + shape.points[2] * .5f, shape.points[1] + shape.points[3] * .5f}) -
                         shape.points[2] * .5f;
                 if (d <= closest) {
                     closest = d;
@@ -508,8 +493,7 @@ std::optional<ViewportTool::Hit> ViewportTool::trace(const ViewportView& view, f
                     face = -face;
                 face = math::try_normalize(face).value_or(math::Vector3d{});
                 material::Context context;
-                context.geometric_normal_world =
-                    math::try_normalize(normal({float(face.x), float(face.y), float(face.z)})).value_or(V3{});
+                context.geometric_normal_world = math::try_normalize(normal(V3(face))).value_or(V3{});
                 if (!surface.policy().double_sided && math::dot(context.geometric_normal_world, ray.direction) >= 0)
                     continue;
                 const std::array weights{1 - t->u - t->v, t->u, t->v};
@@ -554,7 +538,7 @@ std::optional<ViewportTool::Hit> ViewportTool::trace(const ViewportView& view, f
         const auto origin = locator.position;
         const auto p = view.project(origin);
         const auto depth = math::dot(origin - ray.origin, ray.direction);
-        if (p && length(*p - V2{x, y}) <= 8 * view.dpi_scale && depth < nearest && depth >= 0) {
+        if (p && math::distance(*p, V2{x, y}) <= 8 * view.dpi_scale && depth < nearest && depth >= 0) {
             nearest = depth;
             found = Hit{locator.entity, origin};
         }
@@ -880,7 +864,7 @@ Result<void> ViewportTool::update(Session& session, const ViewportView& view, V2
         const float step = g.settings.rotation_step * pi / 180;
         if (((g.settings.grid_snap && g.settings.snap_rotate) != snap) && !typed && step > 0)
             angle = std::round(angle / step) * step;
-        const auto q = rotation(axis, angle);
+        const auto q = math::from_axis_angle(axis, angle);
         for (auto& value : values) {
             value.position = g.pivot + math::rotate(q, value.position - g.pivot);
             value.rotation = q * value.rotation;
@@ -909,11 +893,9 @@ Result<void> ViewportTool::update(Session& session, const ViewportView& view, V2
             if (g.axis < 0 || (g.plane ? axis != g.axis : axis == g.axis))
                 factors[axis] = amount;
         for (auto& value : values) {
-            auto offset = math::rotate(math::conjugate(orientation), value.position - g.pivot);
-            for (int axis = 0; axis < 3; ++axis) {
-                value.scale[axis] *= factors[axis];
-                offset[axis] *= factors[axis];
-            }
+            const auto offset =
+                math::cwise_mul(math::rotate(math::conjugate(orientation), value.position - g.pivot), factors);
+            value.scale = math::cwise_mul(value.scale, factors);
             value.position = g.pivot + math::rotate(orientation, offset);
         }
         // Scale always follows the active Entity's Local axes.
@@ -1023,7 +1005,7 @@ Result<bool> ViewportTool::pointer(Session& session, const ViewportView& view, c
             int best = -1;
             float score = 0;
             const auto basis = gesture_->basis();
-            if (center && length(travel) > 2 * view.dpi_scale)
+            if (center && math::length(travel) > 2 * view.dpi_scale)
                 for (int axis = 0; axis < 3; ++axis) {
                     const auto tip =
                         view.project(gesture_->pivot + math::rotate(basis, axes[axis]) *
@@ -1033,7 +1015,7 @@ Result<bool> ViewportTool::pointer(Session& session, const ViewportView& view, c
                     const auto direction = math::try_normalize(*tip - *center);
                     if (!direction)
                         continue;
-                    const float match = std::abs(math::dot(*direction, travel / length(travel)));
+                    const float match = std::abs(math::dot(*direction, travel / math::length(travel)));
                     if (match > score) {
                         score = match;
                         best = axis;
@@ -1067,9 +1049,9 @@ Result<bool> ViewportTool::pointer(Session& session, const ViewportView& view, c
             marquee_->await_press = false;
         }
         if (event.kind == ui::EventKind::pointer_move && !marquee_->await_press) {
-            marquee_->current = {std::clamp(p.x, view.bounds.x, view.bounds.x + view.bounds.width),
-                                 std::clamp(p.y, view.bounds.y, view.bounds.y + view.bounds.height)};
-            marquee_->dragging |= length(marquee_->current - marquee_->start) >= 4 * view.dpi_scale;
+            marquee_->current = math::clamp(p, {view.bounds.x, view.bounds.y},
+                                            {view.bounds.x + view.bounds.width, view.bounds.y + view.bounds.height});
+            marquee_->dragging |= math::distance(marquee_->current, marquee_->start) >= 4 * view.dpi_scale;
         }
         if (event.kind == ui::EventKind::pointer_up && event.button == marquee_->button && !marquee_->await_press) {
             const auto result = marquee_->dragging
@@ -1234,7 +1216,7 @@ void ViewportTool::overlay(const Session& session, const ViewportView& view, Too
         }
         if (center && gesture_->modal && gesture_->operation != Operation::move) {
             const auto d = gesture_->last - *center;
-            const float total = length(d);
+            const float total = math::length(d);
             const float dash = 6 * view.dpi_scale;
             for (float at = 0; at < total; at += dash * 2) {
                 const auto a = *center + d * (at / total);

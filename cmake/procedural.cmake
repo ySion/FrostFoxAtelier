@@ -11,6 +11,8 @@ function(atelier_add_procedural)
         modules/engine/procedural/src/nodes.cpp
         modules/engine/procedural/src/evaluator.cpp)
     atelier_target(atelier_procedural)
+    # Volume/BVH error-bound proofs rely on separate multiply/add rounding.
+    target_compile_options(atelier_procedural PRIVATE /clang:-ffp-contract=off)
     target_include_directories(atelier_procedural PUBLIC modules/engine/procedural/include)
     target_link_libraries(atelier_procedural PUBLIC atelier_runtime atelier_geometry atelier_source)
     atelier_reflect(atelier_procedural SOURCE modules/engine/procedural/src/graph.cpp
@@ -19,6 +21,7 @@ function(atelier_add_procedural)
 
     add_executable(atelier_procedural_acceptance acceptance/procedural/main.cpp)
     atelier_target(atelier_procedural_acceptance)
+    target_compile_options(atelier_procedural_acceptance PRIVATE /clang:-ffp-contract=off)
     target_link_libraries(atelier_procedural_acceptance PRIVATE atelier_procedural)
     atelier_headless_acceptance(procedural_acceptance
         COMMAND $<TARGET_FILE:atelier_procedural_acceptance>

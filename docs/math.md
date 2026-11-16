@@ -7,9 +7,10 @@
 `math/math.hpp` 是正式聚合入口，定义按职责各存一份，也可直接包含对应头：
 
 - [`type.hpp`](../modules/core/math/include/math/type.hpp)：实数精度约束和数学分类；不创建第二套 Runtime 类型身份。
-- [`vector.hpp`](../modules/core/math/include/math/vector.hpp)：紧凑 2/3/4 分量存储和向量运算。
-- [`quaternion.hpp`](../modules/core/math/include/math/quaternion.hpp)：四元数存储、乘积、共轭、归一化和旋转。
-- [`matrix.hpp`](../modules/core/math/include/math/matrix.hpp)：4×4 存储、矩阵运算、TRS 构造、求逆及法线变换。
+- [`vector.hpp`](../modules/core/math/include/math/vector.hpp)：紧凑 2/3/4 分量存储、同形状显式精度转换和向量运算。
+- [`quaternion.hpp`](../modules/core/math/include/math/quaternion.hpp)：四元数存储、同形状显式精度转换、乘积、共轭、轴角构造、归一化和球面插值/旋转。
+- [`matrix.hpp`](../modules/core/math/include/math/matrix.hpp)：4×4 存储、同形状显式精度转换、矩阵运算、平移/缩放/TRS/左手视图构造、求逆及法线变换。
+- [`bounds.hpp`](../modules/core/math/include/math/bounds.hpp)：C++ 紧凑三维轴对齐包围盒（`BasicBounds<T>` / `Bounds` / `Boundsd`）、显式空盒单位元 `empty()`、包围扩展、包含/相交测试、点到盒平方距离与仿射包围盒变换 `transform_bounds`；仅供原生 C++ 使用，不注册为源码内建类型。
 
 当前头文件是本项目既有实现的职责拆分，未移植第三方实现，也没有 SIMD 寄存器公共类型、Affine3 或 TRS 计算值。存储布局、默认值、函数名和求值顺序保持不变；`dot` 从第一个乘积开始累加，`length` 使用 `hypot`（四维嵌套），归一化先按最大分量缩放。不能用代数等价的新公式替换这些数值路径。
 
@@ -44,7 +45,7 @@
 - World 对缩放、有效变换和生命周期的限制由 World 维护，通用数学值本身不禁止负缩放或非有限计算结果。
 - 源码使用严格浮点语义和普通 LLVM O2 优化，不开启全面 fast-math。结果允许 IEEE 无穷和 NaN；除[超越函数](#超越函数)在支持 FMA3 的主机之间逐位相同外，不承诺跨 CPU、平台或编译器版本逐位一致。精度策略与 SIMD 使用不能替代确定性协议。
 
-原生 C++ 保持 Windows x64 的 SSE2 编译基线，不启用 AVX2/FMA 或 fast-math。`atelier_math` 通过 INTERFACE 编译选项 `/clang:-ffp-contract=off`（clang-cl 透传给 Clang 的 `-ffp-contract=off`），使直接及传递依赖它的自有目标在整个翻译单元内禁止隐式乘加融合，而不只约束头文件中的函数。这不改变舍入模式、FTZ/DAZ 或显式 FMA，也不向没有此依赖的第三方目标传播；BVH 的局部严格浮点 pragma 仍保留。编译选项变化与头文件拆分分别验证，不能由代数等价推定旧输出逐位不变。此 C++ 选项不改变 JIT 生成 IR 的规则或其 FMA3 主机要求。
+原生 C++ 保持 Windows x64 的 SSE2 编译基线，不启用 AVX2/FMA 或 fast-math。依赖分步乘加舍入误差证明的几何与体素路径（`atelier_procedural` 及其验收目标）通过 PRIVATE 编译选项 `/clang:-ffp-contract=off`（clang-cl 透传给 Clang 的 `-ffp-contract=off`）禁止翻译单元内的隐式乘加融合，并保留 BVH 与三角形距离核的局部严格浮点 pragma；`atelier_math` 不再向无关模块传递该选项。这不改变舍入模式、FTZ/DAZ 或显式 FMA，也不改变 JIT 生成 IR 的规则或其 FMA3 主机要求。
 
 `float` 对应 `core.f32`，`double` 对应 `core.f64`。无后缀小数/指数仍是 float，例如 `1.0`、`1e2`；`1f`、`1.0F` 显式表示 float，`1d`、`1.0D` 表示 double。浮点字面量必须有限且在转换范围内。已定型 float/double 不隐式混合；`float(value)` 与 `double(value)` 显式转换 float、double、int 或 uint，窄化由调用者选择。
 
@@ -101,7 +102,7 @@ double energy(const Array<vector3d>& values) {
 
 字段可从变量、数组元素、借用记录及数学临时值读取，例如 `(a + b).x`。临时值不可赋值；修改需要真正的可写存储。矩阵源码使用 `.m00` 等字段，当前没有矩阵下标语法。对象目录同时提供完整数学字段与标量分量路径，支持 `self.position = self.position + self.velocity * delta;`；对象读写经过 Runtime 生命周期检查，整值读取不会暴露对象内存地址。
 
-原生 C++ 库还提供向量复合赋值、`is_finite`、返回 optional 的 `try_normalize`，以及矩阵加减、标量缩放、`vector4 * matrix4`、`rotation_matrix`、`trs_matrix`、`try_inverse`。这些能力不自动成为源码语法；源码当前以本节表格为准。原生向量 `lerp` 与源码 `math.lerp` 使用同一公式。原生 `try_normalize` 对零或非有限输入返回空值；`try_inverse` 先按行缩放再做带选主元的消元，拒绝非有限、奇异、超出工作精度或不能表示的结果，不隐式回退到单位矩阵。
+原生 C++ 库还提供同形状数学值的显式 `float` ↔ `double` 转换、向量复合赋值、`cwise_mul`、`cwise_div`、`cwise_min`、`cwise_max`（同源码 `min`/`max` 的 GLSL 顺序，仅首操作数为 NaN 时保留 NaN）、`cwise_abs`、`clamp`（支持向量或标量上下界，语义同源码 `math.clamp`）、`lerp01`（先将参数按 `math.clamp(t, 0, 1)` 钳制到 `[0, 1]` 再调用 `lerp`，`t` 为 NaN 时归零）、`min_component`、`max_component`（按左折叠顺序调用 `min`/`max`，不传播后续分量的 NaN，校验未信任输入时须配合 `is_finite`）、`length_squared`、`distance_squared`、`distance`、`is_finite`、返回 optional 的 `try_normalize`，四元数 `dot`、`from_axis_angle`（要求单位轴与弧度角）、`slerp01`（要求单位四元数，先按 `math.clamp(t, 0, 1)` 将插值参数钳制到 `[0, 1]`，`dot < 0` 时翻转第二操作数以取最短弧故 `t = 1` 得 `-unit_b`，近共线处走归一化线性分支）、三维轴对齐包围盒 `BasicBounds<T>`（默认零盒，`empty()` 为 `{+∞, -∞}`，是 `encapsulate` 与 `distance_squared` 唯一合法的空盒单位元；任意有限反转盒虽满足 `is_empty` 但不可作为归约单位元；另提供 `is_finite`、`center`、`size`、`extents`、`corner`、`contains`、`intersects` 及按列极值精确传播的 `transform_bounds`），以及矩阵加减、标量缩放、`vector4 * matrix4`、`translation_matrix`、`scale_matrix`、`rotation_matrix`、`trs_matrix`、左手行主序视图矩阵 `try_look_to_lh` / `try_look_at_lh`（对零、非有限、与上方向共线的视线或平移点积溢出的输入返回空值）、`try_inverse`。这些能力不自动成为源码语法；源码当前以本节表格为准。原生向量 `lerp` 与源码 `math.lerp` 使用同一公式。原生 `try_normalize` 对零或非有限输入返回空值；`try_inverse` 先按行缩放再做带选主元的消元，拒绝非有限、奇异、超出工作精度或不能表示的结果，不隐式回退到单位矩阵。
 
 ### 超越函数
 

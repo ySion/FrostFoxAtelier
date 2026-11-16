@@ -10,9 +10,9 @@
 
 namespace atelier::procedural {
 namespace {
-using detail::narrow;
+using math::Bounds;
 
-using detail::widen;
+using math::Vector2;
 
 using math::Vector3;
 
@@ -30,34 +30,10 @@ constexpr std::uint32_t sah_depth = 40;
 
 constexpr std::size_t stack_size = 128;
 
-Vector3 lower(Vector3 a, Vector3 b) {
-    return {std::min(a.x, b.x), std::min(a.y, b.y), std::min(a.z, b.z)};
+[[nodiscard]] double half_area(const Bounds& box) {
+    const auto d = Vector3d(box.maximum) - Vector3d(box.minimum);
+    return d.x < 0 ? 0 : d.x * d.y + d.y * d.z + d.z * d.x;
 }
-
-Vector3 upper(Vector3 a, Vector3 b) {
-    return {std::max(a.x, b.x), std::max(a.y, b.y), std::max(a.z, b.z)};
-}
-
-struct Box {
-    Vector3 minimum{infinity, infinity, infinity};
-
-    Vector3 maximum{-infinity, -infinity, -infinity};
-
-    void add(Vector3 point) {
-        minimum = lower(minimum, point);
-        maximum = upper(maximum, point);
-    }
-
-    void add(const Box& box) {
-        minimum = lower(minimum, box.minimum);
-        maximum = upper(maximum, box.maximum);
-    }
-
-    [[nodiscard]] double area() const {
-        const auto d = widen(maximum) - widen(minimum);
-        return d.x < 0 ? 0 : d.x * d.y + d.y * d.z + d.z * d.x;
-    }
-};
 
 constexpr double double_infinity = std::numeric_limits<double>::infinity();
 
@@ -211,8 +187,8 @@ Result<Bvh> Bvh::build(const Geometry& surface) {
         const Triangle triangle{positions[corners[vertices[0]]], positions[corners[vertices[1]]],
                                 positions[corners[vertices[2]]], p, j};
         // A zero-area triangle has no surface to hit or project onto.
-        const auto a = widen(triangle.a);
-        if (math::cross(widen(triangle.b) - a, widen(triangle.c) - a) != Vector3d{})
+        const auto a = Vector3d(triangle.a);
+        if (math::cross(Vector3d(triangle.b) - a, Vector3d(triangle.c) - a) != Vector3d{})
             triangles.add(triangle);
     }
     const auto count = static_cast<std::uint32_t>(triangles.size());
@@ -221,17 +197,16 @@ Result<Bvh> Bvh::build(const Geometry& surface) {
     result.polygon_tolerances_.reserve(surface.count(Layer::primitive));
     for (std::uint32_t p = 0; p < surface.count(Layer::primitive); ++p)
         result.polygon_tolerances_.add(detail::polygon_scale(surface, surface.primitive(p)).tolerance);
-    Array<Box> bounds;
+    Array<Bounds> bounds;
     bounds.resize(count);
     Array<Vector3> centers;
     centers.resize(count);
     Array<std::uint32_t> order;
     order.resize(count);
     for (std::uint32_t i = 0; i < count; ++i) {
-        bounds[i].add(triangles[i].a);
-        bounds[i].add(triangles[i].b);
-        bounds[i].add(triangles[i].c);
-        centers[i] = bounds[i].minimum * 0.5f + bounds[i].maximum * 0.5f;
+        bounds[i] = math::encapsulate(math::encapsulate(Bounds{triangles[i].a, triangles[i].a}, triangles[i].b),
+                                      triangles[i].c);
+        centers[i] = math::center(bounds[i]);
         order[i] = i;
     }
     struct Task {
@@ -251,12 +226,12 @@ Result<Bvh> Bvh::build(const Geometry& surface) {
     while (!tasks.empty()) {
         const auto [node, begin, end, depth] = tasks.back();
         tasks.pop();
-        Box box;
-        Box spread;
+        auto box = Bounds::empty();
+        auto spread = Bounds::empty();
         double tolerance = 0;
         for (auto i = begin; i < end; ++i) {
-            box.add(bounds[order[i]]);
-            spread.add(centers[order[i]]);
+            box = math::encapsulate(box, bounds[order[i]]);
+            spread = math::encapsulate(spread, centers[order[i]]);
             tolerance = std::max(tolerance, result.polygon_tolerances_[triangles[order[i]].primitive]);
         }
         result.nodes_[node].minimum = box.minimum;
@@ -266,7 +241,7 @@ Result<Bvh> Bvh::build(const Geometry& surface) {
             result.nodes_[node].first = begin;
             result.nodes_[node].count = end - begin;
         };
-        const auto extent = widen(spread.maximum) - widen(spread.minimum);
+        const auto extent = Vector3d(spread.maximum) - Vector3d(spread.minimum);
         const int axis = extent.x >= extent.y && extent.x >= extent.z ? 0 : extent.y >= extent.z ? 1 : 2;
         if (end - begin <= leaf_size || !(extent[axis] > 0)) {
             leaf();
@@ -279,34 +254,35 @@ Result<Bvh> Bvh::build(const Geometry& surface) {
             const auto bin = [&](std::uint32_t i) {
                 return std::min(bins - 1, static_cast<std::uint32_t>((centers[i][axis] - origin) * scale));
             };
-            std::array<Box, bins> boxes;
+            std::array<Bounds, bins> boxes;
+            boxes.fill(Bounds::empty());
             std::array<std::uint32_t, bins> counts{};
             for (auto i = begin; i < end; ++i) {
                 const auto b = bin(order[i]);
                 ++counts[b];
-                boxes[b].add(bounds[order[i]]);
+                boxes[b] = math::encapsulate(boxes[b], bounds[order[i]]);
             }
             std::array<double, bins> left{};
-            Box sweep;
+            auto sweep = Bounds::empty();
             std::uint32_t swept = 0;
             for (std::uint32_t b = 0; b + 1 < bins; ++b) {
-                sweep.add(boxes[b]);
+                sweep = math::encapsulate(sweep, boxes[b]);
                 swept += counts[b];
-                left[b] = sweep.area() * swept;
+                left[b] = half_area(sweep) * swept;
             }
-            sweep = {};
+            sweep = Bounds::empty();
             swept = 0;
-            double best = std::numeric_limits<double>::infinity();
+            double best = double_infinity;
             std::uint32_t split = 1;
             for (std::uint32_t b = bins - 1; b > 0; --b) {
-                sweep.add(boxes[b]);
+                sweep = math::encapsulate(sweep, boxes[b]);
                 swept += counts[b];
-                if (const double cost = left[b - 1] + sweep.area() * swept; cost < best) {
+                if (const double cost = left[b - 1] + half_area(sweep) * swept; cost < best) {
                     best = cost;
                     split = b;
                 }
             }
-            if (end - begin <= 4 * leaf_size && best >= box.area() * (end - begin)) {
+            if (end - begin <= 4 * leaf_size && best >= half_area(box) * (end - begin)) {
                 leaf();
                 continue;
             }
@@ -338,10 +314,10 @@ Result<Bvh> Bvh::build(const Geometry& surface) {
 std::optional<Hit> Bvh::ray(Vector3 origin_float, Vector3 direction_float, float max_distance) const noexcept {
     if (nodes_.empty())
         return std::nullopt;
-    const auto origin = widen(origin_float);
-    const auto direction = widen(direction_float);
+    const auto origin = Vector3d(origin_float);
+    const auto direction = Vector3d(direction_float);
     // Box tests stay in float: an overflowing slab distance is an infinite one, which is right.
-    const Vector3 inverse{1 / direction_float.x, 1 / direction_float.y, 1 / direction_float.z};
+    const auto inverse = math::cwise_div(Vector3{1, 1, 1}, direction_float);
     double best = max_distance;
     float bound = max_distance; // best rounded up to float.
     // Entry distance into a box, or infinity when the ray misses it within `bound`.
@@ -379,9 +355,9 @@ std::optional<Hit> Bvh::ray(Vector3 origin_float, Vector3 direction_float, float
         if (node.count) {
             for (auto i = node.first; i < node.first + node.count; ++i) {
                 const auto& triangle = triangles_[i];
-                const auto a = widen(triangle.a);
-                const auto e1 = widen(triangle.b) - a;
-                const auto e2 = widen(triangle.c) - a;
+                const auto a = Vector3d(triangle.a);
+                const auto e1 = Vector3d(triangle.b) - a;
+                const auto e2 = Vector3d(triangle.c) - a;
                 const auto p = math::cross(direction, e2);
                 const double determinant = math::dot(e1, p);
                 if (determinant == 0)
@@ -406,7 +382,7 @@ std::optional<Hit> Bvh::ray(Vector3 origin_float, Vector3 direction_float, float
                           triangle.triangle,
                           static_cast<float>(distance),
                           {static_cast<float>(u), static_cast<float>(v)},
-                          narrow(a + e1 * u + e2 * v)};
+                          Vector3(a + e1 * u + e2 * v)};
             }
             continue;
         }
@@ -426,7 +402,7 @@ std::optional<Hit> Bvh::ray(Vector3 origin_float, Vector3 direction_float, float
 std::optional<Hit> Bvh::closest(Vector3 point_float, float max_distance) const noexcept {
     if (nodes_.empty())
         return std::nullopt;
-    const auto point = widen(point_float);
+    const auto point = Vector3d(point_float);
     double best = double(max_distance) * max_distance;
     const auto distance = [&](const Node& node) {
         double sum = 0;
@@ -449,19 +425,16 @@ std::optional<Hit> Bvh::closest(Vector3 point_float, float max_distance) const n
         if (node.count) {
             for (auto i = node.first; i < node.first + node.count; ++i) {
                 const auto& triangle = triangles_[i];
-                const auto a = widen(triangle.a);
-                const auto b = widen(triangle.b);
-                const auto c = widen(triangle.c);
+                const auto a = Vector3d(triangle.a);
+                const auto b = Vector3d(triangle.b);
+                const auto c = Vector3d(triangle.c);
                 const auto uv = detail::closest_on_triangle(point, a, b, c);
                 const auto position = a + (b - a) * uv.x + (c - a) * uv.y;
                 const auto offset = position - point;
-                if (const double squared = math::dot(offset, offset); squared <= best) {
+                if (const double squared = math::length_squared(offset); squared <= best) {
                     best = squared;
-                    hit = Hit{triangle.primitive,
-                              triangle.triangle,
-                              static_cast<float>(std::sqrt(squared)),
-                              {static_cast<float>(uv.x), static_cast<float>(uv.y)},
-                              narrow(position)};
+                    hit = Hit{triangle.primitive, triangle.triangle, static_cast<float>(std::sqrt(squared)),
+                              Vector2(uv), Vector3(position)};
                 }
             }
             continue;
@@ -478,7 +451,7 @@ std::optional<Hit> Bvh::closest(Vector3 point_float, float max_distance) const n
 bool Bvh::on_surface_band(Vector3 point) const noexcept {
     if (nodes_.empty())
         return false;
-    const auto q = widen(point);
+    const auto q = Vector3d(point);
     FixedArray<std::uint32_t, stack_size> stack{0};
     while (!stack.empty()) {
         const auto index = stack.back();
@@ -490,11 +463,12 @@ bool Bvh::on_surface_band(Vector3 point) const noexcept {
             for (auto i = node.first; i < node.first + node.count; ++i) {
                 const auto& t = triangles_[i];
                 const double tolerance = polygon_tolerances_[t.primitive];
-                if (!band_box(lower(lower(t.a, t.b), t.c), upper(upper(t.a, t.b), t.c), tolerance, point))
+                if (!band_box(math::cwise_min(math::cwise_min(t.a, t.b), t.c),
+                              math::cwise_max(math::cwise_max(t.a, t.b), t.c), tolerance, point))
                     continue;
-                const auto a = widen(t.a);
-                const auto b = widen(t.b);
-                const auto c = widen(t.c);
+                const auto a = Vector3d(t.a);
+                const auto b = Vector3d(t.b);
+                const auto c = Vector3d(t.c);
                 const auto cross = math::cross(b - a, c - a);
                 const auto normal = cross / math::length(cross);
                 // Preserve C R2's plane broad phase and bounded-distance leaf predicate.
@@ -502,8 +476,7 @@ bool Bvh::on_surface_band(Vector3 point) const noexcept {
                     continue;
                 const auto uv = detail::closest_on_triangle(q, a, b, c);
                 const auto closest = a + (b - a) * uv.x + (c - a) * uv.y;
-                const auto offset = closest - q;
-                if (math::dot(offset, offset) <= tolerance * tolerance)
+                if (math::distance_squared(q, closest) <= tolerance * tolerance)
                     return true;
             }
             continue;
@@ -519,7 +492,7 @@ std::optional<std::int64_t> Bvh::signed_crossings(Vector3 point, Vector3 directi
     if (nodes_.empty())
         return count;
     // Float inputs widen exactly and keep all degree-three products within double range.
-    const auto direction = widen(direction_float);
+    const auto direction = Vector3d(direction_float);
     const Interval3 d{Interval{direction.x}, Interval{direction.y}, Interval{direction.z}};
     FixedArray<std::uint32_t, stack_size> stack{0};
     while (!stack.empty()) {
@@ -532,7 +505,8 @@ std::optional<std::int64_t> Bvh::signed_crossings(Vector3 point, Vector3 directi
             for (auto i = node.first; i < node.first + node.count; ++i) {
                 const auto& t = triangles_[i];
                 // This per-triangle gate makes uncertainty independent of leaf grouping.
-                if (!ray_box(lower(lower(t.a, t.b), t.c), upper(upper(t.a, t.b), t.c), point, direction))
+                if (!ray_box(math::cwise_min(math::cwise_min(t.a, t.b), t.c),
+                             math::cwise_max(math::cwise_max(t.a, t.b), t.c), point, direction))
                     continue;
                 const auto a = relative(t.a, point);
                 const auto b = relative(t.b, point);

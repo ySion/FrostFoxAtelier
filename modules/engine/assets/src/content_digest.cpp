@@ -46,6 +46,12 @@ public:
             u32(std::bit_cast<std::uint32_t>(value));
     }
 
+    void vector3(math::Vector3 value) {
+        u32(std::bit_cast<std::uint32_t>(value.x));
+        u32(std::bit_cast<std::uint32_t>(value.y));
+        u32(std::bit_cast<std::uint32_t>(value.z));
+    }
+
     void text(std::string_view value) {
         size(value.size());
         bytes(std::as_bytes(std::span(value)));
@@ -98,8 +104,8 @@ Result<std::string> mesh_content_sha256(const MeshAsset& asset) {
         out.floats(v.uv);
         out.floats(v.tangent);
     }
-    out.floats(mesh.bounds().minimum);
-    out.floats(mesh.bounds().maximum);
+    out.vector3(mesh.bounds().minimum);
+    out.vector3(mesh.bounds().maximum);
     out.size(mesh.vertices().size() / 3);
     for (std::size_t i = 0; i < mesh.vertices().size() / 3; ++i)
         out.u8(mesh.edge_mask(i));

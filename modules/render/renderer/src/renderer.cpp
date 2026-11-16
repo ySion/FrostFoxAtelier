@@ -177,9 +177,8 @@ bool same_bits(float a, float b) noexcept {
     return std::bit_cast<std::uint32_t>(a) == std::bit_cast<std::uint32_t>(b);
 }
 
-template <std::size_t N>
-bool same_bits(const std::array<float, N>& a, const std::array<float, N>& b) noexcept {
-    for (std::size_t i = 0; i < N; ++i)
+bool same_bits(const math::Matrix4& a, const math::Matrix4& b) noexcept {
+    for (std::size_t i = 0; i < a.size(); ++i)
         if (!same_bits(a[i], b[i]))
             return false;
     return true;
@@ -187,11 +186,9 @@ bool same_bits(const std::array<float, N>& a, const std::array<float, N>& b) noe
 
 // Everything an instance check reads belongs to the instance itself.
 bool valid_instance(const MeshInstance& mesh) {
-    bool good =
-        mesh.geometry && mesh.material_slots && mesh.material_slots->size() == mesh.geometry->materials().size();
-    for (float v : mesh.world)
-        good &= finite(v);
-    return good && mesh.world[3] == 0 && mesh.world[7] == 0 && mesh.world[11] == 0 && mesh.world[15] == 1;
+    return mesh.geometry && mesh.material_slots && mesh.material_slots->size() == mesh.geometry->materials().size() &&
+           math::is_finite(mesh.world) && mesh.world[3] == 0 && mesh.world[7] == 0 && mesh.world[11] == 0 &&
+           mesh.world[15] == 1;
 }
 
 // The last content at each Frame::meshes position that passed valid_instance, and
@@ -201,7 +198,7 @@ bool valid_instance(const MeshInstance& mesh) {
 class MeshChecks {
 public:
     struct Entry {
-        std::array<float, 16> world{};
+        math::Matrix4 world{};
 
         std::uint64_t stable_key{};
 
@@ -316,11 +313,8 @@ Result<void> validate(const Frame& frame, MeshChecks& meshes) {
     good &= finite(cavity.ridge) && cavity.ridge >= 0 && cavity.ridge <= 2 && finite(cavity.valley) &&
             cavity.valley >= 0 && cavity.valley <= 2 && finite(cavity.radius) && cavity.radius >= .5f &&
             cavity.radius <= 4;
-    for (float v : frame.camera.view)
-        good &= finite(v);
-    for (float v : frame.camera.projection)
-        good &= finite(v);
-    good &= finite(frame.camera.far_depth) && frame.camera.far_depth >= 0 && frame.camera.far_depth <= 1;
+    good &= math::is_finite(frame.camera.view) && math::is_finite(frame.camera.projection) &&
+            finite(frame.camera.far_depth) && frame.camera.far_depth >= 0 && frame.camera.far_depth <= 1;
     std::uint64_t material_slots = 0;
     good &= meshes.check(frame.meshes, material_slots);
     for (const auto& mesh : frame.meshes) {
@@ -369,25 +363,16 @@ std::optional<GridCamera> prepare_grid_camera(const Frame& frame) {
     if ((!frame.view.reference_grid && !frame.view.origin_axes) || frame.scene_viewport.width == 0 ||
         frame.scene_viewport.height == 0)
         return {};
-    math::Matrix4d view;
-    math::Matrix4d projection;
-    for (std::size_t i = 0; i < 16; ++i) {
-        view.elements[i] = frame.camera.view[i];
-        projection.elements[i] = frame.camera.projection[i];
-    }
-    const auto combined = view * projection;
+    const auto combined = math::Matrix4d(frame.camera.view) * math::Matrix4d(frame.camera.projection);
     const auto inverse = math::try_inverse(combined);
     // An optional reference guide must not reject an otherwise valid camera.
     if (!inverse)
         return {};
-    GridCamera result;
-    for (std::size_t i = 0; i < 16; ++i) {
-        result.view_projection[i] = static_cast<float>(combined.elements[i]);
-        result.inverse[i] = static_cast<float>(inverse->elements[i]);
-        if (!finite(result.view_projection[i]) || !finite(result.inverse[i]))
-            return {};
-    }
-    return result;
+    const math::Matrix4 vp(combined);
+    const math::Matrix4 inv(*inverse);
+    if (!math::is_finite(vp) || !math::is_finite(inv))
+        return {};
+    return GridCamera{vp.elements, inv.elements};
 }
 
 std::optional<std::array<float, 16>> prepare_cavity_projection(const Frame& frame) {
@@ -396,19 +381,13 @@ std::optional<std::array<float, 16>> prepare_cavity_projection(const Frame& fram
         frame.view.wireframe == Wireframe::only || frame.meshes.empty() || frame.scene_viewport.width == 0 ||
         frame.scene_viewport.height == 0)
         return {};
-    math::Matrix4d projection;
-    for (std::size_t i = 0; i < 16; ++i)
-        projection.elements[i] = frame.camera.projection[i];
-    const auto inverse = math::try_inverse(projection);
+    const auto inverse = math::try_inverse(math::Matrix4d(frame.camera.projection));
     if (!inverse)
         return {};
-    std::array<float, 16> result;
-    for (std::size_t i = 0; i < 16; ++i) {
-        result[i] = static_cast<float>(inverse->elements[i]);
-        if (!finite(result[i]))
-            return {};
-    }
-    return result;
+    const math::Matrix4 result(*inverse);
+    if (!math::is_finite(result))
+        return {};
+    return result.elements;
 }
 
 using detail::PipelineStyle;
@@ -421,7 +400,7 @@ Result<Instance> prepare_instance(const MeshInstance& mesh) {
             error(rhi::ErrorCode::invalid_argument, normal.error() == math::NormalTransformFailure::singular
                                                         ? "Mesh world matrix is singular"
                                                         : "Mesh normal transform cannot be represented by GPU floats"));
-    return Instance{mesh.world, normal->matrix, mesh.selected ? 1.0f : 0.0f, normal->mirror};
+    return Instance{mesh.world.elements, normal->matrix, mesh.selected ? 1.0f : 0.0f, normal->mirror};
 }
 
 struct TextureKey {
@@ -1199,15 +1178,8 @@ struct Renderer::State {
                     instance_data = *written;
                     // Match SceneLit's CPU-composed view/projection before the
                     // precise clip path; chained GPU matrices differ by ULPs.
-                    math::Matrix4d camera_view;
-                    math::Matrix4d camera_projection;
-                    for (std::size_t i = 0; i < 16; ++i) {
-                        camera_view.elements[i] = frame.camera.view[i];
-                        camera_projection.elements[i] = frame.camera.projection[i];
-                    }
-                    const auto combined = camera_view * camera_projection;
-                    for (std::size_t i = 0; i < 16; ++i)
-                        view_projection[i] = static_cast<float>(combined.elements[i]);
+                    const auto combined = math::Matrix4d(frame.camera.view) * math::Matrix4d(frame.camera.projection);
+                    view_projection = math::Matrix4(combined).elements;
                 }
                 const auto program = pipeline.program();
                 ATELIER_TRY(require(gfxProgramSetParameter(gfx, program, "raster_viewport_transform", raster_transform),
@@ -1221,10 +1193,11 @@ struct Renderer::State {
                     require(gfxProgramSetParameter(gfx, program, "instances", instance_data), "Bind mesh instances"));
                 ATELIER_TRY(
                     require(gfxProgramSetParameter(gfx, program, "draw_instances", order), "Bind mesh draw order"));
+                ATELIER_TRY(require(gfxProgramSetParameter(gfx, program, "view", frame.camera.view.elements),
+                                    "Set view matrix"));
                 ATELIER_TRY(
-                    require(gfxProgramSetParameter(gfx, program, "view", frame.camera.view), "Set view matrix"));
-                ATELIER_TRY(require(gfxProgramSetParameter(gfx, program, "projection", frame.camera.projection),
-                                    "Set projection matrix"));
+                    require(gfxProgramSetParameter(gfx, program, "projection", frame.camera.projection.elements),
+                            "Set projection matrix"));
                 ATELIER_TRY(require(gfxProgramSetParameter(gfx, program, "scene_view_projection", view_projection),
                                     "Set raster view projection"));
                 ATELIER_TRY(require(gfxProgramSetParameter(gfx, program, "camera_far_depth", frame.camera.far_depth),

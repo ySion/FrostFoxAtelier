@@ -639,7 +639,7 @@ bool Workspace::sync_world(const Session& session) {
 }
 
 Result<void> Workspace::set_view_settings(Session& session, const renderer::ViewSettings& candidate,
-                                          std::array<float, 3> focus) {
+                                          math::Vector3 focus) {
     ATELIER_TRY(validate_view_options(candidate, focus));
     ATELIER_TRY(session.set_environment(candidate.lit));
     if (view != candidate) {

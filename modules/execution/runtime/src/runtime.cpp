@@ -32,7 +32,7 @@ auto failure(ErrorCode code, std::string message) {
 }
 
 bool normalize_description(std::string& text) {
-    if (!StringView{std::string_view{text}}.is_valid_utf8())
+    if (!StringView{text}.is_valid_utf8())
         return false;
     for (std::size_t i = 0; i < text.size(); ++i) {
         const auto c = static_cast<unsigned char>(text[i]);
@@ -1278,7 +1278,7 @@ struct Runtime::Impl {
                             return {};
                         }};
         representations.try_emplace(type->native.representation, id.index_);
-        names.try_emplace(StringView{std::string_view{type->info.name}}, id.index_);
+        names.try_emplace(StringView{type->info.name}, id.index_);
         types.add(std::move(type));
         return id;
     }
@@ -1349,7 +1349,7 @@ struct Runtime::Impl {
                     if (origin)
                         result = field.type->native.copy_construct(destination, origin);
                     else if (field.default_text) {
-                        auto text = String::from_utf8(StringView{std::string_view{*field.default_text}});
+                        auto text = String::from_utf8(StringView{*field.default_text});
                         if (!text)
                             result = failure(ErrorCode::construction_failed, "Default text is not valid UTF-8.");
                         else
@@ -1567,7 +1567,7 @@ Runtime::Runtime() noexcept {
     impl_->object = TypeId{impl_->context, static_cast<std::uint32_t>(impl_->types.size())};
     auto root = std::make_unique<Impl::Type>();
     root->info = {impl_->object, "core.Object", TypeKind::object, 1, 1, {}, {}};
-    impl_->names.try_emplace(StringView{std::string_view{root->info.name}}, impl_->object.index_);
+    impl_->names.try_emplace(StringView{root->info.name}, impl_->object.index_);
     impl_->types.add(std::move(root));
     const auto registered = register_types(math::type_definitions(*this));
     if (!registered)
@@ -1812,7 +1812,7 @@ void detail::TypePublication::commit(Runtime& runtime) noexcept {
             impl.maximum_trace_depth = std::max(impl.maximum_trace_depth, type->trace_depth);
         if (type->native.representation)
             impl.representations.try_emplace(type->native.representation, index);
-        impl.names.try_emplace(StringView{std::string_view{type->info.name}}, index);
+        impl.names.try_emplace(StringView{type->info.name}, index);
         impl.types.add(std::move(type));
     }
     state_->staged.clear();
@@ -1845,7 +1845,7 @@ Result<void> FieldDefinition::normalize_metadata() {
         }
         if (!valid || start)
             return failure(ErrorCode::invalid_definition, "Meta keys require dotted ASCII identifiers");
-        if (!StringView{std::string_view{value}}.is_valid_utf8())
+        if (!StringView{value}.is_valid_utf8())
             return failure(ErrorCode::invalid_definition, "Meta values require valid UTF-8");
     }
     std::ranges::sort(metadata);
@@ -1878,7 +1878,7 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
             return failure(ErrorCode::invalid_definition,
                            "A named record, object, enum, string or array type is required.");
         }
-        if (!StringView{std::string_view{definition.name}}.is_valid_utf8())
+        if (!StringView{definition.name}.is_valid_utf8())
             return failure(ErrorCode::invalid_definition, "Type names require valid UTF-8.");
         const auto invalid_description = [](const std::string& owner) {
             return failure(ErrorCode::invalid_definition,
@@ -1888,9 +1888,8 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
         if (!normalize_description(definition.description))
             return invalid_description(definition.name);
         for (auto& field : definition.fields) {
-            if (!StringView{std::string_view{field.name}}.is_valid_utf8() ||
-                !StringView{std::string_view{field.label}}.is_valid_utf8() ||
-                !StringView{std::string_view{field.category}}.is_valid_utf8())
+            if (!StringView{field.name}.is_valid_utf8() || !StringView{field.label}.is_valid_utf8() ||
+                !StringView{field.category}.is_valid_utf8())
                 return failure(ErrorCode::invalid_definition,
                                "Field names, labels and categories require valid UTF-8.");
             if (!normalize_description(field.description))
@@ -1901,7 +1900,7 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
                                normalized.error().message + ": " + definition.name + "." + field.name);
         }
         for (auto& method : definition.methods) {
-            if (!StringView{std::string_view{method.name}}.is_valid_utf8())
+            if (!StringView{method.name}.is_valid_utf8())
                 return failure(ErrorCode::invalid_definition, "Method names require valid UTF-8.");
             if (!normalize_description(method.description))
                 return invalid_description(definition.name + "." + method.name);
@@ -2004,7 +2003,7 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
             for (std::size_t e = 0; e < values.size(); ++e) {
                 if (values[e].first.empty())
                     return failure(ErrorCode::invalid_definition, "Enum names cannot be empty.");
-                if (!StringView{std::string_view{values[e].first}}.is_valid_utf8())
+                if (!StringView{values[e].first}.is_valid_utf8())
                     return failure(ErrorCode::invalid_definition, "Enum names require valid UTF-8.");
                 for (std::size_t j = 0; j < e; ++j)
                     if (values[j].first == values[e].first)
@@ -2113,8 +2112,7 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
                                     form == ValueForm::inline_value && target->info.kind == TypeKind::string;
             if (text_field && !field.default_text)
                 field.default_text.emplace();
-            if (field.default_text &&
-                (!text_field || !StringView{std::string_view{*field.default_text}}.is_valid_utf8()))
+            if (field.default_text && (!text_field || !StringView{*field.default_text}.is_valid_utf8()))
                 return failure(ErrorCode::invalid_definition,
                                "Text defaults require a described object's String field and valid UTF-8: " +
                                    type.info.name + "." + field.name);
@@ -2218,7 +2216,7 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
                 return failure(ErrorCode::invalid_definition,
                                "Parameter names must match the parameters of method: " + method.name);
             for (std::size_t i = 0; i < names.size(); ++i) {
-                if (!StringView{std::string_view{names[i]}}.is_valid_utf8())
+                if (!StringView{names[i]}.is_valid_utf8())
                     return failure(ErrorCode::invalid_definition, "Parameter names require valid UTF-8.");
                 if (!names[i].empty() && std::find(names.begin(), names.begin() + i, names[i]) != names.begin() + i)
                     return failure(ErrorCode::duplicate_name,

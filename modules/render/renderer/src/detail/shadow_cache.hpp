@@ -1,5 +1,6 @@
 #pragma once
 
+#include "math/bounds.hpp"
 #include "renderer/renderer.hpp"
 #include "light_frame.hpp"
 
@@ -31,19 +32,13 @@ struct ShadowReceiverDepth {
     float maximum{};
 };
 
-struct ShadowBounds {
-    std::array<float, 3> minimum{};
-
-    std::array<float, 3> maximum{};
-};
-
 // Derived from the existing SceneLit object/geometry cache. All current scene
 // casters are supplied, including objects outside the main camera. A dynamic
 // object stays dynamic for this scene after its first shadow-affecting edit.
 struct ShadowCaster {
     std::uint32_t instance{};
 
-    ShadowBounds bounds;
+    math::Bounds bounds;
 
     bool dynamic{};
 };
@@ -52,9 +47,9 @@ struct ShadowCaster {
 // static-to-dynamic migration dirties static at old_bounds and dynamic at both
 // bounds. Color/roughness edits do not produce a change.
 struct ShadowChange {
-    ShadowBounds old_bounds;
+    math::Bounds old_bounds;
 
-    ShadowBounds new_bounds;
+    math::Bounds new_bounds;
 
     bool old_present{};
 
@@ -110,7 +105,7 @@ struct ShadowUpdate {
     std::array<std::uint32_t, 4> rect{}; // x,y,width,height, including guard.
 
     // Expanded projection used with the entire rect as viewport/scissor.
-    std::array<float, 16> view_projection{};
+    math::Matrix4 view_projection{};
 
     std::vector<std::uint32_t> instances;
 };

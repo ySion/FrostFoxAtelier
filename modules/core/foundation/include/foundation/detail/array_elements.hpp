@@ -13,15 +13,6 @@
 
 namespace atelier::detail {
 
-// The pinned toolchain lacks is_implicit_lifetime_v. These sufficient conditions
-// permit implicit object creation under [c.malloc] for realloc's copied bytes.
-// Replace this conservative condition with that trait when the toolchain supplies it.
-template <class T>
-concept ReallocatableArrayElement =
-    std::is_trivially_copyable_v<T> &&
-    (std::is_aggregate_v<T> || std::is_trivially_default_constructible_v<T> ||
-     std::is_trivially_copy_constructible_v<T> || std::is_trivially_move_constructible_v<T>);
-
 // Raw-storage operations shared by heap and inline sequences. Element operations
 // are ordinary C++ operations, never a recoverable business-error channel.
 template <class T>
@@ -35,8 +26,8 @@ struct ArrayElements {
     static constexpr bool byte_relocate =
         std::is_trivially_copyable_v<T> && std::is_trivially_constructible_v<T, RelocationSource>;
 
-    // Implicit lifetime alone does not permit skipping a nontrivial selected constructor.
-    static constexpr bool byte_reallocate = ReallocatableArrayElement<T> && byte_relocate;
+    // realloc implicitly creates objects in copied bytes; relocation must also be trivial.
+    static constexpr bool byte_reallocate = std::is_implicit_lifetime_v<T> && byte_relocate;
 
     static std::size_t grown_capacity(std::size_t size, std::size_t capacity, std::size_t extra,
                                       std::size_t limit = max_size) noexcept {

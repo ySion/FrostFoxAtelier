@@ -115,7 +115,7 @@ Result<EngineDependency> Reader::engine_dependency(std::string_view key, AssetKi
             if (!encoded)
                 return std::unexpected(Error{ErrorCode::invalid_definition, encoded.error().describe()});
             return EngineDependency{asset.key, AssetKind::material, 1, material_digest_version,
-                                    foundation::sha256(std::as_bytes(std::span(encoded->data(), encoded->size())))};
+                                    foundation::sha256(as_bytes(encoded->view()))};
         }
     const auto at = std::ranges::find(producers, key, &Producer::key);
     if (at == producers.end())

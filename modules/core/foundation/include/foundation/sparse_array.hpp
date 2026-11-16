@@ -24,7 +24,13 @@ class SparseArray {
 
         Slot() noexcept : next(SIZE_MAX) {}
 
-        ~Slot() {}
+        ~Slot()
+            requires std::is_trivially_destructible_v<T>
+        = default;
+
+        ~Slot()
+            requires(!std::is_trivially_destructible_v<T>)
+        {}
     };
 
     using Storage = detail::ArrayElements<Slot>;
@@ -40,7 +46,8 @@ public:
         requires std::is_copy_constructible_v<T>
         : slots_(Storage::allocate(other.extent())), capacity_(other.extent()), occupied_(other.occupied_),
           free_head_(other.free_head_), size_(other.size_) {
-        for (std::size_t i = 0; i != extent(); ++i) {
+        const auto limit = capacity_;
+        for (std::size_t i = 0; i != limit; ++i) {
             std::construct_at(slots_ + i);
             if (occupied_.test(i))
                 std::construct_at(std::addressof(slots_[i].value), std::as_const(other.slots_[i].value));
@@ -89,11 +96,11 @@ public:
 
     [[nodiscard]] bool contains_index(std::size_t index) const noexcept { return occupied_.contains(index); }
 
-    [[nodiscard]] T* try_at(std::size_t index) & noexcept {
+    [[nodiscard]] T* try_at(std::size_t index) & noexcept [[clang::lifetimebound]] {
         return contains_index(index) ? std::addressof(slots_[index].value) : nullptr;
     }
 
-    [[nodiscard]] const T* try_at(std::size_t index) const& noexcept {
+    [[nodiscard]] const T* try_at(std::size_t index) const& noexcept [[clang::lifetimebound]] {
         return contains_index(index) ? std::addressof(slots_[index].value) : nullptr;
     }
 
@@ -101,14 +108,14 @@ public:
 
     const T* try_at(std::size_t) const&& = delete;
 
-    T& operator[](std::size_t index) & noexcept {
+    [[nodiscard]] T& operator[](std::size_t index) & noexcept [[clang::lifetimebound]] {
         auto* value = try_at(index);
         if (!value)
             fatal("SparseArray index is not occupied.");
         return *value;
     }
 
-    const T& operator[](std::size_t index) const& noexcept {
+    [[nodiscard]] const T& operator[](std::size_t index) const& noexcept [[clang::lifetimebound]] {
         const auto* value = try_at(index);
         if (!value)
             fatal("SparseArray index is not occupied.");
@@ -124,14 +131,14 @@ public:
             return;
         auto* replacement = Storage::allocate(capacity);
         occupied_.reserve(capacity);
-        for (std::size_t i = 0; i != extent(); ++i) {
+        const auto limit = extent();
+        for (std::size_t i = 0; i != limit; ++i) {
             std::construct_at(replacement + i);
             if (occupied_.test(i)) {
                 std::construct_at(std::addressof(replacement[i].value), std::move_if_noexcept(slots_[i].value));
                 std::destroy_at(std::addressof(slots_[i].value));
             } else
                 replacement[i].next = slots_[i].next;
-            std::destroy_at(slots_ + i);
         }
         Storage::deallocate(slots_);
         slots_ = replacement;
@@ -171,10 +178,9 @@ public:
     }
 
     void clear() noexcept {
-        for (auto index : occupied_.set_bits())
-            std::destroy_at(std::addressof(slots_[index].value));
-        for (std::size_t i = 0; i != extent(); ++i)
-            std::destroy_at(slots_ + i);
+        if constexpr (!std::is_trivially_destructible_v<T>)
+            for (auto index : occupied_.set_bits())
+                std::destroy_at(std::addressof(slots_[index].value));
         occupied_.clear();
         free_head_ = npos;
         size_ = 0;
@@ -239,9 +245,9 @@ public:
         Iterator<Const> end() const noexcept { return {owner, npos}; }
     };
 
-    [[nodiscard]] Entries<false> entries() & noexcept { return {this}; }
+    [[nodiscard]] Entries<false> entries() & noexcept [[clang::lifetimebound]] { return {this}; }
 
-    [[nodiscard]] Entries<true> entries() const& noexcept { return {this}; }
+    [[nodiscard]] Entries<true> entries() const& noexcept [[clang::lifetimebound]] { return {this}; }
 
     Entries<false> entries() && = delete;
 

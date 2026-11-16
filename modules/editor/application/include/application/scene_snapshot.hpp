@@ -157,7 +157,7 @@ public:
             picking->meshes.reserve(meshes.size());
             for (std::size_t i = 0; i < meshes.size(); ++i)
                 picking->meshes.push_back(
-                    {mesh_entities[i], math::Matrix4{meshes[i].world}, meshes[i].geometry, meshes[i].material_slots});
+                    {mesh_entities[i], meshes[i].world, meshes[i].geometry, meshes[i].material_slots});
             picking_ = std::move(picking);
             ++request_;
             synced_ =
@@ -344,14 +344,12 @@ private:
         return at->second.value;
     }
 
-    static std::array<float, 3> rgb(math::Vector3 value) { return {value.x, value.y, value.z}; }
-
     // A mesh is drawn at its presented matrix while a simulation interpolates it.
     renderer::MeshInstance instance(const presentation::MeshSlot& slot, std::uint64_t key, bool selected) {
         const auto& item = *slot.item;
         ++built;
         renderer::MeshInstance value;
-        value.world = (slot.presented ? *slot.presented : item.world).elements;
+        value.world = slot.presented ? *slot.presented : item.world;
         value.selected = selected;
         value.geometry = item.geometry;
         value.stable_key = key;
@@ -445,11 +443,11 @@ private:
             value.kind = renderer::LightKind::directional;
             break;
         }
-        value.position = rgb(item.position);
-        value.direction = rgb(item.direction);
-        value.right = rgb(item.right);
-        value.up = rgb(item.up);
-        value.color = rgb(settings.color);
+        value.position = item.position;
+        value.direction = item.direction;
+        value.right = item.right;
+        value.up = item.up;
+        value.color = settings.color;
         value.intensity = settings.intensity;
         value.range = settings.range;
         value.source_radius = settings.source_radius;

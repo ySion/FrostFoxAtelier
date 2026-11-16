@@ -121,5 +121,5 @@ double view_value(const renderer::ViewSettings&, ViewOption) noexcept;
 // publish a complete candidate.
 Result<bool> set_view_option(renderer::ViewSettings&, ViewOption, double);
 
-Result<void> validate_view_options(const renderer::ViewSettings&, std::array<float, 3> focus = {});
+Result<void> validate_view_options(const renderer::ViewSettings&, math::Vector3 focus = {});
 }

@@ -143,8 +143,8 @@ float depth(const render::Capture& c, unsigned x, unsigned y) {
     return c.depth[std::size_t(y) * c.extent.width + x];
 }
 
-std::array<float, 16> translation(float x, float y, float z) {
-    return {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x, y, z, 1};
+atelier::math::Matrix4 translation(float x, float y, float z) {
+    return atelier::math::translation_matrix(atelier::math::Vector3{x, y, z});
 }
 
 void snapshot(const render::Capture& c, const char* path) {
@@ -200,7 +200,7 @@ int main(int argc, char** argv) {
     // Non-diagonal view/projection values verify the public row-vector LH ABI.
     frame.camera = {};
     frame.camera.view[14] = 4;
-    frame.camera.projection = {2.0f / 3, 0, 0, 0, 0, 1, 0, 0, 0, 0, -.1f / 9.9f, 1, 0, 0, 1.0f / 9.9f, 0};
+    frame.camera.projection = {{2.0f / 3, 0, 0, 0, 0, 1, 0, 0, 0, 0, -.1f / 9.9f, 1, 0, 0, 1.0f / 9.9f, 0}};
     cubes[0].world = translation(0, 0, 0);
     ++ui_frame.id;
     take(prepared_render(renderer, frame, &capture));

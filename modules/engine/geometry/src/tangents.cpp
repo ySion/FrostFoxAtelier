@@ -1,5 +1,6 @@
 #include "geometry/mesh.hpp"
 #include "mikktspace.h"
+#include <array>
 
 namespace atelier::geometry {
 namespace {

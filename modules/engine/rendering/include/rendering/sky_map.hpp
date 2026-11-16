@@ -1,5 +1,5 @@
 #pragma once
-#include <array>
+#include "math/vector.hpp"
 #include <cstdint>
 #include <expected>
 #include <memory>
@@ -56,7 +56,7 @@ public:
     int scale_exponent() const noexcept { return scale_exponent_; }
 
     // Solid-angle mean radiance of the source.
-    const std::array<float, 3>& mean() const noexcept { return mean_; }
+    const math::Vector3& mean() const noexcept { return mean_; }
 
     // Solid-angle box-filtered source radiance, unscaled RGBA float, cube_size^2 per face in
     // D3D face order +X -X +Y -Y +Z -Z.
@@ -73,7 +73,7 @@ private:
 
     int scale_exponent_{};
 
-    std::array<float, 3> mean_{};
+    math::Vector3 mean_{};
 
     std::vector<float> cube_;
 };

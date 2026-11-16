@@ -152,7 +152,7 @@ std::uint32_t Geometry::count(Layer layer) const noexcept {
 
 const Attribute* Geometry::find(StringView name) const noexcept {
     for (const auto& attribute : attributes_)
-        if (attribute.name.view() == name)
+        if (attribute.name == name)
             return &attribute;
     return nullptr;
 }
@@ -220,7 +220,7 @@ Result<void> Geometry::set(String name, Layer layer, ColumnData data, std::optio
         return valid;
     if (auto sized = fits(layer, data); !sized)
         return sized;
-    if (name.view() == "P") {
+    if (name == "P") {
         if (layer != Layer::point || !std::holds_alternative<SharedArray<math::Vector3>>(data))
             return failure("P is the point vector3 position.");
         for (const auto& position : std::get<SharedArray<math::Vector3>>(data).array())
@@ -239,7 +239,7 @@ Result<void> Geometry::set(String name, Layer layer, ColumnData data, std::optio
 Result<void> Geometry::remove(StringView name) {
     if (name == "P")
         return failure("P cannot be removed.");
-    const auto at = std::ranges::find_if(attributes_, [&](const Attribute& a) { return a.name.view() == name; });
+    const auto at = std::ranges::find_if(attributes_, [&](const Attribute& a) { return a.name == name; });
     if (at != attributes_.end())
         attributes_.erase(at);
     return {};

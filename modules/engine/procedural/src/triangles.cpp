@@ -17,10 +17,7 @@ namespace {
 // forward collinear corners remain valid. Triangles keep their degeneracy policy.
 Result<void> validate_polygon(const Geometry& surface, PrimitiveRange range) {
     const auto corners = surface.vertex_points();
-    const auto point = [&](std::uint32_t i) {
-        const auto p = surface.positions()[corners[range.first + i]];
-        return math::Vector3d{p.x, p.y, p.z};
-    };
+    const auto point = [&](std::uint32_t i) { return math::Vector3d(surface.positions()[corners[range.first + i]]); };
     const auto origin = point(0);
     math::Vector3d area;
     for (std::uint32_t i = 0; i < range.count; ++i) {
@@ -73,7 +70,7 @@ double surface_tolerance(double coordinate_scale, double extent) noexcept {
 PolygonScale polygon_scale(const Geometry& surface, PrimitiveRange range) noexcept {
     const auto corners = surface.vertex_points();
     const auto first = surface.positions()[corners[range.first]];
-    math::Vector3d minimum{first.x, first.y, first.z};
+    auto minimum = math::Vector3d(first);
     auto maximum = minimum;
     double coordinate_scale = 0;
     for (std::uint32_t i = 0; i < range.count; ++i) {

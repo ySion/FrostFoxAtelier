@@ -9,11 +9,11 @@ Result<CameraMatrices> CameraSnapshot::matrices(float aspect) const {
         vertical_fov >= 180 || !std::isfinite(near_clip) || !std::isfinite(far_clip) || near_clip <= 0 ||
         far_clip <= near_clip)
         return error(ErrorCode::argument_mismatch, "Invalid camera projection.");
-    const auto q = math::try_normalize(math::Quaterniond{rotation.x, rotation.y, rotation.z, rotation.w});
+    const auto q = math::try_normalize(math::Quaterniond(rotation));
     if (!q)
         return error(ErrorCode::argument_mismatch, "Invalid camera rotation.");
-    auto view = math::rotation_matrix(math::Quaterniond{-q->x, -q->y, -q->z, q->w});
-    const auto translation = math::transform_direction(math::Vector3d{-position.x, -position.y, -position.z}, view);
+    auto view = math::rotation_matrix(math::conjugate(*q));
+    const auto translation = math::transform_direction(-math::Vector3d(position), view);
     view[12] = translation.x;
     view[13] = translation.y;
     view[14] = translation.z;
@@ -21,10 +21,8 @@ Result<CameraMatrices> CameraSnapshot::matrices(float aspect) const {
     // Infinite reversed-Z: near maps to one; depth zero unprojects to a direction.
     const math::Matrix4d projection{{y / aspect, 0, 0, 0, 0, y, 0, 0, 0, 0, 0, 1, 0, 0, near_clip, 0}};
     CameraMatrices result;
-    for (std::size_t i = 0; i < 16; ++i) {
-        result.view[i] = static_cast<float>(view[i]);
-        result.projection[i] = static_cast<float>(projection[i]);
-    }
+    result.view = math::Matrix4(view);
+    result.projection = math::Matrix4(projection);
     result.far_depth = near_clip / far_clip;
     if (!math::is_finite(result.view) || !math::is_finite(result.projection) || !math::try_inverse(result.projection))
         return error(ErrorCode::argument_mismatch, "Camera matrices are not representable.");
@@ -85,13 +83,12 @@ Result<CameraSnapshot> Scene::camera(ObjectId entity) const {
     ATELIER_TRY_BIND(rotation, space->rotation(entity));
     if (!*rotation)
         return error(ErrorCode::invalid_member, "Camera has an invalid rotation chain.");
-    const auto& q = **rotation;
     return runtime.with_native<const CameraComponent>(
         component, [&](const CameraComponent& value) -> Result<CameraSnapshot> {
             return CameraSnapshot{entity,
                                   component,
                                   {(**matrix)[12], (**matrix)[13], (**matrix)[14]},
-                                  {float(q.x), float(q.y), float(q.z), float(q.w)},
+                                  math::Quaternion(**rotation),
                                   value.vertical_fov,
                                   value.near_clip,
                                   value.far_clip};

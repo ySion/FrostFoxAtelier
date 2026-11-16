@@ -420,7 +420,7 @@ Result<std::string> describe_diagnostic(const Session& session, const world::Dia
                 std::to_string(item.source->column);
     if (item.repeats > 1)
         line += " (×" + std::to_string(item.repeats) + ")";
-    if (!StringView(std::string_view(line)).is_valid_utf8())
+    if (!StringView(line).is_valid_utf8())
         return fail("Invalid UTF-8 text in World diagnostic.");
     return line;
 }

@@ -323,7 +323,7 @@ json::Result<json::Document> image_content(const material::ImageRef& image) {
 
 std::string json_hash(json::Value value) {
     const auto bytes = json::write(value);
-    return foundation::sha256(std::as_bytes(std::span{bytes.data(), bytes.size()}));
+    return foundation::sha256(as_bytes(bytes.view()));
 }
 
 json::Result<std::string> source_material_hash(const assets::MaterialAsset& asset, const language::SourceFile& file) {
@@ -346,7 +346,7 @@ json::Result<std::string> sky_hash(const rendering::SkyMap& map) {
     ATELIER_TRY(content.set(content.root(), "height", map.height()));
     ATELIER_TRY(content.set(content.root(), "scale_exponent", std::int64_t{map.scale_exponent()}));
     ATELIER_TRY_BIND(mean, content.array(content.root(), "mean"));
-    for (const auto value : map.mean())
+    for (const auto value : {map.mean().x, map.mean().y, map.mean().z})
         ATELIER_TRY(content.append(*mean, value));
     content.set_validated(content.root(), "pixels", foundation::sha256(std::as_bytes(map.pixels())));
     content.set_validated(content.root(), "cube", foundation::sha256(std::as_bytes(map.cube())));

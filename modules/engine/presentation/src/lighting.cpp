@@ -23,7 +23,7 @@ Result<void> detail::light_rules(const LightSettings& settings) {
     if (settings.kind == LightKind::rectangle && (settings.width == 0.f || settings.height == 0.f))
         return error(ErrorCode::argument_mismatch, "Rectangle width and height must be positive.");
     if (const auto* message = rendering::analytic_light_range_error(
-            {settings.color.x, settings.color.y, settings.color.z}, settings.intensity,
+            settings.color, settings.intensity,
             settings.kind == LightKind::rectangle ? double(settings.width) * settings.height : 1))
         return error(ErrorCode::argument_mismatch, message);
     return {};
@@ -53,8 +53,8 @@ rendering::SceneLightingSettings environment_settings(const EnvironmentComponent
         auto& to = result.probe_volumes[slot];
         to.enabled = from.enabled;
         to.placement = static_cast<rendering::ProbePlacement>(from.placement);
-        to.minimum = {from.minimum.x, from.minimum.y, from.minimum.z};
-        to.maximum = {from.maximum.x, from.maximum.y, from.maximum.z};
+        to.minimum = from.minimum;
+        to.maximum = from.maximum;
         to.counts = {from.count_x, from.count_y, from.count_z};
         to.blend_cells = from.blend_cells;
     }
@@ -63,7 +63,7 @@ rendering::SceneLightingSettings environment_settings(const EnvironmentComponent
     result.probe_bounce = value.probe_bounce;
     result.indirect_gain = value.indirect_gain;
     result.sky_enabled = value.sky_enabled;
-    result.sky_color = {value.sky_color.x, value.sky_color.y, value.sky_color.z};
+    result.sky_color = value.sky_color;
     result.sky_intensity = value.sky_intensity;
     result.sky_map = detail::Access::sky_map_resolved(value);
     result.sky_rotation = value.sky_rotation;
@@ -225,8 +225,7 @@ Result<std::vector<LightRenderItem>> Scene::extract_lights(const detail::Present
             // A mirrored frame is -R; negating its right axis keeps it right-handed.
             const double sign = (*frame)->mirrored ? -1 : 1;
             const auto axis = [&](math::Vector3d local) {
-                const auto value = math::rotate((*frame)->rotation, local);
-                return math::Vector3{float(value.x), float(value.y), float(value.z)};
+                return math::Vector3(math::rotate((*frame)->rotation, local));
             };
             const auto& world = **matrix;
             LightRenderItem item{owner,

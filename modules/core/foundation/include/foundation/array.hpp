@@ -2,11 +2,8 @@
 
 #include "foundation/detail/array_sequence.hpp"
 
-#include <algorithm>
-#include <concepts>
 #include <cstring>
 #include <initializer_list>
-#include <memory>
 #include <type_traits>
 #include <utility>
 
@@ -84,9 +81,9 @@ public:
 
     [[nodiscard]] std::size_t capacity() const noexcept { return capacity_; }
 
-    [[nodiscard]] T* data() noexcept { return data_; }
+    [[nodiscard]] T* data() noexcept [[clang::lifetimebound]] { return data_; }
 
-    [[nodiscard]] const T* data() const noexcept { return data_; }
+    [[nodiscard]] const T* data() const noexcept [[clang::lifetimebound]] { return data_; }
 
     // Does not construct elements. clear retains allocation; release frees it.
     void reserve(std::size_t capacity) noexcept {

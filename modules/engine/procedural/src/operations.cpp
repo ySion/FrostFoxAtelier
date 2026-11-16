@@ -11,10 +11,6 @@
 namespace atelier::procedural {
 namespace {
 
-using detail::narrow;
-
-using detail::widen;
-
 using math::Matrix4;
 
 using math::Quaternion;
@@ -54,7 +50,7 @@ Vector3 transform_normal(Vector3 n, const std::array<double, 9>& rows) {
                           n.x * rows[2] + n.y * rows[5] + n.z * rows[8]};
     const double length = math::length(result);
     return length == 0 ? Vector3{}
-                       : narrow(result / length); // Non-finite input stays non-finite for the caller's check.
+                       : Vector3(result / length); // Non-finite input stays non-finite for the caller's check.
 }
 
 // The shortest rotation taking +Z to the unit vector `z`.
@@ -262,7 +258,7 @@ Result<Geometry> line(Vector3 start, Vector3 end, std::uint32_t count) {
     positions.reserve(count);
     for (std::uint32_t i = 0; i < count; ++i) {
         const double t = count < 2 ? 0.0 : double(i) / (count - 1);
-        positions.add(narrow(widen(start) + (widen(end) - widen(start)) * t));
+        positions.add(Vector3(Vector3d(start) + (Vector3d(end) - Vector3d(start)) * t));
     }
     return Geometry::points(std::move(positions));
 }
@@ -286,9 +282,9 @@ Result<Geometry> scatter(const Geometry& surface, const ScatterSettings& setting
     for (const auto& [p, j, corners] : *triangles) {
         if (j == 0)
             triangle_offsets.add(static_cast<std::uint32_t>(point_offsets.size() - 1));
-        const auto v0 = widen(points[vertex_points[corners[0]]]);
-        const auto e1 = widen(points[vertex_points[corners[1]]]) - v0;
-        const auto e2 = widen(points[vertex_points[corners[2]]]) - v0;
+        const auto v0 = Vector3d(points[vertex_points[corners[0]]]);
+        const auto e1 = Vector3d(points[vertex_points[corners[1]]]) - v0;
+        const auto e2 = Vector3d(points[vertex_points[corners[2]]]) - v0;
         const auto normal = math::cross(e1, e2);
         const double area = math::length(normal) / 2;
         const double expected = area * settings.density;
@@ -346,12 +342,12 @@ Result<Geometry> scatter(const Geometry& surface, const ScatterSettings& setting
                 // A contiguous n-corner fan contributes n-2 triangles. Thus p's
                 // first original corner is its triangle prefix plus 2*p.
                 const auto first = triangle_offsets[p] + 2 * p;
-                const auto v0 = widen(points[vertex_points[first]]);
-                const auto e1 = widen(points[vertex_points[first + j + 1]]) - v0;
-                const auto e2 = widen(points[vertex_points[first + j + 2]]) - v0;
+                const auto v0 = Vector3d(points[vertex_points[first]]);
+                const auto e1 = Vector3d(points[vertex_points[first + j + 1]]) - v0;
+                const auto e2 = Vector3d(points[vertex_points[first + j + 2]]) - v0;
                 const auto normal = math::cross(e1, e2);
                 const double area = math::length(normal) / 2;
-                const auto face = narrow(normal / (area * 2));
+                const auto face = Vector3(normal / (area * 2));
                 const auto s = j ? hash(hash(seed, p), j) : hash(seed, p);
                 const auto source = j ? hash(p, j) : p;
                 const auto end = std::min(range.end, static_cast<std::size_t>(point_offsets[t + 1]));
@@ -363,7 +359,7 @@ Result<Geometry> scatter(const Geometry& surface, const ScatterSettings& setting
                         r1 = 1 - r1;
                         r2 = 1 - r2;
                     }
-                    positions[i] = narrow(v0 + e1 * double(r1) + e2 * double(r2));
+                    positions[i] = Vector3(v0 + e1 * double(r1) + e2 * double(r2));
                     normals[i] = face;
                     ids[i] = hash(source, k);
                     primitives[i] = p;
@@ -392,7 +388,7 @@ Result<Geometry> scatter(const Geometry& surface, const ScatterSettings& setting
         std::unordered_map<std::array<std::int64_t, 3>, std::vector<std::uint32_t>, CellHash> cells;
         Array<std::uint32_t> kept;
         for (std::uint32_t i = 0; i < positions.size(); ++i) {
-            const auto p = widen(positions[i]);
+            const auto p = Vector3d(positions[i]);
             std::array<std::int64_t, 3> c;
             for (std::size_t axis = 0; axis < 3; ++axis) {
                 // Leaves room for the neighbour offsets below.
@@ -409,8 +405,8 @@ Result<Geometry> scatter(const Geometry& surface, const ScatterSettings& setting
                         if (found == cells.end())
                             continue;
                         for (const auto other : found->second) {
-                            const auto d = widen(positions[other]) - p;
-                            if (math::dot(d, d) < limit) {
+                            const auto d = Vector3d(positions[other]) - p;
+                            if (math::length_squared(d) < limit) {
                                 near = true;
                                 break;
                             }
@@ -701,7 +697,7 @@ Result<Geometry> realize(std::span<const Geometry> sources, const Geometry& poin
                 ATELIER_TRY(admit(attribute, false));
     for (const auto& name : target_attributes) {
         const auto* attribute = points.find(name);
-        if (name.view() == "P" || !attribute || attribute->layer != Layer::point)
+        if (name == "P" || !attribute || attribute->layer != Layer::point)
             return failure("Realize broadcasts must name existing target point columns other than P.");
         ATELIER_TRY(admit(*attribute, true));
     }
@@ -739,7 +735,7 @@ Result<Geometry> realize(std::span<const Geometry> sources, const Geometry& poin
     std::vector<const Attribute*> inputs;
     for (const auto& column : schema) {
         const auto& attribute = *column.first;
-        if (attribute.name.view() == "P") {
+        if (attribute.name == "P") {
             if (attribute.usage != Usage::point)
                 ATELIER_TRY(result->set(attribute.name, attribute.layer, result->find("P")->data, attribute.usage));
             continue;
@@ -785,7 +781,7 @@ Result<Geometry> realize(std::span<const Geometry> sources, const Geometry& poin
                                     return failure("A realized vector is not finite.");
                             }
                         } else if constexpr (std::same_as<T, Quaternion>) {
-                            if (attribute.name.view() == "orient") {
+                            if (attribute.name == "orient") {
                                 v = copy.placement.rotation * v;
                                 if (!math::is_finite(v))
                                     return failure("A realized orient is not finite.");
@@ -815,16 +811,13 @@ Result<Geometry> realize(std::span<const Geometry> sources, const Geometry& poin
     return result;
 }
 
-std::optional<Bounds> bounds(const Geometry& geometry) noexcept {
+std::optional<math::Bounds> bounds(const Geometry& geometry) noexcept {
     const auto& positions = geometry.positions();
     if (positions.empty())
         return std::nullopt;
-    Bounds result{positions[0], positions[0]};
+    math::Bounds result{positions[0], positions[0]};
     for (const auto& p : positions)
-        for (std::size_t axis = 0; axis < 3; ++axis) {
-            result.minimum[axis] = std::min(result.minimum[axis], p[axis]);
-            result.maximum[axis] = std::max(result.maximum[axis], p[axis]);
-        }
+        result = math::encapsulate(result, p);
     return result;
 }
 

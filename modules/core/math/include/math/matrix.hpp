@@ -11,6 +11,7 @@
 #include <optional>
 #include <type_traits>
 #include <utility>
+#include <emmintrin.h>
 
 namespace atelier::math {
 
@@ -47,6 +48,15 @@ struct BasicMatrix4 {
     static constexpr std::size_t size() noexcept { return 16; }
 
     static constexpr BasicMatrix4 identity() noexcept { return {{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1}}; }
+
+    template <Real U>
+        requires(!std::same_as<T, U>)
+    explicit constexpr operator BasicMatrix4<U>() const noexcept {
+        BasicMatrix4<U> result;
+        for (std::size_t i = 0; i < 16; ++i)
+            result[i] = static_cast<U>(elements[i]);
+        return result;
+    }
 
     constexpr bool operator==(const BasicMatrix4&) const = default;
 };
@@ -99,6 +109,46 @@ template <Real T>
 template <Real T>
 [[nodiscard]] constexpr BasicMatrix4<T> operator*(const BasicMatrix4<T>& a, const BasicMatrix4<T>& b) noexcept {
     BasicMatrix4<T> result;
+    if !consteval {
+        if constexpr (std::same_as<T, float>) {
+            const __m128 b0 = _mm_loadu_ps(&b[0]);
+            const __m128 b1 = _mm_loadu_ps(&b[4]);
+            const __m128 b2 = _mm_loadu_ps(&b[8]);
+            const __m128 b3 = _mm_loadu_ps(&b[12]);
+            for (std::size_t row = 0; row < 4; ++row) {
+                __m128 acc = _mm_mul_ps(_mm_set1_ps(a(row, 0)), b0);
+                acc = _mm_add_ps(acc, _mm_mul_ps(_mm_set1_ps(a(row, 1)), b1));
+                acc = _mm_add_ps(acc, _mm_mul_ps(_mm_set1_ps(a(row, 2)), b2));
+                acc = _mm_add_ps(acc, _mm_mul_ps(_mm_set1_ps(a(row, 3)), b3));
+                _mm_storeu_ps(&result[row * 4], acc);
+            }
+            return result;
+        } else {
+            const __m128d b0_lo = _mm_loadu_pd(&b[0]);
+            const __m128d b0_hi = _mm_loadu_pd(&b[2]);
+            const __m128d b1_lo = _mm_loadu_pd(&b[4]);
+            const __m128d b1_hi = _mm_loadu_pd(&b[6]);
+            const __m128d b2_lo = _mm_loadu_pd(&b[8]);
+            const __m128d b2_hi = _mm_loadu_pd(&b[10]);
+            const __m128d b3_lo = _mm_loadu_pd(&b[12]);
+            const __m128d b3_hi = _mm_loadu_pd(&b[14]);
+            for (std::size_t row = 0; row < 4; ++row) {
+                const __m128d a0 = _mm_set1_pd(a(row, 0));
+                const __m128d a1 = _mm_set1_pd(a(row, 1));
+                const __m128d a2 = _mm_set1_pd(a(row, 2));
+                const __m128d a3 = _mm_set1_pd(a(row, 3));
+                __m128d lo = _mm_add_pd(_mm_mul_pd(a0, b0_lo), _mm_mul_pd(a1, b1_lo));
+                lo = _mm_add_pd(lo, _mm_mul_pd(a2, b2_lo));
+                lo = _mm_add_pd(lo, _mm_mul_pd(a3, b3_lo));
+                __m128d hi = _mm_add_pd(_mm_mul_pd(a0, b0_hi), _mm_mul_pd(a1, b1_hi));
+                hi = _mm_add_pd(hi, _mm_mul_pd(a2, b2_hi));
+                hi = _mm_add_pd(hi, _mm_mul_pd(a3, b3_hi));
+                _mm_storeu_pd(&result[row * 4], lo);
+                _mm_storeu_pd(&result[row * 4 + 2], hi);
+            }
+            return result;
+        }
+    }
     for (std::size_t row = 0; row < 4; ++row)
         for (std::size_t column = 0; column < 4; ++column)
             result(row, column) = ((a(row, 0) * b(0, column) + a(row, 1) * b(1, column)) + a(row, 2) * b(2, column)) +
@@ -109,6 +159,38 @@ template <Real T>
 template <Real T>
 [[nodiscard]] constexpr BasicMatrix4<T> transpose(const BasicMatrix4<T>& value) noexcept {
     BasicMatrix4<T> result;
+    if !consteval {
+        if constexpr (std::same_as<T, float>) {
+            __m128 r0 = _mm_loadu_ps(&value[0]);
+            __m128 r1 = _mm_loadu_ps(&value[4]);
+            __m128 r2 = _mm_loadu_ps(&value[8]);
+            __m128 r3 = _mm_loadu_ps(&value[12]);
+            _MM_TRANSPOSE4_PS(r0, r1, r2, r3);
+            _mm_storeu_ps(&result[0], r0);
+            _mm_storeu_ps(&result[4], r1);
+            _mm_storeu_ps(&result[8], r2);
+            _mm_storeu_ps(&result[12], r3);
+            return result;
+        } else {
+            const __m128d r0_lo = _mm_loadu_pd(&value[0]);
+            const __m128d r0_hi = _mm_loadu_pd(&value[2]);
+            const __m128d r1_lo = _mm_loadu_pd(&value[4]);
+            const __m128d r1_hi = _mm_loadu_pd(&value[6]);
+            const __m128d r2_lo = _mm_loadu_pd(&value[8]);
+            const __m128d r2_hi = _mm_loadu_pd(&value[10]);
+            const __m128d r3_lo = _mm_loadu_pd(&value[12]);
+            const __m128d r3_hi = _mm_loadu_pd(&value[14]);
+            _mm_storeu_pd(&result[0], _mm_unpacklo_pd(r0_lo, r1_lo));
+            _mm_storeu_pd(&result[2], _mm_unpacklo_pd(r2_lo, r3_lo));
+            _mm_storeu_pd(&result[4], _mm_unpackhi_pd(r0_lo, r1_lo));
+            _mm_storeu_pd(&result[6], _mm_unpackhi_pd(r2_lo, r3_lo));
+            _mm_storeu_pd(&result[8], _mm_unpacklo_pd(r0_hi, r1_hi));
+            _mm_storeu_pd(&result[10], _mm_unpacklo_pd(r2_hi, r3_hi));
+            _mm_storeu_pd(&result[12], _mm_unpackhi_pd(r0_hi, r1_hi));
+            _mm_storeu_pd(&result[14], _mm_unpackhi_pd(r2_hi, r3_hi));
+            return result;
+        }
+    }
     for (std::size_t row = 0; row < 4; ++row)
         for (std::size_t column = 0; column < 4; ++column)
             result(row, column) = value(column, row);
@@ -117,6 +199,32 @@ template <Real T>
 
 template <Real T>
 [[nodiscard]] constexpr BasicVector<T, 4> operator*(BasicVector<T, 4> v, const BasicMatrix4<T>& m) noexcept {
+    if !consteval {
+        if constexpr (std::same_as<T, float>) {
+            __m128 acc = _mm_mul_ps(_mm_set1_ps(v.x), _mm_loadu_ps(&m[0]));
+            acc = _mm_add_ps(acc, _mm_mul_ps(_mm_set1_ps(v.y), _mm_loadu_ps(&m[4])));
+            acc = _mm_add_ps(acc, _mm_mul_ps(_mm_set1_ps(v.z), _mm_loadu_ps(&m[8])));
+            acc = _mm_add_ps(acc, _mm_mul_ps(_mm_set1_ps(v.w), _mm_loadu_ps(&m[12])));
+            BasicVector<float, 4> result;
+            _mm_storeu_ps(&result.x, acc);
+            return result;
+        } else {
+            const __m128d vx = _mm_set1_pd(v.x);
+            const __m128d vy = _mm_set1_pd(v.y);
+            const __m128d vz = _mm_set1_pd(v.z);
+            const __m128d vw = _mm_set1_pd(v.w);
+            __m128d lo = _mm_add_pd(_mm_mul_pd(vx, _mm_loadu_pd(&m[0])), _mm_mul_pd(vy, _mm_loadu_pd(&m[4])));
+            lo = _mm_add_pd(lo, _mm_mul_pd(vz, _mm_loadu_pd(&m[8])));
+            lo = _mm_add_pd(lo, _mm_mul_pd(vw, _mm_loadu_pd(&m[12])));
+            __m128d hi = _mm_add_pd(_mm_mul_pd(vx, _mm_loadu_pd(&m[2])), _mm_mul_pd(vy, _mm_loadu_pd(&m[6])));
+            hi = _mm_add_pd(hi, _mm_mul_pd(vz, _mm_loadu_pd(&m[10])));
+            hi = _mm_add_pd(hi, _mm_mul_pd(vw, _mm_loadu_pd(&m[14])));
+            BasicVector<double, 4> result;
+            _mm_storeu_pd(&result.x, lo);
+            _mm_storeu_pd(&result.z, hi);
+            return result;
+        }
+    }
     return {((v.x * m[0] + v.y * m[4]) + v.z * m[8]) + v.w * m[12],
             ((v.x * m[1] + v.y * m[5]) + v.z * m[9]) + v.w * m[13],
             ((v.x * m[2] + v.y * m[6]) + v.z * m[10]) + v.w * m[14],
@@ -127,16 +235,69 @@ template <Real T>
 template <Real T>
 [[nodiscard]] constexpr BasicVector<T, 3> transform_point(BasicVector<T, 3> point,
                                                           const BasicMatrix4<T>& affine) noexcept {
-    const auto value = BasicVector<T, 4>{point.x, point.y, point.z, 1} * affine;
-    return {value.x, value.y, value.z};
+    if !consteval {
+        if constexpr (std::same_as<T, float>) {
+            __m128 acc = _mm_mul_ps(_mm_set1_ps(point.x), _mm_loadu_ps(&affine[0]));
+            acc = _mm_add_ps(acc, _mm_mul_ps(_mm_set1_ps(point.y), _mm_loadu_ps(&affine[4])));
+            acc = _mm_add_ps(acc, _mm_mul_ps(_mm_set1_ps(point.z), _mm_loadu_ps(&affine[8])));
+            acc = _mm_add_ps(acc, _mm_loadu_ps(&affine[12]));
+            alignas(16) float out[4];
+            _mm_store_ps(out, acc);
+            return {out[0], out[1], out[2]};
+        } else {
+            const __m128d px = _mm_set1_pd(point.x);
+            const __m128d py = _mm_set1_pd(point.y);
+            const __m128d pz = _mm_set1_pd(point.z);
+            __m128d xy = _mm_add_pd(_mm_mul_pd(px, _mm_loadu_pd(&affine[0])), _mm_mul_pd(py, _mm_loadu_pd(&affine[4])));
+            xy = _mm_add_pd(xy, _mm_mul_pd(pz, _mm_loadu_pd(&affine[8])));
+            xy = _mm_add_pd(xy, _mm_loadu_pd(&affine[12]));
+            alignas(16) double out[2];
+            _mm_store_pd(out, xy);
+            const double z = ((point.x * affine[2] + point.y * affine[6]) + point.z * affine[10]) + affine[14];
+            return {out[0], out[1], z};
+        }
+    }
+    return {((point.x * affine[0] + point.y * affine[4]) + point.z * affine[8]) + affine[12],
+            ((point.x * affine[1] + point.y * affine[5]) + point.z * affine[9]) + affine[13],
+            ((point.x * affine[2] + point.y * affine[6]) + point.z * affine[10]) + affine[14]};
 }
 
 template <Real T>
 [[nodiscard]] constexpr BasicVector<T, 3> transform_direction(BasicVector<T, 3> direction,
                                                               const BasicMatrix4<T>& affine) noexcept {
+    if !consteval {
+        if constexpr (std::same_as<T, float>) {
+            __m128 acc = _mm_mul_ps(_mm_set1_ps(direction.x), _mm_loadu_ps(&affine[0]));
+            acc = _mm_add_ps(acc, _mm_mul_ps(_mm_set1_ps(direction.y), _mm_loadu_ps(&affine[4])));
+            acc = _mm_add_ps(acc, _mm_mul_ps(_mm_set1_ps(direction.z), _mm_loadu_ps(&affine[8])));
+            alignas(16) float out[4];
+            _mm_store_ps(out, acc);
+            return {out[0], out[1], out[2]};
+        } else {
+            const __m128d dx = _mm_set1_pd(direction.x);
+            const __m128d dy = _mm_set1_pd(direction.y);
+            const __m128d dz = _mm_set1_pd(direction.z);
+            __m128d xy = _mm_add_pd(_mm_mul_pd(dx, _mm_loadu_pd(&affine[0])), _mm_mul_pd(dy, _mm_loadu_pd(&affine[4])));
+            xy = _mm_add_pd(xy, _mm_mul_pd(dz, _mm_loadu_pd(&affine[8])));
+            alignas(16) double out[2];
+            _mm_store_pd(out, xy);
+            const double z = (direction.x * affine[2] + direction.y * affine[6]) + direction.z * affine[10];
+            return {out[0], out[1], z};
+        }
+    }
     return {(direction.x * affine[0] + direction.y * affine[4]) + direction.z * affine[8],
             (direction.x * affine[1] + direction.y * affine[5]) + direction.z * affine[9],
             (direction.x * affine[2] + direction.y * affine[6]) + direction.z * affine[10]};
+}
+
+template <Real T>
+[[nodiscard]] constexpr BasicMatrix4<T> translation_matrix(BasicVector<T, 3> offset) noexcept {
+    return {{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, offset.x, offset.y, offset.z, 1}};
+}
+
+template <Real T>
+[[nodiscard]] constexpr BasicMatrix4<T> scale_matrix(BasicVector<T, 3> scale) noexcept {
+    return {{scale.x, 0, 0, 0, 0, scale.y, 0, 0, 0, 0, scale.z, 0, 0, 0, 0, 1}};
 }
 
 // Requires a unit quaternion, like rotate().
@@ -161,10 +322,39 @@ template <Real T>
     return result;
 }
 
+// Left-handed row-vector view matrix (+Z forward). Rejects nonfinite inputs and collinear forward/up.
 template <Real T>
-[[nodiscard]] bool is_finite(const BasicMatrix4<T>& value) noexcept {
+[[nodiscard]] std::optional<BasicMatrix4<T>> try_look_to_lh(BasicVector<T, 3> eye, BasicVector<T, 3> forward,
+                                                            BasicVector<T, 3> up) noexcept {
+    if (!is_finite(eye))
+        return std::nullopt;
+    const auto z = try_normalize(forward);
+    if (!z)
+        return std::nullopt;
+    const auto x = try_normalize(cross(up, *z));
+    if (!x)
+        return std::nullopt;
+    const auto y = cross(*z, *x);
+    const T tx = -dot(eye, *x);
+    const T ty = -dot(eye, y);
+    const T tz = -dot(eye, *z);
+    if (!std::isfinite(tx) || !std::isfinite(ty) || !std::isfinite(tz))
+        return std::nullopt;
+    return BasicMatrix4<T>{{x->x, y.x, z->x, 0, x->y, y.y, z->y, 0, x->z, y.z, z->z, 0, tx, ty, tz, 1}};
+}
+
+template <Real T>
+[[nodiscard]] std::optional<BasicMatrix4<T>> try_look_at_lh(BasicVector<T, 3> eye, BasicVector<T, 3> target,
+                                                            BasicVector<T, 3> up) noexcept {
+    if (!is_finite(target))
+        return std::nullopt;
+    return try_look_to_lh(eye, target - eye, up);
+}
+
+template <Real T>
+[[nodiscard]] constexpr bool is_finite(const BasicMatrix4<T>& value) noexcept {
     for (T component : value)
-        if (!std::isfinite(component))
+        if (!__builtin_isfinite(component))
             return false;
     return true;
 }

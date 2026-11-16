@@ -82,8 +82,8 @@ Result<Geometry> sphere(float radius, std::uint32_t segments, std::uint32_t lati
     normals.reserve(corners.size());
     for (const auto corner : corners) {
         const auto p = positions[corner];
-        const auto n = *math::try_normalize(math::Vector3d{p.x, p.y, p.z});
-        normals.add({static_cast<float>(n.x), static_cast<float>(n.y), static_cast<float>(n.z)});
+        const auto n = *math::try_normalize(math::Vector3d(p));
+        normals.add(Vector3(n));
     }
     return surface(std::move(positions), std::move(corners), offsets, std::move(normals));
 }
@@ -132,16 +132,13 @@ Result<Geometry> tube(float radius, float height, std::uint32_t segments) {
 }
 
 Result<void> group_box(Geometry& geometry, StringView group, Vector3 minimum, Vector3 maximum) {
-    if (!math::is_finite(minimum) || !math::is_finite(maximum) || minimum.x > maximum.x || minimum.y > maximum.y ||
-        minimum.z > maximum.z)
+    const math::Bounds box{minimum, maximum};
+    if (!math::is_finite(box) || math::is_empty(box))
         return failure("GroupBox bounds must be finite and ordered on each axis.");
     ATELIER_TRY_BIND(selected, geometry.add<bool>(group, Layer::point));
     const auto& positions = geometry.positions();
-    for (std::size_t i = 0; i < positions.size(); ++i) {
-        const auto p = positions[i];
-        (**selected)[i] = p.x >= minimum.x && p.x <= maximum.x && p.y >= minimum.y && p.y <= maximum.y &&
-                          p.z >= minimum.z && p.z <= maximum.z;
-    }
+    for (std::size_t i = 0; i < positions.size(); ++i)
+        (**selected)[i] = math::contains(box, positions[i]);
     return {};
 }
 

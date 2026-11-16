@@ -21,41 +21,60 @@ public:
 
     [[nodiscard]] bool empty() const noexcept { return owner().size() == 0; }
 
-    [[nodiscard]] T* begin() noexcept { return owner().data(); }
+    [[nodiscard]] T* begin() noexcept [[clang::lifetimebound]] { return owner().data(); }
 
-    [[nodiscard]] const T* begin() const noexcept { return owner().data(); }
+    [[nodiscard]] const T* begin() const noexcept [[clang::lifetimebound]] { return owner().data(); }
 
-    [[nodiscard]] T* end() noexcept { return empty() ? begin() : begin() + owner().size(); }
+    [[nodiscard]] T* end() noexcept [[clang::lifetimebound]] { return begin() + owner().size(); }
 
-    [[nodiscard]] const T* end() const noexcept { return empty() ? begin() : begin() + owner().size(); }
+    [[nodiscard]] const T* end() const noexcept [[clang::lifetimebound]] { return begin() + owner().size(); }
 
-    [[nodiscard]] Span<T> view() & noexcept { return {begin(), owner().size()}; }
+    [[nodiscard]] Span<T> view() & noexcept [[clang::lifetimebound]] { return {begin(), owner().size()}; }
 
-    [[nodiscard]] Span<const T> view() const& noexcept { return {begin(), owner().size()}; }
+    [[nodiscard]] Span<const T> view() const& noexcept [[clang::lifetimebound]] { return {begin(), owner().size()}; }
 
     Span<T> view() && = delete;
 
     Span<const T> view() const&& = delete;
 
-    [[nodiscard]] T& operator[](std::size_t index) noexcept {
+    [[nodiscard]] Span<T> slice(std::size_t first, std::size_t count = npos) & noexcept [[clang::lifetimebound]] {
+        return view().slice(first, count);
+    }
+
+    [[nodiscard]] Span<const T> slice(std::size_t first, std::size_t count = npos) const& noexcept
+        [[clang::lifetimebound]] {
+        return view().slice(first, count);
+    }
+
+    Span<T> slice(std::size_t first, std::size_t count = npos) && = delete;
+
+    Span<const T> slice(std::size_t first, std::size_t count = npos) const&& = delete;
+
+    [[nodiscard]] T& operator[](std::size_t index) noexcept [[clang::lifetimebound]] {
         check_range(index, 1);
         return begin()[index];
     }
 
-    [[nodiscard]] const T& operator[](std::size_t index) const noexcept {
+    [[nodiscard]] const T& operator[](std::size_t index) const noexcept [[clang::lifetimebound]] {
         check_range(index, 1);
         return begin()[index];
     }
 
-    [[nodiscard]] T* try_at(std::size_t index) noexcept { return index < owner().size() ? begin() + index : nullptr; }
-
-    [[nodiscard]] const T* try_at(std::size_t index) const noexcept {
+    [[nodiscard]] T* try_at(std::size_t index) noexcept [[clang::lifetimebound]] {
         return index < owner().size() ? begin() + index : nullptr;
     }
 
-    [[nodiscard]] T& back() noexcept { return (*this)[owner().size() - 1]; }
+    [[nodiscard]] const T* try_at(std::size_t index) const noexcept [[clang::lifetimebound]] {
+        return index < owner().size() ? begin() + index : nullptr;
+    }
 
-    [[nodiscard]] const T& back() const noexcept { return (*this)[owner().size() - 1]; }
+    [[nodiscard]] T& front() noexcept [[clang::lifetimebound]] { return (*this)[0]; }
+
+    [[nodiscard]] const T& front() const noexcept [[clang::lifetimebound]] { return (*this)[0]; }
+
+    [[nodiscard]] T& back() noexcept [[clang::lifetimebound]] { return (*this)[owner().size() - 1]; }
+
+    [[nodiscard]] const T& back() const noexcept [[clang::lifetimebound]] { return (*this)[owner().size() - 1]; }
 
     void pop() noexcept {
         check_range(owner().size() - 1, 1);
@@ -63,13 +82,13 @@ public:
     }
 
     void clear() noexcept {
-        ArrayElements<T>::destroy(begin(), owner().size());
+        Elements::destroy(begin(), owner().size());
         owner().size_ = 0;
     }
 
     template <class... Args>
         requires std::constructible_from<T, Args...>
-    T& emplace(Args&&... arguments) noexcept {
+    T& emplace(Args&&... arguments) noexcept [[clang::lifetimebound]] {
         auto& array = owner();
         if (array.size() < array.capacity()) {
             std::construct_at(end(), std::forward<Args>(arguments)...);
@@ -111,54 +130,66 @@ public:
         requires std::default_initializable<T>
     {
         auto& array = owner();
-        if constexpr (Elements::byte_reallocate && std::is_nothrow_default_constructible_v<T>) {
-            if (count > array.size()) {
-                array.reserve(array.grown_capacity(count - array.size()));
-                while (array.size_ != count)
-                    std::construct_at(begin() + array.size_++);
-                return;
+        const auto previous = array.size();
+        if (count <= previous) {
+            if (count < previous) {
+                Elements::destroy(begin() + count, previous - count);
+                array.size_ = count;
             }
+            return;
         }
-        if (count < array.size()) {
-            Elements::destroy(begin() + count, array.size() - count);
+        const auto added = count - previous;
+        if constexpr (Elements::byte_reallocate && std::is_nothrow_default_constructible_v<T>) {
+            if (count > array.capacity())
+                array.reserve(array.grown_capacity(added));
+            auto* first = begin() + previous;
+            for (std::size_t index = 0; index != added; ++index)
+                std::construct_at(first + index);
             array.size_ = count;
-        } else
-            array.extend(count - array.size(), [](T* destination, std::size_t count) {
-                for (std::size_t index = 0; index != count; ++index)
+        } else {
+            array.extend(added, [](T* destination, std::size_t total) {
+                for (std::size_t index = 0; index != total; ++index)
                     std::construct_at(destination + index);
             });
+        }
     }
 
     void resize(std::size_t count, const T& value) noexcept
         requires std::is_copy_constructible_v<T>
     {
         auto& array = owner();
-        if constexpr (Elements::byte_reallocate && Elements::byte_copy) {
-            if (count > array.capacity()) {
-                const T saved(value);
-                array.reserve(array.grown_capacity(count - array.size()));
-                while (array.size_ != count)
-                    std::construct_at(begin() + array.size_++, saved);
-                return;
+        const auto previous = array.size();
+        if (count <= previous) {
+            if (count < previous) {
+                Elements::destroy(begin() + count, previous - count);
+                array.size_ = count;
             }
+            return;
         }
-        if (count < array.size()) {
-            Elements::destroy(begin() + count, array.size() - count);
+        const auto added = count - previous;
+        if constexpr (Elements::byte_reallocate && Elements::byte_copy) {
+            const T saved(value);
+            if (count > array.capacity())
+                array.reserve(array.grown_capacity(added));
+            auto* first = begin() + previous;
+            for (std::size_t index = 0; index != added; ++index)
+                std::construct_at(first + index, saved);
             array.size_ = count;
-        } else
-            array.extend(count - array.size(), [&](T* destination, std::size_t count) {
-                for (std::size_t index = 0; index != count; ++index)
+        } else {
+            array.extend(added, [&](T* destination, std::size_t total) {
+                for (std::size_t index = 0; index != total; ++index)
                     std::construct_at(destination + index, value);
             });
+        }
     }
 
-    T& add(const T& value) noexcept
+    T& add(const T& value) noexcept [[clang::lifetimebound]]
         requires std::is_copy_constructible_v<T>
     {
         return owner().emplace(value);
     }
 
-    T& add(T&& value) noexcept
+    T& add(T&& value) noexcept [[clang::lifetimebound]]
         requires std::is_move_constructible_v<T>
     {
         return owner().emplace(std::move(value));
@@ -166,7 +197,7 @@ public:
 
     template <class... Args>
         requires std::constructible_from<T, Args...> && std::is_move_assignable_v<T>
-    T& insert(std::size_t index, Args&&... arguments) noexcept {
+    T& insert(std::size_t index, Args&&... arguments) noexcept [[clang::lifetimebound]] {
         check_range(index, 0);
         owner().emplace(std::forward<Args>(arguments)...);
         std::rotate(begin() + index, end() - 1, end());
@@ -198,7 +229,7 @@ public:
             for (auto index = first; index != owner().size() - count; ++index)
                 begin()[index] = std::move(begin()[index + count]);
         }
-        ArrayElements<T>::destroy(end() - count, count);
+        Elements::destroy(end() - count, count);
         owner().size_ -= count;
     }
 
@@ -224,7 +255,7 @@ public:
         }
         const auto removed = owner().size() - write;
         if (removed)
-            ArrayElements<T>::destroy(begin() + write, removed);
+            Elements::destroy(begin() + write, removed);
         owner().size_ = write;
         return removed;
     }
