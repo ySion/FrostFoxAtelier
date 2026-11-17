@@ -1,6 +1,7 @@
 #include "business.hpp"
 #include "../helpers.hpp"
 #include "runtime/native.hpp"
+#include "source/detail/bridge.hpp"
 #include "source/program.hpp"
 #include <array>
 #include <utility>
@@ -123,6 +124,10 @@ void type_bound_stateless() {
     const auto object_id = object.id();
     auto program = take(source::Program::create(runtime, base));
     publish(*program, "int run(int x) { return x * 3; }");
+    require(source::detail::ProgramAccess::stateless_direct(take(program->pin())),
+            "A bound scalar entry without self must select stateless Typed dispatch.");
+    require(std::get<std::int32_t>(*take(program->entry().invoke(object_id, std::array{Scalar{7}}))) == 21,
+            "Generic dispatch failed to finish with an unused optional receiver.");
     const auto typed = take(program->entry().bind<std::int32_t, std::int32_t>());
     require(take(typed.invoke(object_id, 7)) == 21 && take(typed.invoke({}, 7)) == 21,
             "Stateless Typed::invoke on a type-bound Program rejected a valid derived or empty receiver.");
@@ -134,6 +139,33 @@ void type_bound_stateless() {
     require(!destroyed && destroyed.error().code == ErrorCode::invalid_object,
             "Stateless Typed::invoke accepted a destroyed receiver.");
 }
+
+void weak_acquisition_during_mark() {
+    Runtime runtime;
+    const auto type = take(runtime.register_type({"abi.Observed", TypeKind::object, {}, {}, {}}));
+    auto program = take(source::Program::create(runtime, type));
+    publish(*program, "bool run() { weak abi.Observed w = observe(self); return try_acquire(w) == self; }");
+    const auto typed = take(program->entry().bind<bool>());
+    for (const bool direct : {false, true}) {
+        auto owner = take(runtime.create(type));
+        const auto id = owner.id();
+        const auto weak = take(runtime.observe(owner.reference()));
+        owner.reset();
+        take(runtime.begin_collection());
+        while (runtime.collection_phase() == CollectionPhase::roots)
+            take(runtime.collect_step({1}));
+        const bool acquired = direct ? take(typed.invoke(id))
+                                     : std::get<bool>(*take(program->entry().invoke(id, std::span<const Scalar>{})));
+        while (runtime.collection_phase() != CollectionPhase::idle)
+            take(runtime.collect_step({1}));
+        require(acquired && take(runtime.try_acquire(weak)).has_value(),
+                "A successful synchronous weak acquisition must mark the object for the current cycle.");
+        take(runtime.begin_collection());
+        while (runtime.collection_phase() != CollectionPhase::idle)
+            take(runtime.collect_step({1}));
+        require(!take(runtime.try_acquire(weak)), "Synchronous weak acquisition retained a root after return.");
+    }
+}
 }
 
 void verify_business_execution() {
@@ -141,6 +173,7 @@ void verify_business_execution() {
     boolean_alias();
     reference_coroutine();
     type_bound_stateless();
+    weak_acquisition_during_mark();
     verify_math_abi();
 }
 }

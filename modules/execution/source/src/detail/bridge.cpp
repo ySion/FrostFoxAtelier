@@ -465,7 +465,7 @@ void AbiArguments::initialize(const Binding& binding, const FunctionSignature& s
 
 Invocation::Invocation(Runtime& owner, const Binding& bound, BusinessFrameLayout layout, BusinessTrace* capture,
                        DebugSessionState* session, ExecutionScope* scope)
-    : runtime(owner), binding(bound),
+    : runtime(owner), binding(bound), uses_receiver_slot(layout.uses_receiver_slot),
       roots(sized_slots<ObjectRoot, 2>(!scope && bound.type != TypeId{} ? layout.strong_slots : 0)),
       references(sized_slots<ObjectReference, 4>(scope && bound.type != TypeId{} ? layout.strong_slots : 0)),
       observations(sized_slots<ObjectReference, 2>(layout.weak_slots)),
@@ -780,8 +780,10 @@ bool try_bind_receiver(Invocation& invocation, bool requires_receiver, ObjectId 
     NativeContext resolved;
     if (!NativeContext::try_resolve(invocation.runtime, receiver, invocation.binding.type, resolved))
         return false;
-    invocation.frame.set_validated_reference(receiver_slot, invocation.binding.type, receiver);
-    invocation.native[receiver_slot] = resolved;
+    if (invocation.uses_receiver_slot) {
+        invocation.frame.set_validated_reference(receiver_slot, invocation.binding.type, receiver);
+        invocation.native[receiver_slot] = resolved;
+    }
     return true;
 }
 
@@ -789,6 +791,8 @@ Result<void> bind_receiver(Invocation& invocation, bool requires_receiver, Objec
     if (try_bind_receiver(invocation, requires_receiver, receiver))
         return {};
     ATELIER_TRY_BIND(resolved, NativeContext::resolve(invocation.runtime, receiver, invocation.binding.type));
+    if (!invocation.uses_receiver_slot)
+        return {};
     if (!invocation.references.empty()) {
         invocation.frame.set_validated_reference(receiver_slot, invocation.binding.type, receiver);
         invocation.native[receiver_slot] = *resolved;

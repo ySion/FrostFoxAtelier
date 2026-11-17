@@ -73,7 +73,7 @@ Entry.invoke 选择当前 Version / Lease.invoke 使用固定 Version
   → 生成清理 → 检查引用槽已清空 → 提交结果 → 退出执行作用域
 ```
 
-已发布 Version 使用自己的已验证元数据，正式消费者通过程序入口或版本租约使用已发布代码。未启用诊断和调试时，同步入口通过轻量 `DirectScope` 准入并内联复用同步引用槽、验证接收者（若优化后 IR 证明无接收者的 `_typed` 入口及其可达内部调用完全不读取 `Invocation*`，`DirectScope` 走仅含 `ExecutionScope` 与 `BusinessFailure` 的无状态叶子快路径，跳过 `Invocation` 槽表构造并保留重入保护与失败位置映射）；启用诊断或调试时进入完整捕获路径，共用同一执行与清理合同。
+已发布 Version 使用自己的已验证元数据。宿主和 JIT 按同一入口布局绑定、清理接收者槽。类型绑定的同步函数可以不使用 `self`，调用方显式传入的接收者仍须通过身份与类型校验。若优化后的 `_typed` 入口及其可达调用完全不读取 `Invocation*`，无接收者要求的声明可以走无状态定型路径，仅保留执行准入、重入保护与失败定位。诊断和调试调用仍走完整捕获路径，协程接收者按帧寿命保活。
 
 `Lease::bind<R, Args...>` 和 `Entry::bind<R, Args...>` 核对同一共享签名，创建固定或跟随发布的同名 Typed。支持同步按值 `int32/uint32/float/double/bool` 与 32 位底层枚举，以及已支持标量、枚举、数学值、plain record、原生记录/Array 和只读 String 的同步 `const T&` / `T&` 引用；结果为 `void` 或按值标量/枚举。跟随句柄持有 State 与稳定索引，每次只选一次 Version；固定句柄直接选其持有的 Version，定型地址由版本缓存。定型调用在 Source 端仍进入同一诊断/Debugger 捕获、准入和 `execute_invocation`；宿主栈上的定型实参包由编译期 thunk 展开（引用参数传递已校验非空地址，并核对对齐与类型），直接进入 JIT，不生成通用实参数组。支持的公开函数只降低一次业务体，原通用导出解包后调用同一个 typed 体；内部函数和按值聚合/协程入口不改变合同。根槽、原生服务、错误首因、位置映射以及 RAII 兜底前的 `resources_cleared/live_values` 判定均共用，不因绑定而跳过。
 

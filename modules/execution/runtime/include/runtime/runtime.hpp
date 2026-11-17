@@ -696,6 +696,10 @@ struct NativeLayout {
     bool plain_value{};
 
     bool trivially_destructible{};
+
+    // This specific constructor produces a repeatable, byte-copyable default without per-instance effects.
+    // Replacing construct automatically revokes the qualification.
+    decltype(construct) prototype_constructor{};
 };
 
 // Bounds use the field's exact leaf scalar type; math vectors apply them to each
@@ -1446,7 +1450,7 @@ private:
 
     [[nodiscard]] Result<ObjectReference> strong_reference(ObjectId object, TypeId declared_type) const;
 
-    [[nodiscard]] Result<ObjectReference> try_acquire_reference(const ObjectReference& reference) const;
+    [[nodiscard]] Result<ObjectReference> try_acquire_reference(const ObjectReference& reference);
 
     [[nodiscard]] Result<ObjectReference> read_reference_at(Address address) const;
 

@@ -210,6 +210,8 @@ struct Invocation {
 
     const Binding& binding;
 
+    bool uses_receiver_slot;
+
     InlineArray<ObjectRoot, 2> roots;
 
     InlineArray<ObjectReference, 4> references;
@@ -304,6 +306,8 @@ struct ProgramAccess {
     using Compiler = decltype(&atelier_compile_business);
 
     static std::uintptr_t address(const Program::Lease&) noexcept;
+
+    static bool stateless_direct(const Program::Lease&) noexcept;
 
     static Result<Program::Candidate> prepare(const Program::Request&, Compiler);
 };

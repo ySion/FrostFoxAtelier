@@ -25,6 +25,59 @@ void collect(Runtime& runtime) {
         take(runtime.collect_step({1}));
 }
 
+void native_instance_defaults() {
+    struct Sample {
+        std::int32_t serial;
+    };
+    static std::int32_t constructions;
+    Runtime runtime;
+    auto definition =
+        NativeRegistration<Sample>{runtime, "gc.Sample", TypeKind::record}.field<&Sample::serial>("serial").build();
+    definition.native.construct = [](void* address) noexcept -> Result<void> {
+        std::construct_at(static_cast<Sample*>(address), Sample{++constructions});
+        return {};
+    };
+    const auto sample = take(runtime.register_type(std::move(definition)));
+    TypeDefinition holder;
+    holder.name = "gc.SampleHolder";
+    holder.kind = TypeKind::object;
+    holder.fields = {{"sample", {sample}}};
+    const auto type = take(runtime.register_type(std::move(holder)));
+    const std::array path{take(runtime.describe(type))->fields[0].id, take(runtime.describe(sample))->fields[0].id};
+    require(constructions == 0, "Publication ran a per-instance native constructor.");
+    auto first = take(runtime.create(type));
+    auto second = take(runtime.create(type));
+    require(std::get<std::int32_t>(take(runtime.read(first.id(), path))) == 1 &&
+                std::get<std::int32_t>(take(runtime.read(second.id(), path))) == 2 && constructions == 2,
+            "A described object must run its nested native constructor once per instance.");
+}
+
+void sparse_sweep() {
+    Runtime runtime;
+    const auto type = take(runtime.register_type({"gc.Sparse", TypeKind::object, {}, {}, {}}));
+    std::vector<ObjectRoot> survivors;
+    for (unsigned i = 0; i != 8192; ++i)
+        survivors.push_back(take(runtime.create(type)));
+    auto victim = take(runtime.create(type));
+    const auto dead = victim.id();
+    victim.reset();
+    take(runtime.begin_collection());
+    while (runtime.collection_phase() != CollectionPhase::sweep)
+        take(runtime.collect_step({1}));
+    require(!runtime.type_of(dead) && runtime.pending_reclamation() == 1,
+            "Logical death must precede sparse sweeping.");
+    take(runtime.destroy(survivors.front().id()));
+    auto reused = take(runtime.create(type));
+    auto appended = take(runtime.create(type));
+    const auto progress = take(runtime.collect_step({1}));
+    require(progress.work_done == 1 && progress.reclaimed == 0 && progress.pending_reclamation == 1,
+            "A sparse sweep must yield before scanning the whole occupied prefix.");
+    collect(runtime);
+    require(runtime.live_objects() == survivors.size() + 1 && take(runtime.type_of(reused.id())) == type &&
+                take(runtime.type_of(appended.id())) == type,
+            "Sparse sweeping reclaimed a reused or newly appended live slot.");
+}
+
 void runtime_sequence() {
     Runtime runtime;
     const auto object_type = take(runtime.register_type({"gc.Object", TypeKind::object, {}, {}, {}}));
@@ -104,6 +157,8 @@ void runtime_sequence() {
 int main() {
     atelier::install_fatal_handler();
     runtime_sequence();
+    native_instance_defaults();
+    sparse_sweep();
     verify_reflection();
     atelier::acceptance::verify_default_allocator();
     std::puts("Runtime acceptance: PASS (root collection and cancelled cursor lifetime)");

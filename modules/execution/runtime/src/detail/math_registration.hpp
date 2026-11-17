@@ -21,6 +21,7 @@ TypeDefinition components(Runtime& runtime) {
     // Initialization only writes components; the default member initializers
     // make the C++ default constructor nontrivial without introducing effects.
     definition.native.value_operations_preserve_borrows = true;
+    definition.native.prototype_constructor = definition.native.construct;
     return definition;
 }
 
@@ -42,6 +43,7 @@ TypeDefinition matrix(Runtime& runtime, std::index_sequence<I...>) {
     };
     (add.template operator()<I>(), ...);
     definition.native.value_operations_preserve_borrows = true;
+    definition.native.prototype_constructor = definition.native.construct;
     return definition;
 }
 }

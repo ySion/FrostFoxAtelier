@@ -246,6 +246,8 @@ public:
         definition_.native.plain_value = std::is_standard_layout_v<T> && std::is_trivially_copy_constructible_v<T> &&
                                          std::is_trivially_copy_assignable_v<T> && std::is_trivially_destructible_v<T>;
         definition_.native.trivially_destructible = std::is_trivially_destructible_v<T>;
+        if constexpr (std::is_trivially_default_constructible_v<T> && std::is_trivially_copyable_v<T>)
+            definition_.native.prototype_constructor = definition_.native.construct;
         if constexpr (std::is_enum_v<T>) {
             definition_.enumeration =
                 TypeDefinition::Enumeration{TypeReference::native<std::underlying_type_t<T>>(), {}};

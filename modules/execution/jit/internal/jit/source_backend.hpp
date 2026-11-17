@@ -457,6 +457,8 @@ struct BusinessFrameLayout {
     // or active invocation pin is alive. Empty/null retains the generic binding
     // used by scalar-only programs.
     const char* object_type_name;
+
+    bool uses_receiver_slot;
 };
 
 static_assert(std::is_trivial_v<BusinessFrameLayout> && std::is_standard_layout_v<BusinessFrameLayout>);

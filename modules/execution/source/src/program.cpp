@@ -899,6 +899,10 @@ std::uintptr_t ProgramAccess::address(const Program::Lease& lease) noexcept {
     return lease.version_ ? lease.version_->info.entry_address : 0;
 }
 
+bool ProgramAccess::stateless_direct(const Program::Lease& lease) noexcept {
+    return lease.version_ && lease.version_->stateless_direct;
+}
+
 Result<CompilationArtifacts> Program::Lease::artifacts() const {
     const auto version = version_;
     if (!version)

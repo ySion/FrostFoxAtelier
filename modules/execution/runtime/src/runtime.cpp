@@ -599,8 +599,6 @@ struct Runtime::Impl {
 
     BitVector marked_slots;
 
-    BitVector sweep_slots;
-
     Array<GrayLink> gray_links;
 
     // Two-level hierarchical write-stamp tracking: each WritePage tracks the exact 64-bit masks
@@ -687,9 +685,7 @@ struct Runtime::Impl {
 
     std::size_t value_root_limit{};
 
-    std::size_t sweep_cursor{};
-
-    std::size_t sweep_limit{};
+    std::size_t sweep_word{};
 
     std::uint32_t gray_head{no_slot};
 
@@ -1009,29 +1005,30 @@ struct Runtime::Impl {
                 if (pending == 0) {
                     phase = CollectionPhase::idle;
                 } else {
-                    assert(live_slots.size() == marked_slots.size());
-                    sweep_slots.clear();
-                    sweep_slots.resize(marked_slots.size(), false);
-                    sweep_slots |= live_slots;
-                    sweep_slots ^= marked_slots;
-                    sweep_cursor = 0;
-                    sweep_limit = sweep_slots.size();
+                    sweep_word = 0;
                     phase = CollectionPhase::sweep;
                 }
             }
             return false;
         }
-        const auto found = sweep_slots.find_from(sweep_cursor);
-        if (found < sweep_limit) {
-            const auto index = static_cast<std::uint32_t>(found);
-            sweep_cursor = found + 1;
+        const auto occupied = live_slots.words();
+        const auto marked_words = marked_slots.words();
+        assert(pending && sweep_word < occupied.size() && occupied.size() == marked_words.size());
+        // Bound sparse scans to 4096 slots per work unit; at most one destructor runs.
+        const auto end = std::min(occupied.size(), sweep_word + 64);
+        for (; sweep_word != end; ++sweep_word) {
+            const auto dead = occupied[sweep_word] & ~marked_words[sweep_word];
+            if (!dead)
+                continue;
+            const auto index = static_cast<std::uint32_t>(sweep_word * 64 + std::countr_zero(dead));
+            if (std::has_single_bit(dead))
+                ++sweep_word;
             release(index);
             recycle(index);
             if (pending == 0)
                 phase = CollectionPhase::idle;
             return true;
         }
-        phase = CollectionPhase::idle;
         return false;
     }
 
@@ -1457,6 +1454,7 @@ struct Runtime::Impl {
                         }};
         type->native.plain_value = true;
         type->native.trivially_destructible = true;
+        type->native.prototype_constructor = type->native.construct;
         type->scalar_variant_index = static_cast<std::uint8_t>(Scalar{T{}}.index());
         representations.try_emplace(type->native.representation, id.index_);
         names.try_emplace(StringView{type->info.name}, id.index_);
@@ -1892,8 +1890,6 @@ struct Runtime::Impl {
         } else {
             --pending;
         }
-        if (phase == CollectionPhase::sweep && index < sweep_slots.size())
-            sweep_slots.reset(index);
         live_slots.reset(index);
         auto* type = types.data()[slot.type_index].get();
         void* storage = std::exchange(slot.storage, nullptr);
@@ -2028,7 +2024,6 @@ Result<void> Runtime::begin_collection() {
         return failure(ErrorCode::busy, "Collection can begin only at an idle host safe point.");
     }
     impl_->trace_stack.reserve(impl_->maximum_trace_depth);
-    impl_->sweep_slots.reserve(impl_->slots.capacity());
     impl_->marked_slots.clear();
     impl_->marked_slots.resize(impl_->slots.size(), false);
     impl_->cancel_cursor();
@@ -2284,11 +2279,12 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
         if (definition.fields.size() >= no_slot || definition.methods.size() >= no_slot) {
             return failure(ErrorCode::capacity_exceeded, "Member identity space exhausted.");
         }
-        const bool is_native =
-            native.size || native.alignment || native.representation || native.construct || native.destroy ||
-            native.copy_construct || native.copy_assign || native.swap || native.base_address || native.base_offset ||
-            native.element_representation || native.sequence_view || native.sequence_mutate ||
-            native.value_operations_preserve_borrows || native.plain_value || native.trivially_destructible;
+        const bool is_native = native.size || native.alignment || native.representation || native.construct ||
+                               native.destroy || native.copy_construct || native.copy_assign || native.swap ||
+                               native.base_address || native.base_offset || native.element_representation ||
+                               native.sequence_view || native.sequence_mutate ||
+                               native.value_operations_preserve_borrows || native.plain_value ||
+                               native.trivially_destructible || native.prototype_constructor;
         if (is_native && (!native.size || !std::has_single_bit(native.alignment) || !native.representation ||
                           !native.construct || !native.destroy || native.size % native.alignment != 0)) {
             return failure(ErrorCode::invalid_definition,
@@ -2910,9 +2906,8 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
                         const bool target_ready =
                             !target.needs_destroy && target.info.copy_constructible && target.info.copy_assignable &&
                             (target.prototype != nullptr || target.scalar_leaf != nullptr ||
-                             (target.native.construct != nullptr &&
-                              (target.info.math ||
-                               (target.info.plain_value && target.info.value_operations_preserve_borrows))));
+                             (target.info.plain_value && target.native.prototype_constructor != nullptr &&
+                              target.native.prototype_constructor == target.native.construct));
                         if (!target_ready) {
                             can_prototype = false;
                             break;
@@ -3591,7 +3586,6 @@ Result<ObjectRoot> Runtime::create(TypeId type_id) {
         impl_->slots.reserve(grown);
         impl_->live_slots.reserve(grown);
         impl_->marked_slots.reserve(grown);
-        impl_->sweep_slots.reserve(grown);
         impl_->gray_links.reserve(grown);
     }
     impl_->write_pages.resize(std::max(impl_->write_pages.size(), (impl_->slots.size() >> Impl::write_page_shift) + 1));
@@ -3821,7 +3815,7 @@ Result<ObjectReference> Runtime::null_reference(TypeId type_id, ValueForm form) 
     return reference;
 }
 
-Result<ObjectReference> Runtime::try_acquire_reference(const ObjectReference& reference) const {
+Result<ObjectReference> Runtime::try_acquire_reference(const ObjectReference& reference) {
     detail::assert_serial_access();
     if (!impl_->roots->alive || impl_->roots->traversals != 0) {
         return failure(ErrorCode::busy, "Cannot acquire references during shutdown or reference traversal.");
@@ -3833,6 +3827,8 @@ Result<ObjectReference> Runtime::try_acquire_reference(const ObjectReference& re
         return failure(ErrorCode::type_mismatch, "try_acquire requires a weak reference.");
     }
     const ObjectId id = !reference.is_null() && impl_->lookup(reference.id()) ? reference.id() : ObjectId{};
+    if (id != ObjectId{})
+        impl_->shade(id);
     return ObjectReference{{reference.description().type, ValueForm::strong_reference}, id};
 }
 

@@ -333,6 +333,12 @@ llvm::Type* direct_parameter_type(llvm::LLVMContext& context, language::ValueTyp
     return llvm::Type::getInt32Ty(context); // bool crosses the host ABI as canonical u32.
 }
 
+bool uses_receiver_slot(const language::Function& function, const BusinessEnvironment& environment,
+                        CompileOptions options) noexcept {
+    return environment.object_type_name && *environment.object_type_name &&
+           (function.requires_receiver || function.is_coroutine || options.diagnostics || options.debugging);
+}
+
 class SourceLowering {
 public:
     SourceLowering(llvm::LLVMContext& context, llvm::Module& module, const language::Program& source,
@@ -345,6 +351,7 @@ public:
           temporary_slots_(function_.expressions.size(), null_reference_slot), strong_slots_(strong_base),
           weak_slots_(weak_base), first_strong_slot_(strong_base), first_weak_slot_(weak_base),
           public_entry_(source.exported(function)), typed_entry_(public_entry_ && direct_signature(function_)),
+          owns_receiver_slot_(public_entry_ && uses_receiver_slot(function_, environment, options)),
           diagnostics_(options.diagnostics ? catalog : nullptr), catalog_(catalog),
           debugging_(options.debugging && (source.exports.empty() || !public_entry_)), function_index_(function),
           position_(function_.position), environment_(environment) {
@@ -391,7 +398,7 @@ public:
         }
     }
 
-    BusinessFrameLayout layout() const noexcept { return {strong_slots_, weak_slots_, nullptr}; }
+    BusinessFrameLayout layout() const noexcept { return {strong_slots_, weak_slots_, nullptr, owns_receiver_slot_}; }
 
     llvm::Error generate() {
         for (std::size_t index = 0; index < function_.locals.size(); ++index) {
@@ -542,7 +549,7 @@ public:
         }
         ir_.SetInsertPoint(finish_);
         clear_user_values(false);
-        if (public_entry_ && has_object_binding())
+        if (owns_receiver_slot_)
             clear_slot(receiver_slot);
         close_debug_frame();
         complete(ir_.getInt32(0));
@@ -1131,11 +1138,9 @@ private:
                 debug_local(i, DebugAvailability::out_of_scope);
     }
 
-    bool has_object_binding() const noexcept { return environment_.object_type_name && *environment_.object_type_name; }
-
     void clear_execution_resources() {
         clear_user_values(true);
-        if (public_entry_ && has_object_binding())
+        if (owns_receiver_slot_)
             clear_slot(receiver_slot);
     }
 
@@ -2050,6 +2055,8 @@ private:
 
     const bool typed_entry_;
 
+    const bool owns_receiver_slot_;
+
     DiagnosticCatalog* diagnostics_{};
 
     DiagnosticCatalog* catalog_{};
@@ -2286,7 +2293,7 @@ generate_business(LLJIT& jit, llvm::TargetMachine& machine, const language::Prog
                                                 : llvm::ConstantPointerNull::get(ptr));
         ir.CreateRet(ir.CreateCall(direct, arguments));
     }
-    layout = {business_root_slots, 0, nullptr};
+    layout = {business_root_slots, 0, nullptr, false};
     for (std::uint32_t i = 0; i < functions.size(); ++i) {
         if (!program.reachable[i])
             continue;
@@ -2631,6 +2638,7 @@ llvm::Expected<std::shared_ptr<CompiledBusiness>> compile(const BusinessServices
         state->diagnostics->locations.shrink_to_fit();
         state->layout.object_type_name = state->catalog->object_type_name.c_str();
     }
+    state->layout.uses_receiver_slot = uses_receiver_slot(entry, state->catalog->environment, options);
     state->entry_symbol =
         program.exports.empty() ? "atelier_source_entry" : "atelier_source_entry_" + std::to_string(program.entry);
     auto address = state->jit->lookup(state->entry_symbol);
