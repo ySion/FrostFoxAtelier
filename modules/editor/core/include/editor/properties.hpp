@@ -84,10 +84,10 @@ struct PropertyReport {
     std::function<Result<void>(std::vector<std::string>, json::Value)> converted;
 };
 
-// Tolerant decoding over `fields`, as scene loads do: a leaf that does not fit goes to `report`
-// instead of failing. Runtime and report failures propagate unchanged. Reports may reject after
-// earlier leaves were written; scalar clamps and conversions report after writing, Array clamps before writing.
-[[nodiscard]] Result<void> decode_properties(Runtime&, const PropertyTarget&,
-                                             std::span<const detail::ScalarField> fields, json::Value record,
+// Tolerant decoding of a saved properties record, as scene loads do: fields now declared
+// transient are skipped, while other leaves that do not fit go to `report` instead of failing.
+// Runtime and report failures propagate unchanged. Reports may reject after earlier leaves were
+// written; scalar clamps and conversions report after writing, Array clamps before writing.
+[[nodiscard]] Result<void> decode_properties(Runtime&, const PropertyTarget&, json::Value record,
                                              const PropertyReport& report, const ResolveReference& = {});
 }

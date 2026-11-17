@@ -202,7 +202,7 @@ Result<std::optional<bool>> OperatorBinding::state(const OperatorRegistry& regis
     ATELIER_TRY_BIND(value, parameters(runtime, info->parameters));
     if (info->seed)
         ATELIER_TRY(info->seed(context, {(*value)->type, (*value)->bytes.data()}));
-    ATELIER_TRY(decode_properties(runtime, {(*value)->type, {}, (*value)->bytes}, request.args.root(), {}));
+    ATELIER_TRY(decode_properties(runtime, {(*value)->type, {}, (*value)->bytes}, request.args.root()));
     const auto selected = info->state(context, {(*value)->type, (*value)->bytes.data()});
     // A seeded record depends on current Context; a rooted record must not
     // prolong an object's life just because its menu remains open.
@@ -252,9 +252,7 @@ Result<OperatorReport> call(const OperatorRegistry& registry, OperatorHost& host
         if (*entity)
             for (const auto& [name, _] : *members) {
                 const auto field = runtime.find_field(*type, name);
-                if (field && (*field == document.types().position_fields.front().front() ||
-                              *field == document.types().rotation_fields.front().front() ||
-                              *field == document.types().scale_fields.front().front()))
+                if (field && detail::transform_field(document.types(), *field))
                     return std::unexpected(rejected("Transform fields require scene.transform_set/clear/remove."));
             }
         const auto decoded = decode_properties(

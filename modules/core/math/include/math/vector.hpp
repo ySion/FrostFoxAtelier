@@ -282,29 +282,19 @@ template <Real T>
         return __builtin_copysign(magnitude, sign);
 }
 
-// Requires 0 < value < +inf; handles subnormals and avoids (y * y) overflow at tiny inputs.
+// Positive normal input. Multiplying half_x by y first avoids overflow near the minimum exponent.
 template <Real T>
 [[nodiscard]] constexpr T fast_rsqrt_positive(T value) noexcept {
-    if constexpr (std::same_as<T, float>) {
-        const bool subnormal = value < 0x1.0p-126f;
-        const float xs = value * (subnormal ? 0x1.0p24f : 1.0f);
-        const float scale = subnormal ? 0x1.0p12f : 1.0f;
-        float y = std::bit_cast<float>(0x5f375a86u - (std::bit_cast<std::uint32_t>(xs) >> 1u));
-        const float half_x = 0.5f * xs;
-        y = y * (1.5f - (half_x * y) * y);
-        y = y * (1.5f - (half_x * y) * y);
-        return y * scale;
-    } else {
-        const bool subnormal = value < 0x1.0p-1022;
-        const double xs = value * (subnormal ? 0x1.0p54 : 1.0);
-        const double scale = subnormal ? 0x1.0p27 : 1.0;
-        double y = std::bit_cast<double>(0x5fe6eb50c7b537a9ull - (std::bit_cast<std::uint64_t>(xs) >> 1u));
-        const double half_x = 0.5 * xs;
-        y = y * (1.5 - (half_x * y) * y);
-        y = y * (1.5 - (half_x * y) * y);
-        y = y * (1.5 - (half_x * y) * y);
-        return y * scale;
-    }
+    T y;
+    if constexpr (std::same_as<T, float>)
+        y = std::bit_cast<float>(0x5f375a86u - (std::bit_cast<std::uint32_t>(value) >> 1u));
+    else
+        y = std::bit_cast<double>(0x5fe6eb50c7b537a9ull - (std::bit_cast<std::uint64_t>(value) >> 1u));
+    constexpr int steps = std::same_as<T, float> ? 2 : 3;
+    const T half_x = T{0.5} * value;
+    for (int i = 0; i < steps; ++i)
+        y *= T{1.5} - (half_x * y) * y;
+    return y;
 }
 
 }
@@ -423,17 +413,18 @@ template <Real T, std::size_t N>
     return value / std::sqrt(length_squared(value));
 }
 
-// Branchless approximate reciprocal square root: float <= 1.5e-4, double <= 1e-10 relative error.
-// Special values match 1 / sqrt(x): +-0 -> +-inf, +inf -> +0, negative or NaN -> NaN.
+// Relative error on positive normal inputs: float <= 1.5e-4, double <= 1e-10.
+// Positive subnormals return +inf; signed zeros retain their sign.
 template <Real T>
 [[nodiscard]] constexpr T fast_rsqrt(T value) noexcept {
     constexpr T infinity = std::numeric_limits<T>::infinity();
-    const bool finite_positive = value > T{} && value < infinity;
-    const T refined = detail::fast_rsqrt_positive(finite_positive ? value : T{1});
-    const T special = value == T{}        ? detail::scalar_copysign(infinity, value)
-                      : value == infinity ? T{}
-                                          : std::numeric_limits<T>::quiet_NaN();
-    return finite_positive ? refined : special;
+    constexpr T minimum = std::numeric_limits<T>::min();
+    const bool normal = value >= minimum && value < infinity;
+    const T refined = detail::fast_rsqrt_positive(normal ? value : T{1});
+    const T special = value == infinity ? T{}
+                      : value >= T{}    ? detail::scalar_copysign(infinity, value)
+                                        : std::numeric_limits<T>::quiet_NaN();
+    return normal ? refined : special;
 }
 
 template <Real T, std::size_t N>
@@ -447,12 +438,12 @@ template <Real T, std::size_t N>
 }
 
 // Branchless approximate normalization without component rescaling.
-// Returns all-zero when dot(value, value) is zero, nonfinite, or underflows/overflows.
+// Returns all-zero unless dot(value, value) is positive, finite and normal.
 template <Real T, std::size_t N>
 [[nodiscard]] constexpr BasicVector<T, N> fast_normalize_or_zero(BasicVector<T, N> value) noexcept {
     const T squared = length_squared(value);
-    const bool valid = squared > T{} && squared < std::numeric_limits<T>::infinity();
-    const T scale = valid ? detail::fast_rsqrt_positive(valid ? squared : T{1}) : T{};
+    const bool valid = squared >= std::numeric_limits<T>::min() && squared < std::numeric_limits<T>::infinity();
+    const T scale = detail::fast_rsqrt_positive(valid ? squared : T{1});
     const BasicVector<T, N> safe = valid ? value : BasicVector<T, N>{};
     return safe * scale;
 }

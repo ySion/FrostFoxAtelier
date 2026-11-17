@@ -1,6 +1,7 @@
 #include "memory/fatal.hpp"
 #include "math/math.hpp"
 #include "../helpers.hpp"
+#include "rotation_error.hpp"
 
 #include <bit>
 #include <cmath>
@@ -76,25 +77,13 @@ void scene() {
             const double td = static_cast<double>(k) / 8.0;
             const auto exact_f = slerp01(Quaternion{}, (step & 1) ? -target_f : target_f, tf);
             const auto approx_f = fast_slerp01(Quaternion{}, (step & 1) ? -target_f : target_f, tf);
-            const auto unit_f = *try_normalize(approx_f);
-            const auto aligned_f = dot(exact_f, unit_f) < 0.f ? -unit_f : unit_f;
-            const float angle_err_f =
-                2.f * std::atan2(length(Vector4{exact_f.x - aligned_f.x, exact_f.y - aligned_f.y,
-                                                exact_f.z - aligned_f.z, exact_f.w - aligned_f.w}),
-                                 length(Vector4{exact_f.x + aligned_f.x, exact_f.y + aligned_f.y,
-                                                exact_f.z + aligned_f.z, exact_f.w + aligned_f.w}));
-            require(angle_err_f <= 1e-4f && std::abs(dot(approx_f, approx_f) - 1.f) <= 1e-4f,
+            require(atelier::acceptance::rotation_error(exact_f, approx_f) <= 1e-4f &&
+                        std::abs(dot(approx_f, approx_f) - 1.f) <= 1e-4f,
                     "fast_slerp01(float) exceeded angular or norm bound.");
             const auto exact_d = slerp01(Quaterniond{}, (step & 1) ? -target_d : target_d, td);
             const auto approx_d = fast_slerp01(Quaterniond{}, (step & 1) ? -target_d : target_d, td);
-            const auto unit_d = *try_normalize(approx_d);
-            const auto aligned_d = dot(exact_d, unit_d) < 0.0 ? -unit_d : unit_d;
-            const double angle_err_d =
-                2.0 * std::atan2(length(Vector4d{exact_d.x - aligned_d.x, exact_d.y - aligned_d.y,
-                                                 exact_d.z - aligned_d.z, exact_d.w - aligned_d.w}),
-                                 length(Vector4d{exact_d.x + aligned_d.x, exact_d.y + aligned_d.y,
-                                                 exact_d.z + aligned_d.z, exact_d.w + aligned_d.w}));
-            require(angle_err_d <= 1e-7 && std::abs(dot(approx_d, approx_d) - 1.0) <= 1e-7,
+            require(atelier::acceptance::rotation_error(exact_d, approx_d) <= 1e-7 &&
+                        std::abs(dot(approx_d, approx_d) - 1.0) <= 1e-7,
                     "fast_slerp01(double) exceeded angular or norm bound.");
         }
     }
@@ -103,18 +92,25 @@ void scene() {
     static_assert(compile_rsqrt > 0.4999f && compile_rsqrt < 0.5001f);
     constexpr double compile_rsqrtd = fast_rsqrt(0.25);
     static_assert(compile_rsqrtd > 1.999999999 && compile_rsqrtd < 2.000000001);
-    for (const float x : {1e-42f, 1e-20f, 0.25f, 1.f, 7.5f, 1e20f, 1e36f}) {
+    for (const float x : {std::numeric_limits<float>::min(), std::numeric_limits<float>::max(), 1e-20f, 0.25f, 1.f,
+                          7.5f, 1e20f, 1e36f}) {
         const double expected = 1.0 / std::sqrt(static_cast<double>(x));
         require(std::abs(static_cast<double>(fast_rsqrt(x)) - expected) / expected <= 1.5e-4,
                 "fast_rsqrt(float) exceeded relative error bound.");
     }
-    for (const double x : {1e-315, 1e-150, 0.25, 1.0, 13.75, 1e150, 1e300}) {
+    for (const double x : {std::numeric_limits<double>::min(), std::numeric_limits<double>::max(), 1e-150, 0.25, 1.0,
+                           13.75, 1e150, 1e300}) {
         const double expected = 1.0 / std::sqrt(x);
         require(std::abs(fast_rsqrt(x) - expected) / expected <= 1e-10,
                 "fast_rsqrt(double) exceeded relative error bound.");
     }
     constexpr float inf_f = std::numeric_limits<float>::infinity();
     constexpr float nan_f = std::numeric_limits<float>::quiet_NaN();
+    constexpr float tiny = std::numeric_limits<float>::denorm_min();
+    constexpr double tiny_d = std::numeric_limits<double>::denorm_min();
+    require(fast_rsqrt(tiny) == inf_f && std::isnan(fast_rsqrt(-tiny)) &&
+                fast_rsqrt(tiny_d) == std::numeric_limits<double>::infinity() && std::isnan(fast_rsqrt(-tiny_d)),
+            "fast_rsqrt subnormal inputs violated contract.");
     require(fast_rsqrt(0.f) == inf_f && !std::signbit(fast_rsqrt(0.f)) && fast_rsqrt(-0.f) == -inf_f &&
                 fast_rsqrt(inf_f) == 0.f && !std::signbit(fast_rsqrt(inf_f)) && std::isnan(fast_rsqrt(-1.f)) &&
                 std::isnan(fast_rsqrt(-inf_f)) && std::isnan(fast_rsqrt(nan_f)),
@@ -133,12 +129,12 @@ void scene() {
     require(std::abs(fast_unit_v.x - 3.f / 13.f) <= 1e-4f && std::abs(fast_unit_v.y + 4.f / 13.f) <= 1e-4f &&
                 std::abs(fast_unit_v.z - 12.f / 13.f) <= 1e-4f,
             "Vector3 fast_normalize_or_zero exceeded error bound.");
-    const auto fast_small_v = fast_normalize_or_zero(Vector3{1e-18f, 0.f, 0.f});
+    const auto fast_small_v = fast_normalize_or_zero(Vector3{0x1p-63f, 0.f, 0.f});
     require(std::abs(fast_small_v.x - 1.f) <= 1.5e-4f && fast_small_v.y == 0.f && fast_small_v.z == 0.f,
             "Small normal-squared Vector3 fast_normalize_or_zero exceeded error bound.");
-    const auto fast_sub_v = fast_normalize_or_zero(Vector3{1e-21f, 0.f, 0.f});
-    require(std::abs(fast_sub_v.x - 1.f) <= 2e-3f && fast_sub_v.y == 0.f && fast_sub_v.z == 0.f,
-            "Subnormal-squared Vector3 fast_normalize_or_zero failed graceful degradation.");
+    require(fast_normalize_or_zero(Vector4{1e-21f, 0.f, 0.f, 0.f}) == Vector4{} &&
+                fast_normalize_or_zero(Quaterniond{0x1p-512, 0., 0., 0.}) == Quaterniond{0., 0., 0., 0.},
+            "Subnormal squared length must normalize to zero.");
     require(fast_normalize_or_zero(Vector3{1e25f, 1e25f, 0.f}) == Vector3{},
             "Overflowing Vector3 fast_normalize_or_zero must return zero.");
     const auto fast_unit_q = fast_normalize_or_zero(Quaterniond{1.0, 2.0, -2.0, 4.0});

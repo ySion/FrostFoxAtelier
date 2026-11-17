@@ -134,6 +134,8 @@ public:
                 cross(xyz, twice));
         }
         case Op::transpose:
+            if (args[0]->getType()->getScalarType()->isDoubleTy())
+                return ir_.CreateShuffleVector(args[0], {0, 4, 8, 12, 1, 5, 9, 13, 2, 6, 10, 14, 3, 7, 11, 15});
             return ir_.CreateIntrinsic(llvm::Intrinsic::matrix_transpose, {args[0]->getType()},
                                        {args[0], ir_.getInt32(4), ir_.getInt32(4)});
         case Op::transform_point:
@@ -748,15 +750,17 @@ private:
             return reciprocal;
         }
         const auto constant = [&](double value) { return llvm::ConstantFP::get(type, value); };
-        auto* subnormal = ir_.CreateFCmpOLT(x, constant(0x1.0p-1022));
-        auto* xs = ir_.CreateFMul(x, ir_.CreateSelect(subnormal, constant(0x1.0p54), constant(1)));
-        auto* scale = ir_.CreateSelect(subnormal, constant(0x1.0p27), constant(1));
         auto* magic = integers(type, 0x5fe6eb50c7b537a9LL, 64);
-        auto* y = ir_.CreateBitCast(ir_.CreateSub(magic, ir_.CreateLShr(as_integers(xs), integers(type, 1, 64))), type);
-        auto* neg_half_x = ir_.CreateFMul(xs, constant(-0.5));
+        auto* y = ir_.CreateBitCast(ir_.CreateSub(magic, ir_.CreateLShr(as_integers(x), integers(type, 1, 64))), type);
+        auto* neg_half_x = ir_.CreateFMul(x, constant(-0.5));
         for (int step = 0; step < 3; ++step)
             y = ir_.CreateFMul(y, fma(ir_.CreateFMul(neg_half_x, y), y, constant(1.5)));
-        return ir_.CreateFMul(y, scale);
+        return y;
+    }
+
+    static llvm::Constant* min_normal(llvm::Type* type) {
+        return llvm::ConstantFP::get(type, type->getScalarType()->isDoubleTy() ? std::numeric_limits<double>::min()
+                                                                               : std::numeric_limits<float>::min());
     }
 
     llvm::Value* fast_rsqrt(llvm::Value* x) {
@@ -764,30 +768,25 @@ private:
         const auto constant = [&](double value) { return llvm::ConstantFP::get(type, value); };
         auto* infinity = constant(INFINITY);
         auto* signed_infinity = ir_.CreateIntrinsic(llvm::Intrinsic::copysign, {type}, {infinity, x});
-        if (!type->getScalarType()->isDoubleTy()) {
-            // Hardware vrsqrtps + 1 NR step produces NaN for +-0, +inf, negatives, and NaN;
-            // only +-0 and +inf need explicit overrides.
-            auto* raw = fast_rsqrt_positive(x);
-            return ir_.CreateSelect(ir_.CreateFCmpOEQ(x, constant(0)), signed_infinity,
-                                    ir_.CreateSelect(ir_.CreateFCmpOEQ(x, infinity), constant(0), raw));
-        }
-        auto* finite_positive = ir_.CreateAnd(ir_.CreateFCmpOGT(x, constant(0)), ir_.CreateFCmpOLT(x, infinity));
-        auto* refined = fast_rsqrt_positive(ir_.CreateSelect(finite_positive, x, constant(1)));
-        auto* special = ir_.CreateSelect(ir_.CreateFCmpOEQ(x, constant(0)), signed_infinity,
-                                         ir_.CreateSelect(ir_.CreateFCmpOEQ(x, infinity), constant(0), constant(NAN)));
-        return ir_.CreateSelect(finite_positive, refined, special);
+        auto* minimum = min_normal(type);
+        auto* normal = ir_.CreateAnd(ir_.CreateFCmpOGE(x, minimum), ir_.CreateFCmpOLT(x, infinity));
+        auto* refined = fast_rsqrt_positive(ir_.CreateSelect(normal, x, constant(1)));
+        auto* special =
+            ir_.CreateSelect(ir_.CreateFCmpOEQ(x, infinity), constant(0),
+                             ir_.CreateSelect(ir_.CreateFCmpOGE(x, constant(0)), signed_infinity, constant(NAN)));
+        return ir_.CreateSelect(normal, refined, special);
     }
 
     llvm::Value* fast_normalize(llvm::Value* input) {
         auto* type = llvm::cast<llvm::FixedVectorType>(input->getType());
         auto* scalar = type->getElementType();
         const auto count = type->getNumElements();
-        auto* zero = llvm::ConstantFP::get(scalar, 0);
         auto* one = llvm::ConstantFP::get(scalar, 1);
         auto* infinity = llvm::ConstantFP::getInfinity(scalar);
         auto* squared = dot(input, input);
-        auto* valid = ir_.CreateAnd(ir_.CreateFCmpOGT(squared, zero), ir_.CreateFCmpOLT(squared, infinity));
-        auto* inv_length = ir_.CreateSelect(valid, fast_rsqrt_positive(ir_.CreateSelect(valid, squared, one)), zero);
+        auto* valid =
+            ir_.CreateAnd(ir_.CreateFCmpOGE(squared, min_normal(scalar)), ir_.CreateFCmpOLT(squared, infinity));
+        auto* inv_length = fast_rsqrt_positive(ir_.CreateSelect(valid, squared, one));
         auto* safe = ir_.CreateSelect(valid, input, llvm::Constant::getNullValue(type));
         return ir_.CreateFMul(safe, ir_.CreateVectorSplat(count, inv_length));
     }

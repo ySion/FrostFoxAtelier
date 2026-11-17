@@ -2152,7 +2152,7 @@ private:
     }
 };
 
-// Expands 4x4 @llvm.matrix.transpose after InstCombine so SelectionDAG emits
+// Expands 4x4 float @llvm.matrix.transpose after InstCombine so SelectionDAG emits
 // four-row in-lane unpacks (_MM_TRANSPOSE4_PS) instead of cross-lane vpermps.
 class MatrixTransposeLoweringPass : public llvm::PassInfoMixin<MatrixTransposeLoweringPass> {
 public:
@@ -2168,6 +2168,7 @@ public:
         for (auto* call : calls) {
             llvm::IRBuilder<> ir(call);
             auto* m = call->getArgOperand(0);
+            assert(m->getType() == llvm::FixedVectorType::get(ir.getFloatTy(), 16));
             auto* r0 = ir.CreateShuffleVector(m, {0, 1, 2, 3});
             auto* r1 = ir.CreateShuffleVector(m, {4, 5, 6, 7});
             auto* r2 = ir.CreateShuffleVector(m, {8, 9, 10, 11});

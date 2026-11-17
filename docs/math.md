@@ -76,7 +76,7 @@ double energy(const Array<vector3d>& values) {
 | `math.dot(a, b)`、`math.cross(a, b)` | 同类型向量；cross 限 vector3，dot 返回对应标量 |
 | `math.length(v)`、`math.normalize_or_zero(v)`、`math.fast_normalize_or_zero(v)` | 向量或四元数；归一化对零或非有限输入返回全零值（`fast_normalize_or_zero` 省去分量缩放，见[近似变体](#近似变体)），四元数全零不是单位旋转 |
 | `math.conjugate(q)`、`math.rotate(q, v)` | 共轭；单位四元数旋转同精度 vector3 |
-| `math.slerp01(a, b, t)`、`math.fast_slerp01(a, b, t)` | 同精度单位四元数与同精度插值标量的无分支 `[0, 1]` 最短弧球面插值；`t` 按 `math.clamp(t, 0, 1)` 钳制（`NaN -> 0`），`dot(a, b) < 0` 时翻转第二操作数（`t = 1` 得 `-b`），`slerp01` 在近共线处掩码选择归一化线性插值，`fast_slerp01` 见[近似变体](#近似变体) |
+| `math.slerp01(a, b, t)`、`math.fast_slerp01(a, b, t)` | 同精度单位四元数与同精度插值标量的 `[0, 1]` 最短弧球面插值；`t` 按 `math.clamp(t, 0, 1)` 钳制（`NaN -> 0`），`dot(a, b) < 0` 时翻转第二操作数（`t = 1` 得 `-b`），`slerp01` 在近共线处采用归一化线性插值，`fast_slerp01` 见[近似变体](#近似变体) |
 | `math.transpose(m)` | 矩阵转置 |
 | `math.transform_point(v, m)`、`math.transform_direction(v, m)` | 同精度 vector3、matrix4，参数顺序符合 `v * M` |
 | `math.sqrt`、`fast_rsqrt`、`floor`、`ceil`、`trunc`、`fract`、`abs`、`sign`、`min`、`max`、`clamp`、`lerp`、`step`、`smoothstep` | float/double 标量与向量的逐分量函数，见下节与[近似变体](#近似变体) |
@@ -103,17 +103,17 @@ double energy(const Array<vector3d>& values) {
 
 字段可从变量、数组元素、借用记录及数学临时值读取，例如 `(a + b).x`。临时值不可赋值；修改需要真正的可写存储。矩阵源码使用 `.m00` 等字段，当前没有矩阵下标语法。对象目录同时提供完整数学字段与标量分量路径，支持 `self.position = self.position + self.velocity * delta;`；对象读写经过 Runtime 生命周期检查，整值读取不会暴露对象内存地址。
 
-原生 C++ 库还提供同形状数学值的显式 `float` ↔ `double` 转换、向量复合赋值、`cwise_mul`、`cwise_div`、`cwise_min`、`cwise_max`（同源码 `min`/`max` 的 GLSL 顺序，仅首操作数为 NaN 时保留 NaN）、`cwise_abs`、`clamp`（支持向量或标量上下界，语义同源码 `math.clamp`）、`lerp01`（先将参数按 `math.clamp(t, 0, 1)` 钳制到 `[0, 1]` 再调用 `lerp`，`t` 为 NaN 时归零）、`min_component`、`max_component`（按左折叠顺序调用 `min`/`max`，不传播后续分量的 NaN，校验未信任输入时须配合 `is_finite`）、`length_squared`、`distance_squared`、`distance`、`is_finite`、返回 optional 的 `try_normalize`、标量与向量的 `fast_rsqrt`、向量与四元数的 `fast_normalize_or_zero`，四元数 `dot`、`from_axis_angle`（要求单位轴与弧度角）、无分支精确 `slerp01` 与近似 `fast_slerp01`（要求单位四元数，先按 `math.clamp(t, 0, 1)` 将插值参数钳制到 `[0, 1]`，`dot < 0` 时翻转第二操作数以取最短弧故 `t = 1` 得 `-unit_b`）、三维轴对齐包围盒 `BasicBounds<T>`（默认零盒，`empty()` 为 `{+∞, -∞}`，是 `encapsulate` 与 `distance_squared` 唯一合法的空盒单位元；任意有限反转盒虽满足 `is_empty` 但不可作为归约单位元；另提供 `is_finite`、`center`、`size`、`extents`、`corner`、`contains`、`intersects` 及按列极值精确传播的 `transform_bounds`），以及矩阵加减、标量缩放、`vector4 * matrix4`、`translation_matrix`、`scale_matrix`、`rotation_matrix`、`trs_matrix`、左手行主序视图矩阵 `try_look_to_lh` / `try_look_at_lh`（对零、非有限、与上方向共线的视线或平移点积溢出的输入返回空值）、`try_inverse`。这些能力不自动成为源码语法；源码当前以本节表格为准。原生向量 `lerp` 与源码 `math.lerp` 使用同一公式。原生 `try_normalize` 对零或非有限输入返回空值；`try_inverse` 先按行缩放再做带选主元的消元，拒绝非有限、奇异、超出工作精度或不能表示的结果，不隐式回退到单位矩阵。
+原生 C++ 库还提供同形状数学值的显式 `float` ↔ `double` 转换、向量复合赋值、`cwise_mul`、`cwise_div`、`cwise_min`、`cwise_max`（同源码 `min`/`max` 的 GLSL 顺序，仅首操作数为 NaN 时保留 NaN）、`cwise_abs`、`clamp`（支持向量或标量上下界，语义同源码 `math.clamp`）、`lerp01`（先将参数按 `math.clamp(t, 0, 1)` 钳制到 `[0, 1]` 再调用 `lerp`，`t` 为 NaN 时归零）、`min_component`、`max_component`（按左折叠顺序调用 `min`/`max`，不传播后续分量的 NaN，校验未信任输入时须配合 `is_finite`）、`length_squared`、`distance_squared`、`distance`、`is_finite`、返回 optional 的 `try_normalize`、标量与向量的 `fast_rsqrt`、向量与四元数的 `fast_normalize_or_zero`，四元数 `dot`、`from_axis_angle`（要求单位轴与弧度角）、精确 `slerp01` 与近似 `fast_slerp01`（要求单位四元数，先按 `math.clamp(t, 0, 1)` 将插值参数钳制到 `[0, 1]`，`dot < 0` 时翻转第二操作数以取最短弧故 `t = 1` 得 `-unit_b`）、三维轴对齐包围盒 `BasicBounds<T>`（默认零盒，`empty()` 为 `{+∞, -∞}`，是 `encapsulate` 与 `distance_squared` 唯一合法的空盒单位元；任意有限反转盒虽满足 `is_empty` 但不可作为归约单位元；另提供 `is_finite`、`center`、`size`、`extents`、`corner`、`contains`、`intersects` 及按列极值精确传播的 `transform_bounds`），以及矩阵加减、标量缩放、`vector4 * matrix4`、`translation_matrix`、`scale_matrix`、`rotation_matrix`、`trs_matrix`、左手行主序视图矩阵 `try_look_to_lh` / `try_look_at_lh`（对零、非有限、与上方向共线的视线或平移点积溢出的输入返回空值）、`try_inverse`。这些能力不自动成为源码语法；源码当前以本节表格为准。原生向量 `lerp` 与源码 `math.lerp` 使用同一公式。原生 `try_normalize` 对零或非有限输入返回空值；`try_inverse` 先按行缩放再做带选主元的消元，拒绝非有限、奇异、超出工作精度或不能表示的结果，不隐式回退到单位矩阵。
 
 ### 近似变体
 
-默认数学函数始终保持精确与无分支语义；凡是牺牲 ULP 换取吞吐的变体，在 C++ `atelier::math` 与源码 `math.*` 中统一使用显式 `fast_` 前缀，且不向未标注的普通指令扩散 fast-math 许可。当前提供的近似变体及其契约如下（可编程材质 HLSL 子集拒绝近似变体与四元数插值）：
+原生精确 `slerp01` 在近共线处直接返回归一化线性插值，省去三角函数调用。以精度换取吞吐的变体在 C++ `atelier::math` 与源码 `math.*` 中统一使用显式 `fast_` 前缀，fast-math 许可仅作用于变体内的指定指令。当前提供的近似变体及其契约如下（可编程材质 HLSL 子集拒绝近似变体与四元数插值）：
 
 | 函数 | 支持类型 | 误差上界与定义域 | 端点与特殊值 |
 | --- | --- | --- | --- |
-| `fast_slerp01(a, b, t)` | 同精度单位四元数 + 同精度标量 | 全弧段最短弧无分支多项式反翘曲（零反三角/正弦/开方/除法）；相对精确 `slerp01` 的最大角度误差 float ≤ `1e-4` rad、double ≤ `1e-7` rad，输出范数误差同阶 | `t` 按 `math.clamp(t, 0, 1)` 钳制（`NaN -> 0`）；`t = 0` 精确返回 `a`，`t = 1` 精确返回最短弧目标 `±b` |
-| `fast_rsqrt(x)` | float/double 标量与 vector2/3/4 | 正有限区间 `(0, +∞)`（含次正规数）相对 `1 / sqrt(x)` 的误差 float ≤ `1.5e-4`（源码 JIT 局部发射 `vrsqrtps` + 1 步牛顿迭代，C++ 为位初值 + 2 步迭代）、double ≤ `1e-10`（位初值 + 3 步迭代） | `±0 -> ±∞`（保符号），`+∞ -> +0`，负数与 `NaN -> NaN` |
-| `fast_normalize_or_zero(v)` | float/double 向量与四元数 | 省去精确版的最大分量预缩放除法，直接对 `dot(v, v)` 调用快速倒数平方根；在 `dot(v, v)` 为正规正数的区间内方向与单位长度误差同 `fast_rsqrt`，落入次正规正数区间时受平方尾数截断平滑退化 | 零值、非有限输入，或 `dot(v, v)` 下溢为零 / 上溢为无穷时统一返回全零值（无 `NaN` 泄漏） |
+| `fast_slerp01(a, b, t)` | 同精度单位四元数 + 同精度标量 | 全弧段最短弧无分支多项式反翘曲（零反三角/正弦/开方/除法）；相对精确 `slerp01` 的最大旋转角误差 float ≤ `1e-4` rad、double ≤ `1e-7` rad，输出范数误差同阶 | `t` 按 `math.clamp(t, 0, 1)` 钳制（`NaN -> 0`）；`t = 0` 精确返回 `a`，`t = 1` 精确返回最短弧目标 `±b` |
+| `fast_rsqrt(x)` | float/double 标量与 vector2/3/4 | 正的有限正规数相对 `1 / sqrt(x)` 的误差 float ≤ `1.5e-4`（源码 JIT 允许后端使用硬件倒数平方根估计与 1 步牛顿迭代，C++ 为位初值 + 2 步迭代）、double ≤ `1e-10`（位初值 + 3 步迭代） | 正次正规数返回 `+∞`，`±0 -> ±∞`（保符号），`+∞ -> +0`，负数与 `NaN -> NaN` |
+| `fast_normalize_or_zero(v)` | float/double 向量与四元数 | 省去精确版的最大分量预缩放除法，直接对 `dot(v, v)` 调用快速倒数平方根；在 `dot(v, v)` 为正规正数的区间内方向与单位长度误差同 `fast_rsqrt` | 平方长度为零、次正规数、无穷或 `NaN` 时返回全零值 |
 
 ### 超越函数
 
@@ -156,13 +156,13 @@ double 版把归约后的参数和主要项保留为双字，即精确和等于�
 - atan2：从最近的 atan(c)（c ∈ {0, 1/4, 1/2, 1}）出发，约化比值 (u − c·v)/(v + c·u) 不超过 0.163，u − c·v 是精确的，除法保留余数；最后以双字加上 π/2 或 π。
 - pow：log|x| 以双字算到约 2^-68 的相对误差，y·log|x| 也保留为双字，交给 exp 的核心；特殊值规则与 float 版相同。
 
-精确超越函数与普通数学运算的结果只取决于 IEEE 基本运算与 FMA，不使用查表或随 CPU 变化的近似指令（仅显式 `fast_rsqrt` / `fast_normalize_or_zero` 单精度路径在自身倒数开方指令上局部标记 `afn/arcp` 以生成硬件 `vrsqrtps` + 1 步牛顿迭代，不影响同函数内其他运算）。在相同的默认浮点环境（nearest-even 舍入、FTZ/DAZ 关闭）下，且使用同一套保留既定运算顺序与显式 FMA 的严格 IR/后端时，精确运算在支持 FMA3 的主机上逐位相同，标量调用与向量化循环也逐位相同；修改浮点环境或放宽编译规则不在此保证内，入口不替宿主隔离或恢复浮点环境。前端不向精确运算赋予 fast-math 许可，优化后仍禁止重排、隐式融合、近似或次正规数清零；优化器证明成立的 `nnan/ninf/nsz` 不在此禁令内。NaN 结果只保证是 NaN，符号与载荷不作保证。原生 C++ 代码使用 `<cmath>`，与源码的超越函数结果不保证逐位相同，两边各自满足自己的精度。
+精确超越函数与普通数学运算的结果只取决于 IEEE 基本运算与 FMA，不使用查表或随 CPU 变化的近似指令（仅显式 `fast_rsqrt` / `fast_normalize_or_zero` 单精度路径在开方及取倒数指令上局部标记 `afn`、`arcp`、`reassoc`、`contract`，允许后端选择硬件倒数平方根估计与 1 步牛顿迭代，不影响同函数内其他运算）。在相同的默认浮点环境（nearest-even 舍入、FTZ/DAZ 关闭）下，且使用同一套保留既定运算顺序与显式 FMA 的严格 IR/后端时，精确运算在支持 FMA3 的主机上逐位相同，标量调用与向量化循环也逐位相同；修改浮点环境或放宽编译规则不在此保证内，入口不替宿主隔离或恢复浮点环境。前端不向精确运算赋予 fast-math 许可，优化后仍禁止重排、隐式融合、近似或次正规数清零；优化器证明成立的 `nnan/ninf/nsz` 不在此禁令内。NaN 结果只保证是 NaN，符号与载荷不作保证。原生 C++ 代码使用 `<cmath>`，与源码的超越函数结果不保证逐位相同，两边各自满足自己的精度。
 
 超越函数目前没有自动验收；上表是历史测量，不由验收重跑。
 
 ## 调用、生命周期与优化边界
 
-数学值可作为同步源码及原生方法的按值参数、结果或 `const T&` / `T&` 参数；同步 `const T&` / `T&` 数学引用参数还可通过 `Program::Entry/Lease::bind` 绑定定型调用句柄。按值参数是独立副本，数学左值可整体赋值；引用保持只读性和别名关系。同模块辅助函数直接使用定型内部调用，常用数学操作降低为 LLVM 向量指令：四元数与四阶矩阵保持原生 SIMD 向量读写和置换（四阶矩阵转置在 O2 之后展开为四行道内奇偶交织，避免跨 128-bit 道 `vpermps` 开销），含三维或双分量单精度向量（含单精度四元数球面插值辅助对）的函数先展开分量再由 O2 执行跨元素满宽向量化、内联及消除中间值。普通反射原生方法仍沿 Runtime 调用边界，不保证跨原生机器码边界内联。
+数学值可作为同步源码及原生方法的按值参数、结果或 `const T&` / `T&` 参数；同步 `const T&` / `T&` 数学引用参数还可通过 `Program::Entry/Lease::bind` 绑定定型调用句柄。按值参数是独立副本，数学左值可整体赋值；引用保持只读性和别名关系。同模块辅助函数直接使用定型内部调用，常用数学操作降低为 LLVM 向量指令：四元数与四阶矩阵保持原生 SIMD 向量读写和置换（单精度转置在 O2 之后展开为四行道内交织，双精度转置交给后端选择置换指令），含三维或双分量单精度向量（含单精度四元数球面插值辅助对）的函数先展开分量再由 O2 执行跨元素满宽向量化、内联及消除中间值。普通反射原生方法仍沿 Runtime 调用边界，不保证跨原生机器码边界内联。
 
 公共 `Program::Entry` 与 `Lease` 继续使用同一个 `invoke` 入口。标量结果沿原 `Scalar` 返回，其中包含 double；数学结果选择带 `ValueOutput{type_id, &value}` 的重载。宿主提供已构造、大小和对齐正确、类型准确的活存储；调用成功后提交完整结果，失败不提交结果；已经发生的业务修改不回滚，输出与可变参数别名时同样适用。数学按值参数沿共享 `Argument` 准备过程取得快照，不能把传入地址当成延长生命周期的所有权。
 

@@ -221,16 +221,6 @@ auto each_reference(json::Value value, F&& visit) -> decltype(visit(value)) {
     return {};
 }
 
-std::string dotted(std::span<const std::string> path) {
-    std::string text;
-    for (const auto& name : path) {
-        if (!text.empty())
-            text += '.';
-        text += name;
-    }
-    return text;
-}
-
 std::string dump_retained(json::Value value) {
     if (value.size() == 0)
         return {};
@@ -238,16 +228,10 @@ std::string dump_retained(json::Value value) {
     return {bytes.data(), bytes.size()};
 }
 
-std::vector<detail::ScalarField> business_fields(Runtime& runtime, const world::Types& types,
-                                                 const presentation::Types& shown, TypeId type) {
-    static_cast<void>(shown);
-    auto result = take(detail::author_fields(runtime, type));
-    std::vector<FieldId> reserved;
-    if (derives(runtime, type, types.entity))
-        for (const auto key : {"position", "rotation", "scale"})
-            reserved.push_back(take(runtime.find_field(types.entity, key)));
-    std::erase_if(result,
-                  [&](const auto& field) { return std::ranges::find(reserved, field.path.front()) != reserved.end(); });
+std::vector<detail::ScalarField> business_fields(Runtime& runtime, const world::Types& types, TypeId type,
+                                                 std::vector<detail::FieldNames>* transient_paths = nullptr) {
+    auto result = take(detail::author_fields(runtime, type, false, transient_paths));
+    std::erase_if(result, [&](const auto& field) { return detail::transform_field(types, field.path.front()); });
     return result;
 }
 
@@ -285,7 +269,8 @@ json::Result<void> encode_array(Runtime& runtime, ObjectId object, const detail:
 // (no report) return an error at the first rejected leaf and never clamp. Earlier accepted leaves remain written.
 Result<void> read_record(Runtime& runtime, const PropertyTarget& target, std::span<const detail::ScalarField> schema,
                          json::Value record, const std::vector<std::string>& prefix, const ResolveReference& resolve,
-                         const WriteLeaf& write, const PropertyReport* report) {
+                         const WriteLeaf& write, const PropertyReport* report,
+                         std::span<const detail::FieldNames> transient_paths = {}) {
     const auto object = target.object != ObjectId{};
     const auto store = [&](std::span<const FieldId> path, const PropertyLeaf& leaf) -> Result<void> {
         if (write)
@@ -312,8 +297,8 @@ Result<void> read_record(Runtime& runtime, const PropertyTarget& target, std::sp
     const auto issue = [&](std::vector<std::string> at, json::Value item, world::DiagnosticKind kind,
                            const std::string& problem, const std::string& kept) -> Result<void> {
         if (!report)
-            return std::unexpected(
-                Error{ErrorCode::argument_mismatch, dotted(std::span(at).subspan(prefix.size())) + ": " + problem});
+            return std::unexpected(Error{ErrorCode::argument_mismatch,
+                                         detail::dotted(std::span(at).subspan(prefix.size())) + ": " + problem});
         return report->keep(std::move(at), item, kind, kept);
     };
     const auto read = [&](auto&& self, json::Value value, const std::vector<std::string>& path) -> Result<void> {
@@ -325,10 +310,14 @@ Result<void> read_record(Runtime& runtime, const PropertyTarget& target, std::sp
             at.insert(at.end(), next_path.begin(), next_path.end());
             const auto field = std::ranges::find_if(schema, [&](const auto& f) { return f.names == next_path; });
             if (field == schema.end()) {
-                const bool nested = std::ranges::any_of(schema, [&](const auto& f) {
-                    return f.names.size() > next_path.size() &&
-                           std::equal(next_path.begin(), next_path.end(), f.names.begin());
-                });
+                if (std::ranges::find(transient_paths, next_path) != transient_paths.end())
+                    continue;
+                const auto descendant = [&](const auto& names) {
+                    return names.size() > next_path.size() &&
+                           std::equal(next_path.begin(), next_path.end(), names.begin());
+                };
+                const bool nested = std::ranges::any_of(schema, descendant, &detail::ScalarField::names) ||
+                                    std::ranges::any_of(transient_paths, descendant);
                 if (!nested)
                     ATELIER_TRY(issue(std::move(at), item, world::DiagnosticKind::unknown_field, "Unknown field.",
                                       "Unknown field kept from the saved scene."));
@@ -523,6 +512,21 @@ json::Result<world::Trs> json_trs(json::Value value) {
         return std::unexpected(value.error(json::Fault::range, canonical.error().message));
     return *canonical;
 }
+
+Result<void> validate_property_target(Runtime& runtime, const PropertyTarget& target, json::Value record) {
+    if ((target.object == ObjectId{}) == target.storage.empty())
+        return std::unexpected(
+            Error{ErrorCode::argument_mismatch, "A properties target is either an object or a record value."});
+    if (target.object != ObjectId{}) {
+        ATELIER_TRY_BIND(type, runtime.type_of(target.object));
+        if (*type != target.type)
+            return std::unexpected(
+                Error{ErrorCode::type_mismatch, "A properties target object must have the target type."});
+    }
+    if (record.kind() != json::Kind::object)
+        return std::unexpected(Error{ErrorCode::argument_mismatch, "Expected a property record."});
+    return {};
+}
 }
 
 struct ArrayLeaf::Value {
@@ -654,21 +658,11 @@ Result<json::Document> encode_properties(Runtime& runtime, const PropertyTarget&
 Result<void> decode_properties(Runtime& runtime, const PropertyTarget& target, json::Value record,
                                const ResolveReference& resolve, const WriteLeaf& write, bool include_transient) {
     try {
-        if ((target.object == ObjectId{}) == target.storage.empty())
-            return std::unexpected(
-                Error{ErrorCode::argument_mismatch, "A properties target is either an object or a record value."});
+        ATELIER_TRY(validate_property_target(runtime, target, record));
         if (write && resolve)
             return std::unexpected(
                 Error{ErrorCode::argument_mismatch,
                       "A write hook does not receive reference leaves; decode references without one."});
-        if (target.object != ObjectId{}) {
-            ATELIER_TRY_BIND(type, runtime.type_of(target.object));
-            if (*type != target.type)
-                return std::unexpected(
-                    Error{ErrorCode::type_mismatch, "A properties target object must have the target type."});
-        }
-        if (record.kind() != json::Kind::object)
-            return std::unexpected(Error{ErrorCode::argument_mismatch, "Expected a property record."});
         ATELIER_TRY_BIND(schema, detail::author_fields(runtime, target.type, include_transient));
         return read_record(runtime, target, *schema, record, {}, resolve, write, nullptr);
     } catch (const std::exception& error) {
@@ -676,22 +670,13 @@ Result<void> decode_properties(Runtime& runtime, const PropertyTarget& target, j
     }
 }
 
-Result<void> decode_properties(Runtime& runtime, const PropertyTarget& target,
-                               std::span<const detail::ScalarField> fields, json::Value record,
+Result<void> decode_properties(Runtime& runtime, const PropertyTarget& target, json::Value record,
                                const PropertyReport& report, const ResolveReference& resolve) {
     try {
-        if ((target.object == ObjectId{}) == target.storage.empty())
-            return std::unexpected(
-                Error{ErrorCode::argument_mismatch, "A properties target is either an object or a record value."});
-        if (target.object != ObjectId{}) {
-            ATELIER_TRY_BIND(type, runtime.type_of(target.object));
-            if (*type != target.type)
-                return std::unexpected(
-                    Error{ErrorCode::type_mismatch, "A properties target object must have the target type."});
-        }
-        if (record.kind() != json::Kind::object)
-            return std::unexpected(Error{ErrorCode::argument_mismatch, "Expected a property record."});
-        return read_record(runtime, target, fields, record, {}, resolve, {}, &report);
+        ATELIER_TRY(validate_property_target(runtime, target, record));
+        std::vector<detail::FieldNames> transient_paths;
+        ATELIER_TRY_BIND(fields, detail::author_fields(runtime, target.type, false, &transient_paths));
+        return read_record(runtime, target, *fields, record, {}, resolve, {}, &report, transient_paths);
     } catch (const std::exception& error) {
         return failed(error);
     }
@@ -765,7 +750,7 @@ struct Session::GraphCodec {
                     const Error* cause = nullptr) {
             auto message =
                 cause ? cause->message
-                      : subject(object) + (field.empty() ? std::string{} : " " + dotted(field)) + ": " + detail;
+                      : subject(object) + (field.empty() ? std::string{} : " " + detail::dotted(field)) + ": " + detail;
             if (policy == LoadPolicy::strict && severity != world::Severity::info) {
                 if (cause)
                     throw detail::Failure(*cause);
@@ -1133,9 +1118,7 @@ struct Session::GraphCodec {
                         ATELIER_TRY(archive_material(material.id()));
                     }
             const auto properties = [&](ObjectId object, TypeId type) {
-                return encode_properties(runtime, object,
-                                         business_fields(runtime, session.types_, session.presentation_types_, type),
-                                         reference);
+                return encode_properties(runtime, object, business_fields(runtime, session.types_, type), reference);
             };
             const auto values = *builder.array(root, "entities");
             const auto root_keys = *builder.array(root, "roots");
@@ -1463,7 +1446,7 @@ struct Session::GraphCodec {
             if (field == fields.end())
                 throw std::runtime_error("A changed field is not a scene property.");
             if (key)
-                *key += " " + dotted(field->names);
+                *key += " " + detail::dotted(field->names);
             const auto at = op.object_path_validated(properties, field->names);
             if (field->form == ValueForm::strong_reference || field->form == ValueForm::weak_reference) {
                 const auto reference = take(runtime.read_reference(object, path));
@@ -1493,8 +1476,7 @@ struct Session::GraphCodec {
         op.set_validated(root, "id", *id);
         const auto properties = op.object_validated(root, "properties");
         const auto body = op.object_validated(properties, "body");
-        for (const auto& field :
-             business_fields(runtime, session.types_, session.presentation_types_, take(runtime.type_of(component))))
+        for (const auto& field : business_fields(runtime, session.types_, take(runtime.type_of(component))))
             if (field.form == ValueForm::inline_value && field.names.size() > 1 && field.names.front() == "body") {
                 const auto at = op.object_path_validated(body, std::span(field.names).subspan(1));
                 ATELIER_TRY(encode_scalar(runtime, op, at, take(runtime.read(component, field.path))));
@@ -1518,9 +1500,10 @@ struct Session::GraphCodec {
                                                     "Integral number converted exactly to the field's integer type.");
                                         return {};
                                     }};
-        take(read_record(runtime, {type, object},
-                         business_fields(runtime, session.types_, session.presentation_types_, type), record,
-                         {"properties"}, resolve, write, &report));
+        std::vector<detail::FieldNames> transient_paths;
+        const auto fields = business_fields(runtime, session.types_, type, load.live ? nullptr : &transient_paths);
+        take(read_record(runtime, {type, object}, fields, record, {"properties"}, resolve, write, &report,
+                         transient_paths));
     }
 
     // Scene instances share the asset entry codec, but their parent may have a
@@ -2100,8 +2083,7 @@ struct Session::GraphCodec {
             world::FieldPath, std::variant<Scalar, String, ArrayLeaf, ObjectReference, std::vector<ObjectReference>>>>;
         const auto snapshot = [&](ObjectId object, std::string_view prefix) {
             Defaults values;
-            for (const auto& field :
-                 business_fields(runtime, session.types_, session.presentation_types_, take(runtime.type_of(object))))
+            for (const auto& field : business_fields(runtime, session.types_, take(runtime.type_of(object))))
                 if (!field.names.empty() && (prefix.empty() || field.names.front() == prefix)) {
                     if (field.form == ValueForm::inline_value) {
                         if (field.kind == TypeKind::array) {
@@ -4033,7 +4015,7 @@ Result<RetainedView> Session::retained(ObjectId object) const {
         const bool material = !document && is_material(object);
         std::vector<detail::ScalarField> schema;
         if (!document && !material)
-            schema = business_fields(world_.runtime(), types_, presentation_types_, take(runtime_.type_of(object)));
+            schema = business_fields(world_.runtime(), types_, take(runtime_.type_of(object)));
         const MissingResource* mesh_unavailable{};
         if (!document && !material)
             if (const auto mesh = presentation::read_static_mesh(world_.runtime(), object);
@@ -4156,7 +4138,7 @@ std::vector<world::Diagnostic> Session::issues() const {
         auto subject = object == ObjectId{} ? std::string("Scene") : item.type;
         if (const auto key = document_identity(object); object != ObjectId{} && key)
             subject += " #" + std::to_string(*key);
-        item.message = subject + (field.empty() ? std::string{} : " " + dotted(field)) + ": " + detail;
+        item.message = subject + (field.empty() ? std::string{} : " " + detail::dotted(field)) + ": " + detail;
         item.field = std::move(field);
         item.value = std::move(value);
         result.push_back(std::move(item));

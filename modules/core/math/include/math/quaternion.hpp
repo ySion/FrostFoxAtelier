@@ -86,7 +86,7 @@ template <Real T>
     return {unit.x, unit.y, unit.z, unit.w};
 }
 
-// Branchless shortest-arc spherical interpolation on [0, 1] between unit quaternions.
+// Shortest-arc spherical interpolation on [0, 1] between unit quaternions.
 // Clamps t with source math.clamp semantics (NaN -> 0), negates unit_b when
 // dot(unit_a, unit_b) < 0 (so t = 1 yields -unit_b), and selects a normalized
 // linear blend for near-collinear inputs without dividing by a vanishing sine.
@@ -100,19 +100,18 @@ template <Real T>
     const BasicQuaternion<T> target = flip ? -unit_b : unit_b;
     const T cosine = flip ? -raw_cosine : raw_cosine;
     constexpr T threshold = std::same_as<T, double> ? T(1) - T(1e-10) : T(1) - T(1e-4);
-    const bool near_collinear = cosine > threshold;
-    const BasicVector<T, 4> linear{unit_a.x * u + target.x * clamped, unit_a.y * u + target.y * clamped,
-                                   unit_a.z * u + target.z * clamped, unit_a.w * u + target.w * clamped};
-    const T safe_norm = std::sqrt(near_collinear ? length_squared(linear) : std::max(T{}, T{1} - cosine * cosine));
-    const T sine = near_collinear ? T{} : safe_norm;
+    if (cosine > threshold) {
+        const BasicVector<T, 4> linear{unit_a.x * u + target.x * clamped, unit_a.y * u + target.y * clamped,
+                                       unit_a.z * u + target.z * clamped, unit_a.w * u + target.w * clamped};
+        const T norm = std::sqrt(length_squared(linear));
+        return {linear.x / norm, linear.y / norm, linear.z / norm, linear.w / norm};
+    }
+    const T sine = std::sqrt(std::max(T{}, T{1} - cosine * cosine));
     const T angle = std::atan2(sine, cosine);
-    const T wa = std::sin(u * angle) / safe_norm;
-    const T wb = std::sin(clamped * angle) / safe_norm;
-    const BasicQuaternion<T> collinear{linear.x / safe_norm, linear.y / safe_norm, linear.z / safe_norm,
-                                       linear.w / safe_norm};
-    const BasicQuaternion<T> spherical{unit_a.x * wa + target.x * wb, unit_a.y * wa + target.y * wb,
-                                       unit_a.z * wa + target.z * wb, unit_a.w * wa + target.w * wb};
-    return near_collinear ? collinear : spherical;
+    const T wa = std::sin(u * angle) / sine;
+    const T wb = std::sin(clamped * angle) / sine;
+    return {unit_a.x * wa + target.x * wb, unit_a.y * wa + target.y * wb, unit_a.z * wa + target.z * wb,
+            unit_a.w * wa + target.w * wb};
 }
 
 namespace detail {

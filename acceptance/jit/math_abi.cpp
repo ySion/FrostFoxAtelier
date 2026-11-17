@@ -1,4 +1,5 @@
 #include "../helpers.hpp"
+#include "../math/rotation_error.hpp"
 #include "math/math.hpp"
 #include "runtime/native.hpp"
 #include "source/program.hpp"
@@ -108,6 +109,13 @@ void verify_math_abi() {
             qnorm_out = math.fast_normalize_or_zero(q);
         }
 
+        void eval_packed(vector4& v, vector4& unit) {
+            unit = math.fast_normalize_or_zero(v);
+            v = math.fast_rsqrt(v);
+        }
+
+        void transpose_d(matrix4d& m) { m = math.transpose(m); }
+
         int stateless_divide(int a, int b) {
             return a / b;
         }
@@ -126,6 +134,12 @@ void verify_math_abi() {
     const auto eval_fast_vec = take(take(math_program->pin("eval_fast_vec"))
                                         .bind<void, math::Vector3&, math::Vector3&, math::Quaternion&,
                                               const math::Vector3&, const math::Quaternion&>());
+    const auto eval_packed = take(take(math_program->pin("eval_packed")).bind<void, math::Vector4&, math::Vector4&>());
+    const auto transpose_d = take(take(math_program->pin("transpose_d")).bind<void, math::Matrix4d&>());
+    math::Matrix4d matrix{{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}};
+    const auto transposed = math::transpose(matrix);
+    take(transpose_d.invoke({}, matrix));
+    require(matrix == transposed, "JIT matrix4d transpose misplaced a component.");
     const auto stateless_divide =
         take(take(math_program->pin("stateless_divide")).bind<std::int32_t, std::int32_t, std::int32_t>());
 
@@ -152,15 +166,8 @@ void verify_math_abi() {
             require(std::abs(jit_exact.x - cpp_exact.x) <= 1e-5f && std::abs(jit_exact.y - cpp_exact.y) <= 1e-5f &&
                         std::abs(jit_exact.z - cpp_exact.z) <= 1e-5f && std::abs(jit_exact.w - cpp_exact.w) <= 1e-5f,
                     "JIT math.slerp01(float) diverged from C++ slerp01.");
-            const auto unit_fast = *math::try_normalize(jit_fast);
-            const auto aligned_fast = math::dot(cpp_exact, unit_fast) < 0.0f ? -unit_fast : unit_fast;
-            const float angle_err =
-                2.0f *
-                std::atan2(math::length(math::Vector4{cpp_exact.x - aligned_fast.x, cpp_exact.y - aligned_fast.y,
-                                                      cpp_exact.z - aligned_fast.z, cpp_exact.w - aligned_fast.w}),
-                           math::length(math::Vector4{cpp_exact.x + aligned_fast.x, cpp_exact.y + aligned_fast.y,
-                                                      cpp_exact.z + aligned_fast.z, cpp_exact.w + aligned_fast.w}));
-            require(angle_err <= 1e-4f && std::abs(math::dot(jit_fast, jit_fast) - 1.0f) <= 1e-4f,
+            require(atelier::acceptance::rotation_error(cpp_exact, jit_fast) <= 1e-4f &&
+                        std::abs(math::dot(jit_fast, jit_fast) - 1.0f) <= 1e-4f,
                     "JIT math.fast_slerp01(float) exceeded angular or norm bound.");
             if (t == 0.0f || std::isnan(t))
                 require(jit_fast == math::Quaternion{}, "JIT math.fast_slerp01(float) lost exact t=0/NaN endpoint.");
@@ -177,23 +184,15 @@ void verify_math_abi() {
                         std::abs(jit_exact_d.z - cpp_exact_d.z) <= 1e-13 &&
                         std::abs(jit_exact_d.w - cpp_exact_d.w) <= 1e-13,
                     "JIT math.slerp01(double) diverged from C++ slerp01.");
-            const auto unit_fast_d = *math::try_normalize(jit_fast_d);
-            const auto aligned_fast_d = math::dot(cpp_exact_d, unit_fast_d) < 0.0 ? -unit_fast_d : unit_fast_d;
-            const double angle_err_d =
-                2.0 *
-                std::atan2(
-                    math::length(math::Vector4d{cpp_exact_d.x - aligned_fast_d.x, cpp_exact_d.y - aligned_fast_d.y,
-                                                cpp_exact_d.z - aligned_fast_d.z, cpp_exact_d.w - aligned_fast_d.w}),
-                    math::length(math::Vector4d{cpp_exact_d.x + aligned_fast_d.x, cpp_exact_d.y + aligned_fast_d.y,
-                                                cpp_exact_d.z + aligned_fast_d.z, cpp_exact_d.w + aligned_fast_d.w}));
-            require(angle_err_d <= 1e-7 && std::abs(math::dot(jit_fast_d, jit_fast_d) - 1.0) <= 1e-7,
+            require(atelier::acceptance::rotation_error(cpp_exact_d, jit_fast_d) <= 1e-7 &&
+                        std::abs(math::dot(jit_fast_d, jit_fast_d) - 1.0) <= 1e-7,
                     "JIT math.fast_slerp01(double) exceeded angular or norm bound.");
         }
     }
 
     constexpr float inf_f = std::numeric_limits<float>::infinity();
     constexpr float nan_f = std::numeric_limits<float>::quiet_NaN();
-    for (const float x : {1e-42f, 0.25f, 9.0f, 1e30f}) {
+    for (const float x : {std::numeric_limits<float>::min(), std::numeric_limits<float>::max(), 0.25f, 9.0f, 1e30f}) {
         const double expected = 1.0 / std::sqrt(static_cast<double>(x));
         const float actual_r = take(eval_rsqrt_f.invoke({}, x));
         require(std::abs(static_cast<double>(actual_r) - expected) / expected <= 1.5e-4,
@@ -203,13 +202,17 @@ void verify_math_abi() {
                 take(eval_rsqrt_f.invoke({}, inf_f)) == 0.0f && !std::signbit(take(eval_rsqrt_f.invoke({}, inf_f))) &&
                 std::isnan(take(eval_rsqrt_f.invoke({}, -4.0f))) && std::isnan(take(eval_rsqrt_f.invoke({}, nan_f))),
             "JIT math.fast_rsqrt(float) special values violated contract.");
-    for (const double x : {1e-315, 0.25, 16.0, 1e250}) {
+    for (const double x : {std::numeric_limits<double>::min(), std::numeric_limits<double>::max(), 0.25, 16.0, 1e250}) {
         const double expected = 1.0 / std::sqrt(x);
         const double actual_r = take(eval_rsqrt_d.invoke({}, x));
         require(std::abs(actual_r - expected) / expected <= 1e-10,
                 "JIT math.fast_rsqrt(double) exceeded relative error bound.");
     }
 
+    constexpr double tiny_d = std::numeric_limits<double>::denorm_min();
+    require(take(eval_rsqrt_d.invoke({}, tiny_d)) == std::numeric_limits<double>::infinity() &&
+                std::isnan(take(eval_rsqrt_d.invoke({}, -tiny_d))),
+            "JIT math.fast_rsqrt(double) subnormal inputs violated contract.");
     math::Vector3 vec_rsqrt{};
     math::Vector3 vec_norm{};
     math::Quaternion quat_norm{};
@@ -225,6 +228,21 @@ void verify_math_abi() {
                               math::Quaternion{0.0f, 0.0f, 0.0f, 0.0f}));
     require(vec_norm == math::Vector3{} && quat_norm == math::Quaternion{0.0f, 0.0f, 0.0f, 0.0f},
             "JIT math.fast_normalize_or_zero failed zero/nonfinite fallback.");
+    constexpr float tiny = std::numeric_limits<float>::denorm_min();
+    constexpr float minimum = std::numeric_limits<float>::min();
+    math::Vector4 packed{tiny, -tiny, minimum, -0.f};
+    math::Vector4 packed_unit;
+    take(eval_packed.invoke({}, packed, packed_unit));
+    require(packed.x == inf_f && std::isnan(packed.y) && std::abs(packed.z * std::sqrt(minimum) - 1.f) <= 1.5e-4f &&
+                packed.w == -inf_f,
+            "JIT packed reciprocal square root failed at the normal/subnormal boundary.");
+    packed = {1e-21f, 0.f, 0.f, 0.f};
+    take(eval_packed.invoke({}, packed, packed_unit));
+    take(eval_fast_vec.invoke({}, vec_rsqrt, vec_norm, quat_norm, math::Vector3{0x1p-63f, 0.f, 0.f},
+                              math::Quaternion{0.f, -1e-21f, 0.f, 0.f}));
+    require(packed_unit == math::Vector4{} && quat_norm == math::Quaternion{0.f, 0.f, 0.f, 0.f} &&
+                std::abs(vec_norm.x - 1.f) <= 1.5e-4f,
+            "JIT normalization failed at the normal/subnormal squared-length boundary.");
 
     // Static type checking must reject mismatched precision or unsupported shapes on new intrinsics.
     auto bad_slerp = source::Program::prepare(take(packed_program->request("bad-slerp.source", R"(

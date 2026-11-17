@@ -808,15 +808,9 @@ Result<std::vector<Property>> Session::properties(ObjectId object) const {
         if (*entity && !spatial && detail::transform_path(types_, field.path))
             continue;
         ATELIER_TRY_BIND(value, read_property(object, field.path));
-        std::string name;
-        for (const auto& part : field.names) {
-            if (!name.empty())
-                name += '.';
-            name += part;
-        }
-        result.push_back({std::move(name), std::move(field.path), field.type, std::move(*value), std::move(field.label),
-                          std::move(field.category), std::move(field.description), field.range, field.transient,
-                          field.read_only});
+        result.push_back({detail::dotted(field.names), std::move(field.path), field.type, std::move(*value),
+                          std::move(field.label), std::move(field.category), std::move(field.description), field.range,
+                          field.transient, field.read_only});
     }
     return result;
 }
@@ -928,10 +922,7 @@ Result<void> Session::apply_group(const FieldGroupChange& change, bool forward) 
 Result<void> Session::set_properties(ObjectId object, std::span<const PropertyPatch> patch) {
     ATELIER_TRY_BIND(entity, admit_property_edit(object));
     for (const auto& leaf : patch) {
-        if (object == *entity && !leaf.path.empty() &&
-            (leaf.path.front() == types_.position_fields.front().front() ||
-             leaf.path.front() == types_.rotation_fields.front().front() ||
-             leaf.path.front() == types_.scale_fields.front().front()))
+        if (object == *entity && !leaf.path.empty() && detail::transform_field(types_, leaf.path.front()))
             return invalid("Transform fields require scene.transform_set/clear/remove.");
         ATELIER_TRY_BIND(read_only, read_only_path(runtime_, object, leaf.path));
         if (*read_only)

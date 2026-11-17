@@ -3,10 +3,23 @@
 #include "editor/operator_parameters.hpp"
 #include <algorithm>
 #include <cmath>
+#include <span>
 
 namespace atelier::editor::detail {
+using FieldNames = std::vector<std::string>;
+
+inline std::string dotted(std::span<const std::string> path) {
+    std::string text;
+    for (const auto& name : path) {
+        if (!text.empty())
+            text += '.';
+        text += name;
+    }
+    return text;
+}
+
 struct ScalarField {
-    std::vector<std::string> names;
+    FieldNames names;
 
     world::FieldPath path;
 
@@ -33,7 +46,8 @@ struct ScalarField {
     bool read_only{};
 };
 
-inline Result<std::vector<ScalarField>> author_fields(Runtime& runtime, TypeId type, bool include_transient = false) {
+inline Result<std::vector<ScalarField>> author_fields(Runtime& runtime, TypeId type, bool include_transient = false,
+                                                      std::vector<FieldNames>* skipped = nullptr) {
     std::vector<ScalarField> result;
     const auto visit = [&](auto&& self, TypeId current, ScalarField prefix) -> Result<void> {
         if (prefix.path.size() > 16)
@@ -74,8 +88,13 @@ inline Result<std::vector<ScalarField>> author_fields(Runtime& runtime, TypeId t
             auto child = prefix;
             child.transient |= field.transient;
             child.read_only |= field.read_only;
-            if (!include_transient && child.transient)
+            if (!include_transient && child.transient) {
+                if (skipped) {
+                    child.names.push_back(field.name);
+                    skipped->push_back(std::move(child.names));
+                }
                 continue;
+            }
             child.names.push_back(field.name);
             child.path.push_back(field.id);
             // A vector's lanes share the aggregate caption. Other record children
@@ -139,6 +158,11 @@ inline bool finite_scalar(const Scalar& value) {
                 return true;
         },
         value);
+}
+
+inline bool transform_field(const world::Types& types, FieldId field) noexcept {
+    return field == types.position_fields[0][0] || field == types.rotation_fields[0][0] ||
+           field == types.scale_fields[0][0];
 }
 
 inline bool transform_path(const world::Types& types, std::span<const FieldId> path) {

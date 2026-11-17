@@ -26,14 +26,6 @@ std::optional<std::pair<std::string_view, std::string_view>> endpoint(json::Valu
         return std::nullopt;
     return std::pair{text.substr(0, dot), text.substr(dot + 1)};
 }
-
-std::string dotted(std::span<const std::string> path) {
-    std::string text;
-    for (const auto& name : path)
-        text += (text.empty() ? "" : ".") + name;
-    return text;
-}
-
 }
 
 Result<GraphDocument> load_graph(Runtime& runtime, std::string_view text) {
@@ -113,7 +105,7 @@ Result<GraphDocument> load_graph(Runtime& runtime, std::string_view text) {
         item.type = std::move(type);
         if (value)
             item.value = assets::json_format::preview(*value);
-        item.message = dotted(field) + ": " + detail;
+        item.message = detail::dotted(field) + ": " + detail;
         item.field = std::move(field);
         document.issues.push_back(std::move(item));
     };
@@ -141,9 +133,8 @@ Result<GraphDocument> load_graph(Runtime& runtime, std::string_view text) {
     json::Builder own(settings);
     own.erase(own.root(), "display");
     // Parameters are public fields; graph membership, connections and display are hidden.
-    ATELIER_TRY_BIND(graph_fields, detail::author_fields(runtime, *graph_type));
     ATELIER_TRY(
-        decode_properties(runtime, {*graph_type, graph}, *graph_fields, own.root(),
+        decode_properties(runtime, {*graph_type, graph}, own.root(),
                           keeping(kept_settings, kept_settings.root(), graph, "procedural.Graph", {"settings"})));
 
     for (const auto& [key, entry] : *members) {
@@ -166,10 +157,9 @@ Result<GraphDocument> load_graph(Runtime& runtime, std::string_view text) {
             item.node = std::move(*added);
             json::Builder kept;
             const auto properties = kept.object_validated(kept.root(), "properties");
-            ATELIER_TRY_BIND(fields, detail::author_fields(runtime, *type));
-            ATELIER_TRY(decode_properties(
-                runtime, {*type, item.node.id()}, *fields, entry.find("properties")->value_or(empty.root()),
-                keeping(kept, properties, item.node.id(), type_name, {"nodes", name, "properties"})));
+            ATELIER_TRY(
+                decode_properties(runtime, {*type, item.node.id()}, entry.find("properties")->value_or(empty.root()),
+                                  keeping(kept, properties, item.node.id(), type_name, {"nodes", name, "properties"})));
             if (!properties.size())
                 kept.erase(kept.root(), "properties");
             item.kept = kept.finish();
