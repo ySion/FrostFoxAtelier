@@ -205,6 +205,8 @@ void scene() {
                   Vector2{-1.f, 5.f});
     static_assert(min_component(Vector4{3, -5, 2, -1}) == -5.f);
     static_assert(max_component(Vector4{3, -5, 7, -1}) == 7.f);
+    static_assert(min_component(Vector4{2, 3, nan_f, -1}) == -1.f);
+    static_assert(max_component(Vector4{2, 3, nan_f, 9}) == 9.f);
     static_assert(scale_matrix(Vector3{2, 3, 4}) * rotation_matrix(turn) * translation_matrix(Vector3{4, 5, 6}) ==
                   local);
     const Vector3 camera_eye{2, 4, -6};
@@ -222,6 +224,22 @@ void scene() {
             "Coincident eye and target must fail look-at.");
     require(!try_look_to_lh(camera_eye, Vector3{0, 2, 0}, Vector3{0, 1, 0}).has_value(),
             "Collinear forward and up must fail look-to.");
+    const Vector3 diagonal{1, 1, 7};
+    require(!try_look_to_lh(camera_eye, diagonal, diagonal) && !try_look_to_lh(camera_eye, diagonal, -3.f * diagonal),
+            "Diagonal parallel and antiparallel directions must fail look-to.");
+    require(try_look_to_lh(camera_eye, diagonal, Vector3{1, 1, std::nextafter(7.f, 8.f)}).has_value(),
+            "Distinct nearly parallel directions must still produce a view.");
+    const Vector3 nearly_horizontal{std::numeric_limits<float>::max(), std::numeric_limits<float>::denorm_min(), 0};
+    const auto narrow_view = try_look_to_lh(Vector3{}, Vector3{1, 0, 0}, nearly_horizontal);
+    require(narrow_view && (*narrow_view)(2, 0) == -1.f, "Look-to lost a representable perpendicular component.");
+    for (const float scale : {std::numeric_limits<float>::min(), std::numeric_limits<float>::max()}) {
+        const Vector3 scaled_forward{scale, scale, 0};
+        const Vector3 scaled_up{0, scale, 0};
+        const auto scaled_view = try_look_to_lh(Vector3{}, scaled_forward, scaled_up);
+        require(scaled_view && near((*scaled_view)(2, 0), -1.f) &&
+                    !try_look_to_lh(Vector3{}, scaled_forward, -scaled_forward),
+                "Scaling the directions must preserve the right axis and collinearity.");
+    }
     require(!try_look_to_lh(Vector3{3e38f, 3e38f, 0.f}, Vector3{-1.f, -1.f, 0.f}, Vector3{0.f, 0.f, 1.f}).has_value(),
             "Overflowing view translation dot product must fail look-to.");
     constexpr auto empty_box = Bounds::empty();

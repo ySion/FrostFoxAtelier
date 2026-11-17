@@ -219,10 +219,12 @@ std::expected<std::size_t, StringError> String::replace_all(StringView search, S
     if (at == StringView::npos)
         return 0;
     String candidate;
-    if (replacement.size() <= search.size())
-        candidate.reserve(text.size());
-    else if (const auto delta = replacement.size() - search.size(); delta <= max_size - text.size())
-        candidate.reserve(text.size() + delta);
+    if (replacement.size() >= search.size()) {
+        const auto growth = replacement.size() - search.size();
+        if (growth > max_size - text.size())
+            fatal("String exceeds addressable storage.");
+        candidate.reserve(text.size() + growth);
+    }
     std::size_t first{};
     std::size_t replaced{};
     do {

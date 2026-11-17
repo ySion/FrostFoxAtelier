@@ -194,19 +194,17 @@ public:
     }
 
     [[nodiscard]] Iterator begin() noexcept [[clang::lifetimebound]] {
-        return Iterator{empty() ? nullptr : std::addressof(*storage_.begin())};
+        return Iterator{std::to_address(storage_.begin())};
     }
 
-    [[nodiscard]] Iterator end() noexcept [[clang::lifetimebound]] {
-        return Iterator{empty() ? nullptr : std::addressof(*storage_.begin()) + size()};
-    }
+    [[nodiscard]] Iterator end() noexcept [[clang::lifetimebound]] { return Iterator{std::to_address(storage_.end())}; }
 
     [[nodiscard]] ConstIterator begin() const noexcept [[clang::lifetimebound]] {
-        return ConstIterator{storage_.values().data()};
+        return ConstIterator{std::to_address(storage_.begin())};
     }
 
     [[nodiscard]] ConstIterator end() const noexcept [[clang::lifetimebound]] {
-        return ConstIterator{storage_.values().data() + size()};
+        return ConstIterator{std::to_address(storage_.end())};
     }
 
 private:

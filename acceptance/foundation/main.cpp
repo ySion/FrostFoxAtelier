@@ -1,11 +1,13 @@
 #include "memory/fatal.hpp"
 #include "../helpers.hpp"
 #include "foundation/array.hpp"
+#include "foundation/map.hpp"
 #include "foundation/optional.hpp"
 #include "foundation/sha256.hpp"
 #include "foundation/string.hpp"
 #include <cstdio>
 #include <type_traits>
+#include <utility>
 
 namespace {
 static_assert(sizeof(atelier::Optional<int>) == 8 && alignof(atelier::Optional<int>) == 4);
@@ -45,6 +47,13 @@ int main() {
     auto text = String::from_utf8("abcdefghijklmnopqrst");
     require(text && text->append(text->slice(1)), "String self-append failed.");
     require(*text == "abcdefghijklmnopqrstbcdefghijklmnopqrst", "String self-view was invalidated.");
+    const auto removed = text->replace_all(text->slice(1, 19), {});
+    require(removed && *removed == 2 && *text == "a" && text->capacity() == String::inline_capacity,
+            "Shrinking a heap string to one byte must leave an inline result.");
+    Map<int, int> map;
+    map.reserve(8);
+    require(map.begin() == std::as_const(map).end() && std::as_const(map).begin() == map.end(),
+            "Reserved empty map has inconsistent mutable and const iterators.");
     Array<String> values{String::literal<"seven">(), String::literal<"nine">()};
     require(values.capacity() == 2, "Array initializer construction over-allocated capacity.");
     values.append(values.view());

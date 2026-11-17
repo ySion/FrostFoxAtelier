@@ -346,7 +346,7 @@ template <Real T, std::size_t N>
     if constexpr (N == 3)
         return std::min(std::min(value.x, value.y), value.z);
     if constexpr (N == 4)
-        return std::min(std::min(value.x, value.y), std::min(value.z, value.w));
+        return std::min(std::min(std::min(value.x, value.y), value.z), value.w);
 }
 
 template <Real T, std::size_t N>
@@ -356,7 +356,7 @@ template <Real T, std::size_t N>
     if constexpr (N == 3)
         return std::max(std::max(value.x, value.y), value.z);
     if constexpr (N == 4)
-        return std::max(std::max(value.x, value.y), std::max(value.z, value.w));
+        return std::max(std::max(std::max(value.x, value.y), value.z), value.w);
 }
 
 template <Real T, std::size_t N>

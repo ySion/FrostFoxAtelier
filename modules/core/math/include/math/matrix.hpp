@@ -331,7 +331,18 @@ template <Real T>
     const auto z = try_normalize(forward);
     if (!z)
         return std::nullopt;
-    const auto x = try_normalize(cross(up, *z));
+    // Cross the original directions so rounding just one cannot turn parallel inputs into a basis.
+    auto right = cross(up, forward);
+    if (!is_finite(right) || max_component(cwise_abs(right)) < std::numeric_limits<T>::min()) {
+        const auto unit_up = try_normalize(up);
+        if (!unit_up)
+            return std::nullopt;
+        const auto scaled_right = cross(*unit_up, *z);
+        // A tiny perpendicular component in the original up vector can disappear on normalization.
+        if (scaled_right != BasicVector<T, 3>{})
+            right = scaled_right;
+    }
+    const auto x = try_normalize(right);
     if (!x)
         return std::nullopt;
     const auto y = cross(*z, *x);
