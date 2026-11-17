@@ -224,6 +224,27 @@ inline std::expected<std::string, Diagnostic> string_value(const Token& token) {
     return value;
 }
 
+inline bool normalize_description_text(std::string& text) {
+    for (std::size_t i = 0; i < text.size(); ++i) {
+        const auto c = static_cast<unsigned char>(text[i]);
+        if ((c < 32 && c != '\n' && c != '\r' && c != '\t') || c == 127 ||
+            (c == 0xc2 && i + 1 < text.size() && static_cast<unsigned char>(text[i + 1]) >= 0x80 &&
+             static_cast<unsigned char>(text[i + 1]) <= 0x9f))
+            return false;
+    }
+    auto output = text.find('\r');
+    if (output == std::string::npos)
+        return true;
+    for (auto input = output; input < text.size(); ++input) {
+        const char c = text[input];
+        text[output++] = c == '\r' ? '\n' : c;
+        if (c == '\r' && input + 1 < text.size() && text[input + 1] == '\n')
+            ++input;
+    }
+    text.resize(output);
+    return true;
+}
+
 class Tokens {
 public:
     static std::expected<Tokens, Diagnostic> create(std::string_view source) {

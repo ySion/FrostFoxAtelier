@@ -195,6 +195,8 @@ struct Coroutine::Control {
 
     std::unique_ptr<CoroutineFrame> frame;
 
+    std::size_t references{1};
+
     CoroutineState state{CoroutineState::ready};
 
     bool cancel_requested{};
@@ -204,25 +206,47 @@ struct Coroutine::Control {
     std::optional<Error> error;
 
     Control(Runtime& owner, std::unique_ptr<CoroutineFrame> body) : runtime(owner), frame(std::move(body)) {}
+
+    static void release(Control* control) noexcept {
+        if (control) {
+            assert(control->references != 0);
+            if (--control->references == 0)
+                delete control;
+        }
+    }
+
+    struct Pin {
+        Control* ptr;
+
+        explicit Pin(Control* control) noexcept : ptr(control) { ++ptr->references; }
+
+        ~Pin() { release(ptr); }
+
+        Pin(const Pin&) = delete;
+
+        Pin& operator=(const Pin&) = delete;
+    };
 };
 
 Result<Coroutine> Coroutine::create(Runtime& runtime, std::unique_ptr<CoroutineFrame> frame) {
     detail::assert_serial_access();
     if (!frame)
         return std::unexpected(Error{ErrorCode::invalid_definition, "Coroutine requires an owned frame."});
-    return Coroutine(std::make_shared<Control>(runtime, std::move(frame)));
+    return Coroutine(new Control(runtime, std::move(frame)));
 }
 
 Coroutine::~Coroutine() {
     cancel();
+    Control::release(std::exchange(control_, nullptr));
 }
 
-Coroutine::Coroutine(Coroutine&& other) noexcept : control_(std::move(other.control_)) {}
+Coroutine::Coroutine(Coroutine&& other) noexcept : control_(std::exchange(other.control_, nullptr)) {}
 
 Coroutine& Coroutine::operator=(Coroutine&& other) noexcept {
     if (this != &other) {
         cancel();
-        control_ = std::move(other.control_);
+        Control::release(control_);
+        control_ = std::exchange(other.control_, nullptr);
     }
     return *this;
 }
@@ -233,9 +257,10 @@ CoroutineState Coroutine::state() const noexcept {
 
 void Coroutine::cancel() noexcept {
     detail::assert_serial_access();
-    const auto active = control_;
-    if (!active)
+    if (!control_)
         return;
+    const Control::Pin pin{control_};
+    auto* const active = pin.ptr;
     if (active->state == CoroutineState::running) {
         active->cancel_requested = true;
         return;
@@ -249,10 +274,11 @@ void Coroutine::cancel() noexcept {
 
 Result<CoroutineState> Coroutine::resume() noexcept {
     detail::assert_serial_access();
-    // A callback can destroy/move the public owner. Only this pin is used below.
-    const auto active = control_;
-    if (!active)
+    if (!control_)
         return std::unexpected(Error{ErrorCode::invalid_object, "Coroutine is empty."});
+    // A callback can destroy/move the public owner. Only this pin is used below.
+    const Control::Pin pin{control_};
+    auto* const active = pin.ptr;
     if (active->state == CoroutineState::running)
         return std::unexpected(Error{ErrorCode::busy, "Coroutine is already running."});
     if (active->state != CoroutineState::ready && active->state != CoroutineState::suspended)

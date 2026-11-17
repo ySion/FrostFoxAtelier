@@ -110,7 +110,7 @@ plain record 可以在同步源码与原生调用中按值传入和返回，借�
 - `uint` 的加减乘按模 `2^32` 回绕；比较按无符号值，一元 `+` 保持值，没有一元负号。`4294967295 + 1` 合法并为 0，`4294967296` 是错误字面量。
 - `int` 加减乘和取负按 32 位补码回绕，比较按有符号值；生成代码不附加 signed-overflow 未定义行为假设。
 - `int/uint` 支持 `/`、`%`；有符号除法向零截断，非零余数与被除数同号。除数为零以及 `INT_MIN / -1`、`INT_MIN % -1` 均报告执行错误，未定义的机器运算不会执行。
-- `int/uint` 支持 `&/|/^/~`；二元按位运算要求两侧同类型。移位量可为 int 或 uint，必须在 0～31，负数或超宽计数报告执行错误，不掩码。左移按 32 位回绕；int 右移补符号位，uint 右移补零。
+- `int/uint` 支持 `&/|/^/~`，声明 `Flags` 的无符号枚举同样支持同类型二元 `&/|/^` 与一元 `~`；二元按位运算要求两侧同类型。移位量可为 int 或 uint，必须在 0～31，负数或超宽计数报告执行错误，不掩码。左移按 32 位回绕；int 右移补符号位，uint 右移补零。
 - bool 只支持 `!`、短路 `&&/||` 和同类型 `==/!=`，没有排序、位操作或算术。`&&` 仅在左侧为 true 时求右侧，`||` 仅在左侧为 false 时求右侧；被跳过的表达式不调用函数，也不产生执行错误。
 - `float/double` 加减乘除及取负不启用 fast-math 假设。一元负号翻转符号，保留负零；正负零数值相等。`==/< /<=/>/>=` 遇 NaN 为假，`!=` 遇 NaN 为真。运算可产生无穷或 NaN；没有饱和或浮点异常处理语法，不承诺额外的跨平台 NaN payload/次正规数行为。
 - 向量、四元数、矩阵构造与运算，以及 `math.*` 内建函数，以[数学值规范](docs/math.md#源码运算)为准；源码不提供通用运算符重载。
@@ -157,7 +157,7 @@ uint process(combat.DamageInfo& damage) {
 
 - 类型声明位于顶层，可与函数交错；结构体字段可前向引用同模块类型。名称为准确声明名，支持 `combat.Point` 形式；没有命名空间块或用户类型的相对短名查找。类型不能重名，不能覆盖已注册类型、内建数学短名或 `String/Array/core.*/math.*`；同名类型与函数也拒绝。
 - `editor.` 前缀保留给编辑器。编辑器在文档 Runtime 中以此前缀登记自己的参数类型，源码的 struct、enum 和 class 都不能用这个前缀声明。宿主目录也不包含这些类型：在源码中引用它们，包括作字段类型、局部类型、枚举常量或类的基类，都按未登记类型报错。这是在 Program 拥有各自可见域之前的临时规则。
-- `enum Name [ : int | uint ] { ... }` 默认底层为 int，末尾分号可省略。枚举项可显式指定十进制整数（含负号），否则为零或上一项加一；底层范围溢出、重复项名拒绝，重复值允许。可使用尾随逗号。
+- `[Flags] enum Name [ : int | uint ] { ... }` 默认底层为 int，末尾分号可省略；携带 `[Flags]` 时底层必须显式写 `: uint`。枚举项前可写 `[Label = "...", DESC = "..."]` 展示元数据；枚举项可显式指定十进制整数（含负号），否则为零或上一项加一；底层范围溢出、重复项名拒绝，重复值允许。可使用尾随逗号。
 - `struct Name { Type field; ... };` 字段支持 bool/float/double/uint/int、内建数学值、已注册或同模块枚举、同模块结构体，以及已注册的无 GC 引用记录、String 和具体 Array。`Array<T>`（含嵌套数组）按元素身份解析现有注册类型，不自动实例化 `Array<源码结构体>`。字段顺序决定布局，偏移和对齐由 Runtime 计算；内联循环、未知类型、重复字段和对象引用字段拒绝。没有字段初始化器、方法、继承或自定义构造析构。
 - 结构体的拥有能力由字段生命周期能力递归组合；满足条件的局部可默认构造、深复制初始化和整值赋值。默认构造递归将标量置零、String/Array 置空，并调用原生记录的构造。字段随拥有者清理；部分构造失败时仅销毁已完成的字段。自有局部中的字段及元素遵守上述拥有值修改规则；引用参数允许修改可写标量/枚举叶值和数学字段，不能替换一般聚合字段或改变容器结构。满足 plain record 与拥有资格的源码结构体支持同步按值参数与结果；源码返回临时由返回值复制形成，不额外调用默认构造。没有初始化器的局部仍执行默认构造。
 - 类型声明经 `Program::request` 收集并取得未发布的 Runtime 布局，函数由 `prepare` 编译；成功 `try_publish` 后类型和代码一起可用。任何候选失败均不发布新类型。创建对象后仍可发布新类型，提交需要类型安全点（代码发布条件加 GC 空闲）。
@@ -185,7 +185,7 @@ class game.Move : world.Component {
 ```
 
 - 基类必须是宿主已经注册的原生对象类型。类具有真实 Runtime 类型身份、继承关系和实例存储；字段可以是 bool/float/double/int/uint、float 或 double 的 vector2/3/4（短名或 `math.*` 规范名）、已注册或同快照声明的枚举，以及已注册的引擎 String（`String` 或其规范名 `core.String`）；四元数、矩阵、其他记录、数组和对象引用不能作类字段。原生基类仍由原生构造函数初始化。
-- 字段初始化器给出整值默认值，没有初始化器时取零值（枚举为底层值 0）。标量写不依赖其他声明的常量标量表达式，按现有数值和显式转换规则检查；向量写 `vector3()` 或每个分量一个常量的 `vector3(c0, c1, c2)`，分量精确匹配向量精度，例如 double 向量的分量写 `0.0d`；枚举写 `geo.Axis::z`。每个浮点叶必须有限：`0.0f / 0.0f`、`1e30f * 1e30f` 这类折叠结果在该字段报错。
+- 字段初始化器给出整值默认值，没有初始化器时取零值（枚举为底层值 0）。标量写不依赖其他声明的常量标量表达式，按现有数值和显式转换规则检查；向量写 `vector3()` 或每个分量一个常量的 `vector3(c0, c1, c2)`，分量精确匹配向量精度，例如 double 向量的分量写 `0.0d`；普通枚举写 `geo.Axis::z`，`Flags` 枚举还可写由已声明位项构成的常量按位表达式（如 `ns.Mask::A | ns.Mask::B`）。每个浮点叶必须有限：`0.0f / 0.0f`、`1e30f * 1e30f` 这类折叠结果在该字段报错。原生方法若发布了尾部标量/枚举默认实参（`MethodInfo::parameter_defaults`），源码调用可省略对应的尾部实参并在编译期静态补齐。
 - String 字段默认构造为空，或用一个普通字符串字面量，例如 `String attribute = "pscale";`；转义沿既有 String 规则解码，UTF-8 在发布前校验。`String` 与规范名、无初始化器与 `""` 分别等价。它是同一 Runtime 中的真实拥有型字段，支持宿主反射读写、保存与重建，**不开放源码 `self.attribute` 的读取、写入或借用**，也不新增 class 构造函数或 Source 类间继承。宿主需要文本时先复制到自己的 String，不能让对象内部地址跨 invoke 存续。
 - 字段前可写属性，名称与 AFIELD 相同：`[Min = 0.0, Max = 2.0, LockMin, HardMax = 10.0, Label = "Amount", Category = "Noise", DESC = "说明"] float amount = 0.5f;`。边界是字段叶类型的有限常量（向量按分量、int/uint 用整数），只能用于 int/uint/float/double 和向量字段；`LockMin/LockMax` 把同侧 UI 边界同时作硬边界，要求同侧 `Min/Max` 且不能再写 `HardMin/HardMax`。`Label`、`Category` 是不含控制字符的字符串字面量，`DESC` 允许 `\n`、`\t`。重复或未知属性、写在方法前的属性在编译期报错；大小顺序、UI 边界落在硬边界内、默认值满足硬边界由 Runtime 发布检查，错误同样指到该字段。规则见[字段范围与硬边界](docs/reflection.md#字段范围与硬边界)。
 - 字段还可写 `[Meta("procedural.bind", "evaluate.values"), Meta("procedural.layer", "point")] String attribute = "pscale";`。Meta 可重复声明不同键，每项恰好两个字符串字面量；同键重复拒绝。载体和原生字段一致，格式、拥有关系及排序见[Runtime 字段扩展元数据](docs/runtime-model.md#字段扩展元数据)。语言和 Runtime 不解释这些业务键。
@@ -211,13 +211,15 @@ class_field    = [ "[", field_attribute, { ",", field_attribute }, "]" ],
                  ( scalar_type | math_type | "String" | qualified_name ), identifier, [ "=", expression ], ";" ;
                  (* 数学类型限 float/double 向量；其余具名类型限枚举及已注册 String，String 默认值限单个字面量 *)
 field_attribute = ( "Min" | "Max" | "HardMin" | "HardMax" ), "=", expression | "LockMin" | "LockMax"
+                | "Transient" | "ReadOnly"
                 | ( "Label" | "Category" | "DESC" ), "=", string_literal
                 | "Meta", "(", string_literal, ",", string_literal, ")" ;
 struct_declaration = "struct", qualified_name, "{", { field_declaration }, "}", ";" ;
 field_declaration = ( scalar_type | aggregate_type ), identifier, ";" ;
-enum_declaration = "enum", qualified_name, [ ":", ( "int" | "uint" ) ], "{",
+enum_declaration = [ "[", "Flags", "]" ], "enum", qualified_name, [ ":", ( "int" | "uint" ) ], "{",
                    [ enum_item, { ",", enum_item }, [ "," ] ], "}", [ ";" ] ;
-enum_item      = identifier, [ "=", [ "-" ], decimal_integer ] ;
+enum_item      = [ "[", enum_item_attr, { ",", enum_item_attr }, "]" ], identifier, [ "=", [ "-" ], decimal_integer ] ;
+enum_item_attr = ( "Label" | "DESC" ), "=", string_literal ;
 function       = [ "async" ], result_type, identifier, "(", [ parameters ], ")", block ;
 result_type    = "void" | scalar_type | math_type | plain_record_type ;
 scalar_type    = "bool" | "float" | "double" | "uint" | "int" | qualified_enum_name ;

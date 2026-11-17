@@ -14,6 +14,7 @@
 #include <clang/Lex/LiteralSupport.h>
 #include <clang/Lex/MacroArgs.h>
 #include <clang/Lex/PPCallbacks.h>
+#include <clang/Sema/Sema.h>
 #include <clang/Tooling/CompilationDatabase.h>
 #include <clang/Tooling/Tooling.h>
 #include <llvm/Support/Error.h>
@@ -140,7 +141,7 @@ llvm::Expected<Config> read_config(const char* path) {
     return result;
 }
 
-enum class MarkerKind { object, record, enumeration, field, method, body };
+enum class MarkerKind { object, record, enumeration, enumerator, field, method, body };
 
 struct Marker {
     MarkerKind kind;
@@ -171,7 +172,7 @@ struct Field {
 
     unsigned line{};
 
-    bool direct_layout{};
+    std::optional<std::uint64_t> byte_offset{};
 
     std::string label{};
 
@@ -183,6 +184,10 @@ struct Field {
     std::string range{};
 
     std::vector<std::pair<std::string, std::string>> metadata{};
+
+    bool transient{};
+
+    bool read_only{};
 };
 
 struct Method {
@@ -199,6 +204,16 @@ struct Method {
     std::string description{};
 
     std::vector<std::string> parameters{};
+
+    std::vector<std::optional<std::string>> defaults{};
+};
+
+struct Enumerator {
+    std::string name;
+
+    std::string label{};
+
+    std::string description{};
 };
 
 struct Type {
@@ -230,9 +245,19 @@ struct Type {
 
     std::string underlying{};
 
-    std::vector<std::string> enumerators{};
+    bool enum_flags{};
+
+    std::vector<Enumerator> enumerators{};
 
     std::string description{};
+
+    std::optional<std::uint64_t> base_offset{};
+
+    std::string validator_option{};
+
+    SourceLocation validator_location{};
+
+    std::string validator{};
 };
 
 struct State {
@@ -245,6 +270,12 @@ struct State {
     std::vector<Type> types;
 
     std::set<std::string> dependencies;
+
+    std::set<const CXXRecordDecl*> external_objects;
+
+    std::set<const CXXRecordDecl*> external_records;
+
+    std::set<const EnumDecl*> external_enums;
 
     bool failed{};
 
@@ -362,11 +393,13 @@ struct State {
                     error(marker.location, "Reflection option strings must contain no control characters.");
                     return {};
                 }
-            } else if (name != "Hidden" && name != "BorrowSafe" && name != "LockMin" && name != "LockMax") {
+            } else if (name != "Hidden" && name != "Transient" && name != "ReadOnly" && name != "Flags" &&
+                       name != "BorrowSafe" && name != "LockMin" && name != "LockMax") {
                 error(marker.location, "Reflection option " + name + " requires a value.");
                 return {};
             }
-            if ((name == "Hidden" || name == "BorrowSafe" || name == "LockMin" || name == "LockMax") &&
+            if ((name == "Hidden" || name == "Transient" || name == "ReadOnly" || name == "Flags" ||
+                 name == "BorrowSafe" || name == "LockMin" || name == "LockMax") &&
                 !value.empty()) {
                 error(marker.location, name + " is a flag, without a value.");
                 return {};
@@ -426,6 +459,8 @@ public:
             kind = MarkerKind::record;
         else if (spelling == "AENUM")
             kind = MarkerKind::enumeration;
+        else if (spelling == "AMETA")
+            kind = MarkerKind::enumerator;
         else if (spelling == "AFIELD")
             kind = MarkerKind::field;
         else if (spelling == "AFUNCTION")
@@ -490,7 +525,7 @@ public:
         auto* marker = state_.prefix(*declaration, MarkerKind::enumeration);
         if (!marker)
             return true;
-        const auto options = state_.options(*marker, {"Name", "DESC"});
+        const auto options = state_.options(*marker, {"Name", "DESC", "Flags"});
         if (!options)
             return true;
         const auto* definition = declaration->getDefinition();
@@ -512,6 +547,11 @@ public:
             state_.error(marker->location, "AENUM requires an int32_t or uint32_t underlying type.");
             return true;
         }
+        const bool enum_flags = options->contains("Flags");
+        if (enum_flags && underlying->isSignedIntegerType()) {
+            state_.error(marker->location, "AENUM(Flags) requires a uint32_t underlying type.");
+            return true;
+        }
         const auto qualified = definition->getQualifiedNameAsString();
         std::string runtime_name = qualified;
         for (auto at = runtime_name.find("::"); at != std::string::npos; at = runtime_name.find("::"))
@@ -521,7 +561,8 @@ public:
         const auto description = options->contains("DESC") ? options->at("DESC") : std::string{};
         for (const auto& type : state_.types) {
             if (type.enumeration == definition) {
-                if (type.runtime_name != runtime_name || type.description != description)
+                if (type.runtime_name != runtime_name || type.description != description ||
+                    type.enum_flags != enum_flags)
                     state_.error(marker->location, "Conflicting reflection markers on enum redeclarations.");
                 return true;
             }
@@ -546,8 +587,20 @@ public:
         type.runtime_name = std::move(runtime_name);
         type.description = description;
         type.underlying = underlying->isSignedIntegerType() ? "::std::int32_t" : "::std::uint32_t";
-        for (const auto* item : definition->enumerators())
-            type.enumerators.push_back(item->getNameAsString());
+        type.enum_flags = enum_flags;
+        for (const auto* item : definition->enumerators()) {
+            Enumerator enumerator{item->getNameAsString()};
+            if (auto* item_marker = state_.prefix(*item, MarkerKind::enumerator)) {
+                const auto item_options = state_.options(*item_marker, {"Label", "DESC"});
+                if (!item_options)
+                    return true;
+                if (item_options->contains("Label"))
+                    enumerator.label = item_options->at("Label");
+                if (item_options->contains("DESC"))
+                    enumerator.description = item_options->at("DESC");
+            }
+            type.enumerators.push_back(std::move(enumerator));
+        }
         state_.types.push_back(std::move(type));
         return true;
     }
@@ -561,7 +614,7 @@ public:
             marker = state_.prefix(*declaration, MarkerKind::record);
         if (!marker)
             return true;
-        const auto options = state_.options(*marker, {"Name", "DESC"});
+        const auto options = state_.options(*marker, {"Name", "DESC", "Validate"});
         if (!options)
             return true;
         auto* definition = declaration->getDefinition();
@@ -589,9 +642,11 @@ public:
         if (const auto name = options->find("Name"); name != options->end())
             runtime_name = name->second;
         const auto description = options->contains("DESC") ? options->at("DESC") : std::string{};
+        const auto validator_option = options->contains("Validate") ? options->at("Validate") : std::string{};
         for (const auto& type : state_.types) {
             if (type.declaration == definition) {
-                if (type.object != object || type.runtime_name != runtime_name || type.description != description)
+                if (type.object != object || type.runtime_name != runtime_name || type.description != description ||
+                    type.validator_option != validator_option)
                     state_.error(marker->location, "Conflicting reflection markers on redeclarations.");
                 return true;
             }
@@ -614,6 +669,8 @@ public:
                                 {},
                                 {}});
         state_.types.back().description = description;
+        state_.types.back().validator_option = validator_option;
+        state_.types.back().validator_location = marker->location;
         return true;
     }
 };
@@ -660,10 +717,14 @@ std::optional<std::string> scalar(QualType type, State& state, ASTContext& conte
     type = type.getCanonicalType();
     if (allow_void && type->isVoidType())
         return "void";
-    if (const auto* enumeration = type->getAs<EnumType>())
+    if (const auto* enumeration = type->getAs<EnumType>()) {
         for (const auto& reflected_type : state.types)
             if (reflected_type.enumeration == enumeration->getDecl()->getDefinition())
                 return reflected_type.qualified;
+        if (enumeration->getDecl()->getDefinition() &&
+            state.external_enums.contains(enumeration->getDecl()->getCanonicalDecl()))
+            return TypeName::getFullyQualifiedName(type, context, context.getPrintingPolicy(), true);
+    }
     if (type->isSpecificBuiltinType(BuiltinType::Int) && context.getTypeSize(type) == 32)
         return "::std::int32_t";
     if (type->isSpecificBuiltinType(BuiltinType::Float))
@@ -732,6 +793,22 @@ std::optional<std::string> range_leaf(QualType type, ASTContext& context) {
     return {};
 }
 
+template <class T>
+std::string scalar_literal(T value) {
+    if constexpr (std::is_floating_point_v<T>) {
+        char digits[64];
+        const auto end = std::to_chars(digits, digits + sizeof digits, std::abs(value), std::chars_format::hex).ptr;
+        return std::string("Scalar{") + (std::signbit(value) ? "-0x" : "0x") + std::string(digits, end) +
+               (std::is_same_v<T, float> ? "f}" : "}");
+    } else if constexpr (std::is_same_v<T, std::int32_t>) {
+        return value == std::numeric_limits<std::int32_t>::min()
+                   ? "Scalar{std::int32_t{-2147483647 - 1}}"
+                   : "Scalar{std::int32_t{" + std::to_string(value) + "}}";
+    } else {
+        return "Scalar{std::uint32_t{" + std::to_string(value) + "u}}";
+    }
+}
+
 // Hex floats keep generated bounds bit-exact; integers reject fractions and overflow.
 template <class T>
 std::optional<std::string> range_bound(const std::string& text) {
@@ -742,14 +819,8 @@ std::optional<std::string> range_bound(const std::string& text) {
     if constexpr (std::is_floating_point_v<T>) {
         if (!std::isfinite(value))
             return {};
-        char digits[64];
-        const auto end = std::to_chars(digits, digits + sizeof digits, std::abs(value), std::chars_format::hex).ptr;
-        return std::string("Scalar{") + (std::signbit(value) ? "-0x" : "0x") + std::string(digits, end) +
-               (std::is_same_v<T, float> ? "f}" : "}");
-    } else {
-        return std::string("Scalar{") + (std::is_same_v<T, std::int32_t> ? "std::int32_t{" : "std::uint32_t{") +
-               std::to_string(value) + (std::is_same_v<T, std::int32_t> ? "}}" : "u}}");
     }
+    return scalar_literal(value);
 }
 
 bool contains_reference_storage(QualType type, ASTContext& context, std::set<const CXXRecordDecl*>& visited) {
@@ -795,7 +866,9 @@ bool value_field(QualType type, State& state, ASTContext& context) {
         return !contains_reference_storage(type, context) &&
                value_field(array->getTemplateArgs()[0].getAsType(), state, context);
     const auto* nested = reflected(state, record);
-    return nested && !nested->object;
+    if (nested)
+        return !nested->object;
+    return record->getDefinition() && state.external_records.contains(record->getCanonicalDecl());
 }
 
 std::optional<std::string> record_value(QualType type, State& state, ASTContext& context) {
@@ -803,10 +876,207 @@ std::optional<std::string> record_value(QualType type, State& state, ASTContext&
         return {};
     const auto* record = type.getCanonicalType()->getAsCXXRecordDecl();
     const auto* value = reflected(state, record);
-    if (!value || value->object)
+    if (value) {
+        if (value->object)
+            return {};
+    } else if (!record || !record->getDefinition() || !state.external_records.contains(record->getCanonicalDecl())) {
         return {};
+    }
     // Runtime registration owns the recursive plain-value eligibility check.
     return TypeName::getFullyQualifiedName(type.getCanonicalType(), context, context.getPrintingPolicy(), true);
+}
+
+std::optional<QualType> unwrap_result(QualType type) {
+    const auto* specialization = dyn_cast_or_null<ClassTemplateSpecializationDecl>(type->getAsCXXRecordDecl());
+    if (!specialization || specialization->getSpecializedTemplate()->getQualifiedNameAsString() != "std::expected")
+        return {};
+    const auto& arguments = specialization->getTemplateArgs();
+    if (arguments.size() != 2 || arguments[0].getKind() != TemplateArgument::Type ||
+        arguments[1].getKind() != TemplateArgument::Type)
+        return {};
+    const auto* error = arguments[1].getAsType()->getAsCXXRecordDecl();
+    if (!error || error->getQualifiedNameAsString() != "atelier::Error")
+        return {};
+    return arguments[0].getAsType();
+}
+
+bool valid_validator_input(QualType parameter, const CXXRecordDecl* owner) {
+    if (parameter->isRValueReferenceType())
+        return false;
+    if (parameter->isLValueReferenceType()) {
+        const auto pointee = parameter->getPointeeType();
+        if (!pointee.isConstQualified() || pointee.isVolatileQualified())
+            return false;
+        const auto* record = pointee->getAsCXXRecordDecl();
+        return record && record->getCanonicalDecl() == owner->getCanonicalDecl();
+    }
+    if (parameter.isVolatileQualified())
+        return false;
+    const auto* record = parameter->getAsCXXRecordDecl();
+    return record && record->getCanonicalDecl() == owner->getCanonicalDecl();
+}
+
+std::optional<std::string> resolve_validator(State& state, const Type& type, ASTContext& context) {
+    llvm::StringRef text = type.validator_option;
+    const bool rooted = text.consume_front("::");
+    llvm::SmallVector<llvm::StringRef, 4> parts;
+    text.split(parts, "::");
+    const auto valid_identifier = [](llvm::StringRef part) {
+        return !part.empty() && (std::isalpha(static_cast<unsigned char>(part[0])) || part[0] == '_') &&
+               std::all_of(part.begin(), part.end(), [](unsigned char c) { return std::isalnum(c) || c == '_'; });
+    };
+    if (parts.empty() ||
+        std::any_of(parts.begin(), parts.end(), [&](llvm::StringRef p) { return !valid_identifier(p); })) {
+        state.error(type.validator_location,
+                    "Validate requires a valid member or function name: " + type.validator_option);
+        return {};
+    }
+    const auto find_id = [&](llvm::StringRef name) -> const IdentifierInfo* {
+        const auto found = context.Idents.find(name);
+        return found == context.Idents.end() ? nullptr : found->second;
+    };
+    const auto void_result = [](QualType ret) {
+        const auto inner = unwrap_result(ret);
+        return inner && (*inner)->isVoidType();
+    };
+    if (!rooted && parts.size() == 1) {
+        if (const auto* id = find_id(parts[0])) {
+            const CXXMethodDecl* matched{};
+            std::size_t callables = 0;
+            for (const auto* decl : type.declaration->lookup(id)) {
+                if (isa<FunctionTemplateDecl>(decl))
+                    ++callables;
+                if (const auto* method = dyn_cast<CXXMethodDecl>(decl)) {
+                    ++callables;
+                    if (!method->isDeleted() && void_result(method->getReturnType()) &&
+                        ((!method->isStatic() && method->isConst() && !method->isVolatile() &&
+                          method->getRefQualifier() == RQ_None && method->getNumParams() == 0) ||
+                         (method->isStatic() && method->getNumParams() == 1 &&
+                          valid_validator_input(method->getParamDecl(0)->getType(), type.declaration)))) {
+                        matched = method;
+                    }
+                }
+            }
+            if (callables > 0) {
+                if (!matched || callables != 1) {
+                    state.error(type.validator_location,
+                                "Validate member must be an unambiguous const() or static(const " + type.name +
+                                    "&) method returning Result<void>: " + type.validator_option);
+                    return {};
+                }
+                return "&Self::" + parts[0].str();
+            }
+        }
+    }
+    for (const DeclContext* start = rooted ? context.getTranslationUnitDecl() : type.declaration->getDeclContext();
+         start; start = rooted ? nullptr : start->getParent()) {
+        const DeclContext* scope = start->getPrimaryContext();
+        bool resolved = true;
+        for (std::size_t i = 0; i + 1 < parts.size(); ++i) {
+            const auto* id = find_id(parts[i]);
+            const DeclContext* next = nullptr;
+            if (id) {
+                for (const auto* decl : scope->lookup(id)) {
+                    if (const auto* ns = dyn_cast<NamespaceDecl>(decl)) {
+                        next = ns->getPrimaryContext();
+                        break;
+                    }
+                    if (const auto* rec = dyn_cast<CXXRecordDecl>(decl); rec && rec->getDefinition()) {
+                        next = rec->getDefinition();
+                        break;
+                    }
+                }
+            }
+            if (!next) {
+                resolved = false;
+                break;
+            }
+            scope = next;
+        }
+        if (!resolved)
+            continue;
+        const auto* id = find_id(parts.back());
+        if (!id)
+            continue;
+        const FunctionDecl* matched{};
+        std::size_t callables = 0;
+        for (const auto* decl : scope->lookup(id)) {
+            if (isa<FunctionTemplateDecl>(decl))
+                ++callables;
+            if (const auto* fn = dyn_cast<FunctionDecl>(decl)) {
+                ++callables;
+                const auto* method = dyn_cast<CXXMethodDecl>(fn);
+                if (!fn->isDeleted() && (!method || method->isStatic()) && fn->getNumParams() == 1 &&
+                    void_result(fn->getReturnType()) &&
+                    valid_validator_input(fn->getParamDecl(0)->getType(), type.declaration)) {
+                    matched = fn;
+                }
+            }
+        }
+        if (callables > 0) {
+            if (!matched || callables != 1) {
+                state.error(type.validator_location, "Validate function must unambiguously take const " + type.name +
+                                                         "& and return Result<void>: " + type.validator_option);
+                return {};
+            }
+            return "&::" + matched->getQualifiedNameAsString();
+        }
+    }
+    state.error(type.validator_location, "Unresolved type validator: " + type.validator_option);
+    return {};
+}
+
+void collect_external_reflected(State& state, ASTContext& context) {
+    const auto find_id = [&](llvm::StringRef name) -> const IdentifierInfo* {
+        const auto found = context.Idents.find(name);
+        return found == context.Idents.end() ? nullptr : found->second;
+    };
+    const auto* atelier_id = find_id("atelier");
+    const auto* reflection_id = find_id("reflection");
+    const auto* reflected_id = find_id("Reflected");
+    if (!atelier_id || !reflection_id || !reflected_id)
+        return;
+    for (const auto* top : context.getTranslationUnitDecl()->lookup(atelier_id)) {
+        const auto* ns_atelier = dyn_cast<NamespaceDecl>(top);
+        if (!ns_atelier)
+            continue;
+        for (const auto* sub : ns_atelier->getPrimaryContext()->lookup(reflection_id)) {
+            const auto* ns_reflection = dyn_cast<NamespaceDecl>(sub);
+            if (!ns_reflection)
+                continue;
+            for (const auto* decl : ns_reflection->getPrimaryContext()->lookup(reflected_id)) {
+                const auto* tmpl = dyn_cast<ClassTemplateDecl>(decl);
+                if (!tmpl)
+                    continue;
+                for (const auto* spec : tmpl->getCanonicalDecl()->specializations()) {
+                    if (!spec->isExplicitSpecialization())
+                        continue;
+                    const auto& args = spec->getTemplateArgs();
+                    if (args.size() != 2 || args[0].getKind() != TemplateArgument::Type ||
+                        args[1].getKind() != TemplateArgument::Integral)
+                        continue;
+                    const auto* enum_type = args[1].getIntegralType()->getAs<EnumType>();
+                    if (!enum_type)
+                        continue;
+                    llvm::StringRef kind;
+                    for (const auto* item : enum_type->getDecl()->enumerators())
+                        if (llvm::APSInt::isSameValue(item->getInitVal(), args[1].getAsIntegral()))
+                            kind = item->getName();
+                    const auto target = args[0].getAsType().getCanonicalType();
+                    if (kind == "enumeration") {
+                        if (const auto* enumeration = target->getAs<EnumType>())
+                            state.external_enums.insert(enumeration->getDecl()->getCanonicalDecl());
+                    } else if (const auto* record = target->getAsCXXRecordDecl()) {
+                        if (kind == "object")
+                            state.external_objects.insert(record->getCanonicalDecl());
+                        else if (kind == "record")
+                            state.external_records.insert(record->getCanonicalDecl());
+                    }
+                }
+                return;
+            }
+        }
+    }
 }
 
 void members(State& state, Type& type, ASTContext& context) {
@@ -818,15 +1088,25 @@ void members(State& state, Type& type, ASTContext& context) {
         state.error(record->getLocation(), "This reflection slice supports one object base and no record inheritance.");
         return;
     }
+    const auto& layout = context.getASTRecordLayout(record);
     for (const auto& base : record->bases()) {
         const auto* declaration = base.getType()->getAsCXXRecordDecl();
         const auto* parent = reflected(state, declaration);
-        const bool external = !parent && generated_elsewhere(declaration);
+        const auto* canonical_base = declaration ? declaration->getCanonicalDecl() : nullptr;
+        const bool external = !parent && canonical_base &&
+                              (state.external_objects.contains(canonical_base) ||
+                               (!state.external_records.contains(canonical_base) && generated_elsewhere(declaration)));
         if ((parent ? !parent->object : !external) || base.isVirtual() || base.getAccessSpecifier() != AS_public) {
             state.error(base.getBeginLoc(), "A reflected base must be a public, non-virtual reflected object type.");
             return;
         }
-        type.base = parent ? parent->qualified : "::" + declaration->getDefinition()->getQualifiedNameAsString();
+        const auto* base_definition = declaration->getDefinition();
+        type.base = parent ? parent->qualified : "::" + base_definition->getQualifiedNameAsString();
+        type.base_offset = static_cast<std::uint64_t>(layout.getBaseClassOffset(base_definition).getQuantity());
+    }
+    if (!type.validator_option.empty()) {
+        if (const auto resolved = resolve_validator(state, type, context))
+            type.validator = *resolved;
     }
     unsigned bodies = 0;
     const auto begin = sources.getFileOffset(record->getBeginLoc());
@@ -861,10 +1141,11 @@ void members(State& state, Type& type, ASTContext& context) {
             continue;
         }
         std::vector<std::pair<std::string, std::string>> metadata;
-        const auto options = state.options(*marker,
-                                           {"Name", "Label", "Category", "DESC", "Hidden", "Strong", "Weak", "Sequence",
-                                            "Min", "Max", "LockMin", "LockMax", "HardMin", "HardMax", "Meta"},
-                                           &metadata);
+        const auto options =
+            state.options(*marker,
+                          {"Name", "Label", "Category", "DESC", "Hidden", "Transient", "ReadOnly", "Strong", "Weak",
+                           "Sequence", "Min", "Max", "LockMin", "LockMax", "HardMin", "HardMax", "Meta"},
+                          &metadata);
         if (!options)
             continue;
         if (field->isBitField() || field->isAnonymousStructOrUnion() || field->getType().isConstQualified() ||
@@ -878,11 +1159,19 @@ void members(State& state, Type& type, ASTContext& context) {
                      {},
                      options->contains("Hidden"),
                      sources.getExpansionLineNumber(field->getLocation())};
+        result.transient = options->contains("Transient");
+        result.read_only = options->contains("ReadOnly");
+        if (result.hidden && (result.transient || result.read_only)) {
+            state.error(field->getLocation(), "Hidden fields cannot combine with Transient or ReadOnly.");
+            continue;
+        }
+        const auto char_bits = context.getCharWidth();
         const auto alignment = context.getTypeAlign(field->getType());
-        const auto& layout = context.getASTRecordLayout(record);
-        result.direct_layout = record->isStandardLayout() &&
-                               layout.getAlignment().getQuantity() * context.getCharWidth() >= alignment &&
-                               layout.getFieldOffset(field->getFieldIndex()) % alignment == 0;
+        const auto bit_offset = layout.getFieldOffset(field->getFieldIndex());
+        if (bit_offset % char_bits == 0 && layout.getAlignment().getQuantity() * char_bits >= alignment &&
+            bit_offset % alignment == 0) {
+            result.byte_offset = bit_offset / char_bits;
+        }
         if (options->contains("Name"))
             result.name = options->at("Name");
         if (options->contains("Label"))
@@ -978,38 +1267,64 @@ void members(State& state, Type& type, ASTContext& context) {
         const auto options = state.options(*marker, {"Name", "BorrowSafe", "DESC"});
         if (!options)
             continue;
+        if (!type.object) {
+            state.error(method->getLocation(), "AFUNCTION is supported on ACLASS object types only.");
+            continue;
+        }
         auto result_type = method->getReturnType();
         bool fallible = false;
-        if (const auto* specialization =
-                dyn_cast_or_null<ClassTemplateSpecializationDecl>(result_type->getAsCXXRecordDecl());
-            specialization && specialization->getSpecializedTemplate()->getQualifiedNameAsString() == "std::expected") {
-            const auto& arguments = specialization->getTemplateArgs();
-            if (arguments.size() == 2 && arguments[0].getKind() == TemplateArgument::Type &&
-                arguments[1].getKind() == TemplateArgument::Type) {
-                const auto* error = arguments[1].getAsType()->getAsCXXRecordDecl();
-                if (error && error->getQualifiedNameAsString() == "atelier::Error") {
-                    result_type = arguments[0].getAsType();
-                    fallible = true;
-                }
-            }
+        if (const auto unwrapped = unwrap_result(result_type)) {
+            result_type = *unwrapped;
+            fallible = true;
         }
         auto result = scalar(result_type, state, context, true);
         if (!result)
             result = math_value(result_type, context);
         if (!result)
             result = record_value(result_type, state, context);
-        if (!result || method->isStatic() || method->isVariadic() || method->isDeleted() || method->isVolatile() ||
-            method->getRefQualifier() != RQ_None || method->getDescribedFunctionTemplate() ||
-            isa<CXXConstructorDecl>(method) || isa<CXXDestructorDecl>(method) || method->isOverloadedOperator() ||
-            isa<CXXConversionDecl>(method)) {
+        const bool contextual = method->isStatic();
+        bool receiver_read_only = false;
+        if (contextual) {
+            bool ok = result && fallible && !method->isVariadic() && !method->isDeleted() &&
+                      !method->getDescribedFunctionTemplate() && !method->isOverloadedOperator() &&
+                      method->getNumParams() >= 3;
+            if (ok) {
+                const auto p0 = method->getParamDecl(0)->getType();
+                const auto p1 = method->getParamDecl(1)->getType();
+                const auto p2 = method->getParamDecl(2)->getType();
+                const auto* r0 = p0->isLValueReferenceType() ? p0->getPointeeType()->getAsCXXRecordDecl() : nullptr;
+                const auto* r1 =
+                    (!p1->isReferenceType() && !p1.hasLocalQualifiers()) ? p1->getAsCXXRecordDecl() : nullptr;
+                const auto* r2 = p2->isLValueReferenceType() ? p2->getPointeeType()->getAsCXXRecordDecl() : nullptr;
+                ok = r0 && !p0->getPointeeType().isConstQualified() && !p0->getPointeeType().isVolatileQualified() &&
+                     r0->getQualifiedNameAsString() == "atelier::Runtime" && r1 &&
+                     r1->getQualifiedNameAsString() == "atelier::ObjectId" && r2 &&
+                     !p2->getPointeeType().isVolatileQualified() &&
+                     r2->getCanonicalDecl() == record->getCanonicalDecl();
+                if (ok)
+                    receiver_read_only = p2->getPointeeType().isConstQualified();
+            }
+            if (!ok) {
+                state.error(
+                    method->getLocation(),
+                    "Static AFUNCTION requires contextual signature Result<R>(Runtime&, ObjectId, [const] Self&, ...).");
+                continue;
+            }
+        } else if (!result || method->isVariadic() || method->isDeleted() || method->isVolatile() ||
+                   method->getRefQualifier() != RQ_None || method->getDescribedFunctionTemplate() ||
+                   isa<CXXConstructorDecl>(method) || isa<CXXDestructorDecl>(method) ||
+                   method->isOverloadedOperator() || isa<CXXConversionDecl>(method)) {
             state.error(
                 method->getLocation(),
-                "AFUNCTION requires a supported non-static member with a scalar, void or plain record result, optionally in runtime Result.");
+                "AFUNCTION requires a supported member with a scalar, void or plain record result, optionally in runtime Result.");
             continue;
         }
         if (fallible)
             *result = "::atelier::Result<" + *result + ">";
-        Method value{method->getNameAsString(), method->getNameAsString(), *result + " (Self::*)(",
+        Method value{method->getNameAsString(), method->getNameAsString(),
+                     contextual ? *result + " (*)(::atelier::Runtime&, ::atelier::ObjectId, " +
+                                      (receiver_read_only ? "const Self&" : "Self&")
+                                : *result + " (Self::*)(",
                      sources.getExpansionLineNumber(method->getLocation())};
         if (options->contains("Name"))
             value.name = options->at("Name");
@@ -1017,15 +1332,18 @@ void members(State& state, Type& type, ASTContext& context) {
         if (options->contains("DESC"))
             value.description = options->at("DESC");
         bool valid = true;
-        for (unsigned i = 0; i < method->getNumParams(); ++i) {
-            auto parameter_type = method->getParamDecl(i)->getType();
+        const unsigned first_param = contextual ? 3u : 0u;
+        for (unsigned i = first_param; i < method->getNumParams(); ++i) {
+            const auto* param_decl = method->getParamDecl(i);
+            auto parameter_type = param_decl->getType();
             const bool reference = parameter_type->isLValueReferenceType();
             if (reference)
                 parameter_type = parameter_type->getPointeeType();
             const bool read_only = parameter_type.isConstQualified();
-            auto parameter = parameter_type.isVolatileQualified()
-                                 ? std::optional<std::string>{}
-                                 : scalar(parameter_type.getUnqualifiedType(), state, context);
+            const auto scalar_param = parameter_type.isVolatileQualified()
+                                          ? std::optional<std::string>{}
+                                          : scalar(parameter_type.getUnqualifiedType(), state, context);
+            auto parameter = scalar_param;
             if (!parameter && !parameter_type.isVolatileQualified())
                 parameter = math_value(parameter_type.getUnqualifiedType(), context);
             if (!parameter && !reference && !parameter_type.isVolatileQualified())
@@ -1038,22 +1356,67 @@ void members(State& state, Type& type, ASTContext& context) {
             if (parameter && reference)
                 *parameter = (read_only ? "const " : "") + *parameter + "&";
             if (!parameter) {
-                state.error(method->getParamDecl(i)->getLocation(),
+                state.error(param_decl->getLocation(),
                             "Reflected parameters require scalar/enum/plain record values or const T&/T& borrows.");
                 valid = false;
                 break;
             }
-            if (i)
+            std::optional<std::string> default_expr;
+            if (param_decl->hasDefaultArg()) {
+                if (!scalar_param || (reference && !read_only) || param_decl->hasUnparsedDefaultArg() ||
+                    param_decl->hasUninstantiatedDefaultArg()) {
+                    state.error(param_decl->getLocation(),
+                                "Reflected default arguments require a value or const& scalar/enum parameter.");
+                    valid = false;
+                    break;
+                }
+                Expr::EvalResult evaluated;
+                if (!param_decl->getDefaultArg()->EvaluateAsRValue(evaluated, context) || evaluated.HasSideEffects) {
+                    state.error(param_decl->getLocation(),
+                                "Reflected default arguments require a constant scalar or enum expression.");
+                    valid = false;
+                    break;
+                }
+                const auto canonical = parameter_type.getCanonicalType().getUnqualifiedType();
+                if (canonical->isSpecificBuiltinType(BuiltinType::Bool)) {
+                    default_expr = evaluated.Val.getInt().getBoolValue() ? "Scalar{true}" : "Scalar{false}";
+                } else if (canonical->isSpecificBuiltinType(BuiltinType::Float) ||
+                           canonical->isSpecificBuiltinType(BuiltinType::Double)) {
+                    const bool is_float = canonical->isSpecificBuiltinType(BuiltinType::Float);
+                    const auto& fp = evaluated.Val.getFloat();
+                    if (!fp.isFinite()) {
+                        state.error(param_decl->getLocation(), "Reflected floating default arguments must be finite.");
+                        valid = false;
+                        break;
+                    }
+                    default_expr =
+                        is_float ? scalar_literal(fp.convertToFloat()) : scalar_literal(fp.convertToDouble());
+                } else {
+                    const auto int_type =
+                        canonical->isEnumeralType()
+                            ? canonical->getAs<EnumType>()->getDecl()->getIntegerType().getCanonicalType()
+                            : canonical;
+                    default_expr =
+                        int_type->isSignedIntegerType()
+                            ? scalar_literal(static_cast<std::int32_t>(evaluated.Val.getInt().getSExtValue()))
+                            : scalar_literal(static_cast<std::uint32_t>(evaluated.Val.getInt().getZExtValue()));
+                }
+            }
+            if (contextual || i > first_param)
                 value.pointer += ", ";
             value.pointer += *parameter;
-            value.parameters.push_back(method->getParamDecl(i)->getName().str());
+            value.parameters.push_back(param_decl->getName().str());
+            value.defaults.push_back(std::move(default_expr));
         }
         if (!valid)
             continue;
         value.pointer += ")";
-        if (method->isConst())
+        if (!contextual && method->isConst())
             value.pointer += " const";
-        if (method->getType()->castAs<FunctionProtoType>()->isNothrow())
+        const auto* prototype = method->getType()->castAs<FunctionProtoType>();
+        if (isUnresolvedExceptionSpec(prototype->getExceptionSpecType()) && state.compiler->hasSema())
+            prototype = state.compiler->getSema().ResolveExceptionSpec(method->getLocation(), prototype);
+        if (prototype && prototype->isNothrow())
             value.pointer += " noexcept";
         if (!names.insert(value.name).second)
             state.error(method->getLocation(), "Reflected overloads require distinct Name aliases: " + value.name);
@@ -1070,6 +1433,7 @@ public:
     void HandleTranslationUnit(ASTContext& context) override {
         if (state_.compiler->getDiagnostics().hasErrorOccurred())
             return;
+        collect_external_reflected(state_, context);
         Collector(state_).TraverseDecl(context.getTranslationUnitDecl());
         for (auto& type : state_.types)
             members(state_, type, context);
@@ -1117,6 +1481,10 @@ public:
 
     std::unique_ptr<ASTConsumer> CreateASTConsumer(CompilerInstance& compiler, llvm::StringRef) override {
         state_.compiler = &compiler;
+        compiler.getFrontendOpts().SkipFunctionBodies = true;
+        // Skipping function bodies hides references to private fields and file-local helpers;
+        // real C++ compilation of the translation unit still enforces unused-symbol warnings.
+        compiler.getDiagnostics().setSeverityForGroup(diag::Flavor::WarningOrError, "unused", diag::Severity::Ignored);
         compiler.getPreprocessor().addPPCallbacks(std::make_unique<Markers>(state_));
         return std::make_unique<Consumer>(state_);
     }
@@ -1185,41 +1553,59 @@ llvm::Error emit(const State& state) {
             header += std::string(type.class_tag ? "class " : "struct ") + type.name + ";";
         if (!type.scope.empty())
             header += " }";
+        const char* kind = type.enumeration ? "enumeration" : type.object ? "object" : "record";
         header += "\nnamespace atelier::reflection {\ntemplate<> TypeDefinition Definition<" + type.qualified +
-                  ">::build(Runtime&);\n}\n";
+                  ">::build(Runtime&);\ntemplate<> struct Reflected<" + type.qualified + ", TypeKind::" + kind +
+                  "> {};\n}\n";
         const auto location = [&](unsigned line) {
             return "\n#line " + std::to_string(line) + " " + quote(state.config.headers[type.header].include) + "\n";
         };
         cpp += location(type.line) + "template<> TypeDefinition Definition<" + type.qualified +
                ">::build(Runtime& runtime) {\n    using Self = " + type.qualified + ";\n";
-        cpp += "    return NativeRegistration<Self>{runtime, " + quote(type.runtime_name) + ", TypeKind::" +
-               (type.enumeration ? "enumeration"
-                : type.object    ? "object"
-                                 : "record");
+        cpp += "    return NativeRegistration<Self>{runtime, " + quote(type.runtime_name) + ", TypeKind::" + kind;
         if (!type.description.empty())
             cpp += ", " + quote(type.description);
         cpp += "}";
-        for (const auto& name : type.enumerators)
-            cpp += "\n        .enumerator(" + quote(name) + ", Self::" + name + ")";
-        if (!type.base.empty())
-            cpp += "\n        .base<" + type.base + ">()";
+        if (type.enum_flags)
+            cpp += "\n        .flags()";
+        for (const auto& item : type.enumerators) {
+            cpp += "\n        .enumerator(" + quote(item.name) + ", Self::" + item.name;
+            if (!item.label.empty() || !item.description.empty()) {
+                cpp += ", " + quote(item.label);
+                if (!item.description.empty())
+                    cpp += ", " + quote(item.description);
+            }
+            cpp += ")";
+        }
+        if (!type.base.empty()) {
+            cpp += "\n        .base<" + type.base + ">(";
+            if (type.base_offset)
+                cpp += std::to_string(*type.base_offset) + "u";
+            cpp += ")";
+        }
+        if (!type.validator.empty())
+            cpp += "\n        .validate<" + type.validator + ">()";
         for (const auto& field : type.fields) {
             const bool presentation = !field.label.empty() || !field.category.empty() || !field.description.empty();
             cpp += location(field.line) + "        ." + (field.hidden ? "hidden_field" : "field") +
                    "<&Self::" + field.cpp_name + ">(" + quote(field.name);
             if (!field.form.empty())
                 cpp += ", {TypeReference{" + quote(field.target) + "}, ValueForm::" + field.form + "}";
-            else if ((!field.hidden && field.direct_layout) || presentation)
+            else if (field.byte_offset || presentation)
                 cpp += ", {TypeReference::native<decltype(Self::" + field.cpp_name + ")>()}";
-            if (!field.hidden && field.direct_layout)
-                cpp += ", offsetof(Self, " + field.cpp_name + ")";
-            else if (!field.hidden && presentation)
+            if (field.byte_offset)
+                cpp += ", " + std::to_string(*field.byte_offset) + "u";
+            else if (presentation)
                 cpp += ", std::nullopt";
             if (presentation)
                 cpp += ", " + quote(field.label) + ", " + quote(field.category);
             if (!field.description.empty())
                 cpp += ", " + quote(field.description);
             cpp += ")";
+            if (field.transient)
+                cpp += "\n        .transient()";
+            if (field.read_only)
+                cpp += "\n        .read_only()";
             if (!field.range.empty())
                 cpp += "\n        .range({" + field.range + "})";
             if (!field.metadata.empty()) {
@@ -1243,6 +1629,13 @@ llvm::Error emit(const State& state) {
                 cpp += "\n        .parameter_names({";
                 for (std::size_t i = 0; i < method.parameters.size(); ++i)
                     cpp += (i ? ", " : "") + quote(method.parameters[i]);
+                cpp += "})";
+            }
+            if (std::any_of(method.defaults.begin(), method.defaults.end(),
+                            [](const auto& item) { return item.has_value(); })) {
+                cpp += "\n        .parameter_defaults({";
+                for (std::size_t i = 0; i < method.defaults.size(); ++i)
+                    cpp += (i ? ", " : "") + (method.defaults[i] ? *method.defaults[i] : "std::nullopt");
                 cpp += "})";
             }
         }

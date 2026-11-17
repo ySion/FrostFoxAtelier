@@ -53,7 +53,7 @@ uint process(const gameplay.Batch& input) {
 
 ## 值与借用
 
-- 枚举底层为 `int`（默认）或 `uint`，枚举项可指定十进制整数，否则从零或上一项加一；溢出和重复项名拒绝。
+- 枚举底层为 `int`（默认）或 `uint`，可前置 `[Flags]` 声明为无符号位掩码枚举（要求 `: uint`，支持同类型 `&/|/^/~` 按位运算）；枚举项前可附加 `[Label = "...", DESC = "..."]` 展示元数据，枚举值可指定十进制整数，否则从零或上一项加一；溢出和重复项名拒绝。
 - 结构体字段支持 `float/double/uint/int`、内建数学值、已注册或同模块枚举、同模块结构体，以及已注册的无 GC 引用记录、String 和具体 Array。支持前向引用，内联布局循环拒绝。字段、参数与局部共用类型名称解析；`String`、数学固定短名和 `Array<T>` 解析既有身份，数组类型仍由原生生产者注册。
 - 结构体局部使用 Runtime 值操作进行构造、深复制、赋值和清理。自有结构体的嵌套记录、String/Array 字段及元素可整值赋值或修改容器结构，目标须满足已有安全值操作能力；借用结构体允许可写字段叶值和完整数学字段修改，不能替换一般聚合字段或改变容器结构。
 - 默认构造递归将标量置零、String/Array 置空，并调用原生字段构造。字段随记录逆序销毁；部分构造失败时 Runtime 回收已构造字段，生成代码只负责已完成构造的局部，避免重复清理。正常块退出、提前返回和跨函数失败均沿既有作用域清理链。
@@ -70,9 +70,9 @@ uint process(const gameplay.Batch& input) {
 
 ## 原生对象的源码派生类
 
-项目快照中的 class 使用同一 `TypePublication` 事务准备，继承检查只查询事务类型目录；预览 TypeId 不进入正式 Runtime 查询或对象操作。发布后 `Runtime::create` 直接构造原生基类和描述型字段，不需要宿主调用第二个初始化入口。`FieldInfo::default_leaves` 描述标量、向量和枚举默认值，`default_text` 描述真实 String 字段默认文本，`range/label/category/description/metadata` 来自字段属性；原生字段仍由 C++ 构造函数负责，规则见[字段默认值](runtime-model.md#字段默认值)与[扩展元数据](runtime-model.md#字段扩展元数据)。String 字段仅供宿主反射、保存与重建使用，不向源码开放 `self` 上的 String 访问或借用。
+项目快照中的 class 使用同一 `TypePublication` 事务准备，继承检查只查询事务类型目录；预览 TypeId 不进入正式 Runtime 查询或对象操作。发布后 `Runtime::create` 直接构造原生基类和描述型字段，不需要宿主调用第二个初始化入口。`FieldInfo::default_leaves` 描述标量、向量和枚举默认值，`default_text` 描述真实 String 字段默认文本，`range/label/category/description/metadata/transient/read_only` 来自字段属性；原生字段仍由 C++ 构造函数负责，规则见[字段默认值](runtime-model.md#字段默认值)与[扩展元数据](runtime-model.md#字段扩展元数据)。String 字段仅供宿主反射、保存与重建使用，不向源码开放 `self` 上的 String 访问或借用。
 
-已发布 class 的布局、字段默认值、范围、展示文本和 Meta 内容冻结；后续版本可以追加 class 和已有 class 的新方法。热更新保留已创建对象的字段值、地址和身份；关闭源码 Program 不注销类型。语法、规范化兼容比较、重建限制和具名生命周期入口见 [LANGUAGE.md](../LANGUAGE.md#项目快照与原生派生类)，宿主发布示例见[项目快照](source-function-modules.md#项目快照与多个公开入口)。
+已发布 class 的布局、字段默认值、范围、展示文本、`Transient`/`ReadOnly` 标记和 Meta 内容冻结；后续版本可以追加 class 和已有 class 的新方法。热更新保留已创建对象的字段值、地址和身份；关闭源码 Program 不注销类型。语法、规范化兼容比较、重建限制和具名生命周期入口见 [LANGUAGE.md](../LANGUAGE.md#项目快照与原生派生类)，宿主发布示例见[项目快照](source-function-modules.md#项目快照与多个公开入口)。
 
 ## 验收
 

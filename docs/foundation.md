@@ -71,17 +71,17 @@ names.squeeze();                    // 显式收紧容量；空数组释放缓�
 `BitVector` 是独立类型，不特化 `Array<bool>`，不改变 SharedArray<bool> 或程序化 group 列的表示。Windows x64 上为 32B/align8（Array<uint64_t> 加位数）；每个 word 的低位对应较低下标，尾 word 未使用位始终为零，缩小再扩大不复活旧位。
 
 - `size/empty/reserve/resize(bits,value=false)/clear/release/swap` 管理存储；resize 的 value 只填新增区间，clear 保留容量，release 释放。复制独立拥有，移动后源为空。字数用除法加余数计算，不先做 bits+63。
-- `test/operator[]` 返回 bool，不借出可写引用；`contains(index)` 查询集合成员，未置位或不存在的下标返回 false，由位图入口一次判界，供 SparseArray 占用查询使用；test 的越界 fatal 合同不变。`set(index,value=true)/reset/flip/set_range(first,count,value=true)` 显式修改。`count/any/none` 查询集合，`find_first/find_next` 返回下标或 npos；find_next 严格从给定下标之后查找，npos 或超出末尾时返回 npos。`set_bits()` 是升序、零分配 forward range，禁止从临时对象借出。
+- `test/operator[]` 返回 bool，不借出可写引用；`contains(index)` 查询集合成员，未置位或不存在的下标返回 false，由位图入口一次判界，供 SparseArray 占用查询使用；test 的越界 fatal 合同不变。`set(index,value=true)/reset/flip/set_range(first,count,value=true)` 显式修改。`count/any/none` 查询集合，`find_first/find_from/find_next` 返回下标或 npos；`find_from` 从给定下标起查找（超出末尾时返回 npos），`find_next` 严格从给定下标之后查找。`set_bits()` 是升序、零分配 forward range，`words()` 返回只读 `Span<const uint64_t>` 字视图，二者均禁止从临时对象借出。
 - `&=/|=/^=` 要求位数相等，按 word 计算；test/operator[] 与修改操作的索引/范围越界，以及不等位数运算为 contract-fatal。CPU OOM 和内部容量错误沿 Array 唯一出口。没有原子位、平台分派或第二套分配器。修改内容或结构后重新取得迭代器。
 
-`SparseArray<T>` 的 `size` 是活值数，`extent` 是槽位上界，`capacity` 是槽存储容量。`emplace` 返回下标，先 LIFO 复用空槽，空闲链为空才延伸 extent；`erase` 对空洞或不存在下标返回 false。`contains_index/try_at` 查询正常缺项，`operator[]` 对缺项 contract-fatal。查询指针/引用和 `entries()` 禁止从临时对象借出；entries 按下标升序返回 `{index,value引用}`，const 版本只读。结构修改后重新取得迭代器。
+`SparseArray<T>` 的 `size` 是活值数，`extent` 是槽位上界，`capacity` 是槽存储容量。`emplace` 返回下标，先 LIFO 复用空槽，空闲链为空才延伸 extent；`erase` 对空洞或不存在下标返回 false。`contains_index/try_at/find_index_from` 查询正常缺项或自指定起点查找下一个占用下标，`operator[]` 对缺项 contract-fatal。查询指针/引用和 `entries()` 禁止从临时对象借出；entries 按下标升序返回 `{index,value引用}`，const 版本只读。结构修改后重新取得迭代器。
 
 - Windows x64 对象为 64B/align8：槽指针、capacity、BitVector、free_head、活值数；extent 直接取占用位图长度，不重复保存。Slot 是 T 与 size_t next 的 union，对齐取两者较大值。空洞没有活 T，不要求 T 默认构造。
 - `reserve` 保留下标和空闲链，只构造/搬移活 T；槽分配复用 ArrayElements 的对齐分配/释放与增长算术，不把带空洞的 Slot 整块交给 realloc。增长时先保存 emplace 候选，支持参数借用既有值。普通构析要求与 Array 相同：析构不抛，移动不抛或可复制；操作 noexcept，业务失败不能由元素抛异常表达。
 - 复制从 const 元素来源构造，保留下标、空洞和下次复用顺序，不选用可变来源的复制重载；元素地址统一用 std::addressof，支持重载或删除 operator& 的 T。移动接管全部存储，源为空。移动赋值先分离来源再释放旧资源，支持资源子树提升。`clear` 析构全部活值并令 size/extent 为0，保留容量；`release` 另释放槽和位图。无 compact/重排/连续 T 视图。
 - 稳定下标不是稳定地址或永久身份：增长可使全部元素引用失效，删除的数字可被重新分配。不提供代际、GC、弱引用、并发或持久化格式。两类型均未新增 Runtime/Source/反射/JIT 注册，不改变已有容器 ABI。
 
-真实消费者包括 SparseArray 自身的占用位图、foundation 的资源槽消费序列、`procedural/volume.cpp` 的 seen_corner/seen_point（BitVector），以及 `runtime.cpp` 的 RootState.entries（SparseArray）。根登记的 value_entries 使用 Array，保留移除回调、trace 队列与身份上限；GC 按 extent 逐槽计费（含空洞），visitor 前复制描述值，移除通知先于 erase。Runtime 的 GC/同步遍历、布局与引用定位工作栈使用 Array，标量调用参数使用 InlineArray<Argument,8>；公开借用接口和回调重入时的独立栈区间不变。Runtime 对象槽/UI 带代际槽不能直接按此替换。
+真实消费者包括 SparseArray 自身的占用位图、foundation 的资源槽消费序列、`procedural/volume.cpp` 的 seen_corner/seen_point（BitVector），以及 `runtime.cpp` 的对象存活/标记/清扫位图与 `RootState` 的对象根/值根稀疏表（SparseArray）。GC 根扫描与清扫通过占用位图跳过空洞和存活槽，visitor 前复制描述值，值根移除通知先于 erase。Runtime 的 GC/同步遍历、布局与引用定位工作栈使用 Array，标量调用参数使用 InlineArray<Argument,8>；公开借用接口和回调重入时的独立栈区间不变。Runtime 对象槽/UI 带代际槽不能直接按此替换。
 
 ## 共享不可变数组
 

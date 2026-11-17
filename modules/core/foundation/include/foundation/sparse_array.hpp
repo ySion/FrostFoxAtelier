@@ -96,6 +96,8 @@ public:
 
     [[nodiscard]] bool contains_index(std::size_t index) const noexcept { return occupied_.contains(index); }
 
+    [[nodiscard]] std::size_t find_index_from(std::size_t first) const noexcept { return occupied_.find_from(first); }
+
     [[nodiscard]] T* try_at(std::size_t index) & noexcept [[clang::lifetimebound]] {
         return contains_index(index) ? std::addressof(slots_[index].value) : nullptr;
     }

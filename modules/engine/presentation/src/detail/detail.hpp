@@ -73,13 +73,6 @@ inline std::unexpected<Error> error(ErrorCode code, std::string message) {
     return std::unexpected(Error{code, std::move(message)});
 }
 
-// Validators registered with LightSettings and EnvironmentComponent.
-Result<void> light_rules(const LightSettings&);
-
-Result<void> environment_rules(const EnvironmentComponent&);
-
-Result<void> camera_rules(const CameraComponent&);
-
 // Checks a native value against its reflected type's hard bounds and validators.
 template <class T>
 Result<void> check_value(Runtime& runtime, const T& value) {

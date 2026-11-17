@@ -2424,7 +2424,8 @@ llvm::Expected<std::shared_ptr<CompiledBusiness>> compile(const BusinessServices
             auto& parameters = catalog->method_parameters.emplace_back();
             parameters.reserve(method.parameters.size());
             for (const auto parameter : method.parameters)
-                parameters.push_back({business_type(parameter.type), parameter.passing});
+                parameters.push_back(
+                    {business_type(parameter.type), parameter.passing, parameter.has_default, parameter.default_bits});
             catalog->methods.push_back({catalog->method_names.back().c_str(),
                                         parameters.empty() ? nullptr : parameters.data(),
                                         static_cast<std::uint32_t>(parameters.size()), business_type(method.result),
@@ -2476,7 +2477,7 @@ llvm::Expected<std::shared_ptr<CompiledBusiness>> compile(const BusinessServices
             }
             catalog->enumerations.push_back({catalog->enum_names.back().c_str(),
                                              business_type(enumeration.underlying).kind, items.data(),
-                                             static_cast<std::uint32_t>(items.size())});
+                                             static_cast<std::uint32_t>(items.size()), enumeration.flags});
         }
         catalog->value_names.reserve(environment.values.size());
         catalog->value_field_names.reserve(environment.values.size());
@@ -2821,7 +2822,7 @@ std::uint32_t compile_business_impl(const atelier::source::detail::BusinessServi
             auto underlying = source_type(enumeration.underlying);
             if (!underlying)
                 return compilation_failure(error, error_capacity, llvm::toString(underlying.takeError()).c_str());
-            enumerations.push_back({enumeration.name, *underlying, items});
+            enumerations.push_back({enumeration.name, *underlying, items, enumeration.flags});
         }
         auto catalog = source_values(*environment);
         if (!catalog)
@@ -2849,7 +2850,9 @@ std::uint32_t compile_business_impl(const atelier::source::detail::BusinessServi
                 auto type = source_type(method.parameters[parameter].type);
                 if (!type)
                     return compilation_failure(error, error_capacity, llvm::toString(type.takeError()).c_str());
-                parameters.push_back({*type, method.parameters[parameter].passing});
+                parameters.push_back({*type, method.parameters[parameter].passing,
+                                      method.parameters[parameter].has_default,
+                                      method.parameters[parameter].default_bits});
             }
             language::ValueType result_type = language::ValueType::void_value;
             if (method.result != ValueKind::void_value) {

@@ -236,9 +236,9 @@ public:
 private:
     struct Control;
 
-    explicit Coroutine(std::shared_ptr<Control> control) noexcept : control_(std::move(control)) {}
+    explicit Coroutine(Control* control) noexcept : control_(control) {}
 
-    std::shared_ptr<Control> control_;
+    Control* control_{};
 };
 
 }

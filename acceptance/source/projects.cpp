@@ -55,9 +55,28 @@ source::SourceSnapshot sources() {
             5,
             {{"Source/Math.source", 17, "float distance(float speed, float dt) { return speed * dt; }"},
              {"Source/Move.source", 23, R"(
+[Flags]
+enum game.LayerMask : uint {
+    [Label = "静态层", DESC = "地形"]
+    Static = 1,
+    [Label = "动态层"]
+    Dynamic = 2,
+    Trigger = 4
+}
+
 class game.Move : world.Component {
     float speed = 2.0f;
-    void tick(float dt) { self.translate_owner(distance(self.speed,dt),0.0f,0.0f); }
+    [Transient, ReadOnly] float distance_moved = 0.0f;
+    game.LayerMask layers = game.LayerMask::Static | game.LayerMask::Dynamic;
+    void tick(float dt) {
+        if ((self.layers & game.LayerMask::Static) != game.LayerMask::Static) {
+            return;
+        }
+        self.layers = (self.layers ^ game.LayerMask::Dynamic) | game.LayerMask::Trigger;
+        const float step = distance(self.speed, dt);
+        self.distance_moved = self.distance_moved + step;
+        self.translate_owner(step);
+    }
 }
 )"}}};
 }
@@ -87,7 +106,23 @@ void verify_world_project() {
     require(!take(world.start()).notification_error, "Source lifecycle start failed.");
     const auto x = [&] { return take(w::read_transform(runtime, owner.id())).position.x; };
     take(world.update(.5f));
-    require(x() == 1.f, "Cross-file helper or inherited native action failed.");
+    const auto* move_info = take(runtime.describe(type));
+    const auto mask_type = take(runtime.find_type("game.LayerMask"));
+    const auto* mask_info = take(runtime.describe(mask_type));
+    require(mask_info->enumeration && mask_info->enumeration->flags &&
+                mask_info->enumeration->metadata[0].label == "静态层" &&
+                mask_info->enumeration->metadata[0].description == "地形",
+            "Source [Flags] enum and enumerator metadata did not publish.");
+    const auto moved_field = std::ranges::find(move_info->fields, "distance_moved", &FieldInfo::name);
+    const auto layers_field = std::ranges::find(move_info->fields, "layers", &FieldInfo::name);
+    require(moved_field != move_info->fields.end() && moved_field->transient && moved_field->read_only &&
+                layers_field != move_info->fields.end(),
+            "Source class field did not publish Transient, ReadOnly or Flags enum field.");
+    const FieldId moved_id = moved_field->id;
+    const FieldId layers_id = layers_field->id;
+    require(x() == 1.f && std::get<float>(take(runtime.read(instance.id(), std::span{&moved_id, 1}))) == 1.f &&
+                std::get<EnumValue>(take(runtime.read(instance.id(), std::span{&layers_id, 1}))).bits == 5u,
+            "Cross-file helper, Flags enum ops, default-arg native call or transient/read-only Source write failed.");
     require(!take(world.stop()).notification_error, "Source lifecycle stop failed.");
     program->close();
     require(!take(world.close()).notification_error, "Pinned World cleanup failed.");

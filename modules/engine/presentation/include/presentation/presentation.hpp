@@ -66,7 +66,7 @@ AENUM(
         "Point 点光、Rectangle 矩形面光或 Directional 平行光。不同种类使用不同的强度单位和形状参数；天光在 Environment 中设置。")
 enum class LightKind : std::uint32_t { point, rectangle, directional };
 
-ASTRUCT(Name = "world.LightSettings",
+ASTRUCT(Name = "world.LightSettings", Validate = "validate",
         DESC = "灯光的 Scene 作者参数。Color 与 Intensity 一起决定发光量，位置和朝向来自所属 Entity。")
 struct LightSettings {
     AGENERATED_BODY(LightSettings)
@@ -109,6 +109,9 @@ public:
     bool casts_shadow{true};
 
     bool operator==(const LightSettings&) const = default;
+
+private:
+    [[nodiscard]] Result<void> validate() const;
 };
 
 ACLASS(Name = "world.LightComponent",
@@ -123,7 +126,7 @@ public:
 };
 
 ACLASS(
-    Name = "world.CameraComponent",
+    Name = "world.CameraComponent", Validate = "validate",
     DESC =
         "提供透视相机。一个 Entity 至多一个，包括派生和已停用组件。位置来自世界变换，朝向只复合空间父链的旋转，不受缩放或镜像影响。")
 class CameraComponent : public world::SpatialComponent {
@@ -141,6 +144,9 @@ public:
     AFIELD(Label = "Far clip (m)", Category = "Camera", HardMin = "0.002", HardMax = "1000000",
            DESC = "远裁剪距离，单位 m，必须大于 Near clip。")
     float far_clip{30000.f};
+
+private:
+    [[nodiscard]] Result<void> validate() const;
 };
 
 AENUM(Name = "world.Antialiasing", DESC = "Off 关闭抗锯齿；SMAA 处理当前画面的边缘；TAA 和 SMAA T2x 还利用跨帧信息。")
@@ -200,7 +206,7 @@ public:
 // Scene Lit settings of the whole World. At most one per World, disabled ones
 // included; without an active one the World uses SceneLightingSettings{}.
 ACLASS(
-    Name = "world.EnvironmentComponent",
+    Name = "world.EnvironmentComponent", Validate = "validate",
     DESC =
         "World 的光照、天光、效果与 DDGI 设置。一个 World 至多一个，包括已停用的；没有生效的 Environment 时使用默认值。它不需要 Entity 的 Transform。")
 class EnvironmentComponent : public world::Component {
@@ -309,6 +315,8 @@ public:
 
 private:
     friend struct detail::Access;
+
+    [[nodiscard]] Result<void> validate() const;
 
     AFIELD(Name = "sky_map", Hidden)
     String sky_map_;

@@ -27,9 +27,13 @@ struct ScalarField {
     FieldRange range{};
 
     bool material_entries_json{};
+
+    bool transient{};
+
+    bool read_only{};
 };
 
-inline Result<std::vector<ScalarField>> author_fields(Runtime& runtime, TypeId type) {
+inline Result<std::vector<ScalarField>> author_fields(Runtime& runtime, TypeId type, bool include_transient = false) {
     std::vector<ScalarField> result;
     const auto visit = [&](auto&& self, TypeId current, ScalarField prefix) -> Result<void> {
         if (prefix.path.size() > 16)
@@ -68,6 +72,10 @@ inline Result<std::vector<ScalarField>> author_fields(Runtime& runtime, TypeId t
                 "Scene properties support scalars, enums, strings, Arrays of those and records of those values."});
         for (const auto& field : (*info)->fields) {
             auto child = prefix;
+            child.transient |= field.transient;
+            child.read_only |= field.read_only;
+            if (!include_transient && child.transient)
+                continue;
             child.names.push_back(field.name);
             child.path.push_back(field.id);
             // A vector's lanes share the aggregate caption. Other record children
@@ -100,13 +108,26 @@ inline Result<std::vector<ScalarField>> author_fields(Runtime& runtime, TypeId t
 }
 
 inline Result<std::vector<ScalarField>> scalar_fields(Runtime& runtime, TypeId type) {
-    auto result = author_fields(runtime, type);
+    auto result = author_fields(runtime, type, true);
     if (result)
         std::erase_if(*result, [](const auto& field) {
             return field.form != ValueForm::inline_value || field.kind == TypeKind::string ||
                    field.kind == TypeKind::array;
         });
     return result;
+}
+
+inline std::uint32_t declared_flag_mask(const TypeInfo::Enumeration& enumeration) noexcept {
+    std::uint32_t mask = 0;
+    for (const auto& [_, bits] : enumeration.values)
+        mask |= bits;
+    return mask;
+}
+
+inline bool valid_enum_bits(const TypeInfo::Enumeration& enumeration, std::uint32_t bits) noexcept {
+    if (std::ranges::any_of(enumeration.values, [&](const auto& member) { return member.second == bits; }))
+        return true;
+    return enumeration.flags && (bits & declared_flag_mask(enumeration)) == bits;
 }
 
 inline bool finite_scalar(const Scalar& value) {

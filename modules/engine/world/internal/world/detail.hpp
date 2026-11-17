@@ -122,9 +122,6 @@ Result<bool> is(Runtime&, ObjectId, TypeId);
 
 Result<void> validate_object(Runtime&, ObjectId, TypeId);
 
-// The validator registered with BodySettings.
-Result<void> body_rules(const BodySettings&);
-
 // Checks a native value against its reflected type's hard bounds and validators.
 template <class T>
 Result<void> check_value(Runtime& runtime, const T& value) {

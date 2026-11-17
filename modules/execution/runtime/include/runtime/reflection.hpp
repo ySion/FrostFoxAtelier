@@ -9,6 +9,10 @@ template <class T>
 struct Definition {
     static TypeDefinition build(Runtime&);
 };
+
+// Compile-time classification emitted into generated headers for cross-group lookup.
+template <class T, TypeKind Kind>
+struct Reflected;
 }
 
 // The reflection tool observes these invocations with Clang's preprocessor and
@@ -16,6 +20,7 @@ struct Definition {
 #define ACLASS(...)
 #define ASTRUCT(...)
 #define AENUM(...)
+#define AMETA(...)
 #define AFIELD(...)
 #define AFUNCTION(...)
 #define AGENERATED_BODY(Type) friend struct ::atelier::reflection::Definition<Type>;

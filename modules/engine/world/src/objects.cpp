@@ -10,26 +10,25 @@ using detail::Access;
 
 using detail::error;
 
-namespace {
-Result<void> translate_owner(Runtime& runtime, ObjectId self, Component&, float x, float y, float z) {
-    return detail::queue_translation(runtime, self, {x, y, z});
-}
-
-Result<void> request_entity_destroy(Runtime& runtime, ObjectId self, Entity&) {
+// Requests and deferred translations only enqueue; World applies them when the current phase ends.
+Result<void> Entity::request_destroy(Runtime& runtime, ObjectId self, Entity&) {
     return detail::queue_request(runtime, self, RequestKind::destroy_entity, false);
 }
 
-Result<void> enable_entity(Runtime& runtime, ObjectId self, Entity&, bool enabled) {
+Result<void> Entity::request_enabled(Runtime& runtime, ObjectId self, Entity&, bool enabled) {
     return detail::queue_request(runtime, self, RequestKind::entity_enabled, enabled);
 }
 
-Result<void> request_component_destroy(Runtime& runtime, ObjectId self, Component&) {
+Result<void> Component::translate_owner(Runtime& runtime, ObjectId self, Component&, float x, float y, float z) {
+    return detail::queue_translation(runtime, self, {x, y, z});
+}
+
+Result<void> Component::request_destroy(Runtime& runtime, ObjectId self, Component&) {
     return detail::queue_request(runtime, self, RequestKind::destroy_component, false);
 }
 
-Result<void> enable_component(Runtime& runtime, ObjectId self, Component&, bool enabled) {
+Result<void> Component::request_enabled(Runtime& runtime, ObjectId self, Component&, bool enabled) {
     return detail::queue_request(runtime, self, RequestKind::component_enabled, enabled);
-}
 }
 
 Result<Types> register_types(Runtime& runtime) {
@@ -42,22 +41,11 @@ Result<Types> register_types(Runtime& runtime) {
     std::vector<TypeDefinition> definitions;
     definitions.push_back(reflection::Definition<Entity>::build(runtime));
     definitions.push_back(reflection::Definition<Component>::build(runtime));
-    // The native method collects values only: safe for a generated caller with
-    // borrowed fields. World applies them after every generated call has returned.
-    definitions[1].methods.push_back(native_method<&translate_owner>("translate_owner", true));
-    // Requests only enqueue; the World applies them when the current phase ends.
-    definitions[0].methods.push_back(native_method<&request_entity_destroy>("destroy", true));
-    definitions[0].methods.push_back(native_method<&enable_entity>("set_enabled", true));
-    definitions[1].methods.push_back(native_method<&request_component_destroy>("destroy", true));
-    definitions[1].methods.push_back(native_method<&enable_component>("set_enabled", true));
     definitions.push_back(reflection::Definition<ShapeKind>::build(runtime));
     definitions.push_back(reflection::Definition<MotionKind>::build(runtime));
     definitions.push_back(reflection::Definition<Response>::build(runtime));
     definitions.push_back(reflection::Definition<PhysicsMaterial>::build(runtime));
     definitions.push_back(reflection::Definition<BodySettings>::build(runtime));
-    definitions.back().validate = [](const void* value) noexcept {
-        return detail::body_rules(*static_cast<const BodySettings*>(value));
-    };
     definitions.push_back(reflection::Definition<PrimitiveComponent>::build(runtime));
     definitions.push_back(reflection::Definition<CollisionComponent>::build(runtime));
     definitions.push_back(reflection::Definition<SpatialComponent>::build(runtime));
@@ -93,19 +81,17 @@ Response BodySettings::response(std::uint32_t channel) const noexcept {
 }
 
 // Single-field bounds are AFIELD hard bounds, checked before this runs.
-Result<void> detail::body_rules(const BodySettings& value) {
-    if (value.shape != ShapeKind::box && value.shape != ShapeKind::sphere && value.shape != ShapeKind::triangle_mesh &&
-        value.shape != ShapeKind::capsule)
+Result<void> BodySettings::validate() const {
+    if (shape != ShapeKind::box && shape != ShapeKind::sphere && shape != ShapeKind::triangle_mesh &&
+        shape != ShapeKind::capsule)
         return error(ErrorCode::argument_mismatch, "Unknown collision shape.");
-    if (value.motion != MotionKind::stationary && value.motion != MotionKind::kinematic &&
-        value.motion != MotionKind::dynamic)
+    if (motion != MotionKind::stationary && motion != MotionKind::kinematic && motion != MotionKind::dynamic)
         return error(ErrorCode::argument_mismatch, "Unknown body motion type.");
-    if (value.half_extents.x == 0 || value.half_extents.y == 0 || value.half_extents.z == 0 || value.radius == 0 ||
-        value.capsule_half_height == 0)
+    if (half_extents.x == 0 || half_extents.y == 0 || half_extents.z == 0 || radius == 0 || capsule_half_height == 0)
         return error(ErrorCode::argument_mismatch, "Collision dimensions must be positive.");
-    if ((value.ignore_categories & value.overlap_categories) != 0)
+    if ((ignore_categories & overlap_categories) != 0)
         return error(ErrorCode::argument_mismatch, "A collision category cannot be both ignored and overlapping.");
-    if (value.shape == ShapeKind::triangle_mesh && value.motion != MotionKind::stationary)
+    if (shape == ShapeKind::triangle_mesh && motion != MotionKind::stationary)
         return error(ErrorCode::argument_mismatch, "Triangle mesh collision requires a stationary body.");
     return {};
 }

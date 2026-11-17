@@ -292,6 +292,9 @@ struct CallContext {
     ValueOutput result_value{};
 
     bool result_written{};
+
+    // Pre-resolved declared result TypeId supplied by Runtime::call to skip per-call native_type lookups.
+    TypeId expected_result_type{};
 };
 
 using Invoker = Result<void> (*)(CallContext&) noexcept;
@@ -465,12 +468,14 @@ public:
 private:
     friend class Runtime;
 
-    ObjectRoot(std::shared_ptr<detail::RootState> state, std::uint32_t index) noexcept;
+    ObjectRoot(detail::RootState* state, std::uint32_t index) noexcept;
 
-    std::shared_ptr<detail::RootState> state_;
+    detail::RootState* state_{};
 
     std::uint32_t index_{};
 };
+
+static_assert(sizeof(ObjectRoot) == 16);
 
 // Registers a live caller-owned value, not its storage ownership. Reset this
 // registration before destroying or freeing the value. Moving the handle is safe.
@@ -495,12 +500,14 @@ public:
 private:
     friend class Runtime;
 
-    ValueRoot(std::shared_ptr<detail::RootState> state, std::uint32_t index) noexcept;
+    ValueRoot(detail::RootState* state, std::uint32_t index) noexcept;
 
-    std::shared_ptr<detail::RootState> state_;
+    detail::RootState* state_{};
 
     std::uint32_t index_{};
 };
+
+static_assert(sizeof(ValueRoot) == 16);
 
 struct ReferenceVisitor {
     void* context{};
@@ -668,6 +675,9 @@ struct NativeLayout {
     // Complete native representation to its explicitly declared native base.
     void* (*base_address)(void*) noexcept {};
 
+    // Optional direct byte offset to a non-virtual native base subobject.
+    std::optional<std::size_t> base_offset{};
+
     // Array element representation, checked against the same registered value type.
     const void* element_representation{};
 
@@ -684,6 +694,8 @@ struct NativeLayout {
 
     // Trusted producer qualification; Runtime also checks every declared field.
     bool plain_value{};
+
+    bool trivially_destructible{};
 };
 
 // Bounds use the field's exact leaf scalar type; math vectors apply them to each
@@ -719,8 +731,8 @@ struct FieldDefinition {
     // Hidden fields participate in layout and tracing, but have no public FieldId.
     bool exposed{true};
 
-    // Optional direct access to standard-layout native fields, supplied by
-    // generated offsetof expressions. Native bindings are trusted producers.
+    // Optional direct byte offset to a naturally aligned native field, supplied by
+    // AST layout generation or trusted native bindings.
     std::optional<std::size_t> native_offset{};
 
     // Described object fields only: one finite leaf per scalar component in storage order, of the exact
@@ -749,8 +761,22 @@ struct FieldDefinition {
     // value to empty text; construction uses one String constructor, not assignment.
     std::optional<std::string> default_text{};
 
+    // Excluded from scene/document property serialization while remaining in TypeInfo::fields.
+    bool transient{};
+
+    // Inspector UI displays the field without interactive editing; Runtime and Source writes remain valid.
+    bool read_only{};
+
     // Shared cold-path normalization for native publication and Source comparisons.
     Result<void> normalize_metadata();
+};
+
+struct EnumeratorMetadata {
+    std::string label{};
+
+    std::string description{};
+
+    bool operator==(const EnumeratorMetadata&) const = default;
 };
 
 struct MethodDefinition {
@@ -772,6 +798,10 @@ struct MethodDefinition {
     // Process-local typed native entry, produced from the same C++ signature as
     // invoke. Zero means dynamic-host-only, never a generated-call fallback.
     std::uintptr_t native_entry{};
+
+    // Empty, or one per parameter covering a trailing suffix of value/read_only scalar or enum parameters.
+    // Enum defaults may supply the underlying integer (for batch forward references) or EnumValue.
+    std::vector<std::optional<Scalar>> parameter_defaults{};
 };
 
 struct TypeDefinition {
@@ -792,6 +822,11 @@ struct TypeDefinition {
         TypeReference underlying;
 
         std::vector<std::pair<std::string, std::uint32_t>> values;
+
+        bool flags{};
+
+        // Empty, or one per value; normalized and expanded to values.size() on publication.
+        std::vector<EnumeratorMetadata> metadata{};
     };
 
     std::optional<Enumeration> enumeration{};
@@ -836,6 +871,10 @@ struct FieldInfo {
 
     // Owned decoded String default; absent for native fields and other value types.
     std::optional<std::string> default_text{};
+
+    bool transient{};
+
+    bool read_only{};
 };
 
 struct MethodInfo {
@@ -853,6 +892,9 @@ struct MethodInfo {
     std::vector<std::string> parameter_names{};
 
     std::uintptr_t native_entry{};
+
+    // One per signature parameter; EnumValue defaults carry the resolved Runtime enum TypeId.
+    std::vector<std::optional<Scalar>> parameter_defaults{};
 };
 
 struct TypeInfo {
@@ -885,6 +927,11 @@ struct TypeInfo {
 
         std::vector<std::pair<std::string, std::uint32_t>> values;
 
+        bool flags{};
+
+        // One per value after publication.
+        std::vector<EnumeratorMetadata> metadata{};
+
         bool operator==(const Enumeration&) const = default;
     };
 
@@ -910,6 +957,8 @@ struct TypeInfo {
     std::string description{};
 
     void* (*base_address)(void*) noexcept {};
+
+    std::optional<std::size_t> base_offset{};
 };
 
 // A value that breaks its type's rules. `field` is the failing leaf for a hard bound,
@@ -1286,6 +1335,8 @@ private:
     friend class detail::TypePublication;
 
     Result<std::shared_ptr<detail::TypePublication>> prepare_types(std::vector<TypeDefinition>);
+
+    [[nodiscard]] Result<void> call_scalars(ObjectId, MethodId, std::span<const Scalar>, Scalar*, ValueOutput = {});
 
     [[nodiscard]] Result<void> call_arguments(ObjectId, MethodId, std::span<const Argument>, Scalar*, ValueOutput = {});
 

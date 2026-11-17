@@ -22,14 +22,15 @@ public:
 
 | 宏 | 合同 |
 | --- | --- |
-| `ACLASS(Name = "...", DESC = "...")` | 声明 Runtime 对象；无原生基类时沿用 `core.Object` |
-| `ASTRUCT(Name = "...", DESC = "...")` | 声明 Runtime 记录值，允许内联使用 |
-| `AENUM(Name = "...", DESC = "...")` | 声明命名空间级 enum class；底层支持 int32_t/uint32_t，不需要 AGENERATED_BODY |
-| `AFIELD(Name = "...", Label = "...", Category = "...", DESC = "...", Hidden, Strong = "...", Min = "...", Max = "...", LockMin, LockMax, HardMin = "...", HardMax = "...")` | 声明字段；展示名称、分组、说明与范围均可省略，引用形式和范围见下文 |
-| `AFUNCTION(Name = "...", DESC = "...")` | 声明成员方法；名称与说明可省略，重载须使用不同的反射名称 |
+| `ACLASS(Name = "...", Validate = "...", DESC = "...")` | 声明 Runtime 对象；无原生基类时沿用 `core.Object` |
+| `ASTRUCT(Name = "...", Validate = "...", DESC = "...")` | 声明 Runtime 记录值，允许内联使用 |
+| `AENUM(Name = "...", Flags, DESC = "...")` | 声明命名空间级 enum class；底层支持 int32_t/uint32_t（`Flags` 位掩码枚举要求 uint32_t），不需要 AGENERATED_BODY |
+| `AMETA(Label = "...", DESC = "...")` | 紧邻 `AENUM` 内的单个枚举项，声明枚举项的展示名称与说明文本 |
+| `AFIELD(Name = "...", Label = "...", Category = "...", DESC = "...", Hidden, Transient, ReadOnly, Strong = "...", Min = "...", Max = "...", LockMin, LockMax, HardMin = "...", HardMax = "...")` | 声明字段；展示名称、分组、说明与范围均可省略，引用形式和范围见下文 |
+| `AFUNCTION(Name = "...", BorrowSafe, DESC = "...")` | 声明成员方法或静态上下文方法；名称与说明可省略，重载须使用不同的反射名称 |
 | `AGENERATED_BODY(TypeName)` | 在类型体内出现一次，仅授权对应元数据生产者访问私有成员；不改变访问段或对象布局 |
 
-`ACLASS/ASTRUCT` 表达引擎语义，C++ 声明本身可以使用 `class` 或 `struct`。类型的 `Name` 默认是完整 C++ 名字，并把 `::` 换成 `.`；成员名字默认取 C++ 名字。稳定的既有名字应明确指定。宏值为普通字符串字面量，`Hidden` 是无值标记。未知或重复参数直接报错；字段的 `Meta` 可重复声明不同键，见下文。
+`ACLASS/ASTRUCT` 表达引擎语义，C++ 声明本身可以使用 `class` 或 `struct`。类型的 `Name` 默认是完整 C++ 名字，并把 `::` 换成 `.`；成员名字默认取 C++ 名字。稳定的既有名字应明确指定。宏值为普通字符串字面量，`Hidden`、`Transient`、`ReadOnly`、`Flags`、`BorrowSafe`、`LockMin`、`LockMax` 是无值标记。未知或重复参数直接报错；字段的 `Meta` 可重复声明不同键，见下文。
 
 `AFIELD` 的 `Label` 和 `Category` 是可选展示文本，例如：
 
@@ -86,19 +87,19 @@ AFIELD(Min = "1", Max = "64", LockMin) std::uint32_t samples{8};
 
 生成器在字段调用后输出 `.range({.ui_min = ..., .hard_max = ...})`，手写注册使用同一个 `NativeRegistration::range(FieldRange)`，也可直接填写 `FieldDefinition::range`。范围属于已发布的类型定义。`.source` 类字段用同名属性 `[Min = 0.0, LockMin, HardMax = 10.0]` 写在字段前，边界是字段叶类型的常量表达式而不是字符串，其余规则相同，见[语言规则](../LANGUAGE.md#项目快照与原生派生类)。
 
-跨字段规则由类型校验器表达，目前只能通过手写注册的 `.validate<&F>()` 或 `TypeDefinition::validate` 声明，生成器还没有对应的宏。生成的类型可以在发布前，对 `Definition<T>::build` 返回的定义设置 `validate`，例如 `definition.validate = [](const void* p) { return check(*static_cast<const T*>(p)); };`。语义见[类型校验](runtime-model.md#类型校验)。
+跨字段规则由类型校验器表达：`ACLASS` 与 `ASTRUCT` 可指定 `Validate = "成员或函数名"`（解析为返回 `Result<void>` 的无参 `const` 成员函数、接收 `const T&` 的静态成员函数或同作用域/限定名自由函数），生成器输出 `.validate<&...>()`；手写注册同样使用 `.validate<&F>()` 或 `TypeDefinition::validate`。语义见[类型校验](runtime-model.md#类型校验)。
 
 ### 字段与方法
 
-- 内联字段支持 bool、float、double、int/int32_t、uint32_t、本生成组中的反射枚举与记录，以及内建数学值、引擎 String 和无 GC 引用的 Array<T>。Array 元素使用同一已注册值类型；StringView/Span 不允许作为持久字段。字段必须可写、可取成员地址；位域、const/volatile 字段及其他存储形式报错。
+- 内联字段支持 bool、float、double、int/int32_t、uint32_t、本生成组或已生成上游组中的反射枚举与记录，以及内建数学值、引擎 String 和无 GC 引用的 Array<T>。Array 元素使用同一已注册值类型；StringView/Span 不允许作为持久字段。字段必须可写、可取成员地址；位域、const/volatile 字段及其他存储形式报错。
 - `ReferenceSlot` 必须指定 `Strong = "类型名"` 或 `Weak = "类型名"`；`ReferenceSequence` 必须指定 `Sequence = "元素类型名"`，且只能属于对象。目标可以是本组的反射对象，也可以是组外任意对象类型的限定名（如 `world.Entity`）：生成代码按名称引用，由 Runtime 在发布时解析，所以组外目标必须先发布或在同一批中，缺失时发布错误写明字段和所引用的名称。目标指向本组的非对象类型时生成器报错。这些选项不能用于普通内联值。
-- `Hidden` 只控制 Runtime 公共字段目录；字段仍参与追踪。C++ 的 public/private 与此独立。
+- `Hidden` 只控制 Runtime 公共字段目录；字段仍参与追踪。C++ 的 public/private 与此独立。`Transient` 使公开字段不参与场景与图文档的属性持久化；`ReadOnly` 使公开字段在编辑器检视面板中只读展示，不影响原生代码、`Runtime::write` 或 `.source` 写入。`Hidden` 不能与 `Transient` 或 `ReadOnly` 混用。
 - 漏标直接引用槽、序列或内嵌包含引用存储的记录/数组会报错，避免遗漏 GC 边。未标记的普通原生状态不自动成为反射字段；任意外部资源的所有权仍由原生实现负责。
-- 对象支持一个 public、非 virtual 的原生反射基类；记录不支持继承。基类可以在本组中，也可以来自另一个生成组：生成器凭基类的 `AGENERATED_BODY` 识别（类模板特化不在此列），使用方必须在基类所在组之后注册。组内基类的反射成员重名由生成器报错；跨组时，基类是否为对象类型、成员是否重名，由 Runtime 注册时检查（`Object base must resolve to an object type`、`Member hides an inherited declaration`），不在生成时报。生成 `.base<Base>()`，实际地址调整由 C++ 编译器处理。
-- 方法支持 void、标量（含 bool）/枚举、内建数学值或 plain struct 结果，标量/枚举参数支持按值、`const T&` 和 `T&`；无 GC 引用的原生记录、Array、String 支持后两者。支持 const/noexcept 成员函数。静态方法、变参、模板、指针、右值/volatile 引用、引用返回、引用限定方法和运算符方法报错。内建数学值与递归 plain struct 支持同步按值参数/结果；资源记录与容器按值参数/结果与借用视图参数尚未开放。生成的定型 C++ thunk 负责实际平台 ABI。生成器使用完整成员指针类型和完全限定的原生类型名消除重载与命名空间歧义。
+- 对象支持一个 public、非 virtual 的原生反射基类；记录不支持继承。基类可以在本组中，也可以来自另一个生成组：生成器优先凭上游 `.gen.hpp` 的 `Reflected<T, TypeKind::object>` 识别并拒绝非对象类型，使用方必须在基类所在组之后注册。组内基类的反射成员重名由生成器报错；跨组时，成员重名由 Runtime 注册时检查（`Member hides an inherited declaration`）。生成 `.base<Base>(offset)`，同时提供 Clang `ASTRecordLayout` 的非虚基类字节偏移与 C++ 编译器地址转换钩子。
+- 方法支持 void、标量（含 bool）/枚举、内建数学值或 plain struct 结果，标量/枚举参数支持按值、`const T&` 和 `T&`；无 GC 引用的原生记录、Array、String 支持后两者。支持 const/noexcept 成员函数，以及符合 `Result<R>(Runtime&, ObjectId, [const] Self&, ...)` 签名的静态上下文方法（`Runtime&` 与 `ObjectId` 为宿主上下文，不计入业务参数列表）。普通无上下文静态方法、变参、模板、指针、右值/volatile 引用、引用返回、引用限定方法和运算符方法报错。内建数学值与递归 plain struct 支持同步按值参数/结果；资源记录与容器按值参数/结果与借用视图参数尚未开放。生成的定型 C++ thunk 负责实际平台 ABI。生成器使用完整成员指针或函数指针类型和完全限定的原生类型名消除重载与命名空间歧义。
 - `AFUNCTION(BorrowSafe)` 发布 `MethodInfo::preserves_borrows`，允许同步原生值区间调用该方法。它是开发者对完整调用链的保证，不是自动效果分析；具体约束见[语言规则](../LANGUAGE.md#拥有型-stringarray-与原生算法)。普通方法无需此标记，已有调用行为保持。
-- 方法的参数名取自带 `AFUNCTION` 的那个 C++ 声明，生成为 `.method<...>(...)` 之后的 `.parameter_names({...})`，发布到 `MethodInfo::parameter_names`；未命名的 C++ 参数得到空字符串。手写注册在 `method` 后调用同一个 `NativeRegistration::parameter_names`，规则见[运行时模型](runtime-model.md)。
-- 满足自然对齐的标准布局类型中，公开反射字段额外生成 `offsetof`，由同一 Runtime 发布并校验，供源码借用直接访问。隐藏、非标准布局或不能保证自然对齐的字段继续使用既有成员访问器，不推测偏移；这一限制不影响原有反射能力。详见[原生值借用](native-value-borrows.md)。
+- 方法的参数名取自带 `AFUNCTION` 的那个 C++ 声明，生成为 `.method<...>(...)` 之后的 `.parameter_names({...})`，发布到 `MethodInfo::parameter_names`；未命名的 C++ 参数得到空字符串。手写注册在 `method` 后调用同一个 `NativeRegistration::parameter_names`。若方法的尾部按值或 `const T&` 标量/枚举参数带有 C++ 编译期常量默认实参（浮点默认实参须有限），生成器输出 `.parameter_defaults({...})` 发布到 `MethodInfo::parameter_defaults`，动态 `Runtime::call` 与 `.source` 方法调用均可省略对应的尾部实参；可写引用参数、非标量/枚举参数或非常量默认表达式报错。规则见[运行时模型](runtime-model.md)。
+- 满足自然对齐的非位域反射字段（含非标准布局类型与 `Hidden` 字段）由生成器从当前编译命令的 Clang `ASTRecordLayout` 直接输出精确字节偏移，由同一 Runtime 校验范围与对齐：公开字段发布 `FieldInfo::offset` 供反射路径与源码 JIT 直接访问，`Hidden` 字段仍不进入公开字段目录，仅在 Runtime 内部用于直接偏移寻址与追踪；不能保证自然对齐的紧凑布局或未提交偏移的手写绑定继续使用成员访问器。详见[原生值借用](native-value-borrows.md)。
 - 构造、析构和记录复制能力沿用 `NativeRegistration`。生成代码带原头文件的 `#line`，编译器继续验证默认构造及不抛异常析构等约束。
 
 上述业务结果 R 也可包装一层 `atelier::Result<R>`，包括 `Result<void>`；生成器保留真实成员指针类型，由同一注册器产生动态及定型入口。Result 的成功值类型才是反射业务结果，不生成 expected 的字段或新的 Source Result 类型。失败与输出提交合同统一见[原生调用与 evaluate 目标](runtime-model.md#原生调用与-evaluate-目标)。
@@ -111,16 +112,24 @@ bool 反射字段和方法使用 Runtime 的 `core.bool` 身份与当前目标�
 AENUM(Name = "models.Mode")
 enum class Mode : std::int32_t { idle = -1, active = 2, running = active };
 
+AENUM(Name = "models.LayerMask", Flags)
+enum class LayerMask : std::uint32_t {
+    AMETA(Label = "静态层", DESC = "地形与建筑")
+    static_layer = 1u << 0,
+    AMETA(Label = "动态层")
+    dynamic_layer = 1u << 1,
+};
+
 // 位于带 ACLASS/AGENERATED_BODY 的类中：
 AFIELD() Mode mode{Mode::idle};
-AFUNCTION() void accumulate(int amount, const int& bias, int& total);
+AFUNCTION() void accumulate(int amount, const int& bias = 0, LayerMask mask = LayerMask::static_layer);
 ```
 
-枚举必须与引用它的类型处于同一生成组，并由模块入口一起发布。生成器保留独立 TypeId 及名字/数值，不将枚举合并为底层整数；别名和未命名底层值均有效。当前不生成 uint8/int16 等底层枚举。借用合同见[共享函数契约](runtime-model.md#共享函数签名与结果)，源码写法见 [LANGUAGE](../LANGUAGE.md#参数传递与枚举)。
+枚举可在本生成组中定义，也可来自已生成的上游目标（须在消费目标前向 Runtime 发布）。生成器保留独立 TypeId 及名字/数值，不将枚举合并为底层整数；别名和未命名底层值均有效。`AENUM(..., Flags)` 要求 `std::uint32_t` 底层类型并发布 `TypeInfo::Enumeration::flags = true`；枚举项前的 `AMETA(Label = "...", DESC = "...")` 发布至 `TypeInfo::Enumeration::metadata`，供编辑器检视面板与单选/多选位开关使用。当前不生成 uint8/int16 等底层枚举。借用合同见[共享函数契约](runtime-model.md#共享函数签名与结果)，源码写法见 [LANGUAGE](../LANGUAGE.md#参数传递与枚举)。
 
 ## 生成文件与使用入口
 
-每个输入头产生同路径的 `.gen.hpp`，一个目标产生一份 `reflection.gen.cpp`。头中只有前向声明与元数据构建特化声明；实现包含普通成员指针和既有注册代码。生成文件位于 `out/<配置>/generated/<目标>/`，不提交，也不手工编辑。
+每个输入头产生同路径的 `.gen.hpp`，一个目标产生一份 `reflection.gen.cpp`。头中只有前向声明、元数据构建特化声明与零运行开销的 `Reflected<T, Kind>` 编译期分类特化；实现包含普通成员指针和既有注册代码。生成文件位于 `out/<配置>/generated/<目标>/`，不提交，也不手工编辑。
 
 ```cpp
 auto definitions = std::vector<atelier::TypeDefinition>{
@@ -161,7 +170,7 @@ atelier_reflect(atelier_world
   → 正常编译生成的 C++，沿既有模块入口发布
 ```
 
-扫描复用 SOURCE 的宏、include、目标平台和标准选项，使用锁定 SDK 的资源头；反射头和一般公共 C++ 头一样，影响类型布局的宏须在目标与消费者之间保持一致。宏标记由 `PPCallbacks` 观察，普通 C++ 编译无需加载插件。
+扫描复用 SOURCE 的宏、include、目标平台和标准选项，使用锁定 SDK 的资源头，并启用 `SkipFunctionBodies` 跳过普通函数体解析（文件局部或私有未用告警留给真实 C++ 编译检查）；反射头和一般公共 C++ 头一样，影响类型布局的宏须在目标与消费者之间保持一致。宏标记由 `PPCallbacks` 观察，普通 C++ 编译无需加载插件。
 
 Clang/LLVM 包在独立变量作用域中加载，SDK 的静态 CRT 默认值不会传播到后续引擎或第三方目标。`atelier_reflect` 通过 `atelier_llvm_target` 显式使用 SDK ABI，正式消费者继续使用各自配置的动态 CRT。
 
@@ -185,6 +194,6 @@ cmake --build --preset release --target runtime_acceptance world_acceptance
 
 [生成消费者](../acceptance/reflection/main.cpp)检查生成的构造/析构钩子各运行一次，以及 Runtime 销毁后字段元数据说明（含内嵌零字节的文本）仍按输入保留。按值快照/返回、借用写入失败与 Host→JIT→原生调用链不再有专项代表。
 
-内联记录与枚举字段的类型须在本生成组中解析；反射基类和引用目标可以来自其他生成组，分别按上文的 `AGENERATED_BODY` 识别和限定名解析，其余跨生成组的语义导入尚未开放。工具升级随工具链锁文件进行；源码实现不承诺跨 Clang AST API 版本二进制兼容。
+跨生成组的内联记录、枚举与对象基类通过上游 `.gen.hpp` 中的 `Reflected<T, Kind>` 分类识别（CMake 自动衔接链接目标间的反射生成依赖，运行时仍须按依赖顺序注册），引用目标按限定名解析。工具升级随工具链锁文件进行；源码实现不承诺跨 Clang AST API 版本二进制兼容。
 
 选型依据：[LibTooling](https://clang.llvm.org/docs/LibTooling.html)使用实际 TU 的[编译数据库](https://clang.llvm.org/docs/JSONCompilationDatabase.html)，[PPCallbacks::MacroExpands](https://clang.llvm.org/doxygen/classclang_1_1PPCallbacks.html)记录声明前标记，再由 AST 确认归属、类型和访问规则。未知 attribute 不能假定保留为有效元数据，见 [Clang unknown-attributes](https://clang.llvm.org/docs/DiagnosticsReference.html#wunknown-attributes)。当前生产链直接复用锁定 C++ SDK，不维护 C#/ClangSharp shim 或另一套参数转换；生成结果仍进入同一 NativeRegistration 与 Runtime 类型发布。

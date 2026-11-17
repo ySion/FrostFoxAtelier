@@ -49,6 +49,10 @@ struct Property {
     std::string description;
 
     FieldRange range{};
+
+    bool transient{};
+
+    bool read_only{};
 };
 
 struct PropertyPatch {

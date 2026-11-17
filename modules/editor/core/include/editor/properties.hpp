@@ -72,7 +72,8 @@ using EncodeReference = std::function<Result<json::Document>(ObjectId)>;
 // hook receives inline leaves only, so it cannot be combined with `resolve`: reference leaves
 // would bypass it.
 [[nodiscard]] Result<void> decode_properties(Runtime&, const PropertyTarget&, json::Value record,
-                                             const ResolveReference& = {}, const WriteLeaf& = {});
+                                             const ResolveReference& = {}, const WriteLeaf& = {},
+                                             bool include_transient = false);
 
 // How a tolerant decode reports a saved leaf it does not apply as saved; paths start at the record.
 struct PropertyReport {

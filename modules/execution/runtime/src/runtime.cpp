@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <atomic>
 #include <bit>
+#include <cassert>
 #include <charconv>
 #include <cmath>
 #include <concepts>
@@ -203,75 +204,97 @@ struct ValueRootStorage {
 };
 
 struct RootState {
-    using Value = std::variant<ObjectReference, ValueRootStorage>;
-
-    struct Entry {
-        Value value;
+    struct ValueEntry {
+        ValueRootStorage value;
 
         std::uint32_t trace_next{no_slot};
 
         std::uint32_t trace_previous{no_slot};
 
         bool trace_queued{};
-
-        std::uint32_t value_index{no_slot};
     };
 
-    SparseArray<Entry> entries;
+    SparseArray<ObjectReference> object_entries;
 
-    // Dense live value roots only: object roots and retired entries cannot own this storage.
-    Array<std::uint32_t> value_entries;
+    SparseArray<ValueEntry> value_entries;
+
+    std::size_t references{1};
 
     std::size_t traversals{};
 
     bool alive{true};
 
+    bool marking{};
+
     void* observer{};
 
-    void (*added)(void*, std::uint32_t) noexcept {};
+    void (*object_added)(void*, ObjectId) noexcept {};
 
-    void (*removing)(void*, std::uint32_t) noexcept {};
+    void (*value_added)(void*, std::uint32_t) noexcept {};
 
-    bool has_capacity() const noexcept { return entries.size() < no_slot; }
+    void (*value_removing)(void*, std::uint32_t) noexcept {};
 
-    std::uint32_t add(Value value) noexcept {
+    void retain() noexcept { ++references; }
+
+    static void release(RootState* state) noexcept {
+        if (state) {
+            assert(state->references != 0);
+            if (--state->references == 0)
+                delete state;
+        }
+    }
+
+    bool has_capacity() const noexcept { return object_entries.size() + value_entries.size() < no_slot; }
+
+    std::uint32_t add_object(const ObjectReference& value) noexcept {
         assert_serial_access();
         if (traversals != 0)
             fatal("Cannot add roots during reference traversal.");
         if (!has_capacity())
             fatal("Root identity space exhausted.");
-        const bool is_value = std::holds_alternative<ValueRootStorage>(value);
-        if (is_value && value_entries.size() == value_entries.capacity()) {
-            value_entries.reserve(
-                std::min<std::size_t>(no_slot, std::max<std::size_t>(8, value_entries.capacity() * 2)));
-        }
-        const auto index = static_cast<std::uint32_t>(entries.emplace(Entry{std::move(value)}));
-        if (is_value) {
-            entries[index].value_index = static_cast<std::uint32_t>(value_entries.size());
-            value_entries.add(index);
-        }
-        if (added)
-            added(observer, index);
+        const auto index = static_cast<std::uint32_t>(object_entries.emplace(value));
+        if (marking)
+            object_added(observer, value.id());
         return index;
     }
 
-    void remove(std::uint32_t index) noexcept {
+    void assign_object(std::uint32_t index, const ObjectReference& value) noexcept {
+        if (traversals != 0)
+            fatal("Cannot add roots during reference traversal.");
+        object_entries[index] = value;
+        if (marking)
+            object_added(observer, value.id());
+    }
+
+    void remove_object(std::uint32_t index) noexcept {
         assert_serial_access();
-        if (removing)
-            removing(observer, index);
-        auto& entry = entries[index];
-        if (entry.value_index != no_slot) {
-            const auto moved = value_entries.back();
-            value_entries[entry.value_index] = moved;
-            entries[moved].value_index = entry.value_index;
-            value_entries.pop();
-        }
-        entries.erase(index);
+        object_entries.erase(index);
+    }
+
+    std::uint32_t add_value(ValueRootStorage value) noexcept {
+        assert_serial_access();
+        if (traversals != 0)
+            fatal("Cannot add roots during reference traversal.");
+        if (!has_capacity())
+            fatal("Root identity space exhausted.");
+        const auto index = static_cast<std::uint32_t>(value_entries.emplace(ValueEntry{value}));
+        if (marking)
+            value_added(observer, index);
+        return index;
+    }
+
+    void remove_value(std::uint32_t index) noexcept {
+        assert_serial_access();
+        if (value_removing)
+            value_removing(observer, index);
+        value_entries.erase(index);
     }
 
     bool overlaps_storage(const void* storage, std::size_t size) const noexcept {
-        for (const auto index : value_entries) {
-            const auto& value = std::get<ValueRootStorage>(entries[index].value);
+        if (value_entries.empty())
+            return false;
+        for (const auto entry : value_entries.entries()) {
+            const auto& value = entry.value.value;
             if (overlaps(storage, size, value.storage.data(), value.storage.size()))
                 return true;
         }
@@ -281,8 +304,10 @@ struct RootState {
 
 }
 
-ObjectRoot::ObjectRoot(std::shared_ptr<detail::RootState> state, std::uint32_t index) noexcept
-    : state_(std::move(state)), index_(index) {}
+ObjectRoot::ObjectRoot(detail::RootState* state, std::uint32_t index) noexcept : state_(state), index_(index) {
+    if (state_)
+        state_->retain();
+}
 
 ObjectRoot::~ObjectRoot() {
     reset();
@@ -291,13 +316,19 @@ ObjectRoot::~ObjectRoot() {
 ObjectRoot::ObjectRoot(const ObjectRoot& other) noexcept {
     detail::assert_serial_access();
     if (other.state_) {
-        index_ = other.state_->add(other.reference());
+        index_ = other.state_->add_object(other.reference());
         state_ = other.state_;
+        state_->retain();
     }
 }
 
 ObjectRoot& ObjectRoot::operator=(const ObjectRoot& other) noexcept {
     if (this != &other) {
+        detail::assert_serial_access();
+        if (state_ && state_ == other.state_) {
+            state_->assign_object(index_, other.reference());
+            return *this;
+        }
         ObjectRoot copy{other};
         *this = std::move(copy);
     }
@@ -305,12 +336,12 @@ ObjectRoot& ObjectRoot::operator=(const ObjectRoot& other) noexcept {
 }
 
 ObjectRoot::ObjectRoot(ObjectRoot&& other) noexcept
-    : state_(std::move(other.state_)), index_(std::exchange(other.index_, 0)) {}
+    : state_(std::exchange(other.state_, nullptr)), index_(std::exchange(other.index_, 0)) {}
 
 ObjectRoot& ObjectRoot::operator=(ObjectRoot&& other) noexcept {
     if (this != &other) {
         reset();
-        state_ = std::move(other.state_);
+        state_ = std::exchange(other.state_, nullptr);
         index_ = std::exchange(other.index_, 0);
     }
     return *this;
@@ -319,9 +350,10 @@ ObjectRoot& ObjectRoot::operator=(ObjectRoot&& other) noexcept {
 void ObjectRoot::reset() noexcept {
     detail::assert_serial_access();
     if (state_) {
-        state_->remove(index_);
-        state_.reset();
-        index_ = 0;
+        auto* state = std::exchange(state_, nullptr);
+        const auto index = std::exchange(index_, 0);
+        state->remove_object(index);
+        detail::RootState::release(state);
     }
 }
 
@@ -330,23 +362,25 @@ bool ObjectRoot::registered() const noexcept {
 }
 
 ObjectReference ObjectRoot::reference() const noexcept {
-    return state_ ? std::get<ObjectReference>(state_->entries[index_].value) : ObjectReference{};
+    return state_ ? state_->object_entries[index_] : ObjectReference{};
 }
 
-ValueRoot::ValueRoot(std::shared_ptr<detail::RootState> state, std::uint32_t index) noexcept
-    : state_(std::move(state)), index_(index) {}
+ValueRoot::ValueRoot(detail::RootState* state, std::uint32_t index) noexcept : state_(state), index_(index) {
+    if (state_)
+        state_->retain();
+}
 
 ValueRoot::~ValueRoot() {
     reset();
 }
 
 ValueRoot::ValueRoot(ValueRoot&& other) noexcept
-    : state_(std::move(other.state_)), index_(std::exchange(other.index_, 0)) {}
+    : state_(std::exchange(other.state_, nullptr)), index_(std::exchange(other.index_, 0)) {}
 
 ValueRoot& ValueRoot::operator=(ValueRoot&& other) noexcept {
     if (this != &other) {
         reset();
-        state_ = std::move(other.state_);
+        state_ = std::exchange(other.state_, nullptr);
         index_ = std::exchange(other.index_, 0);
     }
     return *this;
@@ -355,9 +389,10 @@ ValueRoot& ValueRoot::operator=(ValueRoot&& other) noexcept {
 void ValueRoot::reset() noexcept {
     detail::assert_serial_access();
     if (state_) {
-        state_->remove(index_);
-        state_.reset();
-        index_ = 0;
+        auto* state = std::exchange(state_, nullptr);
+        const auto index = std::exchange(index_, 0);
+        state->remove_value(index);
+        detail::RootState::release(state);
     }
 }
 
@@ -418,14 +453,60 @@ struct Runtime::Impl {
 
         const Type* base{};
 
+        // Cohen's display for O(1) single-inheritance tests: ancestors[0] is core.Object
+        // and ancestors[depth] is this type. Append-only type publication leaves existing entries immutable.
+        InlineArray<const Type*, 8> ancestors;
+
+        std::uint32_t depth{};
+
+        // Nearest ancestor depth (<= depth) requiring a non-offset native base_address callback, or 0.
+        std::uint32_t native_base_depth{};
+
+        // Cumulative constant base-subobject byte offset above native_base_depth.
+        std::size_t base_root_offset{};
+
         // Own declarations, including hidden names, for inherited conflict checks.
         std::vector<std::string> member_names;
 
         // An internal leading base segment reuses layout/lifetime/trace walkers.
         // Native constructors still own their complete C++ object themselves.
+        struct CompiledParameter {
+            const Type* type{};
+
+            ParameterPassing passing{ParameterPassing::value};
+
+            std::uint8_t scalar_variant{0xff};
+
+            std::size_t scratch_offset{};
+        };
+
+        struct CompiledMethod {
+            Invoker invoke{};
+
+            const Type* result_type{};
+
+            bool record_result{};
+
+            bool receiver_read_only{};
+
+            bool valid{};
+
+            std::size_t scratch_size{};
+
+            std::size_t scratch_alignment{alignof(double)};
+
+            InlineArray<CompiledParameter, 8> parameters;
+        };
+
         Array<FieldStorage> fields;
 
-        Array<Invoker> methods;
+        Array<CompiledMethod> compiled_methods;
+
+        Map<StringView, FieldId> field_by_name;
+
+        Map<StringView, MethodId> method_by_name;
+
+        std::uint8_t scalar_variant_index{0xff};
 
         Array<std::uint32_t> trace_fields;
 
@@ -439,6 +520,11 @@ struct Runtime::Impl {
 
         // Only built-in scalars and padding-free homogeneous described layouts qualify.
         const Type* scalar_leaf{};
+
+        // Pre-initialized CDO byte image for side-effect-free described types (scalars, enums,
+        // math values, plain structs, ReferenceSlots and default_leaves). Enables single-memcpy
+        // default construction, copy construction and assignment.
+        std::byte* prototype{};
 
         // Every hard-bounded leaf (and Array of them), so whole-value writes and validate() can enforce them.
         Array<ConstrainedLeaf> constrained_leaves;
@@ -459,12 +545,22 @@ struct Runtime::Impl {
         };
 
         Array<SwapPart> swap_parts;
+
+        Type() = default;
+
+        Type(const Type&) = delete;
+
+        Type& operator=(const Type&) = delete;
+
+        ~Type() {
+            if (prototype)
+                ::operator delete(prototype, std::align_val_t{info.alignment});
+        }
     };
 
-    // Ordered to stay at 64 bytes.
-    struct Slot {
-        TypeId type;
-
+    // Hot object-identity and write-stamp fields packed into half a 64-byte cache line.
+    // Cold GC mark bitmaps and gray-list links live out-of-line.
+    struct alignas(32) Slot {
         void* storage{};
 
         std::uint64_t generation{1};
@@ -472,18 +568,20 @@ struct Runtime::Impl {
         // write_epoch of the latest write; see stamp().
         std::uint64_t written{};
 
-        std::uint64_t mark_epoch{};
+        std::uint32_t type_index{no_slot};
 
         std::uint32_t next_free{no_slot};
-
-        std::uint32_t gray_next{no_slot};
-
-        std::uint32_t gray_previous{no_slot};
-
-        bool gray_queued{};
     };
 
-    static_assert(sizeof(Slot) == 64);
+    static_assert(sizeof(Slot) == 32);
+
+    struct GrayLink {
+        std::uint32_t next{no_slot};
+
+        std::uint32_t previous{no_slot};
+    };
+
+    static_assert(sizeof(GrayLink) == 8);
 
     std::uint64_t context{next_context.fetch_add(1, std::memory_order_relaxed)};
 
@@ -497,21 +595,57 @@ struct Runtime::Impl {
 
     Array<Slot> slots;
 
-    // Write stamps. write_pages[i] is the newest stamp among slots [64i, 64i + 64), so
-    // changed_objects() skips unchanged pages. Sized with slots before creation commits.
+    BitVector live_slots;
+
+    BitVector marked_slots;
+
+    BitVector sweep_slots;
+
+    Array<GrayLink> gray_links;
+
+    // Two-level hierarchical write-stamp tracking: each WritePage tracks the exact 64-bit masks
+    // of its two newest write epochs; each write_super_pages entry summarizes 64 pages (4096 slots).
     static constexpr unsigned write_page_shift = 6;
+
+    static constexpr unsigned write_super_page_shift = 12;
+
+    struct WritePage {
+        std::uint64_t newest_epoch{};
+
+        std::uint64_t previous_epoch{};
+
+        std::uint64_t floor_epoch{};
+
+        std::uint64_t newest_mask{};
+
+        std::uint64_t previous_mask{};
+    };
 
     std::uint64_t write_epoch{1};
 
-    Array<std::uint64_t> write_pages;
+    Array<WritePage> write_pages;
+
+    Array<std::uint64_t> write_super_pages;
 
     void stamp(std::uint32_t index) noexcept {
-        slots[index].written = write_epoch;
-        write_pages[index >> write_page_shift] = write_epoch;
+        const auto current = write_epoch;
+        slots.data()[index].written = current;
+        const auto bit = std::uint64_t{1} << (index & 63);
+        auto& page = write_pages.data()[index >> write_page_shift];
+        if (page.newest_epoch == current) [[likely]] {
+            page.newest_mask |= bit;
+            return;
+        }
+        page.floor_epoch = page.previous_epoch;
+        page.previous_epoch = page.newest_epoch;
+        page.previous_mask = page.newest_mask;
+        page.newest_epoch = current;
+        page.newest_mask = bit;
+        write_super_pages.data()[index >> write_super_page_shift] = current;
     }
 
     // Handles keep only this registry alive, never the Runtime or its objects.
-    std::shared_ptr<detail::RootState> roots{std::make_shared<detail::RootState>()};
+    detail::RootState* roots{new detail::RootState()};
 
     std::uint32_t free_head{no_slot};
 
@@ -541,15 +675,17 @@ struct Runtime::Impl {
 
     CollectionPhase phase{CollectionPhase::idle};
 
-    std::uint64_t epoch{};
-
     std::size_t marked{};
 
     std::size_t pending{};
 
-    std::size_t root_cursor{};
+    std::size_t object_root_cursor{};
 
-    std::size_t root_limit{};
+    std::size_t object_root_limit{};
+
+    std::size_t value_root_cursor{};
+
+    std::size_t value_root_limit{};
 
     std::size_t sweep_cursor{};
 
@@ -610,17 +746,22 @@ struct Runtime::Impl {
     Impl() {
         walk_stack.reserve(1);
         roots->observer = this;
-        roots->added = [](void* context, std::uint32_t index) noexcept {
-            auto& impl = *static_cast<Impl*>(context);
-            impl.root_added(index, impl.roots->entries[index]);
+        roots->object_added = [](void* context, ObjectId object) noexcept {
+            static_cast<Impl*>(context)->shade(object);
         };
-        roots->removing = [](void* context, std::uint32_t index) noexcept {
+        roots->value_added = [](void* context, std::uint32_t index) noexcept {
+            auto& impl = *static_cast<Impl*>(context);
+            impl.value_root_added(index, impl.roots->value_entries[index]);
+        };
+        roots->value_removing = [](void* context, std::uint32_t index) noexcept {
             static_cast<Impl*>(context)->root_removing(index);
         };
     }
 
+    ~Impl() { detail::RootState::release(roots); }
+
     void prepare_walk(const Type& type) {
-        if (type.scalar_leaf)
+        if (type.scalar_leaf || type.prototype || (type.native.construct && !type.info.contains_references))
             return;
         // Reserve before touching values, including space for failure cleanup/barriers.
         walk_stack.reserve(walk_stack.size() + type.walk_depth);
@@ -628,8 +769,8 @@ struct Runtime::Impl {
 
     bool marking() const noexcept { return phase == CollectionPhase::roots || phase == CollectionPhase::mark; }
 
-    bool is_live(const Slot& slot) const noexcept {
-        return slot.storage && (phase != CollectionPhase::sweep || slot.mark_epoch == epoch);
+    bool is_live(std::uint32_t index, const Slot& slot) const noexcept {
+        return slot.storage && (phase != CollectionPhase::sweep || marked_slots.contains(index));
     }
 
     void cancel_cursor() noexcept {
@@ -638,46 +779,49 @@ struct Runtime::Impl {
         trace_owner_index = no_slot;
     }
 
+    bool is_gray_queued(std::uint32_t index) const noexcept {
+        return gray_head == index || gray_links.data()[index].previous != no_slot;
+    }
+
     void remove_gray(std::uint32_t index) noexcept {
-        auto& slot = slots[index];
-        if (!slot.gray_queued)
+        if (gray_head == no_slot || !is_gray_queued(index))
             return;
-        if (slot.gray_previous != no_slot)
-            slots[slot.gray_previous].gray_next = slot.gray_next;
+        auto& link = gray_links.data()[index];
+        if (link.previous != no_slot)
+            gray_links.data()[link.previous].next = link.next;
         else
-            gray_head = slot.gray_next;
-        if (slot.gray_next != no_slot)
-            slots[slot.gray_next].gray_previous = slot.gray_previous;
+            gray_head = link.next;
+        if (link.next != no_slot)
+            gray_links.data()[link.next].previous = link.previous;
         else
-            gray_tail = slot.gray_previous;
-        slot.gray_next = no_slot;
-        slot.gray_previous = no_slot;
-        slot.gray_queued = false;
+            gray_tail = link.previous;
+        link.next = no_slot;
+        link.previous = no_slot;
     }
 
     void queue_gray(std::uint32_t index) noexcept {
-        auto& slot = slots[index];
-        if (slot.gray_queued)
+        if (is_gray_queued(index))
             return;
-        slot.gray_previous = gray_tail;
-        slot.gray_next = no_slot;
-        slot.gray_queued = true;
+        auto& link = gray_links.data()[index];
+        link.previous = gray_tail;
+        link.next = no_slot;
         if (gray_tail != no_slot)
-            slots[gray_tail].gray_next = index;
+            gray_links.data()[gray_tail].next = index;
         else
             gray_head = index;
         gray_tail = index;
     }
 
     void shade(ObjectId object) noexcept {
-        if (!marking() || !lookup(object))
+        if (!marking())
             return;
-        auto& slot = slots[object.index_];
-        if (slot.mark_epoch == epoch)
+        const auto* slot = lookup(object);
+        if (!slot || marked_slots.test(object.index_))
             return;
-        slot.mark_epoch = epoch;
+        marked_slots.set(object.index_);
         ++marked;
-        queue_gray(object.index_);
+        if (!types.data()[slot->type_index]->trace_fields.empty())
+            queue_gray(object.index_);
     }
 
     void sequence_changed(ObjectId owner) noexcept {
@@ -686,20 +830,22 @@ struct Runtime::Impl {
         // shade alone cannot reschedule an already marked, partially scanned object.
         if (trace_owner == TraceOwner::object && trace_owner_index == owner.index_)
             cancel_cursor();
-        if (slots[owner.index_].mark_epoch == epoch)
+        if (marked_slots.contains(owner.index_))
             queue_gray(owner.index_);
     }
 
     void remove_root_queue(std::uint32_t index) noexcept {
-        auto& entry = roots->entries[index];
+        if (root_head == no_slot)
+            return;
+        auto& entry = roots->value_entries[index];
         if (!entry.trace_queued)
             return;
         if (entry.trace_previous != no_slot)
-            roots->entries[entry.trace_previous].trace_next = entry.trace_next;
+            roots->value_entries[entry.trace_previous].trace_next = entry.trace_next;
         else
             root_head = entry.trace_next;
         if (entry.trace_next != no_slot)
-            roots->entries[entry.trace_next].trace_previous = entry.trace_previous;
+            roots->value_entries[entry.trace_next].trace_previous = entry.trace_previous;
         else
             root_tail = entry.trace_previous;
         entry.trace_next = no_slot;
@@ -707,21 +853,16 @@ struct Runtime::Impl {
         entry.trace_queued = false;
     }
 
-    void root_added(std::uint32_t index, detail::RootState::Entry& entry) noexcept {
+    void value_root_added(std::uint32_t index, detail::RootState::ValueEntry& entry) noexcept {
         if (!marking())
             return;
-        if (const auto* reference = std::get_if<ObjectReference>(&entry.value)) {
-            shade(reference->id());
-            return;
-        }
-        const auto& value = std::get<detail::ValueRootStorage>(entry.value);
-        if (entry.trace_queued || lookup(value.type)->trace_fields.empty())
+        if (entry.trace_queued || lookup(entry.value.type)->trace_fields.empty())
             return;
         entry.trace_previous = root_tail;
         entry.trace_next = no_slot;
         entry.trace_queued = true;
         if (root_tail != no_slot)
-            roots->entries[root_tail].trace_next = index;
+            roots->value_entries[root_tail].trace_next = index;
         else
             root_head = index;
         root_tail = index;
@@ -768,24 +909,30 @@ struct Runtime::Impl {
         trace_stack.add({&type, storage});
     }
 
-    void trace_one() noexcept {
-        auto& frame = trace_stack.back();
-        if (frame.sequence) {
-            if (frame.next_element != frame.sequence->objects_.size()) {
-                shade(frame.sequence->objects_[frame.next_element++]);
-            } else {
-                frame.sequence = nullptr;
-                frame.next_element = 0;
+    void retire_trace_frames() noexcept {
+        while (!trace_stack.empty()) {
+            auto& top = trace_stack.back();
+            if (top.sequence && top.next_element == top.sequence->objects_.size()) {
+                top.sequence = nullptr;
+                top.next_element = 0;
+            }
+            if (!top.sequence && top.next_field == top.type->trace_fields.size()) {
+                trace_stack.pop();
+                continue;
             }
             return;
         }
-        if (frame.next_field == frame.type->trace_fields.size()) {
-            trace_stack.pop();
-            if (trace_stack.empty())
-                cancel_cursor();
+        cancel_cursor();
+    }
+
+    void trace_one() noexcept {
+        auto& frame = trace_stack.back();
+        if (frame.sequence) {
+            shade(frame.sequence->objects_[frame.next_element++]);
+            retire_trace_frames();
             return;
         }
-        const auto& field = frame.type->fields[frame.type->trace_fields[frame.next_field++]];
+        const auto& field = frame.type->fields.data()[frame.type->trace_fields.data()[frame.next_field++]];
         const auto* address = field.address ? field.address(const_cast<void*>(frame.storage))
                                             : static_cast<const std::byte*>(frame.storage) + field.offset;
         // A locator may revoke its ValueRoot. Never resurrect the cancelled borrow.
@@ -794,11 +941,17 @@ struct Runtime::Impl {
         if (field.value.form == ValueForm::strong_reference) {
             shade(static_cast<const ReferenceSlot*>(address)->object_);
         } else if (field.value.form == ValueForm::strong_sequence) {
-            frame.sequence = static_cast<const ReferenceSequence*>(address);
-            frame.next_element = 0;
+            const auto* sequence = static_cast<const ReferenceSequence*>(address);
+            if (!sequence->objects_.empty()) {
+                frame.sequence = sequence;
+                frame.next_element = 0;
+                return;
+            }
         } else {
             trace_stack.add({field.type, address});
+            return;
         }
+        retire_trace_frames();
     }
 
     void recycle(std::uint32_t index) noexcept {
@@ -813,13 +966,25 @@ struct Runtime::Impl {
 
     bool collect_one() noexcept {
         if (phase == CollectionPhase::roots) {
-            if (root_cursor != root_limit) {
-                const auto index = static_cast<std::uint32_t>(root_cursor++);
-                if (auto* entry = roots->entries.try_at(index))
-                    root_added(index, *entry);
-            } else {
-                phase = CollectionPhase::mark;
+            if (object_root_cursor < object_root_limit) {
+                const auto found = roots->object_entries.find_index_from(object_root_cursor);
+                if (found < object_root_limit) {
+                    object_root_cursor = found + 1;
+                    shade(roots->object_entries[found].id());
+                    return false;
+                }
+                object_root_cursor = object_root_limit;
             }
+            if (value_root_cursor < value_root_limit) {
+                const auto found = roots->value_entries.find_index_from(value_root_cursor);
+                if (found < value_root_limit) {
+                    value_root_cursor = found + 1;
+                    value_root_added(static_cast<std::uint32_t>(found), roots->value_entries[found]);
+                    return false;
+                }
+                value_root_cursor = value_root_limit;
+            }
+            phase = CollectionPhase::mark;
             return false;
         }
         if (phase == CollectionPhase::mark) {
@@ -828,56 +993,69 @@ struct Runtime::Impl {
                 trace_one();
             } else if (root_head != no_slot) {
                 const auto index = root_head;
-                const auto value = std::get<detail::ValueRootStorage>(roots->entries[index].value);
+                const auto value = roots->value_entries[index].value;
                 remove_root_queue(index);
                 start_trace(*lookup(value.type), value.storage.data(), TraceOwner::value_root, index);
             } else if (gray_head != no_slot) {
                 const auto index = gray_head;
                 remove_gray(index);
-                const auto& slot = slots[index];
-                start_trace(*lookup(slot.type), slot.storage, TraceOwner::object, index);
+                const auto& slot = slots.data()[index];
+                start_trace(*types.data()[slot.type_index], slot.storage, TraceOwner::object, index);
             } else {
                 // One atomic logical-death commit. No heap-wide invalidation pass.
+                roots->marking = false;
                 pending = live - marked;
                 live = marked;
-                sweep_cursor = 0;
-                sweep_limit = slots.size();
-                phase = CollectionPhase::sweep;
+                if (pending == 0) {
+                    phase = CollectionPhase::idle;
+                } else {
+                    assert(live_slots.size() == marked_slots.size());
+                    sweep_slots.clear();
+                    sweep_slots.resize(marked_slots.size(), false);
+                    sweep_slots |= live_slots;
+                    sweep_slots ^= marked_slots;
+                    sweep_cursor = 0;
+                    sweep_limit = sweep_slots.size();
+                    phase = CollectionPhase::sweep;
+                }
             }
             return false;
         }
-        if (sweep_cursor != sweep_limit) {
-            const auto index = static_cast<std::uint32_t>(sweep_cursor++);
-            auto& slot = slots[index];
-            if (slot.storage && slot.mark_epoch != epoch) {
-                release(slot);
-                recycle(index);
-                return true;
-            }
-        } else {
-            phase = CollectionPhase::idle;
+        const auto found = sweep_slots.find_from(sweep_cursor);
+        if (found < sweep_limit) {
+            const auto index = static_cast<std::uint32_t>(found);
+            sweep_cursor = found + 1;
+            release(index);
+            recycle(index);
+            if (pending == 0)
+                phase = CollectionPhase::idle;
+            return true;
         }
+        phase = CollectionPhase::idle;
         return false;
     }
 
     Type* lookup(TypeId id) const noexcept {
         if (id.context_ != context || id.index_ >= types.size())
             return nullptr;
-        return types[id.index_].get();
+        return types.data()[id.index_].get();
     }
 
     static bool derives_from(const Type& actual, const Type& expected) noexcept {
-        for (const auto* type = &actual; type; type = type->base) {
-            if (type == &expected)
-                return true;
-        }
-        return false;
+        return &actual == &expected ||
+               (expected.depth < actual.ancestors.size() && actual.ancestors.data()[expected.depth] == &expected);
     }
 
     // Caller validates the ancestry and protects native address callbacks.
     static void* base_storage(const Type& actual, const Type& expected, void* storage) noexcept {
-        for (const auto* type = &actual; type != &expected; type = type->base) {
-            if (type->native.base_address)
+        if (actual.native_base_depth <= expected.depth)
+            return static_cast<std::byte*>(storage) + (actual.base_root_offset - expected.base_root_offset);
+        const auto* const* ancestors = actual.ancestors.data();
+        for (auto depth = actual.depth; depth > expected.depth; --depth) {
+            const auto* type = ancestors[depth];
+            if (type->native.base_offset)
+                storage = static_cast<std::byte*>(storage) + *type->native.base_offset;
+            else if (type->native.base_address)
                 storage = type->native.base_address(storage);
         }
         return storage;
@@ -1239,8 +1417,8 @@ struct Runtime::Impl {
     const Slot* lookup(ObjectId id) const noexcept {
         if (id.context_ != context || id.index_ >= slots.size())
             return nullptr;
-        const auto& slot = slots[id.index_];
-        return is_live(slot) && slot.generation == id.generation_ ? &slot : nullptr;
+        const auto& slot = slots.data()[id.index_];
+        return is_live(id.index_, slot) && slot.generation == id.generation_ ? &slot : nullptr;
     }
 
     Result<const Type*> value_type(TypeId id, std::span<const std::byte> storage) const {
@@ -1277,6 +1455,9 @@ struct Runtime::Impl {
                             *static_cast<T*>(destination) = *static_cast<const T*>(source);
                             return {};
                         }};
+        type->native.plain_value = true;
+        type->native.trivially_destructible = true;
+        type->scalar_variant_index = static_cast<std::uint8_t>(Scalar{T{}}.index());
         representations.try_emplace(type->native.representation, id.index_);
         names.try_emplace(StringView{type->info.name}, id.index_);
         types.add(std::move(type));
@@ -1320,11 +1501,31 @@ struct Runtime::Impl {
             initialize_scalars<std::uint32_t>(storage, type.info.size);
     }
 
+    static_assert(std::is_trivially_copyable_v<ReferenceSlot> && std::is_implicit_lifetime_v<ReferenceSlot>);
+
+    static void apply_default_leaves(std::byte* destination, const std::vector<Scalar>& leaves) noexcept {
+        auto* leaf = destination;
+        for (const auto& value : leaves)
+            std::visit(
+                [&](const auto& scalar) {
+                    using T = std::remove_cvref_t<decltype(scalar)>;
+                    if constexpr (!std::same_as<T, EnumValue>) {
+                        std::memcpy(leaf, &scalar, sizeof(T));
+                        leaf += sizeof(T);
+                    }
+                },
+                value);
+    }
+
     // Native callbacks clean their failed destination. Described frames track
     // only completed fields, so reverse cleanup never destroys the failed child.
     Result<void> construct(const Type& type, void* storage, const void* source = nullptr) {
         if (type.native.construct)
             return source ? type.native.copy_construct(storage, source) : type.native.construct(storage);
+        if (type.prototype) {
+            std::memcpy(storage, source ? source : type.prototype, type.info.size);
+            return {};
+        }
         if (type.scalar_leaf) {
             construct_scalar_block(type, storage, source);
             return {};
@@ -1358,25 +1559,16 @@ struct Runtime::Impl {
                         result = field.type->native.construct(destination);
                     if (!result)
                         break;
+                } else if (field.type->prototype) {
+                    std::memcpy(destination, origin ? origin : field.type->prototype, field.type->info.size);
                 } else if (field.type->scalar_leaf) {
                     construct_scalar_block(*field.type, destination, origin);
                 } else {
                     walk_stack.add({field.type, destination, origin});
                     continue;
                 }
-                if (!origin) {
-                    auto* leaf = destination;
-                    for (const auto& value : field.default_leaves)
-                        std::visit(
-                            [&](const auto& scalar) {
-                                using T = std::remove_cvref_t<decltype(scalar)>;
-                                if constexpr (!std::same_as<T, EnumValue>) {
-                                    std::memcpy(leaf, &scalar, sizeof(T));
-                                    leaf += sizeof(T);
-                                }
-                            },
-                            value);
-                }
+                if (!origin && !field.default_leaves.empty())
+                    apply_default_leaves(destination, field.default_leaves);
             } else if (field.value.form == ValueForm::strong_sequence) {
                 std::construct_at(reinterpret_cast<ReferenceSequence*>(destination));
             } else if (origin) {
@@ -1408,6 +1600,11 @@ struct Runtime::Impl {
     }
 
     Result<void> try_construct(const Type& type, void* storage, const void* source = nullptr) {
+        if (type.prototype) {
+            std::memcpy(storage, source ? source : type.prototype, type.info.size);
+            shade_value(type, storage);
+            return {};
+        }
         prepare_walk(type);
         CallbackScope scope{callbacks};
         auto result = construct(type, storage, source);
@@ -1422,7 +1619,7 @@ struct Runtime::Impl {
     Result<void> assign(const Type& type, void* storage, const void* source) {
         if (type.native.construct)
             return type.native.copy_assign(storage, source);
-        if (type.scalar_leaf) {
+        if (type.prototype || type.scalar_leaf) {
             std::memcpy(storage, source, type.info.size);
             return {};
         }
@@ -1442,7 +1639,7 @@ struct Runtime::Impl {
             if (field.value.form == ValueForm::inline_value) {
                 if (field.type->native.construct) {
                     ATELIER_TRY(field.type->native.copy_assign(destination, origin));
-                } else if (field.type->scalar_leaf)
+                } else if (field.type->prototype || field.type->scalar_leaf)
                     std::memcpy(destination, origin, field.type->info.size);
                 else
                     walk_stack.add({field.type, destination, origin});
@@ -1534,19 +1731,173 @@ struct Runtime::Impl {
         return enumerate();
     }
 
-    void release(Slot& slot) noexcept {
-        const auto index = static_cast<std::uint32_t>(&slot - slots.data());
+    bool try_resolve_inline_field(std::uint32_t slot_index, std::span<const FieldId> path, void*& out_data,
+                                  const Type*& out_type, const FieldRange*& out_range) const noexcept {
+        const auto& slot = slots.data()[slot_index];
+        const Type* actual = types.data()[slot.type_index].get();
+        void* data = slot.storage;
+        const FieldRange* range = nullptr;
+        for (std::size_t depth = 0; depth != path.size(); ++depth) {
+            const FieldId step = path[depth];
+            const auto* owner = lookup(step.owner_);
+            if (!owner || actual->info.kind == TypeKind::array || owner->info.kind == TypeKind::array ||
+                !derives_from(*actual, *owner) || step.index_ >= owner->fields.size()) [[unlikely]]
+                return false;
+            const auto& access = owner->fields.data()[step.index_];
+            if (access.address || actual->native_base_depth > owner->depth ||
+                access.value.form != ValueForm::inline_value) [[unlikely]]
+                return false;
+            data = static_cast<std::byte*>(data) + (actual->base_root_offset - owner->base_root_offset) + access.offset;
+            range = access.hard ? access.hard.get() : actual->info.math ? range : nullptr;
+            actual = access.type;
+        }
+        out_data = data;
+        out_type = actual;
+        out_range = range;
+        return true;
+    }
+
+    static Result<Scalar> read_scalar_bytes(const Type& type, const void* source) noexcept {
+        switch (type.scalar_variant_index) {
+        case 0:
+            return Scalar{*static_cast<const float*>(source)};
+        case 1:
+            return Scalar{*static_cast<const std::uint32_t*>(source)};
+        case 2:
+            return Scalar{*static_cast<const std::int32_t*>(source)};
+        case 3: {
+            std::uint32_t bits;
+            std::memcpy(&bits, source, 4);
+            return Scalar{EnumValue{type.info.id, bits}};
+        }
+        case 4:
+            return Scalar{*static_cast<const double*>(source)};
+        case 5:
+            return Scalar{*static_cast<const bool*>(source)};
+        default:
+            return failure(ErrorCode::type_mismatch,
+                           "Read requires a scalar or enum field; select a field inside the record.");
+        }
+    }
+
+    static void write_scalar_bytes(void* destination, std::uint8_t variant, const Scalar& value) noexcept {
+        switch (variant) {
+        case 0:
+            *static_cast<float*>(destination) = std::get<float>(value);
+            break;
+        case 1:
+            *static_cast<std::uint32_t*>(destination) = std::get<std::uint32_t>(value);
+            break;
+        case 2:
+            *static_cast<std::int32_t*>(destination) = std::get<std::int32_t>(value);
+            break;
+        case 3:
+            std::memcpy(destination, &std::get<EnumValue>(value).bits, 4);
+            break;
+        case 4:
+            *static_cast<double*>(destination) = std::get<double>(value);
+            break;
+        case 5:
+            *static_cast<bool*>(destination) = std::get<bool>(value);
+            break;
+        default:
+            break;
+        }
+    }
+
+    static Result<void> validate_call_output(const Type::CompiledMethod& compiled, Scalar* output,
+                                             ValueOutput value_output) {
+        const auto* result_type = compiled.result_type;
+        if (compiled.record_result) {
+            if (value_output.type != result_type->info.id) [[unlikely]]
+                return failure(ErrorCode::type_mismatch, "Plain value result requires its exact Runtime type.");
+            if (!value_output.data || (reinterpret_cast<std::uintptr_t>(value_output.data) &
+                                       (result_type->info.alignment - 1)) != 0) [[unlikely]]
+                return failure(ErrorCode::invalid_storage, "Plain value result storage is null or misaligned.");
+        } else if (value_output.type != TypeId{} || value_output.data) [[unlikely]] {
+            return failure(ErrorCode::type_mismatch, "Typed value output requires a plain record result.");
+        } else if (result_type && !output) [[unlikely]] {
+            return failure(ErrorCode::invalid_storage, "Non-void method requires result storage.");
+        }
+        return {};
+    }
+
+    Result<void> invoke_compiled(Runtime& self, std::uint32_t slot_index, ObjectId object, const Type& actual,
+                                 const Type& type, const Type::CompiledMethod& compiled, void* slot_storage,
+                                 std::span<const ArgumentView> views, Scalar* output, ValueOutput value_output) {
+        if (!compiled.receiver_read_only)
+            stamp(slot_index);
+        void* receiver = actual.native_base_depth > type.depth ? base_storage(actual, type, slot_storage)
+                                                               : static_cast<std::byte*>(slot_storage) +
+                                                                     (actual.base_root_offset - type.base_root_offset);
+        const auto* result_type = compiled.result_type;
+        const auto run = [&](ValueOutput staging) -> Result<void> {
+            CallContext context{self, object, receiver, views};
+            context.result_value = staging;
+            context.expected_result_type = result_type ? result_type->info.id : TypeId{};
+            ATELIER_TRY(compiled.invoke(context));
+            if (compiled.record_result) {
+                if (context.result || !context.result_written || context.result_value.type != staging.type ||
+                    context.result_value.data != staging.data) [[unlikely]]
+                    return failure(ErrorCode::invocation_failed,
+                                   "Method did not produce its declared plain value result.");
+                std::memcpy(value_output.data, staging.data, result_type->info.size);
+            } else {
+                if (context.result_written || context.result_value.data || context.result_value.type != TypeId{})
+                    [[unlikely]]
+                    return failure(ErrorCode::invocation_failed, "Method produced an undeclared plain value result.");
+                if (result_type) {
+                    if (!context.result || context.result->index() != result_type->scalar_variant_index ||
+                        (result_type->scalar_variant_index == 3 &&
+                         std::get<EnumValue>(*context.result).type != result_type->info.id)) [[unlikely]]
+                        return failure(ErrorCode::invocation_failed,
+                                       "Method did not produce its declared result type.");
+                    *output = *context.result;
+                } else if (context.result) [[unlikely]] {
+                    return failure(ErrorCode::invocation_failed, "Void method produced an undeclared result.");
+                }
+            }
+            return {};
+        };
+        if (compiled.record_result) {
+            if (result_type->info.size <= 128 && result_type->info.alignment <= 32) {
+                alignas(32) std::byte staging[128];
+                if (result_type->prototype)
+                    std::memcpy(staging, result_type->prototype, result_type->info.size);
+                else if (result_type->scalar_leaf)
+                    std::memset(staging, 0, result_type->info.size);
+                else if (result_type->native.construct)
+                    ATELIER_TRY(result_type->native.construct(staging));
+                else
+                    ATELIER_TRY(try_construct(*result_type, staging));
+                return run({result_type->info.id, staging});
+            }
+            detail::ValueStorage staging_owner;
+            auto* staging = staging_owner.prepare(result_type->info.size, result_type->info.alignment);
+            ATELIER_TRY(try_construct(*result_type, staging));
+            return run({result_type->info.id, staging});
+        }
+        return run({});
+    }
+
+    void release(std::uint32_t index) noexcept {
+        auto& slot = slots.data()[index];
         remove_gray(index);
         if (trace_owner == TraceOwner::object && trace_owner_index == index)
             cancel_cursor();
-        if (is_live(slot)) {
+        if (is_live(index, slot)) {
             --live;
-            if (phase != CollectionPhase::idle && slot.mark_epoch == epoch)
+            if (phase != CollectionPhase::idle && marked_slots.contains(index)) {
+                marked_slots.reset(index);
                 --marked;
+            }
         } else {
             --pending;
         }
-        auto* type = lookup(slot.type);
+        if (phase == CollectionPhase::sweep && index < sweep_slots.size())
+            sweep_slots.reset(index);
+        live_slots.reset(index);
+        auto* type = types.data()[slot.type_index].get();
         void* storage = std::exchange(slot.storage, nullptr);
         destroy(*type, storage);
         ::operator delete(storage, std::align_val_t{type->info.alignment});
@@ -1567,6 +1918,7 @@ Runtime::Runtime() noexcept {
     impl_->object = TypeId{impl_->context, static_cast<std::uint32_t>(impl_->types.size())};
     auto root = std::make_unique<Impl::Type>();
     root->info = {impl_->object, "core.Object", TypeKind::object, 1, 1, {}, {}};
+    root->ancestors.add(root.get());
     impl_->names.try_emplace(StringView{root->info.name}, impl_->object.index_);
     impl_->types.add(std::move(root));
     const auto registered = register_types(math::type_definitions(*this));
@@ -1677,16 +2029,18 @@ Result<void> Runtime::begin_collection() {
         impl_->phase != CollectionPhase::idle) {
         return failure(ErrorCode::busy, "Collection can begin only at an idle host safe point.");
     }
-    if (impl_->epoch == std::numeric_limits<std::uint64_t>::max()) {
-        return failure(ErrorCode::capacity_exceeded, "Collection epoch space exhausted.");
-    }
     impl_->trace_stack.reserve(impl_->maximum_trace_depth);
+    impl_->sweep_slots.reserve(impl_->slots.capacity());
+    impl_->marked_slots.clear();
+    impl_->marked_slots.resize(impl_->slots.size(), false);
     impl_->cancel_cursor();
-    ++impl_->epoch;
     impl_->marked = 0;
     impl_->pending = 0;
-    impl_->root_cursor = 0;
-    impl_->root_limit = impl_->roots->entries.extent();
+    impl_->object_root_cursor = 0;
+    impl_->object_root_limit = impl_->roots->object_entries.extent();
+    impl_->value_root_cursor = 0;
+    impl_->value_root_limit = impl_->roots->value_entries.extent();
+    impl_->roots->marking = true;
     impl_->phase = CollectionPhase::roots;
     return {};
 }
@@ -1725,13 +2079,15 @@ std::size_t Runtime::pending_reclamation() const noexcept {
 Runtime::~Runtime() {
     detail::assert_serial_access();
     impl_->roots->alive = false;
+    impl_->roots->marking = false;
     impl_->roots->observer = nullptr;
-    impl_->roots->added = nullptr;
-    impl_->roots->removing = nullptr;
+    impl_->roots->object_added = nullptr;
+    impl_->roots->value_added = nullptr;
+    impl_->roots->value_removing = nullptr;
     CallbackScope scope{impl_->callbacks};
-    for (auto& slot : impl_->slots) {
-        if (slot.storage)
-            impl_->release(slot);
+    for (std::uint32_t index = 0; index < impl_->slots.size(); ++index) {
+        if (impl_->slots.data()[index].storage)
+            impl_->release(index);
     }
 }
 
@@ -1930,10 +2286,11 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
         if (definition.fields.size() >= no_slot || definition.methods.size() >= no_slot) {
             return failure(ErrorCode::capacity_exceeded, "Member identity space exhausted.");
         }
-        const bool is_native = native.size || native.alignment || native.representation || native.construct ||
-                               native.destroy || native.copy_construct || native.copy_assign || native.swap ||
-                               native.base_address || native.element_representation || native.sequence_view ||
-                               native.sequence_mutate || native.value_operations_preserve_borrows || native.plain_value;
+        const bool is_native =
+            native.size || native.alignment || native.representation || native.construct || native.destroy ||
+            native.copy_construct || native.copy_assign || native.swap || native.base_address || native.base_offset ||
+            native.element_representation || native.sequence_view || native.sequence_mutate ||
+            native.value_operations_preserve_borrows || native.plain_value || native.trivially_destructible;
         if (is_native && (!native.size || !std::has_single_bit(native.alignment) || !native.representation ||
                           !native.construct || !native.destroy || native.size % native.alignment != 0)) {
             return failure(ErrorCode::invalid_definition,
@@ -1942,13 +2299,14 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
         if (definition.kind != TypeKind::object && !definition.methods.empty()) {
             return failure(ErrorCode::invalid_definition, "This slice supports methods on object types only.");
         }
-        if (definition.kind != TypeKind::object && (definition.base || native.base_address)) {
+        if (definition.kind != TypeKind::object && (definition.base || native.base_address || native.base_offset)) {
             return failure(ErrorCode::invalid_definition, "Value types cannot declare an object base.");
         }
         if ((definition.kind == TypeKind::enumeration) != definition.enumeration.has_value())
             return failure(ErrorCode::invalid_definition, "Enumeration metadata must match its type kind.");
         if (definition.kind == TypeKind::enumeration &&
             (!definition.fields.empty() || !definition.methods.empty() || definition.base || native.base_address ||
+             native.base_offset ||
              (is_native &&
               (native.size != 4 || native.alignment != 4 || !native.copy_construct || !native.copy_assign))))
             return failure(ErrorCode::invalid_definition,
@@ -2007,7 +2365,13 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
             const auto* underlying = resolve(definition.enumeration->underlying);
             if (!underlying || (underlying->info.id != impl_->i32 && underlying->info.id != impl_->u32))
                 return failure(ErrorCode::invalid_definition, "Enum underlying type must be core.i32 or core.u32.");
+            if (definition.enumeration->flags && underlying->info.id != impl_->u32)
+                return failure(ErrorCode::invalid_definition, "Flags enums require core.u32 underlying type.");
             const auto& values = definition.enumeration->values;
+            auto& enum_metadata = definition.enumeration->metadata;
+            if (!enum_metadata.empty() && enum_metadata.size() != values.size())
+                return failure(ErrorCode::invalid_definition,
+                               "Enumerator metadata must match the enumerators of: " + type.info.name);
             for (std::size_t e = 0; e < values.size(); ++e) {
                 if (values[e].first.empty())
                     return failure(ErrorCode::invalid_definition, "Enum names cannot be empty.");
@@ -2016,9 +2380,24 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
                 for (std::size_t j = 0; j < e; ++j)
                     if (values[j].first == values[e].first)
                         return failure(ErrorCode::duplicate_name, "Duplicate enum name: " + values[e].first);
+                if (e < enum_metadata.size()) {
+                    if (!StringView{enum_metadata[e].label}.is_valid_utf8() ||
+                        std::ranges::any_of(enum_metadata[e].label, [](unsigned char c) { return c < 32 || c == 127; }))
+                        return failure(ErrorCode::invalid_definition,
+                                       "Enumerator labels require valid UTF-8 without control characters: " +
+                                           type.info.name + "." + values[e].first);
+                    if (!normalize_description(enum_metadata[e].description))
+                        return failure(
+                            ErrorCode::invalid_definition,
+                            "Description requires valid UTF-8 without controls other than line breaks and tabs: " +
+                                type.info.name + "." + values[e].first);
+                }
             }
+            enum_metadata.resize(values.size());
             type.info.enumeration =
-                TypeInfo::Enumeration{underlying->info.id, std::move(definition.enumeration->values)};
+                TypeInfo::Enumeration{underlying->info.id, std::move(definition.enumeration->values),
+                                      definition.enumeration->flags, std::move(enum_metadata)};
+            type.scalar_variant_index = static_cast<std::uint8_t>(Scalar{EnumValue{}}.index());
             type.info.size = 4;
             type.info.alignment = 4;
             if (!type.native.construct) {
@@ -2036,21 +2415,26 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
         }
         const bool is_native = type.native.construct != nullptr;
         type.info.base_address = type.native.base_address;
+        type.info.base_offset = type.native.base_offset;
         if (type.info.kind == TypeKind::object) {
             type.base = definition.base ? resolve(*definition.base) : impl_->lookup(impl_->object);
             if (!type.base || type.base->info.kind != TypeKind::object)
                 return failure(ErrorCode::invalid_definition, "Object base must resolve to an object type.");
             type.info.base = type.base->info.id;
+            if (!is_native && type.native.base_offset)
+                return failure(ErrorCode::invalid_definition, "Described objects cannot supply native base offsets.");
             if (is_native && type.base->info.id != impl_->object &&
                 (!type.base->native.construct || !type.native.base_address)) {
                 return failure(ErrorCode::invalid_definition,
                                "Native inheritance requires a native base and its address adapter.");
             }
-            if (type.base->info.id == impl_->object && type.native.base_address)
+            if (type.base->info.id == impl_->object && (type.native.base_address || type.native.base_offset))
                 return failure(ErrorCode::invalid_definition,
                                "The storage-free Object root has no native base adapter.");
             if (type.base->info.id != impl_->object)
-                type.fields.add({0, type.native.base_address, {*type.info.base}});
+                type.fields.add({type.native.base_offset.value_or(0),
+                                 type.native.base_offset ? nullptr : type.native.base_address,
+                                 {*type.info.base}});
         }
         type.info.fields.reserve(definition.fields.size());
         type.fields.reserve(type.fields.size() + definition.fields.size());
@@ -2202,17 +2586,21 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
                             return invalid("default lies outside hard bounds");
                     }
             }
-            type.fields.add({0, field.native_address, value, nullptr, std::move(field.default_leaves),
+            if (!field.exposed && (field.transient || field.read_only))
+                return failure(ErrorCode::invalid_definition, "Hidden fields cannot declare Transient or ReadOnly: " +
+                                                                  type.info.name + "." + field.name);
+            type.fields.add({field.native_offset.value_or(0), field.native_offset ? nullptr : field.native_address,
+                             value, nullptr, std::move(field.default_leaves),
                              field.range.constrains() ? std::make_unique<const FieldRange>(field.range) : nullptr,
                              field.default_text});
             if (field.exposed)
-                type.info.fields.push_back(
-                    {FieldId{id, index}, std::move(field.name), value, field.native_offset, std::move(published_leaves),
-                     std::move(field.label), std::move(field.category), std::move(field.description), field.range,
-                     field.native_address, id, std::move(field.metadata), std::move(field.default_text)});
+                type.info.fields.push_back({FieldId{id, index}, std::move(field.name), value, field.native_offset,
+                                            std::move(published_leaves), std::move(field.label),
+                                            std::move(field.category), std::move(field.description), field.range,
+                                            field.native_address, id, std::move(field.metadata),
+                                            std::move(field.default_text), field.transient, field.read_only});
         }
         type.info.methods.reserve(definition.methods.size());
-        type.methods.reserve(definition.methods.size());
         for (auto& method : definition.methods) {
             type.member_names.push_back(method.name);
             if (method.name.empty() || !method.invoke) {
@@ -2231,10 +2619,63 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
                                    "Duplicate parameter " + names[i] + " in method: " + method.name);
             }
             names.resize(signature->parameters.size());
+            auto& defaults = method.parameter_defaults;
+            if (!defaults.empty() && defaults.size() != signature->parameters.size())
+                return failure(ErrorCode::invalid_definition,
+                               "Parameter defaults must match the parameters of method: " + method.name);
+            bool seen_default = false;
+            for (std::size_t p = 0; p < defaults.size(); ++p) {
+                if (!defaults[p]) {
+                    if (seen_default)
+                        return failure(ErrorCode::invalid_definition,
+                                       "Parameter defaults must cover a trailing suffix of method: " + method.name);
+                    continue;
+                }
+                seen_default = true;
+                const auto& parameter = signature->parameters[p];
+                const auto* target = resolved_type(parameter.type);
+                if (!target || parameter.form != ValueForm::inline_value ||
+                    parameter.passing == ParameterPassing::reference)
+                    return failure(ErrorCode::invalid_definition,
+                                   "Parameter defaults require value or read_only inline parameters: " + method.name);
+                if (target->info.kind == TypeKind::scalar) {
+                    if (std::holds_alternative<EnumValue>(*defaults[p]) ||
+                        impl_->scalar_type(*defaults[p]) != target->info.id ||
+                        !std::isfinite(range_value(*defaults[p])))
+                        return failure(ErrorCode::invalid_definition,
+                                       "Scalar parameter default must be a finite value of the exact parameter type: " +
+                                           method.name);
+                } else if (target->info.kind == TypeKind::enumeration) {
+                    if (const auto* enum_val = std::get_if<EnumValue>(&*defaults[p])) {
+                        if (enum_val->type != target->info.id)
+                            return failure(ErrorCode::invalid_definition,
+                                           "Enum parameter default does not match the parameter enum type: " +
+                                               method.name);
+                    } else {
+                        const auto* underlying =
+                            target->info.enumeration
+                                ? resolved_type(target->info.enumeration->underlying)
+                                : resolve(definitions[target->info.id.index_ - first_index].enumeration->underlying);
+                        if (!underlying || impl_->scalar_type(*defaults[p]) != underlying->info.id)
+                            return failure(ErrorCode::invalid_definition,
+                                           "Enum parameter default must match the parameter enum or underlying type: " +
+                                               method.name);
+                        const std::uint32_t bits =
+                            std::holds_alternative<std::int32_t>(*defaults[p])
+                                ? std::bit_cast<std::uint32_t>(std::get<std::int32_t>(*defaults[p]))
+                                : std::get<std::uint32_t>(*defaults[p]);
+                        defaults[p] = Scalar{EnumValue{target->info.id, bits}};
+                    }
+                } else {
+                    return failure(ErrorCode::invalid_definition,
+                                   "Parameter defaults support scalar and enum parameters only: " + method.name);
+                }
+            }
+            defaults.resize(signature->parameters.size());
             type.info.methods.push_back({MethodId{id, static_cast<std::uint32_t>(type.info.methods.size())},
                                          std::move(method.name), std::move(*signature), method.preserves_borrows,
-                                         std::move(method.description), std::move(names), method.native_entry});
-            type.methods.add(method.invoke);
+                                         std::move(method.description), std::move(names), method.native_entry,
+                                         std::move(defaults)});
         }
     }
 
@@ -2288,6 +2729,14 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
                                                " hides " + ancestor->info.name + "." + name);
                     }
                 }
+                type.depth = type.base->depth + 1;
+                type.ancestors.reserve(type.depth + 1);
+                type.ancestors.append(type.base->ancestors.view());
+                type.ancestors.add(&type);
+                const bool custom_base = type.native.base_address && !type.native.base_offset;
+                type.native_base_depth = custom_base ? type.depth : type.base->native_base_depth;
+                type.base_root_offset =
+                    custom_base ? 0 : type.base->base_root_offset + type.native.base_offset.value_or(0);
                 type.info.fields.insert(type.info.fields.begin(), type.base->info.fields.begin(),
                                         type.base->info.fields.end());
                 type.info.methods.insert(type.info.methods.begin(), type.base->info.methods.begin(),
@@ -2309,7 +2758,7 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
                 if (!element_type->validators.empty())
                     type.validators.add({{}, {}, nullptr, &type});
             }
-            type.needs_destroy = is_native;
+            type.needs_destroy = is_native && !type.native.trivially_destructible;
             if (!is_native && type.info.kind == TypeKind::record)
                 type.info.value_operations_preserve_borrows = true;
             for (std::size_t field_index = 0; field_index != type.fields.size(); ++field_index) {
@@ -2400,25 +2849,33 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
             if (type.validate)
                 type.validators.add({{}, {}, type.validate});
             // Direct offsets are published only after every dependent layout is complete.
-            for (auto& field : type.info.fields) {
-                if (field.id.owner_ != type.info.id)
+            if (type.native.base_offset && (*type.native.base_offset > type.info.size ||
+                                            type.base->info.size > type.info.size - *type.native.base_offset ||
+                                            *type.native.base_offset % type.base->info.alignment != 0 ||
+                                            type.info.alignment < type.base->info.alignment))
+                return failure(ErrorCode::invalid_definition,
+                               "Direct base offset exceeds its type layout or alignment.");
+            const std::size_t first_own_field = type.base && type.base->info.id != impl_->object ? 1u : 0u;
+            for (std::size_t field_index = first_own_field; field_index != type.fields.size(); ++field_index) {
+                const auto& storage = type.fields[field_index];
+                if (storage.address)
                     continue;
-                const auto& storage = type.fields[field.id.index_];
-                if (!is_native)
-                    field.offset = storage.offset;
-                if (!field.offset)
-                    continue;
-                const bool inline_value = field.value.form == ValueForm::inline_value;
-                const auto size = inline_value                                     ? storage.type->info.size
-                                  : field.value.form == ValueForm::strong_sequence ? sizeof(ReferenceSequence)
-                                                                                   : sizeof(ReferenceSlot);
-                const auto alignment = inline_value                                     ? storage.type->info.alignment
-                                       : field.value.form == ValueForm::strong_sequence ? alignof(ReferenceSequence)
-                                                                                        : alignof(ReferenceSlot);
-                if (*field.offset > type.info.size || size > type.info.size - *field.offset ||
-                    *field.offset % alignment != 0 || type.info.alignment < alignment)
+                const bool inline_value = storage.value.form == ValueForm::inline_value;
+                const auto size = inline_value                                       ? storage.type->info.size
+                                  : storage.value.form == ValueForm::strong_sequence ? sizeof(ReferenceSequence)
+                                                                                     : sizeof(ReferenceSlot);
+                const auto alignment = inline_value                                       ? storage.type->info.alignment
+                                       : storage.value.form == ValueForm::strong_sequence ? alignof(ReferenceSequence)
+                                                                                          : alignof(ReferenceSlot);
+                if (storage.offset > type.info.size || size > type.info.size - storage.offset ||
+                    storage.offset % alignment != 0 || type.info.alignment < alignment)
                     return failure(ErrorCode::invalid_definition,
                                    "Direct field offset exceeds its type layout or alignment.");
+            }
+            if (!is_native) {
+                for (auto& field : type.info.fields)
+                    if (field.id.owner_ == type.info.id)
+                        field.offset = type.fields[field.id.index_].offset;
             }
             if (!is_native) {
                 const auto size = aligned_size(std::max(std::size_t{1}, type.info.size), type.info.alignment);
@@ -2440,6 +2897,50 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
                         type.scalar_leaf = scalar;
                     if (type.scalar_leaf)
                         type.walk_depth = 1;
+                    if (!type.scalar_leaf && !type.needs_destroy) {
+                        bool can_prototype = true;
+                        for (const auto& field : type.fields) {
+                            if (field.value.form == ValueForm::strong_reference ||
+                                field.value.form == ValueForm::weak_reference)
+                                continue;
+                            if (field.value.form != ValueForm::inline_value || field.default_text) {
+                                can_prototype = false;
+                                break;
+                            }
+                            const auto& target = *field.type;
+                            const bool target_ready =
+                                !target.needs_destroy && target.info.copy_constructible &&
+                                target.info.copy_assignable &&
+                                (target.prototype != nullptr || target.scalar_leaf != nullptr || target.info.math ||
+                                 (target.info.plain_value && target.info.value_operations_preserve_borrows));
+                            if (!target_ready) {
+                                can_prototype = false;
+                                break;
+                            }
+                        }
+                        if (can_prototype) {
+                            auto* image = static_cast<std::byte*>(
+                                ::operator new(type.info.size, std::align_val_t{type.info.alignment}));
+                            std::memset(image, 0, type.info.size);
+                            type.prototype = image;
+                            for (const auto& field : type.fields) {
+                                auto* destination = image + field.offset;
+                                if (field.value.form != ValueForm::inline_value) {
+                                    std::construct_at(reinterpret_cast<ReferenceSlot*>(destination));
+                                    continue;
+                                }
+                                if (field.type->prototype)
+                                    std::memcpy(destination, field.type->prototype, field.type->info.size);
+                                else if (field.type->scalar_leaf)
+                                    impl_->construct_scalar_block(*field.type, destination, nullptr);
+                                else
+                                    ATELIER_TRY(field.type->native.construct(destination));
+                                if (!field.default_leaves.empty())
+                                    Impl::apply_default_leaves(destination, field.default_leaves);
+                            }
+                            type.walk_depth = 1;
+                        }
+                    }
                 }
             }
             // Trivial values swap their bytes directly; others compose field swaps or use the native one.
@@ -2461,6 +2962,16 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
                     }
                 }
             }
+            if (!type.info.fields.empty()) {
+                type.field_by_name.reserve(type.info.fields.size());
+                for (const auto& field : type.info.fields)
+                    type.field_by_name.try_emplace(StringView{field.name}, field.id);
+            }
+            if (!type.info.methods.empty()) {
+                type.method_by_name.reserve(type.info.methods.size());
+                for (const auto& method : type.info.methods)
+                    type.method_by_name.try_emplace(StringView{method.name}, method.id);
+            }
             states[frame.type] = LayoutState::complete;
             stack.pop();
         }
@@ -2469,8 +2980,60 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
     // Method-only dependencies may be later in the batch. Recheck the shared
     // resolver after all layouts and their GC-reference closure are complete.
     for (std::size_t i = 0; i < staged.size(); ++i) {
+        auto& type = *staged[i];
         for (const auto& method : definitions[i].methods) {
-            ATELIER_TRY_BIND(signature, impl_->resolve_signature(method.signature, staged[i]->info.id, staged));
+            ATELIER_TRY_BIND(signature, impl_->resolve_signature(method.signature, type.info.id, staged));
+        }
+        const std::size_t inherited = type.base ? type.base->info.methods.size() : 0;
+        type.compiled_methods.reserve(definitions[i].methods.size());
+        for (std::size_t m = 0; m < definitions[i].methods.size(); ++m) {
+            const auto& method_info = type.info.methods[inherited + m];
+            const auto& signature = method_info.signature;
+            Impl::Type::CompiledMethod compiled;
+            compiled.invoke = definitions[i].methods[m].invoke;
+            compiled.result_type = signature.result ? resolved_type(signature.result->type) : nullptr;
+            compiled.record_result = compiled.result_type && compiled.result_type->info.kind == TypeKind::record &&
+                                     compiled.result_type->info.plain_value;
+            compiled.receiver_read_only = signature.receiver->read_only;
+            bool valid = true;
+            std::size_t scratch_size = 0;
+            std::size_t scratch_alignment = alignof(double);
+            compiled.parameters.reserve(signature.parameters.size());
+            for (const auto& param : signature.parameters) {
+                const auto* expected = resolved_type(param.type);
+                const bool scalar = expected && expected->scalar_variant_index != 0xff;
+                const bool record_value =
+                    expected && expected->info.kind == TypeKind::record && expected->info.plain_value;
+                const bool value_borrow =
+                    expected && !expected->info.contains_references &&
+                    (expected->info.kind == TypeKind::record || expected->info.kind == TypeKind::array ||
+                     expected->info.kind == TypeKind::string) &&
+                    param.passing != ParameterPassing::value;
+                const bool ok =
+                    expected && (scalar || record_value || value_borrow) && param.form == ValueForm::inline_value &&
+                    (param.passing == ParameterPassing::value || param.passing == ParameterPassing::read_only ||
+                     param.passing == ParameterPassing::reference) &&
+                    (signature.execution != FunctionExecution::coroutine ||
+                     (param.passing == ParameterPassing::value && !record_value));
+                std::size_t offset = 0;
+                if (ok && (scalar || record_value)) {
+                    const auto aligned = aligned_size(scratch_size, expected->info.alignment);
+                    if (!aligned || expected->info.size > std::numeric_limits<std::size_t>::max() - *aligned) {
+                        valid = false;
+                    } else {
+                        offset = *aligned;
+                        scratch_size = *aligned + expected->info.size;
+                        scratch_alignment = std::max(scratch_alignment, expected->info.alignment);
+                    }
+                }
+                valid &= ok;
+                compiled.parameters.add(
+                    {expected, param.passing, expected ? expected->scalar_variant_index : std::uint8_t{0xff}, offset});
+            }
+            compiled.valid = valid;
+            compiled.scratch_size = scratch_size;
+            compiled.scratch_alignment = scratch_alignment;
+            type.compiled_methods.add(std::move(compiled));
         }
     }
     auto& catalog = publication->state_->catalog;
@@ -2550,24 +3113,20 @@ Result<ObjectReference> Runtime::cast_reference(const ObjectReference& reference
 }
 
 Result<FieldId> Runtime::find_field(TypeId type, std::string_view name) const {
-    const auto info = describe(type);
-    if (!info)
-        return std::unexpected(info.error());
-    for (const auto& field : (*info)->fields) {
-        if (field.name == name)
-            return field.id;
-    }
+    const auto* found = impl_->lookup(type);
+    if (!found)
+        return failure(ErrorCode::invalid_type, "Type does not belong to this runtime.");
+    if (const auto* id = found->field_by_name.find(StringView{name}))
+        return *id;
     return failure(ErrorCode::invalid_member, "Unknown field: " + std::string{name});
 }
 
 Result<MethodId> Runtime::find_method(TypeId type, std::string_view name) const {
-    const auto info = describe(type);
-    if (!info)
-        return std::unexpected(info.error());
-    for (const auto& method : (*info)->methods) {
-        if (method.name == name)
-            return method.id;
-    }
+    const auto* found = impl_->lookup(type);
+    if (!found)
+        return failure(ErrorCode::invalid_type, "Type does not belong to this runtime.");
+    if (const auto* id = found->method_by_name.find(StringView{name}))
+        return *id;
     return failure(ErrorCode::invalid_member, "Unknown method: " + std::string{name});
 }
 
@@ -2607,8 +3166,8 @@ Result<Runtime::NativeBorrow> Runtime::borrow_native(ObjectId object, const void
             impl_->stamp(*index);
         return borrow;
     }
-    const auto& slot = impl_->slots[*index];
-    const auto* actual = impl_->lookup(slot.type);
+    const auto& slot = impl_->slots.data()[*index];
+    const auto* actual = impl_->types.data()[slot.type_index].get();
     if (expected->info.kind != TypeKind::object || !expected->native.construct)
         return failure(ErrorCode::invalid_type, "Native borrowing requires a registered native object representation.");
     if (!Impl::derives_from(*actual, *expected))
@@ -2635,7 +3194,7 @@ Result<ReferenceField> Runtime::native_reference_field(ObjectId object, const vo
         return failure(ErrorCode::busy, "Native field lookup requires a protected native borrow.");
     ATELIER_TRY_BIND(index, resolve_object(object));
     CallbackScope scope{impl_->callbacks};
-    const auto& slot = impl_->slots[*index];
+    const auto& slot = impl_->slots.data()[*index];
     struct Cursor {
         const Impl::Type* type;
 
@@ -2645,7 +3204,7 @@ Result<ReferenceField> Runtime::native_reference_field(ObjectId object, const vo
 
         std::size_t depth{};
     };
-    Array<Cursor> cursors{{impl_->lookup(slot.type), slot.storage}};
+    Array<Cursor> cursors{{impl_->types.data()[slot.type_index].get(), slot.storage}};
     std::vector<FieldId> path;
     while (!cursors.empty()) {
         auto& cursor = cursors.back();
@@ -2891,6 +3450,8 @@ Result<void> Runtime::destroy_value(TypeId type_id, std::span<std::byte> storage
     if (impl_->roots->overlaps_storage(storage.data(), (*type)->info.size)) {
         return failure(ErrorCode::busy, "End value-root registrations before destroying their storage.");
     }
+    if (!(*type)->needs_destroy)
+        return {};
     impl_->prepare_walk(**type);
     CallbackScope scope{impl_->callbacks};
     impl_->destroy(**type, storage.data());
@@ -2943,8 +3504,8 @@ Result<void> Runtime::mutate_sequence(TypeId type_id, std::span<std::byte> stora
 std::uint32_t Runtime::try_resolve_object(ObjectId object) const noexcept {
     if (!belongs_to_context(object) || object.index_ >= impl_->slots.size())
         return no_slot;
-    const auto& slot = impl_->slots[object.index_];
-    if (!impl_->is_live(slot) || slot.generation != object.generation_)
+    const auto& slot = impl_->slots.data()[object.index_];
+    if (!impl_->is_live(object.index_, slot) || slot.generation != object.generation_)
         return no_slot;
     return object.index_;
 }
@@ -2953,28 +3514,34 @@ Result<std::uint32_t> Runtime::resolve_object(ObjectId object) const {
     if (!belongs_to_context(object) || object.index_ >= impl_->slots.size()) {
         return failure(ErrorCode::invalid_object, "Object does not belong to this runtime.");
     }
-    const auto& slot = impl_->slots[object.index_];
-    if (!impl_->is_live(slot) || slot.generation != object.generation_) {
+    const auto& slot = impl_->slots.data()[object.index_];
+    if (!impl_->is_live(object.index_, slot) || slot.generation != object.generation_) {
         return failure(ErrorCode::invalid_object, "Object has been destroyed or committed for collection.");
     }
     return object.index_;
 }
 
 bool NativeContext::try_resolve(Runtime& runtime, ObjectId object, TypeId expected, NativeContext& out) noexcept {
-    if (expected == TypeId{})
+    detail::assert_serial_access();
+    auto& impl = *runtime.impl_;
+    const auto* type = impl.lookup(expected);
+    if (!type || type->info.kind != TypeKind::object)
         return false;
     const auto index = runtime.try_resolve_object(object);
     if (index == no_slot)
         return false;
-    auto& impl = *runtime.impl_;
-    const auto& slot = impl.slots[index];
-    const auto* actual = impl.lookup(slot.type);
-    const auto* type = impl.lookup(expected);
-    if (!type || type->info.kind != TypeKind::object || !Runtime::Impl::derives_from(*actual, *type))
+    const auto& slot = impl.slots.data()[index];
+    const auto* actual = impl.types.data()[slot.type_index].get();
+    if (!Runtime::Impl::derives_from(*actual, *type))
         return false;
-    CallbackScope scope{impl.callbacks};
-    out = NativeContext{&runtime, object, Runtime::Impl::base_storage(*actual, *type, slot.storage), &impl.callbacks,
-                        index};
+    void* storage = slot.storage;
+    if (actual->native_base_depth > type->depth) {
+        CallbackScope scope{impl.callbacks};
+        storage = Runtime::Impl::base_storage(*actual, *type, storage);
+    } else {
+        storage = static_cast<std::byte*>(storage) + (actual->base_root_offset - type->base_root_offset);
+    }
+    out = NativeContext{&runtime, object, storage, &impl.callbacks, index};
     return true;
 }
 
@@ -2985,8 +3552,8 @@ Result<NativeContext> NativeContext::resolve(Runtime& runtime, ObjectId object, 
     ATELIER_TRY_BIND(index, runtime.resolve_object(object));
     if (expected == TypeId{})
         return failure(ErrorCode::type_mismatch, "Receiverless source cannot accept an object.");
-    const auto& slot = impl.slots[*index];
-    const auto* actual = impl.lookup(slot.type);
+    const auto& slot = impl.slots.data()[*index];
+    const auto* actual = impl.types.data()[slot.type_index].get();
     const auto* type = impl.lookup(expected);
     if (!type || type->info.kind != TypeKind::object)
         return failure(ErrorCode::invalid_type, "Ancestry requires object types in this Runtime.");
@@ -3015,42 +3582,62 @@ Result<ObjectRoot> Runtime::create(TypeId type_id) {
     }
     // No user callback may resize slots, so commit will not allocate after construction.
     if (impl_->free_head == no_slot && impl_->slots.size() == impl_->slots.capacity()) {
-        impl_->slots.reserve(
-            std::min<std::size_t>(no_slot, std::max(impl_->slots.size() + 1, impl_->slots.capacity() * 2)));
+        const auto grown =
+            std::min<std::size_t>(no_slot, std::max(impl_->slots.size() + 1, impl_->slots.capacity() * 2));
+        impl_->slots.reserve(grown);
+        impl_->live_slots.reserve(grown);
+        impl_->marked_slots.reserve(grown);
+        impl_->sweep_slots.reserve(grown);
+        impl_->gray_links.reserve(grown);
     }
     impl_->write_pages.resize(std::max(impl_->write_pages.size(), (impl_->slots.size() >> Impl::write_page_shift) + 1));
-    impl_->prepare_walk(*type);
-    CallbackScope scope{impl_->callbacks};
-    void* storage = ::operator new(type->info.size, std::align_val_t{type->info.alignment});
-    if (auto made = impl_->construct(*type, storage); !made) {
-        ::operator delete(storage, std::align_val_t{type->info.alignment});
-        made.error().code = ErrorCode::construction_failed;
-        return std::unexpected(std::move(made.error()));
-    }
-    // Construction may retain roots of existing objects, but cannot create object slots.
-    if (!impl_->roots->has_capacity()) {
-        impl_->destroy(*type, storage);
-        ::operator delete(storage, std::align_val_t{type->info.alignment});
-        return failure(ErrorCode::capacity_exceeded, "Root identity space exhausted.");
+    impl_->write_super_pages.resize(
+        std::max(impl_->write_super_pages.size(), (impl_->slots.size() >> Impl::write_super_page_shift) + 1));
+    void* storage{};
+    if (type->prototype) {
+        if (!impl_->roots->has_capacity())
+            return failure(ErrorCode::capacity_exceeded, "Root identity space exhausted.");
+        storage = ::operator new(type->info.size, std::align_val_t{type->info.alignment});
+        std::memcpy(storage, type->prototype, type->info.size);
+    } else {
+        impl_->prepare_walk(*type);
+        CallbackScope scope{impl_->callbacks};
+        storage = ::operator new(type->info.size, std::align_val_t{type->info.alignment});
+        if (auto made = impl_->construct(*type, storage); !made) {
+            ::operator delete(storage, std::align_val_t{type->info.alignment});
+            made.error().code = ErrorCode::construction_failed;
+            return std::unexpected(std::move(made.error()));
+        }
+        // Construction may retain roots of existing objects, but cannot create object slots.
+        if (!impl_->roots->has_capacity()) {
+            impl_->destroy(*type, storage);
+            ::operator delete(storage, std::align_val_t{type->info.alignment});
+            return failure(ErrorCode::capacity_exceeded, "Root identity space exhausted.");
+        }
     }
     const auto index = impl_->free_head == no_slot ? static_cast<std::uint32_t>(impl_->slots.size()) : impl_->free_head;
-    const auto generation = index == impl_->slots.size() ? std::uint64_t{1} : impl_->slots[index].generation;
+    const auto generation = index == impl_->slots.size() ? std::uint64_t{1} : impl_->slots.data()[index].generation;
     const ObjectId object{impl_->context, index, generation};
-    const auto root_index = impl_->roots->add(ObjectReference{{type_id, ValueForm::strong_reference}, object});
+    const auto root_index = impl_->roots->add_object(ObjectReference{{type_id, ValueForm::strong_reference}, object});
     ObjectRoot root{impl_->roots, root_index};
-    if (index == impl_->slots.size())
+    if (index == impl_->slots.size()) {
         impl_->slots.emplace();
-    else
-        impl_->free_head = impl_->slots[index].next_free;
-    auto& slot = impl_->slots[index];
-    slot.type = type_id;
+        impl_->live_slots.resize(index + 1);
+        impl_->gray_links.emplace();
+        if (impl_->phase != CollectionPhase::idle)
+            impl_->marked_slots.resize(index + 1);
+    } else {
+        impl_->free_head = impl_->slots.data()[index].next_free;
+    }
+    auto& slot = impl_->slots.data()[index];
+    slot.type_index = type_id.index_;
     slot.storage = storage;
     slot.next_free = no_slot;
-    slot.mark_epoch = 0;
+    impl_->live_slots.set(index);
     impl_->stamp(index);
     ++impl_->live;
     if (impl_->phase == CollectionPhase::sweep) {
-        slot.mark_epoch = impl_->epoch;
+        impl_->marked_slots.set(index);
         ++impl_->marked;
     } else {
         impl_->shade(object);
@@ -3065,10 +3652,9 @@ Result<void> Runtime::destroy(ObjectId object) {
     const auto index = resolve_object(object);
     if (!index)
         return std::unexpected(index.error());
-    auto& slot = impl_->slots[*index];
     {
         CallbackScope scope{impl_->callbacks};
-        impl_->release(slot);
+        impl_->release(*index);
     }
     impl_->recycle(*index);
     return {};
@@ -3082,7 +3668,7 @@ Result<TypeId> Runtime::type_of(ObjectId object) const {
     const auto index = resolve_object(object);
     if (!index)
         return std::unexpected(index.error());
-    return impl_->slots[*index].type;
+    return TypeId{impl_->context, impl_->slots.data()[*index].type_index};
 }
 
 Result<std::uint64_t> Runtime::change_cursor() {
@@ -3096,21 +3682,45 @@ Result<std::uint64_t> Runtime::change_cursor() {
 bool Runtime::changed_since(ObjectId object, std::uint64_t cursor) const noexcept {
     if (!belongs_to_context(object) || object.index_ >= impl_->slots.size())
         return true;
-    const auto& slot = impl_->slots[object.index_];
-    return !impl_->is_live(slot) || slot.generation != object.generation_ || slot.written > cursor;
+    const auto& slot = impl_->slots.data()[object.index_];
+    return !impl_->is_live(object.index_, slot) || slot.generation != object.generation_ || slot.written > cursor;
 }
 
 void Runtime::changed_objects(std::uint64_t cursor, std::vector<ObjectId>& changed) const {
     changed.clear();
-    constexpr std::size_t page_size = std::size_t{1} << Impl::write_page_shift;
-    for (std::size_t page = 0; page < impl_->write_pages.size(); ++page) {
-        if (impl_->write_pages[page] <= cursor)
+    if (impl_->live == 0)
+        return;
+    const auto live_words = (impl_->phase == CollectionPhase::sweep ? impl_->marked_slots : impl_->live_slots).words();
+    const auto page_count = std::min(impl_->write_pages.size(), live_words.size());
+    constexpr std::size_t pages_per_super = std::size_t{1} << (Impl::write_super_page_shift - Impl::write_page_shift);
+    const auto* pages = impl_->write_pages.data();
+    const auto* super_pages = impl_->write_super_pages.data();
+    const auto* slots = impl_->slots.data();
+    const auto context = impl_->context;
+    for (std::size_t sp = 0; sp < impl_->write_super_pages.size(); ++sp) {
+        if (super_pages[sp] <= cursor)
             continue;
-        const auto end = std::min(impl_->slots.size(), (page + 1) * page_size);
-        for (auto index = page * page_size; index < end; ++index) {
-            const auto& slot = impl_->slots[index];
-            if (slot.written > cursor && impl_->is_live(slot))
-                changed.push_back(ObjectId{impl_->context, static_cast<std::uint32_t>(index), slot.generation});
+        const auto page_end = std::min(page_count, (sp + 1) * pages_per_super);
+        for (std::size_t page_index = sp * pages_per_super; page_index < page_end; ++page_index) {
+            const auto& page = pages[page_index];
+            if (page.newest_epoch <= cursor)
+                continue;
+            const auto base_index = static_cast<std::uint32_t>(page_index << Impl::write_page_shift);
+            if (cursor >= page.floor_epoch) {
+                const auto dirty =
+                    cursor >= page.previous_epoch ? page.newest_mask : (page.newest_mask | page.previous_mask);
+                for (auto mask = dirty & live_words.data()[page_index]; mask != 0; mask &= mask - 1) {
+                    const auto index = base_index + static_cast<std::uint32_t>(std::countr_zero(mask));
+                    changed.push_back(ObjectId{context, index, slots[index].generation});
+                }
+            } else {
+                for (auto mask = live_words.data()[page_index]; mask != 0; mask &= mask - 1) {
+                    const auto index = base_index + static_cast<std::uint32_t>(std::countr_zero(mask));
+                    const auto& slot = slots[index];
+                    if (slot.written > cursor)
+                        changed.push_back(ObjectId{context, index, slot.generation});
+                }
+            }
         }
     }
 }
@@ -3128,7 +3738,7 @@ Result<void> Runtime::validate_reference(const ObjectReference& reference) const
         if (reference.id().context_ != impl_->context)
             return failure(ErrorCode::invalid_object, "Reference identity belongs to another runtime.");
         const auto* live = impl_->lookup(reference.id());
-        if (live && !Impl::derives_from(*impl_->lookup(live->type), *type)) {
+        if (live && !Impl::derives_from(*impl_->types.data()[live->type_index], *type)) {
             return failure(ErrorCode::type_mismatch, "Live object does not match the reference target type.");
         }
     }
@@ -3142,7 +3752,8 @@ Result<ObjectReference> Runtime::strong_reference(ObjectId object) const {
         return std::unexpected(index.error());
     if (!impl_->roots->alive || impl_->roots->traversals != 0)
         return failure(ErrorCode::busy, "Cannot add roots during shutdown or reference traversal.");
-    return ObjectReference{{impl_->slots[*index].type, ValueForm::strong_reference}, object};
+    return ObjectReference{
+        {TypeId{impl_->context, impl_->slots.data()[*index].type_index}, ValueForm::strong_reference}, object};
 }
 
 Result<ObjectReference> Runtime::strong_reference(ObjectId object, TypeId declared_type) const {
@@ -3150,7 +3761,7 @@ Result<ObjectReference> Runtime::strong_reference(ObjectId object, TypeId declar
     const auto index = resolve_object(object);
     if (!index)
         return std::unexpected(index.error());
-    const auto* actual = impl_->lookup(impl_->slots[*index].type);
+    const auto* actual = impl_->types.data()[impl_->slots.data()[*index].type_index].get();
     const auto* expected = impl_->lookup(declared_type);
     if (!expected || expected->info.kind != TypeKind::object)
         return failure(ErrorCode::invalid_type, "Ancestry requires object types in this Runtime.");
@@ -3165,14 +3776,14 @@ Result<ObjectRoot> Runtime::hold(ObjectId object) {
     ATELIER_TRY_BIND(reference, strong_reference(object));
     if (!impl_->roots->has_capacity())
         return failure(ErrorCode::capacity_exceeded, "Root identity space exhausted.");
-    return ObjectRoot{impl_->roots, impl_->roots->add(*reference)};
+    return ObjectRoot{impl_->roots, impl_->roots->add_object(*reference)};
 }
 
 Result<ObjectRoot> Runtime::hold(ObjectId object, TypeId declared_type) {
     ATELIER_TRY_BIND(reference, strong_reference(object, declared_type));
     if (!impl_->roots->has_capacity())
         return failure(ErrorCode::capacity_exceeded, "Root identity space exhausted.");
-    return ObjectRoot{impl_->roots, impl_->roots->add(*reference)};
+    return ObjectRoot{impl_->roots, impl_->roots->add_object(*reference)};
 }
 
 Result<ObjectRoot> Runtime::hold(const ObjectReference& reference) {
@@ -3188,7 +3799,7 @@ Result<ObjectRoot> Runtime::hold(const ObjectReference& reference) {
     }
     if (!impl_->roots->has_capacity())
         return failure(ErrorCode::capacity_exceeded, "Root identity space exhausted.");
-    return ObjectRoot{impl_->roots, impl_->roots->add(reference)};
+    return ObjectRoot{impl_->roots, impl_->roots->add_object(reference)};
 }
 
 Result<ObjectReference> Runtime::observe(const ObjectReference& reference) const {
@@ -3227,7 +3838,7 @@ Result<std::optional<ObjectRoot>> Runtime::try_acquire(const ObjectReference& re
         return std::optional<ObjectRoot>{};
     if (!impl_->roots->has_capacity())
         return failure(ErrorCode::capacity_exceeded, "Root identity space exhausted.");
-    return std::optional<ObjectRoot>{ObjectRoot{impl_->roots, impl_->roots->add(*strong)}};
+    return std::optional<ObjectRoot>{ObjectRoot{impl_->roots, impl_->roots->add_object(*strong)}};
 }
 
 Result<ValueRoot> Runtime::root_value(TypeId type_id, std::span<const std::byte> storage) {
@@ -3241,32 +3852,31 @@ Result<ValueRoot> Runtime::root_value(TypeId type_id, std::span<const std::byte>
     if (!impl_->roots->has_capacity())
         return failure(ErrorCode::capacity_exceeded, "Root identity space exhausted.");
     return ValueRoot{impl_->roots,
-                     impl_->roots->add(detail::ValueRootStorage{type_id, storage.first((*type)->info.size)})};
+                     impl_->roots->add_value(detail::ValueRootStorage{type_id, storage.first((*type)->info.size)})};
 }
 
 Result<void> Runtime::visit_roots(ReferenceVisitor visitor) const {
     if (!impl_->roots->alive)
         return failure(ErrorCode::busy, "Runtime is shutting down.");
     return impl_->visit_guarded(visitor, [&]() -> Result<void> {
-        const auto limit = impl_->roots->entries.extent();
-        for (std::size_t i = 0; i != limit; ++i) {
-            const auto* entry = impl_->roots->entries.try_at(i);
-            if (!entry)
-                continue;
+        const auto object_limit = impl_->roots->object_entries.extent();
+        for (auto i = impl_->roots->object_entries.find_index_from(0); i < object_limit;
+             i = impl_->roots->object_entries.find_index_from(i + 1)) {
             // A visitor may release a root; keep the current descriptor independent.
-            const auto value = entry->value;
-            if (const auto* reference = std::get_if<ObjectReference>(&value)) {
-                if (!reference->is_null()) {
-                    const auto result = visitor.visit(visitor.context, *reference);
-                    if (!result)
-                        return result;
-                }
-            } else {
-                const auto& rooted = std::get<detail::ValueRootStorage>(value);
-                const auto result = impl_->trace(*impl_->lookup(rooted.type), rooted.storage.data(), visitor);
-                if (!result)
-                    return result;
-            }
+            const auto copy = impl_->roots->object_entries[i];
+            if (copy.is_null())
+                continue;
+            const auto result = visitor.visit(visitor.context, copy);
+            if (!result)
+                return result;
+        }
+        const auto value_limit = impl_->roots->value_entries.extent();
+        for (auto i = impl_->roots->value_entries.find_index_from(0); i < value_limit;
+             i = impl_->roots->value_entries.find_index_from(i + 1)) {
+            const auto rooted = impl_->roots->value_entries[i].value;
+            const auto result = impl_->trace(*impl_->lookup(rooted.type), rooted.storage.data(), visitor);
+            if (!result)
+                return result;
         }
         return {};
     });
@@ -3276,9 +3886,9 @@ Result<void> Runtime::visit_references(ObjectId object, ReferenceVisitor visitor
     const auto index = resolve_object(object);
     if (!index)
         return std::unexpected(index.error());
-    const auto& slot = impl_->slots[*index];
-    return impl_->visit_guarded(visitor,
-                                [&] { return impl_->trace(*impl_->lookup(slot.type), slot.storage, visitor); });
+    const auto& slot = impl_->slots.data()[*index];
+    return impl_->visit_guarded(
+        visitor, [&] { return impl_->trace(*impl_->types.data()[slot.type_index], slot.storage, visitor); });
 }
 
 Result<void> Runtime::visit_references(TypeId type_id, std::span<const std::byte> storage,
@@ -3290,15 +3900,15 @@ Result<void> Runtime::visit_references(TypeId type_id, std::span<const std::byte
 }
 
 std::size_t Runtime::root_count() const noexcept {
-    return impl_->roots->entries.size();
+    return impl_->roots->object_entries.size() + impl_->roots->value_entries.size();
 }
 
 Result<Runtime::Address> Runtime::resolve_field(ObjectId object, std::span<const FieldId> path) const {
     const auto index = resolve_object(object);
     if (!index)
         return std::unexpected(index.error());
-    const auto& slot = impl_->slots[*index];
-    return resolve_path(slot.type, slot.storage, path);
+    const auto& slot = impl_->slots.data()[*index];
+    return resolve_path(TypeId{impl_->context, slot.type_index}, slot.storage, path);
 }
 
 Result<Runtime::Address> Runtime::resolve_path(TypeId type, void* storage, std::span<const FieldId> path) const {
@@ -3438,6 +4048,15 @@ Result<void> Runtime::write_reference(TypeId type_id, std::span<std::byte> stora
 }
 
 Result<Scalar> Runtime::read(ObjectId object, std::span<const FieldId> path) const {
+    if (!path.empty()) [[likely]] {
+        const std::uint32_t slot_index = try_resolve_object(object);
+        void* data = nullptr;
+        const Impl::Type* type = nullptr;
+        const FieldRange* range = nullptr;
+        if (slot_index != no_slot && impl_->try_resolve_inline_field(slot_index, path, data, type, range)) [[likely]] {
+            return Impl::read_scalar_bytes(*type, data);
+        }
+    }
     const auto address = resolve_field(object, path);
     if (!address)
         return std::unexpected(address.error());
@@ -3446,8 +4065,31 @@ Result<Scalar> Runtime::read(ObjectId object, std::span<const FieldId> path) con
 
 Result<void> Runtime::write(ObjectId object, std::span<const FieldId> path, Scalar value) {
     detail::assert_serial_access();
-    if (impl_->roots->traversals != 0)
+    if (impl_->roots->traversals != 0) [[unlikely]]
         return failure(ErrorCode::busy, "Field mutation is not allowed during reference traversal.");
+    if (!path.empty()) [[likely]] {
+        const std::uint32_t slot_index = try_resolve_object(object);
+        void* data = nullptr;
+        const Impl::Type* type = nullptr;
+        const FieldRange* range = nullptr;
+        if (slot_index != no_slot && impl_->try_resolve_inline_field(slot_index, path, data, type, range)) [[likely]] {
+            const std::uint8_t variant = type->scalar_variant_index;
+            if (value.index() != variant || (variant == 3 && std::get<EnumValue>(value).type != type->info.id))
+                [[unlikely]] {
+                impl_->stamp(slot_index);
+                return failure(ErrorCode::type_mismatch, "Value type does not match the field.");
+            }
+            if (range && !constrain_scalar(*range, value)) [[unlikely]] {
+                impl_->stamp(slot_index);
+                return impl_->located(ErrorCode::argument_mismatch,
+                                      TypeId{impl_->context, impl_->slots.data()[slot_index].type_index}, path, {},
+                                      "Hard-bounded fields reject NaN and infinity.");
+            }
+            impl_->stamp(slot_index);
+            Impl::write_scalar_bytes(data, variant, value);
+            return {};
+        }
+    }
     const auto address = resolve_field(object, path);
     if (!address)
         return std::unexpected(address.error());
@@ -3482,51 +4124,23 @@ Result<Runtime::Address> Runtime::resolve_storage(TypeId type, std::span<const s
 }
 
 Result<Scalar> Runtime::read_at(const Address& address) const {
-    if (address.value.type == impl_->f32)
-        return Scalar{*static_cast<const float*>(address.data)};
-    if (address.value.type == impl_->f64)
-        return Scalar{*static_cast<const double*>(address.data)};
-    if (address.value.type == impl_->u32)
-        return Scalar{*static_cast<const std::uint32_t*>(address.data)};
-    if (address.value.type == impl_->i32)
-        return Scalar{*static_cast<const std::int32_t*>(address.data)};
-    if (address.value.type == impl_->boolean)
-        return Scalar{*static_cast<const bool*>(address.data)};
     const auto* type = impl_->lookup(address.value.type);
-    if (type && type->info.kind == TypeKind::enumeration && address.value.form == ValueForm::inline_value) {
-        std::uint32_t bits;
-        std::memcpy(&bits, address.data, 4);
-        return Scalar{EnumValue{type->info.id, bits}};
-    }
-    return failure(ErrorCode::type_mismatch, "Read requires a scalar or enum field; select a field inside the record.");
+    if (!type || address.value.form != ValueForm::inline_value)
+        return failure(ErrorCode::type_mismatch,
+                       "Read requires a scalar or enum field; select a field inside the record.");
+    return Impl::read_scalar_bytes(*type, address.data);
 }
 
 Result<void> Runtime::write_at(const Address& address, Scalar value) {
-    if (address.value.form != ValueForm::inline_value || address.value.type != impl_->scalar_type(value)) {
+    const auto* type = impl_->lookup(address.value.type);
+    const std::uint8_t variant = type ? type->scalar_variant_index : std::uint8_t{0xff};
+    if (address.value.form != ValueForm::inline_value || value.index() != variant ||
+        (variant == 3 && std::get<EnumValue>(value).type != type->info.id))
         return failure(ErrorCode::type_mismatch, "Value type does not match the field.");
-    }
-    if (std::holds_alternative<EnumValue>(value) &&
-        impl_->lookup(address.value.type)->info.kind != TypeKind::enumeration)
-        return failure(ErrorCode::type_mismatch, "Enum value cannot masquerade as a scalar.");
     if (address.range && !constrain_scalar(*address.range, value))
         return impl_->located(ErrorCode::argument_mismatch, address.root, address.path, {},
                               "Hard-bounded fields reject NaN and infinity.");
-    if (address.value.type == impl_->f32)
-        *static_cast<float*>(address.data) = std::get<float>(value);
-    else if (address.value.type == impl_->f64)
-        *static_cast<double*>(address.data) = std::get<double>(value);
-    else if (address.value.type == impl_->u32)
-        *static_cast<std::uint32_t*>(address.data) = std::get<std::uint32_t>(value);
-    else if (address.value.type == impl_->i32)
-        *static_cast<std::int32_t*>(address.data) = std::get<std::int32_t>(value);
-    else if (address.value.type == impl_->boolean)
-        *static_cast<bool*>(address.data) = std::get<bool>(value);
-    else {
-        const auto* type = impl_->lookup(address.value.type);
-        if (!type || type->info.kind != TypeKind::enumeration || !std::holds_alternative<EnumValue>(value))
-            return failure(ErrorCode::type_mismatch, "Value is not an enum of the field type.");
-        std::memcpy(address.data, &std::get<EnumValue>(value).bits, 4);
-    }
+    Impl::write_scalar_bytes(address.data, variant, value);
     return {};
 }
 
@@ -3550,8 +4164,8 @@ Result<std::optional<ValidationFailure>> Runtime::validate(ObjectId object) cons
     const auto index = resolve_object(object);
     if (!index)
         return std::unexpected(index.error());
-    const auto& slot = impl_->slots[*index];
-    const auto& type = *impl_->lookup(slot.type);
+    const auto& slot = impl_->slots.data()[*index];
+    const auto& type = *impl_->types.data()[slot.type_index];
     if (type.constrained_leaves.empty() && type.validators.empty())
         return std::nullopt;
     return impl_->check_rules(type, slot.storage);
@@ -3658,6 +4272,23 @@ Result<void> Runtime::mutate_elements(ObjectId object, std::span<const FieldId> 
 }
 
 Result<void> Runtime::read(ObjectId object, std::span<const FieldId> path, ValueOutput output) const {
+    if (!path.empty()) [[likely]] {
+        const std::uint32_t slot_index = try_resolve_object(object);
+        void* data = nullptr;
+        const Impl::Type* type = nullptr;
+        const FieldRange* range = nullptr;
+        if (slot_index != no_slot && impl_->try_resolve_inline_field(slot_index, path, data, type, range) &&
+            type->info.plain_value) [[likely]] {
+            if (output.type != type->info.id) [[unlikely]]
+                return failure(ErrorCode::type_mismatch,
+                               "Whole-value field read requires its exact Runtime type, without GC references.");
+            if (!output.data || (reinterpret_cast<std::uintptr_t>(output.data) & (type->info.alignment - 1)) != 0)
+                [[unlikely]]
+                return failure(ErrorCode::invalid_storage, "Value output storage is null or misaligned.");
+            std::memmove(output.data, data, type->info.size);
+            return {};
+        }
+    }
     const auto address = resolve_field(object, path);
     if (!address)
         return std::unexpected(address.error());
@@ -3666,8 +4297,30 @@ Result<void> Runtime::read(ObjectId object, std::span<const FieldId> path, Value
 
 Result<void> Runtime::write(ObjectId object, std::span<const FieldId> path, ValueInput value) {
     detail::assert_serial_access();
-    if (impl_->roots->traversals != 0)
+    if (impl_->roots->traversals != 0) [[unlikely]]
         return failure(ErrorCode::busy, "Field mutation is not allowed during reference traversal.");
+    if (!path.empty()) [[likely]] {
+        const std::uint32_t slot_index = try_resolve_object(object);
+        void* data = nullptr;
+        const Impl::Type* type = nullptr;
+        const FieldRange* range = nullptr;
+        if (slot_index != no_slot && impl_->try_resolve_inline_field(slot_index, path, data, type, range) &&
+            type->info.plain_value && !range && type->constrained_leaves.empty()) [[likely]] {
+            if (value.type != type->info.id) [[unlikely]] {
+                impl_->stamp(slot_index);
+                return failure(ErrorCode::type_mismatch,
+                               "Whole-value field write requires its exact Runtime type, without GC references.");
+            }
+            if (!value.data || (reinterpret_cast<std::uintptr_t>(value.data) & (type->info.alignment - 1)) != 0)
+                [[unlikely]] {
+                impl_->stamp(slot_index);
+                return failure(ErrorCode::invalid_storage, "Value input storage is null or misaligned.");
+            }
+            impl_->stamp(slot_index);
+            std::memmove(data, value.data, type->info.size);
+            return {};
+        }
+    }
     const auto address = resolve_field(object, path);
     if (!address)
         return std::unexpected(address.error());
@@ -3889,87 +4542,158 @@ Result<void> Runtime::prepare_arguments(const FunctionSignature& signature, std:
 }
 
 Result<void> Runtime::call(ObjectId object, MethodId method, std::span<const Scalar> arguments, Scalar* output) {
-    InlineArray<Argument, 8> values;
-    values.resize(arguments.size());
-    for (std::size_t i = 0; i < arguments.size(); ++i)
-        values[i] = Argument{arguments[i]};
-    return call_arguments(object, method, values, output);
+    return call_scalars(object, method, arguments, output);
 }
 
 Result<void> Runtime::call(ObjectId object, MethodId method, std::span<const Scalar> arguments, ValueOutput output) {
-    InlineArray<Argument, 8> values;
-    values.resize(arguments.size());
-    for (std::size_t i = 0; i < arguments.size(); ++i)
-        values[i] = Argument{arguments[i]};
-    return call_arguments(object, method, values, nullptr, output);
+    return call_scalars(object, method, arguments, nullptr, output);
+}
+
+Result<void> Runtime::call_scalars(ObjectId object, MethodId method, std::span<const Scalar> arguments, Scalar* output,
+                                   ValueOutput value_output) {
+    detail::assert_serial_access();
+    if (impl_->roots->traversals != 0) [[unlikely]]
+        return failure(ErrorCode::busy, "Method execution is not allowed during reference traversal.");
+    const std::uint32_t slot_index = try_resolve_object(object);
+    if (slot_index == no_slot) [[unlikely]]
+        return std::unexpected(resolve_object(object).error());
+    const auto& slot = impl_->slots.data()[slot_index];
+    const auto* actual = impl_->types.data()[slot.type_index].get();
+    const auto* type = impl_->lookup(method.owner_);
+    if (!type || !Impl::derives_from(*actual, *type) || method.index_ >= type->compiled_methods.size()) [[unlikely]]
+        return failure(ErrorCode::invalid_member, "Method does not belong to the receiver type.");
+    const auto& compiled = type->compiled_methods.data()[method.index_];
+    if (!compiled.valid || compiled.parameters.size() > 8 || compiled.scratch_size > 128 ||
+        compiled.scratch_alignment > 32) [[unlikely]] {
+        InlineArray<Argument, 8> values;
+        values.resize(arguments.size());
+        for (std::size_t i = 0; i < arguments.size(); ++i)
+            values[i] = Argument{arguments[i]};
+        return call_arguments(object, method, values, output, value_output);
+    }
+    ATELIER_TRY(Impl::validate_call_output(compiled, output, value_output));
+    const std::size_t param_count = compiled.parameters.size();
+    const auto inherited = type->base ? type->base->info.methods.size() : 0;
+    const auto& method_info = type->info.methods[inherited + method.index_];
+    if (arguments.size() > param_count ||
+        (arguments.size() < param_count && !method_info.parameter_defaults[arguments.size()])) [[unlikely]]
+        return failure(ErrorCode::argument_mismatch, "Incorrect argument count.");
+    alignas(32) std::byte scratch[128];
+    ArgumentView views[8];
+    for (std::size_t i = 0; i < param_count; ++i) {
+        const auto& param = compiled.parameters.data()[i];
+        const Scalar& arg = i < arguments.size() ? arguments[i] : *method_info.parameter_defaults[i];
+        if (arg.index() != param.scalar_variant ||
+            (param.scalar_variant == 3 && std::get<EnumValue>(arg).type != param.type->info.id)) [[unlikely]]
+            return failure(ErrorCode::argument_mismatch, "Argument type does not match parameter " + std::to_string(i));
+        if (param.passing == ParameterPassing::reference) [[unlikely]]
+            return failure(ErrorCode::argument_mismatch, "Writable reference requires mutable lvalue storage.");
+        auto* destination = scratch + param.scratch_offset;
+        Impl::write_scalar_bytes(destination, param.scalar_variant, arg);
+        views[i] = {param.type->info.id, destination, nullptr};
+    }
+    CallbackScope scope{impl_->callbacks};
+    return impl_->invoke_compiled(*this, slot_index, object, *actual, *type, compiled, slot.storage,
+                                  {views, param_count}, output, value_output);
 }
 
 Result<void> Runtime::call_arguments(ObjectId object, MethodId method, std::span<const Argument> arguments,
                                      Scalar* output, ValueOutput value_output) {
     detail::assert_serial_access();
-    if (impl_->roots->traversals != 0)
+    if (impl_->roots->traversals != 0) [[unlikely]]
         return failure(ErrorCode::busy, "Method execution is not allowed during reference traversal.");
-    const auto index = resolve_object(object);
-    if (!index)
-        return std::unexpected(index.error());
-    const auto& slot = impl_->slots[*index];
-    const auto* actual = impl_->lookup(slot.type);
+    const std::uint32_t slot_index = try_resolve_object(object);
+    if (slot_index == no_slot) [[unlikely]]
+        return std::unexpected(resolve_object(object).error());
+    const auto& slot = impl_->slots.data()[slot_index];
+    const auto* actual = impl_->types.data()[slot.type_index].get();
     const auto* type = impl_->lookup(method.owner_);
-    if (!type || !Impl::derives_from(*actual, *type) || method.index_ >= type->methods.size()) {
+    if (!type || !Impl::derives_from(*actual, *type) || method.index_ >= type->compiled_methods.size()) [[unlikely]]
         return failure(ErrorCode::invalid_member, "Method does not belong to the receiver type.");
-    }
+    const auto& compiled = type->compiled_methods.data()[method.index_];
+    ATELIER_TRY(Impl::validate_call_output(compiled, output, value_output));
     const auto inherited = type->base ? type->base->info.methods.size() : 0;
-    const auto& signature = type->info.methods[inherited + method.index_].signature;
-    const auto* result_type = signature.result ? impl_->lookup(signature.result->type) : nullptr;
-    const bool record_result =
-        result_type && result_type->info.kind == TypeKind::record && result_type->info.plain_value;
-    if (record_result) {
-        if (value_output.type != result_type->info.id)
-            return failure(ErrorCode::type_mismatch, "Plain value result requires its exact Runtime type.");
-        if (!value_output.data ||
-            reinterpret_cast<std::uintptr_t>(value_output.data) % result_type->info.alignment != 0)
-            return failure(ErrorCode::invalid_storage, "Plain value result storage is null or misaligned.");
-    } else if (value_output.type != TypeId{} || value_output.data) {
-        return failure(ErrorCode::type_mismatch, "Typed value output requires a plain record result.");
-    } else if (signature.result && !output) {
-        return failure(ErrorCode::invalid_storage, "Non-void method requires result storage.");
-    }
+    const auto& method_info = type->info.methods[inherited + method.index_];
+    const auto& signature = method_info.signature;
     CallbackScope scope{impl_->callbacks};
-    PreparedArguments prepared;
-    ATELIER_TRY(prepare_arguments(signature, arguments, prepared, true));
-    if (!signature.receiver->read_only)
-        impl_->stamp(*index);
-    const auto invoke = [&](ValueOutput staging) -> Result<void> {
-        CallContext context{*this, object, Impl::base_storage(*actual, *type, slot.storage), prepared.values()};
-        context.result_value = staging;
-        ATELIER_TRY(type->methods[method.index_](context));
-        if (record_result) {
-            if (context.result || !context.result_written || context.result_value.type != staging.type ||
-                context.result_value.data != staging.data)
-                return failure(ErrorCode::invocation_failed, "Method did not produce its declared plain value result.");
-            std::memcpy(value_output.data, staging.data, result_type->info.size);
-        } else {
-            if (context.result_written || context.result_value.data || context.result_value.type != TypeId{})
-                return failure(ErrorCode::invocation_failed, "Method produced an undeclared plain value result.");
-            if (signature.result) {
-                if (!context.result || impl_->scalar_type(*context.result) != signature.result->type ||
-                    (std::holds_alternative<EnumValue>(*context.result) &&
-                     result_type->info.kind != TypeKind::enumeration))
-                    return failure(ErrorCode::invocation_failed, "Method did not produce its declared result type.");
-                *output = *context.result;
-            } else if (context.result) {
-                return failure(ErrorCode::invocation_failed, "Void method produced an undeclared result.");
+    const std::size_t param_count = compiled.parameters.size();
+    const bool has_field_arg = std::ranges::any_of(
+        arguments, [](const Argument& arg) { return arg.object_ != ObjectId{} || !arg.path_.empty(); });
+    if (compiled.valid && !has_field_arg && param_count <= 8 && compiled.scratch_size <= 128 &&
+        compiled.scratch_alignment <= 32) [[likely]] {
+        if (arguments.size() > param_count ||
+            (arguments.size() < param_count && !method_info.parameter_defaults[arguments.size()])) [[unlikely]]
+            return failure(ErrorCode::argument_mismatch, "Incorrect argument count.");
+        alignas(32) std::byte scratch[128];
+        ArgumentView views[8];
+        for (std::size_t i = 0; i < param_count; ++i) {
+            const auto& param = compiled.parameters.data()[i];
+            if (i >= arguments.size()) {
+                const Scalar& def = *method_info.parameter_defaults[i];
+                auto* destination = scratch + param.scratch_offset;
+                Impl::write_scalar_bytes(destination, param.scalar_variant, def);
+                views[i] = {param.type->info.id, destination, nullptr};
+                continue;
+            }
+            const Argument& argument = arguments[i];
+            if (argument.borrowed_) {
+                const void* data = argument.data_;
+                void* writable = argument.writable_;
+                if (!data) [[unlikely]]
+                    return failure(ErrorCode::invalid_storage, "Borrowed argument is null.");
+                bool type_matches = false;
+                if (const auto* by_id = std::get_if<TypeId>(&argument.type_.target_))
+                    type_matches = (*by_id == param.type->info.id);
+                else if (const auto* by_rep = std::get_if<const void*>(&argument.type_.target_))
+                    type_matches = (*by_rep != nullptr && *by_rep == param.type->native.representation);
+                else
+                    type_matches = (impl_->lookup(argument.type_) == param.type);
+                if (!type_matches) [[unlikely]]
+                    return failure(ErrorCode::argument_mismatch,
+                                   "Argument type does not match parameter " + std::to_string(i));
+                if ((reinterpret_cast<std::uintptr_t>(data) & (param.type->info.alignment - 1)) != 0 ||
+                    (writable && data != writable)) [[unlikely]]
+                    return failure(ErrorCode::invalid_storage, "Borrowed argument storage is invalid or misaligned.");
+                if (param.passing == ParameterPassing::reference && !writable) [[unlikely]]
+                    return failure(ErrorCode::argument_mismatch, "Writable reference requires mutable lvalue storage.");
+                if (param.passing == ParameterPassing::value) {
+                    auto* destination = scratch + param.scratch_offset;
+                    std::memcpy(destination, data, param.type->info.size);
+                    views[i] = {param.type->info.id, destination, nullptr};
+                } else {
+                    views[i] = {param.type->info.id, data,
+                                param.passing == ParameterPassing::reference ? writable : nullptr};
+                }
+            } else {
+                const Scalar& val = argument.value_;
+                if (val.index() != param.scalar_variant ||
+                    (param.scalar_variant == 3 && std::get<EnumValue>(val).type != param.type->info.id)) [[unlikely]]
+                    return failure(ErrorCode::argument_mismatch,
+                                   "Argument type does not match parameter " + std::to_string(i));
+                if (param.passing == ParameterPassing::reference) [[unlikely]]
+                    return failure(ErrorCode::argument_mismatch, "Writable reference requires mutable lvalue storage.");
+                auto* destination = scratch + param.scratch_offset;
+                Impl::write_scalar_bytes(destination, param.scalar_variant, val);
+                views[i] = {param.type->info.id, destination, nullptr};
             }
         }
-        return {};
-    };
-    if (record_result) {
-        detail::ValueStorage staging_owner;
-        auto* staging = staging_owner.prepare(result_type->info.size, result_type->info.alignment);
-        ATELIER_TRY(impl_->try_construct(*result_type, staging));
-        return invoke({result_type->info.id, staging});
+        return impl_->invoke_compiled(*this, slot_index, object, *actual, *type, compiled, slot.storage,
+                                      {views, param_count}, output, value_output);
     }
-    return invoke({});
+    PreparedArguments prepared;
+    InlineArray<Argument, 8> expanded;
+    std::span<const Argument> effective_arguments = arguments;
+    if (arguments.size() < signature.parameters.size() && method_info.parameter_defaults[arguments.size()]) {
+        expanded.reserve(signature.parameters.size());
+        for (const auto& arg : arguments)
+            expanded.add(arg);
+        for (std::size_t p = arguments.size(); p < signature.parameters.size(); ++p)
+            expanded.add(Argument{*method_info.parameter_defaults[p]});
+        effective_arguments = expanded;
+    }
+    ATELIER_TRY(prepare_arguments(signature, effective_arguments, prepared, true));
+    return impl_->invoke_compiled(*this, slot_index, object, *actual, *type, compiled, slot.storage, prepared.values(),
+                                  output, value_output);
 }
 
 std::size_t Runtime::live_objects() const noexcept {

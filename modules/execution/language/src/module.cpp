@@ -89,17 +89,26 @@ std::expected<void, Diagnostic> field_attributes(Tokens& tokens, const SourceFil
                 ATELIER_TRY(tokens.expect(i == 0 ? "," : ")"));
             }
             field.metadata.emplace_back(std::move(values[0]), std::move(values[1]));
-        } else if (lock) {
+        } else if (lock || option.text == "Transient" || option.text == "ReadOnly") {
             if (tokens.token_.text == "=")
                 return reject(option.position, std::string(option.text) + " is a flag without a value.");
+            if (option.text == "Transient")
+                field.transient = true;
+            else if (option.text == "ReadOnly")
+                field.read_only = true;
         } else if (option.text == "Label" || option.text == "Category" || option.text == "DESC") {
             ATELIER_TRY(tokens.expect("="));
             if (tokens.token_.kind != Token::Kind::string)
                 return reject(tokens.token_.position, std::string(option.text) + " requires a string literal.");
             ATELIER_TRY_BIND(token, tokens.consume());
             ATELIER_TRY_BIND(text, string_value(*token));
-            if (option.text != "DESC" && std::ranges::any_of(*text, [](unsigned char c) { return c < 32; }))
+            if (option.text == "DESC") {
+                if (!normalize_description_text(*text))
+                    return reject(option.position,
+                                  "DESC must not contain control characters other than line breaks and tabs.");
+            } else if (std::ranges::any_of(*text, [](unsigned char c) { return c < 32 || c == 127; })) {
                 return reject(option.position, std::string(option.text) + " must not contain control characters.");
+            }
             (option.text == "Label"      ? field.label
              : option.text == "Category" ? field.category
                                          : field.description) = std::move(*text);
@@ -326,6 +335,17 @@ std::expected<SourceModule, ModuleDiagnostic> collect_module(const SourceSnapsho
             auto& tokens = *created;
             while (tokens.token_.kind != Token::Kind::end) {
                 const auto begin = tokens.token_.position;
+                if (tokens.token_.text == "[") {
+                    while (tokens.token_.text != "]") {
+                        if (tokens.token_.kind == Token::Kind::end || tokens.token_.text == "{" ||
+                            tokens.token_.text == "}" || tokens.token_.text == ";")
+                            return reject(begin, "Expected ']' to close enum attributes.");
+                        ATELIER_TRY(tokens.consume());
+                    }
+                    ATELIER_TRY(tokens.expect("]"));
+                    if (tokens.token_.text != "enum")
+                        return reject(begin, "Top-level attributes apply to enum declarations only.");
+                }
                 ATELIER_TRY_BIND(object, tokens.accept("class"));
                 if (!*object) {
                     // A top-level declaration ends at ';' or a complete body.

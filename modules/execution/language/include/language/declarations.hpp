@@ -10,6 +10,14 @@ struct TypeName {
     bool operator==(const TypeName&) const = default;
 };
 
+struct EnumeratorAttribute {
+    std::string label{};
+
+    std::string description{};
+
+    bool operator==(const EnumeratorAttribute&) const = default;
+};
+
 // Unresolved source definitions. Runtime alone resolves identities and layouts.
 struct TypeDeclaration {
     SourcePosition position;
@@ -20,13 +28,18 @@ struct TypeDeclaration {
 
     bool signed_enum{true};
 
+    bool flags{};
+
     std::vector<std::pair<std::string, std::uint32_t>> enumerators;
+
+    std::vector<EnumeratorAttribute> enumerator_attributes;
 
     std::vector<std::pair<std::string, TypeName>> fields;
 
     bool same_definition(const TypeDeclaration& other) const noexcept {
         return name == other.name && enumeration == other.enumeration && signed_enum == other.signed_enum &&
-               enumerators == other.enumerators && fields == other.fields;
+               flags == other.flags && enumerators == other.enumerators &&
+               enumerator_attributes == other.enumerator_attributes && fields == other.fields;
     }
 };
 

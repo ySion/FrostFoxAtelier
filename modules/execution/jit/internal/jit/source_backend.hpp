@@ -98,6 +98,10 @@ struct BusinessParameter {
 
     ParameterPassing passing{ParameterPassing::value};
 
+    bool has_default{};
+
+    std::uint64_t default_bits{};
+
     bool operator==(const BusinessParameter&) const = default;
 };
 
@@ -188,6 +192,8 @@ struct BusinessEnumBinding {
     const BusinessEnumItem* values;
 
     std::uint32_t value_count;
+
+    bool flags{};
 };
 
 inline bool aggregate(BusinessType type) noexcept {

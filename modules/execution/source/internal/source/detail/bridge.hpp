@@ -62,6 +62,8 @@ struct BoundEnum {
 
     std::vector<std::pair<std::string, std::uint32_t>> values;
 
+    bool flags{};
+
     bool operator==(const BoundEnum&) const = default;
 };
 

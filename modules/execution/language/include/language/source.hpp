@@ -44,6 +44,10 @@ struct ParameterType {
     ValueType type;
 
     ParameterPassing passing{ParameterPassing::value};
+
+    bool has_default{};
+
+    std::uint64_t default_bits{};
 };
 
 struct EnumItem {
@@ -58,6 +62,8 @@ struct EnumBinding {
     ValueType underlying;
 
     std::span<const EnumItem> values;
+
+    bool flags{};
 };
 
 struct FieldBinding {

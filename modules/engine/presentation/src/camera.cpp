@@ -29,9 +29,9 @@ Result<CameraMatrices> CameraSnapshot::matrices(float aspect) const {
     return result;
 }
 
-Result<void> detail::camera_rules(const CameraComponent& value) {
+Result<void> CameraComponent::validate() const {
     // Individual finite bounds are checked by reflected metadata.
-    if (!(value.far_clip > value.near_clip))
+    if (!(far_clip > near_clip))
         return error(ErrorCode::argument_mismatch, "Camera Far clip must exceed Near clip.");
     return {};
 }

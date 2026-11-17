@@ -85,7 +85,7 @@ public:
         std::vector<Body> bodies;
         std::vector<std::string> type_names;
         while (token_.kind != Token::Kind::end) {
-            if (token_.text == "struct" || token_.text == "enum") {
+            if (token_.text == "[" || token_.text == "struct" || token_.text == "enum") {
                 ATELIER_TRY_BIND(declaration, parse_type_declaration(*this));
                 if (type_names.size() == 1024)
                     return reject(declaration->position, "A source module supports at most 1024 type declarations.");
@@ -270,7 +270,7 @@ private:
                 return reject(declaration.position, "Source enum conflicts with its Runtime type.");
             const auto& layout = environment_.enumerations[type->type_index];
             if (layout.underlying != (declaration.signed_enum ? ValueType::i32 : ValueType::u32) ||
-                layout.values.size() != declaration.enumerators.size())
+                layout.flags != declaration.flags || layout.values.size() != declaration.enumerators.size())
                 return reject(declaration.position, "Source enum differs from its prepared Runtime definition.");
             for (std::size_t i = 0; i < layout.values.size(); ++i)
                 if (layout.values[i].name != declaration.enumerators[i].first ||
@@ -471,6 +471,14 @@ private:
                     break;
             }
             ATELIER_TRY(expect(")"));
+        }
+        if (arguments.size() < parameters.size()) {
+            if (!parameters[arguments.size()].has_default)
+                return reject(token_.position, "Call argument count mismatch.");
+            for (std::size_t i = arguments.size(); i < parameters.size(); ++i) {
+                ATELIER_TRY_BIND(value, literal(parameters[i].type, token_.position, parameters[i].default_bits));
+                arguments.push_back(*value);
+            }
         }
         if (arguments.size() != parameters.size())
             return reject(token_.position, "Call argument count mismatch.");
@@ -717,6 +725,11 @@ private:
                                             : 4;
     }
 
+    bool flags_enum(ValueType type) const noexcept {
+        return type.kind == ValueType::enumeration && type.type_index < environment_.enumerations.size() &&
+               environment_.enumerations[type.type_index].flags;
+    }
+
     std::expected<void, Diagnostic> validate_environment() const {
         ATELIER_TRY(validate_name(environment_.object_type_name, true));
         for (std::size_t i = 0; i < environment_.enumerations.size(); ++i) {
@@ -724,6 +737,8 @@ private:
             ATELIER_TRY(validate_name(enumeration.name, false));
             if (enumeration.underlying != ValueType::i32 && enumeration.underlying != ValueType::u32)
                 return reject({}, "Enum requires i32/u32 representation.");
+            if (enumeration.flags && enumeration.underlying != ValueType::u32)
+                return reject({}, "Flags enum requires u32 representation.");
             for (std::size_t j = 0; j < i; ++j)
                 if (environment_.enumerations[j].name == enumeration.name)
                     return reject({}, "Duplicate enum type name.");
@@ -802,13 +817,26 @@ private:
             ATELIER_TRY(validate_name(method.name, false));
             if (method.parameters.size() > std::numeric_limits<std::uint32_t>::max())
                 return reject({}, "Host parameter list exceeds its index range.");
-            for (const auto& parameter : method.parameters)
+            bool seen_default = false;
+            for (const auto& parameter : method.parameters) {
                 if (!supported_value(parameter.type) ||
                     (aggregate(parameter.type) && parameter.passing == ParameterPassing::value &&
                      !plain_record(parameter.type)) ||
                     (parameter.passing != ParameterPassing::value && parameter.passing != ParameterPassing::read_only &&
                      parameter.passing != ParameterPassing::reference))
                     return reject({}, "Host method has an unsupported parameter type or passing mode.");
+                if (!parameter.has_default) {
+                    if (seen_default || parameter.default_bits != 0)
+                        return reject({}, "Host method parameter defaults must cover a trailing suffix.");
+                } else {
+                    seen_default = true;
+                    if (!scalar(parameter.type) || parameter.passing == ParameterPassing::reference ||
+                        (parameter.type == ValueType::boolean && parameter.default_bits > 1) ||
+                        (parameter.type != ValueType::f64 &&
+                         parameter.default_bits > std::numeric_limits<std::uint32_t>::max()))
+                        return reject({}, "Host method has an invalid parameter default.");
+                }
+            }
             if (method.result != ValueType::void_value && !scalar(method.result) && !plain_record(method.result))
                 return reject({}, "Host method has an unsupported result type.");
             for (std::size_t j = 0; j < i; ++j)
@@ -1486,11 +1514,16 @@ private:
                     result_type = right_type;
                 } else
                     return reject(symbol->position, "Unsupported math operation or mismatched component precision.");
+            } else if (flags_enum(type) && right_type == type &&
+                       (operation.operation == Operation::bitwise_and || operation.operation == Operation::bitwise_or ||
+                        operation.operation == Operation::bitwise_xor)) {
+                result_type = type;
             } else if (!scalar(type) || right_type != type ||
                        ((type.kind == ValueType::enumeration || type == ValueType::boolean) &&
                         operation.operation != Operation::equal && operation.operation != Operation::not_equal)) {
-                return reject(symbol->position,
-                              "Binary operands require matching numeric types; bool and enums support equality only.");
+                return reject(
+                    symbol->position,
+                    "Binary operands require matching numeric types; bool and non-Flags enums support equality only.");
             } else if ((operation.operation == Operation::remainder || operation.operation == Operation::bitwise_and ||
                         operation.operation == Operation::bitwise_or ||
                         operation.operation == Operation::bitwise_xor) &&
@@ -1513,8 +1546,8 @@ private:
             const auto type = function_.expressions[operand].type;
             if (symbol->text == "!" && type != ValueType::boolean)
                 return reject(symbol->position, "Logical negation requires bool.");
-            if (symbol->text == "~" && type != ValueType::i32 && type != ValueType::u32)
-                return reject(symbol->position, "Bitwise negation requires int or uint.");
+            if (symbol->text == "~" && type != ValueType::i32 && type != ValueType::u32 && !flags_enum(type))
+                return reject(symbol->position, "Bitwise negation requires int, uint or a Flags enum.");
             return add(Expression{Expression::Kind::unary, type, symbol->position, operand, no_node, 0,
                                   symbol->text == "!" ? Operation::logical_not : Operation::bitwise_not});
         }

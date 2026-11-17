@@ -11,20 +11,18 @@ using world::DiagnosticKind;
 using world::DiagnosticPhase;
 
 // Single-field bounds are AFIELD hard bounds, checked before this runs.
-Result<void> detail::light_rules(const LightSettings& settings) {
-    if (settings.kind != LightKind::point && settings.kind != LightKind::rectangle &&
-        settings.kind != LightKind::directional)
+Result<void> LightSettings::validate() const {
+    if (kind != LightKind::point && kind != LightKind::rectangle && kind != LightKind::directional)
         return error(ErrorCode::argument_mismatch, "Unknown LightKind.");
-    if ((settings.kind == LightKind::point || settings.kind == LightKind::rectangle) && settings.range == 0.f)
+    if ((kind == LightKind::point || kind == LightKind::rectangle) && range == 0.f)
         return error(ErrorCode::argument_mismatch,
                      "Local light range must be positive; directional range may be zero.");
-    if (settings.kind == LightKind::directional && double(settings.source_radius) >= std::numbers::pi_v<double> / 2)
+    if (kind == LightKind::directional && double(source_radius) >= std::numbers::pi_v<double> / 2)
         return error(ErrorCode::argument_mismatch, "Directional angular radius must be below pi/2 radians.");
-    if (settings.kind == LightKind::rectangle && (settings.width == 0.f || settings.height == 0.f))
+    if (kind == LightKind::rectangle && (width == 0.f || height == 0.f))
         return error(ErrorCode::argument_mismatch, "Rectangle width and height must be positive.");
     if (const auto* message = rendering::analytic_light_range_error(
-            settings.color, settings.intensity,
-            settings.kind == LightKind::rectangle ? double(settings.width) * settings.height : 1))
+            color, intensity, kind == LightKind::rectangle ? double(width) * height : 1))
         return error(ErrorCode::argument_mismatch, message);
     return {};
 }
@@ -72,8 +70,8 @@ rendering::SceneLightingSettings environment_settings(const EnvironmentComponent
 }
 
 // Single-field bounds are AFIELD hard bounds, checked before this runs.
-Result<void> detail::environment_rules(const EnvironmentComponent& value) {
-    if (const auto* message = rendering::scene_lighting_error(environment_settings(value)))
+Result<void> EnvironmentComponent::validate() const {
+    if (const auto* message = rendering::scene_lighting_error(environment_settings(*this)))
         return error(ErrorCode::argument_mismatch, message);
     return {};
 }

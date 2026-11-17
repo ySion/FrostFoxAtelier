@@ -66,6 +66,10 @@ struct ClassField {
     std::optional<SourcePosition> range; // the first range attribute
 
     std::vector<std::pair<std::string, std::string>> metadata;
+
+    bool transient{};
+
+    bool read_only{};
 };
 
 // Signatures omit parameter names, so renaming a parameter stays compatible.

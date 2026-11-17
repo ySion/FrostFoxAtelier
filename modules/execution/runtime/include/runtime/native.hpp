@@ -193,19 +193,27 @@ MethodDefinition native_method(std::string name, bool preserves_borrows = false,
         };
         ATELIER_TRY_BIND(result, invoke(std::make_index_sequence<std::tuple_size_v<Args>>{}));
         if constexpr (detail::MathValueType<Return> || detail::PlainNativeValue<Return>) {
-            const auto type = call.runtime.native_type<Return>();
-            if (!type)
-                return std::unexpected(type.error());
-            if (call.result_value.type != *type || !call.result_value.data)
+            TypeId expected = call.expected_result_type;
+            if (expected == TypeId{}) [[unlikely]] {
+                const auto type = call.runtime.native_type<Return>();
+                if (!type)
+                    return std::unexpected(type.error());
+                expected = *type;
+            }
+            if (call.result_value.type != expected || !call.result_value.data)
                 return std::unexpected(Error{ErrorCode::invalid_storage,
                                              "Native plain value result requires exact typed output storage."});
             *static_cast<Return*>(call.result_value.data) = *result;
             call.result_written = true;
         } else if constexpr (std::is_enum_v<Return>) {
-            const auto type = call.runtime.native_type<Return>();
-            if (!type)
-                return std::unexpected(type.error());
-            call.result = EnumValue{*type, static_cast<std::uint32_t>(*result)};
+            TypeId enum_type = call.expected_result_type;
+            if (enum_type == TypeId{}) [[unlikely]] {
+                const auto type = call.runtime.native_type<Return>();
+                if (!type)
+                    return std::unexpected(type.error());
+                enum_type = *type;
+            }
+            call.result = EnumValue{enum_type, static_cast<std::uint32_t>(*result)};
         } else if constexpr (!std::same_as<Return, void>)
             call.result = *result;
         return {};
@@ -237,6 +245,7 @@ public:
             std::is_trivially_constructible_v<T, decltype(std::move_if_noexcept(std::declval<T&>()))>;
         definition_.native.plain_value = std::is_standard_layout_v<T> && std::is_trivially_copy_constructible_v<T> &&
                                          std::is_trivially_copy_assignable_v<T> && std::is_trivially_destructible_v<T>;
+        definition_.native.trivially_destructible = std::is_trivially_destructible_v<T>;
         if constexpr (std::is_enum_v<T>) {
             definition_.enumeration =
                 TypeDefinition::Enumeration{TypeReference::native<std::underlying_type_t<T>>(), {}};
@@ -265,23 +274,40 @@ public:
 
     template <class U = T>
         requires std::is_enum_v<U> && std::same_as<U, T>
-    NativeRegistration& enumerator(std::string name, T value) {
+    NativeRegistration& flags(bool value = true) {
+        static_assert(std::same_as<std::underlying_type_t<T>, std::uint32_t>,
+                      "Flags enums require a uint32_t underlying type.");
+        if (!definition_.enumeration)
+            definition_.enumeration = TypeDefinition::Enumeration{TypeReference::native<std::uint32_t>(), {}};
+        definition_.enumeration->flags = value;
+        return *this;
+    }
+
+    template <class U = T>
+        requires std::is_enum_v<U> && std::same_as<U, T>
+    NativeRegistration& enumerator(std::string name, T value, std::string label = {}, std::string description = {}) {
         using Underlying = std::underlying_type_t<T>;
         static_assert(std::same_as<Underlying, std::int32_t> || std::same_as<Underlying, std::uint32_t>,
                       "Reflected enums require an i32/u32 underlying type.");
         if (!definition_.enumeration)
             definition_.enumeration = TypeDefinition::Enumeration{TypeReference::native<Underlying>(), {}};
-        definition_.enumeration->values.emplace_back(std::move(name), static_cast<std::uint32_t>(value));
+        auto& enumeration = *definition_.enumeration;
+        if (!label.empty() || !description.empty() || !enumeration.metadata.empty()) {
+            enumeration.metadata.resize(enumeration.values.size());
+            enumeration.metadata.push_back({std::move(label), std::move(description)});
+        }
+        enumeration.values.emplace_back(std::move(name), static_cast<std::uint32_t>(value));
         return *this;
     }
 
     template <class Base>
         requires std::derived_from<T, Base>
-    NativeRegistration& base() {
+    NativeRegistration& base(std::optional<std::size_t> offset = std::nullopt) {
         definition_.base = TypeReference::native<Base>();
         definition_.native.base_address = [](void* storage) noexcept -> void* {
             return static_cast<Base*>(static_cast<T*>(storage));
         };
+        definition_.native.base_offset = offset;
         return *this;
     }
 
@@ -315,9 +341,10 @@ public:
     }
 
     template <auto Pointer>
-    NativeRegistration& hidden_field(std::string name, ValueDefinition value, std::string label = {},
+    NativeRegistration& hidden_field(std::string name, ValueDefinition value,
+                                     std::optional<std::size_t> offset = std::nullopt, std::string label = {},
                                      std::string category = {}, std::string description = {}) {
-        field<Pointer>(std::move(name), std::move(value), std::nullopt, std::move(label), std::move(category),
+        field<Pointer>(std::move(name), std::move(value), offset, std::move(label), std::move(category),
                        std::move(description));
         definition_.fields.back().exposed = false;
         return *this;
@@ -326,7 +353,8 @@ public:
     template <auto Pointer>
     NativeRegistration& hidden_field(std::string name, std::string description = {}) {
         using Value = typename detail::Member<decltype(Pointer)>::Value;
-        return hidden_field<Pointer>(std::move(name), {TypeReference::native<Value>()}, {}, {}, std::move(description));
+        return hidden_field<Pointer>(std::move(name), {TypeReference::native<Value>()}, std::nullopt, {}, {},
+                                     std::move(description));
     }
 
     // Applies to the most recently declared field.
@@ -338,6 +366,18 @@ public:
     // Applies to the most recently declared field; Runtime validates and owns the values.
     NativeRegistration& metadata(std::vector<std::pair<std::string, std::string>> values) {
         definition_.fields.back().metadata = std::move(values);
+        return *this;
+    }
+
+    // Applies to the most recently declared field.
+    NativeRegistration& transient(bool value = true) {
+        definition_.fields.back().transient = value;
+        return *this;
+    }
+
+    // Applies to the most recently declared field.
+    NativeRegistration& read_only(bool value = true) {
+        definition_.fields.back().read_only = value;
         return *this;
     }
 
@@ -363,6 +403,12 @@ public:
     // Applies to the most recently declared method; one name per parameter.
     NativeRegistration& parameter_names(std::vector<std::string> names) {
         definition_.methods.back().parameter_names = std::move(names);
+        return *this;
+    }
+
+    // Applies to the most recently declared method; one optional default per parameter.
+    NativeRegistration& parameter_defaults(std::vector<std::optional<Scalar>> defaults) {
+        definition_.methods.back().parameter_defaults = std::move(defaults);
         return *this;
     }
 

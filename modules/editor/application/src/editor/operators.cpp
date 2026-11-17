@@ -257,15 +257,16 @@ Result<OperatorReport> call(const OperatorRegistry& registry, OperatorHost& host
                               *field == document.types().scale_fields.front().front()))
                     return std::unexpected(rejected("Transform fields require scene.transform_set/clear/remove."));
             }
-        const auto decoded =
-            decode_properties(runtime, PropertyTarget{*type, object}, args, {},
-                              [&](std::span<const FieldId> path, const PropertyLeaf& leaf) -> Result<void> {
-                                  const auto* scalar = std::get_if<Scalar>(&leaf);
-                                  if (!scalar)
-                                      return std::unexpected(rejected("A property patch supports Scalar leaves only."));
-                                  patch.push_back({{path.begin(), path.end()}, *scalar});
-                                  return {};
-                              });
+        const auto decoded = decode_properties(
+            runtime, PropertyTarget{*type, object}, args, {},
+            [&](std::span<const FieldId> path, const PropertyLeaf& leaf) -> Result<void> {
+                const auto* scalar = std::get_if<Scalar>(&leaf);
+                if (!scalar)
+                    return std::unexpected(rejected("A property patch supports Scalar leaves only."));
+                patch.push_back({{path.begin(), path.end()}, *scalar});
+                return {};
+            },
+            true);
         if (!decoded)
             return std::unexpected(decoded.error());
     } else if (!info->parameters.empty()) {
@@ -412,6 +413,8 @@ Result<void> record_schema(const detail::OperatorValue& value, TypeId record, st
                     ATELIER_TRY_BIND(names, builder.array(schema, "enum"));
                     for (const auto& member : (*leaf)->enumeration->values)
                         ATELIER_TRY(builder.append(*names, member.first));
+                    if ((*leaf)->enumeration->flags)
+                        ATELIER_TRY(builder.set(schema, "flags", true));
                 } else {
                     const bool number =
                         std::holds_alternative<float>(*current) || std::holds_alternative<double>(*current);

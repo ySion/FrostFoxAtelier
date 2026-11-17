@@ -62,7 +62,7 @@ Result<Binding> bind_type(Runtime& runtime, TypeId type, std::span<const TypeInf
         binding.enumerations.push_back(
             {id, enumeration->name,
              enumeration->enumeration->underlying == binding.i32 ? ValueKind::i32 : ValueKind::u32,
-             enumeration->enumeration->values});
+             enumeration->enumeration->values, enumeration->enumeration->flags});
     }
     std::sort(binding.enumerations.begin(), binding.enumerations.end(),
               [](const auto& a, const auto& b) { return a.name < b.name; });
@@ -132,7 +132,10 @@ Result<Binding> bind_type(Runtime& runtime, TypeId type, std::span<const TypeInf
     const auto append_base = [&](const TypeInfo* actual, TypeId owner, std::vector<BusinessAddressStep>& access) {
         while (actual->id != owner) {
             assert(actual->base.has_value());
-            if (actual->base_address)
+            if (actual->base_offset) {
+                if (*actual->base_offset)
+                    access.push_back({nullptr, *actual->base_offset});
+            } else if (actual->base_address)
                 access.push_back({actual->base_address});
             actual = describe(*actual->base);
         }
@@ -207,8 +210,12 @@ Result<Binding> bind_type(Runtime& runtime, TypeId type, std::span<const TypeInf
             method.name,        method.id, {}, result, signature.receiver->read_only, method.preserves_borrows,
             method.native_entry};
         append_base(info, signature.receiver->type, bound.receiver_access);
-        for (const auto parameter : signature.parameters)
-            bound.parameters.push_back({lookup_kind(parameter.type), parameter.passing});
+        for (std::size_t p = 0; p < signature.parameters.size(); ++p) {
+            const auto parameter = signature.parameters[p];
+            const bool has_default = p < method.parameter_defaults.size() && method.parameter_defaults[p].has_value();
+            const std::uint64_t default_bits = has_default ? scalar(*method.parameter_defaults[p], binding).bits : 0;
+            bound.parameters.push_back({lookup_kind(parameter.type), parameter.passing, has_default, default_bits});
+        }
         binding.methods.push_back(std::move(bound));
     }
     if (binding.fields.size() > std::numeric_limits<std::uint32_t>::max() ||
@@ -279,8 +286,8 @@ EnvironmentView::EnvironmentView(const Binding& binding) noexcept {
         auto& items = enum_items.emplace_back();
         for (const auto& [name, bits] : enumeration.values)
             items.push_back({name.c_str(), bits});
-        enumerations.push_back(
-            {enumeration.name.c_str(), enumeration.underlying, items.data(), static_cast<std::uint32_t>(items.size())});
+        enumerations.push_back({enumeration.name.c_str(), enumeration.underlying, items.data(),
+                                static_cast<std::uint32_t>(items.size()), enumeration.flags});
     }
     value_fields.reserve(binding.values.size());
     values.reserve(binding.values.size());
@@ -711,7 +718,7 @@ bool same_environment(const Binding& binding, const BusinessEnvironment& environ
         const auto& expected = binding.enumerations[i];
         const auto& actual = environment.enumerations[i];
         if (!actual.name || expected.name != actual.name || expected.underlying != actual.underlying ||
-            expected.values.size() != actual.value_count)
+            expected.flags != actual.flags || expected.values.size() != actual.value_count)
             return false;
         for (std::size_t j = 0; j < expected.values.size(); ++j)
             if (!actual.values[j].name || expected.values[j].first != actual.values[j].name ||

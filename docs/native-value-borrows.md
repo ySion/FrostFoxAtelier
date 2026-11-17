@@ -25,8 +25,8 @@ Array 泛型拼写解析到已发布具体类型的同一身份；没有独立�
 
 ## 一条布局与执行链
 
-1. [反射生成器](../tools/reflection/main.cpp)从实际 C++ 声明生成既有 `NativeRegistration` 调用。可直接访问的字段携带 `offsetof`；[基础库适配器](../modules/execution/runtime/include/runtime/foundation.hpp)提供取得 Array/String 原缓冲与长度的只读原语。
-2. [Runtime](../modules/execution/runtime/src/runtime.cpp)在原事务中验证并发布大小、对齐、元素身份和字段偏移。只有满足自然对齐的标准布局字段由生成器提供直接偏移；隐藏、非标准布局或紧凑布局字段保留原访问器，不猜测地址。
+1. [反射生成器](../tools/reflection/main.cpp)从实际 C++ 声明与 `ASTRecordLayout` 生成既有 `NativeRegistration` 调用。自然对齐的字段与非虚基类携带真实字节偏移；[基础库适配器](../modules/execution/runtime/include/runtime/foundation.hpp)提供取得 Array/String 原缓冲与长度的只读原语。
+2. [Runtime](../modules/execution/runtime/src/runtime.cpp)在原事务中验证并发布大小、对齐、元素身份、基类偏移和字段偏移。隐藏字段不进入公开 `TypeInfo::fields` 目录；紧凑布局或未提供偏移的手写绑定保留原访问器，不猜测地址。
 3. [源码绑定](../modules/execution/source/src/detail/bridge.cpp)从同一 Runtime 捕获目录；[Program](../modules/execution/source/src/program.cpp)解析共享 `FunctionSignature`，将元数据依赖固定到代码版本，兼容发布再次核对。
 4. [前端](../modules/execution/language/src/source.cpp)检查类型、可写性和存续期限制；[LLVM 后端](../modules/execution/jit/src/source_backend.cpp)在边界检查后按真实字段偏移和元素步长发出加载/写入。
 5. 宿主进入源码仍经过 `Argument::borrow`、参数准备与 `ExecutionScope`。聚合引用参数传递原地址，不复制到 `Scalar`，也不构造镜像对象。源码调用原生方法则使用编译时绑定的定型 thunk，引用实参在全部实参求值后定位；聚合按值实参另用独立对齐活值，交由 C++ thunk 完成真实按值调用。同步返回后借用结束，原生拥有者继续管理缓冲。

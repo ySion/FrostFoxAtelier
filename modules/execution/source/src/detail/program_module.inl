@@ -28,14 +28,13 @@ Error mapped_error(const SourceSnapshot& snapshot, const language::MappedSource&
     return source_error(snapshot, 0, {}, std::move(message));
 }
 
-// Folds one constant scalar expression with the typed Source parser; floating results must be finite.
-Result<Scalar> fold_scalar(const SourceSnapshot& snapshot, const language::MappedSource& expression,
-                           std::string_view type) {
+Result<std::uint64_t> fold_constant(const SourceSnapshot& snapshot, const language::MappedSource& expression,
+                                    std::string_view type, const language::Environment& environment) {
     language::MappedSource text;
     text.text = "const " + std::string(type) + " __source_default = ";
     text.append(expression);
     text.text += "; " + std::string(type) + " __source_value() { return __source_default; }";
-    auto parsed = language::compile_source(snapshot.name, text.text, {}, "__source_value");
+    auto parsed = language::compile_source(snapshot.name, text.text, environment, "__source_value");
     if (!parsed) {
         // A position in the generated wrapper, such as the ';' after `1.0 +`, reports at the expression.
         const auto offset = parsed.error().position.offset;
@@ -47,22 +46,28 @@ Result<Scalar> fold_scalar(const SourceSnapshot& snapshot, const language::Mappe
     const auto& function = parsed->functions[parsed->entry];
     const auto& value =
         function.expressions[function.statements[function.statements[function.body].children[0]].expression];
-    const auto at = [&](std::string message) {
-        return std::unexpected(mapped_error(snapshot, expression, {}, std::move(message)));
-    };
     if (value.kind != language::Expression::Kind::literal)
-        return at("Field defaults and bounds require constant scalar expressions.");
+        return std::unexpected(
+            mapped_error(snapshot, expression, {}, "Field defaults and bounds require constant scalar expressions."));
+    return value.bits;
+}
+
+// Folds one constant scalar expression with the typed Source parser; floating results must be finite.
+Result<Scalar> fold_scalar(const SourceSnapshot& snapshot, const language::MappedSource& expression,
+                           std::string_view type) {
+    ATELIER_TRY_BIND(folded_bits, fold_constant(snapshot, expression, type, {}));
+    const auto bits = *folded_bits;
     if (type == "bool")
-        return Scalar{value.bits != 0};
+        return Scalar{bits != 0};
     if (type == "int")
-        return Scalar{std::bit_cast<std::int32_t>(static_cast<std::uint32_t>(value.bits))};
+        return Scalar{std::bit_cast<std::int32_t>(static_cast<std::uint32_t>(bits))};
     if (type == "uint")
-        return Scalar{static_cast<std::uint32_t>(value.bits)};
-    const auto number = type == "float" ? double{std::bit_cast<float>(static_cast<std::uint32_t>(value.bits))}
-                                        : std::bit_cast<double>(value.bits);
+        return Scalar{static_cast<std::uint32_t>(bits)};
+    const auto number =
+        type == "float" ? double{std::bit_cast<float>(static_cast<std::uint32_t>(bits))} : std::bit_cast<double>(bits);
     if (!std::isfinite(number))
-        return at("Field defaults and bounds must be finite.");
-    return type == "float" ? Scalar{std::bit_cast<float>(static_cast<std::uint32_t>(value.bits))} : Scalar{number};
+        return std::unexpected(mapped_error(snapshot, expression, {}, "Field defaults and bounds must be finite."));
+    return type == "float" ? Scalar{std::bit_cast<float>(static_cast<std::uint32_t>(bits))} : Scalar{number};
 }
 
 Scalar zero_leaf(std::string_view type) {
@@ -119,6 +124,7 @@ Result<FieldDefinition> class_field(const SourceSnapshot& snapshot, const langua
     const BoundValue* vector{};
     const std::vector<std::pair<std::string, std::uint32_t>>* items{};
     bool signed_items{};
+    bool flags_items{};
     const auto names_vector = [&](std::string_view name) {
         return vector && (name == vector->name || name == math::short_name(vector->math));
     };
@@ -136,6 +142,7 @@ Result<FieldDefinition> class_field(const SourceSnapshot& snapshot, const langua
         result.value = {TypeReference{field.type}};
         items = &declared->enumerators;
         signed_items = declared->signed_enum;
+        flags_items = declared->flags;
     } else if (const auto found = std::ranges::find_if(
                    binding.values, [&](const BoundValue& value) { return value.math && field.type == value.name; });
                found != binding.values.end()) {
@@ -151,6 +158,7 @@ Result<FieldDefinition> class_field(const SourceSnapshot& snapshot, const langua
         else if (info->enumeration) {
             items = &info->enumeration->values;
             signed_items = info->enumeration->underlying == binding.i32;
+            flags_items = info->enumeration->flags;
         } else
             return unsupported();
         result.value = {*type};
@@ -169,10 +177,27 @@ Result<FieldDefinition> class_field(const SourceSnapshot& snapshot, const langua
         if (!initializer.text.empty()) {
             const auto item =
                 std::ranges::find(*items, field.initializer_item, &std::pair<std::string, std::uint32_t>::first);
-            if (field.initializer_item.empty() || field.initializer_name != field.type || item == items->end())
+            if (!field.initializer_item.empty() && field.initializer_name == field.type && item != items->end()) {
+                bits = item->second;
+            } else if (flags_items) {
+                std::vector<language::EnumItem> enum_items;
+                enum_items.reserve(items->size());
+                std::uint32_t declared_mask = 0;
+                for (const auto& [name, val] : *items) {
+                    enum_items.push_back({name, val});
+                    declared_mask |= val;
+                }
+                const language::EnumBinding enum_binding{field.type, language::ValueType::u32, enum_items, true};
+                const language::Environment env{{}, {}, {}, {&enum_binding, 1}, {}};
+                ATELIER_TRY_BIND(folded_bits, fold_constant(snapshot, initializer, field.type, env));
+                bits = static_cast<std::uint32_t>(*folded_bits);
+                if ((bits & declared_mask) != bits)
+                    return std::unexpected(
+                        mapped_error(snapshot, initializer, {}, "Flags enum field default contains undeclared bits."));
+            } else {
                 return std::unexpected(mapped_error(snapshot, initializer, {},
                                                     "Enum field defaults name one item: " + field.type + "::item."));
-            bits = item->second;
+            }
         }
         result.default_leaves = {signed_items ? Scalar{std::bit_cast<std::int32_t>(bits)} : Scalar{bits}};
     } else if (vector) {
@@ -213,6 +238,8 @@ Result<FieldDefinition> class_field(const SourceSnapshot& snapshot, const langua
     result.category = field.category;
     result.description = field.description;
     result.metadata = field.metadata;
+    result.transient = field.transient;
+    result.read_only = field.read_only;
     const auto normalized = result.normalize_metadata();
     if (!normalized)
         return at(field.position, normalized.error().message);
@@ -227,7 +254,8 @@ bool same_field(const FieldDefinition& a, const FieldDefinition& b) {
     return same_leaves(a.default_leaves, b.default_leaves) && same(a.range.ui_min, b.range.ui_min) &&
            same(a.range.ui_max, b.range.ui_max) && same(a.range.hard_min, b.range.hard_min) &&
            same(a.range.hard_max, b.range.hard_max) && a.label == b.label && a.category == b.category &&
-           a.description == b.description && a.metadata == b.metadata && a.default_text == b.default_text;
+           a.description == b.description && a.metadata == b.metadata && a.default_text == b.default_text &&
+           a.transient == b.transient && a.read_only == b.read_only;
 }
 }
 

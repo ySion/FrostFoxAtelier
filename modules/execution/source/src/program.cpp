@@ -132,8 +132,13 @@ Result<std::vector<TypeDefinition>> type_definitions(const std::vector<language:
         definition.name = declaration.name;
         definition.kind = declaration.enumeration ? TypeKind::enumeration : TypeKind::record;
         if (declaration.enumeration) {
-            definition.enumeration = TypeDefinition::Enumeration{declaration.signed_enum ? binding.i32 : binding.u32,
-                                                                 declaration.enumerators};
+            std::vector<EnumeratorMetadata> enum_metadata;
+            enum_metadata.reserve(declaration.enumerator_attributes.size());
+            for (const auto& attr : declaration.enumerator_attributes)
+                enum_metadata.push_back({attr.label, attr.description});
+            definition.enumeration =
+                TypeDefinition::Enumeration{declaration.signed_enum ? binding.i32 : binding.u32,
+                                            declaration.enumerators, declaration.flags, std::move(enum_metadata)};
         } else {
             for (const auto& [name, type] : declaration.fields) {
                 TypeReference reference;

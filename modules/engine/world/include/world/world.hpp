@@ -48,6 +48,12 @@ public:
 private:
     friend struct detail::Access;
 
+    AFUNCTION(Name = "destroy", BorrowSafe)
+    static Result<void> request_destroy(Runtime& runtime, ObjectId self, Entity&);
+
+    AFUNCTION(Name = "set_enabled", BorrowSafe)
+    static Result<void> request_enabled(Runtime& runtime, ObjectId self, Entity&, bool enabled);
+
     AFIELD(Name = "components", Hidden, Sequence = "world.Component")
     ReferenceSequence components_;
 
@@ -88,6 +94,16 @@ public:
 private:
     friend struct detail::Access;
 
+    AFUNCTION(BorrowSafe)
+    static Result<void> translate_owner(Runtime& runtime, ObjectId self, Component&, float x, float y = 0.0f,
+                                        float z = 0.0f);
+
+    AFUNCTION(Name = "destroy", BorrowSafe)
+    static Result<void> request_destroy(Runtime& runtime, ObjectId self, Component&);
+
+    AFUNCTION(Name = "set_enabled", BorrowSafe)
+    static Result<void> request_enabled(Runtime& runtime, ObjectId self, Component&, bool enabled);
+
     AFIELD(Name = "owner", Hidden, Strong = "world.Entity")
     ReferenceSlot owner_;
 
@@ -122,7 +138,7 @@ public:
 };
 
 // Authoring values belong to the World type system. Backend state is scene-owned.
-ASTRUCT(Name = "world.BodySettings",
+ASTRUCT(Name = "world.BodySettings", Validate = "validate",
         DESC = "Primitive 的碰撞形状、运动方式和接触规则。配置随 Scene 保存，实际物理 body 由运行中的物理场景管理。")
 struct BodySettings {
     AGENERATED_BODY(BodySettings)
@@ -181,6 +197,9 @@ public:
     [[nodiscard]] Response response(std::uint32_t category) const noexcept;
 
     bool operator==(const BodySettings&) const = default;
+
+private:
+    [[nodiscard]] Result<void> validate() const;
 };
 
 // Each checks a value against its reflected type's hard bounds and validator.

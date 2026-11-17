@@ -41,6 +41,10 @@ public:
 
     [[nodiscard]] bool empty() const noexcept { return size_ == 0; }
 
+    [[nodiscard]] Span<const std::uint64_t> words() const& noexcept [[clang::lifetimebound]] { return words_.view(); }
+
+    Span<const std::uint64_t> words() const&& = delete;
+
     void reserve(std::size_t bits) noexcept { words_.reserve(word_count(bits)); }
 
     void resize(std::size_t bits, bool value = false) noexcept {
@@ -112,6 +116,20 @@ public:
     [[nodiscard]] bool none() const noexcept { return !any(); }
 
     [[nodiscard]] std::size_t find_first() const noexcept { return find_from(0); }
+
+    [[nodiscard]] std::size_t find_from(std::size_t first) const noexcept {
+        if (first >= size_)
+            return npos;
+        auto index = first / 64;
+        auto word = words_.data()[index] & (UINT64_MAX << (first % 64));
+        for (;;) {
+            if (word)
+                return index * 64 + std::countr_zero(word);
+            if (++index == words_.size())
+                return npos;
+            word = words_.data()[index];
+        }
+    }
 
     // Strictly after index. npos or an index beyond the end yields npos.
     [[nodiscard]] std::size_t find_next(std::size_t index) const noexcept {
@@ -190,20 +208,6 @@ private:
             word = value ? word | mask : word & ~mask;
             first += length;
             count -= length;
-        }
-    }
-
-    [[nodiscard]] std::size_t find_from(std::size_t first) const noexcept {
-        if (first >= size_)
-            return npos;
-        auto index = first / 64;
-        auto word = words_.data()[index] & (UINT64_MAX << (first % 64));
-        for (;;) {
-            if (word)
-                return index * 64 + std::countr_zero(word);
-            if (++index == words_.size())
-                return npos;
-            word = words_.data()[index];
         }
     }
 

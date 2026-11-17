@@ -14,6 +14,35 @@ namespace {
 auto invalid(std::string message) {
     return std::unexpected(Error{ErrorCode::invalid_definition, std::move(message)});
 }
+
+Result<bool> read_only_path(Runtime& runtime, ObjectId object, std::span<const FieldId> path) {
+    ATELIER_TRY_BIND(current, runtime.type_of(object));
+    for (const auto step : path) {
+        ATELIER_TRY_BIND(info, runtime.describe(*current));
+        if ((*info)->kind == TypeKind::array) {
+            current = *(*info)->element;
+            continue;
+        }
+        const auto field = std::ranges::find((*info)->fields, step, &FieldInfo::id);
+        if (field == (*info)->fields.end())
+            return false;
+        if (field->read_only)
+            return true;
+        current = field->value.type;
+    }
+    return false;
+}
+
+Result<void> validate_property_scalar(Runtime& runtime, const Scalar& value) {
+    if (!detail::finite_scalar(value))
+        return invalid("Property values must be finite.");
+    if (const auto* enumerated = std::get_if<EnumValue>(&value)) {
+        const auto type = runtime.describe(enumerated->type);
+        if (!type || !(*type)->enumeration || !detail::valid_enum_bits(*(*type)->enumeration, enumerated->bits))
+            return invalid("Choose a declared enum value so the scene remains serializable.");
+    }
+    return {};
+}
 }
 
 Result<void> Session::initialize(Prepare prepare, SessionRole role) {
@@ -786,7 +815,8 @@ Result<std::vector<Property>> Session::properties(ObjectId object) const {
             name += part;
         }
         result.push_back({std::move(name), std::move(field.path), field.type, std::move(*value), std::move(field.label),
-                          std::move(field.category), std::move(field.description), field.range});
+                          std::move(field.category), std::move(field.description), field.range, field.transient,
+                          field.read_only});
     }
     return result;
 }
@@ -817,6 +847,9 @@ Result<void> Session::begin_edit(ObjectId object, std::span<const FieldId> path,
     if (!control_session)
         return invalid("A field edit requires a control session.");
     ATELIER_TRY_BIND(entity, admit_property_edit(object));
+    ATELIER_TRY_BIND(read_only, read_only_path(runtime_, object, path));
+    if (*read_only)
+        return invalid("Read-only fields cannot be edited in the inspector.");
     ATELIER_TRY_BIND(before, world_.read(object, path));
     ATELIER_TRY_BIND(root, runtime_.hold(object));
     std::variant<world::Trs, Scalar> value{*before};
@@ -844,6 +877,9 @@ Result<void> Session::begin_group_edit(ObjectId object, std::span<const world::F
     for (const auto& path : paths) {
         if (detail::transform_path(types_, path))
             return invalid("Transform fields use the transform edit.");
+        ATELIER_TRY_BIND(read_only, read_only_path(runtime_, object, path));
+        if (*read_only)
+            return invalid("Read-only fields cannot be edited in the inspector.");
         ATELIER_TRY_BIND(value, world_.read(object, path));
         change.before.push_back(*value);
     }
@@ -871,10 +907,11 @@ Result<void> Session::write_group(ObjectId object, std::span<const world::FieldP
     if (paths.empty() || values.size() != paths.size())
         return invalid("A group edit needs one value per field.");
     for (std::size_t i = 0; i < paths.size(); ++i) {
-        if (!detail::finite_scalar(values[i]))
-            return invalid("Property values must be finite.");
+        ATELIER_TRY(validate_property_scalar(runtime_, values[i]));
         ATELIER_TRY_BIND(value, read_property(object, paths[i]));
-        if (value->index() != values[i].index())
+        if (value->index() != values[i].index() ||
+            (std::holds_alternative<EnumValue>(*value) &&
+             std::get<EnumValue>(*value).type != std::get<EnumValue>(values[i]).type))
             return invalid("A group edit value changed its field type.");
     }
     return world_.write(object, paths, values);
@@ -890,12 +927,17 @@ Result<void> Session::apply_group(const FieldGroupChange& change, bool forward) 
 
 Result<void> Session::set_properties(ObjectId object, std::span<const PropertyPatch> patch) {
     ATELIER_TRY_BIND(entity, admit_property_edit(object));
-    for (const auto& leaf : patch)
+    for (const auto& leaf : patch) {
         if (object == *entity && !leaf.path.empty() &&
             (leaf.path.front() == types_.position_fields.front().front() ||
              leaf.path.front() == types_.rotation_fields.front().front() ||
              leaf.path.front() == types_.scale_fields.front().front()))
             return invalid("Transform fields require scene.transform_set/clear/remove.");
+        ATELIER_TRY_BIND(read_only, read_only_path(runtime_, object, leaf.path));
+        if (*read_only)
+            return invalid("Read-only fields cannot be edited in the inspector.");
+        ATELIER_TRY(validate_property_scalar(runtime_, leaf.value));
+    }
     if (patch.empty())
         return {};
     ATELIER_TRY(cancel_edit());
@@ -1030,15 +1072,7 @@ Result<void> Session::preview_edit(std::uint64_t control_session, Scalar value) 
     ATELIER_TRY_BIND(entity, admit_property_edit(active_->root.id()));
     if (*entity != active_->entity)
         return invalid("The property's owning Entity changed.");
-    if (!detail::finite_scalar(value))
-        return invalid("Property values must be finite.");
-    if (const auto* enumerated = std::get_if<EnumValue>(&value)) {
-        const auto type = runtime_.describe(enumerated->type);
-        if (!type || !(*type)->enumeration ||
-            std::ranges::none_of((*type)->enumeration->values,
-                                 [&](const auto& member) { return member.second == enumerated->bits; }))
-            return invalid("Choose a declared enum value so the scene remains serializable.");
-    }
+    ATELIER_TRY(validate_property_scalar(runtime_, value));
     const auto parameter = std::find_if(parameters_.begin(), parameters_.end(),
                                         [&](const auto& item) { return std::ranges::equal(item.path, active_->path); });
     if (parameter != parameters_.end()) {

@@ -1243,12 +1243,31 @@ struct EditorControl::Impl {
             ATELIER_TRY_BIND(value, scalar_json(property.value, runtime));
             result.set_validated(field, "value", value->root());
             if (prop_type->enumeration) {
+                const auto& enum_info = *prop_type->enumeration;
                 ATELIER_TRY_BIND(choices, result.array(field, "choices"));
-                for (const auto& [name, bits] : prop_type->enumeration->values) {
+                for (const auto& [name, bits] : enum_info.values) {
                     static_cast<void>(bits);
                     ATELIER_TRY(result.append(*choices, name));
                 }
+                if (enum_info.flags)
+                    ATELIER_TRY(result.set(field, "flags", true));
+                if (enum_info.flags || std::ranges::any_of(enum_info.metadata, [](const auto& m) {
+                        return !m.label.empty() || !m.description.empty();
+                    })) {
+                    ATELIER_TRY_BIND(enumerators, result.array(field, "enumerators"));
+                    for (std::size_t i = 0; i < enum_info.values.size(); ++i) {
+                        const auto item = result.append_object(*enumerators);
+                        ATELIER_TRY(result.set(item, "name", enum_info.values[i].first));
+                        ATELIER_TRY(result.set(item, "value", static_cast<std::uint64_t>(enum_info.values[i].second)));
+                        ATELIER_TRY(result.set(item, "label", enum_info.metadata[i].label));
+                        ATELIER_TRY(result.set(item, "description", enum_info.metadata[i].description));
+                    }
+                }
             }
+            if (property.transient)
+                ATELIER_TRY(result.set(field, "transient", true));
+            if (property.read_only)
+                ATELIER_TRY(result.set(field, "read_only", true));
             if (property.range != FieldRange{}) {
                 const auto range = result.object_validated(field, "range");
                 for (const auto& [name, bound] : {std::pair{"ui_min", &property.range.ui_min},

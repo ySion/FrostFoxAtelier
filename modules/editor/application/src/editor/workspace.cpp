@@ -1507,7 +1507,7 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
                         property.category.empty() ? std::string_view{"General"} : std::string_view{property.category};
                     properties = category_properties(category);
                 }
-                const bool editable = entity_status.can_edit;
+                const bool editable = entity_status.can_edit && !property.read_only;
                 if (show_position && object == *transform && detail::transform_path(session.types(), property.path))
                     continue;
                 if (light) {
@@ -1684,12 +1684,49 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
                     edit.fields.front().slider = ui::SliderRange{property_key(property.path, Binding::Kind::slider),
                                                                  slider->first, slider->second};
                 std::wstring choice;
-                if (enumeration)
-                    for (const auto& member : take(runtime.describe(enumeration->type))->enumeration->values)
-                        if (member.second == enumeration->bits) {
-                            choice = parameter_label(member.first);
+                std::string description = property.description;
+                if (enumeration) {
+                    const auto& enum_info = *take(runtime.describe(enumeration->type))->enumeration;
+                    const auto enum_label = [&](std::size_t index) {
+                        return index < enum_info.metadata.size() && !enum_info.metadata[index].label.empty()
+                                   ? platform::utf8_to_utf16_validated(enum_info.metadata[index].label)
+                                   : parameter_label(enum_info.values[index].first);
+                    };
+                    for (std::size_t i = 0; i < enum_info.values.size(); ++i)
+                        if (enum_info.values[i].second == enumeration->bits) {
+                            choice = enum_label(i);
+                            if (i < enum_info.metadata.size() && !enum_info.metadata[i].description.empty()) {
+                                if (!description.empty())
+                                    description += "\n";
+                                description += enum_info.metadata[i].description;
+                            }
                             break;
                         }
+                    if (choice.empty() && enum_info.flags) {
+                        if (enumeration->bits == 0) {
+                            choice = L"None";
+                        } else {
+                            std::uint32_t covered = 0;
+                            const auto append_matching = [&](bool single_bit_only) {
+                                for (std::size_t i = 0; i < enum_info.values.size(); ++i) {
+                                    const auto member_bits = enum_info.values[i].second;
+                                    if (member_bits == 0 || (enumeration->bits & member_bits) != member_bits)
+                                        continue;
+                                    if (single_bit_only ? !std::has_single_bit(member_bits)
+                                                        : (member_bits & ~covered) == 0)
+                                        continue;
+                                    covered |= member_bits;
+                                    if (!choice.empty())
+                                        choice += L" | ";
+                                    choice += enum_label(i);
+                                }
+                            };
+                            append_matching(true);
+                            if (covered != enumeration->bits)
+                                append_matching(false);
+                        }
+                    }
+                }
                 PropertyRow row;
                 row.key = property_key(property.path, Binding::Kind::property_row);
                 row.title = std::move(caption);
@@ -1707,7 +1744,7 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
                     platform::utf8_to_utf16_validated(take(runtime.describe(type))->name) + L"." +
                         platform::utf8_to_utf16_validated(property.name) + L" : " +
                         platform::utf8_to_utf16_validated(take(runtime.describe(property.type))->name),
-                    described(property.description, property.range));
+                    described(description, property.range));
                 properties->push_back(std::move(row).item());
             }
             properties = parameter_by_category_ && material_object == ObjectId{} && material_bindings
@@ -2476,16 +2513,35 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
                         context.selection = *call.context.selection;
                         context.region = *call.context.region;
                         const bool available = operators.find(call.id)->poll(context).has_value();
-                        for (const auto& member : take(runtime.describe(enumeration->type))->enumeration->values) {
-                            args.set_validated(argument, name, member.first);
+                        const auto& enum_info = *take(runtime.describe(enumeration->type))->enumeration;
+                        for (std::size_t i = 0; i < enum_info.values.size(); ++i) {
+                            const auto& member = enum_info.values[i];
+                            const std::wstring title =
+                                i < enum_info.metadata.size() && !enum_info.metadata[i].label.empty()
+                                    ? platform::utf8_to_utf16_validated(enum_info.metadata[i].label)
+                                    : parameter_label(member.first);
+                            bool checked = false;
+                            if (enum_info.flags) {
+                                checked = member.second == 0 ? enumeration->bits == 0
+                                                             : (enumeration->bits & member.second) == member.second;
+                                const std::uint32_t next_bits = member.second == 0 ? 0u
+                                                                : checked ? (enumeration->bits & ~member.second)
+                                                                          : (enumeration->bits | member.second);
+                                const auto exact = std::ranges::find(enum_info.values, next_bits,
+                                                                     &std::pair<std::string, std::uint32_t>::second);
+                                if (exact != enum_info.values.end())
+                                    args.set_validated(argument, name, exact->first);
+                                else if (auto added = args.set(argument, name, static_cast<std::uint64_t>(next_bits));
+                                         !added)
+                                    fatal(added.error().describe());
+                            } else {
+                                checked = member.second == enumeration->bits;
+                                args.set_validated(argument, name, member.first);
+                            }
                             call.args = args.finish();
-                            ui::MenuItem item{bind_operator(call),
-                                              parameter_label(member.first),
-                                              available,
-                                              member.second == enumeration->bits,
-                                              {}};
-                            item.behavior = ui::MenuBehavior::radio;
-                            item.radio_group = source->key;
+                            ui::MenuItem item{bind_operator(call), title, available, checked, {}};
+                            item.behavior = enum_info.flags ? ui::MenuBehavior::checkbox : ui::MenuBehavior::radio;
+                            item.radio_group = enum_info.flags ? ui::ControlKey{} : source->key;
                             items.push_back(std::move(item));
                         }
                     }

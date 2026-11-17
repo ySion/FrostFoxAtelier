@@ -32,6 +32,18 @@ std::expected<TypeName, Diagnostic> detail::parse_type_name(Tokens& tokens) {
 std::expected<TypeDeclaration, Diagnostic> detail::parse_type_declaration(Tokens& tokens) {
     TypeDeclaration result;
     result.position = tokens.token_.position;
+    ATELIER_TRY_BIND(attributed, tokens.accept("["));
+    if (*attributed) {
+        ATELIER_TRY_BIND(option, tokens.identifier());
+        if (option->text != "Flags")
+            return reject(option->position, "Unknown enum attribute: " + std::string(option->text));
+        if (tokens.token_.text == "=")
+            return reject(option->position, "Flags is a flag without a value.");
+        result.flags = true;
+        ATELIER_TRY(tokens.expect("]"));
+        if (tokens.token_.text != "enum")
+            return reject(result.position, "[Flags] applies to enum declarations only.");
+    }
     ATELIER_TRY_BIND(enumeration, tokens.accept("enum"));
     result.enumeration = *enumeration;
     if (!result.enumeration) {
@@ -55,6 +67,8 @@ std::expected<TypeDeclaration, Diagnostic> detail::parse_type_declaration(Tokens
                 ATELIER_TRY(tokens.expect("int"));
             }
         }
+        if (result.flags && result.signed_enum)
+            return reject(result.position, "Flags enums require ': uint' underlying type.");
     }
     ATELIER_TRY(tokens.expect("{"));
     std::int64_t next = 0;
@@ -63,6 +77,41 @@ std::expected<TypeDeclaration, Diagnostic> detail::parse_type_declaration(Tokens
         if (*closed)
             break;
         if (result.enumeration) {
+            EnumeratorAttribute attribute;
+            ATELIER_TRY_BIND(item_attributed, tokens.accept("["));
+            if (*item_attributed) {
+                bool seen_label = false;
+                bool seen_desc = false;
+                for (;;) {
+                    ATELIER_TRY_BIND(option, tokens.identifier());
+                    if ((option->text == "Label" && seen_label) || (option->text == "DESC" && seen_desc))
+                        return reject(option->position, "Duplicate enumerator attribute: " + std::string(option->text));
+                    if (option->text != "Label" && option->text != "DESC")
+                        return reject(option->position, "Unknown enumerator attribute: " + std::string(option->text));
+                    ATELIER_TRY(tokens.expect("="));
+                    if (tokens.token_.kind != Token::Kind::string)
+                        return reject(tokens.token_.position,
+                                      std::string(option->text) + " requires a string literal.");
+                    ATELIER_TRY_BIND(str_tok, tokens.consume());
+                    ATELIER_TRY_BIND(decoded, string_value(*str_tok));
+                    if (option->text == "Label") {
+                        if (std::ranges::any_of(*decoded, [](unsigned char c) { return c < 32 || c == 127; }))
+                            return reject(option->position, "Label must not contain control characters.");
+                        attribute.label = std::move(*decoded);
+                        seen_label = true;
+                    } else {
+                        if (!normalize_description_text(*decoded))
+                            return reject(option->position,
+                                          "DESC must not contain control characters other than line breaks and tabs.");
+                        attribute.description = std::move(*decoded);
+                        seen_desc = true;
+                    }
+                    ATELIER_TRY_BIND(more_attr, tokens.accept(","));
+                    if (!*more_attr)
+                        break;
+                }
+                ATELIER_TRY(tokens.expect("]"));
+            }
             ATELIER_TRY_BIND(name, tokens.identifier());
             auto value = next;
             ATELIER_TRY_BIND(assigned, tokens.accept("="));
@@ -83,6 +132,7 @@ std::expected<TypeDeclaration, Diagnostic> detail::parse_type_declaration(Tokens
             if (std::ranges::any_of(result.enumerators, [&](const auto& item) { return item.first == name->text; }))
                 return reject(name->position, "Duplicate enum item name.");
             result.enumerators.emplace_back(name->text, static_cast<std::uint32_t>(value));
+            result.enumerator_attributes.push_back(std::move(attribute));
             next = value + 1;
             if (tokens.token_.text != "}") {
                 ATELIER_TRY(tokens.expect(","));
@@ -110,7 +160,7 @@ std::expected<std::vector<TypeDeclaration>, Diagnostic> collect_declarations(std
     auto& tokens = *created;
     std::vector<TypeDeclaration> result;
     while (tokens.token_.kind != Token::Kind::end) {
-        if (tokens.token_.text == "enum" || tokens.token_.text == "struct") {
+        if (tokens.token_.text == "[" || tokens.token_.text == "enum" || tokens.token_.text == "struct") {
             if (result.size() == 1024)
                 return reject(tokens.token_.position, "A source module supports at most 1024 type declarations.");
             ATELIER_TRY_BIND(declaration, parse_type_declaration(tokens));

@@ -89,6 +89,10 @@ json::Result<void> encode_scalar(Runtime& runtime, json::Builder& builder, json:
                 for (const auto& [name, bits] : info->enumeration->values)
                     if (bits == v.bits)
                         return builder.set(target, std::string_view{name});
+                if (info->enumeration->flags && (v.bits & detail::declared_flag_mask(*info->enumeration)) == v.bits) {
+                    builder.set(target, static_cast<std::uint64_t>(v.bits));
+                    return {};
+                }
                 throw std::runtime_error("Scene enum value has no declared name.");
             } else if constexpr (std::is_floating_point_v<std::decay_t<decltype(v)>>) {
                 auto result = builder.set(target, v);
@@ -127,13 +131,24 @@ Result<DecodedScalar> decode_scalar(Runtime& runtime, const Scalar& prototype, j
                     return std::string("Expected a boolean property.");
                 return Scalar{*value.boolean()};
             } else if constexpr (std::same_as<T, EnumValue>) {
-                if (value.kind() != json::Kind::string)
-                    return std::string("Expected a declared enum member name.");
                 ATELIER_TRY_BIND(info, runtime.describe(original.type));
-                for (const auto& [name, bits] : (*info)->enumeration->values)
-                    if (*value.string() == name)
-                        return Scalar{EnumValue{original.type, bits}};
-                return std::string("Unknown scene enum member.");
+                if (value.kind() == json::Kind::string) {
+                    for (const auto& [name, bits] : (*info)->enumeration->values)
+                        if (*value.string() == name)
+                            return Scalar{EnumValue{original.type, bits}};
+                    return std::string("Unknown scene enum member.");
+                }
+                if ((*info)->enumeration->flags && value.kind() == json::Kind::integer) {
+                    const auto number = value.i64();
+                    if (number && *number >= 0 && *number <= 4294967295ll) {
+                        const auto bits = static_cast<std::uint32_t>(*number);
+                        if ((bits & detail::declared_flag_mask(*(*info)->enumeration)) == bits)
+                            return Scalar{EnumValue{original.type, bits}};
+                    }
+                    return std::string("Unknown scene enum flags.");
+                }
+                return std::string((*info)->enumeration->flags ? "Expected a declared enum member name or flag mask."
+                                                               : "Expected a declared enum member name.");
             } else if constexpr (std::is_integral_v<T>) {
                 if (value.kind() == json::Kind::real) {
                     // Lossless only: an integral value written by an earlier float field.
@@ -637,7 +652,7 @@ Result<json::Document> encode_properties(Runtime& runtime, const PropertyTarget&
 }
 
 Result<void> decode_properties(Runtime& runtime, const PropertyTarget& target, json::Value record,
-                               const ResolveReference& resolve, const WriteLeaf& write) {
+                               const ResolveReference& resolve, const WriteLeaf& write, bool include_transient) {
     try {
         if ((target.object == ObjectId{}) == target.storage.empty())
             return std::unexpected(
@@ -654,7 +669,7 @@ Result<void> decode_properties(Runtime& runtime, const PropertyTarget& target, j
         }
         if (record.kind() != json::Kind::object)
             return std::unexpected(Error{ErrorCode::argument_mismatch, "Expected a property record."});
-        ATELIER_TRY_BIND(schema, detail::author_fields(runtime, target.type));
+        ATELIER_TRY_BIND(schema, detail::author_fields(runtime, target.type, include_transient));
         return read_record(runtime, target, *schema, record, {}, resolve, write, nullptr);
     } catch (const std::exception& error) {
         return failed(error);
