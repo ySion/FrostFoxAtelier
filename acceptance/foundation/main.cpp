@@ -46,7 +46,10 @@ int main() {
     require(text && text->append(text->slice(1)), "String self-append failed.");
     require(*text == "abcdefghijklmnopqrstbcdefghijklmnopqrst", "String self-view was invalidated.");
     Array<String> values{String::literal<"seven">(), String::literal<"nine">()};
+    require(values.capacity() == 2, "Array initializer construction over-allocated capacity.");
     values.append(values.view());
+    const Array<String> copied = values;
+    require(copied.capacity() == 4, "Array copy construction over-allocated capacity.");
     require(values.size() == 4 && values[2] == "seven" && values[3] == "nine" && values.front() == "seven",
             "Array self-append lost its inputs.");
     require(String::join(values, String::literal<"/">()) == "seven/nine/seven/nine", "String::join strings failed.");

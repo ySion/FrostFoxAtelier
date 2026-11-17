@@ -349,8 +349,10 @@ namespace {
 template <class T, std::size_t N>
 InlineArray<T, N> sized_slots(std::size_t count) noexcept {
     InlineArray<T, N> slots;
-    if (count)
+    if (count) {
+        slots.reserve(count);
         slots.resize(count);
+    }
     return slots;
 }
 }

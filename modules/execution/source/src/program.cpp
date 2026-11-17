@@ -555,11 +555,14 @@ bool Program::DirectScope::try_enter(const Version* version, const State* owner,
         return false;
     const auto& binding = version->contract->binding;
     if (version->stateless_direct) {
-        if (receiver != ObjectId{})
-            return false;
         auto entered = ExecutionScope::try_enter(*binding.runtime);
         if (!entered)
             return false;
+        if (receiver != ObjectId{}) {
+            NativeContext unused;
+            if (!NativeContext::try_resolve(*binding.runtime, receiver, binding.type, unused))
+                return false;
+        }
         auto* stateless =
             std::construct_at(reinterpret_cast<Stateless*>(storage_), Stateless{std::move(entered), version, {}});
         mode_ = Mode::stateless;

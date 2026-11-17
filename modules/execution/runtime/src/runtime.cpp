@@ -1866,8 +1866,6 @@ struct Runtime::Impl {
                     std::memcpy(staging, result_type->prototype, result_type->info.size);
                 else if (result_type->scalar_leaf)
                     std::memset(staging, 0, result_type->info.size);
-                else if (result_type->native.construct)
-                    ATELIER_TRY(result_type->native.construct(staging));
                 else
                     ATELIER_TRY(try_construct(*result_type, staging));
                 return run({result_type->info.id, staging});
@@ -2897,49 +2895,55 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
                         type.scalar_leaf = scalar;
                     if (type.scalar_leaf)
                         type.walk_depth = 1;
-                    if (!type.scalar_leaf && !type.needs_destroy) {
-                        bool can_prototype = true;
+                }
+                if (!type.scalar_leaf && !type.needs_destroy) {
+                    bool can_prototype = true;
+                    for (const auto& field : type.fields) {
+                        if (field.value.form == ValueForm::strong_reference ||
+                            field.value.form == ValueForm::weak_reference)
+                            continue;
+                        if (field.value.form != ValueForm::inline_value || field.default_text) {
+                            can_prototype = false;
+                            break;
+                        }
+                        const auto& target = *field.type;
+                        const bool target_ready =
+                            !target.needs_destroy && target.info.copy_constructible && target.info.copy_assignable &&
+                            (target.prototype != nullptr || target.scalar_leaf != nullptr ||
+                             (target.native.construct != nullptr &&
+                              (target.info.math ||
+                               (target.info.plain_value && target.info.value_operations_preserve_borrows))));
+                        if (!target_ready) {
+                            can_prototype = false;
+                            break;
+                        }
+                    }
+                    if (can_prototype) {
+                        auto* image = static_cast<std::byte*>(
+                            ::operator new(type.info.size, std::align_val_t{type.info.alignment}));
+                        std::memset(image, 0, type.info.size);
+                        type.prototype = image;
                         for (const auto& field : type.fields) {
-                            if (field.value.form == ValueForm::strong_reference ||
-                                field.value.form == ValueForm::weak_reference)
+                            auto* destination = image + field.offset;
+                            if (field.value.form != ValueForm::inline_value) {
+                                std::construct_at(reinterpret_cast<ReferenceSlot*>(destination));
                                 continue;
-                            if (field.value.form != ValueForm::inline_value || field.default_text) {
-                                can_prototype = false;
-                                break;
                             }
-                            const auto& target = *field.type;
-                            const bool target_ready =
-                                !target.needs_destroy && target.info.copy_constructible &&
-                                target.info.copy_assignable &&
-                                (target.prototype != nullptr || target.scalar_leaf != nullptr || target.info.math ||
-                                 (target.info.plain_value && target.info.value_operations_preserve_borrows));
-                            if (!target_ready) {
-                                can_prototype = false;
-                                break;
-                            }
-                        }
-                        if (can_prototype) {
-                            auto* image = static_cast<std::byte*>(
-                                ::operator new(type.info.size, std::align_val_t{type.info.alignment}));
-                            std::memset(image, 0, type.info.size);
-                            type.prototype = image;
-                            for (const auto& field : type.fields) {
-                                auto* destination = image + field.offset;
-                                if (field.value.form != ValueForm::inline_value) {
-                                    std::construct_at(reinterpret_cast<ReferenceSlot*>(destination));
-                                    continue;
+                            if (field.type->prototype)
+                                std::memcpy(destination, field.type->prototype, field.type->info.size);
+                            else if (field.type->scalar_leaf)
+                                impl_->construct_scalar_block(*field.type, destination, nullptr);
+                            else {
+                                CallbackScope scope{impl_->callbacks};
+                                if (auto made = field.type->native.construct(destination); !made) {
+                                    made.error().code = ErrorCode::construction_failed;
+                                    return std::unexpected(std::move(made.error()));
                                 }
-                                if (field.type->prototype)
-                                    std::memcpy(destination, field.type->prototype, field.type->info.size);
-                                else if (field.type->scalar_leaf)
-                                    impl_->construct_scalar_block(*field.type, destination, nullptr);
-                                else
-                                    ATELIER_TRY(field.type->native.construct(destination));
-                                if (!field.default_leaves.empty())
-                                    Impl::apply_default_leaves(destination, field.default_leaves);
                             }
-                            type.walk_depth = 1;
+                            if (!field.default_leaves.empty())
+                                Impl::apply_default_leaves(destination, field.default_leaves);
                         }
+                        type.walk_depth = 1;
                     }
                 }
             }

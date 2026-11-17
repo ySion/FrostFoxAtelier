@@ -110,12 +110,37 @@ void reference_coroutine() {
         take(runtime.collect_step({16}));
     require(runtime.live_objects() == 0 && runtime.root_count() == 0, "Completed frame retained its receiver.");
 }
+
+void type_bound_stateless() {
+    struct Unrelated {};
+    Runtime runtime;
+    const auto base = take(NativeRegistration<Counter>{runtime, "abi.Counter", TypeKind::object}.publish());
+    const auto derived =
+        take(NativeRegistration<Derived>{runtime, "abi.Derived", TypeKind::object}.base<Counter>().publish());
+    const auto other_type = take(NativeRegistration<Unrelated>{runtime, "abi.Unrelated", TypeKind::object}.publish());
+    auto object = take(runtime.create(derived));
+    auto wrong = take(runtime.create(other_type));
+    const auto object_id = object.id();
+    auto program = take(source::Program::create(runtime, base));
+    publish(*program, "int run(int x) { return x * 3; }");
+    const auto typed = take(program->entry().bind<std::int32_t, std::int32_t>());
+    require(take(typed.invoke(object_id, 7)) == 21 && take(typed.invoke({}, 7)) == 21,
+            "Stateless Typed::invoke on a type-bound Program rejected a valid derived or empty receiver.");
+    const auto mismatch = typed.invoke(wrong.id(), 7);
+    require(!mismatch && mismatch.error().code == ErrorCode::type_mismatch,
+            "Stateless Typed::invoke accepted an unrelated receiver type.");
+    take(runtime.destroy(object_id));
+    const auto destroyed = typed.invoke(object_id, 7);
+    require(!destroyed && destroyed.error().code == ErrorCode::invalid_object,
+            "Stateless Typed::invoke accepted a destroyed receiver.");
+}
 }
 
 void verify_business_execution() {
     scalar_abi();
     boolean_alias();
     reference_coroutine();
+    type_bound_stateless();
     verify_math_abi();
 }
 }

@@ -64,12 +64,8 @@ Result<Trs> relative_transform(const math::Matrix4& world, const math::Matrix4& 
             Error{ErrorCode::argument_mismatch,
                   "Keeping the world transform requires a finite, nonsingular local TRS without shear."});
     };
-    for (float value : world)
-        if (!std::isfinite(value))
-            return invalid();
-    for (float value : parent)
-        if (!std::isfinite(value))
-            return invalid();
+    if (!math::is_finite(world) || !math::is_finite(parent))
+        return invalid();
     for (const auto* matrix : {&world, &parent})
         if ((*matrix)[3] != 0 || (*matrix)[7] != 0 || (*matrix)[11] != 0 || (*matrix)[15] != 1)
             return invalid();

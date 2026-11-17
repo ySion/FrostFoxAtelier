@@ -17,8 +17,6 @@ struct Samples {
 
     const MaterialTexture* indexed[fast_slots];
 
-    bool has_indexed{};
-
     std::span<const MaterialTexture> textures;
 
     // The backend stops at the first failed callback. Owning errors stay on
@@ -26,7 +24,7 @@ struct Samples {
     std::optional<Error> error{};
 
     const MaterialTexture* lookup(std::uint32_t slot) const noexcept {
-        if (has_indexed && slot < fast_slots && indexed[slot])
+        if (slot < fast_slots && indexed[slot])
             return indexed[slot];
         const auto found = std::ranges::find(textures, slot, &MaterialTexture::slot);
         return found == textures.end() ? nullptr : &*found;
@@ -53,12 +51,9 @@ std::uint32_t sample_texture(void* invocation, std::uint32_t slot, const float* 
         samples.error = std::move(value.error());
         return 1;
     }
-    for (std::size_t i = 0; i < 4; ++i) {
-        const float lane = (*value)[i];
-        if (!finite_float_bits(&lane)) {
-            samples.error = Error{ErrorCode::invocation_failed, "Material sample result is not finite."};
-            return 1;
-        }
+    if (!math::is_finite(*value)) {
+        samples.error = Error{ErrorCode::invocation_failed, "Material sample result is not finite."};
+        return 1;
     }
     std::memcpy(result, &*value, sizeof(*value));
     return 0;
@@ -81,12 +76,9 @@ std::uint32_t sample_orientation(void* invocation, std::uint32_t slot, const flo
         samples.error = std::move(value.error());
         return 1;
     }
-    for (std::size_t i = 0; i < 2; ++i) {
-        const float lane = (*value)[i];
-        if (!finite_float_bits(&lane)) {
-            samples.error = Error{ErrorCode::invocation_failed, "Material sample_orientation result is not finite."};
-            return 1;
-        }
+    if (!math::is_finite(*value)) {
+        samples.error = Error{ErrorCode::invocation_failed, "Material sample_orientation result is not finite."};
+        return 1;
     }
     std::memcpy(result, &*value, sizeof(*value));
     return 0;
@@ -251,7 +243,6 @@ Result<void> MaterialProgram::evaluate(std::span<const std::byte> context, std::
     Samples samples{};
     samples.textures = textures;
     if (!state->textures.empty()) {
-        samples.has_indexed = true;
         for (const auto& input : state->textures) {
             const MaterialTexture* match = nullptr;
             std::size_t count = 0;

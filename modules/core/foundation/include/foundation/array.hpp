@@ -32,7 +32,12 @@ public:
     explicit Array(Span<const T> values) noexcept
         requires std::is_copy_constructible_v<T>
     {
-        this->append(values);
+        if (!values.empty()) {
+            data_ = Elements::allocate(values.size());
+            capacity_ = values.size();
+            Elements::copy_construct(data_, values.data(), values.size());
+            size_ = values.size();
+        }
     }
 
     Array(std::initializer_list<T> values) noexcept

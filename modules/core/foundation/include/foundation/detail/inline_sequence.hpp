@@ -38,7 +38,11 @@ public:
     explicit InlineSequence(Span<const T> values) noexcept
         requires std::is_copy_constructible_v<T>
     {
-        this->append(values);
+        if (!values.empty()) {
+            reserve(values.size());
+            Elements::copy_construct(data(), values.data(), values.size());
+            size_ = values.size();
+        }
     }
 
     InlineSequence(std::initializer_list<T> values) noexcept
