@@ -24,7 +24,7 @@ function(atelier_add_ui)
     target_link_libraries(atelier_ui_language PUBLIC atelier_ui atelier_source PRIVATE atelier_platform)
     add_executable(atelier_ui_acceptance "${_root}/acceptance/ui/main.cpp")
     target_include_directories(atelier_ui_acceptance PRIVATE "${PROJECT_SOURCE_DIR}/modules/gui/ui/internal")
-    target_link_libraries(atelier_ui_acceptance PRIVATE atelier_ui)
+    target_link_libraries(atelier_ui_acceptance PRIVATE atelier_ui_language)
     atelier_target(atelier_ui_acceptance)
     atelier_headless_acceptance(ui_acceptance
         COMMAND $<TARGET_FILE:atelier_ui_acceptance>

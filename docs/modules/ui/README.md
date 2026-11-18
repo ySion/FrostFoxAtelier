@@ -269,9 +269,10 @@ IME使用独立composition_id和固定起始token/替换范围；`CompositionEve
 
 ## 限额与验收
 
-正式入口为 `cmake --build --preset dev --target ui_acceptance`，Release 使用同名目标。先按[根 README](../../../README.md)准备工具链和配置。[消费者](../../../acceptance/ui/main.cpp)只保留 1 个代表，不创建原生窗口或 GPU 设备：
+正式入口为 `cmake --build --preset dev --target ui_acceptance`，Release 使用同名目标。先按[根 README](../../../README.md)准备工具链和配置。[消费者](../../../acceptance/ui/main.cpp)通过无窗口 Session 验收以下行为：
 
 - K6：移除并重用控件 key，Session 析构后旧帧仍拥有文字 Coverage；释放最后一帧后弱引用过期。
+- 声明式 Repeat 的子项在重排、换绑、拒绝回滚和退休后重新插入时使用正确的状态与操作目标；覆盖旧按压取消和新帧点击。[声明式 UI 验收](../editor/declarative-ui.md#验收与成本边界)
 
 单Session最多10,000个控件、布局深度128；Surface每轴最多32,768物理像素，DPI倍率0.25–8；普通 Control.text 最多4,096个UTF-16码元，单张CPU覆盖率最多16MiB。单行text_edit缓冲最多4096个UTF-16码元，number最多64个；CodeDocument 的文档限制由其[源码工作流](../editor/source-editor.md)和公开接口定义，不套用单行字段上限。字素边界和完整数值解析分别负责编辑与业务有效性。可恢复错误通过Result返回，宿主CPU分配失败按工程合同fatal，字形覆盖率预算超限仍为Result的E_OUTOFMEMORY。Session单拥有者线程；发布后不修改UiFrame/Coverage，也不保留可变别名。
 

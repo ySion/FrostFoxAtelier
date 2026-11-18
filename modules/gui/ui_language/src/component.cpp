@@ -147,6 +147,8 @@ struct NodeState {
 
     std::size_t count{};
 
+    std::size_t descendants{}; // Accepted composition budget below this node.
+
     bool dirty{true};
 };
 
@@ -175,6 +177,11 @@ struct InstanceData {
 
     Statistics statistics;
 
+    // Placement in the accepted Repeat, relative to its control slice.
+    std::size_t item_index{};
+
+    std::size_t item_begin{};
+
     bool open{true};
 
     Result<std::unique_ptr<PreparedUpdate>> prepare(std::shared_ptr<Component>, ui::ControlKey,
@@ -185,6 +192,12 @@ struct InstanceData {
 // Definition-dependent data can be replaced while its Instance/Context stays
 // alive. A source candidate borrows child owners until the shared commit point.
 struct DefinitionState {
+    struct ChildEvent {
+        std::size_t node;
+
+        InstanceData* child; // Accepted owner stays alive until commit.
+    };
+
     InstanceData& scope;
 
     std::shared_ptr<Component> component;
@@ -212,6 +225,8 @@ struct DefinitionState {
     std::vector<bool> reads;
 
     std::vector<ui::Control> published;
+
+    std::vector<ChildEvent> child_events;
 
     std::size_t subtree_nodes{};
 
@@ -1084,12 +1099,20 @@ Result<std::shared_ptr<Component>> Component::compile(Runtime& runtime, std::str
 // One plan covers data, definition and topology changes. Accepted child owners
 // remain available until Session has consumed its cleanup effects.
 struct detail::PreparedUpdate {
+    struct Patch {
+        std::size_t begin;
+
+        std::size_t count;
+
+        std::vector<ui::Control> controls;
+    };
+
     struct Change {
         std::size_t node{};
 
         std::size_t next_count{};
 
-        std::vector<ui::Control> controls;
+        std::size_t descendants{};
 
         std::unique_ptr<Instance> child;
 
@@ -1101,7 +1124,7 @@ struct detail::PreparedUpdate {
 
         bool unmount{};
 
-        bool controls_changed{};
+        bool place_items{};
     };
 
     InstanceData& scope;
@@ -1114,6 +1137,8 @@ struct detail::PreparedUpdate {
 
     std::vector<Change> changes;
 
+    std::vector<Patch> patches; // Disjoint ranges in the accepted snapshot, in display order.
+
     std::vector<ui::Control> reordered;
 
     std::uint64_t creations{};
@@ -1125,6 +1150,8 @@ struct detail::PreparedUpdate {
     bool resized{};
 
     bool control_changes{};
+
+    bool keys_changed{};
 
     bool materialized{};
 
@@ -1139,31 +1166,102 @@ struct detail::PreparedUpdate {
             swap_view();
     }
 
+    template <class F>
+    void visit_controls(F visit) const {
+        const std::span<const ui::Control> published = data.published;
+        std::size_t begin{};
+        for (const auto& patch : patches) {
+            visit(published.subspan(begin, patch.begin - begin));
+            visit(std::span<const ui::Control>(patch.controls));
+            begin = patch.begin + patch.count;
+        }
+        visit(published.subspan(begin));
+    }
+
     void append(std::vector<ui::Control>& output) const {
-        if (materialized) {
-            output.insert(output.end(), data.published.begin(), data.published.end());
-            return;
+        visit_controls([&](auto controls) { output.insert(output.end(), controls.begin(), controls.end()); });
+    }
+
+    void count_keys(std::vector<ui::ControlKey>& before, std::vector<ui::ControlKey>& after) {
+        std::sort(before.begin(), before.end());
+        std::sort(after.begin(), after.end());
+        for (const auto key : after)
+            if (!std::binary_search(before.begin(), before.end(), key))
+                ++creations;
+        for (const auto key : before)
+            if (!std::binary_search(after.begin(), after.end(), key))
+                ++removals;
+    }
+
+    void count_changed_keys(std::size_t first_patch) {
+        std::vector<ui::ControlKey> before;
+        std::vector<ui::ControlKey> after;
+        for (const auto& patch : std::span(patches).subspan(first_patch)) {
+            const auto old = std::span(data.published).subspan(patch.begin, patch.count);
+            if (std::ranges::equal(old, patch.controls, {}, &ui::Control::key, &ui::Control::key))
+                continue;
+            keys_changed = true;
+            for (const auto& control : old)
+                before.push_back(control.key);
+            for (const auto& control : patch.controls)
+                after.push_back(control.key);
         }
-        std::size_t change{};
-        for (std::size_t i = 0; i < data.nodes.size(); ++i) {
-            const auto* next = change < changes.size() && changes[change].node == i ? &changes[change++] : nullptr;
-            const auto values =
-                next && next->controls_changed
-                    ? std::span<const ui::Control>(next->controls)
-                    : std::span<const ui::Control>(data.published).subspan(data.nodes[i].begin, data.nodes[i].count);
-            output.insert(output.end(), values.begin(), values.end());
+        count_keys(before, after);
+    }
+
+    Result<void> prepare_children(std::size_t index, std::span<const DefinitionState::ChildEvent> events,
+                                  const std::shared_ptr<Component>& type, std::size_t& remaining) {
+        const auto& node = data.nodes[index];
+        auto retained = node.descendants;
+        for (const auto& event : events)
+            retained -= event.child->value->subtree_nodes;
+        if (retained > remaining)
+            return failure("UI composition exceeds 10000 instantiated declaration nodes.");
+        remaining -= retained;
+        if (events.empty())
+            return {};
+        Change change;
+        change.node = index;
+        change.next_count = node.count;
+        const auto child_budget = remaining;
+        const auto first_patch = patches.size();
+        bool check_keys{};
+        for (const auto& event : events) {
+            auto& child = *event.child;
+            const auto& accepted = *child.value;
+            ATELIER_TRY_BIND(prepared,
+                             child.prepare(type, accepted.parent, accepted.aliases, accepted.inputs, remaining));
+            remaining -= *prepared ? (*prepared)->subtree_nodes : accepted.subtree_nodes;
+            if (!*prepared)
+                continue;
+            const auto& plan = **prepared;
+            for (const auto& patch : plan.patches) {
+                patches.push_back({node.begin + child.item_begin + patch.begin, patch.count, patch.controls});
+                change.next_count = change.next_count - patch.count + patch.controls.size();
+            }
+            change.place_items |=
+                !node.repeated.empty() && plan.resized && plan.reordered.size() != accepted.published.size();
+            resized |= plan.resized;
+            control_changes |= plan.control_changes;
+            check_keys |= plan.keys_changed;
+            change.children.push_back(std::move(*prepared));
         }
+        if (check_keys)
+            count_changed_keys(first_patch);
+        if (!change.children.empty()) {
+            change.descendants = retained + (child_budget - remaining);
+            changes.push_back(std::move(change));
+        }
+        return {};
     }
 
     void swap_view() noexcept {
         if (resized)
             data.published.swap(reordered);
         else
-            for (auto& change : changes)
-                if (change.controls_changed) {
-                    auto at = data.published.begin() + static_cast<std::ptrdiff_t>(data.nodes[change.node].begin);
-                    std::swap_ranges(change.controls.begin(), change.controls.end(), at);
-                }
+            for (auto& patch : patches)
+                std::swap_ranges(patch.controls.begin(), patch.controls.end(),
+                                 data.published.begin() + static_cast<std::ptrdiff_t>(patch.begin));
     }
 
     void materialize() noexcept {
@@ -1193,11 +1291,20 @@ struct detail::PreparedUpdate {
             for (const auto key : change.removals)
                 node.repeated.erase(key);
             node.repeated.merge(change.additions);
+            node.count = change.next_count;
+            node.descendants = change.descendants;
+            if (change.place_items && node.mounted && node.items.values) {
+                std::size_t begin{};
+                std::size_t index{};
+                for (const auto& item : *node.items.values) {
+                    auto& scope = *node.repeated.at(item.key)->data_;
+                    scope.item_index = index++;
+                    scope.item_begin = begin;
+                    begin += scope.value->published.size();
+                }
+            }
         }
         materialize();
-        for (const auto& change : changes)
-            if (change.controls_changed)
-                data.nodes[change.node].count = change.next_count;
         std::size_t begin{};
         for (auto& node : data.nodes) {
             node.begin = begin;
@@ -1212,6 +1319,7 @@ struct detail::PreparedUpdate {
         data.component = std::move(definition);
         data.input_undo.clear();
         data.state_undo.reset();
+        data.child_events.clear();
         data.publication_pending = false;
         committed = true;
         if (replacement)
@@ -1420,24 +1528,25 @@ Result<std::unique_ptr<detail::PreparedUpdate>> detail::InstanceData::prepare(st
     }
     auto update = std::make_unique<PreparedUpdate>(*this, std::move(next), definition);
     auto remaining = budget - data.nodes.size();
-    bool keys_changed{};
+    std::ranges::sort(data.child_events, {},
+                      [](const auto& event) { return std::pair{event.node, event.child->item_index}; });
+    std::span events(data.child_events);
     for (std::size_t i = 0; i < data.nodes.size(); ++i) {
         auto& node = data.nodes[i];
         auto& owners = node.previous ? *node.previous : node;
+        const auto end = std::ranges::find_if(events, [i](const auto& event) { return event.node != i; });
+        const std::span active(events.begin(), end);
+        events = {end, events.end()};
+        const auto& type = definition->impl_->children[i];
         if (!node.dirty && !source_changed) {
-            auto retained = node.child ? node.child->data_->value->subtree_nodes : 0;
-            for (const auto& [key, child] : node.repeated)
-                retained += child->data_->value->subtree_nodes;
-            if (retained > remaining)
-                return failure("UI composition exceeds 10000 instantiated declaration nodes.");
-            remaining -= retained;
+            ATELIER_TRY(update->prepare_children(i, active, type, remaining));
             continue;
         }
         PreparedUpdate::Change change;
         change.node = i;
-        auto& output = change.controls;
+        const auto child_budget = remaining;
+        std::vector<ui::Control> output;
         const auto kind = declaration.nodes[i].kind;
-        const auto& type = definition->impl_->children[i];
         if (node.minimum_width)
             node.control.layout.width.minimum = *node.minimum_width;
         const auto append_existing = [&](Instance& child, std::span<const InputValue> values,
@@ -1470,6 +1579,7 @@ Result<std::unique_ptr<detail::PreparedUpdate>> detail::InstanceData::prepare(st
                 append_new(change.child);
             }
         } else if (kind == NodeKind::repeat) {
+            change.place_items = true;
             std::vector<ui::ControlKey> present;
             if (node.mounted && node.items.values) {
                 if (node.items.values->size() > composition_limit)
@@ -1557,46 +1667,32 @@ Result<std::unique_ptr<detail::PreparedUpdate>> detail::InstanceData::prepare(st
                                     : ": Invalid UI text or numeric properties."));
         const auto previous = std::span(data.published).subspan(node.begin, node.count);
         change.next_count = output.size();
-        change.controls_changed = !std::ranges::equal(previous, output);
+        change.descendants = child_budget - remaining;
         update->resized |= output.size() != node.count;
-        update->control_changes |= change.controls_changed;
-        if (!std::ranges::equal(previous, output, {}, &ui::Control::key, &ui::Control::key)) {
-            keys_changed = true;
-            std::vector<ui::ControlKey> before;
-            std::vector<ui::ControlKey> after;
-            for (const auto& item : previous)
-                before.push_back(item.key);
-            for (const auto& item : output)
-                after.push_back(item.key);
-            std::sort(before.begin(), before.end());
-            std::sort(after.begin(), after.end());
-            for (const auto key : after)
-                if (!std::binary_search(before.begin(), before.end(), key))
-                    ++update->creations;
-            for (const auto key : before)
-                if (!std::binary_search(after.begin(), after.end(), key))
-                    ++update->removals;
+        const bool changed = !std::ranges::equal(previous, output);
+        if (changed) {
+            update->control_changes = true;
+            update->patches.push_back({node.begin, node.count, std::move(output)});
+            update->count_changed_keys(update->patches.size() - 1);
         }
-        if (change.controls_changed || change.child || change.unmount || !change.additions.empty() ||
-            !change.removals.empty() || !change.children.empty())
+        if (changed || change.descendants != node.descendants || change.place_items || change.child || change.unmount ||
+            !change.additions.empty() || !change.removals.empty() || !change.children.empty())
             update->changes.push_back(std::move(change));
     }
-    if (keys_changed) {
+    if (update->keys_changed) {
+        auto count = data.published.size();
+        for (const auto& patch : update->patches)
+            count = count - patch.count + patch.controls.size();
+        if (count > composition_limit)
+            return failure("UI composition exceeds 10000 controls.");
+        if (update->resized)
+            update->reordered.reserve(count);
         std::vector<ui::ControlKey> keys;
-        std::size_t change{};
-        for (std::size_t i = 0; i < data.nodes.size(); ++i) {
-            const auto* next = change < update->changes.size() && update->changes[change].node == i
-                                   ? &update->changes[change++]
-                                   : nullptr;
-            const auto values =
-                next && next->controls_changed
-                    ? std::span<const ui::Control>(next->controls)
-                    : std::span<const ui::Control>(data.published).subspan(data.nodes[i].begin, data.nodes[i].count);
-            if (keys.size() + values.size() > composition_limit)
-                return failure("UI composition exceeds 10000 controls.");
-            for (const auto& control : values)
+        keys.reserve(count);
+        update->visit_controls([&](auto controls) {
+            for (const auto& control : controls)
                 keys.push_back(control.key);
-        }
+        });
         std::sort(keys.begin(), keys.end());
         if ((!keys.empty() && !keys.front()) || std::adjacent_find(keys.begin(), keys.end()) != keys.end())
             return failure("UI composition requires distinct nonzero control keys.");
@@ -1616,16 +1712,9 @@ Result<std::unique_ptr<detail::PreparedUpdate>> detail::InstanceData::prepare(st
             before.push_back(control.key);
         for (const auto& control : candidate)
             after.push_back(control.key);
-        std::sort(before.begin(), before.end());
-        std::sort(after.begin(), after.end());
         update->creations = 0;
         update->removals = 0;
-        for (const auto key : after)
-            if (!std::binary_search(before.begin(), before.end(), key))
-                ++update->creations;
-        for (const auto key : before)
-            if (!std::binary_search(after.begin(), after.end(), key))
-                ++update->removals;
+        update->count_keys(before, after);
     }
     return update;
 }
@@ -1718,11 +1807,14 @@ Result<bool> Instance::event(const ui::Action& action) {
     const auto at = std::ranges::find_if(
         data.declaration().events, [&](const auto& value) { return data.nodes[value.node].control.key == action.key; });
     if (at == data.declaration().events.end()) {
-        for (auto& node : data.nodes) {
+        for (std::size_t i = 0; i < data.nodes.size(); ++i) {
+            auto& node = data.nodes[i];
             const auto dispatch = [&](Instance& child) -> Result<bool> {
                 auto handled = child.event(action);
                 if (handled && *handled) {
-                    node.dirty = true;
+                    if (std::ranges::find(data.child_events, child.data_.get(),
+                                          &detail::DefinitionState::ChildEvent::child) == data.child_events.end())
+                        data.child_events.push_back({i, child.data_.get()});
                     data.publication_pending = true;
                 }
                 return handled;
