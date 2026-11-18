@@ -7,11 +7,13 @@
 #include "memory/fatal.hpp"
 #include "platform/utf.hpp"
 #include <algorithm>
+#include <atomic>
 #include <charconv>
 #include <cmath>
 #include <limits>
 #include <map>
 #include <functional>
+#include <future>
 
 namespace atelier::ui_language {
 namespace {
@@ -955,62 +957,123 @@ struct Component::Impl {
         : runtime(value), declaration(std::move(source)), source_version(version) {}
 
     Error diagnostic(Error, const language::SourcePosition* fallback = nullptr) const;
-    Result<void> compile(TypeId, const Impl* prior, Module::ComponentTiming*);
+    void reuse(const Impl& prior) {
+        program = prior.program;
+        code = prior.code;
+        code_layout = prior.code_layout;
+    }
 };
 
-Result<void> Component::Impl::compile(TypeId receiver, const Impl* prior, Module::ComponentTiming* timing) {
-    catalog_size = runtime.type_count();
-    if (prior && (&prior->runtime != &runtime || prior->catalog_size != catalog_size))
-        prior = nullptr;
-    if (prior && declaration.generated_source == prior->declaration.generated_source) {
-        layout = prior->layout;
-        compilation = Compilation::reused_source;
-    } else {
-        const source::detail::CompileTimer request_timer(timing != nullptr);
-        ATELIER_TRY_BIND(owner, source::Program::create(runtime, receiver));
-        ATELIER_TRY_BIND(request,
-                         (*owner)->request(declaration.source_name, declaration.generated_source, "__ui_dispatch"));
-        if (timing)
-            timing->request_ns = request_timer.elapsed_ns();
-        auto candidate = source::Program::prepare(
-            *request,
-            [&](std::span<const source::EntryFunction> functions) noexcept {
-                const source::detail::CompileTimer selection(timing != nullptr);
-                layout = std::make_shared<DispatchLayout>(declaration.generated_source, functions);
-                const bool changed = !prior || !layout->matches(declaration.generated_source, *prior->layout,
-                                                                prior->declaration.generated_source);
-                if (timing)
-                    timing->select_ns = selection.elapsed_ns();
-                return changed;
-            },
-            timing ? &timing->source : nullptr);
-        if (!candidate)
-            return std::unexpected(diagnostic(std::move(candidate.error())));
-        if (*candidate) {
-            const source::detail::CompileTimer publication(timing != nullptr);
-            ATELIER_TRY((*owner)->try_publish(*candidate));
+struct Module::Build {
+    struct Entry {
+        Component::Impl& next;
+        std::shared_ptr<Component> prior;
+        source::Program::Request request;
+        ComponentTiming* timing;
+        std::optional<source::Program::Emission> emission;
+
+        // Only the candidate layout, owned compiler data and optional worker timing are written here.
+        Result<void> emit() {
+            const source::detail::CompileTimer timer(timing != nullptr);
+            auto compiled = source::Program::emit_entry(
+                request,
+                [&](std::span<const source::EntryFunction> functions) noexcept {
+                    const source::detail::CompileTimer select(timing != nullptr);
+                    const auto& source = next.declaration.generated_source;
+                    next.layout = std::make_shared<DispatchLayout>(source, functions);
+                    const bool changed = !prior || !next.layout->matches(source, *prior->impl_->layout,
+                                                                         prior->declaration().generated_source);
+                    if (timing)
+                        timing->select_ns = select.elapsed_ns();
+                    return changed;
+                },
+                timing ? &timing->source : nullptr);
+            if (!compiled)
+                return std::unexpected(next.diagnostic(std::move(compiled.error())));
+            emission.emplace(std::move(*compiled));
             if (timing)
-                timing->publish_ns = publication.elapsed_ns();
-            const source::detail::CompileTimer binding(timing != nullptr);
-            ATELIER_TRY_BIND(lease, (*owner)->pin());
-            auto typed = lease->bind<void, std::uint32_t>();
-            if (!typed)
-                return std::unexpected(diagnostic(std::move(typed.error())));
-            program = std::move(*owner);
-            code = std::move(*typed);
-            code_layout = layout;
-            catalog_size = runtime.type_count();
-            if (timing)
-                timing->bind_ns = binding.elapsed_ns();
+                timing->total_ns += timer.elapsed_ns();
             return {};
         }
-        compilation = Compilation::reused_dependencies;
+
+        Result<void> publish() {
+            const source::detail::CompileTimer timer(timing != nullptr);
+            auto candidate = source::Program::finish_entry(std::move(*emission));
+            if (!candidate)
+                return std::unexpected(next.diagnostic(std::move(candidate.error())));
+            if (*candidate) {
+                const source::detail::CompileTimer publication(timing != nullptr);
+                ATELIER_TRY(next.program->try_publish(*candidate));
+                if (timing)
+                    timing->publish_ns = publication.elapsed_ns();
+                const source::detail::CompileTimer binding(timing != nullptr);
+                ATELIER_TRY_BIND(lease, next.program->pin());
+                auto typed = lease->bind<void, std::uint32_t>();
+                if (!typed)
+                    return std::unexpected(next.diagnostic(std::move(typed.error())));
+                next.code = std::move(*typed);
+                next.code_layout = next.layout;
+                next.catalog_size = next.runtime.type_count();
+                if (timing)
+                    timing->bind_ns = binding.elapsed_ns();
+            } else {
+                next.compilation = Component::Compilation::reused_dependencies;
+                next.reuse(*prior->impl_);
+            }
+            if (timing) {
+                timing->disposition = next.compilation;
+                timing->total_ns += timer.elapsed_ns();
+            }
+            return {};
+        }
+    };
+
+    std::shared_ptr<Module> module = std::make_shared<Module>();
+    std::vector<Entry> entries;
+    bool background{};
+    std::atomic_bool cancelled{};
+    // Destroy first: the async task borrows entries; their last release stays on the owner.
+    std::future<Result<void>> worker;
+    ~Build() { cancelled.store(true, std::memory_order_relaxed); }
+
+    Result<void> stage(Component::Impl& next, TypeId type, std::shared_ptr<Component> prior, ComponentTiming* timing) {
+        const source::detail::CompileTimer timer(timing != nullptr);
+        next.catalog_size = next.runtime.type_count();
+        if (prior && (&prior->impl_->runtime != &next.runtime || prior->impl_->catalog_size != next.catalog_size))
+            prior.reset();
+        if (prior && next.declaration.generated_source == prior->declaration().generated_source) {
+            next.layout = prior->impl_->layout;
+            next.compilation = Component::Compilation::reused_source;
+            next.reuse(*prior->impl_);
+            if (timing) {
+                timing->disposition = next.compilation;
+                timing->total_ns = timer.elapsed_ns();
+            }
+            return {};
+        }
+        const source::detail::CompileTimer capture(timing != nullptr);
+        ATELIER_TRY_BIND(owner, source::Program::create(next.runtime, type));
+        next.program = std::move(*owner);
+        ATELIER_TRY_BIND(request, next.program->request(next.declaration.source_name, next.declaration.generated_source,
+                                                        "__ui_dispatch"));
+        // Later components must capture the catalog after new Source types have been published.
+        if ((*request)->stages_types())
+            background = false;
+        entries.push_back({next, std::move(prior), std::move(*request), timing, {}});
+        if (timing) {
+            timing->request_ns = capture.elapsed_ns();
+            timing->total_ns = timer.elapsed_ns();
+        }
+        if (!background) {
+            for (auto& entry : entries) {
+                ATELIER_TRY(entry.emit());
+                ATELIER_TRY(entry.publish());
+            }
+            entries.clear();
+        }
+        return {};
     }
-    program = prior->program;
-    code = prior->code;
-    code_layout = prior->code_layout;
-    return {};
-}
+};
 
 Error Component::Impl::diagnostic(Error error, const language::SourcePosition* fallback) const {
     std::string_view message = error.message;
@@ -1180,6 +1243,13 @@ std::shared_ptr<Component> Module::find(std::string_view name) const {
 
 Result<std::shared_ptr<Module>> Module::compile(Runtime& runtime, std::string_view name, std::string_view source,
                                                 const Module* previous, CompileTiming* timing) {
+    ATELIER_TRY_BIND(build, start(runtime, name, source, previous, timing, false));
+    return finish(**build);
+}
+
+Result<std::shared_ptr<Module::Build>> Module::start(Runtime& runtime, std::string_view name, std::string_view source,
+                                                     const Module* previous, CompileTiming* timing, bool background,
+                                                     WorkerTiming* worker_timing) {
     if (timing)
         *timing = {};
     const auto text = source.starts_with("\xef\xbb\xbf") ? source.substr(3) : source;
@@ -1194,7 +1264,9 @@ Result<std::shared_ptr<Module>> Module::compile(Runtime& runtime, std::string_vi
     if (!type)
         return failure("Register UI language types during Runtime bootstrap before creating objects.");
     const auto source_version = source::content_hash(source);
-    auto module = std::make_shared<Module>();
+    auto build = std::make_shared<Build>();
+    build->background = background;
+    auto& module = build->module;
     std::vector<unsigned> states(declarations->size());
     module->components_.reserve(declarations->size());
     if (timing)
@@ -1231,24 +1303,60 @@ Result<std::shared_ptr<Module>> Module::compile(Runtime& runtime, std::string_vi
             }
         const auto prior = previous ? previous->find(declaration.name) : nullptr;
         auto* sample = timing ? &timing->components.emplace_back() : nullptr;
-        // Child visits have already finished. Each component is timed exactly once.
-        const source::detail::CompileTimer component_timer(sample != nullptr);
-        ATELIER_TRY(impl.compile(*type, prior ? prior->impl_.get() : nullptr, sample));
-        if (sample) {
-            sample->total_ns = component_timer.elapsed_ns();
+        if (sample)
             sample->name = declaration.name;
-            sample->disposition = impl.compilation;
-        }
-        if (impl.compilation == Component::Compilation::compiled)
-            ++module->compilation_.compiled;
-        else
-            ++module->compilation_.reused;
+        ATELIER_TRY(build->stage(impl, *type, prior, sample));
         states[index] = 2;
         return {};
     };
     for (std::size_t i = 0; i < module->components_.size(); ++i)
         ATELIER_TRY(compile(i));
-    return module;
+    if (!build->entries.empty())
+        build->worker = std::async(
+            std::launch::async,
+            [entries = std::span{build->entries}, &cancelled = build->cancelled, worker_timing]() -> Result<void> {
+                if (worker_timing)
+                    worker_timing->begin = std::chrono::steady_clock::now();
+                Result<void> result;
+                for (auto& entry : entries) {
+                    if (cancelled.load(std::memory_order_relaxed))
+                        result = failure("UI compilation was superseded.");
+                    else
+                        result = entry.emit();
+                    if (!result)
+                        break;
+                }
+                if (worker_timing)
+                    worker_timing->end = std::chrono::steady_clock::now();
+                return result;
+            });
+    return build;
+}
+
+bool Module::ready(const Build& build) {
+    return !build.worker.valid() || build.worker.wait_for(std::chrono::seconds(0)) == std::future_status::ready;
+}
+
+bool Module::dispatched(const Build& build) {
+    return build.worker.valid();
+}
+
+void Module::cancel(Build& build) {
+    build.cancelled.store(true, std::memory_order_relaxed);
+}
+
+Result<std::shared_ptr<Module>> Module::finish(Build& build) {
+    if (build.worker.valid())
+        ATELIER_TRY(build.worker.get());
+    for (auto& entry : build.entries)
+        ATELIER_TRY(entry.publish());
+    for (const auto& component : build.module->components_) {
+        if (component->compilation() == Component::Compilation::compiled)
+            ++build.module->compilation_.compiled;
+        else
+            ++build.module->compilation_.reused;
+    }
+    return std::move(build.module);
 }
 
 Result<std::shared_ptr<Component>> Component::compile(Runtime& runtime, std::string_view name, std::string_view source,

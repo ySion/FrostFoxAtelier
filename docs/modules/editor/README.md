@@ -392,8 +392,10 @@ Play 的 World Tick/协程按宿主调用推进，物理累积器不代表整个
 
 `atelier_editor --project <工程目录> --profile-ui-reload <新的绝对输出目录>` 在真实编辑器窗口中保留 VSync，预热后用编辑器的原子保存函数写作者文件副本。每个进程交错执行 12 组修改，每组分别测一次开启细分计时的高度修改、一次仅测外层时间的高度修改，以及一次在同一函数内插入或移除空白与注释。三种条件的先后顺序均衡。
 
-- `reloads.csv` 给出保存返回到新版首次进入接受帧的各段耗时，以及 UI 降低耗时。以 `height_coarse` 标记关闭编译细分的高度对照。
-- `components.csv` 按试次、文档版本和组件名给出复用决定、请求、Source 前端、依赖比较、LLVM/ORC 和 Runtime 发布时间，单位为纳秒。`native_compile_ns` 包含 `ir_ns` 和 `first_lookup_ns`；`ir_ns` 包含 `optimize_ns`；`first_lookup_ns` 包含 `object_ns`。
+- `reloads.csv` 给出保存返回到新版首次进入接受帧的各段耗时。后台版本分别记录主线程捕获（`stage_ms`）、工作线程执行、结果就绪到回收的等待，以及核对文件并发布。编译窗口内的最大输入轮询间隔为 `compile_input_gap_ms`，同时统计工作线程执行期间的输入轮询数和接受旧帧数。以 `height_coarse` 标记关闭逐组件计时的高度对照。
+- `input.csv` 记录额外一次高度保存后，从向真实窗口投递折叠点击到折叠帧被接受的耗时，并标明输入是否落在工作线程执行区间、是否由旧版 UI 呈现。随后展开工具架验证新高度生效。
+- `components.csv` 按试次、文档版本和组件名给出复用决定、请求、Source 前端、依赖比较、LLVM/ORC 和 Runtime 发布时间，单位为纳秒。每个组件的 `total_ns` 累加其捕获、编译和发布阶段的工作时间。`native_compile_ns` 包含 `ir_ns` 和 `first_lookup_ns`；`ir_ns` 包含 `optimize_ns`；`first_lookup_ns` 包含 `object_ns`。
+- `dispatch.csv` 测已接受版本的执行成本。保存计时结束后，编辑器修改并还原 PropertyGroup 事件，等待新帧接受，再用同一 Runtime 中的 ToolShelf 和 PropertyGroup 分批执行折叠更新与激活事件。每批记录操作数、实际求值数与总纳秒数。属性更新包含控件提交，事件计时止于处理函数返回。[机器码级别对照](../../research/ui-helper-incremental-compilation.md#ui-机器码生成级别对照)
 - `steps.csv` 提供逐步输入轮询、接受帧间隔及现有帧记录器的阶段时间。常规启动不采集这些报表。[真实编辑器计时](../../research/ui-helper-incremental-compilation.md#真实编辑器从保存到接受帧) · [单组件编译分解](../../research/ui-helper-incremental-compilation.md#单组件编译耗时)
 
 - `editor_log_smoke_acceptance`（窗口）运行 `atelier_editor_control_acceptance <atelier_editor.exe> <输出目录> --smoke-logs`：按 `Config/Project.json` 复制 Examples 的 `Config`、`Source` 与启动场景所在的 `Content/<场景包>`，以 `--no-activate --gpu-validation` 启动真实编辑器并等待启动场景的接受帧；经 Control 执行一次 `scene.add` → `scene.save` → `edit.undo`，确认撤销后有新的接受帧；随后启动 Play，在 Play 运行时关闭编辑器，检查编辑器与 runner 日志零错误且 Play 正常结束，通过后自动删除临时 `Project/` 副本。日志判定见 [Control 端到端验收](control.md#端到端验收)。

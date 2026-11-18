@@ -3,6 +3,7 @@
 #include "ui_language/declaration.hpp"
 #include "source/program.hpp"
 #include "ui/controls.hpp"
+#include <chrono>
 
 namespace atelier::ui_language {
 namespace detail {
@@ -218,11 +219,22 @@ public:
     Compilation compilation() const noexcept { return compilation_; }
 
 private:
+    struct Build;
+    struct WorkerTiming {
+        std::chrono::steady_clock::time_point begin, end;
+    };
+    static Result<std::shared_ptr<Build>> start(Runtime&, std::string_view, std::string_view, const Module*,
+                                                CompileTiming*, bool background, WorkerTiming* = nullptr);
+    static bool ready(const Build&);
+    static bool dispatched(const Build&);
+    static void cancel(Build&);
+    static Result<std::shared_ptr<Module>> finish(Build&);
     std::vector<std::shared_ptr<Component>> components_;
 
     Compilation compilation_;
 
     friend class Component;
+    friend class LiveDocument;
 };
 
 // Single-threaded UI scope. update() prepares inputs and an optional replacement

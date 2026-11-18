@@ -20,12 +20,13 @@
 ```text
 CodeEditor 输入 → SourceEditor 持有的 CodeDocument
 Ctrl+S → Application 命令 → 检查磁盘版本 → 原子写入源文件
-ProjectCode / LiveDocument 检测保存 → Source/JIT 同步编译 → 候选事务
+ProjectCode 检测工程保存 → Source/JIT 同步编译 → 工程候选事务
+LiveDocument 检测 UI 保存 → 捕获绑定 → 后台编译变更入口 → Runtime 线程复核并准备新帧
 成功：提交兼容代码或 UI；失败：保留最后成功版本，在 Code 显示诊断
 点击诊断 → UTF-8 源码列转 UTF-16 编辑位置 → 定位并聚焦代码
 ```
 
-未保存输入只改变源码文档。编译诊断属于已经尝试的磁盘版本；继续编辑后，旧诊断标为 Previous saved version，定位入口失效。修正并保存后重新使用同一编译/发布链。没有第二个 UI 编译器或源码解析器。
+未保存输入只改变源码文档。编译诊断属于已经完成尝试的磁盘版本；继续编辑或新版仍在后台编译时，旧诊断标为 Previous saved version，定位入口失效。修正并保存后重新使用同一编译/发布链。UI 首次加载及只有注释的更新见[声明式 UI 热更](declarative-ui.md#后台编译与发布)。
 
 Workspace 独立拥有编辑器 UI Runtime；场景切换清理旧业务绑定，保留最后提交的 UI 源码检查点以及所有源码文档。若启动时作者文件已损坏，会通过同一编译链使用随程序部署的 UI 源码恢复界面，同时保留原错误供修复；恢复不会覆盖损坏的源文件。部署副本也损坏时仍会报告启动失败。
 

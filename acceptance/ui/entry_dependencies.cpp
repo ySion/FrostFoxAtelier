@@ -1,6 +1,5 @@
-#include "../helpers.hpp"
+#include "reload_fixture.hpp"
 #include "runtime/native.hpp"
-#include "ui_language/live_document.hpp"
 #include <algorithm>
 #include <array>
 #include <fstream>
@@ -60,15 +59,11 @@ void verify_ui_entry_dependencies() {
     const std::array<InputValue, 12> inputs{
         false, true, ItemList{}, ItemList{}, ActionBinding{41}, ActionBinding{42}, ActionBinding{43}, 36.,
         24.,   16.,  0.,         0.};
+    using namespace acceptance::ui_reload;
     const auto reload = [&](std::string_view text) {
-        std::ofstream file(path, std::ios::binary);
-        file << text;
-        file.close();
-        require(file.good(), "Cannot write the editor hot-reload fixture.");
-        now += std::chrono::seconds(1);
-        document.poll(now);
-        now += std::chrono::milliseconds(300);
-        document.poll(now);
+        save(path, text);
+        begin(document, now);
+        drain(document, now);
     };
     const auto present = [&](float height) {
         std::vector<ui::Control> controls;
@@ -128,8 +123,64 @@ void verify_ui_entry_dependencies() {
     changed({"PaneDivider", "ToolShelf"}, Compilation::reused_dependencies);
     require(document.statistics("ToolShelf")->instance == instance && runtime.type_count() == types,
             "Helper changes replaced the accepted UI context or type catalog.");
+    // Save again after dispatch but before the next file poll. Both successful
+    // code and a diagnostic from the previous request must be discarded.
+    const auto supersede = [&](const std::string& first, const std::string& last, float old_height) {
+        const auto revision_before = document.revision();
+        const auto accepted_before = document.committed_source();
+        save(path, first);
+        begin(document, now);
+        require(document.compiling(), "Expected a detached editor compilation.");
+        const auto first_stamp = std::filesystem::last_write_time(path);
+        save(path, last);
+        if (first.size() == last.size())
+            std::filesystem::last_write_time(path, first_stamp);
+        present(old_height);
+        drain(document, now);
+        present(old_height);
+        require(document.revision() == revision_before && document.committed_source() == accepted_before &&
+                    document.diagnostic().empty(),
+                "Stale code or diagnostics escaped supersession.");
+        now += std::chrono::milliseconds(300);
+        document.poll(now);
+        drain(document, now);
+    };
+    auto newer = source;
+    newer.replace(newer.find("38.0d"), 2, "42");
+    const auto broken = "double unused_invalid(){return true;}\n" + newer;
+    auto newest = newer;
+    newest.replace(newest.find("42.0d"), 2, "43");
+    supersede(newer, newest, 38); // Identical size and timestamp; contents select the winner.
+    present(43);
+    require(document.committed_source() == newest, "An older same-stamp save won the race.");
+    supersede(newer, broken, 43);
+    require(document.diagnostic().contains("Type mismatch"), "Latest bad save did not report a type error.");
+    present(43);
+    save(path, newer);
+    begin(document, now);
+    require(document.compiling() && document.attempted_source() == broken && document.diagnostic().contains("Type mismatch"),
+            "A running build attached the previous diagnostic to newer source.");
+    drain(document, now);
+    present(42);
+    require(document.diagnostic().empty() && document.committed_source() == newer, "Valid edit did not recover.");
+    supersede(broken, source, 42);
+    present(38);
+    require(document.committed_source() == source && document.statistics("ToolShelf")->instance == instance,
+            "A superseded failure displaced the accepted editor instance.");
     auto pinned = take(Instance::create(old, 0, next, keys, inputs));
     require(pinned->controls().front().layout.height.value == 56, "Old ToolShelf lost its pinned entry.");
-    std::filesystem::remove(path);
+    // A new Runtime type invalidates all 44 capture-time reuse decisions.
+    save(path, newer);
+    begin(document, now);
+    require(document.compiling(), "Expected a live compiler during catalog growth.");
     verify_component_environments(runtime, next);
+    drain(document, now);
+    present(42);
+    for (const auto& declaration : declarations)
+        require(document.component(declaration.name)->compilation() == Compilation::compiled,
+                "Code survived a changed Runtime catalog during background compilation.");
+    save(path, source);
+    begin(document, now);
+    require(document.compiling(), "Document close did not exercise an outstanding build.");
+    std::filesystem::remove(path); // The document joins before its Runtime goes away.
 }

@@ -1,6 +1,5 @@
-#include "../helpers.hpp"
+#include "reload_fixture.hpp"
 #include "source/snapshot.hpp"
-#include "ui_language/live_document.hpp"
 #include <algorithm>
 #include <array>
 #include <fstream>
@@ -19,15 +18,11 @@ void verify_ui_error_recovery() {
     take(register_types(runtime));
     ui::ControlKey next = 100;
     LiveDocument document(runtime, path, next);
-    const auto reload = [&](std::string_view source) {
-        std::ofstream output(path, std::ios::binary);
-        output << source;
-        output.close();
-        require(output.good(), "Cannot write UI authoring file.");
-        now += std::chrono::seconds(1);
-        document.poll(now);
-        now += std::chrono::milliseconds(300);
-        document.poll(now);
+    using namespace acceptance::ui_reload;
+    const auto reload = [&](std::string_view text) {
+        save(path, text);
+        begin(document, now);
+        drain(document, now);
     };
     std::string source = R"(ui Probe(in double divisor) {
     state double count = 7.0d;

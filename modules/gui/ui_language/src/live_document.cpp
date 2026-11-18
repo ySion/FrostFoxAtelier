@@ -14,6 +14,15 @@ std::string utf8(const std::filesystem::path& path) {
     return {value.begin(), value.end()};
 }
 
+std::optional<std::string> read_source(const std::filesystem::path& path, std::uintmax_t size) {
+    std::ifstream file(path, std::ios::binary);
+    std::string bytes(static_cast<std::size_t>(size), '\0');
+    if (!file || !file.read(bytes.data(), static_cast<std::streamsize>(size)) ||
+        file.peek() != std::ifstream::traits_type::eof())
+        return {};
+    return bytes;
+}
+
 bool same_number(double a, double b) {
     return a == b || std::bit_cast<std::uint64_t>(a) == std::bit_cast<std::uint64_t>(b);
 }
@@ -83,7 +92,10 @@ const LiveDocument::ReloadTiming* LiveDocument::profile_reloads(Profile profile)
 }
 
 void LiveDocument::poll(Clock::time_point now) {
-    if (candidate_ || pending_submission_ || now < next_poll_)
+    if (candidate_ || pending_submission_)
+        return;
+    const bool ready = compiling_ && Module::ready(*compiling_->build);
+    if (!ready && now < next_poll_)
         return;
     next_poll_ = now + std::chrono::milliseconds(100);
     std::error_code error;
@@ -95,6 +107,28 @@ void LiveDocument::poll(Clock::time_point now) {
     if (!stamp_ || current != *stamp_) {
         stamp_ = current;
         changed_at_ = now;
+        changed_ = true;
+    }
+    if (compiling_) {
+        if (changed_)
+            Module::cancel(*compiling_->build);
+        if (!ready)
+            return;
+        auto completed = std::move(compiling_);
+        // Observe the file even before the next periodic poll when a worker finishes.
+        // A changed file invalidates both successful code and diagnostics from that save.
+        if (!changed_ && completed->catalog_size == runtime_.type_count()) {
+            if (timing_)
+                timing_->install_begin = Clock::now();
+            // An atomic replacement can preserve both size and modification time.
+            // Only a completed hot build pays for the final byte comparison.
+            if (read_source(path_, current.size) == completed->source) {
+                install(*completed);
+                return;
+            }
+            changed_at_ = now;
+        } else if (completed->catalog_size != runtime_.type_count())
+            attempted_source_.reset();
         changed_ = true;
     }
     if (!changed_ || (attempted_ && now - changed_at_ < std::chrono::milliseconds(200)))
@@ -119,9 +153,8 @@ void LiveDocument::poll(Clock::time_point now) {
         recover_initial();
         return;
     }
-    std::ifstream stream(path_, std::ios::binary);
-    std::string source(static_cast<std::size_t>(current.size), '\0');
-    if (!stream || !stream.read(source.data(), static_cast<std::streamsize>(source.size()))) {
+    auto source = read_source(path_, current.size);
+    if (!source) {
         attempted_ = true;
         attempted_source_.reset();
         changed_ = true;
@@ -130,27 +163,55 @@ void LiveDocument::poll(Clock::time_point now) {
         recover_initial();
         return;
     }
-    if (attempted_source_ && source == *attempted_source_)
+    if (source == attempted_source_)
         return;
     attempted_ = true;
-    attempted_source_ = source;
     failed_region_.clear();
     submission_failed_ = false;
     if (timing_)
         timing_->compile_begin = Clock::now();
-    auto module = Module::compile(runtime_, utf8(path_.filename()), source, active_.get(),
-                                  profile_components_ ? &timing_->module : nullptr);
+    auto job = std::make_unique<InFlight>();
+    job->source = std::move(*source);
+    auto build = Module::start(runtime_, utf8(path_.filename()), job->source, active_.get(),
+                               profile_components_ ? &job->components : nullptr, active_ != nullptr,
+                               timing_ ? &job->worker : nullptr);
+    if (!build) {
+        attempted_source_ = std::move(job->source);
+        diagnostic_ = build.error().message;
+        recover_initial();
+        return;
+    }
+    job->build = std::move(*build);
+    job->catalog_size = runtime_.type_count();
     if (timing_)
-        timing_->compile_end = Clock::now();
+        timing_->staged = Clock::now();
+    if (Module::dispatched(*job->build))
+        compiling_ = std::move(job);
+    else
+        install(*job);
+}
+
+void LiveDocument::install(InFlight& job) {
+    attempted_source_ = std::move(job.source);
+    auto* sample = timing_ && timing_->compile_begin != Clock::time_point{} ? timing_.get() : nullptr;
+    if (sample && sample->install_begin == Clock::time_point{})
+        sample->install_begin = Clock::now();
+    auto module = Module::finish(*job.build);
+    if (sample) {
+        sample->compile_end = Clock::now();
+        sample->worker_begin = job.worker.begin;
+        sample->worker_end = job.worker.end;
+        sample->module = std::move(job.components);
+    }
     if (!module) {
         diagnostic_ = module.error().message;
         recover_initial();
         return;
     }
     candidate_ = std::move(*module);
-    if (timing_)
-        timing_->compilation = candidate_->compilation();
-    candidate_source_ = std::move(source);
+    if (sample)
+        sample->compilation = candidate_->compilation();
+    candidate_source_ = attempted_source_;
     candidate_failed_ = false;
     for (auto& [name, region] : regions_) {
         if (!region.accepted)
@@ -166,11 +227,11 @@ void LiveDocument::poll(Clock::time_point now) {
             return;
         }
         pending_submission_ |= region.instance->has_pending();
-        if (timing_)
-            ++timing_->rebound_regions;
+        if (sample)
+            ++sample->rebound_regions;
     }
-    if (timing_)
-        timing_->instances_ready = Clock::now();
+    if (sample)
+        sample->instances_ready = Clock::now();
     diagnostic_.clear();
 }
 
@@ -208,7 +269,7 @@ Result<void> LiveDocument::append(std::string_view name, ui::ControlKey parent, 
         }
         blocked = !candidate_ && region.rejected_inputs && same_rejected_inputs(*region.rejected_inputs, inputs);
         retried = region.rejected_inputs.has_value() && !blocked;
-        auto* sample = candidate_ ? timing_.get() : nullptr;
+        auto* sample = candidate_ && timing_ && timing_->compile_begin != Clock::time_point{} ? timing_.get() : nullptr;
         const auto start = sample ? Clock::now() : Clock::time_point{};
         if (!region.instance) {
             if (blocked)
@@ -311,7 +372,7 @@ void LiveDocument::commit_controls() {
         active_source_ = std::move(candidate_source_);
         recovery_source_.reset();
         ++revision_;
-        if (timing_) {
+        if (timing_ && timing_->compile_begin != Clock::time_point{}) {
             timing_->revision = revision_;
             timing_->committed = Clock::now();
         }

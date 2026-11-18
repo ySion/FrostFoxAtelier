@@ -1188,6 +1188,23 @@ Result<Program::Candidate> Program::prepare(const Request& request, std::optiona
                 Error{ErrorCode::invalid_definition, "Compile timing requires a single source input."});
         return Program::prepare_module(request);
     }
+    ATELIER_TRY_BIND(emission, emit_entry(request, needs_code, timing));
+    return finish_entry(std::move(*emission));
+}
+
+void Program::Emission::Destroy::operator()(BusinessCode* code) const noexcept {
+    atelier_destroy_business(code);
+}
+
+Result<Program::Emission> Program::emit_entry(const Request& request, std::optional<NeedsCode> needs_code,
+                                              CompileTiming* timing) {
+    if (!request || request->module_)
+        return std::unexpected(
+            Error{ErrorCode::invalid_definition, "Entry compilation requires a single Source input."});
+    if (request->declaration_error_)
+        return std::unexpected(*request->declaration_error_);
+    if (timing)
+        *timing = {};
     BusinessCode* output{};
     char diagnostic[2048];
     const auto& contract = *request->compilation_contract_;
@@ -1204,9 +1221,21 @@ Result<Program::Candidate> Program::prepare(const Request& request, std::optiona
         &contract.actual_services, request->source_name.c_str(), request->source.data(),
         static_cast<std::uint32_t>(request->source.size()), &environment, &output, diagnostic, sizeof(diagnostic),
         request->entry_name.c_str(), request->options, needs_code ? &selection : nullptr, timing);
-    CodeOwner code{output, &atelier_destroy_business};
     if (status != 0)
         return std::unexpected(Error{ErrorCode::invalid_definition, diagnostic});
+    return Emission{request, output};
+}
+
+Result<Program::Candidate> Program::finish_entry(Emission emission) {
+    atelier::detail::assert_serial_access();
+    const auto& request = emission.request_;
+    if (!request)
+        return std::unexpected(Error{ErrorCode::invalid_definition, "Source emission is empty."});
+    const auto owner = request->owner_.lock();
+    if (!owner || !owner->open)
+        return std::unexpected(Error{ErrorCode::invalid_definition, "Source emission belongs to a closed program."});
+    const auto& contract = *request->compilation_contract_;
+    CodeOwner code{emission.code_.release(), &atelier_destroy_business};
     if (!code)
         return Candidate{};
     const auto info = atelier_business_info(code.get());

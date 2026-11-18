@@ -5,8 +5,8 @@
 #include <map>
 
 namespace atelier::ui_language {
-// One authoring file, one Runtime and one host key authority. Compilation and
-// publication run on that Runtime's thread. The host owns Session submission:
+// One authoring file, one Runtime and one host key authority. Hot entry compilation
+// uses captured bindings; the Runtime thread publishes. The host owns Session submission:
 // append -> set_controls -> route cancellation effects -> prepare layout ->
 // commit_controls. Reject a failed submission/layout before staging the old
 // scopes again; a surface that cannot be prepared cannot publish a candidate.
@@ -17,6 +17,7 @@ public:
     struct ReloadTiming {
         // Detected uses the watcher's poll time. All later boundaries use the monotonic clock.
         Clock::time_point detected, read_begin, compile_begin, compile_end, instances_ready, committed;
+        Clock::time_point staged, worker_begin, worker_end, install_begin;
         // Region creation/update against fresh host inputs, after rebinding the mounted definitions.
         Clock::duration append_updates{};
         Module::Compilation compilation{};
@@ -32,6 +33,7 @@ public:
     LiveDocument(Runtime&, std::filesystem::path, ui::ControlKey&, std::optional<std::string> recovery_source = {});
 
     void poll(Clock::time_point now = Clock::now());
+    bool compiling() const noexcept { return compiling_ != nullptr; }
 
     // Parent and key aliases are immutable region configuration. On an input
     // error, output contains the accepted snapshot and that input is suppressed
@@ -122,6 +124,14 @@ private:
     std::optional<std::string> recovery_source_;
 
     void recover_initial();
+    struct InFlight {
+        std::string source;
+        std::size_t catalog_size{};
+        Module::CompileTiming components;
+        Module::WorkerTiming worker;
+        std::shared_ptr<Module::Build> build; // Joins before the worker's samples are destroyed.
+    };
+    void install(InFlight&);
 
     std::string diagnostic_;
 
@@ -138,5 +148,6 @@ private:
     bool submission_failed_{};
 
     std::uint64_t revision_{};
+    std::unique_ptr<InFlight> compiling_;
 };
 }
