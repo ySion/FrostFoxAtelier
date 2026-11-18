@@ -3,6 +3,20 @@
 #include "runtime/native.hpp"
 #include <cstdio>
 
+namespace {
+struct Base {
+    double value{};
+};
+
+#pragma pack(push, 1)
+struct Packed : Base {
+    bool active{};
+};
+#pragma pack(pop)
+
+static_assert(alignof(Packed) < alignof(Base));
+}
+
 void verify_reflection() {
     using namespace atelier;
     using namespace acceptance::helpers;
@@ -11,6 +25,14 @@ void verify_reflection() {
     TypeInfo retained;
     {
         Runtime runtime;
+        take(NativeRegistration<Base>{runtime, "reflection.AlignedBase", TypeKind::object}.publish());
+        for (const auto offset : {std::optional<std::size_t>{}, std::optional<std::size_t>{0}}) {
+            const auto packed =
+                NativeRegistration<Packed>{runtime, "reflection.Packed", TypeKind::object}.base<Base>(offset).publish();
+            require(!packed && packed.error().code == ErrorCode::invalid_definition &&
+                        packed.error().message.contains("requires alignment 8"),
+                    "Native registration accepted an underaligned base or lost its alignment diagnostic.");
+        }
         const auto mode_def = NativeRegistration<upstream::Mode>{runtime, "upstream.Mode", TypeKind::enumeration}
                                   .enumerator("idle", upstream::Mode::idle)
                                   .enumerator("ready", upstream::Mode::ready)

@@ -21,12 +21,30 @@ void changed(Result<world::Commit> result) {
 
 struct Entity : world::Entity {
     std::int32_t health{100};
+
+    Result<void> validate() const {
+        if (health < 0)
+            return std::unexpected(Error{ErrorCode::argument_mismatch, "Health must be nonnegative."});
+        return {};
+    }
 };
 
 enum class LayerMask : std::uint32_t { none = 0u, world_static = 1u, dynamic_body = 2u };
 
 struct MotionCache {
     math::Vector3 velocity{};
+};
+
+struct SpeedRange {
+    float minimum{1};
+
+    float maximum{5};
+
+    static Result<void> check(const SpeedRange& range) noexcept {
+        if (range.minimum > range.maximum)
+            return std::unexpected(Error{ErrorCode::argument_mismatch, "Speed range is reversed."});
+        return {};
+    }
 };
 
 struct Move : world::Component {
@@ -36,11 +54,18 @@ struct Move : world::Component {
 
     MotionCache cache{};
 
+    SpeedRange range{};
+
     LayerMask mask{LayerMask::world_static};
 };
 
 Result<std::shared_ptr<void>> prepare(world::World& world) {
     auto& runtime = world.runtime();
+    take(NativeRegistration<SpeedRange>{runtime, "game.SpeedRange", TypeKind::record}
+             .field<&SpeedRange::minimum>("minimum")
+             .field<&SpeedRange::maximum>("maximum")
+             .validate<&SpeedRange::check>()
+             .publish());
     take(NativeRegistration<MotionCache>{runtime, "game.MotionCache", TypeKind::record}
              .field<&MotionCache::velocity>("velocity")
              .transient()
@@ -54,6 +79,7 @@ Result<std::shared_ptr<void>> prepare(world::World& world) {
     take(NativeRegistration<Entity>{runtime, "game.Entity", TypeKind::object}
              .base<world::Entity>()
              .field<&Entity::health>("health")
+             .validate<&Entity::validate>()
              .publish());
     take(NativeRegistration<Move>{runtime, "game.Move", TypeKind::object}
              .base<world::Component>()
@@ -62,6 +88,7 @@ Result<std::shared_ptr<void>> prepare(world::World& world) {
              .transient()
              .read_only()
              .field<&Move::cache>("cache")
+             .field<&Move::range>("range")
              .field<&Move::mask>("mask")
              .publish());
     return std::shared_ptr<void>{};
@@ -162,6 +189,46 @@ void verify_roundtrip() {
             std::get<float>(take(restored.read(components.front().id(), std::span{&restored_meter, 1}))) == 1.f &&
             std::get<EnumValue>(take(restored.read(components.front().id(), std::span{&restored_mask, 1}))).bits == 3u,
         "Scene roundtrip changed authored fields, Flags enum mask or serialized a Transient field.");
+    old_scene.erase(cache, "future_field");
+    const auto range = take(props.at("range"));
+    take(old_scene.set(range, "minimum", 9.f));
+    take(old_scene.set(range, "maximum", 7.f));
+    const auto bad_component = load_old(editor::LoadPolicy::strict);
+    require(!bad_component && bad_component.error().message.contains("Speed range is reversed"),
+            "Strict scene load accepted an invalid custom component record.");
+    const auto authored_entity = take(take(old_scene.root().at("entities")).at(0));
+    take(old_scene.set(take(authored_entity.at("properties")), "health", std::int64_t{-3}));
+    const auto bad_entity = load_old(editor::LoadPolicy::strict);
+    require(!bad_entity && bad_entity.error().message.contains("Health must be nonnegative"),
+            "Strict scene load accepted an invalid custom entity.");
+    old_scene.set_validated(range, "discarded_with_range", "obsolete");
+    auto recovered = take(load_old(editor::LoadPolicy::tolerant));
+    const auto diagnostics = recovered->load_issues();
+    require(diagnostics.size() == 3 && diagnostics[0].field == std::vector<std::string>{"properties"} &&
+                diagnostics.back().field == std::vector<std::string>{"properties", "range"},
+            "Scene recovery must diagnose each invalid record.");
+    auto& recovered_runtime = recovered->world().runtime();
+    const auto recovered_owner = take(recovered->world().members()).front().id();
+    const auto recovered_move = take(world::components(recovered_runtime, recovered_owner)).front().id();
+    require(take(recovered_runtime.with_native<const Entity>(
+                recovered_owner, [](const Entity& e) -> Result<bool> { return e.health == 100; })) &&
+                take(recovered_runtime.with_native<const Move>(recovered_move,
+                                                               [](const Move& m) -> Result<bool> {
+                                                                   return m.range.minimum == 1.f &&
+                                                                          m.range.maximum == 5.f && m.speed == 4.f &&
+                                                                          static_cast<std::uint32_t>(m.mask) == 3u;
+                                                               })),
+            "Tolerant load must restore the constructor defaults for the failed record and preserve valid siblings.");
+    const auto repaired = take(recovered->serialize());
+    const auto clean_doc = take(assets::json_format::parse(repaired));
+    const auto clean_range = take(properties(clean_doc.root()).at("range"));
+    require(take(clean_range.number({"minimum"})) == 1.0 && take(clean_range.number({"maximum"})) == 5.0 &&
+                !take(clean_range.find("discarded_with_range")),
+            "Resaving a repaired record must persist its valid defaults.");
+    auto strict_reopen = take(editor::Session::deserialize(repaired, project, prepare, editor::LoadPolicy::strict));
+    require(strict_reopen->load_issues().empty(), "A repaired scene reported another issue after resave.");
+    changed(strict_reopen->close());
+    changed(recovered->close());
     changed(tolerant->close());
     changed(reopened->close());
     changed(document.close());

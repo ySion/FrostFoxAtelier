@@ -2842,11 +2842,17 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
             }
             if (type.validate)
                 type.validators.add({{}, {}, type.validate});
+            type.info.has_validation_rules = !type.constrained_leaves.empty() || !type.validators.empty();
             // Direct offsets are published only after every dependent layout is complete.
+            if (is_native && type.base && type.base->info.id != impl_->object &&
+                type.info.alignment < type.base->info.alignment)
+                return failure(ErrorCode::invalid_definition, type.info.name + " guarantees alignment " +
+                                                                  std::to_string(type.info.alignment) + ", but base " +
+                                                                  type.base->info.name + " requires alignment " +
+                                                                  std::to_string(type.base->info.alignment) + ".");
             if (type.native.base_offset && (*type.native.base_offset > type.info.size ||
                                             type.base->info.size > type.info.size - *type.native.base_offset ||
-                                            *type.native.base_offset % type.base->info.alignment != 0 ||
-                                            type.info.alignment < type.base->info.alignment))
+                                            *type.native.base_offset % type.base->info.alignment != 0))
                 return failure(ErrorCode::invalid_definition,
                                "Direct base offset exceeds its type layout or alignment.");
             const std::size_t first_own_field = type.base && type.base->info.id != impl_->object ? 1u : 0u;
@@ -4166,7 +4172,7 @@ Result<std::optional<ValidationFailure>> Runtime::validate(ObjectId object) cons
         return std::unexpected(index.error());
     const auto& slot = impl_->slots.data()[*index];
     const auto& type = *impl_->types.data()[slot.type_index];
-    if (type.constrained_leaves.empty() && type.validators.empty())
+    if (!type.info.has_validation_rules)
         return std::nullopt;
     return impl_->check_rules(type, slot.storage);
 }
@@ -4176,7 +4182,7 @@ Result<std::optional<ValidationFailure>> Runtime::validate_value(TypeId type_id,
     const auto type = impl_->value_type(type_id, storage);
     if (!type)
         return std::unexpected(type.error());
-    if ((*type)->constrained_leaves.empty() && (*type)->validators.empty())
+    if (!(*type)->info.has_validation_rules)
         return std::nullopt;
     return impl_->check_rules(**type, const_cast<std::byte*>(storage.data()));
 }

@@ -697,7 +697,7 @@ struct Session::GraphCodec {
         // An in-memory copy keeps the sky map it resolved, not only the key.
         std::unordered_map<std::string, presentation::SkyMapBinding> skies;
 
-        std::unordered_map<std::string, physics::BodySettings> bodies;
+        std::unordered_map<std::uint64_t, std::shared_ptr<const std::string>> cooked_shapes;
 
         std::unordered_map<std::string, ObjectRoot> materials;
 
@@ -1153,13 +1153,15 @@ struct Session::GraphCodec {
                 }
                 for (const auto& part : take(world::components(runtime, object))) {
                     const auto state = take(world::inspect_component(runtime, part.id()));
-                    const auto key = std::to_string(ids.at(part.id()));
+                    const auto part_id = ids.at(part.id());
+                    const auto key = std::to_string(part_id);
                     if (derives(runtime, state.type, session.presentation_types_.light_component))
                         take(presentation::validate_light(runtime, take(presentation::read_light(runtime, part.id()))));
                     if (physical_type(runtime, state.type)) {
                         auto body = take(physics::read_settings(runtime, part.id()));
                         take(world::validate_body_settings(runtime, body));
-                        graph.bodies.emplace(key, std::move(body));
+                        if (!persistent)
+                            graph.cooked_shapes.emplace(part_id, std::move(body.cooked_shape));
                     }
                     auto type = type_name(runtime, state.type);
                     auto name = platform::utf16_to_utf8(session.name(part.id()));
@@ -1485,25 +1487,21 @@ struct Session::GraphCodec {
     }
 
     // Scene and Play changes decode a properties record leaf by leaf through the shared decoder.
-    static void read_properties(Session& session, ObjectId object, json::Value record, Load& load,
-                                const ResolveReference& resolve, const WriteLeaf& write = {}) {
-        auto& runtime = session.runtime_;
-        const auto type = take(runtime.type_of(object));
+    static void read_properties(Runtime& runtime, const PropertyTarget& target, json::Value record, Load& load,
+                                const ResolveReference& resolve, std::span<const detail::ScalarField> fields,
+                                std::span<const detail::FieldNames> transient_paths, const WriteLeaf& write = {}) {
         const PropertyReport report{[&](std::vector<std::string> at, json::Value item, world::DiagnosticKind kind,
                                         const std::string& detail) -> Result<void> {
-                                        load.keep(object, std::move(at), item, kind, detail);
+                                        load.keep(target.object, std::move(at), item, kind, detail);
                                         return {};
                                     },
                                     [&](std::vector<std::string> at, json::Value item) -> Result<void> {
-                                        load.report(world::Severity::info, world::DiagnosticKind::converted, object,
-                                                    std::move(at), &item,
+                                        load.report(world::Severity::info, world::DiagnosticKind::converted,
+                                                    target.object, std::move(at), &item,
                                                     "Integral number converted exactly to the field's integer type.");
                                         return {};
                                     }};
-        std::vector<detail::FieldNames> transient_paths;
-        const auto fields = business_fields(runtime, session.types_, type, load.live ? nullptr : &transient_paths);
-        take(read_record(runtime, {type, object}, fields, record, {"properties"}, resolve, write, &report,
-                         transient_paths));
+        take(read_record(runtime, target, fields, record, {"properties"}, resolve, write, &report, transient_paths));
     }
 
     // Scene instances share the asset entry codec, but their parent may have a
@@ -2059,11 +2057,63 @@ struct Session::GraphCodec {
                 }
             result.spaces.push_back({ids.at(*local_key(*entity.at("id"))), target});
         }
-        const auto properties = [&](json::Value value, ObjectId object) {
+        using Names = detail::FieldNames;
+        using DefaultValue = std::variant<Scalar, String, ArrayLeaf, ObjectReference, std::vector<ObjectReference>>;
+        struct DefaultField {
+            Names names;
+            world::FieldPath path;
+            DefaultValue value;
+        };
+        using Defaults = std::vector<DefaultField>;
+        const auto find_path = [](json::Value value, std::span<const std::string> path) -> std::optional<json::Value> {
+            for (const auto& name : path) {
+                if (value.kind() != json::Kind::object)
+                    return {};
+                const auto child = *value.find(name);
+                if (!child)
+                    return {};
+                value = *child;
+            }
+            return value;
+        };
+        const auto default_value = [&](const PropertyTarget& target, const detail::ScalarField& field) -> DefaultValue {
+            const auto object = target.object;
+            if (field.form == ValueForm::inline_value) {
+                if (field.kind == TypeKind::array) {
+                    auto array = take(ArrayLeaf::create(runtime, field.type));
+                    take(runtime.read(object, field.path, array.output()));
+                    return array;
+                }
+                if (field.kind == TypeKind::string)
+                    return encode_string(runtime, target, field);
+                return take(runtime.read(object, field.path));
+            }
+            if (field.form != ValueForm::strong_sequence)
+                return take(runtime.read_reference(object, field.path));
+            const auto locator = take(runtime.reference_field(object, field.path));
+            const auto count = take(runtime.sequence_size(locator));
+            std::vector<ObjectReference> references;
+            references.reserve(count);
+            for (std::size_t i = 0; i < count; ++i)
+                references.push_back(take(runtime.sequence_read(locator, i)));
+            return references;
+        };
+        const auto properties = [&](json::Value value, ObjectId object, TypeId type) {
+            Defaults defaults;
             if (const auto at = *value.find("properties")) {
-                if (at->kind() == json::Kind::object)
-                    read_properties(session, object, *at, load, resolve);
-                else
+                if (at->kind() == json::Kind::object) {
+                    const PropertyTarget target{type, object};
+                    std::vector<Names> transient;
+                    const auto fields =
+                        business_fields(runtime, session.types_, type, load.live ? nullptr : &transient);
+                    // Capture this instance's constructor values only for leaves the file may overwrite.
+                    if (load.policy == LoadPolicy::tolerant && take(runtime.describe(type))->has_validation_rules) {
+                        for (const auto& field : fields)
+                            if (find_path(*at, field.names))
+                                defaults.push_back({field.names, field.path, default_value(target, field)});
+                    }
+                    read_properties(runtime, target, *at, load, resolve, fields, transient);
+                } else
                     load.keep(object, {"properties"}, *at, world::DiagnosticKind::mismatch,
                               "Expected a property record. Defaults are used and the saved value is kept.");
             }
@@ -2077,63 +2127,27 @@ struct Session::GraphCodec {
             else
                 enabled = *at->boolean();
             committed(world.set_enabled(object, enabled));
+            return defaults;
         };
-        // A record that fails its combined validation returns to the type defaults.
-        using Defaults = std::vector<std::pair<
-            world::FieldPath, std::variant<Scalar, String, ArrayLeaf, ObjectReference, std::vector<ObjectReference>>>>;
-        const auto snapshot = [&](ObjectId object, std::string_view prefix) {
-            Defaults values;
-            for (const auto& field : business_fields(runtime, session.types_, take(runtime.type_of(object))))
-                if (!field.names.empty() && (prefix.empty() || field.names.front() == prefix)) {
-                    if (field.form == ValueForm::inline_value) {
-                        if (field.kind == TypeKind::array) {
-                            const auto array = take(ArrayLeaf::create(runtime, field.type));
-                            take(runtime.read(object, field.path, array.output()));
-                            values.emplace_back(field.path, array);
-                            continue;
-                        }
-                        if (field.kind != TypeKind::string) {
-                            values.emplace_back(field.path, take(runtime.read(object, field.path)));
-                            continue;
-                        }
-                        String text;
-                        take(runtime.read(object, field.path, ValueOutput{field.type, &text}));
-                        values.emplace_back(field.path, std::move(text));
-                    } else if (field.form == ValueForm::strong_sequence) {
-                        const auto locator = take(runtime.reference_field(object, field.path));
-                        const auto count = take(runtime.sequence_size(locator));
-                        std::vector<ObjectReference> references;
-                        references.reserve(count);
-                        for (std::size_t i = 0; i < count; ++i)
-                            references.push_back(take(runtime.sequence_read(locator, i)));
-                        values.emplace_back(field.path, std::move(references));
-                    } else
-                        values.emplace_back(field.path, take(runtime.read_reference(object, field.path)));
-                }
-            return values;
-        };
-        const auto saved_property = [&](ObjectId object, std::string_view name) -> std::optional<json::Value> {
-            const auto record = records.at(object);
-            const auto at = *record.find("properties");
-            if (!at || at->kind() != json::Kind::object)
-                return std::nullopt;
-            if (name.empty())
-                return at;
-            return *at->find(name);
-        };
-        // An empty name is the whole properties record.
-        const auto invalid_record = [&](ObjectId object, const std::string& name, const Defaults& defaults,
+        const auto invalid_record = [&](ObjectId object, std::span<const std::string> names, const Defaults& defaults,
                                         const std::string& problem) {
-            std::vector<std::string> path{"properties"};
-            if (!name.empty())
-                path.push_back(name);
-            if (const auto value = saved_property(object, name))
-                load.keep(object, path, *value, world::DiagnosticKind::mismatch,
-                          problem + " Defaults are used and the saved value is kept.");
-            else
-                load.report(world::Severity::warning, world::DiagnosticKind::mismatch, object, path, nullptr,
-                            problem + " Defaults are used.");
-            for (const auto& [path, value] : defaults) {
+            Names path{"properties"};
+            path.insert(path.end(), names.begin(), names.end());
+            const auto saved = find_path(records.at(object), path);
+            load.report(world::Severity::warning, world::DiagnosticKind::mismatch, object, path,
+                        saved ? &*saved : nullptr,
+                        load.policy == LoadPolicy::strict ? problem : problem + " Record restored to its defaults.");
+            if (const auto entry = load.pending.find(object); entry != load.pending.end()) {
+                path.insert(path.begin(), "record");
+                erase_path(entry->second, entry->second.root(), path);
+                if (entry->second.root().size() == 0)
+                    load.pending.erase(entry);
+            }
+            for (const auto& field : defaults) {
+                if (!std::ranges::starts_with(field.names, names))
+                    continue;
+                const auto& path = field.path;
+                const auto& value = field.value;
                 if (const auto* scalar = std::get_if<Scalar>(&value))
                     take(runtime.write(object, path, *scalar));
                 else if (const auto* array = std::get_if<ArrayLeaf>(&value))
@@ -2148,6 +2162,23 @@ struct Session::GraphCodec {
                                                                   std::get<std::vector<ObjectReference>>(value)};
                     take(runtime.apply_reference_changes({&change, 1}));
                 }
+            }
+        };
+        const auto validate = [&](ObjectId object, const Defaults& defaults) {
+            auto failure = take(runtime.validate(object));
+            while (failure) {
+                auto names = failure->names;
+                // Arrays and other aggregate leaves have one saved value for all their elements.
+                for (const auto& field : defaults)
+                    if (field.names.size() < names.size() && std::ranges::starts_with(names, field.names)) {
+                        names = field.names;
+                        break;
+                    }
+                invalid_record(object, names, defaults, failure->error.message);
+                auto next = take(runtime.validate(object));
+                if (next && std::ranges::starts_with(next->names, names))
+                    throw std::runtime_error("Scene type defaults fail validation: " + next->error.message);
+                failure = std::move(next);
             }
         };
         // Without its mesh a component has no slots. Its binding table is kept verbatim,
@@ -2177,21 +2208,32 @@ struct Session::GraphCodec {
             load.store(object, std::array{std::string("materials")}, kept.root());
             return {};
         };
+        // Controller bindings validate their entity sequences as a whole.
+        const auto bound = [&](ObjectId object, const char* name, Result<void> applied, auto clear) {
+            if (applied)
+                return;
+            if (const auto value = find_path(records.at(object), Names{"properties", name}))
+                load.keep(object, {"properties", name}, *value, world::DiagnosticKind::mismatch,
+                          applied.error().message + " The binding is empty and the saved value is kept.");
+            else
+                load.report(world::Severity::warning, world::DiagnosticKind::mismatch, object, {"properties", name},
+                            nullptr, applied.error().message + " The binding is empty.");
+            take(clear());
+        };
         for (const auto& entity : entities) {
-            if (const auto key = *local_key(*entity.at("id")); !anchors.contains(key))
-                properties(entity, ids.at(key));
+            if (const auto key = *local_key(*entity.at("id")); !anchors.contains(key)) {
+                const auto object = ids.at(key);
+                const auto defaults = properties(entity, object, take(runtime.type_of(object)));
+                validate(object, defaults);
+            }
             const auto components = *entity.at("components")->array();
             for (auto part : components) {
-                const auto object = ids.at(*local_key(*part.at("id")));
+                const auto part_id = *local_key(*part.at("id"));
+                const auto object = ids.at(part_id);
                 const auto type = take(runtime.type_of(object));
-                const bool light = derives(runtime, type, session.presentation_types_.light_component);
                 const bool physical = physical_type(runtime, type);
                 const bool environment = derives(runtime, type, session.presentation_types_.environment_component);
-                const bool camera = derives(runtime, type, session.presentation_types_.camera_component);
-                const auto light_defaults = light ? snapshot(object, "settings") : Defaults{};
-                const auto record_defaults = environment || camera ? snapshot(object, {}) : Defaults{};
-                const auto body_defaults = physical ? snapshot(object, "body") : Defaults{};
-                properties(part, object);
+                const auto defaults = properties(part, object, type);
                 if (derives(runtime, type, session.presentation_types_.static_mesh_component)) {
                     const auto key = std::string(*part.string({"id"}));
                     if (auto at = graph.meshes.find(key); at != graph.meshes.end()) {
@@ -2333,21 +2375,20 @@ struct Session::GraphCodec {
                             runtime, object, {source, resolve_sky(session, project, source, load, object)}));
                     }
                 }
-                if (light)
-                    if (auto valid =
-                            presentation::validate_light(runtime, take(presentation::read_light(runtime, object)));
-                        !valid)
-                        invalid_record(object, "settings", light_defaults, valid.error().message);
-                // These rules span fields, so a record that breaks them returns whole to the type defaults.
-                if (environment || camera)
-                    if (const auto failure = take(runtime.validate(object)))
-                        invalid_record(object, {}, record_defaults, failure->error.message);
+                if (derives(runtime, type, session.physics_types_.ragdoll_component))
+                    bound(object, "parts",
+                          physics::set_ragdoll_parts(runtime, object, take(physics::ragdoll_parts(runtime, object))),
+                          [&] { return physics::set_ragdoll_parts(runtime, object, {}); });
+                if (derives(runtime, type, session.physics_types_.scene_query_component))
+                    bound(object, "ignored_entities",
+                          physics::set_query_ignored_entities(runtime, object,
+                                                              take(physics::query_ignored_entities(runtime, object))),
+                          [&] { return physics::set_query_ignored_entities(runtime, object, {}); });
+                validate(object, defaults);
                 if (physical) {
                     auto settings = take(physics::read_settings(runtime, object));
                     std::string problem;
-                    if (auto valid = world::validate_body_settings(runtime, settings); !valid)
-                        problem = valid.error().message;
-                    else if (settings.enabled && settings.shape == physics::ShapeKind::triangle_mesh && project) {
+                    if (settings.enabled && settings.shape == physics::ShapeKind::triangle_mesh && project) {
                         const auto mesh = presentation::read_static_mesh(runtime, object);
                         if (!mesh)
                             problem = mesh.error().message;
@@ -2355,11 +2396,10 @@ struct Session::GraphCodec {
                             problem = "Triangle collision needs a persistent mesh source.";
                     }
                     if (!problem.empty()) {
-                        invalid_record(object, "body", body_defaults, problem);
+                        invalid_record(object, Names{"body"}, defaults, problem);
+                        validate(object, defaults);
                         settings = take(physics::read_settings(runtime, object));
                     }
-                    if (auto at = graph.bodies.find(std::string(*part.string({"id"}))); at != graph.bodies.end())
-                        settings.cooked_shape = at->second.cooked_shape;
                     if (settings.enabled && settings.shape == physics::ShapeKind::triangle_mesh) {
                         const auto mesh = take(presentation::read_static_mesh(runtime, object));
                         if (!mesh.mesh.resolved && !mesh.mesh.source.empty()) {
@@ -2371,38 +2411,13 @@ struct Session::GraphCodec {
                         } else if (mesh.mesh.source.starts_with("project/"))
                             result.triangle_meshes.push_back(object);
                     }
-                    if (auto configured = physics::configure(runtime, object, settings); !configured) {
-                        invalid_record(object, "body", body_defaults, configured.error().message);
-                        std::erase(result.triangle_meshes, object);
-                        take(physics::configure(runtime, object, take(physics::read_settings(runtime, object))));
+                    if (const auto cached = graph.cooked_shapes.find(part_id);
+                        cached != graph.cooked_shapes.end() && cached->second != settings.cooked_shape) {
+                        settings.cooked_shape = cached->second;
+                        take(physics::configure(runtime, object, std::move(settings)));
                     }
                 }
             }
-        }
-        // Controller bindings validate their entity sequences as a whole.
-        const auto bound = [&](ObjectId object, const char* name, Result<void> applied, auto clear) {
-            if (applied)
-                return;
-            if (const auto value = saved_property(object, name))
-                load.keep(object, {"properties", name}, *value, world::DiagnosticKind::mismatch,
-                          applied.error().message + " The binding is empty and the saved value is kept.");
-            else
-                load.report(world::Severity::warning, world::DiagnosticKind::mismatch, object, {"properties", name},
-                            nullptr, applied.error().message + " The binding is empty.");
-            take(clear());
-        };
-        for (const auto& root : result.objects) {
-            const auto object = root.id();
-            const auto type = take(runtime.type_of(object));
-            if (derives(runtime, type, session.physics_types_.ragdoll_component))
-                bound(object, "parts",
-                      physics::set_ragdoll_parts(runtime, object, take(physics::ragdoll_parts(runtime, object))),
-                      [&] { return physics::set_ragdoll_parts(runtime, object, {}); });
-            if (derives(runtime, type, session.physics_types_.scene_query_component))
-                bound(object, "ignored_entities",
-                      physics::set_query_ignored_entities(runtime, object,
-                                                          take(physics::query_ignored_entities(runtime, object))),
-                      [&] { return physics::set_query_ignored_entities(runtime, object, {}); });
         }
         // Retained references bind to document identities, which stay stable for
         // the life of the document and are re-encoded on save.
@@ -2817,7 +2832,9 @@ struct Session::GraphCodec {
                         // Scalar leaves are one group write: a type's rules can span them, as when a probe volume moves.
                         std::vector<world::FieldPath> paths;
                         std::vector<Scalar> values;
-                        read_properties(session, edited, *at, load, resolve,
+                        const PropertyTarget target{take(runtime.type_of(edited)), edited};
+                        const auto fields = business_fields(runtime, session.types_, target.type);
+                        read_properties(runtime, target, *at, load, resolve, fields, {},
                                         [&](std::span<const FieldId> path, const PropertyLeaf& leaf) -> Result<void> {
                                             if (const auto* scalar = std::get_if<Scalar>(&leaf)) {
                                                 paths.emplace_back(path.begin(), path.end());

@@ -87,7 +87,7 @@ AFIELD(Min = "1", Max = "64", LockMin) std::uint32_t samples{8};
 
 生成器在字段调用后输出 `.range({.ui_min = ..., .hard_max = ...})`，手写注册使用同一个 `NativeRegistration::range(FieldRange)`，也可直接填写 `FieldDefinition::range`。范围属于已发布的类型定义。`.source` 类字段用同名属性 `[Min = 0.0, LockMin, HardMax = 10.0]` 写在字段前，边界是字段叶类型的常量表达式而不是字符串，其余规则相同，见[语言规则](../LANGUAGE.md#项目快照与原生派生类)。
 
-跨字段规则由类型校验器表达：`ACLASS` 与 `ASTRUCT` 可指定 `Validate = "成员或函数名"`（解析为返回 `Result<void>` 的无参 `const` 成员函数、接收 `const T&` 的静态成员函数或同作用域/限定名自由函数），生成器输出 `.validate<&...>()`；手写注册同样使用 `.validate<&F>()` 或 `TypeDefinition::validate`。语义见[类型校验](runtime-model.md#类型校验)。
+跨字段规则由类型校验器表达：`ACLASS` 与 `ASTRUCT` 可指定 `Validate = "成员或函数名"`（解析为返回 `Result<void>` 的无参 `const` 成员函数、接收 `const T&` 的静态成员函数或同作用域/限定名自由函数），生成器输出 `.validate<&...>()`；手写注册同样使用 `.validate<&F>()` 或 `TypeDefinition::validate`。生成器与 `NativeRegistration` 均拒绝按值接收被校验对象，支持上述签名的 `noexcept` 形式。语义见[类型校验](runtime-model.md#类型校验)。
 
 ### 字段与方法
 
@@ -95,7 +95,7 @@ AFIELD(Min = "1", Max = "64", LockMin) std::uint32_t samples{8};
 - `ReferenceSlot` 必须指定 `Strong = "类型名"` 或 `Weak = "类型名"`；`ReferenceSequence` 必须指定 `Sequence = "元素类型名"`，且只能属于对象。目标可以是本组的反射对象，也可以是组外任意对象类型的限定名（如 `world.Entity`）：生成代码按名称引用，由 Runtime 在发布时解析，所以组外目标必须先发布或在同一批中，缺失时发布错误写明字段和所引用的名称。目标指向本组的非对象类型时生成器报错。这些选项不能用于普通内联值。
 - `Hidden` 只控制 Runtime 公共字段目录；字段仍参与追踪。C++ 的 public/private 与此独立。`Transient` 使公开字段不参与场景与图文档的属性持久化；`ReadOnly` 使公开字段在编辑器检视面板中只读展示，不影响原生代码、`Runtime::write` 或 `.source` 写入。`Hidden` 不能与 `Transient` 或 `ReadOnly` 混用。
 - 漏标直接引用槽、序列或内嵌包含引用存储的记录/数组会报错，避免遗漏 GC 边。未标记的普通原生状态不自动成为反射字段；任意外部资源的所有权仍由原生实现负责。
-- 对象支持一个 public、非 virtual 的原生反射基类；记录不支持继承。基类可以在本组中，也可以来自另一个生成组：生成器优先凭上游 `.gen.hpp` 的 `Reflected<T, TypeKind::object>` 识别并拒绝非对象类型，使用方必须在基类所在组之后注册。组内基类的反射成员重名由生成器报错；跨组时，成员重名由 Runtime 注册时检查（`Member hides an inherited declaration`）。生成 `.base<Base>(offset)`，同时提供 Clang `ASTRecordLayout` 的非虚基类字节偏移与 C++ 编译器地址转换钩子。
+- 对象支持一个 public、非 virtual 的原生反射基类；记录不支持继承。基类可以在本组中，也可以来自另一个生成组：生成器优先凭上游 `.gen.hpp` 的 `Reflected<T, TypeKind::object>` 识别并拒绝非对象类型，使用方必须在基类所在组之后注册。组内基类的反射成员重名由生成器报错；跨组时，成员重名由 Runtime 注册时检查（`Member hides an inherited declaration`）。派生对象保证的对齐须至少等于基类的实际对齐，基类偏移也须满足该对齐。生成器在基类声明处报告不满足的布局，Runtime 发布时同样检查，地址回调也须满足基类对齐。生成 `.base<Base>(offset)`，同时提供 Clang `ASTRecordLayout` 的非虚基类字节偏移与 C++ 编译器地址转换钩子。
 - 方法支持 void、标量（含 bool）/枚举、内建数学值或 plain struct 结果，标量/枚举参数支持按值、`const T&` 和 `T&`；无 GC 引用的原生记录、Array、String 支持后两者。支持 const/noexcept 成员函数，以及符合 `Result<R>(Runtime&, ObjectId, [const] Self&, ...)` 签名的静态上下文方法（`Runtime&` 与 `ObjectId` 为宿主上下文，不计入业务参数列表）。普通无上下文静态方法、变参、模板、指针、右值/volatile 引用、引用返回、引用限定方法和运算符方法报错。内建数学值与递归 plain struct 支持同步按值参数/结果；资源记录与容器按值参数/结果与借用视图参数尚未开放。生成的定型 C++ thunk 负责实际平台 ABI。生成器使用完整成员指针或函数指针类型和完全限定的原生类型名消除重载与命名空间歧义。
 - `AFUNCTION(BorrowSafe)` 发布 `MethodInfo::preserves_borrows`，允许同步原生值区间调用该方法。它是开发者对完整调用链的保证，不是自动效果分析；具体约束见[语言规则](../LANGUAGE.md#拥有型-stringarray-与原生算法)。普通方法无需此标记，已有调用行为保持。
 - 方法的参数名取自带 `AFUNCTION` 的那个 C++ 声明，生成为 `.method<...>(...)` 之后的 `.parameter_names({...})`，发布到 `MethodInfo::parameter_names`；未命名的 C++ 参数得到空字符串。手写注册在 `method` 后调用同一个 `NativeRegistration::parameter_names`。若方法的尾部按值或 `const T&` 标量/枚举参数带有 C++ 编译期常量默认实参（浮点默认实参须有限），生成器输出 `.parameter_defaults({...})` 发布到 `MethodInfo::parameter_defaults`，动态 `Runtime::call` 与 `.source` 方法调用均可省略对应的尾部实参；可写引用参数、非标量/枚举参数或非常量默认表达式报错。规则见[运行时模型](runtime-model.md)。

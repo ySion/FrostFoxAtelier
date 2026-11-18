@@ -920,6 +920,9 @@ struct TypeInfo {
 
     bool copy_assignable{};
 
+    // Includes hard bounds and type validators inherited or nested in the value.
+    bool has_validation_rules{};
+
     // Includes declared hidden fields and references inside inline records.
     bool contains_references{};
 

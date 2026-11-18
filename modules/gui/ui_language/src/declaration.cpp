@@ -25,8 +25,6 @@ struct Evaluation {
 
     std::uint32_t node{};
 
-    std::uint32_t operation{};
-
     std::optional<Property> property;
 
     InputKind kind{InputKind::boolean};
@@ -474,7 +472,7 @@ private:
                 ATELIER_TRY_BIND(body, fragment("}"));
                 ATELIER_TRY(expect("}"));
                 const auto operation = static_cast<std::uint32_t>(evaluations_.size() + 1);
-                evaluations_.push_back({*body, slot, operation, {}});
+                evaluations_.push_back({*body, slot, {}});
                 result_.events.push_back({slot, operation});
                 continue;
             }
@@ -679,7 +677,7 @@ private:
                     return reject(expression.position, "Component Items argument has a different element type.");
             }
             const auto operation = static_cast<std::uint32_t>(evaluations_.size() + 1);
-            evaluations_.push_back({expression, slot, operation, value, value_kind, argument});
+            evaluations_.push_back({expression, slot, value, value_kind, argument});
             result_.bindings.push_back({slot, operation, value, property.position});
         }
         if ((kind == NodeKind::number_row || kind == NodeKind::text_field) &&

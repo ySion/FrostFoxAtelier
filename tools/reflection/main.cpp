@@ -901,18 +901,12 @@ std::optional<QualType> unwrap_result(QualType type) {
 }
 
 bool valid_validator_input(QualType parameter, const CXXRecordDecl* owner) {
-    if (parameter->isRValueReferenceType())
+    if (!parameter->isLValueReferenceType())
         return false;
-    if (parameter->isLValueReferenceType()) {
-        const auto pointee = parameter->getPointeeType();
-        if (!pointee.isConstQualified() || pointee.isVolatileQualified())
-            return false;
-        const auto* record = pointee->getAsCXXRecordDecl();
-        return record && record->getCanonicalDecl() == owner->getCanonicalDecl();
-    }
-    if (parameter.isVolatileQualified())
+    const auto pointee = parameter->getPointeeType();
+    if (!pointee.isConstQualified() || pointee.isVolatileQualified())
         return false;
-    const auto* record = parameter->getAsCXXRecordDecl();
+    const auto* record = pointee->getAsCXXRecordDecl();
     return record && record->getCanonicalDecl() == owner->getCanonicalDecl();
 }
 
@@ -937,7 +931,7 @@ std::optional<std::string> resolve_validator(State& state, const Type& type, AST
     };
     const auto void_result = [](QualType ret) {
         const auto inner = unwrap_result(ret);
-        return inner && (*inner)->isVoidType();
+        return !ret.getCanonicalType().hasLocalQualifiers() && inner && (*inner)->isVoidType();
     };
     if (!rooted && parts.size() == 1) {
         if (const auto* id = find_id(parts[0])) {
@@ -948,7 +942,7 @@ std::optional<std::string> resolve_validator(State& state, const Type& type, AST
                     ++callables;
                 if (const auto* method = dyn_cast<CXXMethodDecl>(decl)) {
                     ++callables;
-                    if (!method->isDeleted() && void_result(method->getReturnType()) &&
+                    if (!method->isDeleted() && !method->isVariadic() && void_result(method->getReturnType()) &&
                         ((!method->isStatic() && method->isConst() && !method->isVolatile() &&
                           method->getRefQualifier() == RQ_None && method->getNumParams() == 0) ||
                          (method->isStatic() && method->getNumParams() == 1 &&
@@ -1006,8 +1000,8 @@ std::optional<std::string> resolve_validator(State& state, const Type& type, AST
             if (const auto* fn = dyn_cast<FunctionDecl>(decl)) {
                 ++callables;
                 const auto* method = dyn_cast<CXXMethodDecl>(fn);
-                if (!fn->isDeleted() && (!method || method->isStatic()) && fn->getNumParams() == 1 &&
-                    void_result(fn->getReturnType()) &&
+                if (!fn->isDeleted() && !fn->isVariadic() && (!method || method->isStatic()) &&
+                    fn->getNumParams() == 1 && void_result(fn->getReturnType()) &&
                     valid_validator_input(fn->getParamDecl(0)->getType(), type.declaration)) {
                     matched = fn;
                 }
@@ -1101,8 +1095,18 @@ void members(State& state, Type& type, ASTContext& context) {
             return;
         }
         const auto* base_definition = declaration->getDefinition();
+        const auto alignment = context.getASTRecordLayout(base_definition).getAlignment();
+        const auto offset = layout.getBaseClassOffset(base_definition);
+        if (layout.getAlignment() < alignment || !offset.isMultipleOf(alignment)) {
+            state.error(base.getBeginLoc(), "Reflected type " + type.name + " guarantees alignment " +
+                                                std::to_string(layout.getAlignment().getQuantity()) + ", but base " +
+                                                base_definition->getQualifiedNameAsString() + " at offset " +
+                                                std::to_string(offset.getQuantity()) + " requires alignment " +
+                                                std::to_string(alignment.getQuantity()) + ".");
+            return;
+        }
         type.base = parent ? parent->qualified : "::" + base_definition->getQualifiedNameAsString();
-        type.base_offset = static_cast<std::uint64_t>(layout.getBaseClassOffset(base_definition).getQuantity());
+        type.base_offset = static_cast<std::uint64_t>(offset.getQuantity());
     }
     if (!type.validator_option.empty()) {
         if (const auto resolved = resolve_validator(state, type, context))

@@ -262,7 +262,7 @@ Stop Play 先发送合作停止请求，UI 始终非阻塞轮询；从请求起 
 ### 场景相机
 
 - `world.CameraComponent` 派生 SpatialComponent，一个 Entity 至多一个（包括派生和停用组件），准入在挂接/恢复发布前检查。位置取 Entity 世界矩阵，朝向沿真实空间父链复合规范化局部四元数；缩放大小和符号不进入朝向，零缩放本身不使相机失效。灯光仍使用自己的 orientation 规则。
-- 垂直 FOV 默认 45 度、near/far 默认 0.05/30000 米。反射硬边界为 FOV 1–179、near 0.001–100000、far 0.002–1000000，组件校验要求 far > near；渲染前仍验证有限性与投影。加载时同样执行联合校验，拒绝或保留规则见 [Scene 加载合同](../world/project-scenes.md#scene-v10)。当前格式中的可选字段未保存时使用默认值。
+- 垂直 FOV 默认 45 度、near/far 默认 0.05/30000 米。反射硬边界为 FOV 1–179、near 0.001–100000、far 0.002–1000000，组件校验要求 far > near；渲染前仍验证有限性与投影。加载时同样执行联合校验，拒绝与默认值恢复规则见 [Scene 加载合同](../world/project-scenes.md#scene-v10)。当前格式中的可选字段未保存时使用默认值。
 - `world.EnvironmentComponent.main_camera` 是指向 Entity 的弱引用，默认 null，保存为文档 `$ref`，不按顺序自动选择。写入必须走 Runtime 引用接口；同 Runtime 的跨 World 写入可以成功，消费端负责拒绝。每次更新结束（包括 late flush）重新检查引用存活、World 归属、Entity/祖先/组件启用、唯一 Camera、空间、投影和 focus；不依赖 World revision，不清掉失效引用，也不保活弱目标。
 - **Create → Camera** 新建但不自动设为主相机；**Edit → Set as Main Camera** 将选中的同场景 Camera Entity 写入引用，可存停用目标。**Clear Main Camera** 清空引用；World Settings 的 Lighting 页显示当前选择并提供 Clear。作者 Set/Clear 只在本 Session 可编辑边界执行，各记一条历史；首次 Set 同一历史创建默认 Environment，Clear 在没有 Environment 时不创建实体。作者删除目标或包含它的子树时，同一删除历史同步 Clear；删除后保存再 Undo 仍同时恢复图和引用。
 - **View → View from Camera** 一次性复制选中相机的位姿、roll、FOV 和裁剪面，不修改场景或撤销历史，不持续跟随。编辑器观察相机仍是视口状态。

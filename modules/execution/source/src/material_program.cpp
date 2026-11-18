@@ -162,8 +162,6 @@ struct MaterialProgram::State {
 
     MaterialLayout parameters;
 
-    MaterialLayout resources;
-
     std::vector<MaterialParameter> fields;
 
     std::vector<MaterialTextureInput> textures;
@@ -410,7 +408,6 @@ Result<std::shared_ptr<const MaterialProgram>> compile_material(Runtime& runtime
                 return declaration.name == resources.name && !declaration.enumeration;
             }))
             return fail(Error{ErrorCode::invalid_definition, "Material Resources must be declared by this source."});
-        state->resources = {resources.size, resources.alignment};
         state->resource_values.resize(resources.size);
         for (const auto& input : std::span(view.textures, view.texture_count)) {
             state->textures.push_back({input.key, input.slot});

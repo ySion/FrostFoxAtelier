@@ -21,6 +21,11 @@ concept ScalarType = std::same_as<T, float> || std::same_as<T, double> || std::s
 template <class T>
 concept MathValueType = static_cast<bool>(math::type_of<T>);
 
+template <class F, class T>
+concept NativeValidator =
+    std::same_as<F, Result<void> (*)(const T&)> || std::same_as<F, Result<void> (*)(const T&) noexcept> ||
+    std::same_as<F, Result<void> (T::*)() const> || std::same_as<F, Result<void> (T::*)() const noexcept>;
+
 template <class T>
 concept PlainNativeValue =
     std::is_class_v<T> && std::is_standard_layout_v<T> && std::is_trivially_copy_constructible_v<T> &&
@@ -385,7 +390,7 @@ public:
 
     // Validate is a free function or const member returning Result<void> for const T&.
     template <auto Validate>
-        requires std::is_invocable_r_v<Result<void>, decltype(Validate), const T&>
+        requires detail::NativeValidator<decltype(Validate), T>
     NativeRegistration& validate() {
         definition_.validate = [](const void* storage) noexcept -> Result<void> {
             return std::invoke(Validate, *static_cast<const T*>(storage));
