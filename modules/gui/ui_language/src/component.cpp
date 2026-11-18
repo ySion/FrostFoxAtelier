@@ -889,12 +889,61 @@ struct Context {
 };
 }
 
+namespace {
+// These spans are also the correspondence between a retained code version's
+// fault offsets and the current declaration. Keep all non-function declarations.
+struct DispatchLayout {
+    struct Span {
+        std::size_t begin;
+        std::size_t end;
+
+        std::string_view text(std::string_view source) const { return source.substr(begin, end - begin); }
+    };
+    std::vector<Span> spans;
+
+    DispatchLayout(std::string_view source, std::span<const source::EntryFunction> functions) {
+        const auto keep_declarations = [&](std::size_t begin, std::size_t end) {
+            const auto gap = source.substr(begin, end - begin);
+            const auto first = gap.find_first_not_of(" \r\n\t");
+            if (first != gap.npos)
+                spans.push_back({begin + first, begin + gap.find_last_not_of(" \r\n\t") + 1});
+        };
+        std::size_t cursor{};
+        for (const auto& function : functions) {
+            keep_declarations(cursor, function.begin);
+            if (function.reachable)
+                spans.push_back({function.begin, function.end});
+            cursor = function.end;
+        }
+        keep_declarations(cursor, source.size());
+    }
+
+    bool matches(std::string_view source, const DispatchLayout& previous, std::string_view prior_source) const {
+        return std::ranges::equal(spans, previous.spans, [&](Span current, Span prior) {
+            return current.text(source) == prior.text(prior_source);
+        });
+    }
+
+    std::optional<std::size_t> translate(std::size_t offset, const DispatchLayout& current) const {
+        const auto at = std::ranges::upper_bound(spans, offset, {}, &Span::end);
+        if (at == spans.end() || offset < at->begin)
+            return {};
+        return current.spans[static_cast<std::size_t>(at - spans.begin())].begin + (offset - at->begin);
+    }
+};
+}
+
 struct Component::Impl {
     Runtime& runtime;
 
     Declaration declaration;
 
     std::shared_ptr<source::Program> program;
+
+    std::shared_ptr<const DispatchLayout> layout;
+    std::shared_ptr<const DispatchLayout> code_layout;
+    std::size_t catalog_size{};
+    Compilation compilation{Compilation::compiled};
 
     source::Program::Typed<void, std::uint32_t> code;
 
@@ -906,12 +955,54 @@ struct Component::Impl {
         : runtime(value), declaration(std::move(source)), source_version(version) {}
 
     Error diagnostic(Error, const language::SourcePosition* fallback = nullptr) const;
+    Result<void> compile(TypeId, const Impl* prior);
 };
+
+Result<void> Component::Impl::compile(TypeId receiver, const Impl* prior) {
+    catalog_size = runtime.type_count();
+    if (prior && (&prior->runtime != &runtime || prior->catalog_size != catalog_size))
+        prior = nullptr;
+    if (prior && declaration.generated_source == prior->declaration.generated_source) {
+        layout = prior->layout;
+        compilation = Compilation::reused_source;
+    } else {
+        ATELIER_TRY_BIND(owner, source::Program::create(runtime, receiver));
+        ATELIER_TRY_BIND(request,
+                         (*owner)->request(declaration.source_name, declaration.generated_source, "__ui_dispatch"));
+        auto candidate =
+            source::Program::prepare(*request, [&](std::span<const source::EntryFunction> functions) noexcept {
+                layout = std::make_shared<DispatchLayout>(declaration.generated_source, functions);
+                return !prior || !layout->matches(declaration.generated_source, *prior->layout,
+                                                  prior->declaration.generated_source);
+            });
+        if (!candidate)
+            return std::unexpected(diagnostic(std::move(candidate.error())));
+        if (*candidate) {
+            ATELIER_TRY((*owner)->try_publish(*candidate));
+            ATELIER_TRY_BIND(lease, (*owner)->pin());
+            auto typed = lease->bind<void, std::uint32_t>();
+            if (!typed)
+                return std::unexpected(diagnostic(std::move(typed.error())));
+            program = std::move(*owner);
+            code = std::move(*typed);
+            code_layout = layout;
+            catalog_size = runtime.type_count();
+            return {};
+        }
+        compilation = Compilation::reused_dependencies;
+    }
+    program = prior->program;
+    code = prior->code;
+    code_layout = prior->code_layout;
+    return {};
+}
 
 Error Component::Impl::diagnostic(Error error, const language::SourcePosition* fallback) const {
     std::string_view message = error.message;
-    const auto offset =
+    auto offset =
         error.source ? std::optional{error.source->offset} : compiler_offset(declaration.generated_source, message);
+    if (error.source && code_layout && code_layout != layout)
+        offset = code_layout->translate(*offset, *layout);
     if (offset) {
         const auto& mappings = declaration.mappings;
         const auto at = std::ranges::upper_bound(mappings, *offset, {}, &SourceMapping::end);
@@ -949,6 +1040,10 @@ Component::~Component() = default;
 
 const Declaration& Component::declaration() const noexcept {
     return impl_->declaration;
+}
+
+Component::Compilation Component::compilation() const noexcept {
+    return impl_->compilation;
 }
 
 Result<TypeId> register_types(Runtime& runtime) {
@@ -1081,63 +1176,47 @@ Result<std::shared_ptr<Module>> Module::compile(Runtime& runtime, std::string_vi
     const auto source_version = source::content_hash(source);
     auto module = std::make_shared<Module>();
     std::vector<unsigned> states(declarations->size());
-    module->components_.resize(declarations->size());
-    std::function<Result<std::shared_ptr<Component>>(std::size_t)> compile =
-        [&](std::size_t index) -> Result<std::shared_ptr<Component>> {
+    module->components_.reserve(declarations->size());
+    for (auto& declaration : *declarations) {
+        auto impl = std::make_unique<Component::Impl>(runtime, std::move(declaration), source_version);
+        module->components_.emplace_back(new Component(std::move(impl)));
+    }
+    std::function<Result<void>(std::size_t)> compile = [&](std::size_t index) -> Result<void> {
         if (states[index] == 2)
-            return module->components_[index];
+            return {};
         if (states[index] == 1)
             return failure(std::string(name) + ": Recursive UI composition is not supported.");
         states[index] = 1;
-        const auto& declaration = (*declarations)[index];
-        std::vector<std::shared_ptr<Component>> children(declaration.nodes.size());
+        auto& impl = *module->components_[index]->impl_;
+        const auto& declaration = impl.declaration;
+        impl.children.resize(declaration.nodes.size());
         for (std::size_t i = 0; i < declaration.nodes.size(); ++i)
             if (!declaration.nodes[i].component_type.empty()) {
                 const auto& child_name = declaration.nodes[i].component_type;
-                const auto at =
-                    std::ranges::find_if(*declarations, [&](const auto& item) { return item.name == child_name; });
-                if (at == declarations->end())
+                const auto at = std::ranges::find_if(
+                    module->components_, [&](const auto& item) { return item->declaration().name == child_name; });
+                if (at == module->components_.end())
                     return failure(std::string(name) + ": Unknown child component " + child_name);
-                ATELIER_TRY_BIND(child, compile(static_cast<std::size_t>(at - declarations->begin())));
+                ATELIER_TRY(compile(static_cast<std::size_t>(at - module->components_.begin())));
+                const auto& child = *at;
                 if (declaration.nodes[i].kind == NodeKind::repeat &&
-                    (std::ranges::count_if((*child)->declaration().nodes,
+                    (std::ranges::count_if(child->declaration().nodes,
                                            [](const auto& node) { return node.parent == 0; }) != 1 ||
-                     (*child)->declaration().nodes.front().kind == NodeKind::component ||
-                     (*child)->declaration().nodes.front().kind == NodeKind::repeat))
+                     child->declaration().nodes.front().kind == NodeKind::component ||
+                     child->declaration().nodes.front().kind == NodeKind::repeat))
                     return failure(std::string(name) + ": Repeated components require one concrete root node.");
-                children[i] = std::move(*child);
+                impl.children[i] = child;
             }
-        auto impl = std::make_unique<Component::Impl>(runtime, declaration, source_version);
-        impl->children = std::move(children);
         const auto prior = previous ? previous->find(declaration.name) : nullptr;
-        if (prior && &prior->impl_->runtime == &runtime &&
-            prior->declaration().generated_source == declaration.generated_source) {
-            // Share only immutable code. Source maps and child edges belong to
-            // this revision even when its parent dispatch did not change.
-            impl->program = prior->impl_->program;
-            impl->code = prior->impl_->code;
-            ++module->compilation_.reused;
-        } else {
-            ATELIER_TRY_BIND(program, source::Program::create(runtime, *type));
-            impl->program = std::move(*program);
-            ATELIER_TRY_BIND(request, impl->program->request(impl->declaration.source_name,
-                                                             impl->declaration.generated_source, "__ui_dispatch"));
-            auto candidate = source::Program::prepare(*request);
-            if (!candidate)
-                return std::unexpected(impl->diagnostic(std::move(candidate.error())));
-            ATELIER_TRY(impl->program->try_publish(*candidate));
-            ATELIER_TRY_BIND(lease, impl->program->pin());
-            auto code = lease->bind<void, std::uint32_t>();
-            if (!code)
-                return std::unexpected(impl->diagnostic(std::move(code.error())));
-            impl->code = std::move(*code);
+        ATELIER_TRY(impl.compile(*type, prior ? prior->impl_.get() : nullptr));
+        if (impl.compilation == Component::Compilation::compiled)
             ++module->compilation_.compiled;
-        }
-        module->components_[index] = std::shared_ptr<Component>(new Component(std::move(impl)));
+        else
+            ++module->compilation_.reused;
         states[index] = 2;
-        return module->components_[index];
+        return {};
     };
-    for (std::size_t i = 0; i < declarations->size(); ++i)
+    for (std::size_t i = 0; i < module->components_.size(); ++i)
         ATELIER_TRY(compile(i));
     return module;
 }

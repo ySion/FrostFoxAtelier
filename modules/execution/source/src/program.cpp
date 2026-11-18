@@ -1167,34 +1167,42 @@ Result<Program::Request> Program::request(std::string_view name, std::string_vie
     return result;
 }
 
-Result<Program::Candidate> Program::prepare(const Request& request) {
-    return ProgramAccess::prepare(request, &atelier_compile_business);
-}
-
-Result<Program::Candidate> ProgramAccess::prepare(const Program::Request& request, Compiler compile) {
+Result<Program::Candidate> Program::prepare(const Request& request, std::optional<NeedsCode> needs_code) {
     atelier::detail::assert_serial_access();
     if (!request)
         return std::unexpected(Error{ErrorCode::invalid_definition, "Source request is empty."});
-    if (!compile)
-        return std::unexpected(Error{ErrorCode::invalid_definition, "Source compiler is missing."});
     const auto owner = request->owner_.lock();
     if (!owner || !owner->open)
         return std::unexpected(Error{ErrorCode::invalid_definition, "Source request belongs to a closed program."});
     if (request->declaration_error_)
         return std::unexpected(*request->declaration_error_);
-    if (request->module_)
+    if (request->module_) {
+        if (needs_code)
+            return std::unexpected(
+                Error{ErrorCode::invalid_definition, "Entry dependency selection requires a single source input."});
         return Program::prepare_module(request);
+    }
     BusinessCode* output{};
     char diagnostic[2048];
     const auto& contract = *request->compilation_contract_;
     const EnvironmentView storage(contract.binding);
     const auto environment = storage.view(contract.type_name.c_str());
-    const auto status = compile(&contract.actual_services, request->source_name.c_str(), request->source.data(),
-                                static_cast<std::uint32_t>(request->source.size()), &environment, &output, diagnostic,
-                                sizeof(diagnostic), request->entry_name.c_str(), request->options);
+    auto callback = [&](std::span<const EntryFunction> functions) noexcept {
+        return (*needs_code)(functions) || request->type_publication_ != nullptr;
+    };
+    const EntryFilter selection{&callback,
+                                [](void* context, const EntryFunction* functions, std::uint32_t count) noexcept {
+                                    return (*static_cast<decltype(callback)*>(context))({functions, count});
+                                }};
+    const auto status = atelier_compile_business(
+        &contract.actual_services, request->source_name.c_str(), request->source.data(),
+        static_cast<std::uint32_t>(request->source.size()), &environment, &output, diagnostic, sizeof(diagnostic),
+        request->entry_name.c_str(), request->options, needs_code ? &selection : nullptr);
     CodeOwner code{output, &atelier_destroy_business};
     if (status != 0)
         return std::unexpected(Error{ErrorCode::invalid_definition, diagnostic});
+    if (!code)
+        return Candidate{};
     const auto info = atelier_business_info(code.get());
     if (!request->entry_name.empty() && (!info.function_name || request->entry_name != info.function_name))
         return std::unexpected(

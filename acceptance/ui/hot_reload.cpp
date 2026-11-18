@@ -102,5 +102,28 @@ void verify_ui_error_recovery() {
     require(document.diagnostic().empty() && take(click()), "Valid input did not recover the UI.");
     take(stage(2));
     present(1);
+    source.replace(source.find("2.0d / input.divisor"), std::string_view("2.0d / input.divisor").size(),
+                   "double(divide(int(input.divisor)))");
+    source.insert(0, "int unused(){ return 1; }\nint divide(int value){ return 9 / value; }\n");
+    const auto divide_failure = [&](Component::Compilation expected) {
+        reload(source);
+        take(stage(0));
+        present(1);
+        require(document.component("Probe")->compilation() == expected, "Unexpected event entry replacement.");
+        auto error = click();
+        const auto slash = source.find("9 / value") + 2;
+        require(!error && error.error().source && error.error().message.contains("nonzero divisor") &&
+                    error.error().source->offset == slash &&
+                    error.error().source->version == source::content_hash(source) &&
+                    error.error().source->line ==
+                        static_cast<std::size_t>(std::ranges::count(source.substr(0, slash), '\n')) + 1 &&
+                    error.error().source->column == slash - source.rfind('\n', slash),
+                "Division fault points to stale source.");
+    };
+    divide_failure(Component::Compilation::compiled);
+    source.replace(source.find("return 1;"), 9, "int longer = 1234567;\n return longer + 2;");
+    divide_failure(Component::Compilation::reused_dependencies);
+    source.insert(0, "// same code, move the fault again\n");
+    divide_failure(Component::Compilation::reused_source);
     std::filesystem::remove(path);
 }

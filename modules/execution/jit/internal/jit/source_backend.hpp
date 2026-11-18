@@ -2,6 +2,7 @@
 #include "runtime/parameter.hpp"
 #include "math/type.hpp"
 #include "source/diagnostic_types.hpp"
+#include "source/entry_dependencies.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -475,6 +476,11 @@ struct CompileLocation {
     std::uint64_t column{};
 };
 
+struct EntryFilter {
+    void* context;
+    bool (*needs_code)(void*, const EntryFunction*, std::uint32_t) noexcept;
+};
+
 struct MaterialCode;
 
 struct MaterialTextureInfo {
@@ -526,7 +532,8 @@ atelier_compile_business(const atelier::source::detail::BusinessServices* servic
                          const char* source, std::uint32_t source_size,
                          const atelier::source::detail::BusinessEnvironment* environment,
                          atelier::source::detail::BusinessCode** output, char* error, std::uint32_t error_capacity,
-                         const char* entry_name = nullptr, atelier::source::CompileOptions options = {}) noexcept;
+                         const char* entry_name = nullptr, atelier::source::CompileOptions options = {},
+                         const atelier::source::detail::EntryFilter* filter = nullptr) noexcept;
 
 // One synchronous compilation with multiple typed host entries. Each output is
 // a view owning the same JIT module; failure leaves every output untouched.

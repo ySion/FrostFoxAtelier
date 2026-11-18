@@ -303,12 +303,8 @@ Result<BusinessValue> execute_admitted(ExecutionScope&, Runtime&, const Binding&
                                        std::uint32_t* failure_site = nullptr);
 
 struct ProgramAccess {
-    using Compiler = decltype(&atelier_compile_business);
-
     static std::uintptr_t address(const Program::Lease&) noexcept;
 
     static bool stateless_direct(const Program::Lease&) noexcept;
-
-    static Result<Program::Candidate> prepare(const Program::Request&, Compiler);
 };
 }

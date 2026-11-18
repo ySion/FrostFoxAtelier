@@ -141,6 +141,8 @@ public:
                     ++braces;
                 if (token_.text == "}")
                     --braces;
+                if (braces == 0)
+                    module_.functions.back().end_offset = token_.position.offset + token_.text.size();
                 ATELIER_TRY(consume());
             }
         }

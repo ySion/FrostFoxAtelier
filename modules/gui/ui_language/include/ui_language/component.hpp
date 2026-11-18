@@ -165,6 +165,9 @@ public:
 
     const Declaration& declaration() const noexcept;
 
+    enum class Compilation { compiled, reused_source, reused_dependencies };
+    Compilation compilation() const noexcept;
+
 private:
     struct Impl;
 

@@ -2777,15 +2777,13 @@ std::uint32_t compilation_failure(char* error, std::uint32_t capacity, const cha
     return 1;
 }
 
-std::uint32_t compile_business_impl(const atelier::source::detail::BusinessServices* services, const char* source_name,
-                                    const char* source, std::uint32_t source_size,
-                                    const atelier::source::detail::BusinessEnvironment* environment,
-                                    atelier::source::detail::BusinessCode** output, char* error,
-                                    std::uint32_t error_capacity, const char* entry_name,
-                                    atelier::source::CompileOptions options, const char* const* entries = nullptr,
-                                    std::uint32_t entry_count = 0, bool receiver = false,
-                                    atelier::source::detail::CompileLocation* location = nullptr,
-                                    bool declarations_only = false) noexcept {
+std::uint32_t compile_business_impl(
+    const atelier::source::detail::BusinessServices* services, const char* source_name, const char* source,
+    std::uint32_t source_size, const atelier::source::detail::BusinessEnvironment* environment,
+    atelier::source::detail::BusinessCode** output, char* error, std::uint32_t error_capacity, const char* entry_name,
+    atelier::source::CompileOptions options, const char* const* entries = nullptr, std::uint32_t entry_count = 0,
+    bool receiver = false, atelier::source::detail::CompileLocation* location = nullptr, bool declarations_only = false,
+    const atelier::source::detail::EntryFilter* filter = nullptr) noexcept {
     atelier::source::detail::initialize_fatal_handlers();
     if (!error || error_capacity == 0)
         return 1;
@@ -2941,6 +2939,17 @@ std::uint32_t compile_business_impl(const atelier::source::detail::BusinessServi
                                    "Source-owned values require the native value lifecycle services.");
     if (mutates_sequences && !services->mutate_sequence)
         return compilation_failure(error, error_capacity, "Source sequence mutation requires its native service.");
+    if (filter) {
+        std::vector<source::EntryFunction> functions;
+        functions.reserve(program->functions.size());
+        for (std::size_t i = 0; i < program->functions.size(); ++i) {
+            const auto& function = program->functions[i];
+            functions.push_back({static_cast<std::uint32_t>(function.position.offset),
+                                 static_cast<std::uint32_t>(function.end_offset), program->reachable[i]});
+        }
+        if (!filter->needs_code(filter->context, functions.data(), static_cast<std::uint32_t>(functions.size())))
+            return 0;
+    }
     auto state = atelier::source::detail::compile(*services, *program, source_environment, options, {}, environment);
     if (!state)
         return compilation_failure(error, error_capacity, llvm::toString(state.takeError()).c_str());
@@ -3087,9 +3096,10 @@ std::uint32_t atelier_compile_business(const atelier::source::detail::BusinessSe
                                        const atelier::source::detail::BusinessEnvironment* environment,
                                        atelier::source::detail::BusinessCode** output, char* error,
                                        std::uint32_t error_capacity, const char* entry_name,
-                                       atelier::source::CompileOptions options) noexcept {
+                                       atelier::source::CompileOptions options,
+                                       const atelier::source::detail::EntryFilter* filter) noexcept {
     return compile_business_impl(services, source_name, source, source_size, environment, output, error, error_capacity,
-                                 entry_name, options);
+                                 entry_name, options, nullptr, 0, false, nullptr, false, filter);
 }
 
 void atelier_query_business_info(atelier::source::detail::BusinessCode* code,

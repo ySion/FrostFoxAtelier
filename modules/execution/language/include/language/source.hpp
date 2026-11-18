@@ -311,6 +311,8 @@ struct Local {
 struct Function {
     SourcePosition position;
 
+    std::size_t end_offset{};
+
     std::string function_name;
 
     std::vector<ParameterType> parameters;

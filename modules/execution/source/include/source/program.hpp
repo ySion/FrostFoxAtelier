@@ -1,6 +1,8 @@
 #pragma once
 
 #include "foundation/result.hpp"
+#include "foundation/function_ref.hpp"
+#include "source/entry_dependencies.hpp"
 #include "runtime/execution.hpp"
 #include "source/snapshot.hpp"
 #include "source/diagnostics.hpp"
@@ -38,8 +40,6 @@ class Program final {
     struct ModuleRequest;
 
     struct ModuleVersion;
-
-    friend struct detail::ProgramAccess;
 
     template <class T>
     static constexpr bool direct_scalar = std::same_as<T, std::int32_t> || std::same_as<T, std::uint32_t> ||
@@ -223,8 +223,6 @@ public:
     class SourceRequest {
         friend class Program;
 
-        friend struct detail::ProgramAccess;
-
         std::weak_ptr<State> owner_;
 
         std::shared_ptr<const Contract> contract_;
@@ -262,8 +260,6 @@ public:
 
     class Candidate {
         friend class Program;
-
-        friend struct detail::ProgramAccess;
 
         std::unique_ptr<Prepared> prepared_;
 
@@ -376,8 +372,6 @@ public:
     class Entry {
         friend class Program;
 
-        friend struct detail::ProgramAccess;
-
         std::weak_ptr<State> owner_;
 
         std::optional<std::size_t> index_;
@@ -478,7 +472,11 @@ public:
 
     Result<Request> request(SourceSnapshot, CompileOptions = {});
 
-    static Result<Candidate> prepare(const Request&);
+    // For a single input the optional selector inspects borrowed dependency facts
+    // synchronously after all bodies pass. Returning false skips LLVM and yields
+    // an empty candidate unless the request also has types to publish.
+    using NeedsCode = FunctionRef<bool(std::span<const EntryFunction>) noexcept>;
+    static Result<Candidate> prepare(const Request&, std::optional<NeedsCode> = {});
 
     // Busy does not consume the candidate. Publishing requires the latest
     // request, unchanged dependencies and the declaration's frozen signature.

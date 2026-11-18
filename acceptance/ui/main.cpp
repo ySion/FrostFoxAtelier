@@ -14,6 +14,7 @@
 using namespace atelier;
 
 void verify_ui_error_recovery();
+void verify_ui_entry_dependencies();
 
 namespace {
 using acceptance::helpers::require;
@@ -229,5 +230,6 @@ int main() {
     identity_and_lifetime();
     repeat_updates();
     verify_ui_error_recovery();
-    std::puts("UI acceptance: PASS (accepted frame lifetime, Repeat updates, hot-reload error recovery)");
+    verify_ui_entry_dependencies();
+    std::puts("UI acceptance: PASS (accepted frames, Repeat, error recovery, editor entry dependencies)");
 }
