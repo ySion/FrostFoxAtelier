@@ -390,6 +390,8 @@ Play 的 World Tick/协程按宿主调用推进，物理累积器不代表整个
 
 编辑器的自动验收只保留下列入口，均进入总 `acceptance` 目标；构建配置、窗口锁和运行方式见[验收门禁](../../../README.md#构建与端到端验收)。`--profile-*` 是测量入口，不进入总入口。
 
+`atelier_editor --project <工程目录> --profile-ui-reload <新的绝对输出目录>` 在真实编辑器窗口中保留 VSync，预热后交错保存 12 次 ToolShelf 高度改动和 12 次纯注释改动。它使用编辑器的原子保存函数写入输出目录中的作者文件副本。`reloads.csv` 从保存返回计到新版工具架首次进入接受帧，分别给出文件检测、去抖、读取、编译、实例更新和帧接受耗时。`steps.csv` 提供其间逐步的输入轮询、接受帧间隔以及帧记录器已有的阶段时间。常规启动不采集这组样本。[实测结果](../../research/ui-helper-incremental-compilation.md#真实编辑器从保存到接受帧)
+
 - `editor_log_smoke_acceptance`（窗口）运行 `atelier_editor_control_acceptance <atelier_editor.exe> <输出目录> --smoke-logs`：按 `Config/Project.json` 复制 Examples 的 `Config`、`Source` 与启动场景所在的 `Content/<场景包>`，以 `--no-activate --gpu-validation` 启动真实编辑器并等待启动场景的接受帧；经 Control 执行一次 `scene.add` → `scene.save` → `edit.undo`，确认撤销后有新的接受帧；随后启动 Play，在 Play 运行时关闭编辑器，检查编辑器与 runner 日志零错误且 Play 正常结束，通过后自动删除临时 `Project/` 副本。日志判定见 [Control 端到端验收](control.md#端到端验收)。
 - `editor_document_acceptance`（无窗口）的默认运行覆盖 StaticMeshEntity 创建的单条历史及 undo/redo 后的身份与网格资源、glTF 节点变换数学，以及一次网格导入→重新导入。
 - `project_scene_acceptance`（无窗口）覆盖一次作者字段值的 Scene 保存/重开往返，以及失败 Tick 中嵌套 stop 时 End 返回后才释放 PhysicsScene 的停止/关闭顺序。

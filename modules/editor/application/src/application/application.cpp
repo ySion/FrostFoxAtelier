@@ -1958,11 +1958,13 @@ Result<void> Application::enable_control(const std::filesystem::path& directory)
     return {};
 }
 
-Result<bool> Application::step(renderer::Capture* capture) {
+Result<bool> Application::step(renderer::Capture* capture, StepTimes* times) {
     // The frame closes after run_step, so the retirement of its frame-local containers is included.
     timing::Recorder::Frame frame{recorder_};
     sampled_frame_.reset();
-    auto running = run_step(capture);
+    if (times)
+        *times = {};
+    auto running = run_step(capture, times);
     if (!running) {
         close_menu(false);
         report_error(running.error(), "editor.frame_failed");
@@ -1982,7 +1984,7 @@ Result<bool> Application::step(renderer::Capture* capture) {
     return running;
 }
 
-Result<bool> Application::run_step(renderer::Capture* capture) try {
+Result<bool> Application::run_step(renderer::Capture* capture, StepTimes* times) try {
     using Clock = std::chrono::steady_clock;
     frame_statistics_ = {};
     if (closed_)
@@ -2002,6 +2004,8 @@ Result<bool> Application::run_step(renderer::Capture* capture) try {
     {
         timing::Scope input{phases::input};
         Result<void> polled;
+        if (times)
+            times->input = Clock::now();
         window_.poll([&](NativeEvent&& event) {
             if (polled)
                 polled = native(std::move(event));
@@ -2304,8 +2308,12 @@ Result<bool> Application::run_step(renderer::Capture* capture) try {
     if (rendered.status == renderer::FrameStatus::accepted) {
         if (rendered.accepted_id != frame.drawing->id || rendered.accepted_extent != frame.drawing->extent)
             throw std::runtime_error("Renderer accepted a mismatched frame.");
+        if (times)
+            times->accept_begin = Clock::now();
         if (!ui_.accept(*prepared))
             throw std::runtime_error("UI rejected an accepted renderer frame.");
+        if (times)
+            times->accepted = Clock::now();
         if (scene)
             scene_.accept(rendered.accepted_id, drawn->fallback, drawn->view.shading);
         render_retry_at_ = {};

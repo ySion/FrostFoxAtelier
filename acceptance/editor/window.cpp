@@ -25,6 +25,8 @@ using atelier::acceptance::helpers::take;
 
 namespace atelier::application {
 struct EditorAcceptanceAccess {
+    static editor::Workspace& workspace(Application& app) { return app.workspace_; }
+
     static void mark_saved(Application& app) {
         app.effects(app.ui_.cancel_interaction());
         app.document_->mark_saved();
@@ -399,3 +401,4 @@ int capture_editor_snapshot(Application& app, const char* output_directory) {
 }
 
 #include "performance.inl"
+#include "ui_reload_profile.inl"

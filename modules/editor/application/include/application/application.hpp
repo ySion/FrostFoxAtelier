@@ -31,7 +31,10 @@ public:
 
     ~Application();
 
-    Result<bool> step(renderer::Capture* = nullptr);
+    struct StepTimes {
+        timing::Clock::time_point input, accept_begin, accepted;
+    };
+    Result<bool> step(renderer::Capture* = nullptr, StepTimes* = nullptr);
 
     Result<void> enable_control(const std::filesystem::path& directory);
 
@@ -259,7 +262,7 @@ private:
 
     double fps_interval_{}; // The frame interval the FPS text was formatted from.
 
-    Result<bool> run_step(renderer::Capture*);
+    Result<bool> run_step(renderer::Capture*, StepTimes*);
 
     std::chrono::steady_clock::time_point render_retry_at_{};
 

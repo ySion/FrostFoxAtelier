@@ -73,6 +73,14 @@ void LiveDocument::recover_initial() {
     candidate_failed_ = false;
 }
 
+const LiveDocument::ReloadTiming* LiveDocument::profile_reloads(bool enable) {
+    if (!enable)
+        timing_.reset();
+    else if (!timing_)
+        timing_ = std::make_unique<ReloadTiming>();
+    return timing_.get();
+}
+
 void LiveDocument::poll(Clock::time_point now) {
     if (candidate_ || pending_submission_ || now < next_poll_)
         return;
@@ -91,6 +99,11 @@ void LiveDocument::poll(Clock::time_point now) {
     if (!changed_ || (attempted_ && now - changed_at_ < std::chrono::milliseconds(200)))
         return;
     changed_ = false;
+    if (timing_) {
+        *timing_ = {};
+        timing_->detected = changed_at_;
+        timing_->read_begin = Clock::now();
+    }
     if (error) {
         attempted_ = true;
         attempted_source_.reset();
@@ -122,13 +135,19 @@ void LiveDocument::poll(Clock::time_point now) {
     attempted_source_ = source;
     failed_region_.clear();
     submission_failed_ = false;
+    if (timing_)
+        timing_->compile_begin = Clock::now();
     auto module = Module::compile(runtime_, utf8(path_.filename()), source, active_.get());
+    if (timing_)
+        timing_->compile_end = Clock::now();
     if (!module) {
         diagnostic_ = module.error().message;
         recover_initial();
         return;
     }
     candidate_ = std::move(*module);
+    if (timing_)
+        timing_->compilation = candidate_->compilation();
     candidate_source_ = std::move(source);
     candidate_failed_ = false;
     for (auto& [name, region] : regions_) {
@@ -145,7 +164,11 @@ void LiveDocument::poll(Clock::time_point now) {
             return;
         }
         pending_submission_ |= region.instance->has_pending();
+        if (timing_)
+            ++timing_->rebound_regions;
     }
+    if (timing_)
+        timing_->instances_ready = Clock::now();
     diagnostic_.clear();
 }
 
@@ -183,6 +206,8 @@ Result<void> LiveDocument::append(std::string_view name, ui::ControlKey parent, 
         }
         blocked = !candidate_ && region.rejected_inputs && same_rejected_inputs(*region.rejected_inputs, inputs);
         retried = region.rejected_inputs.has_value() && !blocked;
+        auto* sample = candidate_ ? timing_.get() : nullptr;
+        const auto start = sample ? Clock::now() : Clock::time_point{};
         if (!region.instance) {
             if (blocked)
                 return {}; // A refused first mount contributes an empty accepted view.
@@ -204,6 +229,8 @@ Result<void> LiveDocument::append(std::string_view name, ui::ControlKey parent, 
                 return report(updated.error());
             }
         }
+        if (sample)
+            sample->append_updates += Clock::now() - start;
         if (!blocked)
             region.rejected_inputs.reset();
     }
@@ -282,6 +309,10 @@ void LiveDocument::commit_controls() {
         active_source_ = std::move(candidate_source_);
         recovery_source_.reset();
         ++revision_;
+        if (timing_) {
+            timing_->revision = revision_;
+            timing_->committed = Clock::now();
+        }
     }
     pending_submission_ = false;
 }

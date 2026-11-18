@@ -14,6 +14,19 @@ class LiveDocument {
 public:
     using Clock = std::chrono::steady_clock;
 
+    struct ReloadTiming {
+        // Detected uses the watcher's poll time. All later boundaries use the monotonic clock.
+        Clock::time_point detected, read_begin, compile_begin, compile_end, instances_ready, committed;
+        // Region creation/update against fresh host inputs, after rebinding the mounted definitions.
+        Clock::duration append_updates{};
+        Module::Compilation compilation{};
+        std::size_t rebound_regions{};
+        std::uint64_t revision{};
+    };
+
+    // Last attempted file reload. Borrow valid until sampling is disabled or the document closes.
+    const ReloadTiming* profile_reloads(bool enable);
+
     LiveDocument(Runtime&, std::filesystem::path, ui::ControlKey&, std::optional<std::string> recovery_source = {});
 
     void poll(Clock::time_point now = Clock::now());
@@ -94,6 +107,8 @@ private:
     Clock::time_point next_poll_{};
 
     Clock::time_point changed_at_{};
+
+    std::unique_ptr<ReloadTiming> timing_;
 
     std::optional<std::string> attempted_source_;
 

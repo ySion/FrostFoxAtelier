@@ -468,6 +468,10 @@ struct Workspace {
 
     std::uint64_t ui_revision() const noexcept { return ui_document_ ? ui_document_->revision() : 0; }
 
+    const ui_language::LiveDocument::ReloadTiming* profile_ui_reloads(bool enable) {
+        return ui_document_ ? ui_document_->profile_reloads(enable) : nullptr;
+    }
+
     std::shared_ptr<ui_language::Component> ui_component(std::string_view name) const {
         return ui_document_ ? ui_document_->component(name) : nullptr;
     }

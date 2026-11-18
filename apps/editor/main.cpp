@@ -16,6 +16,7 @@
 #include <chrono>
 
 int profile_editor_render_performance(atelier::application::Application&, const char* output_directory);
+atelier::Result<int> profile_editor_ui_reload(atelier::application::Application&, const std::filesystem::path& output_directory);
 
 int capture_editor_snapshot(atelier::application::Application&, const char* output_directory);
 
@@ -38,7 +39,8 @@ atelier::Result<int> host_main(int argc, wchar_t** argv) {
     bool no_activate{};
     bool gpu_validation{};
     std::optional<atelier::ui::PixelExtent> initial_client;
-    std::optional<std::filesystem::path> render_performance_output;
+    std::optional<std::filesystem::path> profile_output;
+    bool profile_reload{};
     const auto dimension = [](std::wstring_view value) {
         std::uint32_t pixels{};
         for (const auto c : value) {
@@ -59,12 +61,13 @@ atelier::Result<int> host_main(int argc, wchar_t** argv) {
             no_activate = true;
         else if (option == L"--gpu-validation")
             gpu_validation = true;
-        else if (option == L"--profile-render-performance") {
-            if (render_performance_output || ++i == argc)
-                throw std::runtime_error("--profile-render-performance requires one absolute output directory.");
-            render_performance_output = std::filesystem::path(argv[i]);
-            if (!render_performance_output->is_absolute())
-                throw std::runtime_error("Render performance output directory must be absolute.");
+        else if (option == L"--profile-render-performance" || option == L"--profile-ui-reload") {
+            if (profile_output || ++i == argc)
+                throw std::runtime_error("Choose one profile and an absolute output directory.");
+            profile_reload = option == L"--profile-ui-reload";
+            profile_output = std::filesystem::path(argv[i]);
+            if (!profile_output->is_absolute())
+                throw std::runtime_error("Profile output directory must be absolute.");
         } else if (option == L"--client-size") {
             if (initial_client)
                 throw std::runtime_error("--client-size can only be specified once.");
@@ -98,31 +101,31 @@ atelier::Result<int> host_main(int argc, wchar_t** argv) {
     const bool project =
         (argc == 3 || (argc == 5 && scene_argument) || preview) && std::wstring_view(argv[1]) == L"--project";
     const bool create = argc == 3 && std::wstring_view(argv[1]) == L"--new-project";
-    if (render_performance_output && !project)
+    if (profile_output && !project)
         throw std::runtime_error(
-            "--profile-render-performance requires --project, optionally followed by the existing --scene and camera arguments.");
+            "Editor profiles require --project, optionally followed by --scene and camera arguments.");
     if (argc != 1 && !project && !((snapshot || create) && argc == 3)) {
         std::fprintf(
             stderr,
-            "Usage: atelier_editor [--log-directory absolute-new-directory] [--parent-run run-id] [--profile-render-performance absolute-output-directory] [--no-activate] [--client-size width height (physical pixels)] [--version] [--project|--new-project folder] [--scene relative.scene [--material-camera|--scene-lit-camera eye-x eye-y eye-z target-x target-y target-z]] [--snapshot output-directory]\n");
+            "Usage: atelier_editor [--log-directory absolute-new-directory] [--parent-run run-id] [--profile-render-performance|--profile-ui-reload absolute-output-directory] [--no-activate] [--client-size width height (physical pixels)] [--version] [--project|--new-project folder] [--scene relative.scene [--material-camera|--scene-lit-camera eye-x eye-y eye-z target-x target-y target-z]] [--snapshot output-directory]\n");
         return 2;
     }
     if (snapshot)
         guard_acceptance_native_dialogs();
-    if (snapshot || render_performance_output)
+    if (snapshot || profile_output)
         atelier::application::isolate_shader_cache();
     auto document = std::make_unique<atelier::editor::Session>();
     ATELIER_TRY(document->initialize({}, atelier::editor::SessionRole::editor));
     atelier::application::Application app;
     const auto initialized =
-        app.initialize(std::move(document), gpu_validation, !snapshot && !no_activate && !render_performance_output,
-                       initial_client, !render_performance_output);
+        app.initialize(std::move(document), gpu_validation, !snapshot && !no_activate && !profile_output,
+                       initial_client, !profile_output || profile_reload);
     if (!initialized)
         return std::unexpected(initialized.error());
     if (project || create) {
         const auto opened =
             app.open_project(argv[2], create,
-                             render_performance_output ? atelier::application::ProjectOpenPolicy::require_scene
+                             profile_output ? atelier::application::ProjectOpenPolicy::require_scene
                                                        : atelier::application::ProjectOpenPolicy::allow_repair);
         if (!opened)
             return std::unexpected(opened.error());
@@ -138,15 +141,17 @@ atelier::Result<int> host_main(int argc, wchar_t** argv) {
         if (!view)
             throw std::runtime_error(view.error().message);
     }
+    if (profile_reload)
+        return profile_editor_ui_reload(app, *profile_output);
     std::string output_directory;
-    if (render_performance_output || snapshot) {
+    if (profile_output || snapshot) {
         auto converted = atelier::platform::utf16_to_utf8(
-            render_performance_output ? render_performance_output->native() : std::wstring_view(argv[2]));
+            profile_output ? profile_output->native() : std::wstring_view(argv[2]));
         if (!converted)
             return std::unexpected(atelier::Error{atelier::ErrorCode::invalid_storage, "Invalid UTF-16 text"});
         output_directory = std::move(*converted);
     }
-    if (render_performance_output)
+    if (profile_output)
         return profile_editor_render_performance(app, output_directory.c_str());
     if (snapshot)
         return capture_editor_snapshot(app, output_directory.c_str());

@@ -214,6 +214,6 @@ UI 外观片（不限 Editor、Renderer）集成前，须把设计参考图（�
 
 同一行为只保留一个最必要的代表用例，期望值必须来自独立真值。删除从被测实现输出反抄期望的用例、重复覆盖、放大规模和参数矩阵，不靠扩大样本或组合保留重复测试。
 
-保留的测量入口仅为 `--profile-render-performance`、`--profile-scene-cpu`、`--profile-physics-cpu`、`--profile-procedural` 和 `--scene-lit-benchmark`。它们独立运行，不进入验收清单或 `-Full`，测量数值不作通过条件；其他 measure/profile 入口列为删除候选。
+保留的测量入口仅为 `--profile-render-performance`、`--profile-ui-reload`、`--profile-scene-cpu`、`--profile-physics-cpu`、`--profile-procedural` 和 `--scene-lit-benchmark`。它们独立运行，不进入验收清单或 `-Full`，测量数值不作通过条件；其他 measure/profile 入口列为删除候选。
 
 其余列为删除候选，包括已能报错、抛异常或进入日志的拒绝、错误文本、边界与防御矩阵，以及 CPU 验收在窗口中的重复检查。删除前提交逐项清单，审批后再改；无法判定的单列，不能把候选当作删除授权。窗口验收删除前须先有日志零错误的冒烟通过证据。只剩测试调用、没有产品消费者的观察接口，随对应测试删除后清理，不删除仍服务产品诊断的接口。以上是已裁定的保留规则，不表示现有用例及目标清单已完成清理。执行模式与命令只在 [README](../README.md#构建与端到端验收) 维护。
