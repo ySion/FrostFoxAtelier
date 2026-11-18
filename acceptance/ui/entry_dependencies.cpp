@@ -6,8 +6,11 @@
 #include <iterator>
 
 using namespace atelier;
+
 using namespace ui_language;
+
 using acceptance::helpers::require;
+
 using acceptance::helpers::take;
 
 namespace {
@@ -109,6 +112,16 @@ void verify_ui_entry_dependencies() {
                 document.committed_source() == source,
             document.diagnostic());
     present(57);
+    for (const std::string_view type_decl :
+         {"struct RejectedUiType { double value; };\n", "[Flags] enum RejectedUiFlags : uint { bit = 1 }\n"}) {
+        reload(std::string(type_decl) + source);
+        require(document.diagnostic().contains(":1:1:") &&
+                    document.diagnostic().contains("do not support Source struct or enum declarations") &&
+                    document.revision() == revision && document.committed_source() == source &&
+                    runtime.type_count() == types,
+                document.diagnostic());
+        present(57);
+    }
     source.insert(0, "double unused_probe() { return 1.0d; }\n");
     reload(source);
     present(57);
@@ -158,7 +171,8 @@ void verify_ui_entry_dependencies() {
     present(43);
     save(path, newer);
     begin(document, now);
-    require(document.compiling() && document.attempted_source() == broken && document.diagnostic().contains("Type mismatch"),
+    require(document.compiling() && document.attempted_source() == broken &&
+                document.diagnostic().contains("Type mismatch"),
             "A running build attached the previous diagnostic to newer source.");
     drain(document, now);
     present(42);

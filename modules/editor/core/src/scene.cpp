@@ -2061,7 +2061,9 @@ struct Session::GraphCodec {
         using DefaultValue = std::variant<Scalar, String, ArrayLeaf, ObjectReference, std::vector<ObjectReference>>;
         struct DefaultField {
             Names names;
+
             world::FieldPath path;
+
             DefaultValue value;
         };
         using Defaults = std::vector<DefaultField>;

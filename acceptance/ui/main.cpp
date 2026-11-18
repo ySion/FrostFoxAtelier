@@ -14,6 +14,7 @@
 using namespace atelier;
 
 void verify_ui_error_recovery();
+
 void verify_ui_entry_dependencies();
 
 namespace {

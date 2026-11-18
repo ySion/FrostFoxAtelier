@@ -479,6 +479,7 @@ struct CompileLocation {
 
 struct EntryFilter {
     void* context;
+
     bool (*needs_code)(void*, const EntryFunction*, std::uint32_t) noexcept;
 };
 

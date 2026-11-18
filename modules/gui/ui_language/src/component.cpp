@@ -897,10 +897,12 @@ namespace {
 struct DispatchLayout {
     struct Span {
         std::size_t begin;
+
         std::size_t end;
 
         std::string_view text(std::string_view source) const { return source.substr(begin, end - begin); }
     };
+
     std::vector<Span> spans;
 
     DispatchLayout(std::string_view source, std::span<const source::EntryFunction> functions) {
@@ -943,8 +945,11 @@ struct Component::Impl {
     std::shared_ptr<source::Program> program;
 
     std::shared_ptr<const DispatchLayout> layout;
+
     std::shared_ptr<const DispatchLayout> code_layout;
+
     std::size_t catalog_size{};
+
     Compilation compilation{Compilation::compiled};
 
     source::Program::Typed<void, std::uint32_t> code;
@@ -957,6 +962,7 @@ struct Component::Impl {
         : runtime(value), declaration(std::move(source)), source_version(version) {}
 
     Error diagnostic(Error, const language::SourcePosition* fallback = nullptr) const;
+
     void reuse(const Impl& prior) {
         program = prior.program;
         code = prior.code;
@@ -967,9 +973,13 @@ struct Component::Impl {
 struct Module::Build {
     struct Entry {
         Component::Impl& next;
+
         std::shared_ptr<Component> prior;
+
         source::Program::Request request;
+
         ComponentTiming* timing;
+
         std::optional<source::Program::Emission> emission;
 
         // Only the candidate layout, owned compiler data and optional worker timing are written here.
@@ -1029,11 +1039,14 @@ struct Module::Build {
     };
 
     std::shared_ptr<Module> module = std::make_shared<Module>();
+
     std::vector<Entry> entries;
-    bool background{};
+
     std::atomic_bool cancelled{};
+
     // Destroy first: the async task borrows entries; their last release stays on the owner.
     std::future<Result<void>> worker;
+
     ~Build() { cancelled.store(true, std::memory_order_relaxed); }
 
     Result<void> stage(Component::Impl& next, TypeId type, std::shared_ptr<Component> prior, ComponentTiming* timing) {
@@ -1056,20 +1069,10 @@ struct Module::Build {
         next.program = std::move(*owner);
         ATELIER_TRY_BIND(request, next.program->request(next.declaration.source_name, next.declaration.generated_source,
                                                         "__ui_dispatch"));
-        // Later components must capture the catalog after new Source types have been published.
-        if ((*request)->stages_types())
-            background = false;
         entries.push_back({next, std::move(prior), std::move(*request), timing, {}});
         if (timing) {
             timing->request_ns = capture.elapsed_ns();
             timing->total_ns = timer.elapsed_ns();
-        }
-        if (!background) {
-            for (auto& entry : entries) {
-                ATELIER_TRY(entry.emit());
-                ATELIER_TRY(entry.publish());
-            }
-            entries.clear();
         }
         return {};
     }
@@ -1265,7 +1268,6 @@ Result<std::shared_ptr<Module::Build>> Module::start(Runtime& runtime, std::stri
         return failure("Register UI language types during Runtime bootstrap before creating objects.");
     const auto source_version = source::content_hash(source);
     auto build = std::make_shared<Build>();
-    build->background = background;
     auto& module = build->module;
     std::vector<unsigned> states(declarations->size());
     module->components_.reserve(declarations->size());
@@ -1311,7 +1313,7 @@ Result<std::shared_ptr<Module::Build>> Module::start(Runtime& runtime, std::stri
     };
     for (std::size_t i = 0; i < module->components_.size(); ++i)
         ATELIER_TRY(compile(i));
-    if (!build->entries.empty())
+    if (background && !build->entries.empty())
         build->worker = std::async(
             std::launch::async,
             [entries = std::span{build->entries}, &cancelled = build->cancelled, worker_timing]() -> Result<void> {
@@ -1348,6 +1350,9 @@ void Module::cancel(Build& build) {
 Result<std::shared_ptr<Module>> Module::finish(Build& build) {
     if (build.worker.valid())
         ATELIER_TRY(build.worker.get());
+    else
+        for (auto& entry : build.entries)
+            ATELIER_TRY(entry.emit());
     for (auto& entry : build.entries)
         ATELIER_TRY(entry.publish());
     for (const auto& component : build.module->components_) {

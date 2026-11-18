@@ -16,23 +16,47 @@ public:
 
     struct ReloadTiming {
         // Detected uses the watcher's poll time. All later boundaries use the monotonic clock.
-        Clock::time_point detected, read_begin, compile_begin, compile_end, instances_ready, committed;
-        Clock::time_point staged, worker_begin, worker_end, install_begin;
+        Clock::time_point detected;
+
+        Clock::time_point read_begin;
+
+        Clock::time_point compile_begin;
+
+        Clock::time_point compile_end;
+
+        Clock::time_point instances_ready;
+
+        Clock::time_point committed;
+
+        Clock::time_point staged;
+
+        Clock::time_point worker_begin;
+
+        Clock::time_point worker_end;
+
+        Clock::time_point install_begin;
+
         // Region creation/update against fresh host inputs, after rebinding the mounted definitions.
         Clock::duration append_updates{};
+
         Module::Compilation compilation{};
+
         Module::CompileTiming module;
+
         std::size_t rebound_regions{};
+
         std::uint64_t revision{};
     };
 
     enum class Profile { off, frame, compiler };
+
     // Last attempted file reload. Borrow valid until sampling is disabled or the document closes.
     const ReloadTiming* profile_reloads(Profile);
 
     LiveDocument(Runtime&, std::filesystem::path, ui::ControlKey&, std::optional<std::string> recovery_source = {});
 
     void poll(Clock::time_point now = Clock::now());
+
     bool compiling() const noexcept { return compiling_ != nullptr; }
 
     // Parent and key aliases are immutable region configuration. On an input
@@ -113,6 +137,7 @@ private:
     Clock::time_point changed_at_{};
 
     std::unique_ptr<ReloadTiming> timing_;
+
     bool profile_components_{};
 
     std::optional<std::string> attempted_source_;
@@ -124,13 +149,19 @@ private:
     std::optional<std::string> recovery_source_;
 
     void recover_initial();
+
     struct InFlight {
         std::string source;
+
         std::size_t catalog_size{};
+
         Module::CompileTiming components;
+
         Module::WorkerTiming worker;
+
         std::shared_ptr<Module::Build> build; // Joins before the worker's samples are destroyed.
     };
+
     void install(InFlight&);
 
     std::string diagnostic_;
@@ -148,6 +179,7 @@ private:
     bool submission_failed_{};
 
     std::uint64_t revision_{};
+
     std::unique_ptr<InFlight> compiling_;
 };
 }

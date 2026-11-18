@@ -167,6 +167,7 @@ public:
     const Declaration& declaration() const noexcept;
 
     enum class Compilation { compiled, reused_source, reused_dependencies };
+
     Compilation compilation() const noexcept;
 
 private:
@@ -193,13 +194,25 @@ class Module {
 public:
     struct ComponentTiming {
         std::string name;
+
         Component::Compilation disposition{};
-        std::uint64_t total_ns{}, request_ns{}, select_ns{}, publish_ns{}, bind_ns{};
+
+        std::uint64_t total_ns{};
+
+        std::uint64_t request_ns{};
+
+        std::uint64_t select_ns{};
+
+        std::uint64_t publish_ns{};
+
+        std::uint64_t bind_ns{};
+
         source::CompileTiming source;
     };
 
     struct CompileTiming {
         std::uint64_t lower_ns{};
+
         std::vector<ComponentTiming> components;
     };
 
@@ -220,20 +233,30 @@ public:
 
 private:
     struct Build;
+
     struct WorkerTiming {
-        std::chrono::steady_clock::time_point begin, end;
+        std::chrono::steady_clock::time_point begin;
+
+        std::chrono::steady_clock::time_point end;
     };
+
     static Result<std::shared_ptr<Build>> start(Runtime&, std::string_view, std::string_view, const Module*,
                                                 CompileTiming*, bool background, WorkerTiming* = nullptr);
+
     static bool ready(const Build&);
+
     static bool dispatched(const Build&);
+
     static void cancel(Build&);
+
     static Result<std::shared_ptr<Module>> finish(Build&);
+
     std::vector<std::shared_ptr<Component>> components_;
 
     Compilation compilation_;
 
     friend class Component;
+
     friend class LiveDocument;
 };
 

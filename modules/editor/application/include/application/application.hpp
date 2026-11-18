@@ -32,8 +32,13 @@ public:
     ~Application();
 
     struct StepTimes {
-        timing::Clock::time_point input, accept_begin, accepted;
+        timing::Clock::time_point input;
+
+        timing::Clock::time_point accept_begin;
+
+        timing::Clock::time_point accepted;
     };
+
     Result<bool> step(renderer::Capture* = nullptr, StepTimes* = nullptr);
 
     Result<void> enable_control(const std::filesystem::path& directory);

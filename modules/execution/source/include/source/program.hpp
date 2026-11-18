@@ -15,6 +15,7 @@
 namespace atelier::source {
 namespace detail {
 struct ProgramAccess;
+
 struct BusinessCode;
 
 struct BusinessFailure;
@@ -256,18 +257,21 @@ public:
         const CompileOptions options;
 
         std::shared_ptr<const SourceSnapshot> snapshot() const;
-        bool stages_types() const noexcept { return type_publication_ != nullptr; }
     };
 
     using Request = std::shared_ptr<const SourceRequest>;
 
     class Emission {
         friend class Program;
+
         struct Destroy {
             void operator()(detail::BusinessCode*) const noexcept;
         };
+
         Request request_;
+
         std::unique_ptr<detail::BusinessCode, Destroy> code_;
+
         Emission(Request request, detail::BusinessCode* code) : request_(std::move(request)), code_(code) {}
     };
 
@@ -490,10 +494,13 @@ public:
     // an empty candidate unless the request also has types to publish. Single-input
     // timing is optional, synchronous and independent of generated-code diagnostics.
     using NeedsCode = FunctionRef<bool(std::span<const EntryFunction>) noexcept>;
+
     // Compiler-only phase. The worker borrows the immutable request and filter; the owner
     // retains the request until join. finish_entry validates the result on the Runtime thread.
     static Result<Emission> emit_entry(const Request&, std::optional<NeedsCode> = {}, CompileTiming* = nullptr);
+
     static Result<Candidate> finish_entry(Emission);
+
     static Result<Candidate> prepare(const Request&, std::optional<NeedsCode> = {}, CompileTiming* = nullptr);
 
     // Busy does not consume the candidate. Publishing requires the latest

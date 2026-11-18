@@ -16,7 +16,9 @@
 #include <chrono>
 
 int profile_editor_render_performance(atelier::application::Application&, const char* output_directory);
-atelier::Result<int> profile_editor_ui_reload(atelier::application::Application&, const std::filesystem::path& output_directory);
+
+atelier::Result<int> profile_editor_ui_reload(atelier::application::Application&,
+                                              const std::filesystem::path& output_directory);
 
 int capture_editor_snapshot(atelier::application::Application&, const char* output_directory);
 
@@ -123,10 +125,9 @@ atelier::Result<int> host_main(int argc, wchar_t** argv) {
     if (!initialized)
         return std::unexpected(initialized.error());
     if (project || create) {
-        const auto opened =
-            app.open_project(argv[2], create,
-                             profile_output ? atelier::application::ProjectOpenPolicy::require_scene
-                                                       : atelier::application::ProjectOpenPolicy::allow_repair);
+        const auto opened = app.open_project(argv[2], create,
+                                             profile_output ? atelier::application::ProjectOpenPolicy::require_scene
+                                                            : atelier::application::ProjectOpenPolicy::allow_repair);
         if (!opened)
             return std::unexpected(opened.error());
     }
@@ -145,8 +146,8 @@ atelier::Result<int> host_main(int argc, wchar_t** argv) {
         return profile_editor_ui_reload(app, *profile_output);
     std::string output_directory;
     if (profile_output || snapshot) {
-        auto converted = atelier::platform::utf16_to_utf8(
-            profile_output ? profile_output->native() : std::wstring_view(argv[2]));
+        auto converted =
+            atelier::platform::utf16_to_utf8(profile_output ? profile_output->native() : std::wstring_view(argv[2]));
         if (!converted)
             return std::unexpected(atelier::Error{atelier::ErrorCode::invalid_storage, "Invalid UTF-16 text"});
         output_directory = std::move(*converted);

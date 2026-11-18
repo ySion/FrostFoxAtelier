@@ -6,7 +6,9 @@ namespace atelier::source {
 // and refer to the exact input whose bodies have all passed semantic analysis.
 struct EntryFunction {
     std::uint32_t begin;
+
     std::uint32_t end;
+
     bool reachable;
 };
 }

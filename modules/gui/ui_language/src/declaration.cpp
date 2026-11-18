@@ -146,15 +146,23 @@ std::expected<std::vector<Header>, Diagnostic> headers(std::string_view source) 
     ATELIER_TRY_BIND(created, Tokens::create(source));
     auto& tokens = *created;
     std::size_t braces{};
+    bool declaration_start = true;
     while (tokens.token_.kind != Token::Kind::end && (tokens.token_.text != "ui" || braces)) {
+        if (!braces && declaration_start &&
+            (tokens.token_.text == "struct" || tokens.token_.text == "enum" || tokens.token_.text == "["))
+            return reject(tokens.token_.position, "UI modules do not support Source struct or enum declarations.");
         ATELIER_TRY_BIND(token, tokens.consume());
-        if (token->text == "{")
+        if (token->text == "{") {
             ++braces;
-        else if (token->text == "}") {
+            declaration_start = false;
+        } else if (token->text == "}") {
             if (!braces)
                 return reject(token->position, "Unexpected closing brace.");
             --braces;
-        }
+            if (!braces)
+                declaration_start = true;
+        } else if (!braces)
+            declaration_start = token->text == ";";
     }
     std::vector<Header> result;
     while (tokens.token_.kind != Token::Kind::end) {
