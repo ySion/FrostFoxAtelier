@@ -94,7 +94,7 @@ struct Header {
 
     SourcePosition begin;
 
-    SourcePosition body;
+    Tokens body;
 };
 
 std::expected<Input, Diagnostic> parse_input(Tokens& tokens) {
@@ -159,33 +159,31 @@ std::expected<std::vector<Header>, Diagnostic> headers(std::string_view source) 
     }
     std::vector<Header> result;
     while (tokens.token_.kind != Token::Kind::end) {
-        Header header;
         ATELIER_TRY_BIND(begin, tokens.expect("ui"));
-        header.begin = begin->position;
         ATELIER_TRY_BIND(name, tokens.identifier());
-        header.name = name->text;
         if (builtin_node(name->text))
             return reject(name->position, "UI component names cannot replace built-in node types.");
         if (result.size() >= 64 ||
-            std::ranges::any_of(result, [&](const auto& item) { return item.name == header.name; }))
-            return reject(header.begin, "Duplicate or excessive UI component type.");
+            std::ranges::any_of(result, [&](const auto& item) { return item.name == name->text; }))
+            return reject(begin->position, "Duplicate or excessive UI component type.");
+        std::vector<Input> inputs;
         ATELIER_TRY(tokens.expect("("));
         ATELIER_TRY_BIND(empty, tokens.accept(")"));
         if (!*empty)
             for (;;) {
                 ATELIER_TRY(tokens.expect("in"));
                 ATELIER_TRY_BIND(input, parse_input(tokens));
-                if (header.inputs.size() >= 1024 ||
-                    std::ranges::any_of(header.inputs, [&](const auto& item) { return item.name == input->name; }))
+                if (inputs.size() >= 1024 ||
+                    std::ranges::any_of(inputs, [&](const auto& item) { return item.name == input->name; }))
                     return reject(tokens.token_.position, "Duplicate or excessive UI input.");
-                header.inputs.push_back(std::move(*input));
+                inputs.push_back(std::move(*input));
                 ATELIER_TRY_BIND(closed, tokens.accept(")"));
                 if (*closed)
                     break;
                 ATELIER_TRY(tokens.expect(","));
             }
         ATELIER_TRY(tokens.expect("{"));
-        header.body = tokens.token_.position;
+        result.push_back({std::string(name->text), std::move(inputs), begin->position, tokens});
         braces = 1;
         while (braces && tokens.token_.kind != Token::Kind::end) {
             ATELIER_TRY_BIND(token, tokens.consume());
@@ -195,8 +193,7 @@ std::expected<std::vector<Header>, Diagnostic> headers(std::string_view source) 
                 --braces;
         }
         if (braces)
-            return reject(header.begin, "Unterminated UI component.");
-        result.push_back(std::move(header));
+            return reject(begin->position, "Unterminated UI component.");
     }
     if (result.empty())
         return reject(tokens.token_.position, "Expected a ui component.");
@@ -210,17 +207,14 @@ std::expected<std::vector<Header>, Diagnostic> headers(std::string_view source) 
 
 class Parser : private Tokens {
 public:
-    Parser(std::string_view name, std::string_view source, Tokens tokens, const std::vector<Header>& all)
-        : Tokens(std::move(tokens)), source_(source), headers_(all) {
+    Parser(std::string_view name, std::string_view source, const Header& header, const std::vector<Header>& all)
+        : Tokens(header.body), source_(source), headers_(all) {
         result_.source_name = name;
-    }
-
-    std::expected<Declaration, Diagnostic> run(const Header& header) {
         result_.name = header.name;
         result_.inputs = header.inputs;
-        while (token_.position.offset < header.body.offset) {
-            ATELIER_TRY(consume());
-        }
+    }
+
+    std::expected<Declaration, Diagnostic> run() {
         const Fragment helpers{0, headers_.front().begin.offset, {}};
         for (;;) {
             ATELIER_TRY_BIND(state, accept("state"));
@@ -819,8 +813,7 @@ std::expected<std::vector<Declaration>, language::Diagnostic> lower_module(std::
     ATELIER_TRY_BIND(all, headers(source));
     std::vector<Declaration> result;
     for (const auto& header : *all) {
-        ATELIER_TRY_BIND(tokens, Tokens::create(source));
-        ATELIER_TRY_BIND(declaration, Parser(name, source, std::move(*tokens), *all).run(header));
+        ATELIER_TRY_BIND(declaration, Parser(name, source, header, *all).run());
         result.push_back(std::move(*declaration));
     }
     return result;
