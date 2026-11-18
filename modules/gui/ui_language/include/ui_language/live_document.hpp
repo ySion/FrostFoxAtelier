@@ -20,12 +20,14 @@ public:
         // Region creation/update against fresh host inputs, after rebinding the mounted definitions.
         Clock::duration append_updates{};
         Module::Compilation compilation{};
+        Module::CompileTiming module;
         std::size_t rebound_regions{};
         std::uint64_t revision{};
     };
 
+    enum class Profile { off, frame, compiler };
     // Last attempted file reload. Borrow valid until sampling is disabled or the document closes.
-    const ReloadTiming* profile_reloads(bool enable);
+    const ReloadTiming* profile_reloads(Profile);
 
     LiveDocument(Runtime&, std::filesystem::path, ui::ControlKey&, std::optional<std::string> recovery_source = {});
 
@@ -109,6 +111,7 @@ private:
     Clock::time_point changed_at_{};
 
     std::unique_ptr<ReloadTiming> timing_;
+    bool profile_components_{};
 
     std::optional<std::string> attempted_source_;
 

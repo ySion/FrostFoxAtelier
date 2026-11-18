@@ -183,7 +183,7 @@ std::expected<std::vector<TypeDeclaration>, Diagnostic> collect_declarations(std
             continue;
         }
         // Function syntax and bodies are checked by the full typed parser.
-        // Tokenization preserves comments, strings and original positions.
+        // The lexer skips comments, keeps strings whole and tracks author positions.
         for (;;) {
             ATELIER_TRY_BIND(open, tokens.accept("{"));
             if (*open)

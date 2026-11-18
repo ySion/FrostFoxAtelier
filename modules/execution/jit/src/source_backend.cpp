@@ -139,6 +139,17 @@ public:
     explicit SharedSimpleCompiler(std::shared_ptr<llvm::TargetMachine> machine)
         : SimpleCompiler(*machine), machine_(std::move(machine)) {}
 
+    llvm::Expected<CompileResult> operator()(llvm::Module& module) override {
+        const CompileTimer timer(object_ns.has_value());
+        auto object = SimpleCompiler::operator()(module);
+        if (object_ns)
+            *object_ns += timer.elapsed_ns();
+        return object;
+    }
+
+    // Engaged only during the profiled synchronous lookup. No caller storage is retained by ORC.
+    std::optional<std::uint64_t> object_ns;
+
 private:
     std::shared_ptr<llvm::TargetMachine> machine_;
 };
@@ -2194,7 +2205,7 @@ public:
 llvm::Expected<llvm::orc::ThreadSafeModule>
 generate_business(LLJIT& jit, llvm::TargetMachine& machine, const language::Program& program,
                   BusinessFrameLayout& layout, DiagnosticCatalog* catalog, CompileOptions options, Artifacts* artifacts,
-                  const BusinessEnvironment& environment, std::vector<bool>& stateless_typed) {
+                  const BusinessEnvironment& environment, std::vector<bool>& stateless_typed, CompileTiming* timing) {
     auto context = std::make_unique<llvm::LLVMContext>();
     auto module = std::make_unique<llvm::Module>(program.source_name, *context);
     module->setSourceFileName(diagnostic_source_name(program.source_name));
@@ -2343,7 +2354,10 @@ generate_business(LLJIT& jit, llvm::TargetMachine& machine, const language::Prog
         // their NaN/Inf and rounding semantics; only explicit fast_* ops carry afn/arcp.
         pipeline.addPass(passes.buildPerModuleDefaultPipeline(llvm::OptimizationLevel::O2));
         pipeline.addPass(llvm::createModuleToFunctionPassAdaptor(MatrixTransposeLoweringPass{}));
+        const CompileTimer optimization(timing != nullptr);
         pipeline.run(*module, modules);
+        if (timing)
+            timing->optimize_ns = optimization.elapsed_ns();
 #ifndef NDEBUG
         verification.clear();
         if (llvm::verifyModule(*module, &stream))
@@ -2389,11 +2403,10 @@ generate_business(LLJIT& jit, llvm::TargetMachine& machine, const language::Prog
     return llvm::orc::ThreadSafeModule{std::move(module), std::move(context)};
 }
 
-llvm::Expected<std::shared_ptr<CompiledBusiness>> compile(const BusinessServices& services,
-                                                          const language::Program& program,
-                                                          language::Environment environment, CompileOptions options,
-                                                          const std::shared_ptr<CompiledBusiness>& shared = {},
-                                                          const BusinessEnvironment* native_environment = nullptr) {
+llvm::Expected<std::shared_ptr<CompiledBusiness>>
+compile(const BusinessServices& services, const language::Program& program, language::Environment environment,
+        CompileOptions options, const std::shared_ptr<CompiledBusiness>& shared = {},
+        const BusinessEnvironment* native_environment = nullptr, CompileTiming* timing = nullptr) {
     const auto& entry = program.functions.at(program.entry);
     auto state = std::make_shared<CompiledBusiness>();
     state->function_name = entry.function_name;
@@ -2627,9 +2640,12 @@ llvm::Expected<std::shared_ptr<CompiledBusiness>> compile(const BusinessServices
         }
         if (auto error = state->jit->getMainJITDylib().define(llvm::orc::absoluteSymbols(std::move(symbols))))
             return error;
+        const CompileTimer ir(timing != nullptr);
         auto module =
             generate_business(*state->jit, *machine, program, state->layout, state->diagnostics.get(), options,
-                              state->artifacts.get(), catalog->environment, catalog->stateless_typed);
+                              state->artifacts.get(), catalog->environment, catalog->stateless_typed, timing);
+        if (timing)
+            timing->ir_ns = ir.elapsed_ns();
         if (!module)
             return module.takeError();
         if (auto error = state->jit->addIRModule(std::move(*module)))
@@ -2642,7 +2658,17 @@ llvm::Expected<std::shared_ptr<CompiledBusiness>> compile(const BusinessServices
     state->layout.uses_receiver_slot = uses_receiver_slot(entry, state->catalog->environment, options);
     state->entry_symbol =
         program.exports.empty() ? "atelier_source_entry" : "atelier_source_entry_" + std::to_string(program.entry);
+    auto* emitter =
+        timing ? &static_cast<SharedSimpleCompiler&>(state->jit->getIRCompileLayer().getCompiler()) : nullptr;
+    if (emitter)
+        emitter->object_ns = 0;
+    const CompileTimer materialization(timing != nullptr);
     auto address = state->jit->lookup(state->entry_symbol);
+    if (timing) {
+        timing->first_lookup_ns = materialization.elapsed_ns();
+        timing->object_ns = *emitter->object_ns;
+        emitter->object_ns.reset();
+    }
     if (!address) {
         auto diagnostic = llvm::toString(address.takeError());
         if (!state->diagnostic->empty())
@@ -2783,7 +2809,8 @@ std::uint32_t compile_business_impl(
     atelier::source::detail::BusinessCode** output, char* error, std::uint32_t error_capacity, const char* entry_name,
     atelier::source::CompileOptions options, const char* const* entries = nullptr, std::uint32_t entry_count = 0,
     bool receiver = false, atelier::source::detail::CompileLocation* location = nullptr, bool declarations_only = false,
-    const atelier::source::detail::EntryFilter* filter = nullptr) noexcept {
+    const atelier::source::detail::EntryFilter* filter = nullptr,
+    atelier::source::CompileTiming* timing = nullptr) noexcept {
     atelier::source::detail::initialize_fatal_handlers();
     if (!error || error_capacity == 0)
         return 1;
@@ -2877,8 +2904,11 @@ std::uint32_t compile_business_impl(
                                                        ? std::string_view(environment->object_type_name)
                                                        : std::string_view{},
                                                    enumerations, values};
+    const CompileTimer frontend(timing != nullptr);
     auto program = language::compile_source(source_name, std::string_view(source, source_size), source_environment,
                                             entry_name ? entry_name : "", declarations_only);
+    if (timing)
+        timing->frontend_ns = frontend.elapsed_ns();
     if (!program) {
         const auto& diagnostic = program.error();
         if (location)
@@ -2950,7 +2980,11 @@ std::uint32_t compile_business_impl(
         if (!filter->needs_code(filter->context, functions.data(), static_cast<std::uint32_t>(functions.size())))
             return 0;
     }
-    auto state = atelier::source::detail::compile(*services, *program, source_environment, options, {}, environment);
+    const CompileTimer native(timing != nullptr);
+    auto state =
+        atelier::source::detail::compile(*services, *program, source_environment, options, {}, environment, timing);
+    if (timing)
+        timing->native_compile_ns = native.elapsed_ns();
     if (!state)
         return compilation_failure(error, error_capacity, llvm::toString(state.takeError()).c_str());
     std::vector<std::unique_ptr<BusinessCode>> codes;
@@ -3097,9 +3131,10 @@ std::uint32_t atelier_compile_business(const atelier::source::detail::BusinessSe
                                        atelier::source::detail::BusinessCode** output, char* error,
                                        std::uint32_t error_capacity, const char* entry_name,
                                        atelier::source::CompileOptions options,
-                                       const atelier::source::detail::EntryFilter* filter) noexcept {
+                                       const atelier::source::detail::EntryFilter* filter,
+                                       atelier::source::CompileTiming* timing) noexcept {
     return compile_business_impl(services, source_name, source, source_size, environment, output, error, error_capacity,
-                                 entry_name, options, nullptr, 0, false, nullptr, false, filter);
+                                 entry_name, options, nullptr, 0, false, nullptr, false, filter, timing);
 }
 
 void atelier_query_business_info(atelier::source::detail::BusinessCode* code,

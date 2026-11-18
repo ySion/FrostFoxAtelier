@@ -190,10 +190,22 @@ private:
 // compiled types; cycles are rejected before any UI instances are mounted.
 class Module {
 public:
+    struct ComponentTiming {
+        std::string name;
+        Component::Compilation disposition{};
+        std::uint64_t total_ns{}, request_ns{}, select_ns{}, publish_ns{}, bind_ns{};
+        source::CompileTiming source;
+    };
+
+    struct CompileTiming {
+        std::uint64_t lower_ns{};
+        std::vector<ComponentTiming> components;
+    };
+
     // Reuse only identical dispatch code from the active module in this Runtime.
     // Every revision still lowers/validates the whole graph and owns fresh metadata.
     static Result<std::shared_ptr<Module>> compile(Runtime&, std::string_view name, std::string_view source,
-                                                   const Module* previous = nullptr);
+                                                   const Module* previous = nullptr, CompileTiming* = nullptr);
 
     std::shared_ptr<Component> find(std::string_view) const;
 

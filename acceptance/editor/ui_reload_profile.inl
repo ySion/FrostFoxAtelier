@@ -55,14 +55,16 @@ atelier::Result<int> profile_editor_ui_reload(Application& app, const std::files
     };
     if (!has_height(56))
         throw std::runtime_error("Unexpected initial ToolShelf height in pixels: " + std::to_string(height_px()));
-    const auto* reload = workspace.profile_ui_reloads(true);
-    require(reload != nullptr, "Missing live editor authoring document.");
+    using Profile = ui_language::LiveDocument::Profile;
     std::ofstream samples(output / "reloads.csv", std::ios::noreplace), frames(output / "steps.csv", std::ios::noreplace);
-    require(samples && frames, "UI reload profile needs writable, new output files.");
+    std::ofstream components(output / "components.csv", std::ios::noreplace);
+    require(samples && frames && components, "UI reload profile needs writable, new output files.");
+    components << "trial,edit,revision,component,decision,total_ns,request_ns,frontend_ns,select_ns,native_compile_ns,"
+                  "ir_ns,optimize_ns,first_lookup_ns,object_ns,publish_ns,bind_ns\n";
     samples
         << "trial,edit,revision,height,height_px,dpi,compiled,reused,regions,compile_step,accepted_step,accepted_id,save_ms,"
            "detect_ms,debounce_ms,read_ms,compile_ms,rebind_ms,append_updates_ms,other_to_commit_ms,"
-           "commit_to_accept_begin_ms,ui_accept_ms,total_ms,debounce_accepted,accepted_gap_ms,compile_input_gap_ms\n";
+           "commit_to_accept_begin_ms,ui_accept_ms,total_ms,debounce_accepted,accepted_gap_ms,compile_input_gap_ms,ui_lower_ns\n";
     frames << "trial,step,input_from_save_ms,accepted_id,accepted_from_save_ms,input_gap_ms,accepted_gap_ms,step_ms";
     std::vector<const timing::Marker*> phases;
     for (const auto* phase : timing::catalog())
@@ -75,18 +77,33 @@ atelier::Result<int> profile_editor_ui_reload(Application& app, const std::files
         return std::chrono::duration<double, std::milli>(duration).count();
     };
     bool expanded_edit{}, comment{};
-    for (unsigned trial = 0; trial < 24; ++trial) {
+    // Each triplet includes the identical height edit with and without compiler
+    // timers, plus a trivia-only edit. Balance all six orders within each process.
+    enum class Sample { detailed_height, coarse_height, trivia_only };
+    using enum Sample;
+    constexpr Sample orders[][3] = {
+        {detailed_height, coarse_height, trivia_only}, {trivia_only, coarse_height, detailed_height},
+        {coarse_height, trivia_only, detailed_height}, {detailed_height, trivia_only, coarse_height},
+        {trivia_only, detailed_height, coarse_height}, {coarse_height, detailed_height, trivia_only}};
+    for (unsigned trial = 0; trial < 36; ++trial) {
         // Vary the save phase within the 100 ms watch interval while continuing to pump the real editor.
         const auto start_after = Clock::now() + std::chrono::milliseconds((trial * 37) % 113);
         while (Clock::now() < start_after)
             ATELIER_TRY(step());
-        const bool height_edit = trial % 4 == 0 || trial % 4 == 3;
+        const auto sample_kind = orders[(trial / 3) % std::size(orders)][trial % 3];
+        const bool height_edit = sample_kind != trivia_only;
+        const bool detailed = sample_kind != coarse_height;
+        const auto edit = detailed ? (height_edit ? "height" : "comment") : "height_coarse";
+        const auto* reload = workspace.profile_ui_reloads(detailed ? Profile::compiler : Profile::frame);
+        require(reload != nullptr, "Missing live editor authoring document.");
         if (height_edit)
             expanded_edit = !expanded_edit;
         else
             comment = !comment;
         const auto height = expanded_edit ? 57.f : 56.f;
-        const std::string next = (comment ? "// moved author positions\n" : "") + (expanded_edit ? taller : original);
+        auto next = expanded_edit ? taller : original;
+        if (comment)
+            next.insert(at + function.find("return") + std::string_view("return").size(), "\t/* tool shelf */\n    ");
         const auto revision = workspace.ui_revision() + 1;
         std::vector<Step> steps;
         steps.reserve(128);
@@ -124,19 +141,38 @@ atelier::Result<int> profile_editor_ui_reload(Application& app, const std::files
         const auto wait_frames = std::ranges::count_if(steps, [&](const Step& s) {
             return s.accepted_id && s.times.accepted >= reload->detected && s.times.accepted < reload->read_begin;
         });
-        samples << trial << ',' << (height_edit ? "height" : "comment") << ',' << revision << ',' << height << ','
-                << accepted_height_px << ',' << accepted_dpi << ',' << reload->compilation.compiled << ','
-                << reload->compilation.reused << ',' << reload->rebound_regions << ',' << changed->frame.sequence << ','
-                << accepted.frame.sequence << ',' << accepted.accepted_id << ',' << ms(saved - write_begin) << ','
-                << ms(reload->detected - saved) << ',' << ms(reload->read_begin - reload->detected) << ','
-                << ms(reload->compile_begin - reload->read_begin) << ','
-                << ms(reload->compile_end - reload->compile_begin) << ','
+        samples << trial << ',' << edit << ',' << revision << ',' << height << ',' << accepted_height_px << ','
+                << accepted_dpi << ',' << reload->compilation.compiled << ',' << reload->compilation.reused << ','
+                << reload->rebound_regions << ',' << changed->frame.sequence << ',' << accepted.frame.sequence << ','
+                << accepted.accepted_id << ',' << ms(saved - write_begin) << ',' << ms(reload->detected - saved) << ','
+                << ms(reload->read_begin - reload->detected) << ',' << ms(reload->compile_begin - reload->read_begin)
+                << ',' << ms(reload->compile_end - reload->compile_begin) << ','
                 << ms(reload->instances_ready - reload->compile_end) << ',' << ms(reload->append_updates) << ','
                 << ms(reload->committed - reload->instances_ready - reload->append_updates) << ','
                 << ms(accepted.times.accept_begin - reload->committed) << ','
                 << ms(accepted.times.accepted - accepted.times.accept_begin) << ','
                 << ms(accepted.times.accepted - saved) << ',' << wait_frames << ',' << ms(accepted.accepted_gap) << ','
-                << ms((changed + 1)->input_gap) << '\n';
+                << ms((changed + 1)->input_gap) << ',' << reload->module.lower_ns << '\n';
+        require(reload->module.components.size() == (detailed ? 44u : 0u), "Incorrect compiler timing mode.");
+        for (const auto& component : reload->module.components) {
+            using Decision = ui_language::Component::Compilation;
+            const auto expected = !height_edit                    ? Decision::reused_source
+                                  : component.name == "ToolShelf" ? Decision::compiled
+                                                                  : Decision::reused_dependencies;
+            require(component.disposition == expected, "Unexpected component decision in compiler profile.");
+            const auto& source = component.source;
+            require(source.ir_ns >= source.optimize_ns && source.first_lookup_ns >= source.object_ns &&
+                        source.native_compile_ns >= source.ir_ns + source.first_lookup_ns,
+                    "Nested compiler timings do not match the synchronous compile path.");
+            const auto decision = expected == Decision::compiled        ? "compiled"
+                                  : expected == Decision::reused_source ? "reused_source"
+                                                                        : "reused_dependencies";
+            components << trial << ',' << edit << ',' << revision << ',' << component.name << ',' << decision << ','
+                       << component.total_ns << ',' << component.request_ns << ',' << source.frontend_ns << ','
+                       << component.select_ns << ',' << source.native_compile_ns << ',' << source.ir_ns << ','
+                       << source.optimize_ns << ',' << source.first_lookup_ns << ',' << source.object_ns << ','
+                       << component.publish_ns << ',' << component.bind_ns << '\n';
+        }
         for (const auto& s : steps) {
             const auto& r = s.frame;
             frames << trial << ',' << r.sequence << ',' << ms(s.times.input - saved) << ',' << s.accepted_id << ',';
@@ -148,11 +184,13 @@ atelier::Result<int> profile_editor_ui_reload(Application& app, const std::files
             frames << '\n';
         }
     }
-    workspace.profile_ui_reloads(false);
+    workspace.profile_ui_reloads(Profile::off);
     samples.close();
     frames.close();
-    require(samples && frames, "Cannot write UI reload profile.");
+    components.close();
+    require(samples && frames && components, "Cannot write UI reload profile.");
     ATELIER_TRY(app.close());
-    std::puts("Editor UI reload profile: 12 ToolShelf saves and 12 comment controls written.");
+    std::puts(
+        "Editor UI reload profile: 12 detailed ToolShelf saves, 12 matched coarse saves and 12 trivia controls written.");
     return 0;
 }

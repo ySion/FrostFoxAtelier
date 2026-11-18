@@ -955,10 +955,10 @@ struct Component::Impl {
         : runtime(value), declaration(std::move(source)), source_version(version) {}
 
     Error diagnostic(Error, const language::SourcePosition* fallback = nullptr) const;
-    Result<void> compile(TypeId, const Impl* prior);
+    Result<void> compile(TypeId, const Impl* prior, Module::ComponentTiming*);
 };
 
-Result<void> Component::Impl::compile(TypeId receiver, const Impl* prior) {
+Result<void> Component::Impl::compile(TypeId receiver, const Impl* prior, Module::ComponentTiming* timing) {
     catalog_size = runtime.type_count();
     if (prior && (&prior->runtime != &runtime || prior->catalog_size != catalog_size))
         prior = nullptr;
@@ -966,19 +966,32 @@ Result<void> Component::Impl::compile(TypeId receiver, const Impl* prior) {
         layout = prior->layout;
         compilation = Compilation::reused_source;
     } else {
+        const source::detail::CompileTimer request_timer(timing != nullptr);
         ATELIER_TRY_BIND(owner, source::Program::create(runtime, receiver));
         ATELIER_TRY_BIND(request,
                          (*owner)->request(declaration.source_name, declaration.generated_source, "__ui_dispatch"));
-        auto candidate =
-            source::Program::prepare(*request, [&](std::span<const source::EntryFunction> functions) noexcept {
+        if (timing)
+            timing->request_ns = request_timer.elapsed_ns();
+        auto candidate = source::Program::prepare(
+            *request,
+            [&](std::span<const source::EntryFunction> functions) noexcept {
+                const source::detail::CompileTimer selection(timing != nullptr);
                 layout = std::make_shared<DispatchLayout>(declaration.generated_source, functions);
-                return !prior || !layout->matches(declaration.generated_source, *prior->layout,
-                                                  prior->declaration.generated_source);
-            });
+                const bool changed = !prior || !layout->matches(declaration.generated_source, *prior->layout,
+                                                                prior->declaration.generated_source);
+                if (timing)
+                    timing->select_ns = selection.elapsed_ns();
+                return changed;
+            },
+            timing ? &timing->source : nullptr);
         if (!candidate)
             return std::unexpected(diagnostic(std::move(candidate.error())));
         if (*candidate) {
+            const source::detail::CompileTimer publication(timing != nullptr);
             ATELIER_TRY((*owner)->try_publish(*candidate));
+            if (timing)
+                timing->publish_ns = publication.elapsed_ns();
+            const source::detail::CompileTimer binding(timing != nullptr);
             ATELIER_TRY_BIND(lease, (*owner)->pin());
             auto typed = lease->bind<void, std::uint32_t>();
             if (!typed)
@@ -987,6 +1000,8 @@ Result<void> Component::Impl::compile(TypeId receiver, const Impl* prior) {
             code = std::move(*typed);
             code_layout = layout;
             catalog_size = runtime.type_count();
+            if (timing)
+                timing->bind_ns = binding.elapsed_ns();
             return {};
         }
         compilation = Compilation::reused_dependencies;
@@ -1164,9 +1179,14 @@ std::shared_ptr<Component> Module::find(std::string_view name) const {
 }
 
 Result<std::shared_ptr<Module>> Module::compile(Runtime& runtime, std::string_view name, std::string_view source,
-                                                const Module* previous) {
+                                                const Module* previous, CompileTiming* timing) {
+    if (timing)
+        *timing = {};
     const auto text = source.starts_with("\xef\xbb\xbf") ? source.substr(3) : source;
+    const source::detail::CompileTimer lowering(timing != nullptr);
     auto declarations = lower_module(name, text);
+    if (timing)
+        timing->lower_ns = lowering.elapsed_ns();
     if (!declarations)
         return failure(std::string(name) + ":" + std::to_string(declarations.error().position.line) + ":" +
                        std::to_string(declarations.error().position.column) + ": " + declarations.error().message);
@@ -1177,6 +1197,8 @@ Result<std::shared_ptr<Module>> Module::compile(Runtime& runtime, std::string_vi
     auto module = std::make_shared<Module>();
     std::vector<unsigned> states(declarations->size());
     module->components_.reserve(declarations->size());
+    if (timing)
+        timing->components.reserve(declarations->size());
     for (auto& declaration : *declarations) {
         auto impl = std::make_unique<Component::Impl>(runtime, std::move(declaration), source_version);
         module->components_.emplace_back(new Component(std::move(impl)));
@@ -1208,7 +1230,15 @@ Result<std::shared_ptr<Module>> Module::compile(Runtime& runtime, std::string_vi
                 impl.children[i] = child;
             }
         const auto prior = previous ? previous->find(declaration.name) : nullptr;
-        ATELIER_TRY(impl.compile(*type, prior ? prior->impl_.get() : nullptr));
+        auto* sample = timing ? &timing->components.emplace_back() : nullptr;
+        // Child visits have already finished. Each component is timed exactly once.
+        const source::detail::CompileTimer component_timer(sample != nullptr);
+        ATELIER_TRY(impl.compile(*type, prior ? prior->impl_.get() : nullptr, sample));
+        if (sample) {
+            sample->total_ns = component_timer.elapsed_ns();
+            sample->name = declaration.name;
+            sample->disposition = impl.compilation;
+        }
         if (impl.compilation == Component::Compilation::compiled)
             ++module->compilation_.compiled;
         else

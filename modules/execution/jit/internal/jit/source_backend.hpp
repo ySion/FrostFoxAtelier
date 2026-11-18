@@ -3,6 +3,7 @@
 #include "math/type.hpp"
 #include "source/diagnostic_types.hpp"
 #include "source/entry_dependencies.hpp"
+#include "source/compile_timing.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -533,7 +534,8 @@ atelier_compile_business(const atelier::source::detail::BusinessServices* servic
                          const atelier::source::detail::BusinessEnvironment* environment,
                          atelier::source::detail::BusinessCode** output, char* error, std::uint32_t error_capacity,
                          const char* entry_name = nullptr, atelier::source::CompileOptions options = {},
-                         const atelier::source::detail::EntryFilter* filter = nullptr) noexcept;
+                         const atelier::source::detail::EntryFilter* filter = nullptr,
+                         atelier::source::CompileTiming* timing = nullptr) noexcept;
 
 // One synchronous compilation with multiple typed host entries. Each output is
 // a view owning the same JIT module; failure leaves every output untouched.

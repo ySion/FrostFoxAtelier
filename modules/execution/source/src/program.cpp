@@ -1167,8 +1167,11 @@ Result<Program::Request> Program::request(std::string_view name, std::string_vie
     return result;
 }
 
-Result<Program::Candidate> Program::prepare(const Request& request, std::optional<NeedsCode> needs_code) {
+Result<Program::Candidate> Program::prepare(const Request& request, std::optional<NeedsCode> needs_code,
+                                            CompileTiming* timing) {
     atelier::detail::assert_serial_access();
+    if (timing)
+        *timing = {};
     if (!request)
         return std::unexpected(Error{ErrorCode::invalid_definition, "Source request is empty."});
     const auto owner = request->owner_.lock();
@@ -1180,6 +1183,9 @@ Result<Program::Candidate> Program::prepare(const Request& request, std::optiona
         if (needs_code)
             return std::unexpected(
                 Error{ErrorCode::invalid_definition, "Entry dependency selection requires a single source input."});
+        if (timing)
+            return std::unexpected(
+                Error{ErrorCode::invalid_definition, "Compile timing requires a single source input."});
         return Program::prepare_module(request);
     }
     BusinessCode* output{};
@@ -1197,7 +1203,7 @@ Result<Program::Candidate> Program::prepare(const Request& request, std::optiona
     const auto status = atelier_compile_business(
         &contract.actual_services, request->source_name.c_str(), request->source.data(),
         static_cast<std::uint32_t>(request->source.size()), &environment, &output, diagnostic, sizeof(diagnostic),
-        request->entry_name.c_str(), request->options, needs_code ? &selection : nullptr);
+        request->entry_name.c_str(), request->options, needs_code ? &selection : nullptr, timing);
     CodeOwner code{output, &atelier_destroy_business};
     if (status != 0)
         return std::unexpected(Error{ErrorCode::invalid_definition, diagnostic});

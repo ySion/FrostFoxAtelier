@@ -73,8 +73,9 @@ void LiveDocument::recover_initial() {
     candidate_failed_ = false;
 }
 
-const LiveDocument::ReloadTiming* LiveDocument::profile_reloads(bool enable) {
-    if (!enable)
+const LiveDocument::ReloadTiming* LiveDocument::profile_reloads(Profile profile) {
+    profile_components_ = profile == Profile::compiler;
+    if (profile == Profile::off)
         timing_.reset();
     else if (!timing_)
         timing_ = std::make_unique<ReloadTiming>();
@@ -137,7 +138,8 @@ void LiveDocument::poll(Clock::time_point now) {
     submission_failed_ = false;
     if (timing_)
         timing_->compile_begin = Clock::now();
-    auto module = Module::compile(runtime_, utf8(path_.filename()), source, active_.get());
+    auto module = Module::compile(runtime_, utf8(path_.filename()), source, active_.get(),
+                                  profile_components_ ? &timing_->module : nullptr);
     if (timing_)
         timing_->compile_end = Clock::now();
     if (!module) {

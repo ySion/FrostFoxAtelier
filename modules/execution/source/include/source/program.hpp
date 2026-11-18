@@ -3,6 +3,7 @@
 #include "foundation/result.hpp"
 #include "foundation/function_ref.hpp"
 #include "source/entry_dependencies.hpp"
+#include "source/compile_timing.hpp"
 #include "runtime/execution.hpp"
 #include "source/snapshot.hpp"
 #include "source/diagnostics.hpp"
@@ -474,9 +475,10 @@ public:
 
     // For a single input the optional selector inspects borrowed dependency facts
     // synchronously after all bodies pass. Returning false skips LLVM and yields
-    // an empty candidate unless the request also has types to publish.
+    // an empty candidate unless the request also has types to publish. Single-input
+    // timing is optional, synchronous and independent of generated-code diagnostics.
     using NeedsCode = FunctionRef<bool(std::span<const EntryFunction>) noexcept>;
-    static Result<Candidate> prepare(const Request&, std::optional<NeedsCode> = {});
+    static Result<Candidate> prepare(const Request&, std::optional<NeedsCode> = {}, CompileTiming* = nullptr);
 
     // Busy does not consume the candidate. Publishing requires the latest
     // request, unchanged dependencies and the declaration's frozen signature.
