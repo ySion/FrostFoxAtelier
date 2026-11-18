@@ -151,6 +151,8 @@ struct Event {
     std::uint32_t node{};
 
     std::uint32_t operation{};
+
+    language::SourcePosition position;
 };
 
 struct SourceMapping {
@@ -181,8 +183,6 @@ struct Declaration {
     std::vector<Event> events;
 
     std::vector<SourceMapping> mappings;
-
-    std::string diagnostic(std::string_view compiler_message) const;
 };
 
 [[nodiscard]] std::expected<Declaration, language::Diagnostic> lower(std::string_view source_name,

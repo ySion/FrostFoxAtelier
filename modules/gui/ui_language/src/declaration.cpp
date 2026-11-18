@@ -2,7 +2,6 @@
 #include "language/lexer.hpp"
 #include "foundation/result.hpp"
 #include <algorithm>
-#include <charconv>
 #include <optional>
 #include <utility>
 
@@ -467,7 +466,7 @@ private:
                 ATELIER_TRY(expect("}"));
                 const auto operation = static_cast<std::uint32_t>(evaluations_.size() + 1);
                 evaluations_.push_back({*body, slot, {}});
-                result_.events.push_back({slot, operation});
+                result_.events.push_back({slot, operation, event->position});
                 continue;
             }
             const auto saved_lexer = lexer_;
@@ -826,32 +825,4 @@ std::expected<Declaration, language::Diagnostic> lower(std::string_view name, st
     return std::move(all->front());
 }
 
-std::string Declaration::diagnostic(std::string_view message) const {
-    // Program appends a request tag. Preserve its message, replace the generated
-    // line/column with the originating declaration token when available.
-    auto colon = message.find("]:");
-    if (colon == message.npos)
-        return std::string(message);
-    colon += 2;
-    std::size_t line{};
-    std::size_t column{};
-    auto first = std::from_chars(message.data() + colon, message.data() + message.size(), line);
-    if (first.ec != std::errc{} || first.ptr == message.data() + message.size() || *first.ptr != ':')
-        return std::string(message);
-    auto second = std::from_chars(first.ptr + 1, message.data() + message.size(), column);
-    if (second.ec != std::errc{})
-        return std::string(message);
-    std::size_t offset{};
-    std::size_t current_line = 1;
-    while (current_line < line && offset < generated_source.size())
-        if (generated_source[offset++] == '\n')
-            ++current_line;
-    offset += column ? column - 1 : 0;
-    const auto at =
-        std::ranges::find_if(mappings, [&](const auto& item) { return offset >= item.begin && offset < item.end; });
-    if (at == mappings.end())
-        return std::string(message);
-    return source_name + ":" + std::to_string(at->origin.line) + ":" + std::to_string(at->origin.column) +
-           std::string(second.ptr, message.data() + message.size());
-}
 } // namespace atelier::ui_language

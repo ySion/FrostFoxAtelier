@@ -13,6 +13,8 @@
 
 using namespace atelier;
 
+void verify_ui_error_recovery();
+
 namespace {
 using acceptance::helpers::require;
 
@@ -226,5 +228,6 @@ int main() {
     atelier::install_fatal_handler();
     identity_and_lifetime();
     repeat_updates();
-    std::puts("UI acceptance: PASS (accepted frame lifetime and transactional Repeat updates)");
+    verify_ui_error_recovery();
+    std::puts("UI acceptance: PASS (accepted frame lifetime, Repeat updates, hot-reload error recovery)");
 }

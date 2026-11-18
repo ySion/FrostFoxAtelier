@@ -1,4 +1,5 @@
 #include "ui_language/component.hpp"
+#include "source/snapshot.hpp"
 #include "runtime/native.hpp"
 #include "runtime/foundation.hpp"
 #include "foundation/result.hpp"
@@ -6,6 +7,7 @@
 #include "memory/fatal.hpp"
 #include "platform/utf.hpp"
 #include <algorithm>
+#include <charconv>
 #include <cmath>
 #include <limits>
 #include <map>
@@ -22,6 +24,34 @@ bool button_node(NodeKind kind) {
 
 auto failure(std::string message) {
     return std::unexpected(Error{ErrorCode::invalid_definition, std::move(message)});
+}
+
+// Single-file compiler diagnostics carry a request-tagged line/column in the message.
+std::optional<std::size_t> compiler_offset(std::string_view generated, std::string_view& message) {
+    auto colon = message.find("]:");
+    if (colon == message.npos)
+        return {};
+    colon += 2;
+    std::size_t line{};
+    std::size_t column{};
+    auto first = std::from_chars(message.data() + colon, message.data() + message.size(), line);
+    if (first.ec != std::errc{} || first.ptr == message.data() + message.size() || *first.ptr != ':')
+        return {};
+    auto second = std::from_chars(first.ptr + 1, message.data() + message.size(), column);
+    if (second.ec != std::errc{} || second.ptr == message.data() + message.size() || *second.ptr != ':' || !line ||
+        !column)
+        return {};
+    std::size_t offset{};
+    std::size_t current_line = 1;
+    while (current_line < line && offset < generated.size())
+        if (generated[offset++] == '\n')
+            ++current_line;
+    if (current_line != line || column - 1 >= generated.size() - offset)
+        return {};
+    message.remove_prefix(static_cast<std::size_t>(second.ptr + 1 - message.data()));
+    if (message.starts_with(' '))
+        message.remove_prefix(1);
+    return offset + column - 1;
 }
 
 Result<std::wstring> wide(const String& value) noexcept {
@@ -255,20 +285,8 @@ struct DefinitionState {
                 dirty[i] = true;
     }
 
-    Result<void> invoke(std::uint32_t operation, const Declaration* source = nullptr) {
-        struct Execution {
-            InstanceData& scope;
-
-            DefinitionState* previous;
-
-            ~Execution() { scope.executing = previous; }
-        } guard{scope, scope.executing};
-        scope.executing = this;
-        auto result = code.invoke(scope.context.id(), operation);
-        if (!result)
-            return failure((source ? *source : declaration()).diagnostic(result.error().message));
-        return {};
-    }
+    Result<void> invoke(std::uint32_t operation, const Component& author,
+                        const language::SourcePosition* fallback = nullptr);
 
     Result<void> publish(std::span<const InputValue>);
 };
@@ -882,8 +900,48 @@ struct Component::Impl {
 
     std::vector<std::shared_ptr<Component>> children;
 
-    Impl(Runtime& value, Declaration source) : runtime(value), declaration(std::move(source)) {}
+    std::uint64_t source_version;
+
+    Impl(Runtime& value, Declaration source, std::uint64_t version)
+        : runtime(value), declaration(std::move(source)), source_version(version) {}
+
+    Error diagnostic(Error, const language::SourcePosition* fallback = nullptr) const;
 };
+
+Error Component::Impl::diagnostic(Error error, const language::SourcePosition* fallback) const {
+    std::string_view message = error.message;
+    const auto offset =
+        error.source ? std::optional{error.source->offset} : compiler_offset(declaration.generated_source, message);
+    if (offset) {
+        const auto& mappings = declaration.mappings;
+        const auto at = std::ranges::upper_bound(mappings, *offset, {}, &SourceMapping::end);
+        if (at != mappings.end() && at->begin <= *offset)
+            fallback = &at->origin;
+    }
+    if (fallback) {
+        error.source =
+            SourceLocation{declaration.source_name, source_version, fallback->offset, fallback->line, fallback->column};
+        error.message = declaration.source_name + ":" + std::to_string(fallback->line) + ":" +
+                        std::to_string(fallback->column) + ": " + std::string(message);
+    }
+    return error;
+}
+
+Result<void> detail::DefinitionState::invoke(std::uint32_t operation, const Component& author,
+                                             const language::SourcePosition* fallback) {
+    struct Execution {
+        InstanceData& scope;
+
+        DefinitionState* previous;
+
+        ~Execution() { scope.executing = previous; }
+    } guard{scope, scope.executing};
+    scope.executing = this;
+    auto result = code.invoke(scope.context.id(), operation);
+    if (!result)
+        return std::unexpected(author.impl_->diagnostic(std::move(result.error()), fallback));
+    return {};
+}
 
 Component::Component(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
 
@@ -1012,13 +1070,15 @@ std::shared_ptr<Component> Module::find(std::string_view name) const {
 
 Result<std::shared_ptr<Module>> Module::compile(Runtime& runtime, std::string_view name, std::string_view source,
                                                 const Module* previous) {
-    auto declarations = lower_module(name, source);
+    const auto text = source.starts_with("\xef\xbb\xbf") ? source.substr(3) : source;
+    auto declarations = lower_module(name, text);
     if (!declarations)
         return failure(std::string(name) + ":" + std::to_string(declarations.error().position.line) + ":" +
                        std::to_string(declarations.error().position.column) + ": " + declarations.error().message);
     const auto type = runtime.native_type<detail::Context>();
     if (!type)
         return failure("Register UI language types during Runtime bootstrap before creating objects.");
+    const auto source_version = source::content_hash(source);
     auto module = std::make_shared<Module>();
     std::vector<unsigned> states(declarations->size());
     module->components_.resize(declarations->size());
@@ -1047,7 +1107,7 @@ Result<std::shared_ptr<Module>> Module::compile(Runtime& runtime, std::string_vi
                     return failure(std::string(name) + ": Repeated components require one concrete root node.");
                 children[i] = std::move(*child);
             }
-        auto impl = std::make_unique<Component::Impl>(runtime, declaration);
+        auto impl = std::make_unique<Component::Impl>(runtime, declaration, source_version);
         impl->children = std::move(children);
         const auto prior = previous ? previous->find(declaration.name) : nullptr;
         if (prior && &prior->impl_->runtime == &runtime &&
@@ -1064,12 +1124,12 @@ Result<std::shared_ptr<Module>> Module::compile(Runtime& runtime, std::string_vi
                                                              impl->declaration.generated_source, "__ui_dispatch"));
             auto candidate = source::Program::prepare(*request);
             if (!candidate)
-                return failure(impl->declaration.diagnostic(candidate.error().message));
+                return std::unexpected(impl->diagnostic(std::move(candidate.error())));
             ATELIER_TRY(impl->program->try_publish(*candidate));
             ATELIER_TRY_BIND(lease, impl->program->pin());
             auto code = lease->bind<void, std::uint32_t>();
             if (!code)
-                return failure(impl->declaration.diagnostic(code.error().message));
+                return std::unexpected(impl->diagnostic(std::move(code.error())));
             impl->code = std::move(*code);
             ++module->compilation_.compiled;
         }
@@ -1492,7 +1552,7 @@ Result<std::unique_ptr<detail::PreparedUpdate>> detail::InstanceData::prepare(st
         next->reads.resize(declaration.inputs.size() + declaration.states.size());
         ATELIER_TRY(next->publish(inputs));
         next->initializing = true;
-        auto initialized = next->invoke(0);
+        auto initialized = next->invoke(0, *definition);
         next->initializing = false;
         if (!initialized)
             return std::unexpected(initialized.error());
@@ -1512,7 +1572,8 @@ Result<std::unique_ptr<detail::PreparedUpdate>> detail::InstanceData::prepare(st
         if (data.dirty[i]) {
             std::fill(data.reads.begin(), data.reads.end(), false);
             data.evaluating = true;
-            auto evaluated = data.invoke(declaration.bindings[i].operation, &declaration);
+            const auto& binding = declaration.bindings[i];
+            auto evaluated = data.invoke(binding.operation, *definition, &binding.position);
             data.evaluating = false;
             ++statistics.binding_evaluations;
             if (!evaluated)
@@ -1845,7 +1906,7 @@ Result<bool> Instance::event(const ui::Action& action) {
     const auto before = data.states;
     data.handling_event = true;
     data.event_checked = checked;
-    auto handled = data.invoke(at->operation);
+    auto handled = data.invoke(at->operation, *data.component, &at->position);
     data.handling_event = false;
     ++scope.statistics.event_evaluations;
     if (!handled) {
