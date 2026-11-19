@@ -81,7 +81,8 @@ Result<Binding> bind_type(Runtime& runtime, TypeId type, std::span<const TypeInf
              value.value_operations_preserve_borrows && value.copy_constructible && value.copy_assignable,
              value.sequence_mutate != nullptr,
              value.math,
-             value.plain_value});
+             value.plain_value,
+             value.zero_default});
         kind_by_id.insert_or_assign(value.id, BusinessType{kind, 0});
     };
     std::vector<const TypeInfo*> pending_arrays;
@@ -297,7 +298,7 @@ EnvironmentView::EnvironmentView(const Binding& binding) noexcept {
             fields.push_back({field.name.c_str(), field.type, field.offset});
         values.push_back({value.name.c_str(), value.kind, value.size, value.alignment, value.element, fields.data(),
                           static_cast<std::uint32_t>(fields.size()), value.sequence_view, value.can_own,
-                          value.can_mutate, value.math, value.plain_value});
+                          value.can_mutate, value.math, value.plain_value, value.zero_default});
     }
     for (const auto& field : binding.fields)
         fields.push_back({field.name.c_str(), field.kind, field.constrained, field.access.data(),
@@ -735,7 +736,7 @@ bool same_environment(const Binding& binding, const BusinessEnvironment& environ
         if (!b.name || a.name != b.name || a.kind != b.kind || a.size != b.size || a.alignment != b.alignment ||
             a.element != b.element || a.sequence_view != b.sequence_view || a.can_own != b.can_own ||
             a.can_mutate != b.can_mutate || a.math != b.math || a.plain_value != b.plain_value ||
-            a.fields.size() != b.field_count || (b.field_count && !b.fields))
+            a.zero_default != b.zero_default || a.fields.size() != b.field_count || (b.field_count && !b.fields))
             return false;
         for (std::size_t j = 0; j < a.fields.size(); ++j) {
             const auto& x = a.fields[j];

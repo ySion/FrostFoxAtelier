@@ -10,6 +10,7 @@
 #include <cstring>
 #include <functional>
 #include <map>
+#include <optional>
 #include <set>
 
 namespace atelier::language {
@@ -48,11 +49,15 @@ class Coverage {
 
     const Program& program_;
 
+    static constexpr std::size_t max_nodes = 65536;
+
     std::vector<Node> nodes_;
 
     std::map<std::pair<ValueType::Kind, std::uint64_t>, NodeId> literals_;
 
     std::vector<std::vector<std::uint64_t>> required_;
+
+    bool overflowed_{};
 
     bool record(ValueType type) const {
         return type.kind == ValueType::record && type.type_index != material_.texture_input;
@@ -78,6 +83,10 @@ class Coverage {
     }
 
     NodeId add(Expression expression) {
+        if (overflowed_ || nodes_.size() >= max_nodes) {
+            overflowed_ = true;
+            return 0;
+        }
         nodes_.push_back({std::move(expression)});
         return nodes_.size() - 1;
     }
@@ -89,13 +98,16 @@ class Coverage {
         Expression value{Expression::Kind::literal, type, {}};
         value.bits = bits;
         const auto id = add(std::move(value));
-        literals_.emplace(key, id);
+        if (!overflowed_)
+            literals_.emplace(key, id);
         return id;
     }
 
     NodeId boolean(bool value) { return literal(ValueType::boolean, value); }
 
     NodeId select(NodeId condition, NodeId yes, NodeId no) {
+        if (overflowed_)
+            return 0;
         if (yes == no)
             return yes;
         if (condition == boolean(true))
@@ -104,6 +116,10 @@ class Coverage {
             return no;
         if (yes == boolean(true) && no == boolean(false))
             return condition;
+        if (nodes_.size() >= max_nodes) {
+            overflowed_ = true;
+            return 0;
+        }
         nodes_.push_back({Expression{Expression::Kind::literal, nodes_[yes].expression.type, {}, yes, no}, condition});
         return nodes_.size() - 1;
     }
@@ -137,15 +153,16 @@ class Coverage {
         return value;
     }
 
-    Value unpack(NodeId id) {
-        const auto type = nodes_[id].expression.type;
+    Value unpack(ValueType type, NodeId id) {
+        if (overflowed_)
+            return Value(width(type), 0);
         if (!record(type))
             return {id};
         Value value;
         for (const auto& field : program_.value_layouts[type.type_index].fields) {
             Expression access{Expression::Kind::value_field, field.type, {}, id};
             access.offset = field.offset;
-            const auto child = unpack(add(std::move(access)));
+            const auto child = unpack(field.type, add(std::move(access)));
             value.insert(value.end(), child.begin(), child.end());
         }
         return value;
@@ -167,6 +184,8 @@ class Coverage {
 
     Value expression(const Function& function, NodeId id, const Flow& flow) {
         const auto& node = function.expressions[id];
+        if (overflowed_)
+            return Value(width(node.type), 0);
         const auto operand = [&](NodeId child) { return expression(function, child, flow); };
         using Kind = Expression::Kind;
         switch (node.kind) {
@@ -258,14 +277,14 @@ class Coverage {
             auto operation = node; // dot/length consume all lanes, unlike element-wise operations.
             for (std::size_t i = 0; i < arguments.size(); ++i)
                 operation.arguments[i] = pack(function.expressions[node.arguments[i]].type, arguments[i]);
-            return unpack(add(std::move(operation)));
+            return unpack(node.type, add(std::move(operation)));
         }
         case Kind::texture_sample:
         case Kind::texture_orientation: {
             auto sample = node;
             sample.left = pack(function.expressions[node.left].type, operand(node.left));
             sample.right = operand(node.right)[0];
-            return unpack(add(std::move(sample)));
+            return unpack(node.type, add(std::move(sample)));
         }
         default:
             fatal("Unvalidated coverage expression.");
@@ -282,12 +301,14 @@ class Coverage {
     }
 
     void statement(const Function& function, NodeId id, Flow& flow) {
+        if (overflowed_)
+            return;
         const auto& node = function.statements[id];
         using Kind = Statement::Kind;
         switch (node.kind) {
         case Kind::block:
             for (const auto child : node.children) {
-                if (flow.returned == boolean(true))
+                if (overflowed_ || flow.returned == boolean(true))
                     break;
                 statement(function, child, flow);
             }
@@ -298,6 +319,8 @@ class Coverage {
             break;
         case Kind::assign: {
             const auto value = expression(function, node.expression, flow);
+            if (overflowed_)
+                return;
             const auto [local, begin] = target(function, node.target);
             std::copy(value.begin(), value.end(), flow.locals[local].begin() + begin);
             break;
@@ -306,17 +329,23 @@ class Coverage {
             break; // No observable side effects in the validated pure subset.
         case Kind::return_value: {
             const auto value = node.expression == no_node ? Value{} : expression(function, node.expression, flow);
+            if (overflowed_)
+                return;
             flow.result = flow.returned == no_node ? value : select(flow.returned, flow.result, value);
             flow.returned = boolean(true);
             break;
         }
         case Kind::condition: {
             const auto condition = expression(function, node.expression, flow)[0];
+            if (overflowed_)
+                return;
             Flow yes{flow.locals, no_node, {}};
             Flow no{flow.locals, no_node, {}};
             statement(function, node.body, yes);
-            if (node.alternative != no_node)
+            if (!overflowed_ && node.alternative != no_node)
                 statement(function, node.alternative, no);
+            if (overflowed_)
+                return;
             for (std::size_t i = 0; i < flow.locals.size(); ++i) {
                 // Branch-local declarations cannot escape their lexical scope.
                 if (!flow.locals[i].empty())
@@ -343,9 +372,13 @@ class Coverage {
     }
 
     Value invoke(const Function& function, std::vector<Value> arguments) {
+        if (overflowed_)
+            return Value(width(function.result), 0);
         Flow flow{std::move(arguments), no_node, {}};
         flow.locals.resize(function.locals.size());
         statement(function, function.body, flow);
+        if (overflowed_)
+            return Value(width(function.result), 0);
         return flow.result;
     }
 
@@ -460,7 +493,7 @@ class Coverage {
 public:
     explicit Coverage(const MaterialModule& material) : material_(material), program_(material.program) {}
 
-    Function generate(std::size_t offset) {
+    std::optional<Function> generate(std::size_t offset) {
         const auto& shade = program_.functions[program_.exports[0]];
         std::vector<Value> arguments;
         Function result;
@@ -469,13 +502,15 @@ public:
         result.parameters = shade.parameters;
         result.locals.assign(shade.locals.begin(), shade.locals.begin() + shade.parameters.size());
         for (std::size_t i = 0; i < shade.parameters.size(); ++i)
-            arguments.push_back(unpack(add(Expression{Expression::Kind::local,
-                                                      shade.parameters[i].type,
-                                                      {},
-                                                      no_node,
-                                                      no_node,
-                                                      static_cast<std::uint32_t>(i)})));
+            arguments.push_back(unpack(shade.parameters[i].type, add(Expression{Expression::Kind::local,
+                                                                                shade.parameters[i].type,
+                                                                                {},
+                                                                                no_node,
+                                                                                no_node,
+                                                                                static_cast<std::uint32_t>(i)})));
         const auto value = invoke(shade, std::move(arguments));
+        if (overflowed_)
+            return std::nullopt;
         const auto root = value[field_begin(shade.result, offset)];
         required_.resize(nodes_.size());
         required(root);
@@ -1386,18 +1421,22 @@ std::string material_hlsl(const MaterialModule& material) {
     const auto field = std::ranges::find_if(
         fields, [](const auto& value) { return value.name == "coverage" && value.type == ValueType::f32; });
     if (field != fields.end()) {
-        MaterialModule projected;
-        projected.context = material.context;
-        projected.parameters = material.parameters;
-        projected.output = material.output;
-        projected.texture_input = material.texture_input;
-        projected.resources = material.resources;
-        projected.textures = material.textures;
-        projected.program.value_layouts = material.program.value_layouts;
-        projected.program.functions.push_back(Coverage(material).generate(field->offset));
-        projected.program.reachable = {true};
-        projected.program.exports = {0};
-        coverage = Hlsl(projected).generate(false, true);
+        if (auto generated = Coverage(material).generate(field->offset)) {
+            MaterialModule projected;
+            projected.context = material.context;
+            projected.parameters = material.parameters;
+            projected.output = material.output;
+            projected.texture_input = material.texture_input;
+            projected.resources = material.resources;
+            projected.textures = material.textures;
+            projected.program.value_layouts = material.program.value_layouts;
+            projected.program.functions.push_back(std::move(*generated));
+            projected.program.reachable = {true};
+            projected.program.exports = {0};
+            coverage = Hlsl(projected).generate(false, true);
+        } else {
+            coverage = "#error Material coverage projection exceeded the compiler node budget.\n";
+        }
     }
     return "#if ATELIER_MATERIAL_COVERAGE\n" + coverage + "#elif ATELIER_MATERIAL_FOOTPRINT\n" +
            Hlsl(material).generate(true) + "#else\n" + Hlsl(material).generate() + "#endif\n";

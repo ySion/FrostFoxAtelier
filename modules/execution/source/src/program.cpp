@@ -47,6 +47,10 @@ struct SourceMap {
 
 // Line indexes are optional: eager diagnostic tables pass them, while a single
 // failure scans its file instead of retaining an index.
+bool is_line_break(std::string_view text, std::size_t index) noexcept {
+    return text[index] == '\n' || (text[index] == '\r' && (index + 1 == text.size() || text[index + 1] != '\n'));
+}
+
 SourceLocation resolve_location(const SourceMap* map, std::string_view path, std::uint64_t version,
                                 const BusinessLocation& position,
                                 const std::vector<std::vector<std::size_t>>* line_starts = nullptr) {
@@ -67,7 +71,7 @@ SourceLocation resolve_location(const SourceMap* map, std::string_view path, std
                 column = mapped - lines[index] + 1;
             } else {
                 for (std::size_t i = 0; i < mapped; ++i)
-                    if (file.source[i] == '\n') {
+                    if (is_line_break(file.source, i)) {
                         ++line;
                         column = 1;
                     } else
@@ -1064,6 +1068,15 @@ Result<std::unique_ptr<Program>> Program::create(Runtime& runtime, TypeId type) 
     atelier::detail::assert_serial_access();
     ATELIER_TRY_BIND(binding, bind_type(runtime, type));
     return std::unique_ptr<Program>{new Program(std::make_shared<const Contract>(std::move(*binding)))};
+}
+
+Result<std::unique_ptr<Program>> Program::create_like(const Program& prototype) noexcept {
+    atelier::detail::assert_serial_access();
+    if (!prototype.state_->open || !prototype.state_->contract->declarations.empty())
+        return std::unexpected(
+            Error{ErrorCode::invalid_definition,
+                  "Shared Program contracts require an open prototype without source type declarations."});
+    return std::unique_ptr<Program>{new Program(prototype.state_->contract)};
 }
 
 Program::Program(std::shared_ptr<const Contract> contract) noexcept

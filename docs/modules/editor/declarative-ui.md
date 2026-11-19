@@ -56,9 +56,9 @@ Dev 和 Release 开发工作树的构建均优先读取 `assets/editor.ui.source
 
 ## 声明、输入与组合
 
-一份文件可声明多个有名 `ui` 类型，可在声明前定义使用显式参数的普通 Source 辅助函数。每个类型生成单个 `void __ui_dispatch(uint __ui_operation)` 入口，并在函数体内以平衡二分条件树分派各绑定操作，实例共享 Program。
+一份文件可声明多个有名 `ui` 类型，可在声明前定义使用显式参数与模块常量的普通 Source 辅助函数；顶层辅助函数不隐式捕获组件的 `input`、`state`、`node` 或 `event`（参数与局部变量可自由使用这些名字，也不耦合不同组件）。静态节点创建、字面量状态初值、字面量属性以及直接槽位转发（`input.x`、`state.x`、`node.x`）直接降低为声明数据并由 C++ 执行；仅含计算表达式、非常量状态初值或 `on activate` 事件的组件才生成单个 `void __ui_dispatch(uint __ui_operation)` 入口，在函数体内以平衡二分条件树分派这些动态操作，通过 `CompileOptions{.fast = true}`（`O1` + `Less`）编译并由实例共享 Program；同模块内复用单份已绑定的 `Contract` 原型。
 
-热更沿用上一接受版中同一 Runtime、同一类型目录下的同名组件。完整生成文本相同（例如只移动注释）时直接复用。文本有变时，Source 在该组件的环境里检查所有函数体并给出分派入口的传递可达函数。逐字节比较这些函数与其余非函数声明，相同时复用代码，有差异则用本次已检查的程序生成机器码。未使用函数中的类型错误同样拒绝候选。各版分别拥有组件声明、子类型关系和作者映射。运行报错先从机器码所属版本的区间转到当版生成文本，再定位作者文件。
+热更沿用上一接受版中同一 Runtime、同一类型目录下的同名组件。纯声明组件不创建 Program 或进入 LLVM，按声明结构与字面量是否变化报告 `compiled`、`reused_source` 或 `reused_dependencies`；若整份文件全为纯声明组件但存在顶层辅助函数，变更的辅助函数仍会被单独类型检查并还原作者文件位置。需要 JIT 的组件在完整生成文本相同（例如只移动注释）时直接复用；文本有变时，Source 检查全部函数体并给出分派入口的传递可达函数，逐字节比较可达函数与非函数声明，相同时复用机器码，有差异则生成新机器码。未使用函数中的类型错误同样拒绝候选。各版分别拥有组件声明、子类型关系和作者映射。运行报错先从机器码所属版本的区间转到当版生成文本，再定位作者文件。
 
 `Component::compilation()` 可查询每个组件本次是重编（`compiled`）、整份输入相同（`reused_source`），还是检查依赖后复用（`reused_dependencies`）。`Module::compilation()` 提供重编和复用总数。两者都能用于普通构建的热更验收。
 
@@ -101,7 +101,7 @@ ui Inspector(in TextEditBinding query, in bool visible) {
 - `node.name` 不接受组件、Repeat 或 TextField 节点。TextField 的实际 key 来自宿主 `TextEditBinding`。
 - 组件属性按子组件的输入名称传参，所有声明输入都必须提供，没有默认实参、隐式捕获父输入、插槽或属性继承。
 
-表达式和事件体最终交给现有 Source 编译器；数值、条件、辅助函数与循环沿用 [LANGUAGE.md](../../../LANGUAGE.md)。UI 降低器禁止 `self`、`new`、`async`、`yield` 和 `__ui_` 内部名称。它不是任意执行 Source 业务代码的入口。
+字面量与兼容的直接槽位引用在降低阶段转为声明数据直接应用；其余计算表达式和事件体交给现有 Source 编译器，数值、条件、辅助函数与循环沿用 [LANGUAGE.md](../../../LANGUAGE.md)。UI 降低器禁止 `self`、`new`、`async`、`yield` 和 `__ui_` 内部名称。它不是任意执行 Source 业务代码的入口。
 
 | 输入 | 宿主值与用途 |
 | --- | --- |
@@ -313,7 +313,7 @@ Session 是 TableData 完整校验与交互的唯一入口。非法快照使同�
 | 层次 | 普通输入或局部 state 变化 | `.ui.source` 内容变化 |
 | --- | --- | --- |
 | 读取与前端 | 不解析或编译源码 | 全文件 lower、类型与组合检查 |
-| JIT | 使用现有代码 | 同 Runtime、同名、生成代码完全相同的组件复用 Program；其余按组件编译 |
+| JIT | 使用现有代码（纯声明与直接转发绑定走 C++ 声明数据） | 纯声明组件零 JIT 编译；需 JIT 且同 Runtime、同名、生成代码完全相同的组件复用 Program，其余按组件走 `CompileOptions::fast` 编译 |
 | DSL 实例树 | 复用原 Instance；只求值依赖变化数据的绑定；Repeat 按项 key 增删和重排子实例 | 兼容 Instance / Context 保留；定义、代码和派生值可替换；只增删不兼容或新增/移除的子实例 |
 | 控件描述 | 准备变化片段；数量变化时准备新的连续快照 | 改过代码/结构的组件重新计算本组件绑定；未变组件沿用派生值并检查子类型更新。准备子树差异，旧 owner 留到 effects 结算 |
 | Session 接入 | 当前编辑器提交完整工作区快照，由 set_controls 按 key/值差分 | 同一完整快照差分入口；相同控件可保留底层状态和资源 |
@@ -321,7 +321,7 @@ Session 是 TableData 完整校验与交互的唯一入口。非法快照使同�
 
 ### 后台编译与发布
 
-编辑器和工程 UI 的首版在所属 Runtime 线程编译。热更时，该线程降低作者文件并捕获类型和宿主绑定。已有组件的生成文本完全相同就直接复用；其余组件合在一个后台作业中完成 Source 函数体检查、可达依赖比较和所需的 LLVM/ORC 编译。未使用函数的类型错误同样会拒绝候选。`.ui.source` 暂不允许声明 Source `struct`/`enum` 类型，降低阶段即拒绝且不修改 Runtime 类型目录。纯注释修改无需启动后台作业。
+编辑器和工程 UI 的首版在所属 Runtime 线程编译。热更时，该线程降低作者文件并捕获共享的宿主类型绑定原型。纯声明组件直接按声明结构复用或替换，不创建 `Program` 也不进入 LLVM；需要 JIT 且生成文本完全相同的组件直接复用；其余需 JIT 的组件（以及全纯声明模块中变更的顶层辅助函数）合在一个后台作业中完成 Source 函数体检查、可达依赖比较和所需的 LLVM/ORC 快速编译（`CompileOptions{.fast = true}`）。未使用函数的类型错误同样会拒绝候选。`.ui.source` 暂不允许声明 Source `struct`/`enum` 类型，降低阶段即拒绝且不修改 Runtime 类型目录。纯注释修改和仅改纯声明组件字面量无需启动后台 JIT 作业。
 
 编译期间旧实例继续接收事件和出帧。每个文档最多一个作业，发现新的保存后，在组件边界停止过期工作。文档关闭会等待当前编译调用返回。结果就绪时先检查最新文件内容与 Runtime 类型目录，再由原线程发布、绑定并用当时的实例输入准备候选。已过期的代码与诊断一起丢弃；有效诊断始终对应完成该次编译的源码。
 
@@ -453,7 +453,7 @@ Parameters、Controls 等区域挂在稳定的业务内容槽内；停靠移动�
 | [workspace.cpp](../../../modules/editor/application/src/editor/workspace.cpp) | World 阶段采样、原业务 key、整体工作区描述 |
 | [application.cpp](../../../modules/editor/application/src/application/application.cpp) | 原生输入、Session 提交/effects 顺序、Renderer 接受链 |
 
-`atelier_ui_language` 链接 `atelier_ui` 与 `atelier_source`，不依赖 editor、World 或 RHI；基础 UI 仍不依赖 Runtime。结构和表达式没有第二个解释器。
+`atelier_ui_language` 链接 `atelier_ui` 与 `atelier_source`，不依赖 editor、World 或 RHI；基础 UI 仍不依赖 Runtime。声明层仅直接应用静态字面量与直接槽位转发，计算表达式与事件全部由 Source/JIT 编译，没有第二套通用表达式解释器。
 
 ## 验收与成本边界
 

@@ -28,9 +28,20 @@ auto failure(std::string message) {
     return std::unexpected(Error{ErrorCode::invalid_definition, std::move(message)});
 }
 
+bool same_declaration_shape(const Declaration& a, const Declaration& b) noexcept {
+    return a.inputs == b.inputs && a.states == b.states && a.nodes == b.nodes && a.has_jit_init == b.has_jit_init &&
+           a.needs_jit == b.needs_jit &&
+           std::ranges::equal(a.bindings, b.bindings,
+                              [](const auto& x, const auto& y) { return x.same_definition(y); }) &&
+           std::ranges::equal(a.events, b.events, [](const auto& x, const auto& y) {
+               return x.node == y.node && x.operation == y.operation;
+           });
+}
+
 // Single-file compiler diagnostics carry a request-tagged line/column in the message.
 std::optional<std::size_t> compiler_offset(std::string_view generated, std::string_view& message) {
-    auto colon = message.find("]:");
+    auto colon = message.rfind("[request#");
+    colon = colon == message.npos ? message.rfind("]:") : message.find("]:", colon);
     if (colon == message.npos)
         return {};
     colon += 2;
@@ -45,10 +56,12 @@ std::optional<std::size_t> compiler_offset(std::string_view generated, std::stri
         return {};
     std::size_t offset{};
     std::size_t current_line = 1;
-    while (current_line < line && offset < generated.size())
-        if (generated[offset++] == '\n')
+    while (current_line < line && offset < generated.size()) {
+        const char ch = generated[offset++];
+        if (ch == '\n' || (ch == '\r' && (offset == generated.size() || generated[offset] != '\n')))
             ++current_line;
-    if (current_line != line || column - 1 >= generated.size() - offset)
+    }
+    if (current_line != line || column - 1 > generated.size() - offset)
         return {};
     message.remove_prefix(static_cast<std::size_t>(second.ptr + 1 - message.data()));
     if (message.starts_with(' '))
@@ -56,16 +69,45 @@ std::optional<std::size_t> compiler_offset(std::string_view generated, std::stri
     return offset + column - 1;
 }
 
-Result<std::wstring> wide(const String& value) noexcept {
-    const auto text = value.view();
+Error map_diagnostic(Error error, std::string_view source_name, std::uint64_t source_version,
+                     std::string_view generated, std::span<const SourceMapping> mappings,
+                     std::optional<std::size_t> translated_offset = {},
+                     const language::SourcePosition* fallback = nullptr) {
+    std::string_view message = error.message;
+    auto offset = translated_offset ? translated_offset
+                  : error.source    ? std::optional{error.source->offset}
+                                    : compiler_offset(generated, message);
+    if (offset) {
+        const auto at = std::ranges::upper_bound(mappings, *offset, {}, &SourceMapping::end);
+        if (at != mappings.end() && at->begin <= *offset)
+            fallback = &at->origin;
+        else if (!mappings.empty() && *offset >= mappings.back().end)
+            fallback = &mappings.back().origin;
+    }
+    if (fallback) {
+        error.source = SourceLocation{std::string(source_name), source_version, fallback->offset, fallback->line,
+                                      fallback->column};
+        error.message = std::string(source_name) + ":" + std::to_string(fallback->line) + ":" +
+                        std::to_string(fallback->column) + ": " + std::string(message);
+    } else if (offset) {
+        error.message = std::string(source_name) + ": " + std::string(message);
+    }
+    return error;
+}
+
+Result<std::wstring> wide_utf8(std::string_view text) noexcept {
     if (text.empty())
         return {};
     if (text.size() > 4096 * 4)
         return failure("UI text exceeds the control limit.");
-    auto result = platform::utf8_to_utf16(text.std_view(), 4096);
+    auto result = platform::utf8_to_utf16(text, 4096);
     if (!result)
         return failure("Invalid or excessive UI text.");
     return std::move(*result);
+}
+
+Result<std::wstring> wide(const String& value) noexcept {
+    return wide_utf8(value.view().std_view());
 }
 
 struct EditReference {
@@ -287,6 +329,12 @@ struct DefinitionState {
                 dirty[i] = true;
     }
 
+    void initialize_nodes();
+
+    Result<void> apply_literal(const Binding& binding);
+
+    Result<void> apply_direct(const Binding& binding);
+
     Result<void> invoke(std::uint32_t operation, const Component& author,
                         const language::SourcePosition* fallback = nullptr);
 
@@ -443,16 +491,12 @@ struct Context {
         return d.event_checked;
     }
 
-    void create_node(std::uint32_t slot, std::uint32_t parent, std::uint32_t kind) {
-        auto& d = data();
-        if (!d.initializing)
-            fatal("UI structure is created only at mount.");
+    static void initialize_node_control(DefinitionState& d, std::uint32_t slot, std::uint32_t parent, NodeKind type) {
         auto& node = d.nodes.at(slot).control;
         node.parent = parent ? (d.declaration().nodes.at(parent - 1).kind == NodeKind::parameter_row
                                     ? d.nodes.at(parent - 1).body
                                     : d.nodes.at(parent - 1).control.key)
                              : d.parent;
-        const auto type = static_cast<NodeKind>(kind);
         node.kind = type == NodeKind::text                              ? ui::ControlKind::label
                     : type == NodeKind::foldout                         ? ui::ControlKind::foldout
                     : type == NodeKind::text_field                      ? ui::ControlKind::text_edit
@@ -587,12 +631,24 @@ struct Context {
         node.tree_lines = row.lines;
     }
 
+    static Result<void> apply_key(NodeState& node, Property p, ui::ControlKey value) noexcept {
+        if (p == Property::selection_group) {
+            if (!value)
+                return failure("ChoiceButton requires a nonzero selection group.");
+            node.control.selection_group = value;
+        } else if (p == Property::radio_group)
+            node.control.radio_group = value;
+        else
+            node.control.context_target = value;
+        return {};
+    }
+
     void set_radio_group(std::uint32_t slot, std::uint32_t, KeyReference reference) {
-        target(slot).control.radio_group = key(reference);
+        static_cast<void>(apply_key(target(slot), Property::radio_group, key(reference)));
     }
 
     void set_context(std::uint32_t slot, std::uint32_t, KeyReference reference) {
-        target(slot).control.context_target = key(reference);
+        static_cast<void>(apply_key(target(slot), Property::context, key(reference)));
     }
 
     void set_context_from_edit(std::uint32_t slot, std::uint32_t, TextEditReference reference) {
@@ -600,11 +656,7 @@ struct Context {
     }
 
     Result<void> set_selection_group(std::uint32_t slot, std::uint32_t, KeyReference reference) noexcept {
-        const auto group = key(reference);
-        if (!group)
-            return failure("ChoiceButton requires a nonzero selection group.");
-        target(slot).control.selection_group = group;
-        return {};
+        return apply_key(target(slot), Property::selection_group, key(reference));
     }
 
     void set_items(std::uint32_t slot, std::uint32_t, ItemsReference reference) {
@@ -612,20 +664,18 @@ struct Context {
         target(slot).items = std::get<ItemList>(d.inputs.at(reference.slot));
     }
 
-    Result<void> set_number(std::uint32_t slot, std::uint32_t property, double value) noexcept {
-        const auto p = static_cast<Property>(property);
+    static Result<void> apply_number(NodeState& state, Property p, double value) noexcept {
         if (p == Property::tree_rows) {
             if (!(value >= 0 && value <= ui::maximum_tree_rows) || std::floor(value) != value)
                 return failure("Tree rows require a count within the supported range.");
-            target(slot).control.tree_row_count = static_cast<std::uint32_t>(value);
+            state.control.tree_row_count = static_cast<std::uint32_t>(value);
             return {};
         }
         const bool signed_value = p == Property::offset_x || p == Property::offset_y;
         if (!std::isfinite(value) || value < (signed_value ? -32768 : 0) || value > 32768)
             return failure("UI layout value is outside its supported range.");
-        auto& state = target(slot);
         auto& node = state.control;
-        if (static_cast<Property>(property) == Property::icon) {
+        if (p == Property::icon) {
             if (std::floor(value) != value || value > static_cast<double>(ui::last_control_icon))
                 return failure("Invalid UI icon.");
             node.icon = static_cast<ui::ControlIcon>(static_cast<unsigned>(value));
@@ -633,7 +683,7 @@ struct Context {
         }
         auto& layout = node.layout;
         const auto scalar = static_cast<float>(value);
-        switch (static_cast<Property>(property)) {
+        switch (p) {
         case Property::offset_x:
             layout.offset_x = scalar;
             break;
@@ -739,10 +789,13 @@ struct Context {
         return {};
     }
 
-    void set_bool(std::uint32_t slot, std::uint32_t property, bool value) {
-        auto& state = target(slot);
+    Result<void> set_number(std::uint32_t slot, std::uint32_t property, double value) noexcept {
+        return apply_number(target(slot), static_cast<Property>(property), value);
+    }
+
+    static void apply_bool(NodeState& state, Property p, bool value) {
         auto& node = state.control;
-        switch (static_cast<Property>(property)) {
+        switch (p) {
         case Property::modified:
             node.modified = value;
             break;
@@ -802,6 +855,10 @@ struct Context {
         default:
             fatal("Invalid boolean UI property.");
         }
+    }
+
+    void set_bool(std::uint32_t slot, std::uint32_t property, bool value) {
+        apply_bool(target(slot), static_cast<Property>(property), value);
     }
 
     void set_edit(std::uint32_t slot, std::uint32_t, EditReference reference) {
@@ -1038,9 +1095,31 @@ struct Module::Build {
         }
     };
 
+    struct HelperCheck {
+        std::shared_ptr<source::Program> program;
+
+        source::Program::Request request;
+
+        const Component::Impl& owner;
+
+        std::shared_ptr<const PreparedHelpers> helpers;
+
+        std::string generated_source;
+
+        Result<void> emit() {
+            auto compiled = source::Program::emit_entry(request);
+            if (!compiled)
+                return std::unexpected(map_diagnostic(std::move(compiled.error()), owner.declaration.source_name,
+                                                      owner.source_version, generated_source, helpers->mappings));
+            return {};
+        }
+    };
+
     std::shared_ptr<Module> module = std::make_shared<Module>();
 
     std::vector<Entry> entries;
+
+    std::optional<HelperCheck> helper_check;
 
     std::atomic_bool cancelled{};
 
@@ -1049,12 +1128,39 @@ struct Module::Build {
 
     ~Build() { cancelled.store(true, std::memory_order_relaxed); }
 
+    Result<std::shared_ptr<source::Program>> allocate_program(Runtime& runtime, TypeId type) {
+        if (!module->contract_prototype_) {
+            ATELIER_TRY_BIND(owner, source::Program::create(runtime, type));
+            module->contract_prototype_ = std::move(*owner);
+        }
+        ATELIER_TRY_BIND(forked, source::Program::create_like(*module->contract_prototype_));
+        return std::shared_ptr<source::Program>(std::move(*forked));
+    }
+
     Result<void> stage(Component::Impl& next, TypeId type, std::shared_ptr<Component> prior, ComponentTiming* timing) {
         const source::detail::CompileTimer timer(timing != nullptr);
         next.catalog_size = next.runtime.type_count();
         if (prior && (&prior->impl_->runtime != &next.runtime || prior->impl_->catalog_size != next.catalog_size))
             prior.reset();
-        if (prior && next.declaration.generated_source == prior->declaration().generated_source) {
+        if (!next.declaration.needs_jit) {
+            if (prior && same_declaration_shape(next.declaration, prior->declaration())) {
+                const auto a_helpers = next.declaration.helpers
+                                           ? std::string_view(next.declaration.helpers->generated_source)
+                                           : std::string_view{};
+                const auto b_helpers = prior->declaration().helpers
+                                           ? std::string_view(prior->declaration().helpers->generated_source)
+                                           : std::string_view{};
+                next.compilation = a_helpers == b_helpers ? Component::Compilation::reused_source
+                                                          : Component::Compilation::reused_dependencies;
+            }
+            if (timing) {
+                timing->disposition = next.compilation;
+                timing->total_ns = timer.elapsed_ns();
+            }
+            return {};
+        }
+        if (prior && prior->declaration().needs_jit &&
+            next.declaration.generated_source == prior->declaration().generated_source) {
             next.layout = prior->impl_->layout;
             next.compilation = Component::Compilation::reused_source;
             next.reuse(*prior->impl_);
@@ -1065,10 +1171,10 @@ struct Module::Build {
             return {};
         }
         const source::detail::CompileTimer capture(timing != nullptr);
-        ATELIER_TRY_BIND(owner, source::Program::create(next.runtime, type));
+        ATELIER_TRY_BIND(owner, allocate_program(next.runtime, type));
         next.program = std::move(*owner);
         ATELIER_TRY_BIND(request, next.program->request(next.declaration.source_name, next.declaration.generated_source,
-                                                        "__ui_dispatch"));
+                                                        "__ui_dispatch", source::CompileOptions{.fast = true}));
         entries.push_back({next, std::move(prior), std::move(*request), timing, {}});
         if (timing) {
             timing->request_ns = capture.elapsed_ns();
@@ -1079,24 +1185,137 @@ struct Module::Build {
 };
 
 Error Component::Impl::diagnostic(Error error, const language::SourcePosition* fallback) const {
-    std::string_view message = error.message;
-    auto offset =
-        error.source ? std::optional{error.source->offset} : compiler_offset(declaration.generated_source, message);
+    std::optional<std::size_t> translated;
     if (error.source && code_layout && code_layout != layout)
-        offset = code_layout->translate(*offset, *layout);
-    if (offset) {
-        const auto& mappings = declaration.mappings;
-        const auto at = std::ranges::upper_bound(mappings, *offset, {}, &SourceMapping::end);
-        if (at != mappings.end() && at->begin <= *offset)
-            fallback = &at->origin;
+        translated = code_layout->translate(error.source->offset, *layout);
+    return map_diagnostic(std::move(error), declaration.source_name, source_version, declaration.generated_source,
+                          declaration.mappings, translated, fallback);
+}
+
+void detail::DefinitionState::initialize_nodes() {
+    const auto& declared = declaration().nodes;
+    for (std::uint32_t i = 0; i < declared.size(); ++i)
+        Context::initialize_node_control(*this, i, declared[i].parent, declared[i].kind);
+}
+
+Result<void> detail::DefinitionState::apply_literal(const Binding& binding) {
+    auto& node = nodes.at(binding.node);
+    node.dirty = true;
+    if (binding.property == Property::argument) {
+        if (const auto* b = std::get_if<bool>(&binding.literal)) {
+            node.arguments.at(binding.argument) = *b;
+            return {};
+        }
+        if (const auto* n = std::get_if<double>(&binding.literal)) {
+            node.arguments.at(binding.argument) = *n;
+            return {};
+        }
+        ATELIER_TRY_BIND(converted, wide_utf8(std::get<std::string>(binding.literal)));
+        node.arguments.at(binding.argument) = std::move(*converted);
+        return {};
     }
-    if (fallback) {
-        error.source =
-            SourceLocation{declaration.source_name, source_version, fallback->offset, fallback->line, fallback->column};
-        error.message = declaration.source_name + ":" + std::to_string(fallback->line) + ":" +
-                        std::to_string(fallback->column) + ": " + std::string(message);
+    if (const auto* b = std::get_if<bool>(&binding.literal)) {
+        Context::apply_bool(node, binding.property, *b);
+        return {};
     }
-    return error;
+    if (const auto* n = std::get_if<double>(&binding.literal))
+        return Context::apply_number(node, binding.property, *n);
+    ATELIER_TRY_BIND(converted, wide_utf8(std::get<std::string>(binding.literal)));
+    return Context::text(node.control, static_cast<std::uint32_t>(binding.property), std::move(*converted));
+}
+
+Result<void> detail::DefinitionState::apply_direct(const Binding& binding) {
+    auto& node = nodes.at(binding.node);
+    node.dirty = true;
+    const auto& src = binding.direct;
+    if (binding.property == Property::argument) {
+        if (src.kind == DirectSource::Kind::node_key) {
+            node.arguments.at(binding.argument) = nodes.at(src.slot).control.key;
+            return {};
+        }
+        if (src.kind == DirectSource::Kind::state) {
+            const auto& value = states.at(src.slot);
+            if (src.input_kind == InputKind::boolean)
+                node.arguments.at(binding.argument) = std::get<bool>(value);
+            else
+                node.arguments.at(binding.argument) = std::get<double>(value);
+            return {};
+        }
+        if (binding.argument_kind == InputKind::text && src.input_kind == InputKind::text_edit) {
+            node.arguments.at(binding.argument) = std::get<TextEditBinding>(inputs.at(src.slot)).text;
+            return {};
+        }
+        node.arguments.at(binding.argument) = inputs.at(src.slot);
+        return {};
+    }
+    if (src.kind == DirectSource::Kind::state) {
+        const auto& value = states.at(src.slot);
+        if (src.input_kind == InputKind::boolean) {
+            Context::apply_bool(node, binding.property, std::get<bool>(value));
+            return {};
+        }
+        return Context::apply_number(node, binding.property, std::get<double>(value));
+    }
+    if (src.kind == DirectSource::Kind::node_key)
+        return Context::apply_key(node, binding.property, nodes.at(src.slot).control.key);
+    const auto& value = inputs.at(src.slot);
+    switch (src.input_kind) {
+    case InputKind::boolean:
+        Context::apply_bool(node, binding.property, std::get<bool>(value));
+        return {};
+    case InputKind::number:
+        return Context::apply_number(node, binding.property, std::get<double>(value));
+    case InputKind::text:
+        return Context::text(node.control, static_cast<std::uint32_t>(binding.property), std::get<std::wstring>(value));
+    case InputKind::text_edit: {
+        const auto& edit = std::get<TextEditBinding>(value);
+        if (binding.property == Property::edit) {
+            node.text_edit = edit;
+            return {};
+        }
+        if (binding.property == Property::context) {
+            node.control.context_target = edit.key;
+            return {};
+        }
+        return Context::text(node.control, static_cast<std::uint32_t>(binding.property), edit.text);
+    }
+    case InputKind::edit:
+        node.edit = std::get<EditBinding>(value);
+        return {};
+    case InputKind::key:
+        return Context::apply_key(node, binding.property, std::get<ui::ControlKey>(value));
+    case InputKind::items:
+        node.items = std::get<ItemList>(value);
+        return {};
+    case InputKind::action:
+        node.action = std::get<ActionBinding>(value);
+        return {};
+    case InputKind::table:
+        node.table = std::get<TableBinding>(value);
+        return {};
+    case InputKind::code:
+        node.code = std::get<CodeBinding>(value);
+        return {};
+    case InputKind::tooltip: {
+        auto& current = node.control.tooltip;
+        const auto& next = std::get<TooltipBinding>(value);
+        if (current != next && (!current || !next || *current != *next))
+            current = next;
+        return {};
+    }
+    case InputKind::tree_row: {
+        const auto& row = std::get<TreeRowBinding>(value);
+        auto& control = node.control;
+        control.tree_index = row.index;
+        control.tree_depth = row.depth;
+        control.tree_branch = row.branch;
+        control.tree_expanded = row.expanded;
+        control.tree_primary = row.primary;
+        control.tree_lines = row.lines;
+        return {};
+    }
+    }
+    fatal("Unknown UI input kind.");
 }
 
 Result<void> detail::DefinitionState::invoke(std::uint32_t operation, const Component& author,
@@ -1183,7 +1402,6 @@ Result<TypeId> register_types(Runtime& runtime) {
                               .method<&C::write_bool>("write_bool", true)
                               .method<&C::write_number>("write_number", true)
                               .method<&C::event_bool>("event_bool", true)
-                              .method<&C::create_node>("create_node", true)
                               .method<&C::set_text>("set_text", true)
                               .method<&C::set_number>("set_number", true)
                               .method<&C::set_bool>("set_bool", true)
@@ -1269,6 +1487,10 @@ Result<std::shared_ptr<Module::Build>> Module::start(Runtime& runtime, std::stri
     const auto source_version = source::content_hash(source);
     auto build = std::make_shared<Build>();
     auto& module = build->module;
+    module->catalog_size_ = runtime.type_count();
+    if (previous && previous->contract_prototype_ && previous->catalog_size_ == module->catalog_size_ &&
+        !previous->components_.empty() && &previous->components_.front()->impl_->runtime == &runtime)
+        module->contract_prototype_ = previous->contract_prototype_;
     std::vector<unsigned> states(declarations->size());
     module->components_.reserve(declarations->size());
     if (timing)
@@ -1313,25 +1535,53 @@ Result<std::shared_ptr<Module::Build>> Module::start(Runtime& runtime, std::stri
     };
     for (std::size_t i = 0; i < module->components_.size(); ++i)
         ATELIER_TRY(compile(i));
-    if (background && !build->entries.empty())
-        build->worker = std::async(
-            std::launch::async,
-            [entries = std::span{build->entries}, &cancelled = build->cancelled, worker_timing]() -> Result<void> {
-                if (worker_timing)
-                    worker_timing->begin = std::chrono::steady_clock::now();
-                Result<void> result;
-                for (auto& entry : entries) {
-                    if (cancelled.load(std::memory_order_relaxed))
-                        result = failure("UI compilation was superseded.");
-                    else
-                        result = entry.emit();
-                    if (!result)
-                        break;
-                }
-                if (worker_timing)
-                    worker_timing->end = std::chrono::steady_clock::now();
-                return result;
-            });
+    // When every component is purely declarative, still type-check changed top-level helpers once.
+    if (build->entries.empty() && !module->components_.empty() && module->components_.front()->declaration().helpers) {
+        const auto& helpers = module->components_.front()->declaration().helpers;
+        const auto prior_helpers = previous && previous->catalog_size_ == module->catalog_size_ &&
+                                           !previous->components_.empty() &&
+                                           &previous->components_.front()->impl_->runtime == &runtime
+                                       ? previous->components_.front()->declaration().helpers
+                                       : nullptr;
+        const bool already_checked = prior_helpers && prior_helpers->generated_source == helpers->generated_source;
+        if (!already_checked) {
+            ATELIER_TRY_BIND(owner, build->allocate_program(runtime, *type));
+            auto check_source = helpers->generated_source + "\nvoid __ui_helpers() {}\n";
+            ATELIER_TRY_BIND(
+                request, (*owner)->request(name, check_source, "__ui_helpers", source::CompileOptions{.fast = true}));
+            build->helper_check.emplace(Build::HelperCheck{std::move(*owner), std::move(*request),
+                                                           *module->components_.front()->impl_, helpers,
+                                                           std::move(check_source)});
+        }
+    }
+    if (background && (!build->entries.empty() || build->helper_check))
+        build->worker = std::async(std::launch::async,
+                                   [entries = std::span{build->entries},
+                                    helper = build->helper_check ? &*build->helper_check : nullptr,
+                                    &cancelled = build->cancelled, worker_timing]() -> Result<void> {
+                                       if (worker_timing)
+                                           worker_timing->begin = std::chrono::steady_clock::now();
+                                       Result<void> result;
+                                       if (helper) {
+                                           if (cancelled.load(std::memory_order_relaxed))
+                                               result = failure("UI compilation was superseded.");
+                                           else
+                                               result = helper->emit();
+                                       }
+                                       if (result) {
+                                           for (auto& entry : entries) {
+                                               if (cancelled.load(std::memory_order_relaxed))
+                                                   result = failure("UI compilation was superseded.");
+                                               else
+                                                   result = entry.emit();
+                                               if (!result)
+                                                   break;
+                                           }
+                                       }
+                                       if (worker_timing)
+                                           worker_timing->end = std::chrono::steady_clock::now();
+                                       return result;
+                                   });
     return build;
 }
 
@@ -1350,9 +1600,12 @@ void Module::cancel(Build& build) {
 Result<std::shared_ptr<Module>> Module::finish(Build& build) {
     if (build.worker.valid())
         ATELIER_TRY(build.worker.get());
-    else
+    else {
+        if (build.helper_check)
+            ATELIER_TRY(build.helper_check->emit());
         for (auto& entry : build.entries)
             ATELIER_TRY(entry.emit());
+    }
     for (auto& entry : build.entries)
         ATELIER_TRY(entry.publish());
     for (const auto& component : build.module->components_) {
@@ -1687,18 +1940,7 @@ Result<std::unique_ptr<detail::PreparedUpdate>> detail::InstanceData::prepare(st
             }
         }
     }
-    const auto same_shape = [&] {
-        const auto& before = value->declaration();
-        return before.inputs == declaration.inputs && before.states == declaration.states &&
-               before.nodes == declaration.nodes &&
-               std::ranges::equal(before.bindings, declaration.bindings,
-                                  [](const auto& a, const auto& b) {
-                                      return a.node == b.node && a.operation == b.operation && a.property == b.property;
-                                  }) &&
-               std::ranges::equal(before.events, declaration.events, [](const auto& a, const auto& b) {
-                   return a.node == b.node && a.operation == b.operation;
-               });
-    };
+    const auto same_shape = [&] { return same_declaration_shape(value->declaration(), declaration); };
     const bool replace =
         !value || parent != value->parent || aliases_changed ||
         (source_changed && (definition->impl_->program != value->component->impl_->program || !same_shape()));
@@ -1765,19 +2007,37 @@ Result<std::unique_ptr<detail::PreparedUpdate>> detail::InstanceData::prepare(st
                 }
             }
         }
-        for (const auto& state : declaration.states)
-            next->states.push_back(state.kind == InputKind::boolean ? std::variant<bool, double>{false}
-                                                                    : std::variant<bool, double>{0.0});
+        for (const auto& state : declaration.states) {
+            if (const auto* b = std::get_if<bool>(&state.initial_value))
+                next->states.emplace_back(*b);
+            else if (const auto* n = std::get_if<double>(&state.initial_value))
+                next->states.emplace_back(*n);
+            else
+                next->states.push_back(state.kind == InputKind::boolean ? std::variant<bool, double>{false}
+                                                                        : std::variant<bool, double>{0.0});
+        }
         next->dependencies.resize(declaration.bindings.size(),
                                   std::vector<bool>(declaration.inputs.size() + declaration.states.size()));
+        for (std::size_t i = 0; i < declaration.bindings.size(); ++i) {
+            const auto& binding = declaration.bindings[i];
+            if (binding.mode == Binding::Mode::direct) {
+                if (binding.direct.kind == DirectSource::Kind::input)
+                    next->dependencies[i][binding.direct.slot] = true;
+                else if (binding.direct.kind == DirectSource::Kind::state)
+                    next->dependencies[i][declaration.inputs.size() + binding.direct.slot] = true;
+            }
+        }
         next->dirty.resize(declaration.bindings.size(), true);
         next->reads.resize(declaration.inputs.size() + declaration.states.size());
         ATELIER_TRY(next->publish(inputs));
-        next->initializing = true;
-        auto initialized = next->invoke(0, *definition);
-        next->initializing = false;
-        if (!initialized)
-            return std::unexpected(initialized.error());
+        next->initialize_nodes();
+        if (declaration.has_jit_init) {
+            next->initializing = true;
+            auto initialized = next->invoke(0, *definition);
+            next->initializing = false;
+            if (!initialized)
+                return std::unexpected(initialized.error());
+        }
         if (value)
             for (std::size_t i = 0; i < declaration.states.size(); ++i) {
                 const auto& old = value->declaration().states;
@@ -1792,15 +2052,29 @@ Result<std::unique_ptr<detail::PreparedUpdate>> detail::InstanceData::prepare(st
     auto& data = next ? *next : *value;
     for (std::size_t i = 0; i < data.dirty.size(); ++i)
         if (data.dirty[i]) {
-            std::fill(data.reads.begin(), data.reads.end(), false);
-            data.evaluating = true;
             const auto& binding = declaration.bindings[i];
-            auto evaluated = data.invoke(binding.operation, *definition, &binding.position);
-            data.evaluating = false;
-            ++statistics.binding_evaluations;
-            if (!evaluated)
-                return std::unexpected(evaluated.error());
-            data.dependencies[i] = data.reads;
+            if (binding.mode == Binding::Mode::literal) {
+                auto evaluated = data.apply_literal(binding);
+                ++statistics.binding_evaluations;
+                if (!evaluated)
+                    return std::unexpected(
+                        definition->impl_->diagnostic(std::move(evaluated.error()), &binding.position));
+            } else if (binding.mode == Binding::Mode::direct) {
+                auto evaluated = data.apply_direct(binding);
+                ++statistics.binding_evaluations;
+                if (!evaluated)
+                    return std::unexpected(
+                        definition->impl_->diagnostic(std::move(evaluated.error()), &binding.position));
+            } else {
+                std::fill(data.reads.begin(), data.reads.end(), false);
+                data.evaluating = true;
+                auto evaluated = data.invoke(binding.operation, *definition, &binding.position);
+                data.evaluating = false;
+                ++statistics.binding_evaluations;
+                if (!evaluated)
+                    return std::unexpected(evaluated.error());
+                data.dependencies[i] = data.reads;
+            }
             data.dirty[i] = false;
             data.publication_pending = true;
         }

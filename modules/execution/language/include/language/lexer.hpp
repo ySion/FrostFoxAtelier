@@ -69,7 +69,7 @@ public:
                    peek() == '\f')
                 advance();
             if (peek() == '/' && peek(1) == '/') {
-                while (!at_end() && peek() != '\n')
+                while (!at_end() && peek() != '\n' && peek() != '\r')
                     advance();
             } else if (peek() == '/' && peek(1) == '*') {
                 const auto start = position_;
@@ -177,7 +177,7 @@ private:
 
     void advance() noexcept {
         const auto value = source_[position_.offset++];
-        if (value == '\n') {
+        if (value == '\n' || (value == '\r' && peek() != '\n')) {
             ++position_.line;
             position_.column = 1;
         } else
@@ -192,6 +192,40 @@ private:
 
     SourcePosition position_;
 };
+
+// RFC 3629 UTF-8 validation matching foundation StringView::is_valid_utf8().
+inline bool valid_utf8(std::string_view text) noexcept {
+    for (std::size_t i = 0; i < text.size();) {
+        const auto first = static_cast<unsigned char>(text[i++]);
+        if (first < 0x80)
+            continue;
+        if (first <= 0xdf) {
+            if (first < 0xc2 || i == text.size() || (static_cast<unsigned char>(text[i++]) ^ 0x80u) >= 0x40u)
+                return false;
+        } else if (first <= 0xef) {
+            if (text.size() - i < 2)
+                return false;
+            const auto b1 = static_cast<unsigned char>(text[i]);
+            const auto b2 = static_cast<unsigned char>(text[i + 1]);
+            if (((b1 ^ 0x80u) | (b2 ^ 0x80u)) >= 0x40u || (first == 0xe0 && b1 < 0xa0) || (first == 0xed && b1 >= 0xa0))
+                return false;
+            i += 2;
+        } else if (first <= 0xf4) {
+            if (text.size() - i < 3)
+                return false;
+            const auto b1 = static_cast<unsigned char>(text[i]);
+            const auto b2 = static_cast<unsigned char>(text[i + 1]);
+            const auto b3 = static_cast<unsigned char>(text[i + 2]);
+            if (((b1 ^ 0x80u) | (b2 ^ 0x80u) | (b3 ^ 0x80u)) >= 0x40u || (first == 0xf0 && b1 < 0x90) ||
+                (first == 0xf4 && b1 >= 0x90))
+                return false;
+            i += 3;
+        } else {
+            return false;
+        }
+    }
+    return true;
+}
 
 // A string token's UTF-8 bytes, with the escapes \\ \" \n \r \t \0 decoded.
 inline std::expected<std::string, Diagnostic> string_value(const Token& token) {
@@ -221,6 +255,8 @@ inline std::expected<std::string, Diagnostic> string_value(const Token& token) {
         }
         value.push_back(c);
     }
+    if (!valid_utf8(value))
+        return reject(token.position, "String literal is not valid UTF-8.");
     return value;
 }
 

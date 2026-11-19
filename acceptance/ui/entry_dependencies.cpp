@@ -15,17 +15,73 @@ using acceptance::helpers::take;
 
 namespace {
 void verify_component_environments(Runtime& runtime, ui::ControlKey& next) {
+    // Top-level helpers are pure module-level Source functions: parameters may be named
+    // input/state, and helpers do not implicitly capture component inputs or couple components.
     std::string source = "const double margin = 2.0d;\n"
-                         "double extent(){return input.size + margin;}\n"
-                         "ui A(in double size){Button a{height:extent();}}\n"
-                         "ui B(in bool flag,in double size){Button b{height:extent();}}";
+                         "double extent(double input) { double state = input; return state + margin; }\n"
+                         "ui A(in double size) { Button a { height: extent(input.size); } }\n"
+                         "ui B(in bool flag, in double size) { Button b { height: extent(input.size); } }";
     auto initial = take(Module::compile(runtime, "environment", source));
     auto a = take(Instance::create(initial->find("A"), 0, next, {}, std::array<InputValue, 1>{30.}));
     auto b = take(Instance::create(initial->find("B"), 0, next, {}, std::array<InputValue, 2>{true, 43.}));
     require(a->controls().front().layout.height.value == 32 && b->controls().front().layout.height.value == 45,
-            "A helper captured another component's input slot.");
-    auto invalid = Module::compile(runtime, "environment", source + "\nui C(){Button c{height:20;}}", initial.get());
-    require(!invalid && invalid.error().message.contains("Unknown UI input"), "An unused capture escaped validation.");
+            "Explicit helper parameters computed the wrong component height.");
+    auto decoupled =
+        take(Module::compile(runtime, "environment", source + "\nui C() { Button c { height: 20; } }", initial.get()));
+    require(decoupled->compilation().compiled == 1 && decoupled->compilation().reused == 2,
+            "Unrelated component failed or invalidated sibling components.");
+    auto implicit_capture =
+        Module::compile(runtime, "environment",
+                        "double bad() { return input.size; }\nui A(in double size) { Button a { height: bad(); } }");
+    require(!implicit_capture, "Top-level helper implicit input capture must be rejected.");
+    auto empty_property = Module::compile(runtime, "environment", "ui A() { Button a { height: ; } }");
+    require(!empty_property && empty_property.error().message.contains("Expected a UI expression"),
+            "Empty UI property expression escaped frontend validation.");
+    // Pure-declarative components bypass LLVM/Program creation while preserving hot reload and helper diagnostics.
+    const std::string plain_v1 =
+        "ui Plain(in double w) { Button b { out_of_flow: true; offset_x: -16; width: input.w; height: 20; } }";
+    const std::string plain_v2 =
+        "ui Plain(in double w) { Button b { out_of_flow: true; offset_x: -16; width: input.w; height: 24; } }";
+    auto plain1 = take(Module::compile(runtime, "plain", plain_v1));
+    require(!plain1->find("Plain")->declaration().needs_jit,
+            "Pure-declarative UI component unexpectedly required JIT.");
+    auto plain_instance = take(Instance::create(plain1->find("Plain"), 0, next, {}, std::array<InputValue, 1>{80.}));
+    require(plain_instance->controls().front().layout.width.value == 80 &&
+                plain_instance->controls().front().layout.height.value == 20 &&
+                plain_instance->controls().front().layout.offset_x == -16,
+            "Pure-declarative UI component evaluated wrong initial dimensions.");
+    auto plain2 = take(Module::compile(runtime, "plain", plain_v2, plain1.get()));
+    require(plain2->find("Plain")->compilation() == Component::Compilation::compiled,
+            "Pure-declarative literal change was not reported as compiled.");
+    take(plain_instance->update(std::array<InputValue, 1>{96.}, plain2->find("Plain")));
+    plain_instance->commit_controls();
+    require(plain_instance->controls().front().layout.width.value == 96 &&
+                plain_instance->controls().front().layout.height.value == 24,
+            "Pure-declarative UI component did not update after hot reload.");
+    auto plain3 = take(Module::compile(runtime, "plain", "// comment\n" + plain_v2, plain2.get()));
+    require(plain3->find("Plain")->compilation() == Component::Compilation::reused_source,
+            "Comment-only edit invalidated a pure-declarative UI component.");
+    auto bad_declarative_helper = Module::compile(runtime, "plain", "double bad() { return \"oops\"; }\n" + plain_v1);
+    require(!bad_declarative_helper && bad_declarative_helper.error().message.contains(":1:23: Type mismatch"),
+            bad_declarative_helper ? "Invalid helper in a pure-declarative UI module compiled."
+                                   : bad_declarative_helper.error().message);
+    // Editing a literal inside a mixed JIT component reuses machine code while still updating the live control.
+    const std::string mixed_v1 = "ui Mixed(in double w) { Button b { width: input.w + 1.0d; height: 20; } }";
+    const std::string mixed_v2 = "ui Mixed(in double w) { Button b { width: input.w + 1.0d; height: 28; } }";
+    auto mixed1 = take(Module::compile(runtime, "mixed", mixed_v1));
+    require(mixed1->find("Mixed")->declaration().needs_jit, "Mixed UI component should require JIT.");
+    auto mixed_instance = take(Instance::create(mixed1->find("Mixed"), 0, next, {}, std::array<InputValue, 1>{80.}));
+    require(mixed_instance->controls().front().layout.width.value == 81 &&
+                mixed_instance->controls().front().layout.height.value == 20,
+            "Mixed UI component evaluated wrong initial dimensions.");
+    auto mixed2 = take(Module::compile(runtime, "mixed", mixed_v2, mixed1.get()));
+    require(mixed2->find("Mixed")->compilation() == Component::Compilation::reused_source,
+            "Literal-only edit in a mixed UI component unexpectedly recompiled JIT code.");
+    take(mixed_instance->update(std::array<InputValue, 1>{80.}, mixed2->find("Mixed")));
+    mixed_instance->commit_controls();
+    require(mixed_instance->controls().front().layout.width.value == 81 &&
+                mixed_instance->controls().front().layout.height.value == 28,
+            "Literal-only edit in a mixed UI component did not update the live control.");
     source.replace(source.find("2.0d"), 4, "5.0d");
     auto changed = take(Module::compile(runtime, "environment", source, initial.get()));
     take(a->update(std::array<InputValue, 1>{30.}, changed->find("A")));
@@ -48,6 +104,8 @@ void verify_ui_entry_dependencies() {
     std::string source{std::istreambuf_iterator<char>{editor}, {}};
     const auto declarations = take(lower_module("editor.ui.source", source));
     require(declarations.size() == 44, "Update the real-editor dependency workload when its component set changes.");
+    const auto jit_components = std::ranges::count_if(declarations, [](const auto& item) { return item.needs_jit; });
+    require(jit_components == 18, "Unexpected JIT component count for assets/editor.ui.source.");
     auto now = LiveDocument::Clock::now();
     const auto path = std::filesystem::temp_directory_path() /
                       ("editor-dependencies-" + std::to_string(now.time_since_epoch().count()) + ".ui.source");

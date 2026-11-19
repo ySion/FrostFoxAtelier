@@ -234,6 +234,8 @@ struct BusinessValueBinding {
     math::Type math{};
 
     bool plain_value{};
+
+    bool zero_default{};
 };
 
 struct BusinessEnvironment {

@@ -448,6 +448,9 @@ public:
     // publishes no Program. The nonmovable owner retains a stable address.
     static Result<std::unique_ptr<Program>> create(Runtime&, TypeId = {}) noexcept;
 
+    // Creates an unbound Program sharing an already-bound Runtime contract.
+    static Result<std::unique_ptr<Program>> create_like(const Program& prototype) noexcept;
+
     ~Program();
 
     // Idempotently closes entries, requests and publication. Existing leases

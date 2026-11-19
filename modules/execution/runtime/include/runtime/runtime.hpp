@@ -960,6 +960,8 @@ struct TypeInfo {
 
     bool plain_value{};
 
+    bool zero_default{};
+
     // Help text is presentation metadata, not type identity, layout or call ABI.
     std::string description{};
 

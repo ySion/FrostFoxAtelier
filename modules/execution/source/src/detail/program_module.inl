@@ -18,7 +18,7 @@ Error mapped_error(const SourceSnapshot& snapshot, const language::MappedSource&
             language::SourcePosition original{offset, 1, 1};
             const auto& text = snapshot.files[piece.file].source;
             for (std::size_t i = 0; i < offset; ++i)
-                if (text[i] == '\n') {
+                if (is_line_break(text, i)) {
                     ++original.line;
                     original.column = 1;
                 } else
@@ -557,7 +557,7 @@ Result<Program::Candidate> Program::prepare_module(const Request& request) {
             lines.push_back(0);
             const auto& source = snapshot.files[file].source;
             for (std::size_t i = 0; i < source.size(); ++i)
-                if (source[i] == '\n')
+                if (is_line_break(source, i))
                     lines.push_back(i + 1);
         }
     }

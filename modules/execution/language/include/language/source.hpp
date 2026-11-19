@@ -105,6 +105,8 @@ struct ValueLayout {
 
     bool plain_value{};
 
+    bool zero_default{};
+
     std::vector<std::byte> initial_value{}; // Material compilation captures plain native defaults, never callbacks.
 };
 

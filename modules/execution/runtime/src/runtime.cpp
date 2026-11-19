@@ -1435,6 +1435,7 @@ struct Runtime::Impl {
         auto type = std::make_unique<Type>();
         type->info = {id, std::move(name), TypeKind::scalar, sizeof(T), alignof(T), {}, {}, true, true};
         type->info.plain_value = true;
+        type->info.zero_default = true;
         type->scalar_leaf = type.get();
         type->native = {sizeof(T),
                         alignof(T),
@@ -2877,6 +2878,25 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
                     if (field.id.owner_ == type.info.id)
                         field.offset = type.fields[field.id.index_].offset;
             }
+            if (is_native && type.info.kind == TypeKind::record && type.info.plain_value &&
+                type.native.prototype_constructor != nullptr &&
+                type.native.prototype_constructor == type.native.construct) {
+                auto* scratch =
+                    static_cast<std::byte*>(::operator new(type.info.size, std::align_val_t{type.info.alignment}));
+                std::memset(scratch, 0, type.info.size);
+                bool constructed_ok = false;
+                {
+                    CallbackScope scope{impl_->callbacks};
+                    constructed_ok = type.native.construct(scratch).has_value();
+                }
+                if (constructed_ok) {
+                    type.info.zero_default =
+                        std::all_of(scratch, scratch + type.info.size, [](std::byte b) { return b == std::byte{0}; });
+                    CallbackScope scope{impl_->callbacks};
+                    type.native.destroy(scratch);
+                }
+                ::operator delete(scratch, std::align_val_t{type.info.alignment});
+            }
             if (!is_native) {
                 const auto size = aligned_size(std::max(std::size_t{1}, type.info.size), type.info.alignment);
                 if (!size)
@@ -2898,6 +2918,9 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
                     if (type.scalar_leaf)
                         type.walk_depth = 1;
                 }
+                if (type.info.kind == TypeKind::record && type.info.plain_value &&
+                    (type.fields.empty() || type.scalar_leaf != nullptr))
+                    type.info.zero_default = true;
                 if (!type.scalar_leaf && !type.needs_destroy) {
                     bool can_prototype = true;
                     for (const auto& field : type.fields) {
@@ -2945,6 +2968,9 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
                                 Impl::apply_default_leaves(destination, field.default_leaves);
                         }
                         type.walk_depth = 1;
+                        if (type.info.kind == TypeKind::record && type.info.plain_value)
+                            type.info.zero_default = std::all_of(image, image + type.info.size,
+                                                                 [](std::byte b) { return b == std::byte{0}; });
                     }
                 }
             }

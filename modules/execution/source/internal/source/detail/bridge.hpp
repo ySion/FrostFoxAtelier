@@ -102,6 +102,8 @@ struct BoundValue {
 
     bool plain_value{};
 
+    bool zero_default{};
+
     bool operator==(const BoundValue&) const = default;
 };
 

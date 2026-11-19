@@ -253,6 +253,10 @@ private:
 
     std::vector<std::shared_ptr<Component>> components_;
 
+    std::shared_ptr<source::Program> contract_prototype_;
+
+    std::size_t catalog_size_{};
+
     Compilation compilation_;
 
     friend class Component;

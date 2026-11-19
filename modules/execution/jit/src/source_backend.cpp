@@ -103,6 +103,8 @@ struct Artifacts {
 struct HostTarget {
     llvm::orc::JITTargetMachineBuilder builder;
 
+    llvm::orc::JITTargetMachineBuilder fast_builder;
+
     llvm::DataLayout data_layout;
 
     std::string target_triple;
@@ -121,15 +123,18 @@ const std::expected<HostTarget, std::string>& host_target() noexcept {
         const auto& features = target->getFeatures().getFeatures();
         if (std::find(features.begin(), features.end(), "+fma") == features.end())
             return std::unexpected("The source JIT requires an x64 host CPU with FMA3.");
-        target->setCodeGenOptLevel(llvm::CodeGenOptLevel::Aggressive);
         target->setCodeModel(llvm::CodeModel::Large);
         target->setRelocationModel(llvm::Reloc::PIC_);
+        auto fast = *target;
+        target->setCodeGenOptLevel(llvm::CodeGenOptLevel::Aggressive);
+        fast.setCodeGenOptLevel(llvm::CodeGenOptLevel::Less);
         auto layout = target->getDefaultDataLayoutForTarget();
         if (!layout)
             return std::unexpected(llvm::toString(layout.takeError()));
         std::string triple = target->getTargetTriple().str();
         std::string feature_text = target->getFeatures().getString();
-        return HostTarget{std::move(*target), std::move(*layout), std::move(triple), std::move(feature_text)};
+        return HostTarget{std::move(*target), std::move(fast), std::move(*layout), std::move(triple),
+                          std::move(feature_text)};
     }();
     return cached;
 }
@@ -432,8 +437,10 @@ public:
                 temporary_slots_[index] = *slot;
             }
             has_source_calls_ |= node.kind == Kind::source_call;
-            if (node.kind == Kind::call)
+            if (node.kind == Kind::call) {
+                has_native_calls_ = true;
                 has_call_result_ |= node.type != language::ValueType::void_value;
+            }
         }
         auto* start = block("entry");
         failure_ = block("cleanup.failure");
@@ -441,6 +448,7 @@ public:
         ir_.SetInsertPoint(failure_);
         failure_status_ = ir_.CreatePHI(ir_.getInt32Ty(), 0, "failure.status");
         failure_reason_ = ir_.CreatePHI(ir_.getInt32Ty(), 0, "failure.reason");
+        failure_report_native_ = ir_.CreatePHI(ir_.getInt1Ty(), 0, "failure.native");
         // Without weights, block placement makes each per-site failure stub the
         // fall-through and moves the success path behind a taken branch.
         failure_weights_ = llvm::MDBuilder(*context_).createLikelyBranchWeights();
@@ -452,9 +460,11 @@ public:
         uint_result_ = ir_.CreateAlloca(ir_.getInt32Ty());
         uint_result_->setAlignment(llvm::Align(4));
         native_context_ = ir_.CreateAlloca(ir_.getPtrTy(), nullptr, "native.receiver");
-        native_error_ =
-            ir_.CreateAlloca(llvm::ArrayType::get(ir_.getInt8Ty(), sizeof(NativeFailure)), nullptr, "native.failure");
-        native_error_->setAlignment(llvm::Align(alignof(NativeFailure)));
+        if (has_native_calls_) {
+            native_error_ = ir_.CreateAlloca(llvm::ArrayType::get(ir_.getInt8Ty(), sizeof(NativeFailure)), nullptr,
+                                             "native.failure");
+            native_error_->setAlignment(llvm::Align(alignof(NativeFailure)));
+        }
         if (has_source_calls_) {
             source_failure_ = ir_.CreateAlloca(llvm::ArrayType::get(ir_.getInt32Ty(), 2), nullptr, "callee.failure");
             source_failure_->setAlignment(llvm::Align(alignof(BusinessFailure)));
@@ -475,6 +485,10 @@ public:
             const bool parameter = index < function_.parameters.size();
             if (managed_value(local.type) &&
                 (!parameter || (public_entry_ && function_.parameters[index].passing == ParameterPassing::value))) {
+                if (plain_record(local.type)) {
+                    locals_.push_back(allocate_value_storage(local.type, local.name));
+                    continue;
+                }
                 const auto slot = allocate_owned(local.type, local.name);
                 owned_local_slots_[index] = slot;
                 locals_.push_back(owned_[slot].storage);
@@ -526,8 +540,14 @@ public:
             }
             const auto type = function_.parameters[index].type;
             if (managed_value(type)) {
-                construct_owned(owned_local_slots_[index],
-                                ir_.CreateLoad(ir_.getPtrTy(), ir_.CreateStructGEP(abi_value_type_, argument, 4)));
+                auto* source = ir_.CreateLoad(ir_.getPtrTy(), ir_.CreateStructGEP(abi_value_type_, argument, 4));
+                if (plain_record(type)) {
+                    const auto& layout = source_.value_layouts.at(type.type_index);
+                    ir_.CreateMemCpy(locals_[index], llvm::Align(layout.alignment), source, llvm::Align(1),
+                                     layout.size);
+                } else {
+                    construct_owned(owned_local_slots_[index], source);
+                }
                 debug_local(index, DebugAvailability::available);
                 continue;
             }
@@ -541,11 +561,9 @@ public:
             debug_local(index, DebugAvailability::available);
         }
         parameter_views_.resize(function_.parameters.size());
-        for (std::size_t i = 0; i < function_.parameters.size(); ++i) {
-            const auto type = function_.parameters[i].type;
-            if (type.kind == language::ValueType::array || type.kind == language::ValueType::string)
-                parameter_views_[i] = sequence_view(locals_[i], type);
-        }
+        for (std::uint32_t i = 0; i < function_.parameters.size(); ++i)
+            if (caches_sequence_parameter(i))
+                parameter_views_[i] = sequence_view(locals_[i], function_.parameters[i].type);
         debug_stop(DebugPoint::entry);
         if (!function_.is_coroutine && !debugging_ && std::ranges::any_of(function_.expressions, [](const auto& node) {
                 return node.kind == language::Expression::Kind::receiver;
@@ -565,6 +583,18 @@ public:
         close_debug_frame();
         complete(ir_.getInt32(0));
         ir_.SetInsertPoint(failure_);
+        if (has_native_failure_edges_) {
+            auto* report = block("cleanup.native.failure");
+            auto* reported = block("cleanup.native.done");
+            ir_.CreateCondBr(failure_report_native_, report, reported);
+            ir_.SetInsertPoint(report);
+            ir_.CreateCall(native_failure_, {invocation_, native_error_});
+            ir_.CreateBr(reported);
+            ir_.SetInsertPoint(reported);
+        } else {
+            failure_report_native_->eraseFromParent();
+            failure_report_native_ = nullptr;
+        }
         trace_failure();
         debug_failure();
         clear_execution_resources();
@@ -727,8 +757,7 @@ private:
         auto* origin = ir_.GetInsertBlock();
         auto* site = block("failure.site");
         ir_.SetInsertPoint(site);
-        if (report_native)
-            ir_.CreateCall(native_failure_, {invocation_, native_error_});
+        has_native_failure_edges_ |= report_native;
         llvm::Value* location = ir_.getInt32(this->location());
         if (!reason) {
             reason = ir_.CreateLoad(ir_.getInt32Ty(), source_failure_);
@@ -742,6 +771,7 @@ private:
         ir_.CreateBr(failure_);
         failure_status_->addIncoming(status, site);
         failure_reason_->addIncoming(reason, site);
+        failure_report_native_->addIncoming(ir_.getInt1(report_native), site);
         ir_.SetInsertPoint(origin);
         return site;
     }
@@ -789,6 +819,13 @@ private:
     }
 
     bool managed_value(language::ValueType type) const { return language::aggregate(type) && !math_type(type); }
+
+    bool plain_record(language::ValueType type) const {
+        if (diagnostics_ || source_.material || !managed_value(type) || type.kind != language::ValueType::record)
+            return false;
+        const auto& layout = source_.value_layouts.at(type.type_index);
+        return layout.plain_value && layout.zero_default;
+    }
 
     llvm::Type* storage_type(language::ValueType type) {
         if (type == language::ValueType::boolean)
@@ -1046,8 +1083,7 @@ private:
 
     llvm::Value* temporary_value(language::ValueType type, llvm::Value* source = nullptr,
                                  const llvm::Twine& name = "value.temporary") {
-        if (source && !diagnostics_ && !source_.material && type.kind == language::ValueType::record &&
-            source_.value_layouts.at(type.type_index).plain_value) {
+        if (plain_record(type)) {
             std::size_t slot = trivial_temporaries_.size();
             for (std::size_t i = 0; i < trivial_temporaries_.size(); ++i) {
                 if (!trivial_temporaries_[i].in_use && trivial_temporaries_[i].type == type) {
@@ -1060,8 +1096,10 @@ private:
             trivial_temporaries_[slot].in_use = true;
             active_trivial_temporaries_.push_back(slot);
             auto* storage = trivial_temporaries_[slot].storage;
-            const auto& layout = source_.value_layouts.at(type.type_index);
-            ir_.CreateMemCpy(storage, llvm::Align(layout.alignment), source, llvm::Align(1), layout.size);
+            if (source) {
+                const auto& layout = source_.value_layouts.at(type.type_index);
+                ir_.CreateMemCpy(storage, llvm::Align(layout.alignment), source, llvm::Align(1), layout.size);
+            }
             return storage;
         }
         std::size_t slot = owned_.size();
@@ -1326,6 +1364,16 @@ private:
         trace_event(DiagnosticCall::sequence_view);
         auto* call = ir_.CreateCall(function_type, address, {value, data, size});
         call->setDoesNotThrow();
+        call->addFnAttr(llvm::Attribute::WillReturn);
+        call->setMemoryEffects(llvm::MemoryEffects::argMemOnly());
+        call->addParamAttr(0, llvm::Attribute::ReadOnly);
+        const auto no_capture = llvm::Attribute::getWithCaptureInfo(*context_, llvm::CaptureInfo::none());
+        if (type.kind == language::ValueType::array)
+            call->addParamAttr(0, no_capture); // Array holds heap storage; String SSO may point into value.
+        call->addParamAttr(1, llvm::Attribute::WriteOnly);
+        call->addParamAttr(1, no_capture);
+        call->addParamAttr(2, llvm::Attribute::WriteOnly);
+        call->addParamAttr(2, no_capture);
         Sequence result{ir_.CreateLoad(ir_.getPtrTy(), data), ir_.CreateLoad(ir_.getInt64Ty(), size)};
         const auto stride = type.kind == language::ValueType::string ? 1 : storage_size(layout.element);
         const auto alignment = type.kind == language::ValueType::string ? 1 : storage_alignment(layout.element);
@@ -1352,6 +1400,19 @@ private:
                : type == language::ValueType::boolean ? 1
                : type == language::ValueType::f64     ? 8
                                                       : 4;
+    }
+
+    bool caches_sequence_parameter(std::uint32_t parameter) const {
+        const auto type = function_.parameters[parameter].type;
+        if (type.kind != language::ValueType::array && type.kind != language::ValueType::string)
+            return false;
+        return std::ranges::any_of(function_.expressions, [&](const auto& node) {
+            using Kind = language::Expression::Kind;
+            if (node.kind != Kind::index && node.kind != Kind::length)
+                return false;
+            const auto& target = function_.expressions[node.left];
+            return target.kind == Kind::local && target.value == parameter;
+        });
     }
 
     Sequence sequence(language::NodeId id) {
@@ -1809,6 +1870,17 @@ private:
                 return;
             }
             const auto type = function_.locals[node.target].type;
+            if (plain_record(type)) {
+                const auto& layout = source_.value_layouts.at(type.type_index);
+                if (node.expression == language::no_node)
+                    ir_.CreateMemSet(locals_[node.target], ir_.getInt8(0), layout.size, llvm::Align(layout.alignment));
+                else
+                    ir_.CreateMemCpy(locals_[node.target], llvm::Align(layout.alignment), expression(node.expression),
+                                     llvm::Align(1), layout.size);
+                clear_temporaries();
+                debug_local(node.target, DebugAvailability::available);
+                return;
+            }
             auto* value = node.expression == language::no_node ? default_math(type) : expression(node.expression);
             if (is_reference(type))
                 copy_reference(local_slots_[node.target], value);
@@ -1830,7 +1902,7 @@ private:
                 if (const auto text = direct_text_input(node); text != language::no_node)
                     write_text(target.type, direct ? address : locals_[target.value], function_.expressions[text].value,
                                SequenceMutation::assign_text);
-                else if (source_.material)
+                else if (source_.material || plain_record(target.type))
                     ir_.CreateMemMove(direct ? address : locals_[target.value], llvm::Align(1),
                                       expression(node.expression), llvm::Align(1),
                                       source_.value_layouts[target.type.type_index].size);
@@ -1978,6 +2050,8 @@ private:
 
     llvm::PHINode* failure_reason_{};
 
+    llvm::PHINode* failure_report_native_{};
+
     // Failure edges are cold; without weights, block placement would make
     // each single-predecessor failure stub the fall-through.
     llvm::MDNode* failure_weights_{};
@@ -2083,6 +2157,10 @@ private:
     llvm::Value* trace_{};
 
     bool has_call_result_{};
+
+    bool has_native_calls_{};
+
+    bool has_native_failure_edges_{};
 
     bool has_source_calls_{};
 
@@ -2352,7 +2430,9 @@ generate_business(LLJIT& jit, llvm::TargetMachine& machine, const language::Prog
         pipeline.addPass(llvm::createModuleToFunctionPassAdaptor(SubtargetVectorScalarizerPass{}));
         // Optimize the complete typed module. Ordinary FP operations retain
         // their NaN/Inf and rounding semantics; only explicit fast_* ops carry afn/arcp.
-        pipeline.addPass(passes.buildPerModuleDefaultPipeline(llvm::OptimizationLevel::O2));
+        const auto level =
+            (options.fast || options.debugging) ? llvm::OptimizationLevel::O1 : llvm::OptimizationLevel::O2;
+        pipeline.addPass(passes.buildPerModuleDefaultPipeline(level));
         pipeline.addPass(llvm::createModuleToFunctionPassAdaptor(MatrixTransposeLoweringPass{}));
         const CompileTimer optimization(timing != nullptr);
         pipeline.run(*module, modules);
@@ -2517,7 +2597,7 @@ compile(const BusinessServices& services, const language::Program& program, lang
             catalog->values.push_back({catalog->value_names.back().c_str(), business_type({value.kind}).kind,
                                        value.size, value.alignment, business_type(value.element), fields.data(),
                                        static_cast<std::uint32_t>(fields.size()), value.sequence_view, value.can_own,
-                                       value.can_mutate, value.math, value.plain_value});
+                                       value.can_mutate, value.math, value.plain_value, value.zero_default});
         }
         catalog->environment = {catalog->fields.empty() ? nullptr : catalog->fields.data(),
                                 static_cast<std::uint32_t>(catalog->fields.size()),
@@ -2531,7 +2611,8 @@ compile(const BusinessServices& services, const language::Program& program, lang
         const auto& host = host_target();
         if (!host)
             return llvm::createStringError(host.error());
-        auto created_machine = llvm::orc::JITTargetMachineBuilder(host->builder).createTargetMachine();
+        const auto& target_builder = (options.fast || options.debugging) ? host->fast_builder : host->builder;
+        auto created_machine = llvm::orc::JITTargetMachineBuilder(target_builder).createTargetMachine();
         if (!created_machine)
             return created_machine.takeError();
         std::shared_ptr<llvm::TargetMachine> machine(std::move(*created_machine));
@@ -2574,7 +2655,7 @@ compile(const BusinessServices& services, const language::Program& program, lang
             state->artifacts->cpu_features = host->cpu_features;
         }
         llvm::orc::LLJITBuilder builder;
-        builder.setJITTargetMachineBuilder(host->builder);
+        builder.setJITTargetMachineBuilder(target_builder);
         builder.setDataLayout(host->data_layout);
         builder.setCompileFunctionCreator(
             [machine](llvm::orc::JITTargetMachineBuilder)
@@ -2776,7 +2857,8 @@ source_values(const atelier::source::detail::BusinessEnvironment& environment) {
                                      value.can_own,
                                      value.can_mutate,
                                      value.math,
-                                     value.plain_value};
+                                     value.plain_value,
+                                     value.zero_default};
         if (value.kind == ValueKind::array) {
             auto element = source_type(value.element);
             if (!element)
@@ -2944,7 +3026,13 @@ std::uint32_t compile_business_impl(
             continue;
         const auto& function = program->functions[i];
         const auto owned_type = [&](language::ValueType type) {
-            return language::aggregate(type) && !program->value_layouts[type.type_index].math;
+            if (!language::aggregate(type))
+                return false;
+            const auto& layout = program->value_layouts[type.type_index];
+            if (layout.math)
+                return false;
+            return options.diagnostics || type.kind != language::ValueType::record || !layout.plain_value ||
+                   !layout.zero_default;
         };
         for (std::size_t local = 0; local < function.locals.size(); ++local)
             owns_values |= owned_type(function.locals[local].type) &&

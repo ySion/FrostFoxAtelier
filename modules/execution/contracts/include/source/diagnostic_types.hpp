@@ -9,6 +9,8 @@ struct CompileOptions {
 
     bool debugging{};
 
+    bool fast{};
+
     bool operator==(const CompileOptions&) const = default;
 };
 

@@ -1,7 +1,10 @@
 #pragma once
 
 #include "language/source.hpp"
+#include <cstdint>
+#include <memory>
 #include <string>
+#include <variant>
 #include <vector>
 
 namespace atelier::ui_language {
@@ -22,6 +25,9 @@ struct State {
     std::string name;
 
     InputKind kind;
+
+    // Non-monostate when initialized by a constant literal; otherwise initialized by JIT op 0.
+    std::variant<std::monostate, bool, double> initial_value{};
 
     bool operator==(const State&) const = default;
 };
@@ -137,14 +143,46 @@ struct Node {
     bool operator==(const Node&) const = default;
 };
 
+struct DirectSource {
+    enum class Kind : std::uint8_t { input, state, node_key };
+
+    Kind kind{};
+
+    std::uint32_t slot{};
+
+    InputKind input_kind{};
+
+    bool operator==(const DirectSource&) const = default;
+};
+
+using LiteralValue = std::variant<std::monostate, bool, double, std::string>;
+
 struct Binding {
+    enum class Mode : std::uint8_t { jit, literal, direct };
+
     std::uint32_t node{};
 
     std::uint32_t operation{};
 
     Property property{};
 
+    InputKind argument_kind{};
+
+    std::uint32_t argument{};
+
+    Mode mode{Mode::jit};
+
+    LiteralValue literal{};
+
+    DirectSource direct{};
+
     language::SourcePosition position;
+
+    bool same_definition(const Binding& other) const noexcept {
+        return node == other.node && operation == other.operation && property == other.property &&
+               argument_kind == other.argument_kind && argument == other.argument && mode == other.mode &&
+               literal == other.literal && direct == other.direct;
+    }
 };
 
 struct Event {
@@ -163,14 +201,27 @@ struct SourceMapping {
     language::SourcePosition origin;
 };
 
-// UI structure and source positions only. Expressions and handlers are typed and
-// compiled by the ordinary Source compiler, in one module per component type.
+struct PreparedHelpers {
+    std::string generated_source;
+
+    std::vector<SourceMapping> mappings;
+};
+
+// UI structure, static/direct bindings and source positions. Computed
+// expressions and handlers are typed and compiled by the ordinary Source
+// compiler when needs_jit is true.
 struct Declaration {
     std::string name;
 
     std::string source_name;
 
     std::string generated_source;
+
+    std::shared_ptr<const PreparedHelpers> helpers;
+
+    bool has_jit_init{};
+
+    bool needs_jit{};
 
     std::vector<Input> inputs;
 

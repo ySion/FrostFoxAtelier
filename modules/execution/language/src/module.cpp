@@ -335,63 +335,60 @@ std::expected<SourceModule, ModuleDiagnostic> collect_module(const SourceSnapsho
             auto& tokens = *created;
             while (tokens.token_.kind != Token::Kind::end) {
                 const auto begin = tokens.token_.position;
-                if (tokens.token_.text == "[") {
-                    while (tokens.token_.text != "]") {
-                        if (tokens.token_.kind == Token::Kind::end || tokens.token_.text == "{" ||
-                            tokens.token_.text == "}" || tokens.token_.text == ";")
-                            return reject(begin, "Expected ']' to close enum attributes.");
-                        ATELIER_TRY(tokens.consume());
-                    }
-                    ATELIER_TRY(tokens.expect("]"));
-                    if (tokens.token_.text != "enum")
-                        return reject(begin, "Top-level attributes apply to enum declarations only.");
+                if (tokens.token_.text == "[" || tokens.token_.text == "enum" || tokens.token_.text == "struct") {
+                    ATELIER_TRY_BIND(parsed_type, parse_type_declaration(tokens));
+                    ATELIER_TRY(declare(parsed_type->name, parsed_type->position));
+                    TopLevel declaration{TopLevel::Kind::type,
+                                         parsed_type->name,
+                                         std::string(own),
+                                         file,
+                                         parsed_type->position,
+                                         {},
+                                         {},
+                                         {}};
+                    declaration.source.append(unit, file, begin.offset, tokens.token_.position.offset);
+                    result.declarations.push_back(std::move(declaration));
+                    continue;
                 }
                 ATELIER_TRY_BIND(object, tokens.accept("class"));
                 if (!*object) {
-                    // A top-level declaration ends at ';' or a complete body.
+                    ATELIER_TRY_BIND(constant, tokens.accept("const"));
+                    if (*constant) {
+                        TopLevel declaration{TopLevel::Kind::constant, {}, std::string(own), file, {}, {}, {}, {}};
+                        ATELIER_TRY(parse_type_name(tokens));
+                        declaration.position = tokens.token_.position;
+                        ATELIER_TRY_BIND(name, tokens.qualified_identifier());
+                        declaration.name = std::move(*name);
+                        ATELIER_TRY(declare(declaration.name, declaration.position));
+                        while (tokens.token_.text != ";") {
+                            if (tokens.token_.kind == Token::Kind::end || tokens.token_.text == "{" ||
+                                tokens.token_.text == "}")
+                                return reject(tokens.token_.position, "Expected ';' to close a module constant.");
+                            ATELIER_TRY(tokens.consume());
+                        }
+                        ATELIER_TRY(tokens.expect(";"));
+                        declaration.source.append(unit, file, begin.offset, tokens.token_.position.offset);
+                        result.declarations.push_back(std::move(declaration));
+                        continue;
+                    }
                     TopLevel declaration{TopLevel::Kind::function, {}, std::string(own), file, {}, {}, {}, {}};
-                    const bool function =
-                        tokens.token_.text != "struct" && tokens.token_.text != "enum" && tokens.token_.text != "const";
-                    if (function) {
-                        ATELIER_TRY_BIND(async, tokens.accept("async"));
-                        if (*async)
-                            return reject(begin, "Project exports must be synchronous.");
-                        ATELIER_TRY_BIND(void_result, tokens.accept("void"));
-                        ATELIER_TRY_BIND(type, *void_result ? std::expected<TypeName, Diagnostic>{TypeName{"void"}}
-                                                            : parse_type_name(tokens));
-                        declaration.position = tokens.token_.position;
-                        ATELIER_TRY_BIND(name, tokens.qualified_identifier());
-                        declaration.name = std::move(*name);
-                        ATELIER_TRY(declare(declaration.name, declaration.position));
-                        FunctionDeclaration exported{declaration.name, {}, {}};
-                        ATELIER_TRY_BIND(signature,
-                                         function_signature(tokens, *type, exported.parameters, &declaration));
-                        exported.signature = std::move(*signature);
-                        // Engine functions serve Source calls only; project functions are the global entries.
-                        if (own.empty())
-                            result.functions.push_back(std::move(exported));
-                    } else {
-                        ATELIER_TRY_BIND(constant, tokens.accept("const"));
-                        if (*constant) {
-                            ATELIER_TRY(parse_type_name(tokens));
-                        } else {
-                            ATELIER_TRY(tokens.consume());
-                        }
-                        declaration.kind = *constant ? TopLevel::Kind::constant : TopLevel::Kind::type;
-                        declaration.position = tokens.token_.position;
-                        ATELIER_TRY_BIND(name, tokens.qualified_identifier());
-                        declaration.name = std::move(*name);
-                        ATELIER_TRY(declare(declaration.name, declaration.position));
-                        while (tokens.token_.text != ";" && tokens.token_.text != "{") {
-                            if (tokens.token_.kind == Token::Kind::end)
-                                return reject(begin, "Incomplete source declaration.");
-                            ATELIER_TRY(tokens.consume());
-                        }
-                    }
-                    if (tokens.token_.text == "{") {
-                        ATELIER_TRY(body(tokens));
-                    }
-                    ATELIER_TRY(tokens.accept(";"));
+                    ATELIER_TRY_BIND(async, tokens.accept("async"));
+                    if (*async)
+                        return reject(begin, "Project exports must be synchronous.");
+                    ATELIER_TRY_BIND(void_result, tokens.accept("void"));
+                    ATELIER_TRY_BIND(type, *void_result ? std::expected<TypeName, Diagnostic>{TypeName{"void"}}
+                                                        : parse_type_name(tokens));
+                    declaration.position = tokens.token_.position;
+                    ATELIER_TRY_BIND(name, tokens.qualified_identifier());
+                    declaration.name = std::move(*name);
+                    ATELIER_TRY(declare(declaration.name, declaration.position));
+                    FunctionDeclaration exported{declaration.name, {}, {}};
+                    ATELIER_TRY_BIND(signature, function_signature(tokens, *type, exported.parameters, &declaration));
+                    exported.signature = std::move(*signature);
+                    // Engine functions serve Source calls only; project functions are the global entries.
+                    if (own.empty())
+                        result.functions.push_back(std::move(exported));
+                    ATELIER_TRY(body(tokens));
                     declaration.source.append(unit, file, begin.offset, tokens.token_.position.offset);
                     result.declarations.push_back(std::move(declaration));
                     continue;

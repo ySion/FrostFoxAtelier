@@ -2,7 +2,10 @@
 #include "language/lexer.hpp"
 #include "foundation/result.hpp"
 #include <algorithm>
+#include <charconv>
+#include <cmath>
 #include <optional>
+#include <span>
 #include <utility>
 
 namespace atelier::ui_language {
@@ -12,11 +15,11 @@ using namespace language;
 using namespace language::detail;
 
 struct Fragment {
-    std::size_t begin{};
-
-    std::size_t end{};
-
     SourcePosition position;
+
+    SourcePosition end_position;
+
+    std::vector<Token> tokens;
 };
 
 struct Evaluation {
@@ -29,6 +32,10 @@ struct Evaluation {
     InputKind kind{InputKind::boolean};
 
     std::uint32_t argument{};
+
+    std::size_t binding_index{};
+
+    std::size_t event_index{};
 };
 
 struct Initializer {
@@ -36,6 +43,74 @@ struct Initializer {
 
     Fragment source;
 };
+
+bool is_numeric_property(Property property) {
+    return property == Property::gap || property == Property::height || property == Property::width ||
+           property == Property::padding_left || property == Property::icon || property == Property::tree_rows ||
+           property == Property::padding_top || property == Property::padding_right ||
+           property == Property::padding_bottom || property == Property::content_width ||
+           property == Property::content_height || property == Property::min_width ||
+           property == Property::shrink_width || (property >= Property::row_height && property <= Property::item_gap) ||
+           (property >= Property::offset_x && property <= Property::step);
+}
+
+bool is_text_property(Property property) {
+    return property == Property::text || property == Property::classes || property == Property::view ||
+           property == Property::empty_text || property == Property::menu_behavior ||
+           property == Property::tooltip_title || property == Property::tooltip_identity;
+}
+
+std::optional<bool> try_bool_literal(std::span<const Token> tokens) {
+    if (tokens.size() == 1 && (tokens[0].text == "true" || tokens[0].text == "false"))
+        return tokens[0].text == "true";
+    return std::nullopt;
+}
+
+std::optional<double> try_number_literal(std::span<const Token> tokens, bool double_only) {
+    if (tokens.empty() || tokens.size() > 2)
+        return std::nullopt;
+    bool negative = false;
+    std::size_t index = 0;
+    if (tokens.size() == 2) {
+        if (tokens[0].text == "-")
+            negative = true;
+        else if (tokens[0].text != "+")
+            return std::nullopt;
+        index = 1;
+    }
+    const auto& token = tokens[index];
+    if (token.kind != Token::Kind::number || token.text.empty())
+        return std::nullopt;
+    auto text = token.text;
+    const char suffix = text.back();
+    const bool is_double = suffix == 'd' || suffix == 'D';
+    const bool is_float = suffix == 'f' || suffix == 'F';
+    if (double_only && !is_double)
+        return std::nullopt;
+    if (is_double || is_float)
+        text.remove_suffix(1);
+    if (is_double) {
+        double value{};
+        const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
+        if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size() || !std::isfinite(value))
+            return std::nullopt;
+        return negative ? -value : value;
+    }
+    if (is_float || text.find_first_of(".eE") != std::string_view::npos) {
+        float value{};
+        const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
+        if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size() || !std::isfinite(value))
+            return std::nullopt;
+        return static_cast<double>(negative ? -value : value);
+    }
+    std::uint32_t value{};
+    const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
+    if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size())
+        return std::nullopt;
+    if (negative)
+        return value <= 2147483648u ? std::optional{-static_cast<double>(value)} : std::nullopt;
+    return static_cast<double>(value);
+}
 
 constexpr std::pair<std::string_view, NodeKind> builtin_nodes[]{{"Column", NodeKind::column},
                                                                 {"Row", NodeKind::row},
@@ -212,17 +287,42 @@ std::expected<std::vector<Header>, Diagnostic> headers(std::string_view source) 
     return result;
 }
 
+std::expected<std::shared_ptr<const PreparedHelpers>, Diagnostic> prepare_helpers(std::string_view source,
+                                                                                  std::size_t end) {
+    auto prepared = std::make_shared<PreparedHelpers>();
+    ATELIER_TRY_BIND(created, Tokens::create(source.substr(0, end)));
+    auto& tokens = *created;
+    std::string_view previous;
+    while (tokens.token_.kind != Token::Kind::end) {
+        ATELIER_TRY_BIND(parsed_token, tokens.consume());
+        const auto token = *parsed_token;
+        const bool member = previous == "." || previous == "::";
+        if (!member && (token.text == "self" || token.text == "new" || token.text == "yield" || token.text == "async" ||
+                        token.text.starts_with("__ui_")))
+            return reject(
+                token.position,
+                "UI helpers use explicit parameters; native context access and asynchronous effects are not permitted.");
+        const auto begin = prepared->generated_source.size();
+        prepared->generated_source += token.text;
+        prepared->mappings.push_back({begin, prepared->generated_source.size(), token.position});
+        prepared->generated_source += ' ';
+        previous = token.text;
+    }
+    return prepared->generated_source.empty() ? std::shared_ptr<const PreparedHelpers>{} : std::move(prepared);
+}
+
 class Parser : private Tokens {
 public:
-    Parser(std::string_view name, std::string_view source, const Header& header, const std::vector<Header>& all)
-        : Tokens(header.body), source_(source), headers_(all) {
+    Parser(std::string_view name, const Header& header, const std::vector<Header>& all,
+           std::shared_ptr<const PreparedHelpers> helpers)
+        : Tokens(header.body), headers_(all) {
         result_.source_name = name;
         result_.name = header.name;
         result_.inputs = header.inputs;
+        result_.helpers = std::move(helpers);
     }
 
     std::expected<Declaration, Diagnostic> run() {
-        const Fragment helpers{0, headers_.front().begin.offset, {}};
         for (;;) {
             ATELIER_TRY_BIND(state, accept("state"));
             if (!*state)
@@ -233,8 +333,16 @@ public:
             ATELIER_TRY(expect("="));
             ATELIER_TRY_BIND(initial, fragment(";"));
             ATELIER_TRY(expect(";"));
-            initializers_.push_back({static_cast<std::uint32_t>(result_.states.size()), *initial});
-            result_.states.push_back({std::string(name->text), *kind});
+            State declared{std::string(name->text), *kind, {}};
+            if (*kind == InputKind::boolean) {
+                if (const auto value = try_bool_literal(initial->tokens))
+                    declared.initial_value = *value;
+            } else if (const auto value = try_number_literal(initial->tokens, true)) {
+                declared.initial_value = *value;
+            }
+            if (std::holds_alternative<std::monostate>(declared.initial_value))
+                initializers_.push_back({static_cast<std::uint32_t>(result_.states.size()), std::move(*initial)});
+            result_.states.push_back(std::move(declared));
         }
         for (;;) {
             ATELIER_TRY_BIND(closed, accept("}"));
@@ -244,62 +352,187 @@ public:
         }
         if (result_.nodes.empty())
             return reject(token_.position, "A ui component needs at least one node.");
-        ATELIER_TRY(rewrite(helpers, false));
-        const std::size_t operation_count = evaluations_.size() + 1;
-        append("\nvoid __ui_dispatch(uint __ui_operation) {\n", {});
-        append("if (__ui_operation >= " + std::to_string(operation_count) + ") { return; }\n", {});
-        ATELIER_TRY(emit_dispatch(0, operation_count));
-        append("}\n", {});
+        result_.has_jit_init = !initializers_.empty();
+        std::vector<std::size_t> jit_evaluations;
+        jit_evaluations.reserve(evaluations_.size());
+        const std::uint32_t op_base = result_.has_jit_init ? 1u : 0u;
+        for (std::size_t i = 0; i < evaluations_.size(); ++i) {
+            const auto& eval = evaluations_[i];
+            if (!eval.property) {
+                const auto op = static_cast<std::uint32_t>(op_base + jit_evaluations.size());
+                result_.events[eval.event_index].operation = op;
+                jit_evaluations.push_back(i);
+                continue;
+            }
+            ATELIER_TRY_BIND(classified, classify_binding(eval));
+            if (*classified)
+                continue;
+            const auto op = static_cast<std::uint32_t>(op_base + jit_evaluations.size());
+            result_.bindings[eval.binding_index].operation = op;
+            jit_evaluations.push_back(i);
+        }
+        jit_evaluations_ = std::move(jit_evaluations);
+        const std::size_t operation_count = op_base + jit_evaluations_.size();
+        result_.needs_jit = operation_count > 0;
+        if (result_.needs_jit) {
+            if (result_.helpers) {
+                result_.generated_source = result_.helpers->generated_source;
+                result_.mappings = result_.helpers->mappings;
+            }
+            append("\nvoid __ui_dispatch(uint __ui_operation) {\n", {});
+            append("if (__ui_operation >= " + std::to_string(operation_count) + ") { return; }\n", {});
+            ATELIER_TRY(emit_dispatch(0, operation_count));
+            append("}\n", {});
+        }
         return std::move(result_);
     }
 
 private:
-    std::string_view source_;
-
     Declaration result_;
 
     const std::vector<Header>& headers_;
 
     std::vector<Evaluation> evaluations_;
 
+    std::vector<std::size_t> jit_evaluations_;
+
     std::vector<Initializer> initializers_;
 
+    std::optional<DirectSource> try_direct_source(std::span<const Token> tokens) const {
+        if (tokens.size() != 3 || tokens[1].text != "." || tokens[2].kind != Token::Kind::identifier)
+            return std::nullopt;
+        const auto member = tokens[2].text;
+        if (tokens[0].text == "input") {
+            for (std::uint32_t i = 0; i < result_.inputs.size(); ++i)
+                if (result_.inputs[i].name == member)
+                    return DirectSource{DirectSource::Kind::input, i, result_.inputs[i].kind};
+            return std::nullopt;
+        }
+        if (tokens[0].text == "state") {
+            for (std::uint32_t i = 0; i < result_.states.size(); ++i)
+                if (result_.states[i].name == member)
+                    return DirectSource{DirectSource::Kind::state, i, result_.states[i].kind};
+            return std::nullopt;
+        }
+        if (tokens[0].text == "node") {
+            for (std::uint32_t i = 0; i < result_.nodes.size(); ++i) {
+                const auto& item = result_.nodes[i];
+                if (item.name != member)
+                    continue;
+                if (item.kind == NodeKind::component || item.kind == NodeKind::repeat ||
+                    item.kind == NodeKind::text_field)
+                    return std::nullopt;
+                return DirectSource{DirectSource::Kind::node_key, i, InputKind::key};
+            }
+        }
+        return std::nullopt;
+    }
+
+    static bool compatible_direct(Property property, InputKind argument_kind, NodeKind node_kind,
+                                  const DirectSource& source) {
+        if (property == Property::argument)
+            return source.input_kind == argument_kind ||
+                   (argument_kind == InputKind::text && source.kind == DirectSource::Kind::input &&
+                    source.input_kind == InputKind::text_edit);
+        if (property == Property::tooltip)
+            return source.kind == DirectSource::Kind::input &&
+                   (source.input_kind == InputKind::tooltip || source.input_kind == InputKind::text ||
+                    source.input_kind == InputKind::text_edit);
+        if (is_text_property(property))
+            return source.kind == DirectSource::Kind::input &&
+                   (source.input_kind == InputKind::text || source.input_kind == InputKind::text_edit);
+        if (is_numeric_property(property))
+            return (source.kind == DirectSource::Kind::input || source.kind == DirectSource::Kind::state) &&
+                   source.input_kind == InputKind::number;
+        if (property == Property::edit)
+            return source.kind == DirectSource::Kind::input &&
+                   source.input_kind == (node_kind == NodeKind::text_field ? InputKind::text_edit : InputKind::edit);
+        if (property == Property::action)
+            return source.kind == DirectSource::Kind::input && source.input_kind == InputKind::action;
+        if (property == Property::model)
+            return source.kind == DirectSource::Kind::input && source.input_kind == InputKind::table;
+        if (property == Property::document)
+            return source.kind == DirectSource::Kind::input && source.input_kind == InputKind::code;
+        if (property == Property::tree_row)
+            return source.kind == DirectSource::Kind::input && source.input_kind == InputKind::tree_row;
+        if (property == Property::items)
+            return source.kind == DirectSource::Kind::input && source.input_kind == InputKind::items;
+        if (property == Property::context)
+            return source.kind == DirectSource::Kind::node_key ||
+                   (source.kind == DirectSource::Kind::input &&
+                    (source.input_kind == InputKind::key || source.input_kind == InputKind::text_edit));
+        if (property == Property::selection_group || property == Property::radio_group)
+            return source.kind == DirectSource::Kind::node_key ||
+                   (source.kind == DirectSource::Kind::input && source.input_kind == InputKind::key);
+        return (source.kind == DirectSource::Kind::input || source.kind == DirectSource::Kind::state) &&
+               source.input_kind == InputKind::boolean;
+    }
+
+    std::expected<bool, Diagnostic> classify_binding(const Evaluation& eval) {
+        auto& binding = result_.bindings[eval.binding_index];
+        const auto property = *eval.property;
+        const auto node_kind = result_.nodes[eval.node].kind;
+        const std::span<const Token> tokens = eval.source.tokens;
+        if (const auto direct = try_direct_source(tokens)) {
+            if (compatible_direct(property, eval.kind, node_kind, *direct)) {
+                binding.mode = Binding::Mode::direct;
+                binding.direct = *direct;
+                return true;
+            }
+            return false;
+        }
+        const bool accepts_text = is_text_property(property) || property == Property::tooltip ||
+                                  (property == Property::argument && eval.kind == InputKind::text);
+        if (accepts_text && tokens.size() == 1 && tokens[0].kind == Token::Kind::string) {
+            ATELIER_TRY_BIND(decoded, string_value(tokens[0]));
+            binding.mode = Binding::Mode::literal;
+            binding.literal = std::move(*decoded);
+            return true;
+        }
+        const bool accepts_number =
+            is_numeric_property(property) || (property == Property::argument && eval.kind == InputKind::number);
+        if (accepts_number) {
+            if (const auto value = try_number_literal(tokens, false)) {
+                binding.mode = Binding::Mode::literal;
+                binding.literal = *value;
+                return true;
+            }
+            return false;
+        }
+        const bool accepts_bool =
+            (property == Property::argument && eval.kind == InputKind::boolean) ||
+            (property != Property::argument && !accepts_text && !accepts_number && property != Property::edit &&
+             property != Property::action && property != Property::model && property != Property::document &&
+             property != Property::tree_row && property != Property::items && property != Property::context &&
+             property != Property::selection_group && property != Property::radio_group);
+        if (accepts_bool) {
+            if (const auto value = try_bool_literal(tokens)) {
+                binding.mode = Binding::Mode::literal;
+                binding.literal = *value;
+                return true;
+            }
+        }
+        return false;
+    }
+
     std::expected<void, Diagnostic> emit_operation(std::size_t index) {
-        if (index == 0) {
+        if (result_.has_jit_init && index == 0) {
             for (const auto& init : initializers_) {
                 append("self.write_" + suffix(result_.states[init.slot].kind) + "(" + std::to_string(init.slot) + ", ",
                        init.source.position);
                 ATELIER_TRY(rewrite(init.source, false));
                 append(");\n", init.source.position);
             }
-            for (std::uint32_t i = 0; i < result_.nodes.size(); ++i) {
-                const auto& value = result_.nodes[i];
-                append("self.create_node(" + std::to_string(i) + ", " + std::to_string(value.parent) + ", " +
-                           std::to_string(static_cast<unsigned>(value.kind)) + ");\n",
-                       {});
-            }
             return {};
         }
-        const auto& evaluation = evaluations_[index - 1];
+        const auto& evaluation = evaluations_[jit_evaluations_[index - (result_.has_jit_init ? 1u : 0u)]];
         if (evaluation.property) {
             const auto property = *evaluation.property;
-            ATELIER_TRY_BIND(parsed_reference, reference_kind(evaluation.source));
-            const auto reference = *parsed_reference;
-            const bool text = property == Property::text || property == Property::classes ||
-                              property == Property::view || property == Property::empty_text ||
-                              property == Property::menu_behavior || property == Property::tooltip_title ||
-                              property == Property::tooltip_identity ||
+            const auto reference = reference_kind(evaluation.source);
+            const bool text = is_text_property(property) ||
                               (property == Property::tooltip && reference != InputKind::tooltip) ||
                               (property == Property::argument && evaluation.kind == InputKind::text);
-            const bool numeric = property == Property::gap || property == Property::height ||
-                                 property == Property::width || property == Property::padding_left ||
-                                 property == Property::icon || property == Property::tree_rows ||
-                                 property == Property::padding_top || property == Property::padding_right ||
-                                 property == Property::padding_bottom || property == Property::content_width ||
-                                 property == Property::content_height || property == Property::min_width ||
-                                 property == Property::shrink_width ||
-                                 (property >= Property::row_height && property <= Property::item_gap) ||
-                                 (property >= Property::offset_x && property <= Property::step) ||
+            const bool numeric = is_numeric_property(property) ||
                                  (property == Property::argument && evaluation.kind == InputKind::number);
             std::string sink;
             if (property == Property::argument)
@@ -392,12 +625,16 @@ private:
 
     std::expected<Fragment, Diagnostic> fragment(std::string_view terminator) {
         const auto begin = token_.position;
+        std::vector<Token> tokens;
         std::size_t parentheses{};
         std::size_t brackets{};
         std::size_t braces{};
         while (token_.kind != Token::Kind::end) {
-            if (!parentheses && !brackets && !braces && token_.text == terminator)
-                return Fragment{begin.offset, token_.position.offset, begin};
+            if (!parentheses && !brackets && !braces && token_.text == terminator) {
+                if (terminator == ";" && tokens.empty())
+                    return reject(begin, "Expected a UI expression.");
+                return Fragment{begin, token_.position, std::move(tokens)};
+            }
             if (token_.text == "(")
                 ++parentheses;
             else if (token_.text == ")") {
@@ -417,25 +654,17 @@ private:
                     return reject(token_.position, "Expected expression terminator.");
                 --braces;
             }
-            ATELIER_TRY(consume());
+            ATELIER_TRY_BIND(parsed_token, consume());
+            tokens.push_back(*parsed_token);
         }
         return reject(begin, "Unterminated UI expression or handler.");
     }
 
-    std::expected<std::optional<InputKind>, Diagnostic> reference_kind(Fragment source) const {
-        ATELIER_TRY_BIND(created, Tokens::create(source_.substr(source.begin, source.end - source.begin)));
-        auto& tokens = *created;
-        ATELIER_TRY_BIND(input, tokens.accept("input"));
-        if (!*input)
-            return {};
-        ATELIER_TRY_BIND(dot, tokens.accept("."));
-        if (!*dot)
-            return {};
-        ATELIER_TRY_BIND(name, tokens.consume());
-        if (tokens.token_.kind != Token::Kind::end)
-            return {};
-        const auto at =
-            std::ranges::find_if(result_.inputs, [&](const auto& input) { return input.name == name->text; });
+    std::optional<InputKind> reference_kind(const Fragment& source) const {
+        if (source.tokens.size() != 3 || source.tokens[0].text != "input" || source.tokens[1].text != ".")
+            return std::nullopt;
+        const auto at = std::ranges::find_if(result_.inputs,
+                                             [&](const auto& input) { return input.name == source.tokens[2].text; });
         return at == result_.inputs.end() ? std::nullopt : std::optional{at->kind};
     }
 
@@ -472,9 +701,9 @@ private:
                 ATELIER_TRY(expect("{"));
                 ATELIER_TRY_BIND(body, fragment("}"));
                 ATELIER_TRY(expect("}"));
-                const auto operation = static_cast<std::uint32_t>(evaluations_.size() + 1);
-                evaluations_.push_back({*body, slot, {}});
-                result_.events.push_back({slot, operation, event->position});
+                const auto event_index = result_.events.size();
+                result_.events.push_back({slot, 0, event->position});
+                evaluations_.push_back({std::move(*body), slot, {}, InputKind::boolean, 0, 0, event_index});
                 continue;
             }
             const auto saved_lexer = lexer_;
@@ -501,7 +730,7 @@ private:
                 std::ranges::any_of(properties, width_strategy))
                 return reject(
                     property.position,
-                    "width, expand_width, content_width and shrink_width are mutually exclusive width strategies.");
+                    "width, expand_width, content_width, shrink_width, flex_width and grow_width are mutually exclusive width strategies.");
             if (kind != NodeKind::component && (property.text == "panel" || property.text == "caption") &&
                 std::ranges::any_of(properties, [](auto name) { return name == "panel" || name == "caption"; }))
                 return reject(property.position, "panel and caption are mutually exclusive roles.");
@@ -578,8 +807,9 @@ private:
                     kind != NodeKind::choice_button && kind != NodeKind::toggle_button && kind != NodeKind::combo &&
                     kind != NodeKind::checkbox && kind != NodeKind::tab && kind != NodeKind::menu_item &&
                     kind != NodeKind::button && !container_node(kind))
-                    return reject(property.position,
-                                  "selected requires Foldout, TreeItem, ChoiceButton, ToggleButton or Combo.");
+                    return reject(
+                        property.position,
+                        "selected requires Foldout, TreeItem, ChoiceButton, ToggleButton, Combo, Checkbox, Tab, MenuItem, Button or a layout container.");
                 if ((value == Property::menu_branch || value == Property::menu_behavior ||
                      value == Property::radio_group) &&
                     kind != NodeKind::menu_item)
@@ -619,10 +849,9 @@ private:
                     return reject(property.position, "items requires Repeat.");
             }
             ATELIER_TRY_BIND(parsed_expression, fragment(";"));
-            const auto expression = *parsed_expression;
+            auto expression = std::move(*parsed_expression);
             ATELIER_TRY(expect(";"));
-            ATELIER_TRY_BIND(parsed_reference, reference_kind(expression));
-            const auto reference = *parsed_reference;
+            const auto reference = reference_kind(expression);
             if (value == Property::tooltip && reference == InputKind::tooltip)
                 tooltip_binding = true;
             if (tooltip_binding && (std::ranges::find(properties, "tooltip_title") != properties.end() ||
@@ -634,16 +863,8 @@ private:
                 return reject(expression.position, "Tooltip arguments require a direct TooltipBinding input.");
             if ((value == Property::selection_group || value == Property::context || value == Property::radio_group) &&
                 reference != InputKind::key && !(value == Property::context && reference == InputKind::text_edit)) {
-                ATELIER_TRY_BIND(created,
-                                 Tokens::create(source_.substr(expression.begin, expression.end - expression.begin)));
-                auto& tokens = *created;
-                ATELIER_TRY_BIND(node_reference, tokens.accept("node"));
-                ATELIER_TRY_BIND(member, *node_reference ? tokens.accept(".") : std::expected<bool, Diagnostic>{false});
-                if (!*member || tokens.token_.kind != Token::Kind::identifier)
-                    return reject(expression.position,
-                                  std::string(property.text) + " requires node.name or a direct Key input.");
-                ATELIER_TRY(tokens.consume());
-                if (tokens.token_.kind != Token::Kind::end)
+                if (expression.tokens.size() != 3 || expression.tokens[0].text != "node" ||
+                    expression.tokens[1].text != "." || expression.tokens[2].kind != Token::Kind::identifier)
                     return reject(expression.position,
                                   std::string(property.text) + " requires node.name or a direct Key input.");
             }
@@ -664,22 +885,17 @@ private:
                     return reject(expression.position, value == Property::items
                                                            ? "Repeat requires a direct Items input."
                                                            : "Items arguments require a direct typed input.");
-                ATELIER_TRY_BIND(created,
-                                 Tokens::create(source_.substr(expression.begin, expression.end - expression.begin)));
-                auto& tokens = *created;
-                ATELIER_TRY(tokens.expect("input"));
-                ATELIER_TRY(tokens.expect("."));
-                ATELIER_TRY_BIND(input, tokens.identifier());
-                const auto at =
-                    std::ranges::find_if(result_.inputs, [&](const auto& item) { return item.name == input->text; });
+                const auto at = std::ranges::find_if(
+                    result_.inputs, [&](const auto& item) { return item.name == expression.tokens[2].text; });
                 if (value == Property::items)
                     result_.nodes[slot].component_type = at->item_type;
                 else if (at->item_type != child->inputs[argument].item_type)
                     return reject(expression.position, "Component Items argument has a different element type.");
             }
-            const auto operation = static_cast<std::uint32_t>(evaluations_.size() + 1);
-            evaluations_.push_back({expression, slot, value, value_kind, argument});
-            result_.bindings.push_back({slot, operation, value, property.position});
+            const auto binding_index = result_.bindings.size();
+            result_.bindings.push_back(
+                {slot, 0, value, value_kind, argument, Binding::Mode::jit, {}, {}, property.position});
+            evaluations_.push_back({std::move(expression), slot, value, value_kind, argument, binding_index, 0});
         }
         if ((kind == NodeKind::number_row || kind == NodeKind::text_field) &&
             std::ranges::find(properties, "edit") == properties.end())
@@ -708,109 +924,116 @@ private:
             result_.mappings.push_back({begin, result_.generated_source.size(), origin});
     }
 
-    std::expected<void, Diagnostic> rewrite(Fragment fragment, bool event, bool checked = false) {
-        const auto position = [&](SourcePosition local) {
-            local.offset += fragment.begin;
-            local.column += local.line == 1 ? fragment.position.column - 1 : 0;
-            local.line += fragment.position.line - 1;
-            return local;
-        };
-        auto rewritten = [&]() -> std::expected<void, Diagnostic> {
-            ATELIER_TRY_BIND(created, Tokens::create(source_.substr(fragment.begin, fragment.end - fragment.begin)));
-            auto& tokens = *created;
-            std::optional<std::size_t> assignment;
-            std::size_t parentheses{};
-            while (tokens.token_.kind != Token::Kind::end) {
-                ATELIER_TRY_BIND(parsed_token, tokens.consume());
-                const auto token = *parsed_token;
-                const auto origin = position(token.position);
-                // Source permits assignments in for's step, whose terminator is ')'.
-                // Calls within the value must close before the generated write call.
-                if (assignment && parentheses == *assignment && (token.text == ";" || token.text == ")")) {
-                    append(")", origin);
-                    assignment.reset();
-                }
-                if (token.text == "(")
-                    ++parentheses;
-                else if (token.text == ")") {
-                    if (!parentheses)
-                        return reject(token.position, "Unbalanced expression.");
-                    --parentheses;
-                }
-                if (token.text == "self" || token.text == "new" || token.text == "yield" || token.text == "async" ||
-                    token.text.starts_with("__ui_"))
-                    return reject(
-                        token.position,
-                        "UI expressions use typed inputs/state; native context access and asynchronous effects are not permitted.");
-                if (token.text == "input" || token.text == "state") {
-                    ATELIER_TRY_BIND(dot, tokens.accept("."));
-                    if (!*dot)
-                        return reject(token.position,
-                                      "input, state and event are reserved UI identifiers; use a member after '.'.");
-                    ATELIER_TRY_BIND(name, tokens.identifier());
-                    const auto state = token.text == "state";
-                    std::optional<std::uint32_t> index;
-                    InputKind kind{};
-                    if (state) {
-                        for (std::uint32_t i = 0; i < result_.states.size(); ++i)
-                            if (result_.states[i].name == name->text) {
-                                index = i;
-                                kind = result_.states[i].kind;
-                            }
-                    } else
-                        for (std::uint32_t i = 0; i < result_.inputs.size(); ++i)
-                            if (result_.inputs[i].name == name->text) {
-                                index = i;
-                                kind = result_.inputs[i].kind;
-                            }
-                    if (!index)
-                        return reject(token.position, "Unknown UI input or state.");
-                    ATELIER_TRY_BIND(write, tokens.accept("="));
-                    if (*write) {
-                        if (!state || !event || assignment)
-                            return reject(token.position,
-                                          "Only event blocks may assign component state; inputs are read-only.");
-                        assignment = parentheses;
-                        append("self.write_" + suffix(kind) + "(" + std::to_string(*index) + ", ", origin);
-                    } else
-                        append("self." + std::string(state ? "state_" : "read_") + suffix(kind) + "(" +
-                                   std::to_string(*index) + ") ",
-                               origin);
-                } else if (token.text == "node") {
-                    ATELIER_TRY(tokens.expect("."));
-                    ATELIER_TRY_BIND(name, tokens.identifier());
-                    const auto at =
-                        std::ranges::find_if(result_.nodes, [&](const auto& item) { return item.name == name->text; });
-                    if (at == result_.nodes.end())
-                        return reject(name->position, "Unknown declaration node.");
-                    if (at->kind == NodeKind::component || at->kind == NodeKind::repeat ||
-                        at->kind == NodeKind::text_field)
-                        return reject(name->position,
-                                      "node references require a concrete node with a declaration-owned key.");
-                    append("self.node_key(" + std::to_string(at - result_.nodes.begin()) + ") ", origin);
-                } else if (token.text == "event") {
-                    if (!event)
-                        return reject(token.position, "event is reserved and only available inside an event handler.");
-                    if (!checked)
-                        return reject(token.position, "Button and ChoiceButton activation do not expose event values.");
-                    ATELIER_TRY(tokens.expect("."));
-                    ATELIER_TRY_BIND(name, tokens.identifier());
-                    if (name->text != "checked")
-                        return reject(name->position, "This event exposes checked: bool.");
-                    append("self.event_bool() ", origin);
-                } else {
-                    append(token.text, origin);
-                    append(" ", origin);
-                }
-            }
-            if (assignment)
-                return reject(tokens.token_.position, "State assignment requires a statement terminator.");
+    std::expected<void, Diagnostic> rewrite(const Fragment& fragment, bool event, bool checked = false) {
+        const auto& tokens = fragment.tokens;
+        std::size_t cursor{};
+        const auto expect_dot = [&]() -> std::expected<void, Diagnostic> {
+            if (cursor >= tokens.size() || tokens[cursor].text != ".")
+                return reject(cursor < tokens.size() ? tokens[cursor].position : fragment.end_position,
+                              "Expected '.'.");
+            ++cursor;
             return {};
-        }();
-        if (!rewritten) {
-            rewritten.error().position = position(rewritten.error().position);
+        };
+        const auto expect_identifier = [&]() -> std::expected<Token, Diagnostic> {
+            if (cursor >= tokens.size() || tokens[cursor].kind != Token::Kind::identifier)
+                return reject(cursor < tokens.size() ? tokens[cursor].position : fragment.end_position,
+                              "Expected an identifier.");
+            return tokens[cursor++];
+        };
+        std::optional<std::size_t> assignment;
+        std::size_t parentheses{};
+        std::string_view previous;
+        while (cursor < tokens.size()) {
+            const auto token = tokens[cursor++];
+            const auto origin = token.position;
+            const bool member = previous == "." || previous == "::";
+            // Source permits assignments in for's step, whose terminator is ')'.
+            // Calls within the value must close before the generated write call.
+            if (assignment && parentheses == *assignment && (token.text == ";" || token.text == ")")) {
+                append(")", origin);
+                assignment.reset();
+            }
+            if (token.text == "(")
+                ++parentheses;
+            else if (token.text == ")") {
+                if (!parentheses)
+                    return reject(token.position, "Unbalanced expression.");
+                --parentheses;
+            }
+            if (!member && (token.text == "self" || token.text == "new" || token.text == "yield" ||
+                            token.text == "async" || token.text.starts_with("__ui_")))
+                return reject(
+                    token.position,
+                    "UI expressions use typed inputs/state; native context access and asynchronous effects are not permitted.");
+            if (!member && (token.text == "input" || token.text == "state")) {
+                if (cursor >= tokens.size() || tokens[cursor].text != ".")
+                    return reject(token.position,
+                                  "input, state and event are reserved UI identifiers; use a member after '.'.");
+                ++cursor;
+                ATELIER_TRY_BIND(name, expect_identifier());
+                const auto state = token.text == "state";
+                std::optional<std::uint32_t> index;
+                InputKind kind{};
+                if (state) {
+                    for (std::uint32_t i = 0; i < result_.states.size(); ++i)
+                        if (result_.states[i].name == name->text) {
+                            index = i;
+                            kind = result_.states[i].kind;
+                        }
+                } else
+                    for (std::uint32_t i = 0; i < result_.inputs.size(); ++i)
+                        if (result_.inputs[i].name == name->text) {
+                            index = i;
+                            kind = result_.inputs[i].kind;
+                        }
+                if (!index)
+                    return reject(token.position, "Unknown UI input or state.");
+                if (cursor < tokens.size() && tokens[cursor].text == "=") {
+                    ++cursor;
+                    if (!state || !event || assignment)
+                        return reject(token.position,
+                                      "Only event blocks may assign component state; inputs are read-only.");
+                    assignment = parentheses;
+                    append("self.write_" + suffix(kind) + "(" + std::to_string(*index) + ", ", origin);
+                    previous = "=";
+                } else {
+                    append("self." + std::string(state ? "state_" : "read_") + suffix(kind) + "(" +
+                               std::to_string(*index) + ") ",
+                           origin);
+                    previous = name->text;
+                }
+            } else if (!member && token.text == "node") {
+                ATELIER_TRY(expect_dot());
+                ATELIER_TRY_BIND(name, expect_identifier());
+                const auto at =
+                    std::ranges::find_if(result_.nodes, [&](const auto& item) { return item.name == name->text; });
+                if (at == result_.nodes.end())
+                    return reject(name->position, "Unknown declaration node.");
+                if (at->kind == NodeKind::component || at->kind == NodeKind::repeat || at->kind == NodeKind::text_field)
+                    return reject(name->position,
+                                  "node references require a concrete node with a declaration-owned key.");
+                append("self.node_key(" + std::to_string(at - result_.nodes.begin()) + ") ", origin);
+                previous = name->text;
+            } else if (!member && token.text == "event") {
+                if (!event)
+                    return reject(token.position, "event is reserved and only available inside an event handler.");
+                if (!checked)
+                    return reject(token.position, "Button and ChoiceButton activation do not expose event values.");
+                ATELIER_TRY(expect_dot());
+                ATELIER_TRY_BIND(name, expect_identifier());
+                if (name->text != "checked")
+                    return reject(name->position, "This event exposes checked: bool.");
+                append("self.event_bool() ", origin);
+                previous = name->text;
+            } else {
+                append(token.text, origin);
+                result_.generated_source += ' ';
+                previous = token.text;
+            }
         }
-        return rewritten;
+        if (assignment)
+            return reject(fragment.end_position, "State assignment requires a statement terminator.");
+        return {};
     }
 };
 }
@@ -818,9 +1041,11 @@ private:
 std::expected<std::vector<Declaration>, language::Diagnostic> lower_module(std::string_view name,
                                                                            std::string_view source) {
     ATELIER_TRY_BIND(all, headers(source));
+    ATELIER_TRY_BIND(helpers, prepare_helpers(source, all->front().begin.offset));
     std::vector<Declaration> result;
+    result.reserve(all->size());
     for (const auto& header : *all) {
-        ATELIER_TRY_BIND(declaration, Parser(name, source, header, *all).run());
+        ATELIER_TRY_BIND(declaration, Parser(name, header, *all, *helpers).run());
         result.push_back(std::move(*declaration));
     }
     return result;

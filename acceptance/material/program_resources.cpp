@@ -39,6 +39,27 @@ int main() {
         state.textures.resize(state.entries.size());
         auto instance = take(create_instance(runtime, "material/instance", std::move(state)));
         surviving = take(capture_program(runtime, instance.id()));
+
+        // Verify a diamond call graph exceeding the Coverage DAG budget terminates cleanly without UB.
+        std::string diamond =
+            "struct Textures { material.TextureInput color; };\n"
+            "struct Params { float gain; };\n"
+            "Params defaults() { Params p; p.gain = 1.0; return p; }\n"
+            "float d0(material.TextureInput t, vector2 uv) { vector4 s = sample(t, uv); return s.x; }\n";
+        for (int i = 1; i <= 16; ++i) {
+            const auto prev = "d" + std::to_string(i - 1);
+            diamond += "float d" + std::to_string(i) + "(material.TextureInput t, vector2 uv) { return " + prev +
+                       "(t, uv) + " + prev + "(t, uv * 0.5); }\n";
+        }
+        diamond += "material.Output shade(material.Context c, Params p, Textures t) {\n"
+                   "    material.Output o; o.coverage = d16(t.color, c.uv) * p.gain;\n"
+                   "    o.normal_world = c.normal_world; return o;\n}";
+        const auto over_budget = take(
+            source::compile_material(runtime, take(runtime.native_type<Context>()), take(runtime.native_type<Output>()),
+                                     take(runtime.native_type<TextureInput>()), "diamond.source", diamond));
+        require(take(over_budget->hlsl("test_ns"))
+                    .contains("#error Material coverage projection exceeded the compiler node budget."),
+                "Material Coverage DAG budget overflow did not emit its #error guard.");
     }
     const auto output = take(surviving->evaluate({}));
     // IEC sRGB decode and the authored gain/alpha, not a previous capture's output.
