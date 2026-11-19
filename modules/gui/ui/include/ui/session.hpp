@@ -154,7 +154,7 @@ struct Control {
 
     bool read_only{}; // CodeEditor only: selectable/copyable, without text mutations or an IME binding.
 
-    bool operator==(const Control&) const = default;
+    bool operator==(const Control& other) const;
 };
 
 struct Surface {

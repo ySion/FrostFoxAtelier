@@ -120,5 +120,21 @@ void verify_ui_error_recovery() {
     divide_failure(Component::Compilation::reused_dependencies);
     source.insert(0, "// same code, move the fault again\n");
     divide_failure(Component::Compilation::reused_source);
+    take(stage(-1.0));
+    present(1);
+    reload(R"(
+        double height(double n) {
+            if (n < 0.0d) { return 37.0d; }
+            if ((1.0d/n) < 0.0d) { return 42.0d; }
+            return -1.0d;
+        }
+        ui Probe(in double divisor) { Button run { width: 120; height: height(input.divisor); } }
+    )");
+    take(stage(-1.0));
+    present(7);
+    require(!stage(0.0), "Positive zero must reject this binding.");
+    take(stage(-0.0));
+    present(12);
+    require(document.diagnostic().empty(), "A failed positive-zero input prevented recovery with negative zero.");
     std::filesystem::remove(path);
 }

@@ -174,7 +174,8 @@
         const bool clear_focus=absent(focus),clear_keyboard=absent(keyboard_pressed) || table_changed(keyboard_pressed,true);
         const auto* future_edit=edit?lookup(edit->key):nullptr;
         const bool refresh_edit=edit && !edit->document && future_edit && !edit->buffer().active() && !edit->composition &&
-            (future_edit->kind==ControlKind::number?edit->original_value!=future_edit->value:edit->buffer().original()!=future_edit->text);
+            (future_edit->kind==ControlKind::number ? detail::number_bits(edit->original_value)!=detail::number_bits(future_edit->value)
+                                                    : edit->buffer().original()!=future_edit->text);
         const bool popup_invalid=next_popup && absent(lookup(next_popup)->popup_owner);
         const bool interaction_changes=cancelling || clear_focus || clear_keyboard || refresh_edit ||
             next_popup!=popup || popup_invalid;

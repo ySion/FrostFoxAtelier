@@ -1,10 +1,27 @@
 #include "ui/controls.hpp"
+#include "ui/detail/number_bits.hpp"
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <stdexcept>
 
 namespace atelier::ui {
+bool SliderRange::operator==(const SliderRange& other) const {
+    using detail::number_bits;
+    return key == other.key && number_bits(minimum) == number_bits(other.minimum) &&
+           number_bits(maximum) == number_bits(other.maximum);
+}
+
+bool NumberField::operator==(const NumberField& other) const {
+    using detail::number_bits;
+    return key == other.key && number_bits(value) == number_bits(other.value) &&
+           number_bits(default_value) == number_bits(other.default_value) &&
+           number_bits(minimum) == number_bits(other.minimum) && number_bits(maximum) == number_bits(other.maximum) &&
+           number_bits(drag_step) == number_bits(other.drag_step) &&
+           number_bits(fine_step) == number_bits(other.fine_step) && label == other.label && axis == other.axis &&
+           slider == other.slider && single_precision == other.single_precision;
+}
+
 ui_layout::NodeInput single_line_layout(float width) {
     auto layout = ui_layout::NodeInput::box(width, single_line_height);
     layout.height = ui_layout::Axis::content(single_line_height);

@@ -339,7 +339,7 @@ flowchart LR
 
 `LiveDocument::poll` 在稳定的区域表上调用原实例的 `update(inputs, candidate_type)`。修改 Position 的 Text 时，Position 保留 Context 并准备新定义；SceneTree、PropertyGroup 的原实例和无变化绑定保留。只改注释且输入无变化时，更新本版元数据和源码位置，零 JIT 编译、零绑定求值、零实例创建/回收。未挂载的新类型只会编译，不会自动出现在界面上。
 
-普通数据和源码更新共用 `Instance::update`：输入变化时，实际读取过变化输入的绑定才失效；控制流切换后依赖集合会更新。Repeat 保留相同项 key 对应的 child，mounted/collapsed 遵循各自生命周期。公开的 `publish` 和 `create(previous)` 路径已移除。
+普通数据和源码更新共用 `Instance::update`：输入变化时，实际读取过变化输入的绑定才失效；控制流切换后依赖集合会更新。数值绑定的字面量按 Source 的类型求值后转成目标类型，因此整数 `-0` 转成正零，浮点 `-0.0d` 保留负号。用于复用、变更检测和失败重试的数值快照区分正负零，同一位模式的无效 NaN 输入只报告一次。Repeat 保留相同项 key 对应的 child，mounted/collapsed 遵循各自生命周期。公开的 `publish` 和 `create(previous)` 路径已移除。
 
 总代价仍与更大范围有关：源码更新遍历已挂载区域与子实例，替换元数据并核对依赖；没有传递依赖索引来跳过整个未变区域。Items 仍作为一个输入快照发布，变化后遍历条目匹配 key；Workspace 仍采样 World 并生成完整描述。没有单项增删数据补丁协议。
 

@@ -1,4 +1,5 @@
 #include "ui/session.hpp"
+#include "ui/detail/number_bits.hpp"
 #include "ui/text.hpp"
 #include "foundation/result.hpp"
 #include <algorithm>
@@ -181,6 +182,31 @@ std::optional<double> number(std::wstring_view text, const Control& control) {
     // Like Runtime writes to bounded fields, typed values clamp to the legal range.
     return std::clamp(value, control.minimum, control.maximum);
 }
+}
+
+bool Control::operator==(const Control& other) const {
+    using detail::number_bits;
+    return key == other.key && parent == other.parent && kind == other.kind &&
+           number_bits(value) == number_bits(other.value) && number_bits(minimum) == number_bits(other.minimum) &&
+           number_bits(maximum) == number_bits(other.maximum) &&
+           number_bits(drag_step) == number_bits(other.drag_step) &&
+           number_bits(fine_step) == number_bits(other.fine_step) &&
+           default_value.transform(number_bits) == other.default_value.transform(number_bits) &&
+           layout == other.layout && text == other.text && single_line == other.single_line && role == other.role &&
+           icon == other.icon && enabled == other.enabled && selected == other.selected &&
+           click_action == other.click_action && single_precision == other.single_precision &&
+           drag_axis == other.drag_axis && classes == other.classes && style == other.style &&
+           style_scope == other.style_scope && invalid == other.invalid && modified == other.modified &&
+           context_target == other.context_target && context_group == other.context_group &&
+           selection_group == other.selection_group && action_target == other.action_target &&
+           tree_row_count == other.tree_row_count && tree_index == other.tree_index && tree_depth == other.tree_depth &&
+           tree_branch == other.tree_branch && tree_expanded == other.tree_expanded && tree_lines == other.tree_lines &&
+           tree_primary == other.tree_primary && tree_draggable == other.tree_draggable &&
+           popup_owner == other.popup_owner && menu_branch == other.menu_branch && edit_command == other.edit_command &&
+           button_behavior == other.button_behavior && menu_behavior == other.menu_behavior &&
+           radio_group == other.radio_group && table == other.table && table_selection == other.table_selection &&
+           table_layout == other.table_layout && code == other.code && tooltip == other.tooltip &&
+           read_only == other.read_only;
 }
 
 Result<void> validate_control_properties(const Control& control) {

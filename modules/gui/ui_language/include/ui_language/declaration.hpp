@@ -1,6 +1,7 @@
 #pragma once
 
 #include "language/source.hpp"
+#include "ui/detail/number_bits.hpp"
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -8,6 +9,16 @@
 #include <vector>
 
 namespace atelier::ui_language {
+
+namespace detail {
+inline constexpr auto same_binding_value = []<class... T>(const std::variant<T...>& a, const std::variant<T...>& b) {
+    if (const auto* number = std::get_if<double>(&a)) {
+        const auto* other = std::get_if<double>(&b);
+        return other && ui::detail::number_bits(*number) == ui::detail::number_bits(*other);
+    }
+    return a == b;
+};
+}
 
 enum class InputKind { boolean, number, edit, text, text_edit, key, items, action, table, code, tooltip, tree_row };
 
@@ -29,7 +40,10 @@ struct State {
     // Non-monostate when initialized by a constant literal; otherwise initialized by JIT op 0.
     std::variant<std::monostate, bool, double> initial_value{};
 
-    bool operator==(const State&) const = default;
+    bool operator==(const State& other) const {
+        return name == other.name && kind == other.kind &&
+               detail::same_binding_value(initial_value, other.initial_value);
+    }
 };
 
 enum class NodeKind {
@@ -181,7 +195,7 @@ struct Binding {
     bool same_definition(const Binding& other) const noexcept {
         return node == other.node && operation == other.operation && property == other.property &&
                argument_kind == other.argument_kind && argument == other.argument && mode == other.mode &&
-               literal == other.literal && direct == other.direct;
+               detail::same_binding_value(literal, other.literal) && direct == other.direct;
     }
 };
 

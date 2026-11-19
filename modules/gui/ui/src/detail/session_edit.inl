@@ -101,7 +101,7 @@
                 ActionValue{edit->buffer().original()});
         if (numeric) {
             const auto value=number(edit->buffer().current().text,control);
-            if (value && *value!=edit->preview_value) {
+            if (value && detail::number_bits(*value)!=detail::number_bits(edit->preview_value)) {
                 action(reply,ActionKind::edit_preview,edit->key,*value); edit->preview_value=*value;
             }
         } else action(reply,ActionKind::edit_preview,edit->key,edit->buffer().current().text);

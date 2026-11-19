@@ -2,6 +2,7 @@
 #include "runtime/native.hpp"
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <fstream>
 #include <iterator>
 
@@ -14,6 +15,116 @@ using acceptance::helpers::require;
 using acceptance::helpers::take;
 
 namespace {
+void verify_signed_zero_bindings(Runtime& runtime, ui::ControlKey& next) {
+    const std::string child = "ui Child(in double n) { Button b { enabled: (1.0d/input.n) < 0.0d; } } "
+                              "ui Rows(in Items<Child> rows) { Repeat r { items: input.rows; } } ";
+    std::shared_ptr<Module> module;
+    std::unique_ptr<Instance> parent;
+    ui::ControlKey key{};
+    for (const std::string_view literal : {"0.0d", "-0.0d", "(-0.0d)", "-0", "(-0)", "-0.0f"}) {
+        const auto source = child + "ui Parent() { Child c { n: " + std::string(literal) + "; } }";
+        module = take(Module::compile(runtime, "signed-zero.ui.source", source, module.get()));
+        const auto component = module->find("Parent");
+        auto fresh = take(Instance::create(component, 0, next, {}, {}));
+        const bool negative = literal == "-0.0d" || literal == "(-0.0d)" || literal == "-0.0f";
+        require(fresh->controls().front().enabled == negative, "Literal binding changed the Source sign of zero.");
+        if (!parent) {
+            key = fresh->controls().front().key;
+            parent = std::move(fresh);
+        } else {
+            take(parent->update({}, component));
+            parent->commit_controls();
+            const auto& button = parent->controls().front();
+            require(button.key == key && button.enabled == negative, "Hot and fresh signed-zero bindings differ.");
+        }
+    }
+    const auto row_key = next++;
+    const auto items = [row_key](double value) {
+        std::vector<Item> rows{{row_key, {value}}};
+        return std::array<InputValue, 1>{ItemList{std::make_shared<const std::vector<Item>>(std::move(rows))}};
+    };
+    auto list = take(Instance::create(module->find("Rows"), 0, next, {}, items(0.0)));
+    take(list->update(items(-0.0)));
+    list->commit_controls();
+    require(list->controls().front().key == row_key && list->controls().front().enabled,
+            "Repeat failed to publish a signed-zero change to an existing item.");
+
+    const auto event = take(Component::compile(runtime, "event-zero.ui.source", R"(
+        ui Probe(in double n) {
+            state double value = 0.0d;
+            Button set { on activate { state.value = input.n; } }
+            Button indicator { enabled: (1.0d/state.value) < 0.0d; }
+            Splitter grip { value: 0.0d * input.n; }
+        })",
+                                               "Probe"));
+    auto instance = take(Instance::create(event, 0, next, {}, std::array<InputValue, 1>{1.0}));
+    take(instance->update(std::array<InputValue, 1>{0.0}));
+    take(instance->update(std::array<InputValue, 1>{-0.0})); // Supersede an uncommitted input.
+    instance->commit_controls();
+    require(std::signbit(instance->controls()[2].value), "Splitter lost the new input's sign.");
+    const auto activate = [&] {
+        require(take(instance->event({ui::ActionKind::activate, instance->controls()[0].key, {}})), "Event missed.");
+        take(instance->update());
+        require(instance->controls()[1].enabled, "Changing only the sign of state did not update the binding.");
+    };
+    activate();
+    instance->reject_controls();
+    take(instance->update());
+    instance->commit_controls();
+    require(!instance->controls()[1].enabled, "Rejecting an event failed to restore positive zero.");
+    activate();
+    instance->commit_controls();
+}
+
+void verify_number_row_sign(std::shared_ptr<Component> component, ui::ControlKey& next) {
+    ui::NumberField field;
+    field.key = next++;
+    EditBinding edit{.group = next++, .enabled = true, .fields = {field}};
+    auto row = take(Instance::create(component, 0, next, {}, std::array<InputValue, 1>{edit}));
+    ui::Session session;
+    take(session.initialize());
+    take(session.set_surface({{600, 200}, 1, 1}));
+    const auto present = [&] {
+        take(session.set_controls(row->controls()));
+        require(session.accept(take(session.prepare())), "NumberRow frame was refused.");
+        row->commit_controls();
+    };
+    present();
+    require(!session.focus(field.key).error && session.focused_control() == field.key,
+            "Could not focus the numeric field.");
+    edit.fields.front().value = -0.0;
+    take(row->update(std::array<InputValue, 1>{edit}));
+    present();
+    ui::Event shortcut{};
+    shortcut.kind = ui::EventKind::key_down;
+    shortcut.control = true;
+    shortcut.key = ui::Key::a;
+    session.input(shortcut);
+    shortcut.key = ui::Key::c;
+    const auto copy = session.input(shortcut);
+    require(std::ranges::any_of(copy.effects,
+                                [](const ui::Effect& effect) {
+                                    const auto* platform = std::get_if<ui::PlatformRequest>(&effect);
+                                    const auto* clipboard =
+                                        platform ? std::get_if<ui::ClipboardRequest>(platform) : nullptr;
+                                    return clipboard && clipboard->kind == ui::ClipboardKind::copy &&
+                                           clipboard->text == L"-0";
+                                }),
+            "The focused editor number field did not expose the updated -0 text.");
+    ui::Event typed{};
+    typed.kind = ui::EventKind::text;
+    typed.data = std::wstring{L"0"};
+    const auto preview = session.input(typed);
+    require(std::ranges::any_of(preview.effects,
+                                [&](const ui::Effect& effect) {
+                                    const auto* action = std::get_if<ui::Action>(&effect);
+                                    return action && action->kind == ui::ActionKind::edit_preview &&
+                                           action->key == field.key && std::get<double>(action->value) == 0.0 &&
+                                           !std::signbit(std::get<double>(action->value));
+                                }),
+            "Editing -0 to 0 did not deliver the new value to the host.");
+}
+
 void verify_state_initializer_order(Runtime& runtime, ui::ControlKey& next) {
     for (const bool parentheses : {false, true}) {
         const auto literal = [&](std::string value) { return parentheses ? "(" + value + ")" : value; };
@@ -175,6 +286,7 @@ void verify_ui_entry_dependencies() {
     };
     reload(source);
     present(56);
+    verify_number_row_sign(document.component("WorkbenchRgb"), next);
     const auto old = document.component("ToolShelf");
     const auto instance = document.statistics("ToolShelf")->instance;
     const auto types = runtime.type_count();
@@ -268,6 +380,7 @@ void verify_ui_entry_dependencies() {
     begin(document, now);
     require(document.compiling(), "Expected a live compiler during catalog growth.");
     verify_state_initializer_order(runtime, next);
+    verify_signed_zero_bindings(runtime, next);
     verify_component_environments(runtime, next);
     drain(document, now);
     present(42);

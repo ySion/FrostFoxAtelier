@@ -1,6 +1,5 @@
 #include "ui_language/live_document.hpp"
 #include <algorithm>
-#include <bit>
 #include <fstream>
 
 namespace atelier::ui_language {
@@ -23,45 +22,6 @@ std::optional<std::string> read_source(const std::filesystem::path& path, std::u
     return bytes;
 }
 
-bool same_number(double a, double b) {
-    return a == b || std::bit_cast<std::uint64_t>(a) == std::bit_cast<std::uint64_t>(b);
-}
-
-bool same_field(const ui::NumberField& a, const ui::NumberField& b) {
-    return a.key == b.key && a.label == b.label && a.axis == b.axis && a.single_precision == b.single_precision &&
-           same_number(a.value, b.value) && same_number(a.default_value, b.default_value) &&
-           same_number(a.minimum, b.minimum) && same_number(a.maximum, b.maximum) &&
-           same_number(a.drag_step, b.drag_step) && same_number(a.fine_step, b.fine_step) &&
-           a.slider.has_value() == b.slider.has_value() &&
-           (!a.slider || (a.slider->key == b.slider->key && same_number(a.slider->minimum, b.slider->minimum) &&
-                          same_number(a.slider->maximum, b.slider->maximum)));
-}
-
-bool same_rejected_inputs(std::span<const InputValue> a, std::span<const InputValue> b) {
-    return std::ranges::equal(a, b, [](const InputValue& left, const InputValue& right) {
-        if (left.index() != right.index())
-            return false;
-        if (const auto* number = std::get_if<double>(&left))
-            return same_number(*number, std::get<double>(right));
-        if (const auto* edit = std::get_if<EditBinding>(&left)) {
-            const auto& other = std::get<EditBinding>(right);
-            return edit->group == other.group && edit->enabled == other.enabled && edit->modified == other.modified &&
-                   std::ranges::equal(edit->fields, other.fields, same_field);
-        }
-        if (const auto* list = std::get_if<ItemList>(&left)) {
-            const auto& other = std::get<ItemList>(right);
-            if (list->values == other.values)
-                return true;
-            const std::span<const Item> items = list->values ? std::span(*list->values) : std::span<const Item>{};
-            const std::span<const Item> others = other.values ? std::span(*other.values) : std::span<const Item>{};
-            return std::ranges::equal(items, others, [](const Item& x, const Item& y) {
-                return x.key == y.key && x.keys == y.keys && x.parent == y.parent &&
-                       same_rejected_inputs(x.inputs, y.inputs);
-            });
-        }
-        return left == right;
-    });
-}
 }
 
 LiveDocument::LiveDocument(Runtime& runtime, std::filesystem::path path, ui::ControlKey& keys,
@@ -267,7 +227,8 @@ Result<void> LiveDocument::append(std::string_view name, ui::ControlKey parent, 
             return report(
                 Error{ErrorCode::invalid_definition, "A live region's parent and key aliases are immutable."});
         }
-        blocked = !candidate_ && region.rejected_inputs && same_rejected_inputs(*region.rejected_inputs, inputs);
+        blocked = !candidate_ && region.rejected_inputs &&
+                  std::ranges::equal(*region.rejected_inputs, inputs, detail::same_binding_value);
         retried = region.rejected_inputs.has_value() && !blocked;
         auto* sample = candidate_ && timing_ && timing_->compile_begin != Clock::time_point{} ? timing_.get() : nullptr;
         const auto start = sample ? Clock::now() : Clock::time_point{};
@@ -346,7 +307,8 @@ bool LiveDocument::reject_controls(std::string message) {
                 region.rejected_inputs = std::vector<InputValue>(values.begin(), values.end());
             }
             region.instance->reject_controls(source);
-            if (!source && same_rejected_inputs(*region.rejected_inputs, region.instance->inputs()))
+            if (!source &&
+                std::ranges::equal(*region.rejected_inputs, region.instance->inputs(), detail::same_binding_value))
                 region.rejected_inputs.reset();
         }
     }

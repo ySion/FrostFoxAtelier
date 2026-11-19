@@ -130,7 +130,7 @@ struct Item {
 
     std::optional<ui::ControlKey> parent{};
 
-    bool operator==(const Item&) const = default;
+    bool operator==(const Item& other) const;
 };
 
 struct Statistics {

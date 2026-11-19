@@ -108,7 +108,8 @@ std::optional<double> try_number_literal(std::span<const Token> tokens, bool dou
     if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size())
         return std::nullopt;
     if (negative)
-        return value <= 2147483648u ? std::optional{-static_cast<double>(value)} : std::nullopt;
+        return value <= 2147483648u ? std::optional{static_cast<double>(-static_cast<std::int64_t>(value))}
+                                    : std::nullopt;
     return static_cast<double>(value);
 }
 

@@ -27,7 +27,7 @@ struct SliderRange {
 
     double maximum{1};
 
-    bool operator==(const SliderRange&) const = default;
+    bool operator==(const SliderRange& other) const;
 };
 
 // A scalar/vector row is a composition of ordinary controls. All keys belong
@@ -55,7 +55,7 @@ struct NumberField {
 
     bool single_precision{};
 
-    bool operator==(const NumberField&) const = default;
+    bool operator==(const NumberField& other) const;
 };
 
 struct ParameterRow {

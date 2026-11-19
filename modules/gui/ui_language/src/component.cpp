@@ -459,14 +459,13 @@ struct Context {
         return std::get<double>(d.states.at(index));
     }
 
-    template <class T>
-    void write_state(std::uint32_t index, T value) {
+    void write_state(std::uint32_t index, std::variant<bool, double> value) {
         auto& d = data();
         if (!d.initializing && !d.handling_event)
             fatal("A binding cannot modify component state.");
-        auto& target = std::get<T>(d.states.at(index));
+        auto& target = d.states.at(index);
         if (!d.initializing) {
-            if (target == value)
+            if (detail::same_binding_value(target, value))
                 return;
             d.invalidate(d.inputs.size() + index);
         }
@@ -1138,7 +1137,8 @@ struct Module::Build {
     Result<void> stage(Component::Impl& next, TypeId type, std::shared_ptr<Component> prior, ComponentTiming* timing) {
         const source::detail::CompileTimer timer(timing != nullptr);
         next.catalog_size = next.runtime.type_count();
-        if (prior && (&prior->impl_->runtime != &next.runtime || prior->impl_->catalog_size != next.catalog_size))
+        if (prior && (&prior->impl_->runtime != &next.runtime || prior->impl_->catalog_size != next.catalog_size ||
+                      prior->declaration().needs_jit != next.declaration.needs_jit))
             prior.reset();
         if (!next.declaration.needs_jit) {
             if (prior && same_declaration_shape(next.declaration, prior->declaration())) {
@@ -1444,6 +1444,11 @@ Result<TypeId> register_types(Runtime& runtime) {
                               .build());
     ATELIER_TRY_BIND(registered, runtime.register_types(std::move(definitions)));
     return registered->back();
+}
+
+bool Item::operator==(const Item& other) const {
+    return key == other.key && parent == other.parent && keys == other.keys &&
+           std::ranges::equal(inputs, other.inputs, detail::same_binding_value);
 }
 
 bool ItemList::operator==(const ItemList& other) const {
@@ -1882,7 +1887,7 @@ Result<void> detail::DefinitionState::publish(std::span<const InputValue> values
     }
     std::vector<std::pair<std::size_t, InputValue>> changes;
     for (std::size_t i = 0; i < values.size(); ++i)
-        if (values[i] != inputs[i])
+        if (!detail::same_binding_value(values[i], inputs[i]))
             changes.emplace_back(i, values[i]);
     input_undo.reserve(input_undo.size() + changes.size());
     for (auto& [index, value] : changes) {
@@ -2324,7 +2329,7 @@ Result<void> Instance::update(std::span<const InputValue> values, std::shared_pt
         definition = scope.value->component;
     const bool source_changed = definition != scope.value->component;
     if (scope.pending && scope.pending->definition == definition &&
-        std::ranges::equal(scope.pending->data.inputs, values))
+        std::ranges::equal(scope.pending->data.inputs, values, detail::same_binding_value))
         return {};
     // LiveDocument may reuse the prepared inputs. Keep that borrow alive if a
     // different definition supersedes its owning candidate before commit.
@@ -2397,18 +2402,18 @@ Result<bool> Instance::event(const ui::Action& action) {
         checked = *value;
     } else if (!std::holds_alternative<std::monostate>(action.value))
         return failure("Button activation does not accept a value.");
-    const auto before = data.states;
+    auto before = data.states;
     data.handling_event = true;
     data.event_checked = checked;
     auto handled = data.invoke(at->operation, *data.component, &at->position);
     data.handling_event = false;
     ++scope.statistics.event_evaluations;
     if (!handled) {
-        data.states = before;
+        data.states = std::move(before);
         return std::unexpected(handled.error());
     }
-    if (data.states != before && !data.state_undo)
-        data.state_undo = before;
+    if (!data.state_undo && !std::ranges::equal(data.states, before, detail::same_binding_value))
+        data.state_undo = std::move(before);
     return true;
 }
 
