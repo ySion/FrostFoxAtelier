@@ -318,6 +318,12 @@ public:
         return *this;
     }
 
+    // Applies to the type itself; Runtime validates, sorts and owns the values.
+    NativeRegistration& type_metadata(MetadataList values) {
+        definition_.metadata = std::move(values);
+        return *this;
+    }
+
     template <auto Pointer>
     NativeRegistration& field(std::string name, std::string description = {}) {
         using Value = typename detail::Member<decltype(Pointer)>::Value;

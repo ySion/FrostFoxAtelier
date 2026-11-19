@@ -180,11 +180,12 @@ std::expected<void, Diagnostic> initializer_shape(Tokens& tokens, const SourceFi
 }
 
 std::expected<std::string, Diagnostic> function_signature(Tokens& tokens, const TypeName& type,
-                                                          std::vector<std::string>& parameters,
+                                                          std::vector<std::string>* parameters,
                                                           TopLevel* declaration = nullptr,
                                                           std::vector<MethodParameter>* method_parameters = nullptr) {
     std::string signature = type.name + ":" + std::to_string(type.array_depth) + "(";
     bool writable_parameter = false;
+    std::size_t parameter_count = 0;
     ATELIER_TRY(tokens.expect("("));
     ATELIER_TRY_BIND(empty, tokens.accept(")"));
     if (!*empty)
@@ -199,7 +200,9 @@ std::expected<std::string, Diagnostic> function_signature(Tokens& tokens, const 
                 return reject(position, "const parameters require a reference in this source slice.");
             writable_parameter |= *reference && !*constant;
             ATELIER_TRY_BIND(name, tokens.identifier());
-            parameters.emplace_back(name->text);
+            ++parameter_count;
+            if (parameters)
+                parameters->emplace_back(name->text);
             const auto passing = *reference ? (*constant ? ParameterPassing::read_only : ParameterPassing::reference)
                                             : ParameterPassing::value;
             if (method_parameters)
@@ -214,7 +217,7 @@ std::expected<std::string, Diagnostic> function_signature(Tokens& tokens, const 
         }
     if (declaration)
         declaration->property =
-            property_name(declaration->name, parameters.size(), type.name == "void", writable_parameter);
+            property_name(declaration->name, parameter_count, type.name == "void", writable_parameter);
     return signature;
 }
 
@@ -396,7 +399,7 @@ std::expected<SourceModule, ModuleDiagnostic> collect_module(const SourceSnapsho
                     declaration.name = std::move(*name);
                     ATELIER_TRY(declare(declaration.name, declaration.position));
                     FunctionDeclaration exported{declaration.name, {}, {}};
-                    ATELIER_TRY_BIND(signature, function_signature(tokens, *type, exported.parameters, &declaration));
+                    ATELIER_TRY_BIND(signature, function_signature(tokens, *type, &exported.parameters, &declaration));
                     exported.signature = std::move(*signature);
                     // Engine functions serve Source calls only; project functions are the global entries.
                     if (own.empty())
@@ -452,9 +455,9 @@ std::expected<SourceModule, ModuleDiagnostic> collect_module(const SourceSnapsho
                     if (tokens.token_.text == "(") {
                         if (*attributed)
                             return reject(attributes, "Attributes apply only to class fields.");
-                        ClassMethod method{std::string(name->text), {}, start, {}, {}, *type, {}};
-                        ATELIER_TRY_BIND(signature, function_signature(tokens, *type, method.parameters, nullptr,
-                                                                       &method.method_parameters));
+                        ClassMethod method{std::string(name->text), {}, start, {}, *type, {}};
+                        ATELIER_TRY_BIND(signature,
+                                         function_signature(tokens, *type, nullptr, nullptr, &method.parameters));
                         method.signature = std::move(*signature);
                         ATELIER_TRY(body(tokens));
                         method.source.append(unit, file, start.offset, tokens.token_.position.offset);

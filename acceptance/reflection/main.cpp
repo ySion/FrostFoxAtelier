@@ -43,6 +43,21 @@ void verify_reflection() {
                                                                        offsetof(upstream::Payload, scale))
                                      .build();
         auto derived_def = atelier::reflection::Definition<DerivedCounter>::build(runtime);
+        {
+            TypeDefinition colliding_described;
+            colliding_described.name = "reflection.CollidingDescribed";
+            colliding_described.kind = TypeKind::object;
+            MethodDefinition callable{"process", {}, {}, true};
+            callable.signature.receiver = ReceiverDefinition{TypeReference{"reflection.CollidingDescribed"}, true};
+            callable.invoke = [](CallContext&) noexcept -> Result<void> { return {}; };
+            colliding_described.methods.push_back(std::move(callable));
+            DescribedMethodDefinition described{"process", {}};
+            described.signature.receiver = ReceiverDefinition{TypeReference{"reflection.CollidingDescribed"}, false};
+            colliding_described.described_methods.push_back(std::move(described));
+            const auto colliding = runtime.register_type(std::move(colliding_described));
+            require(!colliding && colliding.error().code == ErrorCode::duplicate_name,
+                    "Runtime accepted same-name callable and described methods on one type.");
+        }
         const auto quat_type = take(runtime.native_type<math::Quaternion>());
         MethodDefinition partial_method{"partial_rotation", {}, {}, true};
         partial_method.signature.receiver = ReceiverDefinition{TypeReference::native<DerivedCounter>(), true};
@@ -104,16 +119,18 @@ void verify_reflection() {
     }
     const std::vector<std::pair<std::string, std::string>> expected{{"test.binding", "evaluate.values"},
                                                                     {"test.note", std::string{"分组\0尾", 10}}};
+    const MetadataList expected_type_meta{{"source.contract_method", "advance"}};
     const MetadataList expected_run_over{{"procedural.role", "run_over"}};
     const MetadataList expected_param{{"procedural.layer", "point"},
                                       {"procedural.name", "P"},
                                       {"procedural.optional", "true"},
                                       {"procedural.role", "in"},
                                       {"test.param", "ok"}};
-    require(retained.fields[0].metadata == expected && retained_derived.fields[1].metadata == expected_run_over &&
+    require(retained.fields[0].metadata == expected && retained_derived.metadata == expected_type_meta &&
+                retained_derived.fields[1].metadata == expected_run_over &&
                 retained_derived.methods[0].parameter_metadata.size() == 4 &&
                 retained_derived.methods[0].parameter_metadata[0].empty() &&
                 retained_derived.methods[0].parameter_metadata[1] == expected_param,
-            "Generated field/parameter metadata did not outlive Runtime.");
+            "Generated type/field/parameter metadata did not outlive Runtime.");
     std::puts("Reflection consumer: PASS (generated producer and owned metadata)");
 }

@@ -70,7 +70,7 @@ struct Connection {
 //   geometry ports). Read borrows observe the input snapshot; `[Group]` receives an empty
 //   view when its group name is empty (all elements selected); `Optional` `[In]` receives an
 //   empty view when the input lacks that attribute.
-ACLASS(Name = "procedural.Node",
+ACLASS(Name = "procedural.Node", Meta("source.contract_method", "process"),
        DESC = "程序化图中的统一节点基类。公开字段是面板参数，端口与属性列流来自 process 方法签名。")
 class Node {
     AGENERATED_BODY(Node)

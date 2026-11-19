@@ -60,6 +60,19 @@ const Array<T>& column(const Geometry& geometry, const char* name, Layer layer) 
     return *values;
 }
 
+class BadLengthNode final : public Node {
+public:
+    bool mutate_positions{};
+
+    Result<void> process(Array<Vector3>& positions, Array<float>& weights) const noexcept {
+        if (mutate_positions)
+            positions.add({0.0f, 0.0f, 0.0f});
+        else
+            weights.add(1.0f);
+        return {};
+    }
+};
+
 Vector3 normalized(Vector3 v) {
     return *math::try_normalize(v);
 }
@@ -326,12 +339,13 @@ class game.Wave : procedural.Node {
     const auto& orient = column<Quaternion>(*pts, "orient", Layer::point);
     require(pts->find("orient")->usage == Usage::orientation, "Transform lost Usage::orientation on 'orient'.");
     // Unselected point 0 started at (-1, 0, -1); +90 deg about Y in row-vector convention maps (x, y, z) -> (z, y, -x) = (-1, 0, 1).
+    // With RandomScale missing prior `pscale`, unselected points receive unit scale 1.0f rather than 0.0f.
     const std::uint32_t jseed = hash(11u, 5u);
     const std::uint32_t h1 = hash(hash(jseed, 1u));
     const float expected_x1 = 1.0f + (unit(h1) * 2.0f - 1.0f) * 0.5f;
-    require(near(out_p[0], {-1.0f, 0.0f, 1.0f}) && near(out_p[1], {-1.0f, 0.25f, -expected_x1}) && pscale[0] == 0.0f &&
+    require(near(out_p[0], {-1.0f, 0.0f, 1.0f}) && near(out_p[1], {-1.0f, 0.25f, -expected_x1}) && pscale[0] == 1.0f &&
                 pscale[1] == 2.0f && custom_h[0] == 0.0f && custom_h[1] == 0.25f,
-            "Jitter fallback index, GroupBox mask, RandomScale or custom Wave produced wrong values.");
+            "Jitter fallback index, GroupBox mask, RandomScale unit default or custom Wave produced wrong values.");
     // NormalAlign had +Z -> +Y (0,1,0) and +Y -> +Z (0,0,1); after +90 deg about Y, local +Y (0,0,1) rotates to +X (1,0,0)!
     require(near(math::rotate(orient[1], Vector3{0, 0, 1}), {0, 1, 0}, 1e-4f) &&
                 near(math::rotate(orient[1], Vector3{0, 1, 0}), {1, 0, 0}, 1e-4f),
@@ -345,7 +359,27 @@ class game.Wave : procedural.Node {
     std::size_t kept_instances = 0;
     for (const auto& col : pub.collections)
         kept_instances += col.transforms->size();
-    require(pub.dropped == 2 && kept_instances == 2, "publish() did not drop the 2 zero-pscale unselected instances.");
+    require(pub.dropped == 0 && kept_instances == 4, "Grouped RandomScale dropped unselected unit-scale instances.");
+
+    // Chaining a second grouped RandomScale when `pscale` already exists must preserve prior `pscale` on unselected points.
+    const auto group_z_n = add(type<GroupBox>(runtime));
+    const auto rscale2_n = add(rscale_type);
+    take(runtime.with_native<GroupBox>(group_z_n.id(), [](GroupBox& n) -> Result<void> {
+        n.group = String::literal<"z_pos">();
+        n.minimum = {-2.0f, -1.0f, 0.0f};
+        n.maximum = {2.0f, 1.0f, 2.0f};
+        return {};
+    }));
+    write_str(rscale2_n.id(), rscale_type, "group", "z_pos");
+    take(runtime.write(rscale2_n.id(), field(runtime, rscale_type, "minimum"), Scalar{3.0f}));
+    take(runtime.write(rscale2_n.id(), field(runtime, rscale_type, "maximum"), Scalar{3.0f}));
+    take(connect(runtime, graph, rscale_n.id(), 0, group_z_n.id(), 0));
+    take(connect(runtime, graph, group_z_n.id(), 0, rscale2_n.id(), 0));
+    take(set_display(runtime, graph, rscale2_n.id()));
+    take(evaluator.evaluate());
+    const auto& pscale2 = column<float>(*evaluator.output(), "pscale", Layer::point);
+    require(pscale2[0] == 1.0f && pscale2[1] == 2.0f && pscale2[2] == 3.0f && pscale2[3] == 3.0f,
+            "Grouped RandomScale did not preserve existing pscale values on unselected points.");
 
     // 3. Dynamic [RunOver], same-name Remap read/write, and Evaluator error/recovery contract.
     const auto box_n = add(type<Box>(runtime));
@@ -401,6 +435,49 @@ class game.Wave : procedural.Node {
     require(evaluator.output() != nullptr && evaluator.status(remap_n.id())->cache_hits == 1 &&
                 !evaluator.status(tail_n.id())->error.has_value(),
             "Restoring valid parameter did not recover from cache.");
+
+    // 4. Native column-binding length tampering (both attribute column and P) must be rejected before publishing.
+    const auto bad_type = take(NativeRegistration<BadLengthNode>{runtime, "test.BadLengthNode", TypeKind::object}
+                                   .base<Node>()
+                                   .field<&BadLengthNode::mutate_positions>("mutate_positions")
+                                   .method<&BadLengthNode::process>("process")
+                                   .parameter_names({"P", "weights"})
+                                   .parameter_metadata({{{"procedural.role", "inout"}}, {{"procedural.role", "out"}}})
+                                   .publish());
+    const auto bad_n = add(bad_type);
+    take(connect(runtime, graph, grid_n.id(), 0, bad_n.id(), 0));
+    take(set_display(runtime, graph, bad_n.id()));
+    for (const bool mutate_p : {false, true}) {
+        take(runtime.write(bad_n.id(), field(runtime, bad_type, "mutate_positions"), Scalar{mutate_p}));
+        take(evaluator.evaluate());
+        const auto* bad_status = evaluator.status(bad_n.id());
+        require(evaluator.output() == nullptr && evaluator.last_valid_output() != nullptr && bad_status &&
+                    bad_status->error && bad_status->error->code == ErrorCode::invocation_failed &&
+                    bad_status->error->message.contains(mutate_p ? "Column 'P' changed length"
+                                                                 : "Column 'weights' changed length"),
+                "Native column-binding node published mismatched column length.");
+    }
+
+    // 5. Graph-level failure must also clear output() while preserving last_valid_output().
+    {
+        auto transient_graph = take(runtime.create(type<Graph>(runtime)));
+        const auto transient_grid = take(add_node(runtime, transient_graph.id(), type<Grid>(runtime)));
+        take(set_display(runtime, transient_graph.id(), transient_grid.id()));
+        Evaluator transient_eval{runtime, transient_graph, resources, program.get()};
+        take(transient_eval.evaluate());
+        require(transient_eval.output() != nullptr && transient_eval.output()->count(Layer::point) == 100 &&
+                    transient_eval.last_valid_output() != nullptr &&
+                    transient_eval.last_valid_output()->count(Layer::point) == 100,
+                "Transient graph initial evaluation failed.");
+        take(runtime.destroy(transient_graph.id()));
+        for (int attempt = 0; attempt < 2; ++attempt) {
+            const auto destroyed_res = transient_eval.evaluate();
+            require(!destroyed_res && transient_eval.output() == nullptr &&
+                        transient_eval.last_valid_output() != nullptr &&
+                        transient_eval.last_valid_output()->count(Layer::point) == 100,
+                    "Graph-level failure left stale output() non-null or dropped last_valid_output().");
+        }
+    }
 }
 
 // A height field mesh over [0, size]^2 with `quads` quads per side, two triangles each.
@@ -526,6 +603,12 @@ void profile(const char* path) {
     number("scatter_1m_ms",
            median_ms(samples, [](int) {}, [&] { million = take(scatter(ground, {.density = 1, .seed = 3})); }));
     number("scatter_1m_points", million.count(Layer::point));
+    Geometry spaced;
+    number("scatter_spaced_ms",
+           median_ms(
+               samples, [](int) {},
+               [&] { spaced = take(scatter(ground, {.density = 1, .seed = 3, .min_distance = 0.8f})); }));
+    number("scatter_spaced_points", spaced.count(Layer::point));
     number("transform_1m_ms", median_ms(
                                   samples, [](int) {},
                                   [&] {
@@ -545,6 +628,7 @@ void profile(const char* path) {
         }
         Context ctx;
         Array<bool> empty_mask;
+        Array<float> empty_float;
         auto jitter_obj = take(source_rt.create(take(source_rt.find_type("procedural.Jitter"))));
         auto rscale_obj = take(source_rt.create(take(source_rt.find_type("procedural.RandomScale"))));
         auto noise_obj = take(source_rt.create(take(source_rt.find_type("procedural.Noise"))));
@@ -565,14 +649,15 @@ void profile(const char* path) {
                                                              Argument::borrow(std::as_const(empty_mask))};
                                        take(jitter_fn.invoke(jitter_obj.id(), args));
                                    }));
-        number("random_scale_1m_ms", median_ms(
-                                         samples, [](int) {},
-                                         [&] {
-                                             const std::array args{Argument::borrow(ctx), Argument::borrow(float_buf),
-                                                                   Argument::borrow(id_buf),
-                                                                   Argument::borrow(std::as_const(empty_mask))};
-                                             take(rscale_fn.invoke(rscale_obj.id(), args));
-                                         }));
+        number("random_scale_1m_ms",
+               median_ms(
+                   samples, [](int) {},
+                   [&] {
+                       const std::array args{Argument::borrow(ctx), Argument::borrow(std::as_const(empty_float)),
+                                             Argument::borrow(float_buf), Argument::borrow(id_buf),
+                                             Argument::borrow(std::as_const(empty_mask))};
+                       take(rscale_fn.invoke(rscale_obj.id(), args));
+                   }));
         number("noise_1m_ms",
                median_ms(
                    samples, [](int) {},

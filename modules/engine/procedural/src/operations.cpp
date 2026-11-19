@@ -384,7 +384,7 @@ Result<Geometry> scatter(const Geometry& surface, const ScatterSettings& setting
         // Cells as wide as the distance: a kept point closer than it lies in a neighbouring cell.
         const double cell = settings.min_distance;
         const double limit = cell * cell;
-        struct Bucket {
+        struct Cell {
             std::array<std::int64_t, 3> coord{};
 
             std::uint32_t head{UINT32_MAX};
@@ -392,50 +392,57 @@ Result<Geometry> scatter(const Geometry& surface, const ScatterSettings& setting
         const std::size_t max_table_size = std::bit_ceil(std::max<std::size_t>(16, positions.size() * 2));
         std::size_t table_size = std::min<std::size_t>(max_table_size, 1024);
         std::size_t mask = table_size - 1;
-        std::size_t occupied = 0;
-        Array<Bucket> table;
-        table.resize(table_size);
+        Array<std::uint32_t> directory;
+        directory.resize(table_size, UINT32_MAX);
+        Array<Cell> cells;
         Array<std::uint32_t> next_in_cell;
         next_in_cell.resize(positions.size(), UINT32_MAX);
+        std::array<std::int64_t, 3> min_coord{INT64_MAX, INT64_MAX, INT64_MAX};
+        std::array<std::int64_t, 3> max_coord{INT64_MIN, INT64_MIN, INT64_MIN};
         const auto cell_hash = [](const std::array<std::int64_t, 3>& c) noexcept -> std::size_t {
-            return hash(static_cast<std::uint32_t>(c[0]),
-                        hash(static_cast<std::uint32_t>(c[1]), static_cast<std::uint32_t>(c[2])));
+            const auto mix = [](std::uint64_t v) noexcept -> std::uint32_t {
+                return static_cast<std::uint32_t>(v ^ (v >> 32));
+            };
+            return hash(mix(static_cast<std::uint64_t>(c[0])),
+                        hash(mix(static_cast<std::uint64_t>(c[1])), mix(static_cast<std::uint64_t>(c[2]))));
         };
         const auto find_head = [&](const std::array<std::int64_t, 3>& c) noexcept -> std::uint32_t {
             for (std::size_t slot = cell_hash(c) & mask;; slot = (slot + 1) & mask) {
-                if (table[slot].head == UINT32_MAX)
+                const std::uint32_t cell_index = directory[slot];
+                if (cell_index == UINT32_MAX)
                     return UINT32_MAX;
-                if (table[slot].coord == c)
-                    return table[slot].head;
+                if (cells[cell_index].coord == c)
+                    return cells[cell_index].head;
             }
         };
         const auto insert_point = [&](const std::array<std::int64_t, 3>& c, std::uint32_t index) {
-            if (occupied * 2 >= table_size) {
+            if (cells.size() * 2 >= table_size) {
                 table_size *= 2;
                 mask = table_size - 1;
-                Array<Bucket> grown;
-                grown.resize(table_size);
-                for (const auto& entry : table) {
-                    if (entry.head == UINT32_MAX)
-                        continue;
-                    for (std::size_t slot = cell_hash(entry.coord) & mask;; slot = (slot + 1) & mask)
-                        if (grown[slot].head == UINT32_MAX) {
-                            grown[slot] = entry;
+                directory.clear();
+                directory.resize(table_size, UINT32_MAX);
+                for (std::uint32_t ci = 0; ci < cells.size(); ++ci) {
+                    for (std::size_t slot = cell_hash(cells[ci].coord) & mask;; slot = (slot + 1) & mask)
+                        if (directory[slot] == UINT32_MAX) {
+                            directory[slot] = ci;
                             break;
                         }
                 }
-                table = std::move(grown);
+            }
+            for (std::size_t axis = 0; axis < 3; ++axis) {
+                min_coord[axis] = std::min(min_coord[axis], c[axis]);
+                max_coord[axis] = std::max(max_coord[axis], c[axis]);
             }
             for (std::size_t slot = cell_hash(c) & mask;; slot = (slot + 1) & mask) {
-                if (table[slot].head == UINT32_MAX) {
-                    table[slot].coord = c;
-                    table[slot].head = index;
-                    ++occupied;
+                const std::uint32_t cell_index = directory[slot];
+                if (cell_index == UINT32_MAX) {
+                    directory[slot] = static_cast<std::uint32_t>(cells.size());
+                    cells.add({c, index});
                     return;
                 }
-                if (table[slot].coord == c) {
-                    next_in_cell[index] = table[slot].head;
-                    table[slot].head = index;
+                if (cells[cell_index].coord == c) {
+                    next_in_cell[index] = cells[cell_index].head;
+                    cells[cell_index].head = index;
                     return;
                 }
             }
@@ -452,18 +459,33 @@ Result<Geometry> scatter(const Geometry& surface, const ScatterSettings& setting
                 c[axis] = static_cast<std::int64_t>(index);
             }
             bool near = false;
-            for (std::int64_t x = -1; x <= 1 && !near; ++x)
-                for (std::int64_t y = -1; y <= 1 && !near; ++y)
-                    for (std::int64_t z = -1; z <= 1 && !near; ++z) {
-                        for (auto other = find_head({c[0] + x, c[1] + y, c[2] + z}); other != UINT32_MAX;
-                             other = next_in_cell[other]) {
-                            const auto d = Vector3d(positions[other]) - p;
-                            if (math::length_squared(d) < limit) {
-                                near = true;
-                                break;
-                            }
+            if (!cells.empty()) {
+                const auto check_cell = [&](const std::array<std::int64_t, 3>& nc) noexcept {
+                    for (auto other = find_head(nc); other != UINT32_MAX; other = next_in_cell[other]) {
+                        const auto d = Vector3d(positions[other]) - p;
+                        if (math::length_squared(d) < limit) {
+                            near = true;
+                            return;
                         }
                     }
+                };
+                if (c[0] >= min_coord[0] && c[0] <= max_coord[0] && c[1] >= min_coord[1] && c[1] <= max_coord[1] &&
+                    c[2] >= min_coord[2] && c[2] <= max_coord[2])
+                    check_cell(c);
+                const std::int64_t x0 = std::max(c[0] - 1, min_coord[0]);
+                const std::int64_t x1 = std::min(c[0] + 1, max_coord[0]);
+                const std::int64_t y0 = std::max(c[1] - 1, min_coord[1]);
+                const std::int64_t y1 = std::min(c[1] + 1, max_coord[1]);
+                const std::int64_t z0 = std::max(c[2] - 1, min_coord[2]);
+                const std::int64_t z1 = std::min(c[2] + 1, max_coord[2]);
+                for (std::int64_t x = x0; x <= x1 && !near; ++x)
+                    for (std::int64_t y = y0; y <= y1 && !near; ++y)
+                        for (std::int64_t z = z0; z <= z1 && !near; ++z) {
+                            if (x == c[0] && y == c[1] && z == c[2])
+                                continue;
+                            check_cell({x, y, z});
+                        }
+            }
             if (near)
                 continue;
             insert_point(c, i);
@@ -669,9 +691,10 @@ Result<Geometry> ray(const Geometry& points, const Geometry& surface, const RayS
         return failure("Ray direction must be finite and nonzero.");
     if (surface.count(Layer::primitive) > std::uint32_t(std::numeric_limits<std::int32_t>::max()))
         return failure("Ray surfaces have fewer than 2^31 primitives.");
-    for (std::uint32_t p = 0; p < surface.count(Layer::primitive); ++p)
-        if (surface.primitive(p).count - 2 > std::uint32_t(std::numeric_limits<std::int32_t>::max()))
-            return failure("Ray polygons have fewer than 2^31 fan triangles.");
+    if (surface.count(Layer::vertex) > std::uint32_t(std::numeric_limits<std::int32_t>::max()) + 2u)
+        for (std::uint32_t p = 0; p < surface.count(Layer::primitive); ++p)
+            if (surface.primitive(p).count - 2 > std::uint32_t(std::numeric_limits<std::int32_t>::max()))
+                return failure("Ray polygons have fewer than 2^31 fan triangles.");
     ATELIER_TRY_BIND(bvh, Bvh::acquire(surface));
     Geometry output = points;
     const auto count = output.count(Layer::point);

@@ -47,7 +47,7 @@ AFIELD(Label = "Position", Category = "Transform") math::Vector3 position;
 
 ### 字段 Meta
 
-`AFIELD` 另接受 `Meta("namespace.key", "value")`，每项恰好两个普通字符串字面量；可重复使用 Meta 声明不同键。例如 `AFIELD(Meta("custom.binding", "target"), Meta("custom.domain", "point")) String attribute;`。`RunOver` 无值标记等价于写入 `{"procedural.role", "run_over"}`。生成器保留解码后的完整字节和长度，沿 `NativeRegistration::metadata({{"namespace.key", "value"}})` 写入最近声明的字段；手写生产者也可直接填写 `FieldDefinition::metadata`。
+`ACLASS`、`ASTRUCT` 与 `AFIELD` 均接受 `Meta("namespace.key", "value")`，每项恰好两个普通字符串字面量；可重复使用 Meta 声明不同键。类型上的 `Meta` 沿 `NativeRegistration::type_metadata({...})` 发布到 `TypeDefinition::metadata` / `TypeInfo::metadata`（例如 `procedural.Node` 用 `Meta("source.contract_method", "process")` 向源码宿主声明端口契约方法）；字段上的 `Meta` 如 `AFIELD(Meta("custom.binding", "target"), Meta("custom.domain", "point")) String attribute;` 沿 `NativeRegistration::metadata({...})` 写入最近声明的字段（`RunOver` 无值标记等价于写入 `{"procedural.role", "run_over"}`）；手写生产者也可直接填写 `TypeDefinition::metadata` 或 `FieldDefinition::metadata`。
 
 `APARAM` 作用于业务参数（静态上下文方法跳过前三个宿主上下文形参），支持无参角色标记 `Port`、`In`、`Out`、`InOut`、`Group`，赋值写法 `In = "P"`，或与 `.source` 一致的括号写法 `In("P", Optional)`、`Out(From = "attribute", Layer = "point")`，并可附带 `Meta("key", "value")`。每个参数至多声明一种 procedural 角色；`Optional` 仅允许配合 `In`，字面列名与 `From` 互斥，`Port` 不接受列名、`From`、`Layer` 或 `Optional`。生成器沿 `.parameter_metadata({...})` 写入最近声明的方法。
 

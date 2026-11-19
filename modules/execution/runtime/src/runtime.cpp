@@ -2217,6 +2217,84 @@ Result<void> FieldDefinition::normalize_metadata() {
     return normalize_metadata_entries(metadata);
 }
 
+namespace {
+
+Result<void> validate_method_parameters(std::string_view type_name, const std::string& method_name, std::size_t count,
+                                        std::vector<std::string>& names, std::vector<MetadataList>& metadata) {
+    const std::string qualified = std::string(type_name) + "." + method_name;
+    if (!names.empty() && names.size() != count)
+        return failure(ErrorCode::invalid_definition,
+                       "Parameter names must match the parameters of method: " + qualified);
+    for (std::size_t i = 0; i < names.size(); ++i) {
+        if (!StringView{names[i]}.is_valid_utf8())
+            return failure(ErrorCode::invalid_definition, "Parameter names require valid UTF-8: " + qualified);
+        if (!names[i].empty() && std::find(names.begin(), names.begin() + i, names[i]) != names.begin() + i)
+            return failure(ErrorCode::duplicate_name, "Duplicate parameter " + names[i] + " in method: " + qualified);
+    }
+    names.resize(count);
+    if (!metadata.empty() && metadata.size() != count)
+        return failure(ErrorCode::invalid_definition,
+                       "Parameter metadata must match the parameters of method: " + qualified);
+    for (auto& entries : metadata) {
+        const auto normalized = normalize_metadata_entries(entries);
+        if (!normalized)
+            return failure(normalized.error().code, normalized.error().message + ": " + qualified);
+    }
+    metadata.resize(count);
+    return {};
+}
+
+}
+
+Result<void> detail::TypePublication::validate_methods(Runtime& runtime, TypeId existing,
+                                                       std::vector<DescribedMethodDefinition> methods,
+                                                       const TypePublication* pending) {
+    assert_serial_access();
+    auto& impl = *runtime.impl_;
+    const auto* type = impl.lookup(existing);
+    if (!type || type->info.kind != TypeKind::object || type->info.native_storage)
+        return failure(ErrorCode::invalid_definition, "Described method validation requires a described object type.");
+    if (pending && (pending->state_->context != impl.context || pending->state_->committed ||
+                    pending->state_->first_index != impl.types.size()))
+        return failure(ErrorCode::invalid_definition, "Type candidate no longer matches its Runtime catalog.");
+    if (methods.size() >= no_slot)
+        return failure(ErrorCode::capacity_exceeded, "Member identity space exhausted.");
+    const std::size_t own_fields =
+        type->fields.size() - (type->base && type->base->info.id != impl.object ? std::size_t{1} : std::size_t{0});
+    const std::size_t own_callable = type->compiled_methods.size();
+    const std::span<const std::unique_ptr<Runtime::Impl::Type>> staged =
+        pending ? std::span<const std::unique_ptr<Runtime::Impl::Type>>{pending->state_->staged}
+                : std::span<const std::unique_ptr<Runtime::Impl::Type>>{};
+    for (std::size_t i = 0; i != methods.size(); ++i) {
+        auto& method = methods[i];
+        if (method.name.empty())
+            return failure(ErrorCode::invalid_definition, "Described methods require a name.");
+        if (!StringView{method.name}.is_valid_utf8())
+            return failure(ErrorCode::invalid_definition, "Method names require valid UTF-8.");
+        for (std::size_t f = 0; f != own_fields; ++f)
+            if (type->member_names[f] == method.name)
+                return failure(ErrorCode::duplicate_name, "Duplicate member: " + type->info.name + "." + method.name);
+        for (std::size_t c = 0; c != own_callable; ++c)
+            if (type->member_names[own_fields + c] == method.name)
+                return failure(ErrorCode::duplicate_name, "Duplicate method: " + type->info.name + "." + method.name);
+        for (std::size_t previous = 0; previous != i; ++previous)
+            if (methods[previous].name == method.name)
+                return failure(ErrorCode::duplicate_name, "Duplicate method: " + type->info.name + "." + method.name);
+        for (const auto* ancestor = type->base; ancestor; ancestor = ancestor->base)
+            if (std::ranges::find(ancestor->member_names, method.name) != ancestor->member_names.end())
+                return failure(ErrorCode::invalid_definition,
+                               "Member hides an inherited declaration: " + type->info.name + "." + method.name +
+                                   " hides " + ancestor->info.name + "." + method.name);
+        auto signature = impl.resolve_signature(method.signature, existing, staged);
+        if (!signature)
+            return failure(signature.error().code,
+                           signature.error().message + ": " + type->info.name + "." + method.name);
+        ATELIER_TRY(validate_method_parameters(type->info.name, method.name, signature->parameters.size(),
+                                               method.parameter_names, method.parameter_metadata));
+    }
+    return {};
+}
+
 Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vector<TypeDefinition> definitions) {
     detail::assert_serial_access();
     // Preparation only reads the published catalog; reserve_commit checks the safe point.
@@ -2249,6 +2327,8 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
         };
         if (!normalize_description(definition.description))
             return invalid_description(definition.name);
+        if (const auto normalized = normalize_metadata_entries(definition.metadata); !normalized)
+            return failure(normalized.error().code, normalized.error().message + ": " + definition.name);
         for (auto& field : definition.fields) {
             if (!StringView{field.name}.is_valid_utf8() || !StringView{field.label}.is_valid_utf8() ||
                 !StringView{field.category}.is_valid_utf8())
@@ -2344,6 +2424,7 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
         type->info = {
             id, std::move(definition.name), definition.kind, native.size, is_native ? native.alignment : 1, {}, {}};
         type->info.description = std::move(definition.description);
+        type->info.metadata = std::move(definition.metadata);
         type->validate = definition.validate;
         if (definition.kind != TypeKind::object) {
             type->info.copy_constructible = !is_native || native.copy_construct;
@@ -2473,6 +2554,10 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
             for (const auto& field : definition.fields) {
                 if (field.name == name)
                     return failure(ErrorCode::duplicate_name, "Duplicate member: " + type.info.name + "." + name);
+            }
+            for (const auto& callable : definition.methods) {
+                if (callable.name == name)
+                    return failure(ErrorCode::duplicate_name, "Duplicate method: " + type.info.name + "." + name);
             }
             for (std::size_t previous = 0; previous != method_index; ++previous) {
                 if (definition.described_methods[previous].name == name)
@@ -2623,28 +2708,7 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
         const auto validate_parameters = [&](const std::string& method_name, std::size_t count,
                                              std::vector<std::string>& names,
                                              std::vector<MetadataList>& metadata) -> Result<void> {
-            const std::string qualified = type.info.name + "." + method_name;
-            if (!names.empty() && names.size() != count)
-                return failure(ErrorCode::invalid_definition,
-                               "Parameter names must match the parameters of method: " + qualified);
-            for (std::size_t i = 0; i < names.size(); ++i) {
-                if (!StringView{names[i]}.is_valid_utf8())
-                    return failure(ErrorCode::invalid_definition, "Parameter names require valid UTF-8: " + qualified);
-                if (!names[i].empty() && std::find(names.begin(), names.begin() + i, names[i]) != names.begin() + i)
-                    return failure(ErrorCode::duplicate_name,
-                                   "Duplicate parameter " + names[i] + " in method: " + qualified);
-            }
-            names.resize(count);
-            if (!metadata.empty() && metadata.size() != count)
-                return failure(ErrorCode::invalid_definition,
-                               "Parameter metadata must match the parameters of method: " + qualified);
-            for (auto& entries : metadata) {
-                const auto normalized = normalize_metadata_entries(entries);
-                if (!normalized)
-                    return failure(normalized.error().code, normalized.error().message + ": " + qualified);
-            }
-            metadata.resize(count);
-            return {};
+            return validate_method_parameters(type.info.name, method_name, count, names, metadata);
         };
         type.info.methods.reserve(definition.methods.size());
         for (auto& method : definition.methods) {

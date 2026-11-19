@@ -140,8 +140,12 @@ struct NonZeroPlain {
 };
 
 struct PairHost {
+    std::int32_t hidden_secret = 7;
+
     PlainPair add_pair(PlainPair a, PlainPair b) const noexcept { return {a.x + b.x, a.y + b.y}; }
 };
+
+struct ContractHost {};
 
 void verify_frontend_and_pod_evaluation() {
     Runtime runtime;
@@ -158,7 +162,11 @@ void verify_frontend_and_pod_evaluation() {
             .build(),
         std::move(non_zero_def),
         NativeRegistration<PairHost>(runtime, "test.PairHost", TypeKind::object)
+            .hidden_field<&PairHost::hidden_secret>("secret")
             .method<&PairHost::add_pair>("add_pair", true)
+            .build(),
+        NativeRegistration<ContractHost>(runtime, "test.ContractHost", TypeKind::object)
+            .type_metadata({{"source.contract_method", "process"}})
             .build()}));
     auto project = take(Program::create(runtime));
     const auto reject_snapshot = [&](std::string text, std::string_view expected, std::size_t expected_line = 0) {
@@ -190,14 +198,20 @@ void verify_frontend_and_pod_evaluation() {
                     "Duplicate parameter x in method: p.Dup.process", 2);
 
     // Verify math.is_finite, math.as_uint, math.as_int, [RunOver], method parameter attributes,
-    // TypeInfo::described_methods, and rebuild_required on process parameter changes.
+    // TypeInfo::described_methods, contract-scoped process hot-reload rules, and warm/cold parity.
     auto described_prog = take(Program::create(runtime));
     publish(*described_prog, {"sop", 1, {{"Source/Sop.source", 1, R"(
-class test.SopNode : test.PairHost {
+class test.Ordinary : test.PairHost {
+    int count = 0;
+    void helper(int a) {}
+}
+
+class test.SopNode : test.ContractHost {
     [RunOver] int domain = 0;
     String target = "col";
     void helper(int a) {}
-    void process([Port] const test.PlainPair& port_in,
+    void process(int plain_port,
+                 [Port] const test.PlainPair& port_in,
                  [In("src", Optional), Layer = "point"] const Array<int>& input_col,
                  [InOut] Array<int>& col,
                  [Out(From = "target")] Array<int>& out_col) {}
@@ -208,34 +222,101 @@ class test.SopNode : test.PairHost {
     require(sop_info->fields.size() == 2 &&
                 sop_info->fields[0].metadata == MetadataList{{"procedural.role", "run_over"}} &&
                 sop_info->described_methods.size() == 2 && sop_info->described_methods[1].name == "process" &&
-                sop_info->described_methods[1].parameter_names.size() == 4 &&
-                sop_info->described_methods[1].parameter_metadata[0] == MetadataList{{"procedural.role", "port"}} &&
-                sop_info->described_methods[1].parameter_metadata[1] == MetadataList{{"procedural.layer", "point"},
+                sop_info->described_methods[1].parameter_names.size() == 5 &&
+                sop_info->described_methods[1].parameter_metadata[0].empty() &&
+                sop_info->described_methods[1].parameter_metadata[1] == MetadataList{{"procedural.role", "port"}} &&
+                sop_info->described_methods[1].parameter_metadata[2] == MetadataList{{"procedural.layer", "point"},
                                                                                      {"procedural.name", "src"},
                                                                                      {"procedural.optional", "true"},
                                                                                      {"procedural.role", "in"}} &&
-                sop_info->described_methods[1].parameter_metadata[2] == MetadataList{{"procedural.role", "inout"}} &&
-                sop_info->described_methods[1].parameter_metadata[3] ==
+                sop_info->described_methods[1].parameter_metadata[3] == MetadataList{{"procedural.role", "inout"}} &&
+                sop_info->described_methods[1].parameter_metadata[4] ==
                     MetadataList{{"procedural.from", "target"}, {"procedural.role", "out"}},
             "Source class [RunOver] or parameter attributes did not publish into TypeInfo::described_methods.");
-    // Ordinary unattributed method parameter rename remains compatible; process parameter rename requires rebuild.
+    // Ordinary classes (base without source.contract_method) can hot-reload to add `process` and rename its parameter,
+    // while non-contract helper parameter renames on contract classes remain compatible as well.
     publish(*described_prog, {"sop", 2, {{"Source/Sop.source", 2, R"(
-class test.SopNode : test.PairHost {
+class test.Ordinary : test.PairHost {
+    int count = 0;
+    void helper(int a) {}
+    void process(int dt) {}
+}
+
+class test.SopNode : test.ContractHost {
     [RunOver] int domain = 0;
     String target = "col";
     void helper(int renamed_a) {}
-    void process([Port] const test.PlainPair& port_in,
+    void process(int plain_port,
+                 [Port] const test.PlainPair& port_in,
                  [In("src", Optional), Layer = "point"] const Array<int>& input_col,
                  [InOut] Array<int>& col,
                  [Out(From = "target")] Array<int>& out_col) {}
 }
 )"}}});
-    auto rebuild_req = take(described_prog->request({"sop", 3, {{"Source/Sop.source", 3, R"(
-class test.SopNode : test.PairHost {
+    publish(*described_prog, {"sop", 3, {{"Source/Sop.source", 3, R"(
+class test.Ordinary : test.PairHost {
+    int count = 0;
+    void helper(int a) {}
+    void process(int renamed_dt) {}
+}
+
+class test.SopNode : test.ContractHost {
     [RunOver] int domain = 0;
     String target = "col";
     void helper(int renamed_a) {}
-    void process([Port] const test.PlainPair& renamed_port,
+    void process(int plain_port,
+                 [Port] const test.PlainPair& port_in,
+                 [In("src", Optional), Layer = "point"] const Array<int>& input_col,
+                 [InOut] Array<int>& col,
+                 [Out(From = "target")] Array<int>& out_col) {}
+}
+)"}}});
+    const auto ord_proc =
+        std::ranges::find(described_prog->entries(), "test.Ordinary.process", &source::EntryInfo::name);
+    require(ord_proc != described_prog->entries().end() &&
+                ord_proc->parameter_names == std::vector<std::string>{"renamed_dt"},
+            "Ordinary class process hot-reload or EntryInfo::parameter_names update failed.");
+    // Warm hot-reload must reject methods hiding native base methods or hidden fields, matching cold load.
+    for (const auto& [bad_member, expected_msg] :
+         {std::pair{"void add_pair(int x) {}", "test.Ordinary.add_pair hides test.PairHost.add_pair"},
+          std::pair{"void secret(int x) {}", "test.Ordinary.secret hides test.PairHost.secret"}}) {
+        const std::string warm_bad =
+            std::string{
+                "class test.Ordinary : test.PairHost {\n    int count = 0;\n    void helper(int a) {}\n    void process(int renamed_dt) {}\n    "} +
+            bad_member + R"(
+}
+class test.SopNode : test.ContractHost {
+    [RunOver] int domain = 0;
+    String target = "col";
+    void helper(int renamed_a) {}
+    void process(int plain_port,
+                 [Port] const test.PlainPair& port_in,
+                 [In("src", Optional), Layer = "point"] const Array<int>& input_col,
+                 [InOut] Array<int>& col,
+                 [Out(From = "target")] Array<int>& out_col) {}
+}
+)";
+        auto hide_req = take(described_prog->request({"sop", 4, {{"Source/Sop.source", 4, warm_bad}}}));
+        auto hide_cand = Program::prepare(hide_req);
+        require(!hide_cand && hide_cand.error().code == ErrorCode::invalid_definition &&
+                    hide_cand.error().message.contains(expected_msg) && hide_cand.error().source &&
+                    hide_cand.error().source->line == 5,
+                "Warm hot-reload accepted a method hiding an inherited native member or lost its line mapping.");
+    }
+    // Renaming even an unattributed parameter on a contract `process` method requires rebuild.
+    auto rebuild_req = take(described_prog->request({"sop", 5, {{"Source/Sop.source", 5, R"(
+class test.Ordinary : test.PairHost {
+    int count = 0;
+    void helper(int a) {}
+    void process(int renamed_dt) {}
+}
+
+class test.SopNode : test.ContractHost {
+    [RunOver] int domain = 0;
+    String target = "col";
+    void helper(int renamed_a) {}
+    void process(int renamed_plain_port,
+                 [Port] const test.PlainPair& port_in,
                  [In("src", Optional), Layer = "point"] const Array<int>& input_col,
                  [InOut] Array<int>& col,
                  [Out(From = "target")] Array<int>& out_col) {}
@@ -243,7 +324,7 @@ class test.SopNode : test.PairHost {
 )"}}}));
     auto rebuild_cand = Program::prepare(rebuild_req);
     require(!rebuild_cand && rebuild_cand.error().code == ErrorCode::rebuild_required,
-            "Renaming a process port parameter did not report rebuild_required.");
+            "Renaming a contract process parameter did not report rebuild_required.");
 
     // Verify zero-default plain_value POD locals/returns, non-zero default plain_value records,
     // builtin math locals (Vector3), local Array<int> loops, cached SOP Array<int>& writes,

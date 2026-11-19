@@ -45,17 +45,18 @@ public:
 
     Evaluator& operator=(const Evaluator&) = delete;
 
-    // Fails only when the graph itself cannot be read or has invalid topology. Node execution
-    // failures go to status(), clearing output() while preserving last_valid_output().
+    // Fails only when the graph itself cannot be read or has invalid topology; node execution
+    // failures go to status(). Any graph or display-chain failure clears output() while
+    // preserving last_valid_output().
     // Timing is opt-in diagnostics only: it neither changes keys nor forces nodes to run.
     Result<void> evaluate(bool record_timings = false);
 
-    // The display node's first output when the latest evaluation succeeded; null when the
-    // graph has no display node or the display chain failed.
+    // The display node's first output when the latest evaluate() succeeded without display-chain
+    // errors; null when the graph has no display node or the latest evaluation or display chain failed.
     [[nodiscard]] const Geometry* output() const noexcept;
 
-    // The most recent valid display output while a display node is set, retained across node
-    // evaluation errors for editor fallback preview.
+    // The most recent valid display output while a display node is set, retained across graph
+    // and node evaluation errors for editor fallback preview.
     [[nodiscard]] const Geometry* last_valid_output() const noexcept;
 
     // Null for nodes not in the graph at the last evaluation.

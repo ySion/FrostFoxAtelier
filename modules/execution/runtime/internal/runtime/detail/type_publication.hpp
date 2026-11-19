@@ -24,6 +24,11 @@ public:
 
     Result<FunctionSignature> resolve_signature(Runtime&, const SignatureDefinition&) const;
 
+    // Validates the full method list of an already-published described object type against its own
+    // fields, its ancestor chain (including hidden native members), and any staged types in `pending`.
+    static Result<void> validate_methods(Runtime&, TypeId existing, std::vector<DescribedMethodDefinition> methods,
+                                         const TypePublication* pending = nullptr);
+
     // Validate the captured catalog and reserve all commit storage. No semantic
     // publication occurs here. No callbacks or Runtime changes may intervene.
     Result<void> reserve_commit(Runtime&);

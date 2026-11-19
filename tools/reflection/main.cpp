@@ -260,6 +260,8 @@ struct Type {
     SourceLocation validator_location{};
 
     std::string validator{};
+
+    std::vector<std::pair<std::string, std::string>> metadata{};
 };
 
 struct State {
@@ -697,7 +699,8 @@ public:
             marker = state_.prefix(*declaration, MarkerKind::record);
         if (!marker)
             return true;
-        const auto options = state_.options(*marker, {"Name", "DESC", "Validate"});
+        std::vector<std::pair<std::string, std::string>> metadata;
+        const auto options = state_.options(*marker, {"Name", "DESC", "Validate", "Meta"}, &metadata);
         if (!options)
             return true;
         auto* definition = declaration->getDefinition();
@@ -729,7 +732,7 @@ public:
         for (const auto& type : state_.types) {
             if (type.declaration == definition) {
                 if (type.object != object || type.runtime_name != runtime_name || type.description != description ||
-                    type.validator_option != validator_option)
+                    type.validator_option != validator_option || type.metadata != metadata)
                     state_.error(marker->location, "Conflicting reflection markers on redeclarations.");
                 return true;
             }
@@ -754,6 +757,7 @@ public:
         state_.types.back().description = description;
         state_.types.back().validator_option = validator_option;
         state_.types.back().validator_location = marker->location;
+        state_.types.back().metadata = std::move(metadata);
         return true;
     }
 };
@@ -1729,6 +1733,14 @@ llvm::Error emit(const State& state) {
         if (!type.description.empty())
             cpp += ", " + quote(type.description);
         cpp += "}";
+        if (!type.metadata.empty()) {
+            cpp += "\n        .type_metadata({";
+            for (std::size_t i = 0; i < type.metadata.size(); ++i) {
+                const auto& [key, value] = type.metadata[i];
+                cpp += (i ? ", " : "") + std::string{"{"} + metadata_text(key) + ", " + metadata_text(value) + "}";
+            }
+            cpp += "})";
+        }
         if (type.enum_flags)
             cpp += "\n        .flags()";
         for (const auto& item : type.enumerators) {

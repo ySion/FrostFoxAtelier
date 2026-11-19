@@ -73,7 +73,7 @@ struct ClassField {
     bool read_only{};
 };
 
-// Signatures omit parameter names, so renaming a parameter stays compatible.
+// Signatures omit parameter names, so renaming an ordinary parameter stays compatible.
 struct ClassMethod {
     std::string name;
 
@@ -83,11 +83,9 @@ struct ClassMethod {
 
     std::string signature;
 
-    std::vector<std::string> parameters;
-
     TypeName result_type;
 
-    std::vector<MethodParameter> method_parameters;
+    std::vector<MethodParameter> parameters;
 };
 
 struct FunctionDeclaration {

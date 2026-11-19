@@ -863,6 +863,9 @@ struct TypeDefinition {
     Result<void> (*validate)(const void* storage) noexcept {};
 
     std::vector<DescribedMethodDefinition> described_methods{};
+
+    // Owned UTF-8 values under dotted ASCII identifier keys; normalized and key-sorted on publication.
+    MetadataList metadata{};
 };
 
 struct FieldInfo {
@@ -1003,8 +1006,12 @@ struct TypeInfo {
 
     std::optional<std::size_t> base_offset{};
 
-    // Declared methods of a described object type; empty for native types.
+    // Initial method contract frozen when a described object type is first registered; empty for native types.
+    // Live executable entries across compatible hot reloads are queried from the code host (Program::entries).
     std::vector<DescribedMethodInfo> described_methods{};
+
+    // Immutable, key-sorted copy of the type's own declared metadata.
+    MetadataList metadata{};
 };
 
 // A value that breaks its type's rules. `field` is the failing leaf for a hard bound,

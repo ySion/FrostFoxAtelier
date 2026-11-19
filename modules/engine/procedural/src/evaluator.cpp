@@ -69,17 +69,24 @@ Result<void*> out_column(Geometry& geometry, StringView name, Layer layer) {
     return *column;
 }
 
+template <std::size_t I>
+std::size_t borrowed_column_size(const void* column) noexcept {
+    return static_cast<const ColumnArray<I>*>(column)->size();
+}
+
 struct ColumnAccess {
     Result<const void*> (*read)(const Geometry&, StringView, Layer, bool);
 
     Result<void*> (*inout)(Geometry&, StringView, Layer);
 
     Result<void*> (*out)(Geometry&, StringView, Layer);
+
+    std::size_t (*size)(const void*) noexcept;
 };
 
 template <std::size_t... I>
 constexpr std::array<ColumnAccess, sizeof...(I)> column_accessors(std::index_sequence<I...>) {
-    return {ColumnAccess{&read_column<I>, &inout_column<I>, &out_column<I>}...};
+    return {ColumnAccess{&read_column<I>, &inout_column<I>, &out_column<I>, &borrowed_column_size<I>}...};
 }
 
 constexpr auto accessors = column_accessors(std::make_index_sequence<detail::column_type_count>{});
@@ -385,6 +392,7 @@ struct Evaluator::Impl {
         multi_inputs.reserve(multi_port_count); // Borrowed below; must not reallocate.
 
         bool wrote_positions = false;
+        std::array<std::size_t, 5> expected_layer_counts{};
         if (plan.uses_primary_stream) {
             if (string_type == TypeId{})
                 if (auto str = runtime.native_type<String>())
@@ -415,6 +423,9 @@ struct Evaluator::Impl {
             }
 
             const Geometry& primary_in = single_input(0);
+            expected_layer_counts = {primary_in.count(Layer::point), primary_in.count(Layer::vertex),
+                                     primary_in.count(Layer::primitive), primary_in.count(Layer::detail),
+                                     primary_in.count(Layer::instance)};
             // Resolve all read-only column/group borrows against the immutable input snapshot first.
             for (std::size_t i = 0; i < arg_count; ++i) {
                 const auto& arg = plan.arguments[i];
@@ -486,6 +497,17 @@ struct Evaluator::Impl {
             ATELIER_TRY(runtime.call(id, plan.method, arguments));
         } else {
             ATELIER_TRY(source_kernel->entry.invoke(id, arguments));
+        }
+        if (plan.uses_primary_stream) {
+            for (std::size_t i = 0; i < arg_count; ++i) {
+                const auto& arg = plan.arguments[i];
+                if (arg.kind != detail::ArgKind::column_inout && arg.kind != detail::ArgKind::column_out)
+                    continue;
+                if (accessors[arg.column_variant].size(writable[i]) !=
+                    expected_layer_counts[static_cast<std::size_t>(resolved_layers[i])])
+                    return error(ErrorCode::invocation_failed,
+                                 "Column '" + std::string{resolved_names[i].view().std_view()} + "' changed length.");
+            }
         }
         if (wrote_positions) {
             for (const auto& position : entry.outputs[0].positions())
@@ -625,6 +647,19 @@ struct Evaluator::Impl {
         return result;
     }
 
+    void sync_published() {
+        const auto display = members.display();
+        if (display == ObjectId{}) {
+            current_published.reset();
+            last_valid.reset();
+        } else if (const auto* shown = nodes.find(display); shown && !shown->status.error && shown->entry) {
+            current_published = shown->entry;
+            last_valid = shown->entry;
+        } else {
+            current_published.reset();
+        }
+    }
+
     Result<void> evaluate(bool record_timings) {
         auto now = runtime.change_cursor();
         if (!now)
@@ -706,6 +741,7 @@ struct Evaluator::Impl {
         }
         if (!dirty && candidate.empty()) {
             cursor = *now;
+            sync_published();
             return {};
         }
         const auto current = [&](ObjectId node) -> const State& {
@@ -753,21 +789,14 @@ struct Evaluator::Impl {
         cursor = *now;
         if (republished)
             code_revision = program->revision();
-        if (!changed)
+        if (!changed) {
+            sync_published();
             return {};
+        }
         revision = resources.revision();
         for (const auto node : *sequence)
             update(node, *nodes.find(node), record_timings);
-        const auto display = members.display();
-        if (display == ObjectId{}) {
-            current_published.reset();
-            last_valid.reset();
-        } else if (const auto& shown = *nodes.find(display); !shown.status.error && shown.entry) {
-            current_published = shown.entry;
-            last_valid = shown.entry;
-        } else {
-            current_published.reset();
-        }
+        sync_published();
         return {};
     }
 };
@@ -779,7 +808,10 @@ Evaluator::Evaluator(Runtime& runtime, ObjectRoot graph, const Resources& resour
 Evaluator::~Evaluator() = default;
 
 Result<void> Evaluator::evaluate(bool record_timings) {
-    return impl_->evaluate(record_timings);
+    auto result = impl_->evaluate(record_timings);
+    if (!result)
+        impl_->current_published.reset();
+    return result;
 }
 
 const Geometry* Evaluator::output() const noexcept {

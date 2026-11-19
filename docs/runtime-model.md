@@ -225,7 +225,7 @@ C++ 生产者使用 `AFIELD(Label = "Position", Category = "Transform")`，规�
 
 ### 字段扩展元数据
 
-`FieldDefinition::metadata` 与 `FieldInfo::metadata` 是拥有型字符串键值列表。键由至少两段 ASCII 标识符以点分隔组成（每段首字符为字母或下划线，其后可带数字）；值为解码后的有效 UTF-8，允许空值、控制字符和内嵌零字节，按完整长度保存。发布按键排序、拒绝同字段重复键；输入销毁及 `TypeInfo` 复制不使文本悬空。继承复制保留原 `FieldId` 和元数据，隐藏字段不进入公开目录。
+`TypeDefinition::metadata` / `TypeInfo::metadata`、`FieldDefinition::metadata` / `FieldInfo::metadata` 以及方法参数 `parameter_metadata` 均为拥有型字符串键值列表（`MetadataList`）。键由至少两段 ASCII 标识符以点分隔组成（每段首字符为字母或下划线，其后可带数字）；值为解码后的有效 UTF-8，允许空值、控制字符和内嵌零字节，按完整长度保存。发布按键排序、拒绝同一载体上的重复键；输入销毁及 `TypeInfo` 复制不使文本悬空。继承字段的复制保留原 `FieldId` 和字段元数据，隐藏字段不进入公开目录；类型自身的 `TypeInfo::metadata` 不合并到派生类型，消费者按需沿 `base` 链查询。同一描述型对象类型上的可调用 `methods` 与契约声明 `described_methods` 之间同样检查成员重名；`TypeInfo::described_methods` 只保存首次注册时冻结的契约方法声明，兼容热更新增或改参数名的可执行入口以代码宿主（`source::Program::entries()`）为准。
 
 Runtime 只拥有和校验载体，不解释消费者的命名空间、绑定对象或算法。元数据不增加实例字段、不改变存储布局、不写入场景格式，但属于不可变的类型定义，进入 Source 发布依赖快照。Source 类字段的 Meta 内容变化要求重建上下文，排序和格式空白变化不要求重建；原生定义仍通过重新构建和注册建立。原生与源码语法分别见[字段 Meta](reflection.md#字段-meta)和[原生派生类](../LANGUAGE.md#项目快照与原生派生类)。
 

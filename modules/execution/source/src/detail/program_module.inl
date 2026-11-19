@@ -82,8 +82,26 @@ Scalar zero_leaf(std::string_view type) {
     return std::uint32_t{};
 }
 
-// Published classes keep their layout, defaults and methods; new unattributed methods other than process may follow.
-bool keeps_class(const language::ClassDeclaration& published, const language::ClassDeclaration& updated) {
+bool is_contract_method(const Runtime& runtime, std::string_view base_name, std::string_view method_name) {
+    const auto base = runtime.find_type(base_name);
+    if (!base || language::editor_reserved(base_name))
+        return false;
+    for (std::optional<TypeId> current = *base; current;) {
+        const auto info = runtime.describe(*current);
+        if (!info)
+            break;
+        for (const auto& [key, value] : (*info)->metadata)
+            if (key == "source.contract_method" && value == method_name)
+                return true;
+        current = (*info)->base;
+    }
+    return false;
+}
+
+// Published classes keep their layout, defaults and methods; new unattributed methods other than
+// ancestor-declared contract methods may follow, and unattributed non-contract parameter names may change.
+bool keeps_class(const Runtime& runtime, const language::ClassDeclaration& published,
+                 const language::ClassDeclaration& updated) {
     if (published.base != updated.base || published.fields.size() != updated.fields.size())
         return false;
     for (std::size_t i = 0; i < published.fields.size(); ++i)
@@ -92,21 +110,22 @@ bool keeps_class(const language::ClassDeclaration& published, const language::Cl
     for (const auto& method : published.methods) {
         const auto found = std::ranges::find(updated.methods, method.name, &language::ClassMethod::name);
         if (found == updated.methods.end() || found->signature != method.signature ||
-            found->method_parameters.size() != method.method_parameters.size())
+            found->parameters.size() != method.parameters.size())
             return false;
-        for (std::size_t p = 0; p < method.method_parameters.size(); ++p) {
-            if (found->method_parameters[p].metadata != method.method_parameters[p].metadata)
+        const bool contract = is_contract_method(runtime, published.base, method.name);
+        for (std::size_t p = 0; p < method.parameters.size(); ++p) {
+            if (found->parameters[p].metadata != method.parameters[p].metadata)
                 return false;
-            if ((method.name == "process" || !method.method_parameters[p].metadata.empty()) &&
-                found->method_parameters[p].name != method.method_parameters[p].name)
+            if ((contract || !method.parameters[p].metadata.empty()) &&
+                found->parameters[p].name != method.parameters[p].name)
                 return false;
         }
     }
     for (const auto& method : updated.methods) {
         const auto prior = std::ranges::find(published.methods, method.name, &language::ClassMethod::name);
         if (prior == published.methods.end() &&
-            (method.name == "process" ||
-             std::ranges::any_of(method.method_parameters, [](const auto& p) { return !p.metadata.empty(); })))
+            (is_contract_method(runtime, updated.base, method.name) ||
+             std::ranges::any_of(method.parameters, [](const auto& p) { return !p.metadata.empty(); })))
             return false;
     }
     return true;
@@ -347,10 +366,10 @@ Result<DescribedMethodDefinition> class_method(const SourceSnapshot& snapshot, c
         ATELIER_TRY_BIND(resolved, resolve_type(method.result_type, method.position, true));
         result.signature.result = ValueDefinition{std::move(*resolved)};
     }
-    result.signature.parameters.reserve(method.method_parameters.size());
-    result.parameter_names.reserve(method.method_parameters.size());
-    result.parameter_metadata.reserve(method.method_parameters.size());
-    for (const auto& parameter : method.method_parameters) {
+    result.signature.parameters.reserve(method.parameters.size());
+    result.parameter_names.reserve(method.parameters.size());
+    result.parameter_metadata.reserve(method.parameters.size());
+    for (const auto& parameter : method.parameters) {
         ATELIER_TRY_BIND(resolved, resolve_type(parameter.type, parameter.position, false));
         result.signature.parameters.push_back({ValueDefinition{std::move(*resolved)}, parameter.passing});
         result.parameter_names.push_back(parameter.name);
@@ -471,7 +490,7 @@ Result<Program::Request> Program::request(SourceSnapshot snapshot, CompileOption
         for (auto& method : cls.methods) {
             canonical_type_name(method.result_type.name);
             method.signature = method.result_type.name + ":" + std::to_string(method.result_type.array_depth) + "(";
-            for (auto& parameter : method.method_parameters) {
+            for (auto& parameter : method.parameters) {
                 canonical_type_name(parameter.type.name);
                 method.signature += (parameter.passing == ParameterPassing::read_only ? "const " : "") +
                                     parameter.type.name + ":" + std::to_string(parameter.type.array_depth) +
@@ -529,7 +548,7 @@ Result<Program::Request> Program::request(SourceSnapshot snapshot, CompileOption
         }
         for (const auto& cls : published->source.classes) {
             const auto* found = find_named(module.source.classes, cls.name);
-            if (!found || !keeps_class(cls, *found))
+            if (!found || !keeps_class(runtime, cls, *found))
                 return fail(
                     {ErrorCode::rebuild_required,
                      "Published source class layout or method signature changed; rebuild the Runtime context: " +
@@ -543,6 +562,12 @@ Result<Program::Request> Program::request(SourceSnapshot snapshot, CompileOption
     if (published)
         std::erase_if(*definitions,
                       [&](const auto& definition) { return find_named(published->value_types, definition.name); });
+    struct KeptClass {
+        TypeId id;
+
+        std::vector<DescribedMethodDefinition> methods;
+    };
+    std::vector<KeptClass> kept_classes;
     for (const auto& cls : module.source.classes) {
         if (std::ranges::any_of(current_binding->values, [&](const auto& value) {
                 return value.math && cls.name == math::short_name(value.math);
@@ -568,6 +593,14 @@ Result<Program::Request> Program::request(SourceSnapshot snapshot, CompileOption
                 return fail(declared.error());
             fields.push_back(std::move(*declared));
         }
+        std::vector<DescribedMethodDefinition> methods;
+        methods.reserve(cls.methods.size());
+        for (const auto& method : cls.methods) {
+            auto declared = class_method(input, cls, method, module.value_types, *current_binding, runtime);
+            if (!declared)
+                return fail(declared.error());
+            methods.push_back(std::move(*declared));
+        }
         const auto* kept = published ? find_named(published->source.classes, cls.name) : nullptr;
         if (kept) {
             const auto& before =
@@ -578,36 +611,43 @@ Result<Program::Request> Program::request(SourceSnapshot snapshot, CompileOption
                                  "Published source class field changed its default, range, presentation or Meta; "
                                  "rebuild the Runtime context: " +
                                      cls.name + "." + fields[i].name});
+            const auto existing = runtime.find_type(cls.name);
+            if (!existing)
+                return fail(
+                    source_error(input, cls.file, cls.position, "Source class has no prepared Runtime layout."));
+            kept_classes.push_back({*existing, std::move(methods)});
         } else {
-            for (const auto& method : cls.methods) {
-                auto declared = class_method(input, cls, method, module.value_types, *current_binding, runtime);
-                if (!declared)
-                    return fail(declared.error());
-                definition.described_methods.push_back(std::move(*declared));
-            }
+            definition.described_methods = std::move(methods);
             definition.fields = fields;
             definitions->push_back(std::move(definition));
         }
         module.class_fields.push_back(std::move(fields));
     }
+    const auto map_member_error = [&](const Error& error) -> Error {
+        // Runtime member rules end with `Class.member` or `Class.member hides ...`; report them at that member.
+        for (const auto& cls : module.source.classes) {
+            for (const auto& field : cls.fields)
+                if (error.message.ends_with(": " + cls.name + "." + field.name) ||
+                    error.message.contains(": " + cls.name + "." + field.name + " hides "))
+                    return source_error(input, cls.file, field.position, error.message, error.code);
+            for (const auto& method : cls.methods)
+                if (error.message.ends_with(": " + cls.name + "." + method.name) ||
+                    error.message.contains(": " + cls.name + "." + method.name + " hides "))
+                    return source_error(input, cls.file, method.position, error.message, error.code);
+        }
+        return error;
+    };
     if (!definitions->empty()) {
         auto publication = atelier::detail::TypePublication::prepare(runtime, std::move(*definitions));
-        if (!publication) {
-            // Runtime member rules end with `Class.member` or `Class.member hides ...`; report them at that member.
-            const auto& error = publication.error();
-            for (const auto& cls : module.source.classes) {
-                for (const auto& field : cls.fields)
-                    if (error.message.ends_with(": " + cls.name + "." + field.name) ||
-                        error.message.contains(": " + cls.name + "." + field.name + " hides "))
-                        return fail(source_error(input, cls.file, field.position, error.message, error.code));
-                for (const auto& method : cls.methods)
-                    if (error.message.ends_with(": " + cls.name + "." + method.name) ||
-                        error.message.contains(": " + cls.name + "." + method.name + " hides "))
-                        return fail(source_error(input, cls.file, method.position, error.message, error.code));
-            }
-            return fail(error);
-        }
+        if (!publication)
+            return fail(map_member_error(publication.error()));
         request->type_publication_ = *publication;
+    }
+    for (auto& item : kept_classes) {
+        auto checked = atelier::detail::TypePublication::validate_methods(runtime, item.id, std::move(item.methods),
+                                                                          request->type_publication_.get());
+        if (!checked)
+            return fail(map_member_error(checked.error()));
     }
     const auto catalog =
         request->type_publication_ ? request->type_publication_->catalog() : std::span<const TypeInfo* const>{};
@@ -676,11 +716,15 @@ Result<Program::Request> Program::request(SourceSnapshot snapshot, CompileOption
         for (const auto& method : cls.methods) {
             unit.source.append(method.source);
             unit.names.push_back(method.name);
-            unit.parameter_names.push_back(method.parameters);
+            std::vector<std::string> names;
             std::vector<MetadataList> meta;
-            meta.reserve(method.method_parameters.size());
-            for (const auto& parameter : method.method_parameters)
+            names.reserve(method.parameters.size());
+            meta.reserve(method.parameters.size());
+            for (const auto& parameter : method.parameters) {
+                names.push_back(parameter.name);
                 meta.push_back(parameter.metadata);
+            }
+            unit.parameter_names.push_back(std::move(names));
             unit.parameter_metadata.push_back(std::move(meta));
         }
         module.units.push_back(std::move(unit));
