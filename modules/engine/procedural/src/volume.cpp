@@ -236,11 +236,19 @@ Result<Geometry> volume_scatter(const Geometry& surface, const VolumeScatterSett
         offsets[i + 1] = offsets[i] + count;
     }
     const auto candidates = offsets.back();
-    Bvh bvh;
+    Bvh owned_bvh;
+    std::shared_ptr<const Bvh> cached_bvh;
+    const Bvh* bvh = &owned_bvh;
     if (candidates) {
         timing::Scope building{phases::build};
-        ATELIER_TRY_BIND(built, Bvh::build(surface));
-        bvh = std::move(*built);
+        if (settings.cache_bvh) {
+            ATELIER_TRY_BIND(acquired, Bvh::acquire(surface));
+            cached_bvh = std::move(*acquired);
+            bvh = cached_bvh.get();
+        } else {
+            ATELIER_TRY_BIND(built, Bvh::build(surface));
+            owned_bvh = std::move(*built);
+        }
     }
     Array<Vector3> candidate_positions;
     candidate_positions.resize(candidates);
@@ -252,8 +260,8 @@ Result<Geometry> volume_scatter(const Geometry& surface, const VolumeScatterSett
         timing::Scope classification{phases::classify};
         const auto classified = tasks::parallel_for(
             {0, blocks.size()},
-            [&bvh, triangles = std::span<const Triangle>{*triangles}, coordinate, cell_seed, origin = settings.origin,
-             h, candidates, offsets = std::span<const std::uint32_t>{offsets}, positions = candidate_positions.view(),
+            [bvh, triangles = std::span<const Triangle>{*triangles}, coordinate, cell_seed, origin = settings.origin, h,
+             candidates, offsets = std::span<const std::uint32_t>{offsets}, positions = candidate_positions.view(),
              states = std::span{states},
              blocks = std::span{blocks}](tasks::Range range) noexcept -> std::expected<void, tasks::Failure> {
                 // A scheduler body may contain several fixed-size logical blocks.
@@ -279,7 +287,7 @@ Result<Geometry> volume_scatter(const Geometry& surface, const VolumeScatterSett
                             if (!math::is_finite(p))
                                 return std::unexpected(tasks::Failure{1, i}); // Unrepresentable candidate position.
                             positions[i] = p;
-                            states[i] = classify(bvh, triangles, p, result);
+                            states[i] = classify(*bvh, triangles, p, result);
                             result.retained += states[i] == Classification::retained;
                         }
                         ++cell;

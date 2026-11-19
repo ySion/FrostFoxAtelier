@@ -3,6 +3,7 @@
 #include "foundation/array.hpp"
 #include "procedural/geometry.hpp"
 
+#include <memory>
 #include <optional>
 
 namespace atelier::procedural {
@@ -26,6 +27,9 @@ class Bvh {
 public:
     // Fails for polylines or polygons without a simple, convex, resolvable plane.
     static Result<Bvh> build(const Geometry& surface);
+
+    // Reuses a bounded cached hierarchy while `surface` retains the same immutable point and topology columns.
+    static Result<std::shared_ptr<const Bvh>> acquire(const Geometry& surface);
 
     // The nearest triangle along a unit direction within max_distance.
     [[nodiscard]] std::optional<Hit> ray(math::Vector3 origin, math::Vector3 direction,

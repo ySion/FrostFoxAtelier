@@ -2187,7 +2187,7 @@ Result<std::vector<TypeId>> Runtime::register_types(std::vector<TypeDefinition> 
     return result;
 }
 
-Result<void> FieldDefinition::normalize_metadata() {
+Result<void> normalize_metadata_entries(MetadataList& metadata) {
     for (const auto& [key, value] : metadata) {
         bool start = true;
         bool valid = key.find('.') != std::string::npos;
@@ -2211,6 +2211,10 @@ Result<void> FieldDefinition::normalize_metadata() {
         if (metadata[i - 1].first == metadata[i].first)
             return failure(ErrorCode::invalid_definition, "Duplicate Meta key: " + metadata[i].first);
     return {};
+}
+
+Result<void> FieldDefinition::normalize_metadata() {
+    return normalize_metadata_entries(metadata);
 }
 
 Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vector<TypeDefinition> definitions) {
@@ -2263,6 +2267,10 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
             if (!normalize_description(method.description))
                 return invalid_description(definition.name + "." + method.name);
         }
+        for (auto& method : definition.described_methods) {
+            if (!StringView{method.name}.is_valid_utf8())
+                return failure(ErrorCode::invalid_definition, "Method names require valid UTF-8.");
+        }
         const auto same_name = [&](const auto& type) { return type->info.name == definition.name; };
         if (impl_->named(definition.name) || std::ranges::any_of(staged, same_name)) {
             return failure(ErrorCode::duplicate_name, "Type already defined: " + definition.name);
@@ -2277,7 +2285,8 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
                 return failure(ErrorCode::invalid_definition, "C++ representation already has a type definition.");
             }
         }
-        if (definition.fields.size() >= no_slot || definition.methods.size() >= no_slot) {
+        if (definition.fields.size() >= no_slot || definition.methods.size() >= no_slot ||
+            definition.described_methods.size() >= no_slot) {
             return failure(ErrorCode::capacity_exceeded, "Member identity space exhausted.");
         }
         const bool is_native = native.size || native.alignment || native.representation || native.construct ||
@@ -2291,7 +2300,12 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
             return failure(ErrorCode::invalid_definition,
                            "Native layout requires valid size, alignment and lifecycle operations.");
         }
-        if (definition.kind != TypeKind::object && !definition.methods.empty()) {
+        if (is_native && !definition.described_methods.empty()) {
+            return failure(ErrorCode::invalid_definition,
+                           "Native types publish executable methods, not described method declarations.");
+        }
+        if (definition.kind != TypeKind::object &&
+            (!definition.methods.empty() || !definition.described_methods.empty())) {
             return failure(ErrorCode::invalid_definition, "This slice supports methods on object types only.");
         }
         if (definition.kind != TypeKind::object && (definition.base || native.base_address || native.base_offset)) {
@@ -2454,6 +2468,17 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
                     return failure(ErrorCode::duplicate_name, "Duplicate method: " + name);
             }
         }
+        for (std::size_t method_index = 0; method_index != definition.described_methods.size(); ++method_index) {
+            const auto& name = definition.described_methods[method_index].name;
+            for (const auto& field : definition.fields) {
+                if (field.name == name)
+                    return failure(ErrorCode::duplicate_name, "Duplicate member: " + type.info.name + "." + name);
+            }
+            for (std::size_t previous = 0; previous != method_index; ++previous) {
+                if (definition.described_methods[previous].name == name)
+                    return failure(ErrorCode::duplicate_name, "Duplicate method: " + type.info.name + "." + name);
+            }
+        }
         for (auto& field : definition.fields) {
             type.member_names.push_back(field.name);
             const auto* target = resolve(field.value.type);
@@ -2595,6 +2620,32 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
                                             field.native_address, id, std::move(field.metadata),
                                             std::move(field.default_text), field.transient, field.read_only});
         }
+        const auto validate_parameters = [&](const std::string& method_name, std::size_t count,
+                                             std::vector<std::string>& names,
+                                             std::vector<MetadataList>& metadata) -> Result<void> {
+            const std::string qualified = type.info.name + "." + method_name;
+            if (!names.empty() && names.size() != count)
+                return failure(ErrorCode::invalid_definition,
+                               "Parameter names must match the parameters of method: " + qualified);
+            for (std::size_t i = 0; i < names.size(); ++i) {
+                if (!StringView{names[i]}.is_valid_utf8())
+                    return failure(ErrorCode::invalid_definition, "Parameter names require valid UTF-8: " + qualified);
+                if (!names[i].empty() && std::find(names.begin(), names.begin() + i, names[i]) != names.begin() + i)
+                    return failure(ErrorCode::duplicate_name,
+                                   "Duplicate parameter " + names[i] + " in method: " + qualified);
+            }
+            names.resize(count);
+            if (!metadata.empty() && metadata.size() != count)
+                return failure(ErrorCode::invalid_definition,
+                               "Parameter metadata must match the parameters of method: " + qualified);
+            for (auto& entries : metadata) {
+                const auto normalized = normalize_metadata_entries(entries);
+                if (!normalized)
+                    return failure(normalized.error().code, normalized.error().message + ": " + qualified);
+            }
+            metadata.resize(count);
+            return {};
+        };
         type.info.methods.reserve(definition.methods.size());
         for (auto& method : definition.methods) {
             type.member_names.push_back(method.name);
@@ -2603,17 +2654,8 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
             }
             ATELIER_TRY_BIND(signature, impl_->resolve_signature(method.signature, id, staged));
             auto& names = method.parameter_names;
-            if (!names.empty() && names.size() != signature->parameters.size())
-                return failure(ErrorCode::invalid_definition,
-                               "Parameter names must match the parameters of method: " + method.name);
-            for (std::size_t i = 0; i < names.size(); ++i) {
-                if (!StringView{names[i]}.is_valid_utf8())
-                    return failure(ErrorCode::invalid_definition, "Parameter names require valid UTF-8.");
-                if (!names[i].empty() && std::find(names.begin(), names.begin() + i, names[i]) != names.begin() + i)
-                    return failure(ErrorCode::duplicate_name,
-                                   "Duplicate parameter " + names[i] + " in method: " + method.name);
-            }
-            names.resize(signature->parameters.size());
+            auto& metadata = method.parameter_metadata;
+            ATELIER_TRY(validate_parameters(method.name, signature->parameters.size(), names, metadata));
             auto& defaults = method.parameter_defaults;
             if (!defaults.empty() && defaults.size() != signature->parameters.size())
                 return failure(ErrorCode::invalid_definition,
@@ -2670,7 +2712,22 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
             type.info.methods.push_back({MethodId{id, static_cast<std::uint32_t>(type.info.methods.size())},
                                          std::move(method.name), std::move(*signature), method.preserves_borrows,
                                          std::move(method.description), std::move(names), method.native_entry,
-                                         std::move(defaults)});
+                                         std::move(defaults), std::move(metadata)});
+        }
+        type.info.described_methods.reserve(definition.described_methods.size());
+        for (auto& method : definition.described_methods) {
+            type.member_names.push_back(method.name);
+            if (method.name.empty())
+                return failure(ErrorCode::invalid_definition, "Described methods require a name.");
+            auto signature = impl_->resolve_signature(method.signature, id, staged);
+            if (!signature)
+                return failure(signature.error().code,
+                               signature.error().message + ": " + type.info.name + "." + method.name);
+            auto& names = method.parameter_names;
+            auto& metadata = method.parameter_metadata;
+            ATELIER_TRY(validate_parameters(method.name, signature->parameters.size(), names, metadata));
+            type.info.described_methods.push_back(
+                {std::move(method.name), std::move(*signature), std::move(names), std::move(metadata)});
         }
     }
 
@@ -3014,6 +3071,13 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
         auto& type = *staged[i];
         for (const auto& method : definitions[i].methods) {
             ATELIER_TRY_BIND(signature, impl_->resolve_signature(method.signature, type.info.id, staged));
+        }
+        for (std::size_t m = 0; m < definitions[i].described_methods.size(); ++m) {
+            auto signature =
+                impl_->resolve_signature(definitions[i].described_methods[m].signature, type.info.id, staged);
+            if (!signature)
+                return failure(signature.error().code, signature.error().message + ": " + type.info.name + "." +
+                                                           type.info.described_methods[m].name);
         }
         const std::size_t inherited = type.base ? type.base->info.methods.size() : 0;
         type.compiled_methods.reserve(definitions[i].methods.size());

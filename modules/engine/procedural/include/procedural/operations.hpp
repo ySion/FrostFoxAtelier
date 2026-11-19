@@ -6,6 +6,8 @@
 
 namespace atelier::procedural {
 
+class Bvh;
+
 // One primitive per triangle with vertex N and uv and primitive material (the mesh's
 // slot index). Bitwise-equal positions weld into one point.
 [[nodiscard]] Geometry import_mesh(const geometry::Mesh& mesh);
@@ -61,6 +63,8 @@ struct VolumeScatterSettings {
     math::Vector3 origin{};
 
     float cell_size{1};
+
+    bool cache_bvh{}; // Reuse `Bvh::acquire(surface)` across evaluations of an unchanged shell.
 };
 
 // Closed oriented manifold shells, with positive aggregate signed volume. Fixed grid
@@ -84,6 +88,22 @@ Result<void> transform(Geometry& geometry, math::Vector3 translate, math::Quater
 // their points, detail everything); an element touching none takes the default. Sum and
 // average need float or float vector columns. Instances only exchange with detail.
 Result<void> promote(Geometry& geometry, StringView name, Layer to, Reduce reduce);
+
+struct RaySettings {
+    RayMode mode{RayMode::project};
+
+    math::Vector3 direction{0.f, -1.f, 0.f};
+
+    float max_distance{1000.f};
+
+    bool normal{};
+
+    bool remove_misses{};
+};
+
+// Projects points onto convex polygon surfaces along `direction` or to the closest point,
+// writing hitprim, hittri, hitprimuv and hitdist (-1 on miss). Reuses `Bvh::acquire(surface)`.
+Result<Geometry> ray(const Geometry& points, const Geometry& surface, const RaySettings& settings = {});
 
 // Instances at points: transform S * O * T with S = scale * pscale, T from P, O the
 // unit orient when it exists, else the alignment taking +Z to N and +Y toward up (the

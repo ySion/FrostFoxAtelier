@@ -7,6 +7,7 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <mutex>
 
 namespace atelier::procedural {
 namespace {
@@ -309,6 +310,76 @@ Result<Bvh> Bvh::build(const Geometry& surface) {
     for (const auto i : order)
         result.triangles_.add(triangles[i]);
     return result;
+}
+
+Result<std::shared_ptr<const Bvh>> Bvh::acquire(const Geometry& surface) {
+    struct CachedSurface {
+        SharedArray<Vector3> positions;
+
+        SharedArray<std::uint32_t> vertex_points;
+
+        SharedArray<std::uint32_t> offsets;
+
+        SharedArray<PrimitiveKind> kinds;
+
+        std::uint32_t uniform{};
+
+        std::uint32_t primitives{};
+
+        std::shared_ptr<const Bvh> bvh;
+
+        bool matches(const SharedArray<Vector3>& p, const SharedArray<std::uint32_t>& vp,
+                     const SharedArray<std::uint32_t>& off, const SharedArray<PrimitiveKind>& k, std::uint32_t u,
+                     std::uint32_t prims) const noexcept {
+            return uniform == u && primitives == prims && same(positions, p) && same(vertex_points, vp) &&
+                   same(offsets, off) && same(kinds, k);
+        }
+    };
+    constexpr std::size_t capacity = 16;
+    static std::mutex mutex;
+    static InlineArray<CachedSurface, capacity> cache;
+
+    const auto& positions = std::get<SharedArray<Vector3>>(surface.attributes_.front().data);
+    const auto& vertex_points = surface.vertex_points_;
+    const auto& offsets = surface.offsets_;
+    const auto& kinds = surface.kinds_;
+    const auto uniform = surface.uniform_;
+    const auto primitives = surface.primitives_;
+
+    {
+        const std::scoped_lock lock{mutex};
+        for (std::size_t i = 0; i < cache.size(); ++i) {
+            if (!cache[i].matches(positions, vertex_points, offsets, kinds, uniform, primitives))
+                continue;
+            auto found = cache[i].bvh;
+            if (i != 0) {
+                auto promoted = std::move(cache[i]);
+                for (std::size_t j = i; j > 0; --j)
+                    cache[j] = std::move(cache[j - 1]);
+                cache[0] = std::move(promoted);
+            }
+            return found;
+        }
+    }
+
+    auto built = build(surface);
+    if (!built)
+        return std::unexpected(built.error());
+    auto shared = std::make_shared<const Bvh>(std::move(*built));
+
+    {
+        const std::scoped_lock lock{mutex};
+        for (std::size_t i = 0; i < cache.size(); ++i)
+            if (cache[i].matches(positions, vertex_points, offsets, kinds, uniform, primitives))
+                return cache[i].bvh;
+        if (cache.size() == capacity)
+            cache.pop();
+        cache.add({});
+        for (std::size_t j = cache.size() - 1; j > 0; --j)
+            cache[j] = std::move(cache[j - 1]);
+        cache[0] = {positions, vertex_points, offsets, kinds, uniform, primitives, shared};
+    }
+    return shared;
 }
 
 std::optional<Hit> Bvh::ray(Vector3 origin_float, Vector3 direction_float, float max_distance) const noexcept {

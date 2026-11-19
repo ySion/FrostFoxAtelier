@@ -51,7 +51,7 @@ void bool true false float double uint int const if else while for break continu
 
 已定型值严格匹配类型：bool 与数值、整数与浮点、float 与 double、不同数学精度、不同枚举、枚举与底层整数不隐式转换。`int(value)`、`uint(value)`、`float(value)`、`double(value)` 显式转换 float/double/int/uint；bool 和枚举不参与数值转换，也没有通用类型转换语法。非负十进制整数常量默认保持既有 uint 语义；int 上下文可将所有叶字面量均不超过 2147483647 的未定型纯整数常量表达式定型为 int。具有显式类型的模块常量保留声明类型，不参与这一定型便利规则。
 
-数值转整数先向零截断，再检查目标范围；NaN、无穷或截断结果不可表示时报告执行错误。`int → uint` 拒绝负数，`uint → int` 拒绝大于 2147483647 的值，不按位重解释；同类型转换保持值。整数转浮点允许舍入，float 转 double 精确扩展，double 转 float 可舍入为同符号零或无穷，并保留 NaN 的数值语义。
+数值转整数先向零截断，再检查目标范围；NaN、无穷或截断结果不可表示时报告执行错误。`int → uint` 拒绝负数，`uint → int` 拒绝大于 2147483647 的值，不按位重解释；需要 32 位二补码或 IEEE-754 位模式重解释时使用 `math.as_uint(value)` 与 `math.as_int(value)`（见[数学值规范](docs/math.md#源码运算)）；同类型转换保持值。整数转浮点允许舍入，float 转 double 精确扩展，double 转 float 可舍入为同符号零或无穷，并保留 NaN 的数值语义。
 
 ### 参数传递与枚举
 
@@ -169,7 +169,7 @@ uint process(combat.DamageInfo& damage) {
 
 宿主向同一个 `Program` 提交 `SourceSnapshot{name, version, files}`。每个文件拥有项目相对路径、版本和完整正文；路径用 `/`，拒绝绝对路径、重复路径、空段及 `.`/`..` 段。文件身份区分大小写，文件系统扫描与路径归一化由宿主负责。快照允许空文件集合，最多 1024 个文件、1024 个类、32 MiB 正文。空集合发布无类型、无入口的模块；后续版本可以兼容地追加类型和入口。诊断包含原文件路径、版本、字节偏移和行列。
 
-路径以 `engine/` 开头的文件是引擎源码，路径必须是 `engine/<模块>/<文件>`，模块是 core、math、editor 以外的标识符。快照里出现的模块就是引擎命名空间：`engine/<模块>/` 下的文件声明的每个名字（class、struct、enum、函数、常量）都必须在 `<模块>.` 下，其他文件不能在任何引擎命名空间下声明名字。规则只管声明出来的名字，不管基类、字段类型和调用：工程里可以写 `class mygame.Foo : procedural.PointNode`，也可以调用 `procedural.hash(x)`。规则在 `Program::request` 收集快照时检查，与宿主无关；引擎文件的来源见[项目快照](docs/source-function-modules.md#项目快照与多个公开入口)。
+路径以 `engine/` 开头的文件是引擎源码，路径必须是 `engine/<模块>/<文件>`，模块是 core、math、editor 以外的标识符。快照里出现的模块就是引擎命名空间：`engine/<模块>/` 下的文件声明的每个名字（class、struct、enum、函数、常量）都必须在 `<模块>.` 下，其他文件不能在任何引擎命名空间下声明名字。规则只管声明出来的名字，不管基类、字段类型和调用：工程里可以写 `class mygame.Foo : procedural.Node`，也可以调用 `procedural.hash(x)`。规则在 `Program::request` 收集快照时检查，与宿主无关；引擎文件的来源见[项目快照](docs/source-function-modules.md#项目快照与多个公开入口)。
 
 ```cpp
 // Source/Math.source
@@ -188,11 +188,11 @@ class game.Move : world.Component {
 - 字段初始化器给出整值默认值，没有初始化器时取零值（枚举为底层值 0）。标量写不依赖其他声明的常量标量表达式，按现有数值和显式转换规则检查；向量写 `vector3()` 或每个分量一个常量的 `vector3(c0, c1, c2)`，分量精确匹配向量精度，例如 double 向量的分量写 `0.0d`；普通枚举写 `geo.Axis::z`，`Flags` 枚举还可写由已声明位项构成的常量按位表达式（如 `ns.Mask::A | ns.Mask::B`）。每个浮点叶必须有限：`0.0f / 0.0f`、`1e30f * 1e30f` 这类折叠结果在该字段报错。原生方法若发布了尾部标量/枚举默认实参（`MethodInfo::parameter_defaults`），源码调用可省略对应的尾部实参并在编译期静态补齐。
 - String 字段默认构造为空，或用一个普通字符串字面量，例如 `String attribute = "pscale";`；转义沿既有 String 规则解码，UTF-8 在发布前校验。`String` 与规范名、无初始化器与 `""` 分别等价。它是同一 Runtime 中的真实拥有型字段，支持宿主反射读写、保存与重建，**不开放源码 `self.attribute` 的读取、写入或借用**，也不新增 class 构造函数或 Source 类间继承。宿主需要文本时先复制到自己的 String，不能让对象内部地址跨 invoke 存续。
 - 字段前可写属性，名称与 AFIELD 相同：`[Min = 0.0, Max = 2.0, LockMin, HardMax = 10.0, Label = "Amount", Category = "Noise", DESC = "说明"] float amount = 0.5f;`。边界是字段叶类型的有限常量（向量按分量、int/uint 用整数），只能用于 int/uint/float/double 和向量字段；`LockMin/LockMax` 把同侧 UI 边界同时作硬边界，要求同侧 `Min/Max` 且不能再写 `HardMin/HardMax`。`Label`、`Category` 是不含控制字符的字符串字面量，`DESC` 允许 `\n`、`\t`。重复或未知属性、写在方法前的属性在编译期报错；大小顺序、UI 边界落在硬边界内、默认值满足硬边界由 Runtime 发布检查，错误同样指到该字段。规则见[字段范围与硬边界](docs/reflection.md#字段范围与硬边界)。
-- 字段还可写 `[Meta("procedural.bind", "evaluate.values"), Meta("procedural.layer", "point")] String attribute = "pscale";`。Meta 可重复声明不同键，每项恰好两个字符串字面量；同键重复拒绝。载体和原生字段一致，格式、拥有关系及排序见[Runtime 字段扩展元数据](docs/runtime-model.md#字段扩展元数据)。语言和 Runtime 不解释这些业务键。
-- 类方法为同步函数。生命周期入口签名固定为 `void begin()`、`void tick(float)`、`void post_physics_tick(float)`、`void late_tick(float)`、`void end()`，三个帧阶段方法都接收整帧 dt；缺省方法不导出。其余同步方法使用既有值与借用规则。源码通过 `self` 访问当前类及继承成员；同类方法和全局助手按普通函数语法调用。全局函数与该类方法名不能冲突，暂不支持跨类方法调用或动态分派。
+- 字段还可写 `[RunOver]`（发布 `{"procedural.role", "run_over"}`）或通用 `[Meta("custom.key", "value")]`。Meta 可重复声明不同键，每项恰好两个字符串字面量；同键重复拒绝。载体和原生字段一致，格式、拥有关系及排序见[Runtime 字段扩展元数据](docs/runtime-model.md#字段扩展元数据)。语言和 Runtime 不解释业务键语义。
+- 类方法为同步函数，方法声明全部连同参数名与参数属性发布到 `TypeInfo::described_methods`。生命周期入口签名固定为 `void begin()`、`void tick(float)`、`void post_physics_tick(float)`、`void late_tick(float)`、`void end()`，三个帧阶段方法都接收整帧 dt；缺省方法不导出。类方法的形参前可写一个 procedural 参数属性：`[Port]`，或 `[In]`、`[Out]`、`[InOut]`、`[Group]`（可带字面列名 `[In("id", Optional)]`、字段绑定 `[Out(From = "attribute")]`、显式层 `Layer = "point"`，括号内外均支持逗号分隔选项；`Optional` 仅限 `In`，字面名与 `From` 互斥，`Port` 无选项；非类方法禁止写参数属性）。其余同步方法使用既有值与借用规则。源码通过 `self` 访问当前类及继承成员；同类方法和全局助手按普通函数语法调用。全局函数与该类方法名不能冲突，暂不支持跨类方法调用或动态分派。
 - 工程文件里的全局函数导出为函数名，类方法导出为 `完整类名.方法名`；引擎文件里的全局函数只供源码调用，不是入口。类方法始终要求当前类视图的活接收者，即使方法体为空。宿主从 `Program::entries/describe/entry/pin` 取得签名和代码。
 - 整份快照共用类型发布事务。编译单元有三种：工程单元包含工程文件的全部顶层声明，导出其中的函数；每个有方法的 class 一个单元；每个引擎模块一个只做检查、不生成代码的单元。单元只编译自身文本，加上它的文本按名字（含带点的全名及其每个前缀）直接或间接写到的顶层声明；局部变量与声明同名时也算写到。每个顶层声明都在所属单元里通过语义检查，无方法类不生成占位函数。同一单元的入口和助手共用一个 LLVM 模块；输入未变的单元不再检查和编译，沿用已发布的机器码。一个单元失败会保留整个旧版本。
-- 创建 Runtime 对象后仍可发布。已发布模块只增长：方法体可兼容修改，入口声明顺序可调整；新增 struct/enum、class、全局函数，以及已有或新增 class 上的方法（含生命周期入口）随新版本兼容发布。删除或改名已发布的类型、字段、函数或方法，已有类型的字段顺序/类型、基类，已有字段的默认值、范围、`Label`、`Category`、`DESC` 或 Meta 内容变化，以及已有入口的签名变化返回 `rebuild_required`，由宿主重建上下文；只改属性空白、Meta 顺序、String 别名或等价文本默认值仍可兼容发布，不人为更换代码身份。参数名不属于签名，只改参数名可以兼容发布；`Program::entries()` 按顺序给出每个入口的参数名，以及只在该入口所在编译单元的输入变化时才更换的 `code`：改一个没有单元写到的引擎函数不更换任何 code，Runtime 新增值类型则更换全部 code；`Program::revision()` 统计成功发布次数，见[项目快照](docs/source-function-modules.md#项目快照与多个公开入口)。浮点默认值按位表示比较，区分正负零；文本按解码后的完整字节比较。重建使用新上下文和新身份，保存的属性恢复原值，未保存字段使用新默认，不迁移活动对象或帧。
+- 创建 Runtime 对象后仍可发布。已发布模块只增长：方法体可兼容修改，入口声明顺序可调整；新增 struct/enum、class、全局函数，以及已有或新增 class 上的普通无参数属性方法（含生命周期入口，不含 `process`）随新版本兼容发布。删除或改名已发布的类型、字段、函数或方法，已有类型的字段顺序/类型、基类，已有字段的默认值、范围、`Label`、`Category`、`DESC` 或 Meta 内容变化，已有入口的签名或参数属性变化，以及在已发布 class 上新增 `process`、新增带属性参数的方法或修改 `process`/带属性参数的参数名，均返回 `rebuild_required`，由宿主重建上下文；只改属性空白、Meta 顺序、String 别名或等价文本默认值仍可兼容发布，不人为更换代码身份。普通方法与全局函数的参数名不属于签名，只改参数名可以兼容发布；`Program::entries()` 按顺序给出每个入口的参数名、参数元数据，以及只在该入口所在编译单元的输入变化时才更换的 `code`：改一个没有单元写到的引擎函数不更换任何 code，Runtime 新增值类型则更换全部 code；`Program::revision()` 统计成功发布次数，见[项目快照](docs/source-function-modules.md#项目快照与多个公开入口)。浮点默认值按位表示比较，区分正负零；文本按解码后的完整字节比较。重建使用新上下文和新身份，保存的属性恢复原值，未保存字段使用新默认，不迁移活动对象或帧。
 - `Entry` 跟随整个项目的新版本，`Lease` 固定旧入口及其模块。共享助手沿实际调用链传播借用保护，无关入口使用 String/Array 不会增加普通入口的借用限制；两者都不在执行区间内推进 GC。所有操作仍在 Runtime 线程执行。
 
 快照不能与同一 Program 的单源码入口模式混用。项目入口暂不支持 async；单源码请求继续支持既有 async/yield。宿主 API 和发布顺序见[项目快照](docs/source-function-modules.md#项目快照与多个公开入口)。
@@ -211,7 +211,7 @@ class_field    = [ "[", field_attribute, { ",", field_attribute }, "]" ],
                  ( scalar_type | math_type | "String" | qualified_name ), identifier, [ "=", expression ], ";" ;
                  (* 数学类型限 float/double 向量；其余具名类型限枚举及已注册 String，String 默认值限单个字面量 *)
 field_attribute = ( "Min" | "Max" | "HardMin" | "HardMax" ), "=", expression | "LockMin" | "LockMax"
-                | "Transient" | "ReadOnly"
+                | "Transient" | "ReadOnly" | "RunOver"
                 | ( "Label" | "Category" | "DESC" ), "=", string_literal
                 | "Meta", "(", string_literal, ",", string_literal, ")" ;
 struct_declaration = "struct", qualified_name, "{", { field_declaration }, "}", ";" ;
@@ -228,9 +228,15 @@ plain_record_type = qualified_name ; (* Runtime plain_value 且 can_own 的普�
 math_name      = qualified_name ; (* 数学构造名称或已支持的 math.* 操作 *)
 qualified_enum_name = qualified_name ; (* 必须解析为已注册枚举 *)
 parameters     = parameter, { ",", parameter } ;
-parameter      = ( ( scalar_type | math_type | plain_record_type ), [ "&" ]
+parameter      = [ "[", param_attribute, "]" ], (* 参数属性仅限 class 方法 *)
+                 ( ( scalar_type | math_type | plain_record_type ), [ "&" ]
                  | "const", ( scalar_type | math_type | plain_record_type ), "&"
                  | aggregate_type, "&" | "const", aggregate_type, "&" ), identifier ;
+param_attribute = "Port"
+                | ( "In" | "Out" | "InOut" | "Group" ),
+                  [ "(", param_options, ")" ], [ ",", param_options ] ;
+param_options  = param_option, { ",", param_option } ;
+param_option   = string_literal | "Optional" | ( "From" | "Layer" ), "=", string_literal ;
 aggregate_type    = qualified_name | "String" | "Array", "<", ( scalar_type | aggregate_type ), ">" ;
                  (* 须解析为已准备或发布的原生/描述型记录、原生数组/String；String 参数只允许 const 引用 *)
 qualified_name = identifier, { ".", identifier } ;

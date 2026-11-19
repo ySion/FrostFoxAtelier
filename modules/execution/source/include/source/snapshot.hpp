@@ -29,6 +29,8 @@ struct EntryInfo {
     std::vector<std::string> parameter_names;
 
     std::uint64_t code{};
+
+    std::vector<MetadataList> parameter_metadata{};
 };
 
 // FNV-1a 64; never 0.

@@ -1,10 +1,15 @@
 #include "procedural/evaluator.hpp"
+#include "detail/node_plan.hpp"
+#include "foundation/inline_array.hpp"
+#include "foundation/map.hpp"
 #include "foundation/result.hpp"
 #include "source/program.hpp"
 
+#include <algorithm>
+#include <array>
 #include <list>
 #include <string>
-#include <unordered_map>
+#include <tuple>
 #include <utility>
 
 namespace atelier::procedural {
@@ -19,68 +24,65 @@ void append(std::string& key, const T& value) {
     key.append(reinterpret_cast<const char*>(&value), sizeof value);
 }
 
-// A PointNode type's evaluate. Only Source entries are rebound on publication.
-struct Code {
-    enum class Use : std::uint8_t { context, read, write, group };
-
-    struct Parameter {
-        Use use;
-
-        String name; // Parameter name; also the fallback point column.
-
-        std::size_t column{}; // ColumnData alternative.
-
-        TypeId type;
-
-        FieldId selector; // Optional String field selecting this column at call time.
-
-        Layer layer = Layer::point;
-    };
-
-    MethodId method; // Native target; null for Source.
-
-    TypeId string_type;
-
+struct SourceKernel {
     source::Program::Entry entry;
 
-    std::uint64_t identity{}; // Changes whenever the compiled code may behave differently.
-
-    bool context{};
-
-    std::vector<Parameter> parameters;
+    std::uint64_t identity{};
 };
 
 template <std::size_t I>
 using ColumnArray = Array<typename std::variant_alternative_t<I, ColumnData>::Value>;
 
+template <std::size_t... I>
+using EmptyColumnsTuple = std::tuple<ColumnArray<I>...>;
+
+const auto& empty_columns() noexcept {
+    static const auto instances = []<std::size_t... I>(std::index_sequence<I...>) {
+        return EmptyColumnsTuple<I...>{};
+    }(std::make_index_sequence<detail::column_type_count>{});
+    return instances;
+}
+
 template <std::size_t I>
-Result<const void*> read_column(const Geometry& geometry, StringView name, Layer layer) {
+Result<const void*> read_column(const Geometry& geometry, StringView name, Layer layer, bool optional) {
     using T = typename ColumnArray<I>::Value;
     ATELIER_TRY_BIND(column, geometry.read<T>(name, layer));
-    if (!*column)
+    if (!*column) {
+        if (optional)
+            return &std::get<I>(empty_columns());
         return failure("The input has no attribute " + std::string{name.std_view()} + ".");
+    }
     return *column;
 }
 
 template <std::size_t I>
-Result<void*> write_column(Geometry& geometry, StringView name, Layer layer) {
+Result<void*> inout_column(Geometry& geometry, StringView name, Layer layer) {
+    using T = typename ColumnArray<I>::Value;
+    ATELIER_TRY_BIND(column, geometry.write<T>(name, layer));
+    return *column;
+}
+
+template <std::size_t I>
+Result<void*> out_column(Geometry& geometry, StringView name, Layer layer) {
     using T = typename ColumnArray<I>::Value;
     ATELIER_TRY_BIND(column, geometry.add<T>(name, layer));
     return *column;
 }
 
 struct ColumnAccess {
-    Result<const void*> (*read)(const Geometry&, StringView, Layer);
+    Result<const void*> (*read)(const Geometry&, StringView, Layer, bool);
 
-    Result<void*> (*write)(Geometry&, StringView, Layer);
+    Result<void*> (*inout)(Geometry&, StringView, Layer);
+
+    Result<void*> (*out)(Geometry&, StringView, Layer);
 };
 
 template <std::size_t... I>
 constexpr std::array<ColumnAccess, sizeof...(I)> column_accessors(std::index_sequence<I...>) {
-    return {ColumnAccess{&read_column<I>, &write_column<I>}...};
+    return {ColumnAccess{&read_column<I>, &inout_column<I>, &out_column<I>}...};
 }
 
-constexpr auto accessors = column_accessors(std::make_index_sequence<std::variant_size_v<ColumnData>>{});
+constexpr auto accessors = column_accessors(std::make_index_sequence<detail::column_type_count>{});
 
 // One evaluation of one node. Keys are exact byte strings, so equal keys mean equal contents.
 struct Entry {
@@ -105,9 +107,9 @@ struct Entry {
 
 struct Evaluator::Impl {
     struct State {
-        TypeId type;
+        TypeId type{};
 
-        const Ports* ports{};
+        const detail::NodePlan* plan{};
 
         std::string local; // Type and public field contents.
 
@@ -121,7 +123,9 @@ struct Evaluator::Impl {
 
         std::uint64_t failed_revision{};
 
-        Error failure;
+        Error failure{};
+
+        std::optional<Error> root_error; // Root-cause diagnostic carried to blocked downstream nodes.
 
         NodeStatus status;
     };
@@ -138,6 +142,10 @@ struct Evaluator::Impl {
 
     const Geometry empty;
 
+    TypeId string_type{};
+
+    FieldId graph_seed_field{};
+
     std::optional<std::uint64_t> cursor;
 
     std::uint64_t revision{};
@@ -148,16 +156,13 @@ struct Evaluator::Impl {
 
     Contents members;
 
-    std::unordered_map<ObjectId, State> nodes;
+    Map<ObjectId, State> nodes;
 
-    std::unordered_map<TypeId, Result<Ports>> types;
+    Map<TypeId, std::unique_ptr<const Result<detail::NodePlan>>> plans;
 
-    std::unordered_map<TypeId, Result<Code>> kernels; // Native and Source PointNode types.
+    Map<TypeId, Result<SourceKernel>> source_kernels;
 
-    std::array<TypeId, std::variant_size_v<ColumnData>>
-        columns{}; // Array type per column alternative; null for String.
-
-    std::unordered_map<std::string, std::shared_ptr<Entry>> cache;
+    Map<std::string, std::shared_ptr<Entry>> cache;
 
     std::list<Entry*> recent; // Most recently used first.
 
@@ -165,22 +170,32 @@ struct Evaluator::Impl {
 
     std::uint64_t serials{};
 
-    std::shared_ptr<Entry> published;
+    std::shared_ptr<Entry> current_published;
+
+    std::shared_ptr<Entry> last_valid;
 
     Impl(Runtime& owner, ObjectRoot root, const Resources& host, const source::Program* code, std::size_t bytes)
         : runtime(owner), graph(std::move(root)), resources(host), program(code), budget(bytes),
           code_revision(code ? code->revision() : 0) {
-        [&]<std::size_t... I>(std::index_sequence<I...>) {
-            ((columns[I] = [&]() -> TypeId {
-                 if constexpr (std::same_as<typename ColumnArray<I>::Value, String>)
-                     return {};
-                 else {
-                     auto type = runtime.native_type<ColumnArray<I>>();
-                     return type ? *type : TypeId{};
-                 }
-             }()),
-             ...);
-        }(std::make_index_sequence<std::variant_size_v<ColumnData>>{});
+        if (auto str = runtime.native_type<String>())
+            string_type = *str;
+        if (auto graph_type = runtime.native_type<Graph>())
+            if (auto found = runtime.find_field(*graph_type, "seed"))
+                graph_seed_field = *found;
+    }
+
+    Result<SourceKernel> bind_source(TypeId type) const {
+        ATELIER_TRY_BIND(info, runtime.describe(type));
+        const auto& name = (*info)->name;
+        if (!program)
+            return error(ErrorCode::unsupported_operation, "Source node " + name + " needs a program.");
+        const auto entries = program->entries();
+        const std::string entry_name = name + ".process";
+        const auto found = std::ranges::find(entries, entry_name, &source::EntryInfo::name);
+        if (found == entries.end())
+            return error(ErrorCode::invalid_definition, name + " has no published process entry.");
+        ATELIER_TRY_BIND(entry, program->entry(found->name));
+        return SourceKernel{std::move(*entry), found->code};
     }
 
     Result<void> append_value(std::string& key, const TypeInfo& info, const void* data) const {
@@ -190,12 +205,15 @@ struct Evaluator::Impl {
         }
         if (info.kind == TypeKind::record && info.plain_value) {
             const std::span source{static_cast<const std::byte*>(data), info.size};
-            // Ordinary records have padding; only their declared public fields are parameters.
-            // Runtime resolves native member pointers too, so no published offset is required.
             for (const auto& field : info.fields) {
                 auto child = runtime.describe(field.value.type);
                 if (!child)
                     return std::unexpected(child.error());
+                if (field.offset) {
+                    if (auto added = append_value(key, **child, source.data() + *field.offset); !added)
+                        return added;
+                    continue;
+                }
                 atelier::detail::ValueStorage storage;
                 const std::span bytes{storage.prepare((*child)->size, (*child)->alignment), (*child)->size};
                 if (auto made = runtime.initialize_value(field.value.type, bytes); !made)
@@ -263,18 +281,17 @@ struct Evaluator::Impl {
     }
 
     Result<void> read(ObjectId id, State& state) {
-        if (!state.ports)
+        if (!state.plan)
             return std::unexpected(*state.fault);
         auto info = runtime.describe(state.type);
         if (!info)
             return std::unexpected(info.error());
-        // Validate the declaration before field keying can reject an invalid selector's value type.
-        if (state.ports->evaluate == MethodId{}) {
-            auto bound = kernels.find(state.type);
-            if (bound == kernels.end())
-                bound = kernels.emplace(state.type, bind(state.type)).first;
-            if (!bound->second)
-                return std::unexpected(bound->second.error());
+        if (!state.plan->native) {
+            auto* bound = source_kernels.find(state.type);
+            if (!bound)
+                bound = source_kernels.try_emplace(state.type, bind_source(state.type)).value;
+            if (!*bound)
+                return std::unexpected(bound->error());
         }
         std::string local;
         append(local, *info); // Published TypeInfo addresses are stable identities for this Runtime.
@@ -307,13 +324,14 @@ struct Evaluator::Impl {
         entry.cached = false;
         cached_bytes -= entry.bytes;
         recent.erase(entry.recent);
-        cache.erase(cache.find(entry.key)); // May release the entry; touch nothing after this.
+        const std::string key = entry.key;
+        (void)cache.remove(key); // May release the entry; touch nothing after this.
     }
 
     void store(const std::shared_ptr<Entry>& entry) {
-        if (auto old = cache.find(entry->key); old != cache.end())
-            uncache(*old->second);
-        cache.emplace(entry->key, entry);
+        if (auto* old = cache.find(entry->key))
+            uncache(**old);
+        cache.insert_or_assign(entry->key, entry);
         recent.push_front(entry.get());
         entry->recent = recent.begin();
         entry->cached = true;
@@ -322,239 +340,172 @@ struct Evaluator::Impl {
             uncache(*recent.back());
     }
 
-    // Both producers supply the same signature and field Meta. The plan owns no instance names
-    // or column addresses; Source publication invalidates its entry and parameter mapping.
-    Result<Code> bind(TypeId type) const {
-        ATELIER_TRY_BIND(info, runtime.describe(type));
-        const auto& name = (*info)->name;
-        Code code;
-        const FunctionSignature* signature;
-        std::span<const std::string> names;
-        if ((*info)->native_storage) {
-            const auto method = std::ranges::find((*info)->methods, "evaluate", &MethodInfo::name);
-            if (method == (*info)->methods.end())
-                return error(ErrorCode::invalid_definition, name + " has no evaluate method.");
-            if (!method->signature.receiver || !method->signature.receiver->read_only)
-                return error(ErrorCode::invalid_definition, name + ".evaluate must be const.");
-            code.method = method->id;
-            signature = &method->signature;
-            names = method->parameter_names;
-        } else {
-            if (!program)
-                return error(ErrorCode::unsupported_operation, "Source node " + name + " needs a program.");
-            const auto entries = program->entries();
-            const auto found = std::ranges::find(entries, name + ".evaluate", &source::EntryInfo::name);
-            if (found == entries.end())
-                return error(ErrorCode::invalid_definition, name + " has no evaluate method.");
-            ATELIER_TRY_BIND(entry, program->entry(found->name));
-            code.entry = std::move(*entry);
-            code.identity = found->code;
-            signature = &found->signature;
-            names = found->parameter_names;
-        }
-        if (signature->result || signature->execution != FunctionExecution::synchronous)
-            return error(ErrorCode::invalid_definition, name + ".evaluate must be synchronous without a result.");
-        // Borrowing makes evaluate a value region, where the compiler rejects writes to self.
-        if (signature->parameters.empty())
-            return error(ErrorCode::invalid_definition, name + ".evaluate must borrow the context or a point column.");
-        ATELIER_TRY_BIND(context, runtime.native_type<Context>());
-        for (std::size_t i = 0; i < signature->parameters.size(); ++i) {
-            const auto& parameter = signature->parameters[i];
-            const auto& parameter_name = names[i];
-            if (parameter.form == ValueForm::inline_value && parameter.passing != ParameterPassing::value) {
-                const bool read = parameter.passing == ParameterPassing::read_only;
-                if (parameter.type == *context && read && !code.context) {
-                    code.context = true;
-                    code.parameters.push_back({Code::Use::context, {}, 0, parameter.type, {}});
-                    continue;
-                }
-                if (const auto column = std::ranges::find(columns, parameter.type); column != columns.end()) {
-                    auto owned_name = String::from_utf8(StringView{parameter_name});
-                    if (!owned_name || parameter_name.empty())
-                        return error(ErrorCode::invalid_definition,
-                                     name + ".evaluate column parameters need nonempty UTF-8 names.");
-                    code.parameters.push_back({read ? Code::Use::read : Code::Use::write,
-                                               std::move(*owned_name),
-                                               static_cast<std::size_t>(column - columns.begin()),
-                                               parameter.type,
-                                               {}});
-                    continue;
-                }
-            }
-            return error(ErrorCode::invalid_definition,
-                         name + ".evaluate parameter " + parameter_name +
-                             " is not a const procedural.Context& or a borrowed point column.");
-        }
-        ATELIER_TRY_BIND(string_type, runtime.native_type<String>());
-        code.string_type = *string_type;
-        constexpr std::array<std::string_view, 5> layers{"point", "vertex", "primitive", "detail", "instance"};
-        for (const auto& field : (*info)->fields) {
-            std::string_view binding;
-            std::string_view layer;
-            std::string_view kind;
-            bool declared = false;
-            for (const auto& [key, value] : field.metadata) {
-                if (!key.starts_with("procedural."))
-                    continue;
-                declared = true;
-                if (key == "procedural.bind")
-                    binding = value;
-                else if (key == "procedural.layer")
-                    layer = value;
-                else if (key == "procedural.kind")
-                    kind = value;
-                else
-                    return error(ErrorCode::invalid_definition, name + "." + field.name + ": unknown Meta " + key);
-            }
-            if (!declared)
-                continue;
-            const auto at = std::ranges::find(layers, layer);
-            if (field.value.form != ValueForm::inline_value || field.value.type != *string_type ||
-                !binding.starts_with("evaluate.") || at == layers.end() || (kind != "attribute" && kind != "group"))
-                return error(ErrorCode::invalid_definition, name + "." + field.name + ": invalid column binding.");
-            const auto target = binding.substr(std::string_view{"evaluate."}.size());
-            const auto parameter = std::ranges::find_if(code.parameters, [&](const auto& p) {
-                return p.use != Code::Use::context && p.name.view().std_view() == target;
-            });
-            if (parameter == code.parameters.end() || parameter->selector != FieldId{})
-                return error(ErrorCode::invalid_definition,
-                             name + "." + field.name + ": binding target is not unique.");
-            if (kind == "group") {
-                if (parameter->use != Code::Use::read || parameter->type != columns[0])
-                    return error(ErrorCode::invalid_definition,
-                                 name + "." + field.name + ": a group requires const Array<bool>&.");
-                parameter->use = Code::Use::group;
-            }
-            parameter->selector = field.id;
-            parameter->layer = static_cast<Layer>(at - layers.begin());
-        }
-        return code;
-    }
-
-    Result<void> run_columns(ObjectId id, const State& state, const Code& code, Entry& entry) const {
-        const Geometry* input = &empty;
-        for (const auto& connection : state.inputs)
-            input = &nodes.at(connection.from).entry->outputs[connection.output];
-        std::vector<String> names(code.parameters.size());
-        for (std::size_t i = 0; i < code.parameters.size(); ++i) {
-            const auto& parameter = code.parameters[i];
-            if (parameter.selector != FieldId{}) {
-                ATELIER_TRY(runtime.read(id, parameter.selector, ValueOutput{code.string_type, &names[i]}));
-            } else {
-                names[i] = parameter.name;
-            }
-            if (parameter.use == Code::Use::write)
-                for (std::size_t j = 0; j < i; ++j)
-                    if (code.parameters[j].use == Code::Use::write && names[j] == names[i])
-                        return failure("Multiple writable parameters select " +
-                                       std::string{names[i].view().std_view()} + ".");
-        }
+    Result<void> execute_node(ObjectId id, const State& state, const SourceKernel* source_kernel, Entry& entry) {
+        const auto& plan = *state.plan;
         Context context;
         context.seed_ = seed;
         context.resources_ = &resources;
         context.dependencies_ = &entry.dependencies;
-        std::array<Array<bool>, 5> all;
-        std::vector<const void*> values(code.parameters.size());
-        std::vector<void*> writable(code.parameters.size());
-        // Reads must resolve from the old input, even if an earlier write parameter would
-        // create their column. Empty groups are call-owned masks, never output attributes.
-        for (std::size_t i = 0; i < code.parameters.size(); ++i) {
-            const auto& parameter = code.parameters[i];
-            if (parameter.use == Code::Use::context) {
+
+        const auto upstream_geometry = [&](const Input& connection) -> const Geometry& {
+            return nodes.find(connection.from)->entry->outputs[connection.output];
+        };
+        const auto single_input = [&](std::uint32_t port) -> const Geometry& {
+            const Geometry* value = &empty;
+            for (const auto& connection : state.inputs)
+                if (connection.input == port)
+                    value = &upstream_geometry(connection);
+            return *value;
+        };
+
+        Layer dynamic_layer = Layer::point;
+        if (plan.run_over_field != FieldId{}) {
+            ATELIER_TRY_BIND(layer_val, runtime.read(id, plan.run_over_field));
+            const auto bits = std::get<EnumValue>(*layer_val).bits;
+            if (bits > static_cast<std::uint32_t>(Layer::instance))
+                return failure("Invalid procedural.Layer value.");
+            dynamic_layer = static_cast<Layer>(bits);
+        }
+
+        const std::size_t arg_count = plan.arguments.size();
+        InlineArray<String, 16> resolved_names;
+        InlineArray<Layer, 16> resolved_layers;
+        InlineArray<const void*, 16> values;
+        InlineArray<void*, 16> writable;
+        resolved_names.resize(arg_count);
+        resolved_layers.resize(arg_count, Layer::point);
+        values.resize(arg_count, nullptr);
+        writable.resize(arg_count, nullptr);
+
+        std::size_t multi_port_count = 0;
+        for (const auto& arg : plan.arguments)
+            if (arg.kind == detail::ArgKind::port_inputs)
+                ++multi_port_count;
+        std::vector<Geometries> multi_inputs;
+        multi_inputs.reserve(multi_port_count); // Borrowed below; must not reallocate.
+
+        bool wrote_positions = false;
+        if (plan.uses_primary_stream) {
+            if (string_type == TypeId{})
+                if (auto str = runtime.native_type<String>())
+                    string_type = *str;
+            for (std::size_t i = 0; i < arg_count; ++i) {
+                const auto& arg = plan.arguments[i];
+                if (arg.kind != detail::ArgKind::column_in && arg.kind != detail::ArgKind::column_inout &&
+                    arg.kind != detail::ArgKind::column_out && arg.kind != detail::ArgKind::column_group)
+                    continue;
+                resolved_layers[i] = arg.fixed_layer ? *arg.fixed_layer : dynamic_layer;
+                if (arg.name_selector != FieldId{}) {
+                    ATELIER_TRY(runtime.read(id, arg.name_selector, ValueOutput{string_type, &resolved_names[i]}));
+                } else {
+                    resolved_names[i] = arg.static_name;
+                }
+                if (arg.kind != detail::ArgKind::column_group || !resolved_names[i].empty()) {
+                    ATELIER_TRY(Geometry::admit_name(resolved_names[i].view()));
+                }
+                if (arg.kind == detail::ArgKind::column_inout || arg.kind == detail::ArgKind::column_out) {
+                    for (std::size_t j = 0; j < i; ++j) {
+                        const auto pk = plan.arguments[j].kind;
+                        if ((pk == detail::ArgKind::column_inout || pk == detail::ArgKind::column_out) &&
+                            resolved_names[j] == resolved_names[i])
+                            return failure("Multiple writable parameters select " +
+                                           std::string{resolved_names[i].view().std_view()} + ".");
+                    }
+                }
+            }
+
+            const Geometry& primary_in = single_input(0);
+            // Resolve all read-only column/group borrows against the immutable input snapshot first.
+            for (std::size_t i = 0; i < arg_count; ++i) {
+                const auto& arg = plan.arguments[i];
+                if (arg.kind == detail::ArgKind::column_group) {
+                    if (resolved_names[i].empty()) {
+                        values[i] = &std::get<0>(empty_columns());
+                    } else {
+                        ATELIER_TRY_BIND(column,
+                                         accessors[0].read(primary_in, resolved_names[i], resolved_layers[i], false));
+                        values[i] = *column;
+                    }
+                } else if (arg.kind == detail::ArgKind::column_in) {
+                    ATELIER_TRY_BIND(column, accessors[arg.column_variant].read(primary_in, resolved_names[i],
+                                                                                resolved_layers[i], arg.optional));
+                    values[i] = *column;
+                }
+            }
+
+            Geometry& primary_out = entry.outputs[0];
+            primary_out = primary_in;
+            // Create all missing Out columns before taking any writable column borrows.
+            for (std::size_t i = 0; i < arg_count; ++i) {
+                const auto& arg = plan.arguments[i];
+                if (arg.kind == detail::ArgKind::column_out) {
+                    ATELIER_TRY(accessors[arg.column_variant].out(primary_out, resolved_names[i], resolved_layers[i]));
+                }
+            }
+            for (std::size_t i = 0; i < arg_count; ++i) {
+                const auto& arg = plan.arguments[i];
+                if (arg.kind == detail::ArgKind::column_inout || arg.kind == detail::ArgKind::column_out) {
+                    ATELIER_TRY_BIND(column, accessors[arg.column_variant].inout(primary_out, resolved_names[i],
+                                                                                 resolved_layers[i]));
+                    values[i] = writable[i] = *column;
+                    wrote_positions |= resolved_names[i] == "P";
+                }
+            }
+        }
+
+        for (std::size_t i = 0; i < arg_count; ++i) {
+            const auto& arg = plan.arguments[i];
+            switch (arg.kind) {
+            case detail::ArgKind::context:
                 values[i] = &context;
-                continue;
+                break;
+            case detail::ArgKind::port_input:
+                values[i] = &single_input(arg.port_index);
+                break;
+            case detail::ArgKind::port_inputs: {
+                auto& list = multi_inputs.emplace_back();
+                for (const auto& connection : state.inputs)
+                    if (connection.input == arg.port_index)
+                        list.add(upstream_geometry(connection));
+                values[i] = &list;
+                break;
             }
-            if (parameter.use == Code::Use::write)
-                continue;
-            if (parameter.use == Code::Use::group && names[i].empty()) {
-                auto& mask = all[static_cast<std::size_t>(parameter.layer)];
-                if (mask.empty())
-                    mask.resize(input->count(parameter.layer), true);
-                values[i] = &mask;
-            } else {
-                ATELIER_TRY_BIND(column, accessors[parameter.column].read(*input, names[i], parameter.layer));
-                values[i] = *column;
+            case detail::ArgKind::port_output:
+                values[i] = writable[i] = &entry.outputs[arg.port_index];
+                break;
+            default:
+                break;
             }
         }
-        auto& output = entry.outputs.front();
-        output = *input;
-        for (std::size_t i = 0; i < code.parameters.size(); ++i) {
-            const auto& parameter = code.parameters[i];
-            if (parameter.use != Code::Use::write)
-                continue;
-            ATELIER_TRY_BIND(column, accessors[parameter.column].write(output, names[i], parameter.layer));
-            values[i] = writable[i] = *column;
+
+        InlineArray<Argument, 16> arguments;
+        arguments.reserve(arg_count);
+        for (std::size_t i = 0; i < arg_count; ++i)
+            arguments.add(Argument::borrow(plan.arguments[i].type, values[i], writable[i]));
+        if (plan.native) {
+            ATELIER_TRY(runtime.call(id, plan.method, arguments));
+        } else {
+            ATELIER_TRY(source_kernel->entry.invoke(id, arguments));
         }
-        // Array owners live in stable SharedArray blocks even when attributes grow. Do not
-        // use the prepared addresses until all additions/COW finish; no writes repeat a column.
-        std::vector<Argument> arguments;
-        arguments.reserve(code.parameters.size());
-        for (std::size_t i = 0; i < code.parameters.size(); ++i)
-            arguments.push_back(Argument::borrow(code.parameters[i].type, values[i], writable[i]));
-        if (code.method != MethodId{}) {
-            return runtime.call(id, code.method, arguments);
+        if (wrote_positions) {
+            for (const auto& position : entry.outputs[0].positions())
+                if (!math::is_finite(position))
+                    return error(ErrorCode::invocation_failed, "Point positions must be finite.");
         }
-        ATELIER_TRY(code.entry.invoke(id, arguments));
         return {};
     }
 
-    // Calls the native evaluate with its ports in parameter order.
-    Result<void> run_native(ObjectId id, const State& state, Entry& entry) {
-        Context context;
-        context.seed_ = seed;
-        context.resources_ = &resources;
-        context.dependencies_ = &entry.dependencies;
-        std::vector<Geometries> lists;
-        lists.reserve(state.ports->multiple.size()); // Borrowed below; must not move.
-        std::vector<Argument> arguments;
-        arguments.reserve(state.ports->parameters.size());
-        std::uint32_t input = 0;
-        std::uint32_t output = 0;
-        const auto upstream = [&](const Input& connection) -> const Geometry& {
-            return nodes.at(connection.from).entry->outputs[connection.output];
-        };
-        for (const auto slot : state.ports->parameters) {
-            switch (slot) {
-            case Slot::context:
-                arguments.push_back(Argument::borrow(std::as_const(context)));
-                break;
-            case Slot::input: {
-                const Geometry* value = &empty;
-                for (const auto& connection : state.inputs)
-                    if (connection.input == input)
-                        value = &upstream(connection);
-                arguments.push_back(Argument::borrow(*value));
-                ++input;
-                break;
-            }
-            case Slot::inputs: {
-                auto& list = lists.emplace_back();
-                for (const auto& connection : state.inputs)
-                    if (connection.input == input)
-                        list.add(upstream(connection));
-                arguments.push_back(Argument::borrow(std::as_const(list)));
-                ++input;
-                break;
-            }
-            case Slot::output:
-                arguments.push_back(Argument::borrow(entry.outputs[output++]));
-                break;
-            }
-        }
-        return runtime.call(id, state.ports->evaluate, arguments);
-    }
-
-    Result<std::shared_ptr<Entry>> run(ObjectId id, State& state, const Code* code, std::string key,
+    Result<std::shared_ptr<Entry>> run(ObjectId id, State& state, const SourceKernel* source_kernel, std::string key,
                                        bool record_timings) {
         auto entry = std::make_shared<Entry>();
         entry->key = std::move(key);
-        entry->outputs.resize(state.ports->outputs.size());
+        entry->outputs.resize(state.plan->ports.outputs.size());
         ++state.status.evaluations;
         state.status.time.reset();
         std::chrono::steady_clock::time_point start{};
         if (record_timings)
             start = std::chrono::steady_clock::now();
-        auto ran = code ? run_columns(id, state, *code, *entry) : run_native(id, state, *entry);
+        auto ran = execute_node(id, state, source_kernel, *entry);
         if (record_timings)
             state.status.time = std::chrono::steady_clock::now() - start;
         if (!ran)
@@ -569,25 +520,37 @@ struct Evaluator::Impl {
         return entry;
     }
 
+    std::string node_label(TypeId type) const {
+        if (auto info = runtime.describe(type))
+            return (*info)->name;
+        return "procedural.Node";
+    }
+
     void update(ObjectId id, State& state, bool record_timings) {
         if (state.fault) {
             state.status.error = state.fault;
+            state.root_error = Error{state.fault->code, node_label(state.type) + ": " + state.fault->message};
             return;
         }
         std::string key = state.local;
-        const Code* code{};
-        if (state.ports->evaluate == MethodId{}) {
-            code = &*kernels.at(state.type); // read() already validated the current plan.
-            append(key, code->identity);
-            if (code->context)
-                append(key, seed);
-        } else if (std::ranges::find(state.ports->parameters, Slot::context) != state.ports->parameters.end())
+        const SourceKernel* source_kernel{};
+        if (!state.plan->native) {
+            source_kernel = &**source_kernels.find(state.type); // read() already validated the current kernel.
+            append(key, source_kernel->identity);
+        }
+        if (state.plan->uses_context)
             append(key, seed);
         for (const auto& connection : state.inputs) {
-            const auto& upstream = nodes.at(connection.from);
+            const auto& upstream = *nodes.find(connection.from);
             if (upstream.status.error || !upstream.entry) {
-                state.status.error =
-                    Error{ErrorCode::invocation_failed, "Input " + std::to_string(connection.input) + " failed."};
+                const auto& port_name = state.plan->ports.inputs[connection.input];
+                const std::string_view cause = upstream.root_error ? std::string_view{upstream.root_error->message}
+                                               : upstream.status.error
+                                                   ? std::string_view{upstream.status.error->message}
+                                                   : "upstream failed";
+                state.root_error = upstream.root_error ? upstream.root_error : upstream.status.error;
+                state.status.error = Error{ErrorCode::invocation_failed,
+                                           "Input '" + port_name + "' failed (" + std::string{cause} + ")."};
                 return;
             }
             append(key, connection.input);
@@ -597,35 +560,40 @@ struct Evaluator::Impl {
         if (state.entry && state.entry->key == key && current(*state.entry)) {
             touch(*state.entry);
             state.status.error.reset();
+            state.root_error.reset();
             return;
         }
         if (key == state.failed && revision == state.failed_revision) {
             state.status.error = state.failure;
+            state.root_error = Error{state.failure.code, node_label(state.type) + ": " + state.failure.message};
             return;
         }
-        if (const auto found = cache.find(key); found != cache.end() && current(*found->second)) {
-            state.entry = found->second;
+        if (auto* found = cache.find(key); found && current(**found)) {
+            state.entry = *found;
             touch(*state.entry);
             ++state.status.cache_hits;
             state.status.error.reset();
+            state.root_error.reset();
             return;
         }
-        auto evaluated = run(id, state, code, key, record_timings);
+        auto evaluated = run(id, state, source_kernel, key, record_timings);
         if (!evaluated) {
             state.entry.reset();
             state.failed = std::move(key);
             state.failed_revision = revision;
             state.failure = evaluated.error();
             state.status.error = evaluated.error();
+            state.root_error = Error{state.failure.code, node_label(state.type) + ": " + state.failure.message};
             return;
         }
         state.entry = std::move(*evaluated);
         state.failed.clear();
         state.status.error.reset();
+        state.root_error.reset();
     }
 
     // Upstream first, ending at the display node.
-    Result<std::vector<ObjectId>> order(ObjectId display, const std::unordered_map<ObjectId, State>& changed) const {
+    Result<std::vector<ObjectId>> order(ObjectId display, const Map<ObjectId, State>& changed) const {
         std::vector<ObjectId> result;
         if (display == ObjectId{})
             return result;
@@ -634,23 +602,23 @@ struct Evaluator::Impl {
 
             std::size_t next;
         };
-        std::unordered_map<ObjectId, bool> finished; // false while on the path.
+        Map<ObjectId, bool> finished; // false while on the path.
         std::vector<Frame> path{{display, 0}};
-        finished.emplace(display, false);
+        finished.insert_or_assign(display, false);
         while (!path.empty()) {
             const auto id = path.back().id;
-            const auto found = changed.find(id);
-            const auto& state = found != changed.end() ? found->second : nodes.at(id);
+            const auto* staged = changed.find(id);
+            const auto& state = staged ? *staged : *nodes.find(id);
             if (path.back().next < state.inputs.size()) {
                 const auto from = state.inputs[path.back().next++].from;
-                const auto [mark, added] = finished.emplace(from, false);
-                if (added)
+                const auto mark = finished.try_emplace(from, false);
+                if (mark.inserted)
                     path.push_back({from, 0});
-                else if (!mark->second)
+                else if (!*mark.value)
                     return error(ErrorCode::argument_mismatch, "The graph has a cycle.");
                 continue;
             }
-            finished[id] = true;
+            finished.insert_or_assign(id, true);
             result.push_back(id);
             path.pop_back();
         }
@@ -672,13 +640,16 @@ struct Evaluator::Impl {
             auto listed = contents(runtime, id);
             if (!listed)
                 return std::unexpected(listed.error());
-            auto type = runtime.native_type<Graph>();
-            if (!type)
-                return std::unexpected(type.error());
-            auto field = runtime.find_field(*type, "seed");
-            if (!field)
-                return std::unexpected(field.error());
-            auto value = runtime.read(id, *field);
+            if (graph_seed_field == FieldId{}) {
+                auto type = runtime.native_type<Graph>();
+                if (!type)
+                    return std::unexpected(type.error());
+                auto field = runtime.find_field(*type, "seed");
+                if (!field)
+                    return std::unexpected(field.error());
+                graph_seed_field = *field;
+            }
+            auto value = runtime.read(id, graph_seed_field);
             if (!value)
                 return std::unexpected(value.error());
             next_seed = std::get<std::uint32_t>(*value);
@@ -687,48 +658,48 @@ struct Evaluator::Impl {
         }
         const auto& next_members = refreshed ? *refreshed : members;
         // Stage only reread nodes; untouched states and their local strings stay in place.
-        std::unordered_map<ObjectId, State> candidate;
+        Map<ObjectId, State> candidate;
         const bool membership_changed = refreshed && !std::ranges::equal(members.nodes(), refreshed->nodes());
         for (const auto node : next_members.nodes()) {
-            const auto prior = nodes.find(node);
-            const bool added = prior == nodes.end();
+            const auto* prior = nodes.find(node);
+            const bool added = prior == nullptr;
             const bool reread = added || !cursor || runtime.changed_since(node, *cursor);
             dirty = dirty || reread;
-            const bool stale_code =
-                republished && !added && prior->second.ports && prior->second.ports->evaluate == MethodId{};
+            const bool stale_code = republished && !added && prior->plan && !prior->plan->native;
             if (!reread && membership_changed)
-                ATELIER_TRY(next_members.check(prior->second.inputs));
+                ATELIER_TRY(next_members.check(prior->inputs));
             if (!reread && !stale_code)
                 continue;
-            auto& state = candidate.try_emplace(node).first->second;
+            auto& state = *candidate.try_emplace(node).value;
             if (!reread) {
-                state.type = prior->second.type;
-                state.ports = prior->second.ports;
-                state.inputs = prior->second.inputs;
+                state.type = prior->type;
+                state.plan = prior->plan;
+                state.inputs = prior->inputs;
             }
-            // TypeInfo is immutable; changed objects may name a different published type.
-            // Metadata belongs to the existing type cache; a bad declaration remains a node fault.
             if (reread) {
-                state.ports = nullptr;
+                state.plan = nullptr;
                 state.fault.reset();
                 auto type = runtime.type_of(node);
                 if (!type) {
                     state.fault = type.error();
                     if (!added) {
-                        state.inputs = prior->second.inputs;
+                        state.inputs = prior->inputs;
                         if (membership_changed)
                             ATELIER_TRY(next_members.check(state.inputs));
                     }
                     continue;
                 }
                 state.type = *type;
-                auto known = types.find(*type);
-                if (known == types.end())
-                    known = types.emplace(*type, procedural::ports(runtime, *type)).first;
-                if (known->second)
-                    state.ports = &*known->second;
+                auto* known = plans.find(*type);
+                if (!known)
+                    known = plans
+                                .try_emplace(*type, std::make_unique<const Result<detail::NodePlan>>(
+                                                        detail::inspect_node(runtime, *type)))
+                                .value;
+                if (**known)
+                    state.plan = &***known;
                 else
-                    state.fault = known->second.error();
+                    state.fault = (**known).error();
                 ATELIER_TRY_BIND(into, inputs(runtime, next_members, node));
                 state.inputs = std::move(*into);
             }
@@ -738,40 +709,44 @@ struct Evaluator::Impl {
             return {};
         }
         const auto current = [&](ObjectId node) -> const State& {
-            const auto found = candidate.find(node);
-            return found != candidate.end() ? found->second : nodes.at(node);
+            const auto* found = candidate.find(node);
+            return found ? *found : *nodes.find(node);
         };
         for (const auto node : next_members.nodes())
             for (const auto& connection : current(node).inputs) {
                 const auto& source = current(connection.from);
-                if (source.ports && connection.output >= source.ports->outputs.size())
+                if (source.plan && connection.output >= source.plan->ports.outputs.size())
                     return error(ErrorCode::argument_mismatch, "Graph input names a missing output port.");
             }
         ATELIER_TRY_BIND(sequence, order(next_members.display(), candidate));
-        if (republished) {
-            std::erase_if(kernels, [](const auto& item) { return !item.second || item.second->method == MethodId{}; });
-        }
+        if (republished)
+            source_kernels.clear();
         bool changed = !cursor || refreshed || republished || resources.revision() != revision;
-        for (auto& [node, state] : candidate) {
-            const bool added = !nodes.contains(node);
+        for (auto [node, state] : candidate) {
+            const auto* prior = nodes.find(node);
             auto read = this->read(node, state);
             state.fault.reset();
             if (!read)
                 state.fault = read.error();
-            changed = changed || added || !read || state.local != nodes.at(node).local ||
-                      state.inputs != nodes.at(node).inputs;
+            changed = changed || !prior || !read || state.local != prior->local || state.inputs != prior->inputs;
         }
-        for (auto& [node, state] : candidate) {
-            auto& target = nodes[node];
+        for (auto [node, state] : candidate) {
+            auto& target = *nodes.try_emplace(node).value;
             target.type = state.type;
-            target.ports = state.ports;
+            target.plan = state.plan;
             target.inputs = std::move(state.inputs);
             target.fault = std::move(state.fault);
             if (!target.fault)
                 target.local = std::move(state.local);
         }
-        if (membership_changed)
-            std::erase_if(nodes, [&](const auto& node) { return !next_members.contains(node.first); });
+        if (membership_changed) {
+            std::vector<ObjectId> removed;
+            for (const auto& [node, _] : nodes)
+                if (!next_members.contains(node))
+                    removed.push_back(node);
+            for (const auto node : removed)
+                (void)nodes.remove(node);
+        }
         if (refreshed)
             members = std::move(*refreshed);
         seed = next_seed;
@@ -782,12 +757,17 @@ struct Evaluator::Impl {
             return {};
         revision = resources.revision();
         for (const auto node : *sequence)
-            update(node, nodes.at(node), record_timings);
+            update(node, *nodes.find(node), record_timings);
         const auto display = members.display();
-        if (display == ObjectId{})
-            published.reset();
-        else if (const auto& shown = nodes.at(display); !shown.status.error && shown.entry)
-            published = shown.entry;
+        if (display == ObjectId{}) {
+            current_published.reset();
+            last_valid.reset();
+        } else if (const auto& shown = *nodes.find(display); !shown.status.error && shown.entry) {
+            current_published = shown.entry;
+            last_valid = shown.entry;
+        } else {
+            current_published.reset();
+        }
         return {};
     }
 };
@@ -803,12 +783,16 @@ Result<void> Evaluator::evaluate(bool record_timings) {
 }
 
 const Geometry* Evaluator::output() const noexcept {
-    return impl_->published ? &impl_->published->outputs.front() : nullptr;
+    return impl_->current_published ? &impl_->current_published->outputs.front() : nullptr;
+}
+
+const Geometry* Evaluator::last_valid_output() const noexcept {
+    return impl_->last_valid ? &impl_->last_valid->outputs.front() : nullptr;
 }
 
 const NodeStatus* Evaluator::status(ObjectId node) const {
-    const auto found = impl_->nodes.find(node);
-    return found == impl_->nodes.end() ? nullptr : &found->second.status;
+    const auto* found = impl_->nodes.find(node);
+    return found ? &found->status : nullptr;
 }
 
 }

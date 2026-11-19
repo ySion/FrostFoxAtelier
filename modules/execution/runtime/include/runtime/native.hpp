@@ -419,6 +419,12 @@ public:
         return *this;
     }
 
+    // Applies to the most recently declared method; one metadata list per parameter.
+    NativeRegistration& parameter_metadata(std::vector<MetadataList> metadata) {
+        definition_.methods.back().parameter_metadata = std::move(metadata);
+        return *this;
+    }
+
     // Consumes the producer; validation belongs to Runtime, including batch lookup.
     [[nodiscard]] TypeDefinition build() { return std::move(definition_); }
 

@@ -1,7 +1,9 @@
-// Moves each point by a random offset in [-amount, amount) per axis, scaled per axis. The offset
-// comes from the graph seed, the node's seed and the point's id, so it follows the point when
-// other points change.
-class procedural.Jitter : procedural.PointNode {
+// Moves each selected point by a random offset in [-amount, amount) per axis, scaled per axis.
+// Uses point `id` when present so offsets follow points across count changes, falling back to
+// the point index when `id` is absent (for example directly after Grid, Line or Box).
+class procedural.Jitter : procedural.Node {
+    [Label = "Group", DESC = "只修改选中点；空名称表示全选。"]
+    String group = "";
     [Min = 0.0, Max = 1.0, LockMin, Label = "Amount", DESC = "每个轴上偏移的最大距离，单位 m。"]
     float amount = 0.1f;
     [Min = 0.0, Max = 1.0, LockMin, Label = "Axis Scale", DESC = "按轴缩放偏移；某一分量为 0 时不沿该轴移动。"]
@@ -9,12 +11,43 @@ class procedural.Jitter : procedural.PointNode {
     [Label = "Seed", DESC = "与图的种子混合后得到本节点的随机种子。"]
     uint seed = 0;
 
-    void evaluate(const procedural.Context& context, Array<vector3>& P, const Array<uint>& id) {
+    void process(const procedural.Context& context,
+                 [InOut("P")] Array<vector3>& P,
+                 [In("id", Optional)] const Array<uint>& id,
+                 [Group(From = "group")] const Array<bool>& selected) {
+        if (!(math.is_finite(self.amount) && math.is_finite(self.axis_scale))) {
+            self.fail("Jitter amount and axis scale must be finite.");
+        }
         const vector3 reach = self.axis_scale * self.amount;
+        if (!math.is_finite(reach)) {
+            self.fail("Jitter reach must be finite.");
+        }
         const uint node_seed = procedural.hash2(context.seed, self.seed);
-        for (uint i = 0; i < P.size(); i = i + 1) {
-            const vector3 r = procedural.random_vector(procedural.hash2(node_seed, id[i]));
-            P[i] = P[i] + vector3(r.x * reach.x, r.y * reach.y, r.z * reach.z);
+        const uint n = P.size();
+        const bool has_id = id.size() == n;
+        const bool has_mask = selected.size() == n;
+        if (!has_mask && has_id) {
+            for (uint i = 0; i < n; i = i + 1) {
+                const vector3 r = procedural.random_vector(procedural.hash2(node_seed, id[i]));
+                P[i] = P[i] + vector3(r.x * reach.x, r.y * reach.y, r.z * reach.z);
+            }
+        } else if (!has_mask) {
+            for (uint i = 0; i < n; i = i + 1) {
+                const vector3 r = procedural.random_vector(procedural.hash2(node_seed, i));
+                P[i] = P[i] + vector3(r.x * reach.x, r.y * reach.y, r.z * reach.z);
+            }
+        } else if (has_id) {
+            for (uint i = 0; i < n; i = i + 1) {
+                if (!selected[i]) { continue; }
+                const vector3 r = procedural.random_vector(procedural.hash2(node_seed, id[i]));
+                P[i] = P[i] + vector3(r.x * reach.x, r.y * reach.y, r.z * reach.z);
+            }
+        } else {
+            for (uint i = 0; i < n; i = i + 1) {
+                if (!selected[i]) { continue; }
+                const vector3 r = procedural.random_vector(procedural.hash2(node_seed, i));
+                P[i] = P[i] + vector3(r.x * reach.x, r.y * reach.y, r.z * reach.z);
+            }
         }
     }
 }

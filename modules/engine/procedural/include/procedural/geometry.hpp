@@ -28,8 +28,11 @@ enum class Layer : std::uint32_t { point, vertex, primitive, detail, instance };
 AENUM(Name = "procedural.Reduce", DESC = "把多个元素的属性合成一个值：first 取第一个，sum 求和，average 求平均。")
 enum class Reduce : std::uint32_t { first, sum, average };
 
-// How a transform changes a float vector column; see transform().
-enum class Usage : std::uint8_t { none, point, vector, normal, color };
+AENUM(Name = "procedural.RayMode", DESC = "project：沿方向找最近的交点；minimum：取最近的表面点。")
+enum class RayMode : std::uint32_t { project, minimum };
+
+// How a transform changes a vector or orientation column; see transform().
+enum class Usage : std::uint8_t { none, point, vector, normal, color, orientation };
 
 using ColumnData =
     std::variant<SharedArray<bool>, SharedArray<std::int32_t>, SharedArray<std::uint32_t>, SharedArray<float>,
@@ -161,10 +164,13 @@ public:
         return &std::get<SharedArray<T>>(attributes_.back().data).write();
     }
 
-    // Takes ownership of a complete column. Replaces an attribute of the same name.
+    // Takes ownership of a complete column. Replaces an existing attribute only when its
+    // layer and column type match, preserving its existing usage when `usage` is omitted.
     Result<void> set(String name, Layer layer, ColumnData data, std::optional<Usage> usage = {});
 
     Result<void> remove(StringView name);
+
+    static Result<void> admit_name(StringView name);
 
     [[nodiscard]] std::span<const Reference> references() const noexcept { return references_; }
 
@@ -210,6 +216,8 @@ public:
     [[nodiscard]] std::size_t bytes() const noexcept;
 
 private:
+    friend class Bvh;
+
     Attribute* mutable_find(StringView name) noexcept;
 
     template <Element T>
@@ -229,12 +237,15 @@ private:
                 return failure("String attributes live on the detail layer.");
         if (usage == Usage::none)
             return {};
+        if (usage == Usage::orientation) {
+            if constexpr (std::same_as<T, math::Quaternion>)
+                return {};
+            return failure("Orientation usage needs a quaternion column.");
+        }
         if (std::same_as<T, math::Vector3> || (std::same_as<T, math::Vector4> && usage == Usage::color))
             return {};
-        return failure("Usage needs a vector3 column, or a vector4 color.");
+        return failure("Usage needs a vector3 column, a vector4 color, or a quaternion orientation.");
     }
-
-    static Result<void> admit_name(StringView name);
 
     Result<void> fits(Layer layer, const ColumnData& data) const;
 

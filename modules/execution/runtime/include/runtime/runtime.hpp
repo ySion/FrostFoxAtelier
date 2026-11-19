@@ -775,6 +775,11 @@ struct FieldDefinition {
     Result<void> normalize_metadata();
 };
 
+using MetadataList = std::vector<std::pair<std::string, std::string>>;
+
+// Shared cold-path normalization for native publication and Source comparisons.
+Result<void> normalize_metadata_entries(MetadataList& metadata);
+
 struct EnumeratorMetadata {
     std::string label{};
 
@@ -806,6 +811,20 @@ struct MethodDefinition {
     // Empty, or one per parameter covering a trailing suffix of value/read_only scalar or enum parameters.
     // Enum defaults may supply the underlying integer (for batch forward references) or EnumValue.
     std::vector<std::optional<Scalar>> parameter_defaults{};
+
+    // Empty, or one key-value list per parameter; normalized and key-sorted on publication.
+    std::vector<MetadataList> parameter_metadata{};
+};
+
+// Declared method contract of a non-native (described) object type. Execution lives in its code host.
+struct DescribedMethodDefinition {
+    std::string name;
+
+    SignatureDefinition signature;
+
+    std::vector<std::string> parameter_names{};
+
+    std::vector<MetadataList> parameter_metadata{};
 };
 
 struct TypeDefinition {
@@ -842,6 +861,8 @@ struct TypeDefinition {
     // Records and objects only. A pure check of one value's bytes, run by Runtime::validate
     // and never on writes; it must not call the Runtime or throw. Rejection uses Result.
     Result<void> (*validate)(const void* storage) noexcept {};
+
+    std::vector<DescribedMethodDefinition> described_methods{};
 };
 
 struct FieldInfo {
@@ -899,6 +920,19 @@ struct MethodInfo {
 
     // One per signature parameter; EnumValue defaults carry the resolved Runtime enum TypeId.
     std::vector<std::optional<Scalar>> parameter_defaults{};
+
+    // One key-sorted metadata list per signature parameter.
+    std::vector<MetadataList> parameter_metadata{};
+};
+
+struct DescribedMethodInfo {
+    std::string name;
+
+    FunctionSignature signature;
+
+    std::vector<std::string> parameter_names{};
+
+    std::vector<MetadataList> parameter_metadata{};
 };
 
 struct TypeInfo {
@@ -968,6 +1002,9 @@ struct TypeInfo {
     void* (*base_address)(void*) noexcept {};
 
     std::optional<std::size_t> base_offset{};
+
+    // Declared methods of a described object type; empty for native types.
+    std::vector<DescribedMethodInfo> described_methods{};
 };
 
 // A value that breaks its type's rules. `field` is the failing leaf for a hard bound,

@@ -45,7 +45,7 @@
 - World 对缩放、有效变换和生命周期的限制由 World 维护，通用数学值本身不禁止负缩放或非有限计算结果。
 - 源码使用严格浮点语义和普通 LLVM O2 优化，不开启全面 fast-math。结果允许 IEEE 无穷和 NaN；除[超越函数](#超越函数)在支持 FMA3 的主机之间逐位相同外，不承诺跨 CPU、平台或编译器版本逐位一致。精度策略与 SIMD 使用不能替代确定性协议。
 
-原生 C++ 保持 Windows x64 的 SSE2 编译基线，不启用 AVX2/FMA 或 fast-math。依赖分步乘加舍入误差证明的几何与体素路径（`atelier_procedural` 及其验收目标）通过 PRIVATE 编译选项 `/clang:-ffp-contract=off`（clang-cl 透传给 Clang 的 `-ffp-contract=off`）禁止翻译单元内的隐式乘加融合，并保留 BVH 与三角形距离核的局部严格浮点 pragma；`atelier_math` 不再向无关模块传递该选项。这不改变舍入模式、FTZ/DAZ 或显式 FMA，也不改变 JIT 生成 IR 的规则或其 FMA3 主机要求。
+原生 C++ 保持 Windows x64 的 SSE2 编译基线，不启用 AVX2/FMA 或 fast-math。依赖分步乘加舍入误差证明的几何与体素路径（`atelier_procedural` 中的 `triangles.cpp`、`bvh.cpp`、`volume.cpp` 以及 `atelier_procedural_acceptance`）通过编译选项 `/clang:-ffp-contract=off`（clang-cl 透传给 Clang 的 `-ffp-contract=off`）禁止对应翻译单元内的隐式乘加融合，并保留 BVH 与三角形距离核的局部严格浮点 pragma；其余翻译单元与 `atelier_math` 不传递该选项。这不改变舍入模式、FTZ/DAZ 或显式 FMA，也不改变 JIT 生成 IR 的规则或其 FMA3 主机要求。
 
 `float` 对应 `core.f32`，`double` 对应 `core.f64`。无后缀小数/指数仍是 float，例如 `1.0`、`1e2`；`1f`、`1.0F` 显式表示 float，`1d`、`1.0D` 表示 double。浮点字面量必须有限且在转换范围内。已定型 float/double 不隐式混合；`float(value)` 与 `double(value)` 显式转换 float、double、int 或 uint，窄化由调用者选择。
 
@@ -79,6 +79,8 @@ double energy(const Array<vector3d>& values) {
 | `math.slerp01(a, b, t)`、`math.fast_slerp01(a, b, t)` | 同精度单位四元数与同精度插值标量的 `[0, 1]` 最短弧球面插值；`t` 按 `math.clamp(t, 0, 1)` 钳制（`NaN -> 0`），`dot(a, b) < 0` 时翻转第二操作数（`t = 1` 得 `-b`），`slerp01` 在近共线处采用归一化线性插值，`fast_slerp01` 见[近似变体](#近似变体) |
 | `math.transpose(m)` | 矩阵转置 |
 | `math.transform_point(v, m)`、`math.transform_direction(v, m)` | 同精度 vector3、matrix4，参数顺序符合 `v * M` |
+| `math.is_finite(x)` | float/double 标量、vector2/3/4、quaternion 或 matrix4，返回 `bool`；仅当全部分量均非 NaN 且非 `±∞` 时为 `true`（可编程材质子集不支持） |
+| `math.as_uint(x)`、`math.as_int(x)` | 32 位 `int`、`uint` 或 `float` 的零开销按位重解释（二补码 / IEEE-754 binary32 位模式），分别返回 `uint` 与 `int`；拒绝 `double`、`bool` 与向量（可编程材质子集不支持） |
 | `math.sqrt`、`fast_rsqrt`、`floor`、`ceil`、`trunc`、`fract`、`abs`、`sign`、`min`、`max`、`clamp`、`lerp`、`step`、`smoothstep` | float/double 标量与向量的逐分量函数，见下节与[近似变体](#近似变体) |
 | `math.sin`、`cos`、`atan2`、`exp`、`log`、`pow` | float/double 标量与向量的逐分量超越函数，见[超越函数](#超越函数) |
 

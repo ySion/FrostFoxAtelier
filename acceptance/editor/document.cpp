@@ -1,7 +1,12 @@
 #include "memory/fatal.hpp"
 #include "../helpers.hpp"
 #include "editor/session.hpp"
+#include "editor/graph_format.hpp"
 #include "editor/project.hpp"
+#include "procedural/evaluator.hpp"
+#include "procedural/nodes.hpp"
+#include "source/program.hpp"
+#include "source/snapshot.hpp"
 #include "editor/assets.hpp"
 #include "assets/file.hpp"
 #include "platform/utf.hpp"
@@ -54,6 +59,76 @@ ObjectId component(editor::Session& document, ObjectId entity, TypeId type) {
 
 #include "gltf_import.inl"
 #include "project_profile.inl"
+
+void verify_graph_format() {
+    Runtime runtime;
+    take(procedural::register_types(runtime));
+    auto program = take(source::Program::create(runtime));
+    {
+        auto req =
+            take(program->request({"graph_doc", 1, take(source::engine_sources(source::default_engine_root()))}));
+        auto cand = take(source::Program::prepare(req));
+        take(program->try_publish(cand));
+    }
+    const std::string_view input_json = R"({
+  "nodes": {
+    "grid": {
+      "inputs": {},
+      "position": [10.0, 20.0],
+      "properties": {"columns": 3, "rows": 2, "size": {"x": 2.0, "y": 1.0}},
+      "type": "procedural.Grid"
+    },
+    "jitter": {
+      "inputs": {"input": "grid.output"},
+      "position": [180.0, 20.0],
+      "properties": {"amount": 0.25, "group": "", "seed": 4},
+      "type": "procedural.Jitter"
+    },
+    "legacy": {
+      "inputs": {"input": "grid.output"},
+      "position": [180.0, 140.0],
+      "properties": {"foo": 42},
+      "type": "game.MissingSop"
+    },
+    "merged": {
+      "inputs": {"inputs": ["jitter.output", "legacy.output"]},
+      "position": [360.0, 60.0],
+      "properties": {},
+      "type": "procedural.Merge"
+    },
+    "noise": {
+      "inputs": {"input": "merged.output"},
+      "position": [540.0, 60.0],
+      "properties": {"attribute": "nval", "frequency": 2.0, "layer": "point"},
+      "type": "procedural.Noise"
+    }
+  },
+  "settings": {"display": "noise", "seed": 9},
+  "version": 1
+})";
+    const auto doc = take(editor::load_graph(runtime, input_json));
+    require(doc.nodes.size() == 5 && doc.issues.size() == 2 &&
+                doc.issues[0].kind == world::DiagnosticKind::unknown_type &&
+                doc.issues[1].kind == world::DiagnosticKind::reference_dropped,
+            "load_graph did not tolerantly retain missing SOP type and dropped multi-port connection.");
+    const auto saved_once = take(editor::save_graph(runtime, doc));
+    const auto reloaded = take(editor::load_graph(runtime, saved_once));
+    const auto saved_twice = take(editor::save_graph(runtime, reloaded));
+    require(saved_once == saved_twice, "save_graph -> load_graph -> save_graph was not byte-identical.");
+    struct NoMeshes final : procedural::Resources {
+        Result<geometry::MeshRef> mesh(StringView) const noexcept override {
+            return std::unexpected(Error{ErrorCode::invalid_member, "Unused"});
+        }
+
+        std::uint64_t revision() const noexcept override { return 1; }
+    } resources;
+    procedural::Evaluator evaluator{runtime, reloaded.graph, resources, program.get()};
+    take(evaluator.evaluate());
+    const auto* out = evaluator.output();
+    require(out != nullptr && out->count(procedural::Layer::point) == 6 &&
+                take(out->read<float>("nval", procedural::Layer::point)) != nullptr,
+            "Reloaded C++/Source procedural graph did not evaluate to 6 noisy points.");
+}
 }
 
 int main(int argc, char** argv) {
@@ -94,7 +169,9 @@ int main(int argc, char** argv) {
         verify_gltf_import();
         stage = "mesh reimport";
         verify_mesh_reimport();
-        std::puts("Editor document acceptance: PASS (creation undo/redo, glTF transform, mesh reimport)");
+        stage = "procedural graph format";
+        verify_graph_format();
+        std::puts("Editor document acceptance: PASS (creation undo/redo, glTF transform, mesh reimport, graph format)");
         return 0;
     } catch (const std::exception& error) {
         std::fprintf(stderr, "Editor document acceptance: FAIL [%.*s]: %s\n", static_cast<int>(stage.size()),

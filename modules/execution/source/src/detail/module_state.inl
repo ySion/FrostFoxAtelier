@@ -12,6 +12,8 @@ struct Program::ModuleRequest {
 
         std::vector<std::vector<std::string>> parameter_names;
 
+        std::vector<std::vector<MetadataList>> parameter_metadata;
+
         bool receiver{};
     };
 

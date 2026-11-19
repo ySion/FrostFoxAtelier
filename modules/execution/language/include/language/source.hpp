@@ -199,6 +199,9 @@ enum class MathOperation {
     transpose,
     transform_point,
     transform_direction,
+    is_finite,
+    as_uint,
+    as_int,
     square_root,
     fast_rsqrt,
     floor,
@@ -378,7 +381,8 @@ struct Program {
 [[nodiscard]] std::expected<Program, Diagnostic> compile_source(std::string_view source_name, std::string_view source,
                                                                 Environment environment,
                                                                 std::string_view entry_name = {},
-                                                                bool allow_declarations = false);
+                                                                bool allow_declarations = false,
+                                                                bool allow_parameter_attributes = false);
 
 [[nodiscard]] std::expected<void, Diagnostic> export_functions(Program&, std::span<const std::string_view>,
                                                                bool receiver);

@@ -4,18 +4,18 @@
 
 | 头文件 | 内容 |
 | --- | --- |
-| [geometry.hpp](../../../modules/engine/procedural/include/procedural/geometry.hpp) | `Geometry` 值、层、属性列、拓扑与实例 |
-| [operations.hpp](../../../modules/engine/procedural/include/procedural/operations.hpp) | 导入、生成、撒点、变换、Promote、Copy to Points、Realize、包围盒 |
+| [geometry.hpp](../../../modules/engine/procedural/include/procedural/geometry.hpp) | `Geometry` 值、层、用途（含 `Usage::orientation`）、属性列、拓扑与实例 |
+| [operations.hpp](../../../modules/engine/procedural/include/procedural/operations.hpp) | 导入、生成、撒点、射线投射、变换、Promote、Copy to Points、Realize、包围盒 |
 | [instances.hpp](../../../modules/engine/procedural/include/procedural/instances.hpp) | 把 instance 层发布为渲染用的实例集合 |
-| [bvh.hpp](../../../modules/engine/procedural/include/procedural/bvh.hpp) | 首角扇形 BVH：射线与最近点查询 |
-| [graph.hpp](../../../modules/engine/procedural/include/procedural/graph.hpp) | `Graph`、`Node`、端口、连接与编辑入口，类型注册 |
+| [bvh.hpp](../../../modules/engine/procedural/include/procedural/bvh.hpp) | 首角扇形 BVH 与按底层 `SharedArray` 缓冲复用的有界缓存 `Bvh::acquire` |
+| [graph.hpp](../../../modules/engine/procedural/include/procedural/graph.hpp) | `Graph`、统一 `Node` 基类、端口、连接与编辑入口，类型注册 |
 | [nodes.hpp](../../../modules/engine/procedural/include/procedural/nodes.hpp) | C++ 内置节点 |
-| [evaluator.hpp](../../../modules/engine/procedural/include/procedural/evaluator.hpp) | 增量求值与结果缓存 |
+| [evaluator.hpp](../../../modules/engine/procedural/include/procedural/evaluator.hpp) | 增量求值、结果缓存与失败保旧接口 |
 | [random.hpp](../../../modules/engine/procedural/include/procedural/random.hpp) | 固定算法的整数哈希与单位随机数 |
 
 引擎附带的自有语言节点与随机库在 [assets/engine/procedural](../../../assets/engine/procedural)。
 
-本文只说明已实现能力。方向、设计依据与未实施的跨模块约定见[后续路线与未决契约](roadmap.md)。场景生成器组件、渲染器实例化、网络编辑器、持久 Cache、冻结与 Bake 尚未实施；统一字段绑定已接通，Remap／属性噪声算法仍在后续 F 范围。
+本文只说明已实现能力。方向、设计依据与未实施的跨模块约定见[后续路线与未决契约](roadmap.md)。场景生成器组件、渲染器实例化、网络编辑器、持久 Cache、冻结与 Bake 尚未实施。
 
 ## Geometry
 
@@ -24,29 +24,30 @@
 `procedural.Geometry` 是 Runtime 记录类型（`ASTRUCT`，没有反射字段），作为节点端口按引用传递。它是一个值：用 [SharedArray](../../foundation.md#共享不可变数组) 共享属性、拓扑和实例列，写入共享列时才复制成独占；已有独占列原地写。每个写入者必须独占自己的 Geometry，但无需先在单线程上复制列。这个存储能力不改变求值器在 Runtime 线程上串行执行的规则。
 
 - **五层**：point、vertex（图元的角）、primitive、detail（恰好一个元素）、instance。每层是“名字 → 列”，名字在整个 Geometry 内唯一，必须是标识符。点位置是 point 层的 `P`，总是存在且是第一列。
-- **列**：`SharedArray<T>` 持有 `Array<T>`，T 为 bool、int32、uint32、float、Vector2/3/4、Quaternion、Matrix4；String 只能放在 detail 层。`attributes()` 和 `find()` 暴露的共享列只能读取；`read` 借出 const Array，找不到时返回 null，层或类型不符是错误；`write` 先取得独占列再借出可写 Array；`add` 不存在时按填充值新建；`set` 接管一个共享列句柄；`remove` 删除。SharedArray 本身不注册为 Runtime 类型，源码借用的仍是原来的 Array 类型。
-- **借用**：借用结束前，不移动、赋值或结构修改该 Geometry，也不再次 `write` 同一列；可写借用期间还不能复制该 Geometry 或出借列的句柄，只读借用允许复制。需要多列时先完成增列和独占准备，再取供计算使用的引用；Source 求值器和 Ray 节点都按这个顺序执行。
-- **用途**：Vector3 列（以及 Vector4 颜色）带用途 point / vector / normal / color / none，决定变换方式。新列按约定名取用途：P → point，N → normal，v、up → vector，Cd → color，其余 none。
+- **列**：`SharedArray<T>` 持有 `Array<T>`，T 为 bool、int32、uint32、float、Vector2/3/4、Quaternion、Matrix4；String 只能放在 detail 层。`attributes()` 和 `find()` 暴露的共享列只能读取；`read` 借出 const Array，找不到时返回 null，层或类型不符是错误；`write` 先取得独占列再借出可写 Array；`add` 不存在时按填充值新建；`set` 接管一个共享列句柄（若同名列已存在，其所在层与元素类型必须匹配，且未显式传入 `usage` 时自动保留原有用途）；`remove` 删除。SharedArray 本身不注册为 Runtime 类型，源码借用的仍是原来的 Array 类型。
+- **借用**：借用结束前，不移动、赋值或结构修改该 Geometry，也不再次 `write` 同一列；可写借用期间还不能复制该 Geometry 或出借列的句柄，只读借用允许复制。需要多列时先完成增列和独占准备，再取供计算使用的引用；求值器与 Ray 操作都按这个顺序执行。
+- **用途**：列带用途 `point` / `vector` / `normal` / `color` / `orientation` / `none`，决定变换方式。新列按 `Geometry::admit_name` 的约定名取用途：P → point，N → normal，v、up → vector，Cd → color（Vector4），orient → orientation（Quaternion），其余 none。
 - **拓扑**：`vertex_points` 给出每个顶点引用的点；图元是首顶点的 CSR 偏移，全部图元角数相同时不存偏移。独立保留 COW 列 `kind` 区分 polygon（至少三角、隐式闭合）与 polyline（至少两角、只连接相邻角、不隐式闭合），不能从角数推断，也不能经属性绑定改写。`polygons` 明确生成面，`primitives` 接收每图元的 kind；`primitive(p)` 同时返回角范围和 kind。删除、合并保留 kind，`reverse_primitives()` 显式反转两类图元及 vertex 属性；镜像变换只纠正面的绕序。
 - **实例**：去重的资源引用表 `references`（持久键 + 宿主解析出的 `MeshRef`），加上 instance 层的保留列：每个实例的引用下标与有限仿射 Matrix4。`set_instances` 替换整个 instance 层并丢弃它的属性。
 - `bytes()` 估算列与拓扑保留的内存（按容量计），共享的列按全额计算，供缓存预算使用。
 
 ## 操作
 
-- **`import_mesh`**：每个三角形一个图元，法线和 UV 写入 vertex 层的 `N`、`uv`，材质槽号写入 primitive 层的 `material`，位置逐位相等的顶点焊接成同一个点。
+- **`import_mesh`**：每个三角形一个图元，法线和 UV 写入 vertex 层的 `N`、`uv`，材质槽号写入 primitive 层的 `material`；将 `-0.0f` 规范化为 `+0.0f` 后，位置逐位相等的顶点焊接成同一个点。
 - **`grid` / `line`**：XZ 平面点阵（N = +Y，以原点为中心）和含两端的等距点。
 - **`box` / `sphere` / `tube`**：以原点为中心，按下述固定拓扑生成闭合多面体，N 统一为 vertex 层。尺寸、半径、高度须有限且为正；Sphere 经向至少 3 段、纬向至少 2 个区间，Tube 至少 3 段。预检总角数须小于 2³²−1，不截断或自动降分辨率。使用实际 float 坐标，表面消费者仍执行公共凸面判据，不为构造输出豁免精度校验。
 - **`Geometry::connect_points` / Polyline**：只接受纯点输入，不得带任何图元或 instance；按点序连接为一个开放图元，不焊接，不自动闭合，没有 closed 选项。0 点空进空出（保留 detail，与未连端口相容），1 点报错。全部 point 与 detail 列及其用途原样共享保留，不生成 N；已有空 vertex/primitive 列保留定义，分别扩为点数/1 个类型默认值，instance 列仍为空，不静默删列。`Line → Polyline` 先生成等距点，再连接相邻点；作者手填点数组的绘制曲线节点后移到 S2，见 roadmap。
 - **`group_box`**：在各轴闭区间 `[minimum,maximum]` 内选 point，写入/替换同名 bool 列；边界须有限且逐轴有序。名字遵守 Geometry 标识符规则，已有异层/异类型列报错。GroupBox 节点在输入的 COW 副本上操作，不改输入；这是输出组名，不能用空名字表示全选，不支持表达式或反选。
-- **`scatter`**：接受三角形及凸平面多边形，不接受折线；按下述公共首角扇形视图采样。原图元 p、局部子三角 j 的随机源 s 在 j=0 时为 `hash(seed,p)`，j>0 时为 `hash(hash(seed,p),j)`；点数为面积 × 密度，以 `hash(s,0)` 按小数部分概率进位，第 k 个点使用 `hash(s,2*k+1)` 与 `hash(s,2*k+2)` 均匀采样重心坐标。输出按 p/j/k 顺序，k 在每个子三角内从零开始，不把展开下标或线程号混入随机源。可选最小间距在全部候选上按这个顺序稳定淘汰，所有列一起压紧；格坐标超出 ±2⁶² 时失败。输出 P、N、`id`、`sourceprim`、`sourceordinal`、`sourceprimuv`；仅输入包含超过三角的面时在末尾追加 uint `sourcetri`（其他三角面的值为 0）。纯三角输入的六列顺序、算术与值不变。`id` 在 j=0 时为 `hash(p,k)`，否则为 `hash(hash(p,j),k)`，它只是非唯一随机种子；（p,j,k）是局部稳定来源。`sourceprimuv` 是子三角 j 内的 (b1,b2)，不是原多边形坐标。
-- **`transform`**：v · S · R · T。point 列完整变换，vector 列只用线性部分 L，normal 列乘 sign(det L) · cofactor(L) 后归一化（零向量保持为零，所以压扁到平面的奇异变换仍有平面法线），`orient` 列复合旋转，实例矩阵右乘，color 与 none 列不变。行列式为负时只反转 polygon 的顶点顺序及 vertex 列，polyline 的方向不变。输入或结果出现非有限值时失败，几何已被部分改写。
-- **`promote`**：把属性移到另一层，按 first / sum / average 合成每个目标元素接触到的源元素；sum 与 average 只接受 float 与 float 向量；instance 层只和 detail 交换；P 不能移动。
+- **`scatter`**：接受三角形及凸平面多边形，不接受折线；按下述公共首角扇形视图采样。原图元 p、局部子三角 j 的随机源 s 在 j=0 时为 `hash(seed,p)`，j>0 时为 `hash(hash(seed,p),j)`；点数为面积 × 密度，以 `hash(s,0)` 按小数部分概率进位，第 k 个点使用 `hash(s,2*k+1)` 与 `hash(s,2*k+2)` 均匀采样重心坐标。输出按 p/j/k 顺序，k 在每个子三角内从零开始，不把展开下标或线程号混入随机源。可选最小间距通过紧凑双数组开放寻址空间哈希在全部候选上按这个顺序稳定淘汰，所有列一起压紧；格坐标超出 ±2⁶² 时失败。输出 P、N、`id`、`sourceprim`、`sourceordinal`、`sourceprimuv`；仅输入包含超过三角的面时在末尾追加 uint `sourcetri`（其他三角面的值为 0）。纯三角输入的六列顺序、算术与值不变。`id` 在 j=0 时为 `hash(p,k)`，否则为 `hash(hash(p,j),k)`，它只是非唯一随机种子；（p,j,k）是局部稳定来源。`sourceprimuv` 是子三角 j 内的 (b1,b2)，不是原多边形坐标。
+- **`transform`**：v · S · R · T。point 列完整变换，vector 列只用线性部分 L，normal 列乘 sign(det L) · cofactor(L) 后归一化（零向量保持为零，所以压扁到平面的奇异变换仍有平面法线），`Usage::orientation` 四元数列复合旋转，实例矩阵右乘，color 与 none 列不变。行列式为负时只反转 polygon 的顶点顺序及 vertex 列，polyline 的方向不变。输入或结果出现非有限值时失败，几何已被部分改写。
+- **`promote`**：把属性移到另一层，按 first / sum / average 合成每个目标元素接触到的源元素（向 detail 归约或自 detail 广播直接走单次线性快路径）；sum 与 average 只接受 float 与 float 向量；instance 层只和 detail 交换；P 不能移动。
 - **`remove_flagged`**：删除 bool 列为 true 的元素；删除点时一并删除用到它们的图元，删除图元时保留点。
 - **`merge`**：按输入顺序拼接各层，属性按名字合并，缺失的元素取类型默认值，detail 取第一个有值的输入；同名属性的层、类型或用途不一致时失败。
 - **`copy_to_points`**：每个点一个实例，矩阵为 S · O · T：S = scale × pscale，O 是归一化的 `orient`，没有 orient 时由 N 和 up 对齐（只有 N 时取 +Z 到 N 的最短旋转），T 取自 P。点上的 uint 属性（默认 `variant`，缺失时为 0）选择引用。detail 属性带到输出，输出没有点。非有限输入和越界的变体失败。
 - **`realize`**：有序 Geometry 源在选中的目标点上生成真实几何副本，与资源 CopyToPoints 共用放置规则，但不生成或递归展开 instance；分组、属性和所有权合同见下节。
 - **`bounds`**：点的包围盒，空几何没有。
-- **`Bvh`**：对公共扇形视图建立的包围体层次（分箱 SAH，深层退回中位数切分，深度有界），建立时复制三角形，零面积三角形不参与。`ray` 沿单位方向找 max_distance 内最近的交点，三角形双面有效；`closest` 找 max_distance 内最近的表面点。Hit 给出原图元号 `primitive`、局部子三角号 `triangle`、距离、子三角内重心坐标和位置。三角形求交和最近点在 double 中计算，包围盒测试留在 float（溢出的距离就是无穷远），所以有限坐标不会因中间结果溢出得到非有限或超出距离限制的命中，平行于某一轴的射线不受零的符号影响。射线恰好穿过共享边时可能两侧都不命中。
+- **`ray`**：在 `surface` 上按 `RayMode::project`（沿方向投射射线）或 `RayMode::minimum`（最近表面点）查询并将命中的点移到命中处，写入 int32 `hitprim`、`hittri`、Vector2 `hitprimuv` 与 float `hitdist`；未命中点保持原位且编号/距离为 -1；`normal` 开启时从命中子三角原角计算单位法线写入 point 层 `N`；`remove_misses` 开启时移除未命中点。内部经 `Bvh::acquire(surface)` 复用缓存 BVH。
+- **`Bvh`**：对公共扇形视图建立的包围体层次（分箱 SAH，深层退回中位数切分，深度有界），建立时复制三角形，零面积三角形不参与。`Bvh::acquire(surface)` 提供线程安全的 16 项 LRU 共享缓存，以底层 `P`、`vertex_points`、`primitive_offsets`、`primitive_kinds` 的缓冲指针与长度元组为键，并持有这些 `SharedArray` 的浅拷贝以防止 ABA 地址复用；当仅调整下游射线或采样参数而表面缓冲未变时，零拷贝命中同一 `shared_ptr<const Bvh>`。`ray` 沿单位方向找 max_distance 内最近的交点，三角形双面有效；`closest` 找 max_distance 内最近的表面点。Hit 给出原图元号 `primitive`、局部子三角号 `triangle`、距离、子三角内重心坐标和位置。三角形求交和最近点在 double 中计算，包围盒测试留在 float（溢出的距离就是无穷远），所以有限坐标不会因中间结果溢出得到非有限或超出距离限制的命中，平行于某一轴的射线不受零的符号影响。射线恰好穿过共享边时可能两侧都不命中。
 
 ### Realize：真实几何复制
 
@@ -82,7 +83,7 @@
 
 δ_p 的输入尺度不依赖首角；精确算术下，多边形的距离邻域也与首角无关。但当前距离经过扇形片的 double 重心插值计算，距离与 δ_p 只差舍入量的边界点可能随首角变化。此为 C R2 暴力版已有的数值限制；加速保持同一输入的叶谓词，不承诺这类边界点在循环换首角后逐位不变。
 
-一次求值复用现有 SAH BVH，同时持有固定 p/j 顺序的有效三角快照，结束即释放，不跨求值缓存。新增查询不改变 Ray/closest 的最近命中行为：
+一次独立 `volume_scatter` 默认（`cache_bvh = false`）按次建立 SAH BVH 并持有固定 p/j 顺序的有效三角快照；图节点 `VolumeScatter` 显式开启 `cache_bvh = true`，在表面未变时经 `Bvh::acquire` 复用已构建的 BVH。新增查询不改变 Ray/closest 的最近命中行为：
 
 - `on_surface_band` 是存在性查询。节点按子树最大 δ_p 扩大有效查询范围；比较 q 到原始 float 盒两侧的 double 差值，向下舍入后仍大于剪枝阈值才跳过，而不是仅对 `盒边界 ± δ` 的最终结果取相邻值。剪枝阈值是向上舍入的 `δ + δ·2^-27`：额外项等于 32 × double ε × 原面尺度，覆盖最近点重建略微越出顶点盒和距离舍入的误差；不改变叶子的 δ。令 u=double ε/2，返回权重非负且和至多 1+8u，凸包越界及重建各至多 16u×尺度，距离比较再用 8uδ，总计小于 34u×尺度，低于预留的 64u×尺度。`closest_on_triangle` 明确禁止 va/vb/vc 的乘加融合与重结合，以保留上述权重范围证明所需的逐次舍入。叶子用各自原多边形的 δ_p 和原有界距离谓词，任一命中就排除。不能拿最近面的距离只比它的 δ，也不能取全局最小 δ：更远的大尺度面仍可能覆盖 q。
 - `signed_crossings` 用保守 double slab 遍历全部正向交点，不按最近 t 裁剪。叶子再检查各三角自己的射线盒，避免同叶无关三角影响重试。固定八个非轴向方向取 √2/√3/√5 的确定二进制近似及符号排列；常量可由 float 精确表示，谓词全部在 double 中计算。不按运行、候选或遍历序号随机选方向。
@@ -110,15 +111,23 @@
 
 ## 程序化图
 
-`procedural::register_types(Runtime&)` 发布 Layer、Reduce、Geometry、`procedural.Geometries`（`Array<Geometry>`）、Context、Node、PointNode、Graph 和内置节点；String、`Array<String>` 和除 String 外每种列类型的 Array（`procedural.Bools`、`Ints`、`Uints`、`Floats`、`Vector2s`、`Vector3s`、`Vector4s`、`Quaternions`、`Matrix4s`）不存在时一并发布，源码节点借用的列就是这些类型。重复调用不做任何事。
+`procedural::register_types(Runtime&)` 发布 Layer、Reduce、RayMode、Geometry、`procedural.Geometries`（`Array<Geometry>`）、Context、统一基类 `procedural.Node`、Graph 和内置节点；String、`Array<String>` 和除 String 外每种列类型的 Array（`procedural.Bools`、`Ints`、`Uints`、`Floats`、`Vector2s`、`Vector3s`、`Vector4s`、`Quaternions`、`Matrix4s`）不存在时一并发布，源码节点借用的列就是这些类型。重复调用不做任何事。
 
 - **Graph**（`procedural.Graph`）：公开字段 `seed`；隐藏的节点强引用序列和 display 强引用槽。
-- **Node**（`procedural.Node`）：节点类型的公开字段就是参数；隐藏的 `inputs` 强引用序列每个连接一项，按输入端口排序，与之平行的非反射 C++ 数组记录每个连接的（输入端口，上游输出号）。
-- **端口**：`ports(runtime, type)` 从 const 同步方法 `evaluate` 的签名按参数顺序读出端口：`const procedural.Context&` 是上下文，`const procedural.Geometry&` 是输入端口，`const procedural.Geometries&` 是可接多个连接的输入端口，`procedural.Geometry&` 是输出端口。至少要有一个输出；其他参数形式使类型不能作为节点。端口名就是 `evaluate` 的参数名（`MethodInfo::parameter_names`），每个发布版本重新读取；输入、输出端口的参数没有名字时类型不能作为节点，上下文参数可以不命名。图中的连接按端口序号存储，所以兼容更新只改参数名时现有连接仍然有效。PointNode 的子类型端口固定为 `input` → `output`，读端口不需要 Program；PointNode 本身不能作为节点。
+- **Node**（`procedural.Node`）：所有 C++ 与 `.source` 程序化节点统一派生自 `procedural.Node`（不再设 `PointNode`）；节点类型的公开字段就是 UI/持久化参数；隐藏的 `inputs` 强引用序列每个连接一项，按输入端口排序，与之平行的非反射 C++ 数组记录每个连接的（输入端口，上游输出号）。`Node::fail(const String&) const noexcept` 是 `BorrowSafe` 原生成员方法，供 `.source` 节点统一报告业务失败（返回 `invocation_failed`）。`procedural.Node` 自身无 `process` 方法，不能直接作为图节点实例。
+- **统一 `process` 与两类参数角色**：`ports(runtime, type)` 直接从 `Runtime` 元数据（原生类型读 `TypeInfo::methods`，`.source` 类读 `TypeInfo::described_methods`，无需 `source::Program*`）检查名为 `process` 的无返回值同步方法（原生节点须为 `const` 方法）：
+  1. **Geometry 端口角色**：参数带 `Port`（或无角色属性并直接声明 `Geometry`/`Geometries` 引用）：`const procedural.Geometry&` 为单输入端口，`const procedural.Geometries&` 为有序多连接输入端口，`procedural.Geometry&` 为输出端口。所有输入与输出端口参数必须具名；图连接按端口序号存储。
+  2. **属性列与组流式角色（Column SOP / 正式类 Wrangle）**：一旦声明任一 `[In]`、`[Out]`、`[InOut]` 或 `[Group]` 参数（C++ 用 `APARAM(...)`，`.source` 直接写在形参前），自动建立 0 号主输入端口 `input` 与 0 号主输出端口 `output`（并允许同时追加额外具名 `Port` 参考几何端口）；整节点至少须有一个输出端口：
+     - `[In]`（`const Array<T>&`）：从输入几何只读借用共享列，零拷贝；缺失或异层/异型报错。附加 `Optional`（如 `[In("id", Optional)]`）时，若列缺失则借入零分配空 `Array<T>` 哨兵（内核用 `col.size() == n` 判断是否存在），若同名列存在但层或类型不符仍报错。
+     - `[Out]`（`Array<T>&`）：若同层同名同类型列已存在，对其取得 COW 独占副本；若不存在则按类型默认值新建（新列按 `Geometry::admit_name` 赋予约定 `Usage`，类型与约定用途冲突如 `Array<float>& N` 时报错）。
+     - `[InOut]`（`Array<T>&`）：要求输入几何已存在同层同名同类型列，取得 COW 独占副本原地读写；缺失报错。
+     - `[Group]`（`const Array<bool>&`）：组名来自字面量或 `From = "group_field"`。组名为空字符串时借入零分配空 `Array<bool>` 哨兵表示全选（`mask.size() != n`，不分配全 `true` 临时数组，也不写回几何）；非空时须为输入几何同层已有的 `bool` 列。
+     - **列名与运行层解析**：省略列名与 `From` 时默认取形参名（如 `[InOut] Array<vector3>& P`）；也可显式写字面名 `[Out("pscale")]` 或绑定节点的 `String` 字段 `[Out(From = "attribute")]`（字面名与 `From` 互斥）。节点至多可声明一个带 `[RunOver]`（`AFIELD(RunOver)`）的公开 `procedural.Layer` 字段作为动态默认层；否则默认 `Layer::point`；单个参数还可用 `Layer = "detail"` 等静态覆盖层。
+- **执行顺序与安全保证**：每次列模式执行先复制节点 `String` 选择字段并读取 `[RunOver]` 层，拒绝两个可写参数指向同一列；先从输入几何解析全部 `[In]` 与非空 `[Group]`，再在输出副本上准备 `[InOut]`/`[Out]` 的增列与独占缓冲（因此同名 `[In]` + `[Out]` 安全读取旧输入列，不会读到新建零列或半写缓冲），最后同步调用整节点 `process`。若 `process` 以 `[Out]` 或 `[InOut]` 写入了 `P`，调用返回后统一校验全部点位置有限。
 - **Context**（`procedural.Context`）：字段 `seed` 是图的种子，C++ 节点用 `seed()` 读取；`mesh(key)` 经宿主的 `Resources` 解析网格，并记为当前节点结果的依赖。全部成员同一访问级别，类型保持标准布局，所以 `seed` 有生成器给出的偏移，源码按偏移直接读 `context.seed`；`mesh` 不是 Runtime 方法，源码不能调用。
 - **编辑**：`add_node`（类型必须能读出端口）、`remove_node`（同时断开它的下游连接，它是 display 时清除 display）、`connect`（两端都在图内，端口存在，不成环；单输入端口替换已有连接，多输入端口追加到末尾）、`disconnect`、`set_display`（null 清除）。每个入口只写它改变的对象：节点列表和 display 写图，连接写下游节点。读取用 `contents` 和 `inputs`，都是 const 借用。图持有节点、节点持有上游，被删除的节点由别的根（例如编辑历史）保活。
 
-内置节点：
+内置 C++ 节点：
 
 | 节点 | 参数 | 端口 |
 | --- | --- | --- |
@@ -140,85 +149,51 @@
 | CopyToPoints | meshes（资源键列表）、variant | context, points → output |
 | Realize | group=""、variant="variant"、target_attributes=[] | sources（有序多个）, points → output |
 
-Ray 对 surface 的公共凸面扇形建立 BVH，命中的点移到交点（minimum 模式为最近的表面点），写入 `hitprim`、`hittri`（都是 int32）、`hitprimuv`、`hitdist`；未命中的点保持原位，两个编号与距离都为 -1。`hitprimuv` 是局部子三角 `hittri` 内的 (b1,b2)，不是原多边形坐标。`normal` 打开时 N 取命中子三角的三个原角计算的法线，不按 `3*hitprim` 寻址；`remove_misses` 删除未命中的点。每次求值都重新建立 BVH。
+原生节点的 `process(...) const noexcept` 返回 `atelier::Result<void>`，反射仍发布为业务结果 void，端口和 BorrowSafe 约束不变。业务失败在节点边界转换为 `invocation_failed` 并保留原始原因，不通过异常传递；`Resources::mesh` 和 `Context::mesh` 同样通过 noexcept Result 返回资源拒绝。未连接的单输入端口收到空几何。
 
-原生节点的 `evaluate(...) const noexcept` 返回 `atelier::Result<void>`，反射仍发布为业务结果 void，端口和 BorrowSafe 约束不变。业务失败在节点边界转换为 `invocation_failed` 并保留原始原因，不通过异常传递；`Resources::mesh` 和 `Context::mesh` 同样通过 noexcept Result 返回资源拒绝。未连接的单输入端口收到空几何。
+### 自有语言节点与正式类 Wrangle
 
-求值器只在成功后发布候选 Geometry，失败保留旧发布并阻断下游，修正输入后可恢复。直接调用节点不额外承诺可写引用的事务回滚：较晚失败时 output 可能已部分改变，仍可销毁；调用者如需保旧，应像求值器一样提供独立候选。
-
-### 原生与自有语言列节点
-
-属性节点派生自 `procedural.PointNode`，端口固定为 `input` → `output`。原生类型提供 `Result<void> evaluate(...) const noexcept`，经 `Runtime::call` 调用；源码 class 提供同步 `void evaluate(...)`，经 Program 的 `<类名>.evaluate` 入口调用。两者共用列绑定计划，不需要为原生列节点提供 Program，也不增加另一套类型或借用 ABI。无声明时仍按参数名绑定 point 列：
-
-- `const procedural.Context&`（最多一个）是上下文；
-- `Array<T>& name` 是输出列：输入有 point 层的同名同类型列就写它的独占副本，没有就按 T 的默认值（零，四元数为单位旋转）新建，新列按约定名取用途，所以用途与类型不符（例如 `Array<float>& N`）时失败；
-- `const Array<T>& name` 是输入列，借用共享的列本身，不复制；没有这一列时失败。
-- 其他参数形式、没有参数、没有 `evaluate` 方法、带结果或不是同步方法的类型，求值时失败（`invalid_definition`），它的下游被阻断，其他节点照常求值。至少借用上下文或一列，`evaluate` 才是同步值区间，编译器在值区间里拒绝写 `self`。
-
-公开 String 字段可以用以下三个 Meta 键覆盖对应参数的绑定；原生 AFIELD 与 Source 字段属性发布同一份 Runtime 元数据：
-
-```cpp
-AFIELD(Meta("procedural.bind", "evaluate.values"),
-       Meta("procedural.layer", "point"), Meta("procedural.kind", "attribute"))
-String attribute = String::literal<"pscale">();
-// evaluate(..., Array<float>& values) const noexcept
-```
-
-- `procedural.bind` 必须指向唯一的非 Context 列参数，一个参数至多由一个字段选择。`procedural.layer` 显式为 point / vertex / primitive / detail / instance；`procedural.kind` 为 attribute 或 group。缺键、未知 procedural 键、非 String 字段或错误目标均返回 `invalid_definition`，不静默回到参数名。其他命名空间的 Meta 不由本模块解释。
-- 类型与读写权限只来自真实签名，支持已注册的 bool、int32、uint32、float 及 float 数学列；不强转、不隐式 Promote。名字全 Geometry 唯一，已有列的层和类型必须匹配，已有用途保持；新列按 Geometry 的约定名规则确定用途。String 列仍不在列内核签名范围内。
-- group 必须绑定 `const Array<bool>&`。字段值为空时提供该层长度的全 true 临时 mask，不写回 Geometry；非空时必须是输入已有的同层 bool 列。算法负责只写选中元素：已有列的组外值保持，新列的组外值保留类型默认值。输出 GroupBox 的组名不能为空，与此选择语义不同。
-- 每次执行先复制所有选择名，并拒绝多个可写参数选择同名列；所有只读列和显式组从输入解析，之后才准备输出 COW 与增列，最后构造 `Argument::borrow` 并同步调用。多个读别名允许，读写同名时读到旧输入，不会观察本次输出的写入；不能先新建输出再冒充缺失输入。
-- 类型计划只存字段身份、参数序号和静态签名，不保存实例的上次列名或列地址。String 改动自然改变现有内容键；Source revision 改变时重绑其计划，code 身份决定结果复用。Meta 改动仍按 Runtime 定义合同要求重建。错误沿既有 Result 传播，准备或调用失败均不发布候选。
-
-输出就是输入几何加上改写过的列。借用的列不能改变长度，各层元素数保持；拓扑修改仍由 Geometry 端口节点完成。原生内核不得保留引用、修改列结构或重入 Source。源码 `evaluate` 可读 `self` 的标量/数学字段，不写 `self`；String 选择由宿主先复制，不开放源码对象 String 借用。两种调用都在 Runtime 线程上串行执行，不给节点盖章。
-
-Source 节点的业务失败统一调用继承的 `self.fail(message)`：`PointNode::fail(const String&) const noexcept` 是 BorrowSafe 原生成员，返回 `invocation_failed`，消息由 Error 拥有；不保留借用、不修改对象、不 GC 或重入。失败沿现有 Entry 清理与候选丢弃路径传播，不用故意越界、非法转换或 contract-fatal 代替业务错误。正常执行不调用此入口。
-
-[assets/engine/procedural](../../../assets/engine/procedural) 里的文件是引擎源码模块，`ProjectCode::snapshot` 把它们并进每个工程快照（编辑器和 Play 同一处），快照路径带 `engine/` 前缀；`ProjectCode` 第一次构建时在工程的 Runtime 中注册本模块的原生类型，因为这些文件里的类派生自 `procedural.PointNode`。这里只能声明 `procedural.` 下的名字，工程文件不能在 `procedural.` 下声明；函数声明和调用都写全名，工程源码也可以调用，例如 `procedural.hash(x)`：
+工程或引擎中的任意 `.source` `class Name : procedural.Node` 只要声明合法的同步 `void process(...)` 即成为正式 SOP 节点（公开字段为节点参数，函数体内显式书写循环或多步逻辑，不经过文本宏拼接）。[assets/engine/procedural](../../../assets/engine/procedural) 里的文件是引擎源码模块，`ProjectCode::snapshot` 把它们并进每个工程快照（带 `engine/` 前缀），并在首次构建时向工程 Runtime 注册本模块原生类型：
 
 | 文件 | 内容 |
 | --- | --- |
-| random.source | 全局函数 `procedural.hash`、`hash2`、`unit`、`random_vector`，与 [random.hpp](../../../modules/engine/procedural/include/procedural/random.hpp) 算法相同，所以源码节点和 C++ 节点取到相同的随机数；`random_vector(x)` 由 x 连续哈希三次，每个分量均匀落在 [-1, 1) |
-| orient.source | 全局函数 `procedural.frame_rotation`（三根正交轴构成的旋转，按 `math.rotation_matrix` 的行约定）、`shortest_arc`（+Z 到给定单位向量的最短旋转，正对 −Z 时绕 X 转半圈）和 `align_to_normal`（Copy to Points 从 N 与 up 推出的朝向：+Z 沿 N，+Y 朝 up；up 为零、与 N 平行或不是有限值时取最短旋转；N 为零时不旋转，不是有限值时结果也不是有限值） |
-| jitter.source | `procedural.Jitter`：amount、axis_scale（按轴缩放）、seed；P 的每个分量加上 `random_vector(hash2(hash2(图种子, seed), id))` 的对应分量 × amount × axis_scale，读 `id`，所以偏移跟随点 |
-| random_scale.source | `procedural.RandomScale`：minimum、maximum、seed；pscale 取 lerp(minimum, maximum, unit(hash2(hash2(图种子, seed), id)))，读 `id` |
-| normal_align.source | `procedural.NormalAlign`：up；按 `align_to_normal(N, up)` 写 orient，所以 NormalAlign 之后的 Copy to Points 与直接用 N 和同值 up 列的结果相同，中间可以再改 orient |
-| noise.source | `procedural.Noise`：3D value noise，Vector3 空间输入、point float 输出；`lattice_bits` / `lattice_value` 固定有符号格点编码与角值 |
-| remap.source | `procedural.Remap`：point float 线性映射，double 中间计算，允许反向与外推，不夹值 |
+| random.source | 全局函数 `procedural.hash`、`hash2`、`unit`、`random_vector`，与 [random.hpp](../../../modules/engine/procedural/include/procedural/random.hpp) 算法相同；`random_vector(x)` 由 x 连续哈希三次，每个分量均匀落在 [-1, 1) |
+| orient.source | 全局函数 `procedural.frame_rotation`、`shortest_arc` 与 `align_to_normal`（+Z 沿 N，+Y 朝 up；up 为零、与 N 平行或非有限时取最短旋转；N 为零时不旋转，非有限时结果非有限） |
+| jitter.source | `procedural.Jitter`：`group`、`amount`、`axis_scale`、`seed`；校验参数有限性，优先读 `[In("id", Optional)]`，缺 `id` 列时回退到点序号 `i`，只偏移组内点 |
+| random_scale.source | `procedural.RandomScale`：`group`、`minimum`、`maximum`、`seed`；校验范围端点有限性，优先读可选 `id` 列否则回退点序号 `i`，写组内 `pscale` |
+| normal_align.source | `procedural.NormalAlign`：`group`、`up`；校验 `up` 与组内输入 `N` 有限性，按 `align_to_normal(N, up)` 写 `orient`（自动获得 `Usage::orientation`） |
+| noise.source | `procedural.Noise`：`[RunOver] layer`（默认 `point`）、`source_attribute="P"`、`attribute="noise"`、`group=""`、`seed=0`、`frequency=1`、`offset=(0,0,0)`；3D value noise，`lattice_bits` 通过零开销 `math.as_uint` 编码二补码格坐标 |
+| remap.source | `procedural.Remap`：`[RunOver] layer`（默认 `point`）、`source_attribute="noise"`、`attribute="pscale"`、`group=""` 及四端点；double 中间线性映射，允许反向与外推，不夹值 |
 
-参数用源码字段的元数据（Label、DESC、Min/Max、LockMin）声明，Parameters 面板经 `FieldInfo` 读取。
+### Noise / Remap 数值契约
 
-### Noise / Remap
+两者均派生自 `procedural.Node`，支持 `[RunOver]` 动态选择几何层、可选组遮罩以及同名列读写（读旧输入），不改变元素数。只读缺列或异层/异型报错；组外旧值不变，新建输出列的组外值为 0。没有选中元素时仍校验节点参数，不读取未选元素的数值。
 
-两者都是 Source PointNode，复用上面的绑定、组和 COW 合同，不改变点数。只读缺列或异层/异型报错；同名 Remap 读旧输入。组外旧值不变，新建输出列的组外值为 0。没有选中元素时仍校验节点参数，不读取未选点的数值。
+Noise 在输入空间按 float 分步计算 `q=position*frequency+offset`，不自动转世界空间或融合乘加。frequency 是每单位坐标的格数，允许 0（常量场）及负数（镜像）；offset 是缩放后的格坐标偏移。参数须有限，选中元素的 q 每轴须在 `[−2147483648,2147483648)` 内，NaN/Inf 或越界整节点失败，不 wrap、夹坐标或重定位。格子取 `floor(q)`，经 `math.as_uint(int(floor))` 取 32 位二补码位模式；复用 H=`hash2`：`s=H(graph_seed,node_seed)`，角值 `unit(H(H(H(s,bits(x)),bits(y)),bits(z)))`；小数 f=`q−floor(q)` 的权重为 `smoothstep(0,1,f)`，八角按 X→Y→Z 三线性插值，最终 float 显式 clamp 到 `[0,1]`。
 
-| 节点 | 默认字段 |
-| --- | --- |
-| Noise | `source_attribute="P"`（point Vector3）、`attribute="noise"`（point float）、`group=""`；`seed=0`、`frequency=1`、`offset=(0,0,0)` |
-| Remap | `source_attribute="noise"`、`attribute="pscale"`（均为 point float）、`group=""`；`input_min=0`、`input_max=1`、`output_min=0`、`output_max=1` |
-
-Noise 在输入空间按 float 分步计算 `q=position*frequency+offset`，不自动转世界空间或融合乘加。frequency 是每单位坐标的格数，允许 0（常量场）及负数（镜像）；offset 是缩放后的格坐标偏移。参数须有限，选中点的 q 每轴须在 `[−2147483648,2147483648)` 内，NaN/Inf 或越界整节点失败，不 wrap、夹坐标或重定位。大 float 坐标会失去亚格精度。
-
-格子取 `floor(q)`，负格坐标按 int32 二补码编码；Source 的受检 `uint(负 int)` 不能代替位编码，负数用 `~uint(-(i+1))`。复用 H=`hash2`：`s=H(graph_seed,node_seed)`，角值 `unit(H(H(H(s,bits(x)),bits(y)),bits(z)))`；不混入点下标/id。小数 f=`q−floor(q)` 的权重为 `f*f*(3−2*f)`，八角按 X→Y→Z 三线性插值，每次 lerp 使用 `a*(1−t)+b*t`。角值在 `[0,1)`，最终 float 显式 clamp 到 `[0,1]` 以界定插值舍入端点。哈希、编码、权重、轴序均为首发内容合同，不能静默改算法；不提供导数、周期或其他噪声族。
-
-Remap 四端点须有限、输入两端不同，输出两端可以相同。按 `out_min + ((x−in_min)/(in_max−in_min))*(out_max−out_min)` 用 double 运算后转 float，避免有限 float 端点相减溢出；最终 double 结果超出有限 float 范围或非有限则整节点失败，不饱和。此检查也拒绝选中元素的 NaN/Inf 输入。允许反向区间及外推：0…1→2…6 时 0.25→3、1.5→8。
+Remap 四端点须有限、输入两端不同，输出两端可以相同。按 `out_min + ((x−in_min)/(in_max−in_min))*(out_max−out_min)` 用 double 运算后转 float，避免有限 float 端点相减溢出；最终 double 结果超出有限 float 范围或非有限则整节点失败，不饱和。允许反向区间及外推：0…1→2…6 时 0.25→3、1.5→8。
 
 ## 求值器
 
-`Evaluator(runtime, graph, resources, program, cache_bytes)` 在 Runtime 线程上同步求值 display 节点及其上游，`evaluate()` 之后 `output()` 是 display 节点的第一个输出，`status(node)` 给出每个节点的错误、求值次数、缓存命中次数及可选耗时 `time`。`evaluate(record_timings = false)` 默认不读计时时钟；传入 `true` 才记录实际执行节点的耗时，包含参数准备及失败执行。`time` 表示该节点最近一次实际执行，而非本轮图求值：从未执行或最近一次执行未开启计时时为空；无变化、缓存命中、失败键抑制和未进入执行的绑定/上游失败均保留原值，不沿缓存继承别的节点耗时。计时开关不进入键、不判脏，也不强制重算。`program` 提供自有语言节点的代码，可以为空，这时自有语言节点失败（`unsupported_operation`）；它要比求值器活得久。
+`Evaluator(runtime, graph, resources, program, cache_bytes)` 在 Runtime 线程上同步求值 display 节点及其上游。`evaluate()` 之后：
+- 若当前 display 节点及其上游求值成功，`output()` 与 `last_valid_output()` 均指向最新几何输出；
+- 若未设置 display，两者均为空；
+- **若当前 display 链路存在失败节点**，`output()` 明确返回 `nullptr`（绝不把过期的陈旧几何伪装成当前有效结果），而 `last_valid_output()` 保留此前最近一次成功的输出供编辑器预览回退。
 
-- **发现变化**：先取 `change_cursor()`，再读取。图在游标之后被写过时重读节点列表、display 和种子；节点是新的或被写过时，重读它的参数和连接，算出本地键。本地键和连接都没变的写入（例如什么也没改的可写借用）不触发求值；什么都没变、资源版本和 `Program::revision()` 也没变时直接返回。`Program::revision()` 变了就重新绑定自有语言节点的入口，代码身份没变的节点键也不变，不会重算。求值器只用 const 借用、`read` 和 const 接收者的 `evaluate`，不给图和节点盖章。
-- **键**：节点的键是精确的字节串：类型（已发布 `TypeInfo` 的地址）、每个公开字段的内容、带上下文的节点再加图种子，自有语言节点再加入口的代码身份（`EntryInfo::code`：类的方法，或它直接、间接写到的全局函数、类型声明和常量变了才换新值，所以只改 Jitter 的方法体只重算 Jitter 节点和下游；Runtime 新注册值类型时所有 code 都换，节点缓存全部失效），以及每个连接的（输入端口，上游输出号，上游结果序号）。每次真正执行 evaluate 得到一个新的结果序号，所以上游结果变了下游的键就变；内容相同的两个节点共享同一个缓存结果。参数可以是标量、枚举、数学值和普通 plain 记录、String，以及这些类型的 Array，其他字段类型使节点失败。普通记录按公开字段递归编码，不把 padding 字节当作参数；数学值保留紧凑字节表示。键只在本进程、本 Runtime 和本 Program 内有效，不能持久化。
-- **缓存**：按键查找结果，以条目为单位按最近使用淘汰，条目大小为输出的 `bytes()` 加两份键（条目与查找表各一份）、依赖表和条目开销，总量不超过 `cache_bytes`（默认 256 MiB）。撤销把参数改回旧值时直接命中旧结果，不再求值；节点持有的当前结果不受淘汰影响。
+`status(node)` 给出每个节点的错误、求值次数、缓存命中次数及可选耗时 `time`。`evaluate(record_timings = false)` 默认不读计时时钟；传入 `true` 才记录实际执行节点的耗时，包含参数准备及失败执行。`time` 表示该节点最近一次实际执行，而非本轮图求值。`program` 提供自有语言节点的代码，可以为空，这时自有语言节点失败（`unsupported_operation`）；它要比求值器活得久。
+
+- **发现变化**：先取 `change_cursor()`，再读取。图在游标之后被写过时重读节点列表、display 和种子；节点是新的或被写过时，重读它的参数和连接，算出本地键。本地键和连接都没变的写入不触发求值；什么都没变、资源版本和 `Program::revision()` 也没变时直接返回。`Program::revision()` 变了就重新绑定自有语言节点的 `.process` 入口，代码身份没变的节点键也不变，不会重算。求值器只用 const 借用、`read` 和同步 `process` 调用，不给图和节点盖章。
+- **键**：节点的键是精确的字节串：类型（已发布 `TypeInfo` 的地址）、每个公开字段的内容、带上下文的节点再加图种子，自有语言节点再加入口的代码身份（`EntryInfo::code`），以及每个连接的（输入端口，上游输出号，上游结果序号）。每次真正执行 `process` 得到一个新的结果序号，所以上游结果变了下游的键就变；内容相同的两个节点共享同一个缓存结果。
+- **缓存**：按键查找结果，以条目为单位按最近使用淘汰，总量不超过 `cache_bytes`（默认 256 MiB）。撤销把参数改回旧值时直接命中旧结果，不再求值。
 - **资源**：节点经 Context 读到的网格连同解析结果记在结果上。`Resources::revision()` 变化后，复用结果之前重新解析这些键；解析结果不同就重新求值，相同就继续复用。
-- **失败**：节点失败时它的下游不求值，状态记为输入失败，`output()` 保留上一次的结果。失败的键在资源版本不变时不再重试，键变化（例如参数改回）或资源版本变化后再试。
-- **调度**：每个需要的节点每次求值最多调用一次 evaluate，按上游在前的顺序执行。每次发现变化后，对全图连接检查来源输出号；环检测仍只遍历 display 的上游闭包。
+- **失败与根因传播**：节点失败时它的下游不求值，下游节点的 `status(node)->error` 直接携带失败输入端口名及最上游失败节点的类型与原始错误原因（`Input '<port>' failed (<RootType>: <reason>).`），避免多层链路只剩空泛提示。失败的键在资源版本不变时不再重试，键变化或资源版本变化后再试。
+- **调度**：每个需要的节点每次求值最多调用一次 `process`，按上游在前的顺序执行。每次发现变化后，对全图连接检查来源输出号；环检测仍只遍历 display 的上游闭包。
 
 ### 通用反射编辑后的图校验
 
-通用 `apply_reference_changes` 仍允许把 display 或 inputs 写成图外节点，不提供图的写侧保证。`contents` 返回只读 `Contents` 快照（有序 nodes 与成员索引），检查 display；`inputs(runtime, contents, node)` 检查节点及其来源都属于快照，并检查引用序列和连接记录等长。成员或 display 改变后须刷新快照。读取、保存和求值遇到这些无效结构返回 `argument_mismatch`，修复后恢复；`set_display`、`disconnect` 和 `remove_node` 使用内部原始读取，不因旧的图外引用阻止修复。长度不一致须先修复引用序列，不能靠忽略多余引用继续读取。
+通用 `apply_reference_changes` 仍允许把 display 或 inputs 写成图外节点，不提供图的写侧保证。`contents` 返回只读 `Contents` 快照（有序 nodes 与紧凑哈希成员索引），检查 display；`inputs(runtime, contents, node)` 检查节点及其来源都属于快照，并检查引用序列和连接记录等长。成员或 display 改变后须刷新快照。读取、保存和求值遇到这些无效结构返回 `argument_mismatch`，修复后恢复；`set_display`、`disconnect` 和 `remove_node` 使用内部原始读取，不因旧的图外引用阻止修复。
 
-输出端口有效性由持有当前端口的消费者检查：求值器复用唯一的 types 缓存与 `state.ports`，保存沿原有逐边 `ports()` 读取输出名。`inputs` 不读取端口。端口来自 Runtime 已发布的不可变 TypeInfo；现有对象不支持原地类型布局迁移，Source 兼容发布不改变签名，PointNode 的图端口固定为 input/output。Source 重发布即使不给下游盖章，也由 Program revision 触发全图输出检查及内核重绑定；新节点按其 TypeId 查现有缓存。声明或绑定故障仍记入 NodeStatus；只有端口已知而输出号越界才成为外层拓扑错误。
+输出端口有效性由持有当前端口的消费者检查：求值器复用稳定的节点计划缓存与 `state.plan`，保存沿逐边 `ports()` 读取输出名。端口统一来自 Runtime 已发布的不可变 `TypeInfo`（`methods` 或 `described_methods`）。Source 重发布即使不给下游盖章，也由 Program revision 触发全图输出检查及内核重绑定；声明或绑定故障仍记入 `NodeStatus`，只有端口已知而输出号越界才成为外层拓扑错误。
 
 脏图只为本轮重读或重绑定的节点暂存 local、inputs、类型与 ports、读取故障，先检查全部连接及 display 闭包的环，再写回这些字段、成员和 cursor；失败不推进这些状态或结果缓存，旧发布保留，连续无修改求值仍失败。成员变化时，未写过的节点用已缓存的 inputs 对新集合复核，不重读 Runtime。不可变类型元数据仍可按需记入现有 types 缓存，不创建第二份端口缓存。只改一个节点参数时仅重新生成该节点的 local 及连接，其他节点原地借读；重绑定未写节点才复制其已有连接。候选量随改动节点及其数据大小增长，不是整表 O(V) 复制，不复制旧 local、NodeStatus、结果条目或 Geometry 缓冲。脏图的发现和全图拓扑检查仍需 O(V+E) 遍历。
 
@@ -250,23 +225,22 @@ Remap 四端点须有限、输入两端不同，输出两端可以相同。按 `
 
 ## 验收
 
-`procedural_acceptance`（无窗口，[acceptance/procedural/main.cpp](../../../acceptance/procedural/main.cpp)）保留两个独立真值代表，不以被测操作自己的输出生成期望：
+`procedural_acceptance`（无窗口，[acceptance/procedural/main.cpp](../../../acceptance/procedural/main.cpp)）覆盖端到端真值契约：
 
 - **Ray**：y=0 地面上方另有一块 y=2、朝 +Y 的三角形；从 (1,5,1) 竖直向下的射线停在 (1,2,1)，命中 hitprim 2、hittri 0，距离 3、重心 uv (.25,.25)、法线 +Y。
-- **图求值**：原生图 Grid（3×2、3 行 4 列）→ Transform(+1,0,0) → Merge ← Line → CopyToPoints 发布 14 个实例（12 个格点加 2 个线点），首个实例平移为 (−.5,0,−1)。
+- **原生图求值**：Grid（3×2、3 行 4 列）→ Transform(+1,0,0) → Merge ← Line → CopyToPoints 发布 14 个实例（12 个格点加 2 个线点），首个实例平移为 (−.5,0,−1)。
+- **空间与混合 C++/`.source` SOP 契约**：`import_mesh` 正负零缝焊接、`Bvh::acquire` 跨 COW 副本缓存复用与写后失效、`Geometry::set` 用途保持、`scatter` 最小间距空间哈希；`Grid → GroupBox → Jitter → RandomScale → NormalAlign → 自定义 .source SOP → Transform → CopyToPoints`（验证无 `id` 列回退、组遮罩、`Usage::orientation` 旋转复合及实例发布剔除）；`Box → Noise → Promote → Remap`（验证 `[RunOver]` 图元层求值、同名读写、失败时 `output()==nullptr` 与 `last_valid_output()` 保旧、下游根因错误传播及恢复后缓存命中）。
 
-跨模块工程 Source 消费的 K5 验收由 Editor 的 `project_execution.cpp` 负责，此入口不重复。`Geometry::bytes()` 的生产缓存预算接口不随容量观察用例删除。
+图文件 `load_graph` / `save_graph` 对 C++ 与 `.source` 节点的规范往返与缺失类型/失效连接宽容加载由 `editor_document_acceptance`（[acceptance/editor/document.cpp](../../../acceptance/editor/document.cpp)）覆盖；跨模块工程 Source 消费由 `project_integration_acceptance` 覆盖。
 
 ```powershell
 . ./tools/enter-dev.ps1
 cmake --build --preset release --target procedural_acceptance
 ```
 
-图文件的读取、保存与 Missing 类型往返目前没有自动验收；严格结构规则仍如上，旧版本升级属于外部工具，不在加载器内做兼容迁移。
-
 ## 测量
 
-`atelier_procedural_acceptance --profile-procedural <新的绝对路径.json>` 只输出数值，不属于验收。它在一块 32768 个三角形的起伏地形上构建典型生成图：MeshImport → Scatter（约 5 万点），Grid（224 × 224）→ Transform 抬高 → Ray 投射回地形，两路 Merge 后 CopyToPoints 得到约 10 万实例，再按 32 m 分块发布。报告各项 9 次的中位数（先预热 2 次）：100 万点的撒点与变换，地形 BVH 的构建与 224 × 224 条竖直射线的查询，冷启动整图求值与各节点耗时，无变化的求值，改 Scatter 种子、改 Ray 距离、改 CopyToPoints 变体属性名之后的重算，撤销到已缓存的种子，以及首次发布与逐块复用的再发布。测量时机器应空闲。
+`atelier_procedural_acceptance --profile-procedural <新的绝对路径.json>` 只输出数值，不属于验收。它在一块 32768 个三角形的起伏地形上构建典型生成图：MeshImport → Scatter（约 5 万点），Grid（224 × 224）→ Transform 抬高 → Ray 投射回地形，两路 Merge 后 CopyToPoints 得到约 10 万实例，再按 32 m 分块发布。报告各项 9 次的中位数（先预热 2 次）：100 万点的撒点、变换与自有语言 SOP 内核（`Jitter`、`RandomScale`、`Noise`、`Remap`），地形 BVH 的构建与 224 × 224 条竖直射线的查询，冷启动整图求值与各节点耗时，无变化的求值，改 Scatter 种子、改 Ray 距离（复用 `Bvh::acquire` 缓存）、改 CopyToPoints 变体属性名之后的重算，撤销到已缓存的种子，以及首次发布与逐块复用的再发布。测量时机器应空闲。
 
 同一入口另有两档闭合 Volume 负载：**Sphere(r=5,M=32,L=32)** 的 1,984 扇形三角，以及 **M128/L128** 的 32,512 三角；两者都为 1,000 格、10,000 筛选前候选（origin=0/h=1/density=10/seed=3）。小档使用 `volume_*` 键，大档使用 `volume_large_*`；报告输入参数、构建配置、预热/样本数、格数、C、T、实际保留点数和各方向 attempt/retry/fallback 计数，固定输入各轮计数须一致。`retry_rate` 为首方向重试数/C，表面排除的候选仍计入 C。
 

@@ -28,7 +28,7 @@ void run(const std::filesystem::path& root) {
     take(editor::write_file(component, "class project.Move : world.Component { float speed=2.0f; void tick(float dt) {"
                                        "self.translate_owner(travel(self.speed,dt),0.0f,0.0f); } }"));
     auto loaded = editor::load_project_scene(project, take(assets::read_file(root / "Content/Scenes/Main.scene")));
-    require(loaded.session != nullptr, "Project Source failed to load.");
+    require(loaded.session != nullptr, loaded.error ? loaded.error->message : "Project Source failed to load.");
     auto& document = *loaded.session;
     complete(document.add_entity());
     const auto entity = document.selection().entity;

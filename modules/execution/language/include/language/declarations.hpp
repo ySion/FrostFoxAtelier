@@ -18,6 +18,18 @@ struct EnumeratorAttribute {
     bool operator==(const EnumeratorAttribute&) const = default;
 };
 
+struct MethodParameter {
+    std::string name;
+
+    TypeName type;
+
+    ParameterPassing passing{ParameterPassing::value};
+
+    SourcePosition position;
+
+    std::vector<std::pair<std::string, std::string>> metadata;
+};
+
 // Unresolved source definitions. Runtime alone resolves identities and layouts.
 struct TypeDeclaration {
     SourcePosition position;
@@ -57,5 +69,8 @@ class Tokens;
 std::expected<TypeName, Diagnostic> parse_type_name(Tokens&);
 
 std::expected<TypeDeclaration, Diagnostic> parse_type_declaration(Tokens&);
+
+std::expected<void, Diagnostic> parse_parameter_attributes(Tokens&, bool allow_attributes,
+                                                           std::vector<std::pair<std::string, std::string>>& metadata);
 }
 }

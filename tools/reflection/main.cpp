@@ -141,7 +141,7 @@ llvm::Expected<Config> read_config(const char* path) {
     return result;
 }
 
-enum class MarkerKind { object, record, enumeration, enumerator, field, method, body };
+enum class MarkerKind { object, record, enumeration, enumerator, field, method, parameter, body };
 
 struct Marker {
     MarkerKind kind;
@@ -206,6 +206,8 @@ struct Method {
     std::vector<std::string> parameters{};
 
     std::vector<std::optional<std::string>> defaults{};
+
+    std::vector<std::vector<std::pair<std::string, std::string>>> parameter_metadata{};
 };
 
 struct Enumerator {
@@ -357,6 +359,81 @@ struct State {
                     }
                 }
                 metadata->emplace_back(std::move(values[0]), std::move(values[1]));
+            } else if ((name == "In" || name == "Out" || name == "InOut" || name == "Group") && i < tokens.size() &&
+                       tokens[i].is(tok::l_paren)) {
+                ++i;
+                if (i == tokens.size() || tokens[i].is(tok::r_paren)) {
+                    error(marker.location, name + "(...) requires at least one argument.");
+                    return {};
+                }
+                bool first = true;
+                while (i < tokens.size()) {
+                    if (first && tokens[i].is(tok::string_literal)) {
+                        StringLiteralParser literal(llvm::ArrayRef<Token>(&tokens[i++], 1),
+                                                    compiler->getPreprocessor());
+                        if (literal.hadError) {
+                            failed = true;
+                            return {};
+                        }
+                        value = literal.GetString().str();
+                        if (name != "Group" && value.empty()) {
+                            error(marker.location, "Reflection option " + name + " requires a nonempty string.");
+                            return {};
+                        }
+                        if (std::any_of(value.begin(), value.end(),
+                                        [](unsigned char c) { return c < 32 || c == 127; })) {
+                            error(marker.location, "Reflection option strings must contain no control characters.");
+                            return {};
+                        }
+                        result.emplace("__explicit_role_name", "1");
+                    } else if (tokens[i].is(tok::identifier)) {
+                        const auto sub = tokens[i++].getIdentifierInfo()->getName().str();
+                        if (std::find(allowed.begin(), allowed.end(), sub) == allowed.end() || result.contains(sub)) {
+                            error(marker.location, "Unknown or duplicate reflection option: " + sub);
+                            return {};
+                        }
+                        if (sub == "Optional") {
+                            result.emplace(sub, "");
+                        } else if ((sub == "From" || sub == "Layer") && i < tokens.size() && tokens[i].is(tok::equal)) {
+                            ++i;
+                            if (i == tokens.size() || !tokens[i].is(tok::string_literal)) {
+                                error(marker.location,
+                                      "Reflection option " + sub + " requires an ordinary string literal.");
+                                return {};
+                            }
+                            StringLiteralParser literal(llvm::ArrayRef<Token>(&tokens[i++], 1),
+                                                        compiler->getPreprocessor());
+                            if (literal.hadError) {
+                                failed = true;
+                                return {};
+                            }
+                            auto sub_val = literal.GetString().str();
+                            if (sub_val.empty() || std::any_of(sub_val.begin(), sub_val.end(),
+                                                               [](unsigned char c) { return c < 32 || c == 127; })) {
+                                error(marker.location, "Reflection option " + sub +
+                                                           " requires a nonempty string without control characters.");
+                                return {};
+                            }
+                            result.emplace(sub, std::move(sub_val));
+                        } else {
+                            error(marker.location, "Invalid option inside " + name + "(...): " + sub);
+                            return {};
+                        }
+                    } else {
+                        error(tokens[i].getLocation(), "Expected a string literal or option inside " + name + "(...).");
+                        return {};
+                    }
+                    first = false;
+                    if (i < tokens.size() && tokens[i].is(tok::r_paren)) {
+                        ++i;
+                        break;
+                    }
+                    if (i == tokens.size() || !tokens[i++].is(tok::comma) || i == tokens.size() ||
+                        tokens[i].is(tok::r_paren)) {
+                        error(marker.location, "Expected ',' or ')' inside " + name + "(...).");
+                        return {};
+                    }
+                }
             } else if (i < tokens.size() && tokens[i].is(tok::equal)) {
                 ++i;
                 if (i == tokens.size() || !tokens[i].is(tok::string_literal)) {
@@ -371,7 +448,8 @@ struct State {
                 value = literal.GetString().str();
                 const bool presentation = name == "Label" || name == "Category";
                 const bool description = name == "DESC";
-                if (!presentation && !description && value.empty()) {
+                const bool allow_empty = presentation || description || name == "Group";
+                if (!allow_empty && value.empty()) {
                     error(marker.location, "Reflection option " + name + " requires a nonempty string.");
                     return {};
                 }
@@ -393,13 +471,16 @@ struct State {
                     error(marker.location, "Reflection option strings must contain no control characters.");
                     return {};
                 }
-            } else if (name != "Hidden" && name != "Transient" && name != "ReadOnly" && name != "Flags" &&
-                       name != "BorrowSafe" && name != "LockMin" && name != "LockMax") {
+            } else if (name != "Hidden" && name != "Transient" && name != "ReadOnly" && name != "RunOver" &&
+                       name != "Flags" && name != "BorrowSafe" && name != "LockMin" && name != "LockMax" &&
+                       name != "Port" && name != "In" && name != "Out" && name != "InOut" && name != "Group" &&
+                       name != "Optional") {
                 error(marker.location, "Reflection option " + name + " requires a value.");
                 return {};
             }
-            if ((name == "Hidden" || name == "Transient" || name == "ReadOnly" || name == "Flags" ||
-                 name == "BorrowSafe" || name == "LockMin" || name == "LockMax") &&
+            if ((name == "Hidden" || name == "Transient" || name == "ReadOnly" || name == "RunOver" ||
+                 name == "Flags" || name == "BorrowSafe" || name == "LockMin" || name == "LockMax" || name == "Port" ||
+                 name == "Optional") &&
                 !value.empty()) {
                 error(marker.location, name + " is a flag, without a value.");
                 return {};
@@ -465,6 +546,8 @@ public:
             kind = MarkerKind::field;
         else if (spelling == "AFUNCTION")
             kind = MarkerKind::method;
+        else if (spelling == "APARAM")
+            kind = MarkerKind::parameter;
         else if (spelling == "AGENERATED_BODY")
             kind = MarkerKind::body;
         if (!kind)
@@ -1147,11 +1230,13 @@ void members(State& state, Type& type, ASTContext& context) {
         std::vector<std::pair<std::string, std::string>> metadata;
         const auto options =
             state.options(*marker,
-                          {"Name", "Label", "Category", "DESC", "Hidden", "Transient", "ReadOnly", "Strong", "Weak",
-                           "Sequence", "Min", "Max", "LockMin", "LockMax", "HardMin", "HardMax", "Meta"},
+                          {"Name", "Label", "Category", "DESC", "Hidden", "Transient", "ReadOnly", "RunOver", "Strong",
+                           "Weak", "Sequence", "Min", "Max", "LockMin", "LockMax", "HardMin", "HardMax", "Meta"},
                           &metadata);
         if (!options)
             continue;
+        if (options->contains("RunOver"))
+            metadata.emplace_back("procedural.role", "run_over");
         if (field->isBitField() || field->isAnonymousStructOrUnion() || field->getType().isConstQualified() ||
             field->getType().isVolatileQualified()) {
             state.error(field->getLocation(), "AFIELD requires a named, mutable, addressable data member.");
@@ -1339,6 +1424,79 @@ void members(State& state, Type& type, ASTContext& context) {
         const unsigned first_param = contextual ? 3u : 0u;
         for (unsigned i = first_param; i < method->getNumParams(); ++i) {
             const auto* param_decl = method->getParamDecl(i);
+            std::vector<std::pair<std::string, std::string>> param_meta;
+            if (auto* param_marker = state.prefix(*param_decl, MarkerKind::parameter)) {
+                const auto param_options = state.options(
+                    *param_marker, {"Port", "In", "Out", "InOut", "Group", "From", "Layer", "Optional", "Meta"},
+                    &param_meta);
+                if (!param_options) {
+                    valid = false;
+                    break;
+                }
+                constexpr std::array<std::pair<const char*, const char*>, 5> roles{
+                    {{"Port", "port"}, {"In", "in"}, {"Out", "out"}, {"InOut", "inout"}, {"Group", "group"}}};
+                std::string role;
+                std::string explicit_name;
+                bool has_explicit_name = false;
+                for (const auto& [option_name, role_name] : roles) {
+                    const auto found = param_options->find(option_name);
+                    if (found == param_options->end())
+                        continue;
+                    if (!role.empty()) {
+                        state.error(param_marker->location, "APARAM supports at most one procedural role.");
+                        valid = false;
+                        break;
+                    }
+                    role = role_name;
+                    if (!found->second.empty() || param_options->contains("__explicit_role_name") ||
+                        std::string_view{option_name} == "Group") {
+                        if (param_options->contains("__explicit_role_name"))
+                            has_explicit_name = true;
+                        for (std::size_t t = 0; t + 1 < param_marker->arguments.size(); ++t)
+                            if (param_marker->arguments[t].is(tok::identifier) &&
+                                param_marker->arguments[t].getIdentifierInfo()->getName() == option_name &&
+                                param_marker->arguments[t + 1].is(tok::equal))
+                                has_explicit_name = true;
+                        explicit_name = found->second;
+                    }
+                }
+                if (!valid)
+                    break;
+                if (!role.empty()) {
+                    if (role == "port" && (param_options->contains("From") || param_options->contains("Layer") ||
+                                           param_options->contains("Optional"))) {
+                        state.error(param_marker->location, "Port parameters do not accept From, Layer or Optional.");
+                        valid = false;
+                        break;
+                    }
+                    if (has_explicit_name && param_options->contains("From")) {
+                        state.error(param_marker->location,
+                                    "Specify either a literal attribute name or From, not both.");
+                        valid = false;
+                        break;
+                    }
+                    if (param_options->contains("Optional") && role != "in") {
+                        state.error(param_marker->location, "Optional applies only to In parameters.");
+                        valid = false;
+                        break;
+                    }
+                    param_meta.emplace_back("procedural.role", role);
+                    if (has_explicit_name)
+                        param_meta.emplace_back("procedural.name", std::move(explicit_name));
+                    if (param_options->contains("From"))
+                        param_meta.emplace_back("procedural.from", param_options->at("From"));
+                    if (param_options->contains("Layer"))
+                        param_meta.emplace_back("procedural.layer", param_options->at("Layer"));
+                    if (param_options->contains("Optional"))
+                        param_meta.emplace_back("procedural.optional", "true");
+                } else if (param_options->contains("From") || param_options->contains("Layer") ||
+                           param_options->contains("Optional")) {
+                    state.error(param_marker->location,
+                                "From, Layer and Optional require an In, Out, InOut or Group role.");
+                    valid = false;
+                    break;
+                }
+            }
             auto parameter_type = param_decl->getType();
             const bool reference = parameter_type->isLValueReferenceType();
             if (reference)
@@ -1411,6 +1569,7 @@ void members(State& state, Type& type, ASTContext& context) {
             value.pointer += *parameter;
             value.parameters.push_back(param_decl->getName().str());
             value.defaults.push_back(std::move(default_expr));
+            value.parameter_metadata.push_back(std::move(param_meta));
         }
         if (!valid)
             continue;
@@ -1640,6 +1799,20 @@ llvm::Error emit(const State& state) {
                 cpp += "\n        .parameter_defaults({";
                 for (std::size_t i = 0; i < method.defaults.size(); ++i)
                     cpp += (i ? ", " : "") + (method.defaults[i] ? *method.defaults[i] : "std::nullopt");
+                cpp += "})";
+            }
+            if (std::any_of(method.parameter_metadata.begin(), method.parameter_metadata.end(),
+                            [](const auto& entries) { return !entries.empty(); })) {
+                cpp += "\n        .parameter_metadata({";
+                for (std::size_t i = 0; i < method.parameter_metadata.size(); ++i) {
+                    cpp += (i ? ", {" : "{");
+                    for (std::size_t j = 0; j < method.parameter_metadata[i].size(); ++j) {
+                        const auto& [key, val] = method.parameter_metadata[i][j];
+                        cpp +=
+                            (j ? ", " : "") + std::string{"{"} + metadata_text(key) + ", " + metadata_text(val) + "}";
+                    }
+                    cpp += "}";
+                }
                 cpp += "})";
             }
         }

@@ -15,7 +15,8 @@ namespace atelier::procedural {
 struct NodeStatus {
     std::optional<Error> error; // Set while the node or an input it reads fails.
 
-    std::uint64_t evaluations{}; // Calls of evaluate.
+    // Calls of process.
+    std::uint64_t evaluations{};
 
     std::uint64_t cache_hits{}; // Results found in the cache instead.
 
@@ -33,8 +34,8 @@ struct NodeStatus {
 // plain values (math included), String and Arrays of these.
 class Evaluator {
 public:
-    // `program` supplies Source PointNode methods and must outlive the evaluator.
-    // Native PointNode methods need no program.
+    // `program` supplies Source Node methods and must outlive the evaluator.
+    // Native Node methods need no program.
     Evaluator(Runtime& runtime, ObjectRoot graph, const Resources& resources, const source::Program* program = nullptr,
               std::size_t cache_bytes = std::size_t{256} << 20);
 
@@ -44,14 +45,18 @@ public:
 
     Evaluator& operator=(const Evaluator&) = delete;
 
-    // Fails only when the graph cannot be read. Node failures go to status(), and output()
-    // keeps the last result. Timing is opt-in diagnostics only: it neither changes keys
-    // nor forces nodes to run.
+    // Fails only when the graph itself cannot be read or has invalid topology. Node execution
+    // failures go to status(), clearing output() while preserving last_valid_output().
+    // Timing is opt-in diagnostics only: it neither changes keys nor forces nodes to run.
     Result<void> evaluate(bool record_timings = false);
 
-    // The display node's first output from the last evaluation that produced one; null while
-    // the graph has no display node.
+    // The display node's first output when the latest evaluation succeeded; null when the
+    // graph has no display node or the display chain failed.
     [[nodiscard]] const Geometry* output() const noexcept;
+
+    // The most recent valid display output while a display node is set, retained across node
+    // evaluation errors for editor fallback preview.
+    [[nodiscard]] const Geometry* last_valid_output() const noexcept;
 
     // Null for nodes not in the graph at the last evaluation.
     [[nodiscard]] const NodeStatus* status(ObjectId node) const;

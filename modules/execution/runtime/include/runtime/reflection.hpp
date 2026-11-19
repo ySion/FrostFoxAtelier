@@ -23,4 +23,5 @@ struct Reflected;
 #define AMETA(...)
 #define AFIELD(...)
 #define AFUNCTION(...)
+#define APARAM(...)
 #define AGENERATED_BODY(Type) friend struct ::atelier::reflection::Definition<Type>;

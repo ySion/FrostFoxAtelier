@@ -1,13 +1,37 @@
-// Writes orient from N and the up vector, the same orientation Copy to Points would derive, so
-// later nodes can change it before copying.
-class procedural.NormalAlign : procedural.PointNode {
+// Writes orient from N and the up vector, matching the orientation Copy to Points derives when
+// orient is absent, so downstream nodes can further modify orient before instancing.
+class procedural.NormalAlign : procedural.Node {
+    [Label = "Group", DESC = "只修改选中点；空名称表示全选。"]
+    String group = "";
     [Min = -1.0, Max = 1.0, Label = "Up", DESC = "实例的 +Y 尽量朝向的方向。为零或与 N 平行时取 +Z 到 N 的最短旋转。"]
     vector3 up = vector3(0.0, 1.0, 0.0);
 
-    void evaluate(Array<quaternion>& orient, const Array<vector3>& N) {
+    void process([Out("orient")] Array<quaternion>& orient,
+                 [In("N")] const Array<vector3>& N,
+                 [Group(From = "group")] const Array<bool>& selected) {
         const vector3 upward = self.up;
-        for (uint i = 0; i < orient.size(); i = i + 1) {
-            orient[i] = procedural.align_to_normal(N[i], upward);
+        if (!math.is_finite(upward)) {
+            self.fail("NormalAlign up vector must be finite.");
+        }
+        const uint n = orient.size();
+        if (N.size() != n) { return; }
+        if (selected.size() != n) {
+            for (uint i = 0; i < n; i = i + 1) {
+                const vector3 normal = N[i];
+                if (!math.is_finite(normal)) {
+                    self.fail("NormalAlign input normal must be finite.");
+                }
+                orient[i] = procedural.align_to_normal(normal, upward);
+            }
+        } else {
+            for (uint i = 0; i < n; i = i + 1) {
+                if (!selected[i]) { continue; }
+                const vector3 normal = N[i];
+                if (!math.is_finite(normal)) {
+                    self.fail("NormalAlign input normal must be finite.");
+                }
+                orient[i] = procedural.align_to_normal(normal, upward);
+            }
         }
     }
 }

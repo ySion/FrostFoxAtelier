@@ -82,7 +82,7 @@ Scalar zero_leaf(std::string_view type) {
     return std::uint32_t{};
 }
 
-// Published classes keep their layout, defaults and methods; new methods may follow.
+// Published classes keep their layout, defaults and methods; new unattributed methods other than process may follow.
 bool keeps_class(const language::ClassDeclaration& published, const language::ClassDeclaration& updated) {
     if (published.base != updated.base || published.fields.size() != updated.fields.size())
         return false;
@@ -91,7 +91,22 @@ bool keeps_class(const language::ClassDeclaration& published, const language::Cl
             return false;
     for (const auto& method : published.methods) {
         const auto found = std::ranges::find(updated.methods, method.name, &language::ClassMethod::name);
-        if (found == updated.methods.end() || found->signature != method.signature)
+        if (found == updated.methods.end() || found->signature != method.signature ||
+            found->method_parameters.size() != method.method_parameters.size())
+            return false;
+        for (std::size_t p = 0; p < method.method_parameters.size(); ++p) {
+            if (found->method_parameters[p].metadata != method.method_parameters[p].metadata)
+                return false;
+            if ((method.name == "process" || !method.method_parameters[p].metadata.empty()) &&
+                found->method_parameters[p].name != method.method_parameters[p].name)
+                return false;
+        }
+    }
+    for (const auto& method : updated.methods) {
+        const auto prior = std::ranges::find(published.methods, method.name, &language::ClassMethod::name);
+        if (prior == published.methods.end() &&
+            (method.name == "process" ||
+             std::ranges::any_of(method.method_parameters, [](const auto& p) { return !p.metadata.empty(); })))
             return false;
     }
     return true;
@@ -246,6 +261,104 @@ Result<FieldDefinition> class_field(const SourceSnapshot& snapshot, const langua
     return result;
 }
 
+Result<DescribedMethodDefinition> class_method(const SourceSnapshot& snapshot, const language::ClassDeclaration& owner,
+                                               const language::ClassMethod& method,
+                                               const std::vector<language::TypeDeclaration>& declarations,
+                                               const Binding& binding, Runtime& runtime) {
+    const auto at = [&](language::SourcePosition position, std::string message) {
+        return std::unexpected(source_error(snapshot, owner.file, position, std::move(message)));
+    };
+    const auto resolve_type = [&](const language::TypeName& name, language::SourcePosition position,
+                                  bool is_result) -> Result<TypeReference> {
+        if (name.array_depth == 0) {
+            if (name.name == "bool")
+                return TypeReference{binding.boolean};
+            if (name.name == "int")
+                return TypeReference{binding.i32};
+            if (name.name == "uint")
+                return TypeReference{binding.u32};
+            if (name.name == "float")
+                return TypeReference{binding.f32};
+            if (name.name == "double")
+                return TypeReference{binding.f64};
+            for (const auto& value : binding.values)
+                if (value.name == name.name || (value.math && math::short_name(value.math) == name.name) ||
+                    (name.name == "String" && value.kind == ValueKind::string))
+                    return TypeReference{value.type};
+            if (find_named(declarations, name.name))
+                return TypeReference{name.name};
+            if (const auto id = runtime.find_type(name.name); id && !language::editor_reserved(name.name)) {
+                const auto* info = *runtime.describe(*id);
+                if (info->kind == TypeKind::object)
+                    return at(position, is_result
+                                            ? "Function results require a scalar, enum or plain record value type."
+                                            : "Object reference parameters are not supported.");
+                return TypeReference{*id};
+            }
+            return at(position, "Unknown registered value type '" + name.name + "'.");
+        }
+        BusinessType element{ValueKind::void_value};
+        if (name.name == "bool")
+            element = ValueKind::boolean;
+        else if (name.name == "int")
+            element = ValueKind::i32;
+        else if (name.name == "uint")
+            element = ValueKind::u32;
+        else if (name.name == "float")
+            element = ValueKind::f32;
+        else if (name.name == "double")
+            element = ValueKind::f64;
+        else {
+            for (std::uint32_t i = 0; i < binding.values.size(); ++i)
+                if (binding.values[i].name == name.name ||
+                    (binding.values[i].math && math::short_name(binding.values[i].math) == name.name) ||
+                    (name.name == "String" && binding.values[i].kind == ValueKind::string)) {
+                    element = {binding.values[i].kind, i};
+                    break;
+                }
+            if (element == ValueKind::void_value)
+                for (std::uint32_t i = 0; i < binding.enumerations.size(); ++i)
+                    if (binding.enumerations[i].name == name.name) {
+                        element = {ValueKind::enumeration, i};
+                        break;
+                    }
+            if (element == ValueKind::void_value) {
+                if (find_named(declarations, name.name))
+                    return at(position, "This Array element type has not been registered in the Runtime.");
+                return at(position, "Unknown registered value type '" + name.name + "'.");
+            }
+        }
+        for (std::uint32_t depth = 0; depth < name.array_depth; ++depth) {
+            const auto array = std::ranges::find_if(binding.values, [&](const BoundValue& v) {
+                return v.kind == ValueKind::array && v.element == element;
+            });
+            if (array == binding.values.end())
+                return at(position, "This Array element type has not been registered in the Runtime.");
+            element = {ValueKind::array, static_cast<std::uint32_t>(array - binding.values.begin())};
+        }
+        return TypeReference{binding.values[element.type_index].type};
+    };
+
+    DescribedMethodDefinition result;
+    result.name = method.name;
+    result.signature.execution = FunctionExecution::synchronous;
+    result.signature.receiver = ReceiverDefinition{TypeReference{owner.name}, false};
+    if (method.result_type.name != "void" || method.result_type.array_depth != 0) {
+        ATELIER_TRY_BIND(resolved, resolve_type(method.result_type, method.position, true));
+        result.signature.result = ValueDefinition{std::move(*resolved)};
+    }
+    result.signature.parameters.reserve(method.method_parameters.size());
+    result.parameter_names.reserve(method.method_parameters.size());
+    result.parameter_metadata.reserve(method.method_parameters.size());
+    for (const auto& parameter : method.method_parameters) {
+        ATELIER_TRY_BIND(resolved, resolve_type(parameter.type, parameter.position, false));
+        result.signature.parameters.push_back({ValueDefinition{std::move(*resolved)}, parameter.passing});
+        result.parameter_names.push_back(parameter.name);
+        result.parameter_metadata.push_back(parameter.metadata);
+    }
+    return result;
+}
+
 // Published field definitions compare decoded contents, not source spacing or attribute order.
 bool same_field(const FieldDefinition& a, const FieldDefinition& b) {
     const auto same = [](const std::optional<Scalar>& x, const std::optional<Scalar>& y) {
@@ -338,18 +451,34 @@ Result<Program::Request> Program::request(SourceSnapshot snapshot, CompileOption
                                  collected.error().diagnostic.message));
     module.source = std::move(*collected);
     auto& runtime = *state_->contract->binding.runtime;
+    auto current_binding = bind_type(runtime, {});
+    if (!current_binding)
+        return fail(std::move(current_binding.error()));
+    const auto canonical_type_name = [&](std::string& type_name) {
+        if (type_name == "String") {
+            if (const auto type = runtime.native_type<String>())
+                type_name = (*runtime.describe(*type))->name;
+        } else {
+            for (const auto& value : current_binding->values)
+                if (value.math && type_name == math::short_name(value.math))
+                    type_name = value.name;
+        }
+    };
     // Builtin short names and canonical names denote one registered type, including during layout comparison.
-    for (auto& cls : module.source.classes)
-        for (auto& field : cls.fields) {
-            if (field.type == "String") {
-                if (const auto type = runtime.native_type<String>())
-                    field.type = (*runtime.describe(*type))->name;
-            } else {
-                for (const auto& value : state_->contract->binding.values)
-                    if (value.math && field.type == math::short_name(value.math))
-                        field.type = value.name;
+    for (auto& cls : module.source.classes) {
+        for (auto& field : cls.fields)
+            canonical_type_name(field.type);
+        for (auto& method : cls.methods) {
+            canonical_type_name(method.result_type.name);
+            method.signature = method.result_type.name + ":" + std::to_string(method.result_type.array_depth) + "(";
+            for (auto& parameter : method.method_parameters) {
+                canonical_type_name(parameter.type.name);
+                method.signature += (parameter.passing == ParameterPassing::read_only ? "const " : "") +
+                                    parameter.type.name + ":" + std::to_string(parameter.type.array_depth) +
+                                    (parameter.passing != ParameterPassing::value ? "&;" : ";");
             }
         }
+    }
     language::MappedSource types;
     for (const auto& declaration : module.source.declarations)
         if (declaration.kind == language::TopLevel::Kind::type)
@@ -407,7 +536,7 @@ Result<Program::Request> Program::request(SourceSnapshot snapshot, CompileOption
                          cls.name});
         }
     }
-    auto definitions = type_definitions(module.value_types, state_->contract->binding);
+    auto definitions = type_definitions(module.value_types, *current_binding);
     if (!definitions)
         return fail(definitions.error());
     // Existing source types stay published; new ones still reference them by name.
@@ -415,7 +544,7 @@ Result<Program::Request> Program::request(SourceSnapshot snapshot, CompileOption
         std::erase_if(*definitions,
                       [&](const auto& definition) { return find_named(published->value_types, definition.name); });
     for (const auto& cls : module.source.classes) {
-        if (std::ranges::any_of(state_->contract->binding.values, [&](const auto& value) {
+        if (std::ranges::any_of(current_binding->values, [&](const auto& value) {
                 return value.math && cls.name == math::short_name(value.math);
             }))
             return fail(source_error(input, cls.file, cls.position,
@@ -434,7 +563,7 @@ Result<Program::Request> Program::request(SourceSnapshot snapshot, CompileOption
         definition.base = *base;
         std::vector<FieldDefinition> fields;
         for (const auto& field : cls.fields) {
-            auto declared = class_field(input, cls, field, module.value_types, state_->contract->binding, runtime);
+            auto declared = class_field(input, cls, field, module.value_types, *current_binding, runtime);
             if (!declared)
                 return fail(declared.error());
             fields.push_back(std::move(*declared));
@@ -450,6 +579,12 @@ Result<Program::Request> Program::request(SourceSnapshot snapshot, CompileOption
                                  "rebuild the Runtime context: " +
                                      cls.name + "." + fields[i].name});
         } else {
+            for (const auto& method : cls.methods) {
+                auto declared = class_method(input, cls, method, module.value_types, *current_binding, runtime);
+                if (!declared)
+                    return fail(declared.error());
+                definition.described_methods.push_back(std::move(*declared));
+            }
             definition.fields = fields;
             definitions->push_back(std::move(definition));
         }
@@ -458,12 +593,18 @@ Result<Program::Request> Program::request(SourceSnapshot snapshot, CompileOption
     if (!definitions->empty()) {
         auto publication = atelier::detail::TypePublication::prepare(runtime, std::move(*definitions));
         if (!publication) {
-            // Runtime field rules end with `Class.field`; report them at that field.
+            // Runtime member rules end with `Class.member` or `Class.member hides ...`; report them at that member.
             const auto& error = publication.error();
-            for (const auto& cls : module.source.classes)
+            for (const auto& cls : module.source.classes) {
                 for (const auto& field : cls.fields)
-                    if (error.message.ends_with(": " + cls.name + "." + field.name))
+                    if (error.message.ends_with(": " + cls.name + "." + field.name) ||
+                        error.message.contains(": " + cls.name + "." + field.name + " hides "))
                         return fail(source_error(input, cls.file, field.position, error.message, error.code));
+                for (const auto& method : cls.methods)
+                    if (error.message.ends_with(": " + cls.name + "." + method.name) ||
+                        error.message.contains(": " + cls.name + "." + method.name + " hides "))
+                        return fail(source_error(input, cls.file, method.position, error.message, error.code));
+            }
             return fail(error);
         }
         request->type_publication_ = *publication;
@@ -485,10 +626,11 @@ Result<Program::Request> Program::request(SourceSnapshot snapshot, CompileOption
         return roots;
     };
     if (const auto roots = home({}); !roots.empty()) {
-        ModuleRequest::Unit unit{request->compilation_contract_, module.source.closure(roots), {}, {}, {}, false};
+        ModuleRequest::Unit unit{request->compilation_contract_, module.source.closure(roots), {}, {}, {}, {}, false};
         for (const auto& function : module.source.functions) {
             unit.names.push_back(function.name);
             unit.parameter_names.push_back(function.parameters);
+            unit.parameter_metadata.emplace_back(function.parameters.size());
         }
         module.units.push_back(std::move(unit));
     }
@@ -501,6 +643,7 @@ Result<Program::Request> Program::request(SourceSnapshot snapshot, CompileOption
                                 module.source.closure(home(engine)),
                                 {},
                                 "engine/" + std::string(engine),
+                                {},
                                 {},
                                 false});
     for (const auto& cls : module.source.classes) {
@@ -528,11 +671,17 @@ Result<Program::Request> Program::request(SourceSnapshot snapshot, CompileOption
                                  {},
                                  cls.name,
                                  {},
+                                 {},
                                  true};
         for (const auto& method : cls.methods) {
             unit.source.append(method.source);
             unit.names.push_back(method.name);
             unit.parameter_names.push_back(method.parameters);
+            std::vector<MetadataList> meta;
+            meta.reserve(method.method_parameters.size());
+            for (const auto& parameter : method.method_parameters)
+                meta.push_back(parameter.metadata);
+            unit.parameter_metadata.push_back(std::move(meta));
         }
         module.units.push_back(std::move(unit));
     }
@@ -642,7 +791,7 @@ Result<Program::Candidate> Program::prepare_module(const Request& request) {
             const auto name = entry_name(method);
             const auto code =
                 kept ? kept->entries[kept_index(name)].code : next_entry_code.fetch_add(1, std::memory_order_relaxed);
-            module->entries.push_back({name, *signature, unit.parameter_names[i], code});
+            module->entries.push_back({name, *signature, unit.parameter_names[i], code, unit.parameter_metadata[i]});
             auto declaration =
                 std::make_shared<const Declaration>(Declaration{info.function_name, std::move(*signature)});
             auto metadata = std::make_shared<const DiagnosticMetadata>(

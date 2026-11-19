@@ -89,13 +89,15 @@ std::expected<void, Diagnostic> field_attributes(Tokens& tokens, const SourceFil
                 ATELIER_TRY(tokens.expect(i == 0 ? "," : ")"));
             }
             field.metadata.emplace_back(std::move(values[0]), std::move(values[1]));
-        } else if (lock || option.text == "Transient" || option.text == "ReadOnly") {
+        } else if (lock || option.text == "Transient" || option.text == "ReadOnly" || option.text == "RunOver") {
             if (tokens.token_.text == "=")
                 return reject(option.position, std::string(option.text) + " is a flag without a value.");
             if (option.text == "Transient")
                 field.transient = true;
             else if (option.text == "ReadOnly")
                 field.read_only = true;
+            else if (option.text == "RunOver")
+                field.metadata.emplace_back("procedural.role", "run_over");
         } else if (option.text == "Label" || option.text == "Category" || option.text == "DESC") {
             ATELIER_TRY(tokens.expect("="));
             if (tokens.token_.kind != Token::Kind::string)
@@ -179,19 +181,30 @@ std::expected<void, Diagnostic> initializer_shape(Tokens& tokens, const SourceFi
 
 std::expected<std::string, Diagnostic> function_signature(Tokens& tokens, const TypeName& type,
                                                           std::vector<std::string>& parameters,
-                                                          TopLevel* declaration = nullptr) {
+                                                          TopLevel* declaration = nullptr,
+                                                          std::vector<MethodParameter>* method_parameters = nullptr) {
     std::string signature = type.name + ":" + std::to_string(type.array_depth) + "(";
     bool writable_parameter = false;
     ATELIER_TRY(tokens.expect("("));
     ATELIER_TRY_BIND(empty, tokens.accept(")"));
     if (!*empty)
         for (;;) {
+            std::vector<std::pair<std::string, std::string>> metadata;
+            ATELIER_TRY(parse_parameter_attributes(tokens, method_parameters != nullptr, metadata));
+            const auto position = tokens.token_.position;
             ATELIER_TRY_BIND(constant, tokens.accept("const"));
             ATELIER_TRY_BIND(parameter, parse_type_name(tokens));
             ATELIER_TRY_BIND(reference, tokens.accept("&"));
+            if (*constant && !*reference)
+                return reject(position, "const parameters require a reference in this source slice.");
             writable_parameter |= *reference && !*constant;
             ATELIER_TRY_BIND(name, tokens.identifier());
             parameters.emplace_back(name->text);
+            const auto passing = *reference ? (*constant ? ParameterPassing::read_only : ParameterPassing::reference)
+                                            : ParameterPassing::value;
+            if (method_parameters)
+                method_parameters->push_back(
+                    {std::string(name->text), *parameter, passing, position, std::move(metadata)});
             signature += (*constant ? "const " : "") + parameter->name + ":" + std::to_string(parameter->array_depth) +
                          (*reference ? "&;" : ";");
             ATELIER_TRY_BIND(closed, tokens.accept(")"));
@@ -439,8 +452,9 @@ std::expected<SourceModule, ModuleDiagnostic> collect_module(const SourceSnapsho
                     if (tokens.token_.text == "(") {
                         if (*attributed)
                             return reject(attributes, "Attributes apply only to class fields.");
-                        ClassMethod method{std::string(name->text), {}, start, {}, {}};
-                        ATELIER_TRY_BIND(signature, function_signature(tokens, *type, method.parameters));
+                        ClassMethod method{std::string(name->text), {}, start, {}, {}, *type, {}};
+                        ATELIER_TRY_BIND(signature, function_signature(tokens, *type, method.parameters, nullptr,
+                                                                       &method.method_parameters));
                         method.signature = std::move(*signature);
                         ATELIER_TRY(body(tokens));
                         method.source.append(unit, file, start.offset, tokens.token_.position.offset);

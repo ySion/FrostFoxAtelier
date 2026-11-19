@@ -23,6 +23,7 @@ void verify_reflection() {
     using namespace acceptance::reflection;
     namespace upstream = acceptance::upstream;
     TypeInfo retained;
+    TypeInfo retained_derived;
     {
         Runtime runtime;
         take(NativeRegistration<Base>{runtime, "reflection.AlignedBase", TypeKind::object}.publish());
@@ -66,6 +67,7 @@ void verify_reflection() {
                 "Reflected Flags enum or AMETA enumerator metadata did not publish.");
         retained = *take(runtime.describe(types[3]));
         const auto* derived_info = take(runtime.describe(types[5]));
+        retained_derived = *derived_info;
         static_assert(!std::is_standard_layout_v<DerivedCounter>);
         require(derived_info->base_offset == 0u && derived_info->fields.size() == 4 &&
                     derived_info->fields[0].offset.has_value() && !derived_info->fields[0].transient &&
@@ -102,6 +104,16 @@ void verify_reflection() {
     }
     const std::vector<std::pair<std::string, std::string>> expected{{"test.binding", "evaluate.values"},
                                                                     {"test.note", std::string{"分组\0尾", 10}}};
-    require(retained.fields[0].metadata == expected, "Generated metadata did not outlive Runtime.");
+    const MetadataList expected_run_over{{"procedural.role", "run_over"}};
+    const MetadataList expected_param{{"procedural.layer", "point"},
+                                      {"procedural.name", "P"},
+                                      {"procedural.optional", "true"},
+                                      {"procedural.role", "in"},
+                                      {"test.param", "ok"}};
+    require(retained.fields[0].metadata == expected && retained_derived.fields[1].metadata == expected_run_over &&
+                retained_derived.methods[0].parameter_metadata.size() == 4 &&
+                retained_derived.methods[0].parameter_metadata[0].empty() &&
+                retained_derived.methods[0].parameter_metadata[1] == expected_param,
+            "Generated field/parameter metadata did not outlive Runtime.");
     std::puts("Reflection consumer: PASS (generated producer and owned metadata)");
 }

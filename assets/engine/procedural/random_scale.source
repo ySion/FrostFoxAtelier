@@ -1,6 +1,8 @@
-// Sets pscale to a random value between minimum and maximum, from the graph seed, the node's
-// seed and the point's id.
-class procedural.RandomScale : procedural.PointNode {
+// Sets pscale on selected points to a random value in [minimum, maximum], seeded from the graph
+// seed, the node's seed and the point's `id` (or the point index when `id` is absent).
+class procedural.RandomScale : procedural.Node {
+    [Label = "Group", DESC = "只修改选中点；空名称表示全选。"]
+    String group = "";
     [Min = 0.0, Max = 4.0, LockMin, Label = "Minimum", DESC = "pscale 的下限。"]
     float minimum = 0.5f;
     [Min = 0.0, Max = 4.0, LockMin, Label = "Maximum", DESC = "pscale 的上限。"]
@@ -8,12 +10,37 @@ class procedural.RandomScale : procedural.PointNode {
     [Label = "Seed", DESC = "与图的种子混合后得到本节点的随机种子。"]
     uint seed = 0;
 
-    void evaluate(const procedural.Context& context, Array<float>& pscale, const Array<uint>& id) {
+    void process(const procedural.Context& context,
+                 [Out("pscale")] Array<float>& pscale,
+                 [In("id", Optional)] const Array<uint>& id,
+                 [Group(From = "group")] const Array<bool>& selected) {
         const float low = self.minimum;
         const float high = self.maximum;
+        if (!(math.is_finite(low) && math.is_finite(high))) {
+            self.fail("RandomScale bounds must be finite.");
+        }
         const uint node_seed = procedural.hash2(context.seed, self.seed);
-        for (uint i = 0; i < pscale.size(); i = i + 1) {
-            pscale[i] = math.lerp(low, high, procedural.unit(procedural.hash2(node_seed, id[i])));
+        const uint n = pscale.size();
+        const bool has_id = id.size() == n;
+        const bool has_mask = selected.size() == n;
+        if (!has_mask && has_id) {
+            for (uint i = 0; i < n; i = i + 1) {
+                pscale[i] = math.lerp(low, high, procedural.unit(procedural.hash2(node_seed, id[i])));
+            }
+        } else if (!has_mask) {
+            for (uint i = 0; i < n; i = i + 1) {
+                pscale[i] = math.lerp(low, high, procedural.unit(procedural.hash2(node_seed, i)));
+            }
+        } else if (has_id) {
+            for (uint i = 0; i < n; i = i + 1) {
+                if (!selected[i]) { continue; }
+                pscale[i] = math.lerp(low, high, procedural.unit(procedural.hash2(node_seed, id[i])));
+            }
+        } else {
+            for (uint i = 0; i < n; i = i + 1) {
+                if (!selected[i]) { continue; }
+                pscale[i] = math.lerp(low, high, procedural.unit(procedural.hash2(node_seed, i)));
+            }
         }
     }
 }

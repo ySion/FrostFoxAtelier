@@ -170,6 +170,8 @@ Usage Geometry::conventional_usage(StringView name) noexcept {
         return Usage::vector;
     if (name == "Cd")
         return Usage::color;
+    if (name == "orient")
+        return Usage::orientation;
     return Usage::none;
 }
 
@@ -209,7 +211,10 @@ Result<void> Geometry::fits(Layer layer, const ColumnData& data) const {
 }
 
 Result<void> Geometry::set(String name, Layer layer, ColumnData data, std::optional<Usage> usage) {
-    const auto resolved = usage ? *usage : conventional_usage(name);
+    auto* existing = mutable_find(name);
+    if (existing && (existing->layer != layer || existing->data.index() != data.index()))
+        return failure("Attribute " + text(name) + " has another layer or type.");
+    const auto resolved = usage ? *usage : (existing ? existing->usage : conventional_usage(name));
     auto valid = std::visit(
         [&](const auto& column) {
             using T = typename std::remove_cvref_t<decltype(column)>::Value;
@@ -227,10 +232,9 @@ Result<void> Geometry::set(String name, Layer layer, ColumnData data, std::optio
             if (!math::is_finite(position))
                 return failure("Point positions must be finite.");
     }
-    if (auto* attribute = mutable_find(name)) {
-        attribute->layer = layer;
-        attribute->usage = resolved;
-        attribute->data = std::move(data);
+    if (existing) {
+        existing->usage = resolved;
+        existing->data = std::move(data);
     } else
         attributes_.push_back({std::move(name), layer, resolved, std::move(data)});
     return {};

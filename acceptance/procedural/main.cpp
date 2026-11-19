@@ -6,9 +6,11 @@
 #include "procedural/instances.hpp"
 #include "procedural/nodes.hpp"
 #include "procedural/operations.hpp"
+#include "procedural/random.hpp"
 #include "procedural/timing.hpp"
 #include "runtime/native.hpp"
 #include "source/program.hpp"
+#include "source/snapshot.hpp"
 
 #include <algorithm>
 #include <array>
@@ -87,7 +89,7 @@ void ray_node() {
     Ray node;
     node.normal = true;
     Geometry output;
-    take(node.evaluate(points, surface, output));
+    take(node.process(points, surface, output));
     const auto& p = output.positions();
     const auto& primitive = column<std::int32_t>(output, "hitprim", Layer::point);
     const auto& triangle = column<std::int32_t>(output, "hittri", Layer::point);
@@ -171,6 +173,234 @@ void graph_evaluation() {
         require(near(Vector3{first[12], first[13], first[14]}, {-.5f, 0, -1}), "The published grid origin is wrong.");
     };
     verify_output();
+}
+
+void source_and_spatial_contracts() {
+    // 1. -0.0f seam welding, Bvh::acquire cache identity, Geometry::set usage preservation, and Scatter min_distance.
+    std::vector<geometry::Vertex> seam_vertices{
+        {{0.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}},  {{0.0f, 0.0f, 2.0f}, {0.0f, 1.0f, 0.0f}},
+        {{2.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}},  {{2.0f, -0.0f, -0.0f}, {0.0f, 1.0f, 0.0f}},
+        {{-0.0f, 0.0f, 2.0f}, {0.0f, 1.0f, 0.0f}}, {{2.0f, 0.0f, 2.0f}, {0.0f, 1.0f, 0.0f}},
+    };
+    const auto seam_mesh = take(geometry::Mesh::create(std::move(seam_vertices)));
+    auto seam_surface = import_mesh(*seam_mesh);
+    require(seam_surface.count(Layer::point) == 4 && seam_surface.count(Layer::primitive) == 2,
+            "import_mesh failed to weld -0.0f and +0.0f seam vertices.");
+    const auto bvh_first = take(Bvh::acquire(seam_surface));
+    auto seam_copy = seam_surface;
+    const auto bvh_second = take(Bvh::acquire(seam_copy));
+    require(bvh_first != nullptr && bvh_first == bvh_second,
+            "Bvh::acquire did not reuse cached BVH across COW copies.");
+    (*take(seam_copy.write<Vector3>("P", Layer::point)))[0].y = 1.0f;
+    const auto bvh_mutated = take(Bvh::acquire(seam_copy));
+    require(bvh_mutated != nullptr && bvh_mutated != bvh_first, "Bvh::acquire served a stale BVH after P mutated.");
+
+    auto orient_geo = take(Geometry::points(Array<Vector3>{{0, 0, 0}, {1, 0, 0}}));
+    take(orient_geo.add<Quaternion>("orient", Layer::point, Quaternion{}));
+    require(orient_geo.find("orient") && orient_geo.find("orient")->usage == Usage::orientation,
+            "Convention-named 'orient' column did not acquire Usage::orientation.");
+    SharedArray<Quaternion> replacement_orient{Array<Quaternion>{axis_angle({0, 1, 0}, 90), Quaternion{}}};
+    take(orient_geo.set(String::literal<"orient">(), Layer::point, replacement_orient));
+    require(orient_geo.find("orient")->usage == Usage::orientation,
+            "Geometry::set stripped Usage::orientation from an existing column.");
+    require(!orient_geo.set(String::literal<"orient">(), Layer::detail,
+                            SharedArray<Quaternion>{Array<Quaternion>{Quaternion{}}}),
+            "Geometry::set accepted a cross-layer replacement.");
+    require(!orient_geo.set(String::literal<"orient">(), Layer::point, SharedArray<float>{Array<float>{0.0f, 0.0f}}),
+            "Geometry::set accepted a cross-type replacement.");
+
+    const auto spaced_a = take(scatter(seam_surface, {.density = 40.0f, .seed = 9, .min_distance = 0.35f}));
+    const auto spaced_b = take(scatter(seam_surface, {.density = 40.0f, .seed = 9, .min_distance = 0.35f}));
+    const auto& spaced_p = spaced_a.positions();
+    require(spaced_p.size() > 8 && std::ranges::equal(spaced_p, spaced_b.positions()),
+            "Scatter min_distance lost determinism or candidate retention.");
+    for (std::uint32_t i = 0; i < spaced_p.size(); ++i)
+        for (std::uint32_t j = i + 1; j < spaced_p.size(); ++j)
+            require(math::distance_squared(spaced_p[i], spaced_p[j]) >= 0.35f * 0.35f - 1e-5f,
+                    "Scatter min_distance left points closer than the threshold.");
+
+    // 2. Mixed C++ + Engine .source + Custom .source SOP graph.
+    Runtime runtime;
+    take(register_types(runtime));
+    auto files = take(source::engine_sources(source::default_engine_root()));
+    files.push_back({"Source/Wave.source", 1, R"(
+class game.Wave : procedural.Node {
+    float lift = 0.25f;
+    void process([InOut] Array<vector3>& P,
+                 [Out] Array<float>& custom_h,
+                 [Group("selected")] const Array<bool>& mask) {
+        const uint n = P.size();
+        for (uint i = 0; i < n; i = i + 1) {
+            if (mask.size() == n && !mask[i]) { continue; }
+            P[i] = P[i] + vector3(0.0f, self.lift, 0.0f);
+            custom_h[i] = P[i].y;
+        }
+    }
+}
+)"});
+    auto program = take(source::Program::create(runtime));
+    {
+        auto req = take(program->request({"procedural_test", 1, std::move(files)}));
+        auto cand = take(source::Program::prepare(req));
+        take(program->try_publish(cand));
+    }
+
+    const auto jitter_type = take(runtime.find_type("procedural.Jitter"));
+    const auto rscale_type = take(runtime.find_type("procedural.RandomScale"));
+    const auto align_type = take(runtime.find_type("procedural.NormalAlign"));
+    const auto noise_type = take(runtime.find_type("procedural.Noise"));
+    const auto remap_type = take(runtime.find_type("procedural.Remap"));
+    const auto wave_type = take(runtime.find_type("game.Wave"));
+    const auto jitter_ports = take(ports(runtime, jitter_type));
+    require(jitter_ports.inputs == std::vector<std::string>{"input"} &&
+                jitter_ports.outputs == std::vector<std::string>{"output"},
+            "Source Node ports(runtime, type) failed without Program.");
+
+    Meshes resources;
+    resources.meshes["fixture/cube"] = geometry::cube_mesh();
+    const auto graph_root = take(runtime.create(type<Graph>(runtime)));
+    const auto graph = graph_root.id();
+    take(runtime.write(graph, field(runtime, type<Graph>(runtime), "seed"), Scalar{std::uint32_t{11}}));
+    const auto add = [&](TypeId node_type) { return take(add_node(runtime, graph, node_type)); };
+    const auto grid_n = add(type<Grid>(runtime));
+    const auto group_n = add(type<GroupBox>(runtime));
+    const auto jitter_n = add(jitter_type);
+    const auto rscale_n = add(rscale_type);
+    const auto align_n = add(align_type);
+    const auto wave_n = add(wave_type);
+    const auto xform_n = add(type<Transform>(runtime));
+    const auto copy_n = add(type<CopyToPoints>(runtime));
+
+    const auto write_str = [&](ObjectId obj, TypeId owner, const char* name, std::string_view text) {
+        String s;
+        require(s.assign(StringView{text}).has_value(), "Invalid UTF-8 string.");
+        take(runtime.write(obj, field(runtime, owner, name), ValueInput{type<String>(runtime), &s}));
+    };
+    const auto write_v3 = [&](ObjectId obj, TypeId owner, const char* name, Vector3 v) {
+        take(runtime.write(obj, field(runtime, owner, name), ValueInput{type<Vector3>(runtime), &v}));
+    };
+    take(runtime.with_native<Grid>(grid_n.id(), [](Grid& n) -> Result<void> {
+        n.size = {2.0f, 2.0f};
+        n.rows = 2;
+        n.columns = 2;
+        return {};
+    }));
+    take(runtime.with_native<GroupBox>(group_n.id(), [](GroupBox& n) -> Result<void> {
+        n.minimum = {0.0f, -1.0f, -2.0f};
+        n.maximum = {2.0f, 1.0f, 2.0f};
+        return {};
+    }));
+    write_str(jitter_n.id(), jitter_type, "group", "selected");
+    take(runtime.write(jitter_n.id(), field(runtime, jitter_type, "amount"), Scalar{0.5f}));
+    write_v3(jitter_n.id(), jitter_type, "axis_scale", {1.0f, 0.0f, 0.0f});
+    take(runtime.write(jitter_n.id(), field(runtime, jitter_type, "seed"), Scalar{std::uint32_t{5}}));
+    write_str(rscale_n.id(), rscale_type, "group", "selected");
+    take(runtime.write(rscale_n.id(), field(runtime, rscale_type, "minimum"), Scalar{2.0f}));
+    take(runtime.write(rscale_n.id(), field(runtime, rscale_type, "maximum"), Scalar{2.0f}));
+    write_v3(align_n.id(), align_type, "up", {0.0f, 0.0f, 1.0f});
+    take(runtime.with_native<Transform>(xform_n.id(), [](Transform& n) -> Result<void> {
+        n.rotate = axis_angle({0.0f, 1.0f, 0.0f}, 90.0f);
+        return {};
+    }));
+    take(runtime.with_native<CopyToPoints>(copy_n.id(), [](CopyToPoints& n) -> Result<void> {
+        n.meshes.add(String::literal<"fixture/cube">());
+        return {};
+    }));
+
+    take(connect(runtime, graph, grid_n.id(), 0, group_n.id(), 0));
+    take(connect(runtime, graph, group_n.id(), 0, jitter_n.id(), 0));
+    take(connect(runtime, graph, jitter_n.id(), 0, rscale_n.id(), 0));
+    take(connect(runtime, graph, rscale_n.id(), 0, align_n.id(), 0));
+    take(connect(runtime, graph, align_n.id(), 0, wave_n.id(), 0));
+    take(connect(runtime, graph, wave_n.id(), 0, xform_n.id(), 0));
+    take(connect(runtime, graph, xform_n.id(), 0, copy_n.id(), 0));
+    take(set_display(runtime, graph, xform_n.id()));
+
+    Evaluator evaluator{runtime, graph_root, resources, program.get()};
+    take(evaluator.evaluate());
+    const auto* pts = evaluator.output();
+    require(pts != nullptr && pts->count(Layer::point) == 4, "Mixed C++/Source SOP chain failed.");
+    const auto& out_p = pts->positions();
+    const auto& pscale = column<float>(*pts, "pscale", Layer::point);
+    const auto& custom_h = column<float>(*pts, "custom_h", Layer::point);
+    const auto& orient = column<Quaternion>(*pts, "orient", Layer::point);
+    require(pts->find("orient")->usage == Usage::orientation, "Transform lost Usage::orientation on 'orient'.");
+    // Unselected point 0 started at (-1, 0, -1); +90 deg about Y in row-vector convention maps (x, y, z) -> (z, y, -x) = (-1, 0, 1).
+    const std::uint32_t jseed = hash(11u, 5u);
+    const std::uint32_t h1 = hash(hash(jseed, 1u));
+    const float expected_x1 = 1.0f + (unit(h1) * 2.0f - 1.0f) * 0.5f;
+    require(near(out_p[0], {-1.0f, 0.0f, 1.0f}) && near(out_p[1], {-1.0f, 0.25f, -expected_x1}) && pscale[0] == 0.0f &&
+                pscale[1] == 2.0f && custom_h[0] == 0.0f && custom_h[1] == 0.25f,
+            "Jitter fallback index, GroupBox mask, RandomScale or custom Wave produced wrong values.");
+    // NormalAlign had +Z -> +Y (0,1,0) and +Y -> +Z (0,0,1); after +90 deg about Y, local +Y (0,0,1) rotates to +X (1,0,0)!
+    require(near(math::rotate(orient[1], Vector3{0, 0, 1}), {0, 1, 0}, 1e-4f) &&
+                near(math::rotate(orient[1], Vector3{0, 1, 0}), {1, 0, 0}, 1e-4f),
+            "Transform did not compose rotation onto Usage::orientation.");
+
+    take(set_display(runtime, graph, copy_n.id()));
+    take(evaluator.evaluate());
+    require(evaluator.output() && evaluator.output()->count(Layer::instance) == 4,
+            "CopyToPoints failed after Source chain.");
+    const auto pub = take(publish(*evaluator.output(), 32.0f));
+    std::size_t kept_instances = 0;
+    for (const auto& col : pub.collections)
+        kept_instances += col.transforms->size();
+    require(pub.dropped == 2 && kept_instances == 2, "publish() did not drop the 2 zero-pscale unselected instances.");
+
+    // 3. Dynamic [RunOver], same-name Remap read/write, and Evaluator error/recovery contract.
+    const auto box_n = add(type<Box>(runtime));
+    const auto noise_n = add(noise_type);
+    const auto promote_n = add(type<Promote>(runtime));
+    const auto remap_n = add(remap_type);
+    const auto tail_n = add(type<Transform>(runtime));
+    const auto layer_enum = type<Layer>(runtime);
+    take(runtime.with_native<Promote>(promote_n.id(), [](Promote& n) -> Result<void> {
+        n.name = String::literal<"noise">();
+        n.to = Layer::primitive;
+        n.reduce = Reduce::average;
+        return {};
+    }));
+    take(runtime.write(remap_n.id(), field(runtime, remap_type, "layer"),
+                       Scalar{EnumValue{layer_enum, static_cast<std::uint32_t>(Layer::primitive)}}));
+    write_str(remap_n.id(), remap_type, "source_attribute", "noise");
+    write_str(remap_n.id(), remap_type, "attribute", "noise");
+    take(runtime.write(remap_n.id(), field(runtime, remap_type, "output_min"), Scalar{10.0f}));
+    take(runtime.write(remap_n.id(), field(runtime, remap_type, "output_max"), Scalar{20.0f}));
+    take(connect(runtime, graph, box_n.id(), 0, noise_n.id(), 0));
+    take(connect(runtime, graph, noise_n.id(), 0, promote_n.id(), 0));
+    take(connect(runtime, graph, promote_n.id(), 0, remap_n.id(), 0));
+    take(connect(runtime, graph, remap_n.id(), 0, tail_n.id(), 0));
+
+    take(set_display(runtime, graph, promote_n.id()));
+    take(evaluator.evaluate());
+    const Array<float> before_remap = column<float>(*evaluator.output(), "noise", Layer::primitive);
+    take(set_display(runtime, graph, tail_n.id()));
+    take(evaluator.evaluate());
+    const auto* valid_box = evaluator.output();
+    require(valid_box != nullptr && valid_box->count(Layer::primitive) == 6, "Primitive RunOver Remap failed.");
+    const auto& after_remap = column<float>(*valid_box, "noise", Layer::primitive);
+    for (std::uint32_t p = 0; p < 6; ++p)
+        require(near(after_remap[p], 10.0f + before_remap[p] * 10.0f),
+                "Same-name primitive Remap did not read old input before writing.");
+
+    // Trigger failure in Remap: output() must become nullptr while last_valid_output() retains prior geometry,
+    // and downstream Transform status must name procedural.Remap as root cause.
+    take(runtime.write(remap_n.id(), field(runtime, remap_type, "input_max"), Scalar{0.0f}));
+    take(evaluator.evaluate());
+    const auto remap_status = evaluator.status(remap_n.id());
+    const auto tail_status = evaluator.status(tail_n.id());
+    require(evaluator.output() == nullptr && evaluator.last_valid_output() != nullptr &&
+                evaluator.last_valid_output()->count(Layer::primitive) == 6 && remap_status && remap_status->error &&
+                tail_status && tail_status->error &&
+                tail_status->error->message.contains("procedural.Remap: Remap endpoints must be finite"),
+            "Failed display chain served stale output() or lost upstream root-cause error.");
+
+    // Restore valid input_max = 1.0f: hits cache and restores output().
+    take(runtime.write(remap_n.id(), field(runtime, remap_type, "input_max"), Scalar{1.0f}));
+    take(evaluator.evaluate());
+    require(evaluator.output() != nullptr && evaluator.status(remap_n.id())->cache_hits == 1 &&
+                !evaluator.status(tail_n.id())->error.has_value(),
+            "Restoring valid parameter did not recover from cache.");
 }
 
 // A height field mesh over [0, size]^2 with `quads` quads per side, two triangles each.
@@ -303,6 +533,64 @@ void profile(const char* path) {
                                       take(transform(moved, {1, 2, 3}, axis_angle({0, 1, 0}, 30), {1, 2, 1}));
                                   }));
 
+    {
+        Runtime source_rt;
+        take(register_types(source_rt));
+        auto source_prog = take(source::Program::create(source_rt));
+        {
+            auto req = take(source_prog->request(
+                {"profile_procedural", 1, take(source::engine_sources(source::default_engine_root()))}));
+            auto cand = take(source::Program::prepare(req));
+            take(source_prog->try_publish(cand));
+        }
+        Context ctx;
+        Array<bool> empty_mask;
+        auto jitter_obj = take(source_rt.create(take(source_rt.find_type("procedural.Jitter"))));
+        auto rscale_obj = take(source_rt.create(take(source_rt.find_type("procedural.RandomScale"))));
+        auto noise_obj = take(source_rt.create(take(source_rt.find_type("procedural.Noise"))));
+        auto remap_obj = take(source_rt.create(take(source_rt.find_type("procedural.Remap"))));
+        const auto jitter_fn = take(source_prog->entry("procedural.Jitter.process"));
+        const auto rscale_fn = take(source_prog->entry("procedural.RandomScale.process"));
+        const auto noise_fn = take(source_prog->entry("procedural.Noise.process"));
+        const auto remap_fn = take(source_prog->entry("procedural.Remap.process"));
+        Array<Vector3> p_buf = million.positions();
+        const Array<std::uint32_t>& id_buf = column<std::uint32_t>(million, "id", Layer::point);
+        Array<float> float_buf;
+        float_buf.resize(p_buf.size());
+        number("jitter_1m_ms", median_ms(
+                                   samples, [&](int) { p_buf = million.positions(); },
+                                   [&] {
+                                       const std::array args{Argument::borrow(ctx), Argument::borrow(p_buf),
+                                                             Argument::borrow(id_buf),
+                                                             Argument::borrow(std::as_const(empty_mask))};
+                                       take(jitter_fn.invoke(jitter_obj.id(), args));
+                                   }));
+        number("random_scale_1m_ms", median_ms(
+                                         samples, [](int) {},
+                                         [&] {
+                                             const std::array args{Argument::borrow(ctx), Argument::borrow(float_buf),
+                                                                   Argument::borrow(id_buf),
+                                                                   Argument::borrow(std::as_const(empty_mask))};
+                                             take(rscale_fn.invoke(rscale_obj.id(), args));
+                                         }));
+        number("noise_1m_ms",
+               median_ms(
+                   samples, [](int) {},
+                   [&] {
+                       const std::array args{Argument::borrow(ctx), Argument::borrow(std::as_const(p_buf)),
+                                             Argument::borrow(float_buf), Argument::borrow(std::as_const(empty_mask))};
+                       take(noise_fn.invoke(noise_obj.id(), args));
+                   }));
+        number("remap_1m_ms", median_ms(
+                                  samples, [](int) {},
+                                  [&] {
+                                      const std::array args{Argument::borrow(std::as_const(float_buf)),
+                                                            Argument::borrow(float_buf),
+                                                            Argument::borrow(std::as_const(empty_mask))};
+                                      take(remap_fn.invoke(remap_obj.id(), args));
+                                  }));
+    }
+
     const auto terrain = terrain_mesh(128, 64);
     const auto terrain_surface = import_mesh(*terrain);
     std::optional<Bvh> bvh;
@@ -433,6 +721,7 @@ int main(int argc, char** argv) {
     require(argc == 1, "Usage: atelier_procedural_acceptance [--profile-procedural new-output.json]");
     ray_node();
     graph_evaluation();
+    source_and_spatial_contracts();
     std::puts("procedural acceptance passed");
     return 0;
 }

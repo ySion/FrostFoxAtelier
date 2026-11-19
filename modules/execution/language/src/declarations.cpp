@@ -154,6 +154,119 @@ std::expected<TypeDeclaration, Diagnostic> detail::parse_type_declaration(Tokens
     return result;
 }
 
+std::expected<void, Diagnostic>
+detail::parse_parameter_attributes(Tokens& tokens, bool allow_attributes,
+                                   std::vector<std::pair<std::string, std::string>>& metadata) {
+    const auto open_pos = tokens.token_.position;
+    ATELIER_TRY_BIND(attributed, tokens.accept("["));
+    if (!*attributed)
+        return {};
+    if (!allow_attributes)
+        return reject(open_pos, "Parameter attributes apply only to class methods.");
+    ATELIER_TRY_BIND(role_tok, tokens.identifier());
+    std::string role;
+    if (role_tok->text == "Port")
+        role = "port";
+    else if (role_tok->text == "In")
+        role = "in";
+    else if (role_tok->text == "Out")
+        role = "out";
+    else if (role_tok->text == "InOut")
+        role = "inout";
+    else if (role_tok->text == "Group")
+        role = "group";
+    else
+        return reject(role_tok->position, "Unknown parameter attribute: " + std::string(role_tok->text));
+
+    bool has_name = false;
+    std::string explicit_name;
+    std::string from;
+    std::string layer;
+    bool optional = false;
+
+    const auto parse_options = [&](std::string_view close_tok) -> std::expected<void, Diagnostic> {
+        for (;;) {
+            if (tokens.token_.kind == Token::Kind::string) {
+                const auto pos = tokens.token_.position;
+                if (role == "port")
+                    return reject(pos, "Port does not accept arguments.");
+                if (has_name || !from.empty())
+                    return reject(pos, "Specify either a literal name or From, not both.");
+                ATELIER_TRY_BIND(str_tok, tokens.consume());
+                ATELIER_TRY_BIND(decoded, string_value(*str_tok));
+                if (std::ranges::any_of(*decoded, [](unsigned char c) { return c < 32 || c == 127; }))
+                    return reject(pos, "Parameter attribute strings must not contain control characters.");
+                if (role != "group" && decoded->empty())
+                    return reject(pos, "Attribute name cannot be empty.");
+                has_name = true;
+                explicit_name = std::move(*decoded);
+            } else {
+                ATELIER_TRY_BIND(opt, tokens.identifier());
+                if (role == "port")
+                    return reject(opt->position, "Port does not accept options.");
+                if (opt->text == "Optional") {
+                    if (tokens.token_.text == "=")
+                        return reject(opt->position, "Optional is a flag without a value.");
+                    if (role != "in")
+                        return reject(opt->position, "Optional applies only to In parameters.");
+                    if (optional)
+                        return reject(opt->position, "Duplicate parameter option: Optional");
+                    optional = true;
+                } else if (opt->text == "From" || opt->text == "Layer") {
+                    if (opt->text == "From" && (has_name || !from.empty()))
+                        return reject(opt->position, "Specify either a literal name or From, not both.");
+                    if (opt->text == "Layer" && !layer.empty())
+                        return reject(opt->position, "Duplicate parameter option: Layer");
+                    ATELIER_TRY(tokens.expect("="));
+                    if (tokens.token_.kind != Token::Kind::string)
+                        return reject(tokens.token_.position, std::string(opt->text) + " requires a string literal.");
+                    ATELIER_TRY_BIND(str_tok, tokens.consume());
+                    ATELIER_TRY_BIND(decoded, string_value(*str_tok));
+                    if (decoded->empty() ||
+                        std::ranges::any_of(*decoded, [](unsigned char c) { return c < 32 || c == 127; }))
+                        return reject(opt->position, std::string(opt->text) +
+                                                         " requires a nonempty string without control characters.");
+                    (opt->text == "From" ? from : layer) = std::move(*decoded);
+                } else {
+                    return reject(opt->position, "Unknown parameter attribute option: " + std::string(opt->text));
+                }
+            }
+            ATELIER_TRY_BIND(more, tokens.accept(","));
+            if (!*more)
+                break;
+        }
+        ATELIER_TRY(tokens.expect(close_tok));
+        return {};
+    };
+
+    ATELIER_TRY_BIND(parens, tokens.accept("("));
+    if (*parens) {
+        if (role == "port")
+            return reject(role_tok->position, "Port is a flag without arguments.");
+        if (tokens.token_.text == ")")
+            return reject(tokens.token_.position, "Expected an option inside parameter attribute parentheses.");
+        ATELIER_TRY(parse_options(")"));
+    }
+    ATELIER_TRY_BIND(comma, tokens.accept(","));
+    if (*comma) {
+        ATELIER_TRY(parse_options("]"));
+    } else {
+        ATELIER_TRY(tokens.expect("]"));
+    }
+
+    metadata.emplace_back("procedural.role", std::move(role));
+    if (has_name)
+        metadata.emplace_back("procedural.name", std::move(explicit_name));
+    if (!from.empty())
+        metadata.emplace_back("procedural.from", std::move(from));
+    if (!layer.empty())
+        metadata.emplace_back("procedural.layer", std::move(layer));
+    if (optional)
+        metadata.emplace_back("procedural.optional", "true");
+    std::ranges::sort(metadata);
+    return {};
+}
+
 std::expected<std::vector<TypeDeclaration>, Diagnostic> collect_declarations(std::string_view source) {
     using namespace detail;
     ATELIER_TRY_BIND(created, Tokens::create(source));

@@ -1,12 +1,14 @@
 #include "procedural/operations.hpp"
+#include "foundation/map.hpp"
 #include "foundation/result.hpp"
 #include "foundation/tasks.hpp"
+#include "procedural/bvh.hpp"
 #include "procedural/random.hpp"
 #include "detail/triangles.hpp"
 
 #include <bit>
 #include <cmath>
-#include <unordered_map>
+#include <limits>
 
 namespace atelier::procedural {
 namespace {
@@ -185,34 +187,37 @@ Vector3 transformed(Vector3 v, Usage usage, const Matrix4& matrix, const std::ar
 
 Geometry import_mesh(const geometry::Mesh& mesh) {
     struct Key {
-        std::array<std::uint32_t, 3> bits;
+        std::uint32_t x;
 
-        bool operator==(const Key&) const = default;
+        std::uint32_t y;
+
+        std::uint32_t z;
+
+        bool operator==(const Key&) const noexcept = default;
     };
     struct KeyHash {
-        std::size_t operator()(const Key& key) const noexcept {
-            return hash(key.bits[0], hash(key.bits[1], key.bits[2]));
-        }
+        std::size_t operator()(const Key& key) const noexcept { return hash(key.x, hash(key.y, key.z)); }
     };
     const auto vertices = mesh.vertices();
-    std::unordered_map<Key, std::uint32_t, KeyHash> welded;
+    Map<Key, std::uint32_t, KeyHash> welded;
+    welded.reserve(vertices.size());
     Array<Vector3> positions;
     Array<std::uint32_t> vertex_points;
     Array<std::uint32_t> offsets;
-    Array<std::uint32_t> materials;
     Array<Vector3> normals;
     Array<Vector2> uvs;
     vertex_points.reserve(vertices.size());
     normals.reserve(vertices.size());
     uvs.reserve(vertices.size());
+    const auto clean = [](float v) noexcept { return v == 0.0f ? 0.0f : v; };
     for (const auto& vertex : vertices) {
-        const Key key{{std::bit_cast<std::uint32_t>(vertex.position[0]),
-                       std::bit_cast<std::uint32_t>(vertex.position[1]),
-                       std::bit_cast<std::uint32_t>(vertex.position[2])}};
-        const auto [at, added] = welded.try_emplace(key, static_cast<std::uint32_t>(positions.size()));
+        const Vector3 p{clean(vertex.position[0]), clean(vertex.position[1]), clean(vertex.position[2])};
+        const Key key{std::bit_cast<std::uint32_t>(p.x), std::bit_cast<std::uint32_t>(p.y),
+                      std::bit_cast<std::uint32_t>(p.z)};
+        const auto [value_ptr, added] = welded.try_emplace(key, static_cast<std::uint32_t>(positions.size()));
         if (added)
-            positions.add({vertex.position[0], vertex.position[1], vertex.position[2]});
-        vertex_points.add(at->second);
+            positions.add(p);
+        vertex_points.add(*value_ptr);
         normals.add({vertex.normal[0], vertex.normal[1], vertex.normal[2]});
         uvs.add({vertex.uv[0], vertex.uv[1]});
     }
@@ -379,13 +384,62 @@ Result<Geometry> scatter(const Geometry& surface, const ScatterSettings& setting
         // Cells as wide as the distance: a kept point closer than it lies in a neighbouring cell.
         const double cell = settings.min_distance;
         const double limit = cell * cell;
-        struct CellHash {
-            std::size_t operator()(const std::array<std::int64_t, 3>& c) const noexcept {
-                return hash(static_cast<std::uint32_t>(c[0]),
-                            hash(static_cast<std::uint32_t>(c[1]), static_cast<std::uint32_t>(c[2])));
+        struct Bucket {
+            std::array<std::int64_t, 3> coord{};
+
+            std::uint32_t head{UINT32_MAX};
+        };
+        const std::size_t max_table_size = std::bit_ceil(std::max<std::size_t>(16, positions.size() * 2));
+        std::size_t table_size = std::min<std::size_t>(max_table_size, 1024);
+        std::size_t mask = table_size - 1;
+        std::size_t occupied = 0;
+        Array<Bucket> table;
+        table.resize(table_size);
+        Array<std::uint32_t> next_in_cell;
+        next_in_cell.resize(positions.size(), UINT32_MAX);
+        const auto cell_hash = [](const std::array<std::int64_t, 3>& c) noexcept -> std::size_t {
+            return hash(static_cast<std::uint32_t>(c[0]),
+                        hash(static_cast<std::uint32_t>(c[1]), static_cast<std::uint32_t>(c[2])));
+        };
+        const auto find_head = [&](const std::array<std::int64_t, 3>& c) noexcept -> std::uint32_t {
+            for (std::size_t slot = cell_hash(c) & mask;; slot = (slot + 1) & mask) {
+                if (table[slot].head == UINT32_MAX)
+                    return UINT32_MAX;
+                if (table[slot].coord == c)
+                    return table[slot].head;
             }
         };
-        std::unordered_map<std::array<std::int64_t, 3>, std::vector<std::uint32_t>, CellHash> cells;
+        const auto insert_point = [&](const std::array<std::int64_t, 3>& c, std::uint32_t index) {
+            if (occupied * 2 >= table_size) {
+                table_size *= 2;
+                mask = table_size - 1;
+                Array<Bucket> grown;
+                grown.resize(table_size);
+                for (const auto& entry : table) {
+                    if (entry.head == UINT32_MAX)
+                        continue;
+                    for (std::size_t slot = cell_hash(entry.coord) & mask;; slot = (slot + 1) & mask)
+                        if (grown[slot].head == UINT32_MAX) {
+                            grown[slot] = entry;
+                            break;
+                        }
+                }
+                table = std::move(grown);
+            }
+            for (std::size_t slot = cell_hash(c) & mask;; slot = (slot + 1) & mask) {
+                if (table[slot].head == UINT32_MAX) {
+                    table[slot].coord = c;
+                    table[slot].head = index;
+                    ++occupied;
+                    return;
+                }
+                if (table[slot].coord == c) {
+                    next_in_cell[index] = table[slot].head;
+                    table[slot].head = index;
+                    return;
+                }
+            }
+        };
         Array<std::uint32_t> kept;
         for (std::uint32_t i = 0; i < positions.size(); ++i) {
             const auto p = Vector3d(positions[i]);
@@ -401,10 +455,8 @@ Result<Geometry> scatter(const Geometry& surface, const ScatterSettings& setting
             for (std::int64_t x = -1; x <= 1 && !near; ++x)
                 for (std::int64_t y = -1; y <= 1 && !near; ++y)
                     for (std::int64_t z = -1; z <= 1 && !near; ++z) {
-                        const auto found = cells.find({c[0] + x, c[1] + y, c[2] + z});
-                        if (found == cells.end())
-                            continue;
-                        for (const auto other : found->second) {
+                        for (auto other = find_head({c[0] + x, c[1] + y, c[2] + z}); other != UINT32_MAX;
+                             other = next_in_cell[other]) {
                             const auto d = Vector3d(positions[other]) - p;
                             if (math::length_squared(d) < limit) {
                                 near = true;
@@ -414,7 +466,7 @@ Result<Geometry> scatter(const Geometry& surface, const ScatterSettings& setting
                     }
             if (near)
                 continue;
-            cells[c].push_back(i);
+            insert_point(c, i);
             kept.add(i);
         }
         const auto keep = [&](auto& column) {
@@ -459,12 +511,12 @@ Result<void> transform(Geometry& geometry, Vector3 translate, Quaternion rotatio
     const auto normals = normal_rows(matrix);
     for (const auto& attribute : geometry.attributes()) {
         const auto name = attribute.name.view();
-        if (std::holds_alternative<SharedArray<Quaternion>>(attribute.data) && name == "orient") {
+        if (std::holds_alternative<SharedArray<Quaternion>>(attribute.data) && attribute.usage == Usage::orientation) {
             auto& values = *value(geometry.write<Quaternion>(name, attribute.layer));
             for (auto& q : values) {
                 q = *unit_rotation * q;
                 if (!math::is_finite(q))
-                    return failure("Transformed orient is not finite.");
+                    return failure("Transformed " + std::string{name.std_view()} + " is not finite.");
             }
             continue;
         }
@@ -502,55 +554,48 @@ Result<void> promote(Geometry& geometry, StringView name, Layer to, Reduce reduc
         return failure("P stays on points.");
     if ((from == Layer::instance && to != Layer::detail) || (to == Layer::instance && from != Layer::detail))
         return failure("Instance attributes only exchange with detail.");
-    // Sources of each target element as offsets into `sources`.
-    Array<std::uint32_t> starts{0};
-    Array<std::uint32_t> sources;
     const auto vertex_points = geometry.vertex_points();
     const auto primitives = geometry.count(Layer::primitive);
     const auto targets = geometry.count(to);
-    const auto close = [&] { starts.add(static_cast<std::uint32_t>(sources.size())); };
-    if (from == Layer::detail) {
-        for (std::uint32_t i = 0; i < targets; ++i) {
-            sources.add(0);
-            close();
-        }
-    } else if (to == Layer::detail) {
-        for (std::uint32_t i = 0; i < geometry.count(from); ++i)
-            sources.add(i);
-        close();
-    } else if (to == Layer::primitive) {
-        for (std::uint32_t p = 0; p < primitives; ++p) {
-            const auto range = geometry.primitive(p);
-            for (auto v = range.first; v < range.first + range.count; ++v)
-                sources.add(from == Layer::vertex ? v : vertex_points[v]);
-            close();
-        }
-    } else if (to == Layer::vertex) {
-        for (std::uint32_t p = 0; p < primitives; ++p) {
-            const auto range = geometry.primitive(p);
-            for (auto v = range.first; v < range.first + range.count; ++v) {
-                sources.add(from == Layer::point ? vertex_points[v] : p);
+    Array<std::uint32_t> starts;
+    Array<std::uint32_t> sources;
+    if (from != Layer::detail && to != Layer::detail) {
+        starts.add(0);
+        const auto close = [&] { starts.add(static_cast<std::uint32_t>(sources.size())); };
+        if (to == Layer::primitive) {
+            for (std::uint32_t p = 0; p < primitives; ++p) {
+                const auto range = geometry.primitive(p);
+                for (auto v = range.first; v < range.first + range.count; ++v)
+                    sources.add(from == Layer::vertex ? v : vertex_points[v]);
                 close();
             }
+        } else if (to == Layer::vertex) {
+            for (std::uint32_t p = 0; p < primitives; ++p) {
+                const auto range = geometry.primitive(p);
+                for (auto v = range.first; v < range.first + range.count; ++v) {
+                    sources.add(from == Layer::point ? vertex_points[v] : p);
+                    close();
+                }
+            }
+        } else { // To points from vertices or primitives: bucket the vertices by point.
+            Array<std::uint32_t> counts;
+            Array<std::uint32_t> vertex_primitive;
+            counts.resize(targets + 1);
+            vertex_primitive.resize(vertex_points.size());
+            for (std::uint32_t p = 0; p < primitives; ++p) {
+                const auto range = geometry.primitive(p);
+                for (auto v = range.first; v < range.first + range.count; ++v)
+                    vertex_primitive[v] = p;
+            }
+            for (const auto point : vertex_points)
+                ++counts[point + 1];
+            for (std::uint32_t i = 0; i < targets; ++i)
+                counts[i + 1] += counts[i];
+            starts = counts;
+            sources.resize(vertex_points.size());
+            for (std::uint32_t v = 0; v < vertex_points.size(); ++v)
+                sources[counts[vertex_points[v]]++] = from == Layer::vertex ? v : vertex_primitive[v];
         }
-    } else { // To points from vertices or primitives: bucket the vertices by point.
-        Array<std::uint32_t> counts;
-        Array<std::uint32_t> vertex_primitive;
-        counts.resize(targets + 1);
-        vertex_primitive.resize(vertex_points.size());
-        for (std::uint32_t p = 0; p < primitives; ++p) {
-            const auto range = geometry.primitive(p);
-            for (auto v = range.first; v < range.first + range.count; ++v)
-                vertex_primitive[v] = p;
-        }
-        for (const auto point : vertex_points)
-            ++counts[point + 1];
-        for (std::uint32_t i = 0; i < targets; ++i)
-            counts[i + 1] += counts[i];
-        starts = counts;
-        sources.resize(vertex_points.size());
-        for (std::uint32_t v = 0; v < vertex_points.size(); ++v)
-            sources[counts[vertex_points[v]]++] = from == Layer::vertex ? v : vertex_primitive[v];
     }
     auto promoted = std::visit(
         [&](const auto& column) -> Result<ColumnData> {
@@ -563,6 +608,28 @@ Result<void> promote(Geometry& geometry, StringView name, Layer to, Reduce reduc
                 if (reduce != Reduce::first && !numeric)
                     return failure("Sum and average need float or float vector attributes.");
                 Array<T> result;
+                if (from == Layer::detail) {
+                    result.resize(targets, column.array()[0]);
+                    return ColumnData{SharedArray<T>{std::move(result)}};
+                }
+                if (to == Layer::detail) {
+                    const auto& items = column.array();
+                    if (items.empty()) {
+                        result.emplace();
+                    } else if constexpr (numeric) {
+                        if (reduce != Reduce::first) {
+                            T total{};
+                            for (const auto& item : items)
+                                total += item;
+                            result.add(reduce == Reduce::sum ? total : total / static_cast<float>(items.size()));
+                        } else {
+                            result.add(items[0]);
+                        }
+                    } else {
+                        result.add(items[0]);
+                    }
+                    return ColumnData{SharedArray<T>{std::move(result)}};
+                }
                 result.reserve(targets);
                 for (std::uint32_t i = 0; i < targets; ++i) {
                     const auto first = starts[i];
@@ -592,6 +659,72 @@ Result<void> promote(Geometry& geometry, StringView name, Layer to, Reduce reduc
     String moved{attribute->name};
     (void)geometry.remove(name);
     return geometry.set(std::move(moved), to, std::move(*promoted), usage);
+}
+
+Result<Geometry> ray(const Geometry& points, const Geometry& surface, const RaySettings& settings) {
+    if (!std::isfinite(settings.max_distance) || settings.max_distance < 0)
+        return failure("Ray max distance must be finite and non-negative.");
+    const auto unit = math::try_normalize(settings.direction);
+    if (settings.mode == RayMode::project && !unit)
+        return failure("Ray direction must be finite and nonzero.");
+    if (surface.count(Layer::primitive) > std::uint32_t(std::numeric_limits<std::int32_t>::max()))
+        return failure("Ray surfaces have fewer than 2^31 primitives.");
+    for (std::uint32_t p = 0; p < surface.count(Layer::primitive); ++p)
+        if (surface.primitive(p).count - 2 > std::uint32_t(std::numeric_limits<std::int32_t>::max()))
+            return failure("Ray polygons have fewer than 2^31 fan triangles.");
+    ATELIER_TRY_BIND(bvh, Bvh::acquire(surface));
+    Geometry output = points;
+    const auto count = output.count(Layer::point);
+    // Finish adding columns before borrowing them: growing attributes moves their handles.
+    ATELIER_TRY(output.add<std::int32_t>("hitprim", Layer::point));
+    ATELIER_TRY(output.add<std::int32_t>("hittri", Layer::point));
+    ATELIER_TRY(output.add<Vector2>("hitprimuv", Layer::point));
+    ATELIER_TRY(output.add<float>("hitdist", Layer::point));
+    if (settings.normal)
+        ATELIER_TRY(output.add<Vector3>("N", Layer::point));
+    ATELIER_TRY_BIND(positions, output.write<Vector3>("P", Layer::point));
+    ATELIER_TRY_BIND(primitives, output.write<std::int32_t>("hitprim", Layer::point));
+    ATELIER_TRY_BIND(subtriangles, output.write<std::int32_t>("hittri", Layer::point));
+    ATELIER_TRY_BIND(uvs, output.write<Vector2>("hitprimuv", Layer::point));
+    ATELIER_TRY_BIND(distances, output.write<float>("hitdist", Layer::point));
+    Array<Vector3>* normals{};
+    if (settings.normal) {
+        ATELIER_TRY_BIND(writable, output.write<Vector3>("N", Layer::point));
+        normals = *writable;
+    }
+    Array<bool> missed;
+    missed.resize(settings.remove_misses ? count : 0);
+    const auto& corners = surface.positions();
+    const auto vertices = surface.vertex_points();
+    for (std::uint32_t i = 0; i < count; ++i) {
+        const auto hit = settings.mode == RayMode::project ? (*bvh)->ray((**positions)[i], *unit, settings.max_distance)
+                                                           : (*bvh)->closest((**positions)[i], settings.max_distance);
+        if (!hit) {
+            (**primitives)[i] = -1;
+            (**subtriangles)[i] = -1;
+            (**uvs)[i] = {};
+            (**distances)[i] = -1;
+            if (settings.remove_misses)
+                missed[i] = true;
+            continue;
+        }
+        (**positions)[i] = hit->position;
+        (**primitives)[i] = static_cast<std::int32_t>(hit->primitive);
+        (**subtriangles)[i] = static_cast<std::int32_t>(hit->triangle);
+        (**uvs)[i] = hit->uv;
+        (**distances)[i] = hit->distance;
+        if (normals) {
+            const auto indices = detail::fan_corners(surface.primitive(hit->primitive), hit->triangle);
+            const auto a = corners[vertices[indices[0]]];
+            const auto b = corners[vertices[indices[1]]];
+            const auto c = corners[vertices[indices[2]]];
+            if (const auto n = math::try_normalize(math::cross(b - a, c - a)))
+                (*normals)[i] = *n;
+        }
+    }
+    if (settings.remove_misses)
+        return output.remove_flagged(Layer::point, std::span<const bool>{missed.data(), missed.size()});
+    return output;
 }
 
 Result<Geometry> copy_to_points(const Geometry& points, std::span<const Reference> references, StringView variant) {
@@ -781,10 +914,11 @@ Result<Geometry> realize(std::span<const Geometry> sources, const Geometry& poin
                                     return failure("A realized vector is not finite.");
                             }
                         } else if constexpr (std::same_as<T, Quaternion>) {
-                            if (attribute.name == "orient") {
+                            if (attribute.usage == Usage::orientation) {
                                 v = copy.placement.rotation * v;
                                 if (!math::is_finite(v))
-                                    return failure("A realized orient is not finite.");
+                                    return failure("A realized " + std::string{attribute.name.view().std_view()} +
+                                                   " is not finite.");
                             }
                         }
                         values.add(std::move(v));

@@ -176,6 +176,74 @@ void verify_frontend_and_pod_evaluation() {
     reject_snapshot("void bodyless();", "Expected '{'");
     reject_snapshot("struct MissingSemi { int x; }", "Expected ';'");
     reject_snapshot("[UnknownAttr] enum BadEnum { a }", "Unknown enum attribute");
+    reject_snapshot("bool bad_fin() { return math.is_finite(1); }", "math.is_finite requires");
+    reject_snapshot("uint bad_bits() { return math.as_uint(1.0d); }", "math.as_uint requires");
+    reject_snapshot("int bad_ibits() { return math.as_int(vector3()); }", "math.as_int requires");
+    reject_snapshot("void bad_attr([In] const Array<int>& x) {}", "Parameter attributes apply only to class methods");
+    reject_snapshot("class p.A : test.PairHost { void process([In(\"a\", From = \"b\")] const Array<int>& x) {} }",
+                    "either a literal name or From");
+    reject_snapshot("class p.B : test.PairHost { void process([Out(\"a\", Optional)] Array<int>& x) {} }",
+                    "Optional applies only to In");
+    reject_snapshot("class p.C : test.PairHost { void process([Port(\"x\")] test.PlainPair& p) {} }",
+                    "Port is a flag without arguments");
+    reject_snapshot("int ok() { return 1; }\nclass p.Dup : test.PairHost { void process(int x, int x) {} }",
+                    "Duplicate parameter x in method: p.Dup.process", 2);
+
+    // Verify math.is_finite, math.as_uint, math.as_int, [RunOver], method parameter attributes,
+    // TypeInfo::described_methods, and rebuild_required on process parameter changes.
+    auto described_prog = take(Program::create(runtime));
+    publish(*described_prog, {"sop", 1, {{"Source/Sop.source", 1, R"(
+class test.SopNode : test.PairHost {
+    [RunOver] int domain = 0;
+    String target = "col";
+    void helper(int a) {}
+    void process([Port] const test.PlainPair& port_in,
+                 [In("src", Optional), Layer = "point"] const Array<int>& input_col,
+                 [InOut] Array<int>& col,
+                 [Out(From = "target")] Array<int>& out_col) {}
+}
+)"}}});
+    const auto sop_type = take(runtime.find_type("test.SopNode"));
+    const auto* sop_info = take(runtime.describe(sop_type));
+    require(sop_info->fields.size() == 2 &&
+                sop_info->fields[0].metadata == MetadataList{{"procedural.role", "run_over"}} &&
+                sop_info->described_methods.size() == 2 && sop_info->described_methods[1].name == "process" &&
+                sop_info->described_methods[1].parameter_names.size() == 4 &&
+                sop_info->described_methods[1].parameter_metadata[0] == MetadataList{{"procedural.role", "port"}} &&
+                sop_info->described_methods[1].parameter_metadata[1] == MetadataList{{"procedural.layer", "point"},
+                                                                                     {"procedural.name", "src"},
+                                                                                     {"procedural.optional", "true"},
+                                                                                     {"procedural.role", "in"}} &&
+                sop_info->described_methods[1].parameter_metadata[2] == MetadataList{{"procedural.role", "inout"}} &&
+                sop_info->described_methods[1].parameter_metadata[3] ==
+                    MetadataList{{"procedural.from", "target"}, {"procedural.role", "out"}},
+            "Source class [RunOver] or parameter attributes did not publish into TypeInfo::described_methods.");
+    // Ordinary unattributed method parameter rename remains compatible; process parameter rename requires rebuild.
+    publish(*described_prog, {"sop", 2, {{"Source/Sop.source", 2, R"(
+class test.SopNode : test.PairHost {
+    [RunOver] int domain = 0;
+    String target = "col";
+    void helper(int renamed_a) {}
+    void process([Port] const test.PlainPair& port_in,
+                 [In("src", Optional), Layer = "point"] const Array<int>& input_col,
+                 [InOut] Array<int>& col,
+                 [Out(From = "target")] Array<int>& out_col) {}
+}
+)"}}});
+    auto rebuild_req = take(described_prog->request({"sop", 3, {{"Source/Sop.source", 3, R"(
+class test.SopNode : test.PairHost {
+    [RunOver] int domain = 0;
+    String target = "col";
+    void helper(int renamed_a) {}
+    void process([Port] const test.PlainPair& renamed_port,
+                 [In("src", Optional), Layer = "point"] const Array<int>& input_col,
+                 [InOut] Array<int>& col,
+                 [Out(From = "target")] Array<int>& out_col) {}
+}
+)"}}}));
+    auto rebuild_cand = Program::prepare(rebuild_req);
+    require(!rebuild_cand && rebuild_cand.error().code == ErrorCode::rebuild_required,
+            "Renaming a process port parameter did not report rebuild_required.");
 
     // Verify zero-default plain_value POD locals/returns, non-zero default plain_value records,
     // builtin math locals (Vector3), local Array<int> loops, cached SOP Array<int>& writes,
@@ -183,7 +251,32 @@ void verify_frontend_and_pod_evaluation() {
     const auto host_type = take(runtime.find_type("test.PairHost"));
     auto host = take(runtime.create(host_type));
     const std::string_view pod_and_sop = R"(
+bool check_intrinsics(float zero) {
+    const float nan_f = zero / zero;
+    const float inf_f = 1.0f / zero;
+    const double inf_d = -1.0d / double(zero);
+    const bool finite_ok = math.is_finite(3.5f) && math.is_finite(-2.0d) &&
+                           math.is_finite(vector3(1.0f, -2.0f, 3.0f)) &&
+                           math.is_finite(quaternion()) &&
+                           math.is_finite(matrix4(1.0f)) &&
+                           !math.is_finite(nan_f) && !math.is_finite(inf_f) && !math.is_finite(inf_d) &&
+                           !math.is_finite(vector3(1.0f, nan_f, 0.0f)) &&
+                           !math.is_finite(quaternion(0.0f, inf_f, 0.0f, 1.0f));
+    const uint neg_one_bits = math.as_uint(-1);
+    const uint min_int_bits = math.as_uint(-2147483647 - 1);
+    const uint neg_float_bits = math.as_uint(-1.0f);
+    const uint neg_zero_bits = math.as_uint(-zero);
+    const int back_neg_one = math.as_int(neg_one_bits);
+    const int float_as_i = math.as_int(-1.0f);
+    return finite_ok && neg_one_bits == 4294967295 && min_int_bits == 2147483648 &&
+           neg_float_bits == 3212836864 && neg_zero_bits == 2147483648 &&
+           back_neg_one == -1 && float_as_i == -1082130432;
+}
+
 int evaluate(Array<int>& column, test.PlainPair delta) {
+    if (!check_intrinsics(0.0f)) {
+        return -1;
+    }
     test.PlainPair zero;
     test.NonZeroPlain preset;
     test.PlainPair sum = self.add_pair(zero, delta);
@@ -201,6 +294,15 @@ int evaluate(Array<int>& column, test.PlainPair delta) {
     return total + zero.x + zero.y + preset.bias;
 }
 )";
+    // Verify single-source bound Program also rejects class-only parameter attributes.
+    {
+        auto bound_single = take(Program::create(runtime, host_type));
+        auto bad_single = take(bound_single->request("single_bad.source", "void f([In] const Array<int>& a) {}", "f"));
+        auto bad_single_cand = Program::prepare(bad_single);
+        require(!bad_single_cand &&
+                    bad_single_cand.error().message.contains("Parameter attributes apply only to class methods"),
+                "Single-source bound Program accepted class-only parameter attributes.");
+    }
     for (const bool fast : {false, true}) {
         auto tier = take(Program::create(runtime, host_type));
         auto tier_req =

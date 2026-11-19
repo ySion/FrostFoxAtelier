@@ -1,9 +1,12 @@
 #include "procedural/graph.hpp"
+#include "detail/node_plan.hpp"
+#include "foundation/result.hpp"
 #include "procedural/nodes.hpp"
 #include "runtime/foundation.hpp"
 
 #include <algorithm>
-#include <unordered_set>
+#include <array>
+#include <utility>
 
 namespace atelier::procedural {
 namespace detail {
@@ -37,6 +40,9 @@ struct Access {
 namespace {
 using detail::Access;
 
+template <std::size_t I>
+using ColumnArray = Array<typename std::variant_alternative_t<I, ColumnData>::Value>;
+
 std::unexpected<Error> error(ErrorCode code, std::string message) {
     return std::unexpected(Error{code, std::move(message)});
 }
@@ -51,13 +57,13 @@ Result<bool> member(Runtime& runtime, ObjectId graph, ObjectId node) {
 // True when `target` is `from` or feeds it through any path of connections.
 Result<bool> upstream(Runtime& runtime, const Contents& graph, ObjectId from, ObjectId target) {
     std::vector<ObjectId> pending{from};
-    std::unordered_set<ObjectId> seen;
+    Map<ObjectId, std::uint8_t> seen;
     while (!pending.empty()) {
         const auto node = pending.back();
         pending.pop_back();
         if (node == target)
             return true;
-        if (!seen.insert(node).second)
+        if (!seen.try_emplace(node, std::uint8_t{1}).inserted)
             continue;
         auto into = inputs(runtime, graph, node);
         if (!into)
@@ -66,6 +72,14 @@ Result<bool> upstream(Runtime& runtime, const Contents& graph, ObjectId from, Ob
             pending.push_back(input.from);
     }
     return false;
+}
+
+std::optional<Layer> parse_layer_name(std::string_view text) noexcept {
+    constexpr std::array<std::string_view, 5> names{"point", "vertex", "primitive", "detail", "instance"};
+    const auto found = std::ranges::find(names, text);
+    if (found == names.end())
+        return std::nullopt;
+    return static_cast<Layer>(found - names.begin());
 }
 
 }
@@ -85,7 +99,7 @@ Result<Reference> Context::mesh(StringView key) const noexcept {
     return reference;
 }
 
-Result<void> PointNode::fail(const String& message) const noexcept {
+Result<void> Node::fail(const String& message) const noexcept {
     return error(ErrorCode::invocation_failed, std::string{message.view().std_view()});
 }
 
@@ -97,7 +111,7 @@ Result<void> register_types(Runtime& runtime) {
         definitions.push_back(string_definition(runtime));
     if (!runtime.native_type<Array<String>>())
         definitions.push_back(array_definition<String>(runtime, "procedural.Strings"));
-    // Every point column type, so Source nodes can borrow columns.
+    // Every attribute column type, so Source and native nodes can borrow columns.
     const auto column = [&]<class T>(std::type_identity<T>, const char* name) {
         if (!runtime.native_type<Array<T>>())
             definitions.push_back(array_definition<T>(runtime, name));
@@ -113,11 +127,11 @@ Result<void> register_types(Runtime& runtime) {
     column(std::type_identity<math::Matrix4>{}, "procedural.Matrix4s");
     definitions.push_back(reflection::Definition<Layer>::build(runtime));
     definitions.push_back(reflection::Definition<Reduce>::build(runtime));
+    definitions.push_back(reflection::Definition<RayMode>::build(runtime));
     definitions.push_back(reflection::Definition<Geometry>::build(runtime));
     definitions.push_back(array_definition<Geometry>(runtime, "procedural.Geometries"));
     definitions.push_back(reflection::Definition<Context>::build(runtime));
     definitions.push_back(reflection::Definition<Node>::build(runtime));
-    definitions.push_back(reflection::Definition<PointNode>::build(runtime));
     definitions.push_back(reflection::Definition<Graph>::build(runtime));
     definitions.push_back(reflection::Definition<MeshImport>::build(runtime));
     definitions.push_back(reflection::Definition<Grid>::build(runtime));
@@ -133,90 +147,291 @@ Result<void> register_types(Runtime& runtime) {
     definitions.push_back(reflection::Definition<Promote>::build(runtime));
     definitions.push_back(reflection::Definition<Remove>::build(runtime));
     definitions.push_back(reflection::Definition<Merge>::build(runtime));
-    definitions.push_back(reflection::Definition<RayMode>::build(runtime));
     definitions.push_back(reflection::Definition<Ray>::build(runtime));
     definitions.push_back(reflection::Definition<CopyToPoints>::build(runtime));
     definitions.push_back(reflection::Definition<Realize>::build(runtime));
-    auto published = runtime.register_types(std::move(definitions));
-    if (!published)
-        return std::unexpected(published.error());
+    ATELIER_TRY(runtime.register_types(std::move(definitions)));
     return {};
 }
 
-Result<Ports> ports(Runtime& runtime, TypeId type) {
-    auto node = runtime.native_type<Node>();
-    if (!node)
-        return std::unexpected(node.error());
-    auto derived = runtime.is_a(type, *node);
-    if (!derived)
-        return std::unexpected(derived.error());
-    auto info = runtime.describe(type);
-    if (!info)
-        return std::unexpected(info.error());
+Result<detail::NodePlan> detail::inspect_node(Runtime& runtime, TypeId type) {
+    ATELIER_TRY_BIND(node_base, runtime.native_type<Node>());
+    ATELIER_TRY_BIND(derived, runtime.is_a(type, *node_base));
+    ATELIER_TRY_BIND(info, runtime.describe(type));
     const auto& name = (*info)->name;
     if (!*derived)
         return error(ErrorCode::invalid_type, name + " is not a procedural.Node.");
-    auto point = runtime.native_type<PointNode>();
-    if (!point)
-        return std::unexpected(point.error());
-    auto attribute = runtime.is_a(type, *point);
-    if (!attribute)
-        return std::unexpected(attribute.error());
-    if (*attribute) {
-        if (type == *point)
-            return error(ErrorCode::invalid_type, "procedural.PointNode is an attribute-node base, not a node.");
-        return Ports{{}, {}, {"input"}, {false}, {"output"}};
-    }
-    auto method = runtime.find_method(type, "evaluate");
-    if (!method)
-        return error(ErrorCode::invalid_definition, "Node type " + name + " has no evaluate method.");
-    const auto found = std::ranges::find((*info)->methods, *method, &MethodInfo::id);
-    const auto& signature = found->signature;
-    if (!signature.receiver || !signature.receiver->read_only || signature.result ||
-        signature.execution != FunctionExecution::synchronous)
-        return error(ErrorCode::invalid_definition,
-                     name + ".evaluate must be a const synchronous method without a result.");
-    auto context = runtime.native_type<Context>();
-    auto geometry = runtime.native_type<Geometry>();
-    auto geometries = runtime.native_type<Geometries>();
-    if (!context || !geometry || !geometries)
+    if (type == *node_base)
+        return error(ErrorCode::invalid_type, "procedural.Node is the node base, not a concrete node.");
+
+    auto context_type = runtime.native_type<Context>();
+    auto geometry_type = runtime.native_type<Geometry>();
+    auto geometries_type = runtime.native_type<Geometries>();
+    auto layer_type = runtime.native_type<Layer>();
+    auto string_type = runtime.native_type<String>();
+    if (!context_type || !geometry_type || !geometries_type || !layer_type || !string_type)
         return error(ErrorCode::invalid_type, "Register the procedural types first.");
-    Ports result;
-    result.evaluate = *method;
-    for (std::size_t i = 0; i < signature.parameters.size(); ++i) {
-        const auto& parameter = signature.parameters[i];
-        const bool inline_value = parameter.form == ValueForm::inline_value;
-        const bool read = inline_value && parameter.passing == ParameterPassing::read_only;
-        const bool context_seen = std::ranges::find(result.parameters, Slot::context) != result.parameters.end();
-        std::optional<Slot> slot;
-        if (parameter.type == *context && read && !context_seen)
-            slot = Slot::context;
-        else if (parameter.type == *geometry && read)
-            slot = Slot::input;
-        else if (parameter.type == *geometries && read)
-            slot = Slot::inputs;
-        else if (parameter.type == *geometry && inline_value && parameter.passing == ParameterPassing::reference)
-            slot = Slot::output;
-        if (!slot)
-            return error(ErrorCode::invalid_definition, name + ".evaluate parameter " + std::to_string(i) +
-                                                            " is not a context, geometry input or geometry output.");
-        result.parameters.push_back(*slot);
-        if (*slot == Slot::context)
-            continue;
-        const auto& port = found->parameter_names[i];
-        if (port.empty())
+
+    std::array<TypeId, column_type_count> column_types{};
+    bool columns_ready = true;
+    [&]<std::size_t... I>(std::index_sequence<I...>) {
+        ((columns_ready &=
+          [&] {
+              auto found = runtime.native_type<ColumnArray<I>>();
+              if (!found)
+                  return false;
+              column_types[I] = *found;
+              return true;
+          }()),
+         ...);
+    }(std::make_index_sequence<column_type_count>{});
+    if (!columns_ready)
+        return error(ErrorCode::invalid_type, "Register the procedural column types first.");
+
+    NodePlan plan;
+    const FunctionSignature* signature{};
+    std::span<const std::string> parameter_names;
+    std::span<const MetadataList> parameter_metadata;
+
+    if ((*info)->native_storage) {
+        const auto found = std::ranges::find_if((*info)->methods, [&](const MethodInfo& m) {
+            return m.name == "process" && m.signature.receiver && m.signature.receiver->type == type;
+        });
+        if (found == (*info)->methods.end())
+            return error(ErrorCode::invalid_definition, "Node type " + name + " has no process method.");
+        if (!found->signature.receiver || !found->signature.receiver->read_only || found->signature.result ||
+            found->signature.execution != FunctionExecution::synchronous)
             return error(ErrorCode::invalid_definition,
-                         name + ".evaluate parameter " + std::to_string(i) + " needs a name to be a port.");
-        if (*slot == Slot::output) {
-            result.outputs.push_back(port);
+                         name + ".process must be a const synchronous method without a result.");
+        plan.native = true;
+        plan.method = found->id;
+        signature = &found->signature;
+        parameter_names = found->parameter_names;
+        parameter_metadata = found->parameter_metadata;
+    } else {
+        const auto found = std::ranges::find((*info)->described_methods, "process", &DescribedMethodInfo::name);
+        if (found == (*info)->described_methods.end())
+            return error(ErrorCode::invalid_definition, "Node type " + name + " has no process method.");
+        if (found->signature.result || found->signature.execution != FunctionExecution::synchronous)
+            return error(ErrorCode::invalid_definition,
+                         name + ".process must be a synchronous method without a result.");
+        plan.native = false;
+        signature = &found->signature;
+        parameter_names = found->parameter_names;
+        parameter_metadata = found->parameter_metadata;
+    }
+
+    for (const auto& field : (*info)->fields) {
+        for (const auto& [key, value] : field.metadata) {
+            if (!key.starts_with("procedural."))
+                continue;
+            if (key != "procedural.role" || value != "run_over")
+                return error(ErrorCode::invalid_definition,
+                             name + "." + field.name + ": unknown procedural field metadata " + key + ".");
+            if (plan.run_over_field != FieldId{})
+                return error(ErrorCode::invalid_definition, name + ": at most one RunOver field is allowed.");
+            if (field.value.form != ValueForm::inline_value || field.value.type != *layer_type)
+                return error(ErrorCode::invalid_definition,
+                             name + "." + field.name + ": RunOver requires a procedural.Layer field.");
+            plan.run_over_field = field.id;
+        }
+    }
+
+    struct ParsedMeta {
+        std::string_view role;
+
+        std::string_view explicit_name;
+
+        bool has_name{};
+
+        std::string_view from;
+
+        std::string_view layer;
+
+        bool optional{};
+    };
+    std::vector<ParsedMeta> parsed_meta(signature->parameters.size());
+    for (std::size_t i = 0; i < signature->parameters.size(); ++i) {
+        auto& meta = parsed_meta[i];
+        if (i >= parameter_metadata.size())
+            continue;
+        for (const auto& [key, value] : parameter_metadata[i]) {
+            if (!key.starts_with("procedural."))
+                continue;
+            if (key == "procedural.role")
+                meta.role = value;
+            else if (key == "procedural.name") {
+                meta.explicit_name = value;
+                meta.has_name = true;
+            } else if (key == "procedural.from")
+                meta.from = value;
+            else if (key == "procedural.layer")
+                meta.layer = value;
+            else if (key == "procedural.optional" && value == "true")
+                meta.optional = true;
+            else
+                return error(ErrorCode::invalid_definition,
+                             name + ".process parameter " + std::to_string(i) + ": invalid procedural metadata.");
+        }
+        if (meta.role == "in" || meta.role == "out" || meta.role == "inout" || meta.role == "group")
+            plan.uses_primary_stream = true;
+    }
+
+    if (plan.uses_primary_stream) {
+        plan.ports.inputs.push_back("input");
+        plan.ports.multiple.push_back(false);
+        plan.ports.outputs.push_back("output");
+    }
+
+    bool uses_dynamic_layer = false;
+    plan.arguments.reserve(signature->parameters.size());
+
+    for (std::size_t i = 0; i < signature->parameters.size(); ++i) {
+        const auto& param = signature->parameters[i];
+        const std::string& param_name = parameter_names[i];
+        const auto& meta = parsed_meta[i];
+        const bool inline_value = param.form == ValueForm::inline_value;
+        const bool read = inline_value && param.passing == ParameterPassing::read_only;
+        const bool writable = inline_value && param.passing == ParameterPassing::reference;
+
+        if (meta.role.empty() && param.type == *context_type && read) {
+            if (meta.has_name || !meta.from.empty() || !meta.layer.empty() || meta.optional)
+                return error(ErrorCode::invalid_definition,
+                             name + ".process Context parameter accepts no column options.");
+            if (plan.uses_context)
+                return error(ErrorCode::invalid_definition, name + ".process accepts at most one Context parameter.");
+            plan.uses_context = true;
+            plan.arguments.push_back({.kind = ArgKind::context, .type = param.type});
             continue;
         }
-        result.inputs.push_back(port);
-        result.multiple.push_back(*slot == Slot::inputs);
+
+        if (meta.role.empty() || meta.role == "port") {
+            if (meta.has_name || !meta.from.empty() || !meta.layer.empty() || meta.optional)
+                return error(ErrorCode::invalid_definition,
+                             name + ".process port parameter " + std::to_string(i) + " accepts no column options.");
+            std::optional<ArgKind> port_kind;
+            if (param.type == *geometry_type && read)
+                port_kind = ArgKind::port_input;
+            else if (param.type == *geometries_type && read)
+                port_kind = ArgKind::port_inputs;
+            else if (param.type == *geometry_type && writable)
+                port_kind = ArgKind::port_output;
+            if (!port_kind)
+                return error(ErrorCode::invalid_definition,
+                             name + ".process parameter " + std::to_string(i) +
+                                 " is not a Context, Geometry port, or annotated column stream.");
+            if (param_name.empty() || !Geometry::admit_name(StringView{param_name}))
+                return error(ErrorCode::invalid_definition, name + ".process port parameter " + std::to_string(i) +
+                                                                " requires a valid identifier name.");
+            if (*port_kind == ArgKind::port_output) {
+                if (std::ranges::find(plan.ports.outputs, param_name) != plan.ports.outputs.end())
+                    return error(ErrorCode::invalid_definition,
+                                 name + ".process has duplicate output port '" + param_name + "'.");
+                const auto index = static_cast<std::uint32_t>(plan.ports.outputs.size());
+                plan.ports.outputs.push_back(param_name);
+                plan.arguments.push_back({.kind = *port_kind, .type = param.type, .port_index = index});
+            } else {
+                if (std::ranges::find(plan.ports.inputs, param_name) != plan.ports.inputs.end())
+                    return error(ErrorCode::invalid_definition,
+                                 name + ".process has duplicate input port '" + param_name + "'.");
+                const auto index = static_cast<std::uint32_t>(plan.ports.inputs.size());
+                plan.ports.inputs.push_back(param_name);
+                plan.ports.multiple.push_back(*port_kind == ArgKind::port_inputs);
+                plan.arguments.push_back({.kind = *port_kind, .type = param.type, .port_index = index});
+            }
+            continue;
+        }
+
+        ArgKind kind{};
+        if (meta.role == "in")
+            kind = ArgKind::column_in;
+        else if (meta.role == "inout")
+            kind = ArgKind::column_inout;
+        else if (meta.role == "out")
+            kind = ArgKind::column_out;
+        else if (meta.role == "group")
+            kind = ArgKind::column_group;
+        else
+            return error(ErrorCode::invalid_definition, name + ".process parameter " + std::to_string(i) +
+                                                            " has unknown role '" + std::string(meta.role) + "'.");
+
+        const bool expects_read = kind == ArgKind::column_in || kind == ArgKind::column_group;
+        if (expects_read ? !read : !writable)
+            return error(ErrorCode::invalid_definition,
+                         name + ".process parameter '" + param_name +
+                             (expects_read ? "' requires const Array<T>&." : "' requires mutable Array<T>&."));
+        if (meta.optional && kind != ArgKind::column_in)
+            return error(ErrorCode::invalid_definition,
+                         name + ".process parameter '" + param_name + "': Optional applies only to In parameters.");
+        const auto column_it = std::ranges::find(column_types, param.type);
+        if (column_it == column_types.end())
+            return error(ErrorCode::invalid_definition,
+                         name + ".process parameter '" + param_name + "' is not a supported Geometry column Array.");
+        const auto variant = static_cast<std::size_t>(column_it - column_types.begin());
+        if (kind == ArgKind::column_group && variant != 0)
+            return error(ErrorCode::invalid_definition,
+                         name + ".process parameter '" + param_name + "': Group requires const Array<bool>&.");
+        if (meta.has_name && !meta.from.empty())
+            return error(ErrorCode::invalid_definition,
+                         name + ".process parameter '" + param_name + "' specifies both a literal name and From.");
+
+        ArgPlan arg{.kind = kind, .type = param.type, .column_variant = variant, .optional = meta.optional};
+        if (!meta.from.empty()) {
+            const auto field = std::ranges::find((*info)->fields, meta.from, &FieldInfo::name);
+            if (field == (*info)->fields.end() || field->value.form != ValueForm::inline_value ||
+                field->value.type != *string_type)
+                return error(ErrorCode::invalid_definition, name + ".process parameter '" + param_name +
+                                                                "': From must name a String field on " + name + ".");
+            arg.name_selector = field->id;
+        } else {
+            const std::string_view target = meta.has_name ? meta.explicit_name : std::string_view{param_name};
+            if (kind != ArgKind::column_group || !target.empty()) {
+                if (auto valid = Geometry::admit_name(StringView{target}); !valid)
+                    return error(ErrorCode::invalid_definition,
+                                 name + ".process parameter '" + param_name + "': " + valid.error().message);
+            }
+            auto owned = String::from_utf8(StringView{target});
+            if (!owned)
+                return error(ErrorCode::invalid_definition,
+                             name + ".process parameter '" + param_name + "' requires valid UTF-8.");
+            arg.static_name = std::move(*owned);
+        }
+
+        if (!meta.layer.empty()) {
+            const auto parsed_layer = parse_layer_name(meta.layer);
+            if (!parsed_layer)
+                return error(ErrorCode::invalid_definition, name + ".process parameter '" + param_name +
+                                                                "': invalid Layer '" + std::string(meta.layer) + "'.");
+            arg.fixed_layer = *parsed_layer;
+        } else if (plan.run_over_field == FieldId{}) {
+            arg.fixed_layer = Layer::point;
+        } else {
+            uses_dynamic_layer = true;
+        }
+
+        if ((kind == ArgKind::column_inout || kind == ArgKind::column_out) && arg.name_selector == FieldId{}) {
+            for (const auto& prior : plan.arguments)
+                if ((prior.kind == ArgKind::column_inout || prior.kind == ArgKind::column_out) &&
+                    prior.name_selector == FieldId{} && prior.static_name == arg.static_name)
+                    return error(ErrorCode::invalid_definition, name + ".process writes attribute '" +
+                                                                    std::string{arg.static_name.view().std_view()} +
+                                                                    "' more than once.");
+        }
+
+        plan.arguments.push_back(std::move(arg));
     }
-    if (result.outputs.empty())
-        return error(ErrorCode::invalid_definition, name + ".evaluate has no output.");
-    return result;
+
+    if (plan.ports.outputs.empty())
+        return error(ErrorCode::invalid_definition, name + ".process has no output.");
+    if (plan.run_over_field != FieldId{} && !uses_dynamic_layer)
+        return error(ErrorCode::invalid_definition,
+                     name + ": RunOver requires at least one column or group parameter without a fixed Layer.");
+    return plan;
+}
+
+Result<Ports> ports(Runtime& runtime, TypeId type) {
+    ATELIER_TRY_BIND(plan, detail::inspect_node(runtime, type));
+    return std::move(plan->ports);
 }
 
 Result<std::vector<Input>> detail::Access::inputs(Runtime& runtime, ObjectId node) {
@@ -250,12 +465,13 @@ Result<Contents> detail::Access::contents(Runtime& runtime, ObjectId graph) {
             return std::unexpected(count.error());
         Contents result;
         result.nodes_.reserve(*count);
+        result.members_.reserve(*count);
         for (std::size_t i = 0; i < *count; ++i) {
             auto node = runtime.sequence_read(*field, i);
             if (!node)
                 return std::unexpected(node.error());
             result.nodes_.push_back(node->id());
-            result.members_.insert(node->id());
+            result.members_.insert_or_assign(node->id(), std::uint8_t{1});
         }
         auto slot = runtime.reference_field(graph, Access::display(value));
         if (!slot)

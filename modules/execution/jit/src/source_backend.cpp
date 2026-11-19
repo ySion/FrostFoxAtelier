@@ -2987,8 +2987,9 @@ std::uint32_t compile_business_impl(
                                                        : std::string_view{},
                                                    enumerations, values};
     const CompileTimer frontend(timing != nullptr);
-    auto program = language::compile_source(source_name, std::string_view(source, source_size), source_environment,
-                                            entry_name ? entry_name : "", declarations_only);
+    auto program =
+        language::compile_source(source_name, std::string_view(source, source_size), source_environment,
+                                 entry_name ? entry_name : "", declarations_only, entry_count > 0 && receiver);
     if (timing)
         timing->frontend_ns = frontend.elapsed_ns();
     if (!program) {

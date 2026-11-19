@@ -150,6 +150,15 @@ public:
                 result = ir_.CreateFAdd(result, ir_.CreateShuffleVector(args[1], {12, 13, 14}));
             return result;
         }
+        case Op::is_finite: {
+            auto* type = args[0]->getType();
+            auto* finite =
+                ir_.CreateFCmpOLT(intrinsic(llvm::Intrinsic::fabs, args[0]), llvm::ConstantFP::getInfinity(type));
+            return type->isVectorTy() ? ir_.CreateAndReduce(finite) : finite;
+        }
+        case Op::as_uint:
+        case Op::as_int:
+            return ir_.CreateBitCast(args[0], ir_.getInt32Ty());
         default:
             break;
         }

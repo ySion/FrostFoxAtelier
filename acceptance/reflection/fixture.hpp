@@ -45,7 +45,7 @@ public:
     AFIELD()
     float step{1.0f};
 
-    AFIELD()
+    AFIELD(RunOver)
     upstream::Mode mode{upstream::Mode::ready};
 
     AFIELD()
@@ -56,8 +56,9 @@ public:
 
     AFUNCTION(BorrowSafe)
     static Result<float> advance(Runtime& runtime, ObjectId self, DerivedCounter& counter, upstream::Mode next,
-                                 const upstream::Payload& input, float multiplier = 1.0f,
-                                 LayerMask mask = LayerMask::static_layer) {
+                                 APARAM(In("P", Optional), Layer = "point", Meta("test.param", "ok"))
+                                     const upstream::Payload& input,
+                                 float multiplier = 1.0f, LayerMask mask = LayerMask::static_layer) {
         if (!runtime.type_of(self))
             return std::unexpected(Error{ErrorCode::invalid_object, "Missing self."});
         counter.mode = next;

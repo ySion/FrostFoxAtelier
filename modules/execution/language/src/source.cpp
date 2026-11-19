@@ -73,7 +73,8 @@ public:
         module_.source_name = name;
     }
 
-    std::expected<Program, Diagnostic> parse(std::string_view entry_name, bool allow_declarations) {
+    std::expected<Program, Diagnostic> parse(std::string_view entry_name, bool allow_declarations,
+                                             bool allow_parameter_attributes = false) {
         ATELIER_TRY(validate_environment());
         module_.object_type_name = environment_.object_type_name;
         module_.value_layouts.assign(environment_.values.begin(), environment_.values.end());
@@ -126,7 +127,7 @@ public:
             function_ = {};
             function_.position = token_.position;
             visible_.clear();
-            ATELIER_TRY(signature());
+            ATELIER_TRY(signature(allow_parameter_attributes));
             for (const auto& previous : module_.functions)
                 if (previous.function_name == function_.function_name)
                     return reject(function_.position, "Duplicate source function name.");
@@ -295,7 +296,7 @@ private:
         return {};
     }
 
-    std::expected<void, Diagnostic> signature() {
+    std::expected<void, Diagnostic> signature(bool allow_parameter_attributes) {
         ATELIER_TRY_BIND(asynchronous, accept("async"));
         function_.is_coroutine = *asynchronous;
         ATELIER_TRY_BIND(void_result, accept("void"));
@@ -318,6 +319,8 @@ private:
         ATELIER_TRY_BIND(empty, accept(")"));
         if (!*empty) {
             for (;;) {
+                std::vector<std::pair<std::string, std::string>> metadata;
+                ATELIER_TRY(parse_parameter_attributes(*this, allow_parameter_attributes, metadata));
                 const auto position = token_.position;
                 ATELIER_TRY_BIND(read_only, accept("const"));
                 ATELIER_TRY_BIND(type, parameter_type());
@@ -1859,7 +1862,13 @@ private:
         else if (name == "math.pow") {
             operation = MathOperation::pow;
             arity = 2;
-        } else
+        } else if (name == "math.is_finite")
+            operation = MathOperation::is_finite;
+        else if (name == "math.as_uint")
+            operation = MathOperation::as_uint;
+        else if (name == "math.as_int")
+            operation = MathOperation::as_int;
+        else
             return reject(position, "Unknown built-in math operation '" + std::string(name) + "'.");
         if (arguments.size() != arity)
             return reject(position, "Math operation argument count mismatch.");
@@ -1948,6 +1957,18 @@ private:
                         "Transform operations require a vector3 followed by a matrix4 of matching precision.");
                 break;
             }
+            case MathOperation::is_finite:
+                if (!floating(first) && !descriptor)
+                    return reject(position,
+                                  "math.is_finite requires a floating-point scalar, vector, quaternion or matrix.");
+                result_type = ValueType::boolean;
+                break;
+            case MathOperation::as_uint:
+            case MathOperation::as_int:
+                if (first != ValueType::i32 && first != ValueType::u32 && first != ValueType::f32)
+                    return reject(position, std::string(name) + " requires int, uint or float.");
+                result_type = operation == MathOperation::as_uint ? ValueType::u32 : ValueType::i32;
+                break;
             default:
                 break;
             }
@@ -2182,9 +2203,10 @@ private:
 
 std::expected<Program, Diagnostic> compile_source(std::string_view source_name, std::string_view source,
                                                   Environment environment, std::string_view entry_name,
-                                                  bool allow_declarations) {
+                                                  bool allow_declarations, bool allow_parameter_attributes) {
     ATELIER_TRY_BIND(tokens, Tokens::create(source));
-    return Parser(source_name, std::move(*tokens), environment).parse(entry_name, allow_declarations);
+    return Parser(source_name, std::move(*tokens), environment)
+        .parse(entry_name, allow_declarations, allow_parameter_attributes);
 }
 
 std::expected<void, Diagnostic> export_functions(Program& program, std::span<const std::string_view> names,

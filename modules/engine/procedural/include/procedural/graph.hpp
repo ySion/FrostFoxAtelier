@@ -1,11 +1,11 @@
 #pragma once
 
+#include "foundation/map.hpp"
 #include "procedural/geometry.hpp"
 #include "runtime/reflection.hpp"
 
 #include <cstdint>
 #include <string>
-#include <unordered_set>
 #include <vector>
 
 #include "procedural/graph.gen.hpp"
@@ -59,13 +59,19 @@ struct Connection {
     std::uint32_t output;
 };
 
-// The base of graph nodes. Public fields of a node type are its parameters. Its const
-// method evaluate declares the ports, in parameter order: const procedural.Context& is
-// the context, const procedural.Geometry& an input port, const procedural.Geometries&
-// an input port taking any number of connections, and procedural.Geometry& an output.
-// Native evaluate returns Result<void> noexcept (reflected as business void). The evaluator
-// owns publication: a failed direct call may leave mutable output partially changed.
-ACLASS(Name = "procedural.Node", DESC = "程序化图中的节点。公开字段是参数，端口来自 evaluate 方法的签名。")
+// The unified base of all native and Source procedural graph nodes. Public fields are
+// authored parameters (an optional `[RunOver]` `procedural.Layer` field selects the active
+// element domain). Its synchronous void `process` method declares ports and column bindings:
+// - `const procedural.Context&`: evaluation context (seed and host resources).
+// - `const procedural.Geometry&`, `const procedural.Geometries&`, `procedural.Geometry&`:
+//   whole-geometry single input, multi-input and output ports (named by parameter name).
+// - `[In]`, `[Out]`, `[InOut]`, `[Group]` `Array<T>&` / `const Array<T>&` column streams:
+//   imply primary `"input"` -> `"output"` COW geometry ports (combinable with extra reference
+//   geometry ports). Read borrows observe the input snapshot; `[Group]` receives an empty
+//   view when its group name is empty (all elements selected); `Optional` `[In]` receives an
+//   empty view when the input lacks that attribute.
+ACLASS(Name = "procedural.Node",
+       DESC = "程序化图中的统一节点基类。公开字段是面板参数，端口与属性列流来自 process 方法签名。")
 class Node {
     AGENERATED_BODY(Node)
 
@@ -76,6 +82,11 @@ public:
 
     Node& operator=(const Node&) = delete;
 
+    // Fails a node invocation without publishing its candidate. Does not retain `message`
+    // or touch borrowed columns.
+    AFUNCTION(BorrowSafe)
+    [[nodiscard]] Result<void> fail(const String& message) const noexcept;
+
 private:
     friend struct detail::Access;
 
@@ -83,27 +94,6 @@ private:
     ReferenceSequence inputs_; // Upstream node of each connection, ordered by input port.
 
     std::vector<Connection> connections_; // Parallel to inputs_.
-};
-
-// Attribute nodes have fixed `input` -> `output` ports. Native subclasses use a const
-// Result<void> evaluate(...) noexcept; Source subclasses use synchronous void evaluate(...).
-// const Context& supplies the context. Array<T>& writes a COW output column (default-filled
-// when absent), const Array<T>& reads the input snapshot, even for same-name read/write.
-// Columns default to the parameter name on the point layer. Public String fields override
-// this with Meta procedural.bind="evaluate.parameter", procedural.layer, procedural.kind
-// (attribute or group). A group targets const Array<bool>&; an empty selection means all.
-// Finish preparing every column before borrowing. Native callees must not change lengths,
-// retain references or reenter Source; failures discard the candidate, not the old output.
-ACLASS(Name = "procedural.PointNode",
-       DESC = "原生和自有语言属性节点的基类：按参数名或字段 Meta 读写几何属性列，各层元素数不变。")
-class PointNode : public Node {
-    AGENERATED_BODY(PointNode)
-
-public:
-    // Fails the Source invocation without publishing its candidate. Does not retain message
-    // or touch borrowed columns; replace this entry when Source gains a failure statement.
-    AFUNCTION(BorrowSafe)
-    [[nodiscard]] Result<void> fail(const String& message) const noexcept;
 };
 
 ACLASS(Name = "procedural.Graph", DESC = "程序化图：一组节点及其连接，display 节点的输出是图的结果。")
@@ -133,16 +123,8 @@ private:
 // Publishes Geometry, Graph, Node and the built-in nodes. Repeating it changes nothing.
 Result<void> register_types(Runtime& runtime);
 
-enum class Slot : std::uint8_t { context, input, inputs, output };
-
-// Port names are evaluate's parameter names, read again for every published version. A
-// PointNode type has the fixed ports `input` and `output`; its native or Source column kernel
-// is bound by the evaluator, so `evaluate` is null and `parameters` empty.
+// Port schema of a concrete `procedural.Node` type, derived from its `process` method.
 struct Ports {
-    MethodId evaluate;
-
-    std::vector<Slot> parameters; // Of evaluate, in order.
-
     std::vector<std::string> inputs; // Input port names.
 
     std::vector<bool> multiple; // Per input port: takes any number of connections.
@@ -171,7 +153,7 @@ public:
 
     [[nodiscard]] ObjectId display() const noexcept { return display_; }
 
-    [[nodiscard]] bool contains(ObjectId node) const { return members_.contains(node); }
+    [[nodiscard]] bool contains(ObjectId node) const noexcept { return members_.contains(node); }
 
     // Recheck cached connections after a membership change, without rereading the node.
     [[nodiscard]] Result<void> check(std::span<const Input> connections) const;
@@ -181,7 +163,7 @@ private:
 
     std::vector<ObjectId> nodes_;
 
-    std::unordered_set<ObjectId> members_;
+    Map<ObjectId, std::uint8_t> members_;
 
     ObjectId display_;
 };

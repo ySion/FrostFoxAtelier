@@ -1,4 +1,5 @@
 #pragma once
+#include "language/declarations.hpp"
 #include "language/source.hpp"
 #include "language/snapshot.hpp"
 
@@ -83,6 +84,10 @@ struct ClassMethod {
     std::string signature;
 
     std::vector<std::string> parameters;
+
+    TypeName result_type;
+
+    std::vector<MethodParameter> method_parameters;
 };
 
 struct FunctionDeclaration {

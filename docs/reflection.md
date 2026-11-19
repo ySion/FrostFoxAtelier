@@ -26,11 +26,12 @@ public:
 | `ASTRUCT(Name = "...", Validate = "...", DESC = "...")` | 声明 Runtime 记录值，允许内联使用 |
 | `AENUM(Name = "...", Flags, DESC = "...")` | 声明命名空间级 enum class；底层支持 int32_t/uint32_t（`Flags` 位掩码枚举要求 uint32_t），不需要 AGENERATED_BODY |
 | `AMETA(Label = "...", DESC = "...")` | 紧邻 `AENUM` 内的单个枚举项，声明枚举项的展示名称与说明文本 |
-| `AFIELD(Name = "...", Label = "...", Category = "...", DESC = "...", Hidden, Transient, ReadOnly, Strong = "...", Min = "...", Max = "...", LockMin, LockMax, HardMin = "...", HardMax = "...")` | 声明字段；展示名称、分组、说明与范围均可省略，引用形式和范围见下文 |
+| `AFIELD(Name = "...", Label = "...", Category = "...", DESC = "...", Hidden, Transient, ReadOnly, RunOver, Strong = "...", Min = "...", Max = "...", LockMin, LockMax, HardMin = "...", HardMax = "...")` | 声明字段；展示名称、分组、说明与范围均可省略，引用形式和范围见下文 |
 | `AFUNCTION(Name = "...", BorrowSafe, DESC = "...")` | 声明成员方法或静态上下文方法；名称与说明可省略，重载须使用不同的反射名称 |
+| `APARAM(Port, In, Out, InOut, Group, From = "...", Layer = "...", Optional, Meta("...", "..."))` | 紧邻 `AFUNCTION` 的单个业务参数，声明参数级扩展元数据并发布至 `MethodInfo::parameter_metadata` |
 | `AGENERATED_BODY(TypeName)` | 在类型体内出现一次，仅授权对应元数据生产者访问私有成员；不改变访问段或对象布局 |
 
-`ACLASS/ASTRUCT` 表达引擎语义，C++ 声明本身可以使用 `class` 或 `struct`。类型的 `Name` 默认是完整 C++ 名字，并把 `::` 换成 `.`；成员名字默认取 C++ 名字。稳定的既有名字应明确指定。宏值为普通字符串字面量，`Hidden`、`Transient`、`ReadOnly`、`Flags`、`BorrowSafe`、`LockMin`、`LockMax` 是无值标记。未知或重复参数直接报错；字段的 `Meta` 可重复声明不同键，见下文。
+`ACLASS/ASTRUCT` 表达引擎语义，C++ 声明本身可以使用 `class` 或 `struct`。类型的 `Name` 默认是完整 C++ 名字，并把 `::` 换成 `.`；成员名字默认取 C++ 名字。稳定的既有名字应明确指定。宏值为普通字符串字面量，`Hidden`、`Transient`、`ReadOnly`、`RunOver`、`Flags`、`BorrowSafe`、`LockMin`、`LockMax`、`Port`、`Optional` 是无值标记。未知或重复参数直接报错；字段与参数的 `Meta` 可重复声明不同键，见下文。
 
 `AFIELD` 的 `Label` 和 `Category` 是可选展示文本，例如：
 
@@ -46,7 +47,9 @@ AFIELD(Label = "Position", Category = "Transform") math::Vector3 position;
 
 ### 字段 Meta
 
-`AFIELD` 另接受 `Meta("namespace.key", "value")`，每项恰好两个普通字符串字面量；可重复使用 Meta 声明不同键。例如 `AFIELD(Meta("procedural.bind", "evaluate.values"), Meta("procedural.layer", "point")) String attribute;`。生成器保留解码后的完整字节和长度，沿 `NativeRegistration::metadata({{"namespace.key", "value"}})` 写入最近声明的字段；手写生产者也可直接填写 `FieldDefinition::metadata`。
+`AFIELD` 另接受 `Meta("namespace.key", "value")`，每项恰好两个普通字符串字面量；可重复使用 Meta 声明不同键。例如 `AFIELD(Meta("custom.binding", "target"), Meta("custom.domain", "point")) String attribute;`。`RunOver` 无值标记等价于写入 `{"procedural.role", "run_over"}`。生成器保留解码后的完整字节和长度，沿 `NativeRegistration::metadata({{"namespace.key", "value"}})` 写入最近声明的字段；手写生产者也可直接填写 `FieldDefinition::metadata`。
+
+`APARAM` 作用于业务参数（静态上下文方法跳过前三个宿主上下文形参），支持无参角色标记 `Port`、`In`、`Out`、`InOut`、`Group`，赋值写法 `In = "P"`，或与 `.source` 一致的括号写法 `In("P", Optional)`、`Out(From = "attribute", Layer = "point")`，并可附带 `Meta("key", "value")`。每个参数至多声明一种 procedural 角色；`Optional` 仅允许配合 `In`，字面列名与 `From` 互斥，`Port` 不接受列名、`From`、`Layer` 或 `Optional`。生成器沿 `.parameter_metadata({...})` 写入最近声明的方法。
 
 键格式、排序、同键拒绝、拥有关系和定义兼容性由 [Runtime 字段扩展元数据](runtime-model.md#字段扩展元数据)统一规定。消费者解释自己的命名空间，生成器与 Runtime 不解释几何列或其他业务绑定。Source 类字段使用相同的 `Meta("key", "value")` 写在属性列表中，不借用 `DESC` 或展示名称承载机器语义。
 
