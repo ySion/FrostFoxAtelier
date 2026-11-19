@@ -1,5 +1,6 @@
 #include "source/material_program.hpp"
 #include "source/detail/bridge.hpp"
+#include "language/material.hpp"
 #include "runtime/detail/type_publication.hpp"
 
 #include <algorithm>
@@ -169,8 +170,6 @@ struct MaterialProgram::State {
     std::vector<std::byte> defaults;
 
     std::vector<std::byte> resource_values;
-
-    bool supports_coverage{};
 };
 
 MaterialProgram::MaterialProgram(std::shared_ptr<const State> state) : state_(std::move(state)) {}
@@ -199,35 +198,47 @@ std::span<const MaterialTextureInput> MaterialProgram::textures() const noexcept
     return state_->textures;
 }
 
-Result<std::string> MaterialProgram::hlsl(std::string_view name_space) const {
-    return generate_hlsl(name_space, false);
-}
-
-Result<std::string> MaterialProgram::hlsl_footprint(std::string_view name_space) const {
-    return generate_hlsl(name_space, true);
-}
-
-Result<std::string> MaterialProgram::hlsl_coverage(std::string_view name_space) const {
-    return generate_hlsl(name_space, false, true);
-}
-
-Result<std::string> MaterialProgram::generate_hlsl(std::string_view name_space, bool footprint, bool coverage) const {
+namespace {
+Result<std::string> wrap_hlsl(std::string_view name_space, std::string_view body, bool footprint) {
     const auto letter = [](char c) { return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'); };
     if (name_space.empty() || !letter(name_space.front()) ||
         !std::ranges::all_of(name_space, [&](char c) { return letter(c) || (c >= '0' && c <= '9'); }))
         return std::unexpected(
             Error{ErrorCode::argument_mismatch, "Material HLSL namespace requires an ASCII identifier."});
-    if (coverage && !state_->supports_coverage)
+    const std::string_view sampling =
+        footprint
+            ? "float4 atelier_material_sample_grad(uint environment,uint local_slot,float2 uv,float2 d0,float2 d1);\n"
+            : "float4 atelier_material_sample(uint environment,uint local_slot,float2 uv);\n";
+    constexpr std::string_view prefix =
+        "float2 atelier_material_sample_orientation(uint environment,uint local_slot,float2 uv);\nnamespace ";
+    std::string result;
+    result.reserve(sampling.size() + prefix.size() + name_space.size() + body.size() + 5);
+    result.append(sampling).append(prefix).append(name_space).append(" {\n").append(body).append("}\n");
+    return result;
+}
+}
+
+Result<std::string> MaterialProgram::hlsl(std::string_view name_space) const {
+    return wrap_hlsl(name_space, state_->view.shade_hlsl, false);
+}
+
+Result<std::string> MaterialProgram::hlsl_footprint(std::string_view name_space) const {
+    return wrap_hlsl(name_space, state_->view.footprint_hlsl, true);
+}
+
+Result<std::string> MaterialProgram::hlsl_coverage(std::string_view name_space) const {
+    using Status = language::MaterialCoverageStatus;
+    switch (state_->view.coverage_status) {
+    case Status::missing_field:
         return std::unexpected(
             Error{ErrorCode::invalid_type, "Material coverage requires a top-level float coverage field in Output."});
-    std::string result =
-        footprint
-            ? "float4 atelier_material_sample_grad(uint environment,uint local_slot,float2 uv,float2 d0,float2 d1);\n#define ATELIER_MATERIAL_FOOTPRINT 1\n"
-            : "float4 atelier_material_sample(uint environment,uint local_slot,float2 uv);\n#define ATELIER_MATERIAL_FOOTPRINT 0\n";
-    result += coverage ? "#define ATELIER_MATERIAL_COVERAGE 1\n" : "#define ATELIER_MATERIAL_COVERAGE 0\n";
-    result += "float2 atelier_material_sample_orientation(uint environment,uint local_slot,float2 uv);\n";
-    return result + "namespace " + std::string(name_space) + " {\n" + state_->view.hlsl +
-           "}\n#undef ATELIER_MATERIAL_FOOTPRINT\n#undef ATELIER_MATERIAL_COVERAGE\n";
+    case Status::node_budget_exceeded:
+        return std::unexpected(
+            Error{ErrorCode::capacity_exceeded, "Material coverage projection exceeded the compiler node budget."});
+    case Status::available:
+        break;
+    }
+    return wrap_hlsl(name_space, state_->view.coverage_hlsl, false);
 }
 
 Result<void> MaterialProgram::evaluate(std::span<const std::byte> context, std::span<const std::byte> parameters,
@@ -396,8 +407,6 @@ Result<std::shared_ptr<const MaterialProgram>> compile_material(Runtime& runtime
     const auto& c = binding->values[context_type.type_index];
     const auto& o = binding->values[output_type.type_index];
     const auto& p = binding->values[view.parameters];
-    state->supports_coverage = std::ranges::any_of(
-        o.fields, [](const auto& field) { return field.name == "coverage" && field.type == ValueKind::f32; });
     if (!std::ranges::any_of(*declarations, [&](const auto& declaration) {
             return declaration.name == p.name && !declaration.enumeration;
         }))

@@ -14,6 +14,28 @@ using acceptance::helpers::require;
 using acceptance::helpers::take;
 
 namespace {
+void verify_state_initializer_order(Runtime& runtime, ui::ControlKey& next) {
+    for (const bool parentheses : {false, true}) {
+        const auto literal = [&](std::string value) { return parentheses ? "(" + value + ")" : value; };
+        const std::string source =
+            "ui Order() { state double sign = " + literal("-0.0d") +
+            "; state double prefix = 3.0d; state double before = state.later; state double later = " + literal("9.0d") +
+            "; state double after = state.prefix + state.later; "
+            "state bool early = state.flag; state bool flag = " +
+            literal("true") +
+            "; Button size { width: state.before; height: state.after; enabled: state.early; } "
+            "Button flag { enabled: state.flag; } Button sign { enabled: (1.0d/state.sign) < 0.0d; } }";
+        auto module = take(Module::compile(runtime, "order.ui.source", source));
+        auto instance = take(Instance::create(module->find("Order"), 0, next, {}, {}));
+        const auto controls = instance->controls();
+        require(controls[0].layout.width.value == 0 && controls[0].layout.height.value == 12,
+                "State initializer must read the current value in declaration order.");
+        require(!controls[0].enabled && controls[1].enabled,
+                "Boolean state initializer observed a later declaration too early.");
+        require(controls[2].enabled, "Numeric state initialization lost the sign of negative zero.");
+    }
+}
+
 void verify_component_environments(Runtime& runtime, ui::ControlKey& next) {
     // Top-level helpers are pure module-level Source functions: parameters may be named
     // input/state, and helpers do not implicitly capture component inputs or couple components.
@@ -38,10 +60,10 @@ void verify_component_environments(Runtime& runtime, ui::ControlKey& next) {
     require(!empty_property && empty_property.error().message.contains("Expected a UI expression"),
             "Empty UI property expression escaped frontend validation.");
     // Pure-declarative components bypass LLVM/Program creation while preserving hot reload and helper diagnostics.
-    const std::string plain_v1 =
-        "ui Plain(in double w) { Button b { out_of_flow: true; offset_x: -16; width: input.w; height: 20; } }";
-    const std::string plain_v2 =
-        "ui Plain(in double w) { Button b { out_of_flow: true; offset_x: -16; width: input.w; height: 24; } }";
+    const std::string plain_v1 = "ui Plain(in double w) { state bool active = true; Button b { enabled: state.active; "
+                                 "out_of_flow: true; offset_x: -16; width: input.w; height: 20; } }";
+    const std::string plain_v2 = "ui Plain(in double w) { state bool active = true; Button b { enabled: state.active; "
+                                 "out_of_flow: true; offset_x: -16; width: input.w; height: 24; } }";
     auto plain1 = take(Module::compile(runtime, "plain", plain_v1));
     require(!plain1->find("Plain")->declaration().needs_jit,
             "Pure-declarative UI component unexpectedly required JIT.");
@@ -245,6 +267,7 @@ void verify_ui_entry_dependencies() {
     save(path, newer);
     begin(document, now);
     require(document.compiling(), "Expected a live compiler during catalog growth.");
+    verify_state_initializer_order(runtime, next);
     verify_component_environments(runtime, next);
     drain(document, now);
     present(42);

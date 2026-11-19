@@ -2,6 +2,7 @@
 #include "../helpers.hpp"
 #include "material/program_resources.hpp"
 #include "material/resources.hpp"
+#include "runtime/native.hpp"
 #include <cmath>
 #include <cstdio>
 
@@ -40,7 +41,9 @@ int main() {
         auto instance = take(create_instance(runtime, "material/instance", std::move(state)));
         surviving = take(capture_program(runtime, instance.id()));
 
-        // Verify a diamond call graph exceeding the Coverage DAG budget terminates cleanly without UB.
+        require(take(program->hlsl_coverage("test_ns")).contains("float ms_coverage("),
+                "A material with a valid coverage projection must expose its shader.");
+        // Reuse the same material after its coverage projection exceeds the node budget.
         std::string diamond =
             "struct Textures { material.TextureInput color; };\n"
             "struct Params { float gain; };\n"
@@ -57,9 +60,38 @@ int main() {
         const auto over_budget = take(
             source::compile_material(runtime, take(runtime.native_type<Context>()), take(runtime.native_type<Output>()),
                                      take(runtime.native_type<TextureInput>()), "diamond.source", diamond));
-        require(take(over_budget->hlsl("test_ns"))
-                    .contains("#error Material coverage projection exceeded the compiler node budget."),
-                "Material Coverage DAG budget overflow did not emit its #error guard.");
+        const auto rejected = over_budget->hlsl_coverage("test_ns");
+        require(!rejected && rejected.error().code == ErrorCode::capacity_exceeded &&
+                    rejected.error().message.contains("node budget"),
+                "The coverage caller must receive the projection budget error.");
+        const auto point = take(over_budget->hlsl("test_ns"));
+        const auto footprint = take(over_budget->hlsl_footprint("test_ns"));
+        require(point.contains("ms_Output ms_shade(") && !point.contains("#error") &&
+                    footprint.contains("ms_Output ms_shade_footprint(") && !footprint.contains("#error"),
+                "Coverage budget failure disabled an independent shading variant.");
+        const std::array<ImageRef, 1> white{take(Image::create(1, 1, {255, 255, 255, 255}))};
+        const auto surface = take(resolve_source(take(make_definition(over_budget, {}, defaults)), white));
+        require(take(surface->evaluate({})).coverage == 65536.f,
+                "Coverage projection failure changed CPU shading on the same material.");
+
+        struct ColorOnly {
+            float value;
+        };
+        const auto color_type = take(runtime.register_type(
+            NativeRegistration<ColorOnly>(runtime, "test.ColorOnly", TypeKind::record)
+                .field<&ColorOnly::value>("value", {TypeReference::native<float>()}, offsetof(ColorOnly, value))
+                .build()));
+        const auto color_only =
+            take(source::compile_material(runtime, take(runtime.native_type<Context>()), color_type,
+                                          take(runtime.native_type<TextureInput>()), "color.source", R"(
+            struct Params { float value; };
+            Params defaults() { Params p; return p; }
+            test.ColorOnly shade(material.Context c, Params p) { test.ColorOnly o; o.value = p.value; return o; }
+        )"));
+        const auto missing = color_only->hlsl_coverage("test_ns");
+        require(!missing && missing.error().code == ErrorCode::invalid_type && color_only->hlsl("test_ns") &&
+                    color_only->hlsl_footprint("test_ns"),
+                "An output without a float coverage field must reject only the coverage variant.");
     }
     const auto output = take(surviving->evaluate({}));
     // IEC sRGB decode and the authored gain/alpha, not a previous capture's output.
@@ -69,5 +101,5 @@ int main() {
             "Captured material lost its code or image after Runtime destruction.");
     surviving.reset();
     require(released.expired(), "Last material capture retained its image.");
-    std::puts("Material acceptance: PASS (captured code and image lifetime)");
+    std::puts("Material acceptance: PASS (shader variants, coverage errors, captured code and image lifetime)");
 }

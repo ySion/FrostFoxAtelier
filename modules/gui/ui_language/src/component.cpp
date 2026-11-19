@@ -459,28 +459,26 @@ struct Context {
         return std::get<double>(d.states.at(index));
     }
 
-    void write_bool(std::uint32_t index, bool value) {
+    template <class T>
+    void write_state(std::uint32_t index, T value) {
         auto& d = data();
         if (!d.initializing && !d.handling_event)
             fatal("A binding cannot modify component state.");
-        auto& target = std::get<bool>(d.states.at(index));
-        if (target != value) {
-            target = value;
+        auto& target = std::get<T>(d.states.at(index));
+        if (!d.initializing) {
+            if (target == value)
+                return;
             d.invalidate(d.inputs.size() + index);
         }
+        target = value;
     }
 
+    void write_bool(std::uint32_t index, bool value) { write_state(index, value); }
+
     Result<void> write_number(std::uint32_t index, double value) noexcept {
-        auto& d = data();
-        if (!d.initializing && !d.handling_event)
-            fatal("A binding cannot modify component state.");
         if (!std::isfinite(value))
             return failure("Invalid component state write.");
-        auto& target = std::get<double>(d.states.at(index));
-        if (target != value) {
-            target = value;
-            d.invalidate(d.inputs.size() + index);
-        }
+        write_state(index, value);
         return {};
     }
 

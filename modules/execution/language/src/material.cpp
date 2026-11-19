@@ -1413,32 +1413,32 @@ std::expected<MaterialModule, Diagnostic> compile_material(std::string_view name
                           texture_input,    resources, std::move(textures)};
 }
 
-std::string material_hlsl(const MaterialModule& material) {
-    // All variants travel through the existing owned HLSL text. No extra JIT
-    // callback, Runtime type or DLL ABI is needed for a GPU-only lowering.
-    std::string coverage = "#error Material coverage requires a top-level float coverage field in Output.\n";
+MaterialHlsl material_hlsl(const MaterialModule& material) {
+    MaterialHlsl result{
+        Hlsl(material).generate(), Hlsl(material).generate(true), {}, MaterialCoverageStatus::missing_field};
     const auto& fields = material.program.value_layouts[material.output].fields;
     const auto field = std::ranges::find_if(
         fields, [](const auto& value) { return value.name == "coverage" && value.type == ValueType::f32; });
-    if (field != fields.end()) {
-        if (auto generated = Coverage(material).generate(field->offset)) {
-            MaterialModule projected;
-            projected.context = material.context;
-            projected.parameters = material.parameters;
-            projected.output = material.output;
-            projected.texture_input = material.texture_input;
-            projected.resources = material.resources;
-            projected.textures = material.textures;
-            projected.program.value_layouts = material.program.value_layouts;
-            projected.program.functions.push_back(std::move(*generated));
-            projected.program.reachable = {true};
-            projected.program.exports = {0};
-            coverage = Hlsl(projected).generate(false, true);
-        } else {
-            coverage = "#error Material coverage projection exceeded the compiler node budget.\n";
-        }
+    if (field == fields.end())
+        return result;
+    auto generated = Coverage(material).generate(field->offset);
+    if (!generated) {
+        result.coverage_status = MaterialCoverageStatus::node_budget_exceeded;
+        return result;
     }
-    return "#if ATELIER_MATERIAL_COVERAGE\n" + coverage + "#elif ATELIER_MATERIAL_FOOTPRINT\n" +
-           Hlsl(material).generate(true) + "#else\n" + Hlsl(material).generate() + "#endif\n";
+    MaterialModule projected;
+    projected.context = material.context;
+    projected.parameters = material.parameters;
+    projected.output = material.output;
+    projected.texture_input = material.texture_input;
+    projected.resources = material.resources;
+    projected.textures = material.textures;
+    projected.program.value_layouts = material.program.value_layouts;
+    projected.program.functions.push_back(std::move(*generated));
+    projected.program.reachable = {true};
+    projected.program.exports = {0};
+    result.coverage = Hlsl(projected).generate(false, true);
+    result.coverage_status = MaterialCoverageStatus::available;
+    return result;
 }
 }

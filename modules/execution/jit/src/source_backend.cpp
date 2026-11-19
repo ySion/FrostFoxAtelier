@@ -2795,7 +2795,7 @@ struct MaterialCode {
 
     BusinessCode defaults;
 
-    std::string hlsl;
+    language::MaterialHlsl hlsl;
 
     std::vector<language::MaterialTextureInput> textures;
 
@@ -3202,7 +3202,10 @@ atelier::source::detail::MaterialCodeView
 atelier_material_code_view(atelier::source::detail::MaterialCode* code) noexcept {
     return {&code->shade,
             &code->defaults,
-            code->hlsl.c_str(),
+            code->hlsl.shade.c_str(),
+            code->hlsl.footprint.c_str(),
+            code->hlsl.coverage.c_str(),
+            code->hlsl.coverage_status,
             code->texture_views.data(),
             static_cast<std::uint32_t>(code->texture_views.size()),
             code->parameters,

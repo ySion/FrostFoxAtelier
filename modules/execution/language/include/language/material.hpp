@@ -32,11 +32,16 @@ std::expected<MaterialModule, Diagnostic> compile_material(std::string_view name
                                                            std::span<const ValueLayout> values, std::uint32_t context,
                                                            std::uint32_t output, std::uint32_t texture_input);
 
-// Called after capturing initial_value for the reachable value layouts. The
-// owned text selects coverage-only with ATELIER_MATERIAL_COVERAGE, otherwise
-// ATELIER_MATERIAL_FOOTPRINT selects point (0) or two local changes (1).
-// Coverage requires a top-level float coverage field; other Outputs retain the
-// existing point/footprint support. Source's public wrapper selects the variant
-// and declares its sampling bridge; the CPU/JIT invocation ABI is unchanged.
-std::string material_hlsl(const MaterialModule&);
+enum class MaterialCoverageStatus : std::uint8_t { available, missing_field, node_budget_exceeded };
+
+struct MaterialHlsl {
+    std::string shade;
+    std::string footprint;
+    std::string coverage;
+    MaterialCoverageStatus coverage_status;
+};
+
+// Generate separate shader bodies after capturing the reachable layouts' initial values.
+// A rejected coverage projection leaves both full shading variants usable.
+MaterialHlsl material_hlsl(const MaterialModule&);
 }

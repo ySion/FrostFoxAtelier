@@ -58,8 +58,6 @@ class MaterialProgram final {
     friend Result<std::shared_ptr<const MaterialProgram>> compile_material(Runtime&, TypeId, TypeId, TypeId,
                                                                            std::string_view, std::string_view) noexcept;
 
-    Result<std::string> generate_hlsl(std::string_view name_space, bool footprint, bool coverage = false) const;
-
 public:
     MaterialLayout context_layout() const noexcept;
 
@@ -90,8 +88,8 @@ public:
     // top-level float Output.coverage, including defaults, overwrites and helper
     // returns; unrelated shading/samples are removed before HLSL compilation.
     // Uses the point sampling/orientation bridges above, never SampleGrad.
-    // An Output without that field still compiles/evaluates normally; only this
-    // request fails with invalid_type. Does not change textures() or CPU policy.
+    // Returns invalid_type for a missing float coverage field or capacity_exceeded
+    // when projection exceeds the node budget. Both failures are local to this variant.
     Result<std::string> hlsl_coverage(std::string_view name_space) const;
 
     // Same plain Context/Params/Output and parameter loader, but the entry is

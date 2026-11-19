@@ -334,11 +334,15 @@ public:
             ATELIER_TRY_BIND(initial, fragment(";"));
             ATELIER_TRY(expect(";"));
             State declared{std::string(name->text), *kind, {}};
-            if (*kind == InputKind::boolean) {
-                if (const auto value = try_bool_literal(initial->tokens))
+            // Only the leading literals can run before the JIT initializer. A dynamic
+            // initializer may read a later state, which must still hold its type default.
+            if (initializers_.empty()) {
+                if (*kind == InputKind::boolean) {
+                    if (const auto value = try_bool_literal(initial->tokens))
+                        declared.initial_value = *value;
+                } else if (const auto value = try_number_literal(initial->tokens, true)) {
                     declared.initial_value = *value;
-            } else if (const auto value = try_number_literal(initial->tokens, true)) {
-                declared.initial_value = *value;
+                }
             }
             if (std::holds_alternative<std::monostate>(declared.initial_value))
                 initializers_.push_back({static_cast<std::uint32_t>(result_.states.size()), std::move(*initial)});

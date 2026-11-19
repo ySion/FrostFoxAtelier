@@ -15,6 +15,10 @@ struct NativeContext;
 struct NativeFailure;
 }
 
+namespace atelier::language {
+enum class MaterialCoverageStatus : std::uint8_t;
+}
+
 namespace atelier::source::detail {
 
 inline constexpr std::uint32_t no_diagnostic_location = 0xffffffffu;
@@ -500,7 +504,10 @@ struct MaterialCodeView {
 
     BusinessCode* defaults;
 
-    const char* hlsl;
+    const char* shade_hlsl;
+    const char* footprint_hlsl;
+    const char* coverage_hlsl;
+    language::MaterialCoverageStatus coverage_status;
 
     const MaterialTextureInfo* textures;
 
