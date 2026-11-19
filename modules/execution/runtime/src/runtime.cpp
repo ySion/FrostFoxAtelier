@@ -2097,6 +2097,12 @@ Result<FunctionSignature> Runtime::resolve_signature(const SignatureDefinition& 
 }
 
 struct detail::TypePublication::State {
+    struct AddedMethods {
+        std::uint32_t type_index{};
+
+        std::vector<std::string> names;
+    };
+
     std::uint64_t context{};
 
     std::size_t first_index{};
@@ -2104,6 +2110,8 @@ struct detail::TypePublication::State {
     Array<std::unique_ptr<Runtime::Impl::Type>> staged;
 
     Array<const TypeInfo*> catalog;
+
+    std::vector<AddedMethods> added_methods;
 
     bool reserved{};
 
@@ -2136,24 +2144,32 @@ Result<void> detail::TypePublication::reserve_commit(Runtime& runtime) {
     auto& impl = *runtime.impl_;
     if (state_->context != impl.context || state_->committed || state_->first_index != impl.types.size())
         return failure(ErrorCode::invalid_definition, "Type candidate no longer matches its Runtime catalog.");
-    // Type safe point: code-publication quiescence plus an idle collector, whose
-    // trace stack was reserved for the depths known when its cycle began.
-    if (impl.phase != CollectionPhase::idle || !impl.roots->alive || impl.callbacks != 0 ||
+    // Type safe point: code-publication quiescence plus, when new types are staged, an idle collector
+    // whose trace stack was reserved for the depths known when its cycle began.
+    if ((!state_->staged.empty() && impl.phase != CollectionPhase::idle) || !impl.roots->alive || impl.callbacks != 0 ||
         impl.roots->traversals != 0 || impl.active_executions != 0)
         return failure(
             ErrorCode::busy,
             "Type publication requires a host safe point without collection, callbacks or generated execution.");
-    std::size_t walk_depth = 1;
-    std::size_t representations = impl.representations.size();
-    for (const auto& type : state_->staged) {
-        walk_depth = std::max(walk_depth, type->walk_depth);
-        if (type->native.representation)
-            ++representations;
+    for (const auto& ext : state_->added_methods) {
+        auto& names = impl.types[ext.type_index]->member_names;
+        if (ext.names.size() > no_slot - names.size())
+            return failure(ErrorCode::capacity_exceeded, "Member identity space exhausted.");
+        names.reserve(names.size() + ext.names.size());
     }
-    impl.walk_stack.reserve(walk_depth);
-    impl.types.reserve(state_->first_index + state_->staged.size());
-    impl.representations.reserve(representations);
-    impl.names.reserve(state_->first_index + state_->staged.size());
+    if (!state_->staged.empty()) {
+        std::size_t walk_depth = 1;
+        std::size_t representations = impl.representations.size();
+        for (const auto& type : state_->staged) {
+            walk_depth = std::max(walk_depth, type->walk_depth);
+            if (type->native.representation)
+                ++representations;
+        }
+        impl.walk_stack.reserve(walk_depth);
+        impl.types.reserve(state_->first_index + state_->staged.size());
+        impl.representations.reserve(representations);
+        impl.names.reserve(state_->first_index + state_->staged.size());
+    }
     state_->reserved = true;
     return {};
 }
@@ -2173,7 +2189,13 @@ void detail::TypePublication::commit(Runtime& runtime) noexcept {
         impl.names.try_emplace(StringView{type->info.name}, index);
         impl.types.add(std::move(type));
     }
+    for (auto& ext : state_->added_methods) {
+        auto& names = impl.types[ext.type_index]->member_names;
+        for (auto& name : ext.names)
+            names.push_back(std::move(name));
+    }
     state_->staged.clear();
+    state_->added_methods.clear();
     state_->committed = true;
 }
 
@@ -2248,14 +2270,14 @@ Result<void> validate_method_parameters(std::string_view type_name, const std::s
 
 Result<void> detail::TypePublication::validate_methods(Runtime& runtime, TypeId existing,
                                                        std::vector<DescribedMethodDefinition> methods,
-                                                       const TypePublication* pending) {
+                                                       std::shared_ptr<TypePublication>& publication) {
     assert_serial_access();
     auto& impl = *runtime.impl_;
     const auto* type = impl.lookup(existing);
     if (!type || type->info.kind != TypeKind::object || type->info.native_storage)
         return failure(ErrorCode::invalid_definition, "Described method validation requires a described object type.");
-    if (pending && (pending->state_->context != impl.context || pending->state_->committed ||
-                    pending->state_->first_index != impl.types.size()))
+    if (publication && (publication->state_->context != impl.context || publication->state_->committed ||
+                        publication->state_->first_index != impl.types.size()))
         return failure(ErrorCode::invalid_definition, "Type candidate no longer matches its Runtime catalog.");
     if (methods.size() >= no_slot)
         return failure(ErrorCode::capacity_exceeded, "Member identity space exhausted.");
@@ -2263,8 +2285,19 @@ Result<void> detail::TypePublication::validate_methods(Runtime& runtime, TypeId 
         type->fields.size() - (type->base && type->base->info.id != impl.object ? std::size_t{1} : std::size_t{0});
     const std::size_t own_callable = type->compiled_methods.size();
     const std::span<const std::unique_ptr<Runtime::Impl::Type>> staged =
-        pending ? std::span<const std::unique_ptr<Runtime::Impl::Type>>{pending->state_->staged}
-                : std::span<const std::unique_ptr<Runtime::Impl::Type>>{};
+        publication ? std::span<const std::unique_ptr<Runtime::Impl::Type>>{publication->state_->staged}
+                    : std::span<const std::unique_ptr<Runtime::Impl::Type>>{};
+    std::vector<std::string> added_names;
+    const auto check_descendant = [&](const Runtime::Impl::Type& candidate,
+                                      std::string_view method_name) -> Result<void> {
+        if (&candidate != type && candidate.info.kind == TypeKind::object &&
+            Runtime::Impl::derives_from(candidate, *type) &&
+            std::ranges::find(candidate.member_names, method_name) != candidate.member_names.end())
+            return failure(ErrorCode::invalid_definition,
+                           "Member hides an inherited declaration: " + candidate.info.name + "." +
+                               std::string(method_name) + " hides " + type->info.name + "." + std::string(method_name));
+        return {};
+    };
     for (std::size_t i = 0; i != methods.size(); ++i) {
         auto& method = methods[i];
         if (method.name.empty())
@@ -2291,6 +2324,25 @@ Result<void> detail::TypePublication::validate_methods(Runtime& runtime, TypeId 
                            signature.error().message + ": " + type->info.name + "." + method.name);
         ATELIER_TRY(validate_method_parameters(type->info.name, method.name, signature->parameters.size(),
                                                method.parameter_names, method.parameter_metadata));
+        if (std::ranges::find(type->member_names, method.name) == type->member_names.end()) {
+            for (const auto& candidate : impl.types)
+                ATELIER_TRY(check_descendant(*candidate, method.name));
+            for (const auto& candidate : staged)
+                ATELIER_TRY(check_descendant(*candidate, method.name));
+            added_names.push_back(method.name);
+        }
+    }
+    if (!added_names.empty()) {
+        if (!publication) {
+            publication = std::shared_ptr<detail::TypePublication>(new detail::TypePublication);
+            publication->state_->context = impl.context;
+            publication->state_->first_index = impl.types.size();
+            publication->state_->catalog.reserve(impl.types.size());
+            for (const auto& published : impl.types)
+                publication->state_->catalog.add(&published->info);
+        }
+        const std::uint32_t type_index = *impl.names.find(StringView{type->info.name});
+        publication->state_->added_methods.push_back({type_index, std::move(added_names)});
     }
     return {};
 }

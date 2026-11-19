@@ -37,7 +37,12 @@ private:
     Sample sample_;
 };
 
-ACLASS(Name = "reflection.DerivedCounter", Validate = "validate", Meta("source.contract_method", "advance"))
+ACLASS(Name = "reflection.DerivedCounter", Validate = "validate", Meta("test.order", "second"),
+       Meta("source.contract_method", "advance"))
+class DerivedCounter;
+
+ACLASS(Name = "reflection.DerivedCounter", Validate = "validate", Meta("source.contract_method", "advance"),
+       Meta("test.order", "second"))
 class DerivedCounter : public Counter {
     AGENERATED_BODY(DerivedCounter)
 

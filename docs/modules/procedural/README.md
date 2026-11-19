@@ -161,7 +161,7 @@
 | orient.source | 全局函数 `procedural.frame_rotation`、`shortest_arc` 与 `align_to_normal`（+Z 沿 N，+Y 朝 up；up 为零、与 N 平行或非有限时取最短旋转；N 为零时不旋转，非有限时结果非有限） |
 | jitter.source | `procedural.Jitter`：`group`、`amount`、`axis_scale`、`seed`；校验参数有限性，优先读 `[In("id", Optional)]`，缺 `id` 列时回退到点序号 `i`，只偏移组内点 |
 | random_scale.source | `procedural.RandomScale`：`group`、`minimum`、`maximum`、`seed`；校验范围端点有限性，优先读可选 `id` 列否则回退点序号 `i`，写组内 `pscale`；分组模式下若上游已有 `pscale` 则组外点保留原值，若缺列新建则组外点写单位缩放 `1.0` |
-| normal_align.source | `procedural.NormalAlign`：`group`、`up`；校验 `up` 与组内输入 `N` 有限性，按 `align_to_normal(N, up)` 写 `orient`（自动获得 `Usage::orientation`） |
+| normal_align.source | `procedural.NormalAlign`：`group`、`up`；校验 `up` 与输入 `N` 有限性，按 `align_to_normal(N, up)` 写组内 `orient`（自动获得 `Usage::orientation`）；若上游已有 `orient`，组外点保留原值。新建 `orient` 时，组外点遵循 `CopyToPoints` 的规则：零法线使用单位旋转，非零法线才读取可选的点层 `up` 并检查其有限性 |
 | noise.source | `procedural.Noise`：`[RunOver] layer`（默认 `point`）、`source_attribute="P"`、`attribute="noise"`、`group=""`、`seed=0`、`frequency=1`、`offset=(0,0,0)`；3D value noise，`lattice_bits` 通过零开销 `math.as_uint` 编码二补码格坐标 |
 | remap.source | `procedural.Remap`：`[RunOver] layer`（默认 `point`）、`source_attribute="noise"`、`attribute="pscale"`、`group=""` 及四端点；double 中间线性映射，允许反向与外推，不夹值 |
 

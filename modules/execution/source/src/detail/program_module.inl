@@ -632,7 +632,8 @@ Result<Program::Request> Program::request(SourceSnapshot snapshot, CompileOption
                     return source_error(input, cls.file, field.position, error.message, error.code);
             for (const auto& method : cls.methods)
                 if (error.message.ends_with(": " + cls.name + "." + method.name) ||
-                    error.message.contains(": " + cls.name + "." + method.name + " hides "))
+                    error.message.contains(": " + cls.name + "." + method.name + " hides ") ||
+                    error.message.ends_with(" hides " + cls.name + "." + method.name))
                     return source_error(input, cls.file, method.position, error.message, error.code);
         }
         return error;
@@ -645,7 +646,7 @@ Result<Program::Request> Program::request(SourceSnapshot snapshot, CompileOption
     }
     for (auto& item : kept_classes) {
         auto checked = atelier::detail::TypePublication::validate_methods(runtime, item.id, std::move(item.methods),
-                                                                          request->type_publication_.get());
+                                                                          request->type_publication_);
         if (!checked)
             return fail(map_member_error(checked.error()));
     }

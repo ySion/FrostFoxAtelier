@@ -1,4 +1,5 @@
 #include "procedural/operations.hpp"
+#include "foundation/hash.hpp"
 #include "foundation/map.hpp"
 #include "foundation/result.hpp"
 #include "foundation/tasks.hpp"
@@ -400,11 +401,7 @@ Result<Geometry> scatter(const Geometry& surface, const ScatterSettings& setting
         std::array<std::int64_t, 3> min_coord{INT64_MAX, INT64_MAX, INT64_MAX};
         std::array<std::int64_t, 3> max_coord{INT64_MIN, INT64_MIN, INT64_MIN};
         const auto cell_hash = [](const std::array<std::int64_t, 3>& c) noexcept -> std::size_t {
-            const auto mix = [](std::uint64_t v) noexcept -> std::uint32_t {
-                return static_cast<std::uint32_t>(v ^ (v >> 32));
-            };
-            return hash(mix(static_cast<std::uint64_t>(c[0])),
-                        hash(mix(static_cast<std::uint64_t>(c[1])), mix(static_cast<std::uint64_t>(c[2]))));
+            return Hash<StringView>{}({reinterpret_cast<const char*>(c.data()), c.size() * sizeof(c[0])});
         };
         const auto find_head = [&](const std::array<std::int64_t, 3>& c) noexcept -> std::uint32_t {
             for (std::size_t slot = cell_hash(c) & mask;; slot = (slot + 1) & mask) {

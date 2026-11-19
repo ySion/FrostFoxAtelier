@@ -119,7 +119,7 @@ void verify_reflection() {
     }
     const std::vector<std::pair<std::string, std::string>> expected{{"test.binding", "evaluate.values"},
                                                                     {"test.note", std::string{"分组\0尾", 10}}};
-    const MetadataList expected_type_meta{{"source.contract_method", "advance"}};
+    const MetadataList expected_type_meta{{"source.contract_method", "advance"}, {"test.order", "second"}};
     const MetadataList expected_run_over{{"procedural.role", "run_over"}};
     const MetadataList expected_param{{"procedural.layer", "point"},
                                       {"procedural.name", "P"},

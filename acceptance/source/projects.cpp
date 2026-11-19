@@ -276,6 +276,52 @@ class test.SopNode : test.ContractHost {
     require(ord_proc != described_prog->entries().end() &&
                 ord_proc->parameter_names == std::vector<std::string>{"renamed_dt"},
             "Ordinary class process hot-reload or EntryInfo::parameter_names update failed.");
+    // Host-registered Runtime descendants of a Source class must also obey cold/warm hiding parity in both orders:
+    // (1) warm-added `process` on `test.Ordinary` blocks registering a child with member `process`;
+    // (2) registering a child with member `child_slot` blocks `test.Ordinary` from warm-adding `void child_slot()`.
+    {
+        TypeDefinition bad_child;
+        bad_child.name = "test.BadManagedChild";
+        bad_child.kind = TypeKind::object;
+        bad_child.base = TypeReference{"test.Ordinary"};
+        bad_child.fields.push_back({"process", {TypeReference::native<std::int32_t>()}});
+        const auto rejected_child = runtime.register_type(std::move(bad_child));
+        require(!rejected_child && rejected_child.error().code == ErrorCode::invalid_definition &&
+                    rejected_child.error().message.contains("test.BadManagedChild.process hides test.Ordinary.process"),
+                "Runtime child type hid a warm-added Source ancestor method.");
+
+        TypeDefinition ok_child;
+        ok_child.name = "test.OkManagedChild";
+        ok_child.kind = TypeKind::object;
+        ok_child.base = TypeReference{"test.Ordinary"};
+        ok_child.fields.push_back({"child_slot", {TypeReference::native<std::int32_t>()}});
+        take(runtime.register_type(std::move(ok_child)));
+
+        const std::string warm_clash_child = R"(class test.Ordinary : test.PairHost {
+    int count = 0;
+    void helper(int a) {}
+    void process(int renamed_dt) {}
+    void child_slot() {}
+}
+class test.SopNode : test.ContractHost {
+    [RunOver] int domain = 0;
+    String target = "col";
+    void helper(int renamed_a) {}
+    void process(int plain_port,
+                 [Port] const test.PlainPair& port_in,
+                 [In("src", Optional), Layer = "point"] const Array<int>& input_col,
+                 [InOut] Array<int>& col,
+                 [Out(From = "target")] Array<int>& out_col) {}
+}
+)";
+        auto child_clash_req = take(described_prog->request({"sop", 4, {{"Source/Sop.source", 4, warm_clash_child}}}));
+        auto child_clash_cand = Program::prepare(child_clash_req);
+        require(!child_clash_cand && child_clash_cand.error().code == ErrorCode::invalid_definition &&
+                    child_clash_cand.error().message.contains(
+                        "test.OkManagedChild.child_slot hides test.Ordinary.child_slot") &&
+                    child_clash_cand.error().source && child_clash_cand.error().source->line == 5,
+                "Warm Source ancestor method addition hid an existing Runtime descendant member.");
+    }
     // Warm hot-reload must reject methods hiding native base methods or hidden fields, matching cold load.
     for (const auto& [bad_member, expected_msg] :
          {std::pair{"void add_pair(int x) {}", "test.Ordinary.add_pair hides test.PairHost.add_pair"},

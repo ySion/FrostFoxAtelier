@@ -703,6 +703,7 @@ public:
         const auto options = state_.options(*marker, {"Name", "DESC", "Validate", "Meta"}, &metadata);
         if (!options)
             return true;
+        std::ranges::sort(metadata);
         auto* definition = declaration->getDefinition();
         if (!definition || definition->isDependentType() || definition->isUnion() || definition->isLocalClass() ||
             definition->getName().empty() || isa<CXXRecordDecl>(definition->getDeclContext())) {

@@ -250,6 +250,16 @@ class game.Wave : procedural.Node {
         }
     }
 }
+class game.FrameInputs : procedural.Node {
+    vector3 normal;
+    vector3 point_up;
+    void process([Out] Array<vector3>& N, [Out] Array<vector3>& up) {
+        for (uint i = 0; i < N.size(); i = i + 1) {
+            N[i] = self.normal;
+            up[i] = self.point_up;
+        }
+    }
+}
 )"});
     auto program = take(source::Program::create(runtime));
     {
@@ -310,6 +320,7 @@ class game.Wave : procedural.Node {
     write_str(rscale_n.id(), rscale_type, "group", "selected");
     take(runtime.write(rscale_n.id(), field(runtime, rscale_type, "minimum"), Scalar{2.0f}));
     take(runtime.write(rscale_n.id(), field(runtime, rscale_type, "maximum"), Scalar{2.0f}));
+    write_str(align_n.id(), align_type, "group", "selected");
     write_v3(align_n.id(), align_type, "up", {0.0f, 0.0f, 1.0f});
     take(runtime.with_native<Transform>(xform_n.id(), [](Transform& n) -> Result<void> {
         n.rotate = axis_angle({0.0f, 1.0f, 0.0f}, 90.0f);
@@ -346,24 +357,35 @@ class game.Wave : procedural.Node {
     require(near(out_p[0], {-1.0f, 0.0f, 1.0f}) && near(out_p[1], {-1.0f, 0.25f, -expected_x1}) && pscale[0] == 1.0f &&
                 pscale[1] == 2.0f && custom_h[0] == 0.0f && custom_h[1] == 0.25f,
             "Jitter fallback index, GroupBox mask, RandomScale unit default or custom Wave produced wrong values.");
-    // NormalAlign had +Z -> +Y (0,1,0) and +Y -> +Z (0,0,1); after +90 deg about Y, local +Y (0,0,1) rotates to +X (1,0,0)!
-    require(near(math::rotate(orient[1], Vector3{0, 0, 1}), {0, 1, 0}, 1e-4f) &&
+    // Selected point 1 had NormalAlign up=(0,0,1) so +Z -> +Y and +Y -> +Z; unselected point 0 had no prior orient,
+    // so NormalAlign preserved CopyToPoints' default shortest-arc (+Z -> +Y, +Y -> -Z). After +90 deg about Y:
+    require(near(math::rotate(orient[0], Vector3{0, 0, 1}), {0, 1, 0}, 1e-4f) &&
+                near(math::rotate(orient[0], Vector3{0, 1, 0}), {-1, 0, 0}, 1e-4f) &&
+                near(math::rotate(orient[1], Vector3{0, 0, 1}), {0, 1, 0}, 1e-4f) &&
                 near(math::rotate(orient[1], Vector3{0, 1, 0}), {1, 0, 0}, 1e-4f),
-            "Transform did not compose rotation onto Usage::orientation.");
+            "Grouped NormalAlign rotated unselected point away from N or Transform lost Usage::orientation.");
 
     take(set_display(runtime, graph, copy_n.id()));
     take(evaluator.evaluate());
     require(evaluator.output() && evaluator.output()->count(Layer::instance) == 4,
             "CopyToPoints failed after Source chain.");
+    const auto& inst_mats = evaluator.output()->instance_transforms();
+    require(near(Vector3{inst_mats[0](1, 0), inst_mats[0](1, 1), inst_mats[0](1, 2)}, {-1.0f, 0.0f, 0.0f}, 1e-4f) &&
+                near(Vector3{inst_mats[0](2, 0), inst_mats[0](2, 1), inst_mats[0](2, 2)}, {0.0f, 1.0f, 0.0f}, 1e-4f) &&
+                near(Vector3{inst_mats[1](1, 0), inst_mats[1](1, 1), inst_mats[1](1, 2)}, {2.0f, 0.0f, 0.0f}, 1e-4f) &&
+                near(Vector3{inst_mats[1](2, 0), inst_mats[1](2, 1), inst_mats[1](2, 2)}, {0.0f, 2.0f, 0.0f}, 1e-4f),
+            "CopyToPoints instance matrices lost unselected N alignment or selected up/pscale.");
     const auto pub = take(publish(*evaluator.output(), 32.0f));
     std::size_t kept_instances = 0;
     for (const auto& col : pub.collections)
         kept_instances += col.transforms->size();
     require(pub.dropped == 0 && kept_instances == 4, "Grouped RandomScale dropped unselected unit-scale instances.");
 
-    // Chaining a second grouped RandomScale when `pscale` already exists must preserve prior `pscale` on unselected points.
+    // Chaining a second grouped RandomScale and NormalAlign when `pscale` and `orient` already exist
+    // must preserve prior values on unselected points.
     const auto group_z_n = add(type<GroupBox>(runtime));
     const auto rscale2_n = add(rscale_type);
+    const auto align2_n = add(align_type);
     take(runtime.with_native<GroupBox>(group_z_n.id(), [](GroupBox& n) -> Result<void> {
         n.group = String::literal<"z_pos">();
         n.minimum = {-2.0f, -1.0f, 0.0f};
@@ -373,13 +395,41 @@ class game.Wave : procedural.Node {
     write_str(rscale2_n.id(), rscale_type, "group", "z_pos");
     take(runtime.write(rscale2_n.id(), field(runtime, rscale_type, "minimum"), Scalar{3.0f}));
     take(runtime.write(rscale2_n.id(), field(runtime, rscale_type, "maximum"), Scalar{3.0f}));
-    take(connect(runtime, graph, rscale_n.id(), 0, group_z_n.id(), 0));
+    write_str(align2_n.id(), align_type, "group", "z_pos");
+    write_v3(align2_n.id(), align_type, "up", {1.0f, 0.0f, 0.0f});
+    take(connect(runtime, graph, align_n.id(), 0, group_z_n.id(), 0));
     take(connect(runtime, graph, group_z_n.id(), 0, rscale2_n.id(), 0));
-    take(set_display(runtime, graph, rscale2_n.id()));
+    take(connect(runtime, graph, rscale2_n.id(), 0, align2_n.id(), 0));
+    take(set_display(runtime, graph, align2_n.id()));
     take(evaluator.evaluate());
     const auto& pscale2 = column<float>(*evaluator.output(), "pscale", Layer::point);
-    require(pscale2[0] == 1.0f && pscale2[1] == 2.0f && pscale2[2] == 3.0f && pscale2[3] == 3.0f,
-            "Grouped RandomScale did not preserve existing pscale values on unselected points.");
+    const auto& orient2 = column<Quaternion>(*evaluator.output(), "orient", Layer::point);
+    require(pscale2[0] == 1.0f && pscale2[1] == 2.0f && pscale2[2] == 3.0f && pscale2[3] == 3.0f &&
+                near(math::rotate(orient2[1], Vector3{0, 1, 0}), {0, 0, 1}, 1e-4f) &&
+                near(math::rotate(orient2[3], Vector3{0, 1, 0}), {1, 0, 0}, 1e-4f),
+            "Grouped RandomScale or NormalAlign did not preserve existing values on unselected points.");
+
+    const auto frame_type = take(runtime.find_type("game.FrameInputs"));
+    const auto frame_n = add(frame_type);
+    write_v3(frame_n.id(), frame_type, "point_up", {std::numeric_limits<float>::quiet_NaN(), 0, 0});
+    take(connect(runtime, graph, group_n.id(), 0, frame_n.id(), 0));
+    take(connect(runtime, graph, frame_n.id(), 0, copy_n.id(), 0));
+    take(set_display(runtime, graph, copy_n.id()));
+    take(evaluator.evaluate());
+    require(evaluator.output() && evaluator.output()->count(Layer::instance) == 4,
+            "CopyToPoints failed to instance a zero normal with unused non-finite up.");
+    const auto direct_transforms = evaluator.output()->instance_transforms();
+    take(connect(runtime, graph, frame_n.id(), 0, align_n.id(), 0));
+    take(connect(runtime, graph, align_n.id(), 0, copy_n.id(), 0));
+    take(evaluator.evaluate());
+    require(evaluator.output() && std::ranges::equal(direct_transforms, evaluator.output()->instance_transforms()),
+            "Grouped NormalAlign changed the zero-normal fallback used by CopyToPoints.");
+    write_v3(frame_n.id(), frame_type, "normal", {0, 1, 0});
+    take(evaluator.evaluate());
+    const auto* align_status = evaluator.status(align_n.id());
+    require(!evaluator.output() && align_status && align_status->error &&
+                align_status->error->message.contains("NormalAlign point up must be finite"),
+            "Grouped NormalAlign accepted a non-finite up used by a nonzero normal.");
 
     // 3. Dynamic [RunOver], same-name Remap read/write, and Evaluator error/recovery contract.
     const auto box_n = add(type<Box>(runtime));
@@ -599,6 +649,8 @@ void profile(const char* path) {
 
     // One million points: the in-graph scale.
     const auto ground = triangles({{0, 0, 0}, {0, 0, 1000}, {1000, 0, 0}, {1000, 0, 0}, {0, 0, 1000}, {1000, 0, 1000}});
+    const auto centered_ground =
+        triangles({{-500, 0, -500}, {-500, 0, 500}, {500, 0, -500}, {500, 0, -500}, {-500, 0, 500}, {500, 0, 500}});
     Geometry million;
     number("scatter_1m_ms",
            median_ms(samples, [](int) {}, [&] { million = take(scatter(ground, {.density = 1, .seed = 3})); }));
@@ -607,7 +659,7 @@ void profile(const char* path) {
     number("scatter_spaced_ms",
            median_ms(
                samples, [](int) {},
-               [&] { spaced = take(scatter(ground, {.density = 1, .seed = 3, .min_distance = 0.8f})); }));
+               [&] { spaced = take(scatter(centered_ground, {.density = 1, .seed = 3, .min_distance = 0.8f})); }));
     number("scatter_spaced_points", spaced.count(Layer::point));
     number("transform_1m_ms", median_ms(
                                   samples, [](int) {},

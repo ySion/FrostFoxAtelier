@@ -1,13 +1,16 @@
 // Writes orient from N and the up vector, matching the orientation Copy to Points derives when
-// orient is absent, so downstream nodes can further modify orient before instancing.
+// orient is absent, so downstream nodes can further modify orient before instancing. Unselected
+// points keep an existing `orient`, or receive the default N/up orientation when `orient` is newly created.
 class procedural.NormalAlign : procedural.Node {
     [Label = "Group", DESC = "只修改选中点；空名称表示全选。"]
     String group = "";
     [Min = -1.0, Max = 1.0, Label = "Up", DESC = "实例的 +Y 尽量朝向的方向。为零或与 N 平行时取 +Z 到 N 的最短旋转。"]
     vector3 up = vector3(0.0, 1.0, 0.0);
 
-    void process([Out("orient")] Array<quaternion>& orient,
+    void process([In("orient", Optional)] const Array<quaternion>& prior_orient,
+                 [Out("orient")] Array<quaternion>& orient,
                  [In("N")] const Array<vector3>& N,
+                 [In("up", Optional)] const Array<vector3>& point_up,
                  [Group(From = "group")] const Array<bool>& selected) {
         const vector3 upward = self.up;
         if (!math.is_finite(upward)) {
@@ -15,8 +18,20 @@ class procedural.NormalAlign : procedural.Node {
         }
         const uint n = orient.size();
         if (N.size() != n) { return; }
-        if (selected.size() != n) {
+        const bool has_mask = selected.size() == n;
+        const bool had_orient = prior_orient.size() == n;
+        const bool has_point_up = point_up.size() == n;
+        if (!has_mask) {
             for (uint i = 0; i < n; i = i + 1) {
+                const vector3 normal = N[i];
+                if (!math.is_finite(normal)) {
+                    self.fail("NormalAlign input normal must be finite.");
+                }
+                orient[i] = procedural.align_to_normal(normal, upward);
+            }
+        } else if (had_orient) {
+            for (uint i = 0; i < n; i = i + 1) {
+                if (!selected[i]) { continue; }
                 const vector3 normal = N[i];
                 if (!math.is_finite(normal)) {
                     self.fail("NormalAlign input normal must be finite.");
@@ -25,12 +40,21 @@ class procedural.NormalAlign : procedural.Node {
             }
         } else {
             for (uint i = 0; i < n; i = i + 1) {
-                if (!selected[i]) { continue; }
                 const vector3 normal = N[i];
                 if (!math.is_finite(normal)) {
                     self.fail("NormalAlign input normal must be finite.");
                 }
-                orient[i] = procedural.align_to_normal(normal, upward);
+                if (selected[i]) {
+                    orient[i] = procedural.align_to_normal(normal, upward);
+                } else if (has_point_up && normal != vector3()) {
+                    const vector3 fallback_up = point_up[i];
+                    if (!math.is_finite(fallback_up)) {
+                        self.fail("NormalAlign point up must be finite.");
+                    }
+                    orient[i] = procedural.align_to_normal(normal, fallback_up);
+                } else {
+                    orient[i] = procedural.align_to_normal(normal, vector3());
+                }
             }
         }
     }
