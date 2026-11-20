@@ -242,6 +242,8 @@ struct Invocation {
 
     char error[512];
 
+    std::optional<std::string_view> external_error{};
+
     Invocation(Runtime&, const Binding&, BusinessFrameLayout, BusinessTrace* = nullptr, DebugSessionState* = nullptr,
                ExecutionScope* = nullptr);
 
@@ -250,6 +252,12 @@ struct Invocation {
     void record_resources(bool cleared) const noexcept;
 
     void fail(ErrorCode, const char*) noexcept;
+
+    void fail_view(ErrorCode, std::string_view) noexcept;
+
+    std::string_view error_message() const noexcept {
+        return external_error ? *external_error : std::string_view(error);
+    }
 
     void invalidate_native() noexcept;
 };
@@ -288,7 +296,9 @@ bool try_bind_receiver(Invocation&, bool requires_receiver, ObjectId) noexcept;
 Result<void> bind_receiver(Invocation&, bool requires_receiver, ObjectId);
 
 Result<void> finish_invocation(Invocation&, std::uint32_t status, const BusinessFailure&,
-                               std::uint32_t* failure_site = nullptr);
+                               std::uint32_t* failure_site = nullptr,
+                               const BusinessFailureMessage* failure_messages = nullptr,
+                               std::uint32_t failure_message_count = 0);
 
 // Parameter transport varies; admission, Invocation lifetime and explicit
 // cleanup are shared by generic and fixed-signature callers.
@@ -296,7 +306,9 @@ using InvocationBody = std::uint32_t (*)(void*, Invocation&, BusinessFailure&) n
 
 Result<void> execute_invocation(ExecutionScope&, Runtime&, const Binding&, BusinessFrameLayout, bool requires_receiver,
                                 ObjectId, void*, InvocationBody, BusinessTrace* = nullptr, DebugSessionState* = nullptr,
-                                std::uint32_t* failure_site = nullptr);
+                                std::uint32_t* failure_site = nullptr,
+                                const BusinessFailureMessage* failure_messages = nullptr,
+                                std::uint32_t failure_message_count = 0);
 
 Result<BusinessValue> execute_admitted(ExecutionScope&, Runtime&, const Binding&, const BusinessCodeInfo&,
                                        BusinessFrameLayout, bool requires_receiver, ObjectId,

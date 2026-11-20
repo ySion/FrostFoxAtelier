@@ -2,10 +2,12 @@
 #include "diagnostics.hpp"
 #include "debugger.hpp"
 #include "foundation/map.hpp"
+#include "foundation/tasks.hpp"
 #include "language/declarations.hpp"
 #include "memory/fatal.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <cstdio>
 #include <cstring>
@@ -499,7 +501,19 @@ void Invocation::fail(ErrorCode code, const char* message) noexcept {
     if (trace && trace->failure_location == no_diagnostic_location)
         trace->failure_location = trace->current_location;
     error_code = code;
+    external_error.reset();
     std::snprintf(error, sizeof(error), "%s", message);
+}
+
+void Invocation::fail_view(ErrorCode code, std::string_view message) noexcept {
+    if (failed)
+        return;
+    failed = true;
+    if (trace && trace->failure_location == no_diagnostic_location)
+        trace->failure_location = trace->current_location;
+    error_code = code;
+    external_error = message;
+    error[0] = '\0';
 }
 
 void Invocation::invalidate_native() noexcept {
@@ -708,10 +722,72 @@ std::uint32_t mutate_sequence(void* context, std::uint32_t type, SequenceMutatio
     });
 }
 
-const BusinessServices services{create_slot,    clear_slot,    change_reference, same_reference,  construct_value,
-                                assign_value,   destroy_value, mutate_sequence,  debug_enter,     debug_point,
-                                debug_leave,    nullptr,       nullptr,          native_receiver, native_stamp,
-                                native_failure, native_segment};
+std::uint32_t parallel_for_service(std::size_t count, std::size_t grain, const void* capture, ParallelBody body,
+                                   BusinessFailure* failure, BusinessTrace* trace) noexcept {
+    constexpr auto counter_count = static_cast<std::size_t>(DiagnosticCall::count);
+    struct ParallelCall {
+        const void* capture;
+
+        ParallelBody body;
+
+        bool collect_trace;
+
+        std::atomic<std::uint64_t> calls[counter_count]{};
+    } call{capture, body, trace != nullptr};
+    const auto result = tasks::detail::parallel_for(
+        {0, count}, &call,
+        [](const void* state, tasks::Range chunk) noexcept -> std::expected<void, tasks::Failure> {
+            auto& active = *const_cast<ParallelCall*>(static_cast<const ParallelCall*>(state));
+            BusinessFailure chunk_failure{};
+            BusinessTrace chunk_trace{};
+            const auto status = active.body(active.capture, chunk.begin, chunk.end, &chunk_failure,
+                                            active.collect_trace ? &chunk_trace : nullptr);
+            if (active.collect_trace) {
+                for (std::size_t k = 0; k < counter_count; ++k) {
+                    const auto delta = chunk_trace.calls.values[k];
+                    if (delta == 0)
+                        continue;
+                    auto cur = active.calls[k].load(std::memory_order_relaxed);
+                    for (;;) {
+                        const auto next = (UINT64_MAX - cur < delta) ? UINT64_MAX : (cur + delta);
+                        if (active.calls[k].compare_exchange_weak(cur, next, std::memory_order_relaxed,
+                                                                  std::memory_order_relaxed))
+                            break;
+                    }
+                }
+            }
+            if (status != 0) {
+                const auto code = static_cast<std::uint32_t>(chunk_failure.reason);
+                return std::unexpected(tasks::Failure{
+                    code ? code : static_cast<std::uint32_t>(EntryFailure::parallel_failed), chunk_failure.location});
+            }
+            return {};
+        },
+        grain ? grain : 1024, {});
+    if (trace) {
+        for (std::size_t k = 0; k < counter_count; ++k) {
+            const auto delta = call.calls[k].load(std::memory_order_relaxed);
+            trace->calls.values[k] =
+                (UINT64_MAX - trace->calls.values[k] < delta) ? UINT64_MAX : (trace->calls.values[k] + delta);
+        }
+    }
+    if (!result) {
+        failure->reason = static_cast<EntryFailure>(result.error().code);
+        failure->location = static_cast<std::uint32_t>(result.error().item);
+        return 1;
+    }
+    if (*result != tasks::Completion::completed) {
+        failure->reason = EntryFailure::parallel_cancelled;
+        failure->location = no_diagnostic_location;
+        return 1;
+    }
+    return 0;
+}
+
+const BusinessServices services{
+    create_slot,   clear_slot,      change_reference, same_reference, construct_value, assign_value,
+    destroy_value, mutate_sequence, debug_enter,      debug_point,    debug_leave,     nullptr,
+    nullptr,       native_receiver, native_stamp,     native_failure, native_segment,  parallel_for_service};
 
 bool same_environment(const Binding& binding, const BusinessEnvironment& environment) {
     if (binding.fields.size() != environment.field_count || binding.methods.size() != environment.method_count ||
@@ -805,7 +881,8 @@ Result<void> bind_receiver(Invocation& invocation, bool requires_receiver, Objec
 }
 
 Result<void> finish_invocation(Invocation& invocation, std::uint32_t status, const BusinessFailure& failure,
-                               std::uint32_t* failure_site) {
+                               std::uint32_t* failure_site, const BusinessFailureMessage* failure_messages,
+                               std::uint32_t failure_message_count) {
     // Inspect generated cleanup before the RAII fallback.
     const bool cleared = invocation.resources_cleared();
     invocation.record_resources(cleared);
@@ -818,11 +895,11 @@ Result<void> finish_invocation(Invocation& invocation, std::uint32_t status, con
     if (status != 0 || invocation.failed) {
         if (failure_site)
             *failure_site = failure.location;
-        const auto* reason = failure_message(failure.reason);
+        const auto reason = failure_message(failure.reason, failure_messages, failure_message_count);
         return std::unexpected(Error{invocation.failed ? invocation.error_code : ErrorCode::invocation_failed,
-                                     invocation.failed ? invocation.error
-                                     : reason          ? reason
-                                                       : "Source execution failed."});
+                                     invocation.failed ? std::string(invocation.error_message())
+                                     : reason          ? std::string(*reason)
+                                                       : std::string("Source execution failed.")});
     }
     if (!cleared)
         return std::unexpected(Error{ErrorCode::invocation_failed, "Generated code left execution resources alive."});
@@ -834,14 +911,15 @@ Result<void> finish_invocation(Invocation& invocation, std::uint32_t status, con
 Result<void> execute_invocation(ExecutionScope& scope, Runtime& runtime, const Binding& binding,
                                 BusinessFrameLayout layout, bool requires_receiver, ObjectId receiver, void* context,
                                 InvocationBody body, BusinessTrace* trace, DebugSessionState* debugger,
-                                std::uint32_t* failure_site) {
+                                std::uint32_t* failure_site, const BusinessFailureMessage* failure_messages,
+                                std::uint32_t failure_message_count) {
     Invocation invocation(runtime, binding, layout, trace, debugger, &scope);
     if (trace)
         trace->resources_cleared = false;
     ATELIER_TRY(bind_receiver(invocation, requires_receiver, receiver));
     BusinessFailure failure{};
     const auto status = body(context, invocation, failure);
-    return finish_invocation(invocation, status, failure, failure_site);
+    return finish_invocation(invocation, status, failure, failure_site, failure_messages, failure_message_count);
 }
 
 Result<BusinessValue> execute_admitted(ExecutionScope& scope, Runtime& runtime, const Binding& binding,
@@ -867,7 +945,7 @@ Result<BusinessValue> execute_admitted(ExecutionScope& scope, Runtime& runtime, 
                                                                         &failure);
     };
     ATELIER_TRY(execute_invocation(scope, runtime, binding, layout, requires_receiver, receiver, &call, body, trace,
-                                   debugger, failure_site));
+                                   debugger, failure_site, info.failure_messages, info.failure_message_count));
     if (result_data)
         return BusinessValue{info.signature.result, 0, ArgumentStorage::value, result_data};
     return BusinessValue{info.signature.result, call.staged_bits};

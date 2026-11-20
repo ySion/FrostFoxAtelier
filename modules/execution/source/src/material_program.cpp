@@ -288,8 +288,9 @@ Result<void> MaterialProgram::evaluate(std::span<const std::byte> context, std::
     if (state->shade_entry(&samples, arguments, output_data, &failure) != 0) {
         if (samples.error)
             return std::unexpected(std::move(*samples.error));
-        const auto* reason = failure_message(failure.reason);
-        return std::unexpected(Error{ErrorCode::invocation_failed, reason ? reason : "Material evaluation failed."});
+        const auto reason = failure_message(failure.reason);
+        return std::unexpected(Error{ErrorCode::invocation_failed,
+                                     reason ? std::string(*reason) : std::string("Material evaluation failed.")});
     }
     if (!state->output_check.valid(output_data))
         return std::unexpected(Error{ErrorCode::invocation_failed, "Material output is not finite."});

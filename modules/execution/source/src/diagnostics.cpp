@@ -1,6 +1,7 @@
 #include "detail/diagnostics.hpp"
+#include "foundation/string.hpp"
 #include <algorithm>
-#include <cstdio>
+#include <cstring>
 
 namespace atelier::source {
 namespace {
@@ -67,7 +68,7 @@ DiagnosticReport Diagnostics::snapshot() const {
     if (const auto* found = location(state))
         report.location = *found;
     if (state.failed) {
-        report.error = Error{state.error_code, state.error};
+        report.error = Error{state.error_code, std::string(state.error, state.error_size)};
         if (report.location)
             report.error->source = report.location->source;
     }
@@ -140,7 +141,9 @@ void DiagnosticAccess::fail(DiagnosticState& state, const Error& error) noexcept
         return;
     state.failed = true;
     state.error_code = error.code;
-    std::snprintf(state.error, sizeof(state.error), "%s", error.message.c_str());
+    const auto prefix = StringView{error.message}.utf8_prefix(sizeof(state.error));
+    std::memcpy(state.error, prefix.data(), prefix.size());
+    state.error_size = prefix.size();
 }
 
 void DiagnosticAccess::finish(DiagnosticState& state, const Runtime& runtime, DiagnosticStatus status) noexcept {

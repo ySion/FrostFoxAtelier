@@ -14,7 +14,7 @@ class procedural.NormalAlign : procedural.Node {
                  [Group(From = "group")] const Array<bool>& selected) {
         const vector3 upward = self.up;
         if (!math.is_finite(upward)) {
-            self.fail("NormalAlign up vector must be finite.");
+            fail("NormalAlign up vector must be finite.");
         }
         const uint n = orient.size();
         if (N.size() != n) { return; }
@@ -22,34 +22,34 @@ class procedural.NormalAlign : procedural.Node {
         const bool had_orient = prior_orient.size() == n;
         const bool has_point_up = point_up.size() == n;
         if (!has_mask) {
-            for (uint i = 0; i < n; i = i + 1) {
+            parallel_for (uint i : n) {
                 const vector3 normal = N[i];
                 if (!math.is_finite(normal)) {
-                    self.fail("NormalAlign input normal must be finite.");
+                    fail("NormalAlign input normal must be finite.");
                 }
                 orient[i] = procedural.align_to_normal(normal, upward);
             }
         } else if (had_orient) {
-            for (uint i = 0; i < n; i = i + 1) {
+            parallel_for (uint i : n) {
                 if (!selected[i]) { continue; }
                 const vector3 normal = N[i];
                 if (!math.is_finite(normal)) {
-                    self.fail("NormalAlign input normal must be finite.");
+                    fail("NormalAlign input normal must be finite.");
                 }
                 orient[i] = procedural.align_to_normal(normal, upward);
             }
         } else {
-            for (uint i = 0; i < n; i = i + 1) {
+            parallel_for (uint i : n) {
                 const vector3 normal = N[i];
                 if (!math.is_finite(normal)) {
-                    self.fail("NormalAlign input normal must be finite.");
+                    fail("NormalAlign input normal must be finite.");
                 }
                 if (selected[i]) {
                     orient[i] = procedural.align_to_normal(normal, upward);
                 } else if (has_point_up && normal != vector3()) {
                     const vector3 fallback_up = point_up[i];
                     if (!math.is_finite(fallback_up)) {
-                        self.fail("NormalAlign point up must be finite.");
+                        fail("NormalAlign point up must be finite.");
                     }
                     orient[i] = procedural.align_to_normal(normal, fallback_up);
                 } else {

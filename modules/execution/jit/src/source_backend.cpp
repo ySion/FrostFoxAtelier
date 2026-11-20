@@ -195,6 +195,10 @@ struct CompiledCatalog {
     BusinessEnvironment environment{};
 
     std::vector<bool> stateless_typed;
+
+    std::vector<std::string> failure_messages;
+
+    std::vector<BusinessFailureMessage> failure_message_views;
 };
 
 struct CompiledBusiness {
@@ -358,19 +362,24 @@ bool uses_receiver_slot(const language::Function& function, const BusinessEnviro
 class SourceLowering {
 public:
     SourceLowering(llvm::LLVMContext& context, llvm::Module& module, const language::Program& source,
-                   std::uint32_t function, const std::vector<llvm::Function*>& functions, std::uint32_t strong_base,
+                   std::uint32_t function, const std::vector<llvm::Function*>& functions,
+                   const std::vector<llvm::Function*>& parallel_functions, std::uint32_t strong_base,
                    std::uint32_t weak_base, DiagnosticCatalog* catalog, CompileOptions options,
-                   const BusinessEnvironment& environment)
-        : function_(source.functions[function]), source_(source), functions_(functions), context_(&context),
-          module_(&module), ir_(context), entry_(functions[function]),
+                   const BusinessEnvironment& environment, bool parallel_callee = false)
+        : function_(source.functions[function]), source_(source), functions_(functions),
+          parallel_functions_(parallel_functions), context_(&context), module_(&module), ir_(context),
+          entry_(parallel_callee ? parallel_functions[function] : functions[function]),
           local_slots_(function_.locals.size(), null_reference_slot),
           temporary_slots_(function_.expressions.size(), null_reference_slot), strong_slots_(strong_base),
           weak_slots_(weak_base), first_strong_slot_(strong_base), first_weak_slot_(weak_base),
-          public_entry_(source.exported(function)), typed_entry_(public_entry_ && direct_signature(function_)),
+          public_entry_(!parallel_callee && source.exported(function)),
+          typed_entry_(public_entry_ && direct_signature(function_)),
           owns_receiver_slot_(public_entry_ && uses_receiver_slot(function_, environment, options)),
-          diagnostics_(options.diagnostics ? catalog : nullptr), catalog_(catalog),
-          debugging_(options.debugging && (source.exports.empty() || !public_entry_)), function_index_(function),
-          position_(function_.position), environment_(environment) {
+          diagnostics_(options.diagnostics ? catalog : nullptr), callee_takes_trace_(options.diagnostics),
+          catalog_(catalog),
+          debugging_(!parallel_callee && options.debugging && (source.exports.empty() || !public_entry_)),
+          in_parallel_context_(parallel_callee), parallel_callee_(parallel_callee), options_(options),
+          function_index_(function), position_(function_.position), environment_(environment) {
         auto* i32 = ir_.getInt32Ty();
         auto* ptr = ir_.getPtrTy();
         const auto declare = [&](const char* name, llvm::Type* result, std::initializer_list<llvm::Type*> parameters) {
@@ -394,6 +403,7 @@ public:
         mutate_sequence_ = declare("business_mutate_sequence", i32, {ptr, i32, i32, ptr, ptr, ir_.getInt64Ty()});
         sample_texture_ = declare("material_sample_texture", i32, {ptr, i32, ptr, ptr});
         sample_orientation_ = declare("material_sample_orientation", i32, {ptr, i32, ptr, ptr});
+        parallel_for_ = declare("business_parallel_for", i32, {ir_.getInt64Ty(), ir_.getInt64Ty(), ptr, ptr, ptr, ptr});
         if (debugging_) {
             debug_enter_ = declare("business_debug_enter", i32, {ptr, ptr});
             debug_point_ = declare("business_debug_point", i32, {ptr, ptr, i32, i32, i32});
@@ -465,11 +475,16 @@ public:
                                              "native.failure");
             native_error_->setAlignment(llvm::Align(alignof(NativeFailure)));
         }
-        if (has_source_calls_) {
+        bool has_parallel_loops = false;
+        for (const auto& stmt : function_.statements)
+            has_parallel_loops |= stmt.kind == language::Statement::Kind::parallel_loop;
+        if (has_source_calls_ || (has_parallel_loops && !options_.debugging)) {
             source_failure_ = ir_.CreateAlloca(llvm::ArrayType::get(ir_.getInt32Ty(), 2), nullptr, "callee.failure");
             source_failure_->setAlignment(llvm::Align(alignof(BusinessFailure)));
-            source_result_ = ir_.CreateAlloca(llvm::ArrayType::get(ir_.getInt8Ty(), 128), nullptr, "callee.result");
-            source_result_->setAlignment(llvm::Align(32));
+            if (has_source_calls_) {
+                source_result_ = ir_.CreateAlloca(llvm::ArrayType::get(ir_.getInt8Ty(), 128), nullptr, "callee.result");
+                source_result_->setAlignment(llvm::Align(32));
+            }
         }
         // All host-call scratch is allocated once, never on a loop backedge.
         if (has_call_result_) {
@@ -505,6 +520,8 @@ public:
             locals_.push_back(storage);
         }
         open_debug_frame();
+        parameter_views_.resize(function_.parameters.size());
+        unsigned internal_arg = 3 + (diagnostics_ ? 1 : 0);
         for (std::size_t index = 0; index < function_.parameters.size(); ++index) {
             if (typed_entry_) {
                 llvm::Value* argument = entry_->getArg(static_cast<unsigned>(index + 1));
@@ -520,12 +537,20 @@ public:
                 continue;
             }
             if (!public_entry_) {
-                auto* argument = entry_->getArg(static_cast<unsigned>(index + 3 + (diagnostics_ ? 1 : 0)));
+                const auto param_type = function_.parameters[index].type;
+                if (parallel_callee_ &&
+                    (param_type.kind == language::ValueType::array || param_type.kind == language::ValueType::string)) {
+                    auto* data = entry_->getArg(internal_arg++);
+                    auto* size = entry_->getArg(internal_arg++);
+                    ir_.CreateAssumption(ir_.CreateICmpULE(size, ir_.getInt64(UINT32_MAX)));
+                    parameter_views_[index] = {data, size};
+                    continue;
+                }
+                auto* argument = entry_->getArg(internal_arg++);
                 // Internal record arguments already own a caller-created
                 // snapshot. It cannot escape this synchronous call chain.
-                if (function_.parameters[index].passing == ParameterPassing::value &&
-                    !managed_value(function_.parameters[index].type))
-                    store_value(argument, locals_[index], function_.parameters[index].type);
+                if (function_.parameters[index].passing == ParameterPassing::value && !managed_value(param_type))
+                    store_value(argument, locals_[index], param_type);
                 else
                     locals_[index] = argument;
                 debug_local(index, DebugAvailability::available);
@@ -560,9 +585,8 @@ public:
             store_value(value, locals_.at(index), type);
             debug_local(index, DebugAvailability::available);
         }
-        parameter_views_.resize(function_.parameters.size());
         for (std::uint32_t i = 0; i < function_.parameters.size(); ++i)
-            if (caches_sequence_parameter(i))
+            if (!parameter_views_[i].data && caches_sequence_parameter(i))
                 parameter_views_[i] = sequence_view(locals_[i], function_.parameters[i].type);
         debug_stop(DebugPoint::entry);
         if (!function_.is_coroutine && !debugging_ && std::ranges::any_of(function_.expressions, [](const auto& node) {
@@ -821,7 +845,8 @@ private:
     bool managed_value(language::ValueType type) const { return language::aggregate(type) && !math_type(type); }
 
     bool plain_record(language::ValueType type) const {
-        if (diagnostics_ || source_.material || !managed_value(type) || type.kind != language::ValueType::record)
+        if ((diagnostics_ && !in_parallel_context_) || source_.material || !managed_value(type) ||
+            type.kind != language::ValueType::record)
             return false;
         const auto& layout = source_.value_layouts.at(type.type_index);
         return layout.plain_value && layout.zero_default;
@@ -1264,6 +1289,8 @@ private:
     }
 
     llvm::Value* read_field(llvm::Value* slot, language::ValueType type, std::uint32_t field) {
+        if (const auto captured = captured_self_fields_.find(field); captured != captured_self_fields_.end())
+            return captured->second;
         trace_event(DiagnosticCall::field_read);
         return load_value(field_address(native_receiver(slot), field), type);
     }
@@ -1586,11 +1613,18 @@ private:
             return read_field(expression(node.receiver), node.type, node.value);
         case Kind::source_call: {
             llvm::SmallVector<llvm::Value*, 8> arguments{invocation_, source_result_, source_failure_};
-            if (diagnostics_)
+            if (callee_takes_trace_)
                 arguments.push_back(trace_);
             for (std::size_t i = 0; i < node.arguments.size(); ++i) {
                 const auto id = node.arguments[i];
                 const auto& argument = function_.expressions[id];
+                if (in_parallel_context_ && (argument.type.kind == language::ValueType::array ||
+                                             argument.type.kind == language::ValueType::string)) {
+                    const auto view = sequence(id);
+                    arguments.push_back(view.data);
+                    arguments.push_back(view.size);
+                    continue;
+                }
                 if (node.argument_passing[i] == ParameterPassing::value) {
                     auto* value = expression(id);
                     if (managed_value(argument.type))
@@ -1614,7 +1648,8 @@ private:
             ir_.CreateStore(ir_.getInt32(0), source_failure_);
             debug_location();
             trace_event(DiagnosticCall::source_call);
-            auto* status = ir_.CreateCall(functions_.at(node.value), arguments);
+            auto* target_fn = in_parallel_context_ ? parallel_functions_.at(node.value) : functions_.at(node.value);
+            auto* status = ir_.CreateCall(target_fn, arguments);
             auto* failed = failure_edge(status, nullptr);
             auto* next = block("function.ok");
             ir_.CreateCondBr(ir_.CreateICmpEQ(status, ir_.getInt32(0)), next, failed, failure_weights_);
@@ -1840,7 +1875,7 @@ private:
         const auto& node = function_.statements[index];
         PositionScope position(position_, node.position);
         using Kind = language::Statement::Kind;
-        if (node.kind != Kind::block && node.kind != Kind::loop)
+        if (node.kind != Kind::block && node.kind != Kind::loop && node.kind != Kind::parallel_loop)
             debug_stop(DebugPoint::statement);
         switch (node.kind) {
         case Kind::block:
@@ -2003,6 +2038,16 @@ private:
             cached_self_ = condition_self;
             return;
         }
+        case Kind::fail: {
+            clear_temporaries();
+            const auto code =
+                static_cast<std::uint32_t>(EntryFailure::user_base) + static_cast<std::uint32_t>(node.target);
+            ir_.CreateBr(failure_edge(ir_.getInt32(1), ir_.getInt32(code)));
+            return;
+        }
+        case Kind::parallel_loop:
+            lower_parallel_loop(index);
+            return;
         case Kind::break_loop:
         case Kind::continue_loop: {
             if (loops_.empty())
@@ -2020,6 +2065,470 @@ private:
         fatal("Invalid typed statement.");
     }
 
+    struct CapturedSequence {
+        std::uint32_t local{};
+
+        bool written{};
+
+        bool arbitrary_index{};
+
+        language::ValueType element{};
+
+        std::size_t stride{};
+    };
+
+    struct ParallelCapture {
+        std::vector<CapturedSequence> sequences;
+
+        std::vector<std::uint32_t> records;
+
+        std::vector<std::uint32_t> values;
+
+        std::vector<std::uint32_t> self_fields;
+
+        std::vector<std::uint32_t> body_locals;
+
+        bool body_has_source_calls{};
+    };
+
+    SourceLowering(SourceLowering& parent, llvm::Function* chunk_fn, language::SourcePosition position)
+        : function_(parent.function_), source_(parent.source_), functions_(parent.functions_),
+          parallel_functions_(parent.parallel_functions_), context_(parent.context_), module_(parent.module_),
+          ir_(*parent.context_), entry_(chunk_fn), invocation_(llvm::ConstantPointerNull::get(ir_.getPtrTy())),
+          failure_output_(chunk_fn->getArg(3)), local_slots_(function_.locals.size(), null_reference_slot),
+          temporary_slots_(function_.expressions.size(), null_reference_slot), strong_slots_(0), weak_slots_(0),
+          first_strong_slot_(0), first_weak_slot_(0), public_entry_(false), typed_entry_(false),
+          owns_receiver_slot_(false), diagnostics_(parent.diagnostics_),
+          callee_takes_trace_(parent.callee_takes_trace_), catalog_(parent.catalog_), debugging_(false),
+          in_parallel_context_(true), parallel_callee_(false), options_(parent.options_),
+          function_index_(parent.function_index_), position_(position), location_ids_(std::move(parent.location_ids_)),
+          trace_(parent.diagnostics_ ? static_cast<llvm::Value*>(chunk_fn->getArg(4))
+                                     : static_cast<llvm::Value*>(llvm::ConstantPointerNull::get(ir_.getPtrTy()))),
+          environment_(parent.environment_) {}
+
+    ParallelCapture collect_parallel_capture(const language::Statement& loop_node) const {
+        ParallelCapture capture;
+        const auto ivar = static_cast<std::uint32_t>(loop_node.target);
+        const auto add_unique = [](std::vector<std::uint32_t>& list, std::uint32_t value) {
+            if (std::ranges::find(list, value) == list.end())
+                list.push_back(value);
+        };
+        const auto touch_sequence = [&](std::uint32_t local_idx, bool written, bool arbitrary) {
+            const auto type = function_.locals[local_idx].type;
+            auto found = std::ranges::find(capture.sequences, local_idx, &CapturedSequence::local);
+            if (found == capture.sequences.end()) {
+                const auto element = source_.value_layouts.at(type.type_index).element;
+                const auto stride = type.kind == language::ValueType::string ? std::size_t{1} : storage_size(element);
+                capture.sequences.push_back({local_idx, written, arbitrary, element, stride});
+                return;
+            }
+            found->written |= written;
+            found->arbitrary_index |= arbitrary;
+        };
+        const auto unwrap_fields = [&](language::NodeId id) noexcept {
+            while (function_.expressions[id].kind == language::Expression::Kind::value_field)
+                id = function_.expressions[id].left;
+            return id;
+        };
+        auto scan_expr = [&](auto&& self, language::NodeId id) -> void {
+            if (id == language::no_node)
+                return;
+            const auto& expr = function_.expressions[id];
+            using Kind = language::Expression::Kind;
+            switch (expr.kind) {
+            case Kind::local: {
+                if (expr.value >= ivar)
+                    return;
+                const auto type = function_.locals[expr.value].type;
+                if (type.kind == language::ValueType::array || type.kind == language::ValueType::string)
+                    touch_sequence(expr.value, false, false);
+                else if (managed_value(type))
+                    add_unique(capture.records, expr.value);
+                else
+                    add_unique(capture.values, expr.value);
+                return;
+            }
+            case Kind::field:
+                add_unique(capture.self_fields, expr.value);
+                return;
+            case Kind::index: {
+                const auto& seq = function_.expressions[expr.left];
+                const auto& idx = function_.expressions[expr.right];
+                if (seq.kind == Kind::local && seq.value < ivar)
+                    touch_sequence(seq.value, false, idx.kind != Kind::local || idx.value != ivar);
+                self(self, expr.left);
+                self(self, expr.right);
+                return;
+            }
+            case Kind::source_call:
+                capture.body_has_source_calls = true;
+                for (std::size_t a = 0; a < expr.arguments.size(); ++a) {
+                    const auto arg_id = expr.arguments[a];
+                    const auto& arg = function_.expressions[arg_id];
+                    if (expr.argument_passing[a] == ParameterPassing::reference) {
+                        const auto& base = function_.expressions[unwrap_fields(arg_id)];
+                        if (base.kind == Kind::index) {
+                            const auto& seq = function_.expressions[base.left];
+                            if (seq.kind == Kind::local && seq.value < ivar)
+                                touch_sequence(seq.value, true, false);
+                        }
+                    } else if (expr.argument_passing[a] == ParameterPassing::read_only &&
+                               (arg.type.kind == language::ValueType::array ||
+                                arg.type.kind == language::ValueType::string) &&
+                               arg.kind == Kind::local && arg.value < ivar) {
+                        touch_sequence(arg.value, false, true);
+                    }
+                    self(self, arg_id);
+                }
+                return;
+            default:
+                self(self, expr.left);
+                self(self, expr.right);
+                self(self, expr.receiver);
+                for (const auto arg : expr.arguments)
+                    self(self, arg);
+                return;
+            }
+        };
+        auto scan_stmt = [&](auto&& self, language::NodeId id) -> void {
+            if (id == language::no_node)
+                return;
+            const auto& stmt = function_.statements[id];
+            using Kind = language::Statement::Kind;
+            switch (stmt.kind) {
+            case Kind::block:
+                for (const auto child : stmt.children)
+                    self(self, child);
+                return;
+            case Kind::declare:
+                add_unique(capture.body_locals, static_cast<std::uint32_t>(stmt.target));
+                scan_expr(scan_expr, stmt.expression);
+                return;
+            case Kind::assign: {
+                const auto& base = function_.expressions[unwrap_fields(stmt.target)];
+                if (base.kind == language::Expression::Kind::index) {
+                    const auto& seq = function_.expressions[base.left];
+                    if (seq.kind == language::Expression::Kind::local && seq.value < ivar)
+                        touch_sequence(seq.value, true, false);
+                }
+                scan_expr(scan_expr, stmt.target);
+                scan_expr(scan_expr, stmt.expression);
+                return;
+            }
+            case Kind::call:
+                scan_expr(scan_expr, stmt.expression);
+                return;
+            case Kind::condition:
+                scan_expr(scan_expr, stmt.expression);
+                self(self, stmt.body);
+                self(self, stmt.alternative);
+                return;
+            case Kind::loop:
+                scan_expr(scan_expr, stmt.expression);
+                self(self, stmt.body);
+                self(self, stmt.step);
+                return;
+            default:
+                return;
+            }
+        };
+        scan_stmt(scan_stmt, loop_node.body);
+        std::ranges::sort(capture.sequences, {}, &CapturedSequence::local);
+        std::ranges::sort(capture.records);
+        std::ranges::sort(capture.values);
+        std::ranges::sort(capture.self_fields);
+        std::ranges::sort(capture.body_locals);
+        return capture;
+    }
+
+    llvm::Function* generate_parallel_chunk(language::NodeId statement_id, const ParallelCapture& capture,
+                                            llvm::StructType* capture_type) {
+        const auto& loop_node = function_.statements[statement_id];
+        auto* ptr = ir_.getPtrTy();
+        auto* i64 = ir_.getInt64Ty();
+        auto* fn_type = llvm::FunctionType::get(ir_.getInt32Ty(), {ptr, i64, i64, ptr, ptr}, false);
+        auto* chunk_fn = llvm::Function::Create(fn_type, llvm::GlobalValue::InternalLinkage,
+                                                "atelier_source_parallel_" + std::to_string(function_index_) + "_" +
+                                                    std::to_string(statement_id),
+                                                *module_);
+        chunk_fn->addFnAttr(llvm::Attribute::NoInline);
+        chunk_fn->addFnAttr(llvm::Attribute::NoUnwind);
+        chunk_fn->addFnAttr("disable-tail-calls", "true");
+        chunk_fn->addFnAttr("reciprocal-estimates", "sqrt:1,vec-sqrt:1");
+        chunk_fn->setUWTableKind(llvm::UWTableKind::Async);
+        chunk_fn->addParamAttr(0, llvm::Attribute::NoAlias);
+        chunk_fn->addParamAttr(0, llvm::Attribute::ReadOnly);
+        chunk_fn->addParamAttr(3, llvm::Attribute::NoAlias);
+        chunk_fn->addParamAttr(4, llvm::Attribute::NoAlias);
+
+        SourceLowering chunk(*this, chunk_fn, loop_node.position);
+        auto* start = chunk.block("entry");
+        chunk.failure_ = chunk.block("cleanup.failure");
+        chunk.finish_ = chunk.block("finish");
+        chunk.ir_.SetInsertPoint(chunk.failure_);
+        chunk.failure_status_ = chunk.ir_.CreatePHI(chunk.ir_.getInt32Ty(), 0, "failure.status");
+        chunk.failure_reason_ = chunk.ir_.CreatePHI(chunk.ir_.getInt32Ty(), 0, "failure.reason");
+        chunk.failure_report_native_ = chunk.ir_.CreatePHI(chunk.ir_.getInt1Ty(), 0, "failure.native");
+        chunk.failure_weights_ = llvm::MDBuilder(*context_).createLikelyBranchWeights();
+
+        chunk.ir_.SetInsertPoint(start);
+        auto* capture_arg = chunk_fn->getArg(0);
+        auto* begin_arg = chunk_fn->getArg(1);
+        auto* end_arg = chunk_fn->getArg(2);
+        chunk.ir_.CreateAssumption(chunk.ir_.CreateICmpULE(end_arg, chunk.ir_.getInt64(UINT32_MAX)));
+        chunk.ir_.CreateAssumption(chunk.ir_.CreateICmpULE(begin_arg, end_arg));
+        if (capture.body_has_source_calls) {
+            chunk.source_failure_ =
+                chunk.ir_.CreateAlloca(llvm::ArrayType::get(chunk.ir_.getInt32Ty(), 2), nullptr, "callee.failure");
+            chunk.source_failure_->setAlignment(llvm::Align(alignof(BusinessFailure)));
+            chunk.source_result_ =
+                chunk.ir_.CreateAlloca(llvm::ArrayType::get(chunk.ir_.getInt8Ty(), 128), nullptr, "callee.result");
+            chunk.source_result_->setAlignment(llvm::Align(32));
+        }
+        chunk.owned_local_slots_.assign(function_.locals.size(), language::no_node);
+        chunk.locals_.assign(function_.locals.size(), nullptr);
+        chunk.parameter_views_.resize(function_.locals.size());
+
+        unsigned field_idx = 0;
+        for (const auto& seq : capture.sequences) {
+            auto* data = chunk.ir_.CreateLoad(ptr, chunk.ir_.CreateStructGEP(capture_type, capture_arg, field_idx++));
+            auto* size = chunk.ir_.CreateLoad(i64, chunk.ir_.CreateStructGEP(capture_type, capture_arg, field_idx++));
+            chunk.ir_.CreateAssumption(chunk.ir_.CreateICmpULE(size, chunk.ir_.getInt64(UINT32_MAX)));
+            chunk.parameter_views_[seq.local] = {data, size};
+        }
+        for (const auto rec : capture.records)
+            chunk.locals_[rec] =
+                chunk.ir_.CreateLoad(ptr, chunk.ir_.CreateStructGEP(capture_type, capture_arg, field_idx++));
+        for (const auto val : capture.values)
+            chunk.locals_[val] = chunk.ir_.CreateStructGEP(capture_type, capture_arg, field_idx++);
+        for (const auto field : capture.self_fields) {
+            const auto type = source_type(environment_.fields[field].kind);
+            assert(type);
+            chunk.captured_self_fields_.emplace(
+                field, chunk.load_value(chunk.ir_.CreateStructGEP(capture_type, capture_arg, field_idx++), *type));
+        }
+
+        const auto ivar = static_cast<std::uint32_t>(loop_node.target);
+        auto* ivar_alloca = chunk.ir_.CreateAlloca(chunk.ir_.getInt32Ty(), nullptr, function_.locals[ivar].name);
+        ivar_alloca->setAlignment(llvm::Align(4));
+        chunk.locals_[ivar] = ivar_alloca;
+        for (const auto b : capture.body_locals) {
+            const auto type = function_.locals[b].type;
+            if (chunk.managed_value(type)) {
+                chunk.locals_[b] = chunk.allocate_value_storage(type, function_.locals[b].name);
+            } else {
+                auto* storage = chunk.ir_.CreateAlloca(chunk.storage_type(type), nullptr, function_.locals[b].name);
+                storage->setAlignment(llvm::Align(chunk.storage_alignment(type)));
+                chunk.locals_[b] = storage;
+            }
+        }
+
+        auto* cond_bb = chunk.block("parallel.condition");
+        auto* body_bb = chunk.block("parallel.body");
+        auto* step_bb = chunk.block("parallel.step");
+        auto* end_bb = chunk.block("parallel.end");
+        auto* preheader = chunk.ir_.GetInsertBlock();
+        chunk.ir_.CreateBr(cond_bb);
+
+        chunk.ir_.SetInsertPoint(cond_bb);
+        auto* idx = chunk.ir_.CreatePHI(i64, 2, "parallel.index");
+        idx->addIncoming(begin_arg, preheader);
+        chunk.ir_.CreateCondBr(chunk.ir_.CreateICmpULT(idx, end_arg), body_bb, end_bb);
+
+        chunk.ir_.SetInsertPoint(body_bb);
+        chunk.ir_.CreateAlignedStore(chunk.ir_.CreateTrunc(idx, chunk.ir_.getInt32Ty()), ivar_alloca, llvm::Align(4));
+        chunk.loops_.push_back({end_bb, step_bb, chunk.scopes_.size()});
+        chunk.statement(loop_node.body);
+        chunk.loops_.pop_back();
+        if (!chunk.terminated())
+            chunk.ir_.CreateBr(step_bb);
+
+        chunk.ir_.SetInsertPoint(step_bb);
+        auto* next_idx = chunk.ir_.CreateAdd(idx, chunk.ir_.getInt64(1), "parallel.next", true, true);
+        idx->addIncoming(next_idx, step_bb);
+        chunk.ir_.CreateBr(cond_bb);
+
+        chunk.ir_.SetInsertPoint(end_bb);
+        chunk.ir_.CreateBr(chunk.finish_);
+
+        chunk.ir_.SetInsertPoint(chunk.finish_);
+        chunk.ir_.CreateRet(chunk.ir_.getInt32(0));
+
+        if (chunk.failure_status_->getNumIncomingValues() == 0) {
+            chunk.failure_->eraseFromParent();
+        } else {
+            chunk.ir_.SetInsertPoint(chunk.failure_);
+            chunk.failure_report_native_->eraseFromParent();
+            chunk.failure_report_native_ = nullptr;
+            chunk.ir_.CreateStore(chunk.failure_reason_, chunk.failure_output_);
+            chunk.ir_.CreateRet(chunk.failure_status_);
+        }
+        location_ids_ = std::move(chunk.location_ids_);
+        if (chunk.lowering_error_ && !lowering_error_)
+            lowering_error_ = std::move(chunk.lowering_error_);
+        else if (chunk.lowering_error_)
+            llvm::consumeError(std::move(*chunk.lowering_error_));
+        return chunk_fn;
+    }
+
+    void lower_parallel_loop(language::NodeId statement_id) {
+        const auto& node = function_.statements[statement_id];
+        auto* count32 = expression(node.expression);
+        clear_temporaries();
+        if (function_.expressions[node.expression].type == language::ValueType::i32)
+            check_value(ir_.CreateICmpSGE(count32, ir_.getInt32(0)), EntryFailure::sequence_size);
+        auto* count64 = ir_.CreateZExt(count32, ir_.getInt64Ty());
+
+        const auto capture = collect_parallel_capture(node);
+        std::vector<Sequence> views;
+        views.reserve(capture.sequences.size());
+        for (const auto& seq : capture.sequences) {
+            if (seq.local < parameter_views_.size() && parameter_views_[seq.local].data)
+                views.push_back(parameter_views_[seq.local]);
+            else
+                views.push_back(sequence_view(locals_[seq.local], function_.locals[seq.local].type));
+        }
+        std::vector<std::uint32_t> borrowed_params;
+        for (const auto rec : capture.records)
+            if (rec < function_.parameters.size() && function_.parameters[rec].passing != ParameterPassing::value)
+                borrowed_params.push_back(rec);
+        for (const auto val : capture.values)
+            if (val < function_.parameters.size() && function_.parameters[val].passing != ParameterPassing::value)
+                borrowed_params.push_back(val);
+
+        for (std::size_t i = 0; i < capture.sequences.size(); ++i) {
+            if (!capture.sequences[i].written)
+                continue;
+            auto* w_begin = ir_.CreatePtrToInt(views[i].data, ir_.getInt64Ty());
+            auto* w_bytes = ir_.CreateMul(views[i].size, ir_.getInt64(capture.sequences[i].stride));
+            auto* w_end = ir_.CreateAdd(w_begin, w_bytes);
+            auto* w_nonempty = ir_.CreateICmpNE(views[i].size, ir_.getInt64(0));
+            for (std::size_t j = 0; j < capture.sequences.size(); ++j) {
+                if (i == j || (capture.sequences[j].written && j < i))
+                    continue;
+                auto* o_begin = ir_.CreatePtrToInt(views[j].data, ir_.getInt64Ty());
+                auto* o_bytes = ir_.CreateMul(views[j].size, ir_.getInt64(capture.sequences[j].stride));
+                auto* o_end = ir_.CreateAdd(o_begin, o_bytes);
+                auto* o_nonempty = ir_.CreateICmpNE(views[j].size, ir_.getInt64(0));
+                auto* overlaps =
+                    ir_.CreateAnd(ir_.CreateAnd(w_nonempty, o_nonempty),
+                                  ir_.CreateAnd(ir_.CreateICmpULT(w_begin, o_end), ir_.CreateICmpULT(o_begin, w_end)));
+                llvm::Value* valid = ir_.CreateNot(overlaps);
+                if (!capture.sequences[j].arbitrary_index &&
+                    capture.sequences[i].element == capture.sequences[j].element) {
+                    auto* same_range = ir_.CreateAnd(ir_.CreateICmpEQ(w_begin, o_begin),
+                                                     ir_.CreateICmpEQ(views[i].size, views[j].size));
+                    valid = ir_.CreateOr(valid, same_range);
+                }
+                check_value(valid, EntryFailure::parallel_alias);
+            }
+            for (const auto param : borrowed_params) {
+                const auto param_bytes = storage_size(function_.locals[param].type);
+                auto* r_begin = ir_.CreatePtrToInt(locals_[param], ir_.getInt64Ty());
+                auto* r_end = ir_.CreateAdd(r_begin, ir_.getInt64(param_bytes));
+                auto* overlaps = ir_.CreateAnd(
+                    w_nonempty, ir_.CreateAnd(ir_.CreateICmpULT(w_begin, r_end), ir_.CreateICmpULT(r_begin, w_end)));
+                check_value(ir_.CreateNot(overlaps), EntryFailure::parallel_alias);
+            }
+        }
+
+        const auto ivar = static_cast<std::uint32_t>(node.target);
+        if (options_.debugging) {
+            ir_.CreateAlignedStore(ir_.getInt32(0), locals_[ivar], llvm::Align(4));
+            debug_local(ivar, DebugAvailability::available);
+            const auto saved_self = cached_self_;
+            auto* cond_bb = block("parallel.debug.condition");
+            auto* body_bb = block("parallel.debug.body");
+            auto* step_bb = block("parallel.debug.step");
+            auto* end_bb = block("parallel.debug.end");
+            ir_.CreateBr(cond_bb);
+            ir_.SetInsertPoint(cond_bb);
+            cached_self_ = saved_self;
+            debug_stop(DebugPoint::statement);
+            auto* cur = ir_.CreateAlignedLoad(ir_.getInt32Ty(), locals_[ivar], llvm::Align(4));
+            ir_.CreateCondBr(ir_.CreateICmpULT(cur, count32), body_bb, end_bb);
+            ir_.SetInsertPoint(body_bb);
+            cached_self_ = saved_self;
+            loops_.push_back({end_bb, step_bb, scopes_.size()});
+            statement(node.body);
+            loops_.pop_back();
+            if (!terminated())
+                ir_.CreateBr(step_bb);
+            ir_.SetInsertPoint(step_bb);
+            cached_self_ = saved_self;
+            auto* next =
+                ir_.CreateAdd(ir_.CreateAlignedLoad(ir_.getInt32Ty(), locals_[ivar], llvm::Align(4)), ir_.getInt32(1));
+            ir_.CreateAlignedStore(next, locals_[ivar], llvm::Align(4));
+            ir_.CreateBr(cond_bb);
+            ir_.SetInsertPoint(end_bb);
+            cached_self_ = saved_self;
+            debug_local(ivar, DebugAvailability::out_of_scope);
+            return;
+        }
+
+        llvm::SmallVector<llvm::Type*, 16> capture_fields;
+        for (const auto& seq : capture.sequences) {
+            (void)seq;
+            capture_fields.push_back(ir_.getPtrTy());
+            capture_fields.push_back(ir_.getInt64Ty());
+        }
+        for (const auto rec : capture.records) {
+            (void)rec;
+            capture_fields.push_back(ir_.getPtrTy());
+        }
+        for (const auto val : capture.values)
+            capture_fields.push_back(storage_type(function_.locals[val].type));
+        for (const auto field : capture.self_fields) {
+            const auto type = source_type(environment_.fields[field].kind);
+            assert(type);
+            capture_fields.push_back(storage_type(*type));
+        }
+        if (capture_fields.empty())
+            capture_fields.push_back(ir_.getInt8Ty());
+        auto* capture_type = llvm::StructType::get(*context_, capture_fields);
+        llvm::IRBuilder<> entry_ir(&entry_->getEntryBlock(), entry_->getEntryBlock().begin());
+        auto* capture_alloca = entry_ir.CreateAlloca(capture_type, nullptr, "parallel.capture");
+        capture_alloca->setAlignment(llvm::Align(8));
+
+        const auto saved_self = cached_self_;
+        auto* dispatch_bb = block("parallel.dispatch");
+        auto* after_bb = block("parallel.done");
+        ir_.CreateCondBr(ir_.CreateICmpNE(count64, ir_.getInt64(0)), dispatch_bb, after_bb);
+
+        ir_.SetInsertPoint(dispatch_bb);
+        cached_self_ = saved_self;
+        unsigned field_idx = 0;
+        for (std::size_t i = 0; i < capture.sequences.size(); ++i) {
+            ir_.CreateStore(views[i].data, ir_.CreateStructGEP(capture_type, capture_alloca, field_idx++));
+            ir_.CreateStore(views[i].size, ir_.CreateStructGEP(capture_type, capture_alloca, field_idx++));
+        }
+        for (const auto rec : capture.records)
+            ir_.CreateStore(locals_[rec], ir_.CreateStructGEP(capture_type, capture_alloca, field_idx++));
+        for (const auto val : capture.values) {
+            const auto type = function_.locals[val].type;
+            store_value(load_value(locals_[val], type), ir_.CreateStructGEP(capture_type, capture_alloca, field_idx++),
+                        type);
+        }
+        for (const auto field : capture.self_fields) {
+            const auto type = source_type(environment_.fields[field].kind);
+            assert(type);
+            store_value(read_field(ir_.getInt32(receiver_slot), *type, field),
+                        ir_.CreateStructGEP(capture_type, capture_alloca, field_idx++), *type);
+        }
+
+        auto* chunk_fn = generate_parallel_chunk(statement_id, capture, capture_type);
+        ir_.CreateStore(ir_.getInt32(0), source_failure_);
+        auto* trace_arg =
+            diagnostics_ ? trace_ : static_cast<llvm::Value*>(llvm::ConstantPointerNull::get(ir_.getPtrTy()));
+        auto* status = ir_.CreateCall(
+            parallel_for_, {count64, ir_.getInt64(1024), capture_alloca, chunk_fn, source_failure_, trace_arg});
+        auto* failed = failure_edge(status, nullptr);
+        ir_.CreateCondBr(ir_.CreateICmpEQ(status, ir_.getInt32(0)), after_bb, failed, failure_weights_);
+
+        ir_.SetInsertPoint(after_bb);
+        cached_self_ = saved_self;
+    }
+
     std::optional<llvm::Error> lowering_error_;
 
     const language::Function& function_;
@@ -2027,6 +2536,8 @@ private:
     const language::Program& source_;
 
     const std::vector<llvm::Function*>& functions_;
+
+    const std::vector<llvm::Function*>& parallel_functions_;
 
     llvm::LLVMContext* context_;
 
@@ -2144,15 +2655,25 @@ private:
 
     DiagnosticCatalog* diagnostics_{};
 
+    bool callee_takes_trace_{};
+
     DiagnosticCatalog* catalog_{};
 
     bool debugging_{};
+
+    bool in_parallel_context_{};
+
+    bool parallel_callee_{};
+
+    CompileOptions options_{};
 
     std::uint32_t function_index_{};
 
     language::SourcePosition position_;
 
     std::map<std::size_t, std::uint32_t> location_ids_;
+
+    std::map<std::uint32_t, llvm::Value*> captured_self_fields_;
 
     llvm::Value* trace_{};
 
@@ -2191,6 +2712,8 @@ private:
     llvm::FunctionCallee sample_texture_;
 
     llvm::FunctionCallee sample_orientation_;
+
+    llvm::FunctionCallee parallel_for_;
 
     llvm::FunctionCallee debug_enter_;
 
@@ -2292,6 +2815,7 @@ generate_business(LLJIT& jit, llvm::TargetMachine& machine, const language::Prog
     auto* ptr = llvm::PointerType::getUnqual(*context);
     auto* i32 = llvm::Type::getInt32Ty(*context);
     std::vector<llvm::Function*> functions(program.functions.size());
+    std::vector<llvm::Function*> parallel_functions(program.functions.size());
     for (std::size_t i = 0; i < functions.size(); ++i) {
         if (!program.reachable[i])
             continue;
@@ -2347,6 +2871,41 @@ generate_business(LLJIT& jit, llvm::TargetMachine& machine, const language::Prog
         if (coroutine)
             function->addFnAttr(llvm::Attribute::PresplitCoroutine);
         functions[i] = function;
+
+        if (!options.debugging && program.functions[i].used_in_parallel) {
+            llvm::SmallVector<llvm::Type*, 8> parallel_params{ptr, ptr, ptr};
+            if (options.diagnostics)
+                parallel_params.push_back(ptr);
+            for (const auto& parameter : program.functions[i].parameters) {
+                if (parameter.type.kind == language::ValueType::array ||
+                    parameter.type.kind == language::ValueType::string) {
+                    parallel_params.push_back(ptr);
+                    parallel_params.push_back(llvm::Type::getInt64Ty(*context));
+                } else if (parameter.passing != ParameterPassing::value) {
+                    parallel_params.push_back(ptr);
+                } else if (parameter.type.kind == language::ValueType::record) {
+                    const auto math = program.value_layouts.at(parameter.type.type_index).math;
+                    parallel_params.push_back(math ? static_cast<llvm::Type*>(MathLowering::value_type(*context, math))
+                                                   : ptr);
+                } else if (parameter.type == language::ValueType::f32) {
+                    parallel_params.push_back(llvm::Type::getFloatTy(*context));
+                } else if (parameter.type == language::ValueType::f64) {
+                    parallel_params.push_back(llvm::Type::getDoubleTy(*context));
+                } else if (parameter.type == language::ValueType::boolean) {
+                    parallel_params.push_back(llvm::Type::getInt1Ty(*context));
+                } else {
+                    parallel_params.push_back(i32);
+                }
+            }
+            auto* parallel_fn = llvm::Function::Create(llvm::FunctionType::get(i32, parallel_params, false),
+                                                       llvm::GlobalValue::InternalLinkage,
+                                                       "atelier_source_parallel_fn_" + std::to_string(i), *module);
+            parallel_fn->addFnAttr(llvm::Attribute::NoUnwind);
+            parallel_fn->addFnAttr("disable-tail-calls", "true");
+            parallel_fn->addFnAttr("reciprocal-estimates", "sqrt:1,vec-sqrt:1");
+            parallel_fn->setUWTableKind(llvm::UWTableKind::Async);
+            parallel_functions[i] = parallel_fn;
+        }
     }
     // Generic callers only unpack operands. Both transports enter exactly the
     // same body, including its begin/poll/finish, diagnostics and cleanup exits.
@@ -2387,13 +2946,20 @@ generate_business(LLJIT& jit, llvm::TargetMachine& machine, const language::Prog
     for (std::uint32_t i = 0; i < functions.size(); ++i) {
         if (!program.reachable[i])
             continue;
-        SourceLowering lowering(*context, *module, program, i, functions, layout.strong_slots, layout.weak_slots,
-                                catalog, options, environment);
+        SourceLowering lowering(*context, *module, program, i, functions, parallel_functions, layout.strong_slots,
+                                layout.weak_slots, catalog, options, environment);
         if (auto error = lowering.generate())
             return error;
         const auto demand = lowering.layout();
         layout.strong_slots = demand.strong_slots;
         layout.weak_slots = demand.weak_slots;
+        if (parallel_functions[i]) {
+            SourceLowering parallel_lowering(*context, *module, program, i, functions, parallel_functions,
+                                             layout.strong_slots, layout.weak_slots, catalog, options, environment,
+                                             true);
+            if (auto error = parallel_lowering.generate())
+                return error;
+        }
     }
     if (catalog) {
         auto& sites = catalog->debug_sites;
@@ -2510,6 +3076,10 @@ compile(const BusinessServices& services, const language::Program& program, lang
     } else {
         auto catalog = std::make_shared<CompiledCatalog>();
         catalog->object_type_name = program.object_type_name;
+        catalog->failure_messages = program.failure_messages;
+        catalog->failure_message_views.reserve(catalog->failure_messages.size());
+        for (const auto& message : catalog->failure_messages)
+            catalog->failure_message_views.push_back({message.data(), message.size()});
         catalog->field_names.reserve(environment.fields.size());
         catalog->fields.reserve(environment.fields.size());
         for (const auto& field : environment.fields) {
@@ -2710,6 +3280,7 @@ compile(const BusinessServices& services, const language::Program& program, lang
         bind("business_mutate_sequence", services.mutate_sequence);
         bind("material_sample_texture", services.sample_texture);
         bind("material_sample_orientation", services.sample_orientation);
+        bind("business_parallel_for", services.parallel_for);
         if (options.debugging) {
             bind("business_debug_enter", services.debug_enter);
             bind("business_debug_point", services.debug_point);
@@ -3022,6 +3593,7 @@ std::uint32_t compile_business_impl(
     }
     bool owns_values = false;
     bool mutates_sequences = false;
+    bool uses_parallel_for = false;
     for (std::size_t i = 0; i < program->functions.size(); ++i) {
         if (!program->reachable[i])
             continue;
@@ -3032,9 +3604,11 @@ std::uint32_t compile_business_impl(
             const auto& layout = program->value_layouts[type.type_index];
             if (layout.math)
                 return false;
-            return options.diagnostics || type.kind != language::ValueType::record || !layout.plain_value ||
-                   !layout.zero_default;
+            return (options.diagnostics && !function.used_in_parallel) || type.kind != language::ValueType::record ||
+                   !layout.plain_value || !layout.zero_default;
         };
+        for (const auto& statement : function.statements)
+            uses_parallel_for |= statement.kind == language::Statement::Kind::parallel_loop;
         for (std::size_t local = 0; local < function.locals.size(); ++local)
             owns_values |= owned_type(function.locals[local].type) &&
                            (local >= function.parameters.size() ||
@@ -3058,6 +3632,9 @@ std::uint32_t compile_business_impl(
                                    "Source-owned values require the native value lifecycle services.");
     if (mutates_sequences && !services->mutate_sequence)
         return compilation_failure(error, error_capacity, "Source sequence mutation requires its native service.");
+    if (uses_parallel_for && !options.debugging && !services->parallel_for)
+        return compilation_failure(error, error_capacity,
+                                   "Source parallel_for requires its parallel dispatch service.");
     if (filter) {
         std::vector<source::EntryFunction> functions;
         functions.reserve(program->functions.size());
@@ -3259,7 +3836,9 @@ void atelier_query_business_info(atelier::source::detail::BusinessCode* code,
                state.options.debugging ? static_cast<std::uint32_t>(state.diagnostics->debug_functions.size()) : 0,
                state.options.debugging ? state.diagnostics->debug_sites.data() : nullptr,
                state.options.debugging ? static_cast<std::uint32_t>(state.diagnostics->debug_sites.size()) : 0,
-               state.stateless_typed};
+               state.stateless_typed,
+               state.catalog->failure_message_views.empty() ? nullptr : state.catalog->failure_message_views.data(),
+               static_cast<std::uint32_t>(state.catalog->failure_message_views.size())};
 }
 
 bool atelier_query_business_artifacts(atelier::source::detail::BusinessCode* code,
@@ -3366,8 +3945,10 @@ std::uint32_t atelier_invoke_business(atelier::source::detail::BusinessCode* cod
             ? active_code->diagnostic_entry(invocation, arguments, value_result ? staged_value : &staged_bits, &failure,
                                             trace)
             : active_code->entry(invocation, arguments, value_result ? staged_value : &staged_bits, &failure);
-    if (const auto* message = atelier::source::detail::failure_message(failure.reason))
-        std::snprintf(error, error_capacity, "%s", message);
+    if (const auto message = atelier::source::detail::failure_message(
+            failure.reason, active_code->catalog->failure_message_views.data(),
+            static_cast<std::uint32_t>(active_code->catalog->failure_message_views.size())))
+        std::snprintf(error, error_capacity, "%.*s", static_cast<int>(message->size()), message->data());
     if (status != 0 && failure_location)
         *failure_location = failure.location;
     if (status == 0 && result) {
@@ -3435,11 +4016,13 @@ std::uint32_t atelier_create_business_coroutine(atelier::source::detail::Busines
 
 std::uint32_t atelier_resume_business_coroutine(atelier::source::detail::BusinessCoroutine* coroutine, bool* suspended,
                                                 atelier::source::detail::BusinessValue* result, char* error,
-                                                std::uint32_t error_capacity,
-                                                std::uint32_t* failure_location) noexcept {
+                                                std::uint32_t error_capacity, std::uint32_t* failure_location,
+                                                atelier::source::detail::EntryFailure* failure_reason) noexcept {
     if (!error || error_capacity == 0)
         return 1;
     error[0] = '\0';
+    if (failure_reason)
+        *failure_reason = atelier::source::detail::EntryFailure::none;
     if (!coroutine || !suspended || !result) {
         std::snprintf(error, error_capacity, "%s", "Coroutine resume requires an instance and output storage.");
         return 1;
@@ -3452,11 +4035,15 @@ std::uint32_t atelier_resume_business_coroutine(atelier::source::detail::Busines
     active->running = true;
     active->code->resume(active->handle);
     active->running = false;
-    if (const auto* message = atelier::source::detail::failure_message(active->failure.reason))
-        std::snprintf(error, error_capacity, "%s", message);
+    if (const auto message = atelier::source::detail::failure_message(
+            active->failure.reason, active->code->catalog->failure_message_views.data(),
+            static_cast<std::uint32_t>(active->code->catalog->failure_message_views.size())))
+        std::snprintf(error, error_capacity, "%.*s", static_cast<int>(message->size()), message->data());
     if (active->status != 0) {
         if (failure_location)
             *failure_location = active->failure.location;
+        if (failure_reason)
+            *failure_reason = active->failure.reason;
         return active->status;
     }
     *suspended = active->completed == 0;

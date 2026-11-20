@@ -16,34 +16,34 @@ class procedural.Jitter : procedural.Node {
                  [In("id", Optional)] const Array<uint>& id,
                  [Group(From = "group")] const Array<bool>& selected) {
         if (!(math.is_finite(self.amount) && math.is_finite(self.axis_scale))) {
-            self.fail("Jitter amount and axis scale must be finite.");
+            fail("Jitter amount and axis scale must be finite.");
         }
         const vector3 reach = self.axis_scale * self.amount;
         if (!math.is_finite(reach)) {
-            self.fail("Jitter reach must be finite.");
+            fail("Jitter reach must be finite.");
         }
         const uint node_seed = procedural.hash2(context.seed, self.seed);
         const uint n = P.size();
         const bool has_id = id.size() == n;
         const bool has_mask = selected.size() == n;
         if (!has_mask && has_id) {
-            for (uint i = 0; i < n; i = i + 1) {
+            parallel_for (uint i : n) {
                 const vector3 r = procedural.random_vector(procedural.hash2(node_seed, id[i]));
                 P[i] = P[i] + vector3(r.x * reach.x, r.y * reach.y, r.z * reach.z);
             }
         } else if (!has_mask) {
-            for (uint i = 0; i < n; i = i + 1) {
+            parallel_for (uint i : n) {
                 const vector3 r = procedural.random_vector(procedural.hash2(node_seed, i));
                 P[i] = P[i] + vector3(r.x * reach.x, r.y * reach.y, r.z * reach.z);
             }
         } else if (has_id) {
-            for (uint i = 0; i < n; i = i + 1) {
+            parallel_for (uint i : n) {
                 if (!selected[i]) { continue; }
                 const vector3 r = procedural.random_vector(procedural.hash2(node_seed, id[i]));
                 P[i] = P[i] + vector3(r.x * reach.x, r.y * reach.y, r.z * reach.z);
             }
         } else {
-            for (uint i = 0; i < n; i = i + 1) {
+            parallel_for (uint i : n) {
                 if (!selected[i]) { continue; }
                 const vector3 r = procedural.random_vector(procedural.hash2(node_seed, i));
                 P[i] = P[i] + vector3(r.x * reach.x, r.y * reach.y, r.z * reach.z);

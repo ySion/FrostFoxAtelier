@@ -1363,9 +1363,10 @@ std::expected<MaterialModule, Diagnostic> compile_material(std::string_view name
             if (parameter.passing != ParameterPassing::value)
                 return reject(function.position, "Material function parameters are values, not borrows.");
         for (const auto& node : function.statements) {
-            if (node.kind == Statement::Kind::loop || node.kind == Statement::Kind::yield ||
+            if (node.kind == Statement::Kind::loop || node.kind == Statement::Kind::parallel_loop ||
+                node.kind == Statement::Kind::fail || node.kind == Statement::Kind::yield ||
                 node.kind == Statement::Kind::break_loop || node.kind == Statement::Kind::continue_loop)
-                return reject(node.position, "Material does not support loops or suspension.");
+                return reject(node.position, "Material does not support loops, explicit fail or suspension.");
             if (node.kind == Statement::Kind::declare && node.expression == no_node &&
                 contains_texture(function.locals[node.target].type))
                 return reject(node.position, "Texture inputs cannot be default constructed; copy an injected value.");

@@ -7,6 +7,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
+#include <string_view>
 #include <type_traits>
 
 namespace atelier {
@@ -278,6 +280,12 @@ enum class DebugAvailability : std::uint32_t { out_of_scope, uninitialized, avai
 
 enum class DebugPoint : std::uint32_t { statement, entry, call_return, error };
 
+struct BusinessFailureMessage {
+    const char* data;
+
+    std::size_t size;
+};
+
 enum class EntryFailure : std::uint32_t {
     none,
     sequence_bounds,
@@ -285,27 +293,52 @@ enum class EntryFailure : std::uint32_t {
     sequence_size,
     integer_division,
     integer_shift,
-    integer_conversion
+    integer_conversion,
+    parallel_alias,
+    parallel_cancelled,
+    parallel_failed,
+    user_base = 1024
 };
 
-inline const char* failure_message(EntryFailure reason) noexcept {
+inline std::optional<std::string_view> failure_message(EntryFailure reason,
+                                                       const BusinessFailureMessage* user_messages = nullptr,
+                                                       std::uint32_t user_count = 0) noexcept {
+    const auto code = static_cast<std::uint32_t>(reason);
+    if (code >= static_cast<std::uint32_t>(EntryFailure::user_base)) {
+        const auto index = code - static_cast<std::uint32_t>(EntryFailure::user_base);
+        if (user_messages && index < user_count && (user_messages[index].data || user_messages[index].size == 0))
+            return std::string_view(user_messages[index].data ? user_messages[index].data : "",
+                                    user_messages[index].size);
+        return std::string_view("Source execution failed.");
+    }
     switch (reason) {
     case EntryFailure::none:
-        return nullptr;
+        return std::nullopt;
     case EntryFailure::sequence_bounds:
-        return "Borrowed Array/String index is out of range.";
+        return std::string_view("Borrowed Array/String index is out of range.");
     case EntryFailure::sequence_layout:
-        return "Borrowed sequence has invalid storage, alignment or size beyond uint range.";
+        return std::string_view("Borrowed sequence has invalid storage, alignment or size beyond uint range.");
     case EntryFailure::sequence_size:
-        return "Sequence size cannot be negative.";
+        return std::string_view("Sequence size cannot be negative.");
     case EntryFailure::integer_division:
-        return "Integer division or remainder requires a nonzero divisor and a representable quotient.";
+        return std::string_view(
+            "Integer division or remainder requires a nonzero divisor and a representable quotient.");
     case EntryFailure::integer_shift:
-        return "Integer shift count must be in the range 0 through 31.";
+        return std::string_view("Integer shift count must be in the range 0 through 31.");
     case EntryFailure::integer_conversion:
-        return "Integer conversion requires a finite value representable after truncation toward zero.";
+        return std::string_view(
+            "Integer conversion requires a finite value representable after truncation toward zero.");
+    case EntryFailure::parallel_alias:
+        return std::string_view(
+            "Parallel loop writable Array overlaps another captured sequence or borrowed argument.");
+    case EntryFailure::parallel_cancelled:
+        return std::string_view("Parallel loop execution was cancelled.");
+    case EntryFailure::parallel_failed:
+        return std::string_view("Source parallel loop execution failed.");
+    case EntryFailure::user_base:
+        break;
     }
-    return "Unknown source execution failure.";
+    return std::string_view("Unknown source execution failure.");
 }
 
 // Written only on a generated failure exit: the reason, then the innermost
@@ -367,6 +400,9 @@ enum class ReferenceOperation : std::uint32_t { copy, observe, try_acquire };
 // Strong slots are untagged; weak slots address a separate observation array.
 // The null slot is an operand only, never a destination or cleanup target.
 // Field/method operands are indices into the compiled environment's tables.
+using ParallelBody = std::uint32_t (*)(const void* capture, std::size_t begin, std::size_t end,
+                                       BusinessFailure* failure, BusinessTrace* trace) noexcept;
+
 struct BusinessServices {
     std::uint32_t (*create)(void*, std::uint32_t) noexcept;
 
@@ -406,6 +442,9 @@ struct BusinessServices {
     void (*native_failure)(void*, const NativeFailure*) noexcept {};
 
     void (*native_segment)(void*) noexcept {};
+
+    std::uint32_t (*parallel_for)(std::size_t count, std::size_t grain, const void* capture, ParallelBody body,
+                                  BusinessFailure* failure, BusinessTrace* trace) noexcept {};
 
     bool operator==(const BusinessServices&) const = default;
 };
@@ -454,6 +493,10 @@ struct BusinessCodeInfo {
     std::uint32_t debug_site_count;
 
     bool stateless_typed;
+
+    const BusinessFailureMessage* failure_messages;
+
+    std::uint32_t failure_message_count;
 };
 
 struct BusinessFrameLayout {
@@ -644,7 +687,8 @@ atelier_create_business_coroutine(atelier::source::detail::BusinessCode* code, v
 extern "C" ATELIER_BUSINESS_BACKEND std::uint32_t
 atelier_resume_business_coroutine(atelier::source::detail::BusinessCoroutine* coroutine, bool* suspended,
                                   atelier::source::detail::BusinessValue* result, char* error,
-                                  std::uint32_t error_capacity, std::uint32_t* failure_location = nullptr) noexcept;
+                                  std::uint32_t error_capacity, std::uint32_t* failure_location = nullptr,
+                                  atelier::source::detail::EntryFailure* failure_reason = nullptr) noexcept;
 
 extern "C" ATELIER_BUSINESS_BACKEND void
 atelier_destroy_business_coroutine(atelier::source::detail::BusinessCoroutine* coroutine) noexcept;

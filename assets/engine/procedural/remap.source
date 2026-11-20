@@ -22,7 +22,7 @@ class procedural.Remap : procedural.Node {
         if (!(math.is_finite(self.input_min) && math.is_finite(self.input_max) &&
               math.is_finite(self.output_min) && math.is_finite(self.output_max) &&
               self.input_min != self.input_max)) {
-            self.fail("Remap endpoints must be finite and input endpoints must differ.");
+            fail("Remap endpoints must be finite and input endpoints must differ.");
         }
         // Widen before subtraction: finite float endpoints may span more than FLT_MAX.
         const double low = double(self.input_min);
@@ -35,20 +35,20 @@ class procedural.Remap : procedural.Node {
         const uint n = values.size();
         if (source.size() != n) { return; }
         if (selected.size() != n) {
-            for (uint i = 0; i < n; i = i + 1) {
+            parallel_for (uint i : n) {
                 const double mapped = output_low + ((double(source[i]) - low) / input_span) * output_span;
                 // Also rejects non-finite source values, including infinity * a zero output span.
                 if (!(mapped >= -limit && mapped <= limit)) {
-                    self.fail("Remap result must fit a finite float.");
+                    fail("Remap result must fit a finite float.");
                 }
                 values[i] = float(mapped);
             }
         } else {
-            for (uint i = 0; i < n; i = i + 1) {
+            parallel_for (uint i : n) {
                 if (!selected[i]) { continue; }
                 const double mapped = output_low + ((double(source[i]) - low) / input_span) * output_span;
                 if (!(mapped >= -limit && mapped <= limit)) {
-                    self.fail("Remap result must fit a finite float.");
+                    fail("Remap result must fit a finite float.");
                 }
                 values[i] = float(mapped);
             }

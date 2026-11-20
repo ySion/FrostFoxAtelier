@@ -36,7 +36,7 @@ auto report = capture.snapshot(); // owning copy; also available after failure
 | --- | --- |
 | `program_id`、`code_version`、`entry` | 进程内程序身份、发布所用请求序号、入口名称。版本号不要求连续；原生地址不作为身份 |
 | `source_name`、`location` | 编译输入名称；错误/挂起位置包含函数、原始文件路径、文件版本、字节偏移及从 1 开始的行列。单文本请求以请求序号表示源码版本 |
-| `status`、`error` | 执行状态与首个错误；清理不会覆盖首错。错误文字有界保存，最长 511 字节 |
+| `status`、`error` | 执行状态与首个错误；清理不会覆盖首错。错误文字保留内嵌零字节，超过 511 字节时只保留预算内的完整 UTF-8 字符 |
 | `calls` | 生成代码实际经过的调用边界次数；统计口径见下文 |
 | `before`、`after` | 开始及最近暂停/结束时，该 Runtime 的对象数、根数、待回收数与 GC 阶段。它们是上下文快照，不能直接当作本函数的分配量。执行区间内不推进 GC，协程挂起且外层执行退出后宿主可继续收集；不提供逐调用 GC 工作/回收计数 |
 | `peak_owned_values`、`remaining_owned_values` | 本次源码 Invocation 管理的拥有值峰值及当前余额，包含内部函数；不表示字节数或全进程分配次数 |

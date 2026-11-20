@@ -76,7 +76,7 @@ W2 以既有 Runtime/Source/反射/程序化的构造失败、部分赋值、写
 
 ## 并行任务体禁入诊断
 
-Foundation 的 `parallel_for` / `JoinGroup` body 只处理宿主预先准备的普通值，不调用 Runtime 或它的 Source 执行入口；同一规则也适用于 caller 实际参与执行、inline/P=1、嵌套 body 和失败返回前的局部析构。宿主先准备输入、容量与独占输出，join 后才恢复 Runtime 操作。任务的完整借用、捕获与错误载荷前提见[基础库任务协议](foundation.md)。
+Foundation 的 `parallel_for` / `JoinGroup` body 只处理宿主预先准备的普通值，不调用 Runtime 或它的 Source 执行入口；同一规则也适用于 caller 实际参与执行、inline/P=1、嵌套 body 和失败返回前的局部析构。宿主先准备输入、容量与独占输出，join 后才恢复 Runtime 操作。`.source` 语言级 `parallel_for` 遵守同一边界：分派前在串行线程一次性完成序列投影、别名校验与 `self` 值字段快照，轮廓化块函数在 worker 内只读写普通栈值与预投影缓冲，经 `tasks::Failure` 将 `fail(...)` 或算术/越界错误带回 join 后的 Runtime 线程统一清理。任务的完整借用、捕获与错误载荷前提见[基础库任务协议](foundation.md)。
 
 开发构建通过内部 `assert_serial_access()` 读取唯一的 `tasks::in_parallel_body()` TLS。命中时以固定诊断调用唯一 fatal 出口，不返回 busy、不抛可捕获异常、不进入 Runtime 日志或用户回调。release（`NDEBUG`）编译掉检查，不读取此 TLS；它仍须遵守相同的禁入契约，不因此获得并发 Runtime 能力。
 

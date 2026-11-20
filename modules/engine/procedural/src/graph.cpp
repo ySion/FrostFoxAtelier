@@ -99,10 +99,6 @@ Result<Reference> Context::mesh(StringView key) const noexcept {
     return reference;
 }
 
-Result<void> Node::fail(const String& message) const noexcept {
-    return error(ErrorCode::invocation_failed, std::string{message.view().std_view()});
-}
-
 Result<void> register_types(Runtime& runtime) {
     if (runtime.native_type<Graph>())
         return {};

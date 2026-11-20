@@ -282,7 +282,20 @@ struct Expression {
 };
 
 struct Statement {
-    enum class Kind { block, declare, assign, call, condition, loop, return_value, yield, break_loop, continue_loop };
+    enum class Kind {
+        block,
+        declare,
+        assign,
+        call,
+        condition,
+        loop,
+        parallel_loop,
+        return_value,
+        fail,
+        yield,
+        break_loop,
+        continue_loop
+    };
 
     Kind kind;
 
@@ -340,6 +353,10 @@ struct Function {
 
     bool preserves_borrows{};
 
+    bool parallel_safe{};
+
+    bool used_in_parallel{};
+
     std::vector<std::string> strings;
 };
 
@@ -351,6 +368,8 @@ struct Program {
     std::vector<ValueLayout> value_layouts;
 
     std::vector<Function> functions;
+
+    std::vector<std::string> failure_messages;
 
     std::uint32_t entry{};
 

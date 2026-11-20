@@ -33,7 +33,9 @@ struct DiagnosticState {
 
     ErrorCode error_code{ErrorCode::invocation_failed};
 
-    char error[512]{};
+    char error[511]{};
+
+    std::size_t error_size{};
 
     std::uint64_t resumes{};
 

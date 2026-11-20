@@ -19,7 +19,7 @@ class procedural.RandomScale : procedural.Node {
         const float low = self.minimum;
         const float high = self.maximum;
         if (!(math.is_finite(low) && math.is_finite(high))) {
-            self.fail("RandomScale bounds must be finite.");
+            fail("RandomScale bounds must be finite.");
         }
         const uint node_seed = procedural.hash2(context.seed, self.seed);
         const uint n = pscale.size();
@@ -27,15 +27,15 @@ class procedural.RandomScale : procedural.Node {
         const bool has_mask = selected.size() == n;
         const bool had_pscale = prior_pscale.size() == n;
         if (!has_mask && has_id) {
-            for (uint i = 0; i < n; i = i + 1) {
+            parallel_for (uint i : n) {
                 pscale[i] = math.lerp(low, high, procedural.unit(procedural.hash2(node_seed, id[i])));
             }
         } else if (!has_mask) {
-            for (uint i = 0; i < n; i = i + 1) {
+            parallel_for (uint i : n) {
                 pscale[i] = math.lerp(low, high, procedural.unit(procedural.hash2(node_seed, i)));
             }
         } else if (has_id) {
-            for (uint i = 0; i < n; i = i + 1) {
+            parallel_for (uint i : n) {
                 if (!selected[i]) {
                     if (!had_pscale) { pscale[i] = 1.0f; }
                     continue;
@@ -43,7 +43,7 @@ class procedural.RandomScale : procedural.Node {
                 pscale[i] = math.lerp(low, high, procedural.unit(procedural.hash2(node_seed, id[i])));
             }
         } else {
-            for (uint i = 0; i < n; i = i + 1) {
+            parallel_for (uint i : n) {
                 if (!selected[i]) {
                     if (!had_pscale) { pscale[i] = 1.0f; }
                     continue;

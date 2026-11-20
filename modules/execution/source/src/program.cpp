@@ -628,15 +628,18 @@ bool Program::DirectScope::try_finish(std::uint32_t status) noexcept {
 Error Program::DirectScope::finish_error(std::uint32_t status) {
     if (mode_ == Mode::stateless) {
         auto& stateless = *std::launder(reinterpret_cast<Stateless*>(storage_));
-        const auto* reason = failure_message(stateless.failure.reason);
-        Error error{ErrorCode::invocation_failed, reason ? reason : "Source execution failed."};
+        const auto reason = failure_message(stateless.failure.reason, stateless.version->info.failure_messages,
+                                            stateless.version->info.failure_message_count);
+        Error error{ErrorCode::invocation_failed,
+                    reason ? std::string(*reason) : std::string("Source execution failed.")};
         stateless.version->locate(error, stateless.failure.location);
         leave();
         return error;
     }
     auto& active = *std::launder(reinterpret_cast<Active*>(storage_));
     std::uint32_t site = no_diagnostic_location;
-    auto result = finish_invocation(active.invocation, status, active.failure, &site);
+    auto result = finish_invocation(active.invocation, status, active.failure, &site,
+                                    active.version->info.failure_messages, active.version->info.failure_message_count);
     Error error = result ? Error{ErrorCode::invocation_failed, "Generated code left execution resources alive."}
                          : std::move(result.error());
     active.version->locate(error, site);
@@ -676,7 +679,8 @@ Result<std::uint64_t> Program::invoke_bound(const Version* version, const State*
             auto result =
                 execute_invocation(activation, *binding.runtime, binding, version->layout,
                                    version->declaration->signature.receiver.has_value(), receiver, &call, body,
-                                   capture ? capture->trace() : nullptr, debug ? debug->state().get() : nullptr, &site);
+                                   capture ? capture->trace() : nullptr, debug ? debug->state().get() : nullptr, &site,
+                                   version->info.failure_messages, version->info.failure_message_count);
             if (!result) {
                 version->locate(result.error(), site);
                 return std::unexpected(std::move(result.error()));
@@ -761,8 +765,9 @@ struct Program::Frame final : CoroutineFrame {
         bool suspended{};
         BusinessValue output{};
         std::uint32_t site = no_diagnostic_location;
-        const auto status =
-            atelier_resume_business_coroutine(code_frame.get(), &suspended, &output, message, sizeof(message), &site);
+        EntryFailure reason = EntryFailure::none;
+        const auto status = atelier_resume_business_coroutine(code_frame.get(), &suspended, &output, message,
+                                                              sizeof(message), &site, &reason);
         const auto decoded = status == 0 && !suspended && !invocation.failed
                                  ? scalar_value(output, &version->contract->binding)
                                  : std::optional<Scalar>{};
@@ -780,8 +785,14 @@ struct Program::Frame final : CoroutineFrame {
             return CoroutineStep{CoroutineState::completed};
         }
         if (status != 0 || invocation.failed) {
+            const auto resolved =
+                !invocation.failed && reason != EntryFailure::none
+                    ? failure_message(reason, version->info.failure_messages, version->info.failure_message_count)
+                    : std::nullopt;
             Error error{invocation.failed ? invocation.error_code : ErrorCode::invocation_failed,
-                        invocation.failed ? invocation.error : message};
+                        invocation.failed ? std::string(invocation.error_message())
+                        : resolved        ? std::string(*resolved)
+                                          : std::string(message)};
             version->locate(error, site);
             return failure(std::move(error));
         }

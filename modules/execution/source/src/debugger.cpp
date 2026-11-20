@@ -57,6 +57,16 @@ std::shared_ptr<const DebugTables> copy_debug_tables(const BusinessCodeInfo& inf
     if (info.debug_site_count)
         tables->sites.assign(info.debug_sites, info.debug_sites + info.debug_site_count);
     assert(std::ranges::all_of(tables->sites, [&](const auto site) { return site < info.location_count; }));
+    tables->failure_messages.reserve(info.failure_message_count);
+    tables->failure_message_views.reserve(info.failure_message_count);
+    for (std::uint32_t i = 0; i < info.failure_message_count; ++i) {
+        if (info.failure_messages && info.failure_messages[i].data)
+            tables->failure_messages.emplace_back(info.failure_messages[i].data, info.failure_messages[i].size);
+        else
+            tables->failure_messages.emplace_back();
+        const auto& stored = tables->failure_messages.back();
+        tables->failure_message_views.push_back({stored.data(), stored.size()});
+    }
     return tables;
 }
 

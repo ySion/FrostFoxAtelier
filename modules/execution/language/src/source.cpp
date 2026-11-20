@@ -196,6 +196,75 @@ public:
         return std::move(module_);
     }
 
+    static void mark_reachable_parallel_callees(Program& program) {
+        for (auto& function : program.functions)
+            function.used_in_parallel = false;
+        std::vector<std::uint32_t> pending;
+        for (std::size_t i = 0; i < program.functions.size(); ++i) {
+            if (i >= program.reachable.size() || !program.reachable[i])
+                continue;
+            const auto& function = program.functions[i];
+            auto scan_expr = [&](auto&& self, NodeId id) -> void {
+                if (id == no_node)
+                    return;
+                const auto& expr = function.expressions[id];
+                if (expr.kind == Expression::Kind::source_call)
+                    pending.push_back(expr.value);
+                self(self, expr.left);
+                self(self, expr.right);
+                self(self, expr.receiver);
+                for (const auto arg : expr.arguments)
+                    self(self, arg);
+            };
+            auto scan_stmt = [&](auto&& self, NodeId id) -> void {
+                if (id == no_node)
+                    return;
+                const auto& stmt = function.statements[id];
+                using Kind = Statement::Kind;
+                switch (stmt.kind) {
+                case Kind::block:
+                    for (const auto child : stmt.children)
+                        self(self, child);
+                    return;
+                case Kind::declare:
+                case Kind::call:
+                    scan_expr(scan_expr, stmt.expression);
+                    return;
+                case Kind::assign:
+                    scan_expr(scan_expr, stmt.target);
+                    scan_expr(scan_expr, stmt.expression);
+                    return;
+                case Kind::condition:
+                    scan_expr(scan_expr, stmt.expression);
+                    self(self, stmt.body);
+                    self(self, stmt.alternative);
+                    return;
+                case Kind::loop:
+                    scan_expr(scan_expr, stmt.expression);
+                    self(self, stmt.body);
+                    self(self, stmt.step);
+                    return;
+                default:
+                    return;
+                }
+            };
+            for (const auto& root : function.statements)
+                if (root.kind == Statement::Kind::parallel_loop)
+                    scan_stmt(scan_stmt, root.body);
+        }
+        while (!pending.empty()) {
+            const auto index = pending.back();
+            pending.pop_back();
+            auto& callee = program.functions[index];
+            if (callee.used_in_parallel)
+                continue;
+            callee.used_in_parallel = true;
+            for (const auto& expr : callee.expressions)
+                if (expr.kind == Expression::Kind::source_call)
+                    pending.push_back(expr.value);
+        }
+    }
+
 private:
     math::Type math_type(ValueType type) const noexcept {
         return type.kind == ValueType::record && type.type_index < environment_.values.size()
@@ -206,6 +275,21 @@ private:
     bool plain_record(ValueType type) const noexcept {
         return type.kind == ValueType::record && type.type_index < environment_.values.size() &&
                (environment_.values[type.type_index].plain_value || bool(math_type(type)));
+    }
+
+    bool parallel_value_type(ValueType type) const noexcept {
+        if (scalar(type) || bool(math_type(type)))
+            return true;
+        return type.kind == ValueType::record && type.type_index < environment_.values.size() &&
+               environment_.values[type.type_index].plain_value && environment_.values[type.type_index].zero_default &&
+               environment_.values[type.type_index].can_own;
+    }
+
+    bool parallel_sequence_type(ValueType type) const noexcept {
+        if (type.kind == ValueType::string && type.type_index < environment_.values.size())
+            return true;
+        return type.kind == ValueType::array && type.type_index < environment_.values.size() &&
+               parallel_value_type(environment_.values[type.type_index].element);
     }
 
     static bool floating(ValueType type) noexcept { return type == ValueType::f32 || type == ValueType::f64; }
@@ -402,6 +486,56 @@ private:
             for (const auto& local : function.locals)
                 if (reference_type(local.type))
                     function.preserves_borrows = false;
+            function.parallel_safe = !function.is_coroutine && !function.requires_receiver &&
+                                     (function.result == ValueType::void_value || parallel_value_type(function.result));
+            for (std::size_t p = 0; function.parallel_safe && p < function.parameters.size(); ++p) {
+                const auto& param = function.parameters[p];
+                if (param.passing == ParameterPassing::read_only)
+                    function.parallel_safe = parallel_value_type(param.type) || param.type.kind == ValueType::record ||
+                                             parallel_sequence_type(param.type);
+                else
+                    function.parallel_safe = parallel_value_type(param.type);
+            }
+            for (std::size_t loc = function.parameters.size(); function.parallel_safe && loc < function.locals.size();
+                 ++loc)
+                function.parallel_safe = parallel_value_type(function.locals[loc].type);
+            for (std::size_t s = 0; function.parallel_safe && s < function.statements.size(); ++s) {
+                const auto& stmt = function.statements[s];
+                if (stmt.kind == Statement::Kind::parallel_loop || stmt.kind == Statement::Kind::yield)
+                    function.parallel_safe = false;
+                else if (stmt.kind == Statement::Kind::assign && aggregate(function.expressions[stmt.target].type) &&
+                         !math_type(function.expressions[stmt.target].type) &&
+                         !parallel_value_type(function.expressions[stmt.target].type))
+                    function.parallel_safe = false;
+            }
+            for (std::size_t e = 0; function.parallel_safe && e < function.expressions.size(); ++e) {
+                const auto& expr = function.expressions[e];
+                using Kind = Expression::Kind;
+                if (expr.kind == Kind::call || expr.kind == Kind::receiver || expr.kind == Kind::field ||
+                    expr.kind == Kind::null_reference || expr.kind == Kind::create_reference ||
+                    expr.kind == Kind::observe_reference || expr.kind == Kind::acquire_reference ||
+                    expr.kind == Kind::string_literal || expr.kind == Kind::sequence_mutation ||
+                    expr.kind == Kind::texture_sample || expr.kind == Kind::texture_orientation)
+                    function.parallel_safe = false;
+                else if (expr.kind == Kind::value_field &&
+                         (expr.type.kind == ValueType::array || expr.type.kind == ValueType::string))
+                    function.parallel_safe = false;
+                else if ((expr.kind == Kind::index || expr.kind == Kind::length) &&
+                         (function.expressions[expr.left].kind != Kind::local ||
+                          !parallel_sequence_type(function.expressions[expr.left].type)))
+                    function.parallel_safe = false;
+                else if (expr.kind == Kind::source_call) {
+                    for (const auto arg_id : expr.arguments) {
+                        const auto& arg = function.expressions[arg_id];
+                        if ((arg.type.kind == ValueType::array || arg.type.kind == ValueType::string) &&
+                            (arg.kind != Kind::local || arg.value >= function.parameters.size() ||
+                             !parallel_sequence_type(arg.type))) {
+                            function.parallel_safe = false;
+                            break;
+                        }
+                    }
+                }
+            }
         }
         enum class State { fresh, active, complete };
         std::vector<State> states(module_.functions.size());
@@ -435,6 +569,7 @@ private:
                     function.uses_scoped_values |= callee.uses_scoped_values;
                     function.requires_receiver |= callee.requires_receiver;
                     function.preserves_borrows &= callee.preserves_borrows;
+                    function.parallel_safe &= callee.parallel_safe;
                     ++cursor.next;
                 } else {
                     if (function.uses_scoped_values && (function.is_coroutine || !function.preserves_borrows))
@@ -447,6 +582,7 @@ private:
                 }
             }
         }
+        ATELIER_TRY(validate_parallel_loops());
         module_.reachable.resize(module_.functions.size());
         std::vector<std::uint32_t> pending{module_.entry};
         while (!pending.empty()) {
@@ -458,6 +594,187 @@ private:
             for (const auto& call : module_.functions[index].expressions)
                 if (call.kind == Expression::Kind::source_call)
                     pending.push_back(call.value);
+        }
+        mark_reachable_parallel_callees(module_);
+        return {};
+    }
+
+    std::expected<void, Diagnostic> validate_parallel_loops() {
+        for (auto& function : module_.functions) {
+            const auto unwrap_value_fields = [&](NodeId id) noexcept {
+                while (function.expressions[id].kind == Expression::Kind::value_field)
+                    id = function.expressions[id].left;
+                return id;
+            };
+            for (const auto& root : function.statements) {
+                if (root.kind != Statement::Kind::parallel_loop)
+                    continue;
+                const std::uint32_t ivar = static_cast<std::uint32_t>(root.target);
+                std::vector<std::uint32_t> written_arrays;
+                std::vector<std::uint32_t> arbitrary_sequences;
+                const auto mark_unique = [](std::vector<std::uint32_t>& list, std::uint32_t value) {
+                    if (std::ranges::find(list, value) == list.end())
+                        list.push_back(value);
+                };
+                const auto check_mutable_lvalue = [&](NodeId target_id,
+                                                      SourcePosition pos) -> std::expected<void, Diagnostic> {
+                    const auto& target_expr = function.expressions[target_id];
+                    if (aggregate(target_expr.type) && !math_type(target_expr.type) &&
+                        !parallel_value_type(target_expr.type))
+                        return reject(pos, "parallel_for cannot assign non-plain aggregate values.");
+                    const NodeId base_id = unwrap_value_fields(target_id);
+                    const auto& base = function.expressions[base_id];
+                    if (base.kind == Expression::Kind::local && base.value > ivar &&
+                        !function.locals[base.value].read_only)
+                        return {};
+                    if (base.kind == Expression::Kind::index) {
+                        const auto& seq = function.expressions[base.left];
+                        const auto& idx = function.expressions[base.right];
+                        if (seq.kind == Expression::Kind::local && seq.value < ivar &&
+                            seq.type.kind == ValueType::array && parallel_sequence_type(seq.type) &&
+                            !function.locals[seq.value].read_only) {
+                            if (idx.kind != Expression::Kind::local || idx.value != ivar)
+                                return reject(idx.position,
+                                              "parallel_for element writes must index directly by the loop variable.");
+                            mark_unique(written_arrays, seq.value);
+                            return {};
+                        }
+                    }
+                    return reject(
+                        pos,
+                        "parallel_for can only mutate locals declared inside the loop or outer Array[i] elements.");
+                };
+                auto check_expr = [&](auto&& self, NodeId id) -> std::expected<void, Diagnostic> {
+                    if (id == no_node)
+                        return {};
+                    const auto& expr = function.expressions[id];
+                    using Kind = Expression::Kind;
+                    switch (expr.kind) {
+                    case Kind::literal:
+                        return {};
+                    case Kind::local: {
+                        const auto type = function.locals[expr.value].type;
+                        if (expr.value < ivar && !parallel_value_type(type) && type.kind != ValueType::record &&
+                            !parallel_sequence_type(type))
+                            return reject(expr.position,
+                                          "parallel_for cannot capture object references or nested/managed sequences.");
+                        return {};
+                    }
+                    case Kind::field:
+                        if (function.expressions[expr.receiver].kind != Kind::receiver)
+                            return reject(expr.position, "parallel_for can only read fields on self.");
+                        return {};
+                    case Kind::value_field:
+                        if (expr.type.kind == ValueType::array || expr.type.kind == ValueType::string)
+                            return reject(expr.position,
+                                          "parallel_for cannot access Array or String fields inside a record.");
+                        return self(self, expr.left);
+                    case Kind::unary:
+                    case Kind::binary:
+                    case Kind::scalar_cast:
+                        ATELIER_TRY(self(self, expr.left));
+                        return self(self, expr.right);
+                    case Kind::length: {
+                        const auto& seq = function.expressions[expr.left];
+                        if (seq.kind != Kind::local || seq.value >= ivar || !parallel_sequence_type(seq.type))
+                            return reject(expr.position,
+                                          "parallel_for sequence size requires a top-level outer Array or String.");
+                        return self(self, expr.left);
+                    }
+                    case Kind::index: {
+                        const auto& seq = function.expressions[expr.left];
+                        const auto& idx = function.expressions[expr.right];
+                        if (seq.kind != Kind::local || seq.value >= ivar || !parallel_sequence_type(seq.type))
+                            return reject(expr.position,
+                                          "parallel_for indexing requires a top-level outer Array or String.");
+                        if (idx.kind != Kind::local || idx.value != ivar)
+                            mark_unique(arbitrary_sequences, seq.value);
+                        ATELIER_TRY(self(self, expr.left));
+                        return self(self, expr.right);
+                    }
+                    case Kind::math_construct:
+                    case Kind::math_intrinsic:
+                        for (const auto arg : expr.arguments) {
+                            ATELIER_TRY(self(self, arg));
+                        }
+                        return {};
+                    case Kind::source_call: {
+                        const auto& callee = module_.functions[expr.value];
+                        if (!callee.parallel_safe)
+                            return reject(expr.position,
+                                          "Function '" + callee.function_name +
+                                              "' is not parallel-safe and cannot be called in parallel_for.");
+                        for (std::size_t a = 0; a < expr.arguments.size(); ++a) {
+                            const NodeId arg_id = expr.arguments[a];
+                            const auto& arg = function.expressions[arg_id];
+                            if (expr.argument_passing[a] == ParameterPassing::reference) {
+                                ATELIER_TRY(check_mutable_lvalue(arg_id, arg.position));
+                            } else if (expr.argument_passing[a] == ParameterPassing::read_only &&
+                                       (arg.type.kind == ValueType::array || arg.type.kind == ValueType::string)) {
+                                if (arg.kind != Kind::local || arg.value >= ivar || !parallel_sequence_type(arg.type))
+                                    return reject(
+                                        arg.position,
+                                        "parallel_for helper sequence arguments require a top-level outer Array or String.");
+                                mark_unique(arbitrary_sequences, arg.value);
+                            }
+                            ATELIER_TRY(self(self, arg_id));
+                        }
+                        return {};
+                    }
+                    default:
+                        return reject(
+                            expr.position,
+                            "parallel_for does not allow native calls, object operations, String literals or sequence structural mutations.");
+                    }
+                };
+                auto check_stmt = [&](auto&& self, NodeId id) -> std::expected<void, Diagnostic> {
+                    if (id == no_node)
+                        return {};
+                    const auto& stmt = function.statements[id];
+                    using Kind = Statement::Kind;
+                    switch (stmt.kind) {
+                    case Kind::block:
+                        for (const auto child : stmt.children) {
+                            ATELIER_TRY(self(self, child));
+                        }
+                        return {};
+                    case Kind::declare:
+                        if (!parallel_value_type(function.locals[stmt.target].type))
+                            return reject(
+                                stmt.position,
+                                "parallel_for locals require scalar, enum, built-in math or zero-default plain struct types.");
+                        return check_expr(check_expr, stmt.expression);
+                    case Kind::assign:
+                        ATELIER_TRY(check_mutable_lvalue(stmt.target, stmt.position));
+                        ATELIER_TRY(check_expr(check_expr, stmt.target));
+                        return check_expr(check_expr, stmt.expression);
+                    case Kind::call:
+                        return check_expr(check_expr, stmt.expression);
+                    case Kind::condition:
+                        ATELIER_TRY(check_expr(check_expr, stmt.expression));
+                        ATELIER_TRY(self(self, stmt.body));
+                        return self(self, stmt.alternative);
+                    case Kind::loop:
+                        ATELIER_TRY(check_expr(check_expr, stmt.expression));
+                        ATELIER_TRY(self(self, stmt.body));
+                        return self(self, stmt.step);
+                    case Kind::fail:
+                    case Kind::break_loop:
+                    case Kind::continue_loop:
+                        return {};
+                    default:
+                        return reject(stmt.position, "Unsupported control flow inside parallel_for.");
+                    }
+                };
+                ATELIER_TRY(check_stmt(check_stmt, root.body));
+                for (const auto written : written_arrays) {
+                    if (std::ranges::find(arbitrary_sequences, written) != arbitrary_sequences.end())
+                        return reject(
+                            root.position,
+                            "Array '" + function.locals[written].name +
+                                "' is written inside parallel_for and cannot also be indexed by an expression other than the loop variable.");
+                }
+            }
         }
         return {};
     }
@@ -958,6 +1275,7 @@ private:
         const auto& statement = function_.statements[id];
         switch (statement.kind) {
         case Statement::Kind::return_value:
+        case Statement::Kind::fail:
             return true;
         case Statement::Kind::block:
             for (const auto child : statement.children)
@@ -1425,10 +1743,45 @@ private:
             visible_.resize(visible_before);
             return add(std::move(scope));
         }
+        ATELIER_TRY_BIND(parallel_loop, accept("parallel_for"));
+        if (*parallel_loop) {
+            if (function_.is_coroutine)
+                return reject(position, "parallel_for cannot be used in an async function.");
+            if (parallel_loop_depth_ > 0)
+                return reject(position, "parallel_for cannot be nested.");
+            ATELIER_TRY(expect("("));
+            ATELIER_TRY_BIND(explicit_const, accept("const"));
+            (void)explicit_const;
+            ATELIER_TRY(expect("uint"));
+            ATELIER_TRY_BIND(ivar_name, identifier());
+            ATELIER_TRY(unused_name(*ivar_name));
+            ATELIER_TRY(expect(":"));
+            ATELIER_TRY_BIND(count, expression());
+            const auto count_type = function_.expressions[*count].type;
+            if (count_type != ValueType::u32 && count_type != ValueType::i32)
+                return reject(function_.expressions[*count].position, "parallel_for count requires uint or int.");
+            ATELIER_TRY(expect(")"));
+            const auto visible_before = visible_.size();
+            ATELIER_TRY_BIND(ivar, local(*ivar_name, ValueType::u32));
+            function_.locals[*ivar].read_only = true;
+            const auto saved_loop_depth = std::exchange(loop_depth_, 0);
+            ++parallel_loop_depth_;
+            ATELIER_TRY_BIND(body, block());
+            --parallel_loop_depth_;
+            loop_depth_ = saved_loop_depth;
+            visible_.resize(visible_before);
+            return add(Statement{Statement::Kind::parallel_loop, position, *ivar, *count, *body, no_node, {}});
+        }
         if (token_.text == "break" || token_.text == "continue") {
             ATELIER_TRY_BIND(keyword, consume());
-            if (loop_depth_ == 0)
+            if (keyword->text == "break") {
+                if (loop_depth_ == 0)
+                    return reject(position, parallel_loop_depth_ > 0
+                                                ? "break cannot exit parallel_for; use fail(...) for errors."
+                                                : "break and continue require an enclosing loop.");
+            } else if (loop_depth_ == 0 && parallel_loop_depth_ == 0) {
                 return reject(position, "break and continue require an enclosing loop.");
+            }
             ATELIER_TRY(expect(";"));
             return add(
                 Statement{keyword->text == "break" ? Statement::Kind::break_loop : Statement::Kind::continue_loop,
@@ -1439,6 +1792,25 @@ private:
                           no_node,
                           {}});
         }
+        ATELIER_TRY_BIND(failed, accept("fail"));
+        if (*failed) {
+            ATELIER_TRY(expect("("));
+            if (token_.kind != Token::Kind::string)
+                return reject(token_.position, "fail requires a string literal message.");
+            ATELIER_TRY_BIND(message_token, consume());
+            ATELIER_TRY_BIND(decoded, string_value(*message_token));
+            ATELIER_TRY(expect(")"));
+            ATELIER_TRY(expect(";"));
+            std::uint32_t message_index = 0;
+            const auto existing = std::ranges::find(module_.failure_messages, *decoded);
+            if (existing != module_.failure_messages.end())
+                message_index = static_cast<std::uint32_t>(existing - module_.failure_messages.begin());
+            else {
+                message_index = static_cast<std::uint32_t>(module_.failure_messages.size());
+                module_.failure_messages.push_back(std::move(*decoded));
+            }
+            return add(Statement{Statement::Kind::fail, position, message_index, no_node, no_node, no_node, {}});
+        }
         ATELIER_TRY_BIND(yield, accept("yield"));
         if (*yield) {
             if (!function_.is_coroutine)
@@ -1448,6 +1820,8 @@ private:
         }
         ATELIER_TRY_BIND(return_value, accept("return"));
         if (*return_value) {
+            if (parallel_loop_depth_ > 0)
+                return reject(position, "return cannot exit parallel_for.");
             NodeId value = no_node;
             if (function_.result == ValueType::void_value) {
                 if (token_.text != ";")
@@ -2198,6 +2572,8 @@ private:
     std::size_t depth_{};
 
     std::size_t loop_depth_{};
+
+    std::size_t parallel_loop_depth_{};
 };
 }
 
@@ -2232,6 +2608,7 @@ std::expected<void, Diagnostic> export_functions(Program& program, std::span<con
         wrapper.locals.assign(found->locals.begin(), found->locals.begin() + found->parameters.size());
         wrapper.uses_scoped_values = found->uses_scoped_values;
         wrapper.preserves_borrows = found->preserves_borrows;
+        wrapper.parallel_safe = found->parallel_safe;
         wrapper.requires_receiver = receiver || found->requires_receiver;
         Expression call{Expression::Kind::source_call, wrapper.result, wrapper.position};
         call.value = target;
@@ -2271,6 +2648,7 @@ std::expected<void, Diagnostic> export_functions(Program& program, std::span<con
                 pending.push_back(node.value);
     }
     program.entry = program.exports.front();
+    Parser::mark_reachable_parallel_callees(program);
     return {};
 }
 

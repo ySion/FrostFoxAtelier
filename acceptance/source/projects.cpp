@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <span>
 #include <windows.h>
 
 namespace {
@@ -135,12 +136,18 @@ struct PlainPair {
     std::int32_t y;
 };
 
+struct SeqHolder {
+    Array<std::int32_t> lut;
+};
+
 struct NonZeroPlain {
     std::int32_t bias = 42;
 };
 
 struct PairHost {
     std::int32_t hidden_secret = 7;
+
+    std::int32_t scale = 9;
 
     PlainPair add_pair(PlainPair a, PlainPair b) const noexcept { return {a.x + b.x, a.y + b.y}; }
 };
@@ -163,6 +170,7 @@ void verify_frontend_and_pod_evaluation() {
         std::move(non_zero_def),
         NativeRegistration<PairHost>(runtime, "test.PairHost", TypeKind::object)
             .hidden_field<&PairHost::hidden_secret>("secret")
+            .field<&PairHost::scale>("scale")
             .method<&PairHost::add_pair>("add_pair", true)
             .build(),
         NativeRegistration<ContractHost>(runtime, "test.ContractHost", TypeKind::object)
@@ -447,6 +455,492 @@ int evaluate(Array<int>& column, test.PlainPair delta) {
         require(tier_result && std::get<std::int32_t>(*tier_result) == 90 && column[0] == 15 && column[1] == 16 &&
                     column[2] == 17,
                 "POD local/return, non-zero default record or SOP array evaluation produced unexpected results.");
+    }
+
+    // 1. Standalone and stateless_direct `fail("...")` + non-void branch termination.
+    {
+        auto pure_prog = take(Program::create(runtime));
+        const std::string_view pure_src = R"(
+int checked_double(int x) {
+    if (x < 0) {
+        fail("Negative scalar rejected.");
+    }
+    return x * 2;
+}
+int run_checked(int x) {
+    return checked_double(x);
+}
+)";
+        auto req = take(pure_prog->request("pure_fail.source", pure_src, "run_checked"));
+        auto cand = take(Program::prepare(req));
+        take(pure_prog->try_publish(cand));
+        const auto pinned = take(pure_prog->entry().bind<std::int32_t, std::int32_t>());
+        require(take(pinned.invoke(ObjectId{}, 21)) == 42, "Stateless direct helper call failed.");
+        const auto bad = pinned.invoke(ObjectId{}, -3);
+        require(!bad && bad.error().code == ErrorCode::invocation_failed &&
+                    bad.error().message == "Negative scalar rejected." && bad.error().source &&
+                    bad.error().source->line == 4,
+                "Stateless direct fail(...) did not report exact message and source line.");
+    }
+
+    // 2. Multi-chunk `parallel_for`, `self` field snapshot, `const Record&` + LUT reads, `[i]` writes,
+    //    diagnostics owned-value cleanup on parallel failure, and runtime `parallel_alias` verification.
+    take(runtime.register_types(std::vector<TypeDefinition>{
+        array_definition<bool>(runtime, "test.BoolArray"), array_definition<PlainPair>(runtime, "test.PairArray"),
+        NativeRegistration<SeqHolder>(runtime, "test.SeqHolder", TypeKind::record)
+            .field<&SeqHolder::lut>("lut", {TypeReference::native<Array<std::int32_t>>()}, offsetof(SeqHolder, lut))
+            .build()}));
+    {
+        const std::string_view clean_parallel_src = R"(
+int scale_step(int base, int factor, int& slot) {
+    if (factor < 0) {
+        fail("Negative LUT factor.");
+    }
+    slot = base * factor;
+    return slot;
+}
+
+void run_parallel(int count, const test.PlainPair& pair, const Array<int>& lut,
+                  Array<int>& inout, Array<bool>& mask, int trigger_oob) {
+    Array<int> temp;
+    temp.resize(16);
+    const int bonus = pair.y;
+    parallel_for (uint i : count) {
+        if ((i & 1) == 1) {
+            mask[i] = false;
+            continue;
+        }
+        mask[i] = true;
+        if (trigger_oob != 0 && i == 2500) {
+            const int unused = lut[lut.size() + 1];
+            inout[i] = unused;
+            continue;
+        }
+        test.PlainPair local_pair;
+        local_pair.x = int(i);
+        int computed = 0;
+        const int lut_val = lut[i % lut.size()];
+        scale_step(local_pair.x + pair.x, lut_val, computed);
+        inout[i] = inout[i] + computed + bonus + self.scale;
+    }
+}
+)";
+        auto par_prog = take(Program::create(runtime, host_type));
+        auto par_req = take(par_prog->request("parallel_kernel.source", clean_parallel_src, "run_parallel",
+                                              source::CompileOptions{.diagnostics = true}));
+        auto par_cand = take(Program::prepare(par_req));
+        take(par_prog->try_publish(par_cand));
+
+        constexpr std::uint32_t count = 4096; // Spans 4 chunks at grain = 1024.
+        const PlainPair pair{3, 7};
+        Array<std::int32_t> lut{2, 3, 5, 7};
+        Array<std::int32_t> inout;
+        Array<bool> mask;
+        inout.resize(count);
+        mask.resize(count);
+        for (std::uint32_t i = 0; i < count; ++i) {
+            inout[i] = 10;
+            mask[i] = true;
+        }
+        // Empty count (0) succeeds without touching elements; negative int count fails with sequence_size.
+        {
+            const std::int32_t zero_count = 0;
+            const std::int32_t neg_count = -1;
+            const std::int32_t no_oob = 0;
+            const std::array zero_args{
+                Argument{Scalar{zero_count}}, Argument::borrow(pair), Argument::borrow(std::as_const(lut)),
+                Argument::borrow(inout),      Argument::borrow(mask), Argument{Scalar{no_oob}}};
+            take(par_prog->entry().invoke(host.id(), zero_args));
+            const std::array neg_args{
+                Argument{Scalar{neg_count}}, Argument::borrow(pair), Argument::borrow(std::as_const(lut)),
+                Argument::borrow(inout),     Argument::borrow(mask), Argument{Scalar{no_oob}}};
+            const auto neg_res = par_prog->entry().invoke(host.id(), neg_args);
+            require(!neg_res && neg_res.error().code == ErrorCode::invocation_failed &&
+                        neg_res.error().message.contains("Sequence size cannot be negative"),
+                    "Negative int parallel_for count was not rejected.");
+        }
+        // Full 4096-element parallel run.
+        {
+            source::Diagnostics diag;
+            const std::int32_t full_count = static_cast<std::int32_t>(count);
+            const std::int32_t no_oob = 0;
+            const std::array ok_args{
+                Argument{Scalar{full_count}}, Argument::borrow(pair), Argument::borrow(std::as_const(lut)),
+                Argument::borrow(inout),      Argument::borrow(mask), Argument{Scalar{no_oob}}};
+            take(par_prog->entry().invoke(host.id(), ok_args, &diag));
+            const auto snap = diag.snapshot();
+            require(snap.status == source::DiagnosticStatus::completed && snap.remaining_owned_values == 0 &&
+                        snap.resources_cleared,
+                    "Parallel execution left owned values or failed diagnostics.");
+            for (std::uint32_t i = 0; i < count; ++i) {
+                if ((i & 1) == 1) {
+                    require(!mask[i] && inout[i] == 10, "Odd continue iteration modified inout or mask.");
+                } else {
+                    const std::int32_t expected =
+                        10 + static_cast<std::int32_t>(i + 3) * lut[i % 4] + 7 + 9; // host.scale == 9
+                    require(mask[i] && inout[i] == expected, "Parallel element computation mismatch.");
+                }
+            }
+        }
+        // Parallel worker failure via helper `fail(...)` cleans up outer owned `temp` and reports exact line.
+        {
+            lut[2] = -1;
+            source::Diagnostics diag;
+            const std::int32_t full_count = static_cast<std::int32_t>(count);
+            const std::int32_t no_oob = 0;
+            const std::array fail_args{
+                Argument{Scalar{full_count}}, Argument::borrow(pair), Argument::borrow(std::as_const(lut)),
+                Argument::borrow(inout),      Argument::borrow(mask), Argument{Scalar{no_oob}}};
+            const auto fail_res = par_prog->entry().invoke(host.id(), fail_args, &diag);
+            const auto snap = diag.snapshot();
+            require(!fail_res && fail_res.error().code == ErrorCode::invocation_failed &&
+                        fail_res.error().message == "Negative LUT factor." && fail_res.error().source &&
+                        fail_res.error().source->line == 4 && snap.status == source::DiagnosticStatus::failed &&
+                        snap.remaining_owned_values == 0 && snap.resources_cleared && snap.location &&
+                        snap.location->source.line == 4,
+                    "Parallel helper fail(...) lost message, line or outer owned-value cleanup.");
+            lut[2] = 5;
+        }
+        // Parallel worker bounds failure (`sequence_bounds`) at iteration 2500 also converges cleanly.
+        {
+            source::Diagnostics diag;
+            const std::int32_t full_count = static_cast<std::int32_t>(count);
+            const std::int32_t oob = 1;
+            const std::array oob_args{
+                Argument{Scalar{full_count}}, Argument::borrow(pair), Argument::borrow(std::as_const(lut)),
+                Argument::borrow(inout),      Argument::borrow(mask), Argument{Scalar{oob}}};
+            const auto oob_res = par_prog->entry().invoke(host.id(), oob_args, &diag);
+            const auto snap = diag.snapshot();
+            require(!oob_res && oob_res.error().code == ErrorCode::invocation_failed &&
+                        oob_res.error().message.contains("index is out of range") && oob_res.error().source &&
+                        oob_res.error().source->line == 22 && snap.remaining_owned_values == 0 &&
+                        snap.resources_cleared,
+                    "Parallel sequence_bounds failure lost location or leaked outer owned values.");
+        }
+        // Passing the same buffer as arbitrary-indexed `lut` and writable `inout` must trigger `parallel_alias`.
+        {
+            const std::int32_t full_count = static_cast<std::int32_t>(count);
+            const std::int32_t no_oob = 0;
+            const std::array alias_args{
+                Argument{Scalar{full_count}}, Argument::borrow(pair), Argument::borrow(std::as_const(inout)),
+                Argument::borrow(inout),      Argument::borrow(mask), Argument{Scalar{no_oob}}};
+            const auto alias_res = par_prog->entry().invoke(host.id(), alias_args);
+            require(!alias_res && alias_res.error().code == ErrorCode::invocation_failed &&
+                        alias_res.error().message.contains("overlaps another captured sequence"),
+                    "Overlapping arbitrary-read and writable Arrays were not rejected before parallel_for.");
+        }
+    }
+
+    // 3. Debugger stepping inside `parallel_for` and stopping on `fail(...)` (`CompileOptions::debugging`).
+    {
+        const std::string_view dbg_src = R"(
+void debug_parallel(Array<int>& values) {
+    const uint n = values.size();
+    parallel_for (uint i : n) {
+        if (i == 1) {
+            fail("Stopped in debug parallel.");
+        }
+        values[i] = int(i) + 100;
+    }
+}
+)";
+        auto dbg_prog = take(Program::create(runtime));
+        auto dbg_req = take(dbg_prog->request("dbg_parallel.source", dbg_src, "debug_parallel",
+                                              source::CompileOptions{.debugging = true}));
+        auto dbg_cand = take(Program::prepare(dbg_req));
+        take(dbg_prog->try_publish(dbg_cand));
+        Array<std::int32_t> values{0, 0, 0};
+        bool saw_i_zero = false;
+        bool saw_error_stop = false;
+        source::Debugger debugger{[&](const source::DebugSnapshot& stop) noexcept -> Result<source::DebugCommand> {
+            if (!stop.frames.empty()) {
+                for (const auto& loc : stop.frames.front().locals)
+                    if (loc.name == "i" && loc.state == source::DebugValueState::available && loc.scalar &&
+                        std::get<std::uint32_t>(*loc.scalar) == 0u)
+                        saw_i_zero = true;
+            }
+            if (stop.reason == source::DebugStopReason::error && stop.error &&
+                stop.error->message == "Stopped in debug parallel.")
+                saw_error_stop = true;
+            return stop.command(source::DebugAction::step_into);
+        }};
+        const std::array dbg_args{Argument::borrow(values)};
+        const auto dbg_res = dbg_prog->entry().invoke(ObjectId{}, dbg_args, nullptr, &debugger);
+        require(!dbg_res && dbg_res.error().message == "Stopped in debug parallel." && values[0] == 100 && saw_i_zero &&
+                    saw_error_stop,
+                "Debugger stepping inside parallel_for or fail(...) error stop failed.");
+    }
+
+    // 4. Static compile-time data-race and contract rejections.
+    {
+        const std::pair<std::string_view, std::string_view> bad_cases[]{
+            {"void f(Array<int>& a) { int s = 0; parallel_for (uint i : a.size()) { s = s + 1; } }",
+             "parallel_for can only mutate locals declared inside the loop or outer Array[i] elements"},
+            {"void bump(int& x) { x = x + 1; } void f(Array<int>& a) { int s = 0; parallel_for (uint i : a.size()) { bump(s); } }",
+             "parallel_for can only mutate locals declared inside the loop or outer Array[i] elements"},
+            {"void f(Array<int>& a) { parallel_for (uint i : a.size()) { a[i + 1] = 1; } }",
+             "parallel_for element writes must index directly by the loop variable"},
+            {"void f(Array<int>& a) { parallel_for (uint i : a.size()) { a[i] = a[0]; } }",
+             "cannot also be indexed by an expression other than the loop variable"},
+            {"void f(Array<int>& a) { parallel_for (uint i : a.size()) { parallel_for (uint j : 2) { a[i] = int(j); } } }",
+             "parallel_for cannot be nested"},
+            {"void f(Array<int>& a) { parallel_for (uint i : a.size()) { break; } }", "break cannot exit parallel_for"},
+            {"void f(Array<int>& a) { parallel_for (uint i : a.size()) { return; } }",
+             "return cannot exit parallel_for"},
+            {"async void f() { parallel_for (uint i : 4) {} }", "parallel_for cannot be used in an async function"},
+            {"void f(const String& s) { fail(s); }", "fail requires a string literal message"},
+            {"void f(Array<int>& a) { parallel_for (uint i : a.size()) { test.PlainPair z; test.PlainPair p = self.add_pair(z, z); a[i] = p.x; } }",
+             "parallel_for does not allow native calls"},
+            {"int read_any(const Array<int>& a, uint idx) { return a[idx]; } "
+             "int sneak(const test.SeqHolder& h, uint idx) { return read_any(h.lut, idx); } "
+             "void f(const test.SeqHolder& h, Array<int>& out) { parallel_for (uint i : out.size()) { out[i] = sneak(h, i); } }",
+             "is not parallel-safe and cannot be called in parallel_for"},
+            {"void f(const test.SeqHolder& h, Array<int>& out) { parallel_for (uint i : out.size()) { out[i] = h.lut[i]; } }",
+             "requires a top-level outer Array or String"},
+        };
+        for (const auto& [bad_code, expected] : bad_cases) {
+            auto bad_prog = take(Program::create(runtime, host_type));
+            auto bad_req = take(bad_prog->request("bad_parallel.source", bad_code, "f"));
+            auto bad_cand = Program::prepare(bad_req);
+            require(!bad_cand && bad_cand.error().message.contains(expected),
+                    "Invalid parallel_for / fail case was not rejected with expected diagnostic.");
+        }
+    }
+
+    // 5. Borrowed record/scalar overlap parity across normal & debug builds, helper zero task-body sequence
+    //    re-projection + merged `source_call` diagnostics, embedded-NUL `fail`, and >512-byte UTF-8 coroutine `fail`.
+    {
+        const auto publish_single = [](Program& prog, std::string_view name, std::string_view src,
+                                       std::string_view entry = {}, source::CompileOptions opts = {}) {
+            auto req = take(prog.request(name, src, entry, opts));
+            auto cand = take(Program::prepare(req));
+            take(prog.try_publish(cand));
+        };
+        // (a) Pure-Source `rows[0]` record borrow and `xs[0]` scalar borrow overlapping writable Array -> `parallel_alias`
+        //     in BOTH normal (`debugging = false`) and debug (`debugging = true`) builds; by-value scalar capture gives
+        //     identical `[12, 12]` in both builds.
+        const std::string_view alias_parity_src = R"(
+void seed_rows(const test.PlainPair& seed, Array<test.PlainPair>& rows) {
+    parallel_for (uint i : rows.size()) {
+        rows[i].x = rows[i].x + seed.x + 10;
+    }
+}
+void trigger_record_overlap(Array<test.PlainPair>& rows) {
+    seed_rows(rows[0], rows);
+}
+void add_ref_bias(const int& bias, Array<int>& xs) {
+    parallel_for (uint i : xs.size()) {
+        xs[i] = xs[i] + bias + 10;
+    }
+}
+void trigger_scalar_ref_overlap(Array<int>& xs) {
+    add_ref_bias(xs[0], xs);
+}
+void add_val_bias(int bias, Array<int>& xs) {
+    parallel_for (uint i : xs.size()) {
+        xs[i] = xs[i] + bias + 10;
+    }
+}
+void run_scalar_val_capture(Array<int>& xs) {
+    add_val_bias(xs[0], xs);
+}
+)";
+        using IntView = std::span<const std::int32_t>;
+        auto view_type = NativeRegistration<IntView>(runtime, "test.IntView", TypeKind::array).build();
+        view_type.element = TypeReference::native<std::int32_t>();
+        view_type.native.element_representation = detail::representation<std::int32_t>();
+        view_type.native.sequence_view = [](const void* value, const void** data, std::size_t* size) noexcept {
+            const auto view = *static_cast<const IntView*>(value);
+            *data = view.data();
+            *size = view.size();
+        };
+        take(runtime.register_type(std::move(view_type)));
+        const std::string_view view_src = R"(
+void increment(const test.IntView& input, test.IntArray& output) {
+    parallel_for (uint i : output.size()) { output[i] = input[i] + 1; }
+}
+)";
+        for (const bool debug_mode : {false, true}) {
+            const source::CompileOptions opts{.debugging = debug_mode};
+            auto rec_prog = take(Program::create(runtime));
+            publish_single(*rec_prog, "rec_overlap.source", alias_parity_src, "trigger_record_overlap", opts);
+            Array<PlainPair> rows{{1, 0}, {1, 0}};
+            const std::array rec_args{Argument::borrow(rows)};
+            const auto rec_res = rec_prog->entry().invoke(ObjectId{}, rec_args);
+            require(!rec_res && rec_res.error().code == ErrorCode::invocation_failed &&
+                        rec_res.error().message.contains("borrowed argument"),
+                    "Record borrow overlapping writable Array was not rejected with parallel_alias.");
+
+            auto ref_prog = take(Program::create(runtime));
+            publish_single(*ref_prog, "ref_overlap.source", alias_parity_src, "trigger_scalar_ref_overlap", opts);
+            Array<std::int32_t> ref_xs{1, 1};
+            const std::array ref_args{Argument::borrow(ref_xs)};
+            const auto ref_res = ref_prog->entry().invoke(ObjectId{}, ref_args);
+            require(!ref_res && ref_res.error().code == ErrorCode::invocation_failed &&
+                        ref_res.error().message.contains("borrowed argument"),
+                    "Scalar const-ref borrow overlapping writable Array diverged or was not rejected.");
+
+            auto val_prog = take(Program::create(runtime));
+            publish_single(*val_prog, "val_capture.source", alias_parity_src, "run_scalar_val_capture", opts);
+            Array<std::int32_t> val_xs{1, 1};
+            const std::array val_args{Argument::borrow(val_xs)};
+            take(val_prog->entry().invoke(ObjectId{}, val_args));
+            require(val_xs[0] == 12 && val_xs[1] == 12,
+                    "By-value scalar capture produced different results between normal and debug builds.");
+
+            auto view_prog = take(Program::create(runtime));
+            publish_single(*view_prog, "view_overlap.source", view_src, "increment", opts);
+            Array<std::int32_t> xs{3, 7, 11};
+            const IntView full{xs.data(), xs.size()};
+            const auto increment = [&](const IntView& input) {
+                const std::array args{Argument::borrow(input), Argument::borrow(xs)};
+                return view_prog->entry().invoke(ObjectId{}, args);
+            };
+            take(increment(full));
+            require(xs[0] == 4 && xs[1] == 8 && xs[2] == 12,
+                    "Same-element projections over the full buffer failed to increment in place.");
+            for (const auto partial : {full.first(2), full.subspan(1)}) {
+                const auto rejected = increment(partial);
+                require(!rejected && rejected.error().code == ErrorCode::invocation_failed &&
+                            rejected.error().message.contains("overlaps") && xs[0] == 4 && xs[1] == 8 && xs[2] == 12,
+                        "Partially overlapping projections must fail before the first write.");
+            }
+        }
+
+        // (b) 4096-element helper call: `sequence_view` projected ONLY twice on serial thread (0 in worker tasks),
+        //     and `source_call` count equals 4096 in both parallel and debug-serial modes.
+        const std::string_view proj_src = R"(
+int sample_lut(const Array<int>& lut, uint idx) {
+    return lut[idx & 3];
+}
+void run_helper_proj(const Array<int>& lut, Array<int>& out) {
+    parallel_for (uint i : out.size()) {
+        out[i] = sample_lut(lut, i);
+    }
+}
+)";
+        Array<std::int32_t> proj_lut{10, 20, 30, 40};
+        Array<std::int32_t> proj_out;
+        proj_out.resize(4096);
+        for (const bool debug_mode : {false, true}) {
+            auto proj_prog = take(Program::create(runtime));
+            publish_single(*proj_prog, "proj.source", proj_src, "run_helper_proj",
+                           {.diagnostics = true, .debugging = debug_mode});
+            source::Diagnostics diag;
+            const std::array args{Argument::borrow(std::as_const(proj_lut)), Argument::borrow(proj_out)};
+            take(proj_prog->entry().invoke(ObjectId{}, args, &diag));
+            const auto snap = diag.snapshot();
+            require(snap.calls[source::DiagnosticCall::source_call] == 4096,
+                    "Parallel source_call diagnostics were lost or mismatched debug mode.");
+            if (!debug_mode) {
+                require(
+                    snap.calls[source::DiagnosticCall::sequence_view] == 2,
+                    "Parallel helper re-projected sequence_view per element instead of reusing pre-projected view.");
+            }
+            require(proj_out[0] == 10 && proj_out[4095] == 40, "Parallel helper output mismatch.");
+        }
+        {
+            const std::string_view shared_helper_src = R"(
+int make_pair_sum(int v) {
+    test.PlainPair p;
+    p.x = v;
+    p.y = v + 1;
+    return p.x + p.y;
+}
+void unused_parallel(Array<int>& out) {
+    parallel_for (uint i : out.size()) {
+        out[i] = make_pair_sum(int(i));
+    }
+}
+int serial_caller(int v) {
+    return make_pair_sum(v);
+}
+)";
+            auto serial_prog = take(Program::create(runtime));
+            publish_single(*serial_prog, "shared_helper.source", shared_helper_src, "serial_caller",
+                           {.diagnostics = true});
+            source::Diagnostics diag;
+            const std::array args{Scalar{std::int32_t{5}}};
+            const auto res = take(serial_prog->entry().invoke(ObjectId{}, args, &diag));
+            const auto snap = diag.snapshot();
+            require(res && std::get<std::int32_t>(*res) == 11 && snap.peak_owned_values == 1 &&
+                        snap.calls[source::DiagnosticCall::value_construct] == 1,
+                    "Unreachable or parallel-shared helper suppressed serial OwnedValue diagnostics.");
+        }
+
+        // (c) Empty-body `parallel_for` under Debugger stops with `i == 0` in scope and supports immediate `abort`.
+        {
+            const std::string_view empty_loop_src = "void spin() { parallel_for (uint i : 1000000) {} }";
+            auto spin_prog = take(Program::create(runtime));
+            publish_single(*spin_prog, "spin.source", empty_loop_src, "spin", {.debugging = true});
+            std::uint32_t header_stops = 0;
+            bool i_in_scope_at_header = false;
+            source::Debugger abort_dbg{[&](const source::DebugSnapshot& stop) noexcept -> Result<source::DebugCommand> {
+                if (!stop.frames.empty()) {
+                    for (const auto& loc : stop.frames.front().locals) {
+                        if (loc.name == "i" && loc.state == source::DebugValueState::available && loc.scalar &&
+                            std::get<std::uint32_t>(*loc.scalar) == 0u) {
+                            i_in_scope_at_header = true;
+                            ++header_stops;
+                            return stop.command(source::DebugAction::abort);
+                        }
+                    }
+                }
+                return stop.command(source::DebugAction::step_into);
+            }};
+            const auto aborted = spin_prog->entry().invoke(ObjectId{}, std::span<const Scalar>{}, nullptr, &abort_dbg);
+            require(!aborted && aborted.error().code == ErrorCode::execution_aborted && i_in_scope_at_header &&
+                        header_stops == 1,
+                    "Debugger did not expose `i` at parallel_for header or failed to abort empty parallel_for.");
+        }
+
+        // (d) Embedded NUL in `fail("A\0B")` preserves all 3 bytes across sync, stateless-direct, and Debugger stops;
+        //     and >512-byte multi-byte UTF-8 `fail("...")` in an `async` coroutine preserves full valid UTF-8 text.
+        {
+            const std::string expected_nul("A\0B", 3);
+            const std::string_view nul_src = R"(void fail_nul() { fail("A\0B"); })";
+            auto nul_prog = take(Program::create(runtime));
+            publish_single(*nul_prog, "nul.source", nul_src);
+            const auto sync_nul = nul_prog->entry().invoke(ObjectId{}, std::span<const Scalar>{});
+            require(!sync_nul && sync_nul.error().message.size() == 3 && sync_nul.error().message == expected_nul,
+                    "Sync fail(...) truncated at embedded NUL byte.");
+            const auto direct_nul = take(nul_prog->entry().bind<void>()).invoke(ObjectId{});
+            require(!direct_nul && direct_nul.error().message == expected_nul,
+                    "Stateless direct fail(...) truncated at embedded NUL byte.");
+
+            auto dbg_nul_prog = take(Program::create(runtime));
+            publish_single(*dbg_nul_prog, "dbg_nul.source", nul_src, "fail_nul",
+                           {.diagnostics = true, .debugging = true});
+            std::string stopped_msg;
+            source::Debugger nul_dbg{[&](const source::DebugSnapshot& stop) noexcept -> Result<source::DebugCommand> {
+                if (stop.reason == source::DebugStopReason::error && stop.error)
+                    stopped_msg = stop.error->message;
+                return stop.command(source::DebugAction::continue_execution);
+            }};
+            source::Diagnostics diagnostics;
+            const auto dbg_nul =
+                dbg_nul_prog->entry().invoke(ObjectId{}, std::span<const Scalar>{}, &diagnostics, &nul_dbg);
+            const auto nul_report = diagnostics.snapshot();
+            require(!dbg_nul && dbg_nul.error().message == expected_nul && stopped_msg == expected_nul &&
+                        nul_report.error && nul_report.error->message == expected_nul,
+                    "Debug or diagnostics capture truncated fail(...) at an embedded NUL byte.");
+
+            std::string long_utf8;
+            for (int k = 0; k < 171; ++k)
+                long_utf8 += "\xe9\x9c\x9c"; // 171 * 3 = 513 UTF-8 bytes ("霜" * 171).
+            const std::string coro_src = "async void coro_long() { yield; fail(\"" + long_utf8 + "\"); }";
+            auto coro_prog = take(Program::create(runtime));
+            publish_single(*coro_prog, "coro_long.source", coro_src, "coro_long", {.diagnostics = true});
+            auto coro = take(coro_prog->entry().start(ObjectId{}, {}, &diagnostics));
+            require(take(coro.resume()) == CoroutineState::suspended, "Async coroutine did not suspend before fail.");
+            const auto step2 = coro.resume();
+            require(!step2 && step2.error().code == ErrorCode::invocation_failed &&
+                        step2.error().message.size() == 513 && step2.error().message == long_utf8,
+                    "Async coroutine fail(...) truncated >512-byte UTF-8 message.");
+            const auto long_report = diagnostics.snapshot();
+            require(long_report.error && long_report.error->message == std::string_view(long_utf8).substr(0, 510),
+                    "Diagnostics did not retain the longest complete UTF-8 prefix within 511 bytes.");
+        }
     }
 }
 }

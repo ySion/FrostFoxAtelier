@@ -82,11 +82,6 @@ public:
 
     Node& operator=(const Node&) = delete;
 
-    // Fails a node invocation without publishing its candidate. Does not retain `message`
-    // or touch borrowed columns.
-    AFUNCTION(BorrowSafe)
-    [[nodiscard]] Result<void> fail(const String& message) const noexcept;
-
 private:
     friend struct detail::Access;
 

@@ -528,6 +528,44 @@ class game.FrameInputs : procedural.Node {
                     "Graph-level failure left stale output() non-null or dropped last_valid_output().");
         }
     }
+
+    // 6. Verify `procedural.Node` retired `Node.fail`, and multi-chunk parallel Source SOPs report mid-chunk `fail(...)`.
+    {
+        const auto* base_node_info = take(runtime.describe(type<Node>(runtime)));
+        require(base_node_info->methods.empty(), "procedural.Node still exposes retired native methods.");
+        auto chunk_graph = take(runtime.create(type<Graph>(runtime)));
+        const auto big_grid = take(add_node(runtime, chunk_graph.id(), type<Grid>(runtime)));
+        take(runtime.write(big_grid.id(), field(runtime, type<Grid>(runtime), "rows"), Scalar{std::uint32_t{64}}));
+        take(runtime.write(big_grid.id(), field(runtime, type<Grid>(runtime), "columns"), Scalar{std::uint32_t{64}}));
+        const auto align_type = take(runtime.find_type("procedural.NormalAlign"));
+        const auto align_n = take(add_node(runtime, chunk_graph.id(), align_type));
+        take(connect(runtime, chunk_graph.id(), big_grid.id(), 0, align_n.id(), 0));
+        take(set_display(runtime, chunk_graph.id(), align_n.id()));
+        Evaluator chunk_eval{runtime, chunk_graph, resources, program.get()};
+        take(chunk_eval.evaluate());
+        require(chunk_eval.output() != nullptr && chunk_eval.output()->count(Layer::point) == 4096 &&
+                    column<Quaternion>(*chunk_eval.output(), "orient", Layer::point).size() == 4096,
+                "Multi-chunk parallel NormalAlign evaluation failed.");
+        write_v3(align_n.id(), align_type, "up", {0.0f, std::numeric_limits<float>::quiet_NaN(), 0.0f});
+        take(chunk_eval.evaluate());
+        const auto* align_status = chunk_eval.status(align_n.id());
+        require(chunk_eval.output() == nullptr && chunk_eval.last_valid_output() != nullptr &&
+                    chunk_eval.last_valid_output()->count(Layer::point) == 4096 && align_status &&
+                    align_status->error &&
+                    align_status->error->message.contains("NormalAlign up vector must be finite."),
+                "Parallel Source SOP fail(...) did not propagate cleanly through Evaluator.");
+        const auto chunk_noise_type = take(runtime.find_type("procedural.Noise"));
+        const auto chunk_noise = take(add_node(runtime, chunk_graph.id(), chunk_noise_type));
+        take(connect(runtime, chunk_graph.id(), big_grid.id(), 0, chunk_noise.id(), 0));
+        take(set_display(runtime, chunk_graph.id(), chunk_noise.id()));
+        take(runtime.write(chunk_noise.id(), field(runtime, chunk_noise_type, "frequency"), Scalar{1e38f}));
+        take(chunk_eval.evaluate());
+        const auto* noise_status = chunk_eval.status(chunk_noise.id());
+        require(chunk_eval.output() == nullptr && chunk_eval.last_valid_output() != nullptr &&
+                    chunk_eval.last_valid_output()->count(Layer::point) == 4096 && noise_status &&
+                    noise_status->error && noise_status->error->message.contains("Noise coordinates must be finite"),
+                "In-worker parallel_for fail(...) in Noise did not propagate cleanly through Evaluator.");
+    }
 }
 
 // A height field mesh over [0, size]^2 with `quads` quads per side, two triangles each.

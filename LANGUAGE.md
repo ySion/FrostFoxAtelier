@@ -6,7 +6,7 @@
 
 ## 能力范围
 
-单源码请求包含枚举/结构体声明、顶层标量/枚举常量和一至多个函数，由宿主选定公开入口。项目快照还支持跨文件收集和继承原生对象的 class，并统一发布多个具名同步入口。函数可接受 bool/float/double/uint/int 或已注册枚举参数，返回 void 或同范围值类型；同步函数还支持内建数学值和 plain record 的按值参数与结果、原生或描述型记录和 Array 的借用、只读 String，以及具备生命周期能力的拥有型局部。`async` 函数可以用 `yield;` 挂起。语句包括声明、赋值、同模块函数调用、原生成员调用、块、`if/else`、`while`、`for`、`break/continue` 和 `return`。
+单源码请求包含枚举/结构体声明、顶层标量/枚举常量和一至多个函数，由宿主选定公开入口。项目快照还支持跨文件收集和继承原生对象的 class，并统一发布多个具名同步入口。函数可接受 bool/float/double/uint/int 或已注册枚举参数，返回 void 或同范围值类型；同步函数还支持内建数学值和 plain record 的按值参数与结果、原生或描述型记录和 Array 的借用、只读 String，以及具备生命周期能力的拥有型局部。`async` 函数可以用 `yield;` 挂起。语句包括声明、赋值、同模块函数调用、原生成员调用、块、`if/else`、`while`、`for`、`parallel_for`、`break/continue`、`fail` 和 `return`。
 
 对象环境至多包含一个宿主已注册的绑定对象类型，目录包含其继承的公开成员。接收者可为该类型的派生实例；源码的声明视图仍是绑定类型。源码可使用该视图的持有/观察局部、`null`、`new`、身份比较和已绑定的标量/数学字段及原生方法。原生与描述型对象沿用同一 Runtime 类型和身份。
 
@@ -25,7 +25,7 @@
 保留字不能用于函数、参数、局部、类型名段或成员路径段：
 
 ```text
-void bool true false float double uint int const if else while for break continue return self weak null new observe try_acquire async yield enum struct class
+void bool true false float double uint int const if else while for parallel_for break continue return fail self weak null new observe try_acquire async yield enum struct class
 ```
 
 `class` 声明由项目快照入口收集。未列出的名字没有内建含义；符合标识符规则时可作为普通名字。
@@ -242,8 +242,8 @@ aggregate_type    = qualified_name | "String" | "Array", "<", ( scalar_type | ag
 qualified_name = identifier, { ".", identifier } ;
 block          = "{", { statement }, "}" ;
 statement      = block | value_local | reference_local | assignment | call_statement
-               | if_statement | while_statement | for_statement | break_statement | continue_statement
-               | return_statement | yield_statement ;
+               | if_statement | while_statement | for_statement | parallel_for_statement
+               | break_statement | continue_statement | return_statement | fail_statement | yield_statement ;
 value_declaration = [ "const" ], ( scalar_type | math_type | aggregate_type ), identifier, [ "=", expression ] ;
                    (* 标量及所有 const 局部必须初始化；聚合值须满足拥有能力 *)
 reference_declaration = [ "weak" ], qualified_name, identifier, [ "=", expression ] ;
@@ -256,11 +256,13 @@ call_statement = call_clause, ";" ;
 if_statement   = "if", "(", expression, ")", block, [ "else", ( block | if_statement ) ] ;
 while_statement = "while", "(", expression, ")", block ;
 for_statement  = "for", "(", [ for_initializer ], ";", [ expression ], ";", [ for_step ], ")", block ;
+parallel_for_statement = "parallel_for", "(", [ "const" ], "uint", identifier, ":", expression, ")", block ;
 for_initializer = value_declaration | reference_declaration | assignment_clause | call_clause ;
 for_step       = assignment_clause | call_clause ;
 break_statement = "break", ";" ;
 continue_statement = "continue", ";" ;
 return_statement = "return", [ expression ], ";" ;
+fail_statement = "fail", "(", string_literal, ")", ";" ;
 yield_statement = "yield", ";" ;
 expression     = logical_or ;
 logical_or     = logical_and, { "||", logical_and } ;
@@ -304,7 +306,17 @@ primary        = qualified_enum_name, "::", identifier | "true" | "false" | nume
 
 `for (init; condition; step) { ... }` 的三个子句均可省略，省略条件等价于 true。init 可为一条声明、赋值或调用，只执行一次；声明的变量仅在该循环的条件、迭代和体内可见，循环退出时清理。condition 必须是 bool；step 为一条赋值或调用，不允许声明或逗号列表。正常迭代和 continue 都先清理退出的体内作用域，再执行 step，之后回到条件检查。break 清理退出的作用域并直接退出循环，跳过 step。break/continue 只作用于最近的 while/for，在循环外拒绝。
 
-`void` 函数允许 `return;` 或自然落尾。非 void 函数必须返回同类型表达式；顺序块中确定返回、完整 `if/else` 两侧返回可证明不落尾，循环自身不能证明必定返回。不可达代码仍要通过语法和类型检查。
+`fail("message");` 接收一个编译期 UTF-8 字符串字面量（保留完整字节长度及转义 `\0` 字节），立即沿生成失败退出路径清理当前已构造资源，并向同步或 `async` 宿主报告 `invocation_failed`、该字面量消息及精确源码行列（不构造 Runtime `String` 临时对象，也不要求 `self` 接收者）。它与 `return` 同属控制流终结语句：非 void 函数的顺序块或完整 `if/else` 分支以 `fail` 结尾可证明不落尾。
+
+`parallel_for ([const] uint i : count) { ... }` 在同步函数中按元素独立契约并行遍历 `[0, count)`：
+
+- `count` 接受 `uint` 或 `int`（`int < 0` 报告既有 `sequence_size` 执行错误，`count == 0` 合法且不进入任务池）；归纳变量 `i` 在体内为只读 `uint`，循环退出后结束作用域。
+- 体内支持块、标量/枚举/内建数学值/零默认 `plain_record` 栈局部声明、`if/else`、内层串行 `while`/`for`、`continue;`（跳到当前并行循环的下一元素 `i + 1`；内层串行循环中的 `break/continue` 作用于内层循环）以及 `fail("...");`。禁止跨出 `parallel_for` 的 `break`、`return`、`yield`，禁止嵌套 `parallel_for`，在 `async` 函数中拒绝。
+- 外层局部与标量/记录参数在体内严格只读；允许读取 `self` 的标量、枚举与数学字段（串行分派前统一读取快照进捕获结构，worker 线程绝不访问 `Runtime` 或 `NativeContext`）。禁止在体内执行原生成员调用、对象引用操作、访问或转传记录内的 `Array`/`String` 字段、字符串字面量表达式（`fail` 字面量除外）或序列结构修改。允许调用 `math.*` 内建及传递满足上述纯值/只读序列并行安全闭包的同模块同步函数，并行调用链直接复用分派前取得的序列 `(data, size)` 视图。
+- 允许捕获外层顶层 `Array<T>`（`T` 限标量、`bool`、枚举、内建数学值或零默认 `plain_record`）与只读 `String`。凡在体内发生写入（`arr[i] = ...`、`arr[i].field = ...` 或元素作可写引用传参）的外层 `Array`，体内对该数组的全部读、写索引表达式都必须是循环变量 `i` 本身；未写入的外层序列可按任意索引表达式读取。分派前在串行线程一次性投影全部捕获序列并校验字节区间：被写 `Array` 与任意外层引用参数或非 `i` 索引序列不得重叠，与仅按 `i` 访问的数组允许原地读写，条件是元素类型、缓冲起点和元素数量都相同，容器注册名可以不同，违者报告 `parallel_alias` 执行错误。
+- 并行块内触发算术/越界错误或 `fail("...")` 时，原子记录一个真实失败迭代的原因与源码位置、取消未开始块并等待所有活动 worker `join` 后回到 Runtime 线程统一清理外层资源；不回滚已完成迭代对可写借用的修改。启用 `CompileOptions::diagnostics` 时按分块独立累计 `source_call` 等调用计数并在 `join` 后归并。启用 `CompileOptions::debugging` 编译时，`parallel_for` 在 Runtime 线程降级为等价串行循环（仍执行相同的分派前重叠校验），使体内断点、单步、查看局部 `i` 与中止完整可用。
+
+`void` 函数允许 `return;` 或自然落尾。非 void 函数必须返回同类型表达式；顺序块中确定返回或 `fail`、完整 `if/else` 两侧确定终结可证明不落尾，循环自身不能证明必定返回。不可达代码仍要通过语法和类型检查。
 
 ## 同模块函数与入口
 
@@ -432,7 +444,7 @@ material.Output shade(material.Context c, Params p, Textures textures) {
 
 - 必须提供无参数 `Params defaults()`；无纹理使用按值 `Output shade(Context, Params)`，有纹理使用 `Output shade(Context, Params, Textures)`。Params 和 Textures 是本份源码声明的普通结构体；前者只含 float、float 向量及其组合，后者只含实际注册的 TextureInput 叶及嵌套记录。字段路径是所属 MS 内的稳定键，数值/纹理路径重名拒绝；路径变化是接口变化，字段重排、局部参数名和记录类型名变化不改变键，不以 Runtime FieldId、GPU 偏移、slot 或显示名充当键。
 - 源码结构只通过现有类型发布事务预览布局，**不发布或重定义活 Runtime 中的类型**。同名 Params/Textures 的独立材质和改版可共存。布局、参数类型/默认字节、具名纹理 schema、注入资源记录、代码和 HLSL 由返回的不可变内容拥有；不保存 Runtime、根、借用地址或类型解析回调。只捕获可达值类型的默认值，原生默认构造在编译期完成，生成代码中的 plain record 构造与赋值是值复制，不再调用原生生命周期服务。
-- 支持 float、vector2/3/4、plain struct、bool 条件/中间值、局部变量、字段赋值、if/else、按值同步辅助函数。全模块仍经普通 Source 语法/类型检查，并沿共享规则拒绝递归；材质专属限制只检查 shade/defaults 的可达调用闭包。未调用的合法循环辅助函数不阻止编译，调用后则拒绝。当前数学操作为 dot/cross/length、sqrt/sin/cos、floor/ceil/trunc/fract/abs、min/max/clamp/lerp/step。可达代码中的全部循环、对象/GC/引用操作、借用参数、String/Array、协程、任意宿主调用及其余数学类型/操作拒绝。检查类型化语句与表达式，不使用文本黑名单。
+- 支持 float、vector2/3/4、plain struct、bool 条件/中间值、局部变量、字段赋值、if/else、按值同步辅助函数。全模块仍经普通 Source 语法/类型检查，并沿共享规则拒绝递归；材质专属限制只检查 shade/defaults 的可达调用闭包。未调用的合法循环辅助函数不阻止编译，调用后则拒绝。当前数学操作为 dot/cross/length、sqrt/sin/cos、floor/ceil/trunc/fract/abs、min/max/clamp/lerp/step。可达代码中的全部循环（含 `parallel_for`）、显式 `fail`、对象/GC/引用操作、借用参数、String/Array、协程、任意宿主调用及其余数学类型/操作拒绝。检查类型化语句与表达式，不使用文本黑名单。
 - `sample(TextureInput, vector2 UV)` 返回 vector4；数字槽语法不再接受。TextureInput 是编译器注入的 plain value，不是 Runtime Texture 对象或资产键。已有令牌的复制初始化、复制赋值及按值辅助函数沿普通值规则；禁止自行默认构造令牌或包含令牌的记录、读取/写入令牌成员、整数转换和算术。复制已有令牌不改变资源关联，也不能伪造新槽。实际注册的 uint `slot` 字段只提供 CPU 布局，限制由材质 AST 执行，不依赖隐藏标记。`defaults` 及其调用闭包不得持有纹理输入或采样，也不接收运行上下文。
 - `sample_orientation(TextureInput, vector2 UV)` 返回实际输入寻址方式的 vector2 方向：Repeat/Clamp 为 `(1,1)`，Mirror 按各轴折叠区间返回 ±1，精确折点取正。CPU 只在实际执行查询时要求该绑定的 orientation 回调，缺失或返回非有限值令本次调用失败，不假定 Repeat；footprint 将它作为中心值上的分段常量，两方向变化为零。
 - `MaterialProgram::textures()` 导出所有声明输入的稳定键和本编译版本 slot；不做逐输入可达性裁剪，也不宣称全部实际采样。每次求值必须恰好绑定每个声明槽一次，包括当前未采样的输入；空输入不能表示为缺槽，同图的不同输入不合并。纹理默认关联、颜色解释、采样设置及线性 float4 空值属于 MS 类型化作者数据，由 material 从冻结快照准备资源环境，不在数值 defaults 或编译器中另造资产加载规则。坏非空键不能当作清空成功。

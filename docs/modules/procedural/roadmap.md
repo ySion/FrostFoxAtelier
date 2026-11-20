@@ -2,7 +2,7 @@
 
 当前实现、接口和验收以[模块说明](README.md)为准。本页保留首阶段方案中尚有用的产品决定、设计依据与未实施的跨模块约定，不是已实现能力清单，也不授权启动后续阶段。
 
-P1、共享不可变列迁移与统一 `procedural.Node` / `process(...)` 节点架构已交付。属性列、可选输入、组遮罩与 `[RunOver]` 层通过方法参数属性（`APARAM` / `.source` `[In]/[Out]/[InOut]/[Group]/[Port]`）和正式 `.source` class 统一表达，不再使用 `PointNode`、`Meta("procedural.bind", ...)` 或代码片段宏拼接。尚未实现场景 Generator、渲染器实例化、节点图 UI、L3、`.source` 并行循环（`parallel_for`）、冻结或 Bake。
+P1、共享不可变列迁移、统一 `procedural.Node` / `process(...)` 节点架构以及 `.source` 语言级 `parallel_for` 与显式 `fail("...")` 已交付。属性列、可选输入、组遮罩与 `[RunOver]` 层通过方法参数属性（`APARAM` / `.source` `[In]/[Out]/[InOut]/[Group]/[Port]`）和正式 `.source` class 统一表达，不再使用 `PointNode`、`Node::fail`、`Meta("procedural.bind", ...)` 或代码片段宏拼接。尚未实现场景 Generator、渲染器实例化、节点图 UI、L3、冻结或 Bake。
 
 ## 方向与依据
 
@@ -22,8 +22,8 @@ S0 契约静态对齐 → S1 原生拓扑/构造/体积采样/Realize，随后�
 | 项目 | 状态与下一步 |
 | --- | --- |
 | Remap／属性噪声 | E/F 已接通共同绑定与 Source 3D value noise / point float Remap，现行合同见[Noise / Remap](README.md#noise--remap)。其他噪声族、导数和周期仍未排期 |
-| 语言能力 | 参数名与参数属性、`math.is_finite`、`math.as_uint`/`math.as_int`、同步值区间读 self、字段元数据、数学函数、代码身份、引擎源码加载及按依赖复用编译单元已接入，语义见 [LANGUAGE.md](../../../LANGUAGE.md)、[数学模块](../../math.md)和[原生值借用](../../native-value-borrows.md)。`.source` 语言级 `parallel_for` 作为独立后续专题另行分析与设计 |
-| Source 业务失败 | 当前节点统一使用 BorrowSafe `Node.fail(message)` 返回业务失败。以后 Source 语言有显式失败语句时，必须在同一片替换全部消费者并删除该入口，不能并存两条路径 |
+| 语言能力 | 参数名与参数属性、`parallel_for`、显式 `fail("...")`、`math.is_finite`、`math.as_uint`/`math.as_int`、同步值区间读 self、字段元数据、数学函数、代码身份、引擎源码加载及按依赖复用编译单元已接入，语义见 [LANGUAGE.md](../../../LANGUAGE.md)、[数学模块](../../math.md)和[原生值借用](../../native-value-borrows.md) |
+| Source 业务失败 | 已落地语言级 `fail("...")` 语句，替换全部内建 `.source` 节点并移除原 `Node.fail(message)`，零 Runtime `String` 分配且支持 `parallel_for` 块内失败收敛 |
 | L3 | 拥有型 Array 按值返回倾向在调用方存储构造；需运行时负责人另立方案，S4 前再决定。当前借用规则不允许属性节点改列长度；Wrangle 的后续语言需求见下方显式合同 |
 | 调度 | 当前求值器在 Runtime 线程上串行执行，没有每帧时间片调度。C++ 节点迁到工作线程须先有只读求值计划、清楚的发布和借用生命周期，再由实测决定；不能只因列支持写时复制就并行调用 Runtime |
 | Volume 并行化 | 原生入口已采用融合分类与稳定填充的两次 fork/join，不等于后台图求值；当前合同及双规模 profile 见[模块说明](README.md#测量)。正式只记 volume/build/classify 墙钟；三段成本用临时真 P1 诊断并单列插桩扰动，不为计时拆开产品流水线。并行收益只比较同一新内核未插桩的 P1/default P，串行加速片的 12.34× 不是并行或规模扩展证据 |
@@ -55,7 +55,7 @@ S0 契约静态对齐 → S1 原生拓扑/构造/体积采样/Realize，随后�
 | asset.generic_node | 图资产不发布 Runtime 类型；所有资产实例共用一个通用节点类型，暂名 AssetNode，保存资产引用和覆盖记录。Tab 菜单仍按资产列出。定义删除或改名参数后，旧覆盖值保留并报告，不静默删除或猜测改名映射；实例的三类作者记录仍按上一条 | 未来资产目录、通用节点注册与定义编辑入口 | 未来 Tab 菜单、参数面板、覆盖解析和图保存 | 每资产发布新 Runtime 类型，静默丢失无法匹配的覆盖，或把不匹配覆盖当作已应用 | 用户已裁决，未实现；不属 S1；类型名暂定 |
 | freeze.scope_and_history | 两级冻结都保留：节点冻结属于资产定义，所有实例共享；实例/生成器冻结属于场景或包含它的图。冻结只在显式解冻后失效，定义变化只提示、不清掉冻结。冻结/解冻是可撤销编辑，与编辑锁定/解锁分别命名；撤销只记录编辑操作，计算结果不进入历史。冻结载荷的具体存储格式另定 | 未来图定义编辑、宿主实例编辑与冻结命令 | 未来求值宿主、保存/加载与编辑历史 | 定义变化自动解冻、混淆两级归属、混用锁定与冻结，或把重算结果逐次塞入撤销历史 | 用户已裁决，未实现；不属 S1 |
 | geometry.attribute_namespace | 属性名在整个 Geometry 内唯一；跨层访问只能使用显式 Promote 或拓扑数组，不引入同名属性的隐式层优先级 | Geometry 属性创建/合并、Promote；未来绑定与 Wrangle | 全部几何算法、列绑定与属性检查 | 为同名跨层列隐式选择优先层，或静默跨层回退 | 全局唯一规则已实现并保留；未来消费者同样遵守 |
-| wrangle.formal_class | 自定义 SOP / Wrangle 直接采用正式 `.source` `class Name : procedural.Node` + 整节点 `void process(...)`（公开字段为节点参数，形参属性 `[In]/[Out]/[InOut]/[Group]` 绑定属性列，显式书写循环或多阶段步骤），淘汰非正式片段拼接展开。读不存在的非 Optional 属性报错，不跨层回退。当前整节点在单线程执行；后续语言级 `parallel_for` 作为独立专题另立契约 | `.source` 编译器、参数属性反射与求值器 | 统一 Source/Runtime `Node`、列绑定与求值器 | 另建脚本包装世界、引入字符串宏拼接 Wrangle，或静默跨层取值 | 已实现正式类 `process` 模型；`parallel_for` 未排期 |
+| wrangle.formal_class | 自定义 SOP / Wrangle 直接采用正式 `.source` `class Name : procedural.Node` + 整节点 `void process(...)`（公开字段为节点参数，形参属性 `[In]/[Out]/[InOut]/[Group]` 绑定属性列，显式书写串行循环、`parallel_for` 或多阶段步骤，用 `fail("...")` 报告业务失败），淘汰非正式片段拼接展开。读不存在的非 Optional 属性报错，不跨层回退 | `.source` 编译器、参数属性反射与求值器 | 统一 Source/Runtime `Node`、列绑定与求值器 | 另建脚本包装世界、引入字符串宏拼接 Wrangle，或静默跨层取值 | 已实现正式类 `process` 与 `parallel_for` / `fail` 模型 |
 | evaluation.host_boundary | 生成器组件挂普通 Entity，点与实例不是 Entity；求值是派生数据重算，输入变化标脏。编辑器在编辑提交后、场景提取前的宿主边界求值；加载/Play 按 Cache 或冻结结果在 Begin 前准备。运行中参数变化走请求队列，在 World::update 后、提取前统一求值。首版同步，超预算后再考虑后台 | 未来编辑提交、加载/Play 与运行时参数请求入口 | 未来生成器宿主、World 与场景提取 | 在遍历/提取中途重入求值、把每个点/实例变 Entity，或尚未确认就当作现行 World 合同 | 总参谋提出，用户未否决；S2/S5 前再确认；未实现 |
 | ui.houdini_reference | 节点界面参考 Houdini，复用统一图数据、Parameters、操作符与编辑历史；不是在 S1 顺带建立节点画布 | 未来图编辑器与操作符 | 用户界面、Control/LLM 与文档历史 | UI 私有图成为第二份权威数据，或把此方向当作当前已有节点界面 | 用户已裁决；S2/P3，未实现 |
 | curve.authored_points | 作者可编辑点数组的曲线节点需要视口绘制交互和数学值数组的属性编解码；涉及 modules/editor/core/include/editor/fields.hpp:54–59 与 scene.cpp，届时由编辑器负责人实施。S1 的 Polyline 只从纯点输入按点序连开放折线，不为它扩展编解码 | 未来曲线绘制/属性编辑入口与编辑器数学值数组编码器 | 未来曲线节点、图文件与属性解码 | 把点数组压成无类型浮点列表，或在 S1 提前扩展编辑器产品 | S2，未实现 |

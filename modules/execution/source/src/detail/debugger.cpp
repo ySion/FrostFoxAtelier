@@ -314,7 +314,7 @@ public:
             }
         }
         if (invocation_.failed) {
-            result_.error = Error{invocation_.error_code, text(invocation_.error)};
+            result_.error = Error{invocation_.error_code, text(invocation_.error_message())};
             if (invocation_.debug_top && invocation_.debug_top->location < metadata_.locations->size())
                 result_.error->source = source_location((*metadata_.locations)[invocation_.debug_top->location].source);
         }
@@ -372,8 +372,10 @@ std::uint32_t debug_point(void* context, BusinessDebugFrame* frame, std::uint32_
         return 1;
     if (point == DebugPoint::error) {
         if (!invocation.failed) {
-            const auto* message = failure_message(failure);
-            invocation.fail(ErrorCode::invocation_failed, message ? message : "Source execution failed.");
+            const auto& views = state->metadata->tables->failure_message_views;
+            const auto message = failure_message(failure, views.data(), static_cast<std::uint32_t>(views.size()));
+            invocation.fail_view(ErrorCode::invocation_failed,
+                                 message ? *message : std::string_view("Source execution failed."));
         }
         if (state->error_stopped)
             return 1;

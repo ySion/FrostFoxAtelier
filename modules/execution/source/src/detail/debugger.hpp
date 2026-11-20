@@ -21,6 +21,10 @@ struct DebugTables {
     std::vector<DebugFunctionMetadata> functions;
 
     std::vector<std::uint32_t> sites;
+
+    std::vector<std::string> failure_messages;
+
+    std::vector<BusinessFailureMessage> failure_message_views;
 };
 
 struct DebugMetadata {

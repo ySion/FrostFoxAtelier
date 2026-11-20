@@ -51,31 +51,31 @@ class procedural.Noise : procedural.Node {
         const float frequency = self.frequency;
         const vector3 offset = self.offset;
         if (!(math.is_finite(frequency) && math.is_finite(offset))) {
-            self.fail("Noise frequency and offset must be finite.");
+            fail("Noise frequency and offset must be finite.");
         }
         const uint seed = procedural.hash2(context.seed, self.seed);
         const uint n = values.size();
         if (source.size() != n) { return; }
         if (selected.size() != n) {
-            for (uint i = 0; i < n; i = i + 1) {
+            parallel_for (uint i : n) {
                 const vector3 q = source[i] * frequency + offset;
                 // Ordered comparisons also reject NaN. The largest float below 2^31 is
                 // 2147483520, so every floor(q)+1 still fits int32.
                 if (!(q.x >= -2147483648.0f && q.x < 2147483648.0f &&
                       q.y >= -2147483648.0f && q.y < 2147483648.0f &&
                       q.z >= -2147483648.0f && q.z < 2147483648.0f)) {
-                    self.fail("Noise coordinates must be finite and in [-2147483648,2147483648).");
+                    fail("Noise coordinates must be finite and in [-2147483648,2147483648).");
                 }
                 values[i] = procedural.sample_value_noise(seed, q);
             }
         } else {
-            for (uint i = 0; i < n; i = i + 1) {
+            parallel_for (uint i : n) {
                 if (!selected[i]) { continue; }
                 const vector3 q = source[i] * frequency + offset;
                 if (!(q.x >= -2147483648.0f && q.x < 2147483648.0f &&
                       q.y >= -2147483648.0f && q.y < 2147483648.0f &&
                       q.z >= -2147483648.0f && q.z < 2147483648.0f)) {
-                    self.fail("Noise coordinates must be finite and in [-2147483648,2147483648).");
+                    fail("Noise coordinates must be finite and in [-2147483648,2147483648).");
                 }
                 values[i] = procedural.sample_value_noise(seed, q);
             }

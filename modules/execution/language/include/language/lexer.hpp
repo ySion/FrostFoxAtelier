@@ -16,12 +16,12 @@ inline bool digit(char value) noexcept {
 }
 
 inline bool reserved(std::string_view value) noexcept {
-    return value == "bool" || value == "true" || value == "false" || value == "for" || value == "break" ||
-           value == "continue" || value == "void" || value == "float" || value == "double" || value == "uint" ||
-           value == "int" || value == "const" || value == "if" || value == "else" || value == "while" ||
-           value == "return" || value == "self" || value == "weak" || value == "null" || value == "new" ||
-           value == "observe" || value == "try_acquire" || value == "async" || value == "yield" || value == "struct" ||
-           value == "enum" || value == "class";
+    return value == "bool" || value == "true" || value == "false" || value == "for" || value == "parallel_for" ||
+           value == "break" || value == "continue" || value == "void" || value == "float" || value == "double" ||
+           value == "uint" || value == "int" || value == "const" || value == "if" || value == "else" ||
+           value == "while" || value == "return" || value == "fail" || value == "self" || value == "weak" ||
+           value == "null" || value == "new" || value == "observe" || value == "try_acquire" || value == "async" ||
+           value == "yield" || value == "struct" || value == "enum" || value == "class";
 }
 
 // Naming projection only; the parser also checks the accessor's signature.
