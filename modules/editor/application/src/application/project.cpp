@@ -36,7 +36,8 @@ Result<std::optional<std::filesystem::path>> pick(HWND owner, Pick kind, const s
     } apartment{SUCCEEDED(initialized)};
     Microsoft::WRL::ComPtr<IFileDialog> dialog;
     const bool material = kind == Pick::material_save || kind == Pick::material_source_save;
-    const bool save = kind == Pick::scene_save || kind == Pick::source_save || material;
+    const bool procgraph = kind == Pick::procedural_graph_save;
+    const bool save = kind == Pick::scene_save || kind == Pick::source_save || material || procgraph;
     auto hr = CoCreateInstance(save ? CLSID_FileSaveDialog : CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
                                IID_PPV_ARGS(&dialog));
     if (FAILED(hr))
@@ -53,17 +54,20 @@ Result<std::optional<std::filesystem::path>> pick(HWND owner, Pick kind, const s
                                      : kind == Pick::mesh    ? L"OBJ or glTF models"
                                      : kind == Pick::texture ? L"Textures"
                                      : material              ? L"Material"
+                                     : procgraph             ? L"Procedural Graph"
                                                              : L"Atelier scene",
                                      source                  ? L"*.source;*.ss;*.txt;*.json"
                                      : kind == Pick::mesh    ? L"*.obj;*.gltf"
                                      : kind == Pick::texture ? L"*.png;*.jpg;*.jpeg;*.bmp;*.tif;*.tiff"
                                      : material              ? L"*.material"
+                                     : procgraph             ? L"*.procgraph"
                                                              : L"*.scene"};
         dialog->SetFileTypes(1, &type);
         dialog->SetDefaultExtension(source                  ? L"source"
                                     : kind == Pick::mesh    ? L"obj"
                                     : kind == Pick::texture ? L"png"
                                     : material              ? L"material"
+                                    : procgraph             ? L"procgraph"
                                                             : L"scene");
         if (!save)
             options |= FOS_FILEMUSTEXIST;
@@ -73,6 +77,8 @@ Result<std::optional<std::filesystem::path>> pick(HWND owner, Pick kind, const s
             dialog->SetFileName(L"Material.material");
         if (kind == Pick::material_source_save)
             dialog->SetFileName(L"Material.ms.material");
+        if (procgraph)
+            dialog->SetFileName(L"Terrain.procgraph");
     }
     dialog->SetOptions(options);
     if (!initial.empty()) {
@@ -116,10 +122,11 @@ void Application::asset_created(std::string_view key, bool inspect_material) {
 
 Result<bool> Application::confirm_discard(bool sources, bool interactive) {
     if (!interactive) {
-        if (document_->dirty() || !document_->dirty_materials().empty() ||
+        if (document_->dirty() || !document_->dirty_materials().empty() || !document_->dirty_graphs().empty() ||
             (sources &&
              std::ranges::any_of(workspace_.source_editor.files(), [](const auto& file) { return file->dirty(); })))
-            return failed("Save the current scene, material assets and source drafts before replacing the document.");
+            return failed(
+                "Save the current scene, material assets, procedural graphs and source drafts before replacing the document.");
         return true;
     }
     if (const auto edit = ui_.commit_edit(); edit) {
@@ -146,6 +153,20 @@ Result<bool> Application::confirm_discard(bool sources, bool interactive) {
             if (!project_)
                 return failed("Open a project before saving material assets.");
             const auto saved = document_->save_material(*project_, key);
+            if (!saved)
+                return std::unexpected(saved.error());
+        }
+    }
+    for (const auto& key : document_->dirty_graphs()) {
+        const auto response = MessageBoxW(
+            window(), (L"Save changes to procedural graph " + platform::utf8_to_utf16_validated(key) + L"?").c_str(),
+            L"Unsaved procedural graph", MB_YESNOCANCEL | MB_ICONQUESTION);
+        if (response == IDCANCEL)
+            return false;
+        if (response == IDYES) {
+            if (!project_)
+                return failed("Open a project before saving procedural graph assets.");
+            const auto saved = document_->save_graph(*project_, key);
             if (!saved)
                 return std::unexpected(saved.error());
         }
@@ -205,7 +226,9 @@ Result<void> Application::publish_document(std::unique_ptr<editor::Session> next
         return std::unexpected(closed.error());
     document_ = std::move(next);
     project_code_ = code;
+    document_->bind_project_code(code);
     scene_.reset();
+    procedural_preview_.reset();
     workspace_.render_notice.clear();
     camera_.reset();
     sync_world_view();
@@ -524,18 +547,37 @@ Result<void> Application::save_documents(const editor::Context& context, bool al
         workspace_.status = refreshed ? L"Material saved" : L"Material saved; catalog refresh failed";
         return {};
     }
-    if (!all)
-        return context.region == editor::RegionKind::code && file ? save_source(*file, context.interactive)
-                                                                  : this->save_scene();
+    if (!all) {
+        if (context.region == editor::RegionKind::code && file)
+            return save_source(*file, context.interactive);
+        if (!context.active_graph.empty()) {
+            auto edit = ui_.commit_edit();
+            if (!edit || !effects(*edit))
+                return failed("Finish the active field before saving.");
+            ATELIER_TRY(finish_color_edit(true));
+            if (!project_ || !project_->entry(context.active_graph))
+                return failed("Create a project .procgraph asset before saving this procedural graph.");
+            ATELIER_TRY(document_->save_graph(*project_, context.active_graph));
+            const auto refreshed = project_->refresh();
+            workspace_.status =
+                refreshed ? L"Procedural graph saved" : L"Procedural graph saved; catalog refresh failed";
+            return {};
+        }
+        return this->save_scene();
+    }
     if (all) {
         auto edit = ui_.commit_edit();
         if (!edit || !effects(*edit))
             return failed("Finish the current field before saving.");
         ATELIER_TRY(finish_color_edit(true));
-        if (project_)
+        if (project_) {
             for (const auto& key : document_->dirty_materials()) {
                 ATELIER_TRY(document_->save_material(*project_, key));
             }
+            for (const auto& key : document_->dirty_graphs()) {
+                ATELIER_TRY(document_->save_graph(*project_, key));
+            }
+        }
         for (const auto& item : workspace_.source_editor.files())
             if (item->dirty())
                 ATELIER_TRY(save_source(*item, context.interactive));

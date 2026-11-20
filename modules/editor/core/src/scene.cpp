@@ -181,25 +181,6 @@ Result<DecodedScalar> decode_scalar(Runtime& runtime, const Scalar& prototype, j
         prototype);
 }
 
-// Removes the retained subtree at path, or a retained leaf on its prefix.
-bool erase_path(json::Builder& builder, json::Value record, std::span<const std::string> path) {
-    std::vector<json::Value> trail{record};
-    for (std::size_t i = 0; i < path.size(); ++i) {
-        const auto node = trail.back();
-        const auto at = node.find(path[i]);
-        if (!at || !*at)
-            return false;
-        if (i + 1 == path.size() || (**at).kind() != json::Kind::object) {
-            builder.erase(node, path[i]);
-            for (std::size_t up = trail.size() - 1; up > 0 && trail[up].size() == 0; --up)
-                builder.erase(trail[up - 1], path[up - 1]);
-            return true;
-        }
-        trail.push_back(**at);
-    }
-    return false;
-}
-
 bool reference_value(json::Value value) {
     return value.kind() == json::Kind::object && (*value.find("$ref") || *value.find("$external"));
 }
@@ -2141,7 +2122,7 @@ struct Session::GraphCodec {
                         load.policy == LoadPolicy::strict ? problem : problem + " Record restored to its defaults.");
             if (const auto entry = load.pending.find(object); entry != load.pending.end()) {
                 path.insert(path.begin(), "record");
-                erase_path(entry->second, entry->second.root(), path);
+                detail::erase_path(entry->second, entry->second.root(), path);
                 if (entry->second.root().size() == 0)
                     load.pending.erase(entry);
             }
@@ -3868,7 +3849,7 @@ std::vector<Session::RetainedSwap> Session::release(const Change& change) {
         if (!parsed)
             fatal("Invalid retained JSON produced by the Scene writer.");
         json::Builder record(*parsed);
-        if (!erase_path(record, record.root(), path))
+        if (!detail::erase_path(record, record.root(), path))
             return;
         auto after = *entry;
         after.record = dump_retained(record.root());

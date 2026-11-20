@@ -2,7 +2,7 @@
 
 当前实现、接口和验收以[模块说明](README.md)为准。本页保留首阶段方案中尚有用的产品决定、设计依据与未实施的跨模块约定，不是已实现能力清单，也不授权启动后续阶段。
 
-P1、共享不可变列迁移、统一 `procedural.Node` / `process(...)` 节点架构以及 `.source` 语言级 `parallel_for` 与显式 `fail("...")` 已交付。属性列、可选输入、组遮罩与 `[RunOver]` 层通过方法参数属性（`APARAM` / `.source` `[In]/[Out]/[InOut]/[Group]/[Port]`）和正式 `.source` class 统一表达，不再使用 `PointNode`、`Node::fail`、`Meta("procedural.bind", ...)` 或代码片段宏拼接。尚未实现场景 Generator、渲染器实例化、节点图 UI、L3、冻结或 Bake。
+P1、共享不可变列迁移、统一 `procedural.Node` / `process(...)` 节点架构、`.source` 语言级 `parallel_for` 与显式 `fail("...")`，以及 S2 可视化与图操作（Slice 1A + Slice 1B：`.procgraph` 资产、SOP 视口上下文切换、点/法线/朝向辅助显示、Geometry Spreadsheet、Houdini 式二维 Network 节点连线画布、`Tab` 浮动搜索自动连线、`Y` 划断连线、`graph.layout` 自动拓扑排版、独立图撤销历史与 `graph.*` Control 操作链）已交付。属性列、可选输入、组遮罩与 `[RunOver]` 层通过方法参数属性（`APARAM` / `.source` `[In]/[Out]/[InOut]/[Group]/[Port]`）和正式 `.source` class 统一表达，不再使用 `PointNode`、`Node::fail`、`Meta("procedural.bind", ...)` 或代码片段宏拼接。尚未实现场景 Generator（S5）、渲染器大批量实例化、L3、冻结或 Bake。
 
 ## 方向与依据
 
@@ -57,7 +57,7 @@ S0 契约静态对齐 → S1 原生拓扑/构造/体积采样/Realize，随后�
 | geometry.attribute_namespace | 属性名在整个 Geometry 内唯一；跨层访问只能使用显式 Promote 或拓扑数组，不引入同名属性的隐式层优先级 | Geometry 属性创建/合并、Promote；未来绑定与 Wrangle | 全部几何算法、列绑定与属性检查 | 为同名跨层列隐式选择优先层，或静默跨层回退 | 全局唯一规则已实现并保留；未来消费者同样遵守 |
 | wrangle.formal_class | 自定义 SOP / Wrangle 直接采用正式 `.source` `class Name : procedural.Node` + 整节点 `void process(...)`（公开字段为节点参数，形参属性 `[In]/[Out]/[InOut]/[Group]` 绑定属性列，显式书写串行循环、`parallel_for` 或多阶段步骤，用 `fail("...")` 报告业务失败），淘汰非正式片段拼接展开。读不存在的非 Optional 属性报错，不跨层回退 | `.source` 编译器、参数属性反射与求值器 | 统一 Source/Runtime `Node`、列绑定与求值器 | 另建脚本包装世界、引入字符串宏拼接 Wrangle，或静默跨层取值 | 已实现正式类 `process` 与 `parallel_for` / `fail` 模型 |
 | evaluation.host_boundary | 生成器组件挂普通 Entity，点与实例不是 Entity；求值是派生数据重算，输入变化标脏。编辑器在编辑提交后、场景提取前的宿主边界求值；加载/Play 按 Cache 或冻结结果在 Begin 前准备。运行中参数变化走请求队列，在 World::update 后、提取前统一求值。首版同步，超预算后再考虑后台 | 未来编辑提交、加载/Play 与运行时参数请求入口 | 未来生成器宿主、World 与场景提取 | 在遍历/提取中途重入求值、把每个点/实例变 Entity，或尚未确认就当作现行 World 合同 | 总参谋提出，用户未否决；S2/S5 前再确认；未实现 |
-| ui.houdini_reference | 节点界面参考 Houdini，复用统一图数据、Parameters、操作符与编辑历史；不是在 S1 顺带建立节点画布 | 未来图编辑器与操作符 | 用户界面、Control/LLM 与文档历史 | UI 私有图成为第二份权威数据，或把此方向当作当前已有节点界面 | 用户已裁决；S2/P3，未实现 |
+| ui.houdini_reference | 节点界面参考 Houdini，复用统一图数据、Parameters、操作符与编辑历史；不是在 S1 顺带建立节点画布 | 图编辑器与操作符 | 用户界面、Control/LLM 与文档历史 | UI 私有图成为第二份权威数据 | 已实现（Slice 1A + Slice 1B：SOP 视口上下文、Houdini 式二维 Network 连线画布、Geometry Spreadsheet、Parameters、独立图历史与 `graph.*` 操作符） |
 | curve.authored_points | 作者可编辑点数组的曲线节点需要视口绘制交互和数学值数组的属性编解码；涉及 modules/editor/core/include/editor/fields.hpp:54–59 与 scene.cpp，届时由编辑器负责人实施。S1 的 Polyline 只从纯点输入按点序连开放折线，不为它扩展编解码 | 未来曲线绘制/属性编辑入口与编辑器数学值数组编码器 | 未来曲线节点、图文件与属性解码 | 把点数组压成无类型浮点列表，或在 S1 提前扩展编辑器产品 | S2，未实现 |
 
 ### 合同依据：与 Houdini 的显式差异

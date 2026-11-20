@@ -12,7 +12,7 @@ namespace atelier::editor {
 // Entity fields, resource fields and World options differ in how they commit,
 // while publishing the same presentation and interaction bindings.
 struct PropertyRow {
-    enum class Kind { number, boolean, enumeration };
+    enum class Kind { number, boolean, enumeration, text };
 
     ui::ControlKey key{};
 
@@ -44,16 +44,36 @@ struct PropertyRow {
 
     ui_language::ActionBinding pick;
 
+    ui_language::TextEditBinding text_edit;
+
     ui_language::Item item() && {
         const auto color = swatch.value_or(std::array<double, 3>{});
         // Optional actions still cross the DSL's nonzero-target contract.
         // An absent action is inert and retains this row's stable identity.
         const auto inherited = override_available ? inherit : ui_language::ActionBinding{key, false};
+        const auto text_binding =
+            kind == Kind::text ? std::move(text_edit) : ui_language::TextEditBinding{key, {}, false};
         return {key,
-                {std::move(title), std::move(edit), kind == Kind::boolean, checked, enabled, change,
-                 kind == Kind::enumeration, std::move(choice), target, swatch.has_value(), color[0], color[1], color[2],
-                 override_available, overridden, inherited, std::move(help),
-                 pick.target ? pick : ui_language::ActionBinding{key, false}}};
+                {std::move(title),
+                 std::move(edit),
+                 kind == Kind::boolean,
+                 checked,
+                 enabled,
+                 change,
+                 kind == Kind::enumeration,
+                 std::move(choice),
+                 target,
+                 swatch.has_value(),
+                 color[0],
+                 color[1],
+                 color[2],
+                 override_available,
+                 overridden,
+                 inherited,
+                 std::move(help),
+                 pick.target ? pick : ui_language::ActionBinding{key, false},
+                 kind == Kind::text,
+                 text_binding}};
     }
 };
 

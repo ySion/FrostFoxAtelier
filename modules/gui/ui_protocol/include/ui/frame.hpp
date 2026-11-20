@@ -122,6 +122,8 @@ struct DrawQuad {
     std::shared_ptr<const ColorImage> image{}; // Exclusive with coverage; color tints the image.
 
     Color image_background{0, 0, 0, 0}; // Base fill under image, before the common rounded mask.
+
+    float capsule_width{}; // > 0 draws an anti-aliased capsule from uv.{x,y} to uv.{width,height} in physical pixels.
 };
 
 // Draw in vector order; later entries cover earlier ones. All geometry and

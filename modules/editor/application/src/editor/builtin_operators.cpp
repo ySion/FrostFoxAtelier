@@ -72,6 +72,18 @@ Result<void> committed(Result<world::Commit> result) {
 
 // Blender View Selected / View All: bounds of the rendered geometry; locators count as points.
 Result<void> frame(OperatorHost& host, const Context& context, bool selected_only) {
+    if (!context.active_graph.empty()) {
+        ATELIER_TRY_BIND(eval, context.document.evaluate_graph(context.active_graph, context.project));
+        const auto* shown = eval->preview_output.get();
+        const auto summary = summarize_geometry(shown, 0);
+        if (!summary.has_bounds)
+            return std::unexpected(
+                Error{ErrorCode::invalid_definition, "The procedural graph has no geometry bounds to frame."});
+        auto camera = host.camera();
+        camera.frame((summary.bounds_min + summary.bounds_max) * .5f,
+                     std::max(math::length(summary.bounds_max - summary.bounds_min) * .5f, .25f));
+        return host.set_camera(camera);
+    }
     auto& runtime = context.document.world().runtime();
     math::Vector3 low{std::numeric_limits<float>::max(), std::numeric_limits<float>::max(),
                       std::numeric_limits<float>::max()};
@@ -131,6 +143,9 @@ Result<void> frame(OperatorHost& host, const Context& context, bool selected_onl
 
 // Something in a selected subtree must have a Transform to frame.
 Result<void> frame_selected_poll(const Context& context) {
+    if (!context.active_graph.empty())
+        return context.document.has_graph(context.active_graph) ? Result<void>{}
+                                                                : unavailable("Open a procedural graph first.");
     if (!context.scene_available)
         return unavailable("Load a scene before framing the selection.");
     if (context.selection.entities.empty())
@@ -160,7 +175,17 @@ Result<void> frame_selected_poll(const Context& context) {
     return unavailable("Select an Entity with a Transform to frame.");
 }
 
-// The focused region owns the history: Code drafts, an inspected material asset, the Controls samples, else the scene.
+std::string history_graph_key(const Context& context) {
+    if (!context.asset.empty() && context.document.has_graph(context.asset))
+        return context.asset;
+    if (!context.active_graph.empty() && context.asset.empty() && context.region != RegionKind::code &&
+        context.region != RegionKind::controls && context.region != RegionKind::scene_tree &&
+        context.region != RegionKind::structure && context.region != RegionKind::world)
+        return context.active_graph;
+    return {};
+}
+
+// The focused region owns the history: Code drafts, an inspected material/graph asset, the Controls samples, else the scene.
 OperatorInfo history(bool redo) {
     const auto empty = [redo] { return unavailable(redo ? "Nothing to redo." : "Nothing to undo."); };
     return {redo ? "edit.redo" : "edit.undo",
@@ -173,6 +198,8 @@ OperatorInfo history(bool redo) {
                 };
                 if (context.region == RegionKind::code)
                     return can(context.source_history);
+                if (const auto graph_key = history_graph_key(context); !graph_key.empty())
+                    return context.document.graph_can_undo(graph_key, redo) ? Result<void>{} : empty();
                 if (!context.asset.empty())
                     return context.document.material_can_undo(context.asset, redo) ? Result<void>{} : empty();
                 if (context.region == RegionKind::controls)
@@ -183,6 +210,8 @@ OperatorInfo history(bool redo) {
             [redo](OperatorHost& host, const Context& context, const OperatorParameters&, ValueOutput) -> Result<void> {
                 if (context.region == RegionKind::code)
                     return host.source_history(redo);
+                if (const auto graph_key = history_graph_key(context); !graph_key.empty())
+                    return context.document.graph_undo(graph_key, redo);
                 if (!context.asset.empty())
                     return context.document.material_undo(context.asset, redo, context.project);
                 if (context.region == RegionKind::controls)
@@ -636,6 +665,39 @@ Result<void> new_material(OperatorHost& host, const Context& context, const P& p
     }
     return {};
 }
+
+Result<void> new_procedural_graph(OperatorHost& host, const Context& context, const NewProceduralGraph& p,
+                                  AssetResult& result) {
+    auto& project = *context.project;
+    ATELIER_TRY_BIND(chosen, operation_path(host, p.path, PathPurpose::procedural_graph_save,
+                                            project.root() / "Content", L"Terrain.procgraph"));
+    if (!*chosen)
+        return {};
+    const auto& path = **chosen;
+    auto relative = path.is_absolute() ? path.lexically_relative(project.root()) : path;
+    if (!assets::is_procedural_graph_path(relative))
+        relative.replace_extension(L".procgraph");
+    ATELIER_TRY_BIND(created, project.create_procedural_graph(relative, {p.source.c_str(), p.source.size()}));
+    if (!result.asset.assign(StringView{*created}))
+        return std::unexpected(
+            Error{ErrorCode::argument_mismatch, "Created procedural graph key requires valid UTF-8."});
+    ATELIER_TRY(context.document.open_graph(project, *created));
+    if (context.interactive) {
+        host.asset_created(*created, false);
+        ATELIER_TRY(host.open_graph_context(*created));
+    }
+    return {};
+}
+
+Result<std::string> target_graph_key(const Context& context, const String& explicit_asset) {
+    if (!explicit_asset.empty())
+        return std::string(explicit_asset.c_str(), explicit_asset.size());
+    if (!context.asset.empty() && context.document.has_graph(context.asset))
+        return context.asset;
+    if (!context.active_graph.empty())
+        return context.active_graph;
+    return unavailable("Open or specify a procedural graph first.");
+}
 }
 
 void register_builtin_operators(OperatorRegistry& registry) {
@@ -886,8 +948,10 @@ void register_builtin_operators(OperatorRegistry& registry) {
     add({"scene.set_properties", L"Set Properties", "Apply a scalar patch to the inspected object's actual type",
          OperatorFlag::undo,
          [](const Context& context) -> Result<void> {
-             ATELIER_TRY(editable_entity(context));
              const auto object = context.selection.object;
+             if (context.document.is_graph_object(object))
+                 return context.document.world().running() ? unavailable("Stop the document first.") : Result<void>{};
+             ATELIER_TRY(editable_entity(context));
              if (object == context.selection.active)
                  return {};
              const auto state = world::inspect_component(context.document.world().runtime(), object);
@@ -896,8 +960,9 @@ void register_builtin_operators(OperatorRegistry& registry) {
              return {};
          },
          [](OperatorHost& host, const Context& context, const OperatorParameters& parameters, ValueOutput) {
+             const bool graph_obj = context.document.is_graph_object(context.selection.object);
              auto written = context.document.set_properties(context.selection.object, parameters.patch);
-             if (written)
+             if (written && !graph_obj)
                  host.scene_changed();
              return written;
          },
@@ -999,7 +1064,13 @@ void register_builtin_operators(OperatorRegistry& registry) {
         +[](const SceneSave& p) { return p.as_new && p.path.empty(); },
         "as_new=true with an empty path opens a picker; provide path or save in place to execute directly."));
     add({"file.save", L"Save", "Save the active document", OperatorFlag::undo,
-         [source, saveable](const Context& c) { return c.region == RegionKind::code ? source(c) : saveable(c); },
+         [source, saveable](const Context& c) -> Result<void> {
+             if (c.region == RegionKind::code)
+                 return source(c);
+             if (!c.active_graph.empty() && c.project && c.project->entry(c.active_graph))
+                 return {};
+             return saveable(c);
+         },
          [](OperatorHost& h, const Context& c, const OperatorParameters&, ValueOutput) {
              return h.save_documents(c, false);
          }});
@@ -1096,5 +1167,156 @@ void register_builtin_operators(OperatorRegistry& registry) {
                                           "editor.NewMaterialSource",
                                           {},
                                           "editor.AssetResult"}));
+    add(path_operator<NewProceduralGraph>({"asset.new_procedural_graph",
+                                           L"New Procedural Graph",
+                                           "Create a .procgraph procedural geometry asset",
+                                           OperatorFlag::none,
+                                           project_open,
+                                           with_parameters(new_procedural_graph),
+                                           "editor.NewProceduralGraph",
+                                           {},
+                                           "editor.AssetResult"}));
+    const auto graph_editable = [](const Context& c) -> Result<void> {
+        if (c.document.world().running())
+            return unavailable("Stop the running World before editing procedural graphs.");
+        return {};
+    };
+    add({"graph.open", L"Open Procedural Graph", "Open a .procgraph or scratch graph into the SOP viewport context",
+         OperatorFlag::none, graph_editable,
+         with_parameters(+[](OperatorHost& host, const Context& c, const GraphOpen& p) -> Result<void> {
+             const std::string key = !p.asset.empty() ? std::string(p.asset.c_str(), p.asset.size()) : c.asset;
+             if (key.empty())
+                 return std::unexpected(Error{ErrorCode::argument_mismatch, "Specify a procedural graph asset key."});
+             return host.open_graph_context(key);
+         }),
+         "editor.GraphOpen"});
+    add({"graph.exit", L"Exit Procedural Graph", "Return the Scene View from SOP graph context to World",
+         OperatorFlag::none,
+         [](const Context& c) -> Result<void> {
+             return !c.active_graph.empty() ? Result<void>{} : unavailable("No procedural graph context is active.");
+         },
+         [](OperatorHost& host, const Context&, const OperatorParameters&, ValueOutput) -> Result<void> {
+             host.exit_graph_context();
+             return {};
+         }});
+    add({"graph.save", L"Save Procedural Graph", "Save an open .procgraph asset to disk", OperatorFlag::none,
+         project_open, with_parameters(+[](OperatorHost&, const Context& c, const GraphSave& p) -> Result<void> {
+             ATELIER_TRY_BIND(key, target_graph_key(c, p.asset));
+             ATELIER_TRY(c.document.save_graph(*c.project, *key));
+             return c.project->refresh();
+         }),
+         "editor.GraphSave"});
+    add({"graph.add_node",
+         L"Add Graph Node",
+         "Add a procedural node to a graph and select it",
+         OperatorFlag::none,
+         graph_editable,
+         with_parameters(+[](OperatorHost& host, const Context& c, const GraphAddNode& p,
+                             GraphNodeResult& out) -> Result<void> {
+             ATELIER_TRY_BIND(key, target_graph_key(c, p.asset));
+             if (!c.document.has_graph(*key)) {
+                 if (!c.project)
+                     return unavailable("Open a project or scratch graph first.");
+                 ATELIER_TRY(c.document.open_graph(*c.project, *key));
+             }
+             ATELIER_TRY_BIND(created_name,
+                              c.document.graph_add_node(*key, {p.type.c_str(), p.type.size()},
+                                                        {p.name.c_str(), p.name.size()}, {p.position.x, p.position.y}));
+             if (!out.name.assign(StringView{*created_name}))
+                 return std::unexpected(Error{ErrorCode::argument_mismatch, "Invalid UTF-8 node name."});
+             if (*key == c.active_graph)
+                 host.select_graph_node(*key, *created_name);
+             return {};
+         }),
+         "editor.GraphAddNode",
+         {},
+         "editor.GraphNodeResult"});
+    add({"graph.delete_node", L"Delete Graph Node", "Remove selected or named nodes from a procedural graph",
+         OperatorFlag::none, graph_editable,
+         with_parameters(+[](OperatorHost& host, const Context& c, const GraphDeleteNode& p) -> Result<void> {
+             ATELIER_TRY_BIND(key, target_graph_key(c, p.asset));
+             std::vector<std::string> targets;
+             if (!p.name.empty()) {
+                 targets.emplace_back(p.name.c_str(), p.name.size());
+             } else if (*key == c.active_graph) {
+                 if (!c.selected_graph_nodes.empty())
+                     targets = c.selected_graph_nodes;
+                 else if (!c.selected_graph_node.empty())
+                     targets.push_back(c.selected_graph_node);
+             }
+             if (targets.empty())
+                 return std::unexpected(Error{ErrorCode::argument_mismatch, "Select or specify a node to delete."});
+             ATELIER_TRY(c.document.graph_remove_nodes(*key, targets));
+             if (*key == c.active_graph && std::ranges::find(targets, c.selected_graph_node) != targets.end())
+                 host.select_graph_node(*key, {});
+             return {};
+         }),
+         "editor.GraphDeleteNode"});
+    add({"graph.rename_node", L"Rename Graph Node", "Rename a node in a procedural graph", OperatorFlag::none,
+         graph_editable,
+         with_parameters(+[](OperatorHost& host, const Context& c, const GraphRenameNode& p) -> Result<void> {
+             ATELIER_TRY_BIND(key, target_graph_key(c, p.asset));
+             const std::string from = !p.node.empty()
+                                          ? std::string(p.node.c_str(), p.node.size())
+                                          : (*key == c.active_graph ? c.selected_graph_node : std::string{});
+             const std::string to(p.name.c_str(), p.name.size());
+             ATELIER_TRY(c.document.graph_rename_node(*key, from, to));
+             if (*key == c.active_graph && c.selected_graph_node == from)
+                 host.select_graph_node(*key, to);
+             return {};
+         }),
+         "editor.GraphRenameNode"});
+    add({"graph.move_node", L"Move Graph Node", "Move a node on the procedural graph canvas", OperatorFlag::none,
+         graph_editable, with_parameters(+[](OperatorHost&, const Context& c, const GraphMoveNode& p) -> Result<void> {
+             ATELIER_TRY_BIND(key, target_graph_key(c, p.asset));
+             const std::array moves{
+                 std::pair{std::string(p.node.c_str(), p.node.size()), std::array{p.position.x, p.position.y}}};
+             return c.document.graph_move_nodes(*key, moves);
+         }),
+         "editor.GraphMoveNode"});
+    add({"graph.connect", L"Connect Graph Nodes", "Connect an upstream output port to a downstream input port",
+         OperatorFlag::none, graph_editable,
+         with_parameters(+[](OperatorHost&, const Context& c, const GraphConnect& p) -> Result<void> {
+             ATELIER_TRY_BIND(key, target_graph_key(c, p.asset));
+             return c.document.graph_connect(
+                 *key, {p.from_node.c_str(), p.from_node.size()}, {p.from_port.c_str(), p.from_port.size()},
+                 {p.to_node.c_str(), p.to_node.size()}, {p.to_port.c_str(), p.to_port.size()});
+         }),
+         "editor.GraphConnect"});
+    add({"graph.disconnect", L"Disconnect Graph Ports", "Disconnect input connections on a procedural graph node",
+         OperatorFlag::none, graph_editable,
+         with_parameters(+[](OperatorHost&, const Context& c, const GraphDisconnect& p) -> Result<void> {
+             ATELIER_TRY_BIND(key, target_graph_key(c, p.asset));
+             return c.document.graph_disconnect(
+                 *key, {p.to_node.c_str(), p.to_node.size()}, {p.to_port.c_str(), p.to_port.size()},
+                 {p.from_node.c_str(), p.from_node.size()}, {p.from_port.c_str(), p.from_port.size()});
+         }),
+         "editor.GraphDisconnect"});
+    add({"graph.set_display", L"Set Graph Display Node", "Set or clear the blue Display flag on a procedural graph",
+         OperatorFlag::none, graph_editable,
+         with_parameters(+[](OperatorHost&, const Context& c, const GraphSetDisplay& p) -> Result<void> {
+             ATELIER_TRY_BIND(key, target_graph_key(c, p.asset));
+             return c.document.graph_set_display(*key, {p.node.c_str(), p.node.size()});
+         }),
+         "editor.GraphSetDisplay"});
+    add({"graph.select", L"Select Graph Node", "Inspect a procedural graph node without changing the Display flag",
+         OperatorFlag::none, graph_editable,
+         with_parameters(+[](OperatorHost& host, const Context& c, const GraphSelect& p) -> Result<void> {
+             ATELIER_TRY_BIND(key, target_graph_key(c, p.asset));
+             const std::string node_name(p.node.c_str(), p.node.size());
+             if (!node_name.empty() && !c.document.graph_node(*key, node_name))
+                 return std::unexpected(
+                     Error{ErrorCode::argument_mismatch, "No loaded node named '" + node_name + "' in this graph."});
+             host.select_graph_node(*key, node_name);
+             return {};
+         }),
+         "editor.GraphSelect"});
+    add({"graph.layout", L"Auto Layout Graph", "Arrange procedural graph nodes into top-to-bottom topological ranks",
+         OperatorFlag::none, graph_editable,
+         with_parameters(+[](OperatorHost&, const Context& c, const GraphLayout& p) -> Result<void> {
+             ATELIER_TRY_BIND(key, target_graph_key(c, p.asset));
+             return c.document.graph_auto_layout(*key);
+         }),
+         "editor.GraphLayout"});
 }
 }

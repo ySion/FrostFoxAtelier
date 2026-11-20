@@ -389,6 +389,7 @@ ProjectDocument load_project_scene(Project& project, std::string_view source, Lo
         policy, role);
     if (document) {
         result.session = std::move(*document);
+        result.session->bind_project_code(result.code);
         if (result.build && result.build->error)
             result.error = *result.build->error;
     } else {

@@ -50,7 +50,9 @@ enum class RegionKind : std::uint32_t {
     code,
     output,
     world,
-    controls
+    controls,
+    network,
+    spreadsheet
 };
 
 ASTRUCT(Name = "editor.LayoutShow", DESC = "显示并聚焦一个工作区页签。")
@@ -403,6 +405,167 @@ struct AssetResult {
     AGENERATED_BODY(AssetResult)
 
     AFIELD(DESC = "新建或导入的资产键。")
+    String asset;
+};
+
+ASTRUCT(Name = "editor.NewProceduralGraph", DESC = "创建程序化几何图资产（.procgraph）。")
+struct NewProceduralGraph {
+    AGENERATED_BODY(NewProceduralGraph)
+
+    AFIELD(DESC = "工程 Content 下的 .procgraph 路径；交互调用留空时打开原生选择器。")
+    String path;
+
+    AFIELD(DESC = "可选的初始 v1 JSON 文本；留空时生成标准空白图。")
+    String source;
+};
+
+ASTRUCT(Name = "editor.GraphOpen", DESC = "打开程序化图资产并进入 SOP 视口上下文。")
+struct GraphOpen {
+    AGENERATED_BODY(GraphOpen)
+
+    AFIELD(DESC = "工程 .procgraph 资产键，或已存在的 scratch 图键。")
+    String asset;
+};
+
+ASTRUCT(Name = "editor.GraphSave", DESC = "保存程序化图资产。")
+struct GraphSave {
+    AGENERATED_BODY(GraphSave)
+
+    AFIELD(DESC = "目标 .procgraph 资产键；留空时保存当前活动图。")
+    String asset;
+};
+
+ASTRUCT(Name = "editor.GraphAddNode", DESC = "向活动或指定的程序化图添加一个节点并选中它。")
+struct GraphAddNode {
+    AGENERATED_BODY(GraphAddNode)
+
+    AFIELD(DESC = "目标图键；留空时作用于当前活动图。")
+    String asset;
+
+    AFIELD(DESC = "节点完整类型名或短名（例如 procedural.Grid 或 Grid）。")
+    String type;
+
+    AFIELD(DESC = "可选节点名；留空时按类型自动生成唯一标识符。")
+    String name;
+
+    AFIELD(DESC = "节点在网络画布上的二维坐标。")
+    math::Vector2 position{};
+};
+
+ASTRUCT(Name = "editor.GraphNodeResult", DESC = "新建程序化图节点的结果。")
+struct GraphNodeResult {
+    AGENERATED_BODY(GraphNodeResult)
+
+    AFIELD(DESC = "新建节点的唯一名称。")
+    String name;
+};
+
+ASTRUCT(Name = "editor.GraphDeleteNode", DESC = "从程序化图中删除一个节点。")
+struct GraphDeleteNode {
+    AGENERATED_BODY(GraphDeleteNode)
+
+    AFIELD(DESC = "目标图键；留空时作用于当前活动图。")
+    String asset;
+
+    AFIELD(DESC = "要删除的节点名；留空时删除当前选中的图节点。")
+    String name;
+};
+
+ASTRUCT(Name = "editor.GraphRenameNode", DESC = "重命名程序化图中的节点。")
+struct GraphRenameNode {
+    AGENERATED_BODY(GraphRenameNode)
+
+    AFIELD(DESC = "目标图键；留空时作用于当前活动图。")
+    String asset;
+
+    AFIELD(DESC = "原节点名；留空时重命名当前选中的图节点。")
+    String node;
+
+    AFIELD(DESC = "新的唯一节点标识符。")
+    String name;
+};
+
+ASTRUCT(Name = "editor.GraphMoveNode", DESC = "更新程序化图节点在画布上的位置。")
+struct GraphMoveNode {
+    AGENERATED_BODY(GraphMoveNode)
+
+    AFIELD(DESC = "目标图键；留空时作用于当前活动图。")
+    String asset;
+
+    AFIELD(DESC = "节点名。")
+    String node;
+
+    AFIELD(DESC = "新的二维坐标。")
+    math::Vector2 position{};
+};
+
+ASTRUCT(Name = "editor.GraphConnect", DESC = "连接两个程序化图节点的端口。")
+struct GraphConnect {
+    AGENERATED_BODY(GraphConnect)
+
+    AFIELD(DESC = "目标图键；留空时作用于当前活动图。")
+    String asset;
+
+    AFIELD(DESC = "上游节点名。")
+    String from_node;
+
+    AFIELD(DESC = "上游输出端口名；留空时默认取第 0 个输出端口。")
+    String from_port;
+
+    AFIELD(DESC = "下游节点名。")
+    String to_node;
+
+    AFIELD(DESC = "下游输入端口名；留空时默认取第 0 个输入端口。")
+    String to_port;
+};
+
+ASTRUCT(Name = "editor.GraphDisconnect", DESC = "断开程序化图节点的输入连接。")
+struct GraphDisconnect {
+    AGENERATED_BODY(GraphDisconnect)
+
+    AFIELD(DESC = "目标图键；留空时作用于当前活动图。")
+    String asset;
+
+    AFIELD(DESC = "下游节点名。")
+    String to_node;
+
+    AFIELD(DESC = "下游输入端口名；留空时匹配所有输入端口。")
+    String to_port;
+
+    AFIELD(DESC = "可选上游节点名；留空时断开目标端口上的全部连接。")
+    String from_node;
+
+    AFIELD(DESC = "可选上游输出端口名。")
+    String from_port;
+};
+
+ASTRUCT(Name = "editor.GraphSetDisplay", DESC = "设置或清除程序化图的蓝色 Display 标记节点。")
+struct GraphSetDisplay {
+    AGENERATED_BODY(GraphSetDisplay)
+
+    AFIELD(DESC = "目标图键；留空时作用于当前活动图。")
+    String asset;
+
+    AFIELD(DESC = "要显示输出的节点名；留空时清除 Display 标记。")
+    String node;
+};
+
+ASTRUCT(Name = "editor.GraphSelect", DESC = "选择程序化图中的节点用于参数与几何表格检视（不改变 Display 标记）。")
+struct GraphSelect {
+    AGENERATED_BODY(GraphSelect)
+
+    AFIELD(DESC = "目标图键；留空时作用于当前活动图。")
+    String asset;
+
+    AFIELD(DESC = "要选中的节点名；留空时检视图根设置（Graph.seed）。")
+    String node;
+};
+
+ASTRUCT(Name = "editor.GraphLayout", DESC = "按自上而下拓扑层级自动排列程序化图节点，合为一步图历史。")
+struct GraphLayout {
+    AGENERATED_BODY(GraphLayout)
+
+    AFIELD(DESC = "目标图键；留空时作用于当前活动图。")
     String asset;
 };
 

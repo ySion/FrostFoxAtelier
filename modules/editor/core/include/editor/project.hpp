@@ -77,6 +77,10 @@ public:
 
     Result<void> save_material(const assets::MaterialAsset&);
 
+    Result<std::string> create_procedural_graph(const std::filesystem::path&, std::string_view text = {});
+
+    Result<void> save_procedural_graph(std::string_view key, std::string_view text);
+
     // Fresh, deterministic compiler inputs. UI declarations have their own
     // configured entry and are not parsed as gameplay Source functions.
     Result<std::vector<std::filesystem::path>> source_paths() const;

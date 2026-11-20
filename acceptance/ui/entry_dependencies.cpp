@@ -236,9 +236,9 @@ void verify_ui_entry_dependencies() {
     std::ifstream editor(ATELIER_EDITOR_UI_SOURCE, std::ios::binary);
     std::string source{std::istreambuf_iterator<char>{editor}, {}};
     const auto declarations = take(lower_module("editor.ui.source", source));
-    require(declarations.size() == 44, "Update the real-editor dependency workload when its component set changes.");
+    require(declarations.size() == 48, "Update the real-editor dependency workload when its component set changes.");
     const auto jit_components = std::ranges::count_if(declarations, [](const auto& item) { return item.needs_jit; });
-    require(jit_components == 18, "Unexpected JIT component count for assets/editor.ui.source.");
+    require(jit_components == 20, "Unexpected JIT component count for assets/editor.ui.source.");
     auto now = LiveDocument::Clock::now();
     const auto path = std::filesystem::temp_directory_path() /
                       ("editor-dependencies-" + std::to_string(now.time_since_epoch().count()) + ".ui.source");

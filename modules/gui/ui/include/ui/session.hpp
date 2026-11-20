@@ -46,6 +46,61 @@ struct Tooltip {
     bool operator==(const Tooltip&) const = default;
 };
 
+// Immutable 2D vector content painted inside a container's clipped DIP box.
+struct CanvasStroke {
+    float x0{};
+
+    float y0{};
+
+    float x1{};
+
+    float y1{};
+
+    float width{1.f}; // Stroke width in DIP.
+
+    Color color;
+
+    bool operator==(const CanvasStroke&) const = default;
+};
+
+struct CanvasBox {
+    Rect bounds; // Local DIP coordinates relative to the container's top-left corner.
+
+    Color fill{0, 0, 0, 0};
+
+    CornerRadii radius{}; // DIP corner radii.
+
+    float border_width{}; // DIP inside border width.
+
+    Color border_color{0, 0, 0, 0};
+
+    bool operator==(const CanvasBox&) const = default;
+};
+
+struct CanvasData {
+    static constexpr std::size_t max_boxes = 8192;
+
+    static constexpr std::size_t max_strokes = 16384;
+
+    float grid_step{}; // > 0 draws a scrolled 2D background grid in local DIPs before boxes/strokes.
+
+    float grid_origin_x{}; // Local DIP X of canvas world (0, 0).
+
+    float grid_origin_y{}; // Local DIP Y of canvas world (0, 0).
+
+    Color grid_minor{0, 0, 0, 0};
+
+    Color grid_major{0, 0, 0, 0};
+
+    Color grid_axis{0, 0, 0, 0};
+
+    std::vector<CanvasBox> boxes;
+
+    std::vector<CanvasStroke> strokes;
+
+    bool operator==(const CanvasData&) const = default;
+};
+
 inline constexpr std::uint32_t maximum_tree_rows = 1u << 18;
 
 struct Control {
@@ -151,6 +206,8 @@ struct Control {
     std::shared_ptr<CodeDocument> code; // CodeEditor only; document owns text and history.
 
     std::shared_ptr<const Tooltip> tooltip; // Owned documentation, shared across a parameter row and its fields.
+
+    std::shared_ptr<const CanvasData> canvas; // Container only: immutable 2D grid, boxes and capsule strokes.
 
     bool read_only{}; // CodeEditor only: selectable/copyable, without text mutations or an IME binding.
 

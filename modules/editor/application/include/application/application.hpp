@@ -5,6 +5,7 @@
 #include "application/window.hpp"
 #include "application/popup.hpp"
 #include "application/play_process.hpp"
+#include "application/procedural_preview.hpp"
 #include "application/scene_snapshot.hpp"
 #include "application/timing.hpp"
 #include "application/recovery.hpp"
@@ -207,6 +208,8 @@ private:
 
     bool pending_source_focus_{};
 
+    bool pending_network_search_focus_{};
+
     bool pending_parameter_search_focus_{}; // Search opens only after its field is presented.
 
     bool pending_name_focus_{}; // F2 focuses the Entity name once Parameters is presented.
@@ -216,6 +219,8 @@ private:
     renderer::Renderer renderer_;
 
     SceneSnapshot scene_; // Pending/adopted batches retire before renderer_ (also on exceptional shutdown).
+
+    ProceduralPreview procedural_preview_;
 
     bool camera_cut_{true}; // Retained until the renderer accepts the new view.
 
@@ -386,6 +391,12 @@ private:
 
     Result<void> reimport_asset(std::string_view key, const std::filesystem::path&) override;
 
+    Result<void> open_graph_context(std::string_view key) override;
+
+    void exit_graph_context() override;
+
+    void select_graph_node(std::string_view key, std::string_view node_name) override;
+
     Result<void> action(const ui::Action&);
 
     void sync_text_input();
@@ -441,5 +452,7 @@ private:
     bool pointer_ready() const noexcept;
 
     bool viewport_input(const ui::Event&, std::uint32_t native_key);
+
+    bool network_input(const ui::Event&, std::uint32_t native_key);
 };
 }

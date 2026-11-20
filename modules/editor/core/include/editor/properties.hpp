@@ -9,6 +9,27 @@
 #include <variant>
 
 namespace atelier::editor {
+namespace detail {
+// Removes the retained subtree at path, or a retained leaf on its prefix.
+inline bool erase_path(json::Builder& builder, json::Value record, std::span<const std::string> path) {
+    std::vector<json::Value> trail{record};
+    for (std::size_t i = 0; i < path.size(); ++i) {
+        const auto node = trail.back();
+        const auto at = node.find(path[i]);
+        if (!at || !*at)
+            return false;
+        if (i + 1 == path.size() || (**at).kind() != json::Kind::object) {
+            builder.erase(node, path[i]);
+            for (std::size_t up = trail.size() - 1; up > 0 && trail[up].size() == 0; --up)
+                builder.erase(trail[up - 1], path[up - 1]);
+            return true;
+        }
+        trail.push_back(**at);
+    }
+    return false;
+}
+} // namespace detail
+
 // Where a properties record is decoded: an object, or a caller-owned live value of `type`.
 struct PropertyTarget {
     TypeId type;

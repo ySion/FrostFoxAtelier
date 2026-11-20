@@ -3,6 +3,7 @@
 #include "application/diagnostics.hpp"
 #include "editor/fields.hpp"
 #include "editor/view_options.hpp"
+#include "procedural/graph.hpp"
 #include "foundation/set.hpp"
 #include "platform/utf.hpp"
 #include <stdexcept>
@@ -28,15 +29,18 @@ constexpr std::array<std::array<double, 5>, 3> cavity_values{
 }
 
 Workspace::Workspace()
-    : dock(1ULL << 48, {{control::scene_tab, control::scene_content, L"Scene View", {240, 160}},
-                        {control::parameters_tab, 50, L"Parameters", {220, 260}},
-                        {control::workbench, 300, L"Controls", {220, 280}},
-                        {control::entities_tab, 21, L"Scene Tree", {180, 140}},
-                        {control::structure_tab, control::structure_content, L"Entity Structure", {200, 140}},
-                        {control::assets_tab, control::assets_content, L"Asset Browser", {240, 140}},
-                        {source_control::tab, source_control::content, L"Code", {300, 180}},
-                        {control::output_tab, control::output_content, L"Project Output", {240, 120}},
-                        {world_control::tab, world_control::content, L"World", {280, 240}}}) {
+    : dock(1ULL << 48,
+           {{control::scene_tab, control::scene_content, L"Scene View", {240, 160}},
+            {control::parameters_tab, 50, L"Parameters", {220, 260}},
+            {control::workbench, 300, L"Controls", {220, 280}},
+            {control::entities_tab, 21, L"Scene Tree", {180, 140}},
+            {control::structure_tab, control::structure_content, L"Entity Structure", {200, 140}},
+            {control::assets_tab, control::assets_content, L"Asset Browser", {240, 140}},
+            {source_control::tab, source_control::content, L"Code", {300, 180}},
+            {control::output_tab, control::output_content, L"Project Output", {240, 120}},
+            {world_control::tab, world_control::content, L"World", {280, 240}},
+            {network_control::tab, network_control::content, L"Network", {220, 140}},
+            {spreadsheet_control::tab, spreadsheet_control::content, L"Geometry Spreadsheet", {260, 140}}}) {
     const auto registered = ui_language::register_types(ui_runtime_);
     if (!registered)
         throw std::runtime_error(registered.error().message);
@@ -53,7 +57,7 @@ Workspace::Workspace()
 }
 
 namespace {
-constexpr std::array<std::pair<RegionKind, ui::ControlKey>, 9> region_tabs{
+constexpr std::array<std::pair<RegionKind, ui::ControlKey>, 11> region_tabs{
     {{RegionKind::viewport, control::scene_tab},
      {RegionKind::scene_tree, control::entities_tab},
      {RegionKind::structure, control::structure_tab},
@@ -62,7 +66,9 @@ constexpr std::array<std::pair<RegionKind, ui::ControlKey>, 9> region_tabs{
      {RegionKind::code, source_control::tab},
      {RegionKind::output, control::output_tab},
      {RegionKind::world, world_control::tab},
-     {RegionKind::controls, control::workbench}}};
+     {RegionKind::controls, control::workbench},
+     {RegionKind::network, network_control::tab},
+     {RegionKind::spreadsheet, spreadsheet_control::tab}}};
 }
 
 RegionKind region_of(ui::ControlKey tab) noexcept {
@@ -75,6 +81,23 @@ ui::ControlKey region_tab(RegionKind region) noexcept {
     return at == region_tabs.end() ? ui::ControlKey{} : at->second;
 }
 
+ObjectId Workspace::inspected_graph_object(const Session& session) const noexcept {
+    if (active_graph.empty() || !session.has_graph(active_graph))
+        return {};
+    if (!selected_graph_node.empty())
+        if (const auto id = session.graph_node_id(active_graph, selected_graph_node); id != ObjectId{})
+            return id;
+    return session.loaded_graph(active_graph);
+}
+
+std::wstring Workspace::graph_path_title(const Project* project) const {
+    if (active_graph.empty())
+        return L"World";
+    if (const auto* entry = project ? project->entry(active_graph) : nullptr)
+        return L"/" + entry->path.generic_wstring();
+    return L"/" + platform::utf8_to_utf16_validated(active_graph);
+}
+
 Context Workspace::operator_context(Session& session, Project* project, bool interactive,
                                     const ui::ControlBox* focused) const {
     const auto* source = source_editor.active();
@@ -83,6 +106,13 @@ Context Workspace::operator_context(Session& session, Project* project, bool int
                : HistoryState{};
     const auto region = region_of(dock.focused_tab());
     const auto selection = session.selection();
+    SelectionContext selection_context{
+        selection.entity, selection.object, {session.selected_entities().begin(), session.selected_entities().end()}};
+    if (!active_graph.empty() && !inspecting_asset &&
+        (region == RegionKind::parameters || region == RegionKind::network)) {
+        if (const auto graph_object = inspected_graph_object(session); graph_object != ObjectId{})
+            selection_context = {ObjectId{}, graph_object, {}};
+    }
     std::string asset;
     if (inspecting_asset && (region == RegionKind::parameters || region == RegionKind::assets))
         asset = material_inspection;
@@ -104,28 +134,30 @@ Context Workspace::operator_context(Session& session, Project* project, bool int
             if (auto key = material::material_key(session.world().runtime(), object))
                 asset = std::move(*key);
     }
-    return {
-        session,
-        project,
-        {selection.entity, selection.object, {session.selected_entities().begin(), session.selected_entities().end()}},
-        region,
-        std::move(asset),
-        source_history,
-        {workbench.undo_count() != 0, workbench.redo_count() != 0},
-        scene_available,
-        interactive,
-        viewport_settings,
-        {},
-        view,
-        source ? source->path : std::filesystem::path{},
-        ui_source(),
-        project_running,
-        project_stopping,
-        play_pending.has_value(),
-        project_build && project_build->state == BuildState::ready,
-        show_fps,
-        !viewport_options_collapsed,
-        camera_view};
+    return {session,
+            project,
+            std::move(selection_context),
+            region,
+            std::move(asset),
+            active_graph,
+            selected_graph_node,
+            selected_graph_nodes,
+            source_history,
+            {workbench.undo_count() != 0, workbench.redo_count() != 0},
+            scene_available,
+            interactive,
+            viewport_settings,
+            {},
+            view,
+            source ? source->path : std::filesystem::path{},
+            ui_source(),
+            project_running,
+            project_stopping,
+            play_pending.has_value(),
+            project_build && project_build->state == BuildState::ready,
+            show_fps,
+            !viewport_options_collapsed,
+            camera_view};
 }
 
 bool Workspace::poll_output() {
@@ -148,10 +180,12 @@ void Workspace::reset_layout() {
     dock.move(control::scene_tab, control::parameters_tab, ui::DockSide::left, .62f);
     dock.move(control::entities_tab, control::parameters_tab, ui::DockSide::bottom, .7f);
     dock.move(control::structure_tab, control::entities_tab, ui::DockSide::tabs);
+    dock.move(network_control::tab, control::entities_tab, ui::DockSide::tabs);
     dock.select(control::entities_tab);
     dock.move(control::assets_tab, control::scene_tab, ui::DockSide::bottom, .73f);
     dock.move(source_control::tab, control::scene_tab, ui::DockSide::tabs);
     dock.move(control::output_tab, control::assets_tab, ui::DockSide::tabs);
+    dock.move(spreadsheet_control::tab, control::assets_tab, ui::DockSide::tabs);
     dock.select(control::assets_tab);
     dock.select(control::scene_tab);
     dock.select(control::parameters_tab);
@@ -182,6 +216,12 @@ void Workspace::reset_document() {
     parameter_search_visible = false;
     inspecting_asset = false;
     material_inspection.clear();
+    active_graph.clear();
+    selected_graph_node.clear();
+    selected_graph_nodes.clear();
+    network_context_node.clear();
+    spreadsheet.reset();
+    network.reset();
     menu.reset();
     assets.reset(project_open);
     component_choices_.clear();
@@ -197,6 +237,8 @@ std::optional<TypeId> Workspace::component_choice(ui::ControlKey key) const noex
 
 Result<bool> Workspace::apply_ui(const ui::Action& action) {
     if (output.apply(action))
+        return true;
+    if (spreadsheet.apply(action))
         return true;
     return ui_document_ ? ui_document_->event(action) : Result<bool>{false};
 }
@@ -574,7 +616,21 @@ Result<bool> Workspace::apply_view(Session& session, OperatorHost& host, const u
         set(ViewOption::hidden_lines, option != 3 ? 1 : 0);
     } else if (key >= control::topology_first && key < control::topology_first + 2)
         set(ViewOption::triangle_edges, key != control::topology_first ? 1 : 0);
-    else if (key == control::guide_background || key == control::guide_grid || key == control::guide_axes) {
+    else if (key == control::display_sop_points || key == control::display_sop_normals ||
+             key == control::display_sop_orient) {
+        const auto* checked = std::get_if<bool>(&action.value);
+        if (!checked)
+            return false;
+        if (key == control::display_sop_points)
+            sop_show_points = *checked;
+        else if (key == control::display_sop_normals)
+            sop_show_normals = *checked;
+        else
+            sop_show_orient = *checked;
+        ++view_revision_;
+        status = L"SOP guide display updated";
+        return true;
+    } else if (key == control::guide_background || key == control::guide_grid || key == control::guide_axes) {
         const auto* checked = std::get_if<bool>(&action.value);
         if (!checked)
             return false;
@@ -808,12 +864,35 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
     // The World already indexes all attached components, including disabled
     // ones. UI liveness only needs their IDs, not a new Root for each member.
     const auto components = take(session.world().query(session.types().component));
+    const auto graph_objects = session.graph_objects();
+    if (!active_graph.empty() && !session.has_graph(active_graph)) {
+        active_graph.clear();
+        selected_graph_node.clear();
+    } else if (!active_graph.empty() && !selected_graph_node.empty() &&
+               !session.graph_node(active_graph, selected_graph_node)) {
+        if (const auto* graph_doc = session.graph_document(active_graph)) {
+            std::optional<std::string> disp_name;
+            if (graph_doc->graph.registered())
+                if (const auto listed = procedural::contents(runtime, graph_doc->graph.id()))
+                    if (listed->display() != ObjectId{})
+                        disp_name = session.graph_node_name(listed->display());
+            if (disp_name)
+                selected_graph_node = std::move(*disp_name);
+            else if (!graph_doc->nodes.empty())
+                selected_graph_node = graph_doc->nodes.back().name;
+            else
+                selected_graph_node.clear();
+        } else
+            selected_graph_node.clear();
+    }
     Set<ObjectId> live;
-    live.reserve(members.size() + components.size() + 1);
+    live.reserve(members.size() + components.size() + graph_objects.size() + 1);
     for (const auto& member : members)
         live.add(member.id());
     for (const auto component : components)
         live.add(component);
+    for (const auto graph_object : graph_objects)
+        live.add(graph_object);
     const auto material_object = inspecting_asset ? session.loaded_material(material_inspection) : ObjectId{};
     if (material_object != ObjectId{})
         live.add(material_object);
@@ -1001,7 +1080,8 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
         auto slots = std::make_shared<std::vector<ui_language::Item>>();
         if (pane.active)
             slots->push_back({pane.active->content,
-                              {pane.active->key != control::scene_tab && pane.active->key != control::parameters_tab}});
+                              {pane.active->key != control::scene_tab && pane.active->key != control::parameters_tab &&
+                               pane.active->key != network_control::tab}});
         const bool h = pane.horizontal;
         const bool first = pane.collapsed == 1;
         const bool second = pane.collapsed == 2;
@@ -1135,12 +1215,24 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
                                             {binding, double(icon), selected,
                                              std::wstring(grouped ? L"display-toggle grouped" : L"display-toggle")}});
             }
+            if (!active_graph.empty()) {
+                const std::array<std::tuple<ui::ControlKey, ui::ControlIcon, bool, bool>, 3> sop_display{
+                    {{control::display_sop_points, ui::ControlIcon::cursor3d, sop_show_points, true},
+                     {control::display_sop_normals, ui::ControlIcon::up, sop_show_normals, false},
+                     {control::display_sop_orient, ui::ControlIcon::axes, sop_show_orient, false}}};
+                std::size_t sop_index = 0;
+                for (const auto& [key, icon, selected, grouped] : sop_display)
+                    display_toggles->push_back(
+                        {control::display_sop_toggle_first + sop_index++,
+                         {ui_language::ActionBinding{key, true}, double(icon), selected,
+                          std::wstring(grouped ? L"display-toggle grouped" : L"display-toggle")}});
+            }
             const auto step = viewport_settings.grid_spacing;
             const std::wstring step_name = step == .1f   ? L"0.1 m"
                                            : step == .2f ? L"0.2 m"
                                            : step == .5f ? L"0.5 m"
                                                          : L"1 m";
-            const std::array<ui_language::InputValue, 49> inputs{
+            const std::array<ui_language::InputValue, 50> inputs{
                 ui_language::ActionBinding{control::scene_back, can_navigate(-1)},
                 ui_language::ActionBinding{control::scene_forward, can_navigate(1)},
                 double(ui::ControlIcon::back),
@@ -1179,6 +1271,8 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
                 std::wstring(
                     camera_flying
                         ? L"WASD move · Q/E down/up · Wheel speed · Shift fast · Enter/LMB confirm · Esc/RMB cancel"
+                    : !active_graph.empty()
+                        ? L"SOP Context · Middle tumbles · Shift+Middle pans · Wheel zooms · F/Home frames SOP · World exits"
                         : tool_hints[std::size_t(viewport_mode)]),
                 std::wstring(this->view.shading == renderer::Shading::scene_lit ||
                                      this->view.background == renderer::Background::none
@@ -1198,7 +1292,8 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
                 pane.bounds.width < 660,
                 ui_language::ItemList{std::move(display_toggles)},
                 double(ui::ControlIcon::axes_origin),
-                open(control::viewport_orientation)};
+                open(control::viewport_orientation),
+                graph_path_title(project)};
             const std::array<ui_language::KeyBinding, 27> keys{{{"navigation", 641},
                                                                 {"path", control::scene_path},
                                                                 {"back", control::scene_back},
@@ -1262,6 +1357,141 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
         if (view.key == control::assets_tab) {
             assets.append(result, view.content, project, operators.find("scene.add")->poll(context).has_value(), frame,
                           *ui_document_);
+            continue;
+        }
+        if (view.key == spreadsheet_control::tab) {
+            const procedural::Geometry* geom{};
+            std::uint64_t generation{};
+            std::wstring target_label = L"No active graph";
+            std::wstring error_text;
+            if (!active_graph.empty() && session.has_graph(active_graph)) {
+                const ObjectId target_node = spreadsheet.follow_selected() && !selected_graph_node.empty()
+                                                 ? session.graph_node_id(active_graph, selected_graph_node)
+                                                 : ObjectId{};
+                const auto eval = session.evaluate_graph(active_graph, project, target_node);
+                if (!eval)
+                    error_text = application::diagnostic_text(eval.error().message);
+                else if (target_node != ObjectId{}) {
+                    target_label = platform::utf8_to_utf16_validated(selected_graph_node);
+                    geom = eval->inspected_output;
+                    generation = eval->generation;
+                    if (eval->inspected_error)
+                        error_text = application::diagnostic_text(eval->inspected_error->message);
+                } else {
+                    target_label = eval->display_name.empty()
+                                       ? L"(no display)"
+                                       : platform::utf8_to_utf16_validated(eval->display_name) + L" [D]";
+                    geom = eval->preview_output.get();
+                    generation = eval->generation;
+                    if (eval->display_error)
+                        error_text = application::diagnostic_text(eval->display_error->message);
+                }
+            }
+            spreadsheet.append(result, view.content, *ui_document_, geom, generation, target_label, error_text);
+            continue;
+        }
+        if (view.key == network_control::tab) {
+            const bool has_graph = !active_graph.empty() && session.has_graph(active_graph);
+            const auto* graph_doc = has_graph ? session.graph_document(active_graph) : nullptr;
+            auto tab_items = std::make_shared<std::vector<ui_language::Item>>();
+            std::wstring net_status;
+            std::shared_ptr<const GraphInspectView> inspected;
+            std::vector<GraphNodeCatalogEntry> catalog;
+            if (graph_doc) {
+                // Prune any node names removed via Undo or external Control calls.
+                std::erase_if(selected_graph_nodes,
+                              [&](const std::string& n) { return !session.graph_node(active_graph, n); });
+                if (!selected_graph_node.empty() && !session.graph_node(active_graph, selected_graph_node))
+                    selected_graph_node = selected_graph_nodes.empty() ? std::string{} : selected_graph_nodes.back();
+
+                const ObjectId sel_node = !selected_graph_node.empty()
+                                              ? session.graph_node_id(active_graph, selected_graph_node)
+                                              : ObjectId{};
+                const auto eval = session.evaluate_graph(active_graph, project, sel_node);
+                if (auto insp = session.graph_topology(active_graph))
+                    inspected = std::move(*insp);
+                if (auto cat = session.procedural_node_types())
+                    catalog = std::move(*cat);
+
+                if (network.tab_search().open) {
+                    const auto matches = network.filter_catalog(catalog);
+                    tab_items->reserve(matches.size());
+                    for (std::size_t i = 0; i < matches.size(); ++i) {
+                        std::string short_name = matches[i].name;
+                        if (const auto dot = short_name.find_last_of('.'); dot != short_name.npos)
+                            short_name = short_name.substr(dot + 1);
+                        const bool active_row = i == std::min(network.tab_search().highlight, matches.size() - 1);
+                        tab_items->push_back({network_control::tab_item_first + i,
+                                              {platform::utf8_to_utf16_validated(short_name),
+                                               std::wstring(matches[i].native ? L"C++" : L"Source"), active_row,
+                                               ui_language::ActionBinding{network_control::tab_pick_first + i,
+                                                                          !session.world().running()},
+                                               std::wstring(active_row ? L"network-tab-row-active" : L"")}});
+                    }
+                }
+
+                if (!eval)
+                    net_status = L"Cook error: " + application::diagnostic_text(eval.error().message);
+                else if (eval->display_error)
+                    net_status = L"Cook error: " + application::diagnostic_text(eval->display_error->message);
+                else if (const auto* shown = eval->preview_output.get())
+                    net_status = std::format(
+                        L"{} nodes · {} wires · Display '{}': {} pts · {} prims · {} inst   (Tab add · Y+drag cut · H frame · L layout)",
+                        graph_doc->nodes.size(), inspected ? inspected->connections.size() : 0u,
+                        platform::utf8_to_utf16_validated(eval->display_name), shown->count(procedural::Layer::point),
+                        shown->count(procedural::Layer::primitive), shown->count(procedural::Layer::instance));
+                else
+                    net_status = std::format(
+                        L"{} nodes · No Display Flag set   (Click right 'D' pill to display · Tab add · H frame · L layout)",
+                        graph_doc->nodes.size());
+            }
+            json::Builder seed_args;
+            seed_args.set_validated(seed_args.root(), "node", "");
+            const std::wstring graph_title =
+                has_graph ? graph_path_title(project) + (session.graph_dirty(active_graph) ? L" *" : L"")
+                          : std::wstring(L"Procedural Network");
+            const std::wstring zoom_text = std::format(L"{}%", static_cast<int>(std::lround(network.zoom() * 100.f)));
+            const auto& ts = network.tab_search();
+            const std::array<ui_language::InputValue, 18> inputs{
+                graph_title,
+                has_graph,
+                has_graph && !session.world().running(),
+                ui_language::ActionBinding{network_control::add_node, has_graph && !session.world().running()},
+                ui_language::ActionBinding{network_control::frame_all, has_graph},
+                action({"graph.layout"}),
+                zoom_text,
+                ui_language::ActionBinding{network_control::zoom_reset, has_graph},
+                action({"graph.select", seed_args.finish()}),
+                action({"graph.delete_node"}),
+                action({"graph.exit"}),
+                ui_language::ActionBinding{network_control::new_scratch, !session.world().running()},
+                has_graph && ts.open,
+                static_cast<double>(ts.dip_x),
+                static_cast<double>(ts.dip_y),
+                ui_language::TextEditBinding{network_control::tab_search_input, ts.query, has_graph && ts.open},
+                ui_language::ItemList{std::move(tab_items)},
+                std::move(net_status)};
+            const std::array<ui_language::KeyBinding, 4> keys{{{"add_node", network_control::add_node},
+                                                               {"frame_btn", network_control::frame_all},
+                                                               {"canvas", network_control::canvas},
+                                                               {"tab_box", network_control::tab_search_box}}};
+            static_cast<void>(ui_document_->append("NetworkPanel", view.content, keys, inputs, result));
+            if (has_graph && inspected) {
+                ui_layout::Size canvas_dip{std::max(160.f, size.width * .36f), std::max(120.f, size.height * .26f)};
+                if (frame) {
+                    if (const auto* box = frame->find(network_control::canvas);
+                        box && box->bounds.width > 0.f && box->bounds.height > 0.f) {
+                        const float dscale = frame->drawing ? frame->drawing->dpi_scale : 1.f;
+                        canvas_dip = {box->bounds.width / dscale, box->bounds.height / dscale};
+                    }
+                }
+                std::vector<ui::Control> canvas_controls;
+                network.append_canvas(canvas_controls, network_control::canvas, canvas_dip, active_graph, *inspected,
+                                      catalog, selected_graph_node, selected_graph_nodes);
+                const auto tab_it = std::ranges::find(result, network_control::tab_search_box, &ui::Control::key);
+                result.insert(tab_it, std::make_move_iterator(canvas_controls.begin()),
+                              std::make_move_iterator(canvas_controls.end()));
+            }
             continue;
         }
         if (view.key == control::entities_tab) {
@@ -1434,13 +1664,14 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
             };
             std::wstring kind = L"Resource";
             if (asset) {
-                kind = asset->kind == assets::AssetKind::mesh       ? L"Mesh"
-                       : asset->kind == assets::AssetKind::scene    ? L"Scene"
-                       : asset->kind == assets::AssetKind::source   ? L"Source"
-                       : asset->kind == assets::AssetKind::folder   ? L"Folder"
-                       : asset->kind == assets::AssetKind::material ? L"Material"
-                       : asset->kind == assets::AssetKind::texture  ? L"Texture"
-                                                                    : L"File";
+                kind = asset->kind == assets::AssetKind::mesh               ? L"Mesh"
+                       : asset->kind == assets::AssetKind::scene            ? L"Scene"
+                       : asset->kind == assets::AssetKind::source           ? L"Source"
+                       : asset->kind == assets::AssetKind::folder           ? L"Folder"
+                       : asset->kind == assets::AssetKind::material         ? L"Material"
+                       : asset->kind == assets::AssetKind::texture          ? L"Texture"
+                       : asset->kind == assets::AssetKind::procedural_graph ? L"Procedural Graph"
+                                                                            : L"File";
                 add(0, L"Type", kind);
                 add(1, L"Resource", platform::utf8_to_utf16_validated(asset->key));
                 add(2, L"Location", asset->path.empty() ? L"Engine" : asset->path.generic_wstring());
@@ -1458,14 +1689,18 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
             static_cast<void>(ui_document_->append("ResourceParameters", view.content, {}, inputs, result));
             continue;
         }
+        const bool in_graph = !active_graph.empty() && session.has_graph(active_graph);
+        const ObjectId param_object = in_graph ? inspected_graph_object(session) : inspected;
+        const bool param_is_graph = in_graph && param_object != ObjectId{};
+        const auto param_node_name = param_is_graph ? session.graph_node_name(param_object) : std::nullopt;
         const auto lowercase = [](std::wstring value) {
             for (auto& c : value)
                 c = static_cast<wchar_t>(std::towlower(c));
             return value;
         };
         const auto folded = parameter_search_visible ? lowercase(query) : std::wstring{};
-        const bool show_position = !parameter_by_category_ && material_object == ObjectId{} && transform &&
-                                   (inspected == selected || inspected == *transform);
+        const bool show_position = !param_is_graph && !parameter_by_category_ && material_object == ObjectId{} &&
+                                   transform && (inspected == selected || inspected == *transform);
         auto groups = std::make_shared<std::vector<ui_language::Item>>();
         std::vector<std::pair<std::string, std::shared_ptr<std::vector<ui_language::Item>>>> category_rows;
         const auto category_properties = [&](std::string_view category) {
@@ -1507,7 +1742,9 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
                         property.category.empty() ? std::string_view{"General"} : std::string_view{property.category};
                     properties = category_properties(category);
                 }
-                const bool editable = entity_status.can_edit && !property.read_only;
+                const bool can_edit_object =
+                    session.is_graph_object(object) ? !session.world().running() : entity_status.can_edit;
+                const bool editable = can_edit_object && !property.read_only;
                 if (show_position && object == *transform && detail::transform_path(session.types(), property.path))
                     continue;
                 if (light) {
@@ -1654,6 +1891,24 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
                               platform::utf8_to_utf16_validated(property.name + " " + property.category))
                             .find(folded) == std::wstring::npos)
                     continue;
+                if (property.is_string) {
+                    const auto text_key = property_key(property.path, Binding::Kind::text_field);
+                    PropertyRow row;
+                    row.key = property_key(property.path, Binding::Kind::property_row);
+                    row.title = std::move(caption);
+                    row.kind = PropertyRow::Kind::text;
+                    row.enabled = editable;
+                    row.change = {text_key, false};
+                    row.target = text_key;
+                    row.text_edit = {text_key, platform::utf8_to_utf16_validated(property.string_value), editable};
+                    row.help =
+                        property_help_.get(row.key, row.title,
+                                           platform::utf8_to_utf16_validated(take(runtime.describe(type))->name) +
+                                               L"." + platform::utf8_to_utf16_validated(property.name) + L" : String",
+                                           property.description);
+                    properties->push_back(std::move(row).item());
+                    continue;
+                }
                 std::optional<Scalar> default_value;
                 auto owner = type;
                 for (const auto id : property.path) {
@@ -2004,9 +2259,9 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
             for (const auto* binding : shown)
                 append_material(binding->resource.id(), object, binding->slot);
         };
-        if (inspected != ObjectId{}) {
-            append_object(inspected);
-            if (inspected == selected)
+        if (param_object != ObjectId{}) {
+            append_object(param_object);
+            if (!param_is_graph && param_object == selected)
                 for (const auto& component : take(world::components(runtime, selected)))
                     append_object(component.id());
         }
@@ -2071,7 +2326,7 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
         ui_language::EditBinding position{show_position ? bind(*transform, {}, Binding::Kind::position_default)
                                                         : ui::ControlKey{74},
                                           entity_status.can_edit && show_position, group_modified, std::move(fields)};
-        const bool entity_selected = inspected != ObjectId{} && inspected == selected;
+        const bool entity_selected = !param_is_graph && param_object != ObjectId{} && param_object == selected;
         const auto transform_help = [&](std::span<const FieldId> lane, ui::ControlKey key, std::wstring_view title,
                                         bool rotation = false) -> ui_language::TooltipBinding {
             if (!show_position)
@@ -2090,28 +2345,33 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
                 field->description);
         };
         ui_language::TooltipBinding type_help;
-        if (inspected != ObjectId{}) {
-            const auto type = take(runtime.describe(take(runtime.type_of(inspected))));
-            type_help = property_help_.get(52, short_type(inspected), platform::utf8_to_utf16_validated(type->name),
+        if (param_object != ObjectId{}) {
+            const auto type = take(runtime.describe(take(runtime.type_of(param_object))));
+            type_help = property_help_.get(52, short_type(param_object), platform::utf8_to_utf16_validated(type->name),
                                            type->description);
         }
         const std::array transform_descriptions{
             transform_help(session.types().position_fields[0], 70, L"Position (m)"),
             transform_help(session.types().rotation_fields[0], rotation_edit.group, L"Rotation (°)", true),
             transform_help(session.types().scale_fields[0], scale_edit.group, L"Scale")};
-        const std::array<ui_language::InputValue, 29> inputs{
-            inspected == ObjectId{} ? std::wstring(L"Object") : object_title(inspected),
-            ui_language::TextEditBinding{entity_selected ? bind(selected, {}, Binding::Kind::name) : ui::ControlKey{77},
-                                         inspected == ObjectId{} ? L"No selection"
-                                         : entity_selected       ? std::wstring(session.name(selected))
-                                                                 : object_title(inspected),
-                                         entity_selected && entity_status.can_edit},
+        const std::wstring header_name = param_object == ObjectId{} ? L"No selection"
+                                         : param_node_name ? platform::utf8_to_utf16_validated(*param_node_name)
+                                         : param_is_graph  ? graph_path_title(project)
+                                         : entity_selected ? std::wstring(session.name(selected))
+                                                           : object_title(param_object);
+        const bool can_rename_header =
+            param_node_name ? !session.world().running() : (entity_selected && entity_status.can_edit);
+        const std::array<ui_language::InputValue, 30> inputs{
+            param_object == ObjectId{} ? std::wstring(L"Object") : object_title(param_object),
+            ui_language::TextEditBinding{
+                (entity_selected || param_node_name) ? bind(param_object, {}, Binding::Kind::name) : ui::ControlKey{77},
+                header_name, can_rename_header},
             ui_language::ActionBinding{control::parameter_back, can_navigate(-1)},
             ui_language::ActionBinding{control::parameter_forward, can_navigate(1)},
             double(ui::ControlIcon::back),
             double(ui::ControlIcon::forward),
             double(ui::ControlIcon::world),
-            inspected != ObjectId{},
+            param_object != ObjectId{},
             ui_language::ItemList{std::move(groups)},
             matches,
             std::move(position),
@@ -2119,8 +2379,8 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
             empty,
             double(entity_selected ? entity_icon(session, selected) : ui::ControlIcon::component),
             double(ui::ControlIcon::search),
-            parameter_search_visible && inspected != ObjectId{},
-            ui_language::ActionBinding{control::parameter_search_toggle, inspected != ObjectId{}},
+            parameter_search_visible && param_object != ObjectId{},
+            ui_language::ActionBinding{control::parameter_search_toggle, param_object != ObjectId{}},
             std::move(rotation_edit),
             std::move(scale_edit),
             position_matches,
@@ -2132,7 +2392,8 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
             transform_descriptions[0],
             transform_descriptions[1],
             transform_descriptions[2],
-            std::move(type_help)};
+            std::move(type_help),
+            graph_path_title(project)};
         const std::array<ui_language::KeyBinding, 14> keys{{{"components", control::group_components},
                                                             {"categories", control::group_categories},
                                                             {"path.bar", 75},
@@ -2474,28 +2735,114 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
                        source->key == control::viewport_orientation) {
                 items = viewport_calls(source->key);
             } else if (control::is_path(source->key)) {
-                items.push_back({control::world_context, L"World", true, selected == ObjectId{}, {}});
-                for (const auto& member : members)
-                    items.push_back({bind(member.id(), {}, Binding::Kind::navigation),
-                                     std::wstring(session.name(member.id())),
+                items.push_back(
+                    {control::world_context, L"World", true, active_graph.empty() && selected == ObjectId{}, {}});
+                std::vector<std::string> graphs = session.open_graphs();
+                if (project)
+                    for (const auto& entry : project->entries())
+                        if (entry.kind == assets::AssetKind::procedural_graph &&
+                            std::ranges::find(graphs, entry.key) == graphs.end())
+                            graphs.push_back(entry.key);
+                for (std::size_t g = 0; g < graphs.size(); ++g) {
+                    const auto& gkey = graphs[g];
+                    std::wstring label = L"/" + platform::utf8_to_utf16_validated(gkey);
+                    if (const auto* entry = project ? project->entry(gkey) : nullptr)
+                        label = L"/" + entry->path.generic_wstring();
+                    if (session.graph_dirty(gkey))
+                        label += L" *";
+                    json::Builder args;
+                    static_cast<void>(args.set(args.root(), "asset", gkey));
+                    items.push_back({bind_operator({"graph.open", args.finish()}),
+                                     std::move(label),
                                      true,
-                                     selected == member.id(),
+                                     active_graph == gkey,
                                      {},
                                      L"",
-                                     items.size() == 1});
+                                     g == 0});
+                }
+                if (active_graph.empty())
+                    for (std::size_t m = 0; m < members.size(); ++m)
+                        items.push_back({bind(members[m].id(), {}, Binding::Kind::navigation),
+                                         std::wstring(session.name(members[m].id())),
+                                         true,
+                                         selected == members[m].id(),
+                                         {},
+                                         L"",
+                                         m == 0});
                 for (auto& item : items) {
                     item.behavior = ui::MenuBehavior::radio;
                     item.radio_group = source->key;
+                }
+            } else if (source->key == network_control::canvas) {
+                const bool can_edit = !active_graph.empty() && !session.world().running();
+                if (menu->group == network_control::context_node_menu && !network_context_node.empty()) {
+                    const auto* graph_doc = !active_graph.empty() ? session.graph_document(active_graph) : nullptr;
+                    const ObjectId target_id =
+                        graph_doc ? session.graph_node_id(active_graph, network_context_node) : ObjectId{};
+                    bool is_disp = false;
+                    if (graph_doc && graph_doc->graph.registered())
+                        if (const auto listed = procedural::contents(runtime, graph_doc->graph.id()))
+                            is_disp = target_id != ObjectId{} && listed->display() == target_id;
+                    {
+                        json::Builder args;
+                        static_cast<void>(
+                            args.set(args.root(), "node",
+                                     is_disp ? std::string_view{} : std::string_view{network_context_node}));
+                        items.push_back({bind_operator({"graph.set_display", args.finish()}),
+                                         is_disp ? L"Clear Display Flag (D)" : L"Set Display Flag (D)",
+                                         can_edit,
+                                         is_disp,
+                                         {}});
+                    }
+                    if (can_edit && target_id != ObjectId{}) {
+                        json::Builder disc_args;
+                        static_cast<void>(disc_args.set(disc_args.root(), "to_node", network_context_node));
+                        items.push_back({bind_operator({"graph.disconnect", disc_args.finish()}),
+                                         L"Disconnect All Inputs",
+                                         true,
+                                         false,
+                                         {}});
+                    }
+                    {
+                        json::Builder del_args;
+                        static_cast<void>(del_args.set(del_args.root(), "name", network_context_node));
+                        items.push_back({bind_operator({"graph.delete_node", del_args.finish()}),
+                                         L"Delete Node",
+                                         can_edit,
+                                         false,
+                                         {},
+                                         L"Del",
+                                         true});
+                    }
+                } else {
+                    items.push_back({network_control::add_node, L"Add Node…", can_edit, false, {}, L"Tab"});
+                    items.push_back(
+                        {network_control::frame_all, L"Frame All", !active_graph.empty(), false, {}, L"H", true});
+                    items.push_back({bind_operator({"graph.layout"}), L"Auto Layout", can_edit, false, {}, L"L"});
+                    json::Builder seed_args;
+                    seed_args.set_validated(seed_args.root(), "node", "");
+                    items.push_back({bind_operator({"graph.select", seed_args.finish()}),
+                                     L"Inspect Graph Seed",
+                                     !active_graph.empty(),
+                                     false,
+                                     {},
+                                     L"",
+                                     true});
+                    items.push_back(
+                        {bind_operator({"graph.exit"}), L"Return to World", !active_graph.empty(), false, {}});
                 }
             } else if (const auto* target = binding(source->context_target);
                        source->kind == ControlKind::combo && target && target->kind == Binding::Kind::field) {
                 auto value = session.read_property(target->object, target->path);
                 if (value)
                     if (const auto* enumeration = std::get_if<EnumValue>(&*value)) {
+                        const SelectionContext enum_selection =
+                            session.is_graph_object(target->object)
+                                ? SelectionContext{ObjectId{}, target->object, {}}
+                                : SelectionContext{selected, target->object, {selected}};
                         OperatorCall call{"scene.set_properties",
                                           json::Document{},
-                                          {.selection = SelectionContext{selected, target->object, {selected}},
-                                           .region = RegionKind::parameters}};
+                                          {.selection = enum_selection, .region = RegionKind::parameters}};
                         auto type = take(runtime.type_of(target->object));
                         json::Builder args;
                         auto argument = args.root();
@@ -2629,6 +2976,13 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
                 items.push_back({control::guide_axes, L"Origin Axes", true, view.origin_axes, {}});
                 items.push_back(
                     operator_item({"view.toggle", json::Document{json::Document::literal<R"({"option":"fps"})">()}}));
+                if (!active_graph.empty()) {
+                    items.push_back(
+                        {control::display_sop_points, L"SOP Point Markers", true, sop_show_points, {}, L"", true});
+                    items.push_back({control::display_sop_normals, L"SOP Normals (N)", true, sop_show_normals, {}});
+                    items.push_back(
+                        {control::display_sop_orient, L"SOP Orientations (orient)", true, sop_show_orient, {}});
+                }
                 for (auto& item : items)
                     item.behavior = ui::MenuBehavior::checkbox;
             } else if (!items.empty()) {

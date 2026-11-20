@@ -174,6 +174,9 @@ Result<std::vector<Input>> inputs(Runtime& runtime, const Contents& graph, Objec
 // its inputs, so a removed node lives while something else roots it, such as edit history.
 Result<ObjectRoot> add_node(Runtime& runtime, ObjectId graph, TypeId type);
 
+// Re-attaches an existing detached node root (such as from edit history) with empty inputs.
+Result<void> restore_node(Runtime& runtime, ObjectId graph, const ObjectRoot& node);
+
 // Also disconnects the node's outputs and clears it as the display node.
 Result<void> remove_node(Runtime& runtime, ObjectId graph, ObjectId node);
 

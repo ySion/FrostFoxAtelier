@@ -524,6 +524,33 @@ Result<ObjectRoot> add_node(Runtime& runtime, ObjectId graph, TypeId type) {
     return std::move(*node);
 }
 
+Result<void> restore_node(Runtime& runtime, ObjectId graph, const ObjectRoot& node) {
+    if (!node.registered())
+        return error(ErrorCode::invalid_object, "The node root is empty.");
+    ATELIER_TRY_BIND(type, runtime.type_of(node.id()));
+    ATELIER_TRY(ports(runtime, *type));
+    ATELIER_TRY_BIND(listed, Access::contents(runtime, graph));
+    if (listed->contains(node.id()))
+        return error(ErrorCode::argument_mismatch, "The node is already in this graph.");
+    ATELIER_TRY(runtime.with_native<Node>(node.id(), [&](Node& value) -> Result<void> {
+        ATELIER_TRY_BIND(field, runtime.reference_field(node.id(), Access::inputs(value)));
+        auto& connections = Access::connections(value);
+        if (!connections.empty()) {
+            const ReferenceChange clear = SequenceSplice{*field, 0, connections.size(), {}};
+            ATELIER_TRY(runtime.apply_reference_changes({&clear, 1}));
+            connections.clear();
+        }
+        return {};
+    }));
+    return runtime.with_native<Graph>(graph, [&](Graph& value) -> Result<void> {
+        ATELIER_TRY_BIND(field, runtime.reference_field(graph, Access::nodes(value)));
+        ATELIER_TRY_BIND(count, runtime.sequence_size(*field));
+        const auto reference = node.reference();
+        const ReferenceChange change = SequenceSplice{*field, *count, 0, {&reference, 1}};
+        return runtime.apply_reference_changes({&change, 1});
+    });
+}
+
 Result<void> remove_node(Runtime& runtime, ObjectId graph, ObjectId node) {
     auto listed = Access::contents(runtime, graph);
     if (!listed)

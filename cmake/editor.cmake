@@ -30,6 +30,7 @@ function(atelier_add_editor)
         "${PROJECT_SOURCE_DIR}/modules/editor/core/src/graph_format.cpp"
         "${PROJECT_SOURCE_DIR}/modules/editor/core/src/session.cpp"
         "${PROJECT_SOURCE_DIR}/modules/editor/core/src/session_materials.cpp"
+        "${PROJECT_SOURCE_DIR}/modules/editor/core/src/session_graphs.cpp"
         "${PROJECT_SOURCE_DIR}/modules/editor/core/src/camera.cpp"
         "${PROJECT_SOURCE_DIR}/modules/editor/core/src/operator_parameters.cpp"
         "${PROJECT_SOURCE_DIR}/modules/editor/core/src/viewport_tool.cpp")
@@ -45,6 +46,7 @@ function(atelier_add_editor)
         "${PROJECT_SOURCE_DIR}/modules/editor/application/src/application/input.cpp"
         "${PROJECT_SOURCE_DIR}/modules/editor/application/src/application/viewport.cpp"
         "${PROJECT_SOURCE_DIR}/modules/editor/application/src/application/presentation.cpp"
+        "${PROJECT_SOURCE_DIR}/modules/editor/application/src/application/procedural_preview.cpp"
         "${PROJECT_SOURCE_DIR}/modules/editor/application/src/application/lit_preparation.cpp"
         "${PROJECT_SOURCE_DIR}/modules/editor/application/src/application/play_process.cpp"
         "${PROJECT_SOURCE_DIR}/modules/editor/application/src/application/play_link.cpp"
@@ -58,6 +60,7 @@ function(atelier_add_editor)
         "${PROJECT_SOURCE_DIR}/modules/editor/application/src/editor/workspace.cpp"
         "${PROJECT_SOURCE_DIR}/modules/editor/application/src/editor/output.cpp"
         "${PROJECT_SOURCE_DIR}/modules/editor/application/src/editor/workspace_materials.cpp"
+        "${PROJECT_SOURCE_DIR}/modules/editor/application/src/editor/procedural_panes.cpp"
         "${PROJECT_SOURCE_DIR}/modules/editor/application/src/editor/world_panel.cpp"
         "${PROJECT_SOURCE_DIR}/modules/editor/application/src/editor/performance.cpp"
         "${PROJECT_SOURCE_DIR}/modules/editor/application/src/editor/asset_browser.cpp"

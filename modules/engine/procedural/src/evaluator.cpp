@@ -134,6 +134,8 @@ struct Evaluator::Impl {
 
         std::optional<Error> root_error; // Root-cause diagnostic carried to blocked downstream nodes.
 
+        std::uint64_t synced_generation{};
+
         NodeStatus status;
     };
 
@@ -176,6 +178,10 @@ struct Evaluator::Impl {
     std::size_t cached_bytes{};
 
     std::uint64_t serials{};
+
+    std::uint64_t sync_generation{1};
+
+    bool display_current{};
 
     std::shared_ptr<Entry> current_published;
 
@@ -660,7 +666,7 @@ struct Evaluator::Impl {
         }
     }
 
-    Result<void> evaluate(bool record_timings) {
+    Result<void> evaluate(std::optional<ObjectId> explicit_node, bool record_timings) {
         auto now = runtime.change_cursor();
         if (!now)
             return std::unexpected(now.error());
@@ -692,6 +698,9 @@ struct Evaluator::Impl {
             dirty = true;
         }
         const auto& next_members = refreshed ? *refreshed : members;
+        if (explicit_node && *explicit_node != ObjectId{} && !next_members.contains(*explicit_node))
+            return error(ErrorCode::argument_mismatch, "The node is not in the graph.");
+        const auto target_root = explicit_node ? *explicit_node : next_members.display();
         // Stage only reread nodes; untouched states and their local strings stay in place.
         Map<ObjectId, State> candidate;
         const bool membership_changed = refreshed && !std::ranges::equal(members.nodes(), refreshed->nodes());
@@ -739,9 +748,32 @@ struct Evaluator::Impl {
                 state.inputs = std::move(*into);
             }
         }
+        const auto cook_sequence = [&](std::span<const ObjectId> sequence) {
+            for (const auto node : sequence) {
+                auto& state = *nodes.find(node);
+                if (state.synced_generation != sync_generation) {
+                    update(node, state, record_timings);
+                    state.synced_generation = sync_generation;
+                }
+            }
+        };
         if (!dirty && candidate.empty()) {
             cursor = *now;
-            sync_published();
+            if (!explicit_node && display_current) {
+                sync_published();
+                return {};
+            }
+            if (target_root != ObjectId{}) {
+                if (const auto* root_state = nodes.find(target_root);
+                    !root_state || root_state->synced_generation != sync_generation) {
+                    ATELIER_TRY_BIND(sequence, order(target_root, {}));
+                    cook_sequence(*sequence);
+                }
+            }
+            if (!explicit_node) {
+                display_current = true;
+                sync_published();
+            }
             return {};
         }
         const auto current = [&](ObjectId node) -> const State& {
@@ -754,7 +786,7 @@ struct Evaluator::Impl {
                 if (source.plan && connection.output >= source.plan->ports.outputs.size())
                     return error(ErrorCode::argument_mismatch, "Graph input names a missing output port.");
             }
-        ATELIER_TRY_BIND(sequence, order(next_members.display(), candidate));
+        ATELIER_TRY_BIND(sequence, order(target_root, candidate));
         if (republished)
             source_kernels.clear();
         bool changed = !cursor || refreshed || republished || resources.revision() != revision;
@@ -789,14 +821,20 @@ struct Evaluator::Impl {
         cursor = *now;
         if (republished)
             code_revision = program->revision();
-        if (!changed) {
-            sync_published();
-            return {};
+        if (changed) {
+            ++sync_generation;
+            revision = resources.revision();
+            display_current = false;
         }
-        revision = resources.revision();
-        for (const auto node : *sequence)
-            update(node, *nodes.find(node), record_timings);
-        sync_published();
+        if (target_root != ObjectId{}) {
+            if (const auto* root_state = nodes.find(target_root);
+                root_state && root_state->synced_generation != sync_generation)
+                cook_sequence(*sequence);
+        }
+        if (!explicit_node) {
+            display_current = true;
+            sync_published();
+        }
         return {};
     }
 };
@@ -808,10 +846,14 @@ Evaluator::Evaluator(Runtime& runtime, ObjectRoot graph, const Resources& resour
 Evaluator::~Evaluator() = default;
 
 Result<void> Evaluator::evaluate(bool record_timings) {
-    auto result = impl_->evaluate(record_timings);
+    auto result = impl_->evaluate(std::nullopt, record_timings);
     if (!result)
         impl_->current_published.reset();
     return result;
+}
+
+Result<void> Evaluator::evaluate_node(ObjectId node, bool record_timings) {
+    return impl_->evaluate(node, record_timings);
 }
 
 const Geometry* Evaluator::output() const noexcept {
@@ -820,6 +862,23 @@ const Geometry* Evaluator::output() const noexcept {
 
 const Geometry* Evaluator::last_valid_output() const noexcept {
     return impl_->last_valid ? &impl_->last_valid->outputs.front() : nullptr;
+}
+
+std::shared_ptr<const Geometry> Evaluator::retain_last_valid_output() const noexcept {
+    return {impl_->last_valid, last_valid_output()};
+}
+
+std::uint32_t Evaluator::node_output_count(ObjectId node) const noexcept {
+    const auto* found = impl_->nodes.find(node);
+    return found && !found->status.error && found->entry ? static_cast<std::uint32_t>(found->entry->outputs.size())
+                                                         : 0u;
+}
+
+const Geometry* Evaluator::node_output(ObjectId node, std::uint32_t output_index) const noexcept {
+    const auto* found = impl_->nodes.find(node);
+    return found && !found->status.error && found->entry && output_index < found->entry->outputs.size()
+               ? &found->entry->outputs[output_index]
+               : nullptr;
 }
 
 const NodeStatus* Evaluator::status(ObjectId node) const {

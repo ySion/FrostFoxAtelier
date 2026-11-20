@@ -16,7 +16,7 @@ MyGame/
 ## 使用
 
 - File → New Project Folder / Open Project Folder 选择目录；也可运行 `atelier_editor --new-project <目录>` 或 `atelier_editor --project <目录>`，支持中文路径。
-- Ctrl+S 保存当前工作区域：Code 区保存当前源码；资源检查或 Parameters 中获得编辑焦点的具名材质保存该资产；场景字段和场景 MI 保存场景。File → Save Scene 始终保存场景。Ctrl+Shift+S 另存场景到当前工程 Content 内，File → Open Scene 打开同一工程中的场景。标题显示工程、场景和未保存标记。
+- Ctrl+S 保存当前工作区域：Code 区保存当前源码；SOP 程序化图上下文中保存活动 `.procgraph` 资产；资源检查或 Parameters 中获得编辑焦点的具名材质保存该资产；场景字段和场景 MI 保存场景。File → Save Scene 始终保存场景；Save All 保存源码、脏材质、脏 `.procgraph` 与场景。Ctrl+Shift+S 另存场景到当前工程 Content 内，File → Open Scene 打开同一工程中的场景。标题显示工程、场景和未保存标记。
 - 关闭窗口、打开其他工程或场景前处理未保存修改。保存决定完成后才读取目标场景，取消新建也不会创建目录。加载在独立、停止的新 Session/World 中完成；失败保留当前文档，成功才撤下旧 UI 绑定和文档。
 - Config 的 `startup_scene` 是打开工程时加载的场景，路径相对工程根。另存场景不隐式修改启动场景配置。
 - Source 文件由工程统一采集、编译并绑定到真实场景类型。Project 菜单提供创建组件源码、构建、重建类型、运行、停止和项目 UI 预览。
@@ -112,7 +112,7 @@ Runtime 中的 Texture/MS/MI 根和可变作者历史由 Session/宿主持有。
 
 目录树与结果区之间使用 DSL Splitter，可拖动调整目录宽度；两边分别保留至少 96/64 DIP。Esc、失焦、捕获丢失或关闭正在编辑的区域会取消本次调整；临时缩窄整个面板只限制显示宽度，不抹掉用户此前选择的宽度。目录宽度沿现有工作区状态保留，不进入场景撤销，不触发 viewport 渲染目标缩放。
 
-单击资源改变浏览器与参数检查目标，不修改 Scene Tree 选择或创建 Entity。Material 资源打开共享参数编辑，其他资源显示元数据。更多菜单及资源右键菜单中的 Open 进入目录或打开场景，Details 的双击/Enter 走同一 Open 入口。Add to Scene 执行既有 StaticMeshEntity 创建命令；Import Mesh、Refresh 也沿原命令入口。右键先选中当前资源，再构建菜单；原资源消失或选择改变后关闭旧菜单。切换视图保留所选资源、过滤、排序和列宽。Tiles 使用类型图标，不声称已经实现模型缩略图。
+单击资源改变浏览器与参数检查目标，不修改 Scene Tree 选择或创建 Entity。Material 资源打开共享参数编辑，`.procgraph` 程序化图资源显示元数据并通过双击/Enter 或 Open 进入 SOP 视口与 Network 编辑上下文，其他资源显示元数据。更多菜单及资源右键菜单中的 Open 进入目录、打开场景或进入 `.procgraph` SOP 上下文，Details 的双击/Enter 走同一 Open 入口。Add to Scene 执行既有 StaticMeshEntity 创建命令；New Procedural Graph 创建 `Content/**/*.procgraph`（JSON v1）及其 `.asset.json` GUID 身份文件；Import Mesh、Refresh 也沿原命令入口。右键先选中当前资源，再构建菜单；原资源消失或选择改变后关闭旧菜单。切换视图保留所选资源、过滤、排序和列宽。Tiles 使用类型图标，不声称已经实现模型缩略图。
 
 查询或类型过滤排除当前资源时立即清空选择，并禁用对应 Open/Add；仍匹配的选择保留。清除过滤不恢复先前的隐藏选择。目录导航使用共享 Tree 的展开、选择与键盘行为；从路径或内容进入目录时显露对应树行。视图和类型菜单使用互斥单选标记。目录刷新淘汰失效导航记录，当前目录消失时回到有效来源根。
 

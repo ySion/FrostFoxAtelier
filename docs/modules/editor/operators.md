@@ -151,6 +151,15 @@ struct Context {
 | `editor.ToolToggle` | `tool.toggle` | setting（grid_snap、cursor_surface、snap_move、snap_rotate、snap_scale） |
 | `editor.ViewAxis` | `view.axis` | view（`editor.CameraView`） |
 | `editor.ViewSettings`（描述型） | `view.set`（seed） | 由 `ViewOptionInfo` 的完整表生成；未指定项保留当前值，World 作者值从当前文档取种子 |
+| `editor.NewProceduralGraph` | `asset.new_procedural_graph` | path（空路径在交互模式下弹出选择器）、source（可选初始 v1 图 JSON）；结果记录 `editor.AssetResult` 返回 `asset` 键 |
+| `editor.GraphAsset` | `graph.open`、`graph.save` | asset（`.procgraph` 资产键或临时图键；`save` 为空时取 `Context::active_graph`） |
+| `editor.GraphLayout` | `graph.layout` | asset（为空取 `active_graph`；按最长路径拓扑层级与重心排序自上而下排布全部节点，记一步图撤销） |
+| `editor.GraphAddNode` | `graph.add_node` | asset（为空取 `active_graph`）、type（`procedural.Node` 派生类型名）、name（可选节点名）、x、y |
+| `editor.GraphDeleteNode` | `graph.delete_node` | asset、name（省略时批量删除画布选中节点，并记一步撤销） |
+| `editor.GraphNodeTarget` | `graph.set_display`、`graph.select` | asset、node（省略时分别清除 display 或选中图根） |
+| `editor.GraphRenameNode` | `graph.rename_node` | asset、node（为空取选中节点）、new_name |
+| `editor.GraphMoveNode` | `graph.move_node` | asset、node（为空取选中节点）、x、y |
+| `editor.GraphWire` | `graph.connect`、`graph.disconnect` | asset、from_node、from_port、to_node、to_port |
 
 - 只有编辑器自己的文档 Session（`SessionRole::editor`）在引擎类型之后、工程 Source 构建之前登记这些类型；Play、独立运行和其他 Session 不登记。工程 Source 既看不到也不能声明 `editor.*` 类型（运行时的前缀规则），`project_integration` 在编辑器文档里断言这一点。
 - `tool.settings` 的参数是 `editor.ToolSettings`。各编辑器枚举的底层类型为 `uint32_t`，生成器支持 int32/uint32。工具、轴心、选择模式和坐标轴不进持久格式；`CameraView` 以序号出现在 Control 的编辑器相机 JSON 和 repro 包中。Play 使用场景主相机，不接收编辑器相机参数。

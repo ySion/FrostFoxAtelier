@@ -451,6 +451,22 @@ const std::vector<Operation>& operations() {
          {{"object", str}, {"path", str}},
          {"object", "path"}},
         {"material.save", "Save a shared material asset", true, {{"asset", str}}, {"asset"}},
+        {"graph.inspect",
+         "Read an open procedural graph: nodes, connections, cook status/timings and bounded 5-layer geometry statistics",
+         false,
+         {{"asset", str}, {"node", str}, {"timings", Argument::boolean}, {"samples", Argument::integer}},
+         {},
+         editor::OperatorKind::query},
+        {"graph.set_properties",
+         "Patch a procedural graph node or graph root (scalars, math tuples, enums and strings); one graph undo entry",
+         true,
+         {{"asset", str}, {"node", str}, {"properties", obj}},
+         {"properties"}},
+        {"graph.create_scratch",
+         "Create or open an in-memory scratch procedural graph and enter its SOP viewport context",
+         true,
+         {{"key", str}},
+         {}},
         {"repro.export",
          "Export an independent project from the current memory scene; does not save the original",
          true,
@@ -955,6 +971,8 @@ struct EditorControl::Impl {
             throw Failure("unsaved_changes", "Save the current scene before replacing it");
         if (!app.document_->dirty_materials().empty())
             throw Failure("unsaved_changes", "Save the open material assets before replacing the document");
+        if (!app.document_->dirty_graphs().empty())
+            throw Failure("unsaved_changes", "Save the open procedural graph assets before replacing the document");
         for (const auto& file : app.workspace_.source_editor.files())
             if (file->dirty())
                 throw Failure("unsaved_changes", "Source drafts are still open");
@@ -1122,6 +1140,8 @@ struct EditorControl::Impl {
         }
         for (const auto id : app.document_->material_objects())
             live.insert(id);
+        for (const auto id : app.document_->graph_objects())
+            live.insert(id);
         const auto objects_snapshot = live;
         for (const auto id : objects_snapshot)
             if (auto bindings = presentation::read_material_bindings(app.document_->world().runtime(), id); bindings)
@@ -1136,6 +1156,8 @@ struct EditorControl::Impl {
     }
 
     bool member(ObjectId object) const {
+        if (app.document_->is_graph_object(object))
+            return true;
         const auto materials = app.document_->material_objects();
         if (std::ranges::find(materials, object) != materials.end())
             return true;
@@ -1232,6 +1254,12 @@ struct EditorControl::Impl {
             }
             return result.finish();
         }
+        if (app.document_->is_graph_object(id)) {
+            if (const auto graph_key = app.document_->graph_of_object(id))
+                ATELIER_TRY(result.set(root, "graph", *graph_key));
+            if (const auto node_name = app.document_->graph_node_name(id))
+                ATELIER_TRY(result.set(root, "node_name", *node_name));
+        }
         for (const auto& property : take(app.document_->properties(id))) {
             const auto* prop_type = take(runtime.describe(property.type));
             const auto field = result.append_object(*properties);
@@ -1240,8 +1268,12 @@ struct EditorControl::Impl {
             ATELIER_TRY(result.set(field, "category", property.category));
             ATELIER_TRY(result.set(field, "description", property.description));
             ATELIER_TRY(result.set(field, "type", prop_type->name));
-            ATELIER_TRY_BIND(value, scalar_json(property.value, runtime));
-            result.set_validated(field, "value", value->root());
+            if (property.is_string) {
+                ATELIER_TRY(result.set(field, "value", property.string_value));
+            } else {
+                ATELIER_TRY_BIND(value, scalar_json(property.value, runtime));
+                result.set_validated(field, "value", value->root());
+            }
             if (prop_type->enumeration) {
                 const auto& enum_info = *prop_type->enumeration;
                 ATELIER_TRY_BIND(choices, result.array(field, "choices"));
@@ -1559,6 +1591,14 @@ struct EditorControl::Impl {
         ATELIER_TRY(result.set(root, "text_focus", app.ui_.wants_keyboard()));
         ATELIER_TRY(result.set(root, "undo", app.document_->undo_count()));
         ATELIER_TRY(result.set(root, "redo", app.document_->redo_count()));
+        ATELIER_TRY(result.set(root, "active_graph", app.workspace_.active_graph));
+        ATELIER_TRY(result.set(root, "selected_graph_node", app.workspace_.selected_graph_node));
+        {
+            const auto guides = result.object_validated(root, "sop_guides");
+            ATELIER_TRY(result.set(guides, "points", app.workspace_.sop_show_points));
+            ATELIER_TRY(result.set(guides, "normals", app.workspace_.sop_show_normals));
+            ATELIER_TRY(result.set(guides, "orient", app.workspace_.sop_show_orient));
+        }
         const auto camera = camera_json(app.document_->world().runtime(), app.camera_.state());
         result.set_validated(root, "camera", camera.root());
         ATELIER_TRY_BIND(view, view_json(app.workspace_.view));
@@ -1606,6 +1646,14 @@ struct EditorControl::Impl {
         for (const auto& key : app.document_->dirty_materials()) {
             ATELIER_TRY(result.append(*dirty, key));
         }
+        ATELIER_TRY_BIND(dirty_graphs, result.array(root, "dirty_graphs"));
+        for (const auto& key : app.document_->dirty_graphs()) {
+            ATELIER_TRY(result.append(*dirty_graphs, key));
+        }
+        ATELIER_TRY_BIND(open_graphs, result.array(root, "open_graphs"));
+        for (const auto& key : app.document_->open_graphs()) {
+            ATELIER_TRY(result.append(*open_graphs, key));
+        }
         ATELIER_TRY_BIND(types, result.array(root, "component_types"));
         for (const auto& type : take(app.document_->component_types())) {
             ATELIER_TRY(result.append(*types, type.name));
@@ -1615,6 +1663,142 @@ struct EditorControl::Impl {
         for (std::size_t i = 0; i < count; ++i) {
             ATELIER_TRY_BIND(asset, asset_json(i));
             result.append(*assets, asset->root());
+        }
+        return result.finish();
+    }
+
+    std::expected<json::Document, Failure> graph_summary_json(const editor::GraphGeometrySummary& summary) const {
+        json::Builder result;
+        const auto root = result.root();
+        ATELIER_TRY(result.set(root, "valid", summary.valid));
+        const auto counts = result.object_validated(root, "counts");
+        constexpr std::array layer_names{"point", "vertex", "primitive", "detail", "instance"};
+        for (std::size_t i = 0; i < layer_names.size(); ++i)
+            ATELIER_TRY(result.set(counts, layer_names[i], summary.counts[i]));
+        ATELIER_TRY(result.set(root, "has_bounds", summary.has_bounds));
+        if (summary.has_bounds) {
+            ATELIER_TRY(numbers(result, root, "bounds_min", summary.bounds_min));
+            ATELIER_TRY(numbers(result, root, "bounds_max", summary.bounds_max));
+        } else {
+            ATELIER_TRY(result.set_null(root, "bounds_min"));
+            ATELIER_TRY(result.set_null(root, "bounds_max"));
+        }
+        ATELIER_TRY_BIND(attributes, result.array(root, "attributes"));
+        for (std::size_t layer = 0; layer < layer_names.size(); ++layer)
+            for (const auto& attr : summary.attributes[layer]) {
+                const auto item = result.append_object(*attributes);
+                ATELIER_TRY(result.set(item, "layer", layer_names[layer]));
+                ATELIER_TRY(result.set(item, "name", attr.name));
+                ATELIER_TRY(result.set(item, "type", attr.type));
+                ATELIER_TRY(result.set(item, "components", attr.components));
+                ATELIER_TRY(result.set(item, "count", attr.count));
+                ATELIER_TRY(result.set(item, "non_finite_count", attr.non_finite_count));
+                if (!attr.minimum.empty()) {
+                    ATELIER_TRY(result.numbers(item, "minimum", std::span{attr.minimum}));
+                    ATELIER_TRY(result.numbers(item, "maximum", std::span{attr.maximum}));
+                    ATELIER_TRY(result.numbers(item, "mean", std::span{attr.mean}));
+                }
+                ATELIER_TRY_BIND(samples, result.array(item, "samples"));
+                for (const auto& sample : attr.sample_values)
+                    ATELIER_TRY(result.append(*samples, sample));
+            }
+        ATELIER_TRY_BIND(refs, result.array(root, "instance_references"));
+        for (const auto& [mesh_key, inst_count] : summary.instance_references) {
+            const auto item = result.append_object(*refs);
+            ATELIER_TRY(result.set(item, "mesh", mesh_key));
+            ATELIER_TRY(result.set(item, "count", inst_count));
+        }
+        return result.finish();
+    }
+
+    std::expected<json::Document, Failure> graph_inspect_json(const editor::GraphInspectView& view,
+                                                              std::string_view inspected_name,
+                                                              std::span<const editor::GraphNodeCatalogEntry> catalog) {
+        json::Builder result;
+        const auto root = result.root();
+        ATELIER_TRY(result.set(root, "asset", view.key));
+        result.set_validated(root, "graph", handle(view.graph));
+        ATELIER_TRY(result.set(root, "seed", view.seed));
+        ATELIER_TRY(result.set(root, "display", view.display));
+        ATELIER_TRY(result.set(root, "inspected_node", inspected_name));
+        ATELIER_TRY(result.set(root, "dirty", view.dirty));
+        ATELIER_TRY(result.set(root, "can_undo", view.can_undo));
+        ATELIER_TRY(result.set(root, "can_redo", view.can_redo));
+        if (view.display_error)
+            ATELIER_TRY(result.set(root, "display_error", view.display_error->message));
+        else
+            ATELIER_TRY(result.set_null(root, "display_error"));
+        if (view.inspected_error)
+            ATELIER_TRY(result.set(root, "inspected_error", view.inspected_error->message));
+        else
+            ATELIER_TRY(result.set_null(root, "inspected_error"));
+        const auto write_ports = [&](json::Value item, const editor::GraphPortInfo& ports) -> json::Result<void> {
+            ATELIER_TRY_BIND(inputs, result.array(item, "inputs"));
+            for (std::size_t i = 0; i < ports.inputs.size(); ++i) {
+                const auto port = result.append_object(*inputs);
+                ATELIER_TRY(result.set(port, "name", ports.inputs[i]));
+                ATELIER_TRY(result.set(port, "multiple", i < ports.multiple.size() && ports.multiple[i]));
+            }
+            ATELIER_TRY_BIND(outputs, result.array(item, "outputs"));
+            for (const auto& name : ports.outputs)
+                ATELIER_TRY(result.append(*outputs, name));
+            return {};
+        };
+        ATELIER_TRY_BIND(types, result.array(root, "node_types"));
+        for (const auto& type : catalog) {
+            const auto item = result.append_object(*types);
+            ATELIER_TRY(result.set(item, "name", type.name));
+            ATELIER_TRY(result.set(item, "description", type.description));
+            ATELIER_TRY(result.set(item, "native", type.native));
+            ATELIER_TRY(write_ports(item, type.ports));
+        }
+        ATELIER_TRY_BIND(nodes, result.array(root, "nodes"));
+        for (const auto& node : view.nodes) {
+            const auto item = result.append_object(*nodes);
+            ATELIER_TRY(result.set(item, "name", node.name));
+            result.set_validated(item, "handle", handle(node.id));
+            ATELIER_TRY(result.set(item, "type", node.type));
+            ATELIER_TRY(result.set(item, "placeholder", node.placeholder));
+            ATELIER_TRY(result.set(item, "display", node.is_display));
+            ATELIER_TRY(result.numbers(item, "position", std::span{node.position}));
+            ATELIER_TRY(write_ports(item, node.ports));
+            if (node.status) {
+                const auto st = result.object_validated(item, "status");
+                ATELIER_TRY(result.set(st, "evaluations", node.status->evaluations));
+                ATELIER_TRY(result.set(st, "cache_hits", node.status->cache_hits));
+                if (node.status->time)
+                    ATELIER_TRY(result.set(st, "cook_ms", double(node.status->time->count()) / 1e6));
+                else
+                    ATELIER_TRY(result.set_null(st, "cook_ms"));
+                if (node.status->error)
+                    ATELIER_TRY(result.set(st, "error", node.status->error->message));
+                else
+                    ATELIER_TRY(result.set_null(st, "error"));
+            } else {
+                ATELIER_TRY(result.set_null(item, "status"));
+            }
+        }
+        ATELIER_TRY_BIND(connections, result.array(root, "connections"));
+        for (const auto& conn : view.connections) {
+            const auto item = result.append_object(*connections);
+            ATELIER_TRY(result.set(item, "from_node", conn.from_node));
+            ATELIER_TRY(result.set(item, "from_port", conn.from_port));
+            ATELIER_TRY(result.set(item, "to_node", conn.to_node));
+            ATELIER_TRY(result.set(item, "to_port", conn.to_port));
+        }
+        ATELIER_TRY_BIND(issues, result.array(root, "issues"));
+        for (const auto& issue : view.issues) {
+            const auto item = result.append_object(*issues);
+            ATELIER_TRY(result.set(item, "kind", world::name(issue.kind)));
+            ATELIER_TRY(result.set(item, "message", issue.message));
+        }
+        ATELIER_TRY_BIND(disp_summary, graph_summary_json(view.display_summary));
+        result.set_validated(root, "display_summary", disp_summary->root());
+        if (view.inspected_summary) {
+            ATELIER_TRY_BIND(insp_summary, graph_summary_json(*view.inspected_summary));
+            result.set_validated(root, "inspected_summary", insp_summary->root());
+        } else {
+            ATELIER_TRY(result.set_null(root, "inspected_summary"));
         }
         return result.finish();
     }
@@ -2142,6 +2326,46 @@ struct EditorControl::Impl {
                 throw Failure("invalid_request", "Expected a material object");
             return object_json(target);
         }
+        if (op == "graph.inspect") {
+            ATELIER_TRY_BIND(asset_arg, args.find("asset"));
+            std::string key = app.workspace_.active_graph;
+            if (*asset_arg) {
+                ATELIER_TRY_BIND(value, text(**asset_arg));
+                key = std::move(*value);
+            }
+            if (key.empty() || !doc.has_graph(key))
+                throw Failure("invalid_request",
+                              "Open the procedural graph first (via op.call graph.open or graph.create_scratch)");
+            ATELIER_TRY_BIND(node_arg, args.find("node"));
+            std::string node_name =
+                key == app.workspace_.active_graph ? app.workspace_.selected_graph_node : std::string{};
+            if (*node_arg) {
+                ATELIER_TRY_BIND(value, text(**node_arg, 256));
+                node_name = std::move(*value);
+            }
+            ObjectId inspected_id{};
+            if (!node_name.empty()) {
+                const auto* node = doc.graph_node(key, node_name);
+                if (!node)
+                    throw Failure("invalid_request", "Unknown node in procedural graph: " + node_name);
+                inspected_id = node->node.id();
+            }
+            bool timings = false;
+            ATELIER_TRY_BIND(timings_arg, args.find("timings"));
+            if (*timings_arg) {
+                ATELIER_TRY_BIND(flag, (**timings_arg).boolean());
+                timings = *flag;
+            }
+            unsigned samples = 4;
+            ATELIER_TRY_BIND(samples_arg, args.find("samples"));
+            if (*samples_arg) {
+                ATELIER_TRY_BIND(n, integer(**samples_arg, 0, 32));
+                samples = *n;
+            }
+            const auto view =
+                take(doc.inspect_graph(key, app.project_ ? &*app.project_ : nullptr, inspected_id, timings, samples));
+            return graph_inspect_json(view, node_name, take(doc.procedural_node_types()));
+        }
         if (op == "job.status" || op == "job.cancel") {
             ATELIER_TRY_BIND(job_id, text(*args.at("job_id"), 80));
             for (auto& job : jobs)
@@ -2175,6 +2399,46 @@ struct EditorControl::Impl {
         idle();
         if (op == "op.call")
             return call_operator(args);
+        if (op == "graph.create_scratch") {
+            std::string key = "scratch/procedural";
+            ATELIER_TRY_BIND(key_arg, args.find("key"));
+            if (*key_arg) {
+                ATELIER_TRY_BIND(value, text(**key_arg, 256));
+                if (!value->empty())
+                    key = std::move(*value);
+            }
+            const auto graph = take(doc.create_scratch_graph(key));
+            take(app.open_graph_context(key));
+            json::Builder result;
+            ATELIER_TRY(result.set(result.root(), "asset", key));
+            result.set_validated(result.root(), "graph", handle(graph));
+            return result.finish();
+        }
+        if (op == "graph.set_properties") {
+            std::string key = app.workspace_.active_graph;
+            ATELIER_TRY_BIND(asset_arg, args.find("asset"));
+            if (*asset_arg) {
+                ATELIER_TRY_BIND(value, text(**asset_arg));
+                key = std::move(*value);
+            }
+            if (key.empty() || !doc.has_graph(key))
+                throw Failure("invalid_request", "Specify an open procedural graph or enter a graph context first");
+            std::string node_name =
+                key == app.workspace_.active_graph ? app.workspace_.selected_graph_node : std::string{};
+            ATELIER_TRY_BIND(node_arg, args.find("node"));
+            if (*node_arg) {
+                ATELIER_TRY_BIND(value, text(**node_arg, 256));
+                node_name = std::move(*value);
+            }
+            ATELIER_TRY_BIND(props, args.at("properties"));
+            if (props->kind() != json::Kind::object)
+                throw Failure("invalid_request", "properties must be a JSON object");
+            take(doc.graph_set_properties(key, node_name, *props));
+            json::Builder result;
+            ATELIER_TRY(result.set(result.root(), "asset", key));
+            ATELIER_TRY(result.set(result.root(), "node", node_name));
+            return result.finish();
+        }
         if (op.starts_with("material.")) {
             if (op == "material.create_scene") {
                 ATELIER_TRY_BIND(component, object(*args.at("component")));

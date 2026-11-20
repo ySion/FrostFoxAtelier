@@ -206,6 +206,7 @@ bool Control::operator==(const Control& other) const {
            button_behavior == other.button_behavior && menu_behavior == other.menu_behavior &&
            radio_group == other.radio_group && table == other.table && table_selection == other.table_selection &&
            table_layout == other.table_layout && code == other.code && tooltip == other.tooltip &&
+           (canvas == other.canvas || (canvas && other.canvas && *canvas == *other.canvas)) &&
            read_only == other.read_only;
 }
 
@@ -266,6 +267,32 @@ Result<void> validate_control_properties(const Control& control) {
         };
         if (!detail::valid_text(help.title) || !detail::valid_text(help.identity) || !multiline(help.description))
             return std::unexpected(Error{ErrorCode::invalid_control, control.key});
+    }
+    if (control.canvas) {
+        if (control.kind != ControlKind::container)
+            return std::unexpected(Error{ErrorCode::invalid_control, control.key});
+        const auto& c = *control.canvas;
+        if (!std::isfinite(c.grid_step) || c.grid_step < 0 || c.grid_step > 4096 || !std::isfinite(c.grid_origin_x) ||
+            !std::isfinite(c.grid_origin_y) || !valid_color(c.grid_minor) || !valid_color(c.grid_major) ||
+            !valid_color(c.grid_axis) || c.boxes.size() > CanvasData::max_boxes ||
+            c.strokes.size() > CanvasData::max_strokes)
+            return std::unexpected(Error{ErrorCode::invalid_control, control.key});
+        for (const auto& b : c.boxes) {
+            if (!std::isfinite(b.bounds.x) || !std::isfinite(b.bounds.y) || std::abs(b.bounds.x) > 1e6f ||
+                std::abs(b.bounds.y) > 1e6f || !std::isfinite(b.bounds.width) || !std::isfinite(b.bounds.height) ||
+                b.bounds.width < 0 || b.bounds.height < 0 || !valid_color(b.fill) || !valid_color(b.border_color) ||
+                !std::isfinite(b.border_width) || b.border_width < 0 || b.border_width > 64)
+                return std::unexpected(Error{ErrorCode::invalid_control, control.key});
+            for (float r : {b.radius.top_left, b.radius.top_right, b.radius.bottom_right, b.radius.bottom_left})
+                if (!std::isfinite(r) || r < 0 || r > 4096)
+                    return std::unexpected(Error{ErrorCode::invalid_control, control.key});
+        }
+        for (const auto& s : c.strokes) {
+            if (!std::isfinite(s.x0) || !std::isfinite(s.y0) || !std::isfinite(s.x1) || !std::isfinite(s.y1) ||
+                std::abs(s.x0) > 1e6f || std::abs(s.y0) > 1e6f || std::abs(s.x1) > 1e6f || std::abs(s.y1) > 1e6f ||
+                !std::isfinite(s.width) || s.width < 0 || s.width > 32 || !valid_color(s.color))
+                return std::unexpected(Error{ErrorCode::invalid_control, control.key});
+        }
     }
     if (control.default_value && (!std::isfinite(*control.default_value) || *control.default_value < control.minimum ||
                                   *control.default_value > control.maximum))
@@ -1246,6 +1273,75 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare(Preparation preparation)
                 paint_box(bounds, clip, background, appearance.image, radius, border, appearance.border,
                           appearance.border_style, appearance.border_edges, appearance.border_inner,
                           appearance.border_shadow);
+            }
+            if (state.control.canvas) {
+                const auto& c = *state.control.canvas;
+                const auto canvas_clip = intersect(target, intersect(clip, clip_rect(bounds)));
+                if (canvas_clip.right > canvas_clip.left && canvas_clip.bottom > canvas_clip.top) {
+                    if (c.grid_step * scale >= 6.f) {
+                        const float step_px = c.grid_step * scale;
+                        const float phase_x = std::fmod(c.grid_origin_x, c.grid_step * 5.f);
+                        const float ox = bounds.x + phase_x * scale;
+                        const double axis_x =
+                            std::round((static_cast<double>(c.grid_origin_x) - phase_x) / c.grid_step);
+                        const float phase_y = std::fmod(c.grid_origin_y, c.grid_step * 5.f);
+                        const float oy = bounds.y + phase_y * scale;
+                        const double axis_y =
+                            std::round((static_cast<double>(c.grid_origin_y) - phase_y) / c.grid_step);
+                        const float line_w = std::max(1.f, std::round(scale * .667f));
+                        const int ix0 = static_cast<int>(std::floor((canvas_clip.left - ox) / step_px));
+                        const int ix1 = static_cast<int>(std::ceil((canvas_clip.right - ox) / step_px));
+                        for (int ix = ix0; ix <= ix1; ++ix) {
+                            const Color col = ix == axis_x && c.grid_axis.a > 0   ? c.grid_axis
+                                              : ix % 5 == 0 && c.grid_major.a > 0 ? c.grid_major
+                                                                                  : c.grid_minor;
+                            if (col.a > 0)
+                                quad({std::round(ox + ix * step_px), static_cast<float>(canvas_clip.top), line_w,
+                                      static_cast<float>(canvas_clip.bottom - canvas_clip.top)},
+                                     canvas_clip, col);
+                        }
+                        const int iy0 = static_cast<int>(std::floor((canvas_clip.top - oy) / step_px));
+                        const int iy1 = static_cast<int>(std::ceil((canvas_clip.bottom - oy) / step_px));
+                        for (int iy = iy0; iy <= iy1; ++iy) {
+                            const Color col = iy == axis_y && c.grid_axis.a > 0   ? c.grid_axis
+                                              : iy % 5 == 0 && c.grid_major.a > 0 ? c.grid_major
+                                                                                  : c.grid_minor;
+                            if (col.a > 0)
+                                quad({static_cast<float>(canvas_clip.left), std::round(oy + iy * step_px),
+                                      static_cast<float>(canvas_clip.right - canvas_clip.left), line_w},
+                                     canvas_clip, col);
+                        }
+                    }
+                    for (const auto& b : c.boxes) {
+                        if (b.bounds.width <= 0 || b.bounds.height <= 0 ||
+                            (b.fill.a == 0 && (b.border_width <= 0 || b.border_color.a == 0)))
+                            continue;
+                        const Rect rect{bounds.x + b.bounds.x * scale, bounds.y + b.bounds.y * scale,
+                                        b.bounds.width * scale, b.bounds.height * scale};
+                        if (!visible(rect, canvas_clip))
+                            continue;
+                        const CornerRadii box_radius{b.radius.top_left * scale, b.radius.top_right * scale,
+                                                     b.radius.bottom_right * scale, b.radius.bottom_left * scale};
+                        const float bw = std::min({b.border_width * scale, rect.width * .5f, rect.height * .5f});
+                        draws->draws.push_back(
+                            {rect, canvas_clip, b.fill, {0, 0, 1, 1}, {}, box_radius, bw, b.border_color});
+                    }
+                    for (const auto& s : c.strokes) {
+                        if (s.width <= 0 || s.color.a == 0)
+                            continue;
+                        const float ax = bounds.x + s.x0 * scale;
+                        const float ay = bounds.y + s.y0 * scale;
+                        const float bx = bounds.x + s.x1 * scale;
+                        const float by = bounds.y + s.y1 * scale;
+                        const float w = s.width * scale;
+                        const float pad = w * .5f + 1.f;
+                        const Rect aabb{std::min(ax, bx) - pad, std::min(ay, by) - pad, std::abs(bx - ax) + 2.f * pad,
+                                        std::abs(by - ay) + 2.f * pad};
+                        if (visible(aabb, canvas_clip))
+                            draws->draws.push_back(
+                                {aabb, canvas_clip, s.color, {ax, ay, bx, by}, {}, {}, 0.f, {}, {}, {}, w});
+                    }
+                }
             }
             if (kind == ControlKind::tree) {
                 const auto padding = effective_padding(state.control, appearance);

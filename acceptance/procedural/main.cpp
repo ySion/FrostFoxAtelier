@@ -509,6 +509,7 @@ class game.FrameInputs : procedural.Node {
     }
 
     // 5. Graph-level failure must also clear output() while preserving last_valid_output().
+    std::shared_ptr<const Geometry> preview_geometry;
     {
         auto transient_graph = take(runtime.create(type<Graph>(runtime)));
         const auto transient_grid = take(add_node(runtime, transient_graph.id(), type<Grid>(runtime)));
@@ -519,6 +520,7 @@ class game.FrameInputs : procedural.Node {
                     transient_eval.last_valid_output() != nullptr &&
                     transient_eval.last_valid_output()->count(Layer::point) == 100,
                 "Transient graph initial evaluation failed.");
+        preview_geometry = transient_eval.retain_last_valid_output();
         take(runtime.destroy(transient_graph.id()));
         for (int attempt = 0; attempt < 2; ++attempt) {
             const auto destroyed_res = transient_eval.evaluate();
@@ -528,6 +530,9 @@ class game.FrameInputs : procedural.Node {
                     "Graph-level failure left stale output() non-null or dropped last_valid_output().");
         }
     }
+
+    require(preview_geometry && preview_geometry->count(Layer::point) == 100,
+            "An adopted preview lost its geometry when the evaluator closed.");
 
     // 6. Verify `procedural.Node` retired `Node.fail`, and multi-chunk parallel Source SOPs report mid-chunk `fail(...)`.
     {
@@ -565,6 +570,24 @@ class game.FrameInputs : procedural.Node {
                     chunk_eval.last_valid_output()->count(Layer::point) == 4096 && noise_status &&
                     noise_status->error && noise_status->error->message.contains("Noise coordinates must be finite"),
                 "In-worker parallel_for fail(...) in Noise did not propagate cleanly through Evaluator.");
+
+        // 7. Off-display node inspection cooks only the inspected branch without disturbing display output/fallback.
+        const auto inspect_branch = take(add_node(runtime, chunk_graph.id(), type<Box>(runtime)));
+        const auto grid_evals_before = chunk_eval.status(big_grid.id())->evaluations;
+        take(chunk_eval.evaluate_node(inspect_branch.id()));
+        require(chunk_eval.output() == nullptr && chunk_eval.last_valid_output() != nullptr &&
+                    chunk_eval.last_valid_output()->count(Layer::point) == 4096,
+                "evaluate_node altered display output() or last_valid_output().");
+        require(chunk_eval.node_output_count(inspect_branch.id()) == 1 &&
+                    chunk_eval.node_output(inspect_branch.id()) != nullptr &&
+                    chunk_eval.node_output(inspect_branch.id())->count(Layer::point) == 8 &&
+                    chunk_eval.node_output(inspect_branch.id(), 1) == nullptr &&
+                    chunk_eval.node_output(chunk_noise.id()) == nullptr &&
+                    chunk_eval.status(big_grid.id())->evaluations == grid_evals_before,
+                "evaluate_node / node_output returned wrong per-node geometry or re-ran unrelated nodes.");
+        const auto missing_node = chunk_eval.evaluate_node(chunk_graph.id());
+        require(!missing_node && missing_node.error().code == ErrorCode::argument_mismatch,
+                "evaluate_node accepted an ObjectId that is not a node of the graph.");
     }
 }
 

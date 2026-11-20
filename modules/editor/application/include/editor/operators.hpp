@@ -63,7 +63,13 @@ struct Context {
 
     RegionKind region{};
 
-    std::string asset; // Material asset key while Parameters inspects that asset.
+    std::string asset; // Material or procedural graph asset key while Parameters/SOP context inspects it.
+
+    std::string active_graph; // Non-empty when Scene View / Network is inside a SOP .procgraph context.
+
+    std::string selected_graph_node; // Selected node name in active_graph; empty selects Graph root settings.
+
+    std::vector<std::string> selected_graph_nodes; // Multi-node selection in active_graph Network View.
 
     HistoryState source_history; // The Code page's active document; both false without one.
 
@@ -119,7 +125,8 @@ enum class PathPurpose {
     source_save,
     texture,
     material_save,
-    material_source_save
+    material_source_save,
+    procedural_graph_save
 };
 
 // Owns every value needed after the invoking Session and its parameter storage retire.
@@ -228,6 +235,12 @@ public:
     virtual Result<std::string> import_asset(ImportKind, const std::filesystem::path&) = 0;
 
     virtual Result<void> reimport_asset(std::string_view key, const std::filesystem::path&) = 0;
+
+    virtual Result<void> open_graph_context(std::string_view key) = 0;
+
+    virtual void exit_graph_context() = 0;
+
+    virtual void select_graph_node(std::string_view key, std::string_view node_name) = 0;
 
 private:
     bool cancelled_{};

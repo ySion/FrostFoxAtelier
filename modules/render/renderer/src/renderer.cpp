@@ -325,9 +325,17 @@ Result<void> validate(const Frame& frame, MeshChecks& meshes) {
     }
     good &= material_slots < (1u << detail::face_slot_bits);
     for (const auto& draw : ui.draws) {
-        good &= valid(draw.bounds) && valid(draw.uv) && valid(draw.color) && valid(draw.border_color) &&
-                valid(draw.image_background) && finite(draw.border_width) && draw.border_width >= 0 &&
-                !(draw.coverage && draw.image);
+        const bool capsule = finite(draw.capsule_width) && draw.capsule_width > 0;
+        good &= valid(draw.bounds) && valid(draw.color) && valid(draw.border_color) && valid(draw.image_background) &&
+                finite(draw.border_width) && draw.border_width >= 0 && finite(draw.capsule_width) &&
+                draw.capsule_width >= 0 && draw.capsule_width <= 64 && !(draw.coverage && draw.image);
+        if (capsule) {
+            good &= !draw.coverage && !draw.image;
+            for (float v : {draw.uv.x, draw.uv.y, draw.uv.width, draw.uv.height})
+                good &= finite(v) && std::abs(v) < 1e7f;
+        } else {
+            good &= valid(draw.uv);
+        }
         for (float radius :
              {draw.radius.top_left, draw.radius.top_right, draw.radius.bottom_right, draw.radius.bottom_left})
             good &= finite(radius) && radius >= 0;
@@ -962,18 +970,24 @@ struct Renderer::State {
                                 std::clamp(item.clip.top, 0, int(frame.extent.height)),
                                 std::clamp(item.clip.right, 0, int(frame.extent.width)),
                                 std::clamp(item.clip.bottom, 0, int(frame.extent.height))};
+            const bool capsule = item.capsule_width > 0;
             if (clip.left >= clip.right || clip.top >= clip.bottom || item.bounds.width == 0 ||
-                item.bounds.height == 0 || !overlaps(item.bounds, clip) ||
-                (item.color.a == 0 && (!item.image || item.image_background.a == 0) &&
+                item.bounds.height == 0 || !overlaps(item.bounds, clip) || (capsule && item.color.a == 0) ||
+                (!capsule && item.color.a == 0 && (!item.image || item.image_background.a == 0) &&
                  (item.border_width == 0 || item.border_color.a == 0)))
                 continue;
-            const auto shading = item.coverage ? UiShading::coverage : item.image ? UiShading::image : UiShading::solid;
-            if (shading != UiShading::solid)
+            const auto shading = capsule         ? UiShading::capsule
+                                 : item.coverage ? UiShading::coverage
+                                 : item.image    ? UiShading::image
+                                                 : UiShading::solid;
+            if (shading == UiShading::coverage || shading == UiShading::image)
                 ui_textured.emplace_back(static_cast<std::uint32_t>(ui_instances.size()), &item);
-            ui_instances.push_back({item.bounds, item.uv, item.color, item.border_color,
-                                    fit_radius(item.radius, item.bounds), item.image_background,
-                                    std::min({item.border_width, item.bounds.width * .5f, item.bounds.height * .5f}),
-                                    std::to_underlying(shading), pack_clip(clip)});
+            ui_instances.push_back(
+                {item.bounds, item.uv, item.color, item.border_color,
+                 capsule ? ui::CornerRadii{item.capsule_width * .5f, 0, 0, 0} : fit_radius(item.radius, item.bounds),
+                 item.image_background,
+                 capsule ? 0.f : std::min({item.border_width, item.bounds.width * .5f, item.bounds.height * .5f}),
+                 std::to_underlying(shading), pack_clip(clip)});
         }
     }
 

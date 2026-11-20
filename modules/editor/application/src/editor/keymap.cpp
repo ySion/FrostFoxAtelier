@@ -53,6 +53,8 @@ std::span<const KeymapEntry> keymap() {
         {none, after_controls, 'Z', 1, 4, true, true, {"edit.undo"}, L"Ctrl+Z"},
         {none, after_controls, 'Z', 3, 4, true, true, {"edit.redo"}, L"Ctrl+Shift+Z"},
         {none, after_controls, 'Y', 1, 6, true, true, {"edit.redo"}, L"Ctrl+Y"},
+        {network, after_controls, VK_DELETE, 0, 7, false, true, {"graph.delete_node"}, L"Delete"},
+        {network, after_controls, 'L', 0, 0, false, false, {"graph.layout"}, L"L"},
         {none,
          after_controls,
          VK_DELETE,

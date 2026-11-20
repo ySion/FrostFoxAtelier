@@ -3,6 +3,7 @@
 #include "world/world.hpp"
 #include "world/diagnostic.hpp"
 #include "assets/reader.hpp"
+#include "editor/graph_view.hpp"
 #include "physics/physics.hpp"
 #include "presentation/presentation.hpp"
 #include <map>
@@ -10,6 +11,7 @@
 
 namespace atelier::editor {
 class Project;
+class ProjectCode;
 
 struct Parameter {
     const char* name;
@@ -53,6 +55,12 @@ struct Property {
     bool transient{};
 
     bool read_only{};
+
+    bool is_string{};
+
+    std::string string_value{};
+
+    std::string default_string_value{};
 };
 
 struct PropertyPatch {
@@ -411,6 +419,87 @@ public:
 
     bool material_can_undo(std::string_view key, bool redo = false) const;
 
+    void bind_project_code(const ProjectCode* code) noexcept { project_code_ = code; }
+
+    Result<std::vector<GraphNodeCatalogEntry>> procedural_node_types();
+
+    Result<ObjectId> open_graph(Project&, std::string_view key);
+
+    Result<ObjectId> create_scratch_graph(std::string_view key = "scratch/procedural");
+
+    bool has_graph(std::string_view key) const noexcept;
+
+    ObjectId loaded_graph(std::string_view key) const noexcept;
+
+    bool is_graph_object(ObjectId) const noexcept;
+
+    std::vector<ObjectId> graph_objects() const;
+
+    std::vector<std::string> open_graphs() const;
+
+    std::optional<std::string> graph_of_object(ObjectId) const;
+
+    std::optional<std::string> graph_node_name(ObjectId) const;
+
+    const GraphNode* graph_node(std::string_view key, std::string_view name) const noexcept;
+
+    ObjectId graph_node_id(std::string_view key, std::string_view name) const noexcept;
+
+    const GraphDocument* graph_document(std::string_view key) const noexcept;
+
+    bool graph_dirty(std::string_view key) const;
+
+    std::vector<std::string> dirty_graphs() const;
+
+    bool graph_can_undo(std::string_view key, bool redo = false) const;
+
+    Result<void> graph_undo(std::string_view key, bool redo = false);
+
+    Result<void> save_graph(Project&, std::string_view key);
+
+    Result<std::string> graph_add_node(std::string_view key, std::string_view type_name,
+                                       std::string_view desired_name = {}, std::array<float, 2> position = {});
+
+    Result<std::string> graph_place_node(std::string_view key, std::string_view type_name,
+                                         std::array<float, 2> position, std::string_view from_node = {},
+                                         std::string_view from_port = {}, std::string_view to_node = {},
+                                         std::string_view to_port = {}, bool set_display = false);
+
+    Result<void> graph_remove_nodes(std::string_view key, std::span<const std::string> names);
+
+    Result<void> graph_rename_node(std::string_view key, std::string_view old_name, std::string_view new_name);
+
+    Result<void> graph_move_nodes(std::string_view key,
+                                  std::span<const std::pair<std::string, std::array<float, 2>>> moves);
+
+    Result<void> graph_auto_layout(std::string_view key);
+
+    Result<void> graph_connect(std::string_view key, std::string_view from_node, std::string_view from_port,
+                               std::string_view to_node, std::string_view to_port);
+
+    Result<void> graph_disconnect(std::string_view key, std::string_view to_node, std::string_view to_port,
+                                  std::string_view from_node = {}, std::string_view from_port = {});
+
+    Result<void> graph_disconnect_edges(std::string_view key, std::span<const GraphConnectionView> edges);
+
+    Result<void> graph_rewire(std::string_view key, const GraphConnectionView& remove_edge,
+                              std::string_view new_to_node, std::string_view new_to_port);
+
+    Result<void> graph_set_display(std::string_view key, std::string_view node_name);
+
+    Result<void> graph_set_properties(std::string_view key, std::string_view node_name, json::Value properties);
+
+    Result<void> set_string_property(ObjectId, std::span<const FieldId>, std::string_view value);
+
+    Result<GraphEvaluation> evaluate_graph(std::string_view key, Project* = nullptr, ObjectId inspected_node = {},
+                                           bool record_timings = false);
+
+    // Cached authoring topology and last cooked node status. Reading it never cooks or scans geometry.
+    Result<std::shared_ptr<const GraphInspectView>> graph_topology(std::string_view key);
+
+    Result<GraphInspectView> inspect_graph(std::string_view key, Project* = nullptr, ObjectId inspected_node = {},
+                                           bool record_timings = false, std::size_t max_samples = 4);
+
     bool owns_edit(std::uint64_t control_session) const noexcept;
 
     Result<world::Commit> undo(Project* = nullptr);
@@ -489,7 +578,8 @@ public:
     Result<ObjectId> local_object(std::uint64_t) const;
 
     bool dirty() const noexcept {
-        return !saved_cursor_ || *saved_cursor_ != cursor_ || active_ || group_ || transform_ ||
+        return !saved_cursor_ || *saved_cursor_ != cursor_ || (active_ && !is_graph_object(active_->root.id())) ||
+               (group_ && !is_graph_object(group_->root.id())) || transform_ ||
                (material_edit_ && material_edit_->scene);
     }
 
@@ -757,6 +847,10 @@ private:
 
     std::shared_ptr<void> prepared_;
 
+    std::shared_ptr<source::Program> engine_program_;
+
+    const ProjectCode* project_code_{};
+
     world::World world_;
 
     std::optional<presentation::Scene> presentation_;
@@ -846,6 +940,10 @@ private:
     };
 
     std::unordered_map<std::string, MaterialDocument> materials_;
+
+    struct OpenGraph;
+
+    std::unordered_map<std::string, std::shared_ptr<OpenGraph>> graphs_;
 
     std::unordered_map<ObjectId, std::string> scene_material_parents_; // Non-owning; survives parent loss.
 
@@ -947,5 +1045,12 @@ private:
     static Result<void> validate_name(std::wstring_view);
 
     Result<world::Commit> replay(Change&, bool forward, Project*);
+
+    void close_graphs() noexcept;
+
+    Result<const source::Program*> ensure_procedural_program();
+
+    Result<void> remember_graph_scalar_edit(ObjectRoot target, std::vector<world::FieldPath> paths,
+                                            std::vector<Scalar> before, std::vector<Scalar> after);
 };
 }

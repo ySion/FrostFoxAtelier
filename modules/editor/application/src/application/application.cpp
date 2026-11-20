@@ -4,6 +4,7 @@
 #include "application/diagnostics.hpp"
 #include "editor/error.hpp"
 #include "editor/keymap.hpp"
+#include "procedural/graph.hpp"
 #include "foundation/result.hpp"
 #include "logging/native.hpp"
 #include "memory/fatal.hpp"
@@ -319,7 +320,7 @@ Result<void> Application::run_operator(const editor::OperatorCall& call, bool re
 // Command transitions retire the old owner before releasing native capture;
 // cleanup must run before the command can establish a new gesture.
 Result<void> Application::end_interaction() {
-    if (camera_drag_)
+    if (camera_drag_ || workspace_.network.active_gesture())
         cancel_interaction(ui_.cancel_interaction());
     ATELIER_TRY(viewport_tool_.cancel(*document_));
     if (!workspace_.menu)
@@ -457,6 +458,8 @@ Result<void> Application::action(const ui::Action& source) {
     }
     if (workspace_.output.apply(event))
         return {};
+    if (workspace_.spreadsheet.apply(event))
+        return {};
     using namespace editor::control;
     const auto invalid = [] {
         return std::unexpected(
@@ -550,6 +553,88 @@ Result<void> Application::action(const ui::Action& source) {
         ATELIER_TRY_BIND(located, workspace_.source_editor.locate_problem());
         if (*located)
             pending_source_focus_ = true;
+        return {};
+    }
+    if (event.kind == ui::ActionKind::activate && event.key == editor::network_control::new_scratch) {
+        ATELIER_TRY(document_->create_scratch_graph());
+        return open_graph_context("scratch/procedural");
+    }
+    if (event.kind == ui::ActionKind::activate && event.key == editor::network_control::add_node) {
+        if (workspace_.active_graph.empty() || !document_->has_graph(workspace_.active_graph) ||
+            document_->world().running())
+            return {};
+        ui_layout::Size canvas_dip{640.f, 360.f};
+        if (ui_.presented())
+            if (const auto* box = ui_.presented()->find(editor::network_control::canvas);
+                box && box->bounds.width > 0.f && box->bounds.height > 0.f)
+                canvas_dip = {box->bounds.width / window_.dpi_scale(), box->bounds.height / window_.dpi_scale()};
+        std::string from_node;
+        std::string from_port;
+        if (!workspace_.selected_graph_node.empty())
+            if (const auto inspected = document_->graph_topology(workspace_.active_graph)) {
+                const auto at = std::ranges::find((*inspected)->nodes, workspace_.selected_graph_node,
+                                                  &editor::GraphNodeView::name);
+                if (at != (*inspected)->nodes.end() && !at->ports.outputs.empty()) {
+                    from_node = at->name;
+                    from_port = at->ports.outputs.front();
+                }
+            }
+        if (!source.target) {
+            const auto dip =
+                workspace_.network.to_dip(workspace_.network_context_pos[0], workspace_.network_context_pos[1]);
+            workspace_.network.open_tab_search(dip[0], dip[1], canvas_dip, std::move(from_node), std::move(from_port));
+        } else {
+            workspace_.network.open_tab_search(std::max(12.f, canvas_dip.width * .5f - 120.f),
+                                               std::min(72.f, std::max(12.f, canvas_dip.height * .22f)), canvas_dip,
+                                               std::move(from_node), std::move(from_port));
+        }
+        workspace_.dock.select(editor::network_control::tab);
+        pending_network_search_focus_ = true;
+        workspace_.status = L"Tab search · Type to filter · Up/Down select · Enter create · Esc cancel";
+        return {};
+    }
+    if (event.kind == ui::ActionKind::activate && event.key == editor::network_control::frame_all) {
+        if (workspace_.active_graph.empty() || !document_->has_graph(workspace_.active_graph))
+            return {};
+        ui_layout::Size canvas_dip{640.f, 360.f};
+        if (ui_.presented())
+            if (const auto* box = ui_.presented()->find(editor::network_control::canvas);
+                box && box->bounds.width > 0.f && box->bounds.height > 0.f)
+                canvas_dip = {box->bounds.width / window_.dpi_scale(), box->bounds.height / window_.dpi_scale()};
+        ATELIER_TRY_BIND(inspected, document_->graph_topology(workspace_.active_graph));
+        workspace_.network.frame_nodes((*inspected)->nodes, canvas_dip);
+        workspace_.status = L"Framed all SOP nodes";
+        return {};
+    }
+    if (event.kind == ui::ActionKind::activate && event.key == editor::network_control::zoom_reset) {
+        ui_layout::Size canvas_dip{640.f, 360.f};
+        if (ui_.presented())
+            if (const auto* box = ui_.presented()->find(editor::network_control::canvas);
+                box && box->bounds.width > 0.f && box->bounds.height > 0.f)
+                canvas_dip = {box->bounds.width / window_.dpi_scale(), box->bounds.height / window_.dpi_scale()};
+        workspace_.network.reset_zoom(canvas_dip);
+        workspace_.status = L"Network zoom 100%";
+        return {};
+    }
+    if (event.key == editor::network_control::tab_search_input) {
+        if (const auto* text = std::get_if<std::wstring>(&event.value))
+            if (event.kind == ui::ActionKind::edit_preview || event.kind == ui::ActionKind::edit_commit)
+                workspace_.network.set_tab_query(*text);
+        return {};
+    }
+    if (event.kind == ui::ActionKind::activate && event.key >= editor::network_control::tab_pick_first &&
+        event.key < editor::network_control::tab_pick_first + 12) {
+        if (workspace_.active_graph.empty() || !document_->has_graph(workspace_.active_graph) ||
+            !workspace_.network.tab_search().open)
+            return {};
+        ATELIER_TRY_BIND(catalog, document_->procedural_node_types());
+        ATELIER_TRY_BIND(created, workspace_.network.commit_tab_pick(
+                                      *document_, workspace_.active_graph, *catalog,
+                                      static_cast<std::size_t>(event.key - editor::network_control::tab_pick_first),
+                                      workspace_.selected_graph_node, workspace_.selected_graph_nodes, false));
+        effects(ui_.focus(0));
+        workspace_.bump_view_revision();
+        workspace_.status = L"Added SOP node: " + platform::utf8_to_utf16_validated(*created);
         return {};
     }
     if (event.kind == ui::ActionKind::activate)
@@ -650,6 +735,8 @@ Result<void> Application::action(const ui::Action& source) {
             workspace_.dock.select(editor::control::parameters_tab);
         } else if (selected->kind == assets::AssetKind::scene)
             return open_scene(selected->path);
+        else if (selected->kind == assets::AssetKind::procedural_graph && project_)
+            return open_graph_context(selected->key);
         else if (selected->kind == assets::AssetKind::source && project_) {
             ATELIER_TRY_BIND(path, project_->resolve(selected->path));
             return open_source(*path);
@@ -670,11 +757,19 @@ Result<void> Application::action(const ui::Action& source) {
         if (const auto direction = navigation_direction(event.key))
             return done(workspace_.navigate(*document_, *this, direction), L"Selection history");
         if (event.key == world_context) {
+            if (!workspace_.active_graph.empty()) {
+                exit_graph_context();
+                workspace_.status = L"World context";
+                return {};
+            }
             return done(workspace_.select_object(*document_, *this, {}), L"World context");
         }
     }
-    if (event.kind == ui::ActionKind::select && event.key == tree_world)
+    if (event.kind == ui::ActionKind::select && event.key == tree_world) {
+        if (!workspace_.active_graph.empty())
+            exit_graph_context();
         return done(workspace_.select_tree(*document_, *this, event.key), L"World context");
+    }
     if (event.kind == ui::ActionKind::expand) {
         // A filter shows every matching row expanded; row expansion resumes when it clears.
         const auto* expanded = std::get_if<bool>(&event.value);
@@ -805,14 +900,19 @@ Result<void> Application::action(const ui::Action& source) {
         if (event.kind == ui::ActionKind::select &&
             (binding->kind == editor::Workspace::Binding::Kind::object ||
              binding->kind == editor::Workspace::Binding::Kind::structure) &&
-            binding->path.empty())
+            binding->path.empty()) {
+            if (!workspace_.active_graph.empty())
+                exit_graph_context();
             return done(workspace_.select_tree(*document_, *this, event.key,
                                                std::get_if<ui::SelectionModifiers>(&event.value)
                                                    ? std::get<ui::SelectionModifiers>(event.value)
                                                    : ui::SelectionModifiers{}),
                         L"Tree selection updated");
+        }
         if (binding->kind == editor::Workspace::Binding::Kind::navigation) {
             if (event.kind == ui::ActionKind::activate) {
+                if (!workspace_.active_graph.empty())
+                    exit_graph_context();
                 workspace_.inspecting_asset = false;
                 workspace_.dock.select(editor::control::parameters_tab);
                 return done(workspace_.select_object(*document_, *this, binding->object), L"Object selected");
@@ -824,6 +924,16 @@ Result<void> Application::action(const ui::Action& source) {
                 auto name = platform::utf16_to_utf8(std::get<std::wstring>(event.value));
                 if (!name)
                     return std::unexpected(Error{ErrorCode::invalid_storage, "Invalid UTF-16 text."});
+                if (document_->is_graph_object(binding->object)) {
+                    const auto current_name = document_->graph_node_name(binding->object);
+                    if (!current_name || *current_name == *name)
+                        return {};
+                    json::Builder args;
+                    static_cast<void>(args.set(args.root(), "node", *current_name));
+                    static_cast<void>(args.set(args.root(), "name", *name));
+                    return done(run_operator({"graph.rename_node", args.finish()}, true, false),
+                                L"Node renamed / Undo restores its name");
+                }
                 json::Builder args;
                 args.set_validated(args.root(), "name", *name);
                 return done(
@@ -836,6 +946,18 @@ Result<void> Application::action(const ui::Action& source) {
                     L"Entity renamed / Undo restores its name");
             }
             return {};
+        }
+        if (binding->kind == editor::Workspace::Binding::Kind::text_field) {
+            if (event.kind != ui::ActionKind::edit_commit)
+                return {};
+            const auto* wide = std::get_if<std::wstring>(&event.value);
+            if (!wide)
+                return invalid();
+            const auto utf8 = platform::utf16_to_utf8(*wide);
+            if (!utf8)
+                return std::unexpected(Error{ErrorCode::invalid_storage, "Invalid UTF-16 text."});
+            return done(document_->set_string_property(binding->object, binding->path, *utf8),
+                        L"String parameter updated / Undo restores its value");
         }
         if (binding->kind == editor::Workspace::Binding::Kind::position_default) {
             if (event.kind != ui::ActionKind::reset)
@@ -913,10 +1035,12 @@ Result<void> Application::action(const ui::Action& source) {
                 }
                 args.set(value, *checked);
                 const auto entity = document_->selection().entity;
+                const auto selection_ctx = document_->is_graph_object(binding->object)
+                                               ? editor::SelectionContext{ObjectId{}, binding->object, {}}
+                                               : editor::SelectionContext{entity, binding->object, {entity}};
                 return done(run_operator({"scene.set_properties",
                                           args.finish(),
-                                          {.selection = editor::SelectionContext{entity, binding->object, {entity}},
-                                           .region = editor::RegionKind::parameters}}),
+                                          {.selection = selection_ctx, .region = editor::RegionKind::parameters}}),
                             L"Property changed");
             }
         const auto* value = std::get_if<double>(&event.value);
@@ -1186,6 +1310,65 @@ Result<void> Application::rename_asset(std::string_view key, std::string_view na
     return {};
 }
 
+Result<void> Application::open_graph_context(std::string_view key) {
+    close_menu(false);
+    const auto edit = ui_.commit_edit();
+    if (!edit || !effects(*edit))
+        return std::unexpected(
+            Error{ErrorCode::invalid_storage, "Finish the current field edit before switching context."});
+    ATELIER_TRY(finish_color_edit(true));
+    ATELIER_TRY(viewport_tool_.cancel(*document_));
+    if (!document_->has_graph(key)) {
+        if (!project_)
+            return std::unexpected(
+                Error{ErrorCode::invalid_storage, "Open a project before opening a procedural graph asset."});
+        ATELIER_TRY(document_->open_graph(*project_, key));
+    }
+    workspace_.inspecting_asset = false;
+    workspace_.material_inspection.clear();
+    workspace_.active_graph = std::string(key);
+    if (const auto* doc = document_->graph_document(key)) {
+        std::optional<std::string> disp_name;
+        if (doc->graph.registered())
+            if (const auto listed = procedural::contents(document_->world().runtime(), doc->graph.id()))
+                if (listed->display() != ObjectId{})
+                    disp_name = document_->graph_node_name(listed->display());
+        if (disp_name)
+            workspace_.set_single_graph_selection(*disp_name);
+        else if (!doc->nodes.empty())
+            workspace_.set_single_graph_selection(doc->nodes.back().name);
+        else
+            workspace_.set_single_graph_selection({});
+    } else
+        workspace_.set_single_graph_selection({});
+    workspace_.dock.select(editor::network_control::tab);
+    workspace_.dock.select(editor::control::parameters_tab);
+    workspace_.bump_view_revision();
+    camera_cut_ = true;
+    workspace_.status = L"SOP context: " + workspace_.graph_path_title(project_ ? &*project_ : nullptr);
+    return {};
+}
+
+void Application::exit_graph_context() {
+    close_menu(false);
+    workspace_.network.cancel_gesture();
+    workspace_.network.set_cut_key(false);
+    workspace_.network.close_tab_search();
+    workspace_.active_graph.clear();
+    workspace_.set_single_graph_selection({});
+    workspace_.bump_view_revision();
+    camera_cut_ = true;
+}
+
+void Application::select_graph_node(std::string_view key, std::string_view node_name) {
+    if (workspace_.active_graph != key)
+        return;
+    workspace_.inspecting_asset = false;
+    workspace_.material_inspection.clear();
+    workspace_.set_single_graph_selection(node_name);
+    workspace_.bump_view_revision();
+}
+
 void Application::select_box() {
     viewport_tool_.arm_box_select(pointer_position_, false);
     window_.capture(true);
@@ -1346,6 +1529,8 @@ void Application::cancel_interaction(const ui::Reply& reply, std::string_view in
     finish_camera_fly(false);
     camera_fly_release_.reset();
     camera_drag_.reset();
+    workspace_.network.cancel_gesture();
+    workspace_.network.set_cut_key(false);
     workspace_.lighting.cancel();
     const auto color_cancelled = finish_color_edit(false);
     close_menu(false, caller, input_event);
@@ -1838,6 +2023,8 @@ Result<void> Application::native(NativeEvent message) {
 Result<void> Application::input(const ui::Event& event, WPARAM native_key) {
     if (event.kind != ui::EventKind::pointer_move)
         ui_.dismiss_tooltip();
+    if (event.kind == ui::EventKind::key_up && (native_key == 'Y' || event.key == ui::Key::y))
+        workspace_.network.set_cut_key(false);
     if (event.kind == ui::EventKind::pointer_leave) {
         effects(ui_.input(event));
         return {};
@@ -1872,6 +2059,10 @@ Result<void> Application::input(const ui::Event& event, WPARAM native_key) {
     if (pointer)
         pointer_position_ = {event.x, event.y};
     if ((camera_fly_ || viewport_tool_.active()) && viewport_input(event, static_cast<std::uint32_t>(native_key))) {
+        ui_.dismiss_tooltip();
+        return {};
+    }
+    if (workspace_.network.active_gesture() && network_input(event, static_cast<std::uint32_t>(native_key))) {
         ui_.dismiss_tooltip();
         return {};
     }
@@ -1930,6 +2121,11 @@ Result<void> Application::input(const ui::Event& event, WPARAM native_key) {
         return {};
     if (viewport_input(event, static_cast<std::uint32_t>(native_key))) {
         ui_.dismiss_tooltip();
+        return {};
+    }
+    if (network_input(event, static_cast<std::uint32_t>(native_key))) {
+        if (event.kind != ui::EventKind::pointer_move || workspace_.network.active_gesture())
+            ui_.dismiss_tooltip();
         return {};
     }
     auto reply = ui_.input(event);
@@ -2207,12 +2403,28 @@ Result<bool> Application::run_step(renderer::Capture* capture, StepTimes* times)
     viewport_tool_.forget(*document_);
     if (had_viewport_gesture && !viewport_tool_.active())
         window_.capture(false);
+    const bool in_sop = !workspace_.active_graph.empty() && document_->has_graph(workspace_.active_graph);
     renderer::Result<renderer::Preparation> material_preparation{renderer::Preparation{0, 0, true}};
     {
         timing::Scope snapshot{phases::scene};
         if (viewport) {
-            take(scene_.refresh(*document_));
-            material_preparation = scene_.prepare(renderer_);
+            if (in_sop) {
+                const auto eval = document_->evaluate_graph(workspace_.active_graph, project_ ? &*project_ : nullptr);
+                if (!eval) {
+                    take(procedural_preview_.refresh(*document_, project_ ? &*project_ : nullptr, nullptr, 0));
+                    workspace_.render_notice = L"SOP cook error: " + diagnostic_text(eval.error().message);
+                } else {
+                    take(procedural_preview_.refresh(*document_, project_ ? &*project_ : nullptr, eval->preview_output,
+                                                     eval->generation));
+                    if (eval->display_error)
+                        workspace_.render_notice = L"SOP cook error: " + diagnostic_text(eval->display_error->message) +
+                                                   (eval->preview_output ? L" (showing last valid output)" : L"");
+                }
+                material_preparation = procedural_preview_.prepare(renderer_);
+            } else {
+                take(scene_.refresh(*document_));
+                material_preparation = scene_.prepare(renderer_);
+            }
             if (!material_preparation) {
                 if (material_preparation.error().terminal)
                     throw std::runtime_error("Renderer stopped: " + material_preparation.error().cause.message);
@@ -2230,8 +2442,9 @@ Result<bool> Application::run_step(renderer::Capture* capture, StepTimes* times)
             sync_world_view();
     }
     diagnostics();
-    const auto* scene = viewport ? scene_.draw() : nullptr;
-    if (viewport && !scene) {
+    const auto* scene = viewport && !in_sop ? scene_.draw() : nullptr;
+    const auto* sop_draw = viewport && in_sop ? procedural_preview_.draw() : nullptr;
+    if (viewport && (in_sop ? !sop_draw : !scene)) {
         // Do not submit a partial first group. Input still belongs to the last
         // accepted view, if any; compilation never publishes a picking frame.
         lighting_clock_.reset();
@@ -2241,35 +2454,50 @@ Result<bool> Application::run_step(renderer::Capture* capture, StepTimes* times)
     const bool material_pending = viewport && (!material_preparation || !material_preparation->ready);
     const auto camera = camera_.matrices(std::max(scene_bounds.width, 1.f) / std::max(scene_bounds.height, 1.f));
     auto viewport_view = editor::ViewportView::make(camera_, scene_bounds, window_.dpi_scale());
-    if (scene)
+    if (sop_draw)
+        viewport_view.scene = sop_draw->picking;
+    else if (scene)
         viewport_view.scene = scene->picking;
     overlay_.clear();
-    if (viewport)
-        viewport_tool_.overlay(*document_, viewport_view, workspace_.viewport_settings, overlay_);
+    if (viewport) {
+        if (in_sop) {
+            if (sop_draw && sop_draw->shown_geometry)
+                append_procedural_guides(
+                    *sop_draw->shown_geometry, viewport_view,
+                    {workspace_.sop_show_points, workspace_.sop_show_normals, workspace_.sop_show_orient, true},
+                    overlay_);
+        } else
+            viewport_tool_.overlay(*document_, viewport_view, workspace_.viewport_settings, overlay_);
+    }
     const bool projection_cut = accepted_view_ && accepted_view_->orthographic != viewport_view.orthographic;
     renderer::Capture control_capture;
     const bool capturing_control = control_ && control_->wants_capture();
     auto* frame_capture = capture ? capture : capturing_control ? &control_capture : nullptr;
     const auto effective_view = control_ ? control_->view() : workspace_.view;
-    renderer::Frame render_frame{
-        *frame.drawing,
-        {camera.view, camera.projection, camera.far_depth},
-        scene_bounds,
-        scene ? std::span<const renderer::MeshInstance>{scene->meshes} : std::span<const renderer::MeshInstance>{},
-        effective_view,
-        overlay_,
-        scene ? std::span<const renderer::Light>{scene->lights} : std::span<const renderer::Light>{},
-        scene ? scene->identity : scene_.identity,
-        camera_cut_ || projection_cut,
-        rendering::sky_radiance(effective_view.lit),
-        lighting_focus()};
-    render_frame.materials = scene ? scene->materials.get() : nullptr;
+    const auto frame_meshes = sop_draw ? std::span<const renderer::MeshInstance>{sop_draw->meshes}
+                              : scene  ? std::span<const renderer::MeshInstance>{scene->meshes}
+                                       : std::span<const renderer::MeshInstance>{};
+    const auto frame_lights =
+        scene ? std::span<const renderer::Light>{scene->lights} : std::span<const renderer::Light>{};
+    const auto frame_identity = sop_draw ? sop_draw->identity : scene ? scene->identity : scene_.identity;
+    renderer::Frame render_frame{*frame.drawing,
+                                 {camera.view, camera.projection, camera.far_depth},
+                                 scene_bounds,
+                                 frame_meshes,
+                                 effective_view,
+                                 overlay_,
+                                 frame_lights,
+                                 frame_identity,
+                                 camera_cut_ || projection_cut,
+                                 rendering::sky_radiance(effective_view.lit),
+                                 lighting_focus()};
+    render_frame.materials = sop_draw ? sop_draw->materials.get() : scene ? scene->materials.get() : nullptr;
     render_frame.command_trace = control_ ? control_->command_trace() : nullptr;
     std::optional<renderer::Result<renderer::FrameResult>> traced_result;
     if (render_frame.command_trace)
         traced_result.emplace();
     const auto lighting_start = Clock::now();
-    const bool lighting_active = scene && scene_bounds.width > 0 && scene_bounds.height > 0 && !scene->meshes.empty() &&
+    const bool lighting_active = scene_bounds.width > 0 && scene_bounds.height > 0 && !frame_meshes.empty() &&
                                  effective_view.shading == renderer::Shading::scene_lit &&
                                  effective_view.wireframe != renderer::Wireframe::only && effective_view.lit.ddgi;
     render_frame.render_delta_seconds = lighting_clock_.delta(lighting_start, lighting_active);
@@ -2338,6 +2566,13 @@ Result<bool> Application::run_step(renderer::Capture* capture, StepTimes* times)
             pending_source_focus_ = false;
             if (workspace_.source_editor.active())
                 effects(ui_.focus(editor::source_control::buffer));
+        }
+        if (pending_network_search_focus_ &&
+            (!workspace_.network.tab_search().open ||
+             (ui_.presented() && ui_.presented()->find(editor::network_control::tab_search_input)))) {
+            pending_network_search_focus_ = false;
+            if (workspace_.network.tab_search().open)
+                effects(ui_.focus(editor::network_control::tab_search_input));
         }
         // A revealed row can take a frame to be described and presented.
         if (pending_rename_focus_ &&
@@ -2420,6 +2655,7 @@ Result<void> Application::close() {
     diagnostics();
     retire(completion(closed));
     scene_.reset();
+    procedural_preview_.reset();
     retire(renderer_.close().transform_error(renderer_error));
     return result;
 }

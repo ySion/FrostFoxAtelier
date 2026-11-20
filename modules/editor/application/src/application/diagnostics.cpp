@@ -22,7 +22,11 @@ Error renderer_error(const renderer::Error& error) {
 }
 
 std::wstring diagnostic_text(std::string_view message) noexcept {
-    return platform::utf8_to_utf16(message).value_or(L"(诊断文本不是有效 UTF-8)");
+    auto text = platform::utf8_to_utf16(message).value_or(L"(诊断文本不是有效 UTF-8)");
+    for (auto& ch : text)
+        if (ch < 32 && ch != L'\n' && ch != L'\r' && ch != L'\t')
+            ch = static_cast<wchar_t>(0x2400 + ch); // Unicode control pictures keep embedded bytes visible.
+    return text;
 }
 
 std::string diagnostic_text(std::wstring_view message) noexcept {

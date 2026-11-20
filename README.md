@@ -20,7 +20,7 @@
 | 进程日志与 Project Output | Quill 后台日志、结构化 JSONL、增量 Reader、独立健康/丢失状态、完整只读正文与原始源码定位；Editor / Runner 分别拥有 run | [日志合同与验收入口](docs/modules/logging/README.md) |
 | 源码调试核心 | 精确版本断点、进入/跳过/跳出、只读调用栈与有界局部值、受保护暂停和受控终止 | [调试接口与寿命](docs/source-debugger.md) |
 | Jolt 物理 | PrimitiveComponent 统一网格与碰撞配置、子 Entity 多刚体、查询/触发、Cook 资产与 9 个官方 Physic 示例 | [物理模块](docs/modules/physics/README.md)、[接入与更新](#jolt-物理依赖) |
-| 程序化几何与节点图 | 分层属性的 Geometry 值（列写时复制）、撒点/变换/Promote/Copy to Points 等 C++ 操作、实例按块发布；由 Runtime 对象构成的节点图与按内容键缓存的增量求值；尚未接入场景与编辑器 | [程序化模块](docs/modules/procedural/README.md) |
+| 程序化几何与节点图 | 分层属性的 Geometry 值（列写时复制）、撒点/变换/Promote/Copy to Points 等 C++ 与 `.source` 操作、实例按块发布；由 Runtime 对象构成的节点图、按内容键缓存的增量求值，以及编辑器的 `.procgraph` SOP 视口上下文、Houdini 式二维 Network 连线画布、Geometry Spreadsheet 与 Control 操作链；场景生成器组件尚未接入 | [程序化模块](docs/modules/procedural/README.md) |
 | C++ 基础库与反射 | Array/String、共享不可变的 SharedArray、Span/StringView、原生 Map/Set 与 Hash/Equal；反射薄宏及生成代码接入同一 Runtime，Map/Set 暂未开放源码/反射；常开 CPU 帧阶段计时机制 | [基础库](docs/foundation.md)、[自动反射](docs/reflection.md) |
 | UI 布局、控件与样式 | 原生 Flex/Grid、列表可见范围索引与虚拟表格、Unicode 编辑、参数行与延迟悬浮说明、菜单/下拉/数值阶梯、SS 样式及接受帧文字快照 | [布局模块](docs/modules/ui-layout/README.md)、[UI 模块](docs/modules/ui/README.md)、[SS](docs/modules/ui/style-sheets.md) |
 | 场景编辑器与绘制 | Entity/Component/World 编辑、位置参数与撤销、独立菜单窗口、单宿主停靠及控件实验台；圆角、边框、RGBA 图片及相邻实例合批 | [编辑器模块](docs/modules/editor/README.md)、[RHI](docs/modules/rhi/README.md) |
@@ -41,7 +41,7 @@ cmake --build --preset dev --target atelier_editor
 
 编辑器直接消费正式 Entity/Component/World，无参数启动为空文档。独立 [Examples 工程](examples/README.md) 包含 Sponza / Scene Lit Room / Physic / Dungeons，通过 `--project ./examples` 或 File → Open Project 打开，不随引擎部署。顶部 Create 快捷区创建空 Entity 或真正的 StaticMeshEntity；Asset Browser 浏览工程文件与内置网格，选择资源后 Add to Scene 一次创建完整 Entity，撤销/重做保留 Entity 子树与组件身份。Scene Tree 展示 World → Entity 组合层级与实际类型，组件组成由 Entity Structure 维护，属性由 Parameters 展示。菜单、快捷区和快捷键共用指令定义、可用性与应用执行入口。位置字段编辑 Entity 的内联空间数据，拖调实时预览，松手只记一次撤销；Esc 取消，文本输入焦点下 Delete 不删除 Entity。
 视口支持真实网格拾取、多选、框选、移动/旋转/缩放手柄及 G/R/S 数值操作；Shift+D 复制后移动，X 在指针下确认删除，Z 打开支持点击与按住划动松键选择的渲染模式饼菜单；Shift+反引号进入 FPS 自由视角，WASD/QE 移动、鼠标看向、滚轮调速。左键放置 3D 游标、右键选择、W 打开操作菜单，中键环绕、Shift+中键平移、滚轮缩放。工具选项栏提供枢轴、网格吸附与步长；视口内显示当前模式及透视/正交视图菜单。Parameters 的位置、欧拉角和缩放使用三分量数值行，其他数学向量按实际类型组合；选择资源时显示资源元数据。操作、事务和边界见[编辑器模块](docs/modules/editor/README.md#视口编辑)。窗口 resize、最小化恢复与 DPI 过渡使用同一正式帧/输入路径。
-World 提供 Entity 递归组合、有序组件、可选内联 TRS 和独立空间参考，以及 Entity/Component 共用的有序 Begin/End、分阶段 Tick 和任务取消；完整 Detached 子树经统一入口注册，网格、灯和物理消费所属 Entity 的空间。renderer 消费矩阵、共享网格与按槽解析的不可变材质快照。验证入口见[场景模型验收](docs/modules/editor/README.md#场景模型验收)，逐次结果由下方验收门禁记录；当前 World 接入遵循[World 当前合同](docs/modules/world/README.md)。编辑器内源码断点/单步交互、节点图、参数面板固定目标、可浮动的编辑器视图与布局文件保存仍未实施。
+World 提供 Entity 递归组合、有序组件、可选内联 TRS 和独立空间参考，以及 Entity/Component 共用的有序 Begin/End、分阶段 Tick 和任务取消；完整 Detached 子树经统一入口注册，网格、灯和物理消费所属 Entity 的空间。renderer 消费矩阵、共享网格与按槽解析的不可变材质快照。验证入口见[场景模型验收](docs/modules/editor/README.md#场景模型验收)，逐次结果由下方验收门禁记录；当前 World 接入遵循[World 当前合同](docs/modules/world/README.md)。编辑器内源码断点/单步交互、参数面板固定目标、可浮动的编辑器视图与布局文件保存仍未实施。
 
 Scene View 在路径栏末尾提供两个紧凑图标菜单：显示菜单包含 **MatCap / Smooth / Flat / Scene Lit**、着色与边线组合、**Polygon / Triangle Edges** 三组互斥选项；**Guides** 菜单用独立勾选控制渐变背景、参考网格和原点轴线。普通新建场景使用中性陶土 MatCap、蓝灰渐变和 XZ 参考网格，打开工程不按示例名称改变显示模式；选中对象以边线高亮。辅助显示在空场景中也可见，不写入物体深度；所有显示切换不修改场景材质或撤销历史。内置网格保留原始边信息，OBJ 简单多边形经三角化后保留原边界。实现与限制见[视口显示合同](docs/modules/renderer/contract.md#视口显示策略)。渲染特性代表图由 `renderer_acceptance_*` 窗口目标检查，运行时会显示真实窗口，应预留桌面时段。各验收入口证明的内容见[Renderer 验收](docs/modules/renderer/acceptance.md)。
 
@@ -62,7 +62,7 @@ Scene Lit 消费同一 World 的真实光源与标准金属度/粗糙度材质�
 
 **Controls** 标签打开同宿主的控件实验台，可操作数值、Vector3/Vector4、Unicode 文本、下拉、勾选和折叠，检查禁用、长标签与窄面板。实际位置参数复用同一参数行和 Houdini 风格 SS：中英文统一使用 Sarasa UI SC，数字使用 Source Code Pro，配合黑色字段、细凹凸边缘、轻渐变按钮与灰色编辑边界；Tab 以灰色选中底面区分，不显示焦点描边。右键菜单提供复制、粘贴与默认值恢复，中键支持数值阶梯，整组恢复只记一次撤销。字体依据见[字体说明](assets/fonts/README.md)，实验台的样本历史独立于场景，详见[控件实验台](docs/modules/editor/README.md#控件实验台)。
 
-工作区采用 Scene View、Parameters、Controls、Scene Tree、Entity Structure、Asset Browser、Code、World 和 Project Output 九个可移动标签；支持组内重排、跨组移动、边缘分栏、分隔条拖动、关闭重开及最大化。Ctrl+Tab 切换标签，Ctrl+B 最大化/还原，Ctrl+W 关闭，**Reset layout** 恢复默认布局。状态与历史仍由原视图持有；参照 Houdini UI Scale 1.75 校准的尺寸与边界见[工作区文档](docs/modules/editor/README.md#工作区与停靠)。
+工作区采用 Scene View、Parameters、Controls、Scene Tree、Entity Structure、Network、Asset Browser、Geometry Spreadsheet、Code、World 和 Project Output 十一个可移动标签；支持组内重排、跨组移动、边缘分栏、分隔条拖动、关闭重开及最大化。Ctrl+Tab 切换标签，Ctrl+B 最大化/还原，Ctrl+W 关闭，**Reset layout** 恢复默认布局。打开 `.procgraph` 程序化图资产或新建临时 SOP 图时，Scene View 路径切换至该图上下文并隔离预览 Display 节点输出与点/法线/朝向辅助显示，Network 面板提供自上而下的 Houdini 式二维节点连线画布（滚轮档位缩放、中键/右键平移、框选与多选拖动、端口拖拽连线/重连/拔线、按住 `Y` 划断连线、`Tab` 浮动搜索创建并自动连线、`D` 切换 Display Flag、`L` 自动拓扑排版），Parameters 与 Geometry Spreadsheet 默认跟随选中节点，独立图历史接管 Ctrl+Z/Y 与 Ctrl+S。状态与历史仍由原视图持有；参照 Houdini UI Scale 1.75 校准的尺寸与边界见[工作区文档](docs/modules/editor/README.md#工作区与停靠)。
 
 Scene Tree 展示 World → Entity 递归组合关系和实际 Entity 类型，具有类型图标、层级线、交替行、键盘导航和底部过滤；组件组成由 Entity Structure 展示，属性由 Parameters 检查，详见[编辑器模块](docs/modules/editor/README.md)。
 

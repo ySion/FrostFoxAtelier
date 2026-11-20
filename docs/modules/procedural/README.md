@@ -15,7 +15,7 @@
 
 引擎附带的自有语言节点与随机库在 [assets/engine/procedural](../../../assets/engine/procedural)。
 
-本文只说明已实现能力。方向、设计依据与未实施的跨模块约定见[后续路线与未决契约](roadmap.md)。场景生成器组件、渲染器实例化、网络编辑器、持久 Cache、冻结与 Bake 尚未实施。
+本文只说明已实现能力。方向、设计依据与未实施的跨模块约定见[后续路线与未决契约](roadmap.md)。编辑器已接入 `.procgraph` 资产、SOP 视口上下文、Network 大纲、Geometry Spreadsheet 与 Control 操作链（见[编辑器模块](../editor/README.md)）；场景生成器组件、渲染器大批量实例化、二维节点连线画布、持久 Cache、冻结与 Bake 尚未实施。
 
 ## Geometry
 
@@ -125,7 +125,7 @@
      - **列名与运行层解析**：省略列名与 `From` 时默认取形参名（如 `[InOut] Array<vector3>& P`）；也可显式写字面名 `[Out("pscale")]` 或绑定节点的 `String` 字段 `[Out(From = "attribute")]`（字面名与 `From` 互斥）。节点至多可声明一个带 `[RunOver]`（`AFIELD(RunOver)`）的公开 `procedural.Layer` 字段作为动态默认层；否则默认 `Layer::point`；单个参数还可用 `Layer = "detail"` 等静态覆盖层。
 - **执行顺序与安全保证**：每次列模式执行先记录主输入各层元素数、复制节点 `String` 选择字段并读取 `[RunOver]` 层，拒绝两个可写参数指向同一列；先从输入几何解析全部 `[In]` 与非空 `[Group]`，再在输出副本上准备 `[InOut]`/`[Out]` 的增列与独占缓冲（因此同名 `[In]` + `[Out]` 安全读取旧输入列，不会读到新建零列或半写缓冲），最后同步调用整节点 `process`。调用返回后、进入缓存与发布前，求值器核对每个 `[InOut]`/`[Out]` 可写列（含 `P`）的长度未发生改变，并在写入了 `P` 时统一校验全部点位置有限。
 - **Context**（`procedural.Context`）：字段 `seed` 是图的种子，C++ 节点用 `seed()` 读取；`mesh(key)` 经宿主的 `Resources` 解析网格，并记为当前节点结果的依赖。全部成员同一访问级别，类型保持标准布局，所以 `seed` 有生成器给出的偏移，源码按偏移直接读 `context.seed`；`mesh` 不是 Runtime 方法，源码不能调用。
-- **编辑**：`add_node`（类型必须能读出端口）、`remove_node`（同时断开它的下游连接，它是 display 时清除 display）、`connect`（两端都在图内，端口存在，不成环；单输入端口替换已有连接，多输入端口追加到末尾）、`disconnect`、`set_display`（null 清除）。每个入口只写它改变的对象：节点列表和 display 写图，连接写下游节点。读取用 `contents` 和 `inputs`，都是 const 借用。图持有节点、节点持有上游，被删除的节点由别的根（例如编辑历史）保活。
+- **编辑**：`add_node`（类型必须能读出端口）、`restore_node`（把已由外部根保活的同一 `ObjectId` 节点在指定下标恢复回图成员，供编辑器增量撤销/重做复用缓存）、`remove_node`（同时断开它的下游连接，它是 display 时清除 display）、`connect`（两端都在图内，端口存在，不成环；单输入端口替换已有连接，多输入端口追加到末尾）、`disconnect`、`set_display`（null 清除）。每个入口只写它改变的对象：节点列表和 display 写图，连接写下游节点。读取用 `contents` 和 `inputs`，都是 const 借用。图持有节点、节点持有上游，被删除的节点由别的根（例如编辑历史）保活。
 
 内置 C++ 节点：
 
@@ -180,7 +180,7 @@ Remap 四端点须有限、输入两端不同，输出两端可以相同。按 `
 - 若未设置 display，两者均为空；
 - **若本轮求值发生图级错误（返回 `Error`）或当前 display 链路存在失败节点**，`output()` 均明确清空为 `nullptr`（绝不把过期的陈旧几何伪装成当前有效结果），而 `last_valid_output()` 保留此前最近一次成功的输出供编辑器预览回退。
 
-`status(node)` 给出每个节点的错误、求值次数、缓存命中次数及可选耗时 `time`。`evaluate(record_timings = false)` 默认不读计时时钟；传入 `true` 才记录实际执行节点的耗时，包含参数准备及失败执行。`time` 表示该节点最近一次实际执行，而非本轮图求值。`program` 提供自有语言节点的代码，可以为空，这时自有语言节点失败（`unsupported_operation`）；它要比求值器活得久。
+`status(node)` 给出每个节点的错误、求值次数、缓存命中次数及可选耗时 `time`。`evaluate_node(node, record_timings)` 按需同步求值任意图内节点及其上游闭包（即使该节点不在当前 display 链上），不替换 `output()` / `last_valid_output()`，之后可通过 `node_output_count(node)` 与 `node_output(node, output_index)` 读取任意节点的已缓存输出句柄供 Geometry Spreadsheet 等检查视图使用。`evaluate(record_timings = false)` 默认不读计时时钟；传入 `true` 才记录实际执行节点的耗时，包含参数准备及失败执行。`time` 表示该节点最近一次实际执行，而非本轮图求值。`program` 提供自有语言节点的代码，可以为空，这时自有语言节点失败（`unsupported_operation`）；它要比求值器活得久。
 
 - **发现变化**：先取 `change_cursor()`，再读取。图在游标之后被写过时重读节点列表、display 和种子；节点是新的或被写过时，重读它的参数和连接，算出本地键。本地键和连接都没变的写入不触发求值；什么都没变、资源版本和 `Program::revision()` 也没变时直接返回。`Program::revision()` 变了就重新绑定自有语言节点的 `.process` 入口，代码身份没变的节点键也不变，不会重算。求值器只用 const 借用、`read` 和同步 `process` 调用，不给图和节点盖章。
 - **键**：节点的键是精确的字节串：类型（已发布 `TypeInfo` 的地址）、每个公开字段的内容、带上下文的节点再加图种子，自有语言节点再加入口的代码身份（`EntryInfo::code`），以及每个连接的（输入端口，上游输出号，上游结果序号）。每次真正执行 `process` 得到一个新的结果序号，所以上游结果变了下游的键就变；内容相同的两个节点共享同一个缓存结果。
@@ -231,7 +231,7 @@ Remap 四端点须有限、输入两端不同，输出两端可以相同。按 `
 - **原生图求值**：Grid（3×2、3 行 4 列）→ Transform(+1,0,0) → Merge ← Line → CopyToPoints 发布 14 个实例（12 个格点加 2 个线点），首个实例平移为 (−.5,0,−1)。
 - **空间与混合 C++/`.source` SOP 契约**：`import_mesh` 正负零缝焊接、`Bvh::acquire` 跨 COW 副本缓存复用与写后失效、`Geometry::set` 用途保持、`scatter` 最小间距空间哈希；`Grid → GroupBox → Jitter → RandomScale → NormalAlign → 自定义 .source SOP → Transform → CopyToPoints`（验证无 `id` 列回退、组遮罩、`RandomScale` 组外单位缩放与已有 `pscale` 保留、`Usage::orientation` 旋转复合及全部实例正常发布）；原生列绑定节点篡改可写列（含 `P`）长度被求值器拦截；`Box → Noise → Promote → Remap`（验证 `[RunOver]` 图元层求值、同名读写、节点与图级失败时 `output()==nullptr` 与 `last_valid_output()` 保旧、下游根因错误传播及恢复后缓存命中）。
 
-图文件 `load_graph` / `save_graph` 对 C++ 与 `.source` 节点的规范往返与缺失类型/失效连接宽容加载由 `editor_document_acceptance`（[acceptance/editor/document.cpp](../../../acceptance/editor/document.cpp)）覆盖；跨模块工程 Source 消费由 `project_integration_acceptance` 覆盖。
+图文件 `load_graph` / `save_graph` 对 C++ 与 `.source` 节点的规范往返、缺失类型/失效连接宽容加载，以及编辑器 `.procgraph` 资产、SOP 上下文切换、二维 Network 节点连线画布（`graph.layout`、Bezier 连线胶囊、滚轮缩放、框选多选拖动、`Y` 划断连线、`Tab` 搜索创建并自动连线）、Display 与选中节点解耦求值、`String`/标量参数撤销缓存命中、Geometry Spreadsheet 分页过滤与视口表面/辅助线生成由 `editor_document_acceptance`（[acceptance/editor/document.cpp](../../../acceptance/editor/document.cpp)）覆盖；跨模块工程 Source 消费由 `project_integration_acceptance` 覆盖。
 
 ```powershell
 . ./tools/enter-dev.ps1

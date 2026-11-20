@@ -50,6 +50,13 @@ bool is_material_source_path(const std::filesystem::path& path) {
     return filename.ends_with(L".ms.material");
 }
 
+bool is_procedural_graph_path(const std::filesystem::path& path) {
+    auto extension = path.extension().wstring();
+    for (auto& c : extension)
+        c = static_cast<wchar_t>(std::towlower(c));
+    return extension == L".procgraph";
+}
+
 Result<std::filesystem::path> Reader::resolve(const std::filesystem::path& relative) const {
     return resolve_project_path(root_, relative);
 }
@@ -377,6 +384,18 @@ Result<MaterialAsset> Reader::material(std::string_view key) {
     asset.key = item.key;
     asset.name = (is_source ? item.path.stem().stem() : item.path.stem()).wstring();
     return asset;
+}
+
+Result<ProceduralGraphAsset> Reader::procedural_graph(std::string_view key) const {
+    ATELIER_TRY_BIND(found, listed(*this, key, AssetKind::procedural_graph));
+    const auto& item = **found;
+    if (!is_procedural_graph_path(item.path))
+        return failure("Procedural graph assets require a .procgraph file.");
+    ATELIER_TRY_BIND(path, resolve(item.path));
+    ATELIER_TRY_BIND(bytes, read_file(*path, 16 * 1024 * 1024));
+    if (!StringView(*bytes).is_valid_utf8())
+        return failure("Invalid UTF-8 text in procedural graph: " + std::string(key));
+    return ProceduralGraphAsset{item.key, item.path.stem().wstring(), std::move(*bytes)};
 }
 
 Result<source::SourceFile> Reader::source(const std::filesystem::path& project_relative) const {

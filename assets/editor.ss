@@ -409,3 +409,16 @@ button.display-toggle:hover { background: #4b4b4b; background-image: none; }
 button.display-toggle:selected, button.display-toggle:selected:hover { background: #5d7289; background-image: none; indicator-color: #ffffff; }
 button.display-toggle.grouped { border-edges: top; border-width: 0.667dip; border-color: #4d4d4d; }
 button.display-toggle.grouped:selected { border-edges: all; border-color: #374552; }
+button.network-node-btn { text-align: left; padding: 1dip 8dip; }
+button.network-node-btn:selected { background: #6b5820; background-image: none; border-color: #d8a928; color: #ffffff; }
+button.display-flag { padding: 0dip; font-weight: 700; }
+button.display-flag:selected, button.display-flag:selected:hover {
+    background: #2b83c6; background-image: none; border-color: #5cb6f5; color: #ffffff;
+}
+.network-row-error { background: #4a2626; }
+.network-canvas { background: #252525; border-width: 0.667dip; border-style: inset; border-color: #1a1a1a; }
+.network-canvas-bg { background: #252525; }
+.network-tab-popup {
+    background: #2f2f2f; border-width: 1dip; border-style: solid; border-color: #888888; border-radius: 3dip;
+}
+.network-tab-row-active { background: #444444; }

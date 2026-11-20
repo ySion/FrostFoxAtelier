@@ -57,6 +57,9 @@ public:
     // Reads v2 author data only. The file suffix must agree with its MS/MI role.
     Result<MaterialAsset> material(std::string_view);
 
+    // Reads UTF-8 procedural graph JSON text for a listed AssetKind::procedural_graph entry.
+    Result<ProceduralGraphAsset> procedural_graph(std::string_view) const;
+
     // Exact contained project path, including Content/, or reserved builtin/ Source.
     // No game-Source scan or compilation; callers retain this saved-text snapshot.
     Result<source::SourceFile> source(const std::filesystem::path& project_relative) const;

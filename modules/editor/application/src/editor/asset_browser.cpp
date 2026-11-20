@@ -22,6 +22,8 @@ std::wstring_view kind_name(assets::AssetKind kind) {
         return L"Texture";
     case assets::AssetKind::material:
         return L"Material";
+    case assets::AssetKind::procedural_graph:
+        return L"Procedural Graph";
     default:
         return L"File";
     }
@@ -40,7 +42,8 @@ bool matches_filter(const AssetBrowser::Item& item, std::wstring_view query, uns
                           : filter == 2 ? assets::AssetKind::scene
                           : filter == 3 ? assets::AssetKind::source
                           : filter == 4 ? assets::AssetKind::material
-                                        : assets::AssetKind::texture));
+                          : filter == 5 ? assets::AssetKind::texture
+                                        : assets::AssetKind::procedural_graph));
 }
 
 int compare_names(std::wstring_view a, std::wstring_view b) {
@@ -381,7 +384,8 @@ std::vector<ui::MenuItem> AssetBrowser::menu_items(ui::ControlKey source) const 
         items.push_back(std::move(item));
     };
     if (source == id::filter) {
-        const std::array names{L"All types", L"Meshes", L"Scenes", L"Source", L"Materials", L"Textures"};
+        const std::array names{L"All types", L"Meshes",   L"Scenes",           L"Source",
+                               L"Materials", L"Textures", L"Procedural Graphs"};
         for (std::size_t i = 0; i < names.size(); ++i)
             radio(id::filter_first + i, names[i], true, filter_ == i);
     } else if (source == id::view_menu) {
@@ -407,7 +411,8 @@ std::vector<ui::MenuItem> AssetBrowser::menu_items(ui::ControlKey source) const 
              L"Open",
              selected_ &&
                  (selected_->kind == assets::AssetKind::folder || selected_->kind == assets::AssetKind::scene ||
-                  selected_->kind == assets::AssetKind::source || selected_->kind == assets::AssetKind::material),
+                  selected_->kind == assets::AssetKind::source || selected_->kind == assets::AssetKind::material ||
+                  selected_->kind == assets::AssetKind::procedural_graph),
              false,
              {}});
         items.back().icon = ui::ControlIcon::folder;
@@ -520,7 +525,7 @@ bool AssetBrowser::apply(const ui::Action& action) {
         }
     if (action.kind != ui::ActionKind::activate)
         return false;
-    if (action.key >= filter_first && action.key < filter_first + 6) {
+    if (action.key >= filter_first && action.key < filter_first + 7) {
         filter_ = static_cast<unsigned>(action.key - filter_first);
         filter_changed();
         return true;

@@ -88,7 +88,7 @@ bool valid_id(std::string_view id) {
 
 Result<void> admit(const Context& context, const ContextOverride& changes) {
     if (changes.asset && !changes.asset->empty() && context.document.loaded_material(*changes.asset) == ObjectId{} &&
-        !(context.project && context.project->entry(*changes.asset)) &&
+        !context.document.has_graph(*changes.asset) && !(context.project && context.project->entry(*changes.asset)) &&
         std::ranges::find(assets::mesh_assets(), *changes.asset, &assets::MeshAsset::key) ==
             assets::mesh_assets().end() &&
         std::ranges::find(assets::material_assets(), *changes.asset, &assets::MaterialAsset::key) ==
@@ -114,6 +114,8 @@ Result<void> admit(const Context& context, const ContextOverride& changes) {
         std::ranges::find(selection.entities, selection.active) == selection.entities.end())
         return std::unexpected(rejected("The active Entity must be selected."));
     if (selection.object != ObjectId{} && selection.object != selection.active) {
+        if (selection.active == ObjectId{} && context.document.is_graph_object(selection.object))
+            return {};
         auto component = world::inspect_component(context.document.world().runtime(), selection.object);
         if (!component || !component->valid || component->owner != selection.active)
             return std::unexpected(
@@ -148,8 +150,9 @@ std::string history_violation(const OperatorInfo& info, std::uint64_t recorded, 
 }
 
 std::span<const std::string_view> region_names() noexcept {
-    static constexpr std::array<std::string_view, 10> names{
-        "none", "viewport", "scene_tree", "structure", "parameters", "assets", "code", "output", "world", "controls"};
+    static constexpr std::array<std::string_view, 12> names{"none",       "viewport", "scene_tree", "structure",
+                                                            "parameters", "assets",   "code",       "output",
+                                                            "world",      "controls", "network",    "spreadsheet"};
     return names;
 }
 

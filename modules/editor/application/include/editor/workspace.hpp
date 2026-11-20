@@ -7,6 +7,7 @@
 #include "editor/control_workbench.hpp"
 #include "editor/world_panel.hpp"
 #include "editor/property_row.hpp"
+#include "editor/procedural_panes.hpp"
 #include "editor/asset_browser.hpp"
 #include "editor/source_editor.hpp"
 #include "editor/output.hpp"
@@ -120,7 +121,15 @@ inline constexpr ui::ControlKey display_wire_only = 1013;
 
 inline constexpr ui::ControlKey display_lit = 1014;
 
-inline constexpr ui::ControlKey display_toggle_first = 1015; // Eight bar buttons: 1015..1022, below dynamic bindings.
+inline constexpr ui::ControlKey display_toggle_first = 1015; // Bar buttons: 1015..1025, below dynamic bindings.
+
+inline constexpr ui::ControlKey display_sop_points = 1160;
+
+inline constexpr ui::ControlKey display_sop_normals = 1161;
+
+inline constexpr ui::ControlKey display_sop_orient = 1162;
+
+inline constexpr ui::ControlKey display_sop_toggle_first = 1165; // SOP bar buttons: 1165..1167.
 
 inline constexpr ui::ControlKey inline_rename = 1023;
 
@@ -299,7 +308,8 @@ struct Workspace {
             material_field,
             color_pick,
             saved_data,
-            operator_call
+            operator_call,
+            text_field
         };
 
         ui::ControlKey key{};
@@ -356,6 +366,39 @@ struct Workspace {
     bool inspecting_asset{}; // Inspect the browser's persistent resource identity, not an Entity instance.
 
     std::string material_inspection;
+
+    std::string active_graph; // Active SOP .procgraph key (or scratch key); empty in Scene World context.
+
+    std::string selected_graph_node; // Decoupled from Display Flag; empty selects the Graph object itself.
+
+    std::vector<std::string> selected_graph_nodes; // Multi-selection set on the 2D Network canvas.
+
+    std::string network_context_node; // Target node for RMB context menu on Network canvas.
+
+    std::array<float, 2> network_context_pos{}; // World position for RMB canvas context menu.
+
+    bool sop_show_points{};
+
+    bool sop_show_normals{};
+
+    bool sop_show_orient{};
+
+    GeometrySpreadsheet spreadsheet;
+
+    NetworkCanvas network;
+
+    void set_single_graph_selection(std::string_view node_name) {
+        selected_graph_node = std::string(node_name);
+        selected_graph_nodes.clear();
+        if (!selected_graph_node.empty())
+            selected_graph_nodes.push_back(selected_graph_node);
+    }
+
+    ObjectId inspected_graph_object(const Session&) const noexcept;
+
+    std::wstring graph_path_title(const Project*) const;
+
+    void bump_view_revision() noexcept { ++view_revision_; }
 
     void reset_layout();
 
@@ -600,7 +643,7 @@ private:
 
     std::size_t binding_cursor_{};
 
-    ui::ControlKey next_binding_{1024};
+    ui::ControlKey next_binding_{2048};
 
     std::array<ui::ControlKey, std::size(menu_bindings)> shelf_items_{};
 

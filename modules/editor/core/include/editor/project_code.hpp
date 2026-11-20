@@ -35,6 +35,8 @@ public:
     // Last successful publication, independent of a later failed build report.
     const std::shared_ptr<const ProjectBuild>& published_build() const noexcept { return published_; }
 
+    const source::Program* program() const noexcept { return program_.get(); }
+
     static Result<source::SourceSnapshot> snapshot(const Project&);
 
     static Result<std::optional<source::SourceFile>> ui_snapshot(const Project&);

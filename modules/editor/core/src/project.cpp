@@ -460,18 +460,21 @@ Result<std::vector<assets::ProjectEntry>> Project::scan_entries(bool create_iden
                 auto kind = is_directory                               ? assets::AssetKind::folder
                             : assets::is_mesh_path(entry.path())       ? assets::AssetKind::mesh
                             : entry.path().extension() == L".material" ? assets::AssetKind::material
-                            : assets::is_texture_path(entry.path())    ? assets::AssetKind::texture
-                            : assets::is_sky_path(entry.path())        ? assets::AssetKind::sky
-                            : entry.path().extension() == L".scene"    ? assets::AssetKind::scene
-                            : directory == L"Source"                   ? assets::AssetKind::source
-                                                                       : assets::AssetKind::file;
+                            : assets::is_procedural_graph_path(entry.path()) && directory == L"Content"
+                                ? assets::AssetKind::procedural_graph
+                            : assets::is_texture_path(entry.path()) ? assets::AssetKind::texture
+                            : assets::is_sky_path(entry.path())     ? assets::AssetKind::sky
+                            : entry.path().extension() == L".scene" ? assets::AssetKind::scene
+                            : directory == L"Source"                ? assets::AssetKind::source
+                                                                    : assets::AssetKind::file;
                 auto relative_name = platform::utf16_to_utf8(relative.generic_wstring());
                 if (!relative_name)
                     return failure("Invalid UTF-16 text.");
                 std::string key = *relative_name;
                 std::vector<assets::SlotMaterial> materials;
                 if (kind == assets::AssetKind::mesh || kind == assets::AssetKind::material ||
-                    kind == assets::AssetKind::texture || kind == assets::AssetKind::sky) {
+                    kind == assets::AssetKind::procedural_graph || kind == assets::AssetKind::texture ||
+                    kind == assets::AssetKind::sky) {
                     auto meta_relative = relative;
                     meta_relative += L".asset.json";
                     ATELIER_TRY_BIND(metadata, resolve(meta_relative));
@@ -786,8 +789,9 @@ Result<MeshImportPublication> Project::import_mesh_files(const std::filesystem::
             const bool replace = std::ranges::any_of(owned, [&](const auto& old) { return same_path(old, path); });
             // A source dependency is not permission to overwrite a hand-edited MI/MS.
             const auto* existing = file_entry(path);
-            if (existing && existing->kind == assets::AssetKind::material)
-                return failure("Import cannot overwrite an existing material author file.");
+            if (existing && (existing->kind == assets::AssetKind::material ||
+                             existing->kind == assets::AssetKind::procedural_graph))
+                return failure("Import cannot overwrite an existing author file.");
             ATELIER_TRY(queue(path, std::move(file.bytes), replace));
             if (same_path(path, target_relative))
                 continue;

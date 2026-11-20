@@ -12,7 +12,7 @@
 
 ## 唯一入口
 
-[session.hpp](../../../modules/gui/ui/include/ui/session.hpp)的`ui::Session`管理同一窗口UI的布局节点、内容、焦点、按压、编辑缓冲和滚动。应用按稳定key提供父节点在前的平坦`Control`描述；控件布局直接复用`ui_layout::NodeInput`。零key表示隐式overlay根。普通容器可使用现有row/column/Flex/Grid；label/button/item/number/text_edit/checkbox/foldout/menu_item/combo/tab/tree_item 是文字叶，list、tree 和 popup 是带裁剪和滚动的 column，table 是持有共享数据快照的虚拟表格，code_editor 是持有共享源码文档的多行编辑叶，splitter/slider/viewport是盒。viewport不自动填色。
+[session.hpp](../../../modules/gui/ui/include/ui/session.hpp)的`ui::Session`管理同一窗口UI的布局节点、内容、焦点、按压、编辑缓冲和滚动。应用按稳定key提供父节点在前的平坦`Control`描述；控件布局直接复用`ui_layout::NodeInput`。零key表示隐式overlay根。普通容器可使用现有row/column/Flex/Grid，并可通过可选只读 `Control::canvas`（`CanvasData`：滚动背景网格、裁剪圆角边框盒与 `DrawQuad::capsule_width` 抗锯齿胶囊线段）在同一 D3D12 UI 实例批次内绘制二维矢量画布；label/button/item/number/text_edit/checkbox/foldout/menu_item/combo/tab/tree_item 是文字叶，list、tree 和 popup 是带裁剪和滚动的 column，table 是持有共享数据快照的虚拟表格，code_editor 是持有共享源码文档的多行编辑叶，splitter/slider/viewport是盒。viewport不自动填色。
 
 `Session` 默认构造为空壳，在稳定地址调用一次 `initialize(font_files)`；失败返回 `ui::Result<void>`，不发布 Impl，之后只允许析构，不承诺重试。初始化成功后才能使用其他方法。文字存储与 LayoutDocument 的 context 地址不变，不通过移动 Session 传递初始化结果。
 

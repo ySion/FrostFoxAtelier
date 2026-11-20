@@ -9,7 +9,7 @@
 #include <vector>
 
 namespace atelier::assets {
-enum class AssetKind { folder, mesh, scene, source, file, texture, material, sky };
+enum class AssetKind { folder, mesh, scene, source, file, texture, material, sky, procedural_graph };
 
 // An installed producer's compatibility declaration and actual immutable content.
 // Neither the digest nor the semantic version authenticates executable code.
@@ -92,6 +92,14 @@ struct MaterialAsset {
     std::variant<MaterialSourceAsset, MaterialInstanceAsset> author{MaterialInstanceAsset{}};
 };
 
+struct ProceduralGraphAsset {
+    std::string key;
+
+    std::wstring name;
+
+    std::string text;
+};
+
 struct ProjectEntry {
     std::filesystem::path path; // Relative to the project root; never a Runtime ID.
 
@@ -118,4 +126,6 @@ bool is_sky_path(const std::filesystem::path&);
 
 // Both roles remain AssetKind::material; .ms.material is MS, other .material is MI.
 bool is_material_source_path(const std::filesystem::path&);
+
+bool is_procedural_graph_path(const std::filesystem::path&);
 }

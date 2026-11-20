@@ -223,7 +223,16 @@ GPU 段：
 
 主窗体只组织四个区域：顶部菜单栏、工具架、中间 DockSpace 内容区和底部状态栏。业务功能以可停靠的 Tab 子页组成，不将页面业务提升为固定外壳控件。
 
-默认布局参照 Houdini 的分区：Scene View/Code 在左上，Asset Browser/Project Output 在左下，Parameters/Controls/World 共用右上标签组，Scene Tree/Entity Structure 在右下。各视图只保留一份业务状态，可以移到其他标签组或分割区域。
+默认布局参照 Houdini 的分区：Scene View/Code 在左上，Asset Browser/Project Output/Geometry Spreadsheet 在左下，Parameters/Controls/World 共用右上标签组，Scene Tree/Entity Structure/Network 在右下。各视图只保留一份业务状态，可以移到其他标签组或分割区域。
+
+### 程序化 SOP 视口上下文、Network 与 Geometry Spreadsheet
+
+在 Asset Browser 打开 `Content/**/*.procgraph`（或通过 Network 面板 / Control 新建临时图 `/scratch/procedural`）后，Scene View 按 Houdini `/obj` ↔ SOP 上下文方式切换：
+
+- **路径栏与视口隔离**：Scene View 与 Parameters 的路径栏从 `World` 切换为图路径（如 `/Content/Graphs/Terrain.procgraph`），下拉菜单可返回 `World` 或在已打开的图文档间切换。3D 视口隔离渲染当前图的 **Display Flag**（蓝色 `D` 标记，`settings.display`）输出：凸多边形与三角形构建预览表面网格（首角扇形三角化并精确生成外边界 `edge_mask`，多边形线框模式自动隐藏四边形内部对角线），`instance` 层按宿主网格引用渲染实例，折线经 `OverlayShape` 绘制；求值失败时视口回退保留 `last_valid_output()` 并在状态/读数中报告节点错误。SOP 上下文下视口右侧显示栏与 Guides 菜单额外提供 **Point Markers**（支持 `Cd` 着色）、**Normals (`N`)** 与 **Orientations (`orient`/`pscale`)** 三个非持久视图开关，`F` / `Home` 框选当前 SOP 几何包围盒。
+- **选中节点与 Display Flag 解耦**：**Selected Node**（金色高亮，Workspace 视图状态，不写图文件）驱动 Parameters 与默认 `Follow Selected` 的 Geometry Spreadsheet；**Display Flag**（蓝色 `D` 胶囊，持久化于 `settings.display`）驱动 3D 视口，二者经 `Evaluator::evaluate` 与 `Evaluator::evaluate_node` 共享同一份按内容键缓存的结果。
+- **Network 与 Geometry Spreadsheet**：Network 页（Slice 1A 节点大纲，二维连线画布见后续 Slice 1B）提供 `+ Add Node`（汇总引擎内置 C++/`.source` 与工程热更 `.source` `procedural.Node` 派生类）、`Wire Input` 端口连线/断开、图根 `Seed` 设置、节点删除（`Del`）与返回 `World`；Geometry Spreadsheet 页按 `Points | Vertices | Primitives | Detail | Instances` 五层实时展示元素计数，支持 `Follow Selected`（关闭后改为观察 Display 输出）、列名过滤与 512 行零拷贝分页切片。
+- **参数、独立撤销与保存路由**：`PropertyRow` 支持 `String` 字段单行文本提交（供 `MeshImport.mesh`、`Noise.attribute`、`GroupBox.group` 等节点参数编辑）及既有数值、向量、布尔、枚举参数。每个已打开图在 `Session` 内拥有独立的 128 步增量历史（只记录作者增删改与节点 `ObjectRoot`，绝不把重算 `Geometry` 缓冲塞入撤销栈；撤销回旧参数直接命中 `Evaluator` 缓存），SOP 上下文下 `Ctrl+Z` / `Ctrl+Y` 与 `Ctrl+S` 自动路由到活动图文档，不污染场景 `World` 的 dirty 标记。
 
 固定视图标签统一使用正体，包括 Scene View；选中状态仅通过灰色底面区分，不使用斜体或焦点描边。标签只绘制右侧分隔边，首标签直接衔接分隔条的收边，不叠加左边框。
 
@@ -384,7 +393,7 @@ Play 的 World Tick/协程按宿主调用推进，物理累积器不代表整个
 
 当前吸附和着色设置使用已有菜单；带分段按钮、图标列表和勾选组合的富弹出面板仍待建设，须复用 PopupHost 的焦点、Esc 和外部点击政策。Normal/View/Cursor/Parent 变换朝向、顶点/边/面吸附、视口独立可见性/可选性状态、长按工具组、Ramp、方向球和 HSV 二维色盘尚未实现；现有 RGB/HSV/Hex 数值颜色编辑不是二维色盘。
 
-多份同类面板、固定检查目标、浮动视图和布局持久化沿现有 DockSpace 与稳定业务身份扩展，不复制场景状态。资源缩略图及跨区域拖放的责任见[声明式 UI 边界](declarative-ui.md#区域与手势边界)；源码调试接入复用[Runtime/JIT 核心](../../source-debugger.md)和[Control 方案](control.md#源码调试接入待实现)，不是另建源码执行宿主。节点画布仍须把选择、作者对象和显示输出分开，并与领域求值区分。
+多份同类面板、固定检查目标、浮动视图和布局持久化沿现有 DockSpace 与稳定业务身份扩展，不复制场景状态。资源缩略图及跨区域拖放的责任见[声明式 UI 边界](declarative-ui.md#区域与手势边界)；源码调试接入复用[Runtime/JIT 核心](../../source-debugger.md)和[Control 方案](control.md#源码调试接入待实现)，不是另建源码执行宿主。SOP Network 二维节点连线画布已将节点选择（含多选）、作者图对象与持久化 Display 输出严格分开，并通过同一 `Session` 图事务维护单步撤销。
 
 ## 验收入口
 
@@ -399,7 +408,7 @@ Play 的 World Tick/协程按宿主调用推进，物理累积器不代表整个
 - `steps.csv` 提供逐步输入轮询、接受帧间隔及现有帧记录器的阶段时间。常规启动不采集这些报表。[真实编辑器计时](../../research/ui-helper-incremental-compilation.md#真实编辑器从保存到接受帧) · [单组件编译分解](../../research/ui-helper-incremental-compilation.md#单组件编译耗时)
 
 - `editor_log_smoke_acceptance`（窗口）运行 `atelier_editor_control_acceptance <atelier_editor.exe> <输出目录> --smoke-logs`：按 `Config/Project.json` 复制 Examples 的 `Config`、`Source` 与启动场景所在的 `Content/<场景包>`，以 `--no-activate --gpu-validation` 启动真实编辑器并等待启动场景的接受帧；经 Control 执行一次 `scene.add` → `scene.save` → `edit.undo`，确认撤销后有新的接受帧；随后启动 Play，在 Play 运行时关闭编辑器，检查编辑器与 runner 日志零错误且 Play 正常结束，通过后自动删除临时 `Project/` 副本。日志判定见 [Control 端到端验收](control.md#端到端验收)。
-- `editor_document_acceptance`（无窗口）的默认运行覆盖 StaticMeshEntity 创建的单条历史及 undo/redo 后的身份与网格资源、glTF 节点变换数学，以及一次网格导入→重新导入。
+- `editor_document_acceptance`（无窗口）的默认运行覆盖 StaticMeshEntity 创建的单条历史及 undo/redo 后的身份与网格资源、glTF 节点变换数学、一次网格导入→重新导入、`.procgraph` 图格式往返与宽容加载，以及 SOP 编辑器上下文与 Houdini 式二维 Network 连线画布（工程自定义 `.source` `parallel_for` 节点、Display 与选中节点解耦、`String`/标量参数撤销缓存命中、`file.save`、`graph.layout` 拓扑自动排版、Bezier 连线胶囊绘制、锚点滚轮缩放、框选与多选单步撤销拖动、`Y` 划断连线单步撤销、`Tab` 浮动搜索创建并自动连线、Geometry Spreadsheet 分页过滤、多边形线框 `edge_mask` 与完整 Workspace UI 帧接受）。
 - `project_scene_acceptance`（无窗口）覆盖一次作者字段值的 Scene 保存/重开往返，以及失败 Tick 中嵌套 stop 时 End 返回后才释放 PhysicsScene 的停止/关闭顺序。
 - `project_integration_acceptance`（无窗口）覆盖真实 Source → Runtime 的一次 tick，以及停止时卡死的 Source 子进程在期限内被终止。
 

@@ -51,6 +51,10 @@ public:
     // Timing is opt-in diagnostics only: it neither changes keys nor forces nodes to run.
     Result<void> evaluate(bool record_timings = false);
 
+    // Evaluates `node` and its upstream dependencies without changing output() or
+    // last_valid_output(), so an editor can inspect a selected node independent of the display flag.
+    Result<void> evaluate_node(ObjectId node, bool record_timings = false);
+
     // The display node's first output when the latest evaluate() succeeded without display-chain
     // errors; null when the graph has no display node or the latest evaluation or display chain failed.
     [[nodiscard]] const Geometry* output() const noexcept;
@@ -58,6 +62,15 @@ public:
     // The most recent valid display output while a display node is set, retained across graph
     // and node evaluation errors for editor fallback preview.
     [[nodiscard]] const Geometry* last_valid_output() const noexcept;
+    // Keeps the displayed output alive through later cooks and asynchronous presentation.
+    [[nodiscard]] std::shared_ptr<const Geometry> retain_last_valid_output() const noexcept;
+
+    // Number of outputs produced by `node` on its latest successful evaluation, or 0 when
+    // unevaluated, absent from the graph, or in an error state.
+    [[nodiscard]] std::uint32_t node_output_count(ObjectId node) const noexcept;
+
+    // Output `output_index` of `node` when its latest evaluation succeeded; null otherwise.
+    [[nodiscard]] const Geometry* node_output(ObjectId node, std::uint32_t output_index = 0) const noexcept;
 
     // Null for nodes not in the graph at the last evaluation.
     [[nodiscard]] const NodeStatus* status(ObjectId node) const;
