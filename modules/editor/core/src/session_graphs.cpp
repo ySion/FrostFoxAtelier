@@ -494,7 +494,8 @@ struct Session::GeneratorRuntimeCache {
 
         float chunk_size{};
 
-        std::shared_ptr<const procedural::Geometry> last_geom;
+        // Disengaged if skipped. Presentation can retain the previous output after a failed cook.
+        std::optional<Result<void>> latest_cook;
 
         std::uint64_t next_output_generation{1};
 
@@ -534,7 +535,6 @@ struct Session::GeneratorRuntimeCache {
         }
         graph_slots.clear();
         for (auto& [_, entry] : entries) {
-            entry.last_geom.reset();
             entry.resolved_assets.clear();
             entry.output.reset();
         }
@@ -2636,6 +2636,7 @@ Result<void> Session::sync_procedural_generators(Project* project) {
                                    std::vector<std::string> field = {"graph"},
                                    world::DiagnosticKind kind = world::DiagnosticKind::invalid_value) -> Result<void> {
         cache.has_errors = true;
+        cache.entries.at(component).latest_cook.emplace(std::unexpected(err));
         world::Diagnostic diag;
         diag.kind = kind;
         diag.phase = world::DiagnosticPhase::presentation;
@@ -2667,13 +2668,12 @@ Result<void> Session::sync_procedural_generators(Project* project) {
             continue;
         }
 
-        const auto owner_enabled = world::effective_enabled(runtime_, comp_state->owner);
-        if (!comp_state->enabled || !owner_enabled || !*owner_enabled) {
-            if (auto it = cache.entries.find(component); it != cache.entries.end()) {
-                it->second.last_geom.reset();
-                it->second.output.reset();
-                it->second.resolved_assets.clear();
-            }
+        auto& entry = cache.entries[component];
+        entry.latest_cook.reset();
+        ATELIER_TRY_BIND(owner_enabled, world::effective_enabled(runtime_, comp_state->owner));
+        if (!comp_state->enabled || !*owner_enabled) {
+            entry.output.reset();
+            entry.resolved_assets.clear();
             if (proc_source->output)
                 ATELIER_TRY(
                     presentation::set_procedural_binding(runtime_, component, {proc_source->source, nullptr, {}}));
@@ -2698,20 +2698,19 @@ Result<void> Session::sync_procedural_generators(Project* project) {
                 return {};
             }));
         if (!std::isfinite(chunk_size) || chunk_size < 0.1f || chunk_size > 100000.f) {
-            cache.has_errors = true;
+            ATELIER_TRY(contain_error(
+                Error{ErrorCode::argument_mismatch, "Generator chunk size must stay within [0.1, 100000] metres."},
+                component, comp_state->owner, {"chunk_size"}));
             continue;
         }
 
-        auto& entry = cache.entries[component];
         if (entry.graph_key != proc_source->source) {
             entry.graph_key = proc_source->source;
-            entry.last_geom.reset();
             entry.output.reset();
             entry.resolved_assets.clear();
         }
 
         const auto drop_component_output = [&]() -> Result<void> {
-            entry.last_geom.reset();
             entry.output.reset();
             entry.resolved_assets.clear();
             if (proc_source->output)
@@ -2791,17 +2790,19 @@ Result<void> Session::sync_procedural_generators(Project* project) {
             continue;
         }
 
-        const bool same_geom = entry.last_geom.get() == retained_geom.get();
+        const bool same_geom = entry.output && entry.output->geometry == retained_geom;
         const bool same_chunk =
             std::bit_cast<std::uint32_t>(entry.chunk_size) == std::bit_cast<std::uint32_t>(chunk_size);
-        if (same_geom && same_chunk && entry.output) {
+        if (same_geom && same_chunk) {
             if (proc_source->output != entry.output) {
                 if (auto rebound = presentation::set_procedural_binding(
                         runtime_, component, {proc_source->source, entry.output, entry.resolved_assets});
                     !rebound) {
                     ATELIER_TRY(contain_error(rebound.error(), component, comp_state->owner));
+                    continue;
                 }
             }
+            entry.latest_cook.emplace();
             continue;
         }
 
@@ -2814,9 +2815,8 @@ Result<void> Session::sync_procedural_generators(Project* project) {
             continue;
         }
 
-        geometry::MeshRef surface_mesh = (same_geom && entry.output)
-                                             ? entry.output->surface_mesh
-                                             : presentation::build_procedural_surface_mesh(*retained_geom);
+        geometry::MeshRef surface_mesh =
+            same_geom ? entry.output->surface_mesh : presentation::build_procedural_surface_mesh(*retained_geom);
 
         std::vector<presentation::ProceduralMeshDependency> mesh_dependencies;
         for (const auto& dep : slot.evaluator->display_dependencies()) {
@@ -2866,10 +2866,10 @@ Result<void> Session::sync_procedural_generators(Project* project) {
             continue;
         }
 
-        entry.last_geom = retained_geom;
         entry.chunk_size = chunk_size;
         entry.output = std::move(*committed);
         entry.resolved_assets = std::move(resolved_assets);
+        entry.latest_cook.emplace();
     }
 
     std::erase_if(cache.graph_slots, [&](const auto& item) { return !referenced_graphs.contains(item.first); });
@@ -2886,6 +2886,16 @@ Result<void> Session::sync_procedural_generators(Project* project) {
     return {};
 }
 
+const Error* Session::procedural_generator_error(ObjectId component) const noexcept {
+    if (!generator_cache_)
+        return nullptr;
+    const auto it = generator_cache_->entries.find(component);
+    if (it == generator_cache_->entries.end())
+        return nullptr;
+    const auto& cook = it->second.latest_cook;
+    return cook && !*cook ? &cook->error() : nullptr;
+}
+
 Result<world::Commit> Session::bake_procedural_generator(Project* project, ObjectId target) {
     if (world_.running() || world_.closed())
         return graph_error("Baking a procedural generator requires an open, stopped document.",
@@ -2898,12 +2908,18 @@ Result<world::Commit> Session::bake_procedural_generator(Project* project, Objec
     const ObjectId owner = comp_state->owner;
 
     ATELIER_TRY(sync_procedural_generators(project));
+    if (const auto* failure = procedural_generator_error(component))
+        return std::unexpected(*failure);
     ATELIER_TRY_BIND(binding, presentation::read_procedural_binding(runtime_, component));
-    if (!binding->output) {
+    if (!binding->output || !generator_cache_) {
         return graph_error(
             "Procedural Bake converts CopyToPoints mesh instances into StaticMeshEntity objects; this generator currently has no cooked output.",
             ErrorCode::invalid_definition);
     }
+    const auto cached = generator_cache_->entries.find(component);
+    if (cached == generator_cache_->entries.end() || !cached->second.latest_cook ||
+        cached->second.output != binding->output)
+        return graph_error("Procedural Bake requires a successful current cook.", ErrorCode::invalid_definition);
 
     struct ResolvedAssetInfo {
         std::string key;

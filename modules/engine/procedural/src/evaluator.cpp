@@ -561,7 +561,6 @@ struct Evaluator::Impl {
         entry->outputs.resize(state.plan->ports.outputs.size());
         ++state.status.evaluations;
         state.status.time.reset();
-        state.status.boolean_stats.reset();
         std::chrono::steady_clock::time_point start{};
         if (record_timings)
             start = std::chrono::steady_clock::now();

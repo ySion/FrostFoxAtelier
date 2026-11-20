@@ -78,6 +78,65 @@ GeometryBoundsSample compute_geometry_bounds(const procedural::Geometry& geometr
     return {low, high, true};
 }
 
+// Clip guide strokes before perspective division. Off-screen endpoints can project arbitrarily far,
+// and a segment can cross the viewport even when neither endpoint is visible.
+struct GuideStrokes {
+    const editor::ViewportView& view;
+
+    std::vector<renderer::OverlayShape>& overlay;
+
+    math::Matrix4d view_projection =
+        static_cast<math::Matrix4d>(view.view) * static_cast<math::Matrix4d>(view.projection);
+
+    void point(math::Vector3 p, ui::Color color, float diameter_dip) const {
+        const auto screen = view.project(p);
+        const float width = pixels(diameter_dip);
+        const float pad = (width + 1.f) * .5f;
+        if (screen && screen->x >= view.bounds.x - pad && screen->x <= view.bounds.x + view.bounds.width + pad &&
+            screen->y >= view.bounds.y - pad && screen->y <= view.bounds.y + view.bounds.height + pad)
+            overlay.push_back(
+                {renderer::OverlayShape::Kind::segment, {screen->x, screen->y, screen->x, screen->y}, width, color});
+    }
+
+    void segment(math::Vector3 start, math::Vector3 end, ui::Color color, float width_dip) const {
+        auto a = math::Vector4d{start.x, start.y, start.z, 1.} * view_projection;
+        auto b = math::Vector4d{end.x, end.y, end.z, 1.} * view_projection;
+        if (!math::is_finite(a) || !math::is_finite(b) || view.bounds.width <= 0.f || view.bounds.height <= 0.f)
+            return;
+        const float width = pixels(width_dip);
+        const double x_limit = 1. + (width + 1.) / view.bounds.width;
+        const double y_limit = 1. + (width + 1.) / view.bounds.height;
+        if (!clip_plane(a, b, 2, view.far_depth, 1.) || !clip_plane(a, b, 2, 1., -1.) ||
+            !clip_plane(a, b, 0, -x_limit, 1.) || !clip_plane(a, b, 0, x_limit, -1.) ||
+            !clip_plane(a, b, 1, -y_limit, 1.) || !clip_plane(a, b, 1, y_limit, -1.) || a.w <= 0. || b.w <= 0.)
+            return;
+        const auto screen = [&](math::Vector4d p) -> math::Vector2 {
+            return {static_cast<float>(view.bounds.x + (p.x / p.w + 1.) * view.bounds.width * .5),
+                    static_cast<float>(view.bounds.y + (1. - p.y / p.w) * view.bounds.height * .5)};
+        };
+        const auto pa = screen(a);
+        const auto pb = screen(b);
+        overlay.push_back({renderer::OverlayShape::Kind::segment, {pa.x, pa.y, pb.x, pb.y}, width, color});
+    }
+
+private:
+    float pixels(float dip) const noexcept { return std::clamp(dip * std::max(view.dpi_scale, 1.f), 0.f, 64.f); }
+
+    static bool clip_plane(math::Vector4d& a, math::Vector4d& b, std::size_t axis, double limit, double sign) noexcept {
+        const double da = sign * (a[axis] - limit * a.w);
+        const double db = sign * (b[axis] - limit * b.w);
+        if (da < 0. && db < 0.)
+            return false;
+        if ((da < 0.) != (db < 0.)) {
+            // Start at the nearer endpoint for accuracy when segment lengths span many orders of magnitude.
+            auto cut = std::abs(da) < std::abs(db) ? a + (b - a) * (da / (da - db)) : b + (a - b) * (db / (db - da));
+            cut[axis] = limit * cut.w;
+            (da < 0. ? a : b) = cut;
+        }
+        return true;
+    }
+};
+
 } // namespace
 
 bool is_pure_point_cloud(const procedural::Geometry& geometry) noexcept {
@@ -127,7 +186,7 @@ void append_procedural_guides(const procedural::Geometry& geometry, const editor
                               const SopGuideOptions& options, std::vector<renderer::OverlayShape>& overlay) {
     const auto& positions = geometry.positions();
     const std::size_t point_count = positions.size();
-    const float dpi = std::max(view.dpi_scale, 1.f);
+    const GuideStrokes guides{view, overlay};
     const bool identity_world = options.world_transform == math::Matrix4::identity();
     const std::expected<math::NormalTransform, math::NormalTransformFailure> normal_xform =
         identity_world ? std::expected<math::NormalTransform, math::NormalTransformFailure>{math::NormalTransform{
@@ -179,36 +238,7 @@ void append_procedural_guides(const procedural::Geometry& geometry, const editor
         }
     }
 
-    const auto add_segment = [&](math::Vector3 a, math::Vector3 b, std::array<float, 4> color, float width_dip) {
-        if (!finite_v3(a) || !finite_v3(b))
-            return;
-        const auto pa = view.project(a);
-        const auto pb = view.project(b);
-        if (!pa || !pb)
-            return;
-        renderer::OverlayShape shape;
-        shape.kind = renderer::OverlayShape::Kind::segment;
-        shape.points = {pa->x, pa->y, pb->x, pb->y};
-        shape.color = {color[0], color[1], color[2], color[3]};
-        shape.width = std::clamp(width_dip * dpi, 0.f, 64.f);
-        overlay.push_back(shape);
-    };
-
-    const auto add_point_disc = [&](math::Vector3 p, std::array<float, 4> color, float diameter_dip) {
-        if (!finite_v3(p))
-            return;
-        const auto sp = view.project(p);
-        if (!sp)
-            return;
-        renderer::OverlayShape shape;
-        shape.kind = renderer::OverlayShape::Kind::segment;
-        shape.points = {sp->x, sp->y, sp->x, sp->y};
-        shape.color = {color[0], color[1], color[2], color[3]};
-        shape.width = std::clamp(diameter_dip * dpi, 0.f, 64.f);
-        overlay.push_back(shape);
-    };
-
-    const auto add_wire_box = [&](math::Vector3 low, math::Vector3 high, std::array<float, 4> color, float width_dip) {
+    const auto add_wire_box = [&](math::Vector3 low, math::Vector3 high, ui::Color color, float width_dip) {
         const std::array<math::Vector3, 8> corners{{
             transform_point_row({low.x, low.y, low.z}, options.world_transform, identity_world),
             transform_point_row({high.x, low.y, low.z}, options.world_transform, identity_world),
@@ -222,7 +252,7 @@ void append_procedural_guides(const procedural::Geometry& geometry, const editor
         constexpr std::array<std::pair<unsigned, unsigned>, 12> edges{
             {{0, 1}, {1, 2}, {2, 3}, {3, 0}, {4, 5}, {5, 6}, {6, 7}, {7, 4}, {0, 4}, {1, 5}, {2, 6}, {3, 7}}};
         for (const auto [i0, i1] : edges)
-            add_segment(corners[i0], corners[i1], color, width_dip);
+            guides.segment(corners[i0], corners[i1], color, width_dip);
     };
 
     // 1. Bounds & Generator Spatial Chunk Cages:
@@ -268,7 +298,7 @@ void append_procedural_guides(const procedural::Geometry& geometry, const editor
                     transform_point_row(positions[vp[range.first + i]], options.world_transform, identity_world);
                 const auto b =
                     transform_point_row(positions[vp[range.first + i + 1]], options.world_transform, identity_world);
-                add_segment(a, b, {0.92f, 0.78f, 0.36f, 0.95f}, 1.75f);
+                guides.segment(a, b, {0.92f, 0.78f, 0.36f, 0.95f}, 1.75f);
                 ++emitted;
             }
         }
@@ -300,7 +330,7 @@ void append_procedural_guides(const procedural::Geometry& geometry, const editor
             }
             const float alpha = front ? 0.95f : 0.28f;
             const float diam = front ? 4.25f : 2.65f;
-            std::array<float, 4> color{0.32f, 0.78f, 0.98f, alpha};
+            ui::Color color{0.32f, 0.78f, 0.98f, alpha};
             if (cd3) {
                 const auto& c = (*cd3)[i];
                 if (finite_v3(c))
@@ -310,7 +340,7 @@ void append_procedural_guides(const procedural::Geometry& geometry, const editor
                 if (std::isfinite(c.x) && std::isfinite(c.y) && std::isfinite(c.z))
                     color = {std::clamp(c.x, 0.f, 1.f), std::clamp(c.y, 0.f, 1.f), std::clamp(c.z, 0.f, 1.f), alpha};
             }
-            add_point_disc(wp, color, diam);
+            guides.point(wp, color, diam);
         }
     }
 
@@ -322,7 +352,7 @@ void append_procedural_guides(const procedural::Geometry& geometry, const editor
                 const auto wp = transform_point_row(positions[i], options.world_transform, identity_world);
                 if (const auto wn = transform_normal(normals[i])) {
                     const float alpha = front_facing(wp, *wn) ? 0.88f : 0.26f;
-                    add_segment(wp, wp + *wn * guide_scale, {0.35f, 0.90f, 0.85f, alpha}, 1.25f);
+                    guides.segment(wp, wp + *wn * guide_scale, {0.35f, 0.90f, 0.85f, alpha}, 1.25f);
                 }
             }
         } else if (auto vtx_n = geometry.read<math::Vector3>("N", procedural::Layer::vertex); vtx_n && *vtx_n) {
@@ -334,7 +364,7 @@ void append_procedural_guides(const procedural::Geometry& geometry, const editor
                 const auto wp = transform_point_row(positions[vp[v]], options.world_transform, identity_world);
                 if (const auto wn = transform_normal(normals[v])) {
                     const float alpha = front_facing(wp, *wn) ? 0.88f : 0.26f;
-                    add_segment(wp, wp + *wn * guide_scale, {0.72f, 0.52f, 0.96f, alpha}, 1.25f);
+                    guides.segment(wp, wp + *wn * guide_scale, {0.72f, 0.52f, 0.96f, alpha}, 1.25f);
                 }
             }
         }
@@ -379,8 +409,8 @@ void append_procedural_guides(const procedural::Geometry& geometry, const editor
             if (const auto wn = transform_normal(static_cast<math::Vector3>(*local_n))) {
                 const bool front = front_facing(wc, *wn);
                 const float alpha = front ? 0.92f : 0.30f;
-                add_point_disc(wc, {0.98f, 0.72f, 0.24f, alpha}, 2.6f);
-                add_segment(wc, wc + *wn * guide_scale, {0.98f, 0.72f, 0.24f, alpha}, 1.35f);
+                guides.point(wc, {0.98f, 0.72f, 0.24f, alpha}, 2.6f);
+                guides.segment(wc, wc + *wn * guide_scale, {0.98f, 0.72f, 0.24f, alpha}, 1.35f);
             }
         }
     }
@@ -414,9 +444,9 @@ void append_procedural_guides(const procedural::Geometry& geometry, const editor
                     transform_vector_row(rotate_by_quat({0.f, s, 0.f}, q), options.world_transform, identity_world);
                 const auto az =
                     transform_vector_row(rotate_by_quat({0.f, 0.f, s}, q), options.world_transform, identity_world);
-                add_segment(wp, wp + ax, {0.95f, 0.32f, 0.32f, 0.9f}, 1.25f);
-                add_segment(wp, wp + ay, {0.35f, 0.90f, 0.38f, 0.9f}, 1.25f);
-                add_segment(wp, wp + az, {0.35f, 0.58f, 0.98f, 0.9f}, 1.25f);
+                guides.segment(wp, wp + ax, {0.95f, 0.32f, 0.32f, 0.9f}, 1.25f);
+                guides.segment(wp, wp + ay, {0.35f, 0.90f, 0.38f, 0.9f}, 1.25f);
+                guides.segment(wp, wp + az, {0.35f, 0.58f, 0.98f, 0.9f}, 1.25f);
 
                 if (radius > 0.f) {
                     math::Vector3 prev{};
@@ -428,7 +458,7 @@ void append_procedural_guides(const procedural::Geometry& geometry, const editor
                             options.world_transform, identity_world);
                         const math::Vector3 cur = wp + offset;
                         if (seg > 0)
-                            add_segment(prev, cur, {0.96f, 0.82f, 0.36f, 0.52f}, 1.0f);
+                            guides.segment(prev, cur, {0.96f, 0.82f, 0.36f, 0.52f}, 1.0f);
                         prev = cur;
                     }
                 }
@@ -443,10 +473,10 @@ void append_template_wireframe(const procedural::Geometry& geometry, const edito
     const std::size_t point_count = positions.size();
     if (point_count == 0)
         return;
-    const float dpi = std::max(view.dpi_scale, 1.f);
+    const GuideStrokes guides{view, overlay};
     const std::size_t prim_count = geometry.count(procedural::Layer::primitive);
     const auto vp = geometry.vertex_points();
-    constexpr std::array<float, 4> wire_col{0.82f, 0.44f, 0.96f, 0.48f};
+    constexpr ui::Color wire_color{0.82f, 0.44f, 0.96f, 0.48f};
 
     if (prim_count > 0) {
         std::vector<std::pair<std::uint32_t, std::uint32_t>> edges;
@@ -479,32 +509,13 @@ void append_template_wireframe(const procedural::Geometry& geometry, const edito
             const auto [a, b] = edges[i];
             if (a >= point_count || b >= point_count)
                 continue;
-            const auto& pa_w = positions[a];
-            const auto& pb_w = positions[b];
-            if (!finite_v3(pa_w) || !finite_v3(pb_w))
-                continue;
-            const auto pa = view.project(pa_w);
-            const auto pb = view.project(pb_w);
-            if (!pa || !pb)
-                continue;
-            overlay.push_back({renderer::OverlayShape::Kind::segment,
-                               {pa->x, pa->y, pb->x, pb->y},
-                               std::min(1.15f * dpi, 64.f),
-                               {wire_col[0], wire_col[1], wire_col[2], wire_col[3]}});
+            guides.segment(positions[a], positions[b], wire_color, 1.15f);
         }
     } else {
         constexpr std::size_t max_pts = 8192;
         const std::size_t stride = point_count > max_pts ? (point_count + max_pts - 1) / max_pts : 1;
-        for (std::size_t i = 0; i < point_count; i += stride) {
-            if (!finite_v3(positions[i]))
-                continue;
-            if (const auto sp = view.project(positions[i])) {
-                overlay.push_back({renderer::OverlayShape::Kind::segment,
-                                   {sp->x, sp->y, sp->x, sp->y},
-                                   std::min(3.2f * dpi, 64.f),
-                                   {wire_col[0], wire_col[1], wire_col[2], 0.56f}});
-            }
-        }
+        for (std::size_t i = 0; i < point_count; i += stride)
+            guides.point(positions[i], {wire_color.r, wire_color.g, wire_color.b, 0.56f}, 3.2f);
     }
 }
 

@@ -397,6 +397,24 @@ void verify_procedural_generator_scene() {
     require(take(doc.presentation().render_items()).size() == active_render_count,
             "Re-enabling ProceduralGeneratorEntity did not restore render_items.");
 
+    // A failed current cook retains the last visible output but cannot commit it as a static hierarchy.
+    const auto previous_output = take(presentation::read_procedural_source(doc.world().runtime(), gen_comp)).output;
+    const auto member_count = take(doc.world().members()).size();
+    take(doc.open_graph(project, graph_key));
+    const auto invalid_mesh = take(assets::json_format::parse(R"({"meshes":["project/missing-bake-mesh"]})"));
+    take(doc.graph_set_properties(graph_key, "inst", invalid_mesh.root()));
+    const auto history = doc.undo_count();
+    const auto failed_bake = doc.bake_procedural_generator(&project, gen_comp);
+    const auto* cook_error = doc.procedural_generator_error(gen_comp);
+    require(
+        !failed_bake && cook_error && failed_bake.error().message == cook_error->message &&
+            take(presentation::read_procedural_source(doc.world().runtime(), gen_comp)).output == previous_output &&
+            take(doc.world().members()).size() == member_count && doc.undo_count() == history,
+        "A failed generator cook must retain preview, reject Bake with the cook error, and leave scene history intact.");
+    take(doc.graph_undo(graph_key, false));
+    take(doc.sync_procedural_generators(&project));
+    require(!doc.procedural_generator_error(gen_comp), "Generator cook error survived repair of its source graph.");
+
     const auto saved = take(doc.serialize());
     auto strict_reloaded = take(editor::Session::deserialize(saved, project, {}, editor::LoadPolicy::strict));
     require(strict_reloaded->load_issues().empty(), "Strict reload of ProceduralGeneratorEntity reported issues.");

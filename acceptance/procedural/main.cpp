@@ -367,6 +367,19 @@ void boolean_modeling() {
                 evaluator.status(op.id())->evaluations == evaluations && evaluator.status(op.id())->cache_hits,
             "Returning to a cached Boolean result replaced its last actual cook measurements.");
 
+    take(set_bypassed(runtime, op.id(), true));
+    take(evaluator.evaluate());
+    require(evaluator.output() && std::abs(solid_measures(*evaluator.output()).first - 1.) < 1e-6 &&
+                evaluator.status(op.id())->boolean_stats == last_cook,
+            "Bypassing the Boolean did not forward its first input and keep its last cook measurements.");
+    const auto hits_before_restore = evaluator.status(op.id())->cache_hits;
+    take(set_bypassed(runtime, op.id(), false));
+    take(evaluator.evaluate());
+    require(evaluator.output() && std::abs(solid_measures(*evaluator.output()).first - .5) < 1e-6 &&
+                evaluator.status(op.id())->cache_hits == hits_before_restore + 1 &&
+                evaluator.status(op.id())->boolean_stats == last_cook,
+            "Restoring the cached intersection lost the last actual Boolean cook measurements.");
+
     const auto translate = field(runtime, type<Transform>(runtime), "translate");
     const auto move_and_check = [&](Evaluator& ev, float dx, std::uint32_t hits, double volume) {
         const Vector3 offset{dx, 0, 0};

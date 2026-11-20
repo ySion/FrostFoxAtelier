@@ -259,6 +259,9 @@ public:
 
     Result<void> sync_procedural_generators(Project* project);
 
+    // Latest generator failure, valid until the next sync or document close.
+    [[nodiscard]] const Error* procedural_generator_error(ObjectId component) const noexcept;
+
     Result<world::Commit> bake_procedural_generator(Project* project, ObjectId target);
 
     Result<world::Commit> create_light(presentation::LightKind, math::Vector3 position = {});

@@ -844,6 +844,32 @@ class game.DiagnosticSop : procedural.Node {
         std::vector<renderer::OverlayShape> tmpl_overlay;
         application::append_template_wireframe(*tmpl_eval.template_output, vview, tmpl_overlay);
         require(!tmpl_overlay.empty(), "append_template_wireframe emitted no ghosted wireframe segments.");
+
+        require(vcam.look_at({0, 0, 0}, {0, 0, -1}), "Failed to align the template inspection camera.");
+        vview = editor::ViewportView::make(vcam, {30, 20, 800, 600}, 1.f);
+        const auto center = vview.eye + vview.forward;
+        const auto span = vview.right * 100000.f;
+        const auto endpoints = take(procedural::Geometry::points({center - span, center + span}));
+        tmpl_overlay.clear();
+        application::append_template_wireframe(endpoints, vview, tmpl_overlay);
+        require(tmpl_overlay.empty(), "Off-screen template points reached the renderer.");
+        application::append_template_wireframe(take(endpoints.connect_points()), vview, tmpl_overlay);
+        require(tmpl_overlay.size() == 1, "Lost a template line spanning the entire viewport.");
+        const auto horizontal = tmpl_overlay.front().points;
+        require(horizontal[0] >= 27.f && horizontal[0] <= 30.01f && horizontal[2] >= 829.99f &&
+                    horizontal[2] <= 833.f && std::abs(horizontal[1] - 320.f) < .01f &&
+                    std::abs(horizontal[3] - 320.f) < .01f,
+                "Template line endpoints must lie at the viewport edges within the stroke margin.");
+
+        const auto behind = vview.eye - vview.forward - vview.right * .02f;
+        const auto depth_crossing = take(procedural::Geometry::points({behind, center}));
+        tmpl_overlay.clear();
+        application::append_template_wireframe(take(depth_crossing.connect_points()), vview, tmpl_overlay);
+        require(tmpl_overlay.size() == 1, "Lost the visible part of a template line crossing the near plane.");
+        const auto depth_line = tmpl_overlay.front().points;
+        require(depth_line[0] > 30.f && depth_line[0] < 420.f && std::abs(depth_line[2] - 430.f) < .01f &&
+                    std::abs(depth_line[1] - 320.f) < .01f && std::abs(depth_line[3] - 320.f) < .01f,
+                "Near-plane clipping must terminate inside the view and preserve the visible endpoint.");
     }
 
     // Node Appearance (Shape + Color + Comment) + Sticky Note + Network Box group drag in 1 Undo step:

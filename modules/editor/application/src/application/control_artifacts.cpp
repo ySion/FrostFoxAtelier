@@ -222,32 +222,7 @@ std::expected<void, Failure> preflight_resources(editor::Project& project, json:
             materials.push_back(key);
     };
     scene_references(scene, reference);
-    std::vector<std::string> graphs;
-    for (const auto& [kind, key] : references)
-        if (kind == assets::AssetKind::procedural_graph)
-            graphs.push_back(key);
-    for (const auto& key : graphs)
-        if (auto graph_asset = project.assets().procedural_graph(key))
-            if (auto parsed_graph = assets::json_format::parse(graph_asset->text))
-                if (const auto nodes = parsed_graph->root().find("nodes");
-                    nodes && *nodes && (**nodes).kind() == json::Kind::object)
-                    for (const auto& [_, node] : *(**nodes).object_items()) {
-                        if (node.kind() != json::Kind::object)
-                            continue;
-                        const auto props = node.find("properties");
-                        if (!props || !*props || (**props).kind() != json::Kind::object)
-                            continue;
-                        const auto type = string_field(node, "type");
-                        if (type == "procedural.MeshImport")
-                            reference(assets::AssetKind::mesh, string_field(**props, "mesh"));
-                        else if (type == "procedural.CopyToPoints") {
-                            if (const auto arr = (**props).find("meshes");
-                                arr && *arr && (**arr).kind() == json::Kind::array)
-                                for (const auto item : *(**arr).array())
-                                    if (item.kind() == json::Kind::string)
-                                        reference(assets::AssetKind::mesh, std::string{*item.string()});
-                        }
-                    }
+    // The cooked candidate supplies SOP dependencies; disconnected or bypassed nodes may name missing assets.
     // Collect before visiting materials; their ordinal need not follow meshes.
     std::vector<std::string> meshes;
     for (const auto& [kind, key] : references)
@@ -888,6 +863,10 @@ std::expected<Repro, Failure> snapshot_resources(const editor::Session& document
 
 std::expected<void, Failure> validate_candidate_assets(const editor::Session& candidate, json::Value manifest) {
     ATELIER_TRY_BIND(expected, installed_assets(manifest));
+    for (const auto component :
+         take(candidate.world().query(candidate.presentation_types().procedural_generator_component)))
+        if (const auto* error = candidate.procedural_generator_error(component))
+            throw Failure("dependency_mismatch", "Repro generator could not reproduce its output: " + error->message);
     ATELIER_TRY_BIND(actual, snapshot_resources(candidate));
     for (const auto& item : actual->engine_assets)
         if (std::ranges::find(*expected, item) == expected->end())

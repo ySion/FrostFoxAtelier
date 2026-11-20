@@ -248,7 +248,7 @@ GPU 统计带独立采样帧号和有效标志，可能落后于截图。`gpu_sa
 
 ## 复现工程
 
-repro.export 读取 Session::serialize() 的内存场景，保留原路径、dirty 和 Undo；scene.save 才是普通保存。整份复制 Config 和 Source；其余工程根只复制 `snapshot_resources` 冻结的类型化 `references` 闭包及身份 sidecar：场景网格、天空、材质、网格默认关系、MS/MI 父链，以及声明匹配且启用的纹理。禁用、已删除声明和改型失配的条目原样保留为作者数据，不因此复制或加载图片。宿主不重新遍历磁盘材质，避免旧文件引用覆盖当前草稿；原始 glTF buffer、OBJ MTL 等伴随文件单独取自 `Reader::mesh_dependency_files`，不递归材质。文档仍在使用但目录已无同类资产时拒绝导出；已知缺失资源的键保留在场景，严格重开仍拒绝缺失的有效依赖。字体、样式和着色器来自安装目录，Cache 是派生数据，不进入复现包。没有工程时创建独立工程容器，副本 startup scene 指向当前内存场景。
+repro.export 读取 Session::serialize() 的内存场景，保留原路径、dirty 和 Undo；scene.save 才是普通保存。整份复制 Config 和 Source；其余工程根只复制 `snapshot_resources` 冻结的类型化 `references` 闭包及身份 sidecar：场景网格、天空、材质、网格默认关系、MS/MI 父链，以及声明匹配且启用的纹理。禁用、已删除声明和改型失配的条目原样保留为作者数据，不因此复制或加载图片。场景生成器随包保存所引用的图；网格依赖取自实际求值和发布。重开时核对候选场景的依赖，启用的生成器求值失败会拒绝重开，未参与求值的节点可以保留缺失资源键。宿主不重新遍历磁盘材质，避免旧文件引用覆盖当前草稿；原始 glTF buffer、OBJ MTL 等伴随文件单独取自 `Reader::mesh_dependency_files`，不递归材质。文档仍在使用但目录已无同类资产时拒绝导出；已知缺失资源的键保留在场景，严格重开仍拒绝缺失的有效依赖。字体、样式和着色器来自安装目录，Cache 是派生数据，不进入复现包。没有工程时创建独立工程容器，副本 startup scene 指向当前内存场景。
 
 工作线程只持有拥有型作者数据与不可变内容，不持有 Runtime 根。`material_sources` 固定 Session 已加载的精确 MS 文本，`textures` 固定有效输入的 RGBA 像素；导出不回读这些内容的新磁盘版本。图片以无损 PNG 编码写入原资产路径，保持文件名和身份，只排列 RGBA/BGRA 通道，不转换颜色空间；重新解码逐像素核对。一个纹理键对应不同已加载像素、或同一 Source 路径对应不同文本时明确拒绝，不能任取一个版本。
 
