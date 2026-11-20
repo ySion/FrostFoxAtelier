@@ -33,6 +33,9 @@ struct Repro {
 
     std::vector<assets::MaterialAsset> materials;
 
+    // Open procedural graph snapshots so unsaved node/seed edits reproduce faithfully.
+    std::vector<std::pair<std::string, std::string>> procedural_graphs;
+
     // Exact loaded MS text and active input pixels, not file rereads or history.
     // These values have no Runtime roots and can outlive the source document.
     std::vector<language::SourceFile> material_sources;

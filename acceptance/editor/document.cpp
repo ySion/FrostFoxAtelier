@@ -100,20 +100,43 @@ void verify_graph_format() {
       "type": "procedural.Merge"
     },
     "noise": {
+      "color": "#eab308",
+      "comment": "Per-point noise",
       "inputs": {"input": "merged.output"},
       "position": [540.0, 60.0],
       "properties": {"attribute": "nval", "frequency": 2.0, "layer": "point"},
+      "shape": "ribbon",
       "type": "procedural.Noise"
     }
   },
-  "settings": {"display": "noise", "seed": 9},
-  "version": 1
+  "boxes": {
+    "stage_a": {
+      "color": "#3b5b78",
+      "position": [0.0, 0.0],
+      "size": [420.0, 220.0],
+      "title": "Stage A"
+    }
+  },
+  "notes": {
+    "memo1": {
+      "color": "#d4a72c",
+      "position": [540.0, 140.0],
+      "size": [200.0, 96.0],
+      "text": "Line 1\nLine 2",
+      "title": "Memo"
+    }
+  },
+  "settings": {"display": "noise", "seed": 9, "template": "grid"},
+  "version": 2
 })";
+    require(!editor::load_graph(runtime, R"({"version":1,"settings":{},"nodes":{}})"),
+            "load_graph accepted legacy version 1 procedural graph.");
     const auto doc = take(editor::load_graph(runtime, input_json));
-    require(doc.nodes.size() == 5 && doc.issues.size() == 2 &&
+    require(doc.nodes.size() == 5 && doc.notes.size() == 1 && doc.boxes.size() == 1 &&
+                doc.template_node != ObjectId{} && doc.issues.size() == 2 &&
                 doc.issues[0].kind == world::DiagnosticKind::unknown_type &&
                 doc.issues[1].kind == world::DiagnosticKind::reference_dropped,
-            "load_graph did not tolerantly retain missing SOP type and dropped multi-port connection.");
+            "load_graph did not tolerantly retain v2 annotations, template, missing SOP type and dropped connection.");
     const auto saved_once = take(editor::save_graph(runtime, doc));
     const auto reloaded = take(editor::load_graph(runtime, saved_once));
     const auto saved_twice = take(editor::save_graph(runtime, reloaded));
@@ -183,7 +206,7 @@ class game.DiagnosticSop : procedural.Node {
 
     // Tolerant assets remain editable when an unresolved endpoint shares a multi-input port.
     const auto repair_key = take(project.create_procedural_graph(L"Content/Graphs/Repair.procgraph", R"({
-      "version":1,"settings":{},"nodes":{
+      "version":2,"settings":{},"nodes":{
         "grid":{"type":"procedural.Grid","properties":{"columns":"old"}},
         "legacy":{"type":"game.MissingSop"},
         "merged":{"type":"procedural.Merge","inputs":{"inputs":["grid.output","legacy.output"]}},
@@ -463,7 +486,7 @@ class game.DiagnosticSop : procedural.Node {
     workspace.spreadsheet.set_layer(procedural::Layer::point);
 
     // ProceduralPreview surface mesh triangle + quad wireframe edge_masks & viewport SOP guides:
-    const auto surface_mesh = application::build_procedural_surface_mesh(*eval_terrace.inspected_output);
+    const auto surface_mesh = presentation::build_procedural_surface_mesh(*eval_terrace.inspected_output);
     require(surface_mesh != nullptr && surface_mesh->vertices().size() == 8064 * 3 && surface_mesh->edge_mask(0) == 7 &&
                 surface_mesh->edge_mask(64) == 5 && surface_mesh->edge_mask(65) == 3,
             "build_procedural_surface_mesh did not emit polar triangle (7) and quad boundary edge_masks (5, 3).");
@@ -471,8 +494,34 @@ class game.DiagnosticSop : procedural.Node {
     const auto view = editor::ViewportView::make(host.camera(), {0, 0, 800, 600}, 1.f);
     std::vector<renderer::OverlayShape> guides;
     application::append_procedural_guides(*eval_terrace.inspected_output, view,
-                                          {.show_points = true, .show_normals = true, .show_orient = true}, guides);
+                                          {.show_points = true,
+                                           .show_point_normals = true,
+                                           .show_face_normals = true,
+                                           .show_orient = true,
+                                           .show_bounds = true,
+                                           .chunk_size = 4.f},
+                                          guides);
     require(!guides.empty(), "append_procedural_guides emitted zero OverlayShapes for framed SOP geometry.");
+    std::vector<renderer::OverlayShape> gnomon_shapes;
+    application::append_orientation_gnomon(view, gnomon_shapes);
+    require(gnomon_shapes.size() > 6, "append_orientation_gnomon did not emit 3D XYZ axis lines and tip glyphs.");
+
+    // Phase A: pure point-cloud auto-points vs surface/instance default, Backface Tint option, HUD & bilingual tooltips:
+    take(doc.graph_set_display(graph_key, "scatter"));
+    const auto eval_scatter_only = take(doc.evaluate_graph(graph_key, &project));
+    require(!workspace.sop_show_points.has_value() && eval_scatter_only.preview_output &&
+                application::is_pure_point_cloud(*eval_scatter_only.preview_output) &&
+                workspace.effective_show_points(eval_scatter_only.preview_output.get()),
+            "Pure point-cloud SOP node (scatter) did not auto-enable viewport point markers.");
+    take(doc.graph_set_display(graph_key, "instancer"));
+    const auto eval_instancer = take(doc.evaluate_graph(graph_key, &project));
+    require(eval_instancer.preview_output && !application::is_pure_point_cloud(*eval_instancer.preview_output) &&
+                !workspace.effective_show_points(eval_instancer.preview_output.get()),
+            "Surface/instance SOP node unexpectedly auto-enabled point markers without explicit user toggle.");
+    invoke("view.set", R"({"backface_tint":true})");
+    require(workspace.view.backface_tint, "view.set did not enable backface_tint on ViewSettings.");
+    invoke("view.set", R"({"backface_tint":false})");
+    require(!workspace.view.backface_tint, "view.set did not clear backface_tint on ViewSettings.");
 
     // Slice 1B: graph.layout topological rank assignment + 1-step Undo/Redo:
     invoke("graph.layout");
@@ -507,6 +556,20 @@ class game.DiagnosticSop : procedural.Node {
     const auto frame = take_ui(ui_session.prepare());
     require(ui_session.accept(frame), "Workspace UI frame with Network + Geometry Spreadsheet was rejected.");
     workspace.commit_ui_controls();
+    const auto has_cjk = [](std::wstring_view text) {
+        return std::ranges::any_of(text, [](wchar_t ch) { return ch >= 0x4E00 && ch <= 0x9FFF; });
+    };
+    const auto hud_ctrl = std::ranges::find(controls, editor::control::viewport_geometry_hud, &ui::Control::key);
+    require(hud_ctrl != controls.end() && hud_ctrl->text.find(L"Pts:") != std::wstring::npos &&
+                hud_ctrl->text.find(L"Inst:") != std::wstring::npos,
+            "SceneViewport did not mount viewport_geometry_hud with element counts in SOP context.");
+    const auto backface_btn = std::ranges::find(controls, editor::control::display_toggle_first + 5, &ui::Control::key);
+    const auto sop_pts_btn = std::ranges::find(controls, editor::control::display_sop_toggle_first, &ui::Control::key);
+    require(backface_btn != controls.end() && backface_btn->tooltip &&
+                backface_btn->tooltip->title == L"Backface Winding Tint" &&
+                has_cjk(backface_btn->tooltip->description) && sop_pts_btn != controls.end() && sop_pts_btn->tooltip &&
+                sop_pts_btn->tooltip->title == L"Display Points" && has_cjk(sop_pts_btn->tooltip->description),
+            "Scene View right-rail buttons are missing English-title + Chinese-explanation tooltips.");
     const auto* canvas_box = frame->find(editor::network_control::canvas);
     require(frame->find(editor::spreadsheet_control::table) != nullptr &&
                 frame->find(editor::network_control::add_node) != nullptr &&
@@ -646,7 +709,7 @@ class game.DiagnosticSop : procedural.Node {
     require(doc.graph_node(repair_key, "legacy"), "Undo did not restore the placeholder.");
 
     // 33 x 32 connections fit on screen and exceed the capacity of a single stroke batch.
-    std::string dense = R"({"version":1,"settings":{"display":"fault"},"nodes":{)";
+    std::string dense = R"({"version":2,"settings":{"display":"fault"},"nodes":{)";
     std::string inputs;
     for (unsigned i = 0; i < 33; ++i) {
         const auto name = "grid" + std::to_string(i);
@@ -693,8 +756,315 @@ class game.DiagnosticSop : procedural.Node {
     const auto help_frame = take_ui(ui_session.prepare());
     require(help_frame->tooltip && help_frame->tooltip->owner == fault_title,
             "Node hover did not survive a canvas refresh.");
+
+    // Phase B: Bypass pass-through on failing Source SOP ('fault'), 1-step Undo, and multi-input port-1 skip:
+    invoke("graph.set_bypass", R"({"node":"fault","bypass":true})");
+    const auto bypassed_cook = take(doc.evaluate_graph(dense_key, &project));
+    require(!bypassed_cook.display_error && bypassed_cook.display_output != nullptr &&
+                bypassed_cook.display_output->count(procedural::Layer::point) > 0,
+            "Bypassing failing SOP 'fault' did not skip execution and pass grid0.output straight through.");
+    invoke("edit.undo");
+    require(take(doc.evaluate_graph(dense_key, &project)).display_error.has_value(),
+            "edit.undo did not restore Bypass state on 'fault'.");
+    {
+        const auto ray_bypass = take(doc.graph_add_node(dense_key, "procedural.Ray", "ray_byp", {200.f, 240.f}));
+        take(doc.graph_connect(dense_key, "grid0", "output", ray_bypass, "points"));
+        take(doc.graph_connect(dense_key, "fault", "output", ray_bypass, "surface"));
+        take(doc.graph_set_display(dense_key, ray_bypass));
+        require(take(doc.evaluate_graph(dense_key, &project)).display_error.has_value(),
+                "Unbypassed Ray with failing port-1 surface should fail.");
+        take(doc.graph_set_bypass(dense_key, ray_bypass, true));
+        const auto ray_byp_eval = take(doc.evaluate_graph(dense_key, &project));
+        require(!ray_byp_eval.display_error && ray_byp_eval.display_output != nullptr &&
+                    ray_byp_eval.display_output->count(procedural::Layer::point) > 0,
+                "Bypassed multi-input Ray still cooked failing port-1 surface instead of passing port-0 through.");
+    }
+
+    // Phase B: Null milestone node, Drag-onto-wire Auto-Splice, Template Flag wireframe, Shapes/Colors/Notes/Boxes:
+    invoke("graph.open", "{\"asset\":\"" + graph_key + "\"}");
+    workspace.network.frame_nodes(take(doc.graph_topology(graph_key))->nodes, {cpx.width, cpx.height});
+
+    // Acronym Tab search ranking ('ctp' -> CopyToPoints, 'vs' -> VolumeScatter):
+    workspace.network.open_tab_search(80.f, 80.f, {cpx.width, cpx.height});
+    workspace.network.set_tab_query(L"ctp");
+    const auto ctp_matches = workspace.network.filter_catalog(catalog);
+    require(!ctp_matches.empty() && ctp_matches.front().name == "procedural.CopyToPoints",
+            "Acronym query 'ctp' did not rank procedural.CopyToPoints first.");
+    workspace.network.set_tab_query(L"vs");
+    const auto vs_matches = workspace.network.filter_catalog(catalog);
+    require(!vs_matches.empty() && vs_matches.front().name == "procedural.VolumeScatter",
+            "Acronym query 'vs' did not rank procedural.VolumeScatter first.");
+    workspace.network.close_tab_search();
+
+    // Add procedural.Null unconnected, then drag it directly onto scatter.points -> instancer.points wire to auto-splice:
+    const auto null_name = take(doc.graph_add_node(graph_key, "procedural.Null", "OUT_pts", {-240.f, 180.f}));
+    const auto before_splice = take(doc.graph_topology(graph_key));
+    const auto* sc_v = before_splice->find_node("scatter");
+    const auto* in_v = before_splice->find_node("instancer");
+    const auto* nl_v = before_splice->find_node(null_name);
+    require(sc_v && in_v && nl_v, "Missing scatter, instancer, or OUT_pts node.");
+    const auto wire_mid_dip = [&]() {
+        const auto p0 = workspace.network.port_dip(*sc_v, true, 0);
+        const auto p1 = workspace.network.port_dip(*in_v, false, 0);
+        return std::array{(p0[0] + p1[0]) * .5f, (p0[1] + p1[1]) * .5f};
+    }();
+    const auto nl_center_dip = workspace.network.to_dip(nl_v->position[0] + editor::NetworkCanvas::node_width * .45f,
+                                                        nl_v->position[1] + editor::NetworkCanvas::node_height * .5f);
+    send_ptr(ui::EventKind::pointer_down, nl_center_dip[0], nl_center_dip[1]);
+    send_ptr(ui::EventKind::pointer_move, wire_mid_dip[0], wire_mid_dip[1]);
+    send_ptr(ui::EventKind::pointer_up, wire_mid_dip[0], wire_mid_dip[1]);
+    const auto after_splice = take(doc.inspect_graph(graph_key, &project));
+    require(after_splice.connections.size() == 5 && !after_splice.display_error &&
+                after_splice.display_summary.counts[static_cast<std::size_t>(procedural::Layer::instance)] ==
+                    inst_count &&
+                std::ranges::any_of(after_splice.connections,
+                                    [&](const editor::GraphConnectionView& c) {
+                                        return c.from_node == "scatter" && c.to_node == null_name;
+                                    }) &&
+                std::ranges::any_of(after_splice.connections,
+                                    [&](const editor::GraphConnectionView& c) {
+                                        return c.from_node == null_name && c.to_node == "instancer";
+                                    }),
+            "Dragging unconnected Null node onto wire did not auto-splice it cleanly.");
+    invoke("edit.undo");
+    const auto splice_undone = take(doc.graph_topology(graph_key));
+    require(splice_undone->connections.size() == 4 &&
+                std::abs(splice_undone->find_node(null_name)->position[0] - (-240.f)) < 1e-3f,
+            "1-step edit.undo did not revert both node position and spliced wire connections.");
+    invoke("edit.undo"); // Remove OUT_pts
+
+    // Template Flag evaluation + ghosted wireframe overlay:
+    invoke("graph.set_template", R"({"node":"sphere"})");
+    const auto tmpl_eval = take(doc.evaluate_graph(graph_key, &project));
+    require(tmpl_eval.template_output != nullptr && tmpl_eval.template_name == "sphere",
+            "Template Flag did not evaluate sphere reference geometry alongside Display output.");
+    {
+        editor::Camera vcam;
+        auto vview = editor::ViewportView::make(vcam, {0.f, 0.f, 800.f, 600.f}, 1.f);
+        std::vector<renderer::OverlayShape> tmpl_overlay;
+        application::append_template_wireframe(*tmpl_eval.template_output, vview, tmpl_overlay);
+        require(!tmpl_overlay.empty(), "append_template_wireframe emitted no ghosted wireframe segments.");
+    }
+
+    // Node Appearance (Shape + Color + Comment) + Sticky Note + Network Box group drag in 1 Undo step:
+    invoke("graph.set_appearance", R"({"node":"terrace","shape":"ribbon","color":"#eab308","comment":"Plateaus"})");
+    const auto note_id =
+        take(doc.graph_add_note(graph_key, {220.f, 20.f}, {200.f, 100.f}, "Guide", "Line A\nLine B", 0xd4a72c));
+    const auto top_now = take(doc.graph_topology(graph_key));
+    const auto* sp_before = top_now->find_node("sphere");
+    require(sp_before != nullptr && top_now->find_node("terrace")->shape == editor::GraphNodeShape::ribbon &&
+                top_now->find_node("terrace")->comment == "Plateaus",
+            "graph.set_appearance did not persist shape and comment.");
+    const auto box_id = take(doc.graph_add_box(
+        graph_key, {sp_before->position[0] - 30.f, sp_before->position[1] - 36.f}, {200.f, 110.f}, "Source Box"));
+    const float sp_y0 = sp_before->position[1];
+    const auto with_box = take(doc.graph_topology(graph_key));
+    workspace.network.frame_nodes(with_box->nodes, {cpx.width, cpx.height}, {}, with_box->boxes, with_box->notes);
+    const auto* box_view = with_box->find_box(box_id);
+    const auto box_hdr_dip = workspace.network.to_dip(box_view->position[0] + 40.f, box_view->position[1] + 8.f);
+    send_ptr(ui::EventKind::pointer_down, box_hdr_dip[0], box_hdr_dip[1]);
+    send_ptr(ui::EventKind::pointer_move, box_hdr_dip[0] + 36.f, box_hdr_dip[1] + 28.f);
+    send_ptr(ui::EventKind::pointer_up, box_hdr_dip[0] + 36.f, box_hdr_dip[1] + 28.f);
+    const auto after_box_drag = take(doc.graph_topology(graph_key));
+    require(after_box_drag->find_node("sphere")->position[1] > sp_y0 + 5.f,
+            "Dragging Network Box header did not move enclosed 'sphere' node together.");
+    invoke("edit.undo");
+    require(std::abs(take(doc.graph_topology(graph_key))->find_node("sphere")->position[1] - sp_y0) < 1e-3f,
+            "1-step edit.undo did not revert Network Box group drag.");
+
+    // Hover node on NetworkCanvas -> verify ProceduralQuad::node_shape + ProceduralQuad::arc_sector (Air-Ring + Halos),
+    // and verify Z / C / I floating popups mount cleanly in UI layout:
+    {
+        const auto cur_top = take(doc.graph_topology(graph_key));
+        const std::array focus_sphere{std::string{"sphere"}};
+        workspace.network.frame_nodes(cur_top->nodes, {cpx.width, cpx.height}, focus_sphere);
+        const auto* sph = cur_top->find_node("sphere");
+        const auto sph_dip = workspace.network.to_dip(sph->position[0] + editor::NetworkCanvas::node_width * .45f,
+                                                      sph->position[1] + editor::NetworkCanvas::node_height * .5f);
+        send_ptr(ui::EventKind::pointer_move, sph_dip[0], sph_dip[1]);
+        const auto b_controls = take(workspace.describe(doc, {1400, 900}, frame.get(), &project, &ui_session));
+        take_ui(ui_session.set_controls(b_controls));
+        const auto b_frame = take_ui(ui_session.prepare());
+        require(ui_session.accept(b_frame) &&
+                    std::ranges::any_of(
+                        b_frame->drawing->draws,
+                        [](const ui::DrawQuad& q) { return q.procedural == ui::ProceduralQuad::node_shape; }) &&
+                    std::ranges::any_of(
+                        b_frame->drawing->draws,
+                        [](const ui::DrawQuad& q) { return q.procedural == ui::ProceduralQuad::arc_sector; }),
+                "NetworkCanvas did not emit analytic SDF node_shape and arc_sector DrawQuads.");
+        workspace.commit_ui_controls();
+
+        for (const std::uint32_t vk : {'Z', 'C', 'I'}) {
+            send_key(ui::EventKind::key_down, ui::Key::none, vk);
+            require(workspace.network.popup().open(), "Shortcut Z/C/I did not open floating Network popup.");
+            const auto pop_controls = take(workspace.describe(doc, {1400, 900}, b_frame.get(), &project, &ui_session));
+            take_ui(ui_session.set_controls(pop_controls));
+            const auto pop_frame = take_ui(ui_session.prepare());
+            require(ui_session.accept(pop_frame) && pop_frame->find(editor::network_control::popup_box) != nullptr,
+                    "Floating Network popup (Shape/Color/Info) failed UI validation or layout.");
+            workspace.commit_ui_controls();
+            workspace.network.close_popup();
+        }
+
+        // Strict #RRGGBB format validation + unresolved placeholder display/template cleanup + popup auto-close:
+        require(!editor::parse_graph_hex_color("eab308").has_value() &&
+                    editor::parse_graph_hex_color("#eab308") == 0xeab308u,
+                "parse_graph_hex_color must require a leading '#' and 6 hex digits.");
+        {
+            send_ptr(ui::EventKind::pointer_move, 2.f, 2.f);
+            const auto temp_node = take(doc.graph_add_node(graph_key, "procedural.Null", "tmp_pop", {320.f, 0.f}));
+            workspace.selected_graph_node = temp_node;
+            workspace.selected_graph_nodes = {temp_node};
+            send_key(ui::EventKind::key_down, ui::Key::none, 'C');
+            require(workspace.network.popup().open(), "Color picker popup did not open for tmp_pop.");
+            invoke("edit.undo"); // Deletes tmp_pop while popup is open
+            const auto after_pop_undo =
+                take(workspace.describe(doc, {1400, 900}, b_frame.get(), &project, &ui_session));
+            take_ui(ui_session.set_controls(after_pop_undo));
+            require(ui_session.accept(take_ui(ui_session.prepare())) && !workspace.network.popup().open(),
+                    "Deleting popup target via Undo did not auto-close the stale floating popup.");
+            workspace.commit_ui_controls();
+        }
+        {
+            const auto ghost_key = take(project.create_procedural_graph(L"Content/Graphs/GhostTest.procgraph", R"({
+  "version": 2,
+  "settings": { "display": "ghost", "template": "ghost" },
+  "nodes": { "ghost": { "type": "missing.CustomSop", "position": [0, 0] } }
+})"));
+            take(doc.open_graph(project, ghost_key));
+            require(take(doc.graph_topology(ghost_key))->display == "ghost" &&
+                        take(doc.graph_topology(ghost_key))->template_node == "ghost",
+                    "graph_topology did not report kept placeholder display/template.");
+            const std::array rm_ghost{std::string{"ghost"}};
+            take(doc.graph_remove_nodes(ghost_key, rm_ghost));
+            const auto cleaned_snap = doc.procedural_graph_snapshot(ghost_key).value_or("");
+            require(!cleaned_snap.empty() && cleaned_snap.find("ghost") == std::string::npos,
+                    "Removing placeholder node left dangling display/template entry in kept settings.");
+            take(doc.graph_undo(ghost_key, false));
+            require(!doc.graph_dirty(ghost_key) && take(doc.graph_topology(ghost_key))->display == "ghost" &&
+                        take(doc.graph_topology(ghost_key))->template_node == "ghost",
+                    "graph_undo did not restore kept display/template after placeholder deletion.");
+        }
+    }
+
+    // Save v2 .procgraph with notes, boxes, template, shape, color & comment and verify clean state:
+    invoke("file.save");
+    require(!doc.graph_dirty(graph_key) && !note_id.empty(),
+            "Saving .procgraph v2 with annotations, template and styles left graph dirty.");
+
     invoke("graph.exit");
     require(workspace.active_graph.empty(), "graph.exit did not return Scene View context to World.");
+
+    // Scratch graphs cannot be bound to persistent Scene ProceduralGeneratorComponents:
+    take(doc.create_scratch_graph("scratch/procedural"));
+    require(!doc.create_procedural_generator("scratch/procedural", {}, &project),
+            "Session allowed binding a scratch procedural graph to a Scene Entity.");
+
+    // S5-1: Scene Procedural Generator Entity creation, Inspector UI, live .procgraph sync, assign_graph, and Bake:
+    invoke("scene.add", "{\"kind\":\"procedural_generator\",\"graph\":\"" + graph_key + "\"}");
+    const ObjectId gen_ent = doc.selection().entity;
+    require(gen_ent != ObjectId{} &&
+                take(doc.world().runtime().type_of(gen_ent)) == doc.presentation_types().procedural_generator_entity,
+            "scene.add procedural_generator did not create a ProceduralGeneratorEntity.");
+    // Long name ending in a supplementary-plane surrogate pair to verify UTF-16 safe truncation on Bake:
+    std::wstring long_surrogate_name(251, L'A');
+    long_surrogate_name += L"\U0001F3DD"; // 2 UTF-16 code units -> + " Baked" exceeds 256 at surrogate boundary.
+    take(doc.rename(gen_ent, long_surrogate_name));
+    take(doc.sync_procedural_generators(&project));
+    const auto world_items_initial = take(doc.presentation().render_items());
+    require(world_items_initial.size() == inst_count,
+            "ProceduralGeneratorEntity did not publish expected CopyToPoints render_items in World.");
+
+    // Verify Parameters pane mounts ProceduralGeneratorComponent controls cleanly:
+    workspace.dock.select(editor::control::parameters_tab);
+    const auto gen_controls = take(workspace.describe(doc, {1400, 900}, nullptr, &project, &ui_session));
+    take_ui(ui_session.set_controls(gen_controls));
+    const auto gen_frame = take_ui(ui_session.prepare());
+    require(ui_session.accept(gen_frame) &&
+                std::ranges::any_of(gen_controls, [](const ui::Control& c) { return c.text == L"Procedural Graph"; }) &&
+                std::ranges::any_of(gen_controls, [](const ui::Control& c) { return c.text == L"Material · default"; }),
+            "Parameters pane did not mount ProceduralGeneratorComponent graph and material selectors.");
+    workspace.commit_ui_controls();
+
+    // Verify World-context ProceduralGeneratorEntity populates GeometrySpreadsheet and SceneViewport HUD/guides:
+    workspace.dock.select(editor::spreadsheet_control::tab);
+    workspace.dock.select(editor::control::scene_tab);
+    workspace.spreadsheet.set_layer(procedural::Layer::instance);
+    const auto world_gen_ui = take(workspace.describe(doc, {1400, 900}, gen_frame.get(), &project, &ui_session));
+    take_ui(ui_session.set_controls(world_gen_ui));
+    const auto world_gen_frame = take_ui(ui_session.prepare());
+    require(
+        ui_session.accept(world_gen_frame) && workspace.active_graph.empty() &&
+            workspace.spreadsheet.total_rows() == inst_count &&
+            std::ranges::any_of(world_gen_ui,
+                                [](const ui::Control& c) {
+                                    return c.key == editor::control::viewport_geometry_hud &&
+                                           c.text.find(L"[Generator]") != std::wstring::npos &&
+                                           c.text.find(L"Chunks:") != std::wstring::npos;
+                                }) &&
+            std::ranges::any_of(
+                world_gen_ui, [](const ui::Control& c) { return c.key == editor::control::display_sop_toggle_first; }),
+        "Selecting a ProceduralGeneratorEntity in World context did not expose GeometrySpreadsheet rows, HUD, and SOP guide toggles.");
+    workspace.spreadsheet.set_layer(procedural::Layer::point);
+    workspace.commit_ui_controls();
+
+    // procedural.assign_graph + Undo/Redo:
+    invoke("procedural.assign_graph", R"({"asset":""})");
+    take(doc.sync_procedural_generators(&project));
+    require(take(doc.presentation().render_items()).empty(),
+            "Clearing ProceduralGeneratorComponent graph did not clear World render_items.");
+    invoke("edit.undo");
+    take(doc.sync_procedural_generators(&project));
+    require(take(doc.presentation().render_items()).size() == inst_count,
+            "edit.undo did not restore ProceduralGeneratorComponent graph binding.");
+
+    // Live .procgraph edit in Network updates World generator on sync:
+    invoke("graph.open", "{\"asset\":\"" + graph_key + "\"}");
+    set_node_props("scatter", R"({"density":0.55})");
+    invoke("graph.exit");
+    take(doc.sync_procedural_generators(&project));
+    const auto world_items_dense = take(doc.presentation().render_items());
+    require(world_items_dense.size() > inst_count,
+            "Editing .procgraph in Network did not update World ProceduralGeneratorComponent output.");
+    const std::size_t baked_expected = world_items_dense.size();
+
+    // procedural.bake converts CopyToPoints instances into StaticMeshEntity hierarchy in 1 Undo step:
+    const std::size_t members_before_bake = take(doc.world().members()).size();
+    invoke("procedural.bake");
+    const auto members_after_bake = take(doc.world().members());
+    require(members_after_bake.size() == members_before_bake + 1 + baked_expected,
+            "procedural.bake did not attach Baked group Entity and all child StaticMeshEntities.");
+    const ObjectId baked_group = doc.selection().entity;
+    const auto baked_children = take(world::children(doc.world().runtime(), baked_group));
+    require(baked_children.size() == baked_expected &&
+                take(doc.presentation().render_items()).size() == baked_expected * 2,
+            "procedural.bake did not instantiate all CopyToPoints instances as child StaticMeshEntities.");
+    invoke("edit.undo");
+    require(take(doc.world().members()).size() == members_before_bake &&
+                take(doc.presentation().render_items()).size() == baked_expected,
+            "edit.undo did not remove the baked StaticMeshEntity hierarchy in a single step.");
+    invoke("edit.redo");
+    require(take(doc.world().members()).size() == members_before_bake + 1 + baked_expected &&
+                take(doc.presentation().render_items()).size() == baked_expected * 2,
+            "edit.redo did not restore the baked StaticMeshEntity hierarchy.");
+    // Verify UTF-16 surrogate-safe truncation kept the document strictly serializable:
+    const auto post_bake_serialized = take(doc.serialize());
+    require(!post_bake_serialized.empty(), "Serialization after surrogate-truncated Bake failed.");
+
+    // Sheared instance transforms must be explicitly rejected by procedural.bake rather than silently distorted:
+    take(doc.open_graph(project, graph_key));
+    const auto rot_node = take(doc.graph_add_node(graph_key, "procedural.Transform", "rot_inst", {320.f, 220.f}));
+    take(doc.graph_connect(graph_key, "instancer", "output", rot_node, "input"));
+    set_node_props(rot_node, R"({"rotate":{"x":0.0,"y":0.0,"z":0.38268343,"w":0.92387953}})");
+    const auto shear_node = take(doc.graph_add_node(graph_key, "procedural.Transform", "shear_inst", {500.f, 220.f}));
+    take(doc.graph_connect(graph_key, rot_node, "output", shear_node, "input"));
+    set_node_props(shear_node, R"({"scale":{"x":2.5,"y":1.0,"z":1.0}})");
+    take(doc.graph_set_display(graph_key, shear_node));
+    const auto sheared_bake = doc.bake_procedural_generator(&project, gen_ent);
+    require(!sheared_bake && sheared_bake.error().message.find("shear") != std::string::npos,
+            "procedural.bake did not reject sheared instance transforms.");
+
     changed(doc.close());
 }
 }

@@ -110,19 +110,22 @@ Result<void> frame(OperatorHost& host, const Context& context, bool selected_onl
         }
         return false;
     };
+    ATELIER_TRY(context.document.sync_procedural_generators(context.project));
     ATELIER_TRY_BIND(items, context.document.presentation().render_items());
-    std::vector<ObjectId> rendered;
+    std::unordered_set<ObjectId> rendered;
     for (const auto& item : *items) {
-        rendered.push_back(item.entity);
+        rendered.insert(item.entity);
         if (!wanted(item.entity))
             continue;
-        for (const auto& vertex : item.geometry->vertices())
-            include(math::transform_point(math::Vector3{vertex.position[0], vertex.position[1], vertex.position[2]},
-                                          item.world));
+        const auto world_b = math::transform_bounds(item.geometry->bounds(), item.world);
+        if (!math::is_empty(world_b) && math::is_finite(world_b)) {
+            include(world_b.minimum);
+            include(world_b.maximum);
+        }
     }
     ATELIER_TRY_BIND(members, context.document.world().members());
     for (const auto& member : *members) {
-        if (!wanted(member.id()) || std::ranges::find(rendered, member.id()) != rendered.end())
+        if (!wanted(member.id()) || rendered.contains(member.id()))
             continue;
         auto spatial = world::has_transform(runtime, member.id());
         if (!spatial || !*spatial)
@@ -375,6 +378,11 @@ Result<void> scene_add(OperatorHost& host, const Context& context, const SceneAd
             return context.project ? std::unexpected(asset.error())
                                    : std::unexpected(Error{ErrorCode::invalid_definition, "Unknown mesh asset."});
         added = document.create_static_mesh(*asset, context.cursor, context.project);
+        break;
+    }
+    case AddKind::procedural_generator: {
+        std::string_view key{p.graph.c_str(), p.graph.size()};
+        added = document.create_procedural_generator(key, context.cursor, context.project);
         break;
     }
     case AddKind::point:
@@ -1299,6 +1307,69 @@ void register_builtin_operators(OperatorRegistry& registry) {
              return c.document.graph_set_display(*key, {p.node.c_str(), p.node.size()});
          }),
          "editor.GraphSetDisplay"});
+    add({"graph.set_template", L"Set Graph Template Node",
+         "Set or clear the magenta Template reference wireframe flag on a procedural graph", OperatorFlag::none,
+         graph_editable,
+         with_parameters(+[](OperatorHost&, const Context& c, const GraphSetTemplate& p) -> Result<void> {
+             ATELIER_TRY_BIND(key, target_graph_key(c, p.asset));
+             return c.document.graph_set_template(*key, {p.node.c_str(), p.node.size()});
+         }),
+         "editor.GraphSetTemplate"});
+    add({"graph.set_bypass", L"Set Graph Node Bypass",
+         "Enable or disable Bypass pass-through on a procedural graph node", OperatorFlag::none, graph_editable,
+         with_parameters(+[](OperatorHost&, const Context& c, const GraphSetBypass& p) -> Result<void> {
+             ATELIER_TRY_BIND(key, target_graph_key(c, p.asset));
+             const std::string node_name = !p.node.empty()
+                                               ? std::string(p.node.c_str(), p.node.size())
+                                               : (*key == c.active_graph ? c.selected_graph_node : std::string{});
+             if (node_name.empty())
+                 return std::unexpected(Error{ErrorCode::argument_mismatch, "Select or specify a node to bypass."});
+             return c.document.graph_set_bypass(*key, node_name, p.bypass);
+         }),
+         "editor.GraphSetBypass"});
+    add({"graph.set_appearance", L"Set Graph Node Appearance",
+         "Change the shape preset, color swatch, or comment of procedural graph nodes", OperatorFlag::none,
+         graph_editable,
+         with_parameters(+[](OperatorHost&, const Context& c, const GraphSetAppearance& p) -> Result<void> {
+             ATELIER_TRY_BIND(key, target_graph_key(c, p.asset));
+             std::vector<std::string> targets;
+             if (!p.node.empty()) {
+                 targets.emplace_back(p.node.c_str(), p.node.size());
+             } else if (*key == c.active_graph) {
+                 if (!c.selected_graph_nodes.empty())
+                     targets = c.selected_graph_nodes;
+                 else if (!c.selected_graph_node.empty())
+                     targets.push_back(c.selected_graph_node);
+             }
+             if (targets.empty())
+                 return std::unexpected(Error{ErrorCode::argument_mismatch, "Select or specify a node to style."});
+             std::optional<GraphNodeShape> shape;
+             if (!p.shape.empty()) {
+                 const auto parsed = parse_graph_node_shape({p.shape.c_str(), p.shape.size()});
+                 if (!parsed)
+                     return std::unexpected(Error{ErrorCode::argument_mismatch, "Unknown node shape preset."});
+                 shape = *parsed;
+             }
+             std::optional<std::optional<std::uint32_t>> color;
+             if (!p.color.empty()) {
+                 const std::string_view col_sv{p.color.c_str(), p.color.size()};
+                 if (col_sv == "default" || col_sv == "auto") {
+                     color = std::optional<std::uint32_t>{};
+                 } else {
+                     const auto parsed = parse_graph_hex_color(col_sv);
+                     if (!parsed)
+                         return std::unexpected(Error{ErrorCode::argument_mismatch, "Node color must be #RRGGBB."});
+                     color = *parsed;
+                 }
+             }
+             std::optional<std::string> comment;
+             if (!p.comment.empty()) {
+                 const std::string_view com_sv{p.comment.c_str(), p.comment.size()};
+                 comment = com_sv == "-" ? std::string{} : std::string(com_sv);
+             }
+             return c.document.graph_set_node_appearance(*key, targets, shape, color, comment);
+         }),
+         "editor.GraphSetAppearance"});
     add({"graph.select", L"Select Graph Node", "Inspect a procedural graph node without changing the Display flag",
          OperatorFlag::none, graph_editable,
          with_parameters(+[](OperatorHost& host, const Context& c, const GraphSelect& p) -> Result<void> {
@@ -1318,5 +1389,54 @@ void register_builtin_operators(OperatorRegistry& registry) {
              return c.document.graph_auto_layout(*key);
          }),
          "editor.GraphLayout"});
+    const auto stopped_scene = [scene](const Context& c) -> Result<void> {
+        ATELIER_TRY(scene(c));
+        if (c.document.world().running())
+            return unavailable("Stop the running World first.");
+        return {};
+    };
+    static constexpr auto resolve_generator =
+        +[](const Context& c, const ReferenceSlot& comp_slot, const ReferenceSlot* ent_slot) -> Result<ObjectId> {
+        auto& doc = c.document;
+        auto& runtime = doc.world().runtime();
+        ATELIER_TRY_BIND(gen_type, runtime.native_type<presentation::ProceduralGeneratorComponent>());
+        ATELIER_TRY_BIND(comp_ref, runtime.read_reference({*gen_type, ValueForm::weak_reference}, comp_slot));
+        ATELIER_TRY_BIND(comp_held, runtime.try_acquire(*comp_ref));
+        if (!comp_ref->is_null() && !*comp_held)
+            return std::unexpected(
+                Error{ErrorCode::invalid_object, "The target ProceduralGeneratorComponent is no longer alive."});
+        ObjectId candidate = *comp_held ? (*comp_held)->id() : ObjectId{};
+        if (candidate == ObjectId{} && ent_slot) {
+            ATELIER_TRY_BIND(ent_ref,
+                             runtime.read_reference({doc.types().entity, ValueForm::weak_reference}, *ent_slot));
+            ATELIER_TRY_BIND(ent_held, runtime.try_acquire(*ent_ref));
+            if (!ent_ref->is_null() && !*ent_held)
+                return std::unexpected(Error{ErrorCode::invalid_object, "The target Entity is no longer alive."});
+            if (*ent_held)
+                candidate = (*ent_held)->id();
+        }
+        if (candidate == ObjectId{})
+            candidate = c.selection.object != ObjectId{} ? c.selection.object : c.selection.active;
+        return doc.resolve_procedural_generator(candidate);
+    };
+    add({"procedural.assign_graph", L"Assign Procedural Graph",
+         "Bind or clear the .procgraph asset on a ProceduralGeneratorComponent", OperatorFlag::undo, stopped_scene,
+         with_parameters(+[](OperatorHost& host, const Context& c, const AssignProceduralGraph& p) -> Result<void> {
+             ATELIER_TRY_BIND(target, resolve_generator(c, p.component, nullptr));
+             auto result = c.document.set_procedural_graph(c.project, *target, {p.asset.c_str(), p.asset.size()});
+             host.scene_changed();
+             return result;
+         }),
+         "editor.AssignProceduralGraph"});
+    add({"procedural.bake", L"Bake Procedural Generator",
+         "Convert published CopyToPoints mesh instances of a Procedural Generator into StaticMeshEntity objects",
+         OperatorFlag::undo, stopped_scene,
+         with_parameters(+[](OperatorHost& host, const Context& c, const ProceduralBake& p) -> Result<void> {
+             ATELIER_TRY_BIND(target, resolve_generator(c, p.component, &p.entity));
+             auto result = committed(c.document.bake_procedural_generator(c.project, *target));
+             host.scene_changed();
+             return result;
+         }),
+         "editor.ProceduralBake"});
 }
 }

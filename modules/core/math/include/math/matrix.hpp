@@ -465,11 +465,13 @@ normal_transform(const std::array<float, 9>& linear) noexcept {
     const std::array<double, 9> cofactors{e * i - f * h, f * g - d * i, d * h - e * g, c * h - b * i, a * i - c * g,
                                           b * g - a * h, b * f - c * e, c * d - a * f, a * e - b * d};
     const double determinant = a * cofactors[0] + b * cofactors[1] + c * cofactors[2];
-    if (determinant == 0)
+    if (!std::isfinite(determinant) || determinant == 0)
         return std::unexpected(NormalTransformFailure::singular);
     double maximum = 0;
     for (double value : cofactors)
         maximum = std::max(maximum, std::abs(value));
+    if (!std::isfinite(maximum) || maximum == 0)
+        return std::unexpected(NormalTransformFailure::singular);
     const double sign = determinant < 0 ? -1. : 1.;
     NormalTransform result{{}, determinant < 0 ? -1.f : 1.f};
     for (std::size_t n = 0; n < cofactors.size(); ++n) {
@@ -481,7 +483,7 @@ normal_transform(const std::array<float, 9>& linear) noexcept {
     const double gpu_determinant = double(m[0]) * (double(m[4]) * m[8] - double(m[5]) * m[7]) -
                                    double(m[1]) * (double(m[3]) * m[8] - double(m[5]) * m[6]) +
                                    double(m[2]) * (double(m[3]) * m[7] - double(m[4]) * m[6]);
-    if (gpu_determinant == 0)
+    if (!std::isfinite(gpu_determinant) || gpu_determinant == 0)
         return std::unexpected(NormalTransformFailure::unrepresentable);
     return result;
 }

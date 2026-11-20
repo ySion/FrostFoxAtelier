@@ -416,11 +416,13 @@ std::vector<ui::MenuItem> AssetBrowser::menu_items(ui::ControlKey source) const 
              false,
              {}});
         items.back().icon = ui::ControlIcon::folder;
-        items.push_back({id::add,
-                         L"Add to Scene",
-                         can_create_ && selected_ && selected_->kind == assets::AssetKind::mesh,
-                         false,
-                         {}});
+        items.push_back(
+            {id::add,
+             L"Add to Scene",
+             can_create_ && selected_ &&
+                 (selected_->kind == assets::AssetKind::mesh || selected_->kind == assets::AssetKind::procedural_graph),
+             false,
+             {}});
         items.back().icon = ui::ControlIcon::plus;
         items.push_back({id::rename, L"Rename", can_rename(), false, {}, L"F2"});
         items.back().icon = ui::ControlIcon::rename;

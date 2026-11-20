@@ -1,0 +1,202 @@
+{
+  "boxes": {
+    "outpost_scattering": {
+      "color": "#4f6d8a",
+      "position": [
+        40.0,
+        244.0
+      ],
+      "size": [
+        260.0,
+        396.0
+      ],
+      "title": "Outpost Scattering"
+    },
+    "terrain_shaping": {
+      "color": "#386b5e",
+      "position": [
+        -220.0,
+        -44.0
+      ],
+      "size": [
+        244.0,
+        396.0
+      ],
+      "title": "Terrain Shaping"
+    }
+  },
+  "nodes": {
+    "OUT_terrace": {
+      "color": "#eab308",
+      "comment": "Milestone output",
+      "inputs": {
+        "input": "out.output"
+      },
+      "position": [
+        0.0,
+        768.0
+      ],
+      "properties": {},
+      "shape": "diamond",
+      "type": "procedural.Null"
+    },
+    "instancer": {
+      "comment": "2 prop variants",
+      "inputs": {
+        "points": "placement.output"
+      },
+      "position": [
+        98.0,
+        576.0
+      ],
+      "properties": {
+        "meshes": [
+          "project/{BC355578-C6D6-4E69-94C0-B7E8BAD6A3DE}",
+          "project/{0B8A622F-7691-4DA5-802B-D0AA42F9E698}"
+        ],
+        "variant": "variant"
+      },
+      "type": "procedural.CopyToPoints"
+    },
+    "out": {
+      "inputs": {
+        "inputs": [
+          "pieces.output",
+          "instancer.output"
+        ]
+      },
+      "position": [
+        0.0,
+        672.0
+      ],
+      "properties": {},
+      "type": "procedural.Merge"
+    },
+    "pieces": {
+      "inputs": {
+        "input": "terrace.output"
+      },
+      "position": [
+        -98.0,
+        288.0
+      ],
+      "properties": {
+        "attribute": "piece"
+      },
+      "type": "procedural.Connectivity"
+    },
+    "placement": {
+      "comment": "Source SOP",
+      "inputs": {
+        "input": "scale_var.output"
+      },
+      "position": [
+        98.0,
+        480.0
+      ],
+      "properties": {
+        "min_flatness": 0.8,
+        "sanctum_height": 2.4,
+        "seed": 7
+      },
+      "type": "game.OutpostPlacement"
+    },
+    "promote_n": {
+      "inputs": {
+        "input": "terrain_import.output"
+      },
+      "position": [
+        -98.0,
+        96.0
+      ],
+      "properties": {
+        "name": "N",
+        "reduce": "average",
+        "to": "point"
+      },
+      "type": "procedural.Promote"
+    },
+    "scale_var": {
+      "inputs": {
+        "input": "scatter.points"
+      },
+      "position": [
+        98.0,
+        384.0
+      ],
+      "properties": {
+        "group": "",
+        "maximum": 1.28,
+        "minimum": 0.82,
+        "seed": 5
+      },
+      "type": "procedural.RandomScale"
+    },
+    "scatter": {
+      "inputs": {
+        "surface": "terrace.output"
+      },
+      "position": [
+        98.0,
+        288.0
+      ],
+      "properties": {
+        "density": 0.11,
+        "min_distance": 2.35,
+        "seed": 3
+      },
+      "type": "procedural.Scatter"
+    },
+    "terrace": {
+      "comment": "4 stepped plateaus",
+      "inputs": {
+        "input": "promote_n.output"
+      },
+      "position": [
+        -98.0,
+        192.0
+      ],
+      "properties": {
+        "coastline_warp": 0.22,
+        "height": 4.4,
+        "radius": 11.0,
+        "seed": 11,
+        "sharpness": 0.78,
+        "terraces": 4
+      },
+      "type": "game.TerraceIsland"
+    },
+    "terrain_import": {
+      "inputs": {},
+      "position": [
+        -98.0,
+        0.0
+      ],
+      "properties": {
+        "mesh": "project/{7D42BD40-BDDC-486A-B2FE-BFA55902E819}"
+      },
+      "type": "procedural.MeshImport"
+    }
+  },
+  "notes": {
+    "pipeline_overview": {
+      "color": "#d4a72c",
+      "position": [
+        336.0,
+        24.0
+      ],
+      "size": [
+        232.0,
+        136.0
+      ],
+      "text": "1. TerraceIsland (.source) carves plateaus.\n2. Scatter + OutpostPlacement (.source) place props.\n3. Hover nodes for Air-Ring (B/i/D/T); press Z/C to style.",
+      "title": "Terrace Outpost SOP"
+    }
+  },
+  "settings": {
+    "display": "OUT_terrace",
+    "seed": 101,
+    "template": "terrace"
+  },
+  "version": 2
+}

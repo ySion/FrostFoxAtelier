@@ -67,7 +67,75 @@ struct Access {
     static const rendering::SkyMapRef& sky_map_resolved(const EnvironmentComponent& value) noexcept {
         return value.sky_map_resolved_;
     }
+
+    static String& graph_source(ProceduralGeneratorComponent& value) noexcept { return value.graph_source_; }
+
+    static const String& graph_source(const ProceduralGeneratorComponent& value) noexcept {
+        return value.graph_source_;
+    }
+
+    static auto& output(ProceduralGeneratorComponent& value) noexcept { return value.output_; }
+
+    static const auto& output(const ProceduralGeneratorComponent& value) noexcept { return value.output_; }
+
+    static ReferenceSequence& materials(ProceduralGeneratorComponent& value) noexcept { return value.materials_; }
+
+    static const ReferenceSequence& materials(const ProceduralGeneratorComponent& value) noexcept {
+        return value.materials_;
+    }
+
+    static std::vector<std::string>& material_slots(ProceduralGeneratorComponent& value) noexcept {
+        return value.material_slots_;
+    }
+
+    static const std::vector<std::string>& material_slots(const ProceduralGeneratorComponent& value) noexcept {
+        return value.material_slots_;
+    }
+
+    static std::vector<bool>& material_overrides(ProceduralGeneratorComponent& value) noexcept {
+        return value.material_overrides_;
+    }
+
+    static const std::vector<bool>& material_overrides(const ProceduralGeneratorComponent& value) noexcept {
+        return value.material_overrides_;
+    }
+
+    static auto& surfaces(ProceduralGeneratorComponent& value) noexcept { return value.surfaces_; }
+
+    static const auto& surfaces(const ProceduralGeneratorComponent& value) noexcept { return value.surfaces_; }
+
+    static auto& surface_geometry(ProceduralGeneratorComponent& value) noexcept { return value.surface_geometry_; }
+
+    static const auto& surface_geometry(const ProceduralGeneratorComponent& value) noexcept {
+        return value.surface_geometry_;
+    }
+
+    static ReferenceSequence& instance_materials(ProceduralGeneratorComponent& value) noexcept {
+        return value.instance_materials_;
+    }
+
+    static const ReferenceSequence& instance_materials(const ProceduralGeneratorComponent& value) noexcept {
+        return value.instance_materials_;
+    }
+
+    static auto& instance_surfaces(ProceduralGeneratorComponent& value) noexcept { return value.instance_surfaces_; }
+
+    static const auto& instance_surfaces(const ProceduralGeneratorComponent& value) noexcept {
+        return value.instance_surfaces_;
+    }
+
+    static auto& instance_output(ProceduralGeneratorComponent& value) noexcept { return value.instance_output_; }
+
+    static const auto& instance_output(const ProceduralGeneratorComponent& value) noexcept {
+        return value.instance_output_;
+    }
+
+    static Result<void> validate(const ProceduralGeneratorComponent& value) { return value.validate(); }
 };
+
+[[nodiscard]] inline bool has_renderable_output(const std::shared_ptr<const ProceduralOutput>& output) noexcept {
+    return output && (output->surface_mesh || !output->publication.collections.empty());
+}
 
 inline std::unexpected<Error> error(ErrorCode code, std::string message) {
     return std::unexpected(Error{code, std::move(message)});
@@ -91,6 +159,19 @@ Result<std::shared_ptr<const std::vector<material::ProgramSurfaceRef>>>
 material_surfaces(Runtime&, ObjectId, const StaticMeshComponent&, std::unordered_set<ObjectId>* dependencies = nullptr);
 
 Result<void> store_surfaces(Runtime&, ObjectId, std::shared_ptr<const std::vector<material::ProgramSurfaceRef>>);
+
+struct GeneratorCapturedSurfaces {
+    std::shared_ptr<const std::vector<material::ProgramSurfaceRef>> surface;
+
+    std::vector<std::shared_ptr<const std::vector<material::ProgramSurfaceRef>>> assets;
+
+    bool uncached{};
+};
+
+Result<GeneratorCapturedSurfaces> generator_surfaces(Runtime&, ObjectId, const ProceduralGeneratorComponent&,
+                                                     std::unordered_set<ObjectId>* dependencies = nullptr);
+
+Result<void> store_generator_surfaces(Runtime&, ObjectId, const GeneratorCapturedSurfaces&);
 
 // One EnvironmentComponent per World, disabled components included.
 world::World::Admission unique_environment(world::CapabilityId environments);

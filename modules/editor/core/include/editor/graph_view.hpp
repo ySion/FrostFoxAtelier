@@ -57,7 +57,17 @@ struct GraphNodeView {
 
     bool is_display{};
 
+    bool is_template{};
+
+    bool is_bypassed{};
+
     std::array<float, 2> position{};
+
+    GraphNodeShape shape{GraphNodeShape::auto_role};
+
+    std::optional<std::uint32_t> color{};
+
+    std::string comment{};
 
     GraphPortInfo ports;
 
@@ -105,11 +115,17 @@ struct GraphEvaluation {
 
     std::shared_ptr<const procedural::Geometry> preview_output; // Current display or the retained last valid cook.
 
+    const procedural::Geometry* template_output{};
+
     const procedural::Geometry* inspected_output{};
 
     ObjectId display_node{};
 
     std::string display_name;
+
+    ObjectId template_node{};
+
+    std::string template_name;
 
     std::uint64_t generation{};
 
@@ -127,6 +143,8 @@ struct GraphInspectView {
 
     std::string display;
 
+    std::string template_node;
+
     bool dirty{};
 
     bool can_undo{};
@@ -138,6 +156,20 @@ struct GraphInspectView {
     const GraphNodeView* find_node(std::string_view name) const noexcept {
         const auto it = std::ranges::lower_bound(nodes, name, {}, &GraphNodeView::name);
         return it != nodes.end() && it->name == name ? &*it : nullptr;
+    }
+
+    std::vector<GraphStickyNote> notes;
+
+    const GraphStickyNote* find_note(std::string_view name) const noexcept {
+        const auto it = std::ranges::lower_bound(notes, name, {}, &GraphStickyNote::name);
+        return it != notes.end() && it->name == name ? &*it : nullptr;
+    }
+
+    std::vector<GraphNetworkBox> boxes;
+
+    const GraphNetworkBox* find_box(std::string_view name) const noexcept {
+        const auto it = std::ranges::lower_bound(boxes, name, {}, &GraphNetworkBox::name);
+        return it != boxes.end() && it->name == name ? &*it : nullptr;
     }
 
     std::vector<GraphConnectionView> connections;

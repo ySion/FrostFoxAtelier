@@ -47,9 +47,11 @@ public:
 
     // Fails only when the graph itself cannot be read or has invalid topology; node execution
     // failures go to status(). Any graph or display-chain failure clears output() while
-    // preserving last_valid_output().
+    // preserving last_valid_output(). When `seed_override` is engaged, nodes reading the
+    // context receive `*seed_override` without mutating the graph's authored seed or
+    // overwriting last_valid_output().
     // Timing is opt-in diagnostics only: it neither changes keys nor forces nodes to run.
-    Result<void> evaluate(bool record_timings = false);
+    Result<void> evaluate(bool record_timings = false, std::optional<std::uint32_t> seed_override = {});
 
     // Evaluates `node` and its upstream dependencies without changing output() or
     // last_valid_output(), so an editor can inspect a selected node independent of the display flag.
@@ -59,11 +61,25 @@ public:
     // errors; null when the graph has no display node or the latest evaluation or display chain failed.
     [[nodiscard]] const Geometry* output() const noexcept;
 
+    // Keeps the current output() alive through later cooks and asynchronous presentation.
+    [[nodiscard]] std::shared_ptr<const Geometry> retain_output() const noexcept;
+
     // The most recent valid display output while a display node is set, retained across graph
     // and node evaluation errors for editor fallback preview.
     [[nodiscard]] const Geometry* last_valid_output() const noexcept;
+
     // Keeps the displayed output alive through later cooks and asynchronous presentation.
     [[nodiscard]] std::shared_ptr<const Geometry> retain_last_valid_output() const noexcept;
+
+    // True when the graph currently designates a display node.
+    [[nodiscard]] bool has_display_node() const noexcept;
+
+    // Root-cause error on the display chain when the latest evaluate() had a node failure.
+    [[nodiscard]] std::optional<Error> display_error() const;
+
+    // Deduplicated host resources read by the display node and its upstream chain on their
+    // latest evaluations, including cached nodes and zero-instance MeshImport/variant reads.
+    [[nodiscard]] std::vector<Reference> display_dependencies() const;
 
     // Number of outputs produced by `node` on its latest successful evaluation, or 0 when
     // unevaluated, absent from the graph, or in an error state.

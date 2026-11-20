@@ -52,11 +52,14 @@ public:
         ++identity;
         next_key_ = 1;
         mesh_keys_.clear();
+        generator_keys_.clear();
+        generator_slices_.clear();
         light_keys_.clear();
         meshes.clear();
         mesh_entities.clear();
         lights.clear();
         dense_.clear();
+        static_mesh_count_ = 0;
         synced_.reset();
         mesh_surfaces_.clear();
         surfaces_.clear();
@@ -87,17 +90,19 @@ public:
         const bool reselect = !synced_ || !std::ranges::equal(synced_->selection, selection);
         bool changed = !synced_ || synced_->version != *version || reselect;
         const auto slots = scene.mesh_slots();
+        const auto gen_slots = scene.generator_slots();
         const auto since = synced_ ? synced_->version : 0;
         // Slots keep their component until the layout changes; a slot that starts or
         // stops drawing changes the dense order, so the instances are rebuilt.
         bool relayout = !synced_ || scene.mesh_layout() > since;
         bool bindings_changed = relayout;
+        bool generators_changed = relayout;
         for (std::size_t slot = 0; changed && !relayout && slot < slots.size(); ++slot) {
             if (slots[slot].changed <= since)
                 continue;
             const auto at = dense_[slot];
             if ((at == absent) == slots[slot].item.has_value()) {
-                relayout = bindings_changed = true;
+                relayout = bindings_changed = generators_changed = true;
                 break;
             }
             if (at != absent) {
@@ -107,6 +112,12 @@ public:
                 const auto mapping = value.material_slots;
                 value = instance(slots[slot], value.stable_key, value.selected);
                 value.material_slots = mapping;
+            }
+        }
+        for (std::size_t g = 0; changed && !generators_changed && g < gen_slots.size(); ++g) {
+            if (gen_slots[g].changed > since) {
+                generators_changed = true;
+                break;
             }
         }
         if (relayout) {
@@ -127,11 +138,138 @@ public:
                 mesh_surfaces_.push_back(item.surfaces);
                 meshes.push_back(instance(slots[slot], key(mesh_keys_, item.component), false));
             }
+            static_mesh_count_ = meshes.size();
             std::erase_if(mesh_keys_, [](const auto& item) { return !item.second.seen; });
+            generator_slices_.assign(gen_slots.size(), {});
+        }
+        if (generators_changed && (!gen_slots.empty() || meshes.size() > static_mesh_count_)) {
+            if (generator_slices_.size() != gen_slots.size())
+                generator_slices_.assign(gen_slots.size(), {});
+            meshes.resize(static_mesh_count_);
+            mesh_entities.resize(static_mesh_count_);
+            mesh_surfaces_.resize(static_mesh_count_);
+            for (auto& [_, gk] : generator_keys_)
+                gk.seen = false;
+            for (std::size_t g = 0; g < gen_slots.size(); ++g) {
+                const auto& gslot = gen_slots[g];
+                auto& slice = generator_slices_[g];
+                if (!relayout && gslot.changed <= since) {
+                    if (slice.present) {
+                        if (auto it = generator_keys_.find(slice.component); it != generator_keys_.end())
+                            it->second.seen = true;
+                        mesh_entities.insert(mesh_entities.end(), slice.meshes.size(), slice.entity);
+                        mesh_surfaces_.insert(mesh_surfaces_.end(), slice.mesh_surfaces.begin(),
+                                              slice.mesh_surfaces.end());
+                        meshes.insert(meshes.end(), slice.meshes.begin(), slice.meshes.end());
+                    }
+                    continue;
+                }
+                if (!gslot.item) {
+                    if (slice.present)
+                        bindings_changed = true;
+                    slice = {};
+                    continue;
+                }
+                const auto& gen = *gslot.item;
+                const math::Matrix4 gen_world = gslot.presented ? *gslot.presented : gen.world;
+                const bool same_surface_set = [&] {
+                    if (!slice.present || slice.component != gen.component ||
+                        slice.surface_materials != gen.surface_materials ||
+                        slice.collections.size() != gen.collections.size())
+                        return false;
+                    for (std::size_t c = 0; c < gen.collections.size(); ++c)
+                        if (slice.collections[c].surfaces != gen.collections[c].surfaces)
+                            return false;
+                    return true;
+                }();
+                std::unordered_map<std::uint64_t, std::shared_ptr<const std::vector<std::uint32_t>>> prev_slots;
+                if (same_surface_set) {
+                    prev_slots.reserve(slice.meshes.size());
+                    for (const auto& prev_m : slice.meshes)
+                        if (prev_m.material_slots)
+                            prev_slots.emplace(prev_m.stable_key, prev_m.material_slots);
+                } else {
+                    bindings_changed = true;
+                }
+
+                auto& gkeys = generator_keys_[gen.component];
+                gkeys.seen = true;
+                if (gkeys.surface_key == 0)
+                    gkeys.surface_key = next_key_++;
+                for (auto& [_, ck] : gkeys.chunks)
+                    ck.seen = false;
+
+                std::vector<renderer::MeshInstance> next_meshes;
+                std::vector<std::shared_ptr<const std::vector<material::ProgramSurfaceRef>>> next_surfaces;
+                if (gen.surface_geometry && gen.surface_materials) {
+                    ++built;
+                    std::shared_ptr<const std::vector<std::uint32_t>> kept_slots;
+                    if (const auto it = prev_slots.find(gkeys.surface_key); it != prev_slots.end())
+                        kept_slots = it->second;
+                    else
+                        bindings_changed = true;
+                    next_surfaces.push_back(gen.surface_materials);
+                    next_meshes.push_back(
+                        {gen_world, false, gen.surface_geometry, gkeys.surface_key, std::move(kept_slots)});
+                }
+                for (const auto& col : gen.collections) {
+                    if (!col.geometry || !col.transforms || !col.surfaces)
+                        continue;
+                    auto& chunk_entry = gkeys.chunks[col.transforms.get()];
+                    std::vector<std::uint64_t> duplicate_keys;
+                    const std::vector<std::uint64_t>* active_keys = nullptr;
+                    if (chunk_entry.seen) {
+                        duplicate_keys.resize(col.transforms->size());
+                        for (auto& k : duplicate_keys)
+                            k = next_key_++;
+                        active_keys = &duplicate_keys;
+                    } else {
+                        chunk_entry.owner = col.transforms;
+                        if (chunk_entry.keys.size() != col.transforms->size()) {
+                            chunk_entry.keys.resize(col.transforms->size());
+                            for (auto& k : chunk_entry.keys)
+                                k = next_key_++;
+                        }
+                        chunk_entry.seen = true;
+                        active_keys = &chunk_entry.keys;
+                    }
+                    const auto& xforms = *col.transforms;
+                    for (std::size_t i = 0; i < xforms.size(); ++i) {
+                        const auto inst_world = presentation::compose_instance_world(xforms[i], gen_world);
+                        if (!inst_world)
+                            continue;
+                        ++built;
+                        const std::uint64_t inst_key = (*active_keys)[i];
+                        std::shared_ptr<const std::vector<std::uint32_t>> kept_slots;
+                        if (const auto it = prev_slots.find(inst_key); it != prev_slots.end())
+                            kept_slots = it->second;
+                        else
+                            bindings_changed = true;
+                        next_surfaces.push_back(col.surfaces);
+                        next_meshes.push_back({*inst_world, false, col.geometry, inst_key, std::move(kept_slots)});
+                    }
+                }
+                std::erase_if(gkeys.chunks, [](const auto& item) { return !item.second.seen; });
+                if (same_surface_set && next_meshes.size() != slice.meshes.size())
+                    bindings_changed = true;
+
+                slice.present = true;
+                slice.entity = gen.entity;
+                slice.component = gen.component;
+                slice.surface_materials = gen.surface_materials;
+                slice.collections = gen.collections;
+                slice.meshes = std::move(next_meshes);
+                slice.mesh_surfaces = std::move(next_surfaces);
+
+                mesh_entities.insert(mesh_entities.end(), slice.meshes.size(), slice.entity);
+                mesh_surfaces_.insert(mesh_surfaces_.end(), slice.mesh_surfaces.begin(), slice.mesh_surfaces.end());
+                meshes.insert(meshes.end(), slice.meshes.begin(), slice.meshes.end());
+            }
+            std::erase_if(generator_keys_, [](const auto& item) { return !item.second.seen; });
         }
         if (bindings_changed)
             ATELIER_TRY(bind_materials());
-        if (relayout || reselect)
+        if (relayout || generators_changed || reselect)
             ATELIER_TRY(highlight(document, selection));
         if (!synced_ || scene.lights_changed() > since) {
             for (auto& [object, key] : light_keys_) {
@@ -287,13 +425,51 @@ private:
 
     std::optional<std::tuple<std::uint64_t, std::uint64_t, bool, renderer::Shading>> accepted_material_;
 
+    struct ChunkKeys {
+        std::shared_ptr<const std::vector<procedural::Affine>> owner;
+
+        std::vector<std::uint64_t> keys;
+
+        bool seen{};
+    };
+
+    struct GeneratorKeys {
+        std::uint64_t surface_key{};
+
+        std::unordered_map<const void*, ChunkKeys> chunks;
+
+        bool seen{};
+    };
+
+    struct GeneratorSlice {
+        bool present{};
+
+        ObjectId entity{};
+
+        ObjectId component{};
+
+        std::shared_ptr<const std::vector<material::ProgramSurfaceRef>> surface_materials;
+
+        std::vector<presentation::GeneratorRenderCollection> collections;
+
+        std::vector<renderer::MeshInstance> meshes;
+
+        std::vector<std::shared_ptr<const std::vector<material::ProgramSurfaceRef>>> mesh_surfaces;
+    };
+
     std::unordered_map<ObjectId, Key> mesh_keys_;
+
+    std::unordered_map<ObjectId, GeneratorKeys> generator_keys_;
+
+    std::vector<GeneratorSlice> generator_slices_;
 
     std::unordered_map<ObjectId, Key> light_keys_;
 
     std::uint64_t next_key_{1};
 
     std::vector<std::uint32_t> dense_; // Mesh slot to its index in `meshes`, or absent.
+
+    std::size_t static_mesh_count_{};
 
     std::optional<Synced> synced_;
 
@@ -359,24 +535,45 @@ private:
     Result<void> bind_materials() {
         std::vector<material::ProgramSurfaceRef> surfaces;
         std::unordered_map<const material::ProgramSurface*, std::uint32_t> indices;
+        std::unordered_map<const std::vector<material::ProgramSurfaceRef>*,
+                           std::shared_ptr<const std::vector<std::uint32_t>>>
+            slot_cache;
         for (std::size_t i = 0; i < meshes.size(); ++i) {
             const auto& source = mesh_surfaces_[i];
             if (!source || source->size() != meshes[i].geometry->materials().size())
                 return std::unexpected(
                     Error{ErrorCode::invalid_definition, "A scene mesh needs one captured Surface per material slot."});
-            std::vector<std::uint32_t> slots;
-            slots.reserve(source->size());
-            for (const auto& surface : *source) {
-                if (!surface || surfaces.size() >= absent)
-                    return std::unexpected(Error{ErrorCode::invalid_definition, "Invalid scene material table."});
-                const auto [at, added] =
-                    indices.try_emplace(surface.get(), static_cast<std::uint32_t>(surfaces.size()));
-                if (added)
-                    surfaces.push_back(surface);
-                slots.push_back(at->second);
+            std::shared_ptr<const std::vector<std::uint32_t>> mapped;
+            if (const auto cached_it = slot_cache.find(source.get()); cached_it != slot_cache.end()) {
+                mapped = cached_it->second;
+            } else {
+                std::vector<std::uint32_t> slots;
+                slots.reserve(source->size());
+                for (const auto& surface : *source) {
+                    if (!surface || surfaces.size() >= absent)
+                        return std::unexpected(Error{ErrorCode::invalid_definition, "Invalid scene material table."});
+                    const auto [at, added] =
+                        indices.try_emplace(surface.get(), static_cast<std::uint32_t>(surfaces.size()));
+                    if (added)
+                        surfaces.push_back(surface);
+                    slots.push_back(at->second);
+                }
+                if (meshes[i].material_slots && *meshes[i].material_slots == slots)
+                    mapped = meshes[i].material_slots;
+                else
+                    mapped = std::make_shared<const std::vector<std::uint32_t>>(std::move(slots));
+                slot_cache.emplace(source.get(), mapped);
             }
-            if (!meshes[i].material_slots || *meshes[i].material_slots != slots)
-                meshes[i].material_slots = std::make_shared<const std::vector<std::uint32_t>>(std::move(slots));
+            if (!meshes[i].material_slots || *meshes[i].material_slots != *mapped)
+                meshes[i].material_slots = std::move(mapped);
+        }
+        std::size_t gen_offset = static_mesh_count_;
+        for (auto& slice : generator_slices_) {
+            if (!slice.present)
+                continue;
+            for (std::size_t k = 0; k < slice.meshes.size() && gen_offset + k < meshes.size(); ++k)
+                slice.meshes[k].material_slots = meshes[gen_offset + k].material_slots;
+            gen_offset += slice.meshes.size();
         }
         surfaces_ = std::move(surfaces);
         return {};

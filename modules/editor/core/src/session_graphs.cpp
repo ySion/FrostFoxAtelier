@@ -6,9 +6,11 @@
 #include "editor/properties.hpp"
 #include "procedural/evaluator.hpp"
 #include "procedural/graph.hpp"
+#include "procedural/instances.hpp"
 #include "source/program.hpp"
 #include "source/snapshot.hpp"
 #include <algorithm>
+#include <bit>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
@@ -80,13 +82,38 @@ public:
     void bind(Project* project) noexcept {
         if (project_ != project) {
             project_ = project;
+            cached_.clear();
             ++epoch_;
         }
     }
 
+    void publish_mesh(const assets::MeshAsset& asset) {
+        published_.insert_or_assign(asset.key, asset);
+        cached_.insert_or_assign(asset.key, asset);
+        ++epoch_;
+    }
+
+    [[nodiscard]] Result<assets::MeshAsset> resolve_mesh_asset(std::string_view key) const {
+        const std::string lookup(key);
+        if (const auto pub_it = published_.find(lookup); pub_it != published_.end())
+            return pub_it->second;
+        const std::uint64_t proj_rev = project_ ? project_->revision() : 0ULL;
+        if (cached_project_revision_ != proj_rev) {
+            cached_.clear();
+            cached_project_revision_ = proj_rev;
+        }
+        if (const auto it = cached_.find(lookup); it != cached_.end())
+            return it->second;
+        auto resolved = project_ ? project_->assets().mesh(key) : builtin_.mesh(key);
+        if (!resolved)
+            return std::unexpected(resolved.error());
+        cached_.insert_or_assign(lookup, *resolved);
+        return *resolved;
+    }
+
     [[nodiscard]] Result<geometry::MeshRef> mesh(StringView key) const noexcept override {
         try {
-            auto resolved = project_ ? project_->assets().mesh(key.std_view()) : builtin_.mesh(key.std_view());
+            auto resolved = resolve_mesh_asset(key.std_view());
             if (!resolved)
                 return std::unexpected(resolved.error());
             return std::move(resolved->mesh);
@@ -103,6 +130,12 @@ private:
     Project* project_{};
 
     mutable assets::Reader builtin_{};
+
+    mutable std::unordered_map<std::string, assets::MeshAsset> cached_;
+
+    mutable std::uint64_t cached_project_revision_{};
+
+    std::unordered_map<std::string, assets::MeshAsset> published_;
 
     std::uint64_t epoch_{1};
 };
@@ -143,6 +176,54 @@ struct GraphDisplayChange {
     json::Document after_kept;
 };
 
+struct GraphTemplateChange {
+    ObjectId before{};
+
+    ObjectId after{};
+
+    json::Document before_kept;
+
+    json::Document after_kept;
+};
+
+struct GraphBypassChange {
+    ObjectRoot target;
+
+    bool before{};
+
+    bool after{};
+};
+
+struct GraphAppearanceChange {
+    struct Entry {
+        std::string name;
+
+        GraphNodeShape before_shape{GraphNodeShape::auto_role};
+
+        GraphNodeShape after_shape{GraphNodeShape::auto_role};
+
+        std::optional<std::uint32_t> before_color{};
+
+        std::optional<std::uint32_t> after_color{};
+
+        std::string before_comment{};
+
+        std::string after_comment{};
+    };
+
+    std::vector<Entry> entries;
+};
+
+struct GraphAnnotationChange {
+    std::vector<GraphStickyNote> before_notes;
+
+    std::vector<GraphStickyNote> after_notes;
+
+    std::vector<GraphNetworkBox> before_boxes;
+
+    std::vector<GraphNetworkBox> after_boxes;
+};
+
 struct GraphRenameChange {
     std::string before;
 
@@ -169,6 +250,10 @@ struct GraphMoveChange {
     };
 
     std::vector<Move> moves;
+
+    std::vector<Move> note_moves;
+
+    std::vector<Move> box_moves;
 };
 
 struct GraphConnectionChange {
@@ -185,6 +270,8 @@ struct GraphConnectionChange {
     };
 
     std::vector<TargetDelta> targets;
+
+    std::vector<GraphMoveChange::Move> moves{};
 };
 
 struct GraphNodesChange {
@@ -205,18 +292,56 @@ struct GraphNodesChange {
     ObjectId before_display{};
 
     ObjectId after_display{};
+
+    ObjectId before_template{};
+
+    ObjectId after_template{};
+
+    json::Document before_kept;
+
+    json::Document after_kept;
 };
 
-using GraphChange = std::variant<GraphScalarChange, GraphPropertyChange, GraphDisplayChange, GraphRenameChange,
+using GraphChange = std::variant<GraphScalarChange, GraphPropertyChange, GraphDisplayChange, GraphTemplateChange,
+                                 GraphBypassChange, GraphAppearanceChange, GraphAnnotationChange, GraphRenameChange,
                                  GraphMoveChange, GraphConnectionChange, GraphNodesChange>;
+
+void erase_kept_input(json::Document& kept, std::string_view port) {
+    json::Builder next_kept(kept);
+    if (const auto kept_inputs = *next_kept.root().find("inputs");
+        kept_inputs && kept_inputs->kind() == json::Kind::object) {
+        next_kept.erase(*kept_inputs, port);
+        if (!kept_inputs->size())
+            next_kept.erase(next_kept.root(), "inputs");
+    }
+    kept = next_kept.finish();
+}
 
 void sort_graph_nodes(std::vector<GraphNode>& nodes) {
     std::ranges::sort(nodes, {}, &GraphNode::name);
 }
 
+void sort_graph_notes(std::vector<GraphStickyNote>& notes) {
+    std::ranges::sort(notes, {}, &GraphStickyNote::name);
+}
+
+void sort_graph_boxes(std::vector<GraphNetworkBox>& boxes) {
+    std::ranges::sort(boxes, {}, &GraphNetworkBox::name);
+}
+
 GraphNode* find_node(GraphDocument& doc, std::string_view name) noexcept {
     const auto at = std::ranges::lower_bound(doc.nodes, name, {}, &GraphNode::name);
     return at != doc.nodes.end() && at->name == name ? &*at : nullptr;
+}
+
+GraphStickyNote* find_note(GraphDocument& doc, std::string_view name) noexcept {
+    const auto at = std::ranges::lower_bound(doc.notes, name, {}, &GraphStickyNote::name);
+    return at != doc.notes.end() && at->name == name ? &*at : nullptr;
+}
+
+GraphNetworkBox* find_box(GraphDocument& doc, std::string_view name) noexcept {
+    const auto at = std::ranges::lower_bound(doc.boxes, name, {}, &GraphNetworkBox::name);
+    return at != doc.boxes.end() && at->name == name ? &*at : nullptr;
 }
 
 GraphNode* find_node_by_id(GraphDocument& doc, ObjectId id) noexcept {
@@ -322,6 +447,8 @@ struct Session::OpenGraph {
 
     std::uint64_t topology_generation{};
 
+    std::uint64_t mutation_epoch{1};
+
     mutable std::uint64_t dirty_revision{};
 
     mutable bool dirty_cached{};
@@ -334,6 +461,7 @@ struct Session::OpenGraph {
             history.erase(history.begin());
             --cursor;
         }
+        ++mutation_epoch;
         dirty_revision = 0;
     }
 
@@ -345,6 +473,103 @@ struct Session::OpenGraph {
         return find_node_by_id(document, id) != nullptr;
     }
 };
+
+struct Session::GeneratorRuntimeCache {
+    struct GraphSlot {
+        std::optional<GraphDocument> closed_doc;
+
+        std::uint64_t closed_project_revision{};
+
+        ObjectId bound_graph_id{};
+
+        const source::Program* bound_program{};
+
+        std::uint64_t code_version{};
+
+        std::unique_ptr<procedural::Evaluator> evaluator;
+    };
+
+    struct Entry {
+        std::string graph_key;
+
+        float chunk_size{};
+
+        std::shared_ptr<const procedural::Geometry> last_geom;
+
+        std::uint64_t next_output_generation{1};
+
+        std::shared_ptr<const presentation::ProceduralOutput> output;
+
+        std::vector<presentation::ProceduralInstanceAsset> resolved_assets;
+    };
+
+    GraphResources resources;
+
+    assets::Reader* fallback_reader{};
+
+    std::unordered_map<std::string, GraphSlot> graph_slots;
+
+    std::unordered_map<ObjectId, Entry> entries;
+
+    bool idle_valid{};
+
+    bool has_errors{};
+
+    std::uint64_t idle_world_revision{};
+
+    std::uint64_t idle_session_revision{};
+
+    const Project* idle_project{};
+
+    std::uint64_t idle_project_revision{};
+
+    std::uint64_t idle_code_version{};
+
+    std::uint64_t idle_runtime_cursor{};
+
+    void clear() noexcept {
+        for (auto& [_, slot] : graph_slots) {
+            slot.evaluator.reset();
+            slot.closed_doc.reset();
+        }
+        graph_slots.clear();
+        for (auto& [_, entry] : entries) {
+            entry.last_geom.reset();
+            entry.resolved_assets.clear();
+            entry.output.reset();
+        }
+        entries.clear();
+        idle_valid = false;
+        has_errors = false;
+    }
+};
+
+void Session::OpenGraphDeleter::operator()(OpenGraph* ptr) const noexcept {
+    delete ptr;
+}
+
+void Session::GeneratorCacheDeleter::operator()(GeneratorRuntimeCache* ptr) const noexcept {
+    delete ptr;
+}
+
+void Session::bind_project_code(const ProjectCode* code) noexcept {
+    if (project_code_ == code)
+        return;
+    project_code_ = code;
+    for (auto& [_, open] : graphs_) {
+        if (open) {
+            open->evaluator.reset();
+            open->bound_program = nullptr;
+        }
+    }
+    if (generator_cache_) {
+        for (auto& [_, slot] : generator_cache_->graph_slots) {
+            slot.evaluator.reset();
+            slot.bound_program = nullptr;
+        }
+        generator_cache_->idle_valid = false;
+    }
+}
 
 GraphGeometrySummary summarize_geometry(const procedural::Geometry* geometry, std::size_t max_samples) {
     GraphGeometrySummary summary;
@@ -466,6 +691,10 @@ GraphGeometrySummary summarize_geometry(const procedural::Geometry* geometry, st
 }
 
 void Session::close_graphs() noexcept {
+    if (generator_cache_) {
+        generator_cache_->clear();
+        generator_cache_.reset();
+    }
     for (auto& [_, open] : graphs_) {
         if (open)
             open->evaluator.reset();
@@ -571,13 +800,14 @@ Result<ObjectId> Session::open_graph(Project& project, std::string_view key) {
     ATELIER_TRY_BIND(asset, project.assets().procedural_graph(key));
     ATELIER_TRY_BIND(loaded, load_graph(runtime_, asset->text));
     ATELIER_TRY_BIND(canonical, editor::save_graph(runtime_, *loaded));
-    auto open = std::make_shared<OpenGraph>();
+    std::unique_ptr<OpenGraph, OpenGraphDeleter> open(new OpenGraph());
     open->key = asset->key;
     open->document = std::move(*loaded);
     open->saved_text = std::move(*canonical);
     for (const auto& issue : open->document.issues)
         world_.report(issue);
     const auto id = open->document.graph.id();
+    unavailable_.erase(std::pair{assets::AssetKind::procedural_graph, open->key});
     graphs_.emplace(open->key, std::move(open));
     ++revision_;
     return id;
@@ -592,7 +822,7 @@ Result<ObjectId> Session::create_scratch_graph(std::string_view key) {
     ATELIER_TRY(ensure_procedural_program());
     ATELIER_TRY_BIND(graph_type, runtime_.native_type<procedural::Graph>());
     ATELIER_TRY_BIND(graph_root, runtime_.create(*graph_type));
-    auto open = std::make_shared<OpenGraph>();
+    std::unique_ptr<OpenGraph, OpenGraphDeleter> open(new OpenGraph());
     open->key = std::string(key);
     open->scratch = true;
     open->document.graph = std::move(*graph_root);
@@ -606,6 +836,80 @@ Result<ObjectId> Session::create_scratch_graph(std::string_view key) {
 
 bool Session::has_graph(std::string_view key) const noexcept {
     return graphs_.contains(std::string(key));
+}
+
+bool Session::is_scratch_graph(std::string_view key) const noexcept {
+    if (key == "scratch" || key.starts_with("scratch/"))
+        return true;
+    const auto at = graphs_.find(std::string(key));
+    return at != graphs_.end() && at->second && at->second->scratch;
+}
+
+std::optional<std::string> Session::procedural_graph_snapshot(std::string_view key) const {
+    const auto at = graphs_.find(std::string(key));
+    if (at == graphs_.end() || !at->second || at->second->scratch)
+        return std::nullopt;
+    auto encoded = editor::save_graph(world_.runtime(), at->second->document);
+    if (!encoded)
+        return std::nullopt;
+    return std::move(*encoded);
+}
+
+Result<ObjectId> Session::resolve_procedural_generator(ObjectId target) const {
+    if (world_.closed())
+        return graph_error("Procedural Generator resolution requires an open Session.", ErrorCode::invalid_definition);
+    auto& runtime = world_.runtime();
+    if (target == ObjectId{})
+        target = selection_.object != ObjectId{} ? selection_.object : selection_.entity;
+    if (target == ObjectId{})
+        return graph_error("Select a Procedural Generator.", ErrorCode::invalid_definition);
+    ATELIER_TRY_BIND(target_type, runtime.type_of(target));
+    ATELIER_TRY_BIND(is_gen_comp, runtime.is_a(*target_type, presentation_types_.procedural_generator_component));
+    if (*is_gen_comp) {
+        ATELIER_TRY_BIND(state, world::inspect_component(runtime, target));
+        if (!state->valid || state->owner == ObjectId{} || !world_.contains(state->owner))
+            return graph_error("ProceduralGeneratorComponent is not attached to a World Entity.",
+                               ErrorCode::invalid_member);
+        return target;
+    }
+    ObjectId owner{};
+    ATELIER_TRY_BIND(is_comp, runtime.is_a(*target_type, types_.component));
+    if (*is_comp) {
+        ATELIER_TRY_BIND(state, world::inspect_component(runtime, target));
+        if (!state->valid || state->owner == ObjectId{} || !world_.contains(state->owner))
+            return graph_error("Target component is not attached to a World Entity.", ErrorCode::invalid_member);
+        owner = state->owner;
+    } else {
+        ATELIER_TRY_BIND(is_entity, runtime.is_a(*target_type, types_.entity));
+        if (!*is_entity || !world_.contains(target))
+            return graph_error("Target is not a Procedural Generator.", ErrorCode::invalid_definition);
+        owner = target;
+    }
+    ATELIER_TRY_BIND(parts, world::components(runtime, owner));
+    for (const auto& part : *parts) {
+        ATELIER_TRY_BIND(part_type, runtime.type_of(part.id()));
+        ATELIER_TRY_BIND(matches, runtime.is_a(*part_type, presentation_types_.procedural_generator_component));
+        if (*matches)
+            return part.id();
+    }
+    return graph_error("Selected Entity has no ProceduralGeneratorComponent.", ErrorCode::invalid_definition);
+}
+
+Result<void> Session::publish_procedural_mesh(assets::Reader& reader, const assets::MeshAsset& asset) {
+    for (auto& [_, open] : graphs_)
+        if (open)
+            open->resources.publish_mesh(asset);
+    if (!generator_cache_)
+        generator_cache_.reset(new GeneratorRuntimeCache());
+    generator_cache_->resources.publish_mesh(asset);
+    generator_cache_->idle_valid = false;
+    generator_cache_->fallback_reader = &reader;
+    struct ResetReader {
+        GeneratorRuntimeCache& cache;
+
+        ~ResetReader() { cache.fallback_reader = nullptr; }
+    } reset{*generator_cache_};
+    return sync_procedural_generators(nullptr);
 }
 
 ObjectId Session::loaded_graph(std::string_view key) const noexcept {
@@ -725,18 +1029,26 @@ Result<void> Session::save_graph(Project& project, std::string_view key) {
     ATELIER_TRY(project.save_procedural_graph(key, *encoded));
     at->second->saved_text = std::move(*encoded);
     at->second->dirty_revision = 0;
+    unavailable_.erase(std::pair{assets::AssetKind::procedural_graph, std::string(key)});
     ++revision_;
     return {};
 }
 
-Result<void> Session::graph_undo(std::string_view key, bool redo) {
+Result<Session::OpenGraph*> Session::editable_graph(std::string_view key, bool need_program) {
     if (world_.running() || world_.closed())
-        return graph_error("Graph undo/redo requires an open, stopped Session.", ErrorCode::invalid_definition);
-    ATELIER_TRY(cancel_edit());
+        return graph_error("Graph editing requires an open, stopped Session.", ErrorCode::invalid_definition);
+    if (need_program)
+        ATELIER_TRY(ensure_procedural_program());
     const auto at = graphs_.find(std::string(key));
     if (at == graphs_.end() || !at->second)
-        return graph_error("Procedural graph is not open.", ErrorCode::invalid_definition);
-    auto& open = *at->second;
+        return graph_error("Procedural graph is not open: " + std::string(key), ErrorCode::invalid_definition);
+    return at->second.get();
+}
+
+Result<void> Session::graph_undo(std::string_view key, bool redo) {
+    ATELIER_TRY_BIND(open_ptr, editable_graph(key));
+    ATELIER_TRY(cancel_edit());
+    auto& open = **open_ptr;
     if (!graph_can_undo(key, redo))
         return {};
     auto& entry = open.history[redo ? open.cursor : open.cursor - 1];
@@ -762,6 +1074,27 @@ Result<void> Session::graph_undo(std::string_view key, bool redo) {
                 ATELIER_TRY(procedural::set_display(runtime_, graph, redo ? change.after : change.before));
                 open.document.kept = redo ? change.after_kept : change.before_kept;
                 return {};
+            } else if constexpr (std::same_as<T, GraphTemplateChange>) {
+                open.document.template_node = redo ? change.after : change.before;
+                open.document.kept = redo ? change.after_kept : change.before_kept;
+                return {};
+            } else if constexpr (std::same_as<T, GraphBypassChange>) {
+                return procedural::set_bypassed(runtime_, change.target.id(), redo ? change.after : change.before);
+            } else if constexpr (std::same_as<T, GraphAppearanceChange>) {
+                for (const auto& entry_delta : change.entries) {
+                    if (auto* item = find_node(open.document, entry_delta.name)) {
+                        item->shape = redo ? entry_delta.after_shape : entry_delta.before_shape;
+                        item->color = redo ? entry_delta.after_color : entry_delta.before_color;
+                        item->comment = redo ? entry_delta.after_comment : entry_delta.before_comment;
+                    }
+                }
+                return {};
+            } else if constexpr (std::same_as<T, GraphAnnotationChange>) {
+                open.document.notes = redo ? change.after_notes : change.before_notes;
+                open.document.boxes = redo ? change.after_boxes : change.before_boxes;
+                sort_graph_notes(open.document.notes);
+                sort_graph_boxes(open.document.boxes);
+                return {};
             } else if constexpr (std::same_as<T, GraphRenameChange>) {
                 const auto& from = redo ? change.before : change.after;
                 const auto& to = redo ? change.after : change.before;
@@ -781,8 +1114,20 @@ Result<void> Session::graph_undo(std::string_view key, bool redo) {
                     if (auto* item = find_node(open.document, move.name))
                         item->position = redo ? move.after : move.before;
                 }
+                for (const auto& move : change.note_moves) {
+                    if (auto* item = find_note(open.document, move.name))
+                        item->position = redo ? move.after : move.before;
+                }
+                for (const auto& move : change.box_moves) {
+                    if (auto* item = find_box(open.document, move.name))
+                        item->position = redo ? move.after : move.before;
+                }
                 return {};
             } else if constexpr (std::same_as<T, GraphConnectionChange>) {
+                if (change.targets.size() > 1) {
+                    for (const auto& item_delta : change.targets)
+                        ATELIER_TRY(replace_node_inputs(runtime_, graph, item_delta.target.id(), {}));
+                }
                 if (redo) {
                     for (const auto& item_delta : change.targets) {
                         ATELIER_TRY(replace_node_inputs(runtime_, graph, item_delta.target.id(), item_delta.after));
@@ -796,6 +1141,10 @@ Result<void> Session::graph_undo(std::string_view key, bool redo) {
                             item->kept = it->before_kept;
                     }
                 }
+                for (const auto& move : change.moves) {
+                    if (auto* item = find_node(open.document, move.name))
+                        item->position = redo ? move.after : move.before;
+                }
                 return {};
             } else if constexpr (std::same_as<T, GraphNodesChange>) {
                 const bool attach = change.added == redo;
@@ -808,6 +1157,8 @@ Result<void> Session::graph_undo(std::string_view key, bool redo) {
                     sort_graph_nodes(open.document.nodes);
                     for (const auto& saved : change.saved_inputs)
                         ATELIER_TRY(replace_node_inputs(runtime_, graph, saved.to, saved.inputs));
+                    open.document.template_node = change.added ? change.after_template : change.before_template;
+                    open.document.kept = change.added ? change.after_kept : change.before_kept;
                     return procedural::set_display(runtime_, graph,
                                                    change.added ? change.after_display : change.before_display);
                 }
@@ -822,6 +1173,8 @@ Result<void> Session::graph_undo(std::string_view key, bool redo) {
                         if (find_node_by_id(open.document, saved.to))
                             ATELIER_TRY(replace_node_inputs(runtime_, graph, saved.to, saved.detached_inputs));
                 }
+                open.document.template_node = change.added ? change.before_template : change.after_template;
+                open.document.kept = change.added ? change.before_kept : change.after_kept;
                 return procedural::set_display(runtime_, graph,
                                                change.added ? change.before_display : change.after_display);
             }
@@ -831,22 +1184,20 @@ Result<void> Session::graph_undo(std::string_view key, bool redo) {
         ++open.cursor;
     else
         --open.cursor;
+    ++open.mutation_epoch;
     open.dirty_revision = 0;
     ++revision_;
     return {};
 }
 
-Result<std::string> Session::graph_add_node(std::string_view key, std::string_view type_name,
-                                            std::string_view desired_name, std::array<float, 2> position) {
-    if (world_.running() || world_.closed())
-        return graph_error("Graph editing requires an open, stopped Session.", ErrorCode::invalid_definition);
+Result<std::string> Session::add_graph_node_impl(std::string_view key, std::string_view type_name,
+                                                 std::string_view desired_name, std::array<float, 2> position,
+                                                 std::string_view from_node, std::string_view from_port,
+                                                 std::string_view to_node, std::string_view to_port, bool set_display) {
     if (!std::isfinite(position[0]) || !std::isfinite(position[1]))
         return graph_error("Node position must be finite.");
-    ATELIER_TRY(ensure_procedural_program());
-    const auto at = graphs_.find(std::string(key));
-    if (at == graphs_.end() || !at->second)
-        return graph_error("Procedural graph is not open: " + std::string(key), ErrorCode::invalid_definition);
-    auto& open = *at->second;
+    ATELIER_TRY_BIND(open_ptr, editable_graph(key, true));
+    auto& open = **open_ptr;
     std::string resolved_type_name(type_name);
     auto type = runtime_.find_type(resolved_type_name);
     if (!type && resolved_type_name.find('.') == std::string::npos) {
@@ -855,7 +1206,7 @@ Result<std::string> Session::graph_add_node(std::string_view key, std::string_vi
     }
     if (!type)
         return graph_error("Unknown procedural node type: " + std::string(type_name));
-    ATELIER_TRY(procedural::ports(runtime_, *type));
+    ATELIER_TRY_BIND(new_ports, procedural::ports(runtime_, *type));
 
     std::string name(desired_name);
     if (name.empty()) {
@@ -870,56 +1221,6 @@ Result<std::string> Session::graph_add_node(std::string_view key, std::string_vi
             return graph_error("Invalid node name '" + name + "': expected [A-Za-z_][A-Za-z0-9_]*.");
         if (find_node(open.document, name))
             return graph_error("A node named '" + name + "' already exists in this graph.");
-    }
-
-    ATELIER_TRY(cancel_edit());
-    const auto graph = open.document.graph.id();
-    ATELIER_TRY_BIND(before_contents, procedural::contents(runtime_, graph));
-    const bool make_initial_display = before_contents->nodes().empty() && before_contents->display() == ObjectId{} &&
-                                      !open.document.kept.root().find("display")->has_value();
-
-    ATELIER_TRY_BIND(created, procedural::add_node(runtime_, graph, *type));
-    const ObjectId after_display = make_initial_display ? created->id() : before_contents->display();
-    if (make_initial_display)
-        ATELIER_TRY(procedural::set_display(runtime_, graph, after_display));
-
-    GraphNode entry{name, std::move(*created), position, {}};
-    open.document.nodes.push_back(entry);
-    sort_graph_nodes(open.document.nodes);
-    open.push_change(GraphNodesChange{true, {std::move(entry)}, {}, before_contents->display(), after_display});
-    ++revision_;
-    return name;
-}
-
-Result<std::string> Session::graph_place_node(std::string_view key, std::string_view type_name,
-                                              std::array<float, 2> position, std::string_view from_node,
-                                              std::string_view from_port, std::string_view to_node,
-                                              std::string_view to_port, bool set_display) {
-    if (world_.running() || world_.closed())
-        return graph_error("Graph editing requires an open, stopped Session.", ErrorCode::invalid_definition);
-    if (!std::isfinite(position[0]) || !std::isfinite(position[1]))
-        return graph_error("Node position must be finite.");
-    ATELIER_TRY(ensure_procedural_program());
-    const auto at = graphs_.find(std::string(key));
-    if (at == graphs_.end() || !at->second)
-        return graph_error("Procedural graph is not open: " + std::string(key), ErrorCode::invalid_definition);
-    auto& open = *at->second;
-    std::string resolved_type_name(type_name);
-    auto type = runtime_.find_type(resolved_type_name);
-    if (!type && resolved_type_name.find('.') == std::string::npos) {
-        resolved_type_name = "procedural." + resolved_type_name;
-        type = runtime_.find_type(resolved_type_name);
-    }
-    if (!type)
-        return graph_error("Unknown procedural node type: " + std::string(type_name));
-    ATELIER_TRY_BIND(new_ports, procedural::ports(runtime_, *type));
-
-    std::string name;
-    const auto stem = default_node_stem(resolved_type_name);
-    for (std::uint32_t index = 1;; ++index) {
-        name = stem + std::to_string(index);
-        if (!find_node(open.document, name))
-            break;
     }
 
     ATELIER_TRY(cancel_edit());
@@ -978,24 +1279,42 @@ Result<std::string> Session::graph_place_node(std::string_view key, std::string_
     if (after_display != before_contents->display())
         ATELIER_TRY(procedural::set_display(runtime_, graph, after_display));
 
-    GraphNode entry{name, std::move(*created), position, {}};
+    GraphNode entry;
+    entry.name = name;
+    entry.node = std::move(*created);
+    entry.position = position;
     open.document.nodes.push_back(entry);
     sort_graph_nodes(open.document.nodes);
-    open.push_change(
-        GraphNodesChange{true, {std::move(entry)}, std::move(saved_inputs), before_contents->display(), after_display});
+    open.push_change(GraphNodesChange{true,
+                                      {std::move(entry)},
+                                      std::move(saved_inputs),
+                                      before_contents->display(),
+                                      after_display,
+                                      open.document.template_node,
+                                      open.document.template_node,
+                                      open.document.kept,
+                                      open.document.kept});
     ++revision_;
     return name;
 }
 
+Result<std::string> Session::graph_add_node(std::string_view key, std::string_view type_name,
+                                            std::string_view desired_name, std::array<float, 2> position) {
+    return add_graph_node_impl(key, type_name, desired_name, position, {}, {}, {}, {}, false);
+}
+
+Result<std::string> Session::graph_place_node(std::string_view key, std::string_view type_name,
+                                              std::array<float, 2> position, std::string_view from_node,
+                                              std::string_view from_port, std::string_view to_node,
+                                              std::string_view to_port, bool set_display) {
+    return add_graph_node_impl(key, type_name, {}, position, from_node, from_port, to_node, to_port, set_display);
+}
+
 Result<void> Session::graph_remove_nodes(std::string_view key, std::span<const std::string> names) {
-    if (world_.running() || world_.closed())
-        return graph_error("Graph editing requires an open, stopped Session.", ErrorCode::invalid_definition);
-    const auto at = graphs_.find(std::string(key));
-    if (at == graphs_.end() || !at->second)
-        return graph_error("Procedural graph is not open: " + std::string(key), ErrorCode::invalid_definition);
+    ATELIER_TRY_BIND(open_ptr, editable_graph(key));
     if (names.empty())
         return {};
-    auto& open = *at->second;
+    auto& open = **open_ptr;
     std::vector<std::string> unique_names;
     std::unordered_set<ObjectId> removed_ids;
     for (const auto& name : names) {
@@ -1016,6 +1335,20 @@ Result<void> Session::graph_remove_nodes(std::string_view key, std::span<const s
     change.added = false;
     change.before_display = listed->display();
     change.after_display = removed_ids.contains(listed->display()) ? ObjectId{} : listed->display();
+    change.before_template = open.document.template_node;
+    change.after_template =
+        removed_ids.contains(open.document.template_node) ? ObjectId{} : open.document.template_node;
+    change.before_kept = open.document.kept;
+    {
+        json::Builder next_kept(open.document.kept);
+        if (const auto kd = open.document.kept.root().string({"display"});
+            kd && std::ranges::find(unique_names, *kd) != unique_names.end())
+            next_kept.erase(next_kept.root(), "display");
+        if (const auto kt = open.document.kept.root().string({"template"});
+            kt && std::ranges::find(unique_names, *kt) != unique_names.end())
+            next_kept.erase(next_kept.root(), "template");
+        change.after_kept = next_kept.finish();
+    }
 
     // Capture full input order of every removed node and every surviving downstream consumer of a removed node.
     for (const auto node_id : listed->nodes()) {
@@ -1032,6 +1365,8 @@ Result<void> Session::graph_remove_nodes(std::string_view key, std::span<const s
         if (item->node.registered())
             ATELIER_TRY(procedural::remove_node(runtime_, graph, item->node.id()));
     }
+    open.document.template_node = change.after_template;
+    open.document.kept = change.after_kept;
     std::erase_if(open.document.nodes, [&](const GraphNode& item) {
         return std::ranges::find(unique_names, item.name) != unique_names.end();
     });
@@ -1041,14 +1376,10 @@ Result<void> Session::graph_remove_nodes(std::string_view key, std::span<const s
 }
 
 Result<void> Session::graph_rename_node(std::string_view key, std::string_view old_name, std::string_view new_name) {
-    if (world_.running() || world_.closed())
-        return graph_error("Graph editing requires an open, stopped Session.", ErrorCode::invalid_definition);
-    const auto at = graphs_.find(std::string(key));
-    if (at == graphs_.end() || !at->second)
-        return graph_error("Procedural graph is not open: " + std::string(key), ErrorCode::invalid_definition);
+    ATELIER_TRY_BIND(open_ptr, editable_graph(key));
     if (!valid_node_identifier(new_name))
         return graph_error("Invalid node name '" + std::string(new_name) + "': expected [A-Za-z_][A-Za-z0-9_]*.");
-    auto& open = *at->second;
+    auto& open = **open_ptr;
     auto* item = find_node(open.document, old_name);
     if (!item)
         return graph_error("No node named '" + std::string(old_name) + "' in this graph.");
@@ -1087,9 +1418,14 @@ Result<void> Session::graph_rename_node(std::string_view key, std::string_view o
             node.kept = change.references.back().after;
         }
     }
-    if (open.document.kept.root().string({"display"}).value_or("") == old_name) {
+    const bool kept_disp = open.document.kept.root().string({"display"}).value_or("") == old_name;
+    const bool kept_tmpl = open.document.kept.root().string({"template"}).value_or("") == old_name;
+    if (kept_disp || kept_tmpl) {
         json::Builder next(open.document.kept);
-        next.set_validated(next.root(), "display", new_name);
+        if (kept_disp)
+            next.set_validated(next.root(), "display", new_name);
+        if (kept_tmpl)
+            next.set_validated(next.root(), "template", new_name);
         change.references.push_back({{}, open.document.kept, next.finish()});
         open.document.kept = change.references.back().after;
     }
@@ -1100,16 +1436,14 @@ Result<void> Session::graph_rename_node(std::string_view key, std::string_view o
     return {};
 }
 
-Result<void> Session::graph_move_nodes(std::string_view key,
-                                       std::span<const std::pair<std::string, std::array<float, 2>>> moves) {
-    if (world_.running() || world_.closed())
-        return graph_error("Graph editing requires an open, stopped Session.", ErrorCode::invalid_definition);
-    const auto at = graphs_.find(std::string(key));
-    if (at == graphs_.end() || !at->second)
-        return graph_error("Procedural graph is not open: " + std::string(key), ErrorCode::invalid_definition);
-    auto& open = *at->second;
+Result<void> Session::graph_move_canvas_items(std::string_view key,
+                                              std::span<const std::pair<std::string, std::array<float, 2>>> node_moves,
+                                              std::span<const std::pair<std::string, std::array<float, 2>>> note_moves,
+                                              std::span<const std::pair<std::string, std::array<float, 2>>> box_moves) {
+    ATELIER_TRY_BIND(open_ptr, editable_graph(key));
+    auto& open = **open_ptr;
     GraphMoveChange change;
-    for (const auto& [name, next_pos] : moves) {
+    for (const auto& [name, next_pos] : node_moves) {
         if (!std::isfinite(next_pos[0]) || !std::isfinite(next_pos[1]))
             return graph_error("Node position must be finite.");
         const auto* item = find_node(open.document, name);
@@ -1118,24 +1452,46 @@ Result<void> Session::graph_move_nodes(std::string_view key,
         if (item->position != next_pos)
             change.moves.push_back({name, item->position, next_pos});
     }
-    if (change.moves.empty())
+    for (const auto& [name, next_pos] : note_moves) {
+        if (!std::isfinite(next_pos[0]) || !std::isfinite(next_pos[1]))
+            return graph_error("Sticky note position must be finite.");
+        const auto* item = find_note(open.document, name);
+        if (!item)
+            return graph_error("No sticky note named '" + name + "' in this graph.");
+        if (item->position != next_pos)
+            change.note_moves.push_back({name, item->position, next_pos});
+    }
+    for (const auto& [name, next_pos] : box_moves) {
+        if (!std::isfinite(next_pos[0]) || !std::isfinite(next_pos[1]))
+            return graph_error("Network box position must be finite.");
+        const auto* item = find_box(open.document, name);
+        if (!item)
+            return graph_error("No network box named '" + name + "' in this graph.");
+        if (item->position != next_pos)
+            change.box_moves.push_back({name, item->position, next_pos});
+    }
+    if (change.moves.empty() && change.note_moves.empty() && change.box_moves.empty())
         return {};
     ATELIER_TRY(cancel_edit());
     for (const auto& move : change.moves)
         find_node(open.document, move.name)->position = move.after;
+    for (const auto& move : change.note_moves)
+        find_note(open.document, move.name)->position = move.after;
+    for (const auto& move : change.box_moves)
+        find_box(open.document, move.name)->position = move.after;
     open.push_change(std::move(change));
     ++revision_;
     return {};
 }
 
+Result<void> Session::graph_move_nodes(std::string_view key,
+                                       std::span<const std::pair<std::string, std::array<float, 2>>> moves) {
+    return graph_move_canvas_items(key, moves, {}, {});
+}
+
 Result<void> Session::graph_auto_layout(std::string_view key) {
-    if (world_.running() || world_.closed())
-        return graph_error("Graph editing requires an open, stopped Session.", ErrorCode::invalid_definition);
-    ATELIER_TRY(ensure_procedural_program());
-    const auto at = graphs_.find(std::string(key));
-    if (at == graphs_.end() || !at->second)
-        return graph_error("Procedural graph is not open: " + std::string(key), ErrorCode::invalid_definition);
-    auto& open = *at->second;
+    ATELIER_TRY_BIND(open_ptr, editable_graph(key, true));
+    auto& open = **open_ptr;
     const std::size_t n = open.document.nodes.size();
     if (n == 0)
         return {};
@@ -1226,13 +1582,8 @@ Result<void> Session::graph_auto_layout(std::string_view key) {
 
 Result<void> Session::graph_connect(std::string_view key, std::string_view from_node, std::string_view from_port,
                                     std::string_view to_node, std::string_view to_port) {
-    if (world_.running() || world_.closed())
-        return graph_error("Graph editing requires an open, stopped Session.", ErrorCode::invalid_definition);
-    ATELIER_TRY(ensure_procedural_program());
-    const auto at = graphs_.find(std::string(key));
-    if (at == graphs_.end() || !at->second)
-        return graph_error("Procedural graph is not open: " + std::string(key), ErrorCode::invalid_definition);
-    auto& open = *at->second;
+    ATELIER_TRY_BIND(open_ptr, editable_graph(key, true));
+    auto& open = **open_ptr;
     const auto* src = find_node(open.document, from_node);
     auto* dst = find_node(open.document, to_node);
     if (!src || !src->node.registered())
@@ -1279,14 +1630,7 @@ Result<void> Session::graph_connect(std::string_view key, std::string_view from_
     ATELIER_TRY_BIND(after_inputs, procedural::inputs(runtime_, *listed, dst->node.id()));
 
     const auto before_kept = dst->kept;
-    json::Builder next_kept(dst->kept);
-    if (const auto kept_inputs = *next_kept.root().find("inputs");
-        kept_inputs && kept_inputs->kind() == json::Kind::object) {
-        next_kept.erase(*kept_inputs, dst_ports->inputs[in_idx]);
-        if (!kept_inputs->size())
-            next_kept.erase(next_kept.root(), "inputs");
-    }
-    dst->kept = next_kept.finish();
+    erase_kept_input(dst->kept, dst_ports->inputs[in_idx]);
 
     open.push_change(GraphConnectionChange{
         {{dst->node, std::move(*before_inputs), std::move(*after_inputs), before_kept, dst->kept}}});
@@ -1296,13 +1640,8 @@ Result<void> Session::graph_connect(std::string_view key, std::string_view from_
 
 Result<void> Session::graph_disconnect(std::string_view key, std::string_view to_node, std::string_view to_port,
                                        std::string_view from_node, std::string_view from_port) {
-    if (world_.running() || world_.closed())
-        return graph_error("Graph editing requires an open, stopped Session.", ErrorCode::invalid_definition);
-    ATELIER_TRY(ensure_procedural_program());
-    const auto at = graphs_.find(std::string(key));
-    if (at == graphs_.end() || !at->second)
-        return graph_error("Procedural graph is not open: " + std::string(key), ErrorCode::invalid_definition);
-    auto& open = *at->second;
+    ATELIER_TRY_BIND(open_ptr, editable_graph(key, true));
+    auto& open = **open_ptr;
     auto* dst = find_node(open.document, to_node);
     if (!dst || !dst->node.registered())
         return graph_error("Downstream node '" + std::string(to_node) + "' is missing or unresolved.");
@@ -1358,15 +1697,10 @@ Result<void> Session::graph_disconnect(std::string_view key, std::string_view to
 }
 
 Result<void> Session::graph_disconnect_edges(std::string_view key, std::span<const GraphConnectionView> edges) {
-    if (world_.running() || world_.closed())
-        return graph_error("Graph editing requires an open, stopped Session.", ErrorCode::invalid_definition);
     if (edges.empty())
         return {};
-    ATELIER_TRY(ensure_procedural_program());
-    const auto at = graphs_.find(std::string(key));
-    if (at == graphs_.end() || !at->second)
-        return graph_error("Procedural graph is not open: " + std::string(key), ErrorCode::invalid_definition);
-    auto& open = *at->second;
+    ATELIER_TRY_BIND(open_ptr, editable_graph(key, true));
+    auto& open = **open_ptr;
     ATELIER_TRY(cancel_edit());
     const auto graph = open.document.graph.id();
     ATELIER_TRY_BIND(listed, procedural::contents(runtime_, graph));
@@ -1433,13 +1767,8 @@ Result<void> Session::graph_rewire(std::string_view key, const GraphConnectionVi
                                    std::string_view new_to_node, std::string_view new_to_port) {
     if (remove_edge.to_node == new_to_node && remove_edge.to_port == new_to_port)
         return {};
-    if (world_.running() || world_.closed())
-        return graph_error("Graph editing requires an open, stopped Session.", ErrorCode::invalid_definition);
-    ATELIER_TRY(ensure_procedural_program());
-    const auto at = graphs_.find(std::string(key));
-    if (at == graphs_.end() || !at->second)
-        return graph_error("Procedural graph is not open: " + std::string(key), ErrorCode::invalid_definition);
-    auto& open = *at->second;
+    ATELIER_TRY_BIND(open_ptr, editable_graph(key, true));
+    auto& open = **open_ptr;
     const auto* src = find_node(open.document, remove_edge.from_node);
     auto* old_dst = find_node(open.document, remove_edge.to_node);
     auto* new_dst = find_node(open.document, new_to_node);
@@ -1490,14 +1819,7 @@ Result<void> Session::graph_rewire(std::string_view key, const GraphConnectionVi
     }
 
     const auto new_before_kept = new_dst->kept;
-    json::Builder next_kept(new_dst->kept);
-    if (const auto kept_inputs = *next_kept.root().find("inputs");
-        kept_inputs && kept_inputs->kind() == json::Kind::object) {
-        next_kept.erase(*kept_inputs, new_ports->inputs[new_in_idx]);
-        if (!kept_inputs->size())
-            next_kept.erase(next_kept.root(), "inputs");
-    }
-    new_dst->kept = next_kept.finish();
+    erase_kept_input(new_dst->kept, new_ports->inputs[new_in_idx]);
 
     GraphConnectionChange change;
     ATELIER_TRY_BIND(old_after, procedural::inputs(runtime_, *listed, old_dst->node.id()));
@@ -1516,13 +1838,109 @@ Result<void> Session::graph_rewire(std::string_view key, const GraphConnectionVi
     return {};
 }
 
+Result<void> Session::graph_splice_node(std::string_view key, std::string_view node_name, std::array<float, 2> position,
+                                        const GraphConnectionView& wire) {
+    if (!std::isfinite(position[0]) || !std::isfinite(position[1]))
+        return graph_error("Node position must be finite.");
+    ATELIER_TRY_BIND(open_ptr, editable_graph(key, true));
+    auto& open = **open_ptr;
+    auto* mid = find_node(open.document, node_name);
+    const auto* src = find_node(open.document, wire.from_node);
+    auto* dst = find_node(open.document, wire.to_node);
+    if (!mid || !mid->node.registered() || !src || !src->node.registered() || !dst || !dst->node.registered())
+        return graph_error("Splice nodes must exist and be resolved.");
+    if (mid == src || mid == dst)
+        return graph_error("Cannot splice a wire endpoint onto its own wire.");
+
+    ATELIER_TRY_BIND(src_type, runtime_.type_of(src->node.id()));
+    ATELIER_TRY_BIND(mid_type, runtime_.type_of(mid->node.id()));
+    ATELIER_TRY_BIND(dst_type, runtime_.type_of(dst->node.id()));
+    ATELIER_TRY_BIND(src_ports, procedural::ports(runtime_, *src_type));
+    ATELIER_TRY_BIND(mid_ports, procedural::ports(runtime_, *mid_type));
+    ATELIER_TRY_BIND(dst_ports, procedural::ports(runtime_, *dst_type));
+    if (mid_ports->inputs.empty() || mid_ports->outputs.empty())
+        return graph_error("Splice node requires at least one input port and one output port.");
+    const auto out_it = std::ranges::find(src_ports->outputs, wire.from_port);
+    const auto in_it = std::ranges::find(dst_ports->inputs, wire.to_port);
+    if (out_it == src_ports->outputs.end() || in_it == dst_ports->inputs.end())
+        return graph_error("Splice target wire names a missing port.");
+    const auto out_idx = static_cast<std::uint32_t>(out_it - src_ports->outputs.begin());
+    const auto in_idx = static_cast<std::uint32_t>(in_it - dst_ports->inputs.begin());
+
+    ATELIER_TRY(cancel_edit());
+    const auto graph = open.document.graph.id();
+    ATELIER_TRY_BIND(listed, procedural::contents(runtime_, graph));
+    ATELIER_TRY_BIND(mid_before, procedural::inputs(runtime_, *listed, mid->node.id()));
+    ATELIER_TRY_BIND(dst_before, procedural::inputs(runtime_, *listed, dst->node.id()));
+    const bool wire_exists = std::ranges::any_of(*dst_before, [&](const procedural::Input& in) {
+        return in.from == src->node.id() && in.output == out_idx && in.input == in_idx;
+    });
+    if (!wire_exists)
+        return graph_error("Target wire no longer exists.");
+
+    std::vector<procedural::Input> mid_after;
+    for (const auto& in : *mid_before) {
+        if (mid_ports->multiple[0] || in.input != 0)
+            mid_after.push_back(in);
+    }
+    if (!std::ranges::any_of(mid_after, [&](const procedural::Input& in) {
+            return in.from == src->node.id() && in.output == out_idx && in.input == 0;
+        })) {
+        mid_after.push_back({src->node.id(), out_idx, 0});
+    }
+
+    std::vector<procedural::Input> dst_after;
+    bool inserted = false;
+    const bool already_has_mid = std::ranges::any_of(*dst_before, [&](const procedural::Input& in) {
+        return in.from == mid->node.id() && in.output == 0 && in.input == in_idx;
+    });
+    for (const auto& in : *dst_before) {
+        if (in.from == src->node.id() && in.output == out_idx && in.input == in_idx) {
+            if (!already_has_mid && !inserted) {
+                dst_after.push_back({mid->node.id(), 0, in_idx});
+                inserted = true;
+            }
+            continue;
+        }
+        dst_after.push_back(in);
+    }
+
+    static_cast<void>(replace_node_inputs(runtime_, graph, dst->node.id(), {}));
+    static_cast<void>(replace_node_inputs(runtime_, graph, mid->node.id(), {}));
+    if (auto r1 = replace_node_inputs(runtime_, graph, mid->node.id(), mid_after); !r1) {
+        static_cast<void>(replace_node_inputs(runtime_, graph, mid->node.id(), {}));
+        static_cast<void>(replace_node_inputs(runtime_, graph, mid->node.id(), *mid_before));
+        static_cast<void>(replace_node_inputs(runtime_, graph, dst->node.id(), *dst_before));
+        return std::unexpected(r1.error());
+    }
+    if (auto r2 = replace_node_inputs(runtime_, graph, dst->node.id(), dst_after); !r2) {
+        static_cast<void>(replace_node_inputs(runtime_, graph, dst->node.id(), {}));
+        static_cast<void>(replace_node_inputs(runtime_, graph, mid->node.id(), {}));
+        static_cast<void>(replace_node_inputs(runtime_, graph, mid->node.id(), *mid_before));
+        static_cast<void>(replace_node_inputs(runtime_, graph, dst->node.id(), *dst_before));
+        return std::unexpected(r2.error());
+    }
+
+    const auto mid_before_kept = mid->kept;
+    erase_kept_input(mid->kept, mid_ports->inputs[0]);
+    const auto dst_before_kept = dst->kept;
+    erase_kept_input(dst->kept, dst_ports->inputs[in_idx]);
+
+    GraphConnectionChange change;
+    change.targets.push_back({mid->node, std::move(*mid_before), std::move(mid_after), mid_before_kept, mid->kept});
+    change.targets.push_back({dst->node, std::move(*dst_before), std::move(dst_after), dst_before_kept, dst->kept});
+    if (mid->position != position) {
+        change.moves.push_back({mid->name, mid->position, position});
+        mid->position = position;
+    }
+    open.push_change(std::move(change));
+    ++revision_;
+    return {};
+}
+
 Result<void> Session::graph_set_display(std::string_view key, std::string_view node_name) {
-    if (world_.running() || world_.closed())
-        return graph_error("Graph editing requires an open, stopped Session.", ErrorCode::invalid_definition);
-    const auto at = graphs_.find(std::string(key));
-    if (at == graphs_.end() || !at->second)
-        return graph_error("Procedural graph is not open: " + std::string(key), ErrorCode::invalid_definition);
-    auto& open = *at->second;
+    ATELIER_TRY_BIND(open_ptr, editable_graph(key));
+    auto& open = **open_ptr;
     ObjectId target{};
     if (!node_name.empty()) {
         const auto* item = find_node(open.document, node_name);
@@ -1546,16 +1964,270 @@ Result<void> Session::graph_set_display(std::string_view key, std::string_view n
     return {};
 }
 
+Result<void> Session::graph_set_template(std::string_view key, std::string_view node_name) {
+    ATELIER_TRY_BIND(open_ptr, editable_graph(key));
+    auto& open = **open_ptr;
+    ObjectId target{};
+    if (!node_name.empty()) {
+        const auto* item = find_node(open.document, node_name);
+        if (!item || !item->node.registered())
+            return graph_error("Template target '" + std::string(node_name) + "' is missing or unresolved.");
+        target = item->node.id();
+    }
+    ATELIER_TRY(cancel_edit());
+    const auto before = open.document.template_node;
+    const auto before_kept = open.document.kept;
+    json::Builder next_kept(open.document.kept);
+    next_kept.erase(next_kept.root(), "template");
+    const auto after_kept = next_kept.finish();
+    if (before == target && !before_kept.root().find("template")->has_value())
+        return {};
+    open.document.template_node = target;
+    open.document.kept = after_kept;
+    open.push_change(GraphTemplateChange{before, target, before_kept, after_kept});
+    ++revision_;
+    return {};
+}
+
+Result<void> Session::graph_set_bypass(std::string_view key, std::string_view node_name, bool bypassed) {
+    ATELIER_TRY_BIND(open_ptr, editable_graph(key));
+    auto& open = **open_ptr;
+    auto* item = find_node(open.document, node_name);
+    if (!item || !item->node.registered())
+        return graph_error("Bypass target '" + std::string(node_name) + "' is missing or unresolved.");
+    ATELIER_TRY_BIND(before, procedural::bypassed(runtime_, item->node.id()));
+    if (*before == bypassed)
+        return {};
+    ATELIER_TRY(cancel_edit());
+    ATELIER_TRY(procedural::set_bypassed(runtime_, item->node.id(), bypassed));
+    open.push_change(GraphBypassChange{item->node, *before, bypassed});
+    ++revision_;
+    return {};
+}
+
+Result<void> Session::graph_set_node_appearance(std::string_view key, std::span<const std::string> names,
+                                                std::optional<GraphNodeShape> shape,
+                                                std::optional<std::optional<std::uint32_t>> color,
+                                                std::optional<std::string> comment) {
+    ATELIER_TRY_BIND(open_ptr, editable_graph(key));
+    if (names.empty())
+        return {};
+    if (shape && static_cast<std::uint8_t>(*shape) > static_cast<std::uint8_t>(GraphNodeShape::circle))
+        return graph_error("Invalid node shape preset.");
+    if (comment && !StringView(*comment).is_valid_utf8())
+        return graph_error("Node comment must be valid UTF-8.");
+    auto& open = **open_ptr;
+    GraphAppearanceChange change;
+    std::vector<std::string> seen;
+    for (const auto& name : names) {
+        if (std::ranges::find(seen, name) != seen.end())
+            continue;
+        seen.push_back(name);
+        const auto* item = find_node(open.document, name);
+        if (!item)
+            return graph_error("No node named '" + name + "' in this graph.");
+        const GraphNodeShape next_shape = shape.value_or(item->shape);
+        std::optional<std::uint32_t> next_color = item->color;
+        if (color) {
+            next_color = *color ? std::optional<std::uint32_t>{**color & 0xffffffu} : std::nullopt;
+        }
+        const std::string next_comment = comment.value_or(item->comment);
+        if (next_shape != item->shape || next_color != item->color || next_comment != item->comment) {
+            change.entries.push_back(
+                {name, item->shape, next_shape, item->color, next_color, item->comment, next_comment});
+        }
+    }
+    if (change.entries.empty())
+        return {};
+    ATELIER_TRY(cancel_edit());
+    for (const auto& delta : change.entries) {
+        auto* item = find_node(open.document, delta.name);
+        item->shape = delta.after_shape;
+        item->color = delta.after_color;
+        item->comment = delta.after_comment;
+    }
+    open.push_change(std::move(change));
+    ++revision_;
+    return {};
+}
+
+Result<std::string> Session::graph_add_note(std::string_view key, std::array<float, 2> position,
+                                            std::array<float, 2> size, std::string_view title, std::string_view text,
+                                            std::uint32_t color) {
+    ATELIER_TRY_BIND(open_ptr, editable_graph(key));
+    if (!std::isfinite(position[0]) || !std::isfinite(position[1]) || !std::isfinite(size[0]) ||
+        !std::isfinite(size[1]) || size[0] <= 0.f || size[1] <= 0.f)
+        return graph_error("Sticky note position and size must be finite and positive.");
+    if (!StringView(title).is_valid_utf8() || !StringView(text).is_valid_utf8())
+        return graph_error("Sticky note text must be valid UTF-8.");
+    auto& open = **open_ptr;
+    std::string name;
+    for (std::uint32_t idx = 1;; ++idx) {
+        name = "note" + std::to_string(idx);
+        if (!find_note(open.document, name))
+            break;
+    }
+    ATELIER_TRY(cancel_edit());
+    GraphAnnotationChange change{open.document.notes, open.document.notes, open.document.boxes, open.document.boxes};
+    change.after_notes.push_back({name, position, size, std::string(title), std::string(text), color & 0xffffffu});
+    sort_graph_notes(change.after_notes);
+    open.document.notes = change.after_notes;
+    open.push_change(std::move(change));
+    ++revision_;
+    return name;
+}
+
+Result<void> Session::graph_update_note(std::string_view key, std::string_view name,
+                                        std::optional<std::array<float, 2>> position,
+                                        std::optional<std::array<float, 2>> size, std::optional<std::string> title,
+                                        std::optional<std::string> text, std::optional<std::uint32_t> color) {
+    ATELIER_TRY_BIND(open_ptr, editable_graph(key));
+    auto& open = **open_ptr;
+    const auto* existing = find_note(open.document, name);
+    if (!existing)
+        return graph_error("No sticky note named '" + std::string(name) + "' in this graph.");
+    GraphStickyNote updated = *existing;
+    if (position) {
+        if (!std::isfinite((*position)[0]) || !std::isfinite((*position)[1]))
+            return graph_error("Sticky note position must be finite.");
+        updated.position = *position;
+    }
+    if (size) {
+        if (!std::isfinite((*size)[0]) || !std::isfinite((*size)[1]) || (*size)[0] <= 0.f || (*size)[1] <= 0.f)
+            return graph_error("Sticky note size must be finite and positive.");
+        updated.size = *size;
+    }
+    if (title) {
+        if (!StringView(*title).is_valid_utf8())
+            return graph_error("Sticky note title must be valid UTF-8.");
+        updated.title = *title;
+    }
+    if (text) {
+        if (!StringView(*text).is_valid_utf8())
+            return graph_error("Sticky note text must be valid UTF-8.");
+        updated.text = *text;
+    }
+    if (color)
+        updated.color = *color & 0xffffffu;
+    if (updated == *existing)
+        return {};
+    ATELIER_TRY(cancel_edit());
+    GraphAnnotationChange change{open.document.notes, open.document.notes, open.document.boxes, open.document.boxes};
+    for (auto& item : change.after_notes) {
+        if (item.name == name)
+            item = updated;
+    }
+    open.document.notes = change.after_notes;
+    open.push_change(std::move(change));
+    ++revision_;
+    return {};
+}
+
+Result<void> Session::graph_remove_notes(std::string_view key, std::span<const std::string> names) {
+    ATELIER_TRY_BIND(open_ptr, editable_graph(key));
+    if (names.empty())
+        return {};
+    auto& open = **open_ptr;
+    GraphAnnotationChange change{open.document.notes, open.document.notes, open.document.boxes, open.document.boxes};
+    if (std::erase_if(change.after_notes, [&](const GraphStickyNote& item) {
+            return std::ranges::find(names, item.name) != names.end();
+        }) == 0)
+        return {};
+    ATELIER_TRY(cancel_edit());
+    open.document.notes = change.after_notes;
+    open.push_change(std::move(change));
+    ++revision_;
+    return {};
+}
+
+Result<std::string> Session::graph_add_box(std::string_view key, std::array<float, 2> position,
+                                           std::array<float, 2> size, std::string_view title, std::uint32_t color) {
+    ATELIER_TRY_BIND(open_ptr, editable_graph(key));
+    if (!std::isfinite(position[0]) || !std::isfinite(position[1]) || !std::isfinite(size[0]) ||
+        !std::isfinite(size[1]) || size[0] <= 0.f || size[1] <= 0.f)
+        return graph_error("Network box position and size must be finite and positive.");
+    if (!StringView(title).is_valid_utf8())
+        return graph_error("Network box title must be valid UTF-8.");
+    auto& open = **open_ptr;
+    std::string name;
+    for (std::uint32_t idx = 1;; ++idx) {
+        name = "box_frame" + std::to_string(idx);
+        if (!find_box(open.document, name))
+            break;
+    }
+    ATELIER_TRY(cancel_edit());
+    GraphAnnotationChange change{open.document.notes, open.document.notes, open.document.boxes, open.document.boxes};
+    change.after_boxes.push_back({name, position, size, std::string(title), color & 0xffffffu});
+    sort_graph_boxes(change.after_boxes);
+    open.document.boxes = change.after_boxes;
+    open.push_change(std::move(change));
+    ++revision_;
+    return name;
+}
+
+Result<void> Session::graph_update_box(std::string_view key, std::string_view name,
+                                       std::optional<std::array<float, 2>> position,
+                                       std::optional<std::array<float, 2>> size, std::optional<std::string> title,
+                                       std::optional<std::uint32_t> color) {
+    ATELIER_TRY_BIND(open_ptr, editable_graph(key));
+    auto& open = **open_ptr;
+    const auto* existing = find_box(open.document, name);
+    if (!existing)
+        return graph_error("No network box named '" + std::string(name) + "' in this graph.");
+    GraphNetworkBox updated = *existing;
+    if (position) {
+        if (!std::isfinite((*position)[0]) || !std::isfinite((*position)[1]))
+            return graph_error("Network box position must be finite.");
+        updated.position = *position;
+    }
+    if (size) {
+        if (!std::isfinite((*size)[0]) || !std::isfinite((*size)[1]) || (*size)[0] <= 0.f || (*size)[1] <= 0.f)
+            return graph_error("Network box size must be finite and positive.");
+        updated.size = *size;
+    }
+    if (title) {
+        if (!StringView(*title).is_valid_utf8())
+            return graph_error("Network box title must be valid UTF-8.");
+        updated.title = *title;
+    }
+    if (color)
+        updated.color = *color & 0xffffffu;
+    if (updated == *existing)
+        return {};
+    ATELIER_TRY(cancel_edit());
+    GraphAnnotationChange change{open.document.notes, open.document.notes, open.document.boxes, open.document.boxes};
+    for (auto& item : change.after_boxes) {
+        if (item.name == name)
+            item = updated;
+    }
+    open.document.boxes = change.after_boxes;
+    open.push_change(std::move(change));
+    ++revision_;
+    return {};
+}
+
+Result<void> Session::graph_remove_boxes(std::string_view key, std::span<const std::string> names) {
+    ATELIER_TRY_BIND(open_ptr, editable_graph(key));
+    if (names.empty())
+        return {};
+    auto& open = **open_ptr;
+    GraphAnnotationChange change{open.document.notes, open.document.notes, open.document.boxes, open.document.boxes};
+    if (std::erase_if(change.after_boxes, [&](const GraphNetworkBox& item) {
+            return std::ranges::find(names, item.name) != names.end();
+        }) == 0)
+        return {};
+    ATELIER_TRY(cancel_edit());
+    open.document.boxes = change.after_boxes;
+    open.push_change(std::move(change));
+    ++revision_;
+    return {};
+}
+
 Result<void> Session::graph_set_properties(std::string_view key, std::string_view node_name, json::Value properties) {
-    if (world_.running() || world_.closed())
-        return graph_error("Graph editing requires an open, stopped Session.", ErrorCode::invalid_definition);
     if (properties.kind() != json::Kind::object)
         return graph_error("Properties patch must be a JSON object.");
-    ATELIER_TRY(ensure_procedural_program());
-    const auto at = graphs_.find(std::string(key));
-    if (at == graphs_.end() || !at->second)
-        return graph_error("Procedural graph is not open: " + std::string(key), ErrorCode::invalid_definition);
-    auto& open = *at->second;
+    ATELIER_TRY_BIND(open_ptr, editable_graph(key, true));
+    auto& open = **open_ptr;
     ObjectRoot target_root;
     GraphNode* target_node = nullptr;
     if (node_name.empty()) {
@@ -1675,8 +2347,17 @@ Result<GraphEvaluation> Session::evaluate_graph(std::string_view key, Project* p
             result.display_error = st->error;
     }
 
+    if (open.document.template_node != ObjectId{} && listed->contains(open.document.template_node)) {
+        result.template_node = open.document.template_node;
+        if (const auto* tmpl = find_node_by_id(open.document, result.template_node))
+            result.template_name = tmpl->name;
+        if (result.template_node != result.display_node)
+            ATELIER_TRY(open.evaluator->evaluate_node(result.template_node, record_timings));
+        result.template_output = open.evaluator->node_output(result.template_node);
+    }
+
     if (inspected_node != ObjectId{} && listed->contains(inspected_node)) {
-        if (inspected_node != result.display_node)
+        if (inspected_node != result.display_node && inspected_node != result.template_node)
             ATELIER_TRY(open.evaluator->evaluate_node(inspected_node, record_timings));
         result.inspected_output = open.evaluator->node_output(inspected_node);
         if (const auto* st = open.evaluator->status(inspected_node); st && st->error)
@@ -1723,25 +2404,45 @@ Result<std::shared_ptr<const GraphInspectView>> Session::graph_topology(std::str
     view.can_undo = graph_can_undo(key, false);
     view.can_redo = graph_can_undo(key, true);
     view.issues = open.document.issues;
+    view.notes = open.document.notes;
+    view.boxes = open.document.boxes;
 
     if (listed->display() != ObjectId{}) {
         if (const auto* disp_node = find_node_by_id(open.document, listed->display()))
             view.display = disp_node->name;
+    } else if (const auto kept_disp = open.document.kept.root().string({"display"})) {
+        view.display = std::string(*kept_disp);
+    }
+    if (open.document.template_node != ObjectId{}) {
+        if (const auto* tmpl_node = find_node_by_id(open.document, open.document.template_node))
+            view.template_node = tmpl_node->name;
+    } else if (const auto kept_tmpl = open.document.kept.root().string({"template"})) {
+        view.template_node = std::string(*kept_tmpl);
     }
 
     for (const auto& item : open.document.nodes) {
         GraphNodeView node_view;
         node_view.name = item.name;
         node_view.position = item.position;
+        node_view.shape = item.shape;
+        node_view.color = item.color;
+        node_view.comment = item.comment;
         if (!item.node.registered()) {
             node_view.placeholder = true;
+            node_view.is_display = item.name == view.display;
+            node_view.is_template = item.name == view.template_node;
             if (const auto saved_type = item.kept.root().string({"type"}))
                 node_view.type = std::string(*saved_type);
+            if (const auto saved_bypass = item.kept.root().boolean({"bypass"}))
+                node_view.is_bypassed = *saved_bypass;
             view.nodes.push_back(std::move(node_view));
             continue;
         }
         node_view.id = item.node.id();
         node_view.is_display = item.node.id() == listed->display();
+        node_view.is_template = item.node.id() == open.document.template_node;
+        ATELIER_TRY_BIND(is_bypassed, procedural::bypassed(runtime_, item.node.id()));
+        node_view.is_bypassed = *is_bypassed;
         ATELIER_TRY_BIND(type, runtime_.type_of(item.node.id()));
         ATELIER_TRY_BIND(info, runtime_.describe(*type));
         node_view.type = std::string((*info)->name);
@@ -1791,6 +2492,581 @@ Result<GraphInspectView> Session::inspect_graph(std::string_view key, Project* p
                                      : summarize_geometry(eval->inspected_output, max_samples);
     }
     return view;
+}
+
+namespace {
+
+std::wstring truncate_utf16(std::wstring_view text, std::size_t max_units) {
+    if (text.size() <= max_units)
+        return std::wstring(text);
+    auto out = std::wstring(text.substr(0, max_units));
+    if (!out.empty() && out.back() >= 0xd800 && out.back() <= 0xdbff)
+        out.pop_back();
+    return out;
+}
+
+Result<world::Trs> decompose_procedural_instance(const std::array<float, 12>& affine) {
+    const math::Matrix4 mat = presentation::procedural_affine_matrix(affine);
+    if (auto exact = world::relative_transform(mat, math::Matrix4::identity()))
+        return exact;
+
+    for (const float v : affine)
+        if (!std::isfinite(v))
+            return graph_error("Procedural instance transform contains non-finite values.",
+                               ErrorCode::invalid_definition);
+
+    const math::Vector3d row0{affine[0], affine[1], affine[2]};
+    const math::Vector3d row1{affine[3], affine[4], affine[5]};
+    const math::Vector3d row2{affine[6], affine[7], affine[8]};
+    const math::Vector3 pos{affine[9], affine[10], affine[11]};
+
+    double sx = std::hypot(row0.x, row0.y, row0.z);
+    double sy = std::hypot(row1.x, row1.y, row1.z);
+    double sz = std::hypot(row2.x, row2.y, row2.z);
+    const auto valid_scale = [](double s) {
+        const float fs = static_cast<float>(s);
+        return std::isfinite(s) && s > 0. && std::isfinite(fs) && fs != 0.f;
+    };
+    if (!valid_scale(sx) || !valid_scale(sy) || !valid_scale(sz))
+        return graph_error("Procedural instance transform has a degenerate scale.", ErrorCode::invalid_definition);
+
+    const double det = row0.x * (row1.y * row2.z - row1.z * row2.y) - row0.y * (row1.x * row2.z - row1.z * row2.x) +
+                       row0.z * (row1.x * row2.y - row1.y * row2.x);
+    if (!std::isfinite(det) || det == 0.)
+        return graph_error("Procedural instance transform is singular.", ErrorCode::invalid_definition);
+    if (det < 0.)
+        sx = -sx;
+
+    const math::Vector3d u0 = row0 * (1. / sx);
+    const math::Vector3d u1 = row1 * (1. / sy);
+    const math::Vector3d u2 = row2 * (1. / sz);
+    constexpr double shear_limit = 1e-4;
+    if (std::abs(math::dot(u0, u1)) > shear_limit || std::abs(math::dot(u0, u2)) > shear_limit ||
+        std::abs(math::dot(u1, u2)) > shear_limit) {
+        return graph_error(
+            "Procedural instance transform contains shear, which StaticMeshEntity TRS cannot represent; realize instances in the graph before baking.",
+            ErrorCode::invalid_definition);
+    }
+
+    const math::Vector3d r0 = u0;
+    const auto r1_opt = math::try_normalize(u1 - r0 * math::dot(u1, r0));
+    if (!r1_opt)
+        return graph_error("Procedural instance basis is collinear.", ErrorCode::invalid_definition);
+    const math::Vector3d r1 = *r1_opt;
+    const math::Vector3d r2 = math::cross(r0, r1);
+
+    math::Quaterniond qd{};
+    const double trace = r0.x + r1.y + r2.z;
+    if (trace > 0.) {
+        const double s = 2. * std::sqrt(1. + trace);
+        qd.w = 0.25 * s;
+        qd.x = (r1.z - r2.y) / s;
+        qd.y = (r2.x - r0.z) / s;
+        qd.z = (r0.y - r1.x) / s;
+    } else if (r0.x > r1.y && r0.x > r2.z) {
+        const double s = 2. * std::sqrt(std::max(0., 1. + r0.x - r1.y - r2.z));
+        qd.x = 0.25 * s;
+        qd.w = (r1.z - r2.y) / s;
+        qd.y = (r0.y + r1.x) / s;
+        qd.z = (r0.z + r2.x) / s;
+    } else if (r1.y > r2.z) {
+        const double s = 2. * std::sqrt(std::max(0., 1. + r1.y - r0.x - r2.z));
+        qd.y = 0.25 * s;
+        qd.w = (r2.x - r0.z) / s;
+        qd.x = (r0.y + r1.x) / s;
+        qd.z = (r1.z + r2.y) / s;
+    } else {
+        const double s = 2. * std::sqrt(std::max(0., 1. + r2.z - r0.x - r1.y));
+        qd.z = 0.25 * s;
+        qd.w = (r0.y - r1.x) / s;
+        qd.x = (r0.z + r2.x) / s;
+        qd.y = (r1.z + r2.y) / s;
+    }
+    return world::canonical_transform({pos,
+                                       static_cast<math::Quaternion>(qd),
+                                       {static_cast<float>(sx), static_cast<float>(sy), static_cast<float>(sz)}});
+}
+
+} // namespace
+
+Result<void> Session::sync_procedural_generators(Project* project) {
+    if (world_.closed())
+        return {};
+    const std::uint64_t proj_rev = project ? project->revision() : 0ULL;
+    const std::uint64_t code_version =
+        project_code_ && project_code_->report() ? project_code_->report()->published_version : 0ULL;
+
+    if (generator_cache_ && generator_cache_->idle_valid && !generator_cache_->has_errors &&
+        generator_cache_->idle_world_revision == world_.revision() &&
+        generator_cache_->idle_session_revision == revision_ && generator_cache_->idle_project == project &&
+        generator_cache_->idle_project_revision == proj_rev && generator_cache_->idle_code_version == code_version) {
+        if (auto now = runtime_.change_cursor(); now && *now == generator_cache_->idle_runtime_cursor)
+            return {};
+    }
+
+    ATELIER_TRY_BIND(generators, world_.query(presentation_types_.procedural_generator_component));
+    if (generators->empty()) {
+        if (generator_cache_) {
+            generator_cache_->clear();
+            if (auto now = runtime_.change_cursor()) {
+                generator_cache_->idle_valid = true;
+                generator_cache_->idle_world_revision = world_.revision();
+                generator_cache_->idle_session_revision = revision_;
+                generator_cache_->idle_project = project;
+                generator_cache_->idle_project_revision = proj_rev;
+                generator_cache_->idle_code_version = code_version;
+                generator_cache_->idle_runtime_cursor = *now;
+            }
+        }
+        return {};
+    }
+
+    if (!generator_cache_)
+        generator_cache_.reset(new GeneratorRuntimeCache());
+    auto& cache = *generator_cache_;
+    cache.idle_valid = false;
+    cache.has_errors = false;
+    if (project)
+        cache.resources.bind(project);
+
+    std::unordered_set<ObjectId> live_components(generators->begin(), generators->end());
+    std::erase_if(cache.entries, [&](const auto& item) { return !live_components.contains(item.first); });
+
+    const auto contain_error = [&](const Error& err, ObjectId component, ObjectId owner,
+                                   std::vector<std::string> field = {"graph"},
+                                   world::DiagnosticKind kind = world::DiagnosticKind::invalid_value) -> Result<void> {
+        cache.has_errors = true;
+        world::Diagnostic diag;
+        diag.kind = kind;
+        diag.phase = world::DiagnosticPhase::presentation;
+        diag.object = component;
+        diag.entity = owner;
+        diag.field = std::move(field);
+        if (!world_.contain(err, std::move(diag)))
+            return std::unexpected(err);
+        return {};
+    };
+
+    auto program_res = ensure_procedural_program();
+    assets::Reader builtin_reader;
+    assets::Reader& active_reader =
+        project ? project->assets() : (cache.fallback_reader ? *cache.fallback_reader : builtin_reader);
+    std::unordered_set<std::string> referenced_graphs;
+
+    for (const ObjectId component : *generators) {
+        ATELIER_TRY_BIND(comp_state, world::inspect_component(runtime_, component));
+        if (!comp_state->valid || comp_state->owner == ObjectId{} || !world_.contains(comp_state->owner)) {
+            cache.entries.erase(component);
+            continue;
+        }
+        ATELIER_TRY_BIND(proc_source, presentation::read_procedural_source(runtime_, component));
+        if (proc_source->source.empty()) {
+            cache.entries.erase(component);
+            if (proc_source->output)
+                ATELIER_TRY(presentation::set_procedural_binding(runtime_, component, {{}, nullptr, {}}));
+            continue;
+        }
+
+        const auto owner_enabled = world::effective_enabled(runtime_, comp_state->owner);
+        if (!comp_state->enabled || !owner_enabled || !*owner_enabled) {
+            if (auto it = cache.entries.find(component); it != cache.entries.end()) {
+                it->second.last_geom.reset();
+                it->second.output.reset();
+                it->second.resolved_assets.clear();
+            }
+            if (proc_source->output)
+                ATELIER_TRY(
+                    presentation::set_procedural_binding(runtime_, component, {proc_source->source, nullptr, {}}));
+            continue;
+        }
+
+        referenced_graphs.insert(proc_source->source);
+        if (!program_res) {
+            ATELIER_TRY(contain_error(program_res.error(), component, comp_state->owner));
+            continue;
+        }
+        const source::Program* program = *program_res;
+
+        bool override_seed = false;
+        std::int32_t seed = 0;
+        float chunk_size = 32.f;
+        ATELIER_TRY(runtime_.with_native<const presentation::ProceduralGeneratorComponent>(
+            component, [&](const presentation::ProceduralGeneratorComponent& value) -> Result<void> {
+                override_seed = value.override_seed;
+                seed = value.seed;
+                chunk_size = value.chunk_size;
+                return {};
+            }));
+        if (!std::isfinite(chunk_size) || chunk_size < 0.1f || chunk_size > 100000.f) {
+            cache.has_errors = true;
+            continue;
+        }
+
+        auto& entry = cache.entries[component];
+        if (entry.graph_key != proc_source->source) {
+            entry.graph_key = proc_source->source;
+            entry.last_geom.reset();
+            entry.output.reset();
+            entry.resolved_assets.clear();
+        }
+
+        const auto drop_component_output = [&]() -> Result<void> {
+            entry.last_geom.reset();
+            entry.output.reset();
+            entry.resolved_assets.clear();
+            if (proc_source->output)
+                return presentation::set_procedural_binding(runtime_, component, {proc_source->source, nullptr, {}});
+            return {};
+        };
+
+        auto& slot = cache.graph_slots[proc_source->source];
+        ObjectRoot target_graph_root;
+        if (const auto open_it = graphs_.find(proc_source->source); open_it != graphs_.end() && open_it->second) {
+            slot.closed_doc.reset();
+            target_graph_root = open_it->second->document.graph;
+        } else {
+            if (!slot.closed_doc || (project && slot.closed_project_revision != proj_rev)) {
+                if (!project) {
+                    if (!slot.closed_doc)
+                        continue;
+                } else {
+                    auto loaded_asset = project->assets().procedural_graph(proc_source->source);
+                    if (!loaded_asset) {
+                        slot.evaluator.reset();
+                        slot.closed_doc.reset();
+                        const auto& miss = remember_unavailable(project->assets(), assets::AssetKind::procedural_graph,
+                                                                proc_source->source, loaded_asset.error());
+                        ATELIER_TRY(drop_component_output());
+                        ATELIER_TRY(contain_error(miss.error, component, comp_state->owner, {"graph"}, miss.kind));
+                        continue;
+                    }
+                    auto parsed_doc = load_graph(runtime_, loaded_asset->text);
+                    if (!parsed_doc) {
+                        slot.evaluator.reset();
+                        slot.closed_doc.reset();
+                        const Error format_err{ErrorCode::invalid_storage, parsed_doc.error().message};
+                        const auto& miss = remember_unavailable(project->assets(), assets::AssetKind::procedural_graph,
+                                                                proc_source->source, format_err);
+                        ATELIER_TRY(drop_component_output());
+                        ATELIER_TRY(contain_error(miss.error, component, comp_state->owner, {"graph"}, miss.kind));
+                        continue;
+                    }
+                    unavailable_.erase(std::pair{assets::AssetKind::procedural_graph, proc_source->source});
+                    slot.evaluator.reset();
+                    slot.closed_doc = std::move(*parsed_doc);
+                    slot.closed_project_revision = proj_rev;
+                }
+            }
+            target_graph_root = slot.closed_doc->graph;
+        }
+
+        if (!slot.evaluator || slot.bound_graph_id != target_graph_root.id() || slot.bound_program != program ||
+            slot.code_version != code_version) {
+            slot.evaluator = std::make_unique<procedural::Evaluator>(runtime_, target_graph_root, cache.resources,
+                                                                     program, std::size_t{64} << 20);
+            slot.bound_graph_id = target_graph_root.id();
+            slot.bound_program = program;
+            slot.code_version = code_version;
+        }
+
+        const std::optional<std::uint32_t> seed_override =
+            override_seed ? std::optional<std::uint32_t>(static_cast<std::uint32_t>(seed)) : std::nullopt;
+        if (auto evaluated = slot.evaluator->evaluate(false, seed_override); !evaluated) {
+            if (!slot.evaluator->has_display_node() || !entry.output)
+                ATELIER_TRY(drop_component_output());
+            ATELIER_TRY(contain_error(evaluated.error(), component, comp_state->owner));
+            continue;
+        }
+
+        if (auto node_err = slot.evaluator->display_error()) {
+            if (!slot.evaluator->has_display_node() || !entry.output)
+                ATELIER_TRY(drop_component_output());
+            ATELIER_TRY(contain_error(*node_err, component, comp_state->owner));
+            continue;
+        }
+
+        const auto retained_geom = slot.evaluator->retain_output();
+        if (!retained_geom) {
+            ATELIER_TRY(drop_component_output());
+            continue;
+        }
+
+        const bool same_geom = entry.last_geom.get() == retained_geom.get();
+        const bool same_chunk =
+            std::bit_cast<std::uint32_t>(entry.chunk_size) == std::bit_cast<std::uint32_t>(chunk_size);
+        if (same_geom && same_chunk && entry.output) {
+            if (proc_source->output != entry.output) {
+                if (auto rebound = presentation::set_procedural_binding(
+                        runtime_, component, {proc_source->source, entry.output, entry.resolved_assets});
+                    !rebound) {
+                    ATELIER_TRY(contain_error(rebound.error(), component, comp_state->owner));
+                }
+            }
+            continue;
+        }
+
+        const procedural::Publication* prev_pub = entry.output ? &entry.output->publication : nullptr;
+        auto published = procedural::publish(*retained_geom, chunk_size, prev_pub);
+        if (!published) {
+            if (!entry.output)
+                ATELIER_TRY(drop_component_output());
+            ATELIER_TRY(contain_error(published.error(), component, comp_state->owner));
+            continue;
+        }
+
+        geometry::MeshRef surface_mesh = (same_geom && entry.output)
+                                             ? entry.output->surface_mesh
+                                             : presentation::build_procedural_surface_mesh(*retained_geom);
+
+        std::vector<presentation::ProceduralMeshDependency> mesh_dependencies;
+        for (const auto& dep : slot.evaluator->display_dependencies()) {
+            const std::string dep_key(dep.key.view().std_view());
+            if (dep_key.empty())
+                continue;
+            if (auto mesh_asset = cache.resources.resolve_mesh_asset(dep_key); mesh_asset && mesh_asset->mesh) {
+                std::vector<std::pair<std::string, std::string>> slots;
+                slots.reserve(mesh_asset->materials.size());
+                for (const auto& sm : mesh_asset->materials)
+                    slots.emplace_back(sm.slot, sm.key);
+                mesh_dependencies.push_back({dep_key, mesh_asset->mesh, std::move(slots)});
+            } else if (dep.mesh) {
+                mesh_dependencies.push_back({dep_key, dep.mesh, {}});
+            }
+        }
+
+        std::vector<presentation::ProceduralInstanceAsset> resolved_assets;
+        std::set<std::string> seen_keys;
+        for (const auto& col : published->collections) {
+            const std::string key(col.reference.key.view().std_view());
+            if (key.empty() || !seen_keys.insert(key).second)
+                continue;
+            auto mesh_asset = cache.resources.resolve_mesh_asset(key);
+            if (!mesh_asset || !mesh_asset->mesh) {
+                if (col.reference.mesh)
+                    resolved_assets.push_back({key, col.reference.mesh, {}});
+                continue;
+            }
+            std::vector<MissingResource> ignored_missing;
+            auto defaults = mesh_defaults(active_reader, *mesh_asset, &ignored_missing);
+            resolved_assets.push_back({key, mesh_asset->mesh,
+                                       defaults ? std::move(*defaults) : std::vector<presentation::MaterialBinding>{}});
+        }
+
+        presentation::ProceduralOutput draft;
+        draft.generation = entry.next_output_generation++;
+        draft.geometry = retained_geom;
+        draft.surface_mesh = std::move(surface_mesh);
+        draft.publication = std::move(*published);
+        draft.mesh_dependencies = std::move(mesh_dependencies);
+
+        auto committed = presentation::publish_procedural_binding(runtime_, component, proc_source->source,
+                                                                  std::move(draft), resolved_assets);
+        if (!committed) {
+            ATELIER_TRY(contain_error(committed.error(), component, comp_state->owner));
+            continue;
+        }
+
+        entry.last_geom = retained_geom;
+        entry.chunk_size = chunk_size;
+        entry.output = std::move(*committed);
+        entry.resolved_assets = std::move(resolved_assets);
+    }
+
+    std::erase_if(cache.graph_slots, [&](const auto& item) { return !referenced_graphs.contains(item.first); });
+
+    if (auto now = runtime_.change_cursor()) {
+        cache.idle_valid = true;
+        cache.idle_world_revision = world_.revision();
+        cache.idle_session_revision = revision_;
+        cache.idle_project = project;
+        cache.idle_project_revision = proj_rev;
+        cache.idle_code_version = code_version;
+        cache.idle_runtime_cursor = *now;
+    }
+    return {};
+}
+
+Result<world::Commit> Session::bake_procedural_generator(Project* project, ObjectId target) {
+    if (world_.running() || world_.closed())
+        return graph_error("Baking a procedural generator requires an open, stopped document.",
+                           ErrorCode::invalid_definition);
+    ATELIER_TRY(cancel_edit());
+
+    ATELIER_TRY_BIND(component_id, resolve_procedural_generator(target));
+    const ObjectId component = *component_id;
+    ATELIER_TRY_BIND(comp_state, admit_component_edit(component));
+    const ObjectId owner = comp_state->owner;
+
+    ATELIER_TRY(sync_procedural_generators(project));
+    ATELIER_TRY_BIND(binding, presentation::read_procedural_binding(runtime_, component));
+    if (!binding->output) {
+        return graph_error(
+            "Procedural Bake converts CopyToPoints mesh instances into StaticMeshEntity objects; this generator currently has no cooked output.",
+            ErrorCode::invalid_definition);
+    }
+
+    struct ResolvedAssetInfo {
+        std::string key;
+
+        geometry::MeshRef mesh;
+
+        std::vector<presentation::MaterialBinding> defaults;
+
+        std::wstring stem;
+    };
+
+    std::unordered_map<std::string, ResolvedAssetInfo> asset_table;
+    assets::Reader builtin_reader;
+    const auto resolve_asset_info = [&](const std::string& key,
+                                        const geometry::MeshRef& fallback_mesh) -> const ResolvedAssetInfo* {
+        if (key.empty())
+            return nullptr;
+        if (const auto it = asset_table.find(key); it != asset_table.end())
+            return it->second.mesh ? &it->second : nullptr;
+        ResolvedAssetInfo info{key, fallback_mesh, {}, L"Instance"};
+        for (const auto& asset : binding->resolved_assets) {
+            if (asset.key == key) {
+                if (asset.mesh)
+                    info.mesh = asset.mesh;
+                info.defaults = asset.defaults;
+                break;
+            }
+        }
+        if (project) {
+            if (const auto* entry = project->assets().entry(key)) {
+                if (const auto s = entry->path.stem().wstring(); !s.empty())
+                    info.stem = s;
+            } else if (auto loaded_mesh = project->assets().mesh(key); loaded_mesh && !loaded_mesh->name.empty()) {
+                info.stem = loaded_mesh->name;
+            }
+        } else if (auto loaded_mesh = builtin_reader.mesh(key); loaded_mesh && !loaded_mesh->name.empty()) {
+            info.stem = loaded_mesh->name;
+        }
+        auto [inserted, _] = asset_table.emplace(key, std::move(info));
+        return inserted->second.mesh ? &inserted->second : nullptr;
+    };
+
+    struct PendingInstance {
+        const ResolvedAssetInfo* asset{};
+
+        world::Trs trs{};
+    };
+    std::vector<PendingInstance> pending;
+    for (const auto& col : binding->output->publication.collections) {
+        if (!col.transforms || col.transforms->empty())
+            continue;
+        const std::string key(col.reference.key.view().std_view());
+        const auto* asset_info = resolve_asset_info(key, col.reference.mesh);
+        if (!asset_info)
+            continue;
+        for (const auto& affine : *col.transforms) {
+            ATELIER_TRY_BIND(trs, decompose_procedural_instance(affine));
+            pending.push_back({asset_info, *trs});
+        }
+    }
+
+    if (pending.empty()) {
+        return graph_error(
+            "Procedural Bake converts CopyToPoints mesh instances into StaticMeshEntity objects; this generator currently publishes no mesh instances.",
+            ErrorCode::invalid_definition);
+    }
+
+    ATELIER_TRY_BIND(members, world_.members());
+    if (members->size() + 1 + pending.size() > maximum_entities) {
+        return graph_error("Procedural Bake exceeds the Editor Entity limit (" + std::to_string(maximum_entities) +
+                               ").",
+                           ErrorCode::invalid_definition);
+    }
+
+    ATELIER_TRY_BIND(owner_parent, world::parent_entity(runtime_, owner));
+    ATELIER_TRY_BIND(owner_has_space, world::has_transform(runtime_, owner));
+    world::Trs owner_trs{};
+    std::optional<ObjectId> owner_space_ref;
+    if (*owner_has_space) {
+        ATELIER_TRY_BIND(t, world::read_transform(runtime_, owner));
+        owner_trs = *t;
+        ATELIER_TRY_BIND(sr, world::space_reference(runtime_, owner));
+        owner_space_ref = *sr;
+    }
+
+    struct DetachedCleanup {
+        Runtime& runtime;
+
+        std::vector<ObjectRoot> entities;
+
+        bool published{};
+
+        ~DetachedCleanup() {
+            if (published)
+                return;
+            for (auto it = entities.rbegin(); it != entities.rend(); ++it) {
+                if (it->id() != ObjectId{} && runtime.type_of(it->id()))
+                    (void)world::destroy_entity(runtime, it->id());
+            }
+        }
+    } cleanup{runtime_, {}, false};
+
+    ATELIER_TRY_BIND(group_root, world::create_entity(runtime_));
+    const ObjectId group_id = group_root->id();
+    cleanup.entities.push_back(std::move(*group_root));
+    if (*owner_has_space)
+        ATELIER_TRY(world_.set_transform(group_id, owner_trs));
+
+    std::vector<std::pair<ObjectId, std::wstring>> child_labels;
+    child_labels.reserve(pending.size());
+    for (std::size_t i = 0; i < pending.size(); ++i) {
+        const auto& inst = pending[i];
+        ATELIER_TRY_BIND(child, presentation::create_static_mesh_entity(
+                                    world_, {inst.asset->mesh, inst.trs, inst.asset->key, inst.asset->defaults}));
+        const ObjectId child_id = child->id();
+        cleanup.entities.push_back(std::move(*child));
+        ATELIER_TRY(world_.reparent(child_id, group_id, world::ReparentRule::keep_local));
+
+        const std::wstring suffix = L" " + std::to_wstring(i + 1);
+        std::wstring child_label = truncate_utf16(inst.asset->stem, 256 - suffix.size()) + suffix;
+        ATELIER_TRY(validate_name(child_label));
+        child_labels.emplace_back(child_id, std::move(child_label));
+    }
+
+    std::wstring base_name(name(owner));
+    if (base_name.empty())
+        base_name = L"Procedural Generator";
+    base_name += L" Baked";
+
+    std::wstring group_label = truncate_utf16(base_name, 256);
+    for (std::size_t suffix = 2; std::ranges::any_of(names_, [&](const auto& kv) { return kv.second == group_label; });
+         ++suffix) {
+        const auto tail = L" " + std::to_wstring(suffix);
+        group_label = truncate_utf16(base_name, 256 - tail.size()) + tail;
+    }
+    ATELIER_TRY(validate_name(group_label));
+
+    EntityChange change;
+    change.added = true;
+    {
+        world::EntityRemoval removal;
+        ATELIER_TRY_BIND(held, runtime_.hold(group_id));
+        removal.root = std::move(*held);
+        change.removals.push_back(std::move(removal));
+    }
+
+    std::vector<world::SpaceReference> spaces;
+    if (*owner_has_space && owner_space_ref.has_value())
+        spaces.push_back({group_id, owner_space_ref});
+
+    const std::array attachments{world::EntityAttachment{group_id, *owner_parent, world::append}};
+    ATELIER_TRY_BIND(attached, world_.attach_batch(attachments, spaces));
+    cleanup.published = true;
+
+    names_.emplace(group_id, std::move(group_label));
+    for (auto& [cid, clabel] : child_labels)
+        names_.emplace(cid, std::move(clabel));
+
+    if (attached->changed) {
+        set_selection({group_id, group_id});
+        remember(std::move(change));
+    }
+    return std::move(*attached);
 }
 
 } // namespace atelier::editor

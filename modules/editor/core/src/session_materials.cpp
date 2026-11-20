@@ -427,8 +427,8 @@ Session::mesh_defaults(assets::Reader& reader, const assets::MeshAsset& asset, s
 }
 
 Result<std::shared_ptr<const std::vector<material::ProgramSurfaceRef>>>
-Session::mesh_surfaces(assets::Reader& reader, const assets::MeshAsset& asset) {
-    ATELIER_TRY_BIND(defaults, mesh_defaults(reader, asset));
+Session::mesh_surfaces(assets::Reader& reader, const assets::MeshAsset& asset, std::vector<MissingResource>* missing) {
+    ATELIER_TRY_BIND(defaults, mesh_defaults(reader, asset, missing));
     auto result = std::make_shared<std::vector<material::ProgramSurfaceRef>>();
     if (!asset.mesh)
         return result;
@@ -855,7 +855,11 @@ Result<void> Session::assign_material(Project& project, ObjectId object, std::st
 
 Result<void> Session::clear_material(ObjectId object, std::string_view slot) {
     ATELIER_TRY_BIND(bindings, presentation::read_material_bindings(runtime_, object));
-    std::erase_if(*bindings, [&](const auto& binding) { return binding.slot == slot && binding.overridden; });
+    bool is_generator = false;
+    if (const auto type = runtime_.type_of(object))
+        is_generator = runtime_.is_a(*type, presentation_types_.procedural_generator_component).value_or(false);
+    std::erase_if(*bindings,
+                  [&](const auto& binding) { return binding.slot == slot && (is_generator || binding.overridden); });
     return replace_material_bindings(object, std::move(*bindings));
 }
 
@@ -868,11 +872,12 @@ Result<ObjectRoot> Session::create_scene_material(ObjectId component, std::strin
     if (at != bindings->end())
         parent = at->resource;
     else {
-        ATELIER_TRY_BIND(mesh, presentation::read_static_mesh(runtime_, component));
-        const auto fallback = std::ranges::find(mesh->mesh.defaults, slot, &presentation::MaterialBinding::slot);
-        if (fallback != mesh->mesh.defaults.end())
-            parent = fallback->resource;
-        else {
+        if (auto mesh = presentation::read_static_mesh(runtime_, component)) {
+            const auto fallback = std::ranges::find(mesh->mesh.defaults, slot, &presentation::MaterialBinding::slot);
+            if (fallback != mesh->mesh.defaults.end())
+                parent = fallback->resource;
+        }
+        if (parent.id() == ObjectId{}) {
             assets::Reader installed;
             ATELIER_TRY_BIND(grid, material_resource(installed, "builtin/material/default-grid"));
             parent = std::move(*grid);

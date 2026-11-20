@@ -15,7 +15,7 @@
 
 引擎附带的自有语言节点与随机库在 [assets/engine/procedural](../../../assets/engine/procedural)。
 
-本文只说明已实现能力。方向、设计依据与未实施的跨模块约定见[后续路线与未决契约](roadmap.md)。编辑器已接入 `.procgraph` 资产、SOP 视口上下文、Network 大纲、Geometry Spreadsheet 与 Control 操作链（见[编辑器模块](../editor/README.md)）；场景生成器组件、渲染器大批量实例化、二维节点连线画布、持久 Cache、冻结与 Bake 尚未实施。
+本文只说明已实现能力。方向、设计依据与未实施的跨模块约定见[后续路线与未决契约](roadmap.md)。编辑器与呈现层已接入 `.procgraph` 资产、SOP 视口上下文、Houdini 式二维 Network 连线画布、Geometry Spreadsheet、`world.ProceduralGeneratorEntity` / `world.ProceduralGeneratorComponent` 场景生成器组件、实例 `procedural.bake` 与 Control 操作链（见[编辑器模块](../editor/README.md)与[项目场景](../world/project-scenes.md)）；渲染器 GPU 大批量常驻实例化区段、持久磁盘 Cache 与冻结尚未实施。
 
 ## Geometry
 
@@ -147,6 +147,7 @@
 | Promote | name、to、reduce | input → output |
 | Remove | flag、layer | input → output |
 | Merge | — | inputs（多个）→ output |
+| Null | —（原样直通零拷贝传递） | input → output |
 | Ray | mode（project / minimum）、direction、max_distance、normal、remove_misses | points, surface → output |
 | CopyToPoints | meshes（资源键列表）、variant | context, points → output |
 | Realize | group=""、variant="variant"、target_attributes=[] | sources（有序多个）, points → output |
@@ -188,8 +189,8 @@ Remap 四端点须有限、输入两端不同，输出两端可以相同。按 `
 - **键**：节点的键是精确的字节串：类型（已发布 `TypeInfo` 的地址）、每个公开字段的内容、带上下文的节点再加图种子，自有语言节点再加入口的代码身份（`EntryInfo::code`），以及每个连接的（输入端口，上游输出号，上游结果序号）。每次真正执行 `process` 得到一个新的结果序号，所以上游结果变了下游的键就变；内容相同的两个节点共享同一个缓存结果。
 - **缓存**：按键查找结果，以条目为单位按最近使用淘汰，总量不超过 `cache_bytes`（默认 256 MiB）。撤销把参数改回旧值时直接命中旧结果，不再求值。
 - **资源**：节点经 Context 读到的网格连同解析结果记在结果上。`Resources::revision()` 变化后，复用结果之前重新解析这些键；解析结果不同就重新求值，相同就继续复用。
-- **失败与根因传播**：节点失败时它的下游不求值，下游节点的 `status(node)->error` 直接携带失败输入端口名及最上游失败节点的类型与原始错误原因（`Input '<port>' failed (<RootType>: <reason>).`），避免多层链路只剩空泛提示。失败的键在资源版本不变时不再重试，键变化或资源版本变化后再试。
-- **调度**：每个需要的节点每次求值最多调用一次 `process`，按上游在前的顺序执行。每次发现变化后，对全图连接检查来源输出号；环检测仍只遍历 display 的上游闭包。
+- **失败与根因传播**：节点失败时它的下游不求值，下游节点的 `status(node)->error` 直接携带失败输入端口名及最上游失败节点的类型与原始错误原因（`Input '<port>' failed (<RootType>: <reason>).`），避免多层链路只剩空泛提示。失败的键在资源版本不变时不再重试，键变化或资源版本变化后再试。启用 `procedural::set_bypassed(runtime, node, true)` 的节点跳过 `process` 求值（及自有语言内核绑定），将第 0 个输入端口的首个上游输出（无连接时为空 `Geometry`）直接转发至 `outputs[0]`。
+- **调度**：每个需要的节点每次求值最多调用一次 `process`，按上游在前的顺序执行。每次发现变化后，对全图连接检查来源输出号；环检测仍只遍历求值目标的上游闭包。
 
 ### 通用反射编辑后的图校验
 
@@ -203,27 +204,30 @@ Remap 四端点须有限、输入两端不同，输出两端可以相同。按 `
 
 ## 图文件
 
-图文件的编解码在编辑器里（[editor/graph_format.hpp](../../../modules/editor/core/include/editor/graph_format.hpp)，`atelier_editor_core`），procedural 不依赖 editor。`load_graph(runtime, text)` 把 version 1 的图文件打开到已注册 procedural 类型的 Runtime 中，得到 `GraphDocument`：图的根、每个节点的 `GraphNode`（名字、节点根、画布位置、保留的原始 JSON）、保留的 settings 和加载诊断（`world::Diagnostic`，field 是从文件根算起的路径）。`save_graph(runtime, document)` 写出规范文本。名字和位置是文档数据，不放进节点对象，所以移动节点不盖章；保存只做 const 读取。
+图文件的编解码在编辑器里（[editor/graph_format.hpp](../../../modules/editor/core/include/editor/graph_format.hpp)，`atelier_editor_core`），procedural 不依赖 editor。`load_graph(runtime, text)` 把 **version 2** 的图文件打开到已注册 procedural 类型的 Runtime 中（不保留对旧 version 1 的向后兼容），得到 `GraphDocument`：图的根、可选 `template_node`、每个节点的 `GraphNode`（名字、节点根、画布位置、`shape` 形状预设、可选 `#RRGGBB` `color`、`comment` 备注与保留的原始 JSON）、`notes`（Sticky Notes 便签）、`boxes`（Network Boxes 分组背景框）、保留的 settings 和加载诊断（`world::Diagnostic`）。`save_graph(runtime, document)` 写出规范文本。名字、位置、外观与画布注释是文档数据，不放进节点对象，所以移动节点或改配色/形状不盖章；节点 `bypass` 为 true 时在节点条目写出 `"bypass": true` 并在加载时经 `set_bypassed` 恢复。
 
 ```json
 {
+  "boxes": {
+    "terrain": {"color": "#386b5e", "position": [-40.0, -40.0], "size": [240.0, 200.0], "title": "Terrain"}
+  },
   "nodes": {
     "grid":   {"inputs": {}, "position": [0.0, 0.0], "properties": {"columns": 4, "rows": 3, "size": {"x": 3.0, "y": 2.0}}, "type": "procedural.Grid"},
-    "merged": {"inputs": {"inputs": ["moved.output", "line.output"]}, "position": [400.0, 60.0], "properties": {}, "type": "procedural.Merge"}
+    "merged": {"comment": "Final", "inputs": {"inputs": ["moved.output", "line.output"]}, "position": [400.0, 60.0], "properties": {}, "shape": "trapezoid", "type": "procedural.Merge"}
   },
-  "settings": {"display": "merged", "seed": 7},
-  "version": 1
+  "notes": {
+    "memo1": {"color": "#d4a72c", "position": [220.0, 0.0], "size": [200.0, 96.0], "text": "Pipeline overview", "title": "Note"}
+  },
+  "settings": {"display": "merged", "seed": 7, "template": "grid"},
+  "version": 2
 }
 ```
 
-- **规范形式**：`nodes` 以名字为键，名字符合 `[A-Za-z_][A-Za-z0-9_]*`，`json_format::parse` 拒绝重复键。每个节点写 `type`（Runtime 限定类型名）、`position`、`properties`（全部公开字段，与 Scene 共用 `encode_properties`，所以节点默认值以后改变也不改变旧图的含义）和 `inputs`（总是写出；未连接的端口不出现；单输入端口写 `"上游.输出名"`，多输入端口写数组并保留连接顺序）。`settings` 是图的公开字段加 `display`（节点名，没有 display 时不写）。键按名字排序，`dump(2)` 后加换行，所以未改动的文档再次保存逐字节相同。节点的连接、图的节点列表和 display 是隐藏字段，不出现在属性里。
-- **宽容加载**：与 Scene 相同，已声明 `Transient` 的旧字段跳过，其余放不进的内容保留、报告并在保存时写回。类型不存在或不能作为节点（读不出端口）的节点整项保留（`unknown_type`），它的位置仍可移动；已知节点和 settings 中解析不了的参数叶经带 `PropertyReport` 的 `decode_properties` 保留（`mismatch`、`unknown_field`，可无损转换的整数报 `converted`）；端口名或上游节点、输出名解析不了的连接按端口保留（`reference_dropped`），多输入端口中能解析的连接照常建立，原数组整体保留，所以顺序不变；会成环的连接同样保留，按节点名顺序先建立的一侧成立；display 指向没有加载的节点时同样保留。保存时保留的 JSON 覆盖在写出的值上。其他 Runtime 失败（例如节点构造失败）使加载失败，保留原错误码。
-- **结构错误**直接失败：版本不是 1、未知键、`nodes` 或 `settings` 不是对象、节点名非法、缺少 `type`、`position` 不是两个有限数、`properties` 不是对象、`inputs` 不是以端口名为键的对象或连接不是 `"节点.输出"` 形式、display 不是节点名。保存时每个图节点必须恰有一个条目，名字合法且不重复，位置有限。
-- 保留的值在文档中一直覆盖写出的值；网络编辑器接入时，编辑一个保留了值的参数或端口要先丢弃这份保留，与 Scene 的规则相同；改名或删除节点时，还要改写或删除保留的连接、display 和保留节点里指向它的名字。
+- **规范形式**：`nodes`、`notes`、`boxes` 均以标识符名字为键，按名字排序；空的 `notes` / `boxes` 及默认外观字段（`shape: auto`、无自定义 `color`、空 `comment`、`bypass: false`、无 `template`）省略写出，`dump(2)` 后加换行，未改动文档再次保存逐字节相同。
+- **宽容加载**：与 Scene 相同，已声明 `Transient` 的旧字段跳过，其余放不进的内容保留、报告并在保存时写回。类型不存在或不能作为节点的条目整项保留（`unknown_type`）；已知节点和 settings 中解析不了的参数叶经 `PropertyReport` 保留；失效连接按端口保留（`reference_dropped`）；`display` 或 `template` 指向没有加载的节点时同样保留，并在重命名或删除占位节点时同步更新与清理（含撤销恢复）。
+- **结构错误**直接失败：版本不是 2、未知键、`nodes`/`settings`/`notes`/`boxes` 不是对象、标识符非法、缺少 `type`、`position`/`size` 非有限或尺寸非正、非法的 `shape` 预设名或非 `#RRGGBB` 颜色、`inputs` 格式非法。
 
-缺失节点类型变成 null 节点并保留冻结数据是现行宽容行为；未知 leaf、连接、settings 和不能作为节点的已知类型等额外宽容同样是上述现行产品行为，待单独审查；缩减验收不改变这些路径，也不引入旧版本兼容加载。
-
-图文件不保存派生的 Geometry 缓冲；kind 与扇形视图不改变 JSON v1，也不修改资源保存格式。
+图文件不保存派生的 Geometry 缓冲。
 
 ## 验收
 

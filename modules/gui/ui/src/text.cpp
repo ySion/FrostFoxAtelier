@@ -588,6 +588,37 @@ std::shared_ptr<const Coverage> TextStore::symbol(Symbol symbol, std::uint32_t p
                             : symbol == Symbol::up ? (py >= .25f && py <= .7f && std::abs(px - .5f) < (py - .25f) * .7f)
                             : symbol == Symbol::right
                                 ? (px >= .3f && px <= .75f && std::abs(py - .5f) < (.75f - px) * .7f)
+                            : symbol == Symbol::points
+                                ? (std::hypot(px - .24f, py - .30f) < .095f ||
+                                   std::hypot(px - .64f, py - .22f) < .095f ||
+                                   std::hypot(px - .76f, py - .56f) < .095f ||
+                                   std::hypot(px - .32f, py - .72f) < .095f || std::hypot(px - .56f, py - .80f) < .085f)
+                            : symbol == Symbol::point_normals
+                                ? (std::hypot(px - .26f, py - .74f) < .13f || segment(px, py, .28f, .72f, .80f, .20f) ||
+                                   segment(px, py, .80f, .20f, .60f, .22f) || segment(px, py, .80f, .20f, .78f, .40f))
+                            : symbol == Symbol::face_normals
+                                ? (segment(px, py, .14f, .70f, .44f, .86f) || segment(px, py, .44f, .86f, .86f, .66f) ||
+                                   segment(px, py, .86f, .66f, .56f, .50f) || segment(px, py, .56f, .50f, .14f, .70f) ||
+                                   segment(px, py, .50f, .68f, .50f, .14f) || segment(px, py, .50f, .14f, .38f, .28f) ||
+                                   segment(px, py, .50f, .14f, .62f, .28f))
+                            : symbol == Symbol::orient_scale
+                                ? (std::abs(std::hypot(px - .5f, py - .54f) - .35f) < .032f ||
+                                   segment(px, py, .5f, .54f, .5f, .15f) || segment(px, py, .5f, .54f, .84f, .66f) ||
+                                   segment(px, py, .5f, .54f, .20f, .70f) || std::hypot(px - .5f, py - .54f) < .08f)
+                            : symbol == Symbol::backface_tint
+                                ? (segment(px, py, .14f, .74f, .50f, .16f) || segment(px, py, .50f, .16f, .86f, .74f) ||
+                                   segment(px, py, .14f, .74f, .86f, .74f) || segment(px, py, .50f, .16f, .50f, .74f) ||
+                                   (px >= .50f && py <= .74f && py >= .16f + (px - .50f) * (0.58f / 0.36f)))
+                            : symbol == Symbol::bounds_cage
+                                ? (segment(px, py, .15f, .15f, .36f, .15f) || segment(px, py, .15f, .15f, .15f, .36f) ||
+                                   segment(px, py, .85f, .15f, .64f, .15f) || segment(px, py, .85f, .15f, .85f, .36f) ||
+                                   segment(px, py, .15f, .85f, .36f, .85f) || segment(px, py, .15f, .85f, .15f, .64f) ||
+                                   segment(px, py, .85f, .85f, .64f, .85f) || segment(px, py, .85f, .85f, .85f, .64f) ||
+                                   std::hypot(px - .5f, py - .5f) < .07f)
+                            : symbol == Symbol::info
+                                ? (std::abs(std::hypot(px - .5f, py - .5f) - .37f) < .042f ||
+                                   std::hypot(px - .5f, py - .30f) < .065f ||
+                                   (std::abs(px - .5f) < .052f && py >= .44f && py <= .74f))
                                 : (py >= .3f && py <= .75f && std::abs(px - .5f) < (.75f - py) * .7f);
                         inside += hit ? 1u : 0u;
                     }

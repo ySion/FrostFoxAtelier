@@ -118,6 +118,8 @@ struct Evaluator::Impl {
 
         const detail::NodePlan* plan{};
 
+        bool bypassed{};
+
         std::string local; // Type and public field contents.
 
         std::vector<Input> inputs;
@@ -160,6 +162,8 @@ struct Evaluator::Impl {
     std::uint64_t revision{};
 
     std::uint64_t code_revision{}; // Of the program, when Source entries were bound.
+
+    std::uint32_t authored_seed{};
 
     std::uint32_t seed{};
 
@@ -296,10 +300,12 @@ struct Evaluator::Impl {
     Result<void> read(ObjectId id, State& state) {
         if (!state.plan)
             return std::unexpected(*state.fault);
+        ATELIER_TRY_BIND(is_bypassed, bypassed(runtime, id));
+        state.bypassed = *is_bypassed;
         auto info = runtime.describe(state.type);
         if (!info)
             return std::unexpected(info.error());
-        if (!state.plan->native) {
+        if (!state.plan->native && !state.bypassed) {
             auto* bound = source_kernels.find(state.type);
             if (!bound)
                 bound = source_kernels.try_emplace(state.type, bind_source(state.type)).value;
@@ -308,9 +314,12 @@ struct Evaluator::Impl {
         }
         std::string local;
         append(local, *info); // Published TypeInfo addresses are stable identities for this Runtime.
-        for (const auto& field : (*info)->fields)
-            if (auto added = append_field(local, id, field); !added)
-                return added;
+        append(local, state.bypassed);
+        if (!state.bypassed) {
+            for (const auto& field : (*info)->fields)
+                if (auto added = append_field(local, id, field); !added)
+                    return added;
+        }
         state.local = std::move(local);
         return {};
     }
@@ -533,7 +542,17 @@ struct Evaluator::Impl {
         std::chrono::steady_clock::time_point start{};
         if (record_timings)
             start = std::chrono::steady_clock::now();
-        auto ran = execute_node(id, state, source_kernel, *entry);
+        Result<void> ran{};
+        if (state.bypassed) {
+            for (const auto& connection : state.inputs) {
+                if (connection.input == 0) {
+                    entry->outputs[0] = nodes.find(connection.from)->entry->outputs[connection.output];
+                    break;
+                }
+            }
+        } else {
+            ran = execute_node(id, state, source_kernel, *entry);
+        }
         if (record_timings)
             state.status.time = std::chrono::steady_clock::now() - start;
         if (!ran)
@@ -562,13 +581,15 @@ struct Evaluator::Impl {
         }
         std::string key = state.local;
         const SourceKernel* source_kernel{};
-        if (!state.plan->native) {
+        if (!state.plan->native && !state.bypassed) {
             source_kernel = &**source_kernels.find(state.type); // read() already validated the current kernel.
             append(key, source_kernel->identity);
         }
-        if (state.plan->uses_context)
+        if (state.plan->uses_context && !state.bypassed)
             append(key, seed);
         for (const auto& connection : state.inputs) {
+            if (state.bypassed && connection.input != 0)
+                continue;
             const auto& upstream = *nodes.find(connection.from);
             if (upstream.status.error || !upstream.entry) {
                 const auto& port_name = state.plan->ports.inputs[connection.input];
@@ -584,6 +605,8 @@ struct Evaluator::Impl {
             append(key, connection.input);
             append(key, connection.output);
             append(key, upstream.entry->serial);
+            if (state.bypassed)
+                break;
         }
         if (state.entry && state.entry->key == key && current(*state.entry)) {
             touch(*state.entry);
@@ -620,8 +643,10 @@ struct Evaluator::Impl {
         state.root_error.reset();
     }
 
-    // Upstream first, ending at the display node.
-    Result<std::vector<ObjectId>> order(ObjectId display, const Map<ObjectId, State>& changed) const {
+    // Upstream first, ending at the display node. When `active_only` is true, bypassed nodes
+    // only follow their pass-through port 0 instead of cooking unused secondary branches.
+    Result<std::vector<ObjectId>> order(ObjectId display, const Map<ObjectId, State>& changed,
+                                        bool active_only = false) const {
         std::vector<ObjectId> result;
         if (display == ObjectId{})
             return result;
@@ -637,8 +662,15 @@ struct Evaluator::Impl {
             const auto id = path.back().id;
             const auto* staged = changed.find(id);
             const auto& state = staged ? *staged : *nodes.find(id);
+            if (state.bypassed && active_only) {
+                while (path.back().next < state.inputs.size() && state.inputs[path.back().next].input != 0)
+                    ++path.back().next;
+            }
             if (path.back().next < state.inputs.size()) {
-                const auto from = state.inputs[path.back().next++].from;
+                const auto idx = path.back().next++;
+                if (state.bypassed && active_only)
+                    path.back().next = state.inputs.size();
+                const auto from = state.inputs[idx].from;
                 const auto mark = finished.try_emplace(from, false);
                 if (mark.inserted)
                     path.push_back({from, 0});
@@ -653,20 +685,23 @@ struct Evaluator::Impl {
         return result;
     }
 
-    void sync_published() {
+    void sync_published(bool update_last_valid) {
         const auto display = members.display();
         if (display == ObjectId{}) {
             current_published.reset();
-            last_valid.reset();
+            if (update_last_valid)
+                last_valid.reset();
         } else if (const auto* shown = nodes.find(display); shown && !shown->status.error && shown->entry) {
             current_published = shown->entry;
-            last_valid = shown->entry;
+            if (update_last_valid)
+                last_valid = shown->entry;
         } else {
             current_published.reset();
         }
     }
 
-    Result<void> evaluate(std::optional<ObjectId> explicit_node, bool record_timings) {
+    Result<void> evaluate(std::optional<ObjectId> explicit_node, bool record_timings,
+                          std::optional<std::uint32_t> seed_override) {
         auto now = runtime.change_cursor();
         if (!now)
             return std::unexpected(now.error());
@@ -676,7 +711,7 @@ struct Evaluator::Impl {
         const bool republished = program && program->revision() != code_revision;
         dirty = dirty || republished;
         std::optional<Contents> refreshed;
-        auto next_seed = seed;
+        auto next_authored_seed = authored_seed;
         if (!cursor || runtime.changed_since(id, *cursor)) {
             auto listed = contents(runtime, id);
             if (!listed)
@@ -693,10 +728,14 @@ struct Evaluator::Impl {
             auto value = runtime.read(id, graph_seed_field);
             if (!value)
                 return std::unexpected(value.error());
-            next_seed = std::get<std::uint32_t>(*value);
+            next_authored_seed = std::get<std::uint32_t>(*value);
             refreshed = std::move(*listed);
             dirty = true;
         }
+        const std::uint32_t next_seed = seed_override.value_or(next_authored_seed);
+        const bool seed_changed = !cursor || next_seed != seed;
+        dirty = dirty || seed_changed;
+        const bool update_last_valid = !seed_override.has_value();
         const auto& next_members = refreshed ? *refreshed : members;
         if (explicit_node && *explicit_node != ObjectId{} && !next_members.contains(*explicit_node))
             return error(ErrorCode::argument_mismatch, "The node is not in the graph.");
@@ -760,19 +799,20 @@ struct Evaluator::Impl {
         if (!dirty && candidate.empty()) {
             cursor = *now;
             if (!explicit_node && display_current) {
-                sync_published();
+                sync_published(update_last_valid);
                 return {};
             }
             if (target_root != ObjectId{}) {
                 if (const auto* root_state = nodes.find(target_root);
                     !root_state || root_state->synced_generation != sync_generation) {
-                    ATELIER_TRY_BIND(sequence, order(target_root, {}));
+                    ATELIER_TRY(order(target_root, {}, false));
+                    ATELIER_TRY_BIND(sequence, order(target_root, {}, true));
                     cook_sequence(*sequence);
                 }
             }
             if (!explicit_node) {
                 display_current = true;
-                sync_published();
+                sync_published(update_last_valid);
             }
             return {};
         }
@@ -786,22 +826,24 @@ struct Evaluator::Impl {
                 if (source.plan && connection.output >= source.plan->ports.outputs.size())
                     return error(ErrorCode::argument_mismatch, "Graph input names a missing output port.");
             }
-        ATELIER_TRY_BIND(sequence, order(target_root, candidate));
+        ATELIER_TRY(order(target_root, candidate, false));
         if (republished)
             source_kernels.clear();
-        bool changed = !cursor || refreshed || republished || resources.revision() != revision;
+        bool changed = !cursor || refreshed || republished || resources.revision() != revision || seed_changed;
         for (auto [node, state] : candidate) {
             const auto* prior = nodes.find(node);
             auto read = this->read(node, state);
             state.fault.reset();
             if (!read)
                 state.fault = read.error();
-            changed = changed || !prior || !read || state.local != prior->local || state.inputs != prior->inputs;
+            changed = changed || !prior || !read || state.bypassed != prior->bypassed || state.local != prior->local ||
+                      state.inputs != prior->inputs;
         }
         for (auto [node, state] : candidate) {
             auto& target = *nodes.try_emplace(node).value;
             target.type = state.type;
             target.plan = state.plan;
+            target.bypassed = state.bypassed;
             target.inputs = std::move(state.inputs);
             target.fault = std::move(state.fault);
             if (!target.fault)
@@ -817,6 +859,7 @@ struct Evaluator::Impl {
         }
         if (refreshed)
             members = std::move(*refreshed);
+        authored_seed = next_authored_seed;
         seed = next_seed;
         cursor = *now;
         if (republished)
@@ -828,12 +871,14 @@ struct Evaluator::Impl {
         }
         if (target_root != ObjectId{}) {
             if (const auto* root_state = nodes.find(target_root);
-                root_state && root_state->synced_generation != sync_generation)
-                cook_sequence(*sequence);
+                root_state && root_state->synced_generation != sync_generation) {
+                ATELIER_TRY_BIND(active_sequence, order(target_root, {}, true));
+                cook_sequence(*active_sequence);
+            }
         }
         if (!explicit_node) {
             display_current = true;
-            sync_published();
+            sync_published(update_last_valid);
         }
         return {};
     }
@@ -845,19 +890,23 @@ Evaluator::Evaluator(Runtime& runtime, ObjectRoot graph, const Resources& resour
 
 Evaluator::~Evaluator() = default;
 
-Result<void> Evaluator::evaluate(bool record_timings) {
-    auto result = impl_->evaluate(std::nullopt, record_timings);
+Result<void> Evaluator::evaluate(bool record_timings, std::optional<std::uint32_t> seed_override) {
+    auto result = impl_->evaluate(std::nullopt, record_timings, seed_override);
     if (!result)
         impl_->current_published.reset();
     return result;
 }
 
 Result<void> Evaluator::evaluate_node(ObjectId node, bool record_timings) {
-    return impl_->evaluate(node, record_timings);
+    return impl_->evaluate(node, record_timings, std::nullopt);
 }
 
 const Geometry* Evaluator::output() const noexcept {
     return impl_->current_published ? &impl_->current_published->outputs.front() : nullptr;
+}
+
+std::shared_ptr<const Geometry> Evaluator::retain_output() const noexcept {
+    return {impl_->current_published, output()};
 }
 
 const Geometry* Evaluator::last_valid_output() const noexcept {
@@ -866,6 +915,40 @@ const Geometry* Evaluator::last_valid_output() const noexcept {
 
 std::shared_ptr<const Geometry> Evaluator::retain_last_valid_output() const noexcept {
     return {impl_->last_valid, last_valid_output()};
+}
+
+bool Evaluator::has_display_node() const noexcept {
+    return impl_->members.display() != ObjectId{};
+}
+
+std::optional<Error> Evaluator::display_error() const {
+    const auto display = impl_->members.display();
+    if (display == ObjectId{})
+        return std::nullopt;
+    const auto* shown = impl_->nodes.find(display);
+    if (!shown || !shown->status.error)
+        return std::nullopt;
+    return shown->root_error ? shown->root_error : shown->status.error;
+}
+
+std::vector<Reference> Evaluator::display_dependencies() const {
+    std::vector<Reference> result;
+    const auto display = impl_->members.display();
+    if (display == ObjectId{})
+        return result;
+    auto sequence = impl_->order(display, {}, true);
+    if (!sequence)
+        return result;
+    for (const auto node : *sequence) {
+        const auto* state = impl_->nodes.find(node);
+        if (!state || !state->entry || state->bypassed)
+            continue;
+        for (const auto& dep : state->entry->dependencies) {
+            if (std::ranges::find(result, dep) == result.end())
+                result.push_back(dep);
+        }
+    }
+    return result;
 }
 
 std::uint32_t Evaluator::node_output_count(ObjectId node) const noexcept {

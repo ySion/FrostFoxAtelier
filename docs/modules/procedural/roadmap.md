@@ -2,7 +2,7 @@
 
 当前实现、接口和验收以[模块说明](README.md)为准。本页保留首阶段方案中尚有用的产品决定、设计依据与未实施的跨模块约定，不是已实现能力清单，也不授权启动后续阶段。
 
-P1、共享不可变列迁移、统一 `procedural.Node` / `process(...)` 节点架构、`.source` 语言级 `parallel_for` 与显式 `fail("...")`，以及 S2 可视化与图操作（Slice 1A + Slice 1B：`.procgraph` 资产、SOP 视口上下文切换、点/法线/朝向辅助显示、Geometry Spreadsheet、Houdini 式二维 Network 节点连线画布、`Tab` 浮动搜索自动连线、`Y` 划断连线、`graph.layout` 自动拓扑排版、独立图撤销历史与 `graph.*` Control 操作链）已交付。属性列、可选输入、组遮罩与 `[RunOver]` 层通过方法参数属性（`APARAM` / `.source` `[In]/[Out]/[InOut]/[Group]/[Port]`）和正式 `.source` class 统一表达，不再使用 `PointNode`、`Node::fail`、`Meta("procedural.bind", ...)` 或代码片段宏拼接。尚未实现场景 Generator（S5）、渲染器大批量实例化、L3、冻结或 Bake。
+P1、共享不可变列迁移、统一 `procedural.Node` / `process(...)` 节点架构、`.source` 语言级 `parallel_for` 与显式 `fail("...")`、S2 可视化与图操作（Slice 1A + Slice 1B：`.procgraph` 资产、SOP 视口上下文切换、点/法线/朝向辅助显示、Geometry Spreadsheet、Houdini 式二维 Network 节点连线画布、`Tab` 浮动搜索自动连线、`Y` 划断连线、`graph.layout` 自动拓扑排版、独立图撤销历史与 `graph.*` Control 操作链），以及 S5-1 场景生成器组件（`world.ProceduralGeneratorEntity` / `world.ProceduralGeneratorComponent`、宿主边界同步、Scene Lit / Play 联动与实例 `procedural.bake`）已交付。属性列、可选输入、组遮罩与 `[RunOver]` 层通过方法参数属性（`APARAM` / `.source` `[In]/[Out]/[InOut]/[Group]/[Port]`）和正式 `.source` class 统一表达，不再使用 `PointNode`、`Node::fail`、`Meta("procedural.bind", ...)` 或代码片段宏拼接。尚未实现渲染器 GPU 大批量常驻实例化区段（S5-2）、L3、持久磁盘 Cache 或冻结。
 
 ## 方向与依据
 

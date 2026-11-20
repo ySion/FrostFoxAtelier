@@ -36,8 +36,9 @@ enum class Orientation : std::uint32_t { global, local };
 AENUM(Name = "editor.CameraView", DESC = "视口相机：Perspective 透视，或沿某个坐标轴的正交视图。")
 enum class CameraView : std::uint32_t { perspective, top, front, right, bottom, back, left };
 
-AENUM(Name = "editor.AddKind", DESC = "新建对象的种类：空 Entity、静态网格、点光、矩形面光、平行光或相机。")
-enum class AddKind : std::uint32_t { entity, mesh, point, rectangle, directional, camera };
+AENUM(Name = "editor.AddKind",
+      DESC = "新建对象的种类：空 Entity、静态网格、程序化生成器、点光、矩形面光、平行光或相机。")
+enum class AddKind : std::uint32_t { entity, mesh, procedural_generator, point, rectangle, directional, camera };
 
 AENUM(Name = "editor.RegionKind", DESC = "编辑器工作区区域。")
 enum class RegionKind : std::uint32_t {
@@ -134,6 +135,9 @@ struct SceneAdd {
 
     AFIELD(DESC = "网格资源键，只用于 mesh；为空时使用第一个内置网格。")
     String mesh{};
+
+    AFIELD(DESC = "程序化几何图资产键，只用于 procedural_generator；可留空。")
+    String graph{};
 };
 
 ASTRUCT(Name = "editor.SceneParent", DESC = "按选择顺序改父级；实际提交的移动合为一次历史。")
@@ -415,7 +419,7 @@ struct NewProceduralGraph {
     AFIELD(DESC = "工程 Content 下的 .procgraph 路径；交互调用留空时打开原生选择器。")
     String path;
 
-    AFIELD(DESC = "可选的初始 v1 JSON 文本；留空时生成标准空白图。")
+    AFIELD(DESC = "可选的初始 v2 JSON 文本；留空时生成标准空白图。")
     String source;
 };
 
@@ -550,6 +554,51 @@ struct GraphSetDisplay {
     String node;
 };
 
+ASTRUCT(Name = "editor.GraphSetTemplate", DESC = "设置或清除程序化图的紫红色 Template 参考线框标记节点。")
+struct GraphSetTemplate {
+    AGENERATED_BODY(GraphSetTemplate)
+
+    AFIELD(DESC = "目标图键；留空时作用于当前活动图。")
+    String asset;
+
+    AFIELD(DESC = "要作为参考线框叠加的节点名；留空时清除 Template 标记。")
+    String node;
+};
+
+ASTRUCT(Name = "editor.GraphSetBypass", DESC = "设置程序化图节点的黄色 Bypass 直通跳过状态。")
+struct GraphSetBypass {
+    AGENERATED_BODY(GraphSetBypass)
+
+    AFIELD(DESC = "目标图键；留空时作用于当前活动图。")
+    String asset;
+
+    AFIELD(DESC = "目标节点名；留空时作用于当前选中的节点。")
+    String node;
+
+    AFIELD(DESC = "为 true 时跳过该节点求值并直通第 0 输入端口。")
+    bool bypass{};
+};
+
+ASTRUCT(Name = "editor.GraphSetAppearance", DESC = "更新程序化图节点的形状、颜色或备注。")
+struct GraphSetAppearance {
+    AGENERATED_BODY(GraphSetAppearance)
+
+    AFIELD(DESC = "目标图键；留空时作用于当前活动图。")
+    String asset;
+
+    AFIELD(DESC = "目标节点名；留空时作用于当前选中的节点集合。")
+    String node;
+
+    AFIELD(DESC = "可选形状预设名（auto/pill/rect/domed/trapezoid/hexagon/ribbon/diamond/circle）；留空时不修改。")
+    String shape;
+
+    AFIELD(DESC = "可选颜色十六进制字符串（#RRGGBB，或 default 恢复默认）；留空时不修改。")
+    String color;
+
+    AFIELD(DESC = "可选节点备注；设为单字符 '-' 时清空备注，留空时不修改。")
+    String comment;
+};
+
 ASTRUCT(Name = "editor.GraphSelect", DESC = "选择程序化图中的节点用于参数与几何表格检视（不改变 Display 标记）。")
 struct GraphSelect {
     AGENERATED_BODY(GraphSelect)
@@ -567,6 +616,30 @@ struct GraphLayout {
 
     AFIELD(DESC = "目标图键；留空时作用于当前活动图。")
     String asset;
+};
+
+ASTRUCT(Name = "editor.AssignProceduralGraph",
+        DESC = "绑定或清除 ProceduralGeneratorComponent 引用的 .procgraph 资产。")
+struct AssignProceduralGraph {
+    AGENERATED_BODY(AssignProceduralGraph)
+
+    AFIELD(Weak = "world.ProceduralGeneratorComponent",
+           DESC = "目标生成器组件；null 时使用当前 Context 中的生成器组件。")
+    ReferenceSlot component;
+
+    AFIELD(DESC = "目标 .procgraph 资产键；留空时清除绑定。")
+    String asset;
+};
+
+ASTRUCT(Name = "editor.ProceduralBake", DESC = "将程序化生成器的求值实例可撤销地烘焙为 StaticMeshEntity 层级。")
+struct ProceduralBake {
+    AGENERATED_BODY(ProceduralBake)
+
+    AFIELD(Weak = "world.Entity", DESC = "目标生成器所属 Entity；与 component 同为 null 时使用当前选择。")
+    ReferenceSlot entity;
+
+    AFIELD(Weak = "world.ProceduralGeneratorComponent", DESC = "目标生成器组件；与 entity 同为 null 时使用当前选择。")
+    ReferenceSlot component;
 };
 
 // Registers the records above; called once by a document Session.

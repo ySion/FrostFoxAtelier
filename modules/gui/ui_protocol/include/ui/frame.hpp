@@ -102,6 +102,12 @@ struct Coverage {
     std::vector<std::uint8_t> pixels;
 };
 
+enum class ProceduralQuad : std::uint8_t {
+    none = 0,
+    node_shape = 1, // Analytic SDF node silhouette or contour-matched flag slice.
+    arc_sector = 2, // Analytic SDF concentric halo ring or radial Air-Ring sector.
+};
+
 struct DrawQuad {
     Rect bounds; // Physical pixels, independent of window logical coordinates.
 
@@ -109,11 +115,11 @@ struct DrawQuad {
 
     Color color;
 
-    Rect uv{0, 0, 1, 1}; // Normalized texture coordinates.
+    Rect uv{0, 0, 1, 1}; // Normalized texture coordinates, or physical SDF parameters.
 
     std::shared_ptr<const Coverage> coverage;
 
-    CornerRadii radius{}; // Physical pixels; normalized to fit the box by the renderer.
+    CornerRadii radius{}; // Physical pixels, or SDF shape/sector parameters.
 
     float border_width{}; // Uniform inside border, in physical pixels.
 
@@ -124,6 +130,8 @@ struct DrawQuad {
     Color image_background{0, 0, 0, 0}; // Base fill under image, before the common rounded mask.
 
     float capsule_width{}; // > 0 draws an anti-aliased capsule from uv.{x,y} to uv.{width,height} in physical pixels.
+
+    ProceduralQuad procedural{ProceduralQuad::none};
 };
 
 // Draw in vector order; later entries cover earlier ones. All geometry and

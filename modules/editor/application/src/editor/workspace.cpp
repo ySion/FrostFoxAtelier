@@ -1,6 +1,7 @@
 #include "editor/workspace.hpp"
 #include "editor/assets.hpp"
 #include "application/diagnostics.hpp"
+#include "application/procedural_preview.hpp"
 #include "editor/fields.hpp"
 #include "editor/view_options.hpp"
 #include "procedural/graph.hpp"
@@ -530,6 +531,31 @@ ui::ControlKey Workspace::bind_operator(OperatorCall call) {
     return bindings_[binding_cursor_++].key;
 }
 
+bool Workspace::effective_show_points(const procedural::Geometry* geometry) const noexcept {
+    if (sop_show_points.has_value())
+        return *sop_show_points;
+    return geometry != nullptr && application::is_pure_point_cloud(*geometry);
+}
+
+ObjectId Workspace::active_procedural_generator(const Session& session) const noexcept {
+    if (!active_graph.empty())
+        return {};
+    const auto sel = session.selection();
+    const ObjectId candidate = sel.object != ObjectId{} ? sel.object : sel.entity;
+    const auto resolved = session.resolve_procedural_generator(candidate);
+    if (!resolved)
+        return {};
+    auto& runtime = session.world().runtime();
+    const auto comp_state = world::inspect_component(runtime, *resolved);
+    if (!comp_state || !comp_state->valid || comp_state->owner == ObjectId{} ||
+        !session.world().contains(comp_state->owner))
+        return {};
+    const auto owner_enabled = world::effective_enabled(runtime, comp_state->owner);
+    if (!comp_state->enabled || !owner_enabled || !*owner_enabled)
+        return {};
+    return *resolved;
+}
+
 Result<bool> Workspace::apply_view(Session& session, OperatorHost& host, const ui::Action& action) {
     if (action.kind == ui::ActionKind::activate &&
         (action.key == control::group_components || action.key == control::group_categories)) {
@@ -580,7 +606,8 @@ Result<bool> Workspace::apply_view(Session& session, OperatorHost& host, const u
             set(ViewOption::shading, preset == 1   ? double(renderer::Shading::smooth)
                                      : preset == 2 ? double(renderer::Shading::matcap)
                                                    : double(renderer::Shading::scene_lit));
-    } else if (key >= control::display_grid && key <= control::display_lit && key != control::display_fps) {
+    } else if (((key >= control::display_grid && key <= control::display_lit) || key == control::display_backfaces) &&
+               key != control::display_fps) {
         const auto* checked = std::get_if<bool>(&action.value);
         if (!checked)
             return false;
@@ -594,6 +621,8 @@ Result<bool> Workspace::apply_view(Session& session, OperatorHost& host, const u
             set(ViewOption::wireframe, double(*checked ? renderer::Wireframe::only : renderer::Wireframe::off));
         else if (key == control::display_triangles)
             set(ViewOption::triangle_edges, *checked ? 1 : 0);
+        else if (key == control::display_backfaces)
+            set(ViewOption::backface_tint, *checked ? 1 : 0);
         else if (key == control::display_cavity)
             set(ViewOption::cavity, *checked ? 1 : 0);
         else
@@ -617,7 +646,8 @@ Result<bool> Workspace::apply_view(Session& session, OperatorHost& host, const u
     } else if (key >= control::topology_first && key < control::topology_first + 2)
         set(ViewOption::triangle_edges, key != control::topology_first ? 1 : 0);
     else if (key == control::display_sop_points || key == control::display_sop_normals ||
-             key == control::display_sop_orient) {
+             key == control::display_sop_face_normals || key == control::display_sop_orient ||
+             key == control::display_sop_bounds || key == control::display_sop_info) {
         const auto* checked = std::get_if<bool>(&action.value);
         if (!checked)
             return false;
@@ -625,10 +655,16 @@ Result<bool> Workspace::apply_view(Session& session, OperatorHost& host, const u
             sop_show_points = *checked;
         else if (key == control::display_sop_normals)
             sop_show_normals = *checked;
-        else
+        else if (key == control::display_sop_face_normals)
+            sop_show_face_normals = *checked;
+        else if (key == control::display_sop_orient)
             sop_show_orient = *checked;
+        else if (key == control::display_sop_bounds)
+            sop_show_bounds = *checked;
+        else
+            sop_show_info = *checked;
         ++view_revision_;
-        status = L"SOP guide display updated";
+        status = L"Procedural guide display updated";
         return true;
     } else if (key == control::guide_background || key == control::guide_grid || key == control::guide_axes) {
         const auto* checked = std::get_if<bool>(&action.value);
@@ -797,7 +833,8 @@ ui::ControlIcon light_icon(presentation::LightKind kind) {
 ui::ControlIcon entity_icon(const Session& session, ObjectId entity) {
     auto& runtime = session.world().runtime();
     const auto state = world::inspect_entity(runtime, entity);
-    if (state && runtime.is_a(state->type, session.presentation_types().static_mesh_entity).value_or(false))
+    if (state && (runtime.is_a(state->type, session.presentation_types().static_mesh_entity).value_or(false) ||
+                  runtime.is_a(state->type, session.presentation_types().procedural_generator_entity).value_or(false)))
         return ui::ControlIcon::mesh;
     if (const auto parts = world::components(runtime, entity))
         for (const auto& part : *parts) {
@@ -805,6 +842,9 @@ ui::ControlIcon entity_icon(const Session& session, ObjectId entity) {
             if (type && runtime.is_a(*type, session.presentation_types().light_component).value_or(false))
                 if (const auto light = presentation::read_light(runtime, part.id()))
                     return light_icon(light->kind);
+            if (type &&
+                runtime.is_a(*type, session.presentation_types().procedural_generator_component).value_or(false))
+                return ui::ControlIcon::mesh;
         }
     return ui::ControlIcon::object;
 }
@@ -824,6 +864,179 @@ std::wstring parameter_label(std::string_view path) {
         start = false;
     }
     return label;
+}
+
+std::string_view call_string_arg(const OperatorCall& call, std::string_view key) noexcept {
+    if (const auto field = call.args.root().find(key); field && *field)
+        if (const auto text = (*field)->string())
+            return *text;
+    return {};
+}
+
+std::wstring sanitize_single_line(std::wstring_view text) {
+    std::wstring out;
+    out.reserve(text.size());
+    for (const wchar_t c : text)
+        out.push_back(c < 32 ? L' ' : c);
+    return out;
+}
+
+ui_language::TooltipBinding describe_operator_tooltip(PropertyHelpCache& cache, ui::ControlKey key,
+                                                      const OperatorCall& call, const OperatorInfo* info,
+                                                      const Context& target, const Result<void>& polled) {
+    std::wstring title = info ? info->title : platform::utf8_to_utf16_validated(call.id);
+    std::wstring identity = L"Operator · " + platform::utf8_to_utf16_validated(call.id);
+    std::string desc = info ? info->description : std::string{};
+
+    if (call.id == "tool.settings") {
+        if (const auto tool = call_string_arg(call, "tool"); !tool.empty()) {
+            if (tool == "select") {
+                title = L"Select Tool";
+                desc = "左键放置 3D 游标，右键点选或拖拽框选实体；中键旋转视图，Shift+中键平移。";
+            } else if (tool == "transform") {
+                title = L"Transform Tool";
+                desc = "综合变换手柄：可直接拖拽移动、旋转或缩放，也可按 G / R / S 进入模态变换。";
+            } else if (tool == "move") {
+                title = L"Move Tool";
+                desc = "拖拽轴向箭头或平面移动选中实体；按 G 后可按 X / Y / Z 锁定单轴并直接输入数值。";
+            } else if (tool == "rotate") {
+                title = L"Rotate Tool";
+                desc = "拖拽旋转环旋转选中实体；按 R 后可按 X / Y / Z 锁定旋转轴并输入角度。";
+            } else if (tool == "scale") {
+                title = L"Scale Tool";
+                desc = "拖拽轴向方块缩放单轴，拖拽中心均匀缩放；按 S 后可按 X / Y / Z 锁定缩放轴。";
+            }
+        } else if (const auto mode = call_string_arg(call, "select_mode"); !mode.empty()) {
+            if (mode == "set") {
+                title = L"Selection Mode: New";
+                desc = "点选或框选时以新结果替换当前选择集。";
+            } else if (mode == "extend") {
+                title = L"Selection Mode: Extend";
+                desc = "将命中的实体追加并入当前选择集。";
+            } else if (mode == "subtract") {
+                title = L"Selection Mode: Subtract";
+                desc = "从当前选择集中移除本次命中的实体。";
+            } else if (mode == "invert") {
+                title = L"Selection Mode: Invert";
+                desc = "翻转本次命中实体的选中状态。";
+            } else if (mode == "intersect") {
+                title = L"Selection Mode: Intersect";
+                desc = "仅保留原选择集与本次框选区域的交集。";
+            }
+        }
+    } else if (call.id == "tool.toggle") {
+        const auto setting = call_string_arg(call, "setting");
+        if (setting == "grid_snap") {
+            title = L"Grid Snapping";
+            identity = target.tools.grid_snap ? L"Currently: On" : L"Currently: Off";
+            desc = "启用后移动操作按步长吸附到参考网格，旋转与缩放按步进吸附。";
+        } else if (setting == "cursor_surface") {
+            title = L"Surface Cursor";
+            identity = target.tools.cursor_surface ? L"Currently: On" : L"Currently: Off";
+            desc = "启用后左键放置 3D 游标时会射线投射吸附到场景几何体表面，否则落在焦平面上。";
+        }
+    } else if (call.id == "view.toggle") {
+        const auto opt = call_string_arg(call, "option");
+        if (opt == "fps") {
+            title = L"Frame Rate Overlay";
+            identity = target.show_fps ? L"Currently: On" : L"Currently: Off";
+            desc = "在视口左上角显示平滑后的实时呈现帧率（FPS）读数。";
+        } else if (opt == "options") {
+            title = L"Tool Options Bar";
+            identity = target.viewport_options ? L"Currently: Expanded" : L"Currently: Collapsed";
+            desc = "展开或收起视口顶部的工具选项栏（选择模式、变换坐标系与表面游标）。";
+        }
+    } else if (call.id == "scene.add") {
+        const auto kind = call_string_arg(call, "kind");
+        if (kind == "entity") {
+            title = L"Create Empty Entity";
+            desc = "在当前 3D 游标位置创建一个空白实体，可挂载任意组件或作为层级父节点。";
+        } else if (kind == "mesh") {
+            title = L"Create Static Mesh";
+            desc = "在当前 3D 游标位置创建一个静态网格实体（StaticMeshEntity）。";
+        } else if (kind == "procedural_generator") {
+            title = L"Create Procedural Generator";
+            desc = "在当前 3D 游标位置创建程序化几何生成器实体，绑定 .procgraph 图实时生成网格与实例。";
+        } else if (kind == "camera") {
+            title = L"Create Camera";
+            desc = "在当前 3D 游标位置创建一个场景相机实体。";
+        } else if (kind == "point") {
+            title = L"Create Point Light";
+            desc = "在当前 3D 游标位置创建全向点光源实体。";
+        } else if (kind == "rectangle") {
+            title = L"Create Area Light";
+            desc = "在当前 3D 游标位置创建矩形面光源实体。";
+        } else if (kind == "directional") {
+            title = L"Create Sun Light";
+            desc = "创建平行方向光源实体，用于驱动主方向照明与阴影。";
+        }
+    } else if (call.id == "view.frame_selected") {
+        title = L"Frame Selected";
+        desc = "将视口相机对准并完整框显当前选中的实体或 SOP 程序化几何体边界。";
+    } else if (call.id == "view.reset") {
+        title = L"Reset Camera View";
+        desc = "将视口相机恢复为默认透视观察角度与距离。";
+    } else if (call.id == "graph.layout") {
+        title = L"Auto Layout Network";
+        desc = "按拓扑数据流层级自动排布当前程序化图中的所有节点。";
+    } else if (call.id == "graph.select" && call_string_arg(call, "node").empty()) {
+        title = L"Graph Settings";
+        desc = "取消节点单选，在属性面板中查看和编辑整张 .procgraph 图的根种子与属性。";
+    } else if (call.id == "graph.delete_node") {
+        title = L"Delete Selected Nodes";
+        desc = "删除画布中选中的程序化节点，并在单输入链上自动保留直通连线。";
+    } else if (call.id == "graph.exit") {
+        title = L"Exit SOP to World";
+        desc = "退出当前程序化图（SOP）编辑上下文，返回场景世界（World）视图。";
+    } else if (call.id == "play.start") {
+        title = L"Run Project";
+        desc = "编译并启动当前工程的实时运行会话。";
+    } else if (call.id == "play.stop") {
+        title = L"Stop Project";
+        desc = "停止当前正在运行的工程会话并恢复编辑态。";
+    } else if (call.id == "play.restart") {
+        title = L"Restart Project";
+        desc = "重启正在运行的工程会话，使最新场景或代码改动重新生效。";
+    } else if (call.id == "project.build") {
+        title = L"Build Project";
+        desc = "编译当前工程中的自有静态语言组件、材质与程序化节点源码。";
+    } else if (call.id == "source.open") {
+        title = L"Open Source File...";
+        desc = "选择并打开源码文件到代码编辑器中。";
+    } else if (call.id == "file.save") {
+        title = L"Save Document";
+        desc = "保存当前面板关联的活动文档（源码、材质、程序化图或场景）。";
+    } else if (call.id == "source.close") {
+        title = L"Close Source Tab";
+        desc = "关闭当前活动源码文档标签页。";
+    } else if (call.id == "source.reload") {
+        title = L"Reload from Disk";
+        desc = "放弃内存未保存改动，从磁盘重新读取最新文件内容。";
+    } else if (call.id == "source.new_component") {
+        title = L"New Source File...";
+        desc = "在工程源码目录下创建新的自有静态语言源码文件。";
+    } else if (call.id == "scene.main_camera_clear") {
+        title = L"Clear Main Camera";
+        desc = "解除当前场景绑定的主相机引用。";
+    } else if (call.id == "scene.delete") {
+        title = L"Remove Selected Object";
+        desc = "移除当前选中的组件或场景实体（记录一步撤销历史）。";
+    }
+
+    std::wstring_view key_hint = shortcut(call, target.region);
+    if (key_hint.empty())
+        key_hint = shortcut(call, RegionKind::viewport);
+    if (key_hint.empty())
+        key_hint = shortcut(call, RegionKind::network);
+    if (!key_hint.empty() && title.find(L'[') == std::wstring::npos)
+        title += L" [" + std::wstring(key_hint) + L"]";
+
+    if (!polled && !polled.error().message.empty()) {
+        if (!desc.empty())
+            desc += "\n";
+        desc += "当前不可用：" + polled.error().message;
+    }
+    return cache.get(key, sanitize_single_line(title), sanitize_single_line(identity), desc);
 }
 }
 
@@ -978,7 +1191,12 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
             target.asset = *call.context.asset;
         }
         const auto* info = operators.find(call.id);
-        return ui_language::ActionBinding{bind_operator(std::move(call)), info && info->poll(target).has_value()};
+        const atelier::Result<void> polled =
+            info ? info->poll(target)
+                 : atelier::Result<void>{std::unexpected(atelier::Error{atelier::ErrorCode::invalid_definition, {}})};
+        const auto bound_key = bind_operator(call);
+        auto help = describe_operator_tooltip(property_help_, bound_key, call, info, target, polled);
+        return ui_language::ActionBinding{bound_key, polled.has_value(), std::move(help)};
     };
     auto menus = std::make_shared<std::vector<ui_language::Item>>();
     for (const auto& group : menu_groups)
@@ -1023,12 +1241,13 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
         const auto title = definition.shelf_title.empty() ? definition.title : definition.shelf_title;
         const auto kind_field = *definition.call.args.root().find("kind");
         const auto kind = kind_field ? *kind_field->string() : std::string_view{};
-        const auto icon = kind == "point"         ? ui::ControlIcon::point_light
-                          : kind == "rectangle"   ? ui::ControlIcon::area_light
-                          : kind == "directional" ? ui::ControlIcon::sun_light
-                          : kind == "mesh"        ? ui::ControlIcon::mesh
-                          : kind == "entity"      ? ui::ControlIcon::object
-                                                  : ui::ControlIcon::axes;
+        const auto icon = kind == "point"                  ? ui::ControlIcon::point_light
+                          : kind == "rectangle"            ? ui::ControlIcon::area_light
+                          : kind == "directional"          ? ui::ControlIcon::sun_light
+                          : kind == "mesh"                 ? ui::ControlIcon::mesh
+                          : kind == "procedural_generator" ? ui::ControlIcon::mesh
+                          : kind == "entity"               ? ui::ControlIcon::object
+                                                           : ui::ControlIcon::axes;
         auto& items = definition.group == MenuGroup::create ? create_tools : view_tools;
         items->push_back(
             {shelf_items_[index], {std::wstring(title), static_cast<double>(icon), action(definition.call)}});
@@ -1166,14 +1385,25 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
                                                                                                : 1u;
             constexpr std::array shading_icons{ui::ControlIcon::shade_wire, ui::ControlIcon::shade_solid,
                                                ui::ControlIcon::shade_matcap, ui::ControlIcon::shade_lit};
+            constexpr std::array shading_preset_titles{L"Wireframe [Z]", L"Studio Solid [Z]", L"MatCap Shading [Z]",
+                                                       L"Scene Lit [Z]"};
+            constexpr std::array shading_preset_descs{
+                "纯线框模式：隐藏面片着色，仅绘制多边形拓扑轮廓。",
+                "工作室平滑着色：使用相机跟随光照明，适合检查模型体积与曲面形态。",
+                "MatCap 材质球着色：通过高对比反射球检验法线连续性与细节起伏。",
+                "真实场景光照：启用场景直接光、天光与 DDGI 实时全局光照预览。"};
             for (std::size_t i = 0; i < shading_icons.size(); ++i) {
                 const auto key = control::shading_preset_first + i;
-                shading_modes->push_back({930 + i,
-                                          {ui_language::ActionBinding{key, true}, double(shading_icons[i]),
-                                           shading_selected == i, control::viewport_shading_modes,
-                                           std::wstring(i == 0                          ? L"viewport-segment-item first"
-                                                        : i + 1 == shading_icons.size() ? L"viewport-segment-item last"
-                                                                                        : L"viewport-segment-item")}});
+                auto help = property_help_.get(930 + i, shading_preset_titles[i],
+                                               shading_selected == i ? L"Currently: Active" : L"Shading Preset",
+                                               shading_preset_descs[i]);
+                shading_modes->push_back(
+                    {930 + i,
+                     {ui_language::ActionBinding{key, true, std::move(help)}, double(shading_icons[i]),
+                      shading_selected == i, control::viewport_shading_modes,
+                      std::wstring(i == 0                          ? L"viewport-segment-item first"
+                                   : i + 1 == shading_icons.size() ? L"viewport-segment-item last"
+                                                                   : L"viewport-segment-item")}});
             }
             // Blender's select-mode segment: Set / Extend / Subtract / Invert / Intersect.
             auto select_modes = std::make_shared<std::vector<ui_language::Item>>();
@@ -1192,40 +1422,119 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
                                    : i + 1 == select_icons.size() ? L"viewport-segment-item last"
                                                                   : L"viewport-segment-item")}});
             }
-            // Houdini display bar: each toggle mirrors the one ViewSettings value it edits.
+            // Resolve active procedural geometry for both SOP context and World ProceduralGenerator inspection.
+            const bool in_sop = !active_graph.empty() && session.has_graph(active_graph);
+            const ObjectId gen_comp = in_sop ? ObjectId{} : active_procedural_generator(session);
+            if (gen_comp != ObjectId{} && !session.world().running())
+                static_cast<void>(session.sync_procedural_generators(project));
+            const procedural::Geometry* shown_geom{};
+            std::wstring hud_title;
+            std::optional<double> hud_cook_ms;
+            std::size_t hud_chunks{};
+            if (in_sop) {
+                if (const auto eval = session.evaluate_graph(active_graph, project)) {
+                    shown_geom = eval->preview_output.get();
+                    hud_title = eval->display_name.empty()
+                                    ? graph_path_title(project)
+                                    : platform::utf8_to_utf16_validated(eval->display_name) + L" [Display]";
+                    if (const auto insp = session.graph_topology(active_graph); insp && !eval->display_name.empty())
+                        if (const auto* dn = (*insp)->find_node(eval->display_name);
+                            dn && dn->status && dn->status->time)
+                            hud_cook_ms = static_cast<double>(dn->status->time->count()) * 1e-6;
+                }
+            } else if (gen_comp != ObjectId{}) {
+                if (const auto src = presentation::read_procedural_source(runtime, gen_comp);
+                    src && src->output && src->output->geometry) {
+                    shown_geom = src->output->geometry.get();
+                    hud_chunks = src->output->publication.collections.size();
+                    hud_title = std::wstring(session.name(selected)) + L" [Generator]";
+                }
+            }
+            // Houdini display bar: each toggle mirrors the one ViewSettings / procedural guide value it edits.
             auto display_toggles = std::make_shared<std::vector<ui_language::Item>>();
             const auto lit = this->view.shading == renderer::Shading::scene_lit;
-            const std::array<std::tuple<ui::ControlKey, ui::ControlIcon, bool, bool>, 8> display{
-                {{control::display_grid, ui::ControlIcon::grid, this->view.reference_grid, false},
-                 {control::display_axes, ui::ControlIcon::axes_origin, this->view.origin_axes, false},
+            struct DisplayToggleDef {
+                ui::ControlKey key;
+
+                ui::ControlIcon icon;
+
+                bool selected;
+
+                bool grouped;
+
+                const wchar_t* title;
+
+                const char* desc;
+            };
+            const std::array<DisplayToggleDef, 9> display{
+                {{control::display_grid, ui::ControlIcon::grid, this->view.reference_grid, false, L"Reference Grid",
+                  "显示或隐藏水平地面参考网格与公制刻度线。"},
+                 {control::display_axes, ui::ControlIcon::axes_origin, this->view.origin_axes, false, L"Origin Axes",
+                  "显示或隐藏世界原点处的红（X）、绿（Y）、蓝（Z）基准坐标轴。"},
                  {control::display_wire, ui::ControlIcon::wire_overlay,
-                  this->view.wireframe == renderer::Wireframe::overlay, true},
+                  this->view.wireframe == renderer::Wireframe::overlay, true, L"Wireframe Overlay",
+                  "在实体着色表面之上叠加绘制多边形线框（Shaded Wireframe）。"},
                  {control::display_wire_only, ui::ControlIcon::shade_wire,
-                  this->view.wireframe == renderer::Wireframe::only, false},
-                 {control::display_triangles, ui::ControlIcon::mesh, this->view.triangle_edges, false},
-                 {control::display_cavity, ui::ControlIcon::shade_matcap, this->view.cavity.enabled && !lit, true},
-                 {control::display_lit, ui::ControlIcon::shade_lit, lit, false},
-                 {control::display_fps, ui::ControlIcon::fps, show_fps, true}}};
-            for (std::size_t index = 0; const auto& [key, icon, selected, grouped] : display) {
-                const auto binding =
-                    key == control::display_fps
+                  this->view.wireframe == renderer::Wireframe::only, false, L"Wireframe Only",
+                  "切换为纯线框显示模式，透视查看内部网格拓扑结构。"},
+                 {control::display_triangles, ui::ControlIcon::mesh, this->view.triangle_edges, false,
+                  L"Triangle Edges", "在线框中额外显示多边形三角化后的内部对角线，便于检查三角剖分质量。"},
+                 {control::display_backfaces, ui::ControlIcon::backface_tint, this->view.backface_tint && !lit, false,
+                  L"Backface Winding Tint",
+                  "在工作室着色下以高对比青蓝色高亮背面三角形（Winding Order），用于快速排查法线翻转或绕序错误。"},
+                 {control::display_cavity, ui::ControlIcon::shade_matcap, this->view.cavity.enabled && !lit, true,
+                  L"Screen-Space Cavity", "在工作室着色下增强棱角高光与凹缝暗部，提升几何体轮廓体积感。"},
+                 {control::display_lit, ui::ControlIcon::shade_lit, lit, false, L"Scene Lighting",
+                  "在工作室默认照明与真实场景光照（直接光 + 天光 + DDGI）之间一键切换。"},
+                 {control::display_fps, ui::ControlIcon::fps, show_fps, true, L"Frame Rate (FPS)",
+                  "在视口左上角显示平滑后的实时帧率与帧耗时读数。"}}};
+            for (std::size_t index = 0; const auto& item : display) {
+                const auto button_key = control::display_toggle_first + index++;
+                ui_language::ActionBinding binding =
+                    item.key == control::display_fps
                         ? action({"view.toggle", json::Document{json::Document::literal<R"({"option":"fps"})">()}})
-                        : ui_language::ActionBinding{key, true};
-                display_toggles->push_back({control::display_toggle_first + index++,
-                                            {binding, double(icon), selected,
-                                             std::wstring(grouped ? L"display-toggle grouped" : L"display-toggle")}});
+                        : ui_language::ActionBinding{
+                              item.key, true,
+                              property_help_.get(button_key, item.title,
+                                                 item.selected ? L"Currently: On" : L"Currently: Off", item.desc)};
+                display_toggles->push_back(
+                    {button_key,
+                     {std::move(binding), double(item.icon), item.selected,
+                      std::wstring(item.grouped ? L"display-toggle grouped" : L"display-toggle")}});
             }
-            if (!active_graph.empty()) {
-                const std::array<std::tuple<ui::ControlKey, ui::ControlIcon, bool, bool>, 3> sop_display{
-                    {{control::display_sop_points, ui::ControlIcon::cursor3d, sop_show_points, true},
-                     {control::display_sop_normals, ui::ControlIcon::up, sop_show_normals, false},
-                     {control::display_sop_orient, ui::ControlIcon::axes, sop_show_orient, false}}};
+            if (in_sop || gen_comp != ObjectId{}) {
+                const bool pts_effective = effective_show_points(shown_geom);
+                const bool pts_auto =
+                    !sop_show_points.has_value() && shown_geom && application::is_pure_point_cloud(*shown_geom);
+                const std::array<DisplayToggleDef, 6> sop_display{
+                    {{control::display_sop_points, ui::ControlIcon::points, pts_effective, true, L"Display Points",
+                      "在视口中绘制程序化点云标记（支持 Cd 点颜色与半球深度消隐）。纯点云节点默认自动开启，点击后切换为手动开关。"},
+                     {control::display_sop_normals, ui::ControlIcon::point_normals, sop_show_normals, false,
+                      L"Display Point Normals (N)",
+                      "在每个采样点处绘制法线向量（N）青色线段，用于检查散点朝向与曲面插值法线。"},
+                     {control::display_sop_face_normals, ui::ControlIcon::face_normals, sop_show_face_normals, false,
+                      L"Display Primitive Normals",
+                      "在多边形图元重心处绘制琥珀色面法线向量，直观验证多边形绕序与挤出朝向。"},
+                     {control::display_sop_orient, ui::ControlIcon::orient_scale, sop_show_orient, false,
+                      L"Display Orient & pscale",
+                      "绘制点与实例的局部三轴旋转架（orient）及缩放半径圆环（pscale），用于调试 CopyToPoints 散布姿态。"},
+                     {control::display_sop_bounds, ui::ControlIcon::bounds_cage, sop_show_bounds, false,
+                      L"Display Bounds & Chunks",
+                      "绘制程序化几何体总包围盒（AABB）以及生成器在局部空间划分的实例分块（Spatial Chunks）网格。"},
+                     {control::display_sop_info, ui::ControlIcon::info, sop_show_info, true, L"Geometry Info HUD",
+                      "在视口右上角显示当前程序化几何体的元素计数、尺寸范围、属性列表与求值耗时卡片。"}}};
                 std::size_t sop_index = 0;
-                for (const auto& [key, icon, selected, grouped] : sop_display)
+                for (const auto& item : sop_display) {
+                    const auto button_key = control::display_sop_toggle_first + sop_index++;
+                    const std::wstring state_label = item.key == control::display_sop_points && pts_auto
+                                                         ? L"Currently: Auto-On (Point Cloud)"
+                                                         : (item.selected ? L"Currently: On" : L"Currently: Off");
+                    auto help = property_help_.get(button_key, item.title, state_label, item.desc);
                     display_toggles->push_back(
-                        {control::display_sop_toggle_first + sop_index++,
-                         {ui_language::ActionBinding{key, true}, double(icon), selected,
-                          std::wstring(grouped ? L"display-toggle grouped" : L"display-toggle")}});
+                        {button_key,
+                         {ui_language::ActionBinding{item.key, true, std::move(help)}, double(item.icon), item.selected,
+                          std::wstring(item.grouped ? L"display-toggle grouped" : L"display-toggle")}});
+                }
             }
             const auto step = viewport_settings.grid_spacing;
             const std::wstring step_name = step == .1f   ? L"0.1 m"
@@ -1267,7 +1576,11 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
                 double(ui::ControlIcon::down),
                 viewport_readout,
                 !viewport_readout.empty(),
-                ui_language::ActionBinding{control::viewport_rail_snap},
+                ui_language::ActionBinding{
+                    control::viewport_rail_snap, true,
+                    property_help_.get(control::viewport_rail_snap, L"Grid Snapping",
+                                       viewport_settings.grid_snap ? L"Currently: On" : L"Currently: Off",
+                                       "左键切换网格步进吸附；右键打开吸附步长与游标对齐菜单。")},
                 std::wstring(
                     camera_flying
                         ? L"WASD move · Q/E down/up · Wheel speed · Shift fast · Enter/LMB confirm · Esc/RMB cancel"
@@ -1294,7 +1607,7 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
                 double(ui::ControlIcon::axes_origin),
                 open(control::viewport_orientation),
                 graph_path_title(project)};
-            const std::array<ui_language::KeyBinding, 27> keys{{{"navigation", 641},
+            const std::array<ui_language::KeyBinding, 28> keys{{{"navigation", 641},
                                                                 {"path", control::scene_path},
                                                                 {"back", control::scene_back},
                                                                 {"readout", control::viewport_readout},
@@ -1306,6 +1619,7 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
                                                                 {"display", control::scene_shading},
                                                                 {"guides", control::scene_guides},
                                                                 {"viewport", control::viewport},
+                                                                {"scene", control::viewport_scene_overlay},
                                                                 {"pivot", control::viewport_pivot},
                                                                 {"edit_tools", control::viewport_modes},
                                                                 {"actions", control::viewport_tools_menu},
@@ -1322,6 +1636,31 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
                                                                 {"display_bar", control::display_bar},
                                                                 {"basis", control::viewport_orientation}}};
             static_cast<void>(ui_document_->append("SceneViewport", control::scene_content, keys, inputs, result));
+            if (sop_show_info && shown_geom && (in_sop || gen_comp != ObjectId{})) {
+                const bool pts_auto = !sop_show_points.has_value() && application::is_pure_point_cloud(*shown_geom);
+                ui::Control hud;
+                hud.key = control::viewport_geometry_hud;
+                hud.parent = control::viewport_scene_overlay;
+                hud.kind = ui::ControlKind::label;
+                hud.enabled = false;
+                hud.text =
+                    application::format_geometry_info_hud(hud_title, *shown_geom, pts_auto, hud_cook_ms, hud_chunks);
+                hud.layout.out_of_flow = true;
+                hud.layout.anchor_x = 1.f;
+                hud.layout.pivot_x = 1.f;
+                hud.layout.offset_x = -10.f;
+                hud.layout.offset_y = 40.f;
+                hud.layout.width = ui_layout::Axis::fixed(264.f);
+                hud.layout.height = ui_layout::Axis::content(0.f);
+                hud.layout.padding = {9.f, 7.f, 9.f, 7.f};
+                hud.style.background = ui::Color{.018f, .022f, .028f, .86f};
+                hud.style.border = ui::Color{.22f, .28f, .34f, .85f};
+                hud.style.border_width = 1.f;
+                hud.style.radius = {5.f, 5.f, 5.f, 5.f};
+                hud.style.font_size = 11.5f;
+                hud.style.foreground = ui::Color{.88f, .91f, .94f, 1.f};
+                result.push_back(std::move(hud));
+            }
             continue;
         }
         if (view.key == source_control::tab) {
@@ -1386,6 +1725,17 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
                     if (eval->display_error)
                         error_text = application::diagnostic_text(eval->display_error->message);
                 }
+            } else if (const ObjectId gen_comp = active_procedural_generator(session); gen_comp != ObjectId{}) {
+                if (!session.world().running())
+                    static_cast<void>(session.sync_procedural_generators(project));
+                if (const auto src = presentation::read_procedural_source(runtime, gen_comp);
+                    src && src->output && src->output->geometry) {
+                    geom = src->output->geometry.get();
+                    generation = src->output->generation;
+                    target_label = std::wstring(session.name(selected)) + L" [Generator]";
+                } else if (src && !src->source.empty()) {
+                    target_label = platform::utf8_to_utf16_validated(src->source) + L" (no output)";
+                }
             }
             spreadsheet.append(result, view.content, *ui_document_, geom, generation, target_label, error_text);
             continue;
@@ -1420,13 +1770,20 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
                         std::string short_name = matches[i].name;
                         if (const auto dot = short_name.find_last_of('.'); dot != short_name.npos)
                             short_name = short_name.substr(dot + 1);
+                        const auto short_w = platform::utf8_to_utf16_validated(short_name);
+                        const auto pick_key = network_control::tab_pick_first + i;
+                        auto pick_help =
+                            property_help_.get(pick_key, short_w,
+                                               platform::utf8_to_utf16_validated(matches[i].name) +
+                                                   (matches[i].native ? L" · C++ SOP" : L" · Source SOP"),
+                                               matches[i].description.empty() ? "在画布光标位置创建此程序化几何节点。"
+                                                                              : matches[i].description);
                         const bool active_row = i == std::min(network.tab_search().highlight, matches.size() - 1);
-                        tab_items->push_back({network_control::tab_item_first + i,
-                                              {platform::utf8_to_utf16_validated(short_name),
-                                               std::wstring(matches[i].native ? L"C++" : L"Source"), active_row,
-                                               ui_language::ActionBinding{network_control::tab_pick_first + i,
-                                                                          !session.world().running()},
-                                               std::wstring(active_row ? L"network-tab-row-active" : L"")}});
+                        tab_items->push_back(
+                            {network_control::tab_item_first + i,
+                             {short_w, std::wstring(matches[i].native ? L"C++" : L"Source"), active_row,
+                              ui_language::ActionBinding{pick_key, !session.world().running(), std::move(pick_help)},
+                              std::wstring(active_row ? L"network-tab-row-active" : L"")}});
                     }
                 }
 
@@ -1436,13 +1793,13 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
                     net_status = L"Cook error: " + application::diagnostic_text(eval->display_error->message);
                 else if (const auto* shown = eval->preview_output.get())
                     net_status = std::format(
-                        L"{} nodes · {} wires · Display '{}': {} pts · {} prims · {} inst   (Tab add · Y+drag cut · H frame · L layout)",
+                        L"{} nodes · {} wires · Display '{}': {} pts · {} prims · {} inst   (Tab add · D/T/B flags · Z/C style · N note · O box)",
                         graph_doc->nodes.size(), inspected ? inspected->connections.size() : 0u,
                         platform::utf8_to_utf16_validated(eval->display_name), shown->count(procedural::Layer::point),
                         shown->count(procedural::Layer::primitive), shown->count(procedural::Layer::instance));
                 else
                     net_status = std::format(
-                        L"{} nodes · No Display Flag set   (Click right 'D' pill to display · Tab add · H frame · L layout)",
+                        L"{} nodes · No Display Flag set   (Press D or hover Air-Ring to display · Tab add · Z/C style · H frame)",
                         graph_doc->nodes.size());
             }
             json::Builder seed_args;
@@ -1456,26 +1813,77 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
                 graph_title,
                 has_graph,
                 has_graph && !session.world().running(),
-                ui_language::ActionBinding{network_control::add_node, has_graph && !session.world().running()},
-                ui_language::ActionBinding{network_control::frame_all, has_graph},
+                ui_language::ActionBinding{
+                    network_control::add_node, has_graph && !session.world().running(),
+                    property_help_.get(
+                        network_control::add_node, L"Add SOP Node [Tab]", L"Network Canvas",
+                        "打开支持分类筛选与首字母缩写的节点检索面板（如输入 ctp 快速创建 CopyToPoints）。")},
+                ui_language::ActionBinding{
+                    network_control::frame_all, has_graph,
+                    property_help_.get(network_control::frame_all, L"Frame Network [H / Home]", L"Network Canvas",
+                                       "平移并缩放画布视口，使整张程序化图中的所有节点完整居中显示。")},
                 action({"graph.layout"}),
                 zoom_text,
-                ui_language::ActionBinding{network_control::zoom_reset, has_graph},
+                ui_language::ActionBinding{network_control::zoom_reset, has_graph,
+                                           property_help_.get(network_control::zoom_reset, L"Reset Canvas Zoom (100%)",
+                                                              L"Network Canvas",
+                                                              "将二维节点画布的缩放倍率重置为 100% 标准大小。")},
                 action({"graph.select", seed_args.finish()}),
                 action({"graph.delete_node"}),
                 action({"graph.exit"}),
-                ui_language::ActionBinding{network_control::new_scratch, !session.world().running()},
+                ui_language::ActionBinding{
+                    network_control::new_scratch, !session.world().running(),
+                    property_help_.get(network_control::new_scratch, L"New Scratch Graph", L"Procedural Network",
+                                       "在内存中创建一张新的临时程序化图（Scratch Graph）并立即进入 SOP 编辑模式。")},
                 has_graph && ts.open,
                 static_cast<double>(ts.dip_x),
                 static_cast<double>(ts.dip_y),
                 ui_language::TextEditBinding{network_control::tab_search_input, ts.query, has_graph && ts.open},
                 ui_language::ItemList{std::move(tab_items)},
                 std::move(net_status)};
-            const std::array<ui_language::KeyBinding, 4> keys{{{"add_node", network_control::add_node},
+            const std::array<ui_language::KeyBinding, 5> keys{{{"toolbar", network_control::toolbar_row},
+                                                               {"add_node", network_control::add_node},
                                                                {"frame_btn", network_control::frame_all},
                                                                {"canvas", network_control::canvas},
                                                                {"tab_box", network_control::tab_search_box}}};
             static_cast<void>(ui_document_->append("NetworkPanel", view.content, keys, inputs, result));
+            if (has_graph) {
+                const auto add_it = std::ranges::find(result, network_control::add_node, &ui::Control::key);
+                if (add_it != result.end()) {
+                    const bool can_edit = !session.world().running();
+                    ui::Control note_btn;
+                    note_btn.key = network_control::add_sticky_note;
+                    note_btn.parent = network_control::toolbar_row;
+                    note_btn.kind = ControlKind::button;
+                    note_btn.enabled = can_edit;
+                    note_btn.text = L"+ Note";
+                    note_btn.single_line = true;
+                    note_btn.classes = {"browser-tool"};
+                    note_btn.layout = NodeInput::box(0.f, 23.f);
+                    note_btn.layout.width = Axis::content();
+                    note_btn.tooltip = property_help_.get(
+                        network_control::add_sticky_note, L"Add Sticky Note [N]", L"Network Annotation",
+                        "在画布中插入黄色便签注释块（支持拖动、右下角缩放，双击标题栏可编辑标题与多行正文）。");
+
+                    ui::Control box_btn;
+                    box_btn.key = network_control::add_network_box;
+                    box_btn.parent = network_control::toolbar_row;
+                    box_btn.kind = ControlKind::button;
+                    box_btn.enabled = can_edit;
+                    box_btn.text = L"+ Box";
+                    box_btn.single_line = true;
+                    box_btn.classes = {"browser-tool"};
+                    box_btn.layout = NodeInput::box(0.f, 23.f);
+                    box_btn.layout.width = Axis::content();
+                    box_btn.tooltip = property_help_.get(
+                        network_control::add_network_box, L"Add Network Box [O]", L"Network Annotation",
+                        "创建分组背景框（若已选中节点会自动包裹它们）；拖动分组框标题栏可将内部节点与便签整组同步移动。");
+
+                    std::array extra_btns{std::move(note_btn), std::move(box_btn)};
+                    result.insert(add_it + 1, std::make_move_iterator(extra_btns.begin()),
+                                  std::make_move_iterator(extra_btns.end()));
+                }
+            }
             if (has_graph && inspected) {
                 ui_layout::Size canvas_dip{std::max(160.f, size.width * .36f), std::max(120.f, size.height * .26f)};
                 if (frame) {
@@ -1491,6 +1899,7 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
                 const auto tab_it = std::ranges::find(result, network_control::tab_search_box, &ui::Control::key);
                 result.insert(tab_it, std::make_move_iterator(canvas_controls.begin()),
                               std::make_move_iterator(canvas_controls.end()));
+                network.append_tab_categories(result, network_control::tab_search_box);
             }
             continue;
         }
@@ -1714,7 +2123,13 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
         const auto append_properties = [&](ObjectId object) {
             const auto material_bindings = presentation::read_material_bindings(runtime, object);
             const auto mesh =
-                material_bindings ? std::optional(take(presentation::read_static_mesh(runtime, object))) : std::nullopt;
+                material_bindings
+                    ? presentation::read_static_mesh(runtime, object)
+                    : atelier::Result<presentation::StaticMeshState>{std::unexpected(material_bindings.error())};
+            const auto proc_binding =
+                material_bindings
+                    ? presentation::read_procedural_source(runtime, object)
+                    : atelier::Result<presentation::ProceduralSource>{std::unexpected(material_bindings.error())};
             const auto asset_name = [&](const std::string& key) {
                 if (const auto* entry = project ? project->entry(key) : nullptr)
                     return entry->path.stem().wstring();
@@ -2025,7 +2440,20 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
                     name.insert(0, item->kind == world::DiagnosticKind::unreadable_resource ? L"(unreadable) "
                                                                                             : L"(missing) ");
             };
-            if (material_bindings) {
+            if (proc_binding) {
+                properties = parameter_by_category_ && material_object == ObjectId{} ? category_properties("Procedural")
+                                                                                     : component_properties;
+                std::wstring graph_choice = proc_binding->source.empty() ? L"None" : asset_name(proc_binding->source);
+                mark_unavailable(assets::AssetKind::procedural_graph, proc_binding->source, graph_choice);
+                selector(
+                    bind_material(object, {}, Binding::Kind::procedural_graph_slot, {}, "graph"), L"Procedural Graph",
+                    std::move(graph_choice),
+                    "选择此生成器求值的 .procgraph 资产；菜单内也可一键进入二维 Network 画布编辑图节点，或将实例烘焙为普通静态网格实体。");
+                properties = parameter_by_category_ && material_object == ObjectId{} && material_bindings
+                                 ? category_properties("Material")
+                                 : component_properties;
+            }
+            if (material_bindings && mesh) {
                 if (!mesh->mesh.resolved && !mesh->mesh.source.empty() &&
                     (group_matches ||
                      lowercase(L"Mesh " + platform::utf8_to_utf16_validated(mesh->mesh.source)).find(folded) !=
@@ -2067,6 +2495,18 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
                             L"Material · " + platform::utf8_to_utf16_validated(slot_name), std::move(choice),
                             "为这个 Mesh slot 选择 Material 资源。Mesh Default 恢复网格自带材质；修改参与当前 Scene 的撤销与保存。");
                     }
+            } else if (material_bindings && proc_binding) {
+                std::wstring choice = L"Default Grid";
+                if (const auto at = std::ranges::find(*material_bindings, std::string_view{"default"},
+                                                      &presentation::MaterialBinding::slot);
+                    at != material_bindings->end()) {
+                    const auto info = take(session.inspect_material(at->resource.id()));
+                    choice = info.scene ? L"Scene Instance" : asset_name(info.asset_key);
+                    mark_unavailable(assets::AssetKind::material, info.asset_key, choice);
+                }
+                selector(bind_material(object, {}, Binding::Kind::material_slot, {}, "default"), L"Material · default",
+                         std::move(choice),
+                         "为程序化生成的表面多边形选择 Material 资源；CopyToPoints 实例各自保留其网格资产材质。");
             }
             if (!component_properties->empty())
                 groups->push_back(
@@ -2240,19 +2680,21 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
             if (!bindings)
                 return;
             // Groups edit the actual shared document identity. Creating a scene MI is explicit in the slot menu.
-            const auto mesh = take(presentation::read_static_mesh(runtime, object)).mesh;
             std::vector<const presentation::MaterialBinding*> shown;
-            if (mesh.resolved)
-                for (std::size_t i = 0; i < mesh.resolved->materials().size(); ++i) {
-                    const auto name = presentation::material_slot_name(*mesh.resolved, i);
-                    if (const auto at = std::ranges::find(*bindings, name, &presentation::MaterialBinding::slot);
-                        at != bindings->end())
-                        shown.push_back(&*at);
-                    else if (const auto fallback =
-                                 std::ranges::find(mesh.defaults, name, &presentation::MaterialBinding::slot);
-                             fallback != mesh.defaults.end())
-                        shown.push_back(&*fallback);
-                }
+            if (const auto static_mesh = presentation::read_static_mesh(runtime, object)) {
+                const auto& mesh = static_mesh->mesh;
+                if (mesh.resolved)
+                    for (std::size_t i = 0; i < mesh.resolved->materials().size(); ++i) {
+                        const auto name = presentation::material_slot_name(*mesh.resolved, i);
+                        if (const auto at = std::ranges::find(*bindings, name, &presentation::MaterialBinding::slot);
+                            at != bindings->end())
+                            shown.push_back(&*at);
+                        else if (const auto fallback =
+                                     std::ranges::find(mesh.defaults, name, &presentation::MaterialBinding::slot);
+                                 fallback != mesh.defaults.end())
+                            shown.push_back(&*fallback);
+                    }
+            }
             for (const auto& binding : *bindings)
                 if (std::ranges::find(shown, &binding) == shown.end())
                     shown.push_back(&binding);
@@ -2633,6 +3075,41 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
                 items[1].icon = ui::ControlIcon::duplicate;
                 items[2].icon = ui::ControlIcon::trash;
                 items[3].icon = ui::ControlIcon::unparent;
+                if (const auto parts = world::components(runtime, row->object)) {
+                    for (const auto& part : *parts) {
+                        if (const auto proc = presentation::read_procedural_source(runtime, part.id())) {
+                            const bool can_edit = !session.world().running();
+                            if (!proc->source.empty()) {
+                                json::Builder open_args;
+                                static_cast<void>(open_args.set(open_args.root(), "asset", proc->source));
+                                items.push_back({bind_operator({"graph.open", open_args.finish()}),
+                                                 L"Edit Procedural Graph",
+                                                 can_edit,
+                                                 false,
+                                                 {},
+                                                 L"",
+                                                 true});
+                            }
+                            bool has_instances = false;
+                            if (proc->output)
+                                for (const auto& col : proc->output->publication.collections)
+                                    if (col.transforms && !col.transforms->empty())
+                                        has_instances = true;
+                            items.push_back(
+                                {bind_operator({"procedural.bake",
+                                                json::Document{},
+                                                {.selection = SelectionContext{row->object, part.id(), {row->object}},
+                                                 .region = RegionKind::scene_tree}}),
+                                 L"Bake to Entities",
+                                 can_edit && has_instances,
+                                 false,
+                                 {},
+                                 L"",
+                                 proc->source.empty()});
+                            break;
+                        }
+                    }
+                }
             } else if (const auto* group = menu_group(source->key)) {
                 if (group->id == MenuGroup::view) {
                     items.push_back(operator_item({"view.frame_selected"}));
@@ -2780,20 +3257,56 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
                     const ObjectId target_id =
                         graph_doc ? session.graph_node_id(active_graph, network_context_node) : ObjectId{};
                     bool is_disp = false;
-                    if (graph_doc && graph_doc->graph.registered())
+                    bool is_tmpl = false;
+                    bool is_byp = false;
+                    if (graph_doc && graph_doc->graph.registered()) {
                         if (const auto listed = procedural::contents(runtime, graph_doc->graph.id()))
                             is_disp = target_id != ObjectId{} && listed->display() == target_id;
+                        is_tmpl = target_id != ObjectId{} && graph_doc->template_node == target_id;
+                        if (target_id != ObjectId{}) {
+                            if (const auto byp = procedural::bypassed(runtime, target_id))
+                                is_byp = *byp;
+                        }
+                    }
                     {
                         json::Builder args;
                         static_cast<void>(
                             args.set(args.root(), "node",
                                      is_disp ? std::string_view{} : std::string_view{network_context_node}));
                         items.push_back({bind_operator({"graph.set_display", args.finish()}),
-                                         is_disp ? L"Clear Display Flag (D)" : L"Set Display Flag (D)",
-                                         can_edit,
+                                         is_disp ? L"Clear Display Flag" : L"Set Display Flag",
+                                         can_edit && target_id != ObjectId{},
                                          is_disp,
-                                         {}});
+                                         {},
+                                         L"D"});
                     }
+                    {
+                        json::Builder args;
+                        static_cast<void>(
+                            args.set(args.root(), "node",
+                                     is_tmpl ? std::string_view{} : std::string_view{network_context_node}));
+                        items.push_back({bind_operator({"graph.set_template", args.finish()}),
+                                         is_tmpl ? L"Clear Template Flag" : L"Set Template Flag",
+                                         can_edit && target_id != ObjectId{},
+                                         is_tmpl,
+                                         {},
+                                         L"T"});
+                    }
+                    {
+                        json::Builder args;
+                        static_cast<void>(args.set(args.root(), "node", network_context_node));
+                        static_cast<void>(args.set(args.root(), "bypass", !is_byp));
+                        items.push_back({bind_operator({"graph.set_bypass", args.finish()}),
+                                         is_byp ? L"Disable Bypass" : L"Bypass Node",
+                                         can_edit && target_id != ObjectId{},
+                                         is_byp,
+                                         {},
+                                         L"B"});
+                    }
+                    items.push_back(
+                        {network_control::open_node_info, L"Node Info & Comment…", true, false, {}, L"I", true});
+                    items.push_back({network_control::open_shape_picker, L"Change Shape…", can_edit, false, {}, L"Z"});
+                    items.push_back({network_control::open_color_picker, L"Change Color…", can_edit, false, {}, L"C"});
                     if (can_edit && target_id != ObjectId{}) {
                         json::Builder disc_args;
                         static_cast<void>(disc_args.set(disc_args.root(), "to_node", network_context_node));
@@ -2801,7 +3314,9 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
                                          L"Disconnect All Inputs",
                                          true,
                                          false,
-                                         {}});
+                                         {},
+                                         L"",
+                                         true});
                     }
                     {
                         json::Builder del_args;
@@ -2816,6 +3331,8 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
                     }
                 } else {
                     items.push_back({network_control::add_node, L"Add Node…", can_edit, false, {}, L"Tab"});
+                    items.push_back({network_control::add_sticky_note, L"Add Sticky Note", can_edit, false, {}, L"N"});
+                    items.push_back({network_control::add_network_box, L"Add Network Box", can_edit, false, {}, L"O"});
                     items.push_back(
                         {network_control::frame_all, L"Frame All", !active_graph.empty(), false, {}, L"H", true});
                     items.push_back({bind_operator({"graph.layout"}), L"Auto Layout", can_edit, false, {}, L"L"});
@@ -2892,6 +3409,81 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
                             items.push_back(std::move(item));
                         }
                     }
+            } else if (const auto* target = binding(source->context_target);
+                       target && target->kind == Binding::Kind::procedural_graph_slot) {
+                if (const auto proc = presentation::read_procedural_source(runtime, target->object)) {
+                    const bool can_edit = !session.world().running();
+                    const auto comp_status = world::inspect_component(runtime, target->object);
+                    const ObjectId owner_entity = comp_status ? comp_status->owner : selected;
+                    const SelectionContext gen_sel{owner_entity, target->object,
+                                                   owner_entity == ObjectId{} ? std::vector<ObjectId>{}
+                                                                              : std::vector<ObjectId>{owner_entity}};
+                    {
+                        json::Builder clear_args;
+                        clear_args.set_validated(clear_args.root(), "asset", "");
+                        ui::MenuItem none_item{
+                            bind_operator({"procedural.assign_graph",
+                                           clear_args.finish(),
+                                           {.selection = gen_sel, .region = RegionKind::parameters}}),
+                            L"None (Clear Graph)",
+                            can_edit,
+                            proc->source.empty(),
+                            {}};
+                        none_item.behavior = ui::MenuBehavior::radio;
+                        none_item.radio_group = source->key;
+                        items.push_back(std::move(none_item));
+                    }
+                    if (!proc->source.empty()) {
+                        json::Builder open_args;
+                        static_cast<void>(open_args.set(open_args.root(), "asset", proc->source));
+                        items.push_back({bind_operator({"graph.open", open_args.finish()}),
+                                         L"Edit Graph in Network",
+                                         can_edit,
+                                         false,
+                                         {}});
+                    }
+                    bool has_instances = false;
+                    if (proc->output)
+                        for (const auto& col : proc->output->publication.collections)
+                            if (col.transforms && !col.transforms->empty())
+                                has_instances = true;
+                    items.push_back({bind_operator({"procedural.bake",
+                                                    json::Document{},
+                                                    {.selection = gen_sel, .region = RegionKind::parameters}}),
+                                     L"Bake Instances to Entities",
+                                     can_edit && has_instances,
+                                     false,
+                                     {}});
+                    std::vector<std::pair<std::string, std::wstring>> choices;
+                    if (project) {
+                        for (const auto& entry : project->entries())
+                            if (entry.kind == assets::AssetKind::procedural_graph)
+                                choices.emplace_back(entry.key, entry.path.stem().wstring());
+                    }
+                    for (const auto& open_key : session.open_graphs()) {
+                        if (session.is_scratch_graph(open_key))
+                            continue;
+                        if (std::ranges::find(choices, open_key, &std::pair<std::string, std::wstring>::first) ==
+                            choices.end())
+                            choices.emplace_back(open_key, platform::utf8_to_utf16_validated(open_key));
+                    }
+                    for (std::size_t i = 0; i < choices.size(); ++i) {
+                        json::Builder assign_args;
+                        static_cast<void>(assign_args.set(assign_args.root(), "asset", choices[i].first));
+                        ui::MenuItem item{bind_operator({"procedural.assign_graph",
+                                                         assign_args.finish(),
+                                                         {.selection = gen_sel, .region = RegionKind::parameters}}),
+                                          choices[i].second,
+                                          can_edit,
+                                          proc->source == choices[i].first,
+                                          {},
+                                          L"",
+                                          i == 0};
+                        item.behavior = ui::MenuBehavior::radio;
+                        item.radio_group = source->key;
+                        items.push_back(std::move(item));
+                    }
+                }
             } else if (const auto* target = binding(source->context_target);
                        target && (target->kind == Binding::Kind::material_slot ||
                                   target->kind == Binding::Kind::material_texture || !target->material_path.empty())) {
@@ -2975,13 +3567,34 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
                 items.push_back({control::guide_grid, L"Reference Grid", true, view.reference_grid, {}});
                 items.push_back({control::guide_axes, L"Origin Axes", true, view.origin_axes, {}});
                 items.push_back(
+                    {control::display_backfaces, L"Backface Winding Tint", studio, studio && view.backface_tint, {}});
+                items.push_back(
                     operator_item({"view.toggle", json::Document{json::Document::literal<R"({"option":"fps"})">()}}));
-                if (!active_graph.empty()) {
+                const bool in_sop = !active_graph.empty() && session.has_graph(active_graph);
+                const ObjectId gen_comp = in_sop ? ObjectId{} : active_procedural_generator(session);
+                if (in_sop || gen_comp != ObjectId{}) {
+                    const procedural::Geometry* menu_geom{};
+                    if (in_sop) {
+                        if (const auto eval = session.evaluate_graph(active_graph, project))
+                            menu_geom = eval->preview_output.get();
+                    } else if (const auto src = presentation::read_procedural_source(runtime, gen_comp);
+                               src && src->output) {
+                        menu_geom = src->output->geometry.get();
+                    }
+                    items.push_back({control::display_sop_points,
+                                     L"Procedural Points",
+                                     true,
+                                     effective_show_points(menu_geom),
+                                     {},
+                                     L"",
+                                     true});
+                    items.push_back({control::display_sop_normals, L"Point Normals (N)", true, sop_show_normals, {}});
                     items.push_back(
-                        {control::display_sop_points, L"SOP Point Markers", true, sop_show_points, {}, L"", true});
-                    items.push_back({control::display_sop_normals, L"SOP Normals (N)", true, sop_show_normals, {}});
+                        {control::display_sop_face_normals, L"Primitive Normals", true, sop_show_face_normals, {}});
+                    items.push_back({control::display_sop_orient, L"Orient & pscale Axes", true, sop_show_orient, {}});
                     items.push_back(
-                        {control::display_sop_orient, L"SOP Orientations (orient)", true, sop_show_orient, {}});
+                        {control::display_sop_bounds, L"Bounds & Spatial Chunks", true, sop_show_bounds, {}});
+                    items.push_back({control::display_sop_info, L"Geometry Info HUD", true, sop_show_info, {}});
                 }
                 for (auto& item : items)
                     item.behavior = ui::MenuBehavior::checkbox;
@@ -3136,6 +3749,204 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
         reject_ui_controls(std::string(ui_error()));
         return describe(session, size, frame, project, ui, command_focus);
     }
+    const auto set_help = [&](ui::Control& ctrl, std::wstring_view title, std::wstring_view identity,
+                              std::string_view desc) {
+        if (!ctrl.tooltip)
+            ctrl.tooltip = property_help_.get(ctrl.key, title, identity, desc);
+    };
+    for (auto& ctrl : result) {
+        if (ctrl.tooltip)
+            continue;
+        switch (ctrl.key) {
+        case control::menu_bar_handle:
+            set_help(ctrl, L"Toggle Menu Bar", menu_bar_collapsed ? L"Currently: Stowed" : L"Currently: Expanded",
+                     "收起或展开窗口顶部的主菜单栏，腾出更多工作区纵向空间。");
+            break;
+        case control::shelf_handle:
+            set_help(ctrl, L"Toggle Tool Shelf", shelf_collapsed ? L"Currently: Stowed" : L"Currently: Expanded",
+                     "收起或展开顶部工具架（Create / View 快捷图标栏）。");
+            break;
+        case control::shelf_create:
+            set_help(ctrl, L"Create Shelf", L"Shelf Tab",
+                     "切换至创建工具架，快速在 3D 游标位置添加实体、生成器与光源。");
+            break;
+        case control::shelf_view:
+            set_help(ctrl, L"View Shelf", L"Shelf Tab", "切换至视图工具架，快速框显目标或重置相机观察视角。");
+            break;
+        case control::scene_back:
+        case control::entity_back:
+        case control::parameter_back:
+            set_help(ctrl, L"Navigate Back", L"Selection History", "返回上一个检视的场景对象或上下文位置。");
+            break;
+        case control::scene_forward:
+        case control::entity_forward:
+        case control::parameter_forward:
+            set_help(ctrl, L"Navigate Forward", L"Selection History", "前进到下一个检视的场景对象或上下文位置。");
+            break;
+        case control::scene_path:
+        case control::entity_path:
+        case control::parameter_path:
+            set_help(ctrl, L"Context Path", L"Navigation Breadcrumb",
+                     "显示当前所处的场景世界（World）或程序化图（SOP）路径；点击可快速切换层级。");
+            break;
+        case control::viewport_tools_menu:
+            set_help(ctrl, L"Active Tool Menu [W]", L"Viewport Header", "打开当前交互工具与快捷操作菜单。");
+            break;
+        case control::viewport_view_menu:
+            set_help(ctrl, L"View Menu", L"Viewport Header", "打开相机框显、轴向视图、光照覆盖范围与视口显示菜单。");
+            break;
+        case control::viewport_select_menu:
+            set_help(ctrl, L"Select Menu", L"Viewport Header", "打开全选、反选、框选及选择布尔模式菜单。");
+            break;
+        case control::viewport_header_add:
+            set_help(ctrl, L"Add Entity Menu [Shift+A]", L"Viewport Header",
+                     "在当前 3D 游标位置创建网格实体、程序化生成器、相机或光源。");
+            break;
+        case control::viewport_object_menu:
+            set_help(ctrl, L"Object Menu", L"Viewport Header",
+                     "打开选中实体的复制、重命名、父子层级、变换清零与程序化烘焙菜单。");
+            break;
+        case control::viewport_pivot:
+            set_help(ctrl, L"Transform Pivot", L"Viewport Header",
+                     "切换旋转与缩放的枢轴中心（选中集合中心 Selection Center 或 3D Cursor）。");
+            break;
+        case control::viewport_snap:
+            set_help(ctrl, L"Snap Settings", L"Viewport Header",
+                     "设置参考网格吸附步长（0.1m – 1m）、旋转步进角度以及游标/选中项对齐操作。");
+            break;
+        case control::scene_guides:
+            set_help(ctrl, L"Viewport Guides & Overlays", L"Viewport Header",
+                     "统一管理背景渐变、参考网格、原点坐标轴、背面绕序高亮以及程序化几何诊断叠加层。");
+            break;
+        case control::viewport_cavity:
+            set_help(ctrl, L"Cavity Settings", L"Studio Shading",
+                     "调节屏幕空间棱角高光（Ridge）、凹缝暗部（Valley）强度与采样半径。");
+            break;
+        case control::scene_shading:
+            set_help(ctrl, L"Shading & Wireframe Options", L"Viewport Header",
+                     "精细选择着色模式（Smooth / Flat / MatCap / Scene Lit）及线框拓扑绘制方式。");
+            break;
+        case control::viewport_orientation:
+            set_help(ctrl, L"Transform Orientation", L"Tool Options",
+                     "切换变换手柄的参考坐标系：世界坐标（Global）或实体自身局部坐标（Local）。");
+            break;
+        case control::viewport_camera:
+            set_help(ctrl, L"Camera Viewpoint [`]", L"Viewport Overlay",
+                     "在透视视图（Perspective）、正交六视图（Top/Front/Right 等）及主场景相机之间切换。");
+            break;
+        case control::add_component:
+            set_help(ctrl, L"Add Component", L"Entity Structure", "向当前选中的实体挂载空间变换或业务功能组件。");
+            break;
+        case control::parameter_search_toggle:
+            set_help(ctrl, L"Filter Parameters", parameter_search_visible ? L"Currently: Open" : L"Currently: Closed",
+                     "展开或收起属性名称搜索栏，按关键字快速过滤当前对象的参数行。");
+            break;
+        case control::group_components:
+            set_help(ctrl, L"Group by Component", L"Parameters Layout", "按实体挂载的组件归属分组展示属性。");
+            break;
+        case control::group_categories:
+            set_help(ctrl, L"Group by Category", L"Parameters Layout", "按功能语义分类合并展示所有组件属性。");
+            break;
+        case browser_control::back:
+            set_help(ctrl, L"Back", L"Asset Browser", "返回上一个浏览的资源目录。");
+            break;
+        case browser_control::up:
+            set_help(ctrl, L"Up One Folder", L"Asset Browser", "返回当前项目文件夹的上一级父目录。");
+            break;
+        case browser_control::path:
+            set_help(ctrl, L"Folder Path", L"Asset Browser", "显示当前浏览目录路径，点击可在常用根目录间跳转。");
+            break;
+        case browser_control::clear:
+            set_help(ctrl, L"Clear Search & Filter", L"Asset Browser", "清空当前搜索关键字并重置资源类型过滤条件。");
+            break;
+        case browser_control::filter:
+            set_help(ctrl, L"Filter by Asset Type", L"Asset Browser",
+                     "按网格、材质、贴图、程序化图（.procgraph）、场景或源码类型筛选资源。");
+            break;
+        case browser_control::view_menu:
+            set_help(ctrl, L"Browser View Mode", L"Asset Browser",
+                     "在列表（List）、详情表格（Details）与平铺卡片（Tiles）视图之间切换。");
+            break;
+        case browser_control::actions:
+            set_help(ctrl, L"Asset Actions", L"Asset Browser",
+                     "新建材质、新建程序化图（.procgraph）、导入外部网格/贴图或刷新资产目录。");
+            break;
+        case output_control::level:
+            set_help(ctrl, L"Minimum Log Severity", L"Project Output",
+                     "循环切换日志最低显示级别（All / Info+ / Warning+ / Error+）。");
+            break;
+        case output_control::clear_filters:
+            set_help(ctrl, L"Reset Log Filters", L"Project Output",
+                     "重置级别、类别与全文搜索过滤条件，显示全部日志记录。");
+            break;
+        case output_control::locate:
+            set_help(ctrl, L"Jump to Source Location", L"Project Output",
+                     "在代码编辑器中打开并跳转到当前选中诊断记录对应的源码行与列。");
+            break;
+        case output_control::open_directory:
+            set_help(ctrl, L"Open Log Directory", L"Project Output",
+                     "在系统文件资源管理器中打开当前运行会话的日志文件目录。");
+            break;
+        case spreadsheet_control::layer_point:
+            set_help(ctrl, L"Points Layer", L"Geometry Spreadsheet",
+                     "查看点层级（Point）的所有属性列（如 P、N、Cd、uv、orient、pscale）。");
+            break;
+        case spreadsheet_control::layer_vertex:
+            set_help(ctrl, L"Vertices Layer", L"Geometry Spreadsheet",
+                     "查看顶点层级（Vertex）拓扑映射及逐角点属性（如面角 UV）。");
+            break;
+        case spreadsheet_control::layer_primitive:
+            set_help(ctrl, L"Primitives Layer", L"Geometry Spreadsheet",
+                     "查看图元层级（Primitive）的多边形/折线类型、顶点数与图元属性。");
+            break;
+        case spreadsheet_control::layer_detail:
+            set_help(ctrl, L"Detail Layer", L"Geometry Spreadsheet",
+                     "查看整份几何体共享的单行全局属性（Detail Attributes）。");
+            break;
+        case spreadsheet_control::layer_instance:
+            set_help(ctrl, L"Instances Layer", L"Geometry Spreadsheet",
+                     "查看 CopyToPoints 生成的网格实例资产引用与局部变换平移分量。");
+            break;
+        case spreadsheet_control::follow_toggle:
+            set_help(ctrl, L"Follow Selected Node",
+                     spreadsheet.follow_selected() ? L"Currently: Follow Selection" : L"Currently: Pin Display Node",
+                     "开启后电子表格实时检视画布中当前选中的节点输出；关闭后始终锁定检视 Display Flag 节点输出。");
+            break;
+        case spreadsheet_control::page_prev:
+            set_help(ctrl, L"Previous 512 Rows", L"Geometry Spreadsheet", "翻到电子表格的上一页（每页 512 行）。");
+            break;
+        case spreadsheet_control::page_next:
+            set_help(ctrl, L"Next 512 Rows", L"Geometry Spreadsheet", "翻到电子表格的下一页（每页 512 行）。");
+            break;
+        case control::color_revert:
+            set_help(ctrl, L"Revert Color", L"Color Picker", "恢复打开拾色器之前的原始颜色值。");
+            break;
+        case control::color_done:
+            set_help(ctrl, L"Accept Color", L"Color Picker", "关闭拾色器并确认当前颜色修改。");
+            break;
+        default: {
+            const auto has_class = [&](std::string_view cls) {
+                return std::ranges::find(ctrl.classes, cls) != ctrl.classes.end();
+            };
+            if (has_class("dock-add"))
+                set_help(ctrl, L"Add Pane Tab", L"Workspace Dock", "在此停靠窗格中打开新的编辑器视图标签页。");
+            else if (has_class("dock-tool"))
+                set_help(ctrl, L"Maximize / Restore Pane", L"Workspace Dock",
+                         "最大化当前停靠窗格，或恢复多窗格分屏布局。");
+            else if (has_class("dock-menu"))
+                set_help(ctrl, L"Pane Layout Menu", L"Workspace Dock", "拆分、关闭或调整当前停靠窗格布局。");
+            else if (has_class("dock-close"))
+                set_help(ctrl, L"Close Tab", L"Workspace Dock",
+                         "关闭此视图标签页（可通过各窗格 + 按钮或 Window 菜单重新打开）。");
+            else if (has_class("dock-collapse"))
+                set_help(ctrl, L"Collapse / Expand Split", L"Workspace Dock", "一键折叠或恢复相邻分屏窗格。");
+            else if (has_class("dock-grip"))
+                set_help(ctrl, L"Resize Split [Alt+Click Reset]", L"Workspace Dock",
+                         "拖拽调整两侧窗格尺寸比例；按住 Alt 点击恢复默认分割位置。");
+            break;
+        }
+        }
+    }
     // A closed menu or retargeted control must not keep an executable old call.
     bindings_.erase(std::remove_if(bindings_.begin() + static_cast<std::ptrdiff_t>(binding_cursor_), bindings_.end(),
                                    [](const auto& binding) { return binding.kind == Binding::Kind::operator_call; }),
@@ -3145,8 +3956,8 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
 }
 
 std::array<double, 3> rgb_to_hsv(std::array<double, 3> c) noexcept {
-    const auto high = std::max({c[0], c[1], c[2]});
-    const auto low = std::min({c[0], c[1], c[2]});
+    const auto high = std::max(c[0], std::max(c[1], c[2]));
+    const auto low = std::min(c[0], std::min(c[1], c[2]));
     const auto span = high - low;
     double h = 0;
     if (span > 0) {

@@ -139,4 +139,9 @@ Result<void> Realize::process(const Geometries& sources, const Geometry& points,
     return {};
 }
 
+Result<void> Null::process(const Geometry& input, Geometry& output) const noexcept {
+    output = input;
+    return {};
+}
+
 }

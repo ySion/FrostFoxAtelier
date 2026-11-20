@@ -326,19 +326,24 @@ Result<void> validate(const Frame& frame, MeshChecks& meshes) {
     good &= material_slots < (1u << detail::face_slot_bits);
     for (const auto& draw : ui.draws) {
         const bool capsule = finite(draw.capsule_width) && draw.capsule_width > 0;
-        good &= valid(draw.bounds) && valid(draw.color) && valid(draw.border_color) && valid(draw.image_background) &&
+        const bool proc = draw.procedural != ui::ProceduralQuad::none;
+        good &= draw.procedural <= ui::ProceduralQuad::arc_sector && !(capsule && proc) && valid(draw.bounds) &&
+                valid(draw.color) && valid(draw.border_color) && valid(draw.image_background) &&
                 finite(draw.border_width) && draw.border_width >= 0 && finite(draw.capsule_width) &&
                 draw.capsule_width >= 0 && draw.capsule_width <= 64 && !(draw.coverage && draw.image);
-        if (capsule) {
+        if (capsule || proc) {
             good &= !draw.coverage && !draw.image;
             for (float v : {draw.uv.x, draw.uv.y, draw.uv.width, draw.uv.height})
                 good &= finite(v) && std::abs(v) < 1e7f;
+            for (float radius :
+                 {draw.radius.top_left, draw.radius.top_right, draw.radius.bottom_right, draw.radius.bottom_left})
+                good &= finite(radius) && std::abs(radius) < 1e7f;
         } else {
             good &= valid(draw.uv);
+            for (float radius :
+                 {draw.radius.top_left, draw.radius.top_right, draw.radius.bottom_right, draw.radius.bottom_left})
+                good &= finite(radius) && radius >= 0;
         }
-        for (float radius :
-             {draw.radius.top_left, draw.radius.top_right, draw.radius.bottom_right, draw.radius.bottom_left})
-            good &= finite(radius) && radius >= 0;
         if (draw.coverage)
             good &= valid_pixels(*draw.coverage, 1);
         if (draw.image)
@@ -438,7 +443,14 @@ struct CachedImage {
     std::uint32_t slot{}; // Index in this frame's ui_textures while used.
 };
 
-enum class UiShading : std::uint32_t { solid, coverage, image, capsule };
+enum class UiShading : std::uint32_t {
+    solid = 0,
+    coverage = 1,
+    image = 2,
+    capsule = 3,
+    node_shape = 4,
+    arc_sector = 5
+};
 
 struct UiInstance {
     ui::Rect bounds;
@@ -958,7 +970,8 @@ struct Renderer::State {
                     instance.bounds = {shape.points[0], shape.points[1], shape.points[2], shape.points[3]};
                     instance.uv = {0, 0, 1, 1};
                     instance.border_color = shape.border;
-                    instance.border_width = std::min({shape.width, shape.points[2] * .5f, shape.points[3] * .5f});
+                    instance.border_width =
+                        std::min(shape.width, std::min(shape.points[2] * .5f, shape.points[3] * .5f));
                 }
                 if (overlaps(instance.bounds, clip))
                     ui_instances.push_back(instance);
@@ -971,22 +984,28 @@ struct Renderer::State {
                                 std::clamp(item.clip.right, 0, int(frame.extent.width)),
                                 std::clamp(item.clip.bottom, 0, int(frame.extent.height))};
             const bool capsule = item.capsule_width > 0;
+            const bool proc = item.procedural != ui::ProceduralQuad::none;
             if (clip.left >= clip.right || clip.top >= clip.bottom || item.bounds.width == 0 ||
                 item.bounds.height == 0 || !overlaps(item.bounds, clip) || (capsule && item.color.a == 0) ||
                 (!capsule && item.color.a == 0 && (!item.image || item.image_background.a == 0) &&
                  (item.border_width == 0 || item.border_color.a == 0)))
                 continue;
-            const auto shading = capsule         ? UiShading::capsule
-                                 : item.coverage ? UiShading::coverage
-                                 : item.image    ? UiShading::image
-                                                 : UiShading::solid;
+            const auto shading = capsule                                             ? UiShading::capsule
+                                 : item.procedural == ui::ProceduralQuad::node_shape ? UiShading::node_shape
+                                 : item.procedural == ui::ProceduralQuad::arc_sector ? UiShading::arc_sector
+                                 : item.coverage                                     ? UiShading::coverage
+                                 : item.image                                        ? UiShading::image
+                                                                                     : UiShading::solid;
             if (shading == UiShading::coverage || shading == UiShading::image)
                 ui_textured.emplace_back(static_cast<std::uint32_t>(ui_instances.size()), &item);
             ui_instances.push_back(
                 {item.bounds, item.uv, item.color, item.border_color,
-                 capsule ? ui::CornerRadii{item.capsule_width * .5f, 0, 0, 0} : fit_radius(item.radius, item.bounds),
+                 capsule ? ui::CornerRadii{item.capsule_width * .5f, 0, 0, 0}
+                 : proc  ? item.radius
+                         : fit_radius(item.radius, item.bounds),
                  item.image_background,
-                 capsule ? 0.f : std::min({item.border_width, item.bounds.width * .5f, item.bounds.height * .5f}),
+                 capsule ? 0.f
+                         : std::min(item.border_width, std::min(item.bounds.width * .5f, item.bounds.height * .5f)),
                  std::to_underlying(shading), pack_clip(clip)});
         }
     }
@@ -1199,9 +1218,9 @@ struct Renderer::State {
                 ATELIER_TRY(require(gfxProgramSetParameter(gfx, program, "raster_viewport_transform", raster_transform),
                                     "Set scene raster viewport"));
                 ATELIER_TRY(detail::bind_materials(gfx, program, materials));
-                const std::array<std::uint32_t, 4> display{static_cast<std::uint32_t>(frame.view.shading),
-                                                           static_cast<std::uint32_t>(frame.view.wireframe),
-                                                           frame.view.triangle_edges ? 1u : 0u, pass};
+                const std::array<std::uint32_t, 4> display{
+                    static_cast<std::uint32_t>(frame.view.shading), static_cast<std::uint32_t>(frame.view.wireframe),
+                    (frame.view.triangle_edges ? 1u : 0u) | (frame.view.backface_tint ? 2u : 0u), pass};
                 const std::array<float, 2> wire_style{frame.view.wire_width, frame.view.wire_opacity};
                 ATELIER_TRY(
                     require(gfxProgramSetParameter(gfx, program, "instances", instance_data), "Bind mesh instances"));
@@ -1340,7 +1359,7 @@ struct Renderer::State {
             ui_textures.clear();
             for (const auto& [index, item] : ui_textured) {
                 ATELIER_TRY_BIND(slot, item->coverage ? texture(item->coverage) : texture(item->image));
-                ui_instances[index].shading |= *slot << 2;
+                ui_instances[index].shading |= *slot << 3;
             }
             if (!ui_texture_uploads.empty()) {
                 ATELIER_TRY_BIND(staging, ui_texture_slots.write(gfx, context.info().frames_in_flight, upload_pixels,

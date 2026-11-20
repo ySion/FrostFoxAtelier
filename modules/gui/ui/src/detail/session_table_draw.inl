@@ -77,7 +77,7 @@
                     auto width=std::max(0.f,cell.width-(std::max(4.f,appearance.padding.left)+std::max(4.f,appearance.padding.right)+trailing)*scale);
                     const auto color=row_enabled?appearance.foreground:self.style.palette.muted;
                     if (icon!=ControlIcon::none) {
-                        const auto size=std::min({appearance.indicator_size*scale,cell.height-2*scale,width});
+                        const auto size=std::min(appearance.indicator_size*scale,std::min(cell.height-2*scale,width));
                         if (size>0) {
                             if (paint) {
                                 using Icon=ControlIcon;

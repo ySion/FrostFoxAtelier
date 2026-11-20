@@ -236,6 +236,26 @@ bool Application::network_input(const ui::Event& event, std::uint32_t native_key
     const bool pointer = event.kind == ui::EventKind::pointer_down || event.kind == ui::EventKind::pointer_up ||
                          event.kind == ui::EventKind::pointer_move || event.kind == ui::EventKind::wheel;
 
+    if (workspace_.network.popup().open()) {
+        if (event.kind == ui::EventKind::pointer_down) {
+            const auto* pop_box = ui_.presented()->find(editor::network_control::popup_box);
+            const bool in_pop = pop_box && event.x >= pop_box->bounds.x &&
+                                event.x < pop_box->bounds.x + pop_box->bounds.width && event.y >= pop_box->bounds.y &&
+                                event.y < pop_box->bounds.y + pop_box->bounds.height;
+            if (in_pop)
+                return false;
+            workspace_.network.close_popup();
+            effects(ui_.focus(0));
+            return event.x >= canvas_px.x && event.x < canvas_px.x + canvas_px.width && event.y >= canvas_px.y &&
+                   event.y < canvas_px.y + canvas_px.height;
+        }
+        if (event.kind == ui::EventKind::key_down && event.key == ui::Key::escape) {
+            workspace_.network.close_popup();
+            effects(ui_.focus(0));
+            return true;
+        }
+    }
+
     if (workspace_.network.tab_search().open) {
         if (event.kind == ui::EventKind::pointer_down) {
             const auto* tab_box = ui_.presented()->find(editor::network_control::tab_search_box);

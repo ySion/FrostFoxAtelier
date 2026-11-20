@@ -361,6 +361,7 @@ int run_project(const RunOptions& options) {
         std::string material_failure;
         const auto prepare_scene = [&] {
             timing::Scope snapshot{phases::scene};
+            take(document.sync_procedural_generators(&project));
             auto refreshed = scene.refresh(document, false);
             report_diagnostics();
             take(std::move(refreshed));
@@ -483,6 +484,8 @@ int run_project(const RunOptions& options) {
             // now; pending preparation leaves the previous complete group live.
             if (renderer && started)
                 static_cast<void>(prepare_scene());
+            else if (started && !options.preview_ui)
+                take(document.sync_procedural_generators(&project));
             // Reference writes do not change World revision. Resolve after every update,
             // including its late flush; only value snapshots survive this boundary.
             std::optional<atelier::presentation::CameraSnapshot> camera;

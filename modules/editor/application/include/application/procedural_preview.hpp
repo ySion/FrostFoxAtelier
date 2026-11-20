@@ -8,6 +8,7 @@
 #include "renderer/renderer.hpp"
 #include <memory>
 #include <optional>
+#include <string>
 #include <vector>
 
 namespace atelier::application {
@@ -15,17 +16,38 @@ namespace atelier::application {
 struct SopGuideOptions {
     bool show_points{};
 
-    bool show_normals{};
+    bool show_point_normals{};
+
+    bool show_face_normals{};
 
     bool show_orient{};
 
+    bool show_bounds{};
+
     bool show_polylines{true};
+
+    float chunk_size{};
+
+    math::Matrix4 world_transform{math::Matrix4::identity()};
 };
 
-[[nodiscard]] geometry::MeshRef build_procedural_surface_mesh(const procedural::Geometry& geometry);
+// True when the geometry contains points with no polygon surfaces or mesh instances.
+bool is_pure_point_cloud(const procedural::Geometry& geometry) noexcept;
+
+// Multi-line summary for the Scene View (i) Geometry Info HUD.
+std::wstring format_geometry_info_hud(std::wstring_view title, const procedural::Geometry& geometry,
+                                      bool auto_points = false, std::optional<double> cook_ms = {},
+                                      std::size_t chunk_count = 0);
 
 void append_procedural_guides(const procedural::Geometry& geometry, const editor::ViewportView& view,
                               const SopGuideOptions& options, std::vector<renderer::OverlayShape>& overlay);
+
+// Draws ghosted reference wireframe & points for an active SOP Template Flag node.
+void append_template_wireframe(const procedural::Geometry& geometry, const editor::ViewportView& view,
+                               std::vector<renderer::OverlayShape>& overlay);
+
+// Draws the persistent bottom-left 3D XYZ camera orientation gnomon in physical viewport space.
+void append_orientation_gnomon(const editor::ViewportView& view, std::vector<renderer::OverlayShape>& overlay);
 
 class ProceduralPreview final {
 public:

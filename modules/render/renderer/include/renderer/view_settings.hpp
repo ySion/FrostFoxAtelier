@@ -114,6 +114,8 @@ struct ViewSettings {
 
     bool triangle_edges{}; // Otherwise respect the producer's polygon edge mask.
 
+    bool backface_tint{}; // Studio geometry only: highlight back-facing triangles to inspect winding.
+
     float wire_width{1.25f};
 
     float wire_opacity{0.7f};

@@ -1,5 +1,6 @@
 #include "editor/session.hpp"
 #include "editor/error.hpp"
+#include "editor/graph_format.hpp"
 #include "editor/project.hpp"
 #include "assets/file.hpp"
 #include "assets/json_format.hpp"
@@ -8,6 +9,7 @@
 #include "assets/material_format.hpp"
 #include "assets/mesh_format.hpp"
 #include "physics/physics.hpp"
+#include "procedural/graph.hpp"
 #include "platform/utf.hpp"
 #include "runtime/detail/value_storage.hpp"
 #include <limits>
@@ -670,10 +672,18 @@ struct Session::GraphCodec {
         std::vector<presentation::MaterialBinding> bindings;
     };
 
+    struct GeneratorCopy {
+        presentation::ProceduralBinding binding;
+
+        std::vector<presentation::MaterialBinding> bindings;
+    };
+
     struct Graph {
         json::Document data;
 
         std::unordered_map<std::string, MeshCopy> meshes;
+
+        std::unordered_map<std::string, GeneratorCopy> generators;
 
         // An in-memory copy keeps the sky map it resolved, not only the key.
         std::unordered_map<std::string, presentation::SkyMapBinding> skies;
@@ -1087,12 +1097,14 @@ struct Session::GraphCodec {
         };
         const auto encoded = [&]() -> Result<void> {
             for (auto object : nodes)
-                for (const auto& part : take(world::components(runtime, object)))
-                    if (derives(runtime, take(runtime.type_of(part.id())),
-                                session.presentation_types_.static_mesh_component))
+                for (const auto& part : take(world::components(runtime, object))) {
+                    const auto part_type = take(runtime.type_of(part.id()));
+                    if (derives(runtime, part_type, session.presentation_types_.static_mesh_component) ||
+                        derives(runtime, part_type, session.presentation_types_.procedural_generator_component))
                         for (const auto& binding : take(presentation::read_material_bindings(runtime, part.id()))) {
                             ATELIER_TRY(archive_material(binding.resource.id()));
                         }
+                }
             if (document)
                 for (const auto& material : session.retained_document_.materials)
                     if (runtime.type_of(material.id())) {
@@ -1156,6 +1168,18 @@ struct Session::GraphCodec {
                     ATELIER_TRY(scene_result(builder.set(value, "enabled", state.enabled)));
                     ATELIER_TRY_BIND(record, properties(part.id(), state.type));
                     builder.set_validated(value, "properties", record->root());
+                    const auto encode_material_bindings =
+                        [&](json::Value target,
+                            std::span<const presentation::MaterialBinding> bindings) -> Result<void> {
+                        const auto entries = *builder.array(target, "materials");
+                        for (const auto& binding : bindings) {
+                            const auto entry = builder.append_object(entries);
+                            ATELIER_TRY(scene_result(builder.set(entry, "slot", binding.slot)));
+                            builder.set_validated(entry, "resource", std::to_string(ids.at(binding.resource.id())));
+                            ATELIER_TRY(scene_result(builder.set(entry, "overridden", binding.overridden)));
+                        }
+                        return {};
+                    };
                     if (derives(runtime, state.type, session.presentation_types_.static_mesh_component)) {
                         auto mesh = take(presentation::read_static_mesh(runtime, part.id()));
                         if (persistent && mesh.mesh.resolved && mesh.mesh.source.empty())
@@ -1164,13 +1188,22 @@ struct Session::GraphCodec {
                         auto bindings = take(presentation::read_material_bindings(runtime, part.id()));
                         graph.meshes.emplace(key, MeshCopy{mesh, bindings});
                         ATELIER_TRY(scene_result(builder.set(value, "mesh", mesh.mesh.source)));
-                        const auto entries = *builder.array(value, "materials");
-                        for (const auto& binding : bindings) {
-                            const auto entry = builder.append_object(entries);
-                            ATELIER_TRY(scene_result(builder.set(entry, "slot", binding.slot)));
-                            builder.set_validated(entry, "resource", std::to_string(ids.at(binding.resource.id())));
-                            ATELIER_TRY(scene_result(builder.set(entry, "overridden", binding.overridden)));
+                        ATELIER_TRY(encode_material_bindings(value, bindings));
+                    }
+                    if (derives(runtime, state.type, session.presentation_types_.procedural_generator_component)) {
+                        auto bindings = take(presentation::read_material_bindings(runtime, part.id()));
+                        if (persistent) {
+                            auto proc = take(presentation::read_procedural_source(runtime, part.id()));
+                            if (session.is_scratch_graph(proc.source))
+                                throw std::runtime_error(
+                                    "A scratch procedural graph has no persistent source; save it into the Project before archiving.");
+                            ATELIER_TRY(scene_result(builder.set(value, "graph", proc.source)));
+                        } else {
+                            auto proc = take(presentation::read_procedural_binding(runtime, part.id()));
+                            ATELIER_TRY(scene_result(builder.set(value, "graph", proc.source)));
+                            graph.generators.emplace(key, GeneratorCopy{std::move(proc), bindings});
                         }
+                        ATELIER_TRY(encode_material_bindings(value, bindings));
                     }
                     if (derives(runtime, state.type, session.presentation_types_.environment_component)) {
                         auto sky = take(presentation::read_sky_map(runtime, part.id()));
@@ -1661,7 +1694,9 @@ struct Session::GraphCodec {
             const bool placeholder = !matches || !*matches;
             const auto type = !placeholder                     ? *found
                               : !entity && *value.find("mesh") ? session.presentation_types_.static_mesh_component
-                                                               : base;
+                              : !entity && *value.find("graph")
+                                  ? session.presentation_types_.procedural_generator_component
+                                  : base;
             auto root =
                 entity ? take(world::create_entity(runtime, type)) : take(world::create_component(runtime, type));
             const auto object = root.id();
@@ -1763,6 +1798,9 @@ struct Session::GraphCodec {
                 if (derives(runtime, component_type, session.presentation_types_.static_mesh_component))
                     ATELIER_TRY(load.extra(component, part,
                                            {"id", "type", "name", "enabled", "properties", "mesh", "materials"}));
+                else if (derives(runtime, component_type, session.presentation_types_.procedural_generator_component))
+                    ATELIER_TRY(load.extra(component, part,
+                                           {"id", "type", "name", "enabled", "properties", "graph", "materials"}));
                 else if (derives(runtime, component_type, session.presentation_types_.environment_component))
                     ATELIER_TRY(
                         load.extra(component, part, {"id", "type", "name", "enabled", "properties", "sky_map"}));
@@ -2191,7 +2229,70 @@ struct Session::GraphCodec {
             load.store(object, std::array{std::string("materials")}, kept.root());
             return {};
         };
-        // Controller bindings validate their entity sequences as a whole.
+        const auto decode_material_bindings =
+            [&](ObjectId object, json::Value part, bool unresolved, bool warn_if_missing, auto&& slot_matches,
+                const char* slot_mismatch_message) -> json::Result<std::vector<presentation::MaterialBinding>> {
+            std::vector<presentation::MaterialBinding> bindings;
+            const auto entries = *part.find("materials");
+            if (!entries) {
+                if (warn_if_missing)
+                    load.report(world::Severity::warning, world::DiagnosticKind::mismatch, object, {"materials"},
+                                nullptr, "The material binding table is missing; bindings are empty.");
+                return bindings;
+            }
+            if (entries->kind() != json::Kind::array) {
+                load.keep(object, {"materials"}, *entries, world::DiagnosticKind::mismatch,
+                          "Expected a material binding table. Bindings are empty and the saved value is kept.");
+                return bindings;
+            }
+            if (unresolved) {
+                ATELIER_TRY(keep_bindings(object, *entries));
+                return bindings;
+            }
+            if (entries->size() > 1024)
+                throw std::runtime_error("Invalid material binding table.");
+            const auto items = *entries->array();
+            for (auto entry : items) {
+                ATELIER_TRY_BIND(slot_value, entry.string({"slot"}));
+                const auto slot = std::string(*slot_value);
+                const auto members = *entry.object_items();
+                for (const auto& [name, item] : members)
+                    if (name != "slot" && name != "resource" && name != "overridden")
+                        load.keep_slot(object, slot, std::string(name), item, world::DiagnosticKind::unknown_key,
+                                       "Unknown binding key kept from the saved scene.");
+                ATELIER_TRY_BIND(resource_value, entry.at("resource"));
+                ATELIER_TRY_BIND(resource_key, local_key(*resource_value));
+                const auto resource_id = *resource_key;
+                const auto at = material_ids.find(resource_id);
+                if (at == material_ids.end())
+                    throw std::runtime_error("Material binding references an unknown scene resource.");
+                used_materials.insert(resource_id);
+                ObjectRoot resource = at->second;
+                bool overridden{};
+                if (const auto flag = *entry.find("overridden"); !flag)
+                    load.report(world::Severity::warning, world::DiagnosticKind::mismatch, object,
+                                {"materials", slot, "overridden"}, nullptr,
+                                "The override flag is missing; the slot is not overridden.");
+                else if (flag->kind() != json::Kind::boolean)
+                    load.keep_slot(object, slot, "overridden", *flag, world::DiagnosticKind::mismatch,
+                                   "Expected a boolean. The slot is not overridden and the saved value is kept.");
+                else
+                    overridden = *flag->boolean();
+                bindings.push_back({slot, std::move(resource), overridden});
+            }
+            bool missing_slot{};
+            std::erase_if(bindings, [&](const auto& binding) {
+                if (slot_matches(binding.slot))
+                    return false;
+                load.report(world::Severity::warning, world::DiagnosticKind::mismatch, object,
+                            {"materials", binding.slot}, nullptr, slot_mismatch_message);
+                missing_slot = true;
+                return true;
+            });
+            if (missing_slot)
+                ATELIER_TRY(keep_bindings(object, *entries));
+            return bindings;
+        };
         const auto bound = [&](ObjectId object, const char* name, Result<void> applied, auto clear) {
             if (applied)
                 return;
@@ -2277,68 +2378,82 @@ struct Session::GraphCodec {
                         const bool unresolved = !source.empty() && !mesh;
                         take(presentation::set_mesh_binding(runtime, object,
                                                             {source, std::move(mesh), std::move(defaults)}));
-                        std::vector<presentation::MaterialBinding> bindings;
+                        const auto geometry = take(presentation::read_static_mesh(runtime, object)).mesh.resolved;
+                        ATELIER_TRY_BIND(
+                            bindings,
+                            decode_material_bindings(
+                                object, part, unresolved, false,
+                                [&](const std::string& slot) {
+                                    std::size_t matches{};
+                                    if (geometry)
+                                        for (std::size_t i = 0; i < geometry->materials().size(); ++i)
+                                            matches += geometry::material_slot_name(*geometry, i) == slot;
+                                    return matches == 1;
+                                },
+                                "The mesh no longer has one matching slot; the author binding is kept without being applied."));
+                        take(presentation::set_material_bindings(runtime, object, *bindings));
+                    }
+                }
+                if (derives(runtime, type, session.presentation_types_.procedural_generator_component)) {
+                    const auto key = std::string(*part.string({"id"}));
+                    if (auto at = graph.generators.find(key); at != graph.generators.end()) {
+                        const auto& copy = at->second;
+                        take(presentation::set_procedural_binding(runtime, object, copy.binding));
+                        auto bindings = copy.bindings;
+                        for (auto& binding : bindings) {
+                            used_materials.insert(copied_material_keys.at(binding.resource.id()));
+                            binding.resource = copied_materials.at(binding.resource.id());
+                        }
+                        take(presentation::set_material_bindings(runtime, object, bindings));
                         if (const auto entries = *part.find("materials");
-                            entries && entries->kind() != json::Kind::array)
-                            load.keep(
-                                object, {"materials"}, *entries, world::DiagnosticKind::mismatch,
-                                "Expected a material binding table. Bindings are empty and the saved value is kept.");
-                        else if (entries && unresolved)
+                            entries && entries->kind() == json::Kind::array && entries->size() > bindings.size())
                             ATELIER_TRY(keep_bindings(object, *entries));
-                        else if (entries) {
-                            if (entries->size() > 1024)
-                                throw std::runtime_error("Invalid material binding table.");
-                            const auto items = *entries->array();
-                            for (auto entry : items) {
-                                ATELIER_TRY_BIND(slot_value, entry.string({"slot"}));
-                                const auto slot = std::string(*slot_value);
-                                const auto members = *entry.object_items();
-                                for (const auto& [name, item] : members)
-                                    if (name != "slot" && name != "resource" && name != "overridden")
-                                        load.keep_slot(object, slot, std::string(name), item,
-                                                       world::DiagnosticKind::unknown_key,
-                                                       "Unknown binding key kept from the saved scene.");
-                                ATELIER_TRY_BIND(resource_value, entry.at("resource"));
-                                ATELIER_TRY_BIND(resource_key, local_key(*resource_value));
-                                const auto key = *resource_key;
-                                const auto at = material_ids.find(key);
-                                if (at == material_ids.end())
-                                    throw std::runtime_error("Material binding references an unknown scene resource.");
-                                used_materials.insert(key);
-                                ObjectRoot resource = at->second;
-                                bool overridden{};
-                                if (const auto flag = *entry.find("overridden"); !flag)
-                                    load.report(world::Severity::warning, world::DiagnosticKind::mismatch, object,
-                                                {"materials", slot, "overridden"}, nullptr,
-                                                "The override flag is missing; the slot is not overridden.");
-                                else if (flag->kind() != json::Kind::boolean)
-                                    load.keep_slot(
-                                        object, slot, "overridden", *flag, world::DiagnosticKind::mismatch,
-                                        "Expected a boolean. The slot is not overridden and the saved value is kept.");
-                                else
-                                    overridden = *flag->boolean();
-                                bindings.push_back({slot, std::move(resource), overridden});
+                    } else {
+                        if (!project)
+                            throw std::runtime_error("Procedural generator restoration requires a Project.");
+                        std::string source;
+                        if (const auto graph_at = *part.find("graph"); !graph_at)
+                            load.report(world::Severity::warning, world::DiagnosticKind::mismatch, object, {"graph"},
+                                        nullptr, "The procedural graph key is missing; the generator has no graph.");
+                        else if (graph_at->kind() != json::Kind::string)
+                            load.keep(
+                                object, {"graph"}, *graph_at, world::DiagnosticKind::mismatch,
+                                "Expected a procedural graph key. The generator has no graph and the saved value is kept.");
+                        else
+                            source = *graph_at->string();
+                        if (!source.empty() && !session.has_graph(source)) {
+                            const auto* item =
+                                load.live ? nullptr : session.unavailable(assets::AssetKind::procedural_graph, source);
+                            if (!item) {
+                                if (auto loaded = project->assets().procedural_graph(source)) {
+                                    Runtime validation;
+                                    take(procedural::register_types(validation));
+                                    if (auto parsed = load_graph(validation, loaded->text); !parsed) {
+                                        const Error format_error{ErrorCode::invalid_storage, parsed.error().message};
+                                        item = &session.remember_unavailable(project->assets(),
+                                                                             assets::AssetKind::procedural_graph,
+                                                                             source, format_error);
+                                    }
+                                } else {
+                                    item = &session.remember_unavailable(
+                                        project->assets(), assets::AssetKind::procedural_graph, source, loaded.error());
+                                }
+                            }
+                            if (item) {
+                                json::Builder saved;
+                                saved.set_validated(saved.root(), source);
+                                const auto value = saved.root();
+                                load.report(world::Severity::warning, item->kind, object, {"graph"}, &value,
+                                            item->error.message, &item->error);
                             }
                         }
-                        const auto geometry = take(presentation::read_static_mesh(runtime, object)).mesh.resolved;
-                        bool missing_slot{};
-                        std::erase_if(bindings, [&](const auto& binding) {
-                            std::size_t matches{};
-                            if (geometry)
-                                for (std::size_t i = 0; i < geometry->materials().size(); ++i)
-                                    matches += geometry::material_slot_name(*geometry, i) == binding.slot;
-                            if (matches == 1)
-                                return false;
-                            load.report(
-                                world::Severity::warning, world::DiagnosticKind::mismatch, object,
-                                {"materials", binding.slot}, nullptr,
-                                "The mesh no longer has one matching slot; the author binding is kept without being applied.");
-                            missing_slot = true;
-                            return true;
-                        });
-                        if (missing_slot)
-                            ATELIER_TRY(keep_bindings(object, *part.at("materials")));
-                        take(presentation::set_material_bindings(runtime, object, bindings));
+                        take(presentation::set_procedural_binding(runtime, object, {source, nullptr, {}}));
+                        ATELIER_TRY_BIND(
+                            bindings,
+                            decode_material_bindings(
+                                object, part, false, true, [](const std::string& slot) { return slot == "default"; },
+                                "Procedural generators only expose the default surface slot; the author binding is kept without being applied."));
+                        take(presentation::set_material_bindings(runtime, object, *bindings));
                     }
                 }
                 if (environment) {
@@ -2760,7 +2875,7 @@ struct Session::GraphCodec {
                         throw std::runtime_error("Only an Entity or Component can be removed.");
                 } else if (kind == "set") {
                     ATELIER_TRY(op.allowed_members(
-                        {"op", "id", "name", "enabled", "space", "properties", "materials", "sky_map"}));
+                        {"op", "id", "name", "enabled", "space", "properties", "materials", "sky_map", "graph"}));
                     ATELIER_TRY_BIND(id, op.at("id"));
                     ATELIER_TRY_BIND(edited_value, target(*id));
                     const auto edited = *edited_value;
@@ -2875,6 +2990,26 @@ struct Session::GraphCodec {
                         }
                         take(presentation::set_sky_map_binding(runtime, edited, {source, std::move(map)}));
                         // The document keeps the same key unresolved; Play reports it without diverging.
+                        if (missing)
+                            note(world::Severity::warning, missing->kind, missing->error.message, &missing->error);
+                    }
+                    if (const auto at = *op.find("graph")) {
+                        ATELIER_TRY_BIND(text, at->string());
+                        const auto source = std::string(*text);
+                        const MissingResource* missing{};
+                        if (!source.empty() && !session.has_graph(source)) {
+                            auto loaded = project.assets().procedural_graph(source);
+                            if (!loaded && !project.entry(source)) {
+                                take(project.refresh());
+                                loaded = project.assets().procedural_graph(source);
+                            }
+                            if (loaded)
+                                session.unavailable_.erase(std::pair{assets::AssetKind::procedural_graph, source});
+                            else
+                                missing = &session.remember_unavailable(
+                                    project.assets(), assets::AssetKind::procedural_graph, source, loaded.error());
+                        }
+                        take(presentation::set_procedural_binding(runtime, edited, {source, nullptr, {}}));
                         if (missing)
                             note(world::Severity::warning, missing->kind, missing->error.message, &missing->error);
                     }
@@ -3428,6 +3563,8 @@ void Session::forward_change(const Change& change, bool forward) {
                 else if constexpr (std::is_same_v<T, SkyMapChange>)
                     ATELIER_TRY(set(item.root.id(), "sky_map",
                                     take(presentation::read_sky_map(runtime_, item.root.id())).source));
+                else if constexpr (std::is_same_v<T, ProceduralGraphChange>)
+                    ATELIER_TRY(set(item.root.id(), "graph", forward ? item.after : item.before));
                 else
                     static_assert(std::is_same_v<T, RetainedChange>,
                                   "Every change kind is forwarded to Play or explicitly not.");
@@ -3654,6 +3791,7 @@ Result<void> Session::publish_mesh(assets::Reader& reader, const assets::MeshAss
             retained_.insert_or_assign(replacement.object, std::move(replacement.kept));
     }
     unavailable_.erase(std::pair{assets::AssetKind::mesh, asset.key});
+    ATELIER_TRY(publish_procedural_mesh(reader, asset));
     ++revision_;
     forward_mesh(asset);
     return {};
@@ -3738,6 +3876,7 @@ Result<std::vector<world::Diagnostic>> Session::apply_live(std::string_view text
         std::size_t index = 0;
         for (auto op : *ops)
             GraphCodec::apply_change(*this, project, op, index++, result);
+        ATELIER_TRY(sync_procedural_generators(&project));
         return result;
     } catch (const std::exception& error) {
         return failed(error);
@@ -3773,6 +3912,8 @@ Result<std::unique_ptr<Session>> Session::deserialize(std::string_view text, Pro
         session->retained_document_.materials = std::move(load.unreferenced);
         session->load_issues_ = std::move(load.issues);
         session->next_name_ = graph.data.root().at("entities")->size() + 1;
+        if (!prepare)
+            ATELIER_TRY(session->sync_procedural_generators(&project));
         return session;
     } catch (const std::exception& error) {
         return failed(error);
@@ -3792,7 +3933,10 @@ Result<world::Commit> Session::instantiate_subtree(std::string_view text, Projec
         ATELIER_TRY_BIND(prepared, scene_result(GraphCodec::construct(*this, graph, &project, false, load)));
         if (prepared->roots.empty())
             return world::Commit{};
-        return GraphCodec::publish(*this, *prepared, graph, parent, false, load);
+        auto published = GraphCodec::publish(*this, *prepared, graph, parent, false, load);
+        if (published.changed)
+            ATELIER_TRY(sync_procedural_generators(&project));
+        return published;
     } catch (const std::exception& error) {
         return failed(error);
     }
@@ -3861,10 +4005,32 @@ std::vector<Session::RetainedSwap> Session::release(const Change& change) {
     };
     const auto drop_slots = [&](ObjectId object) {
         auto* entry = entry_of(object);
-        if (!entry || entry->slots.empty())
+        if (!entry)
             return;
         auto after = *entry;
-        after.slots.clear();
+        bool changed = false;
+        if (!after.slots.empty()) {
+            after.slots.clear();
+            changed = true;
+        }
+        if (!after.materials.empty()) {
+            after.materials.clear();
+            changed = true;
+        }
+        if (!after.record.empty()) {
+            const auto parsed = json::Document::parse(
+                after.record, {std::numeric_limits<std::size_t>::max(), json::DepthPolicy::containers, true});
+            if (!parsed)
+                fatal("Invalid retained JSON produced by the Scene writer.");
+            json::Builder record(*parsed);
+            static const std::array<std::string, 1> materials_key{"materials"};
+            if (detail::erase_path(record, record.root(), materials_key)) {
+                after.record = dump_retained(record.root());
+                changed = true;
+            }
+        }
+        if (!changed)
+            return;
         swaps.push_back({object, *entry, after});
         if (object != ObjectId{} && after.empty())
             retained_.erase(object);
@@ -3895,6 +4061,7 @@ std::vector<Session::RetainedSwap> Session::release(const Change& change) {
     static const std::array<std::string, 1> space{"space"};
     static const std::array<std::string, 1> name{"name"};
     static const std::array<std::string, 1> sky{"sky_map"};
+    static const std::array<std::string, 1> proc_graph{"graph"};
     static const std::array<std::string, 2> body{"properties", "body"};
     std::visit(
         [&](const auto& item) {
@@ -3931,6 +4098,8 @@ std::vector<Session::RetainedSwap> Session::release(const Change& change) {
                 drop_slots(item.root.id());
             else if constexpr (std::is_same_v<T, SkyMapChange>)
                 drop(item.root.id(), sky);
+            else if constexpr (std::is_same_v<T, ProceduralGraphChange>)
+                drop(item.root.id(), proc_graph);
         },
         change);
     return swaps;
@@ -4053,7 +4222,7 @@ Result<RetainedView> Session::retained(ObjectId object) const {
             }
             if (path.front() == "materials" && mesh_unavailable)
                 return {false, mesh_unavailable->kind};
-            constexpr std::array known{"name", "enabled", "mesh", "materials", "sky_map"};
+            constexpr std::array known{"name", "enabled", "mesh", "graph", "materials", "sky_map"};
             return {false, std::ranges::find(known, path.front()) != known.end() ? mismatch : unknown_key};
         };
         std::vector<std::string> path;

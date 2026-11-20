@@ -2174,6 +2174,8 @@ Result<std::unique_ptr<detail::PreparedUpdate>> detail::InstanceData::prepare(st
             auto control = node.control;
             control.action_target = node.action.target;
             control.enabled &= node.action.enabled;
+            if (!control.tooltip)
+                control.tooltip = node.action.tooltip;
             output.push_back(std::move(control));
         } else if (kind == NodeKind::code_editor) {
             auto control = node.control;

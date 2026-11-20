@@ -122,4 +122,6 @@ function(atelier_add_editor)
     # Repository examples are explicit acceptance inputs, not deployed engine content.
     target_compile_definitions(atelier_editor_control_acceptance PRIVATE
         "ATELIER_EXAMPLE_PROJECT=L\"${PROJECT_SOURCE_DIR}/examples\"")
+    target_compile_definitions(atelier_project_scene_acceptance PRIVATE
+        "ATELIER_EXAMPLE_PROJECT=L\"${PROJECT_SOURCE_DIR}/examples\"")
 endfunction()

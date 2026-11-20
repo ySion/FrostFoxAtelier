@@ -90,6 +90,9 @@ constexpr std::array options{
           "在线框 Only 模式中隐藏被场景表面遮住的边，便于分辨前后关系。"),
     FIELD(triangle_edges, boolean, 0, 1, "Triangle edges", "Display",
           "显示三角形的全部边。关闭时遵循 Mesh 提供的多边形边标记，避免把三角化内部边画出来。"),
+    FIELD(
+        backface_tint, boolean, 0, 1, "Backface tint", "Display",
+        "在 Studio 视图中用醒目的青蓝色高亮法线背向镜头的反面，并临时显示单面材质背面，便于排查程序化网格的绕序（CCW/CW）反转问题。"),
     FIELD(wire_width, number, .25, 16, "Wire width (px)", "Display",
           "线框宽度，单位为物理像素，不随界面 DPI 再次放大。"),
     FIELD(wire_opacity, number, 0, 1, "Wire opacity", "Display",
@@ -266,6 +269,7 @@ double view_value(const renderer::ViewSettings& view, ViewOption option) noexcep
         VALUE(wireframe, wireframe);
         VALUE(hidden_lines, hidden_lines);
         VALUE(triangle_edges, triangle_edges);
+        VALUE(backface_tint, backface_tint);
         VALUE(wire_width, wire_width);
         VALUE(wire_opacity, wire_opacity);
         VALUE(background, background);
@@ -360,6 +364,7 @@ Result<bool> set_view_option(renderer::ViewSettings& view, ViewOption option, do
             SET(wireframe, wireframe);
             SET(hidden_lines, hidden_lines);
             SET(triangle_edges, triangle_edges);
+            SET(backface_tint, backface_tint);
             SET(wire_width, wire_width);
             SET(wire_opacity, wire_opacity);
             SET(background, background);

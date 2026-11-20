@@ -77,10 +77,64 @@ struct CanvasBox {
     bool operator==(const CanvasBox&) const = default;
 };
 
+// Analytic SDF node body (slot == 0), left contour-parallel strip (slot == 1),
+// right contour-parallel strip (slot == 2), or contour-parallel divider stroke (slot == 3 / 4).
+struct CanvasNodeShape {
+    Rect bounds; // Local DIP coordinates relative to the container's top-left corner.
+
+    std::uint8_t shape{}; // 0..7: Pill, Rect, Domed, Trapezoid, Hexagon, Ribbon, Diamond, Circle.
+
+    std::uint8_t
+        slot{}; // 0 = body, 1 = left strip [strip_start, strip_end], 2 = right strip, 3 = left seam, 4 = right seam.
+
+    float strip_start{}; // DIP lateral offset from the shape's side contour.
+
+    float strip_end{}; // DIP lateral end offset from the shape's side contour.
+
+    Color fill{0, 0, 0, 0};
+
+    float border_width{}; // DIP inside border width (or seam stroke width for slot 3/4).
+
+    Color border_color{0, 0, 0, 0};
+
+    bool operator==(const CanvasNodeShape&) const = default;
+};
+
+// Analytic SDF full ring (cos_half <= -1) or annular sector centered at (cx, cy) in local DIPs.
+struct CanvasArc {
+    float cx{};
+
+    float cy{};
+
+    float r_in{};
+
+    float r_out{};
+
+    float dir_x{1.f};
+
+    float dir_y{};
+
+    float cos_half{-2.f}; // <= -1 draws a full 360-degree ring; in (-1, 1) draws a sector of half-angle acos(cos_half).
+
+    float sin_half{};
+
+    Color fill{0, 0, 0, 0};
+
+    float border_width{};
+
+    Color border_color{0, 0, 0, 0};
+
+    bool operator==(const CanvasArc&) const = default;
+};
+
 struct CanvasData {
     static constexpr std::size_t max_boxes = 8192;
 
     static constexpr std::size_t max_strokes = 16384;
+
+    static constexpr std::size_t max_shapes = 8192;
+
+    static constexpr std::size_t max_arcs = 4096;
 
     float grid_step{}; // > 0 draws a scrolled 2D background grid in local DIPs before boxes/strokes.
 
@@ -97,6 +151,10 @@ struct CanvasData {
     std::vector<CanvasBox> boxes;
 
     std::vector<CanvasStroke> strokes;
+
+    std::vector<CanvasNodeShape> shapes;
+
+    std::vector<CanvasArc> arcs;
 
     bool operator==(const CanvasData&) const = default;
 };
@@ -496,6 +554,8 @@ struct UiFrame {
     std::shared_ptr<const Frame> drawing; // Null for geometry-only preparation; such a result cannot be accepted.
 
     std::vector<ControlBox> controls; // Draw order, also used for reverse hit testing.
+
+    std::vector<std::pair<ControlKey, std::uint32_t>> control_index; // Sorted by key for O(log N) lookup in find().
 
     std::uint64_t session_identity{};
 

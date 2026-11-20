@@ -4,6 +4,7 @@
 #include "world/world.hpp"
 #include "geometry/mesh.hpp"
 #include "material/program_resources.hpp"
+#include "procedural/instances.hpp"
 #include <cstring>
 #include <optional>
 #include <type_traits>
@@ -11,9 +12,9 @@
 #include <unordered_set>
 #include "presentation/presentation.gen.hpp"
 
-// Meshes, lights and the Environment: component types consumed by rendering,
-// registered on a World as capabilities. Persistent type names keep the world.
-// prefix of the scene format.
+// Meshes, procedural generators, lights, cameras and the Environment: component
+// types consumed by rendering, registered on a World as capabilities. Persistent
+// type names keep the world. prefix of the scene format.
 namespace atelier::presentation {
 
 namespace detail {
@@ -58,6 +59,62 @@ private:
     std::shared_ptr<const std::vector<material::ProgramSurfaceRef>> surfaces_;
 
     geometry::MeshRef surface_geometry_;
+};
+
+struct ProceduralOutput;
+
+ACLASS(Name = "world.ProceduralGeneratorEntity",
+       DESC = "用于程序化几何与实例散布的 Entity 类型。编辑器创建时会同时配置空间能力和 ProceduralGeneratorComponent。")
+class ProceduralGeneratorEntity : public world::Entity {
+    AGENERATED_BODY(ProceduralGeneratorEntity)
+};
+
+ACLASS(
+    Name = "world.ProceduralGeneratorComponent", Validate = "validate",
+    DESC =
+        "求值 .procgraph 程序化图资产并发布表面网格与按空间块分组的实例集合。点与实例不创建 Entity；空间变换来自所属 Entity。")
+class ProceduralGeneratorComponent : public world::SpatialComponent {
+    AGENERATED_BODY(ProceduralGeneratorComponent)
+
+public:
+    AFIELD(Label = "Override seed", Category = "Generator",
+           DESC = "启用后使用此组件的 Seed 覆盖 .procgraph 图根的默认种子，便于同一图资产在场景中生成不同变体。")
+    bool override_seed{};
+
+    AFIELD(Label = "Seed", Category = "Generator", DESC = "启用 Override seed 时传给程序化图求值的随机种子。")
+    std::int32_t seed{};
+
+    AFIELD(Label = "Chunk size (m)", Category = "Generator", HardMin = "0.1", HardMax = "100000",
+           DESC = "实例发布时按局部空间立方网格分块的边长（m）。未变化的块跨重算复用局部变换缓冲。")
+    float chunk_size{32.f};
+
+private:
+    friend struct detail::Access;
+
+    [[nodiscard]] Result<void> validate() const;
+
+    AFIELD(Name = "graph_source", Hidden)
+    String graph_source_;
+
+    std::shared_ptr<const ProceduralOutput> output_;
+
+    AFIELD(Name = "materials", Hidden, Sequence = "material.Resource")
+    ReferenceSequence materials_;
+
+    std::vector<std::string> material_slots_;
+
+    std::vector<bool> material_overrides_;
+
+    std::shared_ptr<const std::vector<material::ProgramSurfaceRef>> surfaces_;
+
+    geometry::MeshRef surface_geometry_;
+
+    AFIELD(Name = "instance_materials", Hidden, Sequence = "material.Resource")
+    ReferenceSequence instance_materials_;
+
+    std::vector<std::shared_ptr<const std::vector<material::ProgramSurfaceRef>>> instance_surfaces_;
+
+    std::shared_ptr<const ProceduralOutput> instance_output_;
 };
 
 AENUM(
@@ -347,6 +404,10 @@ struct Types {
     TypeId environment_component;
 
     TypeId camera_component;
+
+    TypeId procedural_generator_component;
+
+    TypeId procedural_generator_entity;
 };
 
 // Call once per Runtime, after world::register_types.
@@ -375,6 +436,122 @@ struct StaticMeshEntityDesc {
 // lifecycle notification or Begin occurs until the caller invokes World::attach.
 // Requires an open World at a host boundary; a running World is supported.
 [[nodiscard]] Result<ObjectRoot> create_static_mesh_entity(world::World&, const StaticMeshEntityDesc&);
+
+[[nodiscard]] geometry::MeshRef build_procedural_surface_mesh(const procedural::Geometry&);
+
+inline math::Matrix4 procedural_affine_matrix(const procedural::Affine& a) noexcept {
+    return math::Matrix4{
+        {a[0], a[1], a[2], 0.f, a[3], a[4], a[5], 0.f, a[6], a[7], a[8], 0.f, a[9], a[10], a[11], 1.f}};
+}
+
+// Row-vector local * world composition in double intermediates with finite and
+// normal-transform admission matching the renderer's instance validation.
+[[nodiscard]] inline std::optional<math::Matrix4> compose_instance_world(const procedural::Affine& a,
+                                                                         const math::Matrix4& gen_world) noexcept {
+    for (const float v : a)
+        if (!std::isfinite(v))
+            return std::nullopt;
+    if (!math::is_finite(gen_world))
+        return std::nullopt;
+    const math::Matrix4d local{{double(a[0]), double(a[1]), double(a[2]), 0., double(a[3]), double(a[4]), double(a[5]),
+                                0., double(a[6]), double(a[7]), double(a[8]), 0., double(a[9]), double(a[10]),
+                                double(a[11]), 1.}};
+    const math::Matrix4d product = local * static_cast<math::Matrix4d>(gen_world);
+    auto out = static_cast<math::Matrix4>(product);
+    out[3] = 0.f;
+    out[7] = 0.f;
+    out[11] = 0.f;
+    out[15] = 1.f;
+    if (!math::is_finite(out))
+        return std::nullopt;
+    if (!math::normal_transform({out[0], out[1], out[2], out[4], out[5], out[6], out[8], out[9], out[10]}))
+        return std::nullopt;
+    return out;
+}
+
+struct ProceduralAssetSlotRange {
+    std::string key;
+
+    geometry::MeshRef mesh;
+
+    std::size_t default_offset{};
+
+    std::size_t default_count{};
+
+    std::vector<std::string> default_slots{};
+
+    bool operator==(const ProceduralAssetSlotRange&) const = default;
+};
+
+struct ProceduralMeshDependency {
+    std::string key;
+
+    geometry::MeshRef mesh;
+
+    std::vector<std::pair<std::string, std::string>> slot_materials{};
+
+    bool operator==(const ProceduralMeshDependency&) const = default;
+};
+
+struct ProceduralOutput {
+    std::uint64_t generation{};
+
+    std::shared_ptr<const procedural::Geometry> geometry;
+
+    geometry::MeshRef surface_mesh;
+
+    procedural::Publication publication;
+
+    std::vector<ProceduralAssetSlotRange> assets;
+
+    std::vector<ProceduralMeshDependency> mesh_dependencies{};
+};
+
+struct ProceduralInstanceAsset {
+    std::string key;
+
+    geometry::MeshRef mesh;
+
+    std::vector<MaterialBinding> defaults{};
+};
+
+struct ProceduralSource {
+    std::string source;
+
+    std::shared_ptr<const ProceduralOutput> output;
+};
+
+struct ProceduralBinding {
+    std::string source;
+
+    std::shared_ptr<const ProceduralOutput> output;
+
+    std::vector<ProceduralInstanceAsset> resolved_assets{};
+};
+
+struct ProceduralGeneratorEntityDesc {
+    world::Trs transform{};
+
+    std::string_view graph_source{};
+
+    std::shared_ptr<const ProceduralOutput> output{};
+
+    std::vector<ProceduralInstanceAsset> resolved_assets{};
+};
+
+[[nodiscard]] Result<ObjectRoot> create_procedural_generator_entity(world::World&,
+                                                                    const ProceduralGeneratorEntityDesc&);
+
+[[nodiscard]] Result<void> set_procedural_binding(Runtime&, ObjectId generator_component, ProceduralBinding);
+
+[[nodiscard]] Result<std::shared_ptr<const ProceduralOutput>>
+publish_procedural_binding(Runtime&, ObjectId generator_component, std::string source, ProceduralOutput output,
+                           std::span<const ProceduralInstanceAsset> resolved_assets);
+
+// Reads the graph key and published output handle without reading or rooting instance materials.
+[[nodiscard]] Result<ProceduralSource> read_procedural_source(Runtime&, ObjectId generator_component);
+
+[[nodiscard]] Result<ProceduralBinding> read_procedural_binding(Runtime&, ObjectId generator_component);
 
 struct RenderItem {
     ObjectId entity;
@@ -510,6 +687,44 @@ public:
 };
 
 class Presented;
+
+struct BucketTracker {
+    std::vector<bool> materials_dirty; // Component/binding or resource changed, not just space.
+
+    std::vector<std::unordered_set<ObjectId>> material_dependencies;
+
+    std::unordered_map<ObjectId, std::unordered_set<std::uint32_t>> material_dependents;
+
+    // Each Entity on a slot's spatial chain leads to that slot; `components` maps its component to the slot.
+    std::unordered_map<ObjectId, std::vector<std::uint32_t>> dependents;
+
+    std::unordered_map<ObjectId, std::uint32_t> components;
+
+    // Slot s's chain, its own Entity first, is chains[chain_starts[s], chain_starts[s + 1]).
+    std::vector<ObjectId> chains;
+
+    std::vector<std::uint32_t> chain_starts;
+
+    std::vector<std::uint32_t> dirty;
+
+    std::vector<std::uint32_t> volatile_slots;
+
+    std::vector<std::uint32_t> presented_list;
+
+    std::vector<bool> volatile_flags;
+
+    std::vector<std::uint64_t> marks;
+
+    std::vector<std::uint64_t> presented_marks; // Serial of the update that last listed each slot.
+
+    void clear_layout();
+
+    void reset(std::size_t count);
+
+    void mark(std::uint32_t slot, std::uint64_t serial, bool material = false);
+
+    void index_materials(std::size_t slot, std::unordered_set<ObjectId> dependencies);
+};
 }
 
 // One position of the mesh bucket in the cached extraction.
@@ -522,17 +737,54 @@ struct MeshSlot {
     std::uint64_t changed{}; // Scene::update serial that last changed `item` or `presented`.
 };
 
+struct GeneratorRenderCollection {
+    geometry::MeshRef geometry;
+
+    std::array<std::int32_t, 3> chunk{};
+
+    std::shared_ptr<const std::vector<procedural::Affine>> transforms;
+
+    std::shared_ptr<const std::vector<material::ProgramSurfaceRef>> surfaces;
+};
+
+struct GeneratorRenderItem {
+    ObjectId entity;
+
+    ObjectId component;
+
+    math::Matrix4 world;
+
+    std::uint64_t output_generation{};
+
+    geometry::MeshRef surface_geometry;
+
+    std::shared_ptr<const std::vector<material::ProgramSurfaceRef>> surface_materials;
+
+    std::vector<GeneratorRenderCollection> collections;
+};
+
+struct GeneratorSlot {
+    std::optional<GeneratorRenderItem> item;
+
+    std::optional<math::Matrix4> presented;
+
+    std::uint64_t changed{};
+};
+
 // The presentation of one World; a World without a Scene created by its host is
-// not presented. Creating it registers the mesh (a mesh needs
-// geometry), light and Environment capabilities and the one-Environment
-// admission on that World; extraction reads only those buckets and reports
-// object failures to the World's log under its failure policy. One per World,
-// created at a host boundary and destroyed before the World.
+// not presented. Creating it registers the mesh (a mesh needs geometry),
+// procedural generator (a generator needs renderable output), light, camera and
+// Environment capabilities and the unique Environment/camera admissions on that
+// World; extraction reads only those buckets and reports object failures to the
+// World's log under its failure policy. One per World, created at a host
+// boundary and destroyed before the World.
 class Scene final {
 public:
     [[nodiscard]] static Result<Scene> create(world::World&, const Types&);
 
     [[nodiscard]] world::CapabilityId meshes() const noexcept { return meshes_; }
+
+    [[nodiscard]] world::CapabilityId generators() const noexcept { return generators_; }
 
     [[nodiscard]] world::CapabilityId lights() const noexcept { return lights_; }
 
@@ -565,6 +817,8 @@ public:
 
     // The cache as of the latest update, by mesh bucket position.
     [[nodiscard]] std::span<const MeshSlot> mesh_slots() const noexcept { return mesh_slots_; }
+
+    [[nodiscard]] std::span<const GeneratorSlot> generator_slots() const noexcept { return generator_slots_; }
 
     // Serial of the latest update that rebuilt every slot after the mesh bucket
     // changed (World::revision advanced); slot positions keep their component until then.
@@ -606,11 +860,11 @@ private:
     // Re-reads one mesh slot; true when its item changed.
     Result<bool> update_mesh(world::World::SpatialPass&, std::size_t slot, const world::CapabilityMember&) const;
 
-    // Replace only after a successful capture/storage, even when the Surface owner is unchanged.
-    void index_materials(std::size_t slot, std::unordered_set<ObjectId> dependencies) const;
+    Result<bool> update_generator(world::World::SpatialPass&, std::size_t slot, const world::CapabilityMember&) const;
 
-    // Rebuilds the spatial chains of the mesh slots and the light sources for a new layout.
-    Result<void> index_layout(world::World::SpatialPass&, std::span<const world::CapabilityMember> meshes) const;
+    // Rebuilds the spatial chains of the mesh, generator and light sources for a new layout.
+    Result<void> index_layout(world::World::SpatialPass&, std::span<const world::CapabilityMember> meshes,
+                              std::span<const world::CapabilityMember> generators) const;
 
     // `failed`: an active light was not drawn. `moved`: a presented pose moved a light.
     Result<std::vector<LightRenderItem>> extract_lights(const detail::Presented*, bool* failed = nullptr,
@@ -621,6 +875,8 @@ private:
     Types types_;
 
     world::CapabilityId meshes_;
+
+    world::CapabilityId generators_;
 
     world::CapabilityId lights_;
 
@@ -633,11 +889,14 @@ private:
 
     mutable std::vector<MeshSlot> mesh_slots_;
 
-    mutable std::vector<bool> materials_dirty_; // Component/binding or resource changed, not just space.
+    mutable detail::BucketTracker mesh_tracker_;
 
-    mutable std::vector<std::unordered_set<ObjectId>> material_dependencies_;
+    mutable std::vector<GeneratorSlot> generator_slots_;
 
-    mutable std::unordered_map<ObjectId, std::unordered_set<std::uint32_t>> material_dependents_;
+    mutable detail::BucketTracker generator_tracker_;
+
+    mutable std::unordered_map<std::size_t, std::shared_ptr<const std::vector<material::ProgramSurfaceRef>>>
+        fallback_surfaces_;
 
     mutable std::vector<LightRenderItem> lights_cache_;
 
@@ -650,30 +909,8 @@ private:
 
     mutable std::vector<ObjectId> written_;
 
-    // Each Entity on a mesh's spatial chain, and its component, lead to that slot.
-    mutable std::unordered_map<ObjectId, std::vector<std::uint32_t>> mesh_dependents_;
-
-    mutable std::unordered_map<ObjectId, std::uint32_t> mesh_components_;
-
-    // Slot s's chain, its own Entity first, is chains_[chain_starts_[s], chain_starts_[s + 1]).
-    mutable std::vector<ObjectId> chains_;
-
-    mutable std::vector<std::uint32_t> chain_starts_;
-
     // Light components and the Entities on their chains.
     mutable std::unordered_set<ObjectId> light_sources_;
-
-    mutable std::vector<std::uint32_t> dirty_;
-
-    mutable std::vector<std::uint32_t> volatile_;
-
-    mutable std::vector<std::uint32_t> presented_list_;
-
-    mutable std::vector<bool> volatile_flags_;
-
-    mutable std::vector<std::uint64_t> marks_;
-
-    mutable std::vector<std::uint64_t> presented_marks_; // Serial of the update that last listed each slot.
 
     mutable bool lights_dirty_{true};
 

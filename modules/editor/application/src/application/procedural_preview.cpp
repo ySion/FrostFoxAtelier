@@ -1,139 +1,126 @@
 #include "application/procedural_preview.hpp"
 #include "material/resources.hpp"
+#include "platform/utf.hpp"
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <format>
+#include <numbers>
+#include <set>
+#include <tuple>
 #include <unordered_map>
 
 namespace atelier::application {
 namespace {
 
-math::Vector3 safe_unit_normal(math::Vector3 n, math::Vector3 fallback = {0.f, 1.f, 0.f}) noexcept {
-    if (!std::isfinite(n.x) || !std::isfinite(n.y) || !std::isfinite(n.z))
-        return fallback;
-    const float len2 = n.x * n.x + n.y * n.y + n.z * n.z;
-    if (!std::isfinite(len2) || len2 < 1e-12f)
-        return fallback;
-    const float inv = 1.f / std::sqrt(len2);
-    return {n.x * inv, n.y * inv, n.z * inv};
-}
-
 bool finite_v3(math::Vector3 p) noexcept {
-    return std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z);
-}
-
-math::Vector2 safe_uv(math::Vector2 uv) noexcept {
-    return (std::isfinite(uv.x) && std::isfinite(uv.y)) ? uv : math::Vector2{0.f, 0.f};
-}
-
-math::Matrix4 identity_matrix() noexcept {
-    return {1.f, 0.f, 0.f, 0.f, //
-            0.f, 1.f, 0.f, 0.f, //
-            0.f, 0.f, 1.f, 0.f, //
-            0.f, 0.f, 0.f, 1.f};
+    return math::is_finite(p);
 }
 
 math::Vector3 rotate_by_quat(math::Vector3 v, math::Quaternion q) noexcept {
-    if (!std::isfinite(q.x) || !std::isfinite(q.y) || !std::isfinite(q.z) || !std::isfinite(q.w))
+    if (const auto unit = math::try_normalize(q))
+        return math::rotate(*unit, v);
+    return v;
+}
+
+math::Vector3 transform_point_row(math::Vector3 p, const math::Matrix4& m, bool identity) noexcept {
+    if (identity)
+        return p;
+    return {p.x * m[0] + p.y * m[4] + p.z * m[8] + m[12], p.x * m[1] + p.y * m[5] + p.z * m[9] + m[13],
+            p.x * m[2] + p.y * m[6] + p.z * m[10] + m[14]};
+}
+
+math::Vector3 transform_vector_row(math::Vector3 v, const math::Matrix4& m, bool identity) noexcept {
+    if (identity)
         return v;
-    const float len2 = q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w;
-    if (!std::isfinite(len2) || len2 < 1e-12f)
-        return v;
-    const float inv = 1.f / std::sqrt(len2);
-    q = {q.x * inv, q.y * inv, q.z * inv, q.w * inv};
-    const math::Vector3 u{q.x, q.y, q.z};
-    const math::Vector3 t = math::cross(u, v) * 2.f;
-    return v + t * q.w + math::cross(u, t);
+    return {v.x * m[0] + v.y * m[4] + v.z * m[8], v.x * m[1] + v.y * m[5] + v.z * m[9],
+            v.x * m[2] + v.y * m[6] + v.z * m[10]};
+}
+
+struct GeometryBoundsSample {
+    math::Vector3 low{};
+
+    math::Vector3 high{};
+
+    bool valid{};
+};
+
+GeometryBoundsSample compute_geometry_bounds(const procedural::Geometry& geometry) noexcept {
+    const auto& positions = geometry.positions();
+    math::Vector3 low{1e30f, 1e30f, 1e30f};
+    math::Vector3 high{-1e30f, -1e30f, -1e30f};
+    bool any = false;
+    for (const auto& p : positions) {
+        if (!finite_v3(p))
+            continue;
+        low.x = std::min(low.x, p.x);
+        low.y = std::min(low.y, p.y);
+        low.z = std::min(low.z, p.z);
+        high.x = std::max(high.x, p.x);
+        high.y = std::max(high.y, p.y);
+        high.z = std::max(high.z, p.z);
+        any = true;
+    }
+    for (const auto& m : geometry.instance_transforms()) {
+        const math::Vector3 t{m[12], m[13], m[14]};
+        if (!finite_v3(t))
+            continue;
+        low.x = std::min(low.x, t.x);
+        low.y = std::min(low.y, t.y);
+        low.z = std::min(low.z, t.z);
+        high.x = std::max(high.x, t.x);
+        high.y = std::max(high.y, t.y);
+        high.z = std::max(high.z, t.z);
+        any = true;
+    }
+    if (!any)
+        return {};
+    return {low, high, true};
 }
 
 } // namespace
 
-geometry::MeshRef build_procedural_surface_mesh(const procedural::Geometry& geometry) {
+bool is_pure_point_cloud(const procedural::Geometry& geometry) noexcept {
+    if (geometry.count(procedural::Layer::point) == 0 || geometry.count(procedural::Layer::instance) > 0)
+        return false;
     const auto prim_count = geometry.count(procedural::Layer::primitive);
-    if (prim_count == 0)
-        return {};
-    const auto& positions = geometry.positions();
-    const auto vp = geometry.vertex_points();
+    return prim_count == 0;
+}
 
-    const Array<math::Vector3>* vtx_n = nullptr;
-    const Array<math::Vector3>* pt_n = nullptr;
-    if (auto found = geometry.read<math::Vector3>("N", procedural::Layer::vertex); found && *found)
-        vtx_n = *found;
-    else if (auto found_p = geometry.read<math::Vector3>("N", procedural::Layer::point); found_p && *found_p)
-        pt_n = *found_p;
-
-    const Array<math::Vector2>* vtx_uv = nullptr;
-    const Array<math::Vector2>* pt_uv = nullptr;
-    if (auto found = geometry.read<math::Vector2>("uv", procedural::Layer::vertex); found && *found)
-        vtx_uv = *found;
-    else if (auto found_p = geometry.read<math::Vector2>("uv", procedural::Layer::point); found_p && *found_p)
-        pt_uv = *found_p;
-
-    std::vector<geometry::Vertex> vertices;
-    std::vector<std::uint8_t> edge_masks;
-
-    for (std::uint32_t p = 0; p < prim_count; ++p) {
-        const auto range = geometry.primitive(p);
-        if (range.kind != procedural::PrimitiveKind::polygon || range.count < 3)
-            continue;
-        const std::uint32_t v0 = range.first;
-        const std::uint32_t p0_idx = vp[v0];
-        const math::Vector3 p0 = positions[p0_idx];
-        if (!finite_v3(p0))
-            continue;
-
-        math::Vector3 face_n{0.f, 1.f, 0.f};
-        if (!vtx_n && !pt_n) {
-            const math::Vector3 p1 = positions[vp[v0 + 1]];
-            const math::Vector3 p2 = positions[vp[v0 + 2]];
-            if (finite_v3(p1) && finite_v3(p2))
-                face_n = safe_unit_normal(math::cross(p1 - p0, p2 - p0));
-        }
-
-        const auto make_vertex = [&](std::uint32_t v_idx) {
-            const std::uint32_t pt_idx = vp[v_idx];
-            const math::Vector3 pos = positions[pt_idx];
-            const math::Vector3 n = vtx_n  ? safe_unit_normal((*vtx_n)[v_idx], face_n)
-                                    : pt_n ? safe_unit_normal((*pt_n)[pt_idx], face_n)
-                                           : face_n;
-            const math::Vector2 uv = vtx_uv  ? safe_uv((*vtx_uv)[v_idx])
-                                     : pt_uv ? safe_uv((*pt_uv)[pt_idx])
-                                             : math::Vector2{pos.x * 0.5f, pos.z * 0.5f};
-            geometry::Vertex out{};
-            out.position[0] = pos.x;
-            out.position[1] = pos.y;
-            out.position[2] = pos.z;
-            out.normal[0] = n.x;
-            out.normal[1] = n.y;
-            out.normal[2] = n.z;
-            out.uv[0] = uv.x;
-            out.uv[1] = uv.y;
-            return out;
-        };
-
-        for (std::uint32_t i = 1; i + 1 < range.count; ++i) {
-            const std::uint32_t v1 = v0 + i;
-            const std::uint32_t v2 = v0 + i + 1;
-            if (!finite_v3(positions[vp[v1]]) || !finite_v3(positions[vp[v2]]))
-                continue;
-            vertices.push_back(make_vertex(v0));
-            vertices.push_back(make_vertex(v1));
-            vertices.push_back(make_vertex(v2));
-            std::uint8_t mask = 1u; // Edge opposite v0 is (v1, v2), always a polygon outer edge.
-            if (i + 2 == range.count)
-                mask |= 2u; // Edge opposite v1 is (v2, v0), outer edge on last fan triangle.
-            if (i == 1)
-                mask |= 4u; // Edge opposite v2 is (v0, v1), outer edge on first fan triangle.
-            edge_masks.push_back(mask);
-        }
+std::wstring format_geometry_info_hud(std::wstring_view title, const procedural::Geometry& geometry, bool auto_points,
+                                      std::optional<double> cook_ms, std::size_t chunk_count) {
+    std::wstring out{title};
+    if (auto_points)
+        out += L"  [Auto Points]";
+    out += std::format(L"\nPts: {}  Prims: {}  Vtx: {}  Inst: {}", geometry.count(procedural::Layer::point),
+                       geometry.count(procedural::Layer::primitive), geometry.count(procedural::Layer::vertex),
+                       geometry.count(procedural::Layer::instance));
+    if (const auto bounds = compute_geometry_bounds(geometry); bounds.valid) {
+        const math::Vector3 size = bounds.high - bounds.low;
+        out += std::format(L"\nSize: {:.2f} × {:.2f} × {:.2f} m", size.x, size.y, size.z);
     }
-
-    if (vertices.empty())
-        return {};
-    std::vector<geometry::MaterialSlot> slots{{geometry::MaterialSlot{"default"}}};
-    std::vector<geometry::MeshPart> parts{{geometry::MeshPart{0, static_cast<std::uint32_t>(vertices.size()), 0}}};
-    auto created =
-        geometry::Mesh::create(std::move(vertices), std::move(edge_masks), std::move(slots), std::move(parts));
-    return created ? std::move(*created) : geometry::MeshRef{};
+    if (cook_ms || chunk_count > 0) {
+        out += L"\n";
+        if (cook_ms)
+            out += std::format(L"Cook: {:.2f} ms", *cook_ms);
+        if (cook_ms && chunk_count > 0)
+            out += L"  ·  ";
+        if (chunk_count > 0)
+            out += std::format(L"Chunks: {}", chunk_count);
+    }
+    const auto& attrs = geometry.attributes();
+    if (!attrs.empty()) {
+        out += L"\nAttrs: ";
+        const std::size_t shown = std::min<std::size_t>(attrs.size(), 6);
+        for (std::size_t i = 0; i < shown; ++i) {
+            if (i > 0)
+                out += L", ";
+            out += platform::utf8_to_utf16_validated(attrs[i].name.view().std_view());
+        }
+        if (attrs.size() > shown)
+            out += std::format(L" (+{})", attrs.size() - shown);
+    }
+    return out;
 }
 
 void append_procedural_guides(const procedural::Geometry& geometry, const editor::ViewportView& view,
@@ -141,29 +128,54 @@ void append_procedural_guides(const procedural::Geometry& geometry, const editor
     const auto& positions = geometry.positions();
     const std::size_t point_count = positions.size();
     const float dpi = std::max(view.dpi_scale, 1.f);
+    const bool identity_world = options.world_transform == math::Matrix4::identity();
+    const std::expected<math::NormalTransform, math::NormalTransformFailure> normal_xform =
+        identity_world ? std::expected<math::NormalTransform, math::NormalTransformFailure>{math::NormalTransform{
+                             {1.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 1.f}, 1.f}}
+                       : math::normal_transform(
+                             {options.world_transform[0], options.world_transform[1], options.world_transform[2],
+                              options.world_transform[4], options.world_transform[5], options.world_transform[6],
+                              options.world_transform[8], options.world_transform[9], options.world_transform[10]});
 
-    // Estimate characteristic scale from bounding box so normal/orient guides scale proportionally.
+    const auto transform_normal = [&](math::Vector3 n) noexcept -> std::optional<math::Vector3> {
+        if (!normal_xform)
+            return std::nullopt;
+        if (identity_world)
+            return math::try_normalize(n);
+        const auto& m = normal_xform->matrix;
+        return math::try_normalize(math::Vector3{n.x * m[0] + n.y * m[3] + n.z * m[6],
+                                                 n.x * m[1] + n.y * m[4] + n.z * m[7],
+                                                 n.x * m[2] + n.y * m[5] + n.z * m[8]});
+    };
+
+    const auto front_facing = [&](math::Vector3 world_p, math::Vector3 unit_world_n) noexcept {
+        const math::Vector3 to_eye = view.orthographic ? -view.forward : (view.eye - world_p);
+        return math::dot(unit_world_n, to_eye) >= -0.04f * std::max(1e-4f, math::length(to_eye));
+    };
+
     float guide_scale = 0.2f;
+    math::Vector3 local_low{1e30f, 1e30f, 1e30f};
+    math::Vector3 local_high{-1e30f, -1e30f, -1e30f};
+    bool has_bounds = false;
     if (point_count > 0) {
-        math::Vector3 low{1e30f, 1e30f, 1e30f};
-        math::Vector3 high{-1e30f, -1e30f, -1e30f};
-        bool any = false;
-        const std::size_t sample_step = std::max<std::size_t>(1, point_count / 1024);
+        const std::size_t sample_step = options.show_bounds ? 1 : std::max<std::size_t>(1, point_count / 1024);
         for (std::size_t i = 0; i < point_count; i += sample_step) {
             if (finite_v3(positions[i])) {
-                low.x = std::min(low.x, positions[i].x);
-                low.y = std::min(low.y, positions[i].y);
-                low.z = std::min(low.z, positions[i].z);
-                high.x = std::max(high.x, positions[i].x);
-                high.y = std::max(high.y, positions[i].y);
-                high.z = std::max(high.z, positions[i].z);
-                any = true;
+                local_low.x = std::min(local_low.x, positions[i].x);
+                local_low.y = std::min(local_low.y, positions[i].y);
+                local_low.z = std::min(local_low.z, positions[i].z);
+                local_high.x = std::max(local_high.x, positions[i].x);
+                local_high.y = std::max(local_high.y, positions[i].y);
+                local_high.z = std::max(local_high.z, positions[i].z);
+                has_bounds = true;
             }
         }
-        if (any) {
-            const float diag = math::length(high - low);
+        if (has_bounds) {
+            const math::Vector3 world_a = transform_point_row(local_low, options.world_transform, identity_world);
+            const math::Vector3 world_b = transform_point_row(local_high, options.world_transform, identity_world);
+            const float diag = math::length(world_b - world_a);
             if (std::isfinite(diag) && diag > 1e-4f)
-                guide_scale = std::clamp(diag * 0.045f, 0.02f, 25.f);
+                guide_scale = std::clamp(diag * 0.042f, 0.02f, 25.f);
         }
     }
 
@@ -178,7 +190,7 @@ void append_procedural_guides(const procedural::Geometry& geometry, const editor
         shape.kind = renderer::OverlayShape::Kind::segment;
         shape.points = {pa->x, pa->y, pb->x, pb->y};
         shape.color = {color[0], color[1], color[2], color[3]};
-        shape.width = width_dip * dpi;
+        shape.width = std::clamp(width_dip * dpi, 0.f, 64.f);
         overlay.push_back(shape);
     };
 
@@ -192,11 +204,56 @@ void append_procedural_guides(const procedural::Geometry& geometry, const editor
         shape.kind = renderer::OverlayShape::Kind::segment;
         shape.points = {sp->x, sp->y, sp->x, sp->y};
         shape.color = {color[0], color[1], color[2], color[3]};
-        shape.width = diameter_dip * dpi;
+        shape.width = std::clamp(diameter_dip * dpi, 0.f, 64.f);
         overlay.push_back(shape);
     };
 
-    // 1. Open Polylines (always drawn when enabled, e.g. Line / Polyline curves).
+    const auto add_wire_box = [&](math::Vector3 low, math::Vector3 high, std::array<float, 4> color, float width_dip) {
+        const std::array<math::Vector3, 8> corners{{
+            transform_point_row({low.x, low.y, low.z}, options.world_transform, identity_world),
+            transform_point_row({high.x, low.y, low.z}, options.world_transform, identity_world),
+            transform_point_row({high.x, high.y, low.z}, options.world_transform, identity_world),
+            transform_point_row({low.x, high.y, low.z}, options.world_transform, identity_world),
+            transform_point_row({low.x, low.y, high.z}, options.world_transform, identity_world),
+            transform_point_row({high.x, low.y, high.z}, options.world_transform, identity_world),
+            transform_point_row({high.x, high.y, high.z}, options.world_transform, identity_world),
+            transform_point_row({low.x, high.y, high.z}, options.world_transform, identity_world),
+        }};
+        constexpr std::array<std::pair<unsigned, unsigned>, 12> edges{
+            {{0, 1}, {1, 2}, {2, 3}, {3, 0}, {4, 5}, {5, 6}, {6, 7}, {7, 4}, {0, 4}, {1, 5}, {2, 6}, {3, 7}}};
+        for (const auto [i0, i1] : edges)
+            add_segment(corners[i0], corners[i1], color, width_dip);
+    };
+
+    // 1. Bounds & Generator Spatial Chunk Cages:
+    if (options.show_bounds) {
+        const auto full_bounds =
+            has_bounds ? GeometryBoundsSample{local_low, local_high, true} : compute_geometry_bounds(geometry);
+        if (full_bounds.valid)
+            add_wire_box(full_bounds.low, full_bounds.high, {0.96f, 0.78f, 0.28f, 0.85f}, 1.45f);
+
+        if (options.chunk_size > 0.f && std::isfinite(options.chunk_size) && !geometry.instance_transforms().empty()) {
+            const float inv_chunk = 1.f / options.chunk_size;
+            std::set<std::tuple<int, int, int>> occupied_chunks;
+            for (const auto& m : geometry.instance_transforms()) {
+                if (!std::isfinite(m[12]) || !std::isfinite(m[13]) || !std::isfinite(m[14]))
+                    continue;
+                occupied_chunks.emplace(static_cast<int>(std::floor(m[12] * inv_chunk)),
+                                        static_cast<int>(std::floor(m[13] * inv_chunk)),
+                                        static_cast<int>(std::floor(m[14] * inv_chunk)));
+                if (occupied_chunks.size() >= 128)
+                    break;
+            }
+            for (const auto& [cx, cy, cz] : occupied_chunks) {
+                const math::Vector3 clow{cx * options.chunk_size, cy * options.chunk_size, cz * options.chunk_size};
+                const math::Vector3 chigh{clow.x + options.chunk_size, clow.y + options.chunk_size,
+                                          clow.z + options.chunk_size};
+                add_wire_box(clow, chigh, {0.30f, 0.82f, 0.88f, 0.36f}, 1.0f);
+            }
+        }
+    }
+
+    // 2. Open Polylines:
     if (options.show_polylines) {
         const auto prim_count = geometry.count(procedural::Layer::primitive);
         const auto vp = geometry.vertex_points();
@@ -207,8 +264,11 @@ void append_procedural_guides(const procedural::Geometry& geometry, const editor
             if (range.kind != procedural::PrimitiveKind::polyline || range.count < 2)
                 continue;
             for (std::uint32_t i = 0; i + 1 < range.count && emitted < max_polyline_segments; ++i) {
-                add_segment(positions[vp[range.first + i]], positions[vp[range.first + i + 1]],
-                            {0.92f, 0.78f, 0.36f, 0.95f}, 1.75f);
+                const auto a =
+                    transform_point_row(positions[vp[range.first + i]], options.world_transform, identity_world);
+                const auto b =
+                    transform_point_row(positions[vp[range.first + i + 1]], options.world_transform, identity_world);
+                add_segment(a, b, {0.92f, 0.78f, 0.36f, 0.95f}, 1.75f);
                 ++emitted;
             }
         }
@@ -218,7 +278,11 @@ void append_procedural_guides(const procedural::Geometry& geometry, const editor
     const std::size_t stride =
         point_count > max_guide_points ? (point_count + max_guide_points - 1) / max_guide_points : 1;
 
-    // 2. Point Markers (colored by Cd when present, otherwise Houdini cyan).
+    const Array<math::Vector3>* point_normals = nullptr;
+    if (auto pt_n = geometry.read<math::Vector3>("N", procedural::Layer::point); pt_n && *pt_n)
+        point_normals = *pt_n;
+
+    // 3. Point Markers (colored by Cd when present; hemisphere-dimmed when point N faces away from camera):
     if (options.show_points && point_count > 0) {
         const Array<math::Vector3>* cd3 = nullptr;
         const Array<math::Vector4>* cd4 = nullptr;
@@ -228,28 +292,38 @@ void append_procedural_guides(const procedural::Geometry& geometry, const editor
             cd4 = *c4;
 
         for (std::size_t i = 0; i < point_count; i += stride) {
-            std::array<float, 4> color{0.32f, 0.78f, 0.98f, 0.95f};
+            const auto wp = transform_point_row(positions[i], options.world_transform, identity_world);
+            bool front = true;
+            if (point_normals) {
+                if (const auto wn = transform_normal((*point_normals)[i]))
+                    front = front_facing(wp, *wn);
+            }
+            const float alpha = front ? 0.95f : 0.28f;
+            const float diam = front ? 4.25f : 2.65f;
+            std::array<float, 4> color{0.32f, 0.78f, 0.98f, alpha};
             if (cd3) {
                 const auto& c = (*cd3)[i];
                 if (finite_v3(c))
-                    color = {std::clamp(c.x, 0.f, 1.f), std::clamp(c.y, 0.f, 1.f), std::clamp(c.z, 0.f, 1.f), 0.95f};
+                    color = {std::clamp(c.x, 0.f, 1.f), std::clamp(c.y, 0.f, 1.f), std::clamp(c.z, 0.f, 1.f), alpha};
             } else if (cd4) {
                 const auto& c = (*cd4)[i];
                 if (std::isfinite(c.x) && std::isfinite(c.y) && std::isfinite(c.z))
-                    color = {std::clamp(c.x, 0.f, 1.f), std::clamp(c.y, 0.f, 1.f), std::clamp(c.z, 0.f, 1.f), 0.95f};
+                    color = {std::clamp(c.x, 0.f, 1.f), std::clamp(c.y, 0.f, 1.f), std::clamp(c.z, 0.f, 1.f), alpha};
             }
-            add_point_disc(positions[i], color, 4.25f);
+            add_point_disc(wp, color, diam);
         }
     }
 
-    // 3. Normals (point N, falling back to vertex N).
-    if (options.show_normals) {
-        if (auto pt_n = geometry.read<math::Vector3>("N", procedural::Layer::point); pt_n && *pt_n) {
-            const auto& normals = **pt_n;
+    // 4. Point / Vertex Normals:
+    if (options.show_point_normals) {
+        if (point_normals) {
+            const auto& normals = *point_normals;
             for (std::size_t i = 0; i < point_count; i += stride) {
-                const auto n = safe_unit_normal(normals[i], {0.f, 0.f, 0.f});
-                if (n.x != 0.f || n.y != 0.f || n.z != 0.f)
-                    add_segment(positions[i], positions[i] + n * guide_scale, {0.35f, 0.90f, 0.85f, 0.88f}, 1.25f);
+                const auto wp = transform_point_row(positions[i], options.world_transform, identity_world);
+                if (const auto wn = transform_normal(normals[i])) {
+                    const float alpha = front_facing(wp, *wn) ? 0.88f : 0.26f;
+                    add_segment(wp, wp + *wn * guide_scale, {0.35f, 0.90f, 0.85f, alpha}, 1.25f);
+                }
             }
         } else if (auto vtx_n = geometry.read<math::Vector3>("N", procedural::Layer::vertex); vtx_n && *vtx_n) {
             const auto& normals = **vtx_n;
@@ -257,15 +331,61 @@ void append_procedural_guides(const procedural::Geometry& geometry, const editor
             const std::size_t v_stride =
                 vp.size() > max_guide_points ? (vp.size() + max_guide_points - 1) / max_guide_points : 1;
             for (std::size_t v = 0; v < vp.size(); v += v_stride) {
-                const auto p = positions[vp[v]];
-                const auto n = safe_unit_normal(normals[v], {0.f, 0.f, 0.f});
-                if (n.x != 0.f || n.y != 0.f || n.z != 0.f)
-                    add_segment(p, p + n * guide_scale, {0.72f, 0.52f, 0.96f, 0.88f}, 1.25f);
+                const auto wp = transform_point_row(positions[vp[v]], options.world_transform, identity_world);
+                if (const auto wn = transform_normal(normals[v])) {
+                    const float alpha = front_facing(wp, *wn) ? 0.88f : 0.26f;
+                    add_segment(wp, wp + *wn * guide_scale, {0.72f, 0.52f, 0.96f, alpha}, 1.25f);
+                }
             }
         }
     }
 
-    // 4. Orientations (point orient + optional pscale -> local RGB triad).
+    // 5. Primitive (Face) Geometric Normals at Polygon Centroids (CCW winding inspection):
+    if (options.show_face_normals) {
+        const auto prim_count = geometry.count(procedural::Layer::primitive);
+        const auto vp = geometry.vertex_points();
+        constexpr std::size_t max_face_normals = 8192;
+        const std::size_t f_stride =
+            prim_count > max_face_normals ? (prim_count + max_face_normals - 1) / max_face_normals : 1;
+        for (std::size_t p = 0; p < prim_count; p += f_stride) {
+            const auto range = geometry.primitive(static_cast<std::uint32_t>(p));
+            if (range.kind != procedural::PrimitiveKind::polygon || range.count < 3)
+                continue;
+            math::Vector3d centroid{0., 0., 0.};
+            bool finite_face = true;
+            for (std::uint32_t k = 0; k < range.count; ++k) {
+                const auto& pos = positions[vp[range.first + k]];
+                if (!finite_v3(pos)) {
+                    finite_face = false;
+                    break;
+                }
+                centroid = centroid + static_cast<math::Vector3d>(pos);
+            }
+            if (!finite_face)
+                continue;
+            centroid = centroid * (1. / static_cast<double>(range.count));
+            const auto p0d = static_cast<math::Vector3d>(positions[vp[range.first]]);
+            math::Vector3d area_n{0., 0., 0.};
+            for (std::uint32_t i = 1; i + 1 < range.count; ++i) {
+                const auto e1 = static_cast<math::Vector3d>(positions[vp[range.first + i]]) - p0d;
+                const auto e2 = static_cast<math::Vector3d>(positions[vp[range.first + i + 1]]) - p0d;
+                area_n = area_n + math::cross(e1, e2);
+            }
+            const auto local_n = math::try_normalize(area_n);
+            if (!local_n)
+                continue;
+            const auto wc =
+                transform_point_row(static_cast<math::Vector3>(centroid), options.world_transform, identity_world);
+            if (const auto wn = transform_normal(static_cast<math::Vector3>(*local_n))) {
+                const bool front = front_facing(wc, *wn);
+                const float alpha = front ? 0.92f : 0.30f;
+                add_point_disc(wc, {0.98f, 0.72f, 0.24f, alpha}, 2.6f);
+                add_segment(wc, wc + *wn * guide_scale, {0.98f, 0.72f, 0.24f, alpha}, 1.35f);
+            }
+        }
+    }
+
+    // 6. Orientations & pscale Footprint Rings:
     if (options.show_orient && point_count > 0) {
         const Array<math::Quaternion>* orients = nullptr;
         if (auto found = geometry.read<math::Quaternion>("orient", procedural::Layer::point); found && *found)
@@ -275,17 +395,204 @@ void append_procedural_guides(const procedural::Geometry& geometry, const editor
             pscales = *found;
 
         if (orients || pscales) {
-            const std::size_t orient_stride = std::max<std::size_t>(stride, point_count / 4096 + 1);
+            const std::size_t orient_stride = std::max<std::size_t>(stride, point_count / 2048 + 1);
+            constexpr int ring_segments = 12;
             for (std::size_t i = 0; i < point_count; i += orient_stride) {
-                const auto p = positions[i];
+                const auto lp = positions[i];
+                const auto wp = transform_point_row(lp, options.world_transform, identity_world);
                 const math::Quaternion q = orients ? (*orients)[i] : math::Quaternion{0.f, 0.f, 0.f, 1.f};
                 float s = guide_scale * 0.8f;
-                if (pscales && std::isfinite((*pscales)[i]))
-                    s *= std::clamp(std::abs((*pscales)[i]), 0.1f, 10.f);
-                add_segment(p, p + rotate_by_quat({s, 0.f, 0.f}, q), {0.95f, 0.32f, 0.32f, 0.9f}, 1.25f);
-                add_segment(p, p + rotate_by_quat({0.f, s, 0.f}, q), {0.35f, 0.90f, 0.38f, 0.9f}, 1.25f);
-                add_segment(p, p + rotate_by_quat({0.f, 0.f, s}, q), {0.35f, 0.58f, 0.98f, 0.9f}, 1.25f);
+                float radius = 0.f;
+                if (pscales && std::isfinite((*pscales)[i])) {
+                    const float raw = std::abs((*pscales)[i]);
+                    s *= std::clamp(raw, 0.1f, 10.f);
+                    radius = std::clamp(raw * 0.5f, 0.01f, 500.f);
+                }
+                const auto ax =
+                    transform_vector_row(rotate_by_quat({s, 0.f, 0.f}, q), options.world_transform, identity_world);
+                const auto ay =
+                    transform_vector_row(rotate_by_quat({0.f, s, 0.f}, q), options.world_transform, identity_world);
+                const auto az =
+                    transform_vector_row(rotate_by_quat({0.f, 0.f, s}, q), options.world_transform, identity_world);
+                add_segment(wp, wp + ax, {0.95f, 0.32f, 0.32f, 0.9f}, 1.25f);
+                add_segment(wp, wp + ay, {0.35f, 0.90f, 0.38f, 0.9f}, 1.25f);
+                add_segment(wp, wp + az, {0.35f, 0.58f, 0.98f, 0.9f}, 1.25f);
+
+                if (radius > 0.f) {
+                    math::Vector3 prev{};
+                    for (int seg = 0; seg <= ring_segments; ++seg) {
+                        const float ang = static_cast<float>(seg) *
+                                          (2.f * std::numbers::pi_v<float> / static_cast<float>(ring_segments));
+                        const auto offset = transform_vector_row(
+                            rotate_by_quat({std::cos(ang) * radius, 0.f, std::sin(ang) * radius}, q),
+                            options.world_transform, identity_world);
+                        const math::Vector3 cur = wp + offset;
+                        if (seg > 0)
+                            add_segment(prev, cur, {0.96f, 0.82f, 0.36f, 0.52f}, 1.0f);
+                        prev = cur;
+                    }
+                }
             }
+        }
+    }
+}
+
+void append_template_wireframe(const procedural::Geometry& geometry, const editor::ViewportView& view,
+                               std::vector<renderer::OverlayShape>& overlay) {
+    const auto& positions = geometry.positions();
+    const std::size_t point_count = positions.size();
+    if (point_count == 0)
+        return;
+    const float dpi = std::max(view.dpi_scale, 1.f);
+    const std::size_t prim_count = geometry.count(procedural::Layer::primitive);
+    const auto vp = geometry.vertex_points();
+    constexpr std::array<float, 4> wire_col{0.82f, 0.44f, 0.96f, 0.48f};
+
+    if (prim_count > 0) {
+        std::vector<std::pair<std::uint32_t, std::uint32_t>> edges;
+        edges.reserve(std::min<std::size_t>(vp.size(), 24576));
+        constexpr std::size_t max_raw_edges = 32768;
+        for (std::uint32_t p = 0; p < prim_count && edges.size() < max_raw_edges; ++p) {
+            const auto range = geometry.primitive(p);
+            if (range.kind == procedural::PrimitiveKind::polygon && range.count >= 3) {
+                for (std::uint32_t i = 0; i < range.count && edges.size() < max_raw_edges; ++i) {
+                    const std::uint32_t a = vp[range.first + i];
+                    const std::uint32_t b = vp[range.first + ((i + 1) % range.count)];
+                    if (a != b)
+                        edges.push_back(a < b ? std::pair{a, b} : std::pair{b, a});
+                }
+            } else if (range.kind == procedural::PrimitiveKind::polyline && range.count >= 2) {
+                for (std::uint32_t i = 0; i + 1 < range.count && edges.size() < max_raw_edges; ++i) {
+                    const std::uint32_t a = vp[range.first + i];
+                    const std::uint32_t b = vp[range.first + i + 1];
+                    if (a != b)
+                        edges.push_back(a < b ? std::pair{a, b} : std::pair{b, a});
+                }
+            }
+        }
+        std::ranges::sort(edges);
+        const auto unique_end = std::ranges::unique(edges).begin();
+        edges.erase(unique_end, edges.end());
+        constexpr std::size_t max_segments = 16384;
+        const std::size_t step = edges.size() > max_segments ? (edges.size() + max_segments - 1) / max_segments : 1;
+        for (std::size_t i = 0; i < edges.size(); i += step) {
+            const auto [a, b] = edges[i];
+            if (a >= point_count || b >= point_count)
+                continue;
+            const auto& pa_w = positions[a];
+            const auto& pb_w = positions[b];
+            if (!finite_v3(pa_w) || !finite_v3(pb_w))
+                continue;
+            const auto pa = view.project(pa_w);
+            const auto pb = view.project(pb_w);
+            if (!pa || !pb)
+                continue;
+            overlay.push_back({renderer::OverlayShape::Kind::segment,
+                               {pa->x, pa->y, pb->x, pb->y},
+                               std::min(1.15f * dpi, 64.f),
+                               {wire_col[0], wire_col[1], wire_col[2], wire_col[3]}});
+        }
+    } else {
+        constexpr std::size_t max_pts = 8192;
+        const std::size_t stride = point_count > max_pts ? (point_count + max_pts - 1) / max_pts : 1;
+        for (std::size_t i = 0; i < point_count; i += stride) {
+            if (!finite_v3(positions[i]))
+                continue;
+            if (const auto sp = view.project(positions[i])) {
+                overlay.push_back({renderer::OverlayShape::Kind::segment,
+                                   {sp->x, sp->y, sp->x, sp->y},
+                                   std::min(3.2f * dpi, 64.f),
+                                   {wire_col[0], wire_col[1], wire_col[2], 0.56f}});
+            }
+        }
+    }
+}
+
+void append_orientation_gnomon(const editor::ViewportView& view, std::vector<renderer::OverlayShape>& overlay) {
+    const float dpi = std::max(view.dpi_scale, 1.f);
+    if (view.bounds.width < 180.f * dpi || view.bounds.height < 160.f * dpi)
+        return;
+
+    const float g_scale = std::min(dpi, 1.25f);
+    const float cx = view.bounds.x + 38.f * dpi;
+    const float cy = view.bounds.y + view.bounds.height - 54.f * dpi;
+    const float arm = 20.f * g_scale;
+
+    // Subtle dark circular backdrop hub (clamped within Renderer's 64px overlay capsule limit):
+    overlay.push_back({renderer::OverlayShape::Kind::segment,
+                       {cx, cy, cx, cy},
+                       std::min(50.f * g_scale, 62.f),
+                       {0.08f, 0.09f, 0.11f, 0.42f}});
+
+    struct AxisEntry {
+        int axis; // 0=X, 1=Y, 2=Z
+
+        bool positive;
+
+        float sx;
+
+        float sy;
+
+        float depth;
+
+        std::array<float, 3> rgb;
+    };
+
+    const std::array<math::Vector3, 3> world_axes{{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}};
+    const std::array<std::array<float, 3>, 3> colors{
+        {{0.94f, 0.30f, 0.30f}, {0.30f, 0.84f, 0.45f}, {0.30f, 0.60f, 0.98f}}};
+    std::array<AxisEntry, 6> entries{};
+    for (int a = 0; a < 3; ++a) {
+        const float dx = math::dot(world_axes[a], view.right);
+        const float dy = -math::dot(world_axes[a], view.up);
+        const float dz = math::dot(world_axes[a], view.forward);
+        entries[a * 2] = {a, true, cx + dx * arm, cy + dy * arm, dz, colors[a]};
+        entries[a * 2 + 1] = {a, false, cx - dx * arm * 0.78f, cy - dy * arm * 0.78f, -dz, colors[a]};
+    }
+
+    // Back-to-front painter's order (larger forward depth is further from eye):
+    std::ranges::sort(entries, [](const AxisEntry& lhs, const AxisEntry& rhs) { return lhs.depth > rhs.depth; });
+
+    const auto glyph_seg = [&](float x0, float y0, float x1, float y1, std::array<float, 4> col) {
+        overlay.push_back({renderer::OverlayShape::Kind::segment,
+                           {x0, y0, x1, y1},
+                           std::min(1.35f * g_scale, 64.f),
+                           {col[0], col[1], col[2], col[3]}});
+    };
+
+    for (const auto& e : entries) {
+        if (e.positive) {
+            overlay.push_back({renderer::OverlayShape::Kind::segment,
+                               {cx, cy, e.sx, e.sy},
+                               std::min(2.0f * g_scale, 64.f),
+                               {e.rgb[0], e.rgb[1], e.rgb[2], 0.92f}});
+            overlay.push_back({renderer::OverlayShape::Kind::segment,
+                               {e.sx, e.sy, e.sx, e.sy},
+                               std::min(11.5f * g_scale, 64.f),
+                               {e.rgb[0], e.rgb[1], e.rgb[2], 0.96f}});
+            const float r = 2.6f * g_scale;
+            const std::array<float, 4> ink{0.08f, 0.09f, 0.11f, 0.95f};
+            if (e.axis == 0) { // X
+                glyph_seg(e.sx - r, e.sy - r, e.sx + r, e.sy + r, ink);
+                glyph_seg(e.sx + r, e.sy - r, e.sx - r, e.sy + r, ink);
+            } else if (e.axis == 1) { // Y
+                glyph_seg(e.sx - r, e.sy - r, e.sx, e.sy, ink);
+                glyph_seg(e.sx + r, e.sy - r, e.sx, e.sy, ink);
+                glyph_seg(e.sx, e.sy, e.sx, e.sy + r * 1.15f, ink);
+            } else { // Z
+                glyph_seg(e.sx - r, e.sy - r, e.sx + r, e.sy - r, ink);
+                glyph_seg(e.sx + r, e.sy - r, e.sx - r, e.sy + r, ink);
+                glyph_seg(e.sx - r, e.sy + r, e.sx + r, e.sy + r, ink);
+            }
+        } else {
+            overlay.push_back({renderer::OverlayShape::Kind::segment,
+                               {cx, cy, e.sx, e.sy},
+                               std::min(1.2f * g_scale, 64.f),
+                               {e.rgb[0], e.rgb[1], e.rgb[2], 0.30f}});
+            overlay.push_back({renderer::OverlayShape::Kind::segment,
+                               {e.sx, e.sy, e.sx, e.sy},
+                               std::min(5.5f * g_scale, 64.f),
+                               {e.rgb[0], e.rgb[1], e.rgb[2], 0.42f}});
         }
     }
 }
@@ -305,8 +612,11 @@ void ProceduralPreview::reset() noexcept {
 
 Result<void> ProceduralPreview::refresh(editor::Session& session, editor::Project* project,
                                         std::shared_ptr<const procedural::Geometry> shown, std::uint64_t generation) {
-    if (picking_ && cached_shown_ == shown && cached_generation_ == generation)
+    if (picking_ && cached_shown_ == shown &&
+        (cached_generation_ == generation || !shown || shown->references().empty())) {
+        cached_generation_ = generation;
         return {};
+    }
 
     meshes_.clear();
     surfaces_.clear();
@@ -328,17 +638,16 @@ Result<void> ProceduralPreview::refresh(editor::Session& session, editor::Projec
     assets::Reader installed;
     auto& reader = project ? project->assets() : installed;
 
-    ATELIER_TRY_BIND(grid_mat, session.material_resource(reader, "builtin/material/default-grid"));
-    ATELIER_TRY_BIND(default_surface, material::capture_program(session.world().runtime(), grid_mat->id()));
+    ATELIER_TRY_BIND(default_surface, material::default_world_surface());
 
     std::uint64_t stable_key = 1;
 
     if (shown) {
-        if (cached_shown_ != shown || cached_generation_ != generation)
-            cached_surface_mesh_ = build_procedural_surface_mesh(*shown);
+        if (cached_shown_ != shown)
+            cached_surface_mesh_ = presentation::build_procedural_surface_mesh(*shown);
         if (cached_surface_mesh_) {
             renderer::MeshInstance surface_inst;
-            surface_inst.world = identity_matrix();
+            surface_inst.world = math::Matrix4::identity();
             surface_inst.geometry = cached_surface_mesh_;
             surface_inst.stable_key = stable_key++;
             surface_inst.material_slots = register_surfaces({&*default_surface, 1});
@@ -353,10 +662,13 @@ Result<void> ProceduralPreview::refresh(editor::Session& session, editor::Projec
             if (!refs[r].mesh)
                 continue;
             const auto key_sv = refs[r].key.view().std_view();
-            if (auto resolved_asset = reader.mesh(key_sv)) {
-                if (auto surfs = session.mesh_surfaces(reader, *resolved_asset);
-                    surfs && (*surfs)->size() == refs[r].mesh->materials().size()) {
-                    ref_slots[r] = register_surfaces(**surfs);
+            if (!key_sv.empty()) {
+                if (auto resolved_asset = reader.mesh(key_sv)) {
+                    std::vector<editor::MissingResource> ignored_missing;
+                    if (auto surfs = session.mesh_surfaces(reader, *resolved_asset, &ignored_missing);
+                        surfs && (*surfs)->size() == refs[r].mesh->materials().size()) {
+                        ref_slots[r] = register_surfaces(**surfs);
+                    }
                 }
             }
             if (!ref_slots[r]) {
@@ -365,12 +677,19 @@ Result<void> ProceduralPreview::refresh(editor::Session& session, editor::Projec
             }
         }
 
-        for (std::size_t i = 0; i < inst_indices.size(); ++i) {
+        for (std::size_t i = 0; i < inst_indices.size() && i < inst_transforms.size(); ++i) {
             const auto r = inst_indices[i];
             if (r >= refs.size() || !refs[r].mesh)
                 continue;
+            const auto& m = inst_transforms[i];
+            if (!math::is_finite(m))
+                continue;
+            const procedural::Affine affine{m[0], m[1], m[2], m[4], m[5], m[6], m[8], m[9], m[10], m[12], m[13], m[14]};
+            const auto valid_world = presentation::compose_instance_world(affine, math::Matrix4::identity());
+            if (!valid_world)
+                continue;
             renderer::MeshInstance inst;
-            inst.world = inst_transforms[i];
+            inst.world = *valid_world;
             inst.geometry = refs[r].mesh;
             inst.stable_key = stable_key++;
             inst.material_slots = ref_slots[r];

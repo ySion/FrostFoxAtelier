@@ -4,15 +4,17 @@
 #include "procedural/graph.hpp"
 #include <algorithm>
 #include <cmath>
+#include <format>
 #include <map>
 #include <optional>
 #include <unordered_map>
 
 namespace atelier::editor {
 namespace {
+
 bool identifier(std::string_view text) {
     const auto letter = [](char c) { return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_'; };
-    return !text.empty() && letter(text.front()) &&
+    return !text.empty() && text.size() <= 128 && letter(text.front()) &&
            std::ranges::all_of(text.substr(1), [&](char c) { return letter(c) || (c >= '0' && c <= '9'); });
 }
 
@@ -26,6 +28,87 @@ std::optional<std::pair<std::string_view, std::string_view>> endpoint(json::Valu
         return std::nullopt;
     return std::pair{text.substr(0, dot), text.substr(dot + 1)};
 }
+
+Result<void> append_vec2(json::Builder& builder, json::Value parent, std::string_view key,
+                         const std::array<float, 2>& v) {
+    const auto arr = *builder.array(parent, key);
+    for (const float coordinate : v) {
+        if (auto added = builder.append(arr, coordinate); !added)
+            return std::unexpected(Error{ErrorCode::argument_mismatch, added.error().describe()});
+    }
+    return {};
+}
+
+} // namespace
+
+std::string_view graph_node_shape_name(GraphNodeShape shape) noexcept {
+    switch (shape) {
+    case GraphNodeShape::auto_role:
+        return {};
+    case GraphNodeShape::pill:
+        return "pill";
+    case GraphNodeShape::rect:
+        return "rect";
+    case GraphNodeShape::domed:
+        return "domed";
+    case GraphNodeShape::trapezoid:
+        return "trapezoid";
+    case GraphNodeShape::hexagon:
+        return "hexagon";
+    case GraphNodeShape::ribbon:
+        return "ribbon";
+    case GraphNodeShape::diamond:
+        return "diamond";
+    case GraphNodeShape::circle:
+        return "circle";
+    }
+    return {};
+}
+
+std::optional<GraphNodeShape> parse_graph_node_shape(std::string_view text) noexcept {
+    if (text.empty() || text == "auto")
+        return GraphNodeShape::auto_role;
+    if (text == "pill")
+        return GraphNodeShape::pill;
+    if (text == "rect")
+        return GraphNodeShape::rect;
+    if (text == "domed")
+        return GraphNodeShape::domed;
+    if (text == "trapezoid")
+        return GraphNodeShape::trapezoid;
+    if (text == "hexagon")
+        return GraphNodeShape::hexagon;
+    if (text == "ribbon")
+        return GraphNodeShape::ribbon;
+    if (text == "diamond")
+        return GraphNodeShape::diamond;
+    if (text == "circle")
+        return GraphNodeShape::circle;
+    return std::nullopt;
+}
+
+std::string format_graph_hex_color(std::uint32_t rgb) {
+    return std::format("#{:06x}", rgb & 0xffffffu);
+}
+
+std::optional<std::uint32_t> parse_graph_hex_color(std::string_view text) noexcept {
+    if (text.size() != 7 || text.front() != '#')
+        return std::nullopt;
+    text.remove_prefix(1);
+    std::uint32_t value = 0;
+    for (const char c : text) {
+        std::uint32_t digit = 0;
+        if (c >= '0' && c <= '9')
+            digit = static_cast<std::uint32_t>(c - '0');
+        else if (c >= 'a' && c <= 'f')
+            digit = static_cast<std::uint32_t>(c - 'a' + 10);
+        else if (c >= 'A' && c <= 'F')
+            digit = static_cast<std::uint32_t>(c - 'A' + 10);
+        else
+            return std::nullopt;
+        value = (value << 4u) | digit;
+    }
+    return value;
 }
 
 Result<GraphDocument> load_graph(Runtime& runtime, std::string_view text) {
@@ -33,14 +116,17 @@ Result<GraphDocument> load_graph(Runtime& runtime, std::string_view text) {
     if (!file)
         return std::unexpected(Error{ErrorCode::argument_mismatch, file.error().describe()});
     const auto root = file->root();
-    if (auto fields = root.allowed_members({"version", "settings", "nodes"}); !fields)
+    if (auto fields = root.allowed_members({"version", "settings", "nodes", "notes", "boxes"}); !fields)
         return std::unexpected(Error{ErrorCode::argument_mismatch, fields.error().describe()});
     const auto version = root.u64({"version"});
-    if (!version || *version != 1)
+    if (!version || *version != 2)
         return std::unexpected(Error{ErrorCode::argument_mismatch, "Unsupported procedural graph version."});
     const json::Document empty;
     const auto settings = root.find("settings")->value_or(empty.root());
     const auto entries = root.find("nodes")->value_or(empty.root());
+    const auto notes_json = root.find("notes")->value_or(empty.root());
+    const auto boxes_json = root.find("boxes")->value_or(empty.root());
+
     // Validate the complete file before creating Runtime graph objects.
     const auto validated = [&]() -> json::Result<void> {
         if (settings.kind() != json::Kind::object)
@@ -48,19 +134,47 @@ Result<GraphDocument> load_graph(Runtime& runtime, std::string_view text) {
         if (entries.kind() != json::Kind::object)
             return std::unexpected(
                 entries.error(json::Fault::type, "Graph nodes must be a record keyed by node name."));
+        if (notes_json.kind() != json::Kind::object)
+            return std::unexpected(
+                notes_json.error(json::Fault::type, "Graph notes must be a record keyed by note name."));
+        if (boxes_json.kind() != json::Kind::object)
+            return std::unexpected(
+                boxes_json.error(json::Fault::type, "Graph boxes must be a record keyed by box name."));
         if (const auto display = *settings.find("display")) {
             ATELIER_TRY_BIND(name, display->string());
             if (!identifier(*name))
                 return std::unexpected(display->error(json::Fault::range, "The graph display must name one node."));
         }
+        if (const auto tmpl = *settings.find("template")) {
+            ATELIER_TRY_BIND(name, tmpl->string());
+            if (!identifier(*name))
+                return std::unexpected(tmpl->error(json::Fault::range, "The graph template must name one node."));
+        }
         const auto members = entries.object_items();
         for (auto [name, entry] : *members) {
             if (!identifier(name))
                 return std::unexpected(entry.error(json::Fault::range, "Invalid node name."));
-            ATELIER_TRY(entry.allowed_members({"type", "position", "properties", "inputs"}));
+            ATELIER_TRY(entry.allowed_members(
+                {"type", "position", "properties", "inputs", "bypass", "shape", "color", "comment"}));
             ATELIER_TRY(entry.string({"type"}));
             if (const auto position = *entry.find("position")) {
                 ATELIER_TRY(assets::json_format::vector<2>(*position));
+            }
+            if (const auto bypass = *entry.find("bypass")) {
+                ATELIER_TRY(bypass->boolean());
+            }
+            if (const auto shape = *entry.find("shape")) {
+                ATELIER_TRY_BIND(shape_text, shape->string());
+                if (!parse_graph_node_shape(*shape_text))
+                    return std::unexpected(shape->error(json::Fault::range, "Unknown procedural node shape."));
+            }
+            if (const auto color = *entry.find("color")) {
+                ATELIER_TRY_BIND(color_text, color->string());
+                if (!parse_graph_hex_color(*color_text))
+                    return std::unexpected(color->error(json::Fault::range, "Node color must be #RRGGBB."));
+            }
+            if (const auto comment = *entry.find("comment")) {
+                ATELIER_TRY(comment->string());
             }
             if (const auto properties = *entry.find("properties");
                 properties && properties->kind() != json::Kind::object)
@@ -81,6 +195,39 @@ Result<GraphDocument> load_graph(Runtime& runtime, std::string_view text) {
                     return std::unexpected(
                         value.error(json::Fault::type, "A connection is \"node.output\", or an array of those."));
             }
+        }
+        const auto validate_canvas_box = [](json::Value item, std::string_view kind_label,
+                                            std::initializer_list<std::string_view> fields) -> json::Result<void> {
+            ATELIER_TRY(item.allowed_members(fields));
+            if (const auto pos = *item.find("position"))
+                ATELIER_TRY(assets::json_format::vector<2>(*pos));
+            if (const auto sz = *item.find("size")) {
+                ATELIER_TRY_BIND(v, assets::json_format::vector<2>(*sz));
+                if ((*v)[0] <= 0.f || (*v)[1] <= 0.f)
+                    return std::unexpected(
+                        sz->error(json::Fault::range, std::string(kind_label) + " size must be positive."));
+            }
+            if (const auto title = *item.find("title"))
+                ATELIER_TRY(title->string());
+            if (const auto body = *item.find("text"))
+                ATELIER_TRY(body->string());
+            if (const auto color = *item.find("color")) {
+                ATELIER_TRY_BIND(color_text, color->string());
+                if (!parse_graph_hex_color(*color_text))
+                    return std::unexpected(
+                        color->error(json::Fault::range, std::string(kind_label) + " color must be #RRGGBB."));
+            }
+            return {};
+        };
+        for (auto [name, note] : *notes_json.object_items()) {
+            if (!identifier(name))
+                return std::unexpected(note.error(json::Fault::range, "Invalid sticky note name."));
+            ATELIER_TRY(validate_canvas_box(note, "Sticky note", {"position", "size", "title", "text", "color"}));
+        }
+        for (auto [name, box] : *boxes_json.object_items()) {
+            if (!identifier(name))
+                return std::unexpected(box.error(json::Fault::range, "Invalid network box name."));
+            ATELIER_TRY(validate_canvas_box(box, "Network box", {"position", "size", "title", "color"}));
         }
         return {};
     }();
@@ -132,7 +279,8 @@ Result<GraphDocument> load_graph(Runtime& runtime, std::string_view text) {
     };
     json::Builder own(settings);
     own.erase(own.root(), "display");
-    // Parameters are public fields; graph membership, connections and display are hidden.
+    own.erase(own.root(), "template");
+    // Parameters are public fields; graph membership, connections, display and template are hidden.
     ATELIER_TRY(
         decode_properties(runtime, {*graph_type, graph}, own.root(),
                           keeping(kept_settings, kept_settings.root(), graph, "procedural.Graph", {"settings"})));
@@ -140,7 +288,16 @@ Result<GraphDocument> load_graph(Runtime& runtime, std::string_view text) {
     for (const auto& [key, entry] : *members) {
         const std::string name(key);
         const auto position = *entry.find("position");
-        GraphNode item{name, {}, position ? *assets::json_format::vector<2>(*position) : std::array<float, 2>{}};
+        GraphNode item;
+        item.name = name;
+        item.position = position ? *assets::json_format::vector<2>(*position) : std::array<float, 2>{};
+        if (const auto shape = *entry.find("shape"))
+            item.shape = *parse_graph_node_shape(*shape->string());
+        if (const auto color = *entry.find("color"))
+            item.color = *parse_graph_hex_color(*color->string());
+        if (const auto comment = *entry.find("comment"))
+            item.comment = std::string(*comment->string());
+
         const std::string type_name(*entry.string({"type"}));
         const auto type = runtime.find_type(type_name);
         auto added =
@@ -155,6 +312,9 @@ Result<GraphDocument> load_graph(Runtime& runtime, std::string_view text) {
                    nullptr, added.error().message + " The node is kept.");
         } else {
             item.node = std::move(*added);
+            if (const auto bypass = *entry.find("bypass")) {
+                ATELIER_TRY(procedural::set_bypassed(runtime, item.node.id(), *bypass->boolean()));
+            }
             json::Builder kept;
             const auto properties = kept.object_validated(kept.root(), "properties");
             ATELIER_TRY(
@@ -166,8 +326,41 @@ Result<GraphDocument> load_graph(Runtime& runtime, std::string_view text) {
         }
         document.nodes.push_back(std::move(item));
     }
+    std::ranges::sort(document.nodes, {}, &GraphNode::name);
 
-    // Nodes are in name order, as in the file.
+    for (const auto& [key, note] : *notes_json.object_items()) {
+        GraphStickyNote item;
+        item.name = std::string(key);
+        if (const auto pos = *note.find("position"))
+            item.position = *assets::json_format::vector<2>(*pos);
+        if (const auto sz = *note.find("size"))
+            item.size = *assets::json_format::vector<2>(*sz);
+        if (const auto title = *note.find("title"))
+            item.title = std::string(*title->string());
+        if (const auto body = *note.find("text"))
+            item.text = std::string(*body->string());
+        if (const auto color = *note.find("color"))
+            item.color = *parse_graph_hex_color(*color->string());
+        document.notes.push_back(std::move(item));
+    }
+    std::ranges::sort(document.notes, {}, &GraphStickyNote::name);
+
+    for (const auto& [key, box] : *boxes_json.object_items()) {
+        GraphNetworkBox item;
+        item.name = std::string(key);
+        if (const auto pos = *box.find("position"))
+            item.position = *assets::json_format::vector<2>(*pos);
+        if (const auto sz = *box.find("size"))
+            item.size = *assets::json_format::vector<2>(*sz);
+        if (const auto title = *box.find("title"))
+            item.title = std::string(*title->string());
+        if (const auto color = *box.find("color"))
+            item.color = *parse_graph_hex_color(*color->string());
+        document.boxes.push_back(std::move(item));
+    }
+    std::ranges::sort(document.boxes, {}, &GraphNetworkBox::name);
+
+    // Nodes are in sorted name order.
     const auto named = [&](std::string_view name) -> GraphNode* {
         const auto at = std::ranges::lower_bound(document.nodes, name, {},
                                                  [](const GraphNode& node) -> std::string_view { return node.name; });
@@ -255,6 +448,16 @@ Result<GraphDocument> load_graph(Runtime& runtime, std::string_view text) {
                    {"settings", "display"}, &*at, "No loaded node has this name. The display is kept.");
         }
     }
+    if (const auto at = *settings.find("template")) {
+        const auto* shown = named(*at->string());
+        if (shown && shown->node.registered()) {
+            document.template_node = shown->node.id();
+        } else {
+            kept_settings.set_validated(kept_settings.root(), "template", *at);
+            report(world::Severity::warning, world::DiagnosticKind::reference_dropped, graph, "procedural.Graph",
+                   {"settings", "template"}, &*at, "No loaded node has this name. The template is kept.");
+        }
+    }
     document.kept = kept_settings.finish();
     return document;
 }
@@ -271,6 +474,10 @@ Result<std::string> save_graph(Runtime& runtime, const GraphDocument& document) 
                 Error{ErrorCode::argument_mismatch, "Graph node names must be valid and unique: " + item.name});
         if (!std::isfinite(item.position[0]) || !std::isfinite(item.position[1]))
             return std::unexpected(Error{ErrorCode::argument_mismatch, item.name + ": node positions must be finite."});
+        if (static_cast<std::uint8_t>(item.shape) > static_cast<std::uint8_t>(GraphNodeShape::circle))
+            return std::unexpected(Error{ErrorCode::argument_mismatch, item.name + ": invalid node shape preset."});
+        if (!StringView(item.comment).is_valid_utf8())
+            return std::unexpected(Error{ErrorCode::argument_mismatch, item.name + ": node comment must be UTF-8."});
         const auto saved_type = item.kept.root().find("type");
         if (item.node.registered() ? !by_node.emplace(item.node.id(), &item).second : !saved_type || !*saved_type)
             return std::unexpected(Error{ErrorCode::argument_mismatch,
@@ -280,6 +487,40 @@ Result<std::string> save_graph(Runtime& runtime, const GraphDocument& document) 
         !std::ranges::all_of(contents.nodes(), [&](ObjectId node) { return by_node.contains(node); }))
         return std::unexpected(
             Error{ErrorCode::argument_mismatch, "Every graph node needs exactly one document entry."});
+    if (document.template_node != ObjectId{} && !by_node.contains(document.template_node))
+        return std::unexpected(
+            Error{ErrorCode::argument_mismatch, "Graph template node must belong to the saved graph."});
+
+    const auto valid_box_rect = [](const std::array<float, 2>& pos, const std::array<float, 2>& sz) noexcept {
+        return std::isfinite(pos[0]) && std::isfinite(pos[1]) && std::isfinite(sz[0]) && std::isfinite(sz[1]) &&
+               sz[0] > 0.f && sz[1] > 0.f;
+    };
+    std::map<std::string_view, const GraphStickyNote*> notes_by_name;
+    for (const auto& note : document.notes) {
+        if (!identifier(note.name) || !notes_by_name.emplace(note.name, &note).second)
+            return std::unexpected(
+                Error{ErrorCode::argument_mismatch, "Sticky note names must be valid and unique: " + note.name});
+        if (!valid_box_rect(note.position, note.size))
+            return std::unexpected(
+                Error{ErrorCode::argument_mismatch, note.name + ": sticky note position and size must be valid."});
+        if (!StringView(note.title).is_valid_utf8() || !StringView(note.text).is_valid_utf8())
+            return std::unexpected(
+                Error{ErrorCode::argument_mismatch, note.name + ": sticky note text must be UTF-8."});
+    }
+
+    std::map<std::string_view, const GraphNetworkBox*> boxes_by_name;
+    for (const auto& box : document.boxes) {
+        if (!identifier(box.name) || !boxes_by_name.emplace(box.name, &box).second)
+            return std::unexpected(
+                Error{ErrorCode::argument_mismatch, "Network box names must be valid and unique: " + box.name});
+        if (!valid_box_rect(box.position, box.size))
+            return std::unexpected(
+                Error{ErrorCode::argument_mismatch, box.name + ": network box position and size must be valid."});
+        if (!StringView(box.title).is_valid_utf8())
+            return std::unexpected(
+                Error{ErrorCode::argument_mismatch, box.name + ": network box title must be UTF-8."});
+    }
+
     // contents/inputs guarantee membership; the coverage above guarantees every by_node lookup below.
     const EncodeReference no_reference = [](ObjectId) -> Result<json::Document> {
         return std::unexpected(Error{ErrorCode::unsupported_operation, "Graph files keep no object references."});
@@ -288,12 +529,27 @@ Result<std::string> save_graph(Runtime& runtime, const GraphDocument& document) 
     ATELIER_TRY_BIND(graph_fields, detail::author_fields(runtime, *graph_type));
     ATELIER_TRY_BIND(settings, encode_properties(runtime, graph, *graph_fields, no_reference));
     json::Builder result;
-    static_cast<void>(result.set(result.root(), "version", std::uint32_t{1}));
+    static_cast<void>(result.set(result.root(), "version", std::uint32_t{2}));
     result.set_validated(result.root(), "settings", settings->root());
     const auto settings_node = *result.root().at("settings");
     if (contents.display() != ObjectId{})
         result.set_validated(settings_node, "display", by_node.at(contents.display())->name);
+    if (document.template_node != ObjectId{})
+        result.set_validated(settings_node, "template", by_node.at(document.template_node)->name);
     assets::json_format::overlay(result, settings_node, document.kept.root());
+
+    if (!boxes_by_name.empty()) {
+        const auto boxes = result.object_validated(result.root(), "boxes");
+        for (const auto& [name, box] : boxes_by_name) {
+            const auto entry = result.object_validated(boxes, name);
+            result.set_validated(entry, "color", format_graph_hex_color(box->color));
+            ATELIER_TRY(append_vec2(result, entry, "position", box->position));
+            ATELIER_TRY(append_vec2(result, entry, "size", box->size));
+            if (auto added = result.set(entry, "title", box->title); !added)
+                return std::unexpected(Error{ErrorCode::argument_mismatch, added.error().describe()});
+        }
+    }
+
     const auto nodes = result.object_validated(result.root(), "nodes");
     for (const auto& [name, item] : by_name) {
         const auto entry = result.object_validated(nodes, name);
@@ -325,15 +581,44 @@ Result<std::string> save_graph(Runtime& runtime, const GraphDocument& document) 
             ATELIER_TRY_BIND(info, runtime.describe(*type));
             result.set_validated(entry, "type", (*info)->name);
             result.set_validated(entry, "properties", properties->root());
+            ATELIER_TRY_BIND(is_bypassed, procedural::bypassed(runtime, node));
+            if (*is_bypassed) {
+                if (auto added = result.set(entry, "bypass", true); !added)
+                    return std::unexpected(Error{ErrorCode::argument_mismatch, added.error().describe()});
+            }
         }
         assets::json_format::overlay(result, entry, item->kept.root());
-        const auto position = *result.array(entry, "position");
-        for (auto coordinate : item->position) {
-            if (auto added = result.append(position, coordinate); !added)
+        result.erase(entry, "position");
+        result.erase(entry, "shape");
+        result.erase(entry, "color");
+        result.erase(entry, "comment");
+        ATELIER_TRY(append_vec2(result, entry, "position", item->position));
+        if (const auto shape_name = graph_node_shape_name(item->shape); !shape_name.empty())
+            result.set_validated(entry, "shape", shape_name);
+        if (item->color)
+            result.set_validated(entry, "color", format_graph_hex_color(*item->color));
+        if (!item->comment.empty()) {
+            if (auto added = result.set(entry, "comment", item->comment); !added)
                 return std::unexpected(Error{ErrorCode::argument_mismatch, added.error().describe()});
         }
     }
+
+    if (!notes_by_name.empty()) {
+        const auto notes = result.object_validated(result.root(), "notes");
+        for (const auto& [name, note] : notes_by_name) {
+            const auto entry = result.object_validated(notes, name);
+            result.set_validated(entry, "color", format_graph_hex_color(note->color));
+            ATELIER_TRY(append_vec2(result, entry, "position", note->position));
+            ATELIER_TRY(append_vec2(result, entry, "size", note->size));
+            if (auto added = result.set(entry, "text", note->text); !added)
+                return std::unexpected(Error{ErrorCode::argument_mismatch, added.error().describe()});
+            if (auto added = result.set(entry, "title", note->title); !added)
+                return std::unexpected(Error{ErrorCode::argument_mismatch, added.error().describe()});
+        }
+    }
+
     const auto bytes = json::write(result.root(), {true, true});
     return std::string(bytes.data(), bytes.size());
 }
-}
+
+} // namespace atelier::editor

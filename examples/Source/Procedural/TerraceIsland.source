@@ -1,0 +1,182 @@
+// Procedural showcase nodes for FrostFox Atelier Examples.
+// Demonstrates custom project .source SOPs with parallel_for, analytical normals, and variant selection.
+
+float game.terrace_height(uint seed, float x, float z, float radius, float height, float steps, float sharpness, float warp) {
+    const float inv_r = 1.0f / radius;
+    const float r = math.length(vector2(x, z)) * inv_r;
+    if (r - math.abs(warp) >= 1.33f) {
+        return -0.35f * height;
+    }
+    const float n1 = procedural.sample_value_noise(seed, vector3(x * 0.13f + 11.3f, 0.0f, z * 0.13f - 7.1f)) * 2.0f - 1.0f;
+    const float n2 = procedural.sample_value_noise(procedural.hash2(seed, uint(2654435769)),
+                                                   vector3(x * 0.29f - 5.2f, 3.7f, z * 0.29f + 9.4f)) * 2.0f - 1.0f;
+    const float rw = math.max(0.0f, r + warp * (0.68f * n1 + 0.32f * n2));
+    const float dome = math.clamp(1.0f - rw * rw, 0.0f, 1.0f);
+
+    const float scaled = dome * steps;
+    const float tier = math.floor(scaled);
+    const float frac = scaled - tier;
+    const float band = math.clamp(0.46f * (1.0f - sharpness), 0.02f, 0.46f);
+    const float riser = math.smoothstep(0.5f - band, 0.5f + band, frac);
+    const float terraced = math.clamp((tier + riser) / steps, 0.0f, 1.0f);
+
+    const float bench_detail = 0.055f * n2 * dome;
+    const float skirt = -0.35f * math.smoothstep(0.95f, 1.32f, rw);
+    return (terraced + bench_detail + skirt) * height;
+}
+
+class game.TerraceIsland : procedural.Node {
+    [Min = 2.0, Max = 40.0, LockMin, Label = "Island Radius", DESC = "岛屿台地主体半径，单位 m。"]
+    float radius = 10.5f;
+
+    [Min = 0.2, Max = 20.0, LockMin, Label = "Peak Height", DESC = "中心最高台地高度，单位 m。"]
+    float height = 4.2f;
+
+    [Min = 1, Max = 10, LockMin, Label = "Terrace Tiers", DESC = "阶梯台地的层数。"]
+    int terraces = 4;
+
+    [Min = 0.0, Max = 0.96, LockMin, LockMax, Label = "Cliff Sharpness", DESC = "台地陡坎边缘的锐度。"]
+    float sharpness = 0.76f;
+
+    [Min = 0.0, Max = 0.65, LockMin, Label = "Coastline Warp", DESC = "海岸线与台地轮廓的噪声扭曲幅度。"]
+    float coastline_warp = 0.22f;
+
+    [Label = "Seed", DESC = "与图种子混合的地形种子。"]
+    uint seed = 0;
+
+    void process(const procedural.Context& context,
+                 [InOut("P")] Array<vector3>& P,
+                 [Out("N")] Array<vector3>& N) {
+        const float radius = self.radius;
+        const float height = self.height;
+        const int tiers = self.terraces;
+        const float sharpness = self.sharpness;
+        const float warp = self.coastline_warp;
+        if (!(math.is_finite(radius) && math.is_finite(height) && math.is_finite(sharpness) && math.is_finite(warp))) {
+            fail("TerraceIsland parameters must be finite.");
+        }
+        if (radius <= 0.1f || tiers < 1) {
+            fail("TerraceIsland requires radius > 0.1 and terraces >= 1.");
+        }
+
+        const float steps = float(tiers);
+        const uint mixed_seed = procedural.hash2(context.seed, self.seed);
+        const uint count = P.size();
+        if (N.size() != count) { return; }
+        const float eps = 0.18f;
+
+        parallel_for (uint i : count) {
+            const vector3 pos = P[i];
+            if (!math.is_finite(pos)) {
+                fail("TerraceIsland input positions must be finite.");
+            }
+            const float coord_limit = 7.4e9f;
+            if (!(math.abs(pos.x) <= coord_limit && math.abs(pos.z) <= coord_limit)) {
+                fail("TerraceIsland input coordinates exceed noise lattice range.");
+            }
+            const float h = game.terrace_height(mixed_seed, pos.x, pos.z, radius, height, steps, sharpness, warp);
+            const float hx0 = game.terrace_height(mixed_seed, pos.x - eps, pos.z, radius, height, steps, sharpness, warp);
+            const float hx1 = game.terrace_height(mixed_seed, pos.x + eps, pos.z, radius, height, steps, sharpness, warp);
+            const float hz0 = game.terrace_height(mixed_seed, pos.x, pos.z - eps, radius, height, steps, sharpness, warp);
+            const float hz1 = game.terrace_height(mixed_seed, pos.x, pos.z + eps, radius, height, steps, sharpness, warp);
+
+            const float dhdx = (hx1 - hx0) / (2.0f * eps);
+            const float dhdz = (hz1 - hz0) / (2.0f * eps);
+            const float next_y = pos.y + h;
+            if (!math.is_finite(next_y)) {
+                fail("TerraceIsland displaced height overflowed.");
+            }
+            P[i] = vector3(pos.x, next_y, pos.z);
+            const vector3 nrm = math.normalize_or_zero(vector3(-dhdx, 1.0f, -dhdz));
+            if (nrm == vector3()) {
+                N[i] = vector3(0.0f, 1.0f, 0.0f);
+            } else {
+                N[i] = nrm;
+            }
+        }
+    }
+}
+
+class game.OutpostPlacement : procedural.Node {
+    [Min = 0.0, Max = 20.0, Label = "Sanctum Height", DESC = "高于此高度的平缓台地生成琥珀晶簇变体（variant = 1）。"]
+    float sanctum_height = 2.5f;
+
+    [Min = 0.1, Max = 1.0, LockMin, LockMax, Label = "Bench Flatness", DESC = "判定为平缓台地的最小法线 Y 分量。"]
+    float min_flatness = 0.82f;
+
+    [Label = "Seed", DESC = "与图种子混合的朝向种子。"]
+    uint seed = 7;
+
+    void process(const procedural.Context& context,
+                 [In("P")] const Array<vector3>& P,
+                 [In("N")] const Array<vector3>& N,
+                 [InOut("pscale")] Array<float>& pscale,
+                 [Out("orient")] Array<quaternion>& orient,
+                 [Out("variant")] Array<uint>& variant) {
+        const float sanctum_y = self.sanctum_height;
+        const float flatness = self.min_flatness;
+        if (!(math.is_finite(sanctum_y) && math.is_finite(flatness))) {
+            fail("OutpostPlacement parameters must be finite.");
+        }
+
+        const uint mixed_seed = procedural.hash2(context.seed, self.seed);
+        const uint count = P.size();
+        if (N.size() != count || pscale.size() != count || orient.size() != count || variant.size() != count) {
+            return;
+        }
+
+        parallel_for (uint i : count) {
+            const vector3 pos = P[i];
+            const vector3 nrm = N[i];
+            const float in_scale = pscale[i];
+            if (!(math.is_finite(pos) && math.is_finite(nrm) && math.is_finite(in_scale))) {
+                fail("OutpostPlacement input point attributes must be finite.");
+            }
+            const float yaw = procedural.unit(procedural.hash2(mixed_seed, i)) * 6.2831853f;
+            const vector3 up_axis = vector3(0.0f, 1.0f, 0.0f);
+            const vector3 unit_nrm = math.normalize_or_zero(nrm);
+            vector3 target_nrm = up_axis;
+            if (unit_nrm != vector3()) {
+                target_nrm = unit_nrm;
+            }
+
+            float tilt = 0.55f;
+            float scale_mul = 0.45f;
+            uint chosen = uint(0);
+            if (target_nrm.y >= flatness && pos.y > 0.15f) {
+                if (pos.y >= sanctum_y) {
+                    chosen = uint(1);
+                    tilt = 0.26f;
+                    scale_mul = 1.15f;
+                } else {
+                    chosen = uint(0);
+                    tilt = 0.12f;
+                    scale_mul = 1.0f;
+                }
+            }
+
+            vector3 y_axis = math.normalize_or_zero(math.lerp(up_axis, target_nrm, tilt));
+            if (y_axis == vector3()) {
+                y_axis = up_axis;
+            }
+            vector3 heading = vector3(math.cos(yaw), 0.0f, math.sin(yaw));
+            vector3 x_axis = math.normalize_or_zero(math.cross(y_axis, heading));
+            if (x_axis == vector3()) {
+                vector3 ref_axis = vector3(1.0f, 0.0f, 0.0f);
+                if (math.abs(y_axis.y) < 0.9f) {
+                    ref_axis = vector3(0.0f, 1.0f, 0.0f);
+                }
+                x_axis = math.normalize_or_zero(math.cross(y_axis, ref_axis));
+            }
+            const vector3 z_axis = math.cross(x_axis, y_axis);
+            const float next_scale = in_scale * scale_mul;
+            if (!math.is_finite(next_scale)) {
+                fail("OutpostPlacement output pscale overflowed.");
+            }
+
+            variant[i] = chosen;
+            orient[i] = procedural.frame_rotation(x_axis, y_axis, z_axis);
+            pscale[i] = next_scale;
+        }
+    }
+}

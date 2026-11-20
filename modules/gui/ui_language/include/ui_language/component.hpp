@@ -47,7 +47,12 @@ struct ActionBinding {
 
     bool enabled{true};
 
-    bool operator==(const ActionBinding&) const = default;
+    std::shared_ptr<const ui::Tooltip> tooltip{};
+
+    bool operator==(const ActionBinding& other) const {
+        return target == other.target && enabled == other.enabled &&
+               (tooltip == other.tooltip || (tooltip && other.tooltip && *tooltip == *other.tooltip));
+    }
 };
 
 // The shared Table consumes the host's immutable data directly. Selection is a

@@ -22,7 +22,7 @@ Entity 与 Component 保存真实限定类型名，以 Runtime find_type / is_a 
 - `roots`：有序顶层 Entity 文档 ID。
 - `entities`：Entity 记录，每个包含 `id / type / name / enabled / properties / children / components / space`。
 - `space`：null 表示无空间；否则保存 position、rotation、scale 和 origin。origin 为 null 时继承组合祖先，为字符串 `"0"` 时使用世界，为 Entity ID 字符串时使用显式空间参考。
-- `components`：owner 的有序组件记录，包含自身 `id / type / name / enabled / properties`；网格与材质额外保存现有资源 payload，EnvironmentComponent 额外保存 `sky_map`（天空贴图的资产键，空字符串表示没有贴图）。组件不保存 TRS、parent 或 root。网格槽的默认材质随网格资产解析，不写入场景。
+- `components`：owner 的有序组件记录，包含自身 `id / type / name / enabled / properties`；StaticMeshComponent 额外保存 `mesh` 与 `materials`，ProceduralGeneratorComponent 额外保存严格必填的 `graph`（持久 `.procgraph` 资产键，空字符串表示未绑定，拒绝绑定 `scratch/...` 临时图；停用所属 Entity 或组件自身时停止求值并隐藏渲染输出）与 `materials`（固定 `"default"` 表面材质槽绑定表），EnvironmentComponent 额外保存 `sky_map`（天空贴图的资产键，空字符串表示没有贴图）。组件不保存 TRS、parent 或 root。网格槽的默认材质随网格资产解析，不写入场景。
 - `materials`：按文档 ID 去重的材质资源定义；网格槽使用 `resource` 引用该 ID。具名资产保存 `id / source`；场景 MI 保存 `id / source:"" / parent / entries`。parent 为资产键或场景 MI 的 `{"$ref":"ID"}`，entries 复用材质 v2 的类型化作者 codec；父链有界且无环。源码、编译 slot、图片及 GPU 内容不内联进 Scene。
 
 Entity、Component 与材质定义共用一个文件内的 uint64 ID 域，字符串编码避免 JSON 数值精度丢失。引用字段用 null 或 `{"$ref":"ID"}`，引用序列用这些值的数组；持有/观察属性由 Runtime 字段定义决定，不在 JSON 创造另一套引用类型。保存不记录 Runtime TypeId、ObjectId、FieldId 或后端句柄。String 字段写成 JSON 字符串。

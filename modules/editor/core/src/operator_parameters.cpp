@@ -64,8 +64,13 @@ Result<void> register_editor_types(Runtime& runtime) {
     definitions.push_back(reflection::Definition<GraphConnect>::build(runtime));
     definitions.push_back(reflection::Definition<GraphDisconnect>::build(runtime));
     definitions.push_back(reflection::Definition<GraphSetDisplay>::build(runtime));
+    definitions.push_back(reflection::Definition<GraphSetTemplate>::build(runtime));
+    definitions.push_back(reflection::Definition<GraphSetBypass>::build(runtime));
+    definitions.push_back(reflection::Definition<GraphSetAppearance>::build(runtime));
     definitions.push_back(reflection::Definition<GraphSelect>::build(runtime));
     definitions.push_back(reflection::Definition<GraphLayout>::build(runtime));
+    definitions.push_back(reflection::Definition<AssignProceduralGraph>::build(runtime));
+    definitions.push_back(reflection::Definition<ProceduralBake>::build(runtime));
     TypeDefinition view;
     view.name = "editor.ViewSettings";
     view.kind = TypeKind::record;

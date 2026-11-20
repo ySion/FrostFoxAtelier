@@ -134,7 +134,9 @@ struct Context {
 
 | 记录 | 操作符 | 字段 |
 | --- | --- | --- |
-| `editor.SceneAdd` | `scene.add` | kind（`editor.AddKind`：entity、mesh、point、rectangle、directional、camera）、mesh（String，空为第一个内置网格） |
+| `editor.SceneAdd` | `scene.add` | kind（`editor.AddKind`：entity、mesh、procedural_generator、point、rectangle、directional、camera）、mesh（String，空为第一个内置网格）、graph（String，`.procgraph` 资产键） |
+| `editor.AssignProceduralGraph` | `procedural.assign_graph` | component（弱 `world.ProceduralGeneratorComponent` 引用，默认 null 使用当前选择）、asset（String，绑定到生成器的 `.procgraph` 资产键，空字符串清空） |
+| `editor.ProceduralBake` | `procedural.bake` | entity（弱 `world.Entity` 引用，默认 null）、component（弱 `world.ProceduralGeneratorComponent` 引用，默认 null）；将目标生成器的 `CopyToPoints` 实例烘焙为可单步撤销的 `StaticMeshEntity` 子树（含剪切的实例矩阵显式报错拒绝，需先在图中 `Realize`） |
 | `editor.SceneParent` | `scene.parent_set` | parent（弱 Entity 引用，默认 null）、keep_world（默认 true）、index（默认 -1，表示 append） |
 | `editor.SceneSpaceReference` | `scene.space_reference_set` | origin（弱 Entity 引用，null 继承）、world_space（默认 false；true 时 origin 必须 null，显式使用 World 空间）、keep_world（默认 true） |
 | `editor.SceneSelectAll` | `scene.select_all` | action（select、deselect、invert、toggle；toggle 保留视口 A 的全选/清空行为） |

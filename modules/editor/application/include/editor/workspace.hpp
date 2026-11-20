@@ -121,15 +121,27 @@ inline constexpr ui::ControlKey display_wire_only = 1013;
 
 inline constexpr ui::ControlKey display_lit = 1014;
 
-inline constexpr ui::ControlKey display_toggle_first = 1015; // Bar buttons: 1015..1025, below dynamic bindings.
-
 inline constexpr ui::ControlKey display_sop_points = 1160;
 
 inline constexpr ui::ControlKey display_sop_normals = 1161;
 
 inline constexpr ui::ControlKey display_sop_orient = 1162;
 
-inline constexpr ui::ControlKey display_sop_toggle_first = 1165; // SOP bar buttons: 1165..1167.
+inline constexpr ui::ControlKey display_toggle_first = 1200; // Bar buttons: 1200..1215, below dynamic bindings.
+
+inline constexpr ui::ControlKey display_sop_toggle_first = 1220; // SOP bar buttons: 1220..1235.
+
+inline constexpr ui::ControlKey display_backfaces = 1240;
+
+inline constexpr ui::ControlKey display_sop_face_normals = 1241;
+
+inline constexpr ui::ControlKey display_sop_bounds = 1242;
+
+inline constexpr ui::ControlKey display_sop_info = 1243;
+
+inline constexpr ui::ControlKey viewport_geometry_hud = 1244;
+
+inline constexpr ui::ControlKey viewport_scene_overlay = 1245;
 
 inline constexpr ui::ControlKey inline_rename = 1023;
 
@@ -303,6 +315,7 @@ struct Workspace {
             name,
             navigation,
             material_slot,
+            procedural_graph_slot,
             material_texture,
             material_override,
             material_field,
@@ -377,11 +390,21 @@ struct Workspace {
 
     std::array<float, 2> network_context_pos{}; // World position for RMB canvas context menu.
 
-    bool sop_show_points{};
+    std::optional<bool> sop_show_points{}; // nullopt: auto-enable on pure point clouds, off on surfaces/instances.
 
     bool sop_show_normals{};
 
+    bool sop_show_face_normals{};
+
     bool sop_show_orient{};
+
+    bool sop_show_bounds{};
+
+    bool sop_show_info{true};
+
+    bool effective_show_points(const procedural::Geometry* geometry) const noexcept;
+
+    ObjectId active_procedural_generator(const Session& session) const noexcept;
 
     GeometrySpreadsheet spreadsheet;
 

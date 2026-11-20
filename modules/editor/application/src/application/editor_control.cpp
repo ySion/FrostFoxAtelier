@@ -933,6 +933,7 @@ struct EditorControl::Impl {
         using State = std::pair<std::string_view, bool>;
         return std::array{State{"document_edit", app.document_->editing()},
                           State{"viewport_tool", app.viewport_tool_.active()},
+                          State{"network_gesture", app.workspace_.network.active_gesture()},
                           State{"camera_orbit", app.camera_drag_ && !app.camera_drag_->pan},
                           State{"camera_pan", app.camera_drag_ && app.camera_drag_->pan},
                           State{"camera_fly", app.camera_fly_.has_value()},
@@ -1360,6 +1361,22 @@ struct EditorControl::Impl {
                                            app.document_->unavailable(assets::AssetKind::material, source) != nullptr));
                 }
             }
+            if (const auto proc = presentation::read_procedural_source(runtime, id)) {
+                const auto proc_record = result.object_validated(root, "procedural");
+                ATELIER_TRY(result.set(proc_record, "graph", proc->source));
+                ATELIER_TRY(result.set(
+                    proc_record, "missing",
+                    !proc->source.empty() && !app.document_->has_graph(proc->source) &&
+                        app.document_->unavailable(assets::AssetKind::procedural_graph, proc->source) != nullptr));
+                ATELIER_TRY(
+                    result.set(proc_record, "has_surface", proc->output && proc->output->surface_mesh != nullptr));
+                std::uint64_t instance_count = 0;
+                if (proc->output)
+                    for (const auto& col : proc->output->publication.collections)
+                        if (col.transforms)
+                            instance_count += col.transforms->size();
+                ATELIER_TRY(result.set(proc_record, "instance_count", instance_count));
+            }
             ATELIER_TRY_BIND(materials, result.array(root, "materials"));
             for (const auto& binding : *bindings) {
                 const auto view = take(app.document_->inspect_material(binding.resource.id()));
@@ -1594,10 +1611,25 @@ struct EditorControl::Impl {
         ATELIER_TRY(result.set(root, "active_graph", app.workspace_.active_graph));
         ATELIER_TRY(result.set(root, "selected_graph_node", app.workspace_.selected_graph_node));
         {
+            const procedural::Geometry* shown_geom{};
+            if (!app.workspace_.active_graph.empty() && app.document_->has_graph(app.workspace_.active_graph)) {
+                if (const auto eval = app.document_->evaluate_graph(app.workspace_.active_graph,
+                                                                    app.project_ ? &*app.project_ : nullptr))
+                    shown_geom = eval->preview_output.get();
+            } else if (const ObjectId gen_comp = app.workspace_.active_procedural_generator(*app.document_);
+                       gen_comp != ObjectId{}) {
+                if (const auto src = presentation::read_procedural_source(app.document_->world().runtime(), gen_comp);
+                    src && src->output)
+                    shown_geom = src->output->geometry.get();
+            }
             const auto guides = result.object_validated(root, "sop_guides");
-            ATELIER_TRY(result.set(guides, "points", app.workspace_.sop_show_points));
+            ATELIER_TRY(result.set(guides, "points", app.workspace_.effective_show_points(shown_geom)));
+            ATELIER_TRY(result.set(guides, "points_auto", !app.workspace_.sop_show_points.has_value()));
             ATELIER_TRY(result.set(guides, "normals", app.workspace_.sop_show_normals));
+            ATELIER_TRY(result.set(guides, "face_normals", app.workspace_.sop_show_face_normals));
             ATELIER_TRY(result.set(guides, "orient", app.workspace_.sop_show_orient));
+            ATELIER_TRY(result.set(guides, "bounds", app.workspace_.sop_show_bounds));
+            ATELIER_TRY(result.set(guides, "info", app.workspace_.sop_show_info));
         }
         const auto camera = camera_json(app.document_->world().runtime(), app.camera_.state());
         result.set_validated(root, "camera", camera.root());
@@ -1720,6 +1752,7 @@ struct EditorControl::Impl {
         result.set_validated(root, "graph", handle(view.graph));
         ATELIER_TRY(result.set(root, "seed", view.seed));
         ATELIER_TRY(result.set(root, "display", view.display));
+        ATELIER_TRY(result.set(root, "template", view.template_node));
         ATELIER_TRY(result.set(root, "inspected_node", inspected_name));
         ATELIER_TRY(result.set(root, "dirty", view.dirty));
         ATELIER_TRY(result.set(root, "can_undo", view.can_undo));
@@ -1760,6 +1793,15 @@ struct EditorControl::Impl {
             ATELIER_TRY(result.set(item, "type", node.type));
             ATELIER_TRY(result.set(item, "placeholder", node.placeholder));
             ATELIER_TRY(result.set(item, "display", node.is_display));
+            ATELIER_TRY(result.set(item, "template", node.is_template));
+            ATELIER_TRY(result.set(item, "bypass", node.is_bypassed));
+            const auto shape_name = editor::graph_node_shape_name(node.shape);
+            ATELIER_TRY(result.set(item, "shape", shape_name.empty() ? std::string_view{"auto"} : shape_name));
+            if (node.color)
+                ATELIER_TRY(result.set(item, "color", editor::format_graph_hex_color(*node.color)));
+            else
+                ATELIER_TRY(result.set_null(item, "color"));
+            ATELIER_TRY(result.set(item, "comment", node.comment));
             ATELIER_TRY(result.numbers(item, "position", std::span{node.position}));
             ATELIER_TRY(write_ports(item, node.ports));
             if (node.status) {
@@ -1785,6 +1827,25 @@ struct EditorControl::Impl {
             ATELIER_TRY(result.set(item, "from_port", conn.from_port));
             ATELIER_TRY(result.set(item, "to_node", conn.to_node));
             ATELIER_TRY(result.set(item, "to_port", conn.to_port));
+        }
+        ATELIER_TRY_BIND(notes, result.array(root, "notes"));
+        for (const auto& note : view.notes) {
+            const auto item = result.append_object(*notes);
+            ATELIER_TRY(result.set(item, "name", note.name));
+            ATELIER_TRY(result.numbers(item, "position", std::span{note.position}));
+            ATELIER_TRY(result.numbers(item, "size", std::span{note.size}));
+            ATELIER_TRY(result.set(item, "title", note.title));
+            ATELIER_TRY(result.set(item, "text", note.text));
+            ATELIER_TRY(result.set(item, "color", editor::format_graph_hex_color(note.color)));
+        }
+        ATELIER_TRY_BIND(boxes, result.array(root, "boxes"));
+        for (const auto& box : view.boxes) {
+            const auto item = result.append_object(*boxes);
+            ATELIER_TRY(result.set(item, "name", box.name));
+            ATELIER_TRY(result.numbers(item, "position", std::span{box.position}));
+            ATELIER_TRY(result.numbers(item, "size", std::span{box.size}));
+            ATELIER_TRY(result.set(item, "title", box.title));
+            ATELIER_TRY(result.set(item, "color", editor::format_graph_hex_color(box.color)));
         }
         ATELIER_TRY_BIND(issues, result.array(root, "issues"));
         for (const auto& issue : view.issues) {
@@ -1838,11 +1899,14 @@ struct EditorControl::Impl {
 
     std::expected<json::Document, Failure> start_export(const std::string& id,
                                                         const std::shared_ptr<control::Peer>& peer) {
+        if (app.project_ &&
+            (!app.project_code_ || !app.project_code_->published_build() || !app.workspace_.scene_available))
+            throw Failure("not_ready", "Repair the project and load its scene before exporting a repro");
+        if (auto synced = app.document_->sync_procedural_generators(app.project_ ? &*app.project_ : nullptr); !synced)
+            return std::unexpected(Failure("operation_failed", synced.error().message));
         ATELIER_TRY_BIND(snapshot, control_artifacts::snapshot_resources(*app.document_));
         auto data = std::move(*snapshot);
         if (app.project_) {
-            if (!app.project_code_ || !app.project_code_->published_build() || !app.workspace_.scene_available)
-                throw Failure("not_ready", "Repair the project and load its scene before exporting a repro");
             data.project = app.project_->root();
             const auto& published = *app.project_code_->published_build();
             data.sources = published.sources;
@@ -1889,7 +1953,8 @@ struct EditorControl::Impl {
                 data.files.push_back(path);
                 if (at != entries.end() &&
                     (at->kind == assets::AssetKind::mesh || at->kind == assets::AssetKind::material ||
-                     at->kind == assets::AssetKind::texture || at->kind == assets::AssetKind::sky)) {
+                     at->kind == assets::AssetKind::texture || at->kind == assets::AssetKind::sky ||
+                     at->kind == assets::AssetKind::procedural_graph)) {
                     auto sidecar = path;
                     sidecar += L".asset.json";
                     const auto resolved = app.project_->resolve(sidecar);

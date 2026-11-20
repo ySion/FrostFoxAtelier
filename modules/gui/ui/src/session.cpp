@@ -79,6 +79,13 @@ detail::TextStore::Symbol icon_symbol(ControlIcon icon) {
            : icon == Icon::duplicate        ? Symbol::duplicate
            : icon == Icon::trash            ? Symbol::trash
            : icon == Icon::unparent         ? Symbol::unparent
+           : icon == Icon::points           ? Symbol::points
+           : icon == Icon::point_normals    ? Symbol::point_normals
+           : icon == Icon::face_normals     ? Symbol::face_normals
+           : icon == Icon::orient_scale     ? Symbol::orient_scale
+           : icon == Icon::backface_tint    ? Symbol::backface_tint
+           : icon == Icon::bounds_cage      ? Symbol::bounds_cage
+           : icon == Icon::info             ? Symbol::info
            : icon == Icon::left             ? Symbol::left
            : icon == Icon::right            ? Symbol::right
            : icon == Icon::up               ? Symbol::up
@@ -275,7 +282,8 @@ Result<void> validate_control_properties(const Control& control) {
         if (!std::isfinite(c.grid_step) || c.grid_step < 0 || c.grid_step > 4096 || !std::isfinite(c.grid_origin_x) ||
             !std::isfinite(c.grid_origin_y) || !valid_color(c.grid_minor) || !valid_color(c.grid_major) ||
             !valid_color(c.grid_axis) || c.boxes.size() > CanvasData::max_boxes ||
-            c.strokes.size() > CanvasData::max_strokes)
+            c.strokes.size() > CanvasData::max_strokes || c.shapes.size() > CanvasData::max_shapes ||
+            c.arcs.size() > CanvasData::max_arcs)
             return std::unexpected(Error{ErrorCode::invalid_control, control.key});
         for (const auto& b : c.boxes) {
             if (!std::isfinite(b.bounds.x) || !std::isfinite(b.bounds.y) || std::abs(b.bounds.x) > 1e6f ||
@@ -286,6 +294,26 @@ Result<void> validate_control_properties(const Control& control) {
             for (float r : {b.radius.top_left, b.radius.top_right, b.radius.bottom_right, b.radius.bottom_left})
                 if (!std::isfinite(r) || r < 0 || r > 4096)
                     return std::unexpected(Error{ErrorCode::invalid_control, control.key});
+        }
+        for (const auto& sh : c.shapes) {
+            if (sh.shape > 7 || sh.slot > 4 || !std::isfinite(sh.bounds.x) || !std::isfinite(sh.bounds.y) ||
+                std::abs(sh.bounds.x) > 1e6f || std::abs(sh.bounds.y) > 1e6f || !std::isfinite(sh.bounds.width) ||
+                !std::isfinite(sh.bounds.height) || sh.bounds.width < 0 || sh.bounds.height < 0 ||
+                !std::isfinite(sh.strip_start) || !std::isfinite(sh.strip_end) || sh.strip_start < 0 ||
+                sh.strip_end < sh.strip_start || sh.strip_end > 4096 || !valid_color(sh.fill) ||
+                !valid_color(sh.border_color) || !std::isfinite(sh.border_width) || sh.border_width < 0 ||
+                sh.border_width > 64)
+                return std::unexpected(Error{ErrorCode::invalid_control, control.key});
+        }
+        for (const auto& a : c.arcs) {
+            if (!std::isfinite(a.cx) || !std::isfinite(a.cy) || std::abs(a.cx) > 1e6f || std::abs(a.cy) > 1e6f ||
+                !std::isfinite(a.r_in) || !std::isfinite(a.r_out) || a.r_in < 0 || a.r_out < a.r_in || a.r_out > 8192 ||
+                !std::isfinite(a.dir_x) || !std::isfinite(a.dir_y) || std::abs(a.dir_x) > 2.f ||
+                std::abs(a.dir_y) > 2.f || !std::isfinite(a.cos_half) || !std::isfinite(a.sin_half) ||
+                std::abs(a.cos_half) > 4.f || a.sin_half < 0.f || a.sin_half > 2.f || !valid_color(a.fill) ||
+                !valid_color(a.border_color) || !std::isfinite(a.border_width) || a.border_width < 0 ||
+                a.border_width > 64)
+                return std::unexpected(Error{ErrorCode::invalid_control, control.key});
         }
         for (const auto& s : c.strokes) {
             if (!std::isfinite(s.x0) || !std::isfinite(s.y0) || !std::isfinite(s.x1) || !std::isfinite(s.y1) ||
@@ -308,6 +336,12 @@ Result<void> validate_control_properties(const Control& control) {
 }
 
 const ControlBox* UiFrame::find(ControlKey key) const noexcept {
+    if (!key)
+        return nullptr;
+    if (control_index.size() == controls.size()) {
+        const auto at = std::ranges::lower_bound(control_index, key, {}, &std::pair<ControlKey, std::uint32_t>::first);
+        return at != control_index.end() && at->first == key ? &controls[at->second] : nullptr;
+    }
     const auto found =
         std::find_if(controls.begin(), controls.end(), [key](const auto& box) { return box.key == key; });
     return found == controls.end() ? nullptr : &*found;
@@ -1034,7 +1068,7 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare(Preparation preparation)
                 // Measurement and placement can accumulate fractional rows in
                 // different orders. Discard float roundoff, not real overflow.
                 const auto roundoff =
-                    4 * std::numeric_limits<float>::epsilon() * std::max({1.f, content_end, box->height});
+                    4 * std::numeric_limits<float>::epsilon() * std::max(1.f, std::max(content_end, box->height));
                 state.scroll_limit = overflow > roundoff ? overflow : 0.f;
                 state.scroll = std::clamp(state.scroll, 0.0, state.scroll_limit);
             }
@@ -1073,7 +1107,7 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare(Preparation preparation)
             bounds.y = std::round(bounds.y);
             bounds.width = std::max(0.f, right - bounds.x);
             bounds.height = std::max(0.f, bottom - bounds.y);
-            border = std::min({std::max(1.f, std::round(border)), bounds.width * .5f, bounds.height * .5f});
+            border = std::min(std::max(1.f, std::round(border)), std::min(bounds.width * .5f, bounds.height * .5f));
         }
         const bool separate = beveled || edges != BorderEdges::all;
         draws->draws.push_back({bounds,
@@ -1256,7 +1290,8 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare(Preparation preparation)
             continue;
         }
         const auto& appearance = *state.resolved;
-        const float border = std::min({appearance.border_width * scale, bounds.width * .5f, bounds.height * .5f});
+        const float border =
+            std::min(appearance.border_width * scale, std::min(bounds.width * .5f, bounds.height * .5f));
         // Resolve text geometry once for either mode; painting consumes the
         // same width/metrics rather than resolving an alternate layout path.
         const auto text_padding = text_kind(kind) ? self.padding_for(state) : ui_layout::Insets{};
@@ -1322,9 +1357,59 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare(Preparation preparation)
                             continue;
                         const CornerRadii box_radius{b.radius.top_left * scale, b.radius.top_right * scale,
                                                      b.radius.bottom_right * scale, b.radius.bottom_left * scale};
-                        const float bw = std::min({b.border_width * scale, rect.width * .5f, rect.height * .5f});
+                        const float bw =
+                            std::min(b.border_width * scale, std::min(rect.width * .5f, rect.height * .5f));
                         draws->draws.push_back(
                             {rect, canvas_clip, b.fill, {0, 0, 1, 1}, {}, box_radius, bw, b.border_color});
+                    }
+                    for (const auto& a : c.arcs) {
+                        if (a.r_out <= a.r_in || (a.fill.a == 0 && (a.border_width <= 0 || a.border_color.a == 0)))
+                            continue;
+                        const float cx = bounds.x + a.cx * scale;
+                        const float cy = bounds.y + a.cy * scale;
+                        const float ri = a.r_in * scale;
+                        const float ro = a.r_out * scale;
+                        const float pad = ro + 2.f;
+                        const Rect aabb{cx - pad, cy - pad, pad * 2.f, pad * 2.f};
+                        if (!visible(aabb, canvas_clip))
+                            continue;
+                        const float bw = std::min(a.border_width * scale, (ro - ri) * .5f);
+                        draws->draws.push_back({aabb,
+                                                canvas_clip,
+                                                a.fill,
+                                                {cx, cy, ri, ro},
+                                                {},
+                                                {a.dir_x, a.dir_y, a.cos_half, a.sin_half},
+                                                bw,
+                                                a.border_color,
+                                                {},
+                                                {},
+                                                0.f,
+                                                ProceduralQuad::arc_sector});
+                    }
+                    for (const auto& sh : c.shapes) {
+                        if (sh.bounds.width <= 0 || sh.bounds.height <= 0 ||
+                            (sh.fill.a == 0 && (sh.border_width <= 0 || sh.border_color.a == 0)))
+                            continue;
+                        const Rect rect{bounds.x + sh.bounds.x * scale, bounds.y + sh.bounds.y * scale,
+                                        sh.bounds.width * scale, sh.bounds.height * scale};
+                        if (!visible(rect, canvas_clip))
+                            continue;
+                        const float bw =
+                            std::min(sh.border_width * scale, std::min(rect.width * .5f, rect.height * .5f));
+                        draws->draws.push_back({rect,
+                                                canvas_clip,
+                                                sh.fill,
+                                                {static_cast<float>(sh.shape), static_cast<float>(sh.slot),
+                                                 sh.strip_start * scale, sh.strip_end * scale},
+                                                {},
+                                                {},
+                                                bw,
+                                                sh.border_color,
+                                                {},
+                                                {},
+                                                0.f,
+                                                ProceduralQuad::node_shape});
                     }
                     for (const auto& s : c.strokes) {
                         if (s.width <= 0 || s.color.a == 0)
@@ -1422,8 +1507,8 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare(Preparation preparation)
                     const bool vertical = icon == Icon::grip_vertical;
                     const auto length =
                         std::min(appearance.indicator_size * scale, vertical ? bounds.height : bounds.width);
-                    const auto dot = std::min(
-                        {std::max(1.f, std::round(scale * 4.f / 3)), length, vertical ? bounds.width : bounds.height});
+                    const auto dot = std::min(std::max(1.f, std::round(scale * 4.f / 3)),
+                                              std::min(length, vertical ? bounds.width : bounds.height));
                     const auto pitch = std::round((length - dot) / 6);
                     for (int i = 0; i < 7 && dot > 0; ++i) {
                         const float offset = (static_cast<float>(i) - 3) * pitch;
@@ -1443,7 +1528,7 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare(Preparation preparation)
                         padding.top -= appearance.indicator_size + 2;
                     const float width = std::max(0.f, bounds.width - (padding.left + padding.right) * scale);
                     const float height = std::max(0.f, bounds.height - (padding.top + padding.bottom) * scale);
-                    const float size = std::min({appearance.indicator_size * scale, width, height});
+                    const float size = std::min(appearance.indicator_size * scale, std::min(width, height));
                     const auto alignment = captioned ? TextAlign::center : appearance.icon_align;
                     const float offset = alignment == TextAlign::left    ? 0
                                          : alignment == TextAlign::right ? width - size
@@ -1513,7 +1598,7 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare(Preparation preparation)
                          self.text.symbol(symbol, static_cast<std::uint32_t>(std::ceil(size))));
             }
             if (kind == ControlKind::combo && state.control.icon != ControlIcon::none && state.control.text.empty()) {
-                const auto size = std::min({7.f * scale, bounds.width * .3f, bounds.height * .3f});
+                const auto size = std::min(7.f * scale, std::min(bounds.width * .3f, bounds.height * .3f));
                 if (size > 0)
                     quad(
                         {bounds.x + bounds.width - size - 2 * scale, bounds.y + bounds.height - size - 2 * scale, size,
@@ -1720,6 +1805,10 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare(Preparation preparation)
                         draws->draws.begin() + static_cast<std::ptrdiff_t>(popup_draw_end), draws->draws.end());
         scrollbar(self.states.at(output->popup));
     }
+    output->control_index.reserve(output->controls.size());
+    for (std::uint32_t i = 0; i < static_cast<std::uint32_t>(output->controls.size()); ++i)
+        output->control_index.emplace_back(output->controls[i].key, i);
+    std::ranges::sort(output->control_index, {}, &std::pair<ControlKey, std::uint32_t>::first);
     if (paint) {
 #include "detail/session_ladder.inl"
 #include "detail/session_tooltip_draw.inl"

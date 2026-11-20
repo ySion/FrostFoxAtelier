@@ -62,10 +62,17 @@ enum class ControlIcon {
     rename,
     duplicate,
     trash,
-    unparent
+    unparent,
+    points,
+    point_normals,
+    face_normals,
+    orient_scale,
+    backface_tint,
+    bounds_cage,
+    info
 };
 
-inline constexpr ControlIcon last_control_icon = ControlIcon::unparent;
+inline constexpr ControlIcon last_control_icon = ControlIcon::info;
 
 enum class Role { normal, panel, title, caption };
 

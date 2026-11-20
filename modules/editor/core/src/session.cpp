@@ -619,6 +619,58 @@ Result<world::Commit> Session::create_static_mesh(const assets::MeshAsset& asset
     return attach_created(std::move(*root), asset.name);
 }
 
+Result<std::pair<std::string, std::wstring>> Session::resolve_procedural_graph_asset(std::string_view graph_key,
+                                                                                     Project* project) const {
+    if (is_scratch_graph(graph_key))
+        return std::unexpected(
+            Error{ErrorCode::invalid_definition,
+                  "Save the scratch procedural graph as a Project asset before binding it to a Scene Entity."});
+    std::string resolved_key(graph_key);
+    std::wstring label = L"Procedural Generator";
+    if (!graph_key.empty() && project && !has_graph(graph_key)) {
+        ATELIER_TRY_BIND(asset, project->assets().procedural_graph(graph_key));
+        resolved_key = asset->key;
+        if (!asset->name.empty())
+            label = asset->name;
+    } else if (!graph_key.empty() && project) {
+        if (const auto* entry = project->assets().entry(graph_key)) {
+            resolved_key = entry->key;
+            if (const auto stem = entry->path.stem().wstring(); !stem.empty())
+                label = stem;
+        }
+    }
+    return std::pair{std::move(resolved_key), std::move(label)};
+}
+
+Result<world::Commit> Session::create_procedural_generator(std::string_view graph_key, math::Vector3 position,
+                                                           Project* project) {
+    ATELIER_TRY_BIND(cancelled, cancel_edit());
+    ATELIER_TRY_BIND(members, world_.members());
+    if (members->size() >= maximum_entities)
+        return invalid("Editor Entity limit reached.");
+    ATELIER_TRY_BIND(resolved, resolve_procedural_graph_asset(graph_key, project));
+    ATELIER_TRY_BIND(root, presentation::create_procedural_generator_entity(
+                               world_, {{position, {}, {1.f, 1.f, 1.f}}, resolved->first}));
+    ATELIER_TRY_BIND(attached, attach_created(std::move(*root), resolved->second));
+    if (attached->changed)
+        ATELIER_TRY(sync_procedural_generators(project));
+    return std::move(*attached);
+}
+
+Result<void> Session::set_procedural_graph(Project* project, ObjectId component, std::string_view graph_key) {
+    ATELIER_TRY(cancel_edit());
+    ATELIER_TRY_BIND(state, admit_component_edit(component));
+    ATELIER_TRY_BIND(resolved, resolve_procedural_graph_asset(graph_key, project));
+    ATELIER_TRY_BIND(current, presentation::read_procedural_source(runtime_, component));
+    if (current->source == resolved->first)
+        return {};
+    ATELIER_TRY_BIND(root, runtime_.hold(component));
+    auto before = std::move(current->source);
+    ATELIER_TRY(presentation::set_procedural_binding(runtime_, component, {resolved->first, nullptr, {}}));
+    remember(ProceduralGraphChange{std::move(*root), state->owner, std::move(before), std::move(resolved->first)});
+    return sync_procedural_generators(project);
+}
+
 Result<world::Commit> Session::create_light(presentation::LightKind kind, math::Vector3 position) {
     ATELIER_TRY_BIND(cancelled, cancel_edit());
     ATELIER_TRY_BIND(members, world_.members());
@@ -1388,6 +1440,14 @@ Result<world::Commit> Session::replay(Change& change, bool forward, Project* pro
                                                                             forward ? item.after : item.before));
                 set_selection({item.entity, item.root.id()});
                 return world::Commit{true, {}};
+            } else if constexpr (std::is_same_v<T, ProceduralGraphChange>) {
+                ATELIER_TRY_BIND(state, admit_component_edit(item.root.id()));
+                if (state->owner != item.entity)
+                    return invalid("The procedural generator's owning Entity changed.");
+                ATELIER_TRY(presentation::set_procedural_binding(runtime_, item.root.id(),
+                                                                 {forward ? item.after : item.before, nullptr, {}}));
+                set_selection({item.entity, item.root.id()});
+                return world::Commit{true, {}};
             } else if constexpr (std::is_same_v<T, BodyChange>) {
                 ATELIER_TRY_BIND(state, admit_component_edit(item.root.id()));
                 if (state->owner != item.entity)
@@ -1480,6 +1540,7 @@ Result<world::Commit> Session::undo(Project* project) {
         restore(history_[cursor_ - 1].retained, false);
         --cursor_;
         forward_change(history_[cursor_].change, false);
+        ATELIER_TRY(sync_procedural_generators(project));
     }
     return result;
 }
@@ -1495,6 +1556,7 @@ Result<world::Commit> Session::redo(Project* project) {
         restore(history_[cursor_].retained, true);
         ++cursor_;
         forward_change(history_[cursor_ - 1].change, true);
+        ATELIER_TRY(sync_procedural_generators(project));
     }
     return result;
 }

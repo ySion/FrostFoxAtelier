@@ -390,6 +390,7 @@ ProjectDocument load_project_scene(Project& project, std::string_view source, Lo
     if (document) {
         result.session = std::move(*document);
         result.session->bind_project_code(result.code);
+        static_cast<void>(result.session->sync_procedural_generators(&project));
         if (result.build && result.build->error)
             result.error = *result.build->error;
     } else {

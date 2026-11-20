@@ -11,6 +11,7 @@
 
 namespace atelier::editor {
 class Project;
+
 class ProjectCode;
 
 struct Parameter {
@@ -251,6 +252,15 @@ public:
 
     Result<world::Commit> create_static_mesh(const assets::MeshAsset&, math::Vector3 position = {}, Project* = nullptr);
 
+    Result<world::Commit> create_procedural_generator(std::string_view graph_key = {}, math::Vector3 position = {},
+                                                      Project* = nullptr);
+
+    Result<void> set_procedural_graph(Project* project, ObjectId component, std::string_view graph_key);
+
+    Result<void> sync_procedural_generators(Project* project);
+
+    Result<world::Commit> bake_procedural_generator(Project* project, ObjectId target);
+
     Result<world::Commit> create_light(presentation::LightKind, math::Vector3 position = {});
 
     Result<world::Commit> create_camera(math::Vector3 position = {});
@@ -361,8 +371,8 @@ public:
 
     // What each slot shows where no component binds it: the default material, else the imported surface.
     // Generated instances read the same defaults as mesh components; a material edit publishes a new surface.
-    Result<std::shared_ptr<const std::vector<material::ProgramSurfaceRef>>> mesh_surfaces(assets::Reader&,
-                                                                                          const assets::MeshAsset&);
+    Result<std::shared_ptr<const std::vector<material::ProgramSurfaceRef>>>
+    mesh_surfaces(assets::Reader&, const assets::MeshAsset&, std::vector<MissingResource>* missing = nullptr);
 
     // Opens a material asset for inspection: the asset itself must read, while its
     // unavailable textures stand in so the material can be repaired.
@@ -419,7 +429,7 @@ public:
 
     bool material_can_undo(std::string_view key, bool redo = false) const;
 
-    void bind_project_code(const ProjectCode* code) noexcept { project_code_ = code; }
+    void bind_project_code(const ProjectCode* code) noexcept;
 
     Result<std::vector<GraphNodeCatalogEntry>> procedural_node_types();
 
@@ -428,6 +438,12 @@ public:
     Result<ObjectId> create_scratch_graph(std::string_view key = "scratch/procedural");
 
     bool has_graph(std::string_view key) const noexcept;
+
+    bool is_scratch_graph(std::string_view key) const noexcept;
+
+    std::optional<std::string> procedural_graph_snapshot(std::string_view key) const;
+
+    Result<ObjectId> resolve_procedural_generator(ObjectId target = {}) const;
 
     ObjectId loaded_graph(std::string_view key) const noexcept;
 
@@ -472,6 +488,11 @@ public:
     Result<void> graph_move_nodes(std::string_view key,
                                   std::span<const std::pair<std::string, std::array<float, 2>>> moves);
 
+    Result<void> graph_move_canvas_items(std::string_view key,
+                                         std::span<const std::pair<std::string, std::array<float, 2>>> node_moves,
+                                         std::span<const std::pair<std::string, std::array<float, 2>>> note_moves,
+                                         std::span<const std::pair<std::string, std::array<float, 2>>> box_moves);
+
     Result<void> graph_auto_layout(std::string_view key);
 
     Result<void> graph_connect(std::string_view key, std::string_view from_node, std::string_view from_port,
@@ -485,7 +506,41 @@ public:
     Result<void> graph_rewire(std::string_view key, const GraphConnectionView& remove_edge,
                               std::string_view new_to_node, std::string_view new_to_port);
 
+    Result<void> graph_splice_node(std::string_view key, std::string_view node_name, std::array<float, 2> position,
+                                   const GraphConnectionView& wire);
+
     Result<void> graph_set_display(std::string_view key, std::string_view node_name);
+
+    Result<void> graph_set_template(std::string_view key, std::string_view node_name);
+
+    Result<void> graph_set_bypass(std::string_view key, std::string_view node_name, bool bypassed);
+
+    Result<void> graph_set_node_appearance(std::string_view key, std::span<const std::string> names,
+                                           std::optional<GraphNodeShape> shape = {},
+                                           std::optional<std::optional<std::uint32_t>> color = {},
+                                           std::optional<std::string> comment = {});
+
+    Result<std::string> graph_add_note(std::string_view key, std::array<float, 2> position,
+                                       std::array<float, 2> size = {210.f, 116.f}, std::string_view title = "Note",
+                                       std::string_view text = {}, std::uint32_t color = 0xd4a72c);
+
+    Result<void> graph_update_note(std::string_view key, std::string_view name,
+                                   std::optional<std::array<float, 2>> position = {},
+                                   std::optional<std::array<float, 2>> size = {}, std::optional<std::string> title = {},
+                                   std::optional<std::string> text = {}, std::optional<std::uint32_t> color = {});
+
+    Result<void> graph_remove_notes(std::string_view key, std::span<const std::string> names);
+
+    Result<std::string> graph_add_box(std::string_view key, std::array<float, 2> position,
+                                      std::array<float, 2> size = {320.f, 220.f},
+                                      std::string_view title = "Network Box", std::uint32_t color = 0x3b5b78);
+
+    Result<void> graph_update_box(std::string_view key, std::string_view name,
+                                  std::optional<std::array<float, 2>> position = {},
+                                  std::optional<std::array<float, 2>> size = {}, std::optional<std::string> title = {},
+                                  std::optional<std::uint32_t> color = {});
+
+    Result<void> graph_remove_boxes(std::string_view key, std::span<const std::string> names);
 
     Result<void> graph_set_properties(std::string_view key, std::string_view node_name, json::Value properties);
 
@@ -799,12 +854,22 @@ private:
         presentation::SkyMapBinding after;
     };
 
+    struct ProceduralGraphChange {
+        ObjectRoot root;
+
+        ObjectId entity;
+
+        std::string before;
+
+        std::string after;
+    };
+
     struct RetainedChange {}; // Explicit discard; the history entry's swaps carry the data.
 
-    using Change =
-        std::variant<EntityChange, ComponentChange, FieldChange, NameChange, BodyChange, TransformChange,
-                     MaterialBindingChange, MaterialValueChange, ReparentChange, TransformPresenceChange,
-                     SpaceReferenceChange, FieldGroupChange, SkyMapChange, RetainedChange, ReferenceFieldChange>;
+    using Change = std::variant<EntityChange, ComponentChange, FieldChange, NameChange, BodyChange, TransformChange,
+                                MaterialBindingChange, MaterialValueChange, ReparentChange, TransformPresenceChange,
+                                SpaceReferenceChange, FieldGroupChange, SkyMapChange, ProceduralGraphChange,
+                                RetainedChange, ReferenceFieldChange>;
 
     // Sparse scene-record JSON text the loader could not apply. On the document entry,
     // materials are unreferenced definitions kept for write-back; on a component, they
@@ -943,7 +1008,19 @@ private:
 
     struct OpenGraph;
 
-    std::unordered_map<std::string, std::shared_ptr<OpenGraph>> graphs_;
+    struct OpenGraphDeleter {
+        void operator()(OpenGraph*) const noexcept;
+    };
+
+    std::unordered_map<std::string, std::unique_ptr<OpenGraph, OpenGraphDeleter>> graphs_;
+
+    struct GeneratorRuntimeCache;
+
+    struct GeneratorCacheDeleter {
+        void operator()(GeneratorRuntimeCache*) const noexcept;
+    };
+
+    std::unique_ptr<GeneratorRuntimeCache, GeneratorCacheDeleter> generator_cache_;
 
     std::unordered_map<ObjectId, std::string> scene_material_parents_; // Non-owning; survives parent loss.
 
@@ -1048,7 +1125,19 @@ private:
 
     void close_graphs() noexcept;
 
+    Result<void> publish_procedural_mesh(assets::Reader&, const assets::MeshAsset&);
+
     Result<const source::Program*> ensure_procedural_program();
+
+    Result<OpenGraph*> editable_graph(std::string_view key, bool need_program = false);
+
+    Result<std::string> add_graph_node_impl(std::string_view key, std::string_view type_name,
+                                            std::string_view desired_name, std::array<float, 2> position,
+                                            std::string_view from_node, std::string_view from_port,
+                                            std::string_view to_node, std::string_view to_port, bool set_display);
+
+    Result<std::pair<std::string, std::wstring>> resolve_procedural_graph_asset(std::string_view graph_key,
+                                                                                Project* project) const;
 
     Result<void> remember_graph_scalar_edit(ObjectRoot target, std::vector<world::FieldPath> paths,
                                             std::vector<Scalar> before, std::vector<Scalar> after);

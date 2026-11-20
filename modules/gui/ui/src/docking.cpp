@@ -381,7 +381,7 @@ std::optional<DockSpace::Drop> DockSpace::destination(ControlKey source, const D
             drop.preview.height = tab_height;
             return drop;
         }
-        const float edge = std::min({48.f * scale, b.width * .22f, b.height * .22f});
+        const float edge = std::min(48.f * scale, std::min(b.width * .22f, b.height * .22f));
         if (point.x < b.x + edge)
             drop.side = DockSide::left;
         else if (point.x > b.x + b.width - edge)

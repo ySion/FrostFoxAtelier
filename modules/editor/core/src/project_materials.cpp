@@ -246,6 +246,6 @@ Result<void> Project::save_procedural_graph(std::string_view key, std::string_vi
         return std::unexpected(Error{ErrorCode::invalid_storage, parsed.error().message});
     ATELIER_TRY_BIND(target, resolve((*item)->path));
     ATELIER_TRY(write_file(*target, text));
-    return {};
+    return refresh();
 }
 }

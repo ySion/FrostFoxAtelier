@@ -4,6 +4,7 @@
 #include <cmath>
 #include <limits>
 #include <numbers>
+#include <unordered_set>
 
 namespace atelier::editor {
 namespace {
@@ -213,6 +214,34 @@ std::optional<TriangleHit> triangle(const ViewportView::Ray& ray, V3 a, V3 b, V3
         return {};
     const float t = math::dot(edge2, q) / det;
     return t >= 0 ? std::optional(TriangleHit{t, u, v}) : std::nullopt;
+}
+
+bool ray_hits_bounds(const ViewportView::Ray& ray, const math::Bounds& bounds, float max_t) noexcept {
+    if (math::is_empty(bounds) || !math::is_finite(bounds))
+        return false;
+    float t_min = 0.f;
+    float t_max = max_t;
+    for (std::size_t axis = 0; axis < 3; ++axis) {
+        const float o = ray.origin[axis];
+        const float d = ray.direction[axis];
+        const float lo = bounds.minimum[axis];
+        const float hi = bounds.maximum[axis];
+        if (std::abs(d) < 1e-12f) {
+            if (o < lo || o > hi)
+                return false;
+            continue;
+        }
+        const float inv = 1.f / d;
+        float t0 = (lo - o) * inv;
+        float t1 = (hi - o) * inv;
+        if (t0 > t1)
+            std::swap(t0, t1);
+        t_min = std::max(t_min, t0);
+        t_max = std::min(t_max, t1);
+        if (t_min > t_max)
+            return false;
+    }
+    return true;
 }
 }
 
@@ -446,6 +475,10 @@ std::optional<ViewportTool::Hit> ViewportTool::trace(const ViewportView& view, f
         const auto inverse = math::try_inverse(item.world);
         if (!inverse)
             continue;
+        const ViewportView::Ray local{math::transform_point(ray.origin, *inverse),
+                                      math::transform_direction(ray.direction, *inverse)};
+        if (!ray_hits_bounds(local, item.geometry->bounds(), nearest))
+            continue;
         const auto& m = item.world;
         const auto normal_transform = math::normal_transform({m[0], m[1], m[2], m[4], m[5], m[6], m[8], m[9], m[10]});
         if (!normal_transform)
@@ -465,8 +498,6 @@ std::optional<ViewportTool::Hit> ViewportTool::trace(const ViewportView& view, f
         for (std::size_t row = 0; row < 3; ++row)
             for (std::size_t column = 0; column < 3; ++column)
                 tangent_matrix[row * 4 + column] /= scale;
-        const ViewportView::Ray local{math::transform_point(ray.origin, *inverse),
-                                      math::transform_direction(ray.direction, *inverse)};
         const auto vertices = item.geometry->vertices();
         for (std::size_t i = 0; i < vertices.size(); i += 3) {
             const auto at = [&](std::size_t n) {
@@ -629,9 +660,40 @@ std::vector<ObjectId> ViewportTool::pick_box(const Session& session, const Viewp
     const auto intersects = [&](float left, float top, float right, float bottom) {
         return left <= box.x + box.width && right >= box.x && top <= box.y + box.height && bottom >= box.y;
     };
+    std::unordered_set<ObjectId> selected_set;
     for (const auto& item : view.scene->meshes) {
-        if (std::ranges::find(found, item.entity) != found.end())
+        if (selected_set.contains(item.entity))
             continue;
+        const auto origin = view.project({item.world[12], item.world[13], item.world[14]});
+        if (origin && intersects(origin->x, origin->y, origin->x, origin->y)) {
+            selected_set.insert(item.entity);
+            found.push_back(item.entity);
+            continue;
+        }
+        const auto& local_bounds = item.geometry->bounds();
+        if (!math::is_empty(local_bounds) && math::is_finite(local_bounds)) {
+            float b_left = std::numeric_limits<float>::max();
+            float b_top = b_left;
+            float b_right = -b_left;
+            float b_bottom = -b_left;
+            bool all_projected = true;
+            for (int corner = 0; corner < 8; ++corner) {
+                const V3 local_p{(corner & 1) ? local_bounds.maximum.x : local_bounds.minimum.x,
+                                 (corner & 2) ? local_bounds.maximum.y : local_bounds.minimum.y,
+                                 (corner & 4) ? local_bounds.maximum.z : local_bounds.minimum.z};
+                const auto proj = view.project(math::transform_point(local_p, item.world));
+                if (!proj) {
+                    all_projected = false;
+                    break;
+                }
+                b_left = std::min(b_left, proj->x);
+                b_right = std::max(b_right, proj->x);
+                b_top = std::min(b_top, proj->y);
+                b_bottom = std::max(b_bottom, proj->y);
+            }
+            if (all_projected && !intersects(b_left, b_top, b_right, b_bottom))
+                continue;
+        }
         float left = std::numeric_limits<float>::max();
         float top = left;
         float right = -left;
@@ -646,10 +708,10 @@ std::vector<ObjectId> ViewportTool::pick_box(const Session& session, const Viewp
             top = std::min(top, projected->y);
             bottom = std::max(bottom, projected->y);
         }
-        const auto origin = view.project({item.world[12], item.world[13], item.world[14]});
-        if ((left <= right && intersects(left, top, right, bottom)) ||
-            (origin && intersects(origin->x, origin->y, origin->x, origin->y)))
+        if (left <= right && intersects(left, top, right, bottom)) {
+            selected_set.insert(item.entity);
             found.push_back(item.entity);
+        }
     }
     for (const auto& locator : view.scene->locators) {
         const auto p = view.project(locator.position);

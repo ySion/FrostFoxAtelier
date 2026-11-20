@@ -25,6 +25,11 @@ struct Access {
         return node.connections_;
     }
 
+    template <class N>
+    static auto& bypassed(N& node) {
+        return node.bypassed_;
+    }
+
     template <class G>
     static auto& nodes(G& graph) {
         return graph.nodes_;
@@ -147,6 +152,7 @@ Result<void> register_types(Runtime& runtime) {
     definitions.push_back(reflection::Definition<Ray>::build(runtime));
     definitions.push_back(reflection::Definition<CopyToPoints>::build(runtime));
     definitions.push_back(reflection::Definition<Realize>::build(runtime));
+    definitions.push_back(reflection::Definition<Null>::build(runtime));
     ATELIER_TRY(runtime.register_types(std::move(definitions)));
     return {};
 }
@@ -719,6 +725,21 @@ Result<void> set_display(Runtime& runtime, ObjectId graph, ObjectId node) {
             return std::unexpected(slot.error());
         const ReferenceChange change = ReferenceWrite{*slot, reference};
         return runtime.apply_reference_changes({&change, 1});
+    });
+}
+
+Result<bool> bypassed(Runtime& runtime, ObjectId node) {
+    return runtime.with_native<const Node>(node,
+                                           [](const Node& value) -> Result<bool> { return Access::bypassed(value); });
+}
+
+Result<void> set_bypassed(Runtime& runtime, ObjectId node, bool enabled) {
+    ATELIER_TRY_BIND(current, bypassed(runtime, node));
+    if (*current == enabled)
+        return {};
+    return runtime.with_native<Node>(node, [&](Node& value) -> Result<void> {
+        Access::bypassed(value) = enabled;
+        return {};
     });
 }
 

@@ -26,6 +26,7 @@ enum class ViewOption {
     wireframe,
     hidden_lines,
     triangle_edges,
+    backface_tint,
     wire_width,
     wire_opacity,
     background,

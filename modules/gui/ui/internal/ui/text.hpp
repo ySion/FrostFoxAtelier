@@ -145,7 +145,14 @@ public:
         rename,
         duplicate,
         trash,
-        unparent
+        unparent,
+        points,
+        point_normals,
+        face_normals,
+        orient_scale,
+        backface_tint,
+        bounds_cage,
+        info
     };
 
     std::shared_ptr<const Coverage> symbol(Symbol, std::uint32_t pixels);

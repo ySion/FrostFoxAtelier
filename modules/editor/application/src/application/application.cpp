@@ -372,6 +372,8 @@ Result<void> Application::workbench_history(bool redo) {
 }
 
 void Application::scene_changed() {
+    if (!workspace_.active_graph.empty())
+        exit_graph_context();
     workspace_.inspecting_asset = false;
     sync_world_view();
 }
@@ -383,6 +385,7 @@ Result<void> Application::set_view_settings(const renderer::ViewSettings& settin
 }
 
 Result<renderer::ViewSettings> Application::fitted_probe_view(bool follow_focus) const {
+    ATELIER_TRY(document_->sync_procedural_generators(project_ ? const_cast<editor::Project*>(&*project_) : nullptr));
     ATELIER_TRY_BIND(items, document_->presentation().render_items());
     if (items->empty())
         return std::unexpected(Error{ErrorCode::invalid_definition, "DDGI volume fitting requires rendered geometry."});
@@ -602,7 +605,7 @@ Result<void> Application::action(const ui::Action& source) {
                 box && box->bounds.width > 0.f && box->bounds.height > 0.f)
                 canvas_dip = {box->bounds.width / window_.dpi_scale(), box->bounds.height / window_.dpi_scale()};
         ATELIER_TRY_BIND(inspected, document_->graph_topology(workspace_.active_graph));
-        workspace_.network.frame_nodes((*inspected)->nodes, canvas_dip);
+        workspace_.network.frame_nodes((*inspected)->nodes, canvas_dip, {}, (*inspected)->boxes, (*inspected)->notes);
         workspace_.status = L"Framed all SOP nodes";
         return {};
     }
@@ -623,7 +626,7 @@ Result<void> Application::action(const ui::Action& source) {
         return {};
     }
     if (event.kind == ui::ActionKind::activate && event.key >= editor::network_control::tab_pick_first &&
-        event.key < editor::network_control::tab_pick_first + 12) {
+        event.key < editor::network_control::tab_pick_first + editor::NetworkCanvas::max_tab_results) {
         if (workspace_.active_graph.empty() || !document_->has_graph(workspace_.active_graph) ||
             !workspace_.network.tab_search().open)
             return {};
@@ -636,6 +639,22 @@ Result<void> Application::action(const ui::Action& source) {
         workspace_.bump_view_revision();
         workspace_.status = L"Added SOP node: " + platform::utf8_to_utf16_validated(*created);
         return {};
+    }
+    {
+        ui_layout::Size canvas_dip{640.f, 360.f};
+        if (ui_.presented())
+            if (const auto* box = ui_.presented()->find(editor::network_control::canvas);
+                box && box->bounds.width > 0.f && box->bounds.height > 0.f)
+                canvas_dip = {box->bounds.width / window_.dpi_scale(), box->bounds.height / window_.dpi_scale()};
+        std::wstring net_status;
+        ATELIER_TRY_BIND(handled, workspace_.network.apply_action(
+                                      *document_, workspace_.active_graph, workspace_.selected_graph_node,
+                                      workspace_.selected_graph_nodes, canvas_dip, event, net_status));
+        if (*handled) {
+            if (!net_status.empty())
+                workspace_.status = std::move(net_status);
+            return {};
+        }
     }
     if (event.kind == ui::ActionKind::activate)
         if (const auto type = workspace_.component_choice(event.key)) {
@@ -718,10 +737,12 @@ Result<void> Application::action(const ui::Action& source) {
         if (const auto* cell = std::get_if<ui::TableSelection>(&event.value);
             cell && workspace_.assets.row_key(selected->key) != cell->row)
             return {};
-        if (event.key == editor::browser_control::add && selected->kind == assets::AssetKind::mesh) {
+        if (event.key == editor::browser_control::add &&
+            (selected->kind == assets::AssetKind::mesh || selected->kind == assets::AssetKind::procedural_graph)) {
+            const bool is_mesh = selected->kind == assets::AssetKind::mesh;
             json::Builder args;
-            args.set_validated(args.root(), "kind", "mesh");
-            const auto key = args.set(args.root(), "mesh", selected->key);
+            args.set_validated(args.root(), "kind", is_mesh ? "mesh" : "procedural_generator");
+            const auto key = args.set(args.root(), is_mesh ? "mesh" : "graph", selected->key);
             if (!key)
                 return std::unexpected(Error{ErrorCode::invalid_storage, key.error().describe()});
             return run_operator({"scene.add", args.finish()});
@@ -2404,6 +2425,7 @@ Result<bool> Application::run_step(renderer::Capture* capture, StepTimes* times)
     if (had_viewport_gesture && !viewport_tool_.active())
         window_.capture(false);
     const bool in_sop = !workspace_.active_graph.empty() && document_->has_graph(workspace_.active_graph);
+    const procedural::Geometry* sop_template_geom = nullptr;
     renderer::Result<renderer::Preparation> material_preparation{renderer::Preparation{0, 0, true}};
     {
         timing::Scope snapshot{phases::scene};
@@ -2416,12 +2438,15 @@ Result<bool> Application::run_step(renderer::Capture* capture, StepTimes* times)
                 } else {
                     take(procedural_preview_.refresh(*document_, project_ ? &*project_ : nullptr, eval->preview_output,
                                                      eval->generation));
+                    if (eval->template_output && eval->template_node != eval->display_node)
+                        sop_template_geom = eval->template_output;
                     if (eval->display_error)
                         workspace_.render_notice = L"SOP cook error: " + diagnostic_text(eval->display_error->message) +
                                                    (eval->preview_output ? L" (showing last valid output)" : L"");
                 }
                 material_preparation = procedural_preview_.prepare(renderer_);
             } else {
+                take(document_->sync_procedural_generators(project_ ? &*project_ : nullptr));
                 take(scene_.refresh(*document_));
                 material_preparation = scene_.prepare(renderer_);
             }
@@ -2461,13 +2486,44 @@ Result<bool> Application::run_step(renderer::Capture* capture, StepTimes* times)
     overlay_.clear();
     if (viewport) {
         if (in_sop) {
-            if (sop_draw && sop_draw->shown_geometry)
-                append_procedural_guides(
-                    *sop_draw->shown_geometry, viewport_view,
-                    {workspace_.sop_show_points, workspace_.sop_show_normals, workspace_.sop_show_orient, true},
-                    overlay_);
-        } else
+            if (sop_template_geom)
+                append_template_wireframe(*sop_template_geom, viewport_view, overlay_);
+            if (sop_draw && sop_draw->shown_geometry) {
+                const auto* shown = sop_draw->shown_geometry.get();
+                append_procedural_guides(*shown, viewport_view,
+                                         {workspace_.effective_show_points(shown), workspace_.sop_show_normals,
+                                          workspace_.sop_show_face_normals, workspace_.sop_show_orient,
+                                          workspace_.sop_show_bounds, true},
+                                         overlay_);
+            }
+        } else {
             viewport_tool_.overlay(*document_, viewport_view, workspace_.viewport_settings, overlay_);
+            if (const ObjectId gen_comp = workspace_.active_procedural_generator(*document_); gen_comp != ObjectId{}) {
+                auto& runtime = document_->world().runtime();
+                if (const auto src = presentation::read_procedural_source(runtime, gen_comp);
+                    src && src->output && src->output->geometry) {
+                    const auto* geom = src->output->geometry.get();
+                    float chunk_size = 32.f;
+                    static_cast<void>(runtime.with_native<const presentation::ProceduralGeneratorComponent>(
+                        gen_comp, [&](const presentation::ProceduralGeneratorComponent& comp) -> Result<void> {
+                            chunk_size = comp.chunk_size;
+                            return {};
+                        }));
+                    math::Matrix4 world_mtx = math::Matrix4::identity();
+                    if (const auto comp_state = world::inspect_component(runtime, gen_comp);
+                        comp_state && comp_state->valid) {
+                        if (const auto mtx = world::world_matrix(runtime, comp_state->owner))
+                            world_mtx = *mtx;
+                    }
+                    append_procedural_guides(*geom, viewport_view,
+                                             {workspace_.effective_show_points(geom), workspace_.sop_show_normals,
+                                              workspace_.sop_show_face_normals, workspace_.sop_show_orient,
+                                              workspace_.sop_show_bounds, true, chunk_size, world_mtx},
+                                             overlay_);
+                }
+            }
+        }
+        append_orientation_gnomon(viewport_view, overlay_);
     }
     const bool projection_cut = accepted_view_ && accepted_view_->orthographic != viewport_view.orthographic;
     renderer::Capture control_capture;

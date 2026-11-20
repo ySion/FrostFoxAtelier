@@ -1,0 +1,427 @@
+{
+  "entities": [
+    {
+      "children": [],
+      "components": [
+        {
+          "enabled": true,
+          "graph": "project/{C6723FF1-C4D8-405C-B948-DAAE9D58B90C}",
+          "id": "2",
+          "materials": [
+            {
+              "overridden": true,
+              "resource": "15",
+              "slot": "default"
+            }
+          ],
+          "name": "",
+          "properties": {
+            "chunk_size": 16.0,
+            "override_seed": false,
+            "seed": 0
+          },
+          "type": "world.ProceduralGeneratorComponent"
+        }
+      ],
+      "enabled": true,
+      "id": "1",
+      "name": "Central Terrace Island",
+      "properties": {},
+      "space": {
+        "origin": null,
+        "position": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "type": "world.ProceduralGeneratorEntity"
+    },
+    {
+      "children": [],
+      "components": [
+        {
+          "enabled": true,
+          "graph": "project/{C6723FF1-C4D8-405C-B948-DAAE9D58B90C}",
+          "id": "4",
+          "materials": [
+            {
+              "overridden": true,
+              "resource": "15",
+              "slot": "default"
+            }
+          ],
+          "name": "",
+          "properties": {
+            "chunk_size": 16.0,
+            "override_seed": true,
+            "seed": 2026
+          },
+          "type": "world.ProceduralGeneratorComponent"
+        }
+      ],
+      "enabled": true,
+      "id": "3",
+      "name": "West Outpost Island",
+      "properties": {},
+      "space": {
+        "origin": null,
+        "position": [
+          -26.0,
+          -0.6,
+          10.0
+        ],
+        "rotation": [
+          0.0,
+          0.25708055,
+          0.0,
+          0.96638995
+        ],
+        "scale": [
+          0.92,
+          0.95,
+          0.92
+        ]
+      },
+      "type": "world.ProceduralGeneratorEntity"
+    },
+    {
+      "children": [],
+      "components": [
+        {
+          "enabled": true,
+          "graph": "project/{C6723FF1-C4D8-405C-B948-DAAE9D58B90C}",
+          "id": "6",
+          "materials": [
+            {
+              "overridden": true,
+              "resource": "15",
+              "slot": "default"
+            }
+          ],
+          "name": "",
+          "properties": {
+            "chunk_size": 16.0,
+            "override_seed": true,
+            "seed": 777
+          },
+          "type": "world.ProceduralGeneratorComponent"
+        }
+      ],
+      "enabled": true,
+      "id": "5",
+      "name": "East Sanctum Island",
+      "properties": {},
+      "space": {
+        "origin": null,
+        "position": [
+          25.0,
+          0.7,
+          -8.0
+        ],
+        "rotation": [
+          0.0,
+          -0.3801884,
+          0.0,
+          0.92490906
+        ],
+        "scale": [
+          0.86,
+          1.08,
+          0.86
+        ]
+      },
+      "type": "world.ProceduralGeneratorEntity"
+    },
+    {
+      "children": [],
+      "components": [
+        {
+          "enabled": true,
+          "id": "8",
+          "name": "",
+          "properties": {
+            "settings": {
+              "casts_shadow": true,
+              "color": {
+                "x": 1.0,
+                "y": 0.95,
+                "z": 0.86
+              },
+              "height": 1.0,
+              "intensity": 4.2,
+              "kind": "directional",
+              "range": 10.0,
+              "source_radius": 0.0,
+              "two_sided": false,
+              "width": 1.0
+            }
+          },
+          "type": "world.LightComponent"
+        }
+      ],
+      "enabled": true,
+      "id": "7",
+      "name": "Sun Directional Light",
+      "properties": {},
+      "space": {
+        "origin": null,
+        "position": [
+          -12.0,
+          18.0,
+          -14.0
+        ],
+        "rotation": [
+          0.32774535,
+          0.40954748,
+          -0.16053763,
+          0.836111
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "type": "world.Entity"
+    },
+    {
+      "children": [],
+      "components": [
+        {
+          "enabled": true,
+          "id": "10",
+          "name": "",
+          "properties": {
+            "settings": {
+              "casts_shadow": true,
+              "color": {
+                "x": 1.0,
+                "y": 0.68,
+                "z": 0.28
+              },
+              "height": 1.0,
+              "intensity": 18.0,
+              "kind": "point",
+              "range": 18.0,
+              "source_radius": 0.0,
+              "two_sided": false,
+              "width": 1.0
+            }
+          },
+          "type": "world.LightComponent"
+        }
+      ],
+      "enabled": true,
+      "id": "9",
+      "name": "Sanctum Beacon Light",
+      "properties": {},
+      "space": {
+        "origin": null,
+        "position": [
+          0.0,
+          6.2,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "type": "world.Entity"
+    },
+    {
+      "children": [],
+      "components": [
+        {
+          "enabled": true,
+          "id": "12",
+          "name": "",
+          "properties": {
+            "far_clip": 30000.0,
+            "near_clip": 0.05,
+            "vertical_fov": 45.0
+          },
+          "type": "world.CameraComponent"
+        }
+      ],
+      "enabled": true,
+      "id": "11",
+      "name": "Main Camera",
+      "properties": {},
+      "space": {
+        "origin": null,
+        "position": [
+          -4.5,
+          14.5,
+          -27.5
+        ],
+        "rotation": [
+          0.19655718,
+          0.07538727,
+          -0.015159416,
+          0.97747236
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "type": "world.Entity"
+    },
+    {
+      "children": [],
+      "components": [
+        {
+          "enabled": true,
+          "id": "14",
+          "name": "",
+          "properties": {
+            "antialiasing": "smaa",
+            "ao_radius": 0.35,
+            "bloom": true,
+            "ddgi": true,
+            "direct_candidates": 8,
+            "exposure_ev": 0.0,
+            "gtao": true,
+            "indirect_gain": 1.0,
+            "main_camera": {
+              "$ref": "11"
+            },
+            "probe_bounce": 0.85,
+            "probe_rays": 128,
+            "probe_update_budget": 64,
+            "reflection_distance": 30.0,
+            "reflection_roughness": 0.6,
+            "shadows": true,
+            "sky_color": {
+              "x": 0.22,
+              "y": 0.34,
+              "z": 0.52
+            },
+            "sky_enabled": true,
+            "sky_intensity": 1.15,
+            "sky_rotation": 0.0,
+            "sssr": true,
+            "volume0": {
+              "blend_cells": 0.0,
+              "count_x": 12,
+              "count_y": 4,
+              "count_z": 8,
+              "enabled": true,
+              "maximum": {
+                "x": 42.0,
+                "y": 11.0,
+                "z": 27.0
+              },
+              "minimum": {
+                "x": -42.0,
+                "y": -3.0,
+                "z": -25.0
+              },
+              "placement": "fixed"
+            },
+            "volume1": {
+              "blend_cells": 0.0,
+              "count_x": 8,
+              "count_y": 4,
+              "count_z": 8,
+              "enabled": false,
+              "maximum": {
+                "x": 6.0,
+                "y": 5.0,
+                "z": 6.0
+              },
+              "minimum": {
+                "x": -6.0,
+                "y": -1.0,
+                "z": -6.0
+              },
+              "placement": "fixed"
+            },
+            "volume2": {
+              "blend_cells": 0.0,
+              "count_x": 8,
+              "count_y": 4,
+              "count_z": 8,
+              "enabled": false,
+              "maximum": {
+                "x": 6.0,
+                "y": 5.0,
+                "z": 6.0
+              },
+              "minimum": {
+                "x": -6.0,
+                "y": -1.0,
+                "z": -6.0
+              },
+              "placement": "fixed"
+            },
+            "volume3": {
+              "blend_cells": 0.0,
+              "count_x": 8,
+              "count_y": 4,
+              "count_z": 8,
+              "enabled": false,
+              "maximum": {
+                "x": 6.0,
+                "y": 5.0,
+                "z": 6.0
+              },
+              "minimum": {
+                "x": -6.0,
+                "y": -1.0,
+                "z": -6.0
+              },
+              "placement": "fixed"
+            }
+          },
+          "sky_map": "",
+          "type": "world.EnvironmentComponent"
+        }
+      ],
+      "enabled": true,
+      "id": "13",
+      "name": "Environment",
+      "properties": {},
+      "space": null,
+      "type": "world.Entity"
+    }
+  ],
+  "materials": [
+    {
+      "id": "15",
+      "source": "project/{EAE8ED0C-C1AD-4B55-96E9-7DFF206BC449}"
+    }
+  ],
+  "next_id": "16",
+  "roots": [
+    "1",
+    "3",
+    "5",
+    "7",
+    "9",
+    "11",
+    "13"
+  ],
+  "version": 10
+}

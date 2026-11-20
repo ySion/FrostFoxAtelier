@@ -21,7 +21,7 @@ function(atelier_add_world)
         modules/engine/presentation/src/scene.cpp)
     atelier_target(atelier_presentation)
     target_include_directories(atelier_presentation PUBLIC modules/engine/presentation/include)
-    target_link_libraries(atelier_presentation PUBLIC atelier_world atelier_geometry atelier_rendering atelier_material)
+    target_link_libraries(atelier_presentation PUBLIC atelier_world atelier_geometry atelier_rendering atelier_material atelier_procedural)
     atelier_reflect(atelier_presentation SOURCE modules/engine/presentation/src/objects.cpp
         BASE_DIR modules/engine/presentation/include HEADERS modules/engine/presentation/include/presentation/presentation.hpp)
 

@@ -1,11 +1,17 @@
 #include "../helpers.hpp"
+#include "assets/file.hpp"
 #include "assets/json_format.hpp"
+#include "assets/material_format.hpp"
+#include "editor/project.hpp"
+#include "editor/project_code.hpp"
 #include "editor/properties.hpp"
 #include "editor/session.hpp"
-#include "editor/project.hpp"
-#include "runtime/native.hpp"
+#include "geometry/mesh.hpp"
 #include "physics/physics.hpp"
+#include "runtime/native.hpp"
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 
 namespace {
@@ -275,11 +281,283 @@ void verify_stop_reentry() {
             "Failed Tick did not release physics after End.");
     changed(document.close());
 }
+
+void verify_procedural_generator_scene() {
+    const auto directory = std::filesystem::current_path() / "project-scene-evidence" /
+                           ("procgen-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    auto project = take(editor::Project::create(directory));
+    const std::string_view graph_json = R"({
+  "nodes": {
+    "sphere": {
+      "inputs": {},
+      "position": [0.0, 0.0],
+      "properties": {"latitudes": 8, "radius": 2.0, "segments": 8},
+      "type": "procedural.Sphere"
+    },
+    "scatter": {
+      "inputs": {"surface": "sphere.output"},
+      "position": [0.0, 140.0],
+      "properties": {"density": 0.4, "min_distance": 0.5, "seed": 3},
+      "type": "procedural.Scatter"
+    },
+    "inst": {
+      "inputs": {"points": "scatter.points"},
+      "position": [0.0, 280.0],
+      "properties": {"meshes": ["builtin/cube"]},
+      "type": "procedural.CopyToPoints"
+    },
+    "out": {
+      "inputs": {"inputs": ["sphere.output", "inst.output"]},
+      "position": [120.0, 420.0],
+      "properties": {},
+      "type": "procedural.Merge"
+    }
+  },
+  "settings": {"display": "out", "seed": 42},
+  "version": 2
+})";
+    const auto graph_key = take(project.create_procedural_graph(L"Content/Graphs/Island.procgraph", graph_json));
+    const auto mat_key = take(project.create_material(
+        L"Content/Materials/Stone.material",
+        assets::MaterialAsset{{},
+                              L"Stone",
+                              assets::MaterialInstanceAsset{
+                                  "builtin/material/standard-opaque-double",
+                                  {{"base_color", math::Vector4{.62f, .58f, .50f, 1.f}}, {"roughness", .76f}}}}));
+
+    editor::Session doc;
+    take(doc.initialize());
+    doc.set_live_forwarding(true);
+    changed(doc.create_procedural_generator(graph_key, {3.f, 1.f, -2.f}, &project));
+    const ObjectId gen_entity = doc.selection().entity;
+    ObjectId gen_comp{};
+    for (const auto& c : take(world::components(doc.world().runtime(), gen_entity)))
+        if (take(doc.world().runtime().type_of(c.id())) == doc.presentation_types().procedural_generator_component)
+            gen_comp = c.id();
+    require(gen_comp != ObjectId{}, "ProceduralGeneratorEntity did not attach ProceduralGeneratorComponent.");
+    take(doc.assign_material(project, gen_comp, "default", mat_key));
+    const auto gen_type = doc.presentation_types().procedural_generator_component;
+    take(doc.set_properties(
+        gen_comp, std::array{editor::PropertyPatch{{take(doc.world().runtime().find_field(gen_type, "override_seed"))},
+                                                   Scalar{true}}}));
+    take(doc.set_properties(gen_comp,
+                            std::array{editor::PropertyPatch{{take(doc.world().runtime().find_field(gen_type, "seed"))},
+                                                             Scalar{std::int32_t{99}}}}));
+    take(doc.set_properties(
+        gen_comp, std::array{editor::PropertyPatch{{take(doc.world().runtime().find_field(gen_type, "chunk_size"))},
+                                                   Scalar{12.f}}}));
+    take(doc.sync_procedural_generators(&project));
+    take(doc.presentation().update());
+    const auto initial_slots = doc.presentation().generator_slots();
+    require(initial_slots.size() == 1 && initial_slots[0].item && initial_slots[0].item->surface_geometry != nullptr &&
+                !initial_slots[0].item->collections.empty(),
+            "ProceduralGeneratorComponent did not publish surface geometry and instance collections.");
+    const std::size_t initial_col_count = initial_slots[0].item->collections.size();
+    const std::uint64_t initial_gen = initial_slots[0].item->output_generation;
+
+    // Recooking an already-renderable generator must not advance World::revision() (no full-scene relayout).
+    const std::uint64_t rev_before_seed = doc.world().revision();
+    take(doc.set_properties(gen_comp,
+                            std::array{editor::PropertyPatch{{take(doc.world().runtime().find_field(gen_type, "seed"))},
+                                                             Scalar{std::int32_t{101}}}}));
+    take(doc.sync_procedural_generators(&project));
+    take(doc.presentation().update());
+    require(doc.world().revision() == rev_before_seed &&
+                doc.presentation().generator_slots()[0].item->output_generation > initial_gen,
+            "Recooking an active ProceduralGeneratorComponent unnecessarily bumped World::revision().");
+    take(doc.set_properties(gen_comp,
+                            std::array{editor::PropertyPatch{{take(doc.world().runtime().find_field(gen_type, "seed"))},
+                                                             Scalar{std::int32_t{99}}}}));
+    take(doc.sync_procedural_generators(&project));
+    take(doc.presentation().update());
+    require(doc.world().revision() == rev_before_seed,
+            "Restoring ProceduralGeneratorComponent seed unnecessarily bumped World::revision().");
+
+    // Disabling either ProceduralGeneratorComponent or its owning Entity stops cooking and hides rendered output.
+    const std::size_t active_render_count = take(doc.presentation().render_items()).size();
+    require(active_render_count > 1, "Expected surface + instance render_items while generator is enabled.");
+    auto& mut_world = const_cast<world::World&>(doc.world());
+    changed(mut_world.set_enabled(gen_comp, false));
+    take(doc.sync_procedural_generators(&project));
+    require(take(presentation::read_procedural_source(doc.world().runtime(), gen_comp)).output == nullptr &&
+                take(doc.presentation().render_items()).empty(),
+            "Disabling ProceduralGeneratorComponent did not clear cooked output and hide render_items.");
+    changed(mut_world.set_enabled(gen_comp, true));
+    take(doc.sync_procedural_generators(&project));
+    require(take(doc.presentation().render_items()).size() == active_render_count,
+            "Re-enabling ProceduralGeneratorComponent did not restore render_items.");
+
+    changed(mut_world.set_enabled(gen_entity, false));
+    take(doc.sync_procedural_generators(&project));
+    require(take(presentation::read_procedural_source(doc.world().runtime(), gen_comp)).output == nullptr &&
+                take(doc.presentation().render_items()).empty(),
+            "Disabling ProceduralGeneratorEntity did not clear cooked output and hide render_items.");
+    changed(mut_world.set_enabled(gen_entity, true));
+    take(doc.sync_procedural_generators(&project));
+    require(take(doc.presentation().render_items()).size() == active_render_count,
+            "Re-enabling ProceduralGeneratorEntity did not restore render_items.");
+
+    const auto saved = take(doc.serialize());
+    auto strict_reloaded = take(editor::Session::deserialize(saved, project, {}, editor::LoadPolicy::strict));
+    require(strict_reloaded->load_issues().empty(), "Strict reload of ProceduralGeneratorEntity reported issues.");
+    take(strict_reloaded->presentation().update());
+    const auto reloaded_slots = strict_reloaded->presentation().generator_slots();
+    require(reloaded_slots.size() == 1 && reloaded_slots[0].item &&
+                reloaded_slots[0].item->surface_geometry != nullptr &&
+                reloaded_slots[0].item->collections.size() == initial_col_count,
+            "Strict reload did not reproduce ProceduralGeneratorComponent render items.");
+
+    // Strict current-schema contract: missing "graph" or "materials" must be rejected without legacy shims.
+    {
+        const auto parsed = take(assets::json_format::parse(saved));
+        json::Builder no_graph(parsed.root());
+        const auto comp = take(take(take(take(no_graph.root().at("entities")).at(0)).at("components")).at(0));
+        no_graph.erase(comp, "graph");
+        const auto text = json::write(no_graph.root());
+        require(!editor::Session::deserialize({text.data(), text.size()}, project, {}, editor::LoadPolicy::strict),
+                "Strict scene load accepted ProceduralGeneratorComponent missing 'graph'.");
+    }
+    {
+        const auto parsed = take(assets::json_format::parse(saved));
+        json::Builder no_mats(parsed.root());
+        const auto comp = take(take(take(take(no_mats.root().at("entities")).at(0)).at("components")).at(0));
+        no_mats.erase(comp, "materials");
+        const auto text = json::write(no_mats.root());
+        require(!editor::Session::deserialize({text.data(), text.size()}, project, {}, editor::LoadPolicy::strict),
+                "Strict scene load accepted ProceduralGeneratorComponent missing 'materials'.");
+    }
+
+    // Tolerant load with an unknown slot in "materials" must drop retained "materials" once assign_material edits it.
+    {
+        const auto parsed = take(assets::json_format::parse(saved));
+        json::Builder extra_slot(parsed.root());
+        const auto comp = take(take(take(take(extra_slot.root().at("entities")).at(0)).at("components")).at(0));
+        const auto mats = take(comp.at("materials"));
+        const auto first_mat_res = std::string{take(take(mats.at(0)).string({"resource"}))};
+        const auto stale = extra_slot.append_object(mats);
+        extra_slot.set_validated(stale, "slot", "obsolete_slot");
+        extra_slot.set_validated(stale, "resource", first_mat_res);
+        take(extra_slot.set(stale, "overridden", true));
+        const auto text = json::write(extra_slot.root());
+        auto tolerant_doc =
+            take(editor::Session::deserialize({text.data(), text.size()}, project, {}, editor::LoadPolicy::tolerant));
+        const ObjectId tol_ent = take(tolerant_doc->world().members()).front().id();
+        const ObjectId tol_comp = take(world::components(tolerant_doc->world().runtime(), tol_ent)).front().id();
+        require(tolerant_doc->has_retained(tol_comp), "Expected unknown generator material slot to be retained.");
+        take(tolerant_doc->clear_material(tol_comp, "default"));
+        take(tolerant_doc->assign_material(project, tol_comp, "default", mat_key));
+        require(!tolerant_doc->has_retained(tol_comp),
+                "MaterialBindingChange did not release retained 'materials' record on ProceduralGeneratorComponent.");
+        const auto repaired_text = take(tolerant_doc->serialize());
+        auto strict_after_repair =
+            take(editor::Session::deserialize(repaired_text, project, {}, editor::LoadPolicy::strict));
+        require(strict_after_repair->load_issues().empty(),
+                "Repaired ProceduralGeneratorComponent material bindings failed strict reload.");
+        changed(strict_after_repair->close());
+        changed(tolerant_doc->close());
+    }
+
+    // Corrupt .procgraph on disk must fail LoadPolicy::strict and isolate cleanly under LoadPolicy::tolerant.
+    {
+        const auto broken_key = take(project.create_procedural_graph(L"Content/Graphs/Broken.procgraph", graph_json));
+        const auto broken_path = take(project.resolve(project.entry(broken_key)->path));
+        take(editor::write_file(broken_path, "{corrupt json"));
+        take(project.refresh());
+
+        const auto parsed = take(assets::json_format::parse(saved));
+        json::Builder corrupt_ref(parsed.root());
+        const auto comp = take(take(take(take(corrupt_ref.root().at("entities")).at(0)).at("components")).at(0));
+        corrupt_ref.set_validated(comp, "graph", broken_key);
+        const auto text = json::write(corrupt_ref.root());
+        require(!editor::Session::deserialize({text.data(), text.size()}, project, {}, editor::LoadPolicy::strict),
+                "Strict scene load accepted a syntactically corrupt .procgraph asset.");
+        auto tolerant_corrupt =
+            take(editor::Session::deserialize({text.data(), text.size()}, project, {}, editor::LoadPolicy::tolerant));
+        require(!tolerant_corrupt->load_issues().empty(),
+                "Tolerant scene load did not report unreadable_resource for corrupt .procgraph.");
+        take(tolerant_corrupt->sync_procedural_generators(&project));
+        changed(tolerant_corrupt->close());
+    }
+
+    // Play live-forwarding contract: start from empty Play copy and apply recorded live ops.
+    editor::Session empty_base;
+    take(empty_base.initialize());
+    const auto empty_saved = take(empty_base.serialize());
+    changed(empty_base.close());
+    auto play_copy = take(editor::Session::deserialize(empty_saved, project, {}, editor::LoadPolicy::strict));
+    play_copy->enter_play();
+    const auto live_ops = take(doc.take_live_ops());
+    require(!live_ops.empty(), "ProceduralGeneratorComponent edits produced no live-forwarding ops.");
+    json::Builder batch_builder;
+    const auto ops_arr = take(batch_builder.array(batch_builder.root(), "ops"));
+    for (const auto& op : live_ops) {
+        const auto parsed_op = take(assets::json_format::parse(op.text));
+        batch_builder.append(ops_arr, parsed_op.root());
+    }
+    const auto batch_text = json::write(batch_builder.root());
+    const auto live_diags = take(play_copy->apply_live({batch_text.data(), batch_text.size()}, project));
+    require(live_diags.empty(), "Play copy rejected ProceduralGeneratorComponent live-forwarding batch.");
+    take(play_copy->sync_procedural_generators(&project));
+    take(play_copy->presentation().update());
+    const auto play_slots = play_copy->presentation().generator_slots();
+    require(play_slots.size() == 1 && play_slots[0].item && play_slots[0].item->surface_geometry != nullptr &&
+                play_slots[0].item->collections.size() == initial_col_count,
+            "Play live-forwarding did not reproduce ProceduralGeneratorComponent render items.");
+
+    changed(play_copy->close());
+    changed(strict_reloaded->close());
+    changed(doc.close());
+}
+
+void verify_examples_procedural_showcase() {
+    const std::filesystem::path examples_root{ATELIER_EXAMPLE_PROJECT};
+    const auto temp_dir =
+        std::filesystem::current_path() / "project-scene-evidence" /
+        ("examples-proc-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(temp_dir / "Content");
+    const auto copy_opts = std::filesystem::copy_options::recursive | std::filesystem::copy_options::overwrite_existing;
+    std::filesystem::copy(examples_root / "Config", temp_dir / "Config", copy_opts);
+    std::filesystem::copy(examples_root / "Source", temp_dir / "Source", copy_opts);
+    std::filesystem::copy(examples_root / "Content/Procedural", temp_dir / "Content/Procedural", copy_opts);
+
+    auto project = take(editor::Project::open(temp_dir));
+    const auto scene_file = take(project.resolve("Content/Procedural/Scenes/ProceduralShowcase.scene"));
+    const auto scene_text = take(assets::read_file(scene_file, 16 * 1024 * 1024));
+    auto loaded = editor::load_project_scene(project, scene_text, editor::LoadPolicy::strict);
+    if (loaded.error)
+        fatal(loaded.error->message);
+    require(loaded.session != nullptr && loaded.code != nullptr && loaded.session->load_issues().empty() &&
+                loaded.session->issues().empty(),
+            "ProceduralShowcase.scene reported strict load or runtime issues.");
+
+    take(loaded.session->presentation().update());
+    const auto gen_slots = loaded.session->presentation().generator_slots();
+    require(gen_slots.size() == 3, "ProceduralShowcase.scene expected 3 ProceduralGeneratorEntity islands.");
+    for (const auto& slot : gen_slots) {
+        require(slot.item && slot.item->surface_geometry != nullptr && !slot.item->collections.empty() &&
+                    slot.item->surface_materials != nullptr && !slot.item->surface_materials->empty(),
+                "ProceduralShowcase island missing surface mesh, surface material, or CopyToPoints instances.");
+    }
+    require(*gen_slots[0].item->collections.front().transforms != *gen_slots[1].item->collections.front().transforms,
+            "override_seed on West Outpost Island did not produce distinct instance placements.");
+    const auto showcase_source =
+        take(presentation::read_procedural_source(loaded.session->world().runtime(), gen_slots[0].item->component));
+    require(
+        showcase_source.output && showcase_source.output->mesh_dependencies.size() == 3,
+        "ProceduralShowcase generator did not record all 3 display mesh dependencies (including MeshImport TerrainGrid).");
+    require(take(loaded.session->main_camera()) != ObjectId{} &&
+                !take(loaded.session->presentation().light_items()).empty(),
+            "ProceduralShowcase.scene missing Main Camera or lights.");
+    changed(loaded.session->close());
+}
 }
 
 int main() {
     atelier::install_fatal_handler();
     verify_roundtrip();
     verify_stop_reentry();
-    std::puts("Project Scene acceptance: PASS (authored scalar roundtrip, End/physics shutdown order)");
+    verify_procedural_generator_scene();
+    verify_examples_procedural_showcase();
+    std::puts(
+        "Project Scene acceptance: PASS (authored scalar roundtrip, End/physics shutdown order, ProceduralGenerator strict schema + Play live, Examples ProceduralShowcase)");
 }

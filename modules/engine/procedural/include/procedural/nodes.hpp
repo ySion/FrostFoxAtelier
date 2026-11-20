@@ -313,4 +313,14 @@ public:
                                        Geometry& output) const noexcept;
 };
 
+ACLASS(Name = "procedural.Null",
+       DESC = "无修改直通节点，常用作程序化图中的命名里程碑或稳定输出端点（如 OUT_terrain）。")
+class Null : public Node {
+    AGENERATED_BODY(Null)
+
+public:
+    AFUNCTION(DESC = "原样传递输入几何，零拷贝共享底层属性与拓扑列。")
+    [[nodiscard]] Result<void> process(const Geometry& input, Geometry& output) const noexcept;
+};
+
 }

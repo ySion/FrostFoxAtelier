@@ -89,6 +89,8 @@ private:
     ReferenceSequence inputs_; // Upstream node of each connection, ordered by input port.
 
     std::vector<Connection> connections_; // Parallel to inputs_.
+
+    bool bypassed_{};
 };
 
 ACLASS(Name = "procedural.Graph", DESC = "程序化图：一组节点及其连接，display 节点的输出是图的结果。")
@@ -188,5 +190,10 @@ Result<void> disconnect(Runtime& runtime, ObjectId from, std::uint32_t output, O
 
 // A null node clears the display.
 Result<void> set_display(Runtime& runtime, ObjectId graph, ObjectId node);
+
+// A bypassed node skips process() and forwards its first connected input geometry (or empty Geometry) to output 0.
+Result<bool> bypassed(Runtime& runtime, ObjectId node);
+
+Result<void> set_bypassed(Runtime& runtime, ObjectId node, bool value);
 
 }

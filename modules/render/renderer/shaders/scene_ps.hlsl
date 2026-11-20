@@ -40,7 +40,7 @@ SceneFace scene_face(SceneOutput input, uint primitive, float3 barycentrics) {
     face.dx=material_triangle_delta(tri,barycentrics.yz,bx);
     face.dy=material_triangle_delta(tri,barycentrics.yz,by);
     face.material_index = material_indices[material_offsets[input.instance] + (record.slot_edges & 0x1fffffffu)];
-    face.edge_mask = display.z != 0 ? 7 : record.slot_edges >> 29;
+    face.edge_mask = (display.z & 1u) != 0 ? 7 : record.slot_edges >> 29;
     face.normal = display.x == 1 ? gn : input.normal;
     face.geometric_normal = gn;
     face.eye_geometric_normal = mul(float4(gn, 0), view).xyz;
@@ -53,7 +53,9 @@ float4 scene_color(SceneOutput input, SceneFace face) {
     if(display.w==3 && display.y!=1 && input.selected==0)discard;
     MaterialSurface material=material_surfaces[face.material_index];
     float3 eye_direction=projection[2][3]!=0?-input.eye_position:float3(0,0,-1);
-    if(material.flags.y==0&&dot(face.eye_geometric_normal,eye_direction)<=0)discard;
+    bool backfacing = dot(face.eye_geometric_normal, eye_direction) <= 0;
+    bool tint_backfaces = (display.z & 2u) != 0;
+    if(material.flags.y==0 && !tint_backfaces && backfacing)discard;
     MaterialOutput result=material_shade_footprint(material,face.center,face.dx,face.dy);
     if(material.flags.x!=0&&!(result.ms_coverage>=0))discard;
     if(display.w==2)return 0;
@@ -62,13 +64,17 @@ float4 scene_color(SceneOutput input, SceneFace face) {
     if (display.w == 0) {
         float3 normal = unit_normal(face.normal);
         if(display.x!=1&&display.x!=2)normal=unit_normal(result.ms_normal_world);
-        if(material.flags.y!=0&&dot(face.eye_geometric_normal,eye_direction)<0)normal=-normal;
+        if((material.flags.y!=0 || tint_backfaces) && backfacing)normal=-normal;
         if (display.x == 2) {
             float3 eye_normal = unit_normal(mul(normal, (float3x3)view));
             color = matcap.SampleLevel(matcap_sampler, eye_normal.xy * float2(.5, -.5) + .5, 0).rgb;
         } else {
             float light = .3 + .7 * saturate(dot(normal, normalize(float3(.4, .8, -.6))));
             color = diffuse.rgb * light;
+        }
+        if (tint_backfaces && backfacing) {
+            float bf_light = .34 + .66 * saturate(dot(normal, normalize(float3(.4, .8, -.6))));
+            color = lerp(color, float3(.06, .74, .90) * bf_light, .84);
         }
 #ifdef CAVITY_SURFACE
         return float4(color,1); // Editing ink is composed after the cavity pass.

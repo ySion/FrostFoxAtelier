@@ -203,6 +203,7 @@ void scene_references(json::Value scene, const Reference& reference) {
                     if (component.kind() == json::Kind::object) {
                         reference(assets::AssetKind::mesh, string_field(component, "mesh"));
                         reference(assets::AssetKind::sky, string_field(component, "sky_map"));
+                        reference(assets::AssetKind::procedural_graph, string_field(component, "graph"));
                     }
 }
 
@@ -221,6 +222,32 @@ std::expected<void, Failure> preflight_resources(editor::Project& project, json:
             materials.push_back(key);
     };
     scene_references(scene, reference);
+    std::vector<std::string> graphs;
+    for (const auto& [kind, key] : references)
+        if (kind == assets::AssetKind::procedural_graph)
+            graphs.push_back(key);
+    for (const auto& key : graphs)
+        if (auto graph_asset = project.assets().procedural_graph(key))
+            if (auto parsed_graph = assets::json_format::parse(graph_asset->text))
+                if (const auto nodes = parsed_graph->root().find("nodes");
+                    nodes && *nodes && (**nodes).kind() == json::Kind::object)
+                    for (const auto& [_, node] : *(**nodes).object_items()) {
+                        if (node.kind() != json::Kind::object)
+                            continue;
+                        const auto props = node.find("properties");
+                        if (!props || !*props || (**props).kind() != json::Kind::object)
+                            continue;
+                        const auto type = string_field(node, "type");
+                        if (type == "procedural.MeshImport")
+                            reference(assets::AssetKind::mesh, string_field(**props, "mesh"));
+                        else if (type == "procedural.CopyToPoints") {
+                            if (const auto arr = (**props).find("meshes");
+                                arr && *arr && (**arr).kind() == json::Kind::array)
+                                for (const auto item : *(**arr).array())
+                                    if (item.kind() == json::Kind::string)
+                                        reference(assets::AssetKind::mesh, std::string{*item.string()});
+                        }
+                    }
     // Collect before visiting materials; their ordinal need not follow meshes.
     std::vector<std::string> meshes;
     for (const auto& [kind, key] : references)
@@ -632,6 +659,13 @@ std::expected<Repro, Failure> snapshot_resources(const editor::Session& document
         if (found.size() != locals.size())
             throw Failure("dependency_mismatch", "A scene material has no live author resource");
     }
+    const auto push_unique_mesh = [&](assets::MeshAsset snapshot) {
+        if (snapshot.mesh && std::ranges::none_of(data.meshes, [&](const auto& entry) {
+                return entry.key == snapshot.key && entry.mesh == snapshot.mesh &&
+                       entry.materials == snapshot.materials;
+            }))
+            data.meshes.push_back(std::move(snapshot));
+    };
     for (const auto& entity : take(document.world().members()))
         for (const auto& component : take(world::components(runtime, entity.id()))) {
             if (auto mesh = presentation::read_static_mesh(runtime, component.id())) {
@@ -658,11 +692,65 @@ std::expected<Repro, Failure> snapshot_resources(const editor::Session& document
                             engine.try_emplace(key, installed_asset(key, assets::AssetKind::material));
                         }
                     }
-                if (snapshot.mesh && std::ranges::none_of(data.meshes, [&](const auto& entry) {
-                        return entry.key == snapshot.key && entry.mesh == snapshot.mesh &&
-                               entry.materials == snapshot.materials;
-                    }))
-                    data.meshes.push_back(std::move(snapshot));
+                push_unique_mesh(std::move(snapshot));
+            } else if (auto proc = presentation::read_procedural_binding(runtime, component.id())) {
+                reference(assets::AssetKind::procedural_graph, proc->source);
+                if (!proc->source.empty() && !proc->source.starts_with("builtin/")) {
+                    if (auto snapshot_text = document.procedural_graph_snapshot(proc->source)) {
+                        const auto at = std::ranges::find(data.procedural_graphs, proc->source,
+                                                          &std::pair<std::string, std::string>::first);
+                        if (at == data.procedural_graphs.end())
+                            data.procedural_graphs.emplace_back(proc->source, std::move(*snapshot_text));
+                    }
+                }
+                const auto bindings = take(presentation::read_material_bindings(runtime, component.id()));
+                for (const auto& binding : bindings)
+                    pending.push_back(binding.resource.id());
+                if (proc->output && proc->output->surface_mesh &&
+                    std::ranges::find(bindings, std::string_view{"default"}, &presentation::MaterialBinding::slot) ==
+                        bindings.end()) {
+                    const std::string key = "builtin/material/default-grid";
+                    references.emplace(assets::AssetKind::material, key);
+                    engine.try_emplace(key, installed_asset(key, assets::AssetKind::material));
+                }
+                for (const auto& asset : proc->resolved_assets) {
+                    reference(assets::AssetKind::mesh, asset.key);
+                    assets::MeshAsset snapshot{asset.key, {}, asset.mesh};
+                    for (const auto& binding : asset.defaults) {
+                        const auto key = take(material::material_key(runtime, binding.resource.id()));
+                        reference(assets::AssetKind::material, key);
+                        snapshot.materials.push_back({binding.slot, key});
+                        pending.push_back(binding.resource.id());
+                    }
+                    if (snapshot.mesh) {
+                        for (std::size_t i = 0; i < snapshot.mesh->materials().size(); ++i) {
+                            const auto slot = presentation::material_slot_name(*snapshot.mesh, i);
+                            if (std::ranges::find(asset.defaults, slot, &presentation::MaterialBinding::slot) ==
+                                asset.defaults.end()) {
+                                const std::string key = "builtin/material/default-grid";
+                                references.emplace(assets::AssetKind::material, key);
+                                engine.try_emplace(key, installed_asset(key, assets::AssetKind::material));
+                            }
+                        }
+                        push_unique_mesh(std::move(snapshot));
+                    }
+                }
+                if (proc->output) {
+                    for (const auto& dep : proc->output->mesh_dependencies) {
+                        if (dep.key.empty())
+                            continue;
+                        reference(assets::AssetKind::mesh, dep.key);
+                        if (!dep.mesh)
+                            continue;
+                        assets::MeshAsset snapshot{dep.key, {}, dep.mesh};
+                        snapshot.materials.reserve(dep.slot_materials.size());
+                        for (const auto& [slot, mat_key] : dep.slot_materials) {
+                            reference(assets::AssetKind::material, mat_key);
+                            snapshot.materials.push_back({slot, mat_key});
+                        }
+                        push_unique_mesh(std::move(snapshot));
+                    }
+                }
             } else if (auto sky = presentation::read_sky_map(runtime, component.id())) {
                 reference(assets::AssetKind::sky, sky->source);
                 if (sky->resolved && std::ranges::none_of(data.skies, [&](const auto& entry) {
@@ -1222,6 +1310,15 @@ std::expected<json::Document, Failure> export_repro(const std::filesystem::path&
         ATELIER_TRY_BIND(expected, assets::material_format::encode(material));
         if (*actual != *expected)
             throw Failure("dependency_mismatch", "Exported material author differs from its snapshot: " + material.key);
+    }
+    for (const auto& [key, text] : data.procedural_graphs) {
+        checkpoint(cancel);
+        const auto saved = clone.save_procedural_graph(key, text);
+        if (!saved)
+            return std::unexpected(Failure("storage_error", saved.error().message));
+        const auto actual = take(clone.assets().procedural_graph(key));
+        if (actual.text != text)
+            throw Failure("dependency_mismatch", "Exported procedural graph differs from its snapshot: " + key);
     }
     for (const auto& file : data.material_sources) {
         checkpoint(cancel);
