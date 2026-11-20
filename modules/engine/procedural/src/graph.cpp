@@ -128,6 +128,7 @@ Result<void> register_types(Runtime& runtime) {
     column(std::type_identity<math::Matrix4>{}, "procedural.Matrix4s");
     definitions.push_back(reflection::Definition<Layer>::build(runtime));
     definitions.push_back(reflection::Definition<Reduce>::build(runtime));
+    definitions.push_back(reflection::Definition<BooleanOperation>::build(runtime));
     definitions.push_back(reflection::Definition<RayMode>::build(runtime));
     definitions.push_back(reflection::Definition<Geometry>::build(runtime));
     definitions.push_back(array_definition<Geometry>(runtime, "procedural.Geometries"));
@@ -142,6 +143,7 @@ Result<void> register_types(Runtime& runtime) {
     definitions.push_back(reflection::Definition<Tube>::build(runtime));
     definitions.push_back(reflection::Definition<Polyline>::build(runtime));
     definitions.push_back(reflection::Definition<GroupBox>::build(runtime));
+    definitions.push_back(reflection::Definition<Boolean>::build(runtime));
     definitions.push_back(reflection::Definition<Connectivity>::build(runtime));
     definitions.push_back(reflection::Definition<Scatter>::build(runtime));
     definitions.push_back(reflection::Definition<VolumeScatter>::build(runtime));

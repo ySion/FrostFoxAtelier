@@ -1,5 +1,6 @@
 #include "memory/fatal.hpp"
 #include "../helpers.hpp"
+#include "boolean_profile.hpp"
 #include "foundation/result.hpp"
 #include "procedural/bvh.hpp"
 #include "procedural/evaluator.hpp"
@@ -165,6 +166,377 @@ void connectivity_modeling() {
             "Promote did not carry the piece ID to its polygons and open polyline.");
     require(!connectivity(per_face) && per_face.find("piece")->layer == Layer::primitive,
             "Connectivity overwrote an incompatible existing column.");
+}
+
+std::pair<double, double> solid_measures(const Geometry& g) {
+    double volume = 0;
+    double area = 0;
+    for (std::uint32_t i = 0; i < g.count(Layer::primitive); ++i) {
+        auto face = g.primitive(i);
+        auto vertex = [&](auto n) { return math::Vector3d(g.positions()[g.vertex_points()[face.first + n]]); };
+        const auto a = vertex(0);
+        for (std::uint32_t j = 1; j + 1 < face.count; ++j) {
+            auto cross = math::cross(vertex(j) - a, vertex(j + 1) - a);
+            volume += math::dot(a, cross) / 6.;
+            area += math::length(cross) / 2.;
+        }
+    }
+    return {volume, area};
+}
+
+void boolean_modeling() {
+    using enum BooleanOperation;
+    auto a = take(box({2, 2, 2}));
+    auto b = a;
+    take(transform(b, {1, 0, 0}, {}, {1, 1, 1}));
+    for (auto* mesh : {&a, &b}) {
+        auto* material = take(mesh->add<std::uint32_t>("material", Layer::primitive));
+        for (std::uint32_t p = 0; p < 6; ++p)
+            (*material)[p] = 0xffffff00u + p + (mesh == &b ? 16u : 0u);
+        auto* uv = take(mesh->add<Vector2>("uv", Layer::vertex));
+        for (std::uint32_t c = 0; c < 24; ++c) {
+            const auto v = mesh->positions()[mesh->vertex_points()[c]];
+            (*uv)[c] = {v.x + float(c / 4), v.y};
+        }
+    }
+    auto cut = take(solid_boolean(a, b, subtract));
+    auto overlap = take(solid_boolean(a, b, intersect));
+    auto all = take(solid_boolean(a, b, unite));
+    require(std::abs(solid_measures(cut).first - 4) < 1e-6 && std::abs(solid_measures(overlap).first - 4) < 1e-6 &&
+                std::abs(solid_measures(all).first - 12) < 1e-6 && std::abs(solid_measures(all).second - 32) < 1e-6,
+            "Overlapping boxes produced incorrect volume or retained a coplanar internal face.");
+    const auto& operands = column<std::uint32_t>(cut, "boolean_operand", Layer::primitive);
+    const auto& primitives = column<std::uint32_t>(cut, "boolean_primitive", Layer::primitive);
+    const auto& materials = column<std::uint32_t>(cut, "material", Layer::primitive);
+    const auto& uv = column<Vector2>(cut, "uv", Layer::vertex);
+    const auto& normals = column<Vector3>(cut, "N", Layer::vertex);
+    require(std::ranges::find(operands, 1u) != operands.end(), "Difference did not retain a B wall.");
+    for (std::uint32_t p = 0; p < cut.count(Layer::primitive); ++p) {
+        require(materials[p] == 0xffffff00u + primitives[p] + 16 * operands[p],
+                "Cut wall material lost primitive provenance.");
+        const auto range = cut.primitive(p);
+        auto pos = [&](auto i) { return cut.positions()[cut.vertex_points()[range.first + i]]; };
+        Vector3 area_vector{};
+        for (unsigned i = 1; i + 1 < range.count; ++i)
+            area_vector += math::cross(pos(i) - pos(0), pos(i + 1) - pos(0));
+        auto normal = normalized(area_vector);
+        for (unsigned i = 0; i < range.count; ++i) {
+            const auto value = uv[range.first + i];
+            require(near(value.x, pos(i).x + primitives[p]) && near(value.y, pos(i).y) &&
+                        near(normals[range.first + i], normal),
+                    "A Boolean seam lost its corner UV or the cut normal points into the solid.");
+        }
+    }
+    auto roundtrip = take(solid_boolean(cut, overlap, unite));
+    require(std::abs(solid_measures(roundtrip).first - 8) < 1e-6 &&
+                std::abs(solid_measures(roundtrip).second - 24) < 1e-6,
+            "Cut and recombine did not restore the box boundary.");
+    const auto loose = take(Geometry::points({{1e30f, 0, 0}}));
+    const auto with_unused = take(Geometry::merge(std::array{a, loose}));
+    require(std::abs(solid_measures(take(solid_boolean(with_unused, b, intersect))).first - 4) < 1e-6,
+            "An unreferenced point reduced the solid's working precision.");
+    auto diagonal = a;
+    take(transform(diagonal, {}, axis_angle({0, 0, 1}, 45), {1, 1, 1}));
+    const auto prism = take(solid_boolean(a, diagonal, intersect));
+    require(std::abs(solid_measures(prism).first - 16. * (std::sqrt(2.) - 1.)) < 1e-5,
+            "Rotated boxes failed the analytic octagonal-prism intersection.");
+    auto inner = take(box({1, 1, 1}));
+    require(std::abs(solid_measures(take(solid_boolean(a, inner, subtract))).first - 7) < 1e-6,
+            "Nested solid cavity disappeared.");
+    auto touching = take(box({2, 2, 2}));
+    take(transform(touching, {2, 0, 0}, {}, {1, 1, 1}));
+    require(take(solid_boolean(a, touching, intersect)).count(Layer::point) == 0 &&
+                std::abs(solid_measures(take(solid_boolean(a, touching, unite))).second - 40) < 1e-6 &&
+                take(solid_boolean(a, a, subtract)).count(Layer::point) == 0 &&
+                std::abs(solid_measures(take(solid_boolean(a, {}, unite))).first - 8) < 1e-6,
+            "Boolean failed on face contact, coincident shells, or empty input.");
+    take(transform(touching, {0, 2, 0}, {}, {1, 1, 1}));
+    auto separate = take(solid_boolean(a, touching, unite));
+    separate = take(solid_boolean(separate, {}, unite));
+    take(connectivity(separate));
+    require(std::ranges::max(column<std::uint32_t>(separate, "piece", Layer::point)) == 1,
+            "Edge contact welded two disconnected solid fans.");
+    require(!solid_boolean(a, triangles({{0, 0, 0}, {1, 0, 0}, {0, 1, 0}}), intersect),
+            "Boolean accepted an open triangle.");
+    auto sphere_a = take(sphere(1, 12, 6));
+    auto sphere_b = sphere_a;
+    take(transform(sphere_b, {.5f, 0, 0}, {}, {1, 1, 1}));
+    auto sphere_cut = take(solid_boolean(sphere_a, sphere_b, subtract));
+    auto sphere_intersection = take(solid_boolean(sphere_a, sphere_b, intersect));
+    auto sphere_volume = solid_measures(sphere_a).first;
+    require(std::abs(solid_measures(sphere_cut).first + solid_measures(sphere_intersection).first - sphere_volume) <
+                1e-5,
+            "Two intersecting sphere meshes lost volume.");
+
+    auto restored = sphere_a;
+    const auto expected_area = solid_measures(sphere_a).second;
+    for (unsigned round = 0; round < 30; ++round) {
+        if (round) {
+            sphere_cut = take(solid_boolean(restored, sphere_b, subtract));
+            sphere_intersection = take(solid_boolean(restored, sphere_b, intersect));
+        }
+        restored = take(solid_boolean(sphere_cut, sphere_intersection, unite));
+        auto [volume, area] = solid_measures(restored);
+        require(std::abs(volume - sphere_volume) < 1e-5 && std::abs(area - expected_area) < 1e-4,
+                "Repeated Boolean sphere reconstruction changed volume or boundary area.");
+    }
+
+    auto spatial = take(Bvh::build(restored));
+    const auto hit = spatial.ray({.04f, .09f, 3.f}, {0.f, 0.f, -1.f}, 10.f);
+    const auto ref = take(Bvh::build(sphere_a)).ray({.04f, .09f, 3.f}, {0.f, 0.f, -1.f}, 10.f);
+    require(ref && hit && near(hit->position, ref->position), "Ray cannot consume the reconstructed sphere surface.");
+    // A point edit on a COW copy invalidates only that copy's exact boundary.
+    auto painted = roundtrip;
+    auto* labels = take(painted.write<std::uint32_t>("material", Layer::primitive));
+    std::ranges::fill(*labels, 0xfffffffeu);
+    auto inherited = take(solid_boolean(painted, {}, unite));
+    require(std::ranges::all_of(column<std::uint32_t>(inherited, "material", Layer::primitive),
+                                [](auto label) { return label == 0xfffffffeu; }),
+            "Boolean reused stale attributes after repainting an exact boundary.");
+    auto moved = roundtrip;
+    take(transform(moved, {3, 0, 0}, {}, {1, 1, 1}));
+    require(take(solid_boolean(moved, a, intersect)).count(Layer::point) == 0 &&
+                std::abs(solid_measures(take(solid_boolean(roundtrip, a, intersect))).first - 8) < 1e-6,
+            "Boolean used stale exact positions or invalidated the original copy.");
+    auto independent = take(box({4, 4, 4}));
+    take(transform(independent, {3, 0, 0}, {}, {1, 1, 1}));
+    auto cached_large = take(solid_boolean(independent, {}, unite));
+    auto joined = take(solid_boolean(roundtrip, cached_large, unite));
+    require(std::abs(solid_measures(joined).first - 72) < 1e-6,
+            "Boolean lost precision combining independent lattice frames.");
+    auto opened = roundtrip;
+    auto* removed = take(opened.add<bool>("remove_face", Layer::primitive));
+    (*removed)[0] = true;
+    opened = take(opened.remove_flagged(Layer::primitive, "remove_face"));
+    require(!solid_boolean(opened, a, intersect), "Boolean reused exact boundaries after opening a shell.");
+
+    Runtime runtime;
+    take(register_types(runtime));
+    Meshes resources;
+    auto graph = take(runtime.create(type<Graph>(runtime)));
+    auto box_node = take(add_node(runtime, graph.id(), type<Box>(runtime)));
+    auto move = take(add_node(runtime, graph.id(), type<Transform>(runtime)));
+    auto op = take(add_node(runtime, graph.id(), type<Boolean>(runtime)));
+    take(runtime.with_native<Transform>(move.id(), [](Transform& n) -> Result<void> {
+        n.translate = {.5f, 0, 0};
+        return {};
+    }));
+    take(runtime.with_native<Boolean>(op.id(), [](Boolean& n) -> Result<void> {
+        n.operation = BooleanOperation::intersect;
+        return {};
+    }));
+    take(connect(runtime, graph.id(), box_node.id(), 0, move.id(), 0));
+    take(connect(runtime, graph.id(), box_node.id(), 0, op.id(), 0));
+    take(connect(runtime, graph.id(), move.id(), 0, op.id(), 1));
+    auto display = take(add_node(runtime, graph.id(), type<Connectivity>(runtime)));
+    take(connect(runtime, graph.id(), op.id(), 0, display.id(), 0));
+    take(set_display(runtime, graph.id(), display.id()));
+    Evaluator evaluator{runtime, graph, resources};
+    take(evaluator.evaluate());
+    require(evaluator.output() && std::abs(solid_measures(*evaluator.output()).first - .5) < 1e-6,
+            "The reflected two-input Boolean SOP did not cook the selected operation.");
+    const auto first_stats = evaluator.status(op.id())->boolean_stats;
+    require(first_stats && first_stats->input_faces == 12 && first_stats->candidate_pairs && first_stats->splits &&
+                first_stats->peak_face_scratch_bytes && !evaluator.status(display.id())->boolean_stats,
+            "Live Boolean diagnostics did not capture the actual SOP cook.");
+    const auto preview = evaluator.retain_last_valid_output();
+    const auto set_cutter_scale = [&](Vector3 scale) {
+        take(runtime.write(move.id(), field(runtime, type<Transform>(runtime), "scale"),
+                           ValueInput{type<Vector3>(runtime), &scale}));
+        take(evaluator.evaluate());
+    };
+    set_cutter_scale({1, 0x1p-30f, 1});
+    const auto* failed = evaluator.status(op.id());
+    const auto* downstream = evaluator.status(display.id());
+    require(!evaluator.output() && evaluator.last_valid_output() == preview.get() && failed && failed->error &&
+                failed->error->message.contains("Boolean prepare B: Primitive ") &&
+                failed->error->message.contains("float coordinate precision") && downstream && downstream->error &&
+                downstream->error->message.contains("procedural.Boolean"),
+            "A sub-grid cutter lost the source-face precision diagnostic or the previous display preview.");
+    require(failed->boolean_stats && failed->boolean_stats != first_stats && failed->boolean_stats->input_faces == 6 &&
+                !failed->boolean_stats->candidate_pairs && failed->error->message.contains("prepare B"),
+            "A precision rejection retained stale work or lost its failing phase.");
+    set_cutter_scale({1, .5f, 1});
+    require(evaluator.output() && std::abs(solid_measures(*evaluator.output()).first - .25) < 1e-6 &&
+                !evaluator.status(op.id())->error && !evaluator.status(display.id())->error,
+            "Editing the cutter back to representable thickness did not recover the downstream display.");
+    const auto last_cook = evaluator.status(op.id())->boolean_stats;
+    const auto evaluations = evaluator.status(op.id())->evaluations;
+    set_cutter_scale({1, 1, 1});
+    require(last_cook && evaluator.status(op.id())->boolean_stats == last_cook &&
+                evaluator.status(op.id())->evaluations == evaluations && evaluator.status(op.id())->cache_hits,
+            "Returning to a cached Boolean result replaced its last actual cook measurements.");
+
+    const auto translate = field(runtime, type<Transform>(runtime), "translate");
+    const auto move_and_check = [&](Evaluator& ev, float dx, std::uint32_t hits, double volume) {
+        const Vector3 offset{dx, 0, 0};
+        take(runtime.write(move.id(), translate, ValueInput{type<Vector3>(runtime), &offset}));
+        const auto* previous = ev.status(op.id());
+        const auto runs = previous ? previous->evaluations : 0;
+        take(ev.evaluate());
+        const auto* status = ev.status(op.id());
+        require(status && status->evaluations == runs + 1 && status->boolean_stats &&
+                    status->boolean_stats->prepared_input_hits == hits && ev.output() &&
+                    std::abs(solid_measures(*ev.output()).first - volume) < 1e-6,
+                "Boolean preparation reuse, actual cook count or intersected box volume changed.");
+    };
+    Evaluator prepared{runtime, graph, resources};
+    move_and_check(prepared, .125f, 0, .875);
+    move_and_check(prepared, .25f, 0, .75);
+    move_and_check(prepared, .375f, 1, .625);
+    move_and_check(prepared, 4.f, 0, 0); // Same stationary box, larger joint lattice.
+    const Vector3 smaller{.5f, 1, 1};
+    take(runtime.write(box_node.id(), field(runtime, type<Box>(runtime), "size"),
+                       ValueInput{type<Vector3>(runtime), &smaller}));
+    move_and_check(prepared, .125f, 0, .375); // Editing the shared source changes both operands.
+    for (const std::size_t budget : {0u, 1u}) {
+        Evaluator uncached{runtime, graph, resources, nullptr, budget};
+        move_and_check(uncached, .125f, 0, .375);
+        move_and_check(uncached, .25f, 0, .25);
+        move_and_check(uncached, .375f, 0, .125);
+    }
+}
+
+void boolean_contact_sweep() {
+    // Both the outer shell and its inward cavity enclose the probe AABB.
+    // Neither has surface contact with it. Their winding contributions cancel.
+    auto cavity = take(solid_boolean(take(box({6, 6, 6})), take(box({2, 2, 2})), BooleanOperation::subtract));
+    auto probe = take(box({.5f, .5f, .5f}));
+    require(take(solid_boolean(cavity, probe, BooleanOperation::intersect)).count(Layer::primitive) == 0,
+            "Shell pruning filled a nested cavity with no surface contact.");
+    take(transform(probe, {2, 0, 0}, {}, {1, 1, 1}));
+    require(std::abs(solid_measures(take(solid_boolean(cavity, probe, BooleanOperation::intersect))).first - .125) <
+                1e-8,
+            "Shell pruning discarded an enclosing solid with no surface contact.");
+    // One connected boundary encloses a rectangular through-hole. The probe
+    // crosses four walls in the center, then joins into one piece as it moves.
+    const auto ring = take(solid_boolean(take(box({6, 6, 1})), take(box({2, 2, 2})), BooleanOperation::subtract));
+    for (const float y : {0.f, 1.f, 1.25f}) {
+        auto bar = take(box({8, .5f, .5f}));
+        take(transform(bar, {0, y, 0}, {}, {1, 1, 1}));
+        auto clipped = take(solid_boolean(bar, ring, BooleanOperation::intersect));
+        const double gap = std::clamp(1.25 - double(y), 0., .5);
+        require(std::abs(solid_measures(clipped).first - (3. - 2. * gap) * .5) < 1e-6,
+                "A winding query lost the through-hole or crossed a contact boundary.");
+        take(connectivity(clipped));
+        require(std::ranges::max(column<std::uint32_t>(clipped, "piece", Layer::point)) == (y == 0 ? 1u : 0u),
+                "Shared-point classification joined separate sections of a concave solid.");
+    }
+    const auto empty = take(solid_boolean({}, {}, BooleanOperation::intersect));
+    auto fresh = take(box({.25f, .25f, .25f}));
+    take(transform(fresh, {1, 1, 1}, {}, {1, 1, 1}));
+    const auto after_empty = take(solid_boolean(empty, fresh, BooleanOperation::unite));
+    require(std::abs(solid_measures(after_empty).first - 1. / 64.) < 1e-8,
+            "An empty upstream Boolean imposed its lattice on a fresh operand.");
+    auto curved = take(sphere(1, 24, 12));
+    const auto curved_volume = solid_measures(curved).first;
+    for (float dx : {.375f, .5f, .625f}) {
+        auto cutter = curved;
+        take(transform(cutter, {dx, 0, 0}, {}, {1, 1, 1}));
+        auto rest = take(solid_boolean(curved, cutter, BooleanOperation::subtract));
+        auto inside = take(solid_boolean(curved, cutter, BooleanOperation::intersect));
+        require(std::abs(solid_measures(rest).first + solid_measures(inside).first - curved_volume) < 1e-5,
+                "Moving a curved cutter changed the combined volume.");
+        if (dx == .5f) {
+            const auto rebuilt = take(solid_boolean(rest, inside, BooleanOperation::unite));
+            const auto [v, area] = solid_measures(rebuilt);
+            require(std::abs(v - curved_volume) < 1e-5 && std::abs(area - solid_measures(curved).second) < 1e-4,
+                    "A curved cut with interior intersection endpoints could not be sewn back.");
+        }
+    }
+    auto stock = take(box({2, 2, 2}));
+    auto tool = stock;
+    take(stock.add<std::uint32_t>("material", Layer::primitive, 10));
+    take(tool.add<std::uint32_t>("material", Layer::primitive, 20));
+    constexpr float step = 1.f / 1024;
+    const std::array path{Vector3{2 + step, 2, 2}, Vector3{2, 2, 2},        Vector3{2, 2, 0},
+                          Vector3{2, 0, 0},        Vector3{2 - step, 0, 0}, Vector3{1.75f, 0, 0}};
+    Geometry cut;
+    for (auto center : path) {
+        auto cutter = tool;
+        take(transform(cutter, center, {}, {1, 1, 1}));
+        cut = take(solid_boolean(stock, cutter, BooleanOperation::subtract));
+        const double width = std::min(2.f, center.x);
+        const auto [volume, area] = solid_measures(cut);
+        require(std::abs(volume - 4 * width) < 1e-6 && std::abs(area - (8 + 8 * width)) < 1e-6,
+                "Moving cutter changed stock volume or exposed area at contact.");
+        const auto overlap = take(solid_boolean(stock, cutter, BooleanOperation::intersect));
+        require(std::abs(solid_measures(overlap).first - (8 - volume)) < 1e-6 &&
+                    (center.x < 2 || overlap.count(Layer::point) == 0),
+                "Moving cutter failed to distinguish boundary contact from a thin solid intersection.");
+    }
+    // The +Z quad's first corner alone has weight 1. Its authored diagonal
+    // crosses x=0 at (0,0,1) with weight 1/2. Removing that seam changes the field.
+    auto painted = stock;
+    auto* weights = take(painted.add<float>("weight", Layer::vertex));
+    (*weights)[painted.primitive(5).first] = 1.f;
+    auto halfway = tool;
+    take(transform(halfway, {1, 0, 0}, {}, {1, 1, 1}));
+    const auto weighted = take(solid_boolean(painted, halfway, BooleanOperation::subtract));
+    const auto& values = column<float>(weighted, "weight", Layer::vertex);
+    const auto& sources = column<std::uint32_t>(weighted, "boolean_primitive", Layer::primitive);
+    const auto& operands = column<std::uint32_t>(weighted, "boolean_operand", Layer::primitive);
+    bool found_diagonal = false;
+    for (std::uint32_t p = 0; p < weighted.count(Layer::primitive); ++p) {
+        if (operands[p] != 0 || sources[p] != 5)
+            continue;
+        auto face = weighted.primitive(p);
+        for (std::uint32_t c = face.first; c < face.first + face.count; ++c) {
+            if (weighted.positions()[weighted.vertex_points()[c]] == Vector3{0, 0, 1}) {
+                require(values[c] == .5f, "Boolean changed the field across a painted face diagonal.");
+                found_diagonal = true;
+            }
+        }
+    }
+    require(found_diagonal, "Boolean discarded a semantically significant source diagonal.");
+    // A box rotating about its center at x=2 sweeps a triangular wedge into
+    // the stock on either side of its face-contact pose. The wedge has height 2.
+    for (float degrees : {-2.f, -.25f, 0.f, .25f, 2.f}) {
+        auto cutter = tool;
+        take(transform(cutter, {2, 0, 0}, axis_angle({0, 0, 1}, degrees), {1, 1, 1}));
+        const double angle = std::abs(degrees) * std::numbers::pi / 180.;
+        const double c = std::cos(angle);
+        const double s = std::sin(angle);
+        const auto depth = c + s - 1.;
+        const double wedge = s ? depth * depth / (c * s) : 0.;
+        auto solve = [&](BooleanOperation op) {
+            auto result = solid_boolean(stock, cutter, op);
+            if (!result)
+                fatal("Rotating cutter at " + std::to_string(degrees) + " degrees: " + result.error().message);
+            return std::move(*result);
+        };
+        const auto clipped = solve(BooleanOperation::intersect);
+        const auto rest = solve(BooleanOperation::subtract);
+        require(std::abs(solid_measures(clipped).first - wedge) < 1e-6 &&
+                    std::abs(solid_measures(rest).first - (8. - wedge)) < 1e-6 &&
+                    (degrees != 0 || clipped.count(Layer::point) == 0),
+                "Rotating through face contact changed the analytic wedge volume.");
+    }
+    auto cross_tool = take(box({4, 2, 4}));
+    take(cross_tool.add<std::uint32_t>("material", Layer::primitive, 30));
+    take(transform(cross_tool, {0, 1, 0}, {}, {1, 1, 1}));
+    auto crossed = take(solid_boolean(cut, cross_tool, BooleanOperation::subtract));
+    const auto [volume, area] = solid_measures(crossed);
+    require(std::abs(volume - 3.5) < 1e-6 && std::abs(area - 14.5) < 1e-6,
+            "A second cut across the first tool wall changed volume or exposed area.");
+    const auto& material = column<std::uint32_t>(crossed, "material", Layer::primitive);
+    const auto& operand = column<std::uint32_t>(crossed, "boolean_operand", Layer::primitive);
+    unsigned seen = 0;
+    for (std::uint32_t p = 0; p < crossed.count(Layer::primitive); ++p) {
+        const auto face = crossed.primitive(p);
+        bool first_wall = true;
+        bool second_wall = true;
+        for (std::uint32_t j = 0; j < face.count; ++j) {
+            auto v = crossed.positions()[crossed.vertex_points()[face.first + j]];
+            first_wall &= near(v.x, .75f);
+            second_wall &= near(v.y, 0.f);
+        }
+        const unsigned surface = second_wall ? 2u : first_wall ? 1u : 0u;
+        require(material[p] == 10 * (surface + 1) && operand[p] == (surface == 2),
+                "A consecutive cut lost wall material or assigned the wrong current operand.");
+        seen |= 1u << surface;
+    }
+    require(seen == 7, "A consecutive cut lost the stock surface or one of its two tool walls.");
 }
 
 void graph_evaluation() {
@@ -956,9 +1328,15 @@ int main(int argc, char** argv) {
         profile(argv[2]);
         return 0;
     }
-    require(argc == 1, "Usage: atelier_procedural_acceptance [--profile-procedural new-output.json]");
+    if (argc == 3 && std::string_view{argv[1]} == "--profile-boolean") {
+        atelier::acceptance::profile_boolean(argv[2]);
+        return 0;
+    }
+    require(argc == 1, "Usage: atelier_procedural_acceptance [--profile-procedural|--profile-boolean new-output.json]");
     ray_node();
     connectivity_modeling();
+    boolean_modeling();
+    boolean_contact_sweep();
     graph_evaluation();
     source_and_spatial_contracts();
     std::puts("procedural acceptance passed");

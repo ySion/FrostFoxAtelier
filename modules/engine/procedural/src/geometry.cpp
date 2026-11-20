@@ -192,7 +192,7 @@ std::size_t Geometry::bytes() const noexcept {
                 return size;
             },
             attribute.data);
-    return total;
+    return total + boolean_boundary_bytes();
 }
 
 Result<void> Geometry::admit_name(StringView name) {
@@ -231,6 +231,7 @@ Result<void> Geometry::set(String name, Layer layer, ColumnData data, std::optio
         for (const auto& position : std::get<SharedArray<math::Vector3>>(data).array())
             if (!math::is_finite(position))
                 return failure("Point positions must be finite.");
+        discard_boolean_boundary();
     }
     if (existing) {
         existing->usage = resolved;
@@ -277,6 +278,7 @@ Array<math::Matrix4>& Geometry::write_instance_transforms() {
 void Geometry::reverse_primitives(bool polygons_only) {
     if (!primitives_)
         return;
+    discard_boolean_boundary();
     Array<std::uint32_t> order;
     order.resize(vertices_);
     for (std::uint32_t p = 0; p < primitives_; ++p) {
@@ -327,6 +329,7 @@ Result<Geometry> Geometry::remove_flagged(Layer layer, std::span<const bool> rem
         retain(Layer::instance, instances.view());
         return result;
     }
+    result.discard_boolean_boundary();
     const auto& vertex_points = vertex_points_.array();
     const auto primitives = kept(primitives_, [&](std::uint32_t p) {
         if (layer == Layer::primitive)

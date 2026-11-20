@@ -2,6 +2,7 @@
 
 #include "procedural/geometry.hpp"
 
+#include <chrono>
 #include <span>
 
 namespace atelier::procedural {
@@ -39,6 +40,34 @@ Result<void> group_box(Geometry& geometry, StringView group, math::Vector3 minim
 // Dense point piece IDs, ordered by each connected component's lowest point index.
 // Polygons and open polylines connect at shared point indices. Each unused point forms its own piece.
 Result<void> connectivity(Geometry& geometry, StringView attribute = "piece");
+
+// One actual cook, including completed work on failure. Elapsed phases are
+// exclusive. An absent receiver avoids clock reads and capacity accounting.
+struct BooleanStats {
+    std::uint64_t input_faces{};
+
+    std::uint64_t candidate_pairs{}; // Directed 3D AABB overlaps in A->B and B->A.
+
+    std::uint64_t ray_candidates{}; // Non-parallel target faces visited by cell winding rays after BVH pruning.
+
+    std::uint64_t splits{}; // New cells created, including cells later discarded.
+
+    std::uint64_t peak_face_scratch_bytes{}; // Dynamic cell, corner and segment buffers of one source face.
+
+    std::chrono::nanoseconds prepare{};
+
+    std::chrono::nanoseconds arrange{};
+
+    std::chrono::nanoseconds sew{};
+
+    std::chrono::nanoseconds publish{};
+
+    std::uint32_t prepared_input_hits{}; // Bit 0 for A, bit 1 for B, when a prepared surface was reused.
+};
+
+// Regularized solid Boolean on outward-oriented closed polygon shells.
+Result<Geometry> solid_boolean(const Geometry& a, const Geometry& b, BooleanOperation operation,
+                               BooleanStats* stats = nullptr);
 
 struct ScatterSettings {
     float density{1}; // Points per unit area before elimination.

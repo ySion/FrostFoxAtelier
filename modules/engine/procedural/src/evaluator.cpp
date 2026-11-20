@@ -1,4 +1,6 @@
 #include "procedural/evaluator.hpp"
+#include "procedural/nodes.hpp"
+#include "detail/native_cook.hpp"
 #include "detail/node_plan.hpp"
 #include "foundation/inline_array.hpp"
 #include "foundation/map.hpp"
@@ -155,6 +157,10 @@ struct Evaluator::Impl {
 
     TypeId string_type{};
 
+    TypeId boolean_type{};
+
+    detail::BooleanPreparationCache boolean_preparation;
+
     FieldId graph_seed_field{};
 
     std::optional<std::uint64_t> cursor;
@@ -196,6 +202,8 @@ struct Evaluator::Impl {
           code_revision(code ? code->revision() : 0) {
         if (auto str = runtime.native_type<String>())
             string_type = *str;
+        if (auto op = runtime.native_type<Boolean>())
+            boolean_type = *op;
         if (auto graph_type = runtime.native_type<Graph>())
             if (auto found = runtime.find_field(*graph_type, "seed"))
                 graph_seed_field = *found;
@@ -350,6 +358,14 @@ struct Evaluator::Impl {
         (void)cache.remove(key); // May release the entry; touch nothing after this.
     }
 
+    void trim_cache() {
+        for (auto& slot : boolean_preparation.operands)
+            if (slot.prepared && slot.input.expired())
+                slot = {};
+        while (cached_bytes > budget - boolean_preparation.bytes())
+            uncache(*recent.back());
+    }
+
     void store(const std::shared_ptr<Entry>& entry) {
         if (auto* old = cache.find(entry->key))
             uncache(**old);
@@ -358,11 +374,10 @@ struct Evaluator::Impl {
         entry->recent = recent.begin();
         entry->cached = true;
         cached_bytes += entry->bytes;
-        while (cached_bytes > budget)
-            uncache(*recent.back());
+        trim_cache();
     }
 
-    Result<void> execute_node(ObjectId id, const State& state, const SourceKernel* source_kernel, Entry& entry) {
+    Result<void> execute_node(ObjectId id, State& state, const SourceKernel* source_kernel, Entry& entry) {
         const auto& plan = *state.plan;
         Context context;
         context.seed_ = seed;
@@ -509,6 +524,13 @@ struct Evaluator::Impl {
         for (std::size_t i = 0; i < arg_count; ++i)
             arguments.add(Argument::borrow(plan.arguments[i].type, values[i], writable[i]));
         if (plan.native) {
+            detail::NativeCook collect{state.status.boolean_stats, boolean_preparation, budget};
+            if (budget && state.type == boolean_type) {
+                for (const auto& input : state.inputs) {
+                    const auto& source = nodes.find(input.from)->entry;
+                    collect.inputs[input.input] = {source, &source->outputs[input.output]};
+                }
+            }
             ATELIER_TRY(runtime.call(id, plan.method, arguments));
         } else {
             ATELIER_TRY(source_kernel->entry.invoke(id, arguments));
@@ -539,6 +561,7 @@ struct Evaluator::Impl {
         entry->outputs.resize(state.plan->ports.outputs.size());
         ++state.status.evaluations;
         state.status.time.reset();
+        state.status.boolean_stats.reset();
         std::chrono::steady_clock::time_point start{};
         if (record_timings)
             start = std::chrono::steady_clock::now();
@@ -555,8 +578,10 @@ struct Evaluator::Impl {
         }
         if (record_timings)
             state.status.time = std::chrono::steady_clock::now() - start;
-        if (!ran)
+        if (!ran) {
+            trim_cache();
             return std::unexpected(ran.error());
+        }
         entry->serial = ++serials;
         entry->revision = revision;
         // The cache map holds a second copy of the key.

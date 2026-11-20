@@ -6,6 +6,7 @@
 #include "editor/view_options.hpp"
 #include "assets/json_format.hpp"
 #include "assets/material_format.hpp"
+#include "procedural/operations.hpp"
 #include "platform/error.hpp"
 #include "platform/utf.hpp"
 #include "platform/windows_path.hpp"
@@ -1808,6 +1809,19 @@ struct EditorControl::Impl {
                 const auto st = result.object_validated(item, "status");
                 ATELIER_TRY(result.set(st, "evaluations", node.status->evaluations));
                 ATELIER_TRY(result.set(st, "cache_hits", node.status->cache_hits));
+                if (const auto& stats = node.status->boolean_stats) {
+                    const auto metrics = result.object_validated(st, "boolean");
+                    ATELIER_TRY(result.set(metrics, "input_faces", stats->input_faces));
+                    ATELIER_TRY(result.set(metrics, "candidate_pairs", stats->candidate_pairs));
+                    ATELIER_TRY(result.set(metrics, "prepared_input_hits", stats->prepared_input_hits));
+                    ATELIER_TRY(result.set(metrics, "ray_candidates", stats->ray_candidates));
+                    ATELIER_TRY(result.set(metrics, "splits", stats->splits));
+                    ATELIER_TRY(result.set(metrics, "peak_face_scratch_bytes", stats->peak_face_scratch_bytes));
+                    ATELIER_TRY(result.set(metrics, "prepare_ms", double(stats->prepare.count()) / 1e6));
+                    ATELIER_TRY(result.set(metrics, "arrange_ms", double(stats->arrange.count()) / 1e6));
+                    ATELIER_TRY(result.set(metrics, "sew_ms", double(stats->sew.count()) / 1e6));
+                    ATELIER_TRY(result.set(metrics, "publish_ms", double(stats->publish.count()) / 1e6));
+                }
                 if (node.status->time)
                     ATELIER_TRY(result.set(st, "cook_ms", double(node.status->time->count()) / 1e6));
                 else

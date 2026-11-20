@@ -8,6 +8,7 @@
 #include "runtime/reflection.hpp"
 
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <span>
 #include <variant>
@@ -16,6 +17,12 @@
 #include "procedural/geometry.gen.hpp"
 
 namespace atelier::procedural {
+
+namespace detail {
+struct BooleanBoundary;
+
+class TriangleView;
+}
 
 // One past the largest count remains available as an invalid element index.
 inline constexpr std::uint64_t element_limit = 0xffff'fffeu;
@@ -30,6 +37,9 @@ enum class Reduce : std::uint32_t { first, sum, average };
 
 AENUM(Name = "procedural.RayMode", DESC = "project：沿方向找最近的交点；minimum：取最近的表面点。")
 enum class RayMode : std::uint32_t { project, minimum };
+
+AENUM(Name = "procedural.BooleanOperation", DESC = "闭合实体的并集、交集或差集 A 减 B。")
+enum class BooleanOperation : std::uint32_t { unite, intersect, subtract };
 
 // How a transform changes a vector or orientation column; see transform().
 enum class Usage : std::uint8_t { none, point, vector, normal, color, orientation };
@@ -143,6 +153,8 @@ public:
             return failure("Geometry has no attribute " + std::string{name.std_view()} + ".");
         if (auto checked = check<T>(*attribute, layer); !checked)
             return std::unexpected(checked.error());
+        if (name == "P")
+            discard_boolean_boundary();
         return &std::get<SharedArray<T>>(attribute->data).write();
     }
 
@@ -217,6 +229,16 @@ public:
 
 private:
     friend class Bvh;
+
+    friend struct detail::BooleanBoundary;
+
+    std::shared_ptr<const detail::BooleanBoundary> boolean_boundary_;
+
+    friend class detail::TriangleView;
+
+    [[nodiscard]] std::size_t boolean_boundary_bytes() const noexcept;
+
+    void discard_boolean_boundary() noexcept { boolean_boundary_.reset(); }
 
     Attribute* mutable_find(StringView name) noexcept;
 

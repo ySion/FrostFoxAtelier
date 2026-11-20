@@ -7,6 +7,7 @@
 #include <numbers>
 
 namespace atelier::procedural::detail {
+
 namespace {
 
 // The shared numerical policy for every polygon consumer. Distance uncertainty is
@@ -30,7 +31,7 @@ Result<void> validate_polygon(const Geometry& surface, PrimitiveRange range) {
     const auto [extent, tolerance] = polygon_scale(surface, range);
     const double area_length = math::length(area);
     if (!(area_length > tolerance * extent))
-        return failure("A polygon needs a resolvable plane and area.");
+        return failure("A polygon needs a resolvable plane and area at its float coordinate precision.");
     const auto normal = area / area_length;
     for (std::uint32_t i = 0; i < range.count; ++i)
         if (std::abs(math::dot(point(i) - origin, normal)) > tolerance)
@@ -129,8 +130,14 @@ Result<TriangleView> TriangleView::create(const Geometry& surface, bool require_
         const auto range = surface.primitive(p);
         if (range.kind != PrimitiveKind::polygon)
             return failure("Surface operations do not accept polylines.");
-        if (range.count > 3 || require_nondegenerate)
-            ATELIER_TRY(validate_polygon(surface, range));
+        // Boolean has already certified the convex boundary and checked the
+        // published float fan. Preserve the stricter Volume admission contract.
+        if (require_nondegenerate || (range.count > 3 && !surface.boolean_boundary_)) {
+            if (auto valid = validate_polygon(surface, range); !valid) {
+                valid.error().message = "Primitive " + std::to_string(p) + ": " + valid.error().message;
+                return std::unexpected(std::move(valid.error()));
+            }
+        }
         has_subtriangles |= range.count > 3;
         size += range.count - 2; // Bounded by Geometry's total vertex count.
     }
