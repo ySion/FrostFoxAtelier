@@ -695,7 +695,7 @@ class Hlsl {
         }
     }
 
-    std::string expression(const Function& function, NodeId id) const {
+    std::string expression(const Function& function, NodeId id, bool group_binary = true) const {
         const auto& node = function.expressions[id];
         const auto operand = [&](NodeId value) { return expression(function, value); };
         using Kind = Expression::Kind;
@@ -720,12 +720,12 @@ class Hlsl {
         case Kind::unary:
             return "(" + operation(node.operation) + operand(node.left) + ")";
         case Kind::binary: {
-            auto result = "(" + operand(node.left) + operation(node.operation) + operand(node.right) + ")";
+            auto result = operand(node.left) + operation(node.operation) + operand(node.right);
             const auto left = function.expressions[node.left].type;
             if (left.kind == ValueType::record &&
                 (node.operation == Operation::equal || node.operation == Operation::not_equal))
-                result = (node.operation == Operation::equal ? "all" : "any") + result;
-            return result;
+                return (node.operation == Operation::equal ? "all(" : "any(") + result + ")";
+            return group_binary ? "(" + result + ")" : result;
         }
         case Kind::texture_sample:
             return "::atelier_material_sample(ms_environment," + operand(node.right) + "," + operand(node.left) + ")";
@@ -785,7 +785,7 @@ class Hlsl {
                      (node.expression == no_node ? std::string{} : " " + expression(function, node.expression)) + ";\n";
             break;
         case Kind::condition:
-            text_ += "if (" + expression(function, node.expression) + ") {\n";
+            text_ += "if (" + expression(function, node.expression, false) + ") {\n";
             statement(function, node.body);
             text_ += "}\n";
             if (node.alternative != no_node) {

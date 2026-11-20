@@ -718,8 +718,11 @@ Result<bool> Context::wait_frame(std::uint32_t timeout_ms) {
             Error{ErrorCode::invalid_argument, kGfxResult_InvalidParameter, "frame admission requires a finite wait"});
     if (!state_->frame_latency || state_->frame_ready)
         return true;
-    const DWORD result =
-        MsgWaitForMultipleObjectsEx(1, &state_->frame_latency, timeout_ms, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+    // Input wakes a blocking wait. A readiness poll only needs the DXGI signal,
+    // even when more mouse messages have arrived since the caller pumped input.
+    const DWORD result = timeout_ms == 0 ? WaitForSingleObject(state_->frame_latency, 0)
+                                         : MsgWaitForMultipleObjectsEx(1, &state_->frame_latency, timeout_ms,
+                                                                       QS_ALLINPUT, MWMO_INPUTAVAILABLE);
     if (result == WAIT_OBJECT_0) {
         state_->frame_ready = true;
         return true;

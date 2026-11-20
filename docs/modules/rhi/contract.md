@@ -115,7 +115,7 @@ DXR 的查询与更新限制依据 [SM 6.5](https://microsoft.github.io/DirectX-
 ### 呈现准入
 
 - `ContextOptions::frame_latency_waitable` 默认关闭，只允许窗口 Context。启用时 gfx 用 `FRAME_LATENCY_WAITABLE_OBJECT` 创建交换链，RHI 检查 `SetMaximumFrameLatency(1)` 成功并取得非空等待句柄，否则创建失败；没有静默退回。它只限制排队呈现，不改变 VSync、三个资源帧槽或 fence 回收寿命。
-- owner 在每帧（包括首帧）编码前调用 `wait_frame(timeout_ms)`。有限等待可由 DXGI 呈现容量或线程消息唤醒，不分发消息、不执行回调。输入或超时返回 false，不授予呈现许可；容量就绪返回 true，并由 Context 保留到真正调用 `frame`。二者同时就绪时仍保留容量许可，重复检查、`finish` 和上层 `not_ready` 不消费它。零超时用于单次检查，不用于忙轮询；未启用的 Context 总是返回 true。
+- owner 在每帧（包括首帧）编码前调用 `wait_frame(timeout_ms)`。有限等待可由 DXGI 呈现容量或线程消息唤醒，不分发消息、不执行回调。输入或超时返回 false，不授予呈现许可；容量就绪返回 true，并由 Context 保留到真正调用 `frame`。二者同时就绪时仍保留容量许可，重复检查、`finish` 和上层 `not_ready` 不消费它。零超时直接查询 DXGI 等待句柄，只检查呈现容量，不查询消息队列；未启用的 Context 总是返回 true。
 - RHI 独占句柄和许可。resize 读取交换链实际 flags 传给 `ResizeBuffers`，保留同一交换链的句柄和已获许可；不支持通过借用 gfx 替换交换链。close 失败保留句柄与执行域，成功关闭或安全最终析构才 `CloseHandle`；关闭后重开取得新句柄，首帧重新准入。原生等待失败进入既有执行终态，只允许清理。
 
 ## 阴影 atlas 原语

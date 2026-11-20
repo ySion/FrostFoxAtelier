@@ -2,6 +2,7 @@
 #include "ui/icons.hpp"
 #include <imm.h>
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <stdexcept>
@@ -392,6 +393,9 @@ void Window::poll(FunctionRef<void(NativeEvent&&)> consume) {
     if (popup_)
         return; // The owning main window alone pumps the thread queue.
     MSG message{};
+    // A continuous stream of moves can refill the queue while we dispatch it.
+    // Leave the rest in order for the next step so a ready frame can be presented.
+    const auto input_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(2);
     while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
         if (message.message == WM_QUIT) {
             closing_ = true;
@@ -405,6 +409,8 @@ void Window::poll(FunctionRef<void(NativeEvent&&)> consume) {
         TranslateMessage(&message);
         DispatchMessageW(&message);
         drain();
+        if (message.message == WM_MOUSEMOVE && std::chrono::steady_clock::now() >= input_deadline)
+            break;
     }
 }
 
