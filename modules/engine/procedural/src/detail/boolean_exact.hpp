@@ -1,5 +1,7 @@
 #pragma once
 
+#include "foundation/hash.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -108,6 +110,45 @@ struct PointLess {
     }
 };
 
+// Strip the common power of two, then divide by the first odd component
+// modulo 2^64. Any two integer representatives of a projective tuple
+// differ from the same primitive tuple by an integer scale. Its odd part
+// cancels here. A collision still requires exact projective equality.
+template <class... T>
+std::size_t projective_hash(Wide first, T... rest) noexcept {
+    if (first == 1)
+        return hash_fields(std::uint64_t{1}, static_cast<std::uint64_t>(rest)...);
+    const auto bits = static_cast<unsigned _BitInt(256)>((first | ... | Wide(rest)));
+    const int shift = __builtin_ctzg(bits); // The tuple is nonzero.
+    auto reduced = [shift](Wide v) { return static_cast<std::uint64_t>(v >> shift); };
+    const std::array words{reduced(first), reduced(rest)...};
+    const auto pivot = *std::find_if(words.begin(), words.end(), [](auto w) { return w & 1; });
+    std::uint64_t inverse = 1;
+    // Newton's iteration doubles the number of correct inverse bits each time.
+    for (int i = 0; i < 6; ++i)
+        inverse *= 2 - pivot * inverse;
+    return std::apply([inverse](auto... w) { return hash_fields((w * inverse)...); }, words);
+}
+
+struct PointRefHash {
+    using is_avalanching = void;
+
+    std::size_t operator()(const Point* p) const noexcept {
+        const auto& [x, y, z, w] = *p;
+        return projective_hash(w, x, y, z);
+    }
+};
+
+inline bool same_point(const Point& a, const Point& b) noexcept {
+    if (a[3] == b[3])
+        return a == b;
+    return !compare(a, b, 0) && !compare(a, b, 1) && !compare(a, b, 2);
+}
+
+struct PointRefEqual {
+    bool operator()(const Point* a, const Point* b) const noexcept { return same_point(*a, *b); }
+};
+
 inline Triple determinant(const Point& a, const Point& b, const Point& c, int axis) {
     const int i = (axis + 1) % 3;
     const int j = (axis + 2) % 3;
@@ -136,34 +177,24 @@ struct Line {
         }
         while (!direction[axis])
             ++axis;
-        if (direction[axis] < 0)
-            for (int k = 0; k < 3; ++k) {
-                direction[k] = -direction[k];
-                moment[k] = -moment[k];
-            }
     }
 
-    bool operator<(const Line& b) const {
+    bool operator==(const Line& b) const noexcept {
         if (axis != b.axis)
-            return axis < b.axis;
-        // The common positive denominator cancels exactly. Faces constructed on
-        // the same grid frequently generate this case, including planar fans.
-        if (direction[axis] == b.direction[axis]) {
-            if (direction != b.direction)
-                return direction < b.direction;
-            return moment < b.moment;
-        }
-        for (int k = axis + 1; k < 3; ++k) {
-            auto d = Wide(direction[k]) * b.direction[axis] - Wide(b.direction[k]) * direction[axis];
-            if (d)
-                return d < 0;
-        }
-        for (int k = 0; k < 3; ++k) {
-            auto d = Product(moment[k]) * b.direction[axis] - Product(b.moment[k]) * direction[axis];
-            if (d)
-                return d < 0;
-        }
-        return false;
+            return false;
+        if (direction[axis] == b.direction[axis])
+            return direction == b.direction && moment == b.moment;
+        for (int k = axis + 1; k < 3; ++k)
+            if (Wide(direction[k]) * b.direction[axis] != Wide(b.direction[k]) * direction[axis])
+                return false;
+        for (int k = 0; k < 3; ++k)
+            if (Product(moment[k]) * b.direction[axis] != Product(b.moment[k]) * direction[axis])
+                return false;
+        return true;
+    }
+
+    std::size_t hash() const noexcept {
+        return projective_hash(direction[0], direction[1], direction[2], moment[0], moment[1], moment[2]);
     }
 };
 }

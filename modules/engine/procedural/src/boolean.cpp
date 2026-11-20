@@ -4,6 +4,7 @@
 #include "detail/topology.hpp"
 #include "foundation/result.hpp"
 #include "foundation/inline_array.hpp"
+#include "foundation/map.hpp"
 
 #include <algorithm>
 #include <array>
@@ -924,49 +925,91 @@ struct MeshBuilder {
     std::vector<Piece> pieces;
 
     Result<void> sew(const std::vector<Patch>& patches, const Lattice& grid) {
-        using Lines = std::map<Line, std::vector<std::uint32_t>>;
+        struct Support {
+            const Plane* face;
+
+            const Plane* edge;
+
+            std::size_t fingerprint;
+
+            bool operator==(const Support& b) const noexcept {
+                return fingerprint == b.fingerprint && Line(*face, *edge) == Line(*b.face, *b.edge);
+            }
+        };
+        struct SupportHash {
+            using is_avalanching = void;
+
+            std::size_t operator()(const Support& key) const noexcept { return key.fingerprint; }
+        };
+        struct LinePoints {
+            int axis;
+
+            InlineArray<std::uint32_t, 4> ids;
+        };
         struct Endpoint {
-            Lines::value_type* incoming;
+            std::size_t line;
 
             std::uint32_t point;
         };
-        std::map<Point, std::uint32_t, PointLess> index;
-        Lines lines;
+        std::vector<LinePoints> lines;
         std::vector<Endpoint> ends;
-        for (const auto& patch : patches) {
-            const auto first = ends.size();
-            for (const auto& c : patch.boundary()) {
-                auto [it, added] = index.try_emplace(c.p, static_cast<std::uint32_t>(points.size()));
-                if (added) {
-                    if (points.size() >= element_limit)
-                        return failure("Boolean point limit exceeded.");
-                    points.push_back(c.p);
-                    decoded.push_back(grid.decode(c.p));
+        std::size_t corner_count = 0;
+        for (const auto& patch : patches)
+            corner_count += patch.boundary().size();
+        ends.reserve(corner_count);
+        {
+            // All patch boundaries stay immutable until sewing completes.
+            Map<const Point*, std::uint32_t, PointRefHash, PointRefEqual> index;
+            Map<Support, std::size_t, SupportHash> line_index;
+            for (const auto& patch : patches) {
+                const auto first = ends.size();
+                for (const auto& c : patch.boundary()) {
+                    auto point = index.try_emplace(&c.p, static_cast<std::uint32_t>(points.size()));
+                    if (point.inserted) {
+                        if (points.size() >= element_limit)
+                            return failure("Boolean point limit exceeded.");
+                        points.push_back(c.p);
+                        decoded.push_back(grid.decode(c.p));
+                    }
+                    Line key(patch.face->plane, c.incoming);
+                    const Support support{&patch.face->plane, &c.incoming, key.hash()};
+                    auto line = line_index.try_emplace(support, lines.size());
+                    if (line.inserted)
+                        lines.push_back({key.axis, {}});
+                    ends.push_back({*line.value, *point.value});
                 }
-                // Each edge has one stable line record throughout sewing.
-                auto line = lines.try_emplace(Line(patch.face->plane, c.incoming)).first;
-                ends.push_back({&*line, it->second});
-            }
-            auto previous = ends.back().point;
-            for (auto i = first; i < ends.size(); ++i) {
-                auto& [line, point] = ends[i];
-                line->second.push_back(previous);
-                line->second.push_back(point);
-                previous = point;
+                auto previous = ends.back().point;
+                for (auto i = first; i < ends.size(); ++i) {
+                    const auto [line, point] = ends[i];
+                    auto& ids = lines[line].ids;
+                    // Most supporting lines carry the same edge from two faces.
+                    const bool same_edge = ids.size() == 2 && ((ids[0] == previous && ids[1] == point) ||
+                                                               (ids[1] == previous && ids[0] == point));
+                    if (!same_edge) {
+                        ids.add(previous);
+                        ids.add(point);
+                    }
+                    previous = point;
+                }
             }
         }
-        for (auto& [line, ids] : lines) {
-            std::ranges::sort(ids, [&](auto a, auto b) { return compare(points[a], points[b], line.axis) < 0; });
-            ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
+        for (auto& [axis, ids] : lines) {
+            if (ids.size() == 2 && ids[0] != ids[1])
+                continue;
+            std::ranges::sort(ids, [&](auto a, auto b) { return compare(points[a], points[b], axis) < 0; });
+            ids.resize(std::unique(ids.begin(), ids.end()) - ids.begin());
         }
+        pieces.reserve(patches.size());
         std::size_t first = 0;
         for (const auto& patch : patches) {
             Piece piece{patch.face, {}, {}, patch.reverse};
             const auto& c = patch.boundary();
+            piece.vertices.reserve(c.size());
+            piece.incoming.reserve(c.size());
             for (std::size_t i = 0; i < c.size(); ++i) {
                 const auto j = (i + 1) % c.size();
                 const auto& next = c[j];
-                const auto& [key, ids] = *ends[first + j].incoming;
+                const auto& [line_axis, ids] = lines[ends[first + j].line];
                 if (ids.size() == 2) {
                     piece.vertices.push_back(ends[first + i].point);
                     piece.incoming.push_back(next.incoming);
@@ -974,7 +1017,7 @@ struct MeshBuilder {
                 }
                 auto at = [&](const Point& p) {
                     return std::lower_bound(ids.begin(), ids.end(), p, [&](auto id, const Point& q) {
-                        return compare(points[id], q, key.axis) < 0;
+                        return compare(points[id], q, line_axis) < 0;
                     });
                 };
                 auto start = at(c[i].p);
@@ -1047,7 +1090,7 @@ Result<Sample> sample(const Piece& piece, const Point& p) {
     // A corner of a previously published polygon can lie on a straight edge.
     // Preserve its authored value even when it belongs to a zero-area fan piece.
     for (std::size_t i = 0; i < f.cell.size(); ++i)
-        if (!compare(f.cell[i].p, p, 0) && !compare(f.cell[i].p, p, 1) && !compare(f.cell[i].p, p, 2))
+        if (same_point(f.cell[i].p, p))
             return Sample{&piece, {f.corners[i], f.corners[i], f.corners[i]}, {1., 0., 0.}};
     for (std::size_t j = 0; j < f.cell.size(); ++j) {
         if (f.cell[j].incoming.side(p))
