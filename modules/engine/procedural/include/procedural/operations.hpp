@@ -36,6 +36,10 @@ Result<Geometry> tube(float radius, float height, std::uint32_t segments);
 // existing layer/type or an invalid name fails; P and other columns are unchanged.
 Result<void> group_box(Geometry& geometry, StringView group, math::Vector3 minimum, math::Vector3 maximum);
 
+// Dense point piece IDs, ordered by each connected component's lowest point index.
+// Polygons and open polylines connect at shared point indices. Each unused point forms its own piece.
+Result<void> connectivity(Geometry& geometry, StringView attribute = "piece");
+
 struct ScatterSettings {
     float density{1}; // Points per unit area before elimination.
 

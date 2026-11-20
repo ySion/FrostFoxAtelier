@@ -21,6 +21,7 @@ S0 契约静态对齐 → S1 原生拓扑/构造/体积采样/Realize，随后�
 
 | 项目 | 状态与下一步 |
 | --- | --- |
+| S3 拓扑工具 | Connectivity 已接入 SOP 求值链，可用 point 层的 piece 编号区分共享点的多边形、折线与孤立点，并通过 Promote 传到图元层。见[几何操作](README.md#操作) |
 | Remap／属性噪声 | E/F 已接通共同绑定与 Source 3D value noise / point float Remap，现行合同见[Noise / Remap](README.md#noise--remap)。其他噪声族、导数和周期仍未排期 |
 | 语言能力 | 参数名与参数属性、`parallel_for`、显式 `fail("...")`、`math.is_finite`、`math.as_uint`/`math.as_int`、同步值区间读 self、字段元数据、数学函数、代码身份、引擎源码加载及按依赖复用编译单元已接入，语义见 [LANGUAGE.md](../../../LANGUAGE.md)、[数学模块](../../math.md)和[原生值借用](../../native-value-borrows.md) |
 | Source 业务失败 | 已落地语言级 `fail("...")` 语句，替换全部内建 `.source` 节点并移除原 `Node.fail(message)`，零 Runtime `String` 分配且支持 `parallel_for` 块内失败收敛 |

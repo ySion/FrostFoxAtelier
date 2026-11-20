@@ -64,6 +64,11 @@ Result<void> GroupBox::process(const Geometry& input, Geometry& output) const no
     return invocation_result(group_box(output, group, minimum, maximum));
 }
 
+Result<void> Connectivity::process(const Geometry& input, Geometry& output) const noexcept {
+    output = input;
+    return invocation_result(connectivity(output, attribute));
+}
+
 Result<void> Scatter::process(const Context& context, const Geometry& surface, Geometry& points) const noexcept {
     ATELIER_TRY_BIND(
         result, invocation_result(scatter(

@@ -133,6 +133,18 @@ public:
     [[nodiscard]] Result<void> process(const Geometry& input, Geometry& output) const noexcept;
 };
 
+ACLASS(Name = "procedural.Connectivity", DESC = "按共享点的拓扑给连通块编号；独立的散点各成一块。")
+class Connectivity : public Node {
+    AGENERATED_BODY(Connectivity)
+
+public:
+    AFIELD(Label = "Piece Attribute", DESC = "写入 point 层的 uint 属性，按每个连通块的最小点索引从 0 编号。")
+    String attribute = String::literal<"piece">();
+
+    AFUNCTION(DESC = "保留输入几何，在点上标记各个连通块。")
+    [[nodiscard]] Result<void> process(const Geometry& input, Geometry& output) const noexcept;
+};
+
 ACLASS(Name = "procedural.Scatter", DESC = "在三角形和凸平面多边形上按面积撒点。")
 class Scatter : public Node {
     AGENERATED_BODY(Scatter)

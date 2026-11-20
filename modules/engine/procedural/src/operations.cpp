@@ -10,6 +10,7 @@
 #include <bit>
 #include <cmath>
 #include <limits>
+#include <numeric>
 
 namespace atelier::procedural {
 namespace {
@@ -184,6 +185,57 @@ Vector3 transformed(Vector3 v, Usage usage, const Matrix4& matrix, const std::ar
                                     : v;
 }
 
+Array<std::uint32_t> point_pieces(const Geometry& geometry) {
+    Array<std::uint32_t> piece;
+    const auto point_count = geometry.count(Layer::point);
+    if (!geometry.count(Layer::primitive)) {
+        piece.reserve(point_count);
+        for (std::uint32_t point = 0; point < point_count; ++point)
+            piece.add(point);
+        return piece;
+    }
+    constexpr auto unassigned = std::numeric_limits<std::uint32_t>::max();
+    piece.resize(point_count, unassigned);
+    Array<std::uint32_t> parent;
+    parent.resize(piece.size());
+    std::iota(parent.begin(), parent.end(), 0u);
+    Array<std::uint8_t> rank;
+    rank.resize(piece.size(), 0);
+    const auto root_of = [&](std::uint32_t point) {
+        while (parent[point] != point) {
+            parent[point] = parent[parent[point]];
+            point = parent[point];
+        }
+        return point;
+    };
+    const auto points = geometry.vertex_points();
+    for (std::uint32_t p = 0; p < geometry.count(Layer::primitive); ++p) {
+        const auto range = geometry.primitive(p);
+        auto root = root_of(points[range.first]);
+        for (std::uint32_t i = 1; i < range.count; ++i) {
+            auto other = root_of(points[range.first + i]);
+            if (root == other)
+                continue;
+            if (rank[root] < rank[other])
+                std::swap(root, other);
+            parent[other] = root;
+            if (rank[root] == rank[other])
+                ++rank[root];
+        }
+    }
+
+    // Keep the root's assigned ID in the output itself. First occurrence in point order
+    // defines the ID, regardless of the representative chosen by union by rank.
+    std::uint32_t next_piece = 0;
+    for (std::uint32_t point = 0; point < piece.size(); ++point) {
+        const auto root = root_of(point);
+        if (piece[root] == unassigned)
+            piece[root] = next_piece++;
+        piece[point] = piece[root];
+    }
+    return piece;
+}
+
 }
 
 Geometry import_mesh(const geometry::Mesh& mesh) {
@@ -267,6 +319,14 @@ Result<Geometry> line(Vector3 start, Vector3 end, std::uint32_t count) {
         positions.add(Vector3(Vector3d(start) + (Vector3d(end) - Vector3d(start)) * t));
     }
     return Geometry::points(std::move(positions));
+}
+
+Result<void> connectivity(Geometry& geometry, StringView attribute) {
+    ATELIER_TRY(Geometry::admit_name(attribute));
+    ATELIER_TRY(geometry.read<std::uint32_t>(attribute, Layer::point));
+    // Replacing the whole column avoids copying its old contents from a shared input.
+    return geometry.set(String::from_utf8_validated(attribute), Layer::point,
+                        SharedArray<std::uint32_t>{point_pieces(geometry)});
 }
 
 Result<Geometry> scatter(const Geometry& surface, const ScatterSettings& settings) {

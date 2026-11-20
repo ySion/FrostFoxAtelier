@@ -137,6 +137,7 @@ Result<void> register_types(Runtime& runtime) {
     definitions.push_back(reflection::Definition<Tube>::build(runtime));
     definitions.push_back(reflection::Definition<Polyline>::build(runtime));
     definitions.push_back(reflection::Definition<GroupBox>::build(runtime));
+    definitions.push_back(reflection::Definition<Connectivity>::build(runtime));
     definitions.push_back(reflection::Definition<Scatter>::build(runtime));
     definitions.push_back(reflection::Definition<VolumeScatter>::build(runtime));
     definitions.push_back(reflection::Definition<Transform>::build(runtime));

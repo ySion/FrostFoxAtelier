@@ -1672,7 +1672,7 @@ struct EditorControl::Impl {
         const auto root = result.root();
         ATELIER_TRY(result.set(root, "valid", summary.valid));
         const auto counts = result.object_validated(root, "counts");
-        constexpr std::array layer_names{"point", "vertex", "primitive", "detail", "instance"};
+        constexpr std::array<std::string_view, 5> layer_names{"point", "vertex", "primitive", "detail", "instance"};
         for (std::size_t i = 0; i < layer_names.size(); ++i)
             ATELIER_TRY(result.set(counts, layer_names[i], summary.counts[i]));
         ATELIER_TRY(result.set(root, "has_bounds", summary.has_bounds));

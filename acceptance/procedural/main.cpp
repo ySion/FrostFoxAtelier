@@ -136,6 +136,37 @@ FieldId field(Runtime& runtime, TypeId owner, const char* name) {
     return take(runtime.find_field(owner, name));
 }
 
+void connectivity_modeling() {
+    // Two coincident triangles use distinct points. A polyline shares a point with
+    // only one triangle, and point zero is loose at the same position as both.
+    auto model = take(Geometry::primitives(
+        Array<Vector3>{{0, 0, 0}, {0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 2, 0}},
+        Array<std::uint32_t>{6, 4, 5, 7, 3, 1, 2, 3}, Array<std::uint32_t>{0, 3, 5, 8},
+        Array<PrimitiveKind>{PrimitiveKind::polygon, PrimitiveKind::polyline, PrimitiveKind::polygon}));
+    take(model.add<std::uint32_t>("piece", Layer::point, 42));
+    Connectivity classify;
+    Geometry tagged;
+    take(classify.process(model, tagged));
+    require(std::ranges::equal(column<std::uint32_t>(tagged, "piece", Layer::point),
+                               std::array{0u, 1u, 1u, 1u, 2u, 2u, 2u, 1u}) &&
+                std::ranges::all_of(column<std::uint32_t>(model, "piece", Layer::point),
+                                    [](auto id) { return id == 42; }) &&
+                tagged.vertex_points().data() == model.vertex_points().data() &&
+                tagged.positions().data() == model.positions().data(),
+            "Connectivity changed input storage or grouped points by position or primitive traversal order.");
+
+    Promote faces;
+    faces.name = String::literal<"piece">();
+    faces.to = Layer::primitive;
+    faces.reduce = Reduce::first;
+    Geometry per_face;
+    take(faces.process(tagged, per_face));
+    require(std::ranges::equal(column<std::uint32_t>(per_face, "piece", Layer::primitive), std::array{2u, 1u, 1u}),
+            "Promote did not carry the piece ID to its polygons and open polyline.");
+    require(!connectivity(per_face) && per_face.find("piece")->layer == Layer::primitive,
+            "Connectivity overwrote an incompatible existing column.");
+}
+
 void graph_evaluation() {
     Runtime runtime;
     take(register_types(runtime));
@@ -150,6 +181,7 @@ void graph_evaluation() {
     const auto moved_root = add(type<Transform>(runtime));
     const auto line_root = add(type<Line>(runtime));
     const auto merged_root = add(type<Merge>(runtime));
+    const auto tagged = add(type<Connectivity>(runtime));
     const auto copied_root = add(type<CopyToPoints>(runtime));
     const auto grid_node = grid_root.id();
     const auto moved = moved_root.id();
@@ -174,7 +206,8 @@ void graph_evaluation() {
     take(connect(runtime, graph, grid_node, 0, moved, 0));
     take(connect(runtime, graph, moved, 0, merged, 0));
     take(connect(runtime, graph, line_node, 0, merged, 0));
-    take(connect(runtime, graph, merged, 0, copied, 0));
+    take(connect(runtime, graph, merged, 0, tagged.id(), 0));
+    take(connect(runtime, graph, tagged.id(), 0, copied, 0));
     take(set_display(runtime, graph, copied));
 
     Evaluator evaluator{runtime, graph_root, resources};
@@ -186,6 +219,13 @@ void graph_evaluation() {
         require(near(Vector3{first[12], first[13], first[14]}, {-.5f, 0, -1}), "The published grid origin is wrong.");
     };
     verify_output();
+    const auto* classified = evaluator.node_output(tagged.id());
+    require(classified && evaluator.node_output(merged) && !evaluator.node_output(merged)->find("piece"),
+            "Connectivity failed to publish an independent graph result.");
+    const auto& pieces = column<std::uint32_t>(*classified, "piece", Layer::point);
+    require(pieces.size() == 14, "Connectivity lost a Grid or Line point.");
+    for (std::uint32_t i = 0; i < pieces.size(); ++i)
+        require(pieces[i] == i, "Grid and Line produce loose points. Each needs its own piece.");
 }
 
 void source_and_spatial_contracts() {
@@ -918,6 +958,7 @@ int main(int argc, char** argv) {
     }
     require(argc == 1, "Usage: atelier_procedural_acceptance [--profile-procedural new-output.json]");
     ray_node();
+    connectivity_modeling();
     graph_evaluation();
     source_and_spatial_contracts();
     std::puts("procedural acceptance passed");
