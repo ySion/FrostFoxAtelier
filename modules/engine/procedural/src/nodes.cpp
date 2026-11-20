@@ -1,4 +1,5 @@
 #include "procedural/nodes.hpp"
+#include "detail/native_cook_stats.hpp"
 #include "foundation/result.hpp"
 #include "procedural/operations.hpp"
 #include "procedural/random.hpp"
@@ -78,7 +79,11 @@ Result<void> Scatter::process(const Context& context, const Geometry& surface, G
 }
 
 Result<void> Boolean::process(const Geometry& a, const Geometry& b, Geometry& output) const noexcept {
-    ATELIER_TRY_BIND(result, invocation_result(solid_boolean(a, b, operation)));
+    auto stats = detail::NativeCookStats::current ? std::make_shared<BooleanStats>() : nullptr;
+    auto cooked = solid_boolean(a, b, operation, stats.get());
+    if (stats)
+        *detail::NativeCookStats::current = std::move(stats);
+    ATELIER_TRY_BIND(result, invocation_result(std::move(cooked)));
     output = std::move(*result);
     return {};
 }

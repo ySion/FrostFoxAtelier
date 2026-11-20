@@ -1,4 +1,5 @@
 #include "procedural/evaluator.hpp"
+#include "detail/native_cook_stats.hpp"
 #include "detail/node_plan.hpp"
 #include "foundation/inline_array.hpp"
 #include "foundation/map.hpp"
@@ -353,7 +354,7 @@ struct Evaluator::Impl {
             uncache(*recent.back());
     }
 
-    Result<void> execute_node(ObjectId id, const State& state, const SourceKernel* source_kernel, Entry& entry) {
+    Result<void> execute_node(ObjectId id, State& state, const SourceKernel* source_kernel, Entry& entry) {
         const auto& plan = *state.plan;
         Context context;
         context.seed_ = seed;
@@ -500,6 +501,7 @@ struct Evaluator::Impl {
         for (std::size_t i = 0; i < arg_count; ++i)
             arguments.add(Argument::borrow(plan.arguments[i].type, values[i], writable[i]));
         if (plan.native) {
+            const detail::NativeCookStats collect{state.status.boolean_stats};
             ATELIER_TRY(runtime.call(id, plan.method, arguments));
         } else {
             ATELIER_TRY(source_kernel->entry.invoke(id, arguments));
@@ -530,6 +532,7 @@ struct Evaluator::Impl {
         entry->outputs.resize(state.plan->ports.outputs.size());
         ++state.status.evaluations;
         state.status.time.reset();
+        state.status.boolean_stats.reset();
         std::chrono::steady_clock::time_point start{};
         if (record_timings)
             start = std::chrono::steady_clock::now();

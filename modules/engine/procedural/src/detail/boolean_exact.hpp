@@ -146,6 +146,13 @@ struct Line {
     bool operator<(const Line& b) const {
         if (axis != b.axis)
             return axis < b.axis;
+        // The common positive denominator cancels exactly. Faces constructed on
+        // the same grid frequently generate this case, including planar fans.
+        if (direction[axis] == b.direction[axis]) {
+            if (direction != b.direction)
+                return direction < b.direction;
+            return moment < b.moment;
+        }
         for (int k = axis + 1; k < 3; ++k) {
             auto d = Wide(direction[k]) * b.direction[axis] - Wide(b.direction[k]) * direction[axis];
             if (d)

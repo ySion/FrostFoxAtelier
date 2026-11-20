@@ -25,7 +25,9 @@ function(atelier_add_procedural)
         BASE_DIR modules/engine/procedural/include
         HEADERS modules/engine/procedural/include/procedural/geometry.hpp modules/engine/procedural/include/procedural/graph.hpp modules/engine/procedural/include/procedural/nodes.hpp)
 
-    add_executable(atelier_procedural_acceptance acceptance/procedural/main.cpp)
+    add_executable(atelier_procedural_acceptance
+        acceptance/procedural/main.cpp
+        acceptance/procedural/boolean_profile.cpp)
     atelier_target(atelier_procedural_acceptance)
     target_compile_options(atelier_procedural_acceptance PRIVATE /clang:-ffp-contract=off)
     target_link_libraries(atelier_procedural_acceptance PRIVATE atelier_procedural)

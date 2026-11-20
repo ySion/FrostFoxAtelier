@@ -12,6 +12,8 @@ class Program;
 
 namespace atelier::procedural {
 
+struct BooleanStats;
+
 struct NodeStatus {
     std::optional<Error> error; // Set while the node or an input it reads fails.
 
@@ -23,6 +25,9 @@ struct NodeStatus {
     // The last actual node run, including argument setup and failures; empty if never run
     // or that run was unmeasured. Idle, cached and blocked nodes retain their previous time.
     std::optional<std::chrono::nanoseconds> time;
+
+    // Snapshot from the last actual Boolean invocation, including partial work on failure.
+    std::shared_ptr<const BooleanStats> boolean_stats;
 };
 
 // Brings a graph's display output up to date on the Runtime thread. A node runs again only
@@ -62,6 +67,7 @@ public:
     // The most recent valid display output while a display node is set, retained across graph
     // and node evaluation errors for editor fallback preview.
     [[nodiscard]] const Geometry* last_valid_output() const noexcept;
+
     // Keeps the displayed output alive through later cooks and asynchronous presentation.
     [[nodiscard]] std::shared_ptr<const Geometry> retain_last_valid_output() const noexcept;
 
