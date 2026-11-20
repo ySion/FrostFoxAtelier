@@ -1771,6 +1771,7 @@ struct EditorControl::Impl {
                     const auto metrics = result.object_validated(st, "boolean");
                     ATELIER_TRY(result.set(metrics, "input_faces", stats->input_faces));
                     ATELIER_TRY(result.set(metrics, "candidate_pairs", stats->candidate_pairs));
+                    ATELIER_TRY(result.set(metrics, "prepared_input_hits", stats->prepared_input_hits));
                     ATELIER_TRY(result.set(metrics, "ray_candidates", stats->ray_candidates));
                     ATELIER_TRY(result.set(metrics, "splits", stats->splits));
                     ATELIER_TRY(result.set(metrics, "peak_face_scratch_bytes", stats->peak_face_scratch_bytes));

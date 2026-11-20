@@ -61,6 +61,8 @@ struct BooleanStats {
     std::chrono::nanoseconds sew{};
 
     std::chrono::nanoseconds publish{};
+
+    std::uint32_t prepared_input_hits{}; // Bit 0 for A, bit 1 for B, when a prepared surface was reused.
 };
 
 // Regularized solid Boolean on outward-oriented closed polygon shells.

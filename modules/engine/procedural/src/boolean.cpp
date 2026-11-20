@@ -1,5 +1,6 @@
 #include "procedural/operations.hpp"
 #include "detail/boolean_exact.hpp"
+#include "detail/native_cook.hpp"
 #include "detail/triangles.hpp"
 #include "detail/topology.hpp"
 #include "foundation/result.hpp"
@@ -195,7 +196,9 @@ Bounds point_box(const Point& p) {
     return {lo, hi};
 }
 
-struct Surface {
+}
+
+struct detail::PreparedBooleanSurface {
     struct Node {
         Bounds box;
 
@@ -282,7 +285,17 @@ struct Surface {
             }
         }
     }
+
+    std::size_t bytes() const noexcept {
+        auto total = sizeof(*this) + faces.capacity() * sizeof(Face) + order.capacity() * sizeof(std::size_t) +
+                     tree.capacity() * sizeof(Node) + (shells.capacity() + enclosures.capacity()) * sizeof(Bounds);
+        for (const auto& f : faces)
+            total += f.cell.capacity() * sizeof(Corner) + f.corners.capacity() * sizeof(std::uint32_t);
+        return total;
+    }
 };
+
+namespace {
 
 // Both grids use power-of-two world units. Change the homogeneous basis once
 // per boundary, keeping each original half-space and vertex exactly equivalent.
@@ -407,8 +420,8 @@ bool fan_independent(const Geometry& mesh, const std::vector<std::uint32_t>& cor
     return true;
 }
 
-Result<Surface> make_surface(const Geometry& mesh, const Lattice& grid, unsigned operand) {
-    Surface result;
+Result<PreparedBooleanSurface> make_surface(const Geometry& mesh, const Lattice& grid, unsigned operand) {
+    PreparedBooleanSurface result;
     auto cached = BooleanBoundary::get(mesh);
     if (cached) {
         ATELIER_TRY_BIND(change, GridChange::between(cached->lattice, grid));
@@ -506,7 +519,7 @@ Result<Surface> make_surface(const Geometry& mesh, const Lattice& grid, unsigned
             const bool planar = corners.size() > 3 && std::ranges::all_of(corners, [&](auto c) {
                                     return !support.side(homogeneous(point(c)));
                                 });
-            if (planar && (collinear_fan || fan_independent(mesh, corners, parallelogram))) {
+            if (corners.size() == 3 || (planar && (collinear_fan || fan_independent(mesh, corners, parallelogram)))) {
                 ATELIER_TRY(add_face(std::move(corners), support));
             } else {
                 for (std::size_t i = 1; i + 1 < corners.size(); ++i) {
@@ -527,6 +540,39 @@ Result<Surface> make_surface(const Geometry& mesh, const Lattice& grid, unsigned
         result.build(0, result.order.size());
     }
     return result;
+}
+
+Result<const PreparedBooleanSurface*> prepare_operand(const Geometry& mesh, const Lattice& grid, unsigned operand,
+                                                      PreparedBooleanSurface& scratch, BooleanStats* stats) {
+    auto* cook = NativeCook::current;
+    BooleanPreparationCache::Operand* repeated = nullptr;
+    if (cook && cook->inputs[operand].get() == &mesh) {
+        auto& slot = cook->preparation.operands[operand];
+        if (slot.input.lock().get() == &mesh && slot.origin == grid.origin && slot.step == grid.step) {
+            if (slot.prepared) {
+                if (stats)
+                    stats->prepared_input_hits |= 1u << operand;
+                return slot.prepared.get();
+            }
+            repeated = &slot;
+        } else {
+            slot = {};
+            slot.input = cook->inputs[operand];
+            slot.origin = grid.origin;
+            slot.step = grid.step;
+        }
+    }
+    ATELIER_TRY_BIND(surface, make_surface(mesh, grid, operand));
+    if (repeated) {
+        const auto bytes = surface->bytes();
+        if (bytes <= cook->budget - cook->preparation.bytes()) {
+            repeated->prepared = std::make_shared<PreparedBooleanSurface>(std::move(*surface));
+            repeated->bytes = bytes;
+            return repeated->prepared.get();
+        }
+    }
+    scratch = std::move(*surface);
+    return &scratch;
 }
 
 // Traverse the boundary once for both children. Each new corner remains the
@@ -732,7 +778,7 @@ struct Crossings {
     std::int64_t at{};
 };
 
-Crossings winding(const Cell& cell, int axis, const Surface& target, BooleanStats* stats) {
+Crossings winding(const Cell& cell, int axis, const PreparedBooleanSurface& target, BooleanStats* stats) {
     Crossings result;
     // The symbolic interior sample tends to the first corner. Any target
     // hit for arbitrarily small positive epsilon also meets the closed ray
@@ -784,8 +830,8 @@ bool interior_contains(const Cell& cell, const Point& point) {
     return std::ranges::all_of(cell, [&](const Corner& c) { return c.incoming.side(point) > 0; });
 }
 
-Result<void> arrange(const Geometry& mesh, const Surface& source, const Surface& other, BooleanOperation op,
-                     std::vector<Patch>& patches, BooleanStats* stats) {
+Result<void> arrange(const Geometry& mesh, const PreparedBooleanSurface& source, const PreparedBooleanSurface& other,
+                     BooleanOperation op, std::vector<Patch>& patches, BooleanStats* stats) {
     enum class Location : std::uint8_t { unknown, outside, inside };
     std::vector<Location> locations(mesh.count(Layer::point));
     for (const auto& f : source.faces) {
@@ -1364,19 +1410,20 @@ Result<Geometry> solid_boolean(const Geometry& a, const Geometry& b, BooleanOper
         return failure("Unknown Boolean operation.");
     ATELIER_TRY_BIND(grid,
                      stage(stats, &BooleanStats::prepare, "Boolean prepare lattice", [&] { return lattice(a, b); }));
-    ATELIER_TRY_BIND(
-        left, stage(stats, &BooleanStats::prepare, "Boolean prepare A", [&] { return make_surface(a, *grid, 0); }));
+    PreparedBooleanSurface scratch[2];
+    ATELIER_TRY_BIND(left, stage(stats, &BooleanStats::prepare, "Boolean prepare A",
+                                 [&] { return prepare_operand(a, *grid, 0, scratch[0], stats); }));
     if (stats)
-        stats->input_faces = left->faces.size();
-    ATELIER_TRY_BIND(
-        right, stage(stats, &BooleanStats::prepare, "Boolean prepare B", [&] { return make_surface(b, *grid, 1); }));
+        stats->input_faces = (*left)->faces.size();
+    ATELIER_TRY_BIND(right, stage(stats, &BooleanStats::prepare, "Boolean prepare B",
+                                  [&] { return prepare_operand(b, *grid, 1, scratch[1], stats); }));
     if (stats)
-        stats->input_faces += right->faces.size();
+        stats->input_faces += (*right)->faces.size();
     std::vector<Patch> patches;
     ATELIER_TRY(stage(stats, &BooleanStats::arrange, "Boolean arrange A",
-                      [&] { return arrange(a, *left, *right, operation, patches, stats); }));
+                      [&] { return arrange(a, **left, **right, operation, patches, stats); }));
     ATELIER_TRY(stage(stats, &BooleanStats::arrange, "Boolean arrange B",
-                      [&] { return arrange(b, *right, *left, operation, patches, stats); }));
+                      [&] { return arrange(b, **right, **left, operation, patches, stats); }));
     MeshBuilder mesh;
     ATELIER_TRY(stage(stats, &BooleanStats::sew, "Boolean sew", [&] { return mesh.sew(patches, *grid); }));
     return stage(stats, &BooleanStats::publish, "Boolean publish", [&] { return publish(mesh, *grid, {&a, &b}); });

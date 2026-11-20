@@ -366,6 +366,35 @@ void boolean_modeling() {
     require(last_cook && evaluator.status(op.id())->boolean_stats == last_cook &&
                 evaluator.status(op.id())->evaluations == evaluations && evaluator.status(op.id())->cache_hits,
             "Returning to a cached Boolean result replaced its last actual cook measurements.");
+
+    const auto translate = field(runtime, type<Transform>(runtime), "translate");
+    const auto move_and_check = [&](Evaluator& ev, float dx, std::uint32_t hits, double volume) {
+        const Vector3 offset{dx, 0, 0};
+        take(runtime.write(move.id(), translate, ValueInput{type<Vector3>(runtime), &offset}));
+        const auto* previous = ev.status(op.id());
+        const auto runs = previous ? previous->evaluations : 0;
+        take(ev.evaluate());
+        const auto* status = ev.status(op.id());
+        require(status && status->evaluations == runs + 1 && status->boolean_stats &&
+                    status->boolean_stats->prepared_input_hits == hits && ev.output() &&
+                    std::abs(solid_measures(*ev.output()).first - volume) < 1e-6,
+                "Boolean preparation reuse, actual cook count or intersected box volume changed.");
+    };
+    Evaluator prepared{runtime, graph, resources};
+    move_and_check(prepared, .125f, 0, .875);
+    move_and_check(prepared, .25f, 0, .75);
+    move_and_check(prepared, .375f, 1, .625);
+    move_and_check(prepared, 4.f, 0, 0); // Same stationary box, larger joint lattice.
+    const Vector3 smaller{.5f, 1, 1};
+    take(runtime.write(box_node.id(), field(runtime, type<Box>(runtime), "size"),
+                       ValueInput{type<Vector3>(runtime), &smaller}));
+    move_and_check(prepared, .125f, 0, .375); // Editing the shared source changes both operands.
+    for (const std::size_t budget : {0u, 1u}) {
+        Evaluator uncached{runtime, graph, resources, nullptr, budget};
+        move_and_check(uncached, .125f, 0, .375);
+        move_and_check(uncached, .25f, 0, .25);
+        move_and_check(uncached, .375f, 0, .125);
+    }
 }
 
 void boolean_contact_sweep() {
