@@ -133,6 +133,18 @@ public:
     [[nodiscard]] Result<void> process(const Geometry& input, Geometry& output) const noexcept;
 };
 
+ACLASS(Name = "procedural.Boolean", DESC = "对两个闭合有向实体做并集、交集或差集，保留来源面的属性。")
+class Boolean : public Node {
+    AGENERATED_BODY(Boolean)
+
+public:
+    AFIELD(Label = "Operation", DESC = "unite 并集，intersect 交集，subtract 从 A 切除 B。")
+    BooleanOperation operation{BooleanOperation::unite};
+
+    AFUNCTION(DESC = "求两个实体的布尔结果。")
+    [[nodiscard]] Result<void> process(const Geometry& a, const Geometry& b, Geometry& output) const noexcept;
+};
+
 ACLASS(Name = "procedural.Connectivity", DESC = "按共享点的拓扑给连通块编号；独立的散点各成一块。")
 class Connectivity : public Node {
     AGENERATED_BODY(Connectivity)

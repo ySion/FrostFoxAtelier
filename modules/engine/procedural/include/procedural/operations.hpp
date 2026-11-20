@@ -40,6 +40,9 @@ Result<void> group_box(Geometry& geometry, StringView group, math::Vector3 minim
 // Polygons and open polylines connect at shared point indices. Each unused point forms its own piece.
 Result<void> connectivity(Geometry& geometry, StringView attribute = "piece");
 
+// Regularized solid Boolean on outward-oriented closed polygon shells.
+Result<Geometry> solid_boolean(const Geometry& a, const Geometry& b, BooleanOperation operation);
+
 struct ScatterSettings {
     float density{1}; // Points per unit area before elimination.
 

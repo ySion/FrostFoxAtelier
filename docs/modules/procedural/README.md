@@ -72,7 +72,16 @@
 
 模块内部 [triangles.cpp](../../../modules/engine/procedural/src/triangles.cpp) 是 Scatter、BVH/Ray、Volume 共用的数值判据与首角扇形视图，不生成第二份拓扑；借用期间 Geometry 必须保持不变且存活。图元 p 的第 j 个三角取原角 `(first, first+j+1, first+j+2)`，顺序为 p 再 j；折线明确失败。Scatter/BVH 的三角输入保留原先零面积跳过规则；Volume 要求三角面也通过非退化面校验。多边形都必须有可分辨的平面、简单凸边界及非零边，合法多边形中的零面积扇形片不算退化面。
 
-所有几何判据用 double 计算。每个原多边形 p 的距离容差 δ_p = 8 × float ε × max（该面各角最大绝对坐标分量，该面 AABB 对角线长），两个输入量都不依赖首角或扇形划分，没有固定米制下限；8 是为 float 输入和变换舍入预留的安全系数，不是容许任意翘曲的建模参数。`polygon_scale` 同时为凸面校验与 Volume 表面带提供这个尺度和容差。首角扇形的有向面积向量长度必须大于 δ_p × AABB 对角线长，点到所得平面的距离不超过 δ_p，投影边长须大于 δ_p。采用保守凸性规则：投影相邻边的有向叉积必须非负，即使负值来自舍入也拒绝，不用距离容差放过凹角；正向共线角仍有效，允许零面积扇形子三角。接近折返的角（点积非正、叉积不超过 δ_p × 两邻边长度之和）也拒绝。在此非负转角前提下，转角总和必须为 2π（double 累加容差 64 × ε × 角数），既排除多圈星形，也不让正反小回环抵消成一圈。检查为线性时间，不另建边对相交矩阵。适用于细节显著大于其绝对坐标 float 精度的模型；远离原点或极薄的不可分辨面报错，不静默修补。后续构造与拓扑工具复用此判据，不另定容差。
+本节通用输入多边形的判据用 double 计算。每个原多边形 p 的距离容差 δ_p = 8 × float ε × max（该面各角最大绝对坐标分量，该面 AABB 对角线长），两个输入量都不依赖首角或扇形划分，没有固定米制下限；8 是为 float 输入和变换舍入预留的安全系数，不是容许任意翘曲的建模参数。`polygon_scale` 同时为凸面校验与 Volume 表面带提供这个尺度和容差。首角扇形的有向面积向量长度必须大于 δ_p × AABB 对角线长，点到所得平面的距离不超过 δ_p，投影边长须大于 δ_p。采用保守凸性规则：投影相邻边的有向叉积必须非负，即使负值来自舍入也拒绝，不用距离容差放过凹角；正向共线角仍有效，允许零面积扇形子三角。接近折返的角（点积非正、叉积不超过 δ_p × 两邻边长度之和）也拒绝。在此非负转角前提下，转角总和必须为 2π（double 累加容差 64 × ε × 角数），既排除多圈星形，也不让正反小回环抵消成一圈。检查为线性时间，不另建边对相交矩阵。适用于细节显著大于其绝对坐标 float 精度的模型；远离原点或极薄的不可分辨面报错，不静默修补。后续构造与拓扑工具复用此判据，不另定容差。
+
+### Boolean 实体建模
+
+SOP 的两个 Geometry 端口与 C++ 的 `solid_boolean(a, b, operation)` 走[同一实现](../../../modules/engine/procedural/src/boolean.cpp)。输入为无自交、外向的闭合实体边界，内腔取相反朝向。求解前检查边的成对方向、点的单一面扇和总有向体积。调用方负责输入内部没有自交或重叠壳。空 Geometry 可作为空集；仅有点、折线、实例或开放壳会报告错误。并、交、差都返回实体的体积边界，面接触的交集为空，共面的重合表面优先使用 A。仅沿一条边接触的两个独立实体可以保留各自的点环。
+
+- **求交与分类**　两个新输入共用以 2 的幂为步长、最长轴至多 2²⁵ 格的局部坐标系，坐标取最近格点，未被面引用的散点不参与定标。每个轴上的首次舍入误差至多半格。包围盒树筛出相关面，各面只对有实际交段或共面重叠的候选做平面切分。交点由三个支撑平面确定，使用齐次整数保存。沿分片的内部取符号扰动样点，分别计算边界两侧的有向穿越数。位宽上界和比较在[精确算术实现](../../../modules/engine/procedural/src/detail/boolean_exact.hpp)中。算法借鉴了 EMBER 的平面表示与局部排列，目前采用串行求解。[论文与补充材料](https://www.graphics.rwth-aachen.de/publication/03339/) · [作者完整讲座](https://www.youtube.com/watch?v=-myVogx5mHY)
+- **输出与连续运算**　保留凸多边形，按同一直线上的端点补齐两侧边界，以成对有向边恢复共享点。发布前检查 float P 的首角扇形朝向及闭壳拓扑。Boolean 输出还按现有点、角和图元索引携带不可变的精确坐标与支撑平面。后续 Boolean 可共享这些数据，来自不同格子的结果在位宽允许时做精确换基。写 P、翻转面或改动表面拓扑后，下一次 Boolean 以当前网格重新量化；改属性继续共享精确边界。由普通几何文件重新导入也从导入坐标开始。退化输入、超出位宽或 float 无法显示的面和边会返回错误。Ray、Scatter 可直接读取已验证的输出扇形；Volume Scatter 保留自己的严格尺度检查。
+- **属性与选择**　每个输出面都有 uint 图元列 `boolean_operand`（0 为 A，1 为 B）与 `boolean_primitive`（本次操作的源图元）。该名字再次经过 Boolean 时刷新归属。图元属性按来源逐面复制，包括完整 32 位材质、标签与组。点和角上的浮点标量、向量按源面插值，离散值取权重最大的源元素；差集反向面的法线随面反转，UV 仍使用各自的角。新共享点需要单一值时使用第一个贡献面，A 先于 B。缺列用类型默认值；同名列层、类型或用途不符时报错。Detail 取首先定义该列的输入。
+- **验收**　覆盖共面重叠、嵌套内腔、相同实体、接触、空集、图端口、切面材质及角 UV；两个半径 1、中心相差 0.5 的 12×6 球网格连续 30 轮重算 `(A−B)∪(A∩B)`，逐轮验证表面积、体积并对最终结果执行射线查询。该规模用于验证精度，百万三角面的交互性能尚未测量。
 
 ### Volume Scatter：有向覆盖与固定格
 
@@ -112,7 +121,7 @@
 
 ## 程序化图
 
-`procedural::register_types(Runtime&)` 发布 Layer、Reduce、RayMode、Geometry、`procedural.Geometries`（`Array<Geometry>`）、Context、统一基类 `procedural.Node`、Graph 和内置节点；String、`Array<String>` 和除 String 外每种列类型的 Array（`procedural.Bools`、`Ints`、`Uints`、`Floats`、`Vector2s`、`Vector3s`、`Vector4s`、`Quaternions`、`Matrix4s`）不存在时一并发布，源码节点借用的列就是这些类型。重复调用不做任何事。
+`procedural::register_types(Runtime&)` 发布 Layer、Reduce、RayMode、BooleanOperation、Geometry、`procedural.Geometries`（`Array<Geometry>`）、Context、统一基类 `procedural.Node`、Graph 和内置节点；String、`Array<String>` 和除 String 外每种列类型的 Array（`procedural.Bools`、`Ints`、`Uints`、`Floats`、`Vector2s`、`Vector3s`、`Vector4s`、`Quaternions`、`Matrix4s`）不存在时一并发布，源码节点借用的列就是这些类型。重复调用不做任何事。
 
 - **Graph**（`procedural.Graph`）：公开字段 `seed`；隐藏的节点强引用序列和 display 强引用槽。
 - **Node**（`procedural.Node`）：所有 C++ 与 `.source` 程序化节点统一派生自 `procedural.Node`（不再设 `PointNode`）；节点类型的公开字段就是 UI/持久化参数；隐藏的 `inputs` 强引用序列每个连接一项，按输入端口排序，与之平行的非反射 C++ 数组记录每个连接的（输入端口，上游输出号）。`.source` 节点直接使用语言级 `fail("...")` 语句报告业务失败（返回 `invocation_failed` 与源码位置，`Node::fail` 已退休）并用 `parallel_for` 并行计算属性列。`procedural.Node` 自身无 `process` 方法，不能直接作为图节点实例。
@@ -142,6 +151,7 @@
 | GroupBox | group="selected"、minimum=(−.5,−.5,−.5)、maximum=(.5,.5,.5) | input → output |
 | Connectivity | attribute="piece"（point uint） | input → output |
 | Scatter | density、seed、min_distance；节点种子为 hash(图种子, seed) | context, surface → points |
+| Boolean | operation 默认 unite，可选 intersect、subtract（A 减 B） | a, b → output |
 | VolumeScatter | density=1、seed=0、origin=(0,0,0)、cell_size=1 | context, surface → points |
 | Transform | translate、rotate、scale | input → output |
 | Promote | name、to、reduce | input → output |

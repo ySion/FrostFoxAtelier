@@ -77,6 +77,12 @@ Result<void> Scatter::process(const Context& context, const Geometry& surface, G
     return {};
 }
 
+Result<void> Boolean::process(const Geometry& a, const Geometry& b, Geometry& output) const noexcept {
+    ATELIER_TRY_BIND(result, invocation_result(solid_boolean(a, b, operation)));
+    output = std::move(*result);
+    return {};
+}
+
 Result<void> VolumeScatter::process(const Context& context, const Geometry& surface, Geometry& points) const noexcept {
     ATELIER_TRY_BIND(result, invocation_result(volume_scatter(surface, {.density = density,
                                                                         .seed = hash(context.seed(), seed),

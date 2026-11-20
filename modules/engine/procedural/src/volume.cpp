@@ -1,11 +1,11 @@
 #include "procedural/operations.hpp"
-#include "foundation/bit_vector.hpp"
 #include "foundation/result.hpp"
 #include "foundation/tasks.hpp"
 #include "procedural/bvh.hpp"
 #include "procedural/random.hpp"
 #include "procedural/timing.hpp"
 #include "detail/triangles.hpp"
+#include "detail/topology.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -48,60 +48,6 @@ struct Sum {
     }
 };
 
-// Boundary halfedges, not fan diagonals. Across each edge, link corners around
-// their common point. A closed manifold has exactly one such cycle at each used point.
-Result<void> validate_shells(const Geometry& surface) {
-    struct Edge {
-        std::uint64_t key;
-
-        std::uint32_t corner;
-    };
-    const auto points = surface.vertex_points();
-    Array<Edge> edges;
-    edges.reserve(points.size());
-    Array<std::uint32_t> next;
-    next.resize(points.size());
-    for (std::uint32_t p = 0; p < surface.count(Layer::primitive); ++p) {
-        const auto face = surface.primitive(p);
-        for (std::uint32_t i = 0; i < face.count; ++i) {
-            const auto c = face.first + i;
-            next[c] = face.first + (i + 1 == face.count ? 0 : i + 1);
-            const auto a = points[c];
-            const auto b = points[next[c]];
-            edges.add({(std::uint64_t{std::min(a, b)} << 32) | std::max(a, b), c});
-        }
-    }
-    std::ranges::sort(edges, {}, &Edge::key);
-    Array<std::uint32_t> around;
-    around.resize(points.size());
-    for (std::size_t i = 0; i < edges.size(); i += 2) {
-        if (i + 1 == edges.size() || edges[i].key != edges[i + 1].key ||
-            (i + 2 < edges.size() && edges[i].key == edges[i + 2].key))
-            return failure("Volume needs exactly two faces per boundary edge.");
-        const auto a = edges[i].corner;
-        const auto b = edges[i + 1].corner;
-        if (points[a] != points[next[b]] || points[b] != points[next[a]])
-            return failure("Volume boundary edges must have opposite directions.");
-        around[a] = next[b];
-        around[b] = next[a];
-    }
-    BitVector seen_corner(points.size());
-    BitVector seen_point(surface.count(Layer::point));
-    for (std::uint32_t start = 0; start < points.size(); ++start) {
-        if (seen_corner[start])
-            continue;
-        if (seen_point[points[start]])
-            return failure("Volume needs a single face fan at each used point.");
-        seen_point.set(points[start]);
-        auto c = start;
-        do {
-            seen_corner.set(c);
-            c = around[c];
-        } while (c != start);
-    }
-    return {};
-}
-
 struct Triangle {
     std::array<Vector3d, 3> points;
 };
@@ -113,7 +59,7 @@ Result<Array<Triangle>> prepare(const Geometry& surface) {
         if (!math::is_finite(p))
             return failure("Volume positions must be finite.");
     ATELIER_TRY_BIND(view, detail::TriangleView::create(surface, true));
-    ATELIER_TRY(validate_shells(surface));
+    ATELIER_TRY(detail::validate_shells(surface));
     Array<Triangle> triangles;
     triangles.reserve(view->size());
     const auto origin = Vector3d(surface.positions()[surface.vertex_points()[0]]);

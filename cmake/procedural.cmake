@@ -2,6 +2,8 @@ function(atelier_add_procedural)
     add_library(atelier_procedural STATIC
         modules/engine/procedural/src/geometry.cpp
         modules/engine/procedural/src/operations.cpp
+        modules/engine/procedural/src/topology.cpp
+        modules/engine/procedural/src/boolean.cpp
         modules/engine/procedural/src/constructors.cpp
         modules/engine/procedural/src/triangles.cpp
         modules/engine/procedural/src/volume.cpp

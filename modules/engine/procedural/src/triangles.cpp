@@ -7,6 +7,7 @@
 #include <numbers>
 
 namespace atelier::procedural::detail {
+
 namespace {
 
 // The shared numerical policy for every polygon consumer. Distance uncertainty is
@@ -129,7 +130,9 @@ Result<TriangleView> TriangleView::create(const Geometry& surface, bool require_
         const auto range = surface.primitive(p);
         if (range.kind != PrimitiveKind::polygon)
             return failure("Surface operations do not accept polylines.");
-        if (range.count > 3 || require_nondegenerate)
+        // Boolean has already certified the convex boundary and checked the
+        // published float fan. Preserve the stricter Volume admission contract.
+        if (require_nondegenerate || (range.count > 3 && !surface.boolean_boundary_))
             ATELIER_TRY(validate_polygon(surface, range));
         has_subtriangles |= range.count > 3;
         size += range.count - 2; // Bounded by Geometry's total vertex count.
