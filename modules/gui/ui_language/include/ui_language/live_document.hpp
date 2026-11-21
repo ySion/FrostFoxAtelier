@@ -5,25 +5,47 @@
 #include <map>
 
 namespace atelier::ui_language {
+// Borrowed descriptor slice and producer revision from a LiveDocument region.
+struct ControlRegion {
+    ui::ControlList* target{};
+
+    std::span<const ui::Control> controls{};
+
+    std::uint64_t revision{};
+};
+
 // A snapshot consumer copies descriptors; a retained host can reuse the same authored region.
 class ControlOutput {
 public:
     ControlOutput(std::vector<ui::Control>& values) : flat_(&values) {}
+
     ControlOutput(ui::ControlList& list) : list_(&list) {}
+
+    ControlOutput(ControlRegion& region) : region_(&region) {}
+
     void require_full_submission() const {
         if (list_)
             list_->require_full_submission();
+        else if (region_ && region_->target)
+            region_->target->require_full_submission();
     }
+
     void append(std::span<const ui::Control> controls, std::uint64_t revision) const {
         if (list_)
             list_->append(controls, revision);
-        else
+        else if (region_) {
+            region_->controls = controls;
+            region_->revision = revision;
+        } else
             flat_->insert(flat_->end(), controls.begin(), controls.end());
     }
 
 private:
     std::vector<ui::Control>* flat_{};
+
     ui::ControlList* list_{};
+
+    ControlRegion* region_{};
 };
 
 // One authoring file, one Runtime and one host key authority. Hot entry compilation
@@ -127,7 +149,10 @@ private:
         std::optional<std::vector<InputValue>> rejected_inputs;
 
         bool accepted{};
-        std::uint64_t accepted_controls{}, proposed_controls{};
+
+        std::uint64_t accepted_controls{};
+
+        std::uint64_t proposed_controls{};
     };
 
     struct Stamp {

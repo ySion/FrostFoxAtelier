@@ -2823,12 +2823,17 @@ EditorControl::EditorControl(EditorControl&&) noexcept = default;
 
 EditorControl::~EditorControl() = default;
 
-void EditorControl::poll() {
+bool EditorControl::poll() {
+    bool serviced = impl_->active() != nullptr;
     if (const auto checked = impl_->checkpoint(); !checked)
         impl_->app.report_error({ErrorCode::invalid_definition, checked.error().describe()}, "editor.control_failed");
-    impl_->server.poll([&](const auto& request, const auto& peer) { return impl_->request(request, peer); });
+    impl_->server.poll([&](const auto& request, const auto& peer) {
+        serviced = true;
+        return impl_->request(request, peer);
+    });
     if (const auto checked = impl_->checkpoint(); !checked)
         impl_->app.report_error({ErrorCode::invalid_definition, checked.error().describe()}, "editor.control_failed");
+    return serviced;
 }
 
 void EditorControl::document_replaced() {

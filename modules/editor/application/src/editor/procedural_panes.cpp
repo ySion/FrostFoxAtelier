@@ -2891,7 +2891,7 @@ std::array<float, 2> NetworkCanvas::prepare_wire_routes(const std::shared_ptr<co
     return {};
 }
 
-void NetworkCanvas::append_canvas(std::vector<ui::Control>& controls, ui::ControlKey canvas_parent,
+void NetworkCanvas::append_canvas(ui_language::ControlOutput output, ui::ControlKey canvas_parent,
                                   ui_layout::Size canvas_dip, const std::shared_ptr<const GraphInspectView>& topology,
                                   std::span<const GraphNodeCatalogEntry> catalog, std::string_view primary_selected,
                                   std::span<const std::string> selected_nodes) {
@@ -2922,13 +2922,18 @@ void NetworkCanvas::append_canvas(std::vector<ui::Control>& controls, ui::Contro
         if (idle_projection_ && idle_projection_->topology.lock() == topology && idle_projection_->state == *idle &&
             std::ranges::equal(selected_nodes, idle_projection_->selection) &&
             std::ranges::equal(catalog, idle_projection_->catalog)) {
-            const auto& retained = idle_projection_->controls;
-            controls.insert(controls.end(), retained.begin(), retained.end());
+            if (!popup_.open()) {
+                output.append(idle_projection_->controls, idle_projection_->revision);
+                return;
+            }
+            std::vector<ui::Control> controls = idle_projection_->controls;
             append_canvas_popup(controls, canvas_parent, cw, ch, view, catalog);
+            output.append(controls, 0);
             return;
         }
     }
     idle_projection_.reset();
+    std::vector<ui::Control> controls;
 
     CanvasLayer backdrop;
     auto& grid = *backdrop.batches.front();
@@ -3527,13 +3532,27 @@ void NetworkCanvas::append_canvas(std::vector<ui::Control>& controls, ui::Contro
     }
 
     visible_tooltips_.swap(tooltips);
-    if (idle)
+    if (idle) {
+        const auto revision = ui::ControlList::new_region_revision();
+        if (!popup_.open()) {
+            idle_projection_.emplace(IdleProjection{topology,
+                                                    std::move(*idle),
+                                                    {selected_nodes.begin(), selected_nodes.end()},
+                                                    {catalog.begin(), catalog.end()},
+                                                    std::move(controls),
+                                                    revision});
+            output.append(idle_projection_->controls, revision);
+            return;
+        }
         idle_projection_.emplace(IdleProjection{topology,
                                                 std::move(*idle),
                                                 {selected_nodes.begin(), selected_nodes.end()},
                                                 {catalog.begin(), catalog.end()},
-                                                {controls.begin() + first_label, controls.end()}});
+                                                controls,
+                                                revision});
+    }
     append_canvas_popup(controls, canvas_parent, cw, ch, view, catalog);
+    output.append(controls, 0);
 }
 
 void NetworkCanvas::append_canvas_popup(std::vector<ui::Control>& controls, ui::ControlKey canvas_parent, float cw,

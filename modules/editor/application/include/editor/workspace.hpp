@@ -633,6 +633,7 @@ struct Workspace {
                           const ui::ControlBox* command_focus);
 
     void reset_document();
+
     const Binding* binding(ui::ControlKey) const noexcept;
 
     ui::ControlKey object_control(ObjectId) const noexcept;
@@ -749,6 +750,14 @@ private:
     std::string last_network_graph_;
 
     std::string failed_auto_open_graph_;
+
+    const Runtime* node_catalog_runtime_{};
+
+    std::size_t node_catalog_types_{};
+
+    std::vector<GraphNodeCatalogEntry> node_catalog_;
+
+    std::uint64_t empty_network_canvas_revision_{ui::ControlList::new_region_revision()};
 
     Selection menu_selection_;
 

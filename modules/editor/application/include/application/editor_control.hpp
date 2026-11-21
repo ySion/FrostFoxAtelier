@@ -16,7 +16,7 @@ public:
 
     ~EditorControl();
 
-    void poll();
+    bool poll();
 
     void input(UINT message, WPARAM);
 

@@ -1466,6 +1466,7 @@ void Application::select_box() {
 void Application::toggle_view(editor::ViewToggleOption option) {
     auto& value = option == editor::ViewToggleOption::fps ? workspace_.show_fps : workspace_.viewport_options_collapsed;
     value = !value;
+    workspace_.bump_view_revision();
 }
 
 Result<void> Application::fit_lighting(bool follow_focus) {
@@ -1683,6 +1684,8 @@ void Application::request_menu(const ui::ContextMenuRequest& request) {
         return;
     }
     workspace_.menu = next;
+    menu_projection_.reset();
+    menu_dirty_ = true;
     menu_return_focus_ = return_focus;
     menu_incarnation_ = source->incarnation;
     menu_requested_ = std::chrono::steady_clock::now();
@@ -1691,6 +1694,26 @@ void Application::request_menu(const ui::ContextMenuRequest& request) {
     menu_table_layout_ = source->table_layout;
     static_cast<void>(ATELIER_LOG_WITH(logging::Severity::info, "menu", "menu.requested",
                                        logging::native::Context{fields}, "Menu request adopted"));
+}
+
+Application::MenuProjection Application::current_menu_projection() const noexcept {
+    MenuProjection state{};
+    if (workspace_.menu) {
+        state.source = workspace_.menu->source;
+        state.group = workspace_.menu->group;
+        state.table = workspace_.menu->table;
+    }
+    state.document = document_.get();
+    state.document_revision = document_ ? document_->revision() : 0;
+    state.project_revision = project_ ? project_->revision() : 0;
+    state.view_revision = workspace_.view_revision();
+    state.ui_revision = workspace_.ui_revision();
+    state.build = workspace_.project_build.get();
+    state.selection = document_ ? document_->selection() : editor::Selection{};
+    state.project_open = workspace_.project_open;
+    state.project_running = workspace_.project_running;
+    state.project_stopping = workspace_.project_stopping;
+    return state;
 }
 
 void Application::close_menu(bool restore_focus, std::source_location caller, std::string_view input_event) {
@@ -1727,6 +1750,8 @@ void Application::close_menu(bool restore_focus, std::source_location caller, st
     menu_incarnation_ = 0;
     menu_context_target_ = menu_context_group_ = 0;
     menu_table_layout_ = {};
+    menu_projection_.reset();
+    menu_dirty_ = false;
 }
 
 Result<void> Application::update_menu() {
@@ -1974,7 +1999,8 @@ bool Application::invoke_menu(const ui::Action& command, std::span<const ui::Men
             status(result, L"");
             if (keep_open)
                 close_menu();
-        }
+        } else if (keep_open && workspace_.menu)
+            menu_dirty_ = true;
     }
     return true;
 }
@@ -2336,11 +2362,13 @@ Result<bool> Application::run_step(renderer::Capture* capture, StepTimes* times)
         timing::Scope project{phases::project};
         poll_project();
         diagnostics();
-        static_cast<void>(workspace_.poll_output());
+        if (workspace_.poll_output())
+            menu_dirty_ = true;
     }
     if (control_) {
         timing::Scope control{phases::control};
-        control_->poll();
+        if (control_->poll())
+            menu_dirty_ = true;
     }
     const auto title = (project_ ? project_->name() : L"No project") + L" — " +
                        (scene_path_.empty() ? L"Untitled" : scene_path_.filename().wstring()) +
@@ -2391,14 +2419,16 @@ Result<bool> Application::run_step(renderer::Capture* capture, StepTimes* times)
     if (!host_ready) {
         if (pending_menu_ || !workspace_.menu || workspace_.pie_menu())
             return true;
-        if (menu_window() && popup_->source() == workspace_.menu->source) {
-            // Native menus have their own surface and use the last accepted owner geometry.
+        if (menu_window() && popup_->source() == workspace_.menu->source && !menu_dirty_ &&
+            menu_projection_ == current_menu_projection()) {
+            // Native menus have their own surface and use the last accepted owner geometry
+            // while authoritative document, view and menu state remain unchanged.
             timing::Scope menus{phases::popup};
             ATELIER_TRY(update_menu());
             return true;
         }
-        // A newly requested native menu needs its command model projected and validated
-        // even when the owner cannot present. Keep the normal projection path for its first frame.
+        // A newly requested or state-invalidated native menu needs its command model
+        // projected and validated even when the owner cannot present.
     }
     update_camera_fly();
     const ui_layout::Size view_size{static_cast<float>(extent.width) / surface_.dpi_scale,
@@ -2506,6 +2536,13 @@ Result<bool> Application::run_step(renderer::Capture* capture, StepTimes* times)
                 return std::unexpected(std::move(error));
             }
         }
+    }
+    if (workspace_.menu) {
+        menu_projection_ = current_menu_projection();
+        menu_dirty_ = false;
+    } else {
+        menu_projection_.reset();
+        menu_dirty_ = false;
     }
     // Native popups render on their retained surface before scene submission /
     // Present can block. Their anchor still comes from accepted owner geometry.

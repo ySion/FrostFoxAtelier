@@ -122,6 +122,71 @@ struct EditorAcceptanceAccess {
 
     static void close_menu(Application& app) { app.close_menu(false); }
 
+    static void verify_keep_open_menu(Application& app) {
+        app.request_menu({editor::control::scene_guides, 0, 0, 0});
+        for (int i = 0; i < 6 && !app.menu_window(); ++i)
+            if (!take(app.step()))
+                throw std::runtime_error("Editor closed before Guides menu opened.");
+        if (!app.menu_window() || !app.popup_ || !app.popup_->presented())
+            throw std::runtime_error("Guides popup menu was not presented.");
+
+        const auto find_fps = [&]() -> const ui::MenuItem* {
+            const auto at = std::ranges::find_if(app.workspace_.menu_items,
+                                                 [](const ui::MenuItem& item) { return item.text == L"Show FPS"; });
+            return at == app.workspace_.menu_items.end() ? nullptr : &*at;
+        };
+        const auto* initial = find_fps();
+        if (!initial || initial->selected || app.workspace_.show_fps)
+            throw std::runtime_error("Unexpected initial Show FPS menu state.");
+        const auto fps_key = initial->key;
+        const auto* box = app.popup_->presented()->find(fps_key);
+        if (!box)
+            throw std::runtime_error("Show FPS item missing from presented popup.");
+
+        const float scale = app.popup_->presented()->drawing ? app.popup_->presented()->drawing->dpi_scale : 1.f;
+        POINT pt{static_cast<LONG>(std::lround(box->bounds.x + 6.f * scale)),
+                 static_cast<LONG>(std::lround(box->bounds.y + box->bounds.height * .5f))};
+        ClientToScreen(app.popup_->window(), &pt);
+        ScreenToClient(app.window(), &pt);
+
+        const auto click_checkbox = [&]() {
+            ui::Event down;
+            down.kind = ui::EventKind::pointer_down;
+            down.button = ui::PointerButton::primary;
+            down.x = static_cast<float>(pt.x);
+            down.y = static_cast<float>(pt.y);
+            if (auto r = app.input(down, 0); !r)
+                throw std::runtime_error(r.error().message);
+            ui::Event up = down;
+            up.kind = ui::EventKind::pointer_up;
+            if (auto r = app.input(up, 0); !r)
+                throw std::runtime_error(r.error().message);
+        };
+
+        // 1. Keep-open checkbox click must refresh menu_items and popup presentation on the very next step,
+        // even when VSync=1 throttles host presentation (!host_ready).
+        click_checkbox();
+        if (!take(app.step()))
+            throw std::runtime_error("Editor closed during keep-open checkbox toggle.");
+        const auto* checked_item = find_fps();
+        const auto* checked_box = app.popup_->presented() ? app.popup_->presented()->find(fps_key) : nullptr;
+        if (!app.menu_window() || !app.workspace_.show_fps || !checked_item || !checked_item->selected ||
+            !checked_box || !checked_box->selected)
+            throw std::runtime_error("Keep-open checkbox click left stale popup menu state.");
+
+        // 2. Direct view-revision mutation while the native menu stays open must also invalidate the fast path.
+        app.toggle_view(editor::ViewToggleOption::fps);
+        if (!take(app.step()))
+            throw std::runtime_error("Editor closed after view_revision invalidation.");
+        const auto* unchecked_item = find_fps();
+        const auto* unchecked_box = app.popup_->presented() ? app.popup_->presented()->find(fps_key) : nullptr;
+        if (!app.menu_window() || app.workspace_.show_fps || !unchecked_item || unchecked_item->selected ||
+            !unchecked_box || unchecked_box->selected)
+            throw std::runtime_error("View revision change while menu was open left stale popup menu state.");
+
+        app.close_menu(false);
+    }
+
     static void cancel_rename(Application& app) { app.workspace_.row_rename.reset(); }
 
     static ui::ControlKey color_pick(const Application& app) {
@@ -388,6 +453,7 @@ int capture_editor_snapshot(Application& app, const char* output_directory) {
             png(menu, output / "snapshot-orientation-menu.png");
     }
     Access::close_menu(app);
+    Access::verify_keep_open_menu(app);
     Access::performance_panel(app);
     shot("snapshot-world.png");
     Access::select_tab(app, atelier::editor::control::workbench);

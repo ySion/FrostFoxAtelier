@@ -138,5 +138,50 @@ void verify_ui_error_recovery() {
     take(stage(-0.0));
     present(12);
     require(document.diagnostic().empty(), "A failed positive-zero input prevented recovery with negative zero.");
+    {
+        // Borrowed ControlRegion slices preserve non-zero region revisions across split insertions
+        // while forwarding hot-reload candidate full-submission requirements.
+        ui::ControlList split_controls;
+        const auto mid_revision = ui::ControlList::new_region_revision();
+        ui::Control mid;
+        mid.key = 77;
+        mid.kind = ui::ControlKind::label;
+        mid.text = L"Mid";
+        const auto stage_split = [&](double value, std::size_t& decorated) {
+            split_controls.begin();
+            ControlRegion region{&split_controls};
+            take(document.append("Probe", 0, keys, std::array<InputValue, 1>{value}, region));
+            require(!region.controls.empty() && region.revision != 0, "ControlRegion missed the region revision.");
+            split_controls.append(region.controls.first(1), region.revision);
+            split_controls.append(std::span{&mid, 1}, mid_revision);
+            split_controls.append(region.controls.subspan(1), region.revision);
+            decorated = 0;
+            split_controls.finish([&](ui::Control&) { ++decorated; });
+        };
+        std::size_t decorated{};
+        stage_split(-0.0, decorated);
+        require(decorated == 2 && session.set_controls(split_controls).has_value(),
+                "Initial split ControlRegion failed.");
+        auto first_split = session.prepare();
+        require(first_split && session.accept(*first_split), "Initial split ControlRegion frame was refused.");
+        document.commit_controls();
+        const auto stats_before = session.statistics();
+        stage_split(-0.0, decorated);
+        require(decorated == 0 && session.set_controls(split_controls).has_value(),
+                "Unchanged split ControlRegion dirtied ControlList.");
+        const auto stats_after = session.statistics();
+        require(stats_after.control_batches == stats_before.control_batches &&
+                    stats_after.controls_updated == stats_before.controls_updated,
+                "Unchanged split ControlRegion triggered Session control updates.");
+        reload("// candidate reload\n" +
+               std::string(R"(ui Probe(in double divisor) { Button run { width: 140; height: 42.0d; } })"));
+        stage_split(-0.0, decorated);
+        require(decorated == 1 && session.set_controls(split_controls).has_value(),
+                "Candidate reload through ControlRegion did not refresh Probe.");
+        auto reloaded_split = session.prepare();
+        require(reloaded_split && session.accept(*reloaded_split) && (*reloaded_split)->find(42)->bounds.width == 140.f,
+                "Candidate reload through ControlRegion did not apply updated width.");
+        document.commit_controls();
+    }
     std::filesystem::remove(path);
 }

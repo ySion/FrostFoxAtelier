@@ -169,6 +169,7 @@ private:
     math::Vector2 pointer_position_{};
 
     editor::Workspace workspace_;
+
     ui::ControlList workspace_controls_;
 
     ui::Session ui_;
@@ -194,6 +195,42 @@ private:
     ui::ControlKey menu_context_group_{};
 
     ui::TableLayout menu_table_layout_;
+
+    struct MenuProjection {
+        ui::ControlKey source{};
+
+        ui::ControlKey group{};
+
+        std::optional<ui::TableSelection> table{};
+
+        const editor::Session* document{};
+
+        std::uint64_t document_revision{};
+
+        std::uint64_t project_revision{};
+
+        std::uint64_t view_revision{};
+
+        std::uint64_t ui_revision{};
+
+        const editor::ProjectBuild* build{};
+
+        editor::Selection selection{};
+
+        bool project_open{};
+
+        bool project_running{};
+
+        bool project_stopping{};
+
+        bool operator==(const MenuProjection&) const = default;
+    };
+
+    std::optional<MenuProjection> menu_projection_;
+
+    bool menu_dirty_{};
+
+    MenuProjection current_menu_projection() const noexcept;
 
     ui::ControlKey pending_menu_{}; // Keyboard reveal waits for the bar's accepted geometry.
 
@@ -360,7 +397,10 @@ private:
 
     void scene_changed() override;
 
-    void set_tool_settings(const editor::ToolSettings& settings) override { workspace_.viewport_settings = settings; }
+    void set_tool_settings(const editor::ToolSettings& settings) override {
+        workspace_.viewport_settings = settings;
+        workspace_.bump_view_revision();
+    }
 
     Result<void> set_view_settings(const renderer::ViewSettings&) override;
 

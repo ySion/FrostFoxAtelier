@@ -364,7 +364,7 @@ flowchart LR
 
 `ui::Session::update_controls(changed_controls)` 已支持只提交部分既有 key 的**完整控件属性值**，不是只提交几个字段的补丁。它拒绝重复/不存在的 key，以及 kind、parent、布局种类和结构引用变化；不能通过它新增、删除或重挂节点。
 
-Application 将工作区的 `ControlList` 交给 `Session::set_controls`。同一区段内只要有控件变化，宿主就重新收集该区段，并将实际变化的属性合并进一次事务。原生代码临时插入的画布和覆盖层按本轮描述处理。完整合同见[持久实例与稀疏更新](../ui/updates.md)。
+Application 将工作区的 `ControlList` 交给 `Session::set_controls`。同一区段内只要有控件变化，宿主就重新收集该区段，并将实际变化的属性合并进一次事务。`Network` 面板将 DSL 前后段（`ControlRegion`）与静止态二维节点画布分别带非零区域版本接入 `ControlList` 复用；手势交互、画布浮窗与临时覆盖层按本轮描述处理。完整合同见[持久实例与稀疏更新](../ui/updates.md)。
 
 ### 保存时保留什么
 

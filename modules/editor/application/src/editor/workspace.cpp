@@ -309,6 +309,9 @@ void Workspace::reset_document() {
     network_context_node.clear();
     last_network_graph_.clear();
     failed_auto_open_graph_.clear();
+    node_catalog_runtime_ = nullptr;
+    node_catalog_types_ = 0;
+    node_catalog_.clear();
     spreadsheet.reset();
     network.reset();
     menu.reset();
@@ -1873,7 +1876,7 @@ Result<void> Workspace::describe(ui::ControlList& result, Session& session, ui_l
             std::wstring cook_summary_style = L"network-cook-summary";
             std::wstring net_status;
             std::shared_ptr<const GraphInspectView> inspected;
-            std::vector<GraphNodeCatalogEntry> catalog;
+            std::span<const GraphNodeCatalogEntry> catalog;
             if (graph_doc) {
                 // Prune any node names removed via Undo or external Control calls.
                 std::erase_if(selected_graph_nodes,
@@ -1886,8 +1889,18 @@ Result<void> Workspace::describe(ui::ControlList& result, Session& session, ui_l
                 const auto eval = session.evaluate_graph(net_graph, project, sel_node);
                 if (auto insp = session.graph_topology(net_graph))
                     inspected = std::move(*insp);
-                if (auto cat = session.procedural_node_types())
-                    catalog = std::move(*cat);
+                if (node_catalog_runtime_ != &runtime || node_catalog_types_ != runtime.type_count()) {
+                    if (auto cat = session.procedural_node_types()) {
+                        node_catalog_ = std::move(*cat);
+                        node_catalog_runtime_ = &runtime;
+                        node_catalog_types_ = runtime.type_count();
+                    } else {
+                        node_catalog_.clear();
+                        node_catalog_runtime_ = nullptr;
+                        node_catalog_types_ = 0;
+                    }
+                }
+                catalog = node_catalog_;
 
                 if (network.tab_search().open) {
                     const auto matches = network.filter_catalog(catalog);
@@ -2082,9 +2095,15 @@ Result<void> Workspace::describe(ui::ControlList& result, Session& session, ui_l
                                                                 {"frame_btn", network_control::frame_all},
                                                                 {"canvas", network_control::canvas},
                                                                 {"tab_box", network_control::tab_search_box}}};
-            std::vector<ui::Control> network_controls;
-            static_cast<void>(ui_document_->append("NetworkPanel", view.content, keys, inputs, network_controls));
-            if (has_graph && inspected) {
+            ui_language::ControlRegion panel{&result};
+            static_cast<void>(ui_document_->append("NetworkPanel", view.content, keys, inputs, panel));
+            const auto tab_it = std::ranges::find(panel.controls, network_control::tab_search_box, &ui::Control::key);
+            const auto head = std::span{panel.controls.begin(), tab_it};
+            const auto tail = std::span{tab_it, panel.controls.end()};
+            result.append(head, panel.revision);
+            const bool has_canvas_host =
+                std::ranges::find(head, network_control::canvas, &ui::Control::key) != head.end();
+            if (has_graph && inspected && has_canvas_host) {
                 ui_layout::Size canvas_dip{std::max(160.f, size.width * .36f), std::max(120.f, size.height * .26f)};
                 if (frame) {
                     if (const auto* box = frame->find(network_control::canvas);
@@ -2092,16 +2111,18 @@ Result<void> Workspace::describe(ui::ControlList& result, Session& session, ui_l
                         canvas_dip = {box->bounds.width / dscale, box->bounds.height / dscale};
                     }
                 }
-                std::vector<ui::Control> canvas_controls;
-                network.append_canvas(canvas_controls, network_control::canvas, canvas_dip, inspected, catalog,
+                network.append_canvas(result, network_control::canvas, canvas_dip, inspected, catalog,
                                       selected_graph_node, selected_graph_nodes);
-                const auto tab_it =
-                    std::ranges::find(network_controls, network_control::tab_search_box, &ui::Control::key);
-                network_controls.insert(tab_it, std::make_move_iterator(canvas_controls.begin()),
-                                        std::make_move_iterator(canvas_controls.end()));
-                network.append_tab_categories(network_controls, network_control::tab_search_box);
+            } else {
+                result.append({}, empty_network_canvas_revision_);
             }
-            result.append(std::move(network_controls));
+            if (has_graph && inspected && network.tab_search().open && !tail.empty()) {
+                std::vector<ui::Control> tail_controls(tail.begin(), tail.end());
+                network.append_tab_categories(tail_controls, network_control::tab_search_box);
+                result.append(std::move(tail_controls));
+            } else {
+                result.append(tail, panel.revision);
+            }
             continue;
         }
         if (view.key == control::entities_tab) {

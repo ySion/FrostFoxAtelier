@@ -440,10 +440,12 @@ public:
                                          std::vector<std::string>& selected_nodes, ui::Rect canvas_px, float dpi_scale,
                                          const ui::Event& event, std::uint32_t native_key);
 
-    void append_canvas(std::vector<ui::Control>& controls, ui::ControlKey canvas_parent, ui_layout::Size canvas_dip,
+    void append_canvas(ui_language::ControlOutput output, ui::ControlKey canvas_parent, ui_layout::Size canvas_dip,
                        const std::shared_ptr<const GraphInspectView>& topology,
                        std::span<const GraphNodeCatalogEntry> catalog, std::string_view primary_selected,
                        std::span<const std::string> selected_nodes);
+
+    std::uint64_t idle_revision() const noexcept { return idle_projection_ ? idle_projection_->revision : 0; }
 
     void append_tab_categories(std::vector<ui::Control>& controls, ui::ControlKey tab_box_key) const;
 
@@ -471,13 +473,29 @@ private:
 
     struct IdleCanvasState {
         ui::ControlKey parent;
+
         ui_layout::Size extent;
+
         std::array<float, 2> pan;
+
         float zoom;
-        std::string primary, note, box, hovered_node, air_node;
+
+        std::string primary;
+
+        std::string note;
+
+        std::string box;
+
+        std::string hovered_node;
+
+        std::string air_node;
+
         std::optional<PortRef> hovered_port;
+
         FlagZone flag;
+
         AirButton air;
+
         bool air_ring_hidden;
 
         bool operator==(const IdleCanvasState&) const = default;
@@ -485,33 +503,50 @@ private:
 
     struct IdleProjection {
         std::weak_ptr<const GraphInspectView> topology;
+
         IdleCanvasState state;
+
         std::vector<std::string> selection;
+
         std::vector<GraphNodeCatalogEntry> catalog;
+
         std::vector<ui::Control> controls;
+
+        std::uint64_t revision{};
     };
 
     std::optional<IdleProjection> idle_projection_;
 
     struct RoutedSegment {
-        std::array<float, 2> from, to;
+        std::array<float, 2> from;
+
+        std::array<float, 2> to;
     };
 
     struct WireRoutes {
         struct Wire {
-            std::size_t connection, end;
+            std::size_t connection;
+
+            std::size_t end;
+
             bool upstream_error;
         };
 
         std::weak_ptr<const GraphInspectView> topology;
+
         std::array<float, 2> origin{};
+
         float zoom{};
+
         ui::Rect region{}; // In canvas DIP at origin; includes a margin around the viewport.
+
         std::vector<Wire> wires;
+
         std::vector<RoutedSegment> segments;
     };
 
     WireRoutes wire_routes_;
+
     std::array<float, 2> prepare_wire_routes(const std::shared_ptr<const GraphInspectView>&, ui_layout::Size);
 
     void append_canvas_popup(std::vector<ui::Control>&, ui::ControlKey parent, float width, float height,
