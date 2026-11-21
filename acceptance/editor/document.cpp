@@ -1419,6 +1419,90 @@ class game.DiagnosticSop : procedural.Node {
                 "Bake created StaticMeshEntities referencing a deleted mesh from a frozen SOP snapshot.");
     }
 
+    // Spatial health diagnostics in inspect_graph (topology manifold check, spacing, AABB overlaps, surface clearance):
+    {
+        const auto unit_cube_src = temp_root / "unit_cube.obj";
+        take(editor::write_file(unit_cube_src, "v -0.5 -0.5 -0.5\nv 0.5 -0.5 -0.5\nv 0.5 0.5 -0.5\nv -0.5 0.5 -0.5\n"
+                                               "v -0.5 -0.5 0.5\nv 0.5 -0.5 0.5\nv 0.5 0.5 0.5\nv -0.5 0.5 0.5\n"
+                                               "f 1 3 2\nf 1 4 3\nf 5 6 7\nf 5 7 8\n"
+                                               "f 1 2 6\nf 1 6 5\nf 2 3 7\nf 2 7 6\n"
+                                               "f 3 4 8\nf 3 8 7\nf 4 1 5\nf 4 5 8\n"));
+        const auto cube_key = take(project.import_mesh(unit_cube_src));
+        const auto floor_quad_src = temp_root / "floor_quad.obj";
+        take(editor::write_file(floor_quad_src, "v -5.0 0.0 -5.0\nv -5.0 0.0 5.0\nv 5.0 0.0 5.0\nv 5.0 0.0 -5.0\n"
+                                                "f 1 2 3\nf 1 3 4\n"));
+        const auto floor_mesh_key = take(project.import_mesh(floor_quad_src));
+        const std::string sp_key = "scratch/spatial_check";
+        take(doc.create_scratch_graph(sp_key));
+        take(doc.graph_add_node(sp_key, "procedural.MeshImport", "floor", {0.f, 0.f}));
+        const auto floor_patch = parse_doc("{\"mesh\":\"" + floor_mesh_key + "\"}");
+        take(doc.graph_set_properties(sp_key, "floor", floor_patch.root()));
+        take(doc.graph_add_node(sp_key, "procedural.Box", "closed_box", {160.f, 0.f}));
+        take(doc.graph_add_node(sp_key, "procedural.Line", "pts", {0.f, 120.f}));
+        const auto pts_patch_1 =
+            parse_doc(R"({"start":{"x":0.0,"y":0.5,"z":0.0},"end":{"x":0.4,"y":0.5,"z":0.0},"count":2})");
+        take(doc.graph_set_properties(sp_key, "pts", pts_patch_1.root()));
+        take(doc.graph_add_node(sp_key, "procedural.CopyToPoints", "copy", {0.f, 220.f}));
+        take(doc.graph_connect(sp_key, "pts", "output", "copy", "points"));
+        const auto copy_patch = parse_doc("{\"meshes\":[\"" + cube_key + "\"]}");
+        take(doc.graph_set_properties(sp_key, "copy", copy_patch.root()));
+        take(doc.graph_set_display(sp_key, "copy"));
+
+        const ObjectId floor_id = doc.graph_node_id(sp_key, "floor");
+        const ObjectId box_id_sp = doc.graph_node_id(sp_key, "closed_box");
+        const auto floor_insp = take(doc.inspect_graph(sp_key, &project, floor_id, false, 4, true));
+        require(floor_insp.inspected_summary && floor_insp.inspected_summary->spatial &&
+                    floor_insp.inspected_summary->spatial->topology &&
+                    floor_insp.inspected_summary->spatial->topology->polygon_count == 2 &&
+                    floor_insp.inspected_summary->spatial->topology->open_boundary_edges == 4 &&
+                    floor_insp.inspected_summary->spatial->topology->non_manifold_edges == 0,
+                "Open floor quad topology diagnostics did not report 2 triangles and 4 boundary edges.");
+
+        const auto box_insp = take(doc.inspect_graph(sp_key, &project, box_id_sp, false, 4, true));
+        require(box_insp.inspected_summary && box_insp.inspected_summary->spatial &&
+                    box_insp.inspected_summary->spatial->topology &&
+                    box_insp.inspected_summary->spatial->topology->polygon_count == 6 &&
+                    box_insp.inspected_summary->spatial->topology->open_boundary_edges == 0 &&
+                    box_insp.inspected_summary->spatial->topology->non_manifold_edges == 0 &&
+                    box_insp.inspected_summary->spatial->topology->degenerate_primitives == 0,
+                "Closed Box topology diagnostics did not report a watertight manifold.");
+
+        const auto overlap_insp = take(doc.inspect_graph(sp_key, &project, {}, false, 4, true, floor_id, "floor"));
+        require(overlap_insp.display_summary.spatial.has_value(), "Display summary omitted spatial diagnostics.");
+        const auto& sp1 = *overlap_insp.display_summary.spatial;
+        require(sp1.spacing && sp1.spacing->domain == "instance" && sp1.spacing->element_count == 2 &&
+                    std::abs(sp1.spacing->minimum - 0.4) < 1e-4,
+                "Instance spacing diagnostics did not report 0.4m nearest-neighbor distance.");
+        require(sp1.instance_overlaps && sp1.instance_overlaps->tested_instances == 2 &&
+                    sp1.instance_overlaps->overlapping_pairs == 1 &&
+                    sp1.instance_overlaps->overlapping_instances == 2 &&
+                    std::abs(sp1.instance_overlaps->max_penetration_depth - 0.6) < 1e-3,
+                "Instance overlap diagnostics did not detect 0.6m AABB penetration.");
+        require(sp1.surface_clearance && sp1.surface_clearance->reference_node == "floor" &&
+                    sp1.surface_clearance->grounded_count == 2 && sp1.surface_clearance->floating_count == 0 &&
+                    sp1.surface_clearance->buried_count == 0 && sp1.surface_clearance->off_surface_count == 0 &&
+                    sp1.surface_clearance->has_gaps && std::abs(sp1.surface_clearance->gap_max) < 1e-4,
+                "Surface clearance diagnostics did not report 2 grounded instances on floor.");
+
+        // Move second instance off the 10x10 floor and lift both instances to bottom y = +0.7m (floating):
+        const auto pts_patch_2 =
+            parse_doc(R"({"start":{"x":0.0,"y":1.2,"z":0.0},"end":{"x":20.0,"y":1.2,"z":0.0},"count":2})");
+        take(doc.graph_set_properties(sp_key, "pts", pts_patch_2.root()));
+        const auto float_insp = take(doc.inspect_graph(sp_key, &project, {}, false, 4, true, floor_id, "floor"));
+        const auto& sp2 = *float_insp.display_summary.spatial;
+        require(sp2.instance_overlaps && sp2.instance_overlaps->overlapping_pairs == 0 &&
+                    sp2.instance_overlaps->overlapping_instances == 0,
+                "Separated instances still reported AABB overlap.");
+        require(sp2.surface_clearance && sp2.surface_clearance->grounded_count == 0 &&
+                    sp2.surface_clearance->floating_count == 1 && sp2.surface_clearance->off_surface_count == 1 &&
+                    sp2.surface_clearance->has_gaps && std::abs(sp2.surface_clearance->gap_min - 0.7) < 1e-3,
+                "Surface clearance diagnostics did not distinguish floating (+0.7m) and off-surface instances.");
+
+        const auto disabled_sp = take(doc.inspect_graph(sp_key, &project, {}, false, 4, false));
+        require(!disabled_sp.display_summary.spatial.has_value(),
+                "inspect_graph with include_spatial=false still populated spatial diagnostics.");
+    }
+
     changed(doc.close());
 }
 }

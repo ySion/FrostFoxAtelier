@@ -167,7 +167,7 @@ class GeometrySpreadsheet final {
 public:
     static constexpr std::size_t page_size = 512;
 
-    void reset() noexcept;
+    void reset(bool preserve_view = false) noexcept;
 
     bool apply(const ui::Action& action);
 
@@ -356,7 +356,7 @@ public:
         std::wstring status;
     };
 
-    void reset();
+    void reset(bool preserve_view = false);
 
     bool active_gesture() const noexcept { return gesture_ != Gesture::none; }
 

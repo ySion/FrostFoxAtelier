@@ -188,8 +188,22 @@ Result<bool> Application::confirm_discard(bool sources, bool interactive) {
     return true;
 }
 
-Result<void> Application::publish_document(std::unique_ptr<editor::Session> next, editor::ProjectCode* code) {
+Result<void> Application::publish_document(std::unique_ptr<editor::Session> next, editor::ProjectCode* code,
+                                           bool preserve_view) {
     const auto previous_document = document_->presentation().identity();
+    const editor::Camera saved_camera = camera_;
+    std::vector<std::uint64_t> saved_selected_entities;
+    std::optional<std::uint64_t> saved_active_entity;
+    std::optional<std::uint64_t> saved_inspected_object;
+    if (preserve_view) {
+        for (const auto entity : document_->selected_entities()) {
+            if (const auto lid = document_->document_identity(entity))
+                saved_selected_entities.push_back(*lid);
+        }
+        saved_active_entity = document_->document_identity(document_->selection().entity);
+        saved_inspected_object = document_->document_identity(document_->selection().object);
+    }
+
     restart_play_ = false;
     finish_camera_fly(false);
     camera_fly_release_.reset();
@@ -217,7 +231,7 @@ Result<void> Application::publish_document(std::unique_ptr<editor::Session> next
         ATELIER_TRY(popup_->reset_document());
     for (auto& popup : submenus_)
         ATELIER_TRY(popup->reset_document());
-    workspace_.reset_document();
+    workspace_.reset_document(preserve_view);
     project_code_ = nullptr;
     diagnostics();
     const auto closed = document_->close();
@@ -230,7 +244,34 @@ Result<void> Application::publish_document(std::unique_ptr<editor::Session> next
     scene_.reset();
     procedural_preview_.reset();
     workspace_.render_notice.clear();
-    camera_.reset();
+    if (preserve_view) {
+        camera_ = saved_camera;
+        workspace_.camera_view = camera_.view();
+        std::vector<ObjectId> restored_entities;
+        restored_entities.reserve(saved_selected_entities.size());
+        for (const auto lid : saved_selected_entities) {
+            if (const auto resolved = document_->local_object(lid))
+                restored_entities.push_back(*resolved);
+        }
+        ObjectId restored_active{};
+        if (saved_active_entity) {
+            if (const auto resolved = document_->local_object(*saved_active_entity))
+                restored_active = *resolved;
+        }
+        if (restored_entities.size() > 1) {
+            static_cast<void>(document_->select_entities(restored_entities, restored_active));
+        } else if (saved_inspected_object) {
+            if (const auto resolved = document_->local_object(*saved_inspected_object))
+                static_cast<void>(document_->select(*resolved));
+            else if (!restored_entities.empty())
+                static_cast<void>(document_->select_entities(restored_entities, restored_active));
+        } else if (!restored_entities.empty()) {
+            static_cast<void>(document_->select_entities(restored_entities, restored_active));
+        }
+        workspace_.reconcile_rebuild(*document_, project_ ? &*project_ : nullptr);
+    } else {
+        camera_.reset();
+    }
     sync_world_view();
     camera_cut_ = true;
     invalidate_surface();

@@ -453,9 +453,14 @@ const std::vector<Operation>& operations() {
          {"object", "path"}},
         {"material.save", "Save a shared material asset", true, {{"asset", str}}, {"asset"}},
         {"graph.inspect",
-         "Read an open procedural graph: nodes, connections, cook status/timings and bounded 5-layer geometry statistics",
+         "Read an open procedural graph: nodes, connections, cook status/timings, 5-layer geometry statistics and spatial health diagnostics",
          false,
-         {{"asset", str}, {"node", str}, {"timings", Argument::boolean}, {"samples", Argument::integer}},
+         {{"asset", str},
+          {"node", str},
+          {"timings", Argument::boolean},
+          {"samples", Argument::integer},
+          {"spatial", Argument::boolean},
+          {"reference_node", str}},
          {},
          editor::OperatorKind::query},
         {"graph.set_properties",
@@ -1741,6 +1746,75 @@ struct EditorControl::Impl {
             ATELIER_TRY(result.set(item, "mesh", mesh_key));
             ATELIER_TRY(result.set(item, "count", inst_count));
         }
+        if (summary.spatial) {
+            const auto sp = result.object_validated(root, "spatial");
+            if (summary.spatial->topology) {
+                const auto& t = *summary.spatial->topology;
+                const auto top = result.object_validated(sp, "topology");
+                ATELIER_TRY(result.set(top, "skipped", t.skipped));
+                ATELIER_TRY(result.set(top, "polygon_count", t.polygon_count));
+                ATELIER_TRY(result.set(top, "polyline_count", t.polyline_count));
+                ATELIER_TRY(result.set(top, "degenerate_primitives", t.degenerate_primitives));
+                ATELIER_TRY(result.set(top, "open_boundary_edges", t.open_boundary_edges));
+                ATELIER_TRY(result.set(top, "non_manifold_edges", t.non_manifold_edges));
+            } else {
+                ATELIER_TRY(result.set_null(sp, "topology"));
+            }
+            if (summary.spatial->spacing) {
+                const auto& s = *summary.spatial->spacing;
+                const auto spc = result.object_validated(sp, "spacing");
+                ATELIER_TRY(result.set(spc, "domain", s.domain));
+                ATELIER_TRY(result.set(spc, "element_count", s.element_count));
+                ATELIER_TRY(result.set(spc, "sample_count", s.sample_count));
+                ATELIER_TRY(result.set(spc, "coincident_count", s.coincident_count));
+                ATELIER_TRY(result.set(spc, "min", s.minimum));
+                ATELIER_TRY(result.set(spc, "p5", s.p5));
+                ATELIER_TRY(result.set(spc, "p50", s.p50));
+                ATELIER_TRY(result.set(spc, "p95", s.p95));
+            } else {
+                ATELIER_TRY(result.set_null(sp, "spacing"));
+            }
+            if (summary.spatial->instance_overlaps) {
+                const auto& ov = *summary.spatial->instance_overlaps;
+                const auto obj = result.object_validated(sp, "instance_overlaps");
+                ATELIER_TRY(result.set(obj, "tested_instances", ov.tested_instances));
+                ATELIER_TRY(result.set(obj, "overlapping_pairs", ov.overlapping_pairs));
+                ATELIER_TRY(result.set(obj, "pairs_capped", ov.pairs_capped));
+                ATELIER_TRY(result.set(obj, "overlapping_instances", ov.overlapping_instances));
+                ATELIER_TRY(result.set(obj, "overlapping_ratio", ov.overlapping_ratio));
+                ATELIER_TRY(result.set(obj, "max_penetration_depth", ov.max_penetration_depth));
+            } else {
+                ATELIER_TRY(result.set_null(sp, "instance_overlaps"));
+            }
+            if (summary.spatial->surface_clearance) {
+                const auto& cl = *summary.spatial->surface_clearance;
+                const auto obj = result.object_validated(sp, "surface_clearance");
+                ATELIER_TRY(result.set(obj, "reference_node", cl.reference_node));
+                ATELIER_TRY(result.set(obj, "domain", cl.domain));
+                ATELIER_TRY(result.set(obj, "tested_count", cl.tested_count));
+                ATELIER_TRY(result.set(obj, "grounded_count", cl.grounded_count));
+                ATELIER_TRY(result.set(obj, "floating_count", cl.floating_count));
+                ATELIER_TRY(result.set(obj, "buried_count", cl.buried_count));
+                ATELIER_TRY(result.set(obj, "off_surface_count", cl.off_surface_count));
+                if (cl.has_gaps) {
+                    ATELIER_TRY(result.set(obj, "gap_min", cl.gap_min));
+                    ATELIER_TRY(result.set(obj, "gap_p5", cl.gap_p5));
+                    ATELIER_TRY(result.set(obj, "gap_p50", cl.gap_p50));
+                    ATELIER_TRY(result.set(obj, "gap_p95", cl.gap_p95));
+                    ATELIER_TRY(result.set(obj, "gap_max", cl.gap_max));
+                } else {
+                    ATELIER_TRY(result.set_null(obj, "gap_min"));
+                    ATELIER_TRY(result.set_null(obj, "gap_p5"));
+                    ATELIER_TRY(result.set_null(obj, "gap_p50"));
+                    ATELIER_TRY(result.set_null(obj, "gap_p95"));
+                    ATELIER_TRY(result.set_null(obj, "gap_max"));
+                }
+            } else {
+                ATELIER_TRY(result.set_null(sp, "surface_clearance"));
+            }
+        } else {
+            ATELIER_TRY(result.set_null(root, "spatial"));
+        }
         return result.finish();
     }
 
@@ -2442,8 +2516,28 @@ struct EditorControl::Impl {
                 ATELIER_TRY_BIND(n, integer(**samples_arg, 0, 32));
                 samples = *n;
             }
-            const auto view =
-                take(doc.inspect_graph(key, app.project_ ? &*app.project_ : nullptr, inspected_id, timings, samples));
+            bool spatial = true;
+            ATELIER_TRY_BIND(spatial_arg, args.find("spatial"));
+            if (*spatial_arg) {
+                ATELIER_TRY_BIND(flag, (**spatial_arg).boolean());
+                spatial = *flag;
+            }
+            std::string ref_name;
+            ObjectId ref_id{};
+            ATELIER_TRY_BIND(ref_arg, args.find("reference_node"));
+            if (*ref_arg) {
+                ATELIER_TRY_BIND(value, text(**ref_arg, 256));
+                ref_name = std::move(*value);
+                if (!ref_name.empty()) {
+                    const auto* ref_node = doc.graph_node(key, ref_name);
+                    if (!ref_node || !ref_node->node.registered())
+                        throw Failure("invalid_request",
+                                      "Unknown or unresolved reference_node in procedural graph: " + ref_name);
+                    ref_id = ref_node->node.id();
+                }
+            }
+            const auto view = take(doc.inspect_graph(key, app.project_ ? &*app.project_ : nullptr, inspected_id,
+                                                     timings, samples, spatial, ref_id, ref_name));
             return graph_inspect_json(view, node_name, take(doc.procedural_node_types()));
         }
         if (op == "job.status" || op == "job.cancel") {

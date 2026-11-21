@@ -100,6 +100,100 @@ struct GraphAttributeStats {
     std::vector<std::string> sample_values;
 };
 
+struct GraphTopologyHealth {
+    bool skipped{};
+
+    std::size_t polygon_count{};
+
+    std::size_t polyline_count{};
+
+    std::size_t degenerate_primitives{};
+
+    std::size_t open_boundary_edges{};
+
+    std::size_t non_manifold_edges{};
+};
+
+struct GraphSpacingStats {
+    std::string domain;
+
+    std::size_t element_count{};
+
+    std::size_t sample_count{};
+
+    std::size_t coincident_count{};
+
+    double minimum{};
+
+    double p5{};
+
+    double p50{};
+
+    double p95{};
+};
+
+struct GraphInstanceOverlapStats {
+    std::size_t tested_instances{};
+
+    std::size_t overlapping_pairs{};
+
+    bool pairs_capped{};
+
+    std::size_t overlapping_instances{};
+
+    double overlapping_ratio{};
+
+    double max_penetration_depth{};
+};
+
+struct GraphSurfaceClearanceStats {
+    std::string reference_node;
+
+    std::string domain;
+
+    std::size_t tested_count{};
+
+    std::size_t grounded_count{};
+
+    std::size_t floating_count{};
+
+    std::size_t buried_count{};
+
+    std::size_t off_surface_count{};
+
+    bool has_gaps{};
+
+    double gap_min{};
+
+    double gap_p5{};
+
+    double gap_p50{};
+
+    double gap_p95{};
+
+    double gap_max{};
+};
+
+struct GraphSpatialDiagnostics {
+    std::optional<GraphTopologyHealth> topology;
+
+    std::optional<GraphSpacingStats> spacing;
+
+    std::optional<GraphInstanceOverlapStats> instance_overlaps;
+
+    std::optional<GraphSurfaceClearanceStats> surface_clearance;
+};
+
+struct OpenGraphSnapshot {
+    std::string key;
+
+    bool scratch{};
+
+    std::string text;
+
+    std::string saved_text;
+};
+
 struct GraphGeometrySummary {
     bool valid{};
 
@@ -114,6 +208,8 @@ struct GraphGeometrySummary {
     std::array<std::vector<GraphAttributeStats>, 5> attributes{};
 
     std::vector<std::pair<std::string, std::size_t>> instance_references;
+
+    std::optional<GraphSpatialDiagnostics> spatial;
 };
 
 struct GraphEvaluation {
@@ -191,7 +287,9 @@ struct GraphInspectView {
     std::optional<GraphGeometrySummary> inspected_summary;
 };
 
-[[nodiscard]] GraphGeometrySummary summarize_geometry(const procedural::Geometry* geometry,
-                                                      std::size_t max_samples = 4);
+[[nodiscard]] GraphGeometrySummary summarize_geometry(const procedural::Geometry* geometry, std::size_t max_samples = 4,
+                                                      bool include_spatial = false,
+                                                      const procedural::Geometry* reference_surface = nullptr,
+                                                      std::string_view reference_name = {});
 
 } // namespace atelier::editor

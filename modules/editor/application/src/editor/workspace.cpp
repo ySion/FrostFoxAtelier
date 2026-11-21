@@ -277,7 +277,7 @@ void Workspace::reset_layout() {
     menu_bar_collapsed = shelf_collapsed = false;
 }
 
-void Workspace::reset_document() {
+void Workspace::reset_document(bool preserve_view) {
     camera_flying = false;
     color_edit.reset();
     category_keys_.clear();
@@ -294,32 +294,72 @@ void Workspace::reset_document() {
     structure_tree_ = {};
     navigation_ = {ObjectId{}};
     navigation_cursor_ = 0;
-    query.clear();
-    tree_query.clear();
-    structure_query.clear();
-    parameter_search_visible = false;
-    inspecting_asset = false;
-    inspecting_network = false;
-    material_inspection.clear();
-    active_graph.clear();
-    network_pinned = false;
-    pinned_graph.clear();
-    selected_graph_node.clear();
-    selected_graph_nodes.clear();
+    if (!preserve_view) {
+        query.clear();
+        tree_query.clear();
+        structure_query.clear();
+        parameter_search_visible = false;
+        inspecting_asset = false;
+        inspecting_network = false;
+        material_inspection.clear();
+        active_graph.clear();
+        network_pinned = false;
+        pinned_graph.clear();
+        selected_graph_node.clear();
+        selected_graph_nodes.clear();
+        last_network_graph_.clear();
+    }
     network_context_node.clear();
-    last_network_graph_.clear();
     failed_auto_open_graph_.clear();
     node_catalog_runtime_ = nullptr;
     node_catalog_types_ = 0;
     node_catalog_.clear();
-    spreadsheet.reset();
-    network.reset();
+    spreadsheet.reset(preserve_view);
+    network.reset(preserve_view);
     menu.reset();
-    assets.reset(project_open);
+    if (!preserve_view)
+        assets.reset(project_open);
     component_choices_.clear();
     material_choices_.clear();
     network_path_choices_.clear();
     menu_selection_ = {};
+}
+
+void Workspace::reconcile_rebuild(Session& document, Project* project) {
+    if (inspecting_asset) {
+        if (material_inspection.empty() || !project || !document.open_material(*project, material_inspection)) {
+            inspecting_asset = false;
+            material_inspection.clear();
+        }
+    }
+    if (network_pinned) {
+        if (pinned_graph.empty() || (!document.has_graph(pinned_graph) && !(project && project->entry(pinned_graph)))) {
+            network_pinned = false;
+            pinned_graph.clear();
+        }
+    }
+    if (!active_graph.empty() && !document.has_graph(active_graph))
+        active_graph.clear();
+
+    const std::string target_graph = !active_graph.empty() ? active_graph : current_network_graph(document);
+    if (!target_graph.empty() && !document.has_graph(target_graph) && project && project->entry(target_graph))
+        static_cast<void>(document.open_graph(*project, target_graph));
+
+    if (!target_graph.empty() && document.has_graph(target_graph)) {
+        std::erase_if(selected_graph_nodes,
+                      [&](const std::string& name) { return document.graph_node(target_graph, name) == nullptr; });
+        if (!selected_graph_node.empty() && document.graph_node(target_graph, selected_graph_node) == nullptr)
+            selected_graph_node = selected_graph_nodes.empty() ? std::string{} : selected_graph_nodes.back();
+    } else {
+        selected_graph_nodes.clear();
+        selected_graph_node.clear();
+    }
+
+    if (!active_graph.empty())
+        inspecting_network = false;
+    else if (selected_graph_nodes.empty() && selected_graph_node.empty())
+        inspecting_network = false;
+    bump_view_revision();
 }
 
 std::optional<Workspace::NetworkPathChoice> Workspace::network_path_choice(ui::ControlKey key) const {

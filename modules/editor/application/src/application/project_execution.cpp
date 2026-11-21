@@ -106,6 +106,41 @@ void Application::publish_build(std::shared_ptr<const editor::ProjectBuild> repo
     // ProjectCode records the authoritative request/publication, not this UI projection.
 }
 
+bool Application::has_any_undo_history() const {
+    if (document_->undo_count() || document_->redo_count())
+        return true;
+    for (const auto& key : document_->open_graphs()) {
+        if (document_->graph_can_undo(key, false) || document_->graph_can_undo(key, true))
+            return true;
+    }
+    if (const auto mats = document_->material_assets()) {
+        for (const auto& asset : *mats) {
+            if (document_->material_can_undo(asset.key, false) || document_->material_can_undo(asset.key, true))
+                return true;
+        }
+    }
+    return false;
+}
+
+bool Application::can_auto_rebuild(bool require_clean_source_drafts) const {
+    if (!project_ || !workspace_.scene_available || play_.running() || has_any_undo_history())
+        return false;
+    if (document_->editing() || viewport_tool_.active() || workspace_.network.active_gesture() || camera_drag_ ||
+        camera_fly_ || workspace_.lighting.editing() || workspace_.menu.has_value())
+        return false;
+    const auto ui = ui_.interaction_state();
+    if (ui.pointer || ui.keyboard || ui.text_draft || ui.composition || ui.clipboard || ui.popup)
+        return false;
+    if (require_clean_source_drafts) {
+        for (const auto& file : workspace_.source_editor.files()) {
+            const auto relative = file->path.lexically_relative(project_->root());
+            if (file->dirty() && !relative.empty() && *relative.begin() == L"Source")
+                return false;
+        }
+    }
+    return true;
+}
+
 Result<void> Application::apply_document_request(const editor::DocumentRequest& request) {
     using Kind = editor::DocumentRequest::Kind;
     close_menu(false);
@@ -114,45 +149,67 @@ Result<void> Application::apply_document_request(const editor::DocumentRequest& 
     if (request.kind == Kind::new_project || request.kind == Kind::open_project)
         return open_project(request.path, request.kind == Kind::new_project, ProjectOpenPolicy::allow_repair, {},
                             request.interactive);
-    if (request.rebuild) {
-        if (play_.running())
-            return failure("Stop the project before rebuilding its types.");
-        if (request.interactive && (document_->undo_count() || document_->redo_count()) &&
-            MessageBoxW(
-                window(),
-                L"Rebuild the scene with the new types?\n\nCurrent scene values and source documents will be kept. Scene Undo/Redo history will be cleared.",
-                L"Rebuild project types", MB_OKCANCEL | MB_ICONINFORMATION) != IDOK) {
-            cancel_operator();
-            return {};
-        }
-        const auto edit = ui_.commit_edit();
-        if (!edit)
-            return std::unexpected(ui_error(edit.error()));
-        if (!effects(*edit))
-            return failure("Finish the current edit before rebuilding types.");
-    }
+    if (request.rebuild && play_.running())
+        return failure("Stop the project before rebuilding its types.");
+    const auto edit = ui_.commit_edit();
+    if (!edit)
+        return std::unexpected(ui_error(edit.error()));
+    if (!effects(*edit))
+        return failure("Finish the current edit before building.");
+    ATELIER_TRY(finish_color_edit(true));
     for (const auto& file : workspace_.source_editor.files()) {
         const auto relative = file->path.lexically_relative(project_->root());
         if (file->dirty() && !relative.empty() && *relative.begin() == L"Source")
             ATELIER_TRY(save_source(*file, request.interactive));
     }
-    return build_project(request.rebuild);
+    return build_project(request.rebuild, request.interactive);
 }
 
-Result<void> Application::build_project(bool rebuild) {
+Result<void> Application::build_project(bool rebuild, bool interactive) {
     if (!project_)
         return failure("Open a project folder first.");
     source_build_pending_ = false;
-    if (project_code_ && !rebuild) {
-        auto result = project_code_->poll(*project_, true);
-        publish_build(project_code_->report());
-        return result;
+    const bool has_placeholders =
+        !workspace_.scene_available || document_->placeholder_count() > 0 || document_->has_graph_placeholders();
+    if (project_code_ && !has_placeholders) {
+        auto polled = project_code_->poll(*project_, true);
+        if (polled) {
+            publish_build(project_code_->report());
+            return {};
+        }
+        if (polled.error().code != ErrorCode::rebuild_required) {
+            publish_build(project_code_->report());
+            return polled;
+        }
+        if (!rebuild && !can_auto_rebuild(false)) {
+            publish_build(project_code_->report());
+            workspace_.status = L"Type changes require Rebuild Types; Undo/Redo history will be cleared.";
+            return polled;
+        }
     }
     if (play_.running())
         return failure("Stop the project before rebuilding its types.");
+    if (rebuild && interactive && has_any_undo_history()) {
+        if (MessageBoxW(
+                window(),
+                L"Rebuild the scene and procedural graphs with the new types?\n\nCurrent scene values, open procedural graphs, camera and source documents will be kept. Undo/Redo history will be cleared.",
+                L"Rebuild project types", MB_OKCANCEL | MB_ICONINFORMATION) != IDOK) {
+            if (project_code_)
+                publish_build(project_code_->report());
+            cancel_operator();
+            return {};
+        }
+    }
+    const auto edit = ui_.commit_edit();
+    if (!edit)
+        return std::unexpected(ui_error(edit.error()));
+    if (!effects(*edit))
+        return failure("Finish the current edit before rebuilding types.");
+    ATELIER_TRY(finish_color_edit(true));
     for (const auto& key : document_->dirty_materials()) {
         ATELIER_TRY(document_->save_material(*project_, key));
     }
+    ATELIER_TRY_BIND(open_graphs, document_->snapshot_open_graphs());
     ATELIER_TRY_BIND(text, workspace_.scene_available ? document_->serialize() : Result<std::string>{pending_scene_});
     const bool dirty = workspace_.scene_available && document_->dirty();
     auto next =
@@ -167,19 +224,20 @@ Result<void> Application::build_project(bool rebuild) {
         return std::unexpected(*next.error);
     }
     // Without a code owner the document holds placeholders from a broken build.
-    // Replacing it drops scene history, which only an explicit Rebuild Types may do.
-    if (!rebuild && (document_->undo_count() || document_->redo_count())) {
+    // Replacing it drops history, which only an explicit Rebuild Types may do.
+    if (!rebuild && has_any_undo_history()) {
         publish_build(next.build);
         workspace_.status =
-            L"Project build ready. Rebuild Types to restore placeholder objects; scene Undo/Redo history will be cleared.";
+            L"Project build ready. Rebuild Types to restore placeholder objects; Undo/Redo history will be cleared.";
         notice("source.rebuild_required", workspace_.status);
         return {};
     }
-    // A rebuild retains authored values, but its Runtime identities are new.
-    // Preserve the unsaved marker independently of the retired history roots.
+    // A rebuild retains authored values and open procedural graph drafts, while Runtime identities are new.
     if (dirty)
         next.session->mark_modified();
-    ATELIER_TRY(publish_document(std::move(next.session), next.code));
+    ATELIER_TRY(next.session->restore_open_graphs(&*project_, *open_graphs));
+    static_cast<void>(next.session->sync_procedural_generators(&*project_));
+    ATELIER_TRY(publish_document(std::move(next.session), next.code, true));
     workspace_.scene_available = true;
     pending_scene_ = *text;
     publish_build(next.build);
@@ -355,8 +413,12 @@ void Application::poll_project() {
     if (!project_)
         return;
     if (project_code_) {
-        static_cast<void>(project_code_->poll(*project_, source_build_pending_));
+        const auto polled = project_code_->poll(*project_, source_build_pending_);
         source_build_pending_ = false;
+        if (!polled && polled.error().code == ErrorCode::rebuild_required && can_auto_rebuild(true)) {
+            static_cast<void>(build_project(true));
+            return;
+        }
         publish_build(project_code_->report());
     } else {
         const auto now = std::chrono::steady_clock::now();

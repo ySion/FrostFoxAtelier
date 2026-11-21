@@ -444,6 +444,12 @@ public:
 
     bool is_scratch_graph(std::string_view key) const noexcept;
 
+    bool has_graph_placeholders() const noexcept;
+
+    Result<std::vector<OpenGraphSnapshot>> snapshot_open_graphs() const;
+
+    Result<void> restore_open_graphs(Project* project, std::span<const OpenGraphSnapshot> snapshots);
+
     // Captures the open author graph for repro, checking effective session freezes against a cold replay.
     Result<std::optional<std::string>> procedural_graph_snapshot(std::string_view key) const;
 
@@ -563,7 +569,9 @@ public:
     Result<std::shared_ptr<const GraphInspectView>> graph_topology(std::string_view key);
 
     Result<GraphInspectView> inspect_graph(std::string_view key, Project* = nullptr, ObjectId inspected_node = {},
-                                           bool record_timings = false, std::size_t max_samples = 4);
+                                           bool record_timings = false, std::size_t max_samples = 4,
+                                           bool include_spatial = true, ObjectId reference_node = {},
+                                           std::string_view reference_name = {});
 
     bool owns_edit(std::uint64_t control_session) const noexcept;
 

@@ -63,8 +63,9 @@ struct ColumnExtractor {
 
 } // namespace
 
-void GeometrySpreadsheet::reset() noexcept {
-    page_offset_ = 0;
+void GeometrySpreadsheet::reset(bool preserve_view) noexcept {
+    if (!preserve_view)
+        page_offset_ = 0;
     total_rows_ = 0;
     selected_row_ = 0;
     cached_geometry_ = nullptr;
@@ -864,20 +865,22 @@ bool NetworkCanvas::is_canvas_control(ui::ControlKey key) noexcept {
            (key >= network_control::node_key_base && key < network_control::node_key_limit);
 }
 
-void NetworkCanvas::reset() {
+void NetworkCanvas::reset(bool preserve_view) {
     wire_routes_ = {};
     idle_projection_.reset();
     cancel_gesture();
     close_tab_search();
     close_popup();
-    active_graph_.clear();
-    pan_x_ = 160.f;
-    pan_y_ = 56.f;
-    zoom_index_ = default_zoom_index;
-    framed_ = false;
-    saved_views_.clear();
-    selected_note_.clear();
-    selected_box_.clear();
+    if (!preserve_view) {
+        active_graph_.clear();
+        pan_x_ = 160.f;
+        pan_y_ = 56.f;
+        zoom_index_ = default_zoom_index;
+        framed_ = false;
+        saved_views_.clear();
+        selected_note_.clear();
+        selected_box_.clear();
+    }
     hovered_port_.reset();
     hovered_node_.clear();
     air_node_.clear();

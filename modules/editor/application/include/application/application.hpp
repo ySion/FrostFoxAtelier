@@ -61,7 +61,7 @@ public:
 
     Result<void> save_scene(const std::filesystem::path& relative = {}) override;
 
-    Result<void> build_project(bool rebuild = false);
+    Result<void> build_project(bool rebuild = false, bool interactive = false);
 
     Result<void> run_project();
 
@@ -476,11 +476,16 @@ private:
 
     Result<void> save_source(editor::SourceEditor::File&, bool interactive = true);
 
+    bool has_any_undo_history() const;
+
+    bool can_auto_rebuild(bool require_clean_source_drafts = false) const;
+
     void poll_project();
 
     void publish_build(std::shared_ptr<const editor::ProjectBuild>);
 
-    Result<void> publish_document(std::unique_ptr<editor::Session>, editor::ProjectCode* = nullptr);
+    Result<void> publish_document(std::unique_ptr<editor::Session>, editor::ProjectCode* = nullptr,
+                                  bool preserve_view = false);
 
     Result<void> load_project(const std::filesystem::path&, bool create = false,
                               const std::filesystem::path& scene = {},

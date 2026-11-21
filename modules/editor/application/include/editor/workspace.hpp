@@ -632,7 +632,9 @@ struct Workspace {
     Result<void> describe(ui::ControlList&, Session&, ui_layout::Size, const ui::UiFrame*, Project*, const ui::Session*,
                           const ui::ControlBox* command_focus);
 
-    void reset_document();
+    void reset_document(bool preserve_view = false);
+
+    void reconcile_rebuild(Session& document, Project* project);
 
     const Binding* binding(ui::ControlKey) const noexcept;
 

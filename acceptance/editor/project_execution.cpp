@@ -162,6 +162,127 @@ void verify_network_control_reuse(const std::filesystem::path& root) {
 
     complete(doc.close());
 }
+
+void verify_stateful_rebuild(const std::filesystem::path& root) {
+    auto project = take(editor::Project::create(root));
+    const auto sop_file = root / "Source/HeightStep.source";
+    take(editor::write_file(sop_file, "class game.HeightStep : procedural.Node {\n"
+                                      "    float offset = 1.0f;\n"
+                                      "    void process([InOut(\"P\")] Array<vector3>& P) {\n"
+                                      "        const float dy = self.offset;\n"
+                                      "        const uint n = P.size();\n"
+                                      "        parallel_for (uint i : n) { P[i] = P[i] + vector3(0.0f, dy, 0.0f); }\n"
+                                      "    }\n"
+                                      "}\n"));
+    const auto disk_graph_json =
+        R"({"version":2,"settings":{"display":"step"},"nodes":{)"
+        R"("box":{"type":"procedural.Box","position":[40,20],"properties":{"size":{"x":1.0,"y":1.0,"z":1.0}}},)"
+        R"("step":{"type":"game.HeightStep","position":[40,120],"inputs":{"input":"box.output"},"properties":{"offset":1.5}})"
+        R"(}})";
+    const auto graph_key =
+        take(project.create_procedural_graph(L"Content/Graphs/RebuildCheck.procgraph", disk_graph_json));
+
+    auto loaded = editor::load_project_scene(project, take(assets::read_file(root / "Content/Scenes/Main.scene")),
+                                             editor::LoadPolicy::tolerant, false, editor::SessionRole::editor);
+    require(loaded.session != nullptr && loaded.code != nullptr && !loaded.error,
+            loaded.error ? loaded.error->message : "Initial HeightStep project failed to build.");
+    auto doc = std::move(loaded.session);
+
+    complete(doc->create_procedural_generator(graph_key, {2.f, 0.f, -1.f}, &project));
+    const ObjectId gen_entity_before = doc->selection().entity;
+
+    // Open the project graph and make an UNSAVED in-memory edit, plus create an in-memory scratch graph:
+    take(doc->open_graph(project, graph_key));
+    take(doc->graph_add_node(graph_key, "procedural.Null", "unsaved_out", {40.f, 220.f}));
+    take(doc->graph_connect(graph_key, "step", "output", "unsaved_out", "input"));
+    take(doc->graph_set_display(graph_key, "unsaved_out"));
+    require(doc->graph_dirty(graph_key), "Unsaved node addition did not mark procedural graph dirty.");
+
+    take(doc->create_scratch_graph("scratch/procedural"));
+    take(doc->graph_add_node("scratch/procedural", "procedural.Box", "temp_box", {20.f, 30.f}));
+    take(doc->graph_set_display("scratch/procedural", "temp_box"));
+
+    editor::Workspace workspace;
+    workspace.project_open = true;
+    workspace.active_graph = graph_key;
+    workspace.set_single_graph_selection("step");
+    workspace.network.step_zoom(2, 320.f, 180.f);
+    const float saved_zoom = workspace.network.zoom();
+    const auto saved_pan = workspace.network.pan();
+
+    // 1) Compatible method-body edit hot-reloads in place via poll() without losing graph Undo history:
+    take(editor::write_file(sop_file, "class game.HeightStep : procedural.Node {\n"
+                                      "    float offset = 1.0f;\n"
+                                      "    void process([InOut(\"P\")] Array<vector3>& P) {\n"
+                                      "        const float dy = self.offset * 2.0f;\n"
+                                      "        const uint n = P.size();\n"
+                                      "        parallel_for (uint i : n) { P[i] = P[i] + vector3(0.0f, dy, 0.0f); }\n"
+                                      "    }\n"
+                                      "}\n"));
+    take(loaded.code->poll(project, true));
+    require(doc->graph_can_undo(graph_key, false), "Compatible Source hot-reload cleared graph Undo history.");
+    const auto hot_eval = take(doc->evaluate_graph(graph_key, &project));
+    require(hot_eval.display_output && std::abs(hot_eval.display_output->positions()[0].y - 2.5f) < 1e-4f,
+            "Compatible Source hot-reload did not update cooked HeightStep output (-0.5 + 1.5 * 2 = 2.5).");
+
+    // 2) Adding a new public field triggers rebuild_required on poll(), then stateful rebuild preserves everything:
+    take(editor::write_file(sop_file, "class game.HeightStep : procedural.Node {\n"
+                                      "    float offset = 1.0f;\n"
+                                      "    float gain = 4.0f;\n"
+                                      "    void process([InOut(\"P\")] Array<vector3>& P) {\n"
+                                      "        const float dy = self.offset * self.gain;\n"
+                                      "        const uint n = P.size();\n"
+                                      "        parallel_for (uint i : n) { P[i] = P[i] + vector3(0.0f, dy, 0.0f); }\n"
+                                      "    }\n"
+                                      "}\n"));
+    const auto schema_poll = loaded.code->poll(project, true);
+    require(!schema_poll && schema_poll.error().code == ErrorCode::rebuild_required,
+            "Adding a field to a published procedural.Node did not report rebuild_required.");
+
+    const auto open_snapshots = take(doc->snapshot_open_graphs());
+    const auto scene_text = take(doc->serialize());
+    const auto gen_lid = doc->document_identity(gen_entity_before);
+    require(gen_lid.has_value(), "Serialized ProceduralGeneratorEntity lacked a persistent document LocalId.");
+    const bool scene_dirty = doc->dirty();
+
+    auto rebuilt = editor::load_project_scene(project, scene_text, editor::LoadPolicy::tolerant, false,
+                                              editor::SessionRole::editor);
+    require(rebuilt.session != nullptr && rebuilt.code != nullptr && !rebuilt.error,
+            rebuilt.error ? rebuilt.error->message : "Stateful rebuild failed to load scene.");
+    if (scene_dirty)
+        rebuilt.session->mark_modified();
+    take(rebuilt.session->restore_open_graphs(&project, open_snapshots));
+    take(rebuilt.session->sync_procedural_generators(&project));
+
+    workspace.reset_document(true);
+    complete(doc->close());
+    doc = std::move(rebuilt.session);
+    const ObjectId gen_entity_after = take(doc->local_object(*gen_lid));
+    take(doc->select(gen_entity_after));
+    workspace.reconcile_rebuild(*doc, &project);
+
+    // Verify unsaved .procgraph draft, dirty flag, non-overwritten disk file, scratch graph, new field & Workspace state:
+    const auto disk_after = take(project.assets().procedural_graph(graph_key));
+    require(disk_after.text.find("unsaved_out") == std::string::npos,
+            "Stateful rebuild silently overwrote the unsaved .procgraph file on disk.");
+    require(doc->graph_dirty(graph_key) && doc->graph_node(graph_key, "unsaved_out") != nullptr,
+            "Stateful rebuild lost unsaved .procgraph edits or its dirty marker.");
+    require(doc->has_graph("scratch/procedural") && doc->graph_node("scratch/procedural", "temp_box") != nullptr,
+            "Stateful rebuild lost the in-memory scratch procedural graph.");
+    require(workspace.active_graph == graph_key && workspace.selected_graph_node == "step" &&
+                std::abs(workspace.network.zoom() - saved_zoom) < 1e-5f && workspace.network.pan() == saved_pan,
+            "Stateful rebuild reset active SOP graph, selected node or NetworkCanvas pan/zoom.");
+
+    const auto rebuilt_eval = take(doc->evaluate_graph(graph_key, &project));
+    require(rebuilt_eval.display_output && std::abs(rebuilt_eval.display_output->positions()[0].y - 5.5f) < 1e-4f,
+            "Rebuilt HeightStep did not preserve offset=1.5 while applying new default gain=4.0 (-0.5 + 6.0 = 5.5).");
+    const auto items = take(doc->presentation().render_items());
+    require(!items.empty() && items.front().entity == gen_entity_after && items.front().geometry &&
+                std::abs(items.front().geometry->bounds().maximum.y - 6.5f) < 1e-4f,
+            "World ProceduralGeneratorEntity did not resync its rendered mesh against the restored procedural graph.");
+
+    complete(doc->close());
+}
 }
 
 int main() {
@@ -171,6 +292,8 @@ int main() {
                       (std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
     run(base / "source-run");
     verify_network_control_reuse(base / "network-reuse");
-    std::puts("Project integration: PASS (Source tick, stuck child shutdown, Network ControlList reuse)");
+    verify_stateful_rebuild(base / "stateful-rebuild");
+    std::puts(
+        "Project integration: PASS (Source tick, stuck child shutdown, Network ControlList reuse, stateful rebuild)");
     return 0;
 }

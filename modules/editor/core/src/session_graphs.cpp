@@ -4,6 +4,7 @@
 #include "editor/project.hpp"
 #include "editor/project_code.hpp"
 #include "editor/properties.hpp"
+#include "procedural/bvh.hpp"
 #include "procedural/evaluator.hpp"
 #include "procedural/graph.hpp"
 #include "procedural/instances.hpp"
@@ -16,6 +17,7 @@
 #include <cstdio>
 #include <format>
 #include <limits>
+#include <numeric>
 #include <set>
 #include <unordered_set>
 
@@ -717,7 +719,492 @@ void Session::bind_project_code(const ProjectCode* code) noexcept {
     }
 }
 
-GraphGeometrySummary summarize_geometry(const procedural::Geometry* geometry, std::size_t max_samples) {
+namespace {
+
+double percentile_sorted(std::span<const double> sorted, double q) noexcept {
+    if (sorted.empty())
+        return 0.0;
+    const double pos = std::clamp(q, 0.0, 1.0) * static_cast<double>(sorted.size() - 1);
+    const auto lo = static_cast<std::size_t>(std::floor(pos));
+    const std::size_t hi = std::min(sorted.size() - 1, lo + 1);
+    const double frac = pos - static_cast<double>(lo);
+    return sorted[lo] * (1.0 - frac) + sorted[hi] * frac;
+}
+
+bool finite_v3(math::Vector3 p) noexcept {
+    return std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z);
+}
+
+math::Vector3 transform_affine_point(math::Vector3 p, const math::Matrix4& m) noexcept {
+    return {p.x * m[0] + p.y * m[4] + p.z * m[8] + m[12], p.x * m[1] + p.y * m[5] + p.z * m[9] + m[13],
+            p.x * m[2] + p.y * m[6] + p.z * m[10] + m[14]};
+}
+
+std::optional<GraphTopologyHealth> compute_topology_health(const procedural::Geometry& geometry) {
+    const std::size_t prim_count = geometry.count(procedural::Layer::primitive);
+    if (prim_count == 0)
+        return std::nullopt;
+    GraphTopologyHealth health;
+    const std::size_t vert_count = geometry.count(procedural::Layer::vertex);
+    constexpr std::size_t max_diagnostic_vertices = 500'000;
+    if (vert_count > max_diagnostic_vertices) {
+        health.skipped = true;
+        for (std::size_t p = 0; p < prim_count; ++p) {
+            if (geometry.primitive(static_cast<std::uint32_t>(p)).kind == procedural::PrimitiveKind::polyline)
+                ++health.polyline_count;
+            else
+                ++health.polygon_count;
+        }
+        return health;
+    }
+
+    struct DirectedEdge {
+        std::uint32_t lo{};
+
+        std::uint32_t hi{};
+
+        std::int8_t dir{};
+    };
+
+    const auto& positions = geometry.positions();
+    const auto& vpts = geometry.vertex_points();
+    std::vector<DirectedEdge> edges;
+    edges.reserve(vert_count);
+    std::vector<std::uint32_t> ring;
+
+    for (std::size_t p = 0; p < prim_count; ++p) {
+        const auto prim = geometry.primitive(static_cast<std::uint32_t>(p));
+        if (prim.kind == procedural::PrimitiveKind::polyline) {
+            ++health.polyline_count;
+            bool degenerate = prim.count < 2 || static_cast<std::size_t>(prim.first) + prim.count > vpts.size();
+            if (!degenerate) {
+                for (std::uint32_t j = 0; j < prim.count; ++j) {
+                    const auto idx = vpts[prim.first + j];
+                    if (idx >= positions.size() || !finite_v3(positions[idx])) {
+                        degenerate = true;
+                        break;
+                    }
+                    if (j > 0) {
+                        const auto prev = vpts[prim.first + j - 1];
+                        const math::Vector3d d = math::Vector3d(positions[idx]) - math::Vector3d(positions[prev]);
+                        if (!(math::dot(d, d) > 1e-16)) {
+                            degenerate = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (degenerate)
+                ++health.degenerate_primitives;
+            continue;
+        }
+
+        ++health.polygon_count;
+        if (prim.count < 3 || static_cast<std::size_t>(prim.first) + prim.count > vpts.size()) {
+            ++health.degenerate_primitives;
+            continue;
+        }
+
+        bool valid_pts = true;
+        ring.assign(vpts.begin() + prim.first, vpts.begin() + prim.first + prim.count);
+        for (const auto idx : ring) {
+            if (idx >= positions.size() || !finite_v3(positions[idx])) {
+                valid_pts = false;
+                break;
+            }
+        }
+        std::ranges::sort(ring);
+        const bool has_dup = std::ranges::adjacent_find(ring) != ring.end();
+        bool zero_area = true;
+        if (valid_pts) {
+            math::Vector3d area_sum{};
+            const math::Vector3d p0(positions[vpts[prim.first]]);
+            for (std::uint32_t j = 1; j + 1 < prim.count; ++j) {
+                const math::Vector3d a = math::Vector3d(positions[vpts[prim.first + j]]) - p0;
+                const math::Vector3d b = math::Vector3d(positions[vpts[prim.first + j + 1]]) - p0;
+                area_sum = area_sum + math::cross(a, b);
+            }
+            zero_area = !(math::length(area_sum) > 1e-12);
+        }
+        if (!valid_pts || has_dup || zero_area)
+            ++health.degenerate_primitives;
+
+        for (std::uint32_t j = 0; j < prim.count; ++j) {
+            const std::uint32_t u = vpts[prim.first + j];
+            const std::uint32_t v = vpts[prim.first + ((j + 1 == prim.count) ? 0u : j + 1u)];
+            if (u == v)
+                continue;
+            if (u < v)
+                edges.push_back({u, v, std::int8_t{1}});
+            else
+                edges.push_back({v, u, std::int8_t{-1}});
+        }
+    }
+
+    std::ranges::sort(
+        edges, [](const DirectedEdge& a, const DirectedEdge& b) { return a.lo != b.lo ? a.lo < b.lo : a.hi < b.hi; });
+    for (std::size_t i = 0; i < edges.size();) {
+        std::size_t end = i + 1;
+        while (end < edges.size() && edges[end].lo == edges[i].lo && edges[end].hi == edges[i].hi)
+            ++end;
+        const std::size_t count = end - i;
+        if (count == 1) {
+            ++health.open_boundary_edges;
+        } else if (count > 2 || (edges[i].dir + edges[i + 1].dir != 0)) {
+            ++health.non_manifold_edges;
+        }
+        i = end;
+    }
+    return health;
+}
+
+std::optional<GraphSpacingStats> compute_spacing_stats(const procedural::Geometry& geometry) {
+    std::vector<math::Vector3> pts;
+    std::string domain;
+    if (geometry.count(procedural::Layer::instance) >= 2) {
+        domain = "instance";
+        const auto& transforms = geometry.instance_transforms();
+        pts.reserve(transforms.size());
+        for (const auto& m : transforms) {
+            const math::Vector3 p{m[12], m[13], m[14]};
+            if (finite_v3(p))
+                pts.push_back(p);
+        }
+    } else if (geometry.count(procedural::Layer::primitive) == 0 && geometry.count(procedural::Layer::point) >= 2) {
+        domain = "point";
+        const auto& positions = geometry.positions();
+        pts.reserve(positions.size());
+        for (const auto& p : positions) {
+            if (finite_v3(p))
+                pts.push_back(p);
+        }
+    } else {
+        return std::nullopt;
+    }
+    if (pts.size() < 2)
+        return std::nullopt;
+
+    const std::size_t n = pts.size();
+    constexpr std::size_t max_queries = 4096;
+    const std::size_t q_count = std::min(n, max_queries);
+    std::vector<double> nearest(q_count, std::numeric_limits<double>::infinity());
+
+    math::Vector3 low = pts.front();
+    math::Vector3 high = pts.front();
+    for (const auto& p : pts) {
+        low.x = std::min(low.x, p.x);
+        low.y = std::min(low.y, p.y);
+        low.z = std::min(low.z, p.z);
+        high.x = std::max(high.x, p.x);
+        high.y = std::max(high.y, p.y);
+        high.z = std::max(high.z, p.z);
+    }
+    const math::Vector3d span = math::Vector3d(high) - math::Vector3d(low);
+    const double max_span = std::max({span.x, span.y, span.z});
+
+    if (n <= 512 || !(max_span > 1e-6)) {
+        for (std::size_t qi = 0; qi < q_count; ++qi) {
+            const std::size_t i = q_count == n ? qi : (qi * n) / q_count;
+            const math::Vector3d pi(pts[i]);
+            double best_d2 = std::numeric_limits<double>::infinity();
+            if (!(max_span > 1e-6)) {
+                best_d2 = 0.0;
+            } else {
+                for (std::size_t j = 0; j < n; ++j) {
+                    if (j == i)
+                        continue;
+                    const math::Vector3d d = math::Vector3d(pts[j]) - pi;
+                    best_d2 = std::min(best_d2, math::dot(d, d));
+                }
+            }
+            nearest[qi] = std::sqrt(best_d2);
+        }
+    } else {
+        const int base_dim =
+            std::clamp(static_cast<int>(std::cbrt(static_cast<double>(std::min<std::size_t>(n, 16384)))), 4, 24);
+        const int gx = span.x > 1e-6 ? std::max(1, static_cast<int>(std::round(base_dim * (span.x / max_span)))) : 1;
+        const int gy = span.y > 1e-6 ? std::max(1, static_cast<int>(std::round(base_dim * (span.y / max_span)))) : 1;
+        const int gz = span.z > 1e-6 ? std::max(1, static_cast<int>(std::round(base_dim * (span.z / max_span)))) : 1;
+        const double inv_x = span.x > 1e-6 ? static_cast<double>(gx) / span.x : 0.0;
+        const double inv_y = span.y > 1e-6 ? static_cast<double>(gy) / span.y : 0.0;
+        const double inv_z = span.z > 1e-6 ? static_cast<double>(gz) / span.z : 0.0;
+        const double step_x = span.x > 1e-6 ? span.x / static_cast<double>(gx) : 0.0;
+        const double step_y = span.y > 1e-6 ? span.y / static_cast<double>(gy) : 0.0;
+        const double step_z = span.z > 1e-6 ? span.z / static_cast<double>(gz) : 0.0;
+
+        const auto cell_of = [&](math::Vector3 p) -> std::array<int, 3> {
+            const int cx =
+                inv_x > 0.0 ? std::clamp(static_cast<int>((static_cast<double>(p.x) - low.x) * inv_x), 0, gx - 1) : 0;
+            const int cy =
+                inv_y > 0.0 ? std::clamp(static_cast<int>((static_cast<double>(p.y) - low.y) * inv_y), 0, gy - 1) : 0;
+            const int cz =
+                inv_z > 0.0 ? std::clamp(static_cast<int>((static_cast<double>(p.z) - low.z) * inv_z), 0, gz - 1) : 0;
+            return {cx, cy, cz};
+        };
+        const auto flat_idx = [&](int cx, int cy, int cz) noexcept {
+            return static_cast<std::size_t>((cx * gy + cy) * gz + cz);
+        };
+
+        std::vector<std::int32_t> head(static_cast<std::size_t>(gx * gy * gz), -1);
+        std::vector<std::int32_t> next(n, -1);
+        for (std::size_t idx = 0; idx < n; ++idx) {
+            const auto [cx, cy, cz] = cell_of(pts[idx]);
+            const auto cell = flat_idx(cx, cy, cz);
+            next[idx] = head[cell];
+            head[cell] = static_cast<std::int32_t>(idx);
+        }
+
+        const auto axis_dist_sq = [](double coord, double origin, double step, int c, int dim) noexcept {
+            if (dim <= 1 || step <= 0.0)
+                return 0.0;
+            const double lo_b = origin + static_cast<double>(c) * step;
+            const double hi_b = c + 1 == dim ? origin + static_cast<double>(dim) * step : lo_b + step;
+            if (coord < lo_b) {
+                const double d = lo_b - coord;
+                return d * d;
+            }
+            if (coord > hi_b) {
+                const double d = coord - hi_b;
+                return d * d;
+            }
+            return 0.0;
+        };
+
+        const int max_radius = std::max({gx, gy, gz});
+        for (std::size_t qi = 0; qi < q_count; ++qi) {
+            const std::size_t i = q_count == n ? qi : (qi * n) / q_count;
+            const math::Vector3d pi(pts[i]);
+            const auto [qx, qy, qz] = cell_of(pts[i]);
+            double best_d2 = std::numeric_limits<double>::infinity();
+
+            for (int r = 0; r < max_radius; ++r) {
+                if (r > 1 && best_d2 < std::numeric_limits<double>::infinity()) {
+                    double shell_lb_sq = std::numeric_limits<double>::infinity();
+                    if (qx - r >= 0)
+                        shell_lb_sq = std::min(shell_lb_sq, axis_dist_sq(pi.x, low.x, step_x, qx - r, gx));
+                    if (qx + r < gx)
+                        shell_lb_sq = std::min(shell_lb_sq, axis_dist_sq(pi.x, low.x, step_x, qx + r, gx));
+                    if (qy - r >= 0)
+                        shell_lb_sq = std::min(shell_lb_sq, axis_dist_sq(pi.y, low.y, step_y, qy - r, gy));
+                    if (qy + r < gy)
+                        shell_lb_sq = std::min(shell_lb_sq, axis_dist_sq(pi.y, low.y, step_y, qy + r, gy));
+                    if (qz - r >= 0)
+                        shell_lb_sq = std::min(shell_lb_sq, axis_dist_sq(pi.z, low.z, step_z, qz - r, gz));
+                    if (qz + r < gz)
+                        shell_lb_sq = std::min(shell_lb_sq, axis_dist_sq(pi.z, low.z, step_z, qz + r, gz));
+                    if (shell_lb_sq >= best_d2)
+                        break;
+                }
+                const int x0 = std::max(0, qx - r);
+                const int x1 = std::min(gx - 1, qx + r);
+                const int y0 = std::max(0, qy - r);
+                const int y1 = std::min(gy - 1, qy + r);
+                const int z0 = std::max(0, qz - r);
+                const int z1 = std::min(gz - 1, qz + r);
+                for (int cx = x0; cx <= x1; ++cx) {
+                    const double dx2 = axis_dist_sq(pi.x, low.x, step_x, cx, gx);
+                    if (dx2 >= best_d2)
+                        continue;
+                    for (int cy = y0; cy <= y1; ++cy) {
+                        const double dxy2 = dx2 + axis_dist_sq(pi.y, low.y, step_y, cy, gy);
+                        if (dxy2 >= best_d2)
+                            continue;
+                        for (int cz = z0; cz <= z1; ++cz) {
+                            if (r > 0 && std::max({std::abs(cx - qx), std::abs(cy - qy), std::abs(cz - qz)}) != r)
+                                continue;
+                            if (dxy2 + axis_dist_sq(pi.z, low.z, step_z, cz, gz) >= best_d2)
+                                continue;
+                            for (std::int32_t cur = head[flat_idx(cx, cy, cz)]; cur != -1;
+                                 cur = next[static_cast<std::size_t>(cur)]) {
+                                const auto j = static_cast<std::size_t>(cur);
+                                if (j == i)
+                                    continue;
+                                const math::Vector3d d = math::Vector3d(pts[j]) - pi;
+                                best_d2 = std::min(best_d2, math::dot(d, d));
+                            }
+                        }
+                    }
+                }
+            }
+            nearest[qi] = std::sqrt(best_d2);
+        }
+    }
+
+    GraphSpacingStats stats;
+    stats.domain = std::move(domain);
+    stats.element_count = n;
+    stats.sample_count = q_count;
+    for (const double d : nearest) {
+        if (d <= 1e-4)
+            ++stats.coincident_count;
+    }
+    std::ranges::sort(nearest);
+    stats.minimum = nearest.front();
+    stats.p5 = percentile_sorted(nearest, 0.05);
+    stats.p50 = percentile_sorted(nearest, 0.50);
+    stats.p95 = percentile_sorted(nearest, 0.95);
+    return stats;
+}
+
+std::optional<GraphInstanceOverlapStats> compute_instance_overlaps(std::span<const math::Bounds> boxes) {
+    if (boxes.size() < 2)
+        return std::nullopt;
+    constexpr std::size_t max_tested = 65'536;
+    const std::size_t m = std::min(boxes.size(), max_tested);
+
+    math::Vector3 c_low{std::numeric_limits<float>::infinity(), std::numeric_limits<float>::infinity(),
+                        std::numeric_limits<float>::infinity()};
+    math::Vector3 c_high{-std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::infinity(),
+                         -std::numeric_limits<float>::infinity()};
+    for (std::size_t i = 0; i < m; ++i) {
+        const math::Vector3 c = (boxes[i].minimum + boxes[i].maximum) * 0.5f;
+        c_low.x = std::min(c_low.x, c.x);
+        c_low.y = std::min(c_low.y, c.y);
+        c_low.z = std::min(c_low.z, c.z);
+        c_high.x = std::max(c_high.x, c.x);
+        c_high.y = std::max(c_high.y, c.y);
+        c_high.z = std::max(c_high.z, c.z);
+    }
+    const math::Vector3 span = c_high - c_low;
+    const std::size_t axis = (span.x >= span.y && span.x >= span.z) ? 0u : (span.y >= span.z ? 1u : 2u);
+
+    std::vector<std::uint32_t> order(m);
+    std::iota(order.begin(), order.end(), 0u);
+    std::ranges::sort(
+        order, [&](std::uint32_t a, std::uint32_t b) { return boxes[a].minimum[axis] < boxes[b].minimum[axis]; });
+
+    constexpr float overlap_eps = 1e-5f;
+    constexpr std::size_t max_pairs = 100'000;
+    GraphInstanceOverlapStats stats;
+    stats.tested_instances = m;
+    std::vector<std::uint8_t> overlapped(m, 0);
+
+    for (std::size_t i = 0; i < m && !stats.pairs_capped; ++i) {
+        const auto& bi = boxes[order[i]];
+        const float limit = bi.maximum[axis] - overlap_eps;
+        for (std::size_t j = i + 1; j < m; ++j) {
+            const auto& bj = boxes[order[j]];
+            if (bj.minimum[axis] >= limit)
+                break;
+            const float dx = std::min(bi.maximum.x, bj.maximum.x) - std::max(bi.minimum.x, bj.minimum.x);
+            if (dx <= overlap_eps)
+                continue;
+            const float dy = std::min(bi.maximum.y, bj.maximum.y) - std::max(bi.minimum.y, bj.minimum.y);
+            if (dy <= overlap_eps)
+                continue;
+            const float dz = std::min(bi.maximum.z, bj.maximum.z) - std::max(bi.minimum.z, bj.minimum.z);
+            if (dz <= overlap_eps)
+                continue;
+            overlapped[order[i]] = 1;
+            overlapped[order[j]] = 1;
+            ++stats.overlapping_pairs;
+            stats.max_penetration_depth =
+                std::max(stats.max_penetration_depth, static_cast<double>(std::min({dx, dy, dz})));
+            if (stats.overlapping_pairs >= max_pairs) {
+                stats.pairs_capped = true;
+                break;
+            }
+        }
+    }
+
+    for (const auto flag : overlapped)
+        stats.overlapping_instances += flag;
+    stats.overlapping_ratio = static_cast<double>(stats.overlapping_instances) / static_cast<double>(m);
+    return stats;
+}
+
+std::optional<GraphSurfaceClearanceStats> compute_surface_clearance(const procedural::Geometry& geometry,
+                                                                    const procedural::Bvh& ref_bvh,
+                                                                    std::string_view reference_name) {
+    std::vector<math::Vector3> anchors;
+    std::string domain;
+    const auto refs = geometry.references();
+    const auto& inst_indices = geometry.instance_references();
+    const auto& inst_transforms = geometry.instance_transforms();
+    if (!inst_indices.empty()) {
+        domain = "instance";
+        anchors.reserve(inst_indices.size());
+        for (std::size_t i = 0; i < inst_indices.size(); ++i) {
+            const auto ref_idx = inst_indices[i];
+            const auto& world = inst_transforms[i];
+            math::Vector3 anchor{world[12], world[13], world[14]};
+            if (ref_idx < refs.size() && refs[ref_idx].mesh && !refs[ref_idx].mesh->vertices().empty()) {
+                const auto& mb = refs[ref_idx].mesh->bounds();
+                const math::Vector3 local_base{(mb.minimum.x + mb.maximum.x) * 0.5f, mb.minimum.y,
+                                               (mb.minimum.z + mb.maximum.z) * 0.5f};
+                anchor = transform_affine_point(local_base, world);
+            }
+            if (finite_v3(anchor))
+                anchors.push_back(anchor);
+        }
+    } else if (geometry.count(procedural::Layer::point) > 0) {
+        domain = "point";
+        const auto& positions = geometry.positions();
+        anchors.reserve(positions.size());
+        for (const auto& p : positions) {
+            if (finite_v3(p))
+                anchors.push_back(p);
+        }
+    } else {
+        return std::nullopt;
+    }
+    if (anchors.empty())
+        return std::nullopt;
+
+    constexpr std::size_t max_tested = 8192;
+    const std::size_t total = anchors.size();
+    const std::size_t q_count = std::min(total, max_tested);
+    constexpr float max_ray_dist = 1e6f;
+    constexpr double ground_tol = 0.05;
+
+    GraphSurfaceClearanceStats stats;
+    stats.reference_node = std::string(reference_name);
+    stats.domain = std::move(domain);
+    stats.tested_count = q_count;
+    std::vector<double> gaps;
+    gaps.reserve(q_count);
+
+    for (std::size_t qi = 0; qi < q_count; ++qi) {
+        const math::Vector3 q = anchors[q_count == total ? qi : (qi * total) / q_count];
+        const auto down = ref_bvh.ray(q, {0.f, -1.f, 0.f}, max_ray_dist);
+        const auto up = ref_bvh.ray(q, {0.f, 1.f, 0.f}, max_ray_dist);
+        double gap{};
+        if (down && (!up || down->distance <= up->distance)) {
+            gap = static_cast<double>(down->distance);
+        } else if (up) {
+            gap = -static_cast<double>(up->distance);
+        } else if (const auto near = ref_bvh.closest(q, 1e-3f);
+                   near && std::hypot(q.x - near->position.x, q.z - near->position.z) <= 1e-4f) {
+            gap = static_cast<double>(q.y) - static_cast<double>(near->position.y);
+        } else {
+            ++stats.off_surface_count;
+            continue;
+        }
+
+        if (std::abs(gap) <= ground_tol)
+            ++stats.grounded_count;
+        else if (gap > ground_tol)
+            ++stats.floating_count;
+        else
+            ++stats.buried_count;
+        gaps.push_back(gap);
+    }
+
+    if (!gaps.empty()) {
+        std::ranges::sort(gaps);
+        stats.has_gaps = true;
+        stats.gap_min = gaps.front();
+        stats.gap_p5 = percentile_sorted(gaps, 0.05);
+        stats.gap_p50 = percentile_sorted(gaps, 0.50);
+        stats.gap_p95 = percentile_sorted(gaps, 0.95);
+        stats.gap_max = gaps.back();
+    }
+    return stats;
+}
+
+GraphGeometrySummary summarize_geometry_impl(const procedural::Geometry* geometry, std::size_t max_samples,
+                                             bool include_spatial, const procedural::Bvh* reference_bvh,
+                                             std::string_view reference_name) {
     GraphGeometrySummary summary;
     if (!geometry)
         return summary;
@@ -733,7 +1220,7 @@ GraphGeometrySummary summarize_geometry(const procedural::Geometry* geometry, st
                        -std::numeric_limits<float>::infinity()};
     bool any_bounds = false;
     const auto include_point = [&](math::Vector3 p) {
-        if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z))
+        if (!finite_v3(p))
             return;
         low.x = std::min(low.x, p.x);
         low.y = std::min(low.y, p.y);
@@ -750,6 +1237,9 @@ GraphGeometrySummary summarize_geometry(const procedural::Geometry* geometry, st
     const auto& inst_indices = geometry->instance_references();
     const auto& inst_transforms = geometry->instance_transforms();
     std::vector<std::size_t> ref_counts(refs.size(), 0);
+    std::vector<math::Bounds> instance_boxes;
+    if (include_spatial && inst_indices.size() >= 2)
+        instance_boxes.reserve(std::min<std::size_t>(inst_indices.size(), 65'536));
     for (std::size_t i = 0; i < inst_indices.size(); ++i) {
         const auto ref_idx = inst_indices[i];
         if (ref_idx >= refs.size())
@@ -761,6 +1251,9 @@ GraphGeometrySummary summarize_geometry(const procedural::Geometry* geometry, st
             const auto bounds = math::transform_bounds(mesh->bounds(), world);
             include_point(bounds.minimum);
             include_point(bounds.maximum);
+            if (include_spatial && instance_boxes.size() < 65'536 && finite_v3(bounds.minimum) &&
+                finite_v3(bounds.maximum))
+                instance_boxes.push_back(bounds);
         } else {
             include_point({world[12], world[13], world[14]});
         }
@@ -833,7 +1326,30 @@ GraphGeometrySummary summarize_geometry(const procedural::Geometry* geometry, st
         if (layer_idx < summary.attributes.size())
             summary.attributes[layer_idx].push_back(std::move(stats));
     }
+
+    if (include_spatial) {
+        GraphSpatialDiagnostics diag;
+        diag.topology = compute_topology_health(*geometry);
+        diag.spacing = compute_spacing_stats(*geometry);
+        diag.instance_overlaps = compute_instance_overlaps(instance_boxes);
+        if (reference_bvh)
+            diag.surface_clearance = compute_surface_clearance(*geometry, *reference_bvh, reference_name);
+        summary.spatial = std::move(diag);
+    }
     return summary;
+}
+
+} // namespace
+
+GraphGeometrySummary summarize_geometry(const procedural::Geometry* geometry, std::size_t max_samples,
+                                        bool include_spatial, const procedural::Geometry* reference_surface,
+                                        std::string_view reference_name) {
+    std::shared_ptr<const procedural::Bvh> ref_bvh;
+    if (include_spatial && reference_surface) {
+        if (auto acquired = procedural::Bvh::acquire(*reference_surface))
+            ref_bvh = std::move(*acquired);
+    }
+    return summarize_geometry_impl(geometry, max_samples, include_spatial, ref_bvh.get(), reference_name);
 }
 
 void Session::close_graphs() noexcept {
@@ -990,6 +1506,62 @@ bool Session::is_scratch_graph(std::string_view key) const noexcept {
         return true;
     const auto at = graphs_.find(std::string(key));
     return at != graphs_.end() && at->second && at->second->scratch;
+}
+
+bool Session::has_graph_placeholders() const noexcept {
+    for (const auto& [_, open] : graphs_) {
+        if (!open)
+            continue;
+        if (open->document.kept.root().size() > 0)
+            return true;
+        for (const auto& item : open->document.nodes) {
+            if (!item.node.registered() || item.kept.root().size() > 0)
+                return true;
+        }
+    }
+    return false;
+}
+
+Result<std::vector<OpenGraphSnapshot>> Session::snapshot_open_graphs() const {
+    auto& runtime = world_.runtime();
+    const auto keys = open_graphs();
+    std::vector<OpenGraphSnapshot> result;
+    result.reserve(keys.size());
+    for (const auto& key : keys) {
+        const auto at = graphs_.find(key);
+        if (at == graphs_.end() || !at->second)
+            continue;
+        ATELIER_TRY_BIND(encoded, editor::save_graph(runtime, at->second->document));
+        result.push_back({key, at->second->scratch, std::move(*encoded), at->second->saved_text});
+    }
+    return result;
+}
+
+Result<void> Session::restore_open_graphs(Project* project, std::span<const OpenGraphSnapshot> snapshots) {
+    if (world_.closed())
+        return graph_error("Restoring procedural graphs requires an open Session.", ErrorCode::invalid_definition);
+    if (snapshots.empty())
+        return {};
+    ATELIER_TRY(ensure_procedural_program());
+    for (const auto& snap : snapshots) {
+        ATELIER_TRY_BIND(loaded, load_graph(runtime_, snap.text));
+        std::unique_ptr<OpenGraph, OpenGraphDeleter> open(new OpenGraph());
+        open->key = snap.key;
+        open->scratch = snap.scratch;
+        open->document = std::move(*loaded);
+        open->saved_text = snap.saved_text;
+        if (!snap.scratch && project) {
+            open->resources.bind(project);
+            unavailable_.erase(std::pair{assets::AssetKind::procedural_graph, open->key});
+        }
+        for (const auto& issue : open->document.issues)
+            world_.report(issue);
+        graphs_.insert_or_assign(open->key, std::move(open));
+    }
+    if (generator_cache_)
+        generator_cache_->idle_valid = false;
+    ++revision_;
+    return {};
 }
 
 Result<std::optional<std::string>> Session::procedural_graph_snapshot(std::string_view key) const {
@@ -3062,19 +3634,40 @@ Result<std::shared_ptr<const GraphInspectView>> Session::graph_topology(std::str
 }
 
 Result<GraphInspectView> Session::inspect_graph(std::string_view key, Project* project, ObjectId inspected_node,
-                                                bool record_timings, std::size_t max_samples) {
+                                                bool record_timings, std::size_t max_samples, bool include_spatial,
+                                                ObjectId reference_node, std::string_view reference_name) {
     ATELIER_TRY_BIND(eval, evaluate_graph(key, project, inspected_node, record_timings));
+    std::shared_ptr<const procedural::Bvh> ref_bvh;
+    if (include_spatial && reference_node != ObjectId{}) {
+        const auto at = graphs_.find(std::string(key));
+        if (at == graphs_.end() || !at->second || !at->second->evaluator)
+            return graph_error("Procedural graph evaluator is unavailable.");
+        auto& open = *at->second;
+        ATELIER_TRY(open.evaluator->evaluate_node(reference_node, false));
+        if (const auto* st = open.evaluator->status(reference_node); st && st->error)
+            return graph_error("Reference node '" + std::string(reference_name) + "' failed: " + st->error->message);
+        const auto* ref_geom = open.evaluator->node_output(reference_node, 0);
+        if (!ref_geom)
+            return graph_error("Reference node '" + std::string(reference_name) + "' produced no geometry output.");
+        auto acquired = procedural::Bvh::acquire(*ref_geom);
+        if (!acquired)
+            return graph_error("Reference node '" + std::string(reference_name) +
+                               "' has no valid polygon surface: " + acquired.error().message);
+        ref_bvh = std::move(*acquired);
+    }
     ATELIER_TRY_BIND(topology, graph_topology(key));
     GraphInspectView view = **topology;
     view.dirty = graph_dirty(key);
     view.display_error = eval->display_error;
     view.inspected_error = eval->inspected_error;
-    view.display_summary = summarize_geometry(eval->display_output, max_samples);
+    view.display_summary =
+        summarize_geometry_impl(eval->display_output, max_samples, include_spatial, ref_bvh.get(), reference_name);
     if (inspected_node != ObjectId{} &&
         std::ranges::find(view.nodes, inspected_node, &GraphNodeView::id) != view.nodes.end()) {
         view.inspected_summary = inspected_node == eval->display_node
                                      ? view.display_summary
-                                     : summarize_geometry(eval->inspected_output, max_samples);
+                                     : summarize_geometry_impl(eval->inspected_output, max_samples, include_spatial,
+                                                               ref_bvh.get(), reference_name);
     }
     return view;
 }
