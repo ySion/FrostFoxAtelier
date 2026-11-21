@@ -44,7 +44,8 @@ void append_procedural_guides(const procedural::Geometry& geometry, const editor
 
 // Draws ghosted reference wireframe & points for an active SOP Template Flag node.
 void append_template_wireframe(const procedural::Geometry& geometry, const editor::ViewportView& view,
-                               std::vector<renderer::OverlayShape>& overlay);
+                               std::vector<renderer::OverlayShape>& overlay,
+                               const math::Matrix4& world_transform = math::Matrix4::identity());
 
 // Draws the persistent bottom-left 3D XYZ camera orientation gnomon in physical viewport space.
 void append_orientation_gnomon(const editor::ViewportView& view, std::vector<renderer::OverlayShape>& overlay);

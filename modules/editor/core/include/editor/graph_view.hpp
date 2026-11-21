@@ -61,6 +61,8 @@ struct GraphNodeView {
 
     bool is_bypassed{};
 
+    bool is_frozen{};
+
     std::array<float, 2> position{};
 
     GraphNodeShape shape{GraphNodeShape::auto_role};

@@ -82,13 +82,69 @@ ui::ControlKey region_tab(RegionKind region) noexcept {
     return at == region_tabs.end() ? ui::ControlKey{} : at->second;
 }
 
-ObjectId Workspace::inspected_graph_object(const Session& session) const noexcept {
-    if (active_graph.empty() || !session.has_graph(active_graph))
+ObjectId Workspace::inspected_graph_object(const Session& session, std::string_view graph_key) const noexcept {
+    const std::string resolved = graph_key.empty() ? current_network_graph(session) : std::string(graph_key);
+    if (resolved.empty() || !session.has_graph(resolved))
         return {};
     if (!selected_graph_node.empty())
-        if (const auto id = session.graph_node_id(active_graph, selected_graph_node); id != ObjectId{})
+        if (const auto id = session.graph_node_id(resolved, selected_graph_node); id != ObjectId{})
             return id;
-    return session.loaded_graph(active_graph);
+    return session.loaded_graph(resolved);
+}
+
+std::string Workspace::selected_generator_graph(const Session& session) const {
+    const auto sel = session.selection();
+    const ObjectId candidate = sel.object != ObjectId{} ? sel.object : sel.entity;
+    if (candidate == ObjectId{})
+        return {};
+    const auto resolved = session.resolve_procedural_generator(candidate);
+    if (!resolved)
+        return {};
+    const auto src = presentation::read_procedural_source(session.world().runtime(), *resolved);
+    if (!src || src->source.empty() || session.is_scratch_graph(src->source))
+        return {};
+    return src->source;
+}
+
+std::string Workspace::current_network_graph(const Session& session) const {
+    if (!active_graph.empty() && session.has_graph(active_graph))
+        return active_graph;
+    if (network_pinned && !pinned_graph.empty() && session.has_graph(pinned_graph))
+        return pinned_graph;
+    const auto key = selected_generator_graph(session);
+    if (!key.empty() && session.has_graph(key))
+        return key;
+    return {};
+}
+
+std::string Workspace::effective_network_graph(Session& session, Project* project) {
+    if (!active_graph.empty() && session.has_graph(active_graph))
+        return active_graph;
+    if (network_pinned && !pinned_graph.empty()) {
+        if (!session.has_graph(pinned_graph) && project && project->entry(pinned_graph) &&
+            failed_auto_open_graph_ != pinned_graph) {
+            if (!session.open_graph(*project, pinned_graph))
+                failed_auto_open_graph_ = pinned_graph;
+            else
+                failed_auto_open_graph_.clear();
+        }
+        if (session.has_graph(pinned_graph))
+            return pinned_graph;
+        network_pinned = false;
+        pinned_graph.clear();
+    }
+    const auto key = selected_generator_graph(session);
+    if (key.empty()) {
+        failed_auto_open_graph_.clear();
+        return {};
+    }
+    if (!session.has_graph(key) && project && project->entry(key) && failed_auto_open_graph_ != key) {
+        if (!session.open_graph(*project, key))
+            failed_auto_open_graph_ = key;
+        else
+            failed_auto_open_graph_.clear();
+    }
+    return session.has_graph(key) ? key : std::string{};
 }
 
 std::wstring Workspace::graph_path_title(const Project* project) const {
@@ -97,6 +153,27 @@ std::wstring Workspace::graph_path_title(const Project* project) const {
     if (const auto* entry = project ? project->entry(active_graph) : nullptr)
         return L"/" + entry->path.generic_wstring();
     return L"/" + platform::utf8_to_utf16_validated(active_graph);
+}
+
+std::wstring Workspace::network_path_title(const Session& session, const Project* project,
+                                           std::string_view net_graph) const {
+    if (net_graph.empty())
+        return L"World  ▸  (Select Generator Entity or Open .procgraph)";
+    std::wstring stem = platform::utf8_to_utf16_validated(net_graph);
+    std::wstring rel_path = L"/" + stem;
+    if (const auto* entry = project ? project->entry(net_graph) : nullptr) {
+        stem = entry->path.stem().wstring();
+        rel_path = L"/" + entry->path.generic_wstring();
+    }
+    const std::wstring dirty_mark = session.graph_dirty(net_graph) ? L" *" : L"";
+    if (!active_graph.empty() && active_graph == net_graph)
+        return L"SOP  ▸  " + rel_path + dirty_mark;
+    if (network_pinned && pinned_graph == net_graph)
+        return L"Pinned  ▸  " + stem + dirty_mark;
+    const auto sel = session.selection();
+    if (sel.entity != ObjectId{} && session.world().contains(sel.entity))
+        return L"World  ▸  " + std::wstring(session.name(sel.entity)) + L"  ▸  " + stem + dirty_mark;
+    return L"World  ▸  " + stem + dirty_mark;
 }
 
 Context Workspace::operator_context(Session& session, Project* project, bool interactive,
@@ -109,15 +186,20 @@ Context Workspace::operator_context(Session& session, Project* project, bool int
     const auto selection = session.selection();
     SelectionContext selection_context{
         selection.entity, selection.object, {session.selected_entities().begin(), session.selected_entities().end()}};
-    if (!active_graph.empty() && !inspecting_asset &&
-        (region == RegionKind::parameters || region == RegionKind::network)) {
-        if (const auto graph_object = inspected_graph_object(session); graph_object != ObjectId{})
+    const std::string net_graph = current_network_graph(session);
+    const bool graph_focus =
+        (!active_graph.empty() && !inspecting_asset &&
+         (region == RegionKind::parameters || region == RegionKind::network)) ||
+        (active_graph.empty() && !net_graph.empty() && !inspecting_asset &&
+         (region == RegionKind::network || (region == RegionKind::parameters && inspecting_network)));
+    if (graph_focus) {
+        if (const auto graph_object = inspected_graph_object(session, net_graph); graph_object != ObjectId{})
             selection_context = {ObjectId{}, graph_object, {}};
     }
     std::string asset;
     if (inspecting_asset && (region == RegionKind::parameters || region == RegionKind::assets))
         asset = material_inspection;
-    else if (region == RegionKind::parameters) {
+    else if (region == RegionKind::parameters && !graph_focus) {
         ObjectId object{};
         if (color_edit && color_edit->material_entry && session.owns_edit(control::color_group))
             object = color_edit->object;
@@ -141,6 +223,7 @@ Context Workspace::operator_context(Session& session, Project* project, bool int
             region,
             std::move(asset),
             active_graph,
+            net_graph,
             selected_graph_node,
             selected_graph_nodes,
             source_history,
@@ -216,18 +299,31 @@ void Workspace::reset_document() {
     structure_query.clear();
     parameter_search_visible = false;
     inspecting_asset = false;
+    inspecting_network = false;
     material_inspection.clear();
     active_graph.clear();
+    network_pinned = false;
+    pinned_graph.clear();
     selected_graph_node.clear();
     selected_graph_nodes.clear();
     network_context_node.clear();
+    last_network_graph_.clear();
+    failed_auto_open_graph_.clear();
     spreadsheet.reset();
     network.reset();
     menu.reset();
     assets.reset(project_open);
     component_choices_.clear();
     material_choices_.clear();
+    network_path_choices_.clear();
     menu_selection_ = {};
+}
+
+std::optional<Workspace::NetworkPathChoice> Workspace::network_path_choice(ui::ControlKey key) const {
+    if (key < network_control::path_choice_first ||
+        key - network_control::path_choice_first >= network_path_choices_.size())
+        return {};
+    return network_path_choices_[static_cast<std::size_t>(key - network_control::path_choice_first)];
 }
 
 std::optional<TypeId> Workspace::component_choice(ui::ControlKey key) const noexcept {
@@ -324,6 +420,7 @@ Result<void> Workspace::navigate(Session& session, OperatorHost& host, int direc
     if (changed) {
         navigation_cursor_ = next;
         inspecting_asset = false;
+        inspecting_network = false;
     }
     return changed;
 }
@@ -345,12 +442,14 @@ Result<void> Workspace::select_object(Session& session, OperatorHost& host, Obje
     if (!result)
         return std::unexpected(result.error());
     inspecting_asset = false;
+    inspecting_network = false;
     return {};
 }
 
 Result<void> Workspace::select_tree(Session& session, OperatorHost& host, ui::ControlKey key,
                                     ui::SelectionModifiers modifiers) {
     inspecting_asset = false;
+    inspecting_network = false;
     if (key == control::tree_world)
         return select_object(session, host, {});
     const auto* target = binding(key);
@@ -1180,6 +1279,15 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
         }
         status_text = L"UI: " + diagnostic;
     }
+    const std::string net_graph =
+        dock.visible(network_control::tab) ? effective_network_graph(session, project) : current_network_graph(session);
+    if (net_graph != last_network_graph_) {
+        last_network_graph_ = net_graph;
+        if (active_graph.empty()) {
+            set_single_graph_selection({});
+            inspecting_network = false;
+        }
+    }
     const auto context = operator_context(session, project, true, command_focus);
     const auto action = [&](OperatorCall call) {
         auto target = context;
@@ -1703,11 +1811,16 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
             std::uint64_t generation{};
             std::wstring target_label = L"No active graph";
             std::wstring error_text;
-            if (!active_graph.empty() && session.has_graph(active_graph)) {
+            const bool in_sop = !active_graph.empty() && session.has_graph(active_graph);
+            const bool follow_world_node = !in_sop && !net_graph.empty() && session.has_graph(net_graph) &&
+                                           spreadsheet.follow_selected() && inspecting_network &&
+                                           !selected_graph_node.empty();
+            if (in_sop || follow_world_node) {
+                const std::string& sheet_graph = in_sop ? active_graph : net_graph;
                 const ObjectId target_node = spreadsheet.follow_selected() && !selected_graph_node.empty()
-                                                 ? session.graph_node_id(active_graph, selected_graph_node)
+                                                 ? session.graph_node_id(sheet_graph, selected_graph_node)
                                                  : ObjectId{};
-                const auto eval = session.evaluate_graph(active_graph, project, target_node);
+                const auto eval = session.evaluate_graph(sheet_graph, project, target_node);
                 if (!eval)
                     error_text = application::diagnostic_text(eval.error().message);
                 else if (target_node != ObjectId{}) {
@@ -1741,24 +1854,25 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
             continue;
         }
         if (view.key == network_control::tab) {
-            const bool has_graph = !active_graph.empty() && session.has_graph(active_graph);
-            const auto* graph_doc = has_graph ? session.graph_document(active_graph) : nullptr;
+            const bool has_graph = !net_graph.empty() && session.has_graph(net_graph);
+            const auto* graph_doc = has_graph ? session.graph_document(net_graph) : nullptr;
             auto tab_items = std::make_shared<std::vector<ui_language::Item>>();
+            std::wstring cook_summary;
+            std::wstring cook_summary_style = L"network-cook-summary";
             std::wstring net_status;
             std::shared_ptr<const GraphInspectView> inspected;
             std::vector<GraphNodeCatalogEntry> catalog;
             if (graph_doc) {
                 // Prune any node names removed via Undo or external Control calls.
                 std::erase_if(selected_graph_nodes,
-                              [&](const std::string& n) { return !session.graph_node(active_graph, n); });
-                if (!selected_graph_node.empty() && !session.graph_node(active_graph, selected_graph_node))
+                              [&](const std::string& n) { return !session.graph_node(net_graph, n); });
+                if (!selected_graph_node.empty() && !session.graph_node(net_graph, selected_graph_node))
                     selected_graph_node = selected_graph_nodes.empty() ? std::string{} : selected_graph_nodes.back();
 
-                const ObjectId sel_node = !selected_graph_node.empty()
-                                              ? session.graph_node_id(active_graph, selected_graph_node)
-                                              : ObjectId{};
-                const auto eval = session.evaluate_graph(active_graph, project, sel_node);
-                if (auto insp = session.graph_topology(active_graph))
+                const ObjectId sel_node =
+                    !selected_graph_node.empty() ? session.graph_node_id(net_graph, selected_graph_node) : ObjectId{};
+                const auto eval = session.evaluate_graph(net_graph, project, sel_node);
+                if (auto insp = session.graph_topology(net_graph))
                     inspected = std::move(*insp);
                 if (auto cat = session.procedural_node_types())
                     catalog = std::move(*cat);
@@ -1787,114 +1901,186 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
                     }
                 }
 
-                if (!eval)
+                const std::size_t wire_count = inspected ? inspected->connections.size() : 0u;
+                if (!eval) {
+                    cook_summary = L"Cook Error";
+                    cook_summary_style = L"network-cook-error";
                     net_status = L"Cook error: " + application::diagnostic_text(eval.error().message);
-                else if (eval->display_error)
+                } else if (eval->display_error) {
+                    cook_summary =
+                        std::format(L"Cook Error · '{}'", platform::utf8_to_utf16_validated(eval->display_name));
+                    cook_summary_style = L"network-cook-error";
                     net_status = L"Cook error: " + application::diagnostic_text(eval->display_error->message);
-                else if (const auto* shown = eval->preview_output.get())
+                } else if (const auto* shown = eval->preview_output.get()) {
+                    const std::size_t pts = shown->count(procedural::Layer::point);
+                    const std::size_t prims = shown->count(procedural::Layer::primitive);
+                    const std::size_t insts = shown->count(procedural::Layer::instance);
+                    cook_summary =
+                        insts > 0
+                            ? std::format(L"{} nodes · {} wires · {} ({} inst)", graph_doc->nodes.size(), wire_count,
+                                          platform::utf8_to_utf16_validated(eval->display_name), insts)
+                            : std::format(L"{} nodes · {} wires · {} ({} pts, {} prims)", graph_doc->nodes.size(),
+                                          wire_count, platform::utf8_to_utf16_validated(eval->display_name), pts,
+                                          prims);
                     net_status = std::format(
-                        L"{} nodes · {} wires · Display '{}': {} pts · {} prims · {} inst   (Tab add · D/T/B flags · Z/C style · N note · O box)",
-                        graph_doc->nodes.size(), inspected ? inspected->connections.size() : 0u,
-                        platform::utf8_to_utf16_validated(eval->display_name), shown->count(procedural::Layer::point),
-                        shown->count(procedural::Layer::primitive), shown->count(procedural::Layer::instance));
-                else
+                        L"Display '{}': {} pts · {} prims · {} inst   (Tab add · D/T/B flags · C/Z style · N note · O box · Y+drag cut)",
+                        platform::utf8_to_utf16_validated(eval->display_name), pts, prims, insts);
+                } else {
+                    cook_summary =
+                        std::format(L"{} nodes · {} wires · No Display", graph_doc->nodes.size(), wire_count);
                     net_status = std::format(
-                        L"{} nodes · No Display Flag set   (Press D or hover Air-Ring to display · Tab add · Z/C style · H frame)",
+                        L"{} nodes · No Display Flag set   (Press D or hover Air-Ring to display · Tab add · C/Z style · H frame)",
                         graph_doc->nodes.size());
+                }
             }
+            const bool can_edit_net = has_graph && !session.world().running();
+            const bool has_selected_node = has_graph && (!selected_graph_node.empty() || !selected_graph_nodes.empty());
+            const bool is_isolated = !active_graph.empty() && active_graph == net_graph;
+            const auto popup_kind = network.popup().kind;
+            const ui::ControlIcon path_icon_val = is_isolated      ? ui::ControlIcon::isolate
+                                                  : network_pinned ? ui::ControlIcon::pin
+                                                                   : ui::ControlIcon::world;
+            const float dscale = frame && frame->drawing ? frame->drawing->dpi_scale : 1.f;
+            const float pane_dip_w = pane.bounds.width > 0.f ? (pane.bounds.width / dscale) : size.width * .38f;
+            const bool net_compact = pane_dip_w < 380.f;
+
+            const auto net_action = [&](OperatorCall call) {
+                call.context.region = RegionKind::network;
+                return action(std::move(call));
+            };
             json::Builder seed_args;
             seed_args.set_validated(seed_args.root(), "node", "");
-            const std::wstring graph_title =
-                has_graph ? graph_path_title(project) + (session.graph_dirty(active_graph) ? L" *" : L"")
-                          : std::wstring(L"Procedural Network");
+            auto del_binding = net_action({"graph.delete_node"});
+            del_binding.enabled = del_binding.enabled && has_selected_node;
+
+            const std::wstring graph_title = network_path_title(session, project, net_graph);
             const std::wstring zoom_text = std::format(L"{}%", static_cast<int>(std::lround(network.zoom() * 100.f)));
             const auto& ts = network.tab_search();
-            const std::array<ui_language::InputValue, 18> inputs{
+            const std::array<ui_language::InputValue, 53> inputs{
                 graph_title,
-                has_graph,
-                has_graph && !session.world().running(),
+                double(path_icon_val),
+                ui_language::ActionBinding{network_control::nav_back, can_navigate(-1)},
+                ui_language::ActionBinding{network_control::nav_forward, can_navigate(1)},
+                double(ui::ControlIcon::back),
+                double(ui::ControlIcon::forward),
+                network_pinned,
+                double(ui::ControlIcon::pin),
                 ui_language::ActionBinding{
-                    network_control::add_node, has_graph && !session.world().running(),
+                    network_control::pin_toggle, has_graph || network_pinned,
                     property_help_.get(
-                        network_control::add_node, L"Add SOP Node [Tab]", L"Network Canvas",
-                        "打开支持分类筛选与首字母缩写的节点检索面板（如输入 ctp 快速创建 CopyToPoints）。")},
+                        network_control::pin_toggle, L"Pin Network Tab",
+                        network_pinned ? L"Currently: Pinned" : L"Currently: Follow Selection",
+                        "锁定当前节点网络面板：开启后切换场景实体时保持当前程序化图不变；关闭时点击任意程序化生成器实体即自动显示其节点网络。")},
+                is_isolated,
+                double(ui::ControlIcon::isolate),
                 ui_language::ActionBinding{
-                    network_control::frame_all, has_graph,
-                    property_help_.get(network_control::frame_all, L"Frame Network [H / Home]", L"Network Canvas",
-                                       "平移并缩放画布视口，使整张程序化图中的所有节点完整居中显示。")},
-                action({"graph.layout"}),
-                zoom_text,
-                ui_language::ActionBinding{network_control::zoom_reset, has_graph,
-                                           property_help_.get(network_control::zoom_reset, L"Reset Canvas Zoom (100%)",
-                                                              L"Network Canvas",
-                                                              "将二维节点画布的缩放倍率重置为 100% 标准大小。")},
-                action({"graph.select", seed_args.finish()}),
-                action({"graph.delete_node"}),
-                action({"graph.exit"}),
+                    network_control::isolate_toggle, has_graph || !active_graph.empty(),
+                    property_help_.get(
+                        network_control::isolate_toggle, L"Isolate SOP in 3D Viewport",
+                        is_isolated ? L"Currently: Isolated SOP View" : L"Currently: In-World Scene View",
+                        "在 3D 视口独显当前 SOP 图（局部原点检查模式）与完整 World 场景光照实时预览之间一键切换。")},
+                has_graph,
+                net_compact,
+                menu && menu->source == network_control::menu_add,
+                menu && menu->source == network_control::menu_edit,
+                menu && menu->source == network_control::menu_view,
+                menu && menu->source == network_control::menu_layout,
+                std::move(cook_summary),
+                std::move(cook_summary_style),
                 ui_language::ActionBinding{
                     network_control::new_scratch, !session.world().running(),
                     property_help_.get(network_control::new_scratch, L"New Scratch Graph", L"Procedural Network",
-                                       "在内存中创建一张新的临时程序化图（Scratch Graph）并立即进入 SOP 编辑模式。")},
+                                       "在内存中创建一张新的临时程序化图（Scratch Graph）并进入独显 SOP 编辑模式。")},
+                ui_language::ActionBinding{
+                    network_control::add_node, can_edit_net,
+                    property_help_.get(
+                        network_control::add_node, L"Add SOP Node [Tab / Shift+A]", L"Network Create",
+                        "打开支持分类筛选与首字母缩写的节点检索面板（如输入 ctp 快速创建 CopyToPoints）。")},
+                double(ui::ControlIcon::plus),
+                ui_language::ActionBinding{
+                    network_control::add_sticky_note, can_edit_net,
+                    property_help_.get(
+                        network_control::add_sticky_note, L"Add Sticky Note [N]", L"Network Annotation",
+                        "在画布中插入黄色便签注释块（支持拖动、右下角缩放，双击标题栏可编辑标题与多行正文）。")},
+                double(ui::ControlIcon::sticky_note),
+                ui_language::ActionBinding{
+                    network_control::add_network_box, can_edit_net,
+                    property_help_.get(
+                        network_control::add_network_box, L"Add Network Box [O]", L"Network Annotation",
+                        "创建分组背景框（若已选中节点会自动包裹它们）；拖动分组框标题栏可将内部节点与便签整组同步移动。")},
+                double(ui::ControlIcon::network_box),
+                popup_kind == NetworkCanvas::PopupKind::color_picker,
+                ui_language::ActionBinding{
+                    network_control::open_color_picker, can_edit_net,
+                    property_help_.get(
+                        network_control::open_color_picker, L"Color Palette [C]", L"Node Appearance",
+                        "打开 24 色调色板自定义选中节点或注释的主题颜色（支持批量多选着色与一键恢复角色默认色）。")},
+                double(ui::ControlIcon::palette),
+                popup_kind == NetworkCanvas::PopupKind::shape_picker,
+                ui_language::ActionBinding{
+                    network_control::open_shape_picker, can_edit_net,
+                    property_help_.get(
+                        network_control::open_shape_picker, L"Shape Palette [Z]", L"Node Appearance",
+                        "打开 8 种几何轮廓形状预设面板（Pill / Rect / Domed / Trap / Hexagon / Ribbon / Diamond / Circle）。")},
+                double(ui::ControlIcon::node_shapes),
+                popup_kind == NetworkCanvas::PopupKind::node_info,
+                ui_language::ActionBinding{
+                    network_control::open_node_info, has_selected_node,
+                    property_help_.get(
+                        network_control::open_node_info, L"Node Info & Comment [I]", L"Node Diagnostics",
+                        "查看当前选中节点的类型、端口数、求值耗时、缓存命中、布尔统计，并编辑节点备注标签。")},
+                double(ui::ControlIcon::info),
+                net_action({"graph.layout"}),
+                double(ui::ControlIcon::network_layout),
+                ui_language::ActionBinding{
+                    network_control::frame_all, has_graph,
+                    property_help_.get(network_control::frame_all, L"Frame Network [H / Home]", L"Network View",
+                                       "平移并缩放画布视口，使整张程序化图中的所有节点与注释完整居中显示。")},
+                double(ui::ControlIcon::bounds_cage),
+                zoom_text,
+                ui_language::ActionBinding{network_control::zoom_reset, has_graph,
+                                           property_help_.get(network_control::zoom_reset, L"Reset Canvas Zoom (100%)",
+                                                              L"Network View",
+                                                              "将二维节点画布的缩放倍率重置为 100% 标准大小。")},
+                has_graph && selected_graph_node.empty() && (is_isolated || inspecting_network),
+                net_action({"graph.select", seed_args.finish()}),
+                double(ui::ControlIcon::sliders),
+                std::move(del_binding),
+                double(ui::ControlIcon::trash),
                 has_graph && ts.open,
                 static_cast<double>(ts.dip_x),
                 static_cast<double>(ts.dip_y),
                 ui_language::TextEditBinding{network_control::tab_search_input, ts.query, has_graph && ts.open},
                 ui_language::ItemList{std::move(tab_items)},
                 std::move(net_status)};
-            const std::array<ui_language::KeyBinding, 5> keys{{{"toolbar", network_control::toolbar_row},
-                                                               {"add_node", network_control::add_node},
-                                                               {"frame_btn", network_control::frame_all},
-                                                               {"canvas", network_control::canvas},
-                                                               {"tab_box", network_control::tab_search_box}}};
+            const std::array<ui_language::KeyBinding, 17> keys{{{"toolbar", network_control::toolbar_row},
+                                                                {"back", network_control::nav_back},
+                                                                {"forward", network_control::nav_forward},
+                                                                {"path", network_control::path_combo},
+                                                                {"pin_btn", network_control::pin_toggle},
+                                                                {"isolate_btn", network_control::isolate_toggle},
+                                                                {"action_bar", network_control::action_bar},
+                                                                {"add_menu", network_control::menu_add},
+                                                                {"edit_menu", network_control::menu_edit},
+                                                                {"view_menu", network_control::menu_view},
+                                                                {"layout_menu", network_control::menu_layout},
+                                                                {"add_node", network_control::add_node},
+                                                                {"note_btn", network_control::add_sticky_note},
+                                                                {"box_btn", network_control::add_network_box},
+                                                                {"frame_btn", network_control::frame_all},
+                                                                {"canvas", network_control::canvas},
+                                                                {"tab_box", network_control::tab_search_box}}};
             static_cast<void>(ui_document_->append("NetworkPanel", view.content, keys, inputs, result));
-            if (has_graph) {
-                const auto add_it = std::ranges::find(result, network_control::add_node, &ui::Control::key);
-                if (add_it != result.end()) {
-                    const bool can_edit = !session.world().running();
-                    ui::Control note_btn;
-                    note_btn.key = network_control::add_sticky_note;
-                    note_btn.parent = network_control::toolbar_row;
-                    note_btn.kind = ControlKind::button;
-                    note_btn.enabled = can_edit;
-                    note_btn.text = L"+ Note";
-                    note_btn.single_line = true;
-                    note_btn.classes = {"browser-tool"};
-                    note_btn.layout = NodeInput::box(0.f, 23.f);
-                    note_btn.layout.width = Axis::content();
-                    note_btn.tooltip = property_help_.get(
-                        network_control::add_sticky_note, L"Add Sticky Note [N]", L"Network Annotation",
-                        "在画布中插入黄色便签注释块（支持拖动、右下角缩放，双击标题栏可编辑标题与多行正文）。");
-
-                    ui::Control box_btn;
-                    box_btn.key = network_control::add_network_box;
-                    box_btn.parent = network_control::toolbar_row;
-                    box_btn.kind = ControlKind::button;
-                    box_btn.enabled = can_edit;
-                    box_btn.text = L"+ Box";
-                    box_btn.single_line = true;
-                    box_btn.classes = {"browser-tool"};
-                    box_btn.layout = NodeInput::box(0.f, 23.f);
-                    box_btn.layout.width = Axis::content();
-                    box_btn.tooltip = property_help_.get(
-                        network_control::add_network_box, L"Add Network Box [O]", L"Network Annotation",
-                        "创建分组背景框（若已选中节点会自动包裹它们）；拖动分组框标题栏可将内部节点与便签整组同步移动。");
-
-                    std::array extra_btns{std::move(note_btn), std::move(box_btn)};
-                    result.insert(add_it + 1, std::make_move_iterator(extra_btns.begin()),
-                                  std::make_move_iterator(extra_btns.end()));
-                }
-            }
             if (has_graph && inspected) {
                 ui_layout::Size canvas_dip{std::max(160.f, size.width * .36f), std::max(120.f, size.height * .26f)};
                 if (frame) {
                     if (const auto* box = frame->find(network_control::canvas);
                         box && box->bounds.width > 0.f && box->bounds.height > 0.f) {
-                        const float dscale = frame->drawing ? frame->drawing->dpi_scale : 1.f;
                         canvas_dip = {box->bounds.width / dscale, box->bounds.height / dscale};
                     }
                 }
                 std::vector<ui::Control> canvas_controls;
-                network.append_canvas(canvas_controls, network_control::canvas, canvas_dip, active_graph, *inspected,
+                network.append_canvas(canvas_controls, network_control::canvas, canvas_dip, net_graph, *inspected,
                                       catalog, selected_graph_node, selected_graph_nodes);
                 const auto tab_it = std::ranges::find(result, network_control::tab_search_box, &ui::Control::key);
                 result.insert(tab_it, std::make_move_iterator(canvas_controls.begin()),
@@ -2099,8 +2285,10 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
             continue;
         }
         const bool in_graph = !active_graph.empty() && session.has_graph(active_graph);
-        const ObjectId param_object = in_graph ? inspected_graph_object(session) : inspected;
-        const bool param_is_graph = in_graph && param_object != ObjectId{};
+        const bool in_world_net = !in_graph && inspecting_network && !net_graph.empty() && session.has_graph(net_graph);
+        const ObjectId param_object =
+            (in_graph || in_world_net) ? inspected_graph_object(session, net_graph) : inspected;
+        const bool param_is_graph = (in_graph || in_world_net) && param_object != ObjectId{};
         const auto param_node_name = param_is_graph ? session.graph_node_name(param_object) : std::nullopt;
         const auto lowercase = [](std::wstring value) {
             for (auto& c : value)
@@ -2796,9 +2984,11 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
             transform_help(session.types().position_fields[0], 70, L"Position (m)"),
             transform_help(session.types().rotation_fields[0], rotation_edit.group, L"Rotation (°)", true),
             transform_help(session.types().scale_fields[0], scale_edit.group, L"Scale")};
+        const std::wstring param_graph_title =
+            in_world_net ? network_path_title(session, project, net_graph) : graph_path_title(project);
         const std::wstring header_name = param_object == ObjectId{} ? L"No selection"
                                          : param_node_name ? platform::utf8_to_utf16_validated(*param_node_name)
-                                         : param_is_graph  ? graph_path_title(project)
+                                         : param_is_graph  ? param_graph_title
                                          : entity_selected ? std::wstring(session.name(selected))
                                                            : object_title(param_object);
         const bool can_rename_header =
@@ -2835,7 +3025,7 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
             transform_descriptions[1],
             transform_descriptions[2],
             std::move(type_help),
-            graph_path_title(project)};
+            param_graph_title};
         const std::array<ui_language::KeyBinding, 14> keys{{{"components", control::group_components},
                                                             {"categories", control::group_categories},
                                                             {"path.bar", 75},
@@ -2861,6 +3051,7 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
     menu_items.clear();
     component_choices_.clear();
     material_choices_.clear();
+    network_path_choices_.clear();
     menu_selection_ = session.selection();
     if (menu) {
         const auto find = [&](ui::ControlKey key) -> const ui::Control* {
@@ -3250,15 +3441,180 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
                     item.behavior = ui::MenuBehavior::radio;
                     item.radio_group = source->key;
                 }
+            } else if (source->key == network_control::path_combo) {
+                const auto push_choice = [&](NetworkPathChoice choice, std::wstring title, bool checked,
+                                             bool separator = false, std::wstring_view heading = {}) {
+                    const ui::ControlKey ckey = network_control::path_choice_first + network_path_choices_.size();
+                    network_path_choices_.push_back(std::move(choice));
+                    ui::MenuItem item{ckey, std::move(title), true, checked, {}, L"", separator};
+                    item.heading = std::wstring(heading);
+                    item.behavior = ui::MenuBehavior::radio;
+                    item.radio_group = source->key;
+                    items.push_back(std::move(item));
+                };
+                push_choice({NetworkPathChoice::Kind::unpin_world, {}, {}}, L"World (Follow Selected Generator)",
+                            active_graph.empty() && !network_pinned);
+
+                bool first_gen = true;
+                for (const auto& member : members) {
+                    const auto resolved = session.resolve_procedural_generator(member.id());
+                    if (!resolved)
+                        continue;
+                    const auto src = presentation::read_procedural_source(runtime, *resolved);
+                    if (!src || src->source.empty())
+                        continue;
+                    std::wstring gname = platform::utf8_to_utf16_validated(src->source);
+                    if (const auto* entry = project ? project->entry(src->source) : nullptr)
+                        gname = entry->path.stem().wstring();
+                    push_choice({NetworkPathChoice::Kind::follow_entity, member.id(), src->source},
+                                std::wstring(session.name(member.id())) + L"  ▸  " + gname,
+                                active_graph.empty() && !network_pinned && selected == member.id(), first_gen,
+                                first_gen ? L"Scene Generators" : L"");
+                    first_gen = false;
+                }
+
+                std::vector<std::string> graphs = session.open_graphs();
+                if (project)
+                    for (const auto& entry : project->entries())
+                        if (entry.kind == assets::AssetKind::procedural_graph &&
+                            std::ranges::find(graphs, entry.key) == graphs.end())
+                            graphs.push_back(entry.key);
+                for (std::size_t g = 0; g < graphs.size(); ++g) {
+                    const auto& gkey = graphs[g];
+                    std::wstring label = L"/" + platform::utf8_to_utf16_validated(gkey);
+                    if (const auto* entry = project ? project->entry(gkey) : nullptr)
+                        label = L"/" + entry->path.generic_wstring();
+                    if (session.graph_dirty(gkey))
+                        label += L" *";
+                    push_choice({NetworkPathChoice::Kind::select_graph, {}, gkey}, std::move(label),
+                                (!active_graph.empty() && active_graph == gkey) ||
+                                    (active_graph.empty() && network_pinned && pinned_graph == gkey),
+                                g == 0, g == 0 ? L"Procedural Graphs" : L"");
+                }
+                items.push_back({network_control::new_scratch,
+                                 L"+ New Scratch Graph",
+                                 !session.world().running(),
+                                 false,
+                                 {},
+                                 L"",
+                                 true});
+                if (!active_graph.empty())
+                    items.push_back({bind_operator({"graph.exit"}), L"Return 3D Viewport to World", true, false, {}});
+            } else if (network_control::is_header_menu(source->key)) {
+                const bool has_net = !net_graph.empty() && session.has_graph(net_graph);
+                const bool can_edit = has_net && !session.world().running();
+                const bool has_sel = has_net && (!selected_graph_node.empty() || !selected_graph_nodes.empty());
+                const auto* graph_doc = has_net ? session.graph_document(net_graph) : nullptr;
+                const bool has_nodes = graph_doc && !graph_doc->nodes.empty();
+                const auto net_op = [&](std::string id, json::Document args = {}) {
+                    return bind_operator(
+                        {std::move(id), std::move(args), {.selection = {}, .region = RegionKind::network}});
+                };
+                if (source->key == network_control::menu_add) {
+                    items.push_back({network_control::add_node, L"Add SOP Node…", can_edit, false, {}, L"Tab"});
+                    items.push_back({network_control::add_sticky_note, L"Add Sticky Note", can_edit, false, {}, L"N"});
+                    items.push_back({network_control::add_network_box, L"Add Network Box", can_edit, false, {}, L"O"});
+                    items.push_back({network_control::new_scratch,
+                                     L"+ New Scratch Graph",
+                                     !session.world().running(),
+                                     false,
+                                     {},
+                                     L"",
+                                     true});
+                } else if (source->key == network_control::menu_edit) {
+                    items.push_back({net_op("edit.undo"),
+                                     L"Undo",
+                                     has_net && session.graph_can_undo(net_graph, false),
+                                     false,
+                                     {},
+                                     L"Ctrl+Z"});
+                    items.push_back({net_op("edit.redo"),
+                                     L"Redo",
+                                     has_net && session.graph_can_undo(net_graph, true),
+                                     false,
+                                     {},
+                                     L"Ctrl+Y"});
+                    items.push_back({net_op("graph.duplicate_nodes"),
+                                     L"Duplicate",
+                                     can_edit && has_sel,
+                                     false,
+                                     {},
+                                     L"Shift+D",
+                                     true});
+                    items.push_back(
+                        {net_op("graph.delete_node"), L"Delete", can_edit && has_sel, false, {}, L"Del / X"});
+                    items.push_back(
+                        {network_control::select_all_nodes, L"Select All", has_nodes, false, {}, L"A", true});
+                    items.push_back(
+                        {network_control::deselect_all_nodes, L"Deselect All", has_sel, false, {}, L"Alt+A"});
+                    items.push_back(
+                        {network_control::invert_select_nodes, L"Invert Selection", has_nodes, false, {}, L"Ctrl+I"});
+                    if (!selected_graph_node.empty()) {
+                        const ObjectId sel_id = session.graph_node_id(net_graph, selected_graph_node);
+                        bool is_frz = false;
+                        if (sel_id != ObjectId{}) {
+                            if (const auto frz = procedural::frozen(runtime, sel_id))
+                                is_frz = *frz;
+                        }
+                        json::Builder frz_args;
+                        static_cast<void>(frz_args.set(frz_args.root(), "node", selected_graph_node));
+                        static_cast<void>(frz_args.set(frz_args.root(), "frozen", !is_frz));
+                        items.push_back({net_op("graph.set_frozen", frz_args.finish()),
+                                         is_frz ? L"Unfreeze Node" : L"Freeze Node",
+                                         can_edit && sel_id != ObjectId{},
+                                         is_frz,
+                                         {},
+                                         L"",
+                                         true});
+                        json::Builder disc_args;
+                        static_cast<void>(disc_args.set(disc_args.root(), "to_node", selected_graph_node));
+                        items.push_back({net_op("graph.disconnect", disc_args.finish()),
+                                         L"Disconnect All Inputs",
+                                         can_edit && sel_id != ObjectId{},
+                                         false,
+                                         {},
+                                         L""});
+                    }
+                } else if (source->key == network_control::menu_view) {
+                    items.push_back({network_control::frame_selected, L"Frame Selection", has_net, false, {}, L"F"});
+                    items.push_back({network_control::frame_all, L"Frame All", has_net, false, {}, L"H"});
+                    items.push_back({network_control::zoom_reset, L"Reset Zoom (100%)", has_net, false, {}});
+                    items.push_back(
+                        {network_control::open_node_info, L"Node Info & Comment…", has_sel, false, {}, L"I", true});
+                    json::Builder seed_args;
+                    seed_args.set_validated(seed_args.root(), "node", "");
+                    items.push_back(
+                        {net_op("graph.select", seed_args.finish()), L"Inspect Graph Seed", has_net, false, {}});
+                    ui::MenuItem iso{network_control::isolate_toggle,
+                                     L"Isolate SOP in 3D Viewport",
+                                     has_net || !active_graph.empty(),
+                                     !active_graph.empty(),
+                                     {},
+                                     L"",
+                                     true};
+                    iso.behavior = ui::MenuBehavior::checkbox;
+                    items.push_back(std::move(iso));
+                } else if (source->key == network_control::menu_layout) {
+                    items.push_back({net_op("graph.layout"), L"Auto Arrange Nodes", can_edit, false, {}, L"L"});
+                    items.push_back(
+                        {network_control::open_shape_picker, L"Shape Palette…", can_edit, false, {}, L"Z", true});
+                    items.push_back({network_control::open_color_picker, L"Color Palette…", can_edit, false, {}, L"C"});
+                }
             } else if (source->key == network_control::canvas) {
-                const bool can_edit = !active_graph.empty() && !session.world().running();
+                const bool has_net = !net_graph.empty() && session.has_graph(net_graph);
+                const bool can_edit = has_net && !session.world().running();
+                const auto net_op = [&](std::string id, json::Document args = {}) {
+                    return bind_operator(
+                        {std::move(id), std::move(args), {.selection = {}, .region = RegionKind::network}});
+                };
                 if (menu->group == network_control::context_node_menu && !network_context_node.empty()) {
-                    const auto* graph_doc = !active_graph.empty() ? session.graph_document(active_graph) : nullptr;
+                    const auto* graph_doc = has_net ? session.graph_document(net_graph) : nullptr;
                     const ObjectId target_id =
-                        graph_doc ? session.graph_node_id(active_graph, network_context_node) : ObjectId{};
+                        graph_doc ? session.graph_node_id(net_graph, network_context_node) : ObjectId{};
                     bool is_disp = false;
                     bool is_tmpl = false;
                     bool is_byp = false;
+                    bool is_frz = false;
                     if (graph_doc && graph_doc->graph.registered()) {
                         if (const auto listed = procedural::contents(runtime, graph_doc->graph.id()))
                             is_disp = target_id != ObjectId{} && listed->display() == target_id;
@@ -3266,6 +3622,8 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
                         if (target_id != ObjectId{}) {
                             if (const auto byp = procedural::bypassed(runtime, target_id))
                                 is_byp = *byp;
+                            if (const auto frz = procedural::frozen(runtime, target_id))
+                                is_frz = *frz;
                         }
                     }
                     {
@@ -3273,7 +3631,7 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
                         static_cast<void>(
                             args.set(args.root(), "node",
                                      is_disp ? std::string_view{} : std::string_view{network_context_node}));
-                        items.push_back({bind_operator({"graph.set_display", args.finish()}),
+                        items.push_back({net_op("graph.set_display", args.finish()),
                                          is_disp ? L"Clear Display Flag" : L"Set Display Flag",
                                          can_edit && target_id != ObjectId{},
                                          is_disp,
@@ -3285,7 +3643,7 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
                         static_cast<void>(
                             args.set(args.root(), "node",
                                      is_tmpl ? std::string_view{} : std::string_view{network_context_node}));
-                        items.push_back({bind_operator({"graph.set_template", args.finish()}),
+                        items.push_back({net_op("graph.set_template", args.finish()),
                                          is_tmpl ? L"Clear Template Flag" : L"Set Template Flag",
                                          can_edit && target_id != ObjectId{},
                                          is_tmpl,
@@ -3296,21 +3654,44 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
                         json::Builder args;
                         static_cast<void>(args.set(args.root(), "node", network_context_node));
                         static_cast<void>(args.set(args.root(), "bypass", !is_byp));
-                        items.push_back({bind_operator({"graph.set_bypass", args.finish()}),
+                        items.push_back({net_op("graph.set_bypass", args.finish()),
                                          is_byp ? L"Disable Bypass" : L"Bypass Node",
                                          can_edit && target_id != ObjectId{},
                                          is_byp,
                                          {},
                                          L"B"});
                     }
+                    {
+                        json::Builder args;
+                        static_cast<void>(args.set(args.root(), "node", network_context_node));
+                        static_cast<void>(args.set(args.root(), "frozen", !is_frz));
+                        items.push_back({net_op("graph.set_frozen", args.finish()),
+                                         is_frz ? L"Unfreeze Node" : L"Freeze Node",
+                                         can_edit && target_id != ObjectId{},
+                                         is_frz,
+                                         {},
+                                         L""});
+                    }
                     items.push_back(
                         {network_control::open_node_info, L"Node Info & Comment…", true, false, {}, L"I", true});
                     items.push_back({network_control::open_shape_picker, L"Change Shape…", can_edit, false, {}, L"Z"});
                     items.push_back({network_control::open_color_picker, L"Change Color…", can_edit, false, {}, L"C"});
+                    {
+                        json::Builder dup_args;
+                        if (std::ranges::find(selected_graph_nodes, network_context_node) == selected_graph_nodes.end())
+                            static_cast<void>(dup_args.set(dup_args.root(), "node", network_context_node));
+                        items.push_back({net_op("graph.duplicate_nodes", dup_args.finish()),
+                                         L"Duplicate",
+                                         can_edit,
+                                         false,
+                                         {},
+                                         L"Shift+D",
+                                         true});
+                    }
                     if (can_edit && target_id != ObjectId{}) {
                         json::Builder disc_args;
                         static_cast<void>(disc_args.set(disc_args.root(), "to_node", network_context_node));
-                        items.push_back({bind_operator({"graph.disconnect", disc_args.finish()}),
+                        items.push_back({net_op("graph.disconnect", disc_args.finish()),
                                          L"Disconnect All Inputs",
                                          true,
                                          false,
@@ -3321,7 +3702,7 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
                     {
                         json::Builder del_args;
                         static_cast<void>(del_args.set(del_args.root(), "name", network_context_node));
-                        items.push_back({bind_operator({"graph.delete_node", del_args.finish()}),
+                        items.push_back({net_op("graph.delete_node", del_args.finish()),
                                          L"Delete Node",
                                          can_edit,
                                          false,
@@ -3333,20 +3714,23 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
                     items.push_back({network_control::add_node, L"Add Node…", can_edit, false, {}, L"Tab"});
                     items.push_back({network_control::add_sticky_note, L"Add Sticky Note", can_edit, false, {}, L"N"});
                     items.push_back({network_control::add_network_box, L"Add Network Box", can_edit, false, {}, L"O"});
-                    items.push_back(
-                        {network_control::frame_all, L"Frame All", !active_graph.empty(), false, {}, L"H", true});
-                    items.push_back({bind_operator({"graph.layout"}), L"Auto Layout", can_edit, false, {}, L"L"});
+                    items.push_back({network_control::frame_all, L"Frame All", has_net, false, {}, L"H", true});
+                    items.push_back({net_op("graph.layout"), L"Auto Layout", can_edit, false, {}, L"L"});
                     json::Builder seed_args;
                     seed_args.set_validated(seed_args.root(), "node", "");
-                    items.push_back({bind_operator({"graph.select", seed_args.finish()}),
+                    items.push_back({net_op("graph.select", seed_args.finish()),
                                      L"Inspect Graph Seed",
-                                     !active_graph.empty(),
+                                     has_net,
                                      false,
                                      {},
                                      L"",
                                      true});
                     items.push_back(
-                        {bind_operator({"graph.exit"}), L"Return to World", !active_graph.empty(), false, {}});
+                        {network_control::isolate_toggle,
+                         active_graph.empty() ? L"Isolate SOP in 3D Viewport" : L"Return 3D Viewport to World",
+                         has_net || !active_graph.empty(),
+                         !active_graph.empty(),
+                         {}});
                 }
             } else if (const auto* target = binding(source->context_target);
                        source->kind == ControlKind::combo && target && target->kind == Binding::Kind::field) {
@@ -3776,11 +4160,13 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
         case control::scene_back:
         case control::entity_back:
         case control::parameter_back:
+        case network_control::nav_back:
             set_help(ctrl, L"Navigate Back", L"Selection History", "返回上一个检视的场景对象或上下文位置。");
             break;
         case control::scene_forward:
         case control::entity_forward:
         case control::parameter_forward:
+        case network_control::nav_forward:
             set_help(ctrl, L"Navigate Forward", L"Selection History", "前进到下一个检视的场景对象或上下文位置。");
             break;
         case control::scene_path:
@@ -3788,6 +4174,11 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
         case control::parameter_path:
             set_help(ctrl, L"Context Path", L"Navigation Breadcrumb",
                      "显示当前所处的场景世界（World）或程序化图（SOP）路径；点击可快速切换层级。");
+            break;
+        case network_control::path_combo:
+            set_help(
+                ctrl, L"Network Context Path", L"Network Breadcrumb",
+                "显示当前网络面板关联的世界生成器实体（World ▸ Entity ▸ Graph）或固定/独显图路径；点击可快速切换场景生成器或项目 .procgraph。");
             break;
         case control::viewport_tools_menu:
             set_help(ctrl, L"Active Tool Menu [W]", L"Viewport Header", "打开当前交互工具与快捷操作菜单。");

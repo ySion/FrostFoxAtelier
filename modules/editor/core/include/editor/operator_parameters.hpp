@@ -475,6 +475,21 @@ struct GraphDeleteNode {
     String name;
 };
 
+ASTRUCT(Name = "editor.GraphDuplicateNodes",
+        DESC = "复制程序化图中的选中或指定节点，保留属性、外观与连线，合为一步图历史。")
+struct GraphDuplicateNodes {
+    AGENERATED_BODY(GraphDuplicateNodes)
+
+    AFIELD(DESC = "目标图键；留空时作用于当前活动图。")
+    String asset;
+
+    AFIELD(DESC = "可选单个目标节点名；留空时复制当前选中的节点集合。")
+    String node;
+
+    AFIELD(DESC = "副本相对原节点的画布坐标偏移。")
+    math::Vector2 offset{36.f, 36.f};
+};
+
 ASTRUCT(Name = "editor.GraphRenameNode", DESC = "重命名程序化图中的节点。")
 struct GraphRenameNode {
     AGENERATED_BODY(GraphRenameNode)
@@ -577,6 +592,20 @@ struct GraphSetBypass {
 
     AFIELD(DESC = "为 true 时跳过该节点求值并直通第 0 输入端口。")
     bool bypass{};
+};
+
+ASTRUCT(Name = "editor.GraphSetFrozen", DESC = "设置程序化图节点的冰蓝色 Freeze 几何结果冻结状态。")
+struct GraphSetFrozen {
+    AGENERATED_BODY(GraphSetFrozen)
+
+    AFIELD(DESC = "目标图键；留空时作用于当前活动图。")
+    String asset;
+
+    AFIELD(DESC = "目标节点名；留空时作用于当前选中的节点。")
+    String node;
+
+    AFIELD(DESC = "为 true 时锁定该节点当前已求值的几何输出快照，直至显式解冻。")
+    bool frozen{};
 };
 
 ASTRUCT(Name = "editor.GraphSetAppearance", DESC = "更新程序化图节点的形状、颜色或备注。")

@@ -370,6 +370,7 @@ combo.viewport-header-menu {
 }
 combo.viewport-header-menu:hover { background: #4b4b4b; background-image: none; color: #ffffff; }
 combo.viewport-header-menu:selected, combo.viewport-header-menu:pressed { background: token(menu-active); background-image: none; color: #ffffff; }
+combo.viewport-header-menu:disabled { background: transparent; background-image: none; color: #6e6e6e; }
 combo.viewport-header-icon { padding: 0dip 0dip 0dip 3dip; indicator-size: 16dip; icon-align: left; }
 combo.viewport-header-step {
     padding: 0dip 4dip 0dip 6dip; combo-indicator: down; text-vertical-align: center; indicator-size: 8dip;
@@ -407,15 +408,40 @@ button.display-toggle {
 }
 button.display-toggle:hover { background: #4b4b4b; background-image: none; }
 button.display-toggle:selected, button.display-toggle:selected:hover { background: #5d7289; background-image: none; indicator-color: #ffffff; }
+button.display-toggle:disabled { background: transparent; background-image: none; indicator-color: #666c70; }
 button.display-toggle.grouped { border-edges: top; border-width: 0.667dip; border-color: #4d4d4d; }
 button.display-toggle.grouped:selected { border-edges: all; border-color: #374552; }
-button.network-node-btn { text-align: left; padding: 1dip 8dip; }
-button.network-node-btn:selected { background: #6b5820; background-image: none; border-color: #d8a928; color: #ffffff; }
-button.display-flag { padding: 0dip; font-weight: 700; }
-button.display-flag:selected, button.display-flag:selected:hover {
-    background: #2b83c6; background-image: none; border-color: #5cb6f5; color: #ffffff;
+/* Air-state (ghost) chrome for pane headers, action bars and inline popup headers. */
+button.ghost-tool, button.ghost-button {
+    background: transparent; background-image: none; border-width: 0dip;
+    indicator-size: 15.5dip; indicator-color: #c4ccd0; color: #cccccc;
 }
-.network-row-error { background: #4a2626; }
+button.ghost-tool { padding: 0dip; }
+button.ghost-button { padding: 0dip 6dip; font-size: 11.5dip; }
+button.ghost-tool:hover, button.ghost-button:hover {
+    background: #4b4b4b; background-image: none; indicator-color: #ffffff; color: #ffffff;
+}
+button.ghost-tool:pressed, button.ghost-button:pressed {
+    background: #5b6d7d; background-image: none; indicator-color: #ffffff; color: #ffffff;
+}
+button.ghost-tool:selected, button.ghost-tool:selected:hover,
+button.ghost-button:selected, button.ghost-button:selected:hover {
+    background: #5d7289; background-image: none; indicator-color: #ffffff; color: #ffffff;
+}
+button.ghost-tool:disabled, button.ghost-button:disabled {
+    background: transparent; background-image: none; indicator-color: #666c70; color: #6e6e6e;
+}
+button.viewport-header-toggle:disabled, button.viewport-segment-item:disabled {
+    background-image: linear-gradient(#383838, #313131); indicator-color: #6a7278; color: #707070;
+}
+button.network-node-btn {
+    background: transparent; background-image: none; border-width: 0dip;
+    text-align: left; padding: 1dip 8dip; color: #d6dde3;
+}
+button.network-node-btn:hover { background: #454545; background-image: none; color: #ffffff; }
+button.network-node-btn:selected { background: #536976; background-image: none; color: #ffffff; }
+.network-cook-summary { font-size: 11dip; color: #a7b6c2; text-vertical-align: center; padding: 0dip 4dip; }
+.network-cook-error { font-size: 11dip; color: #f88b8b; font-weight: 600; text-vertical-align: center; padding: 0dip 4dip; }
 .network-canvas { background: #252525; border-width: 0.667dip; border-style: inset; border-color: #1a1a1a; }
 .network-canvas-bg { background: #252525; }
 .network-tab-popup {

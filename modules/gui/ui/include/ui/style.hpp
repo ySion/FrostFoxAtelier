@@ -69,10 +69,23 @@ enum class ControlIcon {
     orient_scale,
     backface_tint,
     bounds_cage,
-    info
+    info,
+    sticky_note,
+    network_box,
+    palette,
+    node_shapes,
+    network_layout,
+    pin,
+    isolate,
+    sliders,
+    bypass_arrow,
+    info_glyph,
+    snowflake,
+    eye,
+    template_flag
 };
 
-inline constexpr ControlIcon last_control_icon = ControlIcon::info;
+inline constexpr ControlIcon last_control_icon = ControlIcon::template_flag;
 
 enum class Role { normal, panel, title, caption };
 

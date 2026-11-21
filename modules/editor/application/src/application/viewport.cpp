@@ -212,6 +212,7 @@ bool Application::viewport_input(const ui::Event& event, std::uint32_t native_ke
     }
     if (*result) {
         workspace_.inspecting_asset = false;
+        workspace_.inspecting_network = false;
         window_.capture(viewport_tool_.capture());
         workspace_.status = viewport_tool_.hint().empty() ? L"Viewport selection / transform updated"
                                                           : std::wstring(viewport_tool_.hint());
@@ -225,8 +226,10 @@ bool Application::viewport_input(const ui::Event& event, std::uint32_t native_ke
 bool Application::network_input(const ui::Event& event, std::uint32_t native_key) {
     if (event.kind == ui::EventKind::key_up && (native_key == 'Y' || event.key == ui::Key::y))
         workspace_.network.set_cut_key(false);
-    if (workspace_.menu || workspace_.dock.dragging() || !ui_.presented() || !pointer_ready() ||
-        workspace_.active_graph.empty() || !document_->has_graph(workspace_.active_graph))
+    if (workspace_.menu || workspace_.dock.dragging() || !ui_.presented() || !pointer_ready())
+        return false;
+    const std::string net_graph = workspace_.effective_network_graph(*document_, project_ ? &*project_ : nullptr);
+    if (net_graph.empty() || !document_->has_graph(net_graph))
         return false;
     const auto* canvas_box = ui_.presented()->find(editor::network_control::canvas);
     if (!canvas_box || canvas_box->bounds.width <= 0.f || canvas_box->bounds.height <= 0.f)
@@ -273,7 +276,7 @@ bool Application::network_input(const ui::Event& event, std::uint32_t native_key
                                                       event.key == ui::Key::down || event.key == ui::Key::enter)) {
             const auto prev_sel = workspace_.selected_graph_node;
             auto outcome =
-                workspace_.network.key_event(*document_, workspace_.active_graph, workspace_.selected_graph_node,
+                workspace_.network.key_event(*document_, net_graph, workspace_.selected_graph_node,
                                              workspace_.selected_graph_nodes, canvas_px, dpi, event, native_key);
             if (!outcome) {
                 status(Result<void>{std::unexpected(outcome.error())}, L"");
@@ -281,8 +284,12 @@ bool Application::network_input(const ui::Event& event, std::uint32_t native_key
             }
             if (!workspace_.network.tab_search().open)
                 effects(ui_.focus(0));
-            if (workspace_.selected_graph_node != prev_sel)
+            if (workspace_.selected_graph_node != prev_sel) {
+                workspace_.inspecting_asset = false;
+                workspace_.material_inspection.clear();
+                workspace_.inspecting_network = !workspace_.selected_graph_node.empty();
                 workspace_.bump_view_revision();
+            }
             if (!outcome->status.empty())
                 workspace_.status = outcome->status;
             return outcome->consumed;
@@ -317,9 +324,9 @@ bool Application::network_input(const ui::Event& event, std::uint32_t native_key
         }
         const auto prev_sel = workspace_.selected_graph_node;
         const auto prev_multi = workspace_.selected_graph_nodes;
-        auto outcome =
-            workspace_.network.pointer_event(*document_, workspace_.active_graph, workspace_.selected_graph_node,
-                                             workspace_.selected_graph_nodes, canvas_px, dpi, event);
+        auto outcome = workspace_.network.pointer_event(*document_, net_graph, workspace_.selected_graph_node,
+                                                        workspace_.selected_graph_nodes, canvas_px, dpi, event,
+                                                        project_ ? &*project_ : nullptr);
         if (!outcome) {
             workspace_.network.cancel_gesture();
             window_.capture(false);
@@ -330,6 +337,8 @@ bool Application::network_input(const ui::Event& event, std::uint32_t native_key
         if (workspace_.selected_graph_node != prev_sel || workspace_.selected_graph_nodes != prev_multi) {
             workspace_.inspecting_asset = false;
             workspace_.material_inspection.clear();
+            workspace_.inspecting_network =
+                !workspace_.selected_graph_node.empty() || !workspace_.selected_graph_nodes.empty();
             workspace_.bump_view_revision();
         }
         if (outcome->capture_acquire)
@@ -369,7 +378,7 @@ bool Application::network_input(const ui::Event& event, std::uint32_t native_key
     }
     const auto prev_sel = workspace_.selected_graph_node;
     const auto prev_multi = workspace_.selected_graph_nodes;
-    auto outcome = workspace_.network.key_event(*document_, workspace_.active_graph, workspace_.selected_graph_node,
+    auto outcome = workspace_.network.key_event(*document_, net_graph, workspace_.selected_graph_node,
                                                 workspace_.selected_graph_nodes, canvas_px, dpi, event, native_key);
     if (!outcome) {
         status(Result<void>{std::unexpected(outcome.error())}, L"");
@@ -378,8 +387,12 @@ bool Application::network_input(const ui::Event& event, std::uint32_t native_key
     if (workspace_.selected_graph_node != prev_sel || workspace_.selected_graph_nodes != prev_multi) {
         workspace_.inspecting_asset = false;
         workspace_.material_inspection.clear();
+        workspace_.inspecting_network =
+            !workspace_.selected_graph_node.empty() || !workspace_.selected_graph_nodes.empty();
         workspace_.bump_view_revision();
     }
+    if (outcome->capture_acquire)
+        window_.capture(true);
     if (outcome->capture_release)
         window_.capture(false);
     if (outcome->cursor)

@@ -486,10 +486,14 @@ public:
 
     Result<void> graph_remove_nodes(std::string_view key, std::span<const std::string> names);
 
+    Result<std::vector<std::string>> graph_duplicate_nodes(std::string_view key, std::span<const std::string> names,
+                                                           std::array<float, 2> offset = {36.f, 36.f});
+
     Result<void> graph_rename_node(std::string_view key, std::string_view old_name, std::string_view new_name);
 
     Result<void> graph_move_nodes(std::string_view key,
-                                  std::span<const std::pair<std::string, std::array<float, 2>>> moves);
+                                  std::span<const std::pair<std::string, std::array<float, 2>>> moves,
+                                  bool amend_creation = false);
 
     Result<void> graph_move_canvas_items(std::string_view key,
                                          std::span<const std::pair<std::string, std::array<float, 2>>> node_moves,
@@ -517,6 +521,8 @@ public:
     Result<void> graph_set_template(std::string_view key, std::string_view node_name);
 
     Result<void> graph_set_bypass(std::string_view key, std::string_view node_name, bool bypassed);
+
+    Result<void> graph_set_frozen(std::string_view key, std::string_view node_name, bool frozen, Project* = nullptr);
 
     Result<void> graph_set_node_appearance(std::string_view key, std::span<const std::string> names,
                                            std::optional<GraphNodeShape> shape = {},

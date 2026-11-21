@@ -152,7 +152,20 @@ public:
         orient_scale,
         backface_tint,
         bounds_cage,
-        info
+        info,
+        sticky_note,
+        network_box,
+        palette,
+        node_shapes,
+        network_layout,
+        pin,
+        isolate,
+        sliders,
+        bypass_arrow,
+        info_glyph,
+        snowflake,
+        eye,
+        template_flag
     };
 
     std::shared_ptr<const Coverage> symbol(Symbol, std::uint32_t pixels);

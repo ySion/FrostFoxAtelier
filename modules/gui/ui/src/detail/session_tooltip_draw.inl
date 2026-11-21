@@ -1,5 +1,5 @@
         self.validate_tooltip(*output);
-        if (self.tooltip_hover && std::chrono::steady_clock::now()-self.tooltip_hover->since>=std::chrono::milliseconds(500)) {
+        if (self.tooltip_hover && std::chrono::steady_clock::now()-self.tooltip_hover->since>=std::chrono::milliseconds(180)) {
             const auto& hover=*self.tooltip_hover;
             const auto& help=*hover.content;
             const float margin=6*scale,padding=8*scale,gap=5*scale;

@@ -468,11 +468,12 @@ void append_procedural_guides(const procedural::Geometry& geometry, const editor
 }
 
 void append_template_wireframe(const procedural::Geometry& geometry, const editor::ViewportView& view,
-                               std::vector<renderer::OverlayShape>& overlay) {
+                               std::vector<renderer::OverlayShape>& overlay, const math::Matrix4& world_transform) {
     const auto& positions = geometry.positions();
     const std::size_t point_count = positions.size();
     if (point_count == 0)
         return;
+    const bool identity_world = (world_transform == math::Matrix4::identity());
     const GuideStrokes guides{view, overlay};
     const std::size_t prim_count = geometry.count(procedural::Layer::primitive);
     const auto vp = geometry.vertex_points();
@@ -509,13 +510,15 @@ void append_template_wireframe(const procedural::Geometry& geometry, const edito
             const auto [a, b] = edges[i];
             if (a >= point_count || b >= point_count)
                 continue;
-            guides.segment(positions[a], positions[b], wire_color, 1.15f);
+            guides.segment(transform_point_row(positions[a], world_transform, identity_world),
+                           transform_point_row(positions[b], world_transform, identity_world), wire_color, 1.15f);
         }
     } else {
         constexpr std::size_t max_pts = 8192;
         const std::size_t stride = point_count > max_pts ? (point_count + max_pts - 1) / max_pts : 1;
         for (std::size_t i = 0; i < point_count; i += stride)
-            guides.point(positions[i], {wire_color.r, wire_color.g, wire_color.b, 0.56f}, 3.2f);
+            guides.point(transform_point_row(positions[i], world_transform, identity_world),
+                         {wire_color.r, wire_color.g, wire_color.b, 0.56f}, 3.2f);
     }
 }
 

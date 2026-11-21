@@ -277,6 +277,36 @@ void DockSpace::focus_control(ControlKey key, const UiFrame& frame) {
     }
 }
 
+bool DockSpace::focus_point(float x, float y, const UiFrame& frame) noexcept {
+    if (!std::isfinite(x) || !std::isfinite(y))
+        return false;
+    const auto* top = maximized_ ? find(maximized_) : root_.get();
+    if (!top)
+        top = root_.get();
+    const auto visit = [&](auto&& self, const Node& node) noexcept -> ControlKey {
+        if (node.split()) {
+            if (node.collapsed != 1)
+                if (const auto hit = self(self, *node.first))
+                    return hit;
+            if (node.collapsed != 2)
+                if (const auto hit = self(self, *node.second))
+                    return hit;
+            return 0;
+        }
+        if (!node.active || !visible(node.active))
+            return 0;
+        const auto* box = frame.find(node.key);
+        if (!box || box->bounds.width <= 0.f || box->bounds.height <= 0.f || !inside(box->bounds, x, y))
+            return 0;
+        return node.active;
+    };
+    const ControlKey hit = visit(visit, *top);
+    if (!hit || hit == focused_)
+        return false;
+    focused_ = hit;
+    return true;
+}
+
 bool DockSpace::move(ControlKey key, ControlKey target, DockSide side, float fraction) {
     const auto* node = owner(target);
     return node && place(key, node->key, side, 0, fraction);

@@ -550,14 +550,18 @@ Result<void> Application::save_documents(const editor::Context& context, bool al
     if (!all) {
         if (context.region == editor::RegionKind::code && file)
             return save_source(*file, context.interactive);
-        if (!context.active_graph.empty()) {
+        const std::string target_graph =
+            !context.active_graph.empty()
+                ? context.active_graph
+                : (context.region == editor::RegionKind::network ? context.network_graph : std::string{});
+        if (!target_graph.empty()) {
             auto edit = ui_.commit_edit();
             if (!edit || !effects(*edit))
                 return failed("Finish the active field before saving.");
             ATELIER_TRY(finish_color_edit(true));
-            if (!project_ || !project_->entry(context.active_graph))
+            if (!project_ || !project_->entry(target_graph))
                 return failed("Create a project .procgraph asset before saving this procedural graph.");
-            ATELIER_TRY(document_->save_graph(*project_, context.active_graph));
+            ATELIER_TRY(document_->save_graph(*project_, target_graph));
             const auto refreshed = project_->refresh();
             workspace_.status =
                 refreshed ? L"Procedural graph saved" : L"Procedural graph saved; catalog refresh failed";

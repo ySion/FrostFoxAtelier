@@ -5,6 +5,7 @@
 #include "runtime/reflection.hpp"
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -59,6 +60,14 @@ struct Connection {
     std::uint32_t output;
 };
 
+struct FrozenOutput {
+    std::uint64_t serial{};
+
+    std::vector<Geometry> outputs;
+
+    std::vector<Reference> dependencies;
+};
+
 // The unified base of all native and Source procedural graph nodes. Public fields are
 // authored parameters (an optional `[RunOver]` `procedural.Layer` field selects the active
 // element domain). Its synchronous void `process` method declares ports and column bindings:
@@ -91,6 +100,10 @@ private:
     std::vector<Connection> connections_; // Parallel to inputs_.
 
     bool bypassed_{};
+
+    bool frozen_{};
+
+    std::shared_ptr<const FrozenOutput> frozen_output_;
 };
 
 ACLASS(Name = "procedural.Graph", DESC = "程序化图：一组节点及其连接，display 节点的输出是图的结果。")
@@ -195,5 +208,12 @@ Result<void> set_display(Runtime& runtime, ObjectId graph, ObjectId node);
 Result<bool> bypassed(Runtime& runtime, ObjectId node);
 
 Result<void> set_bypassed(Runtime& runtime, ObjectId node, bool value);
+
+// A frozen node serves its locked cooked Geometry snapshot without re-evaluating upstream changes until unfrozen.
+Result<bool> frozen(Runtime& runtime, ObjectId node);
+
+Result<std::shared_ptr<const FrozenOutput>> frozen_output(Runtime& runtime, ObjectId node);
+
+Result<void> set_frozen(Runtime& runtime, ObjectId node, bool value, std::shared_ptr<const FrozenOutput> snapshot = {});
 
 }

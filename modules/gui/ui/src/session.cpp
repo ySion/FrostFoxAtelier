@@ -86,6 +86,19 @@ detail::TextStore::Symbol icon_symbol(ControlIcon icon) {
            : icon == Icon::backface_tint    ? Symbol::backface_tint
            : icon == Icon::bounds_cage      ? Symbol::bounds_cage
            : icon == Icon::info             ? Symbol::info
+           : icon == Icon::sticky_note      ? Symbol::sticky_note
+           : icon == Icon::network_box      ? Symbol::network_box
+           : icon == Icon::palette          ? Symbol::palette
+           : icon == Icon::node_shapes      ? Symbol::node_shapes
+           : icon == Icon::network_layout   ? Symbol::network_layout
+           : icon == Icon::pin              ? Symbol::pin
+           : icon == Icon::isolate          ? Symbol::isolate
+           : icon == Icon::sliders          ? Symbol::sliders
+           : icon == Icon::bypass_arrow     ? Symbol::bypass_arrow
+           : icon == Icon::info_glyph       ? Symbol::info_glyph
+           : icon == Icon::snowflake        ? Symbol::snowflake
+           : icon == Icon::eye              ? Symbol::eye
+           : icon == Icon::template_flag    ? Symbol::template_flag
            : icon == Icon::left             ? Symbol::left
            : icon == Icon::right            ? Symbol::right
            : icon == Icon::up               ? Symbol::up

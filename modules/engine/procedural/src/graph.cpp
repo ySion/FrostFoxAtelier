@@ -30,6 +30,16 @@ struct Access {
         return node.bypassed_;
     }
 
+    template <class N>
+    static auto& frozen(N& node) {
+        return node.frozen_;
+    }
+
+    template <class N>
+    static auto& frozen_output(N& node) {
+        return node.frozen_output_;
+    }
+
     template <class G>
     static auto& nodes(G& graph) {
         return graph.nodes_;
@@ -741,6 +751,30 @@ Result<void> set_bypassed(Runtime& runtime, ObjectId node, bool enabled) {
         return {};
     return runtime.with_native<Node>(node, [&](Node& value) -> Result<void> {
         Access::bypassed(value) = enabled;
+        return {};
+    });
+}
+
+Result<bool> frozen(Runtime& runtime, ObjectId node) {
+    return runtime.with_native<const Node>(node,
+                                           [](const Node& value) -> Result<bool> { return Access::frozen(value); });
+}
+
+Result<std::shared_ptr<const FrozenOutput>> frozen_output(Runtime& runtime, ObjectId node) {
+    return runtime.with_native<const Node>(node, [](const Node& value) -> Result<std::shared_ptr<const FrozenOutput>> {
+        return Access::frozen_output(value);
+    });
+}
+
+Result<void> set_frozen(Runtime& runtime, ObjectId node, bool enabled, std::shared_ptr<const FrozenOutput> snapshot) {
+    ATELIER_TRY_BIND(current, frozen(runtime, node));
+    ATELIER_TRY_BIND(current_snap, frozen_output(runtime, node));
+    const auto next_snap = enabled ? std::move(snapshot) : nullptr;
+    if (*current == enabled && *current_snap == next_snap)
+        return {};
+    return runtime.with_native<Node>(node, [&](Node& value) -> Result<void> {
+        Access::frozen(value) = enabled;
+        Access::frozen_output(value) = next_snap;
         return {};
     });
 }

@@ -375,6 +375,7 @@ void Application::scene_changed() {
     if (!workspace_.active_graph.empty())
         exit_graph_context();
     workspace_.inspecting_asset = false;
+    workspace_.inspecting_network = false;
     sync_world_view();
 }
 
@@ -562,19 +563,87 @@ Result<void> Application::action(const ui::Action& source) {
         ATELIER_TRY(document_->create_scratch_graph());
         return open_graph_context("scratch/procedural");
     }
-    if (event.kind == ui::ActionKind::activate && event.key == editor::network_control::add_node) {
-        if (workspace_.active_graph.empty() || !document_->has_graph(workspace_.active_graph) ||
-            document_->world().running())
+    const std::string net_graph = workspace_.effective_network_graph(*document_, project_ ? &*project_ : nullptr);
+    if (event.kind == ui::ActionKind::activate && event.key == editor::network_control::pin_toggle) {
+        if (!workspace_.network_pinned) {
+            if (!net_graph.empty()) {
+                workspace_.network_pinned = true;
+                workspace_.pinned_graph = net_graph;
+                workspace_.status = L"Pinned Network graph";
+            }
+        } else {
+            workspace_.network_pinned = false;
+            workspace_.pinned_graph.clear();
+            workspace_.status = L"Network follows selected Generator Entity";
+        }
+        return {};
+    }
+    if (event.kind == ui::ActionKind::activate && event.key == editor::network_control::isolate_toggle) {
+        if (!workspace_.active_graph.empty()) {
+            const std::string prev = workspace_.active_graph;
+            exit_graph_context();
+            if (workspace_.selected_generator_graph(*document_) != prev && document_->has_graph(prev)) {
+                workspace_.network_pinned = true;
+                workspace_.pinned_graph = prev;
+            }
+            workspace_.status = L"Returned 3D Viewport to World scene";
             return {};
+        }
+        if (!net_graph.empty())
+            return open_graph_context(net_graph);
+        return {};
+    }
+    if (event.kind == ui::ActionKind::activate)
+        if (const auto choice = workspace_.network_path_choice(event.key)) {
+            using Kind = editor::Workspace::NetworkPathChoice::Kind;
+            if (choice->kind == Kind::unpin_world) {
+                if (!workspace_.active_graph.empty())
+                    exit_graph_context();
+                workspace_.network_pinned = false;
+                workspace_.pinned_graph.clear();
+                workspace_.inspecting_network = false;
+                workspace_.status = L"Network follows selected Generator Entity";
+                return {};
+            }
+            if (choice->kind == Kind::follow_entity) {
+                if (!workspace_.active_graph.empty())
+                    exit_graph_context();
+                workspace_.network_pinned = false;
+                workspace_.pinned_graph.clear();
+                workspace_.inspecting_network = false;
+                return done(workspace_.select_object(*document_, *this, choice->entity), L"Generator Entity selected");
+            }
+            if (!workspace_.active_graph.empty())
+                return open_graph_context(choice->graph_key);
+            if (!document_->has_graph(choice->graph_key)) {
+                if (!project_)
+                    return invalid();
+                ATELIER_TRY(document_->open_graph(*project_, choice->graph_key));
+            }
+            workspace_.network_pinned = true;
+            workspace_.pinned_graph = choice->graph_key;
+            workspace_.set_single_graph_selection({});
+            workspace_.inspecting_network = false;
+            workspace_.bump_view_revision();
+            workspace_.status = L"Pinned Network graph";
+            return {};
+        }
+    const auto network_canvas_dip = [&]() {
         ui_layout::Size canvas_dip{640.f, 360.f};
         if (ui_.presented())
             if (const auto* box = ui_.presented()->find(editor::network_control::canvas);
                 box && box->bounds.width > 0.f && box->bounds.height > 0.f)
                 canvas_dip = {box->bounds.width / window_.dpi_scale(), box->bounds.height / window_.dpi_scale()};
+        return canvas_dip;
+    };
+    if (event.kind == ui::ActionKind::activate && event.key == editor::network_control::add_node) {
+        if (net_graph.empty() || !document_->has_graph(net_graph) || document_->world().running())
+            return {};
+        const auto canvas_dip = network_canvas_dip();
         std::string from_node;
         std::string from_port;
         if (!workspace_.selected_graph_node.empty())
-            if (const auto inspected = document_->graph_topology(workspace_.active_graph)) {
+            if (const auto inspected = document_->graph_topology(net_graph)) {
                 const auto at = std::ranges::find((*inspected)->nodes, workspace_.selected_graph_node,
                                                   &editor::GraphNodeView::name);
                 if (at != (*inspected)->nodes.end() && !at->ports.outputs.empty()) {
@@ -582,7 +651,7 @@ Result<void> Application::action(const ui::Action& source) {
                     from_port = at->ports.outputs.front();
                 }
             }
-        if (!source.target) {
+        if (!source.target && workspace_.menu && workspace_.menu->source == editor::network_control::canvas) {
             const auto dip =
                 workspace_.network.to_dip(workspace_.network_context_pos[0], workspace_.network_context_pos[1]);
             workspace_.network.open_tab_search(dip[0], dip[1], canvas_dip, std::move(from_node), std::move(from_port));
@@ -596,61 +665,38 @@ Result<void> Application::action(const ui::Action& source) {
         workspace_.status = L"Tab search · Type to filter · Up/Down select · Enter create · Esc cancel";
         return {};
     }
-    if (event.kind == ui::ActionKind::activate && event.key == editor::network_control::frame_all) {
-        if (workspace_.active_graph.empty() || !document_->has_graph(workspace_.active_graph))
-            return {};
-        ui_layout::Size canvas_dip{640.f, 360.f};
-        if (ui_.presented())
-            if (const auto* box = ui_.presented()->find(editor::network_control::canvas);
-                box && box->bounds.width > 0.f && box->bounds.height > 0.f)
-                canvas_dip = {box->bounds.width / window_.dpi_scale(), box->bounds.height / window_.dpi_scale()};
-        ATELIER_TRY_BIND(inspected, document_->graph_topology(workspace_.active_graph));
-        workspace_.network.frame_nodes((*inspected)->nodes, canvas_dip, {}, (*inspected)->boxes, (*inspected)->notes);
-        workspace_.status = L"Framed all SOP nodes";
-        return {};
-    }
-    if (event.kind == ui::ActionKind::activate && event.key == editor::network_control::zoom_reset) {
-        ui_layout::Size canvas_dip{640.f, 360.f};
-        if (ui_.presented())
-            if (const auto* box = ui_.presented()->find(editor::network_control::canvas);
-                box && box->bounds.width > 0.f && box->bounds.height > 0.f)
-                canvas_dip = {box->bounds.width / window_.dpi_scale(), box->bounds.height / window_.dpi_scale()};
-        workspace_.network.reset_zoom(canvas_dip);
-        workspace_.status = L"Network zoom 100%";
-        return {};
-    }
-    if (event.key == editor::network_control::tab_search_input) {
-        if (const auto* text = std::get_if<std::wstring>(&event.value))
-            if (event.kind == ui::ActionKind::edit_preview || event.kind == ui::ActionKind::edit_commit)
-                workspace_.network.set_tab_query(*text);
-        return {};
-    }
     if (event.kind == ui::ActionKind::activate && event.key >= editor::network_control::tab_pick_first &&
         event.key < editor::network_control::tab_pick_first + editor::NetworkCanvas::max_tab_results) {
-        if (workspace_.active_graph.empty() || !document_->has_graph(workspace_.active_graph) ||
-            !workspace_.network.tab_search().open)
+        if (net_graph.empty() || !document_->has_graph(net_graph) || !workspace_.network.tab_search().open)
             return {};
         ATELIER_TRY_BIND(catalog, document_->procedural_node_types());
         ATELIER_TRY_BIND(created, workspace_.network.commit_tab_pick(
-                                      *document_, workspace_.active_graph, *catalog,
+                                      *document_, net_graph, *catalog,
                                       static_cast<std::size_t>(event.key - editor::network_control::tab_pick_first),
                                       workspace_.selected_graph_node, workspace_.selected_graph_nodes, false));
         effects(ui_.focus(0));
+        workspace_.inspecting_asset = false;
+        workspace_.material_inspection.clear();
+        workspace_.inspecting_network = true;
         workspace_.bump_view_revision();
         workspace_.status = L"Added SOP node: " + platform::utf8_to_utf16_validated(*created);
         return {};
     }
     {
-        ui_layout::Size canvas_dip{640.f, 360.f};
-        if (ui_.presented())
-            if (const auto* box = ui_.presented()->find(editor::network_control::canvas);
-                box && box->bounds.width > 0.f && box->bounds.height > 0.f)
-                canvas_dip = {box->bounds.width / window_.dpi_scale(), box->bounds.height / window_.dpi_scale()};
+        const auto prev_sel = workspace_.selected_graph_node;
+        const auto prev_multi = workspace_.selected_graph_nodes;
         std::wstring net_status;
-        ATELIER_TRY_BIND(handled, workspace_.network.apply_action(
-                                      *document_, workspace_.active_graph, workspace_.selected_graph_node,
-                                      workspace_.selected_graph_nodes, canvas_dip, event, net_status));
+        ATELIER_TRY_BIND(handled, workspace_.network.apply_action(*document_, net_graph, workspace_.selected_graph_node,
+                                                                  workspace_.selected_graph_nodes, network_canvas_dip(),
+                                                                  event, net_status));
         if (*handled) {
+            if (workspace_.selected_graph_node != prev_sel || workspace_.selected_graph_nodes != prev_multi) {
+                workspace_.inspecting_asset = false;
+                workspace_.material_inspection.clear();
+                workspace_.inspecting_network =
+                    !workspace_.selected_graph_node.empty() || !workspace_.selected_graph_nodes.empty();
+                workspace_.bump_view_revision();
+            }
             if (!net_status.empty())
                 workspace_.status = std::move(net_status);
             return {};
@@ -706,6 +752,7 @@ Result<void> Application::action(const ui::Action& source) {
         if (event.key == editor::browser_control::results && event.kind == ui::ActionKind::select) {
             ATELIER_TRY(document_->cancel_edit());
             workspace_.inspecting_asset = true;
+            workspace_.inspecting_network = false;
             workspace_.material_inspection.clear();
             const auto& selected = workspace_.assets.selected();
             if (selected && selected->kind == assets::AssetKind::material && project_) {
@@ -1346,6 +1393,7 @@ Result<void> Application::open_graph_context(std::string_view key) {
         ATELIER_TRY(document_->open_graph(*project_, key));
     }
     workspace_.inspecting_asset = false;
+    workspace_.inspecting_network = false;
     workspace_.material_inspection.clear();
     workspace_.active_graph = std::string(key);
     if (const auto* doc = document_->graph_document(key)) {
@@ -1376,17 +1424,37 @@ void Application::exit_graph_context() {
     workspace_.network.set_cut_key(false);
     workspace_.network.close_tab_search();
     workspace_.active_graph.clear();
+    workspace_.inspecting_network = false;
     workspace_.set_single_graph_selection({});
     workspace_.bump_view_revision();
     camera_cut_ = true;
 }
 
 void Application::select_graph_node(std::string_view key, std::string_view node_name) {
-    if (workspace_.active_graph != key)
+    const auto net_key = workspace_.current_network_graph(*document_);
+    if (workspace_.active_graph != key && net_key != key)
         return;
     workspace_.inspecting_asset = false;
     workspace_.material_inspection.clear();
+    if (workspace_.active_graph.empty() && node_name.empty() && workspace_.selected_graph_node.empty() &&
+        workspace_.inspecting_network) {
+        workspace_.inspecting_network = false;
+    } else {
+        workspace_.inspecting_network = workspace_.active_graph.empty();
+    }
     workspace_.set_single_graph_selection(node_name);
+    workspace_.bump_view_revision();
+}
+
+void Application::select_graph_nodes(std::string_view key, std::span<const std::string> node_names) {
+    const auto net_key = workspace_.current_network_graph(*document_);
+    if (workspace_.active_graph != key && net_key != key)
+        return;
+    workspace_.inspecting_asset = false;
+    workspace_.material_inspection.clear();
+    workspace_.selected_graph_nodes.assign(node_names.begin(), node_names.end());
+    workspace_.selected_graph_node = node_names.empty() ? std::string{} : node_names.back();
+    workspace_.inspecting_network = workspace_.active_graph.empty() && !workspace_.selected_graph_nodes.empty();
     workspace_.bump_view_revision();
 }
 
@@ -1424,6 +1492,12 @@ bool Application::key_input(const ui::Event& event, std::uint32_t key, editor::R
     if (event.repeat && !entry->repeat)
         return true;
     auto call = entry->call;
+    if (call.id == "view.frame_selected") {
+        if (region == editor::RegionKind::network)
+            return true;
+        if (workspace_.active_graph.empty() && document_->selected_entities().empty())
+            call.id = "view.frame_all";
+    }
     if (region != editor::RegionKind::none)
         call.context.region = region;
     if (call.id.starts_with("asset.") && workspace_.assets.selected())
@@ -1755,10 +1829,19 @@ Result<bool> Application::menu_input(const ui::Event& input, WPARAM native_key) 
         return pie_input(input, native_key);
     const auto source = workspace_.menu->source;
     const bool top = editor::control::is_menu(source);
+    const auto is_viewport_strip = [](ui::ControlKey k) noexcept {
+        return k == editor::control::viewport_view_menu || k == editor::control::viewport_select_menu ||
+               k == editor::control::viewport_header_add || k == editor::control::viewport_object_menu;
+    };
+    const bool strip_hover = top || is_viewport_strip(source) || editor::network_control::is_header_menu(source);
+    const auto same_strip = [&](ui::ControlKey k) noexcept {
+        return (top && editor::control::is_menu(k)) || (is_viewport_strip(source) && is_viewport_strip(k)) ||
+               (editor::network_control::is_header_menu(source) && editor::network_control::is_header_menu(k));
+    };
     auto menu_at = ui::ControlKey{};
-    if (ui_.presented())
+    if (strip_hover && ui_.presented())
         for (const auto& box : ui_.presented()->controls)
-            if (editor::control::is_menu(box.key) && input.x >= box.bounds.x &&
+            if (box.enabled && same_strip(box.key) && input.x >= box.bounds.x &&
                 input.x < box.bounds.x + box.bounds.width && input.y >= box.bounds.y &&
                 input.y < box.bounds.y + box.bounds.height) {
                 menu_at = box.key;
@@ -1768,7 +1851,7 @@ Result<bool> Application::menu_input(const ui::Event& input, WPARAM native_key) 
         effects(ui_.focus(key));
         request_menu({key, 0, 0, 0});
     };
-    if (top && input.kind == ui::EventKind::pointer_move && menu_at && menu_at != source) {
+    if (strip_hover && input.kind == ui::EventKind::pointer_move && menu_at && menu_at != source) {
         change(menu_at);
         return true;
     }
@@ -2087,6 +2170,15 @@ Result<void> Application::input(const ui::Event& event, WPARAM native_key) {
         ui_.dismiss_tooltip();
         return {};
     }
+    if (event.kind == ui::EventKind::pointer_move && !camera_fly_ && !camera_drag_ && !viewport_tool_.active() &&
+        !workspace_.network.active_gesture() && !workspace_.dock.dragging() && !ui_.interaction_state().pointer &&
+        !ui_.has_popup() && !workspace_.menu && !workspace_.color_edit && !workspace_.row_rename &&
+        !workspace_.network.tab_search().open && !workspace_.network.popup().open() &&
+        (!ui_.wants_keyboard() || ui_.focused_control() == editor::source_control::buffer) && pointer_ready() &&
+        ui_.presented()) {
+        if (workspace_.dock.focus_point(event.x, event.y, *ui_.presented()))
+            effects(ui_.focus(0));
+    }
     // Scene Tree owns Clear Parent; text fields and other panes retain the
     // Project mnemonic. Resolve this context before opening a top-level menu.
     const auto region = editor::region_of(workspace_.dock.focused_tab());
@@ -2149,8 +2241,9 @@ Result<void> Application::input(const ui::Event& event, WPARAM native_key) {
             ui_.dismiss_tooltip();
         return {};
     }
+    const auto previous_focus = ui_.focused_control();
     auto reply = ui_.input(event);
-    if (ui_.presented())
+    if (ui_.presented() && ui_.focused_control() != previous_focus && ui_.focused_control() != 0)
         workspace_.dock.focus_control(ui_.focused_control(), *ui_.presented());
     if (!effects(reply))
         return {};
@@ -2447,7 +2540,11 @@ Result<bool> Application::run_step(renderer::Capture* capture, StepTimes* times)
                 material_preparation = procedural_preview_.prepare(renderer_);
             } else {
                 take(document_->sync_procedural_generators(project_ ? &*project_ : nullptr));
-                take(scene_.refresh(*document_));
+                const bool editing_network =
+                    workspace_.inspecting_network ||
+                    editor::region_of(workspace_.dock.focused_tab()) == editor::RegionKind::network;
+                const bool network_visible = workspace_.dock.visible(editor::network_control::tab);
+                take(scene_.refresh(*document_, !editing_network, !network_visible));
                 material_preparation = scene_.prepare(renderer_);
             }
             if (!material_preparation) {
@@ -2514,6 +2611,11 @@ Result<bool> Application::run_step(renderer::Capture* capture, StepTimes* times)
                         comp_state && comp_state->valid) {
                         if (const auto mtx = world::world_matrix(runtime, comp_state->owner))
                             world_mtx = *mtx;
+                    }
+                    if (!src->source.empty() && document_->has_graph(src->source)) {
+                        if (const auto eval = document_->evaluate_graph(src->source, project_ ? &*project_ : nullptr);
+                            eval && eval->template_output && eval->template_node != eval->display_node)
+                            append_template_wireframe(*eval->template_output, viewport_view, overlay_, world_mtx);
                     }
                     append_procedural_guides(*geom, viewport_view,
                                              {workspace_.effective_show_points(geom), workspace_.sop_show_normals,

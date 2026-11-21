@@ -249,9 +249,11 @@ constexpr bool is_path(ui::ControlKey key) {
 }
 
 constexpr int navigation_direction(ui::ControlKey key) {
-    return key == scene_back || key == entity_back || key == parameter_back            ? -1
-           : key == scene_forward || key == entity_forward || key == parameter_forward ? 1
-                                                                                       : 0;
+    return key == scene_back || key == entity_back || key == parameter_back || key == network_control::nav_back ? -1
+           : key == scene_forward || key == entity_forward || key == parameter_forward ||
+                   key == network_control::nav_forward
+               ? 1
+               : 0;
 }
 
 inline constexpr ui::ControlKey parameter_search = 54;
@@ -378,9 +380,15 @@ struct Workspace {
 
     bool inspecting_asset{}; // Inspect the browser's persistent resource identity, not an Entity instance.
 
+    bool inspecting_network{}; // Inspect the selected SOP node / graph root in Parameters while staying in World.
+
     std::string material_inspection;
 
-    std::string active_graph; // Active SOP .procgraph key (or scratch key); empty in Scene World context.
+    std::string active_graph; // Active Isolated SOP .procgraph key; empty in Scene World context.
+
+    bool network_pinned{}; // When true in World mode, Network pane stays locked to pinned_graph.
+
+    std::string pinned_graph;
 
     std::string selected_graph_node; // Decoupled from Display Flag; empty selects the Graph object itself.
 
@@ -417,9 +425,17 @@ struct Workspace {
             selected_graph_nodes.push_back(selected_graph_node);
     }
 
-    ObjectId inspected_graph_object(const Session&) const noexcept;
+    ObjectId inspected_graph_object(const Session&, std::string_view graph_key = {}) const noexcept;
+
+    std::string selected_generator_graph(const Session&) const;
+
+    std::string current_network_graph(const Session&) const;
+
+    std::string effective_network_graph(Session&, Project*);
 
     std::wstring graph_path_title(const Project*) const;
+
+    std::wstring network_path_title(const Session&, const Project*, std::string_view net_graph) const;
 
     void bump_view_revision() noexcept { ++view_revision_; }
 
@@ -643,6 +659,18 @@ struct Workspace {
 
     std::optional<MaterialChoice> material_choice(ui::ControlKey) const;
 
+    struct NetworkPathChoice {
+        enum class Kind { follow_entity, select_graph, unpin_world };
+
+        Kind kind{};
+
+        ObjectId entity;
+
+        std::string graph_key;
+    };
+
+    std::optional<NetworkPathChoice> network_path_choice(ui::ControlKey) const;
+
     Selection menu_selection() const noexcept { return menu_selection_; }
 
 private:
@@ -713,6 +741,12 @@ private:
     std::vector<ComponentType> component_choices_;
 
     std::vector<MaterialChoice> material_choices_;
+
+    std::vector<NetworkPathChoice> network_path_choices_;
+
+    std::string last_network_graph_;
+
+    std::string failed_auto_open_graph_;
 
     Selection menu_selection_;
 

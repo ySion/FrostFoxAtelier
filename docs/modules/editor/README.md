@@ -5,7 +5,7 @@
 现有外壳、菜单、工具架、停靠与业务面板由同一 DSL 装配；区域职责、控件语义和未实施的手势见[声明式 UI](declarative-ui.md#区域与手势边界)。
 启动日志和 Help → About 使用构建时生成的同一提交标识及配置；未提交改动标为 `local changes`。`atelier_editor --version` 可在不创建窗口的情况下读取该二进制的标识。工程打开成功后记录实际根目录，About 同时显示当前工程目录和场景路径。标识在构建时刷新，运行时不读取当前目录的 Git 状态。
 当前消费者将正式 Entity/Component/World 接入同一编辑器，并使用自动反射、共享调用合同与基础值类型。输入、视觉合同及验收入口见下文。World 使用可选内联空间的 Entity、StaticMeshComponent 和真实 StaticMeshEntity；网格使用中立的不可变 `geometry::MeshRef`，遵循[World 合同](../world/README.md)。
-模型与渲染消费完整 TRS；参数面板展示实例的公开标量和内联记录。位置、欧拉角和缩放使用三分量行，规范数学类型按元数据组合 Vector2/3/4，材质颜色按 RGB 展示；选择 Material 时编辑共享材质参数，其他资源显示元数据。已接入真实网格拾取、多选/框选、变换手柄及 G/R/S 操作。已声明默认值、修改状态、折叠分组、独立菜单、中键数值阶梯继续复用同一控件链；编辑器内 JIT 单步交互、节点画布、可浮动编辑器视图、布局文件保存、参数面板固定目标仍未实施。
+模型与渲染消费完整 TRS；参数面板展示实例的公开标量和内联记录。位置、欧拉角和缩放使用三分量行，规范数学类型按元数据组合 Vector2/3/4，材质颜色按 RGB 展示；选择 Material 时编辑共享材质参数，其他资源显示元数据。已接入真实网格拾取、多选/框选、变换手柄及 G/R/S 操作。已声明默认值、修改状态、折叠分组、独立菜单、中键数值阶梯继续复用同一控件链；编辑器内 JIT 单步交互、可浮动编辑器视图、布局文件保存、参数面板固定目标仍未实施。
 
 UI 作者层已将 Parameters 的查询、Position、属性组、Entity Structure 和 Scene Tree 迁入 [editor.ui.source](../../../assets/editor.ui.source)，使用有类型的组件组合、动态项和原单行编辑器。在 Dev / Release 开发工作树保存声明文件即可更新面板；代码按组件复用，兼容的 Instance / Context 保留，只增删对应子实例，源码失败保留旧定义与交互。布局、样式、输入与业务事务继续沿用现有设施；作者语法、生命周期和更新边界见[原生声明式 UI](declarative-ui.md)。
 
@@ -23,7 +23,7 @@ File → Edit Editor UI Source 可直接打开并修改当前 UI 声明；Code �
 
 ## 当前 UI 作者入口
 
-现有编辑器界面统一由 [editor.ui.source](../../../assets/editor.ui.source) 描述，包含总外壳、顶部菜单栏、工具架、状态栏、停靠栏/分隔条、Scene View、Parameters、World、Scene Tree、Entity Structure、Asset Browser、Controls、Code、Project Output 和原生窗口内的弹出菜单。C++ 提供数据与身份、业务命令和原生机制；各区域不再保留另一条 C++ 界面组装路径。支持范围、动态内容槽和更新事务见[声明式 UI](declarative-ui.md)。
+现有编辑器界面统一由 [editor.ui.source](../../../assets/editor.ui.source) 描述，包含总外壳、顶部菜单栏、工具架、状态栏、停靠栏/分隔条、Scene View、Parameters、World、Scene Tree、Entity Structure、Network、Geometry Spreadsheet、Asset Browser、Controls、Code、Project Output 和原生窗口内的弹出菜单。C++ 提供数据与身份、业务命令和原生机制；各区域不再保留另一条 C++ 界面组装路径。支持范围、视觉层级规范、动态内容槽和更新事务见[声明式 UI](declarative-ui.md)。
 
 ## 正式执行链
 
@@ -76,6 +76,10 @@ MS/MI、槽菜单、共享编辑、独立资产历史和实例覆盖使用同一
 - UI 根据实际 backbuffer 尺寸和 DPI 生成 draw/clip；renderer 不再次缩放。深度目标显式匹配实际 backbuffer。
 
 ## 视口编辑
+
+停靠区支持 Blender 风格的悬浮跟随焦点（`DockSpace::focus_point`）：在无模态手势、弹出菜单或活动单行文本/数值输入时，鼠标移入可见停靠面板即切换活动区域焦点（例如光标悬浮在 `Network` 时按 `F` 聚焦节点网络，悬浮在 `Scene View` 时按 `F` 聚焦选中对象或全场景）；`Code` 缓冲区在光标移出该面板时自动释放键盘占用。`Network` 面板可见或正在检视节点时，`SceneSnapshot` 不对 `ProceduralGeneratorEntity` 叠加整网面选中内线框，保证 MatCap 等模式下未开启 Wireframe 时仅显示干净曲面。
+
+`Network` 画布支持 `Shift+D`（复制选中/悬停节点并进入跟随光标放置，左键或 `Enter` 确认并合为一步撤销，`Esc`/右键保留偏移副本）、`Ctrl+D`（偏移复制）、`G`（抓取移动节点）、`Tab` / `Shift+A`（节点搜索创建）、`A` / `Alt+A` / `Ctrl+I`（全选切换、清空选择、反选）、`X` / `Del`（删除节点或注释框）、`F` / `H`（聚焦选中或全图）及 `D` / `T` / `B` / `Z` / `C` / `I` / `L` / `Y`。
 
 G／R／S 通过同一 ViewportTool 与 Session 事务预览、提交和撤销 TRS。仿射矩阵求逆保持精确的齐次末列，避免带旋转和平移的有效对象因消元舍入而被误判为透视变换；真正的剪切、反射、非有限值仍沿 World 规则拒绝。
 
@@ -230,8 +234,8 @@ GPU 段：
 在 Asset Browser 打开 `Content/**/*.procgraph`（或通过 Network 面板 / Control 新建临时图 `/scratch/procedural`）后，Scene View 按 Houdini `/obj` ↔ SOP 上下文方式切换：
 
 - **路径栏、视口隔离与程序化可视化栏**：Scene View 与 Parameters 的路径栏从 `World` 切换为图路径（如 `/Content/Graphs/Terrain.procgraph`），下拉菜单可返回 `World` 或在已打开的图文档间切换。3D 视口隔离渲染当前图的 **Display Flag**（蓝色 `D` 标记，`settings.display`）输出，并支持同时叠加 **Template Flag**（紫红色 `T` 标记，`settings.template`）的半透明参考线框；纯点云输出在无表面与实例时自动显示点标记（`Auto Points`），视口左下角常驻 3D XYZ 相机坐标轴指示器（Orientation Gnomon），Studio 模式默认启用背面绕序洋红染色（`Backface Winding Tint`）辅助排查顺逆时针绕序问题。视口右侧竖向程序化显示栏（全部控件采用“英文标题 + 中文说明”悬停提示）提供 **Display Points**、**Display Point Normals (`N`)**、**Display Primitive Normals**、**Display Orient & pscale**、**Display Bounds & Chunks** 与 **Geometry Info HUD (`i`)** 六项可视化开关；在 `World` 上下文中选中 `ProceduralGeneratorEntity` 时同样联动该显示栏与 Geometry Spreadsheet。
-- **选中节点与 Display / Template / Bypass 标记**：**Selected Node**（金色外框，Workspace 视图状态）驱动 Parameters 与默认 `Follow Selected` 的 Geometry Spreadsheet；**Display (`D`)**、**Template (`T`)** 与 **Bypass (`B`)** 持久化于 `.procgraph` v2 文档。
-- **紧凑型 Houdini 式二维 Network 连线画布与 Geometry Spreadsheet**：Network 页采用硬件抗锯齿解析 SDF 绘制 `88 × 28` DIP 紧凑节点主体、右侧双行外部标签（节点名 + 类型/耗时/备注）与 Display/Template 同心背景光环；节点内部保留贴合各造型侧边斜率的纵向状态条（左 `Bypass`、右内 `Template`、右外 `Display`），鼠标悬停时在节点包络外圈展开互不重叠的扇形空气环（Air-Ring：`r = 54..72` DIP，提供 `B` / `i` / `C` / `D` / `T` 快捷操作）。画布支持 8 种节点形状预设（`Z` 键或右键切换，默认按生成器/修改器/汇流器/撒点/`.source`/Null 角色自动匹配）、24 色校准色板（`C` 键）、节点信息与备注浮窗（`I` 键）、分类 + 驼峰首字母缩写的 `Tab` 快速创建（如 `ctp` → `CopyToPoints`）、拖未连线节点到连线上自动串接（Auto-Splice）、`Y` 划断连线、**Sticky Notes 便签**（`N` 键，支持缩放与双击多行编辑）及 **Network Boxes 分组框**（`O` 键，拖动标题栏将框内节点与便签一步整组移动）。Geometry Spreadsheet 页按 `Points | Vertices | Primitives | Detail | Instances` 五层实时展示元素计数，支持 `Follow Selected`、列名过滤与 512 行零拷贝分页切片。
+- **选中节点与 Display / Template / Bypass / Freeze 标记**：**Selected Node**（金色外框，Workspace 视图状态）驱动 Parameters 与默认 `Follow Selected` 的 Geometry Spreadsheet，左键直接拖拽未选中节点仅移动其坐标而不改变当前选中激活目标（左键单击不拖动才切换选择）；**Display (`D`)**、**Template (`T`)** 与 **Bypass (`B`)** 持久化于 `.procgraph` v2 文档，**Freeze**（冰蓝雪花标记）在当前编辑会话中锁定节点已求值的 `Geometry` 快照并支持单步撤销/重做（持久磁盘冻结格式另见程序化路线图）。
+- **紧凑型 Houdini 式二维 Network 连线画布与 Geometry Spreadsheet**：Network 面板顶栏对齐 Scene View 的空气态层级：首行提供路径下拉与空气态 `Pin` / `Isolate` 开关（World 下点击 `ProceduralGeneratorEntity` 即自动跟随呈现并可就地编辑其 `.procgraph`），次行左侧提供与视口同构的 `Add / Edit / View / Layout` 空气态菜单（支持展开后横向悬停切换），右侧提供无外框空气态矢量图标工具（`ghost-tool` / `ghost-button`，含 `Color Palette [C]` 与 `Shape Palette [Z]` 常驻浮动调色/造型入口）。画布采用硬件抗锯齿解析 SDF 绘制 `88 × 28` DIP 紧凑节点主体、居中语义图标、上下外置脱离式端口圆点（支持宽范围磁吸靠近高亮与连线吸附）、精细三段式连线（首尾圆滑贝塞尔弯折 + 中段水平/垂直轴对齐直线）、右侧双行外部标签（节点名 + 类型/耗时/备注/冻结状态）与 Display/Template 同心背景光环；节点内部保留贴合各造型侧边斜率的纵向状态条（左 `Bypass`、冻结时左内冰蓝条、右内 `Template`、右外 `Display`），鼠标悬停时在节点包络外圈展开互不重叠的 100% 不透明扇形空气环（Air-Ring：`r = 54..72` DIP，对齐 Houdini 排布提供左上黄箭头 `Bypass`、左中白 `i` 明细、左下冰蓝雪花 `Freeze`、右上蓝眼 `Display`、右下紫 T 标 `Template` 五个矢量图标扇区）。画布支持 8 种节点形状预设（`Z` 键或顶栏/菜单切换，浮窗内支持 `Shapes [Z]` ⇄ `Colors [C]` 一键互切）、24 色校准色板（`C` 键）、节点信息与布尔诊断/备注浮窗（`I` 键）、分类 + 驼峰首字母缩写的 `Tab` / `Shift+A` 快速创建（如 `ctp` → `CopyToPoints`）、`Shift+D` 交互复制放置（合为单步撤销）、拖未连线节点到连线上自动串接（Auto-Splice）、`Y` 划断连线、**Sticky Notes 便签**（`N` 键，支持缩放与双击多行编辑）及 **Network Boxes 分组框**（`O` 键，拖动标题栏将框内节点与便签一步整组移动）。Geometry Spreadsheet 页按 `Points | Vertices | Primitives | Detail | Instances` 五层实时展示元素计数，支持空气态 `Follow Selected`、列名过滤与 512 行零拷贝分页切片。
 - **参数、独立撤销与保存路由**：`PropertyRow` 支持 `String` 字段单行文本提交（供 `MeshImport.mesh`、`Noise.attribute`、`GroupBox.group` 等节点参数编辑）及既有数值、向量、布尔、枚举参数。每个已打开图在 `Session` 内拥有独立的 128 步增量历史（只记录作者增删改与节点 `ObjectRoot`，绝不把重算 `Geometry` 缓冲塞入撤销栈；撤销回旧参数直接命中 `Evaluator` 缓存），SOP 上下文下 `Ctrl+Z` / `Ctrl+Y` 与 `Ctrl+S` 自动路由到活动图文档，不污染场景 `World` 的 dirty 标记。
 
 固定视图标签统一使用正体，包括 Scene View；选中状态仅通过灰色底面区分，不使用斜体或焦点描边。标签只绘制右侧分隔边，首标签直接衔接分隔条的收边，不叠加左边框。
@@ -323,7 +327,7 @@ PopupHost 的测量 Session 也遵循 Surface 变化取消模态状态的规则�
 
 参数说明沿同一展示链路进入界面：原生类型与字段的 `DESC` 经 Runtime 进入 `Session::Property`；World 使用已有 `ViewOptionInfo` 的 label/category/description。两种生产者都适配成 `PropertyRow`，经同一 DSL 参数行和原生 Tooltip 显示，不建立另一份帮助登记表。World 保留整组候选校验、场景保存与撤销；诊断项保持视口归属。
 
-悬停参数标签或字段 500ms，可看到标题、完整字段身份及实际类型、中文/English 混合说明；向量共享聚合字段的说明，Rotation 明确区分 Quaternion 存储与 Euler 角度编辑。对象标题提供实际类型说明。提示只持有文字快照，切换对象或热更后旧提示失效，不改变 dirty、撤销或场景数据。`editor.inspect`、`material.inspect` 与 `capabilities.display_options` 返回同源描述，`AFUNCTION(DESC=...)` 保存到 Runtime 方法元数据，暂不自动创建函数调用按钮。
+悬停参数标签、工具按钮或节点 180ms（在已展开 Tooltip 的相邻控件间滑移时 50ms 快速切换），可看到标题、完整字段身份及实际类型、中文/English 混合说明；向量共享聚合字段的说明，Rotation 明确区分 Quaternion 存储与 Euler 角度编辑。对象标题提供实际类型说明。提示只持有文字快照，切换对象或热更后旧提示失效，不改变 dirty、撤销或场景数据。`editor.inspect`、`material.inspect` 与 `capabilities.display_options` 返回同源描述，`AFUNCTION(DESC=...)` 保存到 Runtime 方法元数据，暂不自动创建函数调用按钮。
 
 参数标签沿 Houdini 习惯由字段名生成：取最后一段，下划线分词并首字母大写（`material.base_color` → `Base Color`，项目源码字段 `moving` → `Moving`）；字段路径和绑定身份不变。颜色元组（基础色、自发光、灯光颜色）末尾带当前值色块，HDR 值仅在色块上截断到 `[0,1]`。组件分组与变换分组共用整宽折叠条。
 
@@ -408,7 +412,7 @@ Play 的 World Tick/协程按宿主调用推进，物理累积器不代表整个
 - `steps.csv` 提供逐步输入轮询、接受帧间隔及现有帧记录器的阶段时间。常规启动不采集这些报表。[真实编辑器计时](../../research/ui-helper-incremental-compilation.md#真实编辑器从保存到接受帧) · [单组件编译分解](../../research/ui-helper-incremental-compilation.md#单组件编译耗时)
 
 - `editor_log_smoke_acceptance`（窗口）运行 `atelier_editor_control_acceptance <atelier_editor.exe> <输出目录> --smoke-logs`：按 `Config/Project.json` 复制 Examples 的 `Config`、`Source` 与启动场景所在的 `Content/<场景包>`，以 `--no-activate --gpu-validation` 启动真实编辑器并等待启动场景的接受帧；经 Control 执行一次 `scene.add` → `scene.save` → `edit.undo`，确认撤销后有新的接受帧；随后启动 Play，在 Play 运行时关闭编辑器，检查编辑器与 runner 日志零错误且 Play 正常结束，通过后自动删除临时 `Project/` 副本。日志判定见 [Control 端到端验收](control.md#端到端验收)。
-- `editor_document_acceptance`（无窗口）的默认运行覆盖 StaticMeshEntity 创建的单条历史及 undo/redo 后的身份与网格资源、glTF 节点变换数学、一次网格导入→重新导入、`.procgraph` 图格式往返与宽容加载，以及 SOP 编辑器上下文与 Houdini 式二维 Network 连线画布（工程自定义 `.source` `parallel_for` 节点、Display 与选中节点解耦、`String`/标量参数撤销缓存命中、`file.save`、`graph.layout` 拓扑自动排版、Bezier 连线胶囊绘制、锚点滚轮缩放、框选与多选单步撤销拖动、`Y` 划断连线单步撤销、`Tab` 浮动搜索创建并自动连线、Geometry Spreadsheet 分页过滤、多边形线框 `edge_mask` 与完整 Workspace UI 帧接受）。
+- `editor_document_acceptance`（无窗口）的默认运行覆盖 StaticMeshEntity 创建的单条历史及 undo/redo 后的身份与网格资源、glTF 节点变换数学、一次网格导入→重新导入、`.procgraph` 图格式往返与宽容加载，以及 SOP 编辑器上下文与 Houdini 式二维 Network 连线画布（工程自定义 `.source` `parallel_for` 节点、World 场景选中 `ProceduralGeneratorEntity` 自动跟随呈现并支持就地编辑 Network 与 Pin/Isolate 切换、Display 与选中节点解耦、`String`/标量参数撤销缓存命中、`file.save`、`graph.layout` 拓扑自动排版、Bezier 连线与解析轮廓节点绘制、锚点滚轮缩放、框选与多选单步撤销拖动、`Y` 划断连线单步撤销、`Tab` 浮动搜索创建并自动连线、Geometry Spreadsheet 分页过滤、多边形线框 `edge_mask` 与完整 Workspace UI 帧接受）。
 - `project_scene_acceptance`（无窗口）覆盖一次作者字段值的 Scene 保存/重开往返，以及失败 Tick 中嵌套 stop 时 End 返回后才释放 PhysicsScene 的停止/关闭顺序。
 - `project_integration_acceptance`（无窗口）覆盖真实 Source → Runtime 的一次 tick，以及停止时卡死的 Source 子进程在期限内被终止。
 

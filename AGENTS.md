@@ -14,6 +14,7 @@
 
 - 构建、运行验收或确认已实现能力：读取 [README.md](README.md)。版本以 [工具链锁文件](cmake/toolchain-lock.json) 为准，命令以 presets 和 README 为准。
 - 设计模块、编写 C++、处理内存/并发/错误或优化性能：读取 [工程指南](docs/engineering.md) 的相关段落。
+- 设计或修改编辑器界面、面板顶栏/工具栏、`.ui.source` 或 `editor.ss`：读取 [声明式 UI 指南](docs/modules/editor/declarative-ui.md#视觉层级空气态控件与提示规范) 与 [UI 样式说明](docs/modules/editor/README.md#ui-样式与诊断)。
 - 讨论类型、对象、引用、语言或编译器术语：读取 [CONTEXT.md](CONTEXT.md)。其中只有词义，没有额外实现规则。
 - 定位代码时，若仓库根目录有 `.codegraph/`，先用 `codegraph_explore` 或 `codegraph explore`；否则用 `rg`。不自行建立索引，不重复加载已有且仍有效的上下文。
 

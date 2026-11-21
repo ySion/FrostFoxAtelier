@@ -36,8 +36,6 @@ inline constexpr ui::ControlKey layer_detail = 1106;
 
 inline constexpr ui::ControlKey layer_instance = 1107;
 
-inline constexpr ui::ControlKey page_first = 1108;
-
 inline constexpr ui::ControlKey page_prev = 1109;
 
 inline constexpr ui::ControlKey page_next = 1110;
@@ -96,6 +94,24 @@ inline constexpr ui::ControlKey open_node_info = popup_root + 5;
 
 inline constexpr ui::ControlKey toolbar_row = popup_root + 6;
 
+inline constexpr ui::ControlKey path_combo = popup_root + 7;
+
+inline constexpr ui::ControlKey nav_back = popup_root + 8;
+
+inline constexpr ui::ControlKey nav_forward = popup_root + 9;
+
+inline constexpr ui::ControlKey pin_toggle = popup_root + 10;
+
+inline constexpr ui::ControlKey isolate_toggle = popup_root + 11;
+
+inline constexpr ui::ControlKey action_bar = popup_root + 12;
+
+inline constexpr ui::ControlKey popup_switch_style = popup_root + 13;
+
+inline constexpr ui::ControlKey menu_add = popup_root + 14;
+
+inline constexpr ui::ControlKey menu_edit = popup_root + 15;
+
 inline constexpr ui::ControlKey tab_item_first = popup_root + 16; // +16..+31
 
 inline constexpr ui::ControlKey tab_pick_first = popup_root + 32; // +32..+47
@@ -103,6 +119,22 @@ inline constexpr ui::ControlKey tab_pick_first = popup_root + 32; // +32..+47
 inline constexpr ui::ControlKey tab_cat_row = popup_root + 48;
 
 inline constexpr ui::ControlKey tab_cat_first = popup_root + 50; // +50..+55
+
+inline constexpr ui::ControlKey menu_view = popup_root + 56;
+
+inline constexpr ui::ControlKey menu_layout = popup_root + 57;
+
+inline constexpr ui::ControlKey frame_selected = popup_root + 58;
+
+inline constexpr ui::ControlKey select_all_nodes = popup_root + 59;
+
+inline constexpr ui::ControlKey deselect_all_nodes = popup_root + 60;
+
+inline constexpr ui::ControlKey invert_select_nodes = popup_root + 61;
+
+constexpr bool is_header_menu(ui::ControlKey key) noexcept {
+    return key == menu_add || key == menu_edit || key == menu_view || key == menu_layout;
+}
 
 inline constexpr ui::ControlKey popup_box = popup_root + 64;
 
@@ -127,6 +159,8 @@ inline constexpr ui::ControlKey box_title_input = popup_root + 115;
 inline constexpr ui::ControlKey popup_delete_item = popup_root + 116;
 
 inline constexpr ui::ControlKey popup_aux_first = popup_root + 128; // +128..+255
+
+inline constexpr ui::ControlKey path_choice_first = popup_root + 256; // +256..+511
 } // namespace network_control
 
 class GeometrySpreadsheet final {
@@ -204,14 +238,18 @@ public:
 
     static constexpr float flag_width = 13.f;
 
+    static constexpr float pin_offset = 5.5f;
+
     static constexpr float air_inner_radius = 54.f;
 
     static constexpr float air_outer_radius = 72.f;
 
     static constexpr std::size_t max_tab_results = 14;
 
-    static constexpr std::array<float, 10> zoom_steps{0.35f, 0.45f, 0.55f, 0.67f, 0.80f,
-                                                      1.00f, 1.25f, 1.50f, 1.75f, 2.00f};
+    static constexpr std::array<float, 12> zoom_steps{0.20f, 0.27f, 0.35f, 0.45f, 0.55f, 0.67f,
+                                                      0.80f, 1.00f, 1.25f, 1.50f, 1.75f, 2.00f};
+
+    static constexpr std::size_t default_zoom_index = 7;
 
     static constexpr std::array<std::uint32_t, 24> color_palette{
         0xdc2626, 0xea580c, 0xd97706, 0xeab308, 0xca8a04, 0xf59e0b, // Warm reds & golds
@@ -290,6 +328,8 @@ public:
         std::wstring title_edit;
 
         std::wstring body_edit;
+
+        bool palette_floating{};
 
         bool open() const noexcept { return kind != PopupKind::none; }
     };
@@ -393,7 +433,8 @@ public:
 
     Result<InteractionOutcome> pointer_event(Session& session, std::string_view graph_key,
                                              std::string& primary_selected, std::vector<std::string>& selected_nodes,
-                                             ui::Rect canvas_px, float dpi_scale, const ui::Event& event);
+                                             ui::Rect canvas_px, float dpi_scale, const ui::Event& event,
+                                             Project* project = nullptr);
 
     Result<InteractionOutcome> key_event(Session& session, std::string_view graph_key, std::string& primary_selected,
                                          std::vector<std::string>& selected_nodes, ui::Rect canvas_px, float dpi_scale,
@@ -426,7 +467,7 @@ private:
 
     enum class FlagZone : std::uint8_t { none = 0, bypass, template_flag, display };
 
-    enum class AirButton : std::uint8_t { none = 0, bypass, info, style, display, template_flag };
+    enum class AirButton : std::uint8_t { none = 0, bypass, info, freeze, display, template_flag };
 
     struct SavedView {
         float pan_x{160.f};
@@ -446,7 +487,7 @@ private:
 
     float pan_y_{56.f};
 
-    std::size_t zoom_index_{5};
+    std::size_t zoom_index_{default_zoom_index};
 
     bool framed_{};
 
@@ -515,6 +556,10 @@ private:
     AirButton hovered_air_{AirButton::none};
 
     bool cut_key_held_{};
+
+    bool keyboard_grab_{};
+
+    bool amend_duplicate_{};
 
     float wheel_remainder_{};
 

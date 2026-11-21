@@ -93,6 +93,9 @@ public:
     // Output `output_index` of `node` when its latest evaluation succeeded; null otherwise.
     [[nodiscard]] const Geometry* node_output(ObjectId node, std::uint32_t output_index = 0) const noexcept;
 
+    // Captures `node`'s latest valid outputs and dependencies for node freezing; null when unavailable.
+    [[nodiscard]] std::shared_ptr<const FrozenOutput> retain_node_output(ObjectId node) const;
+
     // Null for nodes not in the graph at the last evaluation.
     [[nodiscard]] const NodeStatus* status(ObjectId node) const;
 

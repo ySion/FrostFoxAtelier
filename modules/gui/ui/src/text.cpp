@@ -615,10 +615,104 @@ std::shared_ptr<const Coverage> TextStore::symbol(Symbol symbol, std::uint32_t p
                                    segment(px, py, .15f, .85f, .36f, .85f) || segment(px, py, .15f, .85f, .15f, .64f) ||
                                    segment(px, py, .85f, .85f, .64f, .85f) || segment(px, py, .85f, .85f, .85f, .64f) ||
                                    std::hypot(px - .5f, py - .5f) < .07f)
-                            : symbol == Symbol::info
-                                ? (std::abs(std::hypot(px - .5f, py - .5f) - .37f) < .042f ||
-                                   std::hypot(px - .5f, py - .30f) < .065f ||
-                                   (std::abs(px - .5f) < .052f && py >= .44f && py <= .74f))
+                            : symbol == Symbol::info ? (std::abs(std::hypot(px - .5f, py - .5f) - .37f) < .042f ||
+                                                        std::hypot(px - .5f, py - .30f) < .065f ||
+                                                        (std::abs(px - .5f) < .052f && py >= .44f && py <= .74f))
+                            : symbol == Symbol::sticky_note
+                                ? (segment(px, py, .18f, .14f, .82f, .14f) || segment(px, py, .18f, .14f, .18f, .86f) ||
+                                   segment(px, py, .82f, .14f, .82f, .62f) || segment(px, py, .18f, .86f, .58f, .86f) ||
+                                   segment(px, py, .58f, .86f, .82f, .62f) || segment(px, py, .58f, .62f, .82f, .62f) ||
+                                   segment(px, py, .58f, .62f, .58f, .86f) || segment(px, py, .30f, .35f, .70f, .35f) ||
+                                   segment(px, py, .30f, .50f, .54f, .50f))
+                            : symbol == Symbol::network_box
+                                ? (outline(.12f, .16f, .78f, .82f) ||
+                                   (px >= .12f && px <= .78f && py >= .16f && py <= .33f) ||
+                                   segment(px, py, .64f, .74f, .92f, .74f) || segment(px, py, .78f, .60f, .78f, .88f))
+                            : symbol == Symbol::palette
+                                ? ((px >= .14f && px <= .44f && py >= .14f && py <= .44f) ||
+                                   outline(.56f, .14f, .86f, .44f) || outline(.14f, .56f, .44f, .86f) ||
+                                   (px >= .56f && px <= .86f && py >= .56f && py <= .86f))
+                            : symbol == Symbol::node_shapes
+                                ? ((py >= .20f && py <= .40f && px >= .12f && px <= .46f &&
+                                    std::hypot(std::max(0.f, std::abs(px - .29f) - .07f), py - .30f) <= .10f) ||
+                                   std::hypot(px - .72f, py - .30f) <= .13f ||
+                                   (std::abs(px - .29f) * .8f + std::abs(py - .70f) * 1.15f <= .15f) ||
+                                   (py >= .58f && py <= .82f && std::abs(px - .72f) <= .16f - (py - .58f) * .25f))
+                            : symbol == Symbol::network_layout
+                                ? ((px >= .34f && px <= .66f && py >= .12f && py <= .28f) ||
+                                   (px >= .12f && px <= .42f && py >= .68f && py <= .86f) ||
+                                   (px >= .58f && px <= .88f && py >= .68f && py <= .86f) ||
+                                   segment(px, py, .50f, .28f, .50f, .48f) || segment(px, py, .27f, .48f, .73f, .48f) ||
+                                   segment(px, py, .27f, .48f, .27f, .68f) || segment(px, py, .73f, .48f, .73f, .68f))
+                            : symbol == Symbol::pin
+                                ? ((py >= .15f && py <= .25f && std::abs(px - .5f) <= .24f) ||
+                                   (py >= .25f && py <= .52f && std::abs(px - .5f) <= .14f + (py - .25f) * .5f) ||
+                                   (py >= .52f && py <= .60f && std::abs(px - .5f) <= .30f) ||
+                                   (py >= .60f && py <= .88f &&
+                                    std::abs(px - .5f) <= .048f * (1.f - (py - .60f) * 2.f)))
+                            : symbol == Symbol::isolate
+                                ? (std::abs(std::hypot(px - .5f, py - .5f) - .34f) < .042f ||
+                                   std::hypot(px - .5f, py - .5f) < .11f || segment(px, py, .5f, .08f, .5f, .22f) ||
+                                   segment(px, py, .5f, .78f, .5f, .92f) || segment(px, py, .08f, .5f, .22f, .5f) ||
+                                   segment(px, py, .78f, .5f, .92f, .5f))
+                            : symbol == Symbol::sliders
+                                ? (segment(px, py, .14f, .26f, .86f, .26f) || segment(px, py, .14f, .50f, .86f, .50f) ||
+                                   segment(px, py, .14f, .74f, .86f, .74f) ||
+                                   std::hypot(px - .36f, py - .26f) < .095f ||
+                                   std::hypot(px - .68f, py - .50f) < .095f || std::hypot(px - .44f, py - .74f) < .095f)
+                            : symbol == Symbol::bypass_arrow
+                                ? ((std::abs(px - .50f) <= .074f && py >= .17f && py <= .71f) ||
+                                   [&] {
+                                       const auto bold_seg = [&](float ax, float ay, float bx, float by) {
+                                           const float dx = bx - ax;
+                                           const float dy = by - ay;
+                                           const float t = std::clamp(
+                                               ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy), 0.f, 1.f);
+                                           return std::hypot(px - ax - t * dx, py - ay - t * dy) <= .068f;
+                                       };
+                                       return bold_seg(.24f, .51f, .50f, .78f) || bold_seg(.76f, .51f, .50f, .78f);
+                                   }())
+                            : symbol == Symbol::info_glyph ? (std::hypot(px - .50f, py - .22f) <= .090f ||
+                                                              (px >= .36f && px <= .57f && py >= .40f && py <= .48f) ||
+                                                              (px >= .43f && px <= .57f && py >= .40f && py <= .80f) ||
+                                                              (px >= .34f && px <= .66f && py >= .74f && py <= .83f))
+                            : symbol == Symbol::snowflake  ? ([&] {
+                                  constexpr std::array<std::array<float, 2>, 6> dirs{{
+                                      {0.f, -1.f},
+                                      {.8660254f, -.5f},
+                                      {.8660254f, .5f},
+                                      {0.f, 1.f},
+                                      {-.8660254f, .5f},
+                                      {-.8660254f, -.5f},
+                                  }};
+                                  for (int k = 0; k < 3; ++k) {
+                                      if (segment(px, py, .50f - dirs[k][0] * .39f, .50f - dirs[k][1] * .39f,
+                                                  .50f + dirs[k][0] * .39f, .50f + dirs[k][1] * .39f))
+                                          return true;
+                                  }
+                                  for (int k = 0; k < 6; ++k) {
+                                      const float bx = .50f + dirs[k][0] * .21f;
+                                      const float by = .50f + dirs[k][1] * .21f;
+                                      const auto& d1 = dirs[(k + 1) % 6];
+                                      const auto& d2 = dirs[(k + 5) % 6];
+                                      if (segment(px, py, bx, by, bx + (dirs[k][0] + d1[0]) * .095f,
+                                                  by + (dirs[k][1] + d1[1]) * .095f) ||
+                                          segment(px, py, bx, by, bx + (dirs[k][0] + d2[0]) * .095f,
+                                                  by + (dirs[k][1] + d2[1]) * .095f))
+                                          return true;
+                                  }
+                                  return std::hypot(px - .50f, py - .50f) <= .07f;
+                              }())
+                            : symbol == Symbol::eye ? ((px >= .12f && px <= .88f && py <= .52f &&
+                                                        std::abs(std::hypot(px - .50f, py - .80f) - .48f) <= .044f) ||
+                                                       (px >= .12f && px <= .88f && py >= .48f &&
+                                                        std::abs(std::hypot(px - .50f, py - .20f) - .48f) <= .044f) ||
+                                                       std::hypot(px - .50f, py - .50f) <= .145f)
+                            : symbol == Symbol::template_flag
+                                ? ((py >= .21f && py <= .36f &&
+                                    std::abs(px - .50f) <= .30f - std::max(0.f, .28f - py) * 1.15f) ||
+                                   (std::abs(px - .50f) <= .085f && py >= .26f && py <= .82f) ||
+                                   (std::abs(px - .50f) <= .14f && py >= .76f && py <= .83f))
                                 : (py >= .3f && py <= .75f && std::abs(px - .5f) < (.75f - py) * .7f);
                         inside += hit ? 1u : 0u;
                     }

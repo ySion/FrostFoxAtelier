@@ -209,7 +209,7 @@ Remap 四端点须有限、输入两端不同，输出两端可以相同。按 `
 - **键**：节点的键是精确的字节串：类型（已发布 `TypeInfo` 的地址）、每个公开字段的内容、带上下文的节点再加图种子，自有语言节点再加入口的代码身份（`EntryInfo::code`），以及每个连接的（输入端口，上游输出号，上游结果序号）。每次真正执行 `process` 得到一个新的结果序号，所以上游结果变了下游的键就变；内容相同的两个节点共享同一个缓存结果。
 - **缓存**：按键查找结果，以条目为单位按最近使用淘汰，总量不超过 `cache_bytes`（默认 256 MiB）。撤销把参数改回旧值时直接命中旧结果，不再求值。
 - **资源**：节点经 Context 读到的网格连同解析结果记在结果上。`Resources::revision()` 变化后，复用结果之前重新解析这些键；解析结果不同就重新求值，相同就继续复用。
-- **失败与根因传播**：节点失败时它的下游不求值，下游节点的 `status(node)->error` 直接携带失败输入端口名及最上游失败节点的类型与原始错误原因（`Input '<port>' failed (<RootType>: <reason>).`），避免多层链路只剩空泛提示。失败的键在资源版本不变时不再重试，键变化或资源版本变化后再试。启用 `procedural::set_bypassed(runtime, node, true)` 的节点跳过 `process` 求值（及自有语言内核绑定），将第 0 个输入端口的首个上游输出（无连接时为空 `Geometry`）直接转发至 `outputs[0]`。
+- **失败与根因传播**：节点失败时它的下游不求值，下游节点的 `status(node)->error` 直接携带失败输入端口名及最上游失败节点的类型与原始错误原因（`Input '<port>' failed (<RootType>: <reason>).`），避免多层链路只剩空泛提示。失败的键在资源版本不变时不再重试，键变化或资源版本变化后再试。启用 `procedural::set_bypassed(runtime, node, true)` 的节点跳过 `process` 求值（及自有语言内核绑定），将第 0 个输入端口的首个上游输出（无连接时为空 `Geometry`）直接转发至 `outputs[0]`；启用 `procedural::set_frozen(runtime, node, true, snapshot)` 的会话态冻结节点（未启用 bypass 时）直接输出已锁定的 `FrozenOutput` 几何快照并跳过上游分支求值，直至显式解冻（持久磁盘冻结格式尚未定型，不写入 `.procgraph`）。
 - **调度**：每个需要的节点每次求值最多调用一次 `process`，按上游在前的顺序执行。每次发现变化后，对全图连接检查来源输出号；环检测仍只遍历求值目标的上游闭包。
 
 ### 通用反射编辑后的图校验
@@ -244,7 +244,7 @@ Remap 四端点须有限、输入两端不同，输出两端可以相同。按 `
 ```
 
 - **规范形式**：`nodes`、`notes`、`boxes` 均以标识符名字为键，按名字排序；空的 `notes` / `boxes` 及默认外观字段（`shape: auto`、无自定义 `color`、空 `comment`、`bypass: false`、无 `template`）省略写出，`dump(2)` 后加换行，未改动文档再次保存逐字节相同。
-- **宽容加载**：与 Scene 相同，已声明 `Transient` 的旧字段跳过，其余放不进的内容保留、报告并在保存时写回。类型不存在或不能作为节点的条目整项保留（`unknown_type`）；已知节点和 settings 中解析不了的参数叶经 `PropertyReport` 保留；失效连接按端口保留（`reference_dropped`）；`display` 或 `template` 指向没有加载的节点时同样保留，并在重命名或删除占位节点时同步更新与清理（含撤销恢复）。
+- **宽容加载**：与 Scene 相同，已声明 `Transient` 的旧字段跳过，其余放不进的内容保留、报告并在保存时写回。类型不存在或不能作为节点的条目整项保留（`unknown_type`）；已知节点和 settings 中解析不了的参数叶经 `PropertyReport` 保留；失效连接按端口保留（`reference_dropped`，多输入端口混有未解析端点时保留有序列表，并在后续连线、剪线、重连、串接或删除上游节点时同步增删对应端点、保留其余未解析项与相对顺序并计入撤销历史）；`display` 或 `template` 指向没有加载的节点时同样保留，并在重命名或删除占位节点时同步更新与清理（含撤销恢复）。
 - **结构错误**直接失败：版本不是 2、未知键、`nodes`/`settings`/`notes`/`boxes` 不是对象、标识符非法、缺少 `type`、`position`/`size` 非有限或尺寸非正、非法的 `shape` 预设名或非 `#RRGGBB` 颜色、`inputs` 格式非法。
 
 图文件不保存派生的 Geometry 缓冲。
@@ -258,7 +258,7 @@ Remap 四端点须有限、输入两端不同，输出两端可以相同。按 `
 - **连通块**：重合但拓扑独立的面、共享端点的折线、孤立点经 Connectivity 再 Promote 得到逐图元编号，并检查输入列与拓扑的写时复制。注册节点还经过 Merge → Connectivity → CopyToPoints 的完整图求值。
 - **空间与混合 C++/`.source` SOP 契约**：`import_mesh` 正负零缝焊接、`Bvh::acquire` 跨 COW 副本缓存复用与写后失效、`Geometry::set` 用途保持、`scatter` 最小间距空间哈希；`Grid → GroupBox → Jitter → RandomScale → NormalAlign → 自定义 .source SOP → Transform → CopyToPoints`（验证无 `id` 列回退、组遮罩、`RandomScale` 组外单位缩放与已有 `pscale` 保留、`Usage::orientation` 旋转复合及全部实例正常发布）；原生列绑定节点篡改可写列（含 `P`）长度被求值器拦截；`Box → Noise → Promote → Remap`（验证 `[RunOver]` 图元层求值、同名读写、节点与图级失败时 `output()==nullptr` 与 `last_valid_output()` 保旧、下游根因错误传播及恢复后缓存命中）。
 
-图文件 `load_graph` / `save_graph` 对 C++ 与 `.source` 节点的规范往返、缺失类型/失效连接宽容加载，以及编辑器 `.procgraph` 资产、SOP 上下文切换、二维 Network 节点连线画布（`graph.layout`、Bezier 连线胶囊、滚轮缩放、框选多选拖动、`Y` 划断连线、`Tab` 搜索创建并自动连线）、Display 与选中节点解耦求值、`String`/标量参数撤销缓存命中、Geometry Spreadsheet 分页过滤与视口表面/辅助线生成由 `editor_document_acceptance`（[acceptance/editor/document.cpp](../../../acceptance/editor/document.cpp)）覆盖；跨模块工程 Source 消费由 `project_integration_acceptance` 覆盖。
+图文件 `load_graph` / `save_graph` 对 C++ 与 `.source` 节点的规范往返、缺失类型/失效连接宽容加载（含多输入端口剪线/删节点的保留项同步与撤销），以及编辑器 `.procgraph` 资产、SOP 上下文切换、二维 Network 节点连线画布（`graph.layout`、三段式连线、外置磁吸端口、滚轮缩放、框选多选拖动、`Y` 划断连线、`Tab` 搜索创建并自动连线）、重导入网格删除后的 SOP 快照失效与 `procedural.bake` 拦截、Display 与选中节点解耦求值、`String`/标量参数撤销缓存命中、Geometry Spreadsheet 分页过滤与视口表面/辅助线生成由 `editor_document_acceptance`（[acceptance/editor/document.cpp](../../../acceptance/editor/document.cpp)）覆盖；跨模块工程 Source 消费由 `project_integration_acceptance` 覆盖。
 
 ```powershell
 . ./tools/enter-dev.ps1

@@ -1796,6 +1796,7 @@ struct EditorControl::Impl {
             ATELIER_TRY(result.set(item, "display", node.is_display));
             ATELIER_TRY(result.set(item, "template", node.is_template));
             ATELIER_TRY(result.set(item, "bypass", node.is_bypassed));
+            ATELIER_TRY(result.set(item, "frozen", node.is_frozen));
             const auto shape_name = editor::graph_node_shape_name(node.shape);
             ATELIER_TRY(result.set(item, "shape", shape_name.empty() ? std::string_view{"auto"} : shape_name));
             if (node.color)

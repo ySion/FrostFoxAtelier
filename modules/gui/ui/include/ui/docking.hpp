@@ -67,6 +67,8 @@ public:
 
     void focus_control(ControlKey, const UiFrame&);
 
+    bool focus_point(float x, float y, const UiFrame&) noexcept;
+
     bool apply(const Action&, const UiFrame&);
 
     std::vector<MenuItem> menu_items(ControlKey source, const UiFrame*);

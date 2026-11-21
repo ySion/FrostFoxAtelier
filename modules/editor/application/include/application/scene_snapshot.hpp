@@ -74,7 +74,8 @@ public:
 
     // Play suppresses selection; this is part of the frozen request, not a
     // mutation of an already adopted group's instances.
-    Result<void> refresh(const editor::Session& document, bool show_selection = true) {
+    Result<void> refresh(const editor::Session& document, bool show_selection = true,
+                         bool highlight_generators = true) {
         const auto& scene = document.presentation();
         // The slot map below indexes the synchronized Scene's cache; another one needs reset().
         if (synced_ && synced_->scene != scene.identity())
@@ -87,7 +88,8 @@ public:
         if (!version)
             return std::unexpected(version.error());
         const auto selection = show_selection ? document.selected_entities() : std::span<const ObjectId>{};
-        const bool reselect = !synced_ || !std::ranges::equal(synced_->selection, selection);
+        const bool reselect = !synced_ || !std::ranges::equal(synced_->selection, selection) ||
+                              synced_->highlight_generators != highlight_generators;
         bool changed = !synced_ || synced_->version != *version || reselect;
         const auto slots = scene.mesh_slots();
         const auto gen_slots = scene.generator_slots();
@@ -270,7 +272,7 @@ public:
         if (bindings_changed)
             ATELIER_TRY(bind_materials());
         if (relayout || generators_changed || reselect)
-            ATELIER_TRY(highlight(document, selection));
+            ATELIER_TRY(highlight(document, selection, highlight_generators));
         if (!synced_ || scene.lights_changed() > since) {
             for (auto& [object, key] : light_keys_) {
                 (void)object;
@@ -298,8 +300,11 @@ public:
                     {mesh_entities[i], meshes[i].world, meshes[i].geometry, meshes[i].material_slots});
             picking_ = std::move(picking);
             ++request_;
-            synced_ =
-                Synced{scene.identity(), *version, document.world().revision(), {selection.begin(), selection.end()}};
+            synced_ = Synced{scene.identity(),
+                             *version,
+                             document.world().revision(),
+                             {selection.begin(), selection.end()},
+                             highlight_generators};
         }
         return {};
     }
@@ -413,6 +418,8 @@ private:
         std::uint64_t world_revision;
 
         std::vector<ObjectId> selection;
+
+        bool highlight_generators{true};
     };
 
     struct Prepared {
@@ -656,7 +663,8 @@ private:
     }
 
     // A mesh is highlighted when its Entity or an ancestor is selected.
-    Result<void> highlight(const editor::Session& document, std::span<const ObjectId> selection) {
+    Result<void> highlight(const editor::Session& document, std::span<const ObjectId> selection,
+                           bool highlight_generators = true) {
         if (selection.empty()) {
             for (auto& mesh : meshes)
                 mesh.selected = false;
@@ -676,8 +684,11 @@ private:
             inherited.emplace(member.id(),
                               selected.contains(member.id()) || (*parent != ObjectId{} && inherited.at(*parent)));
         }
-        for (std::size_t i = 0; i < meshes.size(); ++i)
+        const std::size_t limit = highlight_generators ? meshes.size() : std::min(static_mesh_count_, meshes.size());
+        for (std::size_t i = 0; i < limit; ++i)
             meshes[i].selected = inherited.at(mesh_entities[i]);
+        for (std::size_t i = limit; i < meshes.size(); ++i)
+            meshes[i].selected = false;
         return {};
     }
 };

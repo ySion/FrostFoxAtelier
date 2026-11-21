@@ -65,9 +65,11 @@ struct Context {
 
     std::string asset; // Material or procedural graph asset key while Parameters/SOP context inspects it.
 
-    std::string active_graph; // Non-empty when Scene View / Network is inside a SOP .procgraph context.
+    std::string active_graph; // Non-empty when Scene View is isolated inside a SOP .procgraph context.
 
-    std::string selected_graph_node; // Selected node name in active_graph; empty selects Graph root settings.
+    std::string network_graph; // Graph currently shown in Network pane (Isolated SOP, Pinned, or World Entity follow).
+
+    std::string selected_graph_node; // Selected node name in active_graph / network_graph; empty selects Graph root.
 
     std::vector<std::string> selected_graph_nodes; // Multi-node selection in active_graph Network View.
 
@@ -241,6 +243,10 @@ public:
     virtual void exit_graph_context() = 0;
 
     virtual void select_graph_node(std::string_view key, std::string_view node_name) = 0;
+
+    virtual void select_graph_nodes(std::string_view key, std::span<const std::string> node_names) {
+        select_graph_node(key, node_names.empty() ? std::string_view{} : std::string_view{node_names.back()});
+    }
 
 private:
     bool cancelled_{};

@@ -122,6 +122,12 @@ struct Evaluator::Impl {
 
         bool bypassed{};
 
+        bool frozen{};
+
+        std::shared_ptr<const FrozenOutput> frozen_source;
+
+        std::shared_ptr<Entry> frozen_entry;
+
         std::string local; // Type and public field contents.
 
         std::vector<Input> inputs;
@@ -305,15 +311,52 @@ struct Evaluator::Impl {
         return added;
     }
 
-    Result<void> read(ObjectId id, State& state) {
+    Result<void> read(ObjectId id, State& state, const State* prior) {
         if (!state.plan)
             return std::unexpected(*state.fault);
         ATELIER_TRY_BIND(is_bypassed, bypassed(runtime, id));
+        ATELIER_TRY_BIND(is_frozen, frozen(runtime, id));
+        ATELIER_TRY_BIND(snap, frozen_output(runtime, id));
         state.bypassed = *is_bypassed;
+        state.frozen = *is_frozen;
+        state.frozen_source.reset();
+        state.frozen_entry.reset();
+        if (state.frozen) {
+            if (*snap) {
+                if (prior && prior->frozen_source == *snap && prior->frozen_entry) {
+                    state.frozen_source = prior->frozen_source;
+                    state.frozen_entry = prior->frozen_entry;
+                } else {
+                    auto frozen_e = std::make_shared<Entry>();
+                    frozen_e->serial = ++serials;
+                    frozen_e->outputs = (*snap)->outputs;
+                    if (frozen_e->outputs.size() < state.plan->ports.outputs.size())
+                        frozen_e->outputs.resize(state.plan->ports.outputs.size());
+                    frozen_e->dependencies = (*snap)->dependencies;
+                    frozen_e->revision = revision;
+                    state.frozen_source = *snap;
+                    state.frozen_entry = std::move(frozen_e);
+                }
+            } else if (prior && prior->frozen_entry) {
+                state.frozen_entry = prior->frozen_entry;
+            } else if (prior && !prior->bypassed && !prior->status.error && prior->entry) {
+                state.frozen_entry = prior->entry;
+            }
+            if (state.frozen_entry && state.frozen_entry->outputs.size() < state.plan->ports.outputs.size()) {
+                auto resized = std::make_shared<Entry>();
+                resized->serial = ++serials;
+                resized->outputs = state.frozen_entry->outputs;
+                resized->outputs.resize(state.plan->ports.outputs.size());
+                resized->dependencies = state.frozen_entry->dependencies;
+                resized->revision = revision;
+                state.frozen_entry = std::move(resized);
+            }
+        }
+        const bool locked_frozen = !state.bypassed && state.frozen && state.frozen_entry != nullptr;
         auto info = runtime.describe(state.type);
         if (!info)
             return std::unexpected(info.error());
-        if (!state.plan->native && !state.bypassed) {
+        if (!state.plan->native && !state.bypassed && !locked_frozen) {
             auto* bound = source_kernels.find(state.type);
             if (!bound)
                 bound = source_kernels.try_emplace(state.type, bind_source(state.type)).value;
@@ -323,7 +366,10 @@ struct Evaluator::Impl {
         std::string local;
         append(local, *info); // Published TypeInfo addresses are stable identities for this Runtime.
         append(local, state.bypassed);
-        if (!state.bypassed) {
+        append(local, state.frozen);
+        if (locked_frozen) {
+            append(local, state.frozen_entry->serial);
+        } else if (!state.bypassed) {
             for (const auto& field : (*info)->fields)
                 if (auto added = append_field(local, id, field); !added)
                     return added;
@@ -603,6 +649,15 @@ struct Evaluator::Impl {
             state.root_error = Error{state.fault->code, node_label(state.type) + ": " + state.fault->message};
             return;
         }
+        if (!state.bypassed && state.frozen && state.frozen_entry) {
+            if (state.entry != state.frozen_entry)
+                ++state.status.cache_hits;
+            state.entry = state.frozen_entry;
+            touch(*state.entry);
+            state.status.error.reset();
+            state.root_error.reset();
+            return;
+        }
         std::string key = state.local;
         const SourceKernel* source_kernel{};
         if (!state.plan->native && !state.bypassed) {
@@ -634,6 +689,8 @@ struct Evaluator::Impl {
         }
         if (state.entry && state.entry->key == key && current(*state.entry)) {
             touch(*state.entry);
+            if (!state.bypassed && state.frozen && !state.frozen_entry)
+                state.frozen_entry = state.entry;
             state.status.error.reset();
             state.root_error.reset();
             return;
@@ -647,6 +704,8 @@ struct Evaluator::Impl {
             state.entry = *found;
             touch(*state.entry);
             ++state.status.cache_hits;
+            if (!state.bypassed && state.frozen && !state.frozen_entry)
+                state.frozen_entry = state.entry;
             state.status.error.reset();
             state.root_error.reset();
             return;
@@ -662,6 +721,8 @@ struct Evaluator::Impl {
             return;
         }
         state.entry = std::move(*evaluated);
+        if (!state.bypassed && state.frozen && !state.frozen_entry)
+            state.frozen_entry = state.entry;
         state.failed.clear();
         state.status.error.reset();
         state.root_error.reset();
@@ -686,6 +747,8 @@ struct Evaluator::Impl {
             const auto id = path.back().id;
             const auto* staged = changed.find(id);
             const auto& state = staged ? *staged : *nodes.find(id);
+            if (!state.bypassed && state.frozen && state.frozen_entry && active_only)
+                path.back().next = state.inputs.size();
             if (state.bypassed && active_only) {
                 while (path.back().next < state.inputs.size() && state.inputs[path.back().next].input != 0)
                     ++path.back().next;
@@ -856,18 +919,22 @@ struct Evaluator::Impl {
         bool changed = !cursor || refreshed || republished || resources.revision() != revision || seed_changed;
         for (auto [node, state] : candidate) {
             const auto* prior = nodes.find(node);
-            auto read = this->read(node, state);
+            auto read = this->read(node, state, prior);
             state.fault.reset();
             if (!read)
                 state.fault = read.error();
-            changed = changed || !prior || !read || state.bypassed != prior->bypassed || state.local != prior->local ||
-                      state.inputs != prior->inputs;
+            changed = changed || !prior || !read || state.bypassed != prior->bypassed ||
+                      state.frozen != prior->frozen || state.frozen_entry != prior->frozen_entry ||
+                      state.local != prior->local || state.inputs != prior->inputs;
         }
         for (auto [node, state] : candidate) {
             auto& target = *nodes.try_emplace(node).value;
             target.type = state.type;
             target.plan = state.plan;
             target.bypassed = state.bypassed;
+            target.frozen = state.frozen;
+            target.frozen_source = std::move(state.frozen_source);
+            target.frozen_entry = std::move(state.frozen_entry);
             target.inputs = std::move(state.inputs);
             target.fault = std::move(state.fault);
             if (!target.fault)
@@ -986,6 +1053,17 @@ const Geometry* Evaluator::node_output(ObjectId node, std::uint32_t output_index
     return found && !found->status.error && found->entry && output_index < found->entry->outputs.size()
                ? &found->entry->outputs[output_index]
                : nullptr;
+}
+
+std::shared_ptr<const FrozenOutput> Evaluator::retain_node_output(ObjectId node) const {
+    const auto* found = impl_->nodes.find(node);
+    if (!found || found->status.error || !found->entry)
+        return nullptr;
+    auto out = std::make_shared<FrozenOutput>();
+    out->serial = found->entry->serial;
+    out->outputs = found->entry->outputs;
+    out->dependencies = found->entry->dependencies;
+    return out;
 }
 
 const NodeStatus* Evaluator::status(ObjectId node) const {

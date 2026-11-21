@@ -1006,16 +1006,16 @@ ui GeometrySpreadsheet(in TableBinding model, in TextEditBinding filter, in Text
             ChoiceButton detail { text: input.detail_title; selected: input.detail_sel; selection_group: node.toolbar; height: 22; content_width: 0; classes: "section-tab header-tab joined"; }
             ChoiceButton instances { text: input.instances_title; selected: input.instances_sel; selection_group: node.toolbar; height: 22; content_width: 0; classes: "section-tab header-tab joined"; }
             Column spacer { expand_width: true; height: 1; }
-            ToggleButton follow { text: "Follow Selected"; selected: input.follow_selected; action: input.follow_action; height: 22; content_width: 0; classes: "browser-tool"; }
+            ToggleButton follow { text: "Follow Selected"; selected: input.follow_selected; action: input.follow_action; height: 22; content_width: 0; classes: "ghost-button"; }
             Text target_label { text: input.target; content_width: 0; single_line: true; caption: true; }
         }
         Row filter_bar {
             height: 26; gap: 4; padding_left: 6; padding_right: 6; align_center: true; classes: "browser-toolbar";
             Text attr_label { text: "Attributes"; content_width: 0; single_line: true; caption: true; }
             TextField attr_filter { edit: input.filter; expand_width: true; min_width: 48; height: 22; }
-            Button prev_page { text: "<"; action: input.prev_page; collapsed: !input.paged; width: 24; height: 22; classes: "browser-tool"; }
+            Button prev_page { text: "<"; action: input.prev_page; collapsed: !input.paged; width: 24; height: 22; classes: "ghost-button"; }
             Text range_info { text: input.range_text; content_width: 0; single_line: true; caption: true; }
-            Button next_page { text: ">"; action: input.next_page; collapsed: !input.paged; width: 24; height: 22; classes: "browser-tool"; }
+            Button next_page { text: ">"; action: input.next_page; collapsed: !input.paged; width: 24; height: 22; classes: "ghost-button"; }
         }
         Table table {
             model: input.model;
@@ -1037,30 +1037,67 @@ ui NetworkTabItem(in Text title, in Text badge, in bool active_row, in ActionBin
     }
 }
 
-ui NetworkPanel(in Text graph_title, in bool has_graph, in bool editable,
-                in ActionBinding add_action, in ActionBinding frame_action, in ActionBinding layout_action,
+ui NetworkPanel(in Text graph_title, in double path_icon, in ActionBinding back, in ActionBinding forward,
+                in double back_icon, in double forward_icon,
+                in bool pinned, in double pin_icon, in ActionBinding pin_action,
+                in bool isolated, in double isolate_icon, in ActionBinding isolate_action,
+                in bool has_graph, in bool compact,
+                in bool add_menu_open, in bool edit_menu_open, in bool view_menu_open, in bool layout_menu_open,
+                in Text cook_summary, in Text cook_summary_style,
+                in ActionBinding scratch_action,
+                in ActionBinding add_action, in double add_icon,
+                in ActionBinding note_action, in double note_icon,
+                in ActionBinding box_action, in double box_icon,
+                in bool color_open, in ActionBinding color_action, in double color_icon,
+                in bool shape_open, in ActionBinding shape_action, in double shape_icon,
+                in bool info_open, in ActionBinding info_action, in double info_icon,
+                in ActionBinding layout_action, in double layout_icon,
+                in ActionBinding frame_action, in double frame_icon,
                 in Text zoom_text, in ActionBinding zoom_action,
-                in ActionBinding settings_action, in ActionBinding delete_action,
-                in ActionBinding exit_action, in ActionBinding scratch_action,
+                in bool seed_selected, in ActionBinding settings_action, in double settings_icon,
+                in ActionBinding delete_action, in double delete_icon,
                 in bool tab_open, in double tab_x, in double tab_y,
                 in TextEditBinding tab_query, in Items<NetworkTabItem> tab_items,
                 in Text status_text) {
     Column pane {
         expand_height: true; panel: true; classes: "parameter-pane";
         Row toolbar {
-            height: 30; gap: 4; padding_left: 6; padding_right: 6; align_center: true; classes: "path-bar";
-            Text title { text: input.graph_title; expand_width: true; single_line: true; classes: "object-type"; }
-            Button scratch { text: "New Scratch Graph"; action: input.scratch_action; collapsed: input.has_graph; height: 23; content_width: 0; classes: "browser-tool"; }
-            Button add_node { text: "+ Add (Tab)"; action: input.add_action; collapsed: !input.has_graph; enabled: input.editable; height: 23; content_width: 0; classes: "browser-tool"; }
-            Button frame_btn { text: "Frame"; action: input.frame_action; collapsed: !input.has_graph; height: 23; content_width: 0; classes: "browser-tool"; }
-            Button layout_btn { text: "Layout"; action: input.layout_action; collapsed: !input.has_graph; enabled: input.editable; height: 23; content_width: 0; classes: "browser-tool"; }
-            Button zoom_btn { text: input.zoom_text; action: input.zoom_action; collapsed: !input.has_graph; height: 23; width: 48; classes: "browser-tool"; }
-            Button settings { text: "Seed"; action: input.settings_action; collapsed: !input.has_graph; height: 23; content_width: 0; classes: "browser-tool"; }
-            Button remove { text: "Del"; action: input.delete_action; collapsed: !input.has_graph; enabled: input.editable; height: 23; width: 34; classes: "browser-tool"; }
-            Button world_exit { text: "World"; action: input.exit_action; collapsed: !input.has_graph; height: 23; content_width: 0; classes: "browser-tool"; }
+            height: 32; gap: 2; padding_left: 4; padding_top: 3; padding_right: 4; padding_bottom: 3;
+            align_center: true; classes: "path-bar";
+            Button back { icon: input.back_icon; action: input.back; width: 22; height: 24; classes: "path-navigation"; }
+            Button forward { icon: input.forward_icon; action: input.forward; width: 22; height: 24; classes: "path-navigation"; }
+            Combo path { text: input.graph_title; icon: input.path_icon; expand_width: true; min_width: 40; height: 24; classes: "pane-path"; }
+            Column path_gap { width: 2; height: 1; }
+            ToggleButton pin_btn { icon: input.pin_icon; action: input.pin_action; selected: input.pinned; width: 26; height: 24; classes: "ghost-tool"; }
+            ToggleButton isolate_btn { icon: input.isolate_icon; action: input.isolate_action; selected: input.isolated; width: 26; height: 24; classes: "ghost-tool"; }
+        }
+        Row action_bar {
+            height: 28; gap: 2; padding_left: 4; padding_right: 4; align_center: true; wrap: false; classes: "viewport-options";
+            Combo add_menu { text: "Add"; selected: input.add_menu_open; content_width: 0; height: 24; classes: "viewport-header-menu"; }
+            Combo edit_menu { collapsed: !input.has_graph; text: "Edit"; selected: input.edit_menu_open; content_width: 0; height: 24; classes: "viewport-header-menu"; }
+            Combo view_menu { collapsed: !input.has_graph; text: "View"; selected: input.view_menu_open; content_width: 0; height: 24; classes: "viewport-header-menu"; }
+            Combo layout_menu { collapsed: !input.has_graph || input.compact; text: "Layout"; selected: input.layout_menu_open; content_width: 0; height: 24; classes: "viewport-header-menu"; }
+            Column empty_spacer { collapsed: input.has_graph; expand_width: true; height: 1; }
+            Button scratch { text: "+ Scratch Graph"; action: input.scratch_action; collapsed: input.has_graph; height: 24; content_width: 0; classes: "ghost-button"; }
+            Text cook_readout { text: input.cook_summary; collapsed: !input.has_graph || input.compact; expand_width: true; min_width: 24; single_line: true; classes: input.cook_summary_style; }
+            Column compact_spacer { collapsed: !input.has_graph || !input.compact; expand_width: true; height: 1; }
+            Button add_node { collapsed: !input.has_graph; icon: input.add_icon; action: input.add_action; width: 24; height: 24; classes: "ghost-tool"; }
+            Button note_btn { collapsed: !input.has_graph; icon: input.note_icon; action: input.note_action; width: 24; height: 24; classes: "ghost-tool"; }
+            Button box_btn { collapsed: !input.has_graph; icon: input.box_icon; action: input.box_action; width: 24; height: 24; classes: "ghost-tool"; }
+            Column div_style { collapsed: !input.has_graph || input.compact; width: 1; height: 15; classes: "viewport-option-divider"; }
+            ToggleButton color_btn { collapsed: !input.has_graph || input.compact; icon: input.color_icon; action: input.color_action; selected: input.color_open; width: 24; height: 24; classes: "ghost-tool"; }
+            ToggleButton shape_btn { collapsed: !input.has_graph || input.compact; icon: input.shape_icon; action: input.shape_action; selected: input.shape_open; width: 24; height: 24; classes: "ghost-tool"; }
+            ToggleButton info_btn { collapsed: !input.has_graph || input.compact; icon: input.info_icon; action: input.info_action; selected: input.info_open; width: 24; height: 24; classes: "ghost-tool"; }
+            Column div_view { collapsed: !input.has_graph; width: 1; height: 15; classes: "viewport-option-divider"; }
+            Button layout_btn { collapsed: !input.has_graph; icon: input.layout_icon; action: input.layout_action; width: 24; height: 24; classes: "ghost-tool"; }
+            Button frame_btn { collapsed: !input.has_graph; icon: input.frame_icon; action: input.frame_action; width: 24; height: 24; classes: "ghost-tool"; }
+            Button zoom_btn { collapsed: !input.has_graph; text: input.zoom_text; action: input.zoom_action; content_width: 34; height: 24; classes: "ghost-button"; }
+            Column div_graph { collapsed: !input.has_graph; width: 1; height: 15; classes: "viewport-option-divider"; }
+            ToggleButton settings { collapsed: !input.has_graph; icon: input.settings_icon; action: input.settings_action; selected: input.seed_selected; width: 24; height: 24; classes: "ghost-tool"; }
+            Button remove { collapsed: !input.has_graph; icon: input.delete_icon; action: input.delete_action; width: 24; height: 24; classes: "ghost-tool"; }
         }
         Text empty_hint {
-            text: "Open a .procgraph in Asset Browser (File > New Procedural Graph...) or click New Scratch Graph.";
+            text: "Select a Procedural Generator Entity in Scene Tree / 3D Viewport to view and edit its network live in World, open a .procgraph in Asset Browser, or click + Scratch Graph.";
             collapsed: input.has_graph; caption: true; classes: "empty-state";
         }
         Overlay body {
@@ -1077,7 +1114,7 @@ ui NetworkPanel(in Text graph_title, in bool has_graph, in bool editable,
             }
         }
         Text status {
-            text: input.status_text; collapsed: !input.has_graph; height: 22; padding_left: 6; padding_right: 6; caption: true; classes: "browser-status";
+            text: input.status_text; collapsed: !input.has_graph; height: 21; padding_left: 6; padding_right: 6; caption: true; classes: "browser-status";
         }
     }
 }

@@ -235,6 +235,49 @@ class game.DiagnosticSop : procedural.Node {
                 reopened.issues.size() == 2,
             "Save/reopen must retain repaired properties, renamed live edges and unavailable endpoints.");
 
+    // Cutting wires or deleting nodes on a multi-input port with unresolved siblings must strip removed endpoints,
+    // preserve remaining unresolved items and order across save/reopen, and round-trip through Undo/Redo:
+    {
+        take(doc.graph_add_node(repair_key, "procedural.Box", "extra_box", {40.f, 220.f}));
+        take(doc.graph_connect(repair_key, "extra_box", "output", "merged", "inputs"));
+        take(doc.save_graph(project, repair_key));
+        const auto with_extra = take(assets::read_file(temp_root / "Content/Graphs/Repair.procgraph"));
+        const auto pos_ren = with_extra.find("renamed.output");
+        const auto pos_leg = with_extra.find("legacy.output");
+        const auto pos_ext = with_extra.find("extra_box.output");
+        require(pos_ren != with_extra.npos && pos_leg != with_extra.npos && pos_ext != with_extra.npos &&
+                    pos_ren < pos_leg && pos_leg < pos_ext,
+                "Connecting to a multi-input port with kept endpoints lost unresolved siblings or order.");
+
+        const std::array cut_renamed{editor::GraphConnectionView{"renamed", "output", 0, "merged", "inputs", 0}};
+        take(doc.graph_disconnect_edges(repair_key, cut_renamed));
+        require(doc.graph_dirty(repair_key), "Cutting a live wire on a kept multi-input port must dirty the graph.");
+        take(doc.graph_undo(repair_key, false));
+        require(!doc.graph_dirty(repair_key), "Undo of wire cut did not restore exact kept multi-input list.");
+        take(doc.graph_undo(repair_key, true));
+        take(doc.save_graph(project, repair_key));
+        const auto after_cut_disk = take(assets::read_file(temp_root / "Content/Graphs/Repair.procgraph"));
+        const auto reopened_after_cut = take(editor::load_graph(rt, after_cut_disk));
+        const auto cut_leg = after_cut_disk.find("legacy.output");
+        const auto cut_ext = after_cut_disk.find("extra_box.output");
+        require(after_cut_disk.find("renamed.output") == after_cut_disk.npos && cut_leg != after_cut_disk.npos &&
+                    cut_ext != after_cut_disk.npos && cut_leg < cut_ext && reopened_after_cut.issues.size() == 2,
+                "Cut wire resurrected on save/reopen or disturbed remaining kept multi-input order.");
+
+        const std::array remove_extra{std::string{"extra_box"}};
+        take(doc.graph_remove_nodes(repair_key, remove_extra));
+        require(doc.graph_dirty(repair_key), "Removing an upstream node must dirty the graph.");
+        take(doc.graph_undo(repair_key, false));
+        require(!doc.graph_dirty(repair_key), "Undo of node removal did not restore downstream kept multi-input list.");
+        take(doc.graph_undo(repair_key, true));
+        take(doc.save_graph(project, repair_key));
+        const auto after_del_disk = take(assets::read_file(temp_root / "Content/Graphs/Repair.procgraph"));
+        require(after_del_disk.find("extra_box") == after_del_disk.npos &&
+                    after_del_disk.find("renamed.output") == after_del_disk.npos &&
+                    after_del_disk.find("legacy.output") != after_del_disk.npos,
+                "Removed node endpoint resurrected on save or lost unresolved sibling.");
+    }
+
     const auto catalog = take(doc.procedural_node_types());
     require(std::ranges::any_of(catalog, [](const auto& c) { return c.name == "procedural.Grid" && c.native; }) &&
                 std::ranges::any_of(catalog, [](const auto& c) { return c.name == "game.TerraceWave" && !c.native; }),
@@ -649,6 +692,45 @@ class game.DiagnosticSop : procedural.Node {
                 std::abs(node_y(drag_undone, "instancer") - node_y(laid_out, "instancer")) < 1e-3f,
             "edit.undo did not revert multi-node SOP drag in a single Undo step.");
 
+    // Houdini LMB drag vs click: dragging an unselected node moves ONLY that node without selecting/activating it,
+    // whereas clicking without dragging selects it; detached pins highlight magnetically at generous proximity:
+    {
+        workspace.set_single_graph_selection("terrace");
+        const auto sphere_it = std::ranges::find(laid_out.nodes, "sphere", &editor::GraphNodeView::name);
+        const float sphere_x0 = sphere_it->position[0];
+        const float terrace_x0 = terrace_it->position[0];
+        const auto sphere_body =
+            workspace.network.to_dip(sphere_it->position[0] + editor::NetworkCanvas::node_width * .45f,
+                                     sphere_it->position[1] + editor::NetworkCanvas::node_height * .5f);
+        send_ptr(ui::EventKind::pointer_down, sphere_body[0], sphere_body[1]);
+        send_ptr(ui::EventKind::pointer_move, sphere_body[0] + 40.f, sphere_body[1]);
+        send_ptr(ui::EventKind::pointer_up, sphere_body[0] + 40.f, sphere_body[1]);
+        const auto after_unsel_drag = take(doc.graph_topology(graph_key));
+        require(after_unsel_drag->find_node("sphere")->position[0] > sphere_x0 + 10.f &&
+                    std::abs(after_unsel_drag->find_node("terrace")->position[0] - terrace_x0) < 1e-3f &&
+                    workspace.selected_graph_node == "terrace" && workspace.selected_graph_nodes.size() == 1,
+                "Dragging an unselected SOP node changed graph selection or moved unrelated selected nodes.");
+        invoke("edit.undo");
+        require(std::abs(take(doc.graph_topology(graph_key))->find_node("sphere")->position[0] - sphere_x0) < 1e-3f,
+                "edit.undo did not revert unselected SOP node drag.");
+
+        send_ptr(ui::EventKind::pointer_down, sphere_body[0], sphere_body[1]);
+        send_ptr(ui::EventKind::pointer_up, sphere_body[0], sphere_body[1]);
+        require(workspace.selected_graph_node == "sphere" &&
+                    workspace.selected_graph_nodes == std::vector<std::string>{"sphere"},
+                "Clicking an unselected SOP node without dragging did not select it.");
+
+        const auto out_pin = workspace.network.port_dip(*sphere_it, true, 0);
+        const auto sphere_bottom = workspace.network.to_dip(
+            sphere_it->position[0], sphere_it->position[1] + editor::NetworkCanvas::node_height)[1];
+        require(std::abs((out_pin[1] - sphere_bottom) - editor::NetworkCanvas::pin_offset * workspace.network.zoom()) <
+                    1e-2f,
+                "Output pin dot is not detached outside the node bottom edge.");
+        const auto prox_move = send_ptr(ui::EventKind::pointer_move, out_pin[0] + 11.f, out_pin[1] + 5.f);
+        require(prox_move.cursor == ui::Cursor::crosshair,
+                "Detached pin port did not magnetically highlight within generous cursor proximity.");
+    }
+
     // Y + LMB scissor wire-cut across scatter -> instancer Bezier wire, then 1-step Undo:
     const auto scatter_it = std::ranges::find(laid_out.nodes, "scatter", &editor::GraphNodeView::name);
     const auto inst_it = std::ranges::find(laid_out.nodes, "instancer", &editor::GraphNodeView::name);
@@ -713,7 +795,7 @@ class game.DiagnosticSop : procedural.Node {
     std::string inputs;
     for (unsigned i = 0; i < 33; ++i) {
         const auto name = "grid" + std::to_string(i);
-        dense += "\"" + name + R"(":{"type":"procedural.Grid","position":[0,0]},)";
+        dense += "\"" + name + R"(":{"type":"procedural.Grid","position":[)" + std::to_string(i * 8 + 12) + R"(,0]},)";
         if (i)
             inputs += ',';
         inputs += "\"" + name + ".output\"";
@@ -752,10 +834,10 @@ class game.DiagnosticSop : procedural.Node {
     const auto next = take(workspace.describe(doc, {1400, 900}, dense_frame.get(), &project, &ui_session));
     take_ui(ui_session.set_controls(next));
     require(ui_session.accept(take_ui(ui_session.prepare())), "Dense frame refresh failed.");
-    std::this_thread::sleep_for(std::chrono::milliseconds(520));
+    std::this_thread::sleep_for(std::chrono::milliseconds(210));
     const auto help_frame = take_ui(ui_session.prepare());
     require(help_frame->tooltip && help_frame->tooltip->owner == fault_title,
-            "Node hover did not survive a canvas refresh.");
+            "Node hover tooltip did not open promptly (~180ms) after canvas refresh.");
 
     // Phase B: Bypass pass-through on failing Source SOP ('fault'), 1-step Undo, and multi-input port-1 skip:
     invoke("graph.set_bypass", R"({"node":"fault","bypass":true})");
@@ -933,6 +1015,58 @@ class game.DiagnosticSop : procedural.Node {
             workspace.network.close_popup();
         }
 
+        // Air-Ring bottom-left Freeze (Snowflake) locks cooked geometry across upstream edits + Undo/Redo:
+        {
+            const auto pre_freeze_eval = take(doc.evaluate_graph(graph_key, &project));
+            require(pre_freeze_eval.display_output != nullptr, "Missing display output before Freeze test.");
+            const std::size_t frozen_inst_count = pre_freeze_eval.display_output->count(procedural::Layer::instance);
+            const auto cur_t2 = take(doc.graph_topology(graph_key));
+            const std::array focus_terrace{std::string{"terrace"}};
+            workspace.network.frame_nodes(cur_t2->nodes, {cpx.width, cpx.height}, focus_terrace);
+            const auto* ter = cur_t2->find_node("terrace");
+            const auto ter_center =
+                workspace.network.to_dip(ter->position[0] + editor::NetworkCanvas::node_width * .5f,
+                                         ter->position[1] + editor::NetworkCanvas::node_height * .5f);
+            send_ptr(ui::EventKind::pointer_move, ter_center[0], ter_center[1]);
+            const float z_air = workspace.network.zoom();
+            const float r_mid =
+                (editor::NetworkCanvas::air_inner_radius + editor::NetworkCanvas::air_outer_radius) * .5f * z_air;
+            const float rad_freeze = 140.f * (std::numbers::pi_v<float> / 180.f);
+            const float fx = ter_center[0] + std::cos(rad_freeze) * r_mid;
+            const float fy = ter_center[1] + std::sin(rad_freeze) * r_mid;
+            send_ptr(ui::EventKind::pointer_move, fx, fy);
+            send_ptr(ui::EventKind::pointer_down, fx, fy);
+            send_ptr(ui::EventKind::pointer_up, fx, fy);
+            require(take(doc.graph_topology(graph_key))->find_node("terrace")->is_frozen,
+                    "Clicking Air-Ring bottom-left Snowflake sector did not freeze 'terrace'.");
+
+            {
+                json::Builder patch;
+                static_cast<void>(patch.set(patch.root(), "radius", 0.05));
+                take(doc.graph_set_properties(graph_key, "sphere", patch.root()));
+            }
+            const auto while_frozen = take(doc.evaluate_graph(graph_key, &project));
+            require(!while_frozen.display_error && while_frozen.display_output != nullptr &&
+                        while_frozen.display_output->count(procedural::Layer::instance) == frozen_inst_count,
+                    "Frozen SOP node 'terrace' changed output when upstream 'sphere' radius shrunk to 0.05.");
+
+            invoke("graph.set_frozen", R"({"node":"terrace","frozen":false})");
+            const auto after_unfreeze = take(doc.evaluate_graph(graph_key, &project));
+            require(after_unfreeze.display_output != nullptr &&
+                        after_unfreeze.display_output->count(procedural::Layer::instance) < frozen_inst_count,
+                    "Unfreezing 'terrace' did not resume live evaluation against shrunk upstream 'sphere'.");
+            invoke("edit.undo"); // Undoes unfreeze -> restores Freeze
+            require(take(doc.graph_topology(graph_key))->find_node("terrace")->is_frozen,
+                    "edit.undo did not restore Frozen state on 'terrace'.");
+            invoke("edit.undo"); // Undoes sphere radius = 0.05
+            invoke("edit.undo"); // Undoes initial Freeze
+            require(
+                !take(doc.graph_topology(graph_key))->find_node("terrace")->is_frozen &&
+                    take(doc.evaluate_graph(graph_key, &project)).display_output->count(procedural::Layer::instance) ==
+                        frozen_inst_count,
+                "Undo chain did not cleanly revert Freeze + upstream edit.");
+        }
+
         // Strict #RRGGBB format validation + unresolved placeholder display/template cleanup + popup auto-close:
         require(!editor::parse_graph_hex_color("eab308").has_value() &&
                     editor::parse_graph_hex_color("#eab308") == 0xeab308u,
@@ -971,6 +1105,42 @@ class game.DiagnosticSop : procedural.Node {
             require(!doc.graph_dirty(ghost_key) && take(doc.graph_topology(ghost_key))->display == "ghost" &&
                         take(doc.graph_topology(ghost_key))->template_node == "ghost",
                     "graph_undo did not restore kept display/template after placeholder deletion.");
+        }
+
+        // Shift+D interactive node duplicate + grab (1-step Undo/Redo), Ctrl+I invert, and X delete:
+        {
+            const auto disp_before_dup = take(doc.graph_topology(graph_key))->display;
+            workspace.set_single_graph_selection("scatter");
+            send_ptr(ui::EventKind::pointer_move, 140.f, 120.f);
+            send_key(ui::EventKind::key_down, ui::Key::none, 'D', true);
+            require(workspace.network.active_gesture() && workspace.selected_graph_nodes.size() == 1 &&
+                        workspace.selected_graph_node == "scatter1" &&
+                        take(doc.graph_topology(graph_key))->display == disp_before_dup,
+                    "Shift+D did not duplicate scatter into interactive grab without altering Display Flag.");
+            send_ptr(ui::EventKind::pointer_move, 220.f, 170.f);
+            send_ptr(ui::EventKind::pointer_down, 220.f, 170.f);
+            require(!workspace.network.active_gesture(), "Primary click did not commit Shift+D node placement.");
+            const auto after_dup_topo = take(doc.graph_topology(graph_key));
+            const auto* dup_scatter = after_dup_topo->find_node("scatter1");
+            const bool kept_upstream = std::ranges::any_of(after_dup_topo->connections, [](const auto& c) {
+                return c.to_node == "scatter1" && c.from_node == "terrace";
+            });
+            require(dup_scatter != nullptr && kept_upstream,
+                    "Duplicated scatter1 lost its upstream terrace connection.");
+            const auto placed_pos = dup_scatter->position;
+            take(doc.graph_undo(graph_key, false));
+            require(take(doc.graph_topology(graph_key))->find_node("scatter1") == nullptr,
+                    "Shift+D + LMB placement was not undone as a single graph history step.");
+            take(doc.graph_undo(graph_key, true));
+            const auto* redone_scatter = take(doc.graph_topology(graph_key))->find_node("scatter1");
+            require(redone_scatter != nullptr && redone_scatter->position == placed_pos,
+                    "Redo of Shift+D did not restore scatter1 at its amended placement coordinates.");
+
+            // Delete scatter1 via X shortcut and verify graph returns to pre-duplicate state:
+            workspace.set_single_graph_selection("scatter1");
+            send_key(ui::EventKind::key_down, ui::Key::x, 'X');
+            require(take(doc.graph_topology(graph_key))->find_node("scatter1") == nullptr,
+                    "X shortcut did not delete selected SOP node.");
         }
     }
 
@@ -1035,6 +1205,74 @@ class game.DiagnosticSop : procedural.Node {
     workspace.spreadsheet.set_layer(procedural::Layer::point);
     workspace.commit_ui_controls();
 
+    // Verify clicking ProceduralGeneratorEntity in World immediately populates Network pane & allows live node inspection:
+    {
+        workspace.dock.select(editor::network_control::tab);
+        const auto world_net_ui =
+            take(workspace.describe(doc, {1400, 900}, world_gen_frame.get(), &project, &ui_session));
+        take_ui(ui_session.set_controls(world_net_ui));
+        const auto world_net_frame = take_ui(ui_session.prepare());
+        const auto path_it = std::ranges::find(world_net_ui, editor::network_control::path_combo, &ui::Control::key);
+        const auto menu_add_it = std::ranges::find(world_net_ui, editor::network_control::menu_add, &ui::Control::key);
+        const auto menu_edit_it =
+            std::ranges::find(world_net_ui, editor::network_control::menu_edit, &ui::Control::key);
+        const auto add_it = std::ranges::find(world_net_ui, editor::network_control::add_node, &ui::Control::key);
+        const auto nodes_it = std::ranges::find(world_net_ui, editor::network_control::canvas_nodes, &ui::Control::key);
+        require(
+            ui_session.accept(world_net_frame) && workspace.active_graph.empty() && path_it != world_net_ui.end() &&
+                path_it->text.starts_with(L"World  ▸") && menu_add_it != world_net_ui.end() &&
+                std::ranges::find(menu_add_it->classes, "viewport-header-menu") != menu_add_it->classes.end() &&
+                menu_edit_it != world_net_ui.end() &&
+                std::ranges::find(menu_edit_it->classes, "viewport-header-menu") != menu_edit_it->classes.end() &&
+                add_it != world_net_ui.end() && add_it->icon == ui::ControlIcon::plus && add_it->text.empty() &&
+                std::ranges::find(add_it->classes, "ghost-tool") != add_it->classes.end() &&
+                nodes_it != world_net_ui.end() && nodes_it->canvas && !nodes_it->canvas->shapes.empty(),
+            "Selecting a ProceduralGeneratorEntity in World did not display its Network canvas, air-state menus, and ghost icon toolbar.");
+        workspace.commit_ui_controls();
+
+        // Verify Blender-style hover/enter DockSpace::focus_point switches focused_tab across visible panes without clicking:
+        const auto* vp_pane = world_net_frame->find(workspace.dock.pane(editor::control::scene_tab));
+        const auto* net_pane = world_net_frame->find(workspace.dock.pane(editor::network_control::tab));
+        require(vp_pane != nullptr && net_pane != nullptr, "Expected both Scene View and Network panes to be visible.");
+        require(workspace.dock.focus_point(vp_pane->bounds.x + vp_pane->bounds.width * .5f,
+                                           vp_pane->bounds.y + vp_pane->bounds.height * .5f, *world_net_frame) &&
+                    workspace.dock.focused_tab() == editor::control::scene_tab,
+                "DockSpace::focus_point did not focus Scene View on hover.");
+        require(workspace.dock.focus_point(net_pane->bounds.x + net_pane->bounds.width * .5f,
+                                           net_pane->bounds.y + net_pane->bounds.height * .5f, *world_net_frame) &&
+                    workspace.dock.focused_tab() == editor::network_control::tab,
+                "DockSpace::focus_point did not focus Network pane on hover.");
+
+        // Verify SceneSnapshot suppresses interior selection wireframe on ProceduralGeneratorEntity while Network is visible:
+        {
+            application::SceneSnapshot snap_check;
+            take(snap_check.refresh(doc, true, false));
+            require(!snap_check.meshes.empty() &&
+                        std::ranges::none_of(snap_check.meshes, [](const auto& m) { return m.selected; }),
+                    "SceneSnapshot highlighted ProceduralGeneratorEntity meshes while highlight_generators was false.");
+            take(snap_check.refresh(doc, true, true));
+            require(
+                std::ranges::all_of(snap_check.meshes, [](const auto& m) { return m.selected; }),
+                "SceneSnapshot did not restore generator selection highlight when highlight_generators became true.");
+        }
+
+        workspace.set_single_graph_selection("scatter");
+        workspace.inspecting_network = true;
+        const auto inspect_node_ui =
+            take(workspace.describe(doc, {1400, 900}, world_net_frame.get(), &project, &ui_session));
+        take_ui(ui_session.set_controls(inspect_node_ui));
+        const auto inspect_node_frame = take_ui(ui_session.prepare());
+        require(ui_session.accept(inspect_node_frame) && workspace.active_graph.empty() &&
+                    std::ranges::any_of(inspect_node_ui, [](const ui::Control& c) { return c.text == L"Density"; }),
+                "Selecting a SOP node in World Network mode did not inspect its parameters in Parameters pane.");
+        workspace.commit_ui_controls();
+
+        workspace.inspecting_network = false;
+        workspace.set_single_graph_selection({});
+        workspace.dock.select(editor::control::entities_tab);
+        workspace.dock.select(editor::control::scene_tab);
+    }
+
     // procedural.assign_graph + Undo/Redo:
     invoke("procedural.assign_graph", R"({"asset":""})");
     take(doc.sync_procedural_generators(&project));
@@ -1090,6 +1328,87 @@ class game.DiagnosticSop : procedural.Node {
     const auto sheared_bake = doc.bake_procedural_generator(&project, gen_ent);
     require(!sheared_bake && sheared_bake.error().message.find("shear") != std::string::npos,
             "procedural.bake did not reject sheared instance transforms.");
+
+    // Reimporting a mesh, then deleting it from disk and refreshing assets must invalidate SOP snapshots:
+    // current cook must fail (while keeping last valid preview), and Bake must reject creating dangling entities:
+    {
+        const auto obj_src = temp_root / "reimport_prop.obj";
+        take(editor::write_file(obj_src, "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n"));
+        const auto prop_key = take(project.import_mesh(obj_src));
+        const auto prop_graph_key = take(project.create_procedural_graph(
+            L"Content/Graphs/ReimportProp.procgraph",
+            "{\"version\":2,\"settings\":{\"display\":\"copy\"},\"nodes\":{"
+            "\"pts\":{\"type\":\"procedural.Grid\",\"properties\":{\"columns\":2,\"rows\":2}},"
+            "\"copy\":{\"type\":\"procedural.CopyToPoints\",\"inputs\":{\"points\":\"pts.output\"},"
+            "\"properties\":{\"meshes\":[\"" +
+                prop_key + "\"]}}}}"));
+        take(doc.open_graph(project, prop_graph_key));
+        changed(doc.create_procedural_generator(prop_graph_key, {10.f, 0.f, 0.f}, &project));
+        const ObjectId prop_gen = doc.selection().entity;
+        const ObjectId prop_comp = component(doc, prop_gen, doc.presentation_types().procedural_generator_component);
+        const auto eval_initial = take(doc.evaluate_graph(prop_graph_key, &project));
+        require(eval_initial.display_output != nullptr && !eval_initial.display_error,
+                "Initial imported mesh SOP evaluation failed.");
+
+        take(editor::write_file(obj_src, "v 0 0 0\nv 3 0 0\nv 0 3 0\nf 1 2 3\n"));
+        take(doc.reimport_mesh(project, prop_key, obj_src));
+        const auto eval_reimp = take(doc.inspect_graph(prop_graph_key, &project));
+        require(!eval_reimp.display_error && eval_reimp.display_summary.bounds_max.x > 2.5f,
+                "SOP evaluation did not reflect reimported mesh geometry.");
+        take(doc.sync_procedural_generators(&project));
+        const auto retained_gen_preview =
+            take(presentation::read_procedural_source(doc.world().runtime(), prop_comp)).output;
+        require(retained_gen_preview != nullptr, "Generator did not publish reimported mesh preview.");
+
+        const auto* prop_entry = project.entry(prop_key);
+        require(prop_entry != nullptr, "Missing project entry for imported mesh.");
+        const auto imported_path = temp_root / prop_entry->path;
+        auto sidecar_path = imported_path;
+        sidecar_path += L".asset.json";
+
+        std::filesystem::remove(imported_path);
+        std::filesystem::remove(sidecar_path);
+        take(project.refresh());
+        require(project.entry(prop_key) == nullptr, "project.refresh() did not evict deleted mesh entry.");
+
+        // 1) Direct unfrozen case (reimport -> delete -> refresh): current cook fails, preview stays, Bake rejects:
+        const std::size_t members_pre_del = take(doc.world().members()).size();
+        const std::size_t undo_pre_del = doc.undo_count();
+        const auto eval_deleted = take(doc.evaluate_graph(prop_graph_key, &project));
+        require(eval_deleted.display_output == nullptr && eval_deleted.display_error.has_value() &&
+                    eval_deleted.preview_output != nullptr,
+                "Deleting a reimported mesh from disk did not fail current SOP cook or lost fallback preview.");
+
+        const auto unfrozen_deleted_bake = doc.bake_procedural_generator(&project, prop_gen);
+        const auto* gen_err = doc.procedural_generator_error(prop_comp);
+        require(!unfrozen_deleted_bake && gen_err != nullptr &&
+                    unfrozen_deleted_bake.error().message == gen_err->message &&
+                    take(presentation::read_procedural_source(doc.world().runtime(), prop_comp)).output ==
+                        retained_gen_preview &&
+                    take(doc.world().members()).size() == members_pre_del && doc.undo_count() == undo_pre_del,
+                "Bake succeeded or dropped retained preview after reimported mesh was deleted from disk.");
+
+        // 2) Frozen node defense-in-depth: even if CopyToPoints was frozen before mesh deletion, Bake rejects it:
+        const auto frozen_obj_src = temp_root / "frozen_prop.obj";
+        take(editor::write_file(frozen_obj_src, "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n"));
+        const auto frozen_key = take(project.import_mesh(frozen_obj_src));
+        const auto patch_frozen_mesh = parse_doc("{\"meshes\":[\"" + frozen_key + "\"]}");
+        take(doc.graph_set_properties(prop_graph_key, "copy", patch_frozen_mesh.root()));
+        take(doc.sync_procedural_generators(&project));
+        take(doc.graph_set_frozen(prop_graph_key, "copy", true, &project));
+        const auto* frozen_entry = project.entry(frozen_key);
+        require(frozen_entry != nullptr, "Missing project entry for frozen mesh.");
+        const auto frozen_imported_path = temp_root / frozen_entry->path;
+        auto frozen_sidecar_path = frozen_imported_path;
+        frozen_sidecar_path += L".asset.json";
+        std::filesystem::remove(frozen_imported_path);
+        std::filesystem::remove(frozen_sidecar_path);
+        take(project.refresh());
+        const auto frozen_deleted_bake = doc.bake_procedural_generator(&project, prop_gen);
+        require(!frozen_deleted_bake && take(doc.world().members()).size() == members_pre_del &&
+                    doc.undo_count() == undo_pre_del,
+                "Bake created StaticMeshEntities referencing a deleted mesh from a frozen SOP snapshot.");
+    }
 
     changed(doc.close());
 }

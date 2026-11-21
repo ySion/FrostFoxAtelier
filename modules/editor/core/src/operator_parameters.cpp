@@ -59,6 +59,7 @@ Result<void> register_editor_types(Runtime& runtime) {
     definitions.push_back(reflection::Definition<GraphAddNode>::build(runtime));
     definitions.push_back(reflection::Definition<GraphNodeResult>::build(runtime));
     definitions.push_back(reflection::Definition<GraphDeleteNode>::build(runtime));
+    definitions.push_back(reflection::Definition<GraphDuplicateNodes>::build(runtime));
     definitions.push_back(reflection::Definition<GraphRenameNode>::build(runtime));
     definitions.push_back(reflection::Definition<GraphMoveNode>::build(runtime));
     definitions.push_back(reflection::Definition<GraphConnect>::build(runtime));
@@ -66,6 +67,7 @@ Result<void> register_editor_types(Runtime& runtime) {
     definitions.push_back(reflection::Definition<GraphSetDisplay>::build(runtime));
     definitions.push_back(reflection::Definition<GraphSetTemplate>::build(runtime));
     definitions.push_back(reflection::Definition<GraphSetBypass>::build(runtime));
+    definitions.push_back(reflection::Definition<GraphSetFrozen>::build(runtime));
     definitions.push_back(reflection::Definition<GraphSetAppearance>::build(runtime));
     definitions.push_back(reflection::Definition<GraphSelect>::build(runtime));
     definitions.push_back(reflection::Definition<GraphLayout>::build(runtime));

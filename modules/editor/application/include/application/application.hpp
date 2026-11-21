@@ -397,6 +397,8 @@ private:
 
     void select_graph_node(std::string_view key, std::string_view node_name) override;
 
+    void select_graph_nodes(std::string_view key, std::span<const std::string> node_names) override;
+
     Result<void> action(const ui::Action&);
 
     void sync_text_input();

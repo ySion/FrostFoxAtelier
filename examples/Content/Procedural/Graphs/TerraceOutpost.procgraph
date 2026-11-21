@@ -189,14 +189,13 @@
         232.0,
         136.0
       ],
-      "text": "1. TerraceIsland (.source) carves plateaus.\n2. Scatter + OutpostPlacement (.source) place props.\n3. Hover nodes for Air-Ring (B/i/D/T); press Z/C to style.",
+      "text": "1. TerraceIsland (.source) carves plateaus.\n2. Scatter + OutpostPlacement (.source) place props.\n3. Hover nodes for Air-Ring (Bypass/Info/Freeze/Display/Template); press Z/C to style.",
       "title": "Terrace Outpost SOP"
     }
   },
   "settings": {
     "display": "OUT_terrace",
-    "seed": 101,
-    "template": "terrace"
+    "seed": 101
   },
   "version": 2
 }

@@ -1,6 +1,7 @@
 #include "application/diagnostics.hpp"
 #include "editor/procedural_panes.hpp"
 #include "platform/utf.hpp"
+#include "procedural/operations.hpp"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -149,10 +150,6 @@ bool GeometrySpreadsheet::apply(const ui::Action& action) {
     }
     if (action.key == spreadsheet_control::layer_instance) {
         set_layer(procedural::Layer::instance);
-        return true;
-    }
-    if (action.key == spreadsheet_control::page_first) {
-        set_page_offset(0);
         return true;
     }
     if (action.key == spreadsheet_control::page_prev) {
@@ -521,15 +518,6 @@ std::array<float, 2> bezier_point(std::array<float, 2> p0, std::array<float, 2> 
     return {b0 * p0[0] + b1 * p1[0] + b2 * p2[0] + b3 * p3[0], b0 * p0[1] + b1 * p1[1] + b2 * p2[1] + b3 * p3[1]};
 }
 
-std::pair<std::array<float, 2>, std::array<float, 2>> wire_controls(std::array<float, 2> from_dip,
-                                                                    std::array<float, 2> to_dip, float zoom) noexcept {
-    const float dy_raw = to_dip[1] - from_dip[1];
-    const float dx_abs = std::abs(to_dip[0] - from_dip[0]);
-    const float handle = dy_raw >= 0.f ? std::max(26.f * zoom, dy_raw * .5f)
-                                       : std::max(46.f * zoom, std::abs(dy_raw) * .45f + dx_abs * .25f);
-    return {{from_dip[0], from_dip[1] + handle}, {to_dip[0], to_dip[1] - handle}};
-}
-
 float point_segment_distance_sq(std::array<float, 2> p, std::array<float, 2> a, std::array<float, 2> b) noexcept {
     const float vx = b[0] - a[0];
     const float vy = b[1] - a[1];
@@ -542,17 +530,82 @@ float point_segment_distance_sq(std::array<float, 2> p, std::array<float, 2> a, 
     return dx * dx + dy * dy;
 }
 
-float point_bezier_distance(std::array<float, 2> pt, std::array<float, 2> from_dip, std::array<float, 2> to_dip,
-                            float zoom) noexcept {
-    const auto [p1, p2] = wire_controls(from_dip, to_dip, zoom);
-    constexpr int segments = 16;
-    auto prev = from_dip;
-    float best_d2 = 1e18f;
-    for (int i = 1; i <= segments; ++i) {
-        const auto next = bezier_point(from_dip, p1, p2, to_dip, static_cast<float>(i) / static_cast<float>(segments));
-        best_d2 = std::min(best_d2, point_segment_distance_sq(pt, prev, next));
-        prev = next;
+// Houdini-style 3-part wire routing: [Start Bezier] -> [Axis-Aligned Straight Middle] -> [End Bezier].
+template <class Fn>
+void for_each_wire_segment(std::array<float, 2> from_dip, std::array<float, 2> to_dip, float zoom,
+                           Fn&& visit) noexcept {
+    const float x0 = from_dip[0];
+    const float y0 = from_dip[1];
+    const float x1 = to_dip[0];
+    const float y1 = to_dip[1];
+    const float dx = x1 - x0;
+    const float abs_dx = std::abs(dx);
+    const float dy = y1 - y0;
+    const float s = dx >= 0.f ? 1.f : -1.f;
+    constexpr float kappa = 0.55228475f;
+    constexpr int curve_steps = 8;
+
+    const auto sample_cubic = [&](std::array<float, 2> b0, std::array<float, 2> c1, std::array<float, 2> c2,
+                                  std::array<float, 2> b3) {
+        auto prev = b0;
+        for (int i = 1; i <= curve_steps; ++i) {
+            const auto next = bezier_point(b0, c1, c2, b3, static_cast<float>(i) / static_cast<float>(curve_steps));
+            if (visit(prev, next))
+                return true;
+            prev = next;
+        }
+        return false;
+    };
+
+    if (dy >= 0.f && abs_dx < 0.75f) {
+        static_cast<void>(visit(from_dip, to_dip));
+        return;
     }
+
+    if (dy > 0.f && abs_dx >= dy) {
+        const float r = 0.5f * dy;
+        const float y_mid = 0.5f * (y0 + y1);
+        const std::array m0{x0 + s * r, y_mid};
+        const std::array m1{x1 - s * r, y_mid};
+        if (sample_cubic(from_dip, {x0, y0 + kappa * r}, {x0 + s * (1.f - kappa) * r, y_mid}, m0))
+            return;
+        if (std::abs(m1[0] - m0[0]) > 0.25f && visit(m0, m1))
+            return;
+        static_cast<void>(sample_cubic(m1, {x1 - s * (1.f - kappa) * r, y_mid}, {x1, y1 - kappa * r}, to_dip));
+        return;
+    }
+
+    if (dy > 0.f) {
+        const float x_mid = 0.5f * (x0 + x1);
+        const float h = std::min(0.5f * dy, std::max(0.5f * abs_dx, std::min(20.f * zoom, 0.35f * dy)));
+        const std::array m0{x_mid, y0 + h};
+        const std::array m1{x_mid, y1 - h};
+        if (sample_cubic(from_dip, {x0, y0 + 0.55f * h}, {x_mid, y0 + 0.45f * h}, m0))
+            return;
+        if (m1[1] - m0[1] > 0.25f && visit(m0, m1))
+            return;
+        static_cast<void>(sample_cubic(m1, {x_mid, y1 - 0.45f * h}, {x1, y1 - 0.55f * h}, to_dip));
+        return;
+    }
+
+    const float x_chan = abs_dx >= 56.f * zoom ? 0.5f * (x0 + x1) : (std::max(x0, x1) + 48.f * zoom);
+    const float u = std::clamp(0.35f * std::max(abs_dx, 48.f * zoom), 18.f * zoom, 34.f * zoom);
+    const std::array m0{x_chan, y0};
+    const std::array m1{x_chan, y1};
+    if (sample_cubic(from_dip, {x0, y0 + u}, {x_chan, y0 + u}, m0))
+        return;
+    if (std::abs(m1[1] - m0[1]) > 0.25f && visit(m0, m1))
+        return;
+    static_cast<void>(sample_cubic(m1, {x_chan, y1 - u}, {x1, y1 - u}, to_dip));
+}
+
+float point_wire_distance(std::array<float, 2> pt, std::array<float, 2> from_dip, std::array<float, 2> to_dip,
+                          float zoom) noexcept {
+    float best_d2 = 1e18f;
+    for_each_wire_segment(from_dip, to_dip, zoom, [&](std::array<float, 2> a, std::array<float, 2> b) {
+        best_d2 = std::min(best_d2, point_segment_distance_sq(pt, a, b));
+        return false;
+    });
     return std::sqrt(best_d2);
 }
 
@@ -585,20 +638,16 @@ struct CanvasLayer {
     }
 };
 
-void append_bezier_wire(CanvasLayer& layer, std::array<float, 2> from_dip, std::array<float, 2> to_dip, float zoom,
-                        float width, ui::Color color, ui_layout::Size clip) {
-    const auto [p1, p2] = wire_controls(from_dip, to_dip, zoom);
-    const float pad = width + 1.f;
+void append_wire(CanvasLayer& layer, std::array<float, 2> from_dip, std::array<float, 2> to_dip, float zoom,
+                 float width, ui::Color color, ui_layout::Size clip) {
+    const float cull_pad = width + 90.f * zoom + 8.f;
     for (std::size_t axis = 0; axis < 2; ++axis) {
-        const float high = (axis == 0 ? clip.width : clip.height) + pad;
-        if (std::max(std::max(from_dip[axis], to_dip[axis]), std::max(p1[axis], p2[axis])) < -pad ||
-            std::min(std::min(from_dip[axis], to_dip[axis]), std::min(p1[axis], p2[axis])) > high)
+        const float high = (axis == 0 ? clip.width : clip.height) + cull_pad;
+        if (std::max(from_dip[axis], to_dip[axis]) < -cull_pad || std::min(from_dip[axis], to_dip[axis]) > high)
             return;
     }
-    constexpr int segments = 16;
-    auto prev = from_dip;
-    for (int i = 1; i <= segments; ++i) {
-        const auto next = bezier_point(from_dip, p1, p2, to_dip, static_cast<float>(i) / static_cast<float>(segments));
+    const float pad = width + 1.f;
+    for_each_wire_segment(from_dip, to_dip, zoom, [&](std::array<float, 2> prev, std::array<float, 2> next) {
         double enter = 0.;
         double leave = 1.;
         for (std::size_t axis = 0; axis < 2; ++axis) {
@@ -626,8 +675,8 @@ void append_bezier_wire(CanvasLayer& layer, std::array<float, 2> from_dip, std::
             };
             layer.stroke({coord(0, enter), coord(1, enter), coord(0, leave), coord(1, leave), width, color});
         }
-        prev = next;
-    }
+        return false;
+    });
 }
 
 bool segments_intersect(std::array<float, 2> a, std::array<float, 2> b, std::array<float, 2> c,
@@ -648,18 +697,17 @@ bool segments_intersect(std::array<float, 2> a, std::array<float, 2> b, std::arr
     return side(a, b, c) * side(a, b, d) <= 0 && side(c, d, a) * side(c, d, b) <= 0;
 }
 
-bool bezier_intersects_segment(std::array<float, 2> from_dip, std::array<float, 2> to_dip, float zoom,
-                               std::array<float, 2> cut_a, std::array<float, 2> cut_b) noexcept {
-    const auto [p1, p2] = wire_controls(from_dip, to_dip, zoom);
-    constexpr int segments = 16;
-    auto prev = from_dip;
-    for (int i = 1; i <= segments; ++i) {
-        const auto next = bezier_point(from_dip, p1, p2, to_dip, static_cast<float>(i) / static_cast<float>(segments));
-        if (segments_intersect(cut_a, cut_b, prev, next))
+bool wire_intersects_segment(std::array<float, 2> from_dip, std::array<float, 2> to_dip, float zoom,
+                             std::array<float, 2> cut_a, std::array<float, 2> cut_b) noexcept {
+    bool hit = false;
+    for_each_wire_segment(from_dip, to_dip, zoom, [&](std::array<float, 2> prev, std::array<float, 2> next) {
+        if (segments_intersect(cut_a, cut_b, prev, next)) {
+            hit = true;
             return true;
-        prev = next;
-    }
-    return false;
+        }
+        return false;
+    });
+    return hit;
 }
 
 ui_layout::NodeInput out_of_flow_box(float x, float y, float w, float h) {
@@ -679,7 +727,9 @@ struct AirSectorDef {
 
     float half_deg;
 
-    const wchar_t* glyph;
+    ui::ControlIcon icon;
+
+    std::uint32_t idle_rgb;
 
     const wchar_t* title;
 
@@ -687,14 +737,49 @@ struct AirSectorDef {
 };
 
 constexpr std::array<AirSectorDef, 5> air_sector_defs{{
-    {1, -140.f, 17.5f, L"B", L"Bypass Node [B]", "跳过此节点求值并将第 0 个输入几何原样直通到输出。"},
-    {2, 180.f, 16.5f, L"i", L"Node Info & Comment [I]", "查看该节点的求值耗时、缓存命中、端口拓扑并编辑节点备注。"},
-    {3, 140.f, 17.5f, L"C", L"Node Color & Style [C / Z]",
-     "打开 24 色调色板自定义节点配色（按 Z 可切换节点形状预设）。"},
-    {4, -52.f, 18.0f, L"D", L"Display Flag [D]", "切换蓝色主输出标记，在 3D 视口中隔离着色预览此节点的几何结果。"},
-    {5, 52.f, 18.0f, L"T", L"Template Flag [T]",
-     "切换紫红色参考线框标记，在 3D 视口中将此节点作为半透明线框叠加对比。"},
+    {1, -140.f, 17.5f, ui::ControlIcon::bypass_arrow, 0xeab308, L"Bypass Node [B]",
+     "跳过此节点求值并将第 0 个输入几何原样直通到输出。"},
+    {2, 180.f, 16.5f, ui::ControlIcon::info_glyph, 0xf1f5f9, L"Node Info & Comment [I]",
+     "查看该节点的求值耗时、缓存命中、布尔统计与端口拓扑，并编辑节点备注。"},
+    {3, 140.f, 17.5f, ui::ControlIcon::snowflake, 0x7dd3fc, L"Freeze Node",
+     "冻结并锁定该节点当前已求值的几何输出快照；显式解冻前不受上游变化影响。"},
+    {4, -52.f, 18.0f, ui::ControlIcon::eye, 0x38bdf8, L"Display Flag [D]",
+     "切换蓝色主输出标记，将该节点设为当前程序化图的主视输出几何结果。"},
+    {5, 52.f, 18.0f, ui::ControlIcon::template_flag, 0xd896ff, L"Template Flag [T]",
+     "切换紫红色副视对比线框标记，在 3D 视口中将此节点作为参考线框叠加对比。"},
 }};
+
+ui::ControlIcon sop_node_icon(std::string_view type_name, bool is_source_sop, bool has_error) noexcept {
+    if (has_error)
+        return ui::ControlIcon::close;
+    if (is_source_sop)
+        return ui::ControlIcon::sliders;
+    if (type_name == "procedural.Null")
+        return ui::ControlIcon::cursor3d;
+    if (type_name == "procedural.Boolean")
+        return ui::ControlIcon::select_intersect;
+    if (type_name == "procedural.Scatter" || type_name == "procedural.VolumeScatter")
+        return ui::ControlIcon::points;
+    if (type_name == "procedural.CopyToPoints" || type_name == "procedural.Realize")
+        return ui::ControlIcon::orient_scale;
+    if (type_name == "procedural.Ray")
+        return ui::ControlIcon::point_normals;
+    if (type_name == "procedural.NormalAlign")
+        return ui::ControlIcon::face_normals;
+    if (type_name == "procedural.Transform")
+        return ui::ControlIcon::axes;
+    if (type_name == "procedural.GroupBox")
+        return ui::ControlIcon::bounds_cage;
+    if (type_name == "procedural.Promote" || type_name == "procedural.Connectivity")
+        return ui::ControlIcon::network_layout;
+    if (type_name == "procedural.Merge")
+        return ui::ControlIcon::duplicate;
+    if (type_name == "procedural.Remove")
+        return ui::ControlIcon::trash;
+    if (type_name == "procedural.Polyline")
+        return ui::ControlIcon::axes_origin;
+    return ui::ControlIcon::mesh;
+}
 
 std::uint8_t hit_air_sector(float lx, float ly, float cx, float cy, float z) noexcept {
     const float dx = lx - cx;
@@ -759,7 +844,7 @@ NetworkCanvas::TabCategory NetworkCanvas::categorize_node_type(const GraphNodeCa
     if (short_name == "Scatter" || short_name == "VolumeScatter" || short_name == "CopyToPoints" ||
         short_name == "Realize")
         return TabCategory::scatter_copy;
-    if (short_name == "Merge" || short_name == "Remove" || short_name == "Null")
+    if (short_name == "Merge" || short_name == "Remove" || short_name == "Boolean" || short_name == "Null")
         return TabCategory::utility;
     if (entry.ports.inputs.empty() || short_name == "Polyline" || short_name == "MeshImport")
         return TabCategory::primitive;
@@ -780,7 +865,7 @@ void NetworkCanvas::reset() {
     active_graph_.clear();
     pan_x_ = 160.f;
     pan_y_ = 56.f;
-    zoom_index_ = 5;
+    zoom_index_ = default_zoom_index;
     framed_ = false;
     saved_views_.clear();
     selected_note_.clear();
@@ -801,6 +886,8 @@ void NetworkCanvas::reset() {
 
 void NetworkCanvas::cancel_gesture() noexcept {
     gesture_ = Gesture::none;
+    keyboard_grab_ = false;
+    amend_duplicate_ = false;
     pressed_node_.clear();
     active_annotation_.clear();
     drag_origins_.clear();
@@ -896,7 +983,7 @@ std::array<float, 2> NetworkCanvas::port_dip(const GraphNodeView& node, bool is_
         std::max<std::size_t>(1, is_output ? node.ports.outputs.size() : node.ports.inputs.size());
     const float px = total == 1 ? (top_left[0] + sw * .5f)
                                 : (vis_x + vis_w * static_cast<float>(port_index + 1) / static_cast<float>(total + 1));
-    const float py = is_output ? (top_left[1] + sh) : top_left[1];
+    const float py = is_output ? (top_left[1] + sh + pin_offset * z) : (top_left[1] - pin_offset * z);
     return {px, py};
 }
 
@@ -927,7 +1014,7 @@ void NetworkCanvas::sync_graph(std::string_view graph_key, std::span<const Graph
         } else {
             pan_x_ = 160.f;
             pan_y_ = 56.f;
-            zoom_index_ = 5;
+            zoom_index_ = default_zoom_index;
             framed_ = false;
         }
     }
@@ -961,9 +1048,14 @@ void NetworkCanvas::sync_graph(std::string_view graph_key, std::span<const Graph
         } else if (popup_.kind == PopupKind::edit_box) {
             if (!has_box(popup_.target_name))
                 close_popup();
+        } else if (popup_.kind == PopupKind::node_info) {
+            if (!has_node(popup_.target_name))
+                close_popup();
         } else {
             std::erase_if(popup_.target_nodes, [&](const std::string& n) { return !has_node(n); });
-            if (popup_.target_nodes.empty() || (!popup_.target_name.empty() && !has_node(popup_.target_name)))
+            if (!popup_.target_name.empty() && !has_node(popup_.target_name))
+                popup_.target_name.clear();
+            if (!popup_.palette_floating && popup_.target_nodes.empty())
                 close_popup();
         }
     }
@@ -971,7 +1063,7 @@ void NetworkCanvas::sync_graph(std::string_view graph_key, std::span<const Graph
         if (!nodes.empty() || !boxes.empty() || !notes.empty())
             frame_nodes(nodes, last_canvas_dip_, {}, boxes, notes);
         else {
-            zoom_index_ = 5;
+            zoom_index_ = default_zoom_index;
             pan_x_ = std::round((last_canvas_dip_.width - node_width) * .5f);
             pan_y_ = 56.f;
             framed_ = true;
@@ -983,7 +1075,7 @@ void NetworkCanvas::reset_zoom(ui_layout::Size canvas_dip) {
     const float cx = (canvas_dip.width > 32.f ? canvas_dip.width : last_canvas_dip_.width) * .5f;
     const float cy = (canvas_dip.height > 32.f ? canvas_dip.height : last_canvas_dip_.height) * .5f;
     const auto world = to_world(cx, cy);
-    zoom_index_ = 5;
+    zoom_index_ = default_zoom_index;
     pan_x_ = std::clamp(cx - world[0] * zoom(), -250000.f, 250000.f);
     pan_y_ = std::clamp(cy - world[1] * zoom(), -250000.f, 250000.f);
 }
@@ -1006,7 +1098,7 @@ void NetworkCanvas::frame_nodes(std::span<const GraphNodeView> nodes, ui_layout:
     const float cw = canvas_dip.width > 32.f ? canvas_dip.width : last_canvas_dip_.width;
     const float ch = canvas_dip.height > 32.f ? canvas_dip.height : last_canvas_dip_.height;
     if (nodes.empty() && boxes.empty() && notes.empty()) {
-        zoom_index_ = 5;
+        zoom_index_ = default_zoom_index;
         pan_x_ = std::round((cw - node_width) * .5f);
         pan_y_ = 56.f;
         framed_ = true;
@@ -1055,10 +1147,10 @@ void NetworkCanvas::frame_nodes(std::span<const GraphNodeView> nodes, ui_layout:
         }
     }
 
-    const float span_w = std::max(node_width + 72.f, max_x - min_x) + 128.f;
-    const float span_h = std::max(node_height, max_y - min_y) + 104.f;
+    const float span_w = std::max(node_width + 72.f, max_x - min_x) + 144.f;
+    const float span_h = std::max(node_height, max_y - min_y) + 128.f;
     std::size_t chosen = 0;
-    for (std::size_t i = 0; i <= 5; ++i) {
+    for (std::size_t i = 0; i <= default_zoom_index; ++i) {
         if (span_w * zoom_steps[i] <= cw && span_h * zoom_steps[i] <= ch)
             chosen = i;
     }
@@ -1191,28 +1283,29 @@ void NetworkCanvas::open_node_popup(PopupKind kind, const GraphInspectView& view
     const float ch = canvas_dip.height > 32.f ? canvas_dip.height : last_canvas_dip_.height;
     std::string target = !primary_selected.empty() ? std::string(primary_selected)
                                                    : (!selected_nodes.empty() ? selected_nodes.back() : std::string{});
-    if (target.empty())
-        return;
-    const auto* nv = view.find_node(target);
-    if (!nv)
+    const auto* nv = target.empty() ? nullptr : view.find_node(target);
+    if (!nv && kind == PopupKind::node_info)
         return;
     close_tab_search();
     Popup next;
     next.kind = kind;
-    next.target_name = target;
-    if (!selected_nodes.empty() && std::ranges::find(selected_nodes, target) != selected_nodes.end()) {
-        next.target_nodes.assign(selected_nodes.begin(), selected_nodes.end());
-    } else {
-        next.target_nodes = {target};
+    next.palette_floating = (nv == nullptr);
+    if (nv) {
+        next.target_name = target;
+        if (!selected_nodes.empty() && std::ranges::find(selected_nodes, target) != selected_nodes.end()) {
+            next.target_nodes.assign(selected_nodes.begin(), selected_nodes.end());
+        } else {
+            next.target_nodes = {target};
+        }
+        next.body_edit = sanitize_single_line(platform::utf8_to_utf16_validated(nv->comment));
     }
-    next.body_edit = sanitize_single_line(platform::utf8_to_utf16_validated(nv->comment));
 
-    float px = cw * .5f - 110.f;
-    float py = ch * .25f;
+    float px = cw - 244.f;
+    float py = 10.f;
     if (anchor_dip) {
         px = (*anchor_dip)[0];
         py = (*anchor_dip)[1];
-    } else {
+    } else if (nv) {
         const auto tl = to_dip(nv->position[0], nv->position[1]);
         px = tl[0] + (node_width + 18.f) * zoom();
         py = tl[1] - 12.f;
@@ -1225,26 +1318,87 @@ void NetworkCanvas::open_node_popup(PopupKind kind, const GraphInspectView& view
 Result<bool> NetworkCanvas::apply_action(Session& session, std::string_view graph_key, std::string& primary_selected,
                                          std::vector<std::string>& selected_nodes, ui_layout::Size canvas_dip,
                                          const ui::Action& action, std::wstring& out_status) {
+    if (action.key == network_control::tab_search_input) {
+        if (const auto* text = std::get_if<std::wstring>(&action.value))
+            if (action.kind == ui::ActionKind::edit_preview || action.kind == ui::ActionKind::edit_commit)
+                set_tab_query(*text);
+        return true;
+    }
     if (action.kind == ui::ActionKind::activate && action.key >= network_control::tab_cat_first &&
         action.key < network_control::tab_cat_first + 6) {
         set_tab_category(static_cast<TabCategory>(action.key - network_control::tab_cat_first));
         return true;
     }
+    if (action.kind == ui::ActionKind::activate && action.key == network_control::zoom_reset) {
+        reset_zoom(canvas_dip);
+        out_status = L"Network zoom 100%";
+        return true;
+    }
     if (graph_key.empty() || !session.has_graph(graph_key))
         return false;
+
+    if (action.kind == ui::ActionKind::activate &&
+        (action.key == network_control::frame_all || action.key == network_control::frame_selected)) {
+        ATELIER_TRY_BIND(insp, session.graph_topology(graph_key));
+        const bool sel_only = action.key == network_control::frame_selected;
+        frame_nodes((*insp)->nodes, canvas_dip,
+                    sel_only ? std::span<const std::string>{selected_nodes} : std::span<const std::string>{},
+                    (*insp)->boxes, (*insp)->notes);
+        out_status = (sel_only && !selected_nodes.empty()) ? L"Framed SOP selection" : L"Framed all SOP nodes";
+        return true;
+    }
+    if (action.kind == ui::ActionKind::activate &&
+        (action.key == network_control::select_all_nodes || action.key == network_control::deselect_all_nodes ||
+         action.key == network_control::invert_select_nodes)) {
+        ATELIER_TRY_BIND(insp, session.graph_topology(graph_key));
+        if (action.key == network_control::select_all_nodes) {
+            selected_nodes.clear();
+            for (const auto& n : (*insp)->nodes)
+                selected_nodes.push_back(n.name);
+            primary_selected = selected_nodes.empty() ? std::string{} : selected_nodes.back();
+            out_status = L"Selected all SOP nodes";
+        } else if (action.key == network_control::deselect_all_nodes) {
+            selected_nodes.clear();
+            primary_selected.clear();
+            selected_note_.clear();
+            selected_box_.clear();
+            out_status = L"Cleared SOP selection";
+        } else {
+            std::vector<std::string> inverted;
+            for (const auto& n : (*insp)->nodes)
+                if (std::ranges::find(selected_nodes, n.name) == selected_nodes.end())
+                    inverted.push_back(n.name);
+            selected_nodes = std::move(inverted);
+            primary_selected = selected_nodes.empty() ? std::string{} : selected_nodes.back();
+            out_status = L"Inverted SOP selection";
+        }
+        return true;
+    }
 
     if (action.kind == ui::ActionKind::activate && action.key == network_control::popup_close) {
         close_popup();
         return true;
     }
 
+    if (action.kind == ui::ActionKind::activate && action.key == network_control::popup_switch_style) {
+        if (popup_.kind == PopupKind::color_picker)
+            popup_.kind = PopupKind::shape_picker;
+        else if (popup_.kind == PopupKind::shape_picker)
+            popup_.kind = PopupKind::color_picker;
+        return true;
+    }
+
     if (action.kind == ui::ActionKind::activate &&
         (action.key == network_control::open_shape_picker || action.key == network_control::open_color_picker ||
          action.key == network_control::open_node_info)) {
-        ATELIER_TRY_BIND(insp, session.graph_topology(graph_key));
         const PopupKind kind = action.key == network_control::open_shape_picker   ? PopupKind::shape_picker
                                : action.key == network_control::open_color_picker ? PopupKind::color_picker
                                                                                   : PopupKind::node_info;
+        if (popup_.open() && popup_.kind == kind) {
+            close_popup();
+            return true;
+        }
+        ATELIER_TRY_BIND(insp, session.graph_topology(graph_key));
         open_node_popup(kind, **insp, primary_selected, selected_nodes, canvas_dip);
         return true;
     }
@@ -1303,22 +1457,35 @@ Result<bool> NetworkCanvas::apply_action(Session& session, std::string_view grap
     if (!popup_.open() || session.world().running())
         return false;
 
+    const auto active_style_targets = [&]() -> const std::vector<std::string>& {
+        return !selected_nodes.empty() ? selected_nodes : popup_.target_nodes;
+    };
+
     if (action.kind == ui::ActionKind::activate && action.key >= network_control::shape_pick_first &&
         action.key < network_control::shape_pick_first + 9) {
+        const auto& targets = active_style_targets();
+        if (targets.empty()) {
+            out_status = L"Select one or more SOP nodes to apply shape";
+            return true;
+        }
         const auto shape = static_cast<GraphNodeShape>(action.key - network_control::shape_pick_first);
-        ATELIER_TRY(session.graph_set_node_appearance(graph_key, popup_.target_nodes, shape, {}, {}));
+        ATELIER_TRY(session.graph_set_node_appearance(graph_key, targets, shape, {}, {}));
         const auto sname = graph_node_shape_name(shape);
         out_status =
             L"Node shape: " + (sname.empty() ? std::wstring(L"Auto (Role)") : platform::utf8_to_utf16_validated(sname));
-        close_popup();
+        if (!popup_.palette_floating)
+            close_popup();
         return true;
     }
 
     if (action.kind == ui::ActionKind::activate && action.key == network_control::color_reset_btn) {
-        ATELIER_TRY(
-            session.graph_set_node_appearance(graph_key, popup_.target_nodes, {}, std::optional<std::uint32_t>{}, {}));
-        out_status = L"Reset node color to role default";
-        close_popup();
+        const auto& targets = active_style_targets();
+        if (!targets.empty()) {
+            ATELIER_TRY(session.graph_set_node_appearance(graph_key, targets, {}, std::optional<std::uint32_t>{}, {}));
+            out_status = L"Reset node color to role default";
+        }
+        if (!popup_.palette_floating)
+            close_popup();
         return true;
     }
 
@@ -1332,10 +1499,22 @@ Result<bool> NetworkCanvas::apply_action(Session& session, std::string_view grap
             ATELIER_TRY(session.graph_update_box(graph_key, popup_.target_name, {}, {}, {}, rgb));
             out_status = L"Updated Network Box color";
         } else {
-            ATELIER_TRY(session.graph_set_node_appearance(graph_key, popup_.target_nodes, {},
-                                                          std::optional<std::uint32_t>{rgb}, {}));
-            out_status = L"Updated node color: " + platform::utf8_to_utf16_validated(format_graph_hex_color(rgb));
-            close_popup();
+            const auto& targets = active_style_targets();
+            if (!targets.empty()) {
+                ATELIER_TRY(
+                    session.graph_set_node_appearance(graph_key, targets, {}, std::optional<std::uint32_t>{rgb}, {}));
+                out_status = L"Updated node color: " + platform::utf8_to_utf16_validated(format_graph_hex_color(rgb));
+                if (!popup_.palette_floating)
+                    close_popup();
+            } else if (!selected_note_.empty()) {
+                ATELIER_TRY(session.graph_update_note(graph_key, selected_note_, {}, {}, {}, {}, rgb));
+                out_status = L"Updated Sticky Note color";
+            } else if (!selected_box_.empty()) {
+                ATELIER_TRY(session.graph_update_box(graph_key, selected_box_, {}, {}, {}, rgb));
+                out_status = L"Updated Network Box color";
+            } else {
+                out_status = L"Select SOP nodes, a Sticky Note, or a Network Box to color";
+            }
         }
         return true;
     }
@@ -1410,7 +1589,7 @@ Result<NetworkCanvas::InteractionOutcome> NetworkCanvas::pointer_event(Session& 
                                                                        std::string& primary_selected,
                                                                        std::vector<std::string>& selected_nodes,
                                                                        ui::Rect canvas_px, float dpi_scale,
-                                                                       const ui::Event& event) {
+                                                                       const ui::Event& event, Project* project) {
     InteractionOutcome out;
     if (graph_key.empty() || !session.has_graph(graph_key) || canvas_px.width <= 0 || canvas_px.height <= 0 ||
         dpi_scale <= 0.f)
@@ -1536,8 +1715,8 @@ Result<NetworkCanvas::InteractionOutcome> NetworkCanvas::pointer_event(Session& 
                         const auto* dst = view.find_node(conn.to_node);
                         if (!src || !dst)
                             continue;
-                        const float d = point_bezier_distance(center, port_dip(*src, true, conn.from_index),
-                                                              port_dip(*dst, false, conn.to_index), z);
+                        const float d = point_wire_distance(center, port_dip(*src, true, conn.from_index),
+                                                            port_dip(*dst, false, conn.to_index), z);
                         if (d <= best_dist) {
                             best_dist = d;
                             splice_wire_ = conn;
@@ -1549,13 +1728,26 @@ Result<NetworkCanvas::InteractionOutcome> NetworkCanvas::pointer_event(Session& 
                 out.cursor = ui::Cursor::move;
                 return out;
             }
-            if (event.kind == ui::EventKind::pointer_up && event.button == gesture_button_) {
+            if (keyboard_grab_ && event.kind == ui::EventKind::pointer_down &&
+                event.button == ui::PointerButton::secondary) {
+                cancel_gesture();
+                out.capture_release = true;
+                out.cursor = ui::Cursor::arrow;
+                out.status = L"Cancelled SOP node move";
+                return out;
+            }
+            const bool commit =
+                keyboard_grab_
+                    ? (event.kind == ui::EventKind::pointer_down && event.button == ui::PointerButton::primary)
+                    : (event.kind == ui::EventKind::pointer_up && event.button == gesture_button_);
+            if (commit) {
                 std::vector<std::pair<std::string, std::array<float, 2>>> moves;
                 moves.reserve(drag_origins_.size());
                 for (const auto& [name, origin] : drag_origins_)
                     moves.emplace_back(name, std::array{std::round(origin[0] + drag_world_delta_[0]),
                                                         std::round(origin[1] + drag_world_delta_[1])});
                 const auto splice = splice_wire_;
+                const bool amend = amend_duplicate_;
                 cancel_gesture();
                 out.capture_release = true;
                 out.cursor = ui::Cursor::arrow;
@@ -1566,8 +1758,8 @@ Result<NetworkCanvas::InteractionOutcome> NetworkCanvas::pointer_event(Session& 
                         return out;
                     }
                 }
-                ATELIER_TRY(session.graph_move_nodes(graph_key, moves));
-                out.status = L"Moved SOP node(s)";
+                ATELIER_TRY(session.graph_move_nodes(graph_key, moves, amend));
+                out.status = amend ? L"Placed duplicated SOP node(s)" : L"Moved SOP node(s)";
                 return out;
             }
             return out;
@@ -1770,7 +1962,29 @@ Result<NetworkCanvas::InteractionOutcome> NetworkCanvas::pointer_event(Session& 
         }
 
         if (gesture_ == Gesture::wire_drag) {
-            snapped_port_ = hit_port(lx, ly, 15.f, !wire_anchor_.is_output, wire_anchor_.node);
+            snapped_port_ =
+                hit_port(lx, ly, std::clamp(30.f * z, 20.f, 40.f), !wire_anchor_.is_output, wire_anchor_.node);
+            if (!snapped_port_) {
+                for (auto it = view.nodes.rbegin(); it != view.nodes.rend(); ++it) {
+                    if (it->name == wire_anchor_.node || it->placeholder)
+                        continue;
+                    const auto pos = displayed_position(*it);
+                    const auto tl = to_dip(pos[0], pos[1]);
+                    const bool is_circle = resolve_shape_id(*it, false) == 7;
+                    const float vis_x = is_circle ? (tl[0] + (node_width - circle_width) * .5f * z) : tl[0];
+                    const float vis_w = (is_circle ? circle_width : node_width) * z;
+                    const float sh = node_height * z;
+                    if (lx >= vis_x && lx <= vis_x + vis_w && ly >= tl[1] && ly <= tl[1] + sh) {
+                        if (wire_anchor_.is_output && !it->ports.inputs.empty()) {
+                            const bool multi = !it->ports.multiple.empty() && it->ports.multiple[0];
+                            snapped_port_ = PortRef{it->name, it->ports.inputs[0], 0, false, multi};
+                        } else if (!wire_anchor_.is_output && !it->ports.outputs.empty()) {
+                            snapped_port_ = PortRef{it->name, it->ports.outputs[0], 0, true, false};
+                        }
+                        break;
+                    }
+                }
+            }
             if (event.kind == ui::EventKind::pointer_move) {
                 out.cursor = ui::Cursor::crosshair;
                 return out;
@@ -1833,8 +2047,8 @@ Result<NetworkCanvas::InteractionOutcome> NetworkCanvas::pointer_event(Session& 
                     const auto* dst = view.find_node(conn.to_node);
                     if (!src || !dst)
                         continue;
-                    if (bezier_intersects_segment(port_dip(*src, true, conn.from_index),
-                                                  port_dip(*dst, false, conn.to_index), z, cut_a, cut_b))
+                    if (wire_intersects_segment(port_dip(*src, true, conn.from_index),
+                                                port_dip(*dst, false, conn.to_index), z, cut_a, cut_b))
                         cut_edges.push_back(conn);
                 }
                 if (!cut_edges.empty()) {
@@ -1918,14 +2132,14 @@ Result<NetworkCanvas::InteractionOutcome> NetworkCanvas::pointer_event(Session& 
                 flag_under = FlagZone::display;
             else if (lx >= vis_x + vis_w - bw_d - bw_t)
                 flag_under = FlagZone::template_flag;
-            body_interior = (flag_under != FlagZone::none) || (ly >= tl[1] + sh * .28f && ly <= tl[1] + sh * .72f);
+            body_interior = (flag_under != FlagZone::none) || (ly >= tl[1] + 2.f * z && ly <= tl[1] + sh - 2.f * z);
             break;
         }
     }
 
     const auto port_under = (body_interior || air_hit != AirButton::none)
                                 ? std::optional<PortRef>{}
-                                : hit_port(lx, ly, std::clamp(10.f * z, 4.5f, 11.f));
+                                : hit_port(lx, ly, std::clamp(22.f * z, 14.f, 30.f));
     if (port_under) {
         node_under.clear();
         flag_under = FlagZone::none;
@@ -1964,7 +2178,7 @@ Result<NetworkCanvas::InteractionOutcome> NetworkCanvas::pointer_event(Session& 
     out.consumed = true;
     if (tab_search_.open)
         close_tab_search();
-    if (popup_.open())
+    if (popup_.open() && !popup_.palette_floating)
         close_popup();
 
     start_dip_x_ = lx;
@@ -2012,12 +2226,10 @@ Result<NetworkCanvas::InteractionOutcome> NetworkCanvas::pointer_event(Session& 
                 selected_nodes = {air_node_};
                 primary_selected = air_node_;
                 open_node_popup(PopupKind::node_info, view, primary_selected, selected_nodes, canvas_dip, anchor);
-            } else if (air_hit == AirButton::style) {
-                if (std::ranges::find(selected_nodes, air_node_) == selected_nodes.end()) {
-                    selected_nodes = {air_node_};
-                    primary_selected = air_node_;
-                }
-                open_node_popup(PopupKind::color_picker, view, primary_selected, selected_nodes, canvas_dip, anchor);
+            } else if (air_hit == AirButton::freeze && !n->placeholder) {
+                ATELIER_TRY(session.graph_set_frozen(graph_key, air_node_, !n->is_frozen, project));
+                out.status = !n->is_frozen ? L"Frozen SOP node: " + platform::utf8_to_utf16_validated(air_node_)
+                                           : L"Unfrozen SOP node: " + platform::utf8_to_utf16_validated(air_node_);
             }
             return out;
         }
@@ -2085,24 +2297,17 @@ Result<NetworkCanvas::InteractionOutcome> NetworkCanvas::pointer_event(Session& 
         }
         if (event.button == ui::PointerButton::primary) {
             pressed_node_ = node_under;
-            selected_note_.clear();
-            selected_box_.clear();
-            if (!event.shift && std::ranges::find(selected_nodes, node_under) == selected_nodes.end()) {
-                selected_nodes = {node_under};
-                primary_selected = node_under;
-            } else if (!event.shift) {
-                primary_selected = node_under;
-            }
             drag_origins_.clear();
             drag_note_origins_.clear();
             drag_box_origins_.clear();
-            for (const auto& sel : selected_nodes) {
-                if (const auto* nv = view.find_node(sel))
-                    drag_origins_.emplace_back(sel, nv->position);
-            }
-            if (std::ranges::none_of(drag_origins_, [&](const auto& item) { return item.first == node_under; })) {
-                if (const auto* nv = view.find_node(node_under))
-                    drag_origins_.emplace_back(node_under, nv->position);
+            const bool already_selected = std::ranges::find(selected_nodes, node_under) != selected_nodes.end();
+            if (!event.shift && already_selected) {
+                for (const auto& sel : selected_nodes) {
+                    if (const auto* nv = view.find_node(sel))
+                        drag_origins_.emplace_back(sel, nv->position);
+                }
+            } else if (const auto* nv = view.find_node(node_under)) {
+                drag_origins_.emplace_back(node_under, nv->position);
             }
             drag_world_delta_ = {};
             gesture_ = Gesture::press_node;
@@ -2248,35 +2453,76 @@ Result<NetworkCanvas::InteractionOutcome> NetworkCanvas::key_event(Session& sess
         return out;
     }
 
-    if (event.key == ui::Key::escape && active_gesture()) {
-        cancel_gesture();
+    if (active_gesture()) {
+        if (event.key == ui::Key::enter && gesture_ == Gesture::move_nodes && keyboard_grab_) {
+            std::vector<std::pair<std::string, std::array<float, 2>>> moves;
+            moves.reserve(drag_origins_.size());
+            for (const auto& [name, origin] : drag_origins_)
+                moves.emplace_back(name, std::array{std::round(origin[0] + drag_world_delta_[0]),
+                                                    std::round(origin[1] + drag_world_delta_[1])});
+            const auto splice = splice_wire_;
+            const bool amend = amend_duplicate_;
+            cancel_gesture();
+            out.consumed = true;
+            out.capture_release = true;
+            out.cursor = ui::Cursor::arrow;
+            if (splice && moves.size() == 1 &&
+                session.graph_splice_node(graph_key, moves.front().first, moves.front().second, *splice)) {
+                out.status = L"Spliced '" + platform::utf8_to_utf16_validated(moves.front().first) + L"' into wire";
+                return out;
+            }
+            ATELIER_TRY(session.graph_move_nodes(graph_key, moves, amend));
+            out.status = amend ? L"Placed duplicated SOP node(s)" : L"Moved SOP node(s)";
+            return out;
+        }
+        if (event.key == ui::Key::escape) {
+            cancel_gesture();
+            out.consumed = true;
+            out.capture_release = true;
+            out.cursor = ui::Cursor::arrow;
+            out.status = L"Cancelled Network gesture";
+            return out;
+        }
         out.consumed = true;
-        out.capture_release = true;
-        out.cursor = ui::Cursor::arrow;
-        out.status = L"Cancelled Network gesture";
         return out;
     }
-
-    if (event.control || event.alt)
-        return out;
 
     const auto inspected_res = session.graph_topology(graph_key);
     if (!inspected_res)
         return std::unexpected(inspected_res.error());
     const auto& view = **inspected_res;
 
-    if (native_key == 'Y' || event.key == ui::Key::y) {
-        cut_key_held_ = true;
+    const std::string target_node = !hovered_node_.empty() ? hovered_node_
+                                    : !air_node_.empty()   ? air_node_
+                                                           : primary_selected;
+    const auto resolve_targets = [&]() {
+        std::vector<std::string> targets = selected_nodes;
+        if (targets.empty() && !target_node.empty())
+            targets.push_back(target_node);
+        return targets;
+    };
+    const auto begin_keyboard_grab = [&](const GraphInspectView& gview, bool amend_dup) {
+        drag_origins_.clear();
+        drag_note_origins_.clear();
+        drag_box_origins_.clear();
+        for (const auto& sel : selected_nodes) {
+            if (const auto* nv = gview.find_node(sel))
+                drag_origins_.emplace_back(sel, nv->position);
+        }
+        start_dip_x_ =
+            (current_dip_x_ > 0.f && current_dip_x_ < canvas_dip.width) ? current_dip_x_ : canvas_dip.width * .5f;
+        start_dip_y_ =
+            (current_dip_y_ > 0.f && current_dip_y_ < canvas_dip.height) ? current_dip_y_ : canvas_dip.height * .5f;
+        drag_world_delta_ = {};
+        splice_wire_.reset();
+        gesture_ = Gesture::move_nodes;
+        keyboard_grab_ = true;
+        amend_duplicate_ = amend_dup;
         out.consumed = true;
-        out.cursor = ui::Cursor::crosshair;
-        out.status = L"Wire Cut: hold Y and drag across wires to disconnect";
-        return out;
-    }
-
-    if (event.repeat)
-        return out;
-
-    if (event.key == ui::Key::tab && !session.world().running()) {
+        out.capture_acquire = true;
+        out.cursor = ui::Cursor::move;
+    };
+    const auto open_add_menu = [&]() -> InteractionOutcome {
         std::string auto_from;
         std::string auto_from_port;
         float tx = current_dip_x_;
@@ -2296,7 +2542,96 @@ Result<NetworkCanvas::InteractionOutcome> NetworkCanvas::key_event(Session& sess
         out.consumed = true;
         out.focus_tab_search = true;
         return out;
+    };
+
+    if (event.control && !event.alt && !event.shift) {
+        if (!event.repeat && native_key == 'D' && !session.world().running()) {
+            const auto targets = resolve_targets();
+            if (!targets.empty()) {
+                ATELIER_TRY_BIND(created, session.graph_duplicate_nodes(graph_key, targets, {36.f, 36.f}));
+                selected_note_.clear();
+                selected_box_.clear();
+                selected_nodes = *created;
+                primary_selected = created->empty() ? std::string{} : created->back();
+                out.consumed = true;
+                out.status = std::format(L"Duplicated {} SOP node(s)", created->size());
+            }
+            return out;
+        }
+        if (!event.repeat && (native_key == 'A' || event.key == ui::Key::a)) {
+            selected_nodes.clear();
+            for (const auto& n : view.nodes)
+                selected_nodes.push_back(n.name);
+            primary_selected = selected_nodes.empty() ? std::string{} : selected_nodes.back();
+            out.consumed = true;
+            return out;
+        }
+        if (!event.repeat && native_key == 'I') {
+            std::vector<std::string> inverted;
+            for (const auto& n : view.nodes) {
+                if (std::ranges::find(selected_nodes, n.name) == selected_nodes.end())
+                    inverted.push_back(n.name);
+            }
+            selected_nodes = std::move(inverted);
+            primary_selected = selected_nodes.empty() ? std::string{} : selected_nodes.back();
+            out.consumed = true;
+            out.status = L"Inverted SOP selection";
+            return out;
+        }
+        return out;
     }
+
+    if (event.alt && !event.control && !event.shift) {
+        if (!event.repeat && (native_key == 'A' || event.key == ui::Key::a)) {
+            selected_nodes.clear();
+            primary_selected.clear();
+            selected_note_.clear();
+            selected_box_.clear();
+            out.consumed = true;
+            out.status = L"Cleared SOP selection";
+            return out;
+        }
+        return out;
+    }
+
+    if (event.control || event.alt)
+        return out;
+
+    if (event.shift) {
+        if (!event.repeat && native_key == 'D' && !session.world().running()) {
+            const auto targets = resolve_targets();
+            if (!targets.empty()) {
+                ATELIER_TRY_BIND(created, session.graph_duplicate_nodes(graph_key, targets, {28.f, 28.f}));
+                selected_note_.clear();
+                selected_box_.clear();
+                selected_nodes = *created;
+                primary_selected = created->empty() ? std::string{} : created->back();
+                if (const auto after = session.graph_topology(graph_key))
+                    begin_keyboard_grab(**after, true);
+                out.status =
+                    std::format(L"Duplicated {} SOP node(s) · Move cursor, LMB/Enter confirm, Esc/RMB keep offset",
+                                created->size());
+            }
+            return out;
+        }
+        if (!event.repeat && (native_key == 'A' || event.key == ui::Key::a) && !session.world().running())
+            return open_add_menu();
+        return out;
+    }
+
+    if (native_key == 'Y' || event.key == ui::Key::y) {
+        cut_key_held_ = true;
+        out.consumed = true;
+        out.cursor = ui::Cursor::crosshair;
+        out.status = L"Wire Cut: hold Y and drag across wires to disconnect";
+        return out;
+    }
+
+    if (event.repeat)
+        return out;
+
+    if (event.key == ui::Key::tab && !session.world().running())
+        return open_add_menu();
 
     if (native_key == 'H' || event.key == ui::Key::home) {
         frame_nodes(view.nodes, canvas_dip, {}, view.boxes, view.notes);
@@ -2305,10 +2640,22 @@ Result<NetworkCanvas::InteractionOutcome> NetworkCanvas::key_event(Session& sess
         return out;
     }
 
-    if (native_key == 'F') {
+    if (native_key == 'F' || native_key == 0x6E /* VK_DECIMAL */) {
         frame_nodes(view.nodes, canvas_dip, selected_nodes, view.boxes, view.notes);
         out.consumed = true;
-        out.status = L"Framed SOP selection";
+        out.status = selected_nodes.empty() ? L"Framed SOP network" : L"Framed SOP selection";
+        return out;
+    }
+
+    if (native_key == 'G' && !session.world().running()) {
+        if (selected_nodes.empty() && !target_node.empty()) {
+            selected_nodes = {target_node};
+            primary_selected = target_node;
+        }
+        if (!selected_nodes.empty()) {
+            begin_keyboard_grab(view, false);
+            out.status = L"Move SOP node(s) · Move cursor, LMB/Enter confirm, Esc/RMB cancel";
+        }
         return out;
     }
 
@@ -2320,10 +2667,6 @@ Result<NetworkCanvas::InteractionOutcome> NetworkCanvas::key_event(Session& sess
         out.status = L"Auto-arranged SOP network";
         return out;
     }
-
-    const std::string target_node = !hovered_node_.empty() ? hovered_node_
-                                    : !air_node_.empty()   ? air_node_
-                                                           : primary_selected;
 
     if (native_key == 'D' && !session.world().running() && !target_node.empty()) {
         if (const auto* n = view.find_node(target_node); n && !n->placeholder) {
@@ -2355,14 +2698,20 @@ Result<NetworkCanvas::InteractionOutcome> NetworkCanvas::key_event(Session& sess
         }
     }
 
-    if (native_key == 'Z' && !session.world().running() && !target_node.empty()) {
-        open_node_popup(PopupKind::shape_picker, view, target_node, selected_nodes, canvas_dip);
+    if (native_key == 'Z' && !session.world().running()) {
+        if (popup_.open() && popup_.kind == PopupKind::shape_picker)
+            close_popup();
+        else
+            open_node_popup(PopupKind::shape_picker, view, target_node, selected_nodes, canvas_dip);
         out.consumed = true;
         return out;
     }
 
-    if (native_key == 'C' && !session.world().running() && !target_node.empty()) {
-        open_node_popup(PopupKind::color_picker, view, target_node, selected_nodes, canvas_dip);
+    if (native_key == 'C' && !session.world().running()) {
+        if (popup_.open() && popup_.kind == PopupKind::color_picker)
+            close_popup();
+        else
+            open_node_popup(PopupKind::color_picker, view, target_node, selected_nodes, canvas_dip);
         out.consumed = true;
         return out;
     }
@@ -2409,7 +2758,9 @@ Result<NetworkCanvas::InteractionOutcome> NetworkCanvas::key_event(Session& sess
         return out;
     }
 
-    if ((event.key == ui::Key::delete_key || event.key == ui::Key::backspace) && !session.world().running()) {
+    if ((event.key == ui::Key::delete_key || event.key == ui::Key::backspace || native_key == 'X' ||
+         event.key == ui::Key::x) &&
+        !session.world().running()) {
         if (!selected_note_.empty()) {
             const std::array names{selected_note_};
             ATELIER_TRY(session.graph_remove_notes(graph_key, names));
@@ -2472,17 +2823,12 @@ void NetworkCanvas::append_tab_categories(std::vector<ui::Control>& controls, ui
         btn.text = labels[i];
         btn.single_line = true;
         btn.selected = active;
+        btn.classes = {"ghost-button"};
         btn.layout = ui_layout::NodeInput::box(0.f, 20.f);
         btn.layout.width = ui_layout::Axis::expand();
         btn.style.font_size = 10.5f;
         btn.style.font_weight = active ? std::uint16_t{700} : std::uint16_t{400};
         btn.style.radius = {3.f, 3.f, 3.f, 3.f};
-        btn.style.background = active ? hex_color(0x2a4f6e) : hex_color(0x26292e);
-        btn.style.border = active ? hex_color(0x38bdf8, .85f) : hex_color(0x3a3f46);
-        btn.style.border_width = 1.f;
-        btn.style.foreground = active ? hex_color(0xffffff) : hex_color(0xb8c2cc);
-        btn.style.text_align = ui::TextAlign::center;
-        btn.style.text_vertical_align = ui::TextVerticalAlign::center;
         cat_controls.push_back(std::move(btn));
     }
 
@@ -2586,17 +2932,18 @@ void NetworkCanvas::append_canvas(std::vector<ui::Control>& controls, ui::Contro
                                 conn.to_port == splice_wire_->to_port;
         const bool cut_hit =
             gesture_ == Gesture::wire_cut &&
-            bezier_intersects_segment(p0, p3, z, {start_dip_x_, start_dip_y_}, {current_dip_x_, current_dip_y_});
+            wire_intersects_segment(p0, p3, z, {start_dip_x_, start_dip_y_}, {current_dip_x_, current_dip_y_});
         const bool upstream_err = src->status && src->status->error.has_value();
         const bool active_touch = conn.from_node == primary_selected || conn.to_node == primary_selected;
         const ui::Color wire_col = splice_hit     ? hex_color(0xffd900)
                                    : cut_hit      ? hex_color(0xff5252)
                                    : upstream_err ? hex_color(0xd9534f)
                                    : active_touch ? hex_color(0xf0c43e)
-                                                  : hex_color(0x8fa2b4);
-        const float wire_w =
-            std::clamp((splice_hit ? 3.2f : (cut_hit || active_touch ? 2.15f : 1.6f)) * std::sqrt(z), 1.2f, 4.5f);
-        append_bezier_wire(backdrop, p0, p3, z, wire_w, wire_col, {cw, ch});
+                                                  : hex_color(0x94a6b8);
+        const float wire_w = splice_hit ? std::clamp(2.2f * std::sqrt(z), 1.6f, 2.8f)
+                                        : (cut_hit || active_touch ? std::clamp(1.45f * std::sqrt(z), 1.1f, 1.85f)
+                                                                   : std::clamp(1.05f * std::sqrt(z), 0.85f, 1.35f));
+        append_wire(backdrop, p0, p3, z, wire_w, wire_col, {cw, ch});
     }
 
     // 3. Sticky Notes in bodies:
@@ -2721,17 +3068,25 @@ void NetworkCanvas::append_canvas(std::vector<ui::Control>& controls, ui::Contro
             base_rgb = 0x3f3954;
         else if (shape_id == 5)
             base_rgb = 0x324b43;
+        if (node.is_frozen)
+            base_rgb = blend_hex(base_rgb, 0x38bdf8, .18f);
         if (is_hovered)
             base_rgb = blend_hex(base_rgb, 0xffffff, .08f);
 
         const ui::Rect shape_bounds{vis_x, sy, vis_w, sh};
         bodies.shape({shape_bounds, shape_id, 0, 0.f, 0.f, hex_color(base_rgb, body_alpha), 0.f, {}});
 
-        // Contour-matched vertical flag strips (Bypass = Left, Template = Right Inner, Display = Right Outer):
+        // Contour-matched vertical flag strips (Bypass = Left, Freeze = Left Inner when frozen, Template = Right Inner, Display = Right Outer):
         const ui::Color bypass_fill = node.is_bypassed                                    ? hex_color(0xeab308, .95f)
                                       : (is_hovered && hovered_flag_ == FlagZone::bypass) ? hex_color(0x6e5b1d, .85f)
                                                                                           : hex_color(0xffffff, .03f);
         bodies.shape({shape_bounds, shape_id, 1, 0.f, bw_l, bypass_fill, 0.f, {}});
+        if (node.is_frozen) {
+            const float bw_f = (is_circle ? 6.f : 7.5f) * z;
+            bodies.shape({shape_bounds, shape_id, 1, bw_l, bw_l + bw_f, hex_color(0x38bdf8, .78f), 0.f, {}});
+            bodies.shape(
+                {shape_bounds, shape_id, 3, bw_l + bw_f, bw_l + bw_f, {0, 0, 0, 0}, 1.f, hex_color(0x131518, .62f)});
+        }
 
         const ui::Color tmpl_fill = node.is_template ? hex_color(0xd946ef, .92f)
                                     : (is_hovered && hovered_flag_ == FlagZone::template_flag)
@@ -2754,9 +3109,11 @@ void NetworkCanvas::append_canvas(std::vector<ui::Control>& controls, ui::Contro
         const ui::Color outline = is_primary         ? hex_color(0xffd900)
                                   : is_selected      ? hex_color(0xd4af37)
                                   : has_error        ? hex_color(0xef4444)
+                                  : node.is_frozen   ? hex_color(0x38bdf8, .92f)
                                   : node.is_bypassed ? hex_color(0xca8a04, .85f)
                                                      : hex_color(0x16181b);
-        const float border_w = (is_selected || has_error) ? std::max(1.55f, 2.f * std::sqrt(z)) : 1.1f;
+        const float border_w =
+            (is_selected || has_error || node.is_frozen) ? std::max(1.45f, 1.85f * std::sqrt(z)) : 1.1f;
         bodies.shape({shape_bounds, shape_id, 0, 0.f, 0.f, {0, 0, 0, 0}, border_w, outline});
 
         if (node.is_bypassed) {
@@ -2764,7 +3121,7 @@ void NetworkCanvas::append_canvas(std::vector<ui::Control>& controls, ui::Contro
                            hex_color(0xfacc15, .90f)});
         }
 
-        // Input & Output port connectors in overlay:
+        // Detached Houdini-style Input & Output pin dots in overlay:
         for (std::size_t p = 0; p < node.ports.inputs.size(); ++p) {
             const auto pt = port_dip(node, false, p);
             const bool multi = p < node.ports.multiple.size() && node.ports.multiple[p];
@@ -2772,23 +3129,24 @@ void NetworkCanvas::append_canvas(std::vector<ui::Control>& controls, ui::Contro
                               hovered_port_->index == p) ||
                              (snapped_port_ && !snapped_port_->is_output && snapped_port_->node == node.name &&
                               snapped_port_->index == p);
-            const float pw = (multi ? 17.f : 8.2f) * z;
-            const float ph = (multi ? 6.8f : 8.2f) * z;
+            const float base_d = std::clamp(6.4f * z, 3.6f, 11.5f);
+            const float pw = (multi ? base_d * 2.1f : base_d) + (hot ? 1.8f * z : 0.f);
+            const float ph = (multi ? base_d * .9f : base_d) + (hot ? 1.8f * z : 0.f);
             const float pr = ph * .5f;
             if (hot) {
-                const float hw = pw + 5.f * z;
-                const float hh = ph + 5.f * z;
+                const float hw = pw + 6.f * z;
+                const float hh = ph + 6.f * z;
                 overlay.box({{pt[0] - hw * .5f, pt[1] - hh * .5f, hw, hh},
-                             hex_color(0xffd900, .35f),
+                             hex_color(0xffd900, .28f),
                              {hh * .5f, hh * .5f, hh * .5f, hh * .5f},
                              0.f,
                              {}});
             }
             overlay.box({{pt[0] - pw * .5f, pt[1] - ph * .5f, pw, ph},
-                         hot ? hex_color(0xffd900) : hex_color(0xa3b8cc),
+                         hot ? hex_color(0xffd900) : hex_color(0xb8c2cc),
                          {pr, pr, pr, pr},
-                         1.f,
-                         hex_color(0x15171a)});
+                         .8f,
+                         hex_color(0x16181c, .85f)});
         }
         for (std::size_t p = 0; p < node.ports.outputs.size(); ++p) {
             const auto pt = port_dip(node, true, p);
@@ -2796,21 +3154,21 @@ void NetworkCanvas::append_canvas(std::vector<ui::Control>& controls, ui::Contro
                               hovered_port_->index == p) ||
                              (snapped_port_ && snapped_port_->is_output && snapped_port_->node == node.name &&
                               snapped_port_->index == p);
-            const float d = 8.2f * z;
+            const float d = std::clamp(6.4f * z, 3.6f, 11.5f) + (hot ? 1.8f * z : 0.f);
             const float pr = d * .5f;
             if (hot) {
-                const float hd = d + 5.f * z;
+                const float hd = d + 6.f * z;
                 overlay.box({{pt[0] - hd * .5f, pt[1] - hd * .5f, hd, hd},
-                             hex_color(0xffd900, .35f),
+                             hex_color(0xffd900, .28f),
                              {hd * .5f, hd * .5f, hd * .5f, hd * .5f},
                              0.f,
                              {}});
             }
             overlay.box({{pt[0] - pr, pt[1] - pr, d, d},
-                         hot ? hex_color(0xffd900) : hex_color(0xa3b8cc),
+                         hot ? hex_color(0xffd900) : hex_color(0xb8c2cc),
                          {pr, pr, pr, pr},
-                         1.f,
-                         hex_color(0x15171a)});
+                         .8f,
+                         hex_color(0x16181c, .85f)});
         }
 
         const ui::ControlKey base_key = node_base_key(graph_key, node.name);
@@ -2829,19 +3187,27 @@ void NetworkCanvas::append_canvas(std::vector<ui::Control>& controls, ui::Contro
                 desc += "\n";
             desc += "[Bypassed: input 0 passed straight through]";
         }
+        if (node.is_frozen) {
+            if (!desc.empty())
+                desc += "\n";
+            desc += "[Frozen: cooked geometry snapshot locked]";
+        }
         if (node.status) {
             if (!desc.empty())
                 desc += "\n";
             desc += std::format("Evaluations: {} · Cache hits: {}", node.status->evaluations, node.status->cache_hits);
             if (node.status->time)
                 desc += std::format(" · Cook: {:.2f} ms", double(node.status->time->count()) / 1e6);
+            if (const auto& bs = node.status->boolean_stats)
+                desc += std::format("\nBoolean: {} faces · {} pairs · {} splits", bs->input_faces, bs->candidate_pairs,
+                                    bs->splits);
             if (node.status->error)
                 desc += "\nError: " + node.status->error->message;
         }
         help.description = application::diagnostic_text(desc);
         auto content = intern_tooltip(base_key, std::move(help));
 
-        // Center vector icon inside node body:
+        // Center vector icon inside node body (collinear with top/bottom port connectors):
         if (z >= .50f) {
             ui::Control icon_ctrl;
             icon_ctrl.key = base_key + 1;
@@ -2850,15 +3216,11 @@ void NetworkCanvas::append_canvas(std::vector<ui::Control>& controls, ui::Contro
             icon_ctrl.enabled = false;
             icon_ctrl.tooltip = content;
             icon_ctrl.layout = out_of_flow_box(vis_x, sy, vis_w, sh);
-            icon_ctrl.icon = has_error                        ? ui::ControlIcon::close
-                             : node.type == "procedural.Null" ? ui::ControlIcon::cursor3d
-                             : is_source_sop                  ? ui::ControlIcon::component
-                             : shape_id == 5                  ? ui::ControlIcon::points
-                             : shape_id == 3                  ? ui::ControlIcon::bounds_cage
-                                                              : ui::ControlIcon::mesh;
+            icon_ctrl.icon = sop_node_icon(node.type, is_source_sop, has_error);
             icon_ctrl.style.background = ui::Color{0, 0, 0, 0};
             icon_ctrl.style.border_width = 0.f;
-            icon_ctrl.style.padding = ui_layout::Insets{(vis_w - 14.f * z) * .5f - 2.f * z, 0.f, 0.f, 0.f};
+            icon_ctrl.style.padding = ui_layout::Insets{};
+            icon_ctrl.style.icon_align = ui::TextAlign::center;
             icon_ctrl.style.indicator_size = std::clamp(std::round(13.5f * z), 7.f, 26.f);
             icon_ctrl.style.indicator_foreground =
                 has_error ? hex_color(0xffb4b4)
@@ -2892,6 +3254,8 @@ void NetworkCanvas::append_canvas(std::vector<ui::Control>& controls, ui::Contro
             std::wstring sub = sanitize_single_line(platform::utf8_to_utf16_validated(short_type_name(node.type)));
             if (has_error)
                 sub += L" · ERR";
+            else if (node.is_frozen)
+                sub += L" · Frozen";
             else if (!node.comment.empty())
                 sub += L" · " + sanitize_single_line(platform::utf8_to_utf16_validated(node.comment));
             else if (node.status && node.status->time)
@@ -2912,6 +3276,7 @@ void NetworkCanvas::append_canvas(std::vector<ui::Control>& controls, ui::Contro
             badge_ctrl.style.text_vertical_align = ui::TextVerticalAlign::center;
             badge_ctrl.style.font_size = std::clamp(std::round(10.f * z), 6.f, 20.f);
             badge_ctrl.style.foreground = has_error               ? hex_color(0xff8080)
+                                          : node.is_frozen        ? hex_color(0x7dd3fc)
                                           : !node.comment.empty() ? hex_color(0x93c5fd)
                                                                   : hex_color(0x8c96a2);
             badge_ctrl.style.text_shadow = ui::Color{0.f, 0.f, 0.f, .65f};
@@ -2932,30 +3297,36 @@ void NetworkCanvas::append_canvas(std::vector<ui::Control>& controls, ui::Contro
                 const float dy = std::sin(rad);
                 const bool hot = static_cast<std::uint8_t>(hovered_air_) == def.button_id;
                 const bool active = (def.button_id == 1 && node.is_bypassed) ||
-                                    (def.button_id == 4 && node.is_display) || (def.button_id == 5 && node.is_template);
-                ui::Color s_fill = hex_color(0x1b1e24, .88f);
-                ui::Color s_border = hex_color(0x475569, .75f);
-                ui::Color s_fg = hex_color(0xe2e8f0);
+                                    (def.button_id == 3 && node.is_frozen) || (def.button_id == 4 && node.is_display) ||
+                                    (def.button_id == 5 && node.is_template);
+                ui::Color s_fill = hex_color(0x1b1e24, 1.f);
+                ui::Color s_border = hex_color(0x4b586a, 1.f);
+                ui::Color s_fg = hex_color(def.idle_rgb, 1.f);
                 if (def.button_id == 1 && active) {
-                    s_fill = hex_color(0x71540a, .94f);
-                    s_border = hex_color(0xfacc15, .96f);
-                    s_fg = hex_color(0xfef08a);
+                    s_fill = hex_color(0x78580a, 1.f);
+                    s_border = hex_color(0xfacc15, 1.f);
+                    s_fg = hex_color(0xfef08a, 1.f);
+                } else if (def.button_id == 3 && active) {
+                    s_fill = hex_color(0x0e4f68, 1.f);
+                    s_border = hex_color(0x38bdf8, 1.f);
+                    s_fg = hex_color(0xe0f2fe, 1.f);
                 } else if (def.button_id == 4 && active) {
-                    s_fill = hex_color(0x0c4a6e, .94f);
-                    s_border = hex_color(0x38bdf8, .96f);
-                    s_fg = hex_color(0xe0f2fe);
+                    s_fill = hex_color(0x0c4a6e, 1.f);
+                    s_border = hex_color(0x38bdf8, 1.f);
+                    s_fg = hex_color(0xe0f2fe, 1.f);
                 } else if (def.button_id == 5 && active) {
-                    s_fill = hex_color(0x581c68, .94f);
-                    s_border = hex_color(0xe879f9, .96f);
-                    s_fg = hex_color(0xfae8ff);
+                    s_fill = hex_color(0x581c68, 1.f);
+                    s_border = hex_color(0xe879f9, 1.f);
+                    s_fg = hex_color(0xfae8ff, 1.f);
                 }
                 if (hot) {
-                    s_fill = hex_color(0x2d3748, .96f);
-                    s_border = hex_color(0xffd900, .95f);
-                    s_fg = hex_color(0xffffff);
+                    s_fill =
+                        active ? hex_color(blend_hex(0x364356, def.idle_rgb, .30f), 1.f) : hex_color(0x2e3746, 1.f);
+                    s_border = hex_color(0xffd900, 1.f);
+                    s_fg = hex_color(0xffffff, 1.f);
                 }
                 overlay.arc({cx, cy, rin, rout, dx, dy, std::cos(half_rad), std::sin(half_rad), s_fill,
-                             hot ? 1.45f : 1.1f, s_border});
+                             hot ? 1.45f : 1.05f, s_border});
 
                 const ui::ControlKey akey = base_key + 3 + s;
                 ui::Tooltip ahelp{def.title, L"Air-Ring Action", platform::utf8_to_utf16_validated(def.description)};
@@ -2965,16 +3336,15 @@ void NetworkCanvas::append_canvas(std::vector<ui::Control>& controls, ui::Contro
                 gl.kind = ui::ControlKind::label;
                 gl.tooltip = intern_tooltip(akey, std::move(ahelp));
                 const float gw = 18.f * z;
-                const float gh = 16.f * z;
+                const float gh = 18.f * z;
                 gl.layout = out_of_flow_box(cx + dx * rmid - gw * .5f, cy + dy * rmid - gh * .5f, gw, gh);
-                gl.text = def.glyph;
-                gl.single_line = true;
+                gl.icon = def.icon;
                 gl.style.background = ui::Color{0, 0, 0, 0};
                 gl.style.border_width = 0.f;
-                gl.style.text_align = ui::TextAlign::center;
-                gl.style.text_vertical_align = ui::TextVerticalAlign::center;
-                gl.style.font_size = std::clamp(std::round(11.f * z), 7.f, 20.f);
-                gl.style.font_weight = 700;
+                gl.style.padding = ui_layout::Insets{};
+                gl.style.icon_align = ui::TextAlign::center;
+                gl.style.indicator_size = std::clamp(std::round(12.5f * z), 8.f, 21.f);
+                gl.style.indicator_foreground = s_fg;
                 gl.style.foreground = s_fg;
                 controls.push_back(std::move(gl));
             }
@@ -2992,8 +3362,8 @@ void NetworkCanvas::append_canvas(std::vector<ui::Control>& controls, ui::Contro
             }
             const auto from_pt = wire_anchor_.is_output ? anchor_pt : target_pt;
             const auto to_pt = wire_anchor_.is_output ? target_pt : anchor_pt;
-            append_bezier_wire(overlay, from_pt, to_pt, z, 2.4f,
-                               snapped_port_ ? hex_color(0xffd900) : hex_color(0x69b6ff), {cw, ch});
+            append_wire(overlay, from_pt, to_pt, z, std::clamp(1.35f * std::sqrt(z), 1.05f, 1.75f),
+                        snapped_port_ ? hex_color(0xffd900) : hex_color(0x69b6ff), {cw, ch});
         }
     } else if (gesture_ == Gesture::marquee) {
         const float rx = std::min(start_dip_x_, current_dip_x_);
@@ -3120,22 +3490,29 @@ void NetworkCanvas::append_canvas(std::vector<ui::Control>& controls, ui::Contro
         htitle.style.text_vertical_align = ui::TextVerticalAlign::center;
         controls.push_back(std::move(htitle));
 
+        if (popup_.kind == PopupKind::shape_picker || popup_.kind == PopupKind::color_picker) {
+            ui::Control sw_btn;
+            sw_btn.key = network_control::popup_switch_style;
+            sw_btn.parent = network_control::popup_header;
+            sw_btn.kind = ui::ControlKind::button;
+            sw_btn.text = popup_.kind == PopupKind::color_picker ? L"Shapes [Z]" : L"Colors [C]";
+            sw_btn.single_line = true;
+            sw_btn.classes = {"ghost-button"};
+            sw_btn.layout = ui_layout::NodeInput::box(64.f, 20.f);
+            sw_btn.style.font_size = 10.5f;
+            sw_btn.style.radius = {3.f, 3.f, 3.f, 3.f};
+            controls.push_back(std::move(sw_btn));
+        }
+
         if (popup_.kind == PopupKind::edit_note || popup_.kind == PopupKind::edit_box) {
             ui::Control del_btn;
             del_btn.key = network_control::popup_delete_item;
             del_btn.parent = network_control::popup_header;
             del_btn.kind = ui::ControlKind::button;
-            del_btn.text = L"Del";
-            del_btn.single_line = true;
-            del_btn.layout = ui_layout::NodeInput::box(34.f, 19.f);
-            del_btn.style.font_size = 10.5f;
+            del_btn.icon = ui::ControlIcon::trash;
+            del_btn.classes = {"ghost-tool"};
+            del_btn.layout = ui_layout::NodeInput::box(22.f, 20.f);
             del_btn.style.radius = {3.f, 3.f, 3.f, 3.f};
-            del_btn.style.background = hex_color(0x5c2428);
-            del_btn.style.border = hex_color(0x991b1b);
-            del_btn.style.border_width = 1.f;
-            del_btn.style.foreground = hex_color(0xfecaca);
-            del_btn.style.text_align = ui::TextAlign::center;
-            del_btn.style.text_vertical_align = ui::TextVerticalAlign::center;
             controls.push_back(std::move(del_btn));
         }
 
@@ -3143,17 +3520,10 @@ void NetworkCanvas::append_canvas(std::vector<ui::Control>& controls, ui::Contro
         close_btn.key = network_control::popup_close;
         close_btn.parent = network_control::popup_header;
         close_btn.kind = ui::ControlKind::button;
-        close_btn.text = L"×";
-        close_btn.single_line = true;
-        close_btn.layout = ui_layout::NodeInput::box(20.f, 19.f);
-        close_btn.style.font_size = 12.f;
+        close_btn.icon = ui::ControlIcon::close;
+        close_btn.classes = {"ghost-tool"};
+        close_btn.layout = ui_layout::NodeInput::box(22.f, 20.f);
         close_btn.style.radius = {3.f, 3.f, 3.f, 3.f};
-        close_btn.style.background = hex_color(0x2d323a);
-        close_btn.style.border = hex_color(0x475569);
-        close_btn.style.border_width = 1.f;
-        close_btn.style.foreground = hex_color(0xcbd5e1);
-        close_btn.style.text_align = ui::TextAlign::center;
-        close_btn.style.text_vertical_align = ui::TextVerticalAlign::center;
         controls.push_back(std::move(close_btn));
 
         if (popup_.kind == PopupKind::shape_picker) {
@@ -3320,11 +3690,18 @@ void NetworkCanvas::append_canvas(std::vector<ui::Control>& controls, ui::Contro
                 std::wstring info_txt = L"Type: " + sanitize_single_line(platform::utf8_to_utf16_validated(nv->type)) +
                                         (is_src ? L" (Source SOP)" : L" (C++ SOP)");
                 info_txt += std::format(L"\nPorts: {} in / {} out", nv->ports.inputs.size(), nv->ports.outputs.size());
+                if (nv->is_frozen)
+                    info_txt += L"\nState: Frozen (output snapshot locked)";
+                else if (nv->is_bypassed)
+                    info_txt += L"\nState: Bypassed (input 0 pass-through)";
                 if (nv->status) {
                     info_txt +=
                         std::format(L"\nCooks: {}  ·  Cache hits: {}", nv->status->evaluations, nv->status->cache_hits);
                     if (nv->status->time)
                         info_txt += std::format(L"\nCook time: {:.2f} ms", double(nv->status->time->count()) / 1e6);
+                    if (const auto& bs = nv->status->boolean_stats)
+                        info_txt += std::format(L"\nBoolean: {} faces · {} pairs · {} splits", bs->input_faces,
+                                                bs->candidate_pairs, bs->splits);
                     if (nv->status->error)
                         info_txt += L"\nError: " + application::diagnostic_text(nv->status->error->message);
                 }
@@ -3335,7 +3712,9 @@ void NetworkCanvas::append_canvas(std::vector<ui::Control>& controls, ui::Contro
                 stats.kind = ui::ControlKind::label;
                 stats.single_line = false;
                 stats.text = sanitize_multiline_label(info_txt);
-                stats.layout = ui_layout::NodeInput::box(0.f, 68.f);
+                const float stats_h = 68.f + (nv->status && nv->status->boolean_stats ? 16.f : 0.f) +
+                                      ((nv->is_frozen || nv->is_bypassed) ? 15.f : 0.f);
+                stats.layout = ui_layout::NodeInput::box(0.f, stats_h);
                 stats.layout.width = ui_layout::Axis::expand();
                 stats.style.font_size = 10.5f;
                 stats.style.foreground = hex_color(0xcbd5e1);

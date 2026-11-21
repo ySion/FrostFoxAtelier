@@ -62,11 +62,19 @@
         const auto* box=tooltip_blocked()?nullptr:tooltip_target(*published,event.x,event.y);
         if (!box) return dismiss_tooltip();
         const auto now=std::chrono::steady_clock::now();
-        const bool unchanged=tooltip_hover && tooltip_hover->owner==box->key &&
+        const bool same_target=tooltip_hover && tooltip_hover->owner==box->key &&
             tooltip_hover->incarnation==box->incarnation && tooltip_hover->content==box->tooltip &&
-            tooltip_hover->anchor==box->bounds && tooltip_hover->clip==box->clip &&
-            std::abs(event.x-tooltip_hover->x)<=2*surface.dpi_scale && std::abs(event.y-tooltip_hover->y)<=2*surface.dpi_scale;
-        if (unchanged) return false;
-        tooltip_hover=TooltipHover{box->key,box->incarnation,box->bounds,box->clip,box->tooltip,event.x,event.y,now,detail::new_identity()};
+            tooltip_hover->anchor==box->bounds && tooltip_hover->clip==box->clip;
+        if (same_target && std::abs(event.x-tooltip_hover->x)<=2*surface.dpi_scale &&
+            std::abs(event.y-tooltip_hover->y)<=2*surface.dpi_scale) return false;
+        const bool currently_shown=published && published->tooltip.has_value();
+        if (same_target && !currently_shown) {
+            tooltip_hover->x=event.x;
+            tooltip_hover->y=event.y;
+            tooltip_hover->generation=detail::new_identity();
+            return true;
+        }
+        const auto since=(currently_shown && !same_target)?(now-std::chrono::milliseconds(130)):now;
+        tooltip_hover=TooltipHover{box->key,box->incarnation,box->bounds,box->clip,box->tooltip,event.x,event.y,since,detail::new_identity()};
         return true;
     }

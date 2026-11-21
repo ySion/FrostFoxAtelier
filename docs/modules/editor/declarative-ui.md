@@ -1,6 +1,6 @@
 # 引擎原生声明式 UI
 
-编辑器现有界面的装配统一到 [editor.ui.source](../../../assets/editor.ui.source)：EditorShell、菜单栏、工具架、状态栏、停靠页签与分隔条、Scene View、Parameters、Scene Tree、Entity Structure、Asset Browser、Controls、Code、Project Output，以及独立窗口内的 PopupMenu。宿主提供业务数据、稳定身份和动作；Source/JIT 产出同一套原生 Control，沿现有 SS、Session、布局与绘制链执行。区域职责与未实施的交互见[区域与手势边界](#区域与手势边界)。
+编辑器现有界面的装配统一到 [editor.ui.source](../../../assets/editor.ui.source)：EditorShell、菜单栏、工具架、状态栏、停靠页签与分隔条、Scene View、Parameters、Scene Tree、Entity Structure、Network、Geometry Spreadsheet、Asset Browser、Controls、Code、Project Output，以及独立窗口内的 PopupMenu。宿主提供业务数据、稳定身份和动作；Source/JIT 产出同一套原生 Control，沿现有 SS、Session、布局与绘制链执行。区域职责与未实施的交互见[区域与手势边界](#区域与手势边界)。
 
 Parameters 在对象标题下按需展开过滤器，连续展示检查目标的 Position/Rotation/Scale 数值行和 `Items<PropertyGroup>`，不内建 Transform／Components 页签。`PropertyRow` 根据实际字段种类使用 NumberRow、Checkbox 或枚举 Combo；规范数学元组由 NumberRow 组合。资源选择使用 `ResourceParameters` 和 `Items<ResourceProperty>` 展示只读元数据，各行 key 来自同一宿主分配器。EntityStructure 用同一 Tree/Repeat 递归展示 Entity 与组件归属，并提供组成及 Add/Remove Transform 命令；SceneTree 递归展示 Entity 组合层级。ViewportTools 在路径栏末尾提供显示菜单，ViewportMode 在视口左侧组成紧凑的选择组和枢轴菜单。所有视图沿同一原生控件和命令链工作。
 
@@ -26,6 +26,21 @@ Scene Tree 的行选择/重命名/组合换父、Parameters 的实例编辑及�
 未来资源拖放开始时须冻结资源身份、工程/文档代次及源控件寿命；目标协商类型与可用性，预览不创建正式 Entity，drop 时重新验证并提交一次命令/撤销。字段目标冻结对象/字段身份，禁用字段拒绝；切文档、源退役或目标关闭终止旧会话，不能在 drop 时重读“当前选择”。`DragPoint{x,y}` 只是几何，不是载荷协议。外部文件须经 Windows 适配与同一导入服务验证类型、目录/多文件和工程目标；普通外部链接不自动下载或执行。组合换父不能与空间参考混作一个操作。
 
 设计依据：[SideFX Geometry Spreadsheet](https://www.sidefx.com/docs/houdini/ref/panes/geosheet.html)区分过滤、列和排序；[Panes](https://www.sidefx.com/docs/houdini/basics/panes.html)说明窗格组合与分隔操作。借鉴行为和责任，不复制专有素材或将外部软件未核实的隐藏状态当本项目合同。
+
+### 视觉层级、空气态控件与提示规范
+
+编辑器界面区分三层表面视觉权重，新增或重构面板时必须遵守同一规范，禁止将表单按钮框无差别套用到面板导航栏与工具栏：
+
+1. **顶栏、菜单栏与面板工具栏默认采用“空气态”（Air-State / Ghost Chrome）**：
+   - 面板的路径栏尾端开关、二级动作栏（如 `SceneViewport` 的 `View / Select / Add / Object`、`NetworkPanel` 的 `Add / Edit / View / Layout` 与快捷图标组、`GeometrySpreadsheet` 翻页与跟随开关）、左右工具轨（Tool Rail / Display Bar）与浮窗标题栏工具，常态下必须透明无框、无凸起渐变（`background: transparent; background-image: none; border-width: 0dip;`），避免密集小方框造成视觉拥挤。
+   - 交互反馈仅在触发时浮现：`:hover` 使用轻量平底（`#484848`～`#4b4b4b`）并提亮图标/文字；下拉菜单展开态（`:selected` / `:pressed`）使用 `token(menu-active)`（`#b36600`），且同一横栏内的相邻菜单在展开后支持悬停平滑切换；持久布尔开关激活态（`:selected`）使用灰蓝实底（`#5d7289`）；`:disabled` 必须保持透明底面并仅降低图标/文字明度，绝不能回退为实体灰按钮框。
+   - 统一复用 [editor.ss](../../../assets/editor.ss) 中的空气态类：扁平文字菜单用 `viewport-header-menu`，纯图标工具/开关用 `ghost-tool` / `display-toggle` / `parameter-tool`，轻量文字动作（如缩放百分比复位、`+ Scratch Graph`）用 `ghost-button`，图标下拉用 `icon-menu`；组间优先用留白或 `1 DIP` 细竖线（`viewport-option-divider`）分隔，仅需表达紧密互斥组（如着色四连组）时才使用共边 `viewport-segment`。禁止在 C++ 中散写硬编码工具栏按钮背景或边框色。
+2. **属性与表单区保留实体控件框（Framed Field / Action Chrome）**：
+   - 凹陷输入槽（`token(field)`）与带细边的渐变按钮/下拉（`token(button-face)`、`pane-path`）专用于 `Parameters`、路径选择槽与表单提交动作，让“可编辑数据槽”与“面板导航/工具铬层”一眼可辨。
+3. **画布悬浮层与双语提示、悬浮焦点约定**：
+   - 被动 HUD 文字保持 `enabled: false` 不抢命中；`Network` 节点外扩悬停快捷环（Air-Ring）仅在指针进入包络时展开，扇区采用 **100% 不透明实色底面**以保证在网格和连线之上清晰可读。
+   - 高频工具栏坚持“语义矢量图标（`ui::ControlIcon`）+ 空气态文字菜单”，不堆砌英文缩写方框按钮。界面控件标签统一使用简洁英文，所有图标按钮、开关与核心操作必须提供 `Tooltip`（**英文标题 + 快捷键/状态身份 + 中文用途解释**，180ms 首显 / 50ms 相邻滑移快切）。
+   - 停靠面板遵循 `DockSpace::focus_point` 悬浮切焦（无活动手势、菜单或单行文本/数值输入占用时，指针移入即切换区域快捷键归属）。
 
 ## 编辑与保存
 
