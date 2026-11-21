@@ -6,14 +6,27 @@ P1、共享不可变列迁移、统一 `procedural.Node` / `process(...)` 节点
 
 ## 方向与依据
 
-- 第一类产品是 Houdini 式统一几何图：点、顶点、图元、实例与各层属性共用 Geometry。先解决现有网格上的撒点、属性运算与资源实例化，再做多边形构造；Substance 式贴图图推后。点和顶点不是 Runtime 对象或 Entity；生成器将来才作为组件挂在普通 Entity 上。
-- Geometry 核心轻量自建，不做 CAD 内核。算法优先用自有语言；容器、求值器、BVH 和暂时必须由 C++ 完成的改变点数操作留在 C++。可靠的批量服务可以作为原生黑箱，但当前 C++ 操作并不因此自动成为语言可调用的 BorrowSafe 方法。
-- 图是权威数据。未来人与 LLM 共用 Control 操作符和撤销历史：人用网络编辑器与 Parameters，LLM 读写文本、调用操作符并读取客观统计。生成结果不是另一套可编辑权威数据。
-- 场景默认用 Cache 或冻结结果，不每次从零求值；同时允许 Play 与游戏运行时主动求值，图可以封装为可复用的数字资产。这是已定方向，场景消费者与持久缓存尚未实现。
+- 第一类产品是 Houdini 式统一几何图：点、顶点、图元、实例与各层属性共用 Geometry。先解决现有网格上的撒点、属性运算与资源实例化，再做多边形构造；Substance 式贴图图推后。点和顶点不是 Runtime 对象或 Entity；生成器作为组件（`world.ProceduralGeneratorComponent`）挂在普通 Entity 上。
+- Geometry 核心轻量自建，不做 CAD 内核。算法优先用自有语言；容器、求值器、BVH 和需要维护复杂拓扑/数值不变量的操作留在 C++。可靠的批量服务可以作为原生黑箱，但当前 C++ 操作并不因此自动成为语言可调用的 BorrowSafe 方法。
+- 图是权威数据。人与 LLM 共用 Control 操作符和撤销历史：人用网络编辑器与 Parameters，LLM 读写文本、调用操作符并读取客观统计。生成结果不是另一套可编辑权威数据。
+- 场景默认用 Cache 或冻结结果，不每次从零求值；同时允许 Play 与游戏运行时主动求值，图可以封装为可复用的数字资产。持久缓存与磁盘冻结尚未实现。
 - 预期规模是单生成器约 10 万实例、图内约 100 万点；典型图（≤20 节点、≤10 万点）调参重算期望 ≤33 ms，目标画面为 120 FPS。这些是设计量级，不是未经测量的性能承诺或验收硬闸。
 - `id` 是 uint32 随机种子，不是唯一身份。100 万点约有 116 对哈希碰撞的期望值；重复只使随机值相同。P1/P2 当前范围不需要 64 位列，也没有 Source Map/Set 的真实需求。实例覆盖或 Spawn Entity 若需要逐元素身份，必须另定契约；撒点的（`sourceprim`，子三角 `sourcetri`，`sourceordinal`）可作为基础，纯三角输入隐含子三角 0，但不是跨拓扑编辑的永久身份。
 - 参考 Houdini 的分层、属性名与实例矩阵公式；参考 Adobe Lagrange（Apache-2.0）的保留拓扑、用途与等边数图元表示，改编代码须保留许可和署名；Blender Geometry Nodes（GPL）只参考设计，不复制或改编代码。
 - 暂不做常量列（借给 Source 的 Array 需要先展开）、外部缓冲策略矩阵、稳定边编号。需要邻接的服务按需建立邻接；常量列的收益须由负载证明。没有选用 Lagrange 的网格剪枝撒点，因为它不保证点数与面积成比例。
+
+### 人机双环定位、节点粒度与三层分工
+
+本项目程序化服务于**“LLM 主力开发规则 + 人类 120 FPS 观察与滑杆微调”**的双环工作流，主干固定为**共享 `Runtime` + 正式 `.source` `procedural.Node` 类（LLVM O2 JIT）+ 宏观 `.procgraph`**（参考 [TerraceIsland.source](../../../examples/Source/Procedural/TerraceIsland.source)）：
+
+1. **节点粒度准则（语义几何阶段粒度，规避两端误区）**：
+   - **拒绝算术微节点连线**：不在图中建立 `Add`、`Sin`、`Dot`、`Branch` 等低级可视化编程节点；复杂数学、条件分支与循环统一写在 `.source` `process(...)` 内，避免节点图膨胀与端口连错。
+   - **拒绝单节点黑盒巨石**：不把整座建筑或整张关卡塞入 1～2 个数百行的巨型 `.source` 节点。图节点的边界同时是人类视口分步检视（`D`/`T` 主副对比）、`Evaluator` 256 MiB 写时复制结果缓存、节点级 `Freeze` 以及 LLM `graph.inspect` 逐阶段断言的边界。典型单图应保持 **6～15 个可独立观察与缓存的几何变换阶段**。
+2. **三层职责切分（强强联合模型）**：
+   - **C++ 几何底座与高阶拓扑算子（`atelier_procedural`）**：负责精确数值谓词、邻接关系、跨层属性插值（point/vertex/primitive）、流形闭合与公共凸面容差 δ_p 保证（已有 `Boolean`、`VolumeScatter`、`Bvh/Ray`、`Realize`、`Connectivity`；后续补齐沿折线扫掠 `Sweep`、面片挤出/内缩 `Extrude/Inset`、平面裁切 `Clip`、点焊接与三角化 `Fuse/Triangulate` 等高阶构造动词）。**不让 LLM 在 `.source` 中手写三维多边形 CSR 索引汤、封盖环或绕序修补**，防止下游 `Boolean`/`VolumeScatter` 因非流形或翘曲超 δ_p 频繁报错。
+   - **`.source` 领域阶段模块（`class Name : procedural.Node`）**：保持 `.source` 强类型、无隐式转换、同步值区间零 GC 停顿的紧凑边界（不膨胀为半个 C++），专注表达与游戏业务强耦合的阶段逻辑——地形/噪声场塑形、建筑开间与楼层语法切分（Grammar/Lot Subdivision）、道路/枝干折线骨架生成、多参考输入战术打分筛选、变体与朝向状态机。公开字段即人类微调滑杆。
+   - **`.procgraph` 与数字资产（`AssetNode`）**：宏观串联 C++ 拓扑算子与 `.source` 业务阶段模块；成熟子图按 `asset.generic_node` 封装为高阶复合模块供群落/关卡图调用。
+3. **已排除的伪瓶颈**：`Evaluator` 在节点入口对 `.source` 节点按每次求值十余次的图粒度经 `Entry::invoke` 核对借用签名（见[原生值借用](../../native-value-borrows.md)），热点全在内部 `parallel_for` 的 1024 元素 O2 向量化块内，不为节点边界纳秒级调用另造绕过检查的 `_typed` 借用通道；图求值后台化须以实测超预算（>33 ms）和只读求值计划为前提，不破坏单线程 `Runtime` 契约。
 
 ## 当前顺序与后续依赖
 
@@ -21,14 +34,36 @@ S0 契约静态对齐 → S1 原生拓扑/构造/体积采样/Realize，随后�
 
 | 项目 | 状态与下一步 |
 | --- | --- |
-| S3 拓扑工具 | Connectivity 已接入 SOP 求值链，可用 point 层的 piece 编号区分共享点的多边形、折线与孤立点，并通过 Promote 传到图元层。见[几何操作](README.md#操作) |
+| S3 拓扑工具 | Connectivity 已接入 SOP 求值链，可用 point 层的 piece 编号区分共享点的多边形、折线与孤立点，并通过 Promote 传到图元层。见[几何操作](README.md#操作)。后续按真实生成命题补齐 `Sweep`、`Extrude/Inset`、`Clip`、`Fuse/Triangulate` |
 | Remap／属性噪声 | E/F 已接通共同绑定与 Source 3D value noise / point float Remap，现行合同见[Noise / Remap](README.md#noise--remap)。其他噪声族、导数和周期仍未排期 |
 | 语言能力 | 参数名与参数属性、`parallel_for`、显式 `fail("...")`、`math.is_finite`、`math.as_uint`/`math.as_int`、同步值区间读 self、字段元数据、数学函数、代码身份、引擎源码加载及按依赖复用编译单元已接入，语义见 [LANGUAGE.md](../../../LANGUAGE.md)、[数学模块](../../math.md)和[原生值借用](../../native-value-borrows.md) |
 | Source 业务失败 | 已落地语言级 `fail("...")` 语句，替换全部内建 `.source` 节点并移除原 `Node.fail(message)`，零 Runtime `String` 分配且支持 `parallel_for` 块内失败收敛 |
-| L3 | 拥有型 Array 按值返回倾向在调用方存储构造；需运行时负责人另立方案，S4 前再决定。当前借用规则不允许属性节点改列长度；Wrangle 的后续语言需求见下方显式合同 |
+| L3 与多端口查询 | 方向已收敛为“只读辅助 `Geometry` 端口 + `Bvh` 空间查询”与“基于同步值区间栈上拥有型 `Array<T>` 的受控批量 `GeometryBuilder`”（见下节与显式合同表），未实现；由下一阶段真实游戏生成命题驱动落地 |
 | 调度 | 当前求值器在 Runtime 线程上串行执行，没有每帧时间片调度。C++ 节点迁到工作线程须先有只读求值计划、清楚的发布和借用生命周期，再由实测决定；不能只因列支持写时复制就并行调用 Runtime |
 | Volume 并行化 | 原生入口已采用融合分类与稳定填充的两次 fork/join，不等于后台图求值；当前合同及双规模 profile 见[模块说明](README.md#测量)。正式只记 volume/build/classify 墙钟；三段成本用临时真 P1 诊断并单列插桩扰动，不为计时拆开产品流水线。并行收益只比较同一新内核未插桩的 P1/default P，串行加速片的 12.34× 不是并行或规模扩展证据 |
 | 数字资产 | 模板加实例、通用节点而非逐资产 Runtime 类型、定义传播及两级冻结已裁决，见下表；未实现，不属于 S1。具体持久格式与模块接入仍须另审 |
+
+### 下一阶段核心断层与推进顺序（未实施）
+
+围绕上述人机双环定位，当前代码库存在 4 处需要在下一阶段按序闭合的架构断层：
+
+1. **保状态的无感类型热重建（`editor.stateful_rebuild`）**：
+   - **现状与缺口**：`Runtime` 类型表采用只追加不可变设计；给已发布 `.source` `procedural.Node` 增删字段、修改已有字段默认值/滑杆范围/`Label`/`DESC`/元数据，或增改契约方法 `process` 的参数属性与端口名时，[program_module.inl](../../../modules/execution/source/src/detail/program_module.inl) 的 `keeps_class` 返回 `rebuild_required`（见 [LANGUAGE.md](../../../LANGUAGE.md#项目快照与原生派生类)）。而当前编辑器 [project_execution.cpp](../../../modules/editor/application/src/application/project_execution.cpp) 的 `Application::build_project(true)` 仅保存 `dirty_materials()` 并序列化内存 `.scene`，**遗漏了未落盘的 `dirty_graphs()` 内存草稿**，且 [project.cpp](../../../modules/editor/application/src/application/project.cpp) 的 `publish_document()` 会重置视口相机、当前打开的 SOP 上下文与选中节点。
+   - **目标方案**：保持 `Runtime` 只追加偏移不变量不变；在编辑器与 [Editor Control](../editor/control.md) `project.build` 重建链路中完整快照并恢复未落盘 `.procgraph` 草稿（及其 dirty 状态）、视口相机姿态、当前打开的 SOP 图与选中节点，消除 LLM 为 `.source` 节点增改微调滑杆时的上下文丢失。
+2. **`graph.inspect` 轻量空间体检指标（`control.spatial_diagnostics`）**：
+   - **现状与缺口**：[Editor Control](../editor/control.md) 的 `graph.inspect` 目前仅返回元素计数、包围盒及数值列 `min/max/mean` 与样本值，抓不出实例互相穿模、悬空浮空、局部过度团聚或网格破口（对应下方旧 G6 未落地的“间距/穿插反馈”）。
+   - **目标方案**：按需在 `graph.inspect` 中补充客观空间诊断指标——实例 AABB 重叠对数与比例、点/实例最近邻间距分位数（如 P5/P50）、相对指定参考表面的离地间隙分布，以及网格开放边界边/非流形边计数，让 LLM 在交给人眼审阅前自主修掉空间硬伤。
+3. **`.source` 多端口只读参考几何与 `Bvh` 空间查询（`source.spatial_and_aux_ports`）**：
+   - **现状与缺口**：[evaluator.cpp](../../../modules/engine/procedural/src/evaluator.cpp) 当前仅支持纯 `.source` 节点借用 0 号主输入的等长列，无法在 `process(...)` 中消费额外 `Geometry` 端口数据，导致多源参考逻辑（道路排斥带、地形贴合、庭院朝向参考）被迫外化为繁琐的中间连线。
+   - **目标方案**：向 `.source` `process(...)` 开放只读辅助 `Geometry` 端口视图（元素数查询、只读列与 `detail` 借用）及基于 `Bvh::acquire` 共享缓存的 `BorrowSafe` 空间查询（`closest_point`、`raycast` 等）。查询句柄在串行分派前固定只读缓冲，可在 `parallel_for` 块内安全并发读取，工作线程不触碰 `Runtime`。
+4. **受控变长拓扑构建 `GeometryBuilder`（L3）与高阶 C++ 构造算子协同（`source.geometry_builder`）**：
+   - **现状与缺口**：列模式强制校验可写列长度不变，`.source` 尚不能筛选增删点、生成开放折线或输出面框，生成式建模受制于内置 C++ 节点清单。
+   - **目标方案**：不开放对 `Geometry` 共享缓冲的任意可变修改；直接复用 `.source` 同步值区间已实现的栈上拥有型 `Array<T>`（`reserve`/`add`/`resize`/`clear`，见[拥有型基础值](../../source-owned-values.md)），由脚本在局部拥有数组中生成**变长点集、实例集、开放折线 `polyline` 或凸多边形面框**及配套属性列，再经 `BorrowSafe` 只读借用提交给宿主构建器（不重分配任何外部已借用容器，严格满足既有借用安全不变量；后续若需零拷贝移交拥有数组可作为独立底层优化），在节点出口一次性原子校验有限性、各层列长、属性 `Usage` 与公共凸面判据 δ_p 后生成不可变 `Geometry`。配合 C++ `Sweep`、`Extrude/Inset`、`Clip`、`Fuse/Triangulate` 算子，形成**“`.source` 生成骨架/地块规则 + C++ 生成流形闭合网格”**的组合。
+
+**推进顺序**：
+1. **阶段一（人机闭环基础设施）**：先补齐 `editor.stateful_rebuild`（修复重建丢失 `dirty_graphs()` 与相机/SOP 状态）与 `control.spatial_diagnostics`（`graph.inspect` 空间体检）。
+2. **阶段二（真实业务驱动的生成式建模闭环）**：选定一个纯等长列核无法表达的真实游戏生成命题（如带道路排斥与扫掠围墙的哨站模块，或可调层高/开间的程序化建筑/废墟模块），端到端驱动 `source.spatial_and_aux_ports`、受控 `GeometryBuilder`（L3）与配套 C++ `Sweep`/`Extrude` 算子落地。
+3. **阶段三（复合资产化与十万实例规模闭环）**：依次落地 `asset.generic_node` 子图数字资产封装（S4），以及[集合与渲染接口](#集合与渲染接口)中的 `SceneSnapshot` GPU 常驻实例集合区段（S5-2，消除 [scene.cpp](../../../modules/engine/presentation/src/scene.cpp) `Scene::render_items()` 的 CPU 逐实例 `RenderItem` 展开）。
 
 ### Volume 表面带的首角舍入限制（未排期）
 
@@ -60,6 +95,10 @@ S0 契约静态对齐 → S1 原生拓扑/构造/体积采样/Realize，随后�
 | evaluation.host_boundary | 生成器组件挂普通 Entity，点与实例不是 Entity；求值是派生数据重算，输入变化标脏。编辑器在编辑提交后、场景提取前的宿主边界求值；加载/Play 按 Cache 或冻结结果在 Begin 前准备。运行中参数变化走请求队列，在 World::update 后、提取前统一求值。首版同步，超预算后再考虑后台 | 未来编辑提交、加载/Play 与运行时参数请求入口 | 未来生成器宿主、World 与场景提取 | 在遍历/提取中途重入求值、把每个点/实例变 Entity，或尚未确认就当作现行 World 合同 | 总参谋提出，用户未否决；S2/S5 前再确认；未实现 |
 | ui.houdini_reference | 节点界面参考 Houdini，复用统一图数据、Parameters、操作符与编辑历史；不是在 S1 顺带建立节点画布 | 图编辑器与操作符 | 用户界面、Control/LLM 与文档历史 | UI 私有图成为第二份权威数据 | 已实现（Slice 1A + Slice 1B：SOP 视口上下文、Houdini 式二维 Network 连线画布、Geometry Spreadsheet、Parameters、独立图历史与 `graph.*` 操作符） |
 | curve.authored_points | 作者可编辑点数组的曲线节点需要视口绘制交互和数学值数组的属性编解码；涉及 modules/editor/core/include/editor/fields.hpp:54–59 与 scene.cpp，届时由编辑器负责人实施。S1 的 Polyline 只从纯点输入按点序连开放折线，不为它扩展编解码 | 未来曲线绘制/属性编辑入口与编辑器数学值数组编码器 | 未来曲线节点、图文件与属性解码 | 把点数组压成无类型浮点列表，或在 S1 提前扩展编辑器产品 | S2，未实现 |
+| editor.stateful_rebuild | `.source` 类型定义变更触发 `rebuild_required` 时，保持 `Runtime` 类型表只追加设计不变；宿主重建上下文前快照内存 `.scene` 与全部未落盘 `dirty_graphs()` 草稿，并在采纳新文档后恢复视口相机姿态、活动 SOP 图与选中节点 | 编辑器 `build_project`、`publish_document` 与 `project.build` Control 入口 | 重建后的 `Session`、`Workspace` 与视口 | 动摇 `Runtime` 只追加偏移不变量，或重建时丢弃未落盘 `.procgraph` 草稿、重置相机与 SOP 上下文 | 已对齐方向，未实现 |
+| control.spatial_diagnostics | `graph.inspect` 在层计数与数值统计外，按需输出实例 AABB 重叠统计、最近邻间距分位数、相对参考表面离地间隙及开放/非流形边计数，为 LLM 提供客观三维空间反馈 | `Session` 图检查与 `graph.inspect` 序列化入口 | Editor Control / LLM 协作环 | 仅凭标量均值掩盖穿模/浮空，或引入重型有状态副作用污染只读检查 | 已对齐方向，未实现 |
+| source.spatial_and_aux_ports | `.source` `process(...)` 可声明只读辅助 `Geometry` 端口视图与 `Bvh::acquire` 驱动的 `BorrowSafe` 空间查询；串行分派前固定只读缓冲，允许在 `parallel_for` 内并发读取而不触碰 `Runtime` | `.source` 参数绑定、`Evaluator` 与 `Bvh` 查询封装 | 自定义 `.source` 阶段节点 | 工作线程访问 `Runtime`、保存悬垂借用，或退回画布外连大量中间查询节点 | 已对齐方向，未实现 |
+| source.geometry_builder | `.source` 通过同步值区间栈上拥有型 `Array<T>` 构造变长点集、实例集、折线与凸面框并经 `BorrowSafe` 只读借用批量提交；宿主出口一次性原子校验有限性、各层列长、属性 `Usage` 与 δ_p 凸面判据后封装为不可变 `Geometry`，重型流形扫掠/挤出仍由 C++ 算子承担 | `Evaluator`、受控构建器入口与 `.source` 节点 | 下游 `Geometry` 消费者、`Boolean`/`VolumeScatter` 与呈现层 | 向脚本暴露可变共享列句柄、跳过出口有限性/凸性校验，或迫使脚本手拼复杂流形索引汤 | 已对齐方向，未实现 |
 
 ### 合同依据：与 Houdini 的显式差异
 
