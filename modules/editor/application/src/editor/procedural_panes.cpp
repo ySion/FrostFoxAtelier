@@ -638,45 +638,51 @@ struct CanvasLayer {
     }
 };
 
-void append_wire(CanvasLayer& layer, std::array<float, 2> from_dip, std::array<float, 2> to_dip, float zoom,
-                 float width, ui::Color color, ui_layout::Size clip) {
-    const float cull_pad = width + 90.f * zoom + 8.f;
-    for (std::size_t axis = 0; axis < 2; ++axis) {
-        const float high = (axis == 0 ? clip.width : clip.height) + cull_pad;
-        if (std::max(from_dip[axis], to_dip[axis]) < -cull_pad || std::min(from_dip[axis], to_dip[axis]) > high)
-            return;
-    }
+bool wire_near_region(std::array<float, 2> from, std::array<float, 2> to, float zoom, ui::Rect region) {
+    // Covers the reverse-route detour, its control points and the widest interactive stroke.
+    const float pad = 90.f * zoom + 11.f;
+    return std::max(from[0], to[0]) >= region.x - pad && std::min(from[0], to[0]) <= region.x + region.width + pad &&
+           std::max(from[1], to[1]) >= region.y - pad && std::min(from[1], to[1]) <= region.y + region.height + pad;
+}
+
+void append_wire_segment(CanvasLayer& layer, std::array<float, 2> prev, std::array<float, 2> next, float width,
+                         ui::Color color, ui_layout::Size clip) {
     const float pad = width + 1.f;
-    for_each_wire_segment(from_dip, to_dip, zoom, [&](std::array<float, 2> prev, std::array<float, 2> next) {
-        double enter = 0.;
-        double leave = 1.;
-        for (std::size_t axis = 0; axis < 2; ++axis) {
-            const double high = (axis == 0 ? clip.width : clip.height) + pad;
-            const double delta = static_cast<double>(next[axis]) - prev[axis];
-            if (!std::isfinite(delta)) {
+    const auto [left, right] = std::minmax(prev[0], next[0]);
+    const auto [top, bottom] = std::minmax(prev[1], next[1]);
+    if (right < -pad || left > clip.width + pad || bottom < -pad || top > clip.height + pad)
+        return;
+    if (left >= -pad && right <= clip.width + pad && top >= -pad && bottom <= clip.height + pad) {
+        layer.stroke({prev[0], prev[1], next[0], next[1], width, color});
+        return;
+    }
+    double enter = 0.;
+    double leave = 1.;
+    for (std::size_t axis = 0; axis < 2; ++axis) {
+        const double high = (axis == 0 ? clip.width : clip.height) + pad;
+        const double delta = static_cast<double>(next[axis]) - prev[axis];
+        if (!std::isfinite(delta)) {
+            leave = -1.;
+            break;
+        }
+        if (delta == 0.) {
+            if (prev[axis] < -pad || prev[axis] > high)
                 leave = -1.;
-                break;
-            }
-            if (delta == 0.) {
-                if (prev[axis] < -pad || prev[axis] > high)
-                    leave = -1.;
-            } else {
-                const double a = (-static_cast<double>(pad) - prev[axis]) / delta;
-                const double b = (high - prev[axis]) / delta;
-                enter = std::max(enter, std::min(a, b));
-                leave = std::min(leave, std::max(a, b));
-            }
+        } else {
+            const double a = (-static_cast<double>(pad) - prev[axis]) / delta;
+            const double b = (high - prev[axis]) / delta;
+            enter = std::max(enter, std::min(a, b));
+            leave = std::min(leave, std::max(a, b));
         }
-        if (enter <= leave) {
-            const auto coord = [&](int axis, double t) {
-                return static_cast<float>(std::clamp(
-                    std::lerp(static_cast<double>(prev[axis]), static_cast<double>(next[axis]), t),
-                    -static_cast<double>(pad), static_cast<double>((axis == 0 ? clip.width : clip.height) + pad)));
-            };
-            layer.stroke({coord(0, enter), coord(1, enter), coord(0, leave), coord(1, leave), width, color});
-        }
-        return false;
-    });
+    }
+    if (enter <= leave) {
+        const auto coord = [&](int axis, double t) {
+            return static_cast<float>(std::clamp(
+                std::lerp(static_cast<double>(prev[axis]), static_cast<double>(next[axis]), t),
+                -static_cast<double>(pad), static_cast<double>((axis == 0 ? clip.width : clip.height) + pad)));
+        };
+        layer.stroke({coord(0, enter), coord(1, enter), coord(0, leave), coord(1, leave), width, color});
+    }
 }
 
 bool segments_intersect(std::array<float, 2> a, std::array<float, 2> b, std::array<float, 2> c,
@@ -859,6 +865,7 @@ bool NetworkCanvas::is_canvas_control(ui::ControlKey key) noexcept {
 }
 
 void NetworkCanvas::reset() {
+    wire_routes_ = {};
     idle_projection_.reset();
     cancel_gesture();
     close_tab_search();
@@ -2837,6 +2844,53 @@ void NetworkCanvas::append_tab_categories(std::vector<ui::Control>& controls, ui
                     std::make_move_iterator(cat_controls.end()));
 }
 
+std::array<float, 2> NetworkCanvas::prepare_wire_routes(const std::shared_ptr<const GraphInspectView>& topology,
+                                                        ui_layout::Size viewport) {
+    const float z = zoom();
+    const std::array offset{pan_x_ - wire_routes_.origin[0], pan_y_ - wire_routes_.origin[1]};
+    const auto& region = wire_routes_.region;
+    const bool moving_ports = gesture_ == Gesture::move_nodes || gesture_ == Gesture::move_box;
+    const bool same_topology = wire_routes_.topology.lock() == topology;
+    // The cut commit tests the full graph, including off-screen wires, in the current pointer coordinate system.
+    const bool reanchor_cut = gesture_ == Gesture::wire_cut && (offset[0] != 0.f || offset[1] != 0.f);
+    if (!moving_ports && !reanchor_cut && same_topology && wire_routes_.zoom == z && -offset[0] >= region.x &&
+        -offset[1] >= region.y && viewport.width - offset[0] <= region.x + region.width &&
+        viewport.height - offset[1] <= region.y + region.height)
+        return offset;
+
+    // Sample in viewport-local DIP to retain precision far from the graph origin. Always translate from this
+    // anchor, never from last frame's projected points. Routes entering beyond the margin rebuild the working set.
+    if (!same_topology) {
+        wire_routes_ = {};
+        wire_routes_.topology = topology;
+    } else {
+        wire_routes_.wires.clear();
+        wire_routes_.segments.clear();
+    }
+    wire_routes_.origin = pan();
+    // Drag previews depend on live port positions and cannot be reused after the gesture ends.
+    wire_routes_.zoom = moving_ports ? 0.f : z;
+    wire_routes_.region = {-viewport.width * .25f, -viewport.height * .25f, viewport.width * 1.5f,
+                           viewport.height * 1.5f};
+    for (std::size_t i = 0; i < topology->connections.size(); ++i) {
+        const auto& connection = topology->connections[i];
+        const auto* src = topology->find_node(connection.from_node);
+        const auto* dst = topology->find_node(connection.to_node);
+        if (!src || !dst)
+            continue;
+        const auto from = port_dip(*src, true, connection.from_index);
+        const auto to = port_dip(*dst, false, connection.to_index);
+        if (!wire_near_region(from, to, z, wire_routes_.region))
+            continue;
+        for_each_wire_segment(from, to, z, [&](auto a, auto b) {
+            wire_routes_.segments.push_back({a, b});
+            return false;
+        });
+        wire_routes_.wires.push_back({i, wire_routes_.segments.size(), src->status && src->status->error.has_value()});
+    }
+    return {};
+}
+
 void NetworkCanvas::append_canvas(std::vector<ui::Control>& controls, ui::ControlKey canvas_parent,
                                   ui_layout::Size canvas_dip, const std::shared_ptr<const GraphInspectView>& topology,
                                   std::span<const GraphNodeCatalogEntry> catalog, std::string_view primary_selected,
@@ -2945,36 +2999,37 @@ void NetworkCanvas::append_canvas(std::vector<ui::Control>& controls, ui::Contro
     }
 
     // 2. Existing Bezier wires in backdrop:
-    for (const auto& conn : view.connections) {
+    const auto offset = prepare_wire_routes(topology, {cw, ch});
+    const auto translate = [&](std::array<float, 2> p) { return std::array{p[0] + offset[0], p[1] + offset[1]}; };
+    std::size_t begin = 0;
+    for (const auto& route : wire_routes_.wires) {
+        const auto& conn = view.connections[route.connection];
+        const auto segments = std::span{wire_routes_.segments}.subspan(begin, route.end - begin);
+        begin = route.end;
         if (detached_wire_ && conn.from_node == detached_wire_->from_node &&
             conn.from_port == detached_wire_->from_port && conn.to_node == detached_wire_->to_node &&
             conn.to_port == detached_wire_->to_port)
             continue;
-        const auto* src = view.find_node(conn.from_node);
-        const auto* dst = view.find_node(conn.to_node);
-        if (!src || !dst)
-            continue;
-
-        const auto p0 = port_dip(*src, true, conn.from_index);
-        const auto p3 = port_dip(*dst, false, conn.to_index);
 
         const bool splice_hit = splice_wire_ && conn.from_node == splice_wire_->from_node &&
                                 conn.from_port == splice_wire_->from_port && conn.to_node == splice_wire_->to_node &&
                                 conn.to_port == splice_wire_->to_port;
         const bool cut_hit =
-            gesture_ == Gesture::wire_cut &&
-            wire_intersects_segment(p0, p3, z, {start_dip_x_, start_dip_y_}, {current_dip_x_, current_dip_y_});
-        const bool upstream_err = src->status && src->status->error.has_value();
+            gesture_ == Gesture::wire_cut && std::ranges::any_of(segments, [&](const auto& s) {
+                return segments_intersect({start_dip_x_, start_dip_y_}, {current_dip_x_, current_dip_y_},
+                                          translate(s.from), translate(s.to));
+            });
         const bool active_touch = conn.from_node == primary_selected || conn.to_node == primary_selected;
-        const ui::Color wire_col = splice_hit     ? hex_color(0xffd900)
-                                   : cut_hit      ? hex_color(0xff5252)
-                                   : upstream_err ? hex_color(0xd9534f)
-                                   : active_touch ? hex_color(0xf0c43e)
-                                                  : hex_color(0x94a6b8);
+        const ui::Color wire_col = splice_hit             ? hex_color(0xffd900)
+                                   : cut_hit              ? hex_color(0xff5252)
+                                   : route.upstream_error ? hex_color(0xd9534f)
+                                   : active_touch         ? hex_color(0xf0c43e)
+                                                          : hex_color(0x94a6b8);
         const float wire_w = splice_hit ? std::clamp(2.2f * std::sqrt(z), 1.6f, 2.8f)
                                         : (cut_hit || active_touch ? std::clamp(1.45f * std::sqrt(z), 1.1f, 1.85f)
                                                                    : std::clamp(1.05f * std::sqrt(z), 0.85f, 1.35f));
-        append_wire(backdrop, p0, p3, z, wire_w, wire_col, {cw, ch});
+        for (const auto& segment : segments)
+            append_wire_segment(backdrop, translate(segment.from), translate(segment.to), wire_w, wire_col, {cw, ch});
     }
 
     // 3. Sticky Notes in bodies:
@@ -3393,8 +3448,13 @@ void NetworkCanvas::append_canvas(std::vector<ui::Control>& controls, ui::Contro
             }
             const auto from_pt = wire_anchor_.is_output ? anchor_pt : target_pt;
             const auto to_pt = wire_anchor_.is_output ? target_pt : anchor_pt;
-            append_wire(overlay, from_pt, to_pt, z, std::clamp(1.35f * std::sqrt(z), 1.05f, 1.75f),
-                        snapped_port_ ? hex_color(0xffd900) : hex_color(0x69b6ff), {cw, ch});
+            const float width = std::clamp(1.35f * std::sqrt(z), 1.05f, 1.75f);
+            const auto color = snapped_port_ ? hex_color(0xffd900) : hex_color(0x69b6ff);
+            if (wire_near_region(from_pt, to_pt, z, {0, 0, cw, ch}))
+                for_each_wire_segment(from_pt, to_pt, z, [&](auto a, auto b) {
+                    append_wire_segment(overlay, a, b, width, color, {cw, ch});
+                    return false;
+                });
         }
     } else if (gesture_ == Gesture::marquee) {
         const float rx = std::min(start_dip_x_, current_dip_x_);

@@ -493,6 +493,27 @@ private:
 
     std::optional<IdleProjection> idle_projection_;
 
+    struct RoutedSegment {
+        std::array<float, 2> from, to;
+    };
+
+    struct WireRoutes {
+        struct Wire {
+            std::size_t connection, end;
+            bool upstream_error;
+        };
+
+        std::weak_ptr<const GraphInspectView> topology;
+        std::array<float, 2> origin{};
+        float zoom{};
+        ui::Rect region{}; // In canvas DIP at origin; includes a margin around the viewport.
+        std::vector<Wire> wires;
+        std::vector<RoutedSegment> segments;
+    };
+
+    WireRoutes wire_routes_;
+    std::array<float, 2> prepare_wire_routes(const std::shared_ptr<const GraphInspectView>&, ui_layout::Size);
+
     void append_canvas_popup(std::vector<ui::Control>&, ui::ControlKey parent, float width, float height,
                              const GraphInspectView&, std::span<const GraphNodeCatalogEntry>) const;
 

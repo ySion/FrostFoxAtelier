@@ -231,6 +231,8 @@ GPU 段：
 
 ### 程序化 SOP 视口上下文、Network 与 Geometry Spreadsheet
 
+Network 在 CPU 上保留视口及周边连线的曲线采样点。同一拓扑和缩放级别下，平移直接从采样时的原点投影到当前画布并裁剪。视口移出缓存区域、缩放或更换拓扑会重新采样。拖动节点或包含节点的 Network Box 时，连线跟随实时端口位置；选中、错误和剪线高亮使用当前帧状态。
+
 在 Asset Browser 打开 `Content/**/*.procgraph`（或通过 Network 面板 / Control 新建临时图 `/scratch/procedural`）后，Scene View 按 Houdini `/obj` ↔ SOP 上下文方式切换：
 
 - **路径栏、视口隔离与程序化可视化栏**：Scene View 与 Parameters 的路径栏从 `World` 切换为图路径（如 `/Content/Graphs/Terrain.procgraph`），下拉菜单可返回 `World` 或在已打开的图文档间切换。3D 视口隔离渲染当前图的 **Display Flag**（蓝色 `D` 标记，`settings.display`）输出，并支持同时叠加 **Template Flag**（紫红色 `T` 标记，`settings.template`）的半透明参考线框；纯点云输出在无表面与实例时自动显示点标记（`Auto Points`），视口左下角常驻 3D XYZ 相机坐标轴指示器（Orientation Gnomon），Studio 模式默认启用背面绕序洋红染色（`Backface Winding Tint`）辅助排查顺逆时针绕序问题。视口右侧竖向程序化显示栏（全部控件采用“英文标题 + 中文说明”悬停提示）提供 **Display Points**、**Display Point Normals (`N`)**、**Display Primitive Normals**、**Display Orient & pscale**、**Display Bounds & Chunks** 与 **Geometry Info HUD (`i`)** 六项可视化开关；在 `World` 上下文中选中 `ProceduralGeneratorEntity` 时同样联动该显示栏与 Geometry Spreadsheet。
