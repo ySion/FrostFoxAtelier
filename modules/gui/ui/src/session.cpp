@@ -130,6 +130,13 @@ bool text_field(ControlKind kind) {
     return kind == ControlKind::number || kind == ControlKind::text_edit || kind == ControlKind::code_editor;
 }
 
+// These controls only paint local primitives and, for passive fields, publish one immutable text geometry.
+bool retains_local_paint(ControlKind kind) {
+    return (text_kind(kind) && kind != ControlKind::tree_item) || kind == ControlKind::container ||
+           kind == ControlKind::list || kind == ControlKind::splitter || kind == ControlKind::viewport ||
+           kind == ControlKind::slider;
+}
+
 bool editable(ControlKind kind) {
     return kind == ControlKind::number || kind == ControlKind::splitter || kind == ControlKind::slider;
 }
@@ -428,6 +435,14 @@ struct Session::Impl {
 
     struct State {
         Control control;
+
+        // Indices into one immutable frame. A discarded candidate can only cause a cache miss.
+        struct PaintRange {
+            std::uint64_t frame_id{};
+            std::size_t box_index{}, draw_begin{}, draw_count{}, text_index{};
+            ui_layout::Size size;
+            bool baseline{};
+        } paint_range;
 
         ui_layout::LayoutNodeId node;
 
@@ -1352,6 +1367,12 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare(Preparation preparation)
                  bar.clip, arrow, self.text.symbol(symbol, static_cast<std::uint32_t>(std::ceil(size))));
         }
     };
+    const auto* accepted = self.published.get();
+    const bool same_surface = paint && accepted && accepted->drawing->surface_revision == self.surface.revision &&
+                              accepted->drawing->dpi_scale == scale &&
+                              accepted->drawing->extent == self.surface.extent &&
+                              accepted->measure_provider_revision == output->measure_provider_revision &&
+                              accepted->style_revision == self.style_revision;
     std::size_t popup_draw_begin = std::numeric_limits<std::size_t>::max();
     for (auto key : self.order) {
         auto& state = self.states.at(key);
@@ -1430,6 +1451,30 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare(Preparation preparation)
             if (text_kind(kind))
                 ++self.culled_text_controls;
             continue;
+        }
+        // Popup controls are reordered after scrollbars, outside the contiguous base paint ranges.
+        const bool retain = paint && retains_local_paint(kind) &&
+                            popup_draw_begin == std::numeric_limits<std::size_t>::max() &&
+                            !(self.edit && self.edit->key == key) && !(self.press && self.press->key == key);
+        const ui_layout::Size size{box->width, box->height};
+        if (retain) {
+            const auto previous = std::exchange(
+                state.paint_range, Impl::State::PaintRange{frame_id, state.frame_index, draws->draws.size(), 0,
+                                                           output->text_geometry.size(), size, state.baseline_content});
+            if (same_surface && previous.frame_id == accepted->drawing->id && previous.size == size &&
+                previous.baseline == state.baseline_content) {
+                const auto& prior = accepted->controls[previous.box_index];
+                if (prior.bounds == bounds && prior.clip == clip && prior.style == state.resolved &&
+                    prior.enabled == enabled) {
+                    const auto range =
+                        std::span(accepted->drawing->draws).subspan(previous.draw_begin, previous.draw_count);
+                    draws->draws.insert(draws->draws.end(), range.begin(), range.end());
+                    if (text_field(kind))
+                        output->text_geometry.push_back(accepted->text_geometry[previous.text_index]);
+                    state.paint_range.draw_count = range.size();
+                    continue;
+                }
+            }
         }
         const auto& appearance = *state.resolved;
         const float border =
@@ -1899,6 +1944,8 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare(Preparation preparation)
                 output->input_anchor = anchor;
             }
         }
+        if (retain)
+            state.paint_range.draw_count = draws->draws.size() - state.paint_range.draw_begin;
     }
     const auto popup_draw_end = paint ? draws->draws.size() : 0;
     const auto scrollbar = [&](const auto& state) {

@@ -252,6 +252,7 @@
         }
         for (auto& change:changes) {
             auto& state=*change.state;
+            state.paint_range.frame_id=0;
             const auto& before=change.value; const auto& after=state.control;
             state.table_reveal|=before.table_selection!=after.table_selection || before.table_layout!=after.table_layout;
             if (before.code!=after.code) {state.scroll=state.scroll_x=0;state.code_width=0;state.code_selection_revision=0;}

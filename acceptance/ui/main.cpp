@@ -83,11 +83,21 @@ void identity_and_lifetime() {
         consumer.prepare();
         held = consumer.frame;
         released = first_text(*held).coverage;
+        const auto earlier = accepted(consumer.ui.prepare());
+        const auto later = accepted(consumer.ui.prepare());
+        require(later->drawing->id > earlier->drawing->id && consumer.ui.accept(earlier),
+                "A prepared candidate must remain usable until a newer frame is accepted.");
+        consumer.controls.front().text = L"Same key, new text";
+        consumer.prepare();
+        require(first_text(*consumer.frame).coverage != first_text(*held).coverage && !consumer.ui.accept(later),
+                "Changed text retained an obsolete paint range or candidate.");
         consumer.controls.clear();
         accepted(consumer.ui.set_controls(consumer.controls));
         consumer.controls = {leaf(1, ui::ControlKind::button, 10, L"Reused key")};
         accepted(consumer.ui.set_controls(consumer.controls));
         consumer.prepare();
+        require(first_text(*consumer.frame).coverage != first_text(*held).coverage,
+                "A recreated key reused paint from its previous incarnation.");
     }
     require(held && held->drawing && !held->drawing->draws.empty(), "UI frame failed to outlive Session");
     for (const auto& draw : held->drawing->draws)

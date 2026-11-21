@@ -251,6 +251,8 @@ IME使用独立composition_id和固定起始token/替换范围；`CompositionEve
 
 ## CPU绘制与文字寿命
 
+普通控件在已接受帧的有序绘制列表中记录自己的图元区间。控件描述、解析样式、布局位置与大小、裁剪和 Surface 等绘制输入一致时，下一帧直接将这个区间复制到当前 CPU 列表，保持原有叠放顺序。被动文本字段同时复用该区间对应的不可变段落几何。绘制列表仍然逐帧合成，命中区域按当前布局发布。活动编辑、按压、树行、表格、Code 面板与弹窗等按实时状态准备，工具提示继续使用自己的计时。
+
 画布线宽以 DIP 描述，UI 帧中的胶囊线宽使用物理像素。32 DIP 的线条在 250% 缩放下输出 80 px；同一绘制协议覆盖 UI 支持的整个 DPI 范围。普通标签优先复用控件范围内的文字覆盖图。超出单纹理尺寸或覆盖图字节预算时，Session 只栅格化可见区域，必要时分块，保留阴影与分数像素采样所需的边缘。文字排版与命中使用完整段落。
 
 [frame.hpp](../../../modules/gui/ui_protocol/include/ui/frame.hpp)定义唯一renderer协议：有序DrawQuad、物理像素bounds、半开clip、linear straight颜色、独立圆角和向内边框。可选资源为R8 Coverage或预乘RGBA ColorImage，二者互斥；无纹理时为实色盒。shader输出和blend必须配对，避免重复预乘。资源identity/revision不可重新解释成另一份像素；renderer自行管理GPU缓存、上传和在飞退休，并只合并相邻兼容项。图片字节编码、合成与统计见 [SS 绘制合同](style-sheets.md#图片圆角与批处理)。
