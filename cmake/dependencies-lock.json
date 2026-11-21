@@ -44,11 +44,6 @@
     "sha256": "726acc93d6968e2146261a1e415521747d50ad69894c2b42b5d0d4c29fd66ec4",
     "filename": "pix-1.0.240308001.nupkg"
   },
-  "unordered_dense": {
-    "version": "5.3.0",
-    "url": "https://codeload.github.com/martinus/unordered_dense/tar.gz/refs/tags/v5.3.0",
-    "sha256": "ca1cc1c7bc73d9a77680aa2a38ea9ec43340242e3f9dc04e129f06accc56ec88"
-  },
   "oneTBB": {
     "version": "2023.2.0",
     "url": "https://codeload.github.com/uxlfoundation/oneTBB/tar.gz/refs/tags/v2023.2.0",

@@ -5,14 +5,23 @@
 #include "foundation/optional.hpp"
 #include "foundation/priority_queue.hpp"
 #include "foundation/ring_deque.hpp"
+#include "foundation/set.hpp"
 #include "foundation/sha256.hpp"
 #include "foundation/string.hpp"
+#include <array>
 #include <cstdio>
+#include <functional>
 #include <memory>
 #include <type_traits>
 #include <utility>
 
 namespace {
+#if _ITERATOR_DEBUG_LEVEL == 0
+static_assert(sizeof(atelier::Map<int, int>) == 64 && sizeof(atelier::Set<int>) == 64);
+#else
+static_assert(sizeof(atelier::Map<int, int>) == 72 && sizeof(atelier::Set<int>) == 72);
+#endif
+
 static_assert(sizeof(atelier::Optional<int>) == 8 && alignof(atelier::Optional<int>) == 4);
 
 static_assert(std::is_trivially_copyable_v<atelier::Optional<int>> &&
@@ -39,7 +48,6 @@ constexpr bool verify_constexpr_views() {
 }
 
 static_assert(verify_constexpr_views());
-}
 
 void queued_resources() {
     using namespace atelier;
@@ -72,6 +80,139 @@ void queued_resources() {
     require(ready.empty() && jobs.empty(), "Queue transfer retained jobs.");
 }
 
+// Collisions exercise full key comparison and swap-removal during catalog growth.
+struct CatalogHash {
+    using is_transparent = void;
+
+    using is_avalanching = void;
+
+    std::size_t operator()(atelier::StringView) const noexcept { return 0; }
+};
+
+void bound_catalog() {
+    using namespace atelier;
+    using acceptance::helpers::require;
+    using Names = std::array<StringView, 6>;
+    struct ByName {
+        using is_transparent = void;
+
+        using is_avalanching = void;
+
+        std::reference_wrapper<const Names> names;
+
+        size_t operator()(size_t i) const noexcept { return Hash<StringView>{}(names.get()[i]); }
+
+        size_t operator()(StringView s) const noexcept { return Hash<StringView>{}(s); }
+
+        bool operator()(size_t i, size_t j) const noexcept { return i == j; }
+
+        bool operator()(StringView s, size_t i) const noexcept { return s == names.get()[i]; }
+
+        bool operator()(size_t i, StringView s) const noexcept { return (*this)(s, i); }
+    };
+    const Names first{"a", "b", "c", "d", "e", "f"};
+    const Names second{"f", "e", "d", "c", "b", "a"};
+    Set<size_t, ByName, ByName> selected{ByName{first}, ByName{first}};
+    Set<size_t, ByName, ByName> other{ByName{second}, ByName{second}};
+    for (size_t i = 0; i < first.size(); ++i)
+        require(selected.add(i), "Catalog index insertion failed.");
+    auto copy = selected;
+    other = std::move(selected);
+    require(selected.empty() && selected.add(size_t{0}) && selected.contains(StringView{"a"}) &&
+                other.find(StringView{"e"}) && *other.find(StringView{"e"}) == 4 && copy.remove(StringView{"e"}) &&
+                other.contains(StringView{"e"}),
+            "Moving or copying the catalog lost its policy binding.");
+    other.release();
+    require(other.empty() && other.add(size_t{5}) && other.contains(StringView{"f"}), "Release lost catalog binding.");
+}
+
+void borrowed_name_catalog() {
+    using namespace atelier;
+    using acceptance::helpers::require;
+    std::array<char, 40> bytes{};
+    const auto name = [&](std::size_t length) { return StringView{bytes.data(), length}; };
+    Map<StringView, std::size_t> fields;
+    Set<StringView, CatalogHash> colliding;
+    for (std::size_t i = 0; i < 16; ++i)
+        fields.try_emplace(name(i), i);
+    auto copy = fields;
+    for (std::size_t i = 0; i <= bytes.size(); ++i) {
+        if (i >= 16)
+            fields.try_emplace(name(i), i);
+        require(colliding.add(name(i)), "Registering distinct names with a shared hash failed.");
+        require(copy.contains(name(i)) == (i < 16), "Copy changed the inline name catalog.");
+    }
+    for (std::size_t i = 0; i <= bytes.size(); i += 2)
+        require(fields.remove(name(i)) && colliding.remove(name(i)), "Removing a registered name failed.");
+    for (std::size_t i = 0; i <= bytes.size(); ++i) {
+        const auto* field = fields.find(name(i));
+        require((i % 2 ? field && *field == i : !field) && colliding.contains(name(i)) == bool(i % 2),
+                "Catalog promotion or removal changed another name.");
+    }
+}
+
+void resource_catalog_growth() {
+    using namespace atelier;
+    using acceptance::helpers::require;
+    Map<String, std::unique_ptr<int>> resources;
+    Set<String, CatalogHash> selected;
+    for (String name :
+         {String::literal<"a">(), String::literal<"b">(), String::literal<"c">(), String::literal<"d">()}) {
+        resources.try_emplace(name, std::make_unique<int>(int(resources.size())));
+        selected.add(std::move(name));
+    }
+    auto duplicate = std::make_unique<int>(42);
+    auto snapshot = selected;
+    require(snapshot.remove(StringView{"c"}) && snapshot.contains(StringView{"d"}) &&
+                selected.contains(StringView{"c"}),
+            "Copying an unindexed catalog lost the original or the entry moved into the hole.");
+    require(!resources.try_emplace(String::literal<"a">(), std::move(duplicate)).inserted && duplicate &&
+                !selected.add(String::literal<"a">()),
+            "Duplicate resource consumed its input.");
+    auto added = resources.try_emplace(String::literal<"e">(), std::move(*resources.find(StringView{"d"})));
+    require(added.inserted && **added.value == 3 && selected.add(String::literal<"e">()) &&
+                selected.contains(StringView{"e"}) && **resources.find(StringView{"b"}) == 1,
+            "Catalog growth lost a new or an existing resource.");
+    require(resources.remove(StringView{"b"}) && selected.remove(StringView{"b"}) &&
+                !resources.contains(StringView{"b"}) && resources.size() == selected.size(),
+            "Catalog removal lost membership.");
+    resources.clear();
+    resources.try_emplace(String::literal<"only">(), std::move(duplicate));
+    require(**resources.find(StringView{"only"}) == 42 && selected.contains(StringView{"d"}),
+            "Catalog reuse lost ownership.");
+    selected.swap(snapshot);
+    auto moved = std::move(selected);
+    moved.reserve(64);
+    require(moved.size() == 3 && moved.contains(StringView{"a"}) && !moved.contains(StringView{"c"}) &&
+                snapshot.contains(StringView{"e"}) && selected.empty() && selected.add(String::literal<"new">()),
+            "Catalog swap, move or explicit promotion lost membership.");
+    selected.clear();
+    require(!selected.contains(StringView{"new"}) && selected.add(String::literal<"fresh">()) &&
+                selected.contains(StringView{"fresh"}),
+            "Clearing a small catalog retained stale membership.");
+
+    // Removing colliding names leaves holes before live entries further
+    // down the probe sequence. Reuse those holes and check both snapshots.
+    Set<String, CatalogHash> catalog;
+    std::vector<std::string> names;
+    for (unsigned i = 0; i < 320; ++i) {
+        names.push_back("resource/" + std::to_string(i));
+        require(catalog.add(*String::from_utf8(StringView{names.back()})), "Catalog rejected a distinct resource.");
+    }
+    auto saved = catalog;
+    for (unsigned i = 0; i < names.size(); i += 2)
+        require(catalog.remove(StringView{names[i]}), "Catalog removal missed a displaced resource.");
+    for (unsigned i = 0; i < names.size(); ++i) {
+        const StringView name{names[i]};
+        require(saved.contains(name) && catalog.contains(name) == (i % 2 != 0), "Catalog collision chain was broken.");
+        require(catalog.add(*String::from_utf8(name)) == (i % 2 == 0), "Catalog inserted a duplicate after removal.");
+    }
+    catalog.clear();
+    for (const auto& name : names)
+        require(!catalog.contains(StringView{name}), "Cleared catalog retained a colliding resource.");
+}
+}
+
 void verify_tasks();
 
 int main() {
@@ -102,6 +243,9 @@ int main() {
                 "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
             "Span sha256 bridge failed.");
     queued_resources();
+    borrowed_name_catalog();
+    resource_catalog_growth();
+    bound_catalog();
     verify_tasks();
     std::puts("Foundation acceptance: PASS (owning aliases, queued resources and failed join cleanup)");
 }

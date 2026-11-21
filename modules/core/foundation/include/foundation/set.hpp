@@ -1,9 +1,9 @@
 #pragma once
 
 #include "foundation/hash.hpp"
+#include "foundation/detail/dense_hash_table.hpp"
 #include "memory/fatal.hpp"
 
-#include <ankerl/unordered_dense.h>
 #include <memory>
 #include <utility>
 
@@ -16,15 +16,19 @@ class Set {
     static_assert(detail::DenseValue<T>,
                   "Set values require non-throwing move construction, move assignment and destruction.");
 
-    static_assert(detail::HashPolicy<H> && detail::HashPolicy<E> && detail::HashQuery<T, T, H, E>,
+    static_assert(detail::HashPolicyLifecycle<H> && detail::HashPolicyLifecycle<E> && detail::HashQuery<T, T, H, E>,
                   "Set Hash/Equal require non-throwing calls and policy lifecycle operations.");
 
-    using Storage = ankerl::unordered_dense::set<T, H, E>;
+    using Storage = detail::DenseHashTable<T, T, H, E>;
 
 public:
     using Iterator = const T*;
 
-    Set() = default;
+    Set()
+        requires(detail::HashPolicy<H> && detail::HashPolicy<E>)
+    = default;
+
+    Set(const H& hash, const E& equal) noexcept : storage_(hash, equal) {}
 
     Set(const Set&)
         requires std::is_copy_constructible_v<T>
@@ -40,7 +44,7 @@ public:
         return *this;
     }
 
-    Set(Set&& other) noexcept { swap(other); }
+    Set(Set&& other) noexcept : storage_(other.empty_after_move()) { swap(other); }
 
     Set& operator=(Set&& other) noexcept {
         if (this != &other) {
@@ -52,7 +56,7 @@ public:
 
     [[nodiscard]] std::size_t size() const noexcept { return storage_.size(); }
 
-    [[nodiscard]] bool empty() const noexcept { return storage_.empty(); }
+    [[nodiscard]] bool empty() const noexcept { return size() == 0; }
 
     void reserve(std::size_t total) noexcept {
         if (total > storage_.max_size())
@@ -64,7 +68,7 @@ public:
     void clear() noexcept { storage_.clear(); }
 
     void release() noexcept {
-        Storage empty;
+        auto empty = storage_.empty_with_policies();
         storage_.swap(empty);
     }
 
@@ -76,8 +80,7 @@ public:
     template <class Q>
         requires detail::HashQuery<T, Q, H, E>
     [[nodiscard]] const T* find(const Q& value) const noexcept [[clang::lifetimebound]] {
-        const auto at = storage_.find(value);
-        return at == storage_.end() ? nullptr : std::addressof(*at);
+        return storage_.find(value);
     }
 
     template <class Q>
@@ -89,13 +92,13 @@ public:
     template <class Q>
         requires detail::HashQuery<T, Q, H, E> && std::constructible_from<T, Q&&>
     bool add(Q&& value) {
-        return storage_.emplace(std::forward<Q>(value)).second;
+        return storage_.try_emplace(std::forward<Q>(value)).second;
     }
 
     template <class Q>
         requires detail::HashQuery<T, Q, H, E>
     bool remove(const Q& value) noexcept {
-        return storage_.erase(value) != 0;
+        return storage_.erase(value);
     }
 
     [[nodiscard]] Iterator begin() const noexcept [[clang::lifetimebound]] { return storage_.values().data(); }
@@ -103,6 +106,13 @@ public:
     [[nodiscard]] Iterator end() const noexcept [[clang::lifetimebound]] { return begin() + size(); }
 
 private:
+    Storage empty_after_move() const noexcept {
+        if constexpr (detail::HashPolicy<H> && detail::HashPolicy<E>)
+            return {};
+        else
+            return storage_.empty_with_policies();
+    }
+
     Storage storage_;
 };
 

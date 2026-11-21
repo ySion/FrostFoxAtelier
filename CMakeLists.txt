@@ -57,11 +57,11 @@ function(atelier_target target)
 endfunction()
 
 include(cmake/logging.cmake)
-include(cmake/unordered_dense.cmake)
+configure_file(third_party/unordered_dense/LICENSE "${CMAKE_BINARY_DIR}/LICENSE.unordered_dense.txt" COPYONLY)
 include(cmake/tbb.cmake)
 add_library(atelier_foundation_headers INTERFACE)
 target_include_directories(atelier_foundation_headers INTERFACE modules/core/foundation/include)
-target_link_libraries(atelier_foundation_headers INTERFACE unordered_dense::unordered_dense atelier_memory_headers mimalloc)
+target_link_libraries(atelier_foundation_headers INTERFACE atelier_memory_headers mimalloc)
 
 add_library(atelier_math INTERFACE)
 target_include_directories(atelier_math INTERFACE modules/core/math/include)

@@ -80,7 +80,7 @@ function(atelier_add_source)
         "${PROJECT_SOURCE_DIR}/modules/execution/jit/internal"
         "${PROJECT_SOURCE_DIR}/modules/execution/language/include"
         "${PROJECT_SOURCE_DIR}/modules/execution/runtime/include")
-    target_link_libraries(atelier_source_backend PRIVATE atelier_jit_llvm_support unordered_dense::unordered_dense
+    target_link_libraries(atelier_source_backend PRIVATE atelier_jit_llvm_support
         atelier_foundation_headers atelier_math atelier_execution_contracts)
 
     add_library(atelier_source STATIC modules/execution/source/src/program.cpp modules/execution/source/src/diagnostics.cpp modules/execution/source/src/detail/bridge.cpp

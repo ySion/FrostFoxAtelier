@@ -9,9 +9,9 @@
 #include "renderer/timing.hpp"
 #include "logging/native.hpp"
 #include "foundation/result.hpp"
+#include "foundation/set.hpp"
 #include "memory/fatal.hpp"
 
-#include <ankerl/unordered_dense.h>
 #include <d3d12sdklayers.h>
 #include <wrl/client.h>
 
@@ -49,24 +49,23 @@ CancellableResult<WeldedMesh> weld(const geometry::Mesh& mesh, const std::functi
 
         using is_avalanching = void;
 
-        const std::vector<geometry::Vertex>* unique;
+        std::reference_wrapper<const std::vector<geometry::Vertex>> unique;
 
         std::uint64_t operator()(const geometry::Vertex& v) const noexcept {
-            return ankerl::unordered_dense::hash<std::string_view>{}(
-                std::string_view(reinterpret_cast<const char*>(&v), sizeof v));
+            return hash_bytes(as_bytes(Span{&v, 1}));
         }
 
-        std::uint64_t operator()(std::uint32_t i) const noexcept { return (*this)((*unique)[i]); }
+        std::uint64_t operator()(std::uint32_t i) const noexcept { return (*this)(unique.get()[i]); }
     };
     struct Equal {
         using is_transparent = void;
 
-        const std::vector<geometry::Vertex>* unique;
+        std::reference_wrapper<const std::vector<geometry::Vertex>> unique;
 
         bool operator()(std::uint32_t a, std::uint32_t b) const noexcept { return a == b; }
 
         bool operator()(const geometry::Vertex& v, std::uint32_t i) const noexcept {
-            return std::memcmp(&v, &(*unique)[i], sizeof v) == 0;
+            return std::memcmp(&v, &unique.get()[i], sizeof v) == 0;
         }
 
         bool operator()(std::uint32_t i, const geometry::Vertex& v) const noexcept { return (*this)(v, i); }
@@ -76,17 +75,17 @@ CancellableResult<WeldedMesh> weld(const geometry::Mesh& mesh, const std::functi
     ATELIER_TRY(check_stop(stop_requested, "weld"));
     result.indices.resize(source.size());
     result.faces.resize(source.size() / 3);
-    ankerl::unordered_dense::set<std::uint32_t, Hash, Equal> seen(0, Hash{&result.vertices}, Equal{&result.vertices});
+    Set<std::uint32_t, Hash, Equal> seen{Hash{std::cref(result.vertices)}, Equal{std::cref(result.vertices)}};
     for (std::size_t i = 0; i < source.size(); ++i) {
         if (i % 1024 == 0)
             ATELIER_TRY(check_stop(stop_requested, "weld"));
-        if (const auto found = seen.find(source[i]); found != seen.end()) {
+        if (const auto* found = seen.find(source[i])) {
             result.indices[i] = *found;
             continue;
         }
         const auto index = static_cast<std::uint32_t>(result.vertices.size());
         result.vertices.push_back(source[i]);
-        seen.insert(index);
+        seen.add(index);
         result.indices[i] = index;
     }
     for (const auto& part : mesh.parts())

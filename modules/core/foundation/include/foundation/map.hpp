@@ -1,9 +1,9 @@
 #pragma once
 
 #include "foundation/hash.hpp"
+#include "foundation/detail/dense_hash_table.hpp"
 #include "memory/fatal.hpp"
 
-#include <ankerl/unordered_dense.h>
 #include <iterator>
 #include <memory>
 #include <utility>
@@ -21,9 +21,8 @@ class Map {
     static_assert(detail::HashPolicy<H> && detail::HashPolicy<E> && detail::HashQuery<K, K, H, E>,
                   "Map Hash/Equal require non-throwing calls and policy lifecycle operations.");
 
-    using Storage = ankerl::unordered_dense::map<K, V, H, E>;
-
     using Pair = std::pair<K, V>;
+    using Storage = detail::DenseHashTable<K, Pair, H, E>;
 
     static constexpr bool copyable = std::is_copy_constructible_v<K> && std::is_copy_constructible_v<V>;
 
@@ -129,7 +128,7 @@ public:
 
     [[nodiscard]] std::size_t size() const noexcept { return storage_.size(); }
 
-    [[nodiscard]] bool empty() const noexcept { return storage_.empty(); }
+    [[nodiscard]] bool empty() const noexcept { return size() == 0; }
 
     void reserve(std::size_t total) noexcept {
         if (total > storage_.max_size())
@@ -153,15 +152,14 @@ public:
     template <class Q>
         requires detail::HashQuery<K, Q, H, E>
     [[nodiscard]] V* find(const Q& key) noexcept [[clang::lifetimebound]] {
-        const auto at = storage_.find(key);
-        return at == storage_.end() ? nullptr : std::addressof(at->second);
+        return const_cast<V*>(std::as_const(*this).find(key));
     }
 
     template <class Q>
         requires detail::HashQuery<K, Q, H, E>
     [[nodiscard]] const V* find(const Q& key) const noexcept [[clang::lifetimebound]] {
-        const auto at = storage_.find(key);
-        return at == storage_.end() ? nullptr : std::addressof(at->second);
+        const auto* at = storage_.find(key);
+        return at ? std::addressof(at->second) : nullptr;
     }
 
     template <class Q>
@@ -183,28 +181,32 @@ public:
     InsertResult insert_or_assign(Q&& key, U&& value) [[clang::lifetimebound]] {
         // Construct before replacing the old value; committing its move cannot throw.
         V replacement(std::forward<U>(value));
-        const auto [at, inserted] = storage_.insert_or_assign(std::forward<Q>(key), std::move(replacement));
-        return {std::addressof(at->second), inserted};
+        auto result = try_emplace(std::forward<Q>(key), std::move(replacement));
+        if (!result.inserted)
+            *result.value = std::move(replacement);
+        return result;
     }
 
     template <class Q>
         requires detail::HashQuery<K, Q, H, E>
     bool remove(const Q& key) noexcept {
-        return storage_.erase(key) != 0;
+        return storage_.erase(key);
     }
 
-    [[nodiscard]] Iterator begin() noexcept [[clang::lifetimebound]] {
-        return Iterator{std::to_address(storage_.begin())};
-    }
+    [[nodiscard]] Iterator begin() noexcept [[clang::lifetimebound]] { return Iterator{storage_.values().data()}; }
 
-    [[nodiscard]] Iterator end() noexcept [[clang::lifetimebound]] { return Iterator{std::to_address(storage_.end())}; }
+    [[nodiscard]] Iterator end() noexcept [[clang::lifetimebound]] {
+        auto& values = storage_.values();
+        return Iterator{values.data() + values.size()};
+    }
 
     [[nodiscard]] ConstIterator begin() const noexcept [[clang::lifetimebound]] {
-        return ConstIterator{std::to_address(storage_.begin())};
+        return ConstIterator{storage_.values().data()};
     }
 
     [[nodiscard]] ConstIterator end() const noexcept [[clang::lifetimebound]] {
-        return ConstIterator{std::to_address(storage_.end())};
+        const auto& values = storage_.values();
+        return ConstIterator{values.data() + values.size()};
     }
 
 private:

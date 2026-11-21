@@ -1,0 +1,23 @@
+diff --git a/docs/research/small-table-experiment/owned-index/dense_hash_table.hpp b/docs/research/small-table-experiment/owned-index/dense_hash_table.hpp
+--- a/docs/research/small-table-experiment/owned-index/dense_hash_table.hpp
++++ b/docs/research/small-table-experiment/owned-index/dense_hash_table.hpp
+@@ -71,17 +71,8 @@
+         return byte < 2 ? 2 : byte;
+     }
+ 
+-    // The borrowed-name index has byte equality. Its small tables can filter
+-    // using length and a suffix without hashing the whole name. In particular
+-    // both digits distinguish matrix fields such as m01 and m11.
+-    static std::uint8_t name_tag(StringView name) noexcept {
+-        const auto n = name.size();
+-        if (n == 0)
+-            return 1;
+-        const auto last = static_cast<unsigned char>(name.data()[n - 1]);
+-        const auto previous = n > 1 ? static_cast<unsigned char>(name.data()[n - 2]) : 0u;
+-        return tag(n * 31 + previous * 13 + last);
+-    }
++    // Use the same byte hash for borrowed names in both index states.
++    static std::uint8_t name_tag(StringView name) noexcept { return tag(Hash<StringView>{}(name)); }
+     static std::uint8_t name_tag(const char* name) noexcept { return name_tag(StringView{name}); }
+ 
+     template <class Q>

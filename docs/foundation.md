@@ -151,7 +151,9 @@ seen.remove(7u);                            // 返回是否移除了成员
 
 ### Hash/Equal 与失败合同
 
-[Hash/Equal](../modules/core/foundation/include/foundation/hash.hpp) 是共同入口。整数、枚举和指针使用锁定后端的整数哈希，即一次 64 位乘法混合，不读取这些类型的 `std::hash` 特化；MSVC STL 的 `std::hash` 对整数逐字节做 FNV-1a，因此不经过它。其他类型的哈希复用现有 `std::hash<T>`；相等仍使用 `operator==`（String/StringView 除外）。结果已充分混合的哈希声明 `is_avalanching`，表直接使用结果而不再混合一次；`std::hash<T>` 声明了该标记时，`Hash<T>` 随之声明。TypeId 与 ObjectId 的 `std::hash` 由 `hash_fields` 逐字段混合 Runtime 上下文、槽位以及 ObjectId 的代际，与各自的完整相等规则一致；`std::unordered_*` 与 Map/Set 因此得到同一哈希。自定义策略作为 Map/Set 的模板参数提供，当前由容器默认构造；策略本身的默认/复制/移动/交换/析构及 Hash/Equal 调用必须不抛，检查包含结果到 size_t/bool 的转换。移动容器时源获得新默认策略，不要求其已移空的旧策略仍可调用。元素必须具备不抛移动构造、移动赋值和析构，编译期拒绝不满足的类型。标准类型的相等运算若未声明 noexcept，也需提供满足该合同的比较策略。
+[Hash/Equal](../modules/core/foundation/include/foundation/hash.hpp) 是共同入口。Foundation 自己实现字节、整数和复合键哈希。`hash_bytes(Span<const std::byte>)` 用于显式选择按位相等的原始字节，`String/StringView` 复用同一字节混合。Windows x64 上的数值与原 unordered_dense v5.3.0 兼容。字节实现沿用其 wyhash 派生算法，保留 [MIT 许可](../third_party/unordered_dense/LICENSE)。`hash_fields` 按字段顺序混合；TypeId 和 ObjectId 仍覆盖 Runtime 上下文、槽位以及 ObjectId 的代际。整数、枚举、指针使用一次 64 位乘法并折叠乘积的高低半部，其他类型沿用 `std::hash<T>`。哈希结果只服务进程内查询。[算法对照与 Renderer 实测](research/foundation-hash/README.md)
+
+充分混合的策略声明 `using is_avalanching = void` 或 `std::true_type`，`std::false_type` 要求再次混合。`Hash<T>` 识别 `std::hash<T>` 上的类型标记。Map 默认构造策略；Set 也可通过 `Set(hash, equal)` 绑定具体策略实例。策略的复制、移动、交换、析构以及哈希和比较调用须不抛，结果转换也在检查范围内。需要外部上下文的策略可使用不可默认构造的引用包装器，调用方负责上下文的生命周期。Set 的复制携带绑定，release 释放缓冲并保留绑定。移动后，若两个策略均可不抛默认构造，源容器使用新的默认策略；若绑定是必需的，源容器保留策略副本，可继续使用。Map/Set 的元素须可不抛移动构造、移动赋值及析构。
 
 非透明策略只接受实际键类型，必要的类型转换在调用之前显式完成，例如 `Set<unsigned>::contains(1u)`。异构查询要求 Hash/Equal 同时声明 `is_transparent`，并且实际 Q→哈希结果、Q/K→相等结果的完整调用均不抛；不以策略中存在某个重载来推断后端会跳过键构造。这样查询不会在 noexcept 包装内部隐式执行可抛键转换。
 
@@ -161,7 +163,11 @@ String/StringView 共用同一按长度的字节哈希和比较，包含嵌入�
 
 Map/Set 的元素构造和复制入口尚未整体迁移到禁异常合同，现有 C++ 元素异常仍沿这些入口传播：插入失败不发布新成员；复制赋值或替换值构造失败保留目标的原值，部分构造的资源会清理。这不包含 CPU OOM 或 reserve 内部容量违例，两者为 fatal，不承诺回滚。调用者主动移动表内资源或构造函数修改实参属于用户副作用，不由容器回滚。Hash/Equal 不保存输入借用、不修改表、不重入结构操作；不能通过错误的 noexcept 声明掩盖会抛异常的实现。
 
-底层使用锁定的 `ankerl::unordered_dense` 分组索引与连续值存储，不暴露 bucket/load-factor、持久化私有布局或后端入口。版本、下载与校验值统一在[依赖锁文件](../cmake/dependencies-lock.json)，构建复制 `LICENSE.unordered_dense.txt`，当前无上游补丁。内部复用上游标准容器，不另建分配器注册表。哈希值与遍历顺序不属于持久格式或跨版本协议；确定性输出显式排序。
+Map 和 Set 共用 Foundation 的私有分组哈希表。前 16 个不同键只分配连续条目缓冲，对象内的 16 个指纹分别对应同一位置的条目。SSE2 一次筛选候选，再用 Equal 比较完整键。默认策略的借用字符串小表还在组掩码所在位置记录长度模 32 的位图。缺少对应位就能排除该名字；删除可留下多余的位。名字指纹用 Foundation 整数哈希混合长度、首字节和末两字节。默认对象在 Windows x64 Release 为 64 B，dev 为 72 B。[存储实现](../modules/core/foundation/include/foundation/detail/dense_hash_table.hpp)
+
+第 17 个不同键或显式预留超过 16 项时建立外部索引。组数取二的幂，平均每组达到 10 项后扩容。每组有 15 个条目下标和一组可单独读取的指纹；溢出计数决定查询是否继续探测。外部索引使用完整键哈希。删除用尾条目填洞并修正索引；clear 保留分配，release 释放缓冲。注册时已知成员数量的调用方可以直接预留。普通增长仍可能使借用失效。[Runtime、内存与扩容实测](research/small-table-experiment/retirement/README.md)
+
+构建随附字节哈希的原作者许可 `LICENSE.unordered_dense.txt`。哈希值与遍历顺序只用于进程内访问；确定性输出显式排序。
 
 ### 正式消费者
 

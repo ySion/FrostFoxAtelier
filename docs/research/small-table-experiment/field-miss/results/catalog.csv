@@ -1,0 +1,9 @@
+type,fields,requests,names_over_15_bytes,old_hash_eq,new_hash_eq,old_bang_eq,new_bang_eq
+math.matrix4,16,683,0,506,150,0,0
+math.matrix4d,16,712,0,541,180,0,0
+world.BodySettings,11,484,137,0,56,57,56
+material.Context,5,206,50,0,0,0,0
+material.Output,6,259,0,0,0,39,0
+world.LightSettings,9,370,0,0,0,43,0
+world.ProbeVolume,8,355,0,0,110,0,0
+world.EnvironmentComponent,24,1027,186,0,0,0,0

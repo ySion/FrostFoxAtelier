@@ -1,0 +1,337 @@
+diff --git a/modules/core/foundation/include/foundation/detail/small_hash_table.hpp b/modules/core/foundation/include/foundation/detail/small_hash_table.hpp
+new file mode 100644
+--- /dev/null
++++ b/modules/core/foundation/include/foundation/detail/small_hash_table.hpp
+@@ -0,0 +1,132 @@
++#pragma once
++
++#include <memory>
++#include <tuple>
++#include <type_traits>
++#include <utility>
++#include <variant>
++
++namespace atelier::detail {
++
++// Both representations own the same kind of dense value buffer. Promotion hands
++// that buffer to the index, including the capacity reserved by the caller.
++template <class Indexed>
++class SmallHashTable {
++    using Key = typename Indexed::key_type;
++    using Value = typename Indexed::value_type;
++    using Values = typename Indexed::value_container_type;
++    static constexpr bool is_set = std::is_same_v<Key, Value>;
++    using Pointer = std::conditional_t<is_set, const Value*, Value*>;
++
++    static constexpr std::size_t scan_limit = 4;
++
++    struct Small {
++        Values values;
++        [[msvc::no_unique_address]] typename Indexed::hasher hash{};
++        [[msvc::no_unique_address]] typename Indexed::key_equal equal{};
++
++        template <class Q>
++        const Value* find(const Q& key) const noexcept {
++            const auto* end = values.data() + values.size();
++            for (auto* it = values.data(); it != end; ++it) {
++                if constexpr (is_set) {
++                    if (equal(key, *it))
++                        return it;
++                } else if (equal(key, it->first))
++                    return it;
++            }
++            return nullptr;
++        }
++    };
++
++    std::variant<Small, Indexed> state_;
++
++    Indexed& promote() noexcept {
++        Small small{std::move(std::get<Small>(state_))};
++        auto& indexed = state_.template emplace<Indexed>(0, small.hash, small.equal);
++        if (!small.values.empty())
++            indexed.replace(std::move(small.values));
++        return indexed;
++    }
++
++public:
++    static constexpr std::size_t max_size() noexcept { return Indexed::max_size(); }
++
++    const Values& values() const noexcept {
++        if (auto* small = std::get_if<Small>(&state_))
++            return small->values;
++        return std::get<Indexed>(state_).values();
++    }
++
++    std::size_t size() const noexcept { return values().size(); }
++
++    void reserve(std::size_t total) noexcept {
++        if (auto* small = std::get_if<Small>(&state_)) {
++            if (total <= scan_limit)
++                small->values.reserve(total);
++            else
++                promote().reserve(total);
++        } else
++            std::get<Indexed>(state_).reserve(total);
++    }
++
++    template <class Q>
++    const Value* find(const Q& key) const noexcept {
++        if (const auto* small = std::get_if<Small>(&state_))
++            return small->find(key);
++        const auto& indexed = std::get<Indexed>(state_);
++        const auto it = indexed.find(key);
++        return it == indexed.end() ? nullptr : std::addressof(*it);
++    }
++
++    template <class Q, class... Args>
++    std::pair<Pointer, bool> try_emplace(Q&& key, Args&&... args) {
++        if (auto* small = std::get_if<Small>(&state_)) {
++            if (auto* found = small->find(key))
++                return {const_cast<Pointer>(found), false};
++            if constexpr (is_set)
++                small->values.emplace_back(std::forward<Q>(key));
++            else
++                small->values.emplace_back(std::piecewise_construct, std::forward_as_tuple(std::forward<Q>(key)),
++                                           std::forward_as_tuple(std::forward<Args>(args)...));
++            auto* inserted = std::addressof(small->values.back());
++            if (small->values.size() > scan_limit)
++                promote();
++            return {inserted, true};
++        }
++        auto& indexed = std::get<Indexed>(state_);
++        if constexpr (is_set) {
++            const auto [it, inserted] = indexed.emplace(std::forward<Q>(key));
++            return {std::addressof(*it), inserted};
++        } else {
++            const auto [it, inserted] = indexed.try_emplace(std::forward<Q>(key), std::forward<Args>(args)...);
++            return {std::addressof(*it), inserted};
++        }
++    }
++
++    template <class Q>
++    bool erase(const Q& key) noexcept {
++        if (auto* small = std::get_if<Small>(&state_)) {
++            auto* found = const_cast<Value*>(small->find(key));
++            if (!found)
++                return false;
++            auto& last = small->values.back();
++            if (found != std::addressof(last))
++                *found = std::move(last);
++            small->values.pop_back();
++            return true;
++        }
++        return std::get<Indexed>(state_).erase(key) != 0;
++    }
++
++    void clear() noexcept {
++        if (auto* small = std::get_if<Small>(&state_))
++            small->values.clear();
++        else
++            std::get<Indexed>(state_).clear();
++    }
++
++    void swap(SmallHashTable& other) noexcept { state_.swap(other.state_); }
++};
++
++}
+diff --git a/modules/core/foundation/include/foundation/map.hpp b/modules/core/foundation/include/foundation/map.hpp
+--- a/modules/core/foundation/include/foundation/map.hpp
++++ b/modules/core/foundation/include/foundation/map.hpp
+@@ -1,6 +1,7 @@
+ #pragma once
+ 
+ #include "foundation/hash.hpp"
++#include "foundation/detail/small_hash_table.hpp"
+ #include "memory/fatal.hpp"
+ 
+ #include <ankerl/unordered_dense.h>
+@@ -21,7 +22,7 @@
+     static_assert(detail::HashPolicy<H> && detail::HashPolicy<E> && detail::HashQuery<K, K, H, E>,
+                   "Map Hash/Equal require non-throwing calls and policy lifecycle operations.");
+ 
+-    using Storage = ankerl::unordered_dense::map<K, V, H, E>;
++    using Storage = detail::SmallHashTable<ankerl::unordered_dense::map<K, V, H, E>>;
+ 
+     using Pair = std::pair<K, V>;
+ 
+@@ -129,7 +130,7 @@
+ 
+     [[nodiscard]] std::size_t size() const noexcept { return storage_.size(); }
+ 
+-    [[nodiscard]] bool empty() const noexcept { return storage_.empty(); }
++    [[nodiscard]] bool empty() const noexcept { return size() == 0; }
+ 
+     void reserve(std::size_t total) noexcept {
+         if (total > storage_.max_size())
+@@ -153,15 +154,14 @@
+     template <class Q>
+         requires detail::HashQuery<K, Q, H, E>
+     [[nodiscard]] V* find(const Q& key) noexcept [[clang::lifetimebound]] {
+-        const auto at = storage_.find(key);
+-        return at == storage_.end() ? nullptr : std::addressof(at->second);
++        return const_cast<V*>(std::as_const(*this).find(key));
+     }
+ 
+     template <class Q>
+         requires detail::HashQuery<K, Q, H, E>
+     [[nodiscard]] const V* find(const Q& key) const noexcept [[clang::lifetimebound]] {
+-        const auto at = storage_.find(key);
+-        return at == storage_.end() ? nullptr : std::addressof(at->second);
++        const auto* at = storage_.find(key);
++        return at ? std::addressof(at->second) : nullptr;
+     }
+ 
+     template <class Q>
+@@ -183,28 +183,34 @@
+     InsertResult insert_or_assign(Q&& key, U&& value) [[clang::lifetimebound]] {
+         // Construct before replacing the old value; committing its move cannot throw.
+         V replacement(std::forward<U>(value));
+-        const auto [at, inserted] = storage_.insert_or_assign(std::forward<Q>(key), std::move(replacement));
+-        return {std::addressof(at->second), inserted};
++        auto result = try_emplace(std::forward<Q>(key), std::move(replacement));
++        if (!result.inserted)
++            *result.value = std::move(replacement);
++        return result;
+     }
+ 
+     template <class Q>
+         requires detail::HashQuery<K, Q, H, E>
+     bool remove(const Q& key) noexcept {
+-        return storage_.erase(key) != 0;
++        return storage_.erase(key);
+     }
+ 
+     [[nodiscard]] Iterator begin() noexcept [[clang::lifetimebound]] {
+-        return Iterator{std::to_address(storage_.begin())};
+-    }
+-
+-    [[nodiscard]] Iterator end() noexcept [[clang::lifetimebound]] { return Iterator{std::to_address(storage_.end())}; }
++        return Iterator{const_cast<Pair*>(storage_.values().data())};
++    }
++
++    [[nodiscard]] Iterator end() noexcept [[clang::lifetimebound]] {
++        const auto& values = storage_.values();
++        return Iterator{const_cast<Pair*>(values.data()) + values.size()};
++    }
+ 
+     [[nodiscard]] ConstIterator begin() const noexcept [[clang::lifetimebound]] {
+-        return ConstIterator{std::to_address(storage_.begin())};
++        return ConstIterator{storage_.values().data()};
+     }
+ 
+     [[nodiscard]] ConstIterator end() const noexcept [[clang::lifetimebound]] {
+-        return ConstIterator{std::to_address(storage_.end())};
++        const auto& values = storage_.values();
++        return ConstIterator{values.data() + values.size()};
+     }
+ 
+ private:
+diff --git a/modules/core/foundation/include/foundation/set.hpp b/modules/core/foundation/include/foundation/set.hpp
+--- a/modules/core/foundation/include/foundation/set.hpp
++++ b/modules/core/foundation/include/foundation/set.hpp
+@@ -1,6 +1,7 @@
+ #pragma once
+ 
+ #include "foundation/hash.hpp"
++#include "foundation/detail/small_hash_table.hpp"
+ #include "memory/fatal.hpp"
+ 
+ #include <ankerl/unordered_dense.h>
+@@ -19,7 +20,7 @@
+     static_assert(detail::HashPolicy<H> && detail::HashPolicy<E> && detail::HashQuery<T, T, H, E>,
+                   "Set Hash/Equal require non-throwing calls and policy lifecycle operations.");
+ 
+-    using Storage = ankerl::unordered_dense::set<T, H, E>;
++    using Storage = detail::SmallHashTable<ankerl::unordered_dense::set<T, H, E>>;
+ 
+ public:
+     using Iterator = const T*;
+@@ -52,7 +53,7 @@
+ 
+     [[nodiscard]] std::size_t size() const noexcept { return storage_.size(); }
+ 
+-    [[nodiscard]] bool empty() const noexcept { return storage_.empty(); }
++    [[nodiscard]] bool empty() const noexcept { return size() == 0; }
+ 
+     void reserve(std::size_t total) noexcept {
+         if (total > storage_.max_size())
+@@ -76,8 +77,7 @@
+     template <class Q>
+         requires detail::HashQuery<T, Q, H, E>
+     [[nodiscard]] const T* find(const Q& value) const noexcept [[clang::lifetimebound]] {
+-        const auto at = storage_.find(value);
+-        return at == storage_.end() ? nullptr : std::addressof(*at);
++        return storage_.find(value);
+     }
+ 
+     template <class Q>
+@@ -89,13 +89,13 @@
+     template <class Q>
+         requires detail::HashQuery<T, Q, H, E> && std::constructible_from<T, Q&&>
+     bool add(Q&& value) {
+-        return storage_.emplace(std::forward<Q>(value)).second;
++        return storage_.try_emplace(std::forward<Q>(value)).second;
+     }
+ 
+     template <class Q>
+         requires detail::HashQuery<T, Q, H, E>
+     bool remove(const Q& value) noexcept {
+-        return storage_.erase(value) != 0;
++        return storage_.erase(value);
+     }
+ 
+     [[nodiscard]] Iterator begin() const noexcept [[clang::lifetimebound]] { return storage_.values().data(); }
+diff --git a/acceptance/foundation/main.cpp b/acceptance/foundation/main.cpp
+--- a/acceptance/foundation/main.cpp
++++ b/acceptance/foundation/main.cpp
+@@ -5,6 +5,7 @@
+ #include "foundation/optional.hpp"
+ #include "foundation/priority_queue.hpp"
+ #include "foundation/ring_deque.hpp"
++#include "foundation/set.hpp"
+ #include "foundation/sha256.hpp"
+ #include "foundation/string.hpp"
+ #include <cstdio>
+@@ -70,6 +71,33 @@
+         require(*ready.pop() == expected, "Priority queue lost job ownership or order.");
+     require(ready.empty() && jobs.empty(), "Queue transfer retained jobs.");
+ }
++
++void resource_catalog_growth() {
++    using namespace atelier;
++    using acceptance::helpers::require;
++    Map<String, std::unique_ptr<int>> resources;
++    Set<String> selected;
++    for (String name :
++         {String::literal<"a">(), String::literal<"b">(), String::literal<"c">(), String::literal<"d">()}) {
++        resources.try_emplace(name, std::make_unique<int>(int(resources.size())));
++        selected.add(std::move(name));
++    }
++    auto duplicate = std::make_unique<int>(42);
++    require(!resources.try_emplace(String::literal<"a">(), std::move(duplicate)).inserted && duplicate &&
++                !selected.add(String::literal<"a">()),
++            "Duplicate resource consumed its input.");
++    auto added = resources.try_emplace(String::literal<"e">(), std::move(*resources.find(StringView{"d"})));
++    require(added.inserted && **added.value == 3 && selected.add(String::literal<"e">()) &&
++                selected.contains(StringView{"e"}) && **resources.find(StringView{"b"}) == 1,
++            "Catalog growth lost a new or an existing resource.");
++    require(resources.remove(StringView{"b"}) && selected.remove(StringView{"b"}) &&
++                !resources.contains(StringView{"b"}) && resources.size() == selected.size(),
++            "Catalog removal lost membership.");
++    resources.clear();
++    resources.try_emplace(String::literal<"only">(), std::move(duplicate));
++    require(**resources.find(StringView{"only"}) == 42 && selected.contains(StringView{"d"}),
++            "Catalog reuse lost ownership.");
++}
+ }
+ 
+ void verify_tasks();
+@@ -102,6 +130,7 @@
+                 "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+             "Span sha256 bridge failed.");
+     queued_resources();
++    resource_catalog_growth();
+     verify_tasks();
+     std::puts("Foundation acceptance: PASS (owning aliases, queued resources and failed join cleanup)");
+ }

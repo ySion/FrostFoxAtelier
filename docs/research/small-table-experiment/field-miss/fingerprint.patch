@@ -1,0 +1,14 @@
+diff --git a/docs/research/small-table-experiment/owned-index/dense_hash_table.hpp b/docs/research/small-table-experiment/owned-index/dense_hash_table.hpp
+--- a/docs/research/small-table-experiment/owned-index/dense_hash_table.hpp
++++ b/docs/research/small-table-experiment/owned-index/dense_hash_table.hpp
+@@ -76,7 +76,9 @@
+             return 1;
+         const auto last = static_cast<unsigned char>(name.data()[n - 1]);
+         const auto previous = n > 1 ? static_cast<unsigned char>(name.data()[n - 2]) : 0u;
+-        return tag(n * 31 + previous * 13 + last);
++        const auto suffix = (std::uint64_t{n} << 16) | (std::uint64_t{previous} << 8) | last;
++        // Use the high bits so both suffix bytes contribute to the fingerprint.
++        return tag((suffix * UINT64_C(0x9e3779b97f4a7c15)) >> 56);
+     }
+     static std::uint8_t name_tag(const char* name) noexcept { return name_tag(StringView{name}); }
+ 

@@ -1,0 +1,11 @@
+binary,mode,metric,median_ns,paired_percent_vs_before,faster_rounds
+before,ankerl,name_ns,4.1025,0.0,0
+before,ankerl,vertex_ns,2.1367,0.0,0
+before,wy,name_ns,2.1553,-47.27,24
+before,wy,vertex_ns,2.0423,-4.45,24
+before,xxh3,name_ns,4.4403,8.64,0
+before,xxh3,vertex_ns,4.3527,103.17,0
+after,project,name_ns,3.0826,-24.93,24
+after,project,vertex_ns,2.1085,-1.91,18
+before,weld,weld_ns,107017.1875,0.0,0
+after,weld,weld_ns,106567.1875,-0.38,17

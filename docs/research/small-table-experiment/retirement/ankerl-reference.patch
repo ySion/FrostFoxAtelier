@@ -1,0 +1,315 @@
+diff --git a/cmake/dependencies-lock.json b/cmake/dependencies-lock.json
+--- a/cmake/dependencies-lock.json
++++ b/cmake/dependencies-lock.json
+@@ -44,6 +44,11 @@
+     "sha256": "726acc93d6968e2146261a1e415521747d50ad69894c2b42b5d0d4c29fd66ec4",
+     "filename": "pix-1.0.240308001.nupkg"
+   },
++  "unordered_dense": {
++    "version": "5.3.0",
++    "url": "https://codeload.github.com/martinus/unordered_dense/tar.gz/refs/tags/v5.3.0",
++    "sha256": "ca1cc1c7bc73d9a77680aa2a38ea9ec43340242e3f9dc04e129f06accc56ec88"
++  },
+   "oneTBB": {
+     "version": "2023.2.0",
+     "url": "https://codeload.github.com/uxlfoundation/oneTBB/tar.gz/refs/tags/v2023.2.0",
+diff --git a/cmake/unordered_dense.cmake b/cmake/unordered_dense.cmake
+new file mode 100644
+--- /dev/null
++++ b/cmake/unordered_dense.cmake
+@@ -0,0 +1,35 @@
++include(FetchContent)
++file(READ "${CMAKE_CURRENT_LIST_DIR}/dependencies-lock.json" _dense_dependencies)
++string(JSON _dense_url GET "${_dense_dependencies}" unordered_dense url)
++string(JSON _dense_sha GET "${_dense_dependencies}" unordered_dense sha256)
++string(JSON _dense_version GET "${_dense_dependencies}" unordered_dense version)
++set(ANKERL_ENABLE_MODULES OFF CACHE BOOL "" FORCE)
++set(ANKERL_ENABLE_EXAMPLE OFF CACHE BOOL "" FORCE)
++FetchContent_Declare(atelier_unordered_dense
++    URL "${_dense_url}" URL_HASH "SHA256=${_dense_sha}"
++    DOWNLOAD_NAME "unordered_dense-v${_dense_version}.tar.gz"
++    DOWNLOAD_DIR "${PROJECT_SOURCE_DIR}/.tools/downloads" EXCLUDE_FROM_ALL SYSTEM)
++FetchContent_MakeAvailable(atelier_unordered_dense)
++find_package(Git REQUIRED)
++set(_dense_patch "${PROJECT_SOURCE_DIR}/third_party/unordered_dense/atelier.patch")
++set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_dense_patch}")
++file(SHA256 "${_dense_patch}" _dense_sha)
++set(_dense_stamp "${atelier_unordered_dense_SOURCE_DIR}/.atelier-patch-sha256")
++set(_dense_applied "")
++if(EXISTS "${_dense_stamp}")
++    file(READ "${_dense_stamp}" _dense_applied)
++endif()
++if(NOT _dense_applied STREQUAL _dense_sha)
++    set(_dense_header "${atelier_unordered_dense_SOURCE_DIR}/include/ankerl/unordered_dense.h")
++    set(_dense_original "${atelier_unordered_dense_SOURCE_DIR}/.atelier-upstream-unordered_dense.h")
++    if(EXISTS "${_dense_original}")
++        file(COPY_FILE "${_dense_original}" "${_dense_header}" ONLY_IF_DIFFERENT)
++    else()
++        file(COPY_FILE "${_dense_header}" "${_dense_original}")
++    endif()
++    execute_process(COMMAND "${GIT_EXECUTABLE}" apply --unsafe-paths "--directory=${atelier_unordered_dense_SOURCE_DIR}" "${_dense_patch}"
++        WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}" COMMAND_ERROR_IS_FATAL ANY)
++    file(WRITE "${_dense_stamp}" "${_dense_sha}")
++endif()
++configure_file("${atelier_unordered_dense_SOURCE_DIR}/LICENSE"
++    "${CMAKE_BINARY_DIR}/LICENSE.unordered_dense.txt" COPYONLY)
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -57,11 +57,11 @@
+ endfunction()
+ 
+ include(cmake/logging.cmake)
+-configure_file(third_party/unordered_dense/LICENSE "${CMAKE_BINARY_DIR}/LICENSE.unordered_dense.txt" COPYONLY)
++include(cmake/unordered_dense.cmake)
+ include(cmake/tbb.cmake)
+ add_library(atelier_foundation_headers INTERFACE)
+ target_include_directories(atelier_foundation_headers INTERFACE modules/core/foundation/include)
+-target_link_libraries(atelier_foundation_headers INTERFACE atelier_memory_headers mimalloc)
++target_link_libraries(atelier_foundation_headers INTERFACE unordered_dense::unordered_dense atelier_memory_headers mimalloc)
+ 
+ add_library(atelier_math INTERFACE)
+ target_include_directories(atelier_math INTERFACE modules/core/math/include)
+diff --git a/modules/core/foundation/include/foundation/detail/small_hash_table.hpp b/modules/core/foundation/include/foundation/detail/small_hash_table.hpp
+new file mode 100644
+--- /dev/null
++++ b/modules/core/foundation/include/foundation/detail/small_hash_table.hpp
+@@ -0,0 +1,146 @@
++#pragma once
++
++#include <bit>
++#include <cstddef>
++#include <cstdint>
++#include <memory>
++#include <tuple>
++#include <type_traits>
++#include <utility>
++
++namespace atelier::detail {
++
++// No separate mode field. Before the first index allocation only this adapter
++// searches/edits the dense values; reserve() builds the index in place.
++template <class Indexed>
++class SmallHashTable {
++    using Key = typename Indexed::key_type;
++
++    using Value = typename Indexed::value_type;
++
++    using Values = typename Indexed::value_container_type;
++
++    static constexpr bool is_set = std::is_same_v<Key, Value>;
++
++    static constexpr std::size_t scan_limit = 4;
++
++    static_assert(std::is_same_v<decltype(Indexed::m_group_mask), std::uint32_t> &&
++                  scan_limit <= sizeof(std::uint32_t));
++
++    using Pointer = std::conditional_t<is_set, const Value*, Value*>;
++
++    Indexed table_;
++
++    bool unindexed() const noexcept { return table_.m_max_bucket_capacity == 0; }
++
++    template <class Q>
++    std::uint32_t fingerprint(const Q& key) const noexcept {
++        return Indexed::fingerprint_word(table_.mixed_hash(key));
++    }
++
++    template <class Q>
++    const Value* scan(const Q& key, std::uint32_t word) const noexcept {
++        // The unused group mask holds four nonzero tags in dense value order.
++        // Set each byte's high bit iff its XOR with the query tag is zero.
++        const auto different = table_.m_group_mask ^ word;
++        constexpr std::uint32_t low_bits = 0x7f7f7f7f;
++        auto matches = ~(((different & low_bits) + low_bits) | different | low_bits);
++        while (matches) {
++            const auto* entry = table_.m_values.data() + std::countr_zero(matches) / 8;
++            if (table_.m_equal(key, Indexed::get_key(*entry)))
++                return entry;
++            matches &= matches - 1;
++        }
++        return nullptr;
++    }
++
++public:
++    SmallHashTable() = default;
++
++    SmallHashTable(const typename Indexed::hasher& hash, const typename Indexed::key_equal& equal) noexcept
++        : table_(0, hash, equal) {}
++
++    SmallHashTable empty_with_policies() const noexcept { return {table_.m_hash, table_.m_equal}; }
++
++    static constexpr std::size_t max_size() noexcept { return Indexed::max_size(); }
++
++    const Values& values() const noexcept { return table_.values(); }
++
++    Values& values() noexcept { return table_.m_values; }
++
++    std::size_t size() const noexcept { return table_.size(); }
++
++    void reserve(std::size_t total) noexcept {
++        if (total <= scan_limit && unindexed())
++            table_.m_values.reserve(total);
++        else
++            table_.reserve(total);
++    }
++
++    template <class Q>
++    const Value* find(const Q& key) const noexcept {
++        const auto hash = table_.mixed_hash(key);
++        if (unindexed())
++            return scan(key, Indexed::fingerprint_word(hash));
++        const auto slot = table_.probe(key, hash);
++        return slot.found ? table_.m_values.data() + slot.value_idx : nullptr;
++    }
++
++    template <class Q, class... Args>
++    std::pair<Pointer, bool> try_emplace(Q&& key, Args&&... args) {
++        if (unindexed()) {
++            const auto word = fingerprint(key);
++            if (const auto* found = scan(key, word))
++                return {const_cast<Pointer>(found), false};
++            auto& values = table_.m_values;
++            if constexpr (is_set)
++                values.emplace_back(std::forward<Q>(key));
++            else
++                values.emplace_back(std::piecewise_construct, std::forward_as_tuple(std::forward<Q>(key)),
++                                    std::forward_as_tuple(std::forward<Args>(args)...));
++            if (values.size() > scan_limit)
++                reserve(values.size());
++            else
++                table_.m_group_mask |= (word & 0xffu) << ((values.size() - 1) * 8);
++            return {std::addressof(values.back()), true};
++        }
++        if constexpr (is_set) {
++            auto [it, inserted] = table_.emplace(std::forward<Q>(key));
++            return {std::addressof(*it), inserted};
++        } else {
++            auto [it, inserted] = table_.try_emplace(std::forward<Q>(key), std::forward<Args>(args)...);
++            return {std::addressof(*it), inserted};
++        }
++    }
++
++    template <class Q>
++    bool erase(const Q& key) noexcept {
++        if (unindexed()) {
++            auto* found = const_cast<Value*>(scan(key, fingerprint(key)));
++            if (!found)
++                return false;
++            auto& values = table_.m_values;
++            const auto last_shift = (values.size() - 1) * 8;
++            const auto last_tag = table_.m_group_mask >> last_shift;
++            table_.m_group_mask &= ~(0xffu << last_shift);
++            if (found != std::addressof(values.back())) {
++                const auto shift = (found - values.data()) * 8;
++                table_.m_group_mask = (table_.m_group_mask & ~(0xffu << shift)) | (last_tag << shift);
++                *found = std::move(values.back());
++            }
++            values.pop_back();
++            return true;
++        }
++        return table_.erase(key) != 0;
++    }
++
++    void clear() noexcept {
++        if (unindexed())
++            table_.m_group_mask = 0;
++        table_.clear();
++    }
++
++    void swap(SmallHashTable& other) noexcept { table_.swap(other.table_); }
++};
++
++}
+diff --git a/modules/core/foundation/include/foundation/map.hpp b/modules/core/foundation/include/foundation/map.hpp
+--- a/modules/core/foundation/include/foundation/map.hpp
++++ b/modules/core/foundation/include/foundation/map.hpp
+@@ -1,9 +1,10 @@
+ #pragma once
+ 
+ #include "foundation/hash.hpp"
+-#include "foundation/detail/dense_hash_table.hpp"
++#include "foundation/detail/small_hash_table.hpp"
+ #include "memory/fatal.hpp"
+ 
++#include <ankerl/unordered_dense.h>
+ #include <iterator>
+ #include <memory>
+ #include <utility>
+@@ -21,8 +22,9 @@
+     static_assert(detail::HashPolicy<H> && detail::HashPolicy<E> && detail::HashQuery<K, K, H, E>,
+                   "Map Hash/Equal require non-throwing calls and policy lifecycle operations.");
+ 
++    using Storage = detail::SmallHashTable<ankerl::unordered_dense::map<K, V, H, E>>;
++
+     using Pair = std::pair<K, V>;
+-    using Storage = detail::DenseHashTable<K, Pair, H, E>;
+ 
+     static constexpr bool copyable = std::is_copy_constructible_v<K> && std::is_copy_constructible_v<V>;
+ 
+diff --git a/modules/core/foundation/include/foundation/set.hpp b/modules/core/foundation/include/foundation/set.hpp
+--- a/modules/core/foundation/include/foundation/set.hpp
++++ b/modules/core/foundation/include/foundation/set.hpp
+@@ -1,9 +1,10 @@
+ #pragma once
+ 
+ #include "foundation/hash.hpp"
+-#include "foundation/detail/dense_hash_table.hpp"
++#include "foundation/detail/small_hash_table.hpp"
+ #include "memory/fatal.hpp"
+ 
++#include <ankerl/unordered_dense.h>
+ #include <memory>
+ #include <utility>
+ 
+@@ -19,7 +20,7 @@
+     static_assert(detail::HashPolicyLifecycle<H> && detail::HashPolicyLifecycle<E> && detail::HashQuery<T, T, H, E>,
+                   "Set Hash/Equal require non-throwing calls and policy lifecycle operations.");
+ 
+-    using Storage = detail::DenseHashTable<T, T, H, E>;
++    using Storage = detail::SmallHashTable<ankerl::unordered_dense::set<T, H, E>>;
+ 
+ public:
+     using Iterator = const T*;
+diff --git a/third_party/unordered_dense/atelier.patch b/third_party/unordered_dense/atelier.patch
+new file mode 100644
+--- /dev/null
++++ b/third_party/unordered_dense/atelier.patch
+@@ -0,0 +1,37 @@
++diff --git a/include/ankerl/unordered_dense.h b/include/ankerl/unordered_dense.h
++--- a/include/ankerl/unordered_dense.h
+++++ b/include/ankerl/unordered_dense.h
++@@ -173,6 +173,10 @@
++ #        endif
++ 
++ #    endif
+++
+++namespace atelier::detail {
+++template <class> class SmallHashTable;
+++}
++ 
++ namespace ankerl::unordered_dense {
++ inline namespace ANKERL_UNORDERED_DENSE_NAMESPACE {
++@@ -2182,6 +2186,8 @@
++     static_assert(std::is_trivially_destructible_v<Bucket>, "assert there's no need to call destructor / std::destroy");
++     static_assert(std::is_trivially_copyable_v<Bucket>, "assert we can just memset / memcpy");
++ 
+++    template <class> friend class ::atelier::detail::SmallHashTable;
+++
++     value_container_type m_values{}; // Contains all the key-value pairs in one densely stored container. No holes.
++     bucket_container_type m_buckets;
++     std::size_t m_max_bucket_capacity = 0;
++@@ -2805,9 +2811,10 @@
++     // assumes m_values has data, m_buckets=m_buckets_end=nullptr, m_shifts is INITIAL_SHIFTS
++     void copy_buckets(table const& other) {
++         // assumes m_values has already the correct data copied over.
++-        if (empty()) {
++-            // Nothing to index, so stay in the state a default constructed table is in and let the
++-            // first insert allocate. Copying an empty table therefore allocates nothing either.
+++        if (empty() || other.m_buckets.empty()) {
+++            // An unindexed Atelier table keeps up to four fingerprints in the otherwise unused mask.
+++            // An empty indexed table still copies to an empty table without an allocation.
+++            m_group_mask = other.m_buckets.empty() ? other.m_group_mask : 0;
++             m_shifts = initial_shifts;
++         } else {
++             // One pass, not two. This used to grow the array with resize(), which value

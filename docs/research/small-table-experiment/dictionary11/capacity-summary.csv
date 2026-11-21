@@ -1,0 +1,7 @@
+metric,default,matched,matched_vs_default_paired_pct,matched_faster_rounds
+dense_65536_hit,5.296,5.254,-0.60,5
+dense_65536_miss,5.702,2.116,-62.75,6
+dense_65536_half,10.268,8.092,-21.19,6
+spread_65536_hit,10.846,8.671,-20.59,6
+spread_65536_miss,11.891,8.965,-25.11,6
+spread_65536_half,17.119,13.601,-20.62,6
