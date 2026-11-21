@@ -24,6 +24,8 @@ WG21 的 2026-04 P4197 记录 trivial relocation 从 C++26 移除，并讨论 C+
 
 | 候选 | 有关的存储与失败取舍 |
 | --- | --- |
+后续评估覆盖分组探测、小表成本、Runtime 字段点查与网格焊点。项目已接入复用组掩码的四项小表，大表继续使用同一套 ankerl 索引。[原生哈希表研究与接入结果](native-hash-table.md#64-b-小表的接入结果)
+
 | ankerl dense | 连续值区利于遍历；查询多一次值索引访问，删除搬末尾值并重建索引 |
 | Boost unordered_flat_map | 值直接放槽内，删除不搬其他值，rehash 会搬移；适合针对查询/小表成本做对照 |
 | Boost unordered_node_map | 独立节点提供地址稳定性，代价是节点分配和间接访问 |
@@ -41,6 +43,24 @@ v5.3.0 首次非空索引最少 4 组，每组 88 字节，共约 352 字节，�
 AssetBrowser 查询前仍可能拼接前缀，透明查询不等于整条路径零分配。目录测量须滚遍中间 viewport，让键表积累完整工作集；头尾可见项验收不能证明测过整个目录。哈希值与表顺序不用于持久身份，确定输出显式排序；普通快速哈希也不自动抵抗恶意碰撞。
 
 ## 文本与语言接线的边界
+
+## 跨追加的元素地址
+
+[JoinGroup](../../modules/core/foundation/src/tasks.cpp) 把闭包的地址交给 oneTBB。提交线程可以继续追加；join 等待全部任务退出，再在提交线程析构捕获。[World 行为绑定](../../modules/engine/world/src/execution.cpp)也借出元素地址，成员和 tick 计划缓存 `Behavior*`。注册新类型时可以重新解析已有绑定，失败时只撤销尾部候选；同类型重绑定就地更新，tick 直接使用已解析的指针。两处的 `std::deque` 都满足各自的借用期。仓内 Scatter、Volume 和 Source 并行区间使用 `parallel_for`，当前直接调用 `JoinGroup::run` 的是 Foundation 验收。
+
+RHI 的准备队列将 `shared_ptr<PreparationJob>` 移交给 worker，对象寿命由共享所有权延长。Runtime 的类型先由候选目录持有，再把 `unique_ptr<Type>` 移入发布目录；这一过程还要求跨目录转移所有权。这两类消费者都允许句柄槽位搬移。[RHI 准备队列](../../modules/render/rhi/src/rhi.cpp) · [Runtime 类型发布](../../modules/execution/runtime/src/runtime.cpp)
+
+在锁定的 Windows x64 Release 构建中，以 `c8054269` 的 JoinGroup 为基线，与现有 unordered_dense 依赖的 `segmented_vector` 对照，每段放 8 个闭包。两版都在 join 时释放全部闭包和容器存储。每组任务各自写一个独立缓存行；每个规模预热后执行 65,536 个任务，核对每组结果，新旧交替运行 9 对进程。耗时是每组从构造、提交、join 到校验和析构的均摊时间，表中取 9 次中位数。另用计数分配器记录闭包容器请求的分配次数及峰值字节，仅计元素块与容器元数据的动态分配。
+
+| 每组任务数 | deque 耗时 | 分段耗时 | deque / 分段分配次数 | deque / 分段峰值字节 |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 1.24 µs | 1.07 µs | 3 / 2 | 144 / 520 |
+| 8 | 4.90 µs | 4.59 µs | 11 / 2 | 656 / 520 |
+| 256 | 106.42 µs | 115.67 µs | 264 / 38 | 22,480 / 16,640 |
+
+256 项时分段方案在 9 对中有 6 对更慢。单项时它更快，但首段多占 376 字节。当前结论是沿用两个消费者各自的 deque，等实际任务组的规模分布或 World 绑定成本成为瓶颈时再选分段策略。该样本没有测量 World。
+
+地址与迭代位置可分别选型。原生 Map 的 `find` 返回值指针，公开遍历器只存一个条目指针，结构修改使借用失效，容器无需登记并更新活跃遍历器。程序化求值器的 LRU 则在 Entry 中保存链表迭代器：命中后直接 splice，淘汰时直接 erase，两者都省掉一次按节点扫描链表。[Map](../../modules/core/foundation/include/foundation/map.hpp) · [LRU](../../modules/engine/procedural/src/evaluator.cpp)
 
 UE 的 FString、FName、FText 分别承担可修改文本、忽略大小写的驻留标识和本地化语义。名称驻留和本地化不能合并为另一种普通 String。UE 编码概览带有早期平台/UCS-2 描述，不能作为现代能力清单；StringCast 要求正确的源编码类型，普通 char* 不自动表示 UTF-8。[字符串分类](https://dev.epicgames.com/documentation/en-us/unreal-engine/string-handling-in-unreal-engine)、[历史编码概览](https://dev.epicgames.com/documentation/en-us/unreal-engine/character-encoding-in-unreal-engine)、[StringCast](https://dev.epicgames.com/documentation/en-us/unreal-engine/API/Runtime/Core/StringCast)
 

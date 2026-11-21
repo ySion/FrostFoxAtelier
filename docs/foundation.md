@@ -1,6 +1,6 @@
 # 引擎 C++ 基础库
 
-当前提供 `atelier::Array<T>`、`SharedArray<T>`、`Span<T>`、`String`、`StringView`、`Map<K,V>`、`Set<T>` 和 `Hash/Equal`。它们服务于连续数据、共享不可变数据、文本、唯一键索引与共享 Runtime 值存储。独立目标为 `atelier_foundation`，不依赖 Runtime、World、UI 或 JIT；反射适配位于 `runtime/foundation.hpp`。Map/Set 当前服务原生 C++ 消费者，尚未开放反射或源码容器定义。完整 STL 兼容与 Unicode 排版尚未提供。源码已能同步借用原生 String/Array 并访问同一缓冲，也能创建有作用域生命周期的拥有型局部，规则见[原生值借用](native-value-borrows.md)。
+引擎的 C++ 容器位于 `atelier` 命名空间。基础库覆盖连续序列、内联与固定容量、位图、稀疏槽、共享不可变数组、环形双端队列、优先队列、哈希索引和 UTF-8 文本。独立目标为 `atelier_foundation`，不依赖 Runtime、World、UI 或 JIT；反射适配位于 `runtime/foundation.hpp`。Map、Set 与两种队列供原生 C++ 使用。完整 STL 兼容与 Unicode 排版尚未提供。源码可以同步借用原生 String/Array 并访问同一缓冲，也能创建有作用域生命周期的拥有型局部，规则见[原生值借用](native-value-borrows.md)。
 
 产品代码中的拥有型 STL 容器按 A1 决定逐模块迁移到自有容器；这不要求替换成熟原子、类型特征、构析原语和算法。容器、字符串等基础函数库提供语义清楚、经过代表验收的完整常用操作，可以为明确的功能类别预留，不必等首个业务消费者才补齐；不建立兼容转发层或重复实现。第三方与平台类型的转换留在各模块接入边界，性能结论仍以真实工作负载测量为准。选型依据见[工业基础库研究](research/foundation-stl-industrial-research.md)。
 
@@ -11,6 +11,8 @@
 | `Array<T>` | 独占连续缓冲；复制拥有独立元素，平凡操作可批量完成；移动转移缓冲，源变为空；析构剩余元素并释放缓冲 | [array.hpp](../modules/core/foundation/include/foundation/array.hpp) |
 | `InlineArray<T,N>` | 默认使用 N 个内联槽，超出后上堆；移动内联值逐元素，移动堆值接管缓冲 | [inline_array.hpp](../modules/core/foundation/include/foundation/inline_array.hpp) |
 | `FixedArray<T,N>` | 固定容量、可变长度，只构造活前缀；容器自身永不分配堆存储 | [fixed_array.hpp](../modules/core/foundation/include/foundation/fixed_array.hpp) |
+| `RingDeque<T>` | 独占环形缓冲，支持两端插入、删除与逻辑下标访问。复制保留逻辑顺序，移动转移缓冲 | [ring_deque.hpp](../modules/core/foundation/include/foundation/ring_deque.hpp) |
+| `PriorityQueue<T,Compare>` | 独占 Array 和比较器。堆顶只读，出队转移元素所有权 | [priority_queue.hpp](../modules/core/foundation/include/foundation/priority_queue.hpp) |
 | `BitVector` | 独占压缩位集合；最低位对应最低下标，尾部未使用位清零，不提供 bool 引用代理 | [bit_vector.hpp](../modules/core/foundation/include/foundation/bit_vector.hpp) |
 | `SparseArray<T>` | 独占稀疏槽；活下标稳定，扩容可搬移地址，删除后的下标可复用 | [sparse_array.hpp](../modules/core/foundation/include/foundation/sparse_array.hpp) |
 | `SharedArray<T>` | 计数句柄，共享一个不可变 Array；复制只增加计数，写入前先取得独占；移动后源为空 | [shared_array.hpp](../modules/core/foundation/include/foundation/shared_array.hpp) |
@@ -82,6 +84,20 @@ names.squeeze();                    // 显式收紧容量；空数组释放缓�
 - 稳定下标不是稳定地址或永久身份：增长可使全部元素引用失效，删除的数字可被重新分配。不提供代际、GC、弱引用、并发或持久化格式。两类型均未新增 Runtime/Source/反射/JIT 注册，不改变已有容器 ABI。
 
 真实消费者包括 SparseArray 自身的占用位图、foundation 的资源槽消费序列、`procedural/volume.cpp` 的 seen_corner/seen_point（BitVector），以及 `runtime.cpp` 的对象存活/标记位图与 `RootState` 的对象根/值根稀疏表（SparseArray）。GC 根扫描与清扫通过占用位图跳过空洞和存活槽，visitor 前复制描述值，值根移除通知先于 erase。Runtime 的 GC/同步遍历、布局与引用定位工作栈使用 Array，标量调用参数使用 InlineArray<Argument,8>；公开借用接口和回调重入时的独立栈区间不变。Runtime 对象槽/UI 带代际槽不能直接按此替换。
+
+## 双端队列与优先队列
+
+`RingDeque<T>` 用单块分配保存首尾相接的逻辑序列。`emplace_front/emplace_back` 在两端构造，`pop_front/pop_back` 只析构移除的元素。两端插入摊销 O(1)，删除、下标、`front/back` 访问均为 O(1)。文本编辑器用尾端保存和截断撤销历史，用首端淘汰最旧记录，用逻辑下标回放撤销和重做。历史预算由编辑器管理。
+
+- `reserve` 扩容时按逻辑顺序搬移活元素。插入触发扩容时先构造新元素，参数可以借用队列内原有元素。元素的复制、搬移和对齐分配复用 Array 的规则。默认空队列不分配。两种队列均可用 `size/capacity/empty` 查询，`clear` 保留容量，`release` 释放存储。
+- `segments()` 借出按逻辑顺序排列的两个 Span，第二段可以为空。只读队列借出只读元素，临时队列禁止借出。结构修改后须重新获取这对视图。元素引用在扩容时全部失效，容量内的两端操作保留其余元素的地址。JoinGroup 的闭包和 World 的行为绑定使用能跨追加保持地址的存储，见[消费者分析与任务组实测](research/foundation-stl-industrial-research.md#跨追加的元素地址)。
+
+`PriorityQueue<T,Compare>` 用 Array 保存二叉堆。`Compare(a,b)` 为真表示 b 的优先级高于 a。默认 `std::less<>` 使最大值先出，World 的 `std::greater<>` 使最小的组合顺序下标先出。调用方须提供严格弱序，元素在堆内期间排序依据须稳定。优先级相同的元素可以任意顺序出队。
+
+- `emplace` 将新值加入堆，`top` 以只读引用访问堆顶，`pop` 按值取走堆顶，支持仅可移动的元素。查看为 O(1)，调整堆为 O(log n)，底层数组扩容另计。结构修改后重新获取堆顶引用。空队列取顶、出队或双端队列下标越界均经 fatal 报告。
+- 已有一批元素时，`PriorityQueue<T>{std::move(values)}` 直接接管 Array 的缓冲并以 O(n) 建堆。复制队列要求元素与比较器均可复制。World 在处理有前置依赖的 tick 时，将刚解除依赖的项放回同一个就绪堆，让它和已经就绪的项按同一规则竞争。
+
+一次本机 Release 对照使用 `CodeDocument` 的实际编辑入口。单字符文档预热 1,024 次后，连续 50,000 次全选并交替替换为 `x`、`y`，每次编辑形成独立历史项，512 项历史始终已满。基线 `c8054269` 与环形队列版本使用相同的锁定工具链、mimalloc 和 ICU 路径，交替运行七对进程。整段编辑的耗时中位数分别为 343.62 ms 和 168.38 ms。该样本测量持续淘汰历史时的编辑成本，未计入窗口输入或渲染。
 
 ## 共享不可变数组
 
@@ -348,7 +364,7 @@ Recorder 已绑定时，未登记的标记、未在声明父项下打开的标�
 
 `foundation_acceptance` 保留两个代表，检查在 dev/release 中均有效，不依赖 assert：
 
-- [拥有资源消费者](../acceptance/foundation/main.cpp)：String 与 Array 追加自身视图时输入在追加过程中不失效，`String::join` / `Sha256` 桥接与 `Optional`/`StringView`/`Span` 代表性编译期契约成立。
+- [拥有资源消费者](../acceptance/foundation/main.cpp)覆盖 String 与 Array 的自身视图追加、环形队列回绕后的复制与自身借用扩容、优先队列对 move-only 资源的建堆与移交，以及 `String::join` / `Sha256` 桥接与 `Optional`/`StringView`/`Span` 的代表性编译期契约。
 - [原生任务消费者](../acceptance/foundation/tasks.cpp)：任务返回 Failure 后 join 失败、用户闭包在提交线程释放，随后新的 JoinGroup 正常完成。只检查结果与生命周期，不以耗时或参与线程数判 PASS。
 
 设计依据与 UE/Qt 的取舍见[研究记录](research/shared-foundation-types.md#qtue-接口取舍)。

@@ -1,5 +1,6 @@
 #pragma once
 #include "ui/error.hpp"
+#include "foundation/ring_deque.hpp"
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -113,7 +114,7 @@ private:
 
     std::vector<std::uint32_t> lines_{0};
 
-    std::vector<Entry> history_;
+    RingDeque<Entry> history_;
 
     std::size_t limit_{};
 

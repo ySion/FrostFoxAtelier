@@ -159,6 +159,29 @@ void editing_and_execution() {
     std::puts("[pass] World edit history: tick, detach/GC/restore and redo");
 }
 
+void tick_prerequisite_order() {
+    Runtime runtime;
+    const auto types = take(w::register_types(runtime));
+    std::vector<ObjectId> ticks;
+    w::World world;
+    take(world.initialize(runtime, types));
+    auto a = take(w::create_entity(runtime));
+    auto b = take(w::create_entity(runtime));
+    auto c = take(w::create_entity(runtime));
+    for (const auto id : {a.id(), b.id(), c.id()})
+        committed(world.attach(id));
+    take(world.bind_behavior(types.entity, {.tick = [&](Runtime&, ObjectId id, float) -> Result<void> {
+                                 ticks.push_back(id);
+                                 return {};
+                             }}));
+    take(world.add_tick_prerequisite(a.id(), b.id()));
+    committed(world.start());
+    take(world.update(1.f));
+    require(ticks == std::vector<ObjectId>{b.id(), a.id(), c.id()},
+            "A newly ready earlier entity did not precede the unrelated ready entity.");
+    committed(world.close());
+}
+
 void ordered_lifecycle() {
     Runtime runtime;
     const auto types = register_test_types(runtime);
@@ -231,8 +254,9 @@ int main() {
     atelier::install_fatal_handler();
     editing_and_execution();
     ordered_lifecycle();
+    tick_prerequisite_order();
     spatial_tree_and_mesh();
     verify_mesh_import();
-    std::puts("World acceptance: PASS (edit history, transform and failed Begin cleanup)");
+    std::puts("World acceptance: PASS (edit history, tick prerequisites, transform and failed Begin cleanup)");
     return 0;
 }

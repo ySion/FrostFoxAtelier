@@ -176,7 +176,6 @@ Result<TextEdit::Change> TextEdit::replace_range(std::uint32_t first, std::uint3
         if (merge)
             next.before = previous.before;
     }
-    history_.reserve(history_.size() + 1);
     ATELIER_TRY(splice(first, last, inserted));
     current_.caret = current_.anchor = snap(first + static_cast<std::uint32_t>(inserted.size()), true);
     next.after = {current_.caret, current_.anchor};
@@ -190,11 +189,11 @@ Result<TextEdit::Change> TextEdit::replace_range(std::uint32_t first, std::uint3
         history_.pop_back();
     }
     bytes_ += cost(next);
-    history_.push_back(std::move(next));
+    history_.emplace_back(std::move(next));
     while (history_.size() > (single_line_ ? 64u : 512u) ||
            (history_.size() > 1 && bytes_ > (single_line_ ? 64u * 1024 : 8u * 1024 * 1024))) {
         bytes_ -= cost(history_.front());
-        history_.erase(history_.begin());
+        history_.pop_front();
     }
     applied_ = history_.size();
     active_ = true;

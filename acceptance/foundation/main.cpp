@@ -3,9 +3,12 @@
 #include "foundation/array.hpp"
 #include "foundation/map.hpp"
 #include "foundation/optional.hpp"
+#include "foundation/priority_queue.hpp"
+#include "foundation/ring_deque.hpp"
 #include "foundation/sha256.hpp"
 #include "foundation/string.hpp"
 #include <cstdio>
+#include <memory>
 #include <type_traits>
 #include <utility>
 
@@ -38,6 +41,37 @@ constexpr bool verify_constexpr_views() {
 static_assert(verify_constexpr_views());
 }
 
+void queued_resources() {
+    using namespace atelier;
+    using acceptance::helpers::require;
+    RingDeque<String> queue;
+    queue.reserve(3);
+    queue.emplace_back(String::literal<"a">());
+    queue.emplace_back(String::literal<"b">());
+    queue.emplace_back(String::literal<"c">());
+    queue.pop_front();
+    queue.emplace_back(String::literal<"d">());
+    const auto [first, second] = std::as_const(queue).segments();
+    require(first.size() == 2 && first.front() == "b" && second.size() == 1 && second.front() == "d",
+            "Wrapped queue segments lost logical order.");
+    const auto snapshot = queue;
+    queue.emplace_front(queue.back());
+    queue.pop_back();
+    require(queue.size() == 3 && queue[0] == "d" && queue[1] == "b" && queue[2] == "c" && snapshot.front() == "b" &&
+                snapshot.back() == "d",
+            "Growing a wrapped queue lost a borrowed input.");
+
+    Array<std::unique_ptr<int>> jobs;
+    for (const int rank : {4, 9, 1})
+        jobs.emplace(std::make_unique<int>(rank));
+    const auto lower = [](const auto& a, const auto& b) { return *a < *b; };
+    PriorityQueue<std::unique_ptr<int>, decltype(lower)> ready{std::move(jobs), lower};
+    ready.emplace(std::make_unique<int>(7));
+    for (const int expected : {9, 7, 4, 1})
+        require(*ready.pop() == expected, "Priority queue lost job ownership or order.");
+    require(ready.empty() && jobs.empty(), "Queue transfer retained jobs.");
+}
+
 void verify_tasks();
 
 int main() {
@@ -67,6 +101,7 @@ int main() {
     require(foundation::sha256(as_bytes(StringView{"abc"})) ==
                 "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
             "Span sha256 bridge failed.");
+    queued_resources();
     verify_tasks();
-    std::puts("Foundation acceptance: PASS (owning aliases and failed join cleanup)");
+    std::puts("Foundation acceptance: PASS (owning aliases, queued resources and failed join cleanup)");
 }

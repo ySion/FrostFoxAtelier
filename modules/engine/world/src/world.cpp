@@ -1,4 +1,5 @@
 #include "world/detail.hpp"
+#include "foundation/priority_queue.hpp"
 #include "foundation/set.hpp"
 #include "memory/fatal.hpp"
 #include <algorithm>
@@ -6,7 +7,6 @@
 #include <cassert>
 #include <cmath>
 #include <format>
-#include <queue>
 #include <unordered_set>
 
 namespace atelier::world {
@@ -367,20 +367,21 @@ void World::Impl::rebuild_schedule() {
         std::vector<std::size_t> pending(order.size());
         for (const auto& [object, before] : prerequisites)
             pending[index.at(object)] = before.size();
-        std::priority_queue<std::size_t, std::vector<std::size_t>, std::greater<>> ready;
+        PriorityQueue<std::size_t, std::greater<>> ready;
         for (std::size_t i = 0; i < order.size(); ++i)
             if (!pending[i])
-                ready.push(i);
+                ready.emplace(i);
         std::vector<Node> sorted;
         sorted.reserve(order.size());
         while (!ready.empty()) {
-            const auto next = ready.top();
-            ready.pop();
+            const auto next = ready.pop();
             sorted.push_back(order[next]);
             if (const auto found = dependents.find(order[next].item.object); found != dependents.end())
-                for (const auto object : found->second)
-                    if (!--pending[index.at(object)])
-                        ready.push(index.at(object));
+                for (const auto object : found->second) {
+                    const auto dependent = index.at(object);
+                    if (!--pending[dependent])
+                        ready.emplace(dependent);
+                }
         }
         order = std::move(sorted);
     }

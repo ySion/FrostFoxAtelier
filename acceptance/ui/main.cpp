@@ -1,5 +1,6 @@
 #include "memory/fatal.hpp"
 #include "../helpers.hpp"
+#include "ui/code_document.hpp"
 #include "ui/session.hpp"
 #include "ui/text.hpp"
 #include "ui_language/component.hpp"
@@ -105,6 +106,25 @@ void identity_and_lifetime() {
             require(!draw.coverage->pixels.empty(), "frame lost text pixels after teardown");
     held.reset();
     require(released.expired(), "accounting retained pixels after the last frame was released");
+}
+
+void bounded_document_history() {
+    auto document = accepted(ui::CodeDocument::create(L"seed"));
+    auto& edit = document.edit();
+    for (unsigned revision = 1; revision <= 800; ++revision) {
+        edit.select_all();
+        accepted(edit.replace(std::to_wstring(revision)));
+    }
+    for (unsigned step = 0; step < 512; ++step)
+        accepted(edit.history(false));
+    require(!edit.can_undo() && document.text() == L"288", "Document undo crossed its retention boundary.");
+    accepted(edit.history(true));
+    require(document.text() == L"289", "Redo selected the wrong retained edit.");
+    edit.select_all();
+    accepted(edit.replace(L"branch"));
+    require(!edit.can_redo(), "New document edit retained an abandoned redo branch.");
+    accepted(edit.history(false));
+    require(document.text() == L"289", "Undo on the new branch restored the wrong document.");
 }
 
 void repeat_updates() {
@@ -239,8 +259,10 @@ ui ListView(in Items<Group> groups) { Repeat groups { items: input.groups; } }
 int main() {
     atelier::install_fatal_handler();
     identity_and_lifetime();
+    bounded_document_history();
     repeat_updates();
     verify_ui_error_recovery();
     verify_ui_entry_dependencies();
-    std::puts("UI acceptance: PASS (accepted frames, Repeat, error recovery, editor entry dependencies)");
+    std::puts(
+        "UI acceptance: PASS (accepted frames, bounded document history, Repeat, error recovery, editor entry dependencies)");
 }
