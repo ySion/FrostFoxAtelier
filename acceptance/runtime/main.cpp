@@ -128,11 +128,13 @@ void runtime_sequence() {
     outer_def.name = "gc.OuterRecord";
     outer_def.kind = TypeKind::record;
     outer_def.fields = {{"marker", {TypeReference{"gc.EmptyRecord"}}}, {"scale", {f32_type}}};
+    outer_def.fields[1].range = FieldRange{.hard_max = Scalar{2.0f}};
     TypeDefinition holder_def;
     holder_def.name = "gc.HolderObject";
     holder_def.kind = TypeKind::object;
     holder_def.fields = {
         {"outer", {TypeReference{"gc.OuterRecord"}}}, {"empty", {TypeReference{"gc.EmptyRecord"}}}, holder_weight};
+    holder_def.fields.push_back({"other", {TypeReference{"gc.OuterRecord"}}});
     TypeDefinition empty_def;
     empty_def.name = "gc.EmptyRecord";
     empty_def.kind = TypeKind::record;
@@ -148,6 +150,26 @@ void runtime_sequence() {
     require(std::get<float>(take(runtime.read(holder.id(), scale_path))) == 0.0f &&
                 std::get<float>(take(runtime.read(holder.id(), holder_info->fields[2].id))) == 3.5f,
             "Outer prototype containing an empty described record did not initialize fields.");
+    const std::array other_scale{holder_info->fields[3].id, outer_info->fields[1].id};
+    auto second_holder = take(runtime.create(empty_batch[1]));
+    take(runtime.write(holder.id(), scale_path, Scalar{3.0f}));
+    const std::array wrong_owner{holder_info->fields[0].id, holder_info->fields[1].id};
+    const auto rejected = runtime.read(holder.id(), wrong_owner);
+    require(!rejected && rejected.error().code == ErrorCode::invalid_member,
+            "A nested lookup accepted a member of another declaring type.");
+    take(runtime.write(holder.id(), other_scale, Scalar{1.0f}));
+    require(std::get<float>(take(runtime.read(holder.id(), scale_path))) == 2.0f &&
+                std::get<float>(take(runtime.read(second_holder.id(), scale_path))) == 0.0f &&
+                std::get<float>(take(runtime.read(holder.id(), other_scale))) == 1.0f,
+            "Nested fields lost their range, object identity or outer field.");
+    const auto retired = holder.id();
+    holder.reset();
+    take(runtime.begin_collection());
+    collect(runtime);
+    auto replacement = take(runtime.create(empty_batch[1]));
+    require(!runtime.read(retired, other_scale) &&
+                std::get<float>(take(runtime.read(replacement.id(), other_scale))) == 0.0f,
+            "A retired object resolved through a previously used field path.");
     std::vector<std::byte> outer_bytes(outer_info->size);
     take(runtime.initialize_value(empty_batch[0], outer_bytes));
     take(runtime.destroy_value(empty_batch[0], outer_bytes));

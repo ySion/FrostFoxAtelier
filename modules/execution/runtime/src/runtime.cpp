@@ -10,6 +10,7 @@
 #include "memory/fatal.hpp"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <bit>
 #include <cassert>
@@ -1730,11 +1731,37 @@ struct Runtime::Impl {
         return enumerate();
     }
 
+    struct TwoStepField {
+        const Type* root{};
+        std::array<FieldId, 2> path{};
+        std::size_t offset{};
+        const Type* leaf{};
+        const FieldRange* range{};
+    };
+
+    // Published layouts are immutable for the life of this Runtime. Cache only
+    // layout information; every access still resolves the object's live slot.
+    mutable std::array<TwoStepField, 16> two_step_fields{};
+
     bool try_resolve_inline_field(std::uint32_t slot_index, std::span<const FieldId> path, void*& out_data,
                                   const Type*& out_type, const FieldRange*& out_range) const noexcept {
         const auto& slot = slots.data()[slot_index];
-        const Type* actual = types.data()[slot.type_index].get();
-        void* data = slot.storage;
+        const Type* root = types.data()[slot.type_index].get();
+        TwoStepField* cached = nullptr;
+        if (path.size() == 2) {
+            detail::assert_serial_access();
+            // Adjacent vector fields commonly use the same three or four leaf indices.
+            const auto bucket = 4u * path[0].index_ + path[1].index_;
+            cached = &two_step_fields[bucket % two_step_fields.size()];
+            if (cached->root == root && cached->path[0] == path[0] && cached->path[1] == path[1]) {
+                out_data = static_cast<std::byte*>(slot.storage) + cached->offset;
+                out_type = cached->leaf;
+                out_range = cached->range;
+                return true;
+            }
+        }
+        const Type* actual = root;
+        std::size_t offset = 0;
         const FieldRange* range = nullptr;
         for (std::size_t depth = 0; depth != path.size(); ++depth) {
             const FieldId step = path[depth];
@@ -1746,11 +1773,13 @@ struct Runtime::Impl {
             if (access.address || actual->native_base_depth > owner->depth ||
                 access.value.form != ValueForm::inline_value) [[unlikely]]
                 return false;
-            data = static_cast<std::byte*>(data) + (actual->base_root_offset - owner->base_root_offset) + access.offset;
+            offset += (actual->base_root_offset - owner->base_root_offset) + access.offset;
             range = access.hard ? access.hard.get() : actual->info.math ? range : nullptr;
             actual = access.type;
         }
-        out_data = data;
+        if (cached)
+            *cached = {root, {path[0], path[1]}, offset, actual, range};
+        out_data = static_cast<std::byte*>(slot.storage) + offset;
         out_type = actual;
         out_range = range;
         return true;

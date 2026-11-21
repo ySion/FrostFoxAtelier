@@ -88,6 +88,8 @@ Foundation 的 `parallel_for` / `JoinGroup` body 只处理宿主预先准备的�
 
 纯元数据查询（如 describe/types/type_count/native_type/object_type）和仅验证身份的 `resolve_object` 不新增检查。部分名字看似只读的访问并非纯读：字段路径解析、NativeContext 接收者解析及校验/引用遍历会进入 `CallbackScope` 修改共享计数；它们由该计数边界检查，防止多个 body 同时写计数或遍历暂存。未命中诊断不表示调用合法，也不授权直接使用预先取得的对象内部地址。
 
+对象的两级纯偏移字段路径在所属 Runtime 内使用一个有 16 个槽的直接映射缓存。缓存键包含实际根类型和两个完整 FieldId，结果只包含偏移、叶类型和硬范围。每次访问仍通过对象槽验证代际并从本次存储基址寻址。数组选择和需要原生回调的路径继续走逐段解析。读取这份缓存同样遵守串行准入。[编辑器实测](research/runtime-jit-study/README.md)
+
 这是任务体误用诊断，不是任意线程检测、锁或捕获安全证明；提交前及 join 后的闭包构析不一定在 TLS 标记内，任务 Failure 则只有平凡普通值。World 入口尚未覆盖且本片不排期；Runtime 检查不能保证 World 在读写自身队列前已拒绝。MaterialProgram 的独立纯值并发合同保持不变，不在通用 JIT DLL 中增加禁令。
 
 代表性清理验收沿既有 Source shutdown：挂起帧存续时执行普通值嵌套任务并显式转发 Failure，完整 join 后继续源码恢复，再取消、关闭及释放根/代码；dev/release 都执行该合法序列。故意在 P=1 caller body 中撤根的开发版终止探针仅作临时验证，不加入常驻拒绝矩阵。
