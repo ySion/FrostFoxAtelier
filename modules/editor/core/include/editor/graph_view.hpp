@@ -18,6 +18,8 @@ struct GraphPortInfo {
     std::vector<bool> multiple;
 
     std::vector<std::string> outputs;
+
+    bool operator==(const GraphPortInfo&) const = default;
 };
 
 struct GraphNodeCatalogEntry {
@@ -30,6 +32,8 @@ struct GraphNodeCatalogEntry {
     bool native{};
 
     GraphPortInfo ports;
+
+    bool operator==(const GraphNodeCatalogEntry&) const = default;
 };
 
 struct GraphConnectionView {

@@ -441,7 +441,7 @@ public:
                                          const ui::Event& event, std::uint32_t native_key);
 
     void append_canvas(std::vector<ui::Control>& controls, ui::ControlKey canvas_parent, ui_layout::Size canvas_dip,
-                       std::string_view graph_key, const GraphInspectView& view,
+                       const std::shared_ptr<const GraphInspectView>& topology,
                        std::span<const GraphNodeCatalogEntry> catalog, std::string_view primary_selected,
                        std::span<const std::string> selected_nodes);
 
@@ -468,6 +468,33 @@ private:
     enum class FlagZone : std::uint8_t { none = 0, bypass, template_flag, display };
 
     enum class AirButton : std::uint8_t { none = 0, bypass, info, freeze, display, template_flag };
+
+    struct IdleCanvasState {
+        ui::ControlKey parent;
+        ui_layout::Size extent;
+        std::array<float, 2> pan;
+        float zoom;
+        std::string primary, note, box, hovered_node, air_node;
+        std::optional<PortRef> hovered_port;
+        FlagZone flag;
+        AirButton air;
+        bool air_ring_hidden;
+
+        bool operator==(const IdleCanvasState&) const = default;
+    };
+
+    struct IdleProjection {
+        std::weak_ptr<const GraphInspectView> topology;
+        IdleCanvasState state;
+        std::vector<std::string> selection;
+        std::vector<GraphNodeCatalogEntry> catalog;
+        std::vector<ui::Control> controls;
+    };
+
+    std::optional<IdleProjection> idle_projection_;
+
+    void append_canvas_popup(std::vector<ui::Control>&, ui::ControlKey parent, float width, float height,
+                             const GraphInspectView&, std::span<const GraphNodeCatalogEntry>) const;
 
     struct SavedView {
         float pan_x{160.f};

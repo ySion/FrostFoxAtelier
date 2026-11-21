@@ -9,6 +9,11 @@
 namespace atelier::ui::detail {
 std::uint64_t new_identity();
 
+constexpr bool fits_coverage(std::int64_t width, std::int64_t height) noexcept {
+    return width >= 0 && height >= 0 && width <= max_texture_dimension_px && height <= max_texture_dimension_px &&
+           width * height <= 16 * 1024 * 1024;
+}
+
 struct RasterText {
     std::shared_ptr<const Coverage> coverage;
 

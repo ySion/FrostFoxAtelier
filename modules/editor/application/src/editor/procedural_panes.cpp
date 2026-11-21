@@ -859,6 +859,7 @@ bool NetworkCanvas::is_canvas_control(ui::ControlKey key) noexcept {
 }
 
 void NetworkCanvas::reset() {
+    idle_projection_.reset();
     cancel_gesture();
     close_tab_search();
     close_popup();
@@ -2837,13 +2838,43 @@ void NetworkCanvas::append_tab_categories(std::vector<ui::Control>& controls, ui
 }
 
 void NetworkCanvas::append_canvas(std::vector<ui::Control>& controls, ui::ControlKey canvas_parent,
-                                  ui_layout::Size canvas_dip, std::string_view graph_key, const GraphInspectView& view,
+                                  ui_layout::Size canvas_dip, const std::shared_ptr<const GraphInspectView>& topology,
                                   std::span<const GraphNodeCatalogEntry> catalog, std::string_view primary_selected,
                                   std::span<const std::string> selected_nodes) {
+    const auto& view = *topology;
+    const auto& graph_key = view.key;
     sync_graph(graph_key, view.nodes, canvas_dip, view.boxes, view.notes);
     const float z = zoom();
     const float cw = std::max(64.f, canvas_dip.width > 32.f ? canvas_dip.width : last_canvas_dip_.width);
     const float ch = std::max(64.f, canvas_dip.height > 32.f ? canvas_dip.height : last_canvas_dip_.height);
+
+    // Active gestures can move nodes and reroute wires. Popups are appended separately from retained graph content.
+    const bool settled = !active_gesture() && !detached_wire_ && !splice_wire_ && !snapped_port_;
+    std::optional<IdleCanvasState> idle;
+    if (settled) {
+        idle.emplace(IdleCanvasState{canvas_parent,
+                                     {cw, ch},
+                                     pan(),
+                                     z,
+                                     std::string(primary_selected),
+                                     selected_note_,
+                                     selected_box_,
+                                     hovered_node_,
+                                     air_node_,
+                                     hovered_port_,
+                                     hovered_flag_,
+                                     hovered_air_,
+                                     tab_search_.open || popup_.open()});
+        if (idle_projection_ && idle_projection_->topology.lock() == topology && idle_projection_->state == *idle &&
+            std::ranges::equal(selected_nodes, idle_projection_->selection) &&
+            std::ranges::equal(catalog, idle_projection_->catalog)) {
+            const auto& retained = idle_projection_->controls;
+            controls.insert(controls.end(), retained.begin(), retained.end());
+            append_canvas_popup(controls, canvas_parent, cw, ch, view, catalog);
+            return;
+        }
+    }
+    idle_projection_.reset();
 
     CanvasLayer backdrop;
     auto& grid = *backdrop.batches.front();
@@ -3435,7 +3466,19 @@ void NetworkCanvas::append_canvas(std::vector<ui::Control>& controls, ui::Contro
         }
     }
 
-    // 6. Floating Interactive Popups (Shape Picker [Z], Color Picker [C], Node Info [I], Note/Box Editor):
+    visible_tooltips_.swap(tooltips);
+    if (idle)
+        idle_projection_.emplace(IdleProjection{topology,
+                                                std::move(*idle),
+                                                {selected_nodes.begin(), selected_nodes.end()},
+                                                {catalog.begin(), catalog.end()},
+                                                {controls.begin() + first_label, controls.end()}});
+    append_canvas_popup(controls, canvas_parent, cw, ch, view, catalog);
+}
+
+void NetworkCanvas::append_canvas_popup(std::vector<ui::Control>& controls, ui::ControlKey canvas_parent, float cw,
+                                        float ch, const GraphInspectView& view,
+                                        std::span<const GraphNodeCatalogEntry> catalog) const {
     if (popup_.open()) {
         std::size_t aux_idx = 0;
         const auto next_aux = [&]() { return network_control::popup_aux_first + (aux_idx++); };
@@ -3560,6 +3603,13 @@ void NetworkCanvas::append_canvas(std::vector<ui::Control>& controls, ui::Contro
                                                              "内折燕尾丝带形：撒点（Scatter）与点云发射器造型。",
                                                              "菱形里程碑：Null 空节点与关键输出锚点造型。",
                                                              "紧凑圆形：轻量控制与开关节点造型。"};
+            static const auto shape_help = [&] {
+                std::array<std::shared_ptr<const ui::Tooltip>, shape_titles.size()> result;
+                for (std::size_t i = 0; i < result.size(); ++i)
+                    result[i] = std::make_shared<const ui::Tooltip>(
+                        ui::Tooltip{shape_titles[i], L"Node Shape", platform::utf8_to_utf16_validated(shape_descs[i])});
+                return result;
+            }();
             for (std::size_t row_i = 0; row_i < 2; ++row_i) {
                 const ui::ControlKey rkey = next_aux();
                 ui::Control srow;
@@ -3595,8 +3645,7 @@ void NetworkCanvas::append_canvas(std::vector<ui::Control>& controls, ui::Contro
                     cell.text = shape_titles[idx];
                     cell.single_line = true;
                     cell.selected = active;
-                    cell.tooltip = intern_tooltip(
-                        bkey, {shape_titles[idx], L"Node Shape", platform::utf8_to_utf16_validated(shape_descs[idx])});
+                    cell.tooltip = shape_help[idx];
                     cell.layout = ui_layout::NodeInput::box(0.f, 38.f);
                     cell.layout.width = ui_layout::Axis::expand();
                     cell.style.font_size = 9.5f;
@@ -3633,6 +3682,14 @@ void NetworkCanvas::append_canvas(std::vector<ui::Control>& controls, ui::Contro
                 }
             }
         } else if (popup_.kind == PopupKind::color_picker) {
+            static const auto swatch_help = [] {
+                std::array<std::shared_ptr<const ui::Tooltip>, color_palette.size()> result;
+                for (std::size_t i = 0; i < result.size(); ++i)
+                    result[i] = std::make_shared<const ui::Tooltip>(
+                        ui::Tooltip{platform::utf8_to_utf16_validated(format_graph_hex_color(color_palette[i])),
+                                    L"Color Swatch", L"将选中节点的自定义颜色设为此预设色板值。"});
+                return result;
+            }();
             for (std::size_t row_i = 0; row_i < 4; ++row_i) {
                 const ui::ControlKey rkey = next_aux();
                 ui::Control crow;
@@ -3653,9 +3710,7 @@ void NetworkCanvas::append_canvas(std::vector<ui::Control>& controls, ui::Contro
                     sw_btn.key = skey;
                     sw_btn.parent = rkey;
                     sw_btn.kind = ui::ControlKind::button;
-                    sw_btn.tooltip =
-                        intern_tooltip(skey, {platform::utf8_to_utf16_validated(format_graph_hex_color(rgb)),
-                                              L"Color Swatch", L"将选中节点的自定义颜色设为此预设色板值。"});
+                    sw_btn.tooltip = swatch_help[idx];
                     sw_btn.layout = ui_layout::NodeInput::box(0.f, 22.f);
                     sw_btn.layout.width = ui_layout::Axis::expand();
                     sw_btn.style.radius = {3.f, 3.f, 3.f, 3.f};
@@ -3805,8 +3860,6 @@ void NetworkCanvas::append_canvas(std::vector<ui::Control>& controls, ui::Contro
             }
         }
     }
-
-    visible_tooltips_.swap(tooltips);
 }
 
 } // namespace atelier::editor

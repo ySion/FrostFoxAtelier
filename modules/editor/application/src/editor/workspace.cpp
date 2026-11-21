@@ -2080,8 +2080,8 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
                     }
                 }
                 std::vector<ui::Control> canvas_controls;
-                network.append_canvas(canvas_controls, network_control::canvas, canvas_dip, net_graph, *inspected,
-                                      catalog, selected_graph_node, selected_graph_nodes);
+                network.append_canvas(canvas_controls, network_control::canvas, canvas_dip, inspected, catalog,
+                                      selected_graph_node, selected_graph_nodes);
                 const auto tab_it = std::ranges::find(result, network_control::tab_search_box, &ui::Control::key);
                 result.insert(tab_it, std::make_move_iterator(canvas_controls.begin()),
                               std::make_move_iterator(canvas_controls.end()));

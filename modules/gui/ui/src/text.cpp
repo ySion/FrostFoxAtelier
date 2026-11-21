@@ -27,8 +27,6 @@ Result<void> check(HRESULT status) {
 
 std::atomic<std::uint64_t> next_identity{1};
 
-constexpr std::int64_t max_bitmap_bytes = 16 * 1024 * 1024;
-
 struct CoverageAccounting {
     std::atomic<std::uint64_t> count{};
 
@@ -62,6 +60,14 @@ struct FontLess {
     }
 };
 
+Clip visible_ink(Clip ink, const std::optional<Clip>& viewport) noexcept {
+    if (!viewport)
+        return ink;
+    Clip clipped{std::max(ink.left, viewport->left), std::max(ink.top, viewport->top),
+                 std::min(ink.right, viewport->right), std::min(ink.bottom, viewport->bottom)};
+    return clipped.left < clipped.right && clipped.top < clipped.bottom ? clipped : Clip{};
+}
+
 struct Rasterizer final : IDWriteTextRenderer {
     struct Run {
         RECT bounds{};
@@ -74,6 +80,8 @@ struct Rasterizer final : IDWriteTextRenderer {
     float scale;
 
     std::optional<Clip> viewport;
+
+    RECT ink_bounds{};
 
     ULONG refs{1};
 
@@ -132,6 +140,8 @@ struct Rasterizer final : IDWriteTextRenderer {
         failure = analysis->GetAlphaTextureBounds(DWRITE_TEXTURE_ALIASED_1x1, &run.bounds);
         if (FAILED(failure))
             return failure;
+        // Keep the unclipped ink extent even for runs completely outside the current viewport.
+        UnionRect(&ink_bounds, &ink_bounds, &run.bounds);
         if (viewport) {
             run.bounds.left = std::max<LONG>(run.bounds.left, viewport->left);
             run.bounds.top = std::max<LONG>(run.bounds.top, viewport->top);
@@ -142,7 +152,7 @@ struct Rasterizer final : IDWriteTextRenderer {
         const auto height = static_cast<std::int64_t>(run.bounds.bottom) - run.bounds.top;
         if (width <= 0 || height <= 0)
             return S_OK;
-        if (width > 32768 || height > 32768 || width * height > max_bitmap_bytes)
+        if (!fits_coverage(width, height))
             return failure = E_OUTOFMEMORY;
         run.pixels.resize(static_cast<std::size_t>(width * height));
         failure = analysis->CreateAlphaTexture(DWRITE_TEXTURE_ALIASED_1x1, &run.bounds, run.pixels.data(),
@@ -192,7 +202,9 @@ struct TextStore::Impl {
 
         float raster_scale{};
 
-        std::optional<Clip> raster_viewport;
+        Clip ink_bounds{};
+
+        Clip raster_region{};
 
         bool valid{};
     };
@@ -767,7 +779,7 @@ Result<ui_layout::MeasuredSize> TextStore::metrics(TextKey key, float width) {
 Result<RasterText> TextStore::raster(TextKey key, float width, float dpi, std::optional<Clip> viewport) {
     ATELIER_TRY_BIND(resolved, impl_->resolve(key, width));
     auto& paragraph = **resolved;
-    if (paragraph.raster_scale == dpi && paragraph.raster_viewport == viewport) {
+    if (paragraph.raster_scale == dpi && paragraph.raster_region == visible_ink(paragraph.ink_bounds, viewport)) {
         ++impl_->statistics.coverage_cache_hits;
         return paragraph.raster;
     }
@@ -787,7 +799,7 @@ Result<RasterText> TextStore::raster(TextKey key, float width, float dpi, std::o
         }
         const auto width_px = static_cast<std::int64_t>(bounds.right) - bounds.left;
         const auto height_px = static_cast<std::int64_t>(bounds.bottom) - bounds.top;
-        if (width_px > 32768 || height_px > 32768 || width_px * height_px > max_bitmap_bytes)
+        if (!fits_coverage(width_px, height_px))
             return std::unexpected(check(E_OUTOFMEMORY).error());
         auto coverage = std::make_shared<TrackedCoverage>(impl_->accounting, static_cast<std::uint32_t>(width_px),
                                                           static_cast<std::uint32_t>(height_px));
@@ -812,7 +824,9 @@ Result<RasterText> TextStore::raster(TextKey key, float width, float dpi, std::o
     }
     paragraph.raster = output;
     paragraph.raster_scale = dpi;
-    paragraph.raster_viewport = viewport;
+    const auto& ink = rasterizer.ink_bounds;
+    paragraph.ink_bounds = {ink.left, ink.top, ink.right, ink.bottom};
+    paragraph.raster_region = visible_ink(paragraph.ink_bounds, viewport);
     return output;
 }
 

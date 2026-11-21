@@ -251,9 +251,11 @@ IME使用独立composition_id和固定起始token/替换范围；`CompositionEve
 
 ## CPU绘制与文字寿命
 
+画布线宽以 DIP 描述，UI 帧中的胶囊线宽使用物理像素。32 DIP 的线条在 250% 缩放下输出 80 px；同一绘制协议覆盖 UI 支持的整个 DPI 范围。普通标签优先复用控件范围内的文字覆盖图。超出单纹理尺寸或覆盖图字节预算时，Session 只栅格化可见区域，必要时分块，保留阴影与分数像素采样所需的边缘。文字排版与命中使用完整段落。
+
 [frame.hpp](../../../modules/gui/ui_protocol/include/ui/frame.hpp)定义唯一renderer协议：有序DrawQuad、物理像素bounds、半开clip、linear straight颜色、独立圆角和向内边框。可选资源为R8 Coverage或预乘RGBA ColorImage，二者互斥；无纹理时为实色盒。shader输出和blend必须配对，避免重复预乘。资源identity/revision不可重新解释成另一份像素；renderer自行管理GPU缓存、上传和在飞退休，并只合并相邻兼容项。图片字节编码、合成与统计见 [SS 绘制合同](style-sheets.md#图片圆角与批处理)。
 
-文字服务位于生产`text.cpp`。同一个DirectWrite布局对象提供尺寸、首基线、caret位置和栅格字形；使用Factory2灰度分析合成为整段文字R8覆盖率，不建立通用图集。格式缓存按family/locale/weight/解析后字号索引。相同内容/字体/宽度/DPI复用像素；文字/约束改变时生成新版本，已发布帧持有旧像素，Session析构不使旧帧失效。固定尺寸、未参与布局测量的可见文字也在prepare时栅格化。
+文字服务位于生产`text.cpp`。同一个DirectWrite布局对象提供尺寸、首基线、caret位置和栅格字形；使用Factory2灰度分析合成为整段文字R8覆盖率，不建立通用图集。格式缓存按family/locale/weight/解析后字号索引。同一段落与 DPI 下，文字服务记录 DirectWrite 返回的原始墨迹边界。只要裁剪框与墨迹的交集相同，就复用已生成的像素；横向滚动长行或露出新的字形边缘时会按需重新栅格化，已发布帧持有旧像素，Session析构不使旧帧失效。固定尺寸、未参与布局测量的可见文字也在prepare时栅格化。
 
 可编辑字段还由`UiFrame`持有不可变段落和最终文字原点、宽度、DPI与横滚。指针命中始终查询接受帧的文字快照，未接受的字体/布局改变不会重解释旧画面的坐标。内容已不同则请求重绘；连续键盘导航用接受帧的字体与宽度策略排布当前草稿。详细发布行为见 [文字一致性](style-sheets.md#发布与文字一致性)。
 
@@ -263,7 +265,7 @@ IME使用独立composition_id和固定起始token/替换范围；`CompositionEve
 
 `live_coverages/live_coverage_bytes`是读取时仍被文字缓存、当前/旧帧或renderer持有的唯一CPU覆盖率数量和R8像素字节，同一像素的多个引用不重复计数，不包含DirectWrite对象、临时栅格数据、容器容量或GPU内存。已访问的屏外行可能继续被CPU缓存持有；内容移除或变化清理缓存后，旧帧仍可延长像素寿命。独立共享记账对象随最后Coverage释放，不回指Session，也不为计数保活像素。Session仍要求单拥有者访问；外部持有者释放采用原子记账。
 
-可编辑字段保持完整文字排版，灰度纹理只生成当前内容窗口内的像素。横滚偏移和可见裁剪进入该字段的raster缓存键；4096个宽字符在100 DIP字段中也不会分配整条屏外位图。选择、字素导航和caret仍针对完整原文。边界由[CreateAlphaTexture](https://learn.microsoft.com/en-us/windows/win32/api/dwrite/nf-dwrite-idwriteglyphrunanalysis-createalphatexture)的指定纹理矩形实现，不在生成整张大图后裁剪。
+可编辑字段保持完整文字排版，灰度纹理只生成当前内容窗口内的像素。横滚偏移和可见裁剪通过实际可见墨迹区域参与缓存匹配；4096个宽字符在100 DIP字段中也不会分配整条屏外位图。选择、字素导航和caret仍针对完整原文。边界由[CreateAlphaTexture](https://learn.microsoft.com/en-us/windows/win32/api/dwrite/nf-dwrite-idwriteglyphrunanalysis-createalphatexture)的指定纹理矩形实现，不在生成整张大图后裁剪。
 
 一手接口依据：[自定义文字绘制](https://learn.microsoft.com/en-us/windows/win32/directwrite/how-to-implement-a-custom-text-renderer)、[Factory2字形分析](https://learn.microsoft.com/en-us/windows/win32/api/dwrite_2/nf-dwrite_2-idwritefactory2-createglyphrunanalysis)。核心layout保持无平台依赖；Windows/DirectWrite仅位于UI文字实现。
 

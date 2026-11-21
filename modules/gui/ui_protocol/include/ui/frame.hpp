@@ -102,11 +102,18 @@ struct Coverage {
     std::vector<std::uint8_t> pixels;
 };
 
+// Maximum edge of a single sampled UI image, in physical pixels.
+inline constexpr std::int32_t max_texture_dimension_px = 16384;
+
 enum class ProceduralQuad : std::uint8_t {
     none = 0,
     node_shape = 1, // Analytic SDF node silhouette or contour-matched flag slice.
     arc_sector = 2, // Analytic SDF concentric halo ring or radial Air-Ring sector.
 };
+
+inline constexpr float max_canvas_stroke_dip = 32.f;
+inline constexpr float max_dpi_scale = 8.f;
+inline constexpr float max_capsule_width_px = max_canvas_stroke_dip * max_dpi_scale;
 
 struct DrawQuad {
     Rect bounds; // Physical pixels, independent of window logical coordinates.

@@ -167,6 +167,51 @@ bool valid_color(Color c) {
     return std::isfinite(c.r) && std::isfinite(c.g) && std::isfinite(c.b) && std::isfinite(c.a) && c.r >= 0 &&
            c.r <= 1 && c.g >= 0 && c.g <= 1 && c.b >= 0 && c.b <= 1 && c.a >= 0 && c.a <= 1;
 }
+
+Result<void> draw_paragraph(detail::TextStore& text, ControlKey key, float width, float scale, float x, float y,
+                            Clip visible_clip, Clip preferred_clip, Color foreground, std::optional<Color> shadow,
+                            const auto& quad) {
+    if (visible_clip.left >= visible_clip.right || visible_clip.top >= visible_clip.bottom)
+        return {};
+    const float offset = shadow ? std::max(1.f, std::round(scale)) : 0.f;
+    const auto raster_region = [&](Clip dest) {
+        // Include neighboring texels for fractional origins and ink casting a shadow into the destination.
+        return clip_rect({static_cast<float>(dest.left) - x - offset - 1, static_cast<float>(dest.top) - y - offset - 1,
+                          static_cast<float>(dest.right - dest.left) + offset + 2,
+                          static_cast<float>(dest.bottom - dest.top) + offset + 2});
+    };
+    const auto fits = [](Clip region) {
+        return detail::fits_coverage(std::int64_t{region.right} - region.left,
+                                     std::int64_t{region.bottom} - region.top);
+    };
+    const auto paint = [&](Clip region, Clip dest) -> Result<void> {
+        ATELIER_TRY_BIND(raster, text.raster(key, width, scale, region));
+        if (raster->coverage) {
+            Rect ink{x + raster->left, y + raster->top, static_cast<float>(raster->coverage->width),
+                     static_cast<float>(raster->coverage->height)};
+            if (shadow)
+                quad({ink.x + offset, ink.y + offset, ink.width, ink.height}, dest, *shadow, raster->coverage);
+            quad(ink, dest, foreground, raster->coverage);
+        }
+        return {};
+    };
+    const auto preferred = raster_region(preferred_clip);
+    if (fits(preferred))
+        return paint(preferred, visible_clip);
+    const auto visible = raster_region(visible_clip);
+    if (fits(visible))
+        return paint(visible, visible_clip);
+    // Disjoint destination clips keep foreground and shadow compositing correct across tile boundaries.
+    constexpr int tile = 2048;
+    for (int top = visible_clip.top; top < visible_clip.bottom; top += tile) {
+        for (int left = visible_clip.left; left < visible_clip.right; left += tile) {
+            const Clip dest{left, top, std::min(left + tile, visible_clip.right),
+                            std::min(top + tile, visible_clip.bottom)};
+            ATELIER_TRY(paint(raster_region(dest), dest));
+        }
+    }
+    return {};
+}
 #include "detail/style.inl"
 bool visible(Rect bounds, Clip clip) {
     return bounds.width > 0 && bounds.height > 0 && clip.right > clip.left && clip.bottom > clip.top &&
@@ -331,7 +376,7 @@ Result<void> validate_control_properties(const Control& control) {
         for (const auto& s : c.strokes) {
             if (!std::isfinite(s.x0) || !std::isfinite(s.y0) || !std::isfinite(s.x1) || !std::isfinite(s.y1) ||
                 std::abs(s.x0) > 1e6f || std::abs(s.y0) > 1e6f || std::abs(s.x1) > 1e6f || std::abs(s.y1) > 1e6f ||
-                !std::isfinite(s.width) || s.width < 0 || s.width > 32 || !valid_color(s.color))
+                !std::isfinite(s.width) || s.width < 0 || s.width > max_canvas_stroke_dip || !valid_color(s.color))
                 return std::unexpected(Error{ErrorCode::invalid_control, control.key});
         }
     }
@@ -962,8 +1007,8 @@ Statistics Session::statistics() const noexcept {
 }
 
 Result<Reply> Session::set_surface(Surface surface) {
-    if (!std::isfinite(surface.dpi_scale) || surface.dpi_scale < .25f || surface.dpi_scale > 8 || !surface.revision ||
-        surface.extent.width > 32768 || surface.extent.height > 32768)
+    if (!std::isfinite(surface.dpi_scale) || surface.dpi_scale < .25f || surface.dpi_scale > max_dpi_scale ||
+        !surface.revision || surface.extent.width > 32768 || surface.extent.height > 32768)
         return std::unexpected(Error{ErrorCode::invalid_surface});
     Reply reply;
     if (impl_->surface != surface) {
@@ -1040,7 +1085,10 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare(Preparation preparation)
     output->controls.reserve(self.order.size());
     if (paint) {
         draws = std::make_shared<Frame>();
-        draws->draws.reserve(self.order.size() * 3);
+        // Canvas primitives can greatly outnumber controls. Use the last accepted size, not its capacity,
+        // so a sparse frame immediately lowers the estimate for its successor.
+        const auto previous_draws = self.published ? self.published->drawing->draws.size() : 0;
+        draws->draws.reserve(std::max(self.order.size() * 3, previous_draws));
         draws->id = frame_id;
         draws->extent = self.surface.extent;
         draws->dpi_scale = scale;
@@ -1728,26 +1776,9 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare(Preparation preparation)
                                                  bound && self.edit->composition ? self.edit->composition->id : 0});
             }
             if (paint) {
-                const auto raster_result = self.text.raster(
-                    key, width, scale,
-                    text_field(kind)
-                        ? std::optional<Clip>{clip_rect({static_cast<float>(text_clip.left) - x,
-                                                         static_cast<float>(text_clip.top) - y,
-                                                         static_cast<float>(text_clip.right - text_clip.left),
-                                                         static_cast<float>(text_clip.bottom - text_clip.top)})}
-                        : std::nullopt);
-                ATELIER_TRY(raster_result);
-                const auto& raster = *raster_result;
-                if (raster.coverage && appearance.text_shadow) {
-                    const auto offset = std::max(1.f, std::round(scale));
-                    quad({x + raster.left + offset, y + raster.top + offset, static_cast<float>(raster.coverage->width),
-                          static_cast<float>(raster.coverage->height)},
-                         text_clip, *appearance.text_shadow, raster.coverage);
-                }
-                if (raster.coverage)
-                    quad({x + raster.left, y + raster.top, static_cast<float>(raster.coverage->width),
-                          static_cast<float>(raster.coverage->height)},
-                         text_clip, appearance.foreground, raster.coverage);
+                ATELIER_TRY(draw_paragraph(self.text, key, width, scale, x, y, text_clip,
+                                           text_field(kind) ? text_clip : clip_rect(bounds), appearance.foreground,
+                                           appearance.text_shadow, quad));
             }
             if (editing) {
                 if (paint && self.edit->composition) {

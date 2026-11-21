@@ -2383,6 +2383,23 @@ Result<bool> Application::run_step(renderer::Capture* capture, StepTimes* times)
         MsgWaitForMultipleObjectsEx(0, nullptr, static_cast<DWORD>(wait.count()), QS_ALLINPUT, MWMO_INPUTAVAILABLE);
         return true;
     }
+    bool host_ready;
+    {
+        timing::Scope admission{phases::admission};
+        host_ready = graphics(renderer_.wait_frame(0));
+    }
+    if (!host_ready) {
+        if (pending_menu_ || !workspace_.menu || workspace_.pie_menu())
+            return true;
+        if (menu_window() && popup_->source() == workspace_.menu->source) {
+            // Native menus have their own surface and use the last accepted owner geometry.
+            timing::Scope menus{phases::popup};
+            ATELIER_TRY(update_menu());
+            return true;
+        }
+        // A newly requested native menu needs its command model projected and validated
+        // even when the owner cannot present. Keep the normal projection path for its first frame.
+    }
     update_camera_fly();
     const ui_layout::Size view_size{static_cast<float>(extent.width) / surface_.dpi_scale,
                                     static_cast<float>(extent.height) / surface_.dpi_scale};
@@ -2499,13 +2516,8 @@ Result<bool> Application::run_step(renderer::Capture* capture, StepTimes* times)
         timing::Scope menus{phases::popup};
         ATELIER_TRY(update_menu());
     }
-    // A message or service timeout is not permission to submit a host frame.
-    // Keep the refreshed model and popup, but leave accepted host geometry alone.
-    {
-        timing::Scope admission{phases::admission};
-        if (!graphics(renderer_.wait_frame(0)))
-            return true;
-    }
+    if (!host_ready)
+        return true;
     const auto& frame = **prepared;
     const auto* viewport = frame.find(editor::control::viewport);
     const auto scene_bounds = viewport ? viewport->bounds : ui::Rect{};

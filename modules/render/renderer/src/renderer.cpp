@@ -154,9 +154,9 @@ bool valid(const ui::Rect& r) {
 
 template <class Pixels>
 bool valid_pixels(const Pixels& image, unsigned channels) {
-    return image.identity != 0 && image.width > 0 && image.height > 0 &&
-           image.width <= D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION &&
-           image.height <= D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION &&
+    static_assert(ui::max_texture_dimension_px <= D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION);
+    return image.identity != 0 && image.width > 0 && image.height > 0 && image.width <= ui::max_texture_dimension_px &&
+           image.height <= ui::max_texture_dimension_px &&
            std::uint64_t(image.row_pitch) >= std::uint64_t(image.width) * channels &&
            std::uint64_t(image.row_pitch) * image.height <= image.pixels.size();
 }
@@ -330,7 +330,8 @@ Result<void> validate(const Frame& frame, MeshChecks& meshes) {
         good &= draw.procedural <= ui::ProceduralQuad::arc_sector && !(capsule && proc) && valid(draw.bounds) &&
                 valid(draw.color) && valid(draw.border_color) && valid(draw.image_background) &&
                 finite(draw.border_width) && draw.border_width >= 0 && finite(draw.capsule_width) &&
-                draw.capsule_width >= 0 && draw.capsule_width <= 64 && !(draw.coverage && draw.image);
+                draw.capsule_width >= 0 && draw.capsule_width <= ui::max_capsule_width_px &&
+                !(draw.coverage && draw.image);
         if (capsule || proc) {
             good &= !draw.coverage && !draw.image;
             for (float v : {draw.uv.x, draw.uv.y, draw.uv.width, draw.uv.height})
