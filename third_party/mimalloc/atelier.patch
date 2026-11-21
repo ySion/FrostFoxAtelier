@@ -1,7 +1,7 @@
-diff --git a/src/options.c b/src/options.c
---- a/src/options.c
-+++ b/src/options.c
-@@ -364,6 +364,6 @@
+diff --git a/src/util/options.c b/src/util/options.c
+--- a/src/util/options.c
++++ b/src/util/options.c
+@@ -412,6 +412,6 @@
  static void mi_cdecl mi_out_stderr(const char* msg, void* arg) {
 +  // Atelier: allocator diagnostics must not block before a failed allocation
 +  // reaches the host's fatal policy, including startup and verbose overrides.

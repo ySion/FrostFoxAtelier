@@ -1,8 +1,8 @@
 {
   "mimalloc": {
-    "version": "3.5.3",
-    "url": "https://github.com/microsoft/mimalloc/releases/download/v3.5.3/mimalloc-v3.5.3-source.tar.gz",
-    "sha256": "43857a9e4f26412e970cbe49635d0465c2de6e77a697ce3d4b926a473d1045ca"
+    "version": "3.7.0",
+    "url": "https://github.com/microsoft/mimalloc/releases/download/v3.7.0/mimalloc-v3.7.0-source.tar.gz",
+    "sha256": "a207a0802234ff9d21e7511eee52375e6299fa2ac7b25eb4ce26b579a7735c8c"
   },
   "zlib": {
     "version": "1.3.2",
