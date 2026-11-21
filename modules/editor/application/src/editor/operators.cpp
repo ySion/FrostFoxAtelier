@@ -9,6 +9,21 @@
 #include <unordered_set>
 
 namespace atelier::editor {
+std::string Context::focused_graph() const {
+    if (!asset.empty())
+        return document.has_graph(asset) ? asset : std::string{};
+    if (region == RegionKind::network && !network_graph.empty() && document.has_graph(network_graph))
+        return network_graph;
+    if (region == RegionKind::parameters && selection.object != ObjectId{}) {
+        if (const auto owner_graph = document.graph_of_object(selection.object))
+            return *owner_graph;
+    }
+    if (!active_graph.empty() && region != RegionKind::code && region != RegionKind::controls &&
+        region != RegionKind::scene_tree && region != RegionKind::structure && region != RegionKind::world)
+        return active_graph;
+    return {};
+}
+
 namespace detail {
 // A live parameter or result record in owned, aligned storage.
 class OperatorValue {

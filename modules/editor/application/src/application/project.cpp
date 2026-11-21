@@ -535,7 +535,10 @@ Result<void> Application::save_documents(const editor::Context& context, bool al
     const auto& material = context.asset;
     close_menu(false);
     auto* file = workspace_.source_editor.active();
-    if (!all && !material.empty()) {
+    if (!all && context.region == editor::RegionKind::code && file)
+        return save_source(*file, context.interactive);
+    const auto target_graph = all ? std::string{} : context.focused_graph();
+    if (!all && target_graph.empty() && !material.empty()) {
         auto edit = ui_.commit_edit();
         if (!edit || !effects(*edit))
             return failed("Finish the material field before saving.");
@@ -548,12 +551,6 @@ Result<void> Application::save_documents(const editor::Context& context, bool al
         return {};
     }
     if (!all) {
-        if (context.region == editor::RegionKind::code && file)
-            return save_source(*file, context.interactive);
-        const std::string target_graph =
-            !context.active_graph.empty()
-                ? context.active_graph
-                : (context.region == editor::RegionKind::network ? context.network_graph : std::string{});
         if (!target_graph.empty()) {
             auto edit = ui_.commit_edit();
             if (!edit || !effects(*edit))

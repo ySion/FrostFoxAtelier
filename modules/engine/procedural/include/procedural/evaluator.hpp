@@ -60,7 +60,8 @@ public:
 
     // Evaluates `node` and its upstream dependencies without changing output() or
     // last_valid_output(), so an editor can inspect a selected node independent of the display flag.
-    Result<void> evaluate_node(ObjectId node, bool record_timings = false);
+    Result<void> evaluate_node(ObjectId node, bool record_timings = false,
+                               std::optional<std::uint32_t> seed_override = {});
 
     // The display node's first output when the latest evaluate() succeeded without display-chain
     // errors; null when the graph has no display node or the latest evaluation or display chain failed.
@@ -93,8 +94,12 @@ public:
     // Output `output_index` of `node` when its latest evaluation succeeded; null otherwise.
     [[nodiscard]] const Geometry* node_output(ObjectId node, std::uint32_t output_index = 0) const noexcept;
 
-    // Captures `node`'s latest valid outputs and dependencies for node freezing; null when unavailable.
-    [[nodiscard]] std::shared_ptr<const FrozenOutput> retain_node_output(ObjectId node) const;
+    // Cooks the current inputs, then captures all outputs and their effective resource dependencies.
+    [[nodiscard]] Result<std::shared_ptr<const FrozenOutput>>
+    freeze_snapshot(ObjectId node, std::optional<std::uint32_t> seed_override = {});
+
+    // Session freezes that cut off upstream evaluation on the current display branch.
+    [[nodiscard]] std::vector<ObjectId> display_freezes() const;
 
     // Null for nodes not in the graph at the last evaluation.
     [[nodiscard]] const NodeStatus* status(ObjectId node) const;

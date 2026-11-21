@@ -772,6 +772,25 @@ struct Evaluator::Impl {
         return result;
     }
 
+    std::vector<Reference> dependencies(ObjectId node_id) const {
+        std::vector<Reference> result;
+        if (node_id == ObjectId{})
+            return result;
+        auto sequence = order(node_id, {}, true);
+        if (!sequence)
+            return result;
+        for (const auto node : *sequence) {
+            const auto* state = nodes.find(node);
+            if (!state || !state->entry || state->bypassed)
+                continue;
+            for (const auto& dep : state->entry->dependencies) {
+                if (std::ranges::find(result, dep) == result.end())
+                    result.push_back(dep);
+            }
+        }
+        return result;
+    }
+
     void sync_published(bool update_last_valid) {
         const auto display = members.display();
         if (display == ObjectId{}) {
@@ -988,8 +1007,8 @@ Result<void> Evaluator::evaluate(bool record_timings, std::optional<std::uint32_
     return result;
 }
 
-Result<void> Evaluator::evaluate_node(ObjectId node, bool record_timings) {
-    return impl_->evaluate(node, record_timings, std::nullopt);
+Result<void> Evaluator::evaluate_node(ObjectId node, bool record_timings, std::optional<std::uint32_t> seed_override) {
+    return impl_->evaluate(node, record_timings, seed_override);
 }
 
 const Geometry* Evaluator::output() const noexcept {
@@ -1023,23 +1042,7 @@ std::optional<Error> Evaluator::display_error() const {
 }
 
 std::vector<Reference> Evaluator::display_dependencies() const {
-    std::vector<Reference> result;
-    const auto display = impl_->members.display();
-    if (display == ObjectId{})
-        return result;
-    auto sequence = impl_->order(display, {}, true);
-    if (!sequence)
-        return result;
-    for (const auto node : *sequence) {
-        const auto* state = impl_->nodes.find(node);
-        if (!state || !state->entry || state->bypassed)
-            continue;
-        for (const auto& dep : state->entry->dependencies) {
-            if (std::ranges::find(result, dep) == result.end())
-                result.push_back(dep);
-        }
-    }
-    return result;
+    return impl_->dependencies(impl_->members.display());
 }
 
 std::uint32_t Evaluator::node_output_count(ObjectId node) const noexcept {
@@ -1055,15 +1058,29 @@ const Geometry* Evaluator::node_output(ObjectId node, std::uint32_t output_index
                : nullptr;
 }
 
-std::shared_ptr<const FrozenOutput> Evaluator::retain_node_output(ObjectId node) const {
-    const auto* found = impl_->nodes.find(node);
-    if (!found || found->status.error || !found->entry)
-        return nullptr;
-    auto out = std::make_shared<FrozenOutput>();
-    out->serial = found->entry->serial;
-    out->outputs = found->entry->outputs;
-    out->dependencies = found->entry->dependencies;
-    return out;
+Result<std::shared_ptr<const FrozenOutput>> Evaluator::freeze_snapshot(ObjectId node,
+                                                                       std::optional<std::uint32_t> seed_override) {
+    ATELIER_TRY(evaluate_node(node, false, seed_override));
+    const auto* state = impl_->nodes.find(node);
+    if (state && state->status.error)
+        return std::unexpected(*state->status.error);
+    if (!state || !state->entry || state->entry->outputs.empty())
+        return failure("Cannot freeze a node without a valid cooked output.");
+    auto snapshot = std::make_shared<FrozenOutput>();
+    snapshot->outputs = state->entry->outputs;
+    snapshot->dependencies = impl_->dependencies(node);
+    return snapshot;
+}
+
+std::vector<ObjectId> Evaluator::display_freezes() const {
+    std::vector<ObjectId> result;
+    if (const auto sequence = impl_->order(impl_->members.display(), {}, true))
+        for (const auto node : *sequence) {
+            const auto& state = *impl_->nodes.find(node);
+            if (state.frozen && !state.bypassed && state.frozen_entry)
+                result.push_back(node);
+        }
+    return result;
 }
 
 const NodeStatus* Evaluator::status(ObjectId node) const {

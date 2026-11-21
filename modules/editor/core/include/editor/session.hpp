@@ -444,7 +444,8 @@ public:
 
     bool is_scratch_graph(std::string_view key) const noexcept;
 
-    std::optional<std::string> procedural_graph_snapshot(std::string_view key) const;
+    // Captures the open author graph for repro, checking effective session freezes against a cold replay.
+    Result<std::optional<std::string>> procedural_graph_snapshot(std::string_view key) const;
 
     Result<ObjectId> resolve_procedural_generator(ObjectId target = {}) const;
 

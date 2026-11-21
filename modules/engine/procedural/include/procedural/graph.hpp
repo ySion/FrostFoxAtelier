@@ -61,8 +61,6 @@ struct Connection {
 };
 
 struct FrozenOutput {
-    std::uint64_t serial{};
-
     std::vector<Geometry> outputs;
 
     std::vector<Reference> dependencies;

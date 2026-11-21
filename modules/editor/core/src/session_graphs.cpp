@@ -209,9 +209,9 @@ struct GraphBypassChange {
 struct GraphFreezeChange {
     ObjectRoot target;
 
-    bool before{};
+    std::shared_ptr<const procedural::FrozenOutput> snapshot;
 
-    bool after{};
+    bool enabled_after{};
 };
 
 struct GraphAppearanceChange {
@@ -430,171 +430,76 @@ bool kept_port_has_match(const json::Document& kept, std::string_view port_filte
     return false;
 }
 
-template <class Pred>
-void filter_kept_port_endpoints(json::Document& kept, std::string_view port_name, bool is_multi,
-                                std::span<const std::string> live_after, Pred&& should_remove) {
-    const auto cur_inputs = *kept.root().find("inputs");
-    if (!cur_inputs || cur_inputs->kind() != json::Kind::object)
+// Known ports keep their full ordered input list only while some endpoints are unresolved.
+template <class Edit>
+void edit_kept_port(json::Document& kept, std::string_view port, bool multiple, std::span<const std::string> live_after,
+                    Edit edit) {
+    const auto inputs = *kept.root().find("inputs");
+    if (!inputs)
         return;
-    const auto cur_port = *cur_inputs->find(port_name);
-    if (!cur_port)
+    const auto value = *inputs->find(port);
+    if (!value)
         return;
-
-    if (cur_port->kind() == json::Kind::string) {
-        if (should_remove(*cur_port->string()))
-            erase_kept_input(kept, port_name);
-        return;
-    }
-    if (cur_port->kind() != json::Kind::array)
-        return;
-
-    std::vector<std::string> surviving;
-    bool all_strings = true;
-    std::size_t orig_count = 0;
-    for (const auto elem : *cur_port->array()) {
-        ++orig_count;
-        if (const auto s = elem.string()) {
-            if (!should_remove(*s))
-                surviving.emplace_back(*s);
-        } else {
-            all_strings = false;
-        }
-    }
-    if (all_strings && surviving.size() == orig_count)
-        return;
-    if (all_strings && (surviving.empty() || (is_multi && std::ranges::equal(surviving, live_after)))) {
-        erase_kept_input(kept, port_name);
-        return;
-    }
-
-    json::Builder next(kept);
-    const auto next_inputs = *next.root().at("inputs");
-    next.erase(next_inputs, port_name);
-    const auto arr = *next.array(next_inputs, port_name);
-    for (const auto elem : *cur_port->array()) {
-        if (const auto s = elem.string()) {
-            if (!should_remove(*s))
-                static_cast<void>(next.append(arr, *s));
-        } else {
-            next.append(arr, elem);
-        }
-    }
-    kept = next.finish();
-}
-
-void append_kept_port_endpoint(json::Document& kept, std::string_view port_name, bool is_multi,
-                               std::string_view endpoint, std::span<const std::string> live_after) {
-    if (!is_multi) {
-        erase_kept_input(kept, port_name);
-        return;
-    }
-    const auto cur_inputs = *kept.root().find("inputs");
-    if (!cur_inputs || cur_inputs->kind() != json::Kind::object)
-        return;
-    const auto cur_port = *cur_inputs->find(port_name);
-    if (!cur_port)
-        return;
-    if (cur_port->kind() != json::Kind::array) {
-        erase_kept_input(kept, port_name);
-        return;
-    }
+    const bool array = value->kind() == json::Kind::array;
     std::vector<std::string> items;
-    bool all_strings = true;
-    bool already_present = false;
-    for (const auto elem : *cur_port->array()) {
-        if (const auto s = elem.string()) {
-            items.emplace_back(*s);
-            if (*s == endpoint)
-                already_present = true;
-        } else {
-            all_strings = false;
-        }
+    if (array) {
+        for (const auto item : *value->array())
+            items.emplace_back(*item.string());
+    } else {
+        items.emplace_back(*value->string());
     }
-    if (!already_present)
-        items.emplace_back(endpoint);
-    if (all_strings && std::ranges::equal(items, live_after)) {
-        erase_kept_input(kept, port_name);
+    if (!edit(items, array))
+        return;
+    if (items.empty() || (multiple && std::ranges::equal(items, live_after))) {
+        erase_kept_input(kept, port);
         return;
     }
-    if (already_present)
-        return;
     json::Builder next(kept);
-    const auto next_inputs = *next.root().at("inputs");
-    const auto next_port = *next_inputs.at(port_name);
-    static_cast<void>(next.append(next_port, endpoint));
+    const auto record = *next.root().at("inputs");
+    next.erase(record, port);
+    const auto output = *next.array(record, port);
+    for (const auto& item : items)
+        static_cast<void>(next.append(output, item));
     kept = next.finish();
 }
 
-void replace_kept_port_endpoint(json::Document& kept, std::string_view port_name, bool is_multi,
-                                std::string_view old_endpoint, std::string_view new_endpoint,
-                                std::span<const std::string> live_after) {
-    if (!is_multi) {
-        erase_kept_input(kept, port_name);
-        return;
-    }
-    const auto cur_inputs = *kept.root().find("inputs");
-    if (!cur_inputs || cur_inputs->kind() != json::Kind::object)
-        return;
-    const auto cur_port = *cur_inputs->find(port_name);
-    if (!cur_port)
-        return;
-    if (cur_port->kind() != json::Kind::array) {
-        erase_kept_input(kept, port_name);
-        return;
-    }
-    bool already_has_new = false;
-    for (const auto elem : *cur_port->array()) {
-        if (const auto s = elem.string(); s && *s == new_endpoint) {
-            already_has_new = true;
-            break;
-        }
-    }
-    std::vector<std::string> updated;
-    bool all_strings = true;
-    bool inserted = false;
-    bool changed = false;
-    for (const auto elem : *cur_port->array()) {
-        const auto s = elem.string();
-        if (!s) {
-            all_strings = false;
-            continue;
-        }
-        if (*s == old_endpoint) {
-            changed = true;
-            if (!already_has_new && !inserted) {
-                updated.emplace_back(new_endpoint);
-                inserted = true;
-            }
-            continue;
-        }
-        updated.emplace_back(*s);
-    }
-    if (!changed)
-        return;
-    if (all_strings && (updated.empty() || std::ranges::equal(updated, live_after))) {
-        erase_kept_input(kept, port_name);
-        return;
-    }
-    json::Builder next(kept);
-    const auto next_inputs = *next.root().at("inputs");
-    next.erase(next_inputs, port_name);
-    const auto arr = *next.array(next_inputs, port_name);
-    inserted = false;
-    for (const auto elem : *cur_port->array()) {
-        if (const auto s = elem.string()) {
-            if (*s == old_endpoint) {
-                if (!already_has_new && !inserted) {
-                    static_cast<void>(next.append(arr, new_endpoint));
-                    inserted = true;
-                }
-                continue;
-            }
-            static_cast<void>(next.append(arr, *s));
+template <class Pred>
+void filter_kept_port_endpoints(json::Document& kept, std::string_view port, bool multiple,
+                                std::span<const std::string> live_after, Pred should_remove) {
+    edit_kept_port(kept, port, multiple, live_after,
+                   [&](auto& items, bool) { return std::erase_if(items, should_remove) != 0; });
+}
+
+void append_kept_port_endpoint(json::Document& kept, std::string_view port, bool multiple, std::string_view endpoint,
+                               std::span<const std::string> live_after) {
+    edit_kept_port(kept, port, multiple, live_after, [&](auto& items, bool array) {
+        if (multiple && array) {
+            // connect() appends even if this endpoint already had an unresolved slot on disk.
+            std::erase(items, endpoint);
+            items.emplace_back(endpoint);
         } else {
-            next.append(arr, elem);
+            items.clear();
         }
-    }
-    kept = next.finish();
+        return true;
+    });
+}
+
+void replace_kept_port_endpoint(json::Document& kept, std::string_view port, bool multiple,
+                                std::string_view old_endpoint, std::string_view new_endpoint, bool already_live,
+                                std::span<const std::string> live_after) {
+    edit_kept_port(kept, port, multiple, live_after, [&](auto& items, bool array) {
+        if (!multiple || !array) {
+            items.clear();
+            return true;
+        }
+        if (!already_live) {
+            std::erase(items, new_endpoint);
+            if (auto slot = std::ranges::find(items, old_endpoint); slot != items.end())
+                *slot = new_endpoint;
+        }
+        std::erase(items, old_endpoint);
+        return true;
+    });
 }
 
 std::string format_number(double v) {
@@ -1087,13 +992,58 @@ bool Session::is_scratch_graph(std::string_view key) const noexcept {
     return at != graphs_.end() && at->second && at->second->scratch;
 }
 
-std::optional<std::string> Session::procedural_graph_snapshot(std::string_view key) const {
+Result<std::optional<std::string>> Session::procedural_graph_snapshot(std::string_view key) const {
     const auto at = graphs_.find(std::string(key));
     if (at == graphs_.end() || !at->second || at->second->scratch)
         return std::nullopt;
-    auto encoded = editor::save_graph(world_.runtime(), at->second->document);
-    if (!encoded)
-        return std::nullopt;
+    auto& runtime = world_.runtime();
+    const auto& author = at->second->document;
+    ATELIER_TRY_BIND(encoded, editor::save_graph(runtime, author));
+    if (!generator_cache_)
+        return std::move(*encoded);
+    const auto slot = generator_cache_->graph_slots.find(at->first);
+    if (slot == generator_cache_->graph_slots.end() || !slot->second.evaluator)
+        return std::move(*encoded);
+    const auto freezes = slot->second.evaluator->display_freezes();
+    if (freezes.empty())
+        return std::move(*encoded);
+
+    // Load precisely what the bundle will reopen. An independent evaluator keeps the author and
+    // its frozen outputs intact, including when a generator overrides the authored seed.
+    ATELIER_TRY_BIND(copy, editor::load_graph(runtime, *encoded));
+    procedural::Evaluator replay(runtime, copy->graph, generator_cache_->resources, slot->second.bound_program);
+    std::set<std::optional<std::uint32_t>> seeds;
+    for (const auto& [component, entry] : generator_cache_->entries) {
+        if (entry.graph_key != key || !entry.latest_cook)
+            continue;
+        if (!*entry.latest_cook)
+            return std::unexpected(entry.latest_cook->error());
+        auto seed = runtime.with_native<const presentation::ProceduralGeneratorComponent>(
+            component, [](const auto& value) -> Result<std::optional<std::uint32_t>> {
+                return value.override_seed ? std::optional{static_cast<std::uint32_t>(value.seed)} : std::nullopt;
+            });
+        if (!seed)
+            return std::unexpected(seed.error());
+        seeds.insert(*seed);
+    }
+    for (const auto node : freezes) {
+        const auto* original = find_node_by_id(author, node);
+        if (!original)
+            return graph_error("Frozen node is missing from its author graph.");
+        const auto* restored = find_node(*copy, original->name);
+        ATELIER_TRY_BIND(snapshot, procedural::frozen_output(runtime, node));
+        for (const auto seed : seeds) {
+            if (restored && restored->node.registered() && *snapshot) {
+                auto cooked = replay.freeze_snapshot(restored->node.id(), seed);
+                if (cooked &&
+                    std::ranges::equal((*cooked)->outputs, (*snapshot)->outputs, &procedural::Geometry::same_value) &&
+                    std::ranges::is_permutation((*cooked)->dependencies, (*snapshot)->dependencies))
+                    continue;
+            }
+            return graph_error("Graph '" + std::string(key) + "': frozen node '" + original->name +
+                               "' differs from its authored replay. Unfreeze it before exporting.");
+        }
+    }
     return std::move(*encoded);
 }
 
@@ -1327,21 +1277,9 @@ Result<void> Session::graph_undo(std::string_view key, bool redo) {
             } else if constexpr (std::same_as<T, GraphBypassChange>) {
                 return procedural::set_bypassed(runtime_, change.target.id(), redo ? change.after : change.before);
             } else if constexpr (std::same_as<T, GraphFreezeChange>) {
-                const bool want = redo ? change.after : change.before;
-                std::shared_ptr<const procedural::FrozenOutput> snapshot;
-                if (want) {
-                    if (const auto prog = ensure_procedural_program()) {
-                        if (!open.evaluator || open.bound_program != *prog) {
-                            open.bound_program = *prog;
-                            open.evaluator = std::make_unique<procedural::Evaluator>(runtime_, open.document.graph,
-                                                                                     open.resources, *prog);
-                        }
-                        if (open.evaluator->node_output_count(change.target.id()) == 0)
-                            static_cast<void>(open.evaluator->evaluate_node(change.target.id(), false));
-                        snapshot = open.evaluator->retain_node_output(change.target.id());
-                    }
-                }
-                return procedural::set_frozen(runtime_, change.target.id(), want, std::move(snapshot));
+                const bool enabled = redo == change.enabled_after;
+                return procedural::set_frozen(runtime_, change.target.id(), enabled,
+                                              enabled ? change.snapshot : nullptr);
             } else if constexpr (std::same_as<T, GraphAppearanceChange>) {
                 for (const auto& entry_delta : change.entries) {
                     if (auto* item = find_node(open.document, entry_delta.name)) {
@@ -2143,11 +2081,12 @@ Result<void> Session::graph_connect(std::string_view key, std::string_view from_
 
     ATELIER_TRY(procedural::connect(runtime_, graph, src->node.id(), out_idx, dst->node.id(), in_idx));
     ATELIER_TRY_BIND(after_inputs, procedural::inputs(runtime_, *listed, dst->node.id()));
-    ATELIER_TRY_BIND(live_after, format_live_port_endpoints(runtime_, open.document, *after_inputs, in_idx));
-
     const auto before_kept = dst->kept;
-    append_kept_port_endpoint(dst->kept, dst_ports->inputs[in_idx], dst_ports->multiple[in_idx],
-                              src->name + "." + src_ports->outputs[out_idx], *live_after);
+    if (const auto inputs = *dst->kept.root().find("inputs"); inputs && *inputs->find(dst_ports->inputs[in_idx])) {
+        ATELIER_TRY_BIND(live_after, format_live_port_endpoints(runtime_, open.document, *after_inputs, in_idx));
+        append_kept_port_endpoint(dst->kept, dst_ports->inputs[in_idx], dst_ports->multiple[in_idx],
+                                  src->name + "." + src_ports->outputs[out_idx], *live_after);
+    }
 
     open.push_change(GraphConnectionChange{
         {{dst->node, std::move(*before_inputs), std::move(*after_inputs), before_kept, dst->kept}}});
@@ -2424,15 +2363,17 @@ Result<void> Session::graph_rewire(std::string_view key, const GraphConnectionVi
     GraphConnectionChange change;
     if (old_dst == new_dst) {
         ATELIER_TRY_BIND(same_new_live, format_live_port_endpoints(runtime_, open.document, *old_after, new_in_idx));
-        append_kept_port_endpoint(new_dst->kept, new_ports->inputs[new_in_idx], new_ports->multiple[new_in_idx],
-                                  moved_ep, *same_new_live);
+        if (!duplicate_on_new)
+            append_kept_port_endpoint(new_dst->kept, new_ports->inputs[new_in_idx], new_ports->multiple[new_in_idx],
+                                      moved_ep, *same_new_live);
         change.targets.push_back(
             {old_dst->node, std::move(*old_before), std::move(*old_after), old_before_kept, new_dst->kept});
     } else {
         ATELIER_TRY_BIND(new_after, procedural::inputs(runtime_, *listed, new_dst->node.id()));
         ATELIER_TRY_BIND(new_live_after, format_live_port_endpoints(runtime_, open.document, *new_after, new_in_idx));
-        append_kept_port_endpoint(new_dst->kept, new_ports->inputs[new_in_idx], new_ports->multiple[new_in_idx],
-                                  moved_ep, *new_live_after);
+        if (!duplicate_on_new)
+            append_kept_port_endpoint(new_dst->kept, new_ports->inputs[new_in_idx], new_ports->multiple[new_in_idx],
+                                      moved_ep, *new_live_after);
         change.targets.push_back(
             {old_dst->node, std::move(*old_before), std::move(*old_after), old_before_kept, old_dst->kept});
         change.targets.push_back(
@@ -2488,11 +2429,11 @@ Result<void> Session::graph_splice_node(std::string_view key, std::string_view n
         if (mid_ports->multiple[0] || in.input != 0)
             mid_after.push_back(in);
     }
-    if (!std::ranges::any_of(mid_after, [&](const procedural::Input& in) {
-            return in.from == src->node.id() && in.output == out_idx && in.input == 0;
-        })) {
+    const bool mid_has_source = std::ranges::any_of(mid_after, [&](const procedural::Input& in) {
+        return in.from == src->node.id() && in.output == out_idx && in.input == 0;
+    });
+    if (!mid_has_source)
         mid_after.push_back({src->node.id(), out_idx, 0});
-    }
 
     std::vector<procedural::Input> dst_after;
     bool inserted = false;
@@ -2532,10 +2473,11 @@ Result<void> Session::graph_splice_node(std::string_view key, std::string_view n
     ATELIER_TRY_BIND(dst_live_after, format_live_port_endpoints(runtime_, open.document, dst_after, in_idx));
 
     const auto mid_before_kept = mid->kept;
-    append_kept_port_endpoint(mid->kept, mid_ports->inputs[0], mid_ports->multiple[0], src_ep, *mid_live_after);
+    if (!mid_has_source)
+        append_kept_port_endpoint(mid->kept, mid_ports->inputs[0], mid_ports->multiple[0], src_ep, *mid_live_after);
     const auto dst_before_kept = dst->kept;
     replace_kept_port_endpoint(dst->kept, dst_ports->inputs[in_idx], dst_ports->multiple[in_idx], src_ep, mid_ep,
-                               *dst_live_after);
+                               already_has_mid, *dst_live_after);
 
     GraphConnectionChange change;
     change.targets.push_back({mid->node, std::move(*mid_before), std::move(mid_after), mid_before_kept, mid->kept});
@@ -2626,7 +2568,8 @@ Result<void> Session::graph_set_frozen(std::string_view key, std::string_view no
     ATELIER_TRY_BIND(before, procedural::frozen(runtime_, item->node.id()));
     if (*before == frozen)
         return {};
-    std::shared_ptr<const procedural::FrozenOutput> snapshot;
+    ATELIER_TRY(cancel_edit());
+    ATELIER_TRY_BIND(snapshot, procedural::frozen_output(runtime_, item->node.id()));
     if (frozen) {
         ATELIER_TRY_BIND(program, ensure_procedural_program());
         if (project)
@@ -2636,18 +2579,11 @@ Result<void> Session::graph_set_frozen(std::string_view key, std::string_view no
             open.evaluator =
                 std::make_unique<procedural::Evaluator>(runtime_, open.document.graph, open.resources, *program);
         }
-        if (open.evaluator->node_output_count(item->node.id()) == 0)
-            ATELIER_TRY(open.evaluator->evaluate_node(item->node.id(), false));
-        snapshot = open.evaluator->retain_node_output(item->node.id());
-        if (!snapshot) {
-            if (const auto* st = open.evaluator->status(item->node.id()); st && st->error)
-                return std::unexpected(*st->error);
-            return graph_error("Cannot freeze '" + std::string(node_name) + "' without a valid cooked output.");
-        }
+        ATELIER_TRY_BIND(captured, open.evaluator->freeze_snapshot(item->node.id()));
+        *snapshot = std::move(*captured);
     }
-    ATELIER_TRY(cancel_edit());
-    ATELIER_TRY(procedural::set_frozen(runtime_, item->node.id(), frozen, std::move(snapshot)));
-    open.push_change(GraphFreezeChange{item->node, *before, frozen});
+    ATELIER_TRY(procedural::set_frozen(runtime_, item->node.id(), frozen, frozen ? *snapshot : nullptr));
+    open.push_change(GraphFreezeChange{item->node, std::move(*snapshot), frozen});
     ++revision_;
     return {};
 }
@@ -3630,6 +3566,10 @@ Result<world::Commit> Session::bake_procedural_generator(Project* project, Objec
         const auto* asset_info = *asset_info_opt;
         if (!asset_info)
             continue;
+        if (asset_info->mesh != col.reference.mesh)
+            return graph_error(
+                "Cannot bake '" + key +
+                "': the published instance mesh differs from the current project asset. Recook it first.");
         for (const auto& affine : *col.transforms) {
             ATELIER_TRY_BIND(trs, decompose_procedural_instance(affine));
             pending.push_back({asset_info, *trs});

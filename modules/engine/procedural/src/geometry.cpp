@@ -1,6 +1,7 @@
 #include "procedural/geometry.hpp"
 
 #include <algorithm>
+#include <cstring>
 #include <numeric>
 
 namespace atelier::procedural {
@@ -52,6 +53,38 @@ void append(ColumnData& target, const ColumnData* source, std::uint32_t count) {
         target);
 }
 
+}
+
+bool Geometry::same_value(const Geometry& other) const noexcept {
+    const auto equal_column = []<class T>(const SharedArray<T>& a, const SharedArray<T>& b) {
+        if (same(a, b))
+            return true;
+        if (a.size() != b.size())
+            return false;
+        if constexpr (std::same_as<T, String>)
+            return std::ranges::equal(a.array(), b.array());
+        else
+            return a.empty() || std::memcmp(a.array().data(), b.array().data(), a.size() * sizeof(T)) == 0;
+    };
+    if (vertices_ != other.vertices_ || primitives_ != other.primitives_ || uniform_ != other.uniform_ ||
+        attributes_.size() != other.attributes_.size() || references_ != other.references_ ||
+        !equal_column(vertex_points_, other.vertex_points_) || !equal_column(offsets_, other.offsets_) ||
+        !equal_column(kinds_, other.kinds_) || !equal_column(instance_references_, other.instance_references_) ||
+        !equal_column(instance_transforms_, other.instance_transforms_))
+        return false;
+    for (std::size_t i = 0; i < attributes_.size(); ++i) {
+        const auto& a = attributes_[i];
+        const auto& b = other.attributes_[i];
+        if (a.name != b.name || a.layer != b.layer || a.usage != b.usage ||
+            !std::visit(
+                [&](const auto& column) {
+                    const auto* rhs = std::get_if<std::decay_t<decltype(column)>>(&b.data);
+                    return rhs && equal_column(column, *rhs);
+                },
+                a.data))
+            return false;
+    }
+    return same_boolean_boundary(other);
 }
 
 Geometry::Geometry() {

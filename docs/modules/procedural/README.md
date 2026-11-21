@@ -15,7 +15,7 @@
 
 引擎附带的自有语言节点与随机库在 [assets/engine/procedural](../../../assets/engine/procedural)。
 
-本文只说明已实现能力。方向、设计依据与未实施的跨模块约定见[后续路线与未决契约](roadmap.md)。编辑器与呈现层已接入 `.procgraph` 资产、SOP 视口上下文、Houdini 式二维 Network 连线画布、Geometry Spreadsheet、`world.ProceduralGeneratorEntity` / `world.ProceduralGeneratorComponent` 场景生成器组件、实例 `procedural.bake` 与 Control 操作链（见[编辑器模块](../editor/README.md)与[项目场景](../world/project-scenes.md)）；渲染器 GPU 大批量常驻实例化区段、持久磁盘 Cache 与冻结尚未实施。
+本文只说明已实现能力。方向、设计依据与未实施的跨模块约定见[后续路线与未决契约](roadmap.md)。编辑器与呈现层已接入 `.procgraph` 资产、SOP 视口上下文、Houdini 式二维 Network 连线画布、Geometry Spreadsheet、`world.ProceduralGeneratorEntity` / `world.ProceduralGeneratorComponent` 场景生成器组件、实例 `procedural.bake` 与 Control 操作链（见[编辑器模块](../editor/README.md)与[项目场景](../world/project-scenes.md)）；渲染器 GPU 大批量常驻实例化区段、持久磁盘 Cache 与磁盘冻结尚未实施，节点已支持会话冻结。
 
 ## Geometry
 
@@ -209,7 +209,7 @@ Remap 四端点须有限、输入两端不同，输出两端可以相同。按 `
 - **键**：节点的键是精确的字节串：类型（已发布 `TypeInfo` 的地址）、每个公开字段的内容、带上下文的节点再加图种子，自有语言节点再加入口的代码身份（`EntryInfo::code`），以及每个连接的（输入端口，上游输出号，上游结果序号）。每次真正执行 `process` 得到一个新的结果序号，所以上游结果变了下游的键就变；内容相同的两个节点共享同一个缓存结果。
 - **缓存**：按键查找结果，以条目为单位按最近使用淘汰，总量不超过 `cache_bytes`（默认 256 MiB）。撤销把参数改回旧值时直接命中旧结果，不再求值。
 - **资源**：节点经 Context 读到的网格连同解析结果记在结果上。`Resources::revision()` 变化后，复用结果之前重新解析这些键；解析结果不同就重新求值，相同就继续复用。
-- **失败与根因传播**：节点失败时它的下游不求值，下游节点的 `status(node)->error` 直接携带失败输入端口名及最上游失败节点的类型与原始错误原因（`Input '<port>' failed (<RootType>: <reason>).`），避免多层链路只剩空泛提示。失败的键在资源版本不变时不再重试，键变化或资源版本变化后再试。启用 `procedural::set_bypassed(runtime, node, true)` 的节点跳过 `process` 求值（及自有语言内核绑定），将第 0 个输入端口的首个上游输出（无连接时为空 `Geometry`）直接转发至 `outputs[0]`；启用 `procedural::set_frozen(runtime, node, true, snapshot)` 的会话态冻结节点（未启用 bypass 时）直接输出已锁定的 `FrozenOutput` 几何快照并跳过上游分支求值，直至显式解冻（持久磁盘冻结格式尚未定型，不写入 `.procgraph`）。
+- **失败与根因传播**：节点失败时它的下游不求值，下游节点的 `status(node)->error` 直接携带失败输入端口名及最上游失败节点的类型与原始错误原因（`Input '<port>' failed (<RootType>: <reason>).`），避免多层链路只剩空泛提示。失败的键在资源版本不变时不再重试，键变化或资源版本变化后再试。启用 `procedural::set_bypassed(runtime, node, true)` 的节点跳过 `process` 求值（及自有语言内核绑定），将第 0 个输入端口的首个上游输出（无连接时为空 `Geometry`）直接转发至 `outputs[0]`；启用 `procedural::set_frozen(runtime, node, true, snapshot)` 的会话态冻结节点（未启用 bypass 时）直接输出从当前输入捕获的 `FrozenOutput`。快照共同保有各输出及活动上游的传递资源依赖，撤销解冻和重做冻结会恢复同一个快照。冻结时使用该快照并跳过上游分支求值，直至显式解冻（持久磁盘冻结格式尚未定型，不写入 `.procgraph`）。
 - **调度**：每个需要的节点每次求值最多调用一次 `process`，按上游在前的顺序执行。每次发现变化后，对全图连接检查来源输出号；环检测仍只遍历求值目标的上游闭包。
 
 ### 通用反射编辑后的图校验

@@ -1056,8 +1056,10 @@ class game.DiagnosticSop : procedural.Node {
                         after_unfreeze.display_output->count(procedural::Layer::instance) < frozen_inst_count,
                     "Unfreezing 'terrace' did not resume live evaluation against shrunk upstream 'sphere'.");
             invoke("edit.undo"); // Undoes unfreeze -> restores Freeze
-            require(take(doc.graph_topology(graph_key))->find_node("terrace")->is_frozen,
-                    "edit.undo did not restore Frozen state on 'terrace'.");
+            const auto restored = take(doc.evaluate_graph(graph_key, &project));
+            require(take(doc.graph_topology(graph_key))->find_node("terrace")->is_frozen && restored.display_output &&
+                        restored.display_output->count(procedural::Layer::instance) == frozen_inst_count,
+                    "edit.undo did not restore the frozen geometry on 'terrace'.");
             invoke("edit.undo"); // Undoes sphere radius = 0.05
             invoke("edit.undo"); // Undoes initial Freeze
             require(
@@ -1098,7 +1100,7 @@ class game.DiagnosticSop : procedural.Node {
                     "graph_topology did not report kept placeholder display/template.");
             const std::array rm_ghost{std::string{"ghost"}};
             take(doc.graph_remove_nodes(ghost_key, rm_ghost));
-            const auto cleaned_snap = doc.procedural_graph_snapshot(ghost_key).value_or("");
+            const auto cleaned_snap = take(doc.procedural_graph_snapshot(ghost_key)).value_or("");
             require(!cleaned_snap.empty() && cleaned_snap.find("ghost") == std::string::npos,
                     "Removing placeholder node left dangling display/template entry in kept settings.");
             take(doc.graph_undo(ghost_key, false));
@@ -1396,6 +1398,13 @@ class game.DiagnosticSop : procedural.Node {
         take(doc.graph_set_properties(prop_graph_key, "copy", patch_frozen_mesh.root()));
         take(doc.sync_procedural_generators(&project));
         take(doc.graph_set_frozen(prop_graph_key, "copy", true, &project));
+        take(doc.sync_procedural_generators(&project));
+        take(editor::write_file(frozen_obj_src, "v 0 0 0\nv 2 0 0\nv 0 2 0\nf 1 2 3\n"));
+        take(doc.reimport_mesh(project, frozen_key, frozen_obj_src));
+        const auto changed_mesh_bake = doc.bake_procedural_generator(&project, prop_gen);
+        require(!changed_mesh_bake && take(doc.world().members()).size() == members_pre_del &&
+                    doc.undo_count() == undo_pre_del,
+                "Bake used a reimported mesh instead of the frozen instance geometry.");
         const auto* frozen_entry = project.entry(frozen_key);
         require(frozen_entry != nullptr, "Missing project entry for frozen mesh.");
         const auto frozen_imported_path = temp_root / frozen_entry->path;

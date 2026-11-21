@@ -1316,52 +1316,6 @@ void ViewportTool::overlay(const Session& session, const ViewportView& view, Too
                 stroke(*p + *direction * (sign * r * .55f), *p + *direction * (sign * r * 1.85f), 1.25f, {0, 0, 0, 1});
         }
     }
-    {
-        // Houdini orientation triad: fixed lower-left corner, world axes projected
-        // through the camera rotation only, coloured discs with dark axis letters.
-        const float scale = view.dpi_scale;
-        const float arm = 22 * scale;
-        const float disc = 7.5f * scale;
-        // Above the tool hint line, as in Houdini.
-        const V2 origin{view.bounds.x + 40 * scale, view.bounds.y + view.bounds.height - 62 * scale};
-        struct Arm {
-            int axis;
-
-            V2 tip;
-
-            float depth;
-        };
-        std::array<Arm, 3> arms{};
-        for (int axis = 0; axis < 3; ++axis) {
-            const auto a = axes[axis];
-            arms[axis] = {axis, origin + V2{math::dot(a, view.right), -math::dot(a, view.up)} * arm,
-                          math::dot(a, view.forward)};
-        }
-        // Painter's order: the axis pointing away from the viewer is drawn first.
-        std::ranges::sort(arms, std::greater{}, &Arm::depth);
-        const std::array discs{srgb(0xe1, 0x67, 0x67), srgb(0x66, 0xe1, 0x6a), srgb(0x5b, 0x81, 0xdb)};
-        const std::array lines{srgb(0xf2, 0x40, 0x40), srgb(0x40, 0xf2, 0x40), srgb(0x33, 0x66, 0xe5)};
-        for (const auto& item : arms) {
-            stroke(origin, item.tip, 1.5f, lines[item.axis]);
-            stroke(item.tip, item.tip, disc * 2 / scale, discs[item.axis]);
-            // Axis letters: X as a cross, Y as a fork, Z as a zig-zag; 6 px glyph box.
-            const float g = 3 * scale;
-            const auto c = item.tip;
-            const ui::Color ink{0, 0, 0, 1};
-            if (item.axis == 0) {
-                stroke(c + V2{-g, -g}, c + V2{g, g}, 1.6f, ink);
-                stroke(c + V2{g, -g}, c + V2{-g, g}, 1.6f, ink);
-            } else if (item.axis == 1) {
-                stroke(c + V2{-g, -g}, c, 1.6f, ink);
-                stroke(c + V2{g, -g}, c, 1.6f, ink);
-                stroke(c, c + V2{0, g}, 1.6f, ink);
-            } else {
-                stroke(c + V2{-g, -g}, c + V2{g, -g}, 1.6f, ink);
-                stroke(c + V2{g, -g}, c + V2{-g, g}, 1.6f, ink);
-                stroke(c + V2{-g, g}, c + V2{g, g}, 1.6f, ink);
-            }
-        }
-    }
     if (marquee_ && marquee_->dragging) {
         const auto a = marquee_->start;
         const auto b = marquee_->current;

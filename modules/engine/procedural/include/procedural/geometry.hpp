@@ -224,6 +224,9 @@ public:
 
     [[nodiscard]] static Usage conventional_usage(StringView name) noexcept;
 
+    // Exact value comparison for replay, including float bits, resolved mesh identities and Boolean constructions.
+    [[nodiscard]] bool same_value(const Geometry& other) const noexcept;
+
     // Bytes of the columns and topology this value holds, counting shared columns in full.
     [[nodiscard]] std::size_t bytes() const noexcept;
 
@@ -237,6 +240,8 @@ private:
     friend class detail::TriangleView;
 
     [[nodiscard]] std::size_t boolean_boundary_bytes() const noexcept;
+
+    bool same_boolean_boundary(const Geometry& other) const noexcept;
 
     void discard_boolean_boundary() noexcept { boolean_boundary_.reset(); }
 

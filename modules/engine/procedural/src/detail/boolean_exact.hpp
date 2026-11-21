@@ -35,6 +35,8 @@ struct Plane {
 
     Offset d{};
 
+    bool operator==(const Plane&) const = default;
+
     Wide evaluate(const Point& p) const { return n[0] * p[0] + n[1] * p[1] + n[2] * p[2] + d * p[3]; }
 
     int side(const Point& p) const {

@@ -670,13 +670,14 @@ std::expected<Repro, Failure> snapshot_resources(const editor::Session& document
                 push_unique_mesh(std::move(snapshot));
             } else if (auto proc = presentation::read_procedural_binding(runtime, component.id())) {
                 reference(assets::AssetKind::procedural_graph, proc->source);
-                if (!proc->source.empty() && !proc->source.starts_with("builtin/")) {
-                    if (auto snapshot_text = document.procedural_graph_snapshot(proc->source)) {
-                        const auto at = std::ranges::find(data.procedural_graphs, proc->source,
-                                                          &std::pair<std::string, std::string>::first);
-                        if (at == data.procedural_graphs.end())
-                            data.procedural_graphs.emplace_back(proc->source, std::move(*snapshot_text));
-                    }
+                if (!proc->source.empty() && !proc->source.starts_with("builtin/") &&
+                    std::ranges::find(data.procedural_graphs, proc->source,
+                                      &std::pair<std::string, std::string>::first) == data.procedural_graphs.end()) {
+                    auto encoded = document.procedural_graph_snapshot(proc->source);
+                    if (!encoded)
+                        throw Failure("dependency_mismatch", encoded.error().message);
+                    if (*encoded)
+                        data.procedural_graphs.emplace_back(proc->source, std::move(**encoded));
                 }
                 const auto bindings = take(presentation::read_material_bindings(runtime, component.id()));
                 for (const auto& binding : bindings)

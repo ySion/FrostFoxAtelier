@@ -104,6 +104,8 @@ struct Context {
     bool viewport_options{};
 
     CameraView camera_view{CameraView::perspective};
+
+    [[nodiscard]] std::string focused_graph() const;
 };
 
 // Control replaces fields for one call; the document selection does not change.

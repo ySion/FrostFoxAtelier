@@ -178,24 +178,6 @@ Result<void> frame_selected_poll(const Context& context) {
     return unavailable("Select an Entity with a Transform to frame.");
 }
 
-std::string history_graph_key(const Context& context) {
-    if (!context.asset.empty() && context.document.has_graph(context.asset))
-        return context.asset;
-    if (context.region == RegionKind::network && !context.network_graph.empty() &&
-        context.document.has_graph(context.network_graph))
-        return context.network_graph;
-    if (context.region == RegionKind::parameters && context.asset.empty() && context.selection.object != ObjectId{} &&
-        context.document.is_graph_object(context.selection.object)) {
-        if (const auto owner_graph = context.document.graph_of_object(context.selection.object))
-            return *owner_graph;
-    }
-    if (!context.active_graph.empty() && context.asset.empty() && context.region != RegionKind::code &&
-        context.region != RegionKind::controls && context.region != RegionKind::scene_tree &&
-        context.region != RegionKind::structure && context.region != RegionKind::world)
-        return context.active_graph;
-    return {};
-}
-
 // The focused region owns the history: Code drafts, an inspected material/graph asset, the Controls samples, else the scene.
 OperatorInfo history(bool redo) {
     const auto empty = [redo] { return unavailable(redo ? "Nothing to redo." : "Nothing to undo."); };
@@ -209,7 +191,7 @@ OperatorInfo history(bool redo) {
                 };
                 if (context.region == RegionKind::code)
                     return can(context.source_history);
-                if (const auto graph_key = history_graph_key(context); !graph_key.empty())
+                if (const auto graph_key = context.focused_graph(); !graph_key.empty())
                     return context.document.graph_can_undo(graph_key, redo) ? Result<void>{} : empty();
                 if (!context.asset.empty())
                     return context.document.material_can_undo(context.asset, redo) ? Result<void>{} : empty();
@@ -221,7 +203,7 @@ OperatorInfo history(bool redo) {
             [redo](OperatorHost& host, const Context& context, const OperatorParameters&, ValueOutput) -> Result<void> {
                 if (context.region == RegionKind::code)
                     return host.source_history(redo);
-                if (const auto graph_key = history_graph_key(context); !graph_key.empty())
+                if (const auto graph_key = context.focused_graph(); !graph_key.empty())
                     return context.document.graph_undo(graph_key, redo);
                 if (!context.asset.empty())
                     return context.document.material_undo(context.asset, redo, context.project);
@@ -1085,11 +1067,14 @@ void register_builtin_operators(OperatorRegistry& registry) {
          [source, saveable](const Context& c) -> Result<void> {
              if (c.region == RegionKind::code)
                  return source(c);
-             const std::string& g = !c.active_graph.empty()
-                                        ? c.active_graph
-                                        : (c.region == RegionKind::network ? c.network_graph : c.active_graph);
-             if (!g.empty() && c.project && c.project->entry(g))
-                 return {};
+             if (const auto graph = c.focused_graph(); !graph.empty())
+                 return c.project && c.project->entry(graph)
+                            ? Result<void>{}
+                            : unavailable("Create a project .procgraph asset before saving this procedural graph.");
+             if (!c.asset.empty())
+                 return c.project && c.document.loaded_material(c.asset) != ObjectId{}
+                            ? Result<void>{}
+                            : unavailable("Open a project material before saving it.");
              return saveable(c);
          },
          [](OperatorHost& h, const Context& c, const OperatorParameters&, ValueOutput) {

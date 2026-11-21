@@ -65,6 +65,17 @@ struct BooleanBoundary {
 };
 }
 
+bool Geometry::same_boolean_boundary(const Geometry& other) const noexcept {
+    if (boolean_boundary_ == other.boolean_boundary_)
+        return true;
+    if (!boolean_boundary_ || !other.boolean_boundary_)
+        return false;
+    const auto& a = *boolean_boundary_;
+    const auto& b = *other.boolean_boundary_;
+    return a.lattice.origin == b.lattice.origin && a.lattice.step == b.lattice.step && a.positions == b.positions &&
+           a.faces == b.faces && a.incoming == b.incoming;
+}
+
 std::size_t Geometry::boolean_boundary_bytes() const noexcept {
     if (!boolean_boundary_)
         return 0;
