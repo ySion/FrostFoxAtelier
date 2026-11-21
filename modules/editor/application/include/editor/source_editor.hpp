@@ -77,7 +77,7 @@ public:
 
     void poll(bool composing = false);
 
-    void append(std::vector<ui::Control>&, ui::ControlKey, ui_language::LiveDocument&,
+    void append(ui_language::ControlOutput, ui::ControlKey, ui_language::LiveDocument&,
                 const std::function<ui_language::ActionBinding(OperatorCall)>&, const Project* = nullptr,
                 const ProjectBuild* = nullptr, bool running = false);
 

@@ -115,7 +115,7 @@ bool ControlWorkbench::apply(const ui::Action& action) {
     return true;
 }
 
-void ControlWorkbench::append(std::vector<ui::Control>& controls, ui::ControlKey parent,
+void ControlWorkbench::append(ui_language::ControlOutput controls, ui::ControlKey parent,
                               ui_language::LiveDocument& document) const {
     using namespace workbench_control;
     using namespace ui_language;

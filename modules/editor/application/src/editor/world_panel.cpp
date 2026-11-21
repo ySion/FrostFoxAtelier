@@ -184,7 +184,7 @@ void WorldPanel::observe(const renderer::FrameStats& stats) {
     }
 }
 
-void WorldPanel::append(std::vector<ui::Control>& controls, ui::ControlKey parent, ui_language::LiveDocument& document,
+void WorldPanel::append(ui_language::ControlOutput controls, ui::ControlKey parent, ui_language::LiveDocument& document,
                         const renderer::ViewSettings& view, bool editable, std::wstring_view main_camera,
                         ui_language::ActionBinding clear_camera) const {
     using namespace ui_language;

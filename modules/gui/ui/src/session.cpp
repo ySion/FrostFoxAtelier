@@ -1024,6 +1024,87 @@ Result<Reply> Session::set_surface(Surface surface) {
     return reply;
 }
 
+std::uint64_t ControlList::new_region_revision() {
+    return detail::new_identity();
+}
+
+void ControlList::begin(std::uint64_t decoration_revision) {
+    if (!finished_ || decoration_revision != decoration_revision_)
+        regions_.clear();
+    if (!submitted_)
+        baseline_ = 0;
+    decoration_revision_ = decoration_revision;
+    finished_ = submitted_ = false;
+    region_ = count_ = 0;
+    dirty_.clear();
+}
+
+bool ControlList::advance(std::size_t count, std::uint64_t revision) {
+    const Range range{count_, count};
+    count_ += count;
+    if (region_ == regions_.size())
+        regions_.emplace_back();
+    auto& previous = regions_[region_++];
+    if (revision && previous.revision == revision && previous.range.first == range.first &&
+        previous.range.count == count)
+        return false;
+    previous = {range, revision};
+    if (count) {
+        if (!dirty_.empty() && dirty_.back().first + dirty_.back().count == range.first)
+            dirty_.back().count += count;
+        else
+            dirty_.push_back(range);
+    }
+    return true;
+}
+
+void ControlList::append(std::span<const Control> controls, std::uint64_t revision) {
+    const auto first = count_;
+    if (!advance(controls.size(), revision))
+        return;
+    const auto overlap = std::min(controls.size(), values_.size() - first);
+    std::copy_n(controls.begin(), overlap, values_.begin() + first);
+    values_.insert(values_.end(), controls.begin() + overlap, controls.end());
+}
+
+void ControlList::append(std::vector<Control>&& controls) {
+    const auto first = count_;
+    advance(controls.size(), 0);
+    const auto overlap = std::min(controls.size(), values_.size() - first);
+    auto middle = controls.begin() + overlap;
+    std::move(controls.begin(), middle, values_.begin() + first);
+    values_.insert(values_.end(), std::make_move_iterator(middle), std::make_move_iterator(controls.end()));
+}
+
+Result<Reply> Session::set_controls(ControlList& list) {
+    const auto controls = list.controls();
+    const auto submit = [&]() -> Result<Reply> {
+        if (!list.finished_)
+            return std::unexpected(Error{ErrorCode::invalid_control});
+        if (list.baseline_ != impl_->controls_revision || controls.size() != impl_->order.size())
+            return set_controls(controls);
+        std::vector<Control> changed;
+        for (auto range : list.dirty_) {
+            for (std::size_t i = range.first; i < range.first + range.count; ++i) {
+                const auto& proposed = controls[i];
+                if (proposed.key != impl_->order[i])
+                    return impl_->apply_controls(controls, false);
+                const auto& previous = impl_->states.at(proposed.key).control;
+                if (proposed == previous)
+                    continue;
+                if (!Impl::same_structure(previous, proposed))
+                    return impl_->apply_controls(controls, false);
+                changed.push_back(proposed);
+            }
+        }
+        return changed.empty() ? Result<Reply>{Reply{}} : update_controls(changed);
+    };
+    auto result = submit();
+    list.submitted_ = result.has_value();
+    list.baseline_ = result ? impl_->controls_revision : 0;
+    return result;
+}
+
 Result<Reply> Session::set_controls(std::span<const Control> controls) {
     bool unchanged = controls.size() == impl_->order.size();
     for (std::size_t i = 0; unchanged && i < controls.size(); ++i)

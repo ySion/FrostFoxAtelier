@@ -2,6 +2,8 @@
 
 `Session`持有唯一控件状态和布局节点。初装或增删、重排、改父关系使用`set_controls(span<const Control>)`；属性绑定用`update_controls(span<const Control>)`提交发生变化的完整Control值。两入口使用同一校验、交互清理和描述提交实现。
 
+持续生成有序描述的宿主可复用一个 `ControlList`。每次 `begin` 后按绘制顺序追加区段，再 `finish` 并交给 `Session::set_controls`。非零区段版本标识相同的控件内容；版本、位置和长度都匹配时沿用已收集的值。宿主附加提示等派生属性的外部输入改变时，须同时更新 `begin` 的装饰版本。Session 仅在自身描述版本与上次成功提交的基线一致时采用增量。调用者始终可以从列表读取完整描述。
+
 描述生产者可在发布前调用 `validate_control_properties(Control)`，复用 Session 对文本、枚举、数值和样式的约束。该函数不检查父树引用或求解布局；整批结构关系、身份和交互状态仍由 Session 提交入口校验。
 
 ## 属性批次

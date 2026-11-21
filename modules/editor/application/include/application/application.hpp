@@ -169,6 +169,7 @@ private:
     math::Vector2 pointer_position_{};
 
     editor::Workspace workspace_;
+    ui::ControlList workspace_controls_;
 
     ui::Session ui_;
 

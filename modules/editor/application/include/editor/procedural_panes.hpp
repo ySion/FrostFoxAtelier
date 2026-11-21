@@ -190,7 +190,7 @@ public:
 
     std::size_t total_rows() const noexcept { return total_rows_; }
 
-    void append(std::vector<ui::Control>& controls, ui::ControlKey parent, ui_language::LiveDocument& live,
+    void append(ui_language::ControlOutput controls, ui::ControlKey parent, ui_language::LiveDocument& live,
                 const procedural::Geometry* geometry, std::uint64_t generation, std::wstring_view target_label,
                 std::wstring_view error_text = {});
 

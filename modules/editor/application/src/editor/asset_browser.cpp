@@ -563,7 +563,7 @@ bool AssetBrowser::apply(const ui::Action& action) {
     return false;
 }
 
-void AssetBrowser::append(std::vector<ui::Control>& controls, ui::ControlKey parent, const Project* project,
+void AssetBrowser::append(ui_language::ControlOutput controls, ui::ControlKey parent, const Project* project,
                           bool can_create, const ui::UiFrame* frame, ui_language::LiveDocument& document) {
     namespace id = browser_control;
     update_directories(project);

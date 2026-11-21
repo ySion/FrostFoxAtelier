@@ -317,7 +317,7 @@ Result<void> SourceEditor::locate(const logging::SourceLocation& location) {
     return {};
 }
 
-void SourceEditor::append(std::vector<ui::Control>& controls, ui::ControlKey parent, ui_language::LiveDocument& live,
+void SourceEditor::append(ui_language::ControlOutput controls, ui::ControlKey parent, ui_language::LiveDocument& live,
                           const std::function<ui_language::ActionBinding(OperatorCall)>& action, const Project* project,
                           const ProjectBuild* build, bool running) {
     using namespace ui_language;

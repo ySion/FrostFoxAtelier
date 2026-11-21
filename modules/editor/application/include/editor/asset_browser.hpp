@@ -9,6 +9,7 @@
 
 namespace atelier::ui_language {
 class LiveDocument;
+class ControlOutput;
 
 struct Item;
 }
@@ -84,7 +85,7 @@ public:
 
     void reset(bool has_project);
 
-    void append(std::vector<ui::Control>&, ui::ControlKey parent, const Project*, bool can_create, const ui::UiFrame*,
+    void append(ui_language::ControlOutput, ui::ControlKey parent, const Project*, bool can_create, const ui::UiFrame*,
                 ui_language::LiveDocument&);
 
     bool apply(const ui::Action&);

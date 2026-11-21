@@ -176,6 +176,8 @@ void LiveDocument::install(InFlight& job) {
     for (auto& [name, region] : regions_) {
         if (!region.accepted)
             continue;
+        // An unmounted region can be rebound and committed without an intervening append.
+        region.proposed_controls = 0;
         auto type = candidate_->find(name);
         if (!type) {
             reject_controls("UI module is missing the mounted component: " + name);
@@ -196,7 +198,7 @@ void LiveDocument::install(InFlight& job) {
 }
 
 Result<void> LiveDocument::append(std::string_view name, ui::ControlKey parent, std::span<const KeyBinding> keys,
-                                  std::span<const InputValue> inputs, std::vector<ui::Control>& output) {
+                                  std::span<const InputValue> inputs, ControlOutput output) {
     const auto& module = candidate_ ? candidate_ : active_;
     const auto report = [&](const Error& error) -> Result<void> {
         diagnostic_ = error.message;
@@ -208,6 +210,8 @@ Result<void> LiveDocument::append(std::string_view name, ui::ControlKey parent, 
     };
     if (!module)
         return failure(diagnostic_.empty() ? "No compiled UI module." : diagnostic_);
+    if (candidate_)
+        output.require_full_submission();
     auto at = regions_.find(name);
     bool blocked{};
     bool retried{};
@@ -222,7 +226,7 @@ Result<void> LiveDocument::append(std::string_view name, ui::ControlKey parent, 
             if (region.instance) {
                 region.instance->reject_controls(static_cast<bool>(candidate_));
                 const auto controls = region.instance->controls();
-                output.insert(output.end(), controls.begin(), controls.end());
+                output.append(controls, 0);
             }
             return report(
                 Error{ErrorCode::invalid_definition, "A live region's parent and key aliases are immutable."});
@@ -249,7 +253,7 @@ Result<void> LiveDocument::append(std::string_view name, ui::ControlKey parent, 
                     region.rejected_inputs = std::vector<InputValue>(inputs.begin(), inputs.end());
                 region.instance->reject_controls(static_cast<bool>(candidate_));
                 const auto controls = region.instance->controls();
-                output.insert(output.end(), controls.begin(), controls.end());
+                output.append(controls, 0);
                 return report(updated.error());
             }
         }
@@ -259,8 +263,15 @@ Result<void> LiveDocument::append(std::string_view name, ui::ControlKey parent, 
             region.rejected_inputs.reset();
     }
     pending_submission_ |= !at->second.accepted || at->second.instance->has_pending();
-    const auto controls = at->second.instance->controls();
-    output.insert(output.end(), controls.begin(), controls.end());
+    auto& region = at->second;
+    if (!region.accepted || candidate_ || region.instance->changes_controls()) {
+        region.proposed_controls = ui::ControlList::new_region_revision();
+    } else {
+        if (!region.accepted_controls)
+            region.accepted_controls = ui::ControlList::new_region_revision();
+        region.proposed_controls = region.accepted_controls;
+    }
+    output.append(region.instance->controls(), region.proposed_controls);
     if (!blocked && failed_region_ == name) {
         failed_region_.clear();
         diagnostic_.clear();
@@ -293,6 +304,7 @@ bool LiveDocument::reject_controls(std::string message) {
     for (auto& [name, region] : regions_) {
         if (!region.instance)
             continue;
+        region.proposed_controls = 0;
         if (!region.accepted) {
             if (!source) {
                 const auto values = region.instance->inputs();
@@ -326,6 +338,9 @@ void LiveDocument::commit_controls() {
     if (candidate_ || pending_submission_)
         for (auto& [name, region] : regions_)
             if (region.instance) {
+                if (candidate_ || !region.accepted || region.instance->changes_controls())
+                    region.accepted_controls = region.proposed_controls;
+                region.proposed_controls = 0;
                 region.instance->commit_controls();
                 region.accepted = true;
             }

@@ -272,6 +272,53 @@ struct Control {
     bool operator==(const Control& other) const;
 };
 
+// Ordered host description. A producer revision names one immutable region of descriptors;
+// zero denotes fresh native content. The complete list remains available for structural transactions.
+class ControlList {
+public:
+    static std::uint64_t new_region_revision();
+    void begin(std::uint64_t decoration_revision = 0);
+    void require_full_submission() noexcept { baseline_ = 0; }
+    void append(std::span<const Control>, std::uint64_t region_revision);
+    void append(std::vector<Control>&&);
+    std::span<const Control> controls() const { return std::span(values_).first(count_); }
+    std::vector<Control> take() && {
+        auto values = std::move(values_);
+        *this = {};
+        return values;
+    }
+
+    // Host decorations must depend only on the region and decoration_revision.
+    void finish(auto&& decorate) {
+        for (auto range : dirty_)
+            for (auto& control : std::span(values_).subspan(range.first, range.count))
+                decorate(control);
+        values_.resize(count_);
+        regions_.resize(region_);
+        finished_ = true;
+    }
+    void finish() {
+        finish([](Control&) {});
+    }
+
+private:
+    friend class Session;
+    struct Range {
+        std::size_t first{}, count{};
+    };
+    struct Region {
+        Range range;
+        std::uint64_t revision{};
+    };
+    bool advance(std::size_t count, std::uint64_t revision);
+    std::vector<Control> values_;
+    std::vector<Region> regions_;
+    std::vector<Range> dirty_;
+    std::size_t count_{}, region_{};
+    std::uint64_t decoration_revision_{}, baseline_{};
+    bool finished_{}, submitted_{};
+};
+
 struct Surface {
     PixelExtent extent;
 
@@ -916,6 +963,8 @@ public:
     // disappear/disable. Active text drafts survive fresh model projections;
     // passive buffers instead follow the latest authoritative value.
     Result<Reply> set_controls(std::span<const Control>);
+
+    Result<Reply> set_controls(ControlList&);
 
     // Sparse complete values for existing keys. Order is irrelevant; duplicate or
     // missing keys and changes to kind/parent/structural references or tree

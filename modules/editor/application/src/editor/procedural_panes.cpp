@@ -333,7 +333,7 @@ const std::shared_ptr<const ui::TableData>& GeometrySpreadsheet::build_table(con
     return table_;
 }
 
-void GeometrySpreadsheet::append(std::vector<ui::Control>& controls, ui::ControlKey parent,
+void GeometrySpreadsheet::append(ui_language::ControlOutput controls, ui::ControlKey parent,
                                  ui_language::LiveDocument& live, const procedural::Geometry* geometry,
                                  std::uint64_t generation, std::wstring_view target_label,
                                  std::wstring_view error_text) {

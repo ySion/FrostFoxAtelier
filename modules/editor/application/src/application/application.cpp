@@ -2422,36 +2422,36 @@ Result<bool> Application::run_step(renderer::Capture* capture, StepTimes* times)
     // the next poll is after layout, which may cancel a live viewport edit.
     else if (!scene_.picking() || (scene_.draw() && scene_.draw()->picking == scene_.picking()))
         workspace_.render_notice.clear();
-    const auto describe = [&]() -> Result<std::vector<ui::Control>> {
+    const auto describe = [&]() -> Result<void> {
         // Selection/document commands can cancel the business edit before the next UI frame.
         if (workspace_.color_edit && !document_->owns_edit(editor::control::color_group))
             workspace_.color_edit.reset();
-        ATELIER_TRY_BIND(controls, workspace_.describe(*document_, view_size, ui_.presented().get(),
-                                                       project_ ? &*project_ : nullptr, &ui_, command_focus()));
-        if (workspace_.color_edit &&
-            (workspace_.color_edit->composition_failed || std::ranges::none_of(*controls, [](const auto& control) {
-                 return control.key == editor::control::color_editor;
-             }))) {
+        const auto project_controls = [&] {
+            return workspace_.describe(workspace_controls_, *document_, view_size, ui_.presented().get(),
+                                       project_ ? &*project_ : nullptr, &ui_, command_focus());
+        };
+        ATELIER_TRY(project_controls());
+        if (workspace_.color_edit && (workspace_.color_edit->composition_failed ||
+                                      std::ranges::none_of(workspace_controls_.controls(), [](const auto& control) {
+                                          return control.key == editor::control::color_editor;
+                                      }))) {
             const auto diagnostic = std::string(workspace_.ui_error());
             if (auto cancelled = finish_color_edit(false); !cancelled)
                 throw editor::detail::Failure(std::move(cancelled.error()));
-            controls = workspace_.describe(*document_, view_size, ui_.presented().get(),
-                                           project_ ? &*project_ : nullptr, &ui_, command_focus());
-            ATELIER_TRY(controls);
+            ATELIER_TRY(project_controls());
             workspace_.status = L"Colour editor could not open" +
                                 (diagnostic.empty() ? std::wstring{} : L": " + diagnostic_text(diagnostic));
         }
-        return controls;
+        return {};
     };
     std::optional<timing::Scope> stage{std::in_place, phases::ui};
-    ATELIER_TRY_BIND(controls, describe());
-    auto described = ui_.set_controls(*controls);
+    ATELIER_TRY(describe());
+    auto described = ui_.set_controls(workspace_controls_);
     if (!described && described.error().code != ui::ErrorCode::text_failed &&
         workspace_.reject_ui_controls("UI candidate rejected at control " + std::to_string(described.error().key) +
                                       ": " + ui_error(described.error()).message)) {
-        controls = describe();
-        ATELIER_TRY(controls);
-        described = ui_.set_controls(*controls);
+        ATELIER_TRY(describe());
+        described = ui_.set_controls(workspace_controls_);
     }
     if (!described) {
         auto error = ui_error(described.error());
@@ -2470,9 +2470,8 @@ Result<bool> Application::run_step(renderer::Capture* capture, StepTimes* times)
         workspace_.reject_ui_controls("Editor layout candidate rejected at control " +
                                       std::to_string(prepared.error().key) + ": " +
                                       ui_error(prepared.error()).message)) {
-        controls = describe();
-        ATELIER_TRY(controls);
-        described = ui_.set_controls(*controls);
+        ATELIER_TRY(describe());
+        described = ui_.set_controls(workspace_controls_);
         if (!described) {
             auto error = ui_error(described.error());
             error.message = "UI rejected restored editor controls (key " + std::to_string(described.error().key) +

@@ -629,8 +629,10 @@ struct Workspace {
                                               const ui::Session* ui = nullptr,
                                               const ui::ControlBox* command_focus = nullptr);
 
-    void reset_document();
+    Result<void> describe(ui::ControlList&, Session&, ui_layout::Size, const ui::UiFrame*, Project*, const ui::Session*,
+                          const ui::ControlBox* command_focus);
 
+    void reset_document();
     const Binding* binding(ui::ControlKey) const noexcept;
 
     ui::ControlKey object_control(ObjectId) const noexcept;

@@ -107,7 +107,7 @@ public:
 
     std::size_t redo_count() const noexcept { return history_.size() - cursor_ - 1; }
 
-    void append(std::vector<ui::Control>&, ui::ControlKey parent, ui_language::LiveDocument&) const;
+    void append(ui_language::ControlOutput, ui::ControlKey parent, ui_language::LiveDocument&) const;
 
     bool apply(const ui::Action&);
 

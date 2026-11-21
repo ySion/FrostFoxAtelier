@@ -56,7 +56,7 @@ public:
 
     std::vector<ui::MenuItem> menu(ui::ControlKey, const renderer::ViewSettings&) const;
 
-    void append(std::vector<ui::Control>&, ui::ControlKey, ui_language::LiveDocument&, const renderer::ViewSettings&,
+    void append(ui_language::ControlOutput, ui::ControlKey, ui_language::LiveDocument&, const renderer::ViewSettings&,
                 bool editable, std::wstring_view main_camera, ui_language::ActionBinding clear_camera) const;
 
     void observe(const renderer::FrameStats&);

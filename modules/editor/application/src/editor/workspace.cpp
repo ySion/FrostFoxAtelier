@@ -1142,6 +1142,14 @@ ui_language::TooltipBinding describe_operator_tooltip(PropertyHelpCache& cache, 
 Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout::Size size, const ui::UiFrame* frame,
                                                      Project* project, const ui::Session* ui,
                                                      const ui::ControlBox* command_focus) {
+    ui::ControlList list;
+    ATELIER_TRY(describe(list, session, size, frame, project, ui, command_focus));
+    return std::move(list).take();
+}
+
+Result<void> Workspace::describe(ui::ControlList& result, Session& session, ui_layout::Size size,
+                                 const ui::UiFrame* frame, Project* project, const ui::Session* ui,
+                                 const ui::ControlBox* command_focus) {
     property_help_.begin();
     sync_world(session);
     if (!command_focus && frame && ui)
@@ -1234,8 +1242,11 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
         std::erase_if(tree->expansion,
                       [&](const auto& entry) { return entry.first != ObjectId{} && !live.contains(entry.first); });
     binding_cursor_ = 0;
-    std::vector<ui::Control> result;
-    result.reserve(64 + members.size());
+    // The final host-authored tooltips also depend on these inputs outside their DSL region.
+    const unsigned help_state = unsigned(menu_bar_collapsed) | (unsigned(shelf_collapsed) << 1) |
+                                (unsigned(parameter_search_visible) << 2) |
+                                (unsigned(spreadsheet.follow_selected()) << 3);
+    result.begin(help_state);
     const auto requested_selection = session.selection().entity;
     const auto selected =
         std::ranges::any_of(members, [&](const auto& member) { return member.id() == requested_selection; })
@@ -1383,10 +1394,11 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
     // The three authored fixed-height bands define the native dock host extent.
     float chrome_height{};
     for (const auto key : {ui::ControlKey{2}, control::shelf, ui::ControlKey{100}}) {
-        const auto at = std::ranges::find(result, key, &ui::Control::key);
-        if (at == result.end() || at->layout.height.rule != ui_layout::SizeRule::fixed) {
+        const auto chrome = result.controls();
+        const auto at = std::ranges::find(chrome, key, &ui::Control::key);
+        if (at == chrome.end() || at->layout.height.rule != ui_layout::SizeRule::fixed) {
             if (reject_ui_controls("Editor chrome bands require fixed heights for the dock host."))
-                return describe(session, size, frame, project, ui, command_focus);
+                return describe(result, session, size, frame, project, ui, command_focus);
             throw std::runtime_error(std::string(ui_error()));
         }
         chrome_height += at->layout.height.value;
@@ -1767,7 +1779,7 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
                 hud.style.radius = {5.f, 5.f, 5.f, 5.f};
                 hud.style.font_size = 11.5f;
                 hud.style.foreground = ui::Color{.88f, .91f, .94f, 1.f};
-                result.push_back(std::move(hud));
+                result.append(std::span{&hud, 1}, 0);
             }
             continue;
         }
@@ -2070,7 +2082,8 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
                                                                 {"frame_btn", network_control::frame_all},
                                                                 {"canvas", network_control::canvas},
                                                                 {"tab_box", network_control::tab_search_box}}};
-            static_cast<void>(ui_document_->append("NetworkPanel", view.content, keys, inputs, result));
+            std::vector<ui::Control> network_controls;
+            static_cast<void>(ui_document_->append("NetworkPanel", view.content, keys, inputs, network_controls));
             if (has_graph && inspected) {
                 ui_layout::Size canvas_dip{std::max(160.f, size.width * .36f), std::max(120.f, size.height * .26f)};
                 if (frame) {
@@ -2082,11 +2095,13 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
                 std::vector<ui::Control> canvas_controls;
                 network.append_canvas(canvas_controls, network_control::canvas, canvas_dip, inspected, catalog,
                                       selected_graph_node, selected_graph_nodes);
-                const auto tab_it = std::ranges::find(result, network_control::tab_search_box, &ui::Control::key);
-                result.insert(tab_it, std::make_move_iterator(canvas_controls.begin()),
-                              std::make_move_iterator(canvas_controls.end()));
-                network.append_tab_categories(result, network_control::tab_search_box);
+                const auto tab_it =
+                    std::ranges::find(network_controls, network_control::tab_search_box, &ui::Control::key);
+                network_controls.insert(tab_it, std::make_move_iterator(canvas_controls.begin()),
+                                        std::make_move_iterator(canvas_controls.end()));
+                network.append_tab_categories(network_controls, network_control::tab_search_box);
             }
+            result.append(std::move(network_controls));
             continue;
         }
         if (view.key == control::entities_tab) {
@@ -3055,9 +3070,9 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
     menu_selection_ = session.selection();
     if (menu) {
         const auto find = [&](ui::ControlKey key) -> const ui::Control* {
-            const auto at =
-                std::find_if(result.begin(), result.end(), [&](const auto& item) { return item.key == key; });
-            return at == result.end() ? nullptr : &*at;
+            const auto controls = result.controls();
+            const auto at = std::ranges::find(controls, key, &ui::Control::key);
+            return at == controls.end() ? nullptr : &*at;
         };
         const auto* source = find(menu->source);
         bool available = source != nullptr;
@@ -4131,16 +4146,16 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
     }
     if (ui_document_->candidate_failed()) {
         reject_ui_controls(std::string(ui_error()));
-        return describe(session, size, frame, project, ui, command_focus);
+        return describe(result, session, size, frame, project, ui, command_focus);
     }
     const auto set_help = [&](ui::Control& ctrl, std::wstring_view title, std::wstring_view identity,
                               std::string_view desc) {
         if (!ctrl.tooltip)
             ctrl.tooltip = property_help_.get(ctrl.key, title, identity, desc);
     };
-    for (auto& ctrl : result) {
+    result.finish([&](ui::Control& ctrl) {
         if (ctrl.tooltip)
-            continue;
+            return;
         switch (ctrl.key) {
         case control::menu_bar_handle:
             set_help(ctrl, L"Toggle Menu Bar", menu_bar_collapsed ? L"Currently: Stowed" : L"Currently: Expanded",
@@ -4337,13 +4352,13 @@ Result<std::vector<ui::Control>> Workspace::describe(Session& session, ui_layout
             break;
         }
         }
-    }
+    });
     // A closed menu or retargeted control must not keep an executable old call.
     bindings_.erase(std::remove_if(bindings_.begin() + static_cast<std::ptrdiff_t>(binding_cursor_), bindings_.end(),
                                    [](const auto& binding) { return binding.kind == Binding::Kind::operator_call; }),
                     bindings_.end());
     property_help_.end();
-    return result;
+    return {};
 }
 
 std::array<double, 3> rgb_to_hsv(std::array<double, 3> c) noexcept {

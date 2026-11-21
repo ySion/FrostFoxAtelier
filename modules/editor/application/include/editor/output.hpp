@@ -129,7 +129,7 @@ public:
     // Failure retains the old cache, but never returns it for a new selection.
     ui::Result<std::shared_ptr<ui::CodeDocument>> body() const;
 
-    ui::Result<void> append(std::vector<ui::Control>&, ui::ControlKey, ui_language::LiveDocument&, float height);
+    ui::Result<void> append(ui_language::ControlOutput, ui::ControlKey, ui_language::LiveDocument&, float height);
 
 private:
     struct Stream;

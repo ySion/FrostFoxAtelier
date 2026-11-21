@@ -5,6 +5,27 @@
 #include <map>
 
 namespace atelier::ui_language {
+// A snapshot consumer copies descriptors; a retained host can reuse the same authored region.
+class ControlOutput {
+public:
+    ControlOutput(std::vector<ui::Control>& values) : flat_(&values) {}
+    ControlOutput(ui::ControlList& list) : list_(&list) {}
+    void require_full_submission() const {
+        if (list_)
+            list_->require_full_submission();
+    }
+    void append(std::span<const ui::Control> controls, std::uint64_t revision) const {
+        if (list_)
+            list_->append(controls, revision);
+        else
+            flat_->insert(flat_->end(), controls.begin(), controls.end());
+    }
+
+private:
+    std::vector<ui::Control>* flat_{};
+    ui::ControlList* list_{};
+};
+
 // One authoring file, one Runtime and one host key authority. Hot entry compilation
 // uses captured bindings; the Runtime thread publishes. The host owns Session submission:
 // append -> set_controls -> route cancellation effects -> prepare layout ->
@@ -63,7 +84,7 @@ public:
     // error, output contains the accepted snapshot and that input is suppressed
     // until it changes; the accepted scopes can still handle their own events.
     Result<void> append(std::string_view component, ui::ControlKey parent, std::span<const KeyBinding>,
-                        std::span<const InputValue>, std::vector<ui::Control>&);
+                        std::span<const InputValue>, ControlOutput);
 
     Result<bool> event(const ui::Action&);
 
@@ -106,6 +127,7 @@ private:
         std::optional<std::vector<InputValue>> rejected_inputs;
 
         bool accepted{};
+        std::uint64_t accepted_controls{}, proposed_controls{};
     };
 
     struct Stamp {

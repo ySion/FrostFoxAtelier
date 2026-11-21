@@ -607,7 +607,7 @@ bool Output::apply(const ui::Action& action) {
     return false;
 }
 
-ui::Result<void> Output::append(std::vector<ui::Control>& controls, ui::ControlKey parent,
+ui::Result<void> Output::append(ui_language::ControlOutput controls, ui::ControlKey parent,
                                 ui_language::LiveDocument& live, float height) {
     using namespace ui_language;
     rebuild();

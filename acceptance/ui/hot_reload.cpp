@@ -35,14 +35,16 @@ void verify_ui_error_recovery() {
     ui::Session session;
     take(session.initialize());
     take(session.set_surface({{320, 200}, 1, 1}));
-    std::vector<ui::Control> controls;
+    ui::ControlList controls;
     const std::array<KeyBinding, 1> keys{{{"run", 42}}};
     const auto stage = [&](double value) {
-        controls.clear();
-        return document.append("Probe", 0, keys, std::array<InputValue, 1>{value}, controls);
+        controls.begin();
+        auto staged = document.append("Probe", 0, keys, std::array<InputValue, 1>{value}, controls);
+        controls.finish();
+        return staged;
     };
     const auto present = [&](double count) {
-        require(controls.size() == 1 && controls.front().layout.height.value == 30.0 + count,
+        require(controls.controls().size() == 1 && controls.controls().front().layout.height.value == 30.0 + count,
                 "Unexpected accepted UI state.");
         require(session.set_controls(controls).has_value(), "UI error recovery controls were refused.");
         auto frame = session.prepare();

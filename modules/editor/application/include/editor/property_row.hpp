@@ -89,7 +89,9 @@ public:
     }
 
     void end() {
-        std::erase_if(entries_, [](const auto& entry) { return !entry.second.used; });
+        // A retained panel can use its already decorated descriptor without calling get() again.
+        std::erase_if(entries_,
+                      [](const auto& entry) { return !entry.second.used && entry.second.help.use_count() == 1; });
     }
 
     void clear() { entries_.clear(); }
