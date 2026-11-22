@@ -2,7 +2,7 @@
 
 当前实现、接口和验收以[模块说明](README.md)为准。本页保留首阶段方案中尚有用的产品决定、设计依据与未实施的跨模块约定，不是已实现能力清单，也不授权启动后续阶段。
 
-P1、共享不可变列迁移、统一 `procedural.Node` / `process(...)` 节点架构、`.source` 语言级 `parallel_for` 与显式 `fail("...")`、S2 可视化与图操作（Slice 1A + Slice 1B：`.procgraph` 资产、SOP 视口上下文切换、点/法线/朝向辅助显示、Geometry Spreadsheet、Houdini 式二维 Network 节点连线画布、`Tab` 浮动搜索自动连线、`Y` 划断连线、`graph.layout` 自动拓扑排版、独立图撤销历史与 `graph.*` Control 操作链）、S3/S4 生成式建模核心闭环（`Extrude`、`Sweep`、`.source` 多端口辅助列与 `Spatial` 并发 BVH 查询、L3 受控 `Node` 变长拓扑构建接口），以及 S5-1 场景生成器组件（`world.ProceduralGeneratorEntity` / `world.ProceduralGeneratorComponent`、宿主边界同步、Scene Lit / Play 联动与实例 `procedural.bake`）已交付。属性列、可选输入、组遮罩与 `[RunOver]` 层通过方法参数属性（`APARAM` / `.source` `[In]/[Out]/[InOut]/[Group]/[Port]`）和正式 `.source` class 统一表达，不再使用 `PointNode`、`Node::fail`、`Meta("procedural.bind", ...)` 或代码片段宏拼接。尚未实现渲染器 GPU 大批量常驻实例化区段（S5-2）、通用资产节点 `AssetNode`（S4 子图封装）、持久磁盘 Cache 或持久冻结；节点会话冻结已可用。
+P1、共享不可变列迁移、统一 `procedural.Node` / `process(...)` 节点架构、`.source` 语言级 `parallel_for` 与显式 `fail("...")`、S2 可视化与图操作（Slice 1A + Slice 1B：`.procgraph` 资产、SOP 视口上下文切换、点/法线/朝向辅助显示、Geometry Spreadsheet、Houdini 式二维 Network 节点连线画布、`Tab` 浮动搜索自动连线、`Y` 划断连线、`graph.layout` 自动拓扑排版、独立图撤销历史与 `graph.*` Control 操作链）、S3/S4 生成式建模核心闭环（`Extrude`、`Sweep`、`.source` 多端口辅助列与 `Spatial` 并发 BVH 查询、L3 受控 `Node` 变长拓扑构建接口）、S4 子图数字资产与三层同构参数体验（`.procgraph` v3、通用 `AssetNode`、`GraphInput`/`GraphOutput`、多目标暴露参数 `parameters`、`graph.extract_asset` 一键提取、共享 `Evaluator::CachePool` 与默认锁定预览），以及 S5-1 场景生成器组件（`world.ProceduralGeneratorEntity` / `world.ProceduralGeneratorComponent` 内联 `overrides`、宿主边界同步、Scene Lit / Play 联动与实例 `procedural.bake`）已交付。属性列、可选输入、组遮罩与 `[RunOver]` 层通过方法参数属性（`APARAM` / `.source` `[In]/[Out]/[InOut]/[Group]/[Port]`）和正式 `.source` class 统一表达，不再使用 `PointNode`、`Node::fail`、`Meta("procedural.bind", ...)` 或代码片段宏拼接。尚未实现渲染器 GPU 大批量常驻实例化区段（S5-2）、持久磁盘 Cache 或持久冻结；节点会话冻结已可用。
 
 ## 方向与依据
 
@@ -35,13 +35,13 @@ S0 契约静态对齐 → S1 原生拓扑/构造/体积采样/Realize，随后�
 | 项目 | 状态与下一步 |
 | --- | --- |
 | S3 拓扑工具 | `Connectivity`、`Extrude`（法线外推/内缩封边/底盖及逐图元缩放属性）与 `Sweep`（最小旋转标架沿折线扫掠矩形/圆管/自定义闭合截面，三维扭曲侧面自动按对角线破分为满足 δ_p 的三角形流形）已接入 SOP 求值链，见[几何操作](README.md#操作)。后续按真实生成命题补齐 `Clip`、`Fuse/Triangulate` |
-| Remap／属性噪声 | E/F 已接通共同绑定与 Source 3D value noise / point float Remap，现行合同见[Noise / Remap](README.md#noise--remap)。其他噪声族、导数和周期仍未排期 |
+| Remap／属性噪声 | E/F 已接通共同绑定与 Source 3D value noise / point float Remap，现行合同见[Noise / Remap](README.md#noise--remap-数值契约)。其他噪声族、导数和周期仍未排期 |
 | 语言能力 | 参数名与参数属性（含 `[In/Group(..., Port = "...")]` 与 SOP 定长列保护）、可写引用容器结构修改（`Array<T>&`/`String&`/`Struct&`）、自动合成 `Array<源码 struct/enum>`、`parallel_for`、复合赋值（`+=` 等）与短路 `?:`、显式 `fail("...")`、`math.is_finite`、`math.as_uint`/`math.as_int`、同步值区间读 self、字段元数据、数学函数、代码身份、引擎源码加载及按依赖复用编译单元已接入，语义见 [LANGUAGE.md](../../../LANGUAGE.md)、[数学模块](../../math.md)和[原生值借用](../../native-value-borrows.md) |
 | Source 业务失败 | 已落地语言级 `fail("...")` 语句，替换全部内建 `.source` 节点并移除原 `Node.fail(message)`，零 Runtime `String` 分配且支持 `parallel_for` 块内失败收敛 |
 | L3 与多端口查询 | 已落地 `[In/Group(..., Port = "...")]` 辅助端口列借用、`[Port] const procedural.Spatial&`（`Spatial::acquire` 16 槽共享 BVH 缓存 + `spatial.source` `parallel_for` 安全并发查询）与受控 `Node` L3 拓扑构建方法（`emit_points` / `emit_polylines` / `emit_polygons` / `emit_quads` + `set_*`），合同见[模块说明](README.md#source-空间查询与受控拓扑构建l3)与显式合同表 |
 | 调度 | 当前求值器在 Runtime 线程上串行执行，没有每帧时间片调度。C++ 节点迁到工作线程须先有只读求值计划、清楚的发布和借用生命周期，再由实测决定；不能只因列支持写时复制就并行调用 Runtime |
 | Volume 并行化 | 原生入口已采用融合分类与稳定填充的两次 fork/join，不等于后台图求值；当前合同及双规模 profile 见[模块说明](README.md#测量)。正式只记 volume/build/classify 墙钟；三段成本用临时真 P1 诊断并单列插桩扰动，不为计时拆开产品流水线。并行收益只比较同一新内核未插桩的 P1/default P，串行加速片的 12.34× 不是并行或规模扩展证据 |
-| 数字资产 | 模板加实例、通用节点而非逐资产 Runtime 类型、定义传播及两级冻结已裁决，见下表；未实现，不属于 S1。具体持久格式与模块接入仍须另审 |
+| 数字资产与参数面板 | 单轨 `.procgraph` v3 数字资产（`procedural.AssetNode` + `GraphInput`/`GraphOutput`、`graph.extract_asset` 一键提取，不建内联递归 `SubnetNode`）、声明式多目标参数提升 `parameters`、跨实例共享 `Evaluator::CachePool` 与三层同构参数面板（单节点整数量化滑杆/条件可见/局部 `Category`、图级暴露参数、场景 `ProceduralGeneratorEntity` 内联 `overrides` 与默认锁定预览）已全部落地，合同见[显式合约](#已裁决的后续合同与待确认时机)与[模块说明](README.md#图文件) |
 
 ### 核心断层闭环状态与下一阶段顺序
 
@@ -59,7 +59,7 @@ S0 契约静态对齐 → S1 原生拓扑/构造/体积采样/Realize，随后�
 **推进顺序**：
 1. **阶段一（人机闭环基础设施，已完成）**：已落地 `editor.stateful_rebuild` 与 `control.spatial_diagnostics`。
 2. **阶段二（真实业务驱动的生成式建模闭环，已完成）**：已通过带道路排斥与扫掠围墙的哨站（`FortifiedOutpost`）与可调层高/开间的模块化建筑废墟（`ModularRuinBuilding`）双命题，端到端落地 `source.spatial_and_aux_ports`、受控 `GeometryBuilder`（L3）及 C++ `Extrude` / `Sweep` 算子。
-3. **阶段三（复合资产化与十万实例规模闭环，待推进）**：依次落地 `asset.generic_node` 子图数字资产封装（S4），以及[集合与渲染接口](#集合与渲染接口)中的 `SceneSnapshot` GPU 常驻实例集合区段（S5-2，消除 [scene.cpp](../../../modules/engine/presentation/src/scene.cpp) `Scene::render_items()` 的 CPU 逐实例 `RenderItem` 展开）。
+3. **阶段三（复合资产化与十万实例规模闭环）**：S4 子图数字资产与三层同构参数体验已全部落地；下一步推进[集合与渲染接口](#集合与渲染接口)中的 `SceneSnapshot` GPU 常驻实例集合区段（S5-2，消除 [scene.cpp](../../../modules/engine/presentation/src/scene.cpp) `Scene::render_items()` 的 CPU 逐实例 `RenderItem` 展开）。
 
 ### Volume 表面带的首角舍入限制（未排期）
 
@@ -83,8 +83,9 @@ S0 契约静态对齐 → S1 原生拓扑/构造/体积采样/Realize，随后�
 
 | name | meaning | writer | reader | violation | status |
 | --- | --- | --- | --- | --- | --- |
-| asset.template_instance | 数字资产是一份图定义，包含带默认值的暴露参数和几何输入。创建实例时取默认值并立即求值；实例作者记录只存资产引用、参数覆盖、输入连线。实例默认处于编辑锁定状态，只能改暴露参数和输入；解锁后直接编辑共享定义，每次编辑立即传播到所有未冻结实例。不允许实例局部分叉，变体必须显式另存新资产。编辑锁定/解锁不等于冻结/解冻 | 未来资产定义编辑器与实例创建/编辑入口 | 未来图资产解析、实例参数解析与求值宿主 | 偷存实例私有定义、解锁后暗中分叉、未冻结实例遗漏定义更新，或把编辑锁定当冻结 | 用户已裁决，未实现；不属 S1 |
-| asset.generic_node | 图资产不发布 Runtime 类型；所有资产实例共用一个通用节点类型，暂名 AssetNode，保存资产引用和覆盖记录。Tab 菜单仍按资产列出。定义删除或改名参数后，旧覆盖值保留并报告，不静默删除或猜测改名映射；实例的三类作者记录仍按上一条 | 未来资产目录、通用节点注册与定义编辑入口 | 未来 Tab 菜单、参数面板、覆盖解析和图保存 | 每资产发布新 Runtime 类型，静默丢失无法匹配的覆盖，或把不匹配覆盖当作已应用 | 用户已裁决，未实现；不属 S1；类型名暂定 |
+| asset.template_instance | 每个 `.procgraph` 即数字资产定义，由 `GraphInput`（含独立预览回退）与 `GraphOutput`（与作者调试 `Display [D]` 解耦）界定外部几何端口，由顶层声明式多目标 `parameters` 界定暴露参数默认值。不设内联递归 `SubnetNode`，子网复用通过 `graph.extract_asset` 提取为 `.procgraph` 并原位替换为 `AssetNode`。实例（含图内 `AssetNode` 与场景 `ProceduralGeneratorComponent`）各自持有私有运行时 `Graph` 克隆根并共享 `Evaluator::CachePool`，作者记录只存资产引用、差量 `overrides` 与输入连线；默认处于编辑锁定状态（World 模式下跟随选中 Entity 的 Network 面板默认同样锁定），解锁后直接编辑共享定义并立即传播到所有未冻结实例，不允许实例局部分叉 | 资产定义编辑器、`graph.extract_asset` 与实例创建/覆盖编辑入口 | 图资产解析、实例参数覆盖同步与共享缓存求值宿主 | 建立第二套内联子图树、混用 `Display [D]` 与正式 `GraphOutput`、偷存实例私有定义、解锁后暗中分叉、未冻结实例遗漏传播，或把编辑锁定当冻结 | 已实现（S4） |
+| asset.generic_node | 图资产不发布 Runtime 类型；所有子图实例共用 `procedural.AssetNode`（存 `"asset": "project/{GUID}"`、`"overrides"` 与 `seed_offset`），端口由实例级 `ports(Runtime&, ObjectId)` 读取目标资产的有序 `GraphInput`/`GraphOutput`。`Tab` 菜单仍按工程 `.procgraph` 资产列出。上游资产重排或删改端口/暴露参数名后，外层连接按端口名重对齐，失效连线与无法匹配的旧 `overrides` 保留在 `kept` 并产生诊断，不静默丢弃或猜测改名映射 | 资产目录、`AssetNode` 注册、端口重对齐与覆盖编解码入口 | `Tab` 菜单、参数面板（图根、`AssetNode`、场景生成器）、图 v3 与场景保存/加载 | 每资产发布新 Runtime 类型、按端口静态下标错连、静默丢失失效连线或未匹配 `overrides` | 已实现（S4） |
+| parameter.three_layer_ux | 单节点、`.procgraph` 暴露参数与场景 `ProceduralGeneratorEntity` 共用同构参数交互：整数 `Range` 生成基于按下起点连续位移量化的步进 `1` 滑杆；`Meta("ui.visible_when", ...)` 控制枚举/布尔分支字段显隐（已受图参数控制的字段保持可见以供解绑）；节点局部按需 `Category` 分节不改动全局 Entity 参数布局；图级 `parameters` 采用同 `TypeId` 多目标 `targets` 声明式绑定（求硬边界交集、自动同步节点改名/删除），不引入字符串通道表达式 | `ui` 控件层、`editor/core` 属性与图参数绑定层、`Workspace` 参数面板 | 单节点检视、`.procgraph` 根参数、`AssetNode` 与场景 `ProceduralGeneratorEntity` 检视 | 整数拖调产生小数拒绝或慢拖死区、开启全局分类破坏 Entity 变换行、引入脆弱字符串通道表达式，或隐藏受控字段致无法解绑 | 已实现（S4） |
 | freeze.scope_and_history | 两级冻结都保留：节点冻结属于资产定义，所有实例共享；实例/生成器冻结属于场景或包含它的图。冻结只在显式解冻后失效，定义变化只提示、不清掉冻结。冻结/解冻是可撤销编辑，与编辑锁定/解锁分别命名；撤销记录编辑操作；节点冻结与解冻共享不可变快照引用，普通重算不写入历史。冻结载荷的具体存储格式另定 | 未来图定义编辑、宿主实例编辑与冻结命令 | 未来求值宿主、保存/加载与编辑历史 | 定义变化自动解冻、混淆两级归属、混用锁定与冻结，或把重算结果逐次塞入撤销历史 | 用户已裁决，未实现；不属 S1 |
 | geometry.attribute_namespace | 属性名在整个 Geometry 内唯一；跨层访问只能使用显式 Promote 或拓扑数组，不引入同名属性的隐式层优先级 | Geometry 属性创建/合并、Promote；未来绑定与 Wrangle | 全部几何算法、列绑定与属性检查 | 为同名跨层列隐式选择优先层，或静默跨层回退 | 全局唯一规则已实现并保留；未来消费者同样遵守 |
 | wrangle.formal_class | 自定义 SOP / Wrangle 直接采用正式 `.source` `class Name : procedural.Node` + 整节点 `void process(...)`（公开字段为节点参数，形参属性 `[In]/[Out]/[InOut]/[Group]` 绑定属性列，显式书写串行循环、`parallel_for` 或多阶段步骤，用 `fail("...")` 报告业务失败），淘汰非正式片段拼接展开。读不存在的非 Optional 属性报错，不跨层回退 | `.source` 编译器、参数属性反射与求值器 | 统一 Source/Runtime `Node`、列绑定与求值器 | 另建脚本包装世界、引入字符串宏拼接 Wrangle，或静默跨层取值 | 已实现正式类 `process` 与 `parallel_for` / `fail` 模型 |
@@ -105,7 +106,8 @@ S0 契约静态对齐 → S1 原生拓扑/构造/体积采样/Realize，随后�
 | 构造绕序与未来互通 | Houdini Box 为 8 点、6 面、24 角，从外侧看顺时针（例如面 0 的点序 1,5,4,0，N 朝 −Z）。本项目保持外侧逆时针、右手定则外法线，实际点/面顺序见[构造合同](README.md#构造拓扑的持久语义)。未来 Houdini 导入/导出必须显式反转绕序，不按数据猜；C 的整体正有向体积检查应拒绝未经转换的顺时针输入，不自动修补 |
 | geometry.attribute_namespace、wrangle.formal_class | Houdini primitive wrangle 读 `@P` 得面中心，`@ptnum` 是首角的点；写 `@P` 静默丢弃，点不动且无警告。故本项目保留全 Geometry 属性名唯一，跨层只能显式 Promote 或经拓扑数组访问，不按当前 Run Over 层猜测同名读写含义 |
 | 显式跨层、vertex N | Houdini 几何只有 vertex N 时，point wrangle 读一次 `@N` 就平均提升为 point N 并删除 vertex N；写也会静默替换，Box 硬边丢失。本项目读不存在/异层列报错，不隐式 Promote；B 构造的 vertex N 不能被消费者静默提升，转层必须显式操作 |
-| asset.template_instance：不允许局部分叉 | Houdini HDA 实例 Allow Editing 后修改内部，只改该实例；保存定义并 match 后才传播。用户明确不采用此行为：本项目解锁直接编辑共享定义，变体必须另存新资产；冻结另按 freeze.scope_and_history 处理 |
+| asset.template_instance：不允许局部分叉与双轨子图 | Houdini 同时维护内联匿名 Subnet 与外部 HDA 两套机制，且 HDA 实例 Allow Editing 后修改内部只改该实例、保存定义并 match 后才传播。本项目已有 `.source` 承担局部算法抽象、`NetworkBox` 承担视觉分组，故不设内联 `SubnetNode`，统一采用单轨 `.procgraph` + 一键 `graph.extract_asset`；解锁直接编辑共享定义并即时传播到未冻结实例，变体必须另存新资产；正式交付端口由 `GraphOutput` 显式声明，不与调试 `Display [D]` 耦合 |
+| parameter.three_layer_ux：声明式多目标绑定与同构覆盖 | Houdini 用 `ch("../parm")` 相对路径字符串表达式提升内部参数，节点改名易断且缺乏静态类型与范围校验，关卡调参还需跨层级界面。本项目采用类型化 `targets` 多目标声明式绑定（要求同一叶 `TypeId`、自动求硬边界交集并随节点改名/删除同步），并在 `.procgraph` 根、`AssetNode` 与场景 `ProceduralGeneratorEntity` 三处直接内联渲染同一套暴露参数滑杆与差量 `overrides` |
 
 ### 仍需细化的模块合同
 
@@ -125,8 +127,8 @@ S0 契约静态对齐 → S1 原生拓扑/构造/体积采样/Realize，随后�
 
 ### 宿主、资源与保存
 
-- 生成器组件挂普通 Entity，引用图资产键、保存暴露参数覆盖、持有最近发布的不可变输出；具体基类、模块归属及提取时机在 S5 前与 World/presentation 复核。SceneSnapshot 展开集合、不为每个实例生成 CPU 渲染项仍是历史接入方向。
-- 候选图资源为 `Content/**/*.procgraph`，复用 `.asset.json` GUID 边车；AssetKind 在末尾增加，编辑器负责人审。现有图 JSON v1 不含暴露参数；添加 `parameters` 时另定是否升到 v2。
+- 生成器组件（`world.ProceduralGeneratorComponent`）挂普通 Entity，引用 `.procgraph` 资产键、保存暴露参数差量 `overrides`、持有最近发布的不可变输出（基础宿主同步与组件级 `overrides` / 私有运行时图克隆已落地；S5-2 接入 `SceneSnapshot` GPU 常驻实例集合区段）。
+- 图资源为 `Content/**/*.procgraph`，复用 `.asset.json` GUID 边车。现行图 JSON v3 含节点、连接、暴露参数 `parameters`、`AssetNode` `asset`/`overrides`、`NetworkBox` 与 `StickyNote`，遵循[持久化格式规则](../../persistence.md)只读写最新版本，不保留旧版兼容分支。
 - 场景经组件 properties 保存。生成器若需要新的顶层载荷，先确定版本；新程序只读最新场景版本，不增加旧版本迁移。已有内联 Array 编解码按字段 form/kind 分派，不按 JSON 数组形状猜测；它扩展了此前无法保存的字段形状，不需要空迁移。
 - 材质沿用 `editor::Session::mesh_surfaces(assets::Reader&, const MeshAsset&)`，网格经 `project.assets().mesh(key)` 取得。编辑器与 Play 同源：按网格槽顺序解析当前默认材质 capture，未映射槽保留导入表面，不乘组件独有参数。刷新/重载后重新解析，逐元素比较 SurfaceRef；外层 vector 每次新建，不能拿它的地址当变化。材质变化不替换局部变换数组。
 - 第二刀的生成网格候选资源键为 `<图 GUID>#<输出名>`，经 set_mesh_binding 接入；碰撞缓存加入内容哈希。未实施，不是现在可解析的资源键。

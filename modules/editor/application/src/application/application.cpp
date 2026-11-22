@@ -564,11 +564,30 @@ Result<void> Application::action(const ui::Action& source) {
         return open_graph_context("scratch/procedural");
     }
     const std::string net_graph = workspace_.effective_network_graph(*document_, project_ ? &*project_ : nullptr);
+    const bool net_locked = workspace_.is_network_graph_locked(*document_, net_graph);
+    if (event.kind == ui::ActionKind::activate && event.key == editor::network_control::lock_toggle) {
+        if (!net_graph.empty() && !document_->is_scratch_graph(net_graph) && !document_->world().running()) {
+            const bool next_locked = !net_locked;
+            workspace_.network_lock_overrides[net_graph] = next_locked;
+            if (next_locked) {
+                workspace_.network.cancel_gesture();
+                workspace_.network.close_tab_search();
+                workspace_.network.close_popup();
+            }
+            workspace_.bump_view_revision();
+            workspace_.status =
+                next_locked ? L"Locked Preview: shared .procgraph protected from accidental edits"
+                            : L"Unlocked shared .procgraph: live edits propagate to all AssetNodes and Generators";
+        }
+        return {};
+    }
     if (event.kind == ui::ActionKind::activate && event.key == editor::network_control::pin_toggle) {
         if (!workspace_.network_pinned) {
             if (!net_graph.empty()) {
                 workspace_.network_pinned = true;
-                workspace_.pinned_graph = net_graph;
+                workspace_.pinned_graph = (!workspace_.graph_breadcrumbs.empty() && workspace_.active_graph.empty())
+                                              ? workspace_.graph_breadcrumbs.front().graph_key
+                                              : net_graph;
                 workspace_.status = L"Pinned Network graph";
             }
         } else {
@@ -580,22 +599,42 @@ Result<void> Application::action(const ui::Action& source) {
     }
     if (event.kind == ui::ActionKind::activate && event.key == editor::network_control::isolate_toggle) {
         if (!workspace_.active_graph.empty()) {
-            const std::string prev = workspace_.active_graph;
+            const std::string cur_graph = workspace_.active_graph;
+            const std::string root_graph =
+                workspace_.graph_breadcrumbs.empty() ? cur_graph : workspace_.graph_breadcrumbs.front().graph_key;
+            auto saved_crumbs = std::move(workspace_.graph_breadcrumbs);
+            const std::string saved_sel = workspace_.selected_graph_node;
             exit_graph_context();
-            if (workspace_.selected_generator_graph(*document_) != prev && document_->has_graph(prev)) {
+            if (workspace_.selected_generator_graph(*document_) != root_graph && document_->has_graph(root_graph)) {
                 workspace_.network_pinned = true;
-                workspace_.pinned_graph = prev;
+                workspace_.pinned_graph = root_graph;
             }
+            if (!saved_crumbs.empty() &&
+                (workspace_.network_pinned || workspace_.selected_generator_graph(*document_) == root_graph)) {
+                workspace_.graph_breadcrumbs = std::move(saved_crumbs);
+                workspace_.dived_network_graph = cur_graph;
+            }
+            if (!saved_sel.empty() && document_->graph_node(cur_graph, saved_sel))
+                workspace_.set_single_graph_selection(saved_sel);
             workspace_.status = L"Returned 3D Viewport to World scene";
             return {};
         }
-        if (!net_graph.empty())
-            return open_graph_context(net_graph);
+        if (!net_graph.empty()) {
+            auto saved_crumbs = std::move(workspace_.graph_breadcrumbs);
+            const std::string saved_sel = workspace_.selected_graph_node;
+            ATELIER_TRY(open_graph_context(net_graph));
+            workspace_.graph_breadcrumbs = std::move(saved_crumbs);
+            if (!saved_sel.empty() && document_->graph_node(net_graph, saved_sel))
+                workspace_.set_single_graph_selection(saved_sel);
+            return {};
+        }
         return {};
     }
     if (event.kind == ui::ActionKind::activate)
         if (const auto choice = workspace_.network_path_choice(event.key)) {
             using Kind = editor::Workspace::NetworkPathChoice::Kind;
+            workspace_.graph_breadcrumbs.clear();
+            workspace_.dived_network_graph.clear();
             if (choice->kind == Kind::unpin_world) {
                 if (!workspace_.active_graph.empty())
                     exit_graph_context();
@@ -637,7 +676,7 @@ Result<void> Application::action(const ui::Action& source) {
         return canvas_dip;
     };
     if (event.kind == ui::ActionKind::activate && event.key == editor::network_control::add_node) {
-        if (net_graph.empty() || !document_->has_graph(net_graph) || document_->world().running())
+        if (net_graph.empty() || !document_->has_graph(net_graph) || document_->world().running() || net_locked)
             return {};
         const auto canvas_dip = network_canvas_dip();
         std::string from_node;
@@ -667,13 +706,15 @@ Result<void> Application::action(const ui::Action& source) {
     }
     if (event.kind == ui::ActionKind::activate && event.key >= editor::network_control::tab_pick_first &&
         event.key < editor::network_control::tab_pick_first + editor::NetworkCanvas::max_tab_results) {
-        if (net_graph.empty() || !document_->has_graph(net_graph) || !workspace_.network.tab_search().open)
+        if (net_graph.empty() || !document_->has_graph(net_graph) || !workspace_.network.tab_search().open ||
+            net_locked)
             return {};
-        ATELIER_TRY_BIND(catalog, document_->procedural_node_types());
+        ATELIER_TRY_BIND(catalog, document_->procedural_node_types(project_ ? &*project_ : nullptr, net_graph));
         ATELIER_TRY_BIND(created, workspace_.network.commit_tab_pick(
                                       *document_, net_graph, *catalog,
                                       static_cast<std::size_t>(event.key - editor::network_control::tab_pick_first),
-                                      workspace_.selected_graph_node, workspace_.selected_graph_nodes, false));
+                                      workspace_.selected_graph_node, workspace_.selected_graph_nodes, false,
+                                      project_ ? &*project_ : nullptr));
         effects(ui_.focus(0));
         workspace_.inspecting_asset = false;
         workspace_.material_inspection.clear();
@@ -686,9 +727,10 @@ Result<void> Application::action(const ui::Action& source) {
         const auto prev_sel = workspace_.selected_graph_node;
         const auto prev_multi = workspace_.selected_graph_nodes;
         std::wstring net_status;
-        ATELIER_TRY_BIND(handled, workspace_.network.apply_action(*document_, net_graph, workspace_.selected_graph_node,
-                                                                  workspace_.selected_graph_nodes, network_canvas_dip(),
-                                                                  event, net_status));
+        ATELIER_TRY_BIND(handled,
+                         workspace_.network.apply_action(*document_, net_graph, workspace_.selected_graph_node,
+                                                         workspace_.selected_graph_nodes, network_canvas_dip(), event,
+                                                         net_status, document_->world().running() || net_locked));
         if (*handled) {
             if (workspace_.selected_graph_node != prev_sel || workspace_.selected_graph_nodes != prev_multi) {
                 workspace_.inspecting_asset = false;
@@ -822,6 +864,8 @@ Result<void> Application::action(const ui::Action& source) {
         return {};
     }
     if (event.kind == ui::ActionKind::activate) {
+        if (event.key == editor::network_control::nav_back && !workspace_.graph_breadcrumbs.empty())
+            return pop_graph_breadcrumb();
         if (const auto direction = navigation_direction(event.key))
             return done(workspace_.navigate(*document_, *this, direction), L"Selection history");
         if (event.key == world_context) {
@@ -916,6 +960,179 @@ Result<void> Application::action(const ui::Action& source) {
                     drop->parent == ObjectId{} ? L"Entity unparented" : L"Entity parented");
     }
     if (const auto* binding = workspace_.binding(event.key)) {
+        if (binding->kind == editor::Workspace::Binding::Kind::graph_param_override_toggle) {
+            if (event.kind != ui::ActionKind::activate)
+                return {};
+            const auto* enabled = std::get_if<bool>(&event.value);
+            if (!enabled)
+                return invalid();
+            auto* proj = project_ ? &*project_ : nullptr;
+            const bool is_gen_comp = binding->component != ObjectId{};
+            const editor::PromotedParameterTarget target{binding->slot, binding->node_name, binding->component};
+            if (!*enabled) {
+                return done(document_->clear_promoted_parameter_override(target, binding->material_path, proj),
+                            is_gen_comp ? L"Reverted generator override to Digital Asset default"
+                                        : L"Reverted parameter override to Digital Asset default");
+            }
+            ATELIER_TRY_BIND(
+                params, is_gen_comp ? document_->generator_promoted_parameters(binding->component, proj)
+                                    : document_->graph_asset_node_parameters(binding->slot, binding->node_name, proj));
+            const auto pit =
+                std::ranges::find(*params, binding->material_path, &editor::GraphPromotedParameterView::name);
+            if (pit == params->end() || !pit->valid || pit->properties.empty())
+                return invalid();
+            const wchar_t* msg = is_gen_comp ? L"Enabled explicit generator parameter override"
+                                             : L"Enabled explicit Digital Asset override";
+            if (pit->properties.front().is_string) {
+                return done(document_->set_promoted_parameter_string(target, binding->material_path,
+                                                                     pit->properties.front().string_value, proj),
+                            msg);
+            }
+            std::vector<Scalar> scalars;
+            scalars.reserve(pit->properties.size());
+            for (const auto& prop : pit->properties)
+                scalars.push_back(prop.value);
+            return done(document_->set_promoted_parameter_scalars(target, binding->material_path, scalars, proj), msg);
+        }
+        if (binding->kind == editor::Workspace::Binding::Kind::graph_param_text) {
+            if (event.kind != ui::ActionKind::edit_commit)
+                return {};
+            const auto* wide = std::get_if<std::wstring>(&event.value);
+            if (!wide)
+                return invalid();
+            const auto utf8 = platform::utf16_to_utf8(*wide);
+            if (!utf8)
+                return std::unexpected(Error{ErrorCode::invalid_storage, "Invalid UTF-16 text."});
+            const wchar_t* msg = binding->component != ObjectId{} ? L"Generator parameter override updated"
+                                 : binding->node_name.empty()     ? L"Graph parameter updated"
+                                                                  : L"Digital Asset override updated";
+            const editor::PromotedParameterTarget target{binding->slot, binding->node_name, binding->component};
+            return done(document_->set_promoted_parameter_string(target, binding->material_path, *utf8,
+                                                                 project_ ? &*project_ : nullptr),
+                        msg);
+        }
+        if (binding->kind == editor::Workspace::Binding::Kind::graph_param_field ||
+            binding->kind == editor::Workspace::Binding::Kind::graph_param_slider) {
+            auto* proj = project_ ? &*project_ : nullptr;
+            const bool is_gen_comp = binding->component != ObjectId{};
+            if (event.kind == ui::ActionKind::activate) {
+                const auto* checked = std::get_if<bool>(&event.value);
+                if (!checked)
+                    return {};
+                const Scalar val{*checked};
+                const wchar_t* msg = is_gen_comp                  ? L"Generator parameter override updated"
+                                     : binding->node_name.empty() ? L"Graph parameter updated"
+                                                                  : L"Digital Asset override updated";
+                const editor::PromotedParameterTarget target{binding->slot, binding->node_name, binding->component};
+                return done(
+                    document_->set_promoted_parameter_scalars(target, binding->material_path, std::span{&val, 1}, proj),
+                    msg);
+            }
+            const auto* number = std::get_if<double>(&event.value);
+            if (!number || !std::isfinite(*number))
+                return invalid();
+            const auto params = is_gen_comp ? document_->generator_promoted_parameters(binding->component, proj)
+                                : binding->node_name.empty()
+                                    ? document_->graph_promoted_parameters(binding->slot)
+                                    : document_->graph_asset_node_parameters(binding->slot, binding->node_name, proj);
+            if (!params)
+                return std::unexpected(params.error());
+            const auto pit =
+                std::ranges::find(*params, binding->material_path, &editor::GraphPromotedParameterView::name);
+            if (pit == params->end() || !pit->valid || binding->index >= pit->properties.size())
+                return invalid();
+            ATELIER_TRY_BIND(typed, scalar_value(pit->properties[binding->index].value, *number));
+            const std::optional<std::size_t> lane =
+                pit->is_vector ? std::optional<std::size_t>{binding->index} : std::nullopt;
+            switch (event.kind) {
+            case ui::ActionKind::edit_begin:
+                return done(document_->begin_graph_parameter_edit(binding->slot, binding->node_name,
+                                                                  binding->material_path, lane, event.key, proj,
+                                                                  binding->component),
+                            L"Editing Digital Asset parameter / Esc cancels");
+            case ui::ActionKind::edit_preview:
+                return done(document_->preview_graph_parameter_edit(event.key, std::span{&*typed, 1}),
+                            L"Parameter preview / Esc cancels");
+            case ui::ActionKind::edit_commit: {
+                if (auto previewed = document_->preview_graph_parameter_edit(event.key, std::span{&*typed, 1});
+                    !previewed) {
+                    static_cast<void>(document_->cancel_edit());
+                    return previewed;
+                }
+                return done(document_->commit_edit(event.key), L"Digital Asset parameter committed");
+            }
+            default:
+                return {};
+            }
+        }
+        if (binding->kind == editor::Workspace::Binding::Kind::graph_param_context) {
+            if (event.kind != ui::ActionKind::reset)
+                return {};
+            auto* proj = project_ ? &*project_ : nullptr;
+            const editor::PromotedParameterTarget target{binding->slot, binding->node_name, binding->component};
+            if (binding->component != ObjectId{} ||
+                (binding->component == ObjectId{} && !binding->node_name.empty() && binding->path.empty())) {
+                return done(document_->clear_promoted_parameter_override(target, binding->material_path, proj),
+                            binding->component != ObjectId{} ? L"Reverted generator override to Digital Asset default"
+                                                             : L"Reverted override to Digital Asset default");
+            }
+            if (binding->component == ObjectId{} && binding->node_name.empty() && binding->path.empty()) {
+                ATELIER_TRY_BIND(params, document_->graph_promoted_parameters(binding->slot));
+                const auto pit =
+                    std::ranges::find(*params, binding->material_path, &editor::GraphPromotedParameterView::name);
+                if (pit == params->end() || !pit->valid || pit->properties.empty())
+                    return {};
+                if (pit->properties.front().is_string) {
+                    return done(
+                        document_->set_promoted_parameter_string(target, binding->material_path, pit->default_string),
+                        L"Promoted parameter restored to default");
+                }
+                if (!pit->default_scalars.empty()) {
+                    return done(
+                        document_->set_promoted_parameter_scalars(target, binding->material_path, pit->default_scalars),
+                        L"Promoted parameter restored to default");
+                }
+                return {};
+            }
+            if (!binding->path.empty() && binding->object != ObjectId{}) {
+                auto& runtime = document_->world().runtime();
+                auto cur_type = runtime.type_of(binding->object);
+                if (!cur_type)
+                    return std::unexpected(cur_type.error());
+                const FieldInfo* leaf_field = nullptr;
+                for (const auto fid : binding->path) {
+                    const auto info = runtime.describe(*cur_type);
+                    if (!info)
+                        return std::unexpected(info.error());
+                    const auto fit = std::ranges::find((*info)->fields, fid, &FieldInfo::id);
+                    if (fit == (*info)->fields.end())
+                        return {};
+                    leaf_field = &*fit;
+                    cur_type = fit->value.type;
+                }
+                if (!leaf_field || leaf_field->default_leaves.empty())
+                    return {};
+                const auto leaf_desc = runtime.describe(*cur_type);
+                if (!leaf_desc)
+                    return std::unexpected(leaf_desc.error());
+                std::vector<editor::PropertyPatch> patches;
+                if ((*leaf_desc)->math.vector() &&
+                    leaf_field->default_leaves.size() == (*leaf_desc)->math.components() &&
+                    (*leaf_desc)->fields.size() >= leaf_field->default_leaves.size()) {
+                    for (std::size_t li = 0; li < leaf_field->default_leaves.size(); ++li) {
+                        world::FieldPath lane_path = binding->path;
+                        lane_path.push_back((*leaf_desc)->fields[li].id);
+                        patches.push_back({std::move(lane_path), leaf_field->default_leaves[li]});
+                    }
+                } else if (leaf_field->default_leaves.size() == 1) {
+                    patches.push_back({binding->path, leaf_field->default_leaves.front()});
+                } else {
+                    return {};
+                }
+                return done(document_->set_properties(binding->object, patches), L"Parameter restored to default");
+            }
+            return {};
+        }
         if (binding->kind == editor::Workspace::Binding::Kind::material_override) {
             if (event.kind != ui::ActionKind::activate)
                 return {};
@@ -1395,21 +1612,10 @@ Result<void> Application::open_graph_context(std::string_view key) {
     workspace_.inspecting_asset = false;
     workspace_.inspecting_network = false;
     workspace_.material_inspection.clear();
+    workspace_.graph_breadcrumbs.clear();
+    workspace_.dived_network_graph.clear();
     workspace_.active_graph = std::string(key);
-    if (const auto* doc = document_->graph_document(key)) {
-        std::optional<std::string> disp_name;
-        if (doc->graph.registered())
-            if (const auto listed = procedural::contents(document_->world().runtime(), doc->graph.id()))
-                if (listed->display() != ObjectId{})
-                    disp_name = document_->graph_node_name(listed->display());
-        if (disp_name)
-            workspace_.set_single_graph_selection(*disp_name);
-        else if (!doc->nodes.empty())
-            workspace_.set_single_graph_selection(doc->nodes.back().name);
-        else
-            workspace_.set_single_graph_selection({});
-    } else
-        workspace_.set_single_graph_selection({});
+    workspace_.set_single_graph_selection(workspace_.default_selected_graph_node(*document_, key));
     workspace_.dock.select(editor::network_control::tab);
     workspace_.dock.select(editor::control::parameters_tab);
     workspace_.bump_view_revision();
@@ -1423,11 +1629,115 @@ void Application::exit_graph_context() {
     workspace_.network.cancel_gesture();
     workspace_.network.set_cut_key(false);
     workspace_.network.close_tab_search();
+    workspace_.graph_breadcrumbs.clear();
+    workspace_.dived_network_graph.clear();
     workspace_.active_graph.clear();
     workspace_.inspecting_network = false;
     workspace_.set_single_graph_selection({});
     workspace_.bump_view_revision();
     camera_cut_ = true;
+}
+
+Result<void> Application::dive_into_asset_node(std::string_view parent_graph, std::string_view node_name) {
+    if (parent_graph.empty() || node_name.empty())
+        return {};
+    const auto* gnode = document_->graph_node(parent_graph, node_name);
+    auto& runtime = document_->world().runtime();
+    ATELIER_TRY_BIND(asset_node_type, runtime.find_type("procedural.AssetNode"));
+    if (!gnode || !gnode->node.registered() || runtime.type_of(gnode->node.id()) != *asset_node_type ||
+        gnode->asset_key.empty())
+        return std::unexpected(Error{ErrorCode::argument_mismatch, "Selected node has no Digital Asset assigned."});
+    const std::string target_key = gnode->asset_key;
+    if (target_key == parent_graph || std::ranges::any_of(workspace_.graph_breadcrumbs, [&](const auto& crumb) {
+            return crumb.graph_key == target_key;
+        })) {
+        return std::unexpected(Error{ErrorCode::argument_mismatch, "Circular Digital Asset reference."});
+    }
+    close_menu(false);
+    const auto edit = ui_.commit_edit();
+    if (!edit || !effects(*edit))
+        return std::unexpected(
+            Error{ErrorCode::invalid_storage, "Finish the current field edit before diving into a Digital Asset."});
+    if (!document_->has_graph(target_key)) {
+        if (!project_)
+            return std::unexpected(
+                Error{ErrorCode::invalid_storage, "Open a project before opening a Digital Asset (.procgraph)."});
+        ATELIER_TRY(document_->open_graph(*project_, target_key));
+    }
+    workspace_.network.cancel_gesture();
+    workspace_.network.close_tab_search();
+    workspace_.network.close_popup();
+    workspace_.network_lock_overrides.erase(target_key);
+    workspace_.graph_breadcrumbs.push_back({std::string(parent_graph), std::string(node_name)});
+    if (!workspace_.active_graph.empty()) {
+        workspace_.active_graph = target_key;
+        camera_cut_ = true;
+    } else {
+        workspace_.dived_network_graph = target_key;
+    }
+    workspace_.set_single_graph_selection(workspace_.default_selected_graph_node(*document_, target_key));
+    workspace_.inspecting_asset = false;
+    workspace_.material_inspection.clear();
+    workspace_.inspecting_network = true;
+    workspace_.dock.select(editor::network_control::tab);
+    workspace_.dock.select(editor::control::parameters_tab);
+    workspace_.bump_view_revision();
+    workspace_.status = workspace_.is_network_graph_locked(*document_, target_key)
+                            ? L"Dived into Digital Asset (Locked Preview · Click Locked in Network toolbar to edit)"
+                            : L"Dived into Digital Asset (Unlocked)";
+    return {};
+}
+
+Result<void> Application::pop_graph_breadcrumb() {
+    if (workspace_.graph_breadcrumbs.empty())
+        return {};
+    close_menu(false);
+    const auto edit = ui_.commit_edit();
+    if (!edit || !effects(*edit))
+        return std::unexpected(
+            Error{ErrorCode::invalid_storage, "Finish the current field edit before leaving the Digital Asset."});
+    workspace_.network.cancel_gesture();
+    workspace_.network.close_tab_search();
+    workspace_.network.close_popup();
+    editor::Workspace::GraphBreadcrumb crumb;
+    bool found_valid = false;
+    while (!workspace_.graph_breadcrumbs.empty()) {
+        crumb = std::move(workspace_.graph_breadcrumbs.back());
+        workspace_.graph_breadcrumbs.pop_back();
+        if (!document_->has_graph(crumb.graph_key) && project_ && project_->entry(crumb.graph_key))
+            static_cast<void>(document_->open_graph(*project_, crumb.graph_key));
+        if (document_->has_graph(crumb.graph_key)) {
+            found_valid = true;
+            break;
+        }
+    }
+    if (!found_valid) {
+        workspace_.dived_network_graph.clear();
+        if (!workspace_.active_graph.empty())
+            exit_graph_context();
+        else {
+            workspace_.set_single_graph_selection({});
+            workspace_.inspecting_network = false;
+            workspace_.bump_view_revision();
+        }
+        return {};
+    }
+    if (!workspace_.active_graph.empty()) {
+        workspace_.active_graph = crumb.graph_key;
+        camera_cut_ = true;
+    } else {
+        workspace_.dived_network_graph = workspace_.graph_breadcrumbs.empty() ? std::string{} : crumb.graph_key;
+    }
+    const std::string next_sel = document_->graph_node(crumb.graph_key, crumb.asset_node_name)
+                                     ? crumb.asset_node_name
+                                     : workspace_.default_selected_graph_node(*document_, crumb.graph_key);
+    workspace_.set_single_graph_selection(next_sel);
+    workspace_.inspecting_asset = false;
+    workspace_.material_inspection.clear();
+    workspace_.inspecting_network = true;
+    workspace_.bump_view_revision();
+    workspace_.status = L"Returned to parent network";
+    return {};
 }
 
 void Application::select_graph_node(std::string_view key, std::string_view node_name) {
@@ -1734,6 +2044,7 @@ void Application::close_menu(bool restore_focus, std::source_location caller, st
                                        "Menu closing"));
     workspace_.menu.reset();
     workspace_.menu_items.clear();
+    workspace_.network_context_node.clear();
     for (auto& submenu : submenus_)
         if (auto hidden = submenu->hide(); !hidden)
             report_error(hidden.error(), "menu.cleanup_failed");

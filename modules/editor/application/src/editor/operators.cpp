@@ -24,6 +24,10 @@ std::string Context::focused_graph() const {
     return {};
 }
 
+bool Context::is_graph_locked(std::string_view key) const noexcept {
+    return !key.empty() && std::ranges::find(locked_graphs, key) != locked_graphs.end();
+}
+
 namespace detail {
 // A live parameter or result record in owned, aligned storage.
 class OperatorValue {

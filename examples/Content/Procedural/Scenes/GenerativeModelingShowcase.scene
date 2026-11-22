@@ -111,6 +111,13 @@
             }
           ],
           "name": "",
+          "overrides": {
+            "depth": 6.8,
+            "floors": 2,
+            "roof_pitch": 2.15,
+            "ruin_collapse": 0.56,
+            "width": 7.6
+          },
           "properties": {
             "chunk_size": 16.0,
             "override_seed": true,

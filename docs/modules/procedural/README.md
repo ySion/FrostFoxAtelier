@@ -8,14 +8,14 @@
 | [operations.hpp](../../../modules/engine/procedural/include/procedural/operations.hpp) | 导入、生成、挤出（`extrude`）、扫掠（`sweep`）、撒点、射线投射、变换、Promote、Copy to Points、Realize、包围盒 |
 | [instances.hpp](../../../modules/engine/procedural/include/procedural/instances.hpp) | 把 instance 层发布为渲染用的实例集合 |
 | [bvh.hpp](../../../modules/engine/procedural/include/procedural/bvh.hpp) | 首角扇形 `Bvh` 与供 `.source` 并行只读查询的 `Spatial` 加速缓冲及 16 槽共享缓存 |
-| [graph.hpp](../../../modules/engine/procedural/include/procedural/graph.hpp) | `Graph`、统一 `Node` 基类（含受控 L3 `emit_*/set_*` 构建方法）、端口、连接与编辑入口，类型注册 |
-| [nodes.hpp](../../../modules/engine/procedural/include/procedural/nodes.hpp) | C++ 内置节点 |
-| [evaluator.hpp](../../../modules/engine/procedural/include/procedural/evaluator.hpp) | 增量求值、结果缓存与失败保旧接口 |
+| [graph.hpp](../../../modules/engine/procedural/include/procedural/graph.hpp) | `Graph`、统一 `Node` 基类（含受控 L3 `emit_*/set_*` 构建方法）、实例级 `ports`、`AssetSubgraph` 绑定与编辑入口 |
+| [nodes.hpp](../../../modules/engine/procedural/include/procedural/nodes.hpp) | C++ 内置节点（含边界节点 `GraphInput`/`GraphOutput` 与通用数字资产节点 `AssetNode`） |
+| [evaluator.hpp](../../../modules/engine/procedural/include/procedural/evaluator.hpp) | 增量求值、跨实例共享 `CachePool`、递归子图求值与失败保旧接口 |
 | [random.hpp](../../../modules/engine/procedural/include/procedural/random.hpp) | 固定算法的整数哈希与单位随机数 |
 
 引擎附带的自有语言节点与随机库在 [assets/engine/procedural](../../../assets/engine/procedural)。
 
-本文只说明已实现能力。方向、设计依据与未实施的跨模块约定见[后续路线与未决契约](roadmap.md)。编辑器与呈现层已接入 `.procgraph` 资产、SOP 视口上下文、Houdini 式二维 Network 连线画布、Geometry Spreadsheet、`world.ProceduralGeneratorEntity` / `world.ProceduralGeneratorComponent` 场景生成器组件、实例 `procedural.bake` 与 Control 操作链（见[编辑器模块](../editor/README.md)与[项目场景](../world/project-scenes.md)）；渲染器 GPU 大批量常驻实例化区段、持久磁盘 Cache 与磁盘冻结尚未实施，节点已支持会话冻结。
+本文只说明已实现能力。方向、设计依据与未实施的跨模块约定见[后续路线与未决契约](roadmap.md)。编辑器与呈现层已接入 `.procgraph` v3 数字资产（`AssetNode`、`GraphInput`/`GraphOutput`、多目标暴露参数 `parameters` 与 `graph.extract_asset` 一键提取）、SOP 视口上下文、Houdini 式二维 Network 连线画布（含默认锁定预览与面包屑下钻）、Geometry Spreadsheet、`world.ProceduralGeneratorEntity` / `world.ProceduralGeneratorComponent` 场景生成器组件（含内联 `overrides` 与私有克隆图求值）、实例 `procedural.bake` 与 Control 操作链（见[编辑器模块](../editor/README.md)与[项目场景](../world/project-scenes.md)）；渲染器 GPU 大批量常驻实例化区段、持久磁盘 Cache 与磁盘冻结尚未实施，节点已支持会话冻结。
 
 ## Geometry
 
@@ -176,6 +176,9 @@ Release 下运行 `atelier_procedural_acceptance --profile-boolean <新的绝对
 | Realize | group=""、variant="variant"、target_attributes=[] | sources（有序多个）, points → output |
 | Extrude | group=""、distance=0.5、inset=0、distance_attribute=""、inset_attribute=""、individual=true、output_back=true、front_group=""、side_group="" | surface → output |
 | Sweep | profile=rectangle（rectangle / tube / custom）、width=1、height=1、radius=0.5、segments=8、up=(0,1,0)、end_caps=true、scale_attribute="pscale" | backbone, cross_section → output |
+| GraphInput | port_name="input"、order=0、preview_fallback=empty（empty / grid / box / sphere / line；仅独立打开该图且无外层注入时回退） | output |
+| GraphOutput | port_name="output"、order=0（零拷贝透传正式交付输出，与作者调试 `Display [D]` 解耦） | input → output |
+| AssetNode | seed_offset=0（`0` 原样透传外层种子，非零经 `procedural::hash` 确定性混合）；动态端口由 `ports(runtime, node_id)` 从所绑定的 `AssetSubgraph` 读取 | 动态 inputs → 动态 outputs |
 
 原生节点的 `process(...) const noexcept` 返回 `atelier::Result<void>`，反射仍发布为业务结果 void，端口和 BorrowSafe 约束不变。业务失败在节点边界转换为 `invocation_failed` 并保留原始原因，不通过异常传递；`Resources::mesh` 和 `Context::mesh` 同样通过 noexcept Result 返回资源拒绝。未连接的单输入端口收到空几何。
 
@@ -204,7 +207,7 @@ Remap 四端点须有限、输入两端不同，输出两端可以相同。按 `
 
 ## 求值器
 
-`Evaluator(runtime, graph, resources, program, cache_bytes)` 在 Runtime 线程上同步求值 display 节点及其上游。`evaluate()` 之后：
+`Evaluator(runtime, graph, resources, program, cache_bytes_or_pool)` 在 Runtime 线程上同步求值 display 节点（或 `evaluate_targets` 指定的有序 `GraphOutput` 节点集合）及其上游。多个 `Evaluator`（主图、`AssetNode` 子图求值器与场景 `ProceduralGeneratorComponent` 私有图求值器）可共享同一个 `std::shared_ptr<CachePool>`（默认总预算 256 MiB LRU），内容键一致的节点跨实例零重算共享只读 `Geometry` 输出；`AssetNode` 嵌套深度硬上限为 `Evaluator::max_subgraph_depth = 8`。`evaluate()` 之后：
 - 若本轮求值与当前 display 节点上游链路均成功，`output()` 与 `last_valid_output()` 均指向最新几何输出；
 - 若未设置 display，两者均为空；
 - **若本轮求值发生图级错误（返回 `Error`）或当前 display 链路存在失败节点**，`output()` 均明确清空为 `nullptr`（绝不把过期的陈旧几何伪装成当前有效结果），而 `last_valid_output()` 保留此前最近一次成功的输出供编辑器预览回退。
@@ -230,7 +233,7 @@ Remap 四端点须有限、输入两端不同，输出两端可以相同。按 `
 
 ## 图文件
 
-图文件的编解码在编辑器里（[editor/graph_format.hpp](../../../modules/editor/core/include/editor/graph_format.hpp)，`atelier_editor_core`），procedural 不依赖 editor。`load_graph(runtime, text)` 把 **version 2** 的图文件打开到已注册 procedural 类型的 Runtime 中（不保留对旧 version 1 的向后兼容），得到 `GraphDocument`：图的根、可选 `template_node`、每个节点的 `GraphNode`（名字、节点根、画布位置、`shape` 形状预设、可选 `#RRGGBB` `color`、`comment` 备注与保留的原始 JSON）、`notes`（Sticky Notes 便签）、`boxes`（Network Boxes 分组背景框）、保留的 settings 和加载诊断（`world::Diagnostic`）。`save_graph(runtime, document)` 写出规范文本。名字、位置、外观与画布注释是文档数据，不放进节点对象，所以移动节点或改配色/形状不盖章；节点 `bypass` 为 true 时在节点条目写出 `"bypass": true` 并在加载时经 `set_bypassed` 恢复。
+图文件的编解码在编辑器里（[editor/graph_format.hpp](../../../modules/editor/core/include/editor/graph_format.hpp)，`atelier_editor_core`），procedural 不依赖 editor。`load_graph(runtime, text, asset_port_resolver)` 把 **version 3** 的图文件打开到已注册 procedural 类型的 Runtime 中（遵循[持久化格式规则](../../persistence.md)，不保留对旧版本的向后兼容），得到 `GraphDocument`：图的根、可选 `template_node`、有序声明式暴露参数列表 `parameters`（`name`、同 `TypeId` 多目标绑定 `targets: ["node.field", ...]` 及可选 `label`/`category`/`description`）、每个节点的 `GraphNode`（名字、节点根、`AssetNode` 的 `asset` 持久键与差量 `overrides` JSON、画布位置、`shape` 形状预设、可选 `#RRGGBB` `color`、`comment` 备注与保留的原始 JSON）、`notes`（Sticky Notes 便签）、`boxes`（Network Boxes 分组背景框）、保留的 settings 和加载诊断（`world::Diagnostic`）。`save_graph(runtime, document)` 写出规范文本。名字、位置、外观与画布注释是文档数据，不放进节点对象，所以移动节点或改配色/形状不盖章；节点 `bypass` 为 true 时在节点条目写出 `"bypass": true` 并在加载时经 `set_bypassed` 恢复。
 
 ```json
 {
@@ -238,20 +241,23 @@ Remap 四端点须有限、输入两端不同，输出两端可以相同。按 `
     "terrain": {"color": "#386b5e", "position": [-40.0, -40.0], "size": [240.0, 200.0], "title": "Terrain"}
   },
   "nodes": {
-    "grid":   {"inputs": {}, "position": [0.0, 0.0], "properties": {"columns": 4, "rows": 3, "size": {"x": 3.0, "y": 2.0}}, "type": "procedural.Grid"},
-    "merged": {"comment": "Final", "inputs": {"inputs": ["moved.output", "line.output"]}, "position": [400.0, 60.0], "properties": {}, "shape": "trapezoid", "type": "procedural.Merge"}
+    "grid": {"inputs": {}, "position": [0.0, 0.0], "properties": {"columns": 4, "rows": 3, "size": {"x": 3.0, "y": 2.0}}, "type": "procedural.Grid"},
+    "out":  {"comment": "Final", "inputs": {"input": "grid.output"}, "position": [400.0, 60.0], "properties": {"order": 0, "port_name": "output"}, "shape": "diamond", "type": "procedural.GraphOutput"}
   },
   "notes": {
     "memo1": {"color": "#d4a72c", "position": [220.0, 0.0], "size": [200.0, 96.0], "text": "Pipeline overview", "title": "Note"}
   },
-  "settings": {"display": "merged", "seed": 7, "template": "grid"},
-  "version": 2
+  "parameters": [
+    {"category": "Layout", "label": "Grid Width", "name": "grid_width", "targets": ["grid.size.x"]}
+  ],
+  "settings": {"display": "out", "seed": 7, "template": "grid"},
+  "version": 3
 }
 ```
 
-- **规范形式**：`nodes`、`notes`、`boxes` 均以标识符名字为键，按名字排序；空的 `notes` / `boxes` 及默认外观字段（`shape: auto`、无自定义 `color`、空 `comment`、`bypass: false`、无 `template`）省略写出，`dump(2)` 后加换行，未改动文档再次保存逐字节相同。
-- **宽容加载**：与 Scene 相同，已声明 `Transient` 的旧字段跳过，其余放不进的内容保留、报告并在保存时写回。类型不存在或不能作为节点的条目整项保留（`unknown_type`）；已知节点和 settings 中解析不了的参数叶经 `PropertyReport` 保留；失效连接按端口保留（`reference_dropped`，多输入端口混有未解析端点时保留有序列表，并在后续连线、剪线、重连、串接或删除上游节点时同步增删对应端点、保留其余未解析项与相对顺序并计入撤销历史）；`display` 或 `template` 指向没有加载的节点时同样保留，并在重命名或删除占位节点时同步更新与清理（含撤销恢复）。
-- **结构错误**直接失败：版本不是 2、未知键、`nodes`/`settings`/`notes`/`boxes` 不是对象、标识符非法、缺少 `type`、`position`/`size` 非有限或尺寸非正、非法的 `shape` 预设名或非 `#RRGGBB` 颜色、`inputs` 格式非法。
+- **规范形式**：`nodes`、`notes`、`boxes` 均以标识符名字为键，按名字排序；`parameters` 保持作者排列顺序；空的 `parameters` / `notes` / `boxes`、空的 `AssetNode` `overrides` 及默认外观字段（`shape: auto`、无自定义 `color`、空 `comment`、`bypass: false`、无 `template`）省略写出，`dump(2)` 后加换行，未改动文档再次保存逐字节相同。
+- **宽容加载**：与 Scene 相同，已声明 `Transient` 的旧字段跳过，其余放不进的内容保留、报告并在保存时写回。类型不存在或不能作为节点的条目整项保留（`unknown_type`）；已知节点和 settings 中解析不了的参数叶经 `PropertyReport` 保留；上游数字资产增删重排 `GraphInput`/`GraphOutput` 端口后，外层连接按端口名重对齐，失效连接按端口保留入 `kept["inputs"]`（`reference_dropped`，多输入端口混有未解析端点时保留有序列表，并在后续连线、剪线、重连、串接或删除上游节点时同步增删对应端点、保留其余未解析项与相对顺序并计入撤销历史）；上游删改暴露参数名后，`AssetNode` 上未匹配的旧 `overrides` 原样保留并报告诊断；`display` 或 `template` 指向没有加载的节点时同样保留，并在重命名或删除占位节点时同步更新与清理（含撤销恢复）。
+- **结构错误**直接失败：版本不是 3、未知键、`nodes`/`settings`/`notes`/`boxes` 不是对象、`parameters` 不是数组、标识符非法、缺少 `type`、非 `procedural.AssetNode` 携带 `asset`/`overrides`、`position`/`size` 非有限或尺寸非正、非法的 `shape` 预设名或非 `#RRGGBB` 颜色、`inputs` 格式非法。
 
 图文件不保存派生的 Geometry 缓冲。
 

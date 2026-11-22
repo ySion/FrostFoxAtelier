@@ -19,7 +19,8 @@ bool NumberField::operator==(const NumberField& other) const {
            number_bits(minimum) == number_bits(other.minimum) && number_bits(maximum) == number_bits(other.maximum) &&
            number_bits(drag_step) == number_bits(other.drag_step) &&
            number_bits(fine_step) == number_bits(other.fine_step) && label == other.label && axis == other.axis &&
-           slider == other.slider && single_precision == other.single_precision;
+           slider == other.slider && single_precision == other.single_precision && integral == other.integral &&
+           enabled == other.enabled;
 }
 
 ui_layout::NodeInput single_line_layout(float width) {
@@ -42,6 +43,7 @@ void append_parameter_row(std::vector<Control>& controls, const ParameterRow& ro
         return controls.back();
     };
     const bool modified = row.group_modified.value_or(false);
+    const ControlKey ctx = row.context_target ? row.context_target : row.group_key;
     auto layout = NodeInput::row(8);
     layout.cross_gap = 3;
     layout.flow = FlexSpec{};
@@ -49,17 +51,22 @@ void append_parameter_row(std::vector<Control>& controls, const ParameterRow& ro
     layout.flow->align_items = Alignment::fit(.5f);
     auto& root = append(row.key, row.parent, ControlKind::container, layout);
     root.enabled = row.enabled;
+    root.context_target = ctx;
+    root.context_group = row.group_key;
     root.classes = {"parameter-row"};
     auto caption = single_line_layout(160);
     auto& label =
         append(row.group_key ? row.group_key : row.label_key, row.key, ControlKind::label, caption, row.label);
     label.classes = {"parameter-label"};
     label.modified = modified;
-    label.context_target = row.group_key;
+    label.context_target = ctx;
+    label.context_group = row.group_key;
     auto body = NodeInput::row(2);
     body.height = Axis::content(single_line_height);
     body.width = Axis::flex(Basis::fixed(std::max(144.f, body_minimum)), 1, 1, body_minimum);
-    append(row.body_key, row.key, ControlKind::container, body);
+    auto& body_ctrl = append(row.body_key, row.key, ControlKind::container, body);
+    body_ctrl.context_target = ctx;
+    body_ctrl.context_group = row.group_key;
 }
 
 Result<void> append_number_row(std::vector<Control>& controls, ParameterRow row, std::span<const NumberField> fields) {
@@ -79,7 +86,8 @@ Result<void> append_number_row(std::vector<Control>& controls, ParameterRow row,
     for (const auto& field : fields) {
         if (field.slider &&
             (fields.size() != 1 || !field.slider->key || field.slider->minimum >= field.slider->maximum ||
-             field.slider->minimum < field.minimum || field.slider->maximum > field.maximum))
+             field.slider->minimum < field.minimum || field.slider->maximum > field.maximum ||
+             (field.integral && std::ceil(field.slider->minimum) >= std::floor(field.slider->maximum))))
             return std::unexpected(
                 Error{ErrorCode::invalid_control, field.key, 0,
                       "A scalar slider requires a unique key and a range within the number's legal range."});
@@ -87,6 +95,7 @@ Result<void> append_number_row(std::vector<Control>& controls, ParameterRow row,
         number.key = field.key;
         number.parent = row.body_key;
         number.kind = ControlKind::number;
+        number.enabled = row.fields_enabled && field.enabled;
         number.text = field.label;
         number.layout = single_line_layout();
         number.layout.width = ui_layout::Axis::expand(1, field_minimum);
@@ -94,6 +103,7 @@ Result<void> append_number_row(std::vector<Control>& controls, ParameterRow row,
         number.minimum = field.minimum;
         number.maximum = field.maximum;
         number.single_precision = field.single_precision;
+        number.integral = field.integral;
         number.default_value = field.default_value;
         number.context_target = field.key;
         number.context_group = row.group_key;
@@ -117,6 +127,7 @@ Result<void> append_number_row(std::vector<Control>& controls, ParameterRow row,
             slider.key = field.slider->key;
             slider.parent = row.body_key;
             slider.kind = ControlKind::slider;
+            slider.enabled = row.fields_enabled && field.enabled;
             slider.layout = single_line_layout();
             slider.layout.width = ui_layout::Axis::expand(1, 40);
             slider.value = field.value;
@@ -124,6 +135,9 @@ Result<void> append_number_row(std::vector<Control>& controls, ParameterRow row,
             slider.maximum = field.slider->maximum;
             slider.drag_step = field.drag_step;
             slider.fine_step = field.fine_step;
+            slider.integral = field.integral;
+            slider.context_target = field.key;
+            slider.context_group = row.group_key;
             slider.classes = {"parameter-slider"};
             controls.push_back(std::move(slider));
         }

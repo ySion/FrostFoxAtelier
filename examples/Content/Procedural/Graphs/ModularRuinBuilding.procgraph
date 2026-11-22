@@ -1,6 +1,6 @@
 {
   "boxes": {
-    "grammar_stage": {
+    "layout_stage": {
       "color": "#386b5e",
       "position": [
         60.0,
@@ -10,7 +10,7 @@
         264.0,
         176.0
       ],
-      "title": "Architectural & Ruin Grammar"
+      "title": "Building Shell & Layout"
     },
     "manifold_construction": {
       "color": "#7c5a3a",
@@ -40,7 +40,7 @@
   "nodes": {
     "OUT_ruin_building": {
       "color": "#eab308",
-      "comment": "Milestone output",
+      "comment": "Digital Asset output",
       "inputs": {
         "input": "merge_all.output"
       },
@@ -48,14 +48,38 @@
         140.0,
         624.0
       ],
-      "properties": {},
+      "properties": {
+        "order": 0,
+        "port_name": "output"
+      },
       "shape": "diamond",
-      "type": "procedural.Null"
+      "type": "procedural.GraphOutput"
+    },
+    "building_layout": {
+      "comment": "4-port building layout",
+      "inputs": {},
+      "position": [
+        140.0,
+        24.0
+      ],
+      "properties": {
+        "bay_width": 2.6,
+        "depth": 8.2,
+        "floor_height": 3.1,
+        "floors": 3,
+        "pillar_ratio": 0.19,
+        "roof_pitch": 1.75,
+        "ruin_angle": 0.68,
+        "ruin_collapse": 0.36,
+        "seed": 42,
+        "width": 10.4
+      },
+      "type": "game.ModularBuildingLayout"
     },
     "facade_extrude": {
       "comment": "Per-face dist & inset",
       "inputs": {
-        "surface": "grammar.facade_panels"
+        "surface": "building_layout.facade_panels"
       },
       "position": [
         -120.0,
@@ -74,27 +98,6 @@
       },
       "type": "procedural.Extrude"
     },
-    "grammar": {
-      "comment": "4-port L3 grammar",
-      "inputs": {},
-      "position": [
-        140.0,
-        24.0
-      ],
-      "properties": {
-        "bay_width": 2.6,
-        "depth": 8.2,
-        "floor_height": 3.1,
-        "floors": 3,
-        "pillar_ratio": 0.19,
-        "roof_pitch": 1.75,
-        "ruin_angle": 0.68,
-        "ruin_collapse": 0.36,
-        "seed": 42,
-        "width": 10.4
-      },
-      "type": "game.RuinArchitectureGrammar"
-    },
     "merge_all": {
       "inputs": {
         "inputs": [
@@ -112,7 +115,7 @@
     "roof_sweep": {
       "comment": "Rafters & ridge beam",
       "inputs": {
-        "backbone": "grammar.roof_timbers"
+        "backbone": "building_layout.roof_timbers"
       },
       "position": [
         200.0,
@@ -137,7 +140,7 @@
     "rubble_grounder": {
       "comment": "Parallel BVH raycast",
       "inputs": {
-        "candidates": "grammar.rubble_points",
+        "candidates": "building_layout.rubble_points",
         "support": "slab_extrude.output",
         "walls": "facade_extrude.output"
       },
@@ -173,7 +176,7 @@
     "slab_extrude": {
       "comment": "Podium & gallery slabs",
       "inputs": {
-        "surface": "grammar.floor_slabs"
+        "surface": "building_layout.floor_slabs"
       },
       "position": [
         40.0,
@@ -220,13 +223,71 @@
         268.0,
         176.0
       ],
-      "text": "1. RuinArchitectureGrammar (.source) subdivides bays into pilasters, spandrels, sills, jambs, lintels, cornices, gallery slabs, and roof rafters.\n2. Extrude & Sweep build beveled watertight solids.\n3. Drag ruin_collapse (0..0.92) or stories/bay_width for live parametric remodeling.",
+      "text": "1. ModularBuildingLayout (.source) subdivides bays into pilasters, spandrels, sills, jambs, lintels, cornices, gallery slabs, and roof rafters.\n2. Extrude & Sweep build beveled watertight solids.\n3. Drag promoted Digital Asset sliders (floors, width, depth, bay_width, roof_pitch, ruin_collapse) on the Graph, AssetNode, or Scene Entity.",
       "title": "Modular Ruin Building SOP"
     }
   },
+  "parameters": [
+    {
+      "category": "Dimensions",
+      "label": "Width",
+      "name": "width",
+      "targets": [
+        "building_layout.width"
+      ]
+    },
+    {
+      "category": "Dimensions",
+      "label": "Depth",
+      "name": "depth",
+      "targets": [
+        "building_layout.depth"
+      ]
+    },
+    {
+      "category": "Dimensions",
+      "label": "Floors",
+      "name": "floors",
+      "targets": [
+        "building_layout.floors"
+      ]
+    },
+    {
+      "category": "Dimensions",
+      "label": "Floor Height",
+      "name": "floor_height",
+      "targets": [
+        "building_layout.floor_height"
+      ]
+    },
+    {
+      "category": "Facade & Roof",
+      "label": "Bay Width",
+      "name": "bay_width",
+      "targets": [
+        "building_layout.bay_width"
+      ]
+    },
+    {
+      "category": "Facade & Roof",
+      "label": "Roof Pitch",
+      "name": "roof_pitch",
+      "targets": [
+        "building_layout.roof_pitch"
+      ]
+    },
+    {
+      "category": "Ruin Weathering",
+      "label": "Ruin Collapse",
+      "name": "ruin_collapse",
+      "targets": [
+        "building_layout.ruin_collapse"
+      ]
+    }
+  ],
   "settings": {
     "display": "OUT_ruin_building",
     "seed": 308
   },
-  "version": 2
+  "version": 3
 }

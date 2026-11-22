@@ -226,13 +226,32 @@ bool visible(Rect bounds, Clip clip) {
            bounds.y + bounds.height > clip.top;
 }
 
-std::wstring format(double value, bool single_precision = false) {
+std::wstring format(double value, bool single_precision = false, bool integral = false) {
     char buffer[64];
-    const auto result = single_precision ? std::to_chars(buffer, buffer + sizeof(buffer), static_cast<float>(value))
-                                         : std::to_chars(buffer, buffer + sizeof(buffer), value);
+    std::to_chars_result result{};
+    if (integral && value >= -9007199254740992.0 && value <= 9007199254740992.0 && std::trunc(value) == value) {
+        result = std::to_chars(buffer, buffer + sizeof(buffer), static_cast<std::int64_t>(value));
+    } else {
+        result = single_precision ? std::to_chars(buffer, buffer + sizeof(buffer), static_cast<float>(value))
+                                  : std::to_chars(buffer, buffer + sizeof(buffer), value);
+    }
     if (result.ec != std::errc{})
         return L"0";
     return std::wstring(buffer, result.ptr);
+}
+
+std::wstring format(const Control& control, double value) {
+    return format(value, control.single_precision, control.integral);
+}
+
+double quantize_control_value(const Control& control, double raw) {
+    if (!control.integral)
+        return raw;
+    const double low = std::ceil(control.minimum);
+    const double high = std::floor(control.maximum);
+    const double res =
+        low <= high ? std::clamp(std::round(raw), low, high) : std::clamp(raw, control.minimum, control.maximum);
+    return res == 0.0 ? 0.0 : res;
 }
 
 std::optional<double> number(std::wstring_view text, const Control& control) {
@@ -251,8 +270,10 @@ std::optional<double> number(std::wstring_view text, const Control& control) {
     const auto parsed = std::from_chars(begin, buffer + text.size(), value, std::chars_format::general);
     if (parsed.ec != std::errc{} || parsed.ptr != buffer + text.size() || !std::isfinite(value))
         return {};
+    if (control.integral && std::trunc(value) != value)
+        return {};
     // Like Runtime writes to bounded fields, typed values clamp to the legal range.
-    return std::clamp(value, control.minimum, control.maximum);
+    return quantize_control_value(control, std::clamp(value, control.minimum, control.maximum));
 }
 }
 
@@ -267,12 +288,13 @@ bool Control::operator==(const Control& other) const {
            layout == other.layout && text == other.text && single_line == other.single_line && role == other.role &&
            icon == other.icon && enabled == other.enabled && selected == other.selected &&
            click_action == other.click_action && single_precision == other.single_precision &&
-           drag_axis == other.drag_axis && classes == other.classes && style == other.style &&
-           style_scope == other.style_scope && invalid == other.invalid && modified == other.modified &&
-           context_target == other.context_target && context_group == other.context_group &&
-           selection_group == other.selection_group && action_target == other.action_target &&
-           tree_row_count == other.tree_row_count && tree_index == other.tree_index && tree_depth == other.tree_depth &&
-           tree_branch == other.tree_branch && tree_expanded == other.tree_expanded && tree_lines == other.tree_lines &&
+           integral == other.integral && drag_axis == other.drag_axis && classes == other.classes &&
+           style == other.style && style_scope == other.style_scope && invalid == other.invalid &&
+           modified == other.modified && context_target == other.context_target &&
+           context_group == other.context_group && selection_group == other.selection_group &&
+           action_target == other.action_target && tree_row_count == other.tree_row_count &&
+           tree_index == other.tree_index && tree_depth == other.tree_depth && tree_branch == other.tree_branch &&
+           tree_expanded == other.tree_expanded && tree_lines == other.tree_lines &&
            tree_primary == other.tree_primary && tree_draggable == other.tree_draggable &&
            popup_owner == other.popup_owner && menu_branch == other.menu_branch && edit_command == other.edit_command &&
            button_behavior == other.button_behavior && menu_behavior == other.menu_behavior &&
@@ -303,6 +325,11 @@ Result<void> validate_control_properties(const Control& control) {
         ((control.kind == ControlKind::table) != static_cast<bool>(control.table)) ||
         ((control.kind == ControlKind::code_editor) != static_cast<bool>(control.code)) ||
         (control.read_only && control.kind != ControlKind::code_editor) ||
+        (control.integral &&
+         ((control.kind != ControlKind::number && control.kind != ControlKind::slider) || control.single_precision ||
+          std::ceil(control.minimum) > std::floor(control.maximum) ||
+          (control.kind == ControlKind::number && std::trunc(control.value) != control.value) ||
+          (control.default_value && std::trunc(*control.default_value) != *control.default_value))) ||
         (control.kind != ControlKind::table &&
          (control.table_selection != TableSelection{} || control.table_layout != TableLayout{})) ||
         static_cast<unsigned>(control.table_layout.view) > static_cast<unsigned>(TableView::tiles) ||
@@ -319,7 +346,8 @@ Result<void> validate_control_properties(const Control& control) {
          (control.kind != ControlKind::menu_item || control.menu_branch || control.edit_command)) ||
         ((control.menu_behavior == MenuBehavior::radio) != (control.radio_group != 0)) ||
         (control.kind == ControlKind::slider &&
-         (control.minimum >= control.maximum || !std::isfinite(control.maximum - control.minimum))))
+         (control.minimum >= control.maximum || !std::isfinite(control.maximum - control.minimum) ||
+          (control.integral && std::ceil(control.minimum) >= std::floor(control.maximum)))))
         return std::unexpected(Error{ErrorCode::invalid_control, control.key});
     if (!detail::valid_text(control.text, control.kind == ControlKind::text_edit))
         return std::unexpected(Error{ErrorCode::invalid_control, control.key});
@@ -439,8 +467,17 @@ struct Session::Impl {
         // Indices into one immutable frame. A discarded candidate can only cause a cache miss.
         struct PaintRange {
             std::uint64_t frame_id{};
-            std::size_t box_index{}, draw_begin{}, draw_count{}, text_index{};
+
+            std::size_t box_index{};
+
+            std::size_t draw_begin{};
+
+            std::size_t draw_count{};
+
+            std::size_t text_index{};
+
             ui_layout::Size size;
+
             bool baseline{};
         } paint_range;
 
@@ -547,6 +584,8 @@ struct Session::Impl {
         std::optional<Ladder> ladder{};
 
         float slider_span{1}; // Accepted physical track width, frozen until release.
+
+        double raw_value{}; // Continuous unquantized drag accumulator for integral controls.
 
         bool tree_disclosure{};
 

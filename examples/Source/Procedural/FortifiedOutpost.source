@@ -57,34 +57,34 @@ void game.append_accepted_prop(const game.PropDecision& d,
 }
 
 class game.OutpostLayoutSkeleton : procedural.Node {
-    [Min = 3.8, Max = 11.5, LockMin, Label = "Fortress Radius", DESC = "多边形堡垒围墙外接半径，单位 m。"]
+    [Category = "Fortress Perimeter", Min = 3.8, Max = 11.5, LockMin, Label = "Fortress Radius", DESC = "多边形堡垒围墙外接半径，单位 m。"]
     float fort_radius = 6.8f;
 
-    [Min = 5, Max = 14, LockMin, Label = "Bastion Sides", DESC = "多边形棱堡的边数。"]
+    [Category = "Fortress Perimeter", Min = 5, Max = 14, LockMin, Label = "Bastion Sides", DESC = "多边形棱堡的边数。"]
     int sides = 8;
 
-    [Min = 1.8, Max = 5.2, LockMin, Label = "Gate Width", DESC = "朝向引道的城门豁口净宽，单位 m。"]
+    [Category = "Fortress Perimeter", Min = 1.8, Max = 5.2, LockMin, Label = "Gate Width", DESC = "朝向引道的城门豁口净宽，单位 m。"]
     float gate_width = 3.1f;
 
-    [Min = 1.4, Max = 4.8, LockMin, Label = "Wall Height", DESC = "围墙主体地面以上高度（与下游 Sweep 对齐），单位 m。"]
+    [Category = "Fortress Perimeter", Min = 1.4, Max = 4.8, LockMin, Label = "Wall Height", DESC = "围墙主体地面以上高度（与下游 Sweep 对齐），单位 m。"]
     float wall_height = 2.35f;
 
-    [Min = 0.25, Max = 1.2, LockMin, Label = "Merlon Height", DESC = "墙顶雉堞垛口高度，单位 m。"]
+    [Category = "Battlements", Min = 0.25, Max = 1.2, LockMin, Label = "Merlon Height", DESC = "墙顶雉堞垛口高度，单位 m。"]
     float merlon_height = 0.54f;
 
-    [Min = 0.5, Max = 2.0, LockMin, Label = "Merlon Length", DESC = "单个垛口沿墙方向的长度，单位 m。"]
+    [Category = "Battlements", Min = 0.5, Max = 2.0, LockMin, Label = "Merlon Length", DESC = "单个垛口沿墙方向的长度，单位 m。"]
     float merlon_length = 0.92f;
 
-    [Min = 0.35, Max = 1.6, LockMin, Label = "Crenel Gap", DESC = "相邻垛口之间的射孔间距，单位 m。"]
+    [Category = "Battlements", Min = 0.35, Max = 1.6, LockMin, Label = "Crenel Gap", DESC = "相邻垛口之间的射孔间距，单位 m。"]
     float crenel_gap = 0.68f;
 
-    [Min = 6.0, Max = 14.0, LockMin, Label = "Approach Length", DESC = "城门外引道延伸长度，单位 m。"]
+    [Category = "Approach Road", Min = 6.0, Max = 14.0, LockMin, Label = "Approach Length", DESC = "城门外引道延伸长度，单位 m。"]
     float road_length = 10.6f;
 
-    [Min = 0.0, Max = 2.8, LockMin, Label = "Road Meander", DESC = "城外引道的 S 形蜿蜒幅度，单位 m。"]
+    [Category = "Approach Road", Min = 0.0, Max = 2.8, LockMin, Label = "Road Meander", DESC = "城外引道的 S 形蜿蜒幅度，单位 m。"]
     float road_meander = 1.05f;
 
-    [Label = "Seed", DESC = "与图种子混合的布局种子。"]
+    [Category = "Approach Road", Label = "Seed", DESC = "与图种子混合的布局种子。"]
     uint seed = 11;
 
     void process(const procedural.Context& context,
@@ -246,30 +246,29 @@ class game.OutpostLayoutSkeleton : procedural.Node {
 }
 
 class game.OutpostTacticalScatter : procedural.Node {
-    [Min = 0.8, Max = 5.0, LockMin, Label = "Road Exclusion", DESC = "引道中线两侧禁止摆件生成的净空半宽，单位 m。"]
+    [Category = "Clearance & Spacing", Min = 0.8, Max = 5.0, LockMin, Label = "Road Exclusion", DESC = "引道中线两侧禁止摆件生成的净空半宽，单位 m。"]
     float road_clearance = 1.85f;
 
-    [Min = 0.4, Max = 3.5, LockMin, Label = "Colonnade Band", DESC = "引道外侧自动对齐道路切向的列柱带宽度，单位 m。"]
+    [Category = "Clearance & Spacing", Min = 0.4, Max = 3.5, LockMin, Label = "Colonnade Band", DESC = "引道外侧自动对齐道路切向的列柱带宽度，单位 m。"]
     float roadside_band = 1.45f;
 
-    [Min = 0.6, Max = 4.0, LockMin, Label = "Wall Clearance", DESC = "距扫掠围墙表面的最小避让净距，单位 m。"]
+    [Category = "Clearance & Spacing", Min = 0.6, Max = 4.0, LockMin, Label = "Wall Clearance", DESC = "距扫掠围墙表面的最小避让净距，单位 m。"]
     float wall_clearance = 1.25f;
 
-    [Min = 0.9, Max = 4.0, LockMin, Label = "Prop Min Spacing", DESC = "实例间与门柱间的最小间距，消除包围盒穿模，单位 m。"]
+    [Category = "Clearance & Spacing", Min = 0.9, Max = 4.0, LockMin, Label = "Prop Min Spacing", DESC = "实例间与门柱间的最小间距，消除包围盒穿模，单位 m。"]
     float min_spacing = 1.45f;
 
-    [Min = 1.2, Max = 6.5, LockMin, Label = "Sanctum Radius", DESC = "内庭中央生成琥珀晶簇圣坛的半径，单位 m。"]
+    [Category = "Placement Zones", Min = 1.2, Max = 6.5, LockMin, Label = "Sanctum Radius", DESC = "内庭中央生成琥珀晶簇圣坛的半径，单位 m。"]
     float sanctum_radius = 3.2f;
 
-    [Min = 0.5, Max = 0.99, LockMin, LockMax, Label = "Min Flatness", DESC = "允许放置建筑构件的最小地面法线 Y 分量。"]
+    [Category = "Placement Zones", Min = 0.5, Max = 0.99, LockMin, LockMax, Label = "Min Flatness", DESC = "允许放置建筑构件的最小地面法线 Y 分量。"]
     float min_flatness = 0.82f;
 
-    [Label = "Seed", DESC = "与图种子混合的战术散布种子。"]
+    [Category = "Placement Zones", Label = "Seed", DESC = "与图种子混合的战术散布种子。"]
     uint seed = 19;
 
     void process(const procedural.Context& context,
                  [In("P", Port = "candidates")] const Array<vector3>& cand_P,
-                 [In("N", Port = "candidates")] const Array<vector3>& cand_N,
                  [Port] const procedural.Spatial& terrain,
                  [Port] const procedural.Spatial& road,
                  [In("pscale", Port = "road")] const Array<float>& road_scales,
@@ -289,7 +288,7 @@ class game.OutpostTacticalScatter : procedural.Node {
         }
 
         const uint count = cand_P.size();
-        if (cand_N.size() != count || count == 0) {
+        if (count == 0) {
             return;
         }
         const uint mixed_seed = procedural.hash2(context.seed, self.seed);
@@ -301,9 +300,8 @@ class game.OutpostTacticalScatter : procedural.Node {
 
         parallel_for (uint i : count) {
             const vector3 raw_p = cand_P[i];
-            const vector3 raw_n = cand_N[i];
-            if (!(math.is_finite(raw_p) && math.is_finite(raw_n))) {
-                fail("OutpostTacticalScatter candidate attributes must be finite.");
+            if (!math.is_finite(raw_p)) {
+                fail("OutpostTacticalScatter candidate positions must be finite.");
             }
 
             // Ground strictly to terrain surface and reject steep cliffs or low shoreline skirt.

@@ -116,6 +116,10 @@ private:
 
     void preserve_failure(std::string_view) noexcept;
 
+    Result<void> dive_into_asset_node(std::string_view parent_graph, std::string_view node_name) override;
+
+    Result<void> pop_graph_breadcrumb();
+
     std::optional<editor::Project> project_;
 
     editor::ProjectCode* project_code_{}; // Borrowed from document_'s preparation owner.

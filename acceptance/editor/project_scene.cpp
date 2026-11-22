@@ -314,7 +314,7 @@ void verify_procedural_generator_scene() {
     }
   },
   "settings": {"display": "out", "seed": 42},
-  "version": 2
+  "version": 3
 })";
     const auto graph_key = take(project.create_procedural_graph(L"Content/Graphs/Island.procgraph", graph_json));
     const auto mat_key = take(project.create_material(
@@ -596,6 +596,24 @@ void verify_examples_procedural_showcases() {
         require(*gen_slots[1].item->collections.front().transforms !=
                     *gen_slots[2].item->collections.front().transforms,
                 "override_seed on North Sanctuary Ruin did not produce distinct rubble placements.");
+        require(gen_slots[1].item->surface_geometry->vertices().size() >
+                    gen_slots[2].item->surface_geometry->vertices().size(),
+                "North Sanctuary Ruin inline overrides (2 floors vs 3 floors) did not isolate runtime graph geometry.");
+        {
+            const auto hall_params =
+                take(loaded.session->generator_promoted_parameters(gen_slots[1].item->component, &project));
+            const auto ruin_params =
+                take(loaded.session->generator_promoted_parameters(gen_slots[2].item->component, &project));
+            const auto hall_floors =
+                std::ranges::find(hall_params, std::string_view{"floors"}, &editor::GraphPromotedParameterView::name);
+            const auto ruin_floors =
+                std::ranges::find(ruin_params, std::string_view{"floors"}, &editor::GraphPromotedParameterView::name);
+            require(hall_floors != hall_params.end() && !hall_floors->overridden &&
+                        std::get<std::int32_t>(hall_floors->properties.front().value) == 3 &&
+                        ruin_floors != ruin_params.end() && ruin_floors->overridden &&
+                        std::get<std::int32_t>(ruin_floors->properties.front().value) == 2,
+                    "Generator promoted parameter views did not reflect default vs overridden floors.");
+        }
 
         const auto assert_manifold_stages = [&](std::string_view graph_key,
                                                 std::initializer_list<std::string_view> stages) {
@@ -641,16 +659,142 @@ void verify_examples_procedural_showcases() {
                 "ModularRuinBuilding display reported instance overlaps or floating rubble.");
 
         auto intact_doc = take(json::Document::parse(R"({"ruin_collapse": 0.0})", json::ParseOptions{64}));
-        take(loaded.session->graph_set_properties(ruin_key, "grammar", intact_doc.root()));
+        require(!loaded.session->graph_set_properties(ruin_key, "building_layout", intact_doc.root()),
+                "Direct write to promoted target building_layout.ruin_collapse must be rejected.");
+        auto zero_val = take(json::Document::parse("0.0", json::ParseOptions{8}));
+        take(loaded.session->graph_set_parameter_json(ruin_key, "ruin_collapse", zero_val.root()));
         const auto intact_view = take(loaded.session->inspect_graph(ruin_key, &project, {}, false, 4, false));
-        auto heavy_ruin_doc = take(json::Document::parse(R"({"ruin_collapse": 0.78})", json::ParseOptions{64}));
-        take(loaded.session->graph_set_properties(ruin_key, "grammar", heavy_ruin_doc.root()));
+        auto heavy_val = take(json::Document::parse("0.78", json::ParseOptions{8}));
+        take(loaded.session->graph_set_parameter_json(ruin_key, "ruin_collapse", heavy_val.root()));
         const auto heavy_ruin_view =
             take(loaded.session->inspect_graph(ruin_key, &project, {}, false, 4, true, slab_ref, "slab_extrude"));
         require(!intact_view.display_error && !heavy_ruin_view.display_error &&
                     intact_view.display_summary.counts[2] > heavy_ruin_view.display_summary.counts[2] &&
                     heavy_ruin_view.display_summary.spatial->instance_overlaps->overlapping_pairs == 0,
                 "ModularRuinBuilding parametric ruin_collapse slider did not remodel structure cleanly.");
+        take(loaded.session->graph_undo(ruin_key, false));
+        take(loaded.session->graph_undo(ruin_key, false));
+        take(loaded.session->sync_procedural_generators(&project));
+        take(loaded.session->presentation().update());
+
+        // 3. RuinedSettlement.procgraph (3-instance AssetNode composition + spatial overlap clearance):
+        const std::string_view settlement_key = "project/{D37A5B14-6C8E-4F29-B510-9E4D2A83C604}";
+        (void)take(loaded.session->open_graph(project, settlement_key));
+        const auto settlement_view = take(loaded.session->inspect_graph(settlement_key, &project, {}, false, 4, true));
+        require(!settlement_view.display_error && settlement_view.display_summary.valid &&
+                    settlement_view.display_summary.counts[2] > ruin_view.display_summary.counts[2] * 2 &&
+                    settlement_view.display_summary.counts[4] >= 6 && settlement_view.display_summary.spatial &&
+                    settlement_view.display_summary.spatial->instance_overlaps &&
+                    settlement_view.display_summary.spatial->instance_overlaps->overlapping_pairs == 0,
+                "RuinedSettlement.procgraph 3-instance AssetNode composition reported missing geometry or overlaps.");
+
+        // 4. Scene ProceduralGeneratorComponent overrides: cancel_edit rollback, roundtrip, duplicate, Undo/Redo & Play:
+        {
+            const auto cur_slots = loaded.session->presentation().generator_slots();
+            const ObjectId hall_comp = cur_slots[1].item->component;
+            const ObjectId hall_ent = cur_slots[1].item->entity;
+            const std::size_t base_verts = cur_slots[1].item->surface_geometry->vertices().size();
+            const std::size_t undo_before = loaded.session->undo_count();
+            const bool dirty_before = loaded.session->dirty();
+            const Scalar five_floors{std::int32_t{5}};
+
+            // cancel_edit during live slider preview rolls back cooked output without advancing history or dirty state:
+            take(loaded.session->begin_graph_parameter_edit({}, {}, "floors", std::nullopt, 887, &project, hall_comp));
+            take(loaded.session->preview_graph_parameter_edit(887, {&five_floors, 1}));
+            take(loaded.session->presentation().update());
+            require(loaded.session->presentation().generator_slots()[1].item->surface_geometry->vertices().size() >
+                        base_verts,
+                    "Live preview of Scene ProceduralGeneratorComponent 'floors' override did not update geometry.");
+            take(loaded.session->cancel_edit());
+            take(loaded.session->presentation().update());
+            require(loaded.session->presentation().generator_slots()[1].item->surface_geometry->vertices().size() ==
+                            base_verts &&
+                        loaded.session->undo_count() == undo_before && loaded.session->dirty() == dirty_before,
+                    "Cancelling Scene ProceduralGeneratorComponent parameter preview did not roll back cleanly.");
+
+            loaded.session->set_live_forwarding(true);
+
+            auto play_base =
+                editor::load_project_scene(project, take(loaded.session->serialize()), editor::LoadPolicy::strict);
+            if (play_base.error)
+                fatal(play_base.error->message);
+            play_base.session->enter_play();
+
+            take(loaded.session->begin_graph_parameter_edit({}, {}, "floors", std::nullopt, 888, &project, hall_comp));
+            take(loaded.session->preview_graph_parameter_edit(888, {&five_floors, 1}));
+            take(loaded.session->commit_edit(888));
+            take(loaded.session->presentation().update());
+            const std::size_t five_verts =
+                loaded.session->presentation().generator_slots()[1].item->surface_geometry->vertices().size();
+            require(
+                five_verts > base_verts,
+                "Dragging Scene ProceduralGeneratorComponent 'floors' override to 5 did not increase vertex count.");
+
+            // Forward live ops to Play copy:
+            const auto ops = take(loaded.session->take_live_ops());
+            require(!ops.empty(), "Generator override edit emitted no Play live ops.");
+            json::Builder b;
+            const auto arr = take(b.array(b.root(), "ops"));
+            for (const auto& op : ops) {
+                const auto parsed_op = take(assets::json_format::parse(op.text));
+                b.append(arr, parsed_op.root());
+            }
+            const auto batch = json::write(b.root());
+            const auto ldiags = take(play_base.session->apply_live({batch.data(), batch.size()}, project));
+            require(ldiags.empty(), "Play copy rejected generator override live batch.");
+            take(play_base.session->presentation().update());
+            require(play_base.session->presentation().generator_slots()[1].item->surface_geometry->vertices().size() ==
+                        five_verts,
+                    "Play copy did not reproduce 5-story overridden generator geometry.");
+            changed(play_base.session->close());
+
+            // Duplicate entity copies component overrides:
+            changed(loaded.session->duplicate_entities({&hall_ent, 1}));
+            const ObjectId dup_ent = loaded.session->selection().entity;
+            const auto dup_parts = take(world::components(loaded.session->world().runtime(), dup_ent));
+            const auto dup_ov =
+                dup_parts.empty() ? json::Document{} : loaded.session->generator_overrides(dup_parts.front().id());
+            require(dup_ov.root().size() > 0,
+                    "duplicate_entities did not copy ProceduralGeneratorComponent overrides.");
+            changed(loaded.session->undo(&project)); // undo duplicate
+
+            // Undo / Redo of generator parameter override:
+            changed(loaded.session->undo(&project));
+            take(loaded.session->presentation().update());
+            require(loaded.session->presentation().generator_slots()[1].item->surface_geometry->vertices().size() ==
+                        base_verts,
+                    "Undo of generator parameter override did not restore 3-story geometry.");
+            changed(loaded.session->redo(&project));
+            take(loaded.session->presentation().update());
+            require(loaded.session->presentation().generator_slots()[1].item->surface_geometry->vertices().size() ==
+                        five_verts,
+                    "Redo of generator parameter override did not restore 5-story geometry.");
+
+            // Scene roundtrip preserves sparse overrides + tolerantly retains unmatched stale overrides:
+            auto saved_with_ov = take(loaded.session->serialize());
+            const std::string_view needle = "\"floors\": 5";
+            const auto at_floors = saved_with_ov.find(needle);
+            require(at_floors != std::string::npos, "Serialized scene did not write '\"floors\": 5' override.");
+            saved_with_ov.replace(at_floors, needle.size(), "\"floors\": 5, \"legacy_obsolete\": 42");
+            auto reloaded_ov = editor::load_project_scene(project, saved_with_ov, editor::LoadPolicy::tolerant);
+            if (reloaded_ov.error)
+                fatal(reloaded_ov.error->message);
+            take(reloaded_ov.session->presentation().update());
+            const ObjectId reloaded_comp = reloaded_ov.session->presentation().generator_slots()[1].item->component;
+            const auto reloaded_pviews =
+                take(reloaded_ov.session->generator_promoted_parameters(reloaded_comp, &project));
+            const auto stale_it =
+                std::ranges::find_if(reloaded_pviews, [](const editor::GraphPromotedParameterView& p) {
+                    return p.name == "legacy_obsolete" && p.undeclared && p.overridden;
+                });
+            require(
+                reloaded_ov.session->presentation().generator_slots()[1].item->surface_geometry->vertices().size() ==
+                        five_verts &&
+                    stale_it != reloaded_pviews.end() &&
+                    take(reloaded_ov.session->serialize()).contains("\"legacy_obsolete\": 42"),
+                "Scene roundtrip did not preserve overrides and tolerantly retain unmatched stale override.");
+            changed(reloaded_ov.session->close());
+        }
 
         std::printf(
             "  [Showcase Metrics] FortifiedOutpost: %zu pts, %zu prims, %zu instances | ModularRuinBuilding: %zu prims (intact) -> %zu prims (default) -> %zu prims (0.78 collapse), %zu instances\n",
@@ -675,4 +819,5 @@ int main() {
     verify_examples_procedural_showcases();
     std::puts(
         "Project Scene acceptance: PASS (authored scalar roundtrip, End/physics shutdown order, ProceduralGenerator strict schema + Play live, Examples ProceduralShowcase + GenerativeModelingShowcase)");
+    return 0;
 }

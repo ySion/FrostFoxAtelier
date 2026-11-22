@@ -126,17 +126,27 @@ void verify_graph_format() {
       "title": "Memo"
     }
   },
+  "parameters": [
+    {
+      "category": "Sampling",
+      "description": "Grid column count.",
+      "label": "Columns",
+      "name": "grid_cols",
+      "targets": ["grid.columns"]
+    }
+  ],
   "settings": {"display": "noise", "seed": 9, "template": "grid"},
-  "version": 2
+  "version": 3
 })";
-    require(!editor::load_graph(runtime, R"({"version":1,"settings":{},"nodes":{}})"),
-            "load_graph accepted legacy version 1 procedural graph.");
+    require(!editor::load_graph(runtime, R"({"version":2,"settings":{},"nodes":{}})"),
+            "load_graph accepted legacy version 2 procedural graph.");
     const auto doc = take(editor::load_graph(runtime, input_json));
-    require(doc.nodes.size() == 5 && doc.notes.size() == 1 && doc.boxes.size() == 1 &&
-                doc.template_node != ObjectId{} && doc.issues.size() == 2 &&
-                doc.issues[0].kind == world::DiagnosticKind::unknown_type &&
-                doc.issues[1].kind == world::DiagnosticKind::reference_dropped,
-            "load_graph did not tolerantly retain v2 annotations, template, missing SOP type and dropped connection.");
+    require(
+        doc.nodes.size() == 5 && doc.notes.size() == 1 && doc.boxes.size() == 1 && doc.parameters.size() == 1 &&
+            doc.parameters[0].name == "grid_cols" && doc.template_node != ObjectId{} && doc.issues.size() == 2 &&
+            doc.issues[0].kind == world::DiagnosticKind::unknown_type &&
+            doc.issues[1].kind == world::DiagnosticKind::reference_dropped,
+        "load_graph did not tolerantly retain v3 parameters, annotations, template, missing SOP type and dropped connection.");
     const auto saved_once = take(editor::save_graph(runtime, doc));
     const auto reloaded = take(editor::load_graph(runtime, saved_once));
     const auto saved_twice = take(editor::save_graph(runtime, reloaded));
@@ -206,7 +216,7 @@ class game.DiagnosticSop : procedural.Node {
 
     // Tolerant assets remain editable when an unresolved endpoint shares a multi-input port.
     const auto repair_key = take(project.create_procedural_graph(L"Content/Graphs/Repair.procgraph", R"({
-      "version":2,"settings":{},"nodes":{
+      "version":3,"settings":{},"nodes":{
         "grid":{"type":"procedural.Grid","properties":{"columns":"old"}},
         "legacy":{"type":"game.MissingSop"},
         "merged":{"type":"procedural.Merge","inputs":{"inputs":["grid.output","legacy.output"]}},
@@ -791,7 +801,7 @@ class game.DiagnosticSop : procedural.Node {
     require(doc.graph_node(repair_key, "legacy"), "Undo did not restore the placeholder.");
 
     // 33 x 32 connections fit on screen and exceed the capacity of a single stroke batch.
-    std::string dense = R"({"version":2,"settings":{"display":"fault"},"nodes":{)";
+    std::string dense = R"({"version":3,"settings":{"display":"fault"},"nodes":{)";
     std::string inputs;
     for (unsigned i = 0; i < 33; ++i) {
         const auto name = "grid" + std::to_string(i);
@@ -1090,7 +1100,7 @@ class game.DiagnosticSop : procedural.Node {
         }
         {
             const auto ghost_key = take(project.create_procedural_graph(L"Content/Graphs/GhostTest.procgraph", R"({
-  "version": 2,
+  "version": 3,
   "settings": { "display": "ghost", "template": "ghost" },
   "nodes": { "ghost": { "type": "missing.CustomSop", "position": [0, 0] } }
 })"));
@@ -1339,7 +1349,7 @@ class game.DiagnosticSop : procedural.Node {
         const auto prop_key = take(project.import_mesh(obj_src));
         const auto prop_graph_key = take(project.create_procedural_graph(
             L"Content/Graphs/ReimportProp.procgraph",
-            "{\"version\":2,\"settings\":{\"display\":\"copy\"},\"nodes\":{"
+            "{\"version\":3,\"settings\":{\"display\":\"copy\"},\"nodes\":{"
             "\"pts\":{\"type\":\"procedural.Grid\",\"properties\":{\"columns\":2,\"rows\":2}},"
             "\"copy\":{\"type\":\"procedural.CopyToPoints\",\"inputs\":{\"points\":\"pts.output\"},"
             "\"properties\":{\"meshes\":[\"" +
@@ -1501,6 +1511,283 @@ class game.DiagnosticSop : procedural.Node {
         const auto disabled_sp = take(doc.inspect_graph(sp_key, &project, {}, false, 4, false));
         require(!disabled_sp.display_summary.spatial.has_value(),
                 "inspect_graph with include_spatial=false still populated spatial diagnostics.");
+    }
+
+    // S4 Digital Assets (.procgraph v3), multi-target promoted parameters, port realignment & graph_extract_asset:
+    {
+        const std::string pillar_key = take(project.create_procedural_graph("Content/Graphs/PillarPair.procgraph"));
+        take(doc.open_graph(project, pillar_key));
+        take(doc.graph_add_node(pillar_key, "procedural.GraphInput", "in_pts", {0.f, -120.f}));
+        {
+            const auto in_patch = parse_doc(R"({"port_name":"points","order":0,"preview_fallback":"line"})");
+            take(doc.graph_set_properties(pillar_key, "in_pts", in_patch.root()));
+        }
+        take(doc.graph_add_node(pillar_key, "procedural.Box", "box_a", {-96.f, 0.f}));
+        take(doc.graph_add_node(pillar_key, "procedural.Box", "box_b", {96.f, 0.f}));
+        {
+            const auto b_patch = parse_doc(R"({"size":{"x":1.0,"y":9.0,"z":1.0}})");
+            take(doc.graph_set_properties(pillar_key, "box_b", b_patch.root()));
+        }
+        take(doc.graph_add_node(pillar_key, "procedural.Merge", "pair_merge", {0.f, 120.f}));
+        take(doc.graph_connect(pillar_key, "in_pts", "output", "pair_merge", "inputs"));
+        take(doc.graph_connect(pillar_key, "box_a", "output", "pair_merge", "inputs"));
+        take(doc.graph_connect(pillar_key, "box_b", "output", "pair_merge", "inputs"));
+        take(doc.graph_add_node(pillar_key, "procedural.GraphOutput", "out_geo", {0.f, 240.f}));
+        {
+            const auto out_patch = parse_doc(R"({"port_name":"geometry","order":0})");
+            take(doc.graph_set_properties(pillar_key, "out_geo", out_patch.root()));
+        }
+        take(doc.graph_connect(pillar_key, "pair_merge", "output", "out_geo", "input"));
+        // Decoupled author debug node: set Display [D] on an unconnected Sphere; AssetNode must still cook GraphOutput!
+        take(doc.graph_add_node(pillar_key, "procedural.Sphere", "dbg_sphere", {280.f, 0.f}));
+        take(doc.graph_set_display(pillar_key, "dbg_sphere"));
+
+        // Expose box_a.size.y -> "height", then multi-target bind box_b.size.y (syncs box_b.size.y to box_a.size.y = 1.0):
+        const auto exposed_name =
+            take(doc.graph_expose_parameter(pillar_key, "box_a", "size.y", "height", "Pillar Height", "Dimensions"));
+        require(exposed_name == "height", "Expected promoted parameter identifier 'height'.");
+        take(doc.graph_bind_parameter_target(pillar_key, "height", "box_b", "size.y"));
+
+        // Controlled field direct-write rejection:
+        {
+            const auto illegal_patch = parse_doc(R"({"size":{"x":1.0,"y":5.0,"z":1.0}})");
+            require(!doc.graph_set_properties(pillar_key, "box_a", illegal_patch.root()),
+                    "Direct graph_set_properties on a controlled promoted target must be rejected.");
+        }
+
+        // Update promoted parameter -> drives both targets simultaneously:
+        {
+            const auto val_35 = parse_doc("3.5");
+            take(doc.graph_set_parameter_json(pillar_key, "height", val_35.root()));
+            const ObjectId box_a_id = doc.graph_node_id(pillar_key, "box_a");
+            const ObjectId box_b_id = doc.graph_node_id(pillar_key, "box_b");
+            const auto props_a = take(doc.properties(box_a_id));
+            const auto props_b = take(doc.properties(box_b_id));
+            const auto ay = std::ranges::find(props_a, std::string_view{"size.y"}, &editor::Property::name);
+            const auto by = std::ranges::find(props_b, std::string_view{"size.y"}, &editor::Property::name);
+            require(ay != props_a.end() && by != props_b.end() && std::abs(std::get<float>(ay->value) - 3.5f) < 1e-5f &&
+                        std::abs(std::get<float>(by->value) - 3.5f) < 1e-5f,
+                    "Multi-target promoted parameter did not synchronize both bound node fields.");
+        }
+
+        // Node rename automatically syncs promoted parameter targets + Undo/Redo:
+        take(doc.graph_rename_node(pillar_key, "box_b", "box_right"));
+        {
+            const auto pviews = take(doc.graph_promoted_parameters(pillar_key));
+            require(pviews.size() == 1 && pviews[0].targets.size() == 2 && pviews[0].targets[1] == "box_right.size.y",
+                    "Renaming a bound node did not update promoted parameter targets.");
+        }
+        take(doc.graph_undo(pillar_key, false));
+        {
+            const auto pviews = take(doc.graph_promoted_parameters(pillar_key));
+            require(pviews.size() == 1 && pviews[0].targets[1] == "box_b.size.y",
+                    "Undo of node rename did not restore promoted parameter targets.");
+        }
+        take(doc.graph_undo(pillar_key, true));
+        take(doc.save_graph(project, pillar_key));
+
+        // Instantiate Digital Asset in outer graph via "asset:<key>":
+        const std::string court_key = take(project.create_procedural_graph("Content/Graphs/OuterCourt.procgraph"));
+        take(doc.open_graph(project, court_key));
+        take(doc.graph_add_node(court_key, "procedural.Line", "line_pts", {0.f, -120.f}, &project));
+        {
+            const auto lpatch = parse_doc(R"({"count":4})");
+            take(doc.graph_set_properties(court_key, "line_pts", lpatch.root()));
+        }
+        const auto inst_name =
+            take(doc.graph_add_node(court_key, "asset:" + pillar_key, "pillars", {0.f, 0.f}, &project));
+        require(inst_name == "pillars", "Expected AssetNode name 'pillars'.");
+        take(doc.graph_connect(court_key, "line_pts", "output", "pillars", "points"));
+        take(doc.graph_add_node(court_key, "procedural.GraphOutput", "court_out", {0.f, 120.f}));
+        take(doc.graph_connect(court_key, "pillars", "geometry", "court_out", "input"));
+        take(doc.graph_set_display(court_key, "court_out"));
+
+        // Verify GraphOutput (4 Line points + 2 boxes = 20 points, 12 primitives) is evaluated instead of dbg_sphere:
+        const auto court_eval_1 = take(doc.inspect_graph(court_key, &project, {}, false, 4, false));
+        require(!court_eval_1.display_error && court_eval_1.display_summary.counts[2] == 12 &&
+                    court_eval_1.display_summary.counts[0] == 20,
+                "AssetNode did not evaluate GraphOutput with external input (expected 20 points, 12 primitives).");
+
+        // Override "height" = 6.0 on AssetNode without mutating PillarPair's authored 3.5, plus Undo/Redo:
+        {
+            const auto ov_6 = parse_doc("6.0");
+            take(doc.graph_set_asset_override_json(court_key, "pillars", "height", ov_6.root(), &project));
+            take(doc.graph_undo(court_key, false));
+            const auto court_eval_undo = take(doc.evaluate_graph(court_key, &project));
+            float undo_max_y = 0.f;
+            for (const auto& p : court_eval_undo.preview_output->positions())
+                undo_max_y = std::max(undo_max_y, p.y);
+            require(std::abs(undo_max_y - 1.75f) < 1e-4f,
+                    "Undo of AssetNode override did not restore default half-extent y=1.75m.");
+            take(doc.graph_undo(court_key, true));
+
+            const auto court_eval_ov = take(doc.evaluate_graph(court_key, &project));
+            require(court_eval_ov.preview_output != nullptr, "Missing outer court preview output.");
+            float max_y = 0.f;
+            for (const auto& p : court_eval_ov.preview_output->positions())
+                max_y = std::max(max_y, p.y);
+            require(std::abs(max_y - 3.0f) < 1e-4f,
+                    "AssetNode height=6.0 override did not produce half-extent y=3.0m.");
+            const auto props_a = take(doc.properties(doc.graph_node_id(pillar_key, "box_a")));
+            const auto ay = std::ranges::find(props_a, std::string_view{"size.y"}, &editor::Property::name);
+            require(std::abs(std::get<float>(ay->value) - 3.5f) < 1e-5f,
+                    "AssetNode override mutated the shared Digital Asset definition.");
+        }
+
+        // Live propagation: edit uncontrolled sibling lane box_a.size.x via graph_set_properties WITHOUT saving:
+        {
+            const auto xy_patch = parse_doc(R"({"size":{"x":4.0,"y":3.5}})");
+            require(!doc.graph_set_properties(pillar_key, "box_a", xy_patch.root()),
+                    "graph_set_properties accepted a patch touching promoted lane size.y.");
+            const auto x_patch = parse_doc(R"({"size":{"x":4.0}})");
+            take(doc.graph_set_properties(pillar_key, "box_a", x_patch.root()));
+            const auto court_eval_live = take(doc.evaluate_graph(court_key, &project));
+            float max_x = 0.f;
+            float max_y = 0.f;
+            for (const auto& p : court_eval_live.preview_output->positions()) {
+                max_x = std::max(max_x, p.x);
+                max_y = std::max(max_y, p.y);
+            }
+            require(std::abs(max_x - 2.0f) < 1e-4f && std::abs(max_y - 3.0f) < 1e-4f,
+                    "Unlocked edit in open Digital Asset did not live-propagate while preserving instance overrides.");
+        }
+
+        // Removing a bound target node shrinks/restores promoted targets across Undo/Redo:
+        {
+            const std::array<std::string, 1> rm_b{"box_right"};
+            take(doc.graph_remove_nodes(pillar_key, rm_b));
+            require(take(doc.graph_promoted_parameters(pillar_key))[0].targets.size() == 1,
+                    "Removing box_right did not prune promoted parameter target list.");
+            take(doc.graph_undo(pillar_key, false));
+            require(take(doc.graph_promoted_parameters(pillar_key))[0].targets.size() == 2,
+                    "Undo of box_right removal did not restore promoted parameter target list.");
+        }
+
+        // Upstream parameter removal surfaces undeclared override on AssetNode and preserves byte-identical roundtrip:
+        {
+            (void)take(doc.graph_expose_parameter(pillar_key, "box_a", "size.z", "obsolete_depth"));
+            const auto ov_z = parse_doc("2.5");
+            take(doc.graph_set_asset_override_json(court_key, "pillars", "obsolete_depth", ov_z.root(), &project));
+            take(doc.graph_remove_parameter(pillar_key, "obsolete_depth"));
+            take(doc.save_graph(project, pillar_key));
+            take(doc.save_graph(project, court_key));
+            const auto court_disk_1 = take(project.assets().procedural_graph(court_key)).text;
+            const auto snapshots = take(doc.snapshot_open_graphs());
+            const auto court_snap = std::ranges::find(snapshots, court_key, &editor::OpenGraphSnapshot::key);
+            require(court_snap != snapshots.end() && court_snap->text == court_disk_1,
+                    "OuterCourt.procgraph save_graph -> snapshot roundtrip was not byte-identical.");
+            const auto inst_pviews = take(doc.graph_asset_node_parameters(court_key, "pillars", &project));
+            const auto stale_ov = std::ranges::find_if(inst_pviews, [](const editor::GraphPromotedParameterView& p) {
+                return p.name == "obsolete_depth" && p.undeclared && p.overridden;
+            });
+            require(stale_ov != inst_pviews.end(),
+                    "AssetNode did not tolerantly surface unmatched stale override as undeclared.");
+            take(doc.clear_promoted_parameter_override(
+                editor::PromotedParameterTarget{std::string(court_key), "pillars", ObjectId{}}, "obsolete_depth",
+                &project));
+        }
+
+        // Indirect cycle A -> B -> A is rejected without infinite recursion, and graph_set_node_asset Undo/Redo works:
+        {
+            const auto cyc_node =
+                take(doc.graph_add_node(pillar_key, "asset:" + court_key, "back_ref", {160.f, 0.f}, &project));
+            require(cyc_node == "back_ref", "Expected AssetNode back_ref.");
+            take(doc.graph_connect(pillar_key, "back_ref", "output", "pair_merge", "inputs"));
+            const auto cyc_inspect = take(doc.inspect_graph(court_key, &project, {}, false, 4, false));
+            require(cyc_inspect.display_error.has_value(),
+                    "Indirect AssetNode cycle (OuterCourt -> PillarPair -> OuterCourt) was not rejected.");
+            take(doc.graph_undo(pillar_key, false)); // undo connect
+            take(doc.graph_undo(pillar_key, false)); // undo add_node back_ref
+            take(doc.save_graph(project, pillar_key));
+
+            const std::string alt_key = take(project.create_procedural_graph("Content/Graphs/AltAsset.procgraph"));
+            take(doc.open_graph(project, alt_key));
+            take(doc.graph_add_node(alt_key, "procedural.Sphere", "sph", {0.f, 0.f}));
+            take(doc.graph_set_display(alt_key, "sph"));
+            take(doc.save_graph(project, alt_key));
+
+            take(doc.graph_set_node_asset(court_key, "pillars", alt_key, &project));
+            require(doc.graph_node(court_key, "pillars")->asset_key == alt_key &&
+                        doc.graph_node(court_key, "pillars")->kept.root().path({"inputs", "points"}).has_value(),
+                    "graph_set_node_asset did not switch asset and preserve unmatched input in kept['inputs'].");
+            take(doc.graph_undo(court_key, false));
+            require(doc.graph_node(court_key, "pillars")->asset_key == pillar_key &&
+                        !doc.graph_node(court_key, "pillars")->kept.root().path({"inputs", "points"}).has_value(),
+                    "Undo of graph_set_node_asset did not restore original asset and reconnect 'points'.");
+            take(doc.graph_undo(court_key, true));
+            take(doc.graph_undo(court_key, false));
+        }
+
+        // Upstream port rename realigns AssetNode ports and retains broken connection in kept["inputs"]:
+        {
+            const auto rename_port = parse_doc(R"({"port_name":"anchors","order":0,"preview_fallback":"line"})");
+            take(doc.graph_set_properties(pillar_key, "in_pts", rename_port.root()));
+            (void)take(doc.evaluate_graph(court_key, &project));
+            const auto* pillars_node = doc.graph_node(court_key, "pillars");
+            require(pillars_node != nullptr && pillars_node->kept.root().path({"inputs", "points"}).has_value(),
+                    "Upstream GraphInput port rename did not preserve broken outer connection in kept['inputs'].");
+            const auto restore_port = parse_doc(R"({"port_name":"points","order":0,"preview_fallback":"line"})");
+            take(doc.graph_set_properties(pillar_key, "in_pts", restore_port.root()));
+            (void)take(doc.evaluate_graph(court_key, &project));
+            require(!doc.graph_node(court_key, "pillars")->kept.root().path({"inputs", "points"}).has_value(),
+                    "Restoring upstream GraphInput port name did not automatically reconnect kept['inputs'].");
+        }
+
+        // graph_extract_asset: reject non-convex selection, extract convex stage, and 1-step Undo/Redo:
+        {
+            const std::string ext_test_key =
+                take(project.create_procedural_graph("Content/Graphs/ExtractHost.procgraph"));
+            take(doc.open_graph(project, ext_test_key));
+            take(doc.graph_add_node(ext_test_key, "procedural.Box", "src_box", {0.f, 0.f}));
+            take(doc.graph_add_node(ext_test_key, "procedural.Transform", "mid_xform", {0.f, 120.f}));
+            {
+                const auto xpatch = parse_doc(R"({"translate":{"x":2.0,"y":3.0,"z":0.0}})");
+                take(doc.graph_set_properties(ext_test_key, "mid_xform", xpatch.root()));
+            }
+            take(doc.graph_add_node(ext_test_key, "procedural.Transform", "tail_xform", {0.f, 240.f}));
+            take(doc.graph_connect(ext_test_key, "src_box", "output", "mid_xform", "input"));
+            take(doc.graph_connect(ext_test_key, "mid_xform", "output", "tail_xform", "input"));
+            take(doc.graph_set_display(ext_test_key, "tail_xform"));
+            (void)take(doc.graph_expose_parameter(ext_test_key, "mid_xform", "translate.y", "lift_y"));
+
+            // Non-convex selection {src_box, tail_xform} leaves mid_xform both downstream and upstream -> must reject!
+            const std::array<std::string, 2> non_convex{"src_box", "tail_xform"};
+            require(!doc.graph_extract_asset(project, ext_test_key, non_convex,
+                                             "Content/Graphs/IllegalNonConvex.procgraph"),
+                    "graph_extract_asset accepted a non-convex selection that would introduce a cycle.");
+
+            const auto pre_eval = take(doc.evaluate_graph(ext_test_key, &project));
+            const std::array<std::string, 1> convex_sel{"mid_xform"};
+            const auto extracted = take(doc.graph_extract_asset(
+                project, ext_test_key, convex_sel, "Content/Graphs/ExtractedStage.procgraph", "stage_asset"));
+            require(!extracted.first.empty() && extracted.second == "stage_asset",
+                    "graph_extract_asset did not create asset key and expected AssetNode name.");
+            require(doc.graph_node(ext_test_key, "mid_xform") == nullptr &&
+                        doc.graph_node(ext_test_key, "stage_asset") != nullptr,
+                    "graph_extract_asset did not replace selected nodes with stage_asset.");
+
+            const auto post_eval = take(doc.evaluate_graph(ext_test_key, &project));
+            require(pre_eval.preview_output && post_eval.preview_output &&
+                        std::ranges::equal(pre_eval.preview_output->positions(), post_eval.preview_output->positions()),
+                    "Extracted AssetNode did not preserve exact geometry output.");
+
+            // Extracted asset preserved internal promoted parameter 'lift_y':
+            const auto stage_params = take(doc.graph_asset_node_parameters(ext_test_key, "stage_asset", &project));
+            require(stage_params.size() == 1 && stage_params[0].name == "lift_y",
+                    "Extracted .procgraph asset did not preserve internal promoted parameter 'lift_y'.");
+
+            // 1-step Undo restores mid_xform, wires, and outer 'lift_y' parameter; Redo restores stage_asset:
+            take(doc.graph_undo(ext_test_key, false));
+            require(doc.graph_node(ext_test_key, "mid_xform") != nullptr &&
+                        doc.graph_node(ext_test_key, "stage_asset") == nullptr &&
+                        take(doc.graph_promoted_parameters(ext_test_key)).size() == 1,
+                    "Single-step Undo of graph_extract_asset did not restore original nodes and parameters.");
+            take(doc.graph_undo(ext_test_key, true));
+            const auto redo_eval = take(doc.evaluate_graph(ext_test_key, &project));
+            require(doc.graph_node(ext_test_key, "stage_asset") != nullptr && redo_eval.preview_output &&
+                        std::ranges::equal(redo_eval.preview_output->positions(), pre_eval.preview_output->positions()),
+                    "Redo of graph_extract_asset did not restore wired stage_asset and geometry.");
+        }
     }
 
     changed(doc.close());

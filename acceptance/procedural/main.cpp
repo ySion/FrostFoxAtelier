@@ -1552,6 +1552,146 @@ class test.BadWarpedQuad : procedural.Node {
     }
 }
 
+void asset_subgraph_and_cache_pool_contracts() {
+    Runtime runtime;
+    take(register_types(runtime));
+    Meshes resources;
+    resources.meshes.insert_or_assign("project/pillar", geometry::cube_mesh());
+
+    // 1. Standalone GraphInput fallback vs subgraph external input override, GraphOutput decoupling from Display,
+    //    shared CachePool reuse across distinct AssetNodes, and MeshImport dependency bubbling.
+    auto make_sub = [&]() {
+        auto sub = take(runtime.create(type<Graph>(runtime)));
+        const auto gin = take(add_node(runtime, sub.id(), type<GraphInput>(runtime)));
+        take(runtime.write(
+            gin.id(), take(runtime.find_field(type<GraphInput>(runtime), "preview_fallback")),
+            EnumValue{type<PreviewFallback>(runtime), static_cast<std::uint32_t>(PreviewFallback::grid)}));
+        const auto scatter_n = take(add_node(runtime, sub.id(), type<Scatter>(runtime)));
+        take(runtime.write(scatter_n.id(), take(runtime.find_field(type<Scatter>(runtime), "density")), 2.f));
+        const auto copy_n = take(add_node(runtime, sub.id(), type<CopyToPoints>(runtime)));
+        Array<String> meshes;
+        meshes.add(String::literal<"project/pillar">());
+        take(runtime.write(copy_n.id(), take(runtime.find_field(type<CopyToPoints>(runtime), "meshes")),
+                           ValueInput{take(runtime.native_type<Array<String>>()), &meshes}));
+        const auto gout_pts = take(add_node(runtime, sub.id(), type<GraphOutput>(runtime)));
+        const auto gout_inst = take(add_node(runtime, sub.id(), type<GraphOutput>(runtime)));
+        const auto debug_sphere = take(add_node(runtime, sub.id(), type<Sphere>(runtime)));
+
+        take(connect(runtime, sub.id(), gin.id(), 0, scatter_n.id(), 0));
+        take(connect(runtime, sub.id(), scatter_n.id(), 0, copy_n.id(), 0));
+        take(connect(runtime, sub.id(), scatter_n.id(), 0, gout_pts.id(), 0));
+        take(connect(runtime, sub.id(), copy_n.id(), 0, gout_inst.id(), 0));
+        // Author leaves [D] on debug_sphere! Formal AssetNode outputs must still read gout_pts & gout_inst.
+        take(set_display(runtime, sub.id(), debug_sphere.id()));
+
+        struct BuiltSub {
+            ObjectRoot graph;
+
+            ObjectId gin;
+
+            ObjectId gout_pts;
+
+            ObjectId gout_inst;
+
+            ObjectId debug_sphere;
+        };
+        return BuiltSub{std::move(sub), gin.id(), gout_pts.id(), gout_inst.id(), debug_sphere.id()};
+    };
+
+    auto standalone = make_sub();
+    auto shared_pool = std::make_shared<CachePool>(std::size_t{64} << 20);
+    Evaluator standalone_eval{runtime, standalone.graph, resources, nullptr, shared_pool};
+    take(standalone_eval.evaluate());
+    // Display is debug_sphere (polygon mesh), while standalone GraphInput preview_fallback=Grid feeds gout_pts!
+    require(standalone_eval.output() != nullptr && standalone_eval.output()->count(Layer::primitive) > 10,
+            "Standalone SOP display did not show debug_sphere.");
+    take(standalone_eval.evaluate_node(standalone.gin));
+    require(standalone_eval.node_output(standalone.gin) != nullptr &&
+                standalone_eval.node_output(standalone.gin)->count(Layer::point) == 100,
+            "Standalone GraphInput did not emit 10x10 preview_fallback grid.");
+
+    // Outer graph with two AssetNode instances sharing `shared_pool`.
+    auto outer = take(runtime.create(type<Graph>(runtime)));
+    const auto box_src = take(add_node(runtime, outer.id(), type<Box>(runtime)));
+    const auto asset_a = take(add_node(runtime, outer.id(), type<AssetNode>(runtime)));
+    const auto asset_b = take(add_node(runtime, outer.id(), type<AssetNode>(runtime)));
+    const auto merge_out = take(add_node(runtime, outer.id(), type<Merge>(runtime)));
+
+    auto sub_a = make_sub();
+    auto sub_b = make_sub();
+    const Ports sub_ports{{"surface"}, {false}, {"points", "instances"}};
+    take(set_asset_subgraph(
+        runtime, asset_a.id(),
+        {"project/scatter_pillars", sub_ports, sub_a.graph, {sub_a.gin}, {sub_a.gout_pts, sub_a.gout_inst}, {}, 1}));
+    take(set_asset_subgraph(
+        runtime, asset_b.id(),
+        {"project/scatter_pillars", sub_ports, sub_b.graph, {sub_b.gin}, {sub_b.gout_pts, sub_b.gout_inst}, {}, 1}));
+
+    const auto dyn_ports = take(ports(runtime, asset_a.id()));
+    require(dyn_ports == sub_ports, "Instance-level ports(runtime, ObjectId) did not return AssetNode dynamic ports.");
+
+    // Connect box_src -> asset_a.surface and asset_b.surface; merge asset_a.instances + asset_b.instances.
+    take(connect(runtime, outer.id(), box_src.id(), 0, asset_a.id(), 0));
+    take(connect(runtime, outer.id(), box_src.id(), 0, asset_b.id(), 0));
+    take(connect(runtime, outer.id(), asset_a.id(), 1, merge_out.id(), 0));
+    take(connect(runtime, outer.id(), asset_b.id(), 1, merge_out.id(), 0));
+    take(set_display(runtime, outer.id(), merge_out.id()));
+
+    Evaluator outer_eval{runtime, outer, resources, nullptr, shared_pool};
+    take(outer_eval.evaluate());
+    require(outer_eval.output() != nullptr && outer_eval.output()->count(Layer::instance) >= 8,
+            "AssetNode multi-output evaluation failed to produce CopyToPoints instances.");
+    // Identical AssetNode asset_b must hit the shared CachePool without re-running!
+    require(outer_eval.status(asset_a.id())->evaluations == 1 && outer_eval.status(asset_b.id())->cache_hits >= 1,
+            "Second identical AssetNode did not hit shared CachePool.");
+    // Mesh dependency from inner CopyToPoints must bubble up to outer display_dependencies()!
+    const auto deps = outer_eval.display_dependencies();
+    require(deps.size() == 1 && deps[0].key.view() == "project/pillar",
+            "Inner AssetNode mesh dependency did not bubble up to outer Evaluator.");
+
+    // Non-zero seed_offset on asset_b produces distinct scatter placements while asset_a stays cached.
+    take(runtime.write(asset_b.id(), take(runtime.find_field(type<AssetNode>(runtime), "seed_offset")), 99u));
+    take(outer_eval.evaluate());
+    const auto* pts_a = outer_eval.node_output(asset_a.id(), 0);
+    const auto* pts_b = outer_eval.node_output(asset_b.id(), 0);
+    require(pts_a != nullptr && pts_b != nullptr &&
+                (pts_a->count(Layer::point) != pts_b->count(Layer::point) ||
+                 pts_a->positions()[0] != pts_b->positions()[0]),
+            "Non-zero AssetNode seed_offset did not diversify inner scatter seed.");
+
+    // Unconnected AssetNode input must pass empty Geometry, NOT standalone preview_fallback Grid!
+    take(disconnect(runtime, box_src.id(), 0, asset_b.id(), 0));
+    take(outer_eval.evaluate());
+    require(outer_eval.node_output(asset_b.id(), 0) != nullptr &&
+                outer_eval.node_output(asset_b.id(), 0)->count(Layer::point) == 0,
+            "Unconnected AssetNode input leaked standalone preview_fallback instead of empty Geometry.");
+
+    // 2. Enforce exact max_subgraph_depth = 8 boundary: 8 AssetNode hops succeed, 9 AssetNode hops reject.
+    std::vector<ObjectRoot> chain_graphs;
+    for (int d = 0; d < 10; ++d) {
+        auto g = take(runtime.create(type<Graph>(runtime)));
+        const auto n = take(add_node(runtime, g.id(), d == 9 ? type<Box>(runtime) : type<AssetNode>(runtime)));
+        take(set_display(runtime, g.id(), n.id()));
+        if (d > 0) {
+            const auto prev_nodes = take(contents(runtime, chain_graphs.back().id()));
+            take(set_asset_subgraph(
+                runtime, prev_nodes.nodes().front(),
+                {"project/depth_" + std::to_string(d), {{}, {}, {"output"}}, g, {}, {n.id()}, {}, 1}));
+        }
+        chain_graphs.push_back(std::move(g));
+    }
+    Evaluator ok_depth_eval{runtime, chain_graphs[1], resources, nullptr, shared_pool};
+    take(ok_depth_eval.evaluate());
+    require(ok_depth_eval.output() != nullptr && ok_depth_eval.output()->count(Layer::point) == 8 &&
+                !ok_depth_eval.display_error().has_value(),
+            "Evaluator rejected legal AssetNode chain at exact max_subgraph_depth = 8.");
+
+    Evaluator deep_eval{runtime, chain_graphs.front(), resources, nullptr, shared_pool};
+    take(deep_eval.evaluate());
+    require(deep_eval.output() == nullptr && deep_eval.display_error().has_value(),
+            "Evaluator did not reject AssetNode chain exceeding max_subgraph_depth = 8.");
+}
+
 }
 
 int main(int argc, char** argv) {
@@ -1572,6 +1712,7 @@ int main(int argc, char** argv) {
     graph_evaluation();
     source_and_spatial_contracts();
     generative_modeling_and_l3_contracts();
+    asset_subgraph_and_cache_pool_contracts();
     std::puts("procedural acceptance passed");
     return 0;
 }

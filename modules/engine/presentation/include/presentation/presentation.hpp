@@ -81,7 +81,8 @@ public:
            DESC = "启用后使用此组件的 Seed 覆盖 .procgraph 图根的默认种子，便于同一图资产在场景中生成不同变体。")
     bool override_seed{};
 
-    AFIELD(Label = "Seed", Category = "Generator", DESC = "启用 Override seed 时传给程序化图求值的随机种子。")
+    AFIELD(Label = "Seed", Category = "Generator", Meta("ui.visible_when", "override_seed=true"),
+           DESC = "启用 Override seed 时传给程序化图求值的随机种子。")
     std::int32_t seed{};
 
     AFIELD(Label = "Chunk size (m)", Category = "Generator", HardMin = "0.1", HardMax = "100000",

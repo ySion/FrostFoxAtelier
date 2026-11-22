@@ -55,6 +55,7 @@ Result<void> register_editor_types(Runtime& runtime) {
     definitions.push_back(reflection::Definition<AssetResult>::build(runtime));
     definitions.push_back(reflection::Definition<NewProceduralGraph>::build(runtime));
     definitions.push_back(reflection::Definition<GraphOpen>::build(runtime));
+    definitions.push_back(reflection::Definition<GraphDiveIn>::build(runtime));
     definitions.push_back(reflection::Definition<GraphSave>::build(runtime));
     definitions.push_back(reflection::Definition<GraphAddNode>::build(runtime));
     definitions.push_back(reflection::Definition<GraphNodeResult>::build(runtime));
@@ -71,6 +72,17 @@ Result<void> register_editor_types(Runtime& runtime) {
     definitions.push_back(reflection::Definition<GraphSetAppearance>::build(runtime));
     definitions.push_back(reflection::Definition<GraphSelect>::build(runtime));
     definitions.push_back(reflection::Definition<GraphLayout>::build(runtime));
+    definitions.push_back(reflection::Definition<GraphExposeParameter>::build(runtime));
+    definitions.push_back(reflection::Definition<GraphBindParameter>::build(runtime));
+    definitions.push_back(reflection::Definition<GraphUnbindParameter>::build(runtime));
+    definitions.push_back(reflection::Definition<GraphUpdateParameter>::build(runtime));
+    definitions.push_back(reflection::Definition<GraphRemoveParameter>::build(runtime));
+    definitions.push_back(reflection::Definition<GraphSetParameter>::build(runtime));
+    definitions.push_back(reflection::Definition<GraphSetOverride>::build(runtime));
+    definitions.push_back(reflection::Definition<GraphSetNodeAsset>::build(runtime));
+    definitions.push_back(reflection::Definition<GraphExtractAsset>::build(runtime));
+    definitions.push_back(reflection::Definition<GraphExtractAssetResult>::build(runtime));
+    definitions.push_back(reflection::Definition<ProceduralSetOverride>::build(runtime));
     definitions.push_back(reflection::Definition<AssignProceduralGraph>::build(runtime));
     definitions.push_back(reflection::Definition<ProceduralBake>::build(runtime));
     TypeDefinition view;

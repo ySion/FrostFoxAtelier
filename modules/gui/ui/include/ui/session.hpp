@@ -192,6 +192,8 @@ struct Control {
 
     bool single_precision{}; // Float storage uses its shortest round-tripping decimal, without widened double noise.
 
+    bool integral{}; // Number/slider: interactive edits quantize to whole integers within [minimum, maximum].
+
     double drag_step{0.01};
 
     double fine_step{0.001}; // Number/splitter: per DIP. Slider: keyboard increment.

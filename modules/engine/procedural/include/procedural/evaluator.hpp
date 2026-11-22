@@ -14,6 +14,26 @@ namespace atelier::procedural {
 
 struct BooleanStats;
 
+// Shared LRU node-evaluation & Boolean-preparation cache pool across a main graph, its nested
+// AssetNode subgraphs, and multiple scene ProceduralGeneratorComponent instances.
+class CachePool {
+public:
+    explicit CachePool(std::size_t budget_bytes = std::size_t{256} << 20);
+
+    ~CachePool();
+
+    CachePool(const CachePool&) = delete;
+
+    CachePool& operator=(const CachePool&) = delete;
+
+private:
+    friend class Evaluator;
+
+    struct Impl;
+
+    std::unique_ptr<Impl> impl_;
+};
+
 struct NodeStatus {
     std::optional<Error> error; // Set while the node or an input it reads fails.
 
@@ -39,16 +59,38 @@ struct NodeStatus {
 // plain values (math included), String and Arrays of these.
 class Evaluator {
 public:
+    inline static constexpr std::uint32_t max_subgraph_depth = 8;
+
+    struct ExternalInput {
+        ObjectId input_node{};
+
+        Geometry geometry{};
+
+        std::uint64_t serial{}; // Non-zero upstream Entry::serial when connected; 0 when unconnected.
+
+        std::uint32_t output{}; // Upstream output port index within that Entry.
+    };
+
     // `program` supplies Source Node methods and must outlive the evaluator.
     // Native Node methods need no program.
     Evaluator(Runtime& runtime, ObjectRoot graph, const Resources& resources, const source::Program* program = nullptr,
               std::size_t cache_bytes = std::size_t{256} << 20);
+
+    Evaluator(Runtime& runtime, ObjectRoot graph, const Resources& resources, const source::Program* program,
+              std::shared_ptr<CachePool> cache_pool, std::uint32_t subgraph_depth = 0);
 
     ~Evaluator();
 
     Evaluator(const Evaluator&) = delete;
 
     Evaluator& operator=(const Evaluator&) = delete;
+
+    [[nodiscard]] std::shared_ptr<CachePool> cache_pool() const noexcept;
+
+    // Supplies external Geometry inputs for `procedural.GraphInput` nodes when evaluating an AssetNode subgraph.
+    void set_external_inputs(std::span<const ExternalInput> inputs);
+
+    void clear_external_inputs() noexcept;
 
     // Fails only when the graph itself cannot be read or has invalid topology; node execution
     // failures go to status(). Any graph or display-chain failure clears output() while
@@ -62,6 +104,11 @@ public:
     // last_valid_output(), so an editor can inspect a selected node independent of the display flag.
     Result<void> evaluate_node(ObjectId node, bool record_timings = false,
                                std::optional<std::uint32_t> seed_override = {});
+
+    // Evaluates an explicit set of target nodes (e.g. ordered GraphOutput nodes) in one pass
+    // without changing output() or last_valid_output().
+    Result<void> evaluate_targets(std::span<const ObjectId> targets, bool record_timings = false,
+                                  std::optional<std::uint32_t> seed_override = {});
 
     // The display node's first output when the latest evaluate() succeeded without display-chain
     // errors; null when the graph has no display node or the latest evaluation or display chain failed.
@@ -93,6 +140,15 @@ public:
 
     // Output `output_index` of `node` when its latest evaluation succeeded; null otherwise.
     [[nodiscard]] const Geometry* node_output(ObjectId node, std::uint32_t output_index = 0) const noexcept;
+
+    [[nodiscard]] std::shared_ptr<const Geometry> retain_node_output(ObjectId node,
+                                                                     std::uint32_t output_index = 0) const noexcept;
+
+    // Root-cause error on `node` or its upstream chain when its latest evaluation failed.
+    [[nodiscard]] std::optional<Error> target_error(ObjectId node) const;
+
+    // Deduplicated host resources read by `targets` and their active upstream chains.
+    [[nodiscard]] std::vector<Reference> target_dependencies(std::span<const ObjectId> targets) const;
 
     // Cooks the current inputs, then captures all outputs and their effective resource dependencies.
     [[nodiscard]] Result<std::shared_ptr<const FrozenOutput>>

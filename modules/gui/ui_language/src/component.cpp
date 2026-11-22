@@ -2200,7 +2200,8 @@ Result<std::unique_ptr<detail::PreparedUpdate>> detail::InstanceData::prepare(st
             output.push_back(std::move(control));
         } else if (kind == NodeKind::parameter_row) {
             ui::append_parameter_row(output, {node.control.key, node.label, node.body, 0, node.control.parent,
-                                              node.control.text, node.control.enabled, node.control.modified});
+                                              node.control.text, node.control.enabled, true, node.control.modified,
+                                              node.control.context_target});
             output.front().layout.collapsed = node.control.layout.collapsed;
             output.front().tooltip = node.control.tooltip;
             output.front().classes.insert(output.front().classes.end(), node.control.classes.begin(),
@@ -2208,11 +2209,11 @@ Result<std::unique_ptr<detail::PreparedUpdate>> detail::InstanceData::prepare(st
         } else if (kind != NodeKind::number_row)
             output.push_back(node.control);
         else if (!node.edit.fields.empty()) {
-            auto appended = ui::append_number_row(output,
-                                                  {node.control.key, node.label, node.body, node.edit.group,
-                                                   node.control.parent, node.control.text,
-                                                   node.control.enabled && node.edit.enabled, node.edit.modified},
-                                                  node.edit.fields);
+            auto appended =
+                ui::append_number_row(output,
+                                      {node.control.key, node.label, node.body, node.edit.group, node.control.parent,
+                                       node.control.text, node.control.enabled, node.edit.enabled, node.edit.modified},
+                                      node.edit.fields);
             if (!appended)
                 return failure(declaration.source_name + ": " + declaration.nodes[i].name + ": " +
                                std::string(appended.error().message));

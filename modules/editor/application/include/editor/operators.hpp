@@ -73,6 +73,8 @@ struct Context {
 
     std::vector<std::string> selected_graph_nodes; // Multi-node selection in active_graph Network View.
 
+    std::vector<std::string> locked_graphs; // Open .procgraph keys currently in Locked Preview.
+
     HistoryState source_history; // The Code page's active document; both false without one.
 
     HistoryState workbench_history; // The Controls page samples.
@@ -106,6 +108,8 @@ struct Context {
     CameraView camera_view{CameraView::perspective};
 
     [[nodiscard]] std::string focused_graph() const;
+
+    [[nodiscard]] bool is_graph_locked(std::string_view key) const noexcept;
 };
 
 // Control replaces fields for one call; the document selection does not change.
@@ -243,6 +247,10 @@ public:
     virtual Result<void> open_graph_context(std::string_view key) = 0;
 
     virtual void exit_graph_context() = 0;
+
+    virtual Result<void> dive_into_asset_node(std::string_view, std::string_view) {
+        return std::unexpected(Error{ErrorCode::unsupported_operation, "Dive-in requires an editor workspace."});
+    }
 
     virtual void select_graph_node(std::string_view key, std::string_view node_name) = 0;
 

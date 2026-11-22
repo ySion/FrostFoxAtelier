@@ -17,9 +17,9 @@
      - **East Sanctum Island**（开启 `Override Graph Seed`，独立种子 `777`）
    - 地形连续网格的 `"default"` 材质槽绑定 `TerraceStone.material`；散布实例由 `BasaltColumn.obj`（玄武岩石柱）与 `AmberCrystal.obj`（自发光琥珀晶簇，参与 DDGI 间接照明）按台地高度与坡度自动选择变体。
 
-2. **实时编辑 `.procgraph` 与自定义 `.source` 节点**：
-   - 在 **Scene Tree** 或 **3D Viewport** 直接点击任一岛屿实体，**Network** 面板即刻在 World 上下文中呈现该实体的 `.procgraph` 节点图并支持就地编辑（也可点击 `Isolate` 图标或双击资产进入独显 SOP 视口模式）。
-   - 图中（`.procgraph` v2，含 `Terrain Shaping` / `Outpost Scattering` 两个 Network Box 分组框与 `Terrace Outpost SOP` 便签说明）串联了内置节点（`MeshImport` → `Promote` → `Connectivity` / `Scatter` → `RandomScale` → `CopyToPoints` → `Merge` → `Null` 里程碑输出 `OUT_terrace`；按需点亮任意节点的 `T` 标记即可叠加半透明参考线框）与 [TerraceIsland.source](../../Source/Procedural/TerraceIsland.source) 中的两个工程自定义 `parallel_for` 节点：
+2. **三层同构参数与默认锁定预览（`.procgraph` v3）**：
+   - 在 **Scene Tree** 或 **3D Viewport** 直接点击任一岛屿实体，**Parameters** 面板直接在 `ProceduralGeneratorComponent` 下方内联渲染 `Generator Parameters`（如 `Island Radius`、`Terrace Count`、`Plateau Height`、`Prop Density`），拖动滑杆仅为当前实体写入场景差量 `overrides`（接入场景 Undo/Redo 与 Play 同步）；同时 **Network** 面板默认以 **Locked Preview** 打开该 `.procgraph` 供安全检视，点击顶栏 `Unlock` 才进入共享数字资产编辑态并即时传播至全场景所有实例。
+   - 图中（`.procgraph` v3，含 `Terrain Shaping` / `Outpost Scattering` 两个 Network Box 分组框与 `Terrace Outpost SOP` 便签说明）串联了内置节点（`MeshImport` → `Promote` → `Connectivity` / `Scatter` → `RandomScale` → `CopyToPoints` → `Merge` → `GraphOutput` 正式交付输出 `OUT_terrace`；按需点亮任意节点的 `T` 标记即可叠加半透明参考线框）与 [TerraceIsland.source](../../Source/Procedural/TerraceIsland.source) 中的两个工程自定义 `parallel_for` 节点：
      - `game.TerraceIsland`：基于连续值噪声与阶梯平滑曲线抬升阶梯台地，并用解析中心差分计算顶点法线 `N`。
      - `game.OutpostPlacement`：按台地高度与坡度法线筛选变体 `variant`、调整 `pscale`，并用正交基 `frame_rotation` 组合表面法线倾角与随机局部朝向 `orient`。
    - 修改图节点参数后，所有引用该图的岛屿实体会立即在场景中重算并刷新视口与光照几何。
@@ -36,6 +36,11 @@
    - 下游由 3 个 C++ `Sweep` 分别扫掠生成闭合流形路面、围墙主体与雉堞城垛，再由 `game.OutpostTacticalScatter` 在 `parallel_for` 中同时查询地形法线、道路折线（排斥路幅并在路缘切向排列柱廊）与城墙曲面（避让墙体净空）筛选散布点，经 `CopyToPoints` 实例化零穿模、零浮空的石柱与晶簇。
 
 2. **Modular Ruin Building（`Content/Procedural/Graphs/ModularRuinBuilding.procgraph` + [ModularRuinBuilding.source](../../Source/Procedural/ModularRuinBuilding.source)）**：
-   - `game.RuinArchitectureGrammar` 根据可调建筑面宽/进深、楼层数、层高、目标开间宽度、壁柱比例、屋脊高度与坍塌侵蚀度 `ruin_collapse`，按建筑语法切分出阶梯台基、带入口门洞与凹凸窗框（壁柱、窗下墙、挑出窗台、窗侧柱、窗过梁、层间挑檐）的立面面框、带中庭挑空井的多层楼板面框、双坡山墙斜椽与屋脊木构折线，以及残骸候选点。
-   - 下游经 C++ `Extrude`（`distance_attribute = "ext_dist"` / `inset_attribute = "ext_inset"` + 闭合底盖）与 `Sweep`（屋顶木梁扫掠）生成全闭合水密建筑构件，并由 `game.RuinRubbleGrounder` 在 `parallel_for` 中对楼板/台基做 `raycast_surface` 落点贴合与 `closest_surface_point` 墙面避让，将残骸石柱与晶簇精准安放在废墟之上。
+   - `game.ModularBuildingLayout`（节点 `building_layout`）按 `Dimensions`、`Facade & Roof`、`Ruin Weathering` 三组直观参数，根据建筑面宽/进深、楼层数（整数量化滑杆）、层高、目标开间宽度、壁柱比例、屋脊高度与坍塌侵蚀度 `ruin_collapse`，生成阶梯台基、带入口门洞与凹凸窗框（壁柱、窗下墙、挑出窗台、窗侧柱、窗过梁、层间挑檐）的立面面框、带中庭挑空井的多层楼板面框、双坡山墙斜椽与屋脊木构折线，以及残骸候选点。
+   - 下游经 C++ `Extrude`（`distance_attribute = "ext_dist"` / `inset_attribute = "ext_inset"` + 闭合底盖）与 `Sweep`（屋顶木梁扫掠）生成全闭合水密建筑构件，并由 `game.RuinRubbleGrounder` 在 `parallel_for` 中对楼板/台基做 `raycast_surface` 落点贴合与 `closest_surface_point` 墙面避让，将残骸石柱与晶簇精准安放在废墟之上。场景中的 **Grand Ruined Hall** 与 **North Sanctuary Ruin** 共用同一 `ModularRuinBuilding.procgraph` 资产并通过组件级 `overrides` 分别塑造三层主殿与双层坍塌圣所。
+
+## 3. RuinedSettlement.procgraph（数字资产复合组装）
+
+独立程序化数字资产 `Content/Procedural/Graphs/RuinedSettlement.procgraph`（可在 **Assets** 面板双击打开）：
+- 通过 3 个通用 `procedural.AssetNode`（`west_watchtower`、`great_hall`、`east_chapel`）实例化调用 `ModularRuinBuilding.procgraph`，各自配置独立 `overrides`（4 层角楼、3 层主殿、2 层重度坍塌礼拜堂）与 `seed_offset` 并共享同一 256 MiB `Evaluator::CachePool`；图根同时暴露多目标参数 `wing_scale_y` 同步驱动两侧翼楼变换，双击或按 `Enter` 可直接沿面包屑下钻进入子资产检视。
 

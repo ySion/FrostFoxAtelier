@@ -666,8 +666,10 @@ Result<void> Session::set_procedural_graph(Project* project, ObjectId component,
         return {};
     ATELIER_TRY_BIND(root, runtime_.hold(component));
     auto before = std::move(current->source);
+    const json::Document ov = generator_overrides(component);
     ATELIER_TRY(presentation::set_procedural_binding(runtime_, component, {resolved->first, nullptr, {}}));
-    remember(ProceduralGraphChange{std::move(*root), state->owner, std::move(before), std::move(resolved->first)});
+    remember(
+        ProceduralGraphChange{std::move(*root), state->owner, std::move(before), std::move(resolved->first), ov, ov});
     return sync_procedural_generators(project);
 }
 
@@ -884,14 +886,26 @@ Result<std::vector<Property>> Session::properties(ObjectId object) const {
                           field.read_only,
                           true,
                           std::string(value.view().std_view()),
-                          {}};
+                          {},
+                          std::move(field.metadata)};
             result.push_back(std::move(prop));
             continue;
         }
         ATELIER_TRY_BIND(value, read_property(object, field.path));
-        result.push_back({detail::dotted(field.names), std::move(field.path), field.type, std::move(*value),
-                          std::move(field.label), std::move(field.category), std::move(field.description), field.range,
-                          field.transient, field.read_only});
+        result.push_back({detail::dotted(field.names),
+                          std::move(field.path),
+                          field.type,
+                          std::move(*value),
+                          std::move(field.label),
+                          std::move(field.category),
+                          std::move(field.description),
+                          field.range,
+                          field.transient,
+                          field.read_only,
+                          false,
+                          {},
+                          {},
+                          std::move(field.metadata)});
     }
     return result;
 }
@@ -916,6 +930,28 @@ Result<void> Session::configure_body(ObjectId component, physics::BodySettings s
     return {};
 }
 
+Result<void> Session::reject_if_graph_controlled_field(ObjectId object, std::span<const FieldId> path) const {
+    const auto gkey = graph_of_object(object);
+    const auto nname = graph_node_name(object);
+    if (!gkey || !nname)
+        return {};
+    ATELIER_TRY_BIND(cur_type, runtime_.type_of(object));
+    std::vector<std::string> fnames;
+    for (const auto step : path) {
+        ATELIER_TRY_BIND(info, runtime_.describe(*cur_type));
+        const auto f = std::ranges::find((*info)->fields, step, &FieldInfo::id);
+        if (f == (*info)->fields.end())
+            break;
+        fnames.push_back(f->name);
+        cur_type = f->value.type;
+    }
+    const std::string dotted = detail::dotted(fnames);
+    if (const auto ctrl = graph_controlling_parameter(*gkey, *nname, dotted))
+        return invalid("Field '" + *nname + "." + dotted + "' is controlled by promoted graph parameter '" + *ctrl +
+                       "'.");
+    return {};
+}
+
 Result<void> Session::begin_edit(ObjectId object, std::span<const FieldId> path, std::uint64_t control_session) {
     if (editing())
         return invalid("A field edit is already active.");
@@ -926,6 +962,8 @@ Result<void> Session::begin_edit(ObjectId object, std::span<const FieldId> path,
     if (*read_only)
         return invalid("Read-only fields cannot be edited in the inspector.");
     const bool graph_object = is_graph_object(object);
+    if (graph_object)
+        ATELIER_TRY(reject_if_graph_controlled_field(object, path));
     ATELIER_TRY_BIND(before, graph_object ? runtime_.read(object, path) : world_.read(object, path));
     ATELIER_TRY_BIND(root, runtime_.hold(object));
     std::variant<world::Trs, Scalar> value{*before};
@@ -957,6 +995,8 @@ Result<void> Session::begin_group_edit(ObjectId object, std::span<const world::F
         ATELIER_TRY_BIND(read_only, read_only_path(runtime_, object, path));
         if (*read_only)
             return invalid("Read-only fields cannot be edited in the inspector.");
+        if (graph_object)
+            ATELIER_TRY(reject_if_graph_controlled_field(object, path));
         ATELIER_TRY_BIND(value, graph_object ? runtime_.read(object, path) : world_.read(object, path));
         change.before.push_back(*value);
     }
@@ -975,7 +1015,9 @@ Result<void> Session::preview_group_edit(std::uint64_t control_session, std::spa
         return invalid("The property's owning Entity changed.");
     ATELIER_TRY(write_group(group_->root.id(), group_->paths, values));
     ++revision_;
-    if (!is_graph_object(group_->root.id()))
+    if (is_graph_object(group_->root.id()))
+        bump_graph_object_epoch(group_->root.id());
+    else
         forward_edit();
     return {};
 }
@@ -1025,6 +1067,8 @@ Result<void> Session::set_properties(ObjectId object, std::span<const PropertyPa
         ATELIER_TRY_BIND(read_only, read_only_path(runtime_, object, leaf.path));
         if (*read_only)
             return invalid("Read-only fields cannot be edited in the inspector.");
+        if (graph_object)
+            ATELIER_TRY(reject_if_graph_controlled_field(object, leaf.path));
         ATELIER_TRY(validate_property_scalar(runtime_, leaf.value));
     }
     if (patch.empty())
@@ -1052,7 +1096,8 @@ Result<void> Session::set_properties(ObjectId object, std::span<const PropertyPa
 bool Session::owns_edit(std::uint64_t control_session) const noexcept {
     return (group_ && group_->control_session == control_session) ||
            (active_ && active_->control_session == control_session) ||
-           (transform_ && transform_->control_session == control_session) || material_editing(control_session);
+           (transform_ && transform_->control_session == control_session) || material_editing(control_session) ||
+           graph_parameter_editing(control_session);
 }
 
 Result<void> Session::begin_transform(std::span<const ObjectId> entities, std::uint64_t control_session,
@@ -1189,8 +1234,11 @@ Result<void> Session::preview_edit(std::uint64_t control_session, Scalar value) 
         return std::unexpected(before.error());
     auto result = graph_object ? runtime_.write(active_->root.id(), active_->path, value)
                                : world_.write(active_->root.id(), active_->path, value);
-    if (result && *before != value)
+    if (result && *before != value) {
         ++revision_;
+        if (graph_object)
+            bump_graph_object_epoch(active_->root.id());
+    }
     if (result && !graph_object)
         forward_edit();
     return result;
@@ -1199,6 +1247,8 @@ Result<void> Session::preview_edit(std::uint64_t control_session, Scalar value) 
 Result<void> Session::commit_edit(std::uint64_t control_session) {
     if (material_editing(control_session))
         return commit_material_edit(control_session);
+    if (graph_parameter_editing(control_session))
+        return commit_graph_parameter_edit(control_session);
     if (!owns_edit(control_session))
         return invalid("No matching field edit.");
     if (group_) {
@@ -1269,11 +1319,14 @@ Result<void> Session::apply_field(const FieldChange& change, bool forward) {
 
 Result<void> Session::cancel_edit() {
     ATELIER_TRY(cancel_material_edit());
+    ATELIER_TRY(cancel_graph_parameter_edit());
     if (group_) {
         const bool graph_object = is_graph_object(group_->root.id());
         ATELIER_TRY_BIND(restored, apply_group(*group_, false));
         ++revision_;
-        if (!graph_object)
+        if (graph_object)
+            bump_graph_object_epoch(group_->root.id());
+        else
             forward_edit();
         group_.reset();
     }
@@ -1316,8 +1369,11 @@ Result<void> Session::cancel_edit() {
         changed = *current != std::get<Scalar>(active_->before);
     }
     ATELIER_TRY_BIND(restored, apply_field(*active_, false));
-    if (changed)
+    if (changed) {
         ++revision_;
+        if (graph_object)
+            bump_graph_object_epoch(active_->root.id());
+    }
     if (!graph_object)
         forward_edit();
     active_.reset();
@@ -1446,6 +1502,11 @@ Result<world::Commit> Session::replay(Change& change, bool forward, Project* pro
                     return invalid("The procedural generator's owning Entity changed.");
                 ATELIER_TRY(presentation::set_procedural_binding(runtime_, item.root.id(),
                                                                  {forward ? item.after : item.before, nullptr, {}}));
+                const auto& ov = forward ? item.after_overrides : item.before_overrides;
+                if (ov.root().kind() == json::Kind::object && ov.root().size() > 0)
+                    generator_overrides_[item.root.id()] = ov;
+                else
+                    generator_overrides_.erase(item.root.id());
                 set_selection({item.entity, item.root.id()});
                 return world::Commit{true, {}};
             } else if constexpr (std::is_same_v<T, BodyChange>) {
@@ -1572,6 +1633,7 @@ Result<world::Commit> Session::close() {
     cursor_ = 0;
     set_selection({});
     materials_.clear();
+    generator_overrides_.clear();
     close_graphs();
     scene_material_parents_.clear();
     textures_.clear();
@@ -1618,6 +1680,7 @@ Result<void> Session::collect_step() {
         std::erase_if(names_, [&](const auto& item) { return !runtime_.type_of(item.first); });
         std::erase_if(retained_, [&](const auto& item) { return !runtime_.type_of(item.first); });
         std::erase_if(scene_material_parents_, [&](const auto& item) { return !runtime_.type_of(item.first); });
+        std::erase_if(generator_overrides_, [&](const auto& item) { return !runtime_.type_of(item.first); });
     }
     return {};
 }

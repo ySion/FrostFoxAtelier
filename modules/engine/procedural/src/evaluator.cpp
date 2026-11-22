@@ -1,6 +1,7 @@
 #include "procedural/evaluator.hpp"
 #include "procedural/bvh.hpp"
 #include "procedural/nodes.hpp"
+#include "procedural/random.hpp"
 #include "detail/native_cook.hpp"
 #include "detail/node_plan.hpp"
 #include "foundation/inline_array.hpp"
@@ -100,9 +101,13 @@ struct Entry {
 
     std::uint64_t serial{}; // Unique per evaluation; downstream keys use it.
 
+    std::uint32_t subgraph_span{}; // Active AssetNode hops beneath and including this entry.
+
     std::vector<Geometry> outputs;
 
     std::vector<Reference> dependencies; // Resources read, with what they resolved to.
+
+    const Resources* confirmed_resources{}; // Host instance `revision` was confirmed against.
 
     std::uint64_t revision{}; // Resources revision the dependencies were confirmed at.
 
@@ -115,11 +120,71 @@ struct Entry {
 
 }
 
+struct CachePool::Impl {
+    std::size_t budget;
+
+    detail::BooleanPreparationCache boolean_preparation;
+
+    Map<std::string, std::shared_ptr<Entry>> cache;
+
+    std::list<Entry*> recent; // Most recently used first.
+
+    std::size_t cached_bytes{};
+
+    std::uint64_t serials{};
+
+    explicit Impl(std::size_t bytes) : budget(bytes) {}
+
+    void touch(Entry& entry) {
+        if (entry.cached)
+            recent.splice(recent.begin(), recent, entry.recent);
+    }
+
+    void uncache(Entry& entry) {
+        entry.cached = false;
+        cached_bytes -= entry.bytes;
+        recent.erase(entry.recent);
+        const std::string key = entry.key;
+        (void)cache.remove(key); // May release the entry; touch nothing after this.
+    }
+
+    void trim() {
+        for (auto& slot : boolean_preparation.operands)
+            if (slot.prepared && slot.input.expired())
+                slot = {};
+        while (!recent.empty() && cached_bytes + boolean_preparation.bytes() > budget)
+            uncache(*recent.back());
+    }
+
+    void store(const std::shared_ptr<Entry>& entry) {
+        if (auto* old = cache.find(entry->key))
+            uncache(**old);
+        cache.insert_or_assign(entry->key, entry);
+        recent.push_front(entry.get());
+        entry->recent = recent.begin();
+        entry->cached = true;
+        cached_bytes += entry->bytes;
+        trim();
+    }
+};
+
+CachePool::CachePool(std::size_t budget_bytes) : impl_(std::make_unique<Impl>(budget_bytes)) {}
+
+CachePool::~CachePool() = default;
+
 struct Evaluator::Impl {
     struct State {
         TypeId type{};
 
         const detail::NodePlan* plan{};
+
+        std::unique_ptr<const detail::NodePlan> instance_plan;
+
+        bool is_asset_node{};
+
+        AssetSubgraph asset_subgraph{};
+
+        std::shared_ptr<Evaluator> child_evaluator;
 
         bool bypassed{};
 
@@ -158,7 +223,17 @@ struct Evaluator::Impl {
 
     const source::Program* program;
 
-    std::size_t budget;
+    std::shared_ptr<CachePool> pool;
+
+    std::uint32_t subgraph_depth{};
+
+    bool has_external_inputs{};
+
+    std::vector<ExternalInput> external_inputs;
+
+    std::uint64_t external_inputs_epoch{};
+
+    std::uint64_t synced_external_epoch{};
 
     const Geometry empty;
 
@@ -166,7 +241,11 @@ struct Evaluator::Impl {
 
     TypeId boolean_type{};
 
-    detail::BooleanPreparationCache boolean_preparation;
+    TypeId graph_input_type{};
+
+    TypeId asset_node_type{};
+
+    FieldId asset_seed_offset_field{};
 
     FieldId graph_seed_field{};
 
@@ -188,14 +267,6 @@ struct Evaluator::Impl {
 
     Map<TypeId, Result<SourceKernel>> source_kernels;
 
-    Map<std::string, std::shared_ptr<Entry>> cache;
-
-    std::list<Entry*> recent; // Most recently used first.
-
-    std::size_t cached_bytes{};
-
-    std::uint64_t serials{};
-
     std::uint64_t sync_generation{1};
 
     bool display_current{};
@@ -204,13 +275,22 @@ struct Evaluator::Impl {
 
     std::shared_ptr<Entry> last_valid;
 
-    Impl(Runtime& owner, ObjectRoot root, const Resources& host, const source::Program* code, std::size_t bytes)
-        : runtime(owner), graph(std::move(root)), resources(host), program(code), budget(bytes),
+    Impl(Runtime& owner, ObjectRoot root, const Resources& host, const source::Program* code,
+         std::shared_ptr<CachePool> cache_pool, std::uint32_t depth)
+        : runtime(owner), graph(std::move(root)), resources(host), program(code),
+          pool(cache_pool ? std::move(cache_pool) : std::make_shared<CachePool>()), subgraph_depth(depth),
           code_revision(code ? code->revision() : 0) {
         if (auto str = runtime.native_type<String>())
             string_type = *str;
         if (auto op = runtime.native_type<Boolean>())
             boolean_type = *op;
+        if (auto gin = runtime.native_type<GraphInput>())
+            graph_input_type = *gin;
+        if (auto anode = runtime.native_type<AssetNode>()) {
+            asset_node_type = *anode;
+            if (auto found = runtime.find_field(*anode, "seed_offset"))
+                asset_seed_offset_field = *found;
+        }
         if (auto graph_type = runtime.native_type<Graph>())
             if (auto found = runtime.find_field(*graph_type, "seed"))
                 graph_seed_field = *found;
@@ -329,7 +409,7 @@ struct Evaluator::Impl {
                     state.frozen_entry = prior->frozen_entry;
                 } else {
                     auto frozen_e = std::make_shared<Entry>();
-                    frozen_e->serial = ++serials;
+                    frozen_e->serial = ++pool->impl_->serials;
                     frozen_e->outputs = (*snap)->outputs;
                     if (frozen_e->outputs.size() < state.plan->ports.outputs.size())
                         frozen_e->outputs.resize(state.plan->ports.outputs.size());
@@ -345,13 +425,17 @@ struct Evaluator::Impl {
             }
             if (state.frozen_entry && state.frozen_entry->outputs.size() < state.plan->ports.outputs.size()) {
                 auto resized = std::make_shared<Entry>();
-                resized->serial = ++serials;
+                resized->serial = ++pool->impl_->serials;
                 resized->outputs = state.frozen_entry->outputs;
                 resized->outputs.resize(state.plan->ports.outputs.size());
                 resized->dependencies = state.frozen_entry->dependencies;
                 resized->revision = revision;
                 state.frozen_entry = std::move(resized);
             }
+        }
+        if (state.is_asset_node && prior && prior->child_evaluator &&
+            prior->asset_subgraph.graph.id() == state.asset_subgraph.graph.id()) {
+            state.child_evaluator = prior->child_evaluator;
         }
         const bool locked_frozen = !state.bypassed && state.frozen && state.frozen_entry != nullptr;
         auto info = runtime.describe(state.type);
@@ -374,6 +458,31 @@ struct Evaluator::Impl {
             for (const auto& field : (*info)->fields)
                 if (auto added = append_field(local, id, field); !added)
                     return added;
+            if (state.is_asset_node) {
+                append(local, state.asset_subgraph.asset_key.size());
+                local.append(state.asset_subgraph.asset_key);
+                append(local, state.asset_subgraph.revision);
+                append(local, state.asset_subgraph.ports.inputs.size());
+                for (std::size_t p = 0; p < state.asset_subgraph.ports.inputs.size(); ++p) {
+                    append(local, state.asset_subgraph.ports.inputs[p].size());
+                    local.append(state.asset_subgraph.ports.inputs[p]);
+                    const bool multi =
+                        p < state.asset_subgraph.ports.multiple.size() && state.asset_subgraph.ports.multiple[p];
+                    append(local, multi);
+                }
+                append(local, state.asset_subgraph.ports.outputs.size());
+                for (const auto& out_name : state.asset_subgraph.ports.outputs) {
+                    append(local, out_name.size());
+                    local.append(out_name);
+                }
+                const bool has_err = state.asset_subgraph.bind_error.has_value();
+                append(local, has_err);
+                if (has_err) {
+                    append(local, state.asset_subgraph.bind_error->code);
+                    append(local, state.asset_subgraph.bind_error->message.size());
+                    local.append(state.asset_subgraph.bind_error->message);
+                }
+            }
         }
         state.local = std::move(local);
         return {};
@@ -381,50 +490,88 @@ struct Evaluator::Impl {
 
     // Whether the resources an entry read still resolve as they did.
     bool current(Entry& entry) const {
-        if (entry.revision == revision)
+        if (entry.confirmed_resources == &resources && entry.revision == revision)
             return true;
         for (const auto& dependency : entry.dependencies) {
             auto mesh = resources.mesh(dependency.key);
             if (!mesh || *mesh != dependency.mesh)
                 return false;
         }
+        entry.confirmed_resources = &resources;
         entry.revision = revision;
         return true;
     }
 
-    void touch(Entry& entry) {
-        if (entry.cached)
-            recent.splice(recent.begin(), recent, entry.recent);
+    const ExternalInput* find_external_input(ObjectId id) const noexcept {
+        if (!has_external_inputs)
+            return nullptr;
+        const auto at = std::ranges::find(external_inputs, id, &ExternalInput::input_node);
+        return at != external_inputs.end() ? &*at : nullptr;
     }
 
-    void uncache(Entry& entry) {
-        entry.cached = false;
-        cached_bytes -= entry.bytes;
-        recent.erase(entry.recent);
-        const std::string key = entry.key;
-        (void)cache.remove(key); // May release the entry; touch nothing after this.
+    Result<void> execute_asset_node(ObjectId id, State& state, Entry& entry, bool record_timings) {
+        if (subgraph_depth >= Evaluator::max_subgraph_depth)
+            return error(ErrorCode::invocation_failed, "AssetNode nesting exceeds maximum depth of " +
+                                                           std::to_string(Evaluator::max_subgraph_depth) + ".");
+        if (state.asset_subgraph.bind_error)
+            return std::unexpected(*state.asset_subgraph.bind_error);
+        if (!state.asset_subgraph.graph.registered())
+            return error(ErrorCode::invocation_failed, "AssetNode has no bound procedural graph asset.");
+
+        std::uint32_t offset = 0;
+        if (asset_seed_offset_field != FieldId{}) {
+            ATELIER_TRY_BIND(val, runtime.read(id, asset_seed_offset_field));
+            offset = std::get<std::uint32_t>(*val);
+        }
+        const std::uint32_t child_seed = offset == 0u ? seed : hash(seed, offset);
+
+        if (!state.child_evaluator) {
+            state.child_evaluator = std::make_shared<Evaluator>(runtime, state.asset_subgraph.graph, resources, program,
+                                                                pool, subgraph_depth + 1u);
+        }
+        std::vector<ExternalInput> child_inputs;
+        child_inputs.reserve(state.asset_subgraph.input_nodes.size());
+        for (std::size_t p = 0; p < state.asset_subgraph.input_nodes.size(); ++p) {
+            ExternalInput ext{};
+            ext.input_node = state.asset_subgraph.input_nodes[p];
+            for (const auto& connection : state.inputs) {
+                if (connection.input == p) {
+                    const auto& src_entry = nodes.find(connection.from)->entry;
+                    ext.geometry = src_entry->outputs[connection.output];
+                    ext.serial = src_entry->serial;
+                    ext.output = connection.output;
+                    break;
+                }
+            }
+            child_inputs.push_back(std::move(ext));
+        }
+        state.child_evaluator->set_external_inputs(child_inputs);
+        ATELIER_TRY(
+            state.child_evaluator->evaluate_targets(state.asset_subgraph.output_nodes, record_timings, child_seed));
+        for (const ObjectId out_node : state.asset_subgraph.output_nodes) {
+            if (auto err = state.child_evaluator->target_error(out_node))
+                return std::unexpected(std::move(*err));
+        }
+        for (std::size_t out_idx = 0;
+             out_idx < state.asset_subgraph.output_nodes.size() && out_idx < entry.outputs.size(); ++out_idx) {
+            if (const Geometry* geom =
+                    state.child_evaluator->node_output(state.asset_subgraph.output_nodes[out_idx], 0u))
+                entry.outputs[out_idx] = *geom;
+        }
+        entry.subgraph_span = 1u + state.child_evaluator->impl_->max_subgraph_span(state.asset_subgraph.output_nodes);
+        entry.dependencies = state.child_evaluator->target_dependencies(state.asset_subgraph.output_nodes);
+        return {};
     }
 
-    void trim_cache() {
-        for (auto& slot : boolean_preparation.operands)
-            if (slot.prepared && slot.input.expired())
-                slot = {};
-        while (cached_bytes > budget - boolean_preparation.bytes())
-            uncache(*recent.back());
-    }
-
-    void store(const std::shared_ptr<Entry>& entry) {
-        if (auto* old = cache.find(entry->key))
-            uncache(**old);
-        cache.insert_or_assign(entry->key, entry);
-        recent.push_front(entry.get());
-        entry->recent = recent.begin();
-        entry->cached = true;
-        cached_bytes += entry->bytes;
-        trim_cache();
-    }
-
-    Result<void> execute_node(ObjectId id, State& state, const SourceKernel* source_kernel, Entry& entry) {
+    Result<void> execute_node(ObjectId id, State& state, const SourceKernel* source_kernel, Entry& entry,
+                              bool record_timings) {
+        if (has_external_inputs && state.type == graph_input_type) {
+            const auto* ext = find_external_input(id);
+            entry.outputs[0] = ext ? ext->geometry : empty;
+            return {};
+        }
+        if (state.is_asset_node)
+            return execute_asset_node(id, state, entry, record_timings);
         const auto& plan = *state.plan;
         Context context;
         context.seed_ = seed;
@@ -599,11 +746,14 @@ struct Evaluator::Impl {
         for (std::size_t i = 0; i < arg_count; ++i)
             arguments.add(Argument::borrow(plan.arguments[i].type, values[i], writable[i]));
         {
-            detail::NativeCook collect{
-                state.status.boolean_stats, boolean_preparation, budget, active_node, entry.outputs,
-                plan.uses_primary_stream};
+            detail::NativeCook collect{state.status.boolean_stats,
+                                       pool->impl_->boolean_preparation,
+                                       pool->impl_->budget,
+                                       active_node,
+                                       entry.outputs,
+                                       plan.uses_primary_stream};
             if (plan.native) {
-                if (budget && state.type == boolean_type) {
+                if (pool->impl_->budget && state.type == boolean_type) {
                     for (const auto& input : state.inputs) {
                         const auto& source = nodes.find(input.from)->entry;
                         collect.inputs[input.input] = {source, &source->outputs[input.output]};
@@ -645,28 +795,31 @@ struct Evaluator::Impl {
             start = std::chrono::steady_clock::now();
         Result<void> ran{};
         if (state.bypassed) {
-            for (const auto& connection : state.inputs) {
-                if (connection.input == 0) {
-                    entry->outputs[0] = nodes.find(connection.from)->entry->outputs[connection.output];
-                    break;
+            if (!entry->outputs.empty()) {
+                for (const auto& connection : state.inputs) {
+                    if (connection.input == 0) {
+                        entry->outputs[0] = nodes.find(connection.from)->entry->outputs[connection.output];
+                        break;
+                    }
                 }
             }
         } else {
-            ran = execute_node(id, state, source_kernel, *entry);
+            ran = execute_node(id, state, source_kernel, *entry, record_timings);
         }
         if (record_timings)
             state.status.time = std::chrono::steady_clock::now() - start;
         if (!ran) {
-            trim_cache();
+            pool->impl_->trim();
             return std::unexpected(ran.error());
         }
-        entry->serial = ++serials;
+        entry->serial = ++pool->impl_->serials;
+        entry->confirmed_resources = &resources;
         entry->revision = revision;
         // The cache map holds a second copy of the key.
         entry->bytes = sizeof(Entry) + 2 * entry->key.capacity() + entry->dependencies.capacity() * sizeof(Reference);
         for (const auto& geometry : entry->outputs)
             entry->bytes += geometry.bytes();
-        store(entry);
+        pool->impl_->store(entry);
         return entry;
     }
 
@@ -686,7 +839,7 @@ struct Evaluator::Impl {
             if (state.entry != state.frozen_entry)
                 ++state.status.cache_hits;
             state.entry = state.frozen_entry;
-            touch(*state.entry);
+            pool->impl_->touch(*state.entry);
             state.status.error.reset();
             state.root_error.reset();
             return;
@@ -697,6 +850,18 @@ struct Evaluator::Impl {
             source_kernel = &**source_kernels.find(state.type); // read() already validated the current kernel.
             append(key, source_kernel->identity);
         }
+        if (state.is_asset_node && !state.bypassed) {
+            append(key, program);
+            append(key, program ? program->revision() : std::uint64_t{0});
+        }
+        if (state.type == graph_input_type && !state.bypassed) {
+            append(key, has_external_inputs);
+            if (has_external_inputs) {
+                const auto* ext = find_external_input(id);
+                append(key, ext ? ext->serial : std::uint64_t{0});
+                append(key, ext ? ext->output : std::uint32_t{0});
+            }
+        }
         if (state.plan->uses_context && !state.bypassed)
             append(key, seed);
         for (const auto& connection : state.inputs) {
@@ -704,7 +869,9 @@ struct Evaluator::Impl {
                 continue;
             const auto& upstream = *nodes.find(connection.from);
             if (upstream.status.error || !upstream.entry) {
-                const auto& port_name = state.plan->ports.inputs[connection.input];
+                const std::string port_name = connection.input < state.plan->ports.inputs.size()
+                                                  ? state.plan->ports.inputs[connection.input]
+                                                  : std::to_string(connection.input);
                 const std::string_view cause = upstream.root_error ? std::string_view{upstream.root_error->message}
                                                : upstream.status.error
                                                    ? std::string_view{upstream.status.error->message}
@@ -720,8 +887,11 @@ struct Evaluator::Impl {
             if (state.bypassed)
                 break;
         }
-        if (state.entry && state.entry->key == key && current(*state.entry)) {
-            touch(*state.entry);
+        const auto within_depth = [&](const Entry& candidate_entry) noexcept {
+            return state.bypassed || subgraph_depth + candidate_entry.subgraph_span <= Evaluator::max_subgraph_depth;
+        };
+        if (state.entry && state.entry->key == key && within_depth(*state.entry) && current(*state.entry)) {
+            pool->impl_->touch(*state.entry);
             if (!state.bypassed && state.frozen && !state.frozen_entry)
                 state.frozen_entry = state.entry;
             state.status.error.reset();
@@ -733,9 +903,11 @@ struct Evaluator::Impl {
             state.root_error = Error{state.failure.code, node_label(state.type) + ": " + state.failure.message};
             return;
         }
-        if (auto* found = cache.find(key); found && current(**found)) {
+        if (auto* found = pool->impl_->cache.find(key); found &&
+                                                        (**found).outputs.size() == state.plan->ports.outputs.size() &&
+                                                        within_depth(**found) && current(**found)) {
             state.entry = *found;
-            touch(*state.entry);
+            pool->impl_->touch(*state.entry);
             ++state.status.cache_hits;
             if (!state.bypassed && state.frozen && !state.frozen_entry)
                 state.frozen_entry = state.entry;
@@ -761,55 +933,84 @@ struct Evaluator::Impl {
         state.root_error.reset();
     }
 
-    // Upstream first, ending at the display node. When `active_only` is true, bypassed nodes
+    // Upstream first, ending at each root in `roots`. When `active_only` is true, bypassed nodes
     // only follow their pass-through port 0 instead of cooking unused secondary branches.
-    Result<std::vector<ObjectId>> order(ObjectId display, const Map<ObjectId, State>& changed,
+    Result<std::vector<ObjectId>> order(std::span<const ObjectId> roots, const Map<ObjectId, State>& changed,
                                         bool active_only = false) const {
         std::vector<ObjectId> result;
-        if (display == ObjectId{})
-            return result;
         struct Frame {
             ObjectId id;
 
             std::size_t next;
         };
         Map<ObjectId, bool> finished; // false while on the path.
-        std::vector<Frame> path{{display, 0}};
-        finished.insert_or_assign(display, false);
-        while (!path.empty()) {
-            const auto id = path.back().id;
-            const auto* staged = changed.find(id);
-            const auto& state = staged ? *staged : *nodes.find(id);
-            if (!state.bypassed && state.frozen && state.frozen_entry && active_only)
-                path.back().next = state.inputs.size();
-            if (state.bypassed && active_only) {
-                while (path.back().next < state.inputs.size() && state.inputs[path.back().next].input != 0)
-                    ++path.back().next;
-            }
-            if (path.back().next < state.inputs.size()) {
-                const auto idx = path.back().next++;
-                if (state.bypassed && active_only)
-                    path.back().next = state.inputs.size();
-                const auto from = state.inputs[idx].from;
-                const auto mark = finished.try_emplace(from, false);
-                if (mark.inserted)
-                    path.push_back({from, 0});
-                else if (!*mark.value)
-                    return error(ErrorCode::argument_mismatch, "The graph has a cycle.");
+        std::vector<Frame> path;
+        for (const ObjectId root : roots) {
+            if (root == ObjectId{})
                 continue;
+            if (!finished.try_emplace(root, false).inserted)
+                continue;
+            path.push_back({root, 0});
+            while (!path.empty()) {
+                const auto id = path.back().id;
+                const auto* staged = changed.find(id);
+                const auto* state_ptr = staged ? staged : nodes.find(id);
+                if (!state_ptr)
+                    return error(ErrorCode::invalid_member, "Evaluation target does not belong to this graph.");
+                const auto& state = *state_ptr;
+                if (!state.bypassed && state.frozen && state.frozen_entry && active_only)
+                    path.back().next = state.inputs.size();
+                if (state.bypassed && active_only) {
+                    while (path.back().next < state.inputs.size() && state.inputs[path.back().next].input != 0)
+                        ++path.back().next;
+                }
+                if (path.back().next < state.inputs.size()) {
+                    const auto idx = path.back().next++;
+                    if (state.bypassed && active_only)
+                        path.back().next = state.inputs.size();
+                    const auto from = state.inputs[idx].from;
+                    const auto mark = finished.try_emplace(from, false);
+                    if (mark.inserted)
+                        path.push_back({from, 0});
+                    else if (!*mark.value)
+                        return error(ErrorCode::argument_mismatch, "The graph has a cycle.");
+                    continue;
+                }
+                finished.insert_or_assign(id, true);
+                result.push_back(id);
+                path.pop_back();
             }
-            finished.insert_or_assign(id, true);
-            result.push_back(id);
-            path.pop_back();
         }
         return result;
     }
 
-    std::vector<Reference> dependencies(ObjectId node_id) const {
+    Result<std::vector<ObjectId>> order(ObjectId display, const Map<ObjectId, State>& changed,
+                                        bool active_only = false) const {
+        return display == ObjectId{} ? Result<std::vector<ObjectId>>{std::vector<ObjectId>{}}
+                                     : order(std::span<const ObjectId>{&display, 1}, changed, active_only);
+    }
+
+    std::uint32_t max_subgraph_span(std::span<const ObjectId> roots) const {
+        std::uint32_t span = 0;
+        if (roots.empty())
+            return span;
+        auto sequence = order(roots, {}, true);
+        if (!sequence)
+            return span;
+        for (const auto node : *sequence) {
+            const auto* state = nodes.find(node);
+            if (!state || !state->entry || state->bypassed)
+                continue;
+            span = std::max(span, state->entry->subgraph_span);
+        }
+        return span;
+    }
+
+    std::vector<Reference> dependencies_for(std::span<const ObjectId> roots) const {
         std::vector<Reference> result;
-        if (node_id == ObjectId{})
+        if (roots.empty())
             return result;
-        auto sequence = order(node_id, {}, true);
+        auto sequence = order(roots, {}, true);
         if (!sequence)
             return result;
         for (const auto node : *sequence) {
@@ -822,6 +1023,11 @@ struct Evaluator::Impl {
             }
         }
         return result;
+    }
+
+    std::vector<Reference> dependencies(ObjectId node_id) const {
+        return node_id == ObjectId{} ? std::vector<Reference>{}
+                                     : dependencies_for(std::span<const ObjectId>{&node_id, 1});
     }
 
     void sync_published(bool update_last_valid) {
@@ -839,13 +1045,14 @@ struct Evaluator::Impl {
         }
     }
 
-    Result<void> evaluate(std::optional<ObjectId> explicit_node, bool record_timings,
+    Result<void> evaluate(std::optional<std::span<const ObjectId>> explicit_targets, bool record_timings,
                           std::optional<std::uint32_t> seed_override) {
         auto now = runtime.change_cursor();
         if (!now)
             return std::unexpected(now.error());
         const auto id = graph.id();
-        bool dirty = !cursor || resources.revision() != revision;
+        const bool ext_changed = external_inputs_epoch != synced_external_epoch;
+        bool dirty = !cursor || resources.revision() != revision || ext_changed;
         // A publication may change any Source node's code; rebinding finds which did.
         const bool republished = program && program->revision() != code_revision;
         dirty = dirty || republished;
@@ -876,9 +1083,16 @@ struct Evaluator::Impl {
         dirty = dirty || seed_changed;
         const bool update_last_valid = !seed_override.has_value();
         const auto& next_members = refreshed ? *refreshed : members;
-        if (explicit_node && *explicit_node != ObjectId{} && !next_members.contains(*explicit_node))
-            return error(ErrorCode::argument_mismatch, "The node is not in the graph.");
-        const auto target_root = explicit_node ? *explicit_node : next_members.display();
+        const ObjectId display_target = next_members.display();
+        const std::span<const ObjectId> target_roots =
+            explicit_targets ? *explicit_targets
+                             : (display_target != ObjectId{} ? std::span<const ObjectId>{&display_target, 1}
+                                                             : std::span<const ObjectId>{});
+        if (explicit_targets) {
+            for (const ObjectId root_node : *explicit_targets)
+                if (root_node != ObjectId{} && !next_members.contains(root_node))
+                    return error(ErrorCode::argument_mismatch, "The node is not in the graph.");
+        }
         // Stage only reread nodes; untouched states and their local strings stay in place.
         Map<ObjectId, State> candidate;
         const bool membership_changed = refreshed && !std::ranges::equal(members.nodes(), refreshed->nodes());
@@ -900,6 +1114,9 @@ struct Evaluator::Impl {
             }
             if (reread) {
                 state.plan = nullptr;
+                state.instance_plan.reset();
+                state.is_asset_node = false;
+                state.asset_subgraph = {};
                 state.fault.reset();
                 auto type = runtime.type_of(node);
                 if (!type) {
@@ -912,16 +1129,32 @@ struct Evaluator::Impl {
                     continue;
                 }
                 state.type = *type;
-                auto* known = plans.find(*type);
-                if (!known)
-                    known = plans
-                                .try_emplace(*type, std::make_unique<const Result<detail::NodePlan>>(
-                                                        detail::inspect_node(runtime, *type)))
-                                .value;
-                if (**known)
-                    state.plan = &***known;
-                else
-                    state.fault = (**known).error();
+                if (*type == asset_node_type) {
+                    state.is_asset_node = true;
+                    auto sub = asset_subgraph(runtime, node);
+                    if (!sub) {
+                        state.fault = sub.error();
+                    } else {
+                        state.asset_subgraph = std::move(*sub);
+                        auto dyn = std::make_unique<detail::NodePlan>();
+                        dyn->native = true;
+                        dyn->uses_context = true;
+                        dyn->ports = state.asset_subgraph.ports;
+                        state.instance_plan = std::move(dyn);
+                        state.plan = state.instance_plan.get();
+                    }
+                } else {
+                    auto* known = plans.find(*type);
+                    if (!known)
+                        known = plans
+                                    .try_emplace(*type, std::make_unique<const Result<detail::NodePlan>>(
+                                                            detail::inspect_node(runtime, *type)))
+                                    .value;
+                    if (**known)
+                        state.plan = &***known;
+                    else
+                        state.fault = (**known).error();
+                }
                 ATELIER_TRY_BIND(into, inputs(runtime, next_members, node));
                 state.inputs = std::move(*into);
             }
@@ -937,19 +1170,24 @@ struct Evaluator::Impl {
         };
         if (!dirty && candidate.empty()) {
             cursor = *now;
-            if (!explicit_node && display_current) {
+            if (!explicit_targets && display_current) {
                 sync_published(update_last_valid);
                 return {};
             }
-            if (target_root != ObjectId{}) {
-                if (const auto* root_state = nodes.find(target_root);
-                    !root_state || root_state->synced_generation != sync_generation) {
-                    ATELIER_TRY(order(target_root, {}, false));
-                    ATELIER_TRY_BIND(sequence, order(target_root, {}, true));
+            if (!target_roots.empty()) {
+                const bool any_unsynced = std::ranges::any_of(target_roots, [&](ObjectId root_node) {
+                    if (root_node == ObjectId{})
+                        return false;
+                    const auto* root_state = nodes.find(root_node);
+                    return !root_state || root_state->synced_generation != sync_generation;
+                });
+                if (any_unsynced) {
+                    ATELIER_TRY(order(target_roots, {}, false));
+                    ATELIER_TRY_BIND(sequence, order(target_roots, {}, true));
                     cook_sequence(*sequence);
                 }
             }
-            if (!explicit_node) {
+            if (!explicit_targets) {
                 display_current = true;
                 sync_published(update_last_valid);
             }
@@ -965,10 +1203,11 @@ struct Evaluator::Impl {
                 if (source.plan && connection.output >= source.plan->ports.outputs.size())
                     return error(ErrorCode::argument_mismatch, "Graph input names a missing output port.");
             }
-        ATELIER_TRY(order(target_root, candidate, false));
+        ATELIER_TRY(order(target_roots, candidate, false));
         if (republished)
             source_kernels.clear();
-        bool changed = !cursor || refreshed || republished || resources.revision() != revision || seed_changed;
+        bool changed =
+            !cursor || refreshed || republished || resources.revision() != revision || seed_changed || ext_changed;
         for (auto [node, state] : candidate) {
             const auto* prior = nodes.find(node);
             auto read = this->read(node, state, prior);
@@ -983,6 +1222,10 @@ struct Evaluator::Impl {
             auto& target = *nodes.try_emplace(node).value;
             target.type = state.type;
             target.plan = state.plan;
+            target.instance_plan = std::move(state.instance_plan);
+            target.is_asset_node = state.is_asset_node;
+            target.asset_subgraph = std::move(state.asset_subgraph);
+            target.child_evaluator = std::move(state.child_evaluator);
             target.bypassed = state.bypassed;
             target.frozen = state.frozen;
             target.frozen_source = std::move(state.frozen_source);
@@ -1005,6 +1248,7 @@ struct Evaluator::Impl {
         authored_seed = next_authored_seed;
         seed = next_seed;
         cursor = *now;
+        synced_external_epoch = external_inputs_epoch;
         if (republished)
             code_revision = program->revision();
         if (changed) {
@@ -1012,14 +1256,19 @@ struct Evaluator::Impl {
             revision = resources.revision();
             display_current = false;
         }
-        if (target_root != ObjectId{}) {
-            if (const auto* root_state = nodes.find(target_root);
-                root_state && root_state->synced_generation != sync_generation) {
-                ATELIER_TRY_BIND(active_sequence, order(target_root, {}, true));
+        if (!target_roots.empty()) {
+            const bool any_unsynced = std::ranges::any_of(target_roots, [&](ObjectId root_node) {
+                if (root_node == ObjectId{})
+                    return false;
+                const auto* root_state = nodes.find(root_node);
+                return root_state && root_state->synced_generation != sync_generation;
+            });
+            if (any_unsynced) {
+                ATELIER_TRY_BIND(active_sequence, order(target_roots, {}, true));
                 cook_sequence(*active_sequence);
             }
         }
-        if (!explicit_node) {
+        if (!explicit_targets) {
             display_current = true;
             sync_published(update_last_valid);
         }
@@ -1029,9 +1278,51 @@ struct Evaluator::Impl {
 
 Evaluator::Evaluator(Runtime& runtime, ObjectRoot graph, const Resources& resources, const source::Program* program,
                      std::size_t cache_bytes)
-    : impl_(std::make_unique<Impl>(runtime, std::move(graph), resources, program, cache_bytes)) {}
+    : Evaluator(runtime, std::move(graph), resources, program, std::make_shared<CachePool>(cache_bytes), 0) {}
+
+Evaluator::Evaluator(Runtime& runtime, ObjectRoot graph, const Resources& resources, const source::Program* program,
+                     std::shared_ptr<CachePool> cache_pool, std::uint32_t subgraph_depth)
+    : impl_(std::make_unique<Impl>(runtime, std::move(graph), resources, program, std::move(cache_pool),
+                                   subgraph_depth)) {}
 
 Evaluator::~Evaluator() = default;
+
+std::shared_ptr<CachePool> Evaluator::cache_pool() const noexcept {
+    return impl_->pool;
+}
+
+void Evaluator::set_external_inputs(std::span<const ExternalInput> inputs) {
+    bool same = impl_->has_external_inputs && impl_->external_inputs.size() == inputs.size();
+    if (same) {
+        for (std::size_t i = 0; i < inputs.size(); ++i) {
+            const auto& old = impl_->external_inputs[i];
+            const auto& in = inputs[i];
+            const bool equal_geom = (in.serial != 0u && old.serial == in.serial) ||
+                                    (in.serial == 0u && old.geometry.same_value(in.geometry));
+            if (old.input_node != in.input_node || old.output != in.output || !equal_geom) {
+                same = false;
+                break;
+            }
+        }
+    }
+    if (same)
+        return;
+    impl_->has_external_inputs = true;
+    impl_->external_inputs.assign(inputs.begin(), inputs.end());
+    for (auto& ext : impl_->external_inputs) {
+        if (ext.serial == 0u && !ext.geometry.same_value(impl_->empty))
+            ext.serial = ++impl_->pool->impl_->serials;
+    }
+    ++impl_->external_inputs_epoch;
+}
+
+void Evaluator::clear_external_inputs() noexcept {
+    if (!impl_->has_external_inputs && impl_->external_inputs.empty())
+        return;
+    impl_->has_external_inputs = false;
+    impl_->external_inputs.clear();
+    ++impl_->external_inputs_epoch;
+}
 
 Result<void> Evaluator::evaluate(bool record_timings, std::optional<std::uint32_t> seed_override) {
     auto result = impl_->evaluate(std::nullopt, record_timings, seed_override);
@@ -1041,23 +1332,34 @@ Result<void> Evaluator::evaluate(bool record_timings, std::optional<std::uint32_
 }
 
 Result<void> Evaluator::evaluate_node(ObjectId node, bool record_timings, std::optional<std::uint32_t> seed_override) {
-    return impl_->evaluate(node, record_timings, seed_override);
+    const std::span<const ObjectId> single =
+        node != ObjectId{} ? std::span<const ObjectId>{&node, 1} : std::span<const ObjectId>{};
+    return impl_->evaluate(single, record_timings, seed_override);
+}
+
+Result<void> Evaluator::evaluate_targets(std::span<const ObjectId> targets, bool record_timings,
+                                         std::optional<std::uint32_t> seed_override) {
+    return impl_->evaluate(targets, record_timings, seed_override);
 }
 
 const Geometry* Evaluator::output() const noexcept {
-    return impl_->current_published ? &impl_->current_published->outputs.front() : nullptr;
+    return impl_->current_published && !impl_->current_published->outputs.empty()
+               ? &impl_->current_published->outputs.front()
+               : nullptr;
 }
 
 std::shared_ptr<const Geometry> Evaluator::retain_output() const noexcept {
-    return {impl_->current_published, output()};
+    const Geometry* ptr = output();
+    return ptr ? std::shared_ptr<const Geometry>{impl_->current_published, ptr} : std::shared_ptr<const Geometry>{};
 }
 
 const Geometry* Evaluator::last_valid_output() const noexcept {
-    return impl_->last_valid ? &impl_->last_valid->outputs.front() : nullptr;
+    return impl_->last_valid && !impl_->last_valid->outputs.empty() ? &impl_->last_valid->outputs.front() : nullptr;
 }
 
 std::shared_ptr<const Geometry> Evaluator::retain_last_valid_output() const noexcept {
-    return {impl_->last_valid, last_valid_output()};
+    const Geometry* ptr = last_valid_output();
+    return ptr ? std::shared_ptr<const Geometry>{impl_->last_valid, ptr} : std::shared_ptr<const Geometry>{};
 }
 
 bool Evaluator::has_display_node() const noexcept {
@@ -1065,13 +1367,7 @@ bool Evaluator::has_display_node() const noexcept {
 }
 
 std::optional<Error> Evaluator::display_error() const {
-    const auto display = impl_->members.display();
-    if (display == ObjectId{})
-        return std::nullopt;
-    const auto* shown = impl_->nodes.find(display);
-    if (!shown || !shown->status.error)
-        return std::nullopt;
-    return shown->root_error ? shown->root_error : shown->status.error;
+    return target_error(impl_->members.display());
 }
 
 std::vector<Reference> Evaluator::display_dependencies() const {
@@ -1089,6 +1385,27 @@ const Geometry* Evaluator::node_output(ObjectId node, std::uint32_t output_index
     return found && !found->status.error && found->entry && output_index < found->entry->outputs.size()
                ? &found->entry->outputs[output_index]
                : nullptr;
+}
+
+std::shared_ptr<const Geometry> Evaluator::retain_node_output(ObjectId node,
+                                                              std::uint32_t output_index) const noexcept {
+    const auto* found = impl_->nodes.find(node);
+    if (!found || found->status.error || !found->entry || output_index >= found->entry->outputs.size())
+        return {};
+    return {found->entry, &found->entry->outputs[output_index]};
+}
+
+std::optional<Error> Evaluator::target_error(ObjectId node) const {
+    if (node == ObjectId{})
+        return std::nullopt;
+    const auto* state = impl_->nodes.find(node);
+    if (!state || !state->status.error)
+        return std::nullopt;
+    return state->root_error ? state->root_error : state->status.error;
+}
+
+std::vector<Reference> Evaluator::target_dependencies(std::span<const ObjectId> targets) const {
+    return impl_->dependencies_for(targets);
 }
 
 Result<std::shared_ptr<const FrozenOutput>> Evaluator::freeze_snapshot(ObjectId node,

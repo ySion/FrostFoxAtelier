@@ -112,7 +112,7 @@ Runtime 中的 Texture/MS/MI 根和可变作者历史由 Session/宿主持有。
 
 目录树与结果区之间使用 DSL Splitter，可拖动调整目录宽度；两边分别保留至少 96/64 DIP。Esc、失焦、捕获丢失或关闭正在编辑的区域会取消本次调整；临时缩窄整个面板只限制显示宽度，不抹掉用户此前选择的宽度。目录宽度沿现有工作区状态保留，不进入场景撤销，不触发 viewport 渲染目标缩放。
 
-单击资源改变浏览器与参数检查目标，不修改 Scene Tree 选择或创建 Entity。Material 资源打开共享参数编辑，`.procgraph` 程序化图资源显示元数据并通过双击/Enter 或 Open 进入 SOP 视口与 Network 编辑上下文，其他资源显示元数据。更多菜单及资源右键菜单中的 Open 进入目录、打开场景或进入 `.procgraph` SOP 上下文，Details 的双击/Enter 走同一 Open 入口。Add to Scene 执行既有 StaticMeshEntity 创建命令；New Procedural Graph 创建 `Content/**/*.procgraph`（JSON v1）及其 `.asset.json` GUID 身份文件；Import Mesh、Refresh 也沿原命令入口。右键先选中当前资源，再构建菜单；原资源消失或选择改变后关闭旧菜单。切换视图保留所选资源、过滤、排序和列宽。Tiles 使用类型图标，不声称已经实现模型缩略图。
+单击资源改变浏览器与参数检查目标，不修改 Scene Tree 选择或创建 Entity。Material 资源打开共享参数编辑，`.procgraph` 程序化图资源显示元数据并通过双击/Enter 或 Open 进入 SOP 视口与 Network 编辑上下文，其他资源显示元数据。更多菜单及资源右键菜单中的 Open 进入目录、打开场景或进入 `.procgraph` SOP 上下文，Details 的双击/Enter 走同一 Open 入口。Add to Scene 执行既有 StaticMeshEntity 创建命令；New Procedural Graph 创建 `Content/**/*.procgraph`（JSON v3）及其 `.asset.json` GUID 身份文件；Import Mesh、Refresh 也沿原命令入口。右键先选中当前资源，再构建菜单；原资源消失或选择改变后关闭旧菜单。切换视图保留所选资源、过滤、排序和列宽。Tiles 使用类型图标，不声称已经实现模型缩略图。
 
 查询或类型过滤排除当前资源时立即清空选择，并禁用对应 Open/Add；仍匹配的选择保留。清除过滤不恢复先前的隐藏选择。目录导航使用共享 Tree 的展开、选择与键盘行为；从路径或内容进入目录时显露对应树行。视图和类型菜单使用互斥单选标记。目录刷新淘汰失效导航记录，当前目录消失时回到有效来源根。
 

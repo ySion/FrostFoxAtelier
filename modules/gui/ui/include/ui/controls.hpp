@@ -55,6 +55,10 @@ struct NumberField {
 
     bool single_precision{};
 
+    bool integral{};
+
+    bool enabled{true};
+
     bool operator==(const NumberField& other) const;
 };
 
@@ -73,9 +77,14 @@ struct ParameterRow {
 
     bool enabled{true};
 
+    bool fields_enabled{true};
+
     // When the host filters out fields, retain the complete group's state.
     // Otherwise derive it from the supplied fields.
     std::optional<bool> group_modified{};
+
+    // Optional explicit right-click target; falls back to group_key when zero.
+    ControlKey context_target{};
 };
 
 // Common caption/body composition for numbers, text and choices. body_key is

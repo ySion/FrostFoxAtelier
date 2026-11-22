@@ -184,17 +184,42 @@ private:
 // Publishes Geometry, Graph, Node and the built-in nodes. Repeating it changes nothing.
 Result<void> register_types(Runtime& runtime);
 
-// Port schema of a concrete `procedural.Node` type, derived from its `process` method.
+// Port schema of a concrete `procedural.Node` type or bound `procedural.AssetNode` instance.
 struct Ports {
     std::vector<std::string> inputs; // Input port names.
 
     std::vector<bool> multiple; // Per input port: takes any number of connections.
 
     std::vector<std::string> outputs; // Output port names.
+
+    bool operator==(const Ports&) const = default;
+};
+
+struct AssetSubgraph {
+    std::string asset_key;
+
+    Ports ports{{}, {}, {"output"}};
+
+    ObjectRoot graph;
+
+    std::vector<ObjectId> input_nodes;
+
+    std::vector<ObjectId> output_nodes;
+
+    std::optional<Error> bind_error;
+
+    std::uint64_t revision{};
 };
 
 // The ports of a node type, or why it cannot be a node; an unnamed port parameter fails.
 Result<Ports> ports(Runtime& runtime, TypeId node);
+
+// The live ports of a node instance (resolving dynamic subgraph ports on AssetNode).
+Result<Ports> ports(Runtime& runtime, ObjectId node);
+
+Result<AssetSubgraph> asset_subgraph(Runtime& runtime, ObjectId node);
+
+Result<void> set_asset_subgraph(Runtime& runtime, ObjectId node, AssetSubgraph subgraph);
 
 struct Input {
     ObjectId from;

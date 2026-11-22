@@ -171,7 +171,8 @@
         };
         const auto edit_policy_changed=[&](ControlKey key) {
             const auto* future=lookup(key);const auto* previous=live(key);
-            return future && previous && future->read_only!=previous->control.read_only;
+            return future && previous &&
+                (future->read_only!=previous->control.read_only || future->integral!=previous->control.integral);
         };
         // Retire pending clipboard/IME writes without clearing focus: forbidden
         // keys must remain owned by this field during the next-frame transition.
@@ -265,7 +266,9 @@
                 before.classes!=after.classes || before.style!=after.style || before.style_scope!=after.style_scope;
             state.layout_dirty|=before.kind!=after.kind || before.layout!=after.layout || before.text!=after.text ||
                 before.single_line!=after.single_line || before.tree_index!=after.tree_index ||
-                before.tree_row_count!=after.tree_row_count || (text_field(after.kind) && before.value!=after.value);
+                before.tree_row_count!=after.tree_row_count ||
+                (text_field(after.kind) && (before.value!=after.value || before.single_precision!=after.single_precision ||
+                                            before.integral!=after.integral));
             if (!after.tree_primary) state.tree_reveal=false;
         }
         for (auto key:tree_reveals) states.find(key)->second.tree_reveal=true;

@@ -43,6 +43,16 @@ struct Access {
         return node.frozen_output_;
     }
 
+    template <class A>
+    static auto& subgraph(A& node) {
+        return node.subgraph_;
+    }
+
+    template <class A>
+    static auto& subgraph_graph(A& node) {
+        return node.subgraph_graph_;
+    }
+
     template <class G>
     static auto& nodes(G& graph) {
         return graph.nodes_;
@@ -270,6 +280,7 @@ Result<void> register_types(Runtime& runtime) {
     definitions.push_back(reflection::Definition<BooleanOperation>::build(runtime));
     definitions.push_back(reflection::Definition<SweepProfile>::build(runtime));
     definitions.push_back(reflection::Definition<RayMode>::build(runtime));
+    definitions.push_back(reflection::Definition<PreviewFallback>::build(runtime));
     {
         auto node_def = reflection::Definition<SpatialNode>::build(runtime);
         node_def.native.value_operations_preserve_borrows = true;
@@ -317,6 +328,9 @@ Result<void> register_types(Runtime& runtime) {
     definitions.push_back(reflection::Definition<Extrude>::build(runtime));
     definitions.push_back(reflection::Definition<Sweep>::build(runtime));
     definitions.push_back(reflection::Definition<Null>::build(runtime));
+    definitions.push_back(reflection::Definition<GraphInput>::build(runtime));
+    definitions.push_back(reflection::Definition<GraphOutput>::build(runtime));
+    definitions.push_back(reflection::Definition<AssetNode>::build(runtime));
     ATELIER_TRY(runtime.register_types(std::move(definitions)));
     return {};
 }
@@ -640,6 +654,64 @@ Result<Ports> ports(Runtime& runtime, TypeId type) {
     return std::move(plan->ports);
 }
 
+Result<Ports> ports(Runtime& runtime, ObjectId node) {
+    ATELIER_TRY_BIND(type, runtime.type_of(node));
+    if (const auto asset_type = runtime.native_type<AssetNode>(); asset_type && *type == *asset_type) {
+        return runtime.with_native<const AssetNode>(
+            node, [](const AssetNode& value) -> Result<Ports> { return Access::subgraph(value).ports; });
+    }
+    return ports(runtime, *type);
+}
+
+Result<AssetSubgraph> asset_subgraph(Runtime& runtime, ObjectId node) {
+    return runtime.with_native<const AssetNode>(node, [&](const AssetNode& value) -> Result<AssetSubgraph> {
+        ATELIER_TRY_BIND(slot, runtime.reference_field(node, Access::subgraph_graph(value)));
+        ATELIER_TRY_BIND(ref, runtime.read_reference(*slot));
+        ObjectRoot graph_root;
+        if (ref->id() != ObjectId{}) {
+            ATELIER_TRY_BIND(held, runtime.hold(ref->id()));
+            graph_root = std::move(*held);
+        }
+        const auto& meta = Access::subgraph(value);
+        return AssetSubgraph{
+            .asset_key = meta.asset_key,
+            .ports = meta.ports,
+            .graph = std::move(graph_root),
+            .input_nodes = meta.input_nodes,
+            .output_nodes = meta.output_nodes,
+            .bind_error = meta.bind_error,
+            .revision = meta.revision,
+        };
+    });
+}
+
+Result<void> set_asset_subgraph(Runtime& runtime, ObjectId node, AssetSubgraph subgraph) {
+    if (subgraph.ports.multiple.size() != subgraph.ports.inputs.size())
+        return error(ErrorCode::argument_mismatch, "AssetSubgraph input port multiplicity does not match input ports.");
+    ATELIER_TRY_BIND(graph_type, runtime.native_type<Graph>());
+    ATELIER_TRY_BIND(none, runtime.null_reference(*graph_type));
+    ObjectReference reference = *none;
+    if (subgraph.graph.registered()) {
+        ATELIER_TRY_BIND(bound_type, runtime.type_of(subgraph.graph.id()));
+        if (*bound_type != *graph_type)
+            return error(ErrorCode::argument_mismatch, "AssetSubgraph root must be a procedural.Graph.");
+        reference = subgraph.graph.reference();
+    }
+    return runtime.with_native<AssetNode>(node, [&](AssetNode& value) -> Result<void> {
+        ATELIER_TRY_BIND(slot, runtime.reference_field(node, Access::subgraph_graph(value)));
+        const ReferenceChange change = ReferenceWrite{*slot, reference};
+        ATELIER_TRY(runtime.apply_reference_changes({&change, 1}));
+        auto& meta = Access::subgraph(value);
+        meta.asset_key = std::move(subgraph.asset_key);
+        meta.ports = std::move(subgraph.ports);
+        meta.input_nodes = std::move(subgraph.input_nodes);
+        meta.output_nodes = std::move(subgraph.output_nodes);
+        meta.bind_error = std::move(subgraph.bind_error);
+        meta.revision = subgraph.revision;
+        return {};
+    });
+}
+
 Result<std::vector<Input>> detail::Access::inputs(Runtime& runtime, ObjectId node) {
     return runtime.with_native<const Node>(node, [&](const Node& value) -> Result<std::vector<Input>> {
         auto field = runtime.reference_field(node, Access::inputs(value));
@@ -737,8 +809,7 @@ Result<ObjectRoot> add_node(Runtime& runtime, ObjectId graph, TypeId type) {
 Result<void> restore_node(Runtime& runtime, ObjectId graph, const ObjectRoot& node) {
     if (!node.registered())
         return error(ErrorCode::invalid_object, "The node root is empty.");
-    ATELIER_TRY_BIND(type, runtime.type_of(node.id()));
-    ATELIER_TRY(ports(runtime, *type));
+    ATELIER_TRY(ports(runtime, node.id()));
     ATELIER_TRY_BIND(listed, Access::contents(runtime, graph));
     if (listed->contains(node.id()))
         return error(ErrorCode::argument_mismatch, "The node is already in this graph.");
@@ -828,14 +899,10 @@ Result<void> connect(Runtime& runtime, ObjectId graph, ObjectId from, std::uint3
     for (const auto node : {from, to})
         if (!listed->contains(node))
             return error(ErrorCode::invalid_member, "Connected nodes must be in the graph.");
-    auto from_type = runtime.type_of(from);
-    auto to_type = runtime.type_of(to);
-    if (!from_type || !to_type)
-        return error(ErrorCode::invalid_object, "A connected node is not alive.");
-    auto source = ports(runtime, *from_type);
+    auto source = ports(runtime, from);
     if (!source)
         return std::unexpected(source.error());
-    auto target = ports(runtime, *to_type);
+    auto target = ports(runtime, to);
     if (!target)
         return std::unexpected(target.error());
     if (output >= source->outputs.size())

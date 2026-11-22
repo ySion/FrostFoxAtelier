@@ -191,8 +191,13 @@ OperatorInfo history(bool redo) {
                 };
                 if (context.region == RegionKind::code)
                     return can(context.source_history);
-                if (const auto graph_key = context.focused_graph(); !graph_key.empty())
+                if (const auto graph_key = context.focused_graph(); !graph_key.empty()) {
+                    if (context.document.world().running())
+                        return unavailable("Stop the running World before editing procedural graphs.");
+                    if (context.interactive && context.is_graph_locked(graph_key))
+                        return unavailable("Graph is in Locked Preview; click Locked in the Network toolbar to edit.");
                     return context.document.graph_can_undo(graph_key, redo) ? Result<void>{} : empty();
+                }
                 if (!context.asset.empty())
                     return context.document.material_can_undo(context.asset, redo) ? Result<void>{} : empty();
                 if (context.region == RegionKind::controls)
@@ -698,6 +703,63 @@ Result<std::string> target_graph_key(const Context& context, const String& expli
         return context.network_graph;
     return unavailable("Open or specify a procedural graph first.");
 }
+
+Result<std::string> editable_target_graph_key(const Context& context, const String& explicit_asset) {
+    ATELIER_TRY_BIND(key, target_graph_key(context, explicit_asset));
+    if (context.document.world().running())
+        return unavailable("Stop the running World before editing procedural graphs.");
+    if (context.interactive && context.is_graph_locked(*key))
+        return unavailable("Graph is in Locked Preview; click Locked in the Network toolbar to edit.");
+    return key;
+}
+
+Result<std::string> resolve_graph_node_name(const Context& context, std::string_view key, const String& explicit_node,
+                                            std::string_view action_verb) {
+    const bool is_viewed = (key == context.active_graph || key == context.network_graph);
+    std::string node_name = !explicit_node.empty() ? std::string(explicit_node.c_str(), explicit_node.size())
+                                                   : (is_viewed ? context.selected_graph_node : std::string{});
+    if (node_name.empty())
+        return std::unexpected(
+            Error{ErrorCode::argument_mismatch, "Select or specify a node to " + std::string(action_verb) + "."});
+    return node_name;
+}
+
+Result<std::vector<std::string>> resolve_graph_node_targets(const Context& context, std::string_view key,
+                                                            const String& explicit_nodes, bool split_commas,
+                                                            std::string_view action_verb) {
+    const bool is_viewed = (key == context.active_graph || key == context.network_graph);
+    std::vector<std::string> targets;
+    if (!explicit_nodes.empty()) {
+        if (split_commas) {
+            const std::string_view raw{explicit_nodes.c_str(), explicit_nodes.size()};
+            std::size_t pos = 0;
+            while (pos < raw.size()) {
+                const std::size_t comma = raw.find(',', pos);
+                std::string_view tok = comma == std::string_view::npos ? raw.substr(pos) : raw.substr(pos, comma - pos);
+                while (!tok.empty() && (tok.front() == ' ' || tok.front() == '\t'))
+                    tok.remove_prefix(1);
+                while (!tok.empty() && (tok.back() == ' ' || tok.back() == '\t'))
+                    tok.remove_suffix(1);
+                if (!tok.empty())
+                    targets.emplace_back(tok);
+                if (comma == std::string_view::npos)
+                    break;
+                pos = comma + 1;
+            }
+        } else {
+            targets.emplace_back(explicit_nodes.c_str(), explicit_nodes.size());
+        }
+    } else if (is_viewed) {
+        if (!context.selected_graph_nodes.empty())
+            targets = context.selected_graph_nodes;
+        else if (!context.selected_graph_node.empty())
+            targets.push_back(context.selected_graph_node);
+    }
+    if (targets.empty())
+        return std::unexpected(
+            Error{ErrorCode::argument_mismatch, "Select or specify a node to " + std::string(action_verb) + "."});
+    return targets;
+}
 }
 
 void register_builtin_operators(OperatorRegistry& registry) {
@@ -949,8 +1011,13 @@ void register_builtin_operators(OperatorRegistry& registry) {
          OperatorFlag::undo,
          [](const Context& context) -> Result<void> {
              const auto object = context.selection.object;
-             if (context.document.is_graph_object(object))
-                 return context.document.world().running() ? unavailable("Stop the document first.") : Result<void>{};
+             if (const auto graph_key = context.document.graph_of_object(object)) {
+                 if (context.document.world().running())
+                     return unavailable("Stop the document first.");
+                 if (context.interactive && context.is_graph_locked(*graph_key))
+                     return unavailable("Graph is in Locked Preview; click Locked in the Network toolbar to edit.");
+                 return {};
+             }
              ATELIER_TRY(editable_entity(context));
              if (object == context.selection.active)
                  return {};
@@ -1182,13 +1249,25 @@ void register_builtin_operators(OperatorRegistry& registry) {
                                            "editor.NewProceduralGraph",
                                            {},
                                            "editor.AssetResult"}));
-    const auto graph_editable = [](const Context& c) -> Result<void> {
+    const auto world_stopped = [](const Context& c) -> Result<void> {
         if (c.document.world().running())
             return unavailable("Stop the running World before editing procedural graphs.");
         return {};
     };
+    const auto graph_editable = [](const Context& c) -> Result<void> {
+        if (c.document.world().running())
+            return unavailable("Stop the running World before editing procedural graphs.");
+        if (c.interactive) {
+            const std::string_view key = !c.asset.empty() && c.document.has_graph(c.asset) ? std::string_view{c.asset}
+                                         : !c.active_graph.empty() ? std::string_view{c.active_graph}
+                                                                   : std::string_view{c.network_graph};
+            if (!key.empty() && c.is_graph_locked(key))
+                return unavailable("Graph is in Locked Preview; click Locked in the Network toolbar to edit.");
+        }
+        return {};
+    };
     add({"graph.open", L"Open Procedural Graph", "Open a .procgraph or scratch graph into the SOP viewport context",
-         OperatorFlag::none, graph_editable,
+         OperatorFlag::none, world_stopped,
          with_parameters(+[](OperatorHost& host, const Context& c, const GraphOpen& p) -> Result<void> {
              const std::string key = !p.asset.empty() ? std::string(p.asset.c_str(), p.asset.size()) : c.asset;
              if (key.empty())
@@ -1205,6 +1284,14 @@ void register_builtin_operators(OperatorRegistry& registry) {
              host.exit_graph_context();
              return {};
          }});
+    add({"graph.dive_in", L"Dive Into Digital Asset",
+         "Dive into a procedural.AssetNode's referenced .procgraph Digital Asset", OperatorFlag::none, world_stopped,
+         with_parameters(+[](OperatorHost& host, const Context& c, const GraphDiveIn& p) -> Result<void> {
+             ATELIER_TRY_BIND(key, target_graph_key(c, p.asset));
+             ATELIER_TRY_BIND(node_name, resolve_graph_node_name(c, *key, p.node, "dive into"));
+             return host.dive_into_asset_node(*key, *node_name);
+         }),
+         "editor.GraphDiveIn"});
     add({"graph.save", L"Save Procedural Graph", "Save an open .procgraph asset to disk", OperatorFlag::none,
          project_open, with_parameters(+[](OperatorHost&, const Context& c, const GraphSave& p) -> Result<void> {
              ATELIER_TRY_BIND(key, target_graph_key(c, p.asset));
@@ -1217,44 +1304,34 @@ void register_builtin_operators(OperatorRegistry& registry) {
          "Add a procedural node to a graph and select it",
          OperatorFlag::none,
          graph_editable,
-         with_parameters(+[](OperatorHost& host, const Context& c, const GraphAddNode& p,
-                             GraphNodeResult& out) -> Result<void> {
-             ATELIER_TRY_BIND(key, target_graph_key(c, p.asset));
-             if (!c.document.has_graph(*key)) {
-                 if (!c.project)
-                     return unavailable("Open a project or scratch graph first.");
-                 ATELIER_TRY(c.document.open_graph(*c.project, *key));
-             }
-             ATELIER_TRY_BIND(created_name,
-                              c.document.graph_add_node(*key, {p.type.c_str(), p.type.size()},
-                                                        {p.name.c_str(), p.name.size()}, {p.position.x, p.position.y}));
-             if (!out.name.assign(StringView{*created_name}))
-                 return std::unexpected(Error{ErrorCode::argument_mismatch, "Invalid UTF-8 node name."});
-             if (*key == c.active_graph || *key == c.network_graph)
-                 host.select_graph_node(*key, *created_name);
-             return {};
-         }),
+         with_parameters(
+             +[](OperatorHost& host, const Context& c, const GraphAddNode& p, GraphNodeResult& out) -> Result<void> {
+                 ATELIER_TRY_BIND(key, editable_target_graph_key(c, p.asset));
+                 if (!c.document.has_graph(*key)) {
+                     if (!c.project)
+                         return unavailable("Open a project or scratch graph first.");
+                     ATELIER_TRY(c.document.open_graph(*c.project, *key));
+                 }
+                 ATELIER_TRY_BIND(created_name, c.document.graph_add_node(*key, {p.type.c_str(), p.type.size()},
+                                                                          {p.name.c_str(), p.name.size()},
+                                                                          {p.position.x, p.position.y}, c.project));
+                 if (!out.name.assign(StringView{*created_name}))
+                     return std::unexpected(Error{ErrorCode::argument_mismatch, "Invalid UTF-8 node name."});
+                 if (*key == c.active_graph || *key == c.network_graph)
+                     host.select_graph_node(*key, *created_name);
+                 return {};
+             }),
          "editor.GraphAddNode",
          {},
          "editor.GraphNodeResult"});
     add({"graph.delete_node", L"Delete Graph Node", "Remove selected or named nodes from a procedural graph",
          OperatorFlag::none, graph_editable,
          with_parameters(+[](OperatorHost& host, const Context& c, const GraphDeleteNode& p) -> Result<void> {
-             ATELIER_TRY_BIND(key, target_graph_key(c, p.asset));
+             ATELIER_TRY_BIND(key, editable_target_graph_key(c, p.asset));
+             ATELIER_TRY_BIND(targets, resolve_graph_node_targets(c, *key, p.name, false, "delete"));
              const bool is_viewed = (*key == c.active_graph || *key == c.network_graph);
-             std::vector<std::string> targets;
-             if (!p.name.empty()) {
-                 targets.emplace_back(p.name.c_str(), p.name.size());
-             } else if (is_viewed) {
-                 if (!c.selected_graph_nodes.empty())
-                     targets = c.selected_graph_nodes;
-                 else if (!c.selected_graph_node.empty())
-                     targets.push_back(c.selected_graph_node);
-             }
-             if (targets.empty())
-                 return std::unexpected(Error{ErrorCode::argument_mismatch, "Select or specify a node to delete."});
-             ATELIER_TRY(c.document.graph_remove_nodes(*key, targets));
-             if (is_viewed && std::ranges::find(targets, c.selected_graph_node) != targets.end())
+             ATELIER_TRY(c.document.graph_remove_nodes(*key, *targets));
+             if (is_viewed && std::ranges::find(*targets, c.selected_graph_node) != targets->end())
                  host.select_graph_node(*key, {});
              return {};
          }),
@@ -1266,20 +1343,10 @@ void register_builtin_operators(OperatorRegistry& registry) {
          graph_editable,
          with_parameters(+[](OperatorHost& host, const Context& c, const GraphDuplicateNodes& p,
                              GraphNodeResult& out) -> Result<void> {
-             ATELIER_TRY_BIND(key, target_graph_key(c, p.asset));
+             ATELIER_TRY_BIND(key, editable_target_graph_key(c, p.asset));
+             ATELIER_TRY_BIND(targets, resolve_graph_node_targets(c, *key, p.node, false, "duplicate"));
              const bool is_viewed = (*key == c.active_graph || *key == c.network_graph);
-             std::vector<std::string> targets;
-             if (!p.node.empty()) {
-                 targets.emplace_back(p.node.c_str(), p.node.size());
-             } else if (is_viewed) {
-                 if (!c.selected_graph_nodes.empty())
-                     targets = c.selected_graph_nodes;
-                 else if (!c.selected_graph_node.empty())
-                     targets.push_back(c.selected_graph_node);
-             }
-             if (targets.empty())
-                 return std::unexpected(Error{ErrorCode::argument_mismatch, "Select or specify a node to duplicate."});
-             ATELIER_TRY_BIND(created, c.document.graph_duplicate_nodes(*key, targets, {p.offset.x, p.offset.y}));
+             ATELIER_TRY_BIND(created, c.document.graph_duplicate_nodes(*key, *targets, {p.offset.x, p.offset.y}));
              if (!created->empty() && !out.name.assign(StringView{created->back()}))
                  return std::unexpected(Error{ErrorCode::argument_mismatch, "Invalid UTF-8 node name."});
              if (is_viewed && !created->empty())
@@ -1292,20 +1359,19 @@ void register_builtin_operators(OperatorRegistry& registry) {
     add({"graph.rename_node", L"Rename Graph Node", "Rename a node in a procedural graph", OperatorFlag::none,
          graph_editable,
          with_parameters(+[](OperatorHost& host, const Context& c, const GraphRenameNode& p) -> Result<void> {
-             ATELIER_TRY_BIND(key, target_graph_key(c, p.asset));
+             ATELIER_TRY_BIND(key, editable_target_graph_key(c, p.asset));
+             ATELIER_TRY_BIND(from, resolve_graph_node_name(c, *key, p.node, "rename"));
              const bool is_viewed = (*key == c.active_graph || *key == c.network_graph);
-             const std::string from = !p.node.empty() ? std::string(p.node.c_str(), p.node.size())
-                                                      : (is_viewed ? c.selected_graph_node : std::string{});
              const std::string to(p.name.c_str(), p.name.size());
-             ATELIER_TRY(c.document.graph_rename_node(*key, from, to));
-             if (is_viewed && c.selected_graph_node == from)
+             ATELIER_TRY(c.document.graph_rename_node(*key, *from, to));
+             if (is_viewed && c.selected_graph_node == *from)
                  host.select_graph_node(*key, to);
              return {};
          }),
          "editor.GraphRenameNode"});
     add({"graph.move_node", L"Move Graph Node", "Move a node on the procedural graph canvas", OperatorFlag::none,
          graph_editable, with_parameters(+[](OperatorHost&, const Context& c, const GraphMoveNode& p) -> Result<void> {
-             ATELIER_TRY_BIND(key, target_graph_key(c, p.asset));
+             ATELIER_TRY_BIND(key, editable_target_graph_key(c, p.asset));
              const std::array moves{
                  std::pair{std::string(p.node.c_str(), p.node.size()), std::array{p.position.x, p.position.y}}};
              return c.document.graph_move_nodes(*key, moves);
@@ -1314,7 +1380,7 @@ void register_builtin_operators(OperatorRegistry& registry) {
     add({"graph.connect", L"Connect Graph Nodes", "Connect an upstream output port to a downstream input port",
          OperatorFlag::none, graph_editable,
          with_parameters(+[](OperatorHost&, const Context& c, const GraphConnect& p) -> Result<void> {
-             ATELIER_TRY_BIND(key, target_graph_key(c, p.asset));
+             ATELIER_TRY_BIND(key, editable_target_graph_key(c, p.asset));
              return c.document.graph_connect(
                  *key, {p.from_node.c_str(), p.from_node.size()}, {p.from_port.c_str(), p.from_port.size()},
                  {p.to_node.c_str(), p.to_node.size()}, {p.to_port.c_str(), p.to_port.size()});
@@ -1323,7 +1389,7 @@ void register_builtin_operators(OperatorRegistry& registry) {
     add({"graph.disconnect", L"Disconnect Graph Ports", "Disconnect input connections on a procedural graph node",
          OperatorFlag::none, graph_editable,
          with_parameters(+[](OperatorHost&, const Context& c, const GraphDisconnect& p) -> Result<void> {
-             ATELIER_TRY_BIND(key, target_graph_key(c, p.asset));
+             ATELIER_TRY_BIND(key, editable_target_graph_key(c, p.asset));
              return c.document.graph_disconnect(
                  *key, {p.to_node.c_str(), p.to_node.size()}, {p.to_port.c_str(), p.to_port.size()},
                  {p.from_node.c_str(), p.from_node.size()}, {p.from_port.c_str(), p.from_port.size()});
@@ -1332,7 +1398,7 @@ void register_builtin_operators(OperatorRegistry& registry) {
     add({"graph.set_display", L"Set Graph Display Node", "Set or clear the blue Display flag on a procedural graph",
          OperatorFlag::none, graph_editable,
          with_parameters(+[](OperatorHost&, const Context& c, const GraphSetDisplay& p) -> Result<void> {
-             ATELIER_TRY_BIND(key, target_graph_key(c, p.asset));
+             ATELIER_TRY_BIND(key, editable_target_graph_key(c, p.asset));
              return c.document.graph_set_display(*key, {p.node.c_str(), p.node.size()});
          }),
          "editor.GraphSetDisplay"});
@@ -1340,51 +1406,32 @@ void register_builtin_operators(OperatorRegistry& registry) {
          "Set or clear the magenta Template reference wireframe flag on a procedural graph", OperatorFlag::none,
          graph_editable,
          with_parameters(+[](OperatorHost&, const Context& c, const GraphSetTemplate& p) -> Result<void> {
-             ATELIER_TRY_BIND(key, target_graph_key(c, p.asset));
+             ATELIER_TRY_BIND(key, editable_target_graph_key(c, p.asset));
              return c.document.graph_set_template(*key, {p.node.c_str(), p.node.size()});
          }),
          "editor.GraphSetTemplate"});
     add({"graph.set_bypass", L"Set Graph Node Bypass",
          "Enable or disable Bypass pass-through on a procedural graph node", OperatorFlag::none, graph_editable,
          with_parameters(+[](OperatorHost&, const Context& c, const GraphSetBypass& p) -> Result<void> {
-             ATELIER_TRY_BIND(key, target_graph_key(c, p.asset));
-             const bool is_viewed = (*key == c.active_graph || *key == c.network_graph);
-             const std::string node_name = !p.node.empty() ? std::string(p.node.c_str(), p.node.size())
-                                                           : (is_viewed ? c.selected_graph_node : std::string{});
-             if (node_name.empty())
-                 return std::unexpected(Error{ErrorCode::argument_mismatch, "Select or specify a node to bypass."});
-             return c.document.graph_set_bypass(*key, node_name, p.bypass);
+             ATELIER_TRY_BIND(key, editable_target_graph_key(c, p.asset));
+             ATELIER_TRY_BIND(node_name, resolve_graph_node_name(c, *key, p.node, "bypass"));
+             return c.document.graph_set_bypass(*key, *node_name, p.bypass);
          }),
          "editor.GraphSetBypass"});
     add({"graph.set_frozen", L"Set Graph Node Frozen",
          "Freeze or unfreeze a procedural graph node's cooked Geometry output", OperatorFlag::none, graph_editable,
          with_parameters(+[](OperatorHost&, const Context& c, const GraphSetFrozen& p) -> Result<void> {
-             ATELIER_TRY_BIND(key, target_graph_key(c, p.asset));
-             const bool is_viewed = (*key == c.active_graph || *key == c.network_graph);
-             const std::string node_name = !p.node.empty() ? std::string(p.node.c_str(), p.node.size())
-                                                           : (is_viewed ? c.selected_graph_node : std::string{});
-             if (node_name.empty())
-                 return std::unexpected(Error{ErrorCode::argument_mismatch, "Select or specify a node to freeze."});
-             return c.document.graph_set_frozen(*key, node_name, p.frozen, c.project);
+             ATELIER_TRY_BIND(key, editable_target_graph_key(c, p.asset));
+             ATELIER_TRY_BIND(node_name, resolve_graph_node_name(c, *key, p.node, "freeze"));
+             return c.document.graph_set_frozen(*key, *node_name, p.frozen, c.project);
          }),
          "editor.GraphSetFrozen"});
     add({"graph.set_appearance", L"Set Graph Node Appearance",
          "Change the shape preset, color swatch, or comment of procedural graph nodes", OperatorFlag::none,
          graph_editable,
          with_parameters(+[](OperatorHost&, const Context& c, const GraphSetAppearance& p) -> Result<void> {
-             ATELIER_TRY_BIND(key, target_graph_key(c, p.asset));
-             const bool is_viewed = (*key == c.active_graph || *key == c.network_graph);
-             std::vector<std::string> targets;
-             if (!p.node.empty()) {
-                 targets.emplace_back(p.node.c_str(), p.node.size());
-             } else if (is_viewed) {
-                 if (!c.selected_graph_nodes.empty())
-                     targets = c.selected_graph_nodes;
-                 else if (!c.selected_graph_node.empty())
-                     targets.push_back(c.selected_graph_node);
-             }
-             if (targets.empty())
-                 return std::unexpected(Error{ErrorCode::argument_mismatch, "Select or specify a node to style."});
+             ATELIER_TRY_BIND(key, editable_target_graph_key(c, p.asset));
+             ATELIER_TRY_BIND(targets, resolve_graph_node_targets(c, *key, p.node, false, "style"));
              std::optional<GraphNodeShape> shape;
              if (!p.shape.empty()) {
                  const auto parsed = parse_graph_node_shape({p.shape.c_str(), p.shape.size()});
@@ -1409,11 +1456,11 @@ void register_builtin_operators(OperatorRegistry& registry) {
                  const std::string_view com_sv{p.comment.c_str(), p.comment.size()};
                  comment = com_sv == "-" ? std::string{} : std::string(com_sv);
              }
-             return c.document.graph_set_node_appearance(*key, targets, shape, color, comment);
+             return c.document.graph_set_node_appearance(*key, *targets, shape, color, comment);
          }),
          "editor.GraphSetAppearance"});
     add({"graph.select", L"Select Graph Node", "Inspect a procedural graph node without changing the Display flag",
-         OperatorFlag::none, graph_editable,
+         OperatorFlag::none, world_stopped,
          with_parameters(+[](OperatorHost& host, const Context& c, const GraphSelect& p) -> Result<void> {
              ATELIER_TRY_BIND(key, target_graph_key(c, p.asset));
              const std::string node_name(p.node.c_str(), p.node.size());
@@ -1427,10 +1474,158 @@ void register_builtin_operators(OperatorRegistry& registry) {
     add({"graph.layout", L"Auto Layout Graph", "Arrange procedural graph nodes into top-to-bottom topological ranks",
          OperatorFlag::none, graph_editable,
          with_parameters(+[](OperatorHost&, const Context& c, const GraphLayout& p) -> Result<void> {
-             ATELIER_TRY_BIND(key, target_graph_key(c, p.asset));
+             ATELIER_TRY_BIND(key, editable_target_graph_key(c, p.asset));
              return c.document.graph_auto_layout(*key);
          }),
          "editor.GraphLayout"});
+    add({"graph.expose_parameter",
+         L"Expose as Graph Parameter",
+         "Promote a procedural node field or vector lane to a top-level Digital Asset parameter",
+         OperatorFlag::none,
+         graph_editable,
+         with_parameters(+[](OperatorHost&, const Context& c, const GraphExposeParameter& p,
+                             GraphNodeResult& out) -> Result<void> {
+             ATELIER_TRY_BIND(key, editable_target_graph_key(c, p.asset));
+             ATELIER_TRY_BIND(node_name, resolve_graph_node_name(c, *key, p.node, "expose a parameter from"));
+             ATELIER_TRY_BIND(exposed,
+                              c.document.graph_expose_parameter(
+                                  *key, *node_name, {p.path.c_str(), p.path.size()}, {p.name.c_str(), p.name.size()},
+                                  {p.label.c_str(), p.label.size()}, {p.category.c_str(), p.category.size()},
+                                  {p.description.c_str(), p.description.size()}));
+             if (!out.name.assign(StringView{*exposed}))
+                 return std::unexpected(Error{ErrorCode::argument_mismatch, "Invalid UTF-8 parameter name."});
+             return {};
+         }),
+         "editor.GraphExposeParameter",
+         {},
+         "editor.GraphNodeResult"});
+    add({"graph.bind_parameter", L"Bind to Graph Parameter",
+         "Bind a procedural node field or vector lane as an additional target of an existing Graph Parameter",
+         OperatorFlag::none, graph_editable,
+         with_parameters(+[](OperatorHost&, const Context& c, const GraphBindParameter& p) -> Result<void> {
+             ATELIER_TRY_BIND(key, editable_target_graph_key(c, p.asset));
+             ATELIER_TRY_BIND(node_name, resolve_graph_node_name(c, *key, p.node, "bind"));
+             return c.document.graph_bind_parameter_target(*key, {p.parameter.c_str(), p.parameter.size()}, *node_name,
+                                                           {p.path.c_str(), p.path.size()});
+         }),
+         "editor.GraphBindParameter"});
+    add({"graph.unbind_parameter", L"Unbind from Graph Parameter",
+         "Unbind a procedural node field or vector lane from its controlling Graph Parameter", OperatorFlag::none,
+         graph_editable,
+         with_parameters(+[](OperatorHost&, const Context& c, const GraphUnbindParameter& p) -> Result<void> {
+             ATELIER_TRY_BIND(key, editable_target_graph_key(c, p.asset));
+             ATELIER_TRY_BIND(node_name, resolve_graph_node_name(c, *key, p.node, "unbind"));
+             return c.document.graph_unbind_parameter_target(*key, *node_name, {p.path.c_str(), p.path.size()});
+         }),
+         "editor.GraphUnbindParameter"});
+    add({"graph.update_parameter", L"Update Graph Parameter",
+         "Rename, update metadata, or reorder a top-level Graph Parameter", OperatorFlag::none, graph_editable,
+         with_parameters(+[](OperatorHost&, const Context& c, const GraphUpdateParameter& p) -> Result<void> {
+             ATELIER_TRY_BIND(key, editable_target_graph_key(c, p.asset));
+             const std::string param_name(p.parameter.c_str(), p.parameter.size());
+             std::optional<std::string> new_name;
+             if (!p.name.empty())
+                 new_name.emplace(p.name.c_str(), p.name.size());
+             const auto opt_field = [](const String& s) -> std::optional<std::string> {
+                 if (s.empty())
+                     return std::nullopt;
+                 const std::string_view sv{s.c_str(), s.size()};
+                 return sv == "-" ? std::string{} : std::string(sv);
+             };
+             std::optional<std::size_t> new_idx;
+             if (p.move_delta != 0) {
+                 const auto* doc = c.document.graph_document(*key);
+                 if (!doc)
+                     return std::unexpected(Error{ErrorCode::argument_mismatch, "Graph is not open."});
+                 const auto it = std::ranges::find(doc->parameters, param_name, &GraphPromotedParameter::name);
+                 if (it == doc->parameters.end())
+                     return std::unexpected(Error{ErrorCode::argument_mismatch, "Unknown graph parameter."});
+                 const auto cur = static_cast<std::ptrdiff_t>(it - doc->parameters.begin());
+                 const auto last = static_cast<std::ptrdiff_t>(doc->parameters.size()) - 1;
+                 new_idx = static_cast<std::size_t>(
+                     std::clamp<std::ptrdiff_t>(cur + p.move_delta, 0, std::max<std::ptrdiff_t>(0, last)));
+             }
+             return c.document.graph_update_parameter(*key, param_name, std::move(new_name), opt_field(p.label),
+                                                      opt_field(p.category), opt_field(p.description), new_idx);
+         }),
+         "editor.GraphUpdateParameter"});
+    add({"graph.remove_parameter", L"Remove Graph Parameter",
+         "Remove a top-level Graph Parameter and release all bound node targets", OperatorFlag::none, graph_editable,
+         with_parameters(+[](OperatorHost&, const Context& c, const GraphRemoveParameter& p) -> Result<void> {
+             ATELIER_TRY_BIND(key, editable_target_graph_key(c, p.asset));
+             return c.document.graph_remove_parameter(*key, {p.parameter.c_str(), p.parameter.size()});
+         }),
+         "editor.GraphRemoveParameter"});
+    add({"graph.set_parameter", L"Set Graph Parameter",
+         "Set the value of a top-level Graph Parameter across all bound targets", OperatorFlag::none, graph_editable,
+         with_parameters(+[](OperatorHost&, const Context& c, const GraphSetParameter& p) -> Result<void> {
+             ATELIER_TRY_BIND(key, editable_target_graph_key(c, p.asset));
+             const auto parsed = json::Document::parse({p.value_json.c_str(), p.value_json.size()}, {8});
+             if (!parsed)
+                 return std::unexpected(Error{ErrorCode::argument_mismatch, parsed.error().describe()});
+             return c.document.graph_set_parameter_json(*key, {p.parameter.c_str(), p.parameter.size()},
+                                                        parsed->root());
+         }),
+         "editor.GraphSetParameter"});
+    add({"graph.set_override", L"Set AssetNode Override",
+         "Set or clear a parameter override on a procedural.AssetNode instance", OperatorFlag::none, graph_editable,
+         with_parameters(+[](OperatorHost&, const Context& c, const GraphSetOverride& p) -> Result<void> {
+             ATELIER_TRY_BIND(key, editable_target_graph_key(c, p.asset));
+             ATELIER_TRY_BIND(node_name, resolve_graph_node_name(c, *key, p.node, "override"));
+             if (p.clear)
+                 return c.document.graph_set_asset_override_json(
+                     *key, *node_name, {p.parameter.c_str(), p.parameter.size()}, std::nullopt, c.project);
+             const auto parsed = json::Document::parse({p.value_json.c_str(), p.value_json.size()}, {8});
+             if (!parsed)
+                 return std::unexpected(Error{ErrorCode::argument_mismatch, parsed.error().describe()});
+             return c.document.graph_set_asset_override_json(
+                 *key, *node_name, {p.parameter.c_str(), p.parameter.size()}, parsed->root(), c.project);
+         }),
+         "editor.GraphSetOverride"});
+    add({"graph.set_node_asset", L"Assign Node Digital Asset",
+         "Bind or switch the .procgraph Digital Asset referenced by a procedural.AssetNode", OperatorFlag::none,
+         graph_editable,
+         with_parameters(+[](OperatorHost&, const Context& c, const GraphSetNodeAsset& p) -> Result<void> {
+             ATELIER_TRY_BIND(key, editable_target_graph_key(c, p.asset));
+             ATELIER_TRY_BIND(node_name, resolve_graph_node_name(c, *key, p.node, "assign a Digital Asset to"));
+             return c.document.graph_set_node_asset(*key, *node_name, {p.target_asset.c_str(), p.target_asset.size()},
+                                                    c.project);
+         }),
+         "editor.GraphSetNodeAsset"});
+    add(path_operator<GraphExtractAsset>(
+        {"graph.extract_asset",
+         L"Extract Digital Asset…",
+         "Extract selected graph nodes into a reusable .procgraph Digital Asset and replace them with a wired AssetNode",
+         OperatorFlag::none,
+         [graph_editable](const Context& c) -> Result<void> {
+             ATELIER_TRY(project_open(c));
+             return graph_editable(c);
+         },
+         with_parameters(+[](OperatorHost& host, const Context& c, const GraphExtractAsset& p,
+                             GraphExtractAssetResult& out) -> Result<void> {
+             ATELIER_TRY_BIND(key, editable_target_graph_key(c, p.asset));
+             ATELIER_TRY_BIND(targets, resolve_graph_node_targets(c, *key, p.nodes, true, "extract"));
+             const bool is_viewed = (*key == c.active_graph || *key == c.network_graph);
+             ATELIER_TRY_BIND(chosen, operation_path(host, p.path, PathPurpose::procedural_graph_save,
+                                                     c.project->root() / "Content", L"ExtractedAsset.procgraph"));
+             if (!*chosen)
+                 return {};
+             auto relative = (**chosen).is_absolute() ? (**chosen).lexically_relative(c.project->root()) : **chosen;
+             if (!assets::is_procedural_graph_path(relative))
+                 relative.replace_extension(L".procgraph");
+             ATELIER_TRY_BIND(extracted, c.document.graph_extract_asset(*c.project, *key, *targets, relative,
+                                                                        {p.name.c_str(), p.name.size()}));
+             if (!out.asset.assign(StringView{extracted->first}) || !out.node.assign(StringView{extracted->second}))
+                 return std::unexpected(Error{ErrorCode::argument_mismatch, "Extracted identifiers require UTF-8."});
+             if (c.interactive)
+                 host.asset_created(extracted->first, false);
+             if (is_viewed)
+                 host.select_graph_node(*key, extracted->second);
+             return {};
+         }),
+         "editor.GraphExtractAsset",
+         {},
+         "editor.GraphExtractAssetResult"}));
     const auto stopped_scene = [scene](const Context& c) -> Result<void> {
         ATELIER_TRY(scene(c));
         if (c.document.world().running())
@@ -1470,6 +1665,26 @@ void register_builtin_operators(OperatorRegistry& registry) {
              return result;
          }),
          "editor.AssignProceduralGraph"});
+    add({"procedural.set_override", L"Set Generator Parameter Override",
+         "Set or clear a promoted parameter override on a Scene ProceduralGeneratorComponent", OperatorFlag::undo,
+         stopped_scene,
+         with_parameters(+[](OperatorHost& host, const Context& c, const ProceduralSetOverride& p) -> Result<void> {
+             ATELIER_TRY_BIND(target, resolve_generator(c, p.component, &p.entity));
+             Result<void> result;
+             if (p.clear) {
+                 result = c.document.set_generator_override_json(
+                     c.project, *target, {p.parameter.c_str(), p.parameter.size()}, std::nullopt);
+             } else {
+                 const auto parsed = json::Document::parse({p.value_json.c_str(), p.value_json.size()}, {8});
+                 if (!parsed)
+                     return std::unexpected(Error{ErrorCode::argument_mismatch, parsed.error().describe()});
+                 result = c.document.set_generator_override_json(
+                     c.project, *target, {p.parameter.c_str(), p.parameter.size()}, parsed->root());
+             }
+             host.scene_changed();
+             return result;
+         }),
+         "editor.ProceduralSetOverride"});
     add({"procedural.bake", L"Bake Procedural Generator",
          "Convert published CopyToPoints mesh instances of a Procedural Generator into StaticMeshEntity objects",
          OperatorFlag::undo, stopped_scene,

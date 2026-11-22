@@ -31,6 +31,10 @@ struct GraphNodeCatalogEntry {
 
     bool native{};
 
+    std::string asset_key{};
+
+    std::string display_label{};
+
     GraphPortInfo ports;
 
     bool operator==(const GraphNodeCatalogEntry&) const = default;
@@ -56,6 +60,12 @@ struct GraphNodeView {
     ObjectId id{};
 
     std::string type;
+
+    std::string asset_key{};
+
+    std::string asset_label{};
+
+    json::Document overrides{};
 
     bool placeholder{};
 
@@ -252,6 +262,10 @@ struct GraphInspectView {
     bool can_undo{};
 
     bool can_redo{};
+
+    GraphPortInfo external_ports;
+
+    std::vector<GraphPromotedParameter> parameters;
 
     std::vector<GraphNodeView> nodes; // Document name order.
 

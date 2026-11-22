@@ -51,7 +51,7 @@
         if (!begin_edit(reply,command.target,true,true)) return;
         if (command.kind==EditCommandKind::reset) {
             if (!state->control.default_value) return;
-            insert(reply,format(*state->control.default_value,state->control.single_precision),detail::TextEdit::Group::isolated);
+            insert(reply,format(state->control,*state->control.default_value),detail::TextEdit::Group::isolated);
             if (reply.error) return;
             finish_edit(reply,true,true);
         } else {

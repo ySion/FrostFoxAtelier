@@ -1,0 +1,240 @@
+{
+  "boxes": {
+    "building_instances": {
+      "color": "#386b5e",
+      "position": [
+        -300.0,
+        -48.0
+      ],
+      "size": [
+        792.0,
+        316.0
+      ],
+      "title": "Digital Asset Instances (ModularRuinBuilding)"
+    }
+  },
+  "nodes": {
+    "OUT_settlement": {
+      "color": "#eab308",
+      "comment": "Settlement output",
+      "inputs": {
+        "input": "settlement_merge.output"
+      },
+      "position": [
+        96.0,
+        448.0
+      ],
+      "properties": {
+        "order": 0,
+        "port_name": "output"
+      },
+      "shape": "diamond",
+      "type": "procedural.GraphOutput"
+    },
+    "chapel_place": {
+      "inputs": {
+        "input": "east_chapel.output"
+      },
+      "position": [
+        336.0,
+        160.0
+      ],
+      "properties": {
+        "rotate": {
+          "w": 0.98768836,
+          "x": 0.0,
+          "y": -0.15643446,
+          "z": 0.0
+        },
+        "scale": {
+          "x": 1.0,
+          "y": 1.0,
+          "z": 1.0
+        },
+        "translate": {
+          "x": 16.0,
+          "y": 0.0,
+          "z": -4.5
+        }
+      },
+      "type": "procedural.Transform"
+    },
+    "east_chapel": {
+      "asset": "project/{A91C4E85-3D72-49B0-8E24-6C1F5B70D402}",
+      "comment": "2-story collapsed chapel",
+      "inputs": {},
+      "overrides": {
+        "depth": 6.8,
+        "floors": 2,
+        "ruin_collapse": 0.62,
+        "width": 8.4
+      },
+      "position": [
+        336.0,
+        16.0
+      ],
+      "properties": {
+        "seed_offset": 202
+      },
+      "type": "procedural.AssetNode"
+    },
+    "great_hall": {
+      "asset": "project/{A91C4E85-3D72-49B0-8E24-6C1F5B70D402}",
+      "comment": "Central 3-story hall",
+      "inputs": {},
+      "overrides": {
+        "depth": 9.2,
+        "floors": 3,
+        "ruin_collapse": 0.24,
+        "width": 11.6
+      },
+      "position": [
+        96.0,
+        16.0
+      ],
+      "properties": {
+        "seed_offset": 0
+      },
+      "type": "procedural.AssetNode"
+    },
+    "hall_place": {
+      "inputs": {
+        "input": "great_hall.output"
+      },
+      "position": [
+        96.0,
+        160.0
+      ],
+      "properties": {
+        "rotate": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "scale": {
+          "x": 1.0,
+          "y": 1.0,
+          "z": 1.0
+        },
+        "translate": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "type": "procedural.Transform"
+    },
+    "settlement_merge": {
+      "inputs": {
+        "inputs": [
+          "tower_place.output",
+          "hall_place.output",
+          "chapel_place.output"
+        ]
+      },
+      "position": [
+        96.0,
+        320.0
+      ],
+      "properties": {},
+      "type": "procedural.Merge"
+    },
+    "tower_place": {
+      "inputs": {
+        "input": "west_watchtower.output"
+      },
+      "position": [
+        -144.0,
+        160.0
+      ],
+      "properties": {
+        "rotate": {
+          "w": 0.98162717,
+          "x": 0.0,
+          "y": 0.190809,
+          "z": 0.0
+        },
+        "scale": {
+          "x": 1.0,
+          "y": 1.0,
+          "z": 1.0
+        },
+        "translate": {
+          "x": -15.5,
+          "y": 0.0,
+          "z": 5.0
+        }
+      },
+      "type": "procedural.Transform"
+    },
+    "west_watchtower": {
+      "asset": "project/{A91C4E85-3D72-49B0-8E24-6C1F5B70D402}",
+      "comment": "4-story corner watchtower",
+      "inputs": {},
+      "overrides": {
+        "depth": 6.2,
+        "floors": 4,
+        "roof_pitch": 2.25,
+        "ruin_collapse": 0.18,
+        "width": 6.2
+      },
+      "position": [
+        -144.0,
+        16.0
+      ],
+      "properties": {
+        "seed_offset": 101
+      },
+      "type": "procedural.AssetNode"
+    }
+  },
+  "notes": {
+    "settlement_overview": {
+      "color": "#d4a72c",
+      "position": [
+        528.0,
+        -48.0
+      ],
+      "size": [
+        276.0,
+        176.0
+      ],
+      "text": "1. Instantiates three AssetNodes of ModularRuinBuilding with distinct sparse overrides and seed_offsets, sharing Evaluator::CachePool.\n2. Double-click or press Enter on any AssetNode to dive into the Digital Asset (Locked Preview by default).",
+      "title": "Ruined Settlement Composition"
+    }
+  },
+  "parameters": [
+    {
+      "category": "Layout",
+      "label": "West Tower Offset",
+      "name": "west_tower_offset",
+      "targets": [
+        "tower_place.translate"
+      ]
+    },
+    {
+      "category": "Layout",
+      "label": "East Chapel Offset",
+      "name": "east_chapel_offset",
+      "targets": [
+        "chapel_place.translate"
+      ]
+    },
+    {
+      "category": "Layout",
+      "description": "Multi-target uniform scale across both flanking structures.",
+      "label": "Wing Uniform Scale Y",
+      "name": "wing_scale_y",
+      "targets": [
+        "tower_place.scale.y",
+        "chapel_place.scale.y"
+      ]
+    }
+  ],
+  "settings": {
+    "display": "OUT_settlement",
+    "seed": 512
+  },
+  "version": 3
+}

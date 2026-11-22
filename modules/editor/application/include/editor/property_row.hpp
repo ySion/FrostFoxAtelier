@@ -46,6 +46,10 @@ struct PropertyRow {
 
     ui_language::TextEditBinding text_edit;
 
+    ui::ControlKey context_menu{};
+
+    std::optional<bool> row_enabled{};
+
     ui_language::Item item() && {
         const auto color = swatch.value_or(std::array<double, 3>{});
         // Optional actions still cross the DSL's nonzero-target contract.
@@ -53,6 +57,7 @@ struct PropertyRow {
         const auto inherited = override_available ? inherit : ui_language::ActionBinding{key, false};
         const auto text_binding =
             kind == Kind::text ? std::move(text_edit) : ui_language::TextEditBinding{key, {}, false};
+        const bool effective_row_enabled = row_enabled.value_or(enabled);
         return {key,
                 {std::move(title),
                  std::move(edit),
@@ -73,7 +78,9 @@ struct PropertyRow {
                  std::move(help),
                  pick.target ? pick : ui_language::ActionBinding{key, false},
                  kind == Kind::text,
-                 text_binding}};
+                 text_binding,
+                 context_menu,
+                 effective_row_enabled}};
     }
 };
 

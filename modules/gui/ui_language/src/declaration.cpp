@@ -840,7 +840,7 @@ private:
                         "NumberRow layout and field state are owned by the shared parameter row and EditBinding.");
                 if (kind == NodeKind::parameter_row && value != Property::text && value != Property::classes &&
                     value != Property::enabled && value != Property::collapsed && value != Property::modified &&
-                    value != Property::tooltip && value != Property::tooltip_title &&
+                    value != Property::context && value != Property::tooltip && value != Property::tooltip_title &&
                     value != Property::tooltip_identity)
                     return reject(property.position,
                                   "ParameterRow owns its shared layout; put outer layout on its parent.");

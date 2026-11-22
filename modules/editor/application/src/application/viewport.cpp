@@ -275,9 +275,11 @@ bool Application::network_input(const ui::Event& event, std::uint32_t native_key
         if (event.kind == ui::EventKind::key_down && (event.key == ui::Key::escape || event.key == ui::Key::up ||
                                                       event.key == ui::Key::down || event.key == ui::Key::enter)) {
             const auto prev_sel = workspace_.selected_graph_node;
-            auto outcome =
-                workspace_.network.key_event(*document_, net_graph, workspace_.selected_graph_node,
-                                             workspace_.selected_graph_nodes, canvas_px, dpi, event, native_key);
+            const bool net_ro =
+                document_->world().running() || workspace_.is_network_graph_locked(*document_, net_graph);
+            auto outcome = workspace_.network.key_event(*document_, net_graph, workspace_.selected_graph_node,
+                                                        workspace_.selected_graph_nodes, canvas_px, dpi, event,
+                                                        native_key, project_ ? &*project_ : nullptr, net_ro);
             if (!outcome) {
                 status(Result<void>{std::unexpected(outcome.error())}, L"");
                 return true;
@@ -324,14 +326,21 @@ bool Application::network_input(const ui::Event& event, std::uint32_t native_key
         }
         const auto prev_sel = workspace_.selected_graph_node;
         const auto prev_multi = workspace_.selected_graph_nodes;
+        const bool net_ro = document_->world().running() || workspace_.is_network_graph_locked(*document_, net_graph);
         auto outcome = workspace_.network.pointer_event(*document_, net_graph, workspace_.selected_graph_node,
                                                         workspace_.selected_graph_nodes, canvas_px, dpi, event,
-                                                        project_ ? &*project_ : nullptr);
+                                                        project_ ? &*project_ : nullptr, net_ro);
         if (!outcome) {
             workspace_.network.cancel_gesture();
             window_.capture(false);
             window_.cursor(ui::Cursor::arrow);
             status(Result<void>{std::unexpected(outcome.error())}, L"");
+            return true;
+        }
+        if (!outcome->dive_into_node.empty()) {
+            if (outcome->capture_release)
+                window_.capture(false);
+            status(dive_into_asset_node(net_graph, outcome->dive_into_node), L"");
             return true;
         }
         if (workspace_.selected_graph_node != prev_sel || workspace_.selected_graph_nodes != prev_multi) {
@@ -352,13 +361,17 @@ bool Application::network_input(const ui::Event& event, std::uint32_t native_key
         if (!outcome->status.empty())
             workspace_.status = outcome->status;
         if (outcome->open_node_context) {
-            workspace_.network_context_node = outcome->context_node;
             request_menu(
                 {editor::network_control::canvas, editor::network_control::context_node_menu, event.x, event.y});
+            if (workspace_.menu)
+                workspace_.network_context_node = outcome->context_node;
         } else if (outcome->open_canvas_context) {
-            workspace_.network_context_pos = outcome->context_world_pos;
             request_menu(
                 {editor::network_control::canvas, editor::network_control::context_canvas_menu, event.x, event.y});
+            if (workspace_.menu) {
+                workspace_.network_context_node.clear();
+                workspace_.network_context_pos = outcome->context_world_pos;
+            }
         }
         if (event.kind == ui::EventKind::pointer_move && !workspace_.network.active_gesture()) {
             effects(ui_.input(event));
@@ -378,10 +391,16 @@ bool Application::network_input(const ui::Event& event, std::uint32_t native_key
     }
     const auto prev_sel = workspace_.selected_graph_node;
     const auto prev_multi = workspace_.selected_graph_nodes;
+    const bool net_ro = document_->world().running() || workspace_.is_network_graph_locked(*document_, net_graph);
     auto outcome = workspace_.network.key_event(*document_, net_graph, workspace_.selected_graph_node,
-                                                workspace_.selected_graph_nodes, canvas_px, dpi, event, native_key);
+                                                workspace_.selected_graph_nodes, canvas_px, dpi, event, native_key,
+                                                project_ ? &*project_ : nullptr, net_ro);
     if (!outcome) {
         status(Result<void>{std::unexpected(outcome.error())}, L"");
+        return true;
+    }
+    if (!outcome->dive_into_node.empty()) {
+        status(dive_into_asset_node(net_graph, outcome->dive_into_node), L"");
         return true;
     }
     if (workspace_.selected_graph_node != prev_sel || workspace_.selected_graph_nodes != prev_multi) {

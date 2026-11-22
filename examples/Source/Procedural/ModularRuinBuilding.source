@@ -1,4 +1,4 @@
-// Modular Ruin Building procedural grammar for FrostFox Atelier Examples.
+// Modular Ruin Building layout & rubble stages for FrostFox Atelier Examples.
 // Demonstrates L3 multi-output quad/polyline/point emission + per-primitive Extrude & Sweep articulation.
 
 float game.ruin_survival_ceiling(uint seed,
@@ -70,35 +70,35 @@ void game.append_slab_quad(Array<vector3>& slab_pts,
     slab_quads.add(base_s + 3);
 }
 
-class game.RuinArchitectureGrammar : procedural.Node {
-    [Min = 4.5, Max = 26.0, LockMin, Label = "Building Width", DESC = "建筑沿 X 方向总开间面宽，单位 m。"]
+class game.ModularBuildingLayout : procedural.Node {
+    [Category = "Dimensions", Min = 4.5, Max = 26.0, LockMin, Label = "Building Width", DESC = "建筑沿 X 方向总开间面宽，单位 m。"]
     float width = 10.4f;
 
-    [Min = 4.5, Max = 26.0, LockMin, Label = "Building Depth", DESC = "建筑沿 Z 方向总进深，单位 m。"]
+    [Category = "Dimensions", Min = 4.5, Max = 26.0, LockMin, Label = "Building Depth", DESC = "建筑沿 Z 方向总进深，单位 m。"]
     float depth = 8.2f;
 
-    [Min = 1, Max = 6, LockMin, Label = "Stories", DESC = "主体石构楼层数。"]
+    [Category = "Dimensions", Min = 1, Max = 6, LockMin, Label = "Stories", DESC = "主体石构楼层数。"]
     int floors = 3;
 
-    [Min = 2.2, Max = 5.0, LockMin, Label = "Story Height", DESC = "单层标准层高，单位 m。"]
+    [Category = "Dimensions", Min = 2.2, Max = 5.0, LockMin, Label = "Story Height", DESC = "单层标准层高，单位 m。"]
     float floor_height = 3.1f;
 
-    [Min = 1.6, Max = 5.0, LockMin, Label = "Target Bay Width", DESC = "立面柱网目标开间宽度，自动取整均分立面，单位 m。"]
+    [Category = "Facade & Roof", Min = 1.6, Max = 5.0, LockMin, Label = "Target Bay Width", DESC = "立面柱网目标开间宽度，自动取整均分立面，单位 m。"]
     float bay_width = 2.6f;
 
-    [Min = 0.12, Max = 0.36, LockMin, LockMax, Label = "Pilaster Ratio", DESC = "单侧壁柱占开间宽度的比例。"]
+    [Category = "Facade & Roof", Min = 0.12, Max = 0.36, LockMin, LockMax, Label = "Pilaster Ratio", DESC = "单侧壁柱占开间宽度的比例。"]
     float pillar_ratio = 0.19f;
 
-    [Min = 0.4, Max = 4.2, LockMin, Label = "Roof Ridge Rise", DESC = "双坡木构屋脊相对顶层檐口的抬升高度，单位 m。"]
+    [Category = "Facade & Roof", Min = 0.4, Max = 4.2, LockMin, Label = "Roof Ridge Rise", DESC = "双坡木构屋脊相对顶层檐口的抬升高度，单位 m。"]
     float roof_pitch = 1.75f;
 
-    [Min = 0.0, Max = 0.92, LockMin, LockMax, Label = "Ruin Collapse", DESC = "坍塌侵蚀程度：0 为完整殿堂，增大时从屋脊向墙体阶梯式崩落。"]
+    [Category = "Ruin Weathering", Min = 0.0, Max = 0.92, LockMin, LockMax, Label = "Ruin Collapse", DESC = "坍塌侵蚀程度：0 为完整殿堂，增大时从屋脊向墙体阶梯式崩落。"]
     float ruin_collapse = 0.36f;
 
-    [Min = 0.0, Max = 6.283185, LockMin, LockMax, Label = "Collapse Direction", DESC = "坍塌主前锋的水平方位角（弧度）。"]
+    [Category = "Ruin Weathering", Min = 0.0, Max = 6.283185, LockMin, LockMax, Label = "Collapse Direction", DESC = "坍塌主前锋的水平方位角（弧度）。"]
     float ruin_angle = 0.68f;
 
-    [Label = "Seed", DESC = "与图种子混合的建筑风化与残骸种子。"]
+    [Category = "Ruin Weathering", Label = "Seed", DESC = "与图种子混合的建筑风化与残骸种子。"]
     uint seed = 42;
 
     void process(const procedural.Context& context,
@@ -119,10 +119,10 @@ class game.RuinArchitectureGrammar : procedural.Node {
         if (!(math.is_finite(w) && math.is_finite(d) && math.is_finite(fh) && math.is_finite(target_bay) &&
               math.is_finite(pil_ratio) && math.is_finite(roof_h) && math.is_finite(collapse) &&
               math.is_finite(c_angle))) {
-            fail("RuinArchitectureGrammar parameters must be finite.");
+            fail("ModularBuildingLayout parameters must be finite.");
         }
         if (w < 3.0f || d < 3.0f || n_floors < 1 || fh < 1.6f || target_bay < 1.0f) {
-            fail("RuinArchitectureGrammar dimensions are below minimum structural bounds.");
+            fail("ModularBuildingLayout dimensions are below minimum structural bounds.");
         }
 
         const uint mixed_seed = procedural.hash2(context.seed, self.seed);
@@ -361,13 +361,13 @@ class game.RuinArchitectureGrammar : procedural.Node {
 }
 
 class game.RuinRubbleGrounder : procedural.Node {
-    [Min = 0.6, Max = 3.5, LockMin, Label = "Wall Clearance", DESC = "残骸实例距立面石墙的最小净距，消除穿模，单位 m。"]
+    [Category = "Clearance & Spacing", Min = 0.6, Max = 3.5, LockMin, Label = "Wall Clearance", DESC = "残骸实例距立面石墙的最小净距，消除穿模，单位 m。"]
     float wall_clearance = 0.92f;
 
-    [Min = 0.9, Max = 3.5, LockMin, Label = "Min Prop Spacing", DESC = "残骸实例之间的最小中心距，单位 m。"]
+    [Category = "Clearance & Spacing", Min = 0.9, Max = 3.5, LockMin, Label = "Min Prop Spacing", DESC = "残骸实例之间的最小中心距，单位 m。"]
     float min_spacing = 1.38f;
 
-    [Label = "Seed", DESC = "与图种子混合的残骸姿态种子。"]
+    [Category = "Variation", Label = "Seed", DESC = "与图种子混合的残骸姿态种子。"]
     uint seed = 73;
 
     void process(const procedural.Context& context,

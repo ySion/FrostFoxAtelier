@@ -219,6 +219,7 @@ void WorldPanel::append(ui_language::ControlOutput controls, ui::ControlKey pare
                      item->maximum, integer ? 1. : .05, integer ? 1. : .005,
                      options.size() == 1 ? ui::VectorAxis::none : static_cast<ui::VectorAxis>(i + 1)});
                 edit.fields.back().single_precision = !integer;
+                edit.fields.back().integral = integer;
             }
         std::wstring identity = world_option(option->option) ? L"Scene · " : L"Viewport · ";
         for (std::size_t i = 0; i < options.size(); ++i) {

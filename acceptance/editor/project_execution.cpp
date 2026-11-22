@@ -76,7 +76,7 @@ void verify_network_control_reuse(const std::filesystem::path& root) {
     auto project = take(editor::Project::create(root));
     const auto graph_key = take(project.create_procedural_graph(
         L"Content/Graphs/ReuseCheck.procgraph",
-        R"({"version":2,"settings":{"display":"xform"},"nodes":{)"
+        R"({"version":3,"settings":{"display":"xform"},"nodes":{)"
         R"("grid":{"type":"procedural.Grid","position":[60,40],"properties":{"columns":4,"rows":4}},)"
         R"("xform":{"type":"procedural.Transform","position":[60,150],"inputs":{"input":"grid.output"}}}})"));
     editor::Session doc;
@@ -175,7 +175,7 @@ void verify_stateful_rebuild(const std::filesystem::path& root) {
                                       "    }\n"
                                       "}\n"));
     const auto disk_graph_json =
-        R"({"version":2,"settings":{"display":"step"},"nodes":{)"
+        R"({"version":3,"settings":{"display":"step"},"parameters":[{"name":"step_offset","targets":["step.offset"]}],"nodes":{)"
         R"("box":{"type":"procedural.Box","position":[40,20],"properties":{"size":{"x":1.0,"y":1.0,"z":1.0}}},)"
         R"("step":{"type":"game.HeightStep","position":[40,120],"inputs":{"input":"box.output"},"properties":{"offset":1.5}})"
         R"(}})";
@@ -190,8 +190,14 @@ void verify_stateful_rebuild(const std::filesystem::path& root) {
 
     complete(doc->create_procedural_generator(graph_key, {2.f, 0.f, -1.f}, &project));
     const ObjectId gen_entity_before = doc->selection().entity;
+    {
+        const auto gen_parts = take(world::components(doc->world().runtime(), gen_entity_before));
+        const Scalar ov_two{2.0f};
+        take(doc->set_promoted_parameter_scalars(editor::PromotedParameterTarget{{}, {}, gen_parts.front().id()},
+                                                 "step_offset", {&ov_two, 1}, &project));
+    }
 
-    // Open the project graph and make an UNSAVED in-memory edit, plus create an in-memory scratch graph:
+    // Open the project graph and make an UNSAVED in-memory edit, plus create an in-memory scratch graph with AssetNode:
     take(doc->open_graph(project, graph_key));
     take(doc->graph_add_node(graph_key, "procedural.Null", "unsaved_out", {40.f, 220.f}));
     take(doc->graph_connect(graph_key, "step", "output", "unsaved_out", "input"));
@@ -199,8 +205,8 @@ void verify_stateful_rebuild(const std::filesystem::path& root) {
     require(doc->graph_dirty(graph_key), "Unsaved node addition did not mark procedural graph dirty.");
 
     take(doc->create_scratch_graph("scratch/procedural"));
-    take(doc->graph_add_node("scratch/procedural", "procedural.Box", "temp_box", {20.f, 30.f}));
-    take(doc->graph_set_display("scratch/procedural", "temp_box"));
+    take(doc->graph_add_node("scratch/procedural", "asset:" + graph_key, "temp_asset", {20.f, 30.f}, &project));
+    take(doc->graph_set_display("scratch/procedural", "temp_asset"));
 
     editor::Workspace workspace;
     workspace.project_open = true;
@@ -267,8 +273,8 @@ void verify_stateful_rebuild(const std::filesystem::path& root) {
             "Stateful rebuild silently overwrote the unsaved .procgraph file on disk.");
     require(doc->graph_dirty(graph_key) && doc->graph_node(graph_key, "unsaved_out") != nullptr,
             "Stateful rebuild lost unsaved .procgraph edits or its dirty marker.");
-    require(doc->has_graph("scratch/procedural") && doc->graph_node("scratch/procedural", "temp_box") != nullptr,
-            "Stateful rebuild lost the in-memory scratch procedural graph.");
+    require(doc->has_graph("scratch/procedural") && doc->graph_node("scratch/procedural", "temp_asset") != nullptr,
+            "Stateful rebuild lost the in-memory scratch procedural graph or its AssetNode.");
     require(workspace.active_graph == graph_key && workspace.selected_graph_node == "step" &&
                 std::abs(workspace.network.zoom() - saved_zoom) < 1e-5f && workspace.network.pan() == saved_pan,
             "Stateful rebuild reset active SOP graph, selected node or NetworkCanvas pan/zoom.");
@@ -276,10 +282,14 @@ void verify_stateful_rebuild(const std::filesystem::path& root) {
     const auto rebuilt_eval = take(doc->evaluate_graph(graph_key, &project));
     require(rebuilt_eval.display_output && std::abs(rebuilt_eval.display_output->positions()[0].y - 5.5f) < 1e-4f,
             "Rebuilt HeightStep did not preserve offset=1.5 while applying new default gain=4.0 (-0.5 + 6.0 = 5.5).");
+    const auto scratch_eval = take(doc->evaluate_graph("scratch/procedural", &project));
+    require(scratch_eval.display_output && std::abs(scratch_eval.display_output->positions()[0].y - 5.5f) < 1e-4f,
+            "Scratch AssetNode did not rebind and cook against the rebuilt open Digital Asset.");
     const auto items = take(doc->presentation().render_items());
-    require(!items.empty() && items.front().entity == gen_entity_after && items.front().geometry &&
-                std::abs(items.front().geometry->bounds().maximum.y - 6.5f) < 1e-4f,
-            "World ProceduralGeneratorEntity did not resync its rendered mesh against the restored procedural graph.");
+    require(
+        !items.empty() && items.front().entity == gen_entity_after && items.front().geometry &&
+            std::abs(items.front().geometry->bounds().maximum.y - 8.5f) < 1e-4f,
+        "World ProceduralGeneratorEntity did not preserve step_offset=2.0 override across stateful rebuild (0.5 + 2.0 * 4.0 = 8.5).");
 
     complete(doc->close());
 }

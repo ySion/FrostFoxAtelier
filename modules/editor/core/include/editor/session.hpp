@@ -62,6 +62,46 @@ struct Property {
     std::string string_value{};
 
     std::string default_string_value{};
+
+    MetadataList metadata{};
+};
+
+struct GraphPromotedParameterView {
+    std::string name;
+
+    std::string label;
+
+    std::string category;
+
+    std::string description;
+
+    std::vector<std::string> targets;
+
+    bool valid{};
+
+    std::string invalid_reason;
+
+    TypeId value_type{};
+
+    bool is_vector{};
+
+    bool overridden{};
+
+    bool undeclared{};
+
+    std::vector<Property> properties;
+
+    std::vector<Scalar> default_scalars;
+
+    std::string default_string;
+};
+
+struct PromotedParameterTarget {
+    std::string_view graph_key{};
+
+    std::string_view node_name{}; // Empty for Graph Root parameter; non-empty for AssetNode override.
+
+    ObjectId generator_component{}; // Non-null for Scene ProceduralGeneratorComponent override.
 };
 
 struct PropertyPatch {
@@ -257,6 +297,14 @@ public:
 
     Result<void> set_procedural_graph(Project* project, ObjectId component, std::string_view graph_key);
 
+    [[nodiscard]] json::Document generator_overrides(ObjectId component) const;
+
+    Result<std::vector<GraphPromotedParameterView>> generator_promoted_parameters(ObjectId component,
+                                                                                  Project* project = nullptr) const;
+
+    Result<void> set_generator_override_json(Project* project, ObjectId component, std::string_view param_name,
+                                             std::optional<json::Value> value);
+
     Result<void> sync_procedural_generators(Project* project);
 
     // Latest generator failure, valid until the next sync or document close.
@@ -434,7 +482,8 @@ public:
 
     void bind_project_code(const ProjectCode* code) noexcept;
 
-    Result<std::vector<GraphNodeCatalogEntry>> procedural_node_types();
+    Result<std::vector<GraphNodeCatalogEntry>> procedural_node_types(Project* project = nullptr,
+                                                                     std::string_view exclude_graph_key = {});
 
     Result<ObjectId> open_graph(Project&, std::string_view key);
 
@@ -484,12 +533,14 @@ public:
     Result<void> save_graph(Project&, std::string_view key);
 
     Result<std::string> graph_add_node(std::string_view key, std::string_view type_name,
-                                       std::string_view desired_name = {}, std::array<float, 2> position = {});
+                                       std::string_view desired_name = {}, std::array<float, 2> position = {},
+                                       Project* project = nullptr);
 
     Result<std::string> graph_place_node(std::string_view key, std::string_view type_name,
                                          std::array<float, 2> position, std::string_view from_node = {},
                                          std::string_view from_port = {}, std::string_view to_node = {},
-                                         std::string_view to_port = {}, bool set_display = false);
+                                         std::string_view to_port = {}, bool set_display = false,
+                                         Project* project = nullptr);
 
     Result<void> graph_remove_nodes(std::string_view key, std::span<const std::string> names);
 
@@ -559,6 +610,72 @@ public:
     Result<void> graph_remove_boxes(std::string_view key, std::span<const std::string> names);
 
     Result<void> graph_set_properties(std::string_view key, std::string_view node_name, json::Value properties);
+
+    Result<std::vector<GraphPromotedParameterView>> graph_promoted_parameters(std::string_view key) const;
+
+    Result<std::vector<GraphPromotedParameterView>>
+    graph_asset_node_parameters(std::string_view key, std::string_view node_name, Project* project = nullptr) const;
+
+    std::optional<std::string> graph_controlling_parameter(std::string_view key, std::string_view node_name,
+                                                           std::string_view field_path) const noexcept;
+
+    std::optional<std::string> graph_overlapping_parameter(std::string_view key, std::string_view node_name,
+                                                           std::string_view field_path) const noexcept;
+
+    Result<std::string> graph_expose_parameter(std::string_view key, std::string_view node_name,
+                                               std::string_view field_path, std::string_view desired_name = {},
+                                               std::string_view label = {}, std::string_view category = {},
+                                               std::string_view description = {});
+
+    Result<void> graph_bind_parameter_target(std::string_view key, std::string_view param_name,
+                                             std::string_view node_name, std::string_view field_path);
+
+    Result<void> graph_unbind_parameter_target(std::string_view key, std::string_view node_name,
+                                               std::string_view field_path);
+
+    Result<void> graph_update_parameter(std::string_view key, std::string_view param_name,
+                                        std::optional<std::string> new_name = {}, std::optional<std::string> label = {},
+                                        std::optional<std::string> category = {},
+                                        std::optional<std::string> description = {},
+                                        std::optional<std::size_t> new_index = {});
+
+    Result<void> graph_remove_parameter(std::string_view key, std::string_view param_name);
+
+    Result<void> graph_set_parameter_json(std::string_view key, std::string_view param_name, json::Value value);
+
+    Result<void> graph_set_asset_override_json(std::string_view key, std::string_view node_name,
+                                               std::string_view param_name, std::optional<json::Value> value,
+                                               Project* project = nullptr);
+
+    Result<void> graph_set_node_asset(std::string_view key, std::string_view node_name,
+                                      std::string_view target_asset_key, Project* project = nullptr);
+
+    Result<std::pair<std::string, std::string>> graph_extract_asset(Project& project, std::string_view key,
+                                                                    std::span<const std::string> selected_nodes,
+                                                                    const std::filesystem::path& asset_relative_path,
+                                                                    std::string_view desired_node_name = {});
+
+    Result<void> begin_graph_parameter_edit(std::string_view key, std::string_view node_name,
+                                            std::string_view param_name, std::optional<std::size_t> lane,
+                                            std::uint64_t control_session, Project* project = nullptr,
+                                            ObjectId generator_component = {});
+
+    Result<void> preview_graph_parameter_edit(std::uint64_t control_session, std::span<const Scalar> values);
+
+    Result<void> commit_graph_parameter_edit(std::uint64_t control_session);
+
+    Result<void> cancel_graph_parameter_edit();
+
+    bool graph_parameter_editing(std::uint64_t control_session) const noexcept;
+
+    Result<void> set_promoted_parameter_scalars(const PromotedParameterTarget& target, std::string_view param_name,
+                                                std::span<const Scalar> values, Project* project = nullptr);
+
+    Result<void> set_promoted_parameter_string(const PromotedParameterTarget& target, std::string_view param_name,
+                                               std::string_view value, Project* project = nullptr);
+
+    Result<void> clear_promoted_parameter_override(const PromotedParameterTarget& target, std::string_view param_name,
+                                                   Project* project = nullptr);
 
     Result<void> set_string_property(ObjectId, std::span<const FieldId>, std::string_view value);
 
@@ -653,7 +770,8 @@ public:
     bool dirty() const noexcept {
         return !saved_cursor_ || *saved_cursor_ != cursor_ || (active_ && !is_graph_object(active_->root.id())) ||
                (group_ && !is_graph_object(group_->root.id())) || transform_ ||
-               (material_edit_ && material_edit_->scene);
+               (material_edit_ && material_edit_->scene) ||
+               (graph_param_edit_ && graph_param_edit_->generator_root.id() != ObjectId{});
     }
 
     void mark_saved() noexcept {
@@ -674,7 +792,8 @@ public:
     std::uint64_t revision() const noexcept { return revision_; }
 
     bool editing() const noexcept {
-        return active_.has_value() || transform_.has_value() || material_edit_.has_value() || group_.has_value();
+        return active_.has_value() || transform_.has_value() || material_edit_.has_value() ||
+               graph_param_edit_.has_value() || group_.has_value();
     }
 
     std::size_t undo_count() const noexcept { return cursor_; }
@@ -880,6 +999,10 @@ private:
         std::string before;
 
         std::string after;
+
+        json::Document before_overrides;
+
+        json::Document after_overrides;
     };
 
     struct RetainedChange {}; // Explicit discard; the history entry's swaps carry the data.
@@ -1040,6 +1163,67 @@ private:
 
     std::unique_ptr<GeneratorRuntimeCache, GeneratorCacheDeleter> generator_cache_;
 
+    struct AssetSchemaCache;
+
+    struct AssetSchemaCacheDeleter {
+        void operator()(AssetSchemaCache*) const noexcept;
+    };
+
+    mutable std::unique_ptr<AssetSchemaCache, AssetSchemaCacheDeleter> asset_schema_cache_;
+
+    std::shared_ptr<procedural::CachePool> procedural_cache_pool_;
+
+    // Sparse promoted-parameter override records per ProceduralGeneratorComponent; travels through history like names_.
+    std::unordered_map<ObjectId, json::Document> generator_overrides_;
+
+    struct GraphParameterEdit {
+        std::uint64_t control{};
+
+        std::string graph_key;
+
+        std::string node_name; // Empty when editing Graph Root promoted parameter; non-empty for AssetNode override.
+
+        ObjectRoot generator_root; // Non-empty when editing a Scene ProceduralGeneratorComponent override.
+
+        ObjectId generator_owner{};
+
+        Project* edit_project{};
+
+        std::string param_name;
+
+        std::optional<std::size_t> lane; // Specific vector lane, or nullopt for scalar/enum or whole vector.
+
+        TypeId value_type{};
+
+        bool is_vector{};
+
+        FieldRange range{};
+
+        std::vector<FieldRange> lane_ranges;
+
+        std::vector<detail::ScalarField> lane_fields;
+
+        std::vector<Scalar> current_scalars;
+
+        struct NodeBackup {
+            ObjectRoot target;
+
+            json::Document before_props;
+
+            json::Document before_kept;
+        };
+
+        std::vector<NodeBackup> node_backups;
+
+        json::Document before_overrides;
+    };
+
+    std::optional<GraphParameterEdit> graph_param_edit_;
+
+    Result<void> reject_if_graph_controlled_field(ObjectId object, std::span<const FieldId> path) const;
+
+    Result<const GraphDocument*> resolve_target_graph_document(std::string_view asset_key, Project* project) const;
+
     std::unordered_map<ObjectId, std::string> scene_material_parents_; // Non-owning; survives parent loss.
 
     std::vector<std::string> loading_materials_; // Synchronous recursion guard, not a resource cache.
@@ -1152,12 +1336,21 @@ private:
     Result<std::string> add_graph_node_impl(std::string_view key, std::string_view type_name,
                                             std::string_view desired_name, std::array<float, 2> position,
                                             std::string_view from_node, std::string_view from_port,
-                                            std::string_view to_node, std::string_view to_port, bool set_display);
+                                            std::string_view to_node, std::string_view to_port, bool set_display,
+                                            Project* project = nullptr);
+
+    std::shared_ptr<procedural::CachePool> ensure_procedural_cache_pool();
+
+    AssetPortResolver make_asset_port_resolver(Project* project) const;
+
+    Result<void> sync_open_graph_assets(OpenGraph& open, Project* project, bool materialize_subgraphs);
 
     Result<std::pair<std::string, std::wstring>> resolve_procedural_graph_asset(std::string_view graph_key,
                                                                                 Project* project) const;
 
     Result<void> remember_graph_scalar_edit(ObjectRoot target, std::vector<world::FieldPath> paths,
                                             std::vector<Scalar> before, std::vector<Scalar> after);
+
+    void bump_graph_object_epoch(ObjectId object) noexcept;
 };
 }

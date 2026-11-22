@@ -92,6 +92,28 @@ ObjectId Workspace::inspected_graph_object(const Session& session, std::string_v
     return session.loaded_graph(resolved);
 }
 
+std::string Workspace::default_selected_graph_node(const Session& session, std::string_view graph_key) const {
+    const auto* doc = session.graph_document(graph_key);
+    if (!doc)
+        return {};
+    if (doc->graph.registered())
+        if (const auto listed = procedural::contents(session.world().runtime(), doc->graph.id()))
+            if (listed->display() != ObjectId{})
+                if (const auto disp_name = session.graph_node_name(listed->display()))
+                    return *disp_name;
+    return doc->nodes.empty() ? std::string{} : doc->nodes.back().name;
+}
+
+bool Workspace::is_network_graph_locked(const Session& session, std::string_view net_graph) const {
+    if (net_graph.empty() || session.is_scratch_graph(net_graph))
+        return false;
+    if (const auto it = network_lock_overrides.find(std::string(net_graph)); it != network_lock_overrides.end())
+        return it->second;
+    if (!graph_breadcrumbs.empty())
+        return true;
+    return active_graph.empty();
+}
+
 std::string Workspace::selected_generator_graph(const Session& session) const {
     const auto sel = session.selection();
     const ObjectId candidate = sel.object != ObjectId{} ? sel.object : sel.entity;
@@ -109,17 +131,34 @@ std::string Workspace::selected_generator_graph(const Session& session) const {
 std::string Workspace::current_network_graph(const Session& session) const {
     if (!active_graph.empty() && session.has_graph(active_graph))
         return active_graph;
-    if (network_pinned && !pinned_graph.empty() && session.has_graph(pinned_graph))
-        return pinned_graph;
-    const auto key = selected_generator_graph(session);
-    if (!key.empty() && session.has_graph(key))
-        return key;
+    const std::string world_root =
+        (network_pinned && !pinned_graph.empty()) ? pinned_graph : selected_generator_graph(session);
+    if (!graph_breadcrumbs.empty() && !dived_network_graph.empty() &&
+        graph_breadcrumbs.front().graph_key == world_root && session.has_graph(dived_network_graph))
+        return dived_network_graph;
+    if (!world_root.empty() && session.has_graph(world_root))
+        return world_root;
     return {};
 }
 
 std::string Workspace::effective_network_graph(Session& session, Project* project) {
     if (!active_graph.empty() && session.has_graph(active_graph))
         return active_graph;
+    const std::string world_root =
+        (network_pinned && !pinned_graph.empty()) ? pinned_graph : selected_generator_graph(session);
+    if (!graph_breadcrumbs.empty()) {
+        if (graph_breadcrumbs.front().graph_key != world_root || dived_network_graph.empty()) {
+            graph_breadcrumbs.clear();
+            dived_network_graph.clear();
+        } else {
+            if (!session.has_graph(dived_network_graph) && project && project->entry(dived_network_graph))
+                static_cast<void>(session.open_graph(*project, dived_network_graph));
+            if (session.has_graph(dived_network_graph))
+                return dived_network_graph;
+            graph_breadcrumbs.clear();
+            dived_network_graph.clear();
+        }
+    }
     if (network_pinned && !pinned_graph.empty()) {
         if (!session.has_graph(pinned_graph) && project && project->entry(pinned_graph) &&
             failed_auto_open_graph_ != pinned_graph) {
@@ -159,13 +198,31 @@ std::wstring Workspace::network_path_title(const Session& session, const Project
                                            std::string_view net_graph) const {
     if (net_graph.empty())
         return L"World  ▸  (Select Generator Entity or Open .procgraph)";
-    std::wstring stem = platform::utf8_to_utf16_validated(net_graph);
+    const auto graph_stem = [&](std::string_view key) {
+        if (const auto* entry = project ? project->entry(key) : nullptr)
+            return entry->path.stem().wstring();
+        return platform::utf8_to_utf16_validated(key);
+    };
+    std::wstring stem = graph_stem(net_graph);
     std::wstring rel_path = L"/" + stem;
-    if (const auto* entry = project ? project->entry(net_graph) : nullptr) {
-        stem = entry->path.stem().wstring();
+    if (const auto* entry = project ? project->entry(net_graph) : nullptr)
         rel_path = L"/" + entry->path.generic_wstring();
-    }
     const std::wstring dirty_mark = session.graph_dirty(net_graph) ? L" *" : L"";
+    if (!graph_breadcrumbs.empty()) {
+        std::wstring prefix = !active_graph.empty() ? L"SOP" : (network_pinned ? L"Pinned" : L"World");
+        if (active_graph.empty() && !network_pinned) {
+            const auto sel = session.selection();
+            if (sel.entity != ObjectId{} && session.world().contains(sel.entity))
+                prefix += L"  ▸  " + std::wstring(session.name(sel.entity));
+        }
+        for (std::size_t i = 0; i < graph_breadcrumbs.size(); ++i) {
+            const auto& crumb = graph_breadcrumbs[i];
+            if (i == 0)
+                prefix += L"  ▸  " + graph_stem(crumb.graph_key);
+            prefix += L"  ▸  " + platform::utf8_to_utf16_validated(crumb.asset_node_name);
+        }
+        return prefix + L" (" + stem + dirty_mark + L")";
+    }
     if (!active_graph.empty() && active_graph == net_graph)
         return L"SOP  ▸  " + rel_path + dirty_mark;
     if (network_pinned && pinned_graph == net_graph)
@@ -217,6 +274,10 @@ Context Workspace::operator_context(Session& session, Project* project, bool int
             if (auto key = material::material_key(session.world().runtime(), object))
                 asset = std::move(*key);
     }
+    std::vector<std::string> locked;
+    for (const auto& gkey : session.open_graphs())
+        if (is_network_graph_locked(session, gkey))
+            locked.push_back(gkey);
     return {session,
             project,
             std::move(selection_context),
@@ -226,6 +287,7 @@ Context Workspace::operator_context(Session& session, Project* project, bool int
             net_graph,
             selected_graph_node,
             selected_graph_nodes,
+            std::move(locked),
             source_history,
             {workbench.undo_count() != 0, workbench.redo_count() != 0},
             scene_available,
@@ -305,15 +367,15 @@ void Workspace::reset_document(bool preserve_view) {
         active_graph.clear();
         network_pinned = false;
         pinned_graph.clear();
+        graph_breadcrumbs.clear();
+        dived_network_graph.clear();
+        network_lock_overrides.clear();
         selected_graph_node.clear();
         selected_graph_nodes.clear();
         last_network_graph_.clear();
     }
     network_context_node.clear();
     failed_auto_open_graph_.clear();
-    node_catalog_runtime_ = nullptr;
-    node_catalog_types_ = 0;
-    node_catalog_.clear();
     spreadsheet.reset(preserve_view);
     network.reset(preserve_view);
     menu.reset();
@@ -340,6 +402,31 @@ void Workspace::reconcile_rebuild(Session& document, Project* project) {
     }
     if (!active_graph.empty() && !document.has_graph(active_graph))
         active_graph.clear();
+
+    if (!graph_breadcrumbs.empty()) {
+        std::size_t valid_depth = 0;
+        for (; valid_depth < graph_breadcrumbs.size(); ++valid_depth) {
+            const auto& crumb = graph_breadcrumbs[valid_depth];
+            if (!document.has_graph(crumb.graph_key) && project && project->entry(crumb.graph_key))
+                static_cast<void>(document.open_graph(*project, crumb.graph_key));
+            if (!document.has_graph(crumb.graph_key) || !document.graph_node(crumb.graph_key, crumb.asset_node_name))
+                break;
+        }
+        if (valid_depth < graph_breadcrumbs.size()) {
+            const std::string fallback_graph =
+                valid_depth > 0 ? graph_breadcrumbs[valid_depth - 1].graph_key : graph_breadcrumbs.front().graph_key;
+            graph_breadcrumbs.resize(valid_depth);
+            if (!active_graph.empty()) {
+                if (document.has_graph(fallback_graph))
+                    active_graph = fallback_graph;
+                else
+                    active_graph.clear();
+            } else {
+                dived_network_graph =
+                    (valid_depth > 0 && document.has_graph(fallback_graph)) ? fallback_graph : std::string{};
+            }
+        }
+    }
 
     const std::string target_graph = !active_graph.empty() ? active_graph : current_network_graph(document);
     if (!target_graph.empty() && !document.has_graph(target_graph) && project && project->entry(target_graph))
@@ -673,6 +760,32 @@ ui::ControlKey Workspace::bind_operator(OperatorCall call) {
     return bindings_[binding_cursor_++].key;
 }
 
+ui::ControlKey Workspace::bind_graph_param(std::string_view graph_key, std::string_view node_name,
+                                           std::string_view param_path, Binding::Kind kind, std::size_t lane,
+                                           ObjectId object, ObjectId component, std::span<const FieldId> path) {
+    const auto found = std::ranges::find_if(bindings_, [&](const auto& item) {
+        return item.kind == kind && item.object == object && item.component == component && item.slot == graph_key &&
+               item.node_name == node_name && item.material_path == param_path && item.index == lane &&
+               std::equal(item.path.begin(), item.path.end(), path.begin(), path.end());
+    });
+    if (found != bindings_.end())
+        return found->key;
+    if (next_binding_ == std::numeric_limits<ui::ControlKey>::max())
+        throw std::runtime_error("Editor control identities exhausted.");
+    Binding item;
+    item.key = next_binding_++;
+    item.object = object;
+    item.path.assign(path.begin(), path.end());
+    item.kind = kind;
+    item.component = component;
+    item.slot = std::string(graph_key);
+    item.index = lane;
+    item.material_path = std::string(param_path);
+    item.node_name = std::string(node_name);
+    bindings_.push_back(std::move(item));
+    return bindings_.back().key;
+}
+
 bool Workspace::effective_show_points(const procedural::Geometry* geometry) const noexcept {
     if (sop_show_points.has_value())
         return *sop_show_points;
@@ -956,6 +1069,102 @@ std::string described(std::string description, const FieldRange& range) {
     return description;
 }
 
+std::string_view trim_ascii(std::string_view text) noexcept {
+    while (!text.empty() && (text.front() == ' ' || text.front() == '\t'))
+        text.remove_prefix(1);
+    while (!text.empty() && (text.back() == ' ' || text.back() == '\t'))
+        text.remove_suffix(1);
+    return text;
+}
+
+std::string property_condition_token(const Runtime& runtime, const Property& prop) {
+    if (prop.is_string)
+        return prop.string_value;
+    return std::visit(
+        [&](const auto& v) -> std::string {
+            using T = std::decay_t<decltype(v)>;
+            if constexpr (std::same_as<T, bool>) {
+                return v ? "true" : "false";
+            } else if constexpr (std::same_as<T, EnumValue>) {
+                if (const auto info = runtime.describe(v.type); info && (*info)->enumeration) {
+                    for (const auto& [name, bits] : (*info)->enumeration->values)
+                        if (bits == v.bits)
+                            return name;
+                }
+                return std::to_string(v.bits);
+            } else {
+                char buffer[32];
+                const auto written = std::to_chars(buffer, buffer + sizeof(buffer), v);
+                return written.ec == std::errc{} ? std::string(buffer, written.ptr) : std::string{};
+            }
+        },
+        prop.value);
+}
+
+bool property_visible_when(const Runtime& runtime, std::span<const Property> schema, const Property& current) {
+    const auto meta = std::ranges::find(current.metadata, std::string_view{"ui.visible_when"},
+                                        &std::pair<std::string, std::string>::first);
+    if (meta == current.metadata.end() || meta->second.empty())
+        return true;
+    std::string_view remaining = meta->second;
+    while (!remaining.empty()) {
+        const auto semi = remaining.find(';');
+        const std::string_view clause = trim_ascii(remaining.substr(0, semi));
+        remaining = semi == std::string_view::npos ? std::string_view{} : remaining.substr(semi + 1);
+        if (clause.empty())
+            continue;
+        bool negate = false;
+        auto op = clause.find("!=");
+        std::size_t op_len = 2;
+        if (op == std::string_view::npos) {
+            op = clause.find("==");
+            if (op == std::string_view::npos) {
+                op = clause.find('=');
+                op_len = 1;
+            }
+        } else {
+            negate = true;
+        }
+        if (op == std::string_view::npos)
+            continue;
+        const std::string_view key = trim_ascii(clause.substr(0, op));
+        std::string_view rhs = trim_ascii(clause.substr(op + op_len));
+        if (key.empty())
+            continue;
+        const Property* target = nullptr;
+        if (const auto direct = std::ranges::find(schema, key, &Property::name); direct != schema.end()) {
+            target = &*direct;
+        } else {
+            std::string_view prefix = current.name;
+            for (auto dot = prefix.rfind('.'); dot != std::string_view::npos; dot = prefix.rfind('.')) {
+                prefix = prefix.substr(0, dot);
+                const std::string qualified = std::string(prefix) + "." + std::string(key);
+                if (const auto nested = std::ranges::find(schema, qualified, &Property::name); nested != schema.end()) {
+                    target = &*nested;
+                    break;
+                }
+            }
+        }
+        if (!target)
+            continue;
+        const std::string actual = property_condition_token(runtime, *target);
+        bool matched = false;
+        while (true) {
+            const auto pipe = rhs.find('|');
+            if (actual == trim_ascii(rhs.substr(0, pipe))) {
+                matched = true;
+                break;
+            }
+            if (pipe == std::string_view::npos)
+                break;
+            rhs.remove_prefix(pipe + 1);
+        }
+        if (negate ? matched : !matched)
+            return false;
+    }
+    return true;
+}
+
 // Houdini-style parameter label from a reflected field path: "material.base_color"
 // becomes "Base Color". The path still identifies the field; only the caption changes.
 ui::ControlIcon light_icon(presentation::LightKind kind) {
@@ -1130,6 +1339,9 @@ ui_language::TooltipBinding describe_operator_tooltip(PropertyHelpCache& cache, 
     } else if (call.id == "graph.exit") {
         title = L"Exit SOP to World";
         desc = "退出当前程序化图（SOP）编辑上下文，返回场景世界（World）视图。";
+    } else if (call.id == "graph.dive_in") {
+        title = L"Dive Into Digital Asset";
+        desc = "进入当前 AssetNode 实例引用的 .procgraph 子图查看与编辑（默认开启 Locked Preview 防误改保护）。";
     } else if (call.id == "play.start") {
         title = L"Run Project";
         desc = "编译并启动当前工程的实时运行会话。";
@@ -1230,23 +1442,10 @@ Result<void> Workspace::describe(ui::ControlList& result, Session& session, ui_l
     const auto graph_objects = session.graph_objects();
     if (!active_graph.empty() && !session.has_graph(active_graph)) {
         active_graph.clear();
-        selected_graph_node.clear();
+        set_single_graph_selection({});
     } else if (!active_graph.empty() && !selected_graph_node.empty() &&
                !session.graph_node(active_graph, selected_graph_node)) {
-        if (const auto* graph_doc = session.graph_document(active_graph)) {
-            std::optional<std::string> disp_name;
-            if (graph_doc->graph.registered())
-                if (const auto listed = procedural::contents(runtime, graph_doc->graph.id()))
-                    if (listed->display() != ObjectId{})
-                        disp_name = session.graph_node_name(listed->display());
-            if (disp_name)
-                selected_graph_node = std::move(*disp_name);
-            else if (!graph_doc->nodes.empty())
-                selected_graph_node = graph_doc->nodes.back().name;
-            else
-                selected_graph_node.clear();
-        } else
-            selected_graph_node.clear();
+        set_single_graph_selection(default_selected_graph_node(session, active_graph));
     }
     Set<ObjectId> live;
     live.reserve(members.size() + components.size() + graph_objects.size() + 1);
@@ -1916,7 +2115,7 @@ Result<void> Workspace::describe(ui::ControlList& result, Session& session, ui_l
             std::wstring cook_summary_style = L"network-cook-summary";
             std::wstring net_status;
             std::shared_ptr<const GraphInspectView> inspected;
-            std::span<const GraphNodeCatalogEntry> catalog;
+            std::vector<GraphNodeCatalogEntry> catalog;
             if (graph_doc) {
                 // Prune any node names removed via Undo or external Control calls.
                 std::erase_if(selected_graph_nodes,
@@ -1929,39 +2128,40 @@ Result<void> Workspace::describe(ui::ControlList& result, Session& session, ui_l
                 const auto eval = session.evaluate_graph(net_graph, project, sel_node);
                 if (auto insp = session.graph_topology(net_graph))
                     inspected = std::move(*insp);
-                if (node_catalog_runtime_ != &runtime || node_catalog_types_ != runtime.type_count()) {
-                    if (auto cat = session.procedural_node_types()) {
-                        node_catalog_ = std::move(*cat);
-                        node_catalog_runtime_ = &runtime;
-                        node_catalog_types_ = runtime.type_count();
-                    } else {
-                        node_catalog_.clear();
-                        node_catalog_runtime_ = nullptr;
-                        node_catalog_types_ = 0;
-                    }
-                }
-                catalog = node_catalog_;
+                if (auto cat = session.procedural_node_types(project, net_graph))
+                    catalog = std::move(*cat);
 
                 if (network.tab_search().open) {
                     const auto matches = network.filter_catalog(catalog);
                     tab_items->reserve(matches.size());
                     for (std::size_t i = 0; i < matches.size(); ++i) {
-                        std::string short_name = matches[i].name;
-                        if (const auto dot = short_name.find_last_of('.'); dot != short_name.npos)
-                            short_name = short_name.substr(dot + 1);
+                        const bool is_asset = !matches[i].asset_key.empty();
+                        std::string short_name =
+                            is_asset && !matches[i].display_label.empty() ? matches[i].display_label : matches[i].name;
+                        if (!is_asset)
+                            if (const auto dot = short_name.find_last_of('.'); dot != short_name.npos)
+                                short_name = short_name.substr(dot + 1);
                         const auto short_w = platform::utf8_to_utf16_validated(short_name);
                         const auto pick_key = network_control::tab_pick_first + i;
+                        const std::wstring identity =
+                            is_asset ? (L"Digital Asset · " + platform::utf8_to_utf16_validated(matches[i].asset_key))
+                                     : (platform::utf8_to_utf16_validated(matches[i].name) +
+                                        (matches[i].native ? L" · C++ SOP" : L" · Source SOP"));
                         auto pick_help =
-                            property_help_.get(pick_key, short_w,
-                                               platform::utf8_to_utf16_validated(matches[i].name) +
-                                                   (matches[i].native ? L" · C++ SOP" : L" · Source SOP"),
+                            property_help_.get(pick_key, short_w, identity,
                                                matches[i].description.empty() ? "在画布光标位置创建此程序化几何节点。"
                                                                               : matches[i].description);
                         const bool active_row = i == std::min(network.tab_search().highlight, matches.size() - 1);
                         tab_items->push_back(
                             {network_control::tab_item_first + i,
-                             {short_w, std::wstring(matches[i].native ? L"C++" : L"Source"), active_row,
-                              ui_language::ActionBinding{pick_key, !session.world().running(), std::move(pick_help)},
+                             {short_w,
+                              std::wstring(is_asset            ? L"Asset"
+                                           : matches[i].native ? L"C++"
+                                                               : L"Source"),
+                              active_row,
+                              ui_language::ActionBinding{
+                                  pick_key, !session.world().running() && !is_network_graph_locked(session, net_graph),
+                                  std::move(pick_help)},
                               std::wstring(active_row ? L"network-tab-row-active" : L"")}});
                     }
                 }
@@ -1998,7 +2198,8 @@ Result<void> Workspace::describe(ui::ControlList& result, Session& session, ui_l
                         graph_doc->nodes.size());
                 }
             }
-            const bool can_edit_net = has_graph && !session.world().running();
+            const bool net_locked = is_network_graph_locked(session, net_graph);
+            const bool can_edit_net = has_graph && !session.world().running() && !net_locked;
             const bool has_selected_node = has_graph && (!selected_graph_node.empty() || !selected_graph_nodes.empty());
             const bool is_isolated = !active_graph.empty() && active_graph == net_graph;
             const auto popup_kind = network.popup().kind;
@@ -2015,19 +2216,31 @@ Result<void> Workspace::describe(ui::ControlList& result, Session& session, ui_l
             };
             json::Builder seed_args;
             seed_args.set_validated(seed_args.root(), "node", "");
+            auto layout_binding = net_action({"graph.layout"});
+            layout_binding.enabled = layout_binding.enabled && can_edit_net;
             auto del_binding = net_action({"graph.delete_node"});
-            del_binding.enabled = del_binding.enabled && has_selected_node;
+            del_binding.enabled = del_binding.enabled && can_edit_net && has_selected_node;
 
             const std::wstring graph_title = network_path_title(session, project, net_graph);
             const std::wstring zoom_text = std::format(L"{}%", static_cast<int>(std::lround(network.zoom() * 100.f)));
+            const bool is_scratch = has_graph && session.is_scratch_graph(net_graph);
+            const std::wstring lock_text = is_scratch ? L"Scratch" : net_locked ? L"Locked" : L"Unlocked";
             const auto& ts = network.tab_search();
-            const std::array<ui_language::InputValue, 53> inputs{
+            const std::array<ui_language::InputValue, 56> inputs{
                 graph_title,
                 double(path_icon_val),
-                ui_language::ActionBinding{network_control::nav_back, can_navigate(-1)},
+                ui_language::ActionBinding{network_control::nav_back, !graph_breadcrumbs.empty() || can_navigate(-1)},
                 ui_language::ActionBinding{network_control::nav_forward, can_navigate(1)},
                 double(ui::ControlIcon::back),
                 double(ui::ControlIcon::forward),
+                net_locked,
+                lock_text,
+                ui_language::ActionBinding{
+                    network_control::lock_toggle, has_graph && !is_scratch && !session.world().running(),
+                    property_help_.get(
+                        network_control::lock_toggle, L"Lock / Unlock Shared Digital Asset",
+                        net_locked ? L"Currently: Locked Preview (Read-Only)" : L"Currently: Unlocked (Live Authoring)",
+                        "场景预览与子图下潜默认处于 Locked Preview 防误改模式（可平移缩放、点选查看 Spreadsheet、双击下潜）；点击解锁后所做修改将实时同步到引用该 .procgraph 的所有实例与生成器。")},
                 network_pinned,
                 double(ui::ControlIcon::pin),
                 ui_language::ActionBinding{
@@ -2095,7 +2308,7 @@ Result<void> Workspace::describe(ui::ControlList& result, Session& session, ui_l
                         network_control::open_node_info, L"Node Info & Comment [I]", L"Node Diagnostics",
                         "查看当前选中节点的类型、端口数、求值耗时、缓存命中、布尔统计，并编辑节点备注标签。")},
                 double(ui::ControlIcon::info),
-                net_action({"graph.layout"}),
+                std::move(layout_binding),
                 double(ui::ControlIcon::network_layout),
                 ui_language::ActionBinding{
                     network_control::frame_all, has_graph,
@@ -2152,7 +2365,7 @@ Result<void> Workspace::describe(ui::ControlList& result, Session& session, ui_l
                     }
                 }
                 network.append_canvas(result, network_control::canvas, canvas_dip, inspected, catalog,
-                                      selected_graph_node, selected_graph_nodes);
+                                      selected_graph_node, selected_graph_nodes, !can_edit_net);
             } else {
                 result.append({}, empty_network_canvas_revision_);
             }
@@ -2374,15 +2587,247 @@ Result<void> Workspace::describe(ui::ControlList& result, Session& session, ui_l
         const auto folded = parameter_search_visible ? lowercase(query) : std::wstring{};
         const bool show_position = !param_is_graph && !parameter_by_category_ && material_object == ObjectId{} &&
                                    transform && (inspected == selected || inspected == *transform);
-        auto groups = std::make_shared<std::vector<ui_language::Item>>();
-        std::vector<std::pair<std::string, std::shared_ptr<std::vector<ui_language::Item>>>> category_rows;
-        const auto category_properties = [&](std::string_view category) {
-            auto at = std::ranges::find_if(category_rows, [&](const auto& group) { return group.first == category; });
-            if (at == category_rows.end()) {
-                category_rows.emplace_back(std::string(category), std::make_shared<std::vector<ui_language::Item>>());
-                at = std::prev(category_rows.end());
+        using CategoryBuckets = std::vector<std::pair<std::string, std::shared_ptr<std::vector<ui_language::Item>>>>;
+        const auto bucket_rows = [](CategoryBuckets& buckets, std::string_view category) {
+            auto at = std::ranges::find_if(buckets, [&](const auto& group) { return group.first == category; });
+            if (at == buckets.end()) {
+                buckets.emplace_back(std::string(category), std::make_shared<std::vector<ui_language::Item>>());
+                at = std::prev(buckets.end());
             }
             return at->second;
+        };
+        auto groups = std::make_shared<std::vector<ui_language::Item>>();
+        CategoryBuckets category_rows;
+        const auto category_properties = [&](std::string_view category) {
+            return bucket_rows(category_rows, category);
+        };
+        const bool param_graph_locked = param_is_graph && is_network_graph_locked(session, net_graph);
+        const auto format_enum_choice = [&](const EnumValue& enumeration, std::string& description) -> std::wstring {
+            std::wstring choice;
+            const auto& enum_info = *take(runtime.describe(enumeration.type))->enumeration;
+            const auto enum_label = [&](std::size_t index) {
+                return index < enum_info.metadata.size() && !enum_info.metadata[index].label.empty()
+                           ? platform::utf8_to_utf16_validated(enum_info.metadata[index].label)
+                           : parameter_label(enum_info.values[index].first);
+            };
+            for (std::size_t i = 0; i < enum_info.values.size(); ++i)
+                if (enum_info.values[i].second == enumeration.bits) {
+                    choice = enum_label(i);
+                    if (i < enum_info.metadata.size() && !enum_info.metadata[i].description.empty()) {
+                        if (!description.empty())
+                            description += "\n";
+                        description += enum_info.metadata[i].description;
+                    }
+                    break;
+                }
+            if (choice.empty() && enum_info.flags) {
+                if (enumeration.bits == 0) {
+                    choice = L"None";
+                } else {
+                    std::uint32_t covered = 0;
+                    const auto append_matching = [&](bool single_bit_only) {
+                        for (std::size_t i = 0; i < enum_info.values.size(); ++i) {
+                            const auto member_bits = enum_info.values[i].second;
+                            if (member_bits == 0 || (enumeration.bits & member_bits) != member_bits)
+                                continue;
+                            if (single_bit_only ? !std::has_single_bit(member_bits) : (member_bits & ~covered) == 0)
+                                continue;
+                            covered |= member_bits;
+                            if (!choice.empty())
+                                choice += L" | ";
+                            choice += enum_label(i);
+                        }
+                    };
+                    append_matching(true);
+                    if (covered != enumeration.bits)
+                        append_matching(false);
+                }
+            }
+            return choice;
+        };
+        const auto append_promoted_parameter_rows = [&](ObjectId owner_object, std::string_view graph_key,
+                                                        std::string_view node_name, ObjectId generator_component,
+                                                        std::span<const GraphPromotedParameterView> params,
+                                                        bool as_overrides, bool editable,
+                                                        std::string_view default_group_title) {
+            CategoryBuckets local_groups;
+            const auto target_rows = [&](std::string_view cat) {
+                const std::string_view resolved_cat = cat.empty() ? default_group_title : cat;
+                return (parameter_by_category_ && material_object == ObjectId{})
+                           ? category_properties(resolved_cat)
+                           : bucket_rows(local_groups, resolved_cat);
+            };
+            for (const auto& pv : params) {
+                const std::wstring caption =
+                    pv.label.empty() ? parameter_label(pv.name) : platform::utf8_to_utf16_validated(pv.label);
+                if (lowercase(caption + L" " + platform::utf8_to_utf16_validated(pv.name + " " + pv.category))
+                        .find(folded) == std::wstring::npos)
+                    continue;
+                auto rows = target_rows(pv.category);
+                const auto row_key = bind_graph_param(graph_key, node_name, pv.name, Binding::Kind::property_row, 0,
+                                                      owner_object, generator_component);
+                const auto ctx_key = bind_graph_param(graph_key, node_name, pv.name, Binding::Kind::graph_param_context,
+                                                      0, owner_object, generator_component);
+                if (pv.undeclared) {
+                    PropertyRow row;
+                    row.key = row_key;
+                    row.title = caption + L" (Undeclared)";
+                    row.kind = PropertyRow::Kind::enumeration;
+                    row.choice = L"Retained override";
+                    row.target = row_key;
+                    row.enabled = false;
+                    row.row_enabled = editable;
+                    row.change = {row_key, false};
+                    row.context_menu = ctx_key;
+                    if (as_overrides) {
+                        const auto ov_key =
+                            bind_graph_param(graph_key, node_name, pv.name, Binding::Kind::graph_param_override_toggle,
+                                             0, owner_object, generator_component);
+                        row.override_available = true;
+                        row.overridden = true;
+                        row.inherit = {ov_key, editable};
+                    }
+                    row.help =
+                        property_help_.get(row_key, row.title, L"Undeclared Digital Asset Override", pv.invalid_reason);
+                    rows->push_back(std::move(row).item());
+                    continue;
+                }
+                if (!pv.valid || pv.properties.empty()) {
+                    PropertyRow row;
+                    row.key = row_key;
+                    row.title = caption + L" (Invalid)";
+                    row.kind = PropertyRow::Kind::enumeration;
+                    row.choice = application::diagnostic_text(pv.invalid_reason);
+                    row.target = row_key;
+                    row.enabled = false;
+                    row.row_enabled = editable;
+                    row.change = {row_key, false};
+                    row.context_menu = ctx_key;
+                    row.help = property_help_.get(row_key, row.title, L"Invalid Graph Parameter", pv.invalid_reason);
+                    rows->push_back(std::move(row).item());
+                    continue;
+                }
+                PropertyRow row;
+                row.key = row_key;
+                row.title = caption;
+                row.context_menu = ctx_key;
+                row.row_enabled = editable;
+                if (as_overrides) {
+                    const auto ov_key =
+                        bind_graph_param(graph_key, node_name, pv.name, Binding::Kind::graph_param_override_toggle, 0,
+                                         owner_object, generator_component);
+                    row.override_available = true;
+                    row.overridden = pv.overridden;
+                    row.inherit = {ov_key, editable};
+                }
+                std::string desc = pv.description;
+                if (!as_overrides && !pv.targets.empty()) {
+                    if (!desc.empty())
+                        desc += "\n";
+                    desc += "Targets: ";
+                    for (std::size_t t = 0; t < pv.targets.size(); ++t) {
+                        if (t > 0)
+                            desc += ", ";
+                        desc += pv.targets[t];
+                    }
+                }
+                if (pv.is_vector) {
+                    std::vector<ui::NumberField> tuple;
+                    for (std::size_t lane = 0; lane < pv.properties.size(); ++lane) {
+                        const auto& prop = pv.properties[lane];
+                        const double val = scalar_number(prop.value);
+                        const double def_val =
+                            lane < pv.default_scalars.size() ? scalar_number(pv.default_scalars[lane]) : val;
+                        const auto [fmin, fmax] = legal_range(prop.value, prop.range);
+                        const bool lane_int = std::holds_alternative<std::int32_t>(prop.value) ||
+                                              std::holds_alternative<std::uint32_t>(prop.value);
+                        const auto fkey =
+                            bind_graph_param(graph_key, node_name, pv.name, Binding::Kind::graph_param_field, lane,
+                                             owner_object, generator_component);
+                        tuple.push_back({fkey, std::wstring(1, L"XYZW"[lane]), val, def_val, fmin, fmax,
+                                         lane_int ? 1. : .01, lane_int ? 1. : .001,
+                                         static_cast<ui::VectorAxis>(lane + 1)});
+                        tuple.back().single_precision = std::holds_alternative<float>(prop.value);
+                        tuple.back().integral = lane_int;
+                    }
+                    const bool modified = as_overrides ? pv.overridden : std::ranges::any_of(tuple, [](const auto& f) {
+                        return f.value != f.default_value;
+                    });
+                    const auto first_key = tuple.front().key;
+                    row.edit = {ctx_key, editable, modified, std::move(tuple)};
+                    row.enabled = editable;
+                    row.change = {first_key, editable};
+                    row.target = first_key;
+                    row.help = property_help_.get(
+                        row_key, row.title,
+                        L"Digital Asset Parameter · " + platform::utf8_to_utf16_validated(pv.name) + L" : " +
+                            platform::utf8_to_utf16_validated(take(runtime.describe(pv.value_type))->name),
+                        described(desc, pv.properties.front().range));
+                } else if (pv.properties.front().is_string) {
+                    const auto tkey = bind_graph_param(graph_key, node_name, pv.name, Binding::Kind::graph_param_text,
+                                                       0, owner_object, generator_component);
+                    row.kind = PropertyRow::Kind::text;
+                    row.enabled = editable;
+                    row.change = {tkey, false};
+                    row.target = tkey;
+                    row.text_edit = {tkey, platform::utf8_to_utf16_validated(pv.properties.front().string_value),
+                                     editable};
+                    row.help = property_help_.get(row_key, row.title,
+                                                  L"Digital Asset Parameter · " +
+                                                      platform::utf8_to_utf16_validated(pv.name) + L" : String",
+                                                  desc);
+                } else {
+                    const auto& prop = pv.properties.front();
+                    const bool boolean = std::holds_alternative<bool>(prop.value);
+                    const auto* enumeration = std::get_if<EnumValue>(&prop.value);
+                    const bool integral = std::holds_alternative<std::int32_t>(prop.value) ||
+                                          std::holds_alternative<std::uint32_t>(prop.value);
+                    const auto [minimum, maximum] = legal_range(prop.value, prop.range);
+                    const auto fkey = bind_graph_param(graph_key, node_name, pv.name, Binding::Kind::graph_param_field,
+                                                       0, owner_object, generator_component);
+                    const double value = scalar_number(prop.value);
+                    const double initial =
+                        !pv.default_scalars.empty() ? scalar_number(pv.default_scalars.front()) : value;
+                    const bool modified = as_overrides ? pv.overridden : (value != initial);
+                    ui_language::EditBinding edit{
+                        ctx_key,
+                        editable,
+                        modified,
+                        {{fkey, L"", value, initial, minimum, maximum, integral ? 1. : .01, integral ? 1. : .001}}};
+                    edit.fields.front().single_precision = std::holds_alternative<float>(prop.value);
+                    edit.fields.front().integral = integral;
+                    if (const auto slider = slider_range(prop.range);
+                        slider && !boolean && !enumeration && slider->first >= minimum && slider->second <= maximum)
+                        edit.fields.front().slider = ui::SliderRange{
+                            bind_graph_param(graph_key, node_name, pv.name, Binding::Kind::graph_param_slider, 0,
+                                             owner_object, generator_component),
+                            slider->first, slider->second};
+                    std::wstring choice = enumeration ? format_enum_choice(*enumeration, desc) : std::wstring{};
+                    row.kind = boolean       ? PropertyRow::Kind::boolean
+                               : enumeration ? PropertyRow::Kind::enumeration
+                                             : PropertyRow::Kind::number;
+                    row.edit = std::move(edit);
+                    row.checked = boolean && std::get<bool>(prop.value);
+                    row.enabled = editable;
+                    row.change = {fkey, editable};
+                    row.choice = std::move(choice);
+                    row.target = fkey;
+                    row.help = property_help_.get(
+                        row_key, row.title,
+                        L"Digital Asset Parameter · " + platform::utf8_to_utf16_validated(pv.name) + L" : " +
+                            platform::utf8_to_utf16_validated(take(runtime.describe(pv.value_type))->name),
+                        described(desc, prop.range));
+                }
+                rows->push_back(std::move(row).item());
+            }
+            for (auto& [cat, rows] : local_groups)
+                if (!rows->empty()) {
+                    const auto key = bind_graph_param(graph_key, node_name, cat, Binding::Kind::property_group, 0,
+                                                      owner_object, generator_component);
+                    groups->push_back({key,
+                                       {platform::utf8_to_utf16_validated(cat), double(ui::ControlIcon::sliders),
+                                        ui_language::ItemList{std::move(rows)}}});
+                }
         };
         const auto append_properties = [&](ObjectId object) {
             const auto material_bindings = presentation::read_material_bindings(runtime, object);
@@ -2411,19 +2856,109 @@ Result<void> Workspace::describe(ui::ControlList& result, Session& session, ui_l
             auto component_properties = std::make_shared<std::vector<ui_language::Item>>();
             auto properties = component_properties;
             const auto schema = take(session.properties(object));
+            const bool node_categorized =
+                param_is_graph && param_node_name.has_value() && !parameter_by_category_ &&
+                material_object == ObjectId{} && std::ranges::any_of(schema, [&](const Property& prop) {
+                    return !prop.category.empty() && property_visible_when(runtime, schema, prop);
+                });
+            CategoryBuckets node_category_rows;
+            const auto node_category_properties = [&](std::string_view category) {
+                return bucket_rows(node_category_rows, category);
+            };
             const auto light = take(runtime.is_a(type, session.presentation_types().light_component))
                                    ? std::optional(take(presentation::read_light(runtime, object)))
                                    : std::nullopt;
+            const auto type_desc = take(runtime.describe(type));
+            const bool is_sop_node = param_is_graph && param_node_name.has_value() && object == param_object;
+            const bool is_asset_node = is_sop_node && type_desc->name == "procedural.AssetNode";
+            if (is_asset_node) {
+                if (const auto* gnode = session.graph_node(net_graph, *param_node_name)) {
+                    const auto slot_key = bind_graph_param(net_graph, *param_node_name, "asset",
+                                                           Binding::Kind::graph_node_asset_slot, 0, object);
+                    std::wstring asset_choice = gnode->asset_key.empty() ? L"None" : asset_name(gnode->asset_key);
+                    if (!gnode->asset_key.empty() && project && !project->entry(gnode->asset_key) &&
+                        !session.has_graph(gnode->asset_key))
+                        asset_choice = L"(missing) " + asset_choice;
+                    if (group_matches ||
+                        lowercase(L"Digital Asset " + asset_choice).find(folded) != std::wstring::npos) {
+                        PropertyRow row;
+                        row.key = slot_key;
+                        row.title = L"Digital Asset";
+                        row.kind = PropertyRow::Kind::enumeration;
+                        row.enabled = !session.world().running() && !param_graph_locked;
+                        row.change = {slot_key, row.enabled};
+                        row.choice = std::move(asset_choice);
+                        row.target = slot_key;
+                        row.help = property_help_.get(
+                            slot_key, row.title, L"Digital Asset (.procgraph)",
+                            "选择此 AssetNode 实例引用的 .procgraph 数字资产；下拉菜单中也可一键下潜进入子图查看或编辑。");
+                        component_properties->push_back(std::move(row).item());
+                    }
+                }
+            }
             for (std::size_t index = 0; index < schema.size(); ++index) {
                 const auto& property = schema[index];
+                auto parent_type = type;
+                TypeId aggregate_type{};
+                for (std::size_t depth = 0; depth + 1 < property.path.size(); ++depth) {
+                    const auto parent = take(runtime.describe(parent_type));
+                    aggregate_type = parent_type;
+                    parent_type = std::ranges::find(parent->fields, property.path[depth], &FieldInfo::id)->value.type;
+                }
+                const auto parent = take(runtime.describe(parent_type));
+                const bool is_vec_prop = property.path.size() > 1 &&
+                                         (parent->math.vector() || parent->math.shape == math::Shape::quaternion);
+                std::optional<std::string> controlling_param;
+                bool any_lane_controlled = false;
+                if (is_sop_node) {
+                    if (is_vec_prop) {
+                        const auto vec_name = property.name.substr(0, property.name.rfind('.'));
+                        controlling_param = session.graph_controlling_parameter(net_graph, *param_node_name, vec_name);
+                        any_lane_controlled = controlling_param.has_value();
+                        const auto count = parent->math.components();
+                        const auto prefix = std::span(property.path).first(property.path.size() - 1);
+                        for (std::size_t lane = 0; !any_lane_controlled && lane < count && index + lane < schema.size();
+                             ++lane) {
+                            const auto& lf = schema[index + lane];
+                            if (lf.path.size() != property.path.size() ||
+                                !std::equal(prefix.begin(), prefix.end(), lf.path.begin()))
+                                break;
+                            if (session.graph_controlling_parameter(net_graph, *param_node_name, lf.name))
+                                any_lane_controlled = true;
+                        }
+                    } else {
+                        controlling_param =
+                            session.graph_controlling_parameter(net_graph, *param_node_name, property.name);
+                        any_lane_controlled = controlling_param.has_value();
+                    }
+                }
+                if (!any_lane_controlled && !property_visible_when(runtime, schema, property)) {
+                    if (is_vec_prop) {
+                        const auto count = parent->math.components();
+                        const auto prefix = std::span(property.path).first(property.path.size() - 1);
+                        std::size_t skip = 0;
+                        while (skip + 1 < count && index + skip + 1 < schema.size() &&
+                               schema[index + skip + 1].path.size() == property.path.size() &&
+                               std::equal(prefix.begin(), prefix.end(), schema[index + skip + 1].path.begin())) {
+                            ++skip;
+                        }
+                        index += skip;
+                    }
+                    continue;
+                }
                 if (parameter_by_category_ && material_object == ObjectId{}) {
                     const std::string_view category =
                         property.category.empty() ? std::string_view{"General"} : std::string_view{property.category};
                     properties = category_properties(category);
+                } else if (node_categorized) {
+                    const std::string_view category =
+                        property.category.empty() ? std::string_view{"General"} : std::string_view{property.category};
+                    properties = node_category_properties(category);
                 }
-                const bool can_edit_object =
-                    session.is_graph_object(object) ? !session.world().running() : entity_status.can_edit;
-                const bool editable = can_edit_object && !property.read_only;
+                const bool can_edit_object = session.is_graph_object(object)
+                                                 ? (!session.world().running() && !param_graph_locked)
+                                                 : entity_status.can_edit;
+                const bool editable = can_edit_object && !property.read_only && !controlling_param.has_value();
                 if (show_position && object == *transform && detail::transform_path(session.types(), property.path))
                     continue;
                 if (light) {
@@ -2436,16 +2971,7 @@ Result<void> Workspace::describe(ui::ControlList& result, Session& session, ui_l
                     if (light->kind == presentation::LightKind::directional && name == "settings.range")
                         continue;
                 }
-                auto parent_type = type;
-                TypeId aggregate_type{};
-                for (std::size_t depth = 0; depth + 1 < property.path.size(); ++depth) {
-                    const auto parent = take(runtime.describe(parent_type));
-                    aggregate_type = parent_type;
-                    parent_type = std::ranges::find(parent->fields, property.path[depth], &FieldInfo::id)->value.type;
-                }
-                const auto parent = take(runtime.describe(parent_type));
-                if (property.path.size() > 1 &&
-                    (parent->math.vector() || parent->math.shape == math::Shape::quaternion)) {
+                if (is_vec_prop) {
                     const auto count = parent->math.components();
                     const auto name = property.name.substr(0, property.name.rfind('.'));
                     const auto prefix = std::span(property.path).first(property.path.size() - 1);
@@ -2461,6 +2987,7 @@ Result<void> Workspace::describe(ui::ControlList& result, Session& session, ui_l
                                            ? euler_degrees(take(world::read_transform(runtime, object)).rotation)
                                            : math::Vector3{};
                     std::vector<ui::NumberField> tuple;
+                    std::string lane_binding_note;
                     bool matches =
                         group_matches || lowercase(platform::utf8_to_utf16_validated(name + " " + property.label + " " +
                                                                                      property.category))
@@ -2474,6 +3001,15 @@ Result<void> Workspace::describe(ui::ControlList& result, Session& session, ui_l
                             lowercase(platform::utf8_to_utf16_validated(field.name)).find(folded) != std::wstring::npos;
                         if (spatial_rotation && lane == 3)
                             continue;
+                        const auto lane_ctrl =
+                            (is_sop_node && !controlling_param)
+                                ? session.graph_controlling_parameter(net_graph, *param_node_name, field.name)
+                                : std::nullopt;
+                        if (lane_ctrl) {
+                            if (!lane_binding_note.empty())
+                                lane_binding_note += ", ";
+                            lane_binding_note += std::string(1, "xyzw"[lane]) + "↗" + *lane_ctrl;
+                        }
                         const auto value =
                             spatial_rotation ? double(euler[lane])
                                              : std::visit(
@@ -2493,19 +3029,28 @@ Result<void> Workspace::describe(ui::ControlList& result, Session& session, ui_l
                                                : spatial_scale    ? Session::maximum_scale
                                                : spatial_rotation ? 360000
                                                                   : field_maximum;
+                        const bool lane_integral = std::holds_alternative<std::int32_t>(field.value) ||
+                                                   std::holds_alternative<std::uint32_t>(field.value);
                         const auto key =
                             property_key(field.path, spatial_rotation ? Binding::Kind::rotation : Binding::Kind::field);
                         tuple.push_back({key, std::wstring(1, (color ? L"RGBW" : L"XYZW")[lane]), value,
                                          spatial_position || spatial_rotation ? 0
                                          : spatial_scale                      ? 1
                                                                               : value,
-                                         minimum, maximum, spatial_rotation ? 1 : .01, spatial_rotation ? .1 : .001,
+                                         minimum, maximum, spatial_rotation || lane_integral ? 1 : .01,
+                                         lane_integral ? 1 : (spatial_rotation ? .1 : .001),
                                          static_cast<ui::VectorAxis>(lane + 1)});
                         tuple.back().single_precision = parent->math.precision == math::Precision::f32;
+                        tuple.back().integral = lane_integral;
+                        tuple.back().enabled = !lane_ctrl.has_value();
                     }
                     index += count - 1;
                     if (matches) {
                         const auto field_key = tuple.front().key;
+                        const auto sop_ctx_key =
+                            is_sop_node ? bind_graph_param(net_graph, *param_node_name, name,
+                                                           Binding::Kind::graph_param_context, 0, object, {}, prefix)
+                                        : ui::ControlKey{};
                         // Swatch shows the display colour; HDR emission is clamped for the chip only.
                         const auto channel = [&](std::size_t lane) {
                             return tuple.size() > lane ? std::clamp(tuple[lane].value, 0.0, 1.0) : 0.0;
@@ -2517,12 +3062,20 @@ Result<void> Workspace::describe(ui::ControlList& result, Session& session, ui_l
                         row.key = property_key(prefix, Binding::Kind::property_row);
                         row.title =
                             spatial_rotation ? std::wstring(L"Rotation (°)") : property_caption(name, property.label);
+                        if (controlling_param)
+                            row.title += L"  [↗ " + platform::utf8_to_utf16_validated(*controlling_param) + L"]";
+                        else if (!lane_binding_note.empty())
+                            row.title += L"  [" + platform::utf8_to_utf16_validated(lane_binding_note) + L"]";
                         row.edit = {spatial_position   ? bind(object, {}, Binding::Kind::position_default)
                                     : spatial_rotation ? bind(object, {}, Binding::Kind::rotation_default)
                                     : spatial_scale    ? bind(object, {}, Binding::Kind::scale_default)
-                                                       : ui::ControlKey{},
+                                                       : sop_ctx_key,
                                     editable, false, std::move(tuple)};
                         row.enabled = editable;
+                        if (is_sop_node) {
+                            row.context_menu = sop_ctx_key;
+                            row.row_enabled = can_edit_object && !property.read_only;
+                        }
                         row.change = {field_key, editable};
                         row.target = field_key;
                         if (color) {
@@ -2531,18 +3084,23 @@ Result<void> Workspace::describe(ui::ControlList& result, Session& session, ui_l
                             std::ranges::find(bindings_, row.pick.target, &Binding::key)->color_maximum =
                                 row.edit.fields.front().maximum;
                         }
-                        row.help =
-                            property_help_.get(row.key, row.title,
-                                               platform::utf8_to_utf16_validated(take(runtime.describe(type))->name) +
-                                                   L"." + platform::utf8_to_utf16_validated(name) + L" : " +
-                                                   platform::utf8_to_utf16_validated(parent->name) +
-                                                   (spatial_rotation ? L" · Euler (°)" : L""),
-                                               described(property.description, property.range));
+                        row.help = property_help_.get(row.key, row.title,
+                                                      platform::utf8_to_utf16_validated(type_desc->name) + L"." +
+                                                          platform::utf8_to_utf16_validated(name) + L" : " +
+                                                          platform::utf8_to_utf16_validated(parent->name) +
+                                                          (spatial_rotation ? L" · Euler (°)" : L""),
+                                                      described(property.description, property.range));
                         properties->push_back(std::move(row).item());
                     }
                     continue;
                 }
                 auto caption = property_caption(property.name, property.label);
+                if (controlling_param)
+                    caption += L"  [↗ " + platform::utf8_to_utf16_validated(*controlling_param) + L"]";
+                const auto sop_ctx_key =
+                    is_sop_node ? bind_graph_param(net_graph, *param_node_name, property.name,
+                                                   Binding::Kind::graph_param_context, 0, object, {}, property.path)
+                                : ui::ControlKey{};
                 if (light && property.name.starts_with("settings.")) {
                     const auto field = std::string_view(property.name).substr(9);
                     if (field == "kind")
@@ -2577,14 +3135,17 @@ Result<void> Workspace::describe(ui::ControlList& result, Session& session, ui_l
                     row.title = std::move(caption);
                     row.kind = PropertyRow::Kind::text;
                     row.enabled = editable;
+                    if (is_sop_node) {
+                        row.context_menu = sop_ctx_key;
+                        row.row_enabled = can_edit_object && !property.read_only;
+                    }
                     row.change = {text_key, false};
                     row.target = text_key;
                     row.text_edit = {text_key, platform::utf8_to_utf16_validated(property.string_value), editable};
-                    row.help =
-                        property_help_.get(row.key, row.title,
-                                           platform::utf8_to_utf16_validated(take(runtime.describe(type))->name) +
-                                               L"." + platform::utf8_to_utf16_validated(property.name) + L" : String",
-                                           property.description);
+                    row.help = property_help_.get(row.key, row.title,
+                                                  platform::utf8_to_utf16_validated(type_desc->name) + L"." +
+                                                      platform::utf8_to_utf16_validated(property.name) + L" : String",
+                                                  property.description);
                     properties->push_back(std::move(row).item());
                     continue;
                 }
@@ -2608,59 +3169,18 @@ Result<void> Workspace::describe(ui::ControlList& result, Session& session, ui_l
                 const double value = scalar_number(property.value);
                 const double initial = default_value ? scalar_number(*default_value) : value;
                 ui_language::EditBinding edit{
-                    0,
+                    sop_ctx_key,
                     editable,
                     value != initial,
                     {{key, L"", value, initial, minimum, maximum, integral ? 1 : .01, integral ? 1 : .001}}};
                 edit.fields.front().single_precision = std::holds_alternative<float>(property.value);
-                // Integral fields commit whole numbers only, so they keep the ladder without a slider.
-                if (const auto slider = slider_range(property.range); slider && !integral && !boolean && !enumeration)
+                edit.fields.front().integral = integral;
+                if (const auto slider = slider_range(property.range);
+                    slider && !boolean && !enumeration && slider->first >= minimum && slider->second <= maximum)
                     edit.fields.front().slider = ui::SliderRange{property_key(property.path, Binding::Kind::slider),
                                                                  slider->first, slider->second};
-                std::wstring choice;
                 std::string description = property.description;
-                if (enumeration) {
-                    const auto& enum_info = *take(runtime.describe(enumeration->type))->enumeration;
-                    const auto enum_label = [&](std::size_t index) {
-                        return index < enum_info.metadata.size() && !enum_info.metadata[index].label.empty()
-                                   ? platform::utf8_to_utf16_validated(enum_info.metadata[index].label)
-                                   : parameter_label(enum_info.values[index].first);
-                    };
-                    for (std::size_t i = 0; i < enum_info.values.size(); ++i)
-                        if (enum_info.values[i].second == enumeration->bits) {
-                            choice = enum_label(i);
-                            if (i < enum_info.metadata.size() && !enum_info.metadata[i].description.empty()) {
-                                if (!description.empty())
-                                    description += "\n";
-                                description += enum_info.metadata[i].description;
-                            }
-                            break;
-                        }
-                    if (choice.empty() && enum_info.flags) {
-                        if (enumeration->bits == 0) {
-                            choice = L"None";
-                        } else {
-                            std::uint32_t covered = 0;
-                            const auto append_matching = [&](bool single_bit_only) {
-                                for (std::size_t i = 0; i < enum_info.values.size(); ++i) {
-                                    const auto member_bits = enum_info.values[i].second;
-                                    if (member_bits == 0 || (enumeration->bits & member_bits) != member_bits)
-                                        continue;
-                                    if (single_bit_only ? !std::has_single_bit(member_bits)
-                                                        : (member_bits & ~covered) == 0)
-                                        continue;
-                                    covered |= member_bits;
-                                    if (!choice.empty())
-                                        choice += L" | ";
-                                    choice += enum_label(i);
-                                }
-                            };
-                            append_matching(true);
-                            if (covered != enumeration->bits)
-                                append_matching(false);
-                        }
-                    }
-                }
+                std::wstring choice = enumeration ? format_enum_choice(*enumeration, description) : std::wstring{};
                 PropertyRow row;
                 row.key = property_key(property.path, Binding::Kind::property_row);
                 row.title = std::move(caption);
@@ -2670,12 +3190,16 @@ Result<void> Workspace::describe(ui::ControlList& result, Session& session, ui_l
                                          : PropertyRow::Kind::number;
                 row.checked = boolean && std::get<bool>(property.value);
                 row.enabled = editable;
+                if (is_sop_node) {
+                    row.context_menu = sop_ctx_key;
+                    row.row_enabled = can_edit_object && !property.read_only;
+                }
                 row.change = {key, editable};
                 row.choice = std::move(choice);
                 row.target = key;
                 row.help = property_help_.get(
                     row.key, row.title,
-                    platform::utf8_to_utf16_validated(take(runtime.describe(type))->name) + L"." +
+                    platform::utf8_to_utf16_validated(type_desc->name) + L"." +
                         platform::utf8_to_utf16_validated(property.name) + L" : " +
                         platform::utf8_to_utf16_validated(take(runtime.describe(property.type))->name),
                     described(description, property.range));
@@ -2772,11 +3296,74 @@ Result<void> Workspace::describe(ui::ControlList& result, Session& session, ui_l
                          std::move(choice),
                          "为程序化生成的表面多边形选择 Material 资源；CopyToPoints 实例各自保留其网格资产材质。");
             }
+            for (auto& [category, rows] : node_category_rows)
+                if (!rows->empty()) {
+                    const auto key = bind_graph_param(net_graph, *param_node_name, category,
+                                                      Binding::Kind::property_group, 0, object);
+                    groups->push_back(
+                        {key,
+                         {platform::utf8_to_utf16_validated(category), 0., ui_language::ItemList{std::move(rows)}}});
+                }
             if (!component_properties->empty())
                 groups->push_back(
                     {property_key({}, Binding::Kind::property_group),
                      {title, double(object == selected ? ui::ControlIcon::object : ui::ControlIcon::component),
                       ui_language::ItemList{std::move(component_properties)}}});
+            const auto append_promoted_diagnostic = [&](std::string_view graph_key, std::string_view node_name,
+                                                        ObjectId generator_component, std::string_view group_title,
+                                                        std::string_view message) {
+                auto diag_rows = std::make_shared<std::vector<ui_language::Item>>();
+                const auto rkey = bind_graph_param(graph_key, node_name, "$diagnostic", Binding::Kind::saved_data, 0,
+                                                   object, generator_component);
+                PropertyRow row;
+                row.key = rkey;
+                row.title = L"Digital Asset Error";
+                row.kind = PropertyRow::Kind::enumeration;
+                row.choice = application::diagnostic_text(message);
+                row.target = rkey;
+                row.enabled = false;
+                row.change = {rkey, false};
+                row.help = property_help_.get(rkey, row.title, L"Digital Asset Diagnostic", message);
+                diag_rows->push_back(std::move(row).item());
+                const auto gkey = bind_graph_param(graph_key, node_name, group_title, Binding::Kind::property_group, 0,
+                                                   object, generator_component);
+                groups->push_back({gkey,
+                                   {platform::utf8_to_utf16_validated(group_title), double(ui::ControlIcon::sliders),
+                                    ui_language::ItemList{std::move(diag_rows)}}});
+            };
+            if (is_asset_node) {
+                const auto asset_params = session.graph_asset_node_parameters(net_graph, *param_node_name, project);
+                if (!asset_params) {
+                    append_promoted_diagnostic(net_graph, *param_node_name, ObjectId{}, "Asset Parameters",
+                                               asset_params.error().message);
+                } else if (!asset_params->empty()) {
+                    append_promoted_parameter_rows(object, net_graph, *param_node_name, ObjectId{}, *asset_params, true,
+                                                   !session.world().running() && !param_graph_locked,
+                                                   "Asset Parameters");
+                }
+            } else if (param_is_graph && !param_node_name.has_value() && object == param_object) {
+                const auto root_params = session.graph_promoted_parameters(net_graph);
+                if (!root_params) {
+                    append_promoted_diagnostic(net_graph, {}, ObjectId{}, "Promoted Parameters",
+                                               root_params.error().message);
+                } else if (!root_params->empty()) {
+                    append_promoted_parameter_rows(object, net_graph, {}, ObjectId{}, *root_params, false,
+                                                   !session.world().running() && !param_graph_locked,
+                                                   "Promoted Parameters");
+                }
+            } else if (proc_binding && !proc_binding->source.empty()) {
+                const auto gen_params = session.generator_promoted_parameters(object, project);
+                if (!gen_params) {
+                    append_promoted_diagnostic(proc_binding->source, {}, object, "Generator Parameters",
+                                               gen_params.error().message);
+                } else if (!gen_params->empty()) {
+                    const auto comp_state = world::inspect_component(runtime, object);
+                    const bool comp_editable =
+                        comp_state && comp_state->valid && entity_status.can_edit && !session.world().running();
+                    append_promoted_parameter_rows(object, proc_binding->source, {}, object, *gen_params, true,
+                                                   comp_editable, "Generator Parameters");
+                }
+            }
             if (!session.has_retained(object))
                 return;
             const auto saved = session.retained(object);
@@ -3330,6 +3917,7 @@ Result<void> Workspace::describe(ui::ControlList& result, Session& session, ui_l
             } else if (const auto* row = binding(source->key); row && row->kind == Binding::Kind::object &&
                                                                row->path.empty() &&
                                                                source->kind == ui::ControlKind::tree_item) {
+                const ObjectId row_object = row->object;
                 items = calls({{"scene.rename"},
                                {"scene.duplicate"},
                                {"scene.delete", json::Document{json::Document::literal<R"({"target":"entities"})">()}},
@@ -3342,7 +3930,7 @@ Result<void> Workspace::describe(ui::ControlList& result, Session& session, ui_l
                 items[1].icon = ui::ControlIcon::duplicate;
                 items[2].icon = ui::ControlIcon::trash;
                 items[3].icon = ui::ControlIcon::unparent;
-                if (const auto parts = world::components(runtime, row->object)) {
+                if (const auto parts = world::components(runtime, row_object)) {
                     for (const auto& part : *parts) {
                         if (const auto proc = presentation::read_procedural_source(runtime, part.id())) {
                             const bool can_edit = !session.world().running();
@@ -3365,7 +3953,7 @@ Result<void> Workspace::describe(ui::ControlList& result, Session& session, ui_l
                             items.push_back(
                                 {bind_operator({"procedural.bake",
                                                 json::Document{},
-                                                {.selection = SelectionContext{row->object, part.id(), {row->object}},
+                                                {.selection = SelectionContext{row_object, part.id(), {row_object}},
                                                  .region = RegionKind::scene_tree}}),
                                  L"Bake to Entities",
                                  can_edit && has_instances,
@@ -3578,7 +4166,8 @@ Result<void> Workspace::describe(ui::ControlList& result, Session& session, ui_l
                     items.push_back({bind_operator({"graph.exit"}), L"Return 3D Viewport to World", true, false, {}});
             } else if (network_control::is_header_menu(source->key)) {
                 const bool has_net = !net_graph.empty() && session.has_graph(net_graph);
-                const bool can_edit = has_net && !session.world().running();
+                const bool net_locked = is_network_graph_locked(session, net_graph);
+                const bool can_edit = has_net && !session.world().running() && !net_locked;
                 const bool has_sel = has_net && (!selected_graph_node.empty() || !selected_graph_nodes.empty());
                 const auto* graph_doc = has_net ? session.graph_document(net_graph) : nullptr;
                 const bool has_nodes = graph_doc && !graph_doc->nodes.empty();
@@ -3600,13 +4189,13 @@ Result<void> Workspace::describe(ui::ControlList& result, Session& session, ui_l
                 } else if (source->key == network_control::menu_edit) {
                     items.push_back({net_op("edit.undo"),
                                      L"Undo",
-                                     has_net && session.graph_can_undo(net_graph, false),
+                                     can_edit && session.graph_can_undo(net_graph, false),
                                      false,
                                      {},
                                      L"Ctrl+Z"});
                     items.push_back({net_op("edit.redo"),
                                      L"Redo",
-                                     has_net && session.graph_can_undo(net_graph, true),
+                                     can_edit && session.graph_can_undo(net_graph, true),
                                      false,
                                      {},
                                      L"Ctrl+Y"});
@@ -3617,6 +4206,12 @@ Result<void> Workspace::describe(ui::ControlList& result, Session& session, ui_l
                                      {},
                                      L"Shift+D",
                                      true});
+                    items.push_back({net_op("graph.extract_asset"),
+                                     L"Extract Digital Asset…",
+                                     can_edit && has_sel && project != nullptr,
+                                     false,
+                                     {},
+                                     L""});
                     items.push_back(
                         {net_op("graph.delete_node"), L"Delete", can_edit && has_sel, false, {}, L"Del / X"});
                     items.push_back(
@@ -3678,13 +4273,30 @@ Result<void> Workspace::describe(ui::ControlList& result, Session& session, ui_l
                 }
             } else if (source->key == network_control::canvas) {
                 const bool has_net = !net_graph.empty() && session.has_graph(net_graph);
-                const bool can_edit = has_net && !session.world().running();
+                const bool net_locked = is_network_graph_locked(session, net_graph);
+                const bool can_edit = has_net && !session.world().running() && !net_locked;
                 const auto net_op = [&](std::string id, json::Document args = {}) {
                     return bind_operator(
                         {std::move(id), std::move(args), {.selection = {}, .region = RegionKind::network}});
                 };
                 if (menu->group == network_control::context_node_menu && !network_context_node.empty()) {
                     const auto* graph_doc = has_net ? session.graph_document(net_graph) : nullptr;
+                    const auto* ctx_gnode = has_net ? session.graph_node(net_graph, network_context_node) : nullptr;
+                    const bool ctx_is_asset_node =
+                        ctx_gnode && ctx_gnode->node.registered() &&
+                        take(runtime.describe(take(runtime.type_of(ctx_gnode->node.id()))))->name ==
+                            "procedural.AssetNode";
+                    if (ctx_is_asset_node) {
+                        json::Builder dive_args;
+                        static_cast<void>(dive_args.set(dive_args.root(), "asset", net_graph));
+                        static_cast<void>(dive_args.set(dive_args.root(), "node", network_context_node));
+                        items.push_back({net_op("graph.dive_in", dive_args.finish()),
+                                         L"Dive Into Digital Asset",
+                                         !session.world().running() && !ctx_gnode->asset_key.empty(),
+                                         false,
+                                         {},
+                                         L"Enter"});
+                    }
                     const ObjectId target_id =
                         graph_doc ? session.graph_node_id(net_graph, network_context_node) : ObjectId{};
                     bool is_disp = false;
@@ -3764,6 +4376,17 @@ Result<void> Workspace::describe(ui::ControlList& result, Session& session, ui_l
                                          L"Shift+D",
                                          true});
                     }
+                    {
+                        json::Builder ext_args;
+                        if (std::ranges::find(selected_graph_nodes, network_context_node) == selected_graph_nodes.end())
+                            static_cast<void>(ext_args.set(ext_args.root(), "nodes", network_context_node));
+                        items.push_back({net_op("graph.extract_asset", ext_args.finish()),
+                                         L"Extract Digital Asset…",
+                                         can_edit && project != nullptr,
+                                         false,
+                                         {},
+                                         L""});
+                    }
                     if (can_edit && target_id != ObjectId{}) {
                         json::Builder disc_args;
                         static_cast<void>(disc_args.set(disc_args.root(), "to_node", network_context_node));
@@ -3808,134 +4431,277 @@ Result<void> Workspace::describe(ui::ControlList& result, Session& session, ui_l
                          !active_graph.empty(),
                          {}});
                 }
-            } else if (const auto* target = binding(source->context_target);
-                       source->kind == ControlKind::combo && target && target->kind == Binding::Kind::field) {
-                auto value = session.read_property(target->object, target->path);
-                if (value)
-                    if (const auto* enumeration = std::get_if<EnumValue>(&*value)) {
-                        const SelectionContext enum_selection =
-                            session.is_graph_object(target->object)
-                                ? SelectionContext{ObjectId{}, target->object, {}}
-                                : SelectionContext{selected, target->object, {selected}};
-                        OperatorCall call{"scene.set_properties",
-                                          json::Document{},
-                                          {.selection = enum_selection, .region = RegionKind::parameters}};
-                        auto type = take(runtime.type_of(target->object));
-                        json::Builder args;
-                        auto argument = args.root();
-                        std::string_view name;
-                        for (std::size_t i = 0; i < target->path.size(); ++i) {
-                            const auto info = take(runtime.describe(type));
-                            const auto at = std::ranges::find(info->fields, target->path[i], &FieldInfo::id);
-                            if (i + 1 < target->path.size())
-                                argument = args.object_validated(argument, at->name);
-                            else
-                                name = at->name;
-                            type = at->value.type;
+            } else if (const auto* target_ptr = binding(source->context_target);
+                       source->kind == ControlKind::combo && target_ptr &&
+                       (target_ptr->kind == Binding::Kind::field ||
+                        target_ptr->kind == Binding::Kind::graph_param_field)) {
+                const auto append_enum_choices = [&](const EnumValue& enumeration, bool available, auto&& build_call) {
+                    const auto& enum_info = *take(runtime.describe(enumeration.type))->enumeration;
+                    for (std::size_t i = 0; i < enum_info.values.size(); ++i) {
+                        const auto& member = enum_info.values[i];
+                        const std::wstring title = i < enum_info.metadata.size() && !enum_info.metadata[i].label.empty()
+                                                       ? platform::utf8_to_utf16_validated(enum_info.metadata[i].label)
+                                                       : parameter_label(member.first);
+                        bool checked = false;
+                        std::optional<std::string_view> exact_name;
+                        std::uint32_t next_bits = member.second;
+                        if (enum_info.flags) {
+                            checked = member.second == 0 ? enumeration.bits == 0
+                                                         : (enumeration.bits & member.second) == member.second;
+                            next_bits = member.second == 0 ? 0u
+                                        : checked          ? (enumeration.bits & ~member.second)
+                                                           : (enumeration.bits | member.second);
+                            const auto exact = std::ranges::find(enum_info.values, next_bits,
+                                                                 &std::pair<std::string, std::uint32_t>::second);
+                            if (exact != enum_info.values.end())
+                                exact_name = exact->first;
+                        } else {
+                            checked = member.second == enumeration.bits;
+                            exact_name = member.first;
                         }
-                        auto context = operator_context(session, project, true, command_focus);
-                        context.selection = *call.context.selection;
-                        context.region = *call.context.region;
-                        const bool available = operators.find(call.id)->poll(context).has_value();
-                        const auto& enum_info = *take(runtime.describe(enumeration->type))->enumeration;
-                        for (std::size_t i = 0; i < enum_info.values.size(); ++i) {
-                            const auto& member = enum_info.values[i];
-                            const std::wstring title =
-                                i < enum_info.metadata.size() && !enum_info.metadata[i].label.empty()
-                                    ? platform::utf8_to_utf16_validated(enum_info.metadata[i].label)
-                                    : parameter_label(member.first);
-                            bool checked = false;
-                            if (enum_info.flags) {
-                                checked = member.second == 0 ? enumeration->bits == 0
-                                                             : (enumeration->bits & member.second) == member.second;
-                                const std::uint32_t next_bits = member.second == 0 ? 0u
-                                                                : checked ? (enumeration->bits & ~member.second)
-                                                                          : (enumeration->bits | member.second);
-                                const auto exact = std::ranges::find(enum_info.values, next_bits,
-                                                                     &std::pair<std::string, std::uint32_t>::second);
-                                if (exact != enum_info.values.end())
-                                    args.set_validated(argument, name, exact->first);
-                                else if (auto added = args.set(argument, name, static_cast<std::uint64_t>(next_bits));
-                                         !added)
-                                    fatal(added.error().describe());
-                            } else {
-                                checked = member.second == enumeration->bits;
-                                args.set_validated(argument, name, member.first);
+                        ui::MenuItem item{
+                            bind_operator(build_call(exact_name, next_bits)), title, available, checked, {}};
+                        item.behavior = enum_info.flags ? ui::MenuBehavior::checkbox : ui::MenuBehavior::radio;
+                        item.radio_group = enum_info.flags ? ui::ControlKey{} : source->key;
+                        items.push_back(std::move(item));
+                    }
+                };
+                if (target_ptr->kind == Binding::Kind::field) {
+                    const ObjectId target_object = target_ptr->object;
+                    const std::vector<FieldId> target_path = target_ptr->path;
+                    auto value = session.read_property(target_object, target_path);
+                    if (value)
+                        if (const auto* enumeration = std::get_if<EnumValue>(&*value)) {
+                            const SelectionContext enum_selection =
+                                session.is_graph_object(target_object)
+                                    ? SelectionContext{ObjectId{}, target_object, {}}
+                                    : SelectionContext{selected, target_object, {selected}};
+                            OperatorCall base_call{"scene.set_properties",
+                                                   json::Document{},
+                                                   {.selection = enum_selection, .region = RegionKind::parameters}};
+                            auto type = take(runtime.type_of(target_object));
+                            json::Builder args;
+                            auto argument = args.root();
+                            std::string_view name;
+                            for (std::size_t i = 0; i < target_path.size(); ++i) {
+                                const auto info = take(runtime.describe(type));
+                                const auto at = std::ranges::find(info->fields, target_path[i], &FieldInfo::id);
+                                if (i + 1 < target_path.size())
+                                    argument = args.object_validated(argument, at->name);
+                                else
+                                    name = at->name;
+                                type = at->value.type;
                             }
-                            call.args = args.finish();
-                            ui::MenuItem item{bind_operator(call), title, available, checked, {}};
-                            item.behavior = enum_info.flags ? ui::MenuBehavior::checkbox : ui::MenuBehavior::radio;
-                            item.radio_group = enum_info.flags ? ui::ControlKey{} : source->key;
-                            items.push_back(std::move(item));
+                            auto ctx = operator_context(session, project, true, command_focus);
+                            ctx.selection = *base_call.context.selection;
+                            ctx.region = *base_call.context.region;
+                            const bool available = operators.find(base_call.id)->poll(ctx).has_value();
+                            append_enum_choices(
+                                *enumeration, available,
+                                [&](std::optional<std::string_view> exact_name, std::uint32_t next_bits) {
+                                    if (exact_name)
+                                        args.set_validated(argument, name, *exact_name);
+                                    else if (auto added =
+                                                 args.set(argument, name, static_cast<std::uint64_t>(next_bits));
+                                             !added)
+                                        fatal(added.error().describe());
+                                    auto call = base_call;
+                                    call.args = args.finish();
+                                    return call;
+                                });
+                        }
+                } else {
+                    const ObjectId target_comp = target_ptr->component;
+                    const std::string target_slot = target_ptr->slot;
+                    const std::string target_node = target_ptr->node_name;
+                    const std::string target_param = target_ptr->material_path;
+                    const bool is_gen_comp = target_comp != ObjectId{};
+                    const auto params = is_gen_comp ? session.generator_promoted_parameters(target_comp, project)
+                                        : target_node.empty()
+                                            ? session.graph_promoted_parameters(target_slot)
+                                            : session.graph_asset_node_parameters(target_slot, target_node, project);
+                    if (params) {
+                        const auto pit = std::ranges::find(*params, target_param, &GraphPromotedParameterView::name);
+                        if (pit != params->end() && pit->valid && !pit->properties.empty()) {
+                            if (const auto* enumeration = std::get_if<EnumValue>(&pit->properties.front().value)) {
+                                bool available = !session.world().running();
+                                SelectionContext gen_sel{};
+                                if (is_gen_comp) {
+                                    const auto comp_st = world::inspect_component(runtime, target_comp);
+                                    const ObjectId owner_ent = comp_st ? comp_st->owner : ObjectId{};
+                                    const auto ent_st =
+                                        owner_ent != ObjectId{}
+                                            ? world::inspect_entity(runtime, owner_ent)
+                                            : atelier::Result<world::EntityStatus>{world::EntityStatus{}};
+                                    available = available && comp_st && comp_st->valid && owner_ent != ObjectId{} &&
+                                                ent_st && ent_st->can_edit;
+                                    gen_sel = {owner_ent, target_comp,
+                                               owner_ent == ObjectId{} ? std::vector<ObjectId>{}
+                                                                       : std::vector<ObjectId>{owner_ent}};
+                                } else {
+                                    available = available && !is_network_graph_locked(session, target_slot);
+                                }
+                                append_enum_choices(
+                                    *enumeration, available,
+                                    [&](std::optional<std::string_view> exact_name, std::uint32_t next_bits) {
+                                        std::string val_json;
+                                        if (exact_name) {
+                                            json::Builder jb;
+                                            jb.set_validated(jb.root(), *exact_name);
+                                            const auto doc_val = jb.finish();
+                                            const auto bytes = json::write(doc_val.root());
+                                            val_json.assign(bytes.data(), bytes.size());
+                                        } else {
+                                            val_json = std::to_string(next_bits);
+                                        }
+                                        json::Builder args;
+                                        static_cast<void>(args.set(args.root(), "parameter", target_param));
+                                        static_cast<void>(args.set(args.root(), "value_json", val_json));
+                                        if (is_gen_comp) {
+                                            static_cast<void>(args.set(args.root(), "clear", false));
+                                            return OperatorCall{
+                                                "procedural.set_override",
+                                                args.finish(),
+                                                {.selection = gen_sel, .region = RegionKind::parameters}};
+                                        }
+                                        if (!target_node.empty()) {
+                                            static_cast<void>(args.set(args.root(), "asset", target_slot));
+                                            static_cast<void>(args.set(args.root(), "node", target_node));
+                                            static_cast<void>(args.set(args.root(), "clear", false));
+                                            return OperatorCall{"graph.set_override", args.finish()};
+                                        }
+                                        static_cast<void>(args.set(args.root(), "asset", target_slot));
+                                        return OperatorCall{"graph.set_parameter", args.finish()};
+                                    });
+                            }
                         }
                     }
-            } else if (const auto* target = binding(source->context_target);
-                       target && target->kind == Binding::Kind::procedural_graph_slot) {
-                if (const auto proc = presentation::read_procedural_source(runtime, target->object)) {
-                    const bool can_edit = !session.world().running();
-                    const auto comp_status = world::inspect_component(runtime, target->object);
-                    const ObjectId owner_entity = comp_status ? comp_status->owner : selected;
-                    const SelectionContext gen_sel{owner_entity, target->object,
-                                                   owner_entity == ObjectId{} ? std::vector<ObjectId>{}
-                                                                              : std::vector<ObjectId>{owner_entity}};
-                    {
-                        json::Builder clear_args;
-                        clear_args.set_validated(clear_args.root(), "asset", "");
-                        ui::MenuItem none_item{
-                            bind_operator({"procedural.assign_graph",
-                                           clear_args.finish(),
-                                           {.selection = gen_sel, .region = RegionKind::parameters}}),
-                            L"None (Clear Graph)",
-                            can_edit,
-                            proc->source.empty(),
-                            {}};
-                        none_item.behavior = ui::MenuBehavior::radio;
-                        none_item.radio_group = source->key;
-                        items.push_back(std::move(none_item));
-                    }
-                    if (!proc->source.empty()) {
-                        json::Builder open_args;
-                        static_cast<void>(open_args.set(open_args.root(), "asset", proc->source));
-                        items.push_back({bind_operator({"graph.open", open_args.finish()}),
-                                         L"Edit Graph in Network",
-                                         can_edit,
-                                         false,
-                                         {}});
-                    }
-                    bool has_instances = false;
-                    if (proc->output)
-                        for (const auto& col : proc->output->publication.collections)
-                            if (col.transforms && !col.transforms->empty())
-                                has_instances = true;
-                    items.push_back({bind_operator({"procedural.bake",
-                                                    json::Document{},
-                                                    {.selection = gen_sel, .region = RegionKind::parameters}}),
-                                     L"Bake Instances to Entities",
-                                     can_edit && has_instances,
-                                     false,
-                                     {}});
+                }
+            } else if (const auto* target_ptr = binding(source->context_target);
+                       target_ptr && (target_ptr->kind == Binding::Kind::procedural_graph_slot ||
+                                      (source->kind == ControlKind::combo &&
+                                       target_ptr->kind == Binding::Kind::graph_node_asset_slot))) {
+                const bool is_node_slot = target_ptr->kind == Binding::Kind::graph_node_asset_slot;
+                const ObjectId target_object = target_ptr->object;
+                const std::string target_slot = target_ptr->slot;
+                const std::string target_node = target_ptr->node_name;
+                const auto collect_procgraph_choices = [&](std::string_view exclude_key) {
                     std::vector<std::pair<std::string, std::wstring>> choices;
                     if (project) {
                         for (const auto& entry : project->entries())
-                            if (entry.kind == assets::AssetKind::procedural_graph)
+                            if (entry.kind == assets::AssetKind::procedural_graph && entry.key != exclude_key)
                                 choices.emplace_back(entry.key, entry.path.stem().wstring());
                     }
                     for (const auto& open_key : session.open_graphs()) {
-                        if (session.is_scratch_graph(open_key))
+                        if (open_key == exclude_key || session.is_scratch_graph(open_key))
                             continue;
                         if (std::ranges::find(choices, open_key, &std::pair<std::string, std::wstring>::first) ==
                             choices.end())
                             choices.emplace_back(open_key, platform::utf8_to_utf16_validated(open_key));
                     }
+                    return choices;
+                };
+                if (!is_node_slot) {
+                    if (const auto proc = presentation::read_procedural_source(runtime, target_object)) {
+                        const bool can_edit = !session.world().running();
+                        const auto comp_status = world::inspect_component(runtime, target_object);
+                        const ObjectId owner_entity = comp_status ? comp_status->owner : selected;
+                        const SelectionContext gen_sel{
+                            owner_entity, target_object,
+                            owner_entity == ObjectId{} ? std::vector<ObjectId>{} : std::vector<ObjectId>{owner_entity}};
+                        {
+                            json::Builder clear_args;
+                            clear_args.set_validated(clear_args.root(), "asset", "");
+                            ui::MenuItem none_item{
+                                bind_operator({"procedural.assign_graph",
+                                               clear_args.finish(),
+                                               {.selection = gen_sel, .region = RegionKind::parameters}}),
+                                L"None (Clear Graph)",
+                                can_edit,
+                                proc->source.empty(),
+                                {}};
+                            none_item.behavior = ui::MenuBehavior::radio;
+                            none_item.radio_group = source->key;
+                            items.push_back(std::move(none_item));
+                        }
+                        if (!proc->source.empty()) {
+                            json::Builder open_args;
+                            static_cast<void>(open_args.set(open_args.root(), "asset", proc->source));
+                            items.push_back({bind_operator({"graph.open", open_args.finish()}),
+                                             L"Edit Graph in Network",
+                                             can_edit,
+                                             false,
+                                             {}});
+                        }
+                        bool has_instances = false;
+                        if (proc->output)
+                            for (const auto& col : proc->output->publication.collections)
+                                if (col.transforms && !col.transforms->empty())
+                                    has_instances = true;
+                        items.push_back({bind_operator({"procedural.bake",
+                                                        json::Document{},
+                                                        {.selection = gen_sel, .region = RegionKind::parameters}}),
+                                         L"Bake Instances to Entities",
+                                         can_edit && has_instances,
+                                         false,
+                                         {}});
+                        const auto choices = collect_procgraph_choices({});
+                        for (std::size_t i = 0; i < choices.size(); ++i) {
+                            json::Builder assign_args;
+                            static_cast<void>(assign_args.set(assign_args.root(), "asset", choices[i].first));
+                            ui::MenuItem item{bind_operator({"procedural.assign_graph",
+                                                             assign_args.finish(),
+                                                             {.selection = gen_sel, .region = RegionKind::parameters}}),
+                                              choices[i].second,
+                                              can_edit,
+                                              proc->source == choices[i].first,
+                                              {},
+                                              L"",
+                                              i == 0};
+                            item.behavior = ui::MenuBehavior::radio;
+                            item.radio_group = source->key;
+                            items.push_back(std::move(item));
+                        }
+                    }
+                } else {
+                    const bool can_edit = !session.world().running() && !is_network_graph_locked(session, target_slot);
+                    const auto* gnode = session.graph_node(target_slot, target_node);
+                    const std::string current_asset = gnode ? gnode->asset_key : std::string{};
+                    {
+                        json::Builder clear_args;
+                        static_cast<void>(clear_args.set(clear_args.root(), "asset", target_slot));
+                        static_cast<void>(clear_args.set(clear_args.root(), "node", target_node));
+                        static_cast<void>(clear_args.set(clear_args.root(), "target_asset", ""));
+                        ui::MenuItem none_item{bind_operator({"graph.set_node_asset", clear_args.finish()}),
+                                               L"None (Clear Digital Asset)",
+                                               can_edit,
+                                               current_asset.empty(),
+                                               {}};
+                        none_item.behavior = ui::MenuBehavior::radio;
+                        none_item.radio_group = source->key;
+                        items.push_back(std::move(none_item));
+                    }
+                    if (!current_asset.empty()) {
+                        json::Builder dive_args;
+                        static_cast<void>(dive_args.set(dive_args.root(), "asset", target_slot));
+                        static_cast<void>(dive_args.set(dive_args.root(), "node", target_node));
+                        items.push_back({bind_operator({"graph.dive_in", dive_args.finish()}),
+                                         L"Dive Into Digital Asset",
+                                         !session.world().running(),
+                                         false,
+                                         {},
+                                         L"Enter"});
+                    }
+                    const auto choices = collect_procgraph_choices(target_slot);
                     for (std::size_t i = 0; i < choices.size(); ++i) {
                         json::Builder assign_args;
-                        static_cast<void>(assign_args.set(assign_args.root(), "asset", choices[i].first));
-                        ui::MenuItem item{bind_operator({"procedural.assign_graph",
-                                                         assign_args.finish(),
-                                                         {.selection = gen_sel, .region = RegionKind::parameters}}),
+                        static_cast<void>(assign_args.set(assign_args.root(), "asset", target_slot));
+                        static_cast<void>(assign_args.set(assign_args.root(), "node", target_node));
+                        static_cast<void>(assign_args.set(assign_args.root(), "target_asset", choices[i].first));
+                        ui::MenuItem item{bind_operator({"graph.set_node_asset", assign_args.finish()}),
                                           choices[i].second,
                                           can_edit,
-                                          proc->source == choices[i].first,
+                                          current_asset == choices[i].first,
                                           {},
                                           L"",
                                           i == 0};
@@ -3946,7 +4712,11 @@ Result<void> Workspace::describe(ui::ControlList& result, Session& session, ui_l
                 }
             } else if (const auto* target = binding(source->context_target);
                        target && (target->kind == Binding::Kind::material_slot ||
-                                  target->kind == Binding::Kind::material_texture || !target->material_path.empty())) {
+                                  target->kind == Binding::Kind::material_texture ||
+                                  target->kind == Binding::Kind::material_override ||
+                                  target->kind == Binding::Kind::material_field ||
+                                  (target->kind == Binding::Kind::property_row && target->slot.empty() &&
+                                   target->node_name.empty() && !target->material_path.empty()))) {
                 items = material_menu(*target, session, project);
             } else if (auto asset_items = assets.menu_items(source->key); !asset_items.empty()) {
                 items = std::move(asset_items);
@@ -4084,6 +4854,266 @@ Result<void> Workspace::describe(ui::ControlList& result, Session& session, ui_l
                                      ui::EditCommand{ui::EditCommandKind::copy, source->key}});
                     items.push_back({control::menu_paste, L"Paste Value", true, false,
                                      ui::EditCommand{ui::EditCommandKind::paste, source->key}});
+                }
+                const auto* ctx_ptr = source->context_group ? binding(source->context_group) : nullptr;
+                if (!ctx_ptr || ctx_ptr->kind != Binding::Kind::graph_param_context) {
+                    if (const auto* direct = binding(source->context_target)) {
+                        if (direct->kind == Binding::Kind::graph_param_context) {
+                            ctx_ptr = direct;
+                        } else if (direct->kind == Binding::Kind::text_field &&
+                                   session.is_graph_object(direct->object)) {
+                            for (const auto& b : bindings_)
+                                if (b.kind == Binding::Kind::graph_param_context && b.object == direct->object &&
+                                    std::ranges::equal(b.path, direct->path)) {
+                                    ctx_ptr = &b;
+                                    break;
+                                }
+                        } else if (direct->kind == Binding::Kind::graph_param_text) {
+                            for (const auto& b : bindings_)
+                                if (b.kind == Binding::Kind::graph_param_context && b.object == direct->object &&
+                                    b.component == direct->component && b.slot == direct->slot &&
+                                    b.node_name == direct->node_name && b.material_path == direct->material_path) {
+                                    ctx_ptr = &b;
+                                    break;
+                                }
+                        }
+                    }
+                }
+                if (ctx_ptr && ctx_ptr->kind == Binding::Kind::graph_param_context && !ctx_ptr->slot.empty()) {
+                    const ObjectId ctx_object = ctx_ptr->object;
+                    const ObjectId ctx_comp = ctx_ptr->component;
+                    const std::string ctx_slot = ctx_ptr->slot;
+                    const std::string ctx_node = ctx_ptr->node_name;
+                    const std::string ctx_param = ctx_ptr->material_path;
+                    const std::vector<FieldId> ctx_path = ctx_ptr->path;
+                    const bool can_edit_param =
+                        !session.world().running() && !is_network_graph_locked(session, ctx_slot);
+                    bool need_sep = !items.empty();
+                    if (ctx_comp == ObjectId{} && !ctx_node.empty() && !ctx_path.empty()) {
+                        // Single-node SOP field promotion / multi-target binding / unbind:
+                        std::vector<std::string> candidate_paths;
+                        if (const auto* num_b = binding(source->context_target);
+                            source->kind == ControlKind::number && num_b && num_b->kind == Binding::Kind::field &&
+                            num_b->object == ctx_object && num_b->path.size() > ctx_path.size()) {
+                            auto cur_t = take(runtime.type_of(num_b->object));
+                            std::string full_p;
+                            for (const auto fid : num_b->path) {
+                                const auto inf = take(runtime.describe(cur_t));
+                                const auto fit = std::ranges::find(inf->fields, fid, &FieldInfo::id);
+                                if (fit == inf->fields.end())
+                                    break;
+                                if (!full_p.empty())
+                                    full_p.push_back('.');
+                                full_p.append(fit->name);
+                                cur_t = fit->value.type;
+                            }
+                            if (!full_p.empty() && full_p != ctx_param)
+                                candidate_paths.push_back(std::move(full_p));
+                        } else if (!session.graph_controlling_parameter(ctx_slot, ctx_node, ctx_param) &&
+                                   session.graph_overlapping_parameter(ctx_slot, ctx_node, ctx_param) &&
+                                   ctx_object != ObjectId{}) {
+                            auto cur_t = take(runtime.type_of(ctx_object));
+                            bool valid_prefix = true;
+                            for (const auto fid : ctx_path) {
+                                const auto inf = take(runtime.describe(cur_t));
+                                const auto fit = std::ranges::find(inf->fields, fid, &FieldInfo::id);
+                                if (fit == inf->fields.end()) {
+                                    valid_prefix = false;
+                                    break;
+                                }
+                                cur_t = fit->value.type;
+                            }
+                            if (valid_prefix) {
+                                const auto vec_desc = take(runtime.describe(cur_t));
+                                if (vec_desc->math.vector() || vec_desc->math.shape == math::Shape::quaternion) {
+                                    for (const auto& lf : vec_desc->fields)
+                                        candidate_paths.push_back(ctx_param + "." + lf.name);
+                                }
+                            }
+                        }
+                        candidate_paths.push_back(ctx_param);
+
+                        const auto root_params = session.graph_promoted_parameters(ctx_slot);
+                        const auto* gdoc = session.graph_document(ctx_slot);
+                        const auto* gnode = session.graph_node(ctx_slot, ctx_node);
+                        bool added_inspect_root = false;
+                        for (const auto& fpath : candidate_paths) {
+                            const auto wide_fp = platform::utf8_to_utf16_validated(fpath);
+                            if (const auto ctrl = session.graph_controlling_parameter(ctx_slot, ctx_node, fpath)) {
+                                json::Builder uargs;
+                                static_cast<void>(uargs.set(uargs.root(), "asset", ctx_slot));
+                                static_cast<void>(uargs.set(uargs.root(), "node", ctx_node));
+                                static_cast<void>(uargs.set(uargs.root(), "path", fpath));
+                                items.push_back({bind_operator({"graph.unbind_parameter", uargs.finish()}),
+                                                 L"Unbind '" + wide_fp + L"' from '" +
+                                                     platform::utf8_to_utf16_validated(*ctrl) + L"'",
+                                                 can_edit_param,
+                                                 false,
+                                                 {},
+                                                 L"",
+                                                 need_sep});
+                                need_sep = false;
+                                if (!added_inspect_root) {
+                                    added_inspect_root = true;
+                                    json::Builder sargs;
+                                    static_cast<void>(sargs.set(sargs.root(), "asset", ctx_slot));
+                                    static_cast<void>(sargs.set(sargs.root(), "node", ""));
+                                    items.push_back({bind_operator({"graph.select", sargs.finish()}),
+                                                     L"Inspect Graph Root Parameters",
+                                                     true,
+                                                     false,
+                                                     {}});
+                                }
+                            } else if (gnode && gdoc &&
+                                       !session.graph_overlapping_parameter(ctx_slot, ctx_node, fpath)) {
+                                const std::string target_full = ctx_node + "." + fpath;
+                                const auto resolved = resolve_graph_parameter_target(runtime, *gdoc, target_full);
+                                if (!resolved)
+                                    continue;
+                                json::Builder eargs;
+                                static_cast<void>(eargs.set(eargs.root(), "asset", ctx_slot));
+                                static_cast<void>(eargs.set(eargs.root(), "node", ctx_node));
+                                static_cast<void>(eargs.set(eargs.root(), "path", fpath));
+                                items.push_back({bind_operator({"graph.expose_parameter", eargs.finish()}),
+                                                 candidate_paths.size() > 1
+                                                     ? (L"Expose '" + wide_fp + L"' as Graph Parameter")
+                                                     : L"Expose as Graph Parameter",
+                                                 can_edit_param,
+                                                 false,
+                                                 {},
+                                                 L"",
+                                                 need_sep});
+                                need_sep = false;
+                                if (root_params && !root_params->empty()) {
+                                    std::vector<ui::MenuItem> bind_children;
+                                    for (const auto& rp : *root_params) {
+                                        if (!rp.valid || rp.value_type != resolved->value_type)
+                                            continue;
+                                        json::Builder bargs;
+                                        static_cast<void>(bargs.set(bargs.root(), "asset", ctx_slot));
+                                        static_cast<void>(bargs.set(bargs.root(), "parameter", rp.name));
+                                        static_cast<void>(bargs.set(bargs.root(), "node", ctx_node));
+                                        static_cast<void>(bargs.set(bargs.root(), "path", fpath));
+                                        bind_children.push_back(
+                                            {bind_operator({"graph.bind_parameter", bargs.finish()}),
+                                             platform::utf8_to_utf16_validated(rp.name),
+                                             can_edit_param,
+                                             false,
+                                             {}});
+                                    }
+                                    if (!bind_children.empty()) {
+                                        const auto sub_key =
+                                            bind_graph_param(ctx_slot, ctx_node, fpath,
+                                                             Binding::Kind::graph_param_submenu, 0, ctx_object);
+                                        items.push_back(submenu(sub_key,
+                                                                candidate_paths.size() > 1
+                                                                    ? (L"Bind '" + wide_fp + L"' to Parameter")
+                                                                    : L"Bind to Graph Parameter",
+                                                                std::move(bind_children), false));
+                                    }
+                                }
+                            }
+                        }
+                    } else if (ctx_comp == ObjectId{} && ctx_node.empty()) {
+                        // Graph Root promoted parameter management:
+                        const auto* gdoc = session.graph_document(ctx_slot);
+                        std::size_t idx = 0;
+                        std::size_t total = 0;
+                        if (gdoc) {
+                            total = gdoc->parameters.size();
+                            const auto it =
+                                std::ranges::find(gdoc->parameters, ctx_param, &GraphPromotedParameter::name);
+                            if (it != gdoc->parameters.end())
+                                idx = static_cast<std::size_t>(it - gdoc->parameters.begin());
+                        }
+                        {
+                            json::Builder up_args;
+                            static_cast<void>(up_args.set(up_args.root(), "asset", ctx_slot));
+                            static_cast<void>(up_args.set(up_args.root(), "parameter", ctx_param));
+                            static_cast<void>(up_args.set(up_args.root(), "move_delta", std::int64_t{-1}));
+                            items.push_back({bind_operator({"graph.update_parameter", up_args.finish()}),
+                                             L"Move Parameter Up",
+                                             can_edit_param && idx > 0,
+                                             false,
+                                             {},
+                                             L"",
+                                             need_sep});
+                            need_sep = false;
+                        }
+                        {
+                            json::Builder dn_args;
+                            static_cast<void>(dn_args.set(dn_args.root(), "asset", ctx_slot));
+                            static_cast<void>(dn_args.set(dn_args.root(), "parameter", ctx_param));
+                            static_cast<void>(dn_args.set(dn_args.root(), "move_delta", std::int64_t{1}));
+                            items.push_back({bind_operator({"graph.update_parameter", dn_args.finish()}),
+                                             L"Move Parameter Down",
+                                             can_edit_param && idx + 1 < total,
+                                             false,
+                                             {}});
+                        }
+                        {
+                            json::Builder rm_args;
+                            static_cast<void>(rm_args.set(rm_args.root(), "asset", ctx_slot));
+                            static_cast<void>(rm_args.set(rm_args.root(), "parameter", ctx_param));
+                            items.push_back({bind_operator({"graph.remove_parameter", rm_args.finish()}),
+                                             L"Remove Promoted Parameter",
+                                             can_edit_param,
+                                             false,
+                                             {},
+                                             L"",
+                                             true});
+                        }
+                    } else if (ctx_comp == ObjectId{} && !ctx_node.empty() && ctx_path.empty()) {
+                        // AssetNode override row:
+                        bool is_overridden = false;
+                        if (const auto params = session.graph_asset_node_parameters(ctx_slot, ctx_node, project)) {
+                            const auto it = std::ranges::find(*params, ctx_param, &GraphPromotedParameterView::name);
+                            if (it != params->end())
+                                is_overridden = it->overridden;
+                        }
+                        json::Builder clr_args;
+                        static_cast<void>(clr_args.set(clr_args.root(), "asset", ctx_slot));
+                        static_cast<void>(clr_args.set(clr_args.root(), "node", ctx_node));
+                        static_cast<void>(clr_args.set(clr_args.root(), "parameter", ctx_param));
+                        static_cast<void>(clr_args.set(clr_args.root(), "clear", true));
+                        items.push_back({bind_operator({"graph.set_override", clr_args.finish()}),
+                                         L"Revert Override to Asset Default",
+                                         can_edit_param && is_overridden,
+                                         false,
+                                         {},
+                                         L"",
+                                         need_sep});
+                    } else if (ctx_comp != ObjectId{}) {
+                        // Scene ProceduralGeneratorComponent override row:
+                        bool is_overridden = false;
+                        if (const auto params = session.generator_promoted_parameters(ctx_comp, project)) {
+                            const auto it = std::ranges::find(*params, ctx_param, &GraphPromotedParameterView::name);
+                            if (it != params->end())
+                                is_overridden = it->overridden;
+                        }
+                        const auto comp_st = world::inspect_component(runtime, ctx_comp);
+                        const ObjectId owner_ent = comp_st ? comp_st->owner : ObjectId{};
+                        const auto ent_st = owner_ent != ObjectId{}
+                                                ? world::inspect_entity(runtime, owner_ent)
+                                                : atelier::Result<world::EntityStatus>{world::EntityStatus{}};
+                        const bool can_edit_gen = !session.world().running() && comp_st && comp_st->valid &&
+                                                  owner_ent != ObjectId{} && ent_st && ent_st->can_edit;
+                        const SelectionContext gen_sel{owner_ent, ctx_comp,
+                                                       owner_ent == ObjectId{} ? std::vector<ObjectId>{}
+                                                                               : std::vector<ObjectId>{owner_ent}};
+                        json::Builder clr_args;
+                        static_cast<void>(clr_args.set(clr_args.root(), "parameter", ctx_param));
+                        static_cast<void>(clr_args.set(clr_args.root(), "clear", true));
+                        items.push_back({bind_operator({"procedural.set_override",
+                                                        clr_args.finish(),
+                                                        {.selection = gen_sel, .region = RegionKind::parameters}}),
+                                         L"Revert Override to Asset Default",
+                                         can_edit_gen && is_overridden,
+                                         false,
+                                         {},
+                                         L"",
+                                         need_sep});
+                    }
                 }
             }
             if (items.empty())

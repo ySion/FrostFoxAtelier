@@ -62,32 +62,32 @@ ui QueryRow(in TextEditBinding edit, in double label_width, in double gap, in bo
     }
 }
 
-ui NumericProperty(in Text title, in EditBinding edit, in bool swatch, in double r, in double g, in double b, in ActionBinding pick) {
+ui NumericProperty(in Text title, in EditBinding edit, in bool row_enabled, in bool swatch, in double r, in double g, in double b, in ActionBinding pick) {
     // Houdini colour tuples end with a live swatch of the current value; clicking it opens the colour editor.
     Row row { align_center: true; gap: 4;
-        Column fields { expand_width: true; NumberRow number { text: input.title; edit: input.edit; } }
+        Column fields { expand_width: true; NumberRow number { text: input.title; edit: input.edit; enabled: input.row_enabled; } }
         Button swatch { text: ""; action: input.pick; width: 23; height: 21; collapsed: !input.swatch; red: input.r; green: input.g; blue: input.b; classes: "color-swatch parameter-swatch"; }
     }
 }
 
-ui BooleanProperty(in Text title, in bool checked, in bool enabled, in ActionBinding change) {
-    ParameterRow row { text: "";
-        Checkbox toggle { text: input.title; selected: input.checked; enabled: input.enabled; action: input.change; height: 26.667; content_width: 0; }
+ui BooleanProperty(in Text title, in bool checked, in bool enabled, in bool row_enabled, in ActionBinding change, in Key context_menu) {
+    ParameterRow row { text: ""; enabled: input.row_enabled; context: input.context_menu;
+        Checkbox toggle { text: input.title; selected: input.checked; enabled: input.enabled; action: input.change; context: input.context_menu; height: 26.667; content_width: 0; }
     }
 }
 
-ui EnumProperty(in Text title, in Text choice, in bool enabled, in Key target) {
+ui EnumProperty(in Text title, in Text choice, in bool enabled, in bool row_enabled, in Key target, in Key context_menu) {
     // Houdini menu buttons hug their label (e.g. "Scale Rot Trans") instead of
     // spanning the row; a minimum keeps short choices clickable.
-    ParameterRow row { text: input.title;
+    ParameterRow row { text: input.title; enabled: input.row_enabled; context: input.context_menu;
         Combo choice { text: input.choice; context: input.target; enabled: input.enabled; height: 26.667; content_width: 0; min_width: 96;
             classes: "parameter-menu"; }
     }
 }
 
-ui TextProperty(in Text title, in TextEditBinding text_edit) {
-    ParameterRow row { text: input.title;
-        TextField field { edit: input.text_edit; expand_width: true; height: 24; }
+ui TextProperty(in Text title, in TextEditBinding text_edit, in bool row_enabled, in Key context_menu) {
+    ParameterRow row { text: input.title; enabled: input.row_enabled; context: input.context_menu;
+        TextField field { edit: input.text_edit; context: input.text_edit; expand_width: true; height: 24; }
     }
 }
 
@@ -95,17 +95,17 @@ ui PropertyRow(in Text title, in EditBinding edit, in bool boolean, in bool chec
                in ActionBinding change, in bool enumeration, in Text choice, in Key target,
                in bool swatch, in double r, in double g, in double b,
                in bool override_available, in bool overridden, in ActionBinding inherit, in TooltipBinding help, in ActionBinding pick,
-               in bool text_kind, in TextEditBinding text_edit) {
+               in bool text_kind, in TextEditBinding text_edit, in Key context_menu, in bool row_enabled) {
     Row row { gap: 3; tooltip: input.help;
         Column override_area { collapsed: !input.override_available; width: 24;
             Checkbox override { text: ""; selected: input.overridden; action: input.inherit; width: 24; height: 23; }
         }
         Column value { expand_width: true;
-        NumericProperty numeric { mounted: !input.boolean && !input.enumeration && !input.text_kind; title: input.title; edit: input.edit;
+        NumericProperty numeric { mounted: !input.boolean && !input.enumeration && !input.text_kind; title: input.title; edit: input.edit; row_enabled: input.row_enabled;
             swatch: input.swatch; r: input.r; g: input.g; b: input.b; pick: input.pick; }
-        BooleanProperty boolean { mounted: input.boolean; title: input.title; checked: input.checked; enabled: input.enabled; change: input.change; }
-        EnumProperty enumeration { mounted: input.enumeration; title: input.title; choice: input.choice; enabled: input.enabled; target: input.target; }
-        TextProperty text_prop { mounted: input.text_kind; title: input.title; text_edit: input.text_edit; }
+        BooleanProperty boolean { mounted: input.boolean; title: input.title; checked: input.checked; enabled: input.enabled; row_enabled: input.row_enabled; change: input.change; context_menu: input.context_menu; }
+        EnumProperty enumeration { mounted: input.enumeration; title: input.title; choice: input.choice; enabled: input.enabled; row_enabled: input.row_enabled; target: input.target; context_menu: input.context_menu; }
+        TextProperty text_prop { mounted: input.text_kind; title: input.title; text_edit: input.text_edit; row_enabled: input.row_enabled; context_menu: input.context_menu; }
         }
     }
 }
@@ -1039,6 +1039,7 @@ ui NetworkTabItem(in Text title, in Text badge, in bool active_row, in ActionBin
 
 ui NetworkPanel(in Text graph_title, in double path_icon, in ActionBinding back, in ActionBinding forward,
                 in double back_icon, in double forward_icon,
+                in bool locked, in Text lock_text, in ActionBinding lock_action,
                 in bool pinned, in double pin_icon, in ActionBinding pin_action,
                 in bool isolated, in double isolate_icon, in ActionBinding isolate_action,
                 in bool has_graph, in bool compact,
@@ -1068,6 +1069,7 @@ ui NetworkPanel(in Text graph_title, in double path_icon, in ActionBinding back,
             Button forward { icon: input.forward_icon; action: input.forward; width: 22; height: 24; classes: "path-navigation"; }
             Combo path { text: input.graph_title; icon: input.path_icon; expand_width: true; min_width: 40; height: 24; classes: "pane-path"; }
             Column path_gap { width: 2; height: 1; }
+            ToggleButton lock_btn { collapsed: !input.has_graph; text: input.lock_text; action: input.lock_action; selected: !input.locked; height: 24; content_width: 0; classes: "ghost-button"; }
             ToggleButton pin_btn { icon: input.pin_icon; action: input.pin_action; selected: input.pinned; width: 26; height: 24; classes: "ghost-tool"; }
             ToggleButton isolate_btn { icon: input.isolate_icon; action: input.isolate_action; selected: input.isolated; width: 26; height: 24; classes: "ghost-tool"; }
         }

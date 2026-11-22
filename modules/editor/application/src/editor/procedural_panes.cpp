@@ -761,6 +761,10 @@ ui::ControlIcon sop_node_icon(std::string_view type_name, bool is_source_sop, bo
         return ui::ControlIcon::close;
     if (is_source_sop)
         return ui::ControlIcon::sliders;
+    if (type_name == "procedural.AssetNode")
+        return ui::ControlIcon::folder;
+    if (type_name == "procedural.GraphInput" || type_name == "procedural.GraphOutput")
+        return ui::ControlIcon::isolate;
     if (type_name == "procedural.Null")
         return ui::ControlIcon::cursor3d;
     if (type_name == "procedural.Boolean")
@@ -832,9 +836,9 @@ std::uint8_t NetworkCanvas::resolve_shape_id(const GraphNodeView& node, bool is_
     case GraphNodeShape::auto_role:
         break;
     }
-    if (node.type == "procedural.Null")
+    if (node.type == "procedural.Null" || node.type == "procedural.GraphInput" || node.type == "procedural.GraphOutput")
         return 6;
-    if (is_source_sop)
+    if (node.type == "procedural.AssetNode" || is_source_sop)
         return 4;
     if (node.ports.inputs.empty())
         return 2;
@@ -847,13 +851,16 @@ std::uint8_t NetworkCanvas::resolve_shape_id(const GraphNodeView& node, bool is_
 }
 
 NetworkCanvas::TabCategory NetworkCanvas::categorize_node_type(const GraphNodeCatalogEntry& entry) noexcept {
+    if (!entry.asset_key.empty())
+        return TabCategory::digital_asset;
     if (!entry.native)
         return TabCategory::source_sop;
     const auto short_name = short_type_name(entry.name);
     if (short_name == "Scatter" || short_name == "VolumeScatter" || short_name == "CopyToPoints" ||
         short_name == "Realize")
         return TabCategory::scatter_copy;
-    if (short_name == "Merge" || short_name == "Remove" || short_name == "Boolean" || short_name == "Null")
+    if (short_name == "Merge" || short_name == "Remove" || short_name == "Boolean" || short_name == "Null" ||
+        short_name == "GraphInput" || short_name == "GraphOutput")
         return TabCategory::utility;
     if (entry.ports.inputs.empty() || short_name == "Polyline" || short_name == "MeshImport" ||
         short_name == "Extrude" || short_name == "Sweep")
@@ -1239,7 +1246,9 @@ std::vector<GraphNodeCatalogEntry> NetworkCanvas::filter_catalog(std::span<const
             scored.push_back({100, &item});
             continue;
         }
-        const auto sname = short_type_name(item.name);
+        const std::string sname = !item.asset_key.empty() && !item.display_label.empty()
+                                      ? item.display_label
+                                      : std::string(short_type_name(item.name));
         const auto short_lower = lowercase_w(platform::utf8_to_utf16_validated(sname));
         const auto full_lower = lowercase_w(platform::utf8_to_utf16_validated(item.name));
         const auto acronym = extract_acronym(sname);
@@ -1276,7 +1285,8 @@ std::vector<GraphNodeCatalogEntry> NetworkCanvas::filter_catalog(std::span<const
 Result<std::string> NetworkCanvas::commit_tab_pick(Session& session, std::string_view graph_key,
                                                    std::span<const GraphNodeCatalogEntry> catalog,
                                                    std::size_t pick_index, std::string& primary_selected,
-                                                   std::vector<std::string>& selected_nodes, bool set_display) {
+                                                   std::vector<std::string>& selected_nodes, bool set_display,
+                                                   Project* project) {
     const auto matches = filter_catalog(catalog);
     if (pick_index >= matches.size())
         return std::unexpected(Error{ErrorCode::argument_mismatch, "No matching SOP node type selected."});
@@ -1284,7 +1294,7 @@ Result<std::string> NetworkCanvas::commit_tab_pick(Session& session, std::string
     close_tab_search();
     ATELIER_TRY_BIND(created, session.graph_place_node(graph_key, matches[pick_index].name, search.world_pos,
                                                        search.auto_from_node, search.auto_from_port,
-                                                       search.auto_to_node, search.auto_to_port, set_display));
+                                                       search.auto_to_node, search.auto_to_port, set_display, project));
     primary_selected = *created;
     selected_nodes = {*created};
     return std::move(*created);
@@ -1331,16 +1341,17 @@ void NetworkCanvas::open_node_popup(PopupKind kind, const GraphInspectView& view
 
 Result<bool> NetworkCanvas::apply_action(Session& session, std::string_view graph_key, std::string& primary_selected,
                                          std::vector<std::string>& selected_nodes, ui_layout::Size canvas_dip,
-                                         const ui::Action& action, std::wstring& out_status) {
+                                         const ui::Action& action, std::wstring& out_status, bool read_only) {
+    const bool blocked = session.world().running() || read_only;
     if (action.key == network_control::tab_search_input) {
         if (const auto* text = std::get_if<std::wstring>(&action.value))
             if (action.kind == ui::ActionKind::edit_preview || action.kind == ui::ActionKind::edit_commit)
                 set_tab_query(*text);
         return true;
     }
-    if (action.kind == ui::ActionKind::activate && action.key >= network_control::tab_cat_first &&
-        action.key < network_control::tab_cat_first + 6) {
-        set_tab_category(static_cast<TabCategory>(action.key - network_control::tab_cat_first));
+    if (action.kind == ui::ActionKind::activate && action.key >= network_control::tab_cat_7_first &&
+        action.key < network_control::tab_cat_7_first + 7) {
+        set_tab_category(static_cast<TabCategory>(action.key - network_control::tab_cat_7_first));
         return true;
     }
     if (action.kind == ui::ActionKind::activate && action.key == network_control::zoom_reset) {
@@ -1418,7 +1429,7 @@ Result<bool> NetworkCanvas::apply_action(Session& session, std::string_view grap
     }
 
     if (action.kind == ui::ActionKind::activate && action.key == network_control::add_sticky_note) {
-        if (session.world().running())
+        if (blocked)
             return true;
         const float cx = (canvas_dip.width > 32.f ? canvas_dip.width : last_canvas_dip_.width) * .5f;
         const float cy = (canvas_dip.height > 32.f ? canvas_dip.height : last_canvas_dip_.height) * .5f;
@@ -1432,7 +1443,7 @@ Result<bool> NetworkCanvas::apply_action(Session& session, std::string_view grap
     }
 
     if (action.kind == ui::ActionKind::activate && action.key == network_control::add_network_box) {
-        if (session.world().running())
+        if (blocked)
             return true;
         ATELIER_TRY_BIND(insp, session.graph_topology(graph_key));
         std::array<float, 2> pos{};
@@ -1468,7 +1479,7 @@ Result<bool> NetworkCanvas::apply_action(Session& session, std::string_view grap
         return true;
     }
 
-    if (!popup_.open() || session.world().running())
+    if (!popup_.open() || blocked)
         return false;
 
     const auto active_style_targets = [&]() -> const std::vector<std::string>& {
@@ -1599,12 +1610,12 @@ Result<bool> NetworkCanvas::apply_action(Session& session, std::string_view grap
     return false;
 }
 
-Result<NetworkCanvas::InteractionOutcome> NetworkCanvas::pointer_event(Session& session, std::string_view graph_key,
-                                                                       std::string& primary_selected,
-                                                                       std::vector<std::string>& selected_nodes,
-                                                                       ui::Rect canvas_px, float dpi_scale,
-                                                                       const ui::Event& event, Project* project) {
+Result<NetworkCanvas::InteractionOutcome>
+NetworkCanvas::pointer_event(Session& session, std::string_view graph_key, std::string& primary_selected,
+                             std::vector<std::string>& selected_nodes, ui::Rect canvas_px, float dpi_scale,
+                             const ui::Event& event, Project* project, bool read_only) {
     InteractionOutcome out;
+    const bool blocked = session.world().running() || read_only;
     if (graph_key.empty() || !session.has_graph(graph_key) || canvas_px.width <= 0 || canvas_px.height <= 0 ||
         dpi_scale <= 0.f)
         return out;
@@ -1678,12 +1689,13 @@ Result<NetworkCanvas::InteractionOutcome> NetworkCanvas::pointer_event(Session& 
         }
 
         if (gesture_ == Gesture::press_node) {
-            if (event.kind == ui::EventKind::pointer_move && move_dist >= 4.f && !session.world().running()) {
+            if (event.kind == ui::EventKind::pointer_move && move_dist >= 4.f && !blocked) {
                 gesture_ = Gesture::move_nodes;
             } else {
                 if (event.kind == ui::EventKind::pointer_up && event.button == gesture_button_) {
                     const std::string clicked = pressed_node_;
                     const bool shift = gesture_shift_;
+                    const bool clicked_only = move_dist < 4.f;
                     cancel_gesture();
                     out.capture_release = true;
                     out.cursor = ui::Cursor::arrow;
@@ -1698,9 +1710,23 @@ Result<NetworkCanvas::InteractionOutcome> NetworkCanvas::pointer_event(Session& 
                             selected_nodes.push_back(clicked);
                             primary_selected = clicked;
                         }
+                        last_click_tick_ = 0;
                     } else {
                         selected_nodes = {clicked};
                         primary_selected = clicked;
+                        if (clicked_only) {
+                            const auto now = steady_millis();
+                            if (last_click_target_ == "node:" + clicked && now - last_click_tick_ <= 420) {
+                                if (const auto* nv = view.find_node(clicked);
+                                    nv && nv->type == "procedural.AssetNode" && !nv->asset_key.empty()) {
+                                    out.dive_into_node = clicked;
+                                }
+                                last_click_tick_ = 0;
+                            } else {
+                                last_click_target_ = "node:" + clicked;
+                                last_click_tick_ = now;
+                            }
+                        }
                     }
                 }
                 return out;
@@ -2118,7 +2144,7 @@ Result<NetworkCanvas::InteractionOutcome> NetworkCanvas::pointer_event(Session& 
             const float cx = tl[0] + node_width * .5f * z;
             const float cy = tl[1] + node_height * .5f * z;
             const auto sec = hit_air_sector(lx, ly, cx, cy, z);
-            if (sec > 0)
+            if (sec > 0 && (!blocked || sec == static_cast<std::uint8_t>(AirButton::info)))
                 air_hit = static_cast<AirButton>(sec);
         } else {
             air_node_.clear();
@@ -2209,7 +2235,7 @@ Result<NetworkCanvas::InteractionOutcome> NetworkCanvas::pointer_event(Session& 
         return out;
     }
 
-    if (event.button == ui::PointerButton::primary && cut_key_held_ && !session.world().running()) {
+    if (event.button == ui::PointerButton::primary && cut_key_held_ && !blocked) {
         gesture_ = Gesture::wire_cut;
         out.capture_acquire = true;
         out.cursor = ui::Cursor::crosshair;
@@ -2218,7 +2244,7 @@ Result<NetworkCanvas::InteractionOutcome> NetworkCanvas::pointer_event(Session& 
 
     // Air-Ring click handling:
     if (event.button == ui::PointerButton::primary && air_hit != AirButton::none && !air_node_.empty() &&
-        !session.world().running()) {
+        (!blocked || air_hit == AirButton::info)) {
         if (const auto* n = view.find_node(air_node_)) {
             const auto tl = to_dip(n->position[0], n->position[1]);
             const std::array anchor{tl[0] + (node_width + 22.f) * z, tl[1] - 12.f};
@@ -2249,7 +2275,7 @@ Result<NetworkCanvas::InteractionOutcome> NetworkCanvas::pointer_event(Session& 
         }
     }
 
-    if (event.button == ui::PointerButton::primary && port_under && !session.world().running()) {
+    if (event.button == ui::PointerButton::primary && port_under && !blocked) {
         detached_wire_.reset();
         wire_anchor_ = *port_under;
         if (!port_under->is_output && !port_under->multiple) {
@@ -2275,7 +2301,7 @@ Result<NetworkCanvas::InteractionOutcome> NetworkCanvas::pointer_event(Session& 
     }
 
     if (!node_under.empty()) {
-        if (event.button == ui::PointerButton::primary && flag_under != FlagZone::none && !session.world().running()) {
+        if (event.button == ui::PointerButton::primary && flag_under != FlagZone::none && !blocked) {
             const auto* n = view.find_node(node_under);
             if (n && !n->placeholder) {
                 if (flag_under == FlagZone::display) {
@@ -2331,7 +2357,7 @@ Result<NetworkCanvas::InteractionOutcome> NetworkCanvas::pointer_event(Session& 
     }
 
     // Sticky Notes hit-test (above Network Boxes, below Nodes):
-    if (event.button == ui::PointerButton::primary && !session.world().running()) {
+    if (event.button == ui::PointerButton::primary && !blocked) {
         for (auto it = view.notes.rbegin(); it != view.notes.rend(); ++it) {
             const auto tl = to_dip(it->position[0], it->position[1]);
             const float nw = it->size[0] * z;
@@ -2411,12 +2437,12 @@ Result<NetworkCanvas::InteractionOutcome> NetworkCanvas::pointer_event(Session& 
     return out;
 }
 
-Result<NetworkCanvas::InteractionOutcome> NetworkCanvas::key_event(Session& session, std::string_view graph_key,
-                                                                   std::string& primary_selected,
-                                                                   std::vector<std::string>& selected_nodes,
-                                                                   ui::Rect canvas_px, float dpi_scale,
-                                                                   const ui::Event& event, std::uint32_t native_key) {
+Result<NetworkCanvas::InteractionOutcome>
+NetworkCanvas::key_event(Session& session, std::string_view graph_key, std::string& primary_selected,
+                         std::vector<std::string>& selected_nodes, ui::Rect canvas_px, float dpi_scale,
+                         const ui::Event& event, std::uint32_t native_key, Project* project, bool read_only) {
     InteractionOutcome out;
+    const bool blocked = session.world().running() || read_only;
     if (event.kind == ui::EventKind::key_up) {
         if (native_key == 'Y' || event.key == ui::Key::y)
             cut_key_held_ = false;
@@ -2430,7 +2456,7 @@ Result<NetworkCanvas::InteractionOutcome> NetworkCanvas::key_event(Session& sess
                                            : last_canvas_dip_;
 
     if (tab_search_.open) {
-        ATELIER_TRY_BIND(catalog, session.procedural_node_types());
+        ATELIER_TRY_BIND(catalog, session.procedural_node_types(project, graph_key));
         const auto matches = filter_catalog(*catalog);
         if (event.key == ui::Key::escape) {
             close_tab_search();
@@ -2449,9 +2475,9 @@ Result<NetworkCanvas::InteractionOutcome> NetworkCanvas::key_event(Session& sess
         }
         if (event.key == ui::Key::enter) {
             out.consumed = true;
-            if (!matches.empty()) {
+            if (!matches.empty() && !blocked) {
                 ATELIER_TRY_BIND(created, commit_tab_pick(session, graph_key, *catalog, tab_search_.highlight,
-                                                          primary_selected, selected_nodes, event.shift));
+                                                          primary_selected, selected_nodes, event.shift, project));
                 out.status = L"Added SOP node: " + platform::utf8_to_utf16_validated(*created);
             } else {
                 close_tab_search();
@@ -2559,7 +2585,7 @@ Result<NetworkCanvas::InteractionOutcome> NetworkCanvas::key_event(Session& sess
     };
 
     if (event.control && !event.alt && !event.shift) {
-        if (!event.repeat && native_key == 'D' && !session.world().running()) {
+        if (!event.repeat && native_key == 'D' && !blocked) {
             const auto targets = resolve_targets();
             if (!targets.empty()) {
                 ATELIER_TRY_BIND(created, session.graph_duplicate_nodes(graph_key, targets, {36.f, 36.f}));
@@ -2612,7 +2638,7 @@ Result<NetworkCanvas::InteractionOutcome> NetworkCanvas::key_event(Session& sess
         return out;
 
     if (event.shift) {
-        if (!event.repeat && native_key == 'D' && !session.world().running()) {
+        if (!event.repeat && native_key == 'D' && !blocked) {
             const auto targets = resolve_targets();
             if (!targets.empty()) {
                 ATELIER_TRY_BIND(created, session.graph_duplicate_nodes(graph_key, targets, {28.f, 28.f}));
@@ -2628,12 +2654,12 @@ Result<NetworkCanvas::InteractionOutcome> NetworkCanvas::key_event(Session& sess
             }
             return out;
         }
-        if (!event.repeat && (native_key == 'A' || event.key == ui::Key::a) && !session.world().running())
+        if (!event.repeat && (native_key == 'A' || event.key == ui::Key::a) && !blocked)
             return open_add_menu();
         return out;
     }
 
-    if (native_key == 'Y' || event.key == ui::Key::y) {
+    if ((native_key == 'Y' || event.key == ui::Key::y) && !blocked) {
         cut_key_held_ = true;
         out.consumed = true;
         out.cursor = ui::Cursor::crosshair;
@@ -2644,7 +2670,16 @@ Result<NetworkCanvas::InteractionOutcome> NetworkCanvas::key_event(Session& sess
     if (event.repeat)
         return out;
 
-    if (event.key == ui::Key::tab && !session.world().running())
+    if (event.key == ui::Key::enter && !target_node.empty()) {
+        if (const auto* n = view.find_node(target_node);
+            n && n->type == "procedural.AssetNode" && !n->asset_key.empty()) {
+            out.consumed = true;
+            out.dive_into_node = target_node;
+            return out;
+        }
+    }
+
+    if (event.key == ui::Key::tab && !blocked)
         return open_add_menu();
 
     if (native_key == 'H' || event.key == ui::Key::home) {
@@ -2661,7 +2696,7 @@ Result<NetworkCanvas::InteractionOutcome> NetworkCanvas::key_event(Session& sess
         return out;
     }
 
-    if (native_key == 'G' && !session.world().running()) {
+    if (native_key == 'G' && !blocked) {
         if (selected_nodes.empty() && !target_node.empty()) {
             selected_nodes = {target_node};
             primary_selected = target_node;
@@ -2673,7 +2708,7 @@ Result<NetworkCanvas::InteractionOutcome> NetworkCanvas::key_event(Session& sess
         return out;
     }
 
-    if (native_key == 'L' && !session.world().running()) {
+    if (native_key == 'L' && !blocked) {
         ATELIER_TRY(session.graph_auto_layout(graph_key));
         if (const auto after = session.graph_topology(graph_key))
             frame_nodes((*after)->nodes, canvas_dip, {}, (*after)->boxes, (*after)->notes);
@@ -2682,7 +2717,7 @@ Result<NetworkCanvas::InteractionOutcome> NetworkCanvas::key_event(Session& sess
         return out;
     }
 
-    if (native_key == 'D' && !session.world().running() && !target_node.empty()) {
+    if (native_key == 'D' && !blocked && !target_node.empty()) {
         if (const auto* n = view.find_node(target_node); n && !n->placeholder) {
             ATELIER_TRY(session.graph_set_display(graph_key, n->is_display ? std::string_view{} : target_node));
             out.consumed = true;
@@ -2692,7 +2727,7 @@ Result<NetworkCanvas::InteractionOutcome> NetworkCanvas::key_event(Session& sess
         }
     }
 
-    if (native_key == 'T' && !session.world().running() && !target_node.empty()) {
+    if (native_key == 'T' && !blocked && !target_node.empty()) {
         if (const auto* n = view.find_node(target_node); n && !n->placeholder) {
             ATELIER_TRY(session.graph_set_template(graph_key, n->is_template ? std::string_view{} : target_node));
             out.consumed = true;
@@ -2702,7 +2737,7 @@ Result<NetworkCanvas::InteractionOutcome> NetworkCanvas::key_event(Session& sess
         }
     }
 
-    if (native_key == 'B' && !session.world().running() && !target_node.empty()) {
+    if (native_key == 'B' && !blocked && !target_node.empty()) {
         if (const auto* n = view.find_node(target_node); n && !n->placeholder) {
             ATELIER_TRY(session.graph_set_bypass(graph_key, target_node, !n->is_bypassed));
             out.consumed = true;
@@ -2712,7 +2747,7 @@ Result<NetworkCanvas::InteractionOutcome> NetworkCanvas::key_event(Session& sess
         }
     }
 
-    if (native_key == 'Z' && !session.world().running()) {
+    if (native_key == 'Z' && !blocked) {
         if (popup_.open() && popup_.kind == PopupKind::shape_picker)
             close_popup();
         else
@@ -2721,7 +2756,7 @@ Result<NetworkCanvas::InteractionOutcome> NetworkCanvas::key_event(Session& sess
         return out;
     }
 
-    if (native_key == 'C' && !session.world().running()) {
+    if (native_key == 'C' && !blocked) {
         if (popup_.open() && popup_.kind == PopupKind::color_picker)
             close_popup();
         else
@@ -2736,7 +2771,7 @@ Result<NetworkCanvas::InteractionOutcome> NetworkCanvas::key_event(Session& sess
         return out;
     }
 
-    if (native_key == 'N' && !session.world().running()) {
+    if (native_key == 'N' && !blocked) {
         float tx = current_dip_x_ > 0.f ? current_dip_x_ : canvas_dip.width * .5f;
         float ty = current_dip_y_ > 0.f ? current_dip_y_ : canvas_dip.height * .5f;
         const auto wp = to_world(tx - 96.f, ty - 48.f);
@@ -2749,10 +2784,11 @@ Result<NetworkCanvas::InteractionOutcome> NetworkCanvas::key_event(Session& sess
         return out;
     }
 
-    if (native_key == 'O' && !session.world().running()) {
+    if (native_key == 'O' && !blocked) {
         std::wstring status_msg;
         ui::Action act{ui::ActionKind::activate, network_control::add_network_box, {}};
-        ATELIER_TRY(apply_action(session, graph_key, primary_selected, selected_nodes, canvas_dip, act, status_msg));
+        ATELIER_TRY(
+            apply_action(session, graph_key, primary_selected, selected_nodes, canvas_dip, act, status_msg, read_only));
         out.consumed = true;
         out.status = std::move(status_msg);
         return out;
@@ -2774,7 +2810,7 @@ Result<NetworkCanvas::InteractionOutcome> NetworkCanvas::key_event(Session& sess
 
     if ((event.key == ui::Key::delete_key || event.key == ui::Key::backspace || native_key == 'X' ||
          event.key == ui::Key::x) &&
-        !session.world().running()) {
+        !blocked) {
         if (!selected_note_.empty()) {
             const std::array names{selected_note_};
             ATELIER_TRY(session.graph_remove_notes(graph_key, names));
@@ -2827,11 +2863,11 @@ void NetworkCanvas::append_tab_categories(std::vector<ui::Control>& controls, ui
     row.style.border_width = 0.f;
     cat_controls.push_back(std::move(row));
 
-    constexpr std::array<const wchar_t*, 6> labels{L"All", L"Prim", L"Attr", L"Scat", L"Util", L"Src"};
+    constexpr std::array<const wchar_t*, 7> labels{L"All", L"Prim", L"Attr", L"Scat", L"Util", L"Src", L"Asset"};
     for (std::size_t i = 0; i < labels.size(); ++i) {
         const bool active = static_cast<std::size_t>(tab_search_.category) == i;
         ui::Control btn;
-        btn.key = network_control::tab_cat_first + i;
+        btn.key = network_control::tab_cat_7_first + i;
         btn.parent = network_control::tab_cat_row;
         btn.kind = ui::ControlKind::button;
         btn.text = labels[i];
@@ -2900,7 +2936,7 @@ std::array<float, 2> NetworkCanvas::prepare_wire_routes(const std::shared_ptr<co
 void NetworkCanvas::append_canvas(ui_language::ControlOutput output, ui::ControlKey canvas_parent,
                                   ui_layout::Size canvas_dip, const std::shared_ptr<const GraphInspectView>& topology,
                                   std::span<const GraphNodeCatalogEntry> catalog, std::string_view primary_selected,
-                                  std::span<const std::string> selected_nodes) {
+                                  std::span<const std::string> selected_nodes, bool read_only) {
     const auto& view = *topology;
     const auto& graph_key = view.key;
     sync_graph(graph_key, view.nodes, canvas_dip, view.boxes, view.notes);
@@ -2924,7 +2960,8 @@ void NetworkCanvas::append_canvas(ui_language::ControlOutput output, ui::Control
                                      hovered_port_,
                                      hovered_flag_,
                                      hovered_air_,
-                                     tab_search_.open || popup_.open()});
+                                     tab_search_.open || popup_.open(),
+                                     read_only});
         if (idle_projection_ && idle_projection_->topology.lock() == topology && idle_projection_->state == *idle &&
             std::ranges::equal(selected_nodes, idle_projection_->selection) &&
             std::ranges::equal(catalog, idle_projection_->catalog)) {
@@ -2933,7 +2970,7 @@ void NetworkCanvas::append_canvas(ui_language::ControlOutput output, ui::Control
                 return;
             }
             std::vector<ui::Control> controls = idle_projection_->controls;
-            append_canvas_popup(controls, canvas_parent, cw, ch, view, catalog);
+            append_canvas_popup(controls, canvas_parent, cw, ch, view, catalog, read_only);
             output.append(controls, 0);
             return;
         }
@@ -3150,11 +3187,18 @@ void NetworkCanvas::append_canvas(ui_language::ControlOutput output, ui::Control
         }
 
         // Calibrated studio dark-UI body fill:
+        const bool is_asset_node = node.type == "procedural.AssetNode";
         std::uint32_t base_rgb = 0x3a3e45;
         if (has_error)
             base_rgb = 0x522528;
         else if (node.color)
             base_rgb = blend_hex(0x282b30, *node.color, .40f);
+        else if (is_asset_node)
+            base_rgb = 0x4b3d24;
+        else if (node.type == "procedural.GraphInput")
+            base_rgb = 0x26483b;
+        else if (node.type == "procedural.GraphOutput")
+            base_rgb = 0x3b3556;
         else if (node.type == "procedural.Null")
             base_rgb = 0x484228;
         else if (is_source_sop)
@@ -3271,9 +3315,15 @@ void NetworkCanvas::append_canvas(ui_language::ControlOutput output, ui::Control
         const ui::ControlKey base_key = node_base_key(graph_key, node.name);
         ui::Tooltip help;
         help.title = sanitize_single_line(platform::utf8_to_utf16_validated(node.name));
-        help.identity = sanitize_single_line(
-            platform::utf8_to_utf16_validated(node.type + (is_source_sop ? " · Source SOP" : " · C++ SOP")));
+        help.identity = sanitize_single_line(platform::utf8_to_utf16_validated(
+            is_asset_node ? ("Digital Asset · " + (!node.asset_label.empty() ? node.asset_label : node.asset_key))
+                          : (node.type + (is_source_sop ? " · Source SOP" : " · C++ SOP"))));
         std::string desc = cat_it != catalog.end() ? cat_it->description : std::string{};
+        if (is_asset_node && !node.asset_key.empty()) {
+            if (!desc.empty())
+                desc += "\n";
+            desc += "Asset: " + node.asset_key + "\nDouble-click or press Enter to dive into this Digital Asset.";
+        }
         if (!node.comment.empty()) {
             if (!desc.empty())
                 desc += "\n";
@@ -3319,9 +3369,10 @@ void NetworkCanvas::append_canvas(ui_language::ControlOutput output, ui::Control
             icon_ctrl.style.padding = ui_layout::Insets{};
             icon_ctrl.style.icon_align = ui::TextAlign::center;
             icon_ctrl.style.indicator_size = std::clamp(std::round(13.5f * z), 7.f, 26.f);
-            icon_ctrl.style.indicator_foreground =
-                has_error ? hex_color(0xffb4b4)
-                          : (is_source_sop ? hex_color(0x7dd3fc, body_alpha) : hex_color(0xe2e8f0, body_alpha));
+            icon_ctrl.style.indicator_foreground = has_error ? hex_color(0xffb4b4)
+                                                             : (is_asset_node   ? hex_color(0xfcd34d, body_alpha)
+                                                                : is_source_sop ? hex_color(0x7dd3fc, body_alpha)
+                                                                                : hex_color(0xe2e8f0, body_alpha));
             controls.push_back(std::move(icon_ctrl));
         }
 
@@ -3348,7 +3399,9 @@ void NetworkCanvas::append_canvas(ui_language::ControlOutput output, ui::Control
 
         // External right-side Line 2: ShortType · cook_ms / Comment / ERR:
         if (z >= .55f) {
-            std::wstring sub = sanitize_single_line(platform::utf8_to_utf16_validated(short_type_name(node.type)));
+            std::wstring sub = sanitize_single_line(platform::utf8_to_utf16_validated(
+                is_asset_node && !node.asset_label.empty() ? std::string_view{node.asset_label}
+                                                           : short_type_name(node.type)));
             if (has_error)
                 sub += L" · ERR";
             else if (node.is_frozen)
@@ -3388,6 +3441,8 @@ void NetworkCanvas::append_canvas(ui_language::ControlOutput output, ui::Control
             constexpr float deg_to_rad = std::numbers::pi_v<float> / 180.f;
             for (std::size_t s = 0; s < air_sector_defs.size(); ++s) {
                 const auto& def = air_sector_defs[s];
+                if (read_only && def.button_id != static_cast<std::uint8_t>(AirButton::info))
+                    continue;
                 const float rad = def.angle_deg * deg_to_rad;
                 const float half_rad = def.half_deg * deg_to_rad;
                 const float dx = std::cos(rad);
@@ -3557,13 +3612,13 @@ void NetworkCanvas::append_canvas(ui_language::ControlOutput output, ui::Control
                                                 controls,
                                                 revision});
     }
-    append_canvas_popup(controls, canvas_parent, cw, ch, view, catalog);
+    append_canvas_popup(controls, canvas_parent, cw, ch, view, catalog, read_only);
     output.append(controls, 0);
 }
 
 void NetworkCanvas::append_canvas_popup(std::vector<ui::Control>& controls, ui::ControlKey canvas_parent, float cw,
                                         float ch, const GraphInspectView& view,
-                                        std::span<const GraphNodeCatalogEntry> catalog) const {
+                                        std::span<const GraphNodeCatalogEntry> catalog, bool read_only) const {
     if (popup_.open()) {
         std::size_t aux_idx = 0;
         const auto next_aux = [&]() { return network_control::popup_aux_first + (aux_idx++); };
@@ -3637,6 +3692,7 @@ void NetworkCanvas::append_canvas_popup(std::vector<ui::Control>& controls, ui::
             del_btn.key = network_control::popup_delete_item;
             del_btn.parent = network_control::popup_header;
             del_btn.kind = ui::ControlKind::button;
+            del_btn.enabled = !read_only;
             del_btn.icon = ui::ControlIcon::trash;
             del_btn.classes = {"ghost-tool"};
             del_btn.layout = ui_layout::NodeInput::box(22.f, 20.f);
@@ -3662,6 +3718,7 @@ void NetworkCanvas::append_canvas_popup(std::vector<ui::Control>& controls, ui::
             auto_btn.key = network_control::shape_pick_first;
             auto_btn.parent = network_control::popup_box;
             auto_btn.kind = ui::ControlKind::button;
+            auto_btn.enabled = !read_only;
             auto_btn.text = L"Auto (Match SOP Role)";
             auto_btn.single_line = true;
             auto_btn.selected = cur_shape == GraphNodeShape::auto_role;
@@ -3727,6 +3784,7 @@ void NetworkCanvas::append_canvas_popup(std::vector<ui::Control>& controls, ui::
                     cell.key = bkey;
                     cell.parent = wrap_key;
                     cell.kind = ui::ControlKind::button;
+                    cell.enabled = !read_only;
                     cell.text = shape_titles[idx];
                     cell.single_line = true;
                     cell.selected = active;
@@ -3795,6 +3853,7 @@ void NetworkCanvas::append_canvas_popup(std::vector<ui::Control>& controls, ui::
                     sw_btn.key = skey;
                     sw_btn.parent = rkey;
                     sw_btn.kind = ui::ControlKind::button;
+                    sw_btn.enabled = !read_only;
                     sw_btn.tooltip = swatch_help[idx];
                     sw_btn.layout = ui_layout::NodeInput::box(0.f, 22.f);
                     sw_btn.layout.width = ui_layout::Axis::expand();
@@ -3810,6 +3869,7 @@ void NetworkCanvas::append_canvas_popup(std::vector<ui::Control>& controls, ui::
             rst_btn.key = network_control::color_reset_btn;
             rst_btn.parent = network_control::popup_box;
             rst_btn.kind = ui::ControlKind::button;
+            rst_btn.enabled = !read_only;
             rst_btn.text = L"Reset to Role Color";
             rst_btn.single_line = true;
             rst_btn.layout = ui_layout::NodeInput::box(0.f, 22.f);
@@ -3876,6 +3936,7 @@ void NetworkCanvas::append_canvas_popup(std::vector<ui::Control>& controls, ui::
                 cedit.key = network_control::info_comment_input;
                 cedit.parent = network_control::popup_box;
                 cedit.kind = ui::ControlKind::text_edit;
+                cedit.enabled = !read_only;
                 cedit.text = popup_.body_edit;
                 cedit.layout = ui_layout::NodeInput::box(0.f, 23.f);
                 cedit.layout.width = ui_layout::Axis::expand();
@@ -3888,6 +3949,7 @@ void NetworkCanvas::append_canvas_popup(std::vector<ui::Control>& controls, ui::
             tedit.key = is_note ? network_control::note_title_input : network_control::box_title_input;
             tedit.parent = network_control::popup_box;
             tedit.kind = ui::ControlKind::text_edit;
+            tedit.enabled = !read_only;
             tedit.text = popup_.title_edit;
             tedit.layout = ui_layout::NodeInput::box(0.f, 23.f);
             tedit.layout.width = ui_layout::Axis::expand();
@@ -3911,6 +3973,7 @@ void NetworkCanvas::append_canvas_popup(std::vector<ui::Control>& controls, ui::
                 bedit.key = network_control::note_body_input;
                 bedit.parent = network_control::popup_box;
                 bedit.kind = ui::ControlKind::text_edit;
+                bedit.enabled = !read_only;
                 bedit.text = popup_.body_edit;
                 bedit.layout = ui_layout::NodeInput::box(0.f, 23.f);
                 bedit.layout.width = ui_layout::Axis::expand();
@@ -3935,6 +3998,7 @@ void NetworkCanvas::append_canvas_popup(std::vector<ui::Control>& controls, ui::
                 sw.key = network_control::color_pick_first + sw_i;
                 sw.parent = crow_key;
                 sw.kind = ui::ControlKind::button;
+                sw.enabled = !read_only;
                 sw.layout = ui_layout::NodeInput::box(0.f, 20.f);
                 sw.layout.width = ui_layout::Axis::expand();
                 sw.style.radius = {3.f, 3.f, 3.f, 3.f};

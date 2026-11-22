@@ -17,6 +17,7 @@
 #include "ui/docking.hpp"
 #include "renderer/view_settings.hpp"
 #include "ui_language/live_document.hpp"
+#include <unordered_set>
 
 namespace atelier::editor {
 // Colour editor conversions (sRGB-agnostic: the edited field values are used as-is).
@@ -324,7 +325,14 @@ struct Workspace {
             color_pick,
             saved_data,
             operator_call,
-            text_field
+            text_field,
+            graph_param_context,
+            graph_param_field,
+            graph_param_slider,
+            graph_param_text,
+            graph_param_override_toggle,
+            graph_param_submenu,
+            graph_node_asset_slot
         };
 
         ui::ControlKey key{};
@@ -343,7 +351,10 @@ struct Workspace {
 
         double color_maximum{}; // color_pick reuses the owning numeric property's range.
 
-        std::string material_path{}; // Stable MS declaration path; index is a vector lane.
+        std::string
+            material_path{}; // Stable MS declaration path or Graph parameter / field path; index is a vector lane.
+
+        std::string node_name{}; // Optional target node name inside a .procgraph.
 
         std::unique_ptr<OperatorBinding> call{}; // Retired with this binding, before the document closes.
     };
@@ -425,7 +436,23 @@ struct Workspace {
             selected_graph_nodes.push_back(selected_graph_node);
     }
 
+    struct GraphBreadcrumb {
+        std::string graph_key;
+
+        std::string asset_node_name;
+    };
+
+    std::vector<GraphBreadcrumb> graph_breadcrumbs;
+
+    std::string dived_network_graph; // Active child asset graph when diving in while 3D Viewport stays in World.
+
+    std::unordered_map<std::string, bool> network_lock_overrides;
+
+    bool is_network_graph_locked(const Session& session, std::string_view net_graph) const;
+
     ObjectId inspected_graph_object(const Session&, std::string_view graph_key = {}) const noexcept;
+
+    std::string default_selected_graph_node(const Session&, std::string_view graph_key) const;
 
     std::string selected_generator_graph(const Session&) const;
 
@@ -753,12 +780,6 @@ private:
 
     std::string failed_auto_open_graph_;
 
-    const Runtime* node_catalog_runtime_{};
-
-    std::size_t node_catalog_types_{};
-
-    std::vector<GraphNodeCatalogEntry> node_catalog_;
-
     std::uint64_t empty_network_canvas_revision_{ui::ControlList::new_region_revision()};
 
     Selection menu_selection_;
@@ -769,6 +790,10 @@ private:
 
     ui::ControlKey bind_material(ObjectId, std::string_view, Binding::Kind, ObjectId component = {},
                                  std::string_view slot = {}, std::size_t index = 0);
+
+    ui::ControlKey bind_graph_param(std::string_view graph_key, std::string_view node_name, std::string_view param_path,
+                                    Binding::Kind kind, std::size_t lane = 0, ObjectId object = {},
+                                    ObjectId component = {}, std::span<const FieldId> path = {});
 
     std::vector<ui::MenuItem> material_menu(const Binding&, const Session&, const Project*);
 };

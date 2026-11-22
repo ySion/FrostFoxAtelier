@@ -44,6 +44,8 @@ struct ScalarField {
     bool transient{};
 
     bool read_only{};
+
+    MetadataList metadata{};
 };
 
 inline Result<std::vector<ScalarField>> author_fields(Runtime& runtime, TypeId type, bool include_transient = false,
@@ -112,6 +114,14 @@ inline Result<std::vector<ScalarField>> author_fields(Runtime& runtime, TypeId t
                 child.category = field.category;
             if (field.range != FieldRange{})
                 child.range = field.range;
+            for (const auto& entry : field.metadata) {
+                const auto at =
+                    std::ranges::find(child.metadata, entry.first, &std::pair<std::string, std::string>::first);
+                if (at != child.metadata.end())
+                    at->second = entry.second;
+                else
+                    child.metadata.push_back(entry);
+            }
             if (field.value.form != ValueForm::inline_value) {
                 child.type = field.value.type;
                 child.form = field.value.form;
@@ -158,6 +168,34 @@ inline bool finite_scalar(const Scalar& value) {
                 return true;
         },
         value);
+}
+
+inline bool scalar_less(const Scalar& a, const Scalar& b) noexcept {
+    if (a.index() != b.index())
+        return a.index() < b.index();
+    return std::visit(
+        [&](const auto& lhs) noexcept -> bool {
+            using T = std::decay_t<decltype(lhs)>;
+            const auto& rhs = std::get<T>(b);
+            if constexpr (std::same_as<T, EnumValue>)
+                return lhs.bits < rhs.bits;
+            else
+                return lhs < rhs;
+        },
+        a);
+}
+
+inline std::pair<Scalar, bool> clamp_scalar(Scalar value, const FieldRange& range) noexcept {
+    bool clamped = false;
+    if (range.hard_min && value.index() == range.hard_min->index() && scalar_less(value, *range.hard_min)) {
+        value = *range.hard_min;
+        clamped = true;
+    }
+    if (range.hard_max && value.index() == range.hard_max->index() && scalar_less(*range.hard_max, value)) {
+        value = *range.hard_max;
+        clamped = true;
+    }
+    return {value, clamped};
 }
 
 inline bool transform_field(const world::Types& types, FieldId field) noexcept {

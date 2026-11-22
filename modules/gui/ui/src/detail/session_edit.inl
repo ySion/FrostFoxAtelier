@@ -9,7 +9,7 @@
     }
     bool begin_edit(Reply& reply,ControlKey key, bool mode, bool select_all = false) {
         const auto& state=states.at(key);
-        auto candidate=Edit::create(state,state.control.kind==ControlKind::number?format(state.control.value,state.control.single_precision):state.control.text,
+        auto candidate=Edit::create(state,state.control.kind==ControlKind::number?format(state.control,state.control.value):state.control.text,
             state.control.value,mode,select_all);
         if (!text_ok(reply,candidate,key)) return false;
         edit.emplace(std::move(*candidate));return true;
@@ -49,7 +49,7 @@
         auto content=commit?edit->buffer().current().text:edit->buffer().original();
         std::optional<Edit> next;
         if (keep_context && focus==key) {
-            auto candidate=Edit::create(state,numeric?format(value,state.control.single_precision):content,value,!numeric,false);
+            auto candidate=Edit::create(state,numeric?format(state.control,value):content,value,!numeric,false);
             if (!text_ok(reply,candidate,key)) {
                 if (edit->buffer().active()) action(reply,ActionKind::edit_cancel,key,
                     numeric?ActionValue{edit->original_value}:ActionValue{edit->buffer().original()});
@@ -74,7 +74,7 @@
                     action(reply,ActionKind::drag_cancel,old.key,DragPoint{old.last_x,old.last_y});
                 else action(reply,ActionKind::edit_cancel,old.key,old.original);
                 if (focus==old.key && states.at(old.key).control.kind==ControlKind::number) {
-                    auto candidate=Edit::create(states.at(old.key),format(old.original,states.at(old.key).control.single_precision),old.original,false,false);
+                    auto candidate=Edit::create(states.at(old.key),format(states.at(old.key).control,old.original),old.original,false,false);
                     if (text_ok(reply,candidate,old.key)) edit.emplace(std::move(*candidate));
                 }
             }
@@ -122,7 +122,7 @@
         changed(reply,change,was_active);
     }
     std::wstring display(const State& state) const {
-        if (press && press->key==state.control.key && press->dragging) return format(press->value,state.control.single_precision);
+        if (press && press->key==state.control.key && press->dragging) return format(state.control,press->value);
         if (edit && edit->key==state.control.key) {
             auto value=edit->buffer().current().text;
             if (edit->composition) {
@@ -131,7 +131,7 @@
             }
             return value;
         }
-        return state.control.kind==ControlKind::number?format(state.control.value,state.control.single_precision):state.control.text;
+        return state.control.kind==ControlKind::number?format(state.control,state.control.value):state.control.text;
     }
     Result<detail::TextPosition> display_caret() const {
         if (!edit->composition) return edit->buffer().current().caret;

@@ -40,7 +40,7 @@
   "nodes": {
     "OUT_fortified_outpost": {
       "color": "#eab308",
-      "comment": "Milestone output",
+      "comment": "Digital Asset output",
       "inputs": {
         "input": "merge_outpost.output"
       },
@@ -48,9 +48,12 @@
         180.0,
         840.0
       ],
-      "properties": {},
+      "properties": {
+        "order": 0,
+        "port_name": "output"
+      },
       "shape": "diamond",
-      "type": "procedural.Null"
+      "type": "procedural.GraphOutput"
     },
     "all_prop_pts": {
       "inputs": {
@@ -161,7 +164,7 @@
           "y": 1.0,
           "z": 0.0
         },
-        "width": 0.92
+        "width": 0.76
       },
       "type": "procedural.Sweep"
     },
@@ -314,9 +317,68 @@
       "title": "Fortified Outpost SOP"
     }
   },
+  "parameters": [
+    {
+      "category": "Terrain",
+      "label": "Island Radius",
+      "name": "island_radius",
+      "targets": [
+        "island_terrace.radius"
+      ]
+    },
+    {
+      "category": "Terrain",
+      "label": "Terraces",
+      "name": "terraces",
+      "targets": [
+        "island_terrace.terraces"
+      ]
+    },
+    {
+      "category": "Bastion",
+      "label": "Bastion Radius",
+      "name": "fort_radius",
+      "targets": [
+        "layout_skeleton.fort_radius"
+      ]
+    },
+    {
+      "category": "Bastion",
+      "label": "Bastion Sides",
+      "name": "sides",
+      "targets": [
+        "layout_skeleton.sides"
+      ]
+    },
+    {
+      "category": "Bastion",
+      "label": "Gate Width",
+      "name": "gate_width",
+      "targets": [
+        "layout_skeleton.gate_width"
+      ]
+    },
+    {
+      "category": "Bastion",
+      "label": "Merlon Height",
+      "name": "merlon_height",
+      "targets": [
+        "layout_skeleton.merlon_height",
+        "merlon_sweep.height"
+      ]
+    },
+    {
+      "category": "Dressing",
+      "label": "Prop Density",
+      "name": "prop_density",
+      "targets": [
+        "candidates.density"
+      ]
+    }
+  ],
   "settings": {
     "display": "OUT_fortified_outpost",
     "seed": 204
   },
-  "version": 2
+  "version": 3
 }

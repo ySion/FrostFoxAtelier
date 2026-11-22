@@ -118,8 +118,6 @@ inline constexpr ui::ControlKey tab_pick_first = popup_root + 32; // +32..+47
 
 inline constexpr ui::ControlKey tab_cat_row = popup_root + 48;
 
-inline constexpr ui::ControlKey tab_cat_first = popup_root + 50; // +50..+55
-
 inline constexpr ui::ControlKey menu_view = popup_root + 56;
 
 inline constexpr ui::ControlKey menu_layout = popup_root + 57;
@@ -161,6 +159,10 @@ inline constexpr ui::ControlKey popup_delete_item = popup_root + 116;
 inline constexpr ui::ControlKey popup_aux_first = popup_root + 128; // +128..+255
 
 inline constexpr ui::ControlKey path_choice_first = popup_root + 256; // +256..+511
+
+inline constexpr ui::ControlKey tab_cat_7_first = popup_root + 520; // +520..+535
+
+inline constexpr ui::ControlKey lock_toggle = popup_root + 536;
 } // namespace network_control
 
 class GeometrySpreadsheet final {
@@ -265,6 +267,7 @@ public:
         scatter_copy,
         utility,
         source_sop,
+        digital_asset,
     };
 
     enum class PopupKind : std::uint8_t {
@@ -349,6 +352,8 @@ public:
 
         std::string context_node;
 
+        std::string dive_into_node;
+
         std::array<float, 2> context_world_pos{};
 
         std::optional<ui::Cursor> cursor;
@@ -417,7 +422,7 @@ public:
     Result<std::string> commit_tab_pick(Session& session, std::string_view graph_key,
                                         std::span<const GraphNodeCatalogEntry> catalog, std::size_t pick_index,
                                         std::string& primary_selected, std::vector<std::string>& selected_nodes,
-                                        bool set_display = false);
+                                        bool set_display = false, Project* project = nullptr);
 
     const Popup& popup() const noexcept { return popup_; }
 
@@ -429,21 +434,22 @@ public:
 
     Result<bool> apply_action(Session& session, std::string_view graph_key, std::string& primary_selected,
                               std::vector<std::string>& selected_nodes, ui_layout::Size canvas_dip,
-                              const ui::Action& action, std::wstring& out_status);
+                              const ui::Action& action, std::wstring& out_status, bool read_only = false);
 
     Result<InteractionOutcome> pointer_event(Session& session, std::string_view graph_key,
                                              std::string& primary_selected, std::vector<std::string>& selected_nodes,
                                              ui::Rect canvas_px, float dpi_scale, const ui::Event& event,
-                                             Project* project = nullptr);
+                                             Project* project = nullptr, bool read_only = false);
 
     Result<InteractionOutcome> key_event(Session& session, std::string_view graph_key, std::string& primary_selected,
                                          std::vector<std::string>& selected_nodes, ui::Rect canvas_px, float dpi_scale,
-                                         const ui::Event& event, std::uint32_t native_key);
+                                         const ui::Event& event, std::uint32_t native_key, Project* project = nullptr,
+                                         bool read_only = false);
 
     void append_canvas(ui_language::ControlOutput output, ui::ControlKey canvas_parent, ui_layout::Size canvas_dip,
                        const std::shared_ptr<const GraphInspectView>& topology,
                        std::span<const GraphNodeCatalogEntry> catalog, std::string_view primary_selected,
-                       std::span<const std::string> selected_nodes);
+                       std::span<const std::string> selected_nodes, bool read_only = false);
 
     std::uint64_t idle_revision() const noexcept { return idle_projection_ ? idle_projection_->revision : 0; }
 
@@ -498,6 +504,8 @@ private:
 
         bool air_ring_hidden;
 
+        bool read_only;
+
         bool operator==(const IdleCanvasState&) const = default;
     };
 
@@ -550,7 +558,7 @@ private:
     std::array<float, 2> prepare_wire_routes(const std::shared_ptr<const GraphInspectView>&, ui_layout::Size);
 
     void append_canvas_popup(std::vector<ui::Control>&, ui::ControlKey parent, float width, float height,
-                             const GraphInspectView&, std::span<const GraphNodeCatalogEntry>) const;
+                             const GraphInspectView&, std::span<const GraphNodeCatalogEntry>, bool read_only) const;
 
     struct SavedView {
         float pan_x{160.f};

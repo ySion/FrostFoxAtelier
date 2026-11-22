@@ -28,7 +28,7 @@
   "nodes": {
     "OUT_terrace": {
       "color": "#eab308",
-      "comment": "Milestone output",
+      "comment": "Digital Asset output",
       "inputs": {
         "input": "out.output"
       },
@@ -36,9 +36,12 @@
         0.0,
         768.0
       ],
-      "properties": {},
+      "properties": {
+        "order": 0,
+        "port_name": "output"
+      },
       "shape": "diamond",
-      "type": "procedural.Null"
+      "type": "procedural.GraphOutput"
     },
     "instancer": {
       "comment": "2 prop variants",
@@ -193,9 +196,43 @@
       "title": "Terrace Outpost SOP"
     }
   },
+  "parameters": [
+    {
+      "category": "Terrain",
+      "label": "Island Radius",
+      "name": "radius",
+      "targets": [
+        "terrace.radius"
+      ]
+    },
+    {
+      "category": "Terrain",
+      "label": "Terrace Count",
+      "name": "terraces",
+      "targets": [
+        "terrace.terraces"
+      ]
+    },
+    {
+      "category": "Terrain",
+      "label": "Plateau Height",
+      "name": "height",
+      "targets": [
+        "terrace.height"
+      ]
+    },
+    {
+      "category": "Scattering",
+      "label": "Prop Density",
+      "name": "prop_density",
+      "targets": [
+        "scatter.density"
+      ]
+    }
+  ],
   "settings": {
     "display": "OUT_terrace",
     "seed": 101
   },
-  "version": 2
+  "version": 3
 }

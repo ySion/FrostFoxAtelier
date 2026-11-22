@@ -676,6 +676,8 @@ struct Session::GraphCodec {
         presentation::ProceduralBinding binding;
 
         std::vector<presentation::MaterialBinding> bindings;
+
+        json::Document overrides;
     };
 
     struct Graph {
@@ -1192,6 +1194,7 @@ struct Session::GraphCodec {
                     }
                     if (derives(runtime, state.type, session.presentation_types_.procedural_generator_component)) {
                         auto bindings = take(presentation::read_material_bindings(runtime, part.id()));
+                        const json::Document ov = session.generator_overrides(part.id());
                         if (persistent) {
                             auto proc = take(presentation::read_procedural_source(runtime, part.id()));
                             if (session.is_scratch_graph(proc.source))
@@ -1201,8 +1204,10 @@ struct Session::GraphCodec {
                         } else {
                             auto proc = take(presentation::read_procedural_binding(runtime, part.id()));
                             ATELIER_TRY(scene_result(builder.set(value, "graph", proc.source)));
-                            graph.generators.emplace(key, GeneratorCopy{std::move(proc), bindings});
+                            graph.generators.emplace(key, GeneratorCopy{std::move(proc), bindings, ov});
                         }
+                        if (ov.root().kind() == json::Kind::object && ov.root().size() > 0)
+                            builder.set_validated(value, "overrides", ov.root());
                         ATELIER_TRY(encode_material_bindings(value, bindings));
                     }
                     if (derives(runtime, state.type, session.presentation_types_.environment_component)) {
@@ -1799,8 +1804,9 @@ struct Session::GraphCodec {
                     ATELIER_TRY(load.extra(component, part,
                                            {"id", "type", "name", "enabled", "properties", "mesh", "materials"}));
                 else if (derives(runtime, component_type, session.presentation_types_.procedural_generator_component))
-                    ATELIER_TRY(load.extra(component, part,
-                                           {"id", "type", "name", "enabled", "properties", "graph", "materials"}));
+                    ATELIER_TRY(
+                        load.extra(component, part,
+                                   {"id", "type", "name", "enabled", "properties", "graph", "overrides", "materials"}));
                 else if (derives(runtime, component_type, session.presentation_types_.environment_component))
                     ATELIER_TRY(
                         load.extra(component, part, {"id", "type", "name", "enabled", "properties", "sky_map"}));
@@ -2399,6 +2405,8 @@ struct Session::GraphCodec {
                     if (auto at = graph.generators.find(key); at != graph.generators.end()) {
                         const auto& copy = at->second;
                         take(presentation::set_procedural_binding(runtime, object, copy.binding));
+                        if (copy.overrides.root().kind() == json::Kind::object && copy.overrides.root().size() > 0)
+                            session.generator_overrides_[object] = copy.overrides;
                         auto bindings = copy.bindings;
                         for (auto& binding : bindings) {
                             used_materials.insert(copied_material_keys.at(binding.resource.id()));
@@ -2448,6 +2456,27 @@ struct Session::GraphCodec {
                             }
                         }
                         take(presentation::set_procedural_binding(runtime, object, {source, nullptr, {}}));
+                        if (const auto ov_at = *part.find("overrides")) {
+                            if (ov_at->kind() != json::Kind::object) {
+                                load.keep(
+                                    object, {"overrides"}, *ov_at, world::DiagnosticKind::mismatch,
+                                    "Expected an object of generator parameter overrides; the saved value is kept.");
+                            } else {
+                                json::Builder clean_ov;
+                                for (const auto& [ov_key, ov_val] : *ov_at->object_items()) {
+                                    if (!valid_graph_identifier(ov_key)) {
+                                        load.keep(
+                                            object, {"overrides", std::string(ov_key)}, ov_val,
+                                            world::DiagnosticKind::unknown_field,
+                                            "Invalid generator parameter override identifier; the saved value is kept.");
+                                        continue;
+                                    }
+                                    clean_ov.set_validated(clean_ov.root(), ov_key, ov_val);
+                                }
+                                if (clean_ov.root().size() > 0)
+                                    session.generator_overrides_[object] = clean_ov.finish();
+                            }
+                        }
                         ATELIER_TRY_BIND(
                             bindings,
                             decode_material_bindings(
@@ -2874,8 +2903,8 @@ struct Session::GraphCodec {
                     else
                         throw std::runtime_error("Only an Entity or Component can be removed.");
                 } else if (kind == "set") {
-                    ATELIER_TRY(op.allowed_members(
-                        {"op", "id", "name", "enabled", "space", "properties", "materials", "sky_map", "graph"}));
+                    ATELIER_TRY(op.allowed_members({"op", "id", "name", "enabled", "space", "properties", "materials",
+                                                    "sky_map", "graph", "overrides"}));
                     ATELIER_TRY_BIND(id, op.at("id"));
                     ATELIER_TRY_BIND(edited_value, target(*id));
                     const auto edited = *edited_value;
@@ -2994,6 +3023,9 @@ struct Session::GraphCodec {
                             note(world::Severity::warning, missing->kind, missing->error.message, &missing->error);
                     }
                     if (const auto at = *op.find("graph")) {
+                        if (entity || !take(runtime.is_a(take(runtime.type_of(edited)),
+                                                         session.presentation_types_.procedural_generator_component)))
+                            throw std::runtime_error("Only a ProceduralGeneratorComponent has a graph.");
                         ATELIER_TRY_BIND(text, at->string());
                         const auto source = std::string(*text);
                         const MissingResource* missing{};
@@ -3012,6 +3044,28 @@ struct Session::GraphCodec {
                         take(presentation::set_procedural_binding(runtime, edited, {source, nullptr, {}}));
                         if (missing)
                             note(world::Severity::warning, missing->kind, missing->error.message, &missing->error);
+                    }
+                    if (const auto at = *op.find("overrides")) {
+                        if (entity || !take(runtime.is_a(take(runtime.type_of(edited)),
+                                                         session.presentation_types_.procedural_generator_component)))
+                            throw std::runtime_error("Only a ProceduralGeneratorComponent has overrides.");
+                        if (at->is_null()) {
+                            session.generator_overrides_.erase(edited);
+                            ++session.revision_;
+                        } else if (at->kind() == json::Kind::object) {
+                            ATELIER_TRY_BIND(ov_items, at->object_items());
+                            for (const auto& [ov_key, _] : *ov_items) {
+                                if (!valid_graph_identifier(ov_key))
+                                    throw std::runtime_error("Invalid generator override parameter identifier.");
+                            }
+                            if (at->size() > 0)
+                                session.generator_overrides_[edited] = json::Document(*at);
+                            else
+                                session.generator_overrides_.erase(edited);
+                            ++session.revision_;
+                        } else {
+                            throw std::runtime_error("Expected a generator overrides object.");
+                        }
                     }
                     if (const auto at = *op.find("space")) {
                         if (!entity)
@@ -3563,9 +3617,19 @@ void Session::forward_change(const Change& change, bool forward) {
                 else if constexpr (std::is_same_v<T, SkyMapChange>)
                     ATELIER_TRY(set(item.root.id(), "sky_map",
                                     take(presentation::read_sky_map(runtime_, item.root.id())).source));
-                else if constexpr (std::is_same_v<T, ProceduralGraphChange>)
-                    ATELIER_TRY(set(item.root.id(), "graph", forward ? item.after : item.before));
-                else
+                else if constexpr (std::is_same_v<T, ProceduralGraphChange>) {
+                    json::Builder op;
+                    op.set_validated(op.root(), "op", "set");
+                    ATELIER_TRY_BIND(id, scene_result(C::live_id(*this, item.root.id())));
+                    op.set_validated(op.root(), "id", *id);
+                    if (item.before != item.after)
+                        ATELIER_TRY(scene_result(op.set(op.root(), "graph", forward ? item.after : item.before)));
+                    if (item.before_overrides != item.after_overrides || item.before == item.after) {
+                        const auto& ov = forward ? item.after_overrides : item.before_overrides;
+                        op.set_validated(op.root(), "overrides", ov.root());
+                    }
+                    push(op.root());
+                } else
                     static_assert(std::is_same_v<T, RetainedChange>,
                                   "Every change kind is forwarded to Play or explicitly not.");
                 return {};
@@ -3828,6 +3892,15 @@ void Session::forward_edit() {
         const auto encoded = [&]() -> json::Result<void> {
             if (material_edit_)
                 forward_material(material_edit_->root.id());
+            if (graph_param_edit_ && graph_param_edit_->generator_root.id() != ObjectId{}) {
+                ATELIER_TRY_BIND(id, C::live_id(*this, graph_param_edit_->generator_root.id()));
+                json::Builder op;
+                op.set_validated(op.root(), "op", "set");
+                op.set_validated(op.root(), "id", *id);
+                const auto ov = generator_overrides(graph_param_edit_->generator_root.id());
+                op.set_validated(op.root(), "overrides", ov.root());
+                C::live_push(*this, "overrides " + *id, op.root());
+            }
             if (group_)
                 ATELIER_TRY(fields(group_->root.id(), group_->paths));
             if (transform_)
@@ -4062,6 +4135,7 @@ std::vector<Session::RetainedSwap> Session::release(const Change& change) {
     static const std::array<std::string, 1> name{"name"};
     static const std::array<std::string, 1> sky{"sky_map"};
     static const std::array<std::string, 1> proc_graph{"graph"};
+    static const std::array<std::string, 1> proc_overrides{"overrides"};
     static const std::array<std::string, 2> body{"properties", "body"};
     std::visit(
         [&](const auto& item) {
@@ -4098,8 +4172,12 @@ std::vector<Session::RetainedSwap> Session::release(const Change& change) {
                 drop_slots(item.root.id());
             else if constexpr (std::is_same_v<T, SkyMapChange>)
                 drop(item.root.id(), sky);
-            else if constexpr (std::is_same_v<T, ProceduralGraphChange>)
-                drop(item.root.id(), proc_graph);
+            else if constexpr (std::is_same_v<T, ProceduralGraphChange>) {
+                if (item.before != item.after)
+                    drop(item.root.id(), proc_graph);
+                if (item.before_overrides != item.after_overrides)
+                    drop(item.root.id(), proc_overrides);
+            }
         },
         change);
     return swaps;
@@ -4220,9 +4298,14 @@ Result<RetainedView> Session::retained(ObjectId object) const {
                             ? mismatch
                             : unknown_key};
             }
+            if (path.front() == "overrides") {
+                if (path.size() == 1)
+                    return {true, mismatch};
+                return {false, unknown_field};
+            }
             if (path.front() == "materials" && mesh_unavailable)
                 return {false, mesh_unavailable->kind};
-            constexpr std::array known{"name", "enabled", "mesh", "graph", "materials", "sky_map"};
+            constexpr std::array known{"name", "enabled", "mesh", "graph", "overrides", "materials", "sky_map"};
             return {false, std::ranges::find(known, path.front()) != known.end() ? mismatch : unknown_key};
         };
         std::vector<std::string> path;

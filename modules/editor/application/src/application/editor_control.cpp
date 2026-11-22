@@ -1382,6 +1382,9 @@ struct EditorControl::Impl {
                         if (col.transforms)
                             instance_count += col.transforms->size();
                 ATELIER_TRY(result.set(proc_record, "instance_count", instance_count));
+                const auto ov_doc = app.document_->generator_overrides(id);
+                if (ov_doc.root().kind() == json::Kind::object && ov_doc.root().size() > 0)
+                    result.set_validated(proc_record, "overrides", ov_doc.root());
             }
             ATELIER_TRY_BIND(materials, result.array(root, "materials"));
             for (const auto& binding : *bindings) {
@@ -1852,12 +1855,29 @@ struct EditorControl::Impl {
                 ATELIER_TRY(result.append(*outputs, name));
             return {};
         };
+        const auto external_ports = result.object_validated(root, "external_ports");
+        ATELIER_TRY(write_ports(external_ports, view.external_ports));
+        ATELIER_TRY_BIND(parameters, result.array(root, "parameters"));
+        for (const auto& param : view.parameters) {
+            const auto item = result.append_object(*parameters);
+            ATELIER_TRY(result.set(item, "name", param.name));
+            ATELIER_TRY(result.set(item, "label", param.label));
+            ATELIER_TRY(result.set(item, "category", param.category));
+            ATELIER_TRY(result.set(item, "description", param.description));
+            ATELIER_TRY_BIND(targets, result.array(item, "targets"));
+            for (const auto& t : param.targets)
+                ATELIER_TRY(result.append(*targets, t));
+        }
         ATELIER_TRY_BIND(types, result.array(root, "node_types"));
         for (const auto& type : catalog) {
             const auto item = result.append_object(*types);
             ATELIER_TRY(result.set(item, "name", type.name));
             ATELIER_TRY(result.set(item, "description", type.description));
             ATELIER_TRY(result.set(item, "native", type.native));
+            if (!type.asset_key.empty()) {
+                ATELIER_TRY(result.set(item, "asset", type.asset_key));
+                ATELIER_TRY(result.set(item, "display_label", type.display_label));
+            }
             ATELIER_TRY(write_ports(item, type.ports));
         }
         ATELIER_TRY_BIND(nodes, result.array(root, "nodes"));
@@ -1866,6 +1886,12 @@ struct EditorControl::Impl {
             ATELIER_TRY(result.set(item, "name", node.name));
             result.set_validated(item, "handle", handle(node.id));
             ATELIER_TRY(result.set(item, "type", node.type));
+            if (!node.asset_key.empty()) {
+                ATELIER_TRY(result.set(item, "asset", node.asset_key));
+                ATELIER_TRY(result.set(item, "asset_label", node.asset_label));
+            }
+            if (node.overrides.root().kind() == json::Kind::object && node.overrides.root().size() > 0)
+                result.set_validated(item, "overrides", node.overrides.root());
             ATELIER_TRY(result.set(item, "placeholder", node.placeholder));
             ATELIER_TRY(result.set(item, "display", node.is_display));
             ATELIER_TRY(result.set(item, "template", node.is_template));
@@ -2538,7 +2564,8 @@ struct EditorControl::Impl {
             }
             const auto view = take(doc.inspect_graph(key, app.project_ ? &*app.project_ : nullptr, inspected_id,
                                                      timings, samples, spatial, ref_id, ref_name));
-            return graph_inspect_json(view, node_name, take(doc.procedural_node_types()));
+            return graph_inspect_json(view, node_name,
+                                      take(doc.procedural_node_types(app.project_ ? &*app.project_ : nullptr, key)));
         }
         if (op == "job.status" || op == "job.cancel") {
             ATELIER_TRY_BIND(job_id, text(*args.at("job_id"), 80));

@@ -8,6 +8,7 @@
 #include "procedural/evaluator.hpp"
 #include "procedural/graph.hpp"
 #include "procedural/instances.hpp"
+#include "procedural/nodes.hpp"
 #include "source/program.hpp"
 #include "source/snapshot.hpp"
 #include <algorithm>
@@ -26,12 +27,6 @@ namespace {
 
 auto graph_error(std::string message, ErrorCode code = ErrorCode::argument_mismatch) {
     return std::unexpected(Error{code, std::move(message)});
-}
-
-bool valid_node_identifier(std::string_view text) noexcept {
-    const auto head = [](char c) { return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_'; };
-    return !text.empty() && text.size() <= 128 && head(text.front()) &&
-           std::ranges::all_of(text.substr(1), [&](char c) { return head(c) || (c >= '0' && c <= '9'); });
 }
 
 std::string default_node_stem(std::string_view type_name) {
@@ -89,6 +84,8 @@ public:
             ++epoch_;
         }
     }
+
+    [[nodiscard]] Project* project() const noexcept { return project_; }
 
     void bind_temporary_reader(assets::Reader* reader) noexcept {
         if (temporary_reader_ != reader) {
@@ -260,6 +257,10 @@ struct GraphRenameChange {
     };
 
     std::vector<Retained> references;
+
+    std::vector<GraphPromotedParameter> before_parameters{};
+
+    std::vector<GraphPromotedParameter> after_parameters{};
 };
 
 struct GraphMoveChange {
@@ -332,11 +333,80 @@ struct GraphNodesChange {
     json::Document after_kept;
 
     std::vector<RetainedNodeKept> retained_node_kept{};
+
+    std::vector<GraphPromotedParameter> before_parameters{};
+
+    std::vector<GraphPromotedParameter> after_parameters{};
+};
+
+struct GraphParameterSchemaChange {
+    struct NodeSnapshot {
+        ObjectRoot target;
+
+        json::Document before_props;
+
+        json::Document after_props;
+
+        json::Document before_kept;
+
+        json::Document after_kept;
+    };
+
+    std::vector<GraphPromotedParameter> before_parameters;
+
+    std::vector<GraphPromotedParameter> after_parameters;
+
+    std::vector<NodeSnapshot> synced_nodes{};
+};
+
+struct GraphAssetOverrideChange {
+    std::string node_name;
+
+    json::Document before_overrides;
+
+    json::Document after_overrides;
+
+    std::string before_asset{};
+
+    std::string after_asset{};
+
+    bool asset_changed{};
+
+    procedural::Ports before_ports{};
+
+    procedural::Ports after_ports{};
+
+    std::vector<GraphConnectionChange::TargetDelta> connection_deltas{};
+};
+
+struct GraphExtractChange {
+    std::vector<GraphNode> removed_nodes;
+
+    GraphNode added_asset_node;
+
+    std::vector<GraphNodesChange::SavedInputs> before_inputs;
+
+    std::vector<GraphNodesChange::SavedInputs> after_inputs;
+
+    ObjectId before_display{};
+
+    ObjectId after_display{};
+
+    ObjectId before_template{};
+
+    ObjectId after_template{};
+
+    std::vector<GraphNodesChange::RetainedNodeKept> retained_node_kept{};
+
+    std::vector<GraphPromotedParameter> before_parameters{};
+
+    std::vector<GraphPromotedParameter> after_parameters{};
 };
 
 using GraphChange = std::variant<GraphScalarChange, GraphPropertyChange, GraphDisplayChange, GraphTemplateChange,
                                  GraphBypassChange, GraphFreezeChange, GraphAppearanceChange, GraphAnnotationChange,
-                                 GraphRenameChange, GraphMoveChange, GraphConnectionChange, GraphNodesChange>;
+                                 GraphRenameChange, GraphMoveChange, GraphConnectionChange, GraphNodesChange,
+                                 GraphParameterSchemaChange, GraphAssetOverrideChange, GraphExtractChange>;
 
 void erase_kept_input(json::Document& kept, std::string_view port) {
     json::Builder next_kept(kept);
@@ -398,8 +468,7 @@ Result<std::vector<std::string>> format_live_port_endpoints(Runtime& runtime, co
         const auto* src = find_node_by_id(doc, in.from);
         if (!src)
             continue;
-        ATELIER_TRY_BIND(src_type, runtime.type_of(in.from));
-        ATELIER_TRY_BIND(src_ports, procedural::ports(runtime, *src_type));
+        ATELIER_TRY_BIND(src_ports, procedural::ports(runtime, in.from));
         if (in.output < src_ports->outputs.size())
             out.push_back(src->name + "." + src_ports->outputs[in.output]);
     }
@@ -566,6 +635,62 @@ void summarize_numeric_lanes(std::span<const T> values, std::uint32_t lanes, aut
     }
 }
 
+void detach_asset_node_subgraph(Runtime& runtime, ObjectId node_id) noexcept {
+    if (node_id == ObjectId{})
+        return;
+    const auto asset_type = runtime.native_type<procedural::AssetNode>();
+    if (!asset_type || runtime.type_of(node_id) != *asset_type)
+        return;
+    if (auto sub = procedural::asset_subgraph(runtime, node_id)) {
+        if (sub->graph.registered()) {
+            sub->graph = {};
+            sub->input_nodes.clear();
+            sub->output_nodes.clear();
+            (void)procedural::set_asset_subgraph(runtime, node_id, std::move(*sub));
+        }
+    }
+}
+
+struct CachedPromotedParam {
+    std::string name;
+
+    ResolvedPromotedSchema schema;
+
+    std::variant<std::vector<Scalar>, std::string> default_value;
+};
+
+struct BoundAssetInstance {
+    Runtime* owner_runtime{};
+
+    std::string asset_key;
+
+    std::uint64_t source_epoch{};
+
+    std::uint64_t code_version{};
+
+    json::Document applied_overrides;
+
+    bool overrides_initialized{};
+
+    std::uint64_t overrides_hash{};
+
+    std::uint64_t content_revision{};
+
+    GraphDocument cloned_doc;
+
+    std::vector<CachedPromotedParam> cached_params;
+
+    std::vector<world::Diagnostic> override_issues;
+
+    std::unordered_map<ObjectId, std::unique_ptr<BoundAssetInstance>> children;
+
+    ~BoundAssetInstance() {
+        children.clear();
+        if (owner_runtime)
+            destroy_private_graph_document(*owner_runtime, cloned_doc);
+    }
+};
+
 } // namespace
 
 struct Session::OpenGraph {
@@ -587,6 +712,10 @@ struct Session::OpenGraph {
 
     std::unique_ptr<procedural::Evaluator> evaluator;
 
+    std::unordered_map<ObjectId, std::unique_ptr<BoundAssetInstance>> asset_instances;
+
+    std::vector<world::Diagnostic> asset_issues;
+
     std::shared_ptr<const GraphInspectView> topology;
 
     std::uint64_t evaluation_generation{};
@@ -594,6 +723,8 @@ struct Session::OpenGraph {
     std::uint64_t topology_revision{};
 
     std::uint64_t topology_generation{};
+
+    std::uint64_t shallow_ports_revision{};
 
     std::uint64_t mutation_epoch{1};
 
@@ -624,6 +755,8 @@ struct Session::OpenGraph {
 
 struct Session::GeneratorRuntimeCache {
     struct GraphSlot {
+        Runtime* owner_runtime{};
+
         std::optional<GraphDocument> closed_doc;
 
         std::uint64_t closed_project_revision{};
@@ -635,6 +768,78 @@ struct Session::GeneratorRuntimeCache {
         std::uint64_t code_version{};
 
         std::unique_ptr<procedural::Evaluator> evaluator;
+
+        std::unordered_map<ObjectId, std::unique_ptr<BoundAssetInstance>> asset_instances;
+
+        GraphSlot() = default;
+
+        GraphSlot(const GraphSlot&) = delete;
+
+        GraphSlot& operator=(const GraphSlot&) = delete;
+
+        GraphSlot(GraphSlot&& other) noexcept
+            : owner_runtime(std::exchange(other.owner_runtime, nullptr)), closed_doc(std::move(other.closed_doc)),
+              closed_project_revision(other.closed_project_revision), bound_graph_id(other.bound_graph_id),
+              bound_program(other.bound_program), code_version(other.code_version),
+              evaluator(std::move(other.evaluator)), asset_instances(std::move(other.asset_instances)) {}
+
+        GraphSlot& operator=(GraphSlot&& other) noexcept {
+            if (this != &other) {
+                reset();
+                owner_runtime = std::exchange(other.owner_runtime, nullptr);
+                closed_doc = std::move(other.closed_doc);
+                closed_project_revision = other.closed_project_revision;
+                bound_graph_id = other.bound_graph_id;
+                bound_program = other.bound_program;
+                code_version = other.code_version;
+                evaluator = std::move(other.evaluator);
+                asset_instances = std::move(other.asset_instances);
+            }
+            return *this;
+        }
+
+        ~GraphSlot() { reset(); }
+
+        void reset() noexcept {
+            evaluator.reset();
+            bound_graph_id = {};
+            bound_program = nullptr;
+            asset_instances.clear();
+            if (closed_doc && owner_runtime)
+                destroy_private_graph_document(*owner_runtime, *closed_doc);
+            closed_doc.reset();
+        }
+    };
+
+    struct PrivateInstance {
+        Runtime* owner_runtime{};
+
+        std::string graph_key;
+
+        std::uint64_t source_epoch{};
+
+        std::uint64_t code_version{};
+
+        json::Document applied_overrides;
+
+        bool overrides_initialized{};
+
+        GraphDocument cloned_doc;
+
+        std::vector<CachedPromotedParam> cached_params;
+
+        std::unordered_map<ObjectId, std::unique_ptr<BoundAssetInstance>> asset_instances;
+
+        const source::Program* bound_program{};
+
+        std::unique_ptr<procedural::Evaluator> evaluator;
+
+        ~PrivateInstance() {
+            evaluator.reset();
+            asset_instances.clear();
+            if (owner_runtime)
+                destroy_private_graph_document(*owner_runtime, cloned_doc);
+        }
     };
 
     struct Entry {
@@ -650,6 +855,8 @@ struct Session::GeneratorRuntimeCache {
         std::shared_ptr<const presentation::ProceduralOutput> output;
 
         std::vector<presentation::ProceduralInstanceAsset> resolved_assets;
+
+        std::unique_ptr<PrivateInstance> private_instance;
     };
 
     GraphResources resources;
@@ -659,6 +866,8 @@ struct Session::GeneratorRuntimeCache {
     std::unordered_map<std::string, GraphSlot> graph_slots;
 
     std::unordered_map<ObjectId, Entry> entries;
+
+    std::vector<ObjectId> scratch_changed;
 
     bool idle_valid{};
 
@@ -677,12 +886,11 @@ struct Session::GeneratorRuntimeCache {
     std::uint64_t idle_runtime_cursor{};
 
     void clear() noexcept {
-        for (auto& [_, slot] : graph_slots) {
-            slot.evaluator.reset();
-            slot.closed_doc.reset();
-        }
+        for (auto& [_, slot] : graph_slots)
+            slot.reset();
         graph_slots.clear();
         for (auto& [_, entry] : entries) {
+            entry.private_instance.reset();
             entry.resolved_assets.clear();
             entry.output.reset();
         }
@@ -690,6 +898,68 @@ struct Session::GeneratorRuntimeCache {
         idle_valid = false;
         has_errors = false;
     }
+};
+
+struct Session::AssetSchemaCache {
+    struct Entry {
+        Runtime* owner_runtime{};
+
+        const Project* project{};
+
+        std::uint64_t project_revision{};
+
+        std::uint64_t code_version{};
+
+        GraphDocument document;
+
+        Entry() = default;
+
+        Entry(Runtime* rt, const Project* proj, std::uint64_t prev, std::uint64_t cver, GraphDocument doc)
+            : owner_runtime(rt), project(proj), project_revision(prev), code_version(cver), document(std::move(doc)) {}
+
+        Entry(const Entry&) = delete;
+
+        Entry& operator=(const Entry&) = delete;
+
+        Entry(Entry&& other) noexcept
+            : owner_runtime(std::exchange(other.owner_runtime, nullptr)), project(other.project),
+              project_revision(other.project_revision), code_version(other.code_version),
+              document(std::move(other.document)) {}
+
+        Entry& operator=(Entry&& other) noexcept {
+            if (this != &other) {
+                if (owner_runtime)
+                    destroy_private_graph_document(*owner_runtime, document);
+                owner_runtime = std::exchange(other.owner_runtime, nullptr);
+                project = other.project;
+                project_revision = other.project_revision;
+                code_version = other.code_version;
+                document = std::move(other.document);
+            }
+            return *this;
+        }
+
+        ~Entry() {
+            if (owner_runtime)
+                destroy_private_graph_document(*owner_runtime, document);
+        }
+    };
+
+    std::unordered_map<std::string, Entry> schemas;
+
+    std::unordered_set<std::string> resolving;
+
+    bool catalog_valid{};
+
+    std::size_t catalog_type_count{};
+
+    const Project* catalog_project{};
+
+    std::uint64_t catalog_project_revision{};
+
+    std::uint64_t catalog_open_epoch{};
+
+    std::vector<GraphNodeCatalogEntry> full_catalog;
 };
 
 void Session::OpenGraphDeleter::operator()(OpenGraph* ptr) const noexcept {
@@ -700,20 +970,34 @@ void Session::GeneratorCacheDeleter::operator()(GeneratorRuntimeCache* ptr) cons
     delete ptr;
 }
 
+void Session::AssetSchemaCacheDeleter::operator()(AssetSchemaCache* ptr) const noexcept {
+    delete ptr;
+}
+
 void Session::bind_project_code(const ProjectCode* code) noexcept {
     if (project_code_ == code)
         return;
     project_code_ = code;
+    asset_schema_cache_.reset();
     for (auto& [_, open] : graphs_) {
         if (open) {
             open->evaluator.reset();
+            open->asset_instances.clear();
             open->bound_program = nullptr;
         }
     }
     if (generator_cache_) {
         for (auto& [_, slot] : generator_cache_->graph_slots) {
             slot.evaluator.reset();
+            slot.asset_instances.clear();
             slot.bound_program = nullptr;
+        }
+        for (auto& [_, entry] : generator_cache_->entries) {
+            if (entry.private_instance) {
+                entry.private_instance->evaluator.reset();
+                entry.private_instance->asset_instances.clear();
+                entry.private_instance.reset();
+            }
         }
         generator_cache_->idle_valid = false;
     }
@@ -1353,15 +1637,92 @@ GraphGeometrySummary summarize_geometry(const procedural::Geometry* geometry, st
 }
 
 void Session::close_graphs() noexcept {
+    graph_param_edit_.reset();
+    asset_schema_cache_.reset();
     if (generator_cache_) {
         generator_cache_->clear();
         generator_cache_.reset();
     }
     for (auto& [_, open] : graphs_) {
-        if (open)
+        if (open) {
             open->evaluator.reset();
+            open->asset_instances.clear();
+        }
     }
     graphs_.clear();
+    procedural_cache_pool_.reset();
+}
+
+std::shared_ptr<procedural::CachePool> Session::ensure_procedural_cache_pool() {
+    if (!procedural_cache_pool_)
+        procedural_cache_pool_ = std::make_shared<procedural::CachePool>(std::size_t{256} << 20);
+    return procedural_cache_pool_;
+}
+
+Result<const GraphDocument*> Session::resolve_target_graph_document(std::string_view asset_key,
+                                                                    Project* project) const {
+    if (asset_key.empty())
+        return static_cast<const GraphDocument*>(nullptr);
+    if (const auto open_it = graphs_.find(std::string(asset_key)); open_it != graphs_.end() && open_it->second)
+        return &open_it->second->document;
+
+    if (project) {
+        const std::uint64_t proj_rev = project->revision();
+        const std::uint64_t code_version =
+            project_code_ && project_code_->report() ? project_code_->report()->published_version : 0ULL;
+        if (!asset_schema_cache_)
+            asset_schema_cache_.reset(new AssetSchemaCache());
+        auto cached = asset_schema_cache_->schemas.find(std::string(asset_key));
+        if (cached == asset_schema_cache_->schemas.end() || cached->second.project != project ||
+            cached->second.project_revision != proj_rev || cached->second.code_version != code_version) {
+            if (!asset_schema_cache_->resolving.insert(std::string(asset_key)).second)
+                return static_cast<const GraphDocument*>(nullptr);
+            struct Guard {
+                std::unordered_set<std::string>& set;
+
+                std::string key;
+
+                ~Guard() { set.erase(key); }
+            } guard{asset_schema_cache_->resolving, std::string(asset_key)};
+
+            auto asset = project->assets().procedural_graph(asset_key);
+            if (!asset)
+                return std::unexpected(asset.error());
+            // Boundary GraphInput/GraphOutput ports and promoted parameter target schemas depend only on
+            // the graph's own local nodes, never on resolving nested AssetNode connections.
+            auto parsed = load_graph(world_.runtime(), asset->text, {});
+            if (!parsed)
+                return std::unexpected(parsed.error());
+            AssetSchemaCache::Entry entry{&world_.runtime(), project, proj_rev, code_version, std::move(*parsed)};
+            cached = asset_schema_cache_->schemas.insert_or_assign(std::string(asset_key), std::move(entry)).first;
+        }
+        return &cached->second.document;
+    }
+
+    if (asset_schema_cache_) {
+        if (const auto cached = asset_schema_cache_->schemas.find(std::string(asset_key));
+            cached != asset_schema_cache_->schemas.end())
+            return &cached->second.document;
+    }
+    if (generator_cache_) {
+        if (const auto slot = generator_cache_->graph_slots.find(std::string(asset_key));
+            slot != generator_cache_->graph_slots.end() && slot->second.closed_doc)
+            return &*slot->second.closed_doc;
+    }
+    return static_cast<const GraphDocument*>(nullptr);
+}
+
+AssetPortResolver Session::make_asset_port_resolver(Project* project) const {
+    return [this, project](std::string_view asset_key) -> Result<std::optional<procedural::Ports>> {
+        if (asset_key.empty())
+            return std::optional<procedural::Ports>{};
+        auto doc = resolve_target_graph_document(asset_key, project);
+        if (!doc || !*doc)
+            return std::optional<procedural::Ports>{};
+        if (auto ports = extract_graph_ports(world_.runtime(), **doc))
+            return std::optional<procedural::Ports>{std::move(*ports)};
+        return std::optional<procedural::Ports>{};
+    };
 }
 
 Result<const source::Program*> Session::ensure_procedural_program() {
@@ -1423,34 +1784,105 @@ Result<void> Session::remember_graph_scalar_edit(ObjectRoot target, std::vector<
     return graph_error("Graph edit target is no longer in an open document.");
 }
 
-Result<std::vector<GraphNodeCatalogEntry>> Session::procedural_node_types() {
+void Session::bump_graph_object_epoch(ObjectId object) noexcept {
+    if (object == ObjectId{})
+        return;
+    for (auto& [_, open] : graphs_) {
+        if (open && open->owns(object)) {
+            ++open->mutation_epoch;
+            open->dirty_revision = 0;
+            return;
+        }
+    }
+}
+
+Result<std::vector<GraphNodeCatalogEntry>> Session::procedural_node_types(Project* project,
+                                                                          std::string_view exclude_graph_key) {
     if (world_.closed())
         return graph_error("Procedural node catalog requires an open Session.", ErrorCode::invalid_definition);
     ATELIER_TRY(ensure_procedural_program());
-    ATELIER_TRY_BIND(node_base, runtime_.native_type<procedural::Node>());
-    std::vector<GraphNodeCatalogEntry> catalog;
-    for (const auto type : runtime_.types()) {
-        if (type == *node_base)
-            continue;
-        ATELIER_TRY_BIND(info, runtime_.describe(type));
-        if ((*info)->kind != TypeKind::object)
-            continue;
-        ATELIER_TRY_BIND(derived, runtime_.is_a(type, *node_base));
-        if (!*derived)
-            continue;
-        auto port_info = procedural::ports(runtime_, type);
-        if (!port_info)
-            continue;
-        const bool native = (*info)->native_storage;
-        catalog.push_back(
-            {type,
-             std::string((*info)->name),
-             std::string((*info)->description),
-             native,
-             {std::move(port_info->inputs), std::move(port_info->multiple), std::move(port_info->outputs)}});
+    if (!asset_schema_cache_)
+        asset_schema_cache_.reset(new AssetSchemaCache());
+
+    const std::size_t type_count = runtime_.type_count();
+    const std::uint64_t proj_rev = project ? project->revision() : 0ULL;
+    std::uint64_t open_epoch = 14695981039346656037ULL;
+    for (const auto& [k, open] : graphs_) {
+        if (open && !open->scratch) {
+            open_epoch ^= source::content_hash(k, open->mutation_epoch);
+            open_epoch *= 1099511628211ULL;
+        }
     }
-    std::ranges::sort(catalog, {}, &GraphNodeCatalogEntry::name);
-    return catalog;
+
+    auto& cache = *asset_schema_cache_;
+    if (!cache.catalog_valid || cache.catalog_type_count != type_count || cache.catalog_project != project ||
+        cache.catalog_project_revision != proj_rev || cache.catalog_open_epoch != open_epoch) {
+        ATELIER_TRY_BIND(node_base, runtime_.native_type<procedural::Node>());
+        ATELIER_TRY_BIND(asset_node_type, runtime_.native_type<procedural::AssetNode>());
+        std::vector<GraphNodeCatalogEntry> catalog;
+        for (const auto type : runtime_.types()) {
+            if (type == *node_base || type == *asset_node_type)
+                continue;
+            ATELIER_TRY_BIND(info, runtime_.describe(type));
+            if ((*info)->kind != TypeKind::object)
+                continue;
+            ATELIER_TRY_BIND(derived, runtime_.is_a(type, *node_base));
+            if (!*derived)
+                continue;
+            auto port_info = procedural::ports(runtime_, type);
+            if (!port_info)
+                continue;
+            const bool native = (*info)->native_storage;
+            catalog.push_back(
+                {type,
+                 std::string((*info)->name),
+                 std::string((*info)->description),
+                 native,
+                 {},
+                 {},
+                 {std::move(port_info->inputs), std::move(port_info->multiple), std::move(port_info->outputs)}});
+        }
+        std::ranges::sort(catalog, {}, &GraphNodeCatalogEntry::name);
+
+        if (project) {
+            const auto resolver = make_asset_port_resolver(project);
+            std::vector<GraphNodeCatalogEntry> asset_entries;
+            for (const auto& entry : project->entries()) {
+                if (entry.kind != assets::AssetKind::procedural_graph)
+                    continue;
+                GraphPortInfo port_view;
+                if (auto resolved = resolver(entry.key); resolved && *resolved) {
+                    port_view = {std::move((*resolved)->inputs), std::move((*resolved)->multiple),
+                                 std::move((*resolved)->outputs)};
+                }
+                std::string stem = entry.path.stem().string();
+                if (stem.empty())
+                    stem = entry.key;
+                asset_entries.push_back({*asset_node_type, "asset:" + entry.key,
+                                         "Digital Asset · " + entry.path.generic_string(), false, entry.key,
+                                         std::move(stem), std::move(port_view)});
+            }
+            std::ranges::sort(asset_entries, {}, &GraphNodeCatalogEntry::display_label);
+            catalog.insert(catalog.end(), std::make_move_iterator(asset_entries.begin()),
+                           std::make_move_iterator(asset_entries.end()));
+        }
+        cache.full_catalog = std::move(catalog);
+        cache.catalog_type_count = type_count;
+        cache.catalog_project = project;
+        cache.catalog_project_revision = proj_rev;
+        cache.catalog_open_epoch = open_epoch;
+        cache.catalog_valid = true;
+    }
+
+    if (exclude_graph_key.empty())
+        return cache.full_catalog;
+    std::vector<GraphNodeCatalogEntry> filtered;
+    filtered.reserve(cache.full_catalog.size());
+    for (const auto& item : cache.full_catalog) {
+        if (item.asset_key.empty() || item.asset_key != exclude_graph_key)
+            filtered.push_back(item);
+    }
+    return filtered;
 }
 
 Result<ObjectId> Session::open_graph(Project& project, std::string_view key) {
@@ -1460,7 +1892,7 @@ Result<ObjectId> Session::open_graph(Project& project, std::string_view key) {
         return existing->second->document.graph.id();
     ATELIER_TRY(ensure_procedural_program());
     ATELIER_TRY_BIND(asset, project.assets().procedural_graph(key));
-    ATELIER_TRY_BIND(loaded, load_graph(runtime_, asset->text));
+    ATELIER_TRY_BIND(loaded, load_graph(runtime_, asset->text, make_asset_port_resolver(&project)));
     ATELIER_TRY_BIND(canonical, editor::save_graph(runtime_, *loaded));
     std::unique_ptr<OpenGraph, OpenGraphDeleter> open(new OpenGraph());
     open->key = asset->key;
@@ -1543,8 +1975,28 @@ Result<void> Session::restore_open_graphs(Project* project, std::span<const Open
     if (snapshots.empty())
         return {};
     ATELIER_TRY(ensure_procedural_program());
+    const auto fallback_resolver = make_asset_port_resolver(project);
+    const AssetPortResolver snapshot_resolver =
+        [&](std::string_view asset_key) -> Result<std::optional<procedural::Ports>> {
+        const auto in_snap = std::ranges::find(snapshots, asset_key, &OpenGraphSnapshot::key);
+        if (in_snap != snapshots.end()) {
+            if (auto temp = load_graph(runtime_, in_snap->text, {})) {
+                struct TempGuard {
+                    Runtime& rt;
+
+                    GraphDocument& doc;
+
+                    ~TempGuard() { destroy_private_graph_document(rt, doc); }
+                } guard{runtime_, *temp};
+                if (auto ports = extract_graph_ports(runtime_, *temp))
+                    return std::optional<procedural::Ports>{std::move(*ports)};
+            }
+            return std::optional<procedural::Ports>{};
+        }
+        return fallback_resolver(asset_key);
+    };
     for (const auto& snap : snapshots) {
-        ATELIER_TRY_BIND(loaded, load_graph(runtime_, snap.text));
+        ATELIER_TRY_BIND(loaded, load_graph(runtime_, snap.text, snapshot_resolver));
         std::unique_ptr<OpenGraph, OpenGraphDeleter> open(new OpenGraph());
         open->key = snap.key;
         open->scratch = snap.scratch;
@@ -1573,17 +2025,68 @@ Result<std::optional<std::string>> Session::procedural_graph_snapshot(std::strin
     ATELIER_TRY_BIND(encoded, editor::save_graph(runtime, author));
     if (!generator_cache_)
         return std::move(*encoded);
-    const auto slot = generator_cache_->graph_slots.find(at->first);
-    if (slot == generator_cache_->graph_slots.end() || !slot->second.evaluator)
+
+    bool any_referencing = false;
+    const source::Program* bound_program = nullptr;
+    for (const auto& [_, entry] : generator_cache_->entries) {
+        if (entry.graph_key == key && entry.latest_cook) {
+            any_referencing = true;
+            if (entry.private_instance && entry.private_instance->bound_program)
+                bound_program = entry.private_instance->bound_program;
+        }
+    }
+    if (!any_referencing)
         return std::move(*encoded);
-    const auto freezes = slot->second.evaluator->display_freezes();
+    const auto slot = generator_cache_->graph_slots.find(at->first);
+    if (!bound_program && slot != generator_cache_->graph_slots.end())
+        bound_program = slot->second.bound_program;
+
+    std::vector<ObjectId> freezes;
+    for (const auto& item : author.nodes) {
+        if (!item.node.registered())
+            continue;
+        auto frz = procedural::frozen(runtime, item.node.id());
+        auto byp = procedural::bypassed(runtime, item.node.id());
+        if (frz && *frz && byp && !*byp)
+            freezes.push_back(item.node.id());
+    }
     if (freezes.empty())
         return std::move(*encoded);
 
     // Load precisely what the bundle will reopen. An independent evaluator keeps the author and
     // its frozen outputs intact, including when a generator overrides the authored seed.
-    ATELIER_TRY_BIND(copy, editor::load_graph(runtime, *encoded));
-    procedural::Evaluator replay(runtime, copy->graph, generator_cache_->resources, slot->second.bound_program);
+    ATELIER_TRY_BIND(copy,
+                     editor::load_graph(runtime, *encoded, make_asset_port_resolver(at->second->resources.project())));
+    std::unordered_map<ObjectId, std::unique_ptr<BoundAssetInstance>> copy_instances;
+    struct CopyGuard {
+        Runtime& rt;
+
+        GraphDocument& doc;
+
+        std::unordered_map<ObjectId, std::unique_ptr<BoundAssetInstance>>& insts;
+
+        ~CopyGuard() {
+            insts.clear();
+            destroy_private_graph_document(rt, doc);
+        }
+    } copy_guard{runtime, *copy, copy_instances};
+
+    {
+        OpenGraph temp_open;
+        temp_open.key = at->first;
+        temp_open.document = std::move(*copy);
+        temp_open.asset_instances = std::move(copy_instances);
+        if (at->second->resources.project())
+            temp_open.resources.bind(at->second->resources.project());
+        auto synced =
+            const_cast<Session*>(this)->sync_open_graph_assets(temp_open, at->second->resources.project(), true);
+        *copy = std::move(temp_open.document);
+        copy_instances = std::move(temp_open.asset_instances);
+        ATELIER_TRY(synced);
+    }
+
+    procedural::Evaluator replay(runtime, copy->graph, generator_cache_->resources, bound_program,
+                                 procedural_cache_pool_);
     std::set<std::optional<std::uint32_t>> seeds;
     for (const auto& [component, entry] : generator_cache_->entries) {
         if (entry.graph_key != key || !entry.latest_cook)
@@ -1759,7 +2262,9 @@ bool Session::graph_dirty(std::string_view key) const {
     if (at == graphs_.end() || !at->second)
         return false;
     const auto& open = *at->second;
-    if ((active_ && open.owns(active_->root.id())) || (group_ && open.owns(group_->root.id())))
+    if ((active_ && open.owns(active_->root.id())) || (group_ && open.owns(group_->root.id())) ||
+        (graph_param_edit_ && graph_param_edit_->generator_root.id() == ObjectId{} &&
+         graph_param_edit_->graph_key == key))
         return true;
     if (open.dirty_revision == revision_)
         return open.dirty_cached;
@@ -1880,6 +2385,7 @@ Result<void> Session::graph_undo(std::string_view key, bool redo) {
                 }
                 item->name = to;
                 sort_graph_nodes(open.document.nodes);
+                open.document.parameters = redo ? change.after_parameters : change.before_parameters;
                 return {};
             } else if constexpr (std::same_as<T, GraphMoveChange>) {
                 for (const auto& move : change.moves) {
@@ -1935,12 +2441,15 @@ Result<void> Session::graph_undo(std::string_view key, bool redo) {
                         if (auto* item = find_node(open.document, ref.owner))
                             item->kept = change.added ? ref.after : ref.before;
                     }
+                    open.document.parameters = change.added ? change.after_parameters : change.before_parameters;
                     return procedural::set_display(runtime_, graph,
                                                    change.added ? change.after_display : change.before_display);
                 }
                 for (const auto& node_entry : change.entries) {
-                    if (node_entry.node.registered())
+                    if (node_entry.node.registered()) {
+                        detach_asset_node_subgraph(runtime_, node_entry.node.id());
                         ATELIER_TRY(procedural::remove_node(runtime_, graph, node_entry.node.id()));
+                    }
                     std::erase_if(open.document.nodes,
                                   [&](const GraphNode& item) { return item.name == node_entry.name; });
                 }
@@ -1955,8 +2464,100 @@ Result<void> Session::graph_undo(std::string_view key, bool redo) {
                     if (auto* item = find_node(open.document, ref.owner))
                         item->kept = change.added ? ref.before : ref.after;
                 }
+                open.document.parameters = change.added ? change.before_parameters : change.after_parameters;
                 return procedural::set_display(runtime_, graph,
                                                change.added ? change.before_display : change.after_display);
+            } else if constexpr (std::same_as<T, GraphParameterSchemaChange>) {
+                open.document.parameters = redo ? change.after_parameters : change.before_parameters;
+                for (const auto& snap : change.synced_nodes) {
+                    ATELIER_TRY(apply_object_properties(runtime_, snap.target.id(),
+                                                        (redo ? snap.after_props : snap.before_props).root()));
+                    if (auto* item = find_node_by_id(open.document, snap.target.id()))
+                        item->kept = redo ? snap.after_kept : snap.before_kept;
+                }
+                return {};
+            } else if constexpr (std::same_as<T, GraphAssetOverrideChange>) {
+                auto* item = find_node(open.document, change.node_name);
+                if (!item)
+                    return {};
+                item->overrides = redo ? change.after_overrides : change.before_overrides;
+                item->asset_key = redo ? change.after_asset : change.before_asset;
+                if (change.asset_changed && item->node.registered()) {
+                    for (const auto& delta : change.connection_deltas)
+                        ATELIER_TRY(replace_node_inputs(runtime_, graph, delta.target.id(), {}));
+                    procedural::AssetSubgraph stub;
+                    stub.asset_key = item->asset_key;
+                    stub.ports = redo ? change.after_ports : change.before_ports;
+                    ATELIER_TRY(procedural::set_asset_subgraph(runtime_, item->node.id(), std::move(stub)));
+                    if (redo) {
+                        for (const auto& delta : change.connection_deltas) {
+                            ATELIER_TRY(replace_node_inputs(runtime_, graph, delta.target.id(), delta.after));
+                            if (auto* dn = find_node_by_id(open.document, delta.target.id()))
+                                dn->kept = delta.after_kept;
+                        }
+                    } else {
+                        for (auto it = change.connection_deltas.rbegin(); it != change.connection_deltas.rend(); ++it) {
+                            ATELIER_TRY(replace_node_inputs(runtime_, graph, it->target.id(), it->before));
+                            if (auto* dn = find_node_by_id(open.document, it->target.id()))
+                                dn->kept = it->before_kept;
+                        }
+                    }
+                }
+                return {};
+            } else if constexpr (std::same_as<T, GraphExtractChange>) {
+                if (redo) {
+                    for (const auto& saved : change.before_inputs) {
+                        if (find_node_by_id(open.document, saved.to))
+                            ATELIER_TRY(replace_node_inputs(runtime_, graph, saved.to, {}));
+                    }
+                    for (const auto& rem : change.removed_nodes) {
+                        if (rem.node.registered()) {
+                            detach_asset_node_subgraph(runtime_, rem.node.id());
+                            ATELIER_TRY(procedural::remove_node(runtime_, graph, rem.node.id()));
+                        }
+                        std::erase_if(open.document.nodes,
+                                      [&](const GraphNode& item) { return item.name == rem.name; });
+                    }
+                    if (change.added_asset_node.node.registered())
+                        ATELIER_TRY(procedural::restore_node(runtime_, graph, change.added_asset_node.node));
+                    open.document.nodes.push_back(change.added_asset_node);
+                    sort_graph_nodes(open.document.nodes);
+                    for (const auto& saved : change.after_inputs)
+                        ATELIER_TRY(replace_node_inputs(runtime_, graph, saved.to, saved.inputs));
+                    for (const auto& ref : change.retained_node_kept) {
+                        if (auto* item = find_node(open.document, ref.owner))
+                            item->kept = ref.after;
+                    }
+                    open.document.template_node = change.after_template;
+                    open.document.parameters = change.after_parameters;
+                    ATELIER_TRY(procedural::set_display(runtime_, graph, change.after_display));
+                    return sync_open_graph_assets(open, open.resources.project(), false);
+                }
+                for (const auto& saved : change.after_inputs) {
+                    if (find_node_by_id(open.document, saved.to))
+                        ATELIER_TRY(replace_node_inputs(runtime_, graph, saved.to, {}));
+                }
+                if (change.added_asset_node.node.registered()) {
+                    detach_asset_node_subgraph(runtime_, change.added_asset_node.node.id());
+                    ATELIER_TRY(procedural::remove_node(runtime_, graph, change.added_asset_node.node.id()));
+                }
+                std::erase_if(open.document.nodes,
+                              [&](const GraphNode& item) { return item.name == change.added_asset_node.name; });
+                for (const auto& rem : change.removed_nodes) {
+                    if (rem.node.registered())
+                        ATELIER_TRY(procedural::restore_node(runtime_, graph, rem.node));
+                    open.document.nodes.push_back(rem);
+                }
+                sort_graph_nodes(open.document.nodes);
+                for (const auto& saved : change.before_inputs)
+                    ATELIER_TRY(replace_node_inputs(runtime_, graph, saved.to, saved.inputs));
+                for (const auto& ref : change.retained_node_kept) {
+                    if (auto* item = find_node(open.document, ref.owner))
+                        item->kept = ref.before;
+                }
+                open.document.template_node = change.before_template;
+                open.document.parameters = change.before_parameters;
+                return procedural::set_display(runtime_, graph, change.before_display);
             }
         },
         entry));
@@ -1973,12 +2574,32 @@ Result<void> Session::graph_undo(std::string_view key, bool redo) {
 Result<std::string> Session::add_graph_node_impl(std::string_view key, std::string_view type_name,
                                                  std::string_view desired_name, std::array<float, 2> position,
                                                  std::string_view from_node, std::string_view from_port,
-                                                 std::string_view to_node, std::string_view to_port, bool set_display) {
+                                                 std::string_view to_node, std::string_view to_port, bool set_display,
+                                                 Project* project) {
     if (!std::isfinite(position[0]) || !std::isfinite(position[1]))
         return graph_error("Node position must be finite.");
     ATELIER_TRY_BIND(open_ptr, editable_graph(key, true));
     auto& open = **open_ptr;
+    Project* active_project = project ? project : open.resources.project();
+    std::string asset_key;
+    std::string stem_source;
     std::string resolved_type_name(type_name);
+    if (resolved_type_name.starts_with("asset:")) {
+        asset_key = resolved_type_name.substr(6);
+        if (asset_key.empty())
+            return graph_error("AssetNode requires a non-empty .procgraph asset key.");
+        if (!open.scratch && is_scratch_graph(asset_key))
+            return graph_error("A persistent .procgraph asset cannot reference a scratch graph.");
+        if (!open.scratch && asset_key == open.key)
+            return graph_error("A .procgraph asset cannot instantiate itself.");
+        resolved_type_name = "procedural.AssetNode";
+        if (active_project) {
+            if (const auto* asset_entry = active_project->entry(asset_key))
+                stem_source = asset_entry->path.stem().string();
+        }
+        if (stem_source.empty())
+            stem_source = "asset";
+    }
     auto type = runtime_.find_type(resolved_type_name);
     if (!type && resolved_type_name.find('.') == std::string::npos) {
         resolved_type_name = "procedural." + resolved_type_name;
@@ -1986,18 +2607,20 @@ Result<std::string> Session::add_graph_node_impl(std::string_view key, std::stri
     }
     if (!type)
         return graph_error("Unknown procedural node type: " + std::string(type_name));
-    ATELIER_TRY_BIND(new_ports, procedural::ports(runtime_, *type));
+    ATELIER_TRY(procedural::ports(runtime_, *type));
 
     std::string name(desired_name);
     if (name.empty()) {
-        const auto stem = default_node_stem(resolved_type_name);
+        std::string stem = default_node_stem(stem_source.empty() ? resolved_type_name : stem_source);
+        if (stem.size() > 118)
+            stem.resize(118);
         for (std::uint32_t index = 1;; ++index) {
             name = stem + std::to_string(index);
             if (!find_node(open.document, name))
                 break;
         }
     } else {
-        if (!valid_node_identifier(name))
+        if (!valid_graph_identifier(name))
             return graph_error("Invalid node name '" + name + "': expected [A-Za-z_][A-Za-z0-9_]*.");
         if (find_node(open.document, name))
             return graph_error("A node named '" + name + "' already exists in this graph.");
@@ -2011,12 +2634,20 @@ Result<std::string> Session::add_graph_node_impl(std::string_view key, std::stri
 
     ATELIER_TRY_BIND(created, procedural::add_node(runtime_, graph, *type));
     const ObjectId created_id = created->id();
+    if (!asset_key.empty()) {
+        procedural::AssetSubgraph stub;
+        stub.asset_key = asset_key;
+        if (auto resolved_ports = make_asset_port_resolver(active_project)(asset_key);
+            resolved_ports && *resolved_ports)
+            stub.ports = std::move(**resolved_ports);
+        ATELIER_TRY(procedural::set_asset_subgraph(runtime_, created_id, std::move(stub)));
+    }
+    ATELIER_TRY_BIND(new_ports, procedural::ports(runtime_, created_id));
     std::vector<GraphNodesChange::SavedInputs> saved_inputs;
 
     if (!from_node.empty() && !new_ports->inputs.empty()) {
         if (const auto* src = find_node(open.document, from_node); src && src->node.registered()) {
-            ATELIER_TRY_BIND(src_type, runtime_.type_of(src->node.id()));
-            if (const auto src_ports = procedural::ports(runtime_, *src_type);
+            if (const auto src_ports = procedural::ports(runtime_, src->node.id());
                 src_ports && !src_ports->outputs.empty()) {
                 std::uint32_t out_idx = 0;
                 if (!from_port.empty()) {
@@ -2040,8 +2671,7 @@ Result<std::string> Session::add_graph_node_impl(std::string_view key, std::stri
     std::vector<procedural::Input> dst_after_snapshot;
     if (!to_node.empty() && !new_ports->outputs.empty()) {
         if (const auto* dst = find_node(open.document, to_node); dst && dst->node.registered()) {
-            ATELIER_TRY_BIND(dst_type, runtime_.type_of(dst->node.id()));
-            if (const auto dst_ports = procedural::ports(runtime_, *dst_type);
+            if (const auto dst_ports = procedural::ports(runtime_, dst->node.id());
                 dst_ports && !dst_ports->inputs.empty()) {
                 std::uint32_t in_idx = 0;
                 if (!to_port.empty()) {
@@ -2072,6 +2702,7 @@ Result<std::string> Session::add_graph_node_impl(std::string_view key, std::stri
     GraphNode entry;
     entry.name = name;
     entry.node = std::move(*created);
+    entry.asset_key = std::move(asset_key);
     entry.position = position;
     open.document.nodes.push_back(entry);
     sort_graph_nodes(open.document.nodes);
@@ -2098,21 +2729,25 @@ Result<std::string> Session::add_graph_node_impl(std::string_view key, std::stri
                                       open.document.template_node,
                                       open.document.kept,
                                       open.document.kept,
-                                      std::move(retained_node_kept)});
+                                      std::move(retained_node_kept),
+                                      open.document.parameters,
+                                      open.document.parameters});
     ++revision_;
     return name;
 }
 
 Result<std::string> Session::graph_add_node(std::string_view key, std::string_view type_name,
-                                            std::string_view desired_name, std::array<float, 2> position) {
-    return add_graph_node_impl(key, type_name, desired_name, position, {}, {}, {}, {}, false);
+                                            std::string_view desired_name, std::array<float, 2> position,
+                                            Project* project) {
+    return add_graph_node_impl(key, type_name, desired_name, position, {}, {}, {}, {}, false, project);
 }
 
 Result<std::string> Session::graph_place_node(std::string_view key, std::string_view type_name,
                                               std::array<float, 2> position, std::string_view from_node,
                                               std::string_view from_port, std::string_view to_node,
-                                              std::string_view to_port, bool set_display) {
-    return add_graph_node_impl(key, type_name, {}, position, from_node, from_port, to_node, to_port, set_display);
+                                              std::string_view to_port, bool set_display, Project* project) {
+    return add_graph_node_impl(key, type_name, {}, position, from_node, from_port, to_node, to_port, set_display,
+                               project);
 }
 
 Result<void> Session::graph_remove_nodes(std::string_view key, std::span<const std::string> names) {
@@ -2144,6 +2779,20 @@ Result<void> Session::graph_remove_nodes(std::string_view key, std::span<const s
     change.after_template =
         removed_ids.contains(open.document.template_node) ? ObjectId{} : open.document.template_node;
     change.before_kept = open.document.kept;
+    change.before_parameters = open.document.parameters;
+    {
+        auto next_params = open.document.parameters;
+        for (auto& param : next_params) {
+            std::erase_if(param.targets, [&](std::string_view target) {
+                const auto dot = target.find('.');
+                if (dot == std::string_view::npos)
+                    return false;
+                return std::ranges::find(unique_names, target.substr(0, dot)) != unique_names.end();
+            });
+        }
+        std::erase_if(next_params, [](const GraphPromotedParameter& p) { return p.targets.empty(); });
+        change.after_parameters = std::move(next_params);
+    }
     {
         json::Builder next_kept(open.document.kept);
         if (const auto kd = open.document.kept.root().string({"display"});
@@ -2167,11 +2816,14 @@ Result<void> Session::graph_remove_nodes(std::string_view key, std::span<const s
     for (const auto& name : unique_names) {
         auto* item = find_node(open.document, name);
         change.entries.push_back(*item);
-        if (item->node.registered())
+        if (item->node.registered()) {
+            detach_asset_node_subgraph(runtime_, item->node.id());
             ATELIER_TRY(procedural::remove_node(runtime_, graph, item->node.id()));
+        }
     }
     open.document.template_node = change.after_template;
     open.document.kept = change.after_kept;
+    open.document.parameters = change.after_parameters;
     std::erase_if(open.document.nodes, [&](const GraphNode& item) {
         return std::ranges::find(unique_names, item.name) != unique_names.end();
     });
@@ -2193,8 +2845,7 @@ Result<void> Session::graph_remove_nodes(std::string_view key, std::span<const s
         for (const auto& [pname, _] : *cur_inputs->object_items())
             kept_ports.emplace_back(pname);
         if (surv.node.registered()) {
-            ATELIER_TRY_BIND(surv_type, runtime_.type_of(surv.node.id()));
-            ATELIER_TRY_BIND(surv_ports, procedural::ports(runtime_, *surv_type));
+            ATELIER_TRY_BIND(surv_ports, procedural::ports(runtime_, surv.node.id()));
             ATELIER_TRY_BIND(surv_in, procedural::inputs(runtime_, *listed_after, surv.node.id()));
             for (const auto& pname : kept_ports) {
                 const auto p_it = std::ranges::find(surv_ports->inputs, pname);
@@ -2250,6 +2901,8 @@ Session::graph_duplicate_nodes(std::string_view key, std::span<const std::string
         std::string stem = src_name;
         while (stem.size() > 1 && stem.back() >= '0' && stem.back() <= '9')
             stem.pop_back();
+        if (stem.size() > 118)
+            stem.resize(118);
         std::string candidate;
         for (std::uint32_t idx = 1;; ++idx) {
             candidate = stem + std::to_string(idx);
@@ -2287,6 +2940,8 @@ Session::graph_duplicate_nodes(std::string_view key, std::span<const std::string
         const auto* src = find_node(open.document, unique_names[i]);
         GraphNode copy_entry;
         copy_entry.name = created_names[i];
+        copy_entry.asset_key = src->asset_key;
+        copy_entry.overrides = src->overrides;
         copy_entry.position = {std::round(src->position[0] + offset[0]), std::round(src->position[1] + offset[1])};
         copy_entry.shape = src->shape;
         copy_entry.color = src->color;
@@ -2331,6 +2986,12 @@ Session::graph_duplicate_nodes(std::string_view key, std::span<const std::string
             const ObjectId dst_id = created_node->id();
             added_live_ids.push_back(dst_id);
             ATELIER_TRY(apply_object_properties(runtime_, dst_id, props->root()));
+            if (auto src_sub = procedural::asset_subgraph(runtime_, src->node.id())) {
+                procedural::AssetSubgraph stub;
+                stub.asset_key = src_sub->asset_key;
+                stub.ports = src_sub->ports;
+                ATELIER_TRY(procedural::set_asset_subgraph(runtime_, dst_id, std::move(stub)));
+            }
             if (*is_byp)
                 ATELIER_TRY(procedural::set_bypassed(runtime_, dst_id, true));
             if (*is_frz)
@@ -2365,16 +3026,25 @@ Session::graph_duplicate_nodes(std::string_view key, std::span<const std::string
     for (const auto& entry : copy_entries)
         open.document.nodes.push_back(entry);
     sort_graph_nodes(open.document.nodes);
-    open.push_change(GraphNodesChange{
-        true, std::move(copy_entries), std::move(saved_inputs), before_contents->display(), before_contents->display(),
-        open.document.template_node, open.document.template_node, open.document.kept, open.document.kept});
+    open.push_change(GraphNodesChange{true,
+                                      std::move(copy_entries),
+                                      std::move(saved_inputs),
+                                      before_contents->display(),
+                                      before_contents->display(),
+                                      open.document.template_node,
+                                      open.document.template_node,
+                                      open.document.kept,
+                                      open.document.kept,
+                                      {},
+                                      open.document.parameters,
+                                      open.document.parameters});
     ++revision_;
     return created_names;
 }
 
 Result<void> Session::graph_rename_node(std::string_view key, std::string_view old_name, std::string_view new_name) {
     ATELIER_TRY_BIND(open_ptr, editable_graph(key));
-    if (!valid_node_identifier(new_name))
+    if (!valid_graph_identifier(new_name))
         return graph_error("Invalid node name '" + std::string(new_name) + "': expected [A-Za-z_][A-Za-z0-9_]*.");
     auto& open = **open_ptr;
     auto* item = find_node(open.document, old_name);
@@ -2426,6 +3096,15 @@ Result<void> Session::graph_rename_node(std::string_view key, std::string_view o
         change.references.push_back({{}, open.document.kept, next.finish()});
         open.document.kept = change.references.back().after;
     }
+    change.before_parameters = open.document.parameters;
+    for (auto& param : open.document.parameters) {
+        for (auto& target : param.targets) {
+            const auto dot = target.find('.');
+            if (dot != std::string::npos && std::string_view(target).substr(0, dot) == old_name)
+                target = std::string(new_name) + target.substr(dot);
+        }
+    }
+    change.after_parameters = open.document.parameters;
     item->name = std::string(new_name);
     sort_graph_nodes(open.document.nodes);
     open.push_change(std::move(change));
@@ -2616,10 +3295,8 @@ Result<void> Session::graph_connect(std::string_view key, std::string_view from_
     if (!dst || !dst->node.registered())
         return graph_error("Downstream node '" + std::string(to_node) + "' is missing or unresolved.");
 
-    ATELIER_TRY_BIND(src_type, runtime_.type_of(src->node.id()));
-    ATELIER_TRY_BIND(dst_type, runtime_.type_of(dst->node.id()));
-    ATELIER_TRY_BIND(src_ports, procedural::ports(runtime_, *src_type));
-    ATELIER_TRY_BIND(dst_ports, procedural::ports(runtime_, *dst_type));
+    ATELIER_TRY_BIND(src_ports, procedural::ports(runtime_, src->node.id()));
+    ATELIER_TRY_BIND(dst_ports, procedural::ports(runtime_, dst->node.id()));
     if (src_ports->outputs.empty())
         return graph_error("Node '" + src->name + "' has no output ports.");
     if (dst_ports->inputs.empty())
@@ -2674,8 +3351,7 @@ Result<void> Session::graph_disconnect(std::string_view key, std::string_view to
     if (!dst || !dst->node.registered())
         return graph_error("Downstream node '" + std::string(to_node) + "' is missing or unresolved.");
 
-    ATELIER_TRY_BIND(dst_type, runtime_.type_of(dst->node.id()));
-    ATELIER_TRY_BIND(dst_ports, procedural::ports(runtime_, *dst_type));
+    ATELIER_TRY_BIND(dst_ports, procedural::ports(runtime_, dst->node.id()));
     std::optional<std::uint32_t> in_idx;
     if (!to_port.empty()) {
         const auto found = std::ranges::find(dst_ports->inputs, to_port);
@@ -2701,8 +3377,7 @@ Result<void> Session::graph_disconnect(std::string_view key, std::string_view to
         if (src && src->node.registered()) {
             filter_from = src->node.id();
             if (!from_port.empty()) {
-                ATELIER_TRY_BIND(src_type, runtime_.type_of(src->node.id()));
-                ATELIER_TRY_BIND(src_ports, procedural::ports(runtime_, *src_type));
+                ATELIER_TRY_BIND(src_ports, procedural::ports(runtime_, src->node.id()));
                 const auto found = std::ranges::find(src_ports->outputs, from_port);
                 if (found == src_ports->outputs.end()) {
                     if (!kept_port_has_match(dst->kept, to_port, kept_endpoint_matches))
@@ -2805,10 +3480,8 @@ Result<void> Session::graph_disconnect_edges(std::string_view key, std::span<con
         const auto* dst = find_node(open.document, edge.to_node);
         if (!src || !src->node.registered() || !dst || !dst->node.registered())
             continue;
-        ATELIER_TRY_BIND(src_type, runtime_.type_of(src->node.id()));
-        ATELIER_TRY_BIND(dst_type, runtime_.type_of(dst->node.id()));
-        ATELIER_TRY_BIND(src_ports, procedural::ports(runtime_, *src_type));
-        ATELIER_TRY_BIND(dst_ports, procedural::ports(runtime_, *dst_type));
+        ATELIER_TRY_BIND(src_ports, procedural::ports(runtime_, src->node.id()));
+        ATELIER_TRY_BIND(dst_ports, procedural::ports(runtime_, dst->node.id()));
         const auto out_it = std::ranges::find(src_ports->outputs, edge.from_port);
         const auto in_it = std::ranges::find(dst_ports->inputs, edge.to_port);
         if (out_it == src_ports->outputs.end() || in_it == dst_ports->inputs.end())
@@ -2841,8 +3514,7 @@ Result<void> Session::graph_disconnect_edges(std::string_view key, std::span<con
 
         auto before_kept = dst.kept;
         if (dst.kept.root().find("inputs")->has_value()) {
-            ATELIER_TRY_BIND(dst_type, runtime_.type_of(to_id));
-            ATELIER_TRY_BIND(dst_ports, procedural::ports(runtime_, *dst_type));
+            ATELIER_TRY_BIND(dst_ports, procedural::ports(runtime_, to_id));
             for (std::uint32_t p_idx = 0; p_idx < dst_ports->inputs.size(); ++p_idx) {
                 if (std::ranges::none_of(cuts,
                                          [&](const ResolvedCut& c) { return c.to == to_id && c.in_idx == p_idx; }))
@@ -2881,12 +3553,9 @@ Result<void> Session::graph_rewire(std::string_view key, const GraphConnectionVi
         !new_dst->node.registered())
         return graph_error("Rewire nodes must exist and be resolved.");
 
-    ATELIER_TRY_BIND(src_type, runtime_.type_of(src->node.id()));
-    ATELIER_TRY_BIND(old_type, runtime_.type_of(old_dst->node.id()));
-    ATELIER_TRY_BIND(new_type, runtime_.type_of(new_dst->node.id()));
-    ATELIER_TRY_BIND(src_ports, procedural::ports(runtime_, *src_type));
-    ATELIER_TRY_BIND(old_ports, procedural::ports(runtime_, *old_type));
-    ATELIER_TRY_BIND(new_ports, procedural::ports(runtime_, *new_type));
+    ATELIER_TRY_BIND(src_ports, procedural::ports(runtime_, src->node.id()));
+    ATELIER_TRY_BIND(old_ports, procedural::ports(runtime_, old_dst->node.id()));
+    ATELIER_TRY_BIND(new_ports, procedural::ports(runtime_, new_dst->node.id()));
     const auto out_it = std::ranges::find(src_ports->outputs, remove_edge.from_port);
     const auto old_in_it = std::ranges::find(old_ports->inputs, remove_edge.to_port);
     const auto new_in_it = std::ranges::find(new_ports->inputs, new_to_port);
@@ -2970,12 +3639,9 @@ Result<void> Session::graph_splice_node(std::string_view key, std::string_view n
     if (mid == src || mid == dst)
         return graph_error("Cannot splice a wire endpoint onto its own wire.");
 
-    ATELIER_TRY_BIND(src_type, runtime_.type_of(src->node.id()));
-    ATELIER_TRY_BIND(mid_type, runtime_.type_of(mid->node.id()));
-    ATELIER_TRY_BIND(dst_type, runtime_.type_of(dst->node.id()));
-    ATELIER_TRY_BIND(src_ports, procedural::ports(runtime_, *src_type));
-    ATELIER_TRY_BIND(mid_ports, procedural::ports(runtime_, *mid_type));
-    ATELIER_TRY_BIND(dst_ports, procedural::ports(runtime_, *dst_type));
+    ATELIER_TRY_BIND(src_ports, procedural::ports(runtime_, src->node.id()));
+    ATELIER_TRY_BIND(mid_ports, procedural::ports(runtime_, mid->node.id()));
+    ATELIER_TRY_BIND(dst_ports, procedural::ports(runtime_, dst->node.id()));
     if (mid_ports->inputs.empty() || mid_ports->outputs.empty())
         return graph_error("Splice node requires at least one input port and one output port.");
     const auto out_it = std::ranges::find(src_ports->outputs, wire.from_port);
@@ -3146,10 +3812,11 @@ Result<void> Session::graph_set_frozen(std::string_view key, std::string_view no
         ATELIER_TRY_BIND(program, ensure_procedural_program());
         if (project)
             open.resources.bind(project);
+        ATELIER_TRY(sync_open_graph_assets(open, project ? project : open.resources.project(), true));
         if (!open.evaluator || open.bound_program != *program) {
             open.bound_program = *program;
-            open.evaluator =
-                std::make_unique<procedural::Evaluator>(runtime_, open.document.graph, open.resources, *program);
+            open.evaluator = std::make_unique<procedural::Evaluator>(runtime_, open.document.graph, open.resources,
+                                                                     *program, ensure_procedural_cache_pool());
         }
         ATELIER_TRY_BIND(captured, open.evaluator->freeze_snapshot(item->node.id()));
         *snapshot = std::move(*captured);
@@ -3378,6 +4045,2230 @@ Result<void> Session::graph_remove_boxes(std::string_view key, std::span<const s
     return {};
 }
 
+namespace {
+
+bool same_scalar_bits(const Scalar& a, const Scalar& b) noexcept {
+    if (a.index() != b.index())
+        return false;
+    return std::visit(
+        [&](const auto& lhs) noexcept -> bool {
+            using T = std::decay_t<decltype(lhs)>;
+            const auto& rhs = std::get<T>(b);
+            if constexpr (std::same_as<T, float>)
+                return std::bit_cast<std::uint32_t>(lhs) == std::bit_cast<std::uint32_t>(rhs);
+            else if constexpr (std::same_as<T, double>)
+                return std::bit_cast<std::uint64_t>(lhs) == std::bit_cast<std::uint64_t>(rhs);
+            else
+                return lhs == rhs;
+        },
+        a);
+}
+
+Result<Scalar> decode_scalar_or_enum_json(Runtime& runtime, TypeId leaf_type, const FieldRange& range, json::Value val,
+                                          bool tolerant_clamp, bool* was_clamped = nullptr) {
+    if (was_clamped)
+        *was_clamped = false;
+    ATELIER_TRY_BIND(info, runtime.describe(leaf_type));
+    if ((*info)->kind == TypeKind::enumeration) {
+        if (!(*info)->enumeration)
+            return graph_error("Missing enumeration metadata.");
+        const auto& enumeration = *(*info)->enumeration;
+        if (val.kind() == json::Kind::string) {
+            const auto name = *val.string();
+            const auto en = std::ranges::find(enumeration.values, name, &std::pair<std::string, std::uint32_t>::first);
+            if (en == enumeration.values.end())
+                return graph_error("Unknown enumerator '" + std::string(name) + "'.");
+            return Scalar{EnumValue{leaf_type, en->second}};
+        }
+        if (enumeration.flags) {
+            std::int64_t iv = -1;
+            if (const auto exact_i = val.i64()) {
+                iv = *exact_i;
+            } else if (const auto num = val.number()) {
+                if (std::isfinite(*num) && std::trunc(*num) == *num && *num >= 0.0 && *num <= UINT32_MAX)
+                    iv = static_cast<std::int64_t>(*num);
+            }
+            if (iv >= 0 && iv <= UINT32_MAX && detail::valid_enum_bits(enumeration, static_cast<std::uint32_t>(iv)))
+                return Scalar{EnumValue{leaf_type, static_cast<std::uint32_t>(iv)}};
+        }
+        return graph_error("Expected enumeration identifier string.");
+    }
+    if (leaf_type == runtime.native_type<bool>().value_or(TypeId{})) {
+        if (val.kind() != json::Kind::boolean)
+            return graph_error("Expected boolean value.");
+        return Scalar{*val.boolean()};
+    }
+    if (leaf_type == runtime.native_type<float>().value_or(TypeId{})) {
+        auto num = val.number();
+        if (!num || !std::isfinite(*num))
+            return graph_error("Expected finite float value.");
+        const float f = static_cast<float>(*num);
+        if (!std::isfinite(f))
+            return graph_error("Float value overflowed.");
+        auto [clamped_v, did_clamp] = detail::clamp_scalar(Scalar{f}, range);
+        if (did_clamp && !tolerant_clamp)
+            return graph_error("Value is outside promoted parameter hard bounds.");
+        if (was_clamped)
+            *was_clamped = did_clamp;
+        return clamped_v;
+    }
+    if (leaf_type == runtime.native_type<double>().value_or(TypeId{})) {
+        auto num = val.number();
+        if (!num || !std::isfinite(*num))
+            return graph_error("Expected finite double value.");
+        auto [clamped_v, did_clamp] = detail::clamp_scalar(Scalar{*num}, range);
+        if (did_clamp && !tolerant_clamp)
+            return graph_error("Value is outside promoted parameter hard bounds.");
+        if (was_clamped)
+            *was_clamped = did_clamp;
+        return clamped_v;
+    }
+    const bool is_i32 = leaf_type == runtime.native_type<std::int32_t>().value_or(TypeId{});
+    const bool is_u32 = leaf_type == runtime.native_type<std::uint32_t>().value_or(TypeId{});
+    if (is_i32 || is_u32) {
+        std::int64_t iv = 0;
+        if (const auto exact_i = val.i64()) {
+            iv = *exact_i;
+        } else if (const auto num = val.number()) {
+            if (!std::isfinite(*num) || std::trunc(*num) != *num || *num < -9007199254740992.0 ||
+                *num > 9007199254740992.0)
+                return graph_error("Expected exact integer value.");
+            iv = static_cast<std::int64_t>(*num);
+        } else {
+            return graph_error("Expected integer value.");
+        }
+        bool type_clamped = false;
+        Scalar candidate;
+        if (is_i32) {
+            if (iv < INT32_MIN || iv > INT32_MAX) {
+                if (!tolerant_clamp)
+                    return graph_error("Integer value is outside int32 bounds.");
+                iv = std::clamp<std::int64_t>(iv, INT32_MIN, INT32_MAX);
+                type_clamped = true;
+            }
+            candidate = static_cast<std::int32_t>(iv);
+        } else {
+            if (iv < 0 || iv > UINT32_MAX) {
+                if (!tolerant_clamp)
+                    return graph_error("Integer value is outside uint32 bounds.");
+                iv = std::clamp<std::int64_t>(iv, 0, UINT32_MAX);
+                type_clamped = true;
+            }
+            candidate = static_cast<std::uint32_t>(iv);
+        }
+        auto [clamped_v, range_clamped] = detail::clamp_scalar(candidate, range);
+        if ((type_clamped || range_clamped) && !tolerant_clamp)
+            return graph_error("Integer value is outside promoted parameter hard bounds.");
+        if (was_clamped)
+            *was_clamped = type_clamped || range_clamped;
+        return clamped_v;
+    }
+    return graph_error("Unsupported promoted parameter scalar type.");
+}
+
+Result<json::Document> encode_parameter_scalars_json(Runtime& runtime, bool is_vector,
+                                                     std::span<const detail::ScalarField> leaves,
+                                                     std::span<const Scalar> scalars) {
+    json::Builder out;
+    const auto encode_one = [&](json::Value dst, const Scalar& s) -> Result<void> {
+        return std::visit(
+            [&](const auto& v) -> Result<void> {
+                using T = std::decay_t<decltype(v)>;
+                if constexpr (std::same_as<T, bool>) {
+                    out.set(dst, v);
+                } else if constexpr (std::same_as<T, std::int32_t>) {
+                    out.set(dst, static_cast<std::int64_t>(v));
+                } else if constexpr (std::same_as<T, std::uint32_t>) {
+                    out.set(dst, static_cast<std::uint64_t>(v));
+                } else if constexpr (std::same_as<T, float> || std::same_as<T, double>) {
+                    if (auto r = out.set(dst, v); !r)
+                        return graph_error(r.error().describe());
+                } else if constexpr (std::same_as<T, EnumValue>) {
+                    ATELIER_TRY_BIND(info, runtime.describe(v.type));
+                    if (!(*info)->enumeration)
+                        return graph_error("Missing enumeration metadata.");
+                    const auto& enumeration = *(*info)->enumeration;
+                    const auto en =
+                        std::ranges::find(enumeration.values, v.bits, &std::pair<std::string, std::uint32_t>::second);
+                    if (en != enumeration.values.end()) {
+                        out.set_validated(dst, en->first);
+                    } else if (enumeration.flags && detail::valid_enum_bits(enumeration, v.bits)) {
+                        out.set(dst, static_cast<std::uint64_t>(v.bits));
+                    } else {
+                        return graph_error("Invalid enumerator bits.");
+                    }
+                }
+                return {};
+            },
+            s);
+    };
+    if (!is_vector) {
+        ATELIER_TRY(encode_one(out.root(), scalars.front()));
+        return out.finish();
+    }
+    for (std::size_t i = 0; i < leaves.size() && i < scalars.size(); ++i) {
+        const auto& lane_name = leaves[i].names.back();
+        const auto slot = out.object_validated(out.root(), lane_name);
+        ATELIER_TRY(encode_one(slot, scalars[i]));
+    }
+    return out.finish();
+}
+
+Result<std::variant<std::vector<Scalar>, std::string>>
+decode_promoted_value_json(Runtime& runtime, const ResolvedPromotedSchema& schema,
+                           std::span<const Scalar> fallback_scalars, json::Value val, bool tolerant_clamp,
+                           bool* was_clamped = nullptr) {
+    if (was_clamped)
+        *was_clamped = false;
+    if (!schema.primary.is_vector && schema.primary.leaves.front().kind == TypeKind::string) {
+        if (val.kind() != json::Kind::string)
+            return graph_error("Expected string value for parameter.");
+        return std::string(*val.string());
+    }
+    if (!schema.primary.is_vector) {
+        ATELIER_TRY_BIND(s, decode_scalar_or_enum_json(runtime, schema.primary.leaves.front().type,
+                                                       schema.ranges.front(), val, tolerant_clamp, was_clamped));
+        return std::vector<Scalar>{*s};
+    }
+    std::vector<Scalar> lanes(fallback_scalars.begin(), fallback_scalars.end());
+    lanes.resize(schema.primary.leaves.size(), Scalar{0.f});
+    bool any_clamped = false;
+    if (val.kind() == json::Kind::array) {
+        const auto arr = *val.array();
+        if (arr.size() != schema.primary.leaves.size())
+            return graph_error("Vector override array length does not match component count.");
+        std::size_t idx = 0;
+        for (const auto elem : arr) {
+            bool lane_clamped = false;
+            ATELIER_TRY_BIND(s, decode_scalar_or_enum_json(runtime, schema.primary.leaves[idx].type, schema.ranges[idx],
+                                                           elem, tolerant_clamp, &lane_clamped));
+            lanes[idx++] = *s;
+            any_clamped |= lane_clamped;
+        }
+    } else if (val.kind() == json::Kind::object) {
+        for (const auto& [k, elem] : *val.object_items()) {
+            const auto found = std::ranges::find_if(schema.primary.leaves,
+                                                    [&](const detail::ScalarField& f) { return f.names.back() == k; });
+            if (found == schema.primary.leaves.end())
+                return graph_error("Unknown vector component '" + std::string(k) + "'.");
+            const auto idx = static_cast<std::size_t>(found - schema.primary.leaves.begin());
+            bool lane_clamped = false;
+            ATELIER_TRY_BIND(s, decode_scalar_or_enum_json(runtime, found->type, schema.ranges[idx], elem,
+                                                           tolerant_clamp, &lane_clamped));
+            lanes[idx] = *s;
+            any_clamped |= lane_clamped;
+        }
+    } else {
+        return graph_error("Expected vector object or array value.");
+    }
+    if (was_clamped)
+        *was_clamped = any_clamped;
+    return lanes;
+}
+
+Result<void> write_promoted_targets_if_changed(Runtime& runtime, const ResolvedPromotedSchema& schema,
+                                               const std::variant<std::vector<Scalar>, std::string>& desired,
+                                               GraphDocument* clear_kept_doc = nullptr) {
+    for (const auto& target : schema.all_targets) {
+        if (const auto* str = std::get_if<std::string>(&desired)) {
+            const auto& leaf = target.leaves.front();
+            String cur;
+            if (!runtime.read(target.node, leaf.path, ValueOutput{leaf.type, &cur}) || cur.view().std_view() != *str) {
+                auto str_val = String::from_utf8(StringView(*str));
+                if (!str_val)
+                    return graph_error("Invalid UTF-8 parameter string.");
+                ATELIER_TRY(runtime.write(target.node, leaf.path, ValueInput{leaf.type, &*str_val}));
+            }
+        } else {
+            const auto& scalars = std::get<std::vector<Scalar>>(desired);
+            for (std::size_t li = 0; li < target.leaves.size() && li < scalars.size(); ++li) {
+                auto cur = runtime.read(target.node, target.leaves[li].path);
+                if (!cur || !same_scalar_bits(*cur, scalars[li]))
+                    ATELIER_TRY(runtime.write(target.node, target.leaves[li].path, scalars[li]));
+            }
+        }
+        if (clear_kept_doc) {
+            if (auto* gnode = find_node_by_id(*clear_kept_doc, target.node); gnode && gnode->kept.root().size() > 0) {
+                json::Builder next(gnode->kept);
+                bool erased = false;
+                for (const auto& leaf : target.leaves) {
+                    auto names = leaf.names;
+                    names.insert(names.begin(), "properties");
+                    erased |= detail::erase_path(next, next.root(), names);
+                }
+                if (erased)
+                    gnode->kept = next.finish();
+            }
+        }
+    }
+    return {};
+}
+
+std::vector<CachedPromotedParam> build_cached_promoted_params(Runtime& runtime, const GraphDocument& doc) {
+    std::vector<CachedPromotedParam> out;
+    out.reserve(doc.parameters.size());
+    for (const auto& param : doc.parameters) {
+        auto schema = resolve_promoted_parameter_schema(runtime, doc, param);
+        if (!schema)
+            continue;
+        std::variant<std::vector<Scalar>, std::string> def_val;
+        if (!schema->primary.is_vector && schema->primary.leaves.front().kind == TypeKind::string) {
+            String s;
+            if (runtime.read(schema->primary.node, schema->primary.leaves.front().path,
+                             ValueOutput{schema->primary.leaves.front().type, &s}))
+                def_val = std::string(s.view().std_view());
+            else
+                def_val = std::string{};
+        } else {
+            std::vector<Scalar> vals;
+            vals.reserve(schema->primary.leaves.size());
+            for (const auto& leaf : schema->primary.leaves) {
+                Scalar s{0.f};
+                if (auto rs = runtime.read(schema->primary.node, leaf.path))
+                    s = *rs;
+                vals.push_back(s);
+            }
+            def_val = std::move(vals);
+        }
+        out.push_back({param.name, std::move(*schema), std::move(def_val)});
+    }
+    return out;
+}
+
+template <class WarnFn>
+Result<void> apply_cached_instance_overrides(Runtime& runtime, std::span<const CachedPromotedParam> cached_params,
+                                             std::string_view asset_key, const json::Document& overrides,
+                                             WarnFn&& report_warn) {
+    const json::Value ov_root = overrides.root();
+    const bool has_ov = ov_root.kind() == json::Kind::object && ov_root.size() > 0;
+    if (has_ov) {
+        for (const auto& [ov_name_sv, ov_val] : *ov_root.object_items()) {
+            if (std::ranges::find(cached_params, ov_name_sv, &CachedPromotedParam::name) == cached_params.end()) {
+                const std::string ov_name(ov_name_sv);
+                report_warn(ov_name, ov_val, world::DiagnosticKind::unknown_field,
+                            "Asset '" + std::string(asset_key) + "' has no promoted parameter '" + ov_name +
+                                "'. The override is kept.");
+            }
+        }
+    }
+    for (const auto& cp : cached_params) {
+        std::variant<std::vector<Scalar>, std::string> desired = cp.default_value;
+        if (has_ov) {
+            if (const auto ov_val = *ov_root.find(cp.name)) {
+                const auto* def_scalars = std::get_if<std::vector<Scalar>>(&cp.default_value);
+                const std::span<const Scalar> fallback =
+                    def_scalars ? std::span<const Scalar>(*def_scalars) : std::span<const Scalar>{};
+                bool was_clamped = false;
+                auto decoded = decode_promoted_value_json(runtime, cp.schema, fallback, *ov_val, true, &was_clamped);
+                if (!decoded) {
+                    report_warn(cp.name, *ov_val, world::DiagnosticKind::mismatch,
+                                decoded.error().message + " The override is kept.");
+                } else {
+                    if (was_clamped)
+                        report_warn(cp.name, *ov_val, world::DiagnosticKind::invalid_value,
+                                    "Override clamped to promoted parameter hard bounds.");
+                    desired = std::move(*decoded);
+                }
+            }
+        }
+        ATELIER_TRY(write_promoted_targets_if_changed(runtime, cp.schema, desired));
+    }
+    return {};
+}
+
+std::vector<GraphPromotedParameterView> build_promoted_views(Runtime& runtime, const GraphDocument& doc,
+                                                             const json::Value* overrides_obj) {
+    std::vector<GraphPromotedParameterView> out;
+    out.reserve(doc.parameters.size());
+    for (const auto& param : doc.parameters) {
+        GraphPromotedParameterView view;
+        view.name = param.name;
+        view.label = param.label;
+        view.category = param.category;
+        view.description = param.description;
+        view.targets = param.targets;
+
+        auto schema_res = resolve_promoted_parameter_schema(runtime, doc, param);
+        if (!schema_res) {
+            view.valid = false;
+            view.invalid_reason = schema_res.error().message;
+            if (overrides_obj && overrides_obj->kind() == json::Kind::object && *overrides_obj->find(param.name))
+                view.overridden = true;
+            out.push_back(std::move(view));
+            continue;
+        }
+        auto& schema = *schema_res;
+        view.valid = true;
+        view.value_type = schema.primary.value_type;
+        view.is_vector = schema.primary.is_vector;
+        if (view.label.empty())
+            view.label = schema.primary.label;
+        if (view.category.empty())
+            view.category = schema.primary.category;
+        if (view.description.empty())
+            view.description = schema.primary.description;
+
+        if (!schema.primary.is_vector && schema.primary.leaves.front().kind == TypeKind::string) {
+            const auto& leaf = schema.primary.leaves.front();
+            String def_str;
+            if (runtime.read(schema.primary.node, leaf.path, ValueOutput{leaf.type, &def_str}))
+                view.default_string = std::string(def_str.view().std_view());
+            std::string eff_str = view.default_string;
+            if (overrides_obj && overrides_obj->kind() == json::Kind::object) {
+                if (const auto ov = *overrides_obj->find(param.name)) {
+                    view.overridden = true;
+                    if (ov->kind() == json::Kind::string)
+                        eff_str = std::string(*ov->string());
+                }
+            }
+            Property prop;
+            prop.name = param.name;
+            prop.path = leaf.path;
+            prop.type = leaf.type;
+            prop.value = Scalar{0.f};
+            prop.label = view.label;
+            prop.category = view.category;
+            prop.description = view.description;
+            prop.is_string = true;
+            prop.string_value = std::move(eff_str);
+            prop.default_string_value = view.default_string;
+            view.properties.push_back(std::move(prop));
+            out.push_back(std::move(view));
+            continue;
+        }
+
+        for (const auto& leaf : schema.primary.leaves) {
+            Scalar s{0.f};
+            if (auto read_s = runtime.read(schema.primary.node, leaf.path))
+                s = *read_s;
+            view.default_scalars.push_back(s);
+        }
+        std::vector<Scalar> eff_scalars = view.default_scalars;
+        if (overrides_obj && overrides_obj->kind() == json::Kind::object) {
+            if (const auto ov = *overrides_obj->find(param.name)) {
+                view.overridden = true;
+                if (auto decoded =
+                        decode_promoted_value_json(runtime, schema, view.default_scalars, *ov, true, nullptr)) {
+                    if (const auto* sv = std::get_if<std::vector<Scalar>>(&*decoded))
+                        eff_scalars = *sv;
+                }
+            }
+        }
+        for (std::size_t li = 0; li < schema.primary.leaves.size(); ++li) {
+            const auto& leaf = schema.primary.leaves[li];
+            Property prop;
+            prop.name = schema.primary.is_vector ? (param.name + "." + leaf.names.back()) : param.name;
+            prop.path = leaf.path;
+            prop.type = leaf.type;
+            prop.value = eff_scalars[li];
+            prop.label = view.label;
+            prop.category = view.category;
+            prop.description = view.description;
+            prop.range = schema.ranges[li];
+            view.properties.push_back(std::move(prop));
+        }
+        out.push_back(std::move(view));
+    }
+
+    if (overrides_obj && overrides_obj->kind() == json::Kind::object) {
+        for (const auto& [ov_name_sv, ov_val] : *overrides_obj->object_items()) {
+            if (std::ranges::find(doc.parameters, ov_name_sv, &GraphPromotedParameter::name) != doc.parameters.end())
+                continue;
+            GraphPromotedParameterView stale;
+            stale.name = std::string(ov_name_sv);
+            stale.label = stale.name + " (Undeclared)";
+            stale.valid = false;
+            stale.overridden = true;
+            stale.undeclared = true;
+            stale.invalid_reason = "Override has no matching promoted parameter in the referenced graph (kept as \"" +
+                                   assets::json_format::preview(ov_val) + "\").";
+            out.push_back(std::move(stale));
+        }
+    }
+    return out;
+}
+
+Result<SavedGraphPortMap> capture_node_authored_inputs(Runtime& runtime, const GraphDocument& doc,
+                                                       const procedural::Contents& listed, const GraphNode& target,
+                                                       ObjectId overriding_upstream = {},
+                                                       const procedural::Ports* overriding_upstream_ports = nullptr) {
+    SavedGraphPortMap saved;
+    if (const auto kept_in = *target.kept.root().find("inputs"); kept_in && kept_in->kind() == json::Kind::object) {
+        for (const auto& [pname, val] : *kept_in->object_items()) {
+            std::vector<std::string> eps;
+            const bool is_arr = val.kind() == json::Kind::array;
+            if (is_arr) {
+                for (const auto item : *val.array())
+                    if (const auto s = item.string())
+                        eps.emplace_back(*s);
+            } else if (const auto s = val.string()) {
+                eps.emplace_back(*s);
+            }
+            saved.emplace(std::string(pname), std::pair{is_arr, std::move(eps)});
+        }
+    }
+    if (!target.node.registered())
+        return saved;
+
+    ATELIER_TRY_BIND(target_ports, procedural::ports(runtime, target.node.id()));
+    ATELIER_TRY_BIND(conns, procedural::inputs(runtime, listed, target.node.id()));
+    for (std::uint32_t p_idx = 0; p_idx < target_ports->inputs.size(); ++p_idx) {
+        const auto& pname = target_ports->inputs[p_idx];
+        if (saved.contains(pname))
+            continue;
+        std::vector<std::string> eps;
+        for (const auto& in : *conns) {
+            if (in.input != p_idx)
+                continue;
+            const auto* src = find_node_by_id(doc, in.from);
+            if (!src)
+                continue;
+            procedural::Ports local_ports;
+            const procedural::Ports* src_ports = nullptr;
+            if (in.from == overriding_upstream && overriding_upstream_ports) {
+                src_ports = overriding_upstream_ports;
+            } else {
+                ATELIER_TRY_BIND(resolved_p, procedural::ports(runtime, in.from));
+                local_ports = std::move(*resolved_p);
+                src_ports = &local_ports;
+            }
+            if (in.output < src_ports->outputs.size())
+                eps.push_back(src->name + "." + src_ports->outputs[in.output]);
+        }
+        if (!eps.empty())
+            saved.emplace(pname, std::pair{target_ports->multiple[p_idx], std::move(eps)});
+    }
+    return saved;
+}
+
+Result<void> realign_asset_node_ports(Runtime& runtime, GraphDocument& doc, GraphNode& asset_entry,
+                                      const procedural::Ports& old_ports, procedural::AssetSubgraph next_subgraph,
+                                      std::vector<world::Diagnostic>* issues) {
+    const ObjectId graph = doc.graph.id();
+    const ObjectId asset_id = asset_entry.node.id();
+    const bool ports_changed = old_ports != next_subgraph.ports;
+    if (!ports_changed)
+        return procedural::set_asset_subgraph(runtime, asset_id, std::move(next_subgraph));
+
+    ATELIER_TRY_BIND(listed, procedural::contents(runtime, graph));
+    ATELIER_TRY_BIND(asset_saved_in, capture_node_authored_inputs(runtime, doc, *listed, asset_entry));
+
+    struct DownstreamCapture {
+        std::string name;
+
+        SavedGraphPortMap saved_in;
+    };
+    std::vector<DownstreamCapture> downstream;
+    const std::string asset_prefix = asset_entry.name + ".";
+    for (const auto& item : doc.nodes) {
+        if (!item.node.registered() || item.node.id() == asset_id)
+            continue;
+        ATELIER_TRY_BIND(conns, procedural::inputs(runtime, *listed, item.node.id()));
+        const bool live_dep =
+            std::ranges::any_of(*conns, [&](const procedural::Input& in) { return in.from == asset_id; });
+        const bool kept_dep =
+            kept_port_has_match(item.kept, {}, [&](std::string_view ep) { return ep.starts_with(asset_prefix); });
+        if (!live_dep && !kept_dep)
+            continue;
+        ATELIER_TRY_BIND(captured, capture_node_authored_inputs(runtime, doc, *listed, item, asset_id, &old_ports));
+        downstream.push_back({item.name, std::move(*captured)});
+    }
+
+    ATELIER_TRY(replace_node_inputs(runtime, graph, asset_id, {}));
+    for (const auto& ds : downstream) {
+        if (const auto* item = find_node(doc, ds.name); item && item->node.registered())
+            ATELIER_TRY(replace_node_inputs(runtime, graph, item->node.id(), {}));
+    }
+
+    ATELIER_TRY(procedural::set_asset_subgraph(runtime, asset_id, std::move(next_subgraph)));
+    ATELIER_TRY(apply_saved_graph_node_inputs(runtime, doc, asset_entry, *asset_saved_in, issues));
+    for (const auto& ds : downstream) {
+        if (auto* item = find_node(doc, ds.name))
+            ATELIER_TRY(apply_saved_graph_node_inputs(runtime, doc, *item, ds.saved_in, issues));
+    }
+    return {};
+}
+
+template <class FindOpenGraphFn>
+Result<std::uint64_t>
+sync_graph_document_assets_impl(Runtime& runtime, GraphDocument& root_doc,
+                                std::unordered_map<ObjectId, std::unique_ptr<BoundAssetInstance>>& root_instances,
+                                Project* active_project, std::uint64_t code_version, const AssetPortResolver& resolver,
+                                FindOpenGraphFn&& find_open_graph, std::string_view root_asset_key,
+                                bool materialize_subgraphs, bool realign_outer,
+                                std::vector<world::Diagnostic>* root_issues) {
+    const std::uint64_t proj_rev = active_project ? active_project->revision() : 0ULL;
+    ATELIER_TRY_BIND(asset_node_type, runtime.native_type<procedural::AssetNode>());
+
+    const auto sync_doc = [&](auto&& self, GraphDocument& doc,
+                              std::unordered_map<ObjectId, std::unique_ptr<BoundAssetInstance>>& instances,
+                              std::vector<std::string>& stack, bool realign_this_doc,
+                              std::vector<world::Diagnostic>* issues) -> Result<std::uint64_t> {
+        std::unordered_set<ObjectId> live_asset_ids;
+        std::uint64_t combined_rev = 14695981039346656037ULL;
+        const auto mix = [&](std::uint64_t v) noexcept {
+            combined_rev ^= v;
+            combined_rev *= 1099511628211ULL;
+        };
+
+        const auto bind_failed_subgraph = [&](GraphNode& item, const procedural::Ports& old_ports,
+                                              procedural::AssetSubgraph failed_sub) -> Result<void> {
+            instances.erase(item.node.id());
+            mix(std::hash<ObjectId>{}(item.node.id()));
+            mix(source::content_hash(item.asset_key, 0));
+            if (failed_sub.bind_error) {
+                mix(static_cast<std::uint64_t>(failed_sub.bind_error->code));
+                mix(source::content_hash(failed_sub.bind_error->message, 0));
+            }
+            if (realign_this_doc)
+                return realign_asset_node_ports(runtime, doc, item, old_ports, std::move(failed_sub), issues);
+            return procedural::set_asset_subgraph(runtime, item.node.id(), std::move(failed_sub));
+        };
+
+        for (auto& item : doc.nodes) {
+            if (!item.node.registered())
+                continue;
+            ATELIER_TRY_BIND(type, runtime.type_of(item.node.id()));
+            if (*type != *asset_node_type)
+                continue;
+            live_asset_ids.insert(item.node.id());
+            ATELIER_TRY_BIND(old_sub, procedural::asset_subgraph(runtime, item.node.id()));
+
+            if (item.asset_key.empty()) {
+                procedural::AssetSubgraph unbound;
+                unbound.bind_error = Error{ErrorCode::invalid_definition, "AssetNode has no bound .procgraph asset."};
+                ATELIER_TRY(bind_failed_subgraph(item, old_sub->ports, std::move(unbound)));
+                continue;
+            }
+
+            const bool is_cycle = std::ranges::find(stack, item.asset_key) != stack.end();
+            const bool too_deep = stack.size() >= procedural::Evaluator::max_subgraph_depth;
+            if (is_cycle || too_deep) {
+                procedural::AssetSubgraph failed_sub;
+                failed_sub.asset_key = item.asset_key;
+                if (auto p = resolver(item.asset_key); p && *p)
+                    failed_sub.ports = std::move(**p);
+                failed_sub.bind_error =
+                    Error{ErrorCode::invalid_definition,
+                          is_cycle ? ("Cyclic .procgraph asset reference involving '" + item.asset_key + "'.")
+                                   : "Maximum .procgraph AssetNode nesting depth exceeded."};
+                ATELIER_TRY(bind_failed_subgraph(item, old_sub->ports, std::move(failed_sub)));
+                continue;
+            }
+
+            if (!materialize_subgraphs) {
+                procedural::Ports shallow_ports = old_sub->ports;
+                if (auto p = resolver(item.asset_key); p && *p)
+                    shallow_ports = std::move(**p);
+                if (shallow_ports != old_sub->ports || old_sub->asset_key != item.asset_key) {
+                    procedural::AssetSubgraph next_sub = *old_sub;
+                    next_sub.asset_key = item.asset_key;
+                    next_sub.ports = std::move(shallow_ports);
+                    next_sub.graph = {};
+                    ATELIER_TRY(
+                        realign_asset_node_ports(runtime, doc, item, old_sub->ports, std::move(next_sub), issues));
+                }
+                continue;
+            }
+
+            std::uint64_t src_epoch = 0;
+            const auto [open_target_doc, open_mutation_epoch] = find_open_graph(item.asset_key);
+            if (open_target_doc) {
+                src_epoch = (1ULL << 61) ^ open_mutation_epoch;
+            } else if (active_project) {
+                src_epoch = (2ULL << 61) ^ proj_rev;
+            } else {
+                procedural::AssetSubgraph miss_sub;
+                miss_sub.asset_key = item.asset_key;
+                miss_sub.bind_error =
+                    Error{ErrorCode::invalid_storage, "No active Project to resolve '" + item.asset_key + "'."};
+                ATELIER_TRY(bind_failed_subgraph(item, old_sub->ports, std::move(miss_sub)));
+                continue;
+            }
+
+            auto& inst = instances[item.node.id()];
+            const bool need_clone = !inst || inst->asset_key != item.asset_key || inst->source_epoch != src_epoch ||
+                                    inst->code_version != code_version;
+            if (need_clone) {
+                Result<GraphDocument> prepared = std::unexpected(Error{ErrorCode::invalid_storage, {}});
+                if (open_target_doc) {
+                    prepared = clone_graph_document(runtime, *open_target_doc);
+                } else {
+                    auto loaded_asset = active_project->assets().procedural_graph(item.asset_key);
+                    if (!loaded_asset) {
+                        procedural::AssetSubgraph miss_sub;
+                        miss_sub.asset_key = item.asset_key;
+                        miss_sub.bind_error = loaded_asset.error();
+                        ATELIER_TRY(bind_failed_subgraph(item, old_sub->ports, std::move(miss_sub)));
+                        continue;
+                    }
+                    prepared = load_graph(runtime, loaded_asset->text, resolver);
+                }
+                if (!prepared) {
+                    procedural::AssetSubgraph bad_sub;
+                    bad_sub.asset_key = item.asset_key;
+                    bad_sub.bind_error = prepared.error();
+                    ATELIER_TRY(bind_failed_subgraph(item, old_sub->ports, std::move(bad_sub)));
+                    continue;
+                }
+                auto fresh = std::make_unique<BoundAssetInstance>();
+                fresh->owner_runtime = &runtime;
+                fresh->asset_key = item.asset_key;
+                fresh->source_epoch = src_epoch;
+                fresh->code_version = code_version;
+                fresh->cloned_doc = std::move(*prepared);
+                fresh->cached_params = build_cached_promoted_params(runtime, fresh->cloned_doc);
+                inst = std::move(fresh);
+            }
+
+            if (!inst->overrides_initialized || inst->applied_overrides != item.overrides) {
+                inst->override_issues.clear();
+                ATELIER_TRY(
+                    apply_cached_instance_overrides(runtime, inst->cached_params, item.asset_key, item.overrides,
+                                                    [&](const std::string& ov_name, json::Value ov_val,
+                                                        world::DiagnosticKind dkind, const std::string& detail_msg) {
+                                                        world::Diagnostic diag;
+                                                        diag.severity = world::Severity::warning;
+                                                        diag.kind = dkind;
+                                                        diag.phase = world::DiagnosticPhase::load;
+                                                        diag.object = item.node.id();
+                                                        diag.type = "procedural.AssetNode";
+                                                        diag.field = {"nodes", item.name, "overrides", ov_name};
+                                                        diag.value = assets::json_format::preview(ov_val);
+                                                        diag.message = detail::dotted(diag.field) + ": " + detail_msg;
+                                                        inst->override_issues.push_back(std::move(diag));
+                                                    }));
+                inst->applied_overrides = item.overrides;
+                inst->overrides_initialized = true;
+                if (item.overrides.root().kind() == json::Kind::object && item.overrides.root().size() > 0) {
+                    const auto raw = json::write(item.overrides.root());
+                    inst->overrides_hash = source::content_hash(std::string_view(raw.data(), raw.size()), 0);
+                } else {
+                    inst->overrides_hash = 0;
+                }
+            }
+            if (issues) {
+                for (auto diag : inst->override_issues) {
+                    diag.serial = issues->size() + 1;
+                    issues->push_back(std::move(diag));
+                }
+            }
+
+            stack.push_back(item.asset_key);
+            ATELIER_TRY_BIND(child_rev, self(self, inst->cloned_doc, inst->children, stack, true, nullptr));
+            stack.pop_back();
+
+            std::vector<ObjectId> in_nodes;
+            std::vector<ObjectId> out_nodes;
+            procedural::Ports extracted_ports;
+            std::optional<Error> bind_err;
+            if (auto p = extract_graph_ports(runtime, inst->cloned_doc, &in_nodes, &out_nodes)) {
+                extracted_ports = std::move(*p);
+            } else {
+                bind_err = p.error();
+            }
+
+            std::uint64_t inst_rev = 14695981039346656037ULL;
+            const auto mix_inst = [&](std::uint64_t v) noexcept {
+                inst_rev ^= v;
+                inst_rev *= 1099511628211ULL;
+            };
+            mix_inst(std::hash<ObjectId>{}(item.node.id()));
+            mix_inst(source::content_hash(item.asset_key, 0));
+            mix_inst(src_epoch);
+            mix_inst(code_version);
+            mix_inst(inst->overrides_hash);
+            mix_inst(*child_rev);
+            if (bind_err) {
+                mix_inst(static_cast<std::uint64_t>(bind_err->code));
+                mix_inst(source::content_hash(bind_err->message, 0));
+            }
+            inst->content_revision = inst_rev;
+            mix(inst_rev);
+
+            if (need_clone || old_sub->revision != inst_rev || old_sub->ports != extracted_ports ||
+                old_sub->graph.id() != inst->cloned_doc.graph.id()) {
+                procedural::AssetSubgraph bound;
+                bound.asset_key = item.asset_key;
+                bound.ports = std::move(extracted_ports);
+                bound.graph = inst->cloned_doc.graph;
+                bound.input_nodes = std::move(in_nodes);
+                bound.output_nodes = std::move(out_nodes);
+                bound.bind_error = std::move(bind_err);
+                bound.revision = inst_rev;
+                if (realign_this_doc)
+                    ATELIER_TRY(realign_asset_node_ports(runtime, doc, item, old_sub->ports, std::move(bound), issues));
+                else
+                    ATELIER_TRY(procedural::set_asset_subgraph(runtime, item.node.id(), std::move(bound)));
+            }
+        }
+
+        std::erase_if(instances, [&](const auto& kv) { return !live_asset_ids.contains(kv.first); });
+        return combined_rev;
+    };
+
+    std::vector<std::string> stack;
+    if (!root_asset_key.empty())
+        stack.emplace_back(root_asset_key);
+    return sync_doc(sync_doc, root_doc, root_instances, stack, realign_outer, root_issues);
+}
+
+} // namespace
+
+Result<void> Session::sync_open_graph_assets(OpenGraph& open, Project* project, bool materialize_subgraphs) {
+    Project* active_project = project ? project : open.resources.project();
+    const std::uint64_t code_version =
+        project_code_ && project_code_->report() ? project_code_->report()->published_version : 0ULL;
+    const auto resolver = make_asset_port_resolver(active_project);
+
+    std::vector<world::Diagnostic>* issues_sink = nullptr;
+    if (materialize_subgraphs || !open.evaluator) {
+        open.asset_issues.clear();
+        issues_sink = &open.asset_issues;
+    }
+
+    const auto find_open = [&](std::string_view k) -> std::pair<const GraphDocument*, std::uint64_t> {
+        if (const auto it = graphs_.find(std::string(k)); it != graphs_.end() && it->second)
+            return {&it->second->document, it->second->mutation_epoch};
+        return {nullptr, 0ULL};
+    };
+
+    const std::string_view root_key = !open.scratch ? std::string_view(open.key) : std::string_view{};
+    ATELIER_TRY(sync_graph_document_assets_impl(runtime_, open.document, open.asset_instances, active_project,
+                                                code_version, resolver, find_open, root_key, materialize_subgraphs,
+                                                true, issues_sink));
+    return {};
+}
+
+std::optional<std::string> Session::graph_controlling_parameter(std::string_view key, std::string_view node_name,
+                                                                std::string_view field_path) const noexcept {
+    if (node_name.empty() || field_path.empty())
+        return std::nullopt;
+    const auto at = graphs_.find(std::string(key));
+    if (at == graphs_.end() || !at->second)
+        return std::nullopt;
+    const std::string candidate = std::string(node_name) + "." + std::string(field_path);
+    for (const auto& param : at->second->document.parameters) {
+        for (const auto& target : param.targets) {
+            if (graph_target_controls_path(target, candidate))
+                return param.name;
+        }
+    }
+    return std::nullopt;
+}
+
+std::optional<std::string> Session::graph_overlapping_parameter(std::string_view key, std::string_view node_name,
+                                                                std::string_view field_path) const noexcept {
+    if (node_name.empty() || field_path.empty())
+        return std::nullopt;
+    const auto at = graphs_.find(std::string(key));
+    if (at == graphs_.end() || !at->second)
+        return std::nullopt;
+    const std::string candidate = std::string(node_name) + "." + std::string(field_path);
+    for (const auto& param : at->second->document.parameters) {
+        for (const auto& target : param.targets) {
+            if (graph_targets_overlap(target, candidate))
+                return param.name;
+        }
+    }
+    return std::nullopt;
+}
+
+json::Document Session::generator_overrides(ObjectId component) const {
+    const auto at = generator_overrides_.find(component);
+    return at != generator_overrides_.end() ? at->second : json::Document{};
+}
+
+Result<std::vector<GraphPromotedParameterView>> Session::generator_promoted_parameters(ObjectId component,
+                                                                                       Project* project) const {
+    if (world_.closed())
+        return graph_error("Generator parameter inspection requires an open Session.", ErrorCode::invalid_definition);
+    ATELIER_TRY_BIND(state, world::inspect_component(world_.runtime(), component));
+    if (!state->valid || state->owner == ObjectId{})
+        return graph_error("ProceduralGeneratorComponent is not attached to an Entity.", ErrorCode::invalid_member);
+    ATELIER_TRY_BIND(is_gen, world_.runtime().is_a(state->type, presentation_types_.procedural_generator_component));
+    if (!*is_gen)
+        return graph_error("Target component is not a ProceduralGeneratorComponent.", ErrorCode::invalid_definition);
+    ATELIER_TRY_BIND(proc_source, presentation::read_procedural_source(world_.runtime(), component));
+    if (proc_source->source.empty())
+        return std::vector<GraphPromotedParameterView>{};
+
+    ATELIER_TRY_BIND(target_doc, resolve_target_graph_document(proc_source->source, project));
+    if (!*target_doc)
+        return std::vector<GraphPromotedParameterView>{};
+
+    const json::Document ov_doc = generator_overrides(component);
+    const json::Value ov_root = ov_doc.root();
+    const json::Value* ov_ptr = ov_root.kind() == json::Kind::object && ov_root.size() > 0 ? &ov_root : nullptr;
+    return build_promoted_views(world_.runtime(), **target_doc, ov_ptr);
+}
+
+Result<std::vector<GraphPromotedParameterView>> Session::graph_promoted_parameters(std::string_view key) const {
+    const auto at = graphs_.find(std::string(key));
+    if (at == graphs_.end() || !at->second)
+        return graph_error("Procedural graph is not open: " + std::string(key), ErrorCode::invalid_definition);
+    return build_promoted_views(world_.runtime(), at->second->document, nullptr);
+}
+
+Result<std::vector<GraphPromotedParameterView>>
+Session::graph_asset_node_parameters(std::string_view key, std::string_view node_name, Project* project) const {
+    const auto at = graphs_.find(std::string(key));
+    if (at == graphs_.end() || !at->second)
+        return graph_error("Procedural graph is not open: " + std::string(key), ErrorCode::invalid_definition);
+    const auto* item = find_node(at->second->document, node_name);
+    if (!item)
+        return graph_error("No node named '" + std::string(node_name) + "' in this graph.");
+    if (item->asset_key.empty())
+        return std::vector<GraphPromotedParameterView>{};
+
+    Project* active_project = project ? project : at->second->resources.project();
+    ATELIER_TRY_BIND(target_doc, resolve_target_graph_document(item->asset_key, active_project));
+    if (!*target_doc)
+        return std::vector<GraphPromotedParameterView>{};
+
+    const json::Value ov_root = item->overrides.root();
+    const json::Value* ov_ptr = ov_root.kind() == json::Kind::object && ov_root.size() > 0 ? &ov_root : nullptr;
+    return build_promoted_views(world_.runtime(), **target_doc, ov_ptr);
+}
+
+Result<std::string> Session::graph_expose_parameter(std::string_view key, std::string_view node_name,
+                                                    std::string_view field_path, std::string_view desired_name,
+                                                    std::string_view label, std::string_view category,
+                                                    std::string_view description) {
+    ATELIER_TRY_BIND(open_ptr, editable_graph(key, true));
+    auto& open = **open_ptr;
+    const std::string target_spec = std::string(node_name) + "." + std::string(field_path);
+    ATELIER_TRY_BIND(resolved, resolve_graph_parameter_target(runtime_, open.document, target_spec));
+    if (const auto existing = graph_overlapping_parameter(key, node_name, field_path))
+        return graph_error("Field '" + target_spec + "' overlaps with graph parameter '" + *existing + "'.");
+    if (!StringView(label).is_valid_utf8() || !StringView(category).is_valid_utf8() ||
+        !StringView(description).is_valid_utf8())
+        return graph_error("Parameter metadata must be valid UTF-8.");
+
+    const auto is_param_taken = [&](std::string_view cand) noexcept {
+        return std::ranges::find(open.document.parameters, cand, &GraphPromotedParameter::name) !=
+               open.document.parameters.end();
+    };
+    std::string param_name(desired_name);
+    if (param_name.empty()) {
+        std::string stem(field_path);
+        std::ranges::replace(stem, '.', '_');
+        if (!valid_graph_identifier(stem) || !is_param_taken(stem)) {
+            param_name = make_unique_graph_identifier(stem, "param", is_param_taken);
+        } else {
+            const std::string qualified = std::string(node_name) + "_" + stem;
+            if (valid_graph_identifier(qualified) && !is_param_taken(qualified))
+                param_name = qualified;
+            else
+                param_name = make_unique_graph_identifier(stem, "param", is_param_taken);
+        }
+    } else {
+        if (!valid_graph_identifier(param_name))
+            return graph_error("Invalid parameter name '" + param_name +
+                               "': expected [A-Za-z_][A-Za-z0-9_]* up to 128 characters.");
+        if (is_param_taken(param_name))
+            return graph_error("A promoted parameter named '" + param_name + "' already exists in this graph.");
+    }
+
+    ATELIER_TRY(cancel_edit());
+    GraphParameterSchemaChange change;
+    change.before_parameters = open.document.parameters;
+    GraphPromotedParameter entry;
+    entry.name = param_name;
+    entry.targets = {target_spec};
+    entry.label = !label.empty() ? std::string(label) : resolved->label;
+    entry.category = !category.empty() ? std::string(category) : resolved->category;
+    entry.description = !description.empty() ? std::string(description) : resolved->description;
+    open.document.parameters.push_back(std::move(entry));
+    change.after_parameters = open.document.parameters;
+    open.push_change(std::move(change));
+    ++revision_;
+    return param_name;
+}
+
+Result<void> Session::graph_bind_parameter_target(std::string_view key, std::string_view param_name,
+                                                  std::string_view node_name, std::string_view field_path) {
+    ATELIER_TRY_BIND(open_ptr, editable_graph(key, true));
+    auto& open = **open_ptr;
+    const auto p_it = std::ranges::find(open.document.parameters, param_name, &GraphPromotedParameter::name);
+    if (p_it == open.document.parameters.end())
+        return graph_error("No promoted parameter named '" + std::string(param_name) + "' in this graph.");
+    const std::string target_spec = std::string(node_name) + "." + std::string(field_path);
+    if (std::ranges::find(p_it->targets, target_spec) != p_it->targets.end())
+        return {};
+    if (const auto existing = graph_overlapping_parameter(key, node_name, field_path))
+        return graph_error("Field '" + target_spec + "' overlaps with graph parameter '" + *existing + "'.");
+
+    GraphPromotedParameter candidate = *p_it;
+    candidate.targets.push_back(target_spec);
+    ATELIER_TRY_BIND(schema, resolve_promoted_parameter_schema(runtime_, open.document, candidate));
+
+    ATELIER_TRY(cancel_edit());
+    GraphParameterSchemaChange change;
+    change.before_parameters = open.document.parameters;
+
+    // Synchronize all targets to primary's value (clamped to the intersected hard bounds).
+    std::variant<std::vector<Scalar>, std::string> synced_val;
+    if (!schema->primary.is_vector && schema->primary.leaves.front().kind == TypeKind::string) {
+        String s;
+        ATELIER_TRY(runtime_.read(schema->primary.node, schema->primary.leaves.front().path,
+                                  ValueOutput{schema->primary.leaves.front().type, &s}));
+        synced_val = std::string(s.view().std_view());
+    } else {
+        std::vector<Scalar> vals;
+        for (std::size_t li = 0; li < schema->primary.leaves.size(); ++li) {
+            ATELIER_TRY_BIND(s, runtime_.read(schema->primary.node, schema->primary.leaves[li].path));
+            vals.push_back(detail::clamp_scalar(*s, schema->ranges[li]).first);
+        }
+        synced_val = std::move(vals);
+    }
+
+    std::vector<ObjectId> touched_nodes;
+    for (const auto& t : schema->all_targets) {
+        if (std::ranges::find(touched_nodes, t.node) == touched_nodes.end())
+            touched_nodes.push_back(t.node);
+    }
+    for (const ObjectId nid : touched_nodes) {
+        ATELIER_TRY_BIND(held, runtime_.hold(nid));
+        ATELIER_TRY_BIND(before_p, capture_object_properties(runtime_, nid));
+        const auto* gnode = find_node_by_id(open.document, nid);
+        change.synced_nodes.push_back(
+            {std::move(*held), std::move(*before_p), {}, gnode ? gnode->kept : json::Document{}, {}});
+    }
+    ATELIER_TRY(write_promoted_targets_if_changed(runtime_, *schema, synced_val, &open.document));
+    for (auto& snap : change.synced_nodes) {
+        ATELIER_TRY_BIND(after_p, capture_object_properties(runtime_, snap.target.id()));
+        snap.after_props = std::move(*after_p);
+        const auto* gnode = find_node_by_id(open.document, snap.target.id());
+        snap.after_kept = gnode ? gnode->kept : json::Document{};
+    }
+
+    *p_it = std::move(candidate);
+    change.after_parameters = open.document.parameters;
+    open.push_change(std::move(change));
+    ++revision_;
+    return {};
+}
+
+Result<void> Session::graph_unbind_parameter_target(std::string_view key, std::string_view node_name,
+                                                    std::string_view field_path) {
+    ATELIER_TRY_BIND(open_ptr, editable_graph(key));
+    auto& open = **open_ptr;
+    const std::string target_spec = std::string(node_name) + "." + std::string(field_path);
+    auto before = open.document.parameters;
+    bool changed = false;
+    for (auto& param : open.document.parameters) {
+        if (std::erase_if(param.targets, [&](std::string_view t) { return graph_targets_overlap(t, target_spec); }) > 0)
+            changed = true;
+    }
+    if (!changed)
+        return {};
+    ATELIER_TRY(cancel_edit());
+    std::erase_if(open.document.parameters, [](const GraphPromotedParameter& p) { return p.targets.empty(); });
+    open.push_change(GraphParameterSchemaChange{std::move(before), open.document.parameters, {}});
+    ++revision_;
+    return {};
+}
+
+Result<void> Session::graph_update_parameter(std::string_view key, std::string_view param_name,
+                                             std::optional<std::string> new_name, std::optional<std::string> label,
+                                             std::optional<std::string> category,
+                                             std::optional<std::string> description,
+                                             std::optional<std::size_t> new_index) {
+    ATELIER_TRY_BIND(open_ptr, editable_graph(key));
+    auto& open = **open_ptr;
+    auto it = std::ranges::find(open.document.parameters, param_name, &GraphPromotedParameter::name);
+    if (it == open.document.parameters.end())
+        return graph_error("No promoted parameter named '" + std::string(param_name) + "' in this graph.");
+    auto next = open.document.parameters;
+    const auto idx = static_cast<std::size_t>(it - open.document.parameters.begin());
+    if (new_name && *new_name != param_name) {
+        if (!valid_graph_identifier(*new_name))
+            return graph_error("Invalid parameter name '" + *new_name + "'.");
+        if (std::ranges::find(next, *new_name, &GraphPromotedParameter::name) != next.end())
+            return graph_error("A promoted parameter named '" + *new_name + "' already exists.");
+        next[idx].name = *new_name;
+    }
+    if (label) {
+        if (!StringView(*label).is_valid_utf8())
+            return graph_error("Parameter label must be valid UTF-8.");
+        next[idx].label = *label;
+    }
+    if (category) {
+        if (!StringView(*category).is_valid_utf8())
+            return graph_error("Parameter category must be valid UTF-8.");
+        next[idx].category = *category;
+    }
+    if (description) {
+        if (!StringView(*description).is_valid_utf8())
+            return graph_error("Parameter description must be valid UTF-8.");
+        next[idx].description = *description;
+    }
+    if (new_index && !next.empty()) {
+        const std::size_t dst = std::min(*new_index, next.size() - 1);
+        if (dst != idx) {
+            auto moved = std::move(next[idx]);
+            next.erase(next.begin() + static_cast<std::ptrdiff_t>(idx));
+            next.insert(next.begin() + static_cast<std::ptrdiff_t>(dst), std::move(moved));
+        }
+    }
+    if (next == open.document.parameters)
+        return {};
+    ATELIER_TRY(cancel_edit());
+    auto before = std::move(open.document.parameters);
+    open.document.parameters = std::move(next);
+    open.push_change(GraphParameterSchemaChange{std::move(before), open.document.parameters, {}});
+    ++revision_;
+    return {};
+}
+
+Result<void> Session::graph_remove_parameter(std::string_view key, std::string_view param_name) {
+    ATELIER_TRY_BIND(open_ptr, editable_graph(key));
+    auto& open = **open_ptr;
+    auto it = std::ranges::find(open.document.parameters, param_name, &GraphPromotedParameter::name);
+    if (it == open.document.parameters.end())
+        return graph_error("No promoted parameter named '" + std::string(param_name) + "' in this graph.");
+    ATELIER_TRY(cancel_edit());
+    auto before = open.document.parameters;
+    open.document.parameters.erase(it);
+    open.push_change(GraphParameterSchemaChange{std::move(before), open.document.parameters, {}});
+    ++revision_;
+    return {};
+}
+
+Result<void> Session::graph_set_parameter_json(std::string_view key, std::string_view param_name, json::Value value) {
+    ATELIER_TRY_BIND(open_ptr, editable_graph(key, true));
+    auto& open = **open_ptr;
+    const auto p_it = std::ranges::find(open.document.parameters, param_name, &GraphPromotedParameter::name);
+    if (p_it == open.document.parameters.end())
+        return graph_error("No promoted parameter named '" + std::string(param_name) + "' in this graph.");
+    ATELIER_TRY_BIND(schema, resolve_promoted_parameter_schema(runtime_, open.document, *p_it));
+
+    std::vector<Scalar> current_scalars;
+    if (schema->primary.is_vector || schema->primary.leaves.front().kind != TypeKind::string) {
+        for (const auto& leaf : schema->primary.leaves) {
+            ATELIER_TRY_BIND(s, runtime_.read(schema->primary.node, leaf.path));
+            current_scalars.push_back(*s);
+        }
+    }
+    ATELIER_TRY_BIND(decoded, decode_promoted_value_json(runtime_, *schema, current_scalars, value, false));
+
+    ATELIER_TRY(cancel_edit());
+    GraphParameterSchemaChange change{open.document.parameters, open.document.parameters, {}};
+    std::vector<ObjectId> touched_nodes;
+    for (const auto& t : schema->all_targets) {
+        if (std::ranges::find(touched_nodes, t.node) == touched_nodes.end())
+            touched_nodes.push_back(t.node);
+    }
+    for (const ObjectId nid : touched_nodes) {
+        ATELIER_TRY_BIND(held, runtime_.hold(nid));
+        ATELIER_TRY_BIND(before_p, capture_object_properties(runtime_, nid));
+        const auto* gnode = find_node_by_id(open.document, nid);
+        change.synced_nodes.push_back(
+            {std::move(*held), std::move(*before_p), {}, gnode ? gnode->kept : json::Document{}, {}});
+    }
+    ATELIER_TRY(write_promoted_targets_if_changed(runtime_, *schema, *decoded, &open.document));
+    bool any_changed = false;
+    for (auto& snap : change.synced_nodes) {
+        ATELIER_TRY_BIND(after_p, capture_object_properties(runtime_, snap.target.id()));
+        const auto* gnode = find_node_by_id(open.document, snap.target.id());
+        snap.after_kept = gnode ? gnode->kept : json::Document{};
+        if (snap.before_props != *after_p || snap.before_kept != snap.after_kept)
+            any_changed = true;
+        snap.after_props = std::move(*after_p);
+    }
+    if (!any_changed)
+        return {};
+    open.push_change(std::move(change));
+    ++revision_;
+    return {};
+}
+
+namespace {
+
+Result<json::Document> canonicalize_promoted_override_json(Runtime& runtime, const GraphDocument& target_doc,
+                                                           std::string_view asset_key, std::string_view param_name,
+                                                           const json::Value* current_overrides_obj,
+                                                           json::Value value) {
+    const auto p_it = std::ranges::find(target_doc.parameters, param_name, &GraphPromotedParameter::name);
+    if (p_it == target_doc.parameters.end())
+        return graph_error("Asset '" + std::string(asset_key) + "' has no promoted parameter '" +
+                           std::string(param_name) + "'.");
+    ATELIER_TRY_BIND(schema, resolve_promoted_parameter_schema(runtime, target_doc, *p_it));
+    if (!schema->primary.is_vector && schema->primary.leaves.front().kind == TypeKind::string) {
+        if (value.kind() != json::Kind::string)
+            return graph_error("Expected string value for override '" + std::string(param_name) + "'.");
+        json::Builder b;
+        b.set_validated(b.root(), *value.string());
+        return b.finish();
+    }
+    std::vector<Scalar> fallback_scalars;
+    fallback_scalars.reserve(schema->primary.leaves.size());
+    for (const auto& leaf : schema->primary.leaves) {
+        Scalar s{0.f};
+        if (auto rs = runtime.read(schema->primary.node, leaf.path))
+            s = *rs;
+        fallback_scalars.push_back(s);
+    }
+    if (current_overrides_obj && current_overrides_obj->kind() == json::Kind::object) {
+        if (const auto existing_ov = *current_overrides_obj->find(param_name)) {
+            if (auto existing_dec =
+                    decode_promoted_value_json(runtime, *schema, fallback_scalars, *existing_ov, true, nullptr)) {
+                if (const auto* sv = std::get_if<std::vector<Scalar>>(&*existing_dec))
+                    fallback_scalars = *sv;
+            }
+        }
+    }
+    ATELIER_TRY_BIND(decoded_v, decode_promoted_value_json(runtime, *schema, fallback_scalars, value, false));
+    const auto& vec_s = std::get<std::vector<Scalar>>(*decoded_v);
+    return encode_parameter_scalars_json(runtime, schema->primary.is_vector, schema->primary.leaves, vec_s);
+}
+
+Result<Scalar> validate_and_clamp_promoted_scalar(Runtime& runtime, TypeId expected_type, const FieldRange& range,
+                                                  const Scalar& raw) {
+    if (!detail::finite_scalar(raw))
+        return graph_error("Promoted parameter scalar must be finite.");
+    if (const auto* ev = std::get_if<EnumValue>(&raw)) {
+        if (ev->type != expected_type)
+            return graph_error("Enumeration type mismatch.");
+        ATELIER_TRY_BIND(info, runtime.describe(expected_type));
+        if (!(*info)->enumeration || !detail::valid_enum_bits(*(*info)->enumeration, ev->bits))
+            return graph_error("Invalid enumerator bits.");
+        return raw;
+    }
+    const TypeId actual_type = std::visit(
+        [&](const auto& v) -> TypeId {
+            using T = std::decay_t<decltype(v)>;
+            if constexpr (std::same_as<T, EnumValue>)
+                return v.type;
+            else
+                return runtime.native_type<T>().value_or(TypeId{});
+        },
+        raw);
+    if (actual_type == TypeId{} || actual_type != expected_type)
+        return graph_error("Promoted parameter scalar type mismatch.");
+    return detail::clamp_scalar(raw, range).first;
+}
+
+} // namespace
+
+Result<void> Session::graph_set_asset_override_json(std::string_view key, std::string_view node_name,
+                                                    std::string_view param_name, std::optional<json::Value> value,
+                                                    Project* project) {
+    ATELIER_TRY_BIND(open_ptr, editable_graph(key, true));
+    auto& open = **open_ptr;
+    auto* item = find_node(open.document, node_name);
+    if (!item || !item->node.registered())
+        return graph_error("Target AssetNode '" + std::string(node_name) + "' is missing or unresolved.");
+    ATELIER_TRY_BIND(asset_node_type, runtime_.native_type<procedural::AssetNode>());
+    ATELIER_TRY_BIND(node_type, runtime_.type_of(item->node.id()));
+    if (*node_type != *asset_node_type)
+        return graph_error("Node '" + std::string(node_name) + "' is not a procedural.AssetNode.");
+    if (!valid_graph_identifier(param_name))
+        return graph_error("Invalid override parameter name '" + std::string(param_name) + "'.");
+
+    const json::Document before_ov = item->overrides;
+    json::Document canonical_val;
+    if (value) {
+        if (item->asset_key.empty())
+            return graph_error("AssetNode '" + std::string(node_name) + "' has no bound .procgraph asset.");
+        Project* active_project = project ? project : open.resources.project();
+        ATELIER_TRY_BIND(target_doc, resolve_target_graph_document(item->asset_key, active_project));
+        if (!*target_doc)
+            return graph_error("Unable to resolve .procgraph asset '" + item->asset_key + "'.");
+        const json::Value before_root = before_ov.root();
+        const json::Value* before_ptr = before_root.kind() == json::Kind::object ? &before_root : nullptr;
+        ATELIER_TRY_BIND(canon, canonicalize_promoted_override_json(runtime_, **target_doc, item->asset_key, param_name,
+                                                                    before_ptr, *value));
+        canonical_val = std::move(*canon);
+    }
+
+    ATELIER_TRY(cancel_edit());
+    json::Builder next(before_ov.root().kind() == json::Kind::object ? before_ov : json::Document{});
+    if (value)
+        next.set_validated(next.root(), param_name, canonical_val.root());
+    else
+        next.erase(next.root(), param_name);
+    const json::Document after_ov = next.root().size() > 0 ? next.finish() : json::Document{};
+    if (before_ov == after_ov)
+        return {};
+    item->overrides = after_ov;
+    open.push_change(
+        GraphAssetOverrideChange{std::string(node_name), before_ov, after_ov, item->asset_key, item->asset_key});
+    ++revision_;
+    return {};
+}
+
+Result<void> Session::set_generator_override_json(Project* project, ObjectId component, std::string_view param_name,
+                                                  std::optional<json::Value> value) {
+    ATELIER_TRY(cancel_edit());
+    ATELIER_TRY_BIND(state, admit_component_edit(component));
+    ATELIER_TRY_BIND(is_gen, runtime_.is_a(state->type, presentation_types_.procedural_generator_component));
+    if (!*is_gen)
+        return graph_error("Target component is not a ProceduralGeneratorComponent.");
+    if (!valid_graph_identifier(param_name))
+        return graph_error("Invalid override parameter name '" + std::string(param_name) + "'.");
+    ATELIER_TRY(ensure_procedural_program());
+    ATELIER_TRY_BIND(current_src, presentation::read_procedural_source(runtime_, component));
+    if (current_src->source.empty() && value.has_value())
+        return graph_error("ProceduralGeneratorComponent has no bound .procgraph asset.");
+
+    const json::Document before_ov = generator_overrides(component);
+    json::Document canonical_val;
+    if (value) {
+        ATELIER_TRY_BIND(target_doc, resolve_target_graph_document(current_src->source, project));
+        if (!*target_doc)
+            return graph_error("Unable to resolve .procgraph asset '" + current_src->source + "'.");
+        const json::Value before_root = before_ov.root();
+        const json::Value* before_ptr = before_root.kind() == json::Kind::object ? &before_root : nullptr;
+        ATELIER_TRY_BIND(canon, canonicalize_promoted_override_json(runtime_, **target_doc, current_src->source,
+                                                                    param_name, before_ptr, *value));
+        canonical_val = std::move(*canon);
+    }
+
+    json::Builder next(before_ov.root().kind() == json::Kind::object ? before_ov : json::Document{});
+    if (value)
+        next.set_validated(next.root(), param_name, canonical_val.root());
+    else
+        next.erase(next.root(), param_name);
+    const json::Document after_ov = next.root().size() > 0 ? next.finish() : json::Document{};
+    if (before_ov == after_ov)
+        return {};
+
+    ATELIER_TRY_BIND(held, runtime_.hold(component));
+    if (after_ov.root().size() > 0)
+        generator_overrides_[component] = after_ov;
+    else
+        generator_overrides_.erase(component);
+    remember(ProceduralGraphChange{std::move(*held), state->owner, current_src->source, current_src->source, before_ov,
+                                   after_ov});
+    return sync_procedural_generators(project);
+}
+
+Result<std::pair<std::string, std::string>>
+Session::graph_extract_asset(Project& project, std::string_view key, std::span<const std::string> selected_nodes,
+                             const std::filesystem::path& asset_relative_path, std::string_view desired_node_name) {
+    ATELIER_TRY_BIND(open_ptr, editable_graph(key, true));
+    auto& open = **open_ptr;
+    if (selected_nodes.empty())
+        return graph_error("Select at least one node to extract into a Digital Asset.");
+    if (asset_relative_path.empty())
+        return graph_error("Specify a target .procgraph relative path inside Content/.");
+    if (!desired_node_name.empty() && !valid_graph_identifier(desired_node_name))
+        return graph_error("Invalid AssetNode name '" + std::string(desired_node_name) +
+                           "': expected [A-Za-z_][A-Za-z0-9_]* up to 128 characters.");
+
+    ATELIER_TRY_BIND(graph_in_type, runtime_.native_type<procedural::GraphInput>());
+    ATELIER_TRY_BIND(graph_out_type, runtime_.native_type<procedural::GraphOutput>());
+    ATELIER_TRY_BIND(asset_node_type, runtime_.native_type<procedural::AssetNode>());
+    ATELIER_TRY_BIND(graph_type, runtime_.native_type<procedural::Graph>());
+
+    std::vector<std::string> sel_names;
+    std::unordered_set<ObjectId> sel_ids;
+    std::unordered_set<std::string> sel_name_set;
+    for (const auto& name : selected_nodes) {
+        if (!sel_name_set.insert(name).second)
+            continue;
+        const auto* item = find_node(open.document, name);
+        if (!item || !item->node.registered())
+            return graph_error("Selected node '" + name + "' is missing or unresolved.");
+        ATELIER_TRY_BIND(ntype, runtime_.type_of(item->node.id()));
+        if (*ntype == *graph_in_type || *ntype == *graph_out_type)
+            return graph_error(
+                "Boundary GraphInput / GraphOutput nodes belong to the outer graph and cannot be extracted.");
+        sel_names.push_back(name);
+        sel_ids.insert(item->node.id());
+    }
+    std::ranges::sort(sel_names);
+
+    std::string asset_node_name;
+    if (!desired_node_name.empty()) {
+        const auto* conflict = find_node(open.document, desired_node_name);
+        if (conflict && !sel_name_set.contains(conflict->name))
+            return graph_error("A node named '" + std::string(desired_node_name) + "' already exists in this graph.");
+        asset_node_name = std::string(desired_node_name);
+    } else {
+        asset_node_name = make_unique_graph_identifier(
+            asset_relative_path.stem().string(), "asset", [&](std::string_view cand) noexcept {
+                const auto* conflict = find_node(open.document, cand);
+                return conflict != nullptr && !sel_name_set.contains(conflict->name);
+            });
+    }
+
+    ATELIER_TRY(cancel_edit());
+
+    const ObjectId outer_graph = open.document.graph.id();
+    ATELIER_TRY_BIND(listed, procedural::contents(runtime_, outer_graph));
+
+    // Build full adjacency over live nodes to verify selection convexity (contracted graph remains a DAG).
+    std::unordered_map<ObjectId, std::vector<procedural::Input>> node_in_edges;
+    std::unordered_map<ObjectId, std::vector<ObjectId>> forward_adj;
+    std::unordered_map<ObjectId, std::vector<ObjectId>> reverse_adj;
+    for (const auto& item : open.document.nodes) {
+        if (!item.node.registered())
+            continue;
+        ATELIER_TRY_BIND(ins, procedural::inputs(runtime_, *listed, item.node.id()));
+        for (const auto& edge : *ins) {
+            forward_adj[edge.from].push_back(item.node.id());
+            reverse_adj[item.node.id()].push_back(edge.from);
+        }
+        node_in_edges.emplace(item.node.id(), std::move(*ins));
+    }
+
+    std::unordered_set<ObjectId> reachable_from_sel;
+    {
+        std::vector<ObjectId> q(sel_ids.begin(), sel_ids.end());
+        for (std::size_t qi = 0; qi < q.size(); ++qi) {
+            if (const auto it = forward_adj.find(q[qi]); it != forward_adj.end()) {
+                for (const ObjectId nxt : it->second) {
+                    if (!sel_ids.contains(nxt) && reachable_from_sel.insert(nxt).second)
+                        q.push_back(nxt);
+                }
+            }
+        }
+    }
+    std::unordered_set<ObjectId> can_reach_sel;
+    {
+        std::vector<ObjectId> q(sel_ids.begin(), sel_ids.end());
+        for (std::size_t qi = 0; qi < q.size(); ++qi) {
+            if (const auto it = reverse_adj.find(q[qi]); it != reverse_adj.end()) {
+                for (const ObjectId prv : it->second) {
+                    if (!sel_ids.contains(prv) && can_reach_sel.insert(prv).second)
+                        q.push_back(prv);
+                }
+            }
+        }
+    }
+    for (const ObjectId ext : reachable_from_sel) {
+        if (can_reach_sel.contains(ext)) {
+            const auto* ext_node = find_node_by_id(open.document, ext);
+            return graph_error("Selected nodes do not form a convex subgraph: external node '" +
+                               (ext_node ? ext_node->name : std::string("?")) +
+                               "' lies both downstream and upstream of the selection, which would create a cycle.");
+        }
+    }
+
+    struct BoundaryInGroup {
+        ObjectId ext_from{};
+
+        std::string ext_name;
+
+        std::uint32_t ext_output{};
+
+        std::string port_name;
+    };
+
+    struct BoundaryOutGroup {
+        ObjectId sel_from{};
+
+        std::string sel_name;
+
+        std::uint32_t sel_output{};
+
+        std::string port_name;
+    };
+
+    const auto alloc_port_name = [](std::string_view preferred, std::unordered_set<std::string>& used,
+                                    std::string_view fallback) {
+        auto chosen = make_unique_graph_identifier(
+            preferred, fallback, [&](std::string_view cand) { return used.contains(std::string(cand)); });
+        used.insert(chosen);
+        return chosen;
+    };
+
+    std::vector<BoundaryInGroup> incoming_groups;
+    std::unordered_set<std::string> used_in_ports;
+    for (const auto& sname : sel_names) {
+        const auto* sel_item = find_node(open.document, sname);
+        ATELIER_TRY_BIND(sel_ports, procedural::ports(runtime_, sel_item->node.id()));
+        for (const auto& edge : node_in_edges[sel_item->node.id()]) {
+            if (sel_ids.contains(edge.from))
+                continue;
+            const auto* ext_src = find_node_by_id(open.document, edge.from);
+            if (!ext_src)
+                continue;
+            const bool exists = std::ranges::any_of(incoming_groups, [&](const BoundaryInGroup& g) {
+                return g.ext_from == edge.from && g.ext_output == edge.output;
+            });
+            if (!exists) {
+                const std::string_view pref =
+                    edge.input < sel_ports->inputs.size() ? std::string_view(sel_ports->inputs[edge.input]) : "in";
+                incoming_groups.push_back(
+                    {edge.from, ext_src->name, edge.output, alloc_port_name(pref, used_in_ports, "in")});
+            }
+        }
+    }
+    std::ranges::sort(incoming_groups, [](const BoundaryInGroup& a, const BoundaryInGroup& b) {
+        return a.ext_name != b.ext_name ? a.ext_name < b.ext_name : a.ext_output < b.ext_output;
+    });
+    used_in_ports.clear();
+    for (auto& g : incoming_groups)
+        g.port_name = alloc_port_name(g.port_name, used_in_ports, "in");
+
+    std::vector<BoundaryOutGroup> outgoing_groups;
+    std::unordered_set<std::string> used_out_ports;
+    std::unordered_set<ObjectId> downstream_ext_ids;
+    for (const auto& item : open.document.nodes) {
+        if (!item.node.registered() || sel_ids.contains(item.node.id()))
+            continue;
+        for (const auto& edge : node_in_edges[item.node.id()]) {
+            if (!sel_ids.contains(edge.from))
+                continue;
+            const auto* sel_src = find_node_by_id(open.document, edge.from);
+            if (!sel_src)
+                continue;
+            downstream_ext_ids.insert(item.node.id());
+            ATELIER_TRY_BIND(src_ports, procedural::ports(runtime_, sel_src->node.id()));
+            const bool exists = std::ranges::any_of(outgoing_groups, [&](const BoundaryOutGroup& g) {
+                return g.sel_from == edge.from && g.sel_output == edge.output;
+            });
+            if (!exists) {
+                const std::string_view pref =
+                    edge.output < src_ports->outputs.size() ? std::string_view(src_ports->outputs[edge.output]) : "out";
+                outgoing_groups.push_back(
+                    {edge.from, sel_src->name, edge.output, alloc_port_name(pref, used_out_ports, "out")});
+            }
+        }
+    }
+    std::ranges::sort(outgoing_groups, [](const BoundaryOutGroup& a, const BoundaryOutGroup& b) {
+        return a.sel_name != b.sel_name ? a.sel_name < b.sel_name : a.sel_output < b.sel_output;
+    });
+    used_out_ports.clear();
+    for (auto& g : outgoing_groups)
+        g.port_name = alloc_port_name(g.port_name, used_out_ports, "out");
+
+    const ObjectId before_display = listed->display();
+    const ObjectId before_template = open.document.template_node;
+
+    if (outgoing_groups.empty()) {
+        ObjectId fallback_sink{};
+        if (before_display != ObjectId{} && sel_ids.contains(before_display)) {
+            fallback_sink = before_display;
+        } else {
+            for (const auto& sname : sel_names) {
+                const auto* sel_item = find_node(open.document, sname);
+                const bool has_internal_downstream = std::ranges::any_of(
+                    forward_adj[sel_item->node.id()], [&](ObjectId d) { return sel_ids.contains(d); });
+                ATELIER_TRY_BIND(sp, procedural::ports(runtime_, sel_item->node.id()));
+                if (!has_internal_downstream && !sp->outputs.empty()) {
+                    fallback_sink = sel_item->node.id();
+                    break;
+                }
+            }
+        }
+        if (fallback_sink != ObjectId{}) {
+            const auto* sink_item = find_node_by_id(open.document, fallback_sink);
+            outgoing_groups.push_back({fallback_sink, sink_item->name, 0u, "out"});
+        }
+    }
+
+    // Compute selection centroid & bounding box for clean internal/external layout.
+    float sum_x = 0.f;
+    float sum_y = 0.f;
+    float min_y = std::numeric_limits<float>::infinity();
+    float max_y = -std::numeric_limits<float>::infinity();
+    for (const auto& sname : sel_names) {
+        const auto* sel_item = find_node(open.document, sname);
+        sum_x += sel_item->position[0];
+        sum_y += sel_item->position[1];
+        min_y = std::min(min_y, sel_item->position[1]);
+        max_y = std::max(max_y, sel_item->position[1]);
+    }
+    const float cx = std::round(sum_x / static_cast<float>(sel_names.size()));
+    const float cy = std::round(sum_y / static_cast<float>(sel_names.size()));
+
+    // Assemble extracted GraphDocument in memory and serialize before mutating outer graph; destroy temporary
+    // Runtime objects deterministically on scope exit.
+    GraphDocument extracted;
+    struct ExtractedGuard {
+        Runtime& runtime;
+
+        GraphDocument& document;
+
+        ~ExtractedGuard() { destroy_private_graph_document(runtime, document); }
+    } extracted_guard{runtime_, extracted};
+
+    ATELIER_TRY_BIND(ext_graph_root, runtime_.create(*graph_type));
+    extracted.graph = std::move(*ext_graph_root);
+    const ObjectId ext_graph_id = extracted.graph.id();
+
+    std::unordered_map<std::string, ObjectId> inner_id_by_name;
+    for (const auto& sname : sel_names) {
+        const auto* src = find_node(open.document, sname);
+        ATELIER_TRY_BIND(ntype, runtime_.type_of(src->node.id()));
+        ATELIER_TRY_BIND(props, capture_object_properties(runtime_, src->node.id()));
+        ATELIER_TRY_BIND(is_byp, procedural::bypassed(runtime_, src->node.id()));
+        ATELIER_TRY_BIND(created, procedural::add_node(runtime_, ext_graph_id, *ntype));
+        const ObjectId cid = created->id();
+        ATELIER_TRY(apply_object_properties(runtime_, cid, props->root()));
+        if (auto src_sub = procedural::asset_subgraph(runtime_, src->node.id())) {
+            procedural::AssetSubgraph stub;
+            stub.asset_key = src_sub->asset_key;
+            stub.ports = src_sub->ports;
+            ATELIER_TRY(procedural::set_asset_subgraph(runtime_, cid, std::move(stub)));
+        }
+        if (*is_byp)
+            ATELIER_TRY(procedural::set_bypassed(runtime_, cid, true));
+        GraphNode copy_node;
+        copy_node.name = src->name;
+        copy_node.node = std::move(*created);
+        copy_node.asset_key = src->asset_key;
+        copy_node.overrides = src->overrides;
+        copy_node.position = {std::round(src->position[0] - cx), std::round(src->position[1] - cy)};
+        copy_node.shape = src->shape;
+        copy_node.color = src->color;
+        copy_node.comment = src->comment;
+        if (src->kept.root().kind() == json::Kind::object && src->kept.root().size() > 0) {
+            json::Builder ck(src->kept);
+            ck.erase(ck.root(), "inputs");
+            if (ck.root().size() > 0)
+                copy_node.kept = ck.finish();
+        }
+        inner_id_by_name.emplace(copy_node.name, cid);
+        extracted.nodes.push_back(std::move(copy_node));
+    }
+    sort_graph_nodes(extracted.nodes);
+
+    const auto unique_inner_name = [&](std::string_view stem, std::string_view fallback) {
+        return make_unique_graph_identifier(
+            stem, fallback, [&](std::string_view cand) noexcept { return find_node(extracted, cand) != nullptr; });
+    };
+
+    std::vector<ObjectId> created_in_pins;
+    for (std::size_t i = 0; i < incoming_groups.size(); ++i) {
+        ATELIER_TRY_BIND(pin, procedural::add_node(runtime_, ext_graph_id, *graph_in_type));
+        const ObjectId pid = pin->id();
+        ATELIER_TRY(runtime_.with_native<procedural::GraphInput>(pid, [&](procedural::GraphInput& gi) -> Result<void> {
+            if (!gi.port_name.assign(StringView{incoming_groups[i].port_name}))
+                return graph_error("Invalid GraphInput port_name.");
+            gi.order = static_cast<std::int32_t>(i);
+            return {};
+        }));
+        const float half = static_cast<float>(incoming_groups.size() - 1) * 0.5f;
+        GraphNode pin_node;
+        pin_node.name = unique_inner_name("input_" + incoming_groups[i].port_name, "input");
+        pin_node.node = std::move(*pin);
+        pin_node.position = {std::round((static_cast<float>(i) - half) * 196.f), std::round((min_y - cy) - 120.f)};
+        created_in_pins.push_back(pid);
+        extracted.nodes.push_back(std::move(pin_node));
+        sort_graph_nodes(extracted.nodes);
+    }
+
+    std::vector<ObjectId> created_out_pins;
+    for (std::size_t i = 0; i < outgoing_groups.size(); ++i) {
+        ATELIER_TRY_BIND(pin, procedural::add_node(runtime_, ext_graph_id, *graph_out_type));
+        const ObjectId pid = pin->id();
+        ATELIER_TRY(
+            runtime_.with_native<procedural::GraphOutput>(pid, [&](procedural::GraphOutput& go) -> Result<void> {
+                if (!go.port_name.assign(StringView{outgoing_groups[i].port_name}))
+                    return graph_error("Invalid GraphOutput port_name.");
+                go.order = static_cast<std::int32_t>(i);
+                return {};
+            }));
+        const float half = static_cast<float>(outgoing_groups.size() - 1) * 0.5f;
+        GraphNode pin_node;
+        pin_node.name = unique_inner_name("output_" + outgoing_groups[i].port_name, "output");
+        pin_node.node = std::move(*pin);
+        pin_node.position = {std::round((static_cast<float>(i) - half) * 196.f), std::round((max_y - cy) + 120.f)};
+        created_out_pins.push_back(pid);
+        extracted.nodes.push_back(std::move(pin_node));
+        sort_graph_nodes(extracted.nodes);
+    }
+
+    // Wire internal edges and GraphInput fanouts in exact authored multi-input slot order, then GraphOutput sinks.
+    for (const auto& sname : sel_names) {
+        const auto* orig = find_node(open.document, sname);
+        const ObjectId dst_inner = inner_id_by_name.at(sname);
+        for (const auto& edge : node_in_edges[orig->node.id()]) {
+            if (sel_ids.contains(edge.from)) {
+                const auto* src_orig = find_node_by_id(open.document, edge.from);
+                ATELIER_TRY(procedural::connect(runtime_, ext_graph_id, inner_id_by_name.at(src_orig->name),
+                                                edge.output, dst_inner, edge.input));
+            } else {
+                const auto gi = std::ranges::find_if(incoming_groups, [&](const BoundaryInGroup& g) {
+                    return g.ext_from == edge.from && g.ext_output == edge.output;
+                });
+                if (gi != incoming_groups.end()) {
+                    const auto pin_idx = static_cast<std::size_t>(gi - incoming_groups.begin());
+                    ATELIER_TRY(procedural::connect(runtime_, ext_graph_id, created_in_pins[pin_idx], 0, dst_inner,
+                                                    edge.input));
+                }
+            }
+        }
+    }
+    for (std::size_t i = 0; i < outgoing_groups.size(); ++i) {
+        ATELIER_TRY(procedural::connect(runtime_, ext_graph_id, inner_id_by_name.at(outgoing_groups[i].sel_name),
+                                        outgoing_groups[i].sel_output, created_out_pins[i], 0));
+    }
+    if (!created_out_pins.empty())
+        ATELIER_TRY(procedural::set_display(runtime_, ext_graph_id, created_out_pins.front()));
+    else if (before_display != ObjectId{} && sel_ids.contains(before_display))
+        ATELIER_TRY(procedural::set_display(runtime_, ext_graph_id,
+                                            inner_id_by_name.at(find_node_by_id(open.document, before_display)->name)));
+
+    // Preserve promoted parameters whose targets lie completely inside the extracted subgraph.
+    for (const auto& param : open.document.parameters) {
+        const bool all_inside = std::ranges::all_of(param.targets, [&](const std::string& t) {
+            const auto dot = t.find('.');
+            return dot != std::string::npos && sel_name_set.contains(t.substr(0, dot));
+        });
+        if (all_inside)
+            extracted.parameters.push_back(param);
+    }
+
+    ATELIER_TRY_BIND(extracted_ports, extract_graph_ports(runtime_, extracted));
+    ATELIER_TRY_BIND(extracted_text, editor::save_graph(runtime_, extracted));
+    ATELIER_TRY_BIND(created_asset, project.create_procedural_graph(asset_relative_path, *extracted_text));
+
+    GraphExtractChange change;
+    change.before_display = before_display;
+    change.before_template = before_template;
+    change.before_parameters = open.document.parameters;
+
+    for (const auto& item : open.document.nodes) {
+        if (item.node.registered())
+            change.before_inputs.push_back({item.node.id(), node_in_edges[item.node.id()], {}});
+    }
+
+    for (const ObjectId sid : sel_ids)
+        ATELIER_TRY(replace_node_inputs(runtime_, outer_graph, sid, {}));
+    for (const ObjectId ext_id : downstream_ext_ids)
+        ATELIER_TRY(replace_node_inputs(runtime_, outer_graph, ext_id, {}));
+
+    for (const auto& sname : sel_names) {
+        auto it = std::ranges::find(open.document.nodes, sname, &GraphNode::name);
+        if (it != open.document.nodes.end()) {
+            if (it->node.registered()) {
+                detach_asset_node_subgraph(runtime_, it->node.id());
+                ATELIER_TRY(procedural::remove_node(runtime_, outer_graph, it->node.id()));
+            }
+            change.removed_nodes.push_back(std::move(*it));
+            open.document.nodes.erase(it);
+        }
+    }
+
+    ATELIER_TRY_BIND(new_asset_root, procedural::add_node(runtime_, outer_graph, *asset_node_type));
+    const ObjectId new_asset_id = new_asset_root->id();
+    {
+        procedural::AssetSubgraph stub;
+        stub.asset_key = *created_asset;
+        stub.ports = *extracted_ports;
+        ATELIER_TRY(procedural::set_asset_subgraph(runtime_, new_asset_id, std::move(stub)));
+    }
+
+    GraphNode asset_entry;
+    asset_entry.name = asset_node_name;
+    asset_entry.node = std::move(*new_asset_root);
+    asset_entry.asset_key = *created_asset;
+    asset_entry.position = {cx, cy};
+    open.document.nodes.push_back(asset_entry);
+    sort_graph_nodes(open.document.nodes);
+    change.added_asset_node = asset_entry;
+
+    // Wire incoming boundary groups -> AssetNode, and restore downstream consumers preserving multi-input slot order.
+    for (std::size_t i = 0; i < incoming_groups.size(); ++i) {
+        ATELIER_TRY(procedural::connect(runtime_, outer_graph, incoming_groups[i].ext_from,
+                                        incoming_groups[i].ext_output, new_asset_id, static_cast<std::uint32_t>(i)));
+    }
+    for (const ObjectId ext_id : downstream_ext_ids) {
+        std::vector<procedural::Input> desired;
+        const auto& orig_edges = node_in_edges[ext_id];
+        desired.reserve(orig_edges.size());
+        for (const auto& edge : orig_edges) {
+            if (!sel_ids.contains(edge.from)) {
+                desired.push_back(edge);
+                continue;
+            }
+            const auto og = std::ranges::find_if(outgoing_groups, [&](const BoundaryOutGroup& g) {
+                return g.sel_from == edge.from && g.sel_output == edge.output;
+            });
+            if (og == outgoing_groups.end())
+                continue;
+            const procedural::Input mapped{new_asset_id, static_cast<std::uint32_t>(og - outgoing_groups.begin()),
+                                           edge.input};
+            if (std::ranges::find(desired, mapped) == desired.end())
+                desired.push_back(mapped);
+        }
+        ATELIER_TRY(replace_node_inputs(runtime_, outer_graph, ext_id, desired));
+    }
+
+    ObjectId after_display = before_display;
+    if (before_display != ObjectId{} && sel_ids.contains(before_display)) {
+        after_display = !extracted_ports->outputs.empty() ? new_asset_id : ObjectId{};
+        ATELIER_TRY(procedural::set_display(runtime_, outer_graph, after_display));
+    }
+    ObjectId after_template = before_template;
+    if (before_template != ObjectId{} && sel_ids.contains(before_template)) {
+        after_template = !extracted_ports->outputs.empty() ? new_asset_id : ObjectId{};
+        open.document.template_node = after_template;
+    }
+    change.after_display = after_display;
+    change.after_template = after_template;
+
+    // Update outer graph promoted parameters & surviving kept inputs.
+    for (auto pit = open.document.parameters.begin(); pit != open.document.parameters.end();) {
+        std::erase_if(pit->targets, [&](const std::string& t) {
+            const auto dot = t.find('.');
+            return dot != std::string::npos && sel_name_set.contains(t.substr(0, dot));
+        });
+        if (pit->targets.empty())
+            pit = open.document.parameters.erase(pit);
+        else
+            ++pit;
+    }
+    change.after_parameters = open.document.parameters;
+
+    const auto uses_removed_node = [&](std::string_view endpoint) noexcept {
+        const auto dot = endpoint.find('.');
+        return dot != std::string_view::npos && sel_name_set.contains(std::string(endpoint.substr(0, dot)));
+    };
+    ATELIER_TRY_BIND(after_listed, procedural::contents(runtime_, outer_graph));
+    for (auto& surv : open.document.nodes) {
+        std::vector<procedural::Input> live_ins;
+        if (surv.node.registered()) {
+            ATELIER_TRY_BIND(ins_now, procedural::inputs(runtime_, *after_listed, surv.node.id()));
+            live_ins = *ins_now;
+            change.after_inputs.push_back({surv.node.id(), std::move(*ins_now), {}});
+        }
+        if (surv.name == asset_node_name)
+            continue;
+        const auto kept_in = *surv.kept.root().find("inputs");
+        if (!kept_in || kept_in->kind() != json::Kind::object)
+            continue;
+        std::vector<std::string> kports;
+        for (const auto& [pname, _] : *kept_in->object_items())
+            kports.emplace_back(pname);
+        const auto before_surv_kept = surv.kept;
+        std::optional<procedural::Ports> surv_ports;
+        if (surv.node.registered()) {
+            ATELIER_TRY_BIND(sp, procedural::ports(runtime_, surv.node.id()));
+            surv_ports = std::move(*sp);
+        }
+        for (const auto& pname : kports) {
+            bool is_multi = false;
+            std::vector<std::string> live_after;
+            if (surv_ports) {
+                const auto pat = std::ranges::find(surv_ports->inputs, pname);
+                if (pat != surv_ports->inputs.end()) {
+                    const auto p_idx = static_cast<std::uint32_t>(pat - surv_ports->inputs.begin());
+                    is_multi = surv_ports->multiple[p_idx];
+                    if (is_multi) {
+                        ATELIER_TRY_BIND(la, format_live_port_endpoints(runtime_, open.document, live_ins, p_idx));
+                        live_after = std::move(*la);
+                    }
+                }
+            }
+            filter_kept_port_endpoints(surv.kept, pname, is_multi, live_after, uses_removed_node);
+        }
+        if (surv.kept != before_surv_kept)
+            change.retained_node_kept.push_back({surv.name, before_surv_kept, surv.kept});
+    }
+
+    open.push_change(std::move(change));
+    ATELIER_TRY(sync_open_graph_assets(open, &project, false));
+    ++revision_;
+    return std::pair{*created_asset, asset_node_name};
+}
+
+Result<void> Session::graph_set_node_asset(std::string_view key, std::string_view node_name,
+                                           std::string_view target_asset_key, Project* project) {
+    if (!target_asset_key.empty() && target_asset_key == key)
+        return graph_error("A procedural graph cannot instantiate itself as an AssetNode.");
+    ATELIER_TRY_BIND(open_ptr, editable_graph(key, true));
+    auto& open = **open_ptr;
+    if (!open.scratch && !target_asset_key.empty() && is_scratch_graph(target_asset_key))
+        return graph_error("Persistent .procgraph assets cannot reference scratch graphs.");
+    auto* item = find_node(open.document, node_name);
+    ATELIER_TRY_BIND(asset_node_type, runtime_.native_type<procedural::AssetNode>());
+    if (!item || !item->node.registered() || runtime_.type_of(item->node.id()) != *asset_node_type)
+        return graph_error("Target node is not a procedural.AssetNode.");
+    if (item->asset_key == target_asset_key)
+        return {};
+    ATELIER_TRY(cancel_edit());
+
+    const ObjectId graph = open.document.graph.id();
+    ATELIER_TRY_BIND(before_sub, procedural::asset_subgraph(runtime_, item->node.id()));
+    ATELIER_TRY_BIND(before_listed, procedural::contents(runtime_, graph));
+
+    struct PreConnectionState {
+        ObjectRoot target;
+
+        std::vector<procedural::Input> inputs;
+
+        json::Document kept;
+    };
+    std::vector<PreConnectionState> pre_states;
+    for (const auto& gn : open.document.nodes) {
+        if (!gn.node.registered())
+            continue;
+        ATELIER_TRY_BIND(ins, procedural::inputs(runtime_, *before_listed, gn.node.id()));
+        pre_states.push_back({gn.node, std::move(*ins), gn.kept});
+    }
+
+    const std::string before_asset = item->asset_key;
+    item->asset_key = std::string(target_asset_key);
+    if (auto synced = sync_open_graph_assets(open, project, false); !synced) {
+        item->asset_key = before_asset;
+        return synced;
+    }
+
+    ATELIER_TRY_BIND(after_sub, procedural::asset_subgraph(runtime_, item->node.id()));
+    ATELIER_TRY_BIND(after_listed, procedural::contents(runtime_, graph));
+
+    GraphAssetOverrideChange change;
+    change.node_name = std::string(node_name);
+    change.before_overrides = item->overrides;
+    change.after_overrides = item->overrides;
+    change.before_asset = before_asset;
+    change.after_asset = item->asset_key;
+    change.asset_changed = true;
+    change.before_ports = std::move(before_sub->ports);
+    change.after_ports = std::move(after_sub->ports);
+
+    for (auto& pre : pre_states) {
+        const auto* gn = find_node_by_id(open.document, pre.target.id());
+        if (!gn)
+            continue;
+        ATELIER_TRY_BIND(after_ins, procedural::inputs(runtime_, *after_listed, pre.target.id()));
+        if (pre.inputs != *after_ins || pre.kept != gn->kept) {
+            change.connection_deltas.push_back(
+                {std::move(pre.target), std::move(pre.inputs), std::move(*after_ins), std::move(pre.kept), gn->kept});
+        }
+    }
+
+    open.push_change(std::move(change));
+    ++revision_;
+    return {};
+}
+
+bool Session::graph_parameter_editing(std::uint64_t control_session) const noexcept {
+    return graph_param_edit_ && graph_param_edit_->control == control_session;
+}
+
+Result<void> Session::begin_graph_parameter_edit(std::string_view key, std::string_view node_name,
+                                                 std::string_view param_name, std::optional<std::size_t> lane,
+                                                 std::uint64_t control_session, Project* project,
+                                                 ObjectId generator_component) {
+    if (editing())
+        return graph_error("A field edit is already active.");
+    if (!control_session)
+        return graph_error("A field edit requires a control session.");
+
+    GraphParameterEdit edit;
+    edit.control = control_session;
+    edit.param_name = std::string(param_name);
+    edit.lane = lane;
+    edit.edit_project = project;
+
+    const auto populate_from_schema = [&](const ResolvedPromotedSchema& schema,
+                                          const json::Value* overrides_obj) -> Result<void> {
+        if (!schema.primary.is_vector && schema.primary.leaves.front().kind == TypeKind::string)
+            return graph_error("String parameters use set_promoted_parameter_string.");
+        edit.value_type = schema.primary.value_type;
+        edit.is_vector = schema.primary.is_vector;
+        edit.lane_fields = schema.primary.leaves;
+        edit.lane_ranges = schema.ranges;
+        edit.current_scalars.reserve(schema.primary.leaves.size());
+        for (const auto& leaf : schema.primary.leaves) {
+            ATELIER_TRY_BIND(s, runtime_.read(schema.primary.node, leaf.path));
+            edit.current_scalars.push_back(*s);
+        }
+        if (overrides_obj && overrides_obj->kind() == json::Kind::object) {
+            if (const auto ov = *overrides_obj->find(param_name)) {
+                if (auto dec = decode_promoted_value_json(runtime_, schema, edit.current_scalars, *ov, true, nullptr)) {
+                    if (const auto* sv = std::get_if<std::vector<Scalar>>(&*dec))
+                        edit.current_scalars = *sv;
+                }
+            }
+        }
+        if (lane && *lane >= edit.current_scalars.size())
+            return graph_error("Vector lane index out of bounds.");
+        edit.range = lane ? edit.lane_ranges[*lane] : edit.lane_ranges.front();
+        return {};
+    };
+
+    if (generator_component != ObjectId{}) {
+        ATELIER_TRY_BIND(comp_state, admit_component_edit(generator_component));
+        ATELIER_TRY_BIND(is_gen, runtime_.is_a(comp_state->type, presentation_types_.procedural_generator_component));
+        if (!*is_gen)
+            return graph_error("Target component is not a ProceduralGeneratorComponent.");
+        ATELIER_TRY(ensure_procedural_program());
+        ATELIER_TRY_BIND(proc_src, presentation::read_procedural_source(runtime_, generator_component));
+        if (proc_src->source.empty())
+            return graph_error("ProceduralGeneratorComponent has no bound .procgraph asset.");
+        ATELIER_TRY_BIND(target_doc, resolve_target_graph_document(proc_src->source, project));
+        if (!*target_doc)
+            return graph_error("Unable to resolve .procgraph asset '" + proc_src->source + "'.");
+        const auto p_it = std::ranges::find((*target_doc)->parameters, param_name, &GraphPromotedParameter::name);
+        if (p_it == (*target_doc)->parameters.end())
+            return graph_error("Unknown generator parameter '" + std::string(param_name) + "'.");
+        ATELIER_TRY_BIND(schema, resolve_promoted_parameter_schema(runtime_, **target_doc, *p_it));
+
+        edit.before_overrides = generator_overrides(generator_component);
+        const json::Value ov_root = edit.before_overrides.root();
+        ATELIER_TRY(populate_from_schema(*schema, ov_root.kind() == json::Kind::object ? &ov_root : nullptr));
+        ATELIER_TRY_BIND(held, runtime_.hold(generator_component));
+        edit.generator_root = std::move(*held);
+        edit.generator_owner = comp_state->owner;
+        graph_param_edit_ = std::move(edit);
+        return {};
+    }
+
+    ATELIER_TRY_BIND(open_ptr, editable_graph(key, true));
+    auto& open = **open_ptr;
+    edit.graph_key = std::string(key);
+    edit.node_name = std::string(node_name);
+    if (!edit.edit_project)
+        edit.edit_project = open.resources.project();
+
+    if (node_name.empty()) {
+        const auto p_it = std::ranges::find(open.document.parameters, param_name, &GraphPromotedParameter::name);
+        if (p_it == open.document.parameters.end())
+            return graph_error("No promoted parameter named '" + std::string(param_name) + "'.");
+        ATELIER_TRY_BIND(schema, resolve_promoted_parameter_schema(runtime_, open.document, *p_it));
+        ATELIER_TRY(populate_from_schema(*schema, nullptr));
+
+        std::vector<ObjectId> touched;
+        for (const auto& t : schema->all_targets) {
+            if (std::ranges::find(touched, t.node) == touched.end())
+                touched.push_back(t.node);
+        }
+        for (const ObjectId nid : touched) {
+            ATELIER_TRY_BIND(held, runtime_.hold(nid));
+            ATELIER_TRY_BIND(before_p, capture_object_properties(runtime_, nid));
+            const auto* gnode = find_node_by_id(open.document, nid);
+            edit.node_backups.push_back(
+                {std::move(*held), std::move(*before_p), gnode ? gnode->kept : json::Document{}});
+        }
+    } else {
+        auto* item = find_node(open.document, node_name);
+        if (!item || !item->node.registered())
+            return graph_error("Target AssetNode '" + std::string(node_name) + "' is missing.");
+        ATELIER_TRY_BIND(asset_node_type, runtime_.native_type<procedural::AssetNode>());
+        if (runtime_.type_of(item->node.id()) != *asset_node_type)
+            return graph_error("Node '" + std::string(node_name) + "' is not a procedural.AssetNode.");
+        if (item->asset_key.empty())
+            return graph_error("AssetNode '" + std::string(node_name) + "' has no bound .procgraph asset.");
+        ATELIER_TRY_BIND(target_doc, resolve_target_graph_document(item->asset_key, edit.edit_project));
+        if (!*target_doc)
+            return graph_error("Unable to resolve .procgraph asset '" + item->asset_key + "'.");
+        const auto p_it = std::ranges::find((*target_doc)->parameters, param_name, &GraphPromotedParameter::name);
+        if (p_it == (*target_doc)->parameters.end())
+            return graph_error("Unknown AssetNode parameter '" + std::string(param_name) + "'.");
+        ATELIER_TRY_BIND(schema, resolve_promoted_parameter_schema(runtime_, **target_doc, *p_it));
+
+        edit.before_overrides = item->overrides;
+        const json::Value ov_root = edit.before_overrides.root();
+        ATELIER_TRY(populate_from_schema(*schema, ov_root.kind() == json::Kind::object ? &ov_root : nullptr));
+    }
+
+    graph_param_edit_ = std::move(edit);
+    return {};
+}
+
+Result<void> Session::preview_graph_parameter_edit(std::uint64_t control_session, std::span<const Scalar> values) {
+    if (!graph_parameter_editing(control_session))
+        return graph_error("No matching graph parameter edit.");
+    auto& edit = *graph_param_edit_;
+
+    std::vector<Scalar> next_scalars = edit.current_scalars;
+    if (edit.lane) {
+        if (values.size() != 1)
+            return graph_error("Single-lane preview expects exactly 1 scalar.");
+        const std::size_t li = *edit.lane;
+        ATELIER_TRY_BIND(validated, validate_and_clamp_promoted_scalar(runtime_, edit.lane_fields[li].type,
+                                                                       edit.lane_ranges[li], values.front()));
+        next_scalars[li] = *validated;
+    } else {
+        if (values.size() != next_scalars.size())
+            return graph_error("Parameter preview scalar count mismatch.");
+        for (std::size_t i = 0; i < values.size(); ++i) {
+            ATELIER_TRY_BIND(validated, validate_and_clamp_promoted_scalar(runtime_, edit.lane_fields[i].type,
+                                                                           edit.lane_ranges[i], values[i]));
+            next_scalars[i] = *validated;
+        }
+    }
+
+    if (edit.generator_root.id() != ObjectId{}) {
+        const ObjectId comp_id = edit.generator_root.id();
+        ATELIER_TRY_BIND(comp_state, admit_component_edit(comp_id));
+        if (comp_state->owner != edit.generator_owner)
+            return graph_error("The procedural generator's owning Entity changed.");
+        ATELIER_TRY_BIND(enc, encode_parameter_scalars_json(runtime_, edit.is_vector, edit.lane_fields, next_scalars));
+        const json::Document cur_ov = generator_overrides(comp_id);
+        json::Builder next_b(cur_ov.root().kind() == json::Kind::object ? cur_ov : json::Document{});
+        next_b.set_validated(next_b.root(), edit.param_name, enc->root());
+        const json::Document after_ov = next_b.finish();
+        edit.current_scalars = std::move(next_scalars);
+        if (after_ov == cur_ov)
+            return {};
+        generator_overrides_[comp_id] = after_ov;
+        ++revision_;
+        forward_edit();
+        return sync_procedural_generators(edit.edit_project);
+    }
+
+    ATELIER_TRY_BIND(open_ptr, editable_graph(edit.graph_key, true));
+    auto& open = **open_ptr;
+
+    if (edit.node_name.empty()) {
+        const auto p_it = std::ranges::find(open.document.parameters, edit.param_name, &GraphPromotedParameter::name);
+        if (p_it == open.document.parameters.end())
+            return graph_error("Promoted parameter disappeared during edit.");
+        ATELIER_TRY_BIND(schema, resolve_promoted_parameter_schema(runtime_, open.document, *p_it));
+        for (std::size_t i = 0; i < next_scalars.size() && i < schema->ranges.size(); ++i)
+            next_scalars[i] = detail::clamp_scalar(next_scalars[i], schema->ranges[i]).first;
+        ATELIER_TRY(write_promoted_targets_if_changed(
+            runtime_, *schema, std::variant<std::vector<Scalar>, std::string>{next_scalars}, &open.document));
+        edit.current_scalars = std::move(next_scalars);
+        ++open.mutation_epoch;
+        open.dirty_revision = 0;
+        ++revision_;
+        return {};
+    }
+
+    auto* item = find_node(open.document, edit.node_name);
+    if (!item)
+        return graph_error("AssetNode disappeared during edit.");
+    ATELIER_TRY_BIND(enc, encode_parameter_scalars_json(runtime_, edit.is_vector, edit.lane_fields, next_scalars));
+    json::Builder next_b(item->overrides.root().kind() == json::Kind::object ? item->overrides : json::Document{});
+    next_b.set_validated(next_b.root(), edit.param_name, enc->root());
+    const json::Document after_ov = next_b.finish();
+    edit.current_scalars = std::move(next_scalars);
+    if (after_ov == item->overrides)
+        return {};
+    item->overrides = after_ov;
+    ++open.mutation_epoch;
+    open.dirty_revision = 0;
+    ++revision_;
+    return {};
+}
+
+Result<void> Session::commit_graph_parameter_edit(std::uint64_t control_session) {
+    if (!graph_parameter_editing(control_session))
+        return graph_error("No matching graph parameter edit.");
+    auto edit = std::move(*graph_param_edit_);
+    graph_param_edit_.reset();
+
+    if (edit.generator_root.id() != ObjectId{}) {
+        const ObjectId comp_id = edit.generator_root.id();
+        ATELIER_TRY_BIND(comp_state, admit_component_edit(comp_id));
+        if (comp_state->owner != edit.generator_owner)
+            return graph_error("The procedural generator's owning Entity changed.");
+        const json::Document after_ov = generator_overrides(comp_id);
+        if (after_ov != edit.before_overrides) {
+            ATELIER_TRY_BIND(proc_src, presentation::read_procedural_source(runtime_, comp_id));
+            remember(ProceduralGraphChange{std::move(edit.generator_root), edit.generator_owner, proc_src->source,
+                                           proc_src->source, std::move(edit.before_overrides), after_ov});
+        }
+        return {};
+    }
+
+    ATELIER_TRY_BIND(open_ptr, editable_graph(edit.graph_key));
+    auto& open = **open_ptr;
+
+    if (edit.node_name.empty()) {
+        GraphParameterSchemaChange change{open.document.parameters, open.document.parameters, {}};
+        bool any_changed = false;
+        for (auto& bk : edit.node_backups) {
+            ATELIER_TRY_BIND(after_p, capture_object_properties(runtime_, bk.target.id()));
+            const auto* gnode = find_node_by_id(open.document, bk.target.id());
+            json::Document after_k = gnode ? gnode->kept : json::Document{};
+            if (bk.before_props != *after_p || bk.before_kept != after_k)
+                any_changed = true;
+            change.synced_nodes.push_back({std::move(bk.target), std::move(bk.before_props), std::move(*after_p),
+                                           std::move(bk.before_kept), std::move(after_k)});
+        }
+        if (any_changed) {
+            open.push_change(std::move(change));
+            ++revision_;
+        }
+        return {};
+    }
+
+    auto* item = find_node(open.document, edit.node_name);
+    if (item && item->overrides != edit.before_overrides) {
+        open.push_change(GraphAssetOverrideChange{edit.node_name, std::move(edit.before_overrides), item->overrides,
+                                                  item->asset_key, item->asset_key});
+        ++revision_;
+    }
+    return {};
+}
+
+Result<void> Session::cancel_graph_parameter_edit() {
+    if (!graph_param_edit_)
+        return {};
+    auto edit = std::move(*graph_param_edit_);
+    graph_param_edit_.reset();
+
+    if (edit.generator_root.id() != ObjectId{}) {
+        const ObjectId comp_id = edit.generator_root.id();
+        if (edit.before_overrides.root().kind() == json::Kind::object && edit.before_overrides.root().size() > 0)
+            generator_overrides_[comp_id] = std::move(edit.before_overrides);
+        else
+            generator_overrides_.erase(comp_id);
+        ++revision_;
+        forward_edit();
+        static_cast<void>(sync_procedural_generators(edit.edit_project));
+        return {};
+    }
+
+    const auto at = graphs_.find(edit.graph_key);
+    if (at == graphs_.end() || !at->second)
+        return {};
+    auto& open = *at->second;
+    if (edit.node_name.empty()) {
+        for (const auto& bk : edit.node_backups) {
+            ATELIER_TRY(apply_object_properties(runtime_, bk.target.id(), bk.before_props.root()));
+            if (auto* gnode = find_node_by_id(open.document, bk.target.id()))
+                gnode->kept = bk.before_kept;
+        }
+    } else if (auto* item = find_node(open.document, edit.node_name)) {
+        item->overrides = std::move(edit.before_overrides);
+    }
+    ++open.mutation_epoch;
+    open.dirty_revision = 0;
+    ++revision_;
+    return {};
+}
+
+Result<void> Session::set_promoted_parameter_scalars(const PromotedParameterTarget& target, std::string_view param_name,
+                                                     std::span<const Scalar> values, Project* project) {
+    ATELIER_TRY(cancel_edit());
+    constexpr std::uint64_t oneshot_session = std::numeric_limits<std::uint64_t>::max();
+    ATELIER_TRY(begin_graph_parameter_edit(target.graph_key, target.node_name, param_name, std::nullopt,
+                                           oneshot_session, project, target.generator_component));
+    auto changed = preview_graph_parameter_edit(oneshot_session, values);
+    if (changed)
+        changed = commit_graph_parameter_edit(oneshot_session);
+    if (changed)
+        return {};
+    auto restored = cancel_graph_parameter_edit();
+    return restored ? changed : restored;
+}
+
+Result<void> Session::set_promoted_parameter_string(const PromotedParameterTarget& target, std::string_view param_name,
+                                                    std::string_view value, Project* project) {
+    if (!StringView(value).is_valid_utf8())
+        return graph_error("Parameter string must be valid UTF-8.");
+    json::Builder b;
+    b.set_validated(b.root(), value);
+    if (target.generator_component != ObjectId{})
+        return set_generator_override_json(project, target.generator_component, param_name, b.root());
+    if (target.node_name.empty())
+        return graph_set_parameter_json(target.graph_key, param_name, b.root());
+    return graph_set_asset_override_json(target.graph_key, target.node_name, param_name, b.root(), project);
+}
+
+Result<void> Session::clear_promoted_parameter_override(const PromotedParameterTarget& target,
+                                                        std::string_view param_name, Project* project) {
+    if (target.generator_component != ObjectId{})
+        return set_generator_override_json(project, target.generator_component, param_name, std::nullopt);
+    if (target.node_name.empty())
+        return graph_error("Graph root parameters are authored defaults, not overrides.");
+    return graph_set_asset_override_json(target.graph_key, target.node_name, param_name, std::nullopt, project);
+}
+
 Result<void> Session::graph_set_properties(std::string_view key, std::string_view node_name, json::Value properties) {
     if (properties.kind() != json::Kind::object)
         return graph_error("Properties patch must be a JSON object.");
@@ -3392,6 +6283,26 @@ Result<void> Session::graph_set_properties(std::string_view key, std::string_vie
         if (!target_node || !target_node->node.registered())
             return graph_error("Target node '" + std::string(node_name) + "' is missing or unresolved.");
         target_root = target_node->node;
+
+        std::vector<std::string> check_path;
+        const auto check_controlled = [&](auto&& self, json::Value patch) -> Result<void> {
+            for (const auto& [member, val] : *patch.object_items()) {
+                check_path.emplace_back(member);
+                if (val.kind() == json::Kind::object && val.size() > 0) {
+                    ATELIER_TRY(self(self, val));
+                } else {
+                    const std::string dotted = detail::dotted(check_path);
+                    if (const auto ctrl = graph_controlling_parameter(key, node_name, dotted)) {
+                        return graph_error("Field '" + std::string(node_name) + "." + dotted +
+                                           "' is controlled by promoted graph parameter '" + *ctrl +
+                                           "'; edit the graph parameter or unbind it first.");
+                    }
+                }
+                check_path.pop_back();
+            }
+            return {};
+        };
+        ATELIER_TRY(check_controlled(check_controlled, properties));
     }
 
     ATELIER_TRY(cancel_edit());
@@ -3412,7 +6323,7 @@ Result<void> Session::graph_set_properties(std::string_view key, std::string_vie
         const auto members = *patch.object_items();
         for (const auto& [member, value] : members) {
             path.emplace_back(member);
-            if (value.kind() == json::Kind::object)
+            if (value.kind() == json::Kind::object && value.size() > 0)
                 self(self, value);
             else
                 detail::erase_path(next_kept, next_kept.root(), path);
@@ -3422,11 +6333,7 @@ Result<void> Session::graph_set_properties(std::string_view key, std::string_vie
     clear_edited(clear_edited, properties);
     const auto after_kept = next_kept.finish();
 
-    const auto before_bytes = json::write(before->root());
-    const auto after_bytes = json::write(after->root());
-    const auto bk_bytes = json::write(before_kept.root());
-    const auto ak_bytes = json::write(after_kept.root());
-    if (std::ranges::equal(before_bytes, after_bytes) && std::ranges::equal(bk_bytes, ak_bytes))
+    if (*before == *after && before_kept == after_kept)
         return {};
 
     if (target_node)
@@ -3448,6 +6355,7 @@ Result<void> Session::set_string_property(ObjectId object, std::span<const Field
                            ErrorCode::invalid_definition);
     if (!StringView(value).is_valid_utf8())
         return graph_error("Property string must be valid UTF-8.");
+    ATELIER_TRY(reject_if_graph_controlled_field(object, path));
     ATELIER_TRY_BIND(string_type, runtime_.native_type<String>());
     ATELIER_TRY_BIND(type, runtime_.type_of(object));
     std::vector<std::string> names;
@@ -3480,11 +6388,14 @@ Result<GraphEvaluation> Session::evaluate_graph(std::string_view key, Project* p
         return graph_error("Procedural graph is not open: " + std::string(key), ErrorCode::invalid_definition);
     auto& open = *at->second;
     ATELIER_TRY_BIND(program, ensure_procedural_program());
-    open.resources.bind(project);
+    if (project)
+        open.resources.bind(project);
+    ATELIER_TRY(sync_open_graph_assets(open, project ? project : open.resources.project(), true));
+    open.shallow_ports_revision = revision_;
     if (!open.evaluator || open.bound_program != *program) {
         open.bound_program = *program;
-        open.evaluator =
-            std::make_unique<procedural::Evaluator>(runtime_, open.document.graph, open.resources, *program);
+        open.evaluator = std::make_unique<procedural::Evaluator>(runtime_, open.document.graph, open.resources,
+                                                                 *program, ensure_procedural_cache_pool());
     }
     ATELIER_TRY(open.evaluator->evaluate(record_timings));
 
@@ -3544,6 +6455,10 @@ Result<std::shared_ptr<const GraphInspectView>> Session::graph_topology(std::str
     auto& open = *at->second;
     if (open.topology && open.topology_revision == revision_ && open.topology_generation == open.evaluation_generation)
         return open.topology;
+    if (open.shallow_ports_revision != revision_) {
+        ATELIER_TRY(sync_open_graph_assets(open, open.resources.project(), false));
+        open.shallow_ports_revision = revision_;
+    }
     const auto graph = open.document.graph.id();
     ATELIER_TRY_BIND(listed, procedural::contents(runtime_, graph));
     ATELIER_TRY_BIND(graph_type, runtime_.native_type<procedural::Graph>());
@@ -3558,7 +6473,11 @@ Result<std::shared_ptr<const GraphInspectView>> Session::graph_topology(std::str
     view.dirty = graph_dirty(key);
     view.can_undo = graph_can_undo(key, false);
     view.can_redo = graph_can_undo(key, true);
+    if (auto ext_p = extract_graph_ports(runtime_, open.document))
+        view.external_ports = {std::move(ext_p->inputs), std::move(ext_p->multiple), std::move(ext_p->outputs)};
+    view.parameters = open.document.parameters;
     view.issues = open.document.issues;
+    view.issues.insert(view.issues.end(), open.asset_issues.begin(), open.asset_issues.end());
     view.notes = open.document.notes;
     view.boxes = open.document.boxes;
 
@@ -3575,9 +6494,16 @@ Result<std::shared_ptr<const GraphInspectView>> Session::graph_topology(std::str
         view.template_node = std::string(*kept_tmpl);
     }
 
+    Project* active_project = open.resources.project();
     for (const auto& item : open.document.nodes) {
         GraphNodeView node_view;
         node_view.name = item.name;
+        node_view.asset_key = item.asset_key;
+        if (!item.asset_key.empty() && active_project) {
+            if (const auto* entry = active_project->entry(item.asset_key))
+                node_view.asset_label = entry->path.stem().string();
+        }
+        node_view.overrides = item.overrides;
         node_view.position = item.position;
         node_view.shape = item.shape;
         node_view.color = item.color;
@@ -3603,7 +6529,7 @@ Result<std::shared_ptr<const GraphInspectView>> Session::graph_topology(std::str
         ATELIER_TRY_BIND(type, runtime_.type_of(item.node.id()));
         ATELIER_TRY_BIND(info, runtime_.describe(*type));
         node_view.type = std::string((*info)->name);
-        if (auto p = procedural::ports(runtime_, *type)) {
+        if (auto p = procedural::ports(runtime_, item.node.id())) {
             node_view.ports = {std::move(p->inputs), std::move(p->multiple), std::move(p->outputs)};
         }
         if (open.evaluator) {
@@ -3616,8 +6542,7 @@ Result<std::shared_ptr<const GraphInspectView>> Session::graph_topology(std::str
             const auto* src = find_node_by_id(open.document, conn.from);
             if (!src)
                 continue;
-            ATELIER_TRY_BIND(src_type, runtime_.type_of(conn.from));
-            ATELIER_TRY_BIND(src_ports, procedural::ports(runtime_, *src_type));
+            ATELIER_TRY_BIND(src_ports, procedural::ports(runtime_, conn.from));
             const std::string from_port =
                 conn.output < src_ports->outputs.size() ? src_ports->outputs[conn.output] : std::to_string(conn.output);
             const std::string to_port = conn.input < node_view.ports.inputs.size() ? node_view.ports.inputs[conn.input]
@@ -3778,7 +6703,8 @@ Result<void> Session::sync_procedural_generators(Project* project) {
         generator_cache_->idle_world_revision == world_.revision() &&
         generator_cache_->idle_session_revision == revision_ && generator_cache_->idle_project == project &&
         generator_cache_->idle_project_revision == proj_rev && generator_cache_->idle_code_version == code_version) {
-        if (auto now = runtime_.change_cursor(); now && *now == generator_cache_->idle_runtime_cursor)
+        runtime_.changed_objects(generator_cache_->idle_runtime_cursor, generator_cache_->scratch_changed);
+        if (generator_cache_->scratch_changed.empty())
             return {};
     }
 
@@ -3896,11 +6822,26 @@ Result<void> Session::sync_procedural_generators(Project* project) {
             return {};
         };
 
+        const auto find_open = [&](std::string_view k) -> std::pair<const GraphDocument*, std::uint64_t> {
+            if (const auto it = graphs_.find(std::string(k)); it != graphs_.end() && it->second)
+                return {&it->second->document, it->second->mutation_epoch};
+            return {nullptr, 0ULL};
+        };
+        const auto resolver = make_asset_port_resolver(project);
+
         auto& slot = cache.graph_slots[proc_source->source];
-        ObjectRoot target_graph_root;
+        slot.owner_runtime = &runtime_;
+        ObjectRoot source_graph_root;
+        const GraphDocument* source_doc = nullptr;
+        std::uint64_t src_epoch = 0;
         if (const auto open_it = graphs_.find(proc_source->source); open_it != graphs_.end() && open_it->second) {
-            slot.closed_doc.reset();
-            target_graph_root = open_it->second->document.graph;
+            slot.reset();
+            slot.owner_runtime = &runtime_;
+            ATELIER_TRY(sync_open_graph_assets(*open_it->second, project, true));
+            open_it->second->shallow_ports_revision = revision_;
+            source_doc = &open_it->second->document;
+            source_graph_root = open_it->second->document.graph;
+            src_epoch = (1ULL << 61) ^ open_it->second->mutation_epoch;
         } else {
             if (!slot.closed_doc || (project && slot.closed_project_revision != proj_rev)) {
                 if (!project) {
@@ -3909,18 +6850,18 @@ Result<void> Session::sync_procedural_generators(Project* project) {
                 } else {
                     auto loaded_asset = project->assets().procedural_graph(proc_source->source);
                     if (!loaded_asset) {
-                        slot.evaluator.reset();
-                        slot.closed_doc.reset();
+                        slot.reset();
+                        slot.owner_runtime = &runtime_;
                         const auto& miss = remember_unavailable(project->assets(), assets::AssetKind::procedural_graph,
                                                                 proc_source->source, loaded_asset.error());
                         ATELIER_TRY(drop_component_output());
                         ATELIER_TRY(contain_error(miss.error, component, comp_state->owner, {"graph"}, miss.kind));
                         continue;
                     }
-                    auto parsed_doc = load_graph(runtime_, loaded_asset->text);
+                    auto parsed_doc = load_graph(runtime_, loaded_asset->text, resolver);
                     if (!parsed_doc) {
-                        slot.evaluator.reset();
-                        slot.closed_doc.reset();
+                        slot.reset();
+                        slot.owner_runtime = &runtime_;
                         const Error format_err{ErrorCode::invalid_storage, parsed_doc.error().message};
                         const auto& miss = remember_unavailable(project->assets(), assets::AssetKind::procedural_graph,
                                                                 proc_source->source, format_err);
@@ -3929,40 +6870,141 @@ Result<void> Session::sync_procedural_generators(Project* project) {
                         continue;
                     }
                     unavailable_.erase(std::pair{assets::AssetKind::procedural_graph, proc_source->source});
-                    slot.evaluator.reset();
+                    slot.reset();
+                    slot.owner_runtime = &runtime_;
                     slot.closed_doc = std::move(*parsed_doc);
                     slot.closed_project_revision = proj_rev;
                 }
             }
-            target_graph_root = slot.closed_doc->graph;
+            if ((project || !graphs_.empty()) && slot.closed_doc) {
+                auto synced_sub = sync_graph_document_assets_impl(runtime_, *slot.closed_doc, slot.asset_instances,
+                                                                  project, code_version, resolver, find_open,
+                                                                  proc_source->source, true, true, nullptr);
+                if (!synced_sub) {
+                    ATELIER_TRY(contain_error(synced_sub.error(), component, comp_state->owner));
+                    continue;
+                }
+            }
+            source_doc = &*slot.closed_doc;
+            source_graph_root = slot.closed_doc->graph;
+            src_epoch = (2ULL << 61) ^ slot.closed_project_revision;
         }
 
-        if (!slot.evaluator || slot.bound_graph_id != target_graph_root.id() || slot.bound_program != program ||
-            slot.code_version != code_version) {
-            slot.evaluator = std::make_unique<procedural::Evaluator>(runtime_, target_graph_root, cache.resources,
-                                                                     program, std::size_t{64} << 20);
-            slot.bound_graph_id = target_graph_root.id();
-            slot.bound_program = program;
-            slot.code_version = code_version;
+        const json::Document comp_ov = generator_overrides(component);
+        const bool has_ov = comp_ov.root().kind() == json::Kind::object && comp_ov.root().size() > 0;
+        const GraphDocument* target_doc = source_doc;
+        procedural::Evaluator* target_evaluator = nullptr;
+
+        if (!has_ov) {
+            entry.private_instance.reset();
+            if (!slot.evaluator || slot.bound_graph_id != source_graph_root.id() || slot.bound_program != program ||
+                slot.code_version != code_version) {
+                slot.evaluator = std::make_unique<procedural::Evaluator>(runtime_, source_graph_root, cache.resources,
+                                                                         program, ensure_procedural_cache_pool());
+                slot.bound_graph_id = source_graph_root.id();
+                slot.bound_program = program;
+                slot.code_version = code_version;
+            }
+            target_evaluator = slot.evaluator.get();
+        } else {
+            const bool need_clone = !entry.private_instance ||
+                                    entry.private_instance->graph_key != proc_source->source ||
+                                    entry.private_instance->source_epoch != src_epoch ||
+                                    entry.private_instance->code_version != code_version;
+            if (need_clone) {
+                auto cloned = clone_graph_document(runtime_, *source_doc);
+                if (!cloned) {
+                    ATELIER_TRY(contain_error(cloned.error(), component, comp_state->owner));
+                    continue;
+                }
+                auto fresh = std::make_unique<GeneratorRuntimeCache::PrivateInstance>();
+                fresh->owner_runtime = &runtime_;
+                fresh->graph_key = proc_source->source;
+                fresh->source_epoch = src_epoch;
+                fresh->code_version = code_version;
+                fresh->cloned_doc = std::move(*cloned);
+                fresh->cached_params = build_cached_promoted_params(runtime_, fresh->cloned_doc);
+                entry.private_instance = std::move(fresh);
+            }
+
+            if (!entry.private_instance->overrides_initialized ||
+                entry.private_instance->applied_overrides != comp_ov) {
+                auto applied = apply_cached_instance_overrides(
+                    runtime_, entry.private_instance->cached_params, proc_source->source, comp_ov,
+                    [&](const std::string& ov_name, json::Value ov_val, world::DiagnosticKind dkind,
+                        const std::string& detail_msg) {
+                        world::Diagnostic diag;
+                        diag.severity = world::Severity::warning;
+                        diag.kind = dkind;
+                        diag.phase = world::DiagnosticPhase::presentation;
+                        diag.object = component;
+                        diag.entity = comp_state->owner;
+                        diag.field = {"overrides", ov_name};
+                        diag.value = assets::json_format::preview(ov_val);
+                        diag.message = "overrides." + ov_name + ": " + detail_msg;
+                        world_.report(std::move(diag));
+                    });
+                if (!applied) {
+                    ATELIER_TRY(contain_error(applied.error(), component, comp_state->owner, {"overrides"}));
+                    continue;
+                }
+                entry.private_instance->applied_overrides = comp_ov;
+                entry.private_instance->overrides_initialized = true;
+            }
+
+            if (project || !graphs_.empty()) {
+                auto synced_sub = sync_graph_document_assets_impl(
+                    runtime_, entry.private_instance->cloned_doc, entry.private_instance->asset_instances, project,
+                    code_version, resolver, find_open, proc_source->source, true, true, nullptr);
+                if (!synced_sub) {
+                    ATELIER_TRY(contain_error(synced_sub.error(), component, comp_state->owner));
+                    continue;
+                }
+            }
+            if (!entry.private_instance->evaluator || entry.private_instance->bound_program != program) {
+                entry.private_instance->evaluator =
+                    std::make_unique<procedural::Evaluator>(runtime_, entry.private_instance->cloned_doc.graph,
+                                                            cache.resources, program, ensure_procedural_cache_pool());
+                entry.private_instance->bound_program = program;
+            }
+            target_doc = &entry.private_instance->cloned_doc;
+            target_evaluator = entry.private_instance->evaluator.get();
         }
+
+        std::vector<ObjectId> out_nodes;
+        auto ext_ports = extract_graph_ports(runtime_, *target_doc, nullptr, &out_nodes);
+        if (!ext_ports) {
+            if (!entry.output)
+                ATELIER_TRY(drop_component_output());
+            ATELIER_TRY(contain_error(ext_ports.error(), component, comp_state->owner));
+            continue;
+        }
+        if (out_nodes.empty()) {
+            ATELIER_TRY(drop_component_output());
+            ATELIER_TRY(contain_error(
+                Error{ErrorCode::invalid_definition, "The procedural graph has no GraphOutput or display node."},
+                component, comp_state->owner));
+            continue;
+        }
+        const ObjectId target_out = out_nodes.front();
 
         const std::optional<std::uint32_t> seed_override =
             override_seed ? std::optional<std::uint32_t>(static_cast<std::uint32_t>(seed)) : std::nullopt;
-        if (auto evaluated = slot.evaluator->evaluate(false, seed_override); !evaluated) {
-            if (!slot.evaluator->has_display_node() || !entry.output)
+        if (auto evaluated = target_evaluator->evaluate_targets({&target_out, 1}, false, seed_override); !evaluated) {
+            if (!entry.output)
                 ATELIER_TRY(drop_component_output());
             ATELIER_TRY(contain_error(evaluated.error(), component, comp_state->owner));
             continue;
         }
 
-        if (auto node_err = slot.evaluator->display_error()) {
-            if (!slot.evaluator->has_display_node() || !entry.output)
+        if (auto node_err = target_evaluator->target_error(target_out)) {
+            if (!entry.output)
                 ATELIER_TRY(drop_component_output());
             ATELIER_TRY(contain_error(*node_err, component, comp_state->owner));
             continue;
         }
 
-        const auto retained_geom = slot.evaluator->retain_output();
+        const auto retained_geom = target_evaluator->retain_node_output(target_out, 0);
         if (!retained_geom) {
             ATELIER_TRY(drop_component_output());
             continue;
@@ -3997,7 +7039,7 @@ Result<void> Session::sync_procedural_generators(Project* project) {
             same_geom ? entry.output->surface_mesh : presentation::build_procedural_surface_mesh(*retained_geom);
 
         std::vector<presentation::ProceduralMeshDependency> mesh_dependencies;
-        for (const auto& dep : slot.evaluator->display_dependencies()) {
+        for (const auto& dep : target_evaluator->target_dependencies({&target_out, 1})) {
             const std::string dep_key(dep.key.view().std_view());
             if (dep_key.empty())
                 continue;

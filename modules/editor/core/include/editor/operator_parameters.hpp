@@ -419,7 +419,7 @@ struct NewProceduralGraph {
     AFIELD(DESC = "工程 Content 下的 .procgraph 路径；交互调用留空时打开原生选择器。")
     String path;
 
-    AFIELD(DESC = "可选的初始 v2 JSON 文本；留空时生成标准空白图。")
+    AFIELD(DESC = "可选的初始 v3 JSON 文本；留空时生成标准空白图。")
     String source;
 };
 
@@ -429,6 +429,17 @@ struct GraphOpen {
 
     AFIELD(DESC = "工程 .procgraph 资产键，或已存在的 scratch 图键。")
     String asset;
+};
+
+ASTRUCT(Name = "editor.GraphDiveIn", DESC = "下钻进入指定 AssetNode 所引用的 .procgraph 数字资产并压入面包屑栈。")
+struct GraphDiveIn {
+    AGENERATED_BODY(GraphDiveIn)
+
+    AFIELD(DESC = "父图资产键；留空时取当前聚焦或活动网络图。")
+    String asset;
+
+    AFIELD(DESC = "父图中的 AssetNode 节点名；留空时取当前选中的 AssetNode。")
+    String node;
 };
 
 ASTRUCT(Name = "editor.GraphSave", DESC = "保存程序化图资产。")
@@ -645,6 +656,198 @@ struct GraphLayout {
 
     AFIELD(DESC = "目标图键；留空时作用于当前活动图。")
     String asset;
+};
+
+ASTRUCT(Name = "editor.GraphExposeParameter", DESC = "将程序化图内部节点字段提升为图级公开参数。")
+struct GraphExposeParameter {
+    AGENERATED_BODY(GraphExposeParameter)
+
+    AFIELD(DESC = "目标图键；留空时作用于当前活动图。")
+    String asset;
+
+    AFIELD(DESC = "目标节点名；留空时作用于当前选中节点。")
+    String node;
+
+    AFIELD(DESC = "节点上的字段路径（例如 width 或 size.x）。")
+    String path;
+
+    AFIELD(DESC = "可选图级参数标识符；留空时按字段名自动生成唯一名称。")
+    String name;
+
+    AFIELD(DESC = "可选 UI 显示标题。")
+    String label;
+
+    AFIELD(DESC = "可选分组名称。")
+    String category;
+
+    AFIELD(DESC = "可选提示说明。")
+    String description;
+};
+
+ASTRUCT(Name = "editor.GraphBindParameter", DESC = "将节点字段追加绑定到已有图级公开参数（多目标驱动）。")
+struct GraphBindParameter {
+    AGENERATED_BODY(GraphBindParameter)
+
+    AFIELD(DESC = "目标图键；留空时作用于当前活动图。")
+    String asset;
+
+    AFIELD(DESC = "已有图级公开参数名称。")
+    String parameter;
+
+    AFIELD(DESC = "目标节点名；留空时作用于当前选中节点。")
+    String node;
+
+    AFIELD(DESC = "节点上的字段路径。")
+    String path;
+};
+
+ASTRUCT(Name = "editor.GraphUnbindParameter", DESC = "解除节点字段与图级公开参数的绑定。")
+struct GraphUnbindParameter {
+    AGENERATED_BODY(GraphUnbindParameter)
+
+    AFIELD(DESC = "目标图键；留空时作用于当前活动图。")
+    String asset;
+
+    AFIELD(DESC = "目标节点名；留空时作用于当前选中节点。")
+    String node;
+
+    AFIELD(DESC = "节点上的字段路径。")
+    String path;
+};
+
+ASTRUCT(Name = "editor.GraphUpdateParameter", DESC = "修改图级公开参数的名称、元数据或排列顺序。")
+struct GraphUpdateParameter {
+    AGENERATED_BODY(GraphUpdateParameter)
+
+    AFIELD(DESC = "目标图键；留空时作用于当前活动图。")
+    String asset;
+
+    AFIELD(DESC = "图级公开参数当前名称。")
+    String parameter;
+
+    AFIELD(DESC = "可选新标识符；留空时不重命名。")
+    String name;
+
+    AFIELD(DESC = "可选新标题；设为 '-' 时清空。")
+    String label;
+
+    AFIELD(DESC = "可选新分组；设为 '-' 时清空。")
+    String category;
+
+    AFIELD(DESC = "可选新说明；设为 '-' 时清空。")
+    String description;
+
+    AFIELD(DESC = "顺序移动偏移（-1 上移，+1 下移，0 不变）。")
+    std::int32_t move_delta{};
+};
+
+ASTRUCT(Name = "editor.GraphRemoveParameter", DESC = "删除图级公开参数并释放其控制的全部内部节点字段。")
+struct GraphRemoveParameter {
+    AGENERATED_BODY(GraphRemoveParameter)
+
+    AFIELD(DESC = "目标图键；留空时作用于当前活动图。")
+    String asset;
+
+    AFIELD(DESC = "要移除的图级公开参数名称。")
+    String parameter;
+};
+
+ASTRUCT(Name = "editor.GraphSetParameter", DESC = "更新程序化图根级公开参数的值并同步写入其绑定的全部内部目标。")
+struct GraphSetParameter {
+    AGENERATED_BODY(GraphSetParameter)
+
+    AFIELD(DESC = "目标图键；留空时作用于当前活动图。")
+    String asset;
+
+    AFIELD(DESC = "图级公开参数名称。")
+    String parameter;
+
+    AFIELD(DESC = "JSON 编码的参数值（数值、布尔、枚举名、字符串或向量数组）。")
+    String value_json;
+};
+
+ASTRUCT(Name = "editor.GraphSetOverride", DESC = "设置或清除程序化图中 AssetNode 实例上的公开参数覆写。")
+struct GraphSetOverride {
+    AGENERATED_BODY(GraphSetOverride)
+
+    AFIELD(DESC = "外层目标图键；留空时作用于当前活动图。")
+    String asset;
+
+    AFIELD(DESC = "目标 AssetNode 节点名；留空时作用于当前选中节点。")
+    String node;
+
+    AFIELD(DESC = "被引用的数字资产公开参数名。")
+    String parameter;
+
+    AFIELD(DESC = "为 true 时移除覆写并恢复资产默认值。")
+    bool clear{};
+
+    AFIELD(DESC = "clear 为 false 时应用的 JSON 编码覆写值。")
+    String value_json;
+};
+
+ASTRUCT(Name = "editor.GraphSetNodeAsset", DESC = "绑定或切换程序化图中 AssetNode 实例引用的 .procgraph 数字资产。")
+struct GraphSetNodeAsset {
+    AGENERATED_BODY(GraphSetNodeAsset)
+
+    AFIELD(DESC = "外层目标图键；留空时作用于当前活动图。")
+    String asset;
+
+    AFIELD(DESC = "目标 AssetNode 节点名；留空时作用于当前选中节点。")
+    String node;
+
+    AFIELD(DESC = "引用的目标 .procgraph 资产键；留空时清除绑定。")
+    String target_asset;
+};
+
+ASTRUCT(Name = "editor.GraphExtractAsset",
+        DESC = "将选中或指定的连通凸子图提取为独立 .procgraph 数字资产，并在原位置替换为连线对齐的 AssetNode。")
+struct GraphExtractAsset {
+    AGENERATED_BODY(GraphExtractAsset)
+
+    AFIELD(DESC = "外层目标图键；留空时作用于当前活动图。")
+    String asset;
+
+    AFIELD(DESC = "可选逗号分隔的节点名列表；留空时提取当前选中的节点集合。")
+    String nodes;
+
+    AFIELD(DESC = "新 .procgraph 数字资产的保存路径；交互调用留空时打开原生保存选择器。")
+    String path;
+
+    AFIELD(DESC = "替换生成的 AssetNode 可选期望名称；留空时按资产文件名派生。")
+    String name;
+};
+
+ASTRUCT(Name = "editor.GraphExtractAssetResult", DESC = "提取数字资产后的资产键与替换生成的 AssetNode 节点名。")
+struct GraphExtractAssetResult {
+    AGENERATED_BODY(GraphExtractAssetResult)
+
+    AFIELD(DESC = "新创建的 .procgraph 资产键。")
+    String asset;
+
+    AFIELD(DESC = "外层图中替换生成的 AssetNode 节点名。")
+    String node;
+};
+
+ASTRUCT(Name = "editor.ProceduralSetOverride",
+        DESC = "设置或清除场景 ProceduralGeneratorComponent 实例上的公开参数差量覆写。")
+struct ProceduralSetOverride {
+    AGENERATED_BODY(ProceduralSetOverride)
+
+    AFIELD(Weak = "world.Entity", DESC = "目标生成器所属 Entity；与 component 同为 null 时使用当前选择。")
+    ReferenceSlot entity;
+
+    AFIELD(Weak = "world.ProceduralGeneratorComponent", DESC = "目标生成器组件；与 entity 同为 null 时使用当前选择。")
+    ReferenceSlot component;
+
+    AFIELD(DESC = "被引用的 .procgraph 公开参数名称。")
+    String parameter;
+
+    AFIELD(DESC = "为 true 时移除覆写并恢复资产默认值。")
+    bool clear{};
+
+    AFIELD(DESC = "clear 为 false 时应用的 JSON 编码覆写值。")
+    String value_json;
 };
 
 ASTRUCT(Name = "editor.AssignProceduralGraph",

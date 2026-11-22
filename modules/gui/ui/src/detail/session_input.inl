@@ -226,15 +226,16 @@ Reply Session::input(const Event& event) {
                     const auto ticks = std::trunc(ladder.remainder / ladder_tick_distance);
                     ladder.remainder -= ticks * ladder_tick_distance;
                     if (ticks != 0) {
-                        double next = press.value;
+                        double raw = press.raw_value;
                         if (ladder.multiply) {
                             const auto factor = std::pow(1 + geometry.increment, ticks);
-                            if (next != 0)
-                                next *= factor;
+                            if (raw != 0)
+                                raw *= factor;
                             ladder.multiplier = std::clamp(ladder.multiplier * factor, 1e-12, 1e12);
                         } else
-                            next += ticks * geometry.increment;
-                        next = std::clamp(next, control.minimum, control.maximum);
+                            raw += ticks * geometry.increment;
+                        press.raw_value = std::clamp(raw, control.minimum, control.maximum);
+                        const double next = quantize_control_value(control, press.raw_value);
                         if (next != press.value) {
                             if (!press.dragging) {
                                 if (!self.finish_edit(reply, true))
@@ -257,24 +258,33 @@ Reply Session::input(const Event& event) {
                         Impl::action(reply, ActionKind::edit_begin, press.key, press.original);
                     }
                     if (press.dragging) {
+                        double next = press.value;
                         if (control.kind == ControlKind::slider) {
                             const auto step =
                                 (control.maximum - control.minimum) / press.slider_span * (event.shift ? .1 : 1.0);
-                            press.value = std::clamp(press.value + (event.x - press.last_x) * step, control.minimum,
-                                                     control.maximum);
+                            press.raw_value = std::clamp(press.raw_value + (event.x - press.last_x) * step,
+                                                         control.minimum, control.maximum);
+                            next = quantize_control_value(control, press.raw_value);
                         } else if (control.kind == ControlKind::splitter) {
                             // A divider stays under the pointer: travel past a limit is held, not dropped.
                             const auto moved =
                                 control.drag_axis == DragAxis::horizontal ? event.x - press.x : event.y - press.y;
-                            press.value =
+                            press.raw_value =
                                 std::clamp(press.original + moved / self.surface.dpi_scale * control.drag_step,
                                            control.minimum, control.maximum);
+                            next = press.raw_value;
                         } else {
-                            const auto step = event.shift ? control.fine_step : control.drag_step;
-                            press.value = std::clamp(press.value + delta / self.surface.dpi_scale * step,
-                                                     control.minimum, control.maximum);
+                            const auto step = control.integral && event.shift
+                                                  ? std::min(control.fine_step, control.drag_step * .2)
+                                                  : (event.shift ? control.fine_step : control.drag_step);
+                            press.raw_value = std::clamp(press.raw_value + delta / self.surface.dpi_scale * step,
+                                                         control.minimum, control.maximum);
+                            next = quantize_control_value(control, press.raw_value);
                         }
-                        Impl::action(reply, ActionKind::edit_preview, press.key, press.value);
+                        if (!control.integral || next != press.value) {
+                            press.value = next;
+                            Impl::action(reply, ActionKind::edit_preview, press.key, press.value);
+                        }
                         reply.redraw = true;
                     }
                 }
@@ -295,9 +305,25 @@ Reply Session::input(const Event& event) {
             self.context_request(reply, *hit, hit->bounds.x, hit->bounds.y + hit->bounds.height);
             return reply; // Menu launch is press-driven; the popup owns the matching release.
         }
-        if (hit && event.button == PointerButton::secondary && self.states.at(hit->key).control.context_target) {
-            self.context_request(reply, *hit, event.x, event.y);
-            return reply;
+        if (hit && event.button == PointerButton::secondary) {
+            const ControlBox* ctx_box = hit;
+            if (ctx_box->kind == ControlKind::combo) {
+                ctx_box = nullptr;
+                for (ControlKey p = self.states.at(hit->key).control.parent; p;) {
+                    const auto it = self.states.find(p);
+                    if (it == self.states.end())
+                        break;
+                    if (it->second.control.context_target) {
+                        ctx_box = self.published ? self.published->find(p) : nullptr;
+                        break;
+                    }
+                    p = it->second.control.parent;
+                }
+            }
+            if (ctx_box && self.states.at(ctx_box->key).control.context_target) {
+                self.context_request(reply, *ctx_box, event.x, event.y);
+                return reply;
+            }
         }
         if (hit && event.button == PointerButton::middle && event.control) {
             const auto& control = self.states.at(hit->key).control;
@@ -341,6 +367,7 @@ Reply Session::input(const Event& event) {
             return reply;
         self.press =
             Impl::Press{hit->key, event.x, event.y, event.x, event.y, control.value, control.value, false, selecting};
+        self.press->raw_value = control.value;
         self.press->button = event.button;
         if (const auto* row = self.tree_row(hit->key))
             self.press->tree_disclosure = contains(row->disclosure, event.x, event.y);
@@ -348,13 +375,15 @@ Reply Session::input(const Event& event) {
             const auto track = slider_track(hit->bounds, self.surface.dpi_scale);
             auto& press = *self.press;
             press.slider_span = std::max(track.width, 1.f);
-            press.value = std::clamp(control.value, control.minimum, control.maximum);
+            press.raw_value = std::clamp(control.value, control.minimum, control.maximum);
+            const double thumb_val = quantize_control_value(control, press.raw_value);
             const auto thumb =
-                track.x + track.width * (press.value - control.minimum) / (control.maximum - control.minimum);
+                track.x + track.width * (thumb_val - control.minimum) / (control.maximum - control.minimum);
             if (std::abs(event.x - thumb) > 5 * self.surface.dpi_scale) {
                 press.dragging = true;
-                press.value = control.minimum + std::clamp((event.x - track.x) / press.slider_span, 0.f, 1.f) *
-                                                    (control.maximum - control.minimum);
+                press.raw_value = control.minimum + std::clamp((event.x - track.x) / press.slider_span, 0.f, 1.f) *
+                                                        (control.maximum - control.minimum);
+                press.value = quantize_control_value(control, press.raw_value);
                 Impl::action(reply, ActionKind::edit_begin, press.key, press.original);
                 Impl::action(reply, ActionKind::edit_preview, press.key, press.value);
             }
@@ -377,7 +406,12 @@ Reply Session::input(const Event& event) {
                 std::clamp(event.x - width * .5f, 0.f, static_cast<float>(self.surface.extent.width) - width);
             const auto y =
                 std::clamp(event.y - height * .5f, 0.f, static_cast<float>(self.surface.extent.height) - height);
-            ladder.geometry = {hit->key, {x, y, width, height}, height / 7, 3, .1 * (event.shift ? .1 : 1)};
+            const int initial_row = control.integral ? 2 : 3;
+            ladder.geometry = {hit->key,
+                               {x, y, width, height},
+                               height / 7,
+                               initial_row,
+                               ladder_steps[initial_row] * (event.shift ? .1 : 1)};
             for (std::size_t row = 0; row < ladder.labels.size(); ++row) {
                 self.text.set(0, ladder_labels[row], ladder.style->font, false, TextAlign::center);
                 const auto metrics = self.text.metrics(0, width / scale);
@@ -411,9 +445,9 @@ Reply Session::input(const Event& event) {
             Impl::action(reply, ActionKind::drag_commit, press.key, DragPoint{event.x, event.y});
         } else if (press.dragging) {
             if (self.focus == press.key && self.states.at(press.key).control.kind == ControlKind::number) {
-                auto candidate = Impl::Edit::create(
-                    self.states.at(press.key), format(press.value, self.states.at(press.key).control.single_precision),
-                    press.value, false, false);
+                auto candidate = Impl::Edit::create(self.states.at(press.key),
+                                                    format(self.states.at(press.key).control, press.value), press.value,
+                                                    false, false);
                 if (!self.text_ok(reply, candidate, self.focus)) {
                     Impl::action(reply, ActionKind::edit_cancel, press.key, press.original);
                     return reply;
@@ -536,13 +570,15 @@ Reply Session::input(const Event& event) {
         (event.key == Key::left || event.key == Key::right || event.key == Key::up || event.key == Key::down ||
          event.key == Key::home || event.key == Key::end)) {
         const auto& control = focused->control;
-        const auto step = event.shift ? control.fine_step : control.drag_step;
-        const auto value =
+        const auto raw_step = event.shift ? control.fine_step : control.drag_step;
+        const auto step = control.integral ? std::max(1.0, std::round(raw_step)) : raw_step;
+        const auto raw_value =
             event.key == Key::home ? control.minimum
             : event.key == Key::end
                 ? control.maximum
                 : std::clamp(control.value + (event.key == Key::left || event.key == Key::down ? -step : step),
                              control.minimum, control.maximum);
+        const auto value = quantize_control_value(control, raw_value);
         Impl::action(reply, ActionKind::edit_begin, self.focus, control.value);
         Impl::action(reply, ActionKind::edit_preview, self.focus, value);
         Impl::action(reply, ActionKind::edit_commit, self.focus, value);

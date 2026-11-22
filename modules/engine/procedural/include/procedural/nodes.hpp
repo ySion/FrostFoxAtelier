@@ -273,7 +273,7 @@ public:
     AFIELD(Label = "Mode", DESC = "project 沿 Direction 投射；minimum 取最近的表面点。")
     RayMode mode{RayMode::project};
 
-    AFIELD(Label = "Direction", DESC = "project 模式的投射方向，内部归一化。")
+    AFIELD(Label = "Direction", Meta("ui.visible_when", "mode=project"), DESC = "project 模式的投射方向，内部归一化。")
     math::Vector3 direction{0.f, -1.f, 0.f};
 
     AFIELD(Label = "Max Distance", Min = "0", Max = "1000", LockMin, DESC = "最远查找距离，单位 m。")
@@ -332,32 +332,37 @@ class Extrude : public Node {
     AGENERATED_BODY(Extrude)
 
 public:
-    AFIELD(Label = "Group", DESC = "仅挤出选中的 primitive 或 point bool 组；空表示全部多边形。")
-    String group;
-
-    AFIELD(Label = "Distance", Min = "-10", Max = "10", DESC = "沿面法向的挤出距离，单位 m。")
+    AFIELD(Label = "Distance", Category = "Extrusion", Min = "-10", Max = "10", DESC = "沿面法向的挤出距离，单位 m。")
     float distance{0.5f};
 
-    AFIELD(Label = "Inset", Min = "-2", Max = "2",
+    AFIELD(Label = "Inset", Category = "Extrusion", Min = "-2", Max = "2",
            DESC = "在原多边形平面内沿角平分线内缩的距离（负值为外扩），单位 m。")
     float inset{0.f};
 
-    AFIELD(Label = "Distance Attribute", DESC = "可选的 primitive float 属性名，逐图元覆盖 Distance。")
-    String distance_attribute;
-
-    AFIELD(Label = "Inset Attribute", DESC = "可选的 primitive float 属性名，逐图元覆盖 Inset。")
-    String inset_attribute;
-
-    AFIELD(Label = "Individual Faces", DESC = "为 true 时逐面独立挤出；为 false 时合并选中区域的共享内边。")
+    AFIELD(Label = "Individual Faces", Category = "Extrusion",
+           DESC = "为 true 时逐面独立挤出；为 false 时合并选中区域的共享内边。")
     bool individual{true};
 
-    AFIELD(Label = "Output Back", DESC = "生成反向底盖以构成闭合流形体块；在已有闭合壳局部挤出时设为 false。")
+    AFIELD(Label = "Output Back", Category = "Extrusion",
+           DESC = "生成反向底盖以构成闭合流形体块；在已有闭合壳局部挤出时设为 false。")
     bool output_back{true};
 
-    AFIELD(Label = "Front Group", DESC = "可选的 primitive bool 输出组名，标记挤出顶面。")
+    AFIELD(Label = "Group", Category = "Selection & Overrides",
+           DESC = "仅挤出选中的 primitive 或 point bool 组；空表示全部多边形。")
+    String group;
+
+    AFIELD(Label = "Distance Attribute", Category = "Selection & Overrides",
+           DESC = "可选的 primitive float 属性名，逐图元覆盖 Distance。")
+    String distance_attribute;
+
+    AFIELD(Label = "Inset Attribute", Category = "Selection & Overrides",
+           DESC = "可选的 primitive float 属性名，逐图元覆盖 Inset。")
+    String inset_attribute;
+
+    AFIELD(Label = "Front Group", Category = "Output Groups", DESC = "可选的 primitive bool 输出组名，标记挤出顶面。")
     String front_group;
 
-    AFIELD(Label = "Side Group", DESC = "可选的 primitive bool 输出组名，标记挤出侧面。")
+    AFIELD(Label = "Side Group", Category = "Output Groups", DESC = "可选的 primitive bool 输出组名，标记挤出侧面。")
     String side_group;
 
     AFUNCTION(DESC = "挤出输入多边形表面。")
@@ -370,28 +375,34 @@ class Sweep : public Node {
     AGENERATED_BODY(Sweep)
 
 public:
-    AFIELD(Label = "Profile", DESC = "rectangle 矩形截面，tube 圆管截面，custom 使用 cross_section 端口截面。")
+    AFIELD(Label = "Profile", Category = "Profile",
+           DESC = "rectangle 矩形截面，tube 圆管截面，custom 使用 cross_section 端口截面。")
     SweepProfile profile{SweepProfile::rectangle};
 
-    AFIELD(Label = "Width", Min = "0.01", Max = "20", LockMin, DESC = "rectangle 截面的水平宽度，单位 m。")
+    AFIELD(Label = "Width", Category = "Profile", Min = "0.01", Max = "20", LockMin,
+           Meta("ui.visible_when", "profile=rectangle"), DESC = "rectangle 截面的水平宽度，单位 m。")
     float width{1.f};
 
-    AFIELD(Label = "Height", Min = "0.01", Max = "20", LockMin, DESC = "rectangle 截面的竖直高度，单位 m。")
+    AFIELD(Label = "Height", Category = "Profile", Min = "0.01", Max = "20", LockMin,
+           Meta("ui.visible_when", "profile=rectangle"), DESC = "rectangle 截面的竖直高度，单位 m。")
     float height{1.f};
 
-    AFIELD(Label = "Radius", Min = "0.01", Max = "10", LockMin, DESC = "tube 截面的半径，单位 m。")
+    AFIELD(Label = "Radius", Category = "Profile", Min = "0.01", Max = "10", LockMin,
+           Meta("ui.visible_when", "profile=tube"), DESC = "tube 截面的半径，单位 m。")
     float radius{0.5f};
 
-    AFIELD(Label = "Segments", Min = "3", Max = "64", LockMin, DESC = "tube 截面圆周分段数。")
+    AFIELD(Label = "Segments", Category = "Profile", Min = "3", Max = "64", LockMin,
+           Meta("ui.visible_when", "profile=tube"), DESC = "tube 截面圆周分段数。")
     std::uint32_t segments{8};
 
-    AFIELD(Label = "Up Vector", DESC = "稳定扫掠截面竖直方向的参考上向量。")
+    AFIELD(Label = "Up Vector", Category = "Frame & Caps", DESC = "稳定扫掠截面竖直方向的参考上向量。")
     math::Vector3 up{0.f, 1.f, 0.f};
 
-    AFIELD(Label = "End Caps", DESC = "闭合截面时在折线首尾两端生成封盖。")
+    AFIELD(Label = "End Caps", Category = "Frame & Caps", DESC = "闭合截面时在折线首尾两端生成封盖。")
     bool end_caps{true};
 
-    AFIELD(Label = "Scale Attribute", DESC = "可选的折线 point float 缩放属性名；缺失时按 1 处理。")
+    AFIELD(Label = "Scale Attribute", Category = "Frame & Caps",
+           DESC = "可选的折线 point float 缩放属性名；缺失时按 1 处理。")
     String scale_attribute = String::literal<"pscale">();
 
     AFUNCTION(DESC = "沿 backbone 折线扫掠截面。")
@@ -407,6 +418,90 @@ class Null : public Node {
 public:
     AFUNCTION(DESC = "原样传递输入几何，零拷贝共享底层属性与拓扑列。")
     [[nodiscard]] Result<void> process(const Geometry& input, Geometry& output) const noexcept;
+};
+
+AENUM(Name = "procedural.PreviewFallback",
+      DESC = "独立检视含 GraphInput 的 .procgraph 且无外层输入连线时提供的预览回退几何。")
+enum class PreviewFallback : std::uint32_t {
+    AMETA(Label = "Empty", DESC = "输出空几何。") empty = 0,
+    AMETA(Label = "Grid (10m)", DESC = "10m × 10m XZ 平面点阵。") grid = 1,
+    AMETA(Label = "Box (1m)", DESC = "1m 闭合六面体。") box = 2,
+    AMETA(Label = "Sphere (r=1m)", DESC = "半径 1m 闭合球体。") sphere = 3,
+    AMETA(Label = "Line (2m)", DESC = "沿 +Y 方向 2m 采样点列。") line = 4
+};
+
+ACLASS(Name = "procedural.GraphInput",
+       DESC = "数字资产子图（.procgraph）的外部单几何输入边界节点；独立检视时可输出预览回退几何。")
+class GraphInput : public Node {
+    AGENERATED_BODY(GraphInput)
+
+public:
+    AFIELD(Label = "Port Name", Category = "Boundary", DESC = "暴露给外层 AssetNode 的输入端口标识符。")
+    String port_name = String::literal<"input">();
+
+    AFIELD(Label = "Port Order", Category = "Boundary", Min = "0", Max = "16",
+           DESC = "多个 GraphInput 节点按此序号升序排列。")
+    std::int32_t order{0};
+
+    AFIELD(Label = "Standalone Fallback", Category = "Preview",
+           DESC = "独立检视该 .procgraph 时使用的预览几何；作为 AssetNode 子图求值时忽略。")
+    PreviewFallback preview_fallback{PreviewFallback::empty};
+
+    AFUNCTION(DESC = "独立检视时生成回退预览几何；子图求值时由宿主注入外层输入。")
+    [[nodiscard]] Result<void> process(Geometry& output) const noexcept;
+};
+
+ACLASS(Name = "procedural.GraphOutput",
+       DESC = "数字资产子图（.procgraph）的正式几何输出边界节点，与作者调试 Display [D] 独立。")
+class GraphOutput : public Node {
+    AGENERATED_BODY(GraphOutput)
+
+public:
+    AFIELD(Label = "Port Name", Category = "Boundary", DESC = "暴露给外层 AssetNode 的输出端口标识符。")
+    String port_name = String::literal<"output">();
+
+    AFIELD(Label = "Port Order", Category = "Boundary", Min = "0", Max = "16",
+           DESC = "多个 GraphOutput 节点按此序号升序排列；首项作为场景生成器的主交付输出。")
+    std::int32_t order{0};
+
+    AFUNCTION(DESC = "零拷贝透传输入几何作为图资产的正式输出。")
+    [[nodiscard]] Result<void> process(const Geometry& input, Geometry& output) const noexcept;
+};
+
+ACLASS(Name = "procedural.AssetNode",
+       DESC = "实例化调用另一个 .procgraph 数字资产的通用复合节点，持有私有克隆图根并共享结果缓存池。")
+class AssetNode : public Node {
+    AGENERATED_BODY(AssetNode)
+
+public:
+    struct SubgraphMeta {
+        std::string asset_key;
+
+        Ports ports{{}, {}, {"output"}};
+
+        std::vector<ObjectId> input_nodes;
+
+        std::vector<ObjectId> output_nodes;
+
+        std::optional<Error> bind_error;
+
+        std::uint64_t revision{};
+    };
+
+    AFIELD(Label = "Seed Offset", Category = "Asset",
+           DESC = "0 原样透传当前求值种子；非零时经确定性哈希与外层种子混合。")
+    std::uint32_t seed_offset{0};
+
+    AFUNCTION(DESC = "求值所绑定的 .procgraph 数字资产子图。")
+    [[nodiscard]] Result<void> process(const Context& context, Geometry& output) const noexcept;
+
+private:
+    friend struct detail::Access;
+
+    AFIELD(Name = "subgraph_graph", Hidden, Strong = "procedural.Graph")
+    ReferenceSlot subgraph_graph_;
+
+    SubgraphMeta subgraph_{};
 };
 
 }

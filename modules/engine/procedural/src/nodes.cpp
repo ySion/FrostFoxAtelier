@@ -185,4 +185,34 @@ Result<void> Null::process(const Geometry& input, Geometry& output) const noexce
     return {};
 }
 
+Result<void> GraphInput::process(Geometry& output) const noexcept {
+    const auto build = [&]() -> Result<Geometry> {
+        switch (preview_fallback) {
+        case PreviewFallback::empty:
+            return Geometry{};
+        case PreviewFallback::grid:
+            return grid({10.f, 10.f}, 10, 10);
+        case PreviewFallback::box:
+            return box({1.f, 1.f, 1.f});
+        case PreviewFallback::sphere:
+            return sphere(1.f, 24, 12);
+        case PreviewFallback::line:
+            return line({0.f, 0.f, 0.f}, {0.f, 2.f, 0.f}, 8);
+        }
+        return failure("Invalid preview_fallback value.");
+    };
+    ATELIER_TRY_BIND(built, invocation_result(build()));
+    output = std::move(*built);
+    return {};
+}
+
+Result<void> GraphOutput::process(const Geometry& input, Geometry& output) const noexcept {
+    output = input;
+    return {};
+}
+
+Result<void> AssetNode::process(const Context&, Geometry&) const noexcept {
+    return std::unexpected(Error{ErrorCode::invocation_failed, "AssetNode has no bound procedural graph asset."});
+}
+
 }
