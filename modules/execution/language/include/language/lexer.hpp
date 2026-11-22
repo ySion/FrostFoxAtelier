@@ -139,19 +139,30 @@ public:
             advance();
             if (peek() == '=')
                 advance();
-            else if ((first == '<' || first == '>') && peek() == first)
+            else if ((first == '<' || first == '>') && peek() == first) {
                 advance();
+                if (peek() == '=')
+                    advance();
+            }
             return token(Token::Kind::punctuation, start);
         }
         if (first == '+' || first == '-') {
             advance();
             if (peek() == first)
                 return reject(start, "Increment and decrement operators are not supported; use assignment.");
+            if (peek() == '=')
+                advance();
             return token(Token::Kind::punctuation, start);
         }
         if (first == '&' || first == '|') {
             advance();
-            if (peek() == first)
+            if (peek() == first || peek() == '=')
+                advance();
+            return token(Token::Kind::punctuation, start);
+        }
+        if (first == '*' || first == '/' || first == '%' || first == '^') {
+            advance();
+            if (peek() == '=')
                 advance();
             return token(Token::Kind::punctuation, start);
         }
@@ -161,7 +172,7 @@ public:
                 advance();
             return token(Token::Kind::punctuation, start);
         }
-        if (std::string_view("(){}[];.,*/%^~").find(first) != std::string_view::npos) {
+        if (std::string_view("(){}[];.,~?").find(first) != std::string_view::npos) {
             advance();
             return token(Token::Kind::punctuation, start);
         }
@@ -304,7 +315,7 @@ public:
     }
 
     std::expected<Token, Diagnostic> expect(std::string_view text) {
-        if (text == ">" && token_.text == ">>") {
+        if (text == ">" && (token_.text == ">>" || token_.text == ">>=")) {
             auto first = token_;
             first.text = first.text.substr(0, 1);
             token_.text.remove_prefix(1);

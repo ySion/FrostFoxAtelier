@@ -66,6 +66,30 @@ BinaryOperator binary_operator(std::string_view text) noexcept {
     return {-1, Operation::add, false};
 }
 
+std::optional<Operation> compound_assignment_operator(std::string_view text) noexcept {
+    if (text == "+=")
+        return Operation::add;
+    if (text == "-=")
+        return Operation::subtract;
+    if (text == "*=")
+        return Operation::multiply;
+    if (text == "/=")
+        return Operation::divide;
+    if (text == "%=")
+        return Operation::remainder;
+    if (text == "&=")
+        return Operation::bitwise_and;
+    if (text == "|=")
+        return Operation::bitwise_or;
+    if (text == "^=")
+        return Operation::bitwise_xor;
+    if (text == "<<=")
+        return Operation::shift_left;
+    if (text == ">>=")
+        return Operation::shift_right;
+    return std::nullopt;
+}
+
 class Parser : private Tokens {
 public:
     Parser(std::string_view name, Tokens tokens, Environment environment)
@@ -280,9 +304,10 @@ private:
     bool parallel_value_type(ValueType type) const noexcept {
         if (scalar(type) || bool(math_type(type)))
             return true;
-        return type.kind == ValueType::record && type.type_index < environment_.values.size() &&
-               environment_.values[type.type_index].plain_value && environment_.values[type.type_index].zero_default &&
-               environment_.values[type.type_index].can_own;
+        if (type.kind != ValueType::record || type.type_index >= environment_.values.size())
+            return false;
+        const auto& layout = environment_.values[type.type_index];
+        return layout.plain_value && layout.can_own && (layout.zero_default || !layout.initial_value.empty());
     }
 
     bool parallel_sequence_type(ValueType type) const noexcept {
@@ -325,8 +350,9 @@ private:
         if (name == environment_.object_type_name)
             return ValueType::strong_reference;
         for (std::uint32_t i = 0; i < environment_.values.size(); ++i)
-            if (environment_.values[i].name == name ||
-                (name == "String" && environment_.values[i].kind == ValueType::string))
+            if (!synthesized_array_name(environment_.values[i].name) &&
+                (environment_.values[i].name == name ||
+                 (name == "String" && environment_.values[i].kind == ValueType::string)))
                 return ValueType{environment_.values[i].kind, i};
         for (std::uint32_t i = 0; i < environment_.enumerations.size(); ++i)
             if (environment_.enumerations[i].name == name)
@@ -430,14 +456,15 @@ private:
                         return reject(
                             position,
                             "Plain record value parameters require borrow-preserving copy and lifecycle operations.");
-                    if (type->kind == ValueType::string && !*read_only)
-                        return reject(position, "String borrowing requires const String&.");
                     if (*reference || !math_type(*type))
                         function_.uses_scoped_values = true;
                 }
                 ATELIER_TRY_BIND(parameter_name, identifier());
                 ATELIER_TRY_BIND(index, local(*parameter_name, *type));
                 function_.locals[*index].read_only = *read_only;
+                function_.locals[*index].fixed_length = std::ranges::any_of(metadata, [](const auto& item) {
+                    return item.first == "procedural.role" && (item.second == "inout" || item.second == "out");
+                });
                 function_.parameters.push_back({*type, passing});
                 ATELIER_TRY_BIND(more, accept(","));
                 if (!*more)
@@ -446,6 +473,20 @@ private:
             ATELIER_TRY(expect(")"));
         }
         return {};
+    }
+
+    static std::optional<std::uint32_t> root_local(const Function& function, NodeId id) noexcept {
+        while (id != no_node) {
+            const auto& expr = function.expressions[id];
+            if (expr.kind == Expression::Kind::local)
+                return expr.value;
+            if (expr.kind == Expression::Kind::value_field || expr.kind == Expression::Kind::index) {
+                id = expr.left;
+                continue;
+            }
+            return std::nullopt;
+        }
+        return std::nullopt;
     }
 
     std::expected<void, Diagnostic> analyze_calls() {
@@ -457,14 +498,36 @@ private:
             std::vector<bool> blocked(function.expressions.size());
             std::vector<bool> stored(function.expressions.size());
             function.preserves_borrows = true;
-            for (const auto& statement : function.statements)
-                if (statement.kind == Statement::Kind::assign)
+            for (const auto& statement : function.statements) {
+                if (statement.kind == Statement::Kind::assign) {
                     stored[statement.target] = true;
-            for (const auto& node : function.expressions)
+                    const auto target_type = function.expressions[statement.target].type;
+                    if (aggregate(target_type) && !plain_record(target_type))
+                        if (const auto root = root_local(function, statement.target);
+                            root && *root < function.parameters.size() &&
+                            function.parameters[*root].passing == ParameterPassing::reference)
+                            function.parameters[*root].mutates_structure = true;
+                }
+            }
+            for (const auto& node : function.expressions) {
+                if (node.kind == Expression::Kind::sequence_mutation)
+                    if (const auto root = root_local(function, node.left);
+                        root && *root < function.parameters.size() &&
+                        function.parameters[*root].passing == ParameterPassing::reference)
+                        function.parameters[*root].mutates_structure = true;
                 if (node.kind == Expression::Kind::call)
-                    for (std::size_t i = 0; i < node.arguments.size(); ++i)
+                    for (std::size_t i = 0; i < node.arguments.size(); ++i) {
                         if (node.argument_passing[i] != ParameterPassing::value)
                             stored[node.arguments[i]] = true;
+                        const auto arg_type = function.expressions[node.arguments[i]].type;
+                        if (node.argument_passing[i] == ParameterPassing::reference && aggregate(arg_type) &&
+                            !plain_record(arg_type))
+                            if (const auto root = root_local(function, node.arguments[i]);
+                                root && *root < function.parameters.size() &&
+                                function.parameters[*root].passing == ParameterPassing::reference)
+                                function.parameters[*root].mutates_structure = true;
+                    }
+            }
             for (std::size_t i = 0; i < function.expressions.size(); ++i) {
                 const auto& node = function.expressions[i];
                 if (node.kind == Expression::Kind::receiver)
@@ -570,6 +633,13 @@ private:
                     function.requires_receiver |= callee.requires_receiver;
                     function.preserves_borrows &= callee.preserves_borrows;
                     function.parallel_safe &= callee.parallel_safe;
+                    for (std::size_t a = 0; a < call.arguments.size(); ++a)
+                        if (call.argument_passing[a] == ParameterPassing::reference &&
+                            callee.parameters[a].mutates_structure)
+                            if (const auto root = root_local(function, call.arguments[a]);
+                                root && *root < function.parameters.size() &&
+                                function.parameters[*root].passing == ParameterPassing::reference)
+                                function.parameters[*root].mutates_structure = true;
                     ++cursor.next;
                 } else {
                     if (function.uses_scoped_values && (function.is_coroutine || !function.preserves_borrows))
@@ -579,6 +649,38 @@ private:
                                 "' reaches suspension, an object operation other than reading a self field, or a native call without BorrowSafe.");
                     states[cursor.function] = State::complete;
                     stack.pop_back();
+                }
+            }
+        }
+        for (const auto& function : module_.functions) {
+            for (const auto& call : function.expressions) {
+                if (call.kind != Expression::Kind::source_call && call.kind != Expression::Kind::call)
+                    continue;
+                for (std::size_t i = 0; i < call.arguments.size(); ++i) {
+                    if (call.argument_passing[i] != ParameterPassing::reference)
+                        continue;
+                    const auto arg_type = function.expressions[call.arguments[i]].type;
+                    const bool mutates = call.kind == Expression::Kind::source_call
+                                             ? module_.functions[call.value].parameters[i].mutates_structure
+                                             : (aggregate(arg_type) && !plain_record(arg_type));
+                    if (!mutates)
+                        continue;
+                    const auto root = root_local(function, call.arguments[i]);
+                    if (!root)
+                        continue;
+                    if (function.locals[*root].fixed_length)
+                        return reject(
+                            function.expressions[call.arguments[i]].position,
+                            "SOP [InOut] and [Out] attribute columns have fixed element count and cannot change structure.");
+                    for (std::size_t j = 0; j < call.arguments.size(); ++j) {
+                        if (j == i || call.argument_passing[j] == ParameterPassing::value)
+                            continue;
+                        if (root_local(function, call.arguments[j]) == root)
+                            return reject(
+                                function.expressions[call.arguments[j]].position,
+                                "Cannot borrow '" + function.locals[*root].name +
+                                    "' through another reference parameter in the same call when its sequence structure may change.");
+                    }
                 }
             }
         }
@@ -672,6 +774,8 @@ private:
                     case Kind::unary:
                     case Kind::binary:
                     case Kind::scalar_cast:
+                    case Kind::conditional:
+                        ATELIER_TRY(self(self, expr.receiver));
                         ATELIER_TRY(self(self, expr.left));
                         return self(self, expr.right);
                     case Kind::length: {
@@ -1292,7 +1396,7 @@ private:
     bool writable(NodeId id) const {
         const auto& expression = function_.expressions[id];
         if (aggregate(expression.type) && !math_type(expression.type))
-            return owned_storage(id) && environment_.values[expression.type.type_index].can_own;
+            return mutable_local_storage(id) && environment_.values[expression.type.type_index].can_own;
         return writable_storage(id);
     }
 
@@ -1314,15 +1418,8 @@ private:
         return false;
     }
 
-    bool owned_storage(NodeId id) const {
-        const auto& node = function_.expressions[id];
-        if (node.kind == Expression::Kind::local)
-            return !function_.locals[node.value].read_only &&
-                   (node.value >= function_.parameters.size() ||
-                    function_.parameters[node.value].passing == ParameterPassing::value);
-        if (node.kind == Expression::Kind::value_field || node.kind == Expression::Kind::index)
-            return owned_storage(node.left);
-        return false;
+    bool mutable_local_storage(NodeId id) const {
+        return writable_storage(id) && root_local(function_, id).has_value();
     }
 
     bool integer_constant(NodeId id) const {
@@ -1332,7 +1429,9 @@ private:
         if (node.kind == Expression::Kind::literal)
             return node.bits <= 2147483647u;
         return (node.kind == Expression::Kind::unary && integer_constant(node.left)) ||
-               (node.kind == Expression::Kind::binary && integer_constant(node.left) && integer_constant(node.right));
+               (node.kind == Expression::Kind::binary && integer_constant(node.left) && integer_constant(node.right)) ||
+               (node.kind == Expression::Kind::conditional && integer_constant(node.left) &&
+                integer_constant(node.right));
     }
 
     void signed_constant(NodeId id) {
@@ -1459,8 +1558,12 @@ private:
     std::expected<void, Diagnostic> validate_constant(NodeId id) const {
         const auto& node = function_.expressions[id];
         if (node.kind != Expression::Kind::literal && node.kind != Expression::Kind::unary &&
-            node.kind != Expression::Kind::binary && node.kind != Expression::Kind::scalar_cast)
+            node.kind != Expression::Kind::binary && node.kind != Expression::Kind::scalar_cast &&
+            node.kind != Expression::Kind::conditional)
             return reject(node.position, "Module constant initializers require compile-time pure scalar expressions.");
+        if (node.receiver != no_node) {
+            ATELIER_TRY(validate_constant(node.receiver));
+        }
         if (node.left != no_node) {
             ATELIER_TRY(validate_constant(node.left));
         }
@@ -1474,6 +1577,10 @@ private:
         const auto& node = function_.expressions[id];
         if (node.kind == Expression::Kind::literal)
             return node.bits;
+        if (node.kind == Expression::Kind::conditional) {
+            ATELIER_TRY_BIND(cond, fold_constant(node.receiver));
+            return *cond ? fold_constant(node.left) : fold_constant(node.right);
+        }
         ATELIER_TRY_BIND(left_result, fold_constant(node.left));
         const auto left = *left_result;
         const auto input = function_.expressions[node.left].type;
@@ -1660,11 +1767,38 @@ private:
             }
             if (!writable(target))
                 return reject(position, "Assignment requires a writable local or field.");
+            if (const auto& tnode = function_.expressions[target];
+                tnode.kind == Expression::Kind::local && function_.locals[tnode.value].fixed_length)
+                return reject(
+                    position,
+                    "SOP [InOut] and [Out] attribute columns have fixed element count and cannot change structure.");
             const auto type = function_.expressions[target].type;
             ATELIER_TRY_BIND(parsed, expression());
             ATELIER_TRY_BIND(value, converted(*parsed, type));
             ATELIER_TRY(expect(terminator));
             return add(Statement{Statement::Kind::assign, position, target, *value, no_node, no_node, {}});
+        }
+        if (const auto compound = compound_assignment_operator(token_.text)) {
+            ATELIER_TRY_BIND(symbol, consume());
+            if (std::ranges::find(property_uses_, target, &PropertyUse::node) != property_uses_.end())
+                return reject(symbol->position,
+                              "Compound assignment is not supported on Get/Set properties; use explicit assignment.");
+            if (!writable(target))
+                return reject(position, "Assignment requires a writable local or field.");
+            const auto target_type = function_.expressions[target].type;
+            ATELIER_TRY_BIND(parsed_rhs, expression());
+            auto rhs = *parsed_rhs;
+            const bool shift = *compound == Operation::shift_left || *compound == Operation::shift_right;
+            if (!shift && target_type == ValueType::i32 && integer_constant(rhs))
+                signed_constant(rhs);
+            ATELIER_TRY_BIND(result_type, check_binary_types(*compound, false, symbol->position, target_type,
+                                                             function_.expressions[rhs].type));
+            if (*result_type != target_type)
+                return reject(symbol->position, "Compound assignment result type does not match the target type.");
+            ATELIER_TRY(expect(terminator));
+            Statement stmt{Statement::Kind::assign, position, target, rhs, no_node, no_node, {}};
+            stmt.compound = *compound;
+            return add(std::move(stmt));
         }
         if (function_.expressions[target].kind != Expression::Kind::call &&
             function_.expressions[target].kind != Expression::Kind::source_call &&
@@ -1839,6 +1973,56 @@ private:
         return simple_statement(";");
     }
 
+    std::expected<ValueType, Diagnostic> check_binary_types(Operation op, bool comparison, SourcePosition position,
+                                                            ValueType type, ValueType right_type) const {
+        auto result_type = comparison ? ValueType{ValueType::boolean} : type;
+        const bool shift = op == Operation::shift_left || op == Operation::shift_right;
+        if (op == Operation::logical_and || op == Operation::logical_or) {
+            if (type != ValueType::boolean || right_type != ValueType::boolean)
+                return reject(position, "Logical operators require bool operands.");
+            result_type = ValueType::boolean;
+        } else if (shift) {
+            if ((type != ValueType::i32 && type != ValueType::u32) ||
+                (right_type != ValueType::i32 && right_type != ValueType::u32))
+                return reject(position, "Shift operands require int or uint.");
+        } else if (reference_type(type) || reference_type(right_type)) {
+            if (!reference_type(type) || !reference_type(right_type) ||
+                (op != Operation::equal && op != Operation::not_equal))
+                return reject(position, "References support only == and != with another reference or null.");
+        } else if (math_type(type) || math_type(right_type)) {
+            const auto left_math = math_type(type);
+            const auto right_math = math_type(right_type);
+            if ((op == Operation::equal || op == Operation::not_equal) && type == right_type) {
+                // Mathematical equality compares all components, with scalar IEEE semantics.
+            } else if (left_math.vector() && type == right_type &&
+                       (op == Operation::add || op == Operation::subtract)) {
+                result_type = type;
+            } else if (op == Operation::multiply && type == right_type &&
+                       (left_math.shape == math::Shape::quaternion || left_math.shape == math::Shape::matrix4)) {
+                result_type = type;
+            } else if (left_math.vector() && right_type == math_scalar(left_math) &&
+                       (op == Operation::multiply || op == Operation::divide)) {
+                result_type = type;
+            } else if (right_math.vector() && type == math_scalar(right_math) && op == Operation::multiply) {
+                result_type = right_type;
+            } else
+                return reject(position, "Unsupported math operation or mismatched component precision.");
+        } else if (flags_enum(type) && right_type == type &&
+                   (op == Operation::bitwise_and || op == Operation::bitwise_or || op == Operation::bitwise_xor)) {
+            result_type = type;
+        } else if (!scalar(type) || right_type != type ||
+                   ((type.kind == ValueType::enumeration || type == ValueType::boolean) && op != Operation::equal &&
+                    op != Operation::not_equal)) {
+            return reject(
+                position,
+                "Binary operands require matching numeric types; bool and non-Flags enums support equality only.");
+        } else if ((op == Operation::remainder || op == Operation::bitwise_and || op == Operation::bitwise_or ||
+                    op == Operation::bitwise_xor) &&
+                   type != ValueType::i32 && type != ValueType::u32)
+            return reject(position, "Remainder and bitwise operators require int or uint.");
+        return result_type;
+    }
+
     std::expected<NodeId, Diagnostic> expression(int minimum = 0) {
         Depth guard(depth_);
         if (depth_ > 128)
@@ -1848,7 +2032,7 @@ private:
         for (;;) {
             const auto operation = binary_operator(token_.text);
             if (operation.precedence < minimum)
-                return left;
+                break;
             ATELIER_TRY_BIND(symbol, consume());
             ATELIER_TRY_BIND(parsed_right, expression(operation.precedence + 1));
             const auto right = *parsed_right;
@@ -1858,60 +2042,44 @@ private:
                 signed_constant(right);
             if (!shift && function_.expressions[right].type == ValueType::i32 && integer_constant(left))
                 signed_constant(left);
-            const auto type = function_.expressions[left].type;
-            const auto right_type = function_.expressions[right].type;
-            auto result_type = operation.comparison ? ValueType{ValueType::boolean} : type;
-            if (operation.operation == Operation::logical_and || operation.operation == Operation::logical_or) {
-                if (type != ValueType::boolean || right_type != ValueType::boolean)
-                    return reject(symbol->position, "Logical operators require bool operands.");
-                result_type = ValueType::boolean;
-            } else if (shift) {
-                if ((type != ValueType::i32 && type != ValueType::u32) ||
-                    (right_type != ValueType::i32 && right_type != ValueType::u32))
-                    return reject(symbol->position, "Shift operands require int or uint.");
-            } else if (reference_type(type) || reference_type(right_type)) {
-                if (!reference_type(type) || !reference_type(right_type) ||
-                    (operation.operation != Operation::equal && operation.operation != Operation::not_equal))
-                    return reject(symbol->position,
-                                  "References support only == and != with another reference or null.");
-            } else if (math_type(type) || math_type(right_type)) {
-                const auto left_math = math_type(type);
-                const auto right_math = math_type(right_type);
-                const auto op = operation.operation;
-                if ((op == Operation::equal || op == Operation::not_equal) && type == right_type) {
-                    // Mathematical equality compares all components, with scalar IEEE semantics.
-                } else if (left_math.vector() && type == right_type &&
-                           (op == Operation::add || op == Operation::subtract)) {
-                    result_type = type;
-                } else if (op == Operation::multiply && type == right_type &&
-                           (left_math.shape == math::Shape::quaternion || left_math.shape == math::Shape::matrix4)) {
-                    result_type = type;
-                } else if (left_math.vector() && right_type == math_scalar(left_math) &&
-                           (op == Operation::multiply || op == Operation::divide)) {
-                    result_type = type;
-                } else if (right_math.vector() && type == math_scalar(right_math) && op == Operation::multiply) {
-                    result_type = right_type;
-                } else
-                    return reject(symbol->position, "Unsupported math operation or mismatched component precision.");
-            } else if (flags_enum(type) && right_type == type &&
-                       (operation.operation == Operation::bitwise_and || operation.operation == Operation::bitwise_or ||
-                        operation.operation == Operation::bitwise_xor)) {
-                result_type = type;
-            } else if (!scalar(type) || right_type != type ||
-                       ((type.kind == ValueType::enumeration || type == ValueType::boolean) &&
-                        operation.operation != Operation::equal && operation.operation != Operation::not_equal)) {
-                return reject(
-                    symbol->position,
-                    "Binary operands require matching numeric types; bool and non-Flags enums support equality only.");
-            } else if ((operation.operation == Operation::remainder || operation.operation == Operation::bitwise_and ||
-                        operation.operation == Operation::bitwise_or ||
-                        operation.operation == Operation::bitwise_xor) &&
-                       type != ValueType::i32 && type != ValueType::u32)
-                return reject(symbol->position, "Remainder and bitwise operators require int or uint.");
-            ATELIER_TRY_BIND(combined, add(Expression{Expression::Kind::binary, result_type, symbol->position, left,
+            ATELIER_TRY_BIND(result_type,
+                             check_binary_types(operation.operation, operation.comparison, symbol->position,
+                                                function_.expressions[left].type, function_.expressions[right].type));
+            ATELIER_TRY_BIND(combined, add(Expression{Expression::Kind::binary, *result_type, symbol->position, left,
                                                       right, 0, operation.operation}));
             left = *combined;
         }
+        if (minimum == 0) {
+            const auto qmark_pos = token_.position;
+            ATELIER_TRY_BIND(ternary, accept("?"));
+            if (*ternary) {
+                if (function_.expressions[left].type != ValueType::boolean)
+                    return reject(qmark_pos, "Conditional expression requires a bool condition.");
+                ATELIER_TRY_BIND(parsed_then, expression(0));
+                const auto then_id = *parsed_then;
+                ATELIER_TRY(expect(":"));
+                ATELIER_TRY_BIND(parsed_else, expression(0));
+                const auto else_id = *parsed_else;
+                if (function_.expressions[then_id].type == ValueType::i32 && integer_constant(else_id))
+                    signed_constant(else_id);
+                if (function_.expressions[else_id].type == ValueType::i32 && integer_constant(then_id))
+                    signed_constant(then_id);
+                const auto then_type = function_.expressions[then_id].type;
+                const auto else_type = function_.expressions[else_id].type;
+                if (then_type != else_type)
+                    return reject(qmark_pos, "Conditional branches require matching value types.");
+                if (!scalar(then_type) && !math_type(then_type) &&
+                    !(plain_record(then_type) && environment_.values[then_type.type_index].can_own))
+                    return reject(
+                        qmark_pos,
+                        "Conditional branches require matching scalar, enum, built-in math or plain struct value types.");
+                if (plain_record(then_type) && !math_type(then_type))
+                    function_.uses_scoped_values = true;
+                return add(Expression{Expression::Kind::conditional, then_type, qmark_pos, then_id, else_id, 0,
+                                      Operation::add, left});
+            }
+        }
+        return left;
     }
 
     std::expected<NodeId, Diagnostic> unary() {
@@ -1986,9 +2154,15 @@ private:
                                          add(Expression{Expression::Kind::length, ValueType::u32, position, receiver}));
                         receiver = *length;
                     } else {
-                        if (!owned_storage(receiver) || !environment_.values[type.type_index].can_own ||
+                        if (const auto root = root_local(function_, receiver);
+                            root && function_.locals[*root].fixed_length)
+                            return reject(
+                                member->position,
+                                "SOP [InOut] and [Out] attribute columns have fixed element count and cannot change structure.");
+                        if (!mutable_local_storage(receiver) || !environment_.values[type.type_index].can_own ||
                             !environment_.values[type.type_index].can_mutate)
-                            return reject(member->position, "Structural mutation requires a locally owned sequence.");
+                            return reject(member->position,
+                                          "Structural mutation requires a mutable owned or borrowed sequence.");
                         SequenceMutation operation;
                         if (member->text == "reserve")
                             operation = SequenceMutation::reserve;

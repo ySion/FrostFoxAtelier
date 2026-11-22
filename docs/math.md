@@ -69,9 +69,9 @@ double energy(const Array<vector3d>& values) {
 
 | 源码表达式 | 当前契约 |
 | --- | --- |
-| 向量 `+`、`-` | 同一向量类型逐分量运算 |
-| 向量 `*` 标量、标量 `*` 向量；向量 `/` 标量 | 标量与向量精度一致；除零沿 IEEE 规则 |
-| 四元数 `*` 四元数；矩阵 `*` 矩阵 | 同类型乘积；矩阵运算为真正矩阵乘法 |
+| 向量 `+`、`-`（及 `+=`、`-=`） | 同一向量类型逐分量运算 |
+| 向量 `*` 标量、标量 `*` 向量；向量 `/` 标量（及向量 `*=`、`/=` 标量） | 标量与向量精度一致；除零沿 IEEE 规则 |
+| 四元数 `*` 四元数；矩阵 `*` 矩阵（及 `*=`） | 同类型乘积；矩阵运算为真正矩阵乘法 |
 | 数学值一元 `+/-`、`==/!=` | 逐分量正负与精确比较；没有排序或近似相等运算符 |
 | `math.dot(a, b)`、`math.cross(a, b)` | 同类型向量；cross 限 vector3，dot 返回对应标量 |
 | `math.length(v)`、`math.normalize_or_zero(v)`、`math.fast_normalize_or_zero(v)` | 向量或四元数；归一化对零或非有限输入返回全零值（`fast_normalize_or_zero` 省去分量缩放，见[近似变体](#近似变体)），四元数全零不是单位旋转 |
@@ -105,7 +105,7 @@ double energy(const Array<vector3d>& values) {
 
 字段可从变量、数组元素、借用记录及数学临时值读取，例如 `(a + b).x`。临时值不可赋值；修改需要真正的可写存储。矩阵源码使用 `.m00` 等字段，当前没有矩阵下标语法。对象目录同时提供完整数学字段与标量分量路径，支持 `self.position = self.position + self.velocity * delta;`；对象读写经过 Runtime 生命周期检查，整值读取不会暴露对象内存地址。
 
-原生 C++ 库还提供同形状数学值的显式 `float` ↔ `double` 转换、向量复合赋值、`cwise_mul`、`cwise_div`、`cwise_min`、`cwise_max`（同源码 `min`/`max` 的 GLSL 顺序，仅首操作数为 NaN 时保留 NaN）、`cwise_abs`、`clamp`（支持向量或标量上下界，语义同源码 `math.clamp`）、`lerp01`（先将参数按 `math.clamp(t, 0, 1)` 钳制到 `[0, 1]` 再调用 `lerp`，`t` 为 NaN 时归零）、`min_component`、`max_component`（按左折叠顺序调用 `min`/`max`，不传播后续分量的 NaN，校验未信任输入时须配合 `is_finite`）、`length_squared`、`distance_squared`、`distance`、`is_finite`、返回 optional 的 `try_normalize`、标量与向量的 `fast_rsqrt`、向量与四元数的 `fast_normalize_or_zero`，四元数 `dot`、`from_axis_angle`（要求单位轴与弧度角）、精确 `slerp01` 与近似 `fast_slerp01`（要求单位四元数，先按 `math.clamp(t, 0, 1)` 将插值参数钳制到 `[0, 1]`，`dot < 0` 时翻转第二操作数以取最短弧故 `t = 1` 得 `-unit_b`）、三维轴对齐包围盒 `BasicBounds<T>`（默认零盒，`empty()` 为 `{+∞, -∞}`，是 `encapsulate` 与 `distance_squared` 唯一合法的空盒单位元；任意有限反转盒虽满足 `is_empty` 但不可作为归约单位元；另提供 `is_finite`、`center`、`size`、`extents`、`corner`、`contains`、`intersects` 及按列极值精确传播的 `transform_bounds`），以及矩阵加减、标量缩放、`vector4 * matrix4`、`translation_matrix`、`scale_matrix`、`rotation_matrix`、`trs_matrix`、左手行主序视图矩阵 `try_look_to_lh` / `try_look_at_lh`（对零、非有限、与上方向共线的视线或平移点积溢出的输入返回空值）、`try_inverse`。这些能力不自动成为源码语法；源码当前以本节表格为准。原生向量 `lerp` 与源码 `math.lerp` 使用同一公式。原生 `try_normalize` 对零或非有限输入返回空值；`try_inverse` 先按行缩放再做带选主元的消元，拒绝非有限、奇异、超出工作精度或不能表示的结果，不隐式回退到单位矩阵。
+原生 C++ 库还提供同形状数学值的显式 `float` ↔ `double` 转换、`cwise_mul`、`cwise_div`、`cwise_min`、`cwise_max`（同源码 `min`/`max` 的 GLSL 顺序，仅首操作数为 NaN 时保留 NaN）、`cwise_abs`、`clamp`（支持向量或标量上下界，语义同源码 `math.clamp`）、`lerp01`（先将参数按 `math.clamp(t, 0, 1)` 钳制到 `[0, 1]` 再调用 `lerp`，`t` 为 NaN 时归零）、`min_component`、`max_component`（按左折叠顺序调用 `min`/`max`，不传播后续分量的 NaN，校验未信任输入时须配合 `is_finite`）、`length_squared`、`distance_squared`、`distance`、`is_finite`、返回 optional 的 `try_normalize`、标量与向量的 `fast_rsqrt`、向量与四元数的 `fast_normalize_or_zero`，四元数 `dot`、`from_axis_angle`（要求单位轴与弧度角）、精确 `slerp01` 与近似 `fast_slerp01`（要求单位四元数，先按 `math.clamp(t, 0, 1)` 将插值参数钳制到 `[0, 1]`，`dot < 0` 时翻转第二操作数以取最短弧故 `t = 1` 得 `-unit_b`）、三维轴对齐包围盒 `BasicBounds<T>`（默认零盒，`empty()` 为 `{+∞, -∞}`，是 `encapsulate` 与 `distance_squared` 唯一合法的空盒单位元；任意有限反转盒虽满足 `is_empty` 但不可作为归约单位元；另提供 `is_finite`、`center`、`size`、`extents`、`corner`、`contains`、`intersects` 及按列极值精确传播的 `transform_bounds`），以及矩阵加减、标量缩放、`vector4 * matrix4`、`translation_matrix`、`scale_matrix`、`rotation_matrix`、`trs_matrix`、左手行主序视图矩阵 `try_look_to_lh` / `try_look_at_lh`（对零、非有限、与上方向共线的视线或平移点积溢出的输入返回空值）、`try_inverse`。这些能力不自动成为源码语法；源码当前以本节表格为准。原生向量 `lerp` 与源码 `math.lerp` 使用同一公式。原生 `try_normalize` 对零或非有限输入返回空值；`try_inverse` 先按行缩放再做带选主元的消元，拒绝非有限、奇异、超出工作精度或不能表示的结果，不隐式回退到单位矩阵。
 
 ### 近似变体
 

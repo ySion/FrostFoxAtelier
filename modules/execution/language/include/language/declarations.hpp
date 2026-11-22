@@ -57,10 +57,25 @@ struct TypeDeclaration {
 
 [[nodiscard]] std::expected<std::vector<TypeDeclaration>, Diagnostic> collect_declarations(std::string_view source);
 
+[[nodiscard]] std::expected<std::vector<TypeName>, Diagnostic> collect_array_types(std::string_view source);
+
 // The editor publishes its own types under this prefix. Until Programs have their own visibility
 // domains, Source cannot declare such types and its host catalog does not contain them.
 [[nodiscard]] inline bool editor_reserved(std::string_view name) noexcept {
     return name.starts_with("editor.");
+}
+
+[[nodiscard]] inline bool synthesized_array_name(std::string_view name) noexcept {
+    return name.starts_with("__source_array.");
+}
+
+[[nodiscard]] inline std::string make_synthesized_array_name(std::string_view element_name, std::uint32_t depth = 1) {
+    std::string result;
+    result.reserve(depth * 15 + element_name.size());
+    for (std::uint32_t i = 0; i < depth; ++i)
+        result += "__source_array.";
+    result += element_name;
+    return result;
 }
 
 namespace detail {

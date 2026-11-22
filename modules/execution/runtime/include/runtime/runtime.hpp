@@ -999,6 +999,9 @@ struct TypeInfo {
 
     bool zero_default{};
 
+    // Non-null when `kind == record && plain_value` has a prebuilt default byte image of `size` bytes.
+    const std::byte* prototype{};
+
     // Help text is presentation metadata, not type identity, layout or call ABI.
     std::string description{};
 

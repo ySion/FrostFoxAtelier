@@ -2,7 +2,7 @@
 
 当前实现、接口和验收以[模块说明](README.md)为准。本页保留首阶段方案中尚有用的产品决定、设计依据与未实施的跨模块约定，不是已实现能力清单，也不授权启动后续阶段。
 
-P1、共享不可变列迁移、统一 `procedural.Node` / `process(...)` 节点架构、`.source` 语言级 `parallel_for` 与显式 `fail("...")`、S2 可视化与图操作（Slice 1A + Slice 1B：`.procgraph` 资产、SOP 视口上下文切换、点/法线/朝向辅助显示、Geometry Spreadsheet、Houdini 式二维 Network 节点连线画布、`Tab` 浮动搜索自动连线、`Y` 划断连线、`graph.layout` 自动拓扑排版、独立图撤销历史与 `graph.*` Control 操作链），以及 S5-1 场景生成器组件（`world.ProceduralGeneratorEntity` / `world.ProceduralGeneratorComponent`、宿主边界同步、Scene Lit / Play 联动与实例 `procedural.bake`）已交付。属性列、可选输入、组遮罩与 `[RunOver]` 层通过方法参数属性（`APARAM` / `.source` `[In]/[Out]/[InOut]/[Group]/[Port]`）和正式 `.source` class 统一表达，不再使用 `PointNode`、`Node::fail`、`Meta("procedural.bind", ...)` 或代码片段宏拼接。尚未实现渲染器 GPU 大批量常驻实例化区段（S5-2）、L3、持久磁盘 Cache 或持久冻结；节点会话冻结已可用。
+P1、共享不可变列迁移、统一 `procedural.Node` / `process(...)` 节点架构、`.source` 语言级 `parallel_for` 与显式 `fail("...")`、S2 可视化与图操作（Slice 1A + Slice 1B：`.procgraph` 资产、SOP 视口上下文切换、点/法线/朝向辅助显示、Geometry Spreadsheet、Houdini 式二维 Network 节点连线画布、`Tab` 浮动搜索自动连线、`Y` 划断连线、`graph.layout` 自动拓扑排版、独立图撤销历史与 `graph.*` Control 操作链）、S3/S4 生成式建模核心闭环（`Extrude`、`Sweep`、`.source` 多端口辅助列与 `Spatial` 并发 BVH 查询、L3 受控 `Node` 变长拓扑构建接口），以及 S5-1 场景生成器组件（`world.ProceduralGeneratorEntity` / `world.ProceduralGeneratorComponent`、宿主边界同步、Scene Lit / Play 联动与实例 `procedural.bake`）已交付。属性列、可选输入、组遮罩与 `[RunOver]` 层通过方法参数属性（`APARAM` / `.source` `[In]/[Out]/[InOut]/[Group]/[Port]`）和正式 `.source` class 统一表达，不再使用 `PointNode`、`Node::fail`、`Meta("procedural.bind", ...)` 或代码片段宏拼接。尚未实现渲染器 GPU 大批量常驻实例化区段（S5-2）、通用资产节点 `AssetNode`（S4 子图封装）、持久磁盘 Cache 或持久冻结；节点会话冻结已可用。
 
 ## 方向与依据
 
@@ -23,7 +23,7 @@ P1、共享不可变列迁移、统一 `procedural.Node` / `process(...)` 节点
    - **拒绝算术微节点连线**：不在图中建立 `Add`、`Sin`、`Dot`、`Branch` 等低级可视化编程节点；复杂数学、条件分支与循环统一写在 `.source` `process(...)` 内，避免节点图膨胀与端口连错。
    - **拒绝单节点黑盒巨石**：不把整座建筑或整张关卡塞入 1～2 个数百行的巨型 `.source` 节点。图节点的边界同时是人类视口分步检视（`D`/`T` 主副对比）、`Evaluator` 256 MiB 写时复制结果缓存、节点级 `Freeze` 以及 LLM `graph.inspect` 逐阶段断言的边界。典型单图应保持 **6～15 个可独立观察与缓存的几何变换阶段**。
 2. **三层职责切分（强强联合模型）**：
-   - **C++ 几何底座与高阶拓扑算子（`atelier_procedural`）**：负责精确数值谓词、邻接关系、跨层属性插值（point/vertex/primitive）、流形闭合与公共凸面容差 δ_p 保证（已有 `Boolean`、`VolumeScatter`、`Bvh/Ray`、`Realize`、`Connectivity`；后续补齐沿折线扫掠 `Sweep`、面片挤出/内缩 `Extrude/Inset`、平面裁切 `Clip`、点焊接与三角化 `Fuse/Triangulate` 等高阶构造动词）。**不让 LLM 在 `.source` 中手写三维多边形 CSR 索引汤、封盖环或绕序修补**，防止下游 `Boolean`/`VolumeScatter` 因非流形或翘曲超 δ_p 频繁报错。
+   - **C++ 几何底座与高阶拓扑算子（`atelier_procedural`）**：负责精确数值谓词、邻接关系、跨层属性插值（point/vertex/primitive）、流形闭合与公共凸面容差 δ_p 保证（已有 `Boolean`、`VolumeScatter`、`Bvh/Spatial/Ray`、`Realize`、`Connectivity`、`Extrude`、`Sweep`；后续按需补齐平面裁切 `Clip`、点焊接与三角化 `Fuse/Triangulate` 等构造动词）。**不让 LLM 在 `.source` 中手写三维多边形 CSR 索引汤、封盖环或绕序修补**，防止下游 `Boolean`/`VolumeScatter` 因非流形或翘曲超 δ_p 频繁报错。
    - **`.source` 领域阶段模块（`class Name : procedural.Node`）**：保持 `.source` 强类型、无隐式转换、同步值区间零 GC 停顿的紧凑边界（不膨胀为半个 C++），专注表达与游戏业务强耦合的阶段逻辑——地形/噪声场塑形、建筑开间与楼层语法切分（Grammar/Lot Subdivision）、道路/枝干折线骨架生成、多参考输入战术打分筛选、变体与朝向状态机。公开字段即人类微调滑杆。
    - **`.procgraph` 与数字资产（`AssetNode`）**：宏观串联 C++ 拓扑算子与 `.source` 业务阶段模块；成熟子图按 `asset.generic_node` 封装为高阶复合模块供群落/关卡图调用。
 3. **已排除的伪瓶颈**：`Evaluator` 在节点入口对 `.source` 节点按每次求值十余次的图粒度经 `Entry::invoke` 核对借用签名（见[原生值借用](../../native-value-borrows.md)），热点全在内部 `parallel_for` 的 1024 元素 O2 向量化块内，不为节点边界纳秒级调用另造绕过检查的 `_typed` 借用通道；图求值后台化须以实测超预算（>33 ms）和只读求值计划为前提，不破坏单线程 `Runtime` 契约。
@@ -34,34 +34,32 @@ S0 契约静态对齐 → S1 原生拓扑/构造/体积采样/Realize，随后�
 
 | 项目 | 状态与下一步 |
 | --- | --- |
-| S3 拓扑工具 | Connectivity 已接入 SOP 求值链，可用 point 层的 piece 编号区分共享点的多边形、折线与孤立点，并通过 Promote 传到图元层。见[几何操作](README.md#操作)。后续按真实生成命题补齐 `Sweep`、`Extrude/Inset`、`Clip`、`Fuse/Triangulate` |
+| S3 拓扑工具 | `Connectivity`、`Extrude`（法线外推/内缩封边/底盖及逐图元缩放属性）与 `Sweep`（最小旋转标架沿折线扫掠矩形/圆管/自定义闭合截面，三维扭曲侧面自动按对角线破分为满足 δ_p 的三角形流形）已接入 SOP 求值链，见[几何操作](README.md#操作)。后续按真实生成命题补齐 `Clip`、`Fuse/Triangulate` |
 | Remap／属性噪声 | E/F 已接通共同绑定与 Source 3D value noise / point float Remap，现行合同见[Noise / Remap](README.md#noise--remap)。其他噪声族、导数和周期仍未排期 |
-| 语言能力 | 参数名与参数属性、`parallel_for`、显式 `fail("...")`、`math.is_finite`、`math.as_uint`/`math.as_int`、同步值区间读 self、字段元数据、数学函数、代码身份、引擎源码加载及按依赖复用编译单元已接入，语义见 [LANGUAGE.md](../../../LANGUAGE.md)、[数学模块](../../math.md)和[原生值借用](../../native-value-borrows.md) |
+| 语言能力 | 参数名与参数属性（含 `[In/Group(..., Port = "...")]` 与 SOP 定长列保护）、可写引用容器结构修改（`Array<T>&`/`String&`/`Struct&`）、自动合成 `Array<源码 struct/enum>`、`parallel_for`、复合赋值（`+=` 等）与短路 `?:`、显式 `fail("...")`、`math.is_finite`、`math.as_uint`/`math.as_int`、同步值区间读 self、字段元数据、数学函数、代码身份、引擎源码加载及按依赖复用编译单元已接入，语义见 [LANGUAGE.md](../../../LANGUAGE.md)、[数学模块](../../math.md)和[原生值借用](../../native-value-borrows.md) |
 | Source 业务失败 | 已落地语言级 `fail("...")` 语句，替换全部内建 `.source` 节点并移除原 `Node.fail(message)`，零 Runtime `String` 分配且支持 `parallel_for` 块内失败收敛 |
-| L3 与多端口查询 | 方向已收敛为“只读辅助 `Geometry` 端口 + `Bvh` 空间查询”与“基于同步值区间栈上拥有型 `Array<T>` 的受控批量 `GeometryBuilder`”（见下节与显式合同表），未实现；由下一阶段真实游戏生成命题驱动落地 |
+| L3 与多端口查询 | 已落地 `[In/Group(..., Port = "...")]` 辅助端口列借用、`[Port] const procedural.Spatial&`（`Spatial::acquire` 16 槽共享 BVH 缓存 + `spatial.source` `parallel_for` 安全并发查询）与受控 `Node` L3 拓扑构建方法（`emit_points` / `emit_polylines` / `emit_polygons` / `emit_quads` + `set_*`），合同见[模块说明](README.md#source-空间查询与受控拓扑构建l3)与显式合同表 |
 | 调度 | 当前求值器在 Runtime 线程上串行执行，没有每帧时间片调度。C++ 节点迁到工作线程须先有只读求值计划、清楚的发布和借用生命周期，再由实测决定；不能只因列支持写时复制就并行调用 Runtime |
 | Volume 并行化 | 原生入口已采用融合分类与稳定填充的两次 fork/join，不等于后台图求值；当前合同及双规模 profile 见[模块说明](README.md#测量)。正式只记 volume/build/classify 墙钟；三段成本用临时真 P1 诊断并单列插桩扰动，不为计时拆开产品流水线。并行收益只比较同一新内核未插桩的 P1/default P，串行加速片的 12.34× 不是并行或规模扩展证据 |
 | 数字资产 | 模板加实例、通用节点而非逐资产 Runtime 类型、定义传播及两级冻结已裁决，见下表；未实现，不属于 S1。具体持久格式与模块接入仍须另审 |
 
-### 下一阶段核心断层与推进顺序
+### 核心断层闭环状态与下一阶段顺序
 
-围绕上述人机双环定位，4 处核心断层中的前两项基础设施已完成闭环，后两项生成式建模能力待按序推进：
+围绕上述人机双环定位，前两阶段（人机闭环基础设施与生成式建模闭环）已全部落地，下一阶段聚焦复合资产化与十万实例规模闭环：
 
 1. **保状态的无感类型热重建（`editor.stateful_rebuild`，已实现）**：
    - 保持 `Runtime` 只追加偏移不变量不变；无占位对象时 `project.build` 优先走 `poll` 兼容热更快路径，确需重建时内存态无损迁移已打开 `.procgraph` 草稿（保留各自 `dirty` 基线且不覆写磁盘）与 `scratch` 图，恢复视口相机、SOP 上下文、`NetworkCanvas` 平移缩放与实体/节点选择，并在无 Undo 历史且空闲时自动静默重建。详见[工程与源码构建](../editor/projects.md#保存失败与重建)与 [Editor Control](../editor/control.md)。
 2. **`graph.inspect` 轻量空间体检指标（`control.spatial_diagnostics`，已实现）**：
    - `graph.inspect` 默认在几何摘要 `spatial` 下输出多边形流形/开口边体检（`topology`）、最近邻间距分位数与重合计数（`spacing`）、实例世界对齐 AABB 重叠统计（`instance_overlaps`）及可选 `reference_node` 驱动的 `Bvh::acquire` 离地间隙分布（`surface_clearance`）。详见 [Editor Control](../editor/control.md)。
-3. **`.source` 多端口只读参考几何与 `Bvh` 空间查询（`source.spatial_and_aux_ports`，未实施）**：
-   - **现状与缺口**：[evaluator.cpp](../../../modules/engine/procedural/src/evaluator.cpp) 当前仅支持纯 `.source` 节点借用 0 号主输入的等长列，无法在 `process(...)` 中消费额外 `Geometry` 端口数据，导致多源参考逻辑（道路排斥带、地形贴合、庭院朝向参考）被迫外化为繁琐的中间连线。
-   - **目标方案**：向 `.source` `process(...)` 开放只读辅助 `Geometry` 端口视图（元素数查询、只读列与 `detail` 借用）及基于 `Bvh::acquire` 共享缓存的 `BorrowSafe` 空间查询（`closest_point`、`raycast` 等）。查询句柄在串行分派前固定只读缓冲，可在 `parallel_for` 块内安全并发读取，工作线程不触碰 `Runtime`。
-4. **受控变长拓扑构建 `GeometryBuilder`（L3）与高阶 C++ 构造算子协同（`source.geometry_builder`）**：
-   - **现状与缺口**：列模式强制校验可写列长度不变，`.source` 尚不能筛选增删点、生成开放折线或输出面框，生成式建模受制于内置 C++ 节点清单。
-   - **目标方案**：不开放对 `Geometry` 共享缓冲的任意可变修改；直接复用 `.source` 同步值区间已实现的栈上拥有型 `Array<T>`（`reserve`/`add`/`resize`/`clear`，见[拥有型基础值](../../source-owned-values.md)），由脚本在局部拥有数组中生成**变长点集、实例集、开放折线 `polyline` 或凸多边形面框**及配套属性列，再经 `BorrowSafe` 只读借用提交给宿主构建器（不重分配任何外部已借用容器，严格满足既有借用安全不变量；后续若需零拷贝移交拥有数组可作为独立底层优化），在节点出口一次性原子校验有限性、各层列长、属性 `Usage` 与公共凸面判据 δ_p 后生成不可变 `Geometry`。配合 C++ `Sweep`、`Extrude/Inset`、`Clip`、`Fuse/Triangulate` 算子，形成**“`.source` 生成骨架/地块规则 + C++ 生成流形闭合网格”**的组合。
+3. **`.source` 多端口只读参考几何与 `Spatial` 空间查询（`source.spatial_and_aux_ports`，已实现）**：
+   - 向 `.source` `process(...)` 开放 `[In/Group(..., Port = "...")]` 辅助端口列借用（支持 `point` / `vertex` / `primitive` / `detail` 层）与 `[Port] const procedural.Spatial&` 32B 定长节点序列加速句柄（底层由 `Spatial::acquire` 16 槽共享缓冲复用三角形与折线 BVH，深度 ≤ 54）。`assets/engine/procedural/spatial.source` 提供 `raycast_surface`、`closest_surface_point` 与 `closest_polyline`，串行分派前预投影连续只读切片，可在 `parallel_for` 块内无锁并发读取，工作线程零 `Runtime` 触碰。
+4. **受控变长拓扑构建 `GeometryBuilder`（L3）与高阶 C++ 构造算子协同（`source.geometry_builder`，已实现）**：
+   - 复用 `.source` 栈上拥有型 `Array<T>`，在 `procedural.Node` 上提供 12 个 `AFUNCTION(BorrowSafe)` 方法（`emit_points`、`emit_polylines`、`emit_polygons`、`emit_quads` 与各类型 `set_*`），禁止在已声明主输入流列借用时覆盖 0 号输出，并在提交时原子校验有限性、各层列长、属性 `Usage` 与公共凸面判据 δ_p。配合 C++ `Extrude` 与 `Sweep` 算子，已在 [FortifiedOutpost.procgraph](../../../examples/Content/Procedural/Graphs/FortifiedOutpost.procgraph) 与 [ModularRuinBuilding.procgraph](../../../examples/Content/Procedural/Graphs/ModularRuinBuilding.procgraph) 完成端到端验证。
 
 **推进顺序**：
 1. **阶段一（人机闭环基础设施，已完成）**：已落地 `editor.stateful_rebuild` 与 `control.spatial_diagnostics`。
-2. **阶段二（真实业务驱动的生成式建模闭环）**：选定一个纯等长列核无法表达的真实游戏生成命题（如带道路排斥与扫掠围墙的哨站模块，或可调层高/开间的程序化建筑/废墟模块），端到端驱动 `source.spatial_and_aux_ports`、受控 `GeometryBuilder`（L3）与配套 C++ `Sweep`/`Extrude` 算子落地。
-3. **阶段三（复合资产化与十万实例规模闭环）**：依次落地 `asset.generic_node` 子图数字资产封装（S4），以及[集合与渲染接口](#集合与渲染接口)中的 `SceneSnapshot` GPU 常驻实例集合区段（S5-2，消除 [scene.cpp](../../../modules/engine/presentation/src/scene.cpp) `Scene::render_items()` 的 CPU 逐实例 `RenderItem` 展开）。
+2. **阶段二（真实业务驱动的生成式建模闭环，已完成）**：已通过带道路排斥与扫掠围墙的哨站（`FortifiedOutpost`）与可调层高/开间的模块化建筑废墟（`ModularRuinBuilding`）双命题，端到端落地 `source.spatial_and_aux_ports`、受控 `GeometryBuilder`（L3）及 C++ `Extrude` / `Sweep` 算子。
+3. **阶段三（复合资产化与十万实例规模闭环，待推进）**：依次落地 `asset.generic_node` 子图数字资产封装（S4），以及[集合与渲染接口](#集合与渲染接口)中的 `SceneSnapshot` GPU 常驻实例集合区段（S5-2，消除 [scene.cpp](../../../modules/engine/presentation/src/scene.cpp) `Scene::render_items()` 的 CPU 逐实例 `RenderItem` 展开）。
 
 ### Volume 表面带的首角舍入限制（未排期）
 
@@ -95,8 +93,8 @@ S0 契约静态对齐 → S1 原生拓扑/构造/体积采样/Realize，随后�
 | curve.authored_points | 作者可编辑点数组的曲线节点需要视口绘制交互和数学值数组的属性编解码；涉及 modules/editor/core/include/editor/fields.hpp:54–59 与 scene.cpp，届时由编辑器负责人实施。S1 的 Polyline 只从纯点输入按点序连开放折线，不为它扩展编解码 | 未来曲线绘制/属性编辑入口与编辑器数学值数组编码器 | 未来曲线节点、图文件与属性解码 | 把点数组压成无类型浮点列表，或在 S1 提前扩展编辑器产品 | S2，未实现 |
 | editor.stateful_rebuild | `.source` 类型定义变更触发 `rebuild_required` 时，保持 `Runtime` 类型表只追加设计不变；宿主重建上下文前快照内存 `.scene` 与全部已打开程序化图草稿（含未落盘 `.procgraph` 与 `scratch` 图），并在采纳新文档后恢复视口相机姿态、活动 SOP 图、画布缩放平移与选中实体/节点 | 编辑器 `build_project`、`publish_document` 与 `project.build` Control 入口 | 重建后的 `Session`、`Workspace` 与视口 | 动摇 `Runtime` 只追加偏移不变量，或重建时丢弃未落盘 `.procgraph` 草稿、重置相机与 SOP 上下文 | 已实现 |
 | control.spatial_diagnostics | `graph.inspect` 在层计数与数值统计外，默认输出多边形流形/开口边计数、最近邻间距分位数、实例 AABB 重叠统计及可选 `reference_node` 相对参考表面离地间隙，为 LLM 提供客观三维空间反馈 | `Session` 图检查与 `graph.inspect` 序列化入口 | Editor Control / LLM 协作环 | 仅凭标量均值掩盖穿模/浮空，或引入重型有状态副作用污染只读检查 | 已实现 |
-| source.spatial_and_aux_ports | `.source` `process(...)` 可声明只读辅助 `Geometry` 端口视图与 `Bvh::acquire` 驱动的 `BorrowSafe` 空间查询；串行分派前固定只读缓冲，允许在 `parallel_for` 内并发读取而不触碰 `Runtime` | `.source` 参数绑定、`Evaluator` 与 `Bvh` 查询封装 | 自定义 `.source` 阶段节点 | 工作线程访问 `Runtime`、保存悬垂借用，或退回画布外连大量中间查询节点 | 已对齐方向，未实现 |
-| source.geometry_builder | `.source` 通过同步值区间栈上拥有型 `Array<T>` 构造变长点集、实例集、折线与凸面框并经 `BorrowSafe` 只读借用批量提交；宿主出口一次性原子校验有限性、各层列长、属性 `Usage` 与 δ_p 凸面判据后封装为不可变 `Geometry`，重型流形扫掠/挤出仍由 C++ 算子承担 | `Evaluator`、受控构建器入口与 `.source` 节点 | 下游 `Geometry` 消费者、`Boolean`/`VolumeScatter` 与呈现层 | 向脚本暴露可变共享列句柄、跳过出口有限性/凸性校验，或迫使脚本手拼复杂流形索引汤 | 已对齐方向，未实现 |
+| source.spatial_and_aux_ports | `.source` `process(...)` 可声明 `[In/Group(..., Port = "...")]` 只读辅助端口列借用与 `[Port] const procedural.Spatial&` 并发 BVH 空间查询；串行分派前固定只读缓冲，允许在 `parallel_for` 内并发读取而不触碰 `Runtime` | `.source` 参数绑定、`Evaluator`、`Spatial::acquire` 与 `spatial.source` | 自定义 `.source` 阶段节点 | 工作线程访问 `Runtime`、保存悬垂借用，或退回画布外连大量中间查询节点 | 已实现 |
+| source.geometry_builder | `.source` 通过同步值区间栈上拥有型 `Array<T>` 构造变长点集、折线与凸面框并经 `Node` `BorrowSafe` 方法批量提交；宿主原子校验有限性、各层列长、属性 `Usage` 与 δ_p 凸面判据后写入指定输出端口，重型流形扫掠/挤出仍由 C++ `Sweep`/`Extrude` 承担 | `Evaluator`、`Node` 受控构建方法与 `.source` 节点 | 下游 `Geometry` 消费者、`Boolean`/`VolumeScatter` 与呈现层 | 向脚本暴露可变共享列句柄、跳过有限性/凸性校验、破坏 0 号主输入流列借用，或迫使脚本手拼复杂流形索引汤 | 已实现 |
 
 ### 合同依据：与 Houdini 的显式差异
 

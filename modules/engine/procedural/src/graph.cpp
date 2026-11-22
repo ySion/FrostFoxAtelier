@@ -1,6 +1,9 @@
 #include "procedural/graph.hpp"
+#include "detail/native_cook.hpp"
 #include "detail/node_plan.hpp"
+#include "detail/triangles.hpp"
 #include "foundation/result.hpp"
+#include "procedural/bvh.hpp"
 #include "procedural/nodes.hpp"
 #include "runtime/foundation.hpp"
 
@@ -114,6 +117,132 @@ Result<Reference> Context::mesh(StringView key) const noexcept {
     return reference;
 }
 
+namespace {
+
+template <class T>
+Result<T> builder_result(Result<T> result) noexcept {
+    if (!result)
+        result.error().code = ErrorCode::invocation_failed;
+    return result;
+}
+
+Result<Geometry*> target_output(const Node& self, std::uint32_t output_port) noexcept {
+    auto* cook = detail::NativeCook::current;
+    if (!cook || cook->active_node != &self)
+        return error(ErrorCode::unsupported_operation,
+                     "Geometry builder methods can only run on the active procedural.Node during process().");
+    if (output_port >= cook->outputs.size())
+        return error(ErrorCode::invocation_failed, "Output port " + std::to_string(output_port) + " is out of range.");
+    if (cook->uses_primary_stream && output_port == 0u)
+        return error(
+            ErrorCode::invocation_failed,
+            "Cannot emit or replace columns on primary column-stream output 0; declare an explicit [Port] procedural.Geometry& output.");
+    return &cook->outputs[output_port];
+}
+
+Result<void> validate_emitted_polygons(const Geometry& geometry) {
+    const auto count = geometry.count(Layer::primitive);
+    for (std::uint32_t p = 0; p < count; ++p) {
+        if (auto valid = detail::validate_polygon(geometry, geometry.primitive(p)); !valid) {
+            valid.error().code = ErrorCode::invocation_failed;
+            valid.error().message = "Primitive " + std::to_string(p) + ": " + valid.error().message;
+            return std::unexpected(std::move(valid.error()));
+        }
+    }
+    return {};
+}
+
+template <Element T>
+Result<void> set_output_column(const Node& self, const String& name, Layer layer, const Array<T>& values,
+                               std::uint32_t output_port) noexcept {
+    ATELIER_TRY_BIND(out, target_output(self, output_port));
+    return builder_result((*out)->set(name, layer, SharedArray<T>{Array<T>{values}}));
+}
+
+} // namespace
+
+Result<void> Node::emit_points(const Array<math::Vector3>& positions, std::uint32_t output_port) const noexcept {
+    ATELIER_TRY_BIND(out, target_output(*this, output_port));
+    ATELIER_TRY_BIND(built, builder_result(Geometry::points(Array<math::Vector3>{positions})));
+    **out = std::move(*built);
+    return {};
+}
+
+Result<void> Node::emit_polylines(const Array<math::Vector3>& positions, const Array<std::uint32_t>& vertex_points,
+                                  const Array<std::uint32_t>& offsets, std::uint32_t output_port) const noexcept {
+    ATELIER_TRY_BIND(out, target_output(*this, output_port));
+    Array<PrimitiveKind> kinds;
+    kinds.resize(offsets.empty() ? 0 : offsets.size() - 1, PrimitiveKind::polyline);
+    ATELIER_TRY_BIND(
+        built, builder_result(Geometry::primitives(Array<math::Vector3>{positions}, Array<std::uint32_t>{vertex_points},
+                                                   offsets, std::move(kinds))));
+    **out = std::move(*built);
+    return {};
+}
+
+Result<void> Node::emit_polygons(const Array<math::Vector3>& positions, const Array<std::uint32_t>& vertex_points,
+                                 const Array<std::uint32_t>& offsets, std::uint32_t output_port) const noexcept {
+    ATELIER_TRY_BIND(out, target_output(*this, output_port));
+    ATELIER_TRY_BIND(built, builder_result(Geometry::polygons(Array<math::Vector3>{positions},
+                                                              Array<std::uint32_t>{vertex_points}, offsets)));
+    ATELIER_TRY(validate_emitted_polygons(*built));
+    **out = std::move(*built);
+    return {};
+}
+
+Result<void> Node::emit_quads(const Array<math::Vector3>& positions, const Array<std::uint32_t>& quad_points,
+                              std::uint32_t output_port) const noexcept {
+    ATELIER_TRY(target_output(*this, output_port));
+    if ((quad_points.size() % 4u) != 0u)
+        return error(ErrorCode::invocation_failed, "emit_quads requires quad_points.size() to be a multiple of 4.");
+    const std::size_t quad_count = quad_points.size() / 4u;
+    Array<std::uint32_t> offsets;
+    offsets.resize(quad_count + 1u);
+    for (std::size_t q = 0; q <= quad_count; ++q)
+        offsets[q] = static_cast<std::uint32_t>(q * 4u);
+    return emit_polygons(positions, quad_points, offsets, output_port);
+}
+
+Result<void> Node::set_bool(const String& name, Layer layer, const Array<bool>& values,
+                            std::uint32_t output_port) const noexcept {
+    return set_output_column(*this, name, layer, values, output_port);
+}
+
+Result<void> Node::set_int(const String& name, Layer layer, const Array<std::int32_t>& values,
+                           std::uint32_t output_port) const noexcept {
+    return set_output_column(*this, name, layer, values, output_port);
+}
+
+Result<void> Node::set_uint(const String& name, Layer layer, const Array<std::uint32_t>& values,
+                            std::uint32_t output_port) const noexcept {
+    return set_output_column(*this, name, layer, values, output_port);
+}
+
+Result<void> Node::set_float(const String& name, Layer layer, const Array<float>& values,
+                             std::uint32_t output_port) const noexcept {
+    return set_output_column(*this, name, layer, values, output_port);
+}
+
+Result<void> Node::set_vec2(const String& name, Layer layer, const Array<math::Vector2>& values,
+                            std::uint32_t output_port) const noexcept {
+    return set_output_column(*this, name, layer, values, output_port);
+}
+
+Result<void> Node::set_vec3(const String& name, Layer layer, const Array<math::Vector3>& values,
+                            std::uint32_t output_port) const noexcept {
+    return set_output_column(*this, name, layer, values, output_port);
+}
+
+Result<void> Node::set_vec4(const String& name, Layer layer, const Array<math::Vector4>& values,
+                            std::uint32_t output_port) const noexcept {
+    return set_output_column(*this, name, layer, values, output_port);
+}
+
+Result<void> Node::set_quat(const String& name, Layer layer, const Array<math::Quaternion>& values,
+                            std::uint32_t output_port) const noexcept {
+    return set_output_column(*this, name, layer, values, output_port);
+}
+
 Result<void> register_types(Runtime& runtime) {
     if (runtime.native_type<Graph>())
         return {};
@@ -139,7 +268,28 @@ Result<void> register_types(Runtime& runtime) {
     definitions.push_back(reflection::Definition<Layer>::build(runtime));
     definitions.push_back(reflection::Definition<Reduce>::build(runtime));
     definitions.push_back(reflection::Definition<BooleanOperation>::build(runtime));
+    definitions.push_back(reflection::Definition<SweepProfile>::build(runtime));
     definitions.push_back(reflection::Definition<RayMode>::build(runtime));
+    {
+        auto node_def = reflection::Definition<SpatialNode>::build(runtime);
+        node_def.native.value_operations_preserve_borrows = true;
+        node_def.native.prototype_constructor = node_def.native.construct;
+        definitions.push_back(std::move(node_def));
+    }
+    {
+        auto spatial_def = NativeRegistration<Spatial>{runtime, "procedural.Spatial", TypeKind::array}.build();
+        spatial_def.description = "供 Source 节点只读空间查询的表面 BVH 与折线线段缓冲。";
+        spatial_def.element = TypeReference::native<SpatialNode>();
+        spatial_def.native.element_representation = atelier::detail::representation<SpatialNode>();
+        spatial_def.native.sequence_view = [](const void* value, const void** data, std::size_t* size) noexcept {
+            const auto& spatial = *static_cast<const Spatial*>(value);
+            const auto& array = spatial.words.array();
+            *data = array.data();
+            *size = array.size();
+        };
+        spatial_def.native.value_operations_preserve_borrows = true;
+        definitions.push_back(std::move(spatial_def));
+    }
     definitions.push_back(reflection::Definition<Geometry>::build(runtime));
     definitions.push_back(array_definition<Geometry>(runtime, "procedural.Geometries"));
     definitions.push_back(reflection::Definition<Context>::build(runtime));
@@ -164,6 +314,8 @@ Result<void> register_types(Runtime& runtime) {
     definitions.push_back(reflection::Definition<Ray>::build(runtime));
     definitions.push_back(reflection::Definition<CopyToPoints>::build(runtime));
     definitions.push_back(reflection::Definition<Realize>::build(runtime));
+    definitions.push_back(reflection::Definition<Extrude>::build(runtime));
+    definitions.push_back(reflection::Definition<Sweep>::build(runtime));
     definitions.push_back(reflection::Definition<Null>::build(runtime));
     ATELIER_TRY(runtime.register_types(std::move(definitions)));
     return {};
@@ -182,9 +334,10 @@ Result<detail::NodePlan> detail::inspect_node(Runtime& runtime, TypeId type) {
     auto context_type = runtime.native_type<Context>();
     auto geometry_type = runtime.native_type<Geometry>();
     auto geometries_type = runtime.native_type<Geometries>();
+    auto spatial_type = runtime.native_type<Spatial>();
     auto layer_type = runtime.native_type<Layer>();
     auto string_type = runtime.native_type<String>();
-    if (!context_type || !geometry_type || !geometries_type || !layer_type || !string_type)
+    if (!context_type || !geometry_type || !geometries_type || !spatial_type || !layer_type || !string_type)
         return error(ErrorCode::invalid_type, "Register the procedural types first.");
 
     std::array<TypeId, column_type_count> column_types{};
@@ -263,6 +416,8 @@ Result<detail::NodePlan> detail::inspect_node(Runtime& runtime, TypeId type) {
 
         std::string_view layer;
 
+        std::string_view port;
+
         bool optional{};
     };
     std::vector<ParsedMeta> parsed_meta(signature->parameters.size());
@@ -282,21 +437,50 @@ Result<detail::NodePlan> detail::inspect_node(Runtime& runtime, TypeId type) {
                 meta.from = value;
             else if (key == "procedural.layer")
                 meta.layer = value;
+            else if (key == "procedural.port")
+                meta.port = value;
             else if (key == "procedural.optional" && value == "true")
                 meta.optional = true;
             else
                 return error(ErrorCode::invalid_definition,
                              name + ".process parameter " + std::to_string(i) + ": invalid procedural metadata.");
         }
-        if (meta.role == "in" || meta.role == "out" || meta.role == "inout" || meta.role == "group")
+        if ((meta.role == "in" || meta.role == "out" || meta.role == "inout" || meta.role == "group") &&
+            meta.port.empty())
             plan.uses_primary_stream = true;
     }
 
+    std::vector<bool> explicit_input_port;
     if (plan.uses_primary_stream) {
         plan.ports.inputs.push_back("input");
         plan.ports.multiple.push_back(false);
+        explicit_input_port.push_back(true);
         plan.ports.outputs.push_back("output");
     }
+
+    const auto bind_input_port = [&](std::string_view port_name, bool is_explicit,
+                                     bool is_multi) -> Result<std::uint32_t> {
+        const auto found_in = std::ranges::find(plan.ports.inputs, port_name);
+        if (found_in != plan.ports.inputs.end()) {
+            const auto existing_idx = static_cast<std::size_t>(found_in - plan.ports.inputs.begin());
+            if (is_explicit) {
+                if (explicit_input_port[existing_idx] || is_multi || plan.ports.multiple[existing_idx])
+                    return error(ErrorCode::invalid_definition,
+                                 name + ".process has duplicate input port '" + std::string(port_name) + "'.");
+                explicit_input_port[existing_idx] = true;
+            } else if (plan.ports.multiple[existing_idx]) {
+                return error(ErrorCode::invalid_definition,
+                             name + ".process: Port cannot bind to multi-input Geometries port '" +
+                                 std::string(port_name) + "'.");
+            }
+            return static_cast<std::uint32_t>(existing_idx);
+        }
+        const auto index = static_cast<std::uint32_t>(plan.ports.inputs.size());
+        plan.ports.inputs.emplace_back(port_name);
+        plan.ports.multiple.push_back(is_multi);
+        explicit_input_port.push_back(is_explicit);
+        return index;
+    };
 
     bool uses_dynamic_layer = false;
     plan.arguments.reserve(signature->parameters.size());
@@ -310,7 +494,7 @@ Result<detail::NodePlan> detail::inspect_node(Runtime& runtime, TypeId type) {
         const bool writable = inline_value && param.passing == ParameterPassing::reference;
 
         if (meta.role.empty() && param.type == *context_type && read) {
-            if (meta.has_name || !meta.from.empty() || !meta.layer.empty() || meta.optional)
+            if (meta.has_name || !meta.from.empty() || !meta.layer.empty() || !meta.port.empty() || meta.optional)
                 return error(ErrorCode::invalid_definition,
                              name + ".process Context parameter accepts no column options.");
             if (plan.uses_context)
@@ -321,7 +505,7 @@ Result<detail::NodePlan> detail::inspect_node(Runtime& runtime, TypeId type) {
         }
 
         if (meta.role.empty() || meta.role == "port") {
-            if (meta.has_name || !meta.from.empty() || !meta.layer.empty() || meta.optional)
+            if (meta.has_name || !meta.from.empty() || !meta.layer.empty() || !meta.port.empty() || meta.optional)
                 return error(ErrorCode::invalid_definition,
                              name + ".process port parameter " + std::to_string(i) + " accepts no column options.");
             std::optional<ArgKind> port_kind;
@@ -329,12 +513,14 @@ Result<detail::NodePlan> detail::inspect_node(Runtime& runtime, TypeId type) {
                 port_kind = ArgKind::port_input;
             else if (param.type == *geometries_type && read)
                 port_kind = ArgKind::port_inputs;
+            else if (param.type == *spatial_type && read)
+                port_kind = ArgKind::port_spatial;
             else if (param.type == *geometry_type && writable)
                 port_kind = ArgKind::port_output;
             if (!port_kind)
                 return error(ErrorCode::invalid_definition,
                              name + ".process parameter " + std::to_string(i) +
-                                 " is not a Context, Geometry port, or annotated column stream.");
+                                 " is not a Context, Geometry/Spatial port, or annotated column stream.");
             if (param_name.empty() || !Geometry::admit_name(StringView{param_name}))
                 return error(ErrorCode::invalid_definition, name + ".process port parameter " + std::to_string(i) +
                                                                 " requires a valid identifier name.");
@@ -346,13 +532,8 @@ Result<detail::NodePlan> detail::inspect_node(Runtime& runtime, TypeId type) {
                 plan.ports.outputs.push_back(param_name);
                 plan.arguments.push_back({.kind = *port_kind, .type = param.type, .port_index = index});
             } else {
-                if (std::ranges::find(plan.ports.inputs, param_name) != plan.ports.inputs.end())
-                    return error(ErrorCode::invalid_definition,
-                                 name + ".process has duplicate input port '" + param_name + "'.");
-                const auto index = static_cast<std::uint32_t>(plan.ports.inputs.size());
-                plan.ports.inputs.push_back(param_name);
-                plan.ports.multiple.push_back(*port_kind == ArgKind::port_inputs);
-                plan.arguments.push_back({.kind = *port_kind, .type = param.type, .port_index = index});
+                ATELIER_TRY_BIND(index, bind_input_port(param_name, true, *port_kind == ArgKind::port_inputs));
+                plan.arguments.push_back({.kind = *port_kind, .type = param.type, .port_index = *index});
             }
             continue;
         }
@@ -378,6 +559,9 @@ Result<detail::NodePlan> detail::inspect_node(Runtime& runtime, TypeId type) {
         if (meta.optional && kind != ArgKind::column_in)
             return error(ErrorCode::invalid_definition,
                          name + ".process parameter '" + param_name + "': Optional applies only to In parameters.");
+        if (!meta.port.empty() && !expects_read)
+            return error(ErrorCode::invalid_definition, name + ".process parameter '" + param_name +
+                                                            "': Port option applies only to In and Group parameters.");
         const auto column_it = std::ranges::find(column_types, param.type);
         if (column_it == column_types.end())
             return error(ErrorCode::invalid_definition,
@@ -391,6 +575,13 @@ Result<detail::NodePlan> detail::inspect_node(Runtime& runtime, TypeId type) {
                          name + ".process parameter '" + param_name + "' specifies both a literal name and From.");
 
         ArgPlan arg{.kind = kind, .type = param.type, .column_variant = variant, .optional = meta.optional};
+        if (!meta.port.empty()) {
+            if (auto valid_port = Geometry::admit_name(StringView{meta.port}); !valid_port)
+                return error(ErrorCode::invalid_definition,
+                             name + ".process parameter '" + param_name + "': Port " + valid_port.error().message);
+            ATELIER_TRY_BIND(port_idx, bind_input_port(meta.port, false, false));
+            arg.port_index = *port_idx;
+        }
         if (!meta.from.empty()) {
             const auto field = std::ranges::find((*info)->fields, meta.from, &FieldInfo::name);
             if (field == (*info)->fields.end() || field->value.form != ValueForm::inline_value ||

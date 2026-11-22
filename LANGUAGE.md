@@ -6,11 +6,11 @@
 
 ## 能力范围
 
-单源码请求包含枚举/结构体声明、顶层标量/枚举常量和一至多个函数，由宿主选定公开入口。项目快照还支持跨文件收集和继承原生对象的 class，并统一发布多个具名同步入口。函数可接受 bool/float/double/uint/int 或已注册枚举参数，返回 void 或同范围值类型；同步函数还支持内建数学值和 plain record 的按值参数与结果、原生或描述型记录和 Array 的借用、只读 String，以及具备生命周期能力的拥有型局部。`async` 函数可以用 `yield;` 挂起。语句包括声明、赋值、同模块函数调用、原生成员调用、块、`if/else`、`while`、`for`、`parallel_for`、`break/continue`、`fail` 和 `return`。
+单源码请求包含枚举/结构体声明、顶层标量/枚举常量和一至多个函数，由宿主选定公开入口。项目快照还支持跨文件收集和继承原生对象的 class，并统一发布多个具名同步入口。函数可接受 bool/float/double/uint/int 或已注册枚举参数，返回 void 或同范围值类型；同步函数还支持内建数学值和 plain record 的按值参数与结果、原生或描述型记录和 Array/String 的只读与可写借用、源码 struct/enum 的自动合成 `Array<T>`，以及具备生命周期能力的拥有型局部。`async` 函数可以用 `yield;` 挂起。语句与表达式包括声明、赋值与复合赋值（`+=` 等）、三目条件表达式（`?:`）、同模块函数调用、原生成员调用、块、`if/else`、`while`、`for`、`parallel_for`、`break/continue`、`fail` 和 `return`。
 
 对象环境至多包含一个宿主已注册的绑定对象类型，目录包含其继承的公开成员。接收者可为该类型的派生实例；源码的声明视图仍是绑定类型。源码可使用该视图的持有/观察局部、`null`、`new`、身份比较和已绑定的标量/数学字段及原生方法。原生与描述型对象沿用同一 Runtime 类型和身份。
 
-尚未支持：源码 class 继承另一源码 class、源码结构体中的对象引用、以源码结构体为元素的新数组类型、递归调用、内部 async 调用、多对象类型目录、对象引用字段、对象引用参数与返回、const 对象引用局部、String/Array/资源记录的按值参数与返回、async 聚合参数与结果、借用返回与借用局部声明、源码显式销毁、通用泛型、语言异常捕获、`await`、跨线程恢复、一般方法分派、类型或活动帧迁移，以及 `+=` 等复合赋值、`++/--`、`foreach`、`switch`、`?:` 和其他整数宽度。本文不把这些边界转成必须立即实施的计划。
+尚未支持：源码 class 继承另一源码 class、源码结构体中的对象引用、递归调用、内部 async 调用、多对象类型目录、对象引用字段、对象引用参数与返回、const 对象引用局部、String/Array/资源记录的按值参数与返回、async 聚合参数与结果、借用返回与借用局部声明、源码显式销毁、通用泛型、语言异常捕获、`await`、跨线程恢复、一般方法分派、类型或活动帧迁移，以及 `++/--`、`foreach`、`switch` 和其他整数宽度。本文不把这些边界转成必须立即实施的计划。
 
 ## 源码与词法
 
@@ -30,7 +30,7 @@ void bool true false float double uint int const if else while for parallel_for 
 
 `class` 声明由项目快照入口收集。未列出的名字没有内建含义；符合标识符规则时可作为普通名字。
 
-记号包括 `+ - * / % = == != < <= > >= << >> ! && || & | ^ ~ ( ) { } [ ] ; , . : ::`。`>>` 在表达式中表示右移，也可在类型上下文中结束嵌套 `Array<Array<T>>`。相邻 `++/--` 明确拒绝，不再解释为连续的一元运算；用空白或括号分开的 `+ +value`、`- -value` 仍按一元运算检查。复合赋值和自增自减没有语法。
+记号包括 `+ - * / % = += -= *= /= %= == != < <= > >= << >> <<= >>= ! && || & &= | |= ^ ^= ~ ? ( ) { } [ ] ; , . : ::`。`>>` 在表达式中表示右移，也可在类型上下文中结束嵌套 `Array<Array<T>>`。相邻 `++/--` 明确拒绝，不再解释为连续的一元运算；用空白或括号分开的 `+ +value`、`- -value` 仍按一元运算检查。自增自减没有语法。
 
 ## 类型与数值
 
@@ -44,8 +44,8 @@ void bool true false float double uint int const if else while for parallel_for 
 | 内建数学值 | float/double 向量、四元数、矩阵；支持同步按值参数与结果、借用、局部及整值赋值，详见[数学值](docs/math.md) |
 | 已注册枚举 | 独立类型身份，底层为 i32/u32；使用完整 Runtime 类型名 |
 | 记录/结构体 | 同一 Runtime 中的原生或描述型无 GC 引用值；同步借用，具备保持借用有效的复制与生命周期能力时可作拥有型局部 |
-| `Array<T>` | 同一 Runtime 注册的具体原生数组；同步借用或拥有型局部 |
-| `String` | 已注册的引擎 UTF-8 String；只读借用、拥有型局部或宿主可读写的 class 字段，长度和索引按字节 |
+| `Array<T>` | 同一 Runtime 已注册的具体原生数组，或为源码 struct/enum 自动合成的描述型数组（含嵌套 `Array`）；同步借用或拥有型局部 |
+| `String` | 已注册的引擎 UTF-8 String；只读或可写借用、拥有型局部或宿主可读写的 class 字段，长度和索引按字节 |
 | `void` | 函数/方法无结果，不能用于值上下文 |
 | 宿主对象类型 | 持有引用，允许为空；`weak` 表达观察引用 |
 
@@ -63,13 +63,13 @@ void bool true false float double uint int const if else while for parallel_for 
 
 ### 原生值借用
 
-同步源码入口可声明 `Type& name` 或 `const Type& name`；`const` 必须位于类型前。Type 可为已注册、不含 GC 引用的原生/描述型记录或原生数组。`String` 只支持 `const String&`。这些参数使用调用方已有的存储，不复制元素，也不延长拥有者的生命周期。
+同步源码入口可声明 `Type& name` 或 `const Type& name`；`const` 必须位于类型前。Type 可为已注册或同模块声明、不含 GC 引用的原生/描述型记录、Array 或 String。这些参数使用调用方已有的存储，不复制容器，也不延长拥有者的生命周期。
 
-- 一般记录使用完整 Runtime 名称；内建数学类型同时接受[固定短名](docs/math.md#类型名称与存储)。`Array<T>` 递归解析为同一 Runtime 中已注册的具体数组类型，也可直接使用该数组的注册名；它不自动实例化或注册新类型。`String` 是已注册引擎字符串的便利拼写，也接受其注册名。
+- 一般记录使用完整 Runtime 名称；内建数学类型同时接受[固定短名](docs/math.md#类型名称与存储)。原生 C++ 元素类型的 `Array<T>` 递归解析为同一 Runtime 中已注册的具体数组类型（保持与 C++ `atelier::Array<T>` 共享权威布局）；源码声明的 `struct`/`enum`（及其多层嵌套 `Array`）在 `Program::request` 准备阶段自动以保留前缀 `__source_array.` 合成并发布描述型 `TypeKind::array`（24B `{data, size, capacity}`）。`String` 是已注册引擎字符串的便利拼写，也接受其注册名。
 - 数组支持 `values.size()` 与 `values[index]`；元素可以是已支持的标量、枚举、无 GC 引用记录、String 或嵌套数组。记录通过 `value.field` 访问已发布直接偏移的公开字段；只有访问器的字段不能直接使用。
 - String 支持 `text.size()` 与只读 `text[index]`。长度不含末尾零字符，索引返回 0～255 的 `uint` 字节，不解码 Unicode 码点，也不提供可写字节地址。
 - `.size()` 返回 `uint`；索引接受 `uint` 或 `int`，在实际访问前检查负数和越界。长度超过 uint 范围或缓冲布局不合法时执行失败，不截断。空序列的长度查询合法，任何元素访问均越界。
-- 只读性沿记录字段与数组元素向下传播。可写借用允许修改标量/枚举叶值和整体数学值，不允许替换一般记录/容器、改变序列结构或修改 String。只读和可写参数可以指向同一存储，读取会观察已经发生的别名写入。
+- **`const Type&` 保持深只读**：只读性沿记录字段与数组元素递归向下传播，禁止修改任何字段/元素或改变序列结构。**可写 `Type&`（`Array<T>&`、`String&`、`Struct&`）同时支持元素/字段修改与结构/整值修改**（只要类型具备 `can_own` 与 `can_mutate`）：`Array<T>&` 可调用 `.reserve/.resize/.clear/.add/.append` 及整值赋值 `a = b`，`String&` 可调用 `.reserve/.clear/.append` 及字面量/整值赋值，`Struct&` 可修改其内联拥有的容器字段；带有 `[InOut]` 或 `[Out]` 属性的 SOP 几何属性列形参绑定到定长层缓冲，编译期禁止直接或经被调函数改变其序列长度。当被调函数的可写引用形参可能改变序列结构时，生成代码不在入口缓存该形参的 `(data, size)` 视图，且调用点编译期禁止在同一次调用中通过另一引用形参同时借用同一根局部（如拒绝 `push(arr, cref_elem_of_arr)`，按值传参 `push(arr, arr[0])` 合法）。
 
 含聚合借用参数、普通 plain record 按值参数/结果、一般记录/String/Array 拥有型局部或 String 字面量的函数形成**同步值区间**：允许标量/数学计算、局部、控制流和上述值访问，按值读取 `self` 的标量、bool、枚举与数学字段（含 `self.v.x` 分量，继承的原生字段和源码 class 声明的字段都可读）；原生方法仅允许调用 `self` 上声明 `BorrowSafe` 的方法。读取 `self` 字段不盖写代号、不推进 GC，也不向源码暴露对象地址。身份及存储地址在有效执行段内可复用；字段值仍观察已经发生的别名写入和方法副作用（非 const 的 BorrowSafe 方法可以修改 `self` 的叶值），只有证明没有干扰时才可提升读取，不把未知原生调用视为只读。给 `self` 字段赋值、把 `self` 字段作为 `T&`/`const T&` 实参、把 `self` 当作值使用、读取其他对象字段等其他对象操作，以及 async 与 yield 被拒绝。数学按值参数和局部自身不产生该限制，数学引用参数仍产生。函数使用这些值存储的效果沿调用图传播，覆盖所有被调用的同步辅助函数。所有源码执行统一遵守下述[执行区间](#执行诊断与保护)规则；同步值区间额外限制借用和对象操作，不是另一套 GC 模式。调用方须保证存储已构造且持续有效，不销毁、重分配或并发修改其结构。没有执行超时保证，无限循环也会推迟宿主重新取得控制。
 
@@ -103,9 +103,11 @@ plain record 可以在同步源码与原生调用中按值传入和返回，借�
 | 按位异或 | `^` |
 | 按位或 | `\|` |
 | 逻辑与 | `&&` |
-| 最低 | `\|\|` |
+| 逻辑或 | `\|\|` |
+| 最低（条件） | `? :` |
 
-一元右结合，二元左结合。括号改变组合，不改变类型。
+一元与三目条件 `?:` 右结合，二元左结合。括号改变组合，不改变类型。
+- `cond ? then_expr : else_expr`：`cond` 必须为 `bool`；两侧分支须为相同的标量、枚举、内建数学值或合格 `plain_record` 值类型（无隐式数值转换，`int` 与未定型正整数常量可按既有规则配对定型），产生右值并严格短路求值（仅求值被选中的分支，在模块常量折叠、CPU JIT 与材质 HLSL/Coverage/Footprint 中均保持惰性分支语义）。
 
 - `uint` 的加减乘按模 `2^32` 回绕；比较按无符号值，一元 `+` 保持值，没有一元负号。`4294967295 + 1` 合法并为 0，`4294967296` 是错误字面量。
 - `int` 加减乘和取负按 32 位补码回绕，比较按有符号值；生成代码不附加 signed-overflow 未定义行为假设。
@@ -134,7 +136,7 @@ uint process(const Array<float>& input) {
 
 - 类型须已注册，且其值操作已声明保持其他借用有效。String、平凡值元素与满足此条件的嵌套 Array 自动组合；非平凡记录元素须由可信原生生产者明确提供保证。
 - 局部对象按真实大小和对齐放在生成函数的栈上，缓冲由同一基础库持有。初始化/赋值使用 Runtime 值操作和深复制语义。不提供隐式移动或聚合值返回。
-- Array 支持 `reserve(count)`、`resize(count)`、`clear()`、`add(element)`、`append(array)`；String 支持 `reserve(count)`、`clear()`、`append(string)`。修改目标必须从当前函数拥有的局部出发，可以是其嵌套序列；外部借用参数不能改变结构。容量参数为 int/uint，负数报告执行错误；这些修改操作返回 void。整值赋值开放给拥有型局部及其嵌套记录、String/Array 字段或元素，目标类型须具备相同的安全值操作能力；复制后的缓冲独立。
+- Array 支持 `reserve(count)`、`resize(count)`、`clear()`、`add(element)`、`append(array)`；String 支持 `reserve(count)`、`clear()`、`append(string)`。修改目标必须从当前函数的可写局部或非定长可写借用参数出发，可以是其嵌套序列；`const` 只读借用与 SOP `[InOut]`/`[Out]` 定长列参数不能改变结构。容量参数为 int/uint，负数报告执行错误；这些修改操作返回 void。整值赋值开放给可写局部、非定长可写借用参数及其嵌套记录、String/Array 字段或元素，目标类型须具备相同的安全值操作能力；复制后的缓冲独立。
 - 字符串用双引号，支持 UTF-8 及 `\\`、`\"`、`\n`、`\r`、`\t`、`\0`；拒绝未知转义、未闭合字面量、直接换行以及非法 UTF-8 字节（词法解码阶段即在编译时拒绝）。运行时经宿主输入或修改操作进入基础 String 的字节继续沿基础 String 验证 UTF-8。字面量可作为 `const String&` 实参，也可读取长度和字节。
 - 正常块退出、循环迭代、break/continue、提前返回和错误路径逆序销毁已构造的值；字面量临时对象在当前语句或条件结束时清理。复制部分失败由原生构造操作撤销已构造元素，生成代码不重复析构未完成对象。
 - `AFUNCTION(BorrowSafe)` 或 `NativeRegistration::method(name, true)` 是可信 C++ 契约：调用及其间接调用不得使仍使用的借用失效、保存借用、重入源码或挂起。它可以修改可写标量/记录叶值，不能通过容器重分配、清空或替换破坏既存别名。编译器读取同一 MethodInfo 的声明，Runtime 继续保护 GC 和对象生命周期；该标记不是对任意 C++ 函数的自动证明。
@@ -155,11 +157,11 @@ uint process(combat.DamageInfo& damage) {
 }
 ```
 
-- 类型声明位于顶层，可与函数交错；结构体字段可前向引用同模块类型。名称为准确声明名，支持 `combat.Point` 形式；没有命名空间块或用户类型的相对短名查找。类型不能重名，不能覆盖已注册类型、内建数学短名或 `String/Array/core.*/math.*`；同名类型与函数也拒绝。
+- 类型声明位于顶层，可与函数交错；结构体字段可前向引用同模块类型。名称为准确声明名，支持 `combat.Point` 形式；没有命名空间块或用户类型的相对短名查找。类型不能重名，不能覆盖已注册类型、内建数学短名或 `String/Array/core.*/math.*/__source_*`；同名类型与函数也拒绝。
 - `editor.` 前缀保留给编辑器。编辑器在文档 Runtime 中以此前缀登记自己的参数类型，源码的 struct、enum 和 class 都不能用这个前缀声明。宿主目录也不包含这些类型：在源码中引用它们，包括作字段类型、局部类型、枚举常量或类的基类，都按未登记类型报错。这是在 Program 拥有各自可见域之前的临时规则。
 - `[Flags] enum Name [ : int | uint ] { ... }` 默认底层为 int，末尾分号可省略；携带 `[Flags]` 时底层必须显式写 `: uint`。枚举项前可写 `[Label = "...", DESC = "..."]` 展示元数据；枚举项可显式指定十进制整数（含负号），否则为零或上一项加一；底层范围溢出、重复项名拒绝，重复值允许。可使用尾随逗号。
-- `struct Name { Type field; ... };` 字段支持 bool/float/double/uint/int、内建数学值、已注册或同模块枚举、同模块结构体，以及已注册的无 GC 引用记录、String 和具体 Array。`Array<T>`（含嵌套数组）按元素身份解析现有注册类型，不自动实例化 `Array<源码结构体>`。字段顺序决定布局，偏移和对齐由 Runtime 计算；内联循环、未知类型、重复字段和对象引用字段拒绝。没有字段初始化器、方法、继承或自定义构造析构。
-- 结构体的拥有能力由字段生命周期能力递归组合；满足条件的局部可默认构造、深复制初始化和整值赋值。默认构造递归将标量置零、String/Array 置空，并调用原生记录的构造。字段随拥有者清理；部分构造失败时仅销毁已完成的字段。自有局部中的字段及元素遵守上述拥有值修改规则；引用参数允许修改可写标量/枚举叶值和数学字段，不能替换一般聚合字段或改变容器结构。满足 plain record 与拥有资格的源码结构体支持同步按值参数与结果；源码返回临时由返回值复制形成，不额外调用默认构造。没有初始化器的局部仍执行默认构造。
+- `struct Name { Type field; ... };` 字段支持 bool/float/double/uint/int、内建数学值、已注册或同模块枚举、同模块结构体，以及已注册的无 GC 引用记录、String 和 Array。原生元素类型的 `Array<T>` 解析现有注册数组；源码声明的 `struct`/`enum`（及其多层嵌套 `Array`）自动合成对应的描述型 `TypeKind::array`。字段顺序决定布局，偏移和对齐由 Runtime 计算；内联循环（含经 `Array` 回到自身的循环）、未知类型、重复字段和对象引用字段拒绝。没有字段初始化器、方法、继承或自定义构造析构。
+- 结构体的拥有能力由字段生命周期能力递归组合；满足条件的局部可默认构造、深复制初始化和整值赋值。默认构造递归将标量置零、String/Array 置空，并调用原生记录的构造。字段随拥有者清理；部分构造失败时仅销毁已完成的字段。可写局部与非定长可写借用参数中的字段及元素遵守上述拥有值修改规则；`const` 引用参数保持深只读。满足 plain record 与拥有资格的源码结构体支持同步按值参数与结果；源码返回临时由返回值复制形成，不额外调用默认构造。没有初始化器的局部仍执行默认构造。
 - 类型声明经 `Program::request` 收集并取得未发布的 Runtime 布局，函数由 `prepare` 编译；成功 `try_publish` 后类型和代码一起可用。任何候选失败均不发布新类型。创建对象后仍可发布新类型，提交需要类型安全点（代码发布条件加 GC 空闲）。
 - 已发布的类型定义不可变；声明出现顺序可调整，后续版本可以追加新类型。删除、改名或改动已发布的字段/枚举定义须重建 Runtime。代码更新、旧租约和程序关闭不替换或注销类型身份。
 
@@ -189,7 +191,7 @@ class game.Move : world.Component {
 - String 字段默认构造为空，或用一个普通字符串字面量，例如 `String attribute = "pscale";`；转义沿既有 String 规则解码，UTF-8 在发布前校验。`String` 与规范名、无初始化器与 `""` 分别等价。它是同一 Runtime 中的真实拥有型字段，支持宿主反射读写、保存与重建，**不开放源码 `self.attribute` 的读取、写入或借用**，也不新增 class 构造函数或 Source 类间继承。宿主需要文本时先复制到自己的 String，不能让对象内部地址跨 invoke 存续。
 - 字段前可写属性，名称与 AFIELD 相同：`[Min = 0.0, Max = 2.0, LockMin, HardMax = 10.0, Label = "Amount", Category = "Noise", DESC = "说明"] float amount = 0.5f;`。边界是字段叶类型的有限常量（向量按分量、int/uint 用整数），只能用于 int/uint/float/double 和向量字段；`LockMin/LockMax` 把同侧 UI 边界同时作硬边界，要求同侧 `Min/Max` 且不能再写 `HardMin/HardMax`。`Label`、`Category` 是不含控制字符的字符串字面量，`DESC` 允许 `\n`、`\t`。重复或未知属性、写在方法前的属性在编译期报错；大小顺序、UI 边界落在硬边界内、默认值满足硬边界由 Runtime 发布检查，错误同样指到该字段。规则见[字段范围与硬边界](docs/reflection.md#字段范围与硬边界)。
 - 字段还可写 `[RunOver]`（发布 `{"procedural.role", "run_over"}`）或通用 `[Meta("custom.key", "value")]`。Meta 可重复声明不同键，每项恰好两个字符串字面量；同键重复拒绝。载体和原生字段一致，格式、拥有关系及排序见[Runtime 字段扩展元数据](docs/runtime-model.md#字段扩展元数据)。语言和 Runtime 不解释业务键语义。
-- 类方法为同步函数，首次注册类时方法声明连同参数名与参数属性冻结发布到 `TypeInfo::described_methods`；后续热更后的当前可执行入口清单及最新参数名以 `Program::entries()` 为权威来源。生命周期入口签名固定为 `void begin()`、`void tick(float)`、`void post_physics_tick(float)`、`void late_tick(float)`、`void end()`，三个帧阶段方法都接收整帧 dt；缺省方法不导出。类方法的形参前可写一个 procedural 参数属性：`[Port]`，或 `[In]`、`[Out]`、`[InOut]`、`[Group]`（可带字面列名 `[In("id", Optional)]`、字段绑定 `[Out(From = "attribute")]`、显式层 `Layer = "point"`，括号内外均支持逗号分隔选项；`Optional` 仅限 `In`，字面名与 `From` 互斥，`Port` 无选项；非类方法禁止写参数属性）。其余同步方法使用既有值与借用规则。源码通过 `self` 访问当前类及继承成员；同类方法和全局助手按普通函数语法调用。全局函数与该类方法名不能冲突，暂不支持跨类方法调用或动态分派。
+- 类方法为同步函数，首次注册类时方法声明连同参数名与参数属性冻结发布到 `TypeInfo::described_methods`；后续热更后的当前可执行入口清单及最新参数名以 `Program::entries()` 为权威来源。生命周期入口签名固定为 `void begin()`、`void tick(float)`、`void post_physics_tick(float)`、`void late_tick(float)`、`void end()`，三个帧阶段方法都接收整帧 dt；缺省方法不导出。类方法的形参前可写一个 procedural 参数属性：`[Port]`，或 `[In]`、`[Out]`、`[InOut]`、`[Group]`（可带字面列名 `[In("id", Optional)]`、字段绑定 `[Out(From = "attribute")]`、显式层 `Layer = "point"`、辅助输入端口 `Port = "road"`，括号内外均支持逗号分隔选项；`Optional` 仅限 `In`，`Port` 选项仅限 `In` 与 `Group`，字面名与 `From` 互斥，`Port` 主角色无选项；非类方法禁止写参数属性）。其余同步方法使用既有值与借用规则。源码通过 `self` 访问当前类及继承成员；同类方法和全局助手按普通函数语法调用。全局函数与该类方法名不能冲突，暂不支持跨类方法调用或动态分派。
 - 工程文件里的全局函数导出为函数名，类方法导出为 `完整类名.方法名`；引擎文件里的全局函数只供源码调用，不是入口。类方法始终要求当前类视图的活接收者，即使方法体为空。宿主从 `Program::entries/describe/entry/pin` 取得签名和代码。
 - 整份快照共用类型发布事务。编译单元有三种：工程单元包含工程文件的全部顶层声明，导出其中的函数；每个有方法的 class 一个单元；每个引擎模块一个只做检查、不生成代码的单元。单元只编译自身文本，加上它的文本按名字（含带点的全名及其每个前缀）直接或间接写到的顶层声明；局部变量与声明同名时也算写到。每个顶层声明都在所属单元里通过语义检查，无方法类不生成占位函数。同一单元的入口和助手共用一个 LLVM 模块；输入未变的单元不再检查和编译，沿用已发布的机器码。一个单元失败会保留整个旧版本。
 - 创建 Runtime 对象后仍可发布，且已发布类的热更方法执行与冷加载完全相同的继承成员冲突（含原生隐藏字段与方法）、参数重名及签名校验。已发布模块只增长：方法体可兼容修改，入口声明顺序可调整；新增 struct/enum、class、全局函数，以及已有或新增 class 上的普通无参数属性方法（含生命周期入口，普通业务类的 `process` 同样可新增或改参数名）随新版本兼容发布。删除或改名已发布的类型、字段、函数或方法，已有类型的字段顺序/类型、基类，已有字段的默认值、范围、`Label`、`Category`、`DESC` 或 Meta 内容变化，已有入口的签名或参数属性变化，以及在继承了声明 `Meta("source.contract_method", "<name>")` 原生基类的子类（如 `procedural.Node` 的 `process`）上新增该契约方法、在任意已发布 class 上新增带属性参数的方法、或修改契约方法与带属性参数的参数名，均返回 `rebuild_required`，由宿主重建上下文；只改属性空白、Meta 顺序、String 别名或等价文本默认值仍可兼容发布，不人为更换代码身份。普通方法与全局函数的参数名不属于签名，只改参数名可以兼容发布；`Program::entries()` 按顺序给出每个入口的参数名、参数元数据，以及只在该入口所在编译单元的输入变化时才更换的 `code`：改一个没有单元写到的引擎函数不更换任何 code，Runtime 新增值类型则更换全部 code；`Program::revision()` 统计成功发布次数，见[项目快照](docs/source-function-modules.md#项目快照与多个公开入口)。浮点默认值按位表示比较，区分正负零；文本按解码后的完整字节比较。重建使用新上下文和新身份，保存的属性恢复原值，未保存字段使用新默认，不迁移活动对象或帧。
@@ -236,9 +238,9 @@ param_attribute = "Port"
                 | ( "In" | "Out" | "InOut" | "Group" ),
                   [ "(", param_options, ")" ], [ ",", param_options ] ;
 param_options  = param_option, { ",", param_option } ;
-param_option   = string_literal | "Optional" | ( "From" | "Layer" ), "=", string_literal ;
+param_option   = string_literal | "Optional" | ( "From" | "Layer" | "Port" ), "=", string_literal ;
 aggregate_type    = qualified_name | "String" | "Array", "<", ( scalar_type | aggregate_type ), ">" ;
-                 (* 须解析为已准备或发布的原生/描述型记录、原生数组/String；String 参数只允许 const 引用 *)
+                 (* 须解析为已准备或发布的原生/描述型记录、原生或合成描述型数组、或已注册 String *)
 qualified_name = identifier, { ".", identifier } ;
 block          = "{", { statement }, "}" ;
 statement      = block | value_local | reference_local | assignment | call_statement
@@ -249,7 +251,8 @@ value_declaration = [ "const" ], ( scalar_type | math_type | aggregate_type ), i
 reference_declaration = [ "weak" ], qualified_name, identifier, [ "=", expression ] ;
 value_local    = value_declaration, ";" ;
 reference_local = reference_declaration, ";" ;
-assignment_clause = expression, "=", expression ;
+assign_op      = "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "&=" | "|=" | "^=" | "<<=" | ">>=" ;
+assignment_clause = expression, assign_op, expression ;
 call_clause    = expression ; (* 必须是同模块调用、原生调用或序列修改 *)
 assignment     = assignment_clause, ";" ;
 call_statement = call_clause, ";" ;
@@ -264,7 +267,8 @@ continue_statement = "continue", ";" ;
 return_statement = "return", [ expression ], ";" ;
 fail_statement = "fail", "(", string_literal, ")", ";" ;
 yield_statement = "yield", ";" ;
-expression     = logical_or ;
+expression     = conditional ;
+conditional    = logical_or, [ "?", expression, ":", expression ] ;
 logical_or     = logical_and, { "||", logical_and } ;
 logical_and    = bitwise_or, { "&&", bitwise_or } ;
 bitwise_or     = bitwise_xor, { "|", bitwise_xor } ;
@@ -296,7 +300,7 @@ primary        = qualified_enum_name, "::", identifier | "true" | "false" | nume
 
 标量局部必须显式初始化；持有/观察局部可以省略初始化器，等价于该类型和持有形式的空引用。String/Array 局部省略初始化器时构造为空值；一般记录局部调用 Runtime 默认构造；数学值遵循[数学默认值](docs/math.md#默认值坐标与浮点规则)。复制初始化产生独立拥有存储。未初始化槽不能当成已初始化空值。
 
-赋值目标允许可写标量/枚举/数学参数、局部、绑定字段、值中的对应叶值、当前函数拥有的记录/String/Array 局部及其满足拥有能力的嵌套字段或元素，可以外包括号；有 setter 的[计算属性](#计算属性-property)也可赋值，但执行函数调用而不是存储写入。字面量、显式方法调用、比较和运算结果不可赋值；`(steps) = 1;` 合法，`+steps = 1;` 不合法。`=` 不是表达式，不允许链式或条件内赋值。`self` 不可赋值。
+赋值目标允许可写标量/枚举/数学参数、局部、绑定字段、值中的对应叶值、当前函数的可写记录/String/Array 局部或非定长可写借用参数及其满足拥有能力的嵌套字段或元素，可以外包括号；有 setter 的[计算属性](#计算属性-property)也可做简单赋值 `=`（不支持复合赋值），但执行函数调用而不是存储写入。复合赋值（`+= -= *= /= %= &= |= ^= <<= >>=`）遵守与对应二元运算相同的严格类型规则且结果类型必须精确等于左侧目标类型，左侧接收者与索引子表达式严格只求值一次，即使右侧调用扩容了同一数组也写入重分配后的新缓冲。字面量、显式方法调用、比较和运算结果不可赋值；`(steps) = 1;` 合法，`+steps = 1;` 不合法。赋值不是表达式，不允许链式或条件内赋值。`self` 不可赋值。
 
 ### 控制流与返回
 
@@ -311,9 +315,9 @@ primary        = qualified_enum_name, "::", identifier | "true" | "false" | nume
 `parallel_for ([const] uint i : count) { ... }` 在同步函数中按元素独立契约并行遍历 `[0, count)`：
 
 - `count` 接受 `uint` 或 `int`（`int < 0` 报告既有 `sequence_size` 执行错误，`count == 0` 合法且不进入任务池）；归纳变量 `i` 在体内为只读 `uint`，循环退出后结束作用域。
-- 体内支持块、标量/枚举/内建数学值/零默认 `plain_record` 栈局部声明、`if/else`、内层串行 `while`/`for`、`continue;`（跳到当前并行循环的下一元素 `i + 1`；内层串行循环中的 `break/continue` 作用于内层循环）以及 `fail("...");`。禁止跨出 `parallel_for` 的 `break`、`return`、`yield`，禁止嵌套 `parallel_for`，在 `async` 函数中拒绝。
+- 体内支持块、标量/枚举/内建数学值/具备预构建默认字节镜像（全零或含 `quaternion`/`matrix4` 等原型的描述型记录）的 `plain_record` 栈局部声明、`if/else`、内层串行 `while`/`for`、`continue;`（跳到当前并行循环的下一元素 `i + 1`；内层串行循环中的 `break/continue` 作用于内层循环）以及 `fail("...");`。禁止跨出 `parallel_for` 的 `break`、`return`、`yield`，禁止嵌套 `parallel_for`，在 `async` 函数中拒绝。
 - 外层局部与标量/记录参数在体内严格只读；允许读取 `self` 的标量、枚举与数学字段（串行分派前统一读取快照进捕获结构，worker 线程绝不访问 `Runtime` 或 `NativeContext`）。禁止在体内执行原生成员调用、对象引用操作、访问或转传记录内的 `Array`/`String` 字段、字符串字面量表达式（`fail` 字面量除外）或序列结构修改。允许调用 `math.*` 内建及传递满足上述纯值/只读序列并行安全闭包的同模块同步函数，并行调用链直接复用分派前取得的序列 `(data, size)` 视图。
-- 允许捕获外层顶层 `Array<T>`（`T` 限标量、`bool`、枚举、内建数学值或零默认 `plain_record`）与只读 `String`。凡在体内发生写入（`arr[i] = ...`、`arr[i].field = ...` 或元素作可写引用传参）的外层 `Array`，体内对该数组的全部读、写索引表达式都必须是循环变量 `i` 本身；未写入的外层序列可按任意索引表达式读取。分派前在串行线程一次性投影全部捕获序列并校验字节区间：被写 `Array` 与任意外层引用参数或非 `i` 索引序列不得重叠，与仅按 `i` 访问的数组允许原地读写，条件是元素类型、缓冲起点和元素数量都相同，容器注册名可以不同，违者报告 `parallel_alias` 执行错误。
+- 允许捕获外层顶层 `Array<T>`（`T` 限标量、`bool`、枚举、内建数学值或具备预构建默认字节镜像的 `plain_record`，包含源码声明 `struct`/`enum` 自动合成的 `Array<T>`）与只读 `String`。凡在体内发生写入（`arr[i] = ...`、`arr[i].field = ...` 或元素作可写引用传参）的外层 `Array`，体内对该数组的全部读、写索引表达式都必须是循环变量 `i` 本身；未写入的外层序列可按任意索引表达式读取。分派前在串行线程一次性投影全部捕获序列并校验字节区间：被写 `Array` 与任意外层引用参数或非 `i` 索引序列不得重叠，与仅按 `i` 访问的数组允许原地读写，条件是元素类型、缓冲起点和元素数量都相同，容器注册名可以不同，违者报告 `parallel_alias` 执行错误。
 - 并行块内触发算术/越界错误或 `fail("...")` 时，原子记录一个真实失败迭代的原因与源码位置、取消未开始块并等待所有活动 worker `join` 后回到 Runtime 线程统一清理外层资源；不回滚已完成迭代对可写借用的修改。启用 `CompileOptions::diagnostics` 时按分块独立累计 `source_call` 等调用计数并在 `join` 后归并。启用 `CompileOptions::debugging` 编译时，`parallel_for` 在 Runtime 线程降级为等价串行循环（仍执行相同的分派前重叠校验），使体内断点、单步、查看局部 `i` 与中止完整可用。
 
 `void` 函数允许 `return;` 或自然落尾。非 void 函数必须返回同类型表达式；顺序块中确定返回或 `fail`、完整 `if/else` 两侧确定终结可证明不落尾，循环自身不能证明必定返回。不可达代码仍要通过语法和类型检查。

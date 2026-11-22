@@ -14,6 +14,7 @@ enum class ArgKind : std::uint8_t {
     context,
     port_input,
     port_inputs,
+    port_spatial,
     port_output,
     column_in,
     column_inout,

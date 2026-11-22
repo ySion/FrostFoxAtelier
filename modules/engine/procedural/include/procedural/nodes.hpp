@@ -325,6 +325,80 @@ public:
                                        Geometry& output) const noexcept;
 };
 
+ACLASS(
+    Name = "procedural.Extrude",
+    DESC = "将选中的凸平面多边形沿法向挤出并做平面角平分内缩，保留硬边法线与来源图元属性；可选封闭背面构成水密体块。")
+class Extrude : public Node {
+    AGENERATED_BODY(Extrude)
+
+public:
+    AFIELD(Label = "Group", DESC = "仅挤出选中的 primitive 或 point bool 组；空表示全部多边形。")
+    String group;
+
+    AFIELD(Label = "Distance", Min = "-10", Max = "10", DESC = "沿面法向的挤出距离，单位 m。")
+    float distance{0.5f};
+
+    AFIELD(Label = "Inset", Min = "-2", Max = "2",
+           DESC = "在原多边形平面内沿角平分线内缩的距离（负值为外扩），单位 m。")
+    float inset{0.f};
+
+    AFIELD(Label = "Distance Attribute", DESC = "可选的 primitive float 属性名，逐图元覆盖 Distance。")
+    String distance_attribute;
+
+    AFIELD(Label = "Inset Attribute", DESC = "可选的 primitive float 属性名，逐图元覆盖 Inset。")
+    String inset_attribute;
+
+    AFIELD(Label = "Individual Faces", DESC = "为 true 时逐面独立挤出；为 false 时合并选中区域的共享内边。")
+    bool individual{true};
+
+    AFIELD(Label = "Output Back", DESC = "生成反向底盖以构成闭合流形体块；在已有闭合壳局部挤出时设为 false。")
+    bool output_back{true};
+
+    AFIELD(Label = "Front Group", DESC = "可选的 primitive bool 输出组名，标记挤出顶面。")
+    String front_group;
+
+    AFIELD(Label = "Side Group", DESC = "可选的 primitive bool 输出组名，标记挤出侧面。")
+    String side_group;
+
+    AFUNCTION(DESC = "挤出输入多边形表面。")
+    [[nodiscard]] Result<void> process(const Geometry& surface, Geometry& output) const noexcept;
+};
+
+ACLASS(Name = "procedural.Sweep",
+       DESC = "沿输入开放折线扫掠矩形、圆管或自定义截面，使用 up 稳定斜接标架生成带封盖、法线与弧长 UV 的流形网格。")
+class Sweep : public Node {
+    AGENERATED_BODY(Sweep)
+
+public:
+    AFIELD(Label = "Profile", DESC = "rectangle 矩形截面，tube 圆管截面，custom 使用 cross_section 端口截面。")
+    SweepProfile profile{SweepProfile::rectangle};
+
+    AFIELD(Label = "Width", Min = "0.01", Max = "20", LockMin, DESC = "rectangle 截面的水平宽度，单位 m。")
+    float width{1.f};
+
+    AFIELD(Label = "Height", Min = "0.01", Max = "20", LockMin, DESC = "rectangle 截面的竖直高度，单位 m。")
+    float height{1.f};
+
+    AFIELD(Label = "Radius", Min = "0.01", Max = "10", LockMin, DESC = "tube 截面的半径，单位 m。")
+    float radius{0.5f};
+
+    AFIELD(Label = "Segments", Min = "3", Max = "64", LockMin, DESC = "tube 截面圆周分段数。")
+    std::uint32_t segments{8};
+
+    AFIELD(Label = "Up Vector", DESC = "稳定扫掠截面竖直方向的参考上向量。")
+    math::Vector3 up{0.f, 1.f, 0.f};
+
+    AFIELD(Label = "End Caps", DESC = "闭合截面时在折线首尾两端生成封盖。")
+    bool end_caps{true};
+
+    AFIELD(Label = "Scale Attribute", DESC = "可选的折线 point float 缩放属性名；缺失时按 1 处理。")
+    String scale_attribute = String::literal<"pscale">();
+
+    AFUNCTION(DESC = "沿 backbone 折线扫掠截面。")
+    [[nodiscard]] Result<void> process(const Geometry& backbone, const Geometry& cross_section,
+                                       Geometry& output) const noexcept;
+};
+
 ACLASS(Name = "procedural.Null",
        DESC = "无修改直通节点，常用作程序化图中的命名里程碑或稳定输出端点（如 OUT_terrain）。")
 class Null : public Node {

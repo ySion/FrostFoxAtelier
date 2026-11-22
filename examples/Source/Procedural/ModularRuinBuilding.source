@@ -1,0 +1,449 @@
+// Modular Ruin Building procedural grammar for FrostFox Atelier Examples.
+// Demonstrates L3 multi-output quad/polyline/point emission + per-primitive Extrude & Sweep articulation.
+
+float game.ruin_survival_ceiling(uint seed,
+                                 float x,
+                                 float z,
+                                 float half_span,
+                                 float total_h,
+                                 float collapse,
+                                 float angle) {
+    if (collapse <= 0.001f) {
+        return total_h + 100.0f;
+    }
+    const vector2 dir = vector2(math.cos(angle), math.sin(angle));
+    const float proj = (x * dir.x + z * dir.y) / math.max(1.0f, half_span);
+    const float n1 = procedural.sample_value_noise(seed, vector3(x * 0.28f + 5.1f, 1.7f, z * 0.28f - 3.4f)) * 2.0f - 1.0f;
+    const float n2 = procedural.sample_value_noise(procedural.hash2(seed, uint(918273)),
+                                                   vector3(x * 0.67f - 2.3f, 6.2f, z * 0.67f + 4.8f)) * 2.0f - 1.0f;
+    const float exposure = 0.5f * (proj + 1.15f) + 0.28f * n1 + 0.14f * n2;
+    return math.max(0.45f, total_h * (1.28f - collapse * (0.85f + 0.85f * exposure)));
+}
+
+void game.append_wall_panel(Array<vector3>& wall_pts,
+                            Array<uint>& wall_quads,
+                            Array<float>& wall_dists,
+                            Array<float>& wall_insets,
+                            vector3 origin,
+                            vector3 u_axis,
+                            float u0,
+                            float u1,
+                            float v0,
+                            float v1,
+                            float dist,
+                            float inset) {
+    if ((u1 - u0) < 0.08f || (v1 - v0) < 0.08f) {
+        return;
+    }
+    const vector3 up = vector3(0.0f, 1.0f, 0.0f);
+    const uint base_w = wall_pts.size();
+    wall_pts.add(origin + u_axis * u0 + up * v0);
+    wall_pts.add(origin + u_axis * u1 + up * v0);
+    wall_pts.add(origin + u_axis * u1 + up * v1);
+    wall_pts.add(origin + u_axis * u0 + up * v1);
+    wall_quads.add(base_w);
+    wall_quads.add(base_w + 1);
+    wall_quads.add(base_w + 2);
+    wall_quads.add(base_w + 3);
+    wall_dists.add(dist);
+    wall_insets.add(inset);
+}
+
+void game.append_slab_quad(Array<vector3>& slab_pts,
+                           Array<uint>& slab_quads,
+                           float x0,
+                           float x1,
+                           float z0,
+                           float z1,
+                           float y) {
+    if ((x1 - x0) < 0.12f || (z1 - z0) < 0.12f) {
+        return;
+    }
+    const uint base_s = slab_pts.size();
+    slab_pts.add(vector3(x0, y, z0));
+    slab_pts.add(vector3(x0, y, z1));
+    slab_pts.add(vector3(x1, y, z1));
+    slab_pts.add(vector3(x1, y, z0));
+    slab_quads.add(base_s);
+    slab_quads.add(base_s + 1);
+    slab_quads.add(base_s + 2);
+    slab_quads.add(base_s + 3);
+}
+
+class game.RuinArchitectureGrammar : procedural.Node {
+    [Min = 4.5, Max = 26.0, LockMin, Label = "Building Width", DESC = "建筑沿 X 方向总开间面宽，单位 m。"]
+    float width = 10.4f;
+
+    [Min = 4.5, Max = 26.0, LockMin, Label = "Building Depth", DESC = "建筑沿 Z 方向总进深，单位 m。"]
+    float depth = 8.2f;
+
+    [Min = 1, Max = 6, LockMin, Label = "Stories", DESC = "主体石构楼层数。"]
+    int floors = 3;
+
+    [Min = 2.2, Max = 5.0, LockMin, Label = "Story Height", DESC = "单层标准层高，单位 m。"]
+    float floor_height = 3.1f;
+
+    [Min = 1.6, Max = 5.0, LockMin, Label = "Target Bay Width", DESC = "立面柱网目标开间宽度，自动取整均分立面，单位 m。"]
+    float bay_width = 2.6f;
+
+    [Min = 0.12, Max = 0.36, LockMin, LockMax, Label = "Pilaster Ratio", DESC = "单侧壁柱占开间宽度的比例。"]
+    float pillar_ratio = 0.19f;
+
+    [Min = 0.4, Max = 4.2, LockMin, Label = "Roof Ridge Rise", DESC = "双坡木构屋脊相对顶层檐口的抬升高度，单位 m。"]
+    float roof_pitch = 1.75f;
+
+    [Min = 0.0, Max = 0.92, LockMin, LockMax, Label = "Ruin Collapse", DESC = "坍塌侵蚀程度：0 为完整殿堂，增大时从屋脊向墙体阶梯式崩落。"]
+    float ruin_collapse = 0.36f;
+
+    [Min = 0.0, Max = 6.283185, LockMin, LockMax, Label = "Collapse Direction", DESC = "坍塌主前锋的水平方位角（弧度）。"]
+    float ruin_angle = 0.68f;
+
+    [Label = "Seed", DESC = "与图种子混合的建筑风化与残骸种子。"]
+    uint seed = 42;
+
+    void process(const procedural.Context& context,
+                 [Port] procedural.Geometry& facade_panels,
+                 [Port] procedural.Geometry& floor_slabs,
+                 [Port] procedural.Geometry& roof_timbers,
+                 [Port] procedural.Geometry& rubble_points) {
+        const float w = self.width;
+        const float d = self.depth;
+        const int n_floors = self.floors;
+        const float fh = self.floor_height;
+        const float target_bay = self.bay_width;
+        const float pil_ratio = self.pillar_ratio;
+        const float roof_h = self.roof_pitch;
+        const float collapse = self.ruin_collapse;
+        const float c_angle = self.ruin_angle;
+
+        if (!(math.is_finite(w) && math.is_finite(d) && math.is_finite(fh) && math.is_finite(target_bay) &&
+              math.is_finite(pil_ratio) && math.is_finite(roof_h) && math.is_finite(collapse) &&
+              math.is_finite(c_angle))) {
+            fail("RuinArchitectureGrammar parameters must be finite.");
+        }
+        if (w < 3.0f || d < 3.0f || n_floors < 1 || fh < 1.6f || target_bay < 1.0f) {
+            fail("RuinArchitectureGrammar dimensions are below minimum structural bounds.");
+        }
+
+        const uint mixed_seed = procedural.hash2(context.seed, self.seed);
+        const uint bays_x = uint(math.max(2.0f, math.floor(w / target_bay + 0.5f)));
+        const uint bays_z = uint(math.max(2.0f, math.floor(d / target_bay + 0.5f)));
+        const float plinth_h = 0.44f;
+        const float eave_y = plinth_h + float(n_floors) * fh;
+        const float total_h = eave_y + roof_h;
+        const float half_w = 0.5f * w;
+        const float half_d = 0.5f * d;
+        const float half_span = math.length(vector2(half_w, half_d));
+
+        Array<vector3> wall_pts;
+        Array<uint> wall_quads;
+        Array<float> wall_dists;
+        Array<float> wall_insets;
+
+        // 1. Build all 4 facades: 0 = Front (-Z), 1 = Back (+Z), 2 = Right (+X), 3 = Left (-X).
+        for (uint side = 0; side < 4; side += 1) {
+            const vector3 origin = side == 0 ? vector3(half_w, 0.0f, -half_d)
+                                 : side == 1 ? vector3(-half_w, 0.0f, half_d)
+                                 : side == 2 ? vector3(half_w, 0.0f, half_d)
+                                             : vector3(-half_w, 0.0f, -half_d);
+            const vector3 u_axis = side == 0 ? vector3(-1.0f, 0.0f, 0.0f)
+                                 : side == 1 ? vector3(1.0f, 0.0f, 0.0f)
+                                 : side == 2 ? vector3(0.0f, 0.0f, -1.0f)
+                                             : vector3(0.0f, 0.0f, 1.0f);
+            const float span = side < 2 ? w : d;
+            const uint n_bays = side < 2 ? bays_x : bays_z;
+            const float bw = span / float(n_bays);
+            const float pil_w = bw * pil_ratio;
+            const uint portal_bay = n_bays / 2;
+
+            for (uint b = 0; b < n_bays; b += 1) {
+                const float u0 = float(b) * bw;
+                const float u1 = u0 + bw;
+                const vector3 mid_world = origin + u_axis * (0.5f * (u0 + u1));
+                const float ceil_y = game.ruin_survival_ceiling(
+                    mixed_seed, mid_world.x, mid_world.z, half_span, total_h, collapse, c_angle);
+
+                game.append_wall_panel(
+                    wall_pts, wall_quads, wall_dists, wall_insets, origin, u_axis, u0, u1, 0.0f, plinth_h, 0.56f, 0.022f);
+
+                for (uint fl = 0; fl < uint(n_floors); fl += 1) {
+                    const float y_base = plinth_h + float(fl) * fh;
+                    if (y_base >= ceil_y - 0.15f) {
+                        break;
+                    }
+                    const float cornice_h = 0.24f;
+                    const float y_cornice = y_base + fh - cornice_h;
+                    const float y_top = y_base + fh;
+                    const float capped_pil_top = math.min(y_cornice, ceil_y);
+
+                    const float u_in0 = u0 + pil_w;
+                    const float u_in1 = u1 - pil_w;
+                    const bool is_portal = (side == 0) && (fl == 0) && (b == portal_bay);
+                    const float pil_d = is_portal ? 0.54f : 0.46f;
+
+                    game.append_wall_panel(wall_pts, wall_quads, wall_dists, wall_insets, origin, u_axis,
+                                           u0, u_in0, y_base, capped_pil_top, pil_d, 0.018f);
+                    game.append_wall_panel(wall_pts, wall_quads, wall_dists, wall_insets, origin, u_axis,
+                                           u_in1, u1, y_base, capped_pil_top, pil_d, 0.018f);
+
+                    if (is_portal) {
+                        const float door_top = y_base + fh * 0.72f;
+                        if (ceil_y > door_top + 0.14f) {
+                            game.append_wall_panel(wall_pts, wall_quads, wall_dists, wall_insets, origin, u_axis,
+                                                   u_in0, u_in1, door_top, math.min(y_cornice, ceil_y), 0.52f, 0.022f);
+                        }
+                    } else {
+                        const float sill_top = y_base + fh * 0.27f;
+                        const float ledge_top = sill_top + 0.16f;
+                        const float win_top = y_base + fh * 0.74f;
+                        const float jamb_w = (u_in1 - u_in0) * 0.16f;
+
+                        if (ceil_y > y_base + 0.14f) {
+                            game.append_wall_panel(wall_pts, wall_quads, wall_dists, wall_insets, origin, u_axis,
+                                                   u_in0, u_in1, y_base, math.min(sill_top, ceil_y), 0.31f, 0.025f);
+                        }
+                        if (ceil_y > ledge_top) {
+                            game.append_wall_panel(wall_pts, wall_quads, wall_dists, wall_insets, origin, u_axis,
+                                                   u_in0, u_in1, sill_top, ledge_top, 0.45f, 0.014f);
+                        }
+                        if (ceil_y > ledge_top + 0.16f) {
+                            const float jamb_top = math.min(win_top, ceil_y);
+                            game.append_wall_panel(wall_pts, wall_quads, wall_dists, wall_insets, origin, u_axis,
+                                                   u_in0, u_in0 + jamb_w, ledge_top, jamb_top, 0.36f, 0.016f);
+                            game.append_wall_panel(wall_pts, wall_quads, wall_dists, wall_insets, origin, u_axis,
+                                                   u_in1 - jamb_w, u_in1, ledge_top, jamb_top, 0.36f, 0.016f);
+                        }
+                        if (ceil_y > win_top + 0.14f) {
+                            game.append_wall_panel(wall_pts, wall_quads, wall_dists, wall_insets, origin, u_axis,
+                                                   u_in0, u_in1, win_top, math.min(y_cornice, ceil_y), 0.41f, 0.020f);
+                        }
+                    }
+
+                    if (ceil_y >= y_top) {
+                        game.append_wall_panel(wall_pts, wall_quads, wall_dists, wall_insets, origin, u_axis,
+                                               u0, u1, y_cornice, y_top, 0.52f, 0.018f);
+                    }
+                }
+
+                if (side < 2) {
+                    const float u_mid = 0.5f * (u0 + u1);
+                    const float dist_from_center = math.abs(u_mid - 0.5f * span) / (0.5f * span);
+                    const float gable_top =
+                        eave_y + roof_h * math.max(0.0f, 1.0f - dist_from_center - 0.5f / float(n_bays));
+                    const float capped_gable = math.min(gable_top, ceil_y);
+                    if (capped_gable > eave_y + 0.18f) {
+                        game.append_wall_panel(wall_pts, wall_quads, wall_dists, wall_insets, origin, u_axis,
+                                               u0 + 0.04f, u1 - 0.04f, eave_y, capped_gable, 0.36f, 0.022f);
+                    }
+                }
+            }
+        }
+
+        self.emit_quads(wall_pts, wall_quads, uint(0));
+        self.set_float("ext_dist", procedural.Layer::primitive, wall_dists, uint(0));
+        self.set_float("ext_inset", procedural.Layer::primitive, wall_insets, uint(0));
+
+        // 2. Foundation floor plates, exterior podium apron, porch steps, and fractured upper gallery slabs.
+        Array<vector3> slab_pts;
+        Array<uint> slab_quads;
+
+        const float cell_w = w / float(bays_x);
+        const float cell_d = d / float(bays_z);
+        for (uint ix = 0; ix < bays_x; ix += 1) {
+            const float x0 = -half_w + float(ix) * cell_w;
+            const float x1 = x0 + cell_w;
+            for (uint iz = 0; iz < bays_z; iz += 1) {
+                const float z0 = -half_d + float(iz) * cell_d;
+                const float z1 = z0 + cell_d;
+                game.append_slab_quad(slab_pts, slab_quads, x0 + 0.02f, x1 - 0.02f, z0 + 0.02f, z1 - 0.02f, 0.0f);
+
+                for (uint fl_s = 1; fl_s < uint(n_floors); fl_s += 1) {
+                    const float slab_y = plinth_h + float(fl_s) * fh - 0.22f;
+                    const bool is_atrium = (bays_x >= 3) && (bays_z >= 3) && (ix > 0) && (ix + 1 < bays_x) &&
+                                           (iz > 0) && (iz + 1 < bays_z) && (fl_s + 1 == uint(n_floors));
+                    const float cell_ceil = game.ruin_survival_ceiling(
+                        mixed_seed, 0.5f * (x0 + x1), 0.5f * (z0 + z1), half_span, total_h, collapse, c_angle);
+                    if (!is_atrium && cell_ceil >= slab_y + 0.45f) {
+                        game.append_slab_quad(
+                            slab_pts, slab_quads, x0 + 0.08f, x1 - 0.08f, z0 + 0.08f, z1 - 0.08f, slab_y);
+                    }
+                }
+            }
+        }
+
+        const float apron = 1.85f;
+        game.append_slab_quad(slab_pts, slab_quads, -half_w - apron, half_w + apron, -half_d - apron, -half_d - 0.02f, -0.20f);
+        game.append_slab_quad(slab_pts, slab_quads, -half_w - apron, half_w + apron, half_d + 0.02f, half_d + apron, -0.20f);
+        game.append_slab_quad(slab_pts, slab_quads, -half_w - apron, -half_w - 0.02f, -half_d, half_d, -0.20f);
+        game.append_slab_quad(slab_pts, slab_quads, half_w + 0.02f, half_w + apron, -half_d, half_d, -0.20f);
+
+        const float step_w = math.min(w * 0.42f, cell_w * 1.4f);
+        game.append_slab_quad(slab_pts, slab_quads, -0.5f * step_w, 0.5f * step_w, -half_d - 1.35f, -half_d - 0.55f, 0.02f);
+        game.append_slab_quad(slab_pts, slab_quads, -0.44f * step_w, 0.44f * step_w, -half_d - 0.85f, -half_d - 0.15f, 0.18f);
+        self.emit_quads(slab_pts, slab_quads, uint(1));
+
+        // 3. Exposed gabled timber ridge beam and paired rafters (clipped by collapse front).
+        Array<vector3> timber_pts;
+        Array<uint> timber_vp;
+        Array<uint> timber_off;
+        timber_off.add(uint(0));
+
+        const uint rafter_pairs = bays_z * 2 + 1;
+        const float overhang_x = 0.38f;
+        const float overhang_z = 0.35f;
+        for (uint rf = 0; rf < rafter_pairs; rf += 1) {
+            const float tz = rafter_pairs > 1 ? float(rf) / float(rafter_pairs - 1) : 0.5f;
+            const float z_pos = math.lerp(-half_d - overhang_z, half_d + overhang_z, tz);
+
+            for (uint side_r = 0; side_r < 2; side_r += 1) {
+                const float sign_x = side_r == 0 ? -1.0f : 1.0f;
+                const float eave_x = sign_x * (half_w + overhang_x);
+                const float eave_ry = eave_y - 0.08f;
+                const float peak_ry = eave_y + roof_h;
+
+                const float eave_ceil = game.ruin_survival_ceiling(
+                    mixed_seed, eave_x, z_pos, half_span, total_h, collapse, c_angle);
+                const float mid_ceil = game.ruin_survival_ceiling(
+                    mixed_seed, 0.5f * eave_x, z_pos, half_span, total_h, collapse, c_angle);
+                const float peak_ceil = game.ruin_survival_ceiling(
+                    mixed_seed, 0.0f, z_pos, half_span, total_h, collapse, c_angle);
+
+                if (eave_ceil >= eave_ry) {
+                    const float end_t = peak_ceil >= peak_ry                   ? 1.0f
+                                      : mid_ceil >= math.lerp(eave_ry, peak_ry, 0.55f) ? 0.58f
+                                      : eave_ceil >= eave_ry + 0.35f           ? 0.28f
+                                                                               : 0.0f;
+                    if (end_t >= 0.25f) {
+                        game.append_polyline_segment(
+                            timber_pts, timber_vp, timber_off,
+                            vector3(eave_x, eave_ry, z_pos),
+                            vector3(math.lerp(eave_x, 0.0f, end_t), math.lerp(eave_ry, peak_ry, end_t), z_pos));
+                    }
+                }
+            }
+        }
+
+        for (uint rz = 0; rz < bays_z; rz += 1) {
+            const float z0 = -half_d + float(rz) * cell_d;
+            const float z1 = z0 + cell_d;
+            const float peak_ry = eave_y + roof_h + 0.06f;
+            const float c_mid = game.ruin_survival_ceiling(
+                mixed_seed, 0.0f, 0.5f * (z0 + z1), half_span, total_h, collapse, c_angle);
+            if (c_mid >= peak_ry - 0.1f) {
+                game.append_polyline_segment(
+                    timber_pts, timber_vp, timber_off, vector3(0.0f, peak_ry, z0), vector3(0.0f, peak_ry, z1));
+            }
+        }
+        if (timber_off.size() > 1) {
+            self.emit_polylines(timber_pts, timber_vp, timber_off, uint(2));
+        }
+
+        // 4. Rubble & sanctuary relic candidate points around collapsed zone + exterior colonnade.
+        Array<vector3> cand_pts;
+        const uint cand_count = 36;
+        for (uint k = 0; k < cand_count; k += 1) {
+            const uint h1 = procedural.hash2(mixed_seed, k * 3 + 1);
+            const uint h2 = procedural.hash2(mixed_seed, k * 3 + 2);
+            const float rx = (procedural.unit(h1) * 2.0f - 1.0f) * (half_w + 1.55f);
+            const float rz_p = (procedural.unit(h2) * 2.0f - 1.0f) * (half_d + 1.55f);
+            const float local_ceil = game.ruin_survival_ceiling(
+                mixed_seed, rx, rz_p, half_span, total_h, collapse, c_angle);
+            if (local_ceil < total_h - 0.4f || k < 4) {
+                cand_pts.add(k == 0 ? vector3(-0.5f * step_w - 0.55f, 0.5f, -half_d - 1.15f)
+                           : k == 1 ? vector3(0.5f * step_w + 0.55f, 0.5f, -half_d - 1.15f)
+                                    : vector3(rx, total_h + 2.0f, rz_p));
+            }
+        }
+        if (cand_pts.size() > 0) {
+            self.emit_points(cand_pts, uint(3));
+        }
+    }
+}
+
+class game.RuinRubbleGrounder : procedural.Node {
+    [Min = 0.6, Max = 3.5, LockMin, Label = "Wall Clearance", DESC = "残骸实例距立面石墙的最小净距，消除穿模，单位 m。"]
+    float wall_clearance = 0.92f;
+
+    [Min = 0.9, Max = 3.5, LockMin, Label = "Min Prop Spacing", DESC = "残骸实例之间的最小中心距，单位 m。"]
+    float min_spacing = 1.38f;
+
+    [Label = "Seed", DESC = "与图种子混合的残骸姿态种子。"]
+    uint seed = 73;
+
+    void process(const procedural.Context& context,
+                 [In("P", Port = "candidates")] const Array<vector3>& cand_P,
+                 [Port] const procedural.Spatial& support,
+                 [Port] const procedural.Spatial& walls,
+                 [Port] procedural.Geometry& output) {
+        const float w_clear = self.wall_clearance;
+        const float spacing = self.min_spacing;
+        if (!(math.is_finite(w_clear) && math.is_finite(spacing))) {
+            fail("RuinRubbleGrounder parameters must be finite.");
+        }
+
+        const uint count = cand_P.size();
+        if (count == 0) {
+            return;
+        }
+        const uint mixed_seed = procedural.hash2(context.seed, self.seed);
+
+        Array<game.PropDecision> decisions;
+        decisions.resize(count);
+
+        parallel_for (uint i : count) {
+            const vector3 p = cand_P[i];
+            if (!math.is_finite(p)) {
+                fail("RuinRubbleGrounder input positions must be finite.");
+            }
+
+            const procedural.SurfaceHit ground = procedural.raycast_surface(
+                support, vector3(p.x, 32.0f, p.z), vector3(0.0f, -1.0f, 0.0f), 40.0f);
+            if (!ground.hit || ground.normal.y < 0.85f) {
+                continue;
+            }
+            const vector3 probe = ground.position + vector3(0.0f, 0.65f, 0.0f);
+            const procedural.SurfaceHit wall_hit = procedural.closest_surface_point(walls, probe, w_clear);
+            if (wall_hit.hit) {
+                continue;
+            }
+
+            const float r0 = procedural.unit(procedural.hash2(mixed_seed, i * 2));
+            const float r1 = procedural.unit(procedural.hash2(mixed_seed, i * 2 + 1));
+            const float yaw = r0 * 6.2831853f;
+            const bool is_portal_guard = (i < 2);
+
+            const vector3 up_axis = vector3(0.0f, 1.0f, 0.0f);
+            const vector3 tilt_dir = vector3(math.cos(yaw), 0.0f, math.sin(yaw));
+            const float tilt_amt = is_portal_guard ? 0.0f : math.lerp(0.04f, 0.18f, r1);
+
+            game.PropDecision d;
+            d.valid = true;
+            d.position = vector3(ground.position.x, ground.position.y - 0.01f, ground.position.z);
+            d.orient = game.upright_frame(up_axis + tilt_dir * tilt_amt, vector3(-tilt_dir.z, 0.0f, tilt_dir.x));
+            d.scale = is_portal_guard ? 1.05f : math.lerp(0.58f, 0.86f, r1);
+            d.variant = (!is_portal_guard && r0 > 0.52f) ? uint(1) : uint(0);
+            decisions[i] = d;
+        }
+
+        const float min_dist_sq = spacing * spacing;
+        Array<vector3> out_P;
+        Array<quaternion> out_orient;
+        Array<float> out_scale;
+        Array<uint> out_variant;
+
+        for (uint idx = 0; idx < count; idx += 1) {
+            const game.PropDecision d = decisions[idx];
+            if (!d.valid || game.has_neighbor_within(out_P, d.position, min_dist_sq)) {
+                continue;
+            }
+            game.append_accepted_prop(d, out_P, out_orient, out_scale, out_variant);
+        }
+
+        if (out_P.size() > 0) {
+            self.emit_points(out_P, uint(0));
+            self.set_quat("orient", procedural.Layer::point, out_orient, uint(0));
+            self.set_float("pscale", procedural.Layer::point, out_scale, uint(0));
+            self.set_uint("variant", procedural.Layer::point, out_variant, uint(0));
+        }
+    }
+}

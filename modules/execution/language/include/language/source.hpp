@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <expected>
 #include <limits>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -48,6 +49,8 @@ struct ParameterType {
     bool has_default{};
 
     std::uint64_t default_bits{};
+
+    bool mutates_structure{};
 };
 
 struct EnumItem {
@@ -247,7 +250,8 @@ struct Expression {
         math_intrinsic,
         scalar_cast,
         texture_sample,
-        texture_orientation
+        texture_orientation,
+        conditional
     };
 
     Kind kind;
@@ -314,6 +318,8 @@ struct Statement {
     std::vector<std::uint32_t> locals{}; // declarations directly owned by this block
 
     NodeId step{no_node}; // optional loop step, also executed after continue
+
+    std::optional<Operation> compound{};
 };
 
 struct Local {
@@ -322,6 +328,8 @@ struct Local {
     ValueType type;
 
     bool read_only{};
+
+    bool fixed_length{};
     // The first Function::parameters.size() locals are parameters;
     // all remaining locals initialize at their declaration.
 };

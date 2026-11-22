@@ -24,10 +24,14 @@ int main() {
             struct Params { float gain; };
             Params defaults() { Params p; p.gain=0.75; return p; }
             material.Output shade(material.Context c, Params p, Textures textures) {
-                vector4 color=sample(textures.color,c.uv);
-                material.Output o; o.base_color=vector3(color.x,color.y,color.z)*p.gain;
-                o.emissive=vector3(0.0,0.0,color.w); o.coverage=0.5;
-                o.normal_world=c.normal_world; return o;
+                vector4 color = sample(textures.color, c.uv);
+                vector3 tint = c.uv.x <= 1.0 ? vector3(color.x, color.y, color.z) : vector3(0.0, 0.0, 0.0);
+                tint *= p.gain;
+                float cov = 0.25;
+                cov += (p.gain > 0.0 ? 0.25 : 0.0);
+                material.Output o; o.base_color = tint;
+                o.emissive = vector3(0.0, 0.0, color.w); o.coverage = cov;
+                o.normal_world = c.normal_world; return o;
             })"));
         const std::array<TextureDefault, 1> defaults{
             {{"color", {"image/color", Address::clamp}, TextureColor::srgb, {1, 1, 1, 1}}}};

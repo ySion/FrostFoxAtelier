@@ -3,6 +3,7 @@
 #include "procedural/geometry.hpp"
 
 #include <array>
+#include <span>
 
 namespace atelier::procedural::detail {
 
@@ -16,7 +17,14 @@ struct PolygonScale {
 };
 
 // Uses all original corners, not a fan piece; the polygon owns one distance band.
+PolygonScale polygon_scale(std::span<const math::Vector3> corners) noexcept;
+
 PolygonScale polygon_scale(const Geometry& surface, PrimitiveRange range) noexcept;
+
+// Conservative shared planar/convex/simple-boundary admission for a single polygon primitive.
+Result<void> validate_polygon(std::span<const math::Vector3> corners);
+
+Result<void> validate_polygon(const Geometry& surface, PrimitiveRange range);
 
 // Barycentric (v,w) of the closest point on a nondegenerate bounded triangle.
 math::Vector2d closest_on_triangle(math::Vector3d p, math::Vector3d a, math::Vector3d b, math::Vector3d c);

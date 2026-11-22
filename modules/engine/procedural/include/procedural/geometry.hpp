@@ -41,6 +41,12 @@ enum class RayMode : std::uint32_t { project, minimum };
 AENUM(Name = "procedural.BooleanOperation", DESC = "闭合实体的并集、交集或差集 A 减 B。")
 enum class BooleanOperation : std::uint32_t { unite, intersect, subtract };
 
+AENUM(Name = "procedural.SweepProfile",
+      DESC = "沿折线扫掠的截面轮廓：rectangle 矩形，tube 圆形多边形管，custom 来自辅助端口的截面。")
+enum class SweepProfile : std::uint32_t { rectangle, tube, custom };
+
+struct Spatial;
+
 // How a transform changes a vector or orientation column; see transform().
 enum class Usage : std::uint8_t { none, point, vector, normal, color, orientation };
 
@@ -232,6 +238,8 @@ public:
 
 private:
     friend class Bvh;
+
+    friend struct Spatial;
 
     friend struct detail::BooleanBoundary;
 

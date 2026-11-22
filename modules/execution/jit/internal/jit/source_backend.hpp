@@ -242,6 +242,8 @@ struct BusinessValueBinding {
     bool plain_value{};
 
     bool zero_default{};
+
+    const std::byte* initial_value{};
 };
 
 struct BusinessEnvironment {

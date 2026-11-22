@@ -783,8 +783,10 @@ ui::ControlIcon sop_node_icon(std::string_view type_name, bool is_source_sop, bo
         return ui::ControlIcon::duplicate;
     if (type_name == "procedural.Remove")
         return ui::ControlIcon::trash;
-    if (type_name == "procedural.Polyline")
+    if (type_name == "procedural.Polyline" || type_name == "procedural.Sweep")
         return ui::ControlIcon::axes_origin;
+    if (type_name == "procedural.Extrude")
+        return ui::ControlIcon::face_normals;
     return ui::ControlIcon::mesh;
 }
 
@@ -853,7 +855,8 @@ NetworkCanvas::TabCategory NetworkCanvas::categorize_node_type(const GraphNodeCa
         return TabCategory::scatter_copy;
     if (short_name == "Merge" || short_name == "Remove" || short_name == "Boolean" || short_name == "Null")
         return TabCategory::utility;
-    if (entry.ports.inputs.empty() || short_name == "Polyline" || short_name == "MeshImport")
+    if (entry.ports.inputs.empty() || short_name == "Polyline" || short_name == "MeshImport" ||
+        short_name == "Extrude" || short_name == "Sweep")
         return TabCategory::primitive;
     return TabCategory::attribute;
 }

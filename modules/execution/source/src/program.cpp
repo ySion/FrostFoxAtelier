@@ -124,7 +124,36 @@ bool same_leaves(const std::vector<Scalar>& a, const std::vector<Scalar>& b) {
 
 namespace detail {
 Result<std::vector<TypeDefinition>> type_definitions(const std::vector<language::TypeDeclaration>& declarations,
+                                                     std::span<const language::TypeName> array_uses,
                                                      const Binding& binding) {
+    auto& runtime = *binding.runtime;
+    const auto is_described_element = [&](std::string_view name) {
+        if (language::editor_reserved(name) || language::synthesized_array_name(name))
+            return false;
+        if (std::ranges::any_of(declarations, [&](const auto& value) { return value.name == name; }))
+            return true;
+        for (const auto& value : binding.enumerations)
+            if (value.name == name)
+                return !(*runtime.describe(value.type))->native_storage;
+        for (const auto& value : binding.values)
+            if (value.name == name && value.kind == ValueKind::record)
+                return !(*runtime.describe(value.type))->native_storage;
+        return false;
+    };
+    std::vector<TypeDefinition> synthesized;
+    const auto ensure_synthesized_array = [&](std::string_view base_name, std::uint32_t array_depth) {
+        for (std::uint32_t depth = 1; depth <= array_depth; ++depth) {
+            auto arr_name = language::make_synthesized_array_name(base_name, depth);
+            if (std::ranges::any_of(synthesized, [&](const auto& def) { return def.name == arr_name; }))
+                continue;
+            TypeDefinition arr_def;
+            arr_def.name = std::move(arr_name);
+            arr_def.kind = TypeKind::array;
+            arr_def.element = TypeReference{depth == 1 ? std::string(base_name)
+                                                       : language::make_synthesized_array_name(base_name, depth - 1)};
+            synthesized.push_back(std::move(arr_def));
+        }
+    };
     std::vector<TypeDefinition> definitions;
     for (const auto& declaration : declarations) {
         for (const auto& value : binding.values)
@@ -146,11 +175,14 @@ Result<std::vector<TypeDefinition>> type_definitions(const std::vector<language:
         } else {
             for (const auto& [name, type] : declaration.fields) {
                 TypeReference reference;
-                const bool declared =
-                    std::ranges::any_of(declarations, [&](const auto& value) { return value.name == type.name; });
-                if (declared && type.array_depth == 0)
-                    reference = TypeReference{type.name};
-                else {
+                if (is_described_element(type.name)) {
+                    if (type.array_depth == 0) {
+                        reference = TypeReference{type.name};
+                    } else {
+                        ensure_synthesized_array(type.name, type.array_depth);
+                        reference = TypeReference{language::make_synthesized_array_name(type.name, type.array_depth)};
+                    }
+                } else {
                     TypeId resolved{};
                     if (type.name == "float")
                         resolved = binding.f32;
@@ -166,8 +198,9 @@ Result<std::vector<TypeDefinition>> type_definitions(const std::vector<language:
                         if (value.name == type.name)
                             resolved = value.type;
                     for (const auto& value : binding.values)
-                        if (value.name == type.name || (type.name == "String" && value.kind == ValueKind::string) ||
-                            (value.math && type.name == math::short_name(value.math))) {
+                        if (!language::synthesized_array_name(value.name) &&
+                            (value.name == type.name || (type.name == "String" && value.kind == ValueKind::string) ||
+                             (value.math && type.name == math::short_name(value.math)))) {
                             resolved = value.type;
                             break;
                         }
@@ -195,6 +228,11 @@ Result<std::vector<TypeDefinition>> type_definitions(const std::vector<language:
         }
         definitions.push_back(std::move(definition));
     }
+    for (const auto& use : array_uses)
+        if (use.array_depth > 0 && is_described_element(use.name))
+            ensure_synthesized_array(use.name, use.array_depth);
+    for (auto& arr : synthesized)
+        definitions.push_back(std::move(arr));
     return definitions;
 }
 }
@@ -1155,6 +1193,11 @@ Result<Program::Request> Program::request(std::string_view name, std::string_vie
         report(declarations.error().message, declarations.error().position);
         return result;
     }
+    auto array_uses = language::collect_array_types(source);
+    if (!array_uses) {
+        report(array_uses.error().message, array_uses.error().position);
+        return result;
+    }
     // Published declarations are immutable; new ones publish with the next version.
     const auto& previous = state_->contract->declarations;
     const auto published = [&](std::string_view name) {
@@ -1167,15 +1210,18 @@ Result<Program::Request> Program::request(std::string_view name, std::string_vie
             return result;
         }
     }
-    if (declarations->size() == previous.size())
-        return result;
-    auto definitions = type_definitions(*declarations, state_->contract->binding);
+    auto& runtime = *state_->contract->binding.runtime;
+    auto definitions = type_definitions(*declarations, *array_uses, state_->contract->binding);
     if (!definitions) {
         report(definitions.error().message);
         return result;
     }
-    std::erase_if(*definitions, [&](const auto& definition) { return published(definition.name); });
-    auto& runtime = *state_->contract->binding.runtime;
+    std::erase_if(*definitions, [&](const auto& definition) {
+        return published(definition.name) ||
+               (language::synthesized_array_name(definition.name) && runtime.find_type(definition.name).has_value());
+    });
+    if (definitions->empty())
+        return result;
     auto publication = atelier::detail::TypePublication::prepare(runtime, std::move(*definitions));
     if (!publication) {
         report(publication.error().message);

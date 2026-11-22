@@ -114,13 +114,13 @@ Foundation 的 `parallel_for` / `JoinGroup` body 只处理宿主预先准备的�
 
 `PreparedArguments` 持有定型暂存和 `ArgumentView`，参数视图前八项内联；标量、数学值与 plain struct 快照共用 128 字节、32 字节对齐的紧凑暂存区，各值按自身对齐排布，超出容量或要求更高对齐时按实际布局扩展。平凡析构快照不登记销毁回调，也不保留 Runtime 依赖。视图不能越过目标存储、调用及暂存拥有者的有效期。`Runtime::prepare_arguments` 为源码入口适配校验调用者自有存储，拒绝对象字段借用；字段地址仅在原生调用的生命周期/GC 保护范围内解析，离开后才执行源码后续步骤。可信原生代码不得捕获地址，或把逃逸对象内部指针伪装成宿主自有存储。
 
-原生方法与独立源码签名接受不含 GC 引用的原生/描述型记录、Array 和 String 借用，`Runtime::prepare_arguments` 核对其 Runtime 类型身份、实际对齐和可写性，直接交付原地址。聚合值不进入 Scalar 暂存，源码 String 参数只允许只读。原生成员借用同样经过共享签名验证。
+原生方法与独立源码签名接受不含 GC 引用的原生/描述型记录、Array 和 String 借用，`Runtime::prepare_arguments` 核对其 Runtime 类型身份、实际对齐和可写性，直接交付原地址。聚合值不进入 Scalar 暂存；`const Type&` 为深只读借用，`Type&` 为可写借用。原生成员借用同样经过共享签名验证。
 
 直接访问的权威信息归 `TypeInfo`：`native_storage` 标识原生表示，大小/对齐和数组 `element` 决定布局，`FieldInfo::offset` 表示相对声明类型的字段偏移，`TypeInfo::base_offset` 表示非虚原生基类子对象在派生类中的字节偏移。生成器从目标 ABI 的 `ASTRecordLayout` 为自然对齐字段与非虚基类提交字节偏移，Runtime 发布前校验范围和对齐；没有偏移的绑定保留既有访问器。`NativeLayout::sequence_view` 发布读取连续缓冲和长度的原语，基础库适配器实现 Array/String 的投影；它不得分配、修改存储、调用用户代码或重入 Runtime。
 
 源码编译从上述元数据捕获可投影的值目录，数组按元素可用性接入；没有投影的类型，以及参数或声明结果使用这些类型的方法，保留为原生能力，不阻断无关源码。声明了结果但没有投影不等于 void，不能进入源码方法目录。目录绑定代码版本并在发布时核对依赖。生成代码按字段偏移/元素步长直接访问原生存储，序列访问先检查长度、对齐和边界。含聚合值借用、拥有型局部或 String 字面量的源码只允许同步执行，原生调用限于 `self` 上声明 `MethodInfo::preserves_borrows` 的方法，对象访问限于按值读取 `self` 字段；其他对象操作被拒绝，GC 留给返回后的宿主；清理与结果提交仍走既有入口。调用方负责存储存续期和结构稳定，不允许将 Runtime 对象内部地址伪装成自有存储。完整边界见[原生值借用](native-value-borrows.md)和[语言规则](../LANGUAGE.md#原生值借用)。
 
-源码一般拥有型记录/String/Array 的值本体放在生成栈上，构造、复制、赋值、销毁使用同一 Runtime 值操作。`NativeLayout::value_operations_preserve_borrows` 表达操作不保留输入地址、不重入源码、不使其他仍使用的借用失效；平凡原生类型自动具备此能力，Array 依元素、描述型记录依字段递归组合。`sequence_mutate` 提供结构修改原语，`Runtime::mutate_sequence` 统一校验目标、输入类型和操作，再在原生回调保护下执行。前端只向本函数拥有的序列开放结构修改；按值调用和跨挂起生命周期不在此能力内。详见[拥有型基础值](source-owned-values.md)和[源码值字段组合](source-type-declarations.md#值与借用)。
+源码一般拥有型记录/String/Array 的值本体放在生成栈上，构造、复制、赋值、销毁使用同一 Runtime 值操作（描述型 `TypeKind::array` 由 Runtime 自身提供 24B `{data, size, capacity}` 序列投影、构造析构、复制与结构修改原语）。`NativeLayout::value_operations_preserve_borrows` 表达操作不保留输入地址、不重入源码、不使其他仍使用的借用失效；平凡原生类型自动具备此能力，Array 依元素、描述型记录依字段递归组合。`sequence_mutate` 与描述型数组实现提供结构修改原语，`Runtime::mutate_sequence` 统一校验目标、输入类型和操作，再在原生回调保护下执行。前端向可写拥有局部与非定长可写借用参数开放结构修改；按值调用和跨挂起生命周期不在此能力内。详见[拥有型基础值](source-owned-values.md)和[源码值字段组合](source-type-declarations.md#值与借用)。
 
 async 参数只允许值传递；async 体可以在一次同步原生调用期间借用帧内局部。源码不提供保存借用或借用返回语法。只读约束只作用于该访问路径，可观察其他别名的写入，不授予独占访问。
 

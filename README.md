@@ -13,14 +13,14 @@
 | 模块 | 当前能力 | 详细说明 |
 | --- | --- | --- |
 | Runtime | 原生与描述型类型、对象单继承、持有/观察引用、引用序列、值生命周期、宿主推进的非移动分步 GC | [运行时协议](docs/runtime-model.md) |
-| 源码与 JIT | bool、32 位整数运算与数值转换、const、for/parallel_for/break/continue/fail、跨文件与同模块函数、enum/struct 和原生派生 class、值字段组合、值与引用调用、记录/String/Array 拥有型局部、显式 async/yield、兼容代码更新与旧版本保活 | [语言规范](LANGUAGE.md)、[执行结构](docs/runtime-structure.md)、[源码类型发布](docs/source-type-declarations.md) |
+| 源码与 JIT | bool、32 位整数运算与数值转换、复合赋值与三目 `?:`、const、for/parallel_for/break/continue/fail、跨文件与同模块函数、enum/struct 和原生派生 class、自动合成 `Array<源码 struct/enum>`、值与可写/只读引用调用、记录/String/Array 拥有型局部、显式 async/yield、兼容代码更新与旧版本保活 | [语言规范](LANGUAGE.md)、[执行结构](docs/runtime-structure.md)、[源码类型发布](docs/source-type-declarations.md) |
 | 可编程材质 | 自有语言纯值计算、具名纹理与 HLSL/CPU；MS→MI→MI、稀疏作者历史；纹理批次贯通光栅/阴影/DDGI、正式编辑与接受帧拾取 | [材质合同与边界](docs/modules/renderer/materials.md)、[Renderer 验收](docs/modules/renderer/acceptance.md)、[后续资产路线](docs/modules/resources/asset-system-plan.md) |
 | 数学基础值 | float/double 向量、四元数和矩阵；原生/反射/源码共享布局；直接数学 IR 与 O2 优化 | [数学合同](docs/math.md) |
 | Runtime / JIT 诊断 | 按需调用计数与计时、Runtime 资源快照与拥有值统计、源码故障与挂起位置、版本身份、IR 与 COFF 反汇编；开发版并行任务体误用检查 | [诊断接口与边界](docs/source-diagnostics.md)、[任务体禁入范围](docs/runtime-model.md#并行任务体禁入诊断) |
 | 进程日志与 Project Output | Quill 后台日志、结构化 JSONL、增量 Reader、独立健康/丢失状态、完整只读正文与原始源码定位；Editor / Runner 分别拥有 run | [日志合同与验收入口](docs/modules/logging/README.md) |
 | 源码调试核心 | 精确版本断点、进入/跳过/跳出、只读调用栈与有界局部值、受保护暂停和受控终止 | [调试接口与寿命](docs/source-debugger.md) |
 | Jolt 物理 | PrimitiveComponent 统一网格与碰撞配置、子 Entity 多刚体、查询/触发、Cook 资产与 9 个官方 Physic 示例 | [物理模块](docs/modules/physics/README.md)、[接入与更新](#jolt-物理依赖) |
-| 程序化几何与节点图 | 分层属性的 Geometry 值（列写时复制）、撒点/连通性/变换/Promote/Copy to Points 等 C++ 与 `.source` 操作、实例按块发布；由 Runtime 对象构成的节点图、按内容键缓存的增量求值；编辑器的 `.procgraph` SOP 视口上下文、Houdini 式二维 Network 连线画布、Geometry Spreadsheet、Control 操作链，以及场景 `ProceduralGeneratorEntity` / `ProceduralGeneratorComponent` 与实例 Bake | [程序化模块](docs/modules/procedural/README.md) |
+| 程序化几何与节点图 | 分层属性的 Geometry 值（列写时复制）、挤出/扫掠/布尔/体采样/撒点/连通性/变换/Promote/Copy to Points 等 C++ 与 `.source` 操作、`.source` 多端口 `Spatial` BVH 并发查询与受控变长拓扑构建（L3）、实例按块发布；由 Runtime 对象构成的节点图、按内容键缓存的增量求值；编辑器的 `.procgraph` SOP 视口上下文、Houdini 式二维 Network 连线画布、Geometry Spreadsheet、Control 操作链，以及场景 `ProceduralGeneratorEntity` / `ProceduralGeneratorComponent` 与实例 Bake | [程序化模块](docs/modules/procedural/README.md) |
 | C++ 基础库与反射 | Array/String、共享不可变的 SharedArray、Span/StringView、原生 Map/Set 与 Hash/Equal、RingDeque 双端队列和 PriorityQueue 优先队列；反射薄宏及生成代码接入同一 Runtime；常开 CPU 帧阶段计时机制 | [基础库](docs/foundation.md)、[自动反射](docs/reflection.md) |
 | UI 布局、控件与样式 | 原生 Flex/Grid、列表可见范围索引与虚拟表格、Unicode 编辑、参数行与延迟悬浮说明、菜单/下拉/数值阶梯、SS 样式及接受帧文字快照 | [布局模块](docs/modules/ui-layout/README.md)、[UI 模块](docs/modules/ui/README.md)、[SS](docs/modules/ui/style-sheets.md) |
 | 场景编辑器与绘制 | Entity/Component/World 编辑、位置参数与撤销、独立菜单窗口、单宿主停靠及控件实验台；圆角、边框、RGBA 图片及相邻实例合批 | [编辑器模块](docs/modules/editor/README.md)、[RHI](docs/modules/rhi/README.md) |

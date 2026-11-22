@@ -1,0 +1,232 @@
+{
+  "boxes": {
+    "grammar_stage": {
+      "color": "#386b5e",
+      "position": [
+        60.0,
+        -36.0
+      ],
+      "size": [
+        264.0,
+        176.0
+      ],
+      "title": "Architectural & Ruin Grammar"
+    },
+    "manifold_construction": {
+      "color": "#7c5a3a",
+      "position": [
+        -196.0,
+        164.0
+      ],
+      "size": [
+        524.0,
+        292.0
+      ],
+      "title": "C++ Extrude & Sweep Solids"
+    },
+    "rubble_dressing": {
+      "color": "#4f6d8a",
+      "position": [
+        348.0,
+        164.0
+      ],
+      "size": [
+        268.0,
+        320.0
+      ],
+      "title": "BVH Rubble Grounding"
+    }
+  },
+  "nodes": {
+    "OUT_ruin_building": {
+      "color": "#eab308",
+      "comment": "Milestone output",
+      "inputs": {
+        "input": "merge_all.output"
+      },
+      "position": [
+        140.0,
+        624.0
+      ],
+      "properties": {},
+      "shape": "diamond",
+      "type": "procedural.Null"
+    },
+    "facade_extrude": {
+      "comment": "Per-face dist & inset",
+      "inputs": {
+        "surface": "grammar.facade_panels"
+      },
+      "position": [
+        -120.0,
+        224.0
+      ],
+      "properties": {
+        "distance": 0.4,
+        "distance_attribute": "ext_dist",
+        "front_group": "facade_front",
+        "group": "",
+        "individual": true,
+        "inset": 0.02,
+        "inset_attribute": "ext_inset",
+        "output_back": true,
+        "side_group": "facade_bevel"
+      },
+      "type": "procedural.Extrude"
+    },
+    "grammar": {
+      "comment": "4-port L3 grammar",
+      "inputs": {},
+      "position": [
+        140.0,
+        24.0
+      ],
+      "properties": {
+        "bay_width": 2.6,
+        "depth": 8.2,
+        "floor_height": 3.1,
+        "floors": 3,
+        "pillar_ratio": 0.19,
+        "roof_pitch": 1.75,
+        "ruin_angle": 0.68,
+        "ruin_collapse": 0.36,
+        "seed": 42,
+        "width": 10.4
+      },
+      "type": "game.RuinArchitectureGrammar"
+    },
+    "merge_all": {
+      "inputs": {
+        "inputs": [
+          "structure_shell.output",
+          "rubble_instances.output"
+        ]
+      },
+      "position": [
+        140.0,
+        528.0
+      ],
+      "properties": {},
+      "type": "procedural.Merge"
+    },
+    "roof_sweep": {
+      "comment": "Rafters & ridge beam",
+      "inputs": {
+        "backbone": "grammar.roof_timbers"
+      },
+      "position": [
+        200.0,
+        224.0
+      ],
+      "properties": {
+        "end_caps": true,
+        "height": 0.22,
+        "profile": "rectangle",
+        "radius": 0.5,
+        "scale_attribute": "",
+        "segments": 8,
+        "up": {
+          "x": 0.0,
+          "y": 1.0,
+          "z": 0.0
+        },
+        "width": 0.16
+      },
+      "type": "procedural.Sweep"
+    },
+    "rubble_grounder": {
+      "comment": "Parallel BVH raycast",
+      "inputs": {
+        "candidates": "grammar.rubble_points",
+        "support": "slab_extrude.output",
+        "walls": "facade_extrude.output"
+      },
+      "position": [
+        412.0,
+        224.0
+      ],
+      "properties": {
+        "min_spacing": 1.38,
+        "seed": 73,
+        "wall_clearance": 0.92
+      },
+      "type": "game.RuinRubbleGrounder"
+    },
+    "rubble_instances": {
+      "comment": "Fallen drums & crystals",
+      "inputs": {
+        "points": "rubble_grounder.output"
+      },
+      "position": [
+        412.0,
+        368.0
+      ],
+      "properties": {
+        "meshes": [
+          "project/{BC355578-C6D6-4E69-94C0-B7E8BAD6A3DE}",
+          "project/{0B8A622F-7691-4DA5-802B-D0AA42F9E698}"
+        ],
+        "variant": "variant"
+      },
+      "type": "procedural.CopyToPoints"
+    },
+    "slab_extrude": {
+      "comment": "Podium & gallery slabs",
+      "inputs": {
+        "surface": "grammar.floor_slabs"
+      },
+      "position": [
+        40.0,
+        224.0
+      ],
+      "properties": {
+        "distance": 0.24,
+        "distance_attribute": "",
+        "front_group": "slab_top",
+        "group": "",
+        "individual": true,
+        "inset": 0.015,
+        "inset_attribute": "",
+        "output_back": true,
+        "side_group": ""
+      },
+      "type": "procedural.Extrude"
+    },
+    "structure_shell": {
+      "comment": "Watertight manifold shell",
+      "inputs": {
+        "inputs": [
+          "facade_extrude.output",
+          "slab_extrude.output",
+          "roof_sweep.output"
+        ]
+      },
+      "position": [
+        40.0,
+        368.0
+      ],
+      "properties": {},
+      "type": "procedural.Merge"
+    }
+  },
+  "notes": {
+    "ruin_overview": {
+      "color": "#d4a72c",
+      "position": [
+        648.0,
+        164.0
+      ],
+      "size": [
+        268.0,
+        176.0
+      ],
+      "text": "1. RuinArchitectureGrammar (.source) subdivides bays into pilasters, spandrels, sills, jambs, lintels, cornices, gallery slabs, and roof rafters.\n2. Extrude & Sweep build beveled watertight solids.\n3. Drag ruin_collapse (0..0.92) or stories/bay_width for live parametric remodeling.",
+      "title": "Modular Ruin Building SOP"
+    }
+  },
+  "settings": {
+    "display": "OUT_ruin_building",
+    "seed": 308
+  },
+  "version": 2
+}

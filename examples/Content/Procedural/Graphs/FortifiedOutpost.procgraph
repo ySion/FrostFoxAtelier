@@ -1,0 +1,322 @@
+{
+  "boxes": {
+    "bastion_sweep": {
+      "color": "#7c5a3a",
+      "position": [
+        -40.0,
+        252.0
+      ],
+      "size": [
+        520.0,
+        292.0
+      ],
+      "title": "Bastion & Road Sweep"
+    },
+    "tactical_dressing": {
+      "color": "#4f6d8a",
+      "position": [
+        496.0,
+        252.0
+      ],
+      "size": [
+        292.0,
+        460.0
+      ],
+      "title": "Road-Aware Tactical Scattering"
+    },
+    "terrain_base": {
+      "color": "#386b5e",
+      "position": [
+        -312.0,
+        -44.0
+      ],
+      "size": [
+        252.0,
+        480.0
+      ],
+      "title": "Island Terrain"
+    }
+  },
+  "nodes": {
+    "OUT_fortified_outpost": {
+      "color": "#eab308",
+      "comment": "Milestone output",
+      "inputs": {
+        "input": "merge_outpost.output"
+      },
+      "position": [
+        180.0,
+        840.0
+      ],
+      "properties": {},
+      "shape": "diamond",
+      "type": "procedural.Null"
+    },
+    "all_prop_pts": {
+      "inputs": {
+        "inputs": [
+          "layout_skeleton.gate_posts",
+          "tactical_filter.output"
+        ]
+      },
+      "position": [
+        560.0,
+        528.0
+      ],
+      "properties": {},
+      "type": "procedural.Merge"
+    },
+    "candidates": {
+      "inputs": {
+        "surface": "island_terrace.output"
+      },
+      "position": [
+        560.0,
+        304.0
+      ],
+      "properties": {
+        "density": 0.24,
+        "min_distance": 1.15,
+        "seed": 5
+      },
+      "type": "procedural.Scatter"
+    },
+    "island_terrace": {
+      "comment": "4 stepped plateaus",
+      "inputs": {
+        "input": "promote_pt_n.output"
+      },
+      "position": [
+        -220.0,
+        192.0
+      ],
+      "properties": {
+        "coastline_warp": 0.18,
+        "height": 4.2,
+        "radius": 11.2,
+        "seed": 11,
+        "sharpness": 0.78,
+        "terraces": 4
+      },
+      "type": "game.TerraceIsland"
+    },
+    "layout_skeleton": {
+      "comment": "L3 curves + gate posts",
+      "inputs": {
+        "terrain": "island_terrace.output"
+      },
+      "position": [
+        180.0,
+        304.0
+      ],
+      "properties": {
+        "crenel_gap": 0.68,
+        "fort_radius": 6.8,
+        "gate_width": 3.1,
+        "merlon_height": 0.54,
+        "merlon_length": 0.92,
+        "road_length": 10.6,
+        "road_meander": 1.05,
+        "seed": 11,
+        "sides": 8,
+        "wall_height": 2.35
+      },
+      "type": "game.OutpostLayoutSkeleton"
+    },
+    "merge_outpost": {
+      "inputs": {
+        "inputs": [
+          "promote_vtx_n.output",
+          "road_sweep.output",
+          "wall_sweep.output",
+          "merlon_sweep.output",
+          "prop_instances.output"
+        ]
+      },
+      "position": [
+        180.0,
+        744.0
+      ],
+      "properties": {},
+      "type": "procedural.Merge"
+    },
+    "merlon_sweep": {
+      "comment": "Parapet battlements",
+      "inputs": {
+        "backbone": "layout_skeleton.merlon_curves"
+      },
+      "position": [
+        340.0,
+        448.0
+      ],
+      "properties": {
+        "end_caps": true,
+        "height": 0.54,
+        "profile": "rectangle",
+        "radius": 0.5,
+        "scale_attribute": "pscale",
+        "segments": 8,
+        "up": {
+          "x": 0.0,
+          "y": 1.0,
+          "z": 0.0
+        },
+        "width": 0.92
+      },
+      "type": "procedural.Sweep"
+    },
+    "promote_pt_n": {
+      "inputs": {
+        "input": "terrain_import.output"
+      },
+      "position": [
+        -220.0,
+        96.0
+      ],
+      "properties": {
+        "name": "N",
+        "reduce": "average",
+        "to": "point"
+      },
+      "type": "procedural.Promote"
+    },
+    "promote_vtx_n": {
+      "inputs": {
+        "input": "island_terrace.output"
+      },
+      "position": [
+        -220.0,
+        336.0
+      ],
+      "properties": {
+        "name": "N",
+        "reduce": "average",
+        "to": "vertex"
+      },
+      "type": "procedural.Promote"
+    },
+    "prop_instances": {
+      "comment": "Columns & Sanctum spires",
+      "inputs": {
+        "points": "all_prop_pts.output"
+      },
+      "position": [
+        560.0,
+        624.0
+      ],
+      "properties": {
+        "meshes": [
+          "project/{BC355578-C6D6-4E69-94C0-B7E8BAD6A3DE}",
+          "project/{0B8A622F-7691-4DA5-802B-D0AA42F9E698}"
+        ],
+        "variant": "variant"
+      },
+      "type": "procedural.CopyToPoints"
+    },
+    "road_sweep": {
+      "comment": "Stone causeway",
+      "inputs": {
+        "backbone": "layout_skeleton.road_curve"
+      },
+      "position": [
+        20.0,
+        448.0
+      ],
+      "properties": {
+        "end_caps": true,
+        "height": 0.26,
+        "profile": "rectangle",
+        "radius": 0.5,
+        "scale_attribute": "pscale",
+        "segments": 8,
+        "up": {
+          "x": 0.0,
+          "y": 1.0,
+          "z": 0.0
+        },
+        "width": 2.2
+      },
+      "type": "procedural.Sweep"
+    },
+    "tactical_filter": {
+      "comment": "Parallel BVH filter",
+      "inputs": {
+        "candidates": "candidates.points",
+        "gate_posts": "layout_skeleton.gate_posts",
+        "road": "layout_skeleton.road_curve",
+        "terrain": "island_terrace.output",
+        "walls": "wall_sweep.output"
+      },
+      "position": [
+        560.0,
+        416.0
+      ],
+      "properties": {
+        "min_flatness": 0.82,
+        "min_spacing": 1.45,
+        "road_clearance": 1.85,
+        "roadside_band": 1.45,
+        "sanctum_radius": 3.2,
+        "seed": 19,
+        "wall_clearance": 1.25
+      },
+      "type": "game.OutpostTacticalScatter"
+    },
+    "terrain_import": {
+      "inputs": {},
+      "position": [
+        -220.0,
+        0.0
+      ],
+      "properties": {
+        "mesh": "project/{7D42BD40-BDDC-486A-B2FE-BFA55902E819}"
+      },
+      "type": "procedural.MeshImport"
+    },
+    "wall_sweep": {
+      "comment": "Mitered curtain wall",
+      "inputs": {
+        "backbone": "layout_skeleton.wall_curves"
+      },
+      "position": [
+        180.0,
+        448.0
+      ],
+      "properties": {
+        "end_caps": true,
+        "height": 2.57,
+        "profile": "rectangle",
+        "radius": 0.5,
+        "scale_attribute": "",
+        "segments": 8,
+        "up": {
+          "x": 0.0,
+          "y": 1.0,
+          "z": 0.0
+        },
+        "width": 0.84
+      },
+      "type": "procedural.Sweep"
+    }
+  },
+  "notes": {
+    "outpost_overview": {
+      "color": "#d4a72c",
+      "position": [
+        824.0,
+        252.0
+      ],
+      "size": [
+        260.0,
+        168.0
+      ],
+      "text": "1. OutpostLayoutSkeleton (.source) emits terrain-draped road, open-gate bastion walls, merlon curves, and gate pillars.\n2. Sweep builds watertight causeway, curtain walls, and battlements.\n3. OutpostTacticalScatter (.source) runs parallel BVH exclusion + road-tangent alignment.",
+      "title": "Fortified Outpost SOP"
+    }
+  },
+  "settings": {
+    "display": "OUT_fortified_outpost",
+    "seed": 204
+  },
+  "version": 2
+}

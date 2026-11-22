@@ -5,10 +5,10 @@
 | 头文件 | 内容 |
 | --- | --- |
 | [geometry.hpp](../../../modules/engine/procedural/include/procedural/geometry.hpp) | `Geometry` 值、层、用途（含 `Usage::orientation`）、属性列、拓扑与实例 |
-| [operations.hpp](../../../modules/engine/procedural/include/procedural/operations.hpp) | 导入、生成、撒点、射线投射、变换、Promote、Copy to Points、Realize、包围盒 |
+| [operations.hpp](../../../modules/engine/procedural/include/procedural/operations.hpp) | 导入、生成、挤出（`extrude`）、扫掠（`sweep`）、撒点、射线投射、变换、Promote、Copy to Points、Realize、包围盒 |
 | [instances.hpp](../../../modules/engine/procedural/include/procedural/instances.hpp) | 把 instance 层发布为渲染用的实例集合 |
-| [bvh.hpp](../../../modules/engine/procedural/include/procedural/bvh.hpp) | 首角扇形 BVH 与按底层 `SharedArray` 缓冲复用的有界缓存 `Bvh::acquire` |
-| [graph.hpp](../../../modules/engine/procedural/include/procedural/graph.hpp) | `Graph`、统一 `Node` 基类、端口、连接与编辑入口，类型注册 |
+| [bvh.hpp](../../../modules/engine/procedural/include/procedural/bvh.hpp) | 首角扇形 `Bvh` 与供 `.source` 并行只读查询的 `Spatial` 加速缓冲及 16 槽共享缓存 |
+| [graph.hpp](../../../modules/engine/procedural/include/procedural/graph.hpp) | `Graph`、统一 `Node` 基类（含受控 L3 `emit_*/set_*` 构建方法）、端口、连接与编辑入口，类型注册 |
 | [nodes.hpp](../../../modules/engine/procedural/include/procedural/nodes.hpp) | C++ 内置节点 |
 | [evaluator.hpp](../../../modules/engine/procedural/include/procedural/evaluator.hpp) | 增量求值、结果缓存与失败保旧接口 |
 | [random.hpp](../../../modules/engine/procedural/include/procedural/random.hpp) | 固定算法的整数哈希与单位随机数 |
@@ -46,6 +46,9 @@
 - **`merge`**：按输入顺序拼接各层，属性按名字合并，缺失的元素取类型默认值，detail 取第一个有值的输入；同名属性的层、类型或用途不一致时失败。
 - **`copy_to_points`**：每个点一个实例，矩阵为 S · O · T：S = scale × pscale，O 是归一化的 `orient`，没有 orient 时由 N 和 up 对齐（只有 N 时取 +Z 到 N 的最短旋转），T 取自 P。点上的 uint 属性（默认 `variant`，缺失时为 0）选择引用。detail 属性带到输出，输出没有点。非有限输入和越界的变体失败。
 - **`realize`**：有序 Geometry 源在选中的目标点上生成真实几何副本，与资源 CopyToPoints 共用放置规则，但不生成或递归展开 instance；分组、属性和所有权合同见下节。
+- **`extrude`**：对选中（`group` 支持 primitive 或 point bool 组，空表示全选）的凸平面多边形沿面法向挤出 `distance`（可由 primitive float 列 `distance_attribute` 逐面覆盖），并在原平面沿角平分线内缩 `inset`（负值为外扩，可由 `inset_attribute` 逐面覆盖；内缩致边折叠或反向时直接报错）。`individual=true` 时逐面独立生成带硬边 `vertex` `N`、米制侧面 `uv` 与来源 primitive/detail 属性的棱台；`output_back=true` 时每个独立棱台各自封闭底盖，无 4 面共边非流形，可直接送入 `Boolean` 与 `VolumeScatter`；`distance=0` 且 `inset!=0`（须 `output_back=false`）在原面内切出边框四边形环与中心面板。`individual=false`（要求 `inset=0` 且挤出距离非零、同号）合并选中区域的共享内边，仅沿外边界生成侧壁。可选写出 primitive bool 组 `front_group`、`side_group`。输出经公共凸面判据统一复核。
+- **`sweep`**：沿 `backbone` 中的每条开放 `polyline` 扫掠 `SweepProfile::rectangle`（`width × height` 硬边法线）、`tube`（`radius × segments`，`segments >= 8` 平滑径向法线）或 `custom`（`cross_section` 端口单图元 XY 截面，polygon 为闭合、polyline 为开放）。标架采用 `up` 参考向量稳定斜接加共线处平行输运，可选按折线点上的正有限 float 列 `scale_attribute`（默认 `"pscale"`，缺列按 1）逐站缩放截面；闭合截面且 `end_caps=true` 时在首尾生成外向封盖以构成水密流形壳。三维扭转或起伏导致侧面四点超出公共平面容差 δ_p 时，自动沿对角线剖分为两个共点三角形，确保输出全部满足公共凸平面判据。写出 `vertex` `N`、沿弧长与环周的 `vertex` `uv`，并继承折线 primitive 与 detail 属性。
+- **`Spatial`**：`Spatial::acquire(geometry)` 按与 `Bvh::acquire` 相同的 16 槽底层 `SharedArray` 指针元组缓存，将任意含多边形或开放折线的 `Geometry` 编译为紧凑 32 字节 `SpatialNode` 只读序列（同时包含表面三角 SAH/中位数 BVH 与折线有向线段归一化弧长 BVH，保证树深不超过 54 层），供 `.source` `[Port] const procedural.Spatial&` 在 `parallel_for` 内零 Runtime 交互并发查询。
 - **`bounds`**：点的包围盒，空几何没有。
 - **`ray`**：在 `surface` 上按 `RayMode::project`（沿方向投射射线）或 `RayMode::minimum`（最近表面点）查询并将命中的点移到命中处，写入 int32 `hitprim`、`hittri`、Vector2 `hitprimuv` 与 float `hitdist`；未命中点保持原位且编号/距离为 -1；`normal` 开启时从命中子三角原角计算单位法线写入 point 层 `N`；`remove_misses` 开启时移除未命中点。内部经 `Bvh::acquire(surface)` 复用缓存 BVH。
 - **`Bvh`**：对公共扇形视图建立的包围体层次（分箱 SAH，深层退回中位数切分，深度有界），建立时复制三角形，零面积三角形不参与。`Bvh::acquire(surface)` 提供线程安全的 16 项 LRU 共享缓存，以底层 `P`、`vertex_points`、`primitive_offsets`、`primitive_kinds` 的缓冲指针与长度元组为键，并持有这些 `SharedArray` 的浅拷贝以防止 ABA 地址复用；当仅调整下游射线或采样参数而表面缓冲未变时，零拷贝命中同一 `shared_ptr<const Bvh>`。`ray` 沿单位方向找 max_distance 内最近的交点，三角形双面有效；`closest` 找 max_distance 内最近的表面点。Hit 给出原图元号 `primitive`、局部子三角号 `triangle`、距离、子三角内重心坐标和位置。三角形求交和最近点在 double 中计算，包围盒测试留在 float（溢出的距离就是无穷远），所以有限坐标不会因中间结果溢出得到非有限或超出距离限制的命中，平行于某一轴的射线不受零的符号影响。射线恰好穿过共享边时可能两侧都不命中。
@@ -135,9 +138,9 @@ Release 下运行 `atelier_procedural_acceptance --profile-boolean <新的绝对
 
 - **Graph**（`procedural.Graph`）：公开字段 `seed`；隐藏的节点强引用序列和 display 强引用槽。
 - **Node**（`procedural.Node`）：所有 C++ 与 `.source` 程序化节点统一派生自 `procedural.Node`（不再设 `PointNode`）；节点类型的公开字段就是 UI/持久化参数；隐藏的 `inputs` 强引用序列每个连接一项，按输入端口排序，与之平行的非反射 C++ 数组记录每个连接的（输入端口，上游输出号）。`.source` 节点直接使用语言级 `fail("...")` 语句报告业务失败（返回 `invocation_failed` 与源码位置，`Node::fail` 已退休）并用 `parallel_for` 并行计算属性列。`procedural.Node` 自身无 `process` 方法，不能直接作为图节点实例。
-- **统一 `process` 与两类参数角色**：`ports(runtime, type)` 直接从 `Runtime` 元数据（原生类型读 `TypeInfo::methods`，`.source` 类读 `TypeInfo::described_methods`，无需 `source::Program*`）检查名为 `process` 的无返回值同步方法（原生节点须为 `const` 方法；`procedural.Node` 通过 `Meta("source.contract_method", "process")` 固定派生类 `process` 的端口契约，不影响普通非节点 `.source` 类的 `process` 热更）：
-  1. **Geometry 端口角色**：参数带 `Port`（或无角色属性并直接声明 `Geometry`/`Geometries` 引用）：`const procedural.Geometry&` 为单输入端口，`const procedural.Geometries&` 为有序多连接输入端口，`procedural.Geometry&` 为输出端口。所有输入与输出端口参数必须具名；图连接按端口序号存储。当前整几何端口的拓扑读写与赋值仅由原生 C++ 节点实现；`.source` 中 `procedural.Geometry` 为不可直接赋值的不透明原生句柄，纯 `.source` 节点应使用下述主输入输出流列绑定读写属性，暂不消费额外 `Geometry` 端口的数据。
-  2. **属性列与组流式角色（Column SOP / 正式类 Wrangle）**：一旦声明任一 `[In]`、`[Out]`、`[InOut]` 或 `[Group]` 参数（C++ 用 `APARAM(...)`，`.source` 直接写在形参前），自动建立 0 号主输入端口 `input` 与 0 号主输出端口 `output`（并允许同时追加额外具名 `Port` 参考几何端口）；整节点至少须有一个输出端口：
+- **统一 `process` 与三类参数/输出机制**：`ports(runtime, type)` 直接从 `Runtime` 元数据（原生类型读 `TypeInfo::methods`，`.source` 类读 `TypeInfo::described_methods`，无需 `source::Program*`）检查名为 `process` 的无返回值同步方法（原生节点须为 `const` 方法；`procedural.Node` 通过 `Meta("source.contract_method", "process")` 固定派生类 `process` 的端口契约，不影响普通非节点 `.source` 类的 `process` 热更）：
+  1. **Geometry 与 Spatial 端口角色**：参数带 `Port`（或无角色属性并直接声明端口类型引用）：`const procedural.Geometry&` 为单输入端口，`const procedural.Geometries&` 为有序多连接输入端口，`const procedural.Spatial&` 为经 `Spatial::acquire` 构建缓存的只读空间查询输入端口（分派前完成序列投影与别名校验，可在 `.source` `parallel_for` 内并发查询），`procedural.Geometry&` 为显式输出端口。所有输入与输出端口参数必须具名；图连接按端口序号存储。`.source` 节点可通过 `procedural.Node` 上的受控 `BorrowSafe` L3 构建方法（`self.emit_points`、`emit_polylines`、`emit_polygons`、`emit_quads` 及 `set_bool/int/uint/float/vec2/vec3/vec4/quat(..., output_port = 0)`）将局部栈上拥有型 `Array<T>` 批量提交到显式 `[Port] procedural.Geometry&` 输出端口，宿主在提交时原子校验点有限性、各层列长、约定 `Usage` 及多边形公共凸面判据 δ_p（主列流模式下禁止对 0 号 `output` 调用 `emit_*/set_*`，以保护活动可写列借用）。
+  2. **属性列与组流式角色（Column SOP / 正式类 Wrangle）**：声明不带 `Port = "..."` 的 `[In]`、`[Out]`、`[InOut]` 或 `[Group]` 参数时，自动建立 0 号主输入端口 `input` 与 0 号主输出端口 `output`；而 `[In(..., Port = "road")]` 与 `[Group(..., Port = "road")]` 则从具名辅助单输入端口 `"road"` 只读借用上游列（可与同名 `[Port] const procedural.Spatial& road` 共享同一个图输入端口，且在无主列流参数时不额外生成空置的 `input`/`output` 端口）。整节点至少须有一个输出端口：
      - `[In]`（`const Array<T>&`）：从输入几何只读借用共享列，零拷贝；缺失或异层/异型报错。附加 `Optional`（如 `[In("id", Optional)]`）时，若列缺失则借入零分配空 `Array<T>` 哨兵（内核用 `col.size() == n` 判断是否存在），若同名列存在但层或类型不符仍报错。
      - `[Out]`（`Array<T>&`）：若同层同名同类型列已存在，对其取得 COW 独占副本；若不存在则按类型默认值新建（新列按 `Geometry::admit_name` 赋予约定 `Usage`，类型与约定用途冲突如 `Array<float>& N` 时报错）。
      - `[InOut]`（`Array<T>&`）：要求输入几何已存在同层同名同类型列，取得 COW 独占副本原地读写；缺失报错。
@@ -171,6 +174,8 @@ Release 下运行 `atelier_procedural_acceptance --profile-boolean <新的绝对
 | Ray | mode（project / minimum）、direction、max_distance、normal、remove_misses | points, surface → output |
 | CopyToPoints | meshes（资源键列表）、variant | context, points → output |
 | Realize | group=""、variant="variant"、target_attributes=[] | sources（有序多个）, points → output |
+| Extrude | group=""、distance=0.5、inset=0、distance_attribute=""、inset_attribute=""、individual=true、output_back=true、front_group=""、side_group="" | surface → output |
+| Sweep | profile=rectangle（rectangle / tube / custom）、width=1、height=1、radius=0.5、segments=8、up=(0,1,0)、end_caps=true、scale_attribute="pscale" | backbone, cross_section → output |
 
 原生节点的 `process(...) const noexcept` 返回 `atelier::Result<void>`，反射仍发布为业务结果 void，端口和 BorrowSafe 约束不变。业务失败在节点边界转换为 `invocation_failed` 并保留原始原因，不通过异常传递；`Resources::mesh` 和 `Context::mesh` 同样通过 noexcept Result 返回资源拒绝。未连接的单输入端口收到空几何。
 
@@ -187,6 +192,7 @@ Release 下运行 `atelier_procedural_acceptance --profile-boolean <新的绝对
 | normal_align.source | `procedural.NormalAlign`：`group`、`up`；校验 `up` 与输入 `N` 有限性，按 `align_to_normal(N, up)` 写组内 `orient`（自动获得 `Usage::orientation`）；若上游已有 `orient`，组外点保留原值。新建 `orient` 时，组外点遵循 `CopyToPoints` 的规则：零法线使用单位旋转，非零法线才读取可选的点层 `up` 并检查其有限性 |
 | noise.source | `procedural.Noise`：`[RunOver] layer`（默认 `point`）、`source_attribute="P"`、`attribute="noise"`、`group=""`、`seed=0`、`frequency=1`、`offset=(0,0,0)`；3D value noise，`lattice_bits` 通过零开销 `math.as_uint` 编码二补码格坐标 |
 | remap.source | `procedural.Remap`：`[RunOver] layer`（默认 `point`）、`source_attribute="noise"`、`attribute="pscale"`、`group=""` 及四端点；double 中间线性映射，允许反向与外推，不夹值 |
+| spatial.source | 结构体 `procedural.SurfaceHit`、`procedural.CurveSample` 及 `parallel_safe` 空间查询函数 `procedural.raycast_surface`、`closest_surface_point`、`closest_polyline`（遍历 `[Port] const procedural.Spatial&` 的 64 层近端优先 BVH） |
 
 ### Noise / Remap 数值契约
 

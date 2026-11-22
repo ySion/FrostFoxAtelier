@@ -959,10 +959,13 @@ class game.FrameInputs : procedural.Node {
     require(preview_geometry && preview_geometry->count(Layer::point) == 100,
             "An adopted preview lost its geometry when the evaluator closed.");
 
-    // 6. Verify `procedural.Node` retired `Node.fail`, and multi-chunk parallel Source SOPs report mid-chunk `fail(...)`.
+    // 6. Verify `procedural.Node` retired `Node.fail`, exposes only BorrowSafe builder methods, and multi-chunk parallel Source SOPs report mid-chunk `fail(...)`.
     {
         const auto* base_node_info = take(runtime.describe(type<Node>(runtime)));
-        require(base_node_info->methods.empty(), "procedural.Node still exposes retired native methods.");
+        require(std::ranges::none_of(base_node_info->methods, [](const MethodInfo& m) { return m.name == "fail"; }) &&
+                    base_node_info->methods.size() == 12 &&
+                    std::ranges::all_of(base_node_info->methods, &MethodInfo::preserves_borrows),
+                "procedural.Node exposed retired fail or non-BorrowSafe methods.");
         auto chunk_graph = take(runtime.create(type<Graph>(runtime)));
         const auto big_grid = take(add_node(runtime, chunk_graph.id(), type<Grid>(runtime)));
         take(runtime.write(big_grid.id(), field(runtime, type<Grid>(runtime), "rows"), Scalar{std::uint32_t{64}}));
@@ -1333,6 +1336,222 @@ void profile(const char* path) {
     std::fputs(report.c_str(), stdout);
 }
 
+void generative_modeling_and_l3_contracts() {
+    // 1. C++ Extrude: watertight beveled solid, zero-distance inset panel split, and shared-edge region extrude.
+    {
+        Array<Vector3> quad_pos{{-2.f, 0.f, -2.f}, {-2.f, 0.f, 2.f}, {2.f, 0.f, 2.f}, {2.f, 0.f, -2.f}};
+        Array<std::uint32_t> quad_vp{0u, 1u, 2u, 3u};
+        Array<std::uint32_t> quad_off{0u, 4u};
+        auto slab = take(Geometry::polygons(std::move(quad_pos), std::move(quad_vp), quad_off));
+
+        auto prism = take(extrude(slab, {.distance = 2.0f,
+                                         .inset = 0.25f,
+                                         .individual = true,
+                                         .output_back = true,
+                                         .front_group = StringView{"top_cap"},
+                                         .side_group = StringView{"bevel_side"}}));
+        require(prism.count(Layer::primitive) == 6 && prism.count(Layer::point) == 8 &&
+                    column<bool>(prism, "top_cap", Layer::primitive).size() == 6 &&
+                    column<bool>(prism, "bevel_side", Layer::primitive).size() == 6,
+                "Beveled Extrude prism produced unexpected face or group counts.");
+        // Watertight outward-oriented shell must pass VolumeScatter & Boolean directly.
+        const auto prism_vol = take(volume_scatter(prism, {.density = 4.f, .seed = 9, .cell_size = 0.5f}));
+        require(prism_vol.count(Layer::point) > 10, "Extruded beveled prism failed closed manifold VolumeScatter.");
+        const auto cutter = take(box({1.5f, 4.0f, 1.5f}));
+        const auto carved = take(solid_boolean(prism, cutter, BooleanOperation::subtract));
+        require(carved.count(Layer::primitive) > 6, "Boolean subtract on extruded prism failed.");
+
+        // Zero-distance inset splits a panel into 4 border frame quads + 1 inner pane.
+        const auto framed = take(extrude(slab, {.distance = 0.f,
+                                                .inset = 0.4f,
+                                                .individual = true,
+                                                .output_back = false,
+                                                .front_group = StringView{"pane"},
+                                                .side_group = StringView{"frame"}}));
+        require(framed.count(Layer::primitive) == 5,
+                "Zero-distance inset Extrude did not emit 4 frame quads + 1 pane.");
+        const auto collapsed = extrude(slab, {.distance = 1.f, .inset = 2.5f});
+        require(!collapsed, "Extrude accepted an inset larger than half the polygon width.");
+
+        // Shared-edge region extrude over 2 adjacent quads suppresses the interior wall -> 2 top + 2 back + 6 boundary sides = 10 faces.
+        Array<Vector3> two_pos{{0.f, 0.f, 0.f}, {0.f, 0.f, 2.f}, {2.f, 0.f, 2.f},
+                               {2.f, 0.f, 0.f}, {4.f, 0.f, 2.f}, {4.f, 0.f, 0.f}};
+        Array<std::uint32_t> two_vp{0u, 1u, 2u, 3u, 3u, 2u, 4u, 5u};
+        Array<std::uint32_t> two_off{0u, 4u, 8u};
+        const auto two_quads = take(Geometry::polygons(std::move(two_pos), std::move(two_vp), two_off));
+        const auto region_solid =
+            take(extrude(two_quads, {.distance = 1.5f, .individual = false, .output_back = true}));
+        require(region_solid.count(Layer::primitive) == 10, "Region extrude failed to suppress shared interior edge.");
+        const auto region_vol = take(volume_scatter(region_solid, {.density = 4.f, .seed = 3, .cell_size = 0.5f}));
+        require(region_vol.count(Layer::point) > 5, "Region-extruded solid was not a closed outward manifold.");
+    }
+
+    // 2. C++ Sweep: mitered L-wall solid & 3D undulating helical tube (warped-quad diagonal split).
+    {
+        Array<Vector3> l_pts{{0.f, 0.f, 0.f}, {4.f, 0.f, 0.f}, {4.f, 0.f, 4.f}};
+        const auto l_curve = take(take(Geometry::points(std::move(l_pts))).connect_points());
+        const auto l_wall = take(sweep(l_curve, {.profile = SweepProfile::rectangle, .width = 1.2f, .height = 2.0f}));
+        require(l_wall.count(Layer::primitive) == 10, "Planar mitered L-wall Sweep should keep 8 side quads + 2 caps.");
+        const auto l_vol = take(volume_scatter(l_wall, {.density = 4.f, .seed = 5, .cell_size = 0.5f}));
+        require(l_vol.count(Layer::point) > 8, "Mitered L-wall Sweep was not a closed outward manifold.");
+
+        Array<Vector3> helix_pts;
+        for (int k = 0; k < 7; ++k) {
+            const float ang = float(k) * 0.55f;
+            helix_pts.add({3.0f * std::cos(ang), float(k) * 0.65f, 3.0f * std::sin(ang)});
+        }
+        auto helix_curve = take(take(Geometry::points(std::move(helix_pts))).connect_points());
+        auto* pscale = take(helix_curve.add<float>("pscale", Layer::point, 1.f));
+        for (std::size_t k = 0; k < pscale->size(); ++k)
+            (*pscale)[k] = 0.85f + 0.05f * float(k);
+        const auto swept_tube =
+            take(sweep(helix_curve, {.profile = SweepProfile::tube, .radius = 0.7f, .segments = 8, .end_caps = true}));
+        const auto tube_vol = take(volume_scatter(swept_tube, {.density = 6.f, .seed = 7, .cell_size = 0.45f}));
+        require(tube_vol.count(Layer::point) > 5,
+                "3D undulating tapered Sweep failed planar polygon validation or closed manifold VolumeScatter.");
+    }
+
+    // 3. Source L3 GeometryBuilder + Auxiliary Port Columns + Parallel Spatial BVH Queries.
+    {
+        Runtime runtime;
+        take(register_types(runtime));
+        auto program = take(source::Program::create(runtime));
+        auto files = take(source::engine_sources(source::default_engine_root()));
+        files.push_back({"Source/L3Test.source", 1, R"(
+class test.MultiBuilder : procedural.Node {
+    float height = 1.5f;
+
+    void process([Port] procedural.Geometry& floor_out,
+                 [Port] procedural.Geometry& road_out) {
+        Array<vector3> q_pts;
+        q_pts.add(vector3(-3.0f, self.height, -3.0f));
+        q_pts.add(vector3(-3.0f, self.height, 3.0f));
+        q_pts.add(vector3(3.0f, self.height, 3.0f));
+        q_pts.add(vector3(3.0f, self.height, -3.0f));
+        Array<uint> q_idx;
+        q_idx.add(uint(0));
+        q_idx.add(uint(1));
+        q_idx.add(uint(2));
+        q_idx.add(uint(3));
+        self.emit_quads(q_pts, q_idx, uint(0));
+
+        Array<vector3> r_pts;
+        r_pts.add(vector3(-2.0f, self.height, 0.0f));
+        r_pts.add(vector3(2.0f, self.height, 0.0f));
+        Array<uint> r_vp;
+        r_vp.add(uint(0));
+        r_vp.add(uint(1));
+        Array<uint> r_off;
+        r_off.add(uint(0));
+        r_off.add(uint(2));
+        Array<float> r_w;
+        r_w.add(2.5f);
+        self.emit_polylines(r_pts, r_vp, r_off, uint(1));
+        self.set_float("road_w", procedural.Layer::primitive, r_w, uint(1));
+    }
+}
+
+class test.SpatialProbe : procedural.Node {
+    void process([InOut("P")] Array<vector3>& P,
+                 [Out("curve_d")] Array<float>& curve_d,
+                 [Port] const procedural.Spatial& surface,
+                 [Port] const procedural.Spatial& road,
+                 [In("road_w", Port = "road", Layer = "primitive")] const Array<float>& road_w) {
+        const uint n = P.size();
+        float w = 0.0f;
+        if (road_w.size() > 0) {
+            w = road_w[0];
+        }
+        parallel_for (uint i : n) {
+            const procedural.SurfaceHit hit = procedural.raycast_surface(
+                surface, P[i] + vector3(0.0f, 10.0f, 0.0f), vector3(0.0f, -1.0f, 0.0f), 20.0f);
+            const procedural.CurveSample cs = procedural.closest_polyline(road, P[i], 20.0f);
+            if (hit.hit) {
+                P[i] = hit.position;
+            }
+            if (cs.hit) {
+                curve_d[i] = cs.distance + w;
+            } else {
+                curve_d[i] = -1.0f;
+            }
+        }
+    }
+}
+
+class test.BadPrimaryEmit : procedural.Node {
+    void process([InOut("P")] Array<vector3>& P) {
+        Array<vector3> pts;
+        pts.add(vector3(0.0f, 0.0f, 0.0f));
+        self.emit_points(pts, uint(0));
+    }
+}
+
+class test.BadWarpedQuad : procedural.Node {
+    void process([Port] procedural.Geometry& out) {
+        Array<vector3> pts;
+        pts.add(vector3(0.0f, 0.0f, 0.0f));
+        pts.add(vector3(1.0f, 0.0f, 0.0f));
+        pts.add(vector3(1.0f, 1.0f, 1.0f));
+        pts.add(vector3(0.0f, 0.0f, 1.0f));
+        Array<uint> q;
+        q.add(uint(0));
+        q.add(uint(1));
+        q.add(uint(2));
+        q.add(uint(3));
+        self.emit_quads(pts, q, uint(0));
+    }
+}
+)"});
+        const auto req = take(program->request({"l3_test", 1, std::move(files)}));
+        auto cand = take(source::Program::prepare(req));
+        take(program->try_publish(cand));
+
+        Meshes resources;
+        auto graph = take(runtime.create(type<Graph>(runtime)));
+        const auto grid_n = take(add_node(runtime, graph.id(), type<Grid>(runtime)));
+        const auto builder_t = take(runtime.find_type("test.MultiBuilder"));
+        const auto probe_t = take(runtime.find_type("test.SpatialProbe"));
+        const auto probe_ports = take(ports(runtime, probe_t));
+        // `SpatialProbe` shares one single-input port `"road"` between `[Port] const Spatial& road` and `[In(..., Port = "road")]`!
+        require(probe_ports.inputs.size() == 3 && probe_ports.inputs[0] == "input" &&
+                    probe_ports.inputs[1] == "surface" && probe_ports.inputs[2] == "road",
+                "SpatialProbe did not merge Spatial and auxiliary column bindings onto single port 'road'.");
+
+        const auto builder_n = take(add_node(runtime, graph.id(), builder_t));
+        const auto probe_n = take(add_node(runtime, graph.id(), probe_t));
+        take(connect(runtime, graph.id(), grid_n.id(), 0, probe_n.id(), 0));
+        take(connect(runtime, graph.id(), builder_n.id(), 0, probe_n.id(), 1));
+        take(connect(runtime, graph.id(), builder_n.id(), 1, probe_n.id(), 2));
+        take(set_display(runtime, graph.id(), probe_n.id()));
+
+        Evaluator eval{runtime, graph, resources, program.get()};
+        take(eval.evaluate());
+        const auto* out = eval.output();
+        require(out != nullptr && out->count(Layer::point) == 100, "SpatialProbe evaluation failed.");
+        bool any_lifted = false;
+        for (const auto& p : out->positions())
+            any_lifted |= std::abs(p.y - 1.5f) < 1e-4f;
+        const auto& cd = column<float>(*out, "curve_d", Layer::point);
+        require(any_lifted && cd[0] >= 2.5f,
+                "Parallel raycast_surface / closest_polyline + auxiliary port column did not produce expected values.");
+
+        // Reject mutating primary stream output 0 via emit_points.
+        const auto bad_emit_n = take(add_node(runtime, graph.id(), take(runtime.find_type("test.BadPrimaryEmit"))));
+        take(connect(runtime, graph.id(), grid_n.id(), 0, bad_emit_n.id(), 0));
+        take(eval.evaluate_node(bad_emit_n.id()));
+        require(eval.status(bad_emit_n.id()) && eval.status(bad_emit_n.id())->error &&
+                    eval.status(bad_emit_n.id())->error->message.contains("primary column-stream output 0"),
+                "emit_points on primary stream output 0 was not rejected.");
+
+        // Reject warped non-planar quad in emit_quads.
+        const auto bad_quad_n = take(add_node(runtime, graph.id(), take(runtime.find_type("test.BadWarpedQuad"))));
+        take(eval.evaluate_node(bad_quad_n.id()));
+        require(eval.status(bad_quad_n.id()) && eval.status(bad_quad_n.id())->error &&
+                    eval.status(bad_quad_n.id())->error->message.contains("planar"),
+                "Warped non-planar quad in emit_quads was not rejected by shared polygon validator.");
+    }
+}
+
 }
 
 int main(int argc, char** argv) {
@@ -1352,6 +1571,7 @@ int main(int argc, char** argv) {
     boolean_contact_sweep();
     graph_evaluation();
     source_and_spatial_contracts();
+    generative_modeling_and_l3_contracts();
     std::puts("procedural acceptance passed");
     return 0;
 }

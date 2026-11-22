@@ -89,6 +89,59 @@ public:
 
     Node& operator=(const Node&) = delete;
 
+    AFUNCTION(BorrowSafe, DESC = "向指定显式输出端口提交变长纯点集。")
+    [[nodiscard]] Result<void> emit_points(const Array<math::Vector3>& positions,
+                                           std::uint32_t output_port = 0u) const noexcept;
+
+    AFUNCTION(BorrowSafe, DESC = "向指定显式输出端口提交一条或多条开放折线拓扑。")
+    [[nodiscard]] Result<void> emit_polylines(const Array<math::Vector3>& positions,
+                                              const Array<std::uint32_t>& vertex_points,
+                                              const Array<std::uint32_t>& offsets,
+                                              std::uint32_t output_port = 0u) const noexcept;
+
+    AFUNCTION(BorrowSafe, DESC = "向指定显式输出端口提交经公共凸面与平面容差校验的多边形面片拓扑。")
+    [[nodiscard]] Result<void> emit_polygons(const Array<math::Vector3>& positions,
+                                             const Array<std::uint32_t>& vertex_points,
+                                             const Array<std::uint32_t>& offsets,
+                                             std::uint32_t output_port = 0u) const noexcept;
+
+    AFUNCTION(BorrowSafe, DESC = "向指定显式输出端口提交经公共凸面与平面容差校验的四边形面片序列。")
+    [[nodiscard]] Result<void> emit_quads(const Array<math::Vector3>& positions,
+                                          const Array<std::uint32_t>& quad_points,
+                                          std::uint32_t output_port = 0u) const noexcept;
+
+    AFUNCTION(BorrowSafe, DESC = "在指定显式输出端口的几何层上写入或替换 bool 属性列。")
+    [[nodiscard]] Result<void> set_bool(const String& name, Layer layer, const Array<bool>& values,
+                                        std::uint32_t output_port = 0u) const noexcept;
+
+    AFUNCTION(BorrowSafe, DESC = "在指定显式输出端口的几何层上写入或替换 int 属性列。")
+    [[nodiscard]] Result<void> set_int(const String& name, Layer layer, const Array<std::int32_t>& values,
+                                       std::uint32_t output_port = 0u) const noexcept;
+
+    AFUNCTION(BorrowSafe, DESC = "在指定显式输出端口的几何层上写入或替换 uint 属性列。")
+    [[nodiscard]] Result<void> set_uint(const String& name, Layer layer, const Array<std::uint32_t>& values,
+                                        std::uint32_t output_port = 0u) const noexcept;
+
+    AFUNCTION(BorrowSafe, DESC = "在指定显式输出端口的几何层上写入或替换 float 属性列。")
+    [[nodiscard]] Result<void> set_float(const String& name, Layer layer, const Array<float>& values,
+                                         std::uint32_t output_port = 0u) const noexcept;
+
+    AFUNCTION(BorrowSafe, DESC = "在指定显式输出端口的几何层上写入或替换 vector2 属性列。")
+    [[nodiscard]] Result<void> set_vec2(const String& name, Layer layer, const Array<math::Vector2>& values,
+                                        std::uint32_t output_port = 0u) const noexcept;
+
+    AFUNCTION(BorrowSafe, DESC = "在指定显式输出端口的几何层上写入或替换 vector3 属性列。")
+    [[nodiscard]] Result<void> set_vec3(const String& name, Layer layer, const Array<math::Vector3>& values,
+                                        std::uint32_t output_port = 0u) const noexcept;
+
+    AFUNCTION(BorrowSafe, DESC = "在指定显式输出端口的几何层上写入或替换 vector4 属性列。")
+    [[nodiscard]] Result<void> set_vec4(const String& name, Layer layer, const Array<math::Vector4>& values,
+                                        std::uint32_t output_port = 0u) const noexcept;
+
+    AFUNCTION(BorrowSafe, DESC = "在指定显式输出端口的几何层上写入或替换 quaternion 属性列。")
+    [[nodiscard]] Result<void> set_quat(const String& name, Layer layer, const Array<math::Quaternion>& values,
+                                        std::uint32_t output_port = 0u) const noexcept;
+
 private:
     friend struct detail::Access;
 

@@ -317,7 +317,7 @@ Result<std::shared_ptr<const MaterialProgram>> compile_material(Runtime& runtime
     const auto original = bind_type(runtime, {});
     if (!original)
         return fail(original.error());
-    auto definitions = type_definitions(*declarations, *original);
+    auto definitions = type_definitions(*declarations, {}, *original);
     if (!definitions)
         return fail(definitions.error());
     auto publication = atelier::detail::TypePublication::prepare(runtime, std::move(*definitions));

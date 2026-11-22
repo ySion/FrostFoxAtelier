@@ -1503,6 +1503,277 @@ struct Runtime::Impl {
 
     static_assert(std::is_trivially_copyable_v<ReferenceSlot> && std::is_implicit_lifetime_v<ReferenceSlot>);
 
+    struct DescribedArray {
+        std::byte* data{};
+
+        std::size_t size{};
+
+        std::size_t capacity{};
+    };
+
+    static void described_array_view(const void* value, const void** data, std::size_t* size) noexcept {
+        const auto& array = *static_cast<const DescribedArray*>(value);
+        *data = array.data;
+        *size = array.size;
+    }
+
+    static bool is_described_array(const Type& type) noexcept {
+        return !type.native.construct && type.info.kind == TypeKind::array;
+    }
+
+    void destroy_elements(const Type& element, std::byte* data, std::size_t count) noexcept {
+        if (!element.needs_destroy || count == 0)
+            return;
+        for (std::size_t i = count; i-- > 0;)
+            destroy(element, data + i * element.info.size);
+    }
+
+    void destroy_described_array(const Type& array_type, void* storage) noexcept {
+        auto& arr = *static_cast<DescribedArray*>(storage);
+        if (!arr.data)
+            return;
+        const auto& element = *lookup(*array_type.info.element);
+        destroy_elements(element, arr.data, arr.size);
+        ::operator delete(arr.data, std::align_val_t{element.info.alignment});
+        arr = {};
+    }
+
+    Result<void> construct_elements(const Type& element, std::byte* destination, const std::byte* source,
+                                    std::size_t count) {
+        if (count == 0)
+            return {};
+        const std::size_t stride = element.info.size;
+        if (source && (element.prototype || element.scalar_leaf)) {
+            std::memcpy(destination, source, count * stride);
+            return {};
+        }
+        if (!source && element.info.zero_default) {
+            std::memset(destination, 0, count * stride);
+            return {};
+        }
+        if (!source && element.prototype) {
+            for (std::size_t i = 0; i < count; ++i)
+                std::memcpy(destination + i * stride, element.prototype, stride);
+            return {};
+        }
+        prepare_walk(element);
+        for (std::size_t i = 0; i < count; ++i) {
+            auto made = construct(element, destination + i * stride, source ? source + i * stride : nullptr);
+            if (!made) {
+                destroy_elements(element, destination, i);
+                return made;
+            }
+        }
+        return {};
+    }
+
+    Result<void> construct_described_array(const Type& array_type, void* storage, const void* source) {
+        auto& dst = *static_cast<DescribedArray*>(storage);
+        dst = {};
+        if (!source)
+            return {};
+        const auto& src = *static_cast<const DescribedArray*>(source);
+        if (src.size == 0)
+            return {};
+        const auto& element = *lookup(*array_type.info.element);
+        const std::size_t bytes = src.size * element.info.size;
+        auto* buffer = static_cast<std::byte*>(::operator new(bytes, std::align_val_t{element.info.alignment}));
+        if (auto copied = construct_elements(element, buffer, src.data, src.size); !copied) {
+            ::operator delete(buffer, std::align_val_t{element.info.alignment});
+            return copied;
+        }
+        dst = {buffer, src.size, src.size};
+        return {};
+    }
+
+    Result<void> assign_described_array(const Type& array_type, void* storage, const void* source) {
+        if (storage == source)
+            return {};
+        auto& dst = *static_cast<DescribedArray*>(storage);
+        const auto& src = *static_cast<const DescribedArray*>(source);
+        const auto& element = *lookup(*array_type.info.element);
+        if ((element.prototype || element.scalar_leaf) && src.size <= dst.capacity) {
+            if (src.size > 0)
+                std::memcpy(dst.data, src.data, src.size * element.info.size);
+            dst.size = src.size;
+            return {};
+        }
+        DescribedArray copy{};
+        ATELIER_TRY(construct_described_array(array_type, &copy, source));
+        std::swap(dst, copy);
+        destroy_described_array(array_type, &copy);
+        return {};
+    }
+
+    Result<void> mutate_described_array(const Type& array_type, SequenceMutation operation, void* target,
+                                        const void* source, std::size_t count) {
+        auto& arr = *static_cast<DescribedArray*>(target);
+        const auto& element = *lookup(*array_type.info.element);
+        const std::size_t stride = element.info.size;
+        const std::size_t max_elems = (static_cast<std::size_t>(PTRDIFF_MAX)) / std::max(std::size_t{1}, stride);
+        const std::size_t added = operation == SequenceMutation::append
+                                      ? static_cast<const DescribedArray*>(source)->size
+                                  : (operation == SequenceMutation::add || operation == SequenceMutation::insert) ? 1
+                                                                                                                  : 0;
+        if (((operation == SequenceMutation::reserve || operation == SequenceMutation::resize) && count > max_elems) ||
+            added > max_elems - arr.size)
+            return failure(ErrorCode::capacity_exceeded, "Array size exceeds addressable storage.");
+
+        const auto grow_to = [&](std::size_t min_cap) -> Result<std::byte*> {
+            std::size_t next_cap = arr.capacity ? (arr.capacity > max_elems / 2 ? max_elems : arr.capacity * 2) : 4;
+            if (next_cap < min_cap)
+                next_cap = min_cap;
+            auto* buffer =
+                static_cast<std::byte*>(::operator new(next_cap * stride, std::align_val_t{element.info.alignment}));
+            if (auto moved = construct_elements(element, buffer, arr.data, arr.size); !moved) {
+                ::operator delete(buffer, std::align_val_t{element.info.alignment});
+                return std::unexpected(std::move(moved.error()));
+            }
+            arr.capacity = next_cap;
+            return buffer;
+        };
+        const auto replace_storage = [&](std::byte* replacement, std::size_t old_count) noexcept {
+            if (arr.data) {
+                destroy_elements(element, arr.data, old_count);
+                ::operator delete(arr.data, std::align_val_t{element.info.alignment});
+            }
+            arr.data = replacement;
+        };
+        const bool can_reorder =
+            element.info.plain_value || element.info.kind == TypeKind::scalar || !element.swap_parts.empty();
+        const auto swap_one = [&](std::size_t a, std::size_t b) noexcept {
+            auto* first = arr.data + a * stride;
+            auto* second = arr.data + b * stride;
+            if (element.info.plain_value || element.info.kind == TypeKind::scalar)
+                std::swap_ranges(first, first + stride, second);
+            else
+                swap_value(element, first, second);
+        };
+
+        switch (operation) {
+        case SequenceMutation::reserve: {
+            if (count > arr.capacity) {
+                const std::size_t prev_size = arr.size;
+                ATELIER_TRY_BIND(buf, grow_to(count));
+                replace_storage(*buf, prev_size);
+            }
+            return {};
+        }
+        case SequenceMutation::clear:
+            destroy_elements(element, arr.data, arr.size);
+            arr.size = 0;
+            return {};
+        case SequenceMutation::resize: {
+            if (count <= arr.size) {
+                destroy_elements(element, arr.data + count * stride, arr.size - count);
+                arr.size = count;
+                return {};
+            }
+            if (count > arr.capacity) {
+                const std::size_t old_size = arr.size;
+                const std::size_t old_cap = arr.capacity;
+                ATELIER_TRY_BIND(buf, grow_to(count));
+                if (auto init = construct_elements(element, *buf + old_size * stride, nullptr, count - old_size);
+                    !init) {
+                    destroy_elements(element, *buf, old_size);
+                    ::operator delete(*buf, std::align_val_t{element.info.alignment});
+                    arr.capacity = old_cap;
+                    return init;
+                }
+                replace_storage(*buf, old_size);
+                arr.size = count;
+                return {};
+            }
+            ATELIER_TRY(construct_elements(element, arr.data + arr.size * stride, nullptr, count - arr.size));
+            arr.size = count;
+            return {};
+        }
+        case SequenceMutation::add: {
+            // Construct incoming element before releasing old storage so `arr.add(arr[i])` is safe.
+            if (arr.size == arr.capacity) {
+                const std::size_t old_size = arr.size;
+                const std::size_t old_cap = arr.capacity;
+                ATELIER_TRY_BIND(buf, grow_to(old_size + 1));
+                if (auto made =
+                        construct_elements(element, *buf + old_size * stride, static_cast<const std::byte*>(source), 1);
+                    !made) {
+                    destroy_elements(element, *buf, old_size);
+                    ::operator delete(*buf, std::align_val_t{element.info.alignment});
+                    arr.capacity = old_cap;
+                    return made;
+                }
+                replace_storage(*buf, old_size);
+                arr.size = old_size + 1;
+                return {};
+            }
+            ATELIER_TRY(
+                construct_elements(element, arr.data + arr.size * stride, static_cast<const std::byte*>(source), 1));
+            ++arr.size;
+            return {};
+        }
+        case SequenceMutation::append: {
+            const auto& incoming = *static_cast<const DescribedArray*>(source);
+            if (incoming.size == 0)
+                return {};
+            const std::size_t add_count = incoming.size;
+            if (arr.size + add_count > arr.capacity || incoming.data == arr.data) {
+                const std::size_t old_size = arr.size;
+                const std::size_t old_cap = arr.capacity;
+                ATELIER_TRY_BIND(buf, grow_to(old_size + add_count));
+                if (auto made = construct_elements(element, *buf + old_size * stride, incoming.data, add_count);
+                    !made) {
+                    destroy_elements(element, *buf, old_size);
+                    ::operator delete(*buf, std::align_val_t{element.info.alignment});
+                    arr.capacity = old_cap;
+                    return made;
+                }
+                replace_storage(*buf, old_size);
+                arr.size = old_size + add_count;
+                return {};
+            }
+            ATELIER_TRY(construct_elements(element, arr.data + arr.size * stride, incoming.data, add_count));
+            arr.size += add_count;
+            return {};
+        }
+        case SequenceMutation::insert: {
+            if (!can_reorder)
+                return failure(ErrorCode::unsupported_operation, "Element type does not support in-place reordering.");
+            ATELIER_TRY(mutate_described_array(array_type, SequenceMutation::add, target, source, 0));
+            for (std::size_t k = arr.size - 1; k > count; --k)
+                swap_one(k, k - 1);
+            return {};
+        }
+        case SequenceMutation::remove: {
+            const auto remove_count = *static_cast<const std::size_t*>(source);
+            if (remove_count == 0)
+                return {};
+            if (!can_reorder)
+                return failure(ErrorCode::unsupported_operation, "Element type does not support in-place reordering.");
+            for (std::size_t k = count + remove_count; k < arr.size; ++k)
+                swap_one(k - remove_count, k);
+            destroy_elements(element, arr.data + (arr.size - remove_count) * stride, remove_count);
+            arr.size -= remove_count;
+            return {};
+        }
+        case SequenceMutation::move: {
+            const auto to = *static_cast<const std::size_t*>(source);
+            if (count == to)
+                return {};
+            if (!can_reorder)
+                return failure(ErrorCode::unsupported_operation, "Element type does not support in-place reordering.");
+            if (count < to)
+                for (std::size_t k = count; k < to; ++k)
+                    swap_one(k, k + 1);
+            else
+                for (std::size_t k = count; k > to; --k)
+                    swap_one(k, k - 1);
+            return {};
+        }
+        default:
+            return failure(ErrorCode::unsupported_operation, "Unsupported Array mutation.");
+        }
+    }
+
     static void apply_default_leaves(std::byte* destination, const std::vector<Scalar>& leaves) noexcept {
         auto* leaf = destination;
         for (const auto& value : leaves)
@@ -1522,6 +1793,8 @@ struct Runtime::Impl {
     Result<void> construct(const Type& type, void* storage, const void* source = nullptr) {
         if (type.native.construct)
             return source ? type.native.copy_construct(storage, source) : type.native.construct(storage);
+        if (is_described_array(type))
+            return construct_described_array(type, storage, source);
         if (type.prototype) {
             std::memcpy(storage, source ? source : type.prototype, type.info.size);
             return {};
@@ -1557,6 +1830,10 @@ struct Runtime::Impl {
                             std::construct_at(reinterpret_cast<String*>(destination), std::move(*text));
                     } else
                         result = field.type->native.construct(destination);
+                    if (!result)
+                        break;
+                } else if (is_described_array(*field.type)) {
+                    result = construct_described_array(*field.type, destination, origin);
                     if (!result)
                         break;
                 } else if (field.type->prototype) {
@@ -1619,6 +1896,8 @@ struct Runtime::Impl {
     Result<void> assign(const Type& type, void* storage, const void* source) {
         if (type.native.construct)
             return type.native.copy_assign(storage, source);
+        if (is_described_array(type))
+            return assign_described_array(type, storage, source);
         if (type.prototype || type.scalar_leaf) {
             std::memcpy(storage, source, type.info.size);
             return {};
@@ -1639,6 +1918,8 @@ struct Runtime::Impl {
             if (field.value.form == ValueForm::inline_value) {
                 if (field.type->native.construct) {
                     ATELIER_TRY(field.type->native.copy_assign(destination, origin));
+                } else if (is_described_array(*field.type)) {
+                    ATELIER_TRY(assign_described_array(*field.type, destination, origin));
                 } else if (field.type->prototype || field.type->scalar_leaf)
                     std::memcpy(destination, origin, field.type->info.size);
                 else
@@ -1657,6 +1938,10 @@ struct Runtime::Impl {
             type.native.destroy(storage);
             return;
         }
+        if (is_described_array(type)) {
+            destroy_described_array(type, storage);
+            return;
+        }
         WalkScope scope{walk_stack};
         walk_stack.add({&type, static_cast<std::byte*>(storage), nullptr, type.destroy_fields.size()});
         while (walk_stack.size() != scope.base) {
@@ -1673,6 +1958,8 @@ struct Runtime::Impl {
                 std::destroy_at(reinterpret_cast<ReferenceSequence*>(address));
             else if (field.type->native.destroy)
                 field.type->native.destroy(address);
+            else if (is_described_array(*field.type))
+                destroy_described_array(*field.type, address);
             else
                 walk_stack.add({field.type, address, nullptr, field.type->destroy_fields.size()});
         }
@@ -1733,9 +2020,13 @@ struct Runtime::Impl {
 
     struct TwoStepField {
         const Type* root{};
+
         std::array<FieldId, 2> path{};
+
         std::size_t offset{};
+
         const Type* leaf{};
+
         const FieldRange* range{};
     };
 
@@ -2483,16 +2774,19 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
                            "Enums require a 32-bit value layout and cannot declare members or bases.");
         const bool array = definition.kind == TypeKind::array;
         const bool string = definition.kind == TypeKind::string;
-        if (array != definition.element.has_value() || array != (native.element_representation != nullptr))
+        if (array != definition.element.has_value() ||
+            (is_native && array != (native.element_representation != nullptr)))
             return failure(ErrorCode::invalid_definition,
                            "Array types require their exact native element representation.");
-        if (array && !native.sequence_view)
+        if (array && is_native && !native.sequence_view)
             return failure(ErrorCode::invalid_definition,
                            "Array types require an element projection for element paths.");
         if ((native.sequence_view || native.sequence_mutate) && !array && !string)
             return failure(ErrorCode::invalid_definition, "Only Array/String types can project sequence storage.");
-        if ((array || string) &&
-            (!is_native || !native.copy_construct || !native.copy_assign || !definition.fields.empty()))
+        if (string && (!is_native || !native.copy_construct || !native.copy_assign || !definition.fields.empty()))
+            return failure(ErrorCode::invalid_definition,
+                           "Foundation values require native ownership operations and no inline fields.");
+        if (array && (!definition.fields.empty() || (is_native && (!native.copy_construct || !native.copy_assign))))
             return failure(ErrorCode::invalid_definition,
                            "Foundation values require native ownership operations and no inline fields.");
         if (string && native.representation != detail::representation<String>())
@@ -2502,8 +2796,13 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
             return failure(ErrorCode::invalid_definition, "Type validators require a record or object type.");
         const TypeId id{impl_->context, static_cast<std::uint32_t>(first_index + staged.size())};
         auto type = std::make_unique<Impl::Type>();
-        type->info = {
-            id, std::move(definition.name), definition.kind, native.size, is_native ? native.alignment : 1, {}, {}};
+        type->info = {id,
+                      std::move(definition.name),
+                      definition.kind,
+                      is_native ? native.size : (array ? sizeof(Impl::DescribedArray) : 0),
+                      is_native ? native.alignment : (array ? alignof(Impl::DescribedArray) : 1),
+                      {},
+                      {}};
         type->info.description = std::move(definition.description);
         type->info.metadata = std::move(definition.metadata);
         type->validate = definition.validate;
@@ -2515,10 +2814,13 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
                                  (definition.kind == TypeKind::record &&
                                   (!is_native || (native.plain_value && native.copy_construct && native.copy_assign)));
         type->native = native;
+        if (array && !is_native)
+            type->native.sequence_view = &Impl::described_array_view;
         type->info.native_storage = is_native;
-        type->info.sequence_view = native.sequence_view;
+        type->info.sequence_view = type->native.sequence_view;
         type->info.sequence_mutate = native.sequence_mutate;
-        type->info.value_operations_preserve_borrows = native.value_operations_preserve_borrows;
+        type->info.value_operations_preserve_borrows =
+            (array && !is_native) ? true : native.value_operations_preserve_borrows;
         staged.add(std::move(type));
     }
 
@@ -2579,7 +2881,8 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
         if (definition.element) {
             const auto* element = resolve(*definition.element);
             if (!element || element->info.kind == TypeKind::object ||
-                element->native.representation != type.native.element_representation)
+                (type.native.construct != nullptr &&
+                 element->native.representation != type.native.element_representation))
                 return failure(ErrorCode::invalid_definition,
                                "Array elements must resolve to their registered native value representation.");
             type.info.element = element->info.id;
@@ -2945,7 +3248,8 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
                 type.info.value_operations_preserve_borrows &= element.kind == TypeKind::scalar ||
                                                                element.kind == TypeKind::enumeration ||
                                                                element.value_operations_preserve_borrows;
-                if (element.contains_references || !element.copy_constructible)
+                if (element.contains_references || !element.copy_constructible ||
+                    (!is_native && !element.copy_assignable))
                     return failure(
                         ErrorCode::invalid_definition,
                         "Reflected Array elements must be copyable values without GC references; use ReferenceSequence for object references.");
@@ -2954,8 +3258,13 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
                     type.constrained_leaves.add({{}, nullptr, {}, &type});
                 if (!element_type->validators.empty())
                     type.validators.add({{}, {}, nullptr, &type});
+                if (!is_native) {
+                    type.info.copy_constructible = element.copy_constructible;
+                    type.info.copy_assignable = element.copy_assignable;
+                    type.walk_depth = element_type->walk_depth + 1;
+                }
             }
-            type.needs_destroy = is_native && !type.native.trivially_destructible;
+            type.needs_destroy = (is_native && !type.native.trivially_destructible) || Impl::is_described_array(type);
             if (!is_native && type.info.kind == TypeKind::record)
                 type.info.value_operations_preserve_borrows = true;
             for (std::size_t field_index = 0; field_index != type.fields.size(); ++field_index) {
@@ -3099,7 +3408,7 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
                 }
                 ::operator delete(scratch, std::align_val_t{type.info.alignment});
             }
-            if (!is_native) {
+            if (!is_native && type.info.kind != TypeKind::array) {
                 const auto size = aligned_size(std::max(std::size_t{1}, type.info.size), type.info.alignment);
                 if (!size)
                     return std::unexpected(size.error());
@@ -3170,9 +3479,11 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
                                 Impl::apply_default_leaves(destination, field.default_leaves);
                         }
                         type.walk_depth = 1;
-                        if (type.info.kind == TypeKind::record && type.info.plain_value)
+                        if (type.info.kind == TypeKind::record && type.info.plain_value) {
+                            type.info.prototype = image;
                             type.info.zero_default = std::all_of(image, image + type.info.size,
                                                                  [](std::byte b) { return b == std::byte{0}; });
+                        }
                     }
                 }
             }
@@ -3181,6 +3492,8 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
                 if (is_native) {
                     if (type.native.swap)
                         type.swap_parts = {{0, type.info.size, type.native.swap}};
+                } else if (type.info.kind == TypeKind::array) {
+                    type.swap_parts = {{0, type.info.size, nullptr}};
                 } else {
                     for (const auto& field : type.fields) {
                         const auto& target = *field.type;
@@ -3707,7 +4020,9 @@ Result<void> Runtime::mutate_sequence(TypeId type_id, std::span<std::byte> stora
     if (!type)
         return std::unexpected(type.error());
     const auto& info = (*type)->info;
-    if (!info.sequence_mutate || !info.value_operations_preserve_borrows || info.contains_references)
+    const bool described_array = Impl::is_described_array(**type);
+    if ((!info.sequence_mutate && !described_array) || !info.value_operations_preserve_borrows ||
+        info.contains_references)
         return failure(ErrorCode::unsupported_operation,
                        "Sequence operations lack a borrow-preserving value contract.");
     switch (operation) {
@@ -3738,6 +4053,8 @@ Result<void> Runtime::mutate_sequence(TypeId type_id, std::span<std::byte> stora
         return failure(ErrorCode::unsupported_operation, "Unknown sequence operation.");
     }
     CallbackScope scope{impl_->callbacks};
+    if (described_array)
+        return impl_->mutate_described_array(**type, operation, storage.data(), input.data(), count);
     return info.sequence_mutate(operation, storage.data(), input.data(), count);
 }
 
@@ -4476,7 +4793,7 @@ Result<void> Runtime::mutate_elements(ObjectId object, std::span<const FieldId> 
         return std::unexpected(address.error());
     impl_->stamp(object.index_);
     const auto& array = *impl_->lookup(address->value.type);
-    if (!array.info.sequence_mutate)
+    if (!array.info.sequence_mutate && !Impl::is_described_array(array))
         return failure(ErrorCode::unsupported_operation, "This Array type has no structural operations.");
     const auto& element = *impl_->lookup(*array.info.element);
     const auto size = Impl::elements(array, address->data).second;
@@ -4504,8 +4821,11 @@ Result<void> Runtime::mutate_elements(ObjectId object, std::span<const FieldId> 
         return impl_->located(ErrorCode::argument_mismatch, address->root, path, leaf,
                               "Hard-bounded fields reject NaN and infinity.");
     }
-    ATELIER_TRY(array.info.sequence_mutate(operation, address->data,
-                                           operation == SequenceMutation::insert ? value.data : &operand, position));
+    const void* mutation_input = operation == SequenceMutation::insert ? value.data : &operand;
+    if (array.info.sequence_mutate)
+        ATELIER_TRY(array.info.sequence_mutate(operation, address->data, mutation_input, position));
+    else
+        ATELIER_TRY(impl_->mutate_described_array(array, operation, address->data, mutation_input, position));
     if (copy)
         impl_->constrain_value(element, address->range,
                                Impl::elements(array, address->data).first + position * element.info.size, true);

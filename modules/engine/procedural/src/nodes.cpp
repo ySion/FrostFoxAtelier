@@ -150,6 +150,36 @@ Result<void> Realize::process(const Geometries& sources, const Geometry& points,
     return {};
 }
 
+Result<void> Extrude::process(const Geometry& surface, Geometry& output) const noexcept {
+    ATELIER_TRY_BIND(result, invocation_result(extrude(surface, {.group = group.view(),
+                                                                 .distance = distance,
+                                                                 .inset = inset,
+                                                                 .distance_attribute = distance_attribute.view(),
+                                                                 .inset_attribute = inset_attribute.view(),
+                                                                 .individual = individual,
+                                                                 .output_back = output_back,
+                                                                 .front_group = front_group.view(),
+                                                                 .side_group = side_group.view()})));
+    output = std::move(*result);
+    return {};
+}
+
+Result<void> Sweep::process(const Geometry& backbone, const Geometry& cross_section, Geometry& output) const noexcept {
+    const Geometry* profile_geo = profile == SweepProfile::custom ? &cross_section : nullptr;
+    ATELIER_TRY_BIND(result, invocation_result(sweep(backbone,
+                                                     {.profile = profile,
+                                                      .width = width,
+                                                      .height = height,
+                                                      .radius = radius,
+                                                      .segments = segments,
+                                                      .up = up,
+                                                      .end_caps = end_caps,
+                                                      .scale_attribute = scale_attribute.view()},
+                                                     profile_geo)));
+    output = std::move(*result);
+    return {};
+}
+
 Result<void> Null::process(const Geometry& input, Geometry& output) const noexcept {
     output = input;
     return {};

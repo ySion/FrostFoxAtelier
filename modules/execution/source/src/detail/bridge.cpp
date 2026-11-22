@@ -81,10 +81,13 @@ Result<Binding> bind_type(Runtime& runtime, TypeId type, std::span<const TypeInf
              {},
              value.sequence_view,
              value.value_operations_preserve_borrows && value.copy_constructible && value.copy_assignable,
-             value.sequence_mutate != nullptr,
+             value.sequence_mutate != nullptr || (!value.native_storage && value.kind == TypeKind::array),
              value.math,
              value.plain_value,
-             value.zero_default});
+             value.zero_default,
+             (!value.zero_default && value.prototype)
+                 ? std::vector<std::byte>(value.prototype, value.prototype + value.size)
+                 : std::vector<std::byte>{}});
         kind_by_id.insert_or_assign(value.id, BusinessType{kind, 0});
     };
     std::vector<const TypeInfo*> pending_arrays;
@@ -300,7 +303,8 @@ EnvironmentView::EnvironmentView(const Binding& binding) noexcept {
             fields.push_back({field.name.c_str(), field.type, field.offset});
         values.push_back({value.name.c_str(), value.kind, value.size, value.alignment, value.element, fields.data(),
                           static_cast<std::uint32_t>(fields.size()), value.sequence_view, value.can_own,
-                          value.can_mutate, value.math, value.plain_value, value.zero_default});
+                          value.can_mutate, value.math, value.plain_value, value.zero_default,
+                          value.initial_value.empty() ? nullptr : value.initial_value.data()});
     }
     for (const auto& field : binding.fields)
         fields.push_back({field.name.c_str(), field.kind, field.constrained, field.access.data(),
@@ -812,7 +816,9 @@ bool same_environment(const Binding& binding, const BusinessEnvironment& environ
         if (!b.name || a.name != b.name || a.kind != b.kind || a.size != b.size || a.alignment != b.alignment ||
             a.element != b.element || a.sequence_view != b.sequence_view || a.can_own != b.can_own ||
             a.can_mutate != b.can_mutate || a.math != b.math || a.plain_value != b.plain_value ||
-            a.zero_default != b.zero_default || a.fields.size() != b.field_count || (b.field_count && !b.fields))
+            a.zero_default != b.zero_default || a.initial_value.empty() != (b.initial_value == nullptr) ||
+            (!a.initial_value.empty() && std::memcmp(a.initial_value.data(), b.initial_value, a.size) != 0) ||
+            a.fields.size() != b.field_count || (b.field_count && !b.fields))
             return false;
         for (std::size_t j = 0; j < a.fields.size(); ++j) {
             const auto& x = a.fields[j];

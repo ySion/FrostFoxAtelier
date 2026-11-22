@@ -173,6 +173,39 @@ void runtime_sequence() {
     std::vector<std::byte> outer_bytes(outer_info->size);
     take(runtime.initialize_value(empty_batch[0], outer_bytes));
     take(runtime.destroy_value(empty_batch[0], outer_bytes));
+
+    TypeDefinition desc_arr_def;
+    desc_arr_def.name = "gc.OuterArray";
+    desc_arr_def.kind = TypeKind::array;
+    desc_arr_def.element = TypeReference{empty_batch[0]};
+    TypeDefinition arr_owner_def;
+    arr_owner_def.name = "gc.ArrayOwner";
+    arr_owner_def.kind = TypeKind::object;
+    arr_owner_def.fields = {{"items", {TypeReference{"gc.OuterArray"}}}};
+    const auto arr_batch = take(runtime.register_types({std::move(desc_arr_def), std::move(arr_owner_def)}));
+    auto arr_owner = take(runtime.create(arr_batch[1]));
+    const auto* arr_owner_info = take(runtime.describe(arr_batch[1]));
+    const std::array items_path{arr_owner_info->fields[0].id};
+    take(runtime.insert_element(arr_owner.id(), items_path, 0));
+    take(runtime.insert_element(arr_owner.id(), items_path, 1));
+    const std::array elem0_scale{arr_owner_info->fields[0].id, take(runtime.element(arr_batch[0], 0)),
+                                 outer_info->fields[1].id};
+    const std::array elem1_scale{arr_owner_info->fields[0].id, take(runtime.element(arr_batch[0], 1)),
+                                 outer_info->fields[1].id};
+    take(runtime.write(arr_owner.id(), elem0_scale, Scalar{1.25f}));
+    take(runtime.write(arr_owner.id(), elem1_scale, Scalar{1.75f}));
+    take(runtime.move_element(arr_owner.id(), items_path, 0, 1));
+    require(take(runtime.element_count(arr_owner.id(), items_path)) == 2 &&
+                std::get<float>(take(runtime.read(arr_owner.id(), elem0_scale))) == 1.75f &&
+                std::get<float>(take(runtime.read(arr_owner.id(), elem1_scale))) == 1.25f,
+            "Described Array move_element or element read/write failed.");
+    take(runtime.write(arr_owner.id(), elem0_scale, Scalar{2.5f}));
+    require(std::get<float>(take(runtime.read(arr_owner.id(), elem0_scale))) == 2.0f,
+            "Described Array element range clamping failed.");
+    take(runtime.remove_elements(arr_owner.id(), items_path, 0, 1));
+    require(take(runtime.element_count(arr_owner.id(), items_path)) == 1 &&
+                std::get<float>(take(runtime.read(arr_owner.id(), elem0_scale))) == 1.25f,
+            "Described Array remove_elements failed.");
 }
 }
 

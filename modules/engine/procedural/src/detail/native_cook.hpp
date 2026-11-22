@@ -4,10 +4,13 @@
 
 #include <array>
 #include <memory>
+#include <span>
 #include <utility>
 
 namespace atelier::procedural {
 class Geometry;
+
+class Node;
 
 struct BooleanStats;
 
@@ -47,8 +50,16 @@ struct NativeCook {
 
     std::array<std::shared_ptr<const Geometry>, 2> inputs;
 
-    NativeCook(std::shared_ptr<const BooleanStats>& stats, BooleanPreparationCache& cache, std::size_t bytes) noexcept
-        : boolean_stats(stats), preparation(cache), budget(bytes), previous(std::exchange(current, this)) {}
+    const Node* active_node{};
+
+    std::span<Geometry> outputs{};
+
+    bool uses_primary_stream{};
+
+    NativeCook(std::shared_ptr<const BooleanStats>& stats, BooleanPreparationCache& cache, std::size_t bytes,
+               const Node* node = nullptr, std::span<Geometry> out_span = {}, bool primary_stream = false) noexcept
+        : boolean_stats(stats), preparation(cache), budget(bytes), active_node(node), outputs(out_span),
+          uses_primary_stream(primary_stream), previous(std::exchange(current, this)) {}
 
     ~NativeCook() { current = previous; }
 

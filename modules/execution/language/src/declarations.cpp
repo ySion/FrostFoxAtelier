@@ -52,7 +52,7 @@ std::expected<TypeDeclaration, Diagnostic> detail::parse_type_declaration(Tokens
     ATELIER_TRY_BIND(type_name, tokens.qualified_identifier());
     result.name = std::move(*type_name);
     if (result.name == "String" || result.name == "Array" || result.name.starts_with("core.") ||
-        result.name.starts_with("math."))
+        result.name.starts_with("math.") || result.name.starts_with("__source_"))
         return reject(result.position, "Source declarations cannot replace built-in types.");
     if (editor_reserved(result.name))
         return reject(result.position,
@@ -182,6 +182,7 @@ detail::parse_parameter_attributes(Tokens& tokens, bool allow_attributes,
     std::string explicit_name;
     std::string from;
     std::string layer;
+    std::string port;
     bool optional = false;
 
     const auto parse_options = [&](std::string_view close_tok) -> std::expected<void, Diagnostic> {
@@ -212,11 +213,17 @@ detail::parse_parameter_attributes(Tokens& tokens, bool allow_attributes,
                     if (optional)
                         return reject(opt->position, "Duplicate parameter option: Optional");
                     optional = true;
-                } else if (opt->text == "From" || opt->text == "Layer") {
+                } else if (opt->text == "From" || opt->text == "Layer" || opt->text == "Port") {
                     if (opt->text == "From" && (has_name || !from.empty()))
                         return reject(opt->position, "Specify either a literal name or From, not both.");
                     if (opt->text == "Layer" && !layer.empty())
                         return reject(opt->position, "Duplicate parameter option: Layer");
+                    if (opt->text == "Port") {
+                        if (role != "in" && role != "group")
+                            return reject(opt->position, "Port option applies only to In and Group parameters.");
+                        if (!port.empty())
+                            return reject(opt->position, "Duplicate parameter option: Port");
+                    }
                     ATELIER_TRY(tokens.expect("="));
                     if (tokens.token_.kind != Token::Kind::string)
                         return reject(tokens.token_.position, std::string(opt->text) + " requires a string literal.");
@@ -226,7 +233,12 @@ detail::parse_parameter_attributes(Tokens& tokens, bool allow_attributes,
                         std::ranges::any_of(*decoded, [](unsigned char c) { return c < 32 || c == 127; }))
                         return reject(opt->position, std::string(opt->text) +
                                                          " requires a nonempty string without control characters.");
-                    (opt->text == "From" ? from : layer) = std::move(*decoded);
+                    if (opt->text == "From")
+                        from = std::move(*decoded);
+                    else if (opt->text == "Layer")
+                        layer = std::move(*decoded);
+                    else
+                        port = std::move(*decoded);
                 } else {
                     return reject(opt->position, "Unknown parameter attribute option: " + std::string(opt->text));
                 }
@@ -261,6 +273,8 @@ detail::parse_parameter_attributes(Tokens& tokens, bool allow_attributes,
         metadata.emplace_back("procedural.from", std::move(from));
     if (!layer.empty())
         metadata.emplace_back("procedural.layer", std::move(layer));
+    if (!port.empty())
+        metadata.emplace_back("procedural.port", std::move(port));
     if (optional)
         metadata.emplace_back("procedural.optional", "true");
     std::ranges::sort(metadata);
@@ -317,6 +331,29 @@ std::expected<std::vector<TypeDeclaration>, Diagnostic> collect_declarations(std
         }
     }
     std::ranges::sort(result, {}, &TypeDeclaration::name);
+    return result;
+}
+
+std::expected<std::vector<TypeName>, Diagnostic> collect_array_types(std::string_view source) {
+    using namespace detail;
+    ATELIER_TRY_BIND(created, Tokens::create(source));
+    auto& tokens = *created;
+    std::vector<TypeName> result;
+    while (tokens.token_.kind != Token::Kind::end) {
+        if (tokens.token_.text == "Array") {
+            auto probe = tokens;
+            if (auto parsed = parse_type_name(probe); parsed && parsed->array_depth > 0) {
+                for (std::uint32_t depth = 1; depth <= parsed->array_depth; ++depth)
+                    result.push_back({parsed->name, depth});
+            }
+        }
+        ATELIER_TRY(tokens.consume());
+    }
+    std::ranges::sort(result, [](const TypeName& a, const TypeName& b) {
+        return a.array_depth != b.array_depth ? a.array_depth < b.array_depth : a.name < b.name;
+    });
+    const auto duplicate = std::ranges::unique(result);
+    result.erase(duplicate.begin(), duplicate.end());
     return result;
 }
 }

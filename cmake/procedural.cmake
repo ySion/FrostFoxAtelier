@@ -9,6 +9,7 @@ function(atelier_add_procedural)
         modules/engine/procedural/src/volume.cpp
         modules/engine/procedural/src/instances.cpp
         modules/engine/procedural/src/bvh.cpp
+        modules/engine/procedural/src/modeling.cpp
         modules/engine/procedural/src/graph.cpp
         modules/engine/procedural/src/nodes.cpp
         modules/engine/procedural/src/evaluator.cpp)
@@ -23,7 +24,7 @@ function(atelier_add_procedural)
     target_link_libraries(atelier_procedural PUBLIC atelier_runtime atelier_geometry atelier_source)
     atelier_reflect(atelier_procedural SOURCE modules/engine/procedural/src/graph.cpp
         BASE_DIR modules/engine/procedural/include
-        HEADERS modules/engine/procedural/include/procedural/geometry.hpp modules/engine/procedural/include/procedural/graph.hpp modules/engine/procedural/include/procedural/nodes.hpp)
+        HEADERS modules/engine/procedural/include/procedural/geometry.hpp modules/engine/procedural/include/procedural/bvh.hpp modules/engine/procedural/include/procedural/graph.hpp modules/engine/procedural/include/procedural/nodes.hpp)
 
     add_executable(atelier_procedural_acceptance
         acceptance/procedural/main.cpp

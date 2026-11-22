@@ -104,6 +104,8 @@ struct BoundValue {
 
     bool zero_default{};
 
+    std::vector<std::byte> initial_value{};
+
     bool operator==(const BoundValue&) const = default;
 };
 
@@ -141,7 +143,8 @@ BusinessType value_kind(const Binding&, TypeId);
 
 TypeId value_type_id(const Binding&, BusinessType);
 
-Result<std::vector<TypeDefinition>> type_definitions(const std::vector<language::TypeDeclaration>&, const Binding&);
+Result<std::vector<TypeDefinition>> type_definitions(const std::vector<language::TypeDeclaration>&,
+                                                     std::span<const language::TypeName>, const Binding&);
 
 struct EnvironmentView {
     std::vector<BusinessFieldBinding> fields;

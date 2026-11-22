@@ -943,11 +943,377 @@ int serial_caller(int v) {
         }
     }
 }
+
+struct ErgHost {
+    std::int32_t scale{9};
+
+    Result<std::int32_t> native_grow(Array<std::int32_t>& xs) const noexcept {
+        for (std::int32_t k = 0; k < 32; ++k)
+            xs.add(k + 500);
+        return static_cast<std::int32_t>(xs.size());
+    }
+};
+
+void verify_language_ergonomics() {
+    const auto register_erg_host = [](Runtime& rt) {
+        take(rt.register_types(
+            std::vector<TypeDefinition>{string_definition(rt), array_definition<std::int32_t>(rt, "test.IntArray"),
+                                        NativeRegistration<ErgHost>(rt, "test.PairHost", TypeKind::object)
+                                            .field<&ErgHost::scale>("scale")
+                                            .method<&ErgHost::native_grow>("native_grow", true)
+                                            .build()}));
+    };
+    Runtime runtime;
+    register_erg_host(runtime);
+    const auto host_type = take(runtime.find_type("test.PairHost"));
+    const auto publish_single = [](Program& prog, std::string_view name, std::string_view src,
+                                   std::string_view entry = {}, source::CompileOptions opts = {}) {
+        auto req = take(prog.request(name, src, entry, opts));
+        auto cand = take(Program::prepare(req));
+        take(prog.try_publish(cand));
+    };
+
+    // 1. Mutable `Array<T>&`, `String&`, and `Struct&` structural + element mutation, entry view invalidation safety,
+    //    automatic `Array<SourceStruct / SourceEnum>` synthesis (including `quaternion` defaults & nested `String`/`Array`),
+    //    `parallel_for` over `Array<SourceStruct>`, compound assignments, and ternary `?:`.
+    {
+        auto host = take(runtime.create(host_type));
+        auto host_bump = take(Program::create(runtime, host_type));
+        publish_single(*host_bump, "bump_host.source", "int bump() { self.scale += 3; return self.scale; }", "bump");
+        const auto bumped = take(host_bump->entry().invoke(host.id(), std::span<const Scalar>{}));
+        require(bumped && std::get<std::int32_t>(*bumped) == 12, "Compound assignment on self.scale failed.");
+
+        const std::string_view src = R"(
+[Flags]
+enum erg.Mask : uint {
+    None = 0,
+    Alpha = 1,
+    Beta = 2,
+    Gamma = 4
+};
+
+struct erg.Pose {
+    vector3 pos;
+    quaternion rot;
+    erg.Mask flags;
+    int score;
+};
+
+struct erg.Group {
+    String title;
+    Array<erg.Pose> poses;
+};
+
+const int erg.FOLDED_TRUE = true ? 17 : (1 / 0);
+const int erg.FOLDED_CHAIN = false ? 1 : true ? 29 : 3;
+
+void erg.push_pose(Array<erg.Pose>& list, erg.Pose item) {
+    list.add(item);
+}
+
+void erg.populate_group(erg.Group& g, const String& prefix, int count) {
+    g.title = prefix;
+    g.title.append(":ok");
+    g.poses.clear();
+    g.poses.reserve(uint(count));
+    for (int i = 0; i < count; i += 1) {
+        erg.Pose p;
+        p.pos = vector3(float(i), 1.0f, 0.0f);
+        p.score = i * 10;
+        p.flags = (i & 1) == 0 ? erg.Mask::Alpha : erg.Mask::Beta;
+        erg.push_pose(g.poses, p);
+    }
+}
+
+int erg.next_index(int& counter) {
+    counter += 1;
+    return counter - 1;
+}
+
+int erg.grow_and_value(Array<int>& arr, int& side_effects) {
+    side_effects += 10;
+    for (int k = 0; k < 64; k += 1) {
+        arr.add(k + 100);
+    }
+    return 25;
+}
+
+int erg.sum_ref_and_val(const int& ref_elem, int val) {
+    return ref_elem + val;
+}
+
+erg.Pose erg.grow_matrix_and_pose(Array<Array<erg.Pose>>& mat) {
+    Array<erg.Pose> extra;
+    for (int k = 0; k < 16; k += 1) {
+        mat.add(extra);
+    }
+    erg.Pose p;
+    p.score = 777;
+    return p;
+}
+
+int erg.div_zero_trap(int x) {
+    return 100 / x;
+}
+
+int erg.run_all(Array<int>& caller_arr, String& caller_str) {
+    // Read caller_arr[0] BEFORE structural growth inside the same function (`mutates_structure` must not cache stale view).
+    int head_before = caller_arr.size() > 0 ? caller_arr[0] : -1;
+    for (int i = 0; i < 48; i += 1) {
+        caller_arr.add(i + 10);
+    }
+    // Native BorrowSafe method mutating Array<int>& structure must also keep subsequent caller_arr[i] reads live.
+    const int after_native = self.native_grow(caller_arr);
+    if (after_native != 49 + 32) {
+        fail("Native Array<int>& growth failed.");
+    }
+    // By-value element copy from the same array across potential reallocation is safe.
+    int copied_head = caller_arr[0];
+    caller_arr.add(copied_head + 1);
+
+    // Single-evaluation + reallocation-safe compound assignment on indexed Array!
+    int idx_calls = 0;
+    int rhs_calls = 0;
+    caller_arr[erg.next_index(idx_calls)] += erg.grow_and_value(caller_arr, rhs_calls);
+    if (idx_calls != 1 || rhs_calls != 10 || caller_arr[0] != head_before + 25) {
+        fail("Compound assignment evaluated LHS more than once or wrote stale reallocated storage.");
+    }
+    // Cross-argument reallocation safety: earlier const-ref element borrow remains valid when a later argument grows `caller_arr`.
+    if (erg.sum_ref_and_val(caller_arr[0], erg.grow_and_value(caller_arr, rhs_calls)) != head_before + 50) {
+        fail("Cross-argument sequence reallocation corrupted borrowed element reference.");
+    }
+
+    // String& structural mutation and whole-value assignment.
+    String base = "atelier";
+    caller_str = base;
+    caller_str.append("-source");
+
+    // Nested Array<erg.Group> owning String + Array<erg.Pose>, plus Array<Array<erg.Pose>>.
+    Array<erg.Group> groups;
+    groups.resize(uint(2));
+    erg.populate_group(groups[0], caller_str, 6);
+    erg.populate_group(groups[1], "second", 4);
+    if (groups[0].title.size() != 17 || groups[0].title[15] != 111 || groups[0].poses.size() != 6 ||
+        groups[1].poses.size() != 4) {
+        fail("Nested synthesized Array<Group> or String&/Struct& mutation failed.");
+    }
+
+    Array<Array<erg.Pose>> matrix;
+    matrix.add(groups[0].poses);
+    matrix.add(groups[1].poses);
+    // Receiver-vs-RHS reallocation safety: `matrix[0].add(...)` when RHS reallocates outer `matrix`.
+    matrix[0].add(erg.grow_matrix_and_pose(matrix));
+    if (matrix.size() != 18 || matrix[0].size() != 7 || matrix[0][6].score != 777 || matrix[1][3].score != 30) {
+        fail("Nested synthesized Array<Array<Pose>> failed.");
+    }
+
+    // Parallel execution over synthesized Array<erg.Pose> with non-zero quaternion identity prototype!
+    Array<erg.Pose> par_poses;
+    par_poses.resize(uint(32));
+    parallel_for (uint i : par_poses.size()) {
+        erg.Pose local_pose;
+        // Default quaternion must have w == 1.0f (identity), not all-zero bytes!
+        const vector3 rotated = math.rotate(local_pose.rot, vector3(1.0f, 2.0f, 3.0f));
+        local_pose.pos = rotated + (i < 16 ? vector3(float(i), 0.0f, 0.0f) : vector3(0.0f, float(i), 0.0f));
+        local_pose.score = int(i) + erg.FOLDED_TRUE + erg.FOLDED_CHAIN;
+        local_pose.flags = erg.Mask::Alpha;
+        local_pose.flags |= (i & 1) == 1 ? erg.Mask::Gamma : erg.Mask::None;
+        par_poses[i] = local_pose;
+    }
+    if (par_poses[0].pos != vector3(1.0f, 2.0f, 3.0f) || par_poses[5].score != 5 + 17 + 29 ||
+        par_poses[5].flags != (erg.Mask::Alpha | erg.Mask::Gamma)) {
+        fail("parallel_for over synthesized Array<Pose> produced unexpected values.");
+    }
+
+    // Compound operators & short-circuit ternary expressions (scalar, vector, quaternion, plain struct).
+    int math_acc = 20;
+    math_acc -= 5;
+    math_acc *= 4;
+    math_acc /= 3;
+    math_acc %= 13;
+    uint bits = uint(3);
+    bits <<= 2;
+    bits |= uint(1);
+    bits ^= uint(5);
+    bits &= uint(15);
+    bits >>= 1;
+
+    vector3 v = vector3(2.0f, 4.0f, 6.0f);
+    v += vector3(1.0f, 2.0f, 3.0f);
+    v -= vector3(1.0f, 0.0f, 1.0f);
+    v *= 0.5f;
+    v /= 2.0f;
+
+    quaternion q = quaternion();
+    q *= quaternion();
+
+    const int safe_a = true ? 10 : erg.div_zero_trap(0);
+    const int safe_b = false ? erg.div_zero_trap(0) : 22;
+    const int chosen_score = (safe_a < safe_b ? par_poses[2] : par_poses[0]).score;
+
+    return math_acc + int(bits) + int(v.y * 2.0f) + int(q.w) + safe_a + safe_b + chosen_score + self.scale;
+}
+)";
+        for (const bool fast : {false, true}) {
+            Runtime tier_rt;
+            register_erg_host(tier_rt);
+            const auto tier_host_type = take(tier_rt.find_type("test.PairHost"));
+            auto tier_host = take(tier_rt.create(tier_host_type));
+            auto prog = take(Program::create(tier_rt, tier_host_type));
+            publish_single(*prog, "ergonomics.source", src, "erg.run_all", {.diagnostics = true, .fast = fast});
+
+            Array<std::int32_t> arr{7};
+            String str = String::literal<"init">();
+            source::Diagnostics diag;
+            const std::array args{Argument::borrow(arr), Argument::borrow(str)};
+            const auto res = take(prog->entry().invoke(tier_host.id(), args, &diag));
+            const auto snap = diag.snapshot();
+            // math_acc: 7, bits: 4, int(v.y*2): 3, q.w: 1, safe_a: 10, safe_b: 22, chosen_score: 48, self.scale: 9 -> 104
+            require(res && std::get<std::int32_t>(*res) == 104, "Ergonomics end-to-end result mismatch.");
+            require(arr[0] == 32 && arr.size() == 1 + 48 + 32 + 1 + 64 + 64 &&
+                        str.view() == StringView{"atelier-source"},
+                    "Caller Array<int>& or String& mutations did not persist.");
+            require(snap.remaining_owned_values == 0 && snap.resources_cleared,
+                    "Synthesized Array<Group> leaked owned values.");
+        }
+    }
+
+    // 2. Hot-reload compatibly synthesizes `Array<ExistingSourceStruct>` when newly used in a function body,
+    //    and SOP `[InOut]`/`[Out]` fixed-length columns allow element-only helpers while rejecting structural helpers.
+    {
+        source::SourceSnapshot v1;
+        v1.name = "HotArray";
+        v1.version = 1;
+        v1.files.push_back({"a.source", 1, R"(
+struct hot.Item {
+    int id;
+    quaternion q;
+};
+
+void hot.scale_elements(Array<int>& col) {
+    for (uint i = 0; i < col.size(); i += 1) {
+        col[i] *= 2;
+    }
+}
+
+class hot.Op : test.PairHost {
+    void process([InOut] Array<int>& col) {
+        hot.scale_elements(col);
+    }
+}
+
+int hot.run() {
+    hot.Item single;
+    single.id = 5;
+    return single.id + int(single.q.w);
+}
+)"});
+        auto mod_prog = take(Program::create(runtime));
+        auto c1 = take(Program::prepare(take(mod_prog->request(v1))));
+        take(mod_prog->try_publish(c1));
+        const auto r1 = take(take(mod_prog->entry("hot.run")).invoke(ObjectId{}, std::span<const Scalar>{}));
+        require(r1 && std::get<std::int32_t>(*r1) == 6, "HotArray v1 result mismatch.");
+
+        // Verify SOP [InOut] column can call element-only `Array<int>&` helper.
+        auto op_inst = take(runtime.create(mod_prog->classes()[0].type));
+        Array<std::int32_t> sop_col{3, 4, 5};
+        const std::array sop_args{Argument::borrow(sop_col)};
+        (void)take(take(mod_prog->entry("hot.Op.process")).invoke(op_inst.id(), sop_args));
+        require(sop_col.size() == 3 && sop_col[0] == 6 && sop_col[2] == 10,
+                "SOP element-only Array<int>& helper failed.");
+
+        // Version 2: same struct declaration, newly spells `Array<hot.Item>` inside `hot.run` + `parallel_for`!
+        source::SourceSnapshot v2 = v1;
+        v2.version = 2;
+        v2.files[0].version = 2;
+        v2.files[0].source = R"(
+struct hot.Item {
+    int id;
+    quaternion q;
+};
+
+void hot.scale_elements(Array<int>& col) {
+    for (uint i = 0; i < col.size(); i += 1) {
+        col[i] *= 2;
+    }
+}
+
+class hot.Op : test.PairHost {
+    void process([InOut] Array<int>& col) {
+        hot.scale_elements(col);
+    }
+}
+
+int hot.run() {
+    Array<hot.Item> items;
+    items.resize(uint(8));
+    parallel_for (uint i : items.size()) {
+        hot.Item it;
+        it.id = int(i) + 1;
+        items[i] = it;
+    }
+    return items[7].id + int(items[7].q.w);
+}
+)";
+        auto c2 = take(Program::prepare(take(mod_prog->request(v2))));
+        take(mod_prog->try_publish(c2));
+        const auto r2 = take(take(mod_prog->entry("hot.run")).invoke(ObjectId{}, std::span<const Scalar>{}));
+        require(r2 && std::get<std::int32_t>(*r2) == 9, "Hot-reloaded synthesized Array<hot.Item> failed.");
+    }
+
+    // 3. Negative compile-time boundary checks for const deep read-only, SOP fixed-length, call-site aliasing,
+    //    compound assignments, and ternary expressions.
+    {
+        const auto reject_single = [&](std::string_view code, std::string_view expected) {
+            auto bad_prog = take(Program::create(runtime, host_type));
+            auto bad_req = take(bad_prog->request("neg_erg.source", code, "f"));
+            auto bad_cand = Program::prepare(bad_req);
+            require(!bad_cand && bad_cand.error().message.contains(expected),
+                    "Expected diagnostic not produced for negative ergonomics test.");
+        };
+        reject_single("void f(const Array<int>& a) { a.add(1); }", "Structural mutation requires a mutable");
+        reject_single("void f(const Array<int>& a) { a[0] = 1; }", "Assignment requires a writable local or field");
+        reject_single("void f(const String& s) { s.append(\"x\"); }", "Structural mutation requires a mutable");
+        reject_single("void push_bad(Array<int>& a, const int& r) { a.add(r); } "
+                      "void f(Array<int>& a) { push_bad(a, a[0]); }",
+                      "Cannot borrow 'a' through another reference parameter in the same call");
+        reject_single("void f() { float s = 2.0f; s *= vector3(1.0f, 2.0f, 3.0f); }",
+                      "Compound assignment result type does not match");
+        reject_single("int GetVal() { return 1; } void SetVal(int v) {} void f() { Val += 1; }",
+                      "Compound assignment is not supported on Get/Set properties");
+        reject_single("int f() { return 1 ? 2 : 3; }", "Conditional expression requires a bool condition");
+        reject_single("float f(bool c) { return c ? 1 : 1.0f; }", "Conditional branches require matching value types");
+        reject_single("void f(bool c, const Array<int>& a, const Array<int>& b) { uint n = (c ? a : b).size(); }",
+                      "Conditional branches require matching scalar, enum, built-in math or plain struct value types");
+
+        const auto reject_mod = [&](std::string_view file_src, std::string_view expected) {
+            source::SourceSnapshot bad_snap;
+            bad_snap.name = "NegSOP";
+            bad_snap.version = 1;
+            bad_snap.files.push_back({"sop.source", 1, std::string(file_src)});
+            auto p = take(Program::create(runtime));
+            auto r = take(p->request(bad_snap));
+            auto c = Program::prepare(r);
+            require(!c && c.error().message.contains(expected), "Expected SOP fixed-length rejection.");
+        };
+        reject_mod("class s.A : test.PairHost { void process([InOut] Array<int>& col) { col.add(1); } }",
+                   "fixed element count and cannot change structure");
+        reject_mod("class s.B : test.PairHost { void process([Out] Array<int>& col) { Array<int> o; col = o; } }",
+                   "fixed element count and cannot change structure");
+        reject_mod("void grow(Array<int>& x) { x.resize(uint(4)); } "
+                   "class s.C : test.PairHost { void process([InOut] Array<int>& col) { grow(col); } }",
+                   "fixed element count and cannot change structure");
+        reject_mod(
+            "class s.D : test.PairHost { void process([InOut] Array<int>& col) { int n = self.native_grow(col); } }",
+            "fixed element count and cannot change structure");
+    }
+}
 }
 
 void verify_source_projects() {
     verify_project_engine_sources();
     verify_world_project();
     verify_frontend_and_pod_evaluation();
+    verify_language_ergonomics();
     std::puts("Source project consumer: PASS (current disk format and cross-file World tick)");
 }

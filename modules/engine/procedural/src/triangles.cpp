@@ -7,8 +7,25 @@
 #include <numbers>
 
 namespace atelier::procedural::detail {
-
 namespace {
+
+template <class PointAt>
+PolygonScale polygon_scale_impl(std::uint32_t count, PointAt&& point_at) noexcept {
+    const auto first = point_at(0);
+    auto minimum = math::Vector3d(first);
+    auto maximum = minimum;
+    double coordinate_scale = 0;
+    for (std::uint32_t i = 0; i < count; ++i) {
+        const auto p = point_at(i);
+        for (std::size_t axis = 0; axis < 3; ++axis) {
+            minimum[axis] = std::min(minimum[axis], double{p[axis]});
+            maximum[axis] = std::max(maximum[axis], double{p[axis]});
+            coordinate_scale = std::max(coordinate_scale, std::abs(double{p[axis]}));
+        }
+    }
+    const double extent = math::length(maximum - minimum);
+    return {extent, surface_tolerance(coordinate_scale, extent)};
+}
 
 // The shared numerical policy for every polygon consumer. Distance uncertainty is
 // eight float epsilons at the input coordinate/extent scale, not a world-unit floor.
@@ -16,34 +33,36 @@ namespace {
 // gives a simple convex boundary. Allowing even small negative turns would let
 // opposite loops cancel. This conservatively rejects rounding-induced concavity;
 // forward collinear corners remain valid. Triangles keep their degeneracy policy.
-Result<void> validate_polygon(const Geometry& surface, PrimitiveRange range) {
-    const auto corners = surface.vertex_points();
-    const auto point = [&](std::uint32_t i) { return math::Vector3d(surface.positions()[corners[range.first + i]]); };
+template <class PointAt>
+Result<void> validate_polygon_impl(std::uint32_t count, PointAt&& point_at) {
+    if (count < 3)
+        return failure("A polygon requires at least three corners.");
+    const auto point = [&](std::uint32_t i) { return math::Vector3d(point_at(i)); };
     const auto origin = point(0);
     math::Vector3d area;
-    for (std::uint32_t i = 0; i < range.count; ++i) {
+    for (std::uint32_t i = 0; i < count; ++i) {
         const auto p = point(i);
         if (!math::is_finite(p))
             return failure("Polygon positions must be finite.");
-        if (i > 0 && i + 1 < range.count)
+        if (i > 0 && i + 1 < count)
             area += math::cross(p - origin, point(i + 1) - origin);
     }
-    const auto [extent, tolerance] = polygon_scale(surface, range);
+    const auto [extent, tolerance] = polygon_scale_impl(count, point_at);
     const double area_length = math::length(area);
     if (!(area_length > tolerance * extent))
         return failure("A polygon needs a resolvable plane and area at its float coordinate precision.");
     const auto normal = area / area_length;
-    for (std::uint32_t i = 0; i < range.count; ++i)
+    for (std::uint32_t i = 0; i < count; ++i)
         if (std::abs(math::dot(point(i) - origin, normal)) > tolerance)
             return failure("Surface polygons must be planar at their float coordinate precision.");
     const auto edge = [&](std::uint32_t i) {
-        const auto e = point(i + 1 == range.count ? 0 : i + 1) - point(i);
+        const auto e = point(i + 1 == count ? 0 : i + 1) - point(i);
         return e - normal * math::dot(e, normal);
     };
-    auto previous = edge(range.count - 1);
+    auto previous = edge(count - 1);
     double previous_length = math::length(previous);
     double turns = 0;
-    for (std::uint32_t i = 0; i < range.count; ++i) {
+    for (std::uint32_t i = 0; i < count; ++i) {
         const auto next = edge(i);
         const double next_length = math::length(next);
         if (!(previous_length > tolerance) || !(next_length > tolerance))
@@ -57,33 +76,41 @@ Result<void> validate_polygon(const Geometry& surface, PrimitiveRange range) {
         previous = next;
         previous_length = next_length;
     }
-    if (std::abs(turns - 2 * std::numbers::pi) > 64 * std::numeric_limits<double>::epsilon() * range.count)
+    if (std::abs(turns - 2 * std::numbers::pi) > 64 * std::numeric_limits<double>::epsilon() * count)
         return failure("Surface polygons must have a simple boundary.");
     return {};
 }
 
-}
+} // namespace
 
 double surface_tolerance(double coordinate_scale, double extent) noexcept {
     return 8 * std::numeric_limits<float>::epsilon() * std::max(coordinate_scale, extent);
 }
 
+PolygonScale polygon_scale(std::span<const math::Vector3> corners) noexcept {
+    if (corners.empty())
+        return {0.0, 0.0};
+    return polygon_scale_impl(static_cast<std::uint32_t>(corners.size()),
+                              [&](std::uint32_t i) noexcept { return corners[i]; });
+}
+
 PolygonScale polygon_scale(const Geometry& surface, PrimitiveRange range) noexcept {
     const auto corners = surface.vertex_points();
-    const auto first = surface.positions()[corners[range.first]];
-    auto minimum = math::Vector3d(first);
-    auto maximum = minimum;
-    double coordinate_scale = 0;
-    for (std::uint32_t i = 0; i < range.count; ++i) {
-        const auto p = surface.positions()[corners[range.first + i]];
-        for (std::size_t axis = 0; axis < 3; ++axis) {
-            minimum[axis] = std::min(minimum[axis], double{p[axis]});
-            maximum[axis] = std::max(maximum[axis], double{p[axis]});
-            coordinate_scale = std::max(coordinate_scale, std::abs(double{p[axis]}));
-        }
-    }
-    const double extent = math::length(maximum - minimum);
-    return {extent, surface_tolerance(coordinate_scale, extent)};
+    const auto& positions = surface.positions();
+    return polygon_scale_impl(range.count,
+                              [&](std::uint32_t i) noexcept { return positions[corners[range.first + i]]; });
+}
+
+Result<void> validate_polygon(std::span<const math::Vector3> corners) {
+    return validate_polygon_impl(static_cast<std::uint32_t>(corners.size()),
+                                 [&](std::uint32_t i) noexcept { return corners[i]; });
+}
+
+Result<void> validate_polygon(const Geometry& surface, PrimitiveRange range) {
+    const auto corners = surface.vertex_points();
+    const auto& positions = surface.positions();
+    return validate_polygon_impl(range.count,
+                                 [&](std::uint32_t i) noexcept { return positions[corners[range.first + i]]; });
 }
 
 // Ericson, Real-Time Collision Detection 5.1.5: q = a + v (b - a) + w (c - a).

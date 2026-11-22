@@ -1,0 +1,387 @@
+// Fortified Outpost procedural stage modules for FrostFox Atelier Examples.
+// Combines L3 multi-output curve/point emission, parallel BVH spatial queries, and auxiliary port borrows.
+
+struct game.PropDecision {
+    bool valid;
+    vector3 position;
+    quaternion orient;
+    float scale;
+    uint variant;
+};
+
+float game.sample_terrain_height(const procedural.Spatial& terrain, float x, float z) {
+    const procedural.SurfaceHit hit = procedural.raycast_surface(
+        terrain, vector3(x, 48.0f, z), vector3(0.0f, -1.0f, 0.0f), 96.0f);
+    return hit.hit ? hit.position.y : 0.0f;
+}
+
+quaternion game.upright_frame(vector3 up_dir, vector3 heading) {
+    const vector3 raw_y = math.normalize_or_zero(up_dir);
+    const vector3 y_axis = raw_y == vector3() ? vector3(0.0f, 1.0f, 0.0f) : raw_y;
+    vector3 x_axis = math.normalize_or_zero(math.cross(y_axis, heading));
+    if (x_axis == vector3()) {
+        const vector3 fallback = math.abs(y_axis.x) > 0.9f ? vector3(0.0f, 0.0f, 1.0f) : vector3(1.0f, 0.0f, 0.0f);
+        x_axis = math.normalize_or_zero(math.cross(y_axis, fallback));
+    }
+    return procedural.frame_rotation(x_axis, y_axis, math.cross(x_axis, y_axis));
+}
+
+bool game.has_neighbor_within(const Array<vector3>& points, vector3 candidate, float min_dist_sq) {
+    for (uint i = 0; i < points.size(); i += 1) {
+        const vector3 d = candidate - points[i];
+        if (math.dot(d, d) < min_dist_sq) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void game.append_polyline_segment(Array<vector3>& pts, Array<uint>& vp, Array<uint>& offsets, vector3 a, vector3 b) {
+    const uint base_idx = pts.size();
+    pts.add(a);
+    pts.add(b);
+    vp.add(base_idx);
+    vp.add(base_idx + 1);
+    offsets.add(vp.size());
+}
+
+void game.append_accepted_prop(const game.PropDecision& d,
+                               Array<vector3>& out_P,
+                               Array<quaternion>& out_orient,
+                               Array<float>& out_scale,
+                               Array<uint>& out_variant) {
+    out_P.add(d.position);
+    out_orient.add(d.orient);
+    out_scale.add(d.scale);
+    out_variant.add(d.variant);
+}
+
+class game.OutpostLayoutSkeleton : procedural.Node {
+    [Min = 3.8, Max = 11.5, LockMin, Label = "Fortress Radius", DESC = "多边形堡垒围墙外接半径，单位 m。"]
+    float fort_radius = 6.8f;
+
+    [Min = 5, Max = 14, LockMin, Label = "Bastion Sides", DESC = "多边形棱堡的边数。"]
+    int sides = 8;
+
+    [Min = 1.8, Max = 5.2, LockMin, Label = "Gate Width", DESC = "朝向引道的城门豁口净宽，单位 m。"]
+    float gate_width = 3.1f;
+
+    [Min = 1.4, Max = 4.8, LockMin, Label = "Wall Height", DESC = "围墙主体地面以上高度（与下游 Sweep 对齐），单位 m。"]
+    float wall_height = 2.35f;
+
+    [Min = 0.25, Max = 1.2, LockMin, Label = "Merlon Height", DESC = "墙顶雉堞垛口高度，单位 m。"]
+    float merlon_height = 0.54f;
+
+    [Min = 0.5, Max = 2.0, LockMin, Label = "Merlon Length", DESC = "单个垛口沿墙方向的长度，单位 m。"]
+    float merlon_length = 0.92f;
+
+    [Min = 0.35, Max = 1.6, LockMin, Label = "Crenel Gap", DESC = "相邻垛口之间的射孔间距，单位 m。"]
+    float crenel_gap = 0.68f;
+
+    [Min = 6.0, Max = 14.0, LockMin, Label = "Approach Length", DESC = "城门外引道延伸长度，单位 m。"]
+    float road_length = 10.6f;
+
+    [Min = 0.0, Max = 2.8, LockMin, Label = "Road Meander", DESC = "城外引道的 S 形蜿蜒幅度，单位 m。"]
+    float road_meander = 1.05f;
+
+    [Label = "Seed", DESC = "与图种子混合的布局种子。"]
+    uint seed = 11;
+
+    void process(const procedural.Context& context,
+                 [Port] const procedural.Spatial& terrain,
+                 [Port] procedural.Geometry& road_curve,
+                 [Port] procedural.Geometry& wall_curves,
+                 [Port] procedural.Geometry& merlon_curves,
+                 [Port] procedural.Geometry& gate_posts) {
+        const float radius = self.fort_radius;
+        const int side_count = self.sides;
+        const float gate_w = self.gate_width;
+        const float wall_h = self.wall_height;
+        const float merlon_h = self.merlon_height;
+        const float merlon_len = self.merlon_length;
+        const float gap_len = self.crenel_gap;
+        const float approach = self.road_length;
+        const float meander = self.road_meander;
+
+        if (!(math.is_finite(radius) && math.is_finite(gate_w) && math.is_finite(wall_h) &&
+              math.is_finite(merlon_h) && math.is_finite(merlon_len) && math.is_finite(gap_len) &&
+              math.is_finite(approach) && math.is_finite(meander))) {
+            fail("OutpostLayoutSkeleton parameters must be finite.");
+        }
+        if (radius < 2.5f || side_count < 4 || gate_w <= 0.8f || gate_w >= radius * 1.5f) {
+            fail("OutpostLayoutSkeleton requires valid radius, sides >= 4, and gate_width < 1.5 * radius.");
+        }
+
+        const uint mixed_seed = procedural.hash2(context.seed, self.seed);
+        const float phase_jitter = (procedural.unit(mixed_seed) - 0.5f) * 0.5f;
+
+        // 1. Road centerline from outer south slope (-Z) through gate (0, -radius) into courtyard (+Z).
+        Array<vector3> road_pts;
+        Array<uint> road_vp;
+        Array<uint> road_off;
+        Array<float> road_scales;
+        const uint road_steps = 20;
+        road_pts.reserve(road_steps);
+        road_vp.reserve(road_steps);
+        road_scales.reserve(road_steps);
+
+        const float z_start = -approach;
+        const float z_end = 1.85f;
+        for (uint r = 0; r < road_steps; r += 1) {
+            const float t = float(r) / float(road_steps - 1);
+            const float z = math.lerp(z_start, z_end, t);
+            // Pinch lateral meander to 0 near the gate at z = -radius so the road passes cleanly through.
+            const float gate_dist = math.abs(z - (-radius));
+            const float gate_envelope = math.smoothstep(0.6f, 3.6f, gate_dist);
+            const float outer_fade = math.smoothstep(z_end, z_start, z);
+            const float x = meander * gate_envelope * outer_fade * math.sin(t * 4.4f + phase_jitter);
+            const float gy = game.sample_terrain_height(terrain, x, z);
+            road_pts.add(vector3(x, gy + 0.11f, z));
+            road_vp.add(r);
+            road_scales.add(math.lerp(0.95f, 1.14f, math.smoothstep(-radius - 2.0f, 1.5f, z)));
+        }
+        road_off.add(uint(0));
+        road_off.add(road_steps);
+        self.emit_polylines(road_pts, road_vp, road_off, uint(0));
+        self.set_float("pscale", procedural.Layer::point, road_scales, uint(0));
+
+        // 2. Polygonal bastion curtain wall polyline + crenellated merlon segments, open at -Z gate.
+        const float pi = 3.14159265f;
+        const float two_pi = 6.2831853f;
+        const float gate_center_angle = -0.5f * pi; // (0, -radius)
+        const float half_gate_ang = math.clamp(0.5f * gate_w / radius, 0.10f, 0.72f);
+        const float start_ang = gate_center_angle + half_gate_ang;
+        const float end_ang = gate_center_angle + two_pi - half_gate_ang;
+        const float span_ang = end_ang - start_ang;
+
+        const uint n_sides = uint(side_count);
+        const uint sub_per_side = 3;
+        const uint wall_station_count = n_sides * sub_per_side + 1;
+
+        Array<vector3> wall_pts;
+        Array<uint> wall_vp;
+        Array<uint> wall_off;
+        wall_pts.reserve(wall_station_count);
+        wall_vp.reserve(wall_station_count);
+
+        Array<vector2> poly_xz;
+        poly_xz.reserve(n_sides + 1);
+        for (uint s = 0; s <= n_sides; s += 1) {
+            const float ang = start_ang + span_ang * (float(s) / float(n_sides));
+            poly_xz.add(vector2(radius * math.cos(ang), radius * math.sin(ang)));
+        }
+
+        const float wall_embed = 0.22f;
+        const float wall_center_offset = 0.5f * (wall_h - wall_embed);
+        uint pt_cursor = 0;
+        for (uint side_idx = 0; side_idx < n_sides; side_idx += 1) {
+            const vector2 c0 = poly_xz[side_idx];
+            const vector2 c1 = poly_xz[side_idx + 1];
+            const uint sub_limit = (side_idx + 1 == n_sides) ? (sub_per_side + 1) : sub_per_side;
+            for (uint sub = 0; sub < sub_limit; sub += 1) {
+                const vector2 xz = math.lerp(c0, c1, float(sub) / float(sub_per_side));
+                const float gy = game.sample_terrain_height(terrain, xz.x, xz.y);
+                wall_pts.add(vector3(xz.x, gy + wall_center_offset, xz.y));
+                wall_vp.add(pt_cursor);
+                pt_cursor += 1;
+            }
+        }
+        wall_off.add(uint(0));
+        wall_off.add(pt_cursor);
+        self.emit_polylines(wall_pts, wall_vp, wall_off, uint(1));
+
+        // 3. Crenellated merlon segments crowning each bastion side.
+        Array<vector3> merlon_pts;
+        Array<uint> merlon_vp;
+        Array<uint> merlon_off;
+        merlon_off.add(uint(0));
+        const float pitch = merlon_len + gap_len;
+        const float merlon_y_offset = wall_h - wall_embed + 0.5f * merlon_h - 0.04f;
+
+        for (uint ms = 0; ms < n_sides; ms += 1) {
+            const vector2 a2 = poly_xz[ms];
+            const vector2 b2 = poly_xz[ms + 1];
+            const vector2 chord = b2 - a2;
+            const float chord_len = math.length(chord);
+            if (chord_len >= merlon_len + 0.25f) {
+                const vector2 dir2 = chord / chord_len;
+                for (float cursor = 0.18f; cursor + merlon_len <= chord_len - 0.12f; cursor += pitch) {
+                    const vector2 m0 = a2 + dir2 * cursor;
+                    const vector2 m1 = a2 + dir2 * (cursor + merlon_len);
+                    const float y0 = game.sample_terrain_height(terrain, m0.x, m0.y) + merlon_y_offset;
+                    const float y1 = game.sample_terrain_height(terrain, m1.x, m1.y) + merlon_y_offset;
+                    game.append_polyline_segment(
+                        merlon_pts, merlon_vp, merlon_off, vector3(m0.x, y0, m0.y), vector3(m1.x, y1, m1.y));
+                }
+            }
+        }
+        if (merlon_off.size() > 1) {
+            self.emit_polylines(merlon_pts, merlon_vp, merlon_off, uint(2));
+        }
+
+        // 4. Twin gatehouse pillars + alternating bastion corner buttress columns.
+        Array<vector3> post_pts;
+        Array<quaternion> post_orients;
+        Array<float> post_scales;
+        Array<uint> post_variants;
+
+        for (uint c = 0; c <= n_sides; c += 1) {
+            const bool is_gate_pillar = (c == 0) || (c == n_sides);
+            if (is_gate_pillar || ((c & 1) == 0)) {
+                const vector2 xz = poly_xz[c];
+                const float gy = game.sample_terrain_height(terrain, xz.x, xz.y);
+                post_pts.add(vector3(xz.x, gy - 0.02f, xz.y));
+                const vector3 outward = math.normalize_or_zero(vector3(xz.x, 0.0f, xz.y));
+                const vector3 heading = outward != vector3() ? outward : vector3(0.0f, 0.0f, 1.0f);
+                post_orients.add(game.upright_frame(vector3(0.0f, 1.0f, 0.0f), heading));
+                post_scales.add(is_gate_pillar ? 1.34f : 1.08f);
+                post_variants.add(uint(0));
+            }
+        }
+        self.emit_points(post_pts, uint(3));
+        self.set_quat("orient", procedural.Layer::point, post_orients, uint(3));
+        self.set_float("pscale", procedural.Layer::point, post_scales, uint(3));
+        self.set_uint("variant", procedural.Layer::point, post_variants, uint(3));
+    }
+}
+
+class game.OutpostTacticalScatter : procedural.Node {
+    [Min = 0.8, Max = 5.0, LockMin, Label = "Road Exclusion", DESC = "引道中线两侧禁止摆件生成的净空半宽，单位 m。"]
+    float road_clearance = 1.85f;
+
+    [Min = 0.4, Max = 3.5, LockMin, Label = "Colonnade Band", DESC = "引道外侧自动对齐道路切向的列柱带宽度，单位 m。"]
+    float roadside_band = 1.45f;
+
+    [Min = 0.6, Max = 4.0, LockMin, Label = "Wall Clearance", DESC = "距扫掠围墙表面的最小避让净距，单位 m。"]
+    float wall_clearance = 1.25f;
+
+    [Min = 0.9, Max = 4.0, LockMin, Label = "Prop Min Spacing", DESC = "实例间与门柱间的最小间距，消除包围盒穿模，单位 m。"]
+    float min_spacing = 1.45f;
+
+    [Min = 1.2, Max = 6.5, LockMin, Label = "Sanctum Radius", DESC = "内庭中央生成琥珀晶簇圣坛的半径，单位 m。"]
+    float sanctum_radius = 3.2f;
+
+    [Min = 0.5, Max = 0.99, LockMin, LockMax, Label = "Min Flatness", DESC = "允许放置建筑构件的最小地面法线 Y 分量。"]
+    float min_flatness = 0.82f;
+
+    [Label = "Seed", DESC = "与图种子混合的战术散布种子。"]
+    uint seed = 19;
+
+    void process(const procedural.Context& context,
+                 [In("P", Port = "candidates")] const Array<vector3>& cand_P,
+                 [In("N", Port = "candidates")] const Array<vector3>& cand_N,
+                 [Port] const procedural.Spatial& terrain,
+                 [Port] const procedural.Spatial& road,
+                 [In("pscale", Port = "road")] const Array<float>& road_scales,
+                 [Port] const procedural.Spatial& walls,
+                 [In("P", Port = "gate_posts")] const Array<vector3>& post_P,
+                 [Port] procedural.Geometry& output) {
+        const float r_clear = self.road_clearance;
+        const float r_band = self.roadside_band;
+        const float w_clear = self.wall_clearance;
+        const float spacing = self.min_spacing;
+        const float sanctum_r = self.sanctum_radius;
+        const float flat_min = self.min_flatness;
+
+        if (!(math.is_finite(r_clear) && math.is_finite(r_band) && math.is_finite(w_clear) &&
+              math.is_finite(spacing) && math.is_finite(sanctum_r) && math.is_finite(flat_min))) {
+            fail("OutpostTacticalScatter parameters must be finite.");
+        }
+
+        const uint count = cand_P.size();
+        if (cand_N.size() != count || count == 0) {
+            return;
+        }
+        const uint mixed_seed = procedural.hash2(context.seed, self.seed);
+        const float road_scale_boost =
+            road_scales.size() > 0 ? math.clamp(road_scales[road_scales.size() - 1], 0.8f, 1.4f) : 1.0f;
+
+        Array<game.PropDecision> decisions;
+        decisions.resize(count);
+
+        parallel_for (uint i : count) {
+            const vector3 raw_p = cand_P[i];
+            const vector3 raw_n = cand_N[i];
+            if (!(math.is_finite(raw_p) && math.is_finite(raw_n))) {
+                fail("OutpostTacticalScatter candidate attributes must be finite.");
+            }
+
+            // Ground strictly to terrain surface and reject steep cliffs or low shoreline skirt.
+            const procedural.SurfaceHit ground = procedural.raycast_surface(
+                terrain, vector3(raw_p.x, raw_p.y + 12.0f, raw_p.z), vector3(0.0f, -1.0f, 0.0f), 24.0f);
+            if (!ground.hit || ground.position.y < 0.25f || ground.normal.y < flat_min) {
+                continue;
+            }
+            const vector3 pos = ground.position;
+
+            // Exclude roadbed corridor & curtain wall proximity.
+            const procedural.CurveSample road_hit = procedural.closest_polyline(road, pos, r_clear + r_band + 1.0f);
+            if (road_hit.hit && road_hit.distance < r_clear) {
+                continue;
+            }
+            const procedural.SurfaceHit wall_hit = procedural.closest_surface_point(walls, pos, w_clear);
+            if (wall_hit.hit) {
+                continue;
+            }
+
+            const float radial = math.length(vector2(pos.x, pos.z));
+            const float rand_u = procedural.unit(procedural.hash2(mixed_seed, i));
+            const vector3 up_axis = vector3(0.0f, 1.0f, 0.0f);
+
+            vector3 forward = vector3(math.cos(rand_u * 6.2831853f), 0.0f, math.sin(rand_u * 6.2831853f));
+            uint chosen_variant = uint(0);
+            float chosen_scale = math.lerp(0.76f, 0.98f, rand_u);
+
+            if (road_hit.hit && road_hit.distance <= r_clear + r_band) {
+                const vector3 unit_to_road =
+                    math.normalize_or_zero(vector3(road_hit.position.x - pos.x, 0.0f, road_hit.position.z - pos.z));
+                forward = unit_to_road != vector3() ? unit_to_road : forward;
+                chosen_variant = uint(0);
+                chosen_scale = 0.88f * road_scale_boost;
+            } else if (radial <= sanctum_r) {
+                const vector3 to_center = math.normalize_or_zero(vector3(-pos.x, 0.0f, -pos.z));
+                forward = to_center != vector3() ? to_center : forward;
+                chosen_variant = uint(1);
+                chosen_scale = math.lerp(0.92f, 1.18f, rand_u);
+            } else if (pos.y > 2.4f && rand_u > 0.58f) {
+                chosen_variant = uint(1);
+                chosen_scale = math.lerp(0.78f, 1.02f, rand_u);
+            }
+
+            game.PropDecision d;
+            d.valid = true;
+            d.position = vector3(pos.x, pos.y - 0.015f, pos.z);
+            d.orient = game.upright_frame(math.lerp(up_axis, ground.normal, 0.14f), forward);
+            d.scale = chosen_scale;
+            d.variant = chosen_variant;
+            decisions[i] = d;
+        }
+
+        // Serial minimum-distance filter against gate/buttress posts and accepted props.
+        const float min_dist_sq = spacing * spacing;
+        const float post_dist_sq = (spacing + 0.35f) * (spacing + 0.35f);
+        Array<vector3> out_P;
+        Array<quaternion> out_orient;
+        Array<float> out_scale;
+        Array<uint> out_variant;
+
+        for (uint idx = 0; idx < count; idx += 1) {
+            const game.PropDecision d = decisions[idx];
+            if (!d.valid) {
+                continue;
+            }
+            if (game.has_neighbor_within(post_P, d.position, post_dist_sq) ||
+                game.has_neighbor_within(out_P, d.position, min_dist_sq)) {
+                continue;
+            }
+            game.append_accepted_prop(d, out_P, out_orient, out_scale, out_variant);
+        }
+
+        if (out_P.size() > 0) {
+            self.emit_points(out_P, uint(0));
+            self.set_quat("orient", procedural.Layer::point, out_orient, uint(0));
+            self.set_float("pscale", procedural.Layer::point, out_scale, uint(0));
+            self.set_uint("variant", procedural.Layer::point, out_variant, uint(0));
+        }
+    }
+}

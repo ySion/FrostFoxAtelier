@@ -527,7 +527,7 @@ void verify_procedural_generator_scene() {
     changed(doc.close());
 }
 
-void verify_examples_procedural_showcase() {
+void verify_examples_procedural_showcases() {
     const std::filesystem::path examples_root{ATELIER_EXAMPLE_PROJECT};
     const auto temp_dir =
         std::filesystem::current_path() / "project-scene-evidence" /
@@ -539,34 +539,131 @@ void verify_examples_procedural_showcase() {
     std::filesystem::copy(examples_root / "Content/Procedural", temp_dir / "Content/Procedural", copy_opts);
 
     auto project = take(editor::Project::open(temp_dir));
-    const auto scene_file = take(project.resolve("Content/Procedural/Scenes/ProceduralShowcase.scene"));
-    const auto scene_text = take(assets::read_file(scene_file, 16 * 1024 * 1024));
-    auto loaded = editor::load_project_scene(project, scene_text, editor::LoadPolicy::strict);
-    if (loaded.error)
-        fatal(loaded.error->message);
-    require(loaded.session != nullptr && loaded.code != nullptr && loaded.session->load_issues().empty() &&
-                loaded.session->issues().empty(),
-            "ProceduralShowcase.scene reported strict load or runtime issues.");
 
-    take(loaded.session->presentation().update());
-    const auto gen_slots = loaded.session->presentation().generator_slots();
-    require(gen_slots.size() == 3, "ProceduralShowcase.scene expected 3 ProceduralGeneratorEntity islands.");
-    for (const auto& slot : gen_slots) {
-        require(slot.item && slot.item->surface_geometry != nullptr && !slot.item->collections.empty() &&
-                    slot.item->surface_materials != nullptr && !slot.item->surface_materials->empty(),
-                "ProceduralShowcase island missing surface mesh, surface material, or CopyToPoints instances.");
+    // 1. ProceduralShowcase.scene
+    {
+        const auto scene_file = take(project.resolve("Content/Procedural/Scenes/ProceduralShowcase.scene"));
+        const auto scene_text = take(assets::read_file(scene_file, 16 * 1024 * 1024));
+        auto loaded = editor::load_project_scene(project, scene_text, editor::LoadPolicy::strict);
+        if (loaded.error)
+            fatal(loaded.error->message);
+        require(loaded.session != nullptr && loaded.code != nullptr && loaded.session->load_issues().empty() &&
+                    loaded.session->issues().empty(),
+                "ProceduralShowcase.scene reported strict load or runtime issues.");
+
+        take(loaded.session->presentation().update());
+        const auto gen_slots = loaded.session->presentation().generator_slots();
+        require(gen_slots.size() == 3, "ProceduralShowcase.scene expected 3 ProceduralGeneratorEntity islands.");
+        for (const auto& slot : gen_slots) {
+            require(slot.item && slot.item->surface_geometry != nullptr && !slot.item->collections.empty() &&
+                        slot.item->surface_materials != nullptr && !slot.item->surface_materials->empty(),
+                    "ProceduralShowcase island missing surface mesh, surface material, or CopyToPoints instances.");
+        }
+        require(*gen_slots[0].item->collections.front().transforms !=
+                    *gen_slots[1].item->collections.front().transforms,
+                "override_seed on West Outpost Island did not produce distinct instance placements.");
+        const auto showcase_source =
+            take(presentation::read_procedural_source(loaded.session->world().runtime(), gen_slots[0].item->component));
+        require(
+            showcase_source.output && showcase_source.output->mesh_dependencies.size() == 3,
+            "ProceduralShowcase generator did not record all 3 display mesh dependencies (including MeshImport TerrainGrid).");
+        require(take(loaded.session->main_camera()) != ObjectId{} &&
+                    !take(loaded.session->presentation().light_items()).empty(),
+                "ProceduralShowcase.scene missing Main Camera or lights.");
+        changed(loaded.session->close());
     }
-    require(*gen_slots[0].item->collections.front().transforms != *gen_slots[1].item->collections.front().transforms,
-            "override_seed on West Outpost Island did not produce distinct instance placements.");
-    const auto showcase_source =
-        take(presentation::read_procedural_source(loaded.session->world().runtime(), gen_slots[0].item->component));
-    require(
-        showcase_source.output && showcase_source.output->mesh_dependencies.size() == 3,
-        "ProceduralShowcase generator did not record all 3 display mesh dependencies (including MeshImport TerrainGrid).");
-    require(take(loaded.session->main_camera()) != ObjectId{} &&
-                !take(loaded.session->presentation().light_items()).empty(),
-            "ProceduralShowcase.scene missing Main Camera or lights.");
-    changed(loaded.session->close());
+
+    // 2. GenerativeModelingShowcase.scene
+    {
+        const auto scene_file = take(project.resolve("Content/Procedural/Scenes/GenerativeModelingShowcase.scene"));
+        const auto scene_text = take(assets::read_file(scene_file, 16 * 1024 * 1024));
+        auto loaded = editor::load_project_scene(project, scene_text, editor::LoadPolicy::strict);
+        if (loaded.error)
+            fatal(loaded.error->message);
+        require(loaded.session != nullptr && loaded.code != nullptr && loaded.session->load_issues().empty() &&
+                    loaded.session->issues().empty(),
+                "GenerativeModelingShowcase.scene reported strict load or runtime issues.");
+
+        take(loaded.session->presentation().update());
+        const auto gen_slots = loaded.session->presentation().generator_slots();
+        require(gen_slots.size() == 3,
+                "GenerativeModelingShowcase.scene expected 3 ProceduralGeneratorEntity entries.");
+        for (const auto& slot : gen_slots) {
+            require(slot.item && slot.item->surface_geometry != nullptr && !slot.item->collections.empty() &&
+                        slot.item->surface_materials != nullptr && !slot.item->surface_materials->empty(),
+                    "GenerativeModelingShowcase entity missing surface mesh, material, or CopyToPoints instances.");
+        }
+        require(*gen_slots[1].item->collections.front().transforms !=
+                    *gen_slots[2].item->collections.front().transforms,
+                "override_seed on North Sanctuary Ruin did not produce distinct rubble placements.");
+
+        const auto assert_manifold_stages = [&](std::string_view graph_key,
+                                                std::initializer_list<std::string_view> stages) {
+            (void)take(loaded.session->open_graph(project, graph_key));
+            for (const std::string_view stage : stages) {
+                const ObjectId node_id = loaded.session->graph_node_id(graph_key, stage);
+                require(node_id != ObjectId{}, "Missing expected solid stage in showcase graph.");
+                const auto view = take(loaded.session->inspect_graph(graph_key, &project, node_id, false, 4, true));
+                require(!view.inspected_error && view.inspected_summary && view.inspected_summary->spatial &&
+                            view.inspected_summary->spatial->topology &&
+                            view.inspected_summary->spatial->topology->polygon_count > 0 &&
+                            view.inspected_summary->spatial->topology->degenerate_primitives == 0 &&
+                            view.inspected_summary->spatial->topology->open_boundary_edges == 0 &&
+                            view.inspected_summary->spatial->topology->non_manifold_edges == 0,
+                        "Showcase solid stage was not a watertight closed manifold.");
+            }
+        };
+
+        const std::string_view outpost_key = "project/{E4A19C72-8F3B-4D12-9A65-7B2C41F8E301}";
+        assert_manifold_stages(outpost_key, {"road_sweep", "wall_sweep", "merlon_sweep"});
+        const ObjectId island_ref = loaded.session->graph_node_id(outpost_key, "island_terrace");
+        const auto outpost_view = take(
+            loaded.session->inspect_graph(outpost_key, &project, {}, false, 4, true, island_ref, "island_terrace"));
+        require(!outpost_view.display_error && outpost_view.display_summary.valid &&
+                    outpost_view.display_summary.counts[4] >= 6 && outpost_view.display_summary.spatial &&
+                    outpost_view.display_summary.spatial->instance_overlaps &&
+                    outpost_view.display_summary.spatial->instance_overlaps->overlapping_pairs == 0 &&
+                    outpost_view.display_summary.spatial->surface_clearance &&
+                    outpost_view.display_summary.spatial->surface_clearance->floating_count == 0,
+                "FortifiedOutpost display reported instance overlaps or floating props.");
+
+        const std::string_view ruin_key = "project/{A91C4E85-3D72-49B0-8E24-6C1F5B70D402}";
+        assert_manifold_stages(ruin_key, {"facade_extrude", "slab_extrude", "roof_sweep", "structure_shell"});
+        const ObjectId slab_ref = loaded.session->graph_node_id(ruin_key, "slab_extrude");
+        const auto ruin_view =
+            take(loaded.session->inspect_graph(ruin_key, &project, {}, false, 4, true, slab_ref, "slab_extrude"));
+        require(!ruin_view.display_error && ruin_view.display_summary.valid &&
+                    ruin_view.display_summary.counts[2] > 400 && ruin_view.display_summary.counts[4] >= 2 &&
+                    ruin_view.display_summary.spatial && ruin_view.display_summary.spatial->instance_overlaps &&
+                    ruin_view.display_summary.spatial->instance_overlaps->overlapping_pairs == 0 &&
+                    ruin_view.display_summary.spatial->surface_clearance &&
+                    ruin_view.display_summary.spatial->surface_clearance->floating_count == 0,
+                "ModularRuinBuilding display reported instance overlaps or floating rubble.");
+
+        auto intact_doc = take(json::Document::parse(R"({"ruin_collapse": 0.0})", json::ParseOptions{64}));
+        take(loaded.session->graph_set_properties(ruin_key, "grammar", intact_doc.root()));
+        const auto intact_view = take(loaded.session->inspect_graph(ruin_key, &project, {}, false, 4, false));
+        auto heavy_ruin_doc = take(json::Document::parse(R"({"ruin_collapse": 0.78})", json::ParseOptions{64}));
+        take(loaded.session->graph_set_properties(ruin_key, "grammar", heavy_ruin_doc.root()));
+        const auto heavy_ruin_view =
+            take(loaded.session->inspect_graph(ruin_key, &project, {}, false, 4, true, slab_ref, "slab_extrude"));
+        require(!intact_view.display_error && !heavy_ruin_view.display_error &&
+                    intact_view.display_summary.counts[2] > heavy_ruin_view.display_summary.counts[2] &&
+                    heavy_ruin_view.display_summary.spatial->instance_overlaps->overlapping_pairs == 0,
+                "ModularRuinBuilding parametric ruin_collapse slider did not remodel structure cleanly.");
+
+        std::printf(
+            "  [Showcase Metrics] FortifiedOutpost: %zu pts, %zu prims, %zu instances | ModularRuinBuilding: %zu prims (intact) -> %zu prims (default) -> %zu prims (0.78 collapse), %zu instances\n",
+            outpost_view.display_summary.counts[0], outpost_view.display_summary.counts[2],
+            outpost_view.display_summary.counts[4], intact_view.display_summary.counts[2],
+            ruin_view.display_summary.counts[2], heavy_ruin_view.display_summary.counts[2],
+            ruin_view.display_summary.counts[4]);
+
+        changed(loaded.session->close());
+    }
+
+    std::error_code ec;
+    std::filesystem::remove_all(temp_dir, ec);
 }
 }
 
@@ -575,7 +672,7 @@ int main() {
     verify_roundtrip();
     verify_stop_reentry();
     verify_procedural_generator_scene();
-    verify_examples_procedural_showcase();
+    verify_examples_procedural_showcases();
     std::puts(
-        "Project Scene acceptance: PASS (authored scalar roundtrip, End/physics shutdown order, ProceduralGenerator strict schema + Play live, Examples ProceduralShowcase)");
+        "Project Scene acceptance: PASS (authored scalar roundtrip, End/physics shutdown order, ProceduralGenerator strict schema + Play live, Examples ProceduralShowcase + GenerativeModelingShowcase)");
 }

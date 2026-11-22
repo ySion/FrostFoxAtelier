@@ -190,6 +190,8 @@ struct CompiledCatalog {
 
     std::vector<std::vector<BusinessValueField>> value_fields;
 
+    std::vector<std::vector<std::byte>> value_defaults;
+
     std::vector<BusinessValueBinding> values;
 
     BusinessEnvironment environment{};
@@ -849,7 +851,7 @@ private:
             type.kind != language::ValueType::record)
             return false;
         const auto& layout = source_.value_layouts.at(type.type_index);
-        return layout.plain_value && layout.zero_default;
+        return layout.plain_value && (layout.zero_default || !layout.initial_value.empty());
     }
 
     llvm::Type* storage_type(language::ValueType type) {
@@ -896,12 +898,6 @@ private:
 
     llvm::Value* default_math(language::ValueType type) {
         return MathLowering{ir_, *module_}.construct(math_type(type), {});
-    }
-
-    llvm::Value* math_binary(const language::Expression& node, llvm::Value* left, llvm::Value* right) {
-        return MathLowering{ir_, *module_}.binary(node.operation, left, right,
-                                                  math_type(function_.expressions[node.left].type),
-                                                  math_type(function_.expressions[node.right].type));
     }
 
     llvm::Function* intrinsic(llvm::Intrinsic::ID id, llvm::ArrayRef<llvm::Type*> types = {}) {
@@ -1430,6 +1426,8 @@ private:
     }
 
     bool caches_sequence_parameter(std::uint32_t parameter) const {
+        if (function_.parameters[parameter].mutates_structure)
+            return false;
         const auto type = function_.parameters[parameter].type;
         if (type.kind != language::ValueType::array && type.kind != language::ValueType::string)
             return false;
@@ -1450,7 +1448,40 @@ private:
         return sequence_view(value_address(id), node.type);
     }
 
-    llvm::Value* value_address(language::NodeId id) {
+    void collect_lvalue_indices(language::NodeId id, llvm::SmallVectorImpl<language::NodeId>& out) const {
+        const auto& expr = function_.expressions[id];
+        if (expr.kind == language::Expression::Kind::value_field) {
+            collect_lvalue_indices(expr.left, out);
+        } else if (expr.kind == language::Expression::Kind::index) {
+            collect_lvalue_indices(expr.left, out);
+            out.push_back(id);
+        }
+    }
+
+    llvm::SmallVector<std::pair<language::NodeId, llvm::Value*>, 4> prepare_lvalue_indices(language::NodeId id) {
+        llvm::SmallVector<language::NodeId, 4> index_nodes;
+        collect_lvalue_indices(id, index_nodes);
+        llvm::SmallVector<std::pair<language::NodeId, llvm::Value*>, 4> prepared;
+        prepared.reserve(index_nodes.size());
+        for (const auto idx_id : index_nodes)
+            prepared.emplace_back(idx_id, expression(function_.expressions[idx_id].right));
+        return prepared;
+    }
+
+    bool may_mutate_sequences(language::NodeId id) const {
+        if (id == language::no_node)
+            return false;
+        const auto& expr = function_.expressions[id];
+        if (expr.kind == language::Expression::Kind::sequence_mutation ||
+            expr.kind == language::Expression::Kind::source_call || expr.kind == language::Expression::Kind::call)
+            return true;
+        if (may_mutate_sequences(expr.receiver) || may_mutate_sequences(expr.left) || may_mutate_sequences(expr.right))
+            return true;
+        return std::ranges::any_of(expr.arguments, [&](language::NodeId arg) { return may_mutate_sequences(arg); });
+    }
+
+    llvm::Value* value_address(language::NodeId id,
+                               std::span<const std::pair<language::NodeId, llvm::Value*>> prepared_indices = {}) {
         const auto& node = function_.expressions[id];
         PositionScope position(position_, node.position);
         if (node.kind == language::Expression::Kind::local)
@@ -1458,10 +1489,24 @@ private:
         if (node.kind == language::Expression::Kind::string_literal)
             return expression(id);
         if (node.kind == language::Expression::Kind::value_field)
-            return ir_.CreateInBoundsGEP(ir_.getInt8Ty(), value_address(node.left), ir_.getInt64(node.offset));
+            return ir_.CreateInBoundsGEP(ir_.getInt8Ty(), value_address(node.left, prepared_indices),
+                                         ir_.getInt64(node.offset));
         if (node.kind == language::Expression::Kind::index) {
-            const auto input = sequence(node.left);
-            auto* index = expression(node.right);
+            llvm::Value* pre_index = nullptr;
+            for (const auto& [idx_id, idx_val] : prepared_indices)
+                if (idx_id == id) {
+                    pre_index = idx_val;
+                    break;
+                }
+            Sequence input;
+            if (function_.expressions[node.left].kind == language::Expression::Kind::local &&
+                function_.expressions[node.left].value < parameter_views_.size() &&
+                parameter_views_[function_.expressions[node.left].value].data)
+                input = parameter_views_[function_.expressions[node.left].value];
+            else
+                input =
+                    sequence_view(value_address(node.left, prepared_indices), function_.expressions[node.left].type);
+            auto* index = pre_index ? pre_index : expression(node.right);
             auto* offset = function_.expressions[node.right].type == language::ValueType::i32
                                ? ir_.CreateSExt(index, ir_.getInt64Ty())
                                : ir_.CreateZExt(index, ir_.getInt64Ty());
@@ -1471,7 +1516,8 @@ private:
             return ir_.CreateInBoundsGEP(ir_.getInt8Ty(), input.data, ir_.CreateMul(offset, ir_.getInt64(stride)));
         }
         if (managed_value(node.type) &&
-            (node.kind == language::Expression::Kind::call || node.kind == language::Expression::Kind::source_call))
+            (node.kind == language::Expression::Kind::call || node.kind == language::Expression::Kind::source_call ||
+             node.kind == language::Expression::Kind::conditional))
             return expression(id);
         if (math_type(node.type))
             return input_address(id);
@@ -1537,11 +1583,14 @@ private:
         }
         case Kind::sequence_mutation: {
             const auto type = function_.expressions[node.left].type;
-            auto* target = value_address(node.left);
             if (const auto text = direct_text_input(node); text != language::no_node) {
-                write_text(type, target, function_.expressions[text].value, SequenceMutation::append_text);
+                write_text(type, value_address(node.left), function_.expressions[text].value,
+                           SequenceMutation::append_text);
                 return nullptr;
             }
+            const auto prepared_indices = prepare_lvalue_indices(node.left);
+            const bool defer_target = !prepared_indices.empty() && may_mutate_sequences(node.right);
+            auto* target = defer_target ? nullptr : value_address(node.left, prepared_indices);
             llvm::Value* input = llvm::ConstantPointerNull::get(ir_.getPtrTy());
             llvm::Value* count = ir_.getInt64(0);
             if (node.mutation == SequenceMutation::reserve || node.mutation == SequenceMutation::resize) {
@@ -1551,6 +1600,8 @@ private:
                 count = ir_.CreateZExt(number, ir_.getInt64Ty());
             } else if (node.right != language::no_node)
                 input = input_address(node.right);
+            if (!target)
+                target = value_address(node.left, prepared_indices);
             checked_call(mutate_sequence_,
                          {invocation_, ir_.getInt32(type.type_index),
                           ir_.getInt32(static_cast<std::uint32_t>(node.mutation)), target, input, count});
@@ -1615,6 +1666,14 @@ private:
             llvm::SmallVector<llvm::Value*, 8> arguments{invocation_, source_result_, source_failure_};
             if (callee_takes_trace_)
                 arguments.push_back(trace_);
+            struct DeferredRef {
+                std::size_t slot;
+
+                language::NodeId id;
+
+                llvm::SmallVector<std::pair<language::NodeId, llvm::Value*>, 4> indices;
+            };
+            llvm::SmallVector<DeferredRef, 4> deferred_refs;
             for (std::size_t i = 0; i < node.arguments.size(); ++i) {
                 const auto id = node.arguments[i];
                 const auto& argument = function_.expressions[id];
@@ -1630,15 +1689,27 @@ private:
                     if (managed_value(argument.type))
                         value = temporary_value(argument.type, value, "value.argument");
                     arguments.push_back(value);
-                } else if (language::aggregate(argument.type))
+                } else if (language::aggregate(argument.type) || argument.kind == Kind::local ||
+                           argument.kind == Kind::value_field ||
+                           (argument.kind == Kind::index &&
+                            function_.expressions[argument.left].type.kind != language::ValueType::string)) {
+                    const bool later_mutates =
+                        std::any_of(node.arguments.begin() + static_cast<std::ptrdiff_t>(i + 1), node.arguments.end(),
+                                    [&](language::NodeId later) { return may_mutate_sequences(later); });
+                    if (later_mutates) {
+                        auto prepared = prepare_lvalue_indices(id);
+                        if (!prepared.empty()) {
+                            deferred_refs.push_back({arguments.size(), id, std::move(prepared)});
+                            arguments.push_back(nullptr);
+                            continue;
+                        }
+                    }
                     arguments.push_back(value_address(id));
-                else if (argument.kind == Kind::local || argument.kind == Kind::value_field ||
-                         (argument.kind == Kind::index &&
-                          function_.expressions[argument.left].type.kind != language::ValueType::string))
-                    arguments.push_back(value_address(id));
-                else
+                } else
                     arguments.push_back(input_address(id));
             }
+            for (const auto& def : deferred_refs)
+                arguments[def.slot] = value_address(def.id, def.indices);
             llvm::Value* result_storage = source_result_;
             // Plain source results are fully copied by the callee. Their
             // trivial lifetime needs no default construction or cleanup.
@@ -1666,11 +1737,15 @@ private:
         case Kind::call: {
             auto* owner = expression(node.receiver);
             // Evaluate and root identities left-to-right, but do not obtain
-            // object-field addresses until all later operands have run.
+            // object-field or reallocatable sequence addresses until all later operands have run.
             struct Operand {
                 llvm::Value* value;
 
                 std::optional<std::uint32_t> field{};
+
+                language::NodeId deferred_lvalue{language::no_node};
+
+                llvm::SmallVector<std::pair<language::NodeId, llvm::Value*>, 4> prepared_indices{};
             };
             llvm::SmallVector<Operand, 8> values;
             for (std::size_t i = 0; i < node.arguments.size(); ++i) {
@@ -1684,9 +1759,19 @@ private:
                 else if (passing != ParameterPassing::value &&
                          (language::aggregate(argument.type) || argument.kind == Kind::value_field ||
                           (argument.kind == Kind::index &&
-                           function_.expressions[argument.left].type.kind != language::ValueType::string)))
+                           function_.expressions[argument.left].type.kind != language::ValueType::string))) {
+                    const bool later_mutates =
+                        std::any_of(node.arguments.begin() + static_cast<std::ptrdiff_t>(i + 1), node.arguments.end(),
+                                    [&](language::NodeId later) { return may_mutate_sequences(later); });
+                    if (later_mutates) {
+                        auto prepared = prepare_lvalue_indices(id);
+                        if (!prepared.empty()) {
+                            values.push_back({nullptr, std::nullopt, id, std::move(prepared)});
+                            continue;
+                        }
+                    }
                     values.push_back({value_address(id)});
-                else {
+                } else {
                     auto* value = math_type(argument.type) || passing != ParameterPassing::value ? input_address(id)
                                                                                                  : expression(id);
                     if (managed_value(argument.type))
@@ -1716,6 +1801,8 @@ private:
                 const auto type = function_.expressions[node.arguments[i]].type;
                 const auto& operand = values[i];
                 auto* value = operand.value;
+                if (operand.deferred_lvalue != language::no_node)
+                    value = value_address(operand.deferred_lvalue, operand.prepared_indices);
                 if (operand.field) {
                     auto* context = native_receiver(value);
                     value = field_address(context, *operand.field);
@@ -1757,6 +1844,30 @@ private:
                    : (floating_type(node.type) || math_type(node.type)) ? ir_.CreateFNeg(value)
                                                                         : ir_.CreateNeg(value);
         }
+        case Kind::conditional: {
+            auto* cond = expression(node.receiver);
+            const auto saved_self = cached_self_;
+            auto* then_bb = block("conditional.then");
+            auto* else_bb = block("conditional.else");
+            auto* merge_bb = block("conditional.end");
+            ir_.CreateCondBr(cond, then_bb, else_bb);
+            ir_.SetInsertPoint(then_bb);
+            cached_self_ = saved_self;
+            auto* then_val = expression(node.left);
+            auto* then_end = ir_.GetInsertBlock();
+            ir_.CreateBr(merge_bb);
+            ir_.SetInsertPoint(else_bb);
+            cached_self_ = saved_self;
+            auto* else_val = expression(node.right);
+            auto* else_end = ir_.GetInsertBlock();
+            ir_.CreateBr(merge_bb);
+            ir_.SetInsertPoint(merge_bb);
+            cached_self_ = saved_self;
+            auto* result = ir_.CreatePHI(then_val->getType(), 2, "conditional.result");
+            result->addIncoming(then_val, then_end);
+            result->addIncoming(else_val, else_end);
+            return result;
+        }
         case Kind::binary:
             break;
         }
@@ -1784,19 +1895,26 @@ private:
             return result;
         }
         auto* right = expression(node.right);
-        const auto left_type = function_.expressions[node.left].type;
+        return binary_value(node.operation, function_.expressions[node.left].type,
+                            function_.expressions[node.right].type, left, right);
+    }
+
+    llvm::Value* binary_value(language::Operation operation, language::ValueType left_type,
+                              language::ValueType right_type, llvm::Value* left, llvm::Value* right) {
+        using Op = language::Operation;
         if (is_reference(left_type)) {
-            if (node.operation != Op::equal && node.operation != Op::not_equal)
+            if (operation != Op::equal && operation != Op::not_equal)
                 fatal("Invalid typed reference comparison.");
             checked_call(same_reference_, {invocation_, left, right, uint_result_});
             auto* same = ir_.CreateLoad(ir_.getInt32Ty(), uint_result_);
-            return node.operation == Op::equal ? ir_.CreateICmpNE(same, ir_.getInt32(0))
-                                               : ir_.CreateICmpEQ(same, ir_.getInt32(0));
+            return operation == Op::equal ? ir_.CreateICmpNE(same, ir_.getInt32(0))
+                                          : ir_.CreateICmpEQ(same, ir_.getInt32(0));
         }
-        if (math_type(left_type) || math_type(function_.expressions[node.right].type))
-            return math_binary(node, left, right);
+        if (math_type(left_type) || math_type(right_type))
+            return MathLowering{ir_, *module_}.binary(operation, left, right, math_type(left_type),
+                                                      math_type(right_type));
         const bool floating = floating_type(left_type);
-        switch (node.operation) {
+        switch (operation) {
         case Op::add:
             return floating ? ir_.CreateFAdd(left, right) : ir_.CreateAdd(left, right);
         case Op::subtract:
@@ -1814,7 +1932,7 @@ private:
                                       ir_.CreateNot(ir_.CreateAnd(ir_.CreateICmpEQ(left, ir_.getInt32(0x80000000u)),
                                                                   ir_.CreateICmpEQ(right, ir_.getInt32(UINT32_MAX)))));
             check_value(valid, EntryFailure::integer_division);
-            if (node.operation == Op::remainder)
+            if (operation == Op::remainder)
                 return signed_integer ? ir_.CreateSRem(left, right) : ir_.CreateURem(left, right);
             return signed_integer ? ir_.CreateSDiv(left, right) : ir_.CreateUDiv(left, right);
         }
@@ -1827,7 +1945,7 @@ private:
         case Op::shift_left:
         case Op::shift_right:
             check_value(ir_.CreateICmpULT(right, ir_.getInt32(32)), EntryFailure::integer_shift);
-            if (node.operation == Op::shift_left)
+            if (operation == Op::shift_left)
                 return ir_.CreateShl(left, right);
             return left_type == language::ValueType::i32 ? ir_.CreateAShr(left, right) : ir_.CreateLShr(left, right);
         case Op::equal:
@@ -1907,11 +2025,22 @@ private:
             const auto type = function_.locals[node.target].type;
             if (plain_record(type)) {
                 const auto& layout = source_.value_layouts.at(type.type_index);
-                if (node.expression == language::no_node)
-                    ir_.CreateMemSet(locals_[node.target], ir_.getInt8(0), layout.size, llvm::Align(layout.alignment));
-                else
+                if (node.expression == language::no_node) {
+                    if (layout.zero_default) {
+                        ir_.CreateMemSet(locals_[node.target], ir_.getInt8(0), layout.size,
+                                         llvm::Align(layout.alignment));
+                    } else {
+                        auto* proto = ir_.CreateGlobalString(
+                            llvm::StringRef(reinterpret_cast<const char*>(layout.initial_value.data()),
+                                            layout.initial_value.size()),
+                            "record.default");
+                        ir_.CreateMemCpy(locals_[node.target], llvm::Align(layout.alignment), proto, llvm::Align(1),
+                                         layout.size);
+                    }
+                } else {
                     ir_.CreateMemCpy(locals_[node.target], llvm::Align(layout.alignment), expression(node.expression),
                                      llvm::Align(1), layout.size);
+                }
                 clear_temporaries();
                 debug_local(node.target, DebugAvailability::available);
                 return;
@@ -1927,36 +2056,69 @@ private:
         }
         case Kind::assign: {
             const auto& target = function_.expressions[node.target];
+            const auto rhs_type = function_.expressions[node.expression].type;
             // Evaluate a field's owner before its RHS and keep any owner
             // temporary rooted through the store, even if the RHS calls out.
             auto* owner = target.kind == language::Expression::Kind::field ? expression(target.receiver) : nullptr;
             const bool direct = target.kind == language::Expression::Kind::value_field ||
                                 target.kind == language::Expression::Kind::index;
-            auto* address = direct ? value_address(node.target) : nullptr;
+            const auto prepared_indices = direct ? prepare_lvalue_indices(node.target)
+                                                 : llvm::SmallVector<std::pair<language::NodeId, llvm::Value*>, 4>{};
+            const bool rhs_mutates = !prepared_indices.empty() && may_mutate_sequences(node.expression);
             if (managed_value(target.type)) {
-                if (const auto text = direct_text_input(node); text != language::no_node)
-                    write_text(target.type, direct ? address : locals_[target.value], function_.expressions[text].value,
-                               SequenceMutation::assign_text);
-                else if (source_.material || plain_record(target.type))
-                    ir_.CreateMemMove(direct ? address : locals_[target.value], llvm::Align(1),
-                                      expression(node.expression), llvm::Align(1),
-                                      source_.value_layouts[target.type.type_index].size);
-                else
-                    checked_call(assign_value_,
-                                 {invocation_, ir_.getInt32(target.type.type_index),
-                                  direct ? address : locals_[target.value], expression(node.expression)});
+                if (const auto text = direct_text_input(node); text != language::no_node) {
+                    auto* address = direct ? value_address(node.target, prepared_indices) : locals_[target.value];
+                    write_text(target.type, address, function_.expressions[text].value, SequenceMutation::assign_text);
+                } else {
+                    auto* address = !direct       ? locals_[target.value]
+                                    : rhs_mutates ? nullptr
+                                                  : value_address(node.target, prepared_indices);
+                    auto* rhs_ptr = expression(node.expression);
+                    if (!address)
+                        address = value_address(node.target, prepared_indices);
+                    if (source_.material || plain_record(target.type))
+                        ir_.CreateMemMove(address, llvm::Align(1), rhs_ptr, llvm::Align(1),
+                                          source_.value_layouts[target.type.type_index].size);
+                    else
+                        checked_call(assign_value_,
+                                     {invocation_, ir_.getInt32(target.type.type_index), address, rhs_ptr});
+                }
                 clear_temporaries();
                 return;
             }
+            if (node.compound) {
+                if (target.kind == language::Expression::Kind::local) {
+                    auto* lhs = load_value(locals_[target.value], target.type);
+                    auto* rhs = expression(node.expression);
+                    store_value(binary_value(*node.compound, target.type, rhs_type, lhs, rhs), locals_[target.value],
+                                target.type);
+                } else if (direct) {
+                    auto* read_addr = value_address(node.target, prepared_indices);
+                    auto* lhs = load_value(read_addr, target.type);
+                    auto* rhs = expression(node.expression);
+                    auto* store_addr = rhs_mutates ? value_address(node.target, prepared_indices) : read_addr;
+                    store_value(binary_value(*node.compound, target.type, rhs_type, lhs, rhs), store_addr, target.type);
+                } else {
+                    auto* lhs = read_field(owner, target.type, target.value);
+                    auto* rhs = expression(node.expression);
+                    write_field(owner, target.type, target.value,
+                                binary_value(*node.compound, target.type, rhs_type, lhs, rhs));
+                }
+                clear_temporaries();
+                return;
+            }
+            auto* address = (direct && !rhs_mutates) ? value_address(node.target, prepared_indices) : nullptr;
             auto* value = expression(node.expression);
             if (target.kind == language::Expression::Kind::local) {
                 if (is_reference(target.type))
                     copy_reference(local_slots_[target.value], value);
                 else
                     store_value(value, locals_[target.value], target.type);
-            } else if (direct)
+            } else if (direct) {
+                if (!address)
+                    address = value_address(node.target, prepared_indices);
                 store_value(value, address, target.type);
-            else
+            } else
                 write_field(owner, target.type, target.value, value);
             clear_temporaries();
             return;
@@ -3153,11 +3315,13 @@ compile(const BusinessServices& services, const language::Program& program, lang
         catalog->value_names.reserve(environment.values.size());
         catalog->value_field_names.reserve(environment.values.size());
         catalog->value_fields.reserve(environment.values.size());
+        catalog->value_defaults.reserve(environment.values.size());
         catalog->values.reserve(environment.values.size());
         for (const auto& value : environment.values) {
             catalog->value_names.push_back(value.name);
             auto& names = catalog->value_field_names.emplace_back();
             auto& fields = catalog->value_fields.emplace_back();
+            auto& defaults = catalog->value_defaults.emplace_back(value.initial_value);
             names.reserve(value.fields.size());
             fields.reserve(value.fields.size());
             for (const auto& field : value.fields) {
@@ -3167,7 +3331,8 @@ compile(const BusinessServices& services, const language::Program& program, lang
             catalog->values.push_back({catalog->value_names.back().c_str(), business_type({value.kind}).kind,
                                        value.size, value.alignment, business_type(value.element), fields.data(),
                                        static_cast<std::uint32_t>(fields.size()), value.sequence_view, value.can_own,
-                                       value.can_mutate, value.math, value.plain_value, value.zero_default});
+                                       value.can_mutate, value.math, value.plain_value, value.zero_default,
+                                       defaults.empty() ? nullptr : defaults.data()});
         }
         catalog->environment = {catalog->fields.empty() ? nullptr : catalog->fields.data(),
                                 static_cast<std::uint32_t>(catalog->fields.size()),
@@ -3430,6 +3595,8 @@ source_values(const atelier::source::detail::BusinessEnvironment& environment) {
                                      value.math,
                                      value.plain_value,
                                      value.zero_default};
+        if (value.initial_value && value.size)
+            layout.initial_value.assign(value.initial_value, value.initial_value + value.size);
         if (value.kind == ValueKind::array) {
             auto element = source_type(value.element);
             if (!element)
@@ -3605,10 +3772,13 @@ std::uint32_t compile_business_impl(
             if (layout.math)
                 return false;
             return (options.diagnostics && !function.used_in_parallel) || type.kind != language::ValueType::record ||
-                   !layout.plain_value || !layout.zero_default;
+                   !layout.plain_value || (!layout.zero_default && layout.initial_value.empty());
         };
-        for (const auto& statement : function.statements)
+        for (const auto& statement : function.statements) {
             uses_parallel_for |= statement.kind == language::Statement::Kind::parallel_loop;
+            if (statement.kind == language::Statement::Kind::assign)
+                owns_values |= owned_type(function.expressions[statement.target].type);
+        }
         for (std::size_t local = 0; local < function.locals.size(); ++local)
             owns_values |= owned_type(function.locals[local].type) &&
                            (local >= function.parameters.size() ||

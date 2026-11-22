@@ -156,6 +156,56 @@ Result<Geometry> copy_to_points(const Geometry& points, std::span<const Referenc
 Result<Geometry> realize(std::span<const Geometry> sources, const Geometry& points, StringView group = {},
                          StringView variant = "variant", std::span<const String> target_attributes = {});
 
+struct ExtrudeSettings {
+    StringView group{};
+
+    float distance{0.5f};
+
+    float inset{0.f};
+
+    StringView distance_attribute{};
+
+    StringView inset_attribute{};
+
+    bool individual{true};
+
+    bool output_back{true};
+
+    StringView front_group{};
+
+    StringView side_group{};
+};
+
+// Extrudes selected convex planar polygons along their face normals (or shared region vertex normals
+// when individual is false) with optional planar bisector inset, hard-edge vertex N, metric side uv,
+// primitive/detail attribute inheritance, and optional back caps for watertight solid shells.
+Result<Geometry> extrude(const Geometry& surface, const ExtrudeSettings& settings = {});
+
+struct SweepSettings {
+    SweepProfile profile{SweepProfile::rectangle};
+
+    float width{1.f};
+
+    float height{1.f};
+
+    float radius{0.5f};
+
+    std::uint32_t segments{8};
+
+    math::Vector3 up{0.f, 1.f, 0.f};
+
+    bool end_caps{true};
+
+    StringView scale_attribute = StringView{"pscale"};
+};
+
+// Sweeps a rectangular, tubular, or custom XY cross-section along every open polyline in `backbone`
+// using parallel-transport + `up`-stabilized mitered frames, optional point `scale_attribute` modulation,
+// end caps, vertex N, and arc-length/ring vertex uv. Warped 3D quads split cleanly along their diagonal
+// so every output face satisfies the shared planar convex polygon tolerance.
+Result<Geometry> sweep(const Geometry& backbone, const SweepSettings& settings = {},
+                       const Geometry* cross_section = nullptr);
+
 // Of the points; empty geometry has none.
 [[nodiscard]] std::optional<math::Bounds> bounds(const Geometry& geometry) noexcept;
 

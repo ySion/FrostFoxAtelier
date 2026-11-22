@@ -1,12 +1,46 @@
 #pragma once
 
 #include "foundation/array.hpp"
+#include "foundation/shared_array.hpp"
 #include "procedural/geometry.hpp"
+#include "runtime/reflection.hpp"
 
 #include <memory>
 #include <optional>
 
+#include "procedural/bvh.gen.hpp"
+
 namespace atelier::procedural {
+
+// 32-byte word of a read-only Spatial acceleration buffer. Word 0 stores `{tri_root, seg_root}` in
+// `{u0, u1}`; interior/leaf BVH nodes store `{minimum, first, maximum, count}`; leaf items occupy
+// two consecutive words (64 bytes).
+ASTRUCT(Name = "procedural.SpatialNode", DESC = "只读空间加速缓冲的 32 字节单元。")
+struct SpatialNode {
+    AGENERATED_BODY(SpatialNode)
+
+    AFIELD(DESC = "下界或首向量。")
+    math::Vector3 a{};
+
+    AFIELD(DESC = "首下标或图元号。")
+    std::uint32_t u0{};
+
+    AFIELD(DESC = "上界或次向量。")
+    math::Vector3 b{};
+
+    AFIELD(DESC = "叶元素数或辅助编码。")
+    std::uint32_t u1{};
+};
+
+// Immutable surface-triangle and polyline-segment BVH buffer projected as a read-only sequence to
+// Source kernels (`[Port] const procedural.Spatial&`).
+struct Spatial {
+    SharedArray<SpatialNode> words;
+
+    static Result<Spatial> build(const Geometry& geometry);
+
+    static Result<std::shared_ptr<const Spatial>> acquire(const Geometry& geometry);
+};
 
 struct Hit {
     std::uint32_t primitive;

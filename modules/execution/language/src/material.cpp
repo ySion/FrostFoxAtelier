@@ -231,6 +231,8 @@ class Coverage {
             }
             return value;
         }
+        case Kind::conditional:
+            return select(operand(node.receiver)[0], operand(node.left), operand(node.right));
         case Kind::math_construct: {
             if (node.arguments.empty())
                 return initial(node.type);
@@ -318,10 +320,22 @@ class Coverage {
                                                                   : expression(function, node.expression, flow);
             break;
         case Kind::assign: {
-            const auto value = expression(function, node.expression, flow);
+            auto value = expression(function, node.expression, flow);
             if (overflowed_)
                 return;
             const auto [local, begin] = target(function, node.target);
+            if (node.compound) {
+                const auto target_type = function.expressions[node.target].type;
+                const auto target_width = width(target_type);
+                const Value current(flow.locals[local].begin() + begin,
+                                    flow.locals[local].begin() + begin + target_width);
+                const auto scalar = record(target_type) ? ValueType{ValueType::f32} : target_type;
+                Value combined;
+                combined.reserve(target_width);
+                for (std::size_t i = 0; i < target_width; ++i)
+                    combined.push_back(binary(*node.compound, current[i], value[value.size() == 1 ? 0 : i], scalar));
+                value = std::move(combined);
+            }
             std::copy(value.begin(), value.end(), flow.locals[local].begin() + begin);
             break;
         }
@@ -695,7 +709,19 @@ class Hlsl {
         }
     }
 
-    std::string expression(const Function& function, NodeId id, bool group_binary = true) const {
+    static bool contains_conditional(const Function& function, NodeId id) {
+        if (id == no_node)
+            return false;
+        const auto& node = function.expressions[id];
+        if (node.kind == Expression::Kind::conditional)
+            return true;
+        if (contains_conditional(function, node.receiver) || contains_conditional(function, node.left) ||
+            contains_conditional(function, node.right))
+            return true;
+        return std::ranges::any_of(node.arguments, [&](NodeId arg) { return contains_conditional(function, arg); });
+    }
+
+    std::string expression(const Function& function, NodeId id, bool group_binary = true) {
         const auto& node = function.expressions[id];
         const auto operand = [&](NodeId value) { return expression(function, value); };
         using Kind = Expression::Kind;
@@ -720,12 +746,35 @@ class Hlsl {
         case Kind::unary:
             return "(" + operation(node.operation) + operand(node.left) + ")";
         case Kind::binary: {
-            auto result = operand(node.left) + operation(node.operation) + operand(node.right);
+            if ((node.operation == Operation::logical_and || node.operation == Operation::logical_or) &&
+                contains_conditional(function, node.right)) {
+                const auto a = operand(node.left);
+                const auto result = "ms_t" + std::to_string(temporary_++);
+                text_ += "bool " + result + " = " + a + ";\n";
+                text_ += "if (" + std::string(node.operation == Operation::logical_or ? "!" : "") + result + ") {\n";
+                const auto b = operand(node.right);
+                text_ += result + " = " + b + ";\n}\n";
+                return result;
+            }
+            const auto lhs = operand(node.left);
+            const auto rhs = operand(node.right);
+            auto result = lhs + operation(node.operation) + rhs;
             const auto left = function.expressions[node.left].type;
             if (left.kind == ValueType::record &&
                 (node.operation == Operation::equal || node.operation == Operation::not_equal))
                 return (node.operation == Operation::equal ? "all(" : "any(") + result + ")";
             return group_binary ? "(" + result + ")" : result;
+        }
+        case Kind::conditional: {
+            const auto cond = operand(node.receiver);
+            const auto result = "ms_t" + std::to_string(temporary_++);
+            text_ += type(node.type) + " " + result + ";\n";
+            text_ += "if (" + cond + ") {\n";
+            const auto yes = operand(node.left);
+            text_ += result + " = " + yes + ";\n} else {\n";
+            const auto no = operand(node.right);
+            text_ += result + " = " + no + ";\n}\n";
+            return result;
         }
         case Kind::texture_sample:
             return "::atelier_material_sample(ms_environment," + operand(node.right) + "," + operand(node.left) + ")";
@@ -769,23 +818,34 @@ class Hlsl {
             break;
         case Kind::declare: {
             const auto& local = function.locals[node.target];
-            text_ += type(local.type) + " ms_v" + std::to_string(node.target) + " = ";
-            text_ += node.expression == no_node ? initial(local.type, nullptr) : expression(function, node.expression);
-            text_ += ";\n";
+            const auto value =
+                node.expression == no_node ? initial(local.type, nullptr) : expression(function, node.expression);
+            text_ += type(local.type) + " ms_v" + std::to_string(node.target) + " = " + value + ";\n";
             break;
         }
-        case Kind::assign:
-            text_ += expression(function, node.target) + " = " + expression(function, node.expression) + ";\n";
+        case Kind::assign: {
+            const auto target_str = expression(function, node.target);
+            const auto rhs_str = expression(function, node.expression);
+            if (node.compound)
+                text_ += target_str + " = (" + target_str + operation(*node.compound) + rhs_str + ");\n";
+            else
+                text_ += target_str + " = " + rhs_str + ";\n";
             break;
-        case Kind::call:
-            text_ += expression(function, node.expression) + ";\n";
+        }
+        case Kind::call: {
+            const auto expr_str = expression(function, node.expression);
+            text_ += expr_str + ";\n";
             break;
-        case Kind::return_value:
-            text_ += "return" +
-                     (node.expression == no_node ? std::string{} : " " + expression(function, node.expression)) + ";\n";
+        }
+        case Kind::return_value: {
+            const auto ret_str =
+                node.expression == no_node ? std::string{} : " " + expression(function, node.expression);
+            text_ += "return" + ret_str + ";\n";
             break;
-        case Kind::condition:
-            text_ += "if (" + expression(function, node.expression, false) + ") {\n";
+        }
+        case Kind::condition: {
+            const auto cond_str = expression(function, node.expression, false);
+            text_ += "if (" + cond_str + ") {\n";
             statement(function, node.body);
             text_ += "}\n";
             if (node.alternative != no_node) {
@@ -794,6 +854,7 @@ class Hlsl {
                 text_ += "}\n";
             }
             break;
+        }
         default:
             fatal("Unvalidated material statement.");
         }
@@ -988,6 +1049,17 @@ class Hlsl {
                 result = (node.operation == Operation::equal ? "all" : "any") + result;
             return emit(result);
         }
+        case Kind::conditional: {
+            const auto cond = operand(node.receiver);
+            const auto result = "ms_t" + std::to_string(temporary_++);
+            text_ += differential_type(node.type) + " " + result + ";\n";
+            text_ += "if (" + cond + ") {\n";
+            const auto yes = operand(node.left);
+            text_ += result + "=" + yes + ";\n} else {\n";
+            const auto no = operand(node.right);
+            text_ += result + "=" + no + ";\n}\n";
+            return result;
+        }
         case Kind::scalar_cast: {
             const auto value = operand(node.left);
             return function.expressions[node.left].type == ValueType::f32
@@ -1073,7 +1145,25 @@ class Hlsl {
             break;
         }
         case Kind::assign: {
-            const auto value = differential_expression(function, node.expression);
+            auto value = differential_expression(function, node.expression);
+            if (node.compound) {
+                const auto lhs = differential_expression(function, node.target);
+                const auto target_type = function.expressions[node.target].type;
+                const auto rhs_type = function.expressions[node.expression].type;
+                const char* op_name = *node.compound == Operation::add        ? "add"
+                                      : *node.compound == Operation::subtract ? "sub"
+                                      : *node.compound == Operation::multiply ? "mul"
+                                                                              : "div";
+                const auto rhs_cast = (rhs_type == ValueType::f32 && target_type.kind == ValueType::record &&
+                                       program_.value_layouts[target_type.type_index].math)
+                                          ? "ms_seed((" + type(target_type) + ")" + value + ".v,(" + type(target_type) +
+                                                ")" + value + ".d0,(" + type(target_type) + ")" + value + ".d1)"
+                                          : value;
+                const auto combined = "ms_t" + std::to_string(temporary_++);
+                text_ += differential_type(target_type) + " " + combined + "=ms_d" + op_name + "(" + lhs + "," +
+                         rhs_cast + ");\n";
+                value = combined;
+            }
             const auto changes = continuous(function.expressions[node.target].type);
             for (const auto* part : {"v", "d0", "d1"}) {
                 text_ += differential_target(function, node.target, part) + "=" + value +
@@ -1385,6 +1475,7 @@ std::expected<MaterialModule, Diagnostic> compile_material(std::string_view name
             case Kind::value_field:
             case Kind::math_construct:
             case Kind::source_call:
+            case Kind::conditional:
                 break;
             case Kind::unary:
             case Kind::binary:

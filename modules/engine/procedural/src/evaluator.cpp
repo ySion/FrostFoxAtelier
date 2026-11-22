@@ -1,4 +1,5 @@
 #include "procedural/evaluator.hpp"
+#include "procedural/bvh.hpp"
 #include "procedural/nodes.hpp"
 #include "detail/native_cook.hpp"
 #include "detail/node_plan.hpp"
@@ -461,15 +462,25 @@ struct Evaluator::Impl {
         writable.resize(arg_count, nullptr);
 
         std::size_t multi_port_count = 0;
-        for (const auto& arg : plan.arguments)
+        std::size_t spatial_port_count = 0;
+        bool has_any_columns = false;
+        for (const auto& arg : plan.arguments) {
             if (arg.kind == detail::ArgKind::port_inputs)
                 ++multi_port_count;
+            else if (arg.kind == detail::ArgKind::port_spatial)
+                ++spatial_port_count;
+            else if (arg.kind == detail::ArgKind::column_in || arg.kind == detail::ArgKind::column_inout ||
+                     arg.kind == detail::ArgKind::column_out || arg.kind == detail::ArgKind::column_group)
+                has_any_columns = true;
+        }
         std::vector<Geometries> multi_inputs;
         multi_inputs.reserve(multi_port_count); // Borrowed below; must not reallocate.
+        std::vector<std::shared_ptr<const Spatial>> spatial_inputs;
+        spatial_inputs.reserve(spatial_port_count);
 
         bool wrote_positions = false;
         std::array<std::size_t, 5> expected_layer_counts{};
-        if (plan.uses_primary_stream) {
+        if (has_any_columns) {
             if (string_type == TypeId{})
                 if (auto str = runtime.native_type<String>())
                     string_type = *str;
@@ -498,44 +509,48 @@ struct Evaluator::Impl {
                 }
             }
 
-            const Geometry& primary_in = single_input(0);
-            expected_layer_counts = {primary_in.count(Layer::point), primary_in.count(Layer::vertex),
-                                     primary_in.count(Layer::primitive), primary_in.count(Layer::detail),
-                                     primary_in.count(Layer::instance)};
-            // Resolve all read-only column/group borrows against the immutable input snapshot first.
+            // Resolve all read-only column/group borrows against immutable upstream snapshots first.
             for (std::size_t i = 0; i < arg_count; ++i) {
                 const auto& arg = plan.arguments[i];
                 if (arg.kind == detail::ArgKind::column_group) {
                     if (resolved_names[i].empty()) {
                         values[i] = &std::get<0>(empty_columns());
                     } else {
-                        ATELIER_TRY_BIND(column,
-                                         accessors[0].read(primary_in, resolved_names[i], resolved_layers[i], false));
+                        const Geometry& src = single_input(arg.port_index);
+                        ATELIER_TRY_BIND(column, accessors[0].read(src, resolved_names[i], resolved_layers[i], false));
                         values[i] = *column;
                     }
                 } else if (arg.kind == detail::ArgKind::column_in) {
-                    ATELIER_TRY_BIND(column, accessors[arg.column_variant].read(primary_in, resolved_names[i],
+                    const Geometry& src = single_input(arg.port_index);
+                    ATELIER_TRY_BIND(column, accessors[arg.column_variant].read(src, resolved_names[i],
                                                                                 resolved_layers[i], arg.optional));
                     values[i] = *column;
                 }
             }
 
-            Geometry& primary_out = entry.outputs[0];
-            primary_out = primary_in;
-            // Create all missing Out columns before taking any writable column borrows.
-            for (std::size_t i = 0; i < arg_count; ++i) {
-                const auto& arg = plan.arguments[i];
-                if (arg.kind == detail::ArgKind::column_out) {
-                    ATELIER_TRY(accessors[arg.column_variant].out(primary_out, resolved_names[i], resolved_layers[i]));
+            if (plan.uses_primary_stream) {
+                const Geometry& primary_in = single_input(0);
+                expected_layer_counts = {primary_in.count(Layer::point), primary_in.count(Layer::vertex),
+                                         primary_in.count(Layer::primitive), primary_in.count(Layer::detail),
+                                         primary_in.count(Layer::instance)};
+                Geometry& primary_out = entry.outputs[0];
+                primary_out = primary_in;
+                // Create all missing Out columns before taking any writable column borrows.
+                for (std::size_t i = 0; i < arg_count; ++i) {
+                    const auto& arg = plan.arguments[i];
+                    if (arg.kind == detail::ArgKind::column_out) {
+                        ATELIER_TRY(
+                            accessors[arg.column_variant].out(primary_out, resolved_names[i], resolved_layers[i]));
+                    }
                 }
-            }
-            for (std::size_t i = 0; i < arg_count; ++i) {
-                const auto& arg = plan.arguments[i];
-                if (arg.kind == detail::ArgKind::column_inout || arg.kind == detail::ArgKind::column_out) {
-                    ATELIER_TRY_BIND(column, accessors[arg.column_variant].inout(primary_out, resolved_names[i],
-                                                                                 resolved_layers[i]));
-                    values[i] = writable[i] = *column;
-                    wrote_positions |= resolved_names[i] == "P";
+                for (std::size_t i = 0; i < arg_count; ++i) {
+                    const auto& arg = plan.arguments[i];
+                    if (arg.kind == detail::ArgKind::column_inout || arg.kind == detail::ArgKind::column_out) {
+                        ATELIER_TRY_BIND(column, accessors[arg.column_variant].inout(primary_out, resolved_names[i],
+                                                                                     resolved_layers[i]));
+                        values[i] = writable[i] = *column;
+                        wrote_positions |= resolved_names[i] == "P";
+                    }
                 }
             }
         }
@@ -557,6 +572,12 @@ struct Evaluator::Impl {
                 values[i] = &list;
                 break;
             }
+            case detail::ArgKind::port_spatial: {
+                ATELIER_TRY_BIND(built_spatial, Spatial::acquire(single_input(arg.port_index)));
+                spatial_inputs.push_back(std::move(*built_spatial));
+                values[i] = spatial_inputs.back().get();
+                break;
+            }
             case detail::ArgKind::port_output:
                 values[i] = writable[i] = &entry.outputs[arg.port_index];
                 break;
@@ -565,21 +586,33 @@ struct Evaluator::Impl {
             }
         }
 
+        const Node* active_node{};
+        if (!plan.native) {
+            ATELIER_TRY(runtime.with_native<const Node>(id, [&](const Node& ref) -> Result<void> {
+                active_node = &ref;
+                return {};
+            }));
+        }
+
         InlineArray<Argument, 16> arguments;
         arguments.reserve(arg_count);
         for (std::size_t i = 0; i < arg_count; ++i)
             arguments.add(Argument::borrow(plan.arguments[i].type, values[i], writable[i]));
-        if (plan.native) {
-            detail::NativeCook collect{state.status.boolean_stats, boolean_preparation, budget};
-            if (budget && state.type == boolean_type) {
-                for (const auto& input : state.inputs) {
-                    const auto& source = nodes.find(input.from)->entry;
-                    collect.inputs[input.input] = {source, &source->outputs[input.output]};
+        {
+            detail::NativeCook collect{
+                state.status.boolean_stats, boolean_preparation, budget, active_node, entry.outputs,
+                plan.uses_primary_stream};
+            if (plan.native) {
+                if (budget && state.type == boolean_type) {
+                    for (const auto& input : state.inputs) {
+                        const auto& source = nodes.find(input.from)->entry;
+                        collect.inputs[input.input] = {source, &source->outputs[input.output]};
+                    }
                 }
+                ATELIER_TRY(runtime.call(id, plan.method, arguments));
+            } else {
+                ATELIER_TRY(source_kernel->entry.invoke(id, arguments));
             }
-            ATELIER_TRY(runtime.call(id, plan.method, arguments));
-        } else {
-            ATELIER_TRY(source_kernel->entry.invoke(id, arguments));
         }
         if (plan.uses_primary_stream) {
             for (std::size_t i = 0; i < arg_count; ++i) {

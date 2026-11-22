@@ -173,43 +173,37 @@ bool band_box(Vector3 minimum, Vector3 maximum, double tolerance, Vector3 point)
     return true;
 }
 
+template <class NodeT>
+void set_node_bounds(NodeT& node, const Bounds& box) noexcept {
+    if constexpr (requires { node.minimum; }) {
+        node.minimum = box.minimum;
+        node.maximum = box.maximum;
+    } else {
+        node.a = box.minimum;
+        node.b = box.maximum;
+    }
 }
 
-Result<Bvh> Bvh::build(const Geometry& surface) {
-    const auto view = detail::TriangleView::create(surface);
-    if (!view)
-        return std::unexpected(view.error());
-    const auto& positions = surface.positions();
-    const auto corners = surface.vertex_points();
-    Bvh result;
-    Array<Triangle> triangles;
-    triangles.reserve(view->size());
-    for (const auto& [p, j, vertices] : *view) {
-        const Triangle triangle{positions[corners[vertices[0]]], positions[corners[vertices[1]]],
-                                positions[corners[vertices[2]]], p, j};
-        // A zero-area triangle has no surface to hit or project onto.
-        const auto a = Vector3d(triangle.a);
-        if (math::cross(Vector3d(triangle.b) - a, Vector3d(triangle.c) - a) != Vector3d{})
-            triangles.add(triangle);
+template <class NodeT>
+void set_node_span(NodeT& node, std::uint32_t first, std::uint32_t count) noexcept {
+    if constexpr (requires { node.first; }) {
+        node.first = first;
+        node.count = count;
+    } else {
+        node.u0 = first;
+        node.u1 = count;
     }
-    const auto count = static_cast<std::uint32_t>(triangles.size());
-    if (!count)
-        return result;
-    result.polygon_tolerances_.reserve(surface.count(Layer::primitive));
-    for (std::uint32_t p = 0; p < surface.count(Layer::primitive); ++p)
-        result.polygon_tolerances_.add(detail::polygon_scale(surface, surface.primitive(p)).tolerance);
-    Array<Bounds> bounds;
-    bounds.resize(count);
-    Array<Vector3> centers;
-    centers.resize(count);
+}
+
+template <class NodeT>
+Result<Array<std::uint32_t>> append_sah_bvh(Array<NodeT>& nodes, std::span<const Bounds> bounds,
+                                            std::span<const Vector3> centers, std::uint32_t max_sah_depth) {
+    const auto count = static_cast<std::uint32_t>(bounds.size());
     Array<std::uint32_t> order;
     order.resize(count);
-    for (std::uint32_t i = 0; i < count; ++i) {
-        bounds[i] = math::encapsulate(math::encapsulate(Bounds{triangles[i].a, triangles[i].a}, triangles[i].b),
-                                      triangles[i].c);
-        centers[i] = math::center(bounds[i]);
+    for (std::uint32_t i = 0; i < count; ++i)
         order[i] = i;
-    }
+
     struct Task {
         std::uint32_t node;
 
@@ -219,29 +213,22 @@ Result<Bvh> Bvh::build(const Geometry& surface) {
 
         std::uint32_t depth;
     };
-    InlineArray<Task, 64> tasks{{0, 0, count, 0}};
-    result.nodes_.reserve(2 * std::size_t{count} / leaf_size + 1);
-    result.nodes_.add({});
-    result.node_tolerances_.reserve(result.nodes_.capacity());
-    result.node_tolerances_.add(0);
+
+    const auto root_index = static_cast<std::uint32_t>(nodes.size());
+    nodes.reserve(nodes.size() + 2 * std::size_t{count} / leaf_size + 1);
+    nodes.add({});
+    InlineArray<Task, 64> tasks{{root_index, 0, count, 0}};
     while (!tasks.empty()) {
         const auto [node, begin, end, depth] = tasks.back();
         tasks.pop();
         auto box = Bounds::empty();
         auto spread = Bounds::empty();
-        double tolerance = 0;
         for (auto i = begin; i < end; ++i) {
             box = math::encapsulate(box, bounds[order[i]]);
             spread = math::encapsulate(spread, centers[order[i]]);
-            tolerance = std::max(tolerance, result.polygon_tolerances_[triangles[order[i]].primitive]);
         }
-        result.nodes_[node].minimum = box.minimum;
-        result.nodes_[node].maximum = box.maximum;
-        result.node_tolerances_[node] = tolerance;
-        const auto leaf = [&] {
-            result.nodes_[node].first = begin;
-            result.nodes_[node].count = end - begin;
-        };
+        set_node_bounds(nodes[node], box);
+        const auto leaf = [&] { set_node_span(nodes[node], begin, end - begin); };
         const auto extent = Vector3d(spread.maximum) - Vector3d(spread.minimum);
         const int axis = extent.x >= extent.y && extent.x >= extent.z ? 0 : extent.y >= extent.z ? 1 : 2;
         if (end - begin <= leaf_size || !(extent[axis] > 0)) {
@@ -249,7 +236,7 @@ Result<Bvh> Bvh::build(const Geometry& surface) {
             continue;
         }
         auto middle = begin;
-        if (depth < sah_depth) {
+        if (depth < max_sah_depth) {
             const double scale = bins / extent[axis];
             const double origin = spread.minimum[axis];
             const auto bin = [&](std::uint32_t i) {
@@ -296,24 +283,21 @@ Result<Bvh> Bvh::build(const Geometry& surface) {
             std::nth_element(order.begin() + begin, order.begin() + middle, order.begin() + end,
                              [&](std::uint32_t a, std::uint32_t b) { return centers[a][axis] < centers[b][axis]; });
         }
-        const auto child = static_cast<std::uint32_t>(result.nodes_.size());
-        result.nodes_[node].first = child;
-        result.nodes_[node].count = 0;
-        result.nodes_.add({});
-        result.nodes_.add({});
-        result.node_tolerances_.add(0);
-        result.node_tolerances_.add(0);
+        if (nodes.size() + 2 > std::numeric_limits<std::uint32_t>::max())
+            return failure("BVH hierarchy exceeds 32-bit node addressing.");
+        const auto child = static_cast<std::uint32_t>(nodes.size());
+        set_node_span(nodes[node], child, 0u);
+        nodes.add({});
+        nodes.add({});
         tasks.add({child + 1, middle, end, depth + 1});
         tasks.add({child, begin, middle, depth + 1});
     }
-    result.triangles_.reserve(count);
-    for (const auto i : order)
-        result.triangles_.add(triangles[i]);
-    return result;
+    return order;
 }
 
-Result<std::shared_ptr<const Bvh>> Bvh::acquire(const Geometry& surface) {
-    struct CachedSurface {
+template <class Value>
+struct TopologyCache {
+    struct Entry {
         SharedArray<Vector3> positions;
 
         SharedArray<std::uint32_t> vertex_points;
@@ -326,7 +310,7 @@ Result<std::shared_ptr<const Bvh>> Bvh::acquire(const Geometry& surface) {
 
         std::uint32_t primitives{};
 
-        std::shared_ptr<const Bvh> bvh;
+        std::shared_ptr<const Value> value;
 
         bool matches(const SharedArray<Vector3>& p, const SharedArray<std::uint32_t>& vp,
                      const SharedArray<std::uint32_t>& off, const SharedArray<PrimitiveKind>& k, std::uint32_t u,
@@ -335,51 +319,113 @@ Result<std::shared_ptr<const Bvh>> Bvh::acquire(const Geometry& surface) {
                    same(offsets, off) && same(kinds, k);
         }
     };
-    constexpr std::size_t capacity = 16;
-    static std::mutex mutex;
-    static InlineArray<CachedSurface, capacity> cache;
 
-    const auto& positions = std::get<SharedArray<Vector3>>(surface.attributes_.front().data);
-    const auto& vertex_points = surface.vertex_points_;
-    const auto& offsets = surface.offsets_;
-    const auto& kinds = surface.kinds_;
-    const auto uniform = surface.uniform_;
-    const auto primitives = surface.primitives_;
+    static constexpr std::size_t capacity = 16;
 
-    {
-        const std::scoped_lock lock{mutex};
-        for (std::size_t i = 0; i < cache.size(); ++i) {
-            if (!cache[i].matches(positions, vertex_points, offsets, kinds, uniform, primitives))
-                continue;
-            auto found = cache[i].bvh;
-            if (i != 0) {
-                auto promoted = std::move(cache[i]);
-                for (std::size_t j = i; j > 0; --j)
-                    cache[j] = std::move(cache[j - 1]);
-                cache[0] = std::move(promoted);
+    std::mutex mutex;
+
+    InlineArray<Entry, capacity> entries;
+
+    template <class BuildFn>
+    Result<std::shared_ptr<const Value>>
+    acquire(const SharedArray<Vector3>& positions, const SharedArray<std::uint32_t>& vertex_points,
+            const SharedArray<std::uint32_t>& offsets, const SharedArray<PrimitiveKind>& kinds, std::uint32_t uniform,
+            std::uint32_t primitives, BuildFn&& build_fn) {
+        {
+            const std::scoped_lock lock{mutex};
+            for (std::size_t i = 0; i < entries.size(); ++i) {
+                if (!entries[i].matches(positions, vertex_points, offsets, kinds, uniform, primitives))
+                    continue;
+                auto found = entries[i].value;
+                if (i != 0) {
+                    auto promoted = std::move(entries[i]);
+                    for (std::size_t j = i; j > 0; --j)
+                        entries[j] = std::move(entries[j - 1]);
+                    entries[0] = std::move(promoted);
+                }
+                return found;
             }
-            return found;
+        }
+
+        ATELIER_TRY_BIND(built, build_fn());
+        auto shared = std::make_shared<const Value>(std::move(*built));
+
+        {
+            const std::scoped_lock lock{mutex};
+            for (std::size_t i = 0; i < entries.size(); ++i) {
+                if (entries[i].matches(positions, vertex_points, offsets, kinds, uniform, primitives))
+                    return entries[i].value;
+            }
+            if (entries.size() == capacity)
+                entries.pop();
+            entries.add({});
+            for (std::size_t j = entries.size() - 1; j > 0; --j)
+                entries[j] = std::move(entries[j - 1]);
+            entries[0] = {positions, vertex_points, offsets, kinds, uniform, primitives, shared};
+        }
+        return shared;
+    }
+};
+
+}
+
+Result<Bvh> Bvh::build(const Geometry& surface) {
+    const auto view = detail::TriangleView::create(surface);
+    if (!view)
+        return std::unexpected(view.error());
+    const auto& positions = surface.positions();
+    const auto corners = surface.vertex_points();
+    Bvh result;
+    Array<Triangle> triangles;
+    triangles.reserve(view->size());
+    for (const auto& [p, j, vertices] : *view) {
+        const Triangle triangle{positions[corners[vertices[0]]], positions[corners[vertices[1]]],
+                                positions[corners[vertices[2]]], p, j};
+        // A zero-area triangle has no surface to hit or project onto.
+        const auto a = Vector3d(triangle.a);
+        if (math::cross(Vector3d(triangle.b) - a, Vector3d(triangle.c) - a) != Vector3d{})
+            triangles.add(triangle);
+    }
+    const auto count = static_cast<std::uint32_t>(triangles.size());
+    if (!count)
+        return result;
+    result.polygon_tolerances_.reserve(surface.count(Layer::primitive));
+    for (std::uint32_t p = 0; p < surface.count(Layer::primitive); ++p)
+        result.polygon_tolerances_.add(detail::polygon_scale(surface, surface.primitive(p)).tolerance);
+    Array<Bounds> bounds;
+    bounds.resize(count);
+    Array<Vector3> centers;
+    centers.resize(count);
+    for (std::uint32_t i = 0; i < count; ++i) {
+        bounds[i] = math::encapsulate(math::encapsulate(Bounds{triangles[i].a, triangles[i].a}, triangles[i].b),
+                                      triangles[i].c);
+        centers[i] = math::center(bounds[i]);
+    }
+    ATELIER_TRY_BIND(order, append_sah_bvh(result.nodes_, bounds.view(), centers.view(), sah_depth));
+    result.triangles_.reserve(count);
+    for (const auto i : *order)
+        result.triangles_.add(triangles[i]);
+    result.node_tolerances_.resize(result.nodes_.size());
+    for (std::size_t n = result.nodes_.size(); n-- > 0;) {
+        const auto& node = result.nodes_[n];
+        if (node.count) {
+            double tol = 0;
+            for (auto i = node.first; i < node.first + node.count; ++i)
+                tol = std::max(tol, result.polygon_tolerances_[result.triangles_[i].primitive]);
+            result.node_tolerances_[n] = tol;
+        } else {
+            result.node_tolerances_[n] =
+                std::max(result.node_tolerances_[node.first], result.node_tolerances_[node.first + 1]);
         }
     }
+    return result;
+}
 
-    auto built = build(surface);
-    if (!built)
-        return std::unexpected(built.error());
-    auto shared = std::make_shared<const Bvh>(std::move(*built));
-
-    {
-        const std::scoped_lock lock{mutex};
-        for (std::size_t i = 0; i < cache.size(); ++i)
-            if (cache[i].matches(positions, vertex_points, offsets, kinds, uniform, primitives))
-                return cache[i].bvh;
-        if (cache.size() == capacity)
-            cache.pop();
-        cache.add({});
-        for (std::size_t j = cache.size() - 1; j > 0; --j)
-            cache[j] = std::move(cache[j - 1]);
-        cache[0] = {positions, vertex_points, offsets, kinds, uniform, primitives, shared};
-    }
-    return shared;
+Result<std::shared_ptr<const Bvh>> Bvh::acquire(const Geometry& surface) {
+    static TopologyCache<Bvh> cache;
+    return cache.acquire(std::get<SharedArray<Vector3>>(surface.attributes_.front().data), surface.vertex_points_,
+                         surface.offsets_, surface.kinds_, surface.uniform_, surface.primitives_,
+                         [&] { return build(surface); });
 }
 
 std::optional<Hit> Bvh::ray(Vector3 origin_float, Vector3 direction_float, float max_distance) const noexcept {
@@ -603,6 +649,160 @@ std::optional<std::int64_t> Bvh::signed_crossings(Vector3 point, Vector3 directi
         stack.add(node.first);
     }
     return count;
+}
+
+namespace {
+
+constexpr std::uint32_t spatial_sah_depth = 24;
+
+Result<Array<std::uint32_t>> append_spatial_tree(Array<SpatialNode>& words, std::span<const Bounds> bounds,
+                                                 std::span<const Vector3> centers) {
+    const auto root_word = words.size();
+    ATELIER_TRY_BIND(order, append_sah_bvh(words, bounds, centers, spatial_sah_depth));
+    const std::size_t items_base = words.size();
+    if (items_base + 2 * bounds.size() > std::numeric_limits<std::uint32_t>::max())
+        return failure("Spatial buffer exceeds 32-bit word addressing.");
+    for (std::size_t w = root_word; w < items_base; ++w) {
+        if (words[w].u1 > 0)
+            words[w].u0 = static_cast<std::uint32_t>(items_base + 2 * std::size_t{words[w].u0});
+    }
+    return std::move(*order);
+}
+
+} // namespace
+
+Result<Spatial> Spatial::build(const Geometry& geometry) {
+    struct TriItem {
+        Vector3 a;
+
+        Vector3 b;
+
+        Vector3 c;
+
+        Vector3 normal;
+
+        std::uint32_t primitive;
+
+        std::uint32_t triangle;
+    };
+
+    struct SegItem {
+        Vector3 a;
+
+        Vector3 b;
+
+        Vector3 tangent;
+
+        float u0;
+
+        float u1;
+
+        std::uint32_t primitive;
+    };
+
+    const auto& positions = geometry.positions();
+    const auto corners = geometry.vertex_points();
+    const auto prim_count = geometry.count(Layer::primitive);
+
+    Array<TriItem> tris;
+    Array<SegItem> segs;
+
+    for (std::uint32_t p = 0; p < prim_count; ++p) {
+        const auto range = geometry.primitive(p);
+        if (range.kind == PrimitiveKind::polygon) {
+            if (range.count > 3 && !geometry.boolean_boundary_) {
+                if (auto valid = detail::validate_polygon(geometry, range); !valid) {
+                    valid.error().message = "Primitive " + std::to_string(p) + ": " + valid.error().message;
+                    return std::unexpected(std::move(valid.error()));
+                }
+            }
+            const Vector3 a = positions[corners[range.first]];
+            const Vector3d ad(a);
+            for (std::uint32_t j = 0; j + 2 < range.count; ++j) {
+                const Vector3 b = positions[corners[range.first + j + 1]];
+                const Vector3 c = positions[corners[range.first + j + 2]];
+                const auto cross = math::cross(Vector3d(b) - ad, Vector3d(c) - ad);
+                const double len = math::length(cross);
+                if (len > 0)
+                    tris.add({a, b, c, Vector3(cross / len), p, j});
+            }
+        } else if (range.kind == PrimitiveKind::polyline && range.count >= 2) {
+            const std::size_t seg_start = segs.size();
+            double total = 0.0;
+            for (std::uint32_t j = 0; j + 1 < range.count; ++j) {
+                const Vector3 pa = positions[corners[range.first + j]];
+                const Vector3 pb = positions[corners[range.first + j + 1]];
+                const Vector3d delta = Vector3d(pb) - Vector3d(pa);
+                const double seg_len = math::length(delta);
+                if (!(seg_len > 0.0))
+                    continue;
+                const double next_total = total + seg_len;
+                segs.add(
+                    {pa, pb, Vector3(delta / seg_len), static_cast<float>(total), static_cast<float>(next_total), p});
+                total = next_total;
+            }
+            if (total > 0.0) {
+                const float inv_total = static_cast<float>(1.0 / total);
+                for (std::size_t k = seg_start; k < segs.size(); ++k) {
+                    segs[k].u0 *= inv_total;
+                    segs[k].u1 *= inv_total;
+                }
+            }
+        }
+    }
+
+    if (tris.empty() && segs.empty())
+        return Spatial{};
+
+    Array<SpatialNode> words;
+    words.add({}); // Word 0: {u0 = tri_root, u1 = seg_root}.
+
+    if (!tris.empty()) {
+        words[0].u0 = static_cast<std::uint32_t>(words.size());
+        Array<Bounds> bounds;
+        bounds.resize(tris.size());
+        Array<Vector3> centers;
+        centers.resize(tris.size());
+        for (std::size_t i = 0; i < tris.size(); ++i) {
+            bounds[i] = math::encapsulate(math::encapsulate(Bounds{tris[i].a, tris[i].a}, tris[i].b), tris[i].c);
+            centers[i] = math::center(bounds[i]);
+        }
+        ATELIER_TRY_BIND(order, append_spatial_tree(words, bounds.view(), centers.view()));
+        for (const auto idx : *order) {
+            const auto& t = tris[idx];
+            words.add({t.a, t.primitive, t.b, t.triangle});
+            words.add({t.c, 0u, t.normal, 0u});
+        }
+    }
+
+    if (!segs.empty()) {
+        if (words.size() > std::numeric_limits<std::uint32_t>::max())
+            return failure("Spatial buffer exceeds 32-bit word addressing.");
+        words[0].u1 = static_cast<std::uint32_t>(words.size());
+        Array<Bounds> bounds;
+        bounds.resize(segs.size());
+        Array<Vector3> centers;
+        centers.resize(segs.size());
+        for (std::size_t i = 0; i < segs.size(); ++i) {
+            bounds[i] = math::encapsulate(Bounds{segs[i].a, segs[i].a}, segs[i].b);
+            centers[i] = math::center(bounds[i]);
+        }
+        ATELIER_TRY_BIND(order, append_spatial_tree(words, bounds.view(), centers.view()));
+        for (const auto idx : *order) {
+            const auto& s = segs[idx];
+            words.add({s.a, s.primitive, s.b, 0u});
+            words.add({s.tangent, 0u, Vector3{s.u0, s.u1, 0.f}, 0u});
+        }
+    }
+
+    return Spatial{SharedArray<SpatialNode>{std::move(words)}};
+}
+
+Result<std::shared_ptr<const Spatial>> Spatial::acquire(const Geometry& geometry) {
+    static TopologyCache<Spatial> cache;
+    return cache.acquire(std::get<SharedArray<Vector3>>(geometry.attributes_.front().data), geometry.vertex_points_,
+                         geometry.offsets_, geometry.kinds_, geometry.uniform_, geometry.primitives_,
+                         [&] { return build(geometry); });
 }
 
 }

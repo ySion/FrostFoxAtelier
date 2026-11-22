@@ -185,7 +185,8 @@ Result<FieldDefinition> class_field(const SourceSnapshot& snapshot, const langua
         vector = &*found;
         result.value = {vector->type};
         leaf = vector->math.precision == math::Precision::f64 ? "double" : "float";
-    } else if (const auto type = runtime.find_type(field.type); type && !language::editor_reserved(field.type)) {
+    } else if (const auto type = runtime.find_type(field.type);
+               type && !language::editor_reserved(field.type) && !language::synthesized_array_name(field.type)) {
         const auto* info = *runtime.describe(*type);
         if (info->kind == TypeKind::string)
             result.default_text.emplace();
@@ -301,12 +302,14 @@ Result<DescribedMethodDefinition> class_method(const SourceSnapshot& snapshot, c
             if (name.name == "double")
                 return TypeReference{binding.f64};
             for (const auto& value : binding.values)
-                if (value.name == name.name || (value.math && math::short_name(value.math) == name.name) ||
-                    (name.name == "String" && value.kind == ValueKind::string))
+                if (!language::synthesized_array_name(value.name) &&
+                    (value.name == name.name || (value.math && math::short_name(value.math) == name.name) ||
+                     (name.name == "String" && value.kind == ValueKind::string)))
                     return TypeReference{value.type};
             if (find_named(declarations, name.name))
                 return TypeReference{name.name};
-            if (const auto id = runtime.find_type(name.name); id && !language::editor_reserved(name.name)) {
+            if (const auto id = runtime.find_type(name.name);
+                id && !language::editor_reserved(name.name) && !language::synthesized_array_name(name.name)) {
                 const auto* info = *runtime.describe(*id);
                 if (info->kind == TypeKind::object)
                     return at(position, is_result
@@ -315,6 +318,23 @@ Result<DescribedMethodDefinition> class_method(const SourceSnapshot& snapshot, c
                 return TypeReference{*id};
             }
             return at(position, "Unknown registered value type '" + name.name + "'.");
+        }
+        const auto is_described_element = [&]() {
+            if (language::editor_reserved(name.name) || language::synthesized_array_name(name.name))
+                return false;
+            if (find_named(declarations, name.name))
+                return true;
+            const auto id = runtime.find_type(name.name);
+            if (!id)
+                return false;
+            const auto* info = *runtime.describe(*id);
+            return !info->native_storage && (info->kind == TypeKind::record || info->kind == TypeKind::enumeration);
+        };
+        if (is_described_element()) {
+            auto arr_name = language::make_synthesized_array_name(name.name, name.array_depth);
+            if (const auto existing = runtime.find_type(arr_name))
+                return TypeReference{*existing};
+            return TypeReference{std::move(arr_name)};
         }
         BusinessType element{ValueKind::void_value};
         if (name.name == "bool")
@@ -329,9 +349,10 @@ Result<DescribedMethodDefinition> class_method(const SourceSnapshot& snapshot, c
             element = ValueKind::f64;
         else {
             for (std::uint32_t i = 0; i < binding.values.size(); ++i)
-                if (binding.values[i].name == name.name ||
-                    (binding.values[i].math && math::short_name(binding.values[i].math) == name.name) ||
-                    (name.name == "String" && binding.values[i].kind == ValueKind::string)) {
+                if (!language::synthesized_array_name(binding.values[i].name) &&
+                    (binding.values[i].name == name.name ||
+                     (binding.values[i].math && math::short_name(binding.values[i].math) == name.name) ||
+                     (name.name == "String" && binding.values[i].kind == ValueKind::string))) {
                     element = {binding.values[i].kind, i};
                     break;
                 }
@@ -509,7 +530,8 @@ Result<Program::Request> Program::request(SourceSnapshot snapshot, CompileOption
     // Functions, constants and accessor projections share names with the complete type catalog,
     // including empty classes that produce no bound compile unit.
     const auto type_named = [&](std::string_view name) {
-        return (!language::editor_reserved(name) && runtime.find_type(name)) ||
+        return (!language::editor_reserved(name) && !language::synthesized_array_name(name) &&
+                runtime.find_type(name)) ||
                find_named(module.source.classes, name) || find_named(module.value_types, name);
     };
     for (const auto& declaration : module.source.declarations) {
@@ -555,13 +577,23 @@ Result<Program::Request> Program::request(SourceSnapshot snapshot, CompileOption
                          cls.name});
         }
     }
-    auto definitions = type_definitions(module.value_types, *current_binding);
+    std::vector<language::TypeName> array_uses;
+    for (std::uint32_t file_index = 0; file_index < input.files.size(); ++file_index) {
+        auto uses = language::collect_array_types(input.files[file_index].source);
+        if (!uses)
+            return fail(source_error(input, file_index, uses.error().position, uses.error().message));
+        array_uses.insert(array_uses.end(), uses->begin(), uses->end());
+    }
+    auto definitions = type_definitions(module.value_types, array_uses, *current_binding);
     if (!definitions)
         return fail(definitions.error());
     // Existing source types stay published; new ones still reference them by name.
     if (published)
         std::erase_if(*definitions,
                       [&](const auto& definition) { return find_named(published->value_types, definition.name); });
+    std::erase_if(*definitions, [&](const auto& definition) {
+        return language::synthesized_array_name(definition.name) && runtime.find_type(definition.name).has_value();
+    });
     struct KeptClass {
         TypeId id;
 
