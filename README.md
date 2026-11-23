@@ -79,7 +79,7 @@ pwsh -NoProfile -File ./tools/acceptance-gate.ps1 -Targets editor_log_smoke_acce
 成功输出 `Editor log smoke: PASS`；无窗口文档链使用 `editor_document_acceptance`。覆盖范围见[编辑器验收](docs/modules/editor/README.md#验收入口)。
 窗口验收启用真实硬件 D3D12 debug layer。可执行文件旁须保留构建部署的 mimalloc、DXC、Agility、PIX DLL 与许可证，以及 editor.ss、fonts/ 中的字体和许可证。Examples 是独立工程，不属于可执行文件的部署依赖。
 
-编辑器的可捕获异常会在释放 Session 前，将未保存的已提交作者 Scene 原子写入独立恢复目录，并在错误日志中报告路径；原场景保持不变。范围、资源依赖与恢复步骤见[异常退出时的场景保全](docs/modules/editor/projects.md#异常退出时的场景保全)。
+编辑器宿主命令通过 Result 返回失败时，会在释放 Session 前尝试将未保存的已提交作者 Scene 原子写入独立恢复目录，并记录首错与恢复结果；原场景保持不变。范围、资源依赖与恢复步骤见[异常退出时的场景保全](docs/modules/editor/projects.md#异常退出时的场景保全)。
 
 ## 编辑器内编写源码
 
@@ -103,9 +103,9 @@ pwsh -NoProfile -File ./tools/acceptance-gate.ps1 -Targets project_scene_accepta
 pwsh -NoProfile -File ./tools/acceptance-gate.ps1 -Full
 ```
 
-**快速门禁**双配置 `all` 构建，只运行受影响模块的无窗口目标；改到界面或渲染时再列对应窗口目标，只在 release 运行。多片集成后在最终树上跑一次门禁即可推送。**完整门禁** `-Full` 用于阶段收尾：双配置 `all` 构建后，release 的全部已注册无窗口与窗口叶目标各运行一次。验收保留与删除的标准只见[工程指南](docs/engineering.md#验收保留标准)。
+**快速门禁**双配置 `all` 构建，只运行受影响模块的无窗口目标；改到界面或渲染时再列对应窗口目标，只在 release 运行。多片集成后在最终树上跑一次门禁即可推送。**完整门禁** `-Full` 用于阶段收尾：默认构建双配置 `all`，并在 release 运行全部已注册无窗口与窗口叶目标；需要双配置完整验收时，在 PowerShell 中执行 `& ./tools/acceptance-gate.ps1 -Full -Configs dev,release`。验收保留与删除的标准只见[工程指南](docs/engineering.md#验收保留标准)。
 
-`-Targets` 中的每一项是 `目标`、`release:目标` 或 `dev:目标`，逗号分隔；名称必须来自 CMake 生成的目标清单，否则脚本失败。汇总目标 `renderer_acceptance` 会被拒绝：它让全部入口共用一个验证级别，应改列需要的 `renderer_acceptance_<入口>`。`-Configs` 默认 `dev,release`，脚本总是先构建这些配置的 `all`。`-Full` 要求两种配置都在场，不能与 `-Targets` 或 `-ProbeWindowTarget` 同用；它读取构建后 CMake 生成的两类清单，去重后执行叶目标，不另列全套名单，也不重复执行聚合目标。
+`-Targets` 中的每一项是 `目标`、`release:目标` 或 `dev:目标`，逗号分隔；名称必须来自 CMake 生成的目标清单，否则脚本失败。汇总目标 `renderer_acceptance` 会被拒绝：它让全部入口共用一个验证级别，应改列需要的 `renderer_acceptance_<入口>`。`-Configs` 默认 `dev,release`，脚本总是先构建这些配置的 `all`。显式传入 `-Configs` 时，`-Full` 对所选每个配置执行全部叶目标。`-Full` 不能与 `-Targets` 或 `-ProbeWindowTarget` 同用；它读取构建后 CMake 生成的两类清单，去重后执行叶目标，不另列全套名单，也不重复执行聚合目标。
 
 **GPU 验证范围**：脚本为每个窗口目标显式设置 `ATELIER_GPU_VALIDATION`，RHI 在创建设备时读取（见 [RHI 合同](docs/modules/rhi/contract.md)）。快速门禁全部设置为 `debug`。只有 `-Full` 中的 `rhi_acceptance` 与 `renderer_acceptance_default`、`renderer_acceptance_scene_lit`、`renderer_acceptance_material_programs` 四项设置为 `gbv`（D3D12 debug layer + GPU-based validation），其余窗口仍为 `debug`，包括 `editor_log_smoke_acceptance` 及其启动的编辑器子进程。该变量只把请求的 GBV 降为 debug layer，入口自己请求的更低级别不变：`scene-lit-benchmark` 不开验证。降级时每个设备向 stderr 写一行 `RHI: ATELIER_GPU_VALIDATION=debug …`。不经脚本直接运行目标时变量未设置，各入口仍按原有验证级别运行。
 
@@ -344,15 +344,15 @@ Runtime、宿主回调和 DLL 须活到所有非终态帧清理完成。当前�
 - 记录和对象类型可以声明纯函数校验器。`validate` / `validate_value` 先检查硬边界，再按后序执行内联记录、数组元素和继承链上的校验器，返回第一个失败及其结构化字段路径；它从不在写入时自动运行。详见[类型校验](docs/runtime-model.md#类型校验)。
 - 每个对象带写代号：Runtime 的写入、元素和引用修改、`restore`、可变 `with_native`、可写接收者和可写字段实参的方法调用以及创建都会盖章，`with_native<const T>` 和读取不盖章。`change_cursor` 在宿主安全点取游标，`changed_since` 和 `changed_objects` 查询游标之后被写过的对象。详见[写代号与变化游标](docs/runtime-model.md#写代号与变化游标)。
 - `FieldId` 是成员选择子：记录和对象的成员是字段，Array 的成员是元素。`element` 构造元素选择子，`insert_element/remove_elements/move_element` 原子地改变内联 Array 字段的结构，回调和借用期间返回 busy。元素选择子是位置性的，结构变化后可能失效。详见[成员选择子与数组元素](docs/runtime-model.md#成员选择子与数组元素)。
-- `visit_roots` 枚举外部根入口，`visit_references` 枚举一个对象或外部值的非空引用边，包括持有、观察和失效身份；它们不执行可达性收集。原生 `hidden_field` 不暴露公共字段标识，但参与布局、值能力与引用遍历。访问者执行期间拒绝 Runtime 修改操作和新增根，异常转换为调用错误。
+- `visit_roots` 枚举外部根入口，`visit_references` 枚举一个对象或外部值的非空引用边，包括持有、观察和失效身份；它们不执行可达性收集。原生 `hidden_field` 不暴露公共字段标识，但参与布局、值能力与引用遍历。访问者执行期间拒绝 Runtime 修改操作和新增根；访问者返回失败时，枚举立即返回原错误。
 - `begin_collection` 开始一轮非移动增量标记—清扫；宿主在同一运行时线程的安全点调用 `collect_step`，按根处理、标记、清扫分步推进。分配、普通值操作和撤根不隐式触发收集；编辑器与项目运行宿主在各自帧安全点推进收集。
 - 标记完成时统一提交死亡判定，`live_objects` 立即排除待回收对象，`pending_reclamation` 单独报告待析构数量。即使内存尚未释放，观察取得和对象访问也不能复活已判死目标；旧引用保留身份。
 - 收集步支持工作量上限和可选的软时间上限，返回阶段、实际工作量、回收数量与待回收数量。单次原生析构不可中断；写入屏障与值操作不计入 GC 步预算，不承诺硬帧时间。具体计量与存活规则见[分步回收](docs/runtime-model.md#已实现的分步回收)。
-- 方法参数或非 void 输出存储检查失败不会进入用户代码。成功值先在 `CallContext::result` 暂存，核对声明后才写 output；缺值、错类型、未声明结果或异常不覆盖调用方原值。已发生的业务修改不自动回滚。
-- 初始化/复制构造失败会清理已构造部分，不留下半成品；赋值失败保证可销毁、基本不变量成立，允许部分更新，不自动回滚。原生操作必须遵守这些保证，方法异常转换为调用错误。回调中抛出的 `std::bad_alloc` 同样由这些异常边界转换；运行时自身存储、元数据、根登记和错误信息的分配失败可能继续向外传播分配异常，当前不提供完整的内存耗尽恢复保证。
+- 方法参数或非 void 输出存储检查失败不会进入用户代码。成功值先在 `CallContext::result` 暂存，核对声明后才写 output；回调返回失败、缺值、错类型或未声明结果时，保留调用方原值。已发生的业务修改不自动回滚。
+- 初始化/复制构造失败会清理已构造部分，不留下半成品；赋值失败保证可销毁、基本不变量成立，允许部分更新，不自动回滚。原生值操作和方法回调通过显式结果传递业务错误。宿主 CPU 内存耗尽进入[统一 fatal 出口](docs/engineering.md#唯一-fatal-出口)。
 - 原生绑定属于可信代码，必须提供正确的布局和生命周期操作，并声明全部对象引用，包括不公开的原生成员；析构不得抛出异常。原生引用槽通过 Runtime 的引用接口修改，整条原生记录复制走值操作；不能绕过这些入口任意覆盖引用存储。C++ 表示标记只验证原生字段兼容性，不是语言类型身份。
 - 普通回调（包括原生字段定位器）期间禁止创建、销毁对象、注册类型或启动/推进 GC；允许访问有效字段、同步方法调用，以及合法的引用写入和根登记。`CallContext::storage` 只在本次同步调用期间有效，不能缓存；只读引用遍历另行禁止这些修改操作。
-- JIT 业务代码直接调用定型原生 thunk，并按发布布局或固定取址操作访问字段；不把 C++ `Scalar`、`Result` 或私有身份布局暴露给生成代码。接收者存储只在同身份的有效执行段内复用，引用身份变化与协程恢复使缓存失效；字段值不缓存，写代号、硬边界、原生生命周期/重入保护和异常转换继续有效。动态 Runtime 反射接口仍保留。
+- JIT 业务代码直接调用定型原生 thunk，并按发布布局或固定取址操作访问字段；不把 C++ `Scalar`、`Result` 或私有身份布局暴露给生成代码。接收者存储只在同身份的有效执行段内复用，引用身份变化与协程恢复使缓存失效；字段值不缓存，写代号、硬边界、原生生命周期/重入保护和显式错误传播继续有效。动态 Runtime 反射接口仍保留。
 
 ## 已验收场景
 

@@ -3,10 +3,9 @@
 #include <array>
 
 namespace atelier::editor {
-ProjectUI::ProjectUI() {
-    const auto registered = ui_language::register_types(runtime_);
-    if (!registered)
-        throw std::runtime_error(registered.error().message);
+Result<void> ProjectUI::initialize() {
+    ATELIER_TRY(ui_language::register_types(runtime_));
+    return {};
 }
 
 void ProjectUI::sync(const Project* project) {

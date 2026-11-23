@@ -4,7 +4,7 @@ param(
     # Both configurations always build. Each test target runs only where listed:
     # 'target' or 'release:target' runs in release, 'dev:target' in dev. Commas may join items.
     [string[]]$Targets = @(),
-    # Pre-push batch: build dev/release and run every registered leaf once in release.
+    # Run every registered leaf in the explicitly selected configurations (release by default).
     [switch]$Full,
     [ValidateSet('dev', 'release')][string[]]$Configs = @('dev', 'release'),
     [ValidateRange(1, 256)][int]$Jobs = 4,
@@ -17,8 +17,7 @@ $root = Split-Path -Parent $PSScriptRoot
 $Configs = @($Configs | Select-Object -Unique)
 if (-not $Configs.Count) { throw 'At least one configuration is required.' }
 if ($Full -and ($Targets.Count -or $ProbeWindowTarget)) { throw '-Full cannot be combined with -Targets or -ProbeWindowTarget.' }
-if ($Full -and ('dev' -notin $Configs -or 'release' -notin $Configs)) { throw '-Full requires both dev and release configurations.' }
-if ($Full) { $Configs = @('dev', 'release') }
+$fullConfigs = if ($Full -and $PSBoundParameters.ContainsKey('Configs')) { $Configs } elseif ($Full) { 'release' }
 $tier = if ($ProbeWindowTarget) { 'probe' } elseif ($Full) { 'full' } else { 'targeted' }
 $requested = @{ dev = [System.Collections.Generic.List[string]]::new(); release = [System.Collections.Generic.List[string]]::new() }
 foreach ($item in @($Targets | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })) {
@@ -51,7 +50,7 @@ if ((Test-Path $history) -and (Get-Content -LiteralPath $history -TotalCount 1) 
 }
 $plannedScope = @($Configs | ForEach-Object {
     if ($ProbeWindowTarget) { "$_=probe:$ProbeWindowTarget" }
-    elseif ($Full -and $_ -eq 'release') { 'release=build+all-registered-leaves' }
+    elseif ($_ -in $fullConfigs) { "$_=build+all-registered-leaves" }
     elseif ($requested[$_].Count) { "$_=build+targets:$($requested[$_] -join ',')" }
     else { "$_=build" }
 }) -join '; '
@@ -308,7 +307,7 @@ try {
             continue
         }
         $headless = @()
-        $selected = if ($Full -and $config -eq 'release') {
+        $selected = if ($config -in $fullConfigs) {
             @($headlessList + $windowList | Select-Object -Unique)
         } else { $requested[$config] }
         foreach ($target in $selected) {

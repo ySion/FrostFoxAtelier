@@ -22,9 +22,14 @@ std::filesystem::path shader_cache_directory() {
     return local.empty() ? std::filesystem::path{} : std::filesystem::path(local) / L"FrostFoxAtelier" / L"ShaderCache";
 }
 
-void isolate_shader_cache() {
-    if (environment(L"ATELIER_SHADER_CACHE").empty())
-        SetEnvironmentVariableW(L"ATELIER_SHADER_CACHE", (editor::asset_directory() / L"shader-cache").c_str());
+Result<void> isolate_shader_cache() {
+    if (environment(L"ATELIER_SHADER_CACHE").empty()) {
+        ATELIER_TRY_BIND(directory, editor::asset_directory());
+        if (!SetEnvironmentVariableW(L"ATELIER_SHADER_CACHE", (*directory / L"shader-cache").c_str()))
+            return std::unexpected(
+                Error{ErrorCode::invalid_storage, "Cannot set the isolated shader cache directory."});
+    }
+    return {};
 }
 
 renderer::Result<LitFallback::Drawn> LitFallback::render(renderer::Renderer& renderer, renderer::Frame frame,

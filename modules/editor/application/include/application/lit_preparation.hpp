@@ -1,5 +1,6 @@
 #pragma once
 #include "renderer/renderer.hpp"
+#include "runtime/runtime.hpp"
 #include <filesystem>
 #include <optional>
 #include <string>
@@ -9,7 +10,7 @@ namespace atelier::application {
 std::filesystem::path shader_cache_directory();
 
 // Unless the host chose one, harness runs and the Play processes they start cache beside the executable.
-void isolate_shader_cache();
+atelier::Result<void> isolate_shader_cache();
 
 // A Lit view draws once its pipelines are prepared. Until then the frame shows the
 // last Lit view that drew, which keeps its lighting history, or Smooth before any did.

@@ -1,5 +1,4 @@
 #pragma once
-#include "application/project_runner.hpp"
 #include "runtime/runtime.hpp"
 #include <Windows.h>
 #include <chrono>
@@ -12,6 +11,8 @@
 #include <vector>
 
 namespace atelier::editor {
+class Project;
+class Session;
 struct LiveChange;
 }
 
@@ -23,7 +24,7 @@ class LiveLink final {
 public:
     static constexpr std::size_t maximum_message = 4 * 1024 * 1024;
 
-    LiveLink(HANDLE read, HANDLE write); // Owns both handles.
+    LiveLink(HANDLE read, HANDLE write) noexcept; // Owns both handles; both transport threads are required.
 
     ~LiveLink();
 
@@ -136,11 +137,11 @@ private:
 
 // Play end: applies arrived batches at the runner's host boundary and acknowledges
 // each one. After a sequence gap or a failed batch it applies nothing more.
-class PlayEnd final : public PlayChannel {
+class PlayEnd final {
 public:
     explicit PlayEnd(std::unique_ptr<LiveLink> link) : link_(std::move(link)) {}
 
-    void service(editor::Session&, editor::Project&, const Report&) override;
+    void service(editor::Session&, editor::Project&);
 
 private:
     std::unique_ptr<LiveLink> link_;

@@ -44,11 +44,8 @@ public:
 
     Result<void> enable_control(const std::filesystem::path& directory);
 
-    // A require_scene open also checks the loaded scene with dmit before retiring the current document.
     Result<void> open_project(const std::filesystem::path&, bool create = false,
-                              ProjectOpenPolicy = ProjectOpenPolicy::allow_repair,
-                              const std::function<Result<void>(const editor::Session&)>& admit = {},
-                              bool interactive = true);
+                              ProjectOpenPolicy = ProjectOpenPolicy::allow_repair, bool interactive = true);
 
     Result<void> open_scene(const std::filesystem::path&, bool interactive = true);
 
@@ -73,6 +70,9 @@ public:
         restart_play_ = false;
         play_.stop();
     }
+
+    // Save the current authoring scene once, before closing a failed host command.
+    void preserve_failure(std::string_view reason) noexcept;
 
     Result<void> close();
 
@@ -118,13 +118,11 @@ private:
 
     SceneRecovery* recovery_{&owned_recovery_};
 
-    void preserve_failure(std::string_view) noexcept;
-
     Result<void> dive_into_asset_node(std::string_view parent_graph, std::string_view node_name) override;
 
     Result<void> pop_graph_breadcrumb();
 
-    std::optional<editor::Project> project_;
+    std::unique_ptr<editor::Project> project_;
 
     editor::ProjectCode* project_code_{}; // Borrowed from document_'s preparation owner.
 
@@ -143,6 +141,8 @@ private:
     std::filesystem::path document_root_;
 
     std::uint64_t dropped_diagnostics_{};
+
+    editor::Output::Stream* play_output_stream_{};
 
     bool play_log_ended_{};
 
@@ -389,7 +389,7 @@ private:
 
     Result<void> begin_entity_rename(ObjectId, editor::RegionKind) override;
 
-    void reset_layout() override { workspace_.reset_layout(); }
+    Result<void> reset_layout() override { return workspace_.reset_layout(); }
 
     Result<void> close_tab(editor::RegionKind, bool interactive) override;
 
@@ -493,12 +493,17 @@ private:
     void publish_build(std::shared_ptr<const editor::ProjectBuild>);
 
     Result<void> publish_document(std::unique_ptr<editor::Session>, editor::ProjectCode* = nullptr,
-                                  bool preserve_view = false);
+                                  const std::function<void()>& commit_location = {}, bool preserve_view = false);
 
-    Result<void> load_project(const std::filesystem::path&, bool create = false,
-                              const std::filesystem::path& scene = {},
-                              ProjectOpenPolicy = ProjectOpenPolicy::allow_repair,
-                              const std::function<Result<void>(const editor::Session&)>& admit = {});
+    struct ProjectCandidate {
+        // Procedural resource providers borrow this address during loading and after adoption.
+        std::unique_ptr<editor::Project> project;
+        std::string scene_text;
+        editor::ProjectDocument document;
+    };
+
+    static Result<ProjectCandidate> prepare_project_scene(editor::Project, std::string, ProjectOpenPolicy);
+    Result<void> publish_project(ProjectCandidate);
 
     void cancel_interaction(const ui::Reply&, std::string_view input_event = {},
                             std::source_location caller = std::source_location::current());

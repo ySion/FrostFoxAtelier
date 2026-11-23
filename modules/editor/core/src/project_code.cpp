@@ -370,7 +370,7 @@ Result<void> ProjectCode::poll(const Project& project, bool force) {
 ProjectDocument load_project_scene(Project& project, std::string_view source, LoadPolicy policy,
                                    bool allow_failed_build, SessionRole role) {
     ProjectDocument result;
-    auto document = Session::deserialize(
+    auto document = Session::restore_scene(
         source, project,
         [&](world::World& world) -> Result<std::shared_ptr<void>> {
             auto code = std::make_shared<ProjectCode>(world);
@@ -388,13 +388,17 @@ ProjectDocument load_project_scene(Project& project, std::string_view source, Lo
         },
         policy, role);
     if (document) {
+        (*document)->bind_project_code(result.code);
+        if (auto synced = (*document)->sync_procedural_generators(&project); !synced)
+            document = std::unexpected(std::move(synced.error()));
+    }
+    if (result.build && result.build->error)
+        result.error = *result.build->error;
+    if (document)
         result.session = std::move(*document);
-        result.session->bind_project_code(result.code);
-        static_cast<void>(result.session->sync_procedural_generators(&project));
-        if (result.build && result.build->error)
-            result.error = *result.build->error;
-    } else {
-        result.error = result.build && result.build->error ? *result.build->error : document.error();
+    else {
+        if (!result.error)
+            result.error = std::move(document.error());
         result.code = nullptr;
     }
     return result;

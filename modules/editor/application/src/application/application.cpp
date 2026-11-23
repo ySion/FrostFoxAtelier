@@ -2,7 +2,6 @@
 #include "application/editor_control.hpp"
 #include "application/presentation.hpp"
 #include "application/diagnostics.hpp"
-#include "editor/error.hpp"
 #include "editor/keymap.hpp"
 #include "procedural/graph.hpp"
 #include "foundation/result.hpp"
@@ -18,12 +17,10 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
-#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <format>
 #include <limits>
-#include <stdexcept>
 #include <unordered_map>
 
 namespace atelier::application {
@@ -44,23 +41,8 @@ Result<void> Application::completion(Result<world::Commit> result) {
 }
 
 namespace {
-template <class T>
-T take(Result<T> result) {
-    if (!result)
-        throw editor::detail::Failure(std::move(result.error()));
-    return std::move(*result);
-}
-
-void take(Result<void> result) {
-    if (!result)
-        throw editor::detail::Failure(std::move(result.error()));
-}
-
-template <class T>
-T graphics(renderer::Result<T> result) {
-    if (!result)
-        throw std::runtime_error(result.error().cause.message);
-    return std::move(*result);
+std::unexpected<Error> renderer_stopped(const renderer::Error& error) {
+    return std::unexpected(Error{ErrorCode::invalid_storage, "Renderer stopped: " + error.cause.message});
 }
 
 Result<Scalar> scalar_value(const Scalar& prototype, double value) {
@@ -119,10 +101,12 @@ Application::Application(SceneRecovery* recovery) : recovery_(recovery ? recover
 Result<void> Application::initialize(std::unique_ptr<editor::Session> document, bool validation, bool activate,
                                      std::optional<ui::PixelExtent> initial_client, bool vsync) {
     document_ = std::move(document);
+    ATELIER_TRY(workspace_.initialize());
     gpu_validation_ = validation;
     vsync_ = vsync;
     ATELIER_TRY(window_.initialize(nullptr, initial_client));
-    ATELIER_TRY(ui_.initialize(editor_fonts()).transform_error(ui_error));
+    ATELIER_TRY_BIND(fonts, editor_fonts());
+    ATELIER_TRY(ui_.initialize(*fonts).transform_error(ui_error));
     require_frame_timing();
     auto style = ui_.style();
     style.font.family = L"Sarasa UI SC";
@@ -149,10 +133,10 @@ Result<void> Application::initialize(std::unique_ptr<editor::Session> document, 
     ATELIER_TRY_BIND(renderer, renderer::Renderer::open(window_.handle(), options).transform_error(renderer_error));
     renderer_ = std::move(*renderer);
     auto popup = std::make_unique<PopupHost>();
-    ATELIER_TRY(popup->initialize(window(), editor_fonts(), gpu_validation_));
+    ATELIER_TRY(popup->initialize(window(), *fonts, gpu_validation_));
     popup_ = std::move(popup);
     auto submenu = std::make_unique<PopupHost>();
-    ATELIER_TRY(submenu->initialize(window(), editor_fonts(), gpu_validation_));
+    ATELIER_TRY(submenu->initialize(window(), *fonts, gpu_validation_));
     submenus_.push_back(std::move(submenu));
     closed_ = false;
     window_.show(activate);
@@ -160,8 +144,6 @@ Result<void> Application::initialize(std::unique_ptr<editor::Session> document, 
 }
 
 Application::~Application() {
-    if (std::uncaught_exceptions())
-        preserve_failure("Unhandled editor failure outside the frame loop");
     // External cleanup errors remain diagnostics. World/Renderer destructors
     // enforce fatal only when their own necessary retirement cannot complete.
     if (auto result = close(); !result)
@@ -211,27 +193,19 @@ void Application::diagnostics() noexcept {
 void Application::preserve_failure(std::string_view reason) noexcept {
     if (recovery_->attempted() || !document_ || closed_)
         return;
-    try {
-        const auto message = StringView{diagnostic_utf8(reason)}.utf8_prefix(logging::maximum_message_bytes).std_view();
-        if (logging::submit({.severity = logging::Severity::critical,
-                             .category = "application",
-                             .event_code = "application.failure_preserved",
-                             .message = std::string(message)})
-                .status != logging::SubmitStatus::accepted)
-            std::fprintf(stderr, "Editor failure preserved: %.*s\n", static_cast<int>(message.size()), message.data());
-    } catch (...) {
-        std::fputs("Cannot capture the editor's original failure.\n", stderr);
+    const auto message = StringView{diagnostic_utf8(reason)}.utf8_prefix(logging::maximum_message_bytes).std_view();
+    const auto submitted = logging::submit({.severity = logging::Severity::critical,
+                                            .category = "application",
+                                            .event_code = "application.failure_preserved",
+                                            .message = std::string(message)});
+    if (submitted.status != logging::SubmitStatus::accepted) {
+        std::fputs("Editor failure preserved: ", stderr);
+        std::fwrite(message.data(), 1, message.size(), stderr);
+        std::fputc('\n', stderr);
     }
-    try {
-        window_.capture(false);
-        window_.cursor(ui::Cursor::arrow);
-        static_cast<void>(recovery_->preserve(*document_, project_ ? project_->root() : std::filesystem::path{},
-                                              scene_path_, reason));
-    } catch (const std::exception& error) {
-        std::fprintf(stderr, "Scene recovery failed: %s\n", error.what());
-    } catch (...) {
-        std::fputs("Scene recovery failed with an unknown error\n", stderr);
-    }
+    window_.capture(false);
+    window_.cursor(ui::Cursor::arrow);
+    recovery_->preserve(*document_, project_ ? project_->root() : std::filesystem::path{}, scene_path_, reason);
 }
 
 void Application::report_error(const Error& error, std::string_view event, logging::Severity severity) noexcept {
@@ -286,8 +260,7 @@ const ui::ControlBox* Application::command_focus() const noexcept {
 }
 
 editor::Context Application::operator_context(bool interactive) {
-    auto context =
-        workspace_.operator_context(*document_, project_ ? &*project_ : nullptr, interactive, command_focus());
+    auto context = workspace_.operator_context(*document_, project_.get(), interactive, command_focus());
     context.cursor = viewport_tool_.cursor;
     return context;
 }
@@ -389,7 +362,7 @@ Result<void> Application::set_view_settings(const renderer::ViewSettings& settin
 }
 
 Result<renderer::ViewSettings> Application::fitted_probe_view(bool follow_focus) const {
-    ATELIER_TRY(document_->sync_procedural_generators(project_ ? const_cast<editor::Project*>(&*project_) : nullptr));
+    ATELIER_TRY(document_->sync_procedural_generators(project_.get()));
     ATELIER_TRY_BIND(items, document_->presentation().render_items());
     if (items->empty())
         return std::unexpected(Error{ErrorCode::invalid_definition, "DDGI volume fitting requires rendered geometry."});
@@ -566,7 +539,7 @@ Result<void> Application::action(const ui::Action& source) {
         ATELIER_TRY(document_->create_scratch_graph());
         return open_graph_context("scratch/procedural");
     }
-    const std::string net_graph = workspace_.effective_network_graph(*document_, project_ ? &*project_ : nullptr);
+    const std::string net_graph = workspace_.effective_network_graph(*document_, project_.get());
     const bool net_locked = workspace_.is_network_graph_locked(*document_, net_graph);
     if (event.kind == ui::ActionKind::activate && event.key == editor::network_control::lock_toggle) {
         if (!net_graph.empty() && !document_->is_scratch_graph(net_graph) && !document_->world().running()) {
@@ -767,8 +740,11 @@ Result<void> Application::action(const ui::Action& source) {
             const auto call = binding->call->request;
             return run_operator(call, true);
         }
-    if (ui_.presented() && workspace_.dock.apply(event, *ui_.presented()))
-        return {};
+    if (ui_.presented()) {
+        ATELIER_TRY_BIND(handled, workspace_.dock.apply(event, *ui_.presented()).transform_error(ui_error));
+        if (*handled)
+            return {};
+    }
     if (event.kind == ui::ActionKind::activate)
         if (const auto choice = workspace_.material_choice(event.key)) {
             using Kind = editor::Workspace::MaterialChoice::Kind;
@@ -1142,8 +1118,7 @@ Result<void> Application::action(const ui::Action& source) {
             const auto* enabled = std::get_if<bool>(&event.value);
             if (!enabled)
                 return invalid();
-            return document_->set_material_override(binding->object, binding->material_path, *enabled,
-                                                    project_ ? &*project_ : nullptr);
+            return document_->set_material_override(binding->object, binding->material_path, *enabled, project_.get());
         }
         if (binding->kind == editor::Workspace::Binding::Kind::material_field) {
             if (event.kind == ui::ActionKind::edit_begin)
@@ -1623,7 +1598,7 @@ Result<void> Application::open_graph_context(std::string_view key) {
     workspace_.dock.select(editor::control::parameters_tab);
     workspace_.bump_view_revision();
     camera_cut_ = true;
-    workspace_.status = L"SOP context: " + workspace_.graph_path_title(project_ ? &*project_ : nullptr);
+    workspace_.status = L"SOP context: " + workspace_.graph_path_title(project_.get());
     return {};
 }
 
@@ -2137,7 +2112,8 @@ Result<void> Application::update_menu() {
         }
         if (depth == submenus_.size()) {
             auto child = std::make_unique<PopupHost>();
-            ATELIER_TRY(child->initialize(window(), editor_fonts(), gpu_validation_));
+            ATELIER_TRY_BIND(fonts, editor_fonts());
+            ATELIER_TRY(child->initialize(window(), *fonts, gpu_validation_));
             submenus_.push_back(std::move(child));
         }
         POINT corners[2]{{static_cast<LONG>(box->bounds.x), static_cast<LONG>(box->bounds.y)},
@@ -2602,7 +2578,7 @@ Result<void> Application::enable_control(const std::filesystem::path& directory)
     if (!control_) {
         auto created = EditorControl::create(*this, directory);
         if (!created)
-            return std::unexpected(Error{ErrorCode::invalid_storage, created.error().what()});
+            return std::unexpected(Error{ErrorCode::invalid_storage, created.error().message});
         control_ = std::make_unique<EditorControl>(std::move(*created));
     }
     return {};
@@ -2634,16 +2610,17 @@ Result<bool> Application::step(renderer::Capture* capture, StepTimes* times) {
     return running;
 }
 
-Result<bool> Application::run_step(renderer::Capture* capture, StepTimes* times) try {
+Result<bool> Application::run_step(renderer::Capture* capture, StepTimes* times) {
     using Clock = std::chrono::steady_clock;
     frame_statistics_ = {};
     if (closed_)
         return false;
     // No dispatch or business callbacks run inside this wait. Input only wakes
     // the service pass; RHI retains any presentation permission it acquired.
-    if (graphics(renderer_.target()).drawable) {
+    ATELIER_TRY_BIND(before_input, renderer_.target().transform_error(renderer_error));
+    if (before_input->drawable) {
         timing::Scope admission{phases::admission};
-        static_cast<void>(graphics(renderer_.wait_frame(20)));
+        ATELIER_TRY(renderer_.wait_frame(20).transform_error(renderer_error));
     }
     // Everything this step changed reaches Play as one batch, whichever way the step ends.
     struct ForwardLive {
@@ -2691,8 +2668,8 @@ Result<bool> Application::run_step(renderer::Capture* capture, StepTimes* times)
         SetWindowTextW(window(), title.c_str());
         window_title_ = title;
     }
-    auto target = graphics(renderer_.target());
-    const auto extent = target.drawable ? target.extent : ui::PixelExtent{};
+    ATELIER_TRY_BIND(target, renderer_.target().transform_error(renderer_error));
+    const auto extent = target->drawable ? target->extent : ui::PixelExtent{};
     surface_ = {extent, window_.dpi_scale(), surface_revision_};
     auto updated = ui_.set_surface(surface_);
     if (!updated) {
@@ -2705,13 +2682,11 @@ Result<bool> Application::run_step(renderer::Capture* capture, StepTimes* times)
         return std::unexpected(ui_error(*updated->error));
     {
         timing::Scope collecting{phases::gc};
-        auto gc = document_->collect_step();
-        if (!gc)
-            throw editor::detail::Failure(std::move(gc.error()));
+        ATELIER_TRY(document_->collect_step());
     }
     // Keep the last committed scopes while minimized; an empty surface cannot
     // validate a new layout or make its controls available for interaction.
-    if (!target.drawable) {
+    if (!target->drawable) {
         lighting_clock_.reset();
         MsgWaitForMultipleObjectsEx(0, nullptr, 20, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
         return true;
@@ -2728,7 +2703,8 @@ Result<bool> Application::run_step(renderer::Capture* capture, StepTimes* times)
     bool host_ready;
     {
         timing::Scope admission{phases::admission};
-        host_ready = graphics(renderer_.wait_frame(0));
+        ATELIER_TRY_BIND(ready, renderer_.wait_frame(0).transform_error(renderer_error));
+        host_ready = *ready;
     }
     if (!host_ready) {
         if (pending_menu_ || !workspace_.menu || workspace_.pie_menu())
@@ -2772,7 +2748,7 @@ Result<bool> Application::run_step(renderer::Capture* capture, StepTimes* times)
             workspace_.color_edit.reset();
         const auto project_controls = [&] {
             return workspace_.describe(workspace_controls_, *document_, view_size, ui_.presented().get(),
-                                       project_ ? &*project_ : nullptr, &ui_, command_focus());
+                                       project_.get(), &ui_, command_focus());
         };
         ATELIER_TRY(project_controls());
         if (workspace_.color_edit && (workspace_.color_edit->composition_failed ||
@@ -2780,8 +2756,7 @@ Result<bool> Application::run_step(renderer::Capture* capture, StepTimes* times)
                                           return control.key == editor::control::color_editor;
                                       }))) {
             const auto diagnostic = std::string(workspace_.ui_error());
-            if (auto cancelled = finish_color_edit(false); !cancelled)
-                throw editor::detail::Failure(std::move(cancelled.error()));
+            ATELIER_TRY(finish_color_edit(false));
             ATELIER_TRY(project_controls());
             workspace_.status = L"Colour editor could not open" +
                                 (diagnostic.empty() ? std::wstring{} : L": " + diagnostic_text(diagnostic));
@@ -2838,7 +2813,7 @@ Result<bool> Application::run_step(renderer::Capture* capture, StepTimes* times)
         return std::unexpected(std::move(error));
     }
     const auto previous_ui_revision = workspace_.ui_revision();
-    workspace_.commit_ui_controls();
+    ATELIER_TRY(workspace_.commit_ui_controls());
     if (workspace_.ui_revision() != previous_ui_revision) {
         ui_.dismiss_tooltip();
         if ((*prepared)->tooltip) {
@@ -2886,13 +2861,13 @@ Result<bool> Application::run_step(renderer::Capture* capture, StepTimes* times)
         timing::Scope snapshot{phases::scene};
         if (viewport) {
             if (in_sop) {
-                const auto eval = document_->evaluate_graph(workspace_.active_graph, project_ ? &*project_ : nullptr);
+                const auto eval = document_->evaluate_graph(workspace_.active_graph, project_.get());
                 if (!eval) {
-                    take(procedural_preview_.refresh(*document_, project_ ? &*project_ : nullptr, nullptr, 0));
+                    ATELIER_TRY(procedural_preview_.refresh(*document_, project_.get(), nullptr, 0));
                     workspace_.render_notice = L"SOP cook error: " + diagnostic_text(eval.error().message);
                 } else {
-                    take(procedural_preview_.refresh(*document_, project_ ? &*project_ : nullptr, eval->preview_output,
-                                                     eval->generation));
+                    ATELIER_TRY(procedural_preview_.refresh(*document_, project_.get(), eval->preview_output,
+                                                            eval->generation));
                     if (eval->template_output && eval->template_node != eval->display_node)
                         sop_template_geom = eval->template_output;
                     if (eval->display_error)
@@ -2901,17 +2876,17 @@ Result<bool> Application::run_step(renderer::Capture* capture, StepTimes* times)
                 }
                 material_preparation = procedural_preview_.prepare(renderer_);
             } else {
-                take(document_->sync_procedural_generators(project_ ? &*project_ : nullptr));
+                ATELIER_TRY(document_->sync_procedural_generators(project_.get()));
                 const bool editing_network =
                     workspace_.inspecting_network ||
                     editor::region_of(workspace_.dock.focused_tab()) == editor::RegionKind::network;
                 const bool network_visible = workspace_.dock.visible(editor::network_control::tab);
-                take(scene_.refresh(*document_, !editing_network, !network_visible));
+                ATELIER_TRY(scene_.refresh(*document_, !editing_network, !network_visible));
                 material_preparation = scene_.prepare(renderer_);
             }
             if (!material_preparation) {
                 if (material_preparation.error().terminal)
-                    throw std::runtime_error("Renderer stopped: " + material_preparation.error().cause.message);
+                    return renderer_stopped(material_preparation.error());
                 workspace_.render_notice =
                     L"Material preparation failed: " + diagnostic_text(material_preparation.error().cause.message);
                 if (control_)
@@ -2957,7 +2932,8 @@ Result<bool> Application::run_step(renderer::Capture* capture, StepTimes* times)
             }
         } else {
             viewport_tool_.overlay(*document_, viewport_view, workspace_.viewport_settings, overlay_);
-            if (const ObjectId gen_comp = workspace_.active_procedural_generator(*document_); gen_comp != ObjectId{}) {
+            if (const ObjectId gen_comp = workspace_.active_procedural_generator(*document_).value_or(ObjectId{});
+                gen_comp != ObjectId{}) {
                 auto& runtime = document_->world().runtime();
                 if (const auto src = presentation::read_procedural_source(runtime, gen_comp);
                     src && src->output && src->output->geometry) {
@@ -2975,7 +2951,7 @@ Result<bool> Application::run_step(renderer::Capture* capture, StepTimes* times)
                             world_mtx = *mtx;
                     }
                     if (!src->source.empty() && document_->has_graph(src->source)) {
-                        if (const auto eval = document_->evaluate_graph(src->source, project_ ? &*project_ : nullptr);
+                        if (const auto eval = document_->evaluate_graph(src->source, project_.get());
                             eval && eval->template_output && eval->template_node != eval->display_node)
                             append_template_wireframe(*eval->template_output, viewport_view, overlay_, world_mtx);
                     }
@@ -3032,7 +3008,7 @@ Result<bool> Application::run_step(renderer::Capture* capture, StepTimes* times)
         if (control_)
             control_->render_failed(drawn.error().cause.message);
         if (drawn.error().terminal)
-            throw std::runtime_error("Renderer stopped: " + drawn.error().cause.message);
+            return renderer_stopped(drawn.error());
         render_retry_delay_ =
             std::min(render_retry_delay_.count() ? render_retry_delay_ * 2 : std::chrono::milliseconds(20),
                      std::chrono::milliseconds(250));
@@ -3055,11 +3031,11 @@ Result<bool> Application::run_step(renderer::Capture* capture, StepTimes* times)
     }
     if (rendered.status == renderer::FrameStatus::accepted) {
         if (rendered.accepted_id != frame.drawing->id || rendered.accepted_extent != frame.drawing->extent)
-            throw std::runtime_error("Renderer accepted a mismatched frame.");
+            return std::unexpected(Error{ErrorCode::invalid_storage, "Renderer accepted a mismatched frame."});
         if (times)
             times->accept_begin = Clock::now();
         if (!ui_.accept(*prepared))
-            throw std::runtime_error("UI rejected an accepted renderer frame.");
+            return std::unexpected(Error{ErrorCode::invalid_storage, "UI rejected an accepted renderer frame."});
         if (times)
             times->accepted = Clock::now();
         if (scene)
@@ -3128,13 +3104,6 @@ Result<bool> Application::run_step(renderer::Capture* capture, StepTimes* times)
         MsgWaitForMultipleObjectsEx(0, nullptr, 10, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
     }
     return true;
-} catch (const std::exception& error) {
-    report_error(editor::detail::caught_error(error, ErrorCode::invalid_storage), "editor.frame_failed");
-    preserve_failure(error.what());
-    throw;
-} catch (...) {
-    preserve_failure("Unknown editor frame failure");
-    throw;
 }
 
 Result<void> Application::close() {

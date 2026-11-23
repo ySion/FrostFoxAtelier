@@ -78,37 +78,47 @@ Result<void> Reader::publish(std::vector<ProjectEntry> entries) {
     decltype(entry_index_) index;
     index.reserve(entries.size());
     for (std::size_t i = 0; i < entries.size(); ++i) {
-        if (entries[i].key.starts_with("builtin/") || !index.emplace(entries[i].key, i).second)
-            return failure("Duplicate or reserved resource identity in project catalogue.");
+        const auto& key = entries[i].key;
+        if (key.starts_with("builtin/"))
+            return failure("Reserved project resource identity: " + key);
+        const auto [previous, inserted] = index.emplace(key, i);
+        if (!inserted) {
+            const auto first = platform::utf16_to_utf8(entries[previous->second].path.generic_wstring());
+            const auto second = platform::utf16_to_utf8(entries[i].path.generic_wstring());
+            if (!first || !second)
+                return failure("Duplicate project resource identity: " + key);
+            return failure("Duplicate project resource identity " + key + " in " + *first + " and " + *second + ".");
+        }
     }
-    const auto find = [](const std::vector<ProjectEntry>& list, const decltype(entry_index_)& positions,
-                         std::string_view key) -> const ProjectEntry* {
-        const auto at = positions.find(key);
-        return at == positions.end() ? nullptr : &list[at->second];
+    const auto next_entry = [&](std::string_view key) -> const ProjectEntry* {
+        const auto at = index.find(key);
+        return at == index.end() ? nullptr : &entries[at->second];
     };
     std::map<std::filesystem::path, const ProjectEntry*> previous_files;
     std::map<std::filesystem::path, const ProjectEntry*> next_files;
-    for (const auto& entry : entries_)
-        previous_files.emplace(entry.path, &entry);
-    for (const auto& entry : entries)
-        next_files.emplace(entry.path, &entry);
-    std::erase_if(textures_, [&](const auto& cached) {
-        const auto* before = find(entries_, entry_index_, cached.first);
-        const auto* after = find(entries, index, cached.first);
-        return !before || !after || before->bytes != after->bytes || before->modified != after->modified;
-    });
-    std::erase_if(sky_maps_, [&](const auto& cached) {
-        const auto* before = find(entries_, entry_index_, cached.first);
-        const auto* after = find(entries, index, cached.first);
-        return !before || !after || before->bytes != after->bytes || before->modified != after->modified;
-    });
+    if (std::ranges::any_of(meshes_, [](const auto& mesh) {
+            return !mesh.second.exact_content && !mesh.second.dependencies.empty();
+        })) {
+        for (const auto& file : entries_)
+            previous_files.emplace(file.path, &file);
+        for (const auto& file : entries)
+            next_files.emplace(file.path, &file);
+    }
+    const auto file_changed = [&](const auto& cached) {
+        const auto* before = entry(cached.first);
+        const auto* after = next_entry(cached.first);
+        return !before || !after || before->kind != after->kind || before->bytes != after->bytes ||
+               before->modified != after->modified;
+    };
+    std::erase_if(textures_, file_changed);
+    std::erase_if(sky_maps_, file_changed);
     std::erase_if(meshes_, [&](const auto& cached) {
-        const auto* next = find(entries, index, cached.first);
+        const auto* next = next_entry(cached.first);
         if (!next || next->kind != AssetKind::mesh)
             return true;
-        const auto* old = find(entries_, entry_index_, cached.first);
         if (cached.second.exact_content)
             return false;
+        const auto* old = entry(cached.first);
         if (old->bytes != next->bytes || old->modified != next->modified)
             return true;
         for (const auto& path : cached.second.dependencies) {
@@ -127,11 +137,10 @@ Result<void> Reader::publish(std::vector<ProjectEntry> entries) {
     return {};
 }
 
-Result<MeshAsset> Reader::publish_mesh(std::vector<ProjectEntry> entries, std::string_view key,
+Result<MeshAsset> Reader::publish_mesh(Reader candidate, std::vector<ProjectEntry> entries, std::string_view key,
                                        const MeshImport& loaded, std::span<const TextureAsset> textures) {
     if (!loaded.mesh)
         return failure("Mesh publication requires prepared geometry.");
-    Reader candidate = *this;
     candidate.meshes_.erase(std::string(key)); // Explicit reimport supersedes received content/defaults.
     ATELIER_TRY(candidate.publish(std::move(entries)));
     ATELIER_TRY_BIND(found, listed(candidate, key, AssetKind::mesh));
@@ -188,8 +197,7 @@ Result<MeshAsset> Reader::publish_mesh(std::vector<ProjectEntry> entries, std::s
     }
     candidate.meshes_.insert_or_assign(item.key, std::move(cached));
     ATELIER_TRY_BIND(result, candidate.mesh(key));
-    if (candidate.revision_ == revision_)
-        ++candidate.revision_;
+    candidate.revision_ = revision_ + 1;
     static_assert(std::is_nothrow_move_assignable_v<Reader>);
     *this = std::move(candidate);
     return result;

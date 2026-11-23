@@ -186,69 +186,66 @@ void report_load(const editor::Session& session, const std::filesystem::path& ro
 }
 
 void report_source_capture(const source::DiagnosticReport& report, const std::filesystem::path& root) noexcept {
-    try {
-        constexpr std::array status{"unused",    "ready",  "running",   "suspended",
-                                    "completed", "failed", "cancelled", "rejected"};
-        constexpr std::array counters{"field_read",         "field_write",       "native_call",       "object_create",
-                                      "reference",          "reference_compare", "root_clear",        "value_construct",
-                                      "value_assign",       "value_destroy",     "sequence_mutation", "sequence_view",
-                                      "coroutine_allocate", "coroutine_free",    "source_call",       "debug_hook"};
-        static_assert(counters.size() == static_cast<std::size_t>(source::DiagnosticCall::count));
-        logging::Entry entry{.severity = report.error ? logging::Severity::error : logging::Severity::info,
-                             .category = "source",
-                             .event_code = "source.capture",
-                             .message = report.error ? report.error->message : "Explicit Source diagnostic capture."};
-        auto path = platform::utf16_to_utf8(root.generic_wstring());
-        if (!path) {
-            bridge_failed();
-            return;
-        }
-        entry.fields = {{"program_id", report.program_id},
-                        {"code_version", report.code_version},
-                        {"entry", report.entry},
-                        {"project_root", std::move(*path)},
-                        {"source_name", report.source_name},
-                        {"status", std::string(status.at(static_cast<std::size_t>(report.status)))},
-                        {"resumes", report.resumes},
-                        {"peak_owned_values", report.peak_owned_values},
-                        {"remaining_owned_values", std::uint64_t{report.remaining_owned_values}},
-                        {"resources_cleared", report.resources_cleared},
-                        {"timing", report.timing},
-                        {"active_time_ns", std::int64_t{report.active_time.count()}}};
-        for (std::size_t i = 0; i < counters.size(); ++i)
-            entry.fields.push_back({std::string("counter.") + counters[i], report.calls.values[i]});
-        const auto resources = [&](const char* prefix, const source::DiagnosticResources& value) {
-            entry.fields.push_back({std::string(prefix) + ".objects", std::uint64_t{value.objects}});
-            entry.fields.push_back({std::string(prefix) + ".roots", std::uint64_t{value.roots}});
-            entry.fields.push_back(
-                {std::string(prefix) + ".pending_reclamation", std::uint64_t{value.pending_reclamation}});
-            entry.fields.push_back(
-                {std::string(prefix) + ".collection_phase", static_cast<std::uint64_t>(value.collection_phase)});
-        };
-        resources("before", report.before);
-        resources("after", report.after);
-        if (report.location) {
-            entry.source = diagnostic_source(report.location->source);
-            entry.source.function = report.location->function;
-        }
-        if (report.error) {
-            entry.fields.push_back({"error_code", static_cast<std::uint64_t>(report.error->code)});
-            // Error and suspended/current locations are independently meaningful.
-            if (report.error->source) {
-                const auto& location = *report.error->source;
-                entry.fields.insert(entry.fields.end(), {{"error.path", location.path},
-                                                         {"error.version", location.version},
-                                                         {"error.offset", std::uint64_t{location.offset}},
-                                                         {"error.line", std::uint64_t{location.line}},
-                                                         {"error.column", std::uint64_t{location.column}},
-                                                         {"error.disk_path", location.disk_path}});
-                if (!report.location)
-                    entry.source = diagnostic_source(location);
-            }
-        }
-        static_cast<void>(logging::submit(std::move(entry)));
-    } catch (...) {
+    constexpr std::array status{"unused",    "ready",  "running",   "suspended",
+                                "completed", "failed", "cancelled", "rejected"};
+    constexpr std::array counters{"field_read",         "field_write",       "native_call",       "object_create",
+                                  "reference",          "reference_compare", "root_clear",        "value_construct",
+                                  "value_assign",       "value_destroy",     "sequence_mutation", "sequence_view",
+                                  "coroutine_allocate", "coroutine_free",    "source_call",       "debug_hook"};
+    static_assert(counters.size() == static_cast<std::size_t>(source::DiagnosticCall::count));
+    logging::Entry entry{.severity = report.error ? logging::Severity::error : logging::Severity::info,
+                         .category = "source",
+                         .event_code = "source.capture",
+                         .message = report.error ? report.error->message : "Explicit Source diagnostic capture."};
+    auto path = platform::utf16_to_utf8(root.generic_wstring());
+    const auto ordinal = static_cast<std::size_t>(report.status);
+    if (!path || ordinal >= status.size()) {
         bridge_failed();
+        return;
     }
+    entry.fields = {{"program_id", report.program_id},
+                    {"code_version", report.code_version},
+                    {"entry", report.entry},
+                    {"project_root", std::move(*path)},
+                    {"source_name", report.source_name},
+                    {"status", std::string(status[ordinal])},
+                    {"resumes", report.resumes},
+                    {"peak_owned_values", report.peak_owned_values},
+                    {"remaining_owned_values", std::uint64_t{report.remaining_owned_values}},
+                    {"resources_cleared", report.resources_cleared},
+                    {"timing", report.timing},
+                    {"active_time_ns", std::int64_t{report.active_time.count()}}};
+    for (std::size_t i = 0; i < counters.size(); ++i)
+        entry.fields.push_back({std::string("counter.") + counters[i], report.calls.values[i]});
+    const auto resources = [&](const char* prefix, const source::DiagnosticResources& value) {
+        entry.fields.push_back({std::string(prefix) + ".objects", std::uint64_t{value.objects}});
+        entry.fields.push_back({std::string(prefix) + ".roots", std::uint64_t{value.roots}});
+        entry.fields.push_back(
+            {std::string(prefix) + ".pending_reclamation", std::uint64_t{value.pending_reclamation}});
+        entry.fields.push_back(
+            {std::string(prefix) + ".collection_phase", static_cast<std::uint64_t>(value.collection_phase)});
+    };
+    resources("before", report.before);
+    resources("after", report.after);
+    if (report.location) {
+        entry.source = diagnostic_source(report.location->source);
+        entry.source.function = report.location->function;
+    }
+    if (report.error) {
+        entry.fields.push_back({"error_code", static_cast<std::uint64_t>(report.error->code)});
+        // Error and suspended/current locations are independently meaningful.
+        if (report.error->source) {
+            const auto& location = *report.error->source;
+            entry.fields.insert(entry.fields.end(), {{"error.path", location.path},
+                                                     {"error.version", location.version},
+                                                     {"error.offset", std::uint64_t{location.offset}},
+                                                     {"error.line", std::uint64_t{location.line}},
+                                                     {"error.column", std::uint64_t{location.column}},
+                                                     {"error.disk_path", location.disk_path}});
+            if (!report.location)
+                entry.source = diagnostic_source(location);
+        }
+    }
+    static_cast<void>(logging::submit(std::move(entry)));
 }
 }

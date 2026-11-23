@@ -317,9 +317,10 @@ Result<void> SourceEditor::locate(const logging::SourceLocation& location) {
     return {};
 }
 
-void SourceEditor::append(ui_language::ControlOutput controls, ui::ControlKey parent, ui_language::LiveDocument& live,
-                          const std::function<ui_language::ActionBinding(OperatorCall)>& action, const Project* project,
-                          const ProjectBuild* build, bool running) {
+Result<void> SourceEditor::append(ui_language::ControlOutput controls, ui::ControlKey parent,
+                                  ui_language::LiveDocument& live,
+                                  const std::function<Result<ui_language::ActionBinding>(OperatorCall)>& action,
+                                  const Project* project, const ProjectBuild* build, bool running) {
     using namespace ui_language;
     auto* file = active();
     std::wstring diagnostic;
@@ -417,6 +418,15 @@ void SourceEditor::append(ui_language::ControlOutput controls, ui::ControlKey pa
             }
         }
     }
+    ATELIER_TRY_BIND(open_action, action({"source.open"}));
+    ATELIER_TRY_BIND(save_action,
+                     action({"file.save", json::Document{}, {.selection = {}, .region = RegionKind::code}}));
+    ATELIER_TRY_BIND(close_action, action({"source.close"}));
+    ATELIER_TRY_BIND(reload_action, action({"source.reload"}));
+    ATELIER_TRY_BIND(new_component_action, action({"source.new_component"}));
+    ATELIER_TRY_BIND(build_action, action({"project.build"}));
+    ATELIER_TRY_BIND(start_play_action, action({"play.start"}));
+    ATELIER_TRY_BIND(stop_play_action, action({"play.stop"}));
     const std::array<InputValue, 17> inputs{
         CodeBinding{file ? file->document : empty_, file != nullptr},
         bounded(file ? file->path.filename().wstring() + (file->dirty() ? L" *" : L"") : L"No source document"),
@@ -426,17 +436,18 @@ void SourceEditor::append(ui_language::ControlOutput controls, ui::ControlKey pa
         problem_line_ != 0,
         conflict,
         source_control::files,
-        action({"source.open"}),
-        action({"file.save", json::Document{}, {.selection = {}, .region = RegionKind::code}}),
-        action({"source.close"}),
-        action({"source.reload"}),
-        action({"source.new_component"}),
-        action({"project.build"}),
-        action({"play.start"}),
-        action({"play.stop"}),
+        std::move(*open_action),
+        std::move(*save_action),
+        std::move(*close_action),
+        std::move(*reload_action),
+        std::move(*new_component_action),
+        std::move(*build_action),
+        std::move(*start_play_action),
+        std::move(*stop_play_action),
         running};
     const std::array<KeyBinding, 3> keys{
         {{"buffer", source_control::buffer}, {"files", source_control::files}, {"problem", source_control::problem}}};
-    static_cast<void>(live.append("CodePanel", parent, keys, inputs, controls));
+    ATELIER_TRY(live.append("CodePanel", parent, keys, inputs, controls));
+    return {};
 }
 }

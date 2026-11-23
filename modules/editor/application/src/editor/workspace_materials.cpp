@@ -5,17 +5,17 @@ namespace {
 constexpr ui::ControlKey choices = 1ULL << 38;
 }
 
-ui::ControlKey Workspace::bind_material(ObjectId object, std::string_view path, Binding::Kind kind, ObjectId component,
-                                        std::string_view slot, std::size_t index) {
-    const auto at = std::ranges::find_if(bindings_, [&](const auto& value) {
-        return value.object == object && value.kind == kind && value.component == component && value.slot == slot &&
-               value.index == index && value.material_path == path;
-    });
-    if (at != bindings_.end())
-        return at->key;
-    const auto key = next_binding_++;
-    bindings_.push_back({key, object, {}, kind, component, std::string(slot), index, 0, std::string(path)});
-    return key;
+Result<ui::ControlKey> Workspace::bind_material(ObjectId object, std::string_view path, Binding::Kind kind,
+                                                ObjectId component, std::string_view slot, std::size_t index) {
+    return bind_row(
+        0,
+        [&](const Binding& value) {
+            return value.object == object && value.kind == kind && value.component == component && value.slot == slot &&
+                   value.index == index && value.material_path == path;
+        },
+        [&](ui::ControlKey key) {
+            return Binding{key, object, {}, kind, component, std::string(slot), index, 0, std::string(path)};
+        });
 }
 
 std::optional<Workspace::MaterialChoice> Workspace::material_choice(ui::ControlKey key) const {
@@ -24,15 +24,16 @@ std::optional<Workspace::MaterialChoice> Workspace::material_choice(ui::ControlK
     return material_choices_[static_cast<std::size_t>(key - choices)];
 }
 
-std::vector<ui::MenuItem> Workspace::material_menu(const Binding& target, const Session& session,
-                                                   const Project* project) {
+Result<std::vector<ui::MenuItem>> Workspace::material_menu(const Binding& target, const Session& session,
+                                                           const Project* project,
+                                                           std::vector<MaterialChoice>& options) const {
     std::vector<ui::MenuItem> result;
     const bool texture = target.kind == Binding::Kind::material_texture;
     const auto add = [&](std::wstring title, MaterialChoice choice, bool selected = false, bool separator = false) {
-        const auto key = choices + material_choices_.size();
-        material_choices_.push_back(std::move(choice));
+        const auto key = choices + options.size();
+        options.push_back(std::move(choice));
         ui::MenuItem item{key, std::move(title), !session.world().running(), selected, {}, L"", separator};
-        if (material_choices_.back().kind == MaterialChoice::Kind::assign || texture) {
+        if (options.back().kind == MaterialChoice::Kind::assign || texture) {
             item.behavior = ui::MenuBehavior::radio;
             item.radio_group = target.key;
         }
@@ -40,8 +41,8 @@ std::vector<ui::MenuItem> Workspace::material_menu(const Binding& target, const 
     };
     std::string current;
     if (!target.material_path.empty()) {
-        auto view = session.inspect_material(target.object);
-        if (!view || view->source)
+        ATELIER_TRY_BIND(view, session.inspect_material(target.object));
+        if (view->source)
             return result;
         const auto local = std::ranges::find(view->entries, target.material_path, &material::Override::path);
         if (local != view->entries.end())
@@ -62,9 +63,7 @@ std::vector<ui::MenuItem> Workspace::material_menu(const Binding& target, const 
         add(L"None (Explicit Clear)", {MaterialChoice::Kind::texture, target.object, {}, {}, target.material_path},
             current.empty());
     } else {
-        auto bindings = presentation::read_material_bindings(session.world().runtime(), target.object);
-        if (!bindings)
-            return result;
+        ATELIER_TRY_BIND(bindings, presentation::read_material_bindings(session.world().runtime(), target.object));
         const auto at = std::ranges::find(*bindings, target.slot, &presentation::MaterialBinding::slot);
         ObjectId shown = at == bindings->end() ? ObjectId{} : at->resource.id();
         if (shown == ObjectId{})
@@ -76,14 +75,12 @@ std::vector<ui::MenuItem> Workspace::material_menu(const Binding& target, const 
             }
         add(L"Use Mesh Default", {MaterialChoice::Kind::clear, target.object, target.slot, {}}, at == bindings->end());
         if (shown != ObjectId{}) {
-            auto view = session.inspect_material(shown);
-            if (view) {
-                if (at != bindings->end())
-                    current = view->asset_key;
-                if (!view->asset_key.empty())
-                    add(L"Inspect Shared Material",
-                        {MaterialChoice::Kind::edit, target.object, target.slot, view->asset_key});
-            }
+            ATELIER_TRY_BIND(view, session.inspect_material(shown));
+            if (at != bindings->end())
+                current = view->asset_key;
+            if (!view->asset_key.empty())
+                add(L"Inspect Shared Material",
+                    {MaterialChoice::Kind::edit, target.object, target.slot, view->asset_key});
         }
         add(L"Create Scene Material Instance", {MaterialChoice::Kind::create_scene, target.object, target.slot, {}});
     }

@@ -122,6 +122,8 @@ Alt+A/G/R/S 以 `WM_SYSKEYDOWN` 到达，窗口把这四个键与菜单助记键
 
 `ViewportTool` 只持有手势，`Session` 是业务修改入口；一个手势记录一次历史，组内任一目标拒绝时恢复前一有效预览。非法或未完成的数值不能确认；Esc、右键、失焦、捕获丢失、尺寸/DPI 改变、菜单转移、文档更换都取消草稿。Ctrl+Z/Y 先结束视口草稿，再执行同一场景历史。活动变换期间拒绝保存快照与启动 World。
 
+场景保存、独立子树导出和 Play 子树导出共用 Session 的图捕获路径。属性编码或引用校验失败时，调用方从 Result 取得错误，捕获期间新分配的文档身份及其计数器一并回滚。捕获成功后，文件和 Play 消息各自在序列化入口检查大小。
+
 复制沿用场景可编辑属性的同一字段规则，创建独立 Entity 子树与 Component 身份，重建组合关系、空间参考与启用状态，复制业务属性、材质与物理配置，复用不可变网格/碰撞资源。整组选中先在脱离 World 的状态下准备，成员发布失败时回退；不复制运行期句柄或速度。同 Runtime 复制将子树内部的强/弱引用和持有序列重定向到新对象，图外引用保留原目标及其强弱语义；独立子树存档拒绝图外引用。初次定位只允许合入刚建立且未保存的创建记录，之后的普通移动照常单独记历史。交互参照 [Blender Duplicate](https://docs.blender.org/manual/en/4.3/scene_layout/object/editing/duplicate.html) 和 [Pie Menus](https://docs.blender.org/manual/en/latest/interface/controls/buttons/menus.html)；渲染模式使用 Z，吸附保留在磁铁菜单和 Shift+Tab。
 
 自由视角采用 [Blender Walk Navigation](https://docs.blender.org/manual/en/latest/editors/3dview/navigate/walk_fly.html) 的无重力移动方式。相对鼠标只在前台视口手势期间注册、隐藏并约束；失焦、捕获丢失、尺寸变化、菜单转移或文档更换时取消并释放。它复用同一 Camera，不修改 Scene、3D 游标或撤销栈；Control 在飞行期间报告 `camera_fly` 忙状态。真实原始鼠标输入目前没有自动验收。
@@ -377,11 +379,11 @@ accepted extent 固定为录制/呈现时尺寸，frame末尾resize后的新尺�
 上传也是录制；录制开始后的错误没有回滚，终态错误停止新交互与后续帧。普通帧不调用finish，诊断截图才显式同步。
 关闭停止输入并取消编辑，释放renderer拥有的资源后关闭RHI，最后销毁窗口；成员/历史根先于Runtime析构。
 
-`Application::step` 返回 `Result<bool>`：成功 false 是正常退出，unexpected 是失败。Window.poll 的回调只在该调用栈保存首错，之后不派发业务输入；帧失败先关闭菜单、报告原错并执行 preserve_failure，再由入口正常关闭。析构中的外部清理错误记录诊断，不能安全完成 World/Renderer 退休时由资源拥有者 fatal。作者源码错误仍可恢复旧定义；系统文字服务失败不当成坏源码重试。
+`Application::step` 返回 `Result<bool>`：成功 false 是正常退出，unexpected 是失败。Window.poll 的回调只在该调用栈保存首错，之后不派发业务输入；帧失败先关闭菜单、报告原错并执行 `preserve_failure`。快照与性能命令将 Result 返回给仍持有场景的宿主；宿主在关闭前以原始原因尝试一次恢复保存。恢复或关停的次生错误单独记录。命令失败退出码为 1，参数用法和日志启动保留各自的退出码。析构中的外部清理错误记录诊断，不能安全完成 World/Renderer 退休时由资源拥有者 fatal。作者源码错误仍可恢复旧定义；系统文字服务失败不当成坏源码重试。
 
 Output 新记录正文的字符/长度转换后置条件破坏是 fatal，ICU 失败则返回错误并保留旧缓存，不把旧正文冒充新选择的成功结果。`Workspace::describe` 返回 Result，失败拒绝候选并结束 property-help 轮次；不发布半份控件。它本来会改绑定缓存，不保证整个 Workspace 回滚，因此错误继续传给 step 并结束运行。替换文档失败时仍拥有旧 document，不能提前销毁其 Runtime 或宣称新文档已采用。
 
-本轮三族迁移不表示整个编辑器已满足 W5：Workspace::describe 内原有 take、DSL 拒绝及树路径留给 UI-BASE-B/WORKSPACE；Workspace/ProjectUI 注册、Application 其余业务/主 GPU 桥、Window 非初始化异常运输、Output::capture_raw 等仍待后续迁移。
+工作区为宿主控件和声明式 UI 分配同一序列的动态身份，耗尽时返回 `capacity_exceeded`。参数、材质和菜单读取将首个错误直接送回帧循环；菜单行和选择项在描述完成后一起发布。Play 日志挂接返回流句柄，原始输出和流结束通知沿该句柄进入 Output。挂接失败只报告一次，子进程的输出管道仍持续排空。剩余显式异常位置见[异常清单](../../research/cpp-exception-inventory-20261122.md)。
 
 ### 后续调度与成本边界
 
@@ -413,7 +415,7 @@ Play 的 World Tick/协程按宿主调用推进，物理累积器不代表整个
 - `dispatch.csv` 测已接受版本的执行成本。保存计时结束后，编辑器修改并还原 PropertyGroup 事件，等待新帧接受，再用同一 Runtime 中的 ToolShelf 和 PropertyGroup 分批执行折叠更新与激活事件。每批记录操作数、实际求值数与总纳秒数。属性更新包含控件提交，事件计时止于处理函数返回。[机器码级别对照](../../research/ui-helper-incremental-compilation.md#ui-机器码生成级别对照)
 - `steps.csv` 提供逐步输入轮询、接受帧间隔及现有帧记录器的阶段时间。常规启动不采集这些报表。[真实编辑器计时](../../research/ui-helper-incremental-compilation.md#真实编辑器从保存到接受帧) · [单组件编译分解](../../research/ui-helper-incremental-compilation.md#单组件编译耗时)
 
-- `editor_log_smoke_acceptance`（窗口）运行 `atelier_editor_control_acceptance <atelier_editor.exe> <输出目录> --smoke-logs`：按 `Config/Project.json` 复制 Examples 的 `Config`、`Source` 与启动场景所在的 `Content/<场景包>`，以 `--no-activate --gpu-validation` 启动真实编辑器并等待启动场景的接受帧；经 Control 执行一次 `scene.add` → `scene.save` → `edit.undo`，确认撤销后有新的接受帧；随后启动 Play，在 Play 运行时关闭编辑器，检查编辑器与 runner 日志零错误且 Play 正常结束，通过后自动删除临时 `Project/` 副本。日志判定见 [Control 端到端验收](control.md#端到端验收)。
+- `editor_log_smoke_acceptance`（窗口）运行 `atelier_editor_control_acceptance <atelier_editor.exe> <atelier_control.exe> <输出目录> --smoke-logs`：按 `Config/Project.json` 复制 Examples 的 `Config`、`Source` 与启动场景所在的 `Content/<场景包>`，以 `--no-activate --gpu-validation` 启动真实编辑器并等待启动场景的接受帧；经 Control 执行一次 `scene.add` → `scene.save` → `edit.undo`，确认撤销后有新的接受帧；随后启动 Play，在 Play 运行时关闭编辑器，检查编辑器与 runner 日志零错误且 Play 正常结束，通过后自动删除临时 `Project/` 副本。日志判定见 [Control 端到端验收](control.md#端到端验收)。
 - `editor_document_acceptance`（无窗口）的默认运行覆盖 StaticMeshEntity 创建与 undo/redo 后的身份及网格资源、glTF 节点变换数学、网格导入→重新导入、`.procgraph` v3 往返与宽容加载、S4 数字资产（`AssetNode`、`GraphInput`/`GraphOutput`、多目标提升参数、共享定义实时传播、端口重排保留与 `graph.extract_asset` 单步撤销），以及 SOP 上下文、二维 Network 连线画布、Geometry Spreadsheet 与完整 Workspace UI 帧接受。
 - `project_scene_acceptance`（无窗口）覆盖一次作者字段值的 Scene 保存/重开往返、失败 Tick 中嵌套 stop 时 End 返回后才释放 PhysicsScene 的停止/关闭顺序，以及 `ProceduralGeneratorComponent` 差量 `overrides` 的场景往返、复制、Undo/Redo、Play 实时同步与官方程序化展示场景求值。
 - `project_integration_acceptance`（无窗口）覆盖真实 Source → Runtime 的一次 tick，以及停止时卡死的 Source 子进程在期限内被终止。
@@ -432,7 +434,7 @@ Control 验收夹具关闭编辑器时，投递 `WM_CLOSE` 后最多等待 300 �
 
 Scene Tree 使用共享 `tree/tree_item`，投影 World → Entity 递归组合关系。行标签同时显示实例名称和 Runtime 发布的实际类型；World、Entity、StaticMeshEntity 使用不同的原生矢量符号和颜色。组件组成在 Entity Structure 中显示，不进入 Scene Tree。Entity 组合 parent 决定树缩进；无空间的组织 Entity 仍显示，组件保留在 Entity Structure，不另建组件空间树。行绑定实际 ObjectId，视图状态不持有业务根，不增加场景撤销。
 
-参照 Houdini 22.0.429 的 Tree View：20 DIP 等高行、18 DIP 逐层缩进、空白区连续交替底色、细层级连接线、圆形加减按钮、类型图标和底部 Filter。全行选择采用灰色，遵循当前编辑器无黄色焦点框的约定。Workspace 持有 Scene Tree 与 Entity Structure 的展开状态（按 ObjectId，两棵树各自一份），资源目录树由 AssetBrowser 按目录路径持有，目录行首次出现时当前目录及其祖先展开、其余目录折叠；状态跨停靠、隐藏及重开保留，随对象退役清理，不进入撤销历史。每帧宿主按组合先序展平全部成员（O(n)），只为视口附近约三屏的行、首末行以及选中、焦点、重命名行和它们的祖先生成 TreeItem 描述，Dungeons（3617 个 Entity）停靠布局下 Scene Tree 每帧描述约 35 行。展开请求经 `Workspace::set_tree_expanded`（Entity 身份、绝对值、整体校验）或 `AssetBrowser::set_expanded`（目录路径）进入；选中行或其父变化时展开祖先一次，F2 通过 `reveal_in_tree` 展开祖先后开始内联重命名。底部过滤保留祖先并展开结果，不改写保存的展开状态。
+参照 Houdini 22.0.429 的 Tree View：20 DIP 等高行、18 DIP 逐层缩进、空白区连续交替底色、细层级连接线、圆形加减按钮、类型图标和底部 Filter。全行选择采用灰色，遵循当前编辑器无黄色焦点框的约定。Workspace 持有 Scene Tree 与 Entity Structure 的展开状态（按 ObjectId，两棵树各自一份），资源目录树由 AssetBrowser 按目录路径持有，目录行首次出现时当前目录及其祖先展开、其余目录折叠；状态跨停靠、隐藏及重开保留，随对象退役清理，不进入撤销历史。每帧宿主按组合先序展平全部成员（O(n)），只为视口附近约三屏的行、首末行以及选中、焦点、重命名行和它们的祖先生成 TreeItem 描述，Dungeons（3617 个 Entity）停靠布局下 Scene Tree 每帧描述约 35 行。展开请求经 `Workspace::set_tree_expanded`（Entity 身份、绝对值、整体校验）或 `AssetBrowser::set_expanded`（目录路径）进入；选中行或其父变化时展开祖先一次，F2 通过 `reveal_in_tree` 展开祖先后开始内联重命名。底部过滤保留祖先并展开结果，不改写保存的展开状态。场景树和结构树在同一次控件提交中发布可见行、对象映射及自动展开的祖先。读取 World、展平或构建控件失败时，工作区保留上一次成功的树，沿 Result 返回首个诊断。
 
 上下/Home/End 导航并显露选中行，左/右键回父层、折叠和展开。Ctrl 切换 Entity 选择，Shift 按宿主展平的行选择范围（含尚未描述的行）；选择与视口共用 Session 的有序 Entity 集及活动 Entity。复用当前路径栏、字号、滚动条、输入捕获与接受帧；树层级来自真实 Entity 组合关系。
 

@@ -4,6 +4,7 @@
 #include "renderer/renderer.hpp"
 #include "language/snapshot.hpp"
 #include "assets/assets.hpp"
+#include "editor/project.hpp"
 
 namespace atelier::editor {
 class Session;
@@ -55,6 +56,23 @@ struct Repro {
     json::Document drafts;
 };
 
+// Cancellation and publication compete for the same job. Once the worker owns
+// the outcome, the owner must report its Result, including a failed manifest write.
+class WriteState {
+public:
+    bool cancel() { return claim(State::cancelled); }
+    bool claim_outcome() { return claim(State::finishing); }
+    bool cancelled() const { return state_.load() == State::cancelled; }
+
+private:
+    enum class State { running, cancelled, finishing };
+    std::atomic<State> state_{State::running};
+    bool claim(State next) {
+        auto expected = State::running;
+        return state_.compare_exchange_strong(expected, next);
+    }
+};
+
 struct Sample {
     renderer::Capture pixels;
 
@@ -66,20 +84,26 @@ struct Sample {
 // These entry points adapt provider failures to control::Failure(storage_error).
 std::expected<Repro, control::Failure> snapshot_resources(const editor::Session&);
 
-std::expected<void, control::Failure> validate_candidate_assets(const editor::Session&, json::Value manifest);
+struct ReproBundle {
+    json::Document manifest;
+    std::vector<assets::EngineDependency> engine_assets;
+    editor::Project project;
+    std::string scene_text;
+};
+
+std::expected<void, control::Failure> validate_candidate_assets(const editor::Session&, const ReproBundle&);
 
 // Inputs are owned snapshots/immutable resources. Cancellation is checked
 // between bounded file operations. manifest.json is the completion marker.
-std::expected<json::Document, control::Failure> export_repro(const std::filesystem::path&, Repro,
-                                                             const std::atomic_bool& cancel);
+std::expected<json::Document, control::Failure> export_repro(const std::filesystem::path&, Repro, WriteState& work);
 
 // Validate the complete dependency set before publishing a replacement document.
-std::expected<json::Document, control::Failure> validate_repro(const std::filesystem::path&);
+std::expected<ReproBundle, control::Failure> validate_repro(const std::filesystem::path&);
 
 std::expected<json::Document, control::Failure> write_samples(const std::filesystem::path&, std::vector<Sample>,
-                                                              json::Document, const std::atomic_bool& cancel);
+                                                              json::Document, WriteState& work);
 
 // No GPU readback. The worker receives only owned CPU observations and metadata.
 std::expected<json::Document, control::Failure> write_trace(const std::filesystem::path&, rhi::CommandTrace,
-                                                            json::Document, const std::atomic_bool& cancel);
+                                                            json::Document, WriteState& work);
 }

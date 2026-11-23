@@ -23,17 +23,17 @@ MyGame/
 
 ## 异常退出时的场景保全
 
-Application 捕获帧循环异常（包括 Renderer 返回的终态错误）后，在 Session 释放前尝试一次保全；帧循环外的异常栈展开由析构入口兜底。正常关闭沿用原来的保存/放弃流程。
+帧循环通过 Result 返回首个错误。Application 记录该诊断，并在 Session 释放前尝试一次场景保全。Renderer 终态错误走同一入口，恢复结果单独记录。窗口快照、性能采样等宿主命令通过同一失败入口触发保全。
 
 未确认的参数或变换手势先取消，再使用同一个 `Session::serialize` 保存最后已提交的作者 Scene。输出为 `%LOCALAPPDATA%/FrostFoxAtelier/Recovery/<唯一标识>/Scene.scene`；结构化日志记录 `recovery.saved`（正文为 `Scene recovery saved: <完整路径>`，`fields.recovery_scene` 保存路径，宿主退出的 `application.failed` 同步附带该字段）。若日志提交未获接纳（如无活动 Run 或队列已满）或结束时日志 sink 刷盘失败，统一回退向 `stderr` 输出 `Scene recovery saved:` 完整路径。写入复用原子文件创建，不覆盖原场景、不标记文档已保存；重复失败不会重写快照或替换首次原因。
 
-Scene 先写入并刷新到磁盘，随后 `recovery.json` 记录原工程、原场景、失败原因、时间、未确认手势与脏材质资源名称。侧记写出失败时仍保留已经写成的 Scene，并以 `warning` 级别记录警告。序列化或磁盘失败记录 `recovery.failed`（日志不可用时回退输出 `Scene recovery failed:`），不宣称恢复成功。
+Scene 先写入并刷新到磁盘，随后 `recovery.json` 记录原工程、原场景、失败原因、时间、未确认手势与脏材质资源名称。侧记使用原始失败原因；原因无法编码为 UTF-8 或侧记写入失败时，仍保留已经写成的 Scene，并以 `warning` 级别记录警告。序列化或磁盘失败记录 `recovery.failed`（日志不可用时回退输出 `Scene recovery failed:`），不宣称恢复成功。
 
 这条路径不复制或解析资产，缺失 mesh 等外部资源不会阻止有效作者 Scene 的原始引用写出。它不是完整工程备份：独立材质资产、Source 文本草稿和没有持久化来源的程序化网格不在本次保全范围内；原 Scene 序列化本身拒绝的状态仍会失败。强制结束进程、访问违规或断电不能保证执行异常保全。
 
 恢复时先保留原工程及快照，将 `Scene.scene` **复制为原工程 Content/Scenes 下的新文件名**，再通过同一工程的 Open Scene 验证类型和资源；确认后再决定保存位置。不要直接覆盖原文件。
 
-CPU 侧 `SceneRecovery`（取消未确认手势、写出 `.scene` 与 `recovery.json`、超长错误原因下的结构化日志落盘）由 `atelier_editor_document_acceptance` 覆盖；真实设备失效后的 Application 调用链仍需在 GPU 故障风险消除后复验。
+CPU 侧 `SceneRecovery`（取消未确认手势、写出 `.scene` 与 `recovery.json`、超长错误原因下的结构化日志落盘）由 `atelier_editor_document_acceptance` 覆盖。编辑器窗口验收用真实命令、受阻的输出路径和恢复目录检查首错、退出码及可重新打开的 Scene。真实 GPU 设备失效仍需单独验证。
 
 ## 后续方向：可响应加载与多场景文档
 
@@ -92,7 +92,7 @@ Ctrl+Z/Ctrl+Shift+Z 先服从当前文本控件的草稿规则，再路由到获
 
 资产值类型直接使用 `assets::AssetKind`、`assets::MeshAsset` 等声明；文件读取/UTF-8 转换、JSON 与材质 codec 分别通过 `assets/file.hpp`、`assets/json_format.hpp`、`assets/material_format.hpp` 使用，不经 `editor` 别名或转发头。`editor/assets.hpp` 仅声明编辑器部署目录定位 `asset_directory()`，不再作为资产读取入口。接口和格式升级遵循[当前开发基线](../../engineering.md#当前开发基线)。
 
-Project 保留配置、目录作者扫描、sidecar 身份处理以及导入、保存、重命名事务；扫描完整候选通过校验后，发布给它组合的唯一 Reader。目录条目、键索引、revision、网格/天空/贴图内容缓存及图片弱缓存只由 Reader 拥有，Project 的目录接口只是只读视图；类型化读取直接使用 `project.assets()`，不另设 Project 读实现。刷新仍按现有文件大小/修改时间失效，导入预载复用同一图片缓存，失败时移除本次预载与本次写出的文件。借用的目录/说明视图不能跨发布保留；已返回的不可变内容拥有独立寿命。Reader 的调用与发布仍由所属线程串行执行，不提供异步或并发读取合同。
+Project 保留配置、目录作者扫描、sidecar 身份处理以及导入、保存、重命名事务；打开工程与手动刷新共用一次对 Content、Source、Config 的遍历。Reader 在候选键索引通过校验后发布目录。目录访问、sidecar 解码或重复身份导致刷新失败时，上一次发布的条目、键索引、revision 和内容缓存继续可用；修复后可直接重试。扫描为新增资源独占创建的有效 sidecar 随文件保留，重试沿用该身份。目录条目、键索引、revision、网格/天空/贴图内容缓存及图片弱缓存只由 Reader 拥有，Project 的目录接口只是只读视图；类型化读取直接使用 `project.assets()`，不另设 Project 读实现。刷新仍按现有文件大小/修改时间失效，导入预载复用同一图片缓存，失败时移除本次预载与本次写出的文件。借用的目录/说明视图不能跨发布保留；已返回的不可变内容拥有独立寿命。Reader 的调用与发布仍由所属线程串行执行，不提供异步或并发读取合同。
 
 Runtime 中的 Texture/MS/MI 根和可变作者历史由 Session/宿主持有。当前 Scene v10、材质 v2；语言 `engine_sources` 使用独立摘要。Repro 的类型化依赖闭包来自 Session 冻结快照；Reader 只补充网格原始伴随文件，不另行递归读取磁盘材质关系。
 
@@ -124,7 +124,7 @@ Import Mesh 导入 Wavefront OBJ 的位置、法线、UV、MTL 漫反射材质�
 
 MTL 支持 `Kd`、`d`/`Tr`、`map_Kd` 与 `map_d`。WIC 解码 PNG/JPEG/BMP 等系统支持格式；颜色贴图按 sRGB 采样，遮罩按线性值读取。独立 Material 资源支持金属度/粗糙度、法线与 Y 轴约定、HDR 发光和 Mask，并由 Scene Lit 的阴影、反射与 DDGI 消费。OBJ/MTL 的具体映射、通道及着色范围见[材质系统](../renderer/materials.md)；本轮不包含高度贴图或半透明混合。带 `-s`/`-o` 等选项的 map 明确报错，动画仍未导入。
 
-依赖只能位于 OBJ 所在目录及子目录；绝对路径、上级路径、逃逸链接、缺失文件与非法数据在发布前拒绝。单文件最多 128 MiB、整包最多 512 MiB、解码像素最多 768 MiB，图片单边最多 8192；最多 512 个依赖文件、1024 个命名材质、100 万个位置/法线/UV 和 100 万个三角形。导入验证和写盘使用相同字节快照，先检查现有目录；Import 不覆盖无关文件，Reimport 只替换已验证归属的内容。失败恢复已替换文件的内容和时间戳，删除本次新增输出及空目录，清理失败明确报告；不承诺跨文件断电原子性。
+依赖只能位于 OBJ 所在目录及子目录；绝对路径、上级路径、逃逸链接、缺失文件与非法数据在发布前拒绝。单文件最多 128 MiB、整包最多 512 MiB、解码像素最多 768 MiB，图片单边最多 8192；最多 512 个依赖文件、1024 个命名材质、100 万个位置/法线/UV 和 100 万个三角形。导入验证和写盘使用相同字节快照，先检查现有目录；Import 不覆盖无关文件，Reimport 只替换已验证归属的内容。目录、几何和贴图在私有 Reader 上准备，写盘后的目录与资源校验全部通过才一起发布。写盘或发布失败时逆序恢复被替换文件的内容和时间戳，移除本次新建的文件与目录。首错保留错误码、消息和来源，回滚失败的路径与原因追加到该诊断。不承诺跨文件断电原子性。
 
 Import Mesh 也接受 glTF 2.0 的 `.gltf`，buffer 与图片为外部文件，图片须为 Project 可登记为贴图的 PNG、JPEG、BMP 或 TIFF 文件；GLB、data URI 和存放在 buffer 里的图片不支持。默认场景中带 mesh 的节点按文件顺序深度优先展开，节点 TRS 或矩阵烘焙进同一个 Mesh，每个 primitive 一个材质分段；同一 mesh 被多个节点引用时各自展开。glTF 是右手系，引擎是左手系，两者都以 +Y 向上、以米为单位（[renderer 合同](../renderer/contract.md#场景和-ui)），所以导入时镜像 X 轴：位置和切线经矩阵变换，法线经余因子矩阵，作者切线的 w 在行列式为负时取反。缺少 NORMAL 时按 glTF 正面生成面法线；缺少 TANGENT 时由 MikkTSpace 生成，并统一到 glTF 法线贴图 +Y 指向 V 减小方向的约定。UV 不翻转。
 
@@ -186,7 +186,7 @@ Scene 统一写出 v10：顶层 `materials` 按文档 ID 保存具名资产引�
 
 ## 验收
 
-`editor_document_acceptance` 不创建桌面窗口，默认运行中与工程资源相关的代表为：glTF 节点变换、左手系转换及法线/切线随变换；以及一次 OBJ 网格导入→重新导入，检查网格身份与槽默认材质绑定保持、旧几何不变、新贴图像素发布，且已保存的材质作者值不被覆盖。工程命令、浏览视图、导入失败回滚和工程搬移目前没有自动验收。
+`editor_document_acceptance` 不创建桌面窗口，默认运行中与工程资源相关的代表为：glTF 节点变换、左手系转换及法线/切线随变换；以及一次 OBJ 网格导入→重新导入，检查网格身份与槽默认材质绑定保持、旧几何不变、新贴图像素发布，且已保存的材质作者值不被覆盖。失败用例覆盖导入目标冲突、磁盘锁拒绝替换，以及文件写完后资源类型校验拒绝发布，并核对原文件、身份与已发布目录。工程命令、浏览视图和工程搬移目前没有自动验收。
 
 ## 性能测量
 
@@ -307,7 +307,9 @@ ATMS 编解码的格式、文本、长度和预算拒绝返回 `invalid_storage`
 
 多根导入及其 Redo 中，若本批新增或恢复的 Environment 的 `main_camera` 指向同批另一根下的 Entity，该叶在 Environment 的 add 中暂为 null，全部根 add 完成后再单独发送。它不依赖根的先后顺序；同根内部引用照常解码，其他引用字段不被消隐。批次外的既存 Environment 不被重发，游戏已删除且不在本批的目标不被重建。
 
-Play 进程（`run_project`）加载场景后调用 `enter_play`，UI 预览除外。`RunOptions::channel` 可以挂一个 `PlayChannel`（不持有），帧循环每帧在宿主边界调用一次它的 `service(Session&, Project&, Report)`：首帧在 start 之前，之后每次都在 update 之前。批次的取得、应用、回执都在 service 内完成，service 不阻塞也不抛出；`Report` 与 World 诊断走同一条输出（`describe_diagnostic` 逐行写入 Project Output）。编辑器启动的 Play 经 `--live-channel` 挂上链路的 Play 端；独立运行的 `--run-project` 没有 channel。
+Play 子进程由 `--run-project` 启动，加载场景后调用 `enter_play`。UI 预览跳过这步。编辑器用 `--live-channel` 传入一对管道，子进程在首帧 start 前和后续每帧 update 前调用 `PlayEnd::service`，接收批次、应用变更并发送回执。变更诊断通过 World 诊断入口写入 Project Output。独立运行可以省略管道。
+
+Runner 在命令边界转换进程退出码。参数或继承句柄无效返回 2 并记录 `runner.command_rejected`，场景加载、World、UI、渲染或报告写入失败返回 1 并记录 `runner.failed`。业务错误携带原错误码和可用的 Source 位置。正常停止返回 0。
 
 Run 的私有快照固定 Scene 作者数据，不是全部工程文件的不可变副本；首载资源从已保存工程解析。图形 runner 在首个完整材质组 ready 后才 start；headless 没有 GPU 门槛。Live ACK 确认命令已经应用并且接收端已取得内容所有权，用于释放传输文件及更新命令同步状态，不代表 GPU ready、Present 或屏幕显示。渲染与拾取仍遵守各自的完整组及接受帧合同。
 

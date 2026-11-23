@@ -13,6 +13,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <limits>
 
 namespace {
 using namespace atelier;
@@ -27,10 +28,14 @@ void changed(Result<world::Commit> result) {
 
 struct Entity : world::Entity {
     std::int32_t health{100};
+    String label;
 
     Result<void> validate() const {
         if (health < 0)
             return std::unexpected(Error{ErrorCode::argument_mismatch, "Health must be nonnegative."});
+        if (label.view().std_view() == "reserved")
+            return std::unexpected(
+                Error{ErrorCode::invocation_failed, "Reserved label.", SourceLocation{"entity.source", 7, 12, 3, 4}});
         return {};
     }
 };
@@ -85,6 +90,7 @@ Result<std::shared_ptr<void>> prepare(world::World& world) {
     take(NativeRegistration<Entity>{runtime, "game.Entity", TypeKind::object}
              .base<world::Entity>()
              .field<&Entity::health>("health")
+             .field<&Entity::label>("label")
              .validate<&Entity::validate>()
              .publish());
     take(NativeRegistration<Move>{runtime, "game.Move", TypeKind::object}
@@ -98,6 +104,150 @@ Result<std::shared_ptr<void>> prepare(world::World& world) {
              .field<&Move::mask>("mask")
              .publish());
     return std::shared_ptr<void>{};
+}
+
+void verify_rejected_graph(editor::Session& document, ObjectId root, editor::Project& project) {
+    const auto snapshot = take(document.serialize());
+    const auto subtree = take(assets::json_format::parse(take(document.serialize_subtree(root))));
+    json::Builder broken(subtree);
+    const auto root_key = take(take(broken.root().at("roots")).at(0));
+    const std::string key(take(root_key.string()));
+    const auto add_material = [](json::Builder& graph) {
+        const auto instance = graph.append_object(take(graph.root().at("materials")));
+        graph.set_validated(instance, "id", "900001");
+        graph.set_validated(instance, "source", "");
+        graph.set_validated(instance, "parent", "builtin/material/standard-opaque-double");
+        take(graph.array(instance, "entries"));
+        graph.set_validated(graph.root(), "next_id", "900002");
+    };
+    add_material(broken);
+    broken.set_validated(root_key, "999999");
+    const auto text = json::write(broken.root());
+    const auto objects = document.world().runtime().live_objects();
+    const auto history = document.undo_count();
+    const auto revision = document.revision();
+    document.set_live_forwarding(true);
+    const auto refused = document.instantiate_subtree({text.data(), text.size()}, project);
+    require(!refused && refused.error().message == "Invalid graph root." &&
+                document.world().runtime().live_objects() == objects && document.undo_count() == history &&
+                document.revision() == revision && take(document.take_live_ops()).empty() &&
+                take(document.serialize()) == snapshot,
+            "Failed import left provisional objects, a document edit or an outgoing Play change behind.");
+    document.set_live_forwarding(false);
+
+    editor::Session play;
+    take(play.initialize(prepare));
+    play.enter_play();
+    const auto baseline = play.world().runtime().live_objects();
+    json::Builder batch;
+    const auto ops = take(batch.array(batch.root(), "ops"));
+    const auto add = batch.append_object(ops);
+    batch.set_validated(add, "op", "add");
+    take(batch.set_null(add, "parent"));
+    take(batch.set_null(add, "index"));
+    batch.set_validated(add, "graph", broken.root());
+    const auto apply = [&] {
+        const auto bytes = json::write(batch.root());
+        return take(play.apply_live({bytes.data(), bytes.size()}, project));
+    };
+    const auto rejected = apply();
+    require(rejected.size() == 1 && rejected.front().message == "Play change 0 #999999: Invalid graph root." &&
+                rejected.front().kind == world::DiagnosticKind::command_rejected &&
+                rejected.front().severity == world::Severity::error && take(play.world().members()).empty() &&
+                play.world().runtime().live_objects() == baseline,
+            "A rejected Play add published part of its graph.");
+
+    batch.set_validated(add, "graph", subtree.root());
+    const auto change = [&](std::string_view op) {
+        const auto item = batch.append_object(ops);
+        batch.set_validated(item, "op", op);
+        batch.set_validated(item, "id", key);
+        return item;
+    };
+    batch.set_validated(change("set"), "name", "");
+    const auto properties = batch.object_validated(change("set"), "properties");
+    batch.set_validated(properties, "label", "reserved");
+    change("remove");
+    take(batch.set(change("set"), "enabled", false));
+    const auto issues = apply();
+    require(issues.size() == 3 && issues[0].kind == world::DiagnosticKind::command_rejected &&
+                issues[0].error_code == ErrorCode::invalid_definition &&
+                issues[1].error_code == ErrorCode::argument_mismatch &&
+                issues[1].message == "game.Entity: Reserved label." && issues[1].source &&
+                issues[1].source->path == "entity.source" && issues[1].source->line == 3 && issues[2].serial == 3 &&
+                issues[2].kind == world::DiagnosticKind::reference_dropped &&
+                issues[2].severity == world::Severity::warning && take(play.world().members()).empty(),
+            "Play failed to reuse rejected identities, preserve the edit error or skip a destroyed target.");
+    const auto identity = *document.document_identity(root);
+    const auto gone = play.local_object(identity);
+    require(!gone &&
+                gone.error().message == "Document identity does not belong to a live Entity, Component or material.",
+            "A destroyed Play identity resolved as a live object.");
+    json::Builder retry;
+    retry.append(take(retry.array(retry.root(), "ops")), add);
+    const auto retry_text = json::write(retry.root());
+    require(take(play.apply_live({retry_text.data(), retry_text.size()}, project)).empty() &&
+                play.world().contains(take(play.local_object(identity))),
+            "Re-adding a Play graph did not resolve its document identity to its new instance.");
+    changed(play.close());
+
+    json::Builder with_reference{take(assets::json_format::parse(snapshot))};
+    const auto reference = with_reference.object_validated(with_reference.root(), "future_reference");
+    const auto open = [&] {
+        const auto bytes = json::write(with_reference.root());
+        return editor::Session::deserialize({bytes.data(), bytes.size()}, project, prepare);
+    };
+    with_reference.set_validated(reference, "$ref", "999999");
+    const auto dangling = open();
+    require(!dangling && dangling.error().message == "Reference target is outside this graph: 999999",
+            "Tolerant load accepted a dangling reference at document scope.");
+    with_reference.set_validated(reference, "$ref", key);
+    auto retained_play = take(open());
+    retained_play->enter_play();
+    json::Builder remove;
+    const auto command = remove.append_object(take(remove.array(remove.root(), "ops")));
+    remove.set_validated(command, "op", "remove");
+    remove.set_validated(command, "id", key);
+    const auto removal = json::write(remove.root());
+    const auto dropped = [&] {
+        return std::ranges::count(retained_play->issues(), world::DiagnosticKind::reference_dropped,
+                                  &world::Diagnostic::kind);
+    };
+    require(take(retained_play->apply_live({removal.data(), removal.size()}, project)).empty() && dropped() == 1 &&
+                take(retained_play->apply_live({retry_text.data(), retry_text.size()}, project)).empty() &&
+                dropped() == 0,
+            "Retained reference diagnostics did not follow the current Play instance.");
+    changed(retained_play->close());
+
+    const auto scene_root = with_reference.root();
+    add_material(with_reference);
+    with_reference.set_validated(reference, "$ref", "900001");
+    const auto entity_record = take(take(scene_root.at("entities")).at(0));
+    with_reference.set_validated(entity_record, "future_material", reference);
+    auto material_scene = take(open());
+    do {
+        take(material_scene->collect_step());
+    } while (material_scene->world().runtime().collection_phase() != CollectionPhase::idle);
+    const auto verify_material = [&](bool document_ref) {
+        const auto saved = take(assets::json_format::parse(take(material_scene->serialize())));
+        const auto entity = take(take(saved.root().at("entities")).at(0));
+        const auto top = take(saved.root().find("future_reference"));
+        const auto definitions = take(take(saved.root().at("materials")).array());
+        bool has_definition{};
+        for (const auto definition : definitions)
+            if (take(definition.string({"id"})) == "900001")
+                has_definition = true;
+        require(has_definition && material_scene->local_object(900001).has_value() &&
+                    take(entity.string({"future_material", "$ref"})) == "900001" &&
+                    (document_ref ? top && take(top->string({"$ref"})) == "900001" : !top),
+                "A material owned by retained fields did not survive collection and save.");
+    };
+    verify_material(true);
+    take(material_scene->discard_retained({}));
+    verify_material(false);
+    take(material_scene->undo());
+    verify_material(true);
+    changed(material_scene->close());
 }
 
 void verify_roundtrip() {
@@ -114,6 +264,19 @@ void verify_roundtrip() {
     changed(document.add_component(entity, move_type));
     const auto move = document.selection().object;
     take(runtime.write(entity, take(runtime.find_field(entity_type, "health")), Scalar{std::int32_t{75}}));
+    // Native components can supply a value the scene format cannot store.
+    const auto entity_identity = document.document_identity(entity);
+    const auto component_identity = document.document_identity(move);
+    take(runtime.with_native<Move>(move, [](Move& value) -> Result<void> {
+        value.speed = std::numeric_limits<float>::quiet_NaN();
+        return {};
+    }));
+    const auto rejected = document.serialize_subtree(entity);
+    require(!rejected && rejected.error().code == ErrorCode::invalid_storage &&
+                rejected.error().message == "Scene property values must be finite." &&
+                document.document_identity(entity) == entity_identity &&
+                document.document_identity(move) == component_identity,
+            "Rejected subtree capture lost its diagnostic or published provisional identities.");
     take(runtime.write(move, take(runtime.find_field(move_type, "speed")), Scalar{4.f}));
     const FieldId meter_field = take(runtime.find_field(move_type, "runtime_meter"));
     take(runtime.write(move, std::span{&meter_field, 1}, Scalar{99.f}));
@@ -166,18 +329,38 @@ void verify_roundtrip() {
          [](std::vector<std::string>, json::Value) -> Result<void> { return {}; }}));
     require(kept_paths == std::vector<std::vector<std::string>>{{"cache", "future_field"}},
             "Shared tolerant decode_properties did not skip transient fields.");
-    require(!load_old(editor::LoadPolicy::strict), "Strict load accepted an unknown sibling.");
+    old_scene.set_validated(props, "speed", "legacy speed");
+    const auto strict = load_old(editor::LoadPolicy::strict);
     auto tolerant = take(load_old(editor::LoadPolicy::tolerant));
     const auto issues = tolerant->load_issues();
-    require(issues.size() == 1 && issues.front().kind == world::DiagnosticKind::unknown_field &&
-                issues.front().field == std::vector<std::string>{"properties", "cache", "future_field"},
-            "Tolerant load misidentified a transient field or an unknown sibling.");
+    require(issues.size() == 2 && !strict && strict.error().message == issues.front().message &&
+                std::ranges::any_of(issues,
+                                    [](const auto& issue) {
+                                        return issue.kind == world::DiagnosticKind::unknown_field &&
+                                               issue.field ==
+                                                   std::vector<std::string>{"properties", "cache", "future_field"};
+                                    }) &&
+                std::ranges::any_of(issues,
+                                    [](const auto& issue) {
+                                        return issue.kind == world::DiagnosticKind::mismatch &&
+                                               issue.field == std::vector<std::string>{"properties", "speed"};
+                                    }),
+            "Strict load lost its first error or tolerant load lost a rejected field.");
+    const auto owner = take(tolerant->local_object(*document.document_identity(entity)));
+    const auto restored_move = take(tolerant->local_object(*document.document_identity(move)));
+    const auto kept = take(tolerant->retained(restored_move));
+    const auto visible = tolerant->issues();
+    require(kept.entries.size() == 2 && visible.size() == 2 &&
+                std::ranges::all_of(
+                    visible, [&](const auto& issue) { return issue.entity == owner && issue.object == restored_move; }),
+            "Retained field diagnostics lost their document or component identity.");
     const auto resaved = take(assets::json_format::parse(take(tolerant->serialize())));
     const auto saved_props = properties(resaved.root());
     const auto saved_cache = take(saved_props.at("cache"));
     require(!take(saved_props.find("runtime_meter")) && !take(saved_cache.find("velocity")) &&
-                take(take(saved_cache.at("future_field")).string()) == "keep",
-            "Resaving lost an unknown sibling or retained transient data.");
+                take(take(saved_cache.at("future_field")).string()) == "keep" &&
+                take(saved_props.string({"speed"})) == "legacy speed",
+            "Resaving lost the original mismatched value or unknown sibling, or retained transient data.");
     auto& restored = reopened->world().runtime();
     const auto members = take(reopened->world().members());
     require(members.size() == 1, "Scene lost its Entity.");
@@ -196,6 +379,7 @@ void verify_roundtrip() {
             std::get<EnumValue>(take(restored.read(components.front().id(), std::span{&restored_mask, 1}))).bits == 3u,
         "Scene roundtrip changed authored fields, Flags enum mask or serialized a Transient field.");
     old_scene.erase(cache, "future_field");
+    take(old_scene.set(props, "speed", 4.f));
     const auto range = take(props.at("range"));
     take(old_scene.set(range, "minimum", 9.f));
     take(old_scene.set(range, "maximum", 7.f));
@@ -234,6 +418,7 @@ void verify_roundtrip() {
     auto strict_reopen = take(editor::Session::deserialize(repaired, project, prepare, editor::LoadPolicy::strict));
     require(strict_reopen->load_issues().empty(), "A repaired scene reported another issue after resave.");
     changed(strict_reopen->close());
+    verify_rejected_graph(document, entity, project);
     changed(recovered->close());
     changed(tolerant->close());
     changed(reopened->close());
@@ -416,7 +601,7 @@ void verify_procedural_generator_scene() {
     require(!doc.procedural_generator_error(gen_comp), "Generator cook error survived repair of its source graph.");
 
     const auto saved = take(doc.serialize());
-    auto strict_reloaded = take(editor::Session::deserialize(saved, project, {}, editor::LoadPolicy::strict));
+    auto strict_reloaded = take(editor::Session::deserialize(saved, project, prepare, editor::LoadPolicy::strict));
     require(strict_reloaded->load_issues().empty(), "Strict reload of ProceduralGeneratorEntity reported issues.");
     take(strict_reloaded->presentation().update());
     const auto reloaded_slots = strict_reloaded->presentation().generator_slots();

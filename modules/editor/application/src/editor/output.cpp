@@ -121,10 +121,11 @@ Output::Output() {
 
 Output::~Output() = default;
 
-logging::Result<void> Output::add_run(std::filesystem::path directory) {
+logging::Result<Output::Stream*> Output::add_run(std::filesystem::path directory) {
     directory = directory.lexically_normal();
-    if (std::ranges::any_of(streams_, [&](const auto& stream) { return stream->directory == directory; }))
-        return {};
+    const auto existing = std::ranges::find(streams_, directory, &Stream::directory);
+    if (existing != streams_.end())
+        return existing->get();
     health_dirty_ = pending_change_ = true;
     auto opened = logging::Reader::open(directory);
     if (!opened) {
@@ -142,19 +143,12 @@ logging::Result<void> Output::add_run(std::filesystem::path directory) {
     stream->reader = std::move(*opened);
     streams_.push_back(std::move(stream));
     attachment_error_.clear();
-    return {};
+    return streams_.back().get();
 }
 
-void Output::source_ended(const std::filesystem::path& directory) {
-    const auto normalized = directory.lexically_normal();
-    for (auto& stream : streams_)
-        if (stream->directory == normalized) {
-            if (stream->reader)
-                stream->reader->source_ended();
-            return;
-        }
-    health_dirty_ = pending_change_ = true;
-    attachment_error_ = L"End notification for an unattached run: " + directory.wstring();
+void Output::source_ended(Stream& stream) {
+    if (stream.reader)
+        stream.reader->source_ended();
 }
 
 void Output::retain(logging::Record record, std::filesystem::path directory,
@@ -257,16 +251,12 @@ logging::SubmitResult Output::submit_owned(logging::Entry entry) {
     return receipt;
 }
 
-void Output::capture_raw(const std::filesystem::path& directory, bool standard_error, std::string_view bytes,
-                         std::uint64_t offset, bool ended) {
-    const auto normalized = directory.lexically_normal();
-    const auto at = std::ranges::find_if(streams_, [&](const auto& stream) { return stream->directory == normalized; });
-    if (at == streams_.end())
-        throw std::invalid_argument("Attach the raw output run before consuming it.");
-    auto& tail = (*at)->raw[standard_error ? 1 : 0];
+void Output::capture_raw(Stream& stream, bool standard_error, std::string_view bytes, std::uint64_t offset,
+                         bool ended) {
+    auto& tail = stream.raw[standard_error ? 1 : 0];
     // A retention gap must not splice an old prefix into an unrelated character.
     if (!tail.bytes.empty() && tail.offset + tail.bytes.size() != offset)
-        capture_raw(directory, standard_error, {}, tail.offset + tail.bytes.size(), true);
+        capture_raw(stream, standard_error, {}, tail.offset + tail.bytes.size(), true);
     if (tail.bytes.empty())
         tail.offset = offset;
     tail.bytes.append(bytes);
@@ -302,7 +292,7 @@ void Output::capture_raw(const std::filesystem::path& directory, bool standard_e
         logging::Entry entry{.category = "process.raw",
                              .event_code = standard_error ? "raw.stderr" : "raw.stdout",
                              .message = std::move(message)};
-        entry.fields = {{"directory", (*at)->directory_text},
+        entry.fields = {{"directory", stream.directory_text},
                         {"offset", tail.offset + begin},
                         {"bytes", static_cast<std::uint64_t>(consumed - begin)},
                         {"encoding", std::string("utf8-escaped")}};

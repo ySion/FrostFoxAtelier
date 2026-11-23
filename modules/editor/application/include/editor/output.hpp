@@ -79,9 +79,11 @@ public:
 
     Output& operator=(const Output&) = delete;
 
-    logging::Result<void> add_run(std::filesystem::path);
+    struct Stream; // Borrow from add_run until this Output is destroyed.
 
-    void source_ended(const std::filesystem::path&);
+    [[nodiscard]] logging::Result<Stream*> add_run(std::filesystem::path);
+
+    void source_ended(Stream&);
 
     logging::SubmitResult submit_owned(logging::Entry);
 
@@ -89,8 +91,7 @@ public:
     // child JSONL. Retains at most three UTF-8 bytes per stream across chunks;
     // invalid bytes and literal backslashes are reversibly escaped. Offsets are
     // original byte positions; ended flushes a final fragment without a newline.
-    void capture_raw(const std::filesystem::path& directory, bool standard_error, std::string_view bytes,
-                     std::uint64_t offset, bool ended);
+    void capture_raw(Stream&, bool standard_error, std::string_view bytes, std::uint64_t offset, bool ended);
 
     // Standalone consumer seam only. Missing stream identity is assigned here;
     // recent 4096 supplied identities are checked before repeat counting. The
@@ -132,8 +133,6 @@ public:
     ui::Result<void> append(ui_language::ControlOutput, ui::ControlKey, ui_language::LiveDocument&, float height);
 
 private:
-    struct Stream;
-
     std::vector<std::unique_ptr<Stream>> streams_;
 
     std::size_t next_stream_{};
