@@ -1753,6 +1753,34 @@ class game.DiagnosticSop : procedural.Node {
             });
             require(stale_ov != inst_pviews.end(),
                     "AssetNode did not tolerantly surface unmatched stale override as undeclared.");
+            const auto nested_key = take(project.create_procedural_graph("Content/Graphs/NestedCourt.procgraph"));
+            take(doc.open_graph(project, nested_key));
+            take(doc.graph_add_node(nested_key, "asset:" + court_key, "court", {0.f, 0.f}, &project));
+            take(doc.graph_set_display(nested_key, "court"));
+            take(doc.save_graph(project, nested_key));
+            const std::vector<std::string> nested_field{"nodes", "court",   "asset",     court_key,
+                                                        "nodes", "pillars", "overrides", "obsolete_depth"};
+            for (int cook = 0; cook < 2; ++cook) {
+                (void)take(doc.evaluate_graph(nested_key, &project));
+                const auto nested_view = take(doc.inspect_graph(nested_key, &project));
+                require(std::ranges::count(nested_view.issues, nested_field, &world::Diagnostic::field) == 1,
+                        "Nested asset override diagnostic lost its instance path or was duplicated on a cached cook.");
+            }
+            (void)doc.take_diagnostics();
+            ATELIER_TRY(changed(doc.create_procedural_generator(nested_key, {}, &project)));
+            const auto generator =
+                take(component(doc, doc.selection().entity, doc.presentation_types().procedural_generator_component));
+            take(doc.sync_procedural_generators(&project));
+            auto generator_field = nested_field;
+            generator_field.insert(generator_field.begin(), {"graph", nested_key});
+            const auto generator_issues = doc.take_diagnostics();
+            require(std::ranges::count_if(generator_issues,
+                                          [&](const world::Diagnostic& issue) {
+                                              return issue.field == generator_field && issue.object == generator &&
+                                                     issue.severity == world::Severity::warning;
+                                          }) == 1,
+                    "Generator did not report the stale nested override on its owning component.");
+
             take(doc.clear_promoted_parameter_override(
                 editor::PromotedParameterTarget{std::string(court_key), "pillars", ObjectId{}}, "obsolete_depth",
                 &project));
@@ -1770,6 +1798,28 @@ class game.DiagnosticSop : procedural.Node {
             take(doc.graph_undo(pillar_key, false)); // undo connect
             take(doc.graph_undo(pillar_key, false)); // undo add_node back_ref
             take(doc.save_graph(project, pillar_key));
+
+            const auto bad_key = take(project.create_procedural_graph("Content/Graphs/BadPorts.procgraph", R"({
+                "version":4,"settings":{},"nodes":{
+                "one":{"type":"procedural.GraphOutput","properties":{"port_name":"same"}},
+                "two":{"type":"procedural.GraphOutput","properties":{"port_name":"same"}}}})"));
+            const std::string missing_key = "nonexistent-asset";
+            const auto missing = project.assets().procedural_graph(missing_key);
+            require(!missing, "Missing-asset fixture unexpectedly exists.");
+            for (const auto& [key, message] :
+                 std::array{std::pair{missing_key, missing.error().message},
+                            std::pair{bad_key, std::string("Duplicate GraphOutput port_name 'same'.")}}) {
+                take(doc.graph_set_node_asset(court_key, "pillars", key, &project));
+                const auto* node = doc.graph_node(court_key, "pillars");
+                const auto binding = take(procedural::asset_subgraph(rt, node->node.id()));
+                require(node->asset_key == key && binding.bind_error && binding.bind_error->message == message &&
+                            binding.ports.inputs.empty() && binding.ports.outputs.empty() &&
+                            node->kept.root().path({"inputs", "points"}).has_value(),
+                        "Rebinding an unavailable asset exposed stale ports or lost the original error or wire.");
+                take(doc.graph_undo(court_key, false));
+                require(!doc.graph_node(court_key, "pillars")->kept.root().path({"inputs", "points"}).has_value(),
+                        "Undo of failed binding did not restore the original connection.");
+            }
 
             const std::string alt_key = take(project.create_procedural_graph("Content/Graphs/AltAsset.procgraph"));
             take(doc.open_graph(project, alt_key));
@@ -1809,7 +1859,7 @@ class game.DiagnosticSop : procedural.Node {
               "version":4,"settings":{"display":"outside"},"nodes":{
               "a":{"type":"procedural.Grid"},"left":{"type":"procedural.Box"},
               "b":{"type":"procedural.Merge","inputs":{"inputs":["a.output","a.legacy","left.output"]}},
-              "outside":{"type":"procedural.Merge","inputs":{"inputs":["a.output","missing.old","b.output"]}}}})"));
+              "outside":{"type":"procedural.Merge","inputs":{"inputs":["a.output","Retained.output","b.output"]}}}})"));
             take(doc.open_graph(project, host));
             const auto revision = project.revision();
             const std::array<std::string, 1> only_b{"b"};
@@ -1824,8 +1874,14 @@ class game.DiagnosticSop : procedural.Node {
                 "Unrepresentable extraction must return the first boundary error before publishing anything.");
 
             const std::array<std::string, 2> selected{"a", "b"};
+            const auto shadow =
+                doc.graph_extract_asset(project, host, selected, "Content/Graphs/Shadow.procgraph", "Retained");
+            require(!shadow && shadow.error().message.find("Retained") != std::string::npos &&
+                        project.revision() == revision &&
+                        !std::filesystem::exists(project.root() / "Content/Graphs/Shadow.procgraph"),
+                    "An explicit AssetNode name captured an unrelated unresolved outer wire.");
             const auto stage =
-                take(doc.graph_extract_asset(project, host, selected, "Content/Graphs/Retained.procgraph", "asset_ab"));
+                take(doc.graph_extract_asset(project, host, selected, "Content/Graphs/Retained.procgraph"));
             take(doc.open_graph(project, stage.first));
             const auto check_inputs = [&](const std::string& graph, std::string_view node, std::string_view first,
                                           std::string_view second, std::string_view third) {
@@ -1837,12 +1893,12 @@ class game.DiagnosticSop : procedural.Node {
                         "Extraction changed retained multi-input slot order.");
             };
             check_inputs(stage.first, "b", "a.output", "a.legacy", "input_inputs.output");
-            check_inputs(host, "outside", "asset_ab.output", "missing.old", "asset_ab.output_2");
+            check_inputs(host, "outside", "Retained_2.output", "Retained.output", "Retained_2.output_2");
             take(doc.graph_undo(host, false));
             check_inputs(host, "b", "a.output", "a.legacy", "left.output");
-            check_inputs(host, "outside", "a.output", "missing.old", "b.output");
+            check_inputs(host, "outside", "a.output", "Retained.output", "b.output");
             take(doc.graph_undo(host, true));
-            check_inputs(host, "outside", "asset_ab.output", "missing.old", "asset_ab.output_2");
+            check_inputs(host, "outside", "Retained_2.output", "Retained.output", "Retained_2.output_2");
         }
 
         // graph_extract_asset: reject non-convex selection, extract convex stage, and 1-step Undo/Redo:

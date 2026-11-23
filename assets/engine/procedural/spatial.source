@@ -92,7 +92,15 @@ uint procedural.bvh_stack_pop(procedural.BvhStack64& s) {
                      : procedural.bvh_stack16_get(s.s3, rem);
 }
 
-void procedural.bvh_push_ordered(procedural.BvhStack64& stack, uint left, float dl, float dr, float limit) {
+vector3d procedural.spatial_widen(vector3 v) {
+    return vector3d(double(v.x), double(v.y), double(v.z));
+}
+
+vector3 procedural.spatial_narrow(vector3d v) {
+    return vector3(float(v.x), float(v.y), float(v.z));
+}
+
+void procedural.bvh_push_ordered(procedural.BvhStack64& stack, uint left, double dl, double dr, double limit) {
     const uint right = left + 1;
     if (dl <= limit && dr <= limit) {
         procedural.bvh_stack_push(stack, dl <= dr ? right : left);
@@ -104,68 +112,68 @@ void procedural.bvh_push_ordered(procedural.BvhStack64& stack, uint left, float 
     }
 }
 
-bool procedural.bvh_ray_slab(float o, float d, float lo, float hi, float& tmin, float& tmax) {
-    if (d == 0.0f) {
+bool procedural.bvh_ray_slab(double o, double d, double lo, double hi, double& tmin, double& tmax) {
+    if (d == 0.0d) {
         return o >= lo && o <= hi;
     }
-    const float inv = 1.0f / d;
-    const float t0 = (lo - o) * inv;
-    const float t1 = (hi - o) * inv;
+    const double inv = 1.0d / d;
+    const double t0 = (lo - o) * inv;
+    const double t1 = (hi - o) * inv;
     tmin = math.max(tmin, math.min(t0, t1));
     tmax = math.min(tmax, math.max(t0, t1));
     return tmin <= tmax;
 }
 
-float procedural.bvh_ray_box(vector3 bmin, vector3 bmax, vector3 origin, vector3 dir, float max_dist) {
-    float tmin = 0.0f;
-    float tmax = max_dist;
-    return (procedural.bvh_ray_slab(origin.x, dir.x, bmin.x, bmax.x, tmin, tmax) &&
-            procedural.bvh_ray_slab(origin.y, dir.y, bmin.y, bmax.y, tmin, tmax) &&
-            procedural.bvh_ray_slab(origin.z, dir.z, bmin.z, bmax.z, tmin, tmax))
+double procedural.bvh_ray_box(vector3 bmin, vector3 bmax, vector3d origin, vector3d dir, double max_dist) {
+    double tmin = 0.0d;
+    double tmax = max_dist;
+    return (procedural.bvh_ray_slab(origin.x, dir.x, double(bmin.x), double(bmax.x), tmin, tmax) &&
+            procedural.bvh_ray_slab(origin.y, dir.y, double(bmin.y), double(bmax.y), tmin, tmax) &&
+            procedural.bvh_ray_slab(origin.z, dir.z, double(bmin.z), double(bmax.z), tmin, tmax))
                ? tmin
-               : max_dist + 1.0f;
+               : max_dist + math.max(max_dist, 1.0d);
 }
 
-float procedural.bvh_point_box_dist_sq(vector3 bmin, vector3 bmax, vector3 point) {
-    const vector3 d = point - math.clamp(point, bmin, bmax);
+double procedural.bvh_point_box_dist_sq(vector3 bmin, vector3 bmax, vector3d point) {
+    const vector3d d = point - math.clamp(point, procedural.spatial_widen(bmin), procedural.spatial_widen(bmax));
     return math.dot(d, d);
 }
 
-vector3 procedural.closest_point_on_triangle(vector3 p, vector3 a, vector3 b, vector3 c) {
-    const vector3 ab = b - a;
-    const vector3 ac = c - a;
-    const vector3 ap = p - a;
-    const float d1 = math.dot(ab, ap);
-    const float d2 = math.dot(ac, ap);
-    if (d1 <= 0.0f && d2 <= 0.0f) { return a; }
+vector3d procedural.closest_point_on_triangle(vector3d p, vector3d a, vector3d b, vector3d c) {
+    const vector3d ab = b - a;
+    const vector3d ac = c - a;
+    const vector3d ap = p - a;
+    const double d1 = math.dot(ab, ap);
+    const double d2 = math.dot(ac, ap);
+    if (d1 <= 0.0d && d2 <= 0.0d) { return a; }
 
-    const vector3 bp = p - b;
-    const float d3 = math.dot(ab, bp);
-    const float d4 = math.dot(ac, bp);
-    if (d3 >= 0.0f && d4 <= d3) { return b; }
+    const vector3d bp = p - b;
+    const double d3 = math.dot(ab, bp);
+    const double d4 = math.dot(ac, bp);
+    if (d3 >= 0.0d && d4 <= d3) { return b; }
 
-    const float vc = d1 * d4 - d3 * d2;
-    if (vc <= 0.0f && d1 >= 0.0f && d3 <= 0.0f) {
+    const double vc = d1 * d4 - d3 * d2;
+    if (vc <= 0.0d && d1 >= 0.0d && d3 <= 0.0d) {
         return a + ab * (d1 / (d1 - d3));
     }
 
-    const vector3 cp = p - c;
-    const float d5 = math.dot(ab, cp);
-    const float d6 = math.dot(ac, cp);
-    if (d6 >= 0.0f && d5 <= d6) { return c; }
+    const vector3d cp = p - c;
+    const double d5 = math.dot(ab, cp);
+    const double d6 = math.dot(ac, cp);
+    if (d6 >= 0.0d && d5 <= d6) { return c; }
 
-    const float vb = d5 * d2 - d1 * d6;
-    if (vb <= 0.0f && d2 >= 0.0f && d6 <= 0.0f) {
+    const double vb = d5 * d2 - d1 * d6;
+    if (vb <= 0.0d && d2 >= 0.0d && d6 <= 0.0d) {
         return a + ac * (d2 / (d2 - d6));
     }
 
-    const float va = d3 * d6 - d5 * d4;
-    if (va <= 0.0f && (d4 - d3) >= 0.0f && (d5 - d6) >= 0.0f) {
-        const float w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
+    const double va = d3 * d6 - d5 * d4;
+    if (va <= 0.0d && (d4 - d3) >= 0.0d && (d5 - d6) >= 0.0d) {
+        const double w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
         return b + (c - b) * w;
     }
 
-    const float denom = 1.0f / (va + vb + vc);
+    const double denom = 1.0d / (va + vb + vc);
     return a + ab * (vb * denom) + ac * (vc * denom);
 }
 
@@ -178,15 +186,16 @@ procedural.SurfaceHit procedural.raycast_surface(const procedural.Spatial& spati
     if (spatial.size() == 0 || !math.is_finite(origin) || !(max_distance >= 0.0f) || !math.is_finite(max_distance)) {
         return result;
     }
-    const vector3 dir = math.normalize_or_zero(direction);
+    const vector3d origin_d = procedural.spatial_widen(origin);
+    const vector3d dir = math.normalize_or_zero(procedural.spatial_widen(direction));
     const uint root = spatial[0].u0;
-    if (dir == vector3() || root == 0) {
+    if (dir == vector3d() || root == 0) {
         return result;
     }
 
-    float best_dist = max_distance;
+    double best_dist = double(max_distance);
     const procedural.SpatialNode root_node = spatial[root];
-    if (procedural.bvh_ray_box(root_node.a, root_node.b, origin, dir, best_dist) > best_dist) {
+    if (procedural.bvh_ray_box(root_node.a, root_node.b, origin_d, dir, best_dist) > best_dist) {
         return result;
     }
 
@@ -194,7 +203,7 @@ procedural.SurfaceHit procedural.raycast_surface(const procedural.Spatial& spati
     procedural.bvh_stack_push(stack, root);
     while (stack.size > 0) {
         const procedural.SpatialNode node = spatial[procedural.bvh_stack_pop(stack)];
-        if (procedural.bvh_ray_box(node.a, node.b, origin, dir, best_dist) > best_dist) {
+        if (procedural.bvh_ray_box(node.a, node.b, origin_d, dir, best_dist) > best_dist) {
             continue;
         }
         if (node.u1 > 0) {
@@ -202,24 +211,26 @@ procedural.SurfaceHit procedural.raycast_surface(const procedural.Spatial& spati
                 const uint base = node.u0 + k * 2;
                 const procedural.SpatialNode w0 = spatial[base];
                 const procedural.SpatialNode w1 = spatial[base + 1];
-                const vector3 e1 = w0.b - w0.a;
-                const vector3 e2 = w1.a - w0.a;
-                const vector3 h = math.cross(dir, e2);
-                const float det = math.dot(e1, h);
-                if (math.abs(det) > 0.00000001f) {
-                    const float inv_det = 1.0f / det;
-                    const vector3 s = origin - w0.a;
-                    const float u = math.dot(s, h) * inv_det;
-                    if (u >= -0.000001f && u <= 1.000001f) {
-                        const vector3 q = math.cross(s, e1);
-                        const float v = math.dot(dir, q) * inv_det;
-                        if (v >= -0.000001f && (u + v) <= 1.000001f) {
-                            const float t = math.dot(e2, q) * inv_det;
-                            if (t >= 0.0f && t <= best_dist) {
+                const vector3d vertex = procedural.spatial_widen(w0.a);
+                const vector3d e1 = procedural.spatial_widen(w0.b) - vertex;
+                const vector3d e2 = procedural.spatial_widen(w1.a) - vertex;
+                const vector3d h = math.cross(dir, e2);
+                const double det = math.dot(e1, h);
+                // Bound the angular error independently of triangle scale. Squared float inputs fit in double.
+                if (det * det > 1e-28d * math.dot(e1, e1) * math.dot(h, h)) {
+                    const double inv_det = 1.0d / det;
+                    const vector3d s = origin_d - vertex;
+                    const double u = math.dot(s, h) * inv_det;
+                    if (u >= -0.000001d && u <= 1.000001d) {
+                        const vector3d q = math.cross(s, e1);
+                        const double v = math.dot(dir, q) * inv_det;
+                        if (v >= -0.000001d && (u + v) <= 1.000001d) {
+                            const double t = math.dot(e2, q) * inv_det;
+                            if (t >= 0.0d && t <= best_dist) {
                                 best_dist = t;
                                 result.hit = true;
-                                result.distance = t;
-                                result.position = origin + dir * t;
+                                result.distance = float(t);
+                                result.position = procedural.spatial_narrow(origin_d + dir * t);
                                 result.normal = w1.b;
                                 result.primitive = w0.u0;
                             }
@@ -233,8 +244,8 @@ procedural.SurfaceHit procedural.raycast_surface(const procedural.Spatial& spati
         const procedural.SpatialNode rn = spatial[node.u0 + 1];
         procedural.bvh_push_ordered(stack,
                                     node.u0,
-                                    procedural.bvh_ray_box(ln.a, ln.b, origin, dir, best_dist),
-                                    procedural.bvh_ray_box(rn.a, rn.b, origin, dir, best_dist),
+                                    procedural.bvh_ray_box(ln.a, ln.b, origin_d, dir, best_dist),
+                                    procedural.bvh_ray_box(rn.a, rn.b, origin_d, dir, best_dist),
                                     best_dist);
     }
     return result;
@@ -253,9 +264,10 @@ procedural.SurfaceHit procedural.closest_surface_point(const procedural.Spatial&
         return result;
     }
 
-    float best_dist_sq = max_distance * max_distance;
+    const vector3d point_d = procedural.spatial_widen(point);
+    double best_dist_sq = double(max_distance) * double(max_distance);
     const procedural.SpatialNode root_node = spatial[root];
-    if (procedural.bvh_point_box_dist_sq(root_node.a, root_node.b, point) > best_dist_sq) {
+    if (procedural.bvh_point_box_dist_sq(root_node.a, root_node.b, point_d) > best_dist_sq) {
         return result;
     }
 
@@ -263,7 +275,7 @@ procedural.SurfaceHit procedural.closest_surface_point(const procedural.Spatial&
     procedural.bvh_stack_push(stack, root);
     while (stack.size > 0) {
         const procedural.SpatialNode node = spatial[procedural.bvh_stack_pop(stack)];
-        if (procedural.bvh_point_box_dist_sq(node.a, node.b, point) > best_dist_sq) {
+        if (procedural.bvh_point_box_dist_sq(node.a, node.b, point_d) > best_dist_sq) {
             continue;
         }
         if (node.u1 > 0) {
@@ -271,14 +283,15 @@ procedural.SurfaceHit procedural.closest_surface_point(const procedural.Spatial&
                 const uint base = node.u0 + k * 2;
                 const procedural.SpatialNode w0 = spatial[base];
                 const procedural.SpatialNode w1 = spatial[base + 1];
-                const vector3 q = procedural.closest_point_on_triangle(point, w0.a, w0.b, w1.a);
-                const vector3 diff = point - q;
-                const float d2 = math.dot(diff, diff);
+                const vector3d q = procedural.closest_point_on_triangle(
+                    point_d, procedural.spatial_widen(w0.a), procedural.spatial_widen(w0.b), procedural.spatial_widen(w1.a));
+                const vector3d diff = point_d - q;
+                const double d2 = math.dot(diff, diff);
                 if (d2 <= best_dist_sq) {
                     best_dist_sq = d2;
                     result.hit = true;
-                    result.distance = math.sqrt(d2);
-                    result.position = q;
+                    result.distance = float(math.sqrt(d2));
+                    result.position = procedural.spatial_narrow(q);
                     result.normal = w1.b;
                     result.primitive = w0.u0;
                 }
@@ -289,8 +302,8 @@ procedural.SurfaceHit procedural.closest_surface_point(const procedural.Spatial&
         const procedural.SpatialNode rn = spatial[node.u0 + 1];
         procedural.bvh_push_ordered(stack,
                                     node.u0,
-                                    procedural.bvh_point_box_dist_sq(ln.a, ln.b, point),
-                                    procedural.bvh_point_box_dist_sq(rn.a, rn.b, point),
+                                    procedural.bvh_point_box_dist_sq(ln.a, ln.b, point_d),
+                                    procedural.bvh_point_box_dist_sq(rn.a, rn.b, point_d),
                                     best_dist_sq);
     }
     return result;
@@ -309,9 +322,10 @@ procedural.CurveSample procedural.closest_polyline(const procedural.Spatial& spa
         return result;
     }
 
-    float best_dist_sq = max_distance * max_distance;
+    const vector3d point_d = procedural.spatial_widen(point);
+    double best_dist_sq = double(max_distance) * double(max_distance);
     const procedural.SpatialNode root_node = spatial[root];
-    if (procedural.bvh_point_box_dist_sq(root_node.a, root_node.b, point) > best_dist_sq) {
+    if (procedural.bvh_point_box_dist_sq(root_node.a, root_node.b, point_d) > best_dist_sq) {
         return result;
     }
 
@@ -319,7 +333,7 @@ procedural.CurveSample procedural.closest_polyline(const procedural.Spatial& spa
     procedural.bvh_stack_push(stack, root);
     while (stack.size > 0) {
         const procedural.SpatialNode node = spatial[procedural.bvh_stack_pop(stack)];
-        if (procedural.bvh_point_box_dist_sq(node.a, node.b, point) > best_dist_sq) {
+        if (procedural.bvh_point_box_dist_sq(node.a, node.b, point_d) > best_dist_sq) {
             continue;
         }
         if (node.u1 > 0) {
@@ -327,18 +341,19 @@ procedural.CurveSample procedural.closest_polyline(const procedural.Spatial& spa
                 const uint base = node.u0 + k * 2;
                 const procedural.SpatialNode w0 = spatial[base];
                 const procedural.SpatialNode w1 = spatial[base + 1];
-                const vector3 ab = w0.b - w0.a;
-                const float denom = math.dot(ab, ab);
-                const float t = denom > 0.0f ? math.clamp(math.dot(point - w0.a, ab) / denom, 0.0f, 1.0f) : 0.0f;
-                const vector3 q = math.lerp(w0.a, w0.b, t);
-                const vector3 diff = point - q;
-                const float d2 = math.dot(diff, diff);
+                const vector3d a = procedural.spatial_widen(w0.a);
+                const vector3d ab = procedural.spatial_widen(w0.b) - a;
+                const double denom = math.dot(ab, ab);
+                const double t = denom > 0.0d ? math.clamp(math.dot(point_d - a, ab) / denom, 0.0d, 1.0d) : 0.0d;
+                const vector3d q = a + ab * t;
+                const vector3d diff = point_d - q;
+                const double d2 = math.dot(diff, diff);
                 if (d2 <= best_dist_sq) {
                     best_dist_sq = d2;
                     result.hit = true;
-                    result.distance = math.sqrt(d2);
-                    result.u = math.lerp(w1.b.x, w1.b.y, t);
-                    result.position = q;
+                    result.distance = float(math.sqrt(d2));
+                    result.u = math.lerp(w1.b.x, w1.b.y, float(t));
+                    result.position = procedural.spatial_narrow(q);
                     result.tangent = w1.a;
                     result.primitive = w0.u0;
                 }
@@ -349,8 +364,8 @@ procedural.CurveSample procedural.closest_polyline(const procedural.Spatial& spa
         const procedural.SpatialNode rn = spatial[node.u0 + 1];
         procedural.bvh_push_ordered(stack,
                                     node.u0,
-                                    procedural.bvh_point_box_dist_sq(ln.a, ln.b, point),
-                                    procedural.bvh_point_box_dist_sq(rn.a, rn.b, point),
+                                    procedural.bvh_point_box_dist_sq(ln.a, ln.b, point_d),
+                                    procedural.bvh_point_box_dist_sq(rn.a, rn.b, point_d),
                                     best_dist_sq);
     }
     return result;

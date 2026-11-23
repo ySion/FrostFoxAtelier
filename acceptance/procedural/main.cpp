@@ -1446,6 +1446,14 @@ class test.MultiBuilder : procedural.Node {
         q_idx.add(uint(1));
         q_idx.add(uint(2));
         q_idx.add(uint(3));
+        q_pts.add(vector3(8.0f, self.height, 0.0f));
+        q_pts.add(vector3(8.0f, self.height, 0.00005f));
+        q_pts.add(vector3(8.00005f, self.height, 0.00005f));
+        q_pts.add(vector3(8.00005f, self.height, 0.0f));
+        q_idx.add(uint(4));
+        q_idx.add(uint(5));
+        q_idx.add(uint(6));
+        q_idx.add(uint(7));
         self.emit_quads(q_pts, q_idx, uint(0));
 
         Array<vector3> r_pts;
@@ -1474,6 +1482,16 @@ class test.SpatialProbe : procedural.Node {
         float w = 0.0f;
         if (road_w.size() > 0) {
             w = road_w[0];
+        }
+        const procedural.SurfaceHit tiny = procedural.raycast_surface(
+            surface, vector3(8.00001f, 3.5f, 0.00002f), vector3(0.0f, -1.0f, 0.0f), 2.0f);
+        const vector3 far = vector3(0.0f, 2e20f, 0.0f);
+        const procedural.SurfaceHit far_surface = procedural.closest_surface_point(surface, far, 1e20f);
+        const procedural.CurveSample far_curve = procedural.closest_polyline(road, far, 1e20f);
+        const procedural.SurfaceHit in_range = procedural.closest_surface_point(surface, far, 3e20f);
+        if (!tiny.hit || tiny.distance != 2.0f || far_surface.hit || far_curve.hit ||
+            !in_range.hit || in_range.distance != 2e20f) {
+            fail("Spatial queries lost a small triangle or compared overflowed squared distances.");
         }
         parallel_for (uint i : n) {
             const procedural.SurfaceHit hit = procedural.raycast_surface(
@@ -1840,6 +1858,23 @@ void parametric_primitives_and_alignment_contracts() {
                 std::abs((arch_b->minimum.x + arch_b->maximum.x) * 0.5f) < 1e-4f &&
                 solid_measures(arch_checked).first > 1.5,
             "Swept hexagonal stone arch was not watertight or MatchSize did not ground-and-center it.");
+
+    {
+        const auto unit = take(box({1.f, 1.f, 1.f}));
+        const Geometry empty;
+        MatchSizeSettings fit;
+        fit.scale_to_fit = true;
+        fit.target_size = {5e-7f, 1.f, 1.f};
+        const auto fitted = take(match_size(unit, fit, &empty));
+        const auto bb = bounds(fitted);
+        require(bb && std::abs((bb->maximum.x - bb->minimum.x) - fit.target_size.x) < 1e-12f,
+                "MatchSize ignored a small positive target extent.");
+        fit.target_size.x = 0.f;
+        const auto invalid = match_size(unit, fit, &empty);
+        require(!invalid &&
+                    invalid.error().message == "MatchSize target_size must be positive when scale_to_fit is enabled.",
+                "An empty reference bypassed the independent MatchSize target validation.");
+    }
 
     // MatchSize with connected reference port + uniform scale_to_fit:
     take(runtime.with_native<Box>(ref_box.id(), [](Box& n) -> Result<void> {

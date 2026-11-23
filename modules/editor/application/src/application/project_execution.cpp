@@ -237,7 +237,7 @@ Result<void> Application::build_project(bool rebuild, bool interactive) {
     if (dirty)
         next.session->mark_modified();
     ATELIER_TRY(next.session->restore_open_graphs(&*project_, *open_graphs));
-    static_cast<void>(next.session->sync_procedural_generators(&*project_));
+    ATELIER_TRY(next.session->sync_procedural_generators(&*project_));
     ATELIER_TRY(publish_document(std::move(next.session), next.code, {}, true));
     workspace_.scene_available = true;
     pending_scene_ = *text;

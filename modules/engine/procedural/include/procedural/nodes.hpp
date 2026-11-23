@@ -680,7 +680,7 @@ public:
     struct SubgraphMeta {
         std::string asset_key;
 
-        Ports ports{{}, {}, {"output"}};
+        Ports ports; // Resolved schema.
 
         std::vector<ObjectId> input_nodes;
 

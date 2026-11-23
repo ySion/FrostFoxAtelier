@@ -689,6 +689,17 @@ Result<void> apply_saved_graph_node_inputs(Runtime& runtime, GraphDocument& docu
     return {};
 }
 
+procedural::AssetSubgraph resolve_asset_binding(const AssetPortResolver& resolver, std::string_view asset_key) {
+    procedural::AssetSubgraph binding;
+    binding.asset_key = asset_key;
+    auto ports = resolver(asset_key);
+    if (ports)
+        binding.ports = std::move(*ports);
+    else
+        binding.bind_error = std::move(ports.error());
+    return binding;
+}
+
 Result<GraphDocument> load_graph(Runtime& runtime, std::string_view text, const AssetPortResolver& asset_ports) {
     const auto file = assets::json_format::parse(text);
     if (!file)
@@ -959,14 +970,8 @@ Result<GraphDocument> load_graph(Runtime& runtime, std::string_view text, const 
                 ATELIER_TRY(procedural::set_bypassed(runtime, item.node.id(), *bypass->boolean()));
             }
             if (type_name == "procedural.AssetNode" && asset_ports && !item.asset_key.empty()) {
-                if (auto resolved_ports = asset_ports(item.asset_key)) {
-                    if (*resolved_ports) {
-                        procedural::AssetSubgraph stub;
-                        stub.asset_key = item.asset_key;
-                        stub.ports = std::move(**resolved_ports);
-                        ATELIER_TRY(procedural::set_asset_subgraph(runtime, item.node.id(), std::move(stub)));
-                    }
-                }
+                ATELIER_TRY(procedural::set_asset_subgraph(runtime, item.node.id(),
+                                                           resolve_asset_binding(asset_ports, item.asset_key)));
             }
             json::Builder kept;
             const auto properties = kept.object_validated(kept.root(), "properties");

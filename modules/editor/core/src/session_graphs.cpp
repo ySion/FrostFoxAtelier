@@ -1705,15 +1705,12 @@ Result<const GraphDocument*> Session::resolve_target_graph_document(std::string_
 }
 
 AssetPortResolver Session::make_asset_port_resolver(Project* project) const {
-    return [this, project](std::string_view asset_key) -> Result<std::optional<procedural::Ports>> {
-        if (asset_key.empty())
-            return std::optional<procedural::Ports>{};
-        auto doc = resolve_target_graph_document(asset_key, project);
-        if (!doc || !*doc)
-            return std::optional<procedural::Ports>{};
-        if (auto ports = extract_graph_ports(world_.runtime(), **doc))
-            return std::optional<procedural::Ports>{std::move(*ports)};
-        return std::optional<procedural::Ports>{};
+    return [this, project](std::string_view asset_key) -> Result<procedural::Ports> {
+        ATELIER_TRY_BIND(doc, resolve_target_graph_document(asset_key, project));
+        if (!*doc)
+            return graph_error("No graph available to resolve '" + std::string(asset_key) + "'.",
+                               ErrorCode::invalid_storage);
+        return extract_graph_ports(world_.runtime(), **doc);
     };
 }
 
@@ -1843,9 +1840,9 @@ Result<std::vector<GraphNodeCatalogEntry>> Session::procedural_node_types(Projec
                 if (entry.kind != assets::AssetKind::procedural_graph)
                     continue;
                 GraphPortInfo port_view;
-                if (auto resolved = resolver(entry.key); resolved && *resolved) {
-                    port_view = {std::move((*resolved)->inputs), std::move((*resolved)->multiple),
-                                 std::move((*resolved)->outputs)};
+                if (auto resolved = resolver(entry.key)) {
+                    port_view = {std::move(resolved->inputs), std::move(resolved->multiple),
+                                 std::move(resolved->outputs)};
                 }
                 std::string stem = entry.path.stem().string();
                 if (stem.empty())
@@ -1968,22 +1965,13 @@ Result<void> Session::restore_open_graphs(Project* project, std::span<const Open
         return {};
     ATELIER_TRY(ensure_procedural_program());
     const auto fallback_resolver = make_asset_port_resolver(project);
-    const AssetPortResolver snapshot_resolver =
-        [&](std::string_view asset_key) -> Result<std::optional<procedural::Ports>> {
+    const AssetPortResolver snapshot_resolver = [&](std::string_view asset_key) -> Result<procedural::Ports> {
         const auto in_snap = std::ranges::find(snapshots, asset_key, &OpenGraphSnapshot::key);
         if (in_snap != snapshots.end()) {
-            if (auto temp = load_graph(runtime_, in_snap->text, {})) {
-                struct TempGuard {
-                    Runtime& rt;
-
-                    GraphDocument& doc;
-
-                    ~TempGuard() { destroy_private_graph_document(rt, doc); }
-                } guard{runtime_, *temp};
-                if (auto ports = extract_graph_ports(runtime_, *temp))
-                    return std::optional<procedural::Ports>{std::move(*ports)};
-            }
-            return std::optional<procedural::Ports>{};
+            ATELIER_TRY_BIND(temp, load_graph(runtime_, in_snap->text, {}));
+            auto ports = extract_graph_ports(runtime_, *temp);
+            destroy_private_graph_document(runtime_, *temp);
+            return ports;
         }
         return fallback_resolver(asset_key);
     };
@@ -2631,14 +2619,9 @@ Result<std::string> Session::add_graph_node_impl(std::string_view key, std::stri
 
     ATELIER_TRY_BIND(created, procedural::add_node(runtime_, graph, *type));
     const ObjectId created_id = created->id();
-    if (!asset_key.empty()) {
-        procedural::AssetSubgraph stub;
-        stub.asset_key = asset_key;
-        if (auto resolved_ports = make_asset_port_resolver(active_project)(asset_key);
-            resolved_ports && *resolved_ports)
-            stub.ports = std::move(**resolved_ports);
-        ATELIER_TRY(procedural::set_asset_subgraph(runtime_, created_id, std::move(stub)));
-    }
+    if (!asset_key.empty())
+        ATELIER_TRY(procedural::set_asset_subgraph(
+            runtime_, created_id, resolve_asset_binding(make_asset_port_resolver(active_project), asset_key)));
     ATELIER_TRY_BIND(new_ports, procedural::ports(runtime_, created_id));
     std::vector<GraphNodesChange::SavedInputs> saved_inputs;
 
@@ -4643,8 +4626,8 @@ sync_graph_document_assets_impl(Runtime& runtime, GraphDocument& root_doc,
             if (is_cycle || too_deep) {
                 procedural::AssetSubgraph failed_sub;
                 failed_sub.asset_key = item.asset_key;
-                if (auto p = resolver(item.asset_key); p && *p)
-                    failed_sub.ports = std::move(**p);
+                if (auto p = resolver(item.asset_key))
+                    failed_sub.ports = std::move(*p);
                 failed_sub.bind_error =
                     Error{ErrorCode::invalid_definition,
                           is_cycle ? ("Cyclic .procgraph asset reference involving '" + item.asset_key + "'.")
@@ -4654,16 +4637,13 @@ sync_graph_document_assets_impl(Runtime& runtime, GraphDocument& root_doc,
             }
 
             if (!materialize_subgraphs) {
-                procedural::Ports shallow_ports = old_sub->ports;
-                if (auto p = resolver(item.asset_key); p && *p)
-                    shallow_ports = std::move(**p);
-                if (shallow_ports != old_sub->ports || old_sub->asset_key != item.asset_key) {
-                    procedural::AssetSubgraph next_sub = *old_sub;
-                    next_sub.asset_key = item.asset_key;
-                    next_sub.ports = std::move(shallow_ports);
-                    next_sub.graph = {};
+                auto binding = resolve_asset_binding(resolver, item.asset_key);
+                if (binding.bind_error) {
+                    ATELIER_TRY(bind_failed_subgraph(item, old_sub->ports, std::move(binding)));
+                } else if (binding.ports != old_sub->ports || old_sub->asset_key != item.asset_key ||
+                           old_sub->bind_error) {
                     ATELIER_TRY(
-                        realign_asset_node_ports(runtime, doc, item, old_sub->ports, std::move(next_sub), issues));
+                        realign_asset_node_ports(runtime, doc, item, old_sub->ports, std::move(binding), issues));
                 }
                 continue;
             }
@@ -4752,8 +4732,18 @@ sync_graph_document_assets_impl(Runtime& runtime, GraphDocument& root_doc,
             }
 
             stack.push_back(item.asset_key);
-            ATELIER_TRY_BIND(child_rev, self(self, inst->cloned_doc, inst->children, stack, true, nullptr));
+            const auto first_child_issue = issues ? issues->size() : 0;
+            ATELIER_TRY_BIND(child_rev, self(self, inst->cloned_doc, inst->children, stack, true, issues));
             stack.pop_back();
+            if (issues && issues->size() > first_child_issue) {
+                const std::vector<std::string> path{"nodes", item.name, "asset", item.asset_key};
+                const auto prefix = detail::dotted(path) + ".";
+                for (auto& child_issue : std::span(*issues).subspan(first_child_issue)) {
+                    child_issue.object = item.node.id();
+                    child_issue.field.insert(child_issue.field.begin(), path.begin(), path.end());
+                    child_issue.message.insert(0, prefix);
+                }
+            }
 
             std::vector<ObjectId> in_nodes;
             std::vector<ObjectId> out_nodes;
@@ -5378,20 +5368,6 @@ Session::graph_extract_asset(Project& project, std::string_view key, std::span<c
     }
     std::ranges::sort(sel_names);
 
-    std::string asset_node_name;
-    if (!desired_node_name.empty()) {
-        const auto* conflict = find_node(open.document, desired_node_name);
-        if (conflict && !sel_name_set.contains(conflict->name))
-            return graph_error("A node named '" + std::string(desired_node_name) + "' already exists in this graph.");
-        asset_node_name = std::string(desired_node_name);
-    } else {
-        asset_node_name = make_unique_graph_identifier(
-            asset_relative_path.stem().string(), "asset", [&](std::string_view cand) noexcept {
-                const auto* conflict = find_node(open.document, cand);
-                return conflict != nullptr && !sel_name_set.contains(conflict->name);
-            });
-    }
-
     ATELIER_TRY(cancel_edit());
 
     const ObjectId outer_graph = open.document.graph.id();
@@ -5421,11 +5397,14 @@ Session::graph_extract_asset(Project& project, std::string_view key, std::span<c
         std::optional<std::size_t> slot;
     };
     std::vector<SavedBoundary> saved_boundaries;
+    std::unordered_set<std::string_view> outer_names;
     for (const auto& target : open.document.nodes) {
+        const bool inside = sel_name_set.contains(target.name);
+        if (!inside)
+            outer_names.insert(target.name);
         const auto inputs = *target.kept.root().find("inputs");
         if (!inputs)
             continue;
-        const bool inside = sel_name_set.contains(target.name);
         const auto record = [&](std::string_view port, json::Value endpoint,
                                 std::optional<std::size_t> slot) -> Result<void> {
             const auto text = endpoint.string();
@@ -5433,8 +5412,11 @@ Session::graph_extract_asset(Project& project, std::string_view key, std::span<c
                 return graph_error("Invalid saved connection at " + target.name + "." + std::string(port));
             const auto dot = text->find('.');
             const std::string source_name{text->substr(0, dot)};
-            if (sel_name_set.contains(source_name) == inside)
+            if (sel_name_set.contains(source_name) == inside) {
+                if (!inside)
+                    outer_names.insert(text->substr(0, dot));
                 return {};
+            }
             const auto* source = find_node(open.document, source_name);
             if (source && source->node.registered() && dot != text->npos) {
                 ATELIER_TRY_BIND(ports, procedural::ports(runtime_, source->node.id()));
@@ -5463,6 +5445,17 @@ Session::graph_extract_asset(Project& project, std::string_view key, std::span<c
             }
         }
     }
+
+    // A retained source name is occupied even when its node is absent. Reusing it would
+    // silently resolve an unrelated connection on the next load.
+    if (!desired_node_name.empty() && outer_names.contains(desired_node_name))
+        return graph_error("AssetNode name '" + std::string(desired_node_name) +
+                           "' is already used by an outer node or connection.");
+    const std::string asset_node_name =
+        desired_node_name.empty()
+            ? make_unique_graph_identifier(asset_relative_path.stem().string(), "asset",
+                                           [&](std::string_view name) { return outer_names.contains(name); })
+            : std::string(desired_node_name);
 
     std::unordered_set<ObjectId> reachable_from_sel;
     {
@@ -6847,6 +6840,10 @@ Result<void> Session::sync_procedural_generators(Project* project) {
         };
         const auto resolver = make_asset_port_resolver(project);
 
+        const json::Document comp_ov = generator_overrides(component);
+        const bool has_ov = comp_ov.root().kind() == json::Kind::object && comp_ov.root().size() > 0;
+        std::vector<world::Diagnostic> instance_issues;
+        const auto* effective_issues = &instance_issues;
         auto& slot = cache.graph_slots[proc_source->source];
         slot.owner_runtime = &runtime_;
         ObjectRoot source_graph_root;
@@ -6857,6 +6854,8 @@ Result<void> Session::sync_procedural_generators(Project* project) {
             slot.owner_runtime = &runtime_;
             ATELIER_TRY(sync_open_graph_assets(*open_it->second, project, true));
             open_it->second->shallow_ports_revision = revision_;
+            if (!has_ov)
+                effective_issues = &open_it->second->asset_issues;
             source_doc = &open_it->second->document;
             source_graph_root = open_it->second->document.graph;
             src_epoch = (1ULL << 61) ^ open_it->second->mutation_epoch;
@@ -6895,9 +6894,9 @@ Result<void> Session::sync_procedural_generators(Project* project) {
                 }
             }
             if ((project || !graphs_.empty()) && slot.closed_doc) {
-                auto synced_sub = sync_graph_document_assets_impl(runtime_, *slot.closed_doc, slot.asset_instances,
-                                                                  project, code_version, resolver, find_open,
-                                                                  proc_source->source, true, true, nullptr);
+                auto synced_sub = sync_graph_document_assets_impl(
+                    runtime_, *slot.closed_doc, slot.asset_instances, project, code_version, resolver, find_open,
+                    proc_source->source, true, true, has_ov ? nullptr : &instance_issues);
                 if (!synced_sub) {
                     ATELIER_TRY(contain_error(synced_sub.error(), component, comp_state->owner));
                     continue;
@@ -6908,8 +6907,6 @@ Result<void> Session::sync_procedural_generators(Project* project) {
             src_epoch = (2ULL << 61) ^ slot.closed_project_revision;
         }
 
-        const json::Document comp_ov = generator_overrides(component);
-        const bool has_ov = comp_ov.root().kind() == json::Kind::object && comp_ov.root().size() > 0;
         const GraphDocument* target_doc = source_doc;
         procedural::Evaluator* target_evaluator = nullptr;
 
@@ -6973,7 +6970,7 @@ Result<void> Session::sync_procedural_generators(Project* project) {
             if (project || !graphs_.empty()) {
                 auto synced_sub = sync_graph_document_assets_impl(
                     runtime_, entry.private_instance->cloned_doc, entry.private_instance->asset_instances, project,
-                    code_version, resolver, find_open, proc_source->source, true, true, nullptr);
+                    code_version, resolver, find_open, proc_source->source, true, true, &instance_issues);
                 if (!synced_sub) {
                     ATELIER_TRY(contain_error(synced_sub.error(), component, comp_state->owner));
                     continue;
@@ -6990,6 +6987,15 @@ Result<void> Session::sync_procedural_generators(Project* project) {
         }
 
         std::vector<ObjectId> out_nodes;
+        for (auto issue : *effective_issues) {
+            issue.phase = world::DiagnosticPhase::presentation;
+            issue.object = component;
+            issue.entity = comp_state->owner;
+            issue.type.clear();
+            issue.field.insert(issue.field.begin(), {"graph", proc_source->source});
+            issue.message = "graph." + proc_source->source + "." + issue.message;
+            world_.report(std::move(issue));
+        }
         auto ext_ports = extract_graph_ports(runtime_, *target_doc, nullptr, &out_nodes);
         if (!ext_ports) {
             if (!entry.output)

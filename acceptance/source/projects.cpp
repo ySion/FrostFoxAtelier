@@ -1162,6 +1162,27 @@ int erg.run_all(Array<int>& caller_arr, String& caller_str) {
             auto prog = take(Program::create(tier_rt, tier_host_type));
             publish_single(*prog, "ergonomics.source", src, "erg.run_all", {.diagnostics = true, .fast = fast});
 
+            // Exercise the Runtime storage synthesized by the just-published Source group.
+            const auto group = take(tier_rt.describe(take(tier_rt.find_type("erg.Group"))));
+            const auto poses_field = std::ranges::find(group->fields, "poses", &FieldInfo::name);
+            require(poses_field != group->fields.end(), "Missing synthesized pose array field.");
+            const auto poses_type = poses_field->value.type;
+            const auto poses_info = take(tier_rt.describe(poses_type));
+            alignas(std::max_align_t) std::array<std::byte, 64> storage{};
+            require(poses_info->size <= storage.size() && poses_info->alignment <= alignof(std::max_align_t),
+                    "Acceptance storage cannot hold the synthesized array header.");
+            take(tier_rt.initialize_value(poses_type, storage));
+            take(tier_rt.mutate_sequence(poses_type, storage, SequenceMutation::reserve, {}, {}, 8));
+            take(tier_rt.mutate_sequence(poses_type, storage, SequenceMutation::resize, {}, {}, 2));
+            const void* before{};
+            const void* after{};
+            std::size_t count{};
+            poses_info->sequence_view(storage.data(), &before, &count);
+            take(tier_rt.mutate_sequence(poses_type, storage, SequenceMutation::append, poses_type, storage));
+            poses_info->sequence_view(storage.data(), &after, &count);
+            require(before == after && count == 4, "Reserved Source array self-append relocated its live elements.");
+            take(tier_rt.destroy_value(poses_type, storage));
+
             Array<std::int32_t> arr{7};
             String str = String::literal<"init">();
             source::Diagnostics diag;

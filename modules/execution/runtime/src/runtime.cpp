@@ -1718,7 +1718,7 @@ struct Runtime::Impl {
             if (incoming.size == 0)
                 return {};
             const std::size_t add_count = incoming.size;
-            if (arr.size + add_count > arr.capacity || incoming.data == arr.data) {
+            if (arr.size + add_count > arr.capacity) {
                 const std::size_t old_size = arr.size;
                 const std::size_t old_cap = arr.capacity;
                 ATELIER_TRY_BIND(buf, grow_to(old_size + add_count));

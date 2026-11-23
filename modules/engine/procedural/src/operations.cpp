@@ -584,7 +584,8 @@ Result<void> transform(Geometry& geometry, Vector3 translate, Quaternion rotatio
 Result<Geometry> match_size(const Geometry& geometry, const MatchSizeSettings& settings, const Geometry* reference) {
     if (!math::is_finite(settings.target_position) || !math::is_finite(settings.target_size))
         return failure("MatchSize target_position and target_size must be finite.");
-    if (settings.scale_to_fit && !reference &&
+    const auto ref_bounds = reference ? bounds(*reference) : std::nullopt;
+    if (settings.scale_to_fit && !ref_bounds &&
         (settings.target_size.x <= 0.f || settings.target_size.y <= 0.f || settings.target_size.z <= 0.f))
         return failure("MatchSize target_size must be positive when scale_to_fit is enabled.");
 
@@ -592,7 +593,6 @@ Result<Geometry> match_size(const Geometry& geometry, const MatchSizeSettings& s
     if (!src_bounds)
         return geometry;
 
-    const auto ref_bounds = reference ? bounds(*reference) : std::nullopt;
     const Vector3d src_min(src_bounds->minimum);
     const Vector3d src_max(src_bounds->maximum);
     const Vector3d src_center = (src_min + src_max) * 0.5;
@@ -607,7 +607,7 @@ Result<Geometry> match_size(const Geometry& geometry, const MatchSizeSettings& s
             double best = 0.0;
             bool any_axis = false;
             for (std::size_t a = 0; a < 3; ++a) {
-                if (src_ext[a] > 1e-6 && goal_size[a] > 1e-6) {
+                if (src_ext[a] > 0.0 && goal_size[a] > 0.0) {
                     const double ratio = goal_size[a] / src_ext[a];
                     best = any_axis ? std::min(best, ratio) : ratio;
                     any_axis = true;
@@ -617,7 +617,7 @@ Result<Geometry> match_size(const Geometry& geometry, const MatchSizeSettings& s
                 scale_vec = {best, best, best};
         } else {
             for (std::size_t a = 0; a < 3; ++a) {
-                if (src_ext[a] > 1e-6 && goal_size[a] > 1e-6)
+                if (src_ext[a] > 0.0 && goal_size[a] > 0.0)
                     scale_vec[a] = goal_size[a] / src_ext[a];
             }
         }

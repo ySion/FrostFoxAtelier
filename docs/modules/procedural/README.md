@@ -200,7 +200,7 @@ Release 下运行 `atelier_procedural_acceptance --profile-boolean <新的绝对
 | normal_align.source | `procedural.NormalAlign`：`group`、`up`；校验 `up` 与输入 `N` 有限性，按 `align_to_normal(N, up)` 写组内 `orient`（自动获得 `Usage::orientation`）；若上游已有 `orient`，组外点保留原值。新建 `orient` 时，组外点遵循 `CopyToPoints` 的规则：零法线使用单位旋转，非零法线才读取可选的点层 `up` 并检查其有限性 |
 | noise.source | `procedural.Noise`：`[RunOver] layer`（默认 `point`）、`source_attribute="P"`、`attribute="noise"`、`group=""`、`seed=0`、`frequency=1`、`offset=(0,0,0)`；3D value noise，`lattice_bits` 通过零开销 `math.as_uint` 编码二补码格坐标 |
 | remap.source | `procedural.Remap`：`[RunOver] layer`（默认 `point`）、`source_attribute="noise"`、`attribute="pscale"`、`group=""` 及四端点；double 中间线性映射，允许反向与外推，不夹值 |
-| spatial.source | 结构体 `procedural.SurfaceHit`、`procedural.CurveSample` 及 `parallel_safe` 空间查询函数 `procedural.raycast_surface`、`closest_surface_point`、`closest_polyline`（遍历 `[Port] const procedural.Spatial&` 的 64 层近端优先 BVH） |
+| spatial.source | 结构体 `procedural.SurfaceHit`、`procedural.CurveSample` 及 `parallel_safe` 空间查询函数 `procedural.raycast_surface`、`closest_surface_point`、`closest_polyline`（遍历 `[Port] const procedural.Spatial&` 的 64 层近端优先 BVH，使用双精度计算相交条件、距离和剪枝界限） |
 
 ### Noise / Remap 数值契约
 
@@ -261,7 +261,7 @@ Remap 四端点须有限、输入两端不同，输出两端可以相同。按 `
 ```
 
 - **规范形式**：`nodes`、`notes`、`boxes` 均以标识符名字为键，按名字排序；`parameters` 保持作者排列顺序；空的 `parameters` / `notes` / `boxes`、空的 `AssetNode` `overrides` 及默认外观字段（`shape: auto`、无自定义 `color`、空 `comment`、`bypass: false`、无 `template`）省略写出，`dump(2)` 后加换行，未改动文档再次保存逐字节相同。
-- **宽容加载**：与 Scene 相同，已声明 `Transient` 的旧字段跳过，其余放不进的内容保留、报告并在保存时写回。类型不存在或不能作为节点的条目整项保留（`unknown_type`）；已知节点和 settings 中解析不了的参数叶经 `PropertyReport` 保留；上游数字资产增删重排 `GraphInput`/`GraphOutput` 端口后，外层连接按端口名重对齐，失效连接按端口保留入 `kept["inputs"]`（`reference_dropped`，多输入端口混有未解析端点时保留有序列表，并在后续连线、剪线、重连、串接或删除上游节点时同步增删对应端点、保留其余未解析项与相对顺序并计入撤销历史）；上游删改暴露参数名后，`AssetNode` 上未匹配的旧 `overrides` 原样保留并报告诊断；`display` 或 `template` 指向没有加载的节点时同样保留，并在重命名或删除占位节点时同步更新与清理（含撤销恢复）。
+- **宽容加载**：与 Scene 相同，已声明 `Transient` 的旧字段跳过，其余放不进的内容保留、报告并在保存时写回。类型不存在或不能作为节点的条目整项保留（`unknown_type`）；已知节点和 settings 中解析不了的参数叶经 `PropertyReport` 保留；上游数字资产增删重排 `GraphInput`/`GraphOutput` 端口后，外层连接按端口名重对齐，失效连接按端口保留入 `kept["inputs"]`（`reference_dropped`，多输入端口混有未解析端点时保留有序列表，并在后续连线、剪线、重连、串接或删除上游节点时同步增删对应端点、保留其余未解析项与相对顺序并计入撤销历史）；换绑到缺失资产或端口定义无效的资产时，节点立即清空端口，保留原始绑定错误和按名记录的连线。上游删改暴露参数名后，`AssetNode` 上未匹配的旧 `overrides` 原样保留；嵌套诊断携带实例节点、资产键和参数名，场景生成器报告到对应组件；`display` 或 `template` 指向没有加载的节点时同样保留，并在重命名或删除占位节点时同步更新与清理（含撤销恢复）。
 - **结构错误**直接失败：版本不是 4、未知键、`nodes`/`settings`/`notes`/`boxes` 不是对象、`parameters` 不是数组、标识符非法、缺少 `type`、非 `procedural.AssetNode` 携带 `asset`/`overrides`、`position`/`size` 非有限或尺寸非正、非法的 `shape` 预设名或非 `#RRGGBB` 颜色、`inputs` 格式非法。
 
 图文件不保存派生的 Geometry 缓冲。

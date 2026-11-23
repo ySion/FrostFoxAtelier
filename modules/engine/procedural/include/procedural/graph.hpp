@@ -198,7 +198,7 @@ struct Ports {
 struct AssetSubgraph {
     std::string asset_key;
 
-    Ports ports{{}, {}, {"output"}};
+    Ports ports;
 
     ObjectRoot graph;
 

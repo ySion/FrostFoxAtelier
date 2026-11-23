@@ -190,7 +190,10 @@ using SavedGraphPortMap = std::map<std::string, std::pair<bool, std::vector<std:
                                                          const SavedGraphPortMap& saved,
                                                          std::vector<world::Diagnostic>* issues = nullptr);
 
-using AssetPortResolver = std::function<Result<std::optional<procedural::Ports>>(std::string_view asset_key)>;
+using AssetPortResolver = std::function<Result<procedural::Ports>(std::string_view asset_key)>;
+
+[[nodiscard]] procedural::AssetSubgraph resolve_asset_binding(const AssetPortResolver& resolver,
+                                                              std::string_view asset_key);
 
 // Opens a version 4 graph file into `runtime`, which has the procedural types. Loading is
 // tolerant, as for scenes: a node of an unknown type, a property leaf that does not fit its field,
