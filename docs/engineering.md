@@ -49,12 +49,12 @@
 - 格式以 `.clang-format` 为准。它不处理的两条由 `atelier_style` 检查：每条声明只声明一个变量，`for`/`if`/`switch` 的初始化语句除外；函数体外相邻的声明之间空一行，包括类成员、成员函数、嵌套类型、`using` 以及命名空间内的函数和变量。枚举项与函数体内的语句不受空行约束。
 - 注释解释不变量、生命周期、代价或非显然的取舍；避免复述语句。公共接口说明失效条件、错误、所有权和必要的性能特征。
 - 错误分类、显式结果和终止边界统一遵循下文[错误处理](#错误处理)。`noexcept` 应由实际保证支撑，不能通过吞错获得。
-- 立即返回原错误的纯转发使用 `foundation/result.hpp` 的 `ATELIER_TRY`；后续还需要命名 Result 时使用 `ATELIER_TRY_BIND`，保留 Result 变量及 `*x`/`x->` 用法。添加上下文、包装或换码、回滚、回退及返回非 Result 的分支继续手写；已有 `const auto`、显式类型声明和 if-init 中复制已有左值 Result 的站点也保留。clang-format 后宏调用超过三行或参数包含 lambda 体时保留手写。不得为了使用宏改变求值次数、求值顺序、作用域或资源寿命；仅允许在即将返回时将错误复制改为移动，左值表达式不得被宏移走。`ATELIER_TRY` 是单条语句；`ATELIER_TRY_BIND` 含声明及判错，放在条件或循环下时必须有显式块。
+- 立即返回原错误的纯转发使用 `foundation/result.hpp` 的 `ATELIER_TRY`；后续还需要命名 Result 时使用 `ATELIER_TRY_BIND`，保留 Result 变量及 `*x`/`x->` 用法。把成功值赋给已有目标时使用 `ATELIER_TRY_ASSIGN`，只在成功后求值目标，临时结果移动、左值结果借用。添加上下文、包装或换码、回滚、回退及返回非 Result 的分支继续手写；已有 `const auto`、显式类型声明和 if-init 中复制已有左值 Result 的站点也保留。clang-format 后宏调用超过三行或参数包含 lambda 体时保留手写。不得为了使用宏改变求值次数、求值顺序、作用域或资源寿命；仅允许在即将返回时将错误复制改为移动，左值表达式不得被宏移走。`ATELIER_TRY` 是单条语句；`ATELIER_TRY_BIND` 含声明及判错，放在条件或循环下时必须有显式块。
 - STL、智能指针、`std::function`、ranges 等都按实际成本选用。对复制、类型擦除、捕获、分配和间接访问保持可见性，不凭名称断言快慢。
 
 ## 错误处理
 
-**W0 冻结的目标合同，尚未完成代码迁移。** 本节替代按模块自由选择 C++ 异常的旧约定；基线中仍存在的 throw/catch 和异常验收不表示另有长期错误模式。W2 迁移底层，W4 迁移上层与验收，最后 W5 翻转编译开关。模块文档明确标为当前实现的异常行为，在对应迁移完成时更新，不在 W0 文档提交中假称已实现。
+自有 C/C++ 的显式异常路径已迁移，源码词法统计见[异常清单](research/cpp-exception-inventory-20261122.md)。自有目标的编译配置及第三方边界见下文。
 
 ### 错误分类
 
@@ -75,7 +75,7 @@
 
 每个自有 exe 在开始业务工作前调用同一个安装函数，以 `signal(SIGABRT, ...)` 将所在 CRT 域的 abort 接入上述出口。处理器仅以固定原因 `abort` 调用 fatal，不解包异常、不调用 `what()`、不构造 Error，也不返回。安装失败直接 fatal；安装函数同时关闭 `_WRITE_ABORT_MSG`，避免 debug CRT 在发出信号前弹窗。debug CRT 的断言和错误报告也通过报告钩子携带原消息进入唯一 fatal 出口，不弹窗；警告报告保持原行为。此后项目与依赖不得覆盖或忽略该信号处理器。静态初始化不承担可能失败的业务启动；已有清理失败、任务关闭失败及 dev fail-fast 诊断直接归并到 fatal。
 
-锁定 UCRT 的 SIGABRT action 按 CRT 域全局共享，不按线程保存。安装完成且 action 有效时，同一域任意线程调用 abort 都可接入：包括 `_HAS_EXCEPTIONS=0` 的 `std::terminate`、TBB 的终止路径、JSON_NOEXCEPTION 的 abort，以及预编译 STL helper 抛错后无人处理而经 CRT terminate 到 abort 的路径。TBB 与宿主采用匹配的 `/MD(d)`：release 共享 UCRT，dev 共享 debug UCRT；它们不是两个独立的静态 CRT。无需逐线程 set_terminate；无异常 STL 的 `std::set_terminate` 本身是空实现，不能作为安装入口。
+锁定 UCRT 的 SIGABRT action 按 CRT 域全局共享，不按线程保存。安装完成且 action 有效时，同一域任意线程调用 abort 都可接入：包括 `_HAS_EXCEPTIONS=0` 的 `std::terminate`、TBB 的终止路径，以及预编译 STL helper 抛错后无人处理而经 CRT terminate 到 abort 的路径。TBB 与宿主采用匹配的 `/MD(d)`：release 共享 UCRT，dev 共享 debug UCRT；它们不是两个独立的静态 CRT。无需逐线程 set_terminate；无异常 STL 的 `std::set_terminate` 本身是空实现，不能作为安装入口。
 
 LLVM 后端采用 `/MT`，其 CRT 信号状态独立：在现有后端初始化路径、开始 LLVM 工作前，在该域单独安装一次同一 SIGABRT 处理，并用 `llvm::install_fatal_error_handler` 接入同一 fatal 实现。LLVM handler 只使用固定原因 `llvm fatal error` 和相同 fail-fast 原因码，不复制或格式化 LLVM 传来的动态原因。LLVM 的显式 `Error/Expected` 仍正常传播，不能因此把可恢复编译错误升级为 fatal。
 
@@ -95,7 +95,7 @@ LLVM 后端采用 `/MT`，其 CRT 信号状态独立：在现有后端初始化�
 
 ### 标准库、第三方与编译边界
 
-自有目标最终统一 `/EHs-c-` 与 `_HAS_EXCEPTIONS=0`，不留下长期开异常的自有包装目标或异常兼容层。两者分别控制编译器与 MSVC STL 头文件，不能相互替代，也不会改写预编译库；同一链接模块内的头文件配置一致，配置在 PCH 和首次 include 前生效。使用 CMake 目标级配置，不把自有禁异常选项全局泄漏给保持上游构建的依赖。oneTBB 的获准例外及所需边界只在 [oneTBB 二进制边界](foundation.md#onetbb-二进制边界)定义。
+自有 C++ 目标统一 `/EHs-c-` 与 `_HAS_EXCEPTIONS=0`，不留下长期开异常的自有包装目标或异常兼容层。两者分别控制编译器与 MSVC STL 头文件，不能相互替代，也不会改写预编译库；同一链接模块内的头文件配置一致，配置在 PCH 和首次 include 前生效。使用 CMake 目标级配置，不把自有禁异常选项全局泄漏给保持上游构建的依赖。oneTBB 的获准例外及所需边界只在 [oneTBB 二进制边界](foundation.md#onetbb-二进制边界)定义。
 
 第三方源码依赖确有必要时允许修改。改动必须有实际收益：消除异常岛、兼容层、消费侧绕行或重复逻辑，或者修正影响本项目的缺陷。方案须写明上游版本、改动范围及升级时的重放方式，不为非必要的诊断或个人偏好修改第三方。
 

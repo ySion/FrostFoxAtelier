@@ -118,7 +118,7 @@ struct LiveLink::Impl {
     }
 };
 
-LiveLink::LiveLink(HANDLE read, HANDLE write) : impl_(std::make_unique<Impl>(read, write)) {
+LiveLink::LiveLink(HANDLE read, HANDLE write) noexcept : impl_(std::make_unique<Impl>(read, write)) {
     impl_->reader = std::thread([impl = impl_.get()] { impl->receive_loop(); });
     impl_->writer = std::thread([impl = impl_.get()] { impl->send_loop(); });
 }
@@ -425,7 +425,7 @@ std::optional<std::string> PlayLink::inspected(std::uint64_t request) {
     return result;
 }
 
-void PlayEnd::service(editor::Session& document, editor::Project& project, const Report& report) {
+void PlayEnd::service(editor::Session& document, editor::Project& project) {
     for (auto& text : link_->receive()) {
         json::Builder reply;
         const auto reject = [&](const std::string& message, bool print) {
@@ -436,7 +436,7 @@ void PlayEnd::service(editor::Session& document, editor::Project& project, const
             item.phase = world::DiagnosticPhase::command;
             item.message = message;
             if (print)
-                report({&item, 1});
+                report_world(document, {&item, 1}, project.root(), "live");
         };
         const auto error_reply = [&](std::string message) {
             reject(message, true);
@@ -508,7 +508,7 @@ void PlayEnd::service(editor::Session& document, editor::Project& project, const
                             refused("Play change batch " + std::to_string(seq) + " failed: " + applied.error().message,
                                     true);
                         } else {
-                            report(*applied);
+                            report_world(document, *applied, project.root(), "live");
                             for (const auto& item : *applied) {
                                 if (item.severity == world::Severity::error)
                                     diverged_ = true;

@@ -5,7 +5,6 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
-#include <stdexcept>
 #include <utility>
 
 namespace atelier::application {
@@ -268,14 +267,13 @@ void Window::cursor(ui::Cursor intent) {
             tool_cursors_, [&](const auto& value) { return value.intent == intent && value.dpi == dpi; });
         if (found != tool_cursors_.end())
             cursor_ = found->handle;
-        else if (const auto handle = tool_cursor(*icon, dpi)) {
-            try {
-                tool_cursors_.push_back({intent, dpi, handle});
-            } catch (...) {
-                DestroyCursor(handle);
-                throw;
-            }
-            cursor_ = handle;
+        else {
+            auto& cached = tool_cursors_.emplace_back(intent, dpi, nullptr);
+            cached.handle = tool_cursor(*icon, dpi);
+            if (cached.handle)
+                cursor_ = cached.handle;
+            else
+                tool_cursors_.pop_back();
         }
     }
     SetCursor(relative_pointer_ ? nullptr : cursor_);
@@ -386,8 +384,6 @@ void Window::poll(FunctionRef<void(NativeEvent&&)> consume) {
             consume(std::move(owned)); // receive() may append; no reference into events_ survives.
         }
         events_.clear();
-        if (callback_failure_)
-            std::rethrow_exception(std::exchange(callback_failure_, {}));
     };
     drain();
     if (popup_)
@@ -425,7 +421,7 @@ NativeEvent Window::event(UINT message, WPARAM wparam, LPARAM lparam) const {
     return value;
 }
 
-LRESULT CALLBACK Window::procedure(HWND handle, UINT message, WPARAM wparam, LPARAM lparam) {
+LRESULT CALLBACK Window::procedure(HWND handle, UINT message, WPARAM wparam, LPARAM lparam) noexcept {
     auto* self = reinterpret_cast<Window*>(GetWindowLongPtrW(handle, GWLP_USERDATA));
     if (message == WM_NCCREATE) {
         self = static_cast<Window*>(reinterpret_cast<CREATESTRUCTW*>(lparam)->lpCreateParams);
@@ -434,12 +430,7 @@ LRESULT CALLBACK Window::procedure(HWND handle, UINT message, WPARAM wparam, LPA
     }
     if (!self)
         return DefWindowProcW(handle, message, wparam, lparam);
-    try {
-        return self->receive(message, wparam, lparam);
-    } catch (...) {
-        self->callback_failure_ = std::current_exception();
-        return 0;
-    }
+    return self->receive(message, wparam, lparam);
 }
 
 LRESULT Window::receive(UINT message, WPARAM wparam, LPARAM lparam) {

@@ -1,7 +1,6 @@
 #include "application/application.hpp"
 #include "application/editor_control.hpp"
 #include "application/diagnostics.hpp"
-#include "editor/error.hpp"
 #include "foundation/result.hpp"
 #include "logging/native.hpp"
 #include "assets/file.hpp"
@@ -189,7 +188,7 @@ Result<bool> Application::confirm_discard(bool sources, bool interactive) {
 }
 
 Result<void> Application::publish_document(std::unique_ptr<editor::Session> next, editor::ProjectCode* code,
-                                           bool preserve_view) {
+                                           const std::function<void()>& commit_location, bool preserve_view) {
     const auto previous_document = document_->presentation().identity();
     const editor::Camera saved_camera = camera_;
     std::vector<std::uint64_t> saved_selected_entities;
@@ -209,8 +208,6 @@ Result<void> Application::publish_document(std::unique_ptr<editor::Session> next
     camera_fly_release_.reset();
     render_retry_at_ = {};
     render_retry_delay_ = {};
-    if (control_)
-        control_->document_replaced();
     const auto cancelled = viewport_tool_.cancel(*document_);
     if (!cancelled)
         return std::unexpected(cancelled.error());
@@ -231,13 +228,16 @@ Result<void> Application::publish_document(std::unique_ptr<editor::Session> next
         ATELIER_TRY(popup_->reset_document());
     for (auto& popup : submenus_)
         ATELIER_TRY(popup->reset_document());
-    workspace_.reset_document(preserve_view);
-    project_code_ = nullptr;
     diagnostics();
     const auto closed = document_->close();
     diagnostics();
     if (!closed)
         return std::unexpected(closed.error());
+    if (commit_location)
+        commit_location();
+    if (control_)
+        control_->document_replaced();
+    workspace_.reset_document(preserve_view);
     document_ = std::move(next);
     project_code_ = code;
     document_->bind_project_code(code);
@@ -293,7 +293,6 @@ Result<void> Application::publish_document(std::unique_ptr<editor::Session> next
 }
 
 Result<void> Application::open_project(const std::filesystem::path& folder, bool create, ProjectOpenPolicy policy,
-                                       const std::function<Result<void>(const editor::Session&)>& admit,
                                        bool interactive) {
     // A save decision can change the file we are about to open. Read only after
     // that decision; cancellation also precedes Project::create's disk changes.
@@ -304,32 +303,30 @@ Result<void> Application::open_project(const std::filesystem::path& folder, bool
         cancel_operator();
         return {};
     }
-    return load_project(folder, create, {}, policy, admit);
+    ATELIER_TRY_BIND(project, create ? editor::Project::create(folder) : editor::Project::open(folder));
+    ATELIER_TRY_BIND(content, project->read_scene(project->startup_scene()));
+    ATELIER_TRY_BIND(candidate, prepare_project_scene(std::move(*project), std::move(*content), policy));
+    return publish_project(std::move(*candidate));
 }
 
-Result<void> Application::load_project(const std::filesystem::path& folder, bool create,
-                                       const std::filesystem::path& scene, ProjectOpenPolicy policy,
-                                       const std::function<Result<void>(const editor::Session&)>& admit) {
-    ATELIER_TRY_BIND(project, create ? editor::Project::create(folder) : editor::Project::open(folder));
-    const auto initial_scene = scene.empty() ? project->startup_scene() : scene;
-    const auto path = project->resolve(initial_scene);
-    if (!path)
-        return std::unexpected(path.error());
-    const auto content = assets::read_file(*path);
-    if (!content)
-        return std::unexpected(content.error());
-    // Reproducible workflows admit only a complete, exactly applied candidate
-    // before retiring the current document. Interactive opening keeps unresolved
-    // saved data and loads placeholders while the Source build is broken.
-    const bool reproducible = policy == ProjectOpenPolicy::require_scene;
-    auto candidate = editor::load_project_scene(
-        *project, *content, reproducible ? editor::LoadPolicy::strict : editor::LoadPolicy::tolerant, !reproducible,
-        editor::SessionRole::editor);
-    if (reproducible && (!candidate.session || candidate.error))
-        return candidate.error ? std::unexpected(*candidate.error)
-                               : failed("Project did not produce a complete scene.");
-    if (reproducible && admit)
-        ATELIER_TRY(admit(*candidate.session));
+Result<Application::ProjectCandidate> Application::prepare_project_scene(editor::Project project, std::string content,
+                                                                         ProjectOpenPolicy policy) {
+    auto owner = std::make_unique<editor::Project>(std::move(project));
+    const bool strict = policy == ProjectOpenPolicy::require_scene;
+    auto candidate =
+        editor::load_project_scene(*owner, content, strict ? editor::LoadPolicy::strict : editor::LoadPolicy::tolerant,
+                                   !strict, editor::SessionRole::editor);
+    if (strict) {
+        if (candidate.error)
+            return std::unexpected(std::move(*candidate.error));
+        if (!candidate.session)
+            return failed("Project did not produce a complete scene.");
+    }
+    return ProjectCandidate{std::move(owner), std::move(content), std::move(candidate)};
+}
+
+Result<void> Application::publish_project(ProjectCandidate prepared) {
+    auto& candidate = prepared.document;
     const bool scene_available = candidate.session != nullptr;
     if (!scene_available) {
         candidate.session = std::make_unique<editor::Session>();
@@ -337,24 +334,13 @@ Result<void> Application::load_project(const std::filesystem::path& folder, bool
     }
     play_.close();
     consume_play_output();
-    auto previous_project = std::move(project_);
-    auto previous_scene = std::move(scene_path_);
-    auto previous_pending = std::move(pending_scene_);
-    const auto previous_open = workspace_.project_open;
-    const auto previous_available = workspace_.scene_available;
-    project_ = std::move(*project);
-    scene_path_ = initial_scene;
-    workspace_.project_open = true;
-    pending_scene_ = *content;
-    workspace_.scene_available = scene_available;
-    if (auto adopted = publish_document(std::move(candidate.session), candidate.code); !adopted) {
-        project_ = std::move(previous_project);
-        scene_path_ = std::move(previous_scene);
-        pending_scene_ = std::move(previous_pending);
-        workspace_.project_open = previous_open;
-        workspace_.scene_available = previous_available;
-        return adopted;
-    }
+    ATELIER_TRY(publish_document(std::move(candidate.session), candidate.code, [&] {
+        scene_path_ = prepared.project->startup_scene();
+        project_ = std::move(prepared.project);
+        pending_scene_ = std::move(prepared.scene_text);
+        workspace_.project_open = true;
+        workspace_.scene_available = scene_available;
+    }));
     workspace_.source_editor.clear();
     if (candidate.error) {
         auto report = std::make_shared<editor::ProjectBuild>();
@@ -394,8 +380,7 @@ Result<void> Application::open_scene(const std::filesystem::path& relative, bool
         cancel_operator();
         return {};
     }
-    ATELIER_TRY_BIND(path, project_->resolve(relative));
-    ATELIER_TRY_BIND(text, assets::read_file(*path));
+    ATELIER_TRY_BIND(text, project_->read_scene(relative));
     auto next =
         editor::load_project_scene(*project_, *text, editor::LoadPolicy::tolerant, true, editor::SessionRole::editor);
     if (!next.session) {
@@ -404,18 +389,11 @@ Result<void> Application::open_scene(const std::filesystem::path& relative, bool
     }
     play_.close();
     consume_play_output();
-    auto previous_scene = std::move(scene_path_);
-    auto previous_pending = std::move(pending_scene_);
-    const auto previous_available = workspace_.scene_available;
-    scene_path_ = relative;
-    pending_scene_ = *text;
-    workspace_.scene_available = true;
-    if (auto adopted = publish_document(std::move(next.session), next.code); !adopted) {
-        scene_path_ = std::move(previous_scene);
-        pending_scene_ = std::move(previous_pending);
-        workspace_.scene_available = previous_available;
-        return adopted;
-    }
+    ATELIER_TRY(publish_document(std::move(next.session), next.code, [&] {
+        scene_path_ = relative;
+        pending_scene_ = std::move(*text);
+        workspace_.scene_available = true;
+    }));
     publish_build(next.build);
     if (next.error)
         notice("document.placeholders", placeholder_notice, logging::Severity::warning);

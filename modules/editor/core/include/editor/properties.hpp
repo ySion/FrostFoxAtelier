@@ -10,6 +10,8 @@
 
 namespace atelier::editor {
 namespace detail {
+struct PropertyStorage;
+
 // Removes the retained subtree at path, or a retained leaf on its prefix.
 inline bool erase_path(json::Builder& builder, json::Value record, std::span<const std::string> path) {
     std::vector<json::Value> trail{record};
@@ -55,9 +57,7 @@ public:
     [[nodiscard]] ValueOutput output() const noexcept;
 
 private:
-    struct Value;
-
-    std::shared_ptr<Value> value_;
+    std::shared_ptr<detail::PropertyStorage> value_;
 };
 
 // One decoded inline leaf: a scalar or enum within its hard bounds, a String, or a whole Array.
@@ -67,7 +67,7 @@ using PropertyLeaf = std::variant<Scalar, String, ArrayLeaf>;
 using ResolveReference = std::function<Result<std::optional<ObjectReference>>(json::Value, TypeId, ValueForm)>;
 
 // Stores one decoded inline leaf; by default it is written to the target through the Runtime.
-using WriteLeaf = std::function<Result<void>(std::span<const FieldId>, const PropertyLeaf&)>;
+using WriteLeaf = std::function<Result<void>(const detail::ScalarField&, const PropertyLeaf&)>;
 
 // The saved form of one referenced object, called with a null id for an empty reference;
 // the caller's side effects, such as assigning document identities, belong here.
@@ -95,6 +95,11 @@ using EncodeReference = std::function<Result<json::Document>(ObjectId)>;
 [[nodiscard]] Result<void> decode_properties(Runtime&, const PropertyTarget&, json::Value record,
                                              const ResolveReference& = {}, const WriteLeaf& = {},
                                              bool include_transient = false);
+
+// Apply a strict inline patch to an existing object. A failed write or post-edit snapshot restores
+// every committed leaf. The optional snapshot is the canonical record used by graph history.
+[[nodiscard]] Result<void> patch_object_properties(Runtime&, ObjectId, json::Value patch, const EncodeReference&,
+                                                   json::Document* after = nullptr);
 
 // How a tolerant decode reports a saved leaf it does not apply as saved; paths start at the record.
 struct PropertyReport {

@@ -31,10 +31,10 @@ public:
     Result<void> publish(std::vector<ProjectEntry>);
 
     // Explicit import/reimport publication, after the owner has written the bundle.
-    // Validates on a private candidate, then publishes catalogue, prepared geometry
+    // Consumes a private copy of this Reader used for preparation, then publishes catalogue, geometry
     // and exact input pixels together. Failure leaves this Reader unchanged.
     // Disk-derived dependency caches invalidate even when file stamps match.
-    Result<MeshAsset> publish_mesh(std::vector<ProjectEntry>, std::string_view key, const MeshImport&,
+    Result<MeshAsset> publish_mesh(Reader candidate, std::vector<ProjectEntry>, std::string_view key, const MeshImport&,
                                    std::span<const TextureAsset>);
 
     // Exact received content for an existing mesh key. No disk reads/writes,

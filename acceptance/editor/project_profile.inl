@@ -7,16 +7,21 @@ constexpr std::array<timing::Marker*, 1> profile_markers{&profile_calibration};
 // body has been active for 120 frames (at most 1800 frames), and reports the physics
 // phases of frames that end with and without active bodies, the SceneSnapshot refresh after each frame,
 // the Play start and each of the first five frames.
-void profile_physics_cpu(const std::filesystem::path& root, std::string_view scene,
-                         const std::filesystem::path& output) {
-    require(output.is_absolute() && !std::filesystem::exists(output), "Choose a new absolute physics profile file.");
+Result<void> profile_physics_cpu(const std::filesystem::path& root, std::string_view scene,
+                                 const std::filesystem::path& output) {
+    ATELIER_TRY_BIND(exists, acceptance::file_exists(output));
+    if (!output.is_absolute() || *exists)
+        return std::unexpected(Error{ErrorCode::argument_mismatch, "Choose a new absolute physics profile file."});
     application::install_frame_timing(profile_markers);
     timing::Recorder recorder;
-    auto project = take(editor::Project::open(root));
-    auto play = take(editor::Session::deserialize(take(assets::read_file(take(project.resolve(scene)))), project));
+    ATELIER_TRY_BIND(opened, editor::Project::open(root));
+    auto& project = *opened;
+    ATELIER_TRY_BIND(source, project.read_scene(scene));
+    ATELIER_TRY_BIND(loaded, editor::Session::deserialize(*source, project));
+    auto& play = *loaded;
     {
         timing::Recorder::Frame frame{recorder};
-        changed(play->start());
+        ATELIER_TRY(changed(play->start()));
         require(frame.finish().structure_errors == 0,
                 "Physics profile recorded a misplaced or unregistered phase in Play start.");
     }
@@ -100,33 +105,38 @@ void profile_physics_cpu(const std::filesystem::path& root, std::string_view sce
                     take(group.number({"physics.write_back", "median_ms"})),
                     take(group.number({"snapshot.refresh", "median_ms"})));
     }
-    changed(play->stop());
+    ATELIER_TRY(changed(play->stop()));
     const auto bytes = json::write(report.root(), {.pretty = true, .trailing_lf = true});
-    take(editor::write_file(output, {bytes.data(), bytes.size()}));
+    return editor::write_file(output, {bytes.data(), bytes.size()}, editor::WriteMode::create);
 }
 
 // Loads the real project through Session and measures existing CPU consumers.
 // No window, graphics device or author edits; only the Play stages use a second World.
-void profile_scene_cpu(const std::filesystem::path& root, std::string_view scene, const std::filesystem::path& output,
-                       const std::filesystem::path& camera_report) {
-    require(output.is_absolute() && !std::filesystem::exists(output), "Choose a new absolute CPU profile file.");
+Result<void> profile_scene_cpu(const std::filesystem::path& root, std::string_view scene,
+                               const std::filesystem::path& output, const std::filesystem::path& camera_report) {
+    ATELIER_TRY_BIND(exists, acceptance::file_exists(output));
+    if (!output.is_absolute() || *exists)
+        return std::unexpected(Error{ErrorCode::argument_mismatch, "Choose a new absolute CPU profile file."});
     application::install_frame_timing(profile_markers);
     timing::Recorder recorder;
     const auto milliseconds = [](std::chrono::nanoseconds value) {
         return std::chrono::duration<double, std::milli>(value).count();
     };
     // Temporaries destroyed by the operation are part of its sample.
-    const auto sample = [&](auto&& operation) {
+    const auto sample = [&](auto&& operation) -> Result<double> {
         timing::Recorder::Frame frame{recorder};
-        operation();
+        ATELIER_TRY(operation());
         const auto& record = frame.finish();
         require(record.structure_errors == 0, "CPU profile recorded a misplaced or unregistered phase.");
         return milliseconds(record.time(timing::frame));
     };
-    auto project = take(editor::Project::open(root));
-    const auto path = take(project.resolve(scene));
-    const auto source = take(assets::read_file(path));
-    auto document = take(editor::Session::deserialize(source, project));
+    ATELIER_TRY_BIND(opened, editor::Project::open(root));
+    auto& project = *opened;
+    ATELIER_TRY_BIND(path, project.resolve(scene));
+    ATELIER_TRY_BIND(bytes_read, assets::read_file(*path));
+    const auto& source = *bytes_read;
+    ATELIER_TRY_BIND(loaded, editor::Session::deserialize(source, project));
+    auto& document = *loaded;
     const auto original = take(document->serialize());
     application::SceneSnapshot snapshot;
     take(snapshot.refresh(*document));
@@ -142,7 +152,10 @@ void profile_scene_cpu(const std::filesystem::path& root, std::string_view scene
         require(mesh.material_slots && mesh.material_slots->size() == mesh.geometry->materials().size(),
                 "CPU profile received an unresolved material slot table.");
         for (std::size_t slot = 0; slot < mesh.geometry->materials().size(); ++slot) {
-            const auto& surface = snapshot.picking()->materials.at(mesh.material_slots->at(slot));
+            const auto index = (*mesh.material_slots)[slot];
+            if (index >= snapshot.picking()->materials.size())
+                return std::unexpected(Error{ErrorCode::invalid_member, "CPU profile material slot is out of range."});
+            const auto& surface = snapshot.picking()->materials[index];
             require(surface != nullptr, "CPU profile received an empty resolved material.");
             for (const auto& input : surface->inputs()) {
                 if (input.image)
@@ -228,14 +241,14 @@ void profile_scene_cpu(const std::filesystem::path& root, std::string_view scene
 #endif
     const auto stages = take(report.object(report.root(), "stages"));
     // An optional inspector receives each sample's frame record, warmup included.
-    const auto measure = [&](std::string_view name, auto&& operation, auto&&... inspect) {
+    const auto measure = [&](std::string_view name, auto&& operation, auto&&... inspect) -> Result<void> {
         std::vector<double> samples;
         samples.reserve(121);
         for (unsigned i = 0; i < 141; ++i) {
-            const auto elapsed = sample(operation);
+            ATELIER_TRY_BIND(elapsed, sample(operation));
             (inspect(recorder.last()), ...);
             if (i >= 20)
-                samples.push_back(elapsed);
+                samples.push_back(*elapsed);
         }
         const auto total = std::accumulate(samples.begin(), samples.end(), 0.);
         std::ranges::sort(samples);
@@ -244,19 +257,25 @@ void profile_scene_cpu(const std::filesystem::path& root, std::string_view scene
         take(report.set(stage, "median_ms", samples[60]));
         take(report.set(stage, "p95_ms", samples[114]));
         std::printf("Scene CPU %.*s: %.3f ms median\n", static_cast<int>(name.size()), name.data(), samples[60]);
+        return {};
     };
-    measure("render_items", [&] { take(document->presentation().render_items()); });
-    measure("light_items", [&] { take(document->presentation().light_items()); });
-    measure("material_surfaces", [&] {
-        for (const auto& item : geometry)
-            take(presentation::material_surfaces(document->world().runtime(), item.component));
-    });
+    ATELIER_TRY(measure("render_items", [&] { return document->presentation().render_items(); }));
+    ATELIER_TRY(measure("light_items", [&] { return document->presentation().light_items(); }));
+    if (auto measured =
+            measure("material_surfaces",
+                    [&]() -> Result<void> {
+                        for (const auto& item : geometry)
+                            ATELIER_TRY(presentation::material_surfaces(document->world().runtime(), item.component));
+                        return {};
+                    });
+        !measured)
+        return std::unexpected(std::move(measured).error());
     // A refresh opens app.scene.extract, so timed refreshes run under their host phase.
     const auto refresh = [&] {
         timing::Scope scene{application::phases::scene};
-        take(snapshot.refresh(*document));
+        return snapshot.refresh(*document);
     };
-    measure("scene_snapshot", refresh);
+    ATELIER_TRY(measure("scene_snapshot", refresh));
     {
         // Changed frames: the positions of 1 or 50 leaf mesh Entities alternate through Runtime writes.
         auto& runtime = document->world().runtime();
@@ -272,14 +291,14 @@ void profile_scene_cpu(const std::filesystem::path& root, std::string_view scene
         }
         require(leaves.size() == 50, "CPU profile requires 50 leaf mesh Entities.");
         bool moved{};
-        const auto move = [&](std::size_t count) {
+        const auto move = [&](std::size_t count) -> Result<void> {
             moved = !moved;
             for (std::size_t i = 0; i < count; ++i)
-                take(runtime.write(leaves[i].first, x, Scalar{moved ? leaves[i].second + 1 : leaves[i].second}));
-            refresh();
+                ATELIER_TRY(runtime.write(leaves[i].first, x, Scalar{moved ? leaves[i].second + 1 : leaves[i].second}));
+            return refresh();
         };
-        measure("scene_snapshot_changed", [&] { move(1); });
-        measure("scene_snapshot_changed_50", [&] { move(50); });
+        ATELIER_TRY(measure("scene_snapshot_changed", [&] { return move(1); }));
+        ATELIER_TRY(measure("scene_snapshot_changed_50", [&] { return move(50); }));
         for (const auto& [entity, original] : leaves)
             take(runtime.write(entity, x, Scalar{original}));
         take(snapshot.refresh(*document));
@@ -298,27 +317,41 @@ void profile_scene_cpu(const std::filesystem::path& root, std::string_view scene
         require(leaf != ObjectId{}, "CPU profile requires a leaf Entity.");
         take(report.set(report.root(), "spatial_entities", spatial));
         const bool enabled = take(world::inspect_entity(runtime, leaf)).enabled;
-        measure("enabled_toggle_pair", [&] {
-            changed(world.set_enabled(leaf, !enabled));
-            changed(world.set_enabled(leaf, enabled));
-        });
-        measure("detach_restore_leaf", [&] {
-            auto removal = take(world.detach(leaf));
-            changed(world.restore(removal));
-        });
-        measure("world_matrix_each_entity", [&] {
-            for (const auto& member : take(world.members()))
-                if (take(world::has_transform(runtime, member.id())))
-                    take(world::world_matrix(runtime, member.id()));
-        });
-        const auto once = [&](std::string_view name, auto&& operation) {
-            const auto elapsed = sample(operation);
-            take(report.set(take(report.object(stages, name)), "single_ms", elapsed));
-            std::printf("Scene CPU %.*s: %.3f ms single\n", static_cast<int>(name.size()), name.data(), elapsed);
+        if (auto measured = measure("enabled_toggle_pair",
+                                    [&]() -> Result<void> {
+                                        ATELIER_TRY(changed(world.set_enabled(leaf, !enabled)));
+                                        return changed(world.set_enabled(leaf, enabled));
+                                    });
+            !measured)
+            return std::unexpected(std::move(measured).error());
+        if (auto measured = measure("detach_restore_leaf",
+                                    [&]() -> Result<void> {
+                                        ATELIER_TRY_BIND(removal, world.detach(leaf));
+                                        return changed(world.restore(*removal));
+                                    });
+            !measured)
+            return std::unexpected(std::move(measured).error());
+        if (auto measured = measure("world_matrix_each_entity",
+                                    [&]() -> Result<void> {
+                                        ATELIER_TRY_BIND(members, world.members());
+                                        for (const auto& member : *members) {
+                                            ATELIER_TRY_BIND(transform, world::has_transform(runtime, member.id()));
+                                            if (*transform)
+                                                ATELIER_TRY(world::world_matrix(runtime, member.id()));
+                                        }
+                                        return {};
+                                    });
+            !measured)
+            return std::unexpected(std::move(measured).error());
+        const auto once = [&](std::string_view name, auto&& operation) -> Result<void> {
+            ATELIER_TRY_BIND(elapsed, sample(operation));
+            take(report.set(take(report.object(stages, name)), "single_ms", *elapsed));
+            std::printf("Scene CPU %.*s: %.3f ms single\n", static_cast<int>(name.size()), name.data(), *elapsed);
+            return {};
         };
         // Like the Play process, Play runs on its own copy of the source, so dynamic bodies leave the document unchanged.
         auto play = take(editor::Session::deserialize(source, project));
-        once("play_start", [&] { changed(play->start()); });
+        ATELIER_TRY(once("play_start", [&] { return changed(play->start()); }));
         // Structure is checked on every sample; phase durations are diagnostics only.
         const std::array per_update{&world::phases::update,
                                     &world::phases::pre_physics,
@@ -339,19 +372,21 @@ void profile_scene_cpu(const std::filesystem::path& root, std::string_view scene
                                     &physics::phases::reconcile,
                                     &physics::phases::events};
         std::vector<std::vector<double>> phases(timing::catalog().size());
-        measure(
-            "play_update", [&] { take(play->update(1.f / 60)); },
-            [&](const timing::FrameRecord& record) {
-                const auto steps = play->physics_scene()->last_step().steps;
-                require(
-                    std::ranges::all_of(per_update, [&](const auto* marker) { return record.count(*marker) == 1; }) &&
-                        record.count(physics::phases::substep) == steps &&
-                        record.count(physics::phases::solve) == steps &&
-                        record.count(physics::phases::write_back) == steps,
-                    "play_update did not record each World and physics phase once per frame.");
-                for (const auto* marker : timing::catalog())
-                    phases[marker->index()].push_back(milliseconds(record.time(*marker)));
-            });
+        if (auto measured = measure(
+                "play_update", [&] { return play->update(1.f / 60); },
+                [&](const timing::FrameRecord& record) {
+                    const auto steps = play->physics_scene()->last_step().steps;
+                    require(std::ranges::all_of(per_update,
+                                                [&](const auto* marker) { return record.count(*marker) == 1; }) &&
+                                record.count(physics::phases::substep) == steps &&
+                                record.count(physics::phases::solve) == steps &&
+                                record.count(physics::phases::write_back) == steps,
+                            "play_update did not record each World and physics phase once per frame.");
+                    for (const auto* marker : timing::catalog())
+                        phases[marker->index()].push_back(milliseconds(record.time(*marker)));
+                });
+            !measured)
+            return std::unexpected(std::move(measured).error());
         const auto phase_records = take(report.object(take(stages.at("play_update")), "phases"));
         for (const auto module : {std::span<timing::Marker* const>(world::phases::markers),
                                   std::span<timing::Marker* const>(physics::phases::markers)})
@@ -363,40 +398,46 @@ void profile_scene_cpu(const std::filesystem::path& root, std::string_view scene
                 take(report.set(record, "median_ms", values[60]));
                 take(report.set(record, "p95_ms", values[114]));
             }
-        once("play_stop", [&] { changed(play->stop()); });
+        ATELIER_TRY(once("play_stop", [&] { return changed(play->stop()); }));
     }
     editor::Workspace workspace;
+    take(workspace.initialize());
     workspace.project_open = true;
     workspace.dock.maximize(editor::control::scene_tab);
-    const auto describe = [&] {
-        auto controls = take(workspace.describe(*document, {1779, 1154}, nullptr, &project));
-        require(workspace.ui_error().empty() && !controls.empty(), "CPU profile UI description failed.");
-        workspace.commit_ui_controls();
+    const auto describe = [&]() -> Result<void> {
+        ATELIER_TRY_BIND(controls, workspace.describe(*document, {1779, 1154}, nullptr, &project));
+        require(workspace.ui_error().empty() && !controls->empty(), "CPU profile UI description failed.");
+        return workspace.commit_ui_controls();
     };
-    measure("workspace_maximized", describe);
+    ATELIER_TRY(measure("workspace_maximized", describe));
     workspace.dock.maximize(editor::control::scene_tab);
-    measure("workspace_docked", describe);
+    ATELIER_TRY(measure("workspace_docked", describe));
     {
         // The docked editor's UI step on a headless Session: description against the accepted frame, then layout.
-        const std::array fonts{(editor::asset_directory() / "fonts/SarasaUiSC-Regular.ttf").wstring()};
+        const auto directory = take(editor::asset_directory());
+        const std::array fonts{(directory / "fonts/SarasaUiSC-Regular.ttf").wstring()};
         ui::Session surface;
         take(surface.initialize(fonts));
-        const auto theme = ui::StyleSheet::parse(take(assets::read_file(editor::asset_directory() / "editor.ss")));
+        const auto theme = ui::StyleSheet::parse(take(assets::read_file(directory / "editor.ss")));
         require(theme && surface.set_style_sheet(*theme) && surface.set_surface({{1779, 1154}, 1, 1}),
                 "CPU profile UI surface failed.");
         std::size_t controls{};
         std::size_t rows{};
-        measure("ui_docked", [&] {
-            const auto described =
-                take(workspace.describe(*document, {1779, 1154}, surface.presented().get(), &project, &surface));
-            require(workspace.ui_error().empty() && surface.set_controls(described),
-                    "CPU profile UI description was refused.");
-            workspace.commit_ui_controls();
-            const auto frame = surface.prepare();
-            require(frame && surface.accept(*frame), "CPU profile UI layout failed.");
-            controls = described.size();
-            rows = (*frame)->tree_rows.size();
-        });
+        if (auto measured = measure("ui_docked",
+                                    [&]() -> Result<void> {
+                                        const auto described = take(workspace.describe(
+                                            *document, {1779, 1154}, surface.presented().get(), &project, &surface));
+                                        require(workspace.ui_error().empty() && surface.set_controls(described),
+                                                "CPU profile UI description was refused.");
+                                        take(workspace.commit_ui_controls());
+                                        const auto frame = surface.prepare();
+                                        require(frame && surface.accept(*frame), "CPU profile UI layout failed.");
+                                        controls = described.size();
+                                        rows = (*frame)->tree_rows.size();
+                                        return {};
+                                    });
+            !measured)
+            return std::unexpected(std::move(measured).error());
         take(report.set(take(stages.at("ui_docked")), "controls", controls));
         take(report.set(take(stages.at("ui_docked")), "tree_rows", rows));
         std::printf("Scene CPU ui_docked: %zu controls, %zu tree rows\n", controls, rows);
@@ -423,11 +464,10 @@ void profile_scene_cpu(const std::filesystem::path& root, std::string_view scene
                         "Frame root time divided by sequential empty scopes, including loop overhead."));
         std::printf("Scene CPU timing scope: %.1f ns median\n", samples[15]);
     }
-    require(take(document->serialize()) == original && take(assets::read_file(path)) == source && !document->dirty() &&
+    require(take(document->serialize()) == original && take(assets::read_file(*path)) == source && !document->dirty() &&
                 document->undo_count() == 0 && document->redo_count() == 0,
             "CPU profile changed the document or source Scene.");
     take(report.set(report.root(), "status", "pass"));
-    std::filesystem::create_directories(output.parent_path());
     const auto bytes = json::write(report.root(), {.pretty = true, .trailing_lf = true});
-    take(editor::write_file(output, {bytes.data(), bytes.size()}, editor::WriteMode::create));
+    return editor::write_file(output, {bytes.data(), bytes.size()}, editor::WriteMode::create);
 }

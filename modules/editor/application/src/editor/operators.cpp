@@ -175,29 +175,32 @@ std::span<const std::string_view> region_names() noexcept {
     return names;
 }
 
-Result<void> OperatorRegistry::add(OperatorInfo info) {
-    if (!valid_id(info.id))
-        return std::unexpected(invalid("Operator ID must be lowercase <domain>.<action>: " + info.id));
-    if (find(info.id))
-        return std::unexpected(invalid("Operator is already registered: " + info.id));
-    if (!info.poll || !info.execute)
-        return std::unexpected(invalid("Operator needs poll and execute: " + info.id));
-    if (info.seed && info.parameters.empty())
-        return std::unexpected(invalid("Only an operator with parameters can seed them: " + info.id));
-    if (info.kind == OperatorKind::query)
-        return std::unexpected(invalid("Queries use state, schema or inspection, not execute: " + info.id));
-    if (info.requires_interaction && (info.kind != OperatorKind::direct || info.parameters.empty() ||
-                                      info.parameters == "@context.object" || info.interaction.empty()))
-        return std::unexpected(
-            invalid("Conditional interaction needs a direct operator, record and guidance: " + info.id));
-    if (!info.requires_interaction && !info.interaction.empty())
-        return std::unexpected(invalid("Interaction guidance needs a parameter condition: " + info.id));
-    const auto exclusive = int(has_any(info.flags, OperatorFlag::undo)) +
-                           int(has_any(info.flags, OperatorFlag::history)) +
-                           int(has_any(info.flags, OperatorFlag::replaces_document));
-    if (exclusive > 1)
-        return std::unexpected(invalid("Operator history flags are exclusive: " + info.id));
-    operators_.push_back(std::move(info));
+Result<void> OperatorRegistry::validate() const {
+    std::unordered_set<std::string_view> ids;
+    ids.reserve(operators_.size());
+    for (const auto& info : operators_) {
+        if (!valid_id(info.id))
+            return std::unexpected(invalid("Operator ID must be lowercase <domain>.<action>: " + info.id));
+        if (!ids.insert(info.id).second)
+            return std::unexpected(invalid("Operator is already registered: " + info.id));
+        if (!info.poll || !info.execute)
+            return std::unexpected(invalid("Operator needs poll and execute: " + info.id));
+        if (info.seed && info.parameters.empty())
+            return std::unexpected(invalid("Only an operator with parameters can seed them: " + info.id));
+        if (info.kind == OperatorKind::query)
+            return std::unexpected(invalid("Queries use state, schema or inspection, not execute: " + info.id));
+        if (info.requires_interaction && (info.kind != OperatorKind::direct || info.parameters.empty() ||
+                                          info.parameters == "@context.object" || info.interaction.empty()))
+            return std::unexpected(
+                invalid("Conditional interaction needs a direct operator, record and guidance: " + info.id));
+        if (!info.requires_interaction && !info.interaction.empty())
+            return std::unexpected(invalid("Interaction guidance needs a parameter condition: " + info.id));
+        const auto exclusive = int(has_any(info.flags, OperatorFlag::undo)) +
+                               int(has_any(info.flags, OperatorFlag::history)) +
+                               int(has_any(info.flags, OperatorFlag::replaces_document));
+        if (exclusive > 1)
+            return std::unexpected(invalid("Operator history flags are exclusive: " + info.id));
+    }
     return {};
 }
 
@@ -279,11 +282,11 @@ Result<OperatorReport> call(const OperatorRegistry& registry, OperatorHost& host
             }
         const auto decoded = decode_properties(
             runtime, PropertyTarget{*type, object}, args, {},
-            [&](std::span<const FieldId> path, const PropertyLeaf& leaf) -> Result<void> {
+            [&](const detail::ScalarField& field, const PropertyLeaf& leaf) -> Result<void> {
                 const auto* scalar = std::get_if<Scalar>(&leaf);
                 if (!scalar)
                     return std::unexpected(rejected("A property patch supports Scalar leaves only."));
-                patch.push_back({{path.begin(), path.end()}, *scalar});
+                patch.push_back({field.path, *scalar});
                 return {};
             },
             true);

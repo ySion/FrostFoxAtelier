@@ -1,6 +1,8 @@
 #pragma once
 
 #include "editor/session.hpp"
+#include "foundation/map.hpp"
+#include "foundation/set.hpp"
 #include "editor/menu_bindings.hpp"
 #include "editor/operators.hpp"
 #include "editor/keymap.hpp"
@@ -18,6 +20,8 @@
 #include "renderer/view_settings.hpp"
 #include "ui_language/live_document.hpp"
 #include <unordered_set>
+
+#include <algorithm>
 
 namespace atelier::editor {
 // Colour editor conversions (sRGB-agnostic: the edited field values are used as-is).
@@ -361,6 +365,9 @@ struct Workspace {
 
     Workspace();
 
+    // Initialize once at this stable address before using the workspace. On failure, destroy it.
+    [[nodiscard]] Result<void> initialize();
+
     Workspace(const Workspace&) = delete;
 
     Workspace& operator=(const Workspace&) = delete;
@@ -423,7 +430,7 @@ struct Workspace {
 
     bool effective_show_points(const procedural::Geometry* geometry) const noexcept;
 
-    ObjectId active_procedural_generator(const Session& session) const noexcept;
+    Result<ObjectId> active_procedural_generator(const Session& session) const;
 
     GeometrySpreadsheet spreadsheet;
 
@@ -466,7 +473,7 @@ struct Workspace {
 
     void bump_view_revision() noexcept { ++view_revision_; }
 
-    void reset_layout();
+    Result<void> reset_layout();
 
     // Scene Tree drag: the row under the pointer, or World, receives the dragged Entities.
     struct TreeDrop {
@@ -554,6 +561,9 @@ struct Workspace {
 
     Result<void> set_view_settings(Session&, const renderer::ViewSettings&, math::Vector3 focus = {});
 
+    // Apply preferences after the candidate view and its authored environment have been validated.
+    void apply_view_preferences(const renderer::ViewSettings&);
+
     std::uint64_t view_revision() const noexcept { return view_revision_; }
 
     Result<bool> apply_ui(const ui::Action&);
@@ -566,14 +576,14 @@ struct Workspace {
         return ui_document_ ? ui_document_->statistics(component) : std::nullopt;
     }
 
-    void commit_ui_controls();
+    [[nodiscard]] Result<void> commit_ui_controls();
 
     bool reject_ui_controls(std::string message);
 
     // Choose an authoring file before this document's first projection.
-    void set_ui_source(std::filesystem::path);
+    [[nodiscard]] Result<void> set_ui_source(std::filesystem::path);
 
-    std::filesystem::path ui_source() const;
+    Result<std::filesystem::path> ui_source() const;
 
     std::uint64_t ui_revision() const noexcept { return ui_document_ ? ui_document_->revision() : 0; }
 
@@ -736,24 +746,12 @@ private:
 
     std::size_t navigation_cursor_{};
 
-    // A host-flattened entity tree. Expansion survives docking and hiding, not object retirement.
-    struct EntityTreeView {
-        std::unordered_map<ObjectId, bool> expansion; // Overrides of the tree's default.
-
+    struct TreeBuild {
         std::vector<ui::TreeNode> nodes;
-
-        std::vector<ObjectId> objects; // Parallel to nodes.
-
-        std::vector<std::wstring> texts; // Filter text, parallel to nodes while filtering.
-
-        std::vector<ui::TreeRow> rows; // Last flattened rows.
-
-        std::optional<std::pair<ObjectId, ObjectId>> primary; // Last primary row and its parent.
-
-        bool expanded(ObjectId object, bool initial) const {
-            const auto at = expansion.find(object);
-            return at == expansion.end() ? initial : at->second;
-        }
+        std::vector<ObjectId> objects;
+        std::vector<ui::TreeRow> rows;
+        std::optional<std::pair<ObjectId, ObjectId>> primary;
+        Map<ObjectId, bool> edits;
 
         std::uint32_t node(ObjectId object) const noexcept {
             const auto at = std::ranges::find(objects, object);
@@ -761,14 +759,40 @@ private:
         }
     };
 
-    EntityTreeView scene_tree_;
+    struct EntityTreeView {
+        std::unordered_map<ObjectId, bool> expansion;
+        std::vector<ObjectId> objects;
+        std::vector<ui::TreeRow> rows;
+        std::optional<std::pair<ObjectId, ObjectId>> primary;
 
+        Map<ObjectId, bool> requests;
+        TreeBuild candidate;
+        bool pending{};
+
+        void begin(bool visible) {
+            pending = false;
+            candidate.edits.clear();
+            if (visible)
+                candidate.edits.swap(requests);
+        }
+
+        bool expanded(ObjectId object, bool initial) const {
+            if (const bool* edit = candidate.edits.find(object))
+                return *edit;
+            const auto at = expansion.find(object);
+            return at == expansion.end() ? initial : at->second;
+        }
+
+        Result<std::vector<std::uint32_t>> window(ObjectId selected, std::wstring_view filter, ui::TreeViewport,
+                                                  std::span<const ObjectId> pinned);
+        void commit(const Set<ObjectId>& live);
+    };
+
+    std::optional<Set<ObjectId>> pending_live_;
+    EntityTreeView scene_tree_;
     EntityTreeView structure_tree_;
 
-    void build_structure_tree(const Session&, ObjectId entity);
-
-    std::vector<std::uint32_t> window_tree(EntityTreeView&, ObjectId primary, std::wstring_view filter,
-                                           ui::TreeViewport, std::span<const ObjectId> pinned);
+    Result<void> build_structure_tree(const Session&, ObjectId entity, TreeBuild&) const;
 
     std::vector<ComponentType> component_choices_;
 
@@ -784,18 +808,41 @@ private:
 
     Selection menu_selection_;
 
-    ui::ControlKey bind(ObjectId, std::span<const FieldId> = {}, Binding::Kind = Binding::Kind::object);
+    Result<void> build_controls(ui::ControlList&, Session&, ui_layout::Size, const ui::UiFrame*, Project*,
+                                const ui::Session*, const ui::ControlBox*, bool& retry);
 
-    ui::ControlKey bind_operator(OperatorCall);
+    Result<ui::ControlKey> allocate_binding_key();
 
-    ui::ControlKey bind_material(ObjectId, std::string_view, Binding::Kind, ObjectId component = {},
-                                 std::string_view slot = {}, std::size_t index = 0);
+    // Active rows form a prefix. Recompute positions after insertion, which may relocate storage.
+    template <class Match, class Make>
+    Result<ui::ControlKey> bind_row(std::size_t first, Match match, Make make) {
+        const auto at = std::find_if(bindings_.begin() + static_cast<std::ptrdiff_t>(first), bindings_.end(), match);
+        const auto index = static_cast<std::size_t>(at - bindings_.begin());
+        if (index == bindings_.size()) {
+            ATELIER_TRY_BIND(key, allocate_binding_key());
+            bindings_.push_back(make(*key));
+        } else if (index < binding_cursor_) {
+            return bindings_[index].key;
+        }
+        if (index != binding_cursor_)
+            std::swap(bindings_[index], bindings_[binding_cursor_]);
+        return bindings_[binding_cursor_++].key;
+    }
 
-    ui::ControlKey bind_graph_param(std::string_view graph_key, std::string_view node_name, std::string_view param_path,
-                                    Binding::Kind kind, std::size_t lane = 0, ObjectId object = {},
-                                    ObjectId component = {}, std::span<const FieldId> path = {});
+    Result<ui::ControlKey> bind_graph_param(std::string_view graph_key, std::string_view node_name,
+                                            std::string_view param_path, Binding::Kind kind, std::size_t lane = 0,
+                                            ObjectId object = {}, ObjectId component = {},
+                                            std::span<const FieldId> path = {});
 
-    std::vector<ui::MenuItem> material_menu(const Binding&, const Session&, const Project*);
+    Result<ui::ControlKey> bind(ObjectId, std::span<const FieldId> = {}, Binding::Kind = Binding::Kind::object);
+
+    Result<ui::ControlKey> bind_operator(OperatorCall);
+
+    Result<ui::ControlKey> bind_material(ObjectId, std::string_view, Binding::Kind, ObjectId component = {},
+                                         std::string_view slot = {}, std::size_t index = 0);
+
+    Result<std::vector<ui::MenuItem>> material_menu(const Binding&, const Session&, const Project*,
+                                                    std::vector<MaterialChoice>&) const;
 };
 
 RegionKind region_of(ui::ControlKey tab) noexcept;

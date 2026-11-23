@@ -1,4 +1,6 @@
-#include "../helpers.hpp"
+#include "window.hpp"
+#include "assets/png.hpp"
+#include "platform/error.hpp"
 #include "application/application.hpp"
 #include "application/diagnostics.hpp"
 #include "application/editor_control.hpp"
@@ -9,8 +11,7 @@
 #include "ui/text.hpp"
 #include "platform/utf.hpp"
 #include "foundation/sha256.hpp"
-#include <wincodec.h>
-#include <wrl/client.h>
+#include <Windows.h>
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -18,10 +19,53 @@
 #include <filesystem>
 #include <fstream>
 #include <numeric>
-#include <stdexcept>
 #include <thread>
 
-using atelier::acceptance::helpers::take;
+namespace {
+using atelier::application::Application;
+using atelier::Error;
+using atelier::ErrorCode;
+using atelier::Result;
+
+std::unexpected<Error> command_error(std::string message, ErrorCode code = ErrorCode::invalid_definition) {
+    return std::unexpected(Error{code, std::move(message)});
+}
+
+Result<void> advance(Application& app, const char* closed, atelier::renderer::Capture* image = nullptr) {
+    ATELIER_TRY_BIND(running, app.step(image));
+    if (!*running)
+        return command_error(closed);
+    return {};
+}
+
+Result<void> prepare_output(const std::filesystem::path& path) {
+    std::error_code error;
+    std::filesystem::create_directories(path, error);
+    if (error)
+        return command_error(atelier::platform::error_message(error), ErrorCode::invalid_storage);
+    return {};
+}
+
+struct ImageApartment {
+    const HRESULT status = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+
+    ~ImageApartment() {
+        if (SUCCEEDED(status))
+            CoUninitialize();
+    }
+
+    Result<void> ready() const {
+        if (FAILED(status))
+            return command_error("Cannot initialize image encoder: " + std::to_string(status),
+                                 ErrorCode::invalid_storage);
+        return {};
+    }
+};
+
+Result<void> png(const atelier::renderer::Capture& image, const std::filesystem::path& path) {
+    return atelier::assets::write_png(image.extent.width, image.extent.height, image.rgba, path);
+}
+}
 
 namespace atelier::application {
 struct EditorAcceptanceAccess {
@@ -36,10 +80,10 @@ struct EditorAcceptanceAccess {
         return app.run_operator({std::move(id), std::move(args)}, true);
     }
 
-    static bool view_preparing(Application& app) {
+    static Result<bool> view_preparing(Application& app) {
         const auto prepared = app.renderer_.preparation(app.control_ ? app.control_->view() : app.workspace_.view);
         if (!prepared)
-            throw std::runtime_error("Scene Lit preparation failed: " + prepared.error().cause.message);
+            return std::unexpected(renderer_error(prepared.error()));
         if (!prepared->ready || app.fallback_presented_)
             return true;
         if (app.presented() && app.presented()->find(editor::control::viewport)) {
@@ -54,9 +98,11 @@ struct EditorAcceptanceAccess {
 
     static auto camera_state(const Application& app) { return app.camera_.state(); }
 
-    static bool move_camera(Application& app, const editor::CameraState& state) {
+    static Result<void> move_camera(Application& app, const editor::CameraState& state) {
         auto camera = app.camera_;
-        return camera.set_state(state) && app.set_camera(camera, false).has_value();
+        if (!camera.set_state(state))
+            return command_error("The orbit camera state was rejected.");
+        return app.set_camera(camera, false);
     }
 
     static const auto& accepted_view(const Application& app) { return app.accepted_view_; }
@@ -77,17 +123,17 @@ struct EditorAcceptanceAccess {
             0, {float(size.width) / app.surface_.dpi_scale, float(size.height) / app.surface_.dpi_scale});
     }
 
-    static void set_scene_maximized(Application& app, bool maximized) {
+    static Result<void> set_scene_maximized(Application& app, bool maximized) {
         auto& dock = app.workspace_.dock;
         if (!dock.select(editor::control::scene_tab))
-            throw std::runtime_error("Scene View cannot be selected.");
+            return command_error("Scene View cannot be selected.");
         for (const auto& pane : dock_presentation(app).panes)
             if (pane.active && pane.active->key == editor::control::scene_tab) {
                 if (pane.maximized != maximized)
                     dock.maximize(editor::control::scene_tab);
-                return;
+                return {};
             }
-        throw std::runtime_error("Scene View has no presented Dock pane.");
+        return command_error("Scene View has no presented Dock pane.");
     }
 
     static auto scene_lit_view(const Application& app) { return app.workspace_.view; }
@@ -96,9 +142,12 @@ struct EditorAcceptanceAccess {
         return app.workspace_.set_view_settings(*app.document_, view, app.lighting_focus());
     }
 
-    static void performance_panel(Application& app) {
-        app.workspace_.dock.move(editor::world_control::tab, editor::control::parameters_tab, ui::DockSide::tabs);
+    static Result<void> performance_panel(Application& app) {
+        ATELIER_TRY(
+            app.workspace_.dock.move(editor::world_control::tab, editor::control::parameters_tab, ui::DockSide::tabs)
+                .transform_error(ui_error));
         app.workspace_.dock.select(editor::world_control::tab);
+        return {};
     }
 
     static const auto& scene_snapshot(const Application& app) { return app.scene_; }
@@ -122,13 +171,12 @@ struct EditorAcceptanceAccess {
 
     static void close_menu(Application& app) { app.close_menu(false); }
 
-    static void verify_keep_open_menu(Application& app) {
+    static Result<void> verify_keep_open_menu(Application& app) {
         app.request_menu({editor::control::scene_guides, 0, 0, 0});
         for (int i = 0; i < 6 && !app.menu_window(); ++i)
-            if (!take(app.step()))
-                throw std::runtime_error("Editor closed before Guides menu opened.");
+            ATELIER_TRY(advance(app, "Editor closed before Guides menu opened."));
         if (!app.menu_window() || !app.popup_ || !app.popup_->presented())
-            throw std::runtime_error("Guides popup menu was not presented.");
+            return command_error("Guides popup menu was not presented.");
 
         const auto find_fps = [&]() -> const ui::MenuItem* {
             const auto at = std::ranges::find_if(app.workspace_.menu_items,
@@ -137,11 +185,11 @@ struct EditorAcceptanceAccess {
         };
         const auto* initial = find_fps();
         if (!initial || initial->selected || app.workspace_.show_fps)
-            throw std::runtime_error("Unexpected initial Show FPS menu state.");
+            return command_error("Unexpected initial Show FPS menu state.");
         const auto fps_key = initial->key;
         const auto* box = app.popup_->presented()->find(fps_key);
         if (!box)
-            throw std::runtime_error("Show FPS item missing from presented popup.");
+            return command_error("Show FPS item missing from presented popup.");
 
         const float scale = app.popup_->presented()->drawing ? app.popup_->presented()->drawing->dpi_scale : 1.f;
         POINT pt{static_cast<LONG>(std::lround(box->bounds.x + 6.f * scale)),
@@ -149,42 +197,39 @@ struct EditorAcceptanceAccess {
         ClientToScreen(app.popup_->window(), &pt);
         ScreenToClient(app.window(), &pt);
 
-        const auto click_checkbox = [&]() {
+        const auto click_checkbox = [&]() -> Result<void> {
             ui::Event down;
             down.kind = ui::EventKind::pointer_down;
             down.button = ui::PointerButton::primary;
             down.x = static_cast<float>(pt.x);
             down.y = static_cast<float>(pt.y);
-            if (auto r = app.input(down, 0); !r)
-                throw std::runtime_error(r.error().message);
+            ATELIER_TRY(app.input(down, 0));
             ui::Event up = down;
             up.kind = ui::EventKind::pointer_up;
-            if (auto r = app.input(up, 0); !r)
-                throw std::runtime_error(r.error().message);
+            return app.input(up, 0);
         };
 
         // 1. Keep-open checkbox click must refresh menu_items and popup presentation on the very next step,
         // even when VSync=1 throttles host presentation (!host_ready).
-        click_checkbox();
-        if (!take(app.step()))
-            throw std::runtime_error("Editor closed during keep-open checkbox toggle.");
+        ATELIER_TRY(click_checkbox());
+        ATELIER_TRY(advance(app, "Editor closed during keep-open checkbox toggle."));
         const auto* checked_item = find_fps();
         const auto* checked_box = app.popup_->presented() ? app.popup_->presented()->find(fps_key) : nullptr;
         if (!app.menu_window() || !app.workspace_.show_fps || !checked_item || !checked_item->selected ||
             !checked_box || !checked_box->selected)
-            throw std::runtime_error("Keep-open checkbox click left stale popup menu state.");
+            return command_error("Keep-open checkbox click left stale popup menu state.");
 
         // 2. Direct view-revision mutation while the native menu stays open must also invalidate the fast path.
         app.toggle_view(editor::ViewToggleOption::fps);
-        if (!take(app.step()))
-            throw std::runtime_error("Editor closed after view_revision invalidation.");
+        ATELIER_TRY(advance(app, "Editor closed after view_revision invalidation."));
         const auto* unchecked_item = find_fps();
         const auto* unchecked_box = app.popup_->presented() ? app.popup_->presented()->find(fps_key) : nullptr;
         if (!app.menu_window() || app.workspace_.show_fps || !unchecked_item || unchecked_item->selected ||
             !unchecked_box || unchecked_box->selected)
-            throw std::runtime_error("View revision change while menu was open left stale popup menu state.");
+            return command_error("View revision change while menu was open left stale popup menu state.");
 
         app.close_menu(false);
+        return {};
     }
 
     static void cancel_rename(Application& app) { app.workspace_.row_rename.reset(); }
@@ -202,29 +247,27 @@ struct EditorAcceptanceAccess {
     }
 
     // Drive the real tool entry points without OS input (snapshot only).
-    static void tool_key(Application& app, std::uint32_t vk, math::Vector2 pointer) {
+    static Result<void> tool_key(Application& app, std::uint32_t vk, math::Vector2 pointer) {
         ui::Event event;
         event.kind = ui::EventKind::key_down;
-        if (!app.viewport_tool_.key(*app.document_, *app.accepted_view_, event, vk, app.workspace_.viewport_settings,
-                                    pointer))
-            throw std::runtime_error("Snapshot tool key failed.");
+        ATELIER_TRY(app.viewport_tool_.key(*app.document_, *app.accepted_view_, event, vk,
+                                           app.workspace_.viewport_settings, pointer));
+        return {};
     }
 
-    static void tool_move(Application& app, math::Vector2 pointer) {
+    static Result<void> tool_move(Application& app, math::Vector2 pointer) {
         ui::Event event;
         event.kind = ui::EventKind::pointer_move;
         event.x = pointer.x;
         event.y = pointer.y;
-        if (!app.viewport_tool_.pointer(*app.document_, *app.accepted_view_, event, app.workspace_.viewport_settings))
-            throw std::runtime_error("Snapshot tool move failed.");
+        ATELIER_TRY(
+            app.viewport_tool_.pointer(*app.document_, *app.accepted_view_, event, app.workspace_.viewport_settings));
+        return {};
     }
 
-    static void tool_cancel(Application& app) {
-        if (!app.viewport_tool_.cancel(*app.document_))
-            throw std::runtime_error("Snapshot cancel failed.");
-    }
+    static Result<void> tool_cancel(Application& app) { return app.viewport_tool_.cancel(*app.document_); }
 
-    static void place_cursor(Application& app, math::Vector2 pointer) {
+    static Result<void> place_cursor(Application& app, math::Vector2 pointer) {
         ui::Event event;
         event.kind = ui::EventKind::pointer_down;
         event.button = ui::PointerButton::primary;
@@ -232,19 +275,19 @@ struct EditorAcceptanceAccess {
         event.y = pointer.y;
         auto settings = app.workspace_.viewport_settings;
         settings.tool = editor::TransformTool::select;
-        if (!app.viewport_tool_.pointer(*app.document_, *app.accepted_view_, event, settings))
-            throw std::runtime_error("Snapshot cursor placement failed.");
+        ATELIER_TRY(app.viewport_tool_.pointer(*app.document_, *app.accepted_view_, event, settings));
         event.kind = ui::EventKind::pointer_up;
-        static_cast<void>(app.viewport_tool_.pointer(*app.document_, *app.accepted_view_, event, settings));
+        ATELIER_TRY(app.viewport_tool_.pointer(*app.document_, *app.accepted_view_, event, settings));
+        return {};
     }
 
-    static POINT viewport_point(const Application& app, math::Vector3 point) {
+    static Result<math::Vector2> viewport_point(const Application& app, math::Vector3 point) {
         if (!app.accepted_view_)
-            throw std::runtime_error("Viewport has no accepted camera.");
+            return command_error("Viewport has no accepted camera.");
         const auto projected = app.accepted_view_->project(point);
         if (!projected)
-            throw std::runtime_error("Viewport point is outside the camera.");
-        return {static_cast<LONG>(std::round(projected->x)), static_cast<LONG>(std::round(projected->y))};
+            return command_error("Viewport point is outside the camera.");
+        return math::Vector2{std::round(projected->x), std::round(projected->y)};
     }
 };
 }
@@ -257,16 +300,6 @@ using Access = atelier::application::EditorAcceptanceAccess;
 using atelier::ui::ControlKey;
 
 namespace control = atelier::editor::control;
-
-void require(bool condition, const char* message) {
-    if (!condition)
-        throw std::runtime_error(message);
-}
-
-void hr(HRESULT result) {
-    if (FAILED(result))
-        throw std::runtime_error("PNG encoding failed.");
-}
 
 LRESULT CALLBACK native_dialog_guard(int code, WPARAM window, LPARAM parameter) {
     if (code == HCBT_CREATEWND) {
@@ -290,180 +323,153 @@ LRESULT CALLBACK native_dialog_guard(int code, WPARAM window, LPARAM parameter) 
     return CallNextHookEx(nullptr, code, window, parameter);
 }
 
-template <class T>
-T model(atelier::Result<T> result) {
-    if (!result)
-        throw std::runtime_error(result.error().message);
-    if constexpr (!std::is_void_v<T>)
-        return std::move(*result);
-}
-
-void png(const atelier::renderer::Capture& image, const std::filesystem::path& path) {
-    using Microsoft::WRL::ComPtr;
-    ComPtr<IWICImagingFactory> factory;
-    hr(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory)));
-    ComPtr<IWICStream> stream;
-    hr(factory->CreateStream(&stream));
-    hr(stream->InitializeFromFilename(path.c_str(), GENERIC_WRITE));
-    ComPtr<IWICBitmapEncoder> encoder;
-    hr(factory->CreateEncoder(GUID_ContainerFormatPng, nullptr, &encoder));
-    hr(encoder->Initialize(stream.Get(), WICBitmapEncoderNoCache));
-    ComPtr<IWICBitmapFrameEncode> frame;
-    hr(encoder->CreateNewFrame(&frame, nullptr));
-    hr(frame->Initialize(nullptr));
-    hr(frame->SetSize(image.extent.width, image.extent.height));
-    auto format = GUID_WICPixelFormat32bppBGRA;
-    hr(frame->SetPixelFormat(&format));
-    require(format == GUID_WICPixelFormat32bppBGRA, "PNG codec changed pixel format.");
-    auto bgra = image.rgba;
-    for (std::size_t pixel = 0; pixel < bgra.size(); pixel += 4)
-        std::swap(bgra[pixel], bgra[pixel + 2]);
-    hr(frame->WritePixels(image.extent.height, image.extent.width * 4, static_cast<UINT>(bgra.size()), bgra.data()));
-    hr(frame->Commit());
-    hr(encoder->Commit());
-}
-
-atelier::renderer::Capture capture(Application& app) {
+Result<atelier::renderer::Capture> capture(Application& app) {
     atelier::renderer::Capture image;
     const auto deadline = GetTickCount64() + 10000;
     do {
         // A serviced input wakeup need not have permission to submit a host frame.
-        require(take(app.step(&image)), "Editor closed before capture.");
-        require(!atelier::application::EditorAcceptanceAccess::view_preparing(app),
-                "Capture met a previous scene or unprepared view; tick first.");
-        require(image.frame_id || GetTickCount64() < deadline, "Renderer did not capture an accepted frame.");
+        ATELIER_TRY(advance(app, "Editor closed before capture.", &image));
+        ATELIER_TRY_BIND(preparing, Access::view_preparing(app));
+        if (*preparing)
+            return command_error("Capture met a previous scene or unprepared view; tick first.");
+        if (!(image.frame_id || GetTickCount64() < deadline))
+            return command_error("Renderer did not capture an accepted frame.");
     } while (!image.frame_id);
-    require(image.rgba.size() == static_cast<std::size_t>(image.extent.width) * image.extent.height * 4,
-            "Capture has an invalid pixel payload.");
+    if (!(image.rgba.size() == static_cast<std::size_t>(image.extent.width) * image.extent.height * 4))
+        return command_error("Capture has an invalid pixel payload.");
     return image;
 }
 
-void capture(Application& app, const std::filesystem::path& path) {
-    const auto image = capture(app);
+Result<void> capture(Application& app, const std::filesystem::path& path) {
+    ATELIER_TRY_BIND(image, capture(app));
     const auto scene_pixels =
-        std::count_if(image.depth.begin(), image.depth.end(), [](float value) { return value > 0 && value <= 1; });
-    if (app.presented()->find(control::viewport))
-        require(scene_pixels > 32, "Real scene geometry is absent from the depth capture.");
-    else
-        require(scene_pixels == 0, "Hidden Scene tab continued rendering geometry.");
-    png(image, path);
+        std::count_if(image->depth.begin(), image->depth.end(), [](float value) { return value > 0 && value <= 1; });
+    if (app.presented()->find(control::viewport)) {
+        if (scene_pixels <= 32)
+            return command_error("Real scene geometry is absent from the depth capture.");
+    } else {
+        if (scene_pixels != 0)
+            return command_error("Hidden Scene tab continued rendering geometry.");
+    }
+    ATELIER_TRY(png(*image, path));
     if (app.menu_window()) {
         atelier::renderer::Capture popup;
-        take(app.capture_menu(popup));
-        png(popup, path.parent_path() / (path.stem().wstring() + L"-popup.png"));
+        ATELIER_TRY(app.capture_menu(popup));
+        ATELIER_TRY(png(popup, path.parent_path() / (path.stem().wstring() + L"-popup.png")));
     }
+    return {};
 }
 }
 
-void guard_acceptance_native_dialogs() {
+Result<void> guard_acceptance_native_dialogs() {
     if (!SetWindowsHookExW(WH_CBT, native_dialog_guard, nullptr, GetCurrentThreadId()))
-        throw std::runtime_error("Cannot install the acceptance native dialog guard.");
+        return command_error(atelier::platform::error_message(std::error_code(GetLastError(), std::system_category())),
+                             ErrorCode::invalid_storage);
+    return {};
 }
 
-int capture_editor_snapshot(Application& app, const char* output_directory) {
+Result<void> capture_editor_snapshot(Application& app, const std::filesystem::path& output) {
     using Access = atelier::application::EditorAcceptanceAccess;
-    const auto com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
-    hr(com);
-    struct ComScope {
-        ~ComScope() { CoUninitialize(); }
-    } com_scope;
-    const auto output_text = atelier::platform::utf8_to_utf16(output_directory);
-    require(bool(output_text), "Invalid UTF-8 evidence directory.");
-    const auto output = std::filesystem::absolute(*output_text);
-    std::filesystem::create_directories(output);
-    const auto settle = [&] {
+    ImageApartment apartment;
+    ATELIER_TRY(apartment.ready());
+    ATELIER_TRY(prepare_output(output));
+    const auto settle = [&]() -> Result<void> {
         for (int i = 0; i < 6; ++i)
-            require(take(app.step()), "Snapshot editor closed.");
+            ATELIER_TRY(advance(app, "Snapshot editor closed."));
+        return {};
     };
-    const auto shot = [&](const char* name) {
-        settle();
+    const auto shot = [&](const char* name) -> Result<void> {
+        ATELIER_TRY(settle());
         atelier::renderer::Capture image;
         for (int attempt = 0; attempt < 30 && !image.frame_id; ++attempt)
-            require(take(app.step(&image)), "Snapshot editor closed.");
-        require(image.frame_id != 0, "Snapshot frame was not accepted (window occluded?).");
-        png(image, output / name);
+            ATELIER_TRY(advance(app, "Snapshot editor closed.", &image));
+        if (image.frame_id == 0)
+            return command_error("Snapshot frame was not accepted (window occluded?).");
+        ATELIER_TRY(png(image, output / name));
+        return {};
     };
-    settle();
-    model(Access::invoke(app, "scene.add", atelier::json::Document::literal<R"({"kind":"mesh"})">()));
+    ATELIER_TRY(settle());
+    ATELIER_TRY(Access::invoke(app, "scene.add", atelier::json::Document::literal<R"({"kind":"mesh"})">()));
     Access::set_cursor(app, {1.4f, 0, -1.1f});
     Access::set_tool(app, atelier::editor::TransformTool::rotate);
-    shot("snapshot-rotate.png");
+    ATELIER_TRY(shot("snapshot-rotate.png"));
     Access::set_tool(app, atelier::editor::TransformTool::move);
-    shot("snapshot-move.png");
+    ATELIER_TRY(shot("snapshot-move.png"));
     Access::set_tool(app, atelier::editor::TransformTool::scale);
-    shot("snapshot-scale.png");
+    ATELIER_TRY(shot("snapshot-scale.png"));
     Access::set_tool(app, atelier::editor::TransformTool::transform);
-    shot("snapshot-transform.png");
-    const auto at = [&](atelier::math::Vector3 p) {
-        const auto q = Access::viewport_point(app, p);
-        return atelier::math::Vector2{float(q.x), float(q.y)};
-    };
+    ATELIER_TRY(shot("snapshot-transform.png"));
     // Surface-aligned cursor on the cube's +X face, then modal feedback.
-    Access::place_cursor(app, at({.5f, .15f, -.15f}));
-    shot("snapshot-cursor-surface.png");
-    auto pointer = at({0, 0, 0});
+    ATELIER_TRY_BIND(surface, Access::viewport_point(app, {.5f, .15f, -.15f}));
+    ATELIER_TRY(Access::place_cursor(app, *surface));
+    ATELIER_TRY(shot("snapshot-cursor-surface.png"));
+    ATELIER_TRY_BIND(origin, Access::viewport_point(app, {0, 0, 0}));
+    auto pointer = *origin;
     pointer.x += 60;
     pointer.y -= 40;
-    Access::tool_key(app, 'G', pointer);
-    Access::tool_key(app, 'Z', pointer);
+    ATELIER_TRY(Access::tool_key(app, 'G', pointer));
+    ATELIER_TRY(Access::tool_key(app, 'Z', pointer));
     pointer.y -= 50;
-    Access::tool_move(app, pointer);
-    shot("snapshot-modal-grab.png");
-    Access::tool_cancel(app);
-    Access::tool_key(app, 'R', pointer);
-    Access::tool_key(app, 'X', pointer);
+    ATELIER_TRY(Access::tool_move(app, pointer));
+    ATELIER_TRY(shot("snapshot-modal-grab.png"));
+    ATELIER_TRY(Access::tool_cancel(app));
+    ATELIER_TRY(Access::tool_key(app, 'R', pointer));
+    ATELIER_TRY(Access::tool_key(app, 'X', pointer));
     pointer.x += 70;
-    Access::tool_move(app, pointer);
-    shot("snapshot-modal-rotate.png");
-    Access::tool_cancel(app);
+    ATELIER_TRY(Access::tool_move(app, pointer));
+    ATELIER_TRY(shot("snapshot-modal-rotate.png"));
+    ATELIER_TRY(Access::tool_cancel(app));
     // An enum menu and colour swatch row, through the real light creation command.
-    model(Access::invoke(app, "scene.add", atelier::json::Document::literal<R"({"kind":"rectangle"})">()));
-    shot("snapshot-light-parameters.png");
+    ATELIER_TRY(Access::invoke(app, "scene.add", atelier::json::Document::literal<R"({"kind":"rectangle"})">()));
+    ATELIER_TRY(shot("snapshot-light-parameters.png"));
     if (const auto pick = Access::color_pick(app)) {
-        model(Access::ui_action(app, pick));
-        shot("snapshot-color-editor.png");
-        model(Access::ui_action(app, atelier::editor::control::color_done));
+        ATELIER_TRY(Access::ui_action(app, pick));
+        ATELIER_TRY(shot("snapshot-color-editor.png"));
+        ATELIER_TRY(Access::ui_action(app, atelier::editor::control::color_done));
     }
     // Layout review: category grouping and the Entity Structure page.
-    model(Access::ui_action(app, atelier::editor::control::group_categories, true));
-    shot("snapshot-parameters-category.png");
-    model(Access::ui_action(app, atelier::editor::control::group_components, true));
+    ATELIER_TRY(Access::ui_action(app, atelier::editor::control::group_categories, true));
+    ATELIER_TRY(shot("snapshot-parameters-category.png"));
+    ATELIER_TRY(Access::ui_action(app, atelier::editor::control::group_components, true));
     Access::select_tab(app, atelier::editor::control::entities_tab);
-    model(Access::invoke(app, "scene.rename"));
-    shot("snapshot-inline-rename.png");
+    ATELIER_TRY(Access::invoke(app, "scene.rename"));
+    ATELIER_TRY(shot("snapshot-inline-rename.png"));
     Access::cancel_rename(app);
     Access::select_tab(app, atelier::editor::control::structure_tab);
-    shot("snapshot-structure.png");
+    ATELIER_TRY(shot("snapshot-structure.png"));
     Access::select_tab(app, atelier::editor::control::scene_tab);
-    model(Access::open_menu(app, atelier::editor::control::viewport_snap));
-    settle();
+    ATELIER_TRY(Access::open_menu(app, atelier::editor::control::viewport_snap));
+    ATELIER_TRY(settle());
     {
         atelier::renderer::Capture menu;
-        take(app.capture_menu(menu));
+        ATELIER_TRY(app.capture_menu(menu));
         if (!menu.rgba.empty())
-            png(menu, output / "snapshot-snap-menu.png");
+            ATELIER_TRY(png(menu, output / "snapshot-snap-menu.png"));
     }
     Access::close_menu(app);
-    model(Access::open_menu(app, atelier::editor::control::viewport_orientation));
-    settle();
+    ATELIER_TRY(Access::open_menu(app, atelier::editor::control::viewport_orientation));
+    ATELIER_TRY(settle());
     {
         atelier::renderer::Capture menu;
-        take(app.capture_menu(menu));
+        ATELIER_TRY(app.capture_menu(menu));
         if (!menu.rgba.empty())
-            png(menu, output / "snapshot-orientation-menu.png");
+            ATELIER_TRY(png(menu, output / "snapshot-orientation-menu.png"));
     }
     Access::close_menu(app);
-    Access::verify_keep_open_menu(app);
-    Access::performance_panel(app);
-    shot("snapshot-world.png");
+    ATELIER_TRY(Access::verify_keep_open_menu(app));
+    ATELIER_TRY(Access::performance_panel(app));
+    ATELIER_TRY(shot("snapshot-world.png"));
     Access::select_tab(app, atelier::editor::control::workbench);
-    shot("snapshot-controls.png");
+    ATELIER_TRY(shot("snapshot-controls.png"));
     Access::mark_saved(app);
     SendMessageW(app.window(), WM_CLOSE, 0, 0);
-    while (take(app.step())) {
+    for (;;) {
+        ATELIER_TRY_BIND(running, app.step());
+        if (!*running)
+            break;
     }
     std::puts("Editor snapshot: written");
-    return 0;
+    return {};
 }
 
 #include "performance.inl"

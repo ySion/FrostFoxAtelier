@@ -5,7 +5,6 @@
 #include "foundation/function_ref.hpp"
 #include "runtime/runtime.hpp"
 #include <array>
-#include <exception>
 #include <vector>
 
 namespace atelier::application {
@@ -65,7 +64,7 @@ public:
 
     // Main windows pump the thread queue and drain owned records after each
     // Dispatch. Owned popups only drain records queued by that pump or synchronous
-    // callbacks, including callback failures. The consumer never runs from WndProc.
+    // callbacks, with native errors carried by the originating event. The consumer never runs from WndProc.
     // The callback is borrowed only until poll returns, never retained.
     void poll(FunctionRef<void(NativeEvent&&)>);
 
@@ -123,8 +122,6 @@ private:
 
     std::vector<NativeEvent> events_;
 
-    std::exception_ptr callback_failure_;
-
     std::optional<ui::EditToken> input_token_;
 
     std::optional<ui::TextInputAnchor> input_anchor_;
@@ -153,7 +150,7 @@ private:
 
     void composition(UINT, LPARAM);
 
-    static LRESULT CALLBACK procedure(HWND, UINT, WPARAM, LPARAM);
+    static LRESULT CALLBACK procedure(HWND, UINT, WPARAM, LPARAM) noexcept;
 
     LRESULT receive(UINT, WPARAM, LPARAM);
 };

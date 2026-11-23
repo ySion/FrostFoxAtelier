@@ -35,7 +35,7 @@ UI 和快捷键直接调用负责业务不变量的执行层；外部调用经�
 
     ./out/dev/atelier_control.exe --instance INSTANCE_ID --request request.json
 
-CLI 补齐协议及实例身份；没有 request_id 时生成新 ID。异步操作保持连接并轮询到完成，--timeout-ms 为 1–600000 毫秒，默认 120000。成功退出码为 0，错误为 1。超时退出会断开连接，宿主在下个检查点取消任务。
+CLI 补齐协议及实例身份；没有 request_id 时生成新 ID。异步操作保持连接并轮询到完成，--timeout-ms 为 1–600000 毫秒，默认 120000。成功退出码为 0，错误为 1。CLI 先选择实例，读取并限制请求输入大小，再连接和解析 JSON。服务端终态响应原样输出。首次收到 pending 后开始计算 CLI 轮询期限，到期后返回 `timeout` 并断开连接，宿主在下个检查点取消任务。
 
 ## 能力和业务边界
 
@@ -63,7 +63,7 @@ CLI 补齐协议及实例身份；没有 request_id 时生成新 ID。异步操�
 | op.call graph.add_node / graph.delete_node / graph.rename_node / graph.move_node / graph.layout / graph.extract_asset / graph.set_node_asset | 编辑活动或显式 `asset` 图文档并记入该图的独立 128 步撤销栈（不改场景历史计数）：`add_node {type, name, position}` 添加内置 C++、`.source` `procedural.Node` 派生实例或 `"asset:<key>"` 数字资产实例；`delete_node {name}` 删除指定节点或当前画布多选节点（保活 `ObjectRoot` 以供撤销复用求值缓存，自动同步 `parameters` 目标）；`rename_node {node, name}` 重命名节点并同步连线、display、template 与 `parameters` 目标；`move_node {node, position}` 更新二维画布坐标；`layout {asset}` 自上而下自动拓扑排布全部节点；`extract_asset {asset, nodes, path, name}` 校验连通凸子图后提取保存为独立 `.procgraph` 数字资产（自动生成 `GraphInput`/`GraphOutput` 并保留内部提升参数）且原位替换为已连线 `AssetNode`（单步图撤销）；`set_node_asset {asset, node, target_asset}` 切换 `AssetNode` 绑定的 `.procgraph` 资产并按端口名重对齐连线 |
 | op.call graph.expose_parameter / graph.bind_parameter / graph.unbind_parameter / graph.update_parameter / graph.remove_parameter / graph.set_parameter / graph.set_override | 管理 `.procgraph` v3 声明式多目标提升参数与 `AssetNode` 实例差量覆写：`expose_parameter {asset, node, path, name, label, category, description}` 提升节点字段为图级公开参数；`bind_parameter` / `unbind_parameter` 追加同 `TypeId` 目标（求硬边界交集并对齐首目标值）或解除绑定；`update_parameter` / `remove_parameter` 调整元数据、排序或移除参数；`set_parameter {asset, parameter, value_json}` 同步写入全部绑定目标；`set_override {asset, node, parameter, clear, value_json}` 设置或清除 `AssetNode` 实例覆写 |
 | op.call graph.connect / graph.disconnect / graph.set_display / graph.set_template / graph.set_bypass / graph.set_frozen / graph.set_appearance / graph.select | `connect {from_node, from_port, to_node, to_port}` 与 `disconnect {from_node, from_port, to_node, to_port}` 维护端口连线；`set_display {node}` 与 `set_template {node}` 设置或清空持久化 Display / Template 标记；`set_bypass {node, bypass}` 切换节点直通跳过；`set_frozen {node, frozen}` 在当前会话中锁定或解冻节点已求值的几何输出快照（记一步撤销，撤销和重做复用原冻结快照）；`set_appearance {node, shape, color, comment}` 设置节点形状预设、24 色/自定义 `#RRGGBB` 颜色与备注；`select {node}` 设置 Workspace 当前选中节点（空字符串选中图根 `seed` 设置，不写撤销栈） |
-| graph.inspect / graph.set_properties / graph.create_scratch | `graph.inspect {asset, node, timings, samples, spatial, reference_node}` 评估并返回图的节点列表（含 `display`/`template`/`bypass`/`frozen`/`shape`/`color`/`comment` 及 `AssetNode` 的 `asset`/`asset_label`/非空 `overrides`）、`external_ports`、声明式提升参数 `parameters`、端口、连线、`notes`、`boxes`、每节点求值/缓存计数与错误、Display 几何统计及可选任意 `node` 的独立几何统计与可用节点类型目录 `node_types`（每项带 name、description、native、inputs 和 outputs，空图也可查询）。`spatial` 默认 `true`（传 `false` 可省略），在几何摘要 `spatial` 下输出四组客观空间体检：`topology`（多边形/折线数、退化图元数、单次出现的 `open_boundary_edges` 开口边与同向或超过两用的 `non_manifold_edges`）、`spacing`（点云或实例原点的最近邻间距 `min/p5/p50/p95` 与 `<=1e-4 m` 重合计数）、`instance_overlaps`（实例世界对齐 AABB 保守宽阶段重叠对数、重叠实例数/比例与最大最小轴穿插深度 `max_penetration_depth`，严贴合边 `0` 深度不误判重叠），以及指定同图多边形节点 `reference_node` 时的 `surface_clearance`（经 `Bvh::acquire` 统计底部锚点贴地 `|gap|<=0.05 m`、悬空 `gap>0.05 m`、埋地 `gap<-0.05 m`、脱离水平投影 `off_surface_count` 及有向间隙分位数）。Boolean 节点的 `status.boolean` 记录最近一次实际调用的 `input_faces`、`prepared_input_hits`（A、B 分别占第 0、1 位）、`candidate_pairs`、`ray_candidates`、`splits`、`peak_face_scratch_bytes` 和各阶段耗时（`prepare_ms`、`arrange_ms`、`sew_ms`、`publish_ms`）。即使关闭 `timings` 也采集；调用失败保留本次已完成的工作，Bypass、缓存命中或上游阻塞保留上次调用的数据，尚未调用则省略此字段；`graph.set_properties {asset, node, properties}` 以完整 JSON 属性补丁支持含 `String` 与 `Array<String>` 在内的任意节点/图根字段并记一步图撤销；`graph.create_scratch {key}` 创建无需磁盘文件的内存临时图（默认 `/scratch/procedural`）并进入 SOP 上下文 |
+| graph.inspect / graph.set_properties / graph.create_scratch | `graph.inspect {asset, node, timings, samples, spatial, reference_node}` 评估并返回图的节点列表（含 `display`/`template`/`bypass`/`frozen`/`shape`/`color`/`comment` 及 `AssetNode` 的 `asset`/`asset_label`/非空 `overrides`）、`external_ports`、声明式提升参数 `parameters`、端口、连线、`notes`、`boxes`、每节点求值/缓存计数与错误、Display 几何统计及可选任意 `node` 的独立几何统计与可用节点类型目录 `node_types`（每项带 name、description、native、inputs 和 outputs，空图也可查询）。`spatial` 默认 `true`（传 `false` 可省略），在几何摘要 `spatial` 下输出四组客观空间体检：`topology`（多边形/折线数、退化图元数、单次出现的 `open_boundary_edges` 开口边与同向或超过两用的 `non_manifold_edges`）、`spacing`（点云或实例原点的最近邻间距 `min/p5/p50/p95` 与 `<=1e-4 m` 重合计数）、`instance_overlaps`（实例世界对齐 AABB 保守宽阶段重叠对数、重叠实例数/比例与最大最小轴穿插深度 `max_penetration_depth`，严贴合边 `0` 深度不误判重叠），以及指定同图多边形节点 `reference_node` 时的 `surface_clearance`（经 `Bvh::acquire` 统计底部锚点贴地 `|gap|<=0.05 m`、悬空 `gap>0.05 m`、埋地 `gap<-0.05 m`、脱离水平投影 `off_surface_count` 及有向间隙分位数）。Boolean 节点的 `status.boolean` 记录最近一次实际调用的 `input_faces`、`prepared_input_hits`（A、B 分别占第 0、1 位）、`candidate_pairs`、`ray_candidates`、`splits`、`peak_face_scratch_bytes` 和各阶段耗时（`prepare_ms`、`arrange_ms`、`sew_ms`、`publish_ms`）。即使关闭 `timings` 也采集；调用失败保留本次已完成的工作，Bypass、缓存命中或上游阻塞保留上次调用的数据，尚未调用则省略此字段；`graph.set_properties {asset, node, properties}` 以完整 JSON 属性补丁支持含 `String` 与 `Array<String>` 在内的任意节点/图根字段并记一步图撤销；`graph.create_scratch {key}` 创建无需磁盘文件的内存临时图（默认 `scratch/procedural`）并进入 SOP 上下文 |
 | op.call asset.import | kind: texture / mesh，path 为图片或 OBJ/glTF；模型导入生成普通 MI 和网格默认关联，结果记录带 asset 键，重复请求由既有 request_id 合同处理 |
 | op.call asset.reimport | context.asset 与源文件 path；同身份更新并发布精确内容，不进入参数 Undo，模型按槽名保留用户 MI |
 | material.inspect | 保留：无重复 operator；材质编辑随 O2 的 preview/commit 一起迁移。按资产 GUID 或对象句柄读取 MS/MI 的声明、有效值、本地稀疏项、父关系、诊断与保存状态；asset 冷路径可能加载并发布资源、增加文档 revision，后续观察可能更新 state token 或取消活动渲染任务，因此整体标为 direct，仍不要求 state token，不承诺纯只读查询 |
@@ -83,13 +83,15 @@ CLI 补齐协议及实例身份；没有 request_id 时生成新 ID。异步操�
 
 `op.call` 固定使用外部来源，不能通过 context override 伪装成人类。context/poll 与严格解码之后，统一按注册元数据和已解码参数准入；需要人类交互时返回 `status: error`、`error.code: interaction_required`，message 给出操作 ID 和适用的参数条件。拒绝发生在结束旧交互或执行前，不取消手势、不复制实体、不取得捕获。`view.select_box`、`ui.menu`、`app.about`、`app.quit` 仅支持人类交互；`scene.duplicate` 传 `place:false`（默认）直接复制，`place:true` 拒绝；空 name 的重命名和空 path 的选择器也拒绝，`scene.save` 仅在 `as_new:true` 且空 path 时需要选择器。显式路径的直接调用仍遵循原保存冲突、未保存内容和业务校验规则。
 
-严格解码能发现的错误优先于 interaction_required；execute 内业务校验不前移。例如 `asset.new_material {entries:{}}` 且省略 path，entries 的 JSON 在严格解码阶段仅存储，先因需要选择器返回 interaction_required；显式 path 的直接调用才进入原 entries 业务校验。原 busy、状态令牌和请求重放的优先顺序不变。
+严格解码能发现的错误优先于 interaction_required；execute 内业务校验不前移。例如 `asset.new_material {entries:{}}` 且省略 path，entries 的 JSON 在严格解码阶段仅存储，先因需要选择器返回 interaction_required；显式 path 的直接调用才进入原 entries 业务校验。通过请求重放检查、状态令牌和 busy 校验后，依次校验操作符 ID、args 对象形状和 context 覆盖。选择中的过期句柄返回 `stale_object`；句柄有效但 active 不属于 entities 时返回 `invalid_request`。
 
 场景身份与参数统一使用 Entity 名称：`editor.inspect` 的目录和 `scene.select` 的 context 选择数组均为 `entities`；没有 actor/entitys 别名。`scene.add` 的空实体 `kind` 为 `entity`。`scene.add_component` 对当前选中 Entity 添加 `type` 指定的真实组件。
 
 Transform、parent_set 和 space_reference_set 的 Context 目标必须是 Entity，组件不接受 TRS。parent_set 的 parent 为 Entity 句柄，null 或省略表示顶层；keep_world 默认 true，index 可省略。space_reference_set 的 origin 为 null 时继承组合祖先，world_space: true 表示世界，Entity 句柄表示显式空间参考；keep_world 默认 true。
 
-完整 inspect 的 Entity 包含 parent（顶层为空字符串）、children 句柄数组、可选 transform 和 space_reference（null / 空字符串 / 句柄）。组件目录保留反射参数与材质，组件记录不含 TRS。创建子实体复用 op.call scene.add 和 scene.parent_set；没有第二套 create_child 工厂或对象身份。
+程序化图的属性补丁按请求中的字段顺序处理。字段被拒绝时，`graph.set_properties` 返回 `operation_failed` 和首个字段的诊断，保留整次修改之前的值，以及图的撤销和重做位置。非对象形状的 `properties` 返回 `invalid_request`。
+
+完整 inspect 的 Entity 包含 parent（顶层为空字符串）、children 句柄数组、可选 transform 和 space_reference（null / 空字符串 / 句柄）。实体与组件句柄和分页目录一致。组件记录沿用单对象详情，包含反射参数与材质。完整查询读取场景层级、对象详情或组件类型目录失败时，返回 `operation_failed` 和底层首条诊断，响应中没有 `result`。组件记录不含 TRS。创建子实体复用 op.call scene.add 和 scene.parent_set；没有第二套 create_child 工厂或对象身份。
 
 `editor.inspect` 的普通对象记录带 `type_description` 和反射 `properties`。每条属性的 `description` 来自 Runtime 的字段描述；Vector 分量沿用聚合字段的说明，未声明说明时返回空字符串。名称、类型、值和可选枚举 `choices` 保持原有语义；声明了范围的属性另附 `range`，只列出已声明的端点：`ui_min`/`ui_max` 为常用范围（面板滑条），`hard_min`/`hard_max` 为写入时夹值的边界，Vector 分量沿用聚合字段的范围。材质不以固定 Runtime 字段表达参数，改用下述 `declarations` 与 `entries`。说明不包含可执行入口，查询不改变作者值或历史。
 
@@ -125,7 +127,7 @@ full 仍返回完整 assets，不静默截断；full/summary 不接受分页参�
 {"op":"editor.inspect","args":{"detail":"object","object":"<返回的组件 handle>"}}
 ```
 
-结果的 `object` 与 full 中同一对象的反射记录一致，复用现有句柄注册与成员有效性检查；删除或替换后失效的 handle 返回 `stale_object`。Scene 文件中的持久 ID 不能替代 Control handle。随后使用 `op.call scene.set_properties` 和 `op.call edit.undo` 等编辑入口。full/summary 不接受分页参数，单对象详情同样受 4 MiB 协议上限约束。
+结果的 `object` 与 full 中同一对象的反射记录一致，复用现有句柄注册与成员有效性检查；删除对象或替换文档后，旧句柄返回 `stale_object`。读取成员列表、反射属性或适用的组件数据失败时，返回 `operation_failed` 和底层首条诊断，整个详情请求失败。Scene 文件中的持久 ID 不能替代 Control handle。随后使用 `op.call scene.set_properties` 和 `op.call edit.undo` 等编辑入口。full/summary 不接受分页参数，单对象详情同样受 4 MiB 协议上限约束。
 
 宽容加载为未注册类型创建的占位对象，其对象记录另带 `placeholder: true` 和 `saved_type`（存档中的原类型名），`type` 是其原生基类；普通对象不含这两项。full 与单对象详情另以 `saved_data` 列出无法应用的保存值（`path`、截断预览 `value`、诊断 `kind`）。这些值只读，丢弃仍走编辑器的 Discard Saved Data。网格组件详情带 `mesh: {source, missing, default_materials}`；默认关联包含 slot/object/source/missing。显式 `materials` 项包含 slot/object/asset/parent/scene/assignment_override/default_material，具体材质诊断由该 object 的 `material.inspect` 返回。`ProceduralGeneratorComponent` 详情另带 `procedural`（资产键、缺失标记、最近求值诊断及非空 `overrides`）。替代显示不改写保存引用。
 
@@ -151,15 +153,17 @@ DDGI 诊断通过相同的入口使用 `probe_visualization`（off/irradiance/st
 
 当前不包括布局编辑、Source 文本编辑、Play 命令、鼠标回放或任意 C++/JIT 调用。后续能力按业务名称接入现有权威模块。
 
-`material.inspect` 接受 `asset` 或 `object` 二选一。返回 role、asset、parent、scene、default_material、dirty，以及 `declarations`（path/type/value/initial/components）、`entries`（材质 v2 typed entries）和 `diagnostics`（path/message）；父链中存在已加载 MS 文本时，另带 Session 保有的精确 `source: {path, version, text}`。声明值是当前有效结果，本地项保留 enabled 和休眠/失配值；`properties` 不承载固定材质参数。场景实例由 `scene.save` 保存，共享资产由 `material.save` 保存。不可用输入或父链的默认替代伴随诊断，保存仍保留原资源键，不把替代结果写回作者项。
+`material.inspect` 接受 `asset` 或 `object` 二选一。返回 role、asset、parent、scene、default_material、dirty，以及 `declarations`（path/type/value/initial/components）、`entries`（材质 v2 typed entries）和 `diagnostics`（path/message）；父链中存在已加载 MS 文本时，另带 Session 保有的精确 `source: {path, version, text}`。声明值是当前有效结果，本地项保留 enabled 和休眠/失配值；`properties` 不承载固定材质参数。单次覆盖修改在发布前校验输入并解析所需的纹理。读取失败时返回 `operation_failed` 与首条诊断，原有效值、本地项和编辑历史均保留，随后可以继续编辑或保存。场景实例由 `scene.save` 保存，共享资产由 `material.save` 保存。不可用输入或父链的默认替代伴随诊断，保存仍保留原资源键，不把替代结果写回作者项。
 
 ## 协议、身份和重试
 
 命名管道使用 FrostFoxAtelier.Control.<instance_id> 名称、当前用户 ACL，拒绝远端客户端。字节帧为 4 字节小端无符号长度加 UTF-8 JSON。消息最大 4 MiB、JSON 最大 32 层，拒绝重复字段；非法长度断开连接。
 
-请求包含 protocol: 1、instance_id、request_id、op、args 和按需提供的 state_token。正常响应关联前述身份和 token，返回 status: ok / pending / error、result 或 error。无法解析的消息没有可用的请求身份。
+请求包含 protocol: 1、instance_id、request_id、op、args 和按需提供的 state_token。正常响应关联前述身份和 token，返回 status: ok / pending / error、result 或 error。无法解析的消息没有可用的请求身份，服务端仅回复 `status` 和 `error`。客户端将这种解析拒绝作为 `invalid_request` 返回并保留解析位置；响应声明的身份不匹配时返回 `protocol_mismatch`。
 
-- 实例身份包含随机 ID、PID、进程创建时间、构建和 exe SHA-256。客户端校验管道服务进程；发现时过滤已退出或 PID 复用的实例。
+一个管道实例一次服务一条连接，各请求顺序收发。连接等待期内端点持续占用时，`Client::create` 返回 `busy`。已连接客户端的 I/O 超时返回 `timeout`，对端断开返回 `disconnected`。读写中断后客户端关闭该连接，后续请求须重新连接；宿主丢弃已检测到断连且尚未派发的请求。
+
+- 实例身份包含随机 ID、PID、进程创建时间、构建和 exe SHA-256。客户端先核对 PID 与创建时间，再验证管道名称和服务进程。已退出或 PID 已复用的实例返回 `stale_instance`，发现时同样过滤。
 - 有副作用或需要固定上下文的操作要求最近的 token。过期返回 stale_state；错误消息列出操作名、客户端和当前版本，以及两者之间每次版本变化的 Observation 字段名（最多保留最近 16 次，超出时明确标记截断；token 的实例不同时直接说明）。重新观察后再决定是否继续。
 - token 覆盖文档代次、单调编辑版本、选择、相机、显示偏好、窗口映射、工程/已发布代码状态和用户输入。Undo 游标及渲染 revision 不承担此职责。
 - 对象句柄仅在当前实例和文档代次内有效，不持有对象；离开成员关系返回 stale_object。重开文档后重新发现。
@@ -174,7 +178,7 @@ DDGI 诊断通过相同的入口使用 `probe_visualization`（off/irradiance/st
 
 ## 后处理录制视图
 
-`render.trace` 是需要 state_token 的异步诊断操作，使用现有 job.status/job.cancel、请求去重、输出目录和取消规则。唯一范围为 `scene_lit_post`（也是默认值），从 Scene Lit 的 TAA 起点到 SMAA 末尾，不包含之前的光照、末尾 display draw、UI 或 Present。调用前显式选择 Scene Lit；需要就绪管线时先调用 render.prepare。trace 不切换显示、不修改 AA/Bloom、不推进作者历史、不激活窗口，也不为等到 accepted 自动重试。
+`render.trace` 是需要 state_token 的异步诊断操作，使用现有 job.status/job.cancel、请求去重、输出目录和取消规则。唯一范围为 `scene_lit_post`（也是默认值），从 Scene Lit 的 TAA 起点到 SMAA 末尾，不包含之前的光照、末尾 display draw、UI 或 Present。跟踪请求依次校验 scope、当前着色模式和 timeout_ms。未知范围返回 `invalid_request`，当前视图未选 Scene Lit 返回 `not_ready`，超时值越界返回带字段路径的 `invalid_request`。通过校验后才发布 job。需要就绪管线时先调用 render.prepare。trace 不切换显示、不修改 AA/Bloom、不推进作者历史、不激活窗口，也不为等到 accepted 自动重试。
 
     {"op":"render.trace","state_token":"INSTANCE_ID:VERSION","args":{"scope":"scene_lit_post","timeout_ms":120000}}
 
@@ -249,6 +253,8 @@ GPU 统计带独立采样帧号和有效标志，可能落后于截图。`gpu_sa
 
 ## 复现工程
 
+`repro.export` 在编辑器线程冻结场景及依赖。快照失败直接返回协议错误，成功后才发布可轮询的任务。后台写入副本、核对依赖并生成响应路径，最后原子写入带 `complete: true` 的 `manifest.json`。取消先被接受时，任务保留其原因，残留的文件可供排查。后台先进入最终发布时，`job.status` 报告这次发布的实际结果，包括清单写入失败。重复取消保留原结果；`repro.open` 要求完成清单并校验其中的文件。
+
 repro.export 读取 Session::serialize() 的内存场景，保留原路径、dirty 和 Undo；scene.save 才是普通保存。整份复制 Config 和 Source；其余工程根只复制 `snapshot_resources` 冻结的类型化 `references` 闭包及身份 sidecar：场景网格、天空、材质、网格默认关系、MS/MI 父链，以及声明匹配且启用的纹理。禁用、已删除声明和改型失配的条目原样保留为作者数据，不因此复制或加载图片。场景生成器随包保存所引用的图；网格依赖取自实际求值和发布。若启用的生成器在 Display 分支使用会话冻结，导出前用作者图和各实例实际种子核对冻结输出与传递资源依赖。上游变化导致输出无法重现时，导出返回 `dependency_mismatch` 并指出节点；未参与 Display 的冻结节点不影响导出。重开时核对候选场景的依赖，启用的生成器求值失败会拒绝重开，未参与求值的节点可以保留缺失资源键。宿主不重新遍历磁盘材质，避免旧文件引用覆盖当前草稿；原始 glTF buffer、OBJ MTL 等伴随文件单独取自 `Reader::mesh_dependency_files`，不递归材质。文档仍在使用但目录已无同类资产时拒绝导出；已知缺失资源的键保留在场景，严格重开仍拒绝缺失的有效依赖。字体、样式和着色器来自安装目录，Cache 是派生数据，不进入复现包。没有工程时创建独立工程容器，副本 startup scene 指向当前内存场景。
 
 工作线程只持有拥有型作者数据与不可变内容，不持有 Runtime 根。`material_sources` 固定 Session 已加载的精确 MS 文本，`textures` 固定有效输入的 RGBA 像素；导出不回读这些内容的新磁盘版本。图片以无损 PNG 编码写入原资产路径，保持文件名和身份，只排列 RGBA/BGRA 通道，不转换颜色空间；重新解码逐像素核对。一个纹理键对应不同已加载像素、或同一 Source 路径对应不同文本时明确拒绝，不能任取一个版本。
@@ -269,7 +275,7 @@ manifest 必须含 `engine_assets: {version: 1, records: [...]}`，空集合也�
 
 Windows 长路径转换覆盖产物复制、归档、文件时间读取、目录身份比较、实例发现与清理以及 CLI 请求文件。路径拼接和 canonical 解析后，在文件操作边界使用现有 windows_file_path 统一转换；协议中的绝对路径、工程相对路径和资源身份保持原格式。深目录副本可以重开、保存并再次导出。
 
-repro.open 校验完整文件集合、大小及哈希，拒绝缺失、修改、额外文件或链接；运行时生成的 Project/Cache 不参与复现依赖。随后通过同一工程入口的严格加载策略编译源码并读取场景，全部成功才替换当前文档并恢复视图与选择。编译或反序列化失败保留当前工程和对象；常规 UI 的修复工程模式保持原有行为。有未保存场景或源码时拒绝替换。失败/取消可能留下诊断目录，未返回成功的任务不应当作成功交付。
+repro.open 校验完整文件集合、大小及哈希，拒绝缺失、修改、额外文件或链接；运行时生成的 Project/Cache 不参与复现依赖。清单中的场景必须与副本工程配置的启动场景一致。预检和严格加载共用已打开的工程、启动场景字节和已校验的引擎依赖记录。候选会话完成编译、反序列化、依赖与环境核对，并恢复选择及检查目标后，才通过工程打开共用的发布步骤替换当前文档和视图。编译或反序列化失败保留当前工程和对象；常规 UI 的修复工程模式保持原有行为。有未保存场景或源码时拒绝替换。失败/取消可能留下诊断目录，未返回成功的任务不应当作成功交付。
 
 manifest 标记 `view_schema: 7`，相机或视图快照合同改变时加一。`repro.open` 只接受当前 `view_schema` 和当前格式的场景；缺少标记、其他版本、带已删除选项（例如 `ssil`、`shadow_bias`、`direct_reference`）的视图，以及旧格式场景都拒绝。视图里的 World 设置与加载出的候选文档的 Environment 不一致时返回 `dependency_mismatch`；天空贴图和旋转角只由场景记录，视图快照不含这两项，核对前取自场景的 Environment。选择按导出时的 World 成员序号、检查目标按该 Entity 上的组件序号，在候选文档替换当前文档之前解析；序号越界返回 `dependency_mismatch`。视图版本或已删除选项不合格返回 `invalid_request`，旧格式场景在严格加载时失败，返回 `operation_failed`。任何验证失败都保留当前文档。
 
@@ -308,7 +314,19 @@ manifest 标记 `view_schema: 7`，相机或视图快照合同改变时加一。
 
     pwsh -NoProfile -File ./tools/acceptance-gate.ps1 -Targets editor_log_smoke_acceptance
 
-该目标调用 Control harness 的 `--smoke-logs`。每次证据保存在构建目录 `log-smoke-acceptance/<唯一目录>/`：`editor.log` 是子进程 stdout/stderr，正式 JSONL 位于 `Logs/editor/` 及其中的 `runner-N/`；通过后自动移除临时 `Project/` 工程副本并仅保留最近 5 次通过的日志目录，失败时保留完整 `Project/` 现场供排查。Reader 扫描完整轮转段，核对 Editor PID、父子 run 身份、全部附属 run 和磁盘 manifest；一次 Play 只能对应一个 Runner。父日志的 `play.process_ended` 必须确认该 Runner 的实际正常退出（非 forced、exit code 0），才排空子日志；Editor 则以进程句柄退出为依据。Runner 必须在同一文档中记录 started/stopped，且 `runner.stop_observed` 恰好一次；即时停止允许完成帧数为 0。两个进程都须记录 application.started/finished。
+验收直接启动 `atelier_control.exe`，核对文件与标准输入、参数诊断、过期实例和进程退出码。宿主处理真实管道请求并暂停出帧，让跟踪任务保持 pending。分别缩短服务端任务期限和 CLI 轮询期限，核对两种 `timeout` 的消息及任务身份，并在 CLI 断连后从新连接核对宿主记录的取消原因。
+
+`op.call layout.reset` 经宿主返回布局容量错误时，CLI 输出 `operation_failed` 和原始诊断，退出码为 1。验收耗尽实际节点身份后检查失败响应的请求 ID、状态令牌和重放结果，并验证失败前的视口仍有焦点。
+
+窗口冒烟通过真实 CLI 发起 `render.capture` 和 `repro.export`。验收先核对捕获参数的首错，再用普通文件占住实例的工件目录。两种任务都应在轮询中返回 `storage_error` 和文件系统原始诊断，CLI 退出码为 1。随后用新的 CLI 进程取消、查询同一任务，核对错误和任务身份，并用查询请求 ID 确认直接返回终态。恢复目录后重新捕获，核对成功退出、完成清单、PNG 文件头和深度文件长度。
+
+复现包验收在工程副本的 Source 里放入超过单文件上限的输入，检查 `job.status` 和随后取消返回相同的 `resource_limit` 原因，再通过 `repro.open` 打开半成品，核对拒绝结果与当前场景身份。验收另用独占文件句柄制造真实读取失败，将返回的 `storage_error` 消息与底层哈希读取诊断逐字比较。移除故障输入后重新导出，核对完成清单中的场景和工程资产身份。暂时移走一个实际引用的身份文件时，快照直接返回带资产键的 `dependency_mismatch`，查询该请求的任务 ID 返回 `unknown_job`。
+
+打开验收通过 Control 新建工程、添加内置网格并导出复现包。它先等长修改场景文件，核对内容摘要错误；再为含重复对象身份的场景更新清单，确认严格加载返回首个构造错误。验收还分别检查了选择越界、清单场景与工程配置不一致，以及漏报内置网格依赖。每次拒绝都与请求前的工程、场景、对象句柄、选择、历史、相机和视图比较。恢复原包后，验收核对新文档中的场景和选中实体。
+
+分页验收通过同一 Control 连接取一项的首页，调整续页大小，将资产和对象逐项与 full 的内容及顺序对照。它同时核对名称筛选的继承、跨域和越界游标的诊断。新增 Entity 后旧对象游标过期，新增工程目录并刷新后旧资产游标过期，另一目录的有效游标仍可继续。含多个错误的游标会核对首错的协议码和完整消息。
+
+该目标调用 Control harness 的 `--smoke-logs`。每次证据保存在构建目录 `log-smoke-acceptance/<唯一目录>/`：`editor.log` 是子进程 stdout/stderr，正式 JSONL 位于 `Logs/editor/` 及其中的 `runner-N/`；通过后移除临时 `Project/` 工程副本并写入 `passed` 标记。自动清理仅处理带标记的目录，保留最近 5 次通过的日志。中途失败的目录保留已生成的日志和现场。Reader 扫描完整轮转段，核对 Editor PID、父子 run 身份、全部附属 run 和磁盘 manifest；一次 Play 只能对应一个 Runner。父日志的 `play.process_ended` 必须确认该 Runner 的实际正常退出（非 forced、exit code 0），才排空子日志；Editor 则以进程句柄退出为依据。Runner 必须在同一文档中记录 started/stopped，且 `runner.stop_observed` 恰好一次；即时停止允许完成帧数为 0。两个进程都须记录 application.started/finished。
 
 任何 error/critical、日志设施故障、Reader 损坏/丢失、不健康或非 final 的最终 health、缺失日志或退出证据都失败；读取期间的 final=false 不提前判失败。不会以“Reader 能打开目录”、没有 stderr 或进程退出码为唯一通过证据，也不把 warning 文本中的关键词当 fault。该冒烟不覆盖 glTF 导出后关闭等其他特定 K6 序列。
 

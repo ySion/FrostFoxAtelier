@@ -151,11 +151,11 @@ struct TreeRow {
     std::bitset<128> lines; // Control::tree_lines.
 };
 
-// Visible rows of nodes, replacing rows. A nonempty filter (ASCII case folding)
-// keeps matching nodes with their ancestors and subtrees, all expanded. Throws
-// std::invalid_argument for a node outside preorder, deeper than 127 levels, or
-// beyond maximum_tree_rows.
-void flatten_tree(std::span<const TreeNode>, std::wstring_view filter, std::vector<TreeRow>& rows);
+// Returns complete visible rows or the first preorder, depth or capacity error.
+// Filtering keeps matches, their ancestors and subtrees expanded. Callers may
+// transfer a spare row buffer to reuse its capacity.
+[[nodiscard]] Result<std::vector<TreeRow>> flatten_tree(std::span<const TreeNode>, std::wstring_view filter,
+                                                        std::vector<TreeRow> rows = {});
 
 // Ascending row indices to describe: the viewport and one screen beyond either
 // edge, the first and last rows, and each pinned row with its neighbours and ancestors.

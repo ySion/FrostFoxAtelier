@@ -1,15 +1,15 @@
 #pragma once
 
+#include "foundation/function_ref.hpp"
 #include "json/json.hpp"
 #include <atomic>
 #include <chrono>
 #include <expected>
 #include <filesystem>
-#include <functional>
 #include <memory>
-#include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace atelier::control {
 inline constexpr unsigned protocol_version = 1;
@@ -18,13 +18,13 @@ inline constexpr std::size_t maximum_message = 4 * 1024 * 1024;
 
 inline constexpr unsigned maximum_timeout_ms = 600000;
 
-struct Failure final : std::runtime_error {
+struct Failure final {
     std::string code;
+    std::string message;
 
-    Failure(std::string category, std::string message)
-        : std::runtime_error(std::move(message)), code(std::move(category)) {}
+    Failure(std::string category, std::string diagnostic) : code(std::move(category)), message(std::move(diagnostic)) {}
 
-    Failure(const json::Error& error) : std::runtime_error(error.describe()), code("invalid_request") {}
+    Failure(const json::Error& error) : Failure("invalid_request", error.describe()) {}
 };
 
 struct Peer final {
@@ -33,7 +33,7 @@ struct Peer final {
 
 std::expected<std::filesystem::path, Failure> default_directory();
 
-std::string unique_id();
+std::expected<std::string, Failure> unique_id();
 
 json::Result<json::Document> failure(std::string_view code, std::string_view message);
 
@@ -53,9 +53,9 @@ public:
 
     Server& operator=(const Server&) = delete;
 
-    using Handler = std::function<json::Result<json::Document>(json::Value, const std::shared_ptr<Peer>&)>;
+    using Handler = FunctionRef<std::expected<json::Document, Failure>(json::Value, const std::shared_ptr<Peer>&)>;
 
-    void poll(const Handler&);
+    void poll(Handler);
 
     void stop() noexcept;
 

@@ -7,7 +7,7 @@ endforeach()
 foreach(_option BUILD_EXAMPLES BUILD_MODULE BUILD_TESTS BUILD_BENCHMARKS BUILD_FUZZING ENABLE_INSTALL DOCS_GEN)
     set(QUILL_${_option} OFF CACHE BOOL "" FORCE)
 endforeach()
-set(QUILL_NO_EXCEPTIONS OFF CACHE BOOL "" FORCE)
+set(QUILL_NO_EXCEPTIONS ON CACHE BOOL "" FORCE)
 set(QUILL_NO_THREAD_NAME_SUPPORT ON CACHE BOOL "" FORCE)
 set(QUILL_DISABLE_NON_PREFIXED_MACROS ON CACHE BOOL "" FORCE)
 FetchContent_Declare(atelier_quill
@@ -15,6 +15,7 @@ FetchContent_Declare(atelier_quill
     DOWNLOAD_NAME "${_quill_filename}"
     DOWNLOAD_DIR "${PROJECT_SOURCE_DIR}/.tools/downloads" EXCLUDE_FROM_ALL SYSTEM)
 FetchContent_MakeAvailable(atelier_quill)
+target_compile_definitions(quill INTERFACE FMTQUILL_USE_EXCEPTIONS=0)
 
 # Filtering belongs to the host; an inherited QUILL_LOG_LEVEL is not configuration.
 find_package(Git REQUIRED)

@@ -157,6 +157,8 @@ struct Statistics {
     std::uint64_t scope_retirements{};
 };
 
+[[nodiscard]] Result<ui::ControlKey> allocate_control_key(ui::ControlKey& next_key, std::string_view exhausted);
+
 // Call during the host Runtime's existing bootstrap, before its first object.
 Result<TypeId> register_types(Runtime&);
 

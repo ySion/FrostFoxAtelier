@@ -48,9 +48,12 @@ Result<material::ProgramSurfaceRef> capture_slot_surface(Runtime& runtime, const
 } // namespace
 
 Result<std::vector<MaterialBinding>> read_material_bindings(Runtime& runtime, ObjectId id) {
-    if (auto mesh_res = runtime.with_native<const StaticMeshComponent>(
-            id, [&](const StaticMeshComponent& value) { return read_bindings_of(runtime, id, value); }))
-        return mesh_res;
+    ATELIER_TRY_BIND(type, runtime.type_of(id));
+    ATELIER_TRY_BIND(mesh_type, runtime.native_type<StaticMeshComponent>());
+    ATELIER_TRY_BIND(mesh, runtime.is_a(*type, *mesh_type));
+    if (*mesh)
+        return runtime.with_native<const StaticMeshComponent>(
+            id, [&](const StaticMeshComponent& value) { return read_bindings_of(runtime, id, value); });
     return runtime.with_native<const ProceduralGeneratorComponent>(
         id, [&](const ProceduralGeneratorComponent& value) { return read_bindings_of(runtime, id, value); });
 }

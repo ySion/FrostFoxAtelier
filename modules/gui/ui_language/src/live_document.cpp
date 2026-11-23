@@ -197,10 +197,10 @@ void LiveDocument::install(InFlight& job) {
     diagnostic_.clear();
 }
 
-Result<void> LiveDocument::append(std::string_view name, ui::ControlKey parent, std::span<const KeyBinding> keys,
+Result<bool> LiveDocument::append(std::string_view name, ui::ControlKey parent, std::span<const KeyBinding> keys,
                                   std::span<const InputValue> inputs, ControlOutput output) {
     const auto& module = candidate_ ? candidate_ : active_;
-    const auto report = [&](const Error& error) -> Result<void> {
+    const auto report = [&](const Error& error) -> Result<bool> {
         diagnostic_ = error.message;
         candidate_failed_ = static_cast<bool>(candidate_);
         submission_failed_ = false;
@@ -238,7 +238,7 @@ Result<void> LiveDocument::append(std::string_view name, ui::ControlKey parent, 
         const auto start = sample ? Clock::now() : Clock::time_point{};
         if (!region.instance) {
             if (blocked)
-                return {}; // A refused first mount contributes an empty accepted view.
+                return false; // A refused first mount contributes an empty accepted view.
             auto instance = Instance::create(module->find(name), parent, next_key_, keys, inputs);
             if (!instance) {
                 if (!candidate_)
@@ -281,7 +281,7 @@ Result<void> LiveDocument::append(std::string_view name, ui::ControlKey parent, 
         submission_failed_ = false;
         diagnostic_.clear();
     }
-    return {};
+    return !blocked;
 }
 
 Result<bool> LiveDocument::event(const ui::Action& action) {
