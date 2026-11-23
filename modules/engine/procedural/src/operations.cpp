@@ -11,6 +11,7 @@
 #include <bit>
 #include <cmath>
 #include <limits>
+#include <numbers>
 
 namespace atelier::procedural {
 namespace {
@@ -236,25 +237,6 @@ Geometry import_mesh(const geometry::Mesh& mesh) {
     (void)result.set(String::literal<"N">(), Layer::vertex, SharedArray<Vector3>{std::move(normals)});
     (void)result.set(String::literal<"uv">(), Layer::vertex, SharedArray<Vector2>{std::move(uvs)});
     (void)result.set(String::literal<"material">(), Layer::primitive, SharedArray<std::uint32_t>{std::move(material)});
-    return result;
-}
-
-Result<Geometry> grid(Vector2 size, std::uint32_t rows, std::uint32_t columns) {
-    if (!math::is_finite(size) || std::uint64_t{rows} * columns > element_limit)
-        return failure("Grid size must be finite and its point count below 2^32 - 1.");
-    Array<Vector3> positions;
-    positions.reserve(std::size_t{rows} * columns);
-    const auto at = [](float extent, std::uint32_t i, std::uint32_t count) {
-        return count < 2 ? 0.f : static_cast<float>(extent * (double(i) / (count - 1) - 0.5));
-    };
-    for (std::uint32_t r = 0; r < rows; ++r)
-        for (std::uint32_t c = 0; c < columns; ++c)
-            positions.add({at(size.x, c, columns), 0, at(size.y, r, rows)});
-    auto result = Geometry::points(std::move(positions));
-    if (!result)
-        return result;
-    if (auto normals = result->add<Vector3>("N", Layer::point, {0, 1, 0}); !normals)
-        return std::unexpected(normals.error());
     return result;
 }
 
@@ -531,6 +513,34 @@ Result<Geometry> scatter(const Geometry& surface, const ScatterSettings& setting
     return result;
 }
 
+Quaternion euler_to_quaternion(Vector3 euler_degrees) noexcept {
+    constexpr double radians = std::numbers::pi / 180.0;
+    const auto q = math::from_axis_angle(Vector3d{0.0, 0.0, 1.0}, double{euler_degrees.z} * radians) *
+                   math::from_axis_angle(Vector3d{0.0, 1.0, 0.0}, double{euler_degrees.y} * radians) *
+                   math::from_axis_angle(Vector3d{1.0, 0.0, 0.0}, double{euler_degrees.x} * radians);
+    return Quaternion(q);
+}
+
+Result<void> transform(Geometry& geometry, const TransformSettings& settings) {
+    if (!math::is_finite(settings.translate) || !math::is_finite(settings.rotate_degrees) ||
+        !math::is_finite(settings.scale) || !math::is_finite(settings.pivot))
+        return failure("Transform translate, rotate, scale and pivot must be finite.");
+    const Quaternion q = euler_to_quaternion(settings.rotate_degrees);
+    Vector3 effective_translate = settings.translate;
+    if (settings.pivot != Vector3{}) {
+        const auto unit_q = math::try_normalize(q);
+        if (!unit_q)
+            return failure("Transform rotation is degenerate.");
+        const Matrix4 linear = math::trs_matrix({}, *unit_q, settings.scale);
+        const Vector3 pivoted = math::transform_direction(settings.pivot, linear);
+        const Vector3d delta = Vector3d(settings.translate) + Vector3d(settings.pivot) - Vector3d(pivoted);
+        effective_translate = Vector3(delta);
+        if (!math::is_finite(effective_translate))
+            return failure("Transform pivot offset overflowed float range.");
+    }
+    return transform(geometry, effective_translate, q, settings.scale);
+}
+
 Result<void> transform(Geometry& geometry, Vector3 translate, Quaternion rotation, Vector3 scale) {
     const auto unit_rotation = math::try_normalize(rotation);
     if (!math::is_finite(translate) || !math::is_finite(scale) || !unit_rotation)
@@ -569,6 +579,83 @@ Result<void> transform(Geometry& geometry, Vector3 translate, Quaternion rotatio
     if (scale.x * double(scale.y) * scale.z < 0)
         geometry.reverse_primitives(true);
     return {};
+}
+
+Result<Geometry> match_size(const Geometry& geometry, const MatchSizeSettings& settings, const Geometry* reference) {
+    if (!math::is_finite(settings.target_position) || !math::is_finite(settings.target_size))
+        return failure("MatchSize target_position and target_size must be finite.");
+    if (settings.scale_to_fit && !reference &&
+        (settings.target_size.x <= 0.f || settings.target_size.y <= 0.f || settings.target_size.z <= 0.f))
+        return failure("MatchSize target_size must be positive when scale_to_fit is enabled.");
+
+    const auto src_bounds = bounds(geometry);
+    if (!src_bounds)
+        return geometry;
+
+    const auto ref_bounds = reference ? bounds(*reference) : std::nullopt;
+    const Vector3d src_min(src_bounds->minimum);
+    const Vector3d src_max(src_bounds->maximum);
+    const Vector3d src_center = (src_min + src_max) * 0.5;
+    const Vector3d src_ext = src_max - src_min;
+
+    const Vector3d goal_size =
+        ref_bounds ? (Vector3d(ref_bounds->maximum) - Vector3d(ref_bounds->minimum)) : Vector3d(settings.target_size);
+
+    Vector3d scale_vec{1.0, 1.0, 1.0};
+    if (settings.scale_to_fit) {
+        if (settings.uniform_scale) {
+            double best = 0.0;
+            bool any_axis = false;
+            for (std::size_t a = 0; a < 3; ++a) {
+                if (src_ext[a] > 1e-6 && goal_size[a] > 1e-6) {
+                    const double ratio = goal_size[a] / src_ext[a];
+                    best = any_axis ? std::min(best, ratio) : ratio;
+                    any_axis = true;
+                }
+            }
+            if (any_axis)
+                scale_vec = {best, best, best};
+        } else {
+            for (std::size_t a = 0; a < 3; ++a) {
+                if (src_ext[a] > 1e-6 && goal_size[a] > 1e-6)
+                    scale_vec[a] = goal_size[a] / src_ext[a];
+            }
+        }
+    }
+
+    const Vector3d anchor_min = ref_bounds ? Vector3d(ref_bounds->minimum) : Vector3d(settings.target_position);
+    const Vector3d anchor_center = ref_bounds ? ((Vector3d(ref_bounds->minimum) + Vector3d(ref_bounds->maximum)) * 0.5)
+                                              : Vector3d(settings.target_position);
+    const Vector3d anchor_max = ref_bounds ? Vector3d(ref_bounds->maximum) : Vector3d(settings.target_position);
+    const std::array<AxisJustify, 3> justifies{settings.justify_x, settings.justify_y, settings.justify_z};
+
+    Vector3d eff_translate{};
+    for (std::size_t a = 0; a < 3; ++a) {
+        const double scaled_min = src_center[a] + (src_min[a] - src_center[a]) * scale_vec[a];
+        const double scaled_max = src_center[a] + (src_max[a] - src_center[a]) * scale_vec[a];
+        double shift = 0.0;
+        switch (justifies[a]) {
+        case AxisJustify::none:
+            shift = 0.0;
+            break;
+        case AxisJustify::min:
+            shift = anchor_min[a] - scaled_min;
+            break;
+        case AxisJustify::center:
+            shift = anchor_center[a] - src_center[a];
+            break;
+        case AxisJustify::max:
+            shift = anchor_max[a] - scaled_max;
+            break;
+        default:
+            return failure("Invalid AxisJustify value.");
+        }
+        eff_translate[a] = src_center[a] * (1.0 - scale_vec[a]) + shift;
+    }
+
+    Geometry out = geometry;
+    ATELIER_TRY(transform(out, Vector3(eff_translate), Quaternion{}, Vector3(scale_vec)));
+    return out;
 }
 
 Result<void> promote(Geometry& geometry, StringView name, Layer to, Reduce reduce) {

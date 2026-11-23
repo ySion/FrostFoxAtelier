@@ -34,13 +34,13 @@
 ## 操作
 
 - **`import_mesh`**：每个三角形一个图元，法线和 UV 写入 vertex 层的 `N`、`uv`，材质槽号写入 primitive 层的 `material`；将 `-0.0f` 规范化为 `+0.0f` 后，位置逐位相等的顶点焊接成同一个点。
-- **`grid` / `line`**：XZ 平面点阵（N = +Y，以原点为中心）和含两端的等距点。
-- **`box` / `sphere` / `tube`**：以原点为中心，按下述固定拓扑生成闭合多面体，N 统一为 vertex 层。尺寸、半径、高度须有限且为正；Sphere 经向至少 3 段、纬向至少 2 个区间，Tube 至少 3 段。预检总角数须小于 2³²−1，不截断或自动降分辨率。使用实际 float 坐标，表面消费者仍执行公共凸面判据，不为构造输出豁免精度校验。
+- **`grid` / `line`**：`grid(GridSettings)` 支持 `zx`（+Y）、`xy`（+Z）、`yz`（+X）三参考平面上的 `quads`（默认四边形网格）、`triangles`（三角形网格）与 `points`（纯点阵）；表面模式要求 `rows/columns >= 2` 且尺寸为正，写出 `vertex` `N` 与 `[0,1]` 仿射 `uv`；双参数便捷入口 `grid(size, rows, columns)` 保持纯点阵语义。`line` 输出含两端的等距散点。
+- **`box` / `sphere` / `tube` / `wedge` / `circle` / `torus`**：按下述拓扑生成几何，表面均写出 `vertex` `N` 与 `vertex` `uv`。`box` 支持三轴细分（共享棱与角点构成单一闭合流形壳）及 `base_on_ground`（底面贴齐 `center.y`）；`tube` 支持独立 `radius_top`/`radius_bottom`（一端为 0 时生成共享尖顶三角锥面）、中空 `inner_radius`（凸梯形环盖）、多层 `rows` 与扇形 `arc_degrees`（自动封闭径向切口）；`wedge` 生成闭合楔形体或双坡屋顶棱柱（`peak_ratio` 覆盖 `0..1`）；`circle` 在三参考平面上输出闭合凸多边形（小于 360° 为过圆心的凸三角扇）、闭合折线或供 `Sweep` 拱门/弯墙直接消费的开放圆弧折线（`open_arc`）；`torus` 生成 `minor_radius < major_radius` 的无自交圆环或带盖弯管。预检总角数均须小于 2³²−1，表面消费者仍执行公共凸面判据。
 - **`Geometry::connect_points` / Polyline**：只接受纯点输入，不得带任何图元或 instance；按点序连接为一个开放图元，不焊接，不自动闭合，没有 closed 选项。0 点空进空出（保留 detail，与未连端口相容），1 点报错。全部 point 与 detail 列及其用途原样共享保留，不生成 N；已有空 vertex/primitive 列保留定义，分别扩为点数/1 个类型默认值，instance 列仍为空，不静默删列。`Line → Polyline` 先生成等距点，再连接相邻点；作者手填点数组的绘制曲线节点后移到 S2，见 roadmap。
 - **`group_box`**：在各轴闭区间 `[minimum,maximum]` 内选 point，写入/替换同名 bool 列；边界须有限且逐轴有序。名字遵守 Geometry 标识符规则，已有异层/异类型列报错。GroupBox 节点在输入的 COW 副本上操作，不改输入；这是输出组名，不能用空名字表示全选，不支持表达式或反选。
 - **Connectivity** 按共享点索引将多边形、开放折线和散点划分为连通块，在 point 层写入 uint 属性（默认 `piece`）。编号从 0 开始，按每块最小点索引排序。仅位置重合的独立点保持分离，孤立点各有一个编号；实例层与其余属性原样传递。需要逐图元编号时接 Promote，目标层选 primitive，归约选 first。
 - **`scatter`**：接受三角形及凸平面多边形，不接受折线；按下述公共首角扇形视图采样。原图元 p、局部子三角 j 的随机源 s 在 j=0 时为 `hash(seed,p)`，j>0 时为 `hash(hash(seed,p),j)`；点数为面积 × 密度，以 `hash(s,0)` 按小数部分概率进位，第 k 个点使用 `hash(s,2*k+1)` 与 `hash(s,2*k+2)` 均匀采样重心坐标。输出按 p/j/k 顺序，k 在每个子三角内从零开始，不把展开下标或线程号混入随机源。可选最小间距通过紧凑双数组开放寻址空间哈希在全部候选上按这个顺序稳定淘汰，所有列一起压紧；格坐标超出 ±2⁶² 时失败。输出 P、N、`id`、`sourceprim`、`sourceordinal`、`sourceprimuv`；仅输入包含超过三角的面时在末尾追加 uint `sourcetri`（其他三角面的值为 0）。纯三角输入的六列顺序、算术与值不变。`id` 在 j=0 时为 `hash(p,k)`，否则为 `hash(hash(p,j),k)`，它只是非唯一随机种子；（p,j,k）是局部稳定来源。`sourceprimuv` 是子三角 j 内的 (b1,b2)，不是原多边形坐标。
-- **`transform`**：v · S · R · T。point 列完整变换，vector 列只用线性部分 L，normal 列乘 sign(det L) · cofactor(L) 后归一化（零向量保持为零，所以压扁到平面的奇异变换仍有平面法线），`Usage::orientation` 四元数列复合旋转，实例矩阵右乘，color 与 none 列不变。行列式为负时只反转 polygon 的顶点顺序及 vertex 列，polyline 的方向不变。输入或结果出现非有限值时失败，几何已被部分改写。
+- **`transform` / `match_size`**：底层 `transform(geometry, translate, rotation, scale)` 执行 `v · S · R · T`；`TransformSettings` 与 `Transform` 节点采用围绕局部 `pivot` 的缩放加角度制欧拉旋转（`X → Y → Z` 顺序）再平移。point 列完整变换，vector 列只用线性部分 L，normal 列乘 sign(det L) · cofactor(L) 后归一化（零向量保持为零，所以压扁到平面的奇异变换仍有平面法线），`Usage::orientation` 四元数列复合旋转，实例矩阵右乘，color 与 none 列不变；行列式为负时只反转 polygon 的顶点顺序及 vertex 列，polyline 的方向不变。`match_size` 按包围盒执行逐轴 `none / min / center / max` 对齐（默认 XZ 居中、Y 下界贴齐 0）与可选等比/非等比 `scale_to_fit`（连接 `reference` 几何且非空时自动对齐参考几何包围盒）。
 - **`promote`**：把属性移到另一层，按 first / sum / average 合成每个目标元素接触到的源元素（向 detail 归约或自 detail 广播直接走单次线性快路径）；sum 与 average 只接受 float 与 float 向量；instance 层只和 detail 交换；P 不能移动。
 - **`remove_flagged`**：删除 bool 列为 true 的元素；删除点时一并删除用到它们的图元，删除图元时保留点。
 - **`merge`**：按输入顺序拼接各层，属性按名字合并，缺失的元素取类型默认值，detail 取第一个有值的输入；同名属性的层、类型或用途不一致时失败。
@@ -67,9 +67,10 @@
 
 实现位于 [constructors.cpp](../../../modules/engine/procedural/src/constructors.cpp)。已保存图虽不存 Geometry 缓冲，重算仍依赖点序、面序、首角及 N 所在层；同类型不能静默更换这些规则。后续三角化须显式操作，不把 Box 六面改成十二面。
 
-- **Box**：8 点的 bit0/bit1/bit2 分别取 X/Y/Z 上界，0 取下界。六面按 −X、+X、−Y、+Y、−Z、+Z 排列，角号依次为 `(0,4,6,2)`、`(1,3,7,5)`、`(0,1,5,4)`、`(2,6,7,3)`、`(0,2,3,1)`、`(4,5,7,6)`。每面四个 vertex N 都取该面轴向法线。
-- **Sphere**：Y 为极轴，M=`segments`、L=`latitudes`；先北极、再从北到南的 L−1 圈（纬角 πj/L），最后南极；每圈经角 φ=2πi/M，从 +X 向 +Z。共 `2+(L−1)M` 点、`ML` 面、`M(4L−2)` 角，共享缝和极点。先北极三角 `(north,ring1_next,ring1_i)`，再逐圈四边形 `(upper_i,upper_next,lower_next,lower_i)`，最后南极三角 `(south,last_i,last_next)`；每角 N 是其实际点位置的单位径向。
-- **Tube**：Y 轴实心带盖，M=`segments`；先下圈 b、后上圈 t，位置为 `(r cosφ,±h/2,r sinφ)`，经角同 Sphere。侧面依次 `(b_i,t_i,t_next,b_next)`，下盖 `(b_0,b_1,…,b_M−1)`，上盖 `(t_0,t_M−1,…,t_1)`。共 `2M` 点、`M+2` 面、`6M` 角，不加盖心点。侧面 vertex N 是实际位置在 XZ 平面的单位径向，两盖为 −Y/+Y；不支持空心或去盖模式。
+- **Box**：默认 `1×1×1` 未细分时，8 点的 bit0/bit1/bit2 分别取 X/Y/Z 上界，0 取下界；六面按 −X、+X、−Y、+Y、−Z、+Z 排列，角号依次为 `(0,4,6,2)`、`(1,3,7,5)`、`(0,1,5,4)`、`(2,6,7,3)`、`(0,2,3,1)`、`(4,5,7,6)`，并附逐面 `[0,1]` 仿射 `vertex uv`。开启三轴细分时沿六面边界共享整数格点，维持同一六面大组顺序与外向闭合流形。
+- **Sphere**：Y 为极轴，M=`segments`、L=`latitudes`；先北极、再从北到南的 L−1 圈（纬角 πj/L），最后南极；每圈经角 φ=2πi/M，从 +X 向 +Z。共 `2+(L−1)M` 点、`ML` 面、`M(4L−2)` 角，共享缝和极点。先北极三角 `(north,ring1_next,ring1_i)`，再逐圈四边形 `(upper_i,upper_next,lower_next,lower_i)`，最后南极三角 `(south,last_i,last_next)`；每角 N 是其实际点位置的单位径向，附经纬 `vertex uv`。
+- **Tube**：默认实心等径单层整圆（`radius_top == radius_bottom > 0`、`inner_radius = 0`、`rows = 1`、`arc_degrees = 360`、`end_caps = true`）保持原持久拓扑：先下圈 b、后上圈 t，共 `2M` 点、`M+2` 面、`6M` 角，侧面 `(b_i,t_i,t_next,b_next)`，下盖 `(b_0,…,b_M−1)`，上盖 `(t_0,t_M−1,…,t_1)`。一般参数下，尖顶（半径为 0）合并为单顶点并输出三角形锥面；中空（`inner_radius > 0`）追加反向内壁并以凸梯形环片封盖；部分张角（`< 360°`）在 `end_caps` 开启时封闭首尾径向切面。
+- **Wedge / Circle / Torus**：`Wedge` 沿 Z 切分为 `nz+1` 组等截面三角形 `(A_k, B_k, C_k)`，依次输出底面、右坡、左坡四边形与 −Z/+Z 山墙三角形；`Circle` 在右手平面基 `(u, v, n)`（`u × v = n`）下按角度采样，整圆多边形输出单 `M` 边形，部分扇形输出过圆心的 `M` 个凸三角形，`open_arc` / `closed_polyline` 输出单条 `polyline`；`Torus` 要求 `0 < minor_radius < major_radius`，主环平行弦构成严格共面的等腰梯形四边形，部分张角且 `end_caps = true` 时封闭两端管口。
 
 ### 公共凸面剖分
 
@@ -134,7 +135,7 @@ Release 下运行 `atelier_procedural_acceptance --profile-boolean <新的绝对
 
 ## 程序化图
 
-`procedural::register_types(Runtime&)` 发布 Layer、Reduce、RayMode、BooleanOperation、Geometry、`procedural.Geometries`（`Array<Geometry>`）、Context、统一基类 `procedural.Node`、Graph 和内置节点；String、`Array<String>` 和除 String 外每种列类型的 Array（`procedural.Bools`、`Ints`、`Uints`、`Floats`、`Vector2s`、`Vector3s`、`Vector4s`、`Quaternions`、`Matrix4s`）不存在时一并发布，源码节点借用的列就是这些类型。重复调用不做任何事。
+`procedural::register_types(Runtime&)` 发布 Layer、Reduce、RayMode、BooleanOperation、SweepProfile、OrientationPlane、GridPrimitive、CirclePrimitive、AxisJustify、FallbackShape、Geometry、`procedural.Geometries`（`Array<Geometry>`）、Spatial、Context、统一基类 `procedural.Node`、Graph 和内置节点；String、`Array<String>` 和除 String 外每种列类型的 Array（`procedural.Bools`、`Ints`、`Uints`、`Floats`、`Vector2s`、`Vector3s`、`Vector4s`、`Quaternions`、`Matrix4s`）不存在时一并发布，源码节点借用的列就是这些类型。重复调用不做任何事。
 
 - **Graph**（`procedural.Graph`）：公开字段 `seed`；隐藏的节点强引用序列和 display 强引用槽。
 - **Node**（`procedural.Node`）：所有 C++ 与 `.source` 程序化节点统一派生自 `procedural.Node`（不再设 `PointNode`）；节点类型的公开字段就是 UI/持久化参数；隐藏的 `inputs` 强引用序列每个连接一项，按输入端口排序，与之平行的非反射 C++ 数组记录每个连接的（输入端口，上游输出号）。`.source` 节点直接使用语言级 `fail("...")` 语句报告业务失败（返回 `invocation_failed` 与源码位置，`Node::fail` 已退休）并用 `parallel_for` 并行计算属性列。`procedural.Node` 自身无 `process` 方法，不能直接作为图节点实例。
@@ -155,18 +156,22 @@ Release 下运行 `atelier_procedural_acceptance --profile-boolean <新的绝对
 | 节点 | 参数 | 端口 |
 | --- | --- | --- |
 | MeshImport | mesh | context → output |
-| Grid | size、rows、columns | output |
+| Grid | primitive_type=quads（quads / triangles / points）、orientation=zx（zx / xy / yz）、size=(10,10)、center=(0,0,0)、rows=10、columns=10 | output |
 | Line | start、end、count | output |
-| Box | size 默认 (1,1,1) | output |
+| Box | size=(1,1,1)、center=(0,0,0)、base_on_ground=false、divisions_x/y/z=1 | output |
 | Sphere | radius=1、segments=32、latitudes=16（纬向区间数） | output |
-| Tube | radius=1、height=2、segments=32 | output |
+| Tube | radius_top=1、radius_bottom=1、inner_radius=0、height=2、center=(0,0,0)、base_on_ground=false、segments=32、rows=1、arc_degrees=360、end_caps=true | output |
+| Wedge | size=(2,1,2)、peak_ratio=0.5、center=(0,0,0)、base_on_ground=false、divisions_z=1 | output |
+| Circle | primitive_type=polygon（polygon / closed_polyline / open_arc）、orientation=zx、radius=(1,1)、center=(0,0,0)、segments=32、start_degrees=0、arc_degrees=360 | output |
+| Torus | orientation=zx、major_radius=1、minor_radius=0.25、center=(0,0,0)、base_on_ground=false、major_segments=32、minor_segments=16、arc_degrees=360、end_caps=true | output |
 | Polyline | — | points → output |
 | GroupBox | group="selected"、minimum=(−.5,−.5,−.5)、maximum=(.5,.5,.5) | input → output |
 | Connectivity | attribute="piece"（point uint） | input → output |
 | Scatter | density、seed、min_distance；节点种子为 hash(图种子, seed) | context, surface → points |
 | Boolean | operation 默认 unite，可选 intersect、subtract（A 减 B） | a, b → output |
 | VolumeScatter | density=1、seed=0、origin=(0,0,0)、cell_size=1 | context, surface → points |
-| Transform | translate、rotate、scale | input → output |
+| Transform | translate、rotate（X→Y→Z 角度制欧拉角）、scale、pivot | input → output |
+| MatchSize | justify_x=center、justify_y=min、justify_z=center、target_position=(0,0,0)、scale_to_fit=false、uniform_scale=true、target_size=(1,1,1) | input, reference → output |
 | Promote | name、to、reduce | input → output |
 | Remove | flag、layer | input → output |
 | Merge | — | inputs（多个）→ output |
@@ -269,6 +274,7 @@ Remap 四端点须有限、输入两端不同，输出两端可以相同。按 `
 - **原生图求值**：Grid（3×2、3 行 4 列）→ Transform(+1,0,0) → Merge ← Line → CopyToPoints 发布 14 个实例（12 个格点加 2 个线点），首个实例平移为 (−.5,0,−1)。
 - **连通块**：重合但拓扑独立的面、共享端点的折线、孤立点经 Connectivity 再 Promote 得到逐图元编号，并检查输入列与拓扑的写时复制。注册节点还经过 Merge → Connectivity → CopyToPoints 的完整图求值。
 - **空间与混合 C++/`.source` SOP 契约**：`import_mesh` 正负零缝焊接、`Bvh::acquire` 跨 COW 副本缓存复用与写后失效、`Geometry::set` 用途保持、`scatter` 最小间距空间哈希；`Grid → GroupBox → Jitter → RandomScale → NormalAlign → 自定义 .source SOP → Transform → CopyToPoints`（验证无 `id` 列回退、组遮罩、`RandomScale` 组外单位缩放与已有 `pscale` 保留、`Usage::orientation` 旋转复合及全部实例正常发布）；原生列绑定节点篡改可写列（含 `P`）长度被求值器拦截；`Box → Noise → Promote → Remap`（验证 `[RunOver]` 图元层求值、同名读写、节点与图级失败时 `output()==nullptr` 与 `last_valid_output()` 保旧、下游根因错误传播及恢复后缓存命中）。
+- **参数化基础图元、圆弧截面与对齐契约**：`Grid`（`quads`/`triangles`/`points` 与三参考平面及 `vertex uv`）、`Box`（共享棱角三轴细分闭合壳与 `base_on_ground`）、`Tube`（实心圆柱持久拓扑、尖顶圆锥、中空圆管与带径向切面封盖的扇形拱）、`Wedge`（双坡屋顶与斜坡闭合体积）、`Circle`（整圆凸多边形、大于 180° 的凸三角扇及 `open_arc → Sweep` 石拱流形）、`Torus`（闭合圆环与带盖 90° 弯管解析多面体体积）、`Transform`（角度制欧拉旋转 + 局部 `pivot`）与 `MatchSize`（默认 XZ 居中贴地及 `reference` 等比适配）。
 
 图文件 `load_graph` / `save_graph` 对 C++ 与 `.source` 节点的规范往返、缺失类型/失效连接宽容加载（含多输入端口剪线/删节点的保留项同步与撤销），以及编辑器 `.procgraph` 资产、SOP 上下文切换、二维 Network 节点连线画布（`graph.layout`、三段式连线、外置磁吸端口、滚轮缩放、框选多选拖动、`Y` 划断连线、`Tab` 搜索创建并自动连线）、重导入网格删除后的 SOP 快照失效与 `procedural.bake` 拦截、Display 与选中节点解耦求值、`String`/标量参数撤销缓存命中、Geometry Spreadsheet 分页过滤与视口表面/辅助线生成由 `editor_document_acceptance`（[acceptance/editor/document.cpp](../../../acceptance/editor/document.cpp)）覆盖；跨模块工程 Source 消费由 `project_integration_acceptance` 覆盖。
 

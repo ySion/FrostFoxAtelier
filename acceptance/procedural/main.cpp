@@ -580,6 +580,8 @@ void graph_evaluation() {
         take(runtime.write(node, at, ValueInput{vector3, &value}));
     };
     const Vector2 size{3, 2};
+    take(runtime.write(grid_node, field(runtime, type<Grid>(runtime), "primitive_type"),
+                       EnumValue{type<GridPrimitive>(runtime), static_cast<std::uint32_t>(GridPrimitive::points)}));
     take(runtime.write(grid_node, field(runtime, type<Grid>(runtime), "size"), ValueInput{vector2, &size}));
     take(runtime.write(grid_node, field(runtime, type<Grid>(runtime), "rows"), Scalar{std::uint32_t{3}}));
     take(runtime.write(grid_node, field(runtime, type<Grid>(runtime), "columns"), Scalar{std::uint32_t{4}}));
@@ -728,6 +730,7 @@ class game.FrameInputs : procedural.Node {
         take(runtime.write(obj, field(runtime, owner, name), ValueInput{type<Vector3>(runtime), &v}));
     };
     take(runtime.with_native<Grid>(grid_n.id(), [](Grid& n) -> Result<void> {
+        n.primitive_type = GridPrimitive::points;
         n.size = {2.0f, 2.0f};
         n.rows = 2;
         n.columns = 2;
@@ -748,7 +751,7 @@ class game.FrameInputs : procedural.Node {
     write_str(align_n.id(), align_type, "group", "selected");
     write_v3(align_n.id(), align_type, "up", {0.0f, 0.0f, 1.0f});
     take(runtime.with_native<Transform>(xform_n.id(), [](Transform& n) -> Result<void> {
-        n.rotate = axis_angle({0.0f, 1.0f, 0.0f}, 90.0f);
+        n.rotate = {0.0f, 90.0f, 0.0f};
         return {};
     }));
     take(runtime.with_native<CopyToPoints>(copy_n.id(), [](CopyToPoints& n) -> Result<void> {
@@ -968,6 +971,8 @@ class game.FrameInputs : procedural.Node {
                 "procedural.Node exposed retired fail or non-BorrowSafe methods.");
         auto chunk_graph = take(runtime.create(type<Graph>(runtime)));
         const auto big_grid = take(add_node(runtime, chunk_graph.id(), type<Grid>(runtime)));
+        take(runtime.write(big_grid.id(), field(runtime, type<Grid>(runtime), "primitive_type"),
+                           EnumValue{type<GridPrimitive>(runtime), static_cast<std::uint32_t>(GridPrimitive::points)}));
         take(runtime.write(big_grid.id(), field(runtime, type<Grid>(runtime), "rows"), Scalar{std::uint32_t{64}}));
         take(runtime.write(big_grid.id(), field(runtime, type<Grid>(runtime), "columns"), Scalar{std::uint32_t{64}}));
         const auto align_type = take(runtime.find_type("procedural.NormalAlign"));
@@ -1259,6 +1264,7 @@ void profile(const char* path) {
         return {};
     }));
     take(runtime.with_native<Grid>(gridded.id(), [](Grid& node) -> Result<void> {
+        node.primitive_type = GridPrimitive::points;
         node.size = {63, 63};
         node.rows = node.columns = 224;
         return {};
@@ -1692,6 +1698,195 @@ void asset_subgraph_and_cache_pool_contracts() {
             "Evaluator did not reject AssetNode chain exceeding max_subgraph_depth = 8.");
 }
 
+void parametric_primitives_and_alignment_contracts() {
+    // 1. Surface Grid (Quads / Triangles / XY / YZ) + Extrude into watertight solid:
+    const auto floor_grid = take(grid({.primitive_type = GridPrimitive::quads,
+                                       .orientation = OrientationPlane::zx,
+                                       .size = {6.f, 4.f},
+                                       .center = {1.f, 2.f, -1.f},
+                                       .rows = 3,
+                                       .columns = 4}));
+    require(floor_grid.count(Layer::point) == 12 && floor_grid.count(Layer::primitive) == 6 &&
+                floor_grid.count(Layer::vertex) == 24 && std::abs(solid_measures(floor_grid).second - 24.0) < 1e-4,
+            "Default Quad Grid did not produce 12 shared points, 6 quads and area 24.");
+    const auto floor_slab = take(extrude(floor_grid, {.distance = 2.f, .individual = false, .output_back = true}));
+    require(std::abs(solid_measures(floor_slab).first - 48.0) < 1e-4,
+            "Extruded Quad Grid did not form a closed slab of volume 48.");
+
+    const auto wall_xy = take(grid({.primitive_type = GridPrimitive::triangles,
+                                    .orientation = OrientationPlane::xy,
+                                    .size = {4.f, 3.f},
+                                    .rows = 2,
+                                    .columns = 2}));
+    const auto wall_yz = take(grid({.primitive_type = GridPrimitive::quads,
+                                    .orientation = OrientationPlane::yz,
+                                    .size = {5.f, 2.f},
+                                    .rows = 3,
+                                    .columns = 3}));
+    require(wall_xy.count(Layer::primitive) == 2 && near(column<Vector3>(wall_xy, "N", Layer::vertex)[0], {0, 0, 1}) &&
+                wall_yz.count(Layer::primitive) == 4 &&
+                near(column<Vector3>(wall_yz, "N", Layer::vertex)[0], {1, 0, 0}),
+            "Vertical XY/YZ Grids did not orient normals along +Z and +X.");
+
+    // 2. Subdivided Box + base_on_ground: single closed manifold shell compatible with solid_boolean:
+    auto sub_box = take(box_primitive({.size = {6.f, 4.f, 8.f},
+                                       .center = {0.f, 1.f, 0.f},
+                                       .base_on_ground = true,
+                                       .divisions_x = 3,
+                                       .divisions_y = 2,
+                                       .divisions_z = 4}));
+    const auto box_b = bounds(sub_box);
+    require(box_b && near(box_b->minimum, {-3.f, 1.f, -4.f}) && near(box_b->maximum, {3.f, 5.f, 4.f}) &&
+                sub_box.count(Layer::point) == 54 && sub_box.count(Layer::primitive) == 52,
+            "Subdivided Box did not weld seam vertices or honor base_on_ground.");
+    take(connectivity(sub_box));
+    require(std::ranges::max(column<std::uint32_t>(sub_box, "piece", Layer::point)) == 0,
+            "Subdivided Box left unwelded seam components.");
+    const auto [sub_vol, sub_area] = solid_measures(take(solid_boolean(sub_box, {}, BooleanOperation::unite)));
+    require(std::abs(sub_vol - 192.0) < 1e-4 && std::abs(sub_area - 208.0) < 1e-4,
+            "Subdivided Box failed Boolean closed-manifold validation or volume/area check.");
+
+    // 3. Generalized Tube: Cone (radius_top = 0) and 180-deg Hollow Barrel Vault:
+    const auto cone = take(tube(
+        {.radius_top = 0.f, .radius_bottom = 3.f, .height = 4.f, .base_on_ground = true, .segments = 32, .rows = 2}));
+    const double expected_cone_vol = (1.0 / 3.0) * (0.5 * 32.0 * 9.0 * std::sin(2.0 * std::numbers::pi / 32.0)) * 4.0;
+    require(
+        bounds(cone)->minimum.y == 0.f && std::abs(solid_measures(cone).first - expected_cone_vol) < 1e-3 &&
+            take(volume_scatter(cone, {.density = 4.f, .seed = 3, .cell_size = 0.5f})).count(Layer::point) > 10,
+        "Cone Tube (radius_top = 0) failed base_on_ground, analytic volume or VolumeScatter closed-manifold check.");
+
+    const auto vault = take(tube({.radius_top = 3.f,
+                                  .radius_bottom = 3.f,
+                                  .inner_radius = 2.f,
+                                  .height = 2.f,
+                                  .segments = 24,
+                                  .rows = 2,
+                                  .arc_degrees = 180.f,
+                                  .end_caps = true}));
+    const double expected_vault_vol = 2.0 * 24.0 * 0.5 * (9.0 - 4.0) * std::sin(std::numbers::pi / 24.0);
+    const auto vault_checked = take(solid_boolean(vault, {}, BooleanOperation::unite));
+    require(std::abs(solid_measures(vault_checked).first - expected_vault_vol) < 1e-3,
+            "Partial-arc hollow Tube vault was not a watertight manifold of expected volume.");
+
+    // 4. Wedge: symmetric gabled roof (0.5) and right-angle ramp (0.0):
+    const auto roof =
+        take(wedge({.size = {4.f, 3.f, 6.f}, .peak_ratio = 0.5f, .base_on_ground = true, .divisions_z = 2}));
+    const auto ramp =
+        take(wedge({.size = {4.f, 3.f, 6.f}, .peak_ratio = 0.0f, .base_on_ground = true, .divisions_z = 1}));
+    require(bounds(roof)->minimum.y == 0.f &&
+                std::abs(solid_measures(take(solid_boolean(roof, {}, BooleanOperation::unite))).first - 36.0) < 1e-4 &&
+                std::abs(solid_measures(take(solid_boolean(ramp, {}, BooleanOperation::unite))).first - 36.0) < 1e-4,
+            "Wedge gabled roof or right-angle ramp failed watertight manifold volume check.");
+
+    // 5. Circle + Sweep SOP graph: zero-.source stone arch + 270-degree convex pie sector:
+    const auto sector_270 = take(circle({.primitive_type = CirclePrimitive::polygon,
+                                         .orientation = OrientationPlane::zx,
+                                         .radius = {2.f, 2.f},
+                                         .segments = 18,
+                                         .arc_degrees = 270.f}));
+    require(take(scatter(sector_270, {.density = 4.f, .seed = 7})).count(Layer::point) > 10,
+            "Reflex 270-degree Circle polygon sector violated shared convex polygon tolerance.");
+
+    Runtime runtime;
+    take(register_types(runtime));
+    Meshes resources;
+    auto graph = take(runtime.create(type<Graph>(runtime)));
+    const auto arch_arc = take(add_node(runtime, graph.id(), type<Circle>(runtime)));
+    const auto arch_prof = take(add_node(runtime, graph.id(), type<Circle>(runtime)));
+    const auto arch_sweep = take(add_node(runtime, graph.id(), type<Sweep>(runtime)));
+    const auto arch_match = take(add_node(runtime, graph.id(), type<MatchSize>(runtime)));
+    const auto ref_box = take(add_node(runtime, graph.id(), type<Box>(runtime)));
+
+    take(runtime.with_native<Circle>(arch_arc.id(), [](Circle& n) -> Result<void> {
+        n.primitive_type = CirclePrimitive::open_arc;
+        n.orientation = OrientationPlane::xy;
+        n.radius = {3.f, 3.f};
+        n.center = {0.f, 2.f, 0.f};
+        n.segments = 16;
+        n.arc_degrees = 180.f;
+        return {};
+    }));
+    take(runtime.with_native<Circle>(arch_prof.id(), [](Circle& n) -> Result<void> {
+        n.primitive_type = CirclePrimitive::polygon;
+        n.orientation = OrientationPlane::xy;
+        n.radius = {0.35f, 0.25f};
+        n.segments = 6;
+        return {};
+    }));
+    take(runtime.with_native<Sweep>(arch_sweep.id(), [](Sweep& n) -> Result<void> {
+        n.profile = SweepProfile::custom;
+        n.up = {0.f, 0.f, 1.f};
+        n.end_caps = true;
+        return {};
+    }));
+    take(connect(runtime, graph.id(), arch_arc.id(), 0, arch_sweep.id(), 0));
+    take(connect(runtime, graph.id(), arch_prof.id(), 0, arch_sweep.id(), 1));
+    take(connect(runtime, graph.id(), arch_sweep.id(), 0, arch_match.id(), 0));
+    take(set_display(runtime, graph.id(), arch_match.id()));
+
+    Evaluator eval{runtime, graph, resources};
+    take(eval.evaluate());
+    require(eval.output() != nullptr, "Circle -> Sweep -> MatchSize stone arch graph failed to evaluate.");
+    const auto arch_checked = take(solid_boolean(*eval.output(), {}, BooleanOperation::unite));
+    const auto arch_b = bounds(arch_checked);
+    require(arch_b && std::abs(arch_b->minimum.y) < 1e-4f &&
+                std::abs((arch_b->minimum.x + arch_b->maximum.x) * 0.5f) < 1e-4f &&
+                solid_measures(arch_checked).first > 1.5,
+            "Swept hexagonal stone arch was not watertight or MatchSize did not ground-and-center it.");
+
+    // MatchSize with connected reference port + uniform scale_to_fit:
+    take(runtime.with_native<Box>(ref_box.id(), [](Box& n) -> Result<void> {
+        n.size = {10.f, 10.f, 10.f};
+        n.center = {20.f, 4.f, -6.f};
+        n.base_on_ground = true;
+        return {};
+    }));
+    take(runtime.with_native<MatchSize>(arch_match.id(), [](MatchSize& n) -> Result<void> {
+        n.scale_to_fit = true;
+        n.uniform_scale = true;
+        return {};
+    }));
+    take(connect(runtime, graph.id(), ref_box.id(), 0, arch_match.id(), 1));
+    take(eval.evaluate());
+    const auto fit_b = bounds(*eval.output());
+    const Vector3 fit_ext = math::size(*fit_b);
+    require(fit_b && near(fit_b->minimum.y, 4.f, 1e-4f) &&
+                near(std::max(fit_ext.x, std::max(fit_ext.y, fit_ext.z)), 10.f, 1e-4f) &&
+                near((fit_b->minimum.x + fit_b->maximum.x) * 0.5f, 20.f, 1e-4f),
+            "MatchSize did not uniformly fit and ground-align input to connected reference Box.");
+
+    // 6. Torus (360-deg closed ring & 90-deg capped pipe elbow) + Transform pivot:
+    const auto ring = take(torus({.major_radius = 2.f,
+                                  .minor_radius = 0.5f,
+                                  .base_on_ground = true,
+                                  .major_segments = 32,
+                                  .minor_segments = 16}));
+    const double expected_ring_vol = 0.5 * 32.0 * 16.0 * 2.0 * 0.25 * std::sin(2.0 * std::numbers::pi / 32.0) *
+                                     std::sin(2.0 * std::numbers::pi / 16.0);
+    require(near(bounds(ring)->minimum.y, 0.f, 1e-5f) &&
+                std::abs(solid_measures(take(solid_boolean(ring, {}, BooleanOperation::unite))).first -
+                         expected_ring_vol) < 1e-4,
+            "Full Torus failed base_on_ground or closed-manifold Boolean volume check.");
+    const auto elbow = take(torus({.major_radius = 2.f,
+                                   .minor_radius = 0.4f,
+                                   .major_segments = 12,
+                                   .minor_segments = 12,
+                                   .arc_degrees = 90.f,
+                                   .end_caps = true}));
+    const double expected_elbow_vol =
+        12.0 * std::sin(0.5 * std::numbers::pi / 12.0) * 2.0 * (6.0 * 0.16 * std::sin(2.0 * std::numbers::pi / 12.0));
+    require(std::abs(solid_measures(take(solid_boolean(elbow, {}, BooleanOperation::unite))).first -
+                     expected_elbow_vol) < 1e-4,
+            "Partial-arc capped Torus elbow was not a valid closed manifold.");
+
+    auto pivoted = take(box({1.f, 1.f, 1.f}));
+    take(transform(pivoted, {.rotate_degrees = {0.f, 90.f, 0.f}, .pivot = {2.f, 0.f, 0.f}}));
+    const auto piv_b = bounds(pivoted);
+    // Center (0,0,0) relative to pivot (2,0,0) is (-2,0,0); +90 deg Y in row-vector convention maps (-2,0,0) -> (0,0,2), plus pivot = (2,0,2)!
+    require(piv_b && near(math::center(*piv_b), {2.f, 0.f, 2.f}, 1e-4f),
+            "Transform Euler + Pivot did not rotate box around the specified pivot.");
+}
+
 }
 
 int main(int argc, char** argv) {
@@ -1713,6 +1908,7 @@ int main(int argc, char** argv) {
     source_and_spatial_contracts();
     generative_modeling_and_l3_contracts();
     asset_subgraph_and_cache_pool_contracts();
+    parametric_primitives_and_alignment_contracts();
     std::puts("procedural acceptance passed");
     return 0;
 }

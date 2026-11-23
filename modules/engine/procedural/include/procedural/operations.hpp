@@ -13,12 +13,48 @@ class Bvh;
 // slot index). Bitwise-equal positions weld into one point.
 [[nodiscard]] Geometry import_mesh(const geometry::Mesh& mesh);
 
+struct GridSettings {
+    GridPrimitive primitive_type{GridPrimitive::quads};
+
+    OrientationPlane orientation{OrientationPlane::zx};
+
+    math::Vector2 size{10.f, 10.f};
+
+    math::Vector3 center{};
+
+    std::uint32_t rows{10};
+
+    std::uint32_t columns{10};
+};
+
+// Surface or point grid on `orientation` around `center`. Surface modes require finite
+// positive `size` and rows/columns >= 2, emitting vertex N and [0,1] vertex uv.
+Result<Geometry> grid(const GridSettings& settings);
+
 // rows x columns points with N = +Y, spanning `size` on X and Z around the origin;
 // one point on an axis sits at 0. Row r varies Z, column c varies X; point r*columns + c.
 Result<Geometry> grid(math::Vector2 size, std::uint32_t rows, std::uint32_t columns);
 
 // `count` points from `start` to `end` inclusive.
 Result<Geometry> line(math::Vector3 start, math::Vector3 end, std::uint32_t count);
+
+struct BoxSettings {
+    math::Vector3 size{1.f, 1.f, 1.f};
+
+    math::Vector3 center{};
+
+    bool base_on_ground{false};
+
+    std::uint32_t divisions_x{1};
+
+    std::uint32_t divisions_y{1};
+
+    std::uint32_t divisions_z{1};
+};
+
+// Closed subdivided box with shared seam/corner points, hard-edge vertex N and per-face [0,1] vertex uv.
+// When divisions are 1x1x1 and centered at origin, preserves the exact 8-point bit order and 6-face order.
+Result<Geometry> box_primitive(const BoxSettings& settings);
 
 // Origin-centred box with finite positive dimensions, eight shared points in XYZ
 // bit order, and six quads (-X,+X,-Y,+Y,-Z,+Z). Vertex N preserves hard edges.
@@ -29,9 +65,92 @@ Result<Geometry> box(math::Vector3 size);
 // radial vertex N. Radius is finite and positive, segments >= 3, latitudes >= 2.
 Result<Geometry> sphere(float radius, std::uint32_t segments, std::uint32_t latitudes);
 
+struct TubeSettings {
+    float radius_top{1.f};
+
+    float radius_bottom{1.f};
+
+    float inner_radius{0.f};
+
+    float height{2.f};
+
+    math::Vector3 center{};
+
+    bool base_on_ground{false};
+
+    std::uint32_t segments{32};
+
+    std::uint32_t rows{1};
+
+    float arc_degrees{360.f};
+
+    bool end_caps{true};
+};
+
+// Generalized cylinder, cone, frustum, prism, hollow pipe or sector on Y.
+// Preserves the exact 2M-point, (M+2)-face topology on default solid 360-degree 1-row cylinders.
+Result<Geometry> tube(const TubeSettings& settings);
+
 // Origin-centred capped solid cylinder on Y, segments >= 3, finite positive radius
 // and height. Bottom then top rings, side quads then polygon caps; vertex N.
 Result<Geometry> tube(float radius, float height, std::uint32_t segments);
+
+struct WedgeSettings {
+    math::Vector3 size{2.f, 1.f, 2.f};
+
+    float peak_ratio{0.5f}; // 0 = right-angle ramp (-X vertical wall), 0.5 = symmetric gabled roof, 1 = +X wall.
+
+    math::Vector3 center{};
+
+    bool base_on_ground{false};
+
+    std::uint32_t divisions_z{1};
+};
+
+// Closed watertight triangular prism / ramp / gabled roof with hard-edge vertex N and vertex uv.
+Result<Geometry> wedge(const WedgeSettings& settings = {});
+
+struct CircleSettings {
+    CirclePrimitive primitive_type{CirclePrimitive::polygon};
+
+    OrientationPlane orientation{OrientationPlane::zx};
+
+    math::Vector2 radius{1.f, 1.f};
+
+    math::Vector3 center{};
+
+    std::uint32_t segments{32};
+
+    float start_degrees{0.f};
+
+    float arc_degrees{360.f};
+};
+
+// Planar polygon, closed polyline loop, or open arc polyline on `orientation`.
+Result<Geometry> circle(const CircleSettings& settings = {});
+
+struct TorusSettings {
+    OrientationPlane orientation{OrientationPlane::zx};
+
+    float major_radius{1.f};
+
+    float minor_radius{0.25f};
+
+    math::Vector3 center{};
+
+    bool base_on_ground{false};
+
+    std::uint32_t major_segments{32};
+
+    std::uint32_t minor_segments{16};
+
+    float arc_degrees{360.f};
+
+    bool end_caps{true};
+};
+
+// Closed manifold torus or capped partial-arc pipe elbow (requires minor_radius < major_radius).
+Result<Geometry> torus(const TorusSettings& settings = {});
 
 // Writes/replaces a point bool column using a closed finite AABB. Incompatible
 // existing layer/type or an invalid name fails; P and other columns are unchanged.
@@ -108,6 +227,21 @@ struct VolumeScatterSettings {
 // Outputs P, id (nonunique), sourcecellx/y/z (int32), sourceordinal (uint32).
 Result<Geometry> volume_scatter(const Geometry& surface, const VolumeScatterSettings& settings);
 
+// XYZ Euler angles in degrees, applied X then Y then Z.
+[[nodiscard]] math::Quaternion euler_to_quaternion(math::Vector3 euler_degrees) noexcept;
+
+struct TransformSettings {
+    math::Vector3 translate{};
+
+    math::Vector3 rotate_degrees{};
+
+    math::Vector3 scale{1.f, 1.f, 1.f};
+
+    math::Vector3 pivot{};
+};
+
+Result<void> transform(Geometry& geometry, const TransformSettings& settings);
+
 // Applies v * S * R * T. By usage: point columns take the affine transform, vector
 // columns its linear part L, normal columns sign(det L) * cofactor(L) normalized (zero
 // stays zero, so a singular L still yields plane normals); quaternion orient columns
@@ -115,6 +249,27 @@ Result<Geometry> volume_scatter(const Geometry& surface, const VolumeScatterSett
 // columns stay. A reflection reverses only polygon vertex order. Fails when a
 // result is not finite; the geometry is then left partly transformed.
 Result<void> transform(Geometry& geometry, math::Vector3 translate, math::Quaternion rotation, math::Vector3 scale);
+
+struct MatchSizeSettings {
+    AxisJustify justify_x{AxisJustify::center};
+
+    AxisJustify justify_y{AxisJustify::min};
+
+    AxisJustify justify_z{AxisJustify::center};
+
+    math::Vector3 target_position{};
+
+    bool scale_to_fit{false};
+
+    bool uniform_scale{true};
+
+    math::Vector3 target_size{1.f, 1.f, 1.f};
+};
+
+// Aligns and optionally scales `geometry` to `reference` bounds (when non-null and non-empty)
+// or to `target_position` and `target_size`. Empty point geometry passes through unchanged.
+Result<Geometry> match_size(const Geometry& geometry, const MatchSizeSettings& settings = {},
+                            const Geometry* reference = nullptr);
 
 // Moves an attribute to another layer. Each target element combines the source
 // elements it touches (a point the vertices referring to it, a primitive its vertices or

@@ -1335,7 +1335,7 @@ class game.DiagnosticSop : procedural.Node {
     take(doc.open_graph(project, graph_key));
     const auto rot_node = take(doc.graph_add_node(graph_key, "procedural.Transform", "rot_inst", {320.f, 220.f}));
     take(doc.graph_connect(graph_key, "instancer", "output", rot_node, "input"));
-    set_node_props(rot_node, R"({"rotate":{"x":0.0,"y":0.0,"z":0.38268343,"w":0.92387953}})");
+    set_node_props(rot_node, R"({"rotate":{"x":0.0,"y":0.0,"z":45.0}})");
     const auto shear_node = take(doc.graph_add_node(graph_key, "procedural.Transform", "shear_inst", {500.f, 220.f}));
     take(doc.graph_connect(graph_key, rot_node, "output", shear_node, "input"));
     set_node_props(shear_node, R"({"scale":{"x":2.5,"y":1.0,"z":1.0}})");
@@ -1353,7 +1353,7 @@ class game.DiagnosticSop : procedural.Node {
         const auto prop_graph_key = take(project.create_procedural_graph(
             L"Content/Graphs/ReimportProp.procgraph",
             "{\"version\":3,\"settings\":{\"display\":\"copy\"},\"nodes\":{"
-            "\"pts\":{\"type\":\"procedural.Grid\",\"properties\":{\"columns\":2,\"rows\":2}},"
+            "\"pts\":{\"type\":\"procedural.Grid\",\"properties\":{\"primitive_type\":\"points\",\"columns\":2,\"rows\":2}},"
             "\"copy\":{\"type\":\"procedural.CopyToPoints\",\"inputs\":{\"points\":\"pts.output\"},"
             "\"properties\":{\"meshes\":[\"" +
                 prop_key + "\"]}}}}"));

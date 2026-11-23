@@ -45,6 +45,39 @@ AENUM(Name = "procedural.SweepProfile",
       DESC = "沿折线扫掠的截面轮廓：rectangle 矩形，tube 圆形多边形管，custom 来自辅助端口的截面。")
 enum class SweepProfile : std::uint32_t { rectangle, tube, custom };
 
+AENUM(Name = "procedural.OrientationPlane",
+      DESC = "平面图元的构造参考平面：zx 为水平地面（法线 +Y），xy 为正立面（法线 +Z），yz 为侧立面（法线 +X）。")
+enum class OrientationPlane : std::uint32_t {
+    AMETA(Label = "ZX Plane (+Y)", DESC = "水平地面，法线朝 +Y。") zx = 0,
+    AMETA(Label = "XY Plane (+Z)", DESC = "正立面，法线朝 +Z。") xy = 1,
+    AMETA(Label = "YZ Plane (+X)", DESC = "侧立面，法线朝 +X。") yz = 2
+};
+
+AENUM(Name = "procedural.GridPrimitive",
+      DESC = "Grid 输出的几何图元类型：quads 四边形网格，triangles 三角形网格，points 纯点阵。")
+enum class GridPrimitive : std::uint32_t {
+    AMETA(Label = "Quads", DESC = "共享顶点的平面四边形网格。") quads = 0,
+    AMETA(Label = "Triangles", DESC = "共享顶点的平面三角形网格。") triangles = 1,
+    AMETA(Label = "Points", DESC = "不生成图元的纯点阵。") points = 2
+};
+
+AENUM(Name = "procedural.CirclePrimitive",
+      DESC = "Circle 输出的图元形态：polygon 闭合平面多边形，closed_polyline 首尾闭合折线，open_arc 开放圆弧折线。")
+enum class CirclePrimitive : std::uint32_t {
+    AMETA(Label = "Polygon", DESC = "闭合平面多边形（小于 360° 时生成通过圆心的凸三角扇）。") polygon = 0,
+    AMETA(Label = "Closed Polyline", DESC = "首尾闭合的折线轮廓。") closed_polyline = 1,
+    AMETA(Label = "Open Arc", DESC = "按张角生成的开放圆弧折线（可直接作为拱门或弧墙的 Sweep 路径）。") open_arc = 2
+};
+
+AENUM(Name = "procedural.AxisJustify",
+      DESC = "沿单轴的包围盒对齐方式：none 保持不动，min 贴齐下界，center 居中对齐，max 贴齐上界。")
+enum class AxisJustify : std::uint32_t {
+    AMETA(Label = "None", DESC = "该轴保持原位置不动。") none = 0,
+    AMETA(Label = "Min", DESC = "将几何包围盒下界对齐到目标坐标（如底面贴齐 Y=0）。") min = 1,
+    AMETA(Label = "Center", DESC = "将几何包围盒中心对齐到目标坐标。") center = 2,
+    AMETA(Label = "Max", DESC = "将几何包围盒上界对齐到目标坐标。") max = 3
+};
+
 struct Spatial;
 
 // How a transform changes a vector or orientation column; see transform().

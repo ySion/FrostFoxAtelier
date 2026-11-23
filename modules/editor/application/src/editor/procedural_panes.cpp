@@ -779,7 +779,7 @@ ui::ControlIcon sop_node_icon(std::string_view type_name, bool is_source_sop, bo
         return ui::ControlIcon::face_normals;
     if (type_name == "procedural.Transform")
         return ui::ControlIcon::axes;
-    if (type_name == "procedural.GroupBox")
+    if (type_name == "procedural.GroupBox" || type_name == "procedural.MatchSize")
         return ui::ControlIcon::bounds_cage;
     if (type_name == "procedural.Promote" || type_name == "procedural.Connectivity")
         return ui::ControlIcon::network_layout;
@@ -787,7 +787,7 @@ ui::ControlIcon sop_node_icon(std::string_view type_name, bool is_source_sop, bo
         return ui::ControlIcon::duplicate;
     if (type_name == "procedural.Remove")
         return ui::ControlIcon::trash;
-    if (type_name == "procedural.Polyline" || type_name == "procedural.Sweep")
+    if (type_name == "procedural.Polyline" || type_name == "procedural.Sweep" || type_name == "procedural.Circle")
         return ui::ControlIcon::axes_origin;
     if (type_name == "procedural.Extrude")
         return ui::ControlIcon::face_normals;

@@ -279,6 +279,10 @@ Result<void> register_types(Runtime& runtime) {
     definitions.push_back(reflection::Definition<Reduce>::build(runtime));
     definitions.push_back(reflection::Definition<BooleanOperation>::build(runtime));
     definitions.push_back(reflection::Definition<SweepProfile>::build(runtime));
+    definitions.push_back(reflection::Definition<OrientationPlane>::build(runtime));
+    definitions.push_back(reflection::Definition<GridPrimitive>::build(runtime));
+    definitions.push_back(reflection::Definition<CirclePrimitive>::build(runtime));
+    definitions.push_back(reflection::Definition<AxisJustify>::build(runtime));
     definitions.push_back(reflection::Definition<RayMode>::build(runtime));
     definitions.push_back(reflection::Definition<PreviewFallback>::build(runtime));
     {
@@ -312,6 +316,9 @@ Result<void> register_types(Runtime& runtime) {
     definitions.push_back(reflection::Definition<Box>::build(runtime));
     definitions.push_back(reflection::Definition<Sphere>::build(runtime));
     definitions.push_back(reflection::Definition<Tube>::build(runtime));
+    definitions.push_back(reflection::Definition<Wedge>::build(runtime));
+    definitions.push_back(reflection::Definition<Circle>::build(runtime));
+    definitions.push_back(reflection::Definition<Torus>::build(runtime));
     definitions.push_back(reflection::Definition<Polyline>::build(runtime));
     definitions.push_back(reflection::Definition<GroupBox>::build(runtime));
     definitions.push_back(reflection::Definition<Boolean>::build(runtime));
@@ -319,6 +326,7 @@ Result<void> register_types(Runtime& runtime) {
     definitions.push_back(reflection::Definition<Scatter>::build(runtime));
     definitions.push_back(reflection::Definition<VolumeScatter>::build(runtime));
     definitions.push_back(reflection::Definition<Transform>::build(runtime));
+    definitions.push_back(reflection::Definition<MatchSize>::build(runtime));
     definitions.push_back(reflection::Definition<Promote>::build(runtime));
     definitions.push_back(reflection::Definition<Remove>::build(runtime));
     definitions.push_back(reflection::Definition<Merge>::build(runtime));

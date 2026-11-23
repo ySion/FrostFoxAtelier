@@ -22,21 +22,33 @@ public:
     [[nodiscard]] Result<void> process(const Context& context, Geometry& output) const noexcept;
 };
 
-ACLASS(Name = "procedural.Grid", DESC = "XZ 平面上的点阵，以原点为中心，N 朝 +Y。")
+ACLASS(Name = "procedural.Grid", DESC = "可细分的四边形/三角形平面网格或点阵，自带朝向法线与 [0,1] UV。")
 class Grid : public Node {
     AGENERATED_BODY(Grid)
 
 public:
-    AFIELD(Label = "Size", DESC = "点阵沿 X 和 Z 的总长度，单位 m。")
+    AFIELD(Label = "Primitive Type", Category = "Grid",
+           DESC = "quads 四边形网格，triangles 三角形网格，points 纯点阵。")
+    GridPrimitive primitive_type{GridPrimitive::quads};
+
+    AFIELD(Label = "Orientation", Category = "Grid", DESC = "zx 水平地面（+Y），xy 正立面（+Z），yz 侧立面（+X）。")
+    OrientationPlane orientation{OrientationPlane::zx};
+
+    AFIELD(Label = "Size", Category = "Dimensions", DESC = "平面两个切向轴的总跨度，单位 m。")
     math::Vector2 size{10.f, 10.f};
 
-    AFIELD(Label = "Rows", Min = "1", Max = "100", DESC = "沿 Z 的点数。")
+    AFIELD(Label = "Center", Category = "Dimensions", DESC = "网格中心位置，单位 m。")
+    math::Vector3 center;
+
+    AFIELD(Label = "Rows", Category = "Dimensions", Min = "1", Max = "256", LockMin,
+           DESC = "第二切向轴的采样行数（表面模式至少为 2）。")
     std::uint32_t rows{10};
 
-    AFIELD(Label = "Columns", Min = "1", Max = "100", DESC = "沿 X 的点数。")
+    AFIELD(Label = "Columns", Category = "Dimensions", Min = "1", Max = "256", LockMin,
+           DESC = "第一切向轴的采样列数（表面模式至少为 2）。")
     std::uint32_t columns{10};
 
-    AFUNCTION(DESC = "生成点阵。")
+    AFUNCTION(DESC = "生成平面网格或点阵。")
     [[nodiscard]] Result<void> process(Geometry& output) const noexcept;
 };
 
@@ -58,15 +70,32 @@ public:
     [[nodiscard]] Result<void> process(Geometry& output) const noexcept;
 };
 
-ACLASS(Name = "procedural.Box", DESC = "以原点为中心的长方体，八个共享点、六个四边形，顶点法线保留硬边。")
+ACLASS(Name = "procedural.Box",
+       DESC = "闭合长方体网格，支持三轴细分、底面贴齐地面（Base on Ground），保留硬边顶点法线与逐面 UV。")
 class Box : public Node {
     AGENERATED_BODY(Box)
 
 public:
-    AFIELD(Label = "Size", DESC = "X、Y、Z 的总长度，均须有限且为正，单位 m。")
+    AFIELD(Label = "Size", Category = "Dimensions", DESC = "X、Y、Z 的总长度，均须有限且为正，单位 m。")
     math::Vector3 size{1.f, 1.f, 1.f};
 
-    AFUNCTION(DESC = "生成六面体。")
+    AFIELD(Label = "Center", Category = "Transform", DESC = "长方体参考位置，单位 m。")
+    math::Vector3 center;
+
+    AFIELD(Label = "Base on Ground", Category = "Transform",
+           DESC = "开启时将底面贴齐 Center.y（Y 范围 [Center.y, Center.y + Size.y]），消除半高偏移心算。")
+    bool base_on_ground{false};
+
+    AFIELD(Label = "Divisions X", Category = "Subdivisions", Min = "1", Max = "64", LockMin, DESC = "沿 X 轴的分段数。")
+    std::uint32_t divisions_x{1};
+
+    AFIELD(Label = "Divisions Y", Category = "Subdivisions", Min = "1", Max = "64", LockMin, DESC = "沿 Y 轴的分段数。")
+    std::uint32_t divisions_y{1};
+
+    AFIELD(Label = "Divisions Z", Category = "Subdivisions", Min = "1", Max = "64", LockMin, DESC = "沿 Z 轴的分段数。")
+    std::uint32_t divisions_z{1};
+
+    AFUNCTION(DESC = "生成闭合长方体网格。")
     [[nodiscard]] Result<void> process(Geometry& output) const noexcept;
 };
 
@@ -88,21 +117,157 @@ public:
     [[nodiscard]] Result<void> process(Geometry& output) const noexcept;
 };
 
-ACLASS(Name = "procedural.Tube", DESC = "以原点为中心、沿 Y 轴的带盖实心圆柱；侧面四边形，两个多边形盖。")
+ACLASS(
+    Name = "procedural.Tube",
+    DESC =
+        "沿 Y 轴的参数化柱/锥/棱台/中空圆管/扇形柱：上下半径可独立收分（0 为尖锥/棱锥），支持内径中空与扇形切口封盖。")
 class Tube : public Node {
     AGENERATED_BODY(Tube)
 
 public:
-    AFIELD(Label = "Radius", Min = "0", Max = "10", LockMin, DESC = "有限且为正的半径，单位 m。")
-    float radius{1.f};
+    AFIELD(Label = "Radius Top", Category = "Dimensions", Min = "0", Max = "20", LockMin,
+           DESC = "顶端外半径（设为 0 即圆锥或棱锥屋顶），单位 m。")
+    float radius_top{1.f};
 
-    AFIELD(Label = "Height", Min = "0", Max = "10", LockMin, DESC = "有限且为正的总高度，单位 m。")
+    AFIELD(Label = "Radius Bottom", Category = "Dimensions", Min = "0", Max = "20", LockMin,
+           DESC = "底端外半径（不可与顶端同时为 0），单位 m。")
+    float radius_bottom{1.f};
+
+    AFIELD(Label = "Inner Radius", Category = "Dimensions", Min = "0", Max = "19", LockMin,
+           DESC = "中空内半径（0 为实心；大于 0 时生成管壁与凸梯形环盖，须小于两端外半径），单位 m。")
+    float inner_radius{0.f};
+
+    AFIELD(Label = "Height", Category = "Dimensions", Min = "0.001", Max = "50", LockMin,
+           DESC = "沿 Y 轴的总高度，单位 m。")
     float height{2.f};
 
-    AFIELD(Label = "Segments", Min = "3", Max = "128", LockMin, DESC = "绕 Y 轴的分段数。")
+    AFIELD(Label = "Center", Category = "Transform", DESC = "柱体参考位置，单位 m。")
+    math::Vector3 center;
+
+    AFIELD(Label = "Base on Ground", Category = "Transform", DESC = "开启时将底面贴齐 Center.y。")
+    bool base_on_ground{false};
+
+    AFIELD(Label = "Segments", Category = "Resolution & Arc", Min = "3", Max = "256", LockMin,
+           DESC = "绕 Y 轴的环向分段数（4 为四棱锥/台，6 为六棱柱）。")
     std::uint32_t segments{32};
 
-    AFUNCTION(DESC = "生成圆柱；侧面法线径向平滑，盖的法线为正负 Y。")
+    AFIELD(Label = "Height Rows", Category = "Resolution & Arc", Min = "1", Max = "64", LockMin,
+           DESC = "沿高度方向的分段层数。")
+    std::uint32_t rows{1};
+
+    AFIELD(Label = "Arc Angle", Category = "Resolution & Arc", Min = "1", Max = "360", LockMin, LockMax,
+           DESC = "环向张角（度）；小于 360° 且开启封盖时自动封闭两侧径向切面。")
+    float arc_degrees{360.f};
+
+    AFIELD(Label = "End Caps", Category = "Resolution & Arc", DESC = "封闭上下端盖及扇形切口以构成水密实体。")
+    bool end_caps{true};
+
+    AFUNCTION(DESC = "生成参数化柱/锥/管网格。")
+    [[nodiscard]] Result<void> process(Geometry& output) const noexcept;
+};
+
+ACLASS(Name = "procedural.Wedge",
+       DESC = "闭合楔形体 / 双坡屋顶棱柱：Peak Ratio 在 0（直角斜坡/扶壁）与 0.5（对称人字双坡屋顶）之间连续调节。")
+class Wedge : public Node {
+    AGENERATED_BODY(Wedge)
+
+public:
+    AFIELD(Label = "Size", Category = "Dimensions", DESC = "沿 X（跨度）、Y（脊高）、Z（进深）的总尺寸，单位 m。")
+    math::Vector3 size{2.f, 1.f, 2.f};
+
+    AFIELD(Label = "Peak Ratio", Category = "Dimensions", Min = "0", Max = "1", LockMin, LockMax,
+           DESC = "屋脊在 X 方向的归一化位置：0 为直角斜坡，0.5 为对称双坡屋顶，1 为反向斜坡。")
+    float peak_ratio{0.5f};
+
+    AFIELD(Label = "Center", Category = "Transform", DESC = "楔形体参考位置，单位 m。")
+    math::Vector3 center;
+
+    AFIELD(Label = "Base on Ground", Category = "Transform", DESC = "开启时将底面贴齐 Center.y。")
+    bool base_on_ground{false};
+
+    AFIELD(Label = "Divisions Z", Category = "Subdivisions", Min = "1", Max = "64", LockMin,
+           DESC = "沿屋脊 Z 方向的分段数。")
+    std::uint32_t divisions_z{1};
+
+    AFUNCTION(DESC = "生成闭合楔形体或双坡屋顶。")
+    [[nodiscard]] Result<void> process(Geometry& output) const noexcept;
+};
+
+ACLASS(Name = "procedural.Circle",
+       DESC = "平面圆、椭圆、正多边形或圆弧曲线：可输出平面多边形、闭合折线截面或供拱门/弧墙 Sweep 使用的开放圆弧。")
+class Circle : public Node {
+    AGENERATED_BODY(Circle)
+
+public:
+    AFIELD(Label = "Primitive Type", Category = "Circle",
+           DESC = "polygon 闭合面，closed_polyline 闭合折线截面，open_arc 开放圆弧路径。")
+    CirclePrimitive primitive_type{CirclePrimitive::polygon};
+
+    AFIELD(Label = "Orientation", Category = "Circle",
+           DESC = "zx 水平面（+Y），xy 正立面（+Z，0..180° 即正立半圆拱），yz 侧立面（+X）。")
+    OrientationPlane orientation{OrientationPlane::zx};
+
+    AFIELD(Label = "Radius", Category = "Dimensions", DESC = "两正交切向轴的半轴长（相等为圆，不等为椭圆），单位 m。")
+    math::Vector2 radius{1.f, 1.f};
+
+    AFIELD(Label = "Center", Category = "Dimensions", DESC = "圆心位置，单位 m。")
+    math::Vector3 center;
+
+    AFIELD(Label = "Segments", Category = "Arc & Resolution", Min = "1", Max = "256", LockMin,
+           DESC = "分段数（多边形与闭合环至少为 3；如 6 即正六边形）。")
+    std::uint32_t segments{32};
+
+    AFIELD(Label = "Start Angle", Category = "Arc & Resolution", Min = "-360", Max = "360", DESC = "起始角（度）。")
+    float start_degrees{0.f};
+
+    AFIELD(Label = "Arc Angle", Category = "Arc & Resolution", Min = "1", Max = "360", LockMin, LockMax,
+           DESC = "圆弧张角（度）；180° 配合 open_arc 即半圆拱线。")
+    float arc_degrees{360.f};
+
+    AFUNCTION(DESC = "生成平面圆、多边形或圆弧折线。")
+    [[nodiscard]] Result<void> process(Geometry& output) const noexcept;
+};
+
+ACLASS(Name = "procedural.Torus",
+       DESC = "闭合圆环体或带封盖弯管（柱础圆线脚、圆环、弯头），要求管半径严格小于主半径以保持无自交水密流形。")
+class Torus : public Node {
+    AGENERATED_BODY(Torus)
+
+public:
+    AFIELD(Label = "Orientation", Category = "Transform", DESC = "圆环所在主平面。")
+    OrientationPlane orientation{OrientationPlane::zx};
+
+    AFIELD(Label = "Major Radius", Category = "Dimensions", Min = "0.01", Max = "50", LockMin,
+           DESC = "圆环中心到管心的半径，单位 m。")
+    float major_radius{1.f};
+
+    AFIELD(Label = "Minor Radius", Category = "Dimensions", Min = "0.005", Max = "25", LockMin,
+           DESC = "截面管半径（须小于 Major Radius），单位 m。")
+    float minor_radius{0.25f};
+
+    AFIELD(Label = "Center", Category = "Transform", DESC = "圆环中心位置，单位 m。")
+    math::Vector3 center;
+
+    AFIELD(Label = "Base on Ground", Category = "Transform", DESC = "开启时将最低点贴齐 Center.y。")
+    bool base_on_ground{false};
+
+    AFIELD(Label = "Ring Segments", Category = "Resolution & Arc", Min = "3", Max = "256", LockMin,
+           DESC = "沿主环周的分段数。")
+    std::uint32_t major_segments{32};
+
+    AFIELD(Label = "Tube Segments", Category = "Resolution & Arc", Min = "3", Max = "128", LockMin,
+           DESC = "沿管截面的分段数。")
+    std::uint32_t minor_segments{16};
+
+    AFIELD(Label = "Arc Angle", Category = "Resolution & Arc", Min = "1", Max = "360", LockMin, LockMax,
+           DESC = "主环张角（度）；小于 360° 时为弯管段。")
+    float arc_degrees{360.f};
+
+    AFIELD(Label = "End Caps", Category = "Resolution & Arc", Meta("ui.visible_when", "arc_degrees!=360"),
+           DESC = "张角小于 360° 时封闭弯管两端截面。")
+    bool end_caps{true};
+
+    AFUNCTION(DESC = "生成圆环或弯管网格。")
     [[nodiscard]] Result<void> process(Geometry& output) const noexcept;
 };
 
@@ -202,22 +367,60 @@ public:
 ACLASS(
     Name = "procedural.Transform",
     DESC =
-        "依次缩放、旋转、平移几何。各列按用途变换：位置完整变换，向量只用线性部分，法线用逆转置，朝向四元数左乘旋转，镜像时反转多边形顶点顺序。")
+        "围绕 Pivot 依次缩放、按欧拉角（X → Y → Z 度）旋转并平移几何。各列按用途变换：位置完整变换，向量只用线性部分，法线用逆转置，朝向四元数复合旋转，镜像时反转多边形顶点顺序。")
 class Transform : public Node {
     AGENERATED_BODY(Transform)
 
 public:
-    AFIELD(Label = "Translate", DESC = "平移，单位 m。")
+    AFIELD(Label = "Translate", DESC = "平移偏移，单位 m。")
     math::Vector3 translate;
 
-    AFIELD(Label = "Rotate", DESC = "旋转，单位四元数。")
-    math::Quaternion rotate;
+    AFIELD(Label = "Rotate", DESC = "按 X → Y → Z 顺序应用的欧拉旋转角，单位度（°）。")
+    math::Vector3 rotate;
 
     AFIELD(Label = "Scale", DESC = "沿 X、Y、Z 的缩放比例。")
     math::Vector3 scale{1.f, 1.f, 1.f};
 
+    AFIELD(Label = "Pivot", DESC = "缩放与旋转围绕的局部枢轴点，单位 m。")
+    math::Vector3 pivot;
+
     AFUNCTION(DESC = "变换输入几何。")
     [[nodiscard]] Result<void> process(const Geometry& input, Geometry& output) const noexcept;
+};
+
+ACLASS(Name = "procedural.MatchSize",
+       DESC = "按包围盒将几何对齐到目标坐标或参考几何（默认 XZ 居中、底面贴齐 Y=0），可选等比或非等比归一化尺寸。")
+class MatchSize : public Node {
+    AGENERATED_BODY(MatchSize)
+
+public:
+    AFIELD(Label = "Justify X", Category = "Alignment", DESC = "X 轴对齐锚点。")
+    AxisJustify justify_x{AxisJustify::center};
+
+    AFIELD(Label = "Justify Y", Category = "Alignment", DESC = "Y 轴对齐锚点（默认 Min 即底面接地）。")
+    AxisJustify justify_y{AxisJustify::min};
+
+    AFIELD(Label = "Justify Z", Category = "Alignment", DESC = "Z 轴对齐锚点。")
+    AxisJustify justify_z{AxisJustify::center};
+
+    AFIELD(Label = "Target Position", Category = "Alignment",
+           DESC = "未连接 reference 端口时使用的对齐目标坐标，单位 m。")
+    math::Vector3 target_position;
+
+    AFIELD(Label = "Scale to Fit", Category = "Target Size", DESC = "开启时将输入缩放到目标包围盒尺寸。")
+    bool scale_to_fit{false};
+
+    AFIELD(Label = "Uniform Scale", Category = "Target Size", Meta("ui.visible_when", "scale_to_fit=true"),
+           DESC = "保持原始高宽比等比缩放，内接于目标尺寸。")
+    bool uniform_scale{true};
+
+    AFIELD(Label = "Target Size", Category = "Target Size", Meta("ui.visible_when", "scale_to_fit=true"),
+           DESC = "未连接 reference 端口时使用的目标包围盒尺寸，单位 m。")
+    math::Vector3 target_size{1.f, 1.f, 1.f};
+
+    AFUNCTION(DESC = "对齐并归一化输入几何；reference 端口为空时使用面板目标参数。")
+    [[nodiscard]] Result<void> process(const Geometry& input, const Geometry& reference,
+                                       Geometry& output) const noexcept;
 };
 
 ACLASS(Name = "procedural.Promote", DESC = "把属性移到另一层，按 Reduce 合成该层每个元素接触到的值。")

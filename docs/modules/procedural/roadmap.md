@@ -59,7 +59,27 @@ S0 契约静态对齐 → S1 原生拓扑/构造/体积采样/Realize，随后�
 **推进顺序**：
 1. **阶段一（人机闭环基础设施，已完成）**：已落地 `editor.stateful_rebuild` 与 `control.spatial_diagnostics`。
 2. **阶段二（真实业务驱动的生成式建模闭环，已完成）**：已通过带道路排斥与扫掠围墙的哨站（`FortifiedOutpost`）与可调层高/开间的模块化建筑废墟（`ModularRuinBuilding`）双命题，端到端落地 `source.spatial_and_aux_ports`、受控 `GeometryBuilder`（L3）及 C++ `Extrude` / `Sweep` 算子。
-3. **阶段三（复合资产化与十万实例规模闭环）**：S4 子图数字资产与三层同构参数体验已全部落地；下一步推进[集合与渲染接口](#集合与渲染接口)中的 `SceneSnapshot` GPU 常驻实例集合区段（S5-2，消除 [scene.cpp](../../../modules/engine/presentation/src/scene.cpp) `Scene::render_items()` 的 CPU 逐实例 `RenderItem` 展开）。
+3. **阶段三（复合资产化、核心算子扩充与十万实例规模闭环）**：S4 子图数字资产与三层同构参数体验已全部落地；下一步优先探讨并推进 **S4.5 核心几何算子与节点工具箱扩充**（补齐基础图元网格/细分、平面裁切/焊接/分格、法线/UV 投影、折线重采样、语义选组与惰性分支），随后推进[集合与渲染接口](#集合与渲染接口)中的 `SceneSnapshot` GPU 常驻实例集合区段（S5-2，消除 [scene.cpp](../../../modules/engine/presentation/src/scene.cpp) `Scene::render_items()` 的 CPU 逐实例 `RenderItem` 展开）。
+
+### S4.5 核心几何算子与节点工具箱扩充（分批推进中：S4.5-1 参数化图元与对齐底座已实现）
+
+在进入 S5-2 渲染侧批量加速前，针对现有内置节点在真实建模与关卡生成中的高频工作流断层，遵循上述三层分工（**不引入加减乘除算术微节点，聚焦 `.source` 不应手写的 C++ 拓扑/属性硬算子与高频工作流节点**），分批推进核心算子扩充：
+
+| 分组 | 节点 / 升级 | 解决的工作流断层与职责边界 | 当前状态 |
+| --- | --- | --- | --- |
+| 1. 参数化基础图元与对齐（S4.5-1） | `Grid`（表面网格模式 + 三平面 + UV） | 补齐 `quads / triangles / points`（默认 `quads`）、`zx / xy / yz` 朝向、`center` 与 `vertex N`、`uv`，直接作为地形、楼板、墙面起手网格 | 已实现（S4.5-1） |
+| 1. 参数化基础图元与对齐（S4.5-1） | `Box`（三轴细分 `divisions_x/y/z` + `base_on_ground` + UV） | 支持共享棱角点的闭合流形三轴细分、底面贴地（消除半高心算）与逐面仿射 `vertex uv` | 已实现（S4.5-1） |
+| 1. 参数化基础图元与对齐（S4.5-1） | `Tube`（锥度/棱锥 + 中空管 + 扇形封盖）与 `Wedge` / `Circle` / `Torus` | 单一泛化 `Tube` 覆盖圆柱/圆锥/四棱锥屋顶/六棱柱/中空管/扇形拱；新增 `Wedge`（斜坡与双坡屋顶）、`Circle`（正多边形/闭合截面/`open_arc` 拱线）与 `Torus`（柱础圆环/弯管） | 已实现（S4.5-1） |
+| 1. 参数化基础图元与对齐（S4.5-1） | `Transform`（角度制欧拉旋转 + `pivot`）与 `MatchSize` | `Transform.rotate` 统一采用角度制 `X→Y→Z` 欧拉角并支持局部 `pivot`；新增 `MatchSize`（默认 XZ 居中、底面贴齐 `Y=0`，支持 `scale_to_fit` 与 `reference` 参考端口） | 已实现（S4.5-1） |
+| 2. 撒点遮罩与拓扑构造（S4.5-2） | `Scatter`（`Group` 遮罩 + 密度权重列） | 现行 `Scatter` 无法只对局部面组撒点或按属性控制疏密；拟补齐 `group` 过滤与可选密度乘子列 | 候选待推进 |
+| 2. 撒点遮罩与拓扑构造（S4.5-2） | `Clip`（平面裁切 + 可选封盖 `Cap` + 切口组） | 斜屋顶山墙、断壁残垣斜切口与岩石削切；开启 `Cap` 时补齐满足 δ_p 的闭合切面，保持下游 `Boolean` / `VolumeScatter` 可用 | 候选待推进 |
+| 2. 撒点遮罩与拓扑构造（S4.5-2） | `Fuse`（空间哈希点焊接 + 退化图元清理） | `Merge`、`Realize` 或 L3 `emit_*` 拼合几何后，按距离阈值确定性焊接重合点并清理退化边面 | 候选待推进 |
+| 2. 撒点遮罩与拓扑构造（S4.5-2） | `Divide`（凸化 / 三角化 / Bricker 正交网格切分） | 多边形三角化与正交网格分块（Bricker），将不规则裁切面切成规整网格片以供噪声起伏或逐块 `Extrude` | 候选待推进 |
+| 3. 法线与 UV 完备化（S4.5-2） | `Normal`（按折痕角 `Cusp Angle` 重算法线） | `.source` 变形点位置 `P` 后，按平滑/硬边角度阈值重建 `vertex` 或 `point` 法线 | 候选待推进 |
+| 3. 法线与 UV 完备化（S4.5-2） | `UVProject`（Box 六向 / Planar / Cylindrical 投影） | 为 `Boolean`、`Extrude`、`Clip` 及 L3 生成几何赋予统一世界尺度（Texel Density）的 `vertex uv`，打通 Scene Lit 贴图表现 | 候选待推进 |
+| 4. 曲线、选组与分支（S4.5-2） | `Resample`（折线定长/定段重采样 + 切向/`curveu`）与 `Polyline` 闭合支持 | 打通 `Line/Polyline → Resample → Ray → Sweep` 贴地城墙、道路、栏杆与管道生成链路 | 候选待推进 |
+| 4. 曲线、选组与分支（S4.5-2） | `Group`（法线夹角 / 包围体 / 边界边点 / 布尔组合） | 扩展单薄的 `GroupBox`，在 `primitive` / `point` 层按朝向夹角（如屋顶面、竖直墙面）、球盒范围或开口边界建立/组合 `bool` 组 | 候选待推进 |
+| 4. 曲线、选组与分支（S4.5-2） | `Switch`（按索引选择输入，`Evaluator` 惰性求值） | 配合 S4 暴露参数切换数字资产内部造型分支，仅求值被选中的单个上游分支，未选分支零求值开销 | 候选待推进 |
 
 ### Volume 表面带的首角舍入限制（未排期）
 
