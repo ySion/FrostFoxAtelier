@@ -27,7 +27,7 @@
 ## 生命周期与目录
 
 1. **每进程最多一次成功 start**；失败的初始化完整回滚后才允许重试。无同进程 restart；多个 Runtime 共享此进程设施而不是共享业务上下文。start/flush/finish 由同一宿主线程串行调用。
-2. Run 必须在 Application、Project、World、设备等业务拥有者创建前存在。业务作用域销毁、worker join、最外层 catch 中记录原始异常均发生在 finish 之前。调用方停止一切生产者后才能 finish，接口不代替线程协调。全局静态析构不再记录。
+2. Run 必须在 Application、Project、World、设备等业务拥有者创建前存在。业务作用域销毁、worker join 和宿主首错记录均发生在 finish 之前。调用方停止一切生产者后才能 finish，接口不代替线程协调。全局静态析构不再记录。
 3. `current_run()` 在成功 start 后非空，在 finish 完成后为空；指针仅在宿主保证的生命周期中借用，不能与 shutdown 竞争。finish 幂等，Run 对象中的 info/最终 health 仍可查询。析构只能做紧急收尾；未显式 finish 要保存 `lifecycle_violation`、走非递归紧急输出，不能写出“已审查成功”。
 4. `RunOptions.directory` 空时创建 `%LOCALAPPDATA%\FrostFoxAtelier\Logs\<run_id>`。已给目录必须绝对且尚不存在，含 NUL 在任何 IO 前返回 `invalid_options`，以独占创建拒绝复用；不回退到工作目录，不截断旧 run。`run_id` 是不复用的日志运行标识，不是新的业务对象身份。
 5. Editor 为 Runner 预选自己的 run 目录下尚不存在的 `runner-<launch ordinal>` 子目录，通过进程启动参数传该路径及父 `run_id`。Runner 自己 start、写盘和 finish。Editor 可在启动子进程前 open 对应 Reader；日志不进入 Live ACK 或 Control 链路。具体命令行拼写由 Application 集成实现，公共类型不依赖它。
@@ -94,12 +94,12 @@ diagnostic.fields.push_back({"scene_local_id", std::string{"player"}});
 diagnostic.repeat = log::Repeat{"document-7/world-2/diagnostic-19", 3};
 const auto submitted = log::submit(std::move(diagnostic));
 
-// 正式调用点在业务销毁、join 和最外层 catch 之后：
+// 正式调用点在业务销毁、join 和宿主首错记录之后：
 const auto final_report = run->finish();
 // 宿主审查 report；severity/first_error 本身不等于退出失败。
 ```
 
-上例是 Interface 用法，不是完整 main；关键是 Run 拥有者在业务 try/catch 外，finish 在其后。`accepted` 只代表入队，不代表已显示或已写入文件。
+上例是 Interface 用法，不是完整 main；Run 的生命周期覆盖业务执行、错误记录与生产者关闭。`accepted` 只代表入队，不代表已显示或已写入文件。
 
 ## 队列、健康、首因与完成
 
@@ -182,7 +182,7 @@ Reader 不在后台 sink 中调用 UI，也不经 UI 反向背压唯一 Quill wo
 
 Reader 的 I/O 失败经显式结果进入原状态通道；元数据读取失败关闭当前句柄、清理未完成缓冲，保留已加载版本，后续 poll 可重读。扫描中的轮转竞态只结束本次扫描并留待下次 poll，不是空文件集、EOF 或新增错误码；本批已有记录仍正常交付。Reader 与 sink 的文件身份检查复用同一个显式结果入口；sink 的 flush 检查失败仍记录 `file_flush_failed` 和原 native_code，并将本次结果置为失败，成功的身份检查也不能抹掉先前写失败。
 
-Reader 打开/读取、sink 检查/写入、原子快照及启动 IO 的系统错误文本统一经 Platform 输出 UTF-8，不再沿 `what()` 或 CRT 本地编码；这是有意的诊断文本变化，错误分类及既有原生错误码通道不变。自有 Logging 已不以异常传错；Quill 后台内部仍有异常边界，见下方 W5 限制。
+Reader 打开/读取、sink 检查/写入、原子快照及启动 IO 的系统错误文本统一经 Platform 输出 UTF-8，不再沿 `what()` 或 CRT 本地编码；这是有意的诊断文本变化，错误分类及既有原生错误码通道不变。自有 Logging 已不以异常传错；Quill 和 bundled fmt 的无异常配置及其使用范围见下表。
 
 Reader 打开文件时允许 writer 的 read/write/delete sharing，以 Windows 文件身份与偏移跟踪 rename；不能仅按 events.N 的名字续读。按最旧保留文件到当前文件消费，新旧目录快照不一致时重扫而不拼接。利用输出序号高水位与文件游标定位进度，最近 4096 个唯一记录键作有界去重；已经离开这个窗口的旧输出序号只能判重放/倒序，不假称精确知道过去是否交付。producer 只受并发预算限制，不能用“run 一生只有 128 个 producer”作为 Reader 内存有界的前提。重复/倒序异常均须可见，不能以无限 set 掩盖问题。运行中 health 只有最新成功快照，UI 显示 updated_unix_ns/是否 final，过期不被解释为健康。
 
@@ -224,7 +224,7 @@ Quill 的 [atelier.patch](../../../third_party/quill/atelier.patch) 修改两个
 
 采用两个上游支持的开关：`check_backend_singleton_instance=false` 失去跨模块重复 Quill 副本的检测，单常驻宿主合同仍必须遵守；`QUILL_NO_THREAD_NAME_SUPPORT=ON` 失去 Quill 线程名字，持久 schema 只使用 thread_id，不改变身份。它们不关闭日志文件锁，也不使多个 Quill registry 合法。
 
-W5 前仍保持 `QUILL_NO_EXCEPTIONS=OFF`，不提前改变全仓 EH 设置。QUILL-RESULT 的编译期格式合同与诊断时间降级已消除本模块先前登记的可恢复异常来源；在下表固定合同继续成立的前提下，W5 将 `QUILL_NO_EXCEPTIONS=ON` 与独立的 `FMTQUILL_USE_EXCEPTIONS=0` 配合 `/EHs-c-`、`_HAS_EXCEPTIONS=0` 使用的本模块前置条件已满足。剩余不变量违例和 CPU 分配/线程建立失败按 fatal 处理，而不是继续运行。整仓 W5 仍需其他前置片、有效编译命令和双配置完整门禁；不宣称所有未使用的 Quill 功能都已无异常。
+锁定版 Quill 使用 `QUILL_NO_EXCEPTIONS=ON`，bundled fmt 独立设置 `FMTQUILL_USE_EXCEPTIONS=0`。两者随 Quill 头文件传递到消费者，与自有 C++ 目标的禁异常配置一致。下表列出项目实际使用的格式、队列和后台操作的前提。宿主 CPU 分配、线程建立失败和不可恢复的不变量违例进入 fatal。
 
 | 锁定 Quill / bundled fmt 的残留点 | 本项目不可恢复或不可达的依据 |
 |---|---|

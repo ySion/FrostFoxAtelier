@@ -1,6 +1,7 @@
 #pragma once
+#include "runtime/runtime.hpp"
 #include <filesystem>
 
 namespace atelier::editor {
-std::filesystem::path asset_directory();
+Result<std::filesystem::path> asset_directory();
 }

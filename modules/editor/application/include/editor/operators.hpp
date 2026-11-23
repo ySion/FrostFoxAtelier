@@ -89,7 +89,7 @@ struct Context {
 
     std::filesystem::path source{};
 
-    std::filesystem::path editor_ui_source{};
+    Result<std::filesystem::path> editor_ui_source{};
 
     bool project_running{};
 
@@ -183,7 +183,7 @@ public:
     // Starts the existing tree-row or Parameters name editor for this explicit target.
     virtual Result<void> begin_entity_rename(ObjectId, RegionKind) = 0;
 
-    virtual void reset_layout() = 0;
+    virtual Result<void> reset_layout() = 0;
 
     // A region without a Dock page is a no-op; the Code page closes its active document first,
     // asking about unsaved changes only when interactive.
@@ -299,17 +299,16 @@ struct OperatorInfo {
 
 class OperatorRegistry {
 public:
-    Result<void> add(OperatorInfo); // Rejects duplicate or malformed IDs and illegal flag combinations.
+    [[nodiscard]] static Result<OperatorRegistry> builtins();
 
     const OperatorInfo* find(std::string_view id) const noexcept;
 
     std::span<const OperatorInfo> all() const noexcept { return operators_; }
 
 private:
+    Result<void> validate() const;
     std::vector<OperatorInfo> operators_;
 };
-
-void register_builtin_operators(OperatorRegistry&);
 
 struct OperatorCall {
     std::string id;

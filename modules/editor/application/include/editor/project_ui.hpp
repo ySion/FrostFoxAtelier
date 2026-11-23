@@ -8,7 +8,7 @@ namespace atelier::editor {
 // Its sampled inputs are values; no scene Runtime pointers enter UI scopes.
 class ProjectUI final {
 public:
-    ProjectUI();
+    Result<void> initialize();
 
     void sync(const Project*);
 

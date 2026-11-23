@@ -1,9 +1,9 @@
 #include "ui/docking.hpp"
 #include "memory/fatal.hpp"
+#include "foundation/result.hpp"
 #include <algorithm>
 #include <cassert>
 #include <cmath>
-#include <stdexcept>
 
 namespace atelier::ui {
 namespace {
@@ -64,14 +64,20 @@ DockSpace::DockSpace(ControlKey base, std::vector<DockTab> tabs) : base_(base), 
                                    });
                                }) &&
            "Overlapping dock identities.");
-    reset();
+    if (const auto initial = reset(); !initial)
+        fatal(initial.error().message);
 }
 
 DockSpace::~DockSpace() = default;
 
+Result<void> DockSpace::require_nodes(std::size_t count) const {
+    if (count > (base_ + close_offset - 16 - next_) / 16)
+        return std::unexpected(Error{ErrorCode::capacity_exceeded, base_, 0, "Dock identities exhausted."});
+    return {};
+}
+
 std::unique_ptr<DockSpace::Node> DockSpace::make_node() {
-    if (next_ >= base_ + close_offset - 16)
-        throw std::length_error("Dock identities exhausted.");
+    assert(next_ < base_ + close_offset - 16);
     auto result = std::make_unique<Node>();
     result->key = next_;
     next_ += 16;
@@ -107,7 +113,9 @@ DockSpace::Node* DockSpace::owner(ControlKey key) const noexcept {
     return visit(visit, root_.get());
 }
 
-void DockSpace::reset() {
+Result<void> DockSpace::reset(std::span<const DockPlacement> placements) {
+    const auto splits = std::ranges::count_if(placements, [](const auto& p) { return p.side != DockSide::tabs; });
+    ATELIER_TRY(require_nodes(1 + 2 * static_cast<std::size_t>(splits)));
     root_ = make_node();
     for (const auto& view : tabs_)
         root_->tabs.push_back(view.key);
@@ -117,6 +125,11 @@ void DockSpace::reset() {
     closed_tabs_.clear();
     drag_.reset();
     resize_.reset();
+    for (const auto& p : placements) {
+        ATELIER_TRY_BIND(moved, move(p.tab, p.target, p.side, p.fraction));
+        assert(*moved && "Invalid default dock placement.");
+    }
+    return {};
 }
 
 ControlKey DockSpace::pane(ControlKey key) const noexcept {
@@ -307,12 +320,14 @@ bool DockSpace::focus_point(float x, float y, const UiFrame& frame) noexcept {
     return true;
 }
 
-bool DockSpace::move(ControlKey key, ControlKey target, DockSide side, float fraction) {
+Result<bool> DockSpace::move(ControlKey key, ControlKey target, DockSide side, float fraction) {
     const auto* node = owner(target);
-    return node && place(key, node->key, side, 0, fraction);
+    if (!node)
+        return false;
+    return place(key, node->key, side, 0, fraction);
 }
 
-bool DockSpace::place(ControlKey key, ControlKey target, DockSide side, ControlKey before, float fraction) {
+Result<bool> DockSpace::place(ControlKey key, ControlKey target, DockSide side, ControlKey before, float fraction) {
     if (!tab(key) || !std::isfinite(fraction) || fraction <= 0 || fraction >= 1)
         return false;
     auto* to = find(target);
@@ -323,6 +338,8 @@ bool DockSpace::place(ControlKey key, ControlKey target, DockSide side, ControlK
         return true;
     if (before && std::find(to->tabs.begin(), to->tabs.end(), before) == to->tabs.end())
         return false;
+    if (side != DockSide::tabs)
+        ATELIER_TRY(require_nodes(2));
     resize_.reset();
     remove(*from, key);
     if (side == DockSide::tabs) {
@@ -444,7 +461,7 @@ std::optional<DockSpace::Drop> DockSpace::destination(ControlKey source, const D
     return visit(visit, *root_);
 }
 
-bool DockSpace::apply(const Action& action, const UiFrame& frame) {
+Result<bool> DockSpace::apply(const Action& action, const UiFrame& frame) {
     if (tab(action.key)) {
         if (action.kind == ActionKind::activate)
             return select(action.key);
@@ -468,7 +485,7 @@ bool DockSpace::apply(const Action& action, const UiFrame& frame) {
                 const auto target = drag_->target;
                 drag_.reset();
                 if (target)
-                    place(action.key, target->pane, target->side, target->before);
+                    ATELIER_TRY(place(action.key, target->pane, target->side, target->before));
             }
             return true;
         }
@@ -593,7 +610,7 @@ bool DockSpace::apply(const Action& action, const UiFrame& frame) {
         else if (offset == 5)
             close(node->active);
         else if ((offset == 7 || offset == 8) && node->tabs.size() > 1)
-            place(node->active, node->key, offset == 7 ? DockSide::right : DockSide::bottom);
+            ATELIER_TRY(place(node->active, node->key, offset == 7 ? DockSide::right : DockSide::bottom));
         return true;
     }
     return false;

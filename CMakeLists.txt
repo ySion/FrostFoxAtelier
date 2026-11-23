@@ -40,7 +40,8 @@ function(atelier_target target)
         CXX_STANDARD 23 CXX_STANDARD_REQUIRED YES CXX_EXTENSIONS NO
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
         MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
-    target_compile_options(${target} PRIVATE /W4 /WX /EHsc /permissive- /utf-8)
+    target_compile_options(${target} PRIVATE /W4 /WX /permissive- /utf-8 "$<$<COMPILE_LANGUAGE:CXX>:/EHs-c->")
+    target_compile_definitions(${target} PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:_HAS_EXCEPTIONS=0>")
     target_compile_definitions(${target} PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
     target_link_libraries(${target} PRIVATE atelier_memory_headers)
     get_target_property(_type ${target} TYPE)

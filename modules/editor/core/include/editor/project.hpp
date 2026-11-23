@@ -44,13 +44,15 @@ public:
     const assets::ProjectEntry* entry(std::string_view key) const { return assets_.entry(key); }
 
     // The top-level folders the catalogue scans: Content, Source, Config.
-    std::span<const std::filesystem::path> roots() const noexcept { return roots_; }
+    static std::span<const std::filesystem::path> roots() noexcept;
 
     std::uint64_t revision() const noexcept { return assets_.revision(); }
 
     Result<void> refresh();
 
     Result<std::filesystem::path> resolve(const std::filesystem::path&) const;
+
+    Result<std::string> read_scene(const std::filesystem::path& relative) const;
 
     // Authored OBJ/glTF slots publish named MI assets; unbound slots use the engine grid.
     Result<std::string> import_mesh(const std::filesystem::path&);
@@ -111,8 +113,6 @@ private:
     std::filesystem::path ui_source_;
 
     std::wstring name_;
-
-    std::vector<std::filesystem::path> roots_;
 
     assets::Reader assets_;
 };

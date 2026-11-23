@@ -2,7 +2,7 @@
 
 #include "physics/timing.hpp"
 #include "renderer/timing.hpp"
-#include <stdexcept>
+#include "memory/fatal.hpp"
 #include <string>
 
 // CPU phases of one host step: Application::step in the editor and one loop of
@@ -51,8 +51,7 @@ inline void require_frame_timing() {
           std::span<timing::Marker* const>(renderer::phases::markers)})
         for (const auto* marker : module)
             if (!marker->registered())
-                throw std::logic_error(
-                    "Frame timing is not installed: call install_frame_timing() at process start (missing " +
-                    std::string(marker->key()) + ").");
+                fatal("Frame timing is not installed: call install_frame_timing() at process start (missing " +
+                      std::string(marker->key()) + ").");
 }
 }

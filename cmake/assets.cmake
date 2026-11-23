@@ -7,6 +7,7 @@ add_library(atelier_assets STATIC
     "${PROJECT_SOURCE_DIR}/modules/engine/assets/src/reader.cpp"
     "${PROJECT_SOURCE_DIR}/modules/engine/assets/src/file.cpp"
     "${PROJECT_SOURCE_DIR}/modules/engine/assets/src/image_decode.cpp"
+    "${PROJECT_SOURCE_DIR}/modules/engine/assets/src/png.cpp"
     "${PROJECT_SOURCE_DIR}/modules/engine/assets/src/obj_import.cpp"
     "${PROJECT_SOURCE_DIR}/modules/engine/assets/src/gltf_import.cpp")
 atelier_target(atelier_assets)

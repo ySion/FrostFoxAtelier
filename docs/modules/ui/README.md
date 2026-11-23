@@ -119,7 +119,7 @@ DSL 的 EditorShell 和 ToolShelf 用普通容器、按钮和 `collapsed` 组成
 
 `tree` 是共享滚动容器，`tree_item` 是它的直接布局子项。Tree 需要宿主提供展平后的行：宿主持有层级、展开状态和过滤，按深度优先先序把可见节点展平成 `tree_row_count` 行，只描述其中一部分。每个 `tree_item` 给出 `tree_index`（行号）、`tree_depth`（< 128）、`tree_branch`、`tree_expanded` 和 `tree_lines`（第 k 位表示第 k 层祖先或本行之后还有同级行，绘制该层连接线）。Session 校验描述行号递增、不超出行数、相邻行至多深一层且只在展开的分支下，然后只排布描述的行：每行按 `tree_index × 行高` 定位，树的滚动范围覆盖全部 `tree_row_count` 行。逻辑层级只表达展示关系，不创建业务对象或修改 World。
 
-`ui/controls.hpp` 的 `flatten_tree` 把宿主节点展平成行并计算连接线，`tree_window` 按 `Session::tree_viewport`（当前滚动、上次排布的视口高度和行高）选出要描述的行：视口及上下各一屏、首末行，以及钉住的行（主选、焦点、内联重命名）及其相邻行和祖先。视口高度取上次排布的值；停靠变化或缩放超过一屏余量的那一帧可能缺行，下一帧按新高度补齐，输入只命中已接受帧中存在的行。
+`ui/controls.hpp` 的 `flatten_tree` 返回完整可见行和连接线。父节点不在先序祖先路径上时返回 `invalid_control`；超过 128 层、节点索引容量或可见行预算时返回 `capacity_exceeded`。折叠和过滤隐藏的节点也校验层级。`tree_window` 按 `Session::tree_viewport`（当前滚动、上次排布的视口高度和行高）选出要描述的行：视口及上下各一屏、首末行，以及钉住的行（主选、焦点、内联重命名）及其相邻行和祖先。视口高度取上次排布的值；停靠变化或缩放超过一屏余量的那一帧可能缺行，下一帧按新高度补齐，输入只命中已接受帧中存在的行。
 
 展开按钮、左右方向键只发出 `expand` 动作（bool 为请求的展开值），由宿主改变状态后重新描述；折叠焦点所在的子树时焦点移到折叠行。点击行或 Enter/Space 发出 `select`，`SelectionModifiers` 携带 Shift/Ctrl，业务选择集合由宿主维护。上下/Home/End 在已描述的行之间移动，越出视口会滚动显露；左方向键折叠或返回父行，右方向键展开或进入首个子项。Tab 将整个树作为一个停靠点。宿主把某行 `tree_primary` 从 false 改为 true（或换成新的主行）时，Session 滚动显露该行一次；稳定的主行不会反复拉回滚动。行离开描述窗口后再出现使用新 incarnation，禁用或移除行取消旧捕获。`UiFrame::tree_rows` 发布行号、深度、展开值和展开按钮命中区，鼠标与绘制共用这份已接受几何。
 
@@ -173,7 +173,7 @@ PopupHost另保留一个隔离的measurement Session，用工作区约束及同�
 
 [docking.hpp](../../../modules/gui/ui/include/ui/docking.hpp) 的 `DockSpace` 拥有单宿主的分割树、标签顺序、当前标签、最大化目标和拖放预览。宿主注册稳定的 `DockTab.key/content`、标题与最低尺寸，通过 `presentation` 提供分割尺寸、页签与内容槽数据，由编辑器 DSL 描述全部界面结构。它不拥有业务对象、相机、草稿或历史；同类型多实例由宿主注册不同身份才能存在，不能通过复制 key 创建副本。
 
-registry 是代码配置前置条件：1…64 个视图，非零 base 且 base+5,000,256 不溢出；所有 key/content 非零、互异且不落入该闭区间，标题非空、minimum 有限且至少 120×60。空/过大 registry 或范围溢出直接 fatal，其余违例在 dev 断言；release 不保留查重扫描。`reset/split` 的累计身份耗尽仍是 UI-BASE-B 的未迁移路径，本片不改变额度或复用身份。
+registry 是代码配置前置条件：1…64 个视图，非零 base 且 base+5,000,256 不溢出；所有 key/content 非零、互异且不落入该闭区间，标题非空、minimum 有限且至少 120×60。空/过大 registry 或范围溢出直接 fatal，其余违例在 dev 断言；release 不保留查重扫描。重置和分割均在修改布局前检查单调递增的节点身份预算。重置按默认布局的全部分割预检，额度不足返回 `capacity_exceeded`，保留原面板、焦点和节点身份。
 
 - 分割是横/纵方向、比例和两个孩子；叶子是标签组。移动后清理空组与单子分割；最后一组可为空，并仍能从菜单打开内容。最大化不改动原树。
 - `tab` 复用 Session 的焦点、键盘激活、命中和捕获。超过 4 DIP 拖动阈值后产生 `drag_begin/preview/commit/cancel`，`DragPoint` 是已接受客户区的物理坐标。`DockSpace::apply` 使用同一接受帧决定目标，拖放预览不修改布局，松开才提交；Esc、捕获/焦点/Surface 丢失取消。

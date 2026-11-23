@@ -7,7 +7,6 @@
 #include "renderer/renderer.hpp"
 #include "logging/logging.hpp"
 #include <algorithm>
-#include <cstdio>
 #include <limits>
 #include <optional>
 #include <tuple>
@@ -379,7 +378,7 @@ public:
 
     // Called only after the host accepts the rendered frame. Transforms and
     // selection can replace draw requests without changing the material group.
-    void accept(std::uint64_t frame, bool fallback, renderer::Shading shading) noexcept try {
+    void accept(std::uint64_t frame, bool fallback, renderer::Shading shading) noexcept {
         if (!adopted_)
             return;
         const auto& draw = adopted_->draw;
@@ -397,8 +396,6 @@ public:
                         {"fallback", fallback},
                         {"shading", static_cast<std::uint64_t>(shading)}};
         static_cast<void>(logging::submit(std::move(entry)));
-    } catch (...) {
-        std::fputs("Material accepted-frame diagnostic capture failed.\n", stderr);
     }
 
 private:
@@ -499,24 +496,20 @@ private:
     std::optional<Prepared> adopted_;
 
     void material_event(std::string_view code, const renderer::Error* error = nullptr) const noexcept {
-        try {
-            logging::Entry entry{.severity = error ? logging::Severity::error : logging::Severity::info,
-                                 .category = "material",
-                                 .event_code = std::string(code),
-                                 .message = error ? error->cause.message : "Material preparation transition."};
-            entry.fields = {{"document", picking_->scene_identity},
-                            {"draw_request", pending_->request},
-                            {"surfaces", std::uint64_t{surfaces_.size()}}};
-            if (pending_->draw.material_request)
-                entry.fields.push_back({"request_generation", pending_->draw.material_request});
-            if (error) {
-                entry.fields.push_back({"terminal", error->terminal});
-                entry.fields.push_back({"error_code", static_cast<std::uint64_t>(error->cause.code)});
-            }
-            static_cast<void>(logging::submit(std::move(entry)));
-        } catch (...) {
-            std::fputs("Material diagnostic capture failed.\n", stderr);
+        logging::Entry entry{.severity = error ? logging::Severity::error : logging::Severity::info,
+                             .category = "material",
+                             .event_code = std::string(code),
+                             .message = error ? error->cause.message : "Material preparation transition."};
+        entry.fields = {{"document", picking_->scene_identity},
+                        {"draw_request", pending_->request},
+                        {"surfaces", std::uint64_t{surfaces_.size()}}};
+        if (pending_->draw.material_request)
+            entry.fields.push_back({"request_generation", pending_->draw.material_request});
+        if (error) {
+            entry.fields.push_back({"terminal", error->terminal});
+            entry.fields.push_back({"error_code", static_cast<std::uint64_t>(error->cause.code)});
         }
+        static_cast<void>(logging::submit(std::move(entry)));
     }
 
     std::uint64_t key(std::unordered_map<ObjectId, Key>& keys, ObjectId object) {

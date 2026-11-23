@@ -212,9 +212,9 @@ void AssetBrowser::update_directories(const Project* project) {
     invalidate_items();
 }
 
-const std::shared_ptr<const std::vector<ui_language::Item>>& AssetBrowser::directory_items() {
+ui::Result<ui_language::ItemList> AssetBrowser::directory_items() {
     if (!directory_items_dirty_ && directory_items_)
-        return directory_items_;
+        return ui_language::ItemList{directory_items_};
     // Project, its directories in path (preorder) order, then Engine. Few rows: all are described.
     struct Node {
         ui::ControlKey key;
@@ -250,12 +250,11 @@ const std::shared_ptr<const std::vector<ui_language::Item>>& AssetBrowser::direc
     }
     labels.push_back({browser_control::engine, L"Engine", true, engine_, ui::ControlIcon::mesh});
     nodes.push_back({});
-    std::vector<ui::TreeRow> rows;
-    ui::flatten_tree(nodes, {}, rows);
+    ATELIER_TRY_BIND(rows, ui::flatten_tree(nodes, {}));
     auto items = std::make_shared<std::vector<ui_language::Item>>();
-    items->reserve(rows.size());
-    for (std::uint32_t index = 0; index < rows.size(); ++index) {
-        const auto& row = rows[index];
+    items->reserve(rows->size());
+    for (std::uint32_t index = 0; index < rows->size(); ++index) {
+        const auto& row = (*rows)[index];
         const auto& label = labels[row.node];
         items->push_back(
             {label.key,
@@ -263,10 +262,10 @@ const std::shared_ptr<const std::vector<ui_language::Item>>& AssetBrowser::direc
               ui_language::TreeRowBinding{index, row.depth, row.branch, row.expanded, label.selected, row.lines},
               std::wstring{}, false, ui::ControlKey{}}});
     }
-    directory_rows_ = rows.size();
+    directory_rows_ = rows->size();
     directory_items_ = std::move(items);
     directory_items_dirty_ = false;
-    return directory_items_;
+    return ui_language::ItemList{directory_items_};
 }
 
 Result<void> AssetBrowser::set_expanded(std::span<const std::filesystem::path> paths, bool expanded) {
@@ -563,8 +562,9 @@ bool AssetBrowser::apply(const ui::Action& action) {
     return false;
 }
 
-void AssetBrowser::append(ui_language::ControlOutput controls, ui::ControlKey parent, const Project* project,
-                          bool can_create, const ui::UiFrame* frame, ui_language::LiveDocument& document) {
+ui::Result<void> AssetBrowser::append(ui_language::ControlOutput controls, ui::ControlKey parent,
+                                      const Project* project, bool can_create, const ui::UiFrame* frame,
+                                      ui_language::LiveDocument& document) {
     namespace id = browser_control;
     update_directories(project);
     can_create_ = can_create;
@@ -579,8 +579,9 @@ void AssetBrowser::append(ui_language::ControlOutput controls, ui::ControlKey pa
     const auto* body = frame ? frame->find(id::root + 103) : nullptr;
     const double directory_limit =
         body ? std::max(96., static_cast<double>(body->bounds.width / frame->drawing->dpi_scale) - 69.) : 144.;
+    ATELIER_TRY_BIND(directories, directory_items());
     const std::array<ui_language::InputValue, 18> inputs{
-        ui_language::ItemList{directory_items()},
+        std::move(*directories),
         static_cast<double>(directory_rows_),
         ui_language::TextEditBinding{id::search, query_},
         address,
@@ -626,5 +627,6 @@ void AssetBrowser::append(ui_language::ControlOutput controls, ui::ControlKey pa
                                                 : L"No matches. Clear the search or type filter.")};
     const std::array<ui_language::KeyBinding, 1> result_keys{{{"results", id::results}}};
     static_cast<void>(document.append("AssetResults", id::content, result_keys, results, controls));
+    return {};
 }
 }

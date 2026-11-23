@@ -1344,6 +1344,12 @@ Component::Compilation Component::compilation() const noexcept {
     return impl_->compilation;
 }
 
+Result<ui::ControlKey> allocate_control_key(ui::ControlKey& next_key, std::string_view exhausted) {
+    if (!next_key || next_key == std::numeric_limits<ui::ControlKey>::max())
+        return std::unexpected(Error{ErrorCode::capacity_exceeded, std::string(exhausted)});
+    return next_key++;
+}
+
 Result<TypeId> register_types(Runtime& runtime) {
     if (auto type = runtime.native_type<detail::Context>(); type)
         return *type;
@@ -1955,11 +1961,6 @@ Result<std::unique_ptr<detail::PreparedUpdate>> detail::InstanceData::prepare(st
         next->aliases.assign(aliases.begin(), aliases.end());
         next->code = definition->impl_->code;
         next->nodes.resize(declaration.nodes.size());
-        const auto allocate = [&]() -> Result<ui::ControlKey> {
-            if (!*next_key || *next_key == std::numeric_limits<ui::ControlKey>::max())
-                return std::unexpected(Error{ErrorCode::capacity_exceeded, "UI control keys exhausted."});
-            return (*next_key)++;
-        };
         for (std::size_t i = 0; i < next->nodes.size(); ++i) {
             auto& node = next->nodes[i];
             const auto& declared = declaration.nodes[i];
@@ -1978,10 +1979,8 @@ Result<std::unique_ptr<detail::PreparedUpdate>> detail::InstanceData::prepare(st
                 node.control.key = alias->key;
             else if (node.previous)
                 node.control.key = node.previous->control.key;
-            else {
-                ATELIER_TRY_BIND(key, allocate());
-                node.control.key = *key;
-            }
+            else
+                ATELIER_TRY_ASSIGN(node.control.key, allocate_control_key(*next_key, "UI control keys exhausted."));
             if (const auto& type = definition->impl_->children[i])
                 for (const auto& input : type->declaration().inputs)
                     node.arguments.push_back(initial(input.kind));
@@ -1996,18 +1995,14 @@ Result<std::unique_ptr<detail::PreparedUpdate>> detail::InstanceData::prepare(st
                     node.label = alias->label;
                 else if (node.previous)
                     node.label = node.previous->label;
-                else {
-                    ATELIER_TRY_BIND(key, allocate());
-                    node.label = *key;
-                }
+                else
+                    ATELIER_TRY_ASSIGN(node.label, allocate_control_key(*next_key, "UI control keys exhausted."));
                 if (alias != aliases.end() && alias->body)
                     node.body = alias->body;
                 else if (node.previous)
                     node.body = node.previous->body;
-                else {
-                    ATELIER_TRY_BIND(key, allocate());
-                    node.body = *key;
-                }
+                else
+                    ATELIER_TRY_ASSIGN(node.body, allocate_control_key(*next_key, "UI control keys exhausted."));
             }
         }
         for (const auto& state : declaration.states) {

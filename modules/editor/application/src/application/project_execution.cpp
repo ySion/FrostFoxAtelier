@@ -24,12 +24,15 @@ bool same_sources(const source::SourceSnapshot& a, const source::SourceSnapshot&
 }
 }
 
-void Application::attach_play_output() noexcept try {
+void Application::attach_play_output() noexcept {
     play_log_ended_ = false;
     play_output_status_ = {};
     const auto attached = workspace_.output.add_run(play_.log_directory());
-    if (!attached)
+    play_output_stream_ = attached.value_or(nullptr);
+    if (!attached) {
         notice("play.log_attachment_failed", diagnostic_text(attached.error().message), logging::Severity::warning);
+        return;
+    }
     auto directory = platform::utf16_to_utf8(play_.log_directory().generic_wstring());
     auto root = platform::utf16_to_utf8(project_->root().generic_wstring());
     if (!directory || !root) {
@@ -42,17 +45,17 @@ void Application::attach_play_output() noexcept try {
                          .message = "Runner process launched; waiting for its startup evidence."};
     entry.fields = {{"directory", std::move(*directory)}, {"project_root", std::move(*root)}};
     static_cast<void>(workspace_.output.submit_owned(std::move(entry)));
-} catch (...) {
-    std::fputs("Cannot attach the Runner output; the process launch result is unchanged.\n", stderr);
 }
 
-void Application::consume_play_output() noexcept try {
+void Application::consume_play_output() noexcept {
     if (play_.log_directory().empty())
         return;
     const auto raw = play_.take_raw_output();
+    if (!play_output_stream_)
+        return;
     const auto capture = [&](bool standard_error, const PlayProcess::RawStream& stream,
                              const PlayProcess::StreamStatus& state) {
-        workspace_.output.capture_raw(play_.log_directory(), standard_error, stream.bytes, stream.offset,
+        workspace_.output.capture_raw(*play_output_stream_, standard_error, stream.bytes, stream.offset,
                                       state.eof || state.read_error || (!play_.running() && !raw.status.pending));
         auto& previous = play_output_status_[standard_error ? 1 : 0];
         if (previous == state)
@@ -90,9 +93,7 @@ void Application::consume_play_output() noexcept try {
     if (play_log_ended_ || !raw.status.process_exited)
         return;
     play_log_ended_ = true;
-    workspace_.output.source_ended(play_.log_directory());
-} catch (...) {
-    std::fputs("Cannot capture the Runner output; its exit result is unchanged.\n", stderr);
+    workspace_.output.source_ended(*play_output_stream_);
 }
 
 void Application::publish_build(std::shared_ptr<const editor::ProjectBuild> report) {
@@ -112,7 +113,7 @@ Result<void> Application::apply_document_request(const editor::DocumentRequest& 
     if (request.kind == Kind::open_scene)
         return open_scene(request.path, request.interactive);
     if (request.kind == Kind::new_project || request.kind == Kind::open_project)
-        return open_project(request.path, request.kind == Kind::new_project, ProjectOpenPolicy::allow_repair, {},
+        return open_project(request.path, request.kind == Kind::new_project, ProjectOpenPolicy::allow_repair,
                             request.interactive);
     if (request.rebuild) {
         if (play_.running())
@@ -379,14 +380,10 @@ void Application::poll_project() {
 void Application::forward_live() noexcept {
     if (!live_.active())
         return;
-    try {
-        auto ops = document_->take_live_ops();
-        if (!ops)
-            live_.fail(ops.error().message);
-        else
-            live_.forward(*ops);
-    } catch (const std::exception& error) {
-        live_.fail(error.what());
-    }
+    auto ops = document_->take_live_ops();
+    if (ops)
+        live_.forward(*ops);
+    else
+        live_.fail(std::move(ops.error().message));
 }
 }

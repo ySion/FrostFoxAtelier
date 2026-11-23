@@ -245,7 +245,7 @@ Runtime 只拥有和校验载体，不解释消费者的命名空间、绑定对
 - `read/write`（`Scalar` 与 `ValueInput/ValueOutput`）和 `constrain` 都接受元素路径；`constrain` 不需要对象，因此不检查下标。
 - 元素选择子是位置性的，只在数组至少有 index + 1 个元素时有效。插入、删除或移动后，指向受影响位置的路径会指向别的元素或失效。编辑器撤销按逆操作的相反顺序执行即可还原：添加对应删除，删除对应带值插入，移动对应反向移动。
 - 元素选择子的下标是 32 位。数组超过 2^32 个元素时，超出部分不能按路径读写，只能整体访问；校验和硬边界检查仍逐元素进行，失败报告指到数组本身。
-- 结构操作：`element_count`、`insert_element(object, path, index, ValueInput)`、`remove_elements(object, path, first, count)` 和 `move_element(object, path, from, to)`。所有检查先于改动，失败时数组不变，包括元素复制抛出异常的情况；元素的移动或交换可能抛出时，操作在副本上完成后再交换。插入值用元素类型的复制构造，不要求 plain；空 `ValueInput` 默认构造元素，默认构造视同原生构造，不夹值。插入的副本按硬边界夹值，NaN/±Inf 在改动前拒绝。回调、原生借用和引用遍历期间返回 `busy`，借用中的元素地址因此不会因结构变化而悬空。
+- 结构操作：`element_count`、`insert_element(object, path, index, ValueInput)`、`remove_elements(object, path, first, count)` 和 `move_element(object, path, from, to)`。所有检查先于改动，失败时数组不变，包括元素复制返回失败的情况；需要暂存时，操作先在副本上完成再提交。插入值用元素类型的复制构造，不要求 plain；空 `ValueInput` 默认构造元素，默认构造视同原生构造，不夹值。插入的副本按硬边界夹值，NaN/±Inf 在改动前拒绝。回调、原生借用和引用遍历期间返回 `busy`，借用中的元素地址因此不会因结构变化而悬空。
 - 源码前端不绑定对象的数组字段，元素路径不进入源码绑定目录，也不影响生成代码 ABI。
 - 按路径写入和元素操作的失败消息与校验失败一样以“类型名.路径: 原因”命名所在值：越界下标写出下标和元素数，结构操作越界写出操作、位置和元素数，硬边界拒绝 NaN/±Inf 时指向输入里第一个违规叶，例如 `arrays.Owner.points[1].y`。只有失败才构造路径，成功路径不分配。
 - Array 类型发布时必须提供元素投影 `sequence_view`（`array_definition` 已提供）；缺少 `sequence_mutate` 的数组可以按元素读写，结构操作返回 `unsupported_operation`。
@@ -279,7 +279,7 @@ Runtime 为每个对象记录最近一次写入时的代号。消费者用游标
 
 ### 类型校验
 
-`TypeDefinition::validate` 是记录或对象类型可选的 noexcept 校验函数 `Result<void>(const void* storage)`，原生注册写作 `NativeRegistration<T>::validate<&F>()`，`F` 是接受 `const T&` 的自由函数或 const 成员函数。校验器是纯函数：只读一个值的字节，不调用 Runtime，在回调保护下执行；拒绝必须显式返回，不得抛异常。Runtime 保留原校验报告合同，将拒绝文本附上字段路径并报告 `argument_mismatch`，不把它当作一次方法调用失败。校验器属于已发布定义，枚举、标量和容器类型不能声明。
+`TypeDefinition::validate` 是记录或对象类型可选的 noexcept 校验函数 `Result<void>(const void* storage)`，原生注册写作 `NativeRegistration<T>::validate<&F>()`，`F` 是接受 `const T&` 的自由函数或 const 成员函数。校验器是纯函数：只读一个值的字节，不调用 Runtime，在回调保护下执行；拒绝必须显式返回，不得抛异常。Runtime 在拒绝消息前加上类型和字段路径，报告 `argument_mismatch`，并保留校验器提供的源码位置。校验器属于已发布定义，枚举、标量和容器类型不能声明。
 
 `validate(ObjectId)` 与 `validate_value(TypeId, storage)` 只检查，不修改，也从不在写入时自动运行。调用方是呈现提取、物理协调、编辑器事务提交和场景加载；对象上的输入用[写代号](#写代号与变化游标)找出需要重新校验的那些。检查顺序为：
 

@@ -19,6 +19,7 @@
 #include "geometry/mesh.hpp"
 #include "runtime/native.hpp"
 #include "application/diagnostics.hpp"
+#include "application/recovery.hpp"
 #include "application/presentation.hpp"
 #include "application/procedural_preview.hpp"
 #include "application/scene_snapshot.hpp"
@@ -30,22 +31,23 @@
 #include <numeric>
 #include <numbers>
 #include <cstdio>
-#include <stdexcept>
+#include "files.hpp"
 #include <thread>
 #include <unordered_set>
 #include <windows.h>
 
-void verify_mesh_reimport();
+atelier::Result<void> verify_mesh_reimport();
 
 namespace {
 using namespace atelier;
 
 using namespace atelier::acceptance::helpers;
 
-void changed(Result<world::Commit> result) {
-    const auto commit = take(std::move(result));
-    if (commit.notification_error)
-        throw std::runtime_error(commit.notification_error->message);
+Result<void> changed(Result<world::Commit> result) {
+    ATELIER_TRY(result);
+    if (result->notification_error)
+        return std::unexpected(std::move(*result->notification_error));
+    return {};
 }
 
 void collect(editor::Session& document) {
@@ -53,11 +55,15 @@ void collect(editor::Session& document) {
         take(document.collect_step());
 }
 
-ObjectId component(editor::Session& document, ObjectId entity, TypeId type) {
-    for (const auto& root : take(world::components(document.world().runtime(), entity)))
-        if (take(document.world().runtime().type_of(root.id())) == type)
+Result<ObjectId> component(editor::Session& document, ObjectId entity, TypeId type) {
+    auto& runtime = document.world().runtime();
+    ATELIER_TRY_BIND(parts, world::components(runtime, entity));
+    for (const auto& root : *parts) {
+        ATELIER_TRY_BIND(actual, runtime.type_of(root.id()));
+        if (*actual == type)
             return root.id();
-    throw std::runtime_error("Expected component is absent.");
+    }
+    return std::unexpected(Error{ErrorCode::invalid_member, "Expected component is absent."});
 }
 
 #include "gltf_import.inl"
@@ -156,10 +162,50 @@ void verify_graph_format() {
             "Reloaded C++/Source procedural graph did not evaluate to 6 noisy points.");
 }
 
-void verify_procedural_editor() {
-    const auto temp_root =
-        std::filesystem::temp_directory_path() /
-        ("atelier-sop-editor-" + std::to_string(GetCurrentProcessId()) + "-" + std::to_string(GetTickCount64()));
+Result<void> verify_scene_recovery(editor::Project& project) {
+    editor::Session document;
+    take(document.initialize({}, editor::SessionRole::editor));
+    ATELIER_TRY(changed(document.add_entity()));
+    const auto directory = project.root() / "Cache" / "Recovery";
+    const auto original = project.root() / "Content/Scenes/Main.scene";
+    const auto before = take(assets::read_file(original));
+    const auto expected_scene = take(document.serialize());
+
+    application::SceneRecovery recovery;
+    const auto saved = take(recovery.preserve(document, project.root(), original, "Frame read failed", directory));
+    require(saved && saved->warning.empty(), "Author scene recovery did not publish a complete record");
+    const auto metadata = take(assets::read_file(saved->scene.parent_path() / "recovery.json"));
+    const auto parsed = json::Document::parse(metadata, {16});
+    require(parsed && parsed->root().string({"reason"}) == "Frame read failed" &&
+                take(assets::read_file(saved->scene)) == expected_scene,
+            "Recovery lost the failed frame's scene or reason");
+
+    application::SceneRecovery partial;
+    const auto surviving = take(partial.preserve(document, project.root(), original, "\xff", directory));
+    if (!surviving)
+        return std::unexpected(Error{ErrorCode::invalid_storage, "Recovery lost its written scene."});
+    ATELIER_TRY_BIND(metadata_exists, acceptance::file_exists(surviving->scene.parent_path() / "recovery.json"));
+    require(!surviving->warning.empty() && !*metadata_exists,
+            "Rejected metadata hid the saved scene or published a partial sidecar");
+    const auto loaded = take(editor::Session::deserialize(take(assets::read_file(surviving->scene)), project, {},
+                                                          editor::LoadPolicy::strict));
+    require(take(loaded->world().members()).size() == 1, "Surviving recovery scene cannot be reopened");
+
+    application::SceneRecovery blocked;
+    const auto failure = blocked.preserve(document, project.root(), original, "Frame read failed", original);
+    const auto& again = blocked.preserve(document, project.root(), original, "Another failure", directory);
+    require(!failure && !again && !failure.error().message.empty() && again.error().code == failure.error().code &&
+                again.error().message == failure.error().message && document.dirty() &&
+                take(assets::read_file(original)) == before,
+            "A failed recovery replaced its first error or the original scene");
+    return {};
+}
+
+Result<void> verify_procedural_editor() {
+    ATELIER_TRY_BIND(
+        temp, acceptance::file_operation([](auto& error) { return std::filesystem::temp_directory_path(error); }));
+    const auto temp_root = *temp / ("atelier-sop-editor-" + std::to_string(GetCurrentProcessId()) + "-" +
+                                    std::to_string(GetTickCount64()));
     struct Cleanup {
         std::filesystem::path dir;
 
@@ -170,6 +216,7 @@ void verify_procedural_editor() {
     } cleanup{temp_root};
 
     auto project = take(editor::Project::create(temp_root));
+    ATELIER_TRY(verify_scene_recovery(project));
     take(editor::write_file(temp_root / "Source/TerraceWave.source", R"(
 class game.TerraceWave : procedural.Node {
     float lift = 0.5f;
@@ -193,8 +240,9 @@ class game.DiagnosticSop : procedural.Node {
 )"));
     const auto graph_key = take(project.create_procedural_graph(L"Content/Graphs/Terrain.procgraph"));
     const auto* graph_entry = project.entry(graph_key);
-    require(graph_entry != nullptr && graph_entry->kind == assets::AssetKind::procedural_graph &&
-                std::filesystem::exists(temp_root / "Content/Graphs/Terrain.procgraph.asset.json"),
+    ATELIER_TRY_BIND(sidecar_exists,
+                     acceptance::file_exists(temp_root / "Content/Graphs/Terrain.procgraph.asset.json"));
+    require(graph_entry != nullptr && graph_entry->kind == assets::AssetKind::procedural_graph && *sidecar_exists,
             "Project did not register .procgraph asset with GUID sidecar.");
 
     auto loaded = editor::load_project_scene(project, take(assets::read_file(temp_root / "Content/Scenes/Main.scene")),
@@ -284,6 +332,7 @@ class game.DiagnosticSop : procedural.Node {
             "Session procedural node catalog did not include both native C++ and project .source SOPs.");
 
     editor::Workspace workspace;
+    take(workspace.initialize());
     workspace.project_open = true;
 
     struct Host final : editor::OperatorHost {
@@ -321,7 +370,7 @@ class game.DiagnosticSop : procedural.Node {
 
         Result<void> begin_entity_rename(ObjectId, editor::RegionKind) override { return {}; }
 
-        void reset_layout() override { ws.reset_layout(); }
+        Result<void> reset_layout() override { return ws.reset_layout(); }
 
         Result<void> close_tab(editor::RegionKind, bool) override { return {}; }
 
@@ -566,6 +615,15 @@ class game.DiagnosticSop : procedural.Node {
     invoke("view.set", R"({"backface_tint":false})");
     require(!workspace.view.backface_tint, "view.set did not clear backface_tint on ViewSettings.");
 
+    const auto original_grid = workspace.view.reference_grid;
+    require(take(workspace.apply_view(doc, host,
+                                      {ui::ActionKind::activate, editor::control::display_grid, !original_grid})) &&
+                workspace.view.reference_grid != original_grid &&
+                take(workspace.apply_view(doc, host,
+                                          {ui::ActionKind::activate, editor::control::guide_grid, original_grid})) &&
+                workspace.view.reference_grid == original_grid,
+            "Toolbar and Guides did not update the same viewport option");
+
     // Slice 1B: graph.layout topological rank assignment + 1-step Undo/Redo:
     invoke("graph.layout");
     const auto laid_out = take(doc.inspect_graph(graph_key, &project));
@@ -588,7 +646,7 @@ class game.DiagnosticSop : procedural.Node {
 
     // Full Workspace UI composition across 2D Network Canvas, Geometry Spreadsheet, Parameters and Scene View:
     ui::Session ui_session;
-    take_ui(ui_session.initialize(application::editor_fonts()));
+    take_ui(ui_session.initialize(take(application::editor_fonts())));
     const auto styles = take(application::editor_styles());
     take_ui(ui_session.set_style_sheet(styles));
     take_ui(ui_session.set_surface({{1400, 900}, 1.f, 1}));
@@ -598,7 +656,12 @@ class game.DiagnosticSop : procedural.Node {
     take_ui(ui_session.set_controls(controls));
     const auto frame = take_ui(ui_session.prepare());
     require(ui_session.accept(frame), "Workspace UI frame with Network + Geometry Spreadsheet was rejected.");
-    workspace.commit_ui_controls();
+    take(workspace.commit_ui_controls());
+    const auto source_path = take(workspace.ui_source());
+    const auto late_source = workspace.set_ui_source(temp_root / "Other.ui.source");
+    require(!late_source && late_source.error().code == ErrorCode::unsupported_operation &&
+                take(workspace.ui_source()) == source_path,
+            "A late source change replaced the live workspace UI");
     const auto has_cjk = [](std::wstring_view text) {
         return std::ranges::any_of(text, [](wchar_t ch) { return ch >= 0x4E00 && ch <= 0x9FFF; });
     };
@@ -771,7 +834,7 @@ class game.DiagnosticSop : procedural.Node {
     const auto tab_frame = take_ui(ui_session.prepare());
     require(ui_session.accept(tab_frame) && tab_frame->find(editor::network_control::tab_search_input) != nullptr,
             "Open Tab quick-create popup was rejected by UI layout or missing search field.");
-    workspace.commit_ui_controls();
+    take(workspace.commit_ui_controls());
     workspace.network.close_tab_search();
 
     invoke("edit.undo");
@@ -823,7 +886,7 @@ class game.DiagnosticSop : procedural.Node {
     auto dense_frame = take_ui(ui_session.prepare());
     require(ui_session.accept(dense_frame) && wire_segments > ui::CanvasData::max_strokes && fault_title,
             "Dense wire batches or the Source error tooltip did not reach the accepted frame.");
-    workspace.commit_ui_controls();
+    take(workspace.commit_ui_controls());
     const auto* box = dense_frame->find(fault_title);
     require(box != nullptr, "Missing fault node hit region.");
     ui::Event hover;
@@ -1001,7 +1064,7 @@ class game.DiagnosticSop : procedural.Node {
                         b_frame->drawing->draws,
                         [](const ui::DrawQuad& q) { return q.procedural == ui::ProceduralQuad::arc_sector; }),
                 "NetworkCanvas did not emit analytic SDF node_shape and arc_sector DrawQuads.");
-        workspace.commit_ui_controls();
+        take(workspace.commit_ui_controls());
 
         for (const std::uint32_t vk : {'Z', 'C', 'I'}) {
             send_key(ui::EventKind::key_down, ui::Key::none, vk);
@@ -1011,7 +1074,7 @@ class game.DiagnosticSop : procedural.Node {
             const auto pop_frame = take_ui(ui_session.prepare());
             require(ui_session.accept(pop_frame) && pop_frame->find(editor::network_control::popup_box) != nullptr,
                     "Floating Network popup (Shape/Color/Info) failed UI validation or layout.");
-            workspace.commit_ui_controls();
+            take(workspace.commit_ui_controls());
             workspace.network.close_popup();
         }
 
@@ -1086,7 +1149,7 @@ class game.DiagnosticSop : procedural.Node {
             take_ui(ui_session.set_controls(after_pop_undo));
             require(ui_session.accept(take_ui(ui_session.prepare())) && !workspace.network.popup().open(),
                     "Deleting popup target via Undo did not auto-close the stale floating popup.");
-            workspace.commit_ui_controls();
+            take(workspace.commit_ui_controls());
         }
         {
             const auto ghost_key = take(project.create_procedural_graph(L"Content/Graphs/GhostTest.procgraph", R"({
@@ -1183,7 +1246,7 @@ class game.DiagnosticSop : procedural.Node {
                 std::ranges::any_of(gen_controls, [](const ui::Control& c) { return c.text == L"Procedural Graph"; }) &&
                 std::ranges::any_of(gen_controls, [](const ui::Control& c) { return c.text == L"Material · default"; }),
             "Parameters pane did not mount ProceduralGeneratorComponent graph and material selectors.");
-    workspace.commit_ui_controls();
+    take(workspace.commit_ui_controls());
 
     // Verify World-context ProceduralGeneratorEntity populates GeometrySpreadsheet and SceneViewport HUD/guides:
     workspace.dock.select(editor::spreadsheet_control::tab);
@@ -1205,7 +1268,7 @@ class game.DiagnosticSop : procedural.Node {
                 world_gen_ui, [](const ui::Control& c) { return c.key == editor::control::display_sop_toggle_first; }),
         "Selecting a ProceduralGeneratorEntity in World context did not expose GeometrySpreadsheet rows, HUD, and SOP guide toggles.");
     workspace.spreadsheet.set_layer(procedural::Layer::point);
-    workspace.commit_ui_controls();
+    take(workspace.commit_ui_controls());
 
     // Verify clicking ProceduralGeneratorEntity in World immediately populates Network pane & allows live node inspection:
     {
@@ -1230,7 +1293,7 @@ class game.DiagnosticSop : procedural.Node {
                 std::ranges::find(add_it->classes, "ghost-tool") != add_it->classes.end() &&
                 nodes_it != world_net_ui.end() && nodes_it->canvas && !nodes_it->canvas->shapes.empty(),
             "Selecting a ProceduralGeneratorEntity in World did not display its Network canvas, air-state menus, and ghost icon toolbar.");
-        workspace.commit_ui_controls();
+        take(workspace.commit_ui_controls());
 
         // Verify Blender-style hover/enter DockSpace::focus_point switches focused_tab across visible panes without clicking:
         const auto* vp_pane = world_net_frame->find(workspace.dock.pane(editor::control::scene_tab));
@@ -1267,7 +1330,7 @@ class game.DiagnosticSop : procedural.Node {
         require(ui_session.accept(inspect_node_frame) && workspace.active_graph.empty() &&
                     std::ranges::any_of(inspect_node_ui, [](const ui::Control& c) { return c.text == L"Density"; }),
                 "Selecting a SOP node in World Network mode did not inspect its parameters in Parameters pane.");
-        workspace.commit_ui_controls();
+        take(workspace.commit_ui_controls());
 
         workspace.inspecting_network = false;
         workspace.set_single_graph_selection({});
@@ -1345,9 +1408,11 @@ class game.DiagnosticSop : procedural.Node {
             "\"properties\":{\"meshes\":[\"" +
                 prop_key + "\"]}}}}"));
         take(doc.open_graph(project, prop_graph_key));
-        changed(doc.create_procedural_generator(prop_graph_key, {10.f, 0.f, 0.f}, &project));
+        ATELIER_TRY(changed(doc.create_procedural_generator(prop_graph_key, {10.f, 0.f, 0.f}, &project)));
         const ObjectId prop_gen = doc.selection().entity;
-        const ObjectId prop_comp = component(doc, prop_gen, doc.presentation_types().procedural_generator_component);
+        ATELIER_TRY_BIND(prop_component,
+                         component(doc, prop_gen, doc.presentation_types().procedural_generator_component));
+        const auto prop_comp = *prop_component;
         const auto eval_initial = take(doc.evaluate_graph(prop_graph_key, &project));
         require(eval_initial.display_output != nullptr && !eval_initial.display_error,
                 "Initial imported mesh SOP evaluation failed.");
@@ -1368,8 +1433,8 @@ class game.DiagnosticSop : procedural.Node {
         auto sidecar_path = imported_path;
         sidecar_path += L".asset.json";
 
-        std::filesystem::remove(imported_path);
-        std::filesystem::remove(sidecar_path);
+        ATELIER_TRY(acceptance::remove_file(imported_path));
+        ATELIER_TRY(acceptance::remove_file(sidecar_path));
         take(project.refresh());
         require(project.entry(prop_key) == nullptr, "project.refresh() did not evict deleted mesh entry.");
 
@@ -1410,8 +1475,8 @@ class game.DiagnosticSop : procedural.Node {
         const auto frozen_imported_path = temp_root / frozen_entry->path;
         auto frozen_sidecar_path = frozen_imported_path;
         frozen_sidecar_path += L".asset.json";
-        std::filesystem::remove(frozen_imported_path);
-        std::filesystem::remove(frozen_sidecar_path);
+        ATELIER_TRY(acceptance::remove_file(frozen_imported_path));
+        ATELIER_TRY(acceptance::remove_file(frozen_sidecar_path));
         take(project.refresh());
         const auto frozen_deleted_bake = doc.bake_procedural_generator(&project, prop_gen);
         require(!frozen_deleted_bake && take(doc.world().members()).size() == members_pre_del &&
@@ -1419,58 +1484,60 @@ class game.DiagnosticSop : procedural.Node {
                 "Bake created StaticMeshEntities referencing a deleted mesh from a frozen SOP snapshot.");
     }
 
-    changed(doc.close());
+    return changed(doc.close());
 }
+}
+
+Result<void> run_document(int argc, char** argv, std::string_view& stage) {
+    if ((argc == 5 || argc == 6) && stage == "--profile-scene-cpu")
+        return profile_scene_cpu(argv[2], argv[3], argv[4],
+                                 argc == 6 ? std::filesystem::path(argv[5]) : std::filesystem::path{});
+    if (argc == 5 && stage == "--profile-physics-cpu")
+        return profile_physics_cpu(argv[2], argv[3], argv[4]);
+    if (argc != 1)
+        return std::unexpected(Error{ErrorCode::argument_mismatch,
+                                     "Expected no arguments, --profile-scene-cpu or --profile-physics-cpu."});
+    editor::Session single;
+    take(single.initialize());
+    ATELIER_TRY(changed(single.create_static_mesh(assets::mesh_assets().front())));
+    require(single.undo_count() == 1 && take(single.world().runtime().type_of(single.selection().entity)) ==
+                                            single.presentation_types().static_mesh_entity,
+            "Static mesh factory did not create one typed Entity history entry.");
+    const auto entity = single.selection().entity;
+    ATELIER_TRY_BIND(mesh, component(single, entity, single.presentation_types().static_mesh_component));
+    require(take(world::components(single.world().runtime(), entity)).size() == 1,
+            "Mesh Entity acquired an extra component.");
+    ATELIER_TRY(changed(single.undo()));
+    collect(single);
+    require(take(single.world().members()).empty() && take(single.presentation().render_items()).empty(),
+            "Creation undo retained the Entity or its rendering.");
+    ATELIER_TRY(changed(single.redo()));
+    ATELIER_TRY_BIND(restored, component(single, entity, single.presentation_types().static_mesh_component));
+    require(single.selection().entity == entity && *restored == *mesh &&
+                take(single.presentation().render_items()).front().geometry == assets::mesh_assets().front().mesh,
+            "Creation redo changed identity or mesh resource.");
+    ATELIER_TRY(changed(single.close()));
+    stage = "glTF transform";
+    verify_gltf_import();
+    stage = "mesh reimport";
+    ATELIER_TRY(verify_mesh_reimport());
+    stage = "procedural graph format";
+    verify_graph_format();
+    stage = "procedural editor";
+    ATELIER_TRY(verify_procedural_editor());
+    std::puts(
+        "Editor document acceptance: PASS (creation undo/redo, glTF transform, mesh reimport, graph format, SOP editor + 2D Network canvas)");
+    return {};
 }
 
 int main(int argc, char** argv) {
     atelier::install_fatal_handler();
     std::string_view stage = argc > 1 ? argv[1] : "document history";
-    try {
-        if ((argc == 5 || argc == 6) && std::string_view(argv[1]) == "--profile-scene-cpu") {
-            profile_scene_cpu(argv[2], argv[3], argv[4],
-                              argc == 6 ? std::filesystem::path(argv[5]) : std::filesystem::path{});
-            return 0;
-        }
-        if (argc == 5 && std::string_view(argv[1]) == "--profile-physics-cpu") {
-            profile_physics_cpu(argv[2], argv[3], argv[4]);
-            return 0;
-        }
-        require(argc == 1, "Expected no arguments, --profile-scene-cpu or --profile-physics-cpu.");
-        editor::Session single;
-        take(single.initialize());
-        changed(single.create_static_mesh(assets::mesh_assets().front()));
-        require(single.undo_count() == 1 && take(single.world().runtime().type_of(single.selection().entity)) ==
-                                                single.presentation_types().static_mesh_entity,
-                "Static mesh factory did not create one typed Entity history entry.");
-        const auto entity = single.selection().entity;
-        const auto mesh = component(single, entity, single.presentation_types().static_mesh_component);
-        require(take(world::components(single.world().runtime(), entity)).size() == 1,
-                "Mesh Entity acquired an extra component.");
-        changed(single.undo());
-        collect(single);
-        require(take(single.world().members()).empty() && take(single.presentation().render_items()).empty(),
-                "Creation undo retained the Entity or its rendering.");
-        changed(single.redo());
-        require(single.selection().entity == entity &&
-                    component(single, entity, single.presentation_types().static_mesh_component) == mesh &&
-                    take(single.presentation().render_items()).front().geometry == assets::mesh_assets().front().mesh,
-                "Creation redo changed identity or mesh resource.");
-        changed(single.close());
-        stage = "glTF transform";
-        verify_gltf_import();
-        stage = "mesh reimport";
-        verify_mesh_reimport();
-        stage = "procedural graph format";
-        verify_graph_format();
-        stage = "procedural editor";
-        verify_procedural_editor();
-        std::puts(
-            "Editor document acceptance: PASS (creation undo/redo, glTF transform, mesh reimport, graph format, SOP editor + 2D Network canvas)");
-        return 0;
-    } catch (const std::exception& error) {
+    auto run = run_document(argc, argv, stage);
+    if (!run) {
         std::fprintf(stderr, "Editor document acceptance: FAIL [%.*s]: %s\n", static_cast<int>(stage.size()),
-                     stage.data(), error.what());
+                     stage.data(), run.error().message.c_str());
         return 1;
     }
+    return 0;
 }

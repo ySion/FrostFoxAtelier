@@ -1,5 +1,6 @@
 #include "application/play_process.hpp"
 #include "control/control.hpp"
+#include "editor/assets.hpp"
 #include "platform/error.hpp"
 #include "platform/utf.hpp"
 #include "logging/native.hpp"
@@ -123,12 +124,8 @@ Result<void> PlayProcess::start(const std::filesystem::path& project, const std:
     limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
     if (!SetInformationJobObject(job.value, JobObjectExtendedLimitInformation, &limits, sizeof(limits)))
         return failure("Cannot configure the run process group");
-    std::wstring executable(32768, L'\0');
-    const auto length = GetModuleFileNameW(nullptr, executable.data(), static_cast<DWORD>(executable.size()));
-    if (!length || length >= executable.size())
-        return failure("Cannot locate the project runner");
-    executable.resize(length);
-    executable = (std::filesystem::path(executable).parent_path() / L"atelier_editor.exe").wstring();
+    ATELIER_TRY_BIND(directory_path, editor::asset_directory());
+    const auto executable = (*directory_path / L"atelier_editor.exe").wstring();
     static std::uint64_t launch{}; // Owner thread only; not an object identity.
     const auto* parent = logging::current_run();
     std::filesystem::path directory;
@@ -137,9 +134,12 @@ Result<void> PlayProcess::start(const std::filesystem::path& project, const std:
     else {
         const auto storage = control::default_directory();
         if (!storage)
-            return std::unexpected(Error{ErrorCode::invalid_storage, storage.error().what()});
+            return std::unexpected(Error{ErrorCode::invalid_storage, storage.error().message});
+        const auto id = control::unique_id();
+        if (!id)
+            return std::unexpected(Error{ErrorCode::invalid_storage, id.error().message});
         std::error_code error;
-        directory = std::filesystem::absolute(storage->parent_path() / "Logs" / control::unique_id(), error);
+        directory = std::filesystem::absolute(storage->parent_path() / "Logs" / *id, error);
         if (error)
             return std::unexpected(Error{ErrorCode::invalid_storage, platform::error_message(error)});
     }
@@ -307,15 +307,11 @@ void PlayProcess::observe_acknowledgement() noexcept {
     if (waited != WAIT_OBJECT_0)
         return;
     acknowledged_ = true;
-    try {
-        const std::array fields{logging::Field{"waited_ms", std::chrono::duration_cast<std::chrono::milliseconds>(
-                                                                std::chrono::steady_clock::now() - stop_began_)
-                                                                .count()}};
-        static_cast<void>(ATELIER_LOG_WITH(logging::Severity::info, "play", "play.stop_acknowledged",
-                                           logging::native::Context{.fields = fields}, "Play stop acknowledged"));
-    } catch (...) {
-        std::fputs("Play acknowledgement diagnostic capture failed.\n", stderr);
-    }
+    const std::array fields{logging::Field{
+        "waited_ms",
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - stop_began_).count()}};
+    static_cast<void>(ATELIER_LOG_WITH(logging::Severity::info, "play", "play.stop_acknowledged",
+                                       logging::native::Context{.fields = fields}, "Play stop acknowledged"));
 }
 
 DWORD PlayProcess::observe_exit(DWORD timeout_ms) noexcept {

@@ -9,6 +9,7 @@
 #include <array>
 #include <cmath>
 #include <cstdio>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -253,6 +254,18 @@ ui ListView(in Items<Group> groups) { Repeat groups { items: input.groups; } }
     take(root->update(inputs({first, second})));
     present();
     require(!selected(201) && root->controls().size() == initial, "Reinserted item retained retired state.");
+    const auto last_frame = consumer.frame;
+    next = std::numeric_limits<ui::ControlKey>::max() - 1;
+    const auto refused = root->update(inputs({first, second, row(300, 301, 503), row(400, 401, 504)}));
+    require(!refused && refused.error().code == ErrorCode::capacity_exceeded &&
+                refused.error().message == "UI control keys exhausted." &&
+                next == std::numeric_limits<ui::ControlKey>::max() && root->controls().size() == initial &&
+                !last_frame->find(301),
+            "A Repeat update wrapped an exhausted identity or retained a partial row.");
+    take(root->update());
+    present();
+    require(consumer.frame->find(201) && !consumer.frame->find(301),
+            "The accepted rows did not recover after key exhaustion.");
 }
 }
 

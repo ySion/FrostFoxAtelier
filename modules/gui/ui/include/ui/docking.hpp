@@ -1,9 +1,17 @@
 #pragma once
 #include "ui/controls.hpp"
 #include <memory>
+#include <span>
 
 namespace atelier::ui {
 enum class DockSide { tabs, left, right, top, bottom };
+
+struct DockPlacement {
+    ControlKey tab;
+    ControlKey target;
+    DockSide side;
+    float fraction{.5f};
+};
 
 struct DockTab {
     ControlKey key{};
@@ -33,9 +41,10 @@ public:
 
     DockSpace& operator=(const DockSpace&) = delete;
 
-    void reset(); // All registered views reopen in one group; host can dock its default arrangement.
+    // Placements must be legal moves from the initial group of all tabs. Check their full key budget before resetting.
+    Result<void> reset(std::span<const DockPlacement> placements = {});
 
-    bool move(ControlKey tab, ControlKey target_tab, DockSide, float fraction = .5f);
+    Result<bool> move(ControlKey tab, ControlKey target_tab, DockSide, float fraction = .5f);
 
     bool select(ControlKey);
 
@@ -69,7 +78,7 @@ public:
 
     bool focus_point(float x, float y, const UiFrame&) noexcept;
 
-    bool apply(const Action&, const UiFrame&);
+    Result<bool> apply(const Action&, const UiFrame&);
 
     std::vector<MenuItem> menu_items(ControlKey source, const UiFrame*);
 
@@ -192,6 +201,8 @@ private:
 
     std::optional<Resize> resize_; // Preview only; accepted pane geometry changes once at release.
 
+    Result<void> require_nodes(std::size_t count) const;
+
     std::unique_ptr<Node> make_node();
 
     const DockTab* tab(ControlKey) const noexcept;
@@ -208,7 +219,7 @@ private:
 
     void normalize(std::unique_ptr<Node>&);
 
-    bool place(ControlKey, ControlKey, DockSide, ControlKey before = 0, float fraction = .5f);
+    Result<bool> place(ControlKey, ControlKey, DockSide, ControlKey before = 0, float fraction = .5f);
 
     void remove(Node&, ControlKey);
 

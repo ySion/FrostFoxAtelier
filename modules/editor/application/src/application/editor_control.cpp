@@ -2,7 +2,6 @@
 #include "application/application.hpp"
 #include "application/diagnostics.hpp"
 #include "detail/control_artifacts.hpp"
-#include "editor/error.hpp"
 #include "editor/view_options.hpp"
 #include "assets/json_format.hpp"
 #include "assets/material_format.hpp"
@@ -33,23 +32,16 @@ constexpr unsigned inspect_page_items = 256;
 
 constexpr std::size_t inspect_page_bytes = control::maximum_message / 4;
 
-template <class T>
-T take(Result<T> value) {
-    if (!value)
-        throw editor::detail::Failure(std::move(value.error()));
-    return std::move(*value);
-}
-
-void take(Result<void> value) {
-    if (!value)
-        throw editor::detail::Failure(std::move(value.error()));
-}
-
 json::Result<std::string> text(json::Value value, std::size_t maximum = 4096) {
     ATELIER_TRY_BIND(result, value.string());
     if (result->size() > maximum || result->find('\0') != result->npos)
         return std::unexpected(value.error(json::Fault::range, "Invalid string length or NUL"));
     return std::string(*result);
+}
+
+std::expected<std::string, Failure> utf8_text(std::wstring_view value) {
+    return platform::utf16_to_utf8(value).transform_error(
+        [](platform::UtfError) { return Failure("invalid_request", "Invalid UTF-16 text"); });
 }
 
 json::Result<unsigned> integer(json::Value value, unsigned low, unsigned high) {
@@ -65,18 +57,15 @@ json::Result<unsigned> integer(json::Value value, unsigned low, unsigned high) {
     return static_cast<unsigned>(*n);
 }
 
-json::Document camera_json(Runtime& runtime, editor::CameraState value) {
-    const auto type = take(runtime.native_type<editor::CameraState>());
-    return take(editor::encode_properties(runtime, {type, {}, std::as_writable_bytes(std::span{&value, 1})},
-                                          take(editor::detail::author_fields(runtime, type)), {}));
+Result<editor::CameraState> camera_state(Runtime& runtime, json::Value args) {
+    editor::CameraState value;
+    ATELIER_TRY_BIND(type, runtime.native_type<editor::CameraState>());
+    ATELIER_TRY(editor::decode_properties(runtime, {*type, {}, std::as_writable_bytes(std::span{&value, 1})}, args));
+    return value;
 }
 
-editor::CameraState camera_state(Runtime& runtime, json::Value args) {
-    editor::CameraState value;
-    take(editor::decode_properties(
-        runtime, {take(runtime.native_type<editor::CameraState>()), {}, std::as_writable_bytes(std::span{&value, 1})},
-        args));
-    return value;
+Failure operation_failure(const Error& error) {
+    return Failure("operation_failed", error.message);
 }
 
 json::Result<json::Document> view_json(const renderer::ViewSettings& view) {
@@ -306,46 +295,14 @@ json::Result<json::Document> performance_json(const editor::FramePerformance& pe
     return result.finish();
 }
 
-std::expected<renderer::ViewSettings, Failure> patched_view(renderer::ViewSettings view, json::Value patch,
-                                                            math::Vector3 focus) {
-    ATELIER_TRY_BIND(items, patch.object_items());
-    for (const auto& [name, value] : *items) {
-        if (std::ranges::find(removed_view_options, name) != removed_view_options.end())
-            throw Failure("invalid_request",
-                          "Display option was removed: " + std::string(name) +
-                              "; direct light always uses clustered light lists with cached shadows");
-        const auto* option = editor::view_option(name);
-        if (!option)
-            throw Failure("invalid_request", "Unknown display option: " + std::string(name));
-        double scalar{};
-        if (option->kind == editor::ViewValueKind::enumeration) {
-            ATELIER_TRY_BIND(choice, text(value));
-            const auto found = std::ranges::find(option->choices, *choice);
-            if (found == option->choices.end())
-                throw Failure("invalid_request", "Unsupported display choice: " + *choice);
-            scalar = static_cast<double>(found - option->choices.begin());
-        } else if (option->kind == editor::ViewValueKind::boolean) {
-            ATELIER_TRY_BIND(toggle, value.boolean());
-            scalar = *toggle ? 1 : 0;
-        } else {
-            ATELIER_TRY_BIND(n, value.number());
-            scalar = *n;
-        }
-        take(editor::set_view_option(view, option->option, scalar));
-    }
-    take(editor::validate_view_options(view, focus));
-    return view;
-}
-
-json::Result<json::Document> scalar_json(const Scalar& scalar, const Runtime& runtime) {
+json::Result<json::Document> scalar_json(const Scalar& scalar, const TypeInfo& type) {
     return std::visit(
         [&](const auto& value) -> json::Result<json::Document> {
             json::Builder result(json::Kind::null);
             using T = std::decay_t<decltype(value)>;
             if constexpr (std::is_same_v<T, EnumValue>) {
-                const auto* type = take(runtime.describe(value.type));
-                if (type->enumeration)
-                    for (const auto& [name, bits] : type->enumeration->values)
+                if (type.enumeration)
+                    for (const auto& [name, bits] : type.enumeration->values)
                         if (bits == value.bits) {
                             ATELIER_TRY(result.set(result.root(), name));
                             return result.finish();
@@ -613,8 +570,6 @@ struct EditorControl::Impl {
 
     std::uint64_t next_handle{1};
 
-    std::uint64_t edit_id{1ull << 62};
-
     struct Observation {
         std::uint64_t document{};
 
@@ -690,7 +645,7 @@ struct EditorControl::Impl {
 
         Observation context;
 
-        std::shared_ptr<std::atomic_bool> cancel = std::make_shared<std::atomic_bool>(false);
+        std::shared_ptr<control_artifacts::WriteState> work = std::make_shared<control_artifacts::WriteState>();
 
         std::chrono::steady_clock::time_point deadline;
 
@@ -843,7 +798,7 @@ struct EditorControl::Impl {
     ~Impl() {
         server.stop();
         for (auto& job : jobs) {
-            job->cancel->store(true);
+            job->work->cancel();
             if (job->writer.valid())
                 job->writer.wait();
         }
@@ -962,24 +917,78 @@ struct EditorControl::Impl {
         return reasons.finish();
     }
 
-    void idle() const {
-        if (busy())
-            throw Failure("busy", "Finish the current text, menu or viewport interaction first");
+    Failure operation_error(const Error& error) const {
+        app.report_error(error, "editor.control_failed");
+        return operation_failure(error);
     }
 
-    void replaceable() const {
-        idle();
+    template <class T>
+    std::expected<T, Failure> operation(Result<T> result) const {
+        return std::move(result).transform_error([this](const Error& error) { return operation_error(error); });
+    }
+
+    std::expected<json::Document, Failure> camera_json() const {
+        auto& runtime = app.document_->world().runtime();
+        auto camera = app.camera_.state();
+        ATELIER_TRY_BIND(type, operation(runtime.native_type<editor::CameraState>()));
+        ATELIER_TRY_BIND(fields, operation(editor::detail::author_fields(runtime, *type)));
+        return operation(editor::encode_properties(runtime, {*type, {}, std::as_writable_bytes(std::span{&camera, 1})},
+                                                   *fields, {}));
+    }
+
+    std::expected<renderer::ViewSettings, Failure> patched_view(renderer::ViewSettings view, json::Value patch,
+                                                                math::Vector3 focus) {
+        ATELIER_TRY_BIND(items, patch.object_items());
+        for (const auto& [name, value] : *items) {
+            if (std::ranges::find(removed_view_options, name) != removed_view_options.end())
+                return std::unexpected(Failure(
+                    "invalid_request", "Display option was removed: " + std::string(name) +
+                                           "; direct light always uses clustered light lists with cached shadows"));
+            const auto* option = editor::view_option(name);
+            if (!option)
+                return std::unexpected(Failure("invalid_request", "Unknown display option: " + std::string(name)));
+            double scalar{};
+            if (option->kind == editor::ViewValueKind::enumeration) {
+                ATELIER_TRY_BIND(choice, text(value));
+                const auto found = std::ranges::find(option->choices, *choice);
+                if (found == option->choices.end())
+                    return std::unexpected(Failure("invalid_request", "Unsupported display choice: " + *choice));
+                scalar = static_cast<double>(found - option->choices.begin());
+            } else if (option->kind == editor::ViewValueKind::boolean) {
+                ATELIER_TRY_BIND(toggle, value.boolean());
+                scalar = *toggle ? 1 : 0;
+            } else {
+                ATELIER_TRY_BIND(n, value.number());
+                scalar = *n;
+            }
+            ATELIER_TRY(operation(editor::set_view_option(view, option->option, scalar)));
+        }
+        ATELIER_TRY(operation(editor::validate_view_options(view, focus)));
+        return view;
+    }
+
+    std::expected<void, Failure> idle() const {
+        if (busy())
+            return std::unexpected(Failure("busy", "Finish the current text, menu or viewport interaction first"));
+        return {};
+    }
+
+    std::expected<void, Failure> replaceable() const {
+        ATELIER_TRY(idle());
         if (app.document_->dirty())
-            throw Failure("unsaved_changes", "Save the current scene before replacing it");
+            return std::unexpected(Failure("unsaved_changes", "Save the current scene before replacing it"));
         if (!app.document_->dirty_materials().empty())
-            throw Failure("unsaved_changes", "Save the open material assets before replacing the document");
+            return std::unexpected(
+                Failure("unsaved_changes", "Save the open material assets before replacing the document"));
         if (!app.document_->dirty_graphs().empty())
-            throw Failure("unsaved_changes", "Save the open procedural graph assets before replacing the document");
+            return std::unexpected(
+                Failure("unsaved_changes", "Save the open procedural graph assets before replacing the document"));
         for (const auto& file : app.workspace_.source_editor.files())
             if (file->dirty())
-                throw Failure("unsaved_changes", "Source drafts are still open");
+                return std::unexpected(Failure("unsaved_changes", "Source drafts are still open"));
         if (app.play_.running())
-            throw Failure("busy", "Stop the project before replacing its document");
+            return std::unexpected(Failure("busy", "Stop the project before replacing its document"));
+        return {};
     }
 
     Job* active() {
@@ -991,14 +1000,16 @@ struct EditorControl::Impl {
 
     // Codes are application-owned UTF-8 identifiers; messages may be raw diagnostics.
     void cancel(Job& job, std::string_view code, std::string_view message) {
-        if (job.complete || job.cancel->load())
-            return;
+        if (!job.complete && job.work->cancel())
+            fail(job, code, message);
+    }
+
+    void fail(Job& job, std::string_view code, std::string_view message) {
         json::Builder response;
         response.set_validated(response.root(), "status", "error");
         const auto error = response.object_validated(response.root(), "error");
         response.set_validated(error, "code", code);
         response.set_validated(error, "message", diagnostic_utf8(message));
-        job.cancel->store(true);
         job.rendering = false;
         job.preparing = false;
         job.tracing = false;
@@ -1008,6 +1019,15 @@ struct EditorControl::Impl {
         job.samples.clear();
         if (!job.writer.valid())
             job.complete = true;
+    }
+
+    static void start_writer(Job& job, auto write) noexcept {
+        job.writer = std::async(std::launch::async, [work = job.work, write = std::move(write)]() mutable noexcept {
+            auto result = write(*work);
+            if (!result)
+                work->claim_outcome();
+            return result;
+        });
     }
 
     void trim_cache() {
@@ -1087,30 +1107,17 @@ struct EditorControl::Impl {
                 job->response = response.finish();
             }
             if (job->writer.valid() && job->writer.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
-                try {
-                    auto result = job->writer.get();
-                    if (!job->cancel->load()) {
-                        if (result) {
-                            json::Builder response;
-                            response.set_validated(response.root(), "status", "ok");
-                            response.set_validated(response.root(), "result", result->root());
-                            job->response = response.finish();
-                        } else {
-                            cancel(*job, result.error().code, result.error().what());
-                        }
-                    }
-                } catch (const Failure& error) {
-                    if (!job->cancel->load()) {
-                        cancel(*job, error.code, error.what());
-                    }
-                } catch (const std::exception& error) {
-                    if (!job->cancel->load()) {
-                        cancel(*job, "storage_error", error.what());
+                auto result = job->writer.get();
+                if (!job->work->cancelled()) {
+                    if (result) {
+                        json::Builder response;
+                        response.set_validated(response.root(), "status", "ok");
+                        response.set_validated(response.root(), "result", result->root());
+                        job->response = response.finish();
+                    } else {
+                        fail(*job, result.error().code, result.error().message);
                     }
                 }
-                json::Builder response(job->response);
-                response.set_validated(response.root(), "job_id", job->id);
-                job->response = response.finish();
                 job->complete = true;
             }
         }
@@ -1118,12 +1125,21 @@ struct EditorControl::Impl {
         return {};
     }
 
-    std::string handle(ObjectId object) {
+    bool check_jobs() {
+        const auto checked = checkpoint();
+        if (!checked)
+            app.report_error({ErrorCode::invalid_definition, checked.error().describe()}, "editor.control_failed");
+        return checked.has_value();
+    }
+
+    std::expected<std::string_view, Failure> handle(ObjectId object) {
         if (object == ObjectId{})
-            return {};
+            return std::string_view{};
         if (handles.size() > editor::Session::maximum_entities + editor::Session::maximum_components &&
-            pruned_revision != app.document_->revision())
-            prune_handles();
+            pruned_revision != app.document_->revision()) {
+            ATELIER_TRY_BIND(entities, operation(app.document_->world().members()));
+            ATELIER_TRY(prune_handles(*entities));
+        }
         auto [found, added] = handles.try_emplace(object);
         if (added) {
             found->second = std::to_string(document_generation) + "/" + std::to_string(next_handle++);
@@ -1132,107 +1148,109 @@ struct EditorControl::Impl {
         return found->second;
     }
 
-    void prune_handles() {
-        pruned_revision = app.document_->revision();
-        std::unordered_set<ObjectId> live;
-        for (const auto& entity : take(app.document_->world().members())) {
-            live.insert(entity.id());
-            for (const auto& component : take(world::components(app.document_->world().runtime(), entity.id())))
-                live.insert(component.id());
-        }
-        for (const auto id : app.document_->material_objects())
-            live.insert(id);
-        for (const auto id : app.document_->graph_objects())
-            live.insert(id);
-        const auto objects_snapshot = live;
-        for (const auto id : objects_snapshot)
-            if (auto bindings = presentation::read_material_bindings(app.document_->world().runtime(), id); bindings)
-                for (const auto& binding : *bindings)
-                    live.insert(binding.resource.id());
-        std::erase_if(handles, [&](const auto& entry) {
-            if (live.contains(entry.first))
-                return false;
-            objects.erase(entry.second);
-            return true;
-        });
+    std::expected<void, Failure> set_handle(json::Builder& output, json::Value parent, std::string_view key,
+                                            ObjectId id) {
+        ATELIER_TRY_BIND(value, handle(id));
+        output.set_validated(parent, key, *value);
+        return {};
     }
 
-    bool member(ObjectId object) const {
-        if (app.document_->is_graph_object(object))
-            return true;
-        const auto materials = app.document_->material_objects();
-        if (std::ranges::find(materials, object) != materials.end())
-            return true;
-        auto entities = app.document_->world().members();
-        if (!entities)
-            return false;
-        for (const auto& entity : *entities) {
-            if (entity.id() == object)
+    // The directory contains scene members, author objects, and materials bound to live components.
+    Result<bool> any_document_member(std::span<const world::Member> entities, const auto& matches) const {
+        const auto& doc = *app.document_;
+        const auto& world = doc.world();
+        auto& runtime = world.runtime();
+        for (const auto& entity : entities) {
+            if (matches(entity.id()))
                 return true;
-            auto components = world::components(app.document_->world().runtime(), entity.id());
-            if (components)
-                for (const auto& component : *components) {
-                    if (component.id() == object)
+            ATELIER_TRY_BIND(components, world::components(runtime, entity.id()));
+            for (const auto& component : *components)
+                if (matches(component.id()))
+                    return true;
+        }
+        if (std::ranges::any_of(doc.material_objects(), matches) || std::ranges::any_of(doc.graph_objects(), matches))
+            return true;
+        const auto& types = doc.presentation_types();
+        for (const auto type : {types.static_mesh_component, types.procedural_generator_component}) {
+            ATELIER_TRY_BIND(owners, world.query(type));
+            for (const auto owner : *owners) {
+                ATELIER_TRY_BIND(bindings, presentation::read_material_bindings(runtime, owner));
+                for (const auto& binding : *bindings)
+                    if (matches(binding.resource.id()))
                         return true;
-                    if (auto bindings =
-                            presentation::read_material_bindings(app.document_->world().runtime(), component.id());
-                        bindings)
-                        for (const auto& binding : *bindings)
-                            if (binding.resource.id() == object)
-                                return true;
-                }
+            }
         }
         return false;
     }
 
-    json::Result<ObjectId> object(json::Value value) {
+    std::expected<void, Failure> prune_handles(std::span<const world::Member> entities) {
+        if (!handles.empty()) {
+            std::unordered_set<ObjectId> live;
+            ATELIER_TRY(operation(any_document_member(entities, [&](ObjectId id) {
+                live.insert(id);
+                return false;
+            })));
+            std::erase_if(handles, [&](const auto& entry) {
+                if (live.contains(entry.first))
+                    return false;
+                objects.erase(entry.second);
+                return true;
+            });
+        }
+        pruned_revision = app.document_->revision();
+        return {};
+    }
+
+    std::expected<ObjectId, Failure> object(json::Value value) const {
         ATELIER_TRY_BIND(name, text(value, 80));
         const auto found = objects.find(*name);
-        if (found == objects.end() || !member(found->second))
-            throw Failure("stale_object", "Object handle is no longer a document member");
-        return found->second;
+        if (found != objects.end()) {
+            ATELIER_TRY_BIND(entities, operation(app.document_->world().members()));
+            ATELIER_TRY_BIND(
+                member, operation(any_document_member(*entities, [&](ObjectId id) { return id == found->second; })));
+            if (*member)
+                return found->second;
+        }
+        return std::unexpected(Failure("stale_object", "Object handle is no longer a document member"));
     }
 
-    std::expected<json::Document, Failure> object_header(ObjectId id, std::string_view type) {
-        const auto object_handle = handle(id);
-        const auto name = platform::utf16_to_utf8(app.document_->name(id));
-        if (!name)
-            return std::unexpected(Failure("invalid_request", "Invalid UTF-16 text"));
-        json::Builder header;
-        header.set_validated(header.root(), "handle", object_handle);
-        header.set_validated(header.root(), "name", *name);
-        ATELIER_TRY(header.set(header.root(), "type", type));
+    std::expected<void, Failure> write_object_header(json::Builder& header, json::Value root, ObjectId id,
+                                                     std::string_view type) {
+        ATELIER_TRY_BIND(object_handle, handle(id));
+        ATELIER_TRY_BIND(name, utf8_text(app.document_->name(id)));
+        header.set_validated(root, "handle", *object_handle);
+        header.set_validated(root, "name", *name);
+        ATELIER_TRY(header.set(root, "type", type));
         // A placeholder stands in for a saved type the current build does not register.
-        if (app.document_->has_retained(id))
-            if (const auto saved = app.document_->retained(id); saved && !saved->type.empty()) {
-                ATELIER_TRY(header.set(header.root(), "placeholder", true));
-                ATELIER_TRY(header.set(header.root(), "saved_type", saved->type));
-            }
-        return header.finish();
+        if (const auto saved_type = app.document_->placeholder_type(id); !saved_type.empty()) {
+            ATELIER_TRY(header.set(root, "placeholder", true));
+            ATELIER_TRY(header.set(root, "saved_type", saved_type));
+        }
+        return {};
     }
 
-    std::expected<json::Document, Failure> object_json(ObjectId id) {
-        auto& runtime = app.document_->world().runtime();
-        const auto* type = take(runtime.describe(take(runtime.type_of(id))));
-        ATELIER_TRY_BIND(header, object_header(id, type->name));
-        json::Builder result(*header);
-        const auto root = result.root();
-        ATELIER_TRY(result.set(root, "type_description", type->description));
+    std::expected<void, Failure> write_object(json::Builder& result, json::Value root, ObjectId id) {
+        const auto& doc = *app.document_;
+        auto& runtime = doc.world().runtime();
+        ATELIER_TRY_BIND(type_id, operation(runtime.type_of(id)));
+        ATELIER_TRY_BIND(type, operation(runtime.describe(*type_id)));
+        ATELIER_TRY(write_object_header(result, root, id, (*type)->name));
+        ATELIER_TRY(result.set(root, "type_description", (*type)->description));
         ATELIER_TRY_BIND(properties, result.array(root, "properties"));
-        if (app.document_->is_material(id)) {
-            const auto view = take(app.document_->inspect_material(id));
-            ATELIER_TRY(result.set(root, "asset", view.asset_key));
-            ATELIER_TRY(result.set(root, "parent", view.parent_key));
-            result.set_validated(root, "role", view.source ? "source" : "instance");
-            ATELIER_TRY(result.set(root, "scene", view.scene));
-            ATELIER_TRY(result.set(root, "default_material", view.default_material));
-            ATELIER_TRY(result.set(
-                root, "dirty", view.scene ? app.document_->dirty() : app.document_->material_dirty(view.asset_key)));
-            ATELIER_TRY_BIND(entries, assets::material_format::encode_entries(view.entries));
+        ATELIER_TRY_BIND(is_material, operation(doc.is_material_type(*type_id)));
+        if (*is_material) {
+            ATELIER_TRY_BIND(view, operation(doc.inspect_material(id)));
+            ATELIER_TRY(result.set(root, "asset", view->asset_key));
+            ATELIER_TRY(result.set(root, "parent", view->parent_key));
+            result.set_validated(root, "role", view->source ? "source" : "instance");
+            ATELIER_TRY(result.set(root, "scene", view->scene));
+            ATELIER_TRY(result.set(root, "default_material", view->default_material));
+            ATELIER_TRY(result.set(root, "dirty", view->scene ? doc.dirty() : doc.material_dirty(view->asset_key)));
+            ATELIER_TRY_BIND(entries, assets::material_format::encode_entries(view->entries));
             result.set_validated(root, "entries", entries->root());
             ATELIER_TRY_BIND(declarations, result.array(root, "declarations"));
             ATELIER_TRY_BIND(diagnostics, result.array(root, "diagnostics"));
-            for (const auto& declaration : view.declarations) {
+            for (const auto& declaration : view->declarations) {
                 const std::array values{material::Override{declaration.path, declaration.value, true},
                                         material::Override{declaration.path, declaration.initial, true}};
                 ATELIER_TRY_BIND(encoded, assets::material_format::encode_entries(std::span(values).first(1)));
@@ -1243,41 +1261,42 @@ struct EditorControl::Impl {
                 result.set_validated(field, "initial", *initial->root().at(0)->at("value"));
                 ATELIER_TRY(result.set(field, "components", declaration.components));
             }
-            for (const auto& diagnostic : view.diagnostics) {
+            for (const auto& diagnostic : view->diagnostics) {
                 const auto item = result.append_object(*diagnostics);
                 ATELIER_TRY(result.set(item, "path", diagnostic.path));
                 ATELIER_TRY(result.set(item, "message", diagnostic.message));
             }
-            if (view.source_file) {
+            if (view->source_file) {
                 const auto source = result.object_validated(root, "source");
-                ATELIER_TRY(result.set(source, "path", view.source_file->path));
-                ATELIER_TRY(result.set(source, "version", view.source_file->version));
-                ATELIER_TRY(result.set(source, "text", view.source_file->source));
+                ATELIER_TRY(result.set(source, "path", view->source_file->path));
+                ATELIER_TRY(result.set(source, "version", view->source_file->version));
+                ATELIER_TRY(result.set(source, "text", view->source_file->source));
             }
-            return result.finish();
+            return {};
         }
-        if (app.document_->is_graph_object(id)) {
-            if (const auto graph_key = app.document_->graph_of_object(id))
+        if (doc.is_graph_object(id)) {
+            if (const auto graph_key = doc.graph_of_object(id))
                 ATELIER_TRY(result.set(root, "graph", *graph_key));
-            if (const auto node_name = app.document_->graph_node_name(id))
+            if (const auto node_name = doc.graph_node_name(id))
                 ATELIER_TRY(result.set(root, "node_name", *node_name));
         }
-        for (const auto& property : take(app.document_->properties(id))) {
-            const auto* prop_type = take(runtime.describe(property.type));
+        ATELIER_TRY_BIND(fields, operation(doc.properties(id)));
+        for (const auto& property : *fields) {
+            ATELIER_TRY_BIND(prop_type, operation(runtime.describe(property.type)));
             const auto field = result.append_object(*properties);
             ATELIER_TRY(result.set(field, "name", property.name));
             ATELIER_TRY(result.set(field, "label", property.label));
             ATELIER_TRY(result.set(field, "category", property.category));
             ATELIER_TRY(result.set(field, "description", property.description));
-            ATELIER_TRY(result.set(field, "type", prop_type->name));
+            ATELIER_TRY(result.set(field, "type", (*prop_type)->name));
             if (property.is_string) {
                 ATELIER_TRY(result.set(field, "value", property.string_value));
             } else {
-                ATELIER_TRY_BIND(value, scalar_json(property.value, runtime));
+                ATELIER_TRY_BIND(value, scalar_json(property.value, **prop_type));
                 result.set_validated(field, "value", value->root());
             }
-            if (prop_type->enumeration) {
-                const auto& enum_info = *prop_type->enumeration;
+            if ((*prop_type)->enumeration) {
+                const auto& enum_info = *(*prop_type)->enumeration;
                 ATELIER_TRY_BIND(choices, result.array(field, "choices"));
                 for (const auto& [name, bits] : enum_info.values) {
                     static_cast<void>(bits);
@@ -1309,66 +1328,74 @@ struct EditorControl::Impl {
                                                   {"hard_min", &property.range.hard_min},
                                                   {"hard_max", &property.range.hard_max}}) {
                     if (*bound) {
-                        ATELIER_TRY_BIND(number, scalar_json(**bound, runtime));
+                        ATELIER_TRY_BIND(number, scalar_json(**bound, **prop_type));
                         result.set_validated(range, name, number->root());
                     }
                 }
             }
         }
-        if (app.document_->has_retained(id))
-            if (const auto saved = app.document_->retained(id); saved && !saved->entries.empty()) {
-                ATELIER_TRY_BIND(data, result.array(root, "saved_data"));
-                for (const auto& entry : saved->entries) {
-                    std::string path;
-                    for (const auto& part : entry.path)
-                        path += (path.empty() ? "" : ".") + part;
-                    const auto item = result.append_object(*data);
-                    ATELIER_TRY(result.set(item, "path", path));
-                    ATELIER_TRY(result.set(item, "value", entry.value));
-                    ATELIER_TRY(result.set(item, "kind", world::name(entry.kind)));
-                }
+        ATELIER_TRY_BIND(saved, operation(doc.retained(id)));
+        if (!saved->entries.empty()) {
+            ATELIER_TRY_BIND(data, result.array(root, "saved_data"));
+            for (const auto& entry : saved->entries) {
+                std::string path;
+                for (const auto& part : entry.path)
+                    path += (path.empty() ? "" : ".") + part;
+                const auto item = result.append_object(*data);
+                ATELIER_TRY(result.set(item, "path", path));
+                ATELIER_TRY(result.set(item, "value", entry.value));
+                ATELIER_TRY(result.set(item, "kind", world::name(entry.kind)));
             }
-        if (take(runtime.is_a(take(runtime.type_of(id)), app.document_->types().entity))) {
-            const auto origin = take(world::space_reference(runtime, id));
-            if (origin)
-                result.set_validated(root, "space_reference", *origin == ObjectId{} ? "" : handle(*origin));
-            else {
+        }
+        ATELIER_TRY_BIND(entity, operation(runtime.is_a(*type_id, doc.types().entity)));
+        if (*entity) {
+            ATELIER_TRY_BIND(origin, operation(world::space_reference(runtime, id)));
+            if (*origin)
+                ATELIER_TRY(set_handle(result, root, "space_reference", **origin));
+            else
                 ATELIER_TRY(result.set_null(root, "space_reference"));
+            ATELIER_TRY_BIND(spatial, operation(world::has_transform(runtime, id)));
+            if (*spatial) {
+                ATELIER_TRY_BIND(transform, operation(world::read_transform(runtime, id)));
+                const auto field = result.object_validated(root, "transform");
+                const std::array position{transform->position.x, transform->position.y, transform->position.z};
+                const std::array rotation{transform->rotation.x, transform->rotation.y, transform->rotation.z,
+                                          transform->rotation.w};
+                const std::array scale{transform->scale.x, transform->scale.y, transform->scale.z};
+                ATELIER_TRY(result.numbers(field, "position", std::span{position}));
+                ATELIER_TRY(result.numbers(field, "rotation", std::span{rotation}));
+                ATELIER_TRY(result.numbers(field, "scale", std::span{scale}));
             }
+            return {};
         }
-        if (auto transform = world::read_transform(runtime, id)) {
-            const auto field = result.object_validated(root, "transform");
-            const std::array position{transform->position.x, transform->position.y, transform->position.z};
-            const std::array rotation{transform->rotation.x, transform->rotation.y, transform->rotation.z,
-                                      transform->rotation.w};
-            const std::array scale{transform->scale.x, transform->scale.y, transform->scale.z};
-            ATELIER_TRY(result.numbers(field, "position", std::span{position}));
-            ATELIER_TRY(result.numbers(field, "rotation", std::span{rotation}));
-            ATELIER_TRY(result.numbers(field, "scale", std::span{scale}));
-        }
-        if (auto bindings = presentation::read_material_bindings(runtime, id); bindings) {
-            if (const auto mesh = presentation::read_static_mesh(runtime, id)) {
+        const auto& types = doc.presentation_types();
+        ATELIER_TRY_BIND(static_mesh, operation(runtime.is_a(*type_id, types.static_mesh_component)));
+        ATELIER_TRY_BIND(generator, operation(runtime.is_a(*type_id, types.procedural_generator_component)));
+        if (*static_mesh || *generator) {
+            ATELIER_TRY_BIND(bindings, operation(presentation::read_material_bindings(runtime, id)));
+            if (*static_mesh) {
+                ATELIER_TRY_BIND(mesh, operation(presentation::read_static_mesh(runtime, id)));
                 const auto mesh_record = result.object_validated(root, "mesh");
                 ATELIER_TRY(result.set(mesh_record, "source", mesh->mesh.source));
                 ATELIER_TRY(result.set(mesh_record, "missing", !mesh->mesh.resolved && !mesh->mesh.source.empty()));
                 ATELIER_TRY_BIND(defaults, result.array(mesh_record, "default_materials"));
                 for (const auto& binding : mesh->mesh.defaults) {
-                    const auto source = take(material::material_key(runtime, binding.resource.id()));
+                    ATELIER_TRY_BIND(source, operation(material::material_key(runtime, binding.resource.id())));
                     const auto item = result.append_object(*defaults);
                     ATELIER_TRY(result.set(item, "slot", binding.slot));
-                    result.set_validated(item, "object", handle(binding.resource.id()));
-                    ATELIER_TRY(result.set(item, "source", source));
-                    ATELIER_TRY(result.set(item, "missing",
-                                           app.document_->unavailable(assets::AssetKind::material, source) != nullptr));
+                    ATELIER_TRY(set_handle(result, item, "object", binding.resource.id()));
+                    ATELIER_TRY(result.set(item, "source", *source));
+                    ATELIER_TRY(
+                        result.set(item, "missing", doc.unavailable(assets::AssetKind::material, *source) != nullptr));
                 }
-            }
-            if (const auto proc = presentation::read_procedural_source(runtime, id)) {
+            } else {
+                ATELIER_TRY_BIND(proc, operation(presentation::read_procedural_source(runtime, id)));
                 const auto proc_record = result.object_validated(root, "procedural");
                 ATELIER_TRY(result.set(proc_record, "graph", proc->source));
-                ATELIER_TRY(result.set(
-                    proc_record, "missing",
-                    !proc->source.empty() && !app.document_->has_graph(proc->source) &&
-                        app.document_->unavailable(assets::AssetKind::procedural_graph, proc->source) != nullptr));
+                ATELIER_TRY(
+                    result.set(proc_record, "missing",
+                               !proc->source.empty() && !doc.has_graph(proc->source) &&
+                                   doc.unavailable(assets::AssetKind::procedural_graph, proc->source) != nullptr));
                 ATELIER_TRY(
                     result.set(proc_record, "has_surface", proc->output && proc->output->surface_mesh != nullptr));
                 std::uint64_t instance_count = 0;
@@ -1380,18 +1407,18 @@ struct EditorControl::Impl {
             }
             ATELIER_TRY_BIND(materials, result.array(root, "materials"));
             for (const auto& binding : *bindings) {
-                const auto view = take(app.document_->inspect_material(binding.resource.id()));
+                ATELIER_TRY_BIND(view, operation(doc.inspect_material(binding.resource.id())));
                 const auto item = result.append_object(*materials);
                 ATELIER_TRY(result.set(item, "slot", binding.slot));
-                result.set_validated(item, "object", handle(binding.resource.id()));
-                ATELIER_TRY(result.set(item, "asset", view.asset_key));
-                ATELIER_TRY(result.set(item, "parent", view.parent_key));
-                ATELIER_TRY(result.set(item, "scene", view.scene));
+                ATELIER_TRY(set_handle(result, item, "object", binding.resource.id()));
+                ATELIER_TRY(result.set(item, "asset", view->asset_key));
+                ATELIER_TRY(result.set(item, "parent", view->parent_key));
+                ATELIER_TRY(result.set(item, "scene", view->scene));
                 ATELIER_TRY(result.set(item, "assignment_override", binding.overridden));
-                ATELIER_TRY(result.set(item, "default_material", view.default_material));
+                ATELIER_TRY(result.set(item, "default_material", view->default_material));
             }
         }
-        return result.finish();
+        return {};
     }
 
     // Full and paged inspection share the existing builtin-then-project entry contract.
@@ -1401,98 +1428,137 @@ struct EditorControl::Impl {
         const auto builtins = assets::mesh_assets();
         if (index < builtins.size()) {
             const auto& asset = builtins[index];
-            const auto name = platform::utf16_to_utf8(asset.name);
-            if (!name)
-                return std::unexpected(Failure("invalid_request", "Invalid UTF-16 text"));
+            ATELIER_TRY_BIND(name, utf8_text(asset.name));
             ATELIER_TRY(result.set(root, "key", asset.key));
             result.set_validated(root, "name", *name);
             result.set_validated(root, "kind", "mesh");
             return result.finish();
         }
         const auto& entry = app.project_->entries()[index - builtins.size()];
-        const auto path = platform::utf16_to_utf8(entry.path.generic_wstring());
-        if (!path)
-            return std::unexpected(Failure("invalid_request", "Invalid UTF-16 text"));
+        ATELIER_TRY_BIND(path, utf8_text(entry.path.generic_wstring()));
         ATELIER_TRY(result.set(root, "key", entry.key));
         result.set_validated(root, "path", *path);
         ATELIER_TRY(result.set(root, "kind", static_cast<unsigned>(entry.kind)));
         return result.finish();
     }
 
-    std::expected<json::Document, Failure> inspect_assets(json::Value args) {
-        ATELIER_TRY(args.allowed_members({"detail", "limit", "cursor"}));
-        ATELIER_TRY_BIND(limit_arg, args.find("limit"));
+    enum class Directory { objects, assets };
+
+    struct InspectionPage {
+        Directory directory;
+        std::string_view instance;
+        std::uint64_t generation;
+        std::uint64_t revision;
+        unsigned limit;
+        std::optional<json::Value> cursor;
+        json::Builder result{};
+        std::size_t remaining = inspect_page_bytes;
+
+        std::string_view revision_key() const {
+            return directory == Directory::assets ? "project_revision" : "revision";
+        }
+
+        std::expected<void, Failure> check_version(std::string_view saved_instance, std::uint64_t saved_generation,
+                                                   std::uint64_t saved_revision) const {
+            if (saved_instance != instance || saved_generation != generation || saved_revision != revision)
+                return std::unexpected(
+                    Failure("stale_cursor", directory == Directory::assets
+                                                ? "The asset directory changed; restart without a cursor"
+                                                : "The object directory changed; restart without a cursor"));
+            return {};
+        }
+
+        json::Result<json::Value> begin() {
+            const auto root = result.root();
+            const auto detail = directory == Directory::assets ? "assets" : "objects";
+            result.set_validated(root, "detail", detail);
+            ATELIER_TRY(result.set(root, "document_generation", generation));
+            ATELIER_TRY(result.set(root, revision_key(), revision));
+            ATELIER_TRY(result.set_null(root, "next_cursor"));
+            return result.array(root, detail);
+        }
+
+        std::expected<bool, Failure> append(json::Value entries, json::Value entry) {
+            const auto size = json::write(entry).size() + 1;
+            if (size > inspect_page_bytes)
+                return std::unexpected(
+                    Failure("result_too_large", directory == Directory::assets
+                                                    ? "One asset directory entry exceeds the page byte limit"
+                                                    : "One object directory entry exceeds the page byte limit"));
+            if (entries.size() == limit || size > remaining)
+                return false;
+            result.append(entries, entry);
+            remaining -= size;
+            return true;
+        }
+
+        json::Result<json::Value> next_cursor() {
+            const auto next = result.object_validated(result.root(), "next_cursor");
+            result.set_validated(next, "instance", instance);
+            ATELIER_TRY(result.set(next, "document", generation));
+            ATELIER_TRY(result.set(next, revision_key(), revision));
+            return next;
+        }
+    };
+
+    std::expected<InspectionPage, Failure> inspection_page(Directory directory, json::Value args) const {
+        if (directory == Directory::assets) {
+            ATELIER_TRY(args.allowed_members({"detail", "limit", "cursor"}));
+        } else {
+            ATELIER_TRY(args.allowed_members({"detail", "entity_name", "type", "limit", "cursor"}));
+        }
         unsigned limit = 64;
+        ATELIER_TRY_BIND(limit_arg, args.find("limit"));
         if (*limit_arg) {
             ATELIER_TRY_BIND(n, integer(**limit_arg, 1, inspect_page_items));
             limit = *n;
         }
-        const auto revision = app.project_ ? app.project_->revision() : 0;
-        const auto instance = *server.identity().root().string({"instance_id"});
+        ATELIER_TRY_BIND(cursor, args.find("cursor"));
+        const auto revision =
+            directory == Directory::assets ? (app.project_ ? app.project_->revision() : 0) : app.document_->revision();
+        return InspectionPage{
+            directory, *server.identity().root().string({"instance_id"}), document_generation, revision, limit,
+            *cursor};
+    }
+
+    std::expected<json::Document, Failure> inspect_assets(json::Value args) {
+        ATELIER_TRY_BIND(page, inspection_page(Directory::assets, args));
         const auto count = assets::mesh_assets().size() + (app.project_ ? app.project_->entries().size() : 0);
         std::size_t index{};
-        ATELIER_TRY_BIND(cursor_arg, args.find("cursor"));
-        if (*cursor_arg) {
-            const auto cursor = **cursor_arg;
+        if (page->cursor) {
+            const auto cursor = *page->cursor;
             ATELIER_TRY(cursor.members({"domain", "instance", "document", "project_revision", "index"}));
             ATELIER_TRY_BIND(domain, cursor.string({"domain"}));
             if (*domain != "assets")
-                throw Failure("invalid_request", "Expected an assets cursor");
+                return std::unexpected(Failure("invalid_request", "Expected an assets cursor"));
             ATELIER_TRY_BIND(document, cursor.u64({"document"}));
             ATELIER_TRY_BIND(project_revision, cursor.u64({"project_revision"}));
             ATELIER_TRY_BIND(position, cursor.u64({"index"}));
             ATELIER_TRY_BIND(instance_arg, cursor.at("instance"));
             ATELIER_TRY_BIND(cursor_instance, text(*instance_arg));
-            if (*cursor_instance != instance || *document != document_generation || *project_revision != revision)
-                throw Failure("stale_cursor", "The asset directory changed; restart without a cursor");
+            ATELIER_TRY(page->check_version(*cursor_instance, *document, *project_revision));
             if (*position > count)
-                throw Failure("invalid_request", "Asset directory cursor is outside the catalog");
+                return std::unexpected(Failure("invalid_request", "Asset directory cursor is outside the catalog"));
             index = static_cast<std::size_t>(*position);
         }
-        json::Builder result;
-        const auto root = result.root();
-        result.set_validated(root, "detail", "assets");
-        ATELIER_TRY(result.set(root, "document_generation", document_generation));
-        ATELIER_TRY(result.set(root, "project_revision", revision));
-        ATELIER_TRY_BIND(entries, result.array(root, "assets"));
-        std::size_t bytes{};
-        for (; index < count; ++index) {
-            if (entries->size() == limit)
-                break;
+        ATELIER_TRY_BIND(entries, page->begin());
+        for (; index < count && entries->size() < page->limit; ++index) {
             ATELIER_TRY_BIND(value, asset_json(index));
-            const auto size = json::write(value->root()).size() + 1;
-            if (size > inspect_page_bytes)
-                throw Failure("result_too_large", "One asset directory entry exceeds the page byte limit");
-            if (size > inspect_page_bytes - bytes)
+            ATELIER_TRY_BIND(appended, page->append(*entries, value->root()));
+            if (!*appended)
                 break;
-            bytes += size;
-            result.append(*entries, value->root());
         }
         if (index < count) {
-            const auto cursor = result.object_validated(root, "next_cursor");
-            result.set_validated(cursor, "domain", "assets");
-            result.set_validated(cursor, "instance", instance);
-            ATELIER_TRY(result.set(cursor, "document", document_generation));
-            ATELIER_TRY(result.set(cursor, "project_revision", revision));
-            ATELIER_TRY(result.set(cursor, "index", index));
-        } else {
-            ATELIER_TRY(result.set_null(root, "next_cursor"));
+            ATELIER_TRY_BIND(next, page->next_cursor());
+            page->result.set_validated(*next, "domain", "assets");
+            ATELIER_TRY(page->result.set(*next, "index", index));
         }
-        return result.finish();
+        return page->result.finish();
     }
 
     std::expected<json::Document, Failure> inspect_objects(json::Value args) {
-        ATELIER_TRY(args.allowed_members({"detail", "entity_name", "type", "limit", "cursor"}));
-        ATELIER_TRY_BIND(limit_arg, args.find("limit"));
-        unsigned limit = 64;
-        if (*limit_arg) {
-            ATELIER_TRY_BIND(n, integer(**limit_arg, 1, inspect_page_items));
-            limit = *n;
-        }
-        const auto revision = app.document_->revision();
-        const auto instance = *server.identity().root().string({"instance_id"});
-        ATELIER_TRY_BIND(cursor_arg, args.find("cursor"));
-        const auto cursor = *cursor_arg;
+        ATELIER_TRY_BIND(page, inspection_page(Directory::objects, args));
+        const auto& cursor = page->cursor;
         unsigned entity_index{};
         unsigned object_index{};
         if (cursor) {
@@ -1501,8 +1567,7 @@ struct EditorControl::Impl {
             ATELIER_TRY_BIND(cursor_instance, cursor->string({"instance"}));
             ATELIER_TRY_BIND(document, cursor->u64({"document"}));
             ATELIER_TRY_BIND(cursor_revision, cursor->u64({"revision"}));
-            if (*cursor_instance != instance || *document != document_generation || *cursor_revision != revision)
-                throw Failure("stale_cursor", "The object directory changed; restart without a cursor");
+            ATELIER_TRY(page->check_version(*cursor_instance, *document, *cursor_revision));
             ATELIER_TRY_BIND(entity, cursor->at("entity"));
             ATELIER_TRY_BIND(entity_number, integer(*entity, 0, editor::Session::maximum_entities));
             ATELIER_TRY_BIND(component, cursor->at("component"));
@@ -1516,11 +1581,11 @@ struct EditorControl::Impl {
             if (cursor) {
                 ATELIER_TRY_BIND(saved, cursor->at(key));
                 if (*argument && **argument != *saved)
-                    throw Failure("invalid_request", "A pagination cursor cannot change its filters");
+                    return std::unexpected(Failure("invalid_request", "A pagination cursor cannot change its filters"));
                 value = *saved;
             }
             if (*argument && (**argument).is_null())
-                throw Failure("invalid_request", "Inspection filters must be strings");
+                return std::unexpected(Failure("invalid_request", "Inspection filters must be strings"));
             if (!value || value->is_null())
                 return std::nullopt;
             ATELIER_TRY_BIND(name, text(*value));
@@ -1529,74 +1594,77 @@ struct EditorControl::Impl {
         ATELIER_TRY_BIND(entity_filter, filter("entity_name"));
         ATELIER_TRY_BIND(type_filter, filter("type"));
         const auto entity_name = *entity_filter ? platform::utf8_to_utf16_validated(**entity_filter) : std::wstring{};
-        const auto entities = take(app.document_->world().members());
-        if (entity_index > entities.size() || (entity_index == entities.size() && object_index))
-            throw Failure("invalid_request", "Object directory cursor is outside the document");
-        if (pruned_revision != revision)
-            prune_handles();
-        json::Builder result;
-        const auto root = result.root();
-        result.set_validated(root, "detail", "objects");
-        ATELIER_TRY(result.set(root, "document_generation", document_generation));
-        ATELIER_TRY(result.set(root, "revision", revision));
-        ATELIER_TRY_BIND(entries, result.array(root, "objects"));
-        std::size_t bytes{};
+        ATELIER_TRY_BIND(entities, operation(app.document_->world().members()));
+        if (entity_index > entities->size() || (entity_index == entities->size() && object_index))
+            return std::unexpected(Failure("invalid_request", "Object directory cursor is outside the document"));
+        if (pruned_revision != page->revision)
+            ATELIER_TRY(prune_handles(*entities));
+        ATELIER_TRY_BIND(entries, page->begin());
         auto& runtime = app.document_->world().runtime();
-        for (; entity_index < entities.size(); ++entity_index, object_index = 0) {
-            const auto entity = entities[entity_index].id();
-            if (*entity_filter && app.document_->name(entity) != entity_name)
+        for (; entity_index < entities->size(); ++entity_index, object_index = 0) {
+            const auto entity = (*entities)[entity_index].id();
+            const bool matches_name = !*entity_filter || app.document_->name(entity) == entity_name;
+            if (!matches_name && object_index == 0)
                 continue;
-            const auto components = take(world::components(runtime, entity));
-            if (object_index > components.size())
-                throw Failure("invalid_request", "Object directory cursor is outside the entity");
-            for (; object_index <= components.size(); ++object_index) {
-                const auto id = object_index ? components[object_index - 1].id() : entity;
-                const auto* type = take(runtime.describe(take(runtime.type_of(id))));
-                if (*type_filter && type->name != **type_filter)
+            ATELIER_TRY_BIND(components, operation(world::components(runtime, entity)));
+            if (object_index > components->size())
+                return std::unexpected(Failure("invalid_request", "Object directory cursor is outside the entity"));
+            if (!matches_name)
+                continue;
+            for (; object_index <= components->size(); ++object_index) {
+                const auto id = object_index ? (*components)[object_index - 1].id() : entity;
+                ATELIER_TRY_BIND(type_id, operation(runtime.type_of(id)));
+                ATELIER_TRY_BIND(type, operation(runtime.describe(*type_id)));
+                if (*type_filter && (*type)->name != **type_filter)
                     continue;
-                ATELIER_TRY_BIND(header, object_header(id, type->name));
-                json::Builder entry(*header);
+                json::Builder entry;
+                ATELIER_TRY(write_object_header(entry, entry.root(), id, (*type)->name));
                 entry.set_validated(entry.root(), "kind", object_index ? "component" : "entity");
-                entry.set_validated(entry.root(), "entity", handle(entity));
-                if (!object_index)
-                    entry.set_validated(entry.root(), "parent", handle(take(world::parent_entity(runtime, entity))));
-                const auto size = json::write(entry.root()).size() + 1;
-                if (size > inspect_page_bytes)
-                    throw Failure("result_too_large", "One object directory entry exceeds the page byte limit");
-                if (entries->size() == limit || size > inspect_page_bytes - bytes) {
-                    const auto next = result.object_validated(root, "next_cursor");
-                    result.set_validated(next, "instance", instance);
-                    ATELIER_TRY(result.set(next, "document", document_generation));
-                    ATELIER_TRY(result.set(next, "revision", revision));
-                    ATELIER_TRY(result.set(next, "entity", entity_index));
-                    ATELIER_TRY(result.set(next, "component", object_index));
-                    if (*entity_filter)
-                        result.set_validated(next, "entity_name", **entity_filter);
-                    else {
-                        ATELIER_TRY(result.set_null(next, "entity_name"));
-                    }
-                    if (*type_filter)
-                        result.set_validated(next, "type", **type_filter);
-                    else {
-                        ATELIER_TRY(result.set_null(next, "type"));
-                    }
-                    return result.finish();
+                ATELIER_TRY(set_handle(entry, entry.root(), "entity", entity));
+                if (!object_index) {
+                    ATELIER_TRY_BIND(parent, operation(world::parent_entity(runtime, entity)));
+                    ATELIER_TRY(set_handle(entry, entry.root(), "parent", *parent));
                 }
-                bytes += size;
-                result.append(*entries, entry.root());
+                ATELIER_TRY_BIND(appended, page->append(*entries, entry.root()));
+                if (!*appended) {
+                    ATELIER_TRY_BIND(next, page->next_cursor());
+                    ATELIER_TRY(page->result.set(*next, "entity", entity_index));
+                    ATELIER_TRY(page->result.set(*next, "component", object_index));
+                    const auto save_filter = [&](std::string_view key,
+                                                 const std::optional<std::string>& value) -> json::Result<void> {
+                        if (!value)
+                            return page->result.set_null(*next, key);
+                        page->result.set_validated(*next, key, *value);
+                        return {};
+                    };
+                    ATELIER_TRY(save_filter("entity_name", *entity_filter));
+                    ATELIER_TRY(save_filter("type", *type_filter));
+                    return page->result.finish();
+                }
             }
         }
-        ATELIER_TRY(result.set_null(root, "next_cursor"));
-        return result.finish();
+        return page->result.finish();
+    }
+
+    Result<bool> inspect_guide_points() const {
+        const auto& workspace = app.workspace_;
+        if (workspace.sop_show_points)
+            return *workspace.sop_show_points;
+        auto& doc = *app.document_;
+        if (!workspace.active_graph.empty() && doc.has_graph(workspace.active_graph)) {
+            ATELIER_TRY_BIND(graph, doc.evaluate_graph(workspace.active_graph, app.project_.get()));
+            return workspace.effective_show_points(graph->preview_output.get());
+        }
+        ATELIER_TRY_BIND(generator, workspace.active_procedural_generator(doc));
+        if (*generator == ObjectId{})
+            return false;
+        ATELIER_TRY_BIND(source, presentation::read_procedural_source(doc.world().runtime(), *generator));
+        return workspace.effective_show_points(source->output ? source->output->geometry.get() : nullptr);
     }
 
     std::expected<json::Document, Failure> inspect(bool summary = false) {
-        const auto project = platform::utf16_to_utf8(app.project_ ? app.project_->root().generic_wstring() : L"");
-        if (!project)
-            return std::unexpected(Failure("invalid_request", "Invalid UTF-16 text"));
-        const auto scene = platform::utf16_to_utf8(app.scene_path_.generic_wstring());
-        if (!scene)
-            return std::unexpected(Failure("invalid_request", "Invalid UTF-16 text"));
+        ATELIER_TRY_BIND(project, utf8_text(app.project_ ? app.project_->root().generic_wstring() : L""));
+        ATELIER_TRY_BIND(scene, utf8_text(app.scene_path_.generic_wstring()));
         json::Builder result;
         const auto root = result.root();
         result.set_validated(root, "identity", server.identity().root());
@@ -1612,19 +1680,12 @@ struct EditorControl::Impl {
         ATELIER_TRY(result.set(root, "active_graph", app.workspace_.active_graph));
         ATELIER_TRY(result.set(root, "selected_graph_node", app.workspace_.selected_graph_node));
         {
-            const procedural::Geometry* shown_geom{};
-            if (!app.workspace_.active_graph.empty() && app.document_->has_graph(app.workspace_.active_graph)) {
-                if (const auto eval = app.document_->evaluate_graph(app.workspace_.active_graph,
-                                                                    app.project_ ? &*app.project_ : nullptr))
-                    shown_geom = eval->preview_output.get();
-            } else if (const ObjectId gen_comp = app.workspace_.active_procedural_generator(*app.document_);
-                       gen_comp != ObjectId{}) {
-                if (const auto src = presentation::read_procedural_source(app.document_->world().runtime(), gen_comp);
-                    src && src->output)
-                    shown_geom = src->output->geometry.get();
-            }
+            const auto points = inspect_guide_points();
+            // Summary remains available when a preview cannot be read. Full requires every requested field.
+            if (!points && !summary)
+                return std::unexpected(operation_error(points.error()));
             const auto guides = result.object_validated(root, "sop_guides");
-            ATELIER_TRY(result.set(guides, "points", app.workspace_.effective_show_points(shown_geom)));
+            ATELIER_TRY(result.set(guides, "points", points.value_or(false)));
             ATELIER_TRY(result.set(guides, "points_auto", !app.workspace_.sop_show_points.has_value()));
             ATELIER_TRY(result.set(guides, "normals", app.workspace_.sop_show_normals));
             ATELIER_TRY(result.set(guides, "face_normals", app.workspace_.sop_show_face_normals));
@@ -1632,8 +1693,8 @@ struct EditorControl::Impl {
             ATELIER_TRY(result.set(guides, "bounds", app.workspace_.sop_show_bounds));
             ATELIER_TRY(result.set(guides, "info", app.workspace_.sop_show_info));
         }
-        const auto camera = camera_json(app.document_->world().runtime(), app.camera_.state());
-        result.set_validated(root, "camera", camera.root());
+        ATELIER_TRY_BIND(camera, camera_json());
+        result.set_validated(root, "camera", camera->root());
         ATELIER_TRY_BIND(view, view_json(app.workspace_.view));
         result.set_validated(root, "view", view->root());
         ATELIER_TRY(result.set(root, "accepted_frames", app.accepted_frames_));
@@ -1645,36 +1706,41 @@ struct EditorControl::Impl {
             const auto item = result.object_validated(root, "active_job");
             result.set_validated(item, "job_id", job->id);
             ATELIER_TRY(result.set(item, "rendering", job->rendering));
-            ATELIER_TRY(result.set(item, "cancel_requested", job->cancel->load()));
+            ATELIER_TRY(result.set(item, "cancel_requested", job->work->cancelled()));
         }
         if (summary) {
             result.set_validated(root, "detail", "summary");
             return result.finish();
         }
         ATELIER_TRY_BIND(entities, result.array(root, "entities"));
-        for (const auto& entity : take(app.document_->world().members())) {
-            ATELIER_TRY_BIND(object, object_json(entity.id()));
-            json::Builder value(*object);
-            ATELIER_TRY_BIND(components, value.array(value.root(), "components"));
-            for (const auto& component : take(world::components(app.document_->world().runtime(), entity.id()))) {
-                ATELIER_TRY_BIND(item, object_json(component.id()));
-                value.append(*components, item->root());
+        const auto& world = app.document_->world();
+        auto& runtime = world.runtime();
+        ATELIER_TRY_BIND(members, operation(world.members()));
+        for (const auto& entity : *members) {
+            const auto id = entity.id();
+            const auto record = result.append_object(*entities);
+            ATELIER_TRY(write_object(result, record, id));
+            ATELIER_TRY_BIND(parts, operation(world::components(runtime, id)));
+            ATELIER_TRY_BIND(components, result.array(record, "components"));
+            for (const auto& part : *parts)
+                ATELIER_TRY(write_object(result, result.append_object(*components), part.id()));
+            ATELIER_TRY_BIND(parent, operation(world::parent_entity(runtime, id)));
+            ATELIER_TRY(set_handle(result, record, "parent", *parent));
+            ATELIER_TRY_BIND(child_roots, operation(world::children(runtime, id)));
+            ATELIER_TRY_BIND(children, result.array(record, "children"));
+            for (const auto& child : *child_roots) {
+                ATELIER_TRY_BIND(child_handle, handle(child.id()));
+                ATELIER_TRY(result.append(*children, *child_handle));
             }
-            const auto parent = take(world::parent_entity(app.document_->world().runtime(), entity.id()));
-            value.set_validated(value.root(), "parent", parent != ObjectId{} ? handle(parent) : "");
-            ATELIER_TRY_BIND(children, value.array(value.root(), "children"));
-            for (const auto& child : take(world::children(app.document_->world().runtime(), entity.id()))) {
-                ATELIER_TRY(value.append(*children, handle(child.id())));
-            }
-            result.append(*entities, value.root());
         }
         // Released IDs never retain Runtime objects, and are bounded by current membership.
-        prune_handles();
+        ATELIER_TRY(prune_handles(*members));
         ATELIER_TRY_BIND(selection, result.array(root, "selection"));
         for (auto entity : app.document_->selected_entities()) {
-            ATELIER_TRY(result.append(*selection, handle(entity)));
+            ATELIER_TRY_BIND(value_handle, handle(entity));
+            ATELIER_TRY(result.append(*selection, *value_handle));
         }
-        result.set_validated(root, "inspected_object", handle(app.document_->selection().object));
+        ATELIER_TRY(set_handle(result, root, "inspected_object", app.document_->selection().object));
         ATELIER_TRY_BIND(dirty, result.array(root, "dirty_materials"));
         for (const auto& key : app.document_->dirty_materials()) {
             ATELIER_TRY(result.append(*dirty, key));
@@ -1688,7 +1754,8 @@ struct EditorControl::Impl {
             ATELIER_TRY(result.append(*open_graphs, key));
         }
         ATELIER_TRY_BIND(types, result.array(root, "component_types"));
-        for (const auto& type : take(app.document_->component_types())) {
+        ATELIER_TRY_BIND(component_types, operation(app.document_->component_types()));
+        for (const auto& type : *component_types) {
             ATELIER_TRY(result.append(*types, type.name));
         }
         ATELIER_TRY_BIND(assets, result.array(root, "assets"));
@@ -1750,7 +1817,7 @@ struct EditorControl::Impl {
         json::Builder result;
         const auto root = result.root();
         ATELIER_TRY(result.set(root, "asset", view.key));
-        result.set_validated(root, "graph", handle(view.graph));
+        ATELIER_TRY(set_handle(result, root, "graph", view.graph));
         ATELIER_TRY(result.set(root, "seed", view.seed));
         ATELIER_TRY(result.set(root, "display", view.display));
         ATELIER_TRY(result.set(root, "template", view.template_node));
@@ -1790,7 +1857,7 @@ struct EditorControl::Impl {
         for (const auto& node : view.nodes) {
             const auto item = result.append_object(*nodes);
             ATELIER_TRY(result.set(item, "name", node.name));
-            result.set_validated(item, "handle", handle(node.id));
+            ATELIER_TRY(set_handle(result, item, "handle", node.id));
             ATELIER_TRY(result.set(item, "type", node.type));
             ATELIER_TRY(result.set(item, "placeholder", node.placeholder));
             ATELIER_TRY(result.set(item, "display", node.is_display));
@@ -1879,14 +1946,13 @@ struct EditorControl::Impl {
         return result.finish();
     }
 
-    json::Result<Job*> new_job(const std::string& id, const std::shared_ptr<control::Peer>& peer) {
+    std::expected<std::unique_ptr<Job>, Failure> new_job(const std::string& id,
+                                                         const std::shared_ptr<control::Peer>& peer) {
         if (active())
-            throw Failure("busy", "Another control job is still active");
+            return std::unexpected(Failure("busy", "Another control job is still active"));
         if (std::ranges::any_of(jobs, [&](const auto& job) { return job->id == id; }))
-            throw Failure("request_id_expired", "Request payload expired; query the retained job using job.status");
-        record_completions();
-        while (jobs.size() >= 16)
-            jobs.pop_front();
+            return std::unexpected(
+                Failure("request_id_expired", "Request payload expired; query the retained job using job.status"));
         auto job = std::make_unique<Job>();
         job->id = id;
         job->peer = peer;
@@ -1894,30 +1960,38 @@ struct EditorControl::Impl {
         job->context = observed;
         job->started = std::chrono::steady_clock::now();
         job->deadline = job->started + std::chrono::seconds(120);
+        ATELIER_TRY_BIND(directory_id, control::unique_id());
         job->directory =
-            server.directory() / "artifacts" / *server.identity().root().string({"instance_id"}) / control::unique_id();
+            server.directory() / "artifacts" / *server.identity().root().string({"instance_id"}) / *directory_id;
         json::Builder manifest;
         const auto root = manifest.root();
         ATELIER_TRY(manifest.set(root, "protocol", control::protocol_version));
         manifest.set_validated(root, "identity", server.identity().root());
         manifest.set_validated(root, "state_token", token());
         manifest.set_validated(root, "request_id", id);
-        const auto camera = camera_json(app.document_->world().runtime(), app.camera_.state());
-        manifest.set_validated(root, "camera", camera.root());
+        ATELIER_TRY_BIND(camera, camera_json());
+        manifest.set_validated(root, "camera", camera->root());
         ATELIER_TRY(manifest.set(root, "view_schema", repro_view_schema));
         ATELIER_TRY_BIND(view, view_json(app.workspace_.view));
         manifest.set_validated(root, "view", view->root());
         job->manifest = manifest.finish();
+        return job;
+    }
+
+    void publish_job(std::unique_ptr<Job> job) {
+        record_completions();
+        while (jobs.size() >= 16)
+            jobs.pop_front();
         jobs.push_back(std::move(job));
-        return jobs.back().get();
     }
 
     std::expected<json::Document, Failure> start_export(const std::string& id,
                                                         const std::shared_ptr<control::Peer>& peer) {
         if (app.project_ &&
             (!app.project_code_ || !app.project_code_->published_build() || !app.workspace_.scene_available))
-            throw Failure("not_ready", "Repair the project and load its scene before exporting a repro");
-        if (auto synced = app.document_->sync_procedural_generators(app.project_ ? &*app.project_ : nullptr); !synced)
+            return std::unexpected(
+                Failure("not_ready", "Repair the project and load its scene before exporting a repro"));
+        if (auto synced = app.document_->sync_procedural_generators(app.project_.get()); !synced)
             return std::unexpected(Failure("operation_failed", synced.error().message));
         ATELIER_TRY_BIND(snapshot, control_artifacts::snapshot_resources(*app.document_));
         auto data = std::move(*snapshot);
@@ -1931,12 +2005,8 @@ struct EditorControl::Impl {
         json::Builder drafts(json::Kind::array);
         for (const auto& file : app.workspace_.source_editor.files())
             if (file->dirty()) {
-                const auto path = platform::utf16_to_utf8(file->path.generic_wstring());
-                if (!path)
-                    return std::unexpected(Failure("invalid_request", "Invalid UTF-16 text"));
-                const auto source = platform::utf16_to_utf8(file->document->text());
-                if (!source)
-                    return std::unexpected(Failure("invalid_request", "Invalid UTF-16 text"));
+                ATELIER_TRY_BIND(path, utf8_text(file->path.generic_wstring()));
+                ATELIER_TRY_BIND(source, utf8_text(file->document->text()));
                 const auto draft = drafts.append_object(drafts.root());
                 drafts.set_validated(draft, "path", *path);
                 drafts.set_validated(draft, "text", *source);
@@ -1972,11 +2042,7 @@ struct EditorControl::Impl {
                      at->kind == assets::AssetKind::procedural_graph)) {
                     auto sidecar = path;
                     sidecar += L".asset.json";
-                    const auto resolved = app.project_->resolve(sidecar);
-                    if (!resolved) {
-                        app.report_error(resolved.error(), "editor.control_failed");
-                        return std::unexpected(Failure("operation_failed", resolved.error().message));
-                    }
+                    ATELIER_TRY_BIND(resolved, operation(app.project_->resolve(sidecar)));
                     const auto native = platform::windows_file_path(*resolved);
                     if (!native)
                         return std::unexpected(Failure("operation_failed", platform::error_message(native.error())));
@@ -1985,7 +2051,8 @@ struct EditorControl::Impl {
                     if (error)
                         return std::unexpected(Failure("operation_failed", platform::error_message(error)));
                     if (!exists)
-                        throw Failure("dependency_mismatch", "Asset identity file is missing: " + at->key);
+                        return std::unexpected(
+                            Failure("dependency_mismatch", "Asset identity file is missing: " + at->key));
                     if (listed.insert(sidecar).second)
                         data.files.push_back(std::move(sidecar));
                 }
@@ -1998,39 +2065,40 @@ struct EditorControl::Impl {
                 if (!entry || entry->kind != kind) {
                     if (doc.unavailable(kind, key))
                         continue;
-                    throw Failure("dependency_mismatch", "A captured resource is no longer in the project: " + key);
+                    return std::unexpected(
+                        Failure("dependency_mismatch", "A captured resource is no longer in the project: " + key));
                 }
                 ATELIER_TRY(add(entry->path));
                 // Raw geometry companions are not MS/MI execution dependencies.
                 // Use the Reader's prepared mesh closure, never saved material walks.
-                if (kind == assets::AssetKind::mesh && !doc.unavailable(kind, key))
-                    for (const auto& path : take(app.project_->assets().mesh_dependency_files(key)))
+                if (kind == assets::AssetKind::mesh && !doc.unavailable(kind, key)) {
+                    ATELIER_TRY_BIND(files, operation(app.project_->assets().mesh_dependency_files(key)));
+                    for (const auto& path : *files)
                         ATELIER_TRY(add(path));
+                }
             }
         }
         ATELIER_TRY_BIND(created, new_job(id, peer));
-        auto& job = **created;
-        json::Builder manifest(job.manifest);
+        json::Builder manifest(std::move((*created)->manifest));
         const auto root = manifest.root();
         manifest.set_validated(root, "kind", "repro");
-        const auto scene = platform::utf16_to_utf8(app.scene_path_.generic_wstring());
-        if (!scene)
-            return std::unexpected(Failure("invalid_request", "Invalid UTF-16 text"));
+        ATELIER_TRY_BIND(scene, utf8_text(app.scene_path_.generic_wstring()));
         manifest.set_validated(root, "original_scene_path", *scene);
         ATELIER_TRY(manifest.set(root, "original_dirty", app.document_->dirty()));
         ATELIER_TRY_BIND(indices, manifest.array(root, "selection_indices"));
-        const auto members = take(app.document_->world().members());
+        ATELIER_TRY_BIND(members, operation(app.document_->world().members()));
         for (auto selected : app.document_->selected_entities())
-            for (std::size_t i = 0; i < members.size(); ++i)
-                if (members[i].id() == selected)
+            for (std::size_t i = 0; i < members->size(); ++i)
+                if ((*members)[i].id() == selected)
                     manifest.append(*indices, static_cast<std::uint64_t>(i));
         const auto selection = app.document_->selection();
         if (selection.object != selection.entity && selection.object != ObjectId{})
-            for (std::size_t i = 0; i < members.size(); ++i)
-                if (members[i].id() == selection.entity) {
-                    const auto components = take(world::components(app.document_->world().runtime(), selection.entity));
-                    for (std::size_t j = 0; j < components.size(); ++j)
-                        if (components[j].id() == selection.object) {
+            for (std::size_t i = 0; i < members->size(); ++i)
+                if ((*members)[i].id() == selection.entity) {
+                    ATELIER_TRY_BIND(components,
+                                     operation(world::components(app.document_->world().runtime(), selection.entity)));
+                    for (std::size_t j = 0; j < components->size(); ++j)
+                        if ((*components)[j].id() == selection.object) {
                             const auto inspection = manifest.object_validated(root, "inspection");
                             ATELIER_TRY(manifest.set(inspection, "entity", i));
                             ATELIER_TRY(manifest.set(inspection, "component", j));
@@ -2040,18 +2108,14 @@ struct EditorControl::Impl {
         ATELIER_TRY(manifest.set(root, "ui_source_version", data.ui_source ? data.ui_source->version : 0));
         ATELIER_TRY(manifest.set(root, "publication_version", data.publication_version));
         data.manifest = manifest.finish();
-        try {
-            job.writer = std::async(std::launch::async,
-                                    [path = job.directory, data = std::move(data), cancel = job.cancel]() mutable {
-                                        return control_artifacts::export_repro(path, std::move(data), *cancel);
-                                    });
-        } catch (const std::exception& error) {
-            cancel(job, "storage_error", error.what());
-            return job.response;
-        }
+        start_writer(**created, [path = (*created)->directory,
+                                 data = std::move(data)](control_artifacts::WriteState& work) mutable {
+            return control_artifacts::export_repro(path, std::move(data), work);
+        });
         json::Builder response;
         response.set_validated(response.root(), "status", "pending");
         response.set_validated(response.root(), "job_id", id);
+        publish_job(std::move(*created));
         return response.finish();
     }
 
@@ -2061,10 +2125,10 @@ struct EditorControl::Impl {
         if (*scope_arg) {
             ATELIER_TRY_BIND(scope, (**scope_arg).string());
             if (*scope != "scene_lit_post")
-                throw Failure("invalid_request", "Only scene_lit_post observation is supported");
+                return std::unexpected(Failure("invalid_request", "Only scene_lit_post observation is supported"));
         }
         if (app.workspace_.view.shading != renderer::Shading::scene_lit)
-            throw Failure("not_ready", "Select Scene Lit before requesting a post-chain trace");
+            return std::unexpected(Failure("not_ready", "Select Scene Lit before requesting a post-chain trace"));
         unsigned timeout = 120000;
         ATELIER_TRY_BIND(timeout_arg, args.find("timeout_ms"));
         if (*timeout_arg) {
@@ -2086,6 +2150,7 @@ struct EditorControl::Impl {
         response.set_validated(response.root(), "status", "pending");
         response.set_validated(response.root(), "job_id", id);
         response.set_validated(response.object_validated(response.root(), "result"), "phase", "observing");
+        publish_job(std::move(*created));
         return response.finish();
     }
 
@@ -2094,20 +2159,20 @@ struct EditorControl::Impl {
                                                         bool compare, bool prepare = false) {
         if (!app.surface_.extent.width || !app.surface_.extent.height || !app.accepted_view_ ||
             app.accepted_view_->bounds.width <= 0 || app.accepted_view_->bounds.height <= 0)
-            throw Failure("not_ready", "A visible accepted viewport is required");
+            return std::unexpected(Failure("not_ready", "A visible accepted viewport is required"));
         std::vector<Case> cases;
         if (compare) {
             ATELIER_TRY_BIND(input, args.at("cases"));
             ATELIER_TRY_BIND(items, input->array());
             if (!items->size() || items->size() > 8)
-                throw Failure("invalid_request", "Expected 1 to 8 cases");
+                return std::unexpected(Failure("invalid_request", "Expected 1 to 8 cases"));
             std::set<std::string> names;
             for (const auto item : *items) {
                 ATELIER_TRY(item.members({"name", "patch"}));
                 ATELIER_TRY_BIND(name_arg, item.at("name"));
                 ATELIER_TRY_BIND(name, text(*name_arg, 80));
                 if (name->empty() || !names.insert(*name).second)
-                    throw Failure("invalid_request", "Case names must be nonempty and unique");
+                    return std::unexpected(Failure("invalid_request", "Case names must be nonempty and unique"));
                 ATELIER_TRY_BIND(patch, item.at("patch"));
                 ATELIER_TRY_BIND(view, patched_view(app.workspace_.view, *patch, app.lighting_focus()));
                 cases.push_back({std::move(*name), *view});
@@ -2119,7 +2184,7 @@ struct EditorControl::Impl {
                 patch.replace(patch.root(), **patch_arg);
             const auto root = patch.root();
             if (root.kind() != json::Kind::object)
-                throw Failure("invalid_request", "Preparation patch must be an object");
+                return std::unexpected(Failure("invalid_request", "Preparation patch must be an object"));
             if (!*root.find("shading"))
                 patch.set_validated(root, "shading", "scene_lit");
             if (!*root.find("wireframe"))
@@ -2127,7 +2192,8 @@ struct EditorControl::Impl {
             ATELIER_TRY_BIND(view, patched_view(app.workspace_.view, root, app.lighting_focus()));
             if (view->shading != renderer::Shading::scene_lit || view->wireframe == renderer::Wireframe::only ||
                 app.scene_.meshes.empty())
-                throw Failure("not_ready", "Scene Lit preparation requires a filled view and a mesh instance");
+                return std::unexpected(
+                    Failure("not_ready", "Scene Lit preparation requires a filled view and a mesh instance"));
             cases.push_back({"prepare", *view});
         } else
             cases.push_back({"current", app.workspace_.view});
@@ -2136,18 +2202,18 @@ struct EditorControl::Impl {
         if (*points_arg) {
             ATELIER_TRY_BIND(items, (**points_arg).array());
             if (!items->size() || items->size() * cases.size() > 16)
-                throw Failure("invalid_request", "Expected 1 to 16 total sample points");
+                return std::unexpected(Failure("invalid_request", "Expected 1 to 16 total sample points"));
             for (const auto point : *items) {
                 ATELIER_TRY_BIND(n, integer(point, 1, 4096));
                 if (!points.empty() && *n <= points.back())
-                    throw Failure("invalid_request", "Sample ordinals must increase strictly");
+                    return std::unexpected(Failure("invalid_request", "Sample ordinals must increase strictly"));
                 points.push_back(*n);
             }
         } else
             points.push_back(1);
         const auto extent = app.surface_.extent;
-        if (std::uint64_t(extent.width) * extent.height * 8 * points.size() * cases.size() > 256 * 1024 * 1024)
-            throw Failure("resource_limit", "Captured color/depth would exceed 256 MiB");
+        if (std::uint64_t(extent.width) * extent.height > (256 * 1024 * 1024) / (8 * points.size() * cases.size()))
+            return std::unexpected(Failure("resource_limit", "Captured color/depth would exceed 256 MiB"));
         unsigned timeout = prepare ? control::maximum_timeout_ms : 120000;
         ATELIER_TRY_BIND(timeout_arg, args.find("timeout_ms"));
         if (*timeout_arg) {
@@ -2176,12 +2242,14 @@ struct EditorControl::Impl {
         response.set_validated(response.root(), "job_id", id);
         response.set_validated(response.object_validated(response.root(), "result"), "phase",
                                prepare ? "preparing" : "rendering");
+        publish_job(std::move(*created));
         return response.finish();
     }
 
     std::expected<json::Document, Failure> operator_list() const {
         json::Builder output;
         ATELIER_TRY_BIND(operators, output.array(output.root(), "operators"));
+        auto& runtime = app.document_->world().runtime();
         for (const auto& info : app.workspace_.operators.all()) {
             const auto item = output.append_object(*operators);
             ATELIER_TRY_BIND(flags, output.array(item, "flags"));
@@ -2192,21 +2260,15 @@ struct EditorControl::Impl {
                     ATELIER_TRY(output.append(*flags, std::string_view{name}));
                 }
             }
-            auto parameters = editor::parameter_schema(app.document_->world().runtime(), info);
-            if (!parameters)
-                throw Failure("operation_failed", parameters.error().message);
-            auto result = editor::result_schema(app.document_->world().runtime(), info);
-            if (!result)
-                throw Failure("operation_failed", result.error().message);
+            ATELIER_TRY_BIND(parameters, editor::parameter_schema(runtime, info).transform_error(operation_failure));
+            ATELIER_TRY_BIND(result, editor::result_schema(runtime, info).transform_error(operation_failure));
             ATELIER_TRY_BIND(kinds, output.array(item, "kinds"));
             ATELIER_TRY(
                 output.append(*kinds, std::string_view{operator_kind_names[static_cast<std::size_t>(info.kind)]}));
             if (info.requires_interaction) {
                 ATELIER_TRY(output.append(*kinds, "interactive"));
             }
-            const auto title = platform::utf16_to_utf8(info.title);
-            if (!title)
-                return std::unexpected(Failure("invalid_request", "Invalid UTF-16 text"));
+            ATELIER_TRY_BIND(title, utf8_text(info.title));
             ATELIER_TRY(output.set(item, "id", info.id));
             output.set_validated(item, "title", *title);
             ATELIER_TRY(output.set(item, "description", info.description));
@@ -2256,7 +2318,7 @@ struct EditorControl::Impl {
             ATELIER_TRY_BIND(entities, selection.at("entities"));
             ATELIER_TRY_BIND(items, entities->array());
             if (items->size() > editor::Session::maximum_entities)
-                throw Failure("invalid_request", "Invalid entity selection");
+                return std::unexpected(Failure("invalid_request", "Invalid entity selection"));
             editor::SelectionContext context;
             for (const auto entity : *items) {
                 ATELIER_TRY_BIND(id, object(entity));
@@ -2284,7 +2346,7 @@ struct EditorControl::Impl {
             const auto names = editor::region_names();
             const auto at = std::ranges::find(names, *name);
             if (at == names.end())
-                throw Failure("invalid_request", "Unknown region");
+                return std::unexpected(Failure("invalid_request", "Unknown region"));
             result.region = static_cast<editor::RegionKind>(at - names.begin());
         }
         return result;
@@ -2296,11 +2358,11 @@ struct EditorControl::Impl {
         editor::OperatorCall request{std::move(*id), json::Document{}, {}};
         const auto* info = app.workspace_.operators.find(request.id);
         if (!info)
-            throw Failure("unknown_operator", "No editor operator has this ID");
+            return std::unexpected(Failure("unknown_operator", "No editor operator has this ID"));
         ATELIER_TRY_BIND(arguments, args.find("args"));
         if (*arguments) {
             if ((**arguments).kind() != json::Kind::object)
-                throw Failure("invalid_request", "args must be an object");
+                return std::unexpected(Failure("invalid_request", "args must be an object"));
             request.args = json::Document(**arguments);
         }
         ATELIER_TRY_BIND(context_arg, args.find("context"));
@@ -2311,7 +2373,7 @@ struct EditorControl::Impl {
         // Build preserves in-memory author values and dirty state; rebuild:true explicitly retires history.
         // Unlike Open/New it saves Source drafts and materials itself, without discarding the scene.
         if (has_any(info->flags, editor::OperatorFlag::replaces_document) && request.id != "project.build")
-            replaceable();
+            ATELIER_TRY(replaceable());
         const editor::ResolveReference resolve = [&](json::Value value, TypeId type,
                                                      ValueForm form) -> Result<std::optional<ObjectReference>> {
             if (value.kind() != json::Kind::string)
@@ -2319,7 +2381,7 @@ struct EditorControl::Impl {
             auto& runtime = app.document_->world().runtime();
             const auto id = object(value);
             if (!id)
-                return std::unexpected(Error{ErrorCode::invalid_storage, id.error().describe()});
+                return std::unexpected(Error{ErrorCode::invalid_storage, id.error().message});
             const auto target = runtime.hold(*id, type);
             if (!target)
                 return std::nullopt;
@@ -2329,13 +2391,16 @@ struct EditorControl::Impl {
             return reference ? std::optional{*reference} : std::nullopt;
         };
         const auto report = app.call_operator(request, false, resolve);
-        if (!report)
-            throw Failure(report.error().code == ErrorCode::argument_mismatch ? "invalid_request" : "operation_failed",
-                          report.error().message);
+        if (!report) {
+            const auto& error = report.error();
+            return std::unexpected(error.code == ErrorCode::argument_mismatch
+                                       ? Failure("invalid_request", error.message)
+                                       : operation_failure(error));
+        }
         if (report->status == editor::OperatorStatus::failed)
-            throw Failure("poll_failed", report->message);
+            return std::unexpected(Failure("poll_failed", report->message));
         if (report->status == editor::OperatorStatus::interaction_required)
-            throw Failure("interaction_required", report->message);
+            return std::unexpected(Failure("interaction_required", report->message));
         json::Builder response;
         response.set_validated(response.root(), "status", "ok");
         const auto result = response.object_validated(response.root(), "result");
@@ -2346,17 +2411,249 @@ struct EditorControl::Impl {
         response.set_validated(result, "result", report->result.root());
         ATELIER_TRY_BIND(selection, response.array(result, "selection"));
         for (const auto entity : app.document_->selected_entities()) {
-            ATELIER_TRY(response.append(*selection, handle(entity)));
+            ATELIER_TRY_BIND(value_handle, handle(entity));
+            ATELIER_TRY(response.append(*selection, *value_handle));
         }
-        response.set_validated(result, "active", handle(app.document_->selection().entity));
-        response.set_validated(result, "inspected_object", handle(app.document_->selection().object));
+        ATELIER_TRY(set_handle(response, result, "active", app.document_->selection().entity));
+        ATELIER_TRY(set_handle(response, result, "inspected_object", app.document_->selection().object));
         return response.finish();
+    }
+
+    std::expected<json::Document, Failure> open_repro(json::Value args) {
+        ATELIER_TRY(replaceable());
+        ATELIER_TRY_BIND(directory_arg, args.at("directory"));
+        ATELIER_TRY_BIND(directory, text(*directory_arg));
+        const std::filesystem::path root = platform::utf8_to_utf16_validated(*directory);
+        ATELIER_TRY_BIND(validated, control_artifacts::validate_repro(root));
+        const auto manifest = validated->manifest.root();
+        const auto schema = manifest.u32({"view_schema"});
+        if (!schema || *schema != repro_view_schema)
+            return std::unexpected(
+                Failure("invalid_request", "Repro view schema is not current; export the repro again"));
+        auto camera = app.camera_;
+        ATELIER_TRY_BIND(camera_arg, manifest.at("camera"));
+        ATELIER_TRY_BIND(state, operation(camera_state(app.document_->world().runtime(), *camera_arg)));
+        if (!camera.set_state(*state))
+            return std::unexpected(Failure("invalid_request", "Invalid repro camera"));
+        const auto focus = camera.state().target;
+        ATELIER_TRY_BIND(view_arg, manifest.at("view"));
+        ATELIER_TRY_BIND(view, patched_view({}, *view_arg, focus));
+        std::vector<unsigned> indices;
+        ATELIER_TRY_BIND(selection, manifest.at("selection_indices"));
+        ATELIER_TRY_BIND(items, selection->array());
+        for (const auto index : *items) {
+            ATELIER_TRY_BIND(i, integer(index, 0, editor::Session::maximum_entities));
+            if (std::ranges::find(indices, *i) != indices.end())
+                return std::unexpected(Failure("dependency_mismatch", "Invalid repro selection"));
+            indices.push_back(*i);
+        }
+        std::optional<unsigned> inspection;
+        ATELIER_TRY_BIND(inspection_arg, manifest.find("inspection"));
+        if (*inspection_arg) {
+            const auto value = **inspection_arg;
+            ATELIER_TRY(value.members({"entity", "component"}));
+            ATELIER_TRY_BIND(a, integer(*value.at("entity"), 0, editor::Session::maximum_entities));
+            ATELIER_TRY_BIND(c, integer(*value.at("component"), 0, editor::Session::maximum_components));
+            if (indices.size() != 1 || indices[0] != *a)
+                return std::unexpected(Failure("dependency_mismatch", "Invalid repro component inspection"));
+            inspection = *c;
+        }
+
+        ATELIER_TRY_BIND(candidate,
+                         app.prepare_project_scene(std::move(validated->project), std::move(validated->scene_text),
+                                                   ProjectOpenPolicy::require_scene)
+                             .transform_error(operation_failure));
+        auto& session = *candidate->document.session;
+        ATELIER_TRY(control_artifacts::validate_candidate_assets(session, *validated));
+        ATELIER_TRY_BIND(environment, session.presentation().environment().transform_error(operation_failure));
+        // The scene owns the sky map and rotation. All other lighting fields must match the view snapshot.
+        view->lit.sky_map = environment->sky_map;
+        view->lit.sky_rotation = environment->sky_rotation;
+        if (static_cast<const rendering::SceneLightingSettings&>(view->lit) != *environment)
+            return std::unexpected(
+                Failure("dependency_mismatch", "Repro frame snapshot disagrees with its Scene Environment"));
+        ATELIER_TRY(operation(editor::validate_view_options(*view, focus)));
+
+        ATELIER_TRY_BIND(members, session.world().members().transform_error(operation_failure));
+        std::vector<ObjectId> selected;
+        for (const auto i : indices) {
+            if (i >= members->size())
+                return std::unexpected(Failure("dependency_mismatch", "Repro selection exceeds scene size"));
+            selected.push_back((*members)[i].id());
+        }
+        ATELIER_TRY(operation(session.select_entities(selected, selected.empty() ? ObjectId{} : selected.back())));
+        if (inspection) {
+            ATELIER_TRY_BIND(
+                components,
+                world::components(session.world().runtime(), selected.front()).transform_error(operation_failure));
+            if (*inspection >= components->size())
+                return std::unexpected(Failure("dependency_mismatch", "Invalid repro component inspection"));
+            ATELIER_TRY(operation(session.select((*components)[*inspection].id())));
+        }
+        session.mark_saved();
+        ATELIER_TRY(app.publish_project(std::move(*candidate)).transform_error(operation_failure));
+        app.workspace_.apply_view_preferences(*view);
+        app.camera_ = camera;
+        app.camera_cut_ = true;
+        app.workspace_.viewport_settings.grid_spacing = view->grid_spacing;
+        return json::Document{};
+    }
+
+    std::expected<json::Document, Failure> graph_request(std::string_view op, json::Value args) {
+        auto& doc = *app.document_;
+        if (op == "graph.create_scratch") {
+            std::string key = "scratch/procedural";
+            ATELIER_TRY_BIND(key_arg, args.find("key"));
+            if (*key_arg) {
+                ATELIER_TRY_BIND(value, text(**key_arg, 256));
+                if (!value->empty())
+                    key = std::move(*value);
+            }
+            ATELIER_TRY_BIND(graph, operation(doc.create_scratch_graph(key)));
+            ATELIER_TRY(operation(app.open_graph_context(key)));
+            json::Builder result;
+            ATELIER_TRY(result.set(result.root(), "asset", key));
+            ATELIER_TRY(set_handle(result, result.root(), "graph", *graph));
+            return result.finish();
+        }
+        ATELIER_TRY_BIND(asset_arg, args.find("asset"));
+        std::string key = app.workspace_.active_graph;
+        if (*asset_arg) {
+            ATELIER_TRY_BIND(value, text(**asset_arg));
+            key = std::move(*value);
+        }
+        if (key.empty() || !doc.has_graph(key))
+            return std::unexpected(
+                Failure("invalid_request",
+                        op == "graph.inspect"
+                            ? "Open the procedural graph first (via op.call graph.open or graph.create_scratch)"
+                            : "Specify an open procedural graph or enter a graph context first"));
+        ATELIER_TRY_BIND(node_arg, args.find("node"));
+        std::string node_name = key == app.workspace_.active_graph ? app.workspace_.selected_graph_node : std::string{};
+        if (*node_arg) {
+            ATELIER_TRY_BIND(value, text(**node_arg, 256));
+            node_name = std::move(*value);
+        }
+        if (op == "graph.set_properties") {
+            ATELIER_TRY_BIND(props, args.at("properties"));
+            if (props->kind() != json::Kind::object)
+                return std::unexpected(Failure("invalid_request", "properties must be a JSON object"));
+            ATELIER_TRY(operation(doc.graph_set_properties(key, node_name, *props)));
+            json::Builder result;
+            ATELIER_TRY(result.set(result.root(), "asset", key));
+            ATELIER_TRY(result.set(result.root(), "node", node_name));
+            return result.finish();
+        }
+        ObjectId inspected_id{};
+        if (!node_name.empty()) {
+            const auto* node = doc.graph_node(key, node_name);
+            if (!node)
+                return std::unexpected(Failure("invalid_request", "Unknown node in procedural graph: " + node_name));
+            inspected_id = node->node.id();
+        }
+        bool timings = false;
+        ATELIER_TRY_BIND(timings_arg, args.find("timings"));
+        if (*timings_arg) {
+            ATELIER_TRY_BIND(flag, (**timings_arg).boolean());
+            timings = *flag;
+        }
+        unsigned samples = 4;
+        ATELIER_TRY_BIND(samples_arg, args.find("samples"));
+        if (*samples_arg) {
+            ATELIER_TRY_BIND(n, integer(**samples_arg, 0, 32));
+            samples = *n;
+        }
+        ATELIER_TRY_BIND(view, operation(doc.inspect_graph(key, app.project_.get(), inspected_id, timings, samples)));
+        ATELIER_TRY_BIND(catalog, operation(doc.procedural_node_types()));
+        return graph_inspect_json(*view, node_name, *catalog);
+    }
+
+    std::expected<ObjectId, Failure> material_object(json::Value handle) const {
+        ATELIER_TRY_BIND(id, object(handle));
+        const auto& doc = *app.document_;
+        ATELIER_TRY_BIND(type, operation(doc.world().runtime().type_of(*id)));
+        ATELIER_TRY_BIND(material, operation(doc.is_material_type(*type)));
+        if (!*material)
+            return std::unexpected(Failure("invalid_request", "Expected a material object"));
+        return *id;
+    }
+
+    std::expected<json::Document, Failure> material_request(std::string_view op, json::Value args) {
+        auto& doc = *app.document_;
+        auto* project = app.project_.get();
+        json::Builder result;
+        if (op == "material.inspect") {
+            ATELIER_TRY_BIND(asset_arg, args.find("asset"));
+            ATELIER_TRY_BIND(object_arg, args.find("object"));
+            if (asset_arg->has_value() == object_arg->has_value())
+                return std::unexpected(Failure("invalid_request", "Specify exactly one material asset or object"));
+            ObjectId target;
+            if (*asset_arg) {
+                if (!project)
+                    return std::unexpected(Failure("not_ready", "No project is open"));
+                ATELIER_TRY_BIND(key, text(**asset_arg));
+                ATELIER_TRY_BIND(loaded, operation(doc.open_material(*project, *key)));
+                target = loaded->id();
+            } else {
+                ATELIER_TRY_BIND(found, material_object(**object_arg));
+                target = *found;
+            }
+            ATELIER_TRY(write_object(result, result.root(), target));
+        } else if (op == "material.create_scene" || op == "material.assign") {
+            ATELIER_TRY_BIND(component, object(*args.at("component")));
+            ATELIER_TRY_BIND(slot, text(*args.at("slot")));
+            if (op == "material.create_scene") {
+                ATELIER_TRY_BIND(created, operation(doc.create_scene_material(*component, *slot)));
+                ATELIER_TRY(set_handle(result, result.root(), "object", created->id()));
+            } else {
+                ATELIER_TRY_BIND(asset, text(*args.at("asset")));
+                if (asset->empty()) {
+                    ATELIER_TRY(operation(doc.clear_material(*component, *slot)));
+                } else {
+                    if (!project)
+                        return std::unexpected(Failure("not_ready", "No project is open"));
+                    ATELIER_TRY(operation(doc.assign_material(*project, *component, *slot, *asset)));
+                }
+            }
+        } else if (op == "material.override" || op == "material.discard" || op == "material.set_entry") {
+            ATELIER_TRY_BIND(target, material_object(*args.at("object")));
+            if (op == "material.set_entry") {
+                json::Builder input(json::Kind::array);
+                input.append(input.root(), *args.at("entry"));
+                ATELIER_TRY_BIND(entries, assets::material_format::decode_entries(input.root()));
+                ATELIER_TRY(operation(doc.set_material_entry(*target, std::move(entries->front()), project)));
+            } else {
+                ATELIER_TRY_BIND(path, text(*args.at("path")));
+                if (op == "material.override") {
+                    ATELIER_TRY_BIND(enabled, args.boolean({"enabled"}));
+                    ATELIER_TRY(operation(doc.set_material_override(*target, *path, *enabled, project)));
+                } else {
+                    ATELIER_TRY(operation(doc.discard_material_override(*target, *path)));
+                }
+            }
+        } else {
+            if (!project)
+                return std::unexpected(Failure("not_ready", "No project is open"));
+            if (op == "material.save") {
+                ATELIER_TRY_BIND(asset, text(*args.at("asset")));
+                ATELIER_TRY(operation(doc.save_material(*project, *asset)));
+                ATELIER_TRY(result.set(result.root(), "saved", true));
+                if (const auto refreshed = project->refresh(); !refreshed)
+                    ATELIER_TRY(result.set(result.root(), "catalog_warning", refreshed.error().message));
+            } else if (op == "material.set_texture") {
+                ATELIER_TRY_BIND(target, object(*args.at("object")));
+                ATELIER_TRY_BIND(path, text(*args.at("path")));
+                ATELIER_TRY_BIND(texture, text(*args.at("texture")));
+                ATELIER_TRY(operation(doc.set_material_texture(*project, *target, *path, *texture)));
+            } else {
+                return std::unexpected(Failure("invalid_request", "Unknown material operation"));
+            }
+        }
+        return result.finish();
     }
 
     std::expected<json::Document, Failure> dispatch(std::string_view op, json::Value args, const std::string& id,
                                                     const std::shared_ptr<control::Peer>& peer) {
-        auto& doc = *app.document_;
-        auto& runtime = doc.world().runtime();
         if (op == "capabilities")
             return capabilities();
         if (op == "op.list")
@@ -2376,76 +2673,20 @@ struct EditorControl::Impl {
                 ATELIER_TRY(args.allowed_members({"detail", "object"}));
                 ATELIER_TRY_BIND(target_arg, args.at("object"));
                 ATELIER_TRY_BIND(target, object(*target_arg));
-                ATELIER_TRY_BIND(value, object_json(*target));
                 json::Builder result;
                 result.set_validated(result.root(), "detail", "object");
-                result.set_validated(result.root(), "object", value->root());
+                ATELIER_TRY(write_object(result, result.object_validated(result.root(), "object"), *target));
                 return result.finish();
             }
             ATELIER_TRY(args.allowed_members({"detail"}));
             if (detail != "full" && detail != "summary")
-                throw Failure("invalid_request", "Unsupported editor inspection detail");
+                return std::unexpected(Failure("invalid_request", "Unsupported editor inspection detail"));
             return inspect(detail == "summary");
         }
-        if (op == "material.inspect") {
-            ATELIER_TRY_BIND(asset_arg, args.find("asset"));
-            ATELIER_TRY_BIND(object_arg, args.find("object"));
-            if (asset_arg->has_value() == object_arg->has_value())
-                throw Failure("invalid_request", "Specify exactly one material asset or object");
-            if (*asset_arg && !app.project_)
-                throw Failure("not_ready", "No project is open");
-            ObjectId target;
-            if (*asset_arg) {
-                ATELIER_TRY_BIND(key, text(**asset_arg));
-                target = take(doc.open_material(*app.project_, *key)).id();
-            } else {
-                ATELIER_TRY_BIND(found, object(**object_arg));
-                target = *found;
-            }
-            if (!doc.is_material(target))
-                throw Failure("invalid_request", "Expected a material object");
-            return object_json(target);
-        }
-        if (op == "graph.inspect") {
-            ATELIER_TRY_BIND(asset_arg, args.find("asset"));
-            std::string key = app.workspace_.active_graph;
-            if (*asset_arg) {
-                ATELIER_TRY_BIND(value, text(**asset_arg));
-                key = std::move(*value);
-            }
-            if (key.empty() || !doc.has_graph(key))
-                throw Failure("invalid_request",
-                              "Open the procedural graph first (via op.call graph.open or graph.create_scratch)");
-            ATELIER_TRY_BIND(node_arg, args.find("node"));
-            std::string node_name =
-                key == app.workspace_.active_graph ? app.workspace_.selected_graph_node : std::string{};
-            if (*node_arg) {
-                ATELIER_TRY_BIND(value, text(**node_arg, 256));
-                node_name = std::move(*value);
-            }
-            ObjectId inspected_id{};
-            if (!node_name.empty()) {
-                const auto* node = doc.graph_node(key, node_name);
-                if (!node)
-                    throw Failure("invalid_request", "Unknown node in procedural graph: " + node_name);
-                inspected_id = node->node.id();
-            }
-            bool timings = false;
-            ATELIER_TRY_BIND(timings_arg, args.find("timings"));
-            if (*timings_arg) {
-                ATELIER_TRY_BIND(flag, (**timings_arg).boolean());
-                timings = *flag;
-            }
-            unsigned samples = 4;
-            ATELIER_TRY_BIND(samples_arg, args.find("samples"));
-            if (*samples_arg) {
-                ATELIER_TRY_BIND(n, integer(**samples_arg, 0, 32));
-                samples = *n;
-            }
-            const auto view =
-                take(doc.inspect_graph(key, app.project_ ? &*app.project_ : nullptr, inspected_id, timings, samples));
-            return graph_inspect_json(view, node_name, take(doc.procedural_node_types()));
-        }
+        if (op.starts_with("material."))
+            return material_request(op, args);
+        if (op == "graph.inspect")
+            return graph_request(op, args);
         if (op == "job.status" || op == "job.cancel") {
             ATELIER_TRY_BIND(job_id, text(*args.at("job_id"), 80));
             for (auto& job : jobs)
@@ -2466,7 +2707,7 @@ struct EditorControl::Impl {
                                                             : "writing");
                     ATELIER_TRY(response.set(progress, "case_index", job->case_index));
                     ATELIER_TRY(response.set(progress, "accepted_frames", job->accepted));
-                    ATELIER_TRY(response.set(progress, "cancel_requested", job->cancel->load()));
+                    ATELIER_TRY(response.set(progress, "cancel_requested", job->work->cancelled()));
                     if (job->preparing)
                         if (const auto prepared = app.renderer_.preparation(job->cases.front().view)) {
                             ATELIER_TRY(response.set(progress, "compiled", prepared->done));
@@ -2474,303 +2715,99 @@ struct EditorControl::Impl {
                         }
                     return response.finish();
                 }
-            throw Failure("unknown_job", "Job expired or belongs to another instance");
+            return std::unexpected(Failure("unknown_job", "Job expired or belongs to another instance"));
         }
-        idle();
+        ATELIER_TRY(idle());
         if (op == "op.call")
             return call_operator(args);
-        if (op == "graph.create_scratch") {
-            std::string key = "scratch/procedural";
-            ATELIER_TRY_BIND(key_arg, args.find("key"));
-            if (*key_arg) {
-                ATELIER_TRY_BIND(value, text(**key_arg, 256));
-                if (!value->empty())
-                    key = std::move(*value);
-            }
-            const auto graph = take(doc.create_scratch_graph(key));
-            take(app.open_graph_context(key));
-            json::Builder result;
-            ATELIER_TRY(result.set(result.root(), "asset", key));
-            result.set_validated(result.root(), "graph", handle(graph));
-            return result.finish();
-        }
-        if (op == "graph.set_properties") {
-            std::string key = app.workspace_.active_graph;
-            ATELIER_TRY_BIND(asset_arg, args.find("asset"));
-            if (*asset_arg) {
-                ATELIER_TRY_BIND(value, text(**asset_arg));
-                key = std::move(*value);
-            }
-            if (key.empty() || !doc.has_graph(key))
-                throw Failure("invalid_request", "Specify an open procedural graph or enter a graph context first");
-            std::string node_name =
-                key == app.workspace_.active_graph ? app.workspace_.selected_graph_node : std::string{};
-            ATELIER_TRY_BIND(node_arg, args.find("node"));
-            if (*node_arg) {
-                ATELIER_TRY_BIND(value, text(**node_arg, 256));
-                node_name = std::move(*value);
-            }
-            ATELIER_TRY_BIND(props, args.at("properties"));
-            if (props->kind() != json::Kind::object)
-                throw Failure("invalid_request", "properties must be a JSON object");
-            take(doc.graph_set_properties(key, node_name, *props));
-            json::Builder result;
-            ATELIER_TRY(result.set(result.root(), "asset", key));
-            ATELIER_TRY(result.set(result.root(), "node", node_name));
-            return result.finish();
-        }
-        if (op.starts_with("material.")) {
-            if (op == "material.create_scene") {
-                ATELIER_TRY_BIND(component, object(*args.at("component")));
-                ATELIER_TRY_BIND(slot, text(*args.at("slot")));
-                const auto created = take(doc.create_scene_material(*component, *slot));
-                json::Builder result;
-                result.set_validated(result.root(), "object", handle(created.id()));
-                return result.finish();
-            }
-            if (op == "material.assign") {
-                ATELIER_TRY_BIND(component, object(*args.at("component")));
-                ATELIER_TRY_BIND(slot, text(*args.at("slot")));
-                ATELIER_TRY_BIND(asset, text(*args.at("asset")));
-                if (asset->empty())
-                    take(doc.clear_material(*component, *slot));
-                else {
-                    if (!app.project_)
-                        throw Failure("not_ready", "No project is open");
-                    take(doc.assign_material(*app.project_, *component, *slot, *asset));
-                }
-                return json::Document{};
-            }
-            if (op == "material.override" || op == "material.discard" || op == "material.set_entry") {
-                ATELIER_TRY_BIND(target, object(*args.at("object")));
-                if (!doc.is_material(*target))
-                    throw Failure("invalid_request", "Expected a material object");
-                auto* project = app.project_ ? &*app.project_ : nullptr;
-                if (op == "material.override") {
-                    ATELIER_TRY_BIND(path, text(*args.at("path")));
-                    ATELIER_TRY_BIND(enabled, args.boolean({"enabled"}));
-                    take(doc.set_material_override(*target, *path, *enabled, project));
-                } else if (op == "material.discard") {
-                    ATELIER_TRY_BIND(path, text(*args.at("path")));
-                    take(doc.discard_material_override(*target, *path));
-                } else {
-                    json::Builder input(json::Kind::array);
-                    input.append(input.root(), *args.at("entry"));
-                    ATELIER_TRY_BIND(entries, assets::material_format::decode_entries(input.root()));
-                    const auto control = ++edit_id;
-                    take(doc.begin_material_edit(*target, control));
-                    auto changed = doc.preview_material_entry(control, std::move(entries->front()), project);
-                    if (changed)
-                        changed = doc.commit_material_edit(control);
-                    if (!changed) {
-                        take(doc.cancel_material_edit());
-                        take(std::move(changed));
-                    }
-                }
-                return json::Document{};
-            }
-            if (!app.project_)
-                throw Failure("not_ready", "No project is open");
-            auto& project = *app.project_;
-            if (op == "material.save") {
-                ATELIER_TRY_BIND(asset, text(*args.at("asset")));
-                take(doc.save_material(project, *asset));
-                const auto refreshed = project.refresh();
-                json::Builder result;
-                ATELIER_TRY(result.set(result.root(), "saved", true));
-                if (!refreshed) {
-                    ATELIER_TRY(result.set(result.root(), "catalog_warning", refreshed.error().message));
-                }
-                return result.finish();
-            }
-            if (op == "material.set_texture") {
-                ATELIER_TRY_BIND(target, object(*args.at("object")));
-                ATELIER_TRY_BIND(path, text(*args.at("path")));
-                ATELIER_TRY_BIND(texture, text(*args.at("texture")));
-                take(doc.set_material_texture(project, *target, *path, *texture));
-                return json::Document{};
-            }
-            throw Failure("invalid_request", "Unknown material operation");
-        }
+        if (op == "graph.create_scratch" || op == "graph.set_properties")
+            return graph_request(op, args);
         if (op == "repro.export")
             return start_export(id, peer);
         else if (op == "render.trace")
             return start_trace(id, peer, args);
         else if (op == "render.capture" || op == "render.compare" || op == "render.prepare")
             return start_render(id, peer, args, op == "render.compare", op == "render.prepare");
-        else if (op == "repro.open") {
-            replaceable();
-            ATELIER_TRY_BIND(directory, text(*args.at("directory")));
-            const std::filesystem::path root = platform::utf8_to_utf16_validated(*directory);
-            ATELIER_TRY_BIND(validated, control_artifacts::validate_repro(root));
-            const auto manifest = validated->root();
-            const auto schema = manifest.u32({"view_schema"});
-            if (!schema || *schema != repro_view_schema)
-                throw Failure("invalid_request", "Repro view schema is not current; export the repro again");
-            auto camera = app.camera_;
-            ATELIER_TRY_BIND(camera_arg, manifest.at("camera"));
-            if (!camera.set_state(camera_state(runtime, *camera_arg)))
-                throw Failure("invalid_request", "Invalid repro camera");
-            const auto focus = camera.state().target;
-            ATELIER_TRY_BIND(view_arg, manifest.at("view"));
-            ATELIER_TRY_BIND(view, patched_view({}, *view_arg, focus));
-            std::vector<unsigned> indices;
-            ATELIER_TRY_BIND(selection, manifest.at("selection_indices"));
-            ATELIER_TRY_BIND(items, selection->array());
-            for (const auto index : *items) {
-                ATELIER_TRY_BIND(i, integer(index, 0, editor::Session::maximum_entities));
-                if (std::ranges::find(indices, *i) != indices.end())
-                    throw Failure("dependency_mismatch", "Invalid repro selection");
-                indices.push_back(*i);
-            }
-            std::optional<unsigned> inspection;
-            ATELIER_TRY_BIND(inspection_arg, manifest.find("inspection"));
-            if (*inspection_arg) {
-                const auto value = **inspection_arg;
-                ATELIER_TRY(value.members({"entity", "component"}));
-                ATELIER_TRY_BIND(a, integer(*value.at("entity"), 0, editor::Session::maximum_entities));
-                ATELIER_TRY_BIND(c, integer(*value.at("component"), 0, editor::Session::maximum_components));
-                if (indices.size() != 1 || indices[0] != *a)
-                    throw Failure("dependency_mismatch", "Invalid repro component inspection");
-                inspection = *c;
-            }
-            std::vector<ObjectId> selected;
-            ObjectId inspected{};
-            bool mismatch = false;
-            const auto opened = app.open_project(
-                root / "Project", false, ProjectOpenPolicy::require_scene,
-                [&](const editor::Session& candidate) -> Result<void> {
-                    const auto reject = [&](std::string message) -> Result<void> {
-                        mismatch = true;
-                        return std::unexpected(Error{ErrorCode::invalid_definition, std::move(message)});
-                    };
-                    const auto assets = control_artifacts::validate_candidate_assets(candidate, manifest);
-                    if (!assets)
-                        return reject(assets.error().what());
-                    const auto environment = candidate.presentation().environment();
-                    if (!environment)
-                        return std::unexpected(environment.error());
-                    // Only the scene records the sky map and its rotation; the view snapshot holds view options.
-                    view->lit.sky_map = environment->sky_map;
-                    view->lit.sky_rotation = environment->sky_rotation;
-                    if (static_cast<const rendering::SceneLightingSettings&>(view->lit) != *environment)
-                        return reject("Repro frame snapshot disagrees with its Scene Environment");
-                    // Indices refer to World members, as written by repro.export; resolve them before the candidate replaces the document.
-                    const auto members = candidate.world().members();
-                    if (!members)
-                        return std::unexpected(members.error());
-                    for (const auto i : indices) {
-                        if (i >= members->size())
-                            return reject("Repro selection exceeds scene size");
-                        selected.push_back((*members)[i].id());
-                    }
-                    if (inspection) {
-                        const auto components = world::components(candidate.world().runtime(), selected.front());
-                        if (!components)
-                            return std::unexpected(components.error());
-                        if (*inspection >= components->size())
-                            return reject("Invalid repro component inspection");
-                        inspected = (*components)[*inspection].id();
-                    }
-                    return {};
-                });
-            if (!opened)
-                throw Failure(mismatch ? "dependency_mismatch" : "operation_failed", opened.error().message);
-            take(app.workspace_.set_view_settings(*app.document_, *view, focus));
-            app.document_->mark_saved();
-            app.camera_ = camera;
-            app.camera_cut_ = true;
-            app.workspace_.viewport_settings.grid_spacing = view->grid_spacing;
-            take(app.document_->select_entities(selected, selected.empty() ? ObjectId{} : selected.back()));
-            if (inspection)
-                take(app.document_->select(inspected));
-        } else
-            throw Failure("unknown_operation", "Operation has no implementation");
-        return json::Document{};
+        else if (op == "repro.open")
+            return open_repro(args);
+        return std::unexpected(Failure("unknown_operation", "Operation has no implementation"));
     }
 
-    json::Result<json::Document> request(json::Value request, const std::shared_ptr<control::Peer>& peer) {
+    std::expected<json::Document, Failure> request(json::Value request, const std::shared_ptr<control::Peer>& peer) {
         app.sync_world_view();
         json::Document response;
         std::string id;
         Array<char> canonical;
         bool remember{};
         bool replay{};
-        try {
-            const auto execute = [&]() -> std::expected<json::Document, Failure> {
-                ATELIER_TRY(
-                    request.allowed_members({"protocol", "instance_id", "request_id", "op", "args", "state_token"}));
-                ATELIER_TRY_BIND(protocol, request.u32({"protocol"}));
-                ATELIER_TRY_BIND(instance, request.string({"instance_id"}));
-                if (*protocol != control::protocol_version ||
-                    *instance != *server.identity().root().string({"instance_id"}))
-                    throw Failure("protocol_mismatch", "Wrong protocol or editor instance");
-                ATELIER_TRY_BIND(id_arg, request.at("request_id"));
-                ATELIER_TRY_BIND(identity, text(*id_arg, 80));
-                id = std::move(*identity);
-                if (id.empty())
-                    throw Failure("invalid_request", "Empty request identity");
-                canonical = json::write(request);
-                for (const auto& entry : cache)
-                    if (entry.id == id) {
-                        if (!std::ranges::equal(entry.request, canonical))
-                            throw Failure("request_id_conflict", "Request identity was used for different content");
-                        replay = true;
-                        return entry.response;
-                    }
-                if (std::ranges::any_of(jobs, [&](const auto& job) { return job->id == id; }))
-                    throw Failure("request_id_expired",
-                                  "Request payload expired; query the retained job using job.status");
-                ATELIER_TRY_BIND(op_arg, request.at("op"));
-                ATELIER_TRY_BIND(name, text(*op_arg, 80));
-                const auto& known = operations();
-                const auto op = std::ranges::find(known, *name, &Operation::name);
-                if (op == known.end())
-                    throw Failure("unknown_operation", "Operation is not exposed by this editor");
-                ATELIER_TRY_BIND(args_arg, request.find("args"));
-                const json::Document empty_args;
-                const auto args = args_arg->value_or(empty_args.root());
-                ATELIER_TRY_BIND(items, args.object_items());
-                for (const auto& [key, value] : *items)
-                    if (std::ranges::none_of(op->properties, [&](const auto& field) { return field.first == key; }))
-                        throw Failure("invalid_request", "Unknown argument: " + std::string(key));
-                for (const auto& field : op->required) {
-                    ATELIER_TRY(args.at(field));
+        const auto execute = [&]() -> std::expected<json::Document, Failure> {
+            ATELIER_TRY(
+                request.allowed_members({"protocol", "instance_id", "request_id", "op", "args", "state_token"}));
+            ATELIER_TRY_BIND(protocol, request.u32({"protocol"}));
+            ATELIER_TRY_BIND(instance, request.string({"instance_id"}));
+            if (*protocol != control::protocol_version ||
+                *instance != *server.identity().root().string({"instance_id"}))
+                return std::unexpected(Failure("protocol_mismatch", "Wrong protocol or editor instance"));
+            ATELIER_TRY_BIND(id_arg, request.at("request_id"));
+            ATELIER_TRY_BIND(identity, text(*id_arg, 80));
+            id = std::move(*identity);
+            if (id.empty())
+                return std::unexpected(Failure("invalid_request", "Empty request identity"));
+            canonical = json::write(request);
+            for (const auto& entry : cache)
+                if (entry.id == id) {
+                    if (!std::ranges::equal(entry.request, canonical))
+                        return std::unexpected(
+                            Failure("request_id_conflict", "Request identity was used for different content"));
+                    replay = true;
+                    return entry.response;
                 }
-                observe();
-                remember = op->changes;
-                if (op->changes) {
-                    ATELIER_TRY_BIND(token_arg, request.find("state_token"));
-                    std::string_view client_token;
-                    if (*token_arg) {
-                        ATELIER_TRY_BIND(value, (**token_arg).string());
-                        client_token = *value;
-                    }
-                    if (client_token != token())
-                        throw Failure("stale_state", stale_message(client_token, *name, args));
-                }
-                ATELIER_TRY_BIND(result, dispatch(*name, args, id, peer));
-                ATELIER_TRY_BIND(status, result->root().find("status"));
-                if (*status)
-                    return std::move(*result);
-                json::Builder output;
-                output.set_validated(output.root(), "status", "ok");
-                output.set_validated(output.root(), "result", result->root());
-                return output.finish();
-            };
-            auto result = execute();
-            if (result)
-                response = std::move(*result);
-            else {
-                ATELIER_TRY_BIND(failure, control::failure(result.error().code, result.error().what()));
-                response = std::move(*failure);
+            if (std::ranges::any_of(jobs, [&](const auto& job) { return job->id == id; }))
+                return std::unexpected(
+                    Failure("request_id_expired", "Request payload expired; query the retained job using job.status"));
+            ATELIER_TRY_BIND(op_arg, request.at("op"));
+            ATELIER_TRY_BIND(name, text(*op_arg, 80));
+            const auto& known = operations();
+            const auto op = std::ranges::find(known, *name, &Operation::name);
+            if (op == known.end())
+                return std::unexpected(Failure("unknown_operation", "Operation is not exposed by this editor"));
+            ATELIER_TRY_BIND(args_arg, request.find("args"));
+            const json::Document empty_args;
+            const auto args = args_arg->value_or(empty_args.root());
+            ATELIER_TRY_BIND(items, args.object_items());
+            for (const auto& [key, value] : *items)
+                if (std::ranges::none_of(op->properties, [&](const auto& field) { return field.first == key; }))
+                    return std::unexpected(Failure("invalid_request", "Unknown argument: " + std::string(key)));
+            for (const auto& field : op->required) {
+                ATELIER_TRY(args.at(field));
             }
-        } catch (const editor::detail::Failure& error) {
-            app.report_error(error.error, "editor.control_failed");
-            ATELIER_TRY_BIND(failure, control::failure("operation_failed", error.what()));
-            response = std::move(*failure);
-        } catch (const Failure& error) {
-            ATELIER_TRY_BIND(failure, control::failure(error.code, error.what()));
+            observe();
+            remember = op->changes;
+            if (op->changes) {
+                ATELIER_TRY_BIND(token_arg, request.find("state_token"));
+                std::string_view client_token;
+                if (*token_arg) {
+                    ATELIER_TRY_BIND(value, (**token_arg).string());
+                    client_token = *value;
+                }
+                if (client_token != token())
+                    return std::unexpected(Failure("stale_state", stale_message(client_token, *name, args)));
+            }
+            ATELIER_TRY_BIND(result, dispatch(*name, args, id, peer));
+            ATELIER_TRY_BIND(status, result->root().find("status"));
+            if (*status)
+                return std::move(*result);
+            json::Builder output;
+            output.set_validated(output.root(), "status", "ok");
+            output.set_validated(output.root(), "result", result->root());
+            return output.finish();
+        };
+        auto result = execute();
+        if (result)
+            response = std::move(*result);
+        else {
+            const auto& error = result.error();
+            ATELIER_TRY_BIND(failure, control::failure(error.code, diagnostic_utf8(error.message)));
             response = std::move(*failure);
             if (error.code == "busy" && busy()) {
                 ATELIER_TRY_BIND(reasons, busy_reasons());
@@ -2778,9 +2815,6 @@ struct EditorControl::Impl {
                 output.set_validated(*output.root().at("error"), "busy_reasons", reasons->root());
                 response = output.finish();
             }
-        } catch (const std::exception& error) {
-            ATELIER_TRY_BIND(failure, control::failure("operation_failed", error.what()));
-            response = std::move(*failure);
         }
         if (replay)
             return response;
@@ -2825,14 +2859,12 @@ EditorControl::~EditorControl() = default;
 
 bool EditorControl::poll() {
     bool serviced = impl_->active() != nullptr;
-    if (const auto checked = impl_->checkpoint(); !checked)
-        impl_->app.report_error({ErrorCode::invalid_definition, checked.error().describe()}, "editor.control_failed");
+    impl_->check_jobs();
     impl_->server.poll([&](const auto& request, const auto& peer) {
         serviced = true;
         return impl_->request(request, peer);
     });
-    if (const auto checked = impl_->checkpoint(); !checked)
-        impl_->app.report_error({ErrorCode::invalid_definition, checked.error().describe()}, "editor.control_failed");
+    impl_->check_jobs();
     return serviced;
 }
 
@@ -2856,10 +2888,8 @@ renderer::ViewSettings EditorControl::view() const {
 }
 
 bool EditorControl::wants_capture() {
-    if (const auto checked = impl_->checkpoint(); !checked) {
-        impl_->app.report_error({ErrorCode::invalid_definition, checked.error().describe()}, "editor.control_failed");
+    if (!impl_->check_jobs())
         return false;
-    }
     const auto* job = impl_->active();
     return job && job->rendering && !job->preparing && job->accepted + 1 == job->points[job->point_index];
 }
@@ -2876,53 +2906,49 @@ void EditorControl::traced(const renderer::Frame& frame, const renderer::Result<
     if (!job || !job->tracing || frame.command_trace != job->trace.get())
         return;
     job->tracing = false;
-    try {
-        const auto snapshot = [&]() -> json::Result<json::Document> {
-            json::Builder metadata(job->manifest);
-            const auto root = metadata.root();
-            ATELIER_TRY(metadata.set(root, "ui_frame_id", frame.ui_frame.id));
-            ATELIER_TRY(metadata.set(root, "scene_identity", frame.scene_identity));
-            const std::array extent{frame.ui_frame.extent.width, frame.ui_frame.extent.height};
-            ATELIER_TRY(metadata.numbers(root, "extent", std::span{extent}));
-            ATELIER_TRY_BIND(view, view_json(frame.view));
-            metadata.set_validated(root, "effective_view", view->root());
-            metadata.set_validated(root, "attempt", "first_requested_view");
-            if (result) {
-                constexpr std::array statuses{"accepted", "skipped", "not_ready", "cancelled"};
-                metadata.set_validated(root, "frame_status", statuses[std::to_underlying(result->status)]);
-                ATELIER_TRY(metadata.set(root, "accepted_id", result->accepted_id));
-                const std::array accepted{result->accepted_extent.width, result->accepted_extent.height};
-                const std::array next{result->next_extent.width, result->next_extent.height};
-                ATELIER_TRY(metadata.numbers(root, "accepted_extent", std::span{accepted}));
-                ATELIER_TRY(metadata.numbers(root, "next_extent", std::span{next}));
-            } else {
-                metadata.set_validated(root, "frame_status", "error");
-                const auto error = metadata.object_validated(root, "error");
-                ATELIER_TRY(metadata.set(error, "code", static_cast<std::int64_t>(result.error().cause.code)));
-                ATELIER_TRY(metadata.set(error, "native_result",
-                                         static_cast<std::int64_t>(result.error().cause.native_result)));
-                metadata.set_validated(error, "message", diagnostic_utf8(result.error().cause.message));
-                ATELIER_TRY(metadata.set(error, "terminal", result.error().terminal));
-            }
-            return metadata.finish();
-        };
-        auto metadata = snapshot();
-        if (!metadata) {
-            state.cancel(*job, "invalid_request", metadata.error().describe());
-            return;
+    const auto snapshot = [&]() -> json::Result<json::Document> {
+        json::Builder metadata(job->manifest);
+        const auto root = metadata.root();
+        ATELIER_TRY(metadata.set(root, "ui_frame_id", frame.ui_frame.id));
+        ATELIER_TRY(metadata.set(root, "scene_identity", frame.scene_identity));
+        const std::array extent{frame.ui_frame.extent.width, frame.ui_frame.extent.height};
+        ATELIER_TRY(metadata.numbers(root, "extent", std::span{extent}));
+        ATELIER_TRY_BIND(view, view_json(frame.view));
+        metadata.set_validated(root, "effective_view", view->root());
+        metadata.set_validated(root, "attempt", "first_requested_view");
+        if (result) {
+            constexpr std::array statuses{"accepted", "skipped", "not_ready", "cancelled"};
+            metadata.set_validated(root, "frame_status", statuses[std::to_underlying(result->status)]);
+            ATELIER_TRY(metadata.set(root, "accepted_id", result->accepted_id));
+            const std::array accepted{result->accepted_extent.width, result->accepted_extent.height};
+            const std::array next{result->next_extent.width, result->next_extent.height};
+            ATELIER_TRY(metadata.numbers(root, "accepted_extent", std::span{accepted}));
+            ATELIER_TRY(metadata.numbers(root, "next_extent", std::span{next}));
+        } else {
+            metadata.set_validated(root, "frame_status", "error");
+            const auto error = metadata.object_validated(root, "error");
+            ATELIER_TRY(metadata.set(error, "code", static_cast<std::int64_t>(result.error().cause.code)));
+            ATELIER_TRY(
+                metadata.set(error, "native_result", static_cast<std::int64_t>(result.error().cause.native_result)));
+            metadata.set_validated(error, "message", diagnostic_utf8(result.error().cause.message));
+            ATELIER_TRY(metadata.set(error, "terminal", result.error().terminal));
         }
-        job->writer = std::async(std::launch::async, [path = job->directory, trace = std::move(job->trace),
-                                                      metadata = std::move(*metadata), cancel = job->cancel]() mutable {
-            return control_artifacts::write_trace(path, std::move(*trace), std::move(metadata), *cancel);
-        });
-        // A terminal error in either the first render or a later fallback tears
-        // down the host and cancels jobs. Preserve the first attempt beforehand.
-        // This is owned CPU file output only, never a GPU wait or a render retry.
-        if (host_stopping)
-            job->writer.wait();
-    } catch (const std::exception& error) {
-        state.cancel(*job, "storage_error", error.what());
+        return metadata.finish();
+    };
+    auto metadata = snapshot();
+    if (!metadata) {
+        state.cancel(*job, "invalid_request", metadata.error().describe());
+        return;
     }
+    state.start_writer(*job, [path = job->directory, trace = std::move(job->trace),
+                              metadata = std::move(*metadata)](control_artifacts::WriteState& work) mutable {
+        return control_artifacts::write_trace(path, std::move(*trace), std::move(metadata), work);
+    });
+    // A terminal error in either the first render or a later fallback tears
+    // down the host and cancels jobs. Preserve the first attempt beforehand.
+    // This is owned CPU file output only, never a GPU wait or a render retry.
+    if (host_stopping)
+        job->writer.wait();
 }
 
 void EditorControl::render_failed(std::string_view message) {
@@ -2933,10 +2959,8 @@ void EditorControl::render_failed(std::string_view message) {
 void EditorControl::rendered(const renderer::Frame& frame, const renderer::FrameResult& result,
                              renderer::Capture* capture) {
     auto& state = *impl_;
-    if (const auto checked = state.checkpoint(); !checked) {
-        state.app.report_error({ErrorCode::invalid_definition, checked.error().describe()}, "editor.control_failed");
+    if (!state.check_jobs())
         return;
-    }
     auto* job = state.active();
     if (job && job->rendering)
         job->history_resets += result.stats.scene_lit_history_resets;
@@ -3004,15 +3028,10 @@ void EditorControl::rendered(const renderer::Frame& frame, const renderer::Frame
         job->history_resets = 0;
         if (++job->case_index == job->cases.size()) {
             job->rendering = false;
-            try {
-                job->writer =
-                    std::async(std::launch::async, [path = job->directory, samples = std::move(job->samples),
-                                                    manifest = job->manifest, cancel = job->cancel]() mutable {
-                        return control_artifacts::write_samples(path, std::move(samples), std::move(manifest), *cancel);
-                    });
-            } catch (const std::exception& error) {
-                state.cancel(*job, "storage_error", error.what());
-            }
+            state.start_writer(*job, [path = job->directory, samples = std::move(job->samples),
+                                      manifest = job->manifest](control_artifacts::WriteState& work) mutable {
+                return control_artifacts::write_samples(path, std::move(samples), std::move(manifest), work);
+            });
         }
     }
 }

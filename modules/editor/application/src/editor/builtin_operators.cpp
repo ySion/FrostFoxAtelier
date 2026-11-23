@@ -3,13 +3,11 @@
 #include "assets/builtin_materials.hpp"
 #include "assets/file.hpp"
 #include "assets/material_format.hpp"
-#include "editor/error.hpp"
 #include "editor/project.hpp"
 #include "editor/view_options.hpp"
 #include "editor/viewport_tool.hpp"
 #include "platform/utf.hpp"
 #include <limits>
-#include <stdexcept>
 #include <unordered_set>
 
 namespace atelier::editor {
@@ -570,9 +568,11 @@ OperatorInfo source_open(std::string id, std::wstring title, bool create, bool p
          [create, project_ui](OperatorHost& host, const Context& context, const OperatorParameters& parameters,
                               ValueOutput) -> Result<void> {
              const auto& p = *static_cast<const OpenPath*>(parameters.value.data);
+             if (!context.project && !context.editor_ui_source)
+                 return std::unexpected(context.editor_ui_source.error());
              auto path = operation_path(host, p.path, create ? PathPurpose::source_save : PathPurpose::source,
                                         context.project ? context.project->root() / "Source"
-                                                        : context.editor_ui_source.parent_path(),
+                                                        : context.editor_ui_source->parent_path(),
                                         project_ui ? L"Main.ui.source" : L"Move.source");
              if (!path)
                  return std::unexpected(path.error());
@@ -700,11 +700,9 @@ Result<std::string> target_graph_key(const Context& context, const String& expli
 }
 }
 
-void register_builtin_operators(OperatorRegistry& registry) {
-    const auto add = [&](OperatorInfo info) {
-        if (auto added = registry.add(std::move(info)); !added)
-            throw std::logic_error(added.error().message);
-    };
+Result<OperatorRegistry> OperatorRegistry::builtins() {
+    OperatorRegistry registry;
+    const auto add = [&](OperatorInfo info) { registry.operators_.push_back(std::move(info)); };
     add({"ui.menu",
          L"Viewport Menu",
          "Open a menu at the viewport pointer",
@@ -784,8 +782,7 @@ void register_builtin_operators(OperatorRegistry& registry) {
          }});
     add({"layout.reset", L"Reset Layout", "Restore the default pane layout", OperatorFlag::none, available,
          [](OperatorHost& host, const Context&, const OperatorParameters&, ValueOutput) {
-             host.reset_layout();
-             return Result<void>{};
+             return host.reset_layout();
          }});
     add({"layout.show", L"Show Pane", "Show and focus a workspace page", OperatorFlag::none, available,
          with_parameters(layout_show), "editor.LayoutShow"});
@@ -1088,8 +1085,9 @@ void register_builtin_operators(OperatorRegistry& registry) {
     add(source_open("source.new_component", L"New Component Source", true));
     add(source_open("source.new_project_ui", L"New Project UI", true, true));
     add({"source.open_editor_ui", L"Edit Editor UI", "Open the editor UI source", OperatorFlag::undo, available,
-         [](OperatorHost& h, const Context& c, const OperatorParameters&, ValueOutput) {
-             return h.open_source(c.editor_ui_source);
+         [](OperatorHost& h, const Context& c, const OperatorParameters&, ValueOutput) -> Result<void> {
+             ATELIER_TRY(c.editor_ui_source);
+             return h.open_source(*c.editor_ui_source);
          }});
     add({"source.open_project_ui", L"Edit Project UI", "Open the configured project UI source", OperatorFlag::undo,
          ui_source, [](OperatorHost& h, const Context& c, const OperatorParameters&, ValueOutput) -> Result<void> {
@@ -1480,5 +1478,7 @@ void register_builtin_operators(OperatorRegistry& registry) {
              return result;
          }),
          "editor.ProceduralBake"});
+    ATELIER_TRY(registry.validate());
+    return registry;
 }
 }

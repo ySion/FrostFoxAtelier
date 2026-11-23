@@ -12,6 +12,7 @@ class LiveDocument;
 class ControlOutput;
 
 struct Item;
+struct ItemList;
 }
 
 namespace atelier::editor {
@@ -85,8 +86,8 @@ public:
 
     void reset(bool has_project);
 
-    void append(ui_language::ControlOutput, ui::ControlKey parent, const Project*, bool can_create, const ui::UiFrame*,
-                ui_language::LiveDocument&);
+    [[nodiscard]] ui::Result<void> append(ui_language::ControlOutput, ui::ControlKey parent, const Project*,
+                                          bool can_create, const ui::UiFrame*, ui_language::LiveDocument&);
 
     bool apply(const ui::Action&);
 
@@ -210,7 +211,7 @@ private:
 
     void update_directories(const Project*);
 
-    const std::shared_ptr<const std::vector<ui_language::Item>>& directory_items();
+    ui::Result<ui_language::ItemList> directory_items();
 
     void update_items(const Project*);
 

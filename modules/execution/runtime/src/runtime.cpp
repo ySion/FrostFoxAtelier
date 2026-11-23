@@ -1307,8 +1307,10 @@ struct Runtime::Impl {
             return std::nullopt;
         std::vector<FieldId> field;
         std::optional<ValidationFailure> found;
-        const auto fail = [&](std::optional<Scalar> value, std::string reason) {
-            found = ValidationFailure{field, {}, std::move(value), {ErrorCode::argument_mismatch, root.info.name}};
+        const auto fail = [&](std::optional<Scalar> value, std::string reason,
+                              std::optional<SourceLocation> source = {}) {
+            found = ValidationFailure{
+                field, {}, std::move(value), {ErrorCode::argument_mismatch, root.info.name, std::move(source)}};
             for (const auto id : field)
                 found->names.push_back(member_name(id));
             append_path(found->error.message, field);
@@ -1322,7 +1324,7 @@ struct Runtime::Impl {
         };
         auto rule = [&](Result<void> (*validate)(const void*) noexcept, const void* data) {
             auto checked = validate(data);
-            return checked || fail({}, std::move(checked.error().message));
+            return checked || fail({}, std::move(checked.error().message), std::move(checked.error().source));
         };
         if (each_bounded(root, storage, &field, bound))
             each_validator(root, storage, &field, rule);
@@ -4628,6 +4630,13 @@ Result<void> Runtime::write_at(const Address& address, ValueInput value, bool ob
         return failure(ErrorCode::busy,
                        "Non-plain field values cannot be replaced during callbacks or native borrows.");
     return impl_->replace_value(*type, constrained ? &address : nullptr, address.data, value.data);
+}
+
+Result<void> Runtime::read_for_restore(ObjectId object, std::span<const FieldId> path, ValueOutput previous) const {
+    const auto* type = impl_->lookup(previous.type);
+    if (type && !type->info.plain_value && type->swap_parts.empty())
+        return failure(ErrorCode::unsupported_operation, "Restore requires a value type with a non-throwing swap.");
+    return read(object, path, previous);
 }
 
 Result<void> Runtime::restore(ObjectId object, std::span<const FieldId> path, ValueOutput previous) {

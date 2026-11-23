@@ -228,7 +228,7 @@ bool Application::network_input(const ui::Event& event, std::uint32_t native_key
         workspace_.network.set_cut_key(false);
     if (workspace_.menu || workspace_.dock.dragging() || !ui_.presented() || !pointer_ready())
         return false;
-    const std::string net_graph = workspace_.effective_network_graph(*document_, project_ ? &*project_ : nullptr);
+    const std::string net_graph = workspace_.effective_network_graph(*document_, project_.get());
     if (net_graph.empty() || !document_->has_graph(net_graph))
         return false;
     const auto* canvas_box = ui_.presented()->find(editor::network_control::canvas);
@@ -324,9 +324,9 @@ bool Application::network_input(const ui::Event& event, std::uint32_t native_key
         }
         const auto prev_sel = workspace_.selected_graph_node;
         const auto prev_multi = workspace_.selected_graph_nodes;
-        auto outcome = workspace_.network.pointer_event(*document_, net_graph, workspace_.selected_graph_node,
-                                                        workspace_.selected_graph_nodes, canvas_px, dpi, event,
-                                                        project_ ? &*project_ : nullptr);
+        auto outcome =
+            workspace_.network.pointer_event(*document_, net_graph, workspace_.selected_graph_node,
+                                             workspace_.selected_graph_nodes, canvas_px, dpi, event, project_.get());
         if (!outcome) {
             workspace_.network.cancel_gesture();
             window_.capture(false);

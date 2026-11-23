@@ -7,6 +7,7 @@
 #include "application/timing.hpp"
 #include "logging/logging.hpp"
 #include <Windows.h>
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 
@@ -44,7 +45,81 @@ void run(const std::filesystem::path& root) {
     require(take(world::read_transform(document.world().runtime(), entity)).position.x == 1.f,
             "Project Source tick did not produce x=1.");
     complete(document.stop());
+    const auto wait_exit = [](application::PlayProcess& child) {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(45);
+        while (child.running() && std::chrono::steady_clock::now() < deadline) {
+            child.poll();
+            Sleep(10);
+        }
+        require(!child.running(), "Play child did not exit.");
+    };
+
+    // The real command inherits the link and stop events. Read its final authoring state back from disk.
+    const auto report = root / "Cache/reported.scene";
+    {
+        application::PlayProcess child;
+        std::unique_ptr<application::LiveLink> pipe;
+        take(child.start(root, snapshot, true, 0, report, false, false, &pipe));
+        application::PlayLink link;
+        link.open(std::move(pipe), root / "Cache/play-changes");
+        document.set_live_forwarding(true);
+        take(document.rename(entity, L"Renamed in Play"));
+        link.forward(take(document.take_live_ops()));
+        require(link.unacknowledged() == 1, "The editor did not queue the scene rename.");
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(45);
+        while (link.unacknowledged() && link.divergence().empty() && child.running() &&
+               std::chrono::steady_clock::now() < deadline) {
+            child.poll();
+            link.poll(child.running(), child.stopping());
+            Sleep(10);
+        }
+        require(child.running() && link.unacknowledged() == 0 && link.divergence().empty(),
+                "The child did not acknowledge the scene rename.");
+        child.stop();
+        wait_exit(child);
+        require(child.exit_code() == 0 && !child.forced(), "Live Play did not stop cleanly.");
+        auto restored = editor::load_project_scene(project, take(assets::read_file(report)));
+        require(restored.session &&
+                    restored.session->name(take(restored.session->local_object(*document.document_identity(entity)))) ==
+                        L"Renamed in Play",
+                "The child report lost the acknowledged rename or its identity.");
+    }
     complete(document.close());
+
+    // Use the same rejected Source build as the authority for the child process diagnostic.
+    take(editor::write_file(component,
+                            "class project.Move : world.Component { void tick(float dt) { missing_symbol(); } }"));
+    const auto invalid = editor::load_project_scene(project, take(assets::read_file(snapshot)));
+    require(!invalid.session && invalid.error && invalid.error->source, "Expected a located Source build error.");
+    {
+        application::PlayProcess child;
+        take(child.start(root, snapshot, true, 1));
+        wait_exit(child);
+        require(child.exit_code() == 1, "A failed scene build did not reject the Play run.");
+        editor::Output output;
+        const auto refused = output.add_run(snapshot);
+        require(!refused && refused.error().code == logging::ErrorCode::invalid_options &&
+                    refused.error().message == "Reader input is not a directory",
+                "Attaching a scene file lost the log reader's first error.");
+        auto* stream = take(output.add_run(child.log_directory()));
+        require(stream == take(output.add_run(child.log_directory())), "The Play run acquired a second stream.");
+        output.source_ended(*stream);
+        while (!output.source_status(child.log_directory())->finished)
+            output.poll();
+        const auto failure = std::ranges::find_if(
+            output.records(), [](const auto& item) { return item.record.entry.event_code == "runner.failed"; });
+        require(failure != output.records().end(), "A rejected scene build produced no runner diagnostic.");
+        const auto& entry = failure->record.entry;
+        const auto code = std::ranges::find(entry.fields, "error_code", &logging::Field::key);
+        const auto& source = *invalid.error->source;
+        require(code != entry.fields.end() &&
+                    code->value == logging::FieldValue{static_cast<std::uint64_t>(invalid.error->code)} &&
+                    entry.message == invalid.error->message && entry.source.file == source.path &&
+                    entry.source.version == source.version && entry.source.offset == source.offset &&
+                    entry.source.line == source.line && entry.source.column == source.column &&
+                    entry.source.disk_path == source.disk_path,
+                "The child lost the build error code, message or original Source location.");
+    }
 
     // The independent child uses the saved scene, but compiles a deliberately stuck tick.
     take(editor::write_file(
@@ -84,6 +159,7 @@ void verify_network_control_reuse(const std::filesystem::path& root) {
     take(doc.open_graph(project, graph_key));
 
     editor::Workspace workspace;
+    take(workspace.initialize());
     workspace.project_open = true;
     workspace.active_graph = graph_key;
     workspace.set_single_graph_selection("xform");
@@ -97,7 +173,7 @@ void verify_network_control_reuse(const std::filesystem::path& root) {
         if constexpr (!std::is_void_v<T>)
             return std::move(*value);
     };
-    take_ui(ui_session.initialize(application::editor_fonts()));
+    take_ui(ui_session.initialize(take(application::editor_fonts())));
     take_ui(ui_session.set_style_sheet(take(application::editor_styles())));
     take_ui(ui_session.set_surface({{1400, 900}, 1.f, 1}));
 
@@ -107,7 +183,7 @@ void verify_network_control_reuse(const std::filesystem::path& root) {
         take_ui(ui_session.set_controls(list));
         auto frame = take_ui(ui_session.prepare());
         require(ui_session.accept(frame), "Workspace ControlList frame was rejected.");
-        workspace.commit_ui_controls();
+        take(workspace.commit_ui_controls());
     };
     // Frame 1 establishes layout bounds; Frame 2 settles canvas_dip from the accepted frame.
     present_once();
@@ -171,6 +247,7 @@ int main() {
                       (std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
     run(base / "source-run");
     verify_network_control_reuse(base / "network-reuse");
-    std::puts("Project integration: PASS (Source tick, stuck child shutdown, Network ControlList reuse)");
+    std::puts(
+        "Project integration: PASS (Source tick, live rename and report, located build rejection, stuck child shutdown, Network ControlList reuse)");
     return 0;
 }

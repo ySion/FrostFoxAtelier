@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
-#include <stdexcept>
 
 namespace atelier::ui {
 bool SliderRange::operator==(const SliderRange& other) const {
@@ -138,28 +137,15 @@ std::bitset<128> levels_below(std::uint32_t depth) {
 }
 }
 
-void flatten_tree(std::span<const TreeNode> nodes, std::wstring_view filter, std::vector<TreeRow>& rows) {
+Result<std::vector<TreeRow>> flatten_tree(std::span<const TreeNode> nodes, std::wstring_view filter,
+                                          std::vector<TreeRow> rows) {
     rows.clear();
     if (nodes.size() >= no_tree_node)
-        throw std::invalid_argument("A tree has too many nodes.");
+        return std::unexpected(Error{ErrorCode::capacity_exceeded, {}, {}, "A tree has too many nodes."});
     // Ancestor path of the current node: node and its row (no_tree_node when not shown).
     std::array<std::uint32_t, 128> path{};
     std::array<std::uint32_t, 128> path_rows{};
     std::uint32_t path_size{};
-    const auto descend = [&](std::uint32_t index) {
-        const auto parent = nodes[index].parent;
-        if (parent == no_tree_node)
-            path_size = 0;
-        else {
-            while (path_size && path[path_size - 1] != parent)
-                --path_size;
-            if (!path_size)
-                throw std::invalid_argument("Tree nodes must be in depth-first preorder.");
-        }
-        if (path_size == path.size())
-            throw std::invalid_argument("A tree exceeds 128 levels.");
-        return path_size;
-    };
     const auto branch = [&](std::uint32_t index) {
         return index + 1 < nodes.size() && nodes[index + 1].parent == index;
     };
@@ -183,7 +169,19 @@ void flatten_tree(std::span<const TreeNode> nodes, std::wstring_view filter, std
                 kept[nodes[i].parent] |= above;
     }
     for (std::uint32_t i = 0; i < nodes.size(); ++i) {
-        const auto depth = descend(i);
+        const auto parent = nodes[i].parent;
+        if (parent == no_tree_node)
+            path_size = 0;
+        else {
+            while (path_size && path[path_size - 1] != parent)
+                --path_size;
+            if (!path_size)
+                return std::unexpected(
+                    Error{ErrorCode::invalid_control, {}, {}, "Tree nodes must be in depth-first preorder."});
+        }
+        if (path_size == path.size())
+            return std::unexpected(Error{ErrorCode::capacity_exceeded, {}, {}, "A tree exceeds 128 levels."});
+        const auto depth = path_size;
         const auto parent_row = depth ? path_rows[depth - 1] : no_tree_node;
         const bool shown =
             filter.empty() ? (!depth || (parent_row != no_tree_node && nodes[path[depth - 1]].expanded)) : kept[i] != 0;
@@ -193,7 +191,8 @@ void flatten_tree(std::span<const TreeNode> nodes, std::wstring_view filter, std
         if (!shown)
             continue;
         if (rows.size() == maximum_tree_rows)
-            throw std::invalid_argument("A tree shows more rows than Session accepts.");
+            return std::unexpected(
+                Error{ErrorCode::capacity_exceeded, {}, {}, "A tree shows more rows than Session accepts."});
         const bool children = branch(i);
         rows.push_back({i, parent_row, depth, children, children && (!filter.empty() || nodes[i].expanded), {}});
     }
@@ -212,6 +211,7 @@ void flatten_tree(std::span<const TreeNode> nodes, std::wstring_view filter, std
             guides.set(row.depth);
         row.lines = guides;
     }
+    return rows;
 }
 
 std::vector<std::uint32_t> tree_window(std::span<const TreeRow> rows, TreeViewport viewport,

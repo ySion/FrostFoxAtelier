@@ -13,6 +13,7 @@ namespace atelier::editor {
 class Project;
 
 class ProjectCode;
+struct ProjectDocument;
 
 struct Parameter {
     const char* name;
@@ -402,6 +403,8 @@ public:
 
     Result<void> cancel_material_edit();
 
+    Result<void> set_material_entry(ObjectId, material::Override, Project* = nullptr);
+
     Result<void> set_material_texture(Project&, ObjectId, std::string_view path, std::string_view key);
 
     Result<void> assign_material(Project&, ObjectId component, std::string_view slot, std::string_view key);
@@ -430,6 +433,8 @@ public:
 
     bool is_material(ObjectId) const;
 
+    Result<bool> is_material_type(TypeId) const;
+
     bool material_can_undo(std::string_view key, bool redo = false) const;
 
     void bind_project_code(const ProjectCode* code) noexcept;
@@ -447,7 +452,8 @@ public:
     // Captures the open author graph for repro, checking effective session freezes against a cold replay.
     Result<std::optional<std::string>> procedural_graph_snapshot(std::string_view key) const;
 
-    Result<ObjectId> resolve_procedural_generator(ObjectId target = {}) const;
+    // Optional lookup returns a null identity for a selection without a generator. Read failures propagate.
+    Result<ObjectId> resolve_procedural_generator(ObjectId target = {}, bool required = true) const;
 
     ObjectId loaded_graph(std::string_view key) const noexcept;
 
@@ -630,6 +636,8 @@ public:
     // ObjectId{} addresses document-level data (top-level keys and World settings).
     bool has_retained(ObjectId) const noexcept;
 
+    std::string_view placeholder_type(ObjectId) const noexcept;
+
     Result<RetainedView> retained(ObjectId) const;
 
     // Drops the retained data of one object (or the document) as one undoable entry.
@@ -645,7 +653,7 @@ public:
     bool dirty() const noexcept {
         return !saved_cursor_ || *saved_cursor_ != cursor_ || (active_ && !is_graph_object(active_->root.id())) ||
                (group_ && !is_graph_object(group_->root.id())) || transform_ ||
-               (material_edit_ && material_edit_->scene);
+               (material_edit_ && !material_edit_->document);
     }
 
     void mark_saved() noexcept {
@@ -681,6 +689,8 @@ public:
     static constexpr std::size_t maximum_components = 1024;
 
 private:
+    friend ProjectDocument load_project_scene(Project&, std::string_view, LoadPolicy, bool, SessionRole);
+    static Result<std::unique_ptr<Session>> restore_scene(std::string_view, Project&, Prepare, LoadPolicy, SessionRole);
     struct ReferenceFieldChange {
         ObjectRoot root;
 
@@ -893,6 +903,10 @@ private:
 
         std::vector<ObjectRoot> materials;
 
+        // Material instances named solely by $ref in this owner's retained record or slot data.
+        std::vector<std::pair<std::uint64_t, ObjectRoot>> reference_roots;
+        void prune_reference_roots();
+
         bool empty() const noexcept { return type.empty() && record.empty() && slots.empty() && materials.empty(); }
     };
 
@@ -1048,7 +1062,8 @@ private:
 
         std::uint64_t control{};
 
-        bool scene{};
+        // A shared document lives in a stable map node until Session::close cancels edits.
+        MaterialDocument* document{};
 
         std::vector<MaterialEntryChange> entries;
     };
@@ -1058,9 +1073,19 @@ private:
     Result<void> apply_material_entries(ObjectId, std::span<const MaterialEntryChange>, bool forward,
                                         Project* = nullptr);
 
-    Result<void> preview_material_entry(std::uint64_t, std::string_view, std::optional<material::Override>);
+    Result<MaterialDocument*> admit_material_edit(ObjectId);
 
-    Result<void> admit_material_edit(ObjectId) const;
+    Result<MaterialEdit> prepare_material_edit(ObjectId, std::uint64_t control = 0);
+
+    Result<void> preview_material_entry(MaterialEdit&, MaterialEntryChange, Project*);
+
+    Result<void> change_material_entry(MaterialEdit&, MaterialEntryChange, Project*);
+
+    void record_material_edit(MaterialEdit&);
+
+    // Reading a named dependency fills its cache. Explicit publication also forwards the change to Play.
+    Result<ObjectRoot> store_material(assets::Reader&, const assets::MaterialAsset&, std::optional<source::SourceFile>,
+                                      std::vector<MissingResource>*);
 
     Result<ObjectRoot> texture_resource(assets::Reader&, std::string_view,
                                         std::vector<MissingResource>* missing = nullptr, std::size_t input = 0);

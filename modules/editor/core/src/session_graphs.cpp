@@ -113,22 +113,14 @@ public:
         const std::string lookup(key);
         if (const auto it = cached_.find(lookup); it != cached_.end())
             return it->second;
-        auto resolved = active.mesh(key);
-        if (!resolved)
-            return std::unexpected(resolved.error());
+        ATELIER_TRY_BIND(resolved, active.mesh(key));
         cached_.insert_or_assign(lookup, *resolved);
         return *resolved;
     }
 
     [[nodiscard]] Result<geometry::MeshRef> mesh(StringView key) const noexcept override {
-        try {
-            auto resolved = resolve_mesh_asset(key.std_view());
-            if (!resolved)
-                return std::unexpected(resolved.error());
-            return std::move(resolved->mesh);
-        } catch (const std::exception& e) {
-            return std::unexpected(Error{ErrorCode::invalid_storage, e.what()});
-        }
+        ATELIER_TRY_BIND(resolved, resolve_mesh_asset(key.std_view()));
+        return std::move(resolved->mesh);
     }
 
     [[nodiscard]] std::uint64_t revision() const noexcept override {
@@ -1047,14 +1039,19 @@ Result<std::optional<std::string>> Session::procedural_graph_snapshot(std::strin
     return std::move(*encoded);
 }
 
-Result<ObjectId> Session::resolve_procedural_generator(ObjectId target) const {
+Result<ObjectId> Session::resolve_procedural_generator(ObjectId target, bool required) const {
+    const auto missing = [required](const char* message) -> Result<ObjectId> {
+        if (required)
+            return graph_error(message, ErrorCode::invalid_definition);
+        return ObjectId{};
+    };
     if (world_.closed())
         return graph_error("Procedural Generator resolution requires an open Session.", ErrorCode::invalid_definition);
     auto& runtime = world_.runtime();
     if (target == ObjectId{})
         target = selection_.object != ObjectId{} ? selection_.object : selection_.entity;
     if (target == ObjectId{})
-        return graph_error("Select a Procedural Generator.", ErrorCode::invalid_definition);
+        return missing("Select a Procedural Generator.");
     ATELIER_TRY_BIND(target_type, runtime.type_of(target));
     ATELIER_TRY_BIND(is_gen_comp, runtime.is_a(*target_type, presentation_types_.procedural_generator_component));
     if (*is_gen_comp) {
@@ -1074,7 +1071,7 @@ Result<ObjectId> Session::resolve_procedural_generator(ObjectId target) const {
     } else {
         ATELIER_TRY_BIND(is_entity, runtime.is_a(*target_type, types_.entity));
         if (!*is_entity || !world_.contains(target))
-            return graph_error("Target is not a Procedural Generator.", ErrorCode::invalid_definition);
+            return missing("Target is not a Procedural Generator.");
         owner = target;
     }
     ATELIER_TRY_BIND(parts, world::components(runtime, owner));
@@ -1084,7 +1081,7 @@ Result<ObjectId> Session::resolve_procedural_generator(ObjectId target) const {
         if (*matches)
             return part.id();
     }
-    return graph_error("Selected Entity has no ProceduralGeneratorComponent.", ErrorCode::invalid_definition);
+    return missing("Selected Entity has no ProceduralGeneratorComponent.");
 }
 
 Result<void> Session::publish_procedural_mesh(assets::Reader& reader, const assets::MeshAsset&) {
@@ -1259,8 +1256,8 @@ Result<void> Session::graph_undo(std::string_view key, bool redo) {
                 (node ? node->kept : open.document.kept) = redo ? change.after_kept : change.before_kept;
                 return {};
             } else if constexpr (std::same_as<T, GraphPropertyChange>) {
-                ATELIER_TRY(apply_object_properties(runtime_, change.target.id(),
-                                                    (redo ? change.after : change.before).root()));
+                ATELIER_TRY(patch_object_properties(runtime_, change.target.id(),
+                                                    (redo ? change.after : change.before).root(), no_graph_references));
                 if (change.target.id() == graph)
                     open.document.kept = redo ? change.after_kept : change.before_kept;
                 else if (auto* item = find_node_by_id(open.document, change.target.id()))
@@ -2824,12 +2821,8 @@ Result<void> Session::graph_set_properties(std::string_view key, std::string_vie
 
     ATELIER_TRY(cancel_edit());
     ATELIER_TRY_BIND(before, capture_object_properties(runtime_, target_root.id()));
-    auto applied = apply_object_properties(runtime_, target_root.id(), properties);
-    if (!applied) {
-        (void)apply_object_properties(runtime_, target_root.id(), before->root());
-        return applied;
-    }
-    ATELIER_TRY_BIND(after, capture_object_properties(runtime_, target_root.id()));
+    json::Document after;
+    ATELIER_TRY(patch_object_properties(runtime_, target_root.id(), properties, no_graph_references, &after));
 
     const auto before_kept = target_node ? target_node->kept : open.document.kept;
     json::Builder next_kept(before_kept);
@@ -2851,10 +2844,8 @@ Result<void> Session::graph_set_properties(std::string_view key, std::string_vie
     const auto after_kept = next_kept.finish();
 
     const auto before_bytes = json::write(before->root());
-    const auto after_bytes = json::write(after->root());
-    const auto bk_bytes = json::write(before_kept.root());
-    const auto ak_bytes = json::write(after_kept.root());
-    if (std::ranges::equal(before_bytes, after_bytes) && std::ranges::equal(bk_bytes, ak_bytes))
+    const auto after_bytes = json::write(after.root());
+    if (std::ranges::equal(before_bytes, after_bytes) && before_kept == after_kept)
         return {};
 
     if (target_node)
@@ -2862,7 +2853,7 @@ Result<void> Session::graph_set_properties(std::string_view key, std::string_vie
     else
         open.document.kept = after_kept;
     open.push_change(
-        GraphPropertyChange{std::move(target_root), std::move(*before), std::move(*after), before_kept, after_kept});
+        GraphPropertyChange{std::move(target_root), std::move(*before), std::move(after), before_kept, after_kept});
     ++revision_;
     return {};
 }
@@ -3031,9 +3022,8 @@ Result<std::shared_ptr<const GraphInspectView>> Session::graph_topology(std::str
         ATELIER_TRY_BIND(type, runtime_.type_of(item.node.id()));
         ATELIER_TRY_BIND(info, runtime_.describe(*type));
         node_view.type = std::string((*info)->name);
-        if (auto p = procedural::ports(runtime_, *type)) {
-            node_view.ports = {std::move(p->inputs), std::move(p->multiple), std::move(p->outputs)};
-        }
+        ATELIER_TRY_BIND(ports, procedural::ports(runtime_, *type));
+        node_view.ports = {std::move(ports->inputs), std::move(ports->multiple), std::move(ports->outputs)};
         if (open.evaluator) {
             if (const auto* st = open.evaluator->status(item.node.id()))
                 node_view.status = *st;

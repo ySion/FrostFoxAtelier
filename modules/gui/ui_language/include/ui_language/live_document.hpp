@@ -105,7 +105,8 @@ public:
     // Parent and key aliases are immutable region configuration. On an input
     // error, output contains the accepted snapshot and that input is suppressed
     // until it changes; the accepted scopes can still handle their own events.
-    Result<void> append(std::string_view component, ui::ControlKey parent, std::span<const KeyBinding>,
+    // A successful false means the region used its accepted fallback for suppressed inputs.
+    Result<bool> append(std::string_view component, ui::ControlKey parent, std::span<const KeyBinding>,
                         std::span<const InputValue>, ControlOutput);
 
     Result<bool> event(const ui::Action&);
