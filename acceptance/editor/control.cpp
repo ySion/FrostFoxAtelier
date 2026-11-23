@@ -1616,6 +1616,8 @@ Result<void> verify_graph_requests(Driver& driver) {
 
     ATELIER_TRY(
         driver.op("graph.add_node", json::Document::literal<R"({"type":"procedural.Grid","name":"points"})">()));
+    ATELIER_TRY(driver.ok("graph.set_properties",
+                          json::Document::literal<R"({"node":"points","properties":{"primitive_type":"points"}})">()));
     ATELIER_TRY(driver.op("graph.add_node",
                           json::Document::literal<R"({"type":"procedural.CopyToPoints","name":"copies"})">()));
     ATELIER_TRY(
