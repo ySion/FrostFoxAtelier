@@ -583,6 +583,13 @@ Result<void> verify_smoke_logs(SmokeLog& parent, SmokeLog& child) {
     return {};
 }
 
+Result<void> remove_smoke_tree(const std::filesystem::path& root) {
+    auto native = platform::windows_file_path(root);
+    if (!native)
+        return std::unexpected(acceptance::file_error(native.error()));
+    return acceptance::file_operation([&](auto& error) { std::filesystem::remove_all(*native, error); });
+}
+
 Result<void> prune_passed_smoke_runs(const std::filesystem::path& base, std::size_t keep) {
     struct Entry {
         std::filesystem::path path;
@@ -610,11 +617,8 @@ Result<void> prune_passed_smoke_runs(const std::filesystem::path& base, std::siz
     if (error)
         return std::unexpected(acceptance::file_error(error));
     std::ranges::sort(passed, [](const Entry& left, const Entry& right) { return left.modified > right.modified; });
-    for (std::size_t index = keep; index < passed.size(); ++index) {
-        std::filesystem::remove_all(passed[index].path, error);
-        if (error)
-            return std::unexpected(acceptance::file_error(error));
-    }
+    for (std::size_t index = keep; index < passed.size(); ++index)
+        ATELIER_TRY(remove_smoke_tree(passed[index].path));
     return {};
 }
 
@@ -2044,7 +2048,7 @@ Result<void> smoke_logs(const std::filesystem::path& executable, const std::file
     ATELIER_TRY(verify_smoke_logs(*parent, *child));
     // Keep four previous successful runs alongside this one. Unmarked failure evidence stays in place.
     ATELIER_TRY(prune_passed_smoke_runs(root.parent_path(), 4));
-    ATELIER_TRY(acceptance::file_operation([&](auto& error) { return std::filesystem::remove_all(project, error); }));
+    ATELIER_TRY(remove_smoke_tree(project));
     ATELIER_TRY(editor::write_file(root / "passed", "", editor::WriteMode::create));
     std::cout << "Editor log smoke: PASS (edit/save/undo, accepted frame, zero errors, Play close) | " << *root_text
               << '\n';
