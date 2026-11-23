@@ -192,7 +192,7 @@ using SavedGraphPortMap = std::map<std::string, std::pair<bool, std::vector<std:
 
 using AssetPortResolver = std::function<Result<std::optional<procedural::Ports>>(std::string_view asset_key)>;
 
-// Opens a version 3 graph file into `runtime`, which has the procedural types. Loading is
+// Opens a version 4 graph file into `runtime`, which has the procedural types. Loading is
 // tolerant, as for scenes: a node of an unknown type, a property leaf that does not fit its field,
 // and a connection, display or template naming no loaded node or port are kept, reported, and
 // written back on save. Structural errors fail: the version, an unknown key, `nodes` that is not a
@@ -200,7 +200,7 @@ using AssetPortResolver = std::function<Result<std::optional<procedural::Ports>>
 [[nodiscard]] Result<GraphDocument> load_graph(Runtime& runtime, std::string_view text,
                                                const AssetPortResolver& asset_ports = {});
 
-// The canonical version 3 text: nodes/notes/boxes by name, ordered promoted parameters, every node
+// The canonical version 4 text: nodes/notes/boxes by name, ordered promoted parameters, every node
 // parameter, two-space indent and a final newline, so saving an unchanged document again gives the
 // same bytes. Every node of the graph needs exactly one entry, and every loaded entry must be in the graph.
 [[nodiscard]] Result<std::string> save_graph(Runtime& runtime, const GraphDocument& document);

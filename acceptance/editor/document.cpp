@@ -145,17 +145,20 @@ void verify_graph_format() {
     }
   ],
   "settings": {"display": "noise", "seed": 9, "template": "grid"},
-  "version": 3
+  "version": 4
 })";
-    require(!editor::load_graph(runtime, R"({"version":2,"settings":{},"nodes":{}})"),
-            "load_graph accepted legacy version 2 procedural graph.");
+    const auto old_settlement = editor::load_graph(runtime, R"({"version":3,"settings":{"display":"chapel_place"},
+      "nodes":{"chapel_place":{"type":"procedural.Transform","properties":{
+        "rotate":{"w":0.98768836,"x":0,"y":-0.15643446,"z":0}}}}})");
+    require(!old_settlement && old_settlement.error().message == "Unsupported procedural graph version.",
+            "A saved v3 quaternion must fail at the version boundary before decoding Euler angles.");
     const auto doc = take(editor::load_graph(runtime, input_json));
     require(
         doc.nodes.size() == 5 && doc.notes.size() == 1 && doc.boxes.size() == 1 && doc.parameters.size() == 1 &&
             doc.parameters[0].name == "grid_cols" && doc.template_node != ObjectId{} && doc.issues.size() == 2 &&
             doc.issues[0].kind == world::DiagnosticKind::unknown_type &&
             doc.issues[1].kind == world::DiagnosticKind::reference_dropped,
-        "load_graph did not tolerantly retain v3 parameters, annotations, template, missing SOP type and dropped connection.");
+        "load_graph did not tolerantly retain v4 parameters, annotations, template, missing SOP type and dropped connection.");
     const auto saved_once = take(editor::save_graph(runtime, doc));
     const auto reloaded = take(editor::load_graph(runtime, saved_once));
     const auto saved_twice = take(editor::save_graph(runtime, reloaded));
@@ -267,7 +270,7 @@ class game.DiagnosticSop : procedural.Node {
 
     // Tolerant assets remain editable when an unresolved endpoint shares a multi-input port.
     const auto repair_key = take(project.create_procedural_graph(L"Content/Graphs/Repair.procgraph", R"({
-      "version":3,"settings":{},"nodes":{
+      "version":4,"settings":{},"nodes":{
         "grid":{"type":"procedural.Grid","properties":{"columns":"old"}},
         "legacy":{"type":"game.MissingSop"},
         "merged":{"type":"procedural.Merge","inputs":{"inputs":["grid.output","legacy.output"]}},
@@ -867,7 +870,7 @@ class game.DiagnosticSop : procedural.Node {
     require(doc.graph_node(repair_key, "legacy"), "Undo did not restore the placeholder.");
 
     // 33 x 32 connections fit on screen and exceed the capacity of a single stroke batch.
-    std::string dense = R"({"version":3,"settings":{"display":"fault"},"nodes":{)";
+    std::string dense = R"({"version":4,"settings":{"display":"fault"},"nodes":{)";
     std::string inputs;
     for (unsigned i = 0; i < 33; ++i) {
         const auto name = "grid" + std::to_string(i);
@@ -1166,7 +1169,7 @@ class game.DiagnosticSop : procedural.Node {
         }
         {
             const auto ghost_key = take(project.create_procedural_graph(L"Content/Graphs/GhostTest.procgraph", R"({
-  "version": 3,
+  "version": 4,
   "settings": { "display": "ghost", "template": "ghost" },
   "nodes": { "ghost": { "type": "missing.CustomSop", "position": [0, 0] } }
 })"));
@@ -1415,7 +1418,7 @@ class game.DiagnosticSop : procedural.Node {
         const auto prop_key = take(project.import_mesh(obj_src));
         const auto prop_graph_key = take(project.create_procedural_graph(
             L"Content/Graphs/ReimportProp.procgraph",
-            "{\"version\":3,\"settings\":{\"display\":\"copy\"},\"nodes\":{"
+            "{\"version\":4,\"settings\":{\"display\":\"copy\"},\"nodes\":{"
             "\"pts\":{\"type\":\"procedural.Grid\",\"properties\":{\"primitive_type\":\"points\",\"columns\":2,\"rows\":2}},"
             "\"copy\":{\"type\":\"procedural.CopyToPoints\",\"inputs\":{\"points\":\"pts.output\"},"
             "\"properties\":{\"meshes\":[\"" +
@@ -1581,7 +1584,7 @@ class game.DiagnosticSop : procedural.Node {
                 "inspect_graph with include_spatial=false still populated spatial diagnostics.");
     }
 
-    // S4 Digital Assets (.procgraph v3), multi-target promoted parameters, port realignment & graph_extract_asset:
+    // S4 Digital Assets (.procgraph v4), multi-target promoted parameters, port realignment & graph_extract_asset:
     {
         const std::string pillar_key = take(project.create_procedural_graph("Content/Graphs/PillarPair.procgraph"));
         take(doc.open_graph(project, pillar_key));
@@ -1799,6 +1802,47 @@ class game.DiagnosticSop : procedural.Node {
             (void)take(doc.evaluate_graph(court_key, &project));
             require(!doc.graph_node(court_key, "pillars")->kept.root().path({"inputs", "points"}).has_value(),
                     "Restoring upstream GraphInput port name did not automatically reconnect kept['inputs'].");
+        }
+
+        {
+            const auto host = take(project.create_procedural_graph("Content/Graphs/RetainedHost.procgraph", R"({
+              "version":4,"settings":{"display":"outside"},"nodes":{
+              "a":{"type":"procedural.Grid"},"left":{"type":"procedural.Box"},
+              "b":{"type":"procedural.Merge","inputs":{"inputs":["a.output","a.legacy","left.output"]}},
+              "outside":{"type":"procedural.Merge","inputs":{"inputs":["a.output","missing.old","b.output"]}}}})"));
+            take(doc.open_graph(project, host));
+            const auto revision = project.revision();
+            const std::array<std::string, 1> only_b{"b"};
+            const auto failed = doc.graph_extract_asset(project, host, only_b, "Content/Graphs/Rejected.procgraph");
+            require(
+                !failed &&
+                    failed.error().message ==
+                        "Cannot extract saved connection 'a.legacy' at b.inputs: the boundary source port is unresolved." &&
+                    revision == project.revision() && !doc.graph_dirty(host) &&
+                    !std::filesystem::exists(project.root() / "Content/Graphs/Rejected.procgraph") &&
+                    !std::filesystem::exists(project.root() / "Content/Graphs/Rejected.procgraph.asset.json"),
+                "Unrepresentable extraction must return the first boundary error before publishing anything.");
+
+            const std::array<std::string, 2> selected{"a", "b"};
+            const auto stage =
+                take(doc.graph_extract_asset(project, host, selected, "Content/Graphs/Retained.procgraph", "asset_ab"));
+            take(doc.open_graph(project, stage.first));
+            const auto check_inputs = [&](const std::string& graph, std::string_view node, std::string_view first,
+                                          std::string_view second, std::string_view third) {
+                const auto* found = doc.graph_node(graph, node);
+                require(found != nullptr, "Expected retained node after extraction.");
+                const auto port = take(found->kept.root().path({"inputs", "inputs"}));
+                require(port.size() == 3 && port.at(0)->string() == first && port.at(1)->string() == second &&
+                            port.at(2)->string() == third,
+                        "Extraction changed retained multi-input slot order.");
+            };
+            check_inputs(stage.first, "b", "a.output", "a.legacy", "input_inputs.output");
+            check_inputs(host, "outside", "asset_ab.output", "missing.old", "asset_ab.output_2");
+            take(doc.graph_undo(host, false));
+            check_inputs(host, "b", "a.output", "a.legacy", "left.output");
+            check_inputs(host, "outside", "a.output", "missing.old", "b.output");
+            take(doc.graph_undo(host, true));
+            check_inputs(host, "outside", "asset_ab.output", "missing.old", "asset_ab.output_2");
         }
 
         // graph_extract_asset: reject non-convex selection, extract convex stage, and 1-step Undo/Redo:

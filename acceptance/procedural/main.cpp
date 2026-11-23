@@ -1396,6 +1396,13 @@ void generative_modeling_and_l3_contracts() {
     {
         Array<Vector3> l_pts{{0.f, 0.f, 0.f}, {4.f, 0.f, 0.f}, {4.f, 0.f, 4.f}};
         const auto l_curve = take(take(Geometry::points(std::move(l_pts))).connect_points());
+        for (const auto& [segments, error] : {std::pair{1'500'000'000u, "Sweep exceeds the Geometry point limit."},
+                                              std::pair{800'000'000u, "Sweep exceeds the Geometry face limit."},
+                                              std::pair{300'000'000u, "Sweep exceeds the Geometry corner limit."}}) {
+            const auto oversized = sweep(l_curve, {.profile = SweepProfile::tube, .segments = segments});
+            require(!oversized && oversized.error().message == error,
+                    "Oversized Sweep did not reject topology before allocation.");
+        }
         const auto l_wall = take(sweep(l_curve, {.profile = SweepProfile::rectangle, .width = 1.2f, .height = 2.0f}));
         require(l_wall.count(Layer::primitive) == 10, "Planar mitered L-wall Sweep should keep 8 side quads + 2 caps.");
         const auto l_vol = take(volume_scatter(l_wall, {.density = 4.f, .seed = 5, .cell_size = 0.5f}));

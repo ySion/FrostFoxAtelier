@@ -499,7 +499,7 @@ void verify_procedural_generator_scene() {
     }
   },
   "settings": {"display": "out", "seed": 42},
-  "version": 3
+  "version": 4
 })";
     const auto graph_key = take(project.create_procedural_graph(L"Content/Graphs/Island.procgraph", graph_json));
     const auto mat_key = take(project.create_material(

@@ -580,11 +580,33 @@ Result<Geometry> sweep(const Geometry& backbone, const SweepSettings& settings, 
     bool closed_profile = true;
     bool smooth_ring_normals = false;
 
+    // A bent side quad can split into two triangles; a non-convex cap becomes a fan.
+    // Check their worst-case counts before allocating even the first profile ring.
+    std::size_t point_count{}, corner_reserve{}, face_reserve{};
+    const auto size_output = [&](std::uint32_t ring) -> Result<void> {
+        const std::uint64_t stations = backbone.vertex_points().size();
+        const std::uint64_t points = stations * ring;
+        if (points > element_limit)
+            return failure("Sweep exceeds the Geometry point limit.");
+        const auto quads = (stations - prim_count) * (closed_profile ? ring : ring - 1u);
+        const std::uint64_t caps = closed_profile && settings.end_caps ? 2ULL * prim_count : 0;
+        const auto cap_triangles = caps * (ring - 2u);
+        if (2 * quads + cap_triangles > element_limit)
+            return failure("Sweep exceeds the Geometry face limit.");
+        if (6 * quads + 3 * cap_triangles > element_limit)
+            return failure("Sweep exceeds the Geometry corner limit.");
+        point_count = points;
+        corner_reserve = 4 * quads + caps * ring;
+        face_reserve = quads + caps;
+        return {};
+    };
+
     switch (settings.profile) {
     case SweepProfile::rectangle: {
         if (!std::isfinite(settings.width) || !(settings.width > 0.f) || !std::isfinite(settings.height) ||
             !(settings.height > 0.f))
             return failure("Sweep rectangle requires finite positive width and height.");
+        ATELIER_TRY(size_output(4));
         const double hx = 0.5 * double{settings.width};
         const double hy = 0.5 * double{settings.height};
         profile_pts = {{-hx, -hy, 0.f}, {hx, -hy, 0.25f}, {hx, hy, 0.5f}, {-hx, hy, 0.75f}};
@@ -594,6 +616,7 @@ Result<Geometry> sweep(const Geometry& backbone, const SweepSettings& settings, 
         if (!std::isfinite(settings.radius) || !(settings.radius > 0.f) || settings.segments < 3)
             return failure("Sweep tube requires finite positive radius and segments >= 3.");
         const double r = double{settings.radius};
+        ATELIER_TRY(size_output(settings.segments));
         profile_pts.resize(settings.segments);
         for (std::uint32_t i = 0; i < settings.segments; ++i) {
             const double t = static_cast<double>(i) / settings.segments;
@@ -608,6 +631,7 @@ Result<Geometry> sweep(const Geometry& backbone, const SweepSettings& settings, 
             return failure("Sweep custom profile requires a cross_section input with exactly 1 primitive.");
         const auto cr = cross_section->primitive(0);
         closed_profile = (cr.kind == PrimitiveKind::polygon);
+        ATELIER_TRY(size_output(cr.count));
         const auto c_vp = cross_section->vertex_points();
         const auto& c_pos = cross_section->positions();
         profile_pts.resize(cr.count);
@@ -647,10 +671,7 @@ Result<Geometry> sweep(const Geometry& backbone, const SweepSettings& settings, 
     const std::uint32_t seg_edges = closed_profile ? ring_size : (ring_size - 1u);
 
     SurfaceBuilder mesh;
-    const std::size_t approx_sweep_quads =
-        bb_corners.size() > prim_count ? (bb_corners.size() - prim_count) * seg_edges : 0u;
-    mesh.reserve(bb_corners.size() * ring_size, approx_sweep_quads * 4u + prim_count * ring_size * 2u,
-                 approx_sweep_quads + prim_count * 2u, false);
+    mesh.reserve(point_count, corner_reserve, face_reserve, false);
     std::vector<Vector3d> path_pts;
     std::vector<double> scales;
     std::vector<Vector3d> seg_t;

@@ -11,6 +11,7 @@
 
 namespace atelier::editor {
 namespace {
+constexpr std::uint32_t graph_format_version = 4;
 
 // "node.output", or nothing when malformed.
 std::optional<std::pair<std::string_view, std::string_view>> endpoint(json::Value value) {
@@ -696,7 +697,7 @@ Result<GraphDocument> load_graph(Runtime& runtime, std::string_view text, const 
     if (auto fields = root.allowed_members({"version", "settings", "parameters", "nodes", "notes", "boxes"}); !fields)
         return std::unexpected(Error{ErrorCode::argument_mismatch, fields.error().describe()});
     const auto version = root.u64({"version"});
-    if (!version || *version != 3)
+    if (!version || *version != graph_format_version)
         return std::unexpected(Error{ErrorCode::argument_mismatch, "Unsupported procedural graph version."});
     const json::Document empty;
     const auto settings = root.find("settings")->value_or(empty.root());
@@ -1254,7 +1255,7 @@ Result<std::string> save_graph(Runtime& runtime, const GraphDocument& document) 
     ATELIER_TRY_BIND(graph_fields, detail::author_fields(runtime, *graph_type));
     ATELIER_TRY_BIND(settings, encode_properties(runtime, graph, *graph_fields, no_reference));
     json::Builder result;
-    static_cast<void>(result.set(result.root(), "version", std::uint32_t{3}));
+    static_cast<void>(result.set(result.root(), "version", graph_format_version));
     result.set_validated(result.root(), "settings", settings->root());
     const auto settings_node = *result.root().at("settings");
     if (contents.display() != ObjectId{})

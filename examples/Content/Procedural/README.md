@@ -17,9 +17,9 @@
      - **East Sanctum Island**（开启 `Override Graph Seed`，独立种子 `777`）
    - 地形连续网格的 `"default"` 材质槽绑定 `TerraceStone.material`；散布实例由 `BasaltColumn.obj`（玄武岩石柱）与 `AmberCrystal.obj`（自发光琥珀晶簇，参与 DDGI 间接照明）按台地高度与坡度自动选择变体。
 
-2. **三层同构参数与默认锁定预览（`.procgraph` v3）**：
+2. **三层同构参数与默认锁定预览（`.procgraph` v4）**：
    - 在 **Scene Tree** 或 **3D Viewport** 直接点击任一岛屿实体，**Parameters** 面板直接在 `ProceduralGeneratorComponent` 下方内联渲染 `Generator Parameters`（如 `Island Radius`、`Terrace Count`、`Plateau Height`、`Prop Density`），拖动滑杆仅为当前实体写入场景差量 `overrides`（接入场景 Undo/Redo 与 Play 同步）；同时 **Network** 面板默认以 **Locked Preview** 打开该 `.procgraph` 供安全检视，点击顶栏 `Unlock` 才进入共享数字资产编辑态并即时传播至全场景所有实例。
-   - 图中（`.procgraph` v3，含 `Terrain Shaping` / `Outpost Scattering` 两个 Network Box 分组框与 `Terrace Outpost SOP` 便签说明）串联了内置节点（`MeshImport` → `Promote` → `Connectivity` / `Scatter` → `RandomScale` → `CopyToPoints` → `Merge` → `GraphOutput` 正式交付输出 `OUT_terrace`；按需点亮任意节点的 `T` 标记即可叠加半透明参考线框）与 [TerraceIsland.source](../../Source/Procedural/TerraceIsland.source) 中的两个工程自定义 `parallel_for` 节点：
+   - 图中（`.procgraph` v4，含 `Terrain Shaping` / `Outpost Scattering` 两个 Network Box 分组框与 `Terrace Outpost SOP` 便签说明）串联了内置节点（`MeshImport` → `Promote` → `Connectivity` / `Scatter` → `RandomScale` → `CopyToPoints` → `Merge` → `GraphOutput` 正式交付输出 `OUT_terrace`；按需点亮任意节点的 `T` 标记即可叠加半透明参考线框）与 [TerraceIsland.source](../../Source/Procedural/TerraceIsland.source) 中的两个工程自定义 `parallel_for` 节点：
      - `game.TerraceIsland`：基于连续值噪声与阶梯平滑曲线抬升阶梯台地，并用解析中心差分计算顶点法线 `N`。
      - `game.OutpostPlacement`：按台地高度与坡度法线筛选变体 `variant`、调整 `pscale`，并用正交基 `frame_rotation` 组合表面法线倾角与随机局部朝向 `orient`。
    - 修改图节点参数后，所有引用该图的岛屿实体会立即在场景中重算并刷新视口与光照几何。

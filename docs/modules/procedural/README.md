@@ -15,7 +15,7 @@
 
 引擎附带的自有语言节点与随机库在 [assets/engine/procedural](../../../assets/engine/procedural)。
 
-本文只说明已实现能力。方向、设计依据与未实施的跨模块约定见[后续路线与未决契约](roadmap.md)。编辑器与呈现层已接入 `.procgraph` v3 数字资产（`AssetNode`、`GraphInput`/`GraphOutput`、多目标暴露参数 `parameters` 与 `graph.extract_asset` 一键提取）、SOP 视口上下文、Houdini 式二维 Network 连线画布（含默认锁定预览与面包屑下钻）、Geometry Spreadsheet、`world.ProceduralGeneratorEntity` / `world.ProceduralGeneratorComponent` 场景生成器组件（含内联 `overrides` 与私有克隆图求值）、实例 `procedural.bake` 与 Control 操作链（见[编辑器模块](../editor/README.md)与[项目场景](../world/project-scenes.md)）；渲染器 GPU 大批量常驻实例化区段、持久磁盘 Cache 与磁盘冻结尚未实施，节点已支持会话冻结。
+本文只说明已实现能力。方向、设计依据与未实施的跨模块约定见[后续路线与未决契约](roadmap.md)。编辑器与呈现层已接入 `.procgraph` v4 数字资产（`AssetNode`、`GraphInput`/`GraphOutput`、多目标暴露参数 `parameters` 与 `graph.extract_asset` 一键提取）、SOP 视口上下文、Houdini 式二维 Network 连线画布（含默认锁定预览与面包屑下钻）、Geometry Spreadsheet、`world.ProceduralGeneratorEntity` / `world.ProceduralGeneratorComponent` 场景生成器组件（含内联 `overrides` 与私有克隆图求值）、实例 `procedural.bake` 与 Control 操作链（见[编辑器模块](../editor/README.md)与[项目场景](../world/project-scenes.md)）；渲染器 GPU 大批量常驻实例化区段、持久磁盘 Cache 与磁盘冻结尚未实施，节点已支持会话冻结。
 
 ## Geometry
 
@@ -238,7 +238,7 @@ Remap 四端点须有限、输入两端不同，输出两端可以相同。按 `
 
 ## 图文件
 
-图文件的编解码在编辑器里（[editor/graph_format.hpp](../../../modules/editor/core/include/editor/graph_format.hpp)，`atelier_editor_core`），procedural 不依赖 editor。`load_graph(runtime, text, asset_port_resolver)` 把 **version 3** 的图文件打开到已注册 procedural 类型的 Runtime 中（遵循[持久化格式规则](../../persistence.md)，不保留对旧版本的向后兼容），得到 `GraphDocument`：图的根、可选 `template_node`、有序声明式暴露参数列表 `parameters`（`name`、同 `TypeId` 多目标绑定 `targets: ["node.field", ...]` 及可选 `label`/`category`/`description`）、每个节点的 `GraphNode`（名字、节点根、`AssetNode` 的 `asset` 持久键与差量 `overrides` JSON、画布位置、`shape` 形状预设、可选 `#RRGGBB` `color`、`comment` 备注与保留的原始 JSON）、`notes`（Sticky Notes 便签）、`boxes`（Network Boxes 分组背景框）、保留的 settings 和加载诊断（`world::Diagnostic`）。`save_graph(runtime, document)` 写出规范文本。名字、位置、外观与画布注释是文档数据，不放进节点对象，所以移动节点或改配色/形状不盖章；节点 `bypass` 为 true 时在节点条目写出 `"bypass": true` 并在加载时经 `set_bypassed` 恢复。
+图文件的编解码在编辑器里（[editor/graph_format.hpp](../../../modules/editor/core/include/editor/graph_format.hpp)，`atelier_editor_core`），procedural 不依赖 editor。`load_graph(runtime, text, asset_port_resolver)` 把 **version 4** 的图文件打开到已注册 procedural 类型的 Runtime 中（遵循[持久化格式规则](../../persistence.md)，不保留对旧版本的向后兼容），得到 `GraphDocument`：图的根、可选 `template_node`、有序声明式暴露参数列表 `parameters`（`name`、同 `TypeId` 多目标绑定 `targets: ["node.field", ...]` 及可选 `label`/`category`/`description`）、每个节点的 `GraphNode`（名字、节点根、`AssetNode` 的 `asset` 持久键与差量 `overrides` JSON、画布位置、`shape` 形状预设、可选 `#RRGGBB` `color`、`comment` 备注与保留的原始 JSON）、`notes`（Sticky Notes 便签）、`boxes`（Network Boxes 分组背景框）、保留的 settings 和加载诊断（`world::Diagnostic`）。`save_graph(runtime, document)` 写出规范文本。名字、位置、外观与画布注释是文档数据，不放进节点对象，所以移动节点或改配色/形状不盖章；节点 `bypass` 为 true 时在节点条目写出 `"bypass": true` 并在加载时经 `set_bypassed` 恢复。
 
 ```json
 {
@@ -256,13 +256,13 @@ Remap 四端点须有限、输入两端不同，输出两端可以相同。按 `
     {"category": "Layout", "label": "Grid Width", "name": "grid_width", "targets": ["grid.size.x"]}
   ],
   "settings": {"display": "out", "seed": 7, "template": "grid"},
-  "version": 3
+  "version": 4
 }
 ```
 
 - **规范形式**：`nodes`、`notes`、`boxes` 均以标识符名字为键，按名字排序；`parameters` 保持作者排列顺序；空的 `parameters` / `notes` / `boxes`、空的 `AssetNode` `overrides` 及默认外观字段（`shape: auto`、无自定义 `color`、空 `comment`、`bypass: false`、无 `template`）省略写出，`dump(2)` 后加换行，未改动文档再次保存逐字节相同。
 - **宽容加载**：与 Scene 相同，已声明 `Transient` 的旧字段跳过，其余放不进的内容保留、报告并在保存时写回。类型不存在或不能作为节点的条目整项保留（`unknown_type`）；已知节点和 settings 中解析不了的参数叶经 `PropertyReport` 保留；上游数字资产增删重排 `GraphInput`/`GraphOutput` 端口后，外层连接按端口名重对齐，失效连接按端口保留入 `kept["inputs"]`（`reference_dropped`，多输入端口混有未解析端点时保留有序列表，并在后续连线、剪线、重连、串接或删除上游节点时同步增删对应端点、保留其余未解析项与相对顺序并计入撤销历史）；上游删改暴露参数名后，`AssetNode` 上未匹配的旧 `overrides` 原样保留并报告诊断；`display` 或 `template` 指向没有加载的节点时同样保留，并在重命名或删除占位节点时同步更新与清理（含撤销恢复）。
-- **结构错误**直接失败：版本不是 3、未知键、`nodes`/`settings`/`notes`/`boxes` 不是对象、`parameters` 不是数组、标识符非法、缺少 `type`、非 `procedural.AssetNode` 携带 `asset`/`overrides`、`position`/`size` 非有限或尺寸非正、非法的 `shape` 预设名或非 `#RRGGBB` 颜色、`inputs` 格式非法。
+- **结构错误**直接失败：版本不是 4、未知键、`nodes`/`settings`/`notes`/`boxes` 不是对象、`parameters` 不是数组、标识符非法、缺少 `type`、非 `procedural.AssetNode` 携带 `asset`/`overrides`、`position`/`size` 非有限或尺寸非正、非法的 `shape` 预设名或非 `#RRGGBB` 颜色、`inputs` 格式非法。
 
 图文件不保存派生的 Geometry 缓冲。
 

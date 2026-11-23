@@ -5412,6 +5412,58 @@ Session::graph_extract_asset(Project& project, std::string_view key, std::span<c
         node_in_edges.emplace(item.node.id(), std::move(*ins));
     }
 
+    struct SavedBoundary {
+        const GraphNode* target;
+        const GraphNode* source;
+        std::uint32_t output;
+        std::string endpoint;
+        std::string port;
+        std::optional<std::size_t> slot;
+    };
+    std::vector<SavedBoundary> saved_boundaries;
+    for (const auto& target : open.document.nodes) {
+        const auto inputs = *target.kept.root().find("inputs");
+        if (!inputs)
+            continue;
+        const bool inside = sel_name_set.contains(target.name);
+        const auto record = [&](std::string_view port, json::Value endpoint,
+                                std::optional<std::size_t> slot) -> Result<void> {
+            const auto text = endpoint.string();
+            if (!text)
+                return graph_error("Invalid saved connection at " + target.name + "." + std::string(port));
+            const auto dot = text->find('.');
+            const std::string source_name{text->substr(0, dot)};
+            if (sel_name_set.contains(source_name) == inside)
+                return {};
+            const auto* source = find_node(open.document, source_name);
+            if (source && source->node.registered() && dot != text->npos) {
+                ATELIER_TRY_BIND(ports, procedural::ports(runtime_, source->node.id()));
+                const auto output = std::ranges::find(ports->outputs, text->substr(dot + 1));
+                if (output != ports->outputs.end()) {
+                    saved_boundaries.push_back({&target, source,
+                                                static_cast<std::uint32_t>(output - ports->outputs.begin()),
+                                                std::string(*text), std::string(port), slot});
+                    if (target.node.registered()) {
+                        forward_adj[source->node.id()].push_back(target.node.id());
+                        reverse_adj[target.node.id()].push_back(source->node.id());
+                    }
+                    return {};
+                }
+            }
+            return graph_error("Cannot extract saved connection '" + std::string(*text) + "' at " + target.name + "." +
+                               std::string(port) + ": the boundary source port is unresolved.");
+        };
+        for (const auto& [port, saved] : *inputs->object_items()) {
+            if (saved.kind() == json::Kind::array) {
+                std::size_t slot{};
+                for (const auto endpoint : *saved.array())
+                    ATELIER_TRY(record(port, endpoint, slot++));
+            } else {
+                ATELIER_TRY(record(port, saved, std::nullopt));
+            }
+        }
+    }
+
     std::unordered_set<ObjectId> reachable_from_sel;
     {
         std::vector<ObjectId> q(sel_ids.begin(), sel_ids.end());
@@ -5474,63 +5526,53 @@ Session::graph_extract_asset(Project& project, std::string_view key, std::span<c
     };
 
     std::vector<BoundaryInGroup> incoming_groups;
-    std::unordered_set<std::string> used_in_ports;
+    const auto add_in = [&](const GraphNode& src, std::uint32_t output, std::string_view input_name) {
+        if (std::ranges::none_of(incoming_groups,
+                                 [&](const auto& g) { return g.ext_from == src.node.id() && g.ext_output == output; }))
+            incoming_groups.push_back({src.node.id(), src.name, output, std::string(input_name)});
+    };
     for (const auto& sname : sel_names) {
         const auto* sel_item = find_node(open.document, sname);
-        ATELIER_TRY_BIND(sel_ports, procedural::ports(runtime_, sel_item->node.id()));
-        for (const auto& edge : node_in_edges[sel_item->node.id()]) {
-            if (sel_ids.contains(edge.from))
-                continue;
-            const auto* ext_src = find_node_by_id(open.document, edge.from);
-            if (!ext_src)
-                continue;
-            const bool exists = std::ranges::any_of(incoming_groups, [&](const BoundaryInGroup& g) {
-                return g.ext_from == edge.from && g.ext_output == edge.output;
-            });
-            if (!exists) {
-                const std::string_view pref =
-                    edge.input < sel_ports->inputs.size() ? std::string_view(sel_ports->inputs[edge.input]) : "in";
-                incoming_groups.push_back(
-                    {edge.from, ext_src->name, edge.output, alloc_port_name(pref, used_in_ports, "in")});
-            }
-        }
+        ATELIER_TRY_BIND(ports, procedural::ports(runtime_, sel_item->node.id()));
+        for (const auto& edge : node_in_edges[sel_item->node.id()])
+            if (!sel_ids.contains(edge.from))
+                add_in(*find_node_by_id(open.document, edge.from), edge.output, ports->inputs[edge.input]);
     }
+    for (const auto& saved : saved_boundaries)
+        if (sel_name_set.contains(saved.target->name))
+            add_in(*saved.source, saved.output, saved.port);
     std::ranges::sort(incoming_groups, [](const BoundaryInGroup& a, const BoundaryInGroup& b) {
         return a.ext_name != b.ext_name ? a.ext_name < b.ext_name : a.ext_output < b.ext_output;
     });
-    used_in_ports.clear();
+    std::unordered_set<std::string> used_in_ports;
     for (auto& g : incoming_groups)
         g.port_name = alloc_port_name(g.port_name, used_in_ports, "in");
 
     std::vector<BoundaryOutGroup> outgoing_groups;
-    std::unordered_set<std::string> used_out_ports;
     std::unordered_set<ObjectId> downstream_ext_ids;
+    const auto add_out = [&](const GraphNode& src, std::uint32_t output, std::string_view name) {
+        if (std::ranges::none_of(outgoing_groups,
+                                 [&](const auto& g) { return g.sel_from == src.node.id() && g.sel_output == output; }))
+            outgoing_groups.push_back({src.node.id(), src.name, output, std::string(name)});
+    };
     for (const auto& item : open.document.nodes) {
         if (!item.node.registered() || sel_ids.contains(item.node.id()))
             continue;
         for (const auto& edge : node_in_edges[item.node.id()]) {
             if (!sel_ids.contains(edge.from))
                 continue;
-            const auto* sel_src = find_node_by_id(open.document, edge.from);
-            if (!sel_src)
-                continue;
             downstream_ext_ids.insert(item.node.id());
-            ATELIER_TRY_BIND(src_ports, procedural::ports(runtime_, sel_src->node.id()));
-            const bool exists = std::ranges::any_of(outgoing_groups, [&](const BoundaryOutGroup& g) {
-                return g.sel_from == edge.from && g.sel_output == edge.output;
-            });
-            if (!exists) {
-                const std::string_view pref =
-                    edge.output < src_ports->outputs.size() ? std::string_view(src_ports->outputs[edge.output]) : "out";
-                outgoing_groups.push_back(
-                    {edge.from, sel_src->name, edge.output, alloc_port_name(pref, used_out_ports, "out")});
-            }
+            ATELIER_TRY_BIND(ports, procedural::ports(runtime_, edge.from));
+            add_out(*find_node_by_id(open.document, edge.from), edge.output, ports->outputs[edge.output]);
         }
     }
+    for (const auto& saved : saved_boundaries)
+        if (!sel_name_set.contains(saved.target->name))
+            add_out(*saved.source, saved.output, std::string_view(saved.endpoint).substr(saved.endpoint.find('.') + 1));
     std::ranges::sort(outgoing_groups, [](const BoundaryOutGroup& a, const BoundaryOutGroup& b) {
         return a.sel_name != b.sel_name ? a.sel_name < b.sel_name : a.sel_output < b.sel_output;
     });
-    used_out_ports.clear();
+    std::unordered_set<std::string> used_out_ports;
     for (auto& g : outgoing_groups)
         g.port_name = alloc_port_name(g.port_name, used_out_ports, "out");
 
@@ -5606,21 +5648,9 @@ Session::graph_extract_asset(Project& project, std::string_view key, std::span<c
         }
         if (*is_byp)
             ATELIER_TRY(procedural::set_bypassed(runtime_, cid, true));
-        GraphNode copy_node;
-        copy_node.name = src->name;
+        GraphNode copy_node = *src;
         copy_node.node = std::move(*created);
-        copy_node.asset_key = src->asset_key;
-        copy_node.overrides = src->overrides;
         copy_node.position = {std::round(src->position[0] - cx), std::round(src->position[1] - cy)};
-        copy_node.shape = src->shape;
-        copy_node.color = src->color;
-        copy_node.comment = src->comment;
-        if (src->kept.root().kind() == json::Kind::object && src->kept.root().size() > 0) {
-            json::Builder ck(src->kept);
-            ck.erase(ck.root(), "inputs");
-            if (ck.root().size() > 0)
-                copy_node.kept = ck.finish();
-        }
         inner_id_by_name.emplace(copy_node.name, cid);
         extracted.nodes.push_back(std::move(copy_node));
     }
@@ -5713,11 +5743,41 @@ Session::graph_extract_asset(Project& project, std::string_view key, std::span<c
             extracted.parameters.push_back(param);
     }
 
+    GraphExtractChange change;
+    // Retained multi-input arrays are the authoritative full order (live and unresolved slots).
+    // Entries were gathered by target, so rewrite only the crossing slots on one copy per node.
+    for (std::size_t i = 0; i < saved_boundaries.size();) {
+        const auto& owner = *saved_boundaries[i].target;
+        const bool inside = sel_name_set.contains(owner.name);
+        json::Builder kept(owner.kept);
+        const auto inputs = *kept.root().at("inputs");
+        do {
+            const auto& saved = saved_boundaries[i++];
+            auto cell = *inputs.at(saved.port);
+            if (saved.slot)
+                cell = *cell.at(*saved.slot);
+            if (inside) {
+                const auto g = std::ranges::find_if(incoming_groups, [&](const auto& pin) {
+                    return pin.ext_from == saved.source->node.id() && pin.ext_output == saved.output;
+                });
+                const auto* pin = find_node_by_id(extracted, created_in_pins[g - incoming_groups.begin()]);
+                kept.set_validated(cell, pin->name + ".output");
+            } else {
+                const auto g = std::ranges::find_if(outgoing_groups, [&](const auto& pin) {
+                    return pin.sel_from == saved.source->node.id() && pin.sel_output == saved.output;
+                });
+                kept.set_validated(cell, asset_node_name + "." + g->port_name);
+            }
+        } while (i < saved_boundaries.size() && saved_boundaries[i].target == &owner);
+        if (inside)
+            find_node(extracted, owner.name)->kept = kept.finish();
+        else
+            change.retained_node_kept.push_back({owner.name, owner.kept, kept.finish()});
+    }
     ATELIER_TRY_BIND(extracted_ports, extract_graph_ports(runtime_, extracted));
     ATELIER_TRY_BIND(extracted_text, editor::save_graph(runtime_, extracted));
     ATELIER_TRY_BIND(created_asset, project.create_procedural_graph(asset_relative_path, *extracted_text));
 
-    GraphExtractChange change;
     change.before_display = before_display;
     change.before_template = before_template;
     change.before_parameters = open.document.parameters;
@@ -5815,50 +5875,14 @@ Session::graph_extract_asset(Project& project, std::string_view key, std::span<c
     }
     change.after_parameters = open.document.parameters;
 
-    const auto uses_removed_node = [&](std::string_view endpoint) noexcept {
-        const auto dot = endpoint.find('.');
-        return dot != std::string_view::npos && sel_name_set.contains(std::string(endpoint.substr(0, dot)));
-    };
+    for (const auto& retained : change.retained_node_kept)
+        find_node(open.document, retained.owner)->kept = retained.after;
     ATELIER_TRY_BIND(after_listed, procedural::contents(runtime_, outer_graph));
-    for (auto& surv : open.document.nodes) {
-        std::vector<procedural::Input> live_ins;
-        if (surv.node.registered()) {
-            ATELIER_TRY_BIND(ins_now, procedural::inputs(runtime_, *after_listed, surv.node.id()));
-            live_ins = *ins_now;
-            change.after_inputs.push_back({surv.node.id(), std::move(*ins_now), {}});
+    for (const auto& node : open.document.nodes) {
+        if (node.node.registered()) {
+            ATELIER_TRY_BIND(inputs, procedural::inputs(runtime_, *after_listed, node.node.id()));
+            change.after_inputs.push_back({node.node.id(), std::move(*inputs), {}});
         }
-        if (surv.name == asset_node_name)
-            continue;
-        const auto kept_in = *surv.kept.root().find("inputs");
-        if (!kept_in || kept_in->kind() != json::Kind::object)
-            continue;
-        std::vector<std::string> kports;
-        for (const auto& [pname, _] : *kept_in->object_items())
-            kports.emplace_back(pname);
-        const auto before_surv_kept = surv.kept;
-        std::optional<procedural::Ports> surv_ports;
-        if (surv.node.registered()) {
-            ATELIER_TRY_BIND(sp, procedural::ports(runtime_, surv.node.id()));
-            surv_ports = std::move(*sp);
-        }
-        for (const auto& pname : kports) {
-            bool is_multi = false;
-            std::vector<std::string> live_after;
-            if (surv_ports) {
-                const auto pat = std::ranges::find(surv_ports->inputs, pname);
-                if (pat != surv_ports->inputs.end()) {
-                    const auto p_idx = static_cast<std::uint32_t>(pat - surv_ports->inputs.begin());
-                    is_multi = surv_ports->multiple[p_idx];
-                    if (is_multi) {
-                        ATELIER_TRY_BIND(la, format_live_port_endpoints(runtime_, open.document, live_ins, p_idx));
-                        live_after = std::move(*la);
-                    }
-                }
-            }
-            filter_kept_port_endpoints(surv.kept, pname, is_multi, live_after, uses_removed_node);
-        }
-        if (surv.kept != before_surv_kept)
-            change.retained_node_kept.push_back({surv.name, before_surv_kept, surv.kept});
     }
 
     open.push_change(std::move(change));

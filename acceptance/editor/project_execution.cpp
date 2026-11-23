@@ -151,7 +151,7 @@ void verify_network_control_reuse(const std::filesystem::path& root) {
     auto project = take(editor::Project::create(root));
     const auto graph_key = take(project.create_procedural_graph(
         L"Content/Graphs/ReuseCheck.procgraph",
-        R"({"version":3,"settings":{"display":"xform"},"nodes":{)"
+        R"({"version":4,"settings":{"display":"xform"},"nodes":{)"
         R"("grid":{"type":"procedural.Grid","position":[60,40],"properties":{"columns":4,"rows":4}},)"
         R"("xform":{"type":"procedural.Transform","position":[60,150],"inputs":{"input":"grid.output"}}}})"));
     editor::Session doc;
@@ -251,7 +251,7 @@ void verify_stateful_rebuild(const std::filesystem::path& root) {
                                       "    }\n"
                                       "}\n"));
     const auto disk_graph_json =
-        R"({"version":3,"settings":{"display":"step"},"parameters":[{"name":"step_offset","targets":["step.offset"]}],"nodes":{)"
+        R"({"version":4,"settings":{"display":"step"},"parameters":[{"name":"step_offset","targets":["step.offset"]}],"nodes":{)"
         R"("box":{"type":"procedural.Box","position":[40,20],"properties":{"size":{"x":1.0,"y":1.0,"z":1.0}}},)"
         R"("step":{"type":"game.HeightStep","position":[40,120],"inputs":{"input":"box.output"},"properties":{"offset":1.5}})"
         R"(}})";

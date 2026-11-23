@@ -416,7 +416,7 @@ Play 的 World Tick/协程按宿主调用推进，物理累积器不代表整个
 - `steps.csv` 提供逐步输入轮询、接受帧间隔及现有帧记录器的阶段时间。常规启动不采集这些报表。[真实编辑器计时](../../research/ui-helper-incremental-compilation.md#真实编辑器从保存到接受帧) · [单组件编译分解](../../research/ui-helper-incremental-compilation.md#单组件编译耗时)
 
 - `editor_log_smoke_acceptance`（窗口）运行 `atelier_editor_control_acceptance <atelier_editor.exe> <atelier_control.exe> <输出目录> --smoke-logs`：按 `Config/Project.json` 复制 Examples 的 `Config`、`Source` 与启动场景所在的 `Content/<场景包>`，以 `--no-activate --gpu-validation` 启动真实编辑器并等待启动场景的接受帧；经 Control 执行一次 `scene.add` → `scene.save` → `edit.undo`，确认撤销后有新的接受帧；随后启动 Play，在 Play 运行时关闭编辑器，检查编辑器与 runner 日志零错误且 Play 正常结束，通过后自动删除临时 `Project/` 副本。日志判定见 [Control 端到端验收](control.md#端到端验收)。
-- `editor_document_acceptance`（无窗口）的默认运行覆盖 StaticMeshEntity 创建与 undo/redo 后的身份及网格资源、glTF 节点变换数学、网格导入→重新导入、`.procgraph` v3 往返与宽容加载、S4 数字资产（`AssetNode`、`GraphInput`/`GraphOutput`、多目标提升参数、共享定义实时传播、端口重排保留与 `graph.extract_asset` 单步撤销），以及 SOP 上下文、二维 Network 连线画布、Geometry Spreadsheet 与完整 Workspace UI 帧接受。
+- `editor_document_acceptance`（无窗口）的默认运行覆盖 StaticMeshEntity 创建与 undo/redo 后的身份及网格资源、glTF 节点变换数学、网格导入→重新导入、`.procgraph` v4 往返与宽容加载、S4 数字资产（`AssetNode`、`GraphInput`/`GraphOutput`、多目标提升参数、共享定义实时传播、端口重排保留与 `graph.extract_asset` 单步撤销），以及 SOP 上下文、二维 Network 连线画布、Geometry Spreadsheet 与完整 Workspace UI 帧接受。
 - `project_scene_acceptance`（无窗口）覆盖一次作者字段值的 Scene 保存/重开往返、失败 Tick 中嵌套 stop 时 End 返回后才释放 PhysicsScene 的停止/关闭顺序，以及 `ProceduralGeneratorComponent` 差量 `overrides` 的场景往返、复制、Undo/Redo、Play 实时同步与官方程序化展示场景求值。
 - `project_integration_acceptance`（无窗口）覆盖真实 Source → Runtime 的一次 tick，以及停止时卡死的 Source 子进程在期限内被终止。
 
