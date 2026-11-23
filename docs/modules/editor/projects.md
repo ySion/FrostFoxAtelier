@@ -25,15 +25,15 @@ MyGame/
 
 Application 捕获帧循环异常（包括 Renderer 返回的终态错误）后，在 Session 释放前尝试一次保全；帧循环外的异常栈展开由析构入口兜底。正常关闭沿用原来的保存/放弃流程。
 
-未确认的参数或变换手势先取消，再使用同一个 `Session::serialize` 保存最后已提交的作者 Scene。输出为 `%LOCALAPPDATA%/FrostFoxAtelier/Recovery/<唯一标识>/Scene.scene`，日志以 `Scene recovery saved:` 报告完整路径。写入复用原子文件创建，不覆盖原场景、不标记文档已保存；重复失败不会重写快照或替换首次原因。
+未确认的参数或变换手势先取消，再使用同一个 `Session::serialize` 保存最后已提交的作者 Scene。输出为 `%LOCALAPPDATA%/FrostFoxAtelier/Recovery/<唯一标识>/Scene.scene`；结构化日志记录 `recovery.saved`（正文为 `Scene recovery saved: <完整路径>`，`fields.recovery_scene` 保存路径，宿主退出的 `application.failed` 同步附带该字段）。若日志提交未获接纳（如无活动 Run 或队列已满）或结束时日志 sink 刷盘失败，统一回退向 `stderr` 输出 `Scene recovery saved:` 完整路径。写入复用原子文件创建，不覆盖原场景、不标记文档已保存；重复失败不会重写快照或替换首次原因。
 
-Scene 先写入并刷新到磁盘，随后 `recovery.json` 记录原工程、原场景、失败原因、时间、未确认手势与脏材质资源名称。侧记写出失败时仍保留已经写成的 Scene，并输出警告。序列化或磁盘失败明确输出 `Scene recovery failed:`，不宣称恢复成功。
+Scene 先写入并刷新到磁盘，随后 `recovery.json` 记录原工程、原场景、失败原因、时间、未确认手势与脏材质资源名称。侧记写出失败时仍保留已经写成的 Scene，并以 `warning` 级别记录警告。序列化或磁盘失败记录 `recovery.failed`（日志不可用时回退输出 `Scene recovery failed:`），不宣称恢复成功。
 
 这条路径不复制或解析资产，缺失 mesh 等外部资源不会阻止有效作者 Scene 的原始引用写出。它不是完整工程备份：独立材质资产、Source 文本草稿和没有持久化来源的程序化网格不在本次保全范围内；原 Scene 序列化本身拒绝的状态仍会失败。强制结束进程、访问违规或断电不能保证执行异常保全。
 
 恢复时先保留原工程及快照，将 `Scene.scene` **复制为原工程 Content/Scenes 下的新文件名**，再通过同一工程的 Open Scene 验证类型和资源；确认后再决定保存位置。不要直接覆盖原文件。
 
-Scene 恢复路径目前没有自动验收；真实设备失效后的 Application 调用链需在 GPU 故障风险消除后复验。
+CPU 侧 `SceneRecovery`（取消未确认手势、写出 `.scene` 与 `recovery.json`、超长错误原因下的结构化日志落盘）由 `atelier_editor_document_acceptance` 覆盖；真实设备失效后的 Application 调用链仍需在 GPU 故障风险消除后复验。
 
 ## 后续方向：可响应加载与多场景文档
 

@@ -114,7 +114,7 @@ ui::PixelExtent client_extent(HWND window) {
 }
 }
 
-Application::Application() = default;
+Application::Application(SceneRecovery* recovery) : recovery_(recovery ? recovery : &owned_recovery_) {}
 
 Result<void> Application::initialize(std::unique_ptr<editor::Session> document, bool validation, bool activate,
                                      std::optional<ui::PixelExtent> initial_client, bool vsync) {
@@ -209,21 +209,24 @@ void Application::diagnostics() noexcept {
 }
 
 void Application::preserve_failure(std::string_view reason) noexcept {
-    if (recovery_.attempted() || !document_ || closed_)
+    if (recovery_->attempted() || !document_ || closed_)
         return;
     try {
-        static_cast<void>(logging::submit({.severity = logging::Severity::critical,
-                                           .category = "application",
-                                           .event_code = "application.failure_preserved",
-                                           .message = std::string(reason)}));
+        const auto message = StringView{diagnostic_utf8(reason)}.utf8_prefix(logging::maximum_message_bytes).std_view();
+        if (logging::submit({.severity = logging::Severity::critical,
+                             .category = "application",
+                             .event_code = "application.failure_preserved",
+                             .message = std::string(message)})
+                .status != logging::SubmitStatus::accepted)
+            std::fprintf(stderr, "Editor failure preserved: %.*s\n", static_cast<int>(message.size()), message.data());
     } catch (...) {
         std::fputs("Cannot capture the editor's original failure.\n", stderr);
     }
     try {
         window_.capture(false);
         window_.cursor(ui::Cursor::arrow);
-        static_cast<void>(
-            recovery_.preserve(*document_, project_ ? project_->root() : std::filesystem::path{}, scene_path_, reason));
+        static_cast<void>(recovery_->preserve(*document_, project_ ? project_->root() : std::filesystem::path{},
+                                              scene_path_, reason));
     } catch (const std::exception& error) {
         std::fprintf(stderr, "Scene recovery failed: %s\n", error.what());
     } catch (...) {

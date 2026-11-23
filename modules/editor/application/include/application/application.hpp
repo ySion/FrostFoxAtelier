@@ -24,7 +24,7 @@ enum class ProjectOpenPolicy { allow_repair, require_scene };
 
 class Application final : private editor::OperatorHost {
 public:
-    Application();
+    explicit Application(SceneRecovery* recovery = nullptr);
 
     // Takes an initialized document at this stable address. Failure permits destruction only.
     Result<void> initialize(std::unique_ptr<editor::Session>, bool gpu_validation = false, bool activate = true,
@@ -101,6 +101,8 @@ public:
     // Most recent step's render result; zero when that step did not render.
     const renderer::FrameStats& frame_statistics() const noexcept { return frame_statistics_; }
 
+    const SceneRecovery& recovery() const noexcept { return *recovery_; }
+
 private:
     friend struct EditorAcceptanceAccess; // Drives snapshots and render-performance measurements.
 
@@ -112,7 +114,9 @@ private:
 
     std::unique_ptr<editor::Session> document_;
 
-    SceneRecovery recovery_;
+    SceneRecovery owned_recovery_;
+
+    SceneRecovery* recovery_{&owned_recovery_};
 
     void preserve_failure(std::string_view) noexcept;
 

@@ -25,7 +25,7 @@ int capture_editor_snapshot(atelier::application::Application&, const char* outp
 void guard_acceptance_native_dialogs();
 
 namespace {
-atelier::Result<int> host_main(int argc, wchar_t** argv) {
+atelier::Result<int> host_main(int argc, wchar_t** argv, atelier::application::SceneRecovery& recovery) {
     atelier::application::install_frame_timing();
     if (argc == 2 && std::wstring_view(argv[1]) == L"--version") {
         std::printf("FrostFox Atelier | %s | %s\n", atelier::build_info::revision, atelier::build_info::configuration);
@@ -118,7 +118,7 @@ atelier::Result<int> host_main(int argc, wchar_t** argv) {
         atelier::application::isolate_shader_cache();
     auto document = std::make_unique<atelier::editor::Session>();
     ATELIER_TRY(document->initialize({}, atelier::editor::SessionRole::editor));
-    atelier::application::Application app;
+    atelier::application::Application app{&recovery};
     const auto initialized =
         app.initialize(std::move(document), gpu_validation, !snapshot && !no_activate && !profile_output,
                        initial_client, !profile_output || profile_reload);
@@ -177,7 +177,18 @@ int wmain(int argc, wchar_t** argv) {
     // Deliberately outside the business try: Application, World, workers and
     // catch diagnostics all retire before finish, including early command returns.
     std::unique_ptr<log::Run> run;
+    atelier::application::SceneRecovery recovery;
     int result = 1;
+    const auto report_host_error = [&](const atelier::Error& error) noexcept {
+        auto entry = atelier::application::error_diagnostic(error, "application.failed", {});
+        if (entry) {
+            entry->severity = log::Severity::critical;
+            if (const auto field = recovery.diagnostic_field())
+                entry->fields.push_back(*field);
+        }
+        if (!entry || log::submit(std::move(*entry)).status != log::SubmitStatus::accepted)
+            std::fprintf(stderr, "Host failure: %s\n", error.message.c_str());
+    };
     try {
         log::RunOptions options;
         std::vector<wchar_t*> arguments{argv[0]};
@@ -212,40 +223,39 @@ int wmain(int argc, wchar_t** argv) {
         static_cast<void>(ATELIER_LOG(log::Severity::info, "application", "application.started",
                                       "FrostFox Atelier | {} | {}", atelier::build_info::revision,
                                       atelier::build_info::configuration));
-        const auto hosted = host_main(static_cast<int>(arguments.size()), arguments.data());
+        const auto hosted = host_main(static_cast<int>(arguments.size()), arguments.data(), recovery);
         if (hosted)
             result = *hosted;
-        else {
-            auto entry = atelier::application::error_diagnostic(hosted.error(), "application.failed", {});
-            if (entry)
-                entry->severity = log::Severity::critical;
-            if (!entry || log::submit(std::move(*entry)).status != log::SubmitStatus::accepted)
-                std::fprintf(stderr, "Host failure: %s\n", hosted.error().message.c_str());
-        }
+        else
+            report_host_error(hosted.error());
     } catch (const atelier::editor::detail::Failure& error) {
-        auto entry = atelier::application::error_diagnostic(error.error, "application.failed", {});
-        if (entry)
-            entry->severity = log::Severity::critical;
-        if (!entry || log::submit(std::move(*entry)).status != log::SubmitStatus::accepted)
-            std::fprintf(stderr, "Host failure: %s\n", error.what());
+        report_host_error(error.error);
     } catch (const std::exception& error) {
-        const auto submitted = ATELIER_LOG(log::Severity::critical, "application", "application.failed",
-                                           "Host failure: {}", std::string_view(error.what()));
+        const auto field = recovery.diagnostic_field();
+        const log::native::Context context{field ? std::span<const log::Field>{&*field, 1}
+                                                 : std::span<const log::Field>{}};
+        const auto submitted =
+            ATELIER_LOG_WITH(log::Severity::critical, "application", "application.failed", context, "Host failure: {}",
+                             atelier::application::diagnostic_utf8(error.what()));
         if (submitted.status != log::SubmitStatus::accepted)
             std::fprintf(stderr, "Host failure: %s\n", error.what());
     } catch (...) {
-        const auto submitted =
-            ATELIER_LOG(log::Severity::critical, "application", "application.failed", "Unknown host failure");
+        const auto field = recovery.diagnostic_field();
+        const log::native::Context context{field ? std::span<const log::Field>{&*field, 1}
+                                                 : std::span<const log::Field>{}};
+        const auto submitted = ATELIER_LOG_WITH(log::Severity::critical, "application", "application.failed", context,
+                                                "Unknown host failure");
         if (submitted.status != log::SubmitStatus::accepted)
             std::fputs("Unknown host failure.\n", stderr);
     }
     if (run) {
+        bool sink_healthy = false;
         try {
             static_cast<void>(ATELIER_LOG(log::Severity::info, "application", "application.finished",
                                           "Business exit code {}", result));
             const auto final = run->finish();
-            if (!final.backend_acknowledged || !final.sink_flush_succeeded || !final.summary_published ||
-                final.health.facility_failures || final.health.backend_notifications ||
+            sink_healthy = final.backend_acknowledged && final.sink_flush_succeeded && !final.health.facility_failures;
+            if (!sink_healthy || !final.summary_published || final.health.backend_notifications ||
                 final.health.rejected_queue_full || final.health.rejected_producer_limit ||
                 final.health.rejected_record_too_large || final.health.rejected_invalid_record ||
                 final.health.rejected_internal_failure)
@@ -257,6 +267,8 @@ int wmain(int argc, wchar_t** argv) {
         } catch (...) {
             std::fputs("Logging finish failed; business exit code is unchanged.\n", stderr);
         }
+        if (!sink_healthy && recovery.logged())
+            recovery.report_stderr();
     }
     return result;
 }

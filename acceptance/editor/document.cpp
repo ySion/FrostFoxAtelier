@@ -21,7 +21,10 @@
 #include "application/diagnostics.hpp"
 #include "application/presentation.hpp"
 #include "application/procedural_preview.hpp"
+#include "application/recovery.hpp"
 #include "application/scene_snapshot.hpp"
+#include "json/json.hpp"
+#include "logging/logging.hpp"
 #include "renderer/scene_visibility.hpp"
 #include <algorithm>
 #include <chrono>
@@ -1792,6 +1795,100 @@ class game.DiagnosticSop : procedural.Node {
 
     changed(doc.close());
 }
+
+void verify_scene_recovery() {
+    const auto temp_root =
+        std::filesystem::temp_directory_path() /
+        ("atelier-scene-recovery-" + std::to_string(GetCurrentProcessId()) + "-" + std::to_string(GetTickCount64()));
+    struct Cleanup {
+        std::filesystem::path dir;
+
+        ~Cleanup() {
+            std::error_code ec;
+            std::filesystem::remove_all(dir, ec);
+        }
+    } cleanup{temp_root};
+
+    auto project = take(editor::Project::create(temp_root / "project"));
+    auto loaded =
+        editor::load_project_scene(project, take(assets::read_file(project.root() / "Content/Scenes/Main.scene")),
+                                   editor::LoadPolicy::strict, false, editor::SessionRole::editor);
+    require(loaded.session != nullptr && !loaded.error, "Recovery test scene failed to load.");
+    auto& doc = *loaded.session;
+    changed(doc.create_static_mesh(assets::mesh_assets().front()));
+    const ObjectId entity = doc.selection().entity;
+    const std::array entities{entity};
+    const std::array committed_trs{world::Trs{{3.f, 0.f, 0.f}, {}, {1.f, 1.f, 1.f}}};
+    take(doc.begin_transform(entities, 901));
+    take(doc.preview_transform(901, committed_trs));
+    take(doc.commit_edit(901));
+
+    const std::array unfinished_trs{world::Trs{{99.f, 0.f, 0.f}, {}, {1.f, 1.f, 1.f}}};
+    take(doc.begin_transform(entities, 902));
+    take(doc.preview_transform(902, unfinished_trs));
+    require(doc.editing() && doc.dirty(), "Expected dirty document with an active unfinished transform gesture.");
+
+    const auto log_dir = temp_root / "logs";
+    auto run = take(logging::start_run({.directory = log_dir, .process_name = "recovery_acceptance"}));
+    application::SceneRecovery recovery;
+    const std::string oversized_reason(5000, 'r');
+    const auto& outcome =
+        recovery.preserve(doc, project.root(), "Content/Scenes/Main.scene", oversized_reason, temp_root / "recovery");
+    require(recovery.attempted() && recovery.logged() && outcome && outcome->has_value() && doc.dirty() &&
+                !doc.editing(),
+            "SceneRecovery did not cancel unfinished edit, keep dirty state, and log oversized failure reason.");
+    const auto saved_scene = (*outcome)->scene;
+    require((*outcome)->warning.empty() && std::filesystem::exists(saved_scene),
+            "Recovery scene file was not written cleanly.");
+    const auto diag_field = recovery.diagnostic_field();
+    const auto expected_utf8 = platform::utf16_to_utf8(saved_scene.generic_wstring());
+    require(expected_utf8.has_value() && diag_field && diag_field->key == "recovery_scene" &&
+                std::get<std::string>(diag_field->value) == *expected_utf8,
+            "SceneRecovery::diagnostic_field did not retain the saved scene path.");
+
+    const auto finished = run->finish();
+    require(finished.backend_acknowledged && finished.sink_flush_succeeded &&
+                finished.health.rejected_invalid_record == 0 && finished.health.rejected_record_too_large == 0,
+            "Logging rejected or failed to flush the scene recovery record.");
+    auto reader = take(logging::Reader::open(log_dir));
+    std::vector<logging::Record> records;
+    bool reader_done = false;
+    for (unsigned polls = 0; polls < 200 && !reader_done; ++polls) {
+        auto batch = reader->poll({1024 * 1024, 4096, std::chrono::milliseconds{50}});
+        for (auto& r : batch.records)
+            records.push_back(std::move(r));
+        reader_done = batch.status.finished;
+    }
+    require(reader_done, "Logging Reader did not finish reading recovery run.");
+    const auto logged_it =
+        std::ranges::find_if(records, [](const logging::Record& r) { return r.entry.event_code == "recovery.saved"; });
+    require(logged_it != records.end() && logged_it->entry.message == "Scene recovery saved: " + *expected_utf8,
+            "events.jsonl did not persist recovery.saved with the full recovery scene path.");
+
+    const auto sidecar =
+        take(json::Document::parse(take(assets::read_file(saved_scene.parent_path() / "recovery.json")), {16}));
+    require(take(sidecar.root().string({"kind"})) == "author_scene_recovery" &&
+                take(sidecar.root().boolean({"unfinished_edit_cancelled"})) &&
+                take(sidecar.root().string({"reason"})) == oversized_reason,
+            "recovery.json did not record cancelled unfinished gesture and full failure reason.");
+
+    auto recovered = editor::load_project_scene(project, take(assets::read_file(saved_scene)),
+                                                editor::LoadPolicy::strict, false, editor::SessionRole::editor);
+    require(recovered.session != nullptr && !recovered.error, "Recovered scene failed strict reload.");
+    const auto members = take(recovered.session->world().members());
+    ObjectId recovered_mesh_entity{};
+    for (const auto& m : members)
+        if (take(recovered.session->world().runtime().type_of(m.id())) ==
+            recovered.session->presentation_types().static_mesh_entity)
+            recovered_mesh_entity = m.id();
+    require(recovered_mesh_entity != ObjectId{}, "Recovered scene lost the StaticMeshEntity.");
+    const auto mtx = take(world::world_matrix(recovered.session->world().runtime(), recovered_mesh_entity));
+    require(mtx == world::transform_matrix(committed_trs[0]),
+            "Recovered scene did not restore the last committed transform instead of the unfinished gesture.");
+
+    changed(recovered.session->close());
+    changed(doc.close());
+}
 }
 
 int main(int argc, char** argv) {
@@ -1836,8 +1933,10 @@ int main(int argc, char** argv) {
         verify_graph_format();
         stage = "procedural editor";
         verify_procedural_editor();
+        stage = "scene recovery";
+        verify_scene_recovery();
         std::puts(
-            "Editor document acceptance: PASS (creation undo/redo, glTF transform, mesh reimport, graph format, SOP editor + 2D Network canvas)");
+            "Editor document acceptance: PASS (creation undo/redo, glTF transform, mesh reimport, graph format, SOP editor + 2D Network canvas, scene recovery)");
         return 0;
     } catch (const std::exception& error) {
         std::fprintf(stderr, "Editor document acceptance: FAIL [%.*s]: %s\n", static_cast<int>(stage.size()),
