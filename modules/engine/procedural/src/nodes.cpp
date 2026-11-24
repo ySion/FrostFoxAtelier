@@ -121,6 +121,16 @@ Result<void> Resample::process(const Geometry& curves, Geometry& output) const n
     return {};
 }
 
+Result<void> SampleCurve::process(const Geometry& curves, Geometry& output) const noexcept {
+    ATELIER_TRY_ASSIGN(output, invocation_result(sample_curves(curves, distance, from_end)));
+    return {};
+}
+
+Result<void> SliceCurve::process(const Geometry& curves, Geometry& output) const noexcept {
+    ATELIER_TRY_ASSIGN(output, invocation_result(slice_curves(curves, start, end, end_from_tip)));
+    return {};
+}
+
 Result<void> Group::process(const Geometry& input, Geometry& output) const noexcept {
     ATELIER_TRY_BIND(result, invocation_result(build_group(input, {.group = group,
                                                                    .criterion = criterion,

@@ -81,7 +81,7 @@
 
 ## 弧形石栏杆 ArcBalustrade
 
-打开[场景](Scenes/ArcBalustrade.scene)，主相机面对一段 132° 的石栏杆。它由[一张 18 节点的图](Graphs/ArcBalustrade.procgraph)生成。四皮墙石交替错开半块，灰缝宽 16 mm，灰芯比石面内收 20 mm。柱座落在 1.22 m 高的压顶上，扶手底面和栏柱顶面同高 2.16 m。方柱座的局部 +Z 沿导线切向，两端各留 0.22 m。石块、灰芯、扶手和栏柱是各自闭合的构件。
+打开[场景](Scenes/ArcBalustrade.scene)，主相机面对一段 132° 的石栏杆。它由[一张 20 节点的图](Graphs/ArcBalustrade.procgraph)生成。四皮墙石交替错开半块，灰缝宽 16 mm，灰芯比石面内收 20 mm。柱座落在 1.22 m 高的压顶上，扶手底面和栏柱顶面同高 2.16 m。方柱座的局部 +Z 沿导线切向，两端各留 0.22 m。石块、灰芯、扶手和栏柱是各自闭合的构件。
 
 | 弧线半径 `arc_radius` | 最大柱距 `post_spacing` | 栏柱 | 实际等分柱距 | 墙石 / 压顶石 |
 |---:|---:|---:|---:|---:|
@@ -90,10 +90,10 @@
 | 2.10 m | 0.48 m | 11 | 0.440 m | 34 / 5 |
 | 2.80 m | 0.48 m | 14 | 0.462 m | 42 / 6 |
 
-`guide` 是 Circle 的水平开放弧。半径同时绑定它的两个半轴。`measured_guide` 用 Resample 的 1 段模式保留原折点，生成以米计的 `arclength` 和 `tangent`。扶手、墙石和栏柱均从这条线取得位置。墙石按弧长切段并保留切口之间的原折点，随后交给 Sweep。瓶形柱用竖直折线和 point float `shaft_scale` 驱动圆管 Sweep，腹部半径 0.160 m、颈部 0.076 m。柱脚和柱头复用一次 Bevel 生成的方座，整根栏柱只做一次，再沿曲线 Realize。[案例中的截面、砌法和布站](../../Source/Procedural/ArcBalustrade.source)
+三个分支共用 `guide` 的 64 段开放圆弧。扶手直接沿原弧抬高并 Sweep。`post_span` 用 SliceCurve 两端各退 0.22 m，`post_pitch` 用 Resample 的 `fit_spacing` 模式排匀柱位。`post_stations` 设置柱脚高度和朝向，并把桩号换回完整导线的里程。`guide_end` 用 SampleCurve 从末端量 0 m 读取弧长；砌石 Source 决定每道灰缝的位置，一次批量截取全部石块与灰芯的原线区间，再分别抬升和扫掠。瓶形柱用竖直折线和 point float `shaft_scale` 驱动圆管 Sweep，腹部半径 0.160 m、颈部 0.076 m。柱脚和柱头复用一次 Bevel 生成的方座，整根栏柱只做一次，再沿曲线 Realize。[案例中的截面、砌法和布站](../../Source/Procedural/ArcBalustrade.source)
 
 **用 Control 改稿。** 打开图后，用 `op.call` 传入 `{"id":"graph.set_parameter","args":{"parameter":"post_spacing","value_json":"0.48"}}`。用 `graph.inspect {"node":"post_stations","samples":16}` 查看全部柱脚的 `arclength`，用 `graph.inspect {"view":"node","node":"spindle","bindings":true}` 查看半径列的实际来源。缺列时返回 `fallback`，实际系数为 1。对 `spindle.output` 从 `[0.6,0.406,0]` 和 `[0.6,0.721,0]` 沿 `[-1,0,0]` 发射线可以复测柱腹和柱颈。执行 `edit.undo` 恢复上一次改稿。
 
-**这次案例暴露的曲线需求。** 默认弧长 4.838 m，用固定 0.68 m 步长会在末端留下 0.078 m，放不下宽 0.33 m 的柱脚。等分可用长度并保留两端退距解决了布柱问题。柱位和石缝还都要按距离定位到原折线的一段并插值，砌石再取出区间内的折点。这两种操作值得在下一个沿线案例中提炼。车削母线的有序高度与半径目前写在案例 Source 中，Control 可发现所有截面的端口和使用方法。编辑轮廓样点是另一个独立的作者工具需求。
+默认弧长 4.838 m，固定 0.68 m 步长的尾段仅 0.078 m。两端退距后按最大间距均分，实际 7 跨各约 0.628 m，能容纳宽 0.33 m 的柱脚。通过 Control 对 `handrail.output` 的每个原弧段从内外两侧径向发射线，可独立核对两次调柱距前后的扶手面。车削母线的有序高度与半径目前写在案例 Source 中，Control 可发现所有截面的端口和使用方法。编辑轮廓样点是另一个独立的作者工具需求。
 
 **已复现的射线边界读数。** 默认图的 `wall_stones.output`，从 `[2.0132889498235693,0.39,2.3572584933600957]` 沿 `[-0.6494480483301837,0,-0.7604059656000309]` 发射长度 1.55 m 的射线，落在一个截面站的共享边上，报告 1.2700 m 处的内壁。沿弧向前或向后各移 2 mm 再径向入射，两侧都在 0.7300 m 命中外壁。该件拓扑检查为零开口、零非流形边和零退化面。测量灰缝时使用两侧射线，单条共边射线的差异仍待定位。

@@ -47,10 +47,11 @@ enum class GroupCriterion : std::uint32_t { normal, existing, range };
 AENUM(Name = "procedural.GroupOperation", DESC = "直接使用条件结果，或与指定的同层基组求并、交、差。")
 enum class GroupOperation : std::uint32_t { replace, unite, intersect, subtract };
 
-AENUM(Name = "procedural.ResampleMode", DESC = "用固定弧长间距或固定段数重采样每条折线。")
+AENUM(Name = "procedural.ResampleMode", DESC = "按固定间距、固定段数或最大间距均分每条折线。")
 enum class ResampleMode : std::uint32_t {
     AMETA(Label = "Spacing", DESC = "从起点按间距取样，末端保留余段。") spacing,
-    AMETA(Label = "Segments", DESC = "按总弧长平分为指定段数。") segments
+    AMETA(Label = "Segments", DESC = "按总弧长平分为指定段数。") segments,
+    AMETA(Label = "Fit Spacing", DESC = "全长等分，使用满足最大间距的最少段数。") fit_spacing
 };
 
 AENUM(Name = "procedural.SweepProfile",

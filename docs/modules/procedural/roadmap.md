@@ -80,7 +80,7 @@ S0 契约静态对齐 → S1 原生拓扑/构造/体积采样/Realize，随后�
 | 3. 法线与 UV 完备化（S4.5-2） | `Normal`（按折痕角 `Cusp Angle` 重算法线） | `.source` 变形点位置 `P` 后，按平滑/硬边角度阈值重建 `vertex` 或 `point` 法线 | 候选待推进 |
 | 3. 法线与 UV 完备化（S4.5-2） | `UVProject`（Box 六向 / Planar / Cylindrical 投影） | 为 `Boolean`、`Extrude`、`Clip` 及 L3 生成几何赋予统一世界尺度（Texel Density）的 `vertex uv`，打通 Scene Lit 贴图表现 | 候选待推进 |
 | 4. 曲线、选组与分支（S4.5-2） | `Resample` 与 `Polyline` 闭合创建 | `Resample` 已支持折线定距/定段、可选保留转角、切向与弧长，兼容首尾共用点的闭环；`Polyline` 从纯点创建闭合线仍为候选 | 重采样已落地；闭合创建待推进 |
-| 4. 曲线、选组与分支（S4.5-2） | 按弧长取样、截段与等分布站 | [弧形石栏杆](../../../examples/Content/Procedural/README.md#弧形石栏杆-arcbalustrade)的柱脚与石缝都需按米定位。先验证共享的折线距离查询与保留内部折点的区间提取，再从 Resample 提供两端退距和按最大间距均分的布点策略。 | 案例已验证，公共接口候选 |
+| 4. 曲线、选组与分支（S4.5-2） | 按弧长取样、截段与等分布站 | [弧形石栏杆](../../../examples/Content/Procedural/README.md#弧形石栏杆-arcbalustrade)使用 SampleCurve 读里程、SliceCurve 保留切口之间的折点、Resample 按最大间距均分。Source 砌石复用同一截段实现。 | 已落地 |
 | 4. 曲线、选组与分支（S4.5-2） | `Group` | 面法线夹角、已有组和 float 列闭区间三种条件、同层并交差及视口高亮已落地；`GroupBox` 提供盒选点，球形范围与开口边界选组按案例推进 | 基础选组已实现；其余候选 |
 | 4. 曲线、选组与分支（S4.5-2） | `Switch`（按索引选择输入，`Evaluator` 惰性求值） | 等数字资产出现互斥造型分支时验证。结构与环校验仍检查已连的分支，仅选中输入进入本次求值与缓存键。验收应覆盖未选分支报错或修改不影响输出、切换后返回所选分支首错、撤销切换后恢复。 | 候选 |
 

@@ -5,6 +5,7 @@
 #include "foundation/result.hpp"
 #include "procedural/bvh.hpp"
 #include "procedural/nodes.hpp"
+#include "procedural/operations.hpp"
 #include "runtime/foundation.hpp"
 
 #include <algorithm>
@@ -178,6 +179,12 @@ Result<void> Node::emit_points(const Array<math::Vector3>& positions, std::uint3
     return {};
 }
 
+Result<void> Node::read_curve_slices(const Geometry& curves, std::uint32_t primitive,
+                                     const Array<math::Vector2>& intervals, Array<math::Vector3>& positions,
+                                     Array<std::uint32_t>& offsets) const noexcept {
+    return builder_result(procedural::read_curve_slices(curves, primitive, intervals, positions, offsets));
+}
+
 Result<void> Node::emit_polylines(const Array<math::Vector3>& positions, const Array<std::uint32_t>& vertex_points,
                                   const Array<std::uint32_t>& offsets, std::uint32_t output_port) const noexcept {
     ATELIER_TRY_BIND(out, target_output(*this, output_port));
@@ -324,6 +331,8 @@ Result<void> register_types(Runtime& runtime) {
     definitions.push_back(reflection::Definition<Torus>::build(runtime));
     definitions.push_back(reflection::Definition<Polyline>::build(runtime));
     definitions.push_back(reflection::Definition<Resample>::build(runtime));
+    definitions.push_back(reflection::Definition<SampleCurve>::build(runtime));
+    definitions.push_back(reflection::Definition<SliceCurve>::build(runtime));
     definitions.push_back(reflection::Definition<Group>::build(runtime));
     definitions.push_back(reflection::Definition<GroupBox>::build(runtime));
     definitions.push_back(reflection::Definition<Boolean>::build(runtime));

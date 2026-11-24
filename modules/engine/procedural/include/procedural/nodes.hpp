@@ -285,11 +285,11 @@ class Resample : public Node {
     AGENERATED_BODY(Resample)
 
 public:
-    AFIELD(Label = "Mode", DESC = "选择固定间距或固定段数。")
+    AFIELD(Label = "Mode", DESC = "spacing 固定步进并保留余段；segments 固定段数；fit_spacing 按最大间距均分。")
     ResampleMode mode{ResampleMode::spacing};
 
-    AFIELD(Label = "Spacing", Meta("ui.visible_when", "mode=spacing"),
-           DESC = "从每条折线起点按米步进。开放线保留终点，闭合线回到接缝，末段可以短于设定间距。")
+    AFIELD(Label = "Spacing (m)", Meta("ui.visible_when", "mode!=segments"),
+           DESC = "沿原折线计量。spacing 为固定步长，fit_spacing 为每一跨的上限，两端之间的各跨相等。")
     float spacing{1.f};
 
     AFIELD(Label = "Segments", Min = "1", Max = "256", LockMin, Meta("ui.visible_when", "mode=segments"),
@@ -307,6 +307,40 @@ public:
             Port,
             DESC = "带 point float arclength（米）、curveu（0–1）与 point vector3 tangent 的折线。每条曲线单独计量。")
             Geometry& output) const noexcept;
+};
+
+ACLASS(Name = "procedural.SampleCurve", DESC = "在每条折线上沿弧长取一个点，输出位置、原线里程和单位切向。")
+class SampleCurve : public Node {
+    AGENERATED_BODY(SampleCurve)
+
+public:
+    AFIELD(Label = "Distance (m)", Min = "0", LockMin, DESC = "从所选端点沿线量取的非负距离，须落在折线上。")
+    float distance{};
+    AFIELD(Label = "Measure From End", DESC = "开启则从末端反向量距。输出里程和切向仍沿原线方向。")
+    bool from_end{};
+    AFUNCTION(DESC = "每条输入折线取一处，开放末端用入边切向，内部拐角用出边切向。")
+    [[nodiscard]] Result<void>
+    process(APARAM(Port, DESC = "一条或多条有向折线，直接使用原拓扑与 P，单位米。") const Geometry& curves,
+            APARAM(Port, DESC = "每线一个散点，带 arclength、curveu、tangent 和取样处的属性。")
+                Geometry& output) const noexcept;
+};
+
+ACLASS(Name = "procedural.SliceCurve", DESC = "按米截取每条折线的一段，插入精确的两端并保留区间内的原折点。")
+class SliceCurve : public Node {
+    AGENERATED_BODY(SliceCurve)
+
+public:
+    AFIELD(Label = "Start (m)", Min = "0", LockMin, DESC = "从起点沿原线量取的起始距离。")
+    float start{};
+    AFIELD(Label = "End (m)", Min = "0", LockMin, DESC = "截段终点的距离。量距方向由 End From Tip 指定。")
+    float end{};
+    AFIELD(Label = "End From Tip", DESC = "开启时 end 为末端留量，关闭时 end 为从起点量取的终点里程。")
+    bool end_from_tip{true};
+    AFUNCTION(DESC = "保持原线走向、内部顶点和属性。反向、空区间及越界报错，闭环以接缝为起点。")
+    [[nodiscard]] Result<void>
+    process(APARAM(Port, DESC = "一条或多条有向折线，各按自己的长度计算。") const Geometry& curves,
+            APARAM(Port, DESC = "每线一段，可直接接 Sweep.backbone。arclength、curveu 和切向相对于源线。")
+                Geometry& output) const noexcept;
 };
 
 ACLASS(Name = "procedural.Group", DESC = "按面法线、已有组或标量区间选组，可与同层组组合。")

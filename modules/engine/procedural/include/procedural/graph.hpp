@@ -89,6 +89,15 @@ public:
 
     Node& operator=(const Node&) = delete;
 
+    // Position-only sections for Source kernels which author many pieces from one guide.
+    AFUNCTION(
+        BorrowSafe,
+        DESC =
+            "在给定折线图元上批量取出区间路径。每对数是从起点量取的米数；positions 和 offsets 按请求顺序返回，区间之间不连线。")
+    [[nodiscard]] Result<void> read_curve_slices(const Geometry& curves, std::uint32_t primitive,
+                                                 const Array<math::Vector2>& intervals, Array<math::Vector3>& positions,
+                                                 Array<std::uint32_t>& offsets) const noexcept;
+
     AFUNCTION(BorrowSafe, DESC = "向指定显式输出端口提交变长纯点集。")
     [[nodiscard]] Result<void> emit_points(const Array<math::Vector3>& positions,
                                            std::uint32_t output_port = 0u) const noexcept;

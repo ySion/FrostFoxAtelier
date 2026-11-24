@@ -176,7 +176,9 @@ Release 下运行 `atelier_procedural_acceptance --profile-boolean <新的绝对
 | Circle | primitive_type=polygon（polygon / closed_polyline / open_arc）、orientation=zx、radius=(1,1)、center=(0,0,0)、segments=32、start_degrees=0、arc_degrees=360 | output |
 | Torus | orientation=zx、major_radius=1、minor_radius=0.25、center=(0,0,0)、base_on_ground=false、major_segments=32、minor_segments=16、arc_degrees=360、end_caps=true | output |
 | Polyline | — | points → output |
-| Resample | mode=spacing、spacing=1 m 或 segments=8、preserve_corners=false | curves（折线）→ output |
+| SampleCurve | distance=0 m、from_end=false | curves（折线）→ output（每条线一个点） |
+| SliceCurve | start=0 m、end=0 m、end_from_tip=true | curves（折线）→ output（保留原折点的区段） |
+| Resample | mode=spacing / fit_spacing / segments、spacing=1 m、segments=8、preserve_corners=false | curves（折线）→ output |
 | Group | group="selected"、criterion=normal、direction=(0,1,0)、max_angle=45°、source_group=""、source_attribute=""、minimum=0、maximum=1、operation=replace、base_group="" | input → output |
 | GroupBox | group="selected"、minimum=(−.5,−.5,−.5)、maximum=(.5,.5,.5) | input → output |
 | Connectivity | attribute="piece"（point uint） | input → output |
@@ -206,7 +208,11 @@ Sweep 在每个骨架点读取 `scale_attribute` 指定的 point float，乘到�
 
 ### 沿路径布点与保形重采样
 
-`Resample` 对每条折线分别从起点计算弧长。间距模式按 `0, spacing, 2 × spacing, …` 取样并保留精确终点，最后一段可以较短。段数模式沿原始弧长均分。默认相邻采样点直接相连，可能削平两点之间的转角；开启 `preserve_corners` 会额外插入原线的转折点，后面的采样位置不动。因此开启后实际段数可以增加。在直段内增加共线控制点不会额外布点。
+曲线上的距离均按图局部空间的米数、沿图元顶点顺序累加。`SampleCurve` 在每条折线输出一个散点，`from_end` 让输入距离从终点反向量取；输出的 `arclength` 和切向仍沿原线方向。原顶点、图元属性随样点转到点层，detail 属性沿用。`SliceCurve` 从起点量取 `start`；`end_from_tip=true` 时 `end` 是末端留量，关闭后是从起点量取的终点里程。区间须在同一圈内且起点先于终点；全长截取保留闭环接缝。切口之间保留原折线顶点和各层属性，端点插值遵循下述规则。截段的 `arclength` 和 `curveu` 对应源线，随后再接 Resample 时会从截段起点重新计量。
+
+例如先沿 X 走 1 m，再沿 Z 走 3 m，绝对里程 0.8–1.4 m 截出三个点 `(0.8,0,0) → (1,0,0) → (1,0,0.4)`。Source 节点需要按多道接缝切同一图元时，可调用 `self.read_curve_slices(curves, primitive, intervals, positions, offsets)`。每个 vector2 是从起点量取的两端米数，一次测量后按请求顺序输出位置和分段偏移；失败保留原输出数组。
+
+`Resample` 对每条折线分别从起点计算弧长。间距模式按 `0, spacing, 2 × spacing, …` 取样并保留精确终点，最后一段可以较短。`segments` 模式沿原始弧长均分为指定段数。`fit_spacing` 用 `ceil(全长 / 最大间距)` 跨均分，全长短于上限的开放线仍保留两端，闭环至少三跨。默认相邻采样点直接相连，可能削平两点之间的转角；开启 `preserve_corners` 会额外插入原线的转折点，后面的采样位置不动。因此开启后实际段数可以增加。在直段内增加共线控制点不会额外布点。
 
 例如一段向东 3 m 再向北 2 m 的街墙：间距 2 m 时柱位在原线的 0、2、4、5 m；扫掠墙体时开启保留转角，则再插入 3 m 处的墙角。输出的点层 `arclength` 为原线累计长度，`curveu` 为其占总长的比例，`tangent` 为原线的单位切向；转角取出边方向，开放终点取入边方向。闭合线按原有的首尾共用点索引表示，接缝点的弧长和比例为 0，首尾顶点可以有不同的顶点属性。
 

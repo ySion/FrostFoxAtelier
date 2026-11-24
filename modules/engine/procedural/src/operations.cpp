@@ -616,7 +616,7 @@ void detail::append_native_rules(std::vector<AttributeRule>& rules, std::string_
                   write,
                   "conditional",
                   "Fan triangle index when the input has a polygon with more than three corners"}};
-    } else if (type == "procedural.Resample") {
+    } else if (type == "procedural.Resample" || type == "procedural.SampleCurve" || type == "procedural.SliceCurve") {
         rules = {
             {"curves", "P", {}, "point", {}, "vector3", read, "error", "Ordered polyline positions"},
             {"output",

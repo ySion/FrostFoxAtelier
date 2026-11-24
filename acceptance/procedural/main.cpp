@@ -269,6 +269,32 @@ void resampled_wall_and_post_paths() {
                 take(sweep(wall)).count(Layer::point) == 20,
             "Preserved wall corner, outgoing tangent or interpolated Sweep width is incorrect.");
 
+    // Cut a measured 60 cm coping stone around a right angle, then use the same source as a post guide.
+    auto corner = take(take(Geometry::points({{0, 0, 0}, {1, 0, 0}, {1, 0, 3}})).connect_points());
+    take(corner.set(String::literal<"pscale">(), Layer::point, SharedArray<float>{Array<float>{1, 2, 5}}));
+    const auto cut = take(slice_curves(corner, .8f, 1.4f));
+    const auto post = take(sample_curves(corner, 1.f));
+    const auto fitted = take(resample(cut, {.mode = ResampleMode::fit_spacing, .spacing = .25f}));
+    const auto& marks = column<float>(fitted, "arclength", Layer::point);
+    require(cut.count(Layer::point) == 3 && cut.positions()[0] == Vector3{.8f, 0, 0} &&
+                cut.positions()[1] == Vector3{1, 0, 0} &&
+                math::length(cut.positions()[2] - Vector3{1, 0, .4f}) < 1e-6f &&
+                take(sweep(cut)).count(Layer::point) == 12 && post.count(Layer::primitive) == 0 &&
+                post.positions()[0] == cut.positions()[1] &&
+                column<Vector3>(post, "tangent", Layer::point)[0] == Vector3{0, 0, 1} &&
+                std::abs(column<float>(cut, "pscale", Layer::point)[2] - 2.4f) < 1e-6f && marks.size() == 4 &&
+                std::abs(marks[1] - .2f) < 1e-6f && std::abs(marks[2] - .4f) < 1e-6f &&
+                std::abs(marks[3] - .6f) < 1e-6f && !slice_curves(corner, 1.4f, .8f) && !sample_curves(corner, 4.1f),
+            "Corner slice lost its turn, inherited width, source tangent or uniformly fitted stations.");
+    Array<Vector3> stone_points;
+    Array<std::uint32_t> stone_offsets;
+    take(read_curve_slices(corner, 0, {{.8f, 1.4f}, {1.f, 4.f}}, stone_points, stone_offsets));
+    const auto bad_cuts = read_curve_slices(corner, 0, {{0.f, 1.f}, {2.f, 1.f}}, stone_points, stone_offsets);
+    require(!bad_cuts && std::ranges::equal(stone_offsets, std::array{0u, 3u, 5u}) &&
+                std::ranges::equal(std::span{stone_points.data(), 3}, cut.positions()) &&
+                stone_points[3] == corner.positions()[1] && stone_points[4] == corner.positions()[2],
+            "A failed batch replaced the previous cuts, or the Source projection disagreed with the slice SOP.");
+
     // Two primitives sharing a control point: each restarts arc length. The closed loop shares
     // its start point, while its two seam corners retain their distinct authored vertex values.
     auto loop = take(Geometry::primitives({{0, 0, 0}, {2, 0, 0}, {2, 0, 2}, {0, 0, 2}}, {0, 1, 2, 3, 0, 0, 0, 1},
@@ -276,6 +302,12 @@ void resampled_wall_and_post_paths() {
     take(loop.set(String::literal<"seam">(), Layer::vertex,
                   SharedArray<float>{Array<float>{0, 2, 4, 6, 8, 10, 10, 12}}));
     const auto ring = take(resample(loop, {.mode = ResampleMode::segments, .segments = 8}));
+    const auto full = take(slice_curves(loop, 0.f, 0.f, true));
+    const auto coarse = take(resample(loop, {.mode = ResampleMode::fit_spacing, .spacing = 20.f}));
+    require(full.vertex_points()[4] == full.vertex_points()[0] &&
+                column<float>(full, "seam", Layer::vertex)[4] == 8.f && coarse.primitive(0).count == 4 &&
+                coarse.primitive(1).count == 2,
+            "Full-length slice or fitted closed loop lost its seam or the second primitive.");
     const auto& seam = column<float>(ring, "seam", Layer::vertex);
     require(ring.count(Layer::point) == 17 && ring.count(Layer::vertex) == 18 &&
                 ring.vertex_points()[8] == ring.vertex_points()[0] && seam[1] == 1.f && seam[8] == 8.f &&
@@ -1272,11 +1304,12 @@ class game.FrameInputs : procedural.Node {
     require(preview_geometry && preview_geometry->count(Layer::point) == 100,
             "An adopted preview lost its geometry when the evaluator closed.");
 
-    // 6. Verify `procedural.Node` retired `Node.fail`, exposes only BorrowSafe builder methods, and multi-chunk parallel Source SOPs report mid-chunk `fail(...)`.
+    // 6. Source nodes can use borrow-safe geometry methods and propagate a mid-chunk failure.
     {
         const auto* base_node_info = take(runtime.describe(type<Node>(runtime)));
         require(std::ranges::none_of(base_node_info->methods, [](const MethodInfo& m) { return m.name == "fail"; }) &&
-                    base_node_info->methods.size() == 12 &&
+                    std::ranges::any_of(base_node_info->methods,
+                                        [](const MethodInfo& m) { return m.name == "read_curve_slices"; }) &&
                     std::ranges::all_of(base_node_info->methods, &MethodInfo::preserves_borrows),
                 "procedural.Node exposed retired fail or non-BorrowSafe methods.");
         auto chunk_graph = take(runtime.create(type<Graph>(runtime)));

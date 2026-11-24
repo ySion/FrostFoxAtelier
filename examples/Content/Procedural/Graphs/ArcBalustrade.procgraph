@@ -90,7 +90,8 @@
     },
     "courses": {
       "inputs": {
-        "guide": "measured_guide.output"
+        "guide": "guide.output",
+        "guide_end": "guide_end.output"
       },
       "position": [
         -380.0,
@@ -123,6 +124,20 @@
       },
       "type": "procedural.Circle"
     },
+    "guide_end": {
+      "inputs": {
+        "curves": "guide.output"
+      },
+      "position": [
+        -380.0,
+        110.0
+      ],
+      "properties": {
+        "distance": 0.0,
+        "from_end": true
+      },
+      "type": "procedural.SampleCurve"
+    },
     "handrail": {
       "inputs": {
         "backbone": "rail_axis.output",
@@ -147,22 +162,6 @@
         "width": 1.0
       },
       "type": "procedural.Sweep"
-    },
-    "measured_guide": {
-      "inputs": {
-        "curves": "guide.output"
-      },
-      "position": [
-        0.0,
-        110.0
-      ],
-      "properties": {
-        "mode": "segments",
-        "preserve_corners": true,
-        "segments": 1,
-        "spacing": 1.0
-      },
-      "type": "procedural.Resample"
     },
     "plinth": {
       "inputs": {
@@ -203,6 +202,22 @@
       },
       "type": "procedural.Box"
     },
+    "post_pitch": {
+      "inputs": {
+        "curves": "post_span.output"
+      },
+      "position": [
+        125.0,
+        210.0
+      ],
+      "properties": {
+        "mode": "fit_spacing",
+        "preserve_corners": false,
+        "segments": 8,
+        "spacing": 0.68
+      },
+      "type": "procedural.Resample"
+    },
     "post_prototype": {
       "inputs": {
         "inputs": [
@@ -218,18 +233,32 @@
       "properties": {},
       "type": "procedural.Merge"
     },
-    "post_stations": {
+    "post_span": {
       "inputs": {
-        "guide": "measured_guide.output"
+        "curves": "guide.output"
       },
       "position": [
-        150.0,
-        250.0
+        100.0,
+        105.0
       ],
       "properties": {
-        "spacing": 0.68
+        "start": 0.22,
+        "end": 0.22,
+        "end_from_tip": true
       },
-      "type": "game.BalusterStations"
+      "type": "procedural.SliceCurve"
+    },
+    "post_stations": {
+      "inputs": {
+        "stations": "post_pitch.output",
+        "span": "post_span.output"
+      },
+      "position": [
+        215.0,
+        330.0
+      ],
+      "properties": {},
+      "type": "game.BalusterFeet"
     },
     "profiles": {
       "inputs": {},
@@ -242,7 +271,7 @@
     },
     "rail_axis": {
       "inputs": {
-        "input": "measured_guide.output"
+        "input": "guide.output"
       },
       "position": [
         -80.0,
@@ -381,7 +410,7 @@
       "label": "Maximum post spacing (m)",
       "name": "post_spacing",
       "targets": [
-        "post_stations.spacing"
+        "post_pitch.spacing"
       ]
     }
   ],

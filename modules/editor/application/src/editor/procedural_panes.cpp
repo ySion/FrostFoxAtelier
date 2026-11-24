@@ -822,8 +822,9 @@ ui::ControlIcon sop_node_icon(std::string_view type_name, bool is_source_sop, bo
         return ui::ControlIcon::duplicate;
     if (type_name == "procedural.Remove")
         return ui::ControlIcon::trash;
-    if (type_name == "procedural.Polyline" || type_name == "procedural.Resample" || type_name == "procedural.Sweep" ||
-        type_name == "procedural.Circle")
+    if (type_name == "procedural.Polyline" || type_name == "procedural.Resample" ||
+        type_name == "procedural.SampleCurve" || type_name == "procedural.SliceCurve" ||
+        type_name == "procedural.Sweep" || type_name == "procedural.Circle")
         return ui::ControlIcon::axes_origin;
     if (type_name == "procedural.Extrude")
         return ui::ControlIcon::face_normals;
@@ -899,7 +900,8 @@ NetworkCanvas::TabCategory NetworkCanvas::categorize_node_type(const GraphNodeCa
         short_name == "GraphInput" || short_name == "GraphOutput")
         return TabCategory::utility;
     if (entry.ports.inputs.empty() || short_name == "Polyline" || short_name == "MeshImport" ||
-        short_name == "Extrude" || short_name == "Sweep" || short_name == "Resample")
+        short_name == "Extrude" || short_name == "Sweep" || short_name == "Resample" || short_name == "SampleCurve" ||
+        short_name == "SliceCurve")
         return TabCategory::primitive;
     return TabCategory::attribute;
 }
