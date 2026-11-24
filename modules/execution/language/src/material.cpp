@@ -241,6 +241,10 @@ class Coverage {
                 const auto part = operand(child);
                 value.insert(value.end(), part.begin(), part.end());
             }
+            if (value.size() == 1 && width(node.type) > 1) {
+                const auto splat = value[0];
+                value.assign(width(node.type), splat);
+            }
             return value;
         }
         case Kind::source_call: {
@@ -678,6 +682,12 @@ class Hlsl {
             return "cross";
         case MathOperation::length:
             return "length";
+        case MathOperation::length_squared:
+            return "ms_length_squared";
+        case MathOperation::distance:
+            return "distance";
+        case MathOperation::distance_squared:
+            return "ms_distance_squared";
         case MathOperation::square_root:
             return "sqrt";
         case MathOperation::sin:
@@ -690,6 +700,8 @@ class Hlsl {
             return "ceil";
         case MathOperation::trunc:
             return "trunc";
+        case MathOperation::round:
+            return "round";
         case MathOperation::fract:
             return "ms_fract";
         case MathOperation::abs:
@@ -700,6 +712,14 @@ class Hlsl {
             return "max";
         case MathOperation::clamp:
             return "ms_clamp";
+        case MathOperation::cwise_mul:
+            return "ms_cwise_mul";
+        case MathOperation::cwise_div:
+            return "ms_cwise_div";
+        case MathOperation::radians:
+            return "radians";
+        case MathOperation::degrees:
+            return "degrees";
         case MathOperation::lerp:
             return "ms_lerp";
         case MathOperation::step:
@@ -788,6 +808,9 @@ class Hlsl {
         case Kind::source_call: {
             if (node.arguments.empty() && node.kind == Kind::math_construct)
                 return initial(node.type, nullptr);
+            if (node.kind == Kind::math_construct && node.arguments.size() == 1 &&
+                function.expressions[node.arguments[0]].type == ValueType::f32)
+                return "((" + type(node.type) + ")(" + operand(node.arguments[0]) + "))";
             std::string result = node.kind == Kind::source_call      ? "ms_f" + std::to_string(node.value)
                                  : node.kind == Kind::math_construct ? type(node.type)
                                                                      : intrinsic(node.math_operation);
@@ -910,9 +933,10 @@ class Hlsl {
 
             std::size_t arity;
         };
-        constexpr Element elements[]{{"add", 2}, {"sub", 2},  {"mul", 2},   {"div", 2},  {"neg", 1},   {"sin", 1},
-                                     {"cos", 1}, {"sqrt", 1}, {"floor", 1}, {"ceil", 1}, {"trunc", 1}, {"fract", 1},
-                                     {"abs", 1}, {"min", 2},  {"max", 2},   {"step", 2}, {"clamp", 3}, {"lerp", 3}};
+        constexpr Element elements[]{
+            {"add", 2},  {"sub", 2},   {"mul", 2},  {"div", 2},     {"neg", 1},     {"sin", 1},   {"cos", 1},
+            {"sqrt", 1}, {"floor", 1}, {"ceil", 1}, {"trunc", 1},   {"round", 1},   {"fract", 1}, {"abs", 1},
+            {"min", 2},  {"max", 2},   {"step", 2}, {"radians", 1}, {"degrees", 1}, {"clamp", 3}, {"lerp", 3}};
         constexpr std::string_view components = "xyzw";
         for (std::size_t n = 2; n <= 4; ++n) {
             const auto value = "float" + std::to_string(n);
@@ -944,6 +968,7 @@ class Hlsl {
             for (std::size_t i = 1; i < n; ++i)
                 text_ += "r=ms_dadd(r,ms_dmul(" + lane("a", components[i]) + "," + lane("b", components[i]) + "));\n";
             text_ += "r.v=dot(a.v,b.v); return r; }\n";
+            text_ += "ms_Dfloat ms_dlength_squared(" + d + " a) { return ms_ddot(a,a); }\n";
             text_ += "float ms_length_change(" + value + " a," + value +
                      " d,float r) {\n"
                      "if (!ms_finite(r)) return ms_unavailable();\n"
@@ -958,6 +983,9 @@ class Hlsl {
             text_ += "ms_Dfloat ms_dlength(" + d +
                      " a) { precise float r=length(a.v);\n"
                      "return ms_seed(r,ms_length_change(a.v,a.d0,r),ms_length_change(a.v,a.d1,r)); }\n";
+            text_ += "ms_Dfloat ms_ddistance(" + d + " a," + d + " b) { return ms_dlength(ms_dsub(b,a)); }\n";
+            text_ += "ms_Dfloat ms_ddistance_squared(" + d + " a," + d + " b) { " + d +
+                     " diff=ms_dsub(b,a); return ms_ddot(diff,diff); }\n";
         }
         text_ += "ms_Dfloat3 ms_dcross(ms_Dfloat3 a,ms_Dfloat3 b) { ms_Dfloat3 r;\n";
         for (std::size_t i = 0; i < 3; ++i) {
@@ -1084,21 +1112,29 @@ class Hlsl {
             if (node.kind == Kind::math_construct) {
                 if (arguments.empty())
                     return emit("ms_constant(" + initial(node.type, nullptr) + ")");
+                const bool splat_scalar =
+                    arguments.size() == 1 && function.expressions[node.arguments[0]].type == ValueType::f32;
                 std::string result = "ms_seed(";
                 for (const auto* part : {"v", "d0", "d1"}) {
                     if (part != std::string_view("v"))
                         result += ",";
-                    result += type(node.type) + "(";
-                    for (std::size_t i = 0; i < arguments.size(); ++i) {
-                        if (i)
-                            result += ",";
-                        result += arguments[i] + "." + part;
+                    if (splat_scalar) {
+                        result += "(" + type(node.type) + ")(" + arguments[0] + "." + part + ")";
+                    } else {
+                        result += type(node.type) + "(";
+                        for (std::size_t i = 0; i < arguments.size(); ++i) {
+                            if (i)
+                                result += ",";
+                            result += arguments[i] + "." + part;
+                        }
+                        result += ")";
                     }
-                    result += ")";
                 }
                 return emit(result + ")");
             }
-            auto name = intrinsic(node.math_operation);
+            auto name = node.math_operation == MathOperation::cwise_mul   ? std::string("mul")
+                        : node.math_operation == MathOperation::cwise_div ? std::string("div")
+                                                                          : intrinsic(node.math_operation);
             if (name.starts_with("ms_"))
                 name.erase(0, 3);
             std::string result = node.kind == Kind::source_call
@@ -1247,18 +1283,36 @@ public:
                     const auto operation = node.math_operation;
                     if (node.kind != Expression::Kind::math_intrinsic ||
                         (operation != MathOperation::clamp && operation != MathOperation::lerp &&
-                         operation != MathOperation::fract))
+                         operation != MathOperation::fract && operation != MathOperation::cwise_mul &&
+                         operation != MathOperation::cwise_div && operation != MathOperation::length_squared &&
+                         operation != MathOperation::distance_squared))
                         continue;
-                    const auto value = type(node.type);
+                    const bool vector_reduction =
+                        operation == MathOperation::length_squared || operation == MathOperation::distance_squared;
+                    const auto value =
+                        vector_reduction ? type(function.expressions[node.arguments[0]].type) : type(node.type);
                     if (!helpers.emplace(operation, value).second)
                         continue;
                     // Typed value arguments evaluate each operand once. These Source
                     // contracts differ from HLSL's built-ins; precise prevents DXC
                     // from reassociating lerp or folding subtraction back into frac.
+                    if (operation == MathOperation::length_squared) {
+                        text_ += "float ms_length_squared(" + value +
+                                 " a) { precise float result = dot(a,a); return result; }\n";
+                        continue;
+                    }
+                    if (operation == MathOperation::distance_squared) {
+                        text_ += "float ms_distance_squared(" + value + " a," + value + " b) { precise " + value +
+                                 " d = b - a; precise float result = dot(d,d); return result; }\n";
+                        continue;
+                    }
                     text_ += value + " " + intrinsic(operation) + "(" + value + " a";
                     if (operation == MathOperation::fract) {
                         text_ += ") { precise " + value +
                                  " result = a - floor(a); return min(result,asfloat(0x3f7fffffu)); }\n";
+                    } else if (operation == MathOperation::cwise_mul || operation == MathOperation::cwise_div) {
+                        text_ += "," + value + " b) { precise " + value + " result = a " +
+                                 (operation == MathOperation::cwise_mul ? "*" : "/") + " b; return result; }\n";
                     } else {
                         text_ += "," + value + " b," + value + " c) { ";
                         text_ += operation == MathOperation::clamp

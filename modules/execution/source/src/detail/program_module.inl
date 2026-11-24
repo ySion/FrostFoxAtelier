@@ -240,13 +240,19 @@ Result<FieldDefinition> class_field(const SourceSnapshot& snapshot, const langua
         if (!initializer.text.empty()) {
             const auto& arguments = field.initializer_arguments;
             if (!field.initializer_item.empty() || !names_vector(field.initializer_name) ||
-                (!arguments.empty() && arguments.size() != components))
+                (!arguments.empty() && arguments.size() != 1 && arguments.size() != components))
                 return std::unexpected(mapped_error(snapshot, initializer, {},
-                                                    "Vector field defaults are " + field.type + "() or " + field.type +
+                                                    "Vector field defaults are " + field.type + "(), " + field.type +
+                                                        "(scalar), or " + field.type +
                                                         " with one constant per component."));
-            for (const auto& argument : arguments) {
-                ATELIER_TRY_BIND(value, fold_scalar(snapshot, argument, leaf));
-                result.default_leaves.push_back(*value);
+            if (arguments.size() == 1) {
+                ATELIER_TRY_BIND(value, fold_scalar(snapshot, arguments[0], leaf));
+                result.default_leaves.assign(components, *value);
+            } else {
+                for (const auto& argument : arguments) {
+                    ATELIER_TRY_BIND(value, fold_scalar(snapshot, argument, leaf));
+                    result.default_leaves.push_back(*value);
+                }
             }
         }
         if (result.default_leaves.empty())

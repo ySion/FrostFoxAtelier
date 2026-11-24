@@ -69,7 +69,16 @@ ms_Dfloat ms_dsqrt(ms_Dfloat a) {
 ms_Dfloat ms_dfloor(ms_Dfloat a) { return ms_constant(floor(a.v)); }
 ms_Dfloat ms_dceil(ms_Dfloat a) { return ms_constant(ceil(a.v)); }
 ms_Dfloat ms_dtrunc(ms_Dfloat a) { return ms_constant(trunc(a.v)); }
+ms_Dfloat ms_dround(ms_Dfloat a) { return ms_constant(round(a.v)); }
 ms_Dfloat ms_dstep(ms_Dfloat a,ms_Dfloat b) { return ms_constant(step(a.v,b.v)); }
+ms_Dfloat ms_dradians(ms_Dfloat a) {
+    precise float k=asfloat(0x3c8efa35u), v=a.v*k;
+    return ms_seed(v,ms_change_scale(k,a.d0),ms_change_scale(k,a.d1));
+}
+ms_Dfloat ms_ddegrees(ms_Dfloat a) {
+    precise float k=asfloat(0x42652ee1u), v=a.v*k;
+    return ms_seed(v,ms_change_scale(k,a.d0),ms_change_scale(k,a.d1));
+}
 ms_Dfloat ms_dfract(ms_Dfloat a) {
     precise float raw=a.v-floor(a.v);
     precise float v=min(raw,asfloat(0x3f7fffffu));

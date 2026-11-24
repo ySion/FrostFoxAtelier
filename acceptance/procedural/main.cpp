@@ -476,9 +476,9 @@ void beveled_stonework() {
             "Four bevel strips meeting at a pyramid apex left a spike or an open corner.");
     // Off-center apex over a rectangular base: the four inward planes meet in
     // two trivalent corners joined by a short ridge, even at a small radius.
-    const auto skew_finial = take(Geometry::polygons(
-        {{-1, 0, -.75f}, {1, 0, -.75f}, {1, 0, .75f}, {-1, 0, .75f}, {.25f, 1.6f, -.2f}},
-        {0, 1, 2, 3, 1, 0, 4, 2, 1, 4, 3, 2, 4, 0, 3, 4}, {0, 4, 7, 10, 13, 16}));
+    const auto skew_finial =
+        take(Geometry::polygons({{-1, 0, -.75f}, {1, 0, -.75f}, {1, 0, .75f}, {-1, 0, .75f}, {.25f, 1.6f, -.2f}},
+                                {0, 1, 2, 3, 1, 0, 4, 2, 1, 4, 3, 2, 4, 0, 3, 4}, {0, 4, 7, 10, 13, 16}));
     for (const auto segments : {1u, 3u}) {
         const auto stone = take(bevel(skew_finial, {.radius = .06f, .angle_degrees = 0.f, .segments = segments}));
         const auto spatial = take(Bvh::build(stone));
@@ -488,7 +488,8 @@ void beveled_stonework() {
             for (const auto point : skew_finial.vertex_points().subspan(face.first, face.count))
                 center += skew_finial.positions()[point];
             center /= static_cast<float>(face.count);
-            require(spatial.closest(center, 1e-5f).has_value(), "Bevel displaced a main face of the skew stone finial.");
+            require(spatial.closest(center, 1e-5f).has_value(),
+                    "Bevel displaced a main face of the skew stone finial.");
         }
         const auto height = bounds(stone)->maximum.y;
         require(height < 1.59f && height > 1.45f && solid_measures(stone).first > 1.5 &&
@@ -2303,6 +2304,304 @@ void parametric_primitives_and_alignment_contracts() {
             "Transform Euler + Pivot did not rotate box around the specified pivot.");
 }
 
+void source_sop_batch1_contracts() {
+    Runtime runtime;
+    take(register_types(runtime));
+    auto files = take(source::engine_sources(source::default_engine_root()));
+    files.push_back({"Source/Batch1Probe.source", 1, R"(
+void test_orient_contracts(const vector3& up, const vector3& forward, const vector3& euler_deg, const vector3& axis,
+                           float rad, quaternion& up_frame, quaternion& euler_q, quaternion& axis_q,
+                           quaternion& between_q) {
+    up_frame = procedural.align_to_up(up, forward);
+    euler_q = procedural.euler_degrees(euler_deg);
+    axis_q = procedural.unit_axis_angle(axis, rad);
+    between_q = procedural.rotation_between(up, forward);
+}
+
+void test_remap_contracts(float val, float in_a, float in_b, float out_a, float out_b, vector4& out) {
+    out = vector4(procedural.unlerp(val, in_a, in_b),
+                  procedural.fit(val, in_a, in_b, out_a, out_b),
+                  procedural.fit01(val, out_a, out_b),
+                  procedural.efit(val, in_a, in_b, out_a, out_b));
+}
+)"});
+    auto program = take(source::Program::create(runtime));
+    auto cand = take(source::Program::prepare(take(program->request({"batch1_sop", 1, std::move(files)}))));
+    take(program->try_publish(cand));
+
+    auto eval_orient = take(take(program->pin("test_orient_contracts"))
+                                .bind<void, const Vector3&, const Vector3&, const Vector3&, const Vector3&, float,
+                                      Quaternion&, Quaternion&, Quaternion&, Quaternion&>());
+    auto eval_remap = take(
+        take(program->pin("test_remap_contracts")).bind<void, float, float, float, float, float, math::Vector4&>());
+
+    // 1. Sloped terrain prop frame: +Y strictly tracks `up`, +Z projects `forward` perpendicular to `up`.
+    const Vector3 slope_up = normalized({0.3f, 0.9f, -0.2f});
+    const Vector3 heading{1.0f, 0.5f, 2.0f};
+    const Vector3 euler_deg{25.0f, -60.0f, 15.0f};
+    const Vector3 unit_axis = normalized({-1.0f, 2.0f, 0.5f});
+    Quaternion up_frame{};
+    Quaternion euler_q{};
+    Quaternion axis_q{};
+    Quaternion between_q{};
+    take(eval_orient.invoke({}, slope_up, heading, euler_deg, unit_axis, 1.15f, up_frame, euler_q, axis_q, between_q));
+
+    const Vector3 frame_x = math::rotate(up_frame, {1.f, 0.f, 0.f});
+    const Vector3 frame_y = math::rotate(up_frame, {0.f, 1.f, 0.f});
+    const Vector3 frame_z = math::rotate(up_frame, {0.f, 0.f, 1.f});
+    require(near(frame_y, slope_up, 1e-5f) && std::abs(math::dot(frame_z, slope_up)) <= 1e-5f &&
+                math::dot(frame_z, heading) > 0.f && near(math::cross(frame_y, frame_z), frame_x, 1e-5f),
+            "procedural.align_to_up violated +Y=up or projected +Z right-handedness.");
+
+    const Quaternion cpp_euler = euler_to_quaternion(euler_deg);
+    const Quaternion cpp_axis = math::from_axis_angle(unit_axis, 1.15f);
+    require(near({euler_q.x, euler_q.y, euler_q.z}, {cpp_euler.x, cpp_euler.y, cpp_euler.z}, 1e-6f) &&
+                near(euler_q.w, cpp_euler.w, 1e-6f) &&
+                near({axis_q.x, axis_q.y, axis_q.z}, {cpp_axis.x, cpp_axis.y, cpp_axis.z}, 1e-6f) &&
+                near(axis_q.w, cpp_axis.w, 1e-6f) &&
+                near(math::rotate(between_q, slope_up), normalized(heading), 1e-5f),
+            "procedural.euler_degrees, unit_axis_angle, or rotation_between diverged from C++ math.");
+
+    // Degenerate collinear forward on +Y must return exact identity (no +90 deg twist); non-finite up returns NaN.
+    take(eval_orient.invoke({}, {0.f, 1.f, 0.f}, {0.f, -3.f, 0.f}, {}, {0.f, 1.f, 0.f}, 0.f, up_frame, euler_q, axis_q,
+                            between_q));
+    require(up_frame == Quaternion{0.f, 0.f, 0.f, 1.f} && between_q == Quaternion{0.f, 0.f, 1.f, 0.f},
+            "Collinear align_to_up(+Y, -Y) did not fall back to identity or +Y->-Y flip changed axis.");
+    take(eval_orient.invoke({}, {0.f, 0.f, 1.f}, {0.f, 0.f, -1.f}, {}, {0.f, 1.f, 0.f}, 0.f, up_frame, euler_q, axis_q,
+                            between_q));
+    require(between_q == Quaternion{1.f, 0.f, 0.f, 0.f},
+            "rotation_between(+Z, -Z) broke bit-parity with shortest_arc(-Z).");
+    take(eval_orient.invoke({}, {std::numeric_limits<float>::quiet_NaN(), 1.f, 0.f}, {0.f, 0.f, 1.f}, {},
+                            {0.f, 1.f, 0.f}, 0.f, up_frame, euler_q, axis_q, between_q));
+    require(!math::is_finite(up_frame) && !math::is_finite(between_q),
+            "align_to_up or rotation_between masked a non-finite input vector.");
+
+    // 2. Range mapping functions: clamping (`fit`/`fit01`) vs extrapolation (`efit`), reversed ranges,
+    //    coincident input bounds (`in_min == in_max`), and NaN preservation.
+    math::Vector4 r{};
+    // Reversed input [10, 0] -> [2, 6] at val = 15 (t = -0.5 -> clamped 0 -> 2; unclamped -> 0).
+    take(eval_remap.invoke({}, 15.f, 10.f, 0.f, 2.f, 6.f, r));
+    require(near(r.x, -0.5f) && r.y == 2.f && r.z == 6.f && near(r.w, 0.f),
+            "fit/fit01/efit/unlerp failed on reversed input bounds or out-of-range extrapolation.");
+    // Coincident finite bounds: unlerp -> 0, fit/efit -> out_min.
+    take(eval_remap.invoke({}, 5.f, 3.f, 3.f, 7.5f, 12.f, r));
+    require(r.x == 0.f && r.y == 7.5f && r.w == 7.5f,
+            "Coincident input bounds did not return 0 (unlerp) and out_min (fit/efit).");
+    // Non-finite input must propagate NaN rather than saturating to out_min via GLSL clamp.
+    take(eval_remap.invoke({}, std::numeric_limits<float>::quiet_NaN(), 0.f, 1.f, 2.f, 6.f, r));
+    require(std::isnan(r.x) && std::isnan(r.y) && std::isnan(r.z) && std::isnan(r.w),
+            "Range mapping functions swallowed NaN instead of propagating it.");
+}
+
+void source_sop_batch2_contracts() {
+    Runtime runtime;
+    take(procedural::register_types(runtime));
+
+    // 1. Compile-time enforcement of read-only self.<String> invariants.
+    const auto expect_compile_reject = [&](std::string_view snippet, const char* label) {
+        auto prog = take(source::Program::create(runtime));
+        std::vector<source::SourceFile> bad;
+        bad.push_back({"bad.source", 1, std::string{snippet}});
+        auto req = prog->request({"bad_mod", 1, std::move(bad)});
+        if (req) {
+            auto prep = source::Program::prepare(std::move(*req));
+            require(!prep.has_value(), label);
+        }
+    };
+    expect_compile_reject(R"(
+class test.AssignSelfStr : procedural.Node {
+    String attr = "a";
+    void process([Port] procedural.Geometry& out) { self.attr = "b"; }
+}
+)",
+                          "Assigning self.<String> must be rejected at compile time.");
+    expect_compile_reject(R"(
+class test.MutateSelfStr : procedural.Node {
+    String attr = "a";
+    void process([Port] procedural.Geometry& out) { self.attr.append("b"); }
+}
+)",
+                          "Mutating self.<String> sequence structure must be rejected at compile time.");
+    expect_compile_reject(R"(
+void test.take_mut(String& s) { s.clear(); }
+class test.BorrowMutSelfStr : procedural.Node {
+    String attr = "a";
+    void process([Port] procedural.Geometry& out) { test.take_mut(self.attr); }
+}
+)",
+                          "Passing self.<String> to mutable String& must be rejected at compile time.");
+    expect_compile_reject(R"(
+class test.ParallelSelfStr : procedural.Node {
+    String attr = "a";
+    void process([InOut("P")] Array<vector3>& P) {
+        parallel_for (uint i : P.size()) {
+            const uint n = self.attr.size();
+            P[i].x += float(n);
+        }
+    }
+}
+)",
+                          "Accessing self.<String> directly inside parallel_for must be rejected at compile time.");
+
+    // 2. End-to-end topology queries, polyline_length, dynamic self.<String> L3 column naming, and RailPanel vertex order.
+    auto files = take(source::engine_sources(source::default_engine_root()));
+    files.push_back({"batch2_sop.source", 1, R"(
+uint test.hash_label(const String& s) {
+    uint acc = s.size();
+    for (uint i = 0u; i < s.size(); i += 1u) {
+        acc = acc * 131u + s[i];
+    }
+    return acc;
+}
+
+class test.TopologyProbe : procedural.Node {
+    String attribute = "arc_total";
+    uint query_primitive = 1u;
+    bool require_polyline_length = true;
+
+    void process([Port] const procedural.Geometry& source,
+                 [In("P", Port = "source")] const Array<vector3>& P,
+                 [Port] procedural.Geometry& out) {
+        const uint pt_count = self.count_elements(source, procedural.Layer::point);
+        const uint vx_count = self.count_elements(source, procedural.Layer::vertex);
+        const uint pr_count = self.count_elements(source, procedural.Layer::primitive);
+        if (pt_count != P.size() || vx_count == 0u || pr_count == 0u) {
+            fail("Unexpected topology counts.");
+        }
+        const procedural.PrimitiveSpan span = self.primitive_span(source, self.query_primitive);
+        Array<uint> pts;
+        self.read_primitive_points(source, self.query_primitive, pts);
+        if (pts.size() != span.vertex_count) {
+            fail("read_primitive_points count mismatched primitive_span.vertex_count.");
+        }
+        const uint kind_code = span.kind == procedural.PrimitiveType::polyline ? 1u : 0u;
+        const float arc = self.require_polyline_length ? self.polyline_length(source, self.query_primitive)
+                                                       : float(span.first_vertex * 100u + kind_code);
+        const uint label_tag = test.hash_label(self.attribute) + self.attribute.size() + self.attribute[0];
+        String local_name = self.attribute;
+
+        Array<vector3> out_p;
+        out_p.resize(pts.size());
+        Array<float> values;
+        values.resize(pts.size());
+        parallel_for (uint i : pts.size()) {
+            out_p[i] = P[pts[i]];
+            values[i] = arc + float(local_name.size() + local_name[0] - label_tag + label_tag - local_name.size() - local_name[0]);
+        }
+        self.emit_points(out_p, 0u);
+        self.set_float(self.attribute, procedural.Layer::point, values, 0u);
+        Array<uint> tags;
+        tags.add(label_tag);
+        self.set_uint("label_tag", procedural.Layer::detail, tags, 0u);
+    }
+}
+)"});
+    auto program = take(source::Program::create(runtime));
+    auto cand = take(source::Program::prepare(take(program->request({"batch2_sop", 1, std::move(files)}))));
+    take(program->try_publish(cand));
+
+    // Build mixed Geometry: primitive 0 is a triangle polygon (3 corners), primitive 1 is a bent polyline
+    // with a zero-length duplicate corner: (0,0,0) -> (3,0,0) -> (3,0,0) -> (3,0,4) => exact length 7.0 m.
+    Array<Vector3> mixed_p{{0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {0.f, 1.f, 0.f}, {3.f, 0.f, 0.f}, {3.f, 0.f, 4.f}};
+    Array<std::uint32_t> mixed_vp{0u, 1u, 2u, 0u, 3u, 3u, 4u};
+    Array<std::uint32_t> mixed_offsets{0u, 3u, 7u};
+    Array<procedural::PrimitiveKind> mixed_kinds{procedural::PrimitiveKind::polygon,
+                                                 procedural::PrimitiveKind::polyline};
+    const auto mixed_geo = take(procedural::Geometry::primitives(std::move(mixed_p), std::move(mixed_vp), mixed_offsets,
+                                                                 std::move(mixed_kinds)));
+
+    const auto graph_type = take(runtime.native_type<procedural::Graph>());
+    const auto input_type = take(runtime.native_type<procedural::GraphInput>());
+    const auto probe_type = runtime.find_type("test.TopologyProbe");
+    require(probe_type.has_value(), "test.TopologyProbe was not registered.");
+
+    auto graph = take(runtime.create(graph_type));
+    auto ext_in = take(procedural::add_node(runtime, graph.id(), input_type));
+    auto probe = take(procedural::add_node(runtime, graph.id(), *probe_type));
+    take(procedural::connect(runtime, graph.id(), ext_in.id(), 0u, probe.id(), 0u));
+    take(procedural::set_display(runtime, graph.id(), probe.id()));
+
+    Meshes resources;
+    procedural::Evaluator evaluator(runtime, graph, resources, program.get());
+    const std::array<procedural::Evaluator::ExternalInput, 1> probe_inputs{{{ext_in.id(), mixed_geo, 1u, 0u}}};
+    evaluator.set_external_inputs(probe_inputs);
+    take(evaluator.evaluate());
+    require(evaluator.output() != nullptr, "TopologyProbe evaluation failed on valid polyline.");
+    const auto& cooked0 = *evaluator.output();
+    require(cooked0.count(procedural::Layer::point) == 4u, "Expected 4 polyline vertices emitted as points.");
+    const auto* arc_col = take(cooked0.read<float>("arc_total", procedural::Layer::point));
+    require(arc_col != nullptr && (*arc_col)[0] == 7.0f && (*arc_col)[3] == 7.0f,
+            "polyline_length or dynamic self.<String> set_float mismatched expected 7.0 m.");
+
+    // Mutate String parameter on the node and query polygon primitive 0 without polyline_length.
+    const auto string_type = take(runtime.native_type<String>());
+    const auto attr_field = take(runtime.find_field(*probe_type, "attribute"));
+    const auto prim_field = take(runtime.find_field(*probe_type, "query_primitive"));
+    const auto req_len_field = take(runtime.find_field(*probe_type, "require_polyline_length"));
+    auto renamed = String::literal<"span_encoding">();
+    take(runtime.write(probe.id(), attr_field, ValueInput{string_type, &renamed}));
+    take(runtime.write(probe.id(), prim_field, 0u));
+    take(runtime.write(probe.id(), req_len_field, false));
+    take(evaluator.evaluate());
+    require(evaluator.output() != nullptr, "TopologyProbe failed when inspecting polygon primitive 0.");
+    const auto* span_col = take(evaluator.output()->read<float>("span_encoding", procedural::Layer::point));
+    require(span_col != nullptr && span_col->size() == 3u && (*span_col)[0] == 0.0f,
+            "Updated self.<String> attribute or polygon PrimitiveSpan mismatched.");
+
+    // Calling polyline_length on polygon primitive 0 or out-of-bounds primitive 9 must fail cleanly.
+    take(runtime.write(probe.id(), req_len_field, true));
+    take(evaluator.evaluate());
+    require(evaluator.output() == nullptr && evaluator.status(probe.id()) && evaluator.status(probe.id())->error &&
+                evaluator.status(probe.id())->error->message.contains("Expected a polyline"),
+            "polyline_length on a polygon primitive must fail with polyline diagnostic.");
+    take(runtime.write(probe.id(), prim_field, 9u));
+    take(evaluator.evaluate());
+    require(evaluator.output() == nullptr && evaluator.status(probe.id()) && evaluator.status(probe.id())->error &&
+                evaluator.status(probe.id())->error->message.contains("out of bounds"),
+            "Out-of-bounds primitive_span must fail cleanly.");
+
+    // 3. RailPanel follows primitive vertex order even when rail_a has extra unreferenced points and rail_b's
+    //    point array is stored in reverse order relative to its polyline vertices.
+    const auto rail_panel_type = runtime.find_type("procedural.RailPanel");
+    require(rail_panel_type.has_value(), "procedural.RailPanel was not registered.");
+
+    Array<Vector3> rail_a_p{{0.f, 1.f, -1.f}, {2.f, 1.5f, -1.f}, {4.f, 1.f, -1.f}, {50.f, 50.f, 50.f}};
+    Array<std::uint32_t> rail_a_vp{0u, 1u, 2u};
+    Array<std::uint32_t> rail_offsets{0u, 3u};
+    Array<procedural::PrimitiveKind> rail_kinds{procedural::PrimitiveKind::polyline};
+    const auto rail_a_geo = take(procedural::Geometry::primitives(
+        std::move(rail_a_p), std::move(rail_a_vp), rail_offsets, Array<procedural::PrimitiveKind>{rail_kinds}));
+
+    Array<Vector3> rail_b_p{{4.f, 2.f, 1.f}, {2.f, 2.5f, 1.f}, {0.f, 2.f, 1.f}};
+    Array<std::uint32_t> rail_b_vp{2u, 1u, 0u};
+    const auto rail_b_geo = take(procedural::Geometry::primitives(std::move(rail_b_p), std::move(rail_b_vp),
+                                                                  rail_offsets, std::move(rail_kinds)));
+
+    auto rp_graph = take(runtime.create(graph_type));
+    auto in_a = take(procedural::add_node(runtime, rp_graph.id(), input_type));
+    auto in_b = take(procedural::add_node(runtime, rp_graph.id(), input_type));
+    auto panel_node = take(procedural::add_node(runtime, rp_graph.id(), *rail_panel_type));
+    const auto order_field = take(runtime.find_field(input_type, "order"));
+    const auto port_name_field = take(runtime.find_field(input_type, "port_name"));
+    auto port_b_name = String::literal<"input_b">();
+    take(runtime.write(in_b.id(), order_field, std::int32_t{1}));
+    take(runtime.write(in_b.id(), port_name_field, ValueInput{string_type, &port_b_name}));
+    take(procedural::connect(runtime, rp_graph.id(), in_a.id(), 0u, panel_node.id(), 0u));
+    take(procedural::connect(runtime, rp_graph.id(), in_b.id(), 0u, panel_node.id(), 1u));
+    take(procedural::set_display(runtime, rp_graph.id(), panel_node.id()));
+
+    procedural::Evaluator rp_eval(runtime, rp_graph, resources, program.get());
+    const std::array<procedural::Evaluator::ExternalInput, 2> rp_inputs{
+        {{in_a.id(), rail_a_geo, 1u, 0u}, {in_b.id(), rail_b_geo, 2u, 0u}}};
+    rp_eval.set_external_inputs(rp_inputs);
+    take(rp_eval.evaluate());
+    require(rp_eval.output() != nullptr, "RailPanel failed on reversed-storage polyline rails.");
+    const auto& panel_geo = *rp_eval.output();
+    require(panel_geo.count(procedural::Layer::point) == 12u && panel_geo.count(procedural::Layer::primitive) == 20u &&
+                panel_geo.count(procedural::Layer::vertex) == 60u,
+            "RailPanel output topology counts mismatched expected 3-station closed panel.");
+}
+
 }
 
 int main(int argc, char** argv) {
@@ -2329,6 +2628,8 @@ int main(int argc, char** argv) {
     generative_modeling_and_l3_contracts();
     asset_subgraph_and_cache_pool_contracts();
     parametric_primitives_and_alignment_contracts();
+    source_sop_batch1_contracts();
+    source_sop_batch2_contracts();
     std::puts("procedural acceptance passed");
     return 0;
 }

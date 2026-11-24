@@ -91,6 +91,27 @@ enum class AxisJustify : std::uint32_t {
     AMETA(Label = "Max", DESC = "将几何包围盒上界对齐到目标坐标。") max = 3
 };
 
+AENUM(Name = "procedural.PrimitiveType",
+      DESC = "图元的拓扑形态：polygon 为至少三个角的闭合多边形面，polyline 为至少两个角的开放折线。")
+enum class PrimitiveType : std::uint32_t {
+    AMETA(Label = "Polygon", DESC = "至少三个角的闭合平面多边形。") polygon = 0,
+    AMETA(Label = "Polyline", DESC = "至少两个角、仅连接相邻角的开放折线。") polyline = 1
+};
+
+ASTRUCT(Name = "procedural.PrimitiveSpan", DESC = "单个图元在顶点层中的有序区间与拓扑形态。")
+struct PrimitiveSpan {
+    AGENERATED_BODY(PrimitiveSpan)
+
+    AFIELD(DESC = "该图元第一个角在 vertex 层的下标。")
+    std::uint32_t first_vertex{};
+
+    AFIELD(DESC = "该图元拥有的有序角数量。")
+    std::uint32_t vertex_count{};
+
+    AFIELD(DESC = "图元的拓扑形态（polygon 或 polyline）。")
+    PrimitiveType kind{PrimitiveType::polygon};
+};
+
 struct Spatial;
 
 // How a transform changes a vector or orientation column; see transform().

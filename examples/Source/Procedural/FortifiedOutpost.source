@@ -15,21 +15,9 @@ float game.sample_terrain_height(const procedural.Spatial& terrain, float x, flo
     return hit.hit ? hit.position.y : 0.0f;
 }
 
-quaternion game.upright_frame(vector3 up_dir, vector3 heading) {
-    const vector3 raw_y = math.normalize_or_zero(up_dir);
-    const vector3 y_axis = raw_y == vector3() ? vector3(0.0f, 1.0f, 0.0f) : raw_y;
-    vector3 x_axis = math.normalize_or_zero(math.cross(y_axis, heading));
-    if (x_axis == vector3()) {
-        const vector3 fallback = math.abs(y_axis.x) > 0.9f ? vector3(0.0f, 0.0f, 1.0f) : vector3(1.0f, 0.0f, 0.0f);
-        x_axis = math.normalize_or_zero(math.cross(y_axis, fallback));
-    }
-    return procedural.frame_rotation(x_axis, y_axis, math.cross(x_axis, y_axis));
-}
-
 bool game.has_neighbor_within(const Array<vector3>& points, vector3 candidate, float min_dist_sq) {
-    for (uint i = 0; i < points.size(); i += 1) {
-        const vector3 d = candidate - points[i];
-        if (math.dot(d, d) < min_dist_sq) {
+    for (uint i = 0u; i < points.size(); i += 1u) {
+        if (math.distance_squared(points[i], candidate) < min_dist_sq) {
             return true;
         }
     }
@@ -141,18 +129,16 @@ class game.OutpostLayoutSkeleton : procedural.Node {
             road_vp.add(r);
             road_scales.add(math.lerp(0.95f, 1.14f, math.smoothstep(-radius - 2.0f, 1.5f, z)));
         }
-        road_off.add(uint(0));
+        road_off.add(0u);
         road_off.add(road_steps);
-        self.emit_polylines(road_pts, road_vp, road_off, uint(0));
-        self.set_float("pscale", procedural.Layer::point, road_scales, uint(0));
+        self.emit_polylines(road_pts, road_vp, road_off, 0u);
+        self.set_float("pscale", procedural.Layer::point, road_scales, 0u);
 
         // 2. Polygonal bastion curtain wall polyline + crenellated merlon segments, open at -Z gate.
-        const float pi = 3.14159265f;
-        const float two_pi = 6.2831853f;
-        const float gate_center_angle = -0.5f * pi; // (0, -radius)
+        const float gate_center_angle = -0.5f * math.PI; // (0, -radius)
         const float half_gate_ang = math.clamp(0.5f * gate_w / radius, 0.10f, 0.72f);
         const float start_ang = gate_center_angle + half_gate_ang;
-        const float end_ang = gate_center_angle + two_pi - half_gate_ang;
+        const float end_ang = gate_center_angle + math.TAU - half_gate_ang;
         const float span_ang = end_ang - start_ang;
 
         const uint n_sides = uint(side_count);
@@ -234,15 +220,15 @@ class game.OutpostLayoutSkeleton : procedural.Node {
                 post_pts.add(vector3(xz.x, gy - 0.02f, xz.y));
                 const vector3 outward = math.normalize_or_zero(vector3(xz.x, 0.0f, xz.y));
                 const vector3 heading = outward != vector3() ? outward : vector3(0.0f, 0.0f, 1.0f);
-                post_orients.add(game.upright_frame(vector3(0.0f, 1.0f, 0.0f), heading));
+                post_orients.add(procedural.align_to_up(vector3(0.0f, 1.0f, 0.0f), heading));
                 post_scales.add(is_gate_pillar ? 1.34f : 1.08f);
-                post_variants.add(uint(0));
+                post_variants.add(0u);
             }
         }
-        self.emit_points(post_pts, uint(3));
-        self.set_quat("orient", procedural.Layer::point, post_orients, uint(3));
-        self.set_float("pscale", procedural.Layer::point, post_scales, uint(3));
-        self.set_uint("variant", procedural.Layer::point, post_variants, uint(3));
+        self.emit_points(post_pts, 3u);
+        self.set_quat("orient", procedural.Layer::point, post_orients, 3u);
+        self.set_float("pscale", procedural.Layer::point, post_scales, 3u);
+        self.set_uint("variant", procedural.Layer::point, post_variants, 3u);
     }
 }
 
@@ -328,30 +314,30 @@ class game.OutpostTacticalScatter : procedural.Node {
             const float rand_u = procedural.unit(procedural.hash2(mixed_seed, i));
             const vector3 up_axis = vector3(0.0f, 1.0f, 0.0f);
 
-            vector3 forward = vector3(math.cos(rand_u * 6.2831853f), 0.0f, math.sin(rand_u * 6.2831853f));
-            uint chosen_variant = uint(0);
+            vector3 forward = vector3(math.cos(rand_u * math.TAU), 0.0f, math.sin(rand_u * math.TAU));
+            uint chosen_variant = 0u;
             float chosen_scale = math.lerp(0.76f, 0.98f, rand_u);
 
             if (road_hit.hit && road_hit.distance <= r_clear + r_band) {
                 const vector3 unit_to_road =
                     math.normalize_or_zero(vector3(road_hit.position.x - pos.x, 0.0f, road_hit.position.z - pos.z));
                 forward = unit_to_road != vector3() ? unit_to_road : forward;
-                chosen_variant = uint(0);
+                chosen_variant = 0u;
                 chosen_scale = 0.88f * road_scale_boost;
             } else if (radial <= sanctum_r) {
                 const vector3 to_center = math.normalize_or_zero(vector3(-pos.x, 0.0f, -pos.z));
                 forward = to_center != vector3() ? to_center : forward;
-                chosen_variant = uint(1);
+                chosen_variant = 1u;
                 chosen_scale = math.lerp(0.92f, 1.18f, rand_u);
             } else if (pos.y > 2.4f && rand_u > 0.58f) {
-                chosen_variant = uint(1);
+                chosen_variant = 1u;
                 chosen_scale = math.lerp(0.78f, 1.02f, rand_u);
             }
 
             game.PropDecision d;
             d.valid = true;
             d.position = vector3(pos.x, pos.y - 0.015f, pos.z);
-            d.orient = game.upright_frame(math.lerp(up_axis, ground.normal, 0.14f), forward);
+            d.orient = procedural.align_to_up(math.lerp(up_axis, ground.normal, 0.14f), forward);
             d.scale = chosen_scale;
             d.variant = chosen_variant;
             decisions[i] = d;

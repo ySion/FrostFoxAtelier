@@ -215,6 +215,7 @@ struct ResampleSettings {
 // Coordinates are metres on each source polyline. Distances outside [0, length] are errors.
 [[nodiscard]] Result<Geometry> sample_curves(const Geometry& curves, float distance, bool from_end = false);
 [[nodiscard]] Result<Geometry> slice_curves(const Geometry& curves, float start, float end, bool end_from_tip = false);
+[[nodiscard]] Result<float> polyline_length(const Geometry& curves, std::uint32_t primitive);
 [[nodiscard]] Result<void> read_curve_slices(const Geometry& curves, std::uint32_t primitive,
                                              const Array<math::Vector2>& intervals, Array<math::Vector3>& positions,
                                              Array<std::uint32_t>& offsets);

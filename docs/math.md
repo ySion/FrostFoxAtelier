@@ -38,8 +38,8 @@
 
 ## 默认值、坐标与浮点规则
 
-- 向量默认零；四元数默认 `(0,0,0,1)`；矩阵默认零。C++ 单位矩阵使用 `Matrix4::identity()`，源码使用 `matrix4(1.0)`；单参数矩阵构造把参数放到四个对角元素，其余元素为零。
-- 源码构造还允许无参数或完整分量列表：向量 2/3/4 项、四元数 4 项、矩阵按行 16 项。每个参数必须精确匹配分量精度。
+- 向量默认零；四元数默认 `(0,0,0,1)`；矩阵默认零。C++ 单位矩阵使用 `Matrix4::identity()`，源码使用 `matrix4(1.0)`；单标量参数构造在向量上将标量广播到所有分量（如 `vector3(1.0f)`），在矩阵上把参数放到四个对角元素、其余元素为零。
+- 源码构造还允许无参数、同形状数学值的显式精度转换（如 `vector3d(v3)`、`vector3(v3d)`、`quaterniond(q)`、`matrix4d(m)`）或完整分量列表：向量 2/3/4 项、四元数 4 项、矩阵按行 16 项。标量参数必须精确匹配分量精度。
 - 矩阵使用行向量约定 `v * M`，变换组合为 `S * R * T`，平移位于第 4 行。`transform_point(v, m)` 按齐次分量 1 计算，`transform_direction(v, m)` 按 0 计算；它们用于仿射变换，不做透视除法。
 - 四元数乘法使用 Hamilton 乘积。`rotate(q, v)` 要求调用者提供单位四元数，不在每次旋转中隐式归一化。四元数相等比较分量，因此 `q` 与 `-q` 可以表示相同旋转但比较不相等。
 - World 对缩放、有效变换和生命周期的限制由 World 维护，通用数学值本身不禁止负缩放或非有限计算结果。
@@ -73,15 +73,19 @@ double energy(const Array<vector3d>& values) {
 | 向量 `*` 标量、标量 `*` 向量；向量 `/` 标量（及向量 `*=`、`/=` 标量） | 标量与向量精度一致；除零沿 IEEE 规则 |
 | 四元数 `*` 四元数；矩阵 `*` 矩阵（及 `*=`） | 同类型乘积；矩阵运算为真正矩阵乘法 |
 | 数学值一元 `+/-`、`==/!=` | 逐分量正负与精确比较；没有排序或近似相等运算符 |
+| `math.PI`、`math.TAU`、`math.PI_D`、`math.TAU_D` | 编译期精确浮点圆周率常量：前两者为 `float`（π 与 2π），后两者为 `double` |
 | `math.dot(a, b)`、`math.cross(a, b)` | 同类型向量；cross 限 vector3，dot 返回对应标量 |
-| `math.length(v)`、`math.normalize_or_zero(v)`、`math.fast_normalize_or_zero(v)` | 向量或四元数；归一化对零或非有限输入返回全零值（`fast_normalize_or_zero` 省去分量缩放，见[近似变体](#近似变体)），四元数全零不是单位旋转 |
+| `math.length(v)`、`math.length_squared(v)`、`math.normalize_or_zero(v)`、`math.fast_normalize_or_zero(v)` | 向量或四元数；`length` 先按最大分量预缩放防中间溢出，`length_squared` 直接返回 `dot(v, v)`；归一化对零或非有限输入返回全零值（`fast_normalize_or_zero` 省去分量缩放，见[近似变体](#近似变体)），四元数全零不是单位旋转 |
+| `math.distance(a, b)`、`math.distance_squared(a, b)` | 同类型向量；`distance(a, b)` 与 `length(b - a)` 共享最大分量预缩放精度，`distance_squared(a, b)` 计算一次 `d = b - a` 后返回 `dot(d, d)` |
 | `math.conjugate(q)`、`math.rotate(q, v)` | 共轭；单位四元数旋转同精度 vector3 |
 | `math.slerp01(a, b, t)`、`math.fast_slerp01(a, b, t)` | 同精度单位四元数与同精度插值标量的 `[0, 1]` 最短弧球面插值；`t` 按 `math.clamp(t, 0, 1)` 钳制（`NaN -> 0`），`dot(a, b) < 0` 时翻转第二操作数（`t = 1` 得 `-b`），`slerp01` 在近共线处采用归一化线性插值，`fast_slerp01` 见[近似变体](#近似变体) |
 | `math.transpose(m)` | 矩阵转置 |
 | `math.transform_point(v, m)`、`math.transform_direction(v, m)` | 同精度 vector3、matrix4，参数顺序符合 `v * M` |
 | `math.is_finite(x)` | float/double 标量、vector2/3/4、quaternion 或 matrix4，返回 `bool`；仅当全部分量均非 NaN 且非 `±∞` 时为 `true`（可编程材质子集不支持） |
 | `math.as_uint(x)`、`math.as_int(x)` | 32 位 `int`、`uint` 或 `float` 的零开销按位重解释（二补码 / IEEE-754 binary32 位模式），分别返回 `uint` 与 `int`；拒绝 `double`、`bool` 与向量（可编程材质子集不支持） |
-| `math.sqrt`、`fast_rsqrt`、`floor`、`ceil`、`trunc`、`fract`、`abs`、`sign`、`min`、`max`、`clamp`、`lerp`、`step`、`smoothstep` | float/double 标量与向量的逐分量函数，见下节与[近似变体](#近似变体) |
+| `math.min`、`math.max`、`math.clamp`（整数重载） | 同型 `int` 或 `uint` 标量（支持无类型非负整数字面量适配 `int`）；`clamp(x, lo, hi)` 保持 `max(lo, min(x, hi))`（`lo > hi` 得 `lo`） |
+| `math.abs`（有符号整数重载） | 接受 `int` 并返回非负 `int`；`x == INT_MIN`（`-2147483648`）报告执行错误，拒绝 `uint` |
+| `math.sqrt`、`fast_rsqrt`、`floor`、`ceil`、`trunc`、`round`、`fract`、`abs`、`sign`、`min`、`max`、`clamp`、`cwise_mul`、`cwise_div`、`radians`、`degrees`、`lerp`、`step`、`smoothstep` | float/double 标量与向量的逐分量函数，见下节与[近似变体](#近似变体) |
 | `math.sin`、`cos`、`atan2`、`exp`、`log`、`pow` | float/double 标量与向量的逐分量超越函数，见[超越函数](#超越函数) |
 
 ### 逐分量函数
@@ -91,12 +95,14 @@ double energy(const Array<vector3d>& values) {
 | 函数 | 定义与特殊值 |
 | --- | --- |
 | `sqrt(x)` | IEEE 平方根；负数得 NaN，`sqrt(-0) = -0` |
-| `floor(x)`、`ceil(x)`、`trunc(x)` | IEEE 取整；保留 ±0，NaN 与 ±∞ 原样返回 |
+| `floor(x)`、`ceil(x)`、`trunc(x)`、`round(x)` | IEEE 取整；`round(x)` 采用最近偶数舍入（ties-to-even，`round(±0.5) = ±0`、`round(±1.5) = ±2`）；均保留 ±0，NaN 与 ±∞ 原样返回 |
 | `fract(x)` | `min(x − floor(x), 1 的前一个浮点数)`，结果在 [0, 1)：极小负数不会得到 1.0，`fract(x) * n` 可直接作下标；NaN 和 ±∞ 得 NaN |
 | `abs(x)` | 清除符号位，含 −0 与 NaN |
 | `sign(x)` | `x > 0 ? 1 : (x < 0 ? −1 : x)`；±0 原样返回，NaN 得 NaN |
 | `min(x, y)`、`max(x, y)` | GLSL 定义：`y < x ? y : x`、`x < y ? y : x`；只有第一个参数为 NaN 时结果为 NaN |
 | `clamp(x, lo, hi)` | `max(lo, min(x, hi))`；x 为 NaN 得 lo，lo > hi 时得 lo |
+| `cwise_mul(x, y)`、`cwise_div(x, y)` | 逐分量 `x * y` 与 `x / y`（支持单侧同精度标量广播）；除零与 NaN 沿 IEEE 规则 |
+| `radians(x)`、`degrees(x)` | 角度转弧度 `x · (π / 180)` 与弧度转角度 `x · (180 / π)`，使用对应精度的最接近舍入常数 |
 | `lerp(a, b, t)` | `a·(1 − t) + b·t`（GLSL mix）；有限值下 t = 0 精确得 a、t = 1 精确得 b；不保证单调，`lerp(a, a, t)` 可能差 1 ULP |
 | `step(edge, x)` | `x < edge ? 0 : 1`；NaN 得 1 |
 | `smoothstep(e0, e1, x)` | `t = clamp((x − e0) / (e1 − e0), 0, 1)`，返回 `t·t·(3 − 2t)`；e0、e1 是同一个有限值时为阶跃（x ≤ e0 得 0，x > e0 得 1；+0 与 −0 按公式算，不视为同一个值），e0 > e1 时方向相反；e0 ≠ e1 时 x 为 NaN 得 0 |

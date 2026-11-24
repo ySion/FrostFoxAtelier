@@ -8,7 +8,7 @@ float game.terrace_height(uint seed, float x, float z, float radius, float heigh
         return -0.35f * height;
     }
     const float n1 = procedural.sample_value_noise(seed, vector3(x * 0.13f + 11.3f, 0.0f, z * 0.13f - 7.1f)) * 2.0f - 1.0f;
-    const float n2 = procedural.sample_value_noise(procedural.hash2(seed, uint(2654435769)),
+    const float n2 = procedural.sample_value_noise(procedural.hash2(seed, 0x9e3779b9u),
                                                    vector3(x * 0.29f - 5.2f, 3.7f, z * 0.29f + 9.4f)) * 2.0f - 1.0f;
     const float rw = math.max(0.0f, r + warp * (0.68f * n1 + 0.32f * n2));
     const float dome = math.clamp(1.0f - rw * rw, 0.0f, 1.0f);
@@ -134,7 +134,7 @@ class game.OutpostPlacement : procedural.Node {
             if (!(math.is_finite(pos) && math.is_finite(nrm) && math.is_finite(in_scale))) {
                 fail("OutpostPlacement input point attributes must be finite.");
             }
-            const float yaw = procedural.unit(procedural.hash2(mixed_seed, i)) * 6.2831853f;
+            const float yaw = procedural.unit(procedural.hash2(mixed_seed, i)) * math.TAU;
             const vector3 up_axis = vector3(0.0f, 1.0f, 0.0f);
             const vector3 unit_nrm = math.normalize_or_zero(nrm);
             vector3 target_nrm = up_axis;
@@ -144,14 +144,14 @@ class game.OutpostPlacement : procedural.Node {
 
             float tilt = 0.55f;
             float scale_mul = 0.45f;
-            uint chosen = uint(0);
+            uint chosen = 0u;
             if (target_nrm.y >= flatness && pos.y > 0.15f) {
                 if (pos.y >= sanctum_y) {
-                    chosen = uint(1);
+                    chosen = 1u;
                     tilt = 0.26f;
                     scale_mul = 1.15f;
                 } else {
-                    chosen = uint(0);
+                    chosen = 0u;
                     tilt = 0.12f;
                     scale_mul = 1.0f;
                 }
@@ -161,23 +161,14 @@ class game.OutpostPlacement : procedural.Node {
             if (y_axis == vector3()) {
                 y_axis = up_axis;
             }
-            vector3 heading = vector3(math.cos(yaw), 0.0f, math.sin(yaw));
-            vector3 x_axis = math.normalize_or_zero(math.cross(y_axis, heading));
-            if (x_axis == vector3()) {
-                vector3 ref_axis = vector3(1.0f, 0.0f, 0.0f);
-                if (math.abs(y_axis.y) < 0.9f) {
-                    ref_axis = vector3(0.0f, 1.0f, 0.0f);
-                }
-                x_axis = math.normalize_or_zero(math.cross(y_axis, ref_axis));
-            }
-            const vector3 z_axis = math.cross(x_axis, y_axis);
+            const vector3 heading = vector3(math.cos(yaw), 0.0f, math.sin(yaw));
             const float next_scale = in_scale * scale_mul;
             if (!math.is_finite(next_scale)) {
                 fail("OutpostPlacement output pscale overflowed.");
             }
 
             variant[i] = chosen;
-            orient[i] = procedural.frame_rotation(x_axis, y_axis, z_axis);
+            orient[i] = procedural.align_to_up(y_axis, heading);
             pscale[i] = next_scale;
         }
     }

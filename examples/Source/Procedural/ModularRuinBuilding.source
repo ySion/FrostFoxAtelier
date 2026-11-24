@@ -127,8 +127,8 @@ class game.ModularBuildingLayout : procedural.Node {
         }
 
         const uint mixed_seed = procedural.hash2(context.seed, self.seed);
-        const uint bays_x = uint(math.max(2.0f, math.floor(w / target_bay + 0.5f)));
-        const uint bays_z = uint(math.max(2.0f, math.floor(d / target_bay + 0.5f)));
+        const uint bays_x = math.max(2u, uint(math.round(w / target_bay)));
+        const uint bays_z = math.max(2u, uint(math.round(d / target_bay)));
         const float plinth_h = 0.44f;
         const float eave_y = plinth_h + float(n_floors) * fh;
         const float total_h = eave_y + roof_h;
@@ -411,7 +411,7 @@ class game.RuinRubbleGrounder : procedural.Node {
 
             const float r0 = procedural.unit(procedural.hash2(mixed_seed, i * 2));
             const float r1 = procedural.unit(procedural.hash2(mixed_seed, i * 2 + 1));
-            const float yaw = r0 * 6.2831853f;
+            const float yaw = r0 * math.TAU;
             const bool is_portal_guard = (i < 2);
 
             const vector3 up_axis = vector3(0.0f, 1.0f, 0.0f);
@@ -421,9 +421,9 @@ class game.RuinRubbleGrounder : procedural.Node {
             game.PropDecision d;
             d.valid = true;
             d.position = vector3(ground.position.x, ground.position.y - 0.01f, ground.position.z);
-            d.orient = game.upright_frame(up_axis + tilt_dir * tilt_amt, vector3(-tilt_dir.z, 0.0f, tilt_dir.x));
+            d.orient = procedural.align_to_up(up_axis + tilt_dir * tilt_amt, vector3(-tilt_dir.z, 0.0f, tilt_dir.x));
             d.scale = is_portal_guard ? 1.05f : math.lerp(0.58f, 0.86f, r1);
-            d.variant = (!is_portal_guard && r0 > 0.52f) ? uint(1) : uint(0);
+            d.variant = (!is_portal_guard && r0 > 0.52f) ? 1u : 0u;
             decisions[i] = d;
         }
 

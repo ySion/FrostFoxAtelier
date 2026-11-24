@@ -30,6 +30,30 @@ quaternion procedural.shortest_arc(vector3 z) {
     return math.normalize_or_zero(quaternion(-z.y, z.x, 0.0f, w));
 }
 
+// Shortest-arc unit rotation taking normalized `from` to normalized `to`.
+// Non-finite inputs return NaN; a finite zero vector returns the identity rotation;
+// opposite vectors rotate 180 degrees around a deterministic orthogonal axis (matching
+// shortest_arc when `from` is +Z and `to` is -Z, and preserving +Z when flipping +Y to -Y).
+quaternion procedural.rotation_between(vector3 from, vector3 to) {
+    if (!math.is_finite(from) || !math.is_finite(to)) {
+        const float invalid = math.length((from - from) + (to - to));
+        return quaternion(invalid, invalid, invalid, 1.0f + invalid);
+    }
+    const vector3 a = math.normalize_or_zero(from);
+    const vector3 b = math.normalize_or_zero(to);
+    if (a == vector3() || b == vector3()) {
+        return quaternion();
+    }
+    const float w = 1.0f + math.dot(a, b);
+    if (w < 0.0000001f) {
+        const vector3 ref = math.abs(a.y) < 0.9f ? vector3(0.0f, 1.0f, 0.0f) : vector3(1.0f, 0.0f, 0.0f);
+        const vector3 ortho = math.normalize_or_zero(math.cross(ref, a));
+        return quaternion(ortho.x, ortho.y, ortho.z, 0.0f);
+    }
+    const vector3 c = math.cross(a, b);
+    return math.normalize_or_zero(quaternion(c.x, c.y, c.z, w));
+}
+
 // The orientation Copy to Points derives from a normal and an up vector: +Z along the normal and
 // +Y toward up, or the shortest rotation from +Z to the normal when up is zero, parallel to it or
 // not finite. A zero normal leaves the identity; a non-finite one gives a non-finite result.
@@ -44,4 +68,42 @@ quaternion procedural.align_to_normal(vector3 normal, vector3 up) {
         return procedural.shortest_arc(z);
     }
     return procedural.frame_rotation(x, math.cross(z, x), z);
+}
+
+// Upright architectural/prop frame: local +Y strictly follows `up`, and local +Z follows the
+// projection of `forward` onto the plane perpendicular to `up` (+X = +Y x +Z). When `forward`
+// is zero, collinear with `up`, or non-finite, tilts +Y to `up` via shortest arc (returning
+// exact identity when `up` is +Y). A zero finite `up` returns identity; non-finite `up` returns NaN.
+quaternion procedural.align_to_up(vector3 up, vector3 forward) {
+    const vector3 y = math.normalize_or_zero(up);
+    if (y == vector3()) {
+        const float invalid = math.length(up - up);
+        return quaternion(invalid, invalid, invalid, 1.0f + invalid);
+    }
+    const vector3 f = math.normalize_or_zero(forward);
+    const vector3 x = math.normalize_or_zero(math.cross(y, f));
+    if (x == vector3()) {
+        return procedural.rotation_between(vector3(0.0f, 1.0f, 0.0f), y);
+    }
+    return procedural.frame_rotation(x, y, math.cross(x, y));
+}
+
+// Quaternion from a caller-normalized unit axis and right-handed angle in radians
+// (direct counterpart of C++ atelier::math::from_axis_angle).
+quaternion procedural.unit_axis_angle(vector3 unit_axis, float radians) {
+    const float half = radians * 0.5f;
+    const vector3 xyz = unit_axis * math.sin(half);
+    return quaternion(xyz.x, xyz.y, xyz.z, math.cos(half));
+}
+
+// Extrinsic X -> Y -> Z Euler rotation in degrees (q_z * q_y * q_x), matching
+// procedural.Transform.rotate and C++ procedural::euler_to_quaternion.
+quaternion procedural.euler_degrees(vector3 degrees) {
+    const vector3d half = math.radians(vector3d(degrees)) * 0.5d;
+    const vector3d s = math.sin(half);
+    const vector3d c = math.cos(half);
+    const quaterniond q = quaterniond(0.0d, 0.0d, s.z, c.z) *
+                          quaterniond(0.0d, s.y, 0.0d, c.y) *
+                          quaterniond(s.x, 0.0d, 0.0d, c.x);
+    return quaternion(q);
 }

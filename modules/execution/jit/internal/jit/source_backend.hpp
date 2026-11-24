@@ -296,6 +296,7 @@ enum class EntryFailure : std::uint32_t {
     integer_division,
     integer_shift,
     integer_conversion,
+    integer_overflow,
     parallel_alias,
     parallel_cancelled,
     parallel_failed,
@@ -330,6 +331,8 @@ inline std::optional<std::string_view> failure_message(EntryFailure reason,
     case EntryFailure::integer_conversion:
         return std::string_view(
             "Integer conversion requires a finite value representable after truncation toward zero.");
+    case EntryFailure::integer_overflow:
+        return std::string_view("Signed integer abs overflows on INT_MIN (-2147483648).");
     case EntryFailure::parallel_alias:
         return std::string_view(
             "Parallel loop writable Array overlaps another captured sequence or borrowed argument.");

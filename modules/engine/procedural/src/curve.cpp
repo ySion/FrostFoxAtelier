@@ -12,7 +12,9 @@ using math::Vector3;
 using math::Vector3d;
 
 namespace {
-Result<void> measure_edges(const Geometry& input, std::uint32_t p, std::vector<ArcEdge>& edges) {
+Result<double> measure_polyline(const Geometry& input, std::uint32_t p, std::vector<ArcEdge>* edges) {
+    if (p >= input.count(Layer::primitive))
+        return failure("Polyline primitive index " + std::to_string(p) + " is out of bounds.");
     const auto prim = input.primitive(p);
     if (prim.kind != PrimitiveKind::polyline)
         return failure("Expected a polyline at primitive " + std::to_string(p) + ".");
@@ -28,10 +30,16 @@ Result<void> measure_edges(const Geometry& input, std::uint32_t p, std::vector<A
             return failure("Polyline arc length exceeds representable precision at primitive " + std::to_string(p) +
                            ".");
         length = next;
-        edges.push_back({v, length});
+        if (edges)
+            edges->push_back({v, length});
     }
     if (length == 0.)
         return failure("Zero-length polyline at primitive " + std::to_string(p) + ".");
+    return length;
+}
+
+Result<void> measure_edges(const Geometry& input, std::uint32_t p, std::vector<ArcEdge>& edges) {
+    ATELIER_TRY(measure_polyline(input, p, &edges));
     return {};
 }
 
@@ -247,6 +255,11 @@ Result<Geometry> slice_curves(const Geometry& input, float start, float end, boo
         output.finish_primitive();
     }
     return output.geometry();
+}
+
+Result<float> polyline_length(const Geometry& curves, std::uint32_t primitive) {
+    ATELIER_TRY_BIND(length, measure_polyline(curves, primitive, nullptr));
+    return static_cast<float>(*length);
 }
 
 // This position-only projection lets a Source modeler apply its own layout to many pieces.

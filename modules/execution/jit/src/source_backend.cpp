@@ -1486,6 +1486,10 @@ private:
         PositionScope position(position_, node.position);
         if (node.kind == language::Expression::Kind::local)
             return locals_.at(node.value);
+        if (node.kind == language::Expression::Kind::field && node.type.kind == language::ValueType::string) {
+            trace_event(DiagnosticCall::field_read);
+            return field_address(native_receiver(expression(node.receiver)), node.value);
+        }
         if (node.kind == language::Expression::Kind::string_literal)
             return expression(id);
         if (node.kind == language::Expression::Kind::value_field)
@@ -1562,10 +1566,15 @@ private:
             llvm::SmallVector<llvm::Value*, 16> arguments;
             for (const auto id : node.arguments)
                 arguments.push_back(expression(id));
+            if (node.kind == Kind::math_intrinsic && node.math_operation == language::MathOperation::abs &&
+                node.type == language::ValueType::i32) {
+                check_value(ir_.CreateICmpNE(arguments[0], ir_.getInt32(0x80000000u)), EntryFailure::integer_overflow);
+                return ir_.CreateBinaryIntrinsic(llvm::Intrinsic::abs, arguments[0], ir_.getFalse());
+            }
             MathLowering lowering{ir_, *module_};
             if (node.kind == Kind::math_construct)
                 return lowering.construct(math_type(node.type), arguments);
-            return lowering.operation(node.math_operation, arguments);
+            return lowering.operation(node.math_operation, node.type, arguments);
         }
         case Kind::literal:
             if (node.type == language::ValueType::f32)
@@ -1661,6 +1670,10 @@ private:
             return load_value(result, node.type);
         }
         case Kind::field:
+            if (managed_value(node.type)) {
+                trace_event(DiagnosticCall::field_read);
+                return field_address(native_receiver(expression(node.receiver)), node.value);
+            }
             return read_field(expression(node.receiver), node.type, node.value);
         case Kind::source_call: {
             llvm::SmallVector<llvm::Value*, 8> arguments{invocation_, source_result_, source_failure_};

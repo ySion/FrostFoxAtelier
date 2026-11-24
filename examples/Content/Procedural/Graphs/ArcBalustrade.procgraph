@@ -90,8 +90,7 @@
     },
     "courses": {
       "inputs": {
-        "guide": "guide.output",
-        "guide_end": "guide_end.output"
+        "guide": "guide.output"
       },
       "position": [
         -380.0,
@@ -123,20 +122,6 @@
         "start_degrees": -66.0
       },
       "type": "procedural.Circle"
-    },
-    "guide_end": {
-      "inputs": {
-        "curves": "guide.output"
-      },
-      "position": [
-        -380.0,
-        110.0
-      ],
-      "properties": {
-        "distance": 0.0,
-        "from_end": true
-      },
-      "type": "procedural.SampleCurve"
     },
     "handrail": {
       "inputs": {

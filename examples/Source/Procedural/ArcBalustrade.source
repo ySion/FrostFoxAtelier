@@ -19,7 +19,7 @@ class game.BalusterFeet : procedural.Node {
                 fail("BalusterFeet needs finite stations with room for a 0.33 m foot.");
             }
             if (!math.is_finite(tangents[i]) || math.abs(tangents[i].y) > 0.0001f ||
-                math.abs(math.dot(tangents[i], tangents[i]) - 1.0f) > 0.001f) {
+                math.abs(math.length_squared(tangents[i]) - 1.0f) > 0.001f) {
                 fail("BalusterFeet requires horizontal unit tangents.");
             }
             origins.add(P[i] + up * 1.22f);
@@ -65,7 +65,7 @@ void game.ashlar_course(game.StoneCuts& cuts, float length, uint blocks, bool st
 
 void game.lift_stones(game.StonePaths& paths, const Array<vector3>& points, const Array<uint>& offsets,
                       const Array<float>& heights, uint first, uint end) {
-    paths.offsets.add(uint(0));
+    paths.offsets.add(0u);
     for (uint i = first; i < end; i += 1) {
         const vector3 lift = vector3(0.0f, heights[i], 0.0f);
         for (uint v = offsets[i]; v < offsets[i + 1]; v += 1) {
@@ -79,18 +79,20 @@ void game.lift_stones(game.StonePaths& paths, const Array<vector3>& points, cons
 [DESC = "在同一水平导线上排四皮错缝墙石、压顶石和灰芯。石缝定下每块的起止桩号，公共弧长截段保留切口之间的原弯道。"]
 class game.BalustradeCourses : procedural.Node {
     void process(
-        [Port, DESC = "一条有向水平开放折线。墙石、压顶和灰芯从这条原线截取。"] const procedural.Geometry& guide,
-        [In("arclength", Port = "guide_end", DESC = "接同一导线的 SampleCurve，从末端量 0 米，提供全长。")] const Array<float>& s,
+        [Port, DESC = "一条有向水平开放折线。直接读取其总弧长，并从这条原线截取墙石、压顶和灰芯。"] const procedural.Geometry& guide,
         [Port, DESC = "四皮石墙，每块一条开放折线，交替半块错缝，竖缝宽 0.016 米。接墙石 Sweep.backbone。"] procedural.Geometry& courses,
         [Port, DESC = "一皮压顶石，每块一条弧线，竖缝宽 0.012 米。接压顶石 Sweep.backbone。"] procedural.Geometry& coping,
         [Port, DESC = "连续灰芯轴线，首尾各内退 0.018 米。"] procedural.Geometry& bedding) {
-        if (s.size() != 1) { fail("BalustradeCourses needs the end station of a single guide."); }
-        const float length = s[0];
+        if (self.count_elements(guide, procedural.Layer::primitive) != 1u ||
+            self.count_elements(guide, procedural.Layer::instance) != 0u) {
+            fail("BalustradeCourses needs a single guide polyline.");
+        }
+        const float length = self.polyline_length(guide, 0u);
         if (!math.is_finite(length) || length < 0.77f || length / 0.64f >= 16777216.0f) {
             fail("Arc length is outside the stone course range.");
         }
-        const uint blocks = uint(math.max(1.0f, math.floor(length / 0.64f + 0.5f)));
-        const uint caps = uint(math.max(1.0f, math.floor(length / 0.96f + 0.5f)));
+        const uint blocks = math.max(1u, uint(math.round(length / 0.64f)));
+        const uint caps = math.max(1u, uint(math.round(length / 0.96f)));
         game.StoneCuts cuts;
         for (uint row = 0; row < 4; row += 1) {
             game.ashlar_course(cuts, length, blocks, row % 2 == 1, (float(row) + 0.5f) * 0.26f, 0.016f);
@@ -124,7 +126,7 @@ void game.turning_station(game.StonePaths& line, Array<float>& radii, float y, f
 void game.eased_section(game.StonePaths& section, float width, float height, float lower, float upper) {
     const float w = width * 0.5f;
     const float h = height * 0.5f;
-    section.offsets.add(uint(0));
+    section.offsets.add(0u);
     game.stone_point(section, vector3(-w + lower, -h, 0.0f));
     game.stone_point(section, vector3( w - lower, -h, 0.0f));
     game.stone_point(section, vector3( w, -h + lower, 0.0f));
@@ -145,7 +147,7 @@ class game.BalustradeProfiles : procedural.Node {
         [Port, DESC = "连续扶手的 XY 截面，底窄顶冠略收，宽 0.52 米，高 0.18 米。"] procedural.Geometry& handrail) {
         game.StonePaths turning;
         Array<float> radius;
-        turning.offsets.add(uint(0));
+        turning.offsets.add(0u);
         game.turning_station(turning, radius, 0.100f, 0.130f);
         game.turning_station(turning, radius, 0.114f, 0.147f);
         game.turning_station(turning, radius, 0.132f, 0.150f);
@@ -186,7 +188,7 @@ class game.BalustradeProfiles : procedural.Node {
         self.emit_polygons(sill_section.p, sill_section.corners, sill_section.offsets, 2);
 
         game.StonePaths crown;
-        crown.offsets.add(uint(0));
+        crown.offsets.add(0u);
         game.stone_point(crown, vector3(-0.207f, -0.090f, 0.0f));
         game.stone_point(crown, vector3(0.207f, -0.090f, 0.0f));
         game.stone_point(crown, vector3(0.256f, -0.045f, 0.0f));

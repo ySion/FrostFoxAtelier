@@ -71,7 +71,7 @@ void bool true false float double uint int const if else while for parallel_for 
 - `.size()` 返回 `uint`；索引接受 `uint` 或 `int`，在实际访问前检查负数和越界。长度超过 uint 范围或缓冲布局不合法时执行失败，不截断。空序列的长度查询合法，任何元素访问均越界。
 - **`const Type&` 保持深只读**：只读性沿记录字段与数组元素递归向下传播，禁止修改任何字段/元素或改变序列结构。**可写 `Type&`（`Array<T>&`、`String&`、`Struct&`）同时支持元素/字段修改与结构/整值修改**（只要类型具备 `can_own` 与 `can_mutate`）：`Array<T>&` 可调用 `.reserve/.resize/.clear/.add/.append` 及整值赋值 `a = b`，`String&` 可调用 `.reserve/.clear/.append` 及字面量/整值赋值，`Struct&` 可修改其内联拥有的容器字段；带有 `[InOut]` 或 `[Out]` 属性的 SOP 几何属性列形参绑定到定长层缓冲，编译期禁止直接或经被调函数改变其序列长度。当被调函数的可写引用形参可能改变序列结构时，生成代码不在入口缓存该形参的 `(data, size)` 视图，且调用点编译期禁止在同一次调用中通过另一引用形参同时借用同一根局部（如拒绝 `push(arr, cref_elem_of_arr)`，按值传参 `push(arr, arr[0])` 合法）。
 
-含聚合借用参数、普通 plain record 按值参数/结果、一般记录/String/Array 拥有型局部或 String 字面量的函数形成**同步值区间**：允许标量/数学计算、局部、控制流和上述值访问，按值读取 `self` 的标量、bool、枚举与数学字段（含 `self.v.x` 分量，继承的原生字段和源码 class 声明的字段都可读）；原生方法仅允许调用 `self` 上声明 `BorrowSafe` 的方法。读取 `self` 字段不盖写代号、不推进 GC，也不向源码暴露对象地址。身份及存储地址在有效执行段内可复用；字段值仍观察已经发生的别名写入和方法副作用（非 const 的 BorrowSafe 方法可以修改 `self` 的叶值），只有证明没有干扰时才可提升读取，不把未知原生调用视为只读。给 `self` 字段赋值、把 `self` 字段作为 `T&`/`const T&` 实参、把 `self` 当作值使用、读取其他对象字段等其他对象操作，以及 async 与 yield 被拒绝。数学按值参数和局部自身不产生该限制，数学引用参数仍产生。函数使用这些值存储的效果沿调用图传播，覆盖所有被调用的同步辅助函数。所有源码执行统一遵守下述[执行区间](#执行诊断与保护)规则；同步值区间额外限制借用和对象操作，不是另一套 GC 模式。调用方须保证存储已构造且持续有效，不销毁、重分配或并发修改其结构。没有执行超时保证，无限循环也会推迟宿主重新取得控制。
+含聚合借用参数、普通 plain record 按值参数/结果、一般记录/String/Array 拥有型局部、String 字面量或读取 `self` 的 `String` 字段的函数形成**同步值区间**：允许标量/数学计算、局部、控制流和上述值访问，按值读取 `self` 的标量、bool、枚举与数学字段（含 `self.v.x` 分量，继承的原生字段和源码 class 声明的字段都可读），以及**只读借用 `self` 的 `String` 字段**（支持 `self.s.size()`、`self.s[i]`、复制给拥有型局部 `String`、以及作为 `const String&` 实参传给同步源码函数或 `self` 上的 `BorrowSafe` 原生方法；禁止对 `self.s` 赋值、改变序列结构、绑定 `String&` 或在 `parallel_for` 体内直接访问）；原生方法仅允许调用 `self` 上声明 `BorrowSafe` 的方法。读取 `self` 字段不盖写代号、不推进 GC，也不向源码暴露对象地址。身份及存储地址在有效执行段内可复用；字段值仍观察已经发生的别名写入和方法副作用（非 const 的 BorrowSafe 方法可以修改 `self` 的叶值），只有证明没有干扰时才可提升读取，不把未知原生调用视为只读。给 `self` 字段赋值、把非 `String` 的 `self` 字段传给源码引用参数或把任意 `self` 字段作为可写 `T&` 实参、把 `self` 当作值使用、读取其他对象字段等其他对象操作，以及 async 与 yield 被拒绝。数学按值参数和局部自身不产生该限制，数学引用参数仍产生。函数使用这些值存储的效果沿调用图传播，覆盖所有被调用的同步辅助函数。所有源码执行统一遵守下述[执行区间](#执行诊断与保护)规则；同步值区间额外限制借用和对象操作，不是另一套 GC 模式。调用方须保证存储已构造且持续有效，不销毁、重分配或并发修改其结构。没有执行超时保证，无限循环也会推迟宿主重新取得控制。
 
 源码执行（含区间内的 `self` 读取）只在 Runtime 线程上进行。Runtime 的执行计数、根表、对象槽与回调计数都没有同步，多个线程同时调用同一 Runtime 的入口是数据竞争；需要并行的宿主在 Runtime 线程上串行调用源码，或在进入并行段之前把所需数据读成普通值，工作线程只处理这些值。
 
@@ -82,8 +82,8 @@ plain record 可以在同步源码与原生调用中按值传入和返回，借�
 ### 字面量
 
 - `true/false` 为 bool 字面量，可以用于局部、参数、返回和条件；它们不是整数 1/0。
-- `uint` 只接受无后缀十进制数字；`007` 为十进制 7。超范围字面量拒绝，不先回绕。没有进制前缀或分隔符。`-1` 定型为 int；`-2147483648` 合法，超出有符号范围的负字面量拒绝。uint 变量仍不能应用一元负号。
-- 浮点字面量必须以数字开头。无后缀且包含小数点或指数时为 float；`f/F` 显式指定 float，`d/D` 指定 double。`1.0`、`1.`、`1e2`、`1E-2`、`1.e+2`、`1f`、`1.0d` 合法；`.5` 和缺少指数数字的 `1e+` 不合法。
+- 整数字面量支持十进制（`007` 为十进制 7）与十六进制 `0x`/`0X`（至少一位十六进制数字，不带小数点），可选尾缀 `u`/`U`；超 32 位范围字面量拒绝，不先回绕。带 `u`/`U` 尾缀的字面量严格定型为 `uint`（拒绝赋给 `int` 或应用一元负号）；无尾缀非负字面量默认保持 `uint`，在 `int` 上下文中若不超过 2147483647 可适配定型为 `int`。`-1` 定型为 `int`；`-2147483648` 与 `-0x80000000` 合法，超出有符号范围的负字面量拒绝。`uint` 变量仍不能应用一元负号。
+- 浮点字面量必须以十进制数字开头。无后缀且包含小数点或指数时为 float；`f/F` 显式指定 float，`d/D` 指定 double。`1.0`、`1.`、`1e2`、`1E-2`、`1.e+2`、`1f`、`1.0d` 合法；`.5`、`0x1.0` 和缺少指数数字的 `1e+` 不合法。
 - 浮点字面量由 `std::from_chars` 完整转换，结果必须有限；超范围或下溢范围错误拒绝。`NaN/Infinity/inf` 没有字面量含义，宿主输入和运行中的运算仍可携带非有限值。
 
 ### 运算和求值
@@ -159,7 +159,7 @@ uint process(combat.DamageInfo& damage) {
 
 - 类型声明位于顶层，可与函数交错；结构体字段可前向引用同模块类型。名称为准确声明名，支持 `combat.Point` 形式；没有命名空间块或用户类型的相对短名查找。类型不能重名，不能覆盖已注册类型、内建数学短名或 `String/Array/core.*/math.*/__source_*`；同名类型与函数也拒绝。
 - `editor.` 前缀保留给编辑器。编辑器在文档 Runtime 中以此前缀登记自己的参数类型，源码的 struct、enum 和 class 都不能用这个前缀声明。宿主目录也不包含这些类型：在源码中引用它们，包括作字段类型、局部类型、枚举常量或类的基类，都按未登记类型报错。这是在 Program 拥有各自可见域之前的临时规则。
-- `[Flags] enum Name [ : int | uint ] { ... }` 默认底层为 int，末尾分号可省略；携带 `[Flags]` 时底层必须显式写 `: uint`。枚举项前可写 `[Label = "...", DESC = "..."]` 展示元数据；枚举项可显式指定十进制整数（含负号），否则为零或上一项加一；底层范围溢出、重复项名拒绝，重复值允许。可使用尾随逗号。
+- `[Flags] enum Name [ : int | uint ] { ... }` 默认底层为 int，末尾分号可省略；携带 `[Flags]` 时底层必须显式写 `: uint`。枚举项前可写 `[Label = "...", DESC = "..."]` 展示元数据；枚举项可显式指定十进制或十六进制整数（有符号底层支持负号，`: uint` 底层支持尾缀 `u`/`U`），否则为零或上一项加一；底层范围溢出、重复项名拒绝，重复值允许。可使用尾随逗号。
 - `struct Name { Type field; ... };` 字段支持 bool/float/double/uint/int、内建数学值、已注册或同模块枚举、同模块结构体，以及已注册的无 GC 引用记录、String 和 Array。原生元素类型的 `Array<T>` 解析现有注册数组；源码声明的 `struct`/`enum`（及其多层嵌套 `Array`）自动合成对应的描述型 `TypeKind::array`。字段顺序决定布局，偏移和对齐由 Runtime 计算；内联循环（含经 `Array` 回到自身的循环）、未知类型、重复字段和对象引用字段拒绝。没有字段初始化器、方法、继承或自定义构造析构。
 - 结构体的拥有能力由字段生命周期能力递归组合；满足条件的局部可默认构造、深复制初始化和整值赋值。默认构造递归将标量置零、String/Array 置空，并调用原生记录的构造。字段随拥有者清理；部分构造失败时仅销毁已完成的字段。可写局部与非定长可写借用参数中的字段及元素遵守上述拥有值修改规则；`const` 引用参数保持深只读。满足 plain record 与拥有资格的源码结构体支持同步按值参数与结果；源码返回临时由返回值复制形成，不额外调用默认构造。没有初始化器的局部仍执行默认构造。
 - 类型声明经 `Program::request` 收集并取得未发布的 Runtime 布局，函数由 `prepare` 编译；成功 `try_publish` 后类型和代码一起可用。任何候选失败均不发布新类型。创建对象后仍可发布新类型，提交需要类型安全点（代码发布条件加 GC 空闲）。
@@ -189,7 +189,7 @@ class game.Move : world.Component {
 ```
 
 - 基类必须是宿主已经注册的原生对象类型。类具有真实 Runtime 类型身份、继承关系和实例存储；字段可以是 bool/float/double/int/uint、float 或 double 的 vector2/3/4（短名或 `math.*` 规范名）、已注册或同快照声明的枚举，以及已注册的引擎 String（`String` 或其规范名 `core.String`）；四元数、矩阵、其他记录、数组和对象引用不能作类字段。原生基类仍由原生构造函数初始化。
-- 字段初始化器给出整值默认值，没有初始化器时取零值（枚举为底层值 0）。标量写不依赖其他声明的常量标量表达式，按现有数值和显式转换规则检查；向量写 `vector3()` 或每个分量一个常量的 `vector3(c0, c1, c2)`，分量精确匹配向量精度，例如 double 向量的分量写 `0.0d`；普通枚举写 `geo.Axis::z`，`Flags` 枚举还可写由已声明位项构成的常量按位表达式（如 `ns.Mask::A | ns.Mask::B`）。每个浮点叶必须有限：`0.0f / 0.0f`、`1e30f * 1e30f` 这类折叠结果在该字段报错。原生方法若发布了尾部标量/枚举默认实参（`MethodInfo::parameter_defaults`），源码调用可省略对应的尾部实参并在编译期静态补齐。
+- 字段初始化器给出整值默认值，没有初始化器时取零值（枚举为底层值 0）。标量写不依赖其他声明的常量标量表达式，按现有数值和显式转换规则检查；向量写 `vector3()`、单标量广播 `vector3(c)` 或每个分量一个常量的 `vector3(c0, c1, c2)`，分量精确匹配向量精度，例如 double 向量的分量写 `0.0d`；普通枚举写 `geo.Axis::z`，`Flags` 枚举还可写由已声明位项构成的常量按位表达式（如 `ns.Mask::A | ns.Mask::B`）。每个浮点叶必须有限：`0.0f / 0.0f`、`1e30f * 1e30f` 这类折叠结果在该字段报错。原生方法若发布了尾部标量/枚举默认实参（`MethodInfo::parameter_defaults`），源码调用可省略对应的尾部实参并在编译期静态补齐。
 - String 字段默认构造为空，或用一个普通字符串字面量，例如 `String attribute = "pscale";`；转义沿既有 String 规则解码，UTF-8 在发布前校验。`String` 与规范名、无初始化器与 `""` 分别等价。它是同一 Runtime 中的真实拥有型字段，支持宿主反射读写、保存与重建，**不开放源码 `self.attribute` 的读取、写入或借用**，也不新增 class 构造函数或 Source 类间继承。宿主需要文本时先复制到自己的 String，不能让对象内部地址跨 invoke 存续。
 - 字段前可写属性，名称与 AFIELD 相同：`[Min = 0.0, Max = 2.0, LockMin, HardMax = 10.0, Label = "Amount", Category = "Noise", DESC = "说明"] float amount = 0.5f;`。边界是字段叶类型的有限常量（向量按分量、int/uint 用整数），只能用于 int/uint/float/double 和向量字段；`LockMin/LockMax` 把同侧 UI 边界同时作硬边界，要求同侧 `Min/Max` 且不能再写 `HardMin/HardMax`。`Label`、`Category` 是不含控制字符的字符串字面量，`DESC` 允许 `\n`、`\t`。重复或未知属性、写在方法前的属性在编译期报错；大小顺序、UI 边界落在硬边界内、默认值满足硬边界由 Runtime 发布检查，错误同样指到该字段。规则见[字段范围与硬边界](docs/reflection.md#字段范围与硬边界)。
 - 字段还可写 `[RunOver]`（发布 `{"procedural.role", "run_over"}`）或通用 `[Meta("custom.key", "value")]`。Meta 可重复声明不同键，每项恰好两个字符串字面量；同键重复拒绝。载体和原生字段一致，格式、拥有关系及排序见[Runtime 字段扩展元数据](docs/runtime-model.md#字段扩展元数据)。语言和 Runtime 不解释业务键语义。
@@ -450,7 +450,7 @@ material.Output shade(material.Context c, Params p, Textures textures) {
 
 - 必须提供无参数 `Params defaults()`；无纹理使用按值 `Output shade(Context, Params)`，有纹理使用 `Output shade(Context, Params, Textures)`。Params 和 Textures 是本份源码声明的普通结构体；前者只含 float、float 向量及其组合，后者只含实际注册的 TextureInput 叶及嵌套记录。字段路径是所属 MS 内的稳定键，数值/纹理路径重名拒绝；路径变化是接口变化，字段重排、局部参数名和记录类型名变化不改变键，不以 Runtime FieldId、GPU 偏移、slot 或显示名充当键。
 - 源码结构只通过现有类型发布事务预览布局，**不发布或重定义活 Runtime 中的类型**。同名 Params/Textures 的独立材质和改版可共存。布局、参数类型/默认字节、具名纹理 schema、注入资源记录、代码和 HLSL 由返回的不可变内容拥有；不保存 Runtime、根、借用地址或类型解析回调。只捕获可达值类型的默认值，原生默认构造在编译期完成，生成代码中的 plain record 构造与赋值是值复制，不再调用原生生命周期服务。
-- 支持 float、vector2/3/4、plain struct、bool 条件/中间值、局部变量、字段赋值、if/else、按值同步辅助函数。全模块仍经普通 Source 语法/类型检查，并沿共享规则拒绝递归；材质专属限制只检查 shade/defaults 的可达调用闭包。未调用的合法循环辅助函数不阻止编译，调用后则拒绝。当前数学操作为 dot/cross/length、sqrt/sin/cos、floor/ceil/trunc/fract/abs、min/max/clamp/lerp/step。可达代码中的全部循环（含 `parallel_for`）、显式 `fail`、对象/GC/引用操作、借用参数、String/Array、协程、任意宿主调用及其余数学类型/操作拒绝。检查类型化语句与表达式，不使用文本黑名单。
+- 支持 float、vector2/3/4、plain struct、bool 条件/中间值、局部变量、字段赋值、if/else、按值同步辅助函数。全模块仍经普通 Source 语法/类型检查，并沿共享规则拒绝递归；材质专属限制只检查 shade/defaults 的可达调用闭包。未调用的合法循环辅助函数不阻止编译，调用后则拒绝。当前数学操作与常量为 `PI/TAU`、`dot/cross/length/length_squared/distance/distance_squared`、`sqrt/sin/cos/radians/degrees`、`floor/ceil/trunc/round/fract/abs`、`min/max/clamp/cwise_mul/cwise_div/lerp/step`。可达代码中的全部循环（含 `parallel_for`）、显式 `fail`、对象/GC/引用操作、借用参数、String/Array、协程、任意宿主调用及其余数学类型/操作拒绝。检查类型化语句与表达式，不使用文本黑名单。
 - `sample(TextureInput, vector2 UV)` 返回 vector4；数字槽语法不再接受。TextureInput 是编译器注入的 plain value，不是 Runtime Texture 对象或资产键。已有令牌的复制初始化、复制赋值及按值辅助函数沿普通值规则；禁止自行默认构造令牌或包含令牌的记录、读取/写入令牌成员、整数转换和算术。复制已有令牌不改变资源关联，也不能伪造新槽。实际注册的 uint `slot` 字段只提供 CPU 布局，限制由材质 AST 执行，不依赖隐藏标记。`defaults` 及其调用闭包不得持有纹理输入或采样，也不接收运行上下文。
 - `sample_orientation(TextureInput, vector2 UV)` 返回实际输入寻址方式的 vector2 方向：Repeat/Clamp 为 `(1,1)`，Mirror 按各轴折叠区间返回 ±1，精确折点取正。CPU 只在实际执行查询时要求该绑定的 orientation 回调，缺失或返回非有限值令本次调用失败，不假定 Repeat；footprint 将它作为中心值上的分段常量，两方向变化为零。
 - `MaterialProgram::textures()` 导出所有声明输入的稳定键和本编译版本 slot；不做逐输入可达性裁剪，也不宣称全部实际采样。每次求值必须恰好绑定每个声明槽一次，包括当前未采样的输入；空输入不能表示为缺槽，同图的不同输入不合并。纹理默认关联、颜色解释、采样设置及线性 float4 空值属于 MS 类型化作者数据，由 material 从冻结快照准备资源环境，不在数值 defaults 或编译器中另造资产加载规则。坏非空键不能当作清空成功。

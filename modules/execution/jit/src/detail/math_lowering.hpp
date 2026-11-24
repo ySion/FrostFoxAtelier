@@ -7,6 +7,7 @@
 #include <llvm/IR/Module.h>
 #include <cmath>
 #include <limits>
+#include <numbers>
 #include <span>
 #include <utility>
 
@@ -52,6 +53,10 @@ public:
     }
 
     llvm::Value* construct(math::Type type, std::span<llvm::Value* const> values) {
+        if (values.size() == 1 && values[0]->getType()->isVectorTy())
+            return ir_.CreateFPCast(values[0], value_type(ir_.getContext(), type));
+        if (type.vector() && values.size() == 1)
+            return ir_.CreateVectorSplat(static_cast<unsigned>(type.components()), values[0]);
         llvm::Value* result = llvm::Constant::getNullValue(value_type(ir_.getContext(), type));
         if (values.empty()) {
             if (type.shape == math::Shape::quaternion)
@@ -105,10 +110,11 @@ public:
         }
     }
 
-    llvm::Value* operation(language::MathOperation operation, std::span<llvm::Value* const> args) {
+    llvm::Value* operation(language::MathOperation operation, language::ValueType result_type,
+                           std::span<llvm::Value* const> args) {
         using Op = language::MathOperation;
         if (operation >= Op::square_root)
-            return elementwise(operation, args);
+            return elementwise(operation, result_type, args);
         switch (operation) {
         case Op::dot:
             return dot(args[0], args[1]);
@@ -116,6 +122,14 @@ public:
             return cross(args[0], args[1]);
         case Op::length:
             return norm(args[0], false);
+        case Op::length_squared:
+            return dot(args[0], args[0]);
+        case Op::distance:
+            return norm(ir_.CreateFSub(args[1], args[0]), false);
+        case Op::distance_squared: {
+            auto* diff = ir_.CreateFSub(args[1], args[0]);
+            return dot(diff, diff);
+        }
         case Op::normalize_or_zero:
             return norm(args[0], true);
         case Op::fast_normalize_or_zero:
@@ -205,8 +219,28 @@ private:
     llvm::Value* maximum(llvm::Value* x, llvm::Value* y) { return ir_.CreateSelect(ir_.CreateFCmpOLT(x, y), y, x); }
 
     // Scalar arguments apply to every lane of the vector argument's type.
-    llvm::Value* elementwise(language::MathOperation operation, std::span<llvm::Value* const> input) {
+    llvm::Value* elementwise(language::MathOperation operation, language::ValueType result_type,
+                             std::span<llvm::Value* const> input) {
         using Op = language::MathOperation;
+        if (result_type == language::ValueType::i32 || result_type == language::ValueType::u32) {
+            const bool signed_int = result_type == language::ValueType::i32;
+            const auto imin = [&](llvm::Value* x, llvm::Value* y) {
+                return ir_.CreateBinaryIntrinsic(signed_int ? llvm::Intrinsic::smin : llvm::Intrinsic::umin, x, y);
+            };
+            const auto imax = [&](llvm::Value* x, llvm::Value* y) {
+                return ir_.CreateBinaryIntrinsic(signed_int ? llvm::Intrinsic::smax : llvm::Intrinsic::umax, x, y);
+            };
+            switch (operation) {
+            case Op::min:
+                return imin(input[0], input[1]);
+            case Op::max:
+                return imax(input[0], input[1]);
+            case Op::clamp:
+                return imax(input[1], imin(input[0], input[2]));
+            default:
+                fatal("Invalid integer math operation.");
+            }
+        }
         llvm::Type* type = input[0]->getType();
         for (auto* value : input)
             if (value->getType()->isVectorTy()) {
@@ -234,6 +268,8 @@ private:
             return intrinsic(llvm::Intrinsic::ceil, a[0]);
         case Op::trunc:
             return intrinsic(llvm::Intrinsic::trunc, a[0]);
+        case Op::round:
+            return intrinsic(llvm::Intrinsic::roundeven, a[0]);
         case Op::fract: {
             // Capped below one so fract(x) * n stays a valid index.
             const double below_one = type->getScalarType()->isDoubleTy()
@@ -252,6 +288,18 @@ private:
             return maximum(a[0], a[1]);
         case Op::clamp:
             return clamp(a[0], a[1], a[2]);
+        case Op::cwise_mul:
+            return ir_.CreateFMul(a[0], a[1]);
+        case Op::cwise_div:
+            return ir_.CreateFDiv(a[0], a[1]);
+        case Op::radians:
+            return ir_.CreateFMul(
+                a[0], constant(wide ? (std::numbers::pi_v<double> / 180.0)
+                                    : static_cast<double>(static_cast<float>(std::numbers::pi_v<double> / 180.0))));
+        case Op::degrees:
+            return ir_.CreateFMul(
+                a[0], constant(wide ? (180.0 / std::numbers::pi_v<double>)
+                                    : static_cast<double>(static_cast<float>(180.0 / std::numbers::pi_v<double>))));
         case Op::lerp:
             return ir_.CreateFAdd(ir_.CreateFMul(a[0], ir_.CreateFSub(constant(1), a[2])), ir_.CreateFMul(a[1], a[2]));
         case Op::step:

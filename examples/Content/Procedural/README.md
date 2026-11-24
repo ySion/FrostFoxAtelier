@@ -81,7 +81,7 @@
 
 ## 弧形石栏杆 ArcBalustrade
 
-打开[场景](Scenes/ArcBalustrade.scene)，主相机面对一段 132° 的石栏杆。它由[一张 20 节点的图](Graphs/ArcBalustrade.procgraph)生成。四皮墙石交替错开半块，灰缝宽 16 mm，灰芯比石面内收 20 mm。柱座落在 1.22 m 高的压顶上，扶手底面和栏柱顶面同高 2.16 m。方柱座的局部 +Z 沿导线切向，两端各留 0.22 m。石块、灰芯、扶手和栏柱是各自闭合的构件。
+打开[场景](Scenes/ArcBalustrade.scene)，主相机面对一段 132° 的石栏杆。它由[一张 19 节点的图](Graphs/ArcBalustrade.procgraph)生成。四皮墙石交替错开半块，灰缝宽 16 mm，灰芯比石面内收 20 mm。柱座落在 1.22 m 高的压顶上，扶手底面和栏柱顶面同高 2.16 m。方柱座的局部 +Z 沿导线切向，两端各留 0.22 m。石块、灰芯、扶手和栏柱是各自闭合的构件。
 
 | 弧线半径 `arc_radius` | 最大柱距 `post_spacing` | 栏柱 | 实际等分柱距 | 墙石 / 压顶石 |
 |---:|---:|---:|---:|---:|
@@ -90,7 +90,7 @@
 | 2.10 m | 0.48 m | 11 | 0.440 m | 34 / 5 |
 | 2.80 m | 0.48 m | 14 | 0.462 m | 42 / 6 |
 
-三个分支共用 `guide` 的 64 段开放圆弧。扶手直接沿原弧抬高并 Sweep。`post_span` 用 SliceCurve 两端各退 0.22 m，`post_pitch` 用 Resample 的 `fit_spacing` 模式排匀柱位。`post_stations` 设置柱脚高度和朝向，并把桩号换回完整导线的里程。`guide_end` 用 SampleCurve 从末端量 0 m 读取弧长；砌石 Source 决定每道灰缝的位置，一次批量截取全部石块与灰芯的原线区间，再分别抬升和扫掠。瓶形柱用竖直折线和 point float `shaft_scale` 驱动圆管 Sweep，腹部半径 0.160 m、颈部 0.076 m。柱脚和柱头复用一次 Bevel 生成的方座，整根栏柱只做一次，再沿曲线 Realize。[案例中的截面、砌法和布站](../../Source/Procedural/ArcBalustrade.source)
+三个分支共用 `guide` 的 64 段开放圆弧。扶手直接沿原弧抬高并 Sweep。`post_span` 用 SliceCurve 两端各退 0.22 m，`post_pitch` 用 Resample 的 `fit_spacing` 模式排匀柱位。`post_stations` 设置柱脚高度和朝向，并把桩号换回完整导线的里程。砌石 Source 直接由 `self.polyline_length(guide, 0u)` 读取导线总弧长并决定每道灰缝的位置，一次批量截取全部石块与灰芯的原线区间，再分别抬升和扫掠。瓶形柱用竖直折线和 point float `shaft_scale` 驱动圆管 Sweep，腹部半径 0.160 m、颈部 0.076 m。柱脚和柱头复用一次 Bevel 生成的方座，整根栏柱只做一次，再沿曲线 Realize。[案例中的截面、砌法和布站](../../Source/Procedural/ArcBalustrade.source)
 
 **用 Control 改稿。** 打开图后，用 `op.call` 传入 `{"id":"graph.set_parameter","args":{"parameter":"post_spacing","value_json":"0.48"}}`。用 `graph.inspect {"node":"post_stations","samples":16}` 查看全部柱脚的 `arclength`，用 `graph.inspect {"view":"node","node":"spindle","bindings":true}` 查看半径列的实际来源。缺列时返回 `fallback`，实际系数为 1。对 `spindle.output` 从 `[0.6,0.406,0]` 和 `[0.6,0.721,0]` 沿 `[-1,0,0]` 发射线可以复测柱腹和柱颈。执行 `edit.undo` 恢复上一次改稿。
 

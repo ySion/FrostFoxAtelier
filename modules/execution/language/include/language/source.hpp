@@ -188,11 +188,14 @@ enum class Operation {
     logical_or
 };
 
-// square_root and every later operation are element-wise over float/double scalars and vectors.
+// square_root and every later operation are element-wise over scalars and vectors.
 enum class MathOperation {
     dot,
     cross,
     length,
+    length_squared,
+    distance,
+    distance_squared,
     normalize_or_zero,
     fast_normalize_or_zero,
     conjugate,
@@ -210,12 +213,17 @@ enum class MathOperation {
     floor,
     ceil,
     trunc,
+    round,
     fract,
     abs,
     sign,
     min,
     max,
     clamp,
+    cwise_mul,
+    cwise_div,
+    radians,
+    degrees,
     lerp,
     step,
     smoothstep,

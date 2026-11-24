@@ -184,9 +184,10 @@ Result<Binding> bind_type(Runtime& runtime, TypeId type, std::span<const TypeInf
         prefix += field.name;
         const auto field_kind = lookup_kind(field.value.type);
         const bool typed_field = field_kind.kind == ValueKind::record && binding.values[field_kind.type_index].math;
+        const bool string_field = field_kind.kind == ValueKind::string;
         const bool constrained = cursor.constrained || field.range.constrains();
         const auto range = field.range.constrains() ? field.range : cursor.type->math ? cursor.range : FieldRange{};
-        if (field_kind != ValueKind::void_value && (!aggregate(field_kind) || typed_field)) {
+        if (field_kind != ValueKind::void_value && (!aggregate(field_kind) || typed_field || string_field)) {
             binding.fields.push_back({prefix, path, field_kind, constrained, access,
                                       range.hard_min ? scalar(*range.hard_min, binding).bits : 0,
                                       range.hard_max ? scalar(*range.hard_max, binding).bits : 0,

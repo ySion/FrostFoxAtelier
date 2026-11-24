@@ -873,6 +873,24 @@ void verify_examples_procedural_showcases() {
                     settlement_view.display_summary.spatial->instance_overlaps->overlapping_pairs == 0,
                 "RuinedSettlement.procgraph 3-instance AssetNode composition reported missing geometry or overlaps.");
 
+        // 3b. ArcBalustrade.procgraph (direct self.polyline_length without SampleCurve) & Footbridge.procgraph (RailPanel):
+        const std::string_view balustrade_key = "project/{5EE9A8F9-A129-4BB3-ABB5-C4A1769A9CB6}";
+        assert_manifold_stages(balustrade_key,
+                               {"bedding", "wall_stones", "sill_stones", "balusters", "handrail", "stonework"});
+        require(loaded.session->graph_node_id(balustrade_key, "guide_end") == ObjectId{},
+                "ArcBalustrade.procgraph still retains redundant guide_end SampleCurve node.");
+        const auto balustrade_view = take(loaded.session->inspect_graph(balustrade_key, &project, {}, false, 4, false));
+        require(!balustrade_view.display_error && balustrade_view.display_summary.valid &&
+                    balustrade_view.nodes.size() == 19,
+                "ArcBalustrade.procgraph failed or mismatched expected 19-node topology.");
+
+        const std::string_view footbridge_key = "project/{D939310F-FB4A-43F3-969D-766EF268C181}";
+        (void)take(loaded.session->open_graph(project, footbridge_key));
+        const auto footbridge_view = take(loaded.session->inspect_graph(footbridge_key, &project, {}, false, 4, true));
+        require(!footbridge_view.display_error && footbridge_view.display_summary.valid &&
+                    footbridge_view.display_summary.counts[2] > 0,
+                "Footbridge.procgraph (RailPanel) failed to evaluate cleanly.");
+
         // 4. Scene ProceduralGeneratorComponent overrides: cancel_edit rollback, roundtrip, duplicate, Undo/Redo & Play:
         {
             const auto cur_slots = loaded.session->presentation().generator_slots();

@@ -89,6 +89,20 @@ public:
 
     Node& operator=(const Node&) = delete;
 
+    AFUNCTION(BorrowSafe, DESC = "返回给定几何在指定层（point、vertex、primitive、detail、instance）的元素数量。")
+    [[nodiscard]] Result<std::uint32_t> count_elements(const Geometry& geometry, Layer layer) const noexcept;
+
+    AFUNCTION(BorrowSafe, DESC = "读取指定图元在 vertex 层的起始下标、有序角数量与拓扑形态（polygon 或 polyline）。")
+    [[nodiscard]] Result<PrimitiveSpan> primitive_span(const Geometry& geometry,
+                                                       std::uint32_t primitive) const noexcept;
+
+    AFUNCTION(BorrowSafe, DESC = "将指定图元的有序角所引用的点下标依次写入 points（覆盖原有内容）。")
+    [[nodiscard]] Result<void> read_primitive_points(const Geometry& geometry, std::uint32_t primitive,
+                                                     Array<std::uint32_t>& points) const noexcept;
+
+    AFUNCTION(BorrowSafe, DESC = "计算指定开放折线图元的总弧长（米）。图元越界、非折线、零长或超出可表示范围时失败。")
+    [[nodiscard]] Result<float> polyline_length(const Geometry& geometry, std::uint32_t primitive) const noexcept;
+
     // Position-only sections for Source kernels which author many pieces from one guide.
     AFUNCTION(
         BorrowSafe,

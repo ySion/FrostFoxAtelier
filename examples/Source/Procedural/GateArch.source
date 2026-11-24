@@ -75,8 +75,8 @@ class game.GateArch : procedural.Node {
         const float cap = 4.13f;
         const float front = -1.68f;
         const float back = 1.82f;
-        const uint count = 17;
-        const float step = 3.14159265f / float(count);
+        const uint count = 17u;
+        const float step = math.PI / float(count);
         Array<vector3> p; Array<uint> f; Array<vector3> normals;
         Array<vector3> stones; Array<uint> blocks; Array<vector3> stone_normals;
         uint last_low = 0; uint last_high = 0;
@@ -103,26 +103,26 @@ class game.GateArch : procedural.Node {
         game.arch_normals(p, f, normals);
         self.set_vec3("N", procedural.Layer::vertex, normals, 0);
 
-        for (uint side = 0; side < uint(2); side += 1) {
-            const float z0 = side == 0 ? front - 0.11f : back - 0.025f;
-            const float z1 = side == 0 ? front + 0.025f : back + 0.11f;
-            for (uint i = 0; i < count; i += 1) {
+        for (uint side = 0u; side < 2u; side += 1u) {
+            const float z0 = side == 0u ? front - 0.11f : back - 0.025f;
+            const float z1 = side == 0u ? front + 0.025f : back + 0.11f;
+            for (uint i = 0u; i < count; i += 1u) {
                 const float a = step * float(i) + 0.006f;
-                const float b = step * float(i + 1) - 0.006f;
-                const float band = i == count / 2 ? 0.45f : 0.32f;
+                const float b = step * float(i + 1u) - 0.006f;
+                const float band = i == count / 2u ? 0.45f : 0.32f;
                 game.arch_block(stones, blocks,
                     vector2(r * math.cos(a), spring + rise * math.sin(a)),
                     vector2(r * math.cos(b), spring + rise * math.sin(b)),
                     vector2((r + band) * math.cos(b), spring + (rise + band) * math.sin(b)),
                     vector2((r + band) * math.cos(a), spring + (rise + band) * math.sin(a)), z0, z1);
             }
-            for (uint tier = 0; tier < uint(5); tier += 1) {
+            for (uint tier = 0u; tier < 5u; tier += 1u) {
                 const float y0 = spring * float(tier) / 5.0f + 0.012f;
-                const float y1 = spring * float(tier + 1) / 5.0f - 0.012f;
-                const float width = tier % 2 == 0 ? 0.39f : 0.31f;
-                for (uint jamb = 0; jamb < uint(2); jamb += 1) {
-                    const float left = jamb == 0 ? -r - width : r;
-                    const float right = jamb == 0 ? -r : r + width;
+                const float y1 = spring * float(tier + 1u) / 5.0f - 0.012f;
+                const float width = tier % 2u == 0u ? 0.39f : 0.31f;
+                for (uint jamb = 0u; jamb < 2u; jamb += 1u) {
+                    const float left = jamb == 0u ? -r - width : r;
+                    const float right = jamb == 0u ? -r : r + width;
                     game.arch_block(stones, blocks, vector2(left,y0), vector2(left,y1),
                         vector2(right,y1), vector2(right,y0), z0, z1);
                 }

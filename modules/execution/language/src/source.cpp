@@ -2,10 +2,11 @@
 #include "language/lexer.hpp"
 #include "language/declarations.hpp"
 
-#include <bit>
 #include <algorithm>
+#include <bit>
 #include <charconv>
 #include <cmath>
+#include <numbers>
 #include <type_traits>
 #include <utility>
 
@@ -517,9 +518,11 @@ private:
                         function.parameters[*root].mutates_structure = true;
                 if (node.kind == Expression::Kind::call)
                     for (std::size_t i = 0; i < node.arguments.size(); ++i) {
-                        if (node.argument_passing[i] != ParameterPassing::value)
-                            stored[node.arguments[i]] = true;
                         const auto arg_type = function.expressions[node.arguments[i]].type;
+                        if (node.argument_passing[i] == ParameterPassing::reference ||
+                            (node.argument_passing[i] == ParameterPassing::read_only &&
+                             arg_type.kind != ValueType::string))
+                            stored[node.arguments[i]] = true;
                         if (node.argument_passing[i] == ParameterPassing::reference && aggregate(arg_type) &&
                             !plain_record(arg_type))
                             if (const auto root = root_local(function, node.arguments[i]);
@@ -765,6 +768,10 @@ private:
                     case Kind::field:
                         if (function.expressions[expr.receiver].kind != Kind::receiver)
                             return reject(expr.position, "parallel_for can only read fields on self.");
+                        if (expr.type.kind == ValueType::string)
+                            return reject(
+                                expr.position,
+                                "parallel_for cannot access String fields on self; copy to a local String before the loop.");
                         return {};
                     case Kind::value_field:
                         if (expr.type.kind == ValueType::array || expr.type.kind == ValueType::string)
@@ -944,7 +951,10 @@ private:
             if (parameter.passing == ParameterPassing::reference && !writable_storage(*argument))
                 return reject(node.position, "Writable reference requires a mutable lvalue.");
             if (parameter.passing != ParameterPassing::value && node.kind == Expression::Kind::field) {
-                if (!native)
+                const bool readonly_self_string =
+                    node.type.kind == ValueType::string && parameter.passing == ParameterPassing::read_only &&
+                    function_.expressions[node.receiver].kind == Expression::Kind::receiver;
+                if (!native && !readonly_self_string)
                     return reject(node.position,
                                   "Runtime object fields may only be borrowed by protected native calls.");
                 if (parameter.passing == ParameterPassing::reference && environment_.fields[node.value].constrained)
@@ -1088,7 +1098,12 @@ private:
     std::expected<std::string, Diagnostic> expression_name(bool native) {
         ATELIER_TRY_BIND(first, identifier());
         std::string name(first->text);
-        while (token_.text == "." && !find_property(name, native)) {
+        const auto string_field = [&](std::string_view candidate_name) {
+            return native && std::ranges::any_of(environment_.fields, [&](const auto& field) {
+                       return field.name == candidate_name && field.type.kind == ValueType::string;
+                   });
+        };
+        while (token_.text == "." && !find_property(name, native) && !string_field(name)) {
             ATELIER_TRY(consume());
             name += '.';
             ATELIER_TRY_BIND(part, identifier());
@@ -1232,8 +1247,10 @@ private:
         for (std::size_t i = 0; i < environment_.fields.size(); ++i) {
             const auto& field = environment_.fields[i];
             ATELIER_TRY(validate_name(field.name, false));
-            if (!scalar(field.type) && !math_type(field.type))
-                return reject({}, "Host fields require scalar or built-in math value types.");
+            const bool valid_string_field =
+                field.type.kind == ValueType::string && supported_value(field.type) && !field.constrained;
+            if (!scalar(field.type) && !math_type(field.type) && !valid_string_field)
+                return reject({}, "Host fields require scalar, built-in math or String value types.");
             for (std::size_t j = 0; j < i; ++j)
                 if (environment_.fields[j].name == field.name)
                     return reject({}, "Ambiguous host field binding.");
@@ -1315,9 +1332,11 @@ private:
         return function_.expressions.size() - 1;
     }
 
-    std::expected<NodeId, Diagnostic> literal(ValueType type, SourcePosition position, std::uint64_t bits) {
+    std::expected<NodeId, Diagnostic> literal(ValueType type, SourcePosition position, std::uint64_t bits,
+                                              bool typed_constant = false) {
         Expression expression{Expression::Kind::literal, type, position};
         expression.bits = bits;
+        expression.typed_constant = typed_constant;
         return add(std::move(expression));
     }
 
@@ -1403,7 +1422,7 @@ private:
     bool writable_storage(NodeId id) const {
         const auto& node = function_.expressions[id];
         if (node.kind == Expression::Kind::field)
-            return true;
+            return node.type.kind != ValueType::string;
         if (node.kind == Expression::Kind::local)
             return !function_.locals[node.value].read_only;
         if (node.kind == Expression::Kind::index && function_.expressions[node.left].type.kind == ValueType::string)
@@ -2260,6 +2279,11 @@ private:
                         field = &candidate;
                 if (!field)
                     return reject(position, "Unknown receiver field '" + *member + "'.");
+                if (field->type.kind == ValueType::string) {
+                    if (function_.expressions[receiver].kind != Expression::Kind::receiver)
+                        return reject(position, "String fields may only be borrowed from self.");
+                    function_.uses_scoped_values = true;
+                }
                 auto access = add(Expression{Expression::Kind::field, field->type, position, no_node, no_node,
                                              static_cast<std::uint32_t>(field - environment_.fields.data()),
                                              Operation::add, receiver});
@@ -2273,7 +2297,23 @@ private:
 
     std::expected<NodeId, Diagnostic> numeric_literal(const Token& token) {
         auto text = token.text;
+        const bool is_hex = text.size() > 2 && text[0] == '0' && (text[1] == 'x' || text[1] == 'X');
         const auto suffix = text.back();
+        const bool explicit_unsigned = suffix == 'u' || suffix == 'U';
+        if (explicit_unsigned)
+            text.remove_suffix(1);
+        if (is_hex || explicit_unsigned) {
+            int base = 10;
+            if (is_hex) {
+                text.remove_prefix(2);
+                base = 16;
+            }
+            std::uint32_t value{};
+            const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value, base);
+            if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size())
+                return reject(token.position, "Uint literal is outside 0..4294967295.");
+            return literal(ValueType::u32, token.position, value, explicit_unsigned);
+        }
         const bool is_double = suffix == 'd' || suffix == 'D';
         const bool is_float = suffix == 'f' || suffix == 'F';
         if (is_float || is_double)
@@ -2316,11 +2356,25 @@ private:
         }
         if (constructed != ValueType::void_value) {
             const auto descriptor = math_type(constructed);
-            if (!arguments.empty() && arguments.size() != descriptor.components() &&
-                !(descriptor.shape == math::Shape::matrix4 && arguments.size() == 1))
+            if (arguments.size() == 1) {
+                const auto arg_math = math_type(function_.expressions[arguments[0]].type);
+                if (arg_math && arg_math.shape == descriptor.shape) {
+                    Expression result{Expression::Kind::math_construct, constructed, position};
+                    result.arguments = std::move(arguments);
+                    return add(std::move(result));
+                }
+                if (descriptor.vector() || descriptor.shape == math::Shape::matrix4) {
+                    ATELIER_TRY_BIND(value, converted(arguments[0], math_scalar(descriptor)));
+                    arguments[0] = *value;
+                    Expression result{Expression::Kind::math_construct, constructed, position};
+                    result.arguments = std::move(arguments);
+                    return add(std::move(result));
+                }
+            }
+            if (!arguments.empty() && arguments.size() != descriptor.components())
                 return reject(
                     position,
-                    "Math construction requires no arguments, one scalar per component, or one diagonal scalar for a matrix.");
+                    "Math construction requires no arguments, a same-shape math value, one broadcast/diagonal scalar for a vector or matrix, or one scalar per component.");
             for (auto& argument : arguments) {
                 ATELIER_TRY_BIND(value, converted(argument, math_scalar(descriptor)));
                 argument = *value;
@@ -2339,7 +2393,15 @@ private:
             arity = 2;
         } else if (name == "math.length")
             operation = MathOperation::length;
-        else if (name == "math.normalize_or_zero")
+        else if (name == "math.length_squared")
+            operation = MathOperation::length_squared;
+        else if (name == "math.distance") {
+            operation = MathOperation::distance;
+            arity = 2;
+        } else if (name == "math.distance_squared") {
+            operation = MathOperation::distance_squared;
+            arity = 2;
+        } else if (name == "math.normalize_or_zero")
             operation = MathOperation::normalize_or_zero;
         else if (name == "math.fast_normalize_or_zero")
             operation = MathOperation::fast_normalize_or_zero;
@@ -2372,6 +2434,8 @@ private:
             operation = MathOperation::ceil;
         else if (name == "math.trunc")
             operation = MathOperation::trunc;
+        else if (name == "math.round")
+            operation = MathOperation::round;
         else if (name == "math.fract")
             operation = MathOperation::fract;
         else if (name == "math.abs")
@@ -2390,7 +2454,17 @@ private:
         } else if (name == "math.clamp") {
             operation = MathOperation::clamp;
             arity = 3;
-        } else if (name == "math.lerp") {
+        } else if (name == "math.cwise_mul") {
+            operation = MathOperation::cwise_mul;
+            arity = 2;
+        } else if (name == "math.cwise_div") {
+            operation = MathOperation::cwise_div;
+            arity = 2;
+        } else if (name == "math.radians")
+            operation = MathOperation::radians;
+        else if (name == "math.degrees")
+            operation = MathOperation::degrees;
+        else if (name == "math.lerp") {
             operation = MathOperation::lerp;
             arity = 3;
         } else if (name == "math.smoothstep") {
@@ -2424,45 +2498,78 @@ private:
         const auto descriptor = math_type(first);
         auto result_type = first;
         if (operation >= MathOperation::square_root) {
-            // Element-wise: the result is the vector argument's type, or the scalar
-            // type when every argument is scalar; scalar arguments apply to every lane.
-            for (const auto argument : arguments) {
-                const auto type = function_.expressions[argument].type;
-                if (math_type(type).vector()) {
-                    result_type = type;
-                    break;
+            const bool integer_eligible = (operation == MathOperation::min || operation == MathOperation::max ||
+                                           operation == MathOperation::clamp || operation == MathOperation::abs) &&
+                                          std::ranges::all_of(arguments, [&](NodeId arg) {
+                                              const auto t = function_.expressions[arg].type;
+                                              return t == ValueType::i32 || t == ValueType::u32;
+                                          });
+            if (integer_eligible) {
+                if (operation == MathOperation::abs) {
+                    if (integer_constant(arguments[0]))
+                        signed_constant(arguments[0]);
+                    if (function_.expressions[arguments[0]].type != ValueType::i32)
+                        return reject(position, "math.abs requires float, double, float/double vectors, or int.");
+                    result_type = ValueType::i32;
+                } else {
+                    const bool any_signed = std::ranges::any_of(
+                        arguments, [&](NodeId arg) { return function_.expressions[arg].type == ValueType::i32; });
+                    if (any_signed) {
+                        for (const auto arg : arguments)
+                            if (integer_constant(arg))
+                                signed_constant(arg);
+                    }
+                    result_type = function_.expressions[arguments[0]].type;
+                    for (const auto arg : arguments) {
+                        if (function_.expressions[arg].type != result_type)
+                            return reject(function_.expressions[arg].position,
+                                          std::string(name) + " integer arguments require matching int or uint types.");
+                    }
                 }
-            }
-            const auto lane = math_type(result_type).vector() ? math_scalar(math_type(result_type)) : result_type;
-            if (!floating(lane))
-                return reject(position, std::string(name) + " requires float or double scalars or vectors.");
-            for (const auto argument : arguments) {
-                const auto type = function_.expressions[argument].type;
-                if (type != result_type && type != lane)
-                    return reject(
-                        function_.expressions[argument].position,
-                        std::string(name) +
-                            " arguments must have the result type or its component type; numeric types and precision do not convert implicitly.");
+            } else {
+                // Element-wise: the result is the vector argument's type, or the scalar
+                // type when every argument is scalar; scalar arguments apply to every lane.
+                for (const auto argument : arguments) {
+                    const auto type = function_.expressions[argument].type;
+                    if (math_type(type).vector()) {
+                        result_type = type;
+                        break;
+                    }
+                }
+                const auto lane = math_type(result_type).vector() ? math_scalar(math_type(result_type)) : result_type;
+                if (!floating(lane))
+                    return reject(position, std::string(name) + " requires float or double scalars or vectors.");
+                for (const auto argument : arguments) {
+                    const auto type = function_.expressions[argument].type;
+                    if (type != result_type && type != lane)
+                        return reject(
+                            function_.expressions[argument].position,
+                            std::string(name) +
+                                " arguments must have the result type or its component type; numeric types and precision do not convert implicitly.");
+                }
             }
         } else
             switch (operation) {
             case MathOperation::dot:
-            case MathOperation::cross: {
+            case MathOperation::cross:
+            case MathOperation::distance:
+            case MathOperation::distance_squared: {
                 if (!descriptor.vector() ||
                     (operation == MathOperation::cross && descriptor.shape != math::Shape::vector3))
-                    return reject(position, "math.dot requires vectors; math.cross requires vector3.");
+                    return reject(position, std::string(name) + " requires matching vector operands.");
                 ATELIER_TRY_BIND(value, converted(arguments[1], first));
                 arguments[1] = *value;
-                if (operation == MathOperation::dot)
+                if (operation != MathOperation::cross)
                     result_type = math_scalar(descriptor);
                 break;
             }
             case MathOperation::length:
+            case MathOperation::length_squared:
             case MathOperation::normalize_or_zero:
             case MathOperation::fast_normalize_or_zero:
                 if (!descriptor.vector() && descriptor.shape != math::Shape::quaternion)
                     return reject(position, "Length and normalization require a vector or quaternion.");
-                if (operation == MathOperation::length)
+                if (operation == MathOperation::length || operation == MathOperation::length_squared)
                     result_type = math_scalar(descriptor);
                 break;
             case MathOperation::conjugate:
@@ -2632,6 +2739,22 @@ private:
                 ATELIER_TRY_BIND(actual_name, qualified_identifier());
                 ATELIER_TRY(expect("("));
                 return math_call(*actual_name, token.position, constructed);
+            }
+            if (next->text != "(" && next->text != "::" && name.starts_with("math.")) {
+                ATELIER_TRY_BIND(actual_name, qualified_identifier());
+                if (*actual_name == "math.PI")
+                    return literal(ValueType::f32, token.position,
+                                   std::bit_cast<std::uint32_t>(std::numbers::pi_v<float>), true);
+                if (*actual_name == "math.TAU")
+                    return literal(ValueType::f32, token.position,
+                                   std::bit_cast<std::uint32_t>(2.0f * std::numbers::pi_v<float>), true);
+                if (*actual_name == "math.PI_D")
+                    return literal(ValueType::f64, token.position,
+                                   std::bit_cast<std::uint64_t>(std::numbers::pi_v<double>), true);
+                if (*actual_name == "math.TAU_D")
+                    return literal(ValueType::f64, token.position,
+                                   std::bit_cast<std::uint64_t>(2.0 * std::numbers::pi_v<double>), true);
+                return reject(token.position, "Unknown built-in math constant '" + *actual_name + "'.");
             }
             if (next->text == "::") {
                 ATELIER_TRY_BIND(name_actual, qualified_identifier());

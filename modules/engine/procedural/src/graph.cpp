@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstring>
 #include <utility>
 
 namespace atelier::procedural {
@@ -172,6 +173,38 @@ Result<void> set_output_column(const Node& self, const String& name, Layer layer
 
 } // namespace
 
+Result<std::uint32_t> Node::count_elements(const Geometry& geometry, Layer layer) const noexcept {
+    if (layer > Layer::instance)
+        return error(ErrorCode::invocation_failed, "Invalid geometry layer.");
+    return geometry.count(layer);
+}
+
+Result<PrimitiveSpan> Node::primitive_span(const Geometry& geometry, std::uint32_t primitive) const noexcept {
+    if (primitive >= geometry.count(Layer::primitive))
+        return error(ErrorCode::invocation_failed,
+                     "Primitive index " + std::to_string(primitive) + " is out of bounds.");
+    const auto range = geometry.primitive(primitive);
+    return PrimitiveSpan{range.first, range.count,
+                         range.kind == PrimitiveKind::polyline ? PrimitiveType::polyline : PrimitiveType::polygon};
+}
+
+Result<void> Node::read_primitive_points(const Geometry& geometry, std::uint32_t primitive,
+                                         Array<std::uint32_t>& points) const noexcept {
+    if (primitive >= geometry.count(Layer::primitive))
+        return error(ErrorCode::invocation_failed,
+                     "Primitive index " + std::to_string(primitive) + " is out of bounds.");
+    const auto range = geometry.primitive(primitive);
+    const auto span = geometry.vertex_points().subspan(range.first, range.count);
+    points.resize(span.size());
+    if (!span.empty())
+        std::memcpy(points.data(), span.data(), span.size_bytes());
+    return {};
+}
+
+Result<float> Node::polyline_length(const Geometry& geometry, std::uint32_t primitive) const noexcept {
+    return builder_result(procedural::polyline_length(geometry, primitive));
+}
+
 Result<void> Node::emit_points(const Array<math::Vector3>& positions, std::uint32_t output_port) const noexcept {
     ATELIER_TRY_BIND(out, target_output(*this, output_port));
     ATELIER_TRY_BIND(built, builder_result(Geometry::points(Array<math::Vector3>{positions})));
@@ -293,8 +326,15 @@ Result<void> register_types(Runtime& runtime) {
     definitions.push_back(reflection::Definition<GridPrimitive>::build(runtime));
     definitions.push_back(reflection::Definition<CirclePrimitive>::build(runtime));
     definitions.push_back(reflection::Definition<AxisJustify>::build(runtime));
+    definitions.push_back(reflection::Definition<PrimitiveType>::build(runtime));
     definitions.push_back(reflection::Definition<RayMode>::build(runtime));
     definitions.push_back(reflection::Definition<PreviewFallback>::build(runtime));
+    {
+        auto span_def = reflection::Definition<PrimitiveSpan>::build(runtime);
+        span_def.native.value_operations_preserve_borrows = true;
+        span_def.native.prototype_constructor = span_def.native.construct;
+        definitions.push_back(std::move(span_def));
+    }
     {
         auto node_def = reflection::Definition<SpatialNode>::build(runtime);
         node_def.native.value_operations_preserve_borrows = true;
@@ -566,7 +606,8 @@ Result<detail::NodePlan> detail::inspect_node(Runtime& runtime, TypeId type,
                 return error(ErrorCode::invalid_definition, name + ".process port parameter " + std::to_string(i) +
                                                                 " requires a valid identifier name.");
             if (port_descriptions && !meta.purpose.empty())
-                port_descriptions->push_back({param_name, *port_kind == ArgKind::port_output, std::string(meta.purpose)});
+                port_descriptions->push_back(
+                    {param_name, *port_kind == ArgKind::port_output, std::string(meta.purpose)});
             if (*port_kind == ArgKind::port_output) {
                 if (std::ranges::find(plan.ports.outputs, param_name) != plan.ports.outputs.end())
                     return error(ErrorCode::invalid_definition,

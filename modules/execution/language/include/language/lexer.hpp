@@ -15,6 +15,10 @@ inline bool digit(char value) noexcept {
     return value >= '0' && value <= '9';
 }
 
+inline bool hex_digit(char value) noexcept {
+    return digit(value) || (value >= 'a' && value <= 'f') || (value >= 'A' && value <= 'F');
+}
+
 inline bool reserved(std::string_view value) noexcept {
     return value == "bool" || value == "true" || value == "false" || value == "for" || value == "parallel_for" ||
            value == "break" || value == "continue" || value == "void" || value == "float" || value == "double" ||
@@ -112,15 +116,31 @@ public:
             return token(Token::Kind::identifier, start);
         }
         if (digit(first)) {
+            if (first == '0' && (peek(1) == 'x' || peek(1) == 'X')) {
+                advance();
+                advance();
+                if (!hex_digit(peek()))
+                    return reject(start, "Hexadecimal integer literal requires digits.");
+                while (hex_digit(peek()))
+                    advance();
+                if (peek() == 'u' || peek() == 'U')
+                    advance();
+                if (letter(peek()) || digit(peek()) || peek() == '.')
+                    return reject(start, "Invalid hexadecimal integer literal.");
+                return token(Token::Kind::number, start);
+            }
             do {
                 advance();
             } while (digit(peek()));
+            bool is_float = false;
             if (peek() == '.') {
+                is_float = true;
                 advance();
                 while (digit(peek()))
                     advance();
             }
             if (peek() == 'e' || peek() == 'E') {
+                is_float = true;
                 advance();
                 if (peek() == '+' || peek() == '-')
                     advance();
@@ -129,8 +149,13 @@ public:
                 while (digit(peek()))
                     advance();
             }
-            if (peek() == 'f' || peek() == 'F' || peek() == 'd' || peek() == 'D')
+            if (is_float) {
+                if (peek() == 'f' || peek() == 'F' || peek() == 'd' || peek() == 'D')
+                    advance();
+            } else if (peek() == 'f' || peek() == 'F' || peek() == 'd' || peek() == 'D' || peek() == 'u' ||
+                       peek() == 'U') {
                 advance();
+            }
             if (letter(peek()) || digit(peek()))
                 return reject(start, "Invalid numeric literal suffix.");
             return token(Token::Kind::number, start);

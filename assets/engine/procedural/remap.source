@@ -1,3 +1,59 @@
+// Wide-precision affine range map for finite distinct input bounds; shared by procedural.efit and Remap.
+double procedural.efit_wide(float value, double in_min, double in_span, double out_min, double out_span) {
+    return out_min + ((double(value) - in_min) / in_span) * out_span;
+}
+
+// Unclamped normalized position of `value` in [in_min, in_max] (supports reversed bounds).
+// Returns NaN if any argument is non-finite, and 0.0f when finite bounds coincide (in_min == in_max).
+float procedural.unlerp(float value, float in_min, float in_max) {
+    if (!(math.is_finite(value) && math.is_finite(in_min) && math.is_finite(in_max))) {
+        return 0.0f / 0.0f;
+    }
+    if (in_min == in_max) {
+        return 0.0f;
+    }
+    return float((double(value) - double(in_min)) / (double(in_max) - double(in_min)));
+}
+
+// Clamped affine remap (Houdini `fit`): clamps the normalized parameter to [0, 1] before
+// interpolating [out_min, out_max] (supports reversed bounds; exact endpoints; NaN on non-finite args).
+float procedural.fit(float value, float in_min, float in_max, float out_min, float out_max) {
+    if (!(math.is_finite(value) && math.is_finite(in_min) && math.is_finite(in_max) &&
+          math.is_finite(out_min) && math.is_finite(out_max))) {
+        return 0.0f / 0.0f;
+    }
+    if (in_min == in_max) {
+        return out_min;
+    }
+    const double t = (double(value) - double(in_min)) / (double(in_max) - double(in_min));
+    const double tc = math.clamp(t, 0.0d, 1.0d);
+    return float((1.0d - tc) * double(out_min) + tc * double(out_max));
+}
+
+// Clamped [0, 1] -> [out_min, out_max] remap (NaN on non-finite args; exact endpoints).
+float procedural.fit01(float value, float out_min, float out_max) {
+    if (!(math.is_finite(value) && math.is_finite(out_min) && math.is_finite(out_max))) {
+        return 0.0f / 0.0f;
+    }
+    const double tc = math.clamp(double(value), 0.0d, 1.0d);
+    return float((1.0d - tc) * double(out_min) + tc * double(out_max));
+}
+
+// Unclamped affine remap (Houdini `efit`): extrapolates outside [in_min, in_max] using double
+// intermediates; returns out_min when finite bounds coincide, and NaN on non-finite args.
+float procedural.efit(float value, float in_min, float in_max, float out_min, float out_max) {
+    if (!(math.is_finite(value) && math.is_finite(in_min) && math.is_finite(in_max) &&
+          math.is_finite(out_min) && math.is_finite(out_max))) {
+        return 0.0f / 0.0f;
+    }
+    if (in_min == in_max) {
+        return out_min;
+    }
+    const double low = double(in_min);
+    const double out_low = double(out_min);
+    return float(procedural.efit_wide(value, low, double(in_max) - low, out_low, double(out_max) - out_low));
+}
+
 [DESC = "将一个 float 属性从输入区间线性映射到输出区间，区间外继续外推。可指定写入列和选组。"]
 class procedural.Remap : procedural.Node {
     [RunOver, Label = "Run Over", DESC = "读取与写入属性所在的几何层。"]
@@ -37,7 +93,7 @@ class procedural.Remap : procedural.Node {
         if (source.size() != n) { return; }
         if (selected.size() != n) {
             parallel_for (uint i : n) {
-                const double mapped = output_low + ((double(source[i]) - low) / input_span) * output_span;
+                const double mapped = procedural.efit_wide(source[i], low, input_span, output_low, output_span);
                 // Also rejects non-finite source values, including infinity * a zero output span.
                 if (!(mapped >= -limit && mapped <= limit)) {
                     fail("Remap result must fit a finite float.");
@@ -47,7 +103,7 @@ class procedural.Remap : procedural.Node {
         } else {
             parallel_for (uint i : n) {
                 if (!selected[i]) { continue; }
-                const double mapped = output_low + ((double(source[i]) - low) / input_span) * output_span;
+                const double mapped = procedural.efit_wide(source[i], low, input_span, output_low, output_span);
                 if (!(mapped >= -limit && mapped <= limit)) {
                     fail("Remap result must fit a finite float.");
                 }

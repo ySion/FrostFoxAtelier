@@ -253,5 +253,106 @@ void verify_math_abi() {
         quaternion bad(quaternion q) { return math.fast_rsqrt(q); }
     )")));
     require(!bad_rsqrt.has_value(), "math.fast_rsqrt accepted a quaternion.");
+
+    // S-SOP-1: hex & unsigned literals, broadcast/precision math casts, cwise_mul/div,
+    // length_squared/distance/distance_squared, round (ties-to-even), radians/degrees/PI/TAU,
+    // and integer min/max/clamp/abs (with checked INT_MIN overflow).
+    auto sop_math_prog = take(source::Program::create(runtime));
+    source::SourceSnapshot sop_math_snap{"sop_math_batch1", 1, {{"sop-math-batch1.source", 1, R"(
+        [Flags] enum Mask : uint { A = 0x01u, B = 0x1fu, Top = 0x80000000u }
+        const float HALF_TURN_RAD = math.PI;
+        const double FULL_TURN_RAD_D = math.TAU_D;
+
+        uint check_literals_and_ints(int signed_in, uint unsigned_in, int& abs_out) {
+            const int min_i32 = -0x80000000;
+            const int hex_adapt = 0x7f;
+            const uint hex_hash = 0x7feb352du;
+            if (min_i32 != -2147483648 || hex_adapt != 127 || hex_hash != 2146121005u) {
+                return 0u;
+            }
+            // Exact > 2^24 integer clamping that float32 would round away.
+            const int clamped_i = math.clamp(signed_in, -16777219, 16777219);
+            const int reversed_i = math.clamp(signed_in, 10, -10);
+            const uint clamped_u = math.clamp(unsigned_in, 16777217u, 4000000001u);
+            abs_out = math.abs(signed_in);
+            if (reversed_i != 10 || math.min(-5, 0) != -5 || math.max(0u, 0xffffffffu) != 0xffffffffu) {
+                return 0u;
+            }
+            return uint(clamped_i == 16777219 ? 1 : 0) + (clamped_u == 4000000001u ? 2u : 0u);
+        }
+
+        void check_vectors_and_round(const vector3& a, const vector3& b, vector4& rounds_out, vector3& cwise_out,
+                                     double& dist_wide_out, float& dist_rescaled_out) {
+            const vector3 splat = vector3(2.5f);
+            const vector3d wide_a = vector3d(a);
+            const vector3d wide_b = vector3d(b) + vector3d(0.5d);
+            dist_wide_out = math.distance_squared(wide_a, wide_b);
+            const vector3 narrowed = vector3(wide_b);
+            cwise_out = math.cwise_div(math.cwise_mul(narrowed, splat), 2.5f);
+            // Large separation overflows distance_squared to +Inf in float, while rescaled distance stays finite.
+            const vector3 far_a = vector3(1e25f, 0.0f, 0.0f);
+            const vector3 far_b = vector3(-1e25f, 0.0f, 0.0f);
+            dist_rescaled_out = math.is_finite(math.distance_squared(far_a, far_b))
+                                    ? -1.0f
+                                    : math.distance(far_a, far_b);
+            rounds_out = math.round(vector4(0.5f, 1.5f, -0.5f, -1.5f));
+            const float deg = math.degrees(HALF_TURN_RAD);
+            const double rad_d = math.radians(180.0d);
+            if (math.abs(deg - 180.0f) > 1e-4f || math.abs(rad_d - math.PI_D) > 1e-15d ||
+                math.abs(FULL_TURN_RAD_D - 2.0d * math.PI_D) > 1e-15d) {
+                rounds_out = vector4(-999.0f);
+            }
+        }
+        )"}}};
+    auto sop_math_cand = take(source::Program::prepare(take(sop_math_prog->request(std::move(sop_math_snap)))));
+    take(sop_math_prog->try_publish(sop_math_cand));
+
+    auto sop_ints = take(take(sop_math_prog->pin("check_literals_and_ints"))
+                             .bind<std::uint32_t, std::int32_t, std::uint32_t, std::int32_t&>());
+    auto sop_vecs = take(
+        take(sop_math_prog->pin("check_vectors_and_round"))
+            .bind<void, const math::Vector3&, const math::Vector3&, math::Vector4&, math::Vector3&, double&, float&>());
+
+    std::int32_t abs_val = 0;
+    require(take(sop_ints.invoke({}, 16777225, 4100000000u, abs_val)) == 3u && abs_val == 16777225,
+            "Integer min/max/clamp lost >2^24 precision or hex/u literal evaluation failed.");
+    require(take(sop_ints.invoke({}, -42, 16777218u, abs_val)) == 0u && abs_val == 42,
+            "Signed math.abs failed on negative int.");
+    const auto int_min_fail = sop_ints.invoke({}, std::numeric_limits<std::int32_t>::min(), 20000000u, abs_val);
+    require(!int_min_fail.has_value() && int_min_fail.error().code == ErrorCode::invocation_failed &&
+                int_min_fail.error().message.contains("INT_MIN"),
+            "math.abs(INT_MIN) did not trap with checked integer_overflow.");
+
+    math::Vector4 rounds_out{};
+    math::Vector3 cwise_out{};
+    double dist_wide_out = 0.0;
+    float dist_rescaled_out = 0.0f;
+    take(sop_vecs.invoke({}, math::Vector3{1.0f, -2.0f, 3.0f}, math::Vector3{2.5f, -1.5f, 4.5f}, rounds_out, cwise_out,
+                         dist_wide_out, dist_rescaled_out));
+    // wide_b = (3.0, -1.0, 5.0), wide_a = (1.0, -2.0, 3.0) -> diff = (2, 1, 2) -> dist_sq = 9.0.
+    require(std::abs(dist_wide_out - 9.0) <= 1e-12 && std::abs(cwise_out.x - 3.0f) <= 1e-6f &&
+                std::abs(cwise_out.y - (-1.0f)) <= 1e-6f && std::abs(cwise_out.z - 5.0f) <= 1e-6f &&
+                std::abs(dist_rescaled_out - 2e25f) <= 1e19f,
+            "Vector broadcast/precision conversion, cwise_mul/div, or rescaled distance failed.");
+    require(rounds_out.x == 0.0f && !std::signbit(rounds_out.x) && rounds_out.y == 2.0f && rounds_out.z == 0.0f &&
+                std::signbit(rounds_out.z) && rounds_out.w == -2.0f,
+            "math.round violated IEEE round-ties-to-even or signed-zero preservation.");
+
+    // Reject invalid unsigned negation, int <- uint literal suffix, and unsigned math.abs.
+    require(!source::Program::prepare(take(packed_program->request("bad-neg-u.source", R"(
+        int bad() { return -1u; }
+    )")))
+                 .has_value(),
+            "Accepted unary minus on an explicit unsigned literal.");
+    require(!source::Program::prepare(take(packed_program->request("bad-assign-u.source", R"(
+        int bad() { int x = 1u; return x; }
+    )")))
+                 .has_value(),
+            "Implicitly converted a 'u'-suffixed uint literal to int.");
+    require(!source::Program::prepare(take(packed_program->request("bad-abs-u.source", R"(
+        uint bad(uint x) { return math.abs(x); }
+    )")))
+                 .has_value(),
+            "Accepted unsigned uint in math.abs.");
 }
 }
