@@ -136,6 +136,38 @@ FieldId field(Runtime& runtime, TypeId owner, const char* name) {
     return take(runtime.find_field(owner, name));
 }
 
+void scatter_primitive_groups() {
+    // Coincident triangles: a global spacing pass retains only the first face's candidate.
+    // Selecting the second face must still produce its original candidate.
+    auto surface = take(Geometry::polygons({{0, 0, 0}, {1, 0, 0}, {0, 1, 0}}, {0, 1, 2, 0, 1, 2}, {0, 3, 6}));
+    take(surface.set(String::literal<"second">(), Layer::primitive, SharedArray<bool>{Array<bool>{false, true}}));
+    take(surface.add<bool>("all_faces", Layer::primitive, true));
+    take(surface.add<bool>("no_faces", Layer::primitive, false));
+    take(surface.add<bool>("point_mask", Layer::point, true));
+    take(surface.add<float>("coverage", Layer::primitive, 1.f));
+
+    const auto raw = take(scatter(surface, {.density = 2, .seed = 9}));
+    require(raw.count(Layer::point) == 2 &&
+                raw.same_value(take(scatter(surface, {.density = 2, .seed = 9, .group = "all_faces"}))),
+            "An all-true mask changed unrestricted Scatter.");
+    const auto spaced = take(scatter(surface, {.density = 2, .seed = 9, .min_distance = 2}));
+    const auto selected = take(scatter(surface, {.density = 2, .seed = 9, .min_distance = 2, .group = "second"}));
+    require(spaced.count(Layer::point) == 1 && column<std::uint32_t>(spaced, "sourceprim", Layer::point)[0] == 0 &&
+                selected.count(Layer::point) == 1 &&
+                column<std::uint32_t>(selected, "sourceprim", Layer::point)[0] == 1 &&
+                selected.positions()[0] == raw.positions()[1] &&
+                column<std::uint32_t>(selected, "id", Layer::point)[0] ==
+                    column<std::uint32_t>(raw, "id", Layer::point)[1] &&
+                column<math::Vector2>(selected, "sourceprimuv", Layer::point)[0] ==
+                    column<math::Vector2>(raw, "sourceprimuv", Layer::point)[1],
+            "Masking renumbered Scatter candidates or allowed an excluded face to suppress a selected point.");
+    const auto empty = take(scatter(surface, {.group = "no_faces"}));
+    require(empty.count(Layer::point) == 0 && empty.attributes().size() == raw.attributes().size() &&
+                !scatter(surface, {.density = 0, .group = "absent"}) && !scatter(surface, {.group = "point_mask"}) &&
+                !scatter(surface, {.group = "coverage"}),
+            "Scatter lost its empty output schema or accepted an invalid primitive group.");
+}
+
 void grouped_wall_surfaces() {
     auto wall = take(box({2, 2, 2}));
     // Deliberately contradictory shading normals. The selection must follow polygon winding.
@@ -2052,6 +2084,7 @@ int main(int argc, char** argv) {
     require(argc == 1, "Usage: atelier_procedural_acceptance [--profile-procedural|--profile-boolean new-output.json]");
     ray_node();
     grouped_wall_surfaces();
+    scatter_primitive_groups();
     resampled_wall_and_post_paths();
     connectivity_modeling();
     boolean_modeling();

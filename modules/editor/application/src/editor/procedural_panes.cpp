@@ -3355,6 +3355,11 @@ void NetworkCanvas::append_canvas(ui_language::ControlOutput output, ui::Control
             is_asset_node ? ("Digital Asset · " + (!node.asset_label.empty() ? node.asset_label : node.asset_key))
                           : (node.type + (is_source_sop ? " · Source SOP" : " · C++ SOP"))));
         std::string desc = cat_it != catalog.end() ? cat_it->description : std::string{};
+        if (cat_it != catalog.end() && cat_it->attribute_help) {
+            if (!desc.empty())
+                desc += "\n";
+            desc += cat_it->attribute_help->text;
+        }
         if (is_asset_node && !node.asset_key.empty()) {
             if (!desc.empty())
                 desc += "\n";

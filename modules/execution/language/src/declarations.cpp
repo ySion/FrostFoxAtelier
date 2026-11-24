@@ -183,6 +183,7 @@ detail::parse_parameter_attributes(Tokens& tokens, bool allow_attributes,
     std::string from;
     std::string layer;
     std::string port;
+    std::string description;
     bool optional = false;
 
     const auto parse_options = [&](std::string_view close_tok) -> std::expected<void, Diagnostic> {
@@ -213,7 +214,9 @@ detail::parse_parameter_attributes(Tokens& tokens, bool allow_attributes,
                     if (optional)
                         return reject(opt->position, "Duplicate parameter option: Optional");
                     optional = true;
-                } else if (opt->text == "From" || opt->text == "Layer" || opt->text == "Port") {
+                } else if (opt->text == "From" || opt->text == "Layer" || opt->text == "Port" || opt->text == "DESC") {
+                    if (opt->text == "DESC" && !description.empty())
+                        return reject(opt->position, "Duplicate parameter option: DESC");
                     if (opt->text == "From" && (has_name || !from.empty()))
                         return reject(opt->position, "Specify either a literal name or From, not both.");
                     if (opt->text == "Layer" && !layer.empty())
@@ -237,8 +240,10 @@ detail::parse_parameter_attributes(Tokens& tokens, bool allow_attributes,
                         from = std::move(*decoded);
                     else if (opt->text == "Layer")
                         layer = std::move(*decoded);
-                    else
+                    else if (opt->text == "Port")
                         port = std::move(*decoded);
+                    else
+                        description = std::move(*decoded);
                 } else {
                     return reject(opt->position, "Unknown parameter attribute option: " + std::string(opt->text));
                 }
@@ -275,6 +280,8 @@ detail::parse_parameter_attributes(Tokens& tokens, bool allow_attributes,
         metadata.emplace_back("procedural.layer", std::move(layer));
     if (!port.empty())
         metadata.emplace_back("procedural.port", std::move(port));
+    if (!description.empty())
+        metadata.emplace_back("procedural.description", std::move(description));
     if (optional)
         metadata.emplace_back("procedural.optional", "true");
     std::ranges::sort(metadata);

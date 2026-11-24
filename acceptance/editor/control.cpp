@@ -14,6 +14,7 @@
 #include <Windows.h>
 #include <algorithm>
 #include <fstream>
+#include <cmath>
 #include <future>
 #include <iostream>
 #include <thread>
@@ -1657,6 +1658,157 @@ Result<void> verify_graph_discovery_cli(ControlCli& cli) {
     return {};
 }
 
+Result<void> verify_moss_bindings_cli(ControlCli& cli) {
+    // The same query must explain cached results after rewiring and undo.
+    const auto query = json::Document::literal<R"({"view":"node","node":"place_clumps","bindings":true})">();
+    const auto field = [](json::Value rows, std::string_view name, std::string_view access,
+                          std::string_view key) -> std::string_view {
+        for (const auto row : *rows.array())
+            if (row.string({"name"}) == name && row.string({"access"}) == access)
+                return row.string({key}).value_or("");
+        return {};
+    };
+    ATELIER_TRY_BIND(source,
+                     cli.call("graph.inspect", 0,
+                              json::Document::literal<R"({"view":"catalog","type":"procedural.RandomScale"})">()));
+    const auto source_rules = *source->root().at("result")->at("attribute_contracts");
+    if (field(source_rules, "id", "read", "purpose") != "混入随机种子；缺列时使用点序号。" ||
+        field(source_rules, "pscale", "write", "port") != "output")
+        return fixture_failure("Source binding annotations did not reach the SOP catalog");
+    ATELIER_TRY_BIND(scatter,
+                     cli.call("graph.inspect", 0,
+                              json::Document::literal<R"({"view":"node","node":"moss_anchors","bindings":true})">()));
+    const auto scatter_rows = *scatter->root().at("result")->at("bindings")->at("attributes");
+    if (field(scatter_rows, "moss_faces", "group", "column_source") != "moss_faces" ||
+        field(scatter_rows, "sourcetri", "write", "status") != "written")
+        return fixture_failure("Scatter did not resolve the authored roof mask and polygon output columns");
+
+    const auto check = [&](bool orient, bool scaled) -> Result<void> {
+        ATELIER_TRY_BIND(reply, cli.call("graph.inspect", 0, query));
+        const auto table = *reply->root().at("result")->at("bindings");
+        const auto rows = *table.at("attributes");
+        const auto read = [&](std::string_view name, std::string_view key) { return field(rows, name, "read", key); };
+        if (table.string({"mode"}) != "evaluated" || read("N", "column_source") != "moss_anchors" ||
+            read("N", "status") != (orient ? "inactive" : "bound") ||
+            read("orient", "status") != (orient ? "bound" : "fallback") ||
+            (orient && read("orient", "column_source") != "align") ||
+            read("pscale", "status") != (scaled ? "bound" : "fallback") ||
+            (scaled && read("pscale", "column_source") != "vary_clumps") ||
+            (!scaled && read("pscale", "missing") != "1"))
+            return fixture_failure("Realize placement explanation disagreed with its wired target columns");
+        return {};
+    };
+    const auto samples = [&]() -> Result<std::vector<std::string>> {
+        ATELIER_TRY_BIND(reply,
+                         cli.call("graph.inspect", 0,
+                                  json::Document::literal<R"({"node":"place_clumps","samples":8,"spatial":false})">()));
+        const auto summary = *reply->root().at("result")->at("inspected_summary");
+        for (const auto attr : *summary.at("attributes")->array()) {
+            if (attr.string({"name"}) != "P")
+                continue;
+            std::vector<std::string> result;
+            for (const auto sample : *attr.at("samples")->array()) {
+                ATELIER_TRY_BIND(value, sample.string().transform_error(json_error));
+                result.emplace_back(*value);
+            }
+            if (result.size() == 8)
+                return result;
+        }
+        return fixture_failure("Missing realized point samples");
+    };
+    const auto undo = json::Document::literal<R"({"id":"edit.undo"})">();
+    ATELIER_TRY(check(false, true));
+    ATELIER_TRY_BIND(original, samples());
+    ATELIER_TRY(cli.call("graph.apply", 0, json::Document::literal<R"({"nodes":{
+        "align":{"type":"procedural.NormalAlign","properties":{"up":{"x":0,"y":0,"z":1}},"inputs":{"input":"vary_clumps.output"}},
+        "place_clumps":{"inputs":{"points":"align.output"}}}})">()));
+    ATELIER_TRY(check(true, true));
+    ATELIER_TRY_BIND(rotated, samples());
+    ATELIER_TRY(cli.call("graph.apply", 0, json::Document::literal<R"({"nodes":{
+        "place_clumps":{"inputs":{"points":"moss_anchors.points"}}}})">()));
+    ATELIER_TRY(check(false, false));
+    ATELIER_TRY_BIND(unit, samples());
+    if (*original == *rotated || *original == *unit)
+        return fixture_failure("Changing the rotation or removing pscale failed to change the realized positions");
+    ATELIER_TRY(cli.call("graph.apply", 0, json::Document::literal<R"({"nodes":{
+        "place_clumps":{"properties":{"variant":"N"}}}})">()));
+    ATELIER_TRY(require_control_error(cli.call("graph.inspect", 1, query), "operation_failed",
+                                      "procedural.Realize: Attribute N has another layer or type."));
+    for (unsigned i = 0; i < 3; ++i)
+        ATELIER_TRY(cli.call("op.call", 0, undo));
+    ATELIER_TRY(check(false, true));
+    ATELIER_TRY_BIND(restored, samples());
+    if (*original != *restored)
+        return fixture_failure("Undo did not restore the realized roof geometry");
+    return {};
+}
+
+Result<void> verify_moss_roof_cli(ControlCli& cli) {
+    // Author from the shipped example in the isolated edit project. All cooks and changes go through the CLI.
+    ATELIER_TRY_BIND(source, read_bytes(std::filesystem::path(ATELIER_EXAMPLE_PROJECT) /
+                                        "Content/Procedural/Graphs/MossRoof.procgraph"));
+    json::Builder create;
+    create.set_validated(create.root(), "id", "asset.new_procedural_graph");
+    const auto args = create.object_validated(create.root(), "args");
+    create.set_validated(args, "path", "Content/MossRoof.procgraph");
+    ATELIER_TRY(create.set(args, "source", *source).transform_error(json_error));
+    ATELIER_TRY_BIND(created, cli.call("op.call", 0, create.finish()));
+    ATELIER_TRY_BIND(asset, created->root().string({"result", "result", "asset"}).transform_error(json_error));
+    json::Builder open;
+    open.set_validated(open.root(), "id", "graph.open");
+    open.set_validated(open.object_validated(open.root(), "args"), "asset", *asset);
+    ATELIER_TRY(cli.call("op.call", 0, open.finish()));
+
+    const auto inspect = json::Document::literal<R"({"node":"moss_anchors","samples":32,"spatial":false})">();
+    const auto slope = [&](bool left) -> Result<void> {
+        ATELIER_TRY_BIND(reply, cli.call("graph.inspect", 0, inspect));
+        const auto result = *reply->root().at("result");
+        const auto anchors = *result.at("inspected_summary");
+        const auto count = anchors.u64({"counts", "point"}).value_or(0);
+        if (!count || count > 32 || result.boolean({"display_summary", "valid"}) != true ||
+            result.u64({"display_summary", "counts", "primitive"}).value_or(0) <= 5)
+            return fixture_failure("Moss roof did not produce a complete set of anchors and attached clumps");
+        bool positions = false, provenance = false;
+        for (const auto attr : *anchors.at("attributes")->array()) {
+            if (attr.string({"name"}) == "sourceprim") {
+                const auto expected = left ? 2u : 1u;
+                provenance =
+                    attr.at("minimum")->at(0)->number() == expected && attr.at("maximum")->at(0)->number() == expected;
+            }
+            if (attr.string({"name"}) != "P")
+                continue;
+            const auto samples = *attr.at("samples");
+            if (samples.size() != count)
+                return fixture_failure("Moss check needs every anchor, not a truncated sample");
+            for (const auto sample : *samples.array()) {
+                ATELIER_TRY_BIND(text, sample.string().transform_error(json_error));
+                ATELIER_TRY_BIND(tuple, json::Document::parse(*text, {32}).transform_error(json_error));
+                const auto row = tuple->root();
+                if (row.kind() != json::Kind::array || row.size() != 3)
+                    return fixture_failure("Missing moss anchor coordinates");
+                const auto x = *row.at(0)->number(), y = *row.at(1)->number(), z = *row.at(2)->number();
+                const auto side_x = left ? -x : x;
+                // The Wedge spans [-2,2] in X/Z, with eaves at Y=0 and its ridge at (0,2).
+                // P samples are printed to four significant digits.
+                if (side_x < 0 || side_x > 2 || std::abs(z) > 2 || std::abs(y + side_x - 2) > .002)
+                    return fixture_failure("A moss anchor missed the selected roof polygon");
+            }
+            positions = true;
+        }
+        return positions && provenance ? Result<void>{}
+                                       : fixture_failure("Moss anchors lost their position or source face");
+    };
+    ATELIER_TRY(slope(true));
+    ATELIER_TRY(verify_moss_bindings_cli(cli));
+    ATELIER_TRY(cli.call(
+        "graph.apply", 0,
+        json::Document::literal<R"({"nodes":{"moss_faces":{"properties":{"direction":{"x":1,"y":1,"z":0}}}}})">()));
+    ATELIER_TRY(slope(false));
+    ATELIER_TRY(cli.call("op.call", 0, json::Document::literal<R"({"id":"edit.undo"})">()));
+    ATELIER_TRY(cli.call("op.call", 0, json::Document::literal<R"({"id":"graph.exit"})">()));
+    return {};
+}
+
 Result<void> verify_graph_patch_cli(ControlCli& cli) {
     ATELIER_TRY(verify_graph_discovery_cli(cli));
     ATELIER_TRY(cli.call("graph.create_scratch", 0, json::Document::literal<R"({"key":"scratch/roof"})">()));
@@ -1972,6 +2124,7 @@ Result<void> verify_edit_requests(const std::filesystem::path& executable, const
             graph_cli.token = std::move(startup->token);
         }
         ATELIER_TRY(verify_graph_patch_cli(graph_cli));
+        ATELIER_TRY(verify_moss_roof_cli(graph_cli));
         return Driver::connect(std::move(*instance));
     };
     auto connected = open_edit_driver();

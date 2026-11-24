@@ -107,6 +107,8 @@ Agent 从 `{"op":"capabilities","args":{"scope":"graph"}}` 获取精简目录。
 | 查算子说明 | `graph.inspect {"view":"catalog","type":"procedural.Group"}` | 精确查类型。普通 SOP 列出可写字段的路径、类型、枚举值、数组元素类型、范围及声明元数据；向量的分量路径如 `direction.x` 对应补丁里的嵌套对象。数字资产按 `asset:<key>` 查其端口和公开的提升参数。发现请求不选择节点、不触发几何求值。 |
 | 看结构 | `graph.inspect {"view":"topology"}` | 一层节点与端口、有序连线、显示节点、模板节点、子图资产键和可撤销/重做状态。未解析的已保存输入列在对应节点的 `kept_inputs` 中。只读作者拓扑，不发起 cook；可沿 `asset` 打开子图继续查询。 |
 | 看字段 | `graph.inspect {"view":"node","node":"upper"}` | 所选已解析节点当前的可编辑属性 `properties`，不求值。 |
+| 查列契约 | `graph.inspect {"view":"catalog","type":"procedural.Realize"}` | `attribute_contracts` 列出已声明的具名绑定，每项给出端口、读写方向、层、类型、缺列行为及适用条件。Source 的 `name_from`、`layer_from` 指向可编辑字段。空表表示没有已声明的绑定。 |
+| 解释一次放置 | `graph.inspect {"view":"node","node":"place_clumps","bindings":true}` | 仅请求该节点的求值分支。`bindings.attributes` 返回解析后的列名、层、状态和来源。`bound` 代表内核可读取该列，`inactive` 表示受优先级或前置列条件排除，`fallback` 使用缺列规则。`upstream` 是直接连线节点；`column_source` 沿可证明共享非空列的主输入流追溯，到原生整块几何操作、快照或列重写处停止。冻结或旁路直接返回对应 `mode` 和空列表。求值失败返回首错。 |
 | 核对产物 | `graph.inspect {"node":"upper","samples":0,"spatial":false}` | 默认 `full` 视图求值并返回几何统计。布尔属性的 `count` 为层元素总数，`selected_count` 为完整成员数，均与样本上限无关。 |
 | 修改图 | `graph.apply` | 成功返回 `asset` 和 `changed`。一个有效修改对应一步图撤销；原样重发返回 `changed:false`。 |
 

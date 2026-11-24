@@ -446,6 +446,7 @@ Result<detail::NodePlan> detail::inspect_node(Runtime& runtime, TypeId type) {
         std::string_view port;
 
         bool optional{};
+        std::string_view purpose;
     };
     std::vector<ParsedMeta> parsed_meta(signature->parameters.size());
     for (std::size_t i = 0; i < signature->parameters.size(); ++i) {
@@ -466,6 +467,8 @@ Result<detail::NodePlan> detail::inspect_node(Runtime& runtime, TypeId type) {
                 meta.layer = value;
             else if (key == "procedural.port")
                 meta.port = value;
+            else if (key == "procedural.description")
+                meta.purpose = value;
             else if (key == "procedural.optional" && value == "true")
                 meta.optional = true;
             else
@@ -601,7 +604,11 @@ Result<detail::NodePlan> detail::inspect_node(Runtime& runtime, TypeId type) {
             return error(ErrorCode::invalid_definition,
                          name + ".process parameter '" + param_name + "' specifies both a literal name and From.");
 
-        ArgPlan arg{.kind = kind, .type = param.type, .column_variant = variant, .optional = meta.optional};
+        ArgPlan arg{.kind = kind,
+                    .type = param.type,
+                    .column_variant = variant,
+                    .optional = meta.optional,
+                    .purpose = std::string(meta.purpose)};
         if (!meta.port.empty()) {
             if (auto valid_port = Geometry::admit_name(StringView{meta.port}); !valid_port)
                 return error(ErrorCode::invalid_definition,
@@ -660,6 +667,65 @@ Result<detail::NodePlan> detail::inspect_node(Runtime& runtime, TypeId type) {
         return error(ErrorCode::invalid_definition,
                      name + ": RunOver requires at least one column or group parameter without a fixed Layer.");
     return plan;
+}
+
+std::string_view layer_name(Layer layer) noexcept {
+    constexpr std::array names{"point", "vertex", "primitive", "detail", "instance"};
+    return names[static_cast<std::size_t>(layer)];
+}
+
+std::string_view access_name(AttributeAccess access) noexcept {
+    constexpr std::array names{"read", "write", "edit", "group"};
+    return names[static_cast<std::size_t>(access)];
+}
+
+std::vector<AttributeRule> detail::attribute_rules(const NodePlan& plan, const TypeInfo& type) {
+    std::vector<AttributeRule> result;
+    if (plan.native)
+        append_native_rules(result, type.name);
+    const auto field_name = [&](FieldId id) -> std::string {
+        return id == FieldId{} ? std::string{} : std::ranges::find(type.fields, id, &FieldInfo::id)->name;
+    };
+    constexpr std::array elements{"bool",    "int",     "uint",       "float",  "vector2",
+                                  "vector3", "vector4", "quaternion", "matrix4"};
+    static_assert(elements.size() == column_type_count);
+    for (const auto& arg : plan.arguments) {
+        AttributeAccess access;
+        std::string_view missing;
+        switch (arg.kind) {
+        case ArgKind::column_in:
+            access = AttributeAccess::read;
+            missing = arg.optional ? "empty array" : "error";
+            break;
+        case ArgKind::column_out:
+            access = AttributeAccess::write;
+            missing = "create";
+            break;
+        case ArgKind::column_inout:
+            access = AttributeAccess::edit;
+            missing = "error";
+            break;
+        case ArgKind::column_group:
+            access = AttributeAccess::group;
+            missing = "empty selector selects all; named group required";
+            break;
+        default:
+            continue;
+        }
+        result.push_back({access == AttributeAccess::write ? plan.ports.outputs[0] : plan.ports.inputs[arg.port_index],
+                          std::string(arg.static_name.view().std_view()), field_name(arg.name_selector),
+                          arg.fixed_layer ? std::string(layer_name(*arg.fixed_layer)) : std::string{},
+                          arg.fixed_layer ? std::string{} : field_name(plan.run_over_field),
+                          elements[arg.column_variant], access, missing, arg.purpose});
+    }
+    return result;
+}
+
+Result<NodeInterface> node_interface(Runtime& runtime, TypeId type) {
+    ATELIER_TRY_BIND(plan, detail::inspect_node(runtime, type));
+    ATELIER_TRY_BIND(info, runtime.describe(type));
+    auto attributes = detail::attribute_rules(*plan, **info);
+    return NodeInterface{std::move(plan->ports), std::move(attributes)};
 }
 
 Result<Ports> ports(Runtime& runtime, TypeId type) {

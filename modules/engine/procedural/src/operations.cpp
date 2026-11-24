@@ -1,3 +1,4 @@
+#include "detail/node_plan.hpp"
 #include "procedural/operations.hpp"
 #include "foundation/hash.hpp"
 #include "foundation/map.hpp"
@@ -103,6 +104,9 @@ struct Placement {
 };
 
 // Borrows one immutable point input for either resource instances or real copies.
+constexpr char orientation[] = "orient", uniform_scale[] = "pscale", axis_scale[] = "scale", normal_name[] = "N",
+               up_name[] = "up";
+
 struct PlacementColumns {
     const Array<Vector3>* positions;
 
@@ -119,11 +123,11 @@ struct PlacementColumns {
     const Array<std::uint32_t>* variants;
 
     static Result<PlacementColumns> read(const Geometry& points, StringView variant) {
-        ATELIER_TRY_BIND(orient, points.read<Quaternion>("orient", Layer::point));
-        ATELIER_TRY_BIND(pscale, points.read<float>("pscale", Layer::point));
-        ATELIER_TRY_BIND(scale, points.read<Vector3>("scale", Layer::point));
-        ATELIER_TRY_BIND(normal, points.read<Vector3>("N", Layer::point));
-        ATELIER_TRY_BIND(up, points.read<Vector3>("up", Layer::point));
+        ATELIER_TRY_BIND(orient, points.read<Quaternion>(orientation, Layer::point));
+        ATELIER_TRY_BIND(pscale, points.read<float>(uniform_scale, Layer::point));
+        ATELIER_TRY_BIND(scale, points.read<Vector3>(axis_scale, Layer::point));
+        ATELIER_TRY_BIND(normal, points.read<Vector3>(normal_name, Layer::point));
+        ATELIER_TRY_BIND(up, points.read<Vector3>(up_name, Layer::point));
         ATELIER_TRY_BIND(variants, points.read<std::uint32_t>(variant, Layer::point));
         return PlacementColumns{&points.positions(), *orient, *pscale, *scale, *normal, *up, *variants};
     }
@@ -264,6 +268,13 @@ Result<Geometry> scatter(const Geometry& surface, const ScatterSettings& setting
     if (!std::isfinite(settings.density) || settings.density < 0 || !std::isfinite(settings.min_distance) ||
         settings.min_distance < 0)
         return failure("Scatter density and minimum distance must be finite and non-negative.");
+    const Array<bool>* selected = nullptr;
+    if (!settings.group.empty()) {
+        ATELIER_TRY_BIND(mask, surface.read<bool>(settings.group, Layer::primitive));
+        if (!*mask)
+            return failure("Scatter primitive group " + std::string{settings.group.std_view()} + " was not found.");
+        selected = *mask;
+    }
     const auto triangles = detail::TriangleView::create(surface);
     if (!triangles)
         return std::unexpected(triangles.error());
@@ -279,13 +290,18 @@ Result<Geometry> scatter(const Geometry& surface, const ScatterSettings& setting
     for (const auto& [p, j, corners] : *triangles) {
         if (j == 0)
             triangle_offsets.add(static_cast<std::uint32_t>(point_offsets.size() - 1));
+        auto end = point_offsets[point_offsets.size() - 1];
+        if (selected && !(*selected)[p]) {
+            // Keep the original fan index and primitive numbering without generating candidates.
+            point_offsets.add(end);
+            continue;
+        }
         const auto v0 = Vector3d(points[vertex_points[corners[0]]]);
         const auto e1 = Vector3d(points[vertex_points[corners[1]]]) - v0;
         const auto e2 = Vector3d(points[vertex_points[corners[2]]]) - v0;
         const auto normal = math::cross(e1, e2);
         const double area = math::length(normal) / 2;
         const double expected = area * settings.density;
-        auto end = point_offsets[point_offsets.size() - 1];
         if (area > 0 && expected > 0) {
             const auto seed = j ? hash(hash(settings.seed, p), j) : hash(settings.seed, p);
             const double whole = std::floor(expected);
@@ -511,6 +527,93 @@ Result<Geometry> scatter(const Geometry& surface, const ScatterSettings& setting
         ATELIER_TRY(result->set(String::literal<"sourcetri">(), Layer::point,
                                 SharedArray<std::uint32_t>{std::move(subtriangles)}));
     return result;
+}
+
+// The native placement contract covers named bindings. Bulk propagation of source geometry
+// and Realize's explicit target_attributes list are separate from these conventional names.
+void detail::append_native_rules(std::vector<AttributeRule>& rules, std::string_view type) {
+    using enum AttributeAccess;
+    if (type == "procedural.Scatter") {
+        rules = {{"surface", "P", {}, "point", {}, "vector3", read, "error", "Surface positions"},
+                 {"surface",
+                  {},
+                  "group",
+                  "primitive",
+                  {},
+                  "bool",
+                  group,
+                  "empty selector selects all; named group required",
+                  "Eligible faces"},
+                 {"points", "P", {}, "point", {}, "vector3", write, "create", "Sample position"},
+                 {"points", normal_name, {}, "point", {}, "vector3", write, "create", "Geometric face normal"},
+                 {"points", "id", {}, "point", {}, "uint", write, "create", "Deterministic seed, may repeat"},
+                 {"points", "sourceprim", {}, "point", {}, "uint", write, "create", "Source face index"},
+                 {"points",
+                  "sourceordinal",
+                  {},
+                  "point",
+                  {},
+                  "uint",
+                  write,
+                  "create",
+                  "Candidate ordinal within the sampling triangle"},
+                 {"points",
+                  "sourceprimuv",
+                  {},
+                  "point",
+                  {},
+                  "vector2",
+                  write,
+                  "create",
+                  "Barycentric coordinates in the sampling triangle"},
+                 {"points",
+                  "sourcetri",
+                  {},
+                  "point",
+                  {},
+                  "uint",
+                  write,
+                  "conditional",
+                  "Fan triangle index when the input has a polygon with more than three corners"}};
+    } else if (type == "procedural.Realize" || type == "procedural.CopyToPoints") {
+        rules = {
+            {"points", "P", {}, "point", {}, "vector3", read, "error", "Translation"},
+            {"points", orientation, {}, "point", {}, "quaternion", read, "use N, then identity", "Rotation"},
+            {"points",
+             normal_name,
+             {},
+             "point",
+             {},
+             "vector3",
+             read,
+             "identity",
+             "Align local +Z; zero normal keeps identity",
+             orientation},
+            {"points",
+             up_name,
+             {},
+             "point",
+             {},
+             "vector3",
+             read,
+             "shortest rotation from +Z",
+             "Roll reference; parallel or zero up uses shortest rotation",
+             orientation,
+             normal_name},
+            {"points", uniform_scale, {}, "point", {}, "float", read, "1", "Uniform factor multiplied by scale"},
+            {"points", axis_scale, {}, "point", {}, "vector3", read, "(1,1,1)", "Axis factors multiplied by pscale"},
+            {"points", {}, "variant", "point", {}, "uint", read, "source index 0", "Select ordered source"}};
+        if (type == "procedural.Realize")
+            rules.push_back({"points",
+                             {},
+                             "group",
+                             "point",
+                             {},
+                             "bool",
+                             group,
+                             "empty selector selects all; named group required",
+                             "Eligible target points"});
+    }
 }
 
 Quaternion euler_to_quaternion(Vector3 euler_degrees) noexcept {

@@ -380,6 +380,9 @@ class Scatter : public Node {
     AGENERATED_BODY(Scatter)
 
 public:
+    AFIELD(Label = "Primitive Group", DESC = "只在该 primitive 布尔组内撒点。留空选择整个表面。")
+    String group;
+
     AFIELD(Label = "Density", Min = "0", Max = "100", LockMin, DESC = "每平方米的点数，淘汰过近的点之前。")
     float density{1.f};
 

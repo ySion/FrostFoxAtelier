@@ -411,11 +411,12 @@ const std::vector<Operation>& operations() {
          {"object", "path"}},
         {"material.save", "Save a shared material asset", true, {{"asset", str}}, {"asset"}},
         {"graph.inspect",
-         "Use view=catalog to discover SOPs without an open graph. Add type for fields, enum choices and ports. topology and node inspect authoring state; full cooks geometry",
+         "Use view=catalog to discover SOPs without an open graph. Add type for fields, ports and named attribute contracts. topology and node inspect authoring state. With view=node, bindings=true cooks the target and explains its columns. full cooks geometry",
          false,
          {{"asset", str},
           {"node", str},
           {"view", Argument::graph_view},
+          {"bindings", Argument::boolean},
           {"type", str},
           {"timings", Argument::boolean},
           {"samples", Argument::integer},
@@ -504,6 +505,29 @@ json::Result<void> write_graph_ports(json::Builder& result, json::Value item, co
     ATELIER_TRY_BIND(outputs, result.array(item, "outputs"));
     for (const auto& name : ports.outputs)
         ATELIER_TRY(result.append(*outputs, name));
+    return {};
+}
+
+json::Result<void> write_attribute_rule(json::Builder& result, json::Value item,
+                                        const procedural::AttributeRule& rule) {
+    ATELIER_TRY(result.set(item, "port", rule.port));
+    ATELIER_TRY(result.set(item, "access", procedural::access_name(rule.access)));
+    ATELIER_TRY(result.set(item, "type", rule.type));
+    if (!rule.name.empty())
+        ATELIER_TRY(result.set(item, "name", rule.name));
+    if (!rule.selector.empty())
+        ATELIER_TRY(result.set(item, "name_from", rule.selector));
+    if (!rule.layer.empty())
+        ATELIER_TRY(result.set(item, "layer", rule.layer));
+    if (!rule.layer_selector.empty())
+        ATELIER_TRY(result.set(item, "layer_from", rule.layer_selector));
+    ATELIER_TRY(result.set(item, "missing", rule.missing));
+    if (!rule.purpose.empty())
+        ATELIER_TRY(result.set(item, "purpose", rule.purpose));
+    if (!rule.unless_present.empty())
+        ATELIER_TRY(result.set(item, "unless_present", rule.unless_present));
+    if (!rule.needs_present.empty())
+        ATELIER_TRY(result.set(item, "needs_present", rule.needs_present));
     return {};
 }
 
@@ -2677,6 +2701,10 @@ struct EditorControl::Impl {
             if (!found)
                 return std::unexpected(Failure("invalid_request", "Unknown procedural node type: " + *name));
             ATELIER_TRY(write_graph_type(result, root, *found));
+            ATELIER_TRY_BIND(attributes, result.array(root, "attribute_contracts"));
+            if (found->attribute_help)
+                for (const auto& rule : found->attribute_help->rules)
+                    ATELIER_TRY(write_attribute_rule(result, result.append_object(*attributes), rule));
             auto& runtime = doc.world().runtime();
             if (!found->asset_key.empty()) {
                 ATELIER_TRY_BIND(params,
@@ -2755,6 +2783,8 @@ struct EditorControl::Impl {
             return result.finish();
         }
         if (op == "graph.inspect") {
+            if (*args.find("bindings") && args.string({"view"}) != "node")
+                return std::unexpected(Failure("invalid_request", "bindings requires view=node"));
             if (args.string({"view"}) == "catalog")
                 return graph_catalog(args);
             if (*args.find("type"))
@@ -2805,6 +2835,27 @@ struct EditorControl::Impl {
                 ATELIER_TRY(result.set(result.root(), "asset", key));
                 ATELIER_TRY(result.set(result.root(), "node", node_name));
                 result.set_validated(result.root(), "properties", props->root());
+                if (const auto requested = *args.find("bindings")) {
+                    ATELIER_TRY_BIND(enabled, requested->boolean());
+                    if (*enabled) {
+                        ATELIER_TRY_BIND(bindings,
+                                         operation(doc.graph_node_bindings(key, node_name, app.project_.get())));
+                        const auto object = result.object_validated(result.root(), "bindings");
+                        ATELIER_TRY(result.set(object, "mode", bindings->mode));
+                        ATELIER_TRY_BIND(entries, result.array(object, "attributes"));
+                        for (const auto& binding : bindings->attributes) {
+                            const auto item = result.append_object(*entries);
+                            ATELIER_TRY(write_attribute_rule(result, item, binding.rule));
+                            ATELIER_TRY(result.set(item, "name", binding.name));
+                            ATELIER_TRY(result.set(item, "layer", binding.layer));
+                            ATELIER_TRY(result.set(item, "status", binding.status));
+                            if (auto upstream = doc.graph_node_name(binding.upstream))
+                                ATELIER_TRY(result.set(item, "upstream", *upstream));
+                            if (auto source = doc.graph_node_name(binding.column_source))
+                                ATELIER_TRY(result.set(item, "column_source", *source));
+                        }
+                    }
+                }
                 return result.finish();
             }
             if (*value != "full")

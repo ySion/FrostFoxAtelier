@@ -1813,16 +1813,34 @@ Result<std::optional<GraphNodeCatalogEntry>> describe_sop(Runtime& runtime, Type
     ATELIER_TRY_BIND(derived, runtime.is_a(type, base));
     if (!*derived)
         return std::nullopt;
-    auto ports = procedural::ports(runtime, type);
-    if (!ports)
+    auto schema = procedural::node_interface(runtime, type);
+    if (!schema)
         return std::nullopt;
+    std::string help;
+    for (const auto& rule : schema->attributes) {
+        if (!help.empty())
+            help += '\n';
+        help += std::format("{} {}.{} · {} · {}", procedural::access_name(rule.access),
+                            rule.layer.empty() ? "$" + rule.layer_selector : rule.layer,
+                            rule.selector.empty() ? rule.name : "$" + rule.selector, rule.type, rule.missing);
+        if (!rule.unless_present.empty())
+            help += std::format(" · unless {}", rule.unless_present);
+        if (!rule.needs_present.empty())
+            help += std::format(" · requires {}", rule.needs_present);
+        if (!rule.purpose.empty())
+            help += std::format(" · {}", rule.purpose);
+    }
+    auto& ports = schema->ports;
     return GraphNodeCatalogEntry{type,
                                  std::string((*info)->name),
                                  std::string((*info)->description),
                                  (*info)->native_storage,
                                  {},
                                  {},
-                                 {std::move(ports->inputs), std::move(ports->multiple), std::move(ports->outputs)}};
+                                 {std::move(ports.inputs), std::move(ports.multiple), std::move(ports.outputs)},
+                                 help.empty() ? nullptr
+                                              : std::make_shared<GraphAttributeHelp>(GraphAttributeHelp{
+                                                    std::move(schema->attributes), std::move(help)})};
 }
 
 GraphNodeCatalogEntry describe_graph_asset(const assets::ProjectEntry& entry, TypeId asset_node,
@@ -3860,15 +3878,7 @@ Result<void> Session::graph_set_frozen(std::string_view key, std::string_view no
     ATELIER_TRY(cancel_edit());
     ATELIER_TRY_BIND(snapshot, procedural::frozen_output(runtime_, item->node.id()));
     if (frozen) {
-        ATELIER_TRY_BIND(program, ensure_procedural_program());
-        if (project)
-            open.resources.bind(project);
-        ATELIER_TRY(sync_open_graph_assets(open, project ? project : open.resources.project(), true));
-        if (!open.evaluator || open.bound_program != *program) {
-            open.bound_program = *program;
-            open.evaluator = std::make_unique<procedural::Evaluator>(runtime_, open.document.graph, open.resources,
-                                                                     *program, ensure_procedural_cache_pool());
-        }
+        ATELIER_TRY(prepare_graph_evaluator(open, project));
         ATELIER_TRY_BIND(captured, open.evaluator->freeze_snapshot(item->node.id()));
         *snapshot = std::move(*captured);
     }
@@ -6500,14 +6510,7 @@ Result<void> Session::set_string_property(ObjectId object, std::span<const Field
     return graph_set_properties(*graph_key, node_name.value_or(""), patch.root());
 }
 
-Result<GraphEvaluation> Session::evaluate_graph(std::string_view key, Project* project, ObjectId inspected_node,
-                                                bool record_timings) {
-    if (world_.closed())
-        return graph_error("Graph evaluation requires an open Session.", ErrorCode::invalid_definition);
-    const auto at = graphs_.find(std::string(key));
-    if (at == graphs_.end() || !at->second)
-        return graph_error("Procedural graph is not open: " + std::string(key), ErrorCode::invalid_definition);
-    auto& open = *at->second;
+Result<procedural::Evaluator*> Session::prepare_graph_evaluator(OpenGraph& open, Project* project) {
     ATELIER_TRY_BIND(program, ensure_procedural_program());
     if (project)
         open.resources.bind(project);
@@ -6518,6 +6521,28 @@ Result<GraphEvaluation> Session::evaluate_graph(std::string_view key, Project* p
         open.evaluator = std::make_unique<procedural::Evaluator>(runtime_, open.document.graph, open.resources,
                                                                  *program, ensure_procedural_cache_pool());
     }
+    return open.evaluator.get();
+}
+
+Result<procedural::NodeBindings> Session::graph_node_bindings(std::string_view key, std::string_view name,
+                                                              Project* project) {
+    const auto id = graph_node_id(key, name);
+    if (id == ObjectId{})
+        return graph_error("Missing or unresolved graph node: " + std::string(name));
+    auto& open = *graphs_.find(std::string(key))->second;
+    ATELIER_TRY_BIND(evaluator, prepare_graph_evaluator(open, project));
+    return (*evaluator)->inspect_bindings(id);
+}
+
+Result<GraphEvaluation> Session::evaluate_graph(std::string_view key, Project* project, ObjectId inspected_node,
+                                                bool record_timings) {
+    if (world_.closed())
+        return graph_error("Graph evaluation requires an open Session.", ErrorCode::invalid_definition);
+    const auto at = graphs_.find(std::string(key));
+    if (at == graphs_.end() || !at->second)
+        return graph_error("Procedural graph is not open: " + std::string(key), ErrorCode::invalid_definition);
+    auto& open = *at->second;
+    ATELIER_TRY(prepare_graph_evaluator(open, project));
     ATELIER_TRY(open.evaluator->evaluate(record_timings));
 
     GraphEvaluation result;

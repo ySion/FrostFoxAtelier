@@ -34,6 +34,18 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
+struct AttributeBinding {
+    AttributeRule rule;
+    std::string name{}, layer{};
+    std::string_view status{};
+    ObjectId upstream{}, column_source{};
+};
+
+struct NodeBindings {
+    std::string_view mode;
+    std::vector<AttributeBinding> attributes;
+};
+
 struct NodeStatus {
     std::optional<Error> error; // Set while the node or an input it reads fails.
 
@@ -143,6 +155,9 @@ public:
 
     [[nodiscard]] std::shared_ptr<const Geometry> retain_node_output(ObjectId node,
                                                                      std::uint32_t output_index = 0) const noexcept;
+
+    // Cook only the target branch and explain the named columns of the resulting snapshot.
+    [[nodiscard]] Result<NodeBindings> inspect_bindings(ObjectId node);
 
     // Root-cause error on `node` or its upstream chain when its latest evaluation failed.
     [[nodiscard]] std::optional<Error> target_error(ObjectId node) const;

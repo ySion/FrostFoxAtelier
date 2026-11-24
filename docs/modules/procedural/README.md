@@ -39,6 +39,8 @@
 - **`Geometry::connect_points` / Polyline**：只接受纯点输入，不得带任何图元或 instance；按点序连接为一个开放图元，不焊接，不自动闭合，没有 closed 选项。0 点空进空出（保留 detail，与未连端口相容），1 点报错。全部 point 与 detail 列及其用途原样共享保留，不生成 N；已有空 vertex/primitive 列保留定义，分别扩为点数/1 个类型默认值，instance 列仍为空，不静默删列。`Line → Polyline` 先生成等距点，再连接相邻点；作者手填点数组的绘制曲线节点后移到 S2，见 roadmap。
 - **`Group`** 输出一列命名的 `bool` 属性。选 `normal` 时，用局部空间点位和多边形绕序计算面积法线；与 `direction` 的夹角 ≤ `max_angle`（0–180°）即入 primitive 组。边界包含在内，折线的条件值为假，零面积面报出首个图元索引。选 `existing` 时直接读取 `source_group` 的层和成员。默认 `replace` 写入条件结果；`unite / intersect / subtract` 计算“基组 ∪ 条件 / 基组 ∩ 条件 / 基组 − 条件”。输出可与任一操作数同名。显式命名的组须存在、为 bool，参与组合的组须同层。已有列替换遵守 Geometry 层与类型契约。
 - **屋面示例**：对宽 2、高 1 的对称 `Wedge` 用 +Y、45° 得到两片 `roof_faces`；以右坡法线 (1,1,0)、0° 得到 `protected_side`。在 `Group` 里选 `existing`、`subtract`，以 `roof_faces` 为基组、`protected_side` 为条件，输出 `work_area`。下游 `Extrude.group = work_area` 只抬高左坡。Scene View 的 Guides → Highlight Group 可以检查该列，Geometry Info HUD 显示成员数和所在层的总数。
+- **命名属性契约**：类型目录和网络节点提示使用同一份声明。Source 的列参数可在 `In/Out/InOut/Group` 上加单行 `DESC` 说明用途，例如 `[In("id", Optional, DESC = "缺列时使用点序号。")]`。绑定器传入空数组，点序号回退由节点内核实现。原生 `Scatter` 声明所读的坡面组和写出的点列；`Realize / CopyToPoints` 声明具名的放置输入。任意源几何的列传播和 `Realize.target_attributes` 的显式广播仍由各自算子定义。Scatter 的 `density` 是每平方米的候选点数，输入几何上即便有同名列也不会自动加权。
+- **屋面长苔**：[MossRoof.procgraph](../../../examples/Content/Procedural/Graphs/MossRoof.procgraph) 用 `Wedge → Group → Scatter` 在朝 −X 的 45° 坡面取样；`RandomScale → Realize` 按点法线放置大小略有不同的扁球苔斑，最后与屋面合并。查看 `moss_anchors` 可单独检查锚点，翻转 `moss_faces.direction.x` 可切换坡面。固定图种子 17、散点种子 31 和最小间距 0.3 m 时，密度 2 点/m² 在左坡保留 18 个锚点，改为 1 点/m² 保留 10 个。
 - **`group_box`**：在各轴闭区间 `[minimum,maximum]` 内选 point，写入/替换同名 bool 列；边界须有限且逐轴有序。名字遵守 Geometry 标识符规则，已有异层/异类型列报错。GroupBox 节点在输入的 COW 副本上操作，不改输入；这是输出组名，不能用空名字表示全选，不支持表达式或反选。
 - **Connectivity** 按共享点索引将多边形、开放折线和散点划分为连通块，在 point 层写入 uint 属性（默认 `piece`）。编号从 0 开始，按每块最小点索引排序。仅位置重合的独立点保持分离，孤立点各有一个编号；实例层与其余属性原样传递。需要逐图元编号时接 Promote，目标层选 primitive，归约选 first。
 - **`scatter`**：接受三角形及凸平面多边形，不接受折线；按下述公共首角扇形视图采样。原图元 p、局部子三角 j 的随机源 s 在 j=0 时为 `hash(seed,p)`，j>0 时为 `hash(hash(seed,p),j)`；点数为面积 × 密度，以 `hash(s,0)` 按小数部分概率进位，第 k 个点使用 `hash(s,2*k+1)` 与 `hash(s,2*k+2)` 均匀采样重心坐标。输出按 p/j/k 顺序，k 在每个子三角内从零开始，不把展开下标或线程号混入随机源。可选最小间距通过紧凑双数组开放寻址空间哈希在全部候选上按这个顺序稳定淘汰，所有列一起压紧；格坐标超出 ±2⁶² 时失败。输出 P、N、`id`、`sourceprim`、`sourceordinal`、`sourceprimuv`；仅输入包含超过三角的面时在末尾追加 uint `sourcetri`（其他三角面的值为 0）。纯三角输入的六列顺序、算术与值不变。`id` 在 j=0 时为 `hash(p,k)`，否则为 `hash(hash(p,j),k)`，它只是非唯一随机种子；（p,j,k）是局部稳定来源。`sourceprimuv` 是子三角 j 内的 (b1,b2)，不是原多边形坐标。
@@ -75,6 +77,8 @@
 - **Wedge / Circle / Torus**：`Wedge` 沿 Z 切分为 `nz+1` 组等截面三角形 `(A_k, B_k, C_k)`，依次输出底面、右坡、左坡四边形与 −Z/+Z 山墙三角形；`Circle` 在右手平面基 `(u, v, n)`（`u × v = n`）下按角度采样，整圆多边形输出单 `M` 边形，部分扇形输出过圆心的 `M` 个凸三角形，`open_arc` / `closed_polyline` 输出单条 `polyline`；`Torus` 要求 `0 < minor_radius < major_radius`，主环平行弦构成严格共面的等腰梯形四边形，部分张角且 `end_caps = true` 时封闭两端管口。
 
 ### 公共凸面剖分
+
+Scatter 的 `group` 留空时在整个有效表面撒点；命名组必须是输入几何的 primitive 布尔列。全假组选出零点，并保留相同的输出列结构。只对组内面生成候选再执行最小间距淘汰，因此组外点不会挤掉组内点。源面与扇形三角仍按原输入编号；相同种子下，未做间距淘汰时组内候选的位置、ID 和重心坐标与全表面采样对应项一致。输入表面的几何有效性校验覆盖全部图元。
 
 模块内部 [triangles.cpp](../../../modules/engine/procedural/src/triangles.cpp) 是 Scatter、BVH/Ray、Volume 共用的数值判据与首角扇形视图，不生成第二份拓扑；借用期间 Geometry 必须保持不变且存活。图元 p 的第 j 个三角取原角 `(first, first+j+1, first+j+2)`，顺序为 p 再 j；折线明确失败。Scatter/BVH 的三角输入保留原先零面积跳过规则；Volume 要求三角面也通过非退化面校验。多边形都必须有可分辨的平面、简单凸边界及非零边，合法多边形中的零面积扇形片不算退化面。
 
@@ -171,7 +175,7 @@ Release 下运行 `atelier_procedural_acceptance --profile-boolean <新的绝对
 | Group | group="selected"、criterion=normal、direction=(0,1,0)、max_angle=45°、source_group=""、operation=replace、base_group="" | input → output |
 | GroupBox | group="selected"、minimum=(−.5,−.5,−.5)、maximum=(.5,.5,.5) | input → output |
 | Connectivity | attribute="piece"（point uint） | input → output |
-| Scatter | density、seed、min_distance；节点种子为 hash(图种子, seed) | context, surface → points |
+| Scatter | density、seed、min_distance、group=""（primitive bool）；节点种子为 hash(图种子, seed) | context, surface → points |
 | Boolean | operation 默认 unite，可选 intersect、subtract（A 减 B） | a, b → output |
 | VolumeScatter | density=1、seed=0、origin=(0,0,0)、cell_size=1 | context, surface → points |
 | Transform | translate、rotate（X→Y→Z 角度制欧拉角）、scale、pivot | input → output |

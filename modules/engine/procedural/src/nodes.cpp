@@ -141,9 +141,10 @@ Result<void> Connectivity::process(const Geometry& input, Geometry& output) cons
 }
 
 Result<void> Scatter::process(const Context& context, const Geometry& surface, Geometry& points) const noexcept {
-    ATELIER_TRY_BIND(
-        result, invocation_result(scatter(
-                    surface, {.density = density, .seed = hash(context.seed(), seed), .min_distance = min_distance})));
+    ATELIER_TRY_BIND(result, invocation_result(scatter(surface, {.density = density,
+                                                                 .seed = hash(context.seed(), seed),
+                                                                 .min_distance = min_distance,
+                                                                 .group = group})));
     points = std::move(*result);
     return {};
 }

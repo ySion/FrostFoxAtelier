@@ -1,0 +1,164 @@
+{
+  "nodes": {
+    "moss_anchors": {
+      "inputs": {
+        "surface": "moss_faces.output"
+      },
+      "position": [
+        0.0,
+        192.0
+      ],
+      "properties": {
+        "density": 2.0,
+        "group": "moss_faces",
+        "min_distance": 0.3,
+        "seed": 31
+      },
+      "type": "procedural.Scatter"
+    },
+    "moss_faces": {
+      "inputs": {
+        "input": "roof.output"
+      },
+      "position": [
+        -98.0,
+        96.0
+      ],
+      "properties": {
+        "base_group": "",
+        "criterion": "normal",
+        "direction": {
+          "x": -1.0,
+          "y": 1.0,
+          "z": 0.0
+        },
+        "group": "moss_faces",
+        "max_angle": 5.0,
+        "operation": "replace",
+        "source_group": ""
+      },
+      "type": "procedural.Group"
+    },
+    "moss_pad": {
+      "inputs": {
+        "input": "tuft.output"
+      },
+      "position": [
+        98.0,
+        96.0
+      ],
+      "properties": {
+        "pivot": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "rotate": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "scale": {
+          "x": 0.2,
+          "y": 0.15,
+          "z": 0.055
+        },
+        "translate": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "type": "procedural.Transform"
+    },
+    "moss_roof": {
+      "inputs": {
+        "inputs": [
+          "roof.output",
+          "place_clumps.output"
+        ]
+      },
+      "position": [
+        0.0,
+        480.0
+      ],
+      "properties": {},
+      "type": "procedural.Merge"
+    },
+    "place_clumps": {
+      "inputs": {
+        "points": "vary_clumps.output",
+        "sources": [
+          "moss_pad.output"
+        ]
+      },
+      "position": [
+        0.0,
+        384.0
+      ],
+      "properties": {
+        "group": "",
+        "target_attributes": [],
+        "variant": "variant"
+      },
+      "type": "procedural.Realize"
+    },
+    "roof": {
+      "inputs": {},
+      "position": [
+        -98.0,
+        0.0
+      ],
+      "properties": {
+        "base_on_ground": true,
+        "center": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "divisions_z": 1,
+        "peak_ratio": 0.5,
+        "size": {
+          "x": 4.0,
+          "y": 2.0,
+          "z": 4.0
+        }
+      },
+      "type": "procedural.Wedge"
+    },
+    "tuft": {
+      "inputs": {},
+      "position": [
+        98.0,
+        0.0
+      ],
+      "properties": {
+        "latitudes": 4,
+        "radius": 1.0,
+        "segments": 8
+      },
+      "type": "procedural.Sphere"
+    },
+    "vary_clumps": {
+      "inputs": {
+        "input": "moss_anchors.points"
+      },
+      "position": [
+        0.0,
+        288.0
+      ],
+      "properties": {
+        "group": "",
+        "maximum": 1.4,
+        "minimum": 0.65,
+        "seed": 3
+      },
+      "type": "procedural.RandomScale"
+    }
+  },
+  "settings": {
+    "display": "moss_roof",
+    "seed": 17
+  },
+  "version": 4
+}

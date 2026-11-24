@@ -12,9 +12,9 @@ class procedural.RandomScale : procedural.Node {
     uint seed = 0;
 
     void process(const procedural.Context& context,
-                 [In("pscale", Optional)] const Array<float>& prior_pscale,
-                 [Out("pscale")] Array<float>& pscale,
-                 [In("id", Optional)] const Array<uint>& id,
+                 [In("pscale", Optional, DESC = "组外点保留原值；缺列时取 1。")] const Array<float>& prior_pscale,
+                 [Out("pscale", DESC = "为选中的点写入 minimum 到 maximum 之间的均匀缩放。")] Array<float>& pscale,
+                 [In("id", Optional, DESC = "混入随机种子；缺列时使用点序号。")] const Array<uint>& id,
                  [Group(From = "group")] const Array<bool>& selected) {
         const float low = self.minimum;
         const float high = self.maximum;

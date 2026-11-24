@@ -1395,6 +1395,98 @@ std::shared_ptr<const Geometry> Evaluator::retain_node_output(ObjectId node,
     return {found->entry, &found->entry->outputs[output_index]};
 }
 
+Result<NodeBindings> Evaluator::inspect_bindings(ObjectId node) {
+    ATELIER_TRY(evaluate_node(node));
+    if (auto cause = target_error(node))
+        return std::unexpected(std::move(*cause));
+    const auto* state = impl_->nodes.find(node);
+    if (!state || !state->entry)
+        return failure("No evaluated procedural node for attribute inspection.");
+    if (state->bypassed)
+        return NodeBindings{"bypassed", {}};
+    if (state->frozen && state->frozen_entry)
+        return NodeBindings{"frozen", {}};
+
+    // Follow proven sharing through the primary stream. Stop at opaque kernels, snapshots
+    // and empty columns (two empty arrays need not share an allocation).
+    const auto column_source = [&](ObjectId current, const Attribute& column, std::uint32_t output) {
+        while (const auto* owner = impl_->nodes.find(current)) {
+            if (output != 0 || (!owner->bypassed && (!owner->plan->uses_primary_stream || owner->frozen)))
+                break;
+            const auto input = std::ranges::find(owner->inputs, 0u, &Input::input);
+            if (input == owner->inputs.end())
+                break;
+            const auto* geometry = node_output(input->from, input->output);
+            const auto* prior = geometry ? geometry->find(column.name) : nullptr;
+            if (!prior || prior->layer != column.layer ||
+                !std::visit(
+                    [&](const auto& values) {
+                        const auto* original = std::get_if<std::decay_t<decltype(values)>>(&prior->data);
+                        return original && !values.empty() && same(values, *original);
+                    },
+                    column.data))
+                break;
+            current = input->from;
+            output = input->output;
+        }
+        return current;
+    };
+
+    NodeBindings result{"evaluated", {}};
+    auto& runtime = impl_->runtime;
+    ATELIER_TRY_BIND(type, runtime.describe(state->type));
+    auto rules = detail::attribute_rules(*state->plan, **type);
+    for (auto& rule : rules) {
+        AttributeBinding binding{.rule = std::move(rule)};
+        auto& attr = binding.rule;
+        binding.name = attr.name;
+        binding.layer = attr.layer;
+        if (!attr.selector.empty()) {
+            ATELIER_TRY_BIND(field, runtime.find_field(state->type, attr.selector));
+            ATELIER_TRY_BIND(string_type, runtime.native_type<String>());
+            String selected;
+            ATELIER_TRY(runtime.read(node, *field, ValueOutput{*string_type, &selected}));
+            binding.name = selected.view().std_view();
+        }
+        if (!attr.layer_selector.empty()) {
+            ATELIER_TRY_BIND(field, runtime.find_field(state->type, attr.layer_selector));
+            ATELIER_TRY_BIND(value, runtime.read(node, *field));
+            binding.layer = layer_name(static_cast<Layer>(std::get<EnumValue>(*value).bits));
+        }
+
+        const bool writes = attr.access == AttributeAccess::write;
+        const auto& ports = writes ? state->plan->ports.outputs : state->plan->ports.inputs;
+        const auto port = std::ranges::find(ports, attr.port);
+        if (port == ports.end())
+            return failure("Unknown attribute contract port: " + attr.port);
+        const auto index = static_cast<std::uint32_t>(port - ports.begin());
+        const Geometry* geometry = &impl_->empty;
+        const Input* edge = nullptr;
+        if (writes)
+            geometry = node_output(node, index);
+        else if (const auto input = std::ranges::find(state->inputs, index, &Input::input);
+                 input != state->inputs.end()) {
+            edge = &*input;
+            geometry = node_output(edge->from, edge->output);
+            binding.upstream = edge->from;
+        }
+        const auto* column = geometry->find(StringView{binding.name});
+        if (column && edge)
+            binding.column_source = column_source(edge->from, *column, edge->output);
+        if ((!attr.unless_present.empty() && geometry->find(StringView{attr.unless_present})) ||
+            (!attr.needs_present.empty() && !geometry->find(StringView{attr.needs_present})))
+            binding.status = "inactive";
+        else if (writes)
+            binding.status = column ? "written" : "omitted";
+        else if (attr.access == AttributeAccess::group && binding.name.empty())
+            binding.status = "all";
+        else
+            binding.status = column ? "bound" : "fallback";
+        result.attributes.push_back(std::move(binding));
+    }
+    return result;
+}
+
 std::optional<Error> Evaluator::target_error(ObjectId node) const {
     if (node == ObjectId{})
         return std::nullopt;

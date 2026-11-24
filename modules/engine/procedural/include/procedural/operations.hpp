@@ -216,6 +216,8 @@ struct ScatterSettings {
     std::uint32_t seed{};
 
     float min_distance{}; // 0 keeps every point.
+
+    StringView group{}; // Empty selects the entire surface; otherwise an existing primitive bool column.
 };
 
 // Points on first-corner fans of convex planar polygons; polylines fail. Primitive p,

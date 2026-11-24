@@ -211,6 +211,28 @@ struct AssetSubgraph {
     std::uint64_t revision{};
 };
 
+// Named column bindings. Opaque geometry kernels may additionally transport arbitrary columns.
+enum class AttributeAccess { read, write, edit, group };
+
+struct AttributeRule {
+    std::string port, name, selector; // A selector names the public field supplying the column name.
+    std::string layer, layer_selector, type;
+    AttributeAccess access{};
+    std::string_view missing;
+    std::string purpose{};
+    std::string_view unless_present{}, needs_present{};
+    bool operator==(const AttributeRule&) const = default;
+};
+
+struct NodeInterface {
+    Ports ports;
+    std::vector<AttributeRule> attributes;
+};
+
+Result<NodeInterface> node_interface(Runtime& runtime, TypeId node);
+std::string_view layer_name(Layer layer) noexcept;
+std::string_view access_name(AttributeAccess access) noexcept;
+
 // The ports of a node type, or why it cannot be a node; an unnamed port parameter fails.
 Result<Ports> ports(Runtime& runtime, TypeId node);
 

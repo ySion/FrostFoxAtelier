@@ -620,6 +620,8 @@ public:
     // Apply one text edit to the open graph. Returns whether an undo step was published.
     Result<bool> graph_apply(std::string_view key, json::Value patch, Project* project = nullptr);
 
+    Result<procedural::NodeBindings> graph_node_bindings(std::string_view key, std::string_view name, Project* project);
+
     Result<json::Document> graph_node_properties(std::string_view key, std::string_view name);
 
     Result<void> graph_set_properties(std::string_view key, std::string_view node_name, json::Value properties);
@@ -1376,6 +1378,8 @@ private:
     std::shared_ptr<procedural::CachePool> ensure_procedural_cache_pool();
 
     AssetPortResolver make_asset_port_resolver(Project* project) const;
+
+    Result<procedural::Evaluator*> prepare_graph_evaluator(OpenGraph& open, Project* project);
 
     Result<void> sync_open_graph_assets(OpenGraph& open, Project* project, bool materialize_subgraphs);
 
